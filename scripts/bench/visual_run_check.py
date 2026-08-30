@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import hashlib
 import json
 import re
@@ -15,16 +14,18 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable
 
-from PIL import Image, ImageChops, ImageFilter, ImageStat
+from PIL import Image, ImageChops, ImageStat
 
 
 FRAME_WIDTH = 480
 FRAME_HEIGHT = 200
 FRAME_BYTES = FRAME_WIDTH * FRAME_HEIGHT * 3
-SIGNATURE_WIDTH = 120
-SIGNATURE_HEIGHT = 50
-MIN_VISUAL_SIGNAL_RMS = 10.0
-LEDGER_SCHEMA = 1
+# display_layout.h reserves framebuffer x=0..76 for the live top/status field.
+ALERT_REGION_LEFT = round(FRAME_WIDTH * 77 / 640)
+REFERENCE_FRAME_COUNT = 10
+PRE_EVENT_NS = 150_000_000
+POST_EVENT_NS = 250_000_000
+LEDGER_SCHEMA = 6
 
 
 class VisualCheckError(RuntimeError):
@@ -124,7 +125,6 @@ def run_metadata(run_dir: Path) -> dict[str, Any]:
         "blink_profile": (result.get("emulator") or {}).get("blink_profile"),
         "camera_name": camera_result.get("camera_name"),
         "camera_profile": profile,
-        "camera_transform": transform,
     }
     compatibility_id = hashlib.sha256(
         json.dumps(compatibility, sort_keys=True, separators=(",", ":")).encode()
@@ -145,7 +145,6 @@ def run_metadata(run_dir: Path) -> dict[str, Any]:
         "source_id": hashlib.sha256(
             json.dumps(source_identity, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest(),
-        "framerate": framerate,
         "crop_fractions": crop,
         "video": video,
         "replay": replay,
@@ -154,11 +153,10 @@ def run_metadata(run_dir: Path) -> dict[str, Any]:
 
 def alert_events(replay: Path) -> list[dict[str, Any]]:
     stimuli = list(read_ndjson(replay / "replay_stimulus.ndjson"))
-    accepted = {
-        (item.get("stimulusSequence"), item.get("emissionOrdinal")): item
-        for item in read_ndjson(replay / "replay_delivery.ndjson")
-        if item.get("state") == "notification_accepted"
-    }
+    deliveries: dict[tuple[Any, Any], dict[str, dict[str, Any]]] = {}
+    for item in read_ndjson(replay / "replay_delivery.ndjson"):
+        key = (item.get("stimulusSequence"), item.get("emissionOrdinal"))
+        deliveries.setdefault(key, {})[str(item.get("state"))] = item
     if not stimuli:
         raise VisualCheckError("replay stimulus evidence is empty")
     events: list[dict[str, Any]] = []
@@ -176,16 +174,18 @@ def alert_events(replay: Path) -> list[dict[str, Any]]:
             if not display:
                 raise VisualCheckError("alert transition has no display-frame emission")
             key = (stimulus.get("stimulusSequence"), display.get("ordinal"))
-            delivery = accepted.get(key)
-            if not delivery:
-                raise VisualCheckError("alert transition has no accepted display-frame emission")
+            delivery = deliveries.get(key) or {}
+            requested = delivery.get("notification_requested")
+            accepted = delivery.get("notification_accepted")
+            if not requested or not accepted:
+                raise VisualCheckError("alert transition lacks requested/accepted display evidence")
             events.append(
                 {
                     "kind": kind,
                     "sequence": int(stimulus["stimulusSequence"]),
                     "before": previous,
                     "expected": expected,
-                    "accepted_ns": int(delivery["hostMonotonicNs"]),
+                    "requested_ns": int(requested["hostMonotonicNs"]),
                 }
             )
         previous = expected
@@ -231,9 +231,9 @@ def decode_event_frames(
         members = [
             item
             for item in timings
-            if event["accepted_ns"] - 30_000_000
+            if event["requested_ns"] - PRE_EVENT_NS
             <= item["capture_ns"]
-            <= event["accepted_ns"] + 250_000_000
+            <= event["requested_ns"] + POST_EVENT_NS
         ]
         if len(members) < 10:
             raise VisualCheckError("camera evidence does not bracket an alert transition")
@@ -282,8 +282,14 @@ def decode_event_frames(
     return images
 
 
-def rms_difference(first: Image.Image, second: Image.Image, mask: Image.Image) -> float:
-    return ImageStat.Stat(ImageChops.difference(first, second).convert("L"), mask=mask).rms[0]
+def alert_region(image: Image.Image) -> Image.Image:
+    return image.crop((ALERT_REGION_LEFT, 0, FRAME_WIDTH, FRAME_HEIGHT))
+
+
+def rms_difference(first: Image.Image, second: Image.Image) -> float:
+    return ImageStat.Stat(
+        ImageChops.difference(alert_region(first), alert_region(second)).convert("L")
+    ).rms[0]
 
 
 def sustained_bracket(
@@ -299,26 +305,6 @@ def sustained_bracket(
         else:
             first_true = None
     return None
-
-
-def visual_signature(image: Image.Image) -> str:
-    reduced = image.convert("RGB").resize(
-        (SIGNATURE_WIDTH, SIGNATURE_HEIGHT), Image.Resampling.BOX
-    )
-    signature = bytearray()
-    for red, green, blue in reduced.getdata():
-        brightest = max(red, green, blue)
-        if brightest < 10:
-            signature.append(0)
-        elif red >= green * 1.3 and red >= blue * 1.3:
-            signature.append(1)
-        elif green >= red * 1.2 and green >= blue * 1.2:
-            signature.append(2)
-        elif blue >= red * 1.2 and blue >= green * 1.2:
-            signature.append(3)
-        else:
-            signature.append(4)
-    return base64.b64encode(signature).decode("ascii")
 
 
 def format_alert(expected: dict[str, Any]) -> str:
@@ -341,58 +327,52 @@ def measure_event(
         item
         for item in timings
         if item["index"] in images
-        and event["accepted_ns"] - 30_000_000
+        and event["requested_ns"] - PRE_EVENT_NS
         <= item["capture_ns"]
-        <= event["accepted_ns"] + 250_000_000
+        <= event["requested_ns"] + POST_EVENT_NS
     ]
-    before = [item for item in window if item["capture_ns"] < event["accepted_ns"]]
-    after = [item for item in window if item["capture_ns"] >= event["accepted_ns"]]
+    before = [item for item in window if item["capture_ns"] < event["requested_ns"]]
+    after = [item for item in window if item["capture_ns"] >= event["requested_ns"]]
     if not before or not after:
-        raise VisualCheckError("camera frames do not bracket alert acceptance")
+        raise VisualCheckError("camera frames do not bracket the display request")
     old = images[before[-1]["index"]]
-    reference_timing = min(
-        after, key=lambda item: abs(item["capture_ns"] - (event["accepted_ns"] + 200_000_000))
-    )
-    target = images[reference_timing["index"]]
-    mask = (
-        ImageChops.difference(old, target)
-        .convert("L")
-        .point(lambda value: 255 if value >= 12 else 0)
-        .filter(ImageFilter.MaxFilter(5))
-    )
-    full_signal = rms_difference(old, target, mask)
-    if full_signal < MIN_VISUAL_SIGNAL_RMS:
-        raise VisualCheckError(f"no visible {event['kind']} transition for stimulus {event['sequence']}")
     old_noise = max(
-        (rms_difference(old, images[item["index"]], mask) for item in before[:-1]),
+        (rms_difference(old, images[item["index"]]) for item in before[:-1]),
         default=0.0,
     )
-    settled_frames = [
-        item
-        for item in after
-        if 170_000_000 <= item["capture_ns"] - event["accepted_ns"] <= 240_000_000
-    ]
+    if len(after) < REFERENCE_FRAME_COUNT:
+        raise VisualCheckError("camera evidence has too few final-state reference frames")
+    references = after[-REFERENCE_FRAME_COUNT:]
+    target_timing = min(
+        references,
+        key=lambda candidate: sum(
+            rms_difference(images[candidate["index"]], images[item["index"]])
+            for item in references
+        ),
+    )
+    target = images[target_timing["index"]]
     target_noise = max(
-        (rms_difference(target, images[item["index"]], mask) for item in settled_frames),
-        default=0.0,
+        rms_difference(target, images[item["index"]]) for item in references
     )
-    onset_threshold = max(old_noise + 1.0, full_signal * 0.02)
-    complete_threshold = max(target_noise * 3.0 + 1.0, full_signal * 0.08)
-    onset = sustained_bracket(
-        after,
-        lambda item: rms_difference(old, images[item["index"]], mask) >= onset_threshold,
+    full_signal = rms_difference(old, target)
+    if full_signal <= max(old_noise, target_noise):
+        raise VisualCheckError(f"camera noise obscures stimulus {event['sequence']}")
+    acquired = sustained_bracket(
+        [before[-1], *after],
+        lambda item: rms_difference(target, images[item["index"]])
+        < rms_difference(old, images[item["index"]]),
     )
     complete = sustained_bracket(
-        after,
-        lambda item: rms_difference(target, images[item["index"]], mask) <= complete_threshold,
+        [before[-1], *after],
+        lambda item: rms_difference(target, images[item["index"]]) <= target_noise,
     )
-    if not onset or not complete:
-        raise VisualCheckError(f"visible {event['kind']} transition did not settle")
+    if not acquired or not complete:
+        raise VisualCheckError(f"visible {event['kind']} transition was not bounded")
 
     def bracket(pair: tuple[dict[str, int], dict[str, int]]) -> dict[str, Any]:
         return {
             "ms": [
-                round((item["capture_ns"] - event["accepted_ns"]) / 1_000_000.0, 3)
+                round((item["capture_ns"] - event["requested_ns"]) / 1_000_000.0, 3)
                 for item in pair
             ],
             "frames": [item["frame_seq"] for item in pair],
@@ -405,10 +385,8 @@ def measure_event(
         "kind": event["kind"],
         "sequence": event["sequence"],
         "label": f"{old_label} to {new_label}",
-        "accepted_ns": event["accepted_ns"],
-        "onset": bracket(onset),
+        "acquired": bracket(acquired),
         "complete": bracket(complete),
-        "settled_signature": visual_signature(target),
     }
 
 
@@ -425,7 +403,6 @@ def analyze_run(run_dir: Path, metadata: dict[str, Any]) -> dict[str, Any]:
         "compatibility_id": metadata["compatibility_id"],
         "git_sha": metadata["git_sha"],
         "image_id": metadata["image_id"],
-        "framerate": metadata["framerate"],
         "events": measured,
     }
 
@@ -434,8 +411,10 @@ def load_ledger(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {"schema_version": LEDGER_SCHEMA, "runs": []}
     ledger = read_json(path)
-    if ledger.get("schema_version") != LEDGER_SCHEMA or not isinstance(ledger.get("runs"), list):
-        raise VisualCheckError("visual ledger has an unsupported schema")
+    if ledger.get("schema_version") != LEDGER_SCHEMA:
+        return {"schema_version": LEDGER_SCHEMA, "runs": []}
+    if not isinstance(ledger.get("runs"), list):
+        raise VisualCheckError("visual ledger is malformed")
     return ledger
 
 
@@ -464,105 +443,114 @@ def add_to_ledger(ledger: dict[str, Any], result: dict[str, Any]) -> None:
     ledger["runs"].sort(key=lambda item: str(item.get("run_id")))
 
 
-def midpoint(event: dict[str, Any], field: str) -> float:
-    lower, upper = event[field]["ms"]
-    return (float(lower) + float(upper)) / 2.0
+def run_bracket(result: dict[str, Any], field: str) -> tuple[float, float]:
+    brackets = [event[field]["ms"] for event in result["events"]]
+    return (
+        statistics.fmean(float(pair[0]) for pair in brackets),
+        statistics.fmean(float(pair[1]) for pair in brackets),
+    )
 
 
-def run_average(result: dict[str, Any], field: str) -> float:
-    return statistics.fmean(midpoint(event, field) for event in result["events"])
+def group_mean_bracket(results: list[dict[str, Any]], field: str) -> tuple[float, float]:
+    brackets = [run_bracket(result, field) for result in results]
+    return (
+        statistics.fmean(pair[0] for pair in brackets),
+        statistics.fmean(pair[1] for pair in brackets),
+    )
 
 
-def signature_difference(first: str, second: str) -> float:
-    left = base64.b64decode(first)
-    right = base64.b64decode(second)
-    if len(left) != len(right):
-        return 100.0
-    different = sum(a != b for a, b in zip(left, right))
-    return different / (SIGNATURE_WIDTH * SIGNATURE_HEIGHT) * 100.0
+def group_observed_span(results: list[dict[str, Any]], field: str) -> tuple[float, float]:
+    brackets = [run_bracket(result, field) for result in results]
+    return min(pair[0] for pair in brackets), max(pair[1] for pair in brackets)
 
 
-def visual_mismatches(
-    current: dict[str, Any], history: list[dict[str, Any]]
-) -> tuple[list[str], list[str]]:
-    if not history:
-        return [], []
-    history_by_key = {
-        result["run_id"]: {event["key"]: event for event in result["events"]}
-        for result in history
-    }
-    mismatches: list[str] = []
-    inconsistent_history: list[str] = []
-    for event in current["events"]:
-        prior = [events[event["key"]] for events in history_by_key.values() if event["key"] in events]
-        if not prior:
-            continue
-        internal = [
-            signature_difference(prior[left]["settled_signature"], prior[right]["settled_signature"])
-            for left in range(len(prior))
-            for right in range(left + 1, len(prior))
-        ]
-        history_difference = max(internal, default=0.0)
-        if history_difference > 1.0:
-            inconsistent_history.append(event["label"])
-            continue
-        tolerance = max(1.0, history_difference * 3.0)
-        observed = max(
-            signature_difference(event["settled_signature"], item["settled_signature"])
-            for item in prior
-        )
-        if observed > tolerance:
-            mismatches.append(f"{event['label']} ({observed:.1f}% visual difference)")
-    return mismatches, inconsistent_history
+def format_bracket(pair: tuple[float, float]) -> str:
+    return f"{pair[0]:.1f}-{pair[1]:.1f} ms"
 
 
-def print_result(current: dict[str, Any], history: list[dict[str, Any]]) -> None:
-    onset = run_average(current, "onset")
-    complete = run_average(current, "complete")
-    worst = max(current["events"], key=lambda event: midpoint(event, "complete"))
+def comparison_line(
+    label: str,
+    current: list[dict[str, Any]],
+    previous: list[dict[str, Any]],
+    field: str,
+) -> str:
+    current_mean = group_mean_bracket(current, field)
+    previous_mean = group_mean_bracket(previous, field)
+    current_span = group_observed_span(current, field)
+    previous_span = group_observed_span(previous, field)
+    overlap = min(current_span[1], previous_span[1]) - max(current_span[0], previous_span[0])
+    if overlap >= 0:
+        result = "run ranges overlap; no change is demonstrated"
+    elif current_span[0] > previous_span[1]:
+        result = f"current runs are at least {current_span[0] - previous_span[1]:.1f} ms slower"
+    else:
+        result = f"current runs are at least {previous_span[0] - current_span[1]:.1f} ms faster"
+    return (
+        f"  {label}: current mean {format_bracket(current_mean)} "
+        f"(runs {format_bracket(current_span)}); prior mean {format_bracket(previous_mean)} "
+        f"(runs {format_bracket(previous_span)}); {result}."
+    )
+
+
+def print_result(
+    current: dict[str, Any], history: list[dict[str, Any]], group_size: int
+) -> None:
+    acquired = run_bracket(current, "acquired")
+    stable_state = run_bracket(current, "complete")
+    worst = max(current["events"], key=lambda event: float(event["complete"]["ms"][1]))
     print(f"Display evidence for {current['run_id']}")
     print(f"Firmware {str(current.get('git_sha') or '')[:7]} | image {current.get('image_id') or 'unknown'}")
     print()
-    print("Timing starts when the Mac accepts the emulator display packet.")
+    print("Timing starts when v1replay requests the display notification.")
+    print("This includes BLE transport; DUT receipt time is not observed.")
+    print("Intervals are bounded by consecutive camera frames; no midpoint is observed.")
+    print("The live status field is excluded from the camera measurement.")
+    print("New-state crossing is when the alert area becomes closer to its final state than its prior state.")
+    print("Stable state is the first two frames inside the final 10-frame camera envelope.")
     print(f"Measured {len(current['events'])} alert appearance/clear transitions.")
-    print(f"Average first-visible response: {onset:.1f} ms")
-    print(f"Average fully-settled response: {complete:.1f} ms")
+    print(f"Average new-state crossing interval: {format_bracket(acquired)}")
+    print(f"Average stable-state interval: {format_bracket(stable_state)}")
     print(
-        f"Slowest settled response: {midpoint(worst, 'complete'):.1f} ms "
+        f"Slowest stable-state interval: "
+        f"{format_bracket(tuple(float(value) for value in worst['complete']['ms']))} "
         f"({worst['label']})"
     )
     print()
-    if not history:
-        print("No compatible visual history exists; this run is the baseline.")
-        return
-    mismatches, inconsistent_history = visual_mismatches(current, history)
-    if inconsistent_history:
+    current_group = [current] + [
+        item for item in history if item.get("image_id") == current.get("image_id")
+    ]
+    current_group = current_group[:group_size]
+    if len(current_group) < group_size:
         print(
-            f"Compatible history was visually inconsistent in "
-            f"{len(inconsistent_history)} transition(s); no visual match is claimed."
+            f"Timing comparison withheld: current image has {len(current_group)} of "
+            f"{group_size} compatible runs."
         )
-    elif mismatches:
-        print(f"Settled display differed from history in {len(mismatches)} transition(s):")
-        for mismatch in mismatches:
-            print(f"  - {mismatch}")
-    else:
-        print(f"All settled displays matched the last {len(history)} compatible run(s).")
-    historical = [run_average(item, "complete") for item in history]
-    historical_average = statistics.fmean(historical)
-    delta = complete - historical_average
-    half_spread = (max(historical) - min(historical)) / 2.0 if len(historical) > 1 else 0.0
-    frame_interval = 1000.0 / max(int(current.get("framerate") or 0), 1)
-    unchanged_limit = max(frame_interval, half_spread)
-    direction = "slower" if delta > 0 else "faster"
-    print()
-    print(f"Compared with the last {len(history)} compatible run(s):")
-    print(f"  Average change: {abs(delta):.1f} ms {direction}")
-    if len(historical) > 1:
-        print(f"  Prior run-to-run spread: {max(historical) - min(historical):.1f} ms")
-    if abs(delta) <= unchanged_limit:
-        print("  Meaning: effectively unchanged")
-    else:
-        print(f"  Meaning: measurably {direction}")
+        return
+
+    previous_candidates = [item for item in history if item.get("image_id") != current.get("image_id")]
+    image_order = list(dict.fromkeys(item.get("image_id") for item in previous_candidates))
+    previous_group: list[dict[str, Any]] = []
+    for image_id in image_order:
+        candidate_group = [
+            item for item in previous_candidates if item.get("image_id") == image_id
+        ][:group_size]
+        if len(candidate_group) >= group_size:
+            previous_group = candidate_group
+            break
+        if not previous_group:
+            previous_group = candidate_group
+
+    if len(previous_group) < group_size:
+        print(
+            f"Timing comparison withheld: prior image has {len(previous_group)} of "
+            f"{group_size} compatible runs."
+        )
+        return
+
+    print(f"{group_size}-run image comparison:")
+    print(comparison_line("New-state crossing", current_group, previous_group, "acquired"))
+    print(comparison_line("Stable state", current_group, previous_group, "complete"))
+    print("  Visual content correctness is not determined by this measurement.")
 
 
 def parse_args() -> argparse.Namespace:
@@ -574,11 +562,27 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def comparison_ready(
+    current: dict[str, Any], history: list[dict[str, Any]], group_size: int
+) -> bool:
+    current_count = 1 + sum(
+        item.get("image_id") == current.get("image_id") for item in history
+    )
+    previous_counts: dict[Any, int] = {}
+    for item in history:
+        image_id = item.get("image_id")
+        if image_id != current.get("image_id"):
+            previous_counts[image_id] = previous_counts.get(image_id, 0) + 1
+    return current_count >= group_size and any(
+        count >= group_size for count in previous_counts.values()
+    )
+
+
 def main() -> int:
     args = parse_args()
     run_dir = args.run_dir.resolve()
-    if args.history_count < 0:
-        raise VisualCheckError("history count cannot be negative")
+    if args.history_count < 3:
+        raise VisualCheckError("history count must be at least 3")
     metadata = run_metadata(run_dir)
     ledger_path = (
         args.ledger.resolve()
@@ -599,11 +603,11 @@ def main() -> int:
         and item.get("compatibility_id") == current["compatibility_id"]
     ]
     history.sort(key=lambda item: item["run_id"], reverse=True)
-    if len(history) < args.history_count:
+    if not comparison_ready(current, history, args.history_count):
+        discovered: list[tuple[Path, dict[str, Any]]] = []
         for candidate in sorted(run_dir.parent.iterdir(), reverse=True):
             if (
-                len(history) >= args.history_count
-                or not candidate.is_dir()
+                not candidate.is_dir()
                 or candidate.name >= run_dir.name
                 or any(item["run_id"] == candidate.name for item in history)
             ):
@@ -614,16 +618,42 @@ def main() -> int:
                 continue
             if candidate_metadata["compatibility_id"] != current["compatibility_id"]:
                 continue
-            candidate_result = None if args.rebuild else cached_run(ledger, candidate_metadata)
-            if candidate_result is None:
-                print(f"Analyzing compatible history {candidate.name}...", file=sys.stderr)
-                candidate_result = analyze_run(candidate, candidate_metadata)
-                add_to_ledger(ledger, candidate_result)
+            discovered.append((candidate, candidate_metadata))
+            available = history + [metadata for _path, metadata in discovered]
+            if comparison_ready(current, available, args.history_count):
+                break
+
+        available = history + [metadata for _path, metadata in discovered]
+        available.sort(key=lambda item: item["run_id"], reverse=True)
+        current_candidates = [
+            item for item in available if item.get("image_id") == current.get("image_id")
+        ]
+        selected_ids = {
+            item["run_id"] for item in current_candidates[: args.history_count - 1]
+        }
+        current_count = 1 + len(current_candidates)
+        if current_count >= args.history_count:
+            previous = [
+                item for item in available if item.get("image_id") != current.get("image_id")
+            ]
+            for image_id in dict.fromkeys(item.get("image_id") for item in previous):
+                image_group = [item for item in previous if item.get("image_id") == image_id]
+                if len(image_group) >= args.history_count:
+                    selected_ids.update(
+                        item["run_id"] for item in image_group[: args.history_count]
+                    )
+                    break
+
+        for candidate, candidate_metadata in discovered:
+            if candidate_metadata["run_id"] not in selected_ids:
+                continue
+            print(f"Analyzing compatible history {candidate.name}...", file=sys.stderr)
+            candidate_result = analyze_run(candidate, candidate_metadata)
+            add_to_ledger(ledger, candidate_result)
             history.append(candidate_result)
     history.sort(key=lambda item: item["run_id"], reverse=True)
-    history = history[: args.history_count]
     save_ledger(ledger_path, ledger)
-    print_result(current, history)
+    print_result(current, history, args.history_count)
     return 0
 
 

@@ -256,6 +256,19 @@ void AlpRuntimeModule::process(uint32_t nowMs) {
     // the next tick.
     suppressHeartbeatResumeThisProcess_ = false;
 
+    if (lastUartByteMs_ != 0 && nowMs - lastUartByteMs_ > HEARTBEAT_TIMEOUT_MS) {
+        transitionTo(AlpState::IDLE, nowMs);
+        lastHeartbeatMs_ = 0;
+        lastUartByteMs_ = 0;
+        lastHbByte1_ = 0xFF;
+        firstFrameMs_ = 0;
+        warmUpPreambleMs_ = 0;
+        bootGunConfirmed_ = false;
+        alertDetectedViaHb_ = false;
+        consecutiveBadChecksums_ = 0;
+        ringLen_ = 0;
+    }
+
     // Drain UART into ring buffer
     drainUart(nowMs);
 

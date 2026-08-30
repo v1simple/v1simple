@@ -594,6 +594,40 @@ void test_heartbeat_keeps_listening_if_within_timeout() {
     TEST_ASSERT_EQUAL(AlpState::LISTENING, alpRuntimeModule.getState());
 }
 
+void test_link_epoch_reset_suppresses_return_boot_probe() {
+    beginEnabled();
+    const uint8_t hbDli[] = { 0xB0, 0x03, 0x00, 0x33 };
+    inject(hbDli, sizeof(hbDli));
+    processAt(1000);
+    inject(BURST_PL3_DETECT, sizeof(BURST_PL3_DETECT));
+    processAt(2000);
+    TEST_ASSERT_TRUE(alpRuntimeModule.currentEvent().active);
+    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, alpRuntimeModule.currentEvent().gun);
+
+    alpRuntimeModule.testSetLastUartByteMs(2000);
+    processAt(2000 + AlpRuntimeModule::HEARTBEAT_TIMEOUT_MS + 1);
+    TEST_ASSERT_EQUAL(AlpState::IDLE, alpRuntimeModule.getState());
+    TEST_ASSERT_FALSE(alpRuntimeModule.currentSession().active);
+    TEST_ASSERT_EQUAL_HEX8(0xFF, alpRuntimeModule.testGetLastHbByte1());
+    TEST_ASSERT_EQUAL_UINT32(0, alpRuntimeModule.testGetFirstFrameMs());
+
+    const uint8_t trigger[] = { 0x98, 0x02, 0x00, 0x1A };
+    const uint8_t hbWarm[] = { 0xB0, 0x02, 0x00, 0x32 };
+    const uint8_t hbLid[] = { 0xB0, 0x04, 0x00, 0x34 };
+    inject(trigger, sizeof(trigger));
+    processAt(6000);
+    inject(hbWarm, sizeof(hbWarm));
+    processAt(6081);
+    inject(hbLid, sizeof(hbLid));
+    processAt(6868);
+    inject(trigger, sizeof(trigger));
+    processAt(9295);
+
+    TEST_ASSERT_TRUE(alpRuntimeModule.currentSession().active);
+    TEST_ASSERT_TRUE(alpRuntimeModule.currentSession().isWarmUp);
+    TEST_ASSERT_FALSE(alpRuntimeModule.currentEvent().active);
+}
+
 // ── Register write with FD terminator (teardown trigger) ─────────────
 
 void test_fd_terminator_triggers_teardown_from_alert() {
@@ -913,6 +947,34 @@ void test_noise_window_exit_preserves_live_session_into_teardown() {
     TEST_ASSERT_TRUE(alpRuntimeModule.currentEvent().active);
     TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE,
                       alpRuntimeModule.currentEvent().gun);
+}
+
+void test_noise_window_raw_activity_keeps_live_session() {
+    beginEnabled();
+    const uint8_t hbDli[] = { 0xB0, 0x03, 0x00, 0x33 };
+    inject(hbDli, sizeof(hbDli));
+    processAt(1000);
+    inject(BURST_PL3_DETECT, sizeof(BURST_PL3_DETECT));
+    processAt(2000);
+
+    uint8_t noise[64];
+    for (size_t i = 0; i < sizeof(noise); ++i) {
+        noise[i] = 0xFF;
+    }
+    alpRuntimeModule.testSetLastUartByteMs(2000);
+    inject(noise, sizeof(noise));
+    processAt(2500);
+    TEST_ASSERT_EQUAL(AlpState::NOISE_WINDOW, alpRuntimeModule.getState());
+
+    alpRuntimeModule.testSetLastUartByteMs(2500);
+    processAt(5000);
+    alpRuntimeModule.testSetLastUartByteMs(5000);
+    processAt(7500);
+
+    TEST_ASSERT_EQUAL(AlpState::NOISE_WINDOW, alpRuntimeModule.getState());
+    TEST_ASSERT_TRUE(alpRuntimeModule.currentSession().active);
+    TEST_ASSERT_TRUE(alpRuntimeModule.currentEvent().active);
+    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, alpRuntimeModule.currentEvent().gun);
 }
 
 // ── Snapshot ─────────────────────────────────────────────────────────
@@ -3059,6 +3121,7 @@ int main(int argc, char** argv) {
     // Timeouts
     RUN_TEST(test_heartbeat_timeout_returns_to_idle);
     RUN_TEST(test_heartbeat_keeps_listening_if_within_timeout);
+    RUN_TEST(test_link_epoch_reset_suppresses_return_boot_probe);
     RUN_TEST(test_teardown_timeout_returns_to_listening);
     RUN_TEST(test_alert_active_timeout_transitions_to_teardown);
     RUN_TEST(test_alert_active_stays_before_timeout);
@@ -3081,6 +3144,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_consecutive_bad_checksums_trigger_noise_window);
     RUN_TEST(test_noise_window_ends_on_valid_frame);
     RUN_TEST(test_noise_window_exit_preserves_live_session_into_teardown);
+    RUN_TEST(test_noise_window_raw_activity_keeps_live_session);
 
     // Snapshot
     RUN_TEST(test_snapshot_reflects_state);

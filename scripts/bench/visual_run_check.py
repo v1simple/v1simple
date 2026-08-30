@@ -25,7 +25,7 @@ ALERT_REGION_LEFT = round(FRAME_WIDTH * 77 / 640)
 REFERENCE_FRAME_COUNT = 10
 PRE_EVENT_NS = 150_000_000
 POST_EVENT_NS = 250_000_000
-LEDGER_SCHEMA = 6
+LEDGER_SCHEMA = 8
 
 
 class VisualCheckError(RuntimeError):
@@ -186,6 +186,7 @@ def alert_events(replay: Path) -> list[dict[str, Any]]:
                     "before": previous,
                     "expected": expected,
                     "requested_ns": int(requested["hostMonotonicNs"]),
+                    "accepted_ns": int(accepted["hostMonotonicNs"]),
                 }
             )
         previous = expected
@@ -286,25 +287,39 @@ def alert_region(image: Image.Image) -> Image.Image:
     return image.crop((ALERT_REGION_LEFT, 0, FRAME_WIDTH, FRAME_HEIGHT))
 
 
-def rms_difference(first: Image.Image, second: Image.Image) -> float:
-    return ImageStat.Stat(
-        ImageChops.difference(alert_region(first), alert_region(second)).convert("L")
-    ).rms[0]
+def squared_difference(first: Image.Image, second: Image.Image) -> float:
+    rms = ImageStat.Stat(
+        ImageChops.difference(alert_region(first), alert_region(second))
+    ).rms
+    return sum(value * value for value in rms)
 
 
-def sustained_bracket(
-    frames: list[dict[str, int]], predicate: Any
-) -> tuple[dict[str, int], dict[str, int]] | None:
-    first_true: int | None = None
-    for index, frame in enumerate(frames):
-        if predicate(frame):
-            first_true = index if first_true is None else first_true
-            if index - first_true + 1 >= 2:
-                lower = frames[first_true - 1] if first_true else frames[0]
-                return lower, frames[first_true]
-        else:
-            first_true = None
-    return None
+def reference_medoid(
+    frames: list[dict[str, int]], images: dict[int, Image.Image]
+) -> dict[str, int]:
+    return min(
+        frames,
+        key=lambda candidate: sum(
+            squared_difference(images[candidate["index"]], images[item["index"]])
+            for item in frames
+        ),
+    )
+
+
+def progress_crossing(
+    points: list[dict[str, Any]], level: float
+) -> tuple[int, dict[str, Any], dict[str, Any]]:
+    for left, right in zip(points, points[1:]):
+        left_progress = float(left["progress"])
+        right_progress = float(right["progress"])
+        if left_progress < level <= right_progress:
+            fraction = (level - left_progress) / (right_progress - left_progress)
+            estimate_ns = round(
+                int(left["capture_ns"])
+                + fraction * (int(right["capture_ns"]) - int(left["capture_ns"]))
+            )
+            return estimate_ns, left, right
+    raise VisualCheckError(f"camera progress never crossed {level:.0%}")
 
 
 def format_alert(expected: dict[str, Any]) -> str:
@@ -333,50 +348,63 @@ def measure_event(
     ]
     before = [item for item in window if item["capture_ns"] < event["requested_ns"]]
     after = [item for item in window if item["capture_ns"] >= event["requested_ns"]]
-    if not before or not after:
+    if len(before) < REFERENCE_FRAME_COUNT or len(after) < REFERENCE_FRAME_COUNT:
         raise VisualCheckError("camera frames do not bracket the display request")
-    old = images[before[-1]["index"]]
-    old_noise = max(
-        (rms_difference(old, images[item["index"]]) for item in before[:-1]),
-        default=0.0,
-    )
-    if len(after) < REFERENCE_FRAME_COUNT:
-        raise VisualCheckError("camera evidence has too few final-state reference frames")
-    references = after[-REFERENCE_FRAME_COUNT:]
-    target_timing = min(
-        references,
-        key=lambda candidate: sum(
-            rms_difference(images[candidate["index"]], images[item["index"]])
-            for item in references
-        ),
-    )
-    target = images[target_timing["index"]]
-    target_noise = max(
-        rms_difference(target, images[item["index"]]) for item in references
-    )
-    full_signal = rms_difference(old, target)
-    if full_signal <= max(old_noise, target_noise):
+    old_frames = before[-REFERENCE_FRAME_COUNT:]
+    final_frames = after[-REFERENCE_FRAME_COUNT:]
+    old_timing = reference_medoid(old_frames, images)
+    final_timing = reference_medoid(final_frames, images)
+    old = images[old_timing["index"]]
+    final = images[final_timing["index"]]
+    full_signal = squared_difference(old, final)
+    old_noise = max(squared_difference(old, images[item["index"]]) for item in old_frames)
+    final_noise = max(squared_difference(final, images[item["index"]]) for item in final_frames)
+    if full_signal <= max(old_noise, final_noise):
         raise VisualCheckError(f"camera noise obscures stimulus {event['sequence']}")
-    acquired = sustained_bracket(
-        [before[-1], *after],
-        lambda item: rms_difference(target, images[item["index"]])
-        < rms_difference(old, images[item["index"]]),
-    )
-    complete = sustained_bracket(
-        [before[-1], *after],
-        lambda item: rms_difference(target, images[item["index"]]) <= target_noise,
-    )
-    if not acquired or not complete:
-        raise VisualCheckError(f"visible {event['kind']} transition was not bounded")
+    points: list[dict[str, Any]] = []
+    for item in window:
+        frame = images[item["index"]]
+        progress = (
+            squared_difference(old, frame)
+            - squared_difference(final, frame)
+            + full_signal
+        ) / (2.0 * full_signal)
+        points.append({**item, "progress": progress})
 
-    def bracket(pair: tuple[dict[str, int], dict[str, int]]) -> dict[str, Any]:
+    old_progress = [float(item["progress"]) for item in points if item["capture_ns"] < event["requested_ns"]]
+    final_progress = [float(item["progress"]) for item in points[-REFERENCE_FRAME_COUNT:]]
+    reference_span = max(
+        max(old_progress) - min(old_progress),
+        max(final_progress) - min(final_progress),
+    )
+    changing = [
+        float(item["progress"])
+        for item in points
+        if 0.5 <= float(item["progress"]) <= 0.9
+    ]
+    backsteps = sum(
+        right < left - reference_span for left, right in zip(changing, changing[1:])
+    )
+
+    def timing(level: float) -> tuple[dict[str, Any], int]:
+        estimate_ns, left, right = progress_crossing(points, level)
+        if not event["requested_ns"] <= event["accepted_ns"] <= estimate_ns:
+            raise VisualCheckError("display timing precedes its CoreBluetooth send")
         return {
             "ms": [
-                round((item["capture_ns"] - event["requested_ns"]) / 1_000_000.0, 3)
-                for item in pair
+                round((estimate_ns - event["accepted_ns"]) / 1_000_000.0, 3),
+                round((estimate_ns - event["requested_ns"]) / 1_000_000.0, 3),
             ],
-            "frames": [item["frame_seq"] for item in pair],
-        }
+            "camera_frame_ms": [
+                round((item["capture_ns"] - event["requested_ns"]) / 1_000_000.0, 3)
+                for item in (left, right)
+            ],
+            "frames": [left["frame_seq"], right["frame_seq"]],
+            "progress": [round(float(left["progress"]), 6), round(float(right["progress"]), 6)],
+        }, estimate_ns
+
+    t50, t50_ns = timing(0.5)
+    t90, t90_ns = timing(0.9)
 
     old_label = format_alert(event["before"])
     new_label = format_alert(event["expected"])
@@ -385,8 +413,11 @@ def measure_event(
         "kind": event["kind"],
         "sequence": event["sequence"],
         "label": f"{old_label} to {new_label}",
-        "acquired": bracket(acquired),
-        "complete": bracket(complete),
+        "t50": t50,
+        "t90": t90,
+        "draw_ms": round((t90_ns - t50_ns) / 1_000_000.0, 3),
+        "reference_span": round(reference_span, 6),
+        "backsteps": backsteps,
     }
 
 
@@ -464,6 +495,14 @@ def group_observed_span(results: list[dict[str, Any]], field: str) -> tuple[floa
     return min(pair[0] for pair in brackets), max(pair[1] for pair in brackets)
 
 
+def run_average(result: dict[str, Any], field: str) -> float:
+    return statistics.fmean(float(event[field]) for event in result["events"])
+
+
+def progress_backsteps(result: dict[str, Any]) -> int:
+    return sum(int(event["backsteps"]) for event in result["events"])
+
+
 def format_bracket(pair: tuple[float, float]) -> str:
     return f"{pair[0]:.1f}-{pair[1]:.1f} ms"
 
@@ -492,29 +531,71 @@ def comparison_line(
     )
 
 
+def scalar_comparison_line(
+    label: str,
+    current: list[dict[str, Any]],
+    previous: list[dict[str, Any]],
+    field: str,
+) -> str:
+    current_runs = [run_average(result, field) for result in current]
+    previous_runs = [run_average(result, field) for result in previous]
+    current_span = (min(current_runs), max(current_runs))
+    previous_span = (min(previous_runs), max(previous_runs))
+    overlap = min(current_span[1], previous_span[1]) - max(current_span[0], previous_span[0])
+    if overlap >= 0:
+        result = "run ranges overlap; no change is demonstrated"
+    elif current_span[0] > previous_span[1]:
+        result = f"current runs are at least {current_span[0] - previous_span[1]:.1f} ms slower"
+    else:
+        result = f"current runs are at least {previous_span[0] - current_span[1]:.1f} ms faster"
+    return (
+        f"  {label}: current mean {statistics.fmean(current_runs):.1f} ms "
+        f"(runs {format_bracket(current_span)}); prior mean "
+        f"{statistics.fmean(previous_runs):.1f} ms (runs {format_bracket(previous_span)}); "
+        f"{result}."
+    )
+
+
 def print_result(
     current: dict[str, Any], history: list[dict[str, Any]], group_size: int
 ) -> None:
-    acquired = run_bracket(current, "acquired")
-    stable_state = run_bracket(current, "complete")
-    worst = max(current["events"], key=lambda event: float(event["complete"]["ms"][1]))
+    t50 = run_bracket(current, "t50")
+    t90 = run_bracket(current, "t90")
+    draw_ms = run_average(current, "draw_ms")
+    worst = max(current["events"], key=lambda event: float(event["t90"]["ms"][1]))
+    reference_span = max(float(event["reference_span"]) for event in current["events"])
+    backsteps = progress_backsteps(current)
+    camera_spacing = statistics.fmean(
+        float(event["t50"]["camera_frame_ms"][1])
+        - float(event["t50"]["camera_frame_ms"][0])
+        for event in current["events"]
+    )
     print(f"Display evidence for {current['run_id']}")
     print(f"Firmware {str(current.get('git_sha') or '')[:7]} | image {current.get('image_id') or 'unknown'}")
     print()
-    print("Timing starts when v1replay requests the display notification.")
+    print("Timing bounds the emulator send between its request and successful CoreBluetooth return.")
     print("This includes BLE transport; DUT receipt time is not observed.")
-    print("Intervals are bounded by consecutive camera frames; no midpoint is observed.")
-    print("The live status field is excluded from the camera measurement.")
-    print("New-state crossing is when the alert area becomes closer to its final state than its prior state.")
-    print("Stable state is the first two frames inside the final 10-frame camera envelope.")
-    print(f"Measured {len(current['events'])} alert appearance/clear transitions.")
-    print(f"Average new-state crossing interval: {format_bracket(acquired)}")
-    print(f"Average stable-state interval: {format_bracket(stable_state)}")
     print(
-        f"Slowest stable-state interval: "
-        f"{format_bracket(tuple(float(value) for value in worst['complete']['ms']))} "
+        f"T50 and T90 are estimates interpolated inside camera samples "
+        f"{camera_spacing:.1f} ms apart on average."
+    )
+    print("The live status field is excluded from the camera measurement.")
+    print(f"Measured {len(current['events'])} alert appearance/clear transitions.")
+    print(f"Average 50% visual response estimate: {format_bracket(t50)}")
+    print(f"Average 90% visual response estimate: {format_bracket(t90)}")
+    print(f"Average 50-90% draw time: {draw_ms:.1f} ms")
+    print(
+        f"Slowest 90% response: "
+        f"{format_bracket(tuple(float(value) for value in worst['t90']['ms']))} "
         f"({worst['label']})"
     )
+    if backsteps:
+        print(f"Progress warning: {backsteps} backward step(s) exceeded reference variation.")
+    else:
+        print(
+            f"Measured 50-90% progress was monotonic; maximum old/final "
+            f"reference variation was {reference_span * 100:.1f}%."
+        )
     print()
     current_group = [current] + [
         item for item in history if item.get("image_id") == current.get("image_id")
@@ -547,9 +628,16 @@ def print_result(
         )
         return
 
+    comparison_group = current_group + previous_group
+    reversals = sum(progress_backsteps(result) for result in comparison_group)
+    if reversals:
+        print(f"Timing comparison withheld: {reversals} progress reversal(s) need inspection.")
+        return
+
     print(f"{group_size}-run image comparison:")
-    print(comparison_line("New-state crossing", current_group, previous_group, "acquired"))
-    print(comparison_line("Stable state", current_group, previous_group, "complete"))
+    print(comparison_line("50% response", current_group, previous_group, "t50"))
+    print(comparison_line("90% response", current_group, previous_group, "t90"))
+    print(scalar_comparison_line("50-90% draw", current_group, previous_group, "draw_ms"))
     print("  Visual content correctness is not determined by this measurement.")
 
 

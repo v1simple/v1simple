@@ -35,8 +35,14 @@ final class V1ReplayEvidenceTests: XCTestCase {
         XCTAssertNotEqual(first.globalTxSequence, repeated.globalTxSequence)
 
         let requested = first.requestedEvent
-        let accepted = first.acceptedEvent(hostMonotonicNs: 1_250)
-        let delayed = first.delayedEvent(hostMonotonicNs: 1_100)
+        let accepted = first.acceptedEvent(
+            attemptedHostMonotonicNs: 1_200,
+            hostMonotonicNs: 1_250
+        )
+        let delayed = first.delayedEvent(
+            attemptedHostMonotonicNs: 1_050,
+            hostMonotonicNs: 1_100
+        )
         let dropped = first.droppedEvent(hostMonotonicNs: 1_200)
         let skipped = first.skippedEvent(hostMonotonicNs: 1_225)
         XCTAssertEqual(requested.state, "notification_requested")
@@ -49,6 +55,9 @@ final class V1ReplayEvidenceTests: XCTestCase {
         XCTAssertEqual(requested.emissionOrdinal, 1)
         XCTAssertEqual(requested.intendedHostMonotonicNs, 900)
         XCTAssertEqual(requested.hostMonotonicNs, 1_000)
+        XCTAssertNil(requested.attemptedHostMonotonicNs)
+        XCTAssertEqual(accepted.attemptedHostMonotonicNs, 1_200)
+        XCTAssertEqual(delayed.attemptedHostMonotonicNs, 1_050)
         XCTAssertEqual(accepted.hostMonotonicNs, 1_250)
 
         for event in [requested, accepted] {
@@ -62,6 +71,7 @@ final class V1ReplayEvidenceTests: XCTestCase {
             XCTAssertEqual(decoded["characteristic"] as? String, "B2CE")
             XCTAssertEqual(decoded["payloadFnv1a32"] as? String, "1A47E90B")
             XCTAssertEqual(decoded["payloadHex"] as? String, "616263")
+            XCTAssertEqual(decoded["schemaVersion"] as? Int, 3)
         }
     }
 

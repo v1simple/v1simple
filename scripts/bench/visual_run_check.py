@@ -25,7 +25,7 @@ ALERT_REGION_LEFT = round(FRAME_WIDTH * 77 / 640)
 REFERENCE_FRAME_COUNT = 10
 PRE_EVENT_NS = 150_000_000
 POST_EVENT_NS = 250_000_000
-LEDGER_SCHEMA = 8
+LEDGER_SCHEMA = 9
 
 
 class VisualCheckError(RuntimeError):
@@ -179,6 +179,10 @@ def alert_events(replay: Path) -> list[dict[str, Any]]:
             accepted = delivery.get("notification_accepted")
             if not requested or not accepted:
                 raise VisualCheckError("alert transition lacks requested/accepted display evidence")
+            attempted = accepted.get("attemptedHostMonotonicNs")
+            has_call_bound = isinstance(attempted, int) and not isinstance(attempted, bool)
+            if int(accepted.get("schemaVersion") or 0) >= 3 and not has_call_bound:
+                raise VisualCheckError("accepted display evidence has no call timestamp")
             events.append(
                 {
                     "kind": kind,
@@ -186,7 +190,9 @@ def alert_events(replay: Path) -> list[dict[str, Any]]:
                     "before": previous,
                     "expected": expected,
                     "requested_ns": int(requested["hostMonotonicNs"]),
+                    "attempted_ns": int(attempted if has_call_bound else requested["hostMonotonicNs"]),
                     "accepted_ns": int(accepted["hostMonotonicNs"]),
+                    "send_anchor": "corebluetooth_call" if has_call_bound else "emulator_request",
                 }
             )
         previous = expected
@@ -388,12 +394,17 @@ def measure_event(
 
     def timing(level: float) -> tuple[dict[str, Any], int]:
         estimate_ns, left, right = progress_crossing(points, level)
-        if not event["requested_ns"] <= event["accepted_ns"] <= estimate_ns:
+        if not (
+            event["requested_ns"]
+            <= event["attempted_ns"]
+            <= event["accepted_ns"]
+            <= estimate_ns
+        ):
             raise VisualCheckError("display timing precedes its CoreBluetooth send")
         return {
             "ms": [
                 round((estimate_ns - event["accepted_ns"]) / 1_000_000.0, 3),
-                round((estimate_ns - event["requested_ns"]) / 1_000_000.0, 3),
+                round((estimate_ns - event["attempted_ns"]) / 1_000_000.0, 3),
             ],
             "camera_frame_ms": [
                 round((item["capture_ns"] - event["requested_ns"]) / 1_000_000.0, 3)
@@ -413,6 +424,7 @@ def measure_event(
         "kind": event["kind"],
         "sequence": event["sequence"],
         "label": f"{old_label} to {new_label}",
+        "send_anchor": event["send_anchor"],
         "t50": t50,
         "t90": t90,
         "draw_ms": round((t90_ns - t50_ns) / 1_000_000.0, 3),
@@ -573,7 +585,11 @@ def print_result(
     print(f"Display evidence for {current['run_id']}")
     print(f"Firmware {str(current.get('git_sha') or '')[:7]} | image {current.get('image_id') or 'unknown'}")
     print()
-    print("Timing bounds the emulator send between its request and successful CoreBluetooth return.")
+    anchors = {str(event.get("send_anchor")) for event in current["events"]}
+    if anchors == {"corebluetooth_call"}:
+        print("Timing bounds the emulator send between its CoreBluetooth call and successful return.")
+    else:
+        print("Timing bounds the emulator send between its request and successful CoreBluetooth return.")
     print("This includes BLE transport; DUT receipt time is not observed.")
     print(
         f"T50 and T90 are estimates interpolated inside camera samples "

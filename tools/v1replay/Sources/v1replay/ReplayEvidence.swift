@@ -79,18 +79,26 @@ struct ReplayNotificationIdentity: Equatable {
         )
     }
 
-    func acceptedEvent(hostMonotonicNs: UInt64) -> ReplayNotificationEvent {
+    func acceptedEvent(
+        attemptedHostMonotonicNs: UInt64,
+        hostMonotonicNs: UInt64
+    ) -> ReplayNotificationEvent {
         return ReplayNotificationEvent(
             state: .accepted,
             identity: self,
+            attemptedHostMonotonicNs: attemptedHostMonotonicNs,
             hostMonotonicNs: hostMonotonicNs
         )
     }
 
-    func delayedEvent(hostMonotonicNs: UInt64) -> ReplayNotificationEvent {
+    func delayedEvent(
+        attemptedHostMonotonicNs: UInt64,
+        hostMonotonicNs: UInt64
+    ) -> ReplayNotificationEvent {
         return ReplayNotificationEvent(
             state: .delayed,
             identity: self,
+            attemptedHostMonotonicNs: attemptedHostMonotonicNs,
             hostMonotonicNs: hostMonotonicNs
         )
     }
@@ -125,7 +133,7 @@ struct ReplayNotificationEvent: Encodable, Equatable {
     }
 
     let state: String
-    let schemaVersion = 2
+    let schemaVersion = 3
     let globalTxSequence: UInt64
     let stimulusSequence: Int?
     let emissionOrdinal: Int?
@@ -134,10 +142,12 @@ struct ReplayNotificationEvent: Encodable, Equatable {
     let payloadFnv1a32: String
     let payloadHex: String
     let intendedHostMonotonicNs: UInt64?
+    let attemptedHostMonotonicNs: UInt64?
     let hostMonotonicNs: UInt64
 
     init(state: State,
          identity: ReplayNotificationIdentity,
+         attemptedHostMonotonicNs: UInt64? = nil,
          hostMonotonicNs: UInt64) {
         self.state = state.rawValue
         self.globalTxSequence = identity.globalTxSequence
@@ -148,6 +158,7 @@ struct ReplayNotificationEvent: Encodable, Equatable {
         self.payloadFnv1a32 = identity.payloadFnv1a32
         self.payloadHex = identity.payloadHex
         self.intendedHostMonotonicNs = identity.intendedHostMonotonicNs
+        self.attemptedHostMonotonicNs = attemptedHostMonotonicNs
         self.hostMonotonicNs = hostMonotonicNs
     }
 

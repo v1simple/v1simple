@@ -504,16 +504,20 @@ final class V1Peripheral: NSObject {
     private func flush() {
         guard !isStopping, !handshakeNotificationHold.blocksFlush else { return }
         while let item = pending.first {
-            guard manager.updateValue(
+            let attemptedHostMonotonicNs = hostMonotonicNanoseconds()
+            let accepted = manager.updateValue(
                 item.data,
                 for: item.characteristic,
                 onSubscribedCentrals: nil
-            ) else {
+            )
+            let completedHostMonotonicNs = hostMonotonicNanoseconds()
+            guard accepted else {
                 if !item.delayReported {
                     pending[0].delayReported = true
                     onNotificationEvent?(
                         item.evidence.delayedEvent(
-                            hostMonotonicNs: hostMonotonicNanoseconds()
+                            attemptedHostMonotonicNs: attemptedHostMonotonicNs,
+                            hostMonotonicNs: completedHostMonotonicNs
                         )
                     )
                 }
@@ -523,7 +527,8 @@ final class V1Peripheral: NSObject {
             withState { $0.notifiesSent += 1 }
             onNotificationEvent?(
                 item.evidence.acceptedEvent(
-                    hostMonotonicNs: hostMonotonicNanoseconds()
+                    attemptedHostMonotonicNs: attemptedHostMonotonicNs,
+                    hostMonotonicNs: completedHostMonotonicNs
                 )
             )
             let firstHandshakeClearDelivery = item.purpose == .handshakeClear

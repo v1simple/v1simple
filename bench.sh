@@ -267,6 +267,17 @@ if isinstance(camera, dict) and camera.get("result") == "CAPTURED":
 PY
 }
 
+print_visual_summary() {
+  local visual_status=0
+  printf '[bench] visual timing: analyzing replay camera evidence...\n'
+  python3 "$ROOT_DIR/scripts/bench/visual_run_check.py" "$RUN_DIR" \
+    2>> "$RUN_LOG" || visual_status=$?
+  printf 'visual timing: exit=%s\n' "$visual_status" >> "$RUN_LOG"
+  if [[ "$visual_status" -ne 0 ]]; then
+    printf '[bench] visual timing unavailable; collection verdict is unchanged (see bench.log)\n'
+  fi
+}
+
 V1REPLAY_EXECUTABLE="$ROOT_DIR/tools/v1replay/.build/v1replay"
 SUITES=(core display replay)
 [[ "$RUN_REPLAY" -eq 1 ]] && SUITES=(replay)
@@ -324,6 +335,9 @@ for suite in "${SUITES[@]}"; do
   if [[ "$result" == "PASS" && "$runner_status" -eq 0 ]]; then
     if ! print_window_summary "$step_dir/window_result.json" "$suite"; then
       printf '%s: external evidence summary unavailable\n' "$suite" >> "$RUN_LOG"
+    fi
+    if [[ "$suite" == "replay" && "$CAMERA_ENABLED" -eq 1 ]]; then
+      print_visual_summary
     fi
     continue
   fi

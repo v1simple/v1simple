@@ -14,9 +14,9 @@ Configuration runs in a separate maintenance-mode WiFi interface.
 
 ### Board revision — read before ordering
 
-Waveshare discontinued the V1 board and switched shipments to V2 after
-2026-06-08, so a board bought new today is likely V2. The firmware supports both
-revisions with automatic detection and routing at boot:
+Waveshare discontinued the V1 board and says shipments switched to V2 after
+2026-06-08. The firmware supports both revisions with automatic detection and
+routing at boot:
 
 | Board | Backlight | Panel reset |
 |---|---|---|
@@ -35,9 +35,8 @@ Identify the revision before flashing:
 | QC sticker on the case | none | **V2** |
 
 The revision numbering is confusing: silkscreen `Rev1.1` is the *newer* V2
-board. Waveshare documents this on
-<https://docs.waveshare.com/ESP32-S3-Touch-LCD-3.49> only; the older
-`waveshare.com/wiki` page for the same product does not mention it.
+board. Waveshare documents the revision change at
+<https://docs.waveshare.com/ESP32-S3-Touch-LCD-3.49>.
 
 ### Safety
 

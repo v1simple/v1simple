@@ -1,10 +1,3 @@
-/**
- * Screen-mode renderers.
- *
- * Contains showDisconnected, showMaintenanceMode, showResting, showScanning,
- * showBootSplash, showShutdown, showLowBattery, forceNextRedraw,
- * and resetChangeTracking.
- */
 
 #include "display.h"
 #include "config.h"
@@ -23,9 +16,6 @@
 using namespace DisplaySegments;
 using DisplayLayout::PRIMARY_ZONE_HEIGHT;
 
-// ============================================================================
-// showDisconnected
-// ============================================================================
 
 void V1Display::showDisconnected() {
     drawBaseFrame();
@@ -34,9 +24,6 @@ void V1Display::showDisconnected() {
     drawBatteryIndicator();
 }
 
-// ============================================================================
-// showMaintenanceMode
-// ============================================================================
 
 void V1Display::showMaintenanceMode(const char* ipAddress, bool stationMode) {
     dirty_.multiAlert = true;
@@ -49,31 +36,24 @@ void V1Display::showMaintenanceMode(const char* ipAddress, bool stationMode) {
 
     GFX_setTextDatum(MC_DATUM);
 
-    // Title on a single line so the network address has room below it.
     TFT_CALL(setTextSize)(3);
     TFT_CALL(setTextColor)(0x07FF, PALETTE_BG); // Cyan
     GFX_drawString(tft_, "MAINTENANCE MODE", SCREEN_WIDTH / 2, 48);
 
     const bool hasIp = (ipAddress != nullptr && ipAddress[0] != '\0');
 
-    // Context line: explains the address shown below. Falls back to the
-    // original copy while WiFi is still coming up (no address yet).
     TFT_CALL(setTextSize)(2);
     TFT_CALL(setTextColor)(PALETTE_TEXT, PALETTE_BG);
     const char* label = !hasIp ? "WiFi setup active" : (stationMode ? "Browse to:" : "Join WiFi, then browse to:");
     GFX_drawString(tft_, label, SCREEN_WIDTH / 2, 84);
 
-    // Network address — legible size, drawn in green so it stands out from the
-    // cyan title, white label, and grey hint.
     if (hasIp) {
         TFT_CALL(setTextSize)(3);
         TFT_CALL(setTextColor)(0x07E0, PALETTE_BG); // Green
         GFX_drawString(tft_, ipAddress, SCREEN_WIDTH / 2, 118);
     }
 
-    // Exit hint: PALETTE_GRAY is the near-black "resting" colour (0x1082 ≈
-    // RGB 16,16,16) and is almost invisible on the black background, so draw
-    // this at a legible size in mid-grey.
+    // PALETTE_GRAY is too dark on black for the exit hint.
     TFT_CALL(setTextSize)(2);
     TFT_CALL(setTextColor)(0x7BEF, PALETTE_BG); // Mid-grey
     GFX_drawString(tft_, "Hold BOOT 4s to exit", SCREEN_WIDTH / 2, 150);
@@ -88,33 +68,23 @@ void V1Display::showMaintenanceMode(const char* ipAddress, bool stationMode) {
     DISPLAY_FLUSH();
 }
 
-// ============================================================================
-// showResting
-// ============================================================================
 
 void V1Display::showResting(bool forceRedraw) {
-    // Always use multi-alert layout positioning
     dirty_.multiAlert = true;
     multiAlertMode_ = false;
 
-    // Save the last known bogey counter before potentially resetting
-    // This preserves the mode indicator (A/L/c) when V1 is connected.
-    // Single-LED bogey counter — image1 only. FSD-002 Verdict Reversal:
-    // image2 is the off-phase blink pair, not a second physical digit.
+    // Preserve the connected-mode indicator; image2 is the blink off-phase.
     char savedBogeyChar = lastState_.bogeyCounterChar;
     bool savedBogeyDot = lastState_.bogeyCounterDot;
 
-    // Avoid redundant full-screen clears/flushes when already resting and nothing changed
     bool paletteChanged = (lastRestingPaletteRevision_ != paletteRevision_);
     bool screenChanged = (currentScreen_ != ScreenMode::Resting);
     int profileSlot = currentProfileSlot_;
     bool profileChanged = (profileSlot != lastRestingProfileSlot_);
 
     if (forceRedraw || screenChanged || paletteChanged) {
-        // Full redraw when forced, coming from another screen, or after theme change
         drawBaseFrame();
 
-        // Draw idle state: if V1 is connected, show last known mode; otherwise show "0"
         char topChar = '0';
         bool topDot = true;
         if (bleCtx_.v1Connected && savedBogeyChar != 0) {
@@ -122,31 +92,23 @@ void V1Display::showResting(bool forceRedraw) {
             topDot = savedBogeyDot;
         }
         drawTopCounterPair(topChar, false, topDot);
-        // Volume indicator not shown in resting state (no DisplayState available)
 
-        // Band indicators all dimmed (no active bands)
         drawBandIndicators(0, false);
 
-        // Signal bars all empty
         drawVerticalSignalBars(0, 0, BAND_KA, false);
 
-        // Direction arrows all dimmed
         drawDirectionArrow(DIR_NONE, false);
 
-        // Frequency display
         drawFrequency(0, BAND_NONE);
 
-        // Mute indicator off
         drawMuteIcon(false);
         syncTopIndicators(millis());
         drawObdIndicator();
         drawAlpIndicator();
 
-        // Profile indicator
         drawProfileIndicator(profileSlot);
 
-        // Reset secondary alert card state so stale live-alert cards can't
-        // survive into (or past) the resting screen.
+        // Prevent stale live-alert cards from surviving the resting screen.
         AlertData emptyPriority;
         drawSecondaryAlertCards(nullptr, 0, emptyPriority, false);
 
@@ -157,34 +119,24 @@ void V1Display::showResting(bool forceRedraw) {
 
         DISPLAY_FLUSH();
     } else if (profileChanged) {
-        // Only the profile changed while already resting; redraw just the indicator
         drawProfileIndicator(profileSlot);
         lastRestingProfileSlot_ = profileSlot;
-        // Flush the regions annotated by the leaf renderers: the profile
-        // indicator plus any restored battery corner or percentage. Static
-        // flush rectangles can miss pixels when indicator geometry moves.
+        // Leaf-renderer regions include restored battery pixels that a static
+        // profile rectangle can miss when geometry moves.
         if (!drawnRegion_.empty()) {
             flushRegion(drawnRegion_.x(), drawnRegion_.y(), drawnRegion_.w(), drawnRegion_.h());
             drawnRegion_.reset();
         }
     }
 
-    // Reset lastState_ so next update() detects changes from this "resting" state
     lastState_ = DisplayState(); // All defaults: bands=0, arrows=0, bars=0, hasMode=false, modeChar=0
 
 }
 
-// ============================================================================
-// forceNextRedraw / resetChangeTracking
-// ============================================================================
 
 void V1Display::forceNextRedraw() {
-    // Reset lastState_ to force next update() to detect all changes and redraw
     lastState_ = DisplayState();
-    // Set screen mode to Unknown so any next update/showResting detects a screen change
     currentScreen_ = ScreenMode::Unknown;
-    // Reset the singleton-scoped render tracking variables (volume, mode,
-    // arrows, etc.) so the single production display path fully redraws.
     resetChangeTracking();
 }
 
@@ -192,22 +144,15 @@ void V1Display::resetChangeTracking() {
     dirty_.resetTracking = true;
 }
 
-// ============================================================================
-// showScanning
-// ============================================================================
 
 void V1Display::showScanning() {
-    // Always use multi-alert layout positioning
     dirty_.multiAlert = true;
 
     const V1Settings& s = settings_.get();
 
-    // Clear and draw the base frame
     drawBaseFrame();
 
-    // Draw idle state elements
     drawTopCounter('0', false, true);
-    // Volume indicator not shown in scanning state (no DisplayState available)
     drawBandIndicators(0, false);
     drawVerticalSignalBars(0, 0, BAND_KA, false);
     drawDirectionArrow(DIR_NONE, false);
@@ -217,10 +162,8 @@ void V1Display::showScanning() {
     drawAlpIndicator();
     drawProfileIndicator(currentProfileSlot_);
 
-    // Draw "SCAN" with the same geometry as the live frequency text.
     const char* text = "SCAN";
     if (fontMgr_.segment7Ready) {
-        // Use Segment7 TTF font at the frequency font size and baseline.
         const int fontSize = DisplayLayout::FREQUENCY_OFR_FONT_SIZE;
         const int leftMargin = DisplayLayout::FREQUENCY_OFR_LEFT_MARGIN;
         const int y = DisplayLayout::frequencyOfrY();
@@ -260,7 +203,6 @@ void V1Display::showScanning() {
         fontMgr_.segment7.setCursor(x, y);
         fontMgr_.segment7.printf("%s", text);
     } else {
-        // Fallback: software 14-segment display using the frequency fallback scale.
         const float scale = DisplayLayout::FREQUENCY_FALLBACK_SCALE;
         SegMetrics m = segMetrics(scale);
         const int y = DisplayLayout::frequencyFallbackY(m.digitH);
@@ -276,7 +218,6 @@ void V1Display::showScanning() {
         draw14SegmentText(text, x, y, scale, s.colorBandKa, PALETTE_BG);
     }
 
-    // Reset lastState_
     lastState_ = DisplayState();
 
     DISPLAY_FLUSH();
@@ -285,28 +226,19 @@ void V1Display::showScanning() {
     lastRestingProfileSlot_ = -1;
 }
 
-// ============================================================================
-// showBootSplash
-// ============================================================================
 
 void V1Display::showBootSplash() {
     const unsigned long splashStartMs = millis();
     drawBaseFrame();
 
-    // Decode the RLE-compressed V1 Simple logo.  Each row must be decoded
-    // sequentially (RLE state is linear), but we stage the full 640×172×2
-    // byte image (~215 KiB) in PSRAM and hand it to Arduino_GFX as one blit
-    // instead of 172 per-row blits.  Arduino_GFX's full-bitmap path takes a
-    // single bounds-check + tight pixel loop; the per-row path re-enters
-    // that machinery once per row, with a non-trivial fixed cost each time.
-    // Boot-path only — the PSRAM buffer is freed before backlight enable.
+    // RLE rows decode sequentially; one PSRAM-backed blit avoids 172 fixed-cost
+    // draw calls. The buffer is freed before backlight enable.
     const unsigned long logoStartMs = millis();
     constexpr size_t kLogoPixelCount =
         static_cast<size_t>(V1SIMPLE_LOGO_WIDTH) * static_cast<size_t>(V1SIMPLE_LOGO_HEIGHT);
     constexpr size_t kLogoBytes = kLogoPixelCount * sizeof(uint16_t);
     uint16_t* logoBuffer = static_cast<uint16_t*>(heap_caps_malloc(kLogoBytes, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM));
     if (logoBuffer) {
-        // Decode all rows into the contiguous buffer, then one blit.
         for (int sy = 0; sy < V1SIMPLE_LOGO_HEIGHT; sy++) {
             decodeV1SimpleLogoRow(static_cast<uint16_t>(sy),
                                   logoBuffer + static_cast<size_t>(sy) * V1SIMPLE_LOGO_WIDTH);
@@ -314,9 +246,7 @@ void V1Display::showBootSplash() {
         TFT_CALL(draw16bitRGBBitmap)(0, 0, logoBuffer, V1SIMPLE_LOGO_WIDTH, V1SIMPLE_LOGO_HEIGHT);
         heap_caps_free(logoBuffer);
     } else {
-        // PSRAM allocation failed (shouldn't happen on this board, but keep
-        // the splash visible rather than crashing the boot screen).  Fall
-        // back to the row-by-row path with a stack row buffer.
+        // Keep the splash functional if PSRAM allocation fails.
         uint16_t rowBuffer[V1SIMPLE_LOGO_WIDTH];
         for (int sy = 0; sy < V1SIMPLE_LOGO_HEIGHT; sy++) {
             decodeV1SimpleLogoRow(static_cast<uint16_t>(sy), rowBuffer);
@@ -325,55 +255,40 @@ void V1Display::showBootSplash() {
     }
     const unsigned long logoMs = millis() - logoStartMs;
 
-    // Draw version number in bottom-right corner
     GFX_setTextDatum(BR_DATUM); // Bottom-right alignment
     TFT_CALL(setTextSize)(2);
     TFT_CALL(setTextColor)(0x7BEF, PALETTE_BG); // Gray text (mid-gray RGB565)
     GFX_drawString(tft_, "v" FIRMWARE_VERSION, SCREEN_WIDTH - 8, SCREEN_HEIGHT - 6);
 
-    // Flush canvas to display before enabling backlight
     const unsigned long flushStartMs = millis();
     DISPLAY_FLUSH();
     const unsigned long flushMs = millis() - flushStartMs;
 
-    // Turn on backlight now that splash is drawn.
     setBrightness(255);
     Serial.println("Backlight ON (post-splash, inverted)");
     Serial.printf("[BootTiming] splash total=%lu logo=%lu flush=%lu\n", millis() - splashStartMs, logoMs, flushMs);
 }
 
-// ============================================================================
-// showShutdown
-// ============================================================================
 
 void V1Display::showShutdown() {
-    // Clear screen
     TFT_CALL(fillScreen)(PALETTE_BG);
 
-    // Draw "GOODBYE" message centered
     GFX_setTextDatum(MC_DATUM);
     TFT_CALL(setTextSize)(3);
     TFT_CALL(setTextColor)(PALETTE_TEXT, PALETTE_BG);
     GFX_drawString(tft_, "GOODBYE", SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 - 20);
 
-    // Draw smaller "Powering off..." below
     TFT_CALL(setTextSize)(2);
     TFT_CALL(setTextColor)(PALETTE_GRAY, PALETTE_BG);
     GFX_drawString(tft_, "Powering off...", SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + 20);
 
-    // Flush to display
     DISPLAY_FLUSH();
 }
 
-// ============================================================================
-// showLowBattery
-// ============================================================================
 
 void V1Display::showLowBattery() {
-    // Clear screen
     TFT_CALL(fillScreen)(PALETTE_BG);
 
-    // Draw large battery outline in center
     const int battW = 120;
     const int battH = 60;
     const int battX = (SCREEN_WIDTH - battW) / 2;
@@ -381,28 +296,21 @@ void V1Display::showLowBattery() {
     const int capW = 12;
     const int capH = 24;
 
-    // Draw battery outline in red
     uint16_t redColor = 0xF800;
     DRAW_RECT(battX, battY, battW, battH, redColor);
     FILL_RECT(battX + battW, battY + (battH - capH) / 2, capW, capH, redColor);
 
-    // Draw single bar (low)
     const int padding = 8;
     FILL_RECT(battX + padding, battY + padding, 20, battH - 2 * padding, redColor);
 
-    // Draw "LOW BATTERY" text below
     GFX_setTextDatum(MC_DATUM);
     TFT_CALL(setTextSize)(2);
     TFT_CALL(setTextColor)(redColor, PALETTE_BG);
     GFX_drawString(tft_, "LOW BATTERY", SCREEN_WIDTH / 2, battY + battH + 30);
 
-    // Flush to display
     DISPLAY_FLUSH();
 }
 
-// ============================================================================
-// showStealth — blank screen with OBD speed centered
-// ============================================================================
 
 void V1Display::showStealth(float speedMph, bool speedValid) {
     dirty_.multiAlert = true;
@@ -412,10 +320,7 @@ void V1Display::showStealth(float speedMph, bool speedValid) {
     const bool displaySpeedValid = speedValid && speedMph >= 0.0f;
     const int roundedSpeedMph = displaySpeedValid ? static_cast<int>(speedMph + 0.5f) : -1;
 
-    // External status setters may have drawn into the shared canvas before the
-    // pipeline arrives here. Preserve today's safe behavior: any pending draw
-    // still gets erased by a full stealth repaint instead of being hidden by a
-    // cache-hit skip.
+    // Pending external draws require a full stealth repaint before cache skipping.
     const bool hadPendingExternalDraws = !drawnRegion_.empty();
     drawnRegion_.reset();
     arrowVisibilityForceFullFlush_ = false;
@@ -426,10 +331,8 @@ void V1Display::showStealth(float speedMph, bool speedValid) {
         return;
     }
 
-    // Clear to background
     TFT_CALL(fillScreen)(PALETTE_BG);
 
-    // Build speed string
     char speedText[16];
     if (displaySpeedValid) {
         snprintf(speedText, sizeof(speedText), "%d MPH", roundedSpeedMph);
@@ -437,7 +340,6 @@ void V1Display::showStealth(float speedMph, bool speedValid) {
         snprintf(speedText, sizeof(speedText), "-- MPH");
     }
 
-    // Draw centered in white — large, clean, readable
     GFX_setTextDatum(MC_DATUM);
     TFT_CALL(setTextSize)(10);
     TFT_CALL(setTextColor)(0xFFFF, PALETTE_BG);

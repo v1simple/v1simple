@@ -5,35 +5,8 @@
 #include "display.h"       // For V1Display, DisplayState
 
 /**
- * DisplayPreviewModule - comprehensive display test / color preview
- *
- * Replaces the original 5-step color swatch with a realistic display test
- * that exercises every visual element on screen:
- *
- * Phase 1: Band + direction sweep
- *   Each band cycles front → side → rear with realistic frequencies
- *   and ramping signal strength. Covers X, K, Ka (3 freqs), Laser.
- *
- * Phase 2: Multi-alert combos with priority-only visuals
- *   Realistic multi-bogey scenarios showing the priority alert only.
- *   Includes Photo radar display.
- *
- * Phase 3: ALP state cycling
- *   Simulates all ALP badge states (OFF → IDLE → LISTENING with PDC/DLI/LID
- *   heartbeat sub-states → ALERT_ACTIVE → NOISE_WINDOW → TEARDOWN) with gun
- *   abbreviation frequency override.
- *
- * Phase 4: Status indicator cycling
- *   Bogey counter chars, mode chars, mute, OBD states, BLE proxy,
- *   volume levels, profile slots.
- *
- * Responsibilities:
- * - Run the timed preview sequence
- * - Expose simple control (start/cancel) and completion flag
- *
- * Does NOT:
- * - Own display connection (expects V1Display pointer)
- * - Touch real runtime modules (uses preview setters for ALP/OBD)
+ * Timed preview for band, direction, multi-alert, ALP, and status rendering.
+ * It uses preview setters and does not own or mutate runtime modules.
  */
 class DisplayPreviewModule {
   public:

@@ -1,17 +1,9 @@
 #pragma once
 
-// ============================================================================
-// Display Drawing Macros — shared primitive drawing wrappers
-//
-// These macros wrap the Arduino_GFX / TFT_eSPI drawing API with coordinate
-// transforms and provide a portable abstraction used by all display code.
-//
-// Each call site provides `tft_` as an Arduino_Canvas* or TFT_eSPI&.
-// ============================================================================
+// Drawing wrappers expect each call site to provide `tft_`.
 
 #include "display_driver.h" // DISPLAY_USE_ARDUINO_GFX, Arduino_Canvas, etc.
 
-// --- Utility: dim a 565 colour by a percentage (default 60%) for subtle icons ---
 inline uint16_t dimColor(uint16_t c, uint8_t scalePercent = 60) {
     uint8_t r = (c >> 11) & 0x1F;
     uint8_t g = (c >> 5) & 0x3F;
@@ -22,17 +14,15 @@ inline uint16_t dimColor(uint16_t c, uint8_t scalePercent = 60) {
     return (r << 11) | (g << 5) | b;
 }
 
-// --- TFT access layer — pointer (Arduino_GFX) vs object (TFT_eSPI) ---
 #define TFT_CALL(method) tft_->method
 #define TFT_PTR tft_
 
-// --- Coordinate transforms (identity — hardware handles rotation) ---
+// Hardware handles rotation; transforms are intentionally identity.
 #define TX(vx, vy) (vx)
 #define TY(vx, vy) (vy)
 #define TW(vw, vh) (vw)
 #define TH(vw, vh) (vh)
 
-// --- Drawing wrapper macros with coordinate transformation ---
 #define FILL_RECT(x, y, w, h, color) TFT_CALL(fillRect)(TX(x, y), TY(x, y), TW(w, h), TH(w, h), (color))
 #define DRAW_RECT(x, y, w, h, color) TFT_CALL(drawRect)(TX(x, y), TY(x, y), TW(w, h), TH(w, h), (color))
 #define FILL_ROUND_RECT(x, y, w, h, r, color)                                                                          \

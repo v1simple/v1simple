@@ -1,34 +1,6 @@
 /**
- * device_test_reset.h — Auto-restart after device tests finish.
- *
- * Problem: On ESP32-S3 with USB CDC, the USB stack can degrade after tests
- * (WiFi, I2C, FreeRTOS task manipulation). If the test firmware just loops
- * after UNITY_END(), the USB CDC port disappears from the host, preventing
- * upload of the next test suite.
- *
- * Solution: After tests complete, call esp_restart() to reboot cleanly with
- * a fresh USB CDC stack. On the second boot, an RTC_NOINIT_ATTR flag tells
- * setup() to skip tests and just keep USB alive via loop().
- *
- * Additional fix: All tests wait for the PlatformIO host to open the serial
- * port before printing any output, preventing USB CDC buffer overflow when
- * tests finish before PlatformIO connects.
- *
- * Usage in each test file:
- *
- *   #include "../device_test_reset.h"
- *
- *   void setup() {
- *       if (deviceTestSetup("test_device_xxx")) return;
- *       UNITY_BEGIN();
- *       // ... RUN_TESTs ...
- *       UNITY_END();
- *       deviceTestFinish();
- *   }
- *
- *   void loop() {
- *       delay(100);
- *   }
+ * Device tests run once, mark completion in RTC memory, and restart so a clean
+ * USB CDC instance remains available for the next upload.
  */
 #pragma once
 
@@ -93,7 +65,7 @@ static inline void deviceTestMetricBool(const char* metric,
  * Call at the very start of setup().
  * - On a post-test reboot: initialises serial, prints keepalive msg, returns true.
  *   Caller should `return;` so loop() keeps USB alive for next upload.
- * - On a normal boot: initialises serial, waits up to 5 s for PlatformIO host
+ * - On a normal boot: initialises serial, waits up to 8 s for PlatformIO host
  *   to open the port, prints a diagnostic banner, returns false.
  */
 static inline bool deviceTestSetup(const char* suiteName) {

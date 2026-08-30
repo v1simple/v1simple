@@ -1,16 +1,10 @@
-// ============================================================================
-// display_segments.h — 7-segment and 14-segment rendering data tables
-//
-// Pure data + utility functions for segment-display rendering.
-// No display-driver dependency — just geometry and character maps.
-// ============================================================================
+// Segment rendering geometry and lookup tables.
 #pragma once
 #include <cstdint>
 #include <cstddef>
 
 namespace DisplaySegments {
 
-// --- Geometry ---
 
 struct SegMetrics {
     int segLen;
@@ -21,7 +15,6 @@ struct SegMetrics {
     int dot;
 };
 
-/// Compute segment metrics for a given scale factor.
 inline SegMetrics segMetrics(float scale) {
     int segLen = static_cast<int>(8 * scale + 0.5f);
     int segThick = static_cast<int>(3 * scale + 0.5f);
@@ -32,9 +25,7 @@ inline SegMetrics segMetrics(float scale) {
     return {segLen, segThick, segLen + 2 * segThick, 2 * segLen + 3 * segThick, segThick, segThick};
 }
 
-// --- 7-segment lookup ---
 
-/// Standard 7-segment patterns (a–g) for digits 0–9.
 constexpr bool DIGIT_SEGMENTS[10][7] = {
     // a,     b,     c,     d,     e,     f,     g
     {true, true, true, true, true, true, false},     // 0
@@ -49,7 +40,6 @@ constexpr bool DIGIT_SEGMENTS[10][7] = {
     {true, true, true, true, false, true, true}      // 9
 };
 
-// --- 14-segment lookup ---
 // Segments: 0=top, 1=top-right, 2=bottom-right, 3=bottom, 4=bottom-left,
 //           5=top-left, 6=middle-left, 7=middle-right, 8=diag-top-left,
 //           9=diag-top-right, 10=center-top, 11=center-bottom,
@@ -60,7 +50,6 @@ struct Char14Seg {
     uint16_t segs; // bit flags for segments 0-13
 };
 
-// Segment bit flags
 constexpr uint16_t S14_TOP = (1 << 0);
 constexpr uint16_t S14_TR = (1 << 1); // top-right vertical
 constexpr uint16_t S14_BR = (1 << 2); // bottom-right vertical
@@ -105,7 +94,6 @@ constexpr Char14Seg CHAR14_MAP[] = {
 };
 constexpr int CHAR14_MAP_SIZE = sizeof(CHAR14_MAP) / sizeof(CHAR14_MAP[0]);
 
-/// Look up the 14-segment bit pattern for a character (case-insensitive).
 inline uint16_t get14SegPattern(char c) {
     char upper = (c >= 'a' && c <= 'z') ? static_cast<char>(c - 32) : c;
     for (int i = 0; i < CHAR14_MAP_SIZE; i++) {

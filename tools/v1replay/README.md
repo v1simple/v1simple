@@ -166,133 +166,30 @@ slot reuse, and removal during Phase 0.
 
 ## Protocol behavior
 
-The public contract inventory uses these stable behavior IDs:
-
-- `V1-BLE-IDENTITY-001` pins the service UUID, four core characteristic UUIDs,
-  and the separate two-characteristic compatibility surface. It covers literal
-  identity only; CoreBluetooth behavior remains integration or bench evidence.
-- `V1-SESSION-TRANSPORT-001` pins the emulator's ordered command stream: an
-  incomplete frame is retained, valid complete frames are handled once in wire
-  order, and large coalesced writes are drained before the incomplete residual
-  tail is bounded. B2CE subscription is core readiness; the alert bench also
-  requires alert-stream enablement. B4E0 remains optional capacity for genuinely
-  long packets and is not required for the current 15-byte alert rows.
-  Fragmented writes are an emulator robustness guarantee, not a claim about
-  typical physical-device boundaries. Inbound checksums remain mandatory even
-  when generated checksums are disabled. The strict `DA E6` request header is
-  the V1Simple-host policy; `E6` is not claimed as every possible client's
-  universal origin.
-- `V1-CONNECT-READBACK-001` pins V1Simple's automatic connected readback: after
-  short-notification setup and its alert-stream request, the accepted version
-  query precedes the accepted all-volume query on the selected short command
-  characteristic. A transient local pacing or transport deferral retains the
-  unsent query for a later loop instead of skipping it. Exact retry count,
-  delay, and reply arrival order are not gated.
-- `V1-VERSION-REPLY-001` pins a valid version request, its checksummed
-  V1-to-app reply, and selection of the B2CE short-display channel.
-- `V1-ALL-VOLUME-001` pins the four ordered current/saved volume fields and the
-  B2CE short-packet route. Equal current and saved values are emulator fixture
-  configuration, not a universal device default. Parser product tests verify
-  that the four values enter parser state; the managed process log records the
-  exact external reply that was requested and accepted.
-- `V1-CONTROL-MODE-001` pins the default-US one-byte mode commands `01`, `02`,
-  and `03`. They update the current mode without a semantic reply. Later idle
-  display information carries the matching mode glyph and Aux1 mode bits; active
-  display information retains those mode bits while its glyph shows the alert
-  count.
-- `V1-CONTROL-VOLUME-001` pins V1Simple's exact three-byte `aux0=00` volume
-  write: main and muted values are `0...9`; it updates the current pair, leaves
-  the saved pair unchanged, and produces no semantic reply. For V4.1028+, a
-  full eight-byte ID31 payload carries current main/muted volume in Aux2's
-  high/low nibbles; saved values are not carried. Vendor documentation assigns
-  `aux0` bit `04` to saving on V4.1037+, but that branch is host-modeled
-  compatibility, not emitted by V1Simple or physically confirmed. Before
-  V4.1037, the emulator leaves saved state unchanged because reserved-bit
-  handling is unknown. A later all-volume reply carries both pairs.
-- `V1-ALERT-STREAM-CONTROL-001` pins start and stop as state transitions with no
-  invented immediate reply. Repeating start while already enabled is an
-  idempotent request, not a second state transition. Delivery already queued
-  around a stop and the timing of the first or last alert row remain provisional
-  and non-gating.
-- `V1-USER-BYTES-001` pins the six-byte payload shape, version-aware read/write
-  state, and the B2CE read response. Under the default v4.1038 identity, writes
-  preserve `FF FF` in the final two positions. Writes have no invented immediate
-  reply; verification uses a later readback. Gen2 full six-byte storage begins
-  with v4.1039.
-- `V1-ALERT-TABLE-001` pins complete one-based tables on B2CE: rows repeat the
-  total, carry exactly one priority flag for an authored active sample, and are
-  planned in row order before the display packet. Empty samples use the
-  emulator's explicit all-zero count-zero clear fixture. The chosen inverse
-  raw-strength bytes and row transmission order are deterministic emulator
-  choices, not claims that every physical V1 emits those exact bytes or cadence.
-- `V1-DISPLAY-FRAME-001` pins the default-v4.1038 full eight-byte B2CE display
-  payload after the table, with its count, meter, band, direction, and mute
-  state derived from the flagged priority row. Aux1 carries the current
-  default-US mode even during an active alert; Aux2 carries current main and
-  muted volume in its high and low nibbles, never saved values. Generated
-  display and alert information use the `D8 EA` broadcast header; targeted
-  request replies remain `D6 EA`. Identical steady image planes are a
-  deterministic fixture choice.
-
-These tests cover pure session decisions and the pure playback packet plan.
-Actual notification delivery, subscription mechanics, and characteristic
-permissions remain integration or bench evidence. Mute on/off and display-on
-accept empty payloads; display-off accepts empty, `00`, or `01`. These state
-commands do not invent same-ID replies. Mode and volume writes accept their
-validated one- and three-byte payloads without an immediate packet reply.
-Feedback rendering and timing, other reserved volume-control bits, disconnect
-restore, power-cycle persistence, and non-US mode variants remain outside this
-host-state gate.
-
-Managed replay keeps the quiet preflight and replacement process outputs as
-separate plain-text logs. Their machine events record notification lifecycles,
-transport readiness, lifecycle boundaries, and monotonic host times. The
-still-open serial log records the intervening board cleanup and same-boot
-fences. These raw streams remain the source evidence. The bench collector also
-retains the notification lifecycle records in `replay_delivery.ndjson` and
-publishes explicit requested, attempted, accepted, dropped, skipped, unresolved,
-and malformed-sequence counters in its result. Missing delivery instrumentation,
-any delivery loss, or a malformed per-sequence lifecycle vetoes a replay PASS.
-
-With `--machine-events`, every queued notification emits
-`notification_requested`; every successful CoreBluetooth `updateValue` emits
-`notification_accepted`. Both records carry a process-global TX sequence,
-the whole-notification FNV-1a32 digest used by DUT causal traces,
-optional stimulus sequence and emission ordinal, characteristic, exact payload
-hex, SHA-256 digest, and host monotonic nanoseconds. The shared identities join
-repeated equal packets without treating payload equality as causality.
-CoreBluetooth acceptance means the host stack accepted the update for delivery;
-it does not prove DUT receipt, parsing, rendering, or pixels.
-
 The tool advertises the V1 service, four core characteristics, and two
-compatibility additions. It answers the handshake v1simple performs on connect
-and emits display and alert-table rows. Alert rows wait for
-`reqStartAlertData` unless `--always-alerts` is used.
+compatibility characteristics. B2CE subscription is transport readiness; managed
+bench playback also waits for v1simple to request alert data. B4E0 remains
+optional because the packets generated here fit B2CE.
 
-Every active bench step sends a complete one-, two-, or three-row B2CE table
-with exactly one priority flag. The K alert remains row 1 when Ka becomes the
-row-2 priority, so the stimulus exercises priority selection rather than relying
-on row order. Empty steps send an explicit count-zero table. The B2CE bogey
-count matches the active-row count, and its meter, band, and direction come from
-the priority alert.
+The emulator retains incomplete command frames and drains complete frames in
+wire order. Incoming v1simple commands require a valid checksum and the
+`DA E6` request header. The connect handshake answers version and all-volume
+queries, and alert rows are withheld until `reqStartAlertData` unless
+`--always-alerts` is selected.
 
-Playback uses `D8 EA` for generated broadcast information and `D6 EA` for
-targeted replies by default. Its steady bogey planes remain a deterministic
-stimulus choice; `--header draft` and `--blink-bogey` select fixture-compatible
-alternatives. Priority-arrow blink profiles clear only the selected direction
-bit from image2; timing and visual cadence remain non-gating bench/camera
-evidence.
+Each active bench step sends a complete alert table with one priority row,
+followed by display data derived from that row. Empty steps send an explicit
+count-zero table. Generated broadcast information uses `D8 EA`; targeted
+replies use `D6 EA`. `--header draft`, `--blink-bogey`, and the
+priority-arrow blink profiles select deterministic stimulus variants.
 
-The pure plan does not prove CoreBluetooth subscription properties, notification
-delivery, or a future long-packet chunk wrapper. B4E0 segmentation is outside
-this slice and is not synthesized for packets that already fit B2CE.
+With `--machine-events`, notification events include sequence, characteristic,
+payload identity, and host monotonic time. CoreBluetooth accepting an update
+does not prove that the DUT received, parsed, or rendered it.
 
-The tool is a stimulus source, not the sole oracle. Literal host contract tests,
-firmware parser tests, raw process continuity, and camera evidence each own a
-distinct layer of assertions. The generated default scenario contains 708
-complete active tables, including 30 three-bogey tables, so it continues to
-exercise priority selection and multi-row product behavior without depending on
-firmware-generated evidence.
+Host tests cover packet construction and session decisions. BLE subscription,
+notification delivery, firmware rendering, and visible pixels require
+integration, serial, or camera evidence.
 
 ## Verification
 
@@ -306,9 +203,9 @@ env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 
 The publication check enforces the source-only tree and scans publishable text
 for common local-path, timestamp, credential, and private-key markers. The
-protocol verifier generates its complete test matrix in memory; it never reads
-external replay input. It also compiles the portable Swift scenario model and
-checks its emitted timeline and CSV without creating a replay fixture.
+protocol verifier compiles `V1Protocol.swift`, feeds its in-memory packet matrix
+to the firmware parser, and never reads external replay input. The Swift test
+suite covers the scenario timeline and CSV.
 
 ## Limitations
 

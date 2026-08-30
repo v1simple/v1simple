@@ -368,14 +368,10 @@ func runCrib() {
     D6 EA for targeted replies. Use --header draft only when exact fixture
     parity is required.
 
-    \(Ansi.bold)One deliberate difference from the draft: bogey image2\(Ansi.reset)
-    The draft and test_protocol_spec_conformance both send 06 00. The tool sends
-    06 06 as a deliberate stimulus choice:
-    display_update.cpp:223 and display_orchestration_module.cpp:147 gate the
-    blink-refresh repaint on bogeyCounterByte != bogeyCounterByte2. Sending 06 00
-    therefore switches on an extra repaint source for the whole replay. 06 06
-    leaves paint slaved to parse, which makes packet-to-paint tests deterministic.
-    --blink-bogey sends 06 00 if you want fixture parity instead.
+    \(Ansi.bold)Bogey blink stimulus\(Ansi.reset)
+    Normal replay uses matching bogey image planes (06 06). --blink-bogey
+    selects the draft's differing planes (06 00) and exercises the firmware's
+    blink-refresh path.
 
     `v1replay play` also adds a checksum byte and the V4.1028+ full eight-byte
     display payload (so auxData2 carries current main/muted volume in its

@@ -16,26 +16,8 @@
 namespace {
 static constexpr uint32_t SAVE_DIAG_REPORT_INTERVAL_MS = 60000; // 60 seconds
 
-// This path is normal-boot only. processV1DeviceStoreSave() has one caller in
-// DriveRuntime's typed periodic-maintenance phase. WiFi starts only in maintenance
-// boot (MaintenanceRuntime owns every startSetupMode() call), so
-// WiFi.getMode() here can only be WIFI_OFF.
-//
-// That made two thirds of this gate unreachable, and it has now been removed:
-//
-//   - the AP+STA and STA-only threshold branches (staRadioOn was always false)
-//   - BACKGROUND_SAVE_AGED_DMA_FREE / _BLOCK / MAX_DIRTY_AGE_MS and the whole
-//     aged-retry path, which was gated on thresholds.allowAgedRetry -- set true
-//     only in the dead AP+STA branch, so the && short-circuited every time and
-//     hasAgedDmaHeadroomForBackgroundSave() was never once called
-//   - withinDeficitTolerance(), which took a tolerance that was always 0:
-//     `sample < required && (required - sample) <= 0` is unsatisfiable on
-//     unsigned arithmetic, so it could never return true
-//   - the freeJitter/blockJitter/agedFree/agedBlock/modeLabel fields those fed
-//
-// What is left is the AP-only pair that was always in force. The names are kept
-// pointing at WiFiManager because that is where the numbers were calibrated,
-// even though the radio cannot be on when they are read.
+// Normal-boot persistence runs with WiFi off. The AP-only calibrated floors
+// remain as conservative SD headroom thresholds.
 struct SaveDmaThresholds {
     uint32_t minFree = 0;
     uint32_t minBlock = 0;
@@ -67,19 +49,8 @@ SaveDmaThresholds getSaveDmaThresholds() {
     return thresholds;
 }
 
-// Note the mask: this samples MALLOC_CAP_DMA while the thresholds above were
-// sized against MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT, the pool the WiFi runtime
-// guard reads at wifi_manager_lifecycle.cpp:641-642. The two disagree by a stable
-// offset (min 2,296 / median 7,664 / max 14,756 bytes across 42,437 bench rows,
-// equal in none of them), which makes the 16,384 B floor effectively ~24,000 B
-// here.
-//
-// Left as-is on purpose. The worst freeDmaCap ever recorded on the bench is
-// 77,584 B -- 4.7x the floor, with 61 KB of slack -- and the worst largestDmaCap
-// is 45,044 B against a 12,288 B block floor. The offset changes no decision and
-// cannot be pushed toward one, because the WiFi that the constants anticipate
-// cannot run in this mode. Switching the mask would tighten a gate that has never
-// come close to firing.
+// MALLOC_CAP_DMA is narrower than the pool used to set these floors, making
+// this normal-boot gate intentionally conservative.
 inline bool hasDmaHeadroomForBackgroundSave(uint32_t& freeDma, uint32_t& largestDma,
                                             const SaveDmaThresholds& thresholds) {
     freeDma = heap_caps_get_free_size(MALLOC_CAP_DMA);
@@ -120,7 +91,6 @@ void maybeLogSaveDiag(const char* tag, SaveDiagStats& stats, uint32_t nowMs) {
 }
 } // namespace
 
-// --- Generic dirty-save state machine ---
 
 struct DirtySaveConfig {
     const char* tag;         // Log prefix, e.g. "V1DeviceStore"

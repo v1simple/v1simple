@@ -1,17 +1,8 @@
 #pragma once
 
-// ============================================================================
-// DrawnRegion — per-frame bounding-rect accumulator for partial-flush dispatch
-//
-// Used by V1Display update paths to decide whether a frame actually repainted
-// pixels. Live alert frames choose between full DISPLAY_FLUSH, region
-// flushRegion(), and no-op cache-hit-skip. Resting/persisted frames use the
-// same signal only to suppress unchanged full-panel flushes; any painted pixel
-// in those paths still takes the safe full DISPLAY_FLUSH route.
-//
-// This is NOT a DisplayDirtyFlags member — it is write-only-per-frame
-// instrumentation, reset at frame boundaries and consumed at the end.
-// ============================================================================
+// Per-frame painted-region accumulator. Live alerts may region-flush;
+// resting and persisted screens full-flush whenever any pixel changed.
+// It resets and is consumed within one frame, unlike DisplayDirtyFlags.
 
 #include <cstdint>
 

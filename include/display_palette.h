@@ -1,23 +1,14 @@
 #pragma once
 
-// ============================================================================
-// Display Palette — colour helpers shared by display sub-modules
-//
-// Provides the current theme palette and user-configurable colours to every
-// display renderer.
-// ============================================================================
 
 #include "color_themes.h" // ColorPalette, ColorThemes
 
-// Forward-declare V1Display (full definition not needed for the pointer)
 class V1Display;
 
-// Global display instance pointer — set by V1Display constructor, defined in
-// display.cpp.  Used to reach the active colour palette and persisted-mode flag.
+// Active display for palette and persisted-mode lookup.
 extern V1Display* g_displayInstance;
 
-// Resolve the current colour palette (falls back to STANDARD if no instance).
-// Include this header only after the complete V1Display definition is visible.
+// The complete V1Display definition must be visible before including this header.
 inline const ColorPalette& getColorPalette() {
     if (g_displayInstance) {
         return g_displayInstance->getCurrentPalette();
@@ -25,25 +16,16 @@ inline const ColorPalette& getColorPalette() {
     return ColorThemes::STANDARD();
 }
 
-// Convenience macros — evaluate to the live palette / user colours.
 #define PALETTE_BG getColorPalette().bg
 #define PALETTE_TEXT getColorPalette().text
 #define PALETTE_GRAY getColorPalette().colorGray
 #define PALETTE_MUTED getColorPalette().colorMuted
 #define PALETTE_PERSISTED getColorPalette().colorPersisted
 
-// Returns PALETTE_PERSISTED when in persisted-alert mode, else PALETTE_MUTED.
 #define PALETTE_MUTED_OR_PERSISTED                                                                                     \
     (g_displayInstance && g_displayInstance->isPersistedMode() ? PALETTE_PERSISTED : PALETTE_MUTED)
 
-// --- RGB565 → RGB888 helper ----------------------------------------------
-// OpenFontRender's setFontColor / setBackgroundColor take 8-bit components.
-// Native draw state is RGB565, so every glyph draw would otherwise inline the
-// same bit-twiddle (see display_top_counter.cpp, display_frequency.cpp).
-// Factor it into one constexpr helper so:
-//   - there is one definition of "how we unpack a 565 to 888"
-//   - the compiler can constant-fold the shifts for literal colors (e.g. the
-//     STANDARD palette bg = 0x0000 → {0,0,0} at compile time)
+// OpenFontRender accepts RGB888; native display state is RGB565.
 struct Rgb888 {
     uint8_t r;
     uint8_t g;

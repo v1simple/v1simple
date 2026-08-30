@@ -1,20 +1,6 @@
 /**
- * BLE Client for Valentine1 Gen2
- * With BLE Server proxy support for companion app
- *
- * Architecture:
- * - NimBLE 2.3.7 tuned for stable dual-role operation
- * - Client connects to V1 (V1G* device names)
- * - Server advertises with a V1-compatible name for companion apps
- * - FreeRTOS task manages advertising timing
- * - Thread-safe with mutexes for BLE operations
- *
- * Key Features:
- * - Automatic V1 discovery and reconnection
- * - Bidirectional proxy (V1 ↔ app)
- * - Profile settings push
- * - Mode control (All Bogeys/Logic/Advanced Logic)
- * - Mute toggle
+ * Valentine One Gen2 client and companion-app BLE proxy.
+ * BLE callbacks synchronize with main-loop-owned runtime state.
  */
 
 #include "ble_client.h"

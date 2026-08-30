@@ -11,25 +11,9 @@
 #include <algorithm>
 #include <cstring>
 
-// ============================================================================
-// Step table — the comprehensive display test sequence
-// ============================================================================
-//
-// Phase 1: Band + direction sweep (each band: front → side → rear)
-//          Signal strength ramps per direction to show bar range.
-// Phase 2: Multi-alert combos with priority-only visuals
-// Phase 3: ALP state cycling with gun abbreviation frequency override
-// Phase 4: Status indicator cycling (bogey counter, mode, OBD, BLE, volume)
-//
-// Step duration: 2 seconds each. Total ~80 seconds.
-//
-// Shorthand for the step struct (keeps table readable):
-//   {band, dir, freq, fBars, rBars, flags,
-//    secBand, secDir, secFreq, secFBars, secRBars,
-//    thirdBand, thirdDir, thirdFreq, thirdFBars, thirdRBars,
-//    bogeyChar, modeChar, profileSlot,
-//    alpState, alpHb, obdState, bleState,
-//    mainVol, muteVol, alpGunAbbrev}
+// Two-second steps cover band/direction, multi-alert cards, ALP, and status
+// indicators. Entries carry primary, secondary, and third alerts followed by
+// status and preview-override state.
 
 #define NO_SEC BAND_NONE, DIR_NONE, 0, 0, 0
 #define NO_THIRD BAND_NONE, DIR_NONE, 0, 0, 0
@@ -494,24 +478,8 @@ void DisplayPreviewModule::update() {
         return;
     }
 
-    // Blink refresh.
-    //
-    // A step render happens once every two seconds, but the step table declares
-    // that some steps flash, and V1's cadence for that is a 96 ms alternation.
-    // Nothing was driving it here: the orchestrator's lightweight refresh is
-    // suppressed while preview is running, and it renders the live pipeline
-    // rather than the preview anyway. So a flashing preview step was drawn once,
-    // in whatever phase happened to be current, and then held for two seconds.
-    //
-    // Preview owns the *invocation* only. V1Display remains the single owner of
-    // the phase itself: this asks whether the renderer's own last transition is
-    // at least one interval old and, if so, redraws the state already on screen.
-    // Because arrow and band both read that one phase inside the renderer, they
-    // stay synchronised without preview knowing anything about either.
-    //
-    // A step transition above returns early, so a boundary and a due tick in the
-    // same loop still produce exactly one render, and a late loop refreshes once
-    // rather than replaying the intervals it missed.
+    // V1Display owns the shared 96 ms blink phase. Preview requests at most one
+    // due redraw per loop; step transitions return above and missed ticks do not replay.
     if (blinkRefreshDue(now)) {
         renderResolvedStep(lastResolved_, false);
     }

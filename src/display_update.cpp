@@ -853,14 +853,11 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
     syncTopIndicators(static_cast<uint32_t>(millis()));
     drawStatusStrip(state, liveTopCounterChar, state.muted, liveTopCounterDot);
 
-    // Photo-radar detection: image1 is the steady displayed character. If V1
-    // is showing 'P' (steady or in the on-phase of a blink), liveTopCounterChar
-    // == 'P'. Under blink-pair semantics image2=='P' implies image1=='P'
-    // (steady-P case), so a separate byte2 check would be redundant.
+    // Under blink-pair semantics, image2=='P' also implies image1=='P'.
     const bool isPhotoRadar = (priority.photoType != 0) || state.hasPhotoAlert || (liveTopCounterChar == 'P');
     drawFrequency(priority.frequency, priority.band, state.muted, isPhotoRadar);
 
-    // B1: see above — re-label K cell as "Ku" when a Ku alert is active.
+    // Ku shares the K cell.
     const uint8_t bandMaskWithKu2 = static_cast<uint8_t>(state.activeBands | (state.hasKuAlert ? BAND_KU : 0));
     const bool bandsPainted = drawBandIndicators(bandMaskWithKu2, state.muted, state.bandFlashBits);
     if (bandsPainted || dirty_.gpsIndicator) {
@@ -868,63 +865,21 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
     }
     drawVerticalSignalBars(state.signalBars, state.signalBars, priority.band, state.muted);
 
-    // Arrow blink: V1 reports the priority-arrow blink directly via image1 vs
-    // image2 in the InfDisplayData packet (image1 = currently lit, image2 =
-    // steady).  packet_parser.cpp computes state.flashBits = image1 & ~image2
-    // & 0xE0, so any direction V1 wants to blink is already in state.flashBits.
-    // Synthesizing a flash bit here whenever alertCount > 1 would misread
-    // ESP Spec 3.015 §9 and force blinks during 2-alert windows where V1
-    // explicitly reports "no blink" (image1 == image2), so we use the
-    // packet-reported flash bits as-is.
+    // The parser exposes V1's image1-vs-image2 arrow blink bits directly;
+    // alert count must not synthesize additional blinks.
     const uint8_t arrowFlashBits = state.flashBits;
     drawDirectionArrow(arrowsToShow, state.muted, arrowFlashBits);
 
     if (needsFullRedraw) {
-        // Force card redraw only when a full screen clear invalidated the card area.
         dirty_.cards = true;
         elementCaches_.cards.invalidate();
     }
 
     drawSecondaryAlertCards(allAlerts, alertCount, priority, state.muted);
 
-    // Region-union partial-flush dispatch (steady-state optimization).
-    //
-    // Bounded-drift safety (Valentine's Law — docs/VALENTINE_PHILOSOPHY.md,
-    // principle #7: the display must not lie by going stale). This is the one
-    // place a performance shortcut can leave the panel showing something the
-    // parser no longer believes, so the drift is bounded by construction: every
-    // outcome below either pushes what was painted or provably painted nothing,
-    // mode transitions force a full redraw, and the elements whose small-window
-    // updates are unreliable on this panel path (blink, arrow visibility, signal
-    // bars — outcome 3) are excluded from the partial route entirely rather than
-    // trusted. Worst case is a single stale frame; the next annotated frame
-    // repaints. Do not widen the partial route to those elements to save a flush.
-    //
-    // Each leaf draw function annotates its paint rect via drawnRegion_.add().
-    // DrawnRegion retains both a historical union bbox and the individual
-    // item rects. Six outcomes:
-    //
-    //   1. needsFullRedraw        → DISPLAY_FLUSH() (mode transition / reset)
-    //   2. drawnRegion_.empty()   → no flush at all (every leaf cache hit)
-    //   3. blink, arrow visibility, or signal-bar change → DISPLAY_FLUSH()
-    //                                (small-window updates for these elements
-    //                                are not reliable enough on this panel path)
-    //   4. safe split rects   → flushRegion(each item rect) when the union is
-    //                            mostly dead space and no arrow rect repainted
-    //   5. est. union flush ≥ kFullFlushUs → DISPLAY_FLUSH() (a partial push
-    //                                would cost more than the whole canvas)
-    //   6. otherwise              → flushRegion(union)
-    //
-    // Outcome 5 compares estimated cost, not area. flushRegion() costs roughly
-    // w * (48us + 0.33us*h) because it issues one row call per logical width
-    // unit, so a tall narrow-in-area region can be slower than pushing all
-    // 110,080 px. The 230x133 alert union measured 45.8 ms against 17.7 ms for
-    // a full flush while sitting at 30,590 px -- comfortably under the old
-    // 55,040 px area cap, and taken by the partial path in 20 of 22 bench runs.
-    //
-    // kPartialFlushAreaCap (50% of canvas = 55,040 px) still gates the
-    // multi-rect split below. Every region at or above it also fails the cost
-    // test, so it is now a cheaper early-out rather than the deciding rule.
+    // Leaf renderers annotate painted regions. Mode changes and unreliable
+    // small-window updates use full flushes; other frames skip, split, union,
+    // or full-flush according to the annotated regions and estimated cost.
     constexpr uint32_t kPartialFlushAreaCap =
         static_cast<uint32_t>(SCREEN_WIDTH) * static_cast<uint32_t>(SCREEN_HEIGHT) / 2;
 
@@ -935,10 +890,7 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
                          pendingExternalDraws.h(), pendingSources);
     }
 
-    // Bench replay showed the parser and framebuffer accepting every bar
-    // transition while the physical meter remained at the previous value.
-    // The same panel path already requires full pushes for changing arrows;
-    // keep signal-bar transitions off the unreliable partial-window route too.
+    // Small-window signal-bar updates are unreliable on this panel.
     const bool signalBarsPainted = (drawnRegion_.sourceMask() & DisplayDirtyRegionSource::SignalBars) != 0;
     const bool smallWindowForceFullFlush =
         blinkForceFullFlush || signalBarsPainted ||

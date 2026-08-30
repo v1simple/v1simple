@@ -8,12 +8,7 @@
 
 namespace DisplayVisualContract {
 
-// The bar count a card meter shows for one alert, selected by direction.
-//
-// This is the single definition used by the live card renderer and by the
-// preview. The preview must be incapable of disagreeing with the display, so it
-// shares this code rather than reproducing its behaviour: a change here moves
-// both at once, and there is no second implementation to drift.
+// Shared six-cell projection for live and preview renderers.
 inline uint8_t projectVrBarsToSix(uint8_t vrBars) {
     const uint8_t clamped = (vrBars > 8) ? 8 : vrBars;
     return static_cast<uint8_t>((clamped * 6u + 4u) / 8u);

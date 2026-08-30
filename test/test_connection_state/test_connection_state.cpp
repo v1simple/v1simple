@@ -1,17 +1,6 @@
 /**
- * test_connection_state.cpp - ConnectionStateModule Logic Tests
- * 
- * Tests the BLE connection state tracking logic:
- * - Connect/disconnect transitions
- * - Parser state reset on disconnect
- * - Stale data detection and recovery
- * - Request rate limiting
- * 
- * Note: We test the logic patterns directly since the module implementation
- * includes hardware headers that can't be mocked in native tests.
- *
- * Regression boundary: connection transitions, display ownership, stale-frame
- * handling, and session-generation changes cannot present obsolete state.
+ * Connection-state regression tests for transitions, display ownership,
+ * stale-frame recovery, rate limiting, and session generation.
  */
 #include <unity.h>
 

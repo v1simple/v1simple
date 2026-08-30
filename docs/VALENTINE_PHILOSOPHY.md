@@ -4,7 +4,7 @@ The design filter and behavior contract for all display, mute, and alert
 behavior in V1Simple.
 
 **This document is the maintainer's interpretation.** Part I quotes Mike
-Valentine's published principles, with sources. Parts II–V and the named
+Valentine's published principles, with sources. Parts II–III and the named
 deviation — "Valentine's Law" included — are how this project chooses to read
 and apply those principles: our name, our rules, our trade-offs. The name
 credits the source material; it does not claim his endorsement, and where this
@@ -17,8 +17,7 @@ document goes beyond what he published, the error is ours.
 This document blends two things and keeps them visibly separate:
 
 1. **Mike Valentine's published principles**, quoted from Valentine Research's own
-   pages under fair use. Every quote below carries its source URL, and every URL was
-   re-verified on 2026-08-05.
+   pages under fair use. Sources are listed below.
 2. **This project's rules**, which are our reading and extension of those
    principles. They are labelled **"Ours."**
 
@@ -27,10 +26,6 @@ by Valentine Research, Inc.** "Valentine's Law" is *our* name for a design disci
 inspired by Mike's publicly stated approach. The phrasing is ours, not a Valentine
 Research slogan. Keep it labelled that way so no one later mistakes it for one. See
 `README.md` and `THIRD_PARTY_NOTICES.md` for trademark and attribution notices.
-
-Sourcing rule for this file: a principle stays only while its citation resolves and
-supports it. This document was deleted once (`1e44f2f`, B14) for carrying claims it
-could not ground. Anything added here needs a live citation or the **Ours** label.
 
 ---
 
@@ -115,8 +110,8 @@ binding statement of the same value:
 > *(ESP Specification 3.015 §2, p.7 — hence `infV1Busy`, `respRequestNotProcessed`,
 > and TS Holdoff.)*
 
-VR built the priority rule into the wire so accessories learn to wait rather than the
-V1 learning to hurry. Our tier system is the same rule from the accessory side.
+VR built the priority rule into the wire so accessories defer while alert
+processing retains priority.
 
 ---
 
@@ -171,13 +166,7 @@ configured levels: speed mute is a standing user choice, so below the threshold
 alerts suppress to the configured level with no exceptions, and volume fade
 settles to its configured level after its delay. Within whatever volume the
 user allows, a **newly detected, distinct V1 priority alert releases any active
-fade mute and sounds again** — new threat, new sound. (An opt-in laser/Ka
-breakthrough of speed mute is a possible future feature; it is not part of this
-contract.)
-
-This split is what makes audio comfort features legitimate under principle #7 —
-the information never leaves the screen — and it is why any future feature that
-hides something *on the panel* is a different and much harder argument.
+fade mute and sounds again** — new threat, new sound.
 
 ---
 
@@ -188,84 +177,36 @@ silently drop, delay, or downgrade a real threat.
 
 | Principle | Where it lives | What it enforces |
 |---|---|---|
-| Never downgrade a live threat (#6, corollary) | `src/modules/display/render_frame_composer.cpp`, `synthesizeAlpPrimaryState()` | A live ALP laser event composes with `muted = false`, so every downstream renderer paints the same full-urgency frame. A refactor cannot reintroduce mute on the laser path. |
+| Never downgrade a live threat (#6, corollary) | `src/modules/display/render_frame_composer.cpp`, `synthesizeAlpPrimaryState()` | A live ALP laser event composes with `muted = false` before downstream rendering. |
 | Direction is truth (#2) | `src/display_arrow.cpp`, the ALP color-override block | Laser-direction color overrides never suppress the V1's own radar-band direction arrows. Each source keeps its authoritative direction. |
-| The display must not lie by going stale (#7) | `src/display_update.cpp`, the region-union partial-flush dispatch | Partial-flush optimizations are bounded so the worst case is one stale frame; unreliable small-window paths (blink, arrow visibility, signal bars) force a full push, and mode transitions force a full redraw. |
+| The display must not lie by going stale (#7) | `src/display_update.cpp`, the region-union partial-flush dispatch | Blink, arrow-visibility, and signal-bar changes bypass the partial route, while mode transitions force a full redraw. |
 | Fidelity to the V1 (#1, #7) | `test/test_protocol_spec_conformance/test_protocol_spec_conformance.cpp`, user-bytes section | Pins the V1 profile command bits. A wrong row means a profile push could silently disable a detection band. |
-
-**The rule of thumb when adding one:** if a future maintainer could "optimize" your
-code in a way that hides, delays, or misdirects a real alert, leave a `Valentine's
-Law` note explaining why the slower or safer path is intentional.
-
----
-
-## Part IV — The priority stack
-
-The tier system is the Law applied to a real-time system. Higher tiers may
-never be blocked or starved by lower ones.
-
-1. **V1 connectivity** — you cannot warn about a threat you never received.
-2. **BLE ingest/drain** — latency here is a missed Instant-On alert (#6).
-3. **Display update** — the driver's honest, current picture (#2, #7).
-4. **Audio** — best-effort; must not block the above.
-5. **Metrics** — bounded time, degrade gracefully.
-6. **Wi-Fi / web UI** — maintenance mode only, off by default.
-7. **Logging / persistence** — drops OK, corruption not; never blocks the above.
-
----
-
-## Part V — The review checklist
-
-1. **Does this risk hiding, delaying, or misdirecting a real alert?** If yes, stop.
-   Take the safer path or add a `Valentine's Law` guard and a test.
-2. **Does it touch Tier 0?** Then it must not add latency, jitter, or disconnects.
-   Justify it with a measurement.
-3. **Does it downgrade urgency** — mute, dim, defer, suppress — on a live-threat path?
-   Only if the threat is genuinely gone. Never as a side effect of a rendering or
-   performance shortcut. If it is audio-only and stays within the user's configured
-   volumes, say so explicitly — the speaker is the user's channel, the screen is not.
-4. **Is the driver still deciding?** Surface the information; don't make the "probably
-   nothing" call for them.
-5. **Can you measure the claim?** "If measurements aren't repeatable, they aren't
-   measurements."
-
-When in doubt, favor **showing the threat**. That is the whole point of the instrument.
 
 ---
 
 ## Named deviation
 
 **Ours.** **ALP warm-up display suppression — deliberate.**
-`src/modules/alp/alp_runtime_module.cpp` flags some laser sessions as `WARM_UP`
-and withholds them from the display, on heuristics (boot envelope, preamble
-window, heartbeat mode bytes). It is the one place the firmware decides a live
-laser event is not worth showing, so it is enumerated here rather than quietly
-kept.
+`src/modules/alp/alp_runtime_module.cpp` flags unconfirmed laser sessions as
+`WARM_UP` and withholds them from the display based on the boot envelope,
+preamble window, and heartbeat mode bytes.
 
-**Why it stands:** bench reads of the wire show false laser signals during ALP
-start-up, and the window is short. Principle #5 obliges us to report the RF
-environment — but a signal the accessory emits at itself while booting is not
-the environment. The unmarking paths keep it honest: an observed LID deploy or
-a DLI/LID engage promotes the session to real immediately.
+The gate treats boot-envelope, preamble, and heartbeat-mode patterns as
+unconfirmed startup traffic. Confirmation can come from a gun ID or LID deploy;
+heartbeat-mode confirmation remains subject to the explicit boot-envelope and
+mode gates in the runtime module.
 
-**Pinned:** `test/test_alp_runtime` holds the conformance suite — the flag
-conditions (no-heartbeat boot, warm-up heartbeat mode, idle-mode trigger,
-preamble window), every promotion path (gun ID, LID deploy, 02→04 engage,
-targeted heartbeat), the 35 s envelope expiry, and the display suppression
-itself (`hasLaserEvent()` stays false while flagged). A refactor cannot widen
-the window without failing those tests.
+`test/test_alp_runtime` covers the warm-up flag conditions, confirmation gates,
+35-second envelope, and display suppression while a session remains flagged.
 
 ---
 
 ## Sources
 
-Valentine Research, quoted under fair use as nominative reference. All re-verified
-2026-08-05.
+Valentine Research, quoted under fair use as nominative reference.
 
 - About Radar Detectors — https://www.valentine1.com/v1-info/about-radar-detectors/
 - Evaluating Radar Detector Tests — https://www.valentine1.com/v1-info/tech-reports/evaluating-radar-detector-tests/
-- The V1 Difference — https://www.valentine1.com/the-v1-difference/
-- About Us — https://www.valentine1.com/about-us/
 
 Specification, as distributed in VR's official repositories:
 

@@ -1,24 +1,7 @@
 /**
- * Display Driver for V1 Gen2 Radar Detector Interface
- * Target: Waveshare ESP32-S3-Touch-LCD-3.49 (172x640 LCD, AXS15231B)
- *
- * Features:
- * - Multiple color themes (Standard/HighContrast/Stealth/Business)
- * - Custom 7-segment and 14-segment displays
- * - Live alert visualization with signal bars
- * - Status indicators (WiFi, BLE proxy, mute)
- *
- * Display Modes:
- * - Idle/Resting: Logo or blank screen
- * - Alert: Frequency, band, signal strength, direction
- * - Status: Connection info, bogey count
- *
- * Threading: All draw operations must be called from main thread
- * Display updates throttled to ~10 FPS max for performance
- *
- * Ownership: production firmware uses a single global V1Display instance.
- * Some hot-path render tracking is still singleton-scoped behind this class
- * so runtime behavior is singleton-oriented even though the API is object-shaped.
+ * Waveshare ESP32-S3-Touch-LCD-3.49 display driver.
+ * Drawing is main-loop-only and limited to 20 Hz. Production owns one global
+ * instance, including singleton-scoped hot-path render tracking.
  */
 
 #pragma once

@@ -1,6 +1,3 @@
-/**
- * Boot-time diagnostics and reset-reason handling.
- */
 
 #include "main_internals.h"
 #include "display.h"
@@ -15,7 +12,6 @@
 #include <nvs_flash.h>
 #include <nvs.h>
 
-// --- resetReasonToString ---
 
 const char* resetReasonToString(esp_reset_reason_t reason) {
     switch (reason) {
@@ -44,9 +40,7 @@ const char* resetReasonToString(esp_reset_reason_t reason) {
     }
 }
 
-// --- logPanicBreadcrumbs ---
 
-// PANIC BREADCRUMBS: Log heap stats + coredump info on crash recovery
 void logPanicBreadcrumbs() {
     esp_reset_reason_t reason = esp_reset_reason();
     bool isCrash =
@@ -58,14 +52,13 @@ void logPanicBreadcrumbs() {
     Serial.println("\n!!! CRASH RECOVERY DETECTED !!!");
     Serial.printf("Reset reason: %s\n", resetReasonToString(reason));
 
-    // Log current heap stats (post-crash, but helpful for baseline)
+    // Post-reset heap values are baseline only; the coredump holds the crash state.
     uint32_t freeHeap = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
     uint32_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
     uint32_t minFreeHeap = heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT);
     Serial.printf("Heap now: free=%lu, largest=%lu, minEver=%lu\n", (unsigned long)freeHeap,
                   (unsigned long)largestBlock, (unsigned long)minFreeHeap);
 
-    // Check for coredump
     esp_core_dump_summary_t summary;
     esp_err_t err = esp_core_dump_get_summary(&summary);
     if (err == ESP_OK) {
@@ -74,7 +67,6 @@ void logPanicBreadcrumbs() {
         Serial.printf("  Exception cause: %lu\n", (unsigned long)summary.ex_info.exc_cause);
         Serial.printf("  Exception PC: 0x%08lx\n", (unsigned long)summary.exc_pc);
 
-        // Print backtrace if available
         if (summary.exc_bt_info.depth > 0) {
             Serial.print("  Backtrace: ");
             for (int i = 0; i < summary.exc_bt_info.depth && i < 16; i++) {
@@ -88,17 +80,8 @@ void logPanicBreadcrumbs() {
 
     Serial.println("!!! END CRASH RECOVERY INFO !!!\n");
 
-    // Best-effort: Try to write panic.txt to LittleFS (SD not mounted yet)
-    // This runs BEFORE storage init, so we use LittleFS directly
-    //
-    // FILE_APPEND, not FILE_WRITE. FILE_WRITE is "w" -- it truncates -- so every
-    // panic used to erase the one before it. A device that panics three times in
-    // a row kept only the third record, which is exactly the case where the
-    // pattern across crashes is the thing you need to see.
-    //
-    // Capped so a crash loop cannot fill LittleFS: once the file passes the cap
-    // it is rotated to panic.prev.txt and started fresh, keeping the two most
-    // recent generations.
+    // Storage is not initialized yet. Append and rotate in LittleFS to retain
+    // recent crash history without letting a crash loop fill the partition.
     static constexpr size_t kPanicLogMaxBytes = 8192;
     if (fsmount::mountStorage()) { // never auto-format during panic logging
         if (LittleFS.exists("/panic.txt")) {
@@ -115,9 +98,7 @@ void logPanicBreadcrumbs() {
 
         File f = LittleFS.open("/panic.txt", FILE_APPEND);
         if (f) {
-            // Boot id is not available here -- logPanicBreadcrumbs() runs before
-            // storage init and before nextBootId(). Records remain ordered by
-            // append position.
+            // Boot IDs are unavailable before storage init; append order preserves sequence.
             f.printf("--- CRASH at boot (millis=%lu)\n", millis());
             f.printf("Reset reason: %s\n", resetReasonToString(reason));
             f.printf("Heap: free=%lu, largest=%lu, minEver=%lu\n", (unsigned long)freeHeap, (unsigned long)largestBlock,
@@ -144,9 +125,7 @@ void logPanicBreadcrumbs() {
     }
 }
 
-// --- nvsHealthCheck ---
 
-// Log NVS statistics without mutating settings namespaces during early boot.
 void nvsHealthCheck() {
     nvs_stats_t stats;
     if (nvs_get_stats(NULL, &stats) == ESP_OK) {
@@ -168,7 +147,6 @@ void nvsHealthCheck() {
     }
 }
 
-// --- nextBootId ---
 
 uint32_t nextBootId() {
     Preferences prefs;
@@ -181,19 +159,8 @@ uint32_t nextBootId() {
     return stored ? bootId : 0;
 }
 
-// --- clean-shutdown marker ---
-//
-// A small boolean in the "v1boot" NVS namespace used to distinguish a graceful
-// power-off (long-press → prepareForShutdown → markCleanShutdown → powerOff)
-// from an unexpected power cut (car ignition drop, cable yank, brownout).
-//
-// Semantics:
-//   - readAndResetCleanShutdownMarker() is called once at boot. It returns the
-//     previous value and immediately writes false, so the default assumption
-//     during the next run is "we died uncleanly." prepareForShutdown() flips
-//     it to true, and an aborted hardware tail immediately restores false.
-//   - If the marker reads false at boot, the previous run ended uncleanly.
-//     This is the normal case under car-power mode with no hold-up.
+// Reading clears the marker so an unexpected power loss defaults to unclean.
+// Graceful portable shutdown sets it; car-power loss normally leaves it clear.
 
 bool readAndResetCleanShutdownMarker() {
     Preferences prefs;
@@ -228,12 +195,8 @@ void markUncleanShutdown() {
     }
 }
 
-// --- maintenance boot marker ---
-//
-// This is intentionally one-shot. Normal runtime must not bring WiFi up late
-// after BLE/display/SD have fragmented internal DMA memory. A user
-// gesture writes this marker and reboots; early setup consumes it and takes a
-// separate maintenance path that skips normal V1/BLE scan/runtime work.
+// Maintenance is a one-shot boot path: late WiFi startup after normal
+// BLE/display/SD initialization may lack contiguous internal DMA memory.
 
 bool requestMaintenanceBoot() {
     Preferences prefs;
@@ -256,10 +219,7 @@ bool readAndClearMaintenanceBootRequest() {
     return requested && cleared;
 }
 
-// --- fatalBootError ---
 
-// Report a fatal boot error, wait, and restart. displayAvailable indicates
-// whether display.begin() succeeded.
 void fatalBootError(V1Display& display, const char* message, bool displayAvailable) {
     Serial.printf("FATAL: %s\n", message);
 
@@ -267,13 +227,11 @@ void fatalBootError(V1Display& display, const char* message, bool displayAvailab
         display.showDisconnected(); // Clear screen with base frame
         Serial.println("Showing error on display, will restart in 10 seconds...");
 
-        // Keep the error visible during the restart countdown.
         for (int i = 10; i > 0; i--) {
             Serial.printf("Restarting in %d...\n", i);
             delay(1000);
         }
     } else {
-        // No display - just wait and restart
         Serial.println("Display unavailable. Restarting in 10 seconds...");
         delay(10000);
     }

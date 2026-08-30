@@ -1,6 +1,3 @@
-/**
- * Valentine One Gen2 command builders and send helpers.
- */
 
 #include "ble_client.h"
 #include "ble_internals.h"
@@ -9,7 +6,6 @@
 #include <atomic>
 #include <cstring>
 
-// --- checksum helper (used only by command builders) ---
 
 static inline uint8_t calcV1Checksum(const uint8_t* data, size_t len) {
     uint8_t sum = 0;
@@ -19,7 +15,6 @@ static inline uint8_t calcV1Checksum(const uint8_t* data, size_t len) {
     return sum;
 }
 
-// --- command send primitives ---
 
 bool V1BLEClient::sendCommand(const uint8_t* data, size_t length) {
     return sendCommandWithResult(data, length) == SendResult::SENT;
@@ -39,7 +34,6 @@ SendResult V1BLEClient::sendCommandWithResult(const uint8_t* data, size_t length
     // performed on the same object.
     NimBLERemoteCharacteristic* const commandChar = pCommandChar_;
 
-    // Hard failures first - these should not be retried
     if (!isConnected() || !commandChar) {
         return SendResult::FAILED;
     }
@@ -47,8 +41,7 @@ SendResult V1BLEClient::sendCommandWithResult(const uint8_t* data, size_t length
         return SendResult::FAILED;
     }
 
-    // Light pacing: non-blocking timestamp gate
-    // Return NOT_YET if too soon - caller retains packet for retry
+    // Five-millisecond non-blocking gate; the caller retains NOT_YET packets.
     static std::atomic<uint32_t> lastCommandMs{0};
     uint32_t nowMs = millis();
     uint32_t last = lastCommandMs.load(std::memory_order_relaxed);
@@ -67,14 +60,12 @@ SendResult V1BLEClient::sendCommandWithResult(const uint8_t* data, size_t length
     }
 
     if (!ok) {
-        // Write failed after isConnected() check - likely transient (BLE busy/queue full)
-        // Return NOT_YET to retry; if connection truly dead, next isConnected() will catch it
+        // A post-check write failure may be transient; the next retry rechecks connection state.
         return SendResult::NOT_YET;
     }
     return SendResult::SENT;
 }
 
-// --- V1 protocol command builders ---
 
 bool V1BLEClient::requestAlertData() {
     if (!isConnected()) {
@@ -84,13 +75,11 @@ bool V1BLEClient::requestAlertData() {
     const uint32_t requestGeneration = sessionGeneration_.load(std::memory_order_acquire);
     const uint32_t requestNowMs = static_cast<uint32_t>(millis());
     if (!alertDataRequestGate_.permits(requestGeneration, requestNowMs)) {
-        // The stream is already requested for this session. Treat the
-        // cross-owner duplicate as satisfied rather than as a transport error.
+        // A cross-owner duplicate is satisfied, not a transport failure.
         return true;
     }
 
-    // Packet structure intentionally explicit (not abstracted). Matches V1
-    // protocol docs exactly; easier to verify than a builder pattern.
+    // Keep protocol bytes explicit for direct verification.
     uint8_t packet[] = {ESP_PACKET_START,
                         static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),
                         static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),
@@ -103,8 +92,7 @@ bool V1BLEClient::requestAlertData() {
 
     const bool sent = sendCommand(packet, sizeof(packet));
     if (sent) {
-        // Record after the write succeeds so the minimum interval is measured
-        // conservatively from an actual transmission, not an attempted one.
+        // Measure the retry interval from a successful transmission.
         alertDataRequestGate_.recordSuccessfulSend(requestGeneration, static_cast<uint32_t>(millis()));
     }
     return sent;
@@ -131,8 +119,7 @@ void V1BLEClient::onV1FirmwareVersionReceived(uint32_t version) {
 }
 
 bool V1BLEClient::requestAllVolume() {
-    // REQALLVOLUME 0x3C uses an empty payload. V1 replies
-    // with RESPALLVOLUME 0x3D containing [main, muted, savedMain, savedMuted].
+    // The empty request returns [main, muted, savedMain, savedMuted].
     uint8_t packet[] = {ESP_PACKET_START,
                         static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),
                         static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),
@@ -151,17 +138,9 @@ bool V1BLEClient::setDisplayOn(bool on) {
         return false;
     }
 
-    // For dark mode, we need to use reqTurnOffMainDisplay with proper payload
-    // Mode 0 = completely off, Mode 1 = only BT icon visible
-    // For "dark mode on" we want display OFF, for "dark mode off" we want display ON
-    //
-    // Packet format derived from v1g2-t4s3 reference implementation:
-    // - reqTurnOnMainDisplay: 7-byte packet with payloadLength=1, no actual payload data
-    // - reqTurnOffMainDisplay: 8-byte packet with payloadLength=2, only 1 mode byte in payload
+    // Protocol quirk: ON has no payload; OFF declares length 2 but carries one mode byte.
 
     if (on) {
-        // Turn display back ON (exit dark mode)
-        // Packet: AA DA E4 33 01 [checksum] AB  (7 bytes total)
         uint8_t packet[] = {
             ESP_PACKET_START,                                // [0] 0xAA
             static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1), // [1] 0xDA
@@ -172,15 +151,10 @@ bool V1BLEClient::setDisplayOn(bool on) {
             ESP_PACKET_END                                   // [6] 0xAB
         };
 
-        // Calculate checksum over bytes 0-4 (5 bytes)
         packet[5] = calcV1Checksum(packet, 5);
 
         return sendCommand(packet, sizeof(packet));
     } else {
-        // Turn display OFF (enter dark mode)
-        // Per Kenny's implementation: payloadLength=2 but only 1 actual payload byte
-        // Packet: AA DA E4 32 02 [mode] [checksum] AB  (8 bytes total)
-        // mode=0: completely dark, mode=1: only BT icon visible
         uint8_t mode = 0x00; // Completely dark
         uint8_t packet[] = {
             ESP_PACKET_START,                                // [0] 0xAA
@@ -193,7 +167,6 @@ bool V1BLEClient::setDisplayOn(bool on) {
             ESP_PACKET_END                                   // [7] 0xAB
         };
 
-        // Calculate checksum over bytes 0-5 (6 bytes)
         packet[6] = calcV1Checksum(packet, 6);
 
         return sendCommand(packet, sizeof(packet));
@@ -210,8 +183,7 @@ SendResult V1BLEClient::setMuteResult(bool muted) {
     }
 
     uint8_t packetId = muted ? PACKET_ID_MUTE_ON : PACKET_ID_MUTE_OFF;
-    // reqMuteOn/Off has no payload (payload length = 1, no actual payload bytes needed per V1 protocol)
-    // Packet: AA DA E4 34/35 01 [checksum] AB
+    // Empty-payload commands encode their length as 1.
     uint8_t packet[] = {
         ESP_PACKET_START,                                // [0] 0xAA
         static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1), // [1] 0xDA
@@ -232,7 +204,6 @@ bool V1BLEClient::setMode(uint8_t mode) {
         return false;
     }
 
-    // Packet ID 0x36 = REQCHANGEMODE
     // Mode: 0x01 = All Bogeys, 0x02 = Logic, 0x03 = Advanced Logic
     uint8_t packet[] = {
         ESP_PACKET_START,                                // [0] 0xAA
@@ -245,7 +216,6 @@ bool V1BLEClient::setMode(uint8_t mode) {
         ESP_PACKET_END                                   // [7] 0xAB
     };
 
-    // Calculate checksum over bytes 0-5 (6 bytes)
     packet[6] = calcV1Checksum(packet, 6);
 
     return sendCommand(packet, sizeof(packet));
@@ -267,14 +237,12 @@ SendResult V1BLEClient::setVolumeResult(uint8_t mainVolume, uint8_t mutedVolume)
         return SendResult::FAILED;
     }
 
-    // Clamp to valid range (0-9)
     if (mainVolume > 9)
         mainVolume = 9;
     if (mutedVolume > 9)
         mutedVolume = 9;
 
-    // Packet ID 0x39 = REQWRITEVOLUME
-    // Payload: mainVolume, mutedVolume (currentVolume), aux0
+    // REQWRITEVOLUME payload is [main, muted, aux0].
     uint8_t packet[] = {
         ESP_PACKET_START,                                // [0] 0xAA
         static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1), // [1] 0xDA
@@ -288,16 +256,13 @@ SendResult V1BLEClient::setVolumeResult(uint8_t mainVolume, uint8_t mutedVolume)
         ESP_PACKET_END                                   // [9] 0xAB
     };
 
-    // Calculate checksum over bytes 0-7 (8 bytes)
     packet[8] = calcV1Checksum(packet, 8);
 
     return sendCommandWithResult(packet, sizeof(packet));
 }
 
-// --- user bytes read/write ---
 
 bool V1BLEClient::requestUserBytes() {
-    // Build packet: AA D0+dest E0+src 11 01 [checksum] AB
     uint8_t packet[] = {ESP_PACKET_START,
                         static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),
                         static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),
@@ -324,7 +289,6 @@ bool V1BLEClient::writeUserBytes(const uint8_t* bytes) {
     uint8_t preparedBytes[V1FirmwareCompat::kUserByteCount];
     V1FirmwareCompat::prepareUserBytesForWrite(bytes, preparedBytes, firmwareVersion);
 
-    // Build packet: AA D0+dest E0+src 13 07 [6 bytes] [checksum] AB
     uint8_t packet[13];
     packet[0] = ESP_PACKET_START;
     packet[1] = static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1);
@@ -352,19 +316,17 @@ V1BLEClient::WriteVerifyResult V1BLEClient::writeUserBytesVerified(const uint8_t
     for (int attempt = 1; attempt <= maxRetries; attempt++) {
         if (writeUserBytes(bytes)) {
             Serial.printf("[VerifyPush] Write command sent successfully (attempt %d/%d)\n", attempt, maxRetries);
-            // Request an asynchronous read-back without extending this call.
             requestUserBytes();
             return VERIFY_OK;
         }
         Serial.printf("[VerifyPush] Write attempt %d/%d failed, retrying...\n", attempt, maxRetries);
-        // BLE write failures are immediate, so retries do not need a delay.
+        // BLE write failures are immediate, so retries need no delay.
     }
 
     Serial.println("[VerifyPush] All write attempts failed");
     return VERIFY_WRITE_FAILED;
 }
 
-// --- user bytes verification ---
 
 void V1BLEClient::startUserBytesVerification(const uint8_t* expected) {
     if (!expected) {

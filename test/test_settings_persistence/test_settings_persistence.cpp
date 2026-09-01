@@ -2116,9 +2116,16 @@ void test_fresh_install_seeds_six_physical_defaults() {
 }
 
 void test_v18_backup_eight_segment_theme_collapses_to_six() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
     SettingsManager manager(storage, profiles);
     JsonDocument doc;
     doc["_version"] = 18;
+    JsonObject unusedWifiSlot = doc["wifiStaSlots"].to<JsonArray>().add<JsonObject>();
+    unusedWifiSlot["index"] = 2;
+    unusedWifiSlot["ssid"] = "";
+    unusedWifiSlot["priority"] = 2;
     const uint16_t segments[8] = {0x1001, 0x1002, 0x1003, 0x1004, 0x1005, 0x1006, 0x1007, 0x1008};
     for (int i = 0; i < 8; ++i) {
         char key[16];

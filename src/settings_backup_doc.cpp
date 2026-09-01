@@ -667,7 +667,7 @@ bool validateBackupNetworkCredentialFields(const JsonDocument& doc) {
             }
             seen[rawIndex] = true;
             const String ssid = slot["ssid"].as<String>();
-            if (ssid.length() == 0 || sanitizeWifiClientSsidValue(ssid) != ssid ||
+            if (sanitizeWifiClientSsidValue(ssid) != ssid ||
                 (!slot["label"].isNull() && !slot["label"].is<const char*>()) ||
                 (!slot["priority"].isNull() && !slot["priority"].is<int>()) ||
                 (!slot["lastConnectedAtSec"].isNull() && !slot["lastConnectedAtSec"].is<uint32_t>() &&

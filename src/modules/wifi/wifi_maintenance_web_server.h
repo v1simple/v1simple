@@ -32,9 +32,8 @@ class WifiMaintenanceWebServer final : public WebServer {
                 return;
             }
             // NetworkClient::localIP() is backed by getsockname() in the
-            // pinned framework, so this is the destination/interface address
-            // of the accepted TCP socket. Reject STA/LAN clients before any
-            // availability read, header peek, rate admission, or parser call.
+            // pinned framework, so admit only the maintenance AP or current
+            // saved-network address before parsing the request.
             const uint32_t liveStaIp = liveStaIp_ ? liveStaIp_() : 0;
             if (!WifiMaintenanceInterfacePolicy::allows(static_cast<uint32_t>(_currentClient.localIP()),
                                                          maintenanceApIp_, liveStaIp)) {

@@ -211,7 +211,7 @@ describe('profiles route page', () => {
         unmount();
     });
 
-    it('does not report success until the refreshed catalog contains the saved profile', async () => {
+    it('uses the confirmed save to update a catalog that was initially stale', async () => {
         installDefaultFetch([
             { method: 'GET', match: '/api/v1/profiles', respond: jsonResponse({ profiles: [] }) },
             { method: 'POST', match: '/api/v1/profile', respond: jsonResponse({ success: true }) }
@@ -226,8 +226,8 @@ describe('profiles route page', () => {
         });
         await fireEvent.click(within(modal).getByRole('button', { name: /^Save$/i }));
 
-        await screen.findByText('Save was not confirmed by the refreshed profile catalog');
-        expect(screen.queryByText('Profile "Unconfirmed" saved')).not.toBeInTheDocument();
+        await screen.findByText('Profile "Unconfirmed" saved');
+        expect(screen.getByText('Unconfirmed')).toBeInTheDocument();
         unmount();
     });
 

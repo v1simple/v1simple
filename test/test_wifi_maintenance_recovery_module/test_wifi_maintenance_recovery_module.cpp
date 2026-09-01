@@ -178,14 +178,17 @@ void test_maintenance_auto_connect_retries_failed_storage_resolution_then_starts
     TEST_ASSERT_EQUAL_INT(1, scanCalls);
 }
 
-void test_maintenance_http_interface_admission_allows_only_initialized_ap_destination() {
+void test_maintenance_http_interface_admission_allows_initialized_ap_and_sta_destinations() {
     constexpr uint32_t apIp = 0x0523A8C0u;
     constexpr uint32_t staIp = 0x6401A8C0u;
+    constexpr uint32_t otherIp = 0x6E01A8C0u;
 
     TEST_ASSERT_TRUE(WifiMaintenanceInterfacePolicy::allows(apIp, apIp, staIp));
-    TEST_ASSERT_FALSE(WifiMaintenanceInterfacePolicy::allows(staIp, apIp, staIp));
+    TEST_ASSERT_TRUE(WifiMaintenanceInterfacePolicy::allows(apIp, apIp, 0));
+    TEST_ASSERT_TRUE(WifiMaintenanceInterfacePolicy::allows(staIp, apIp, staIp));
+    TEST_ASSERT_FALSE(WifiMaintenanceInterfacePolicy::allows(otherIp, apIp, staIp));
     TEST_ASSERT_FALSE(WifiMaintenanceInterfacePolicy::allows(0, apIp, staIp));
-    TEST_ASSERT_FALSE(WifiMaintenanceInterfacePolicy::allows(apIp, 0, staIp));
+    TEST_ASSERT_FALSE(WifiMaintenanceInterfacePolicy::allows(staIp, 0, staIp));
     TEST_ASSERT_FALSE(WifiMaintenanceInterfacePolicy::allows(apIp, apIp, apIp));
     TEST_ASSERT_TRUE(WifiMaintenanceInterfacePolicy::hasAddressCollision(apIp, apIp));
     TEST_ASSERT_FALSE(WifiMaintenanceInterfacePolicy::hasAddressCollision(apIp, 0));
@@ -530,7 +533,7 @@ int main() {
     RUN_TEST(test_maintenance_with_saved_credentials_uses_ap_sta_auto_connect);
     RUN_TEST(test_normal_setup_preserves_saved_sta_connectivity);
     RUN_TEST(test_maintenance_auto_connect_retries_failed_storage_resolution_then_starts);
-    RUN_TEST(test_maintenance_http_interface_admission_allows_only_initialized_ap_destination);
+    RUN_TEST(test_maintenance_http_interface_admission_allows_initialized_ap_and_sta_destinations);
     RUN_TEST(test_physical_auto_reconnect_is_reconciled_into_app_state);
     RUN_TEST(test_true_link_loss_waits_then_restarts_candidate_scan);
     RUN_TEST(test_explicit_disconnect_zero_deadline_never_auto_rejoins);

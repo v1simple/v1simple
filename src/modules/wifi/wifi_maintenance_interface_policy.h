@@ -15,7 +15,7 @@ inline bool allows(const uint32_t acceptedLocalIp, const uint32_t maintenanceApI
     // When AP and STA have the same address, getsockname() cannot identify the
     // ingress interface. Fail closed for every socket until STA is removed.
     return !hasAddressCollision(maintenanceApIp, liveStaIp) && maintenanceApIp != 0 &&
-           acceptedLocalIp == maintenanceApIp;
+           (acceptedLocalIp == maintenanceApIp || (liveStaIp != 0 && acceptedLocalIp == liveStaIp));
 }
 
 } // namespace WifiMaintenanceInterfacePolicy

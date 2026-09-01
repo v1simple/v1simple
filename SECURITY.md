@@ -13,10 +13,10 @@ The repository declares no support window or response-time promise.
 ## Current device security model
 
 The maintenance web/API interface is available only after physical entry into
-maintenance boot and only through the device's WPA-protected access point;
-requests arriving through the station/LAN interface are rejected. Read
-endpoints rely on access-point membership and have no additional application
-authentication. Mutating requests also require maintenance boot and the fixed
+maintenance boot. It is reachable through the device's WPA-protected access
+point and, while connected, through its saved-network address. There is no
+additional application authentication, so other devices on that LAN can access
+it during the maintenance session. Mutating requests also require the fixed
 `X-V1Simple-Request` request-shape header, which is not authentication. Change
 the published default access-point password during first setup. A maintenance
 session expires after 10 minutes without UI activity and after 30 minutes at

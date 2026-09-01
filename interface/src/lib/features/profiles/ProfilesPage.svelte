@@ -56,6 +56,14 @@
         }
     }
 
+    function recordSavedProfile(name, description, displayOn) {
+        const saved = { name, description, displayOn: displayOn ?? true };
+        const found = profiles.some((profile) => profile.name === name);
+        profiles = found
+            ? profiles.map((profile) => (profile.name === name ? saved : profile))
+            : [...profiles, saved];
+    }
+
     onMount(() => {
         void fetchProfiles();
     });
@@ -115,14 +123,11 @@
 
             if (res.ok) {
                 const canonicalName = validatedName.canonical;
-                const refreshed = await fetchProfiles();
-                if (!refreshed || !profiles.some((profile) => profile.name === canonicalName)) {
-                    message = {
-                        type: 'error',
-                        text: 'Save was not confirmed by the refreshed profile catalog'
-                    };
-                    return;
-                }
+                recordSavedProfile(
+                    canonicalName,
+                    payload.description,
+                    payload.displayOn
+                );
                 saveName = canonicalName;
                 message = { type: 'success', text: `Profile "${canonicalName}" saved` };
                 showSaveDialog = false;
@@ -228,14 +233,7 @@
             });
 
             if (res.ok) {
-                const refreshed = await fetchProfiles();
-                if (!refreshed || !profiles.some((profile) => profile.name === currentProfile.name)) {
-                    message = {
-                        type: 'error',
-                        text: 'Save was not confirmed by the refreshed profile catalog'
-                    };
-                    return;
-                }
+                recordSavedProfile(currentProfile.name, payload.description, payload.displayOn);
                 message = { type: 'success', text: `Profile "${currentProfile.name}" saved` };
                 currentProfile = {
                     ...currentProfile,

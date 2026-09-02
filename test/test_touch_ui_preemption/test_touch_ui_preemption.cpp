@@ -15,7 +15,7 @@
 #include "../mocks/Arduino.h"
 #include "../mocks/display.h"
 #include "../mocks/settings.h"
-#include "../mocks/touch_handler.h"
+#include "../../src/touch_handler.cpp"
 
 #ifndef ARDUINO
 SerialClass Serial;
@@ -55,11 +55,26 @@ void requestMaintenanceBoot(void* /*ctx*/) {
     gPersistCallsAtMaintenanceRequest = gSettings.saveDeferredBackupCalls;
 }
 
+bool processInput(unsigned long now, bool bootPressed) {
+    mockMillis = now;
+    return gModule.process(now, bootPressed);
+}
+
+void queueTouch(uint16_t x, uint16_t y, uint8_t points = 1) {
+    std::vector<uint8_t> data(32, 0);
+    data[1] = points;
+    data[2] = x >> 8;
+    data[3] = x;
+    data[4] = y >> 8;
+    data[5] = y;
+    Wire.queueRequestFrom(data.size(), data);
+}
+
 // Short BOOT press/release: the module's documented enter-adjust gesture.
 unsigned long enterAdjustMode(unsigned long now) {
-    gModule.process(now, true);
+    processInput(now, true);
     now += 400; // >= BOOT_DEBOUNCE_MS, < MAINTENANCE_BOOT_LONG_PRESS_MS
-    gModule.process(now, false);
+    processInput(now, false);
     return now;
 }
 
@@ -68,7 +83,10 @@ unsigned long enterAdjustMode(unsigned long now) {
 void setUp() {
     gModule = TouchUiModule{};
     gDisplay.reset();
-    gTouch.reset();
+    mockMillis = 0;
+    Wire.resetMock();
+    gTouch = TouchHandler{};
+    TEST_ASSERT_TRUE(gTouch.begin());
     gSettings = SettingsManager{};
     gSettings.settings.brightness = 180;
     gSettings.settings.voiceVolume = 60;
@@ -99,7 +117,7 @@ void test_preempt_is_noop_when_menu_closed() {
 void test_preempt_closes_active_adjust_session() {
     unsigned long now = enterAdjustMode(1000);
     TEST_ASSERT_EQUAL(1, gDisplay.showSettingsSlidersCalls);
-    TEST_ASSERT_TRUE(gModule.process(now + 10, false)); // sliders own the loop
+    TEST_ASSERT_TRUE(processInput(now + 10, false)); // sliders own the loop
 
     TEST_ASSERT_TRUE(gModule.preemptForLiveAlert());
 
@@ -116,7 +134,7 @@ void test_preempt_closes_active_adjust_session() {
 
     // The menu stays closed: the loop is no longer consumed, and nothing
     // re-enters adjust mode without a fresh user gesture.
-    TEST_ASSERT_FALSE(gModule.process(now + 20, false));
+    TEST_ASSERT_FALSE(processInput(now + 20, false));
     TEST_ASSERT_EQUAL(1, gDisplay.showSettingsSlidersCalls);
 }
 
@@ -134,11 +152,11 @@ void test_preempt_is_single_shot() {
 void test_maintenance_long_press_saves_active_slider_edits_before_request() {
     const unsigned long now = enterAdjustMode(1000);
     gDisplay.activeSliderFromTouch = 0;
-    gTouch.queueTouch(600, 100);
-    TEST_ASSERT_TRUE(gModule.process(now + 10, false));
+    queueTouch(600, 100);
+    TEST_ASSERT_TRUE(processInput(now + 10, false));
 
-    TEST_ASSERT_TRUE(gModule.process(now + 100, true));
-    TEST_ASSERT_FALSE(gModule.process(now + 4200, false));
+    TEST_ASSERT_TRUE(processInput(now + 100, true));
+    TEST_ASSERT_FALSE(processInput(now + 4200, false));
 
     TEST_ASSERT_EQUAL(1, gMaintenanceBootCalls);
     TEST_ASSERT_EQUAL(80, gBrightnessAtMaintenanceRequest);
@@ -148,28 +166,40 @@ void test_maintenance_long_press_saves_active_slider_edits_before_request() {
     TEST_ASSERT_EQUAL(0, gSettings.requestDeferredPersistCalls);
 }
 
+void test_invalid_coordinates_cannot_edit_slider_values() {
+    const unsigned long now = enterAdjustMode(1000);
+    gDisplay.activeSliderFromTouch = 0;
+    queueTouch(514, 514);
+    TEST_ASSERT_TRUE(processInput(now + 100, false));
+    TEST_ASSERT_FALSE(gTouch.isTouchActive());
+    TEST_ASSERT_EQUAL_INT(0, gDisplay.updateSettingsSlidersCalls);
+    TEST_ASSERT_TRUE(gModule.preemptForLiveAlert());
+    TEST_ASSERT_EQUAL_UINT8(180, gSettings.get().brightness);
+    TEST_ASSERT_EQUAL_UINT8(60, gSettings.get().voiceVolume);
+}
+
 void test_released_boot_never_requests_maintenance() {
     for (unsigned long now = 1000; now <= 12000; now += 100) {
-        gModule.process(now, false);
+        processInput(now, false);
     }
     TEST_ASSERT_EQUAL(0, gMaintenanceBootCalls);
     TEST_ASSERT_EQUAL(0, gDisplay.showSettingsSlidersCalls);
 }
 
 void test_boot_hold_requests_maintenance_only_once_on_release() {
-    gModule.process(1000, true);
-    gModule.process(5000, true); // Four seconds held: keep waiting for release.
+    processInput(1000, true);
+    processInput(5000, true); // Four seconds held: keep waiting for release.
     TEST_ASSERT_EQUAL(0, gMaintenanceBootCalls);
 
-    gModule.process(5000, false); // Release at the exact four-second boundary.
+    processInput(5000, false); // Release at the exact four-second boundary.
     TEST_ASSERT_EQUAL(1, gMaintenanceBootCalls);
-    gModule.process(7000, false);
+    processInput(7000, false);
     TEST_ASSERT_EQUAL(1, gMaintenanceBootCalls);
 }
 
 void test_boot_release_below_four_seconds_keeps_short_press_behavior() {
-    gModule.process(1000, true);
-    gModule.process(4999, false);
+    processInput(1000, true);
+    processInput(4999, false);
     TEST_ASSERT_EQUAL(0, gMaintenanceBootCalls);
     TEST_ASSERT_EQUAL(1, gDisplay.showSettingsSlidersCalls);
 }
@@ -191,12 +221,12 @@ void test_eligible_ten_second_boot_hold_pairs_obd_instead_of_maintenance() {
     cbs.requestObdManualPairScanCtx = &pairRequests;
     gModule.begin(&gDisplay, &gTouch, &gSettings, cbs);
 
-    gModule.process(1000, true);
-    gModule.process(5000, true);
-    gModule.process(11000, true);
+    processInput(1000, true);
+    processInput(5000, true);
+    processInput(11000, true);
     TEST_ASSERT_EQUAL(0, gMaintenanceBootCalls);
     TEST_ASSERT_EQUAL(0, pairRequests);
-    gModule.process(11001, false);
+    processInput(11001, false);
     TEST_ASSERT_EQUAL(0, gMaintenanceBootCalls);
     TEST_ASSERT_EQUAL(1, pairRequests);
 }
@@ -211,5 +241,6 @@ int main(int, char**) {
     RUN_TEST(test_boot_hold_requests_maintenance_only_once_on_release);
     RUN_TEST(test_boot_release_below_four_seconds_keeps_short_press_behavior);
     RUN_TEST(test_eligible_ten_second_boot_hold_pairs_obd_instead_of_maintenance);
+    RUN_TEST(test_invalid_coordinates_cannot_edit_slider_values);
     return UNITY_END();
 }

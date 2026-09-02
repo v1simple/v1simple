@@ -162,7 +162,7 @@ void test_screen_holds_cannot_request_maintenance_but_boot_hold_can() {
         parser.setAlerts({});
         for (unsigned long nowMs = 1000; nowMs <= 5500; nowMs += 25) {
             pollTouch(nowMs, true, coordinate);
-            TEST_ASSERT_TRUE(touch.isTouchActive()); // The report reached the actual reader.
+            TEST_ASSERT_EQUAL(coordinate == 10, touch.isTouchActive());
             TEST_ASSERT_EQUAL_INT(0, maintenanceBootRequests);
         }
         TEST_ASSERT_EQUAL_UINT8(0, settings.get().activeSlot);
@@ -193,8 +193,19 @@ void test_three_screen_taps_still_cycle_profile_once() {
     TEST_ASSERT_EQUAL_INT(0, maintenanceBootRequests);
 }
 
+void test_invalid_touch_coordinates_cannot_mute_a_live_alert() {
+    pollTouch(1000, true, 514);
+    TEST_ASSERT_FALSE(touch.isTouchActive());
+    TEST_ASSERT_EQUAL_INT(0, ble.setMuteCalls);
+    pollTouch(1250, true, 10);
+    TEST_ASSERT_TRUE(touch.isTouchActive());
+    TEST_ASSERT_EQUAL_INT(1, ble.setMuteCalls);
+    TEST_ASSERT_TRUE(ble.lastMuteValue);
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_invalid_touch_coordinates_cannot_mute_a_live_alert);
     RUN_TEST(test_active_alert_tap_retries_one_transient_mute_without_resend_after_success);
     RUN_TEST(test_alert_clear_drops_stale_mute_retry);
     RUN_TEST(test_failed_touch_reads_invalidate_level_without_turning_recovery_into_a_tap);

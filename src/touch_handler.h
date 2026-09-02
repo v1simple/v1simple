@@ -8,7 +8,7 @@
  * - Single-touch support (hardware limitation)
  * - 200ms debounce to prevent rapid repeat taps
  * - Optional hardware reset support via RST pin
- * - Returns coordinates in display space
+ * - Returns raw controller coordinates (X: 0-640, Y: 0-172, mirrored to the display)
  *
  * Usage:
  *   TouchHandler touch;

@@ -224,7 +224,6 @@ bool TouchHandler::getTouchPoint(int16_t& x, int16_t& y) {
         buff[i] = Wire.read();
     }
     recordI2cSuccess();
-    touchReadValid_ = true;
 
     // Parse touch data from AXS15231B response
     // buff[0] = gesture (ignored)
@@ -238,6 +237,7 @@ bool TouchHandler::getTouchPoint(int16_t& x, int16_t& y) {
 
     if (numPoints == 0 || numPoints > 4) {
         // No touch - track when finger was released
+        touchReadValid_ = true;
         noteNoTouch(now);
         return false;
     }
@@ -245,6 +245,13 @@ bool TouchHandler::getTouchPoint(int16_t& x, int16_t& y) {
     // Extract coordinates
     x = ((buff[2] & 0x0F) << 8) | buff[3];
     y = ((buff[4] & 0x0F) << 8) | buff[5];
+
+    // Supplier raw coordinates use the long X axis and short Y axis, with
+    // inclusive endpoints. An impossible report is not a finger release.
+    if (x > 640 || y > 172) {
+        return false;
+    }
+    touchReadValid_ = true;
 
     // Check if we're still within debounce period from last tap
     if (!hasElapsedMs(now, lastTouchTime_, touchDebounceMs_)) {

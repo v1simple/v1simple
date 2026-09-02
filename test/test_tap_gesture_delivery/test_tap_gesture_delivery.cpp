@@ -27,6 +27,10 @@ class AlertPersistenceModule {
 
 #include "../../src/modules/quiet/quiet_coordinator_module.cpp"
 #include "../../src/modules/touch/tap_gesture_module.cpp"
+#include "../../src/modules/touch/touch_ui_module.cpp"
+
+void audio_set_volume(uint8_t) {}
+void play_test_voice() {}
 
 namespace {
 TouchHandler touch;
@@ -39,18 +43,27 @@ AlertPersistenceModule persistence;
 DisplayMode displayMode = DisplayMode::IDLE;
 QuietCoordinatorModule quiet;
 TapGestureModule tap;
+TouchUiModule touchUi;
 int maintenanceBootRequests = 0;
 
 bool wifiInactive(void*) { return false; }
 void requestMaintenanceBoot(void*) { ++maintenanceBootRequests; }
 
-void pollTouch(unsigned long nowMs, bool active) {
+void processInput(unsigned long nowMs, bool bootPressed = false) {
+    mockMillis = nowMs;
+    // Match normal runtime ownership: BOOT/settings first, then screen taps.
+    if (!touchUi.process(nowMs, bootPressed)) {
+        tap.process(nowMs);
+    }
+}
+
+void pollTouch(unsigned long nowMs, bool active, uint16_t coordinate = 10) {
     std::vector<uint8_t> data(32, 0);
     data[1] = active ? 1 : 0;
-    data[3] = data[5] = 10;
+    data[2] = data[4] = coordinate >> 8;
+    data[3] = data[5] = coordinate;
     Wire.queueRequestFrom(data.size(), data);
-    mockMillis = nowMs;
-    tap.process(nowMs);
+    processInput(nowMs);
 }
 }
 
@@ -68,15 +81,16 @@ void setUp() {
     quiet = QuietCoordinatorModule{};
     quiet.begin(&ble, &parser);
     tap = TapGestureModule{};
+    touchUi = TouchUiModule{};
     maintenanceBootRequests = 0;
-    TapGestureModule::WifiCallbacks wifiCallbacks{};
-    wifiCallbacks.isWifiActive = wifiInactive;
-    wifiCallbacks.requestMaintenanceBoot = requestMaintenanceBoot;
-    tap.begin(&touch, &settings, &display, &ble, &parser, &autoPush, &persistence, &displayMode, &quiet,
-              wifiCallbacks);
+    TouchUiModule::Callbacks callbacks{};
+    callbacks.isWifiSetupActive = wifiInactive;
+    callbacks.requestMaintenanceBoot = requestMaintenanceBoot;
+    touchUi.begin(&display, &touch, &settings, callbacks);
+    tap.begin(&touch, &settings, &display, &ble, &parser, &autoPush, &persistence, &displayMode, &quiet);
 }
 
-void test_alert_clear_drops_stale_mute_and_does_not_starve_long_press() {
+void test_alert_clear_drops_stale_mute_retry() {
     ble.nextMuteSendResult = SendResult::NOT_YET;
     pollTouch(200, true);
     TEST_ASSERT_EQUAL_INT(1, ble.setMuteCalls);
@@ -86,9 +100,6 @@ void test_alert_clear_drops_stale_mute_and_does_not_starve_long_press() {
     TEST_ASSERT_EQUAL_INT(1, ble.setMuteCalls);
 
     pollTouch(450, true); // Allow the real reader's tap/release debounce.
-    pollTouch(4450, true);
-
-    TEST_ASSERT_EQUAL_INT(1, maintenanceBootRequests);
     TEST_ASSERT_EQUAL_INT(1, ble.setMuteCalls);
 }
 
@@ -100,7 +111,7 @@ void test_active_alert_tap_retries_one_transient_mute_without_resend_after_succe
     TEST_ASSERT_EQUAL_INT(1, ble.setMuteCalls);
     TEST_ASSERT_TRUE(ble.lastMuteValue);
 
-    tap.process(210);
+    processInput(210);
     TEST_ASSERT_EQUAL_INT(1, ble.setMuteCalls);
     pollTouch(225, false);
     TEST_ASSERT_EQUAL_INT(2, ble.setMuteCalls);
@@ -110,7 +121,7 @@ void test_active_alert_tap_retries_one_transient_mute_without_resend_after_succe
     TEST_ASSERT_EQUAL_INT(2, ble.setMuteCalls);
 }
 
-void test_failed_touch_reads_cancel_hold_without_turning_recovery_into_a_tap() {
+void test_failed_touch_reads_invalidate_level_without_turning_recovery_into_a_tap() {
     for (bool shortRead : {false, true}) {
         setUp();
         parser.setAlerts({});
@@ -122,8 +133,7 @@ void test_failed_touch_reads_cancel_hold_without_turning_recovery_into_a_tap() {
             } else {
                 Wire.queueEndTransmission(2);
             }
-            mockMillis = nowMs;
-            tap.process(nowMs);
+            processInput(nowMs);
             TEST_ASSERT_FALSE(touch.isTouchActive());
         }
         TEST_ASSERT_GREATER_THAN_INT(0, Wire.endCalls); // Includes recovery backoff.
@@ -134,21 +144,61 @@ void test_failed_touch_reads_cancel_hold_without_turning_recovery_into_a_tap() {
         pollTouch(5500, true);
         TEST_ASSERT_EQUAL_INT(0, ble.setMuteCalls);
 
-        parser.setAlerts({});
         pollTouch(9500, true);
-        TEST_ASSERT_EQUAL_INT(0, maintenanceBootRequests);
+        TEST_ASSERT_EQUAL_INT(0, ble.setMuteCalls);
 
         pollTouch(9525, false);
         pollTouch(9700, true);
+        TEST_ASSERT_EQUAL_INT(1, ble.setMuteCalls);
         pollTouch(13700, true);
+        TEST_ASSERT_EQUAL_INT(1, ble.setMuteCalls);
+        TEST_ASSERT_EQUAL_INT(0, maintenanceBootRequests);
+    }
+}
+
+void test_screen_holds_cannot_request_maintenance_but_boot_hold_can() {
+    for (uint16_t coordinate : {10, 514}) {
+        setUp();
+        parser.setAlerts({});
+        for (unsigned long nowMs = 1000; nowMs <= 5500; nowMs += 25) {
+            pollTouch(nowMs, true, coordinate);
+            TEST_ASSERT_TRUE(touch.isTouchActive()); // The report reached the actual reader.
+            TEST_ASSERT_EQUAL_INT(0, maintenanceBootRequests);
+        }
+        TEST_ASSERT_EQUAL_UINT8(0, settings.get().activeSlot);
+
+        // Exercise the same live callback through its sole authorized input.
+        processInput(6000, true);
+        processInput(10000, true);
+        TEST_ASSERT_EQUAL_INT(0, maintenanceBootRequests);
+        processInput(10025, false);
         TEST_ASSERT_EQUAL_INT(1, maintenanceBootRequests);
     }
+}
+
+void test_three_screen_taps_still_cycle_profile_once() {
+    parser.setAlerts({});
+    pollTouch(1000, true);
+    pollTouch(1050, false);
+    pollTouch(1250, true);
+    TEST_ASSERT_EQUAL_UINT8(0, settings.get().activeSlot);
+    pollTouch(1300, false);
+    pollTouch(1500, true);
+    TEST_ASSERT_EQUAL_UINT8(1, settings.get().activeSlot);
+    TEST_ASSERT_EQUAL_INT(1, settings.saveDeferredBackupCalls);
+    TEST_ASSERT_EQUAL_INT(1, display.drawProfileIndicatorCalls);
+    pollTouch(5500, true);
+    TEST_ASSERT_EQUAL_UINT8(1, settings.get().activeSlot);
+    TEST_ASSERT_EQUAL_INT(1, display.drawProfileIndicatorCalls);
+    TEST_ASSERT_EQUAL_INT(0, maintenanceBootRequests);
 }
 
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_active_alert_tap_retries_one_transient_mute_without_resend_after_success);
-    RUN_TEST(test_alert_clear_drops_stale_mute_and_does_not_starve_long_press);
-    RUN_TEST(test_failed_touch_reads_cancel_hold_without_turning_recovery_into_a_tap);
+    RUN_TEST(test_alert_clear_drops_stale_mute_retry);
+    RUN_TEST(test_failed_touch_reads_invalidate_level_without_turning_recovery_into_a_tap);
+    RUN_TEST(test_screen_holds_cannot_request_maintenance_but_boot_hold_can);
+    RUN_TEST(test_three_screen_taps_still_cycle_profile_once);
     return UNITY_END();
 }

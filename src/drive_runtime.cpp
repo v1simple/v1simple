@@ -195,15 +195,8 @@ void DriveRuntime::initializeTouchAndUi() {
     touchCallbacks.isObdPairGestureSafeCtx = this;
     touchUi_.begin(&display_, &touch_, &settings_, touchCallbacks);
 
-    TapGestureModule::WifiCallbacks tapCallbacks{};
-    tapCallbacks.isWifiActive = [](void*) { return false; };
-    tapCallbacks.stopWifi = [](void*) {};
-    tapCallbacks.requestMaintenanceBoot = [](void* context) {
-        static_cast<DriveRuntime*>(context)->requestMaintenanceBootRestart();
-    };
-    tapCallbacks.requestMaintenanceBootCtx = this;
     tapGesture_.begin(&touch_, &settings_, &display_, &ble_, &parser_, &autoPush_, &alertPersistence_,
-                      &displayMode_, &quiet_, tapCallbacks);
+                      &displayMode_, &quiet_);
 }
 
 bool DriveRuntime::restoreConnectionDisplayOwner(void* context, uint32_t nowMs) {

@@ -15,24 +15,14 @@ class QuietCoordinatorModule;
 
 class TapGestureModule {
   public:
-    struct WifiCallbacks {
-        bool (*isWifiActive)(void* ctx);
-        void* isWifiActiveCtx;
-        void (*stopWifi)(void* ctx);
-        void* stopWifiCtx;
-        void (*requestMaintenanceBoot)(void* ctx);
-        void* requestMaintenanceBootCtx;
-    };
-
     void begin(TouchHandler* touchHandler, SettingsManager* settings, V1Display* display, V1BLEClient* bleClient,
                PacketParser* parser, AutoPushModule* autoPushModule, AlertPersistenceModule* alertPersistenceModule,
-               DisplayMode* displayModePtr, QuietCoordinatorModule* quietCoordinator,
-               const WifiCallbacks& wifiCbs = {});
+               DisplayMode* displayModePtr, QuietCoordinatorModule* quietCoordinator);
 
     void process(unsigned long nowMs);
 
-    // Drop any gesture that spans a higher-priority presentation interval so
-    // its elapsed hold/tap count cannot fire when normal input resumes.
+    // Drop pending taps and mute retries across a higher-priority presentation
+    // interval so they cannot fire when normal input resumes.
     void suspendForPresentationOwner();
 
   private:
@@ -52,16 +42,10 @@ class TapGestureModule {
     static constexpr unsigned long TAP_WINDOW_MS = 600;
     static constexpr unsigned long TAP_DEBOUNCE_MS = 150;
 
-    // Long-press maintenance entry / WiFi stop
-    WifiCallbacks wifiCbs_ = {};
-    unsigned long touchStartMs_ = 0;
     unsigned long nextTouchPollMs_ = 0;
-    bool touching_ = false;
-    bool longPressFired_ = false;
     bool pendingMuteCommand_ = false;
     bool pendingMuteValue_ = false;
     unsigned long pendingMuteLastAttemptMs_ = 0;
     static constexpr unsigned long MUTE_RETRY_INTERVAL_MS = 25;
-    static constexpr unsigned long LONG_PRESS_WIFI_MS = 4000;
     static constexpr unsigned long TOUCH_POLL_INTERVAL_MS = 25;
 };

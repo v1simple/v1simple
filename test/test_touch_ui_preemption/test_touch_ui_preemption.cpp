@@ -7,6 +7,8 @@
 // retaining the in-progress adjustments, deferring persistence, and yielding
 // the screen via the restore callback — and reports false when adjust mode is
 // not active so the normal settings early-return path is unchanged.
+// Physical BOOT remains the maintenance-entry owner; its hold/release and
+// longer OBD-pair gesture are exercised directly against the same module.
 
 #include <unity.h>
 
@@ -146,11 +148,68 @@ void test_maintenance_long_press_saves_active_slider_edits_before_request() {
     TEST_ASSERT_EQUAL(0, gSettings.requestDeferredPersistCalls);
 }
 
+void test_released_boot_never_requests_maintenance() {
+    for (unsigned long now = 1000; now <= 12000; now += 100) {
+        gModule.process(now, false);
+    }
+    TEST_ASSERT_EQUAL(0, gMaintenanceBootCalls);
+    TEST_ASSERT_EQUAL(0, gDisplay.showSettingsSlidersCalls);
+}
+
+void test_boot_hold_requests_maintenance_only_once_on_release() {
+    gModule.process(1000, true);
+    gModule.process(5000, true); // Four seconds held: keep waiting for release.
+    TEST_ASSERT_EQUAL(0, gMaintenanceBootCalls);
+
+    gModule.process(5000, false); // Release at the exact four-second boundary.
+    TEST_ASSERT_EQUAL(1, gMaintenanceBootCalls);
+    gModule.process(7000, false);
+    TEST_ASSERT_EQUAL(1, gMaintenanceBootCalls);
+}
+
+void test_boot_release_below_four_seconds_keeps_short_press_behavior() {
+    gModule.process(1000, true);
+    gModule.process(4999, false);
+    TEST_ASSERT_EQUAL(0, gMaintenanceBootCalls);
+    TEST_ASSERT_EQUAL(1, gDisplay.showSettingsSlidersCalls);
+}
+
+void test_eligible_ten_second_boot_hold_pairs_obd_instead_of_maintenance() {
+    int pairRequests = 0;
+    TouchUiModule::Callbacks cbs{};
+    cbs.requestMaintenanceBoot = &requestMaintenanceBoot;
+    cbs.readObdStatus = [](uint32_t, void*) {
+        ObdRuntimeStatus status;
+        status.enabled = true;
+        return status;
+    };
+    cbs.isObdPairGestureSafe = [](uint32_t, void*) { return true; };
+    cbs.requestObdManualPairScan = [](uint32_t, void* ctx) {
+        ++*static_cast<int*>(ctx);
+        return true;
+    };
+    cbs.requestObdManualPairScanCtx = &pairRequests;
+    gModule.begin(&gDisplay, &gTouch, &gSettings, cbs);
+
+    gModule.process(1000, true);
+    gModule.process(5000, true);
+    gModule.process(11000, true);
+    TEST_ASSERT_EQUAL(0, gMaintenanceBootCalls);
+    TEST_ASSERT_EQUAL(0, pairRequests);
+    gModule.process(11001, false);
+    TEST_ASSERT_EQUAL(0, gMaintenanceBootCalls);
+    TEST_ASSERT_EQUAL(1, pairRequests);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_preempt_is_noop_when_menu_closed);
     RUN_TEST(test_preempt_closes_active_adjust_session);
     RUN_TEST(test_preempt_is_single_shot);
     RUN_TEST(test_maintenance_long_press_saves_active_slider_edits_before_request);
+    RUN_TEST(test_released_boot_never_requests_maintenance);
+    RUN_TEST(test_boot_hold_requests_maintenance_only_once_on_release);
+    RUN_TEST(test_boot_release_below_four_seconds_keeps_short_press_behavior);
+    RUN_TEST(test_eligible_ten_second_boot_hold_pairs_obd_instead_of_maintenance);
     return UNITY_END();
 }

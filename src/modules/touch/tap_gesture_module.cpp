@@ -9,7 +9,7 @@
 void TapGestureModule::begin(TouchHandler* touchHandler, SettingsManager* settings, V1Display* displayPtr,
                              V1BLEClient* bleClient, PacketParser* parserPtr, AutoPushModule* autoPushModule,
                              AlertPersistenceModule* alertPersistenceModule, DisplayMode* displayModePtr,
-                             QuietCoordinatorModule* quietCoordinator, const WifiCallbacks& wifiCbs) {
+                             QuietCoordinatorModule* quietCoordinator) {
     touch_ = touchHandler;
     settings_ = settings;
     display_ = displayPtr;
@@ -19,7 +19,6 @@ void TapGestureModule::begin(TouchHandler* touchHandler, SettingsManager* settin
     alertPersistence_ = alertPersistenceModule;
     displayMode_ = displayModePtr;
     quiet_ = quietCoordinator;
-    wifiCbs_ = wifiCbs;
 }
 
 void TapGestureModule::process(unsigned long nowMs) {
@@ -46,9 +45,7 @@ void TapGestureModule::process(unsigned long nowMs) {
                 pendingMuteCommand_ = false;
             }
         }
-        // Continue through touch-level processing even while a retry remains
-        // pending. In particular, alert-clear must still allow the maintenance
-        // long-press lifecycle to progress.
+        // Continue reading taps while a mute retry remains pending.
     }
 
     int16_t touchX, touchY;
@@ -100,43 +97,6 @@ void TapGestureModule::process(unsigned long nowMs) {
     };
 
     const bool newTapEdge = touch_->getTouchPoint(touchX, touchY);
-    const bool touchLevelActive = touch_->isTouchActive();
-
-    // Long-press tracking. getTouchPoint() is edge-triggered (true once per
-    // new tap and false while held), so the 4 s threshold must be evaluated from
-    // the driver's level state on held polls; evaluating it inside the edge
-    // branch can never accumulate hold time.
-    if (newTapEdge) {
-        touching_ = true;
-        touchStartMs_ = nowMs;
-        longPressFired_ = false;
-    } else if (!touchLevelActive) {
-        touching_ = false;
-        longPressFired_ = false;
-    }
-
-    // If WiFi is somehow already active, stop it; otherwise reboot into
-    // maintenance instead of starting WiFi late in the normal drive runtime.
-    // Gated on no active alert: an accidental 4 s hold mid-alert must never
-    // reboot the display out from under the driver.
-    if (touching_ && touchLevelActive && !longPressFired_ && wifiCbs_.isWifiActive && !parser_->hasAlerts() &&
-        (nowMs - touchStartMs_) >= LONG_PRESS_WIFI_MS) {
-        longPressFired_ = true;
-        tapCount_ = 0;
-        if (wifiCbs_.isWifiActive(wifiCbs_.isWifiActiveCtx)) {
-            if (wifiCbs_.stopWifi)
-                wifiCbs_.stopWifi(wifiCbs_.stopWifiCtx);
-            Serial.println("Long-press: WiFi stopped");
-        } else {
-            if (wifiCbs_.requestMaintenanceBoot) {
-                wifiCbs_.requestMaintenanceBoot(wifiCbs_.requestMaintenanceBootCtx);
-            }
-            Serial.println("Long-press: maintenance boot requested");
-        }
-        return;
-    }
-    if (longPressFired_)
-        return; // Suppress taps while held after long-press
 
     if (newTapEdge) {
         const bool hasActiveAlert = parser_->hasAlerts();
@@ -172,10 +132,7 @@ void TapGestureModule::process(unsigned long nowMs) {
 void TapGestureModule::suspendForPresentationOwner() {
     lastTapTime_ = 0;
     tapCount_ = 0;
-    touchStartMs_ = 0;
     nextTouchPollMs_ = 0;
-    touching_ = false;
-    longPressFired_ = false;
     pendingMuteCommand_ = false;
     pendingMuteValue_ = false;
     pendingMuteLastAttemptMs_ = 0;

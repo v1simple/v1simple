@@ -361,6 +361,10 @@ struct Encounter {
         }
 
         var offsets = absolute.map { $0 - base }
+        guard offsets.allSatisfy({ $0.isFinite && $0 >= 0 }),
+              zip(offsets, offsets.dropFirst()).allSatisfy({ $0 <= $1 }) else {
+            throw ReplayError.message("external replay input has invalid timestamp timing")
+        }
 
         // Whole-second exports often contain same-second runs. Spread those
         // samples evenly while preserving genuine gaps.

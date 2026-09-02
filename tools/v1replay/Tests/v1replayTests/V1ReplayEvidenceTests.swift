@@ -3,6 +3,95 @@ import XCTest
 @testable import v1replay
 
 final class V1ReplayEvidenceTests: XCTestCase {
+    private func legacySamples(_ times: [Double]) -> [[String: Any]] {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return times.enumerated().map { index, time in
+            ["timestamp": formatter.string(from: Date(timeIntervalSinceReferenceDate: time)),
+             "strength": 1 + index % 8, "direction": "FRONT",
+             "muteState": index == times.count - 1 ? "2" : "0"]
+        }
+    }
+
+    private func loadExternal(_ samples: [[String: Any]]) throws -> Encounter {
+        let input = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).appendingPathExtension("json")
+        defer { try? FileManager.default.removeItem(at: input) }
+        let data = try JSONSerialization.data(withJSONObject: [
+            "band": "ka", "frequencyMHz": 34_700, "samples": samples
+        ])
+        try data.write(to: input)
+        return try Encounter.loadExternal(path: input.path, mutedWhen: "2")
+    }
+
+    func testLegacyInputRejectsBackwardsTimesBeforeSpreadingOrCheckpoints() throws {
+        for times in [[1.0, 0.0], [0.0, 2.0, 1.0], [0.0, 2.0, 2.0, 1.0]] {
+            XCTAssertThrowsError(try loadExternal(legacySamples(times))) { error in
+                XCTAssertEqual((error as? ReplayError)?.description,
+                               "external replay input has invalid timestamp timing")
+            }
+        }
+    }
+
+    func testLegacyInputPreservesEqualTimeSpreadingGapsAndSampleOrder() throws {
+        let cases: [([Double], [Double])] = [
+            ([5], [0]),
+            ([7, 9, 12], [0, 2, 5]),
+            ([4, 4, 4], [0, 1.0 / 3, 2.0 / 3]),
+            ([0, 0, 0, 2, 2, 5, 5], [0, 1.0 / 3, 2.0 / 3, 2, 2.5, 5, 5.5])
+        ]
+        for (times, expected) in cases {
+            let encounter = try loadExternal(legacySamples(times))
+            XCTAssertEqual(encounter.samples.count, expected.count)
+            for (index, sample) in encounter.samples.enumerated() {
+                XCTAssertEqual(sample.offset, expected[index], accuracy: 0.000_001)
+                XCTAssertEqual(sample.sourceIndex, index)
+                XCTAssertEqual(sample.priorityAlert?.strength, 1 + index % 8)
+                XCTAssertEqual(sample.muted, index == expected.count - 1)
+            }
+            XCTAssertEqual(encounter.detectorMuteCheckpoints.count, 1)
+            XCTAssertEqual(encounter.detectorMuteCheckpoints.first?.replaySecond, expected.last)
+        }
+    }
+
+    func testCompleteRelativeOffsetsKeepPrecedenceAndValidation() throws {
+        var samples = legacySamples([1, 0])
+        samples[0]["offsetSeconds"] = 0.4
+        samples[1]["offsetSeconds"] = 0.6
+        XCTAssertEqual(try loadExternal(samples).samples.map(\.offset), [0.4, 0.6])
+
+        samples = legacySamples([0, 1])
+        samples[0]["offsetSeconds"] = 0.0
+        samples[1]["offsetSeconds"] = -1.0
+        XCTAssertThrowsError(try loadExternal(samples)) { error in
+            XCTAssertEqual((error as? ReplayError)?.description,
+                           "external replay input has invalid relative timing")
+        }
+    }
+
+    func testPartialRelativeOffsetsUseAndValidateTheEntireTimestampSequence() throws {
+        var samples = legacySamples([0, 2, 3])
+        samples[0]["offsetSeconds"] = 999.0
+        samples[2]["offsetSeconds"] = 0.1
+        XCTAssertEqual(try loadExternal(samples).samples.map(\.offset), [0, 2, 3])
+
+        samples = legacySamples([1, 0])
+        samples[0]["offsetSeconds"] = 0.4
+        XCTAssertThrowsError(try loadExternal(samples)) { error in
+            XCTAssertEqual((error as? ReplayError)?.description,
+                           "external replay input has invalid timestamp timing")
+        }
+        for timestamp in [nil, "not-a-timestamp"] as [String?] {
+            samples = legacySamples([0, 1])
+            samples[0]["offsetSeconds"] = 0.4
+            samples[1]["timestamp"] = timestamp
+            XCTAssertThrowsError(try loadExternal(samples)) { error in
+                XCTAssertEqual((error as? ReplayError)?.description,
+                               "external replay input needs relative offsets or parseable timestamps")
+            }
+        }
+    }
+
     func testNotificationEventsJoinRepeatedPayloadsByAssignedSequences() throws {
         let payload = Data("abc".utf8)
         let first = ReplayNotificationIdentity(

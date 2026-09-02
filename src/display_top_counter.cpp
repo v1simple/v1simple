@@ -305,6 +305,7 @@ void V1Display::drawTopCounterPair(char primary, bool muted, bool primaryDot, ch
 
     // Skip redraw if nothing changed
     if (elementCaches_.topCounter.counterValid && !colorChanged && muted == elementCaches_.topCounter.lastMuted &&
+        drawFixedPrimaryDot == elementCaches_.topCounter.lastFixedPrimaryDot &&
         strcmp(buf, elementCaches_.topCounter.lastText) == 0) {
         return;
     }
@@ -321,6 +322,7 @@ void V1Display::drawTopCounterPair(char primary, bool muted, bool primaryDot, ch
                      DisplayLayout::kTopCounterRect.h, DisplayDirtyRegionSource::Status);
     elementCaches_.topCounter.counterValid = true;
     elementCaches_.topCounter.lastMuted = muted;
+    elementCaches_.topCounter.lastFixedPrimaryDot = drawFixedPrimaryDot;
     elementCaches_.topCounter.lastBogeyColor = s.colorBogey;
     strncpy(elementCaches_.topCounter.lastText, buf, sizeof(elementCaches_.topCounter.lastText));
     elementCaches_.topCounter.lastText[sizeof(elementCaches_.topCounter.lastText) - 1] = '\0';

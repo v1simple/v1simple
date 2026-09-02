@@ -164,6 +164,127 @@ void test_top_counter_fixed_dot_stays_inside_field() {
     TEST_ASSERT_EQUAL_INT(1, display.ut_fontMgr().segment7.printfCount);
 }
 
+// Reset observations between frames without invalidating the cache under test.
+static void resetCounterObservations() {
+    canvas()->resetCounters();
+    resetFontRecorder();
+    display.ut_resetDrawnRegion();
+}
+
+static void assertCounterRepaint(bool dot, bool ofr) {
+    TEST_ASSERT_EQUAL_UINT(1u, canvas()->fillRectCalls.size());
+    const auto& clear = canvas()->fillRectCalls[0];
+    TEST_ASSERT_EQUAL_INT16(DisplayLayout::TOP_COUNTER_FIELD_X - 1, clear.x);
+    TEST_ASSERT_EQUAL_INT16(77 - clear.x, clear.w);
+    TEST_ASSERT_EQUAL_INT16(DisplayLayout::TOP_COUNTER_FIELD_Y, clear.y);
+    TEST_ASSERT_EQUAL_INT16(DisplayLayout::TOP_COUNTER_FIELD_H, clear.h);
+    TEST_ASSERT_FALSE(display.ut_drawnRegionEmpty());
+    TEST_ASSERT_EQUAL_INT16(clear.x, display.ut_drawnRegionX());
+    TEST_ASSERT_EQUAL_INT16(clear.w, display.ut_drawnRegionW());
+    TEST_ASSERT_EQUAL_INT16(DisplayLayout::kTopCounterRect.y, display.ut_drawnRegionY());
+    TEST_ASSERT_EQUAL_INT16(DisplayLayout::kTopCounterRect.h, display.ut_drawnRegionH());
+    TEST_ASSERT_EQUAL_UINT(dot ? 1u : 0u, canvas()->fillCircleCalls.size());
+    if (dot) {
+        const auto& circle = canvas()->fillCircleCalls[0];
+        TEST_ASSERT_EQUAL_INT16(4, circle.r);
+        TEST_ASSERT_EQUAL_INT16(DisplayLayout::TOP_COUNTER_FIELD_X + DisplayLayout::TOP_COUNTER_FIELD_W -
+                               DisplayLayout::TOP_COUNTER_PAD_RIGHT - 5, circle.x);
+        TEST_ASSERT_EQUAL_INT16(DisplayLayout::TOP_COUNTER_TEXT_Y + DisplayLayout::TOP_COUNTER_FONT_SIZE - 5,
+                               circle.y);
+    }
+    if (ofr) {
+        TEST_ASSERT_EQUAL_INT(1, display.ut_fontMgr().segment7.printfCount);
+        TEST_ASSERT_EQUAL_STRING("3", display.ut_fontMgr().segment7.lastPrinted);
+    } else {
+        TEST_ASSERT_EQUAL_INT(0, display.ut_fontMgr().segment7.printfCount);
+        TEST_ASSERT_GREATER_THAN_UINT(0u, canvas()->fillRoundRectCalls.size());
+    }
+    TEST_ASSERT_EQUAL_INT(0, canvas()->getFlushCount());
+}
+
+static void assertCounterNoPaint() {
+    TEST_ASSERT_EQUAL_UINT(0u, canvas()->fillRectCalls.size());
+    TEST_ASSERT_EQUAL_UINT(0u, canvas()->fillRoundRectCalls.size());
+    TEST_ASSERT_EQUAL_UINT(0u, canvas()->fillCircleCalls.size());
+    TEST_ASSERT_EQUAL_INT(0, display.ut_fontMgr().segment7.printfCount);
+    TEST_ASSERT_TRUE(display.ut_drawnRegionEmpty());
+    TEST_ASSERT_EQUAL_INT(0, canvas()->getFlushCount());
+}
+
+static void assertSameDigitDotTransition(bool initialDot, bool ofr) {
+    display.ut_fontMgr().segment7Ready = ofr;
+    resetCounterObservations();
+    display.ut_drawTopCounterPair('3', false, initialDot);
+    assertCounterRepaint(initialDot, ofr);
+
+    resetCounterObservations();
+    display.ut_drawTopCounterPair('3', false, !initialDot);
+    assertCounterRepaint(!initialDot, ofr);
+
+    resetCounterObservations();
+    display.ut_drawTopCounterPair('3', false, !initialDot);
+    assertCounterNoPaint();
+
+    display.ut_elementCaches().topCounter.invalidate();
+    display.ut_drawTopCounterPair('3', false, !initialDot);
+    assertCounterRepaint(!initialDot, ofr);
+}
+
+void test_same_digit_dot_on_repaints_with_ofr() {
+    assertSameDigitDotTransition(false, true);
+}
+void test_same_digit_dot_off_clears_previously_painted_dot_with_ofr() {
+    assertSameDigitDotTransition(true, true);
+}
+void test_same_digit_dot_on_repaints_with_fallback() {
+    assertSameDigitDotTransition(false, false);
+}
+void test_same_digit_dot_off_clears_previously_painted_dot_with_fallback() {
+    assertSameDigitDotTransition(true, false);
+}
+
+void test_fixed_dot_preserves_mute_and_color_cache_keys() {
+    display.ut_drawTopCounterPair('3', false, true);
+    resetCounterObservations();
+    display.ut_drawTopCounterPair('3', true, true);
+    assertCounterRepaint(true, true);
+    // Numeric glyphs/dots retain the configured bogey color even when muted.
+    TEST_ASSERT_EQUAL_UINT16(settings.get().colorBogey, canvas()->fillCircleCalls[0].color);
+
+    const uint16_t originalColor = settings.get().colorBogey;
+    settings.mutableSettings().colorBogey ^= 1;
+    resetCounterObservations();
+    display.ut_drawTopCounterPair('3', true, true);
+    assertCounterRepaint(true, true);
+    TEST_ASSERT_EQUAL_UINT16(settings.get().colorBogey, canvas()->fillCircleCalls[0].color);
+    settings.mutableSettings().colorBogey = originalColor;
+}
+
+void test_text_and_paired_dots_keep_their_existing_layout_and_cache_semantics() {
+    display.ut_drawTopCounterPair('P', false, true);
+    TEST_ASSERT_EQUAL_STRING("P.", display.ut_fontMgr().segment7.lastPrinted);
+    TEST_ASSERT_EQUAL_UINT(0u, canvas()->fillCircleCalls.size());
+    resetCounterObservations();
+    display.ut_drawTopCounterPair('\0', false, true);
+    TEST_ASSERT_EQUAL_STRING(" .", display.ut_fontMgr().segment7.lastPrinted);
+    TEST_ASSERT_EQUAL_UINT(0u, canvas()->fillCircleCalls.size());
+    resetCounterObservations();
+    display.ut_drawTopCounterPair(' ', false, true);
+    assertCounterNoPaint(); // Null and space normalize to the same text.
+
+    display.ut_drawTopCounterPair('3', false, true, '4', true);
+    TEST_ASSERT_EQUAL_STRING("3.4.", display.ut_fontMgr().segment7.lastPrinted);
+    TEST_ASSERT_EQUAL_UINT(0u, canvas()->fillCircleCalls.size());
+    resetCounterObservations();
+    display.ut_drawTopCounterPair('3', false, true, '4', true);
+    assertCounterNoPaint();
+    display.ut_drawTopCounterPair('3', false, true);
+    assertCounterRepaint(true, true);
+    resetCounterObservations();
+    display.ut_drawTopCounterPair('3', false, true);
+    assertCounterNoPaint();
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_top_counter_uses_ofr_segment7_when_ready);
@@ -172,5 +293,11 @@ int main(int, char**) {
     RUN_TEST(test_top_counter_mode_and_volume_symbols_share_locked_cell);
     RUN_TEST(test_top_counter_cursor_ignores_corrupted_live_measure);
     RUN_TEST(test_top_counter_fixed_dot_stays_inside_field);
+    RUN_TEST(test_same_digit_dot_on_repaints_with_ofr);
+    RUN_TEST(test_same_digit_dot_off_clears_previously_painted_dot_with_ofr);
+    RUN_TEST(test_same_digit_dot_on_repaints_with_fallback);
+    RUN_TEST(test_same_digit_dot_off_clears_previously_painted_dot_with_fallback);
+    RUN_TEST(test_fixed_dot_preserves_mute_and_color_cache_keys);
+    RUN_TEST(test_text_and_paired_dots_keep_their_existing_layout_and_cache_semantics);
     return UNITY_END();
 }

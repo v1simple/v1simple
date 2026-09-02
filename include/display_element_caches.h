@@ -122,6 +122,7 @@ struct TopCounterRenderCache {
     // Bogey counter sub-cache
     char lastText[8] = "";
     bool lastMuted = false;
+    bool lastFixedPrimaryDot = false;
     uint16_t lastBogeyColor = 0;
     bool counterValid = false;
 

@@ -355,7 +355,12 @@ void MaintenanceRuntime::tick(uint32_t nowMs) {
     const bool bootPressed = digitalRead(BOOT_BUTTON_GPIO) == LOW;
     if (powerPresentationOwned) {
         bootButtonPressStartMs_ = 0;
+        bootButtonReleaseRequired_ = true;
         exitRequestFired_ = false;
+    } else if (bootButtonReleaseRequired_) {
+        if (!bootPressed) {
+            bootButtonReleaseRequired_ = false;
+        }
     } else if (bootPressed && bootButtonPressStartMs_ == 0) {
         bootButtonPressStartMs_ = nowMs == 0 ? 1 : nowMs;
         exitRequestFired_ = false;

@@ -49,6 +49,9 @@ void restoreDisplay(void* /*ctx*/) { ++gRestoreDisplayCalls; }
 int gMaintenanceBootCalls = 0;
 uint8_t gBrightnessAtMaintenanceRequest = 0;
 int gPersistCallsAtMaintenanceRequest = 0;
+ObdRuntimeStatus gObdStatus;
+bool gObdSafe = true;
+int gObdPairRequests = 0;
 void requestMaintenanceBoot(void* /*ctx*/) {
     ++gMaintenanceBootCalls;
     gBrightnessAtMaintenanceRequest = gSettings.settings.brightness;
@@ -97,10 +100,19 @@ void setUp() {
     gMaintenanceBootCalls = 0;
     gBrightnessAtMaintenanceRequest = 0;
     gPersistCallsAtMaintenanceRequest = 0;
+    gObdStatus = ObdRuntimeStatus{};
+    gObdSafe = true;
+    gObdPairRequests = 0;
 
     TouchUiModule::Callbacks cbs{};
     cbs.restoreDisplay = &restoreDisplay;
     cbs.requestMaintenanceBoot = &requestMaintenanceBoot;
+    cbs.readObdStatus = [](uint32_t, void*) { return gObdStatus; };
+    cbs.isObdPairGestureSafe = [](uint32_t, void*) { return gObdSafe; };
+    cbs.requestObdManualPairScan = [](uint32_t, void*) {
+        ++gObdPairRequests;
+        return true;
+    };
     gModule.begin(&gDisplay, &gTouch, &gSettings, cbs);
 }
 
@@ -153,9 +165,9 @@ void test_maintenance_long_press_saves_active_slider_edits_before_request() {
     const unsigned long now = enterAdjustMode(1000);
     gDisplay.activeSliderFromTouch = 0;
     queueTouch(600, 100);
-    TEST_ASSERT_TRUE(processInput(now + 10, false));
+    TEST_ASSERT_TRUE(processInput(now + 100, false));
 
-    TEST_ASSERT_TRUE(processInput(now + 100, true));
+    TEST_ASSERT_TRUE(processInput(now + 200, true));
     TEST_ASSERT_FALSE(processInput(now + 4200, false));
 
     TEST_ASSERT_EQUAL(1, gMaintenanceBootCalls);
@@ -205,30 +217,149 @@ void test_boot_release_below_four_seconds_keeps_short_press_behavior() {
 }
 
 void test_eligible_ten_second_boot_hold_pairs_obd_instead_of_maintenance() {
-    int pairRequests = 0;
-    TouchUiModule::Callbacks cbs{};
-    cbs.requestMaintenanceBoot = &requestMaintenanceBoot;
-    cbs.readObdStatus = [](uint32_t, void*) {
-        ObdRuntimeStatus status;
-        status.enabled = true;
-        return status;
-    };
-    cbs.isObdPairGestureSafe = [](uint32_t, void*) { return true; };
-    cbs.requestObdManualPairScan = [](uint32_t, void* ctx) {
-        ++*static_cast<int*>(ctx);
-        return true;
-    };
-    cbs.requestObdManualPairScanCtx = &pairRequests;
-    gModule.begin(&gDisplay, &gTouch, &gSettings, cbs);
+    gObdStatus.enabled = true;
 
     processInput(1000, true);
     processInput(5000, true);
     processInput(11000, true);
     TEST_ASSERT_EQUAL(0, gMaintenanceBootCalls);
-    TEST_ASSERT_EQUAL(0, pairRequests);
+    TEST_ASSERT_EQUAL(0, gObdPairRequests);
     processInput(11001, false);
     TEST_ASSERT_EQUAL(0, gMaintenanceBootCalls);
-    TEST_ASSERT_EQUAL(1, pairRequests);
+    TEST_ASSERT_EQUAL(1, gObdPairRequests);
+}
+
+void test_interrupted_boot_requires_release_before_any_new_gesture() {
+    for (unsigned long resumedHold : {300UL, 4000UL, 10002UL}) {
+        setUp();
+        gObdStatus.enabled = true;
+        processInput(1000, true);
+        gModule.suspendForPresentationOwner();
+        processInput(3000, true);
+        processInput(3000 + resumedHold, false);
+        TEST_ASSERT_EQUAL_INT(0, gDisplay.showSettingsSlidersCalls);
+        TEST_ASSERT_EQUAL_INT(0, gMaintenanceBootCalls);
+        TEST_ASSERT_EQUAL_INT(0, gObdPairRequests);
+        TEST_ASSERT_FALSE(gSettings.get().stealthEnabled);
+
+        enterAdjustMode(4000 + resumedHold);
+        TEST_ASSERT_EQUAL_INT(1, gDisplay.showSettingsSlidersCalls);
+    }
+}
+
+void test_warning_restores_settings_while_canceled_boot_remains_held() {
+    enterAdjustMode(1000);
+    gDisplay.activeSliderFromTouch = 0;
+    processInput(1600, true);
+    gModule.suspendForPresentationOwner();
+    TEST_ASSERT_TRUE(gModule.restorePresentationIfOwned());
+    TEST_ASSERT_EQUAL_INT(2, gDisplay.showSettingsSlidersCalls);
+    queueTouch(600, 100);
+    TEST_ASSERT_TRUE(processInput(3000, true));
+    TEST_ASSERT_EQUAL_INT(0, gDisplay.updateSettingsSlidersCalls);
+    TEST_ASSERT_TRUE(processInput(7000, false));
+    TEST_ASSERT_EQUAL_INT(0, gMaintenanceBootCalls);
+    TEST_ASSERT_EQUAL_INT(0, gDisplay.hideBrightnessSliderCalls);
+    // An observed release restores screen input with its existing debounce.
+    queueTouch(600, 100);
+    TEST_ASSERT_TRUE(processInput(7200, false));
+    TEST_ASSERT_EQUAL_INT(1, gDisplay.updateSettingsSlidersCalls);
+}
+
+void test_settings_entry_and_both_exit_paths_cancel_existing_screen_contact() {
+    for (bool preempt : {false, true}) {
+        setUp();
+        gDisplay.activeSliderFromTouch = 0;
+        processInput(1000, true);
+        queueTouch(600, 100); // Contact already down when settings takes ownership.
+        TEST_ASSERT_TRUE(processInput(1400, false));
+        TEST_ASSERT_FALSE(gTouch.isTouchActive());
+        TEST_ASSERT_EQUAL_INT(0, gDisplay.updateSettingsSlidersCalls);
+        queueTouch(0, 0, 0);
+        processInput(1600, false);
+        queueTouch(600, 100);
+        processInput(1800, false);
+        TEST_ASSERT_EQUAL_INT(1, gDisplay.updateSettingsSlidersCalls);
+
+        if (preempt) {
+            TEST_ASSERT_TRUE(gModule.preemptForLiveAlert());
+        } else {
+            queueTouch(600, 100);
+            processInput(2200, true);
+            TEST_ASSERT_FALSE(processInput(2600, false));
+        }
+        int16_t x, y;
+        mockMillis = 2800;
+        queueTouch(600, 100);
+        TEST_ASSERT_FALSE(gTouch.getTouchPoint(x, y));
+        TEST_ASSERT_FALSE(gTouch.isTouchActive());
+        mockMillis = 3000;
+        queueTouch(0, 0, 0);
+        TEST_ASSERT_FALSE(gTouch.getTouchPoint(x, y));
+        mockMillis = 3200;
+        queueTouch(100, 100);
+        TEST_ASSERT_TRUE(gTouch.getTouchPoint(x, y));
+    }
+}
+
+void test_obd_release_crossing_threshold_uses_release_duration() {
+    gObdStatus.enabled = true;
+    processInput(1000, true);
+    processInput(10999, true);
+    processInput(11002, false);
+    TEST_ASSERT_EQUAL_INT(1, gObdPairRequests);
+    TEST_ASSERT_EQUAL_INT(0, gMaintenanceBootCalls);
+}
+
+void test_obd_release_uses_current_safety_and_status_with_maintenance_fallback() {
+    for (bool loseSafety : {false, true}) {
+        setUp();
+        gObdStatus.enabled = true;
+        processInput(1000, true);
+        processInput(11000, true);
+        TEST_ASSERT_TRUE(gDisplay.lastObdAttention);
+        if (loseSafety) {
+            gObdSafe = false;
+        } else {
+            gObdStatus.connected = true;
+        }
+        processInput(11002, false);
+        TEST_ASSERT_EQUAL_INT(0, gObdPairRequests);
+        TEST_ASSERT_EQUAL_INT(1, gMaintenanceBootCalls);
+        TEST_ASSERT_FALSE(gDisplay.lastObdAttention);
+    }
+}
+
+void test_ten_second_hold_in_settings_keeps_maintenance_save_fallback() {
+    gObdStatus.enabled = true;
+    enterAdjustMode(1000);
+    processInput(2000, true);
+    processInput(12000, true);
+    processInput(12002, false);
+    TEST_ASSERT_EQUAL_INT(0, gObdPairRequests);
+    TEST_ASSERT_EQUAL_INT(1, gMaintenanceBootCalls);
+    TEST_ASSERT_EQUAL_INT(1, gSettings.saveDeferredBackupCalls);
+}
+
+void test_short_and_double_boot_thresholds_are_unchanged() {
+    processInput(1000, true);
+    processInput(1299, false);
+    TEST_ASSERT_EQUAL_INT(0, gDisplay.showSettingsSlidersCalls);
+    processInput(1500, true);
+    processInput(1800, false);
+    TEST_ASSERT_EQUAL_INT(1, gDisplay.showSettingsSlidersCalls);
+    processInput(2099, true);
+    processInput(2399, false); // Second release 599 ms later: double.
+    TEST_ASSERT_TRUE(gSettings.get().stealthEnabled);
+    TEST_ASSERT_EQUAL_INT(1, gDisplay.hideBrightnessSliderCalls);
+
+    setUp();
+    processInput(1500, true);
+    processInput(1800, false);
+    processInput(2100, true);
+    processInput(2400, false); // At 600 ms this is an ordinary settings exit.
+    TEST_ASSERT_FALSE(gSettings.get().stealthEnabled);
+    TEST_ASSERT_EQUAL_INT(1, gDisplay.hideBrightnessSliderCalls);
 }
 
 int main(int, char**) {
@@ -242,5 +373,12 @@ int main(int, char**) {
     RUN_TEST(test_boot_release_below_four_seconds_keeps_short_press_behavior);
     RUN_TEST(test_eligible_ten_second_boot_hold_pairs_obd_instead_of_maintenance);
     RUN_TEST(test_invalid_coordinates_cannot_edit_slider_values);
+    RUN_TEST(test_interrupted_boot_requires_release_before_any_new_gesture);
+    RUN_TEST(test_warning_restores_settings_while_canceled_boot_remains_held);
+    RUN_TEST(test_settings_entry_and_both_exit_paths_cancel_existing_screen_contact);
+    RUN_TEST(test_obd_release_crossing_threshold_uses_release_duration);
+    RUN_TEST(test_obd_release_uses_current_safety_and_status_with_maintenance_fallback);
+    RUN_TEST(test_ten_second_hold_in_settings_keeps_maintenance_save_fallback);
+    RUN_TEST(test_short_and_double_boot_thresholds_are_unchanged);
     return UNITY_END();
 }

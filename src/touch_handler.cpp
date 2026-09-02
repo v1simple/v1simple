@@ -236,6 +236,13 @@ bool TouchHandler::getTouchPoint(int16_t& x, int16_t& y) {
     uint8_t numPoints = buff[1];
 
     if (numPoints == 0 || numPoints > 4) {
+        if (releaseRequired_) {
+            if (numPoints != 0) {
+                return false;
+            }
+            releaseRequired_ = false;
+            lastReleaseTime_ = now;
+        }
         // No touch - track when finger was released
         touchReadValid_ = true;
         noteNoTouch(now);
@@ -248,7 +255,7 @@ bool TouchHandler::getTouchPoint(int16_t& x, int16_t& y) {
 
     // Supplier raw coordinates use the long X axis and short Y axis, with
     // inclusive endpoints. An impossible report is not a finger release.
-    if (x > 640 || y > 172) {
+    if (x > 640 || y > 172 || releaseRequired_) {
         return false;
     }
     touchReadValid_ = true;

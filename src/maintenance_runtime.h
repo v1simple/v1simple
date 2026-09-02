@@ -99,6 +99,7 @@ class MaintenanceRuntime : public PowerLifecycle {
 
     String shownIp_;
     uint32_t bootButtonPressStartMs_ = 0;
+    bool bootButtonReleaseRequired_ = false;
     bool shownStation_ = false;
     bool exitRequestFired_ = false;
     bool idleHeapLogged_ = false;

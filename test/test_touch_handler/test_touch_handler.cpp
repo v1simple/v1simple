@@ -71,10 +71,41 @@ void test_invalid_coordinates_during_contact_do_not_create_a_recovery_tap() {
     TEST_ASSERT_TRUE(poll(1750, 150, 100));
 }
 
+void test_required_release_ignores_contacts_and_invalid_observations() {
+    for (bool previouslyDown : {false, true}) {
+        setUp();
+        if (previouslyDown) {
+            TEST_ASSERT_TRUE(poll(1000, 100, 100));
+        }
+        touch.requireRelease();
+        TEST_ASSERT_FALSE(touch.isTouchActive());
+        TEST_ASSERT_FALSE(poll(1250, 100, 100));
+        TEST_ASSERT_FALSE(touch.isTouchActive());
+        TEST_ASSERT_FALSE(poll(1500, 514, 514));
+        TEST_ASSERT_FALSE(poll(1750, 0, 0, 5));
+
+        mockMillis = 2000;
+        Wire.queueRequestFrom(0, {});
+        TEST_ASSERT_FALSE(touch.getTouchPoint(readX, readY));
+        mockMillis = 2250;
+        Wire.queueEndTransmission(2);
+        TEST_ASSERT_FALSE(touch.getTouchPoint(readX, readY));
+        TEST_ASSERT_FALSE(poll(2500, 100, 100));
+        TEST_ASSERT_FALSE(touch.isTouchActive());
+
+        TEST_ASSERT_FALSE(poll(2750, 0, 0, 0)); // Only an observed release unlocks.
+        TEST_ASSERT_FALSE(poll(2800, 100, 100)); // Preserve the 100 ms release debounce.
+        TEST_ASSERT_FALSE(poll(3000, 100, 100)); // Early recontact stays suppressed.
+        TEST_ASSERT_FALSE(poll(3050, 0, 0, 0));
+        TEST_ASSERT_TRUE(poll(3150, 100, 100));
+    }
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_impossible_coordinates_are_invalid_without_bus_recovery);
     RUN_TEST(test_supplier_raw_extrema_and_contact_counts_remain_accepted);
     RUN_TEST(test_invalid_coordinates_during_contact_do_not_create_a_recovery_tap);
+    RUN_TEST(test_required_release_ignores_contacts_and_invalid_observations);
     return UNITY_END();
 }

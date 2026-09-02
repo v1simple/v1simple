@@ -19,6 +19,11 @@ bool TouchUiModule::process(unsigned long nowMs, bool bootPressed) {
     if (!display_ || !touchHandler_ || !settings_)
         return false;
 
+    const bool bootInputAllowed = !bootReleaseRequired_;
+    if (!bootPressed) {
+        bootReleaseRequired_ = false;
+    }
+
     // BOOT button handling:
     // - Short press: enter/exit adjust mode
     // - 4s hold/release: request reboot into maintenance mode
@@ -26,11 +31,11 @@ bool TouchUiModule::process(unsigned long nowMs, bool bootPressed) {
     //
     // Maintenance entry fires on release, not at the threshold, so a user can
     // continue holding to the 10s OBD gesture without being rebooted at 4s.
-    if (bootPressed && !bootWasPressed_) {
+    if (bootInputAllowed && bootPressed && !bootWasPressed_) {
         bootPressStart_ = nowMs;
     }
 
-    if (bootPressed) {
+    if (bootInputAllowed && bootPressed) {
         const unsigned long held = nowMs - bootPressStart_;
 
         const bool shouldArmObdPair =
@@ -42,9 +47,10 @@ bool TouchUiModule::process(unsigned long nowMs, bool bootPressed) {
     }
 
     // On release: determine action based on hold duration
-    if (!bootPressed && bootWasPressed_) {
+    if (bootInputAllowed && !bootPressed && bootWasPressed_) {
         unsigned long pressDuration = nowMs - bootPressStart_;
-        const bool triggerObdPair = obdPairGestureArmed_ && pressDuration >= OBD_PAIR_LONG_PRESS_MS;
+        const bool triggerObdPair = pressDuration >= OBD_PAIR_LONG_PRESS_MS && !brightnessAdjustMode_ &&
+                                    canArmObdPairGesture(nowMs);
 
         if (obdPairGestureArmed_) {
             obdPairGestureArmed_ = false;
@@ -97,7 +103,7 @@ bool TouchUiModule::process(unsigned long nowMs, bool bootPressed) {
         }
     }
 
-    bootWasPressed_ = bootPressed;
+    bootWasPressed_ = bootInputAllowed && bootPressed;
 
     // If in settings adjustment mode, handle touch sliders and debounce test voice.
     if (brightnessAdjustMode_) {
@@ -115,9 +121,13 @@ bool TouchUiModule::process(unsigned long nowMs, bool bootPressed) {
 void TouchUiModule::suspendForPresentationOwner() {
     bootPressStart_ = 0;
     bootWasPressed_ = false;
+    bootReleaseRequired_ = true;
     obdPairGestureArmed_ = false;
     lastShortPressReleaseMs_ = 0;
     lastVolumeChangeMs_ = 0;
+    if (touchHandler_) {
+        touchHandler_->requireRelease();
+    }
     if (display_) {
         // State-only setter; the warning owner remains the sole flusher. The
         // authoritative redraw after release will paint the cleared attention.
@@ -159,6 +169,7 @@ void TouchUiModule::updateObdIndicatorAttention(bool attention, unsigned long no
 }
 
 void TouchUiModule::enterAdjustMode() {
+    touchHandler_->requireRelease();
     const V1Settings& s = settings_->get();
     brightnessAdjustMode_ = true;
     brightnessAdjustValue_ = s.brightness;
@@ -171,6 +182,7 @@ void TouchUiModule::enterAdjustMode() {
 }
 
 void TouchUiModule::exitAdjustModeAndSave(bool deferPersistence) {
+    touchHandler_->requireRelease();
     brightnessAdjustMode_ = false;
     settings_->updateBrightness(brightnessAdjustValue_);
     settings_->updateVoiceVolume(volumeAdjustValue_);

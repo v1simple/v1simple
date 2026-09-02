@@ -21,9 +21,12 @@ public:
     // returns false and only the level state (isTouchActive) stays true.
     bool getTouchPoint(int16_t& x, int16_t& y) {
         ++getTouchPointCalls;
+        touchReadValid_ = false;
         if (touches_.empty()) {
             // No touch data this poll: finger is up (real driver noteNoTouch).
             touchActive_ = false;
+            releaseRequired_ = false;
+            touchReadValid_ = true;
             return false;
         }
 
@@ -31,8 +34,15 @@ public:
         touches_.pop_front();
         if (!point.active) {
             touchActive_ = false;
+            releaseRequired_ = false;
+            touchReadValid_ = true;
             return false;
         }
+
+        if (point.x < 0 || point.x > 640 || point.y < 0 || point.y > 172 || releaseRequired_) {
+            return false;
+        }
+        touchReadValid_ = true;
 
         const bool newTap = !touchActive_;
         touchActive_ = true;
@@ -46,7 +56,12 @@ public:
     }
 
     // Level state, matching src/touch_handler.h.
-    bool isTouchActive() const { return touchActive_; }
+    bool isTouchActive() const { return touchReadValid_ && touchActive_; }
+
+    void requireRelease() {
+        releaseRequired_ = true;
+        touchReadValid_ = false;
+    }
 
     void queueTouch(int16_t x, int16_t y) {
         touches_.push_back(TouchPoint{x, y, true});
@@ -60,6 +75,8 @@ public:
         touches_.clear();
         getTouchPointCalls = 0;
         touchActive_ = false;
+        touchReadValid_ = false;
+        releaseRequired_ = false;
     }
 
     int getTouchPointCalls = 0;
@@ -67,6 +84,8 @@ public:
 private:
     std::deque<TouchPoint> touches_;
     bool touchActive_ = false;
+    bool touchReadValid_ = false;
+    bool releaseRequired_ = false;
 };
 
 #endif  // TOUCH_HANDLER_H

@@ -77,6 +77,7 @@ class TouchUiModule {
 
     unsigned long bootPressStart_ = 0;
     bool bootWasPressed_ = false;
+    bool bootReleaseRequired_ = false;
     bool obdPairGestureArmed_ = false;
     unsigned long lastShortPressReleaseMs_ = 0;
 

@@ -54,6 +54,12 @@ class TouchHandler {
     // Only a valid latest poll can confirm a hold; read failures are not releases.
     bool isTouchActive() const { return touchReadValid_ && touchActive_; }
 
+    // Cancel input across presentation changes until a valid release is read.
+    void requireRelease() {
+        releaseRequired_ = true;
+        touchReadValid_ = false;
+    }
+
     // Reset the touch controller
     void reset();
 
@@ -65,6 +71,7 @@ class TouchHandler {
     bool touchAvailable_ = false;
     bool touchActive_;
     bool touchReadValid_ = false;
+    bool releaseRequired_ = false;
     uint32_t lastTouchTime_;
     uint32_t lastReleaseTime_; // When finger was last released
     uint32_t touchDebounceMs_;

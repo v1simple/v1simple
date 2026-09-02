@@ -80,19 +80,23 @@ function normalizeRequestOptions(url, opts) {
 /**
  * Wrap fetch() with an AbortController timeout so hung requests
  * on a flaky ESP32 AP link don't pile up forever.
+ * Without a consumer, return the original Response at headers as before.
+ * An optional consumer keeps the same deadline active through body reading.
  *
+ * @template [T=Response]
  * @param {string} url
  * @param {RequestInit} [opts]
  * @param {number} [timeoutMs=5000]
- * @returns {Promise<Response>}
+ * @param {(response: Response) => T | Promise<T>} [consumeResponse]
+ * @returns {Promise<Response | T>}
  */
-export function fetchWithTimeout(url, opts = {}, timeoutMs = 5000) {
+export function fetchWithTimeout(url, opts = {}, timeoutMs = 5000, consumeResponse) {
     const requestOpts = normalizeRequestOptions(url, opts);
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), timeoutMs);
-    return fetch(url, { ...requestOpts, signal: controller.signal }).finally(() =>
-        clearTimeout(id)
-    );
+    const response = fetch(url, { ...requestOpts, signal: controller.signal });
+    return (consumeResponse ? response.then(consumeResponse) : response)
+        .finally(() => clearTimeout(id));
 }
 
 /**

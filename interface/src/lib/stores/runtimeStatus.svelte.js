@@ -74,11 +74,14 @@ async function fetchRuntimeStatus() {
     const fetchVersion = stateVersion;
 
     try {
-        const statusRes = await fetchWithTimeout('/api/status');
+        const statusRes = await fetchWithTimeout('/api/status', {}, undefined, async (response) => ({
+            ok: response.ok,
+            data: response.ok ? await response.json() : null
+        }));
         if (fetchVersion !== stateVersion || statusConsumerCount <= 0) return;
 
         if (statusRes.ok) {
-            runtimeStatus.set(await statusRes.json());
+            runtimeStatus.set(statusRes.data);
             runtimeStatusError.set(null);
             return;
         }
@@ -89,10 +92,10 @@ async function fetchRuntimeStatus() {
             runtimeStatusError.set('Connection lost');
         }
     } finally {
-        if (fetchVersion === stateVersion && statusConsumerCount > 0) {
-            runtimeStatusLoading.set(false);
+        if (fetchVersion === stateVersion) {
+            statusFetchInFlight = false;
+            if (statusConsumerCount > 0) runtimeStatusLoading.set(false);
         }
-        statusFetchInFlight = false;
     }
 }
 

@@ -222,6 +222,8 @@ VoiceAction VoiceModule::prepareAction(const VoiceContext& ctx) {
             const AlertData& alert = ctx.alerts[i];
             if (!alert.isValid || alert.band == BAND_NONE)
                 continue;
+            if (alert.photoType != 0)
+                continue;
 
             uint16_t alertFreq = (uint16_t)alert.frequency;
 

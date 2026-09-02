@@ -122,8 +122,8 @@ FrameV1Alerts buildFrameV1Alerts(const RenderFrame& frame) {
 
 bool pendingVoiceActionStillCurrent(const VoiceAction& action, const FrameV1Alerts& alerts) {
     const auto matches = [&](const AlertData& alert) {
-        return alert.band == action.sourceBand && static_cast<uint16_t>(alert.frequency) == action.freq &&
-               alert.direction == action.sourceDirection;
+        return alert.photoType == 0 && alert.band == action.sourceBand &&
+               static_cast<uint16_t>(alert.frequency) == action.freq && alert.direction == action.sourceDirection;
     };
 
     if (action.type == VoiceAction::Type::ANNOUNCE_PRIORITY ||

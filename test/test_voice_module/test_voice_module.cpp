@@ -474,6 +474,53 @@ void test_process_announces_normal_k_when_phototype_zero() {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(AlertBand::K), static_cast<int>(action.band));
 }
 
+void test_secondary_photo_is_skipped_without_hiding_later_ordinary_k() {
+    AlertData alerts[] = {
+        AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700),
+        AlertData::create(BAND_K, DIR_FRONT, 2, 0, 24125),
+        AlertData::create(BAND_K, DIR_REAR, 2, 0, 24200),
+    };
+    alerts[1].photoType = 1;
+    VoiceContext ctx;
+    ctx.priority = &alerts[0];
+    ctx.alerts = alerts;
+    ctx.alertCount = 3;
+    ctx.mainVolume = 5;
+    ctx.now = 1000;
+    TEST_ASSERT_EQUAL(VoiceAction::Type::ANNOUNCE_PRIORITY, voiceModule.process(ctx).type);
+    ctx.now = 3000;
+    const VoiceAction action = voiceModule.prepareAction(ctx);
+    TEST_ASSERT_EQUAL(VoiceAction::Type::ANNOUNCE_SECONDARY, action.type);
+    TEST_ASSERT_EQUAL_UINT16(24200, action.freq);
+    TEST_ASSERT_EQUAL(AlertBand::K, action.band);
+    TEST_ASSERT_EQUAL_UINT8(3, action.sourceAlertCount);
+    TEST_ASSERT_EQUAL_UINT8(1, alerts[1].photoType);
+}
+
+void test_only_photo_secondary_stays_unheard_and_can_recover_as_ordinary_k() {
+    AlertData alerts[] = {
+        AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700),
+        AlertData::create(BAND_K, DIR_FRONT, 2, 0, 24125),
+    };
+    alerts[1].photoType = 1;
+    VoiceContext ctx;
+    ctx.priority = &alerts[0];
+    ctx.alerts = alerts;
+    ctx.alertCount = 2;
+    ctx.mainVolume = 5;
+    ctx.now = 1000;
+    TEST_ASSERT_EQUAL(VoiceAction::Type::ANNOUNCE_PRIORITY, voiceModule.process(ctx).type);
+    ctx.now = 3000;
+    TEST_ASSERT_EQUAL(VoiceAction::Type::NONE, voiceModule.process(ctx).type);
+    alerts[1].photoType = 0;
+    ctx.now = 3100;
+    const VoiceAction recovered = voiceModule.process(ctx);
+    TEST_ASSERT_EQUAL(VoiceAction::Type::ANNOUNCE_SECONDARY, recovered.type);
+    TEST_ASSERT_EQUAL_UINT16(24125, recovered.freq);
+    ctx.now = 3101;
+    TEST_ASSERT_EQUAL(VoiceAction::Type::NONE, voiceModule.process(ctx).type);
+}
+
 void test_prepare_priority_does_not_commit_until_playback_accepts() {
     AlertData alert = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700);
     VoiceContext ctx;
@@ -682,6 +729,8 @@ int main() {
     // Photo-radar voice suppression
     RUN_TEST(test_process_suppresses_voice_for_priority_photo_radar);
     RUN_TEST(test_process_announces_normal_k_when_phototype_zero);
+    RUN_TEST(test_secondary_photo_is_skipped_without_hiding_later_ordinary_k);
+    RUN_TEST(test_only_photo_secondary_stays_unheard_and_can_recover_as_ordinary_k);
     RUN_TEST(test_prepare_priority_does_not_commit_until_playback_accepts);
     RUN_TEST(test_prepare_direction_and_secondary_remain_retryable_until_commit);
     RUN_TEST(test_prepare_escalation_is_not_marked_announced_before_commit);

@@ -66,7 +66,46 @@ void resetCardTemporalState(CardsRenderCache& cache) {
 SecondaryCardFrame evolveSecondaryCardState(CardsRenderCache& cache, const AlertData* alerts, int alertCount,
                                             const AlertData& priority, unsigned long now, unsigned long gracePeriodMs,
                                             bool expireForVisualPreview) {
-    if (cache.lastPriority.isValid && cache.lastPriority.band != BAND_NONE) {
+    for (CardSlot& slot : cache.slots) {
+        if (slot.lastSeen == 0) continue;
+        bool stillExists = false;
+        for (int i = 0; alerts && i < alertCount; ++i) {
+            if (alertsContinuityMatch(slot.alert, alerts[i])) {
+                stillExists = true;
+                slot.alert = alerts[i];
+                slot.lastSeen = now;
+                break;
+            }
+        }
+        // Refresh first: continuity jitter can move this slot onto the new priority.
+        if (alertMatchesPriority(slot.alert, priority) ||
+            (!stillExists && (expireForVisualPreview || (now - slot.lastSeen) > gracePeriodMs))) {
+            slot = CardSlot();
+        }
+    }
+
+    for (int i = 0; alerts && i < alertCount; ++i) {
+        if (!alerts[i].isValid || alerts[i].band == BAND_NONE || alertMatchesPriority(alerts[i], priority)) continue;
+        bool found = false;
+        for (const CardSlot& slot : cache.slots) {
+            if (slot.lastSeen > 0 && alertsContinuityMatch(slot.alert, alerts[i])) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            for (CardSlot& slot : cache.slots) {
+                if (slot.lastSeen == 0) {
+                    slot.alert = alerts[i];
+                    slot.lastSeen = now;
+                    break;
+                }
+            }
+        }
+    }
+
+    // Live rows use released capacity before a vanished priority receives grace.
+    if (!expireForVisualPreview && cache.lastPriority.isValid && cache.lastPriority.band != BAND_NONE) {
         const bool priorityChanged = !alertsIdentityMatch(cache.lastPriority, priority);
         bool oldPriorityGone = true;
         for (int i = 0; alerts && i < alertCount; ++i) {
@@ -98,42 +137,6 @@ SecondaryCardFrame evolveSecondaryCardState(CardsRenderCache& cache, const Alert
         }
     }
     cache.lastPriority = priority;
-
-    for (CardSlot& slot : cache.slots) {
-        if (slot.lastSeen == 0) continue;
-        bool stillExists = false;
-        for (int i = 0; alerts && i < alertCount; ++i) {
-            if (alertsContinuityMatch(slot.alert, alerts[i])) {
-                stillExists = true;
-                slot.alert = alerts[i];
-                slot.lastSeen = now;
-                break;
-            }
-        }
-        if (!stillExists && (expireForVisualPreview || (now - slot.lastSeen) > gracePeriodMs)) {
-            slot = CardSlot();
-        }
-    }
-
-    for (int i = 0; alerts && i < alertCount; ++i) {
-        if (!alerts[i].isValid || alerts[i].band == BAND_NONE || alertMatchesPriority(alerts[i], priority)) continue;
-        bool found = false;
-        for (const CardSlot& slot : cache.slots) {
-            if (slot.lastSeen > 0 && alertsContinuityMatch(slot.alert, alerts[i])) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            for (CardSlot& slot : cache.slots) {
-                if (slot.lastSeen == 0) {
-                    slot.alert = alerts[i];
-                    slot.lastSeen = now;
-                    break;
-                }
-            }
-        }
-    }
 
     SecondaryCardFrame frame;
     for (int c = 0; c < 2 && frame.count < 2; ++c) {

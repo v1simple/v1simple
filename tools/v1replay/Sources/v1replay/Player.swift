@@ -425,8 +425,15 @@ final class Player {
 
     private func playTimeline() -> Outcome {
         setPhase(.playing)
-        var index = startIndex()
+        let start = startIndex()
+        var index = start.index
         var deadline = hostMonotonicNanoseconds()
+        if !start.wasSeek, let first = encounter.samples.first {
+            deadline = advanceReplayDeadline(
+                deadline,
+                by: replayIntervalNanoseconds(first.offset / currentSpeed())
+            )
+        }
         var applyGap = false
 
         while index < encounter.samples.count {
@@ -665,14 +672,15 @@ final class Player {
         lock.unlock()
     }
 
-    private func startIndex() -> Int {
+    private func startIndex() -> (index: Int, wasSeek: Bool) {
         lock.lock()
+        let wasSeek = _seekRequest != nil
         let index = _seekRequest ?? 0
         _seekRequest = nil
         _index = index
         _elapsed = index < encounter.samples.count ? encounter.samples[index].offset : 0
         lock.unlock()
-        return index
+        return (index, wasSeek)
     }
 
     private func consumeSeek() -> Int? {

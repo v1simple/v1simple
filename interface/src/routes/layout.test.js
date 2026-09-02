@@ -1,4 +1,4 @@
-import { createRawSnippet } from 'svelte';
+import { createRawSnippet, flushSync, tick } from 'svelte';
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -60,8 +60,31 @@ function installLayoutFetch() {
     );
 }
 
+function installDesktopMedia(matches = false) {
+    const listeners = new Set();
+    const media = {
+        matches,
+        media: '(min-width: 48rem)',
+        addEventListener: vi.fn((type, listener) => {
+            if (type === 'change') listeners.add(listener);
+        }),
+        removeEventListener: vi.fn((type, listener) => {
+            if (type === 'change') listeners.delete(listener);
+        }),
+        change(next) {
+            media.matches = next;
+            for (const listener of listeners) listener(media);
+        }
+    };
+    vi.stubGlobal('matchMedia', vi.fn(() => media));
+    return media;
+}
+
 describe('root layout', () => {
+    let desktopMedia;
+
     beforeEach(() => {
+        desktopMedia = installDesktopMedia();
         installStorage('sessionStorage');
         installStorage('localStorage');
         document.documentElement.dataset.theme = 'amethyst';
@@ -240,6 +263,102 @@ describe('root layout', () => {
         const second = renderLayout();
         expect(await screen.findByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument();
         second.unmount();
+    });
+
+    it('closes mobile navigation at the desktop breakpoint and restores workspace interaction', async () => {
+        installLayoutFetch();
+        pageStore.setPath('/colors');
+        document.body.style.overflow = 'scroll';
+        const { container, unmount } = renderLayout();
+        try {
+            const menu = screen.getByRole('button', { name: /open navigation menu/i });
+            const workspace = container.querySelector('.shell-workspace');
+            const desktopLink = container.querySelector('.desktop-sidebar a[aria-current="page"]');
+            await fireEvent.click(screen.getByRole('button', { name: 'Collapse sidebar' }));
+            await fireEvent.click(menu);
+            expect(workspace).toHaveProperty('inert', true);
+            expect(document.body.style.overflow).toBe('hidden');
+
+            desktopMedia.change(true);
+            await waitFor(() => expect(menu).toHaveAttribute('aria-expanded', 'false'));
+            expect(workspace).toHaveProperty('inert', false);
+            expect(document.body.style.overflow).toBe('scroll');
+            await waitFor(() => expect(desktopLink).toHaveFocus());
+            expect(localStorage.getItem('v1simple:sidebarCollapsed')).toBe('1');
+            expect(container.querySelector('.desktop-sidebar')).toHaveClass('collapsed');
+
+            desktopMedia.change(false);
+            await tick();
+            expect(menu).toHaveAttribute('aria-expanded', 'false');
+            await fireEvent.click(menu);
+            expect(menu).toHaveAttribute('aria-expanded', 'true');
+            desktopMedia.change(true);
+            await waitFor(() => expect(workspace).toHaveProperty('inert', false));
+        } finally {
+            unmount();
+            document.body.style.overflow = '';
+        }
+    });
+
+    it('removes its breakpoint listener and restores overflow when an open drawer unmounts', async () => {
+        installLayoutFetch();
+        document.body.style.overflow = 'auto';
+        const { unmount } = renderLayout();
+        await fireEvent.click(screen.getByRole('button', { name: /open navigation menu/i }));
+        const listener = desktopMedia.addEventListener.mock.calls[0]?.[1];
+        unmount();
+        expect(document.body.style.overflow).toBe('auto');
+        document.body.style.overflow = '';
+        expect(listener).toBeTypeOf('function');
+        expect(desktopMedia.removeEventListener).toHaveBeenCalledWith('change', listener);
+    });
+
+    it('keeps desktop startup closed without moving focus and preserves the collapse preference', async () => {
+        installLayoutFetch();
+        desktopMedia.matches = true;
+        localStorage.setItem('v1simple:sidebarCollapsed', '1');
+        const { container, unmount } = renderLayout();
+        await tick();
+        expect(window.matchMedia).toHaveBeenCalledWith('(min-width: 48rem)');
+        expect(container.querySelector('.shell-workspace')).toHaveProperty('inert', false);
+        expect(container.querySelector('.desktop-sidebar')).toHaveClass('collapsed');
+        expect(document.activeElement).toBe(document.body);
+        unmount();
+    });
+
+    it('does not focus a hidden drawer when desktop takes over before opening focus settles', async () => {
+        installLayoutFetch();
+        const { container, unmount } = renderLayout();
+        const close = container.querySelector('.mobile-drawer-head button');
+        const closeFocus = vi.spyOn(close, 'focus');
+        flushSync(() => screen.getByRole('button', { name: /open navigation menu/i }).click());
+        flushSync(() => desktopMedia.change(true));
+        await tick();
+        expect(closeFocus).not.toHaveBeenCalled();
+        await waitFor(() => expect(container.querySelector('.desktop-sidebar a[aria-current="page"]')).toHaveFocus());
+        unmount();
+    });
+
+    it('keeps focus in a rapidly reopened mobile drawer and wraps Tab normally', async () => {
+        installLayoutFetch();
+        const { container, unmount } = renderLayout();
+        const menu = screen.getByRole('button', { name: /open navigation menu/i });
+        await fireEvent.click(menu);
+        const drawer = screen.getByRole('dialog', { name: 'Main navigation' });
+        const menuFocus = vi.spyOn(menu, 'focus');
+        flushSync(() => drawer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+        flushSync(() => menu.click());
+        await tick();
+        expect(menuFocus).not.toHaveBeenCalled();
+        await waitFor(() => expect(container.querySelector('.mobile-drawer-head button')).toHaveFocus());
+        const first = drawer.querySelector('a[href]');
+        const last = drawer.querySelector('a[href="/settings"]');
+        last.focus();
+        await fireEvent.keyDown(drawer, { key: 'Tab' });
+        expect(first).toHaveFocus();
+        await fireEvent.keyDown(drawer, { key: 'Tab', shiftKey: true });
+        expect(last).toHaveFocus();
+        unmount();
     });
 
     it('shows and dismisses the default-password warning', async () => {

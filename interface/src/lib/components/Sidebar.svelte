@@ -50,12 +50,21 @@
     ];
 
     let collapsed = $state(false);
+    let desktopSidebar = $state(null);
     let drawer = $state(null);
     let closeButton = $state(null);
+    let desktopMedia;
     let wasOpen = false;
 
     onMount(() => {
         collapsed = localStorage.getItem(COLLAPSED_STORAGE_KEY) === '1';
+        desktopMedia = window.matchMedia('(min-width: 48rem)');
+        const closeOnDesktop = () => {
+            if (desktopMedia.matches && open) onclose();
+        };
+        desktopMedia.addEventListener('change', closeOnDesktop);
+        closeOnDesktop();
+        return () => desktopMedia.removeEventListener('change', closeOnDesktop);
     });
 
     $effect(() => {
@@ -63,7 +72,9 @@
             wasOpen = true;
             const priorOverflow = document.body.style.overflow;
             document.body.style.overflow = 'hidden';
-            void tick().then(() => closeButton?.focus());
+            void tick().then(() => {
+                if (open && !desktopMedia?.matches && closeButton?.isConnected) closeButton.focus();
+            });
             return () => {
                 document.body.style.overflow = priorOverflow;
             };
@@ -71,7 +82,13 @@
 
         if (wasOpen) {
             wasOpen = false;
-            void tick().then(() => trigger?.focus());
+            void tick().then(() => {
+                if (open) return;
+                const target = desktopMedia?.matches
+                    ? desktopSidebar?.querySelector('a[aria-current="page"]') ?? desktopSidebar?.querySelector('.sidebar-brand')
+                    : trigger;
+                if (target?.isConnected) target.focus();
+            });
         }
     });
 
@@ -157,7 +174,7 @@
     </div>
 {/snippet}
 
-<aside class="desktop-sidebar surface-chrome" class:collapsed aria-label="Application sidebar">
+<aside bind:this={desktopSidebar} class="desktop-sidebar surface-chrome" class:collapsed aria-label="Application sidebar">
     <a href="/" class="sidebar-brand" aria-label="V1 Simple dashboard">
         <span class="sidebar-brand-mark" aria-hidden="true">V1</span>
         <span class="sidebar-brand-name">V1Simple</span>

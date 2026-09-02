@@ -977,6 +977,121 @@ void test_noise_window_raw_activity_keeps_live_session() {
     TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, alpRuntimeModule.currentEvent().gun);
 }
 
+static void beginUnknownTargetedSession() {
+    beginEnabled();
+    const uint8_t idle[] = {0xB0, 0x03, 0x00, 0x33};
+    const uint8_t targeted[] = {0xB0, 0x01, 0x00, 0x31};
+    inject(idle, sizeof(idle));
+    processAt(1000);
+    inject(targeted, sizeof(targeted));
+    processAt(2000);
+    TEST_ASSERT_TRUE(alpRuntimeModule.currentSession().active);
+    TEST_ASSERT_EQUAL(AlpGunType::UNKNOWN, alpRuntimeModule.currentSession().gun);
+    TEST_ASSERT_EQUAL_UINT(0, alpRuntimeModule.testGetRingLen());
+}
+
+void test_noise_recovery_preserves_burst_before_trailing_heartbeat() {
+    // Clean input and a gun frame at the end are controls for the burst
+    // previously discarded between a noise prefix and its trailing heartbeat.
+    for (int variant = 0; variant < 3; ++variant) {
+        resetModule();
+        SystemEventBus bus;
+        bus.reset();
+        alpRuntimeModule.setEventBus(&bus);
+        beginUnknownTargetedSession();
+        const uint32_t sessionStart = alpRuntimeModule.currentSession().startMs;
+        if (variant != 0) {
+            uint8_t noise[64];
+            memset(noise, 0xFF, sizeof(noise));
+            inject(noise, sizeof(noise));
+            processAt(2100);
+            TEST_ASSERT_EQUAL(AlpState::NOISE_WINDOW, alpRuntimeModule.getState());
+            TEST_ASSERT_EQUAL_UINT(3, alpRuntimeModule.testGetRingLen());
+        }
+        (void)bus.consumeAlpStateChanged();
+        inject(BURST_PL3_DETECT, sizeof(BURST_PL3_DETECT));
+        const uint8_t idle[] = {0xB0, 0x03, 0x00, 0x33};
+        const uint8_t gun[] = {0xC8, 0x0D, 0x00, 0x55};
+        inject(variant == 2 ? gun : idle, sizeof(idle));
+        processAt(2200);
+
+        TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, alpRuntimeModule.currentSession().gun);
+        TEST_ASSERT_TRUE(alpRuntimeModule.currentSession().active);
+        TEST_ASSERT_EQUAL_UINT32(sessionStart, alpRuntimeModule.currentSession().startMs);
+        TEST_ASSERT_TRUE(alpRuntimeModule.currentEvent().active);
+        TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, alpRuntimeModule.currentEvent().gun);
+        TEST_ASSERT_TRUE(bus.consumeAlpStateChanged());
+        TEST_ASSERT_EQUAL_UINT(0, alpRuntimeModule.testGetRingLen());
+        if (variant != 2) {
+            TEST_ASSERT_EQUAL(AlpState::TEARDOWN, alpRuntimeModule.getState());
+        }
+    }
+}
+
+void test_noise_recovery_scans_full_ring_in_one_process() {
+    beginUnknownTargetedSession();
+    uint8_t data[64];
+    memset(data, 0xFF, 36);
+    memcpy(data + 36, BURST_PL3_DETECT, sizeof(BURST_PL3_DETECT));
+    const uint8_t idle[] = {0xB0, 0x03, 0x00, 0x33};
+    memcpy(data + 60, idle, sizeof(idle));
+    inject(data, sizeof(data));
+    TEST_ASSERT_EQUAL_UINT(sizeof(data), alpRuntimeModule.testGetRingLen());
+    processAt(2100);
+
+    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, alpRuntimeModule.currentSession().gun);
+    TEST_ASSERT_TRUE(alpRuntimeModule.currentEvent().active);
+    TEST_ASSERT_EQUAL(AlpState::TEARDOWN, alpRuntimeModule.getState());
+    TEST_ASSERT_EQUAL_UINT(0, alpRuntimeModule.testGetRingLen());
+}
+
+void test_noise_recovery_retains_each_partial_gun_frame() {
+    for (size_t partial = 0; partial < AlpRuntimeModule::FRAME_LEN; ++partial) {
+        resetModule();
+        beginUnknownTargetedSession();
+        uint8_t noise[64];
+        memset(noise, 0xFF, sizeof(noise));
+        inject(noise, sizeof(noise));
+        processAt(2100);
+
+        // The fourth frame identifies the gun. Stop at its boundary or after
+        // one, two or three bytes, then complete the same received burst.
+        const size_t split = 12 + partial;
+        inject(BURST_PL3_DETECT, split);
+        processAt(2200);
+        TEST_ASSERT_EQUAL(AlpGunType::UNKNOWN, alpRuntimeModule.currentSession().gun);
+        TEST_ASSERT_EQUAL_UINT(partial, alpRuntimeModule.testGetRingLen());
+        if (partial != 0) {
+            TEST_ASSERT_EQUAL_MEMORY(BURST_PL3_DETECT + 12, alpRuntimeModule.testGetRingBuf(), partial);
+        }
+
+        inject(BURST_PL3_DETECT + split, sizeof(BURST_PL3_DETECT) - split);
+        const uint8_t idle[] = {0xB0, 0x03, 0x00, 0x33};
+        inject(idle, sizeof(idle));
+        processAt(2300);
+        TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, alpRuntimeModule.currentSession().gun);
+        TEST_ASSERT_TRUE(alpRuntimeModule.currentEvent().active);
+        TEST_ASSERT_EQUAL(AlpState::TEARDOWN, alpRuntimeModule.getState());
+        TEST_ASSERT_EQUAL_UINT(0, alpRuntimeModule.testGetRingLen());
+    }
+}
+
+void test_noise_recovery_does_not_invent_frames_from_repeated_noise() {
+    beginUnknownTargetedSession();
+    uint8_t noise[64];
+    memset(noise, 0xFF, sizeof(noise));
+    for (uint32_t batch = 0; batch < 3; ++batch) {
+        const size_t remainingCapacity = sizeof(noise) - alpRuntimeModule.testGetRingLen();
+        inject(noise, remainingCapacity);
+        processAt(2100 + batch * 100);
+        TEST_ASSERT_EQUAL(AlpState::NOISE_WINDOW, alpRuntimeModule.getState());
+        TEST_ASSERT_EQUAL(AlpGunType::UNKNOWN, alpRuntimeModule.currentSession().gun);
+        TEST_ASSERT_EQUAL_UINT32(2000, alpRuntimeModule.testGetLastFrameMs());
+        TEST_ASSERT_EQUAL_UINT(3, alpRuntimeModule.testGetRingLen());
+        TEST_ASSERT_EQUAL_MEMORY(noise, alpRuntimeModule.testGetRingBuf(), 3);
+    }
+}
+
 // ── Snapshot ─────────────────────────────────────────────────────────
 
 void test_snapshot_reflects_state() {
@@ -3145,6 +3260,10 @@ int main(int argc, char** argv) {
     RUN_TEST(test_noise_window_ends_on_valid_frame);
     RUN_TEST(test_noise_window_exit_preserves_live_session_into_teardown);
     RUN_TEST(test_noise_window_raw_activity_keeps_live_session);
+    RUN_TEST(test_noise_recovery_preserves_burst_before_trailing_heartbeat);
+    RUN_TEST(test_noise_recovery_scans_full_ring_in_one_process);
+    RUN_TEST(test_noise_recovery_retains_each_partial_gun_frame);
+    RUN_TEST(test_noise_recovery_does_not_invent_frames_from_repeated_noise);
 
     // Snapshot
     RUN_TEST(test_snapshot_reflects_state);

@@ -519,7 +519,9 @@ void AlpRuntimeModule::drainUart(uint32_t nowMs) {
 // checksum failures from ALERT_ACTIVE trigger NOISE_WINDOW transition.
 
 void AlpRuntimeModule::parseRingBuffer(uint32_t nowMs) {
-    int maxIterations = 32;
+    // Every attempt consumes at least one byte; drain all complete candidates
+    // in this bounded batch while retaining an incomplete frame for next time.
+    size_t maxIterations = RING_CAPACITY;
 
     while (ringLen_ >= FRAME_LEN && maxIterations-- > 0) {
         // Try to parse a valid 4-byte frame at current position
@@ -549,20 +551,8 @@ void AlpRuntimeModule::parseRingBuffer(uint32_t nowMs) {
             }
         }
 
-        // During NOISE_WINDOW, drain the buffer efficiently (no per-byte log)
-        if (state_ == AlpState::NOISE_WINDOW) {
-            if (ringLen_ > FRAME_LEN) {
-                // Keep one full 4-byte candidate frame so the next clean
-                // frame can terminate NOISE_WINDOW immediately instead of
-                // getting stranded behind a 3-byte tail.
-                size_t discard = ringLen_ - FRAME_LEN;
-                consumeBytes(discard);
-            } else {
-                consumeBytes(1);
-            }
-            continue;
-        }
-
+        // Noise can precede intact frames in the same batch. Slide to the next
+        // candidate instead of discarding bytes that have not been examined.
         consumeBytes(1);
     }
 }

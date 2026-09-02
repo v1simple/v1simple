@@ -51,9 +51,8 @@ class TouchHandler {
     // stays down it returns false. Use isTouchActive() for the level state.
     bool getTouchPoint(int16_t& x, int16_t& y);
 
-    // Level state: true while a finger is down (updated by getTouchPoint()
-    // polls). Long-press detection must use this, not getTouchPoint().
-    bool isTouchActive() const { return touchActive_; }
+    // Only a valid latest poll can confirm a hold; read failures are not releases.
+    bool isTouchActive() const { return touchReadValid_ && touchActive_; }
 
     // Reset the touch controller
     void reset();
@@ -65,6 +64,7 @@ class TouchHandler {
     int rstPin_;
     bool touchAvailable_ = false;
     bool touchActive_;
+    bool touchReadValid_ = false;
     uint32_t lastTouchTime_;
     uint32_t lastReleaseTime_; // When finger was last released
     uint32_t touchDebounceMs_;

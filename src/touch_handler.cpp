@@ -179,6 +179,7 @@ void TouchHandler::recoverI2cBus(uint32_t now) {
 }
 
 bool TouchHandler::getTouchPoint(int16_t& x, int16_t& y) {
+    touchReadValid_ = false;
     if (!touchAvailable_) {
         return false;
     }
@@ -223,6 +224,7 @@ bool TouchHandler::getTouchPoint(int16_t& x, int16_t& y) {
         buff[i] = Wire.read();
     }
     recordI2cSuccess();
+    touchReadValid_ = true;
 
     // Parse touch data from AXS15231B response
     // buff[0] = gesture (ignored)

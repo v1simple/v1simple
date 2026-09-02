@@ -99,37 +99,44 @@ VoiceAction VoiceModule::process(const VoiceContext& ctx) {
     return action;
 }
 
-VoiceAction VoiceModule::prepareAction(const VoiceContext& ctx) {
-    VoiceAction action; // Default = NONE
-
+bool VoiceModule::canAnnounceContext(const VoiceContext& ctx) const {
     if (!settings_)
-        return action;
+        return false;
     const V1Settings& s = settings_->get();
 
     if (s.voiceAlertMode == VOICE_MODE_DISABLED)
-        return action;
+        return false;
 
     if (s.muteVoiceIfVolZero && ctx.mainVolume == 0)
-        return action;
+        return false;
 
     // aux0 bit 0 is the V1 audio gate. The visible mute LED is independently
     // debounced and may not match the current audio state.
     if (ctx.isSoftMuted)
-        return action;
+        return false;
 
     if (ctx.isSuppressed)
-        return action;
+        return false;
 
     if (ctx.isProxyConnected)
-        return action;
+        return false;
 
     if (!ctx.priority || ctx.priority->band == BAND_NONE)
-        return action;
+        return false;
 
     // V1 represents photo radar as K band plus photoType. Suppress voice rather
     // than announcing it as an ordinary K-band alert.
     if (ctx.priority->photoType != 0)
+        return false;
+
+    return true;
+}
+
+VoiceAction VoiceModule::prepareAction(const VoiceContext& ctx) {
+    VoiceAction action; // Default = NONE
+    if (!canAnnounceContext(ctx))
         return action;
+    const V1Settings& s = settings_->get();
 
     // --- Priority Alert Logic ---
 

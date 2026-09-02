@@ -108,6 +108,8 @@ class VoiceModule {
 
     // Main decision method - returns what to announce (if anything)
     VoiceAction process(const VoiceContext& ctx);
+    // Current policy only; does not advance selection, history, or dedup state.
+    bool canAnnounceContext(const VoiceContext& ctx) const;
     VoiceAction prepareAction(const VoiceContext& ctx);
     void commitAction(const VoiceAction& action, unsigned long acceptedAtMs);
 

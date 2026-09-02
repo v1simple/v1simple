@@ -353,6 +353,10 @@ void DisplayPipelineModule::runVoice(const RenderFrame& frame, const V1Settings&
         return;
     }
 
+    if (hasPendingVoiceAction_ && !voice_->canAnnounceContext(voiceCtx)) {
+        return; // Keep the unheard action eligible when current suppression lifts.
+    }
+
     const VoiceAction voiceAction = hasPendingVoiceAction_ ? pendingVoiceAction_ : voice_->prepareAction(voiceCtx);
 
     if (!voiceAction.hasAction()) {

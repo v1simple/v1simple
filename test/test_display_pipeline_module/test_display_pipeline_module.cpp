@@ -275,6 +275,144 @@ void test_busy_voice_drops_stale_pending_action_when_alert_changes() {
     TEST_ASSERT_EQUAL_UINT16(24250, g_lastVoiceFrequency);
 }
 
+enum class RetryGate { SoftMute, VolumeZero, SpeedMute, Proxy, Disabled, PhotoPriority };
+
+static void setRetryGate(RetryGate gate, bool active) {
+    switch (gate) {
+    case RetryGate::SoftMute: parser.state.softMuted = active; break;
+    case RetryGate::VolumeZero: parser.setMainVolume(active ? 0 : 5); break;
+    case RetryGate::SpeedMute:
+        if (active) {
+            speedMute.begin(true, 25, 3, 0, true);
+            speedMute.update(0.0f, true, 2100);
+        } else {
+            speedMute.update(0.0f, false, 2151); // Lost speed fails open immediately.
+        }
+        break;
+    case RetryGate::Proxy: ble.setProxyConnected(active); break;
+    case RetryGate::Disabled:
+        settings.settings.voiceAlertMode = active ? VOICE_MODE_DISABLED : VOICE_MODE_BAND_FREQ;
+        break;
+    case RetryGate::PhotoPriority: {
+        AlertData alert = makeKAlert();
+        alert.photoType = active ? 1 : 0;
+        parser.setAlerts({alert});
+        break;
+    }
+    }
+}
+
+static void assertBusyRetryHonorsCurrentGate(RetryGate gate) {
+    settings.settings.muteVoiceIfVolZero = true;
+    parser.setMainVolume(5);
+    parser.setAlerts({makeKAlert()});
+    g_voicePlaybackResult = AudioPlaybackResult::Busy;
+    module.handleParsed(1000);
+    TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
+
+    setRetryGate(gate, true);
+    g_voicePlaybackResult = AudioPlaybackResult::Accepted;
+    module.handleParsed(2100);
+    module.handleParsed(2150);
+    TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
+
+    setRetryGate(gate, false);
+    module.handleParsed(2151); // Suppressed calls must not postpone eligibility.
+    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
+    TEST_ASSERT_EQUAL_UINT16(24148, g_lastVoiceFrequency);
+    module.handleParsed(2200);
+    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
+}
+
+void test_busy_voice_honors_new_soft_mute_then_recovers() {
+    assertBusyRetryHonorsCurrentGate(RetryGate::SoftMute);
+}
+void test_busy_voice_honors_new_volume_zero_then_recovers() {
+    assertBusyRetryHonorsCurrentGate(RetryGate::VolumeZero);
+}
+void test_busy_voice_honors_new_speed_suppression_then_recovers() {
+    assertBusyRetryHonorsCurrentGate(RetryGate::SpeedMute);
+}
+void test_busy_voice_honors_new_proxy_then_recovers() {
+    assertBusyRetryHonorsCurrentGate(RetryGate::Proxy);
+}
+void test_busy_voice_honors_disabled_mode_then_recovers() {
+    assertBusyRetryHonorsCurrentGate(RetryGate::Disabled);
+}
+void test_busy_voice_honors_photo_priority_then_recovers() {
+    assertBusyRetryHonorsCurrentGate(RetryGate::PhotoPriority);
+}
+
+void test_busy_voice_visible_mute_and_optional_volume_zero_remain_allowed() {
+    for (bool volumeZero : {false, true}) {
+        setUp();
+        parser.setMainVolume(5);
+        parser.setAlerts({makeKAlert()});
+        g_voicePlaybackResult = AudioPlaybackResult::Busy;
+        module.handleParsed(1000);
+        TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
+        if (volumeZero) {
+            settings.settings.muteVoiceIfVolZero = false;
+            parser.setMainVolume(0);
+        } else {
+            parser.state.muted = true;
+        }
+        g_voicePlaybackResult = AudioPlaybackResult::Accepted;
+        module.handleParsed(1100);
+        TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
+    }
+}
+
+void test_busy_secondary_survives_mute_without_consuming_unheard_dedup() {
+    settings.settings.announceSecondaryAlerts = true;
+    settings.settings.secondaryK = true;
+    parser.setMainVolume(5);
+    AlertData priority = makeKaAlert();
+    priority.isPriority = true;
+    AlertData secondary = makeKAlert();
+    secondary.isPriority = false;
+    parser.setAlerts({priority, secondary});
+    module.handleParsed(1000);
+    TEST_ASSERT_EQUAL_UINT16(priority.frequency, g_lastVoiceFrequency);
+    g_voicePlaybackResult = AudioPlaybackResult::Busy;
+    module.handleParsed(3000);
+    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
+    TEST_ASSERT_EQUAL_UINT16(secondary.frequency, g_lastVoiceFrequency);
+    parser.state.softMuted = true;
+    g_voicePlaybackResult = AudioPlaybackResult::Accepted;
+    module.handleParsed(3100);
+    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
+    parser.state.softMuted = false;
+    module.handleParsed(3101);
+    TEST_ASSERT_EQUAL_INT(3, g_voicePlaybackAttempts);
+    TEST_ASSERT_EQUAL_UINT16(secondary.frequency, g_lastVoiceFrequency);
+    module.handleParsed(3150);
+    TEST_ASSERT_EQUAL_INT(3, g_voicePlaybackAttempts);
+}
+
+void test_blocked_pending_voice_does_not_survive_source_replacement_or_clear() {
+    for (bool clear : {false, true}) {
+        setUp();
+        parser.setMainVolume(5);
+        parser.setAlerts({makeKAlert()});
+        g_voicePlaybackResult = AudioPlaybackResult::Busy;
+        module.handleParsed(1000);
+        parser.state.softMuted = true;
+        if (clear) parser.setAlerts({});
+        else parser.setAlerts({makeKAlert(24250)});
+        g_voicePlaybackResult = AudioPlaybackResult::Accepted;
+        module.handleParsed(1100);
+        TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
+        parser.state.softMuted = false;
+        parser.setAlerts({makeKAlert(24250)});
+        module.handleParsed(1101);
+        TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
+        TEST_ASSERT_EQUAL_UINT16(24250, g_lastVoiceFrequency);
+        module.handleParsed(1200);
+        TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
+    }
+}
+
 void test_unavailable_voice_is_not_retried_every_frame_or_committed() {
     parser.setMainVolume(5);
     parser.setAlerts({makeKAlert(24148)});
@@ -1071,6 +1209,15 @@ int main() {
     RUN_TEST(test_handle_parsed_promotes_display_v1_laser_and_keeps_radar_cards);
     RUN_TEST(test_busy_voice_keeps_exact_action_until_playback_accepts);
     RUN_TEST(test_busy_voice_drops_stale_pending_action_when_alert_changes);
+    RUN_TEST(test_busy_voice_honors_new_soft_mute_then_recovers);
+    RUN_TEST(test_busy_voice_honors_new_volume_zero_then_recovers);
+    RUN_TEST(test_busy_voice_honors_new_speed_suppression_then_recovers);
+    RUN_TEST(test_busy_voice_honors_new_proxy_then_recovers);
+    RUN_TEST(test_busy_voice_honors_disabled_mode_then_recovers);
+    RUN_TEST(test_busy_voice_honors_photo_priority_then_recovers);
+    RUN_TEST(test_busy_voice_visible_mute_and_optional_volume_zero_remain_allowed);
+    RUN_TEST(test_busy_secondary_survives_mute_without_consuming_unheard_dedup);
+    RUN_TEST(test_blocked_pending_voice_does_not_survive_source_replacement_or_clear);
     RUN_TEST(test_unavailable_voice_is_not_retried_every_frame_or_committed);
     RUN_TEST(test_handle_parsed_updates_resting_display_when_idle);
     RUN_TEST(test_handle_parsed_prefers_persisted_alert_when_configured);

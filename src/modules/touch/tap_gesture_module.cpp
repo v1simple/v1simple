@@ -76,8 +76,13 @@ void TapGestureModule::process(unsigned long nowMs) {
 
     auto performProfileCycle = [&]() {
         const V1Settings& s = settings_->get();
+        if (ble_->isConnected() && s.autoPushEnabled && autoPush_->isActive()) {
+            return;
+        }
         int newSlot = (s.activeSlot + 1) % 3;
-        settings_->setActiveSlot(newSlot, SettingsPersistMode::ImmediateNvsDeferredBackup);
+        if (!settings_->setActiveSlot(newSlot, SettingsPersistMode::ImmediateNvsDeferredBackup).success) {
+            return;
+        }
         *displayMode_ = DisplayMode::IDLE;
 
         alertPersistence_->clearPersistence();

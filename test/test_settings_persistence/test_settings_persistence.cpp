@@ -67,6 +67,15 @@ void ObdRuntimeModule::forgetDevice() {}
 #include "../../src/modules/obd/obd_api_service.cpp"
 #include "../../src/modules/wifi/backup_snapshot_cache.cpp"
 #include "../../src/modules/wifi/backup_api_service.cpp"
+#include "../mocks/ble_client.h"
+#include "../mocks/display.h"
+#include "../../src/packet_parser.cpp"
+#include "../../src/packet_parser_alerts.cpp"
+#include "../../src/touch_handler.cpp"
+#include "../../src/modules/quiet/quiet_coordinator_module.cpp"
+#include "../../src/modules/auto_push/auto_push_module.cpp"
+#include "../../src/modules/alert_persistence/alert_persistence_module.cpp"
+#include "../../src/modules/touch/tap_gesture_module.cpp"
 
 namespace {
 
@@ -3827,8 +3836,159 @@ void test_actual_backup_now_preserves_same_due_profile_snapshot() {
     TEST_ASSERT_EQUAL_UINT32(0, manager.backupDueRevision());
 }
 
+
+namespace {
+// Exercise the actual setter, profile loader and push executor through real
+// contact reports. BLE/display mocks capture the resulting command boundary.
+struct ProfileTapHarness {
+    TouchHandler touch;
+    V1BLEClient ble;
+    V1Display display;
+    PacketParser parser;
+    QuietCoordinatorModule quiet;
+    AutoPushModule push;
+    AlertPersistenceModule persistence;
+    DisplayMode mode = DisplayMode::LIVE;
+    TapGestureModule tap;
+
+    explicit ProfileTapHarness(SettingsManager& manager) {
+        Wire.resetMock();
+        touch.begin();
+        ble.reset();
+        quiet.begin(&ble, &parser);
+        push.begin(&manager, &profiles, &ble, &display, &quiet);
+        persistence.begin(&ble, &parser, &display, &manager);
+        tap.begin(&touch, &manager, &display, &ble, &parser, &push, &persistence, &mode, &quiet);
+    }
+    void poll(unsigned long now, bool down) {
+        mockMillis = now;
+        std::vector<uint8_t> bytes(32, 0);
+        bytes[1] = down ? 1 : 0;
+        bytes[3] = bytes[5] = 10;
+        Wire.queueRequestFrom(bytes.size(), bytes);
+        tap.process(now);
+    }
+    void triple(unsigned long start) {
+        poll(start, true);
+        poll(start + 50, false);
+        poll(start + 250, true);
+        poll(start + 300, false);
+        poll(start + 500, true);
+        poll(start + 550, false);
+    }
+    void advancePush(unsigned long now) {
+        mockMillis = now;
+        push.process();
+    }
+};
+
+void seedTapProfiles(SettingsManager& manager) {
+    V1Profile highway("HighwayProbe");
+    highway.settings.bytes[1] = 0x22;
+    TEST_ASSERT_TRUE(profiles.saveProfile(highway).success);
+    V1Profile comfort("ComfortProbe");
+    comfort.settings.bytes[1] = 0x66;
+    TEST_ASSERT_TRUE(profiles.saveProfile(comfort).success);
+    manager.mutableSettings().autoPushEnabled = true;
+    manager.mutableSettings().slot1_highway.profileName = "HighwayProbe";
+    manager.mutableSettings().slot1_highway.mode = V1_MODE_LOGIC;
+    manager.mutableSettings().slot2_comfort.profileName = "ComfortProbe";
+    manager.mutableSettings().slot2_comfort.mode = V1_MODE_ADVANCED_LOGIC;
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+}
+} // namespace
+
+void test_profile_taps_preserve_accepted_state_when_persistence_fails() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    seedTapProfiles(manager);
+    ProfileTapHarness input(manager);
+    input.persistence.setPersistedAlert(AlertData::create(BAND_KA, DIR_FRONT, 5, 0, 34700));
+    input.persistence.startPersistence(900);
+    mock_preferences::set_fail_writes_for_key(kNvsActiveSlot);
+    input.triple(1000);
+    mock_preferences::set_fail_writes_for_key(nullptr);
+    TEST_ASSERT_EQUAL_INT(0, manager.get().activeSlot);
+    SettingsManager reloaded(storage, profiles);
+    reloaded.load();
+    TEST_ASSERT_EQUAL_INT(0, reloaded.get().activeSlot);
+    TEST_ASSERT_EQUAL_INT(0, input.display.drawProfileIndicatorCalls);
+    TEST_ASSERT_FALSE(input.push.isActive());
+    TEST_ASSERT_TRUE(input.persistence.isPersistenceActive());
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(DisplayMode::LIVE), static_cast<int>(input.mode));
+    input.advancePush(2000);
+    TEST_ASSERT_EQUAL_INT(0, input.ble.writeUserBytesCalls);
+}
+
+void test_profile_taps_decline_busy_cycle_then_accept_fresh_cycle() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    seedTapProfiles(manager);
+    ProfileTapHarness input(manager);
+    input.triple(1000);
+    TEST_ASSERT_EQUAL_INT(1, manager.get().activeSlot);
+    input.advancePush(1600);
+    input.advancePush(1600);
+    input.advancePush(1630); // First push waits for real executor readback admission.
+    input.triple(1750);
+    TEST_ASSERT_EQUAL_INT(1, manager.get().activeSlot);
+    TEST_ASSERT_EQUAL_INT(1, input.display.lastProfileIndicatorSlot);
+    SettingsManager reloaded(storage, profiles);
+    reloaded.load();
+    TEST_ASSERT_EQUAL_INT(1, reloaded.get().activeSlot);
+    input.ble.setUserBytesVerificationStatus(V1BLEClient::UserBytesVerificationStatus::MATCH);
+    for (unsigned long now : {2300ul, 2330ul, 2360ul, 2390ul}) {
+        input.advancePush(now);
+    }
+    TEST_ASSERT_FALSE(input.push.isActive());
+    TEST_ASSERT_EQUAL_UINT8(0x22, input.ble.lastUserBytes[1]);
+    TEST_ASSERT_EQUAL_UINT8(V1_MODE_LOGIC, input.ble.lastModeValue);
+
+    input.triple(2750);
+    TEST_ASSERT_EQUAL_INT(2, manager.get().activeSlot);
+    TEST_ASSERT_EQUAL_INT(2, input.display.lastProfileIndicatorSlot);
+    input.advancePush(3350);
+    input.advancePush(3350);
+    input.advancePush(3380);
+    input.ble.setUserBytesVerificationStatus(V1BLEClient::UserBytesVerificationStatus::MATCH);
+    for (unsigned long now : {3380ul, 3410ul, 3440ul, 3470ul}) {
+        input.advancePush(now);
+    }
+    TEST_ASSERT_FALSE(input.push.isActive());
+    TEST_ASSERT_EQUAL_UINT8(0x66, input.ble.lastUserBytes[1]);
+    TEST_ASSERT_EQUAL_UINT8(V1_MODE_ADVANCED_LOGIC, input.ble.lastModeValue);
+}
+
+void test_profile_taps_keep_local_selection_when_offline_or_auto_push_disabled() {
+    for (bool offline : {false, true}) {
+        fs::FS fs(g_tempRoot);
+        storage.setFilesystem(&fs, true);
+        TEST_ASSERT_TRUE(profiles.begin(storage));
+        SettingsManager manager(storage, profiles);
+        seedTapProfiles(manager);
+        ProfileTapHarness input(manager);
+        input.ble.setConnected(!offline);
+        manager.mutableSettings().autoPushEnabled = offline;
+        input.triple(1000);
+        TEST_ASSERT_EQUAL_INT(1, manager.get().activeSlot);
+        TEST_ASSERT_EQUAL_INT(1, input.display.lastProfileIndicatorSlot);
+        TEST_ASSERT_FALSE(input.push.isActive());
+        TEST_ASSERT_EQUAL_INT(0, input.ble.writeUserBytesCalls);
+        SettingsManager reloaded(storage, profiles);
+        reloaded.load();
+        TEST_ASSERT_EQUAL_INT(1, reloaded.get().activeSlot);
+    }
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_profile_taps_preserve_accepted_state_when_persistence_fails);
+    RUN_TEST(test_profile_taps_decline_busy_cycle_then_accept_fresh_cycle);
+    RUN_TEST(test_profile_taps_keep_local_selection_when_offline_or_auto_push_disabled);
     RUN_TEST(test_actual_http_saves_keep_new_backup_when_old_writer_runs_first);
     RUN_TEST(test_actual_http_saves_keep_new_backup_when_old_writer_runs_last);
     RUN_TEST(test_actual_backup_now_preserves_same_due_profile_snapshot);

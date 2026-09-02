@@ -17,6 +17,7 @@ unsigned long mockMicros = 0;
 class AutoPushModule {
   public:
     enum class QueueResult : uint8_t { QUEUED };
+    bool isActive() const { return false; }
     QueueResult queueSlotPush(int) { return QueueResult::QUEUED; }
 };
 

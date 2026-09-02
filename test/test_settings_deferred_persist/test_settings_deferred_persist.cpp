@@ -282,8 +282,72 @@ void test_full_settings_save_supersedes_pending_degraded_fallback() {
     TEST_ASSERT_EQUAL_STRING("", manager.loadLastV1AddressFallback().c_str());
 }
 
+void test_filtered_fallback_cleanup_preserves_other_persisted_and_pending_addresses() {
+    SettingsManager manager(storage, profiles);
+    manager.requestLastV1AddressFallbackPersist("AA:BB:CC:DD:EE:FF");
+    manager.serviceDeferredPersist(5000);
+    manager.requestLastV1AddressFallbackPersist("11:22:33:44:55:66");
+    TEST_ASSERT_TRUE(manager.clearLastV1AddressFallback("aa-bb-cc-dd-ee-ff"));
+    TEST_ASSERT_EQUAL_STRING("", manager.loadLastV1AddressFallback().c_str());
+    manager.serviceDeferredPersist(6000);
+    TEST_ASSERT_EQUAL_STRING("11:22:33:44:55:66", manager.loadLastV1AddressFallback().c_str());
+
+    manager.requestLastV1AddressFallbackPersist("AA:BB:CC:DD:EE:FF");
+    TEST_ASSERT_TRUE(manager.clearLastV1AddressFallback("AA:BB:CC:DD:EE:FF"));
+    manager.serviceDeferredPersist(7000);
+    TEST_ASSERT_EQUAL_STRING("11:22:33:44:55:66", manager.loadLastV1AddressFallback().c_str());
+}
+
+void test_filtered_fallback_cleanup_cancels_pending_only_address() {
+    SettingsManager manager(storage, profiles);
+    manager.requestLastV1AddressFallbackPersist("AA:BB:CC:DD:EE:FF");
+    TEST_ASSERT_TRUE(manager.clearLastV1AddressFallback("AA:BB:CC:DD:EE:FF"));
+    manager.serviceDeferredPersist(5000);
+    TEST_ASSERT_EQUAL_STRING("", manager.loadLastV1AddressFallback().c_str());
+}
+
+void test_failed_filtered_fallback_cleanup_preserves_durable_and_pending_intent() {
+    SettingsManager manager(storage, profiles);
+    manager.requestLastV1AddressFallbackPersist("AA:BB:CC:DD:EE:FF");
+    mock_preferences::set_fail_begin_for_namespace(kSettingsV1RuntimeNamespace);
+    TEST_ASSERT_FALSE(manager.clearLastV1AddressFallback("AA:BB:CC:DD:EE:FF"));
+    mock_preferences::set_fail_begin_for_namespace(nullptr);
+    manager.serviceDeferredPersist(5000);
+    TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF", manager.loadLastV1AddressFallback().c_str());
+    manager.requestLastV1AddressFallbackPersist("11:22:33:44:55:66");
+    mock_preferences::set_fail_writes_for_key(kNvsLastConnectedV1Address);
+    TEST_ASSERT_FALSE(manager.clearLastV1AddressFallback("AA:BB:CC:DD:EE:FF"));
+    TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF", manager.loadLastV1AddressFallback().c_str());
+    mock_preferences::set_fail_writes_for_key(nullptr);
+    manager.serviceDeferredPersist(6000);
+    TEST_ASSERT_EQUAL_STRING("11:22:33:44:55:66", manager.loadLastV1AddressFallback().c_str());
+}
+
+void test_filtered_cleanup_rejects_present_unreadable_key_and_preserves_pending_intent() {
+    for (bool wrongType : {false, true}) {
+        SettingsManager manager(storage, profiles);
+        manager.requestLastV1AddressFallbackPersist("AA:BB:CC:DD:EE:FF");
+        Preferences prefs;
+        TEST_ASSERT_TRUE(prefs.begin(kSettingsV1RuntimeNamespace, false));
+        if (wrongType) prefs.putUInt(kNvsLastConnectedV1Address, 17);
+        else prefs.putString(kNvsLastConnectedV1Address, "");
+        TEST_ASSERT_TRUE(prefs.isKey(kNvsLastConnectedV1Address));
+        const auto previousType = prefs.getType(kNvsLastConnectedV1Address);
+        TEST_ASSERT_FALSE(manager.clearLastV1AddressFallback("AA:BB:CC:DD:EE:FF"));
+        TEST_ASSERT_EQUAL(previousType, prefs.getType(kNvsLastConnectedV1Address));
+        prefs.end();
+        manager.serviceDeferredPersist(5000);
+        TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF", manager.loadLastV1AddressFallback().c_str());
+        TEST_ASSERT_TRUE(manager.clearLastV1AddressFallback());
+    }
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_filtered_fallback_cleanup_preserves_other_persisted_and_pending_addresses);
+    RUN_TEST(test_filtered_fallback_cleanup_cancels_pending_only_address);
+    RUN_TEST(test_failed_filtered_fallback_cleanup_preserves_durable_and_pending_intent);
+    RUN_TEST(test_filtered_cleanup_rejects_present_unreadable_key_and_preserves_pending_intent);
     RUN_TEST(test_deferred_batch_updates_coalesce_to_single_persist_and_request_backup);
     RUN_TEST(test_deferred_persist_retries_after_failed_nvs_write);
     RUN_TEST(test_save_flushes_immediately_and_clears_deferred_persist);

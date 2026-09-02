@@ -546,33 +546,12 @@ WifiV1DevicesApiService::Runtime WiFiManager::makeV1DevicesRuntime() {
                 return payload;
             }
 
-            auto devices = self->devices_.listDevices();
-            auto hasAddress = [&](const String& address) {
-                if (address.length() == 0) {
-                    return true;
-                }
-                for (const auto& device : devices) {
-                    if (device.address.equalsIgnoreCase(address)) {
-                        return true;
-                    }
-                }
-                return false;
-            };
-
-            const String lastV1Address = normalizeV1DeviceAddress(self->settings_.get().lastV1Address);
-            if (!hasAddress(lastV1Address)) {
-                self->devices_.touchDeviceInMemory(lastV1Address);
-                devices = self->devices_.listDevices();
-            }
+            const auto devices = self->devices_.listDevices();
 
             String connectedAddress;
             NimBLEAddress connected = self->bleRuntime_->getConnectedAddress();
             if (!connected.isNull()) {
                 connectedAddress = normalizeV1DeviceAddress(String(connected.toString().c_str()));
-                if (!hasAddress(connectedAddress)) {
-                    self->devices_.touchDeviceInMemory(connectedAddress);
-                    devices = self->devices_.listDevices();
-                }
             }
 
             payload.reserve(devices.size());
@@ -595,7 +574,15 @@ WifiV1DevicesApiService::Runtime WiFiManager::makeV1DevicesRuntime() {
             return static_cast<WiFiManager*>(ctx)->devices_.setDeviceDefaultProfile(address, defaultProfile);
         },
         this,
-        [](const String& address, void* ctx) { return static_cast<WiFiManager*>(ctx)->devices_.removeDevice(address); },
+        [](const String& address, void* ctx) {
+            auto* self = static_cast<WiFiManager*>(ctx);
+            const String normalized = normalizeV1DeviceAddress(address);
+            if (normalized.length() == 0 || !self->devices_.isReady() || !self->devices_.flushPendingSave()) {
+                return false;
+            }
+            // Preserve a durable row before removing its degraded recovery hint.
+            return self->settings_.clearLastV1AddressFallback(normalized) && self->devices_.removeDevice(normalized);
+        },
         this,
     };
 }

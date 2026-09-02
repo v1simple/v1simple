@@ -1052,32 +1052,47 @@ void SettingsManager::serviceLastV1AddressFallbackPersist(uint32_t nowMs) {
     lastV1AddressFallbackNextAttemptAtMs_ = 0;
 }
 
-bool SettingsManager::clearLastV1AddressFallback() {
+bool SettingsManager::clearLastV1AddressFallback(const String& addressFilter) {
+    String filter = sanitizeLastV1AddressValue(addressFilter);
+    filter.replace("-", ":");
+    const auto matches = [&](String value) {
+        value = sanitizeLastV1AddressValue(value);
+        value.replace("-", ":");
+        return addressFilter.length() == 0 || (filter.length() > 0 && value == filter);
+    };
     Preferences prefs;
     if (!prefs.begin(kSettingsV1RuntimeNamespace, false)) {
         Serial.println("[Settings] WARN: Failed to open degraded V1 address fallback for cleanup");
         return false;
     }
-    if (!prefs.isKey(kNvsLastConnectedV1Address)) {
-        prefs.end();
+    const bool present = prefs.isKey(kNvsLastConnectedV1Address);
+    String stored;
+    if (present && addressFilter.length() > 0) {
+        stored = sanitizeLastV1AddressValue(prefs.getString(kNvsLastConnectedV1Address, ""));
+        // Preferences also returns its empty default on a read/type error.
+        // An unreadable key cannot establish that another address owns it.
+        if (stored.length() == 0) {
+            prefs.end();
+            return false;
+        }
+    }
+    if (present && matches(stored)) {
+        const bool removed = prefs.remove(kNvsLastConnectedV1Address);
+        const bool absent = !prefs.isKey(kNvsLastConnectedV1Address);
+        if (!removed || !absent) {
+            prefs.end();
+            Serial.println("[Settings] WARN: Failed to clear degraded V1 address fallback");
+            return false;
+        }
+        Serial.println("[Settings] Cleared degraded V1 address fallback");
+    }
+    prefs.end();
+
+    if (matches(pendingLastV1AddressFallback_)) {
         pendingLastV1AddressFallback_ = "";
         lastV1AddressFallbackPending_ = false;
         lastV1AddressFallbackNextAttemptAtMs_ = 0;
-        return true;
     }
-
-    const bool removed = prefs.remove(kNvsLastConnectedV1Address);
-    const bool absent = !prefs.isKey(kNvsLastConnectedV1Address);
-    prefs.end();
-    if (!removed || !absent) {
-        Serial.println("[Settings] WARN: Failed to clear degraded V1 address fallback");
-        return false;
-    }
-
-    pendingLastV1AddressFallback_ = "";
-    lastV1AddressFallbackPending_ = false;
-    lastV1AddressFallbackNextAttemptAtMs_ = 0;
-    Serial.println("[Settings] Cleared degraded V1 address fallback");
     return true;
 }
 

@@ -458,7 +458,7 @@ bool V1DeviceStore::begin(fs::FS* filesystem, fs::FS* importFilesystem) {
         devices_.clear();
     }
 
-    if (devices_.empty()) {
+    if (generation_ == 0) {
         bool migrated = migrateLegacyFiles(fs_);
         if (!migrated && importFilesystem && importFilesystem != fs_) {
             migrated = migrateLegacyFiles(importFilesystem);
@@ -519,6 +519,16 @@ bool V1DeviceStore::upsertDeviceInternal(const String& address, bool persistNow)
 
 bool V1DeviceStore::upsertDevice(const String& address) {
     return upsertDeviceInternal(address, true);
+}
+
+bool V1DeviceStore::bootstrapDevice(const String& address, bool fromDegradedConnection) {
+    if (!ready_ || normalizeV1DeviceAddress(address).length() == 0) {
+        return false;
+    }
+    if (!fromDegradedConnection && generation_ != 0) {
+        return true;
+    }
+    return upsertDevice(address);
 }
 
 bool V1DeviceStore::touchDeviceInMemory(const String& address) {

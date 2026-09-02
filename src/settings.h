@@ -809,7 +809,7 @@ class SettingsManager {
     // unavailable. Writes are deferred through serviceDeferredPersist().
     String loadLastV1AddressFallback();
     void requestLastV1AddressFallbackPersist(const String& addr);
-    bool clearLastV1AddressFallback();
+    bool clearLastV1AddressFallback(const String& addressFilter = "");
 
     const AutoPushSlot& getSlot(int slotNum) const;
 

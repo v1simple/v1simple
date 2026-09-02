@@ -80,7 +80,9 @@ void DriveRuntime::initializeStorageAndProfiles() {
         const String restoredLastKnownV1 = degradedFallback.length() > 0 ? degradedFallback : settingsFallback;
         if (restoredLastKnownV1.length() > 0) {
             settings_.setLastV1Address(restoredLastKnownV1);
-            if (devices_.isReady() && devices_.upsertDevice(restoredLastKnownV1) && degradedFallback.length() > 0) {
+            if (devices_.isReady() &&
+                devices_.bootstrapDevice(restoredLastKnownV1, degradedFallback.length() > 0) &&
+                degradedFallback.length() > 0) {
                 settings_.clearLastV1AddressFallback();
             }
         }

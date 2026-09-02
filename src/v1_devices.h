@@ -33,6 +33,9 @@ class V1DeviceStore {
     std::vector<V1DeviceRecord> listDevices() const;
 
     bool upsertDevice(const String& address);
+    // Historical hints seed only a missing catalog. A connection recorded
+    // during a storage outage may also augment an existing catalog.
+    bool bootstrapDevice(const String& address, bool fromDegradedConnection);
     bool touchDeviceInMemory(const String& address);
     bool setDeviceName(const String& address, const String& name);
     bool setDeviceDefaultProfile(const String& address, uint8_t defaultProfile);

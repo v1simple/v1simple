@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 
 #include <ArduinoJson.h>
@@ -347,8 +348,145 @@ void test_secondary_device_store_failure_is_reported_and_retried() {
                              readFileToString(little, "/v1devices.json").c_str());
 }
 
+void test_deleted_last_legacy_device_stays_deleted_after_reload() {
+    fs::FS fs(g_tempRoot);
+    writeFileFromString(fs, "/known_v1.txt", "AA:BB:CC:DD:EE:FF\n");
+    V1DeviceStore devices;
+    TEST_ASSERT_TRUE(devices.begin(&fs));
+    TEST_ASSERT_EQUAL_UINT(1, devices.listDevices().size());
+    TEST_ASSERT_TRUE(devices.removeDevice("AA:BB:CC:DD:EE:FF"));
+    V1DeviceStore rebooted;
+    TEST_ASSERT_TRUE(rebooted.begin(&fs));
+    TEST_ASSERT_TRUE(rebooted.listDevices().empty());
+    TEST_ASSERT_TRUE(fs.exists("/known_v1.txt"));
+}
+
+void test_empty_legacy_v1_catalog_overrides_legacy_text_import() {
+    fs::FS fs(g_tempRoot);
+    writeFileFromString(fs, "/v1devices.json", "{\"version\":1,\"devices\":[]}");
+    writeFileFromString(fs, "/known_v1.txt", "AA:BB:CC:DD:EE:FF\n");
+    V1DeviceStore devices;
+    TEST_ASSERT_TRUE(devices.begin(&fs));
+    TEST_ASSERT_TRUE(devices.listDevices().empty());
+    JsonDocument upgraded;
+    TEST_ASSERT_FALSE(deserializeJson(upgraded, readFileToString(fs, "/v1devices.json")));
+    TEST_ASSERT_EQUAL_INT(2, upgraded["version"].as<int>());
+    TEST_ASSERT_TRUE(upgraded["crc32"].is<uint32_t>());
+}
+
+void test_newer_empty_littlefs_catalog_overrides_stale_sd_and_legacy_text() {
+    std::filesystem::create_directories(g_tempRoot / "sd");
+    std::filesystem::create_directories(g_tempRoot / "little");
+    fs::FS sd(g_tempRoot / "sd"), little(g_tempRoot / "little");
+    V1DeviceStore initial;
+    TEST_ASSERT_TRUE(initial.begin(&sd, &little));
+    TEST_ASSERT_TRUE(initial.upsertDevice("AA:BB:CC:DD:EE:FF"));
+    V1DeviceStore offline;
+    TEST_ASSERT_TRUE(offline.begin(&little));
+    TEST_ASSERT_TRUE(offline.removeDevice("AA:BB:CC:DD:EE:FF"));
+    writeFileFromString(sd, "/known_v1.txt", "AA:BB:CC:DD:EE:FF\n");
+    V1DeviceStore returned;
+    TEST_ASSERT_TRUE(returned.begin(&sd, &little));
+    TEST_ASSERT_TRUE(returned.listDevices().empty());
+    TEST_ASSERT_EQUAL_STRING(readFileToString(little, "/v1devices.json").c_str(),
+                             readFileToString(sd, "/v1devices.json").c_str());
+}
+
+void test_missing_and_invalid_catalogs_still_import_legacy_text() {
+    fs::FS fs(g_tempRoot);
+    writeFileFromString(fs, "/known_v1.txt", "AA:BB:CC:DD:EE:FF\n");
+    for (bool invalid : {false, true}) {
+        if (invalid) writeFileFromString(fs, "/v1devices.json", "invalid");
+        V1DeviceStore devices;
+        TEST_ASSERT_TRUE(devices.begin(&fs));
+        TEST_ASSERT_EQUAL_UINT(1, devices.listDevices().size());
+    }
+}
+
+void test_empty_rollback_catalog_remains_authoritative() {
+    fs::FS fs(g_tempRoot);
+    V1DeviceStore devices;
+    TEST_ASSERT_TRUE(devices.begin(&fs));
+    TEST_ASSERT_TRUE(devices.upsertDevice("AA:BB:CC:DD:EE:FF"));
+    TEST_ASSERT_TRUE(devices.removeDevice("AA:BB:CC:DD:EE:FF"));
+    TEST_ASSERT_TRUE(fs.rename("/v1devices.json", "/v1devices.json.prev"));
+    writeFileFromString(fs, "/v1devices.json", "invalid");
+    writeFileFromString(fs, "/known_v1.txt", "AA:BB:CC:DD:EE:FF\n");
+    V1DeviceStore rebooted;
+    TEST_ASSERT_TRUE(rebooted.begin(&fs));
+    TEST_ASSERT_TRUE(rebooted.listDevices().empty());
+    TEST_ASSERT_TRUE(rebooted.bootstrapDevice("AA:BB:CC:DD:EE:FF", false));
+    TEST_ASSERT_TRUE(rebooted.listDevices().empty());
+}
+
+void test_bootstrap_distinguishes_history_from_actual_degraded_connection() {
+    fs::FS fs(g_tempRoot);
+    V1DeviceStore devices;
+    TEST_ASSERT_FALSE(devices.bootstrapDevice("AA:BB:CC:DD:EE:FF", true));
+    TEST_ASSERT_TRUE(devices.begin(&fs));
+    TEST_ASSERT_FALSE(devices.bootstrapDevice("invalid", false));
+    TEST_ASSERT_TRUE(devices.bootstrapDevice("AA:BB:CC:DD:EE:FF", false));
+    TEST_ASSERT_EQUAL_UINT(1, devices.listDevices().size());
+    TEST_ASSERT_TRUE(devices.removeDevice("AA:BB:CC:DD:EE:FF"));
+    const std::string emptyCatalog = readFileToString(fs, "/v1devices.json");
+    TEST_ASSERT_TRUE(devices.bootstrapDevice("AA:BB:CC:DD:EE:FF", false));
+    TEST_ASSERT_EQUAL_STRING(emptyCatalog.c_str(), readFileToString(fs, "/v1devices.json").c_str());
+    // A later actual connection recorded while this valid catalog was offline
+    // is recovery data, even when the old catalog was deliberately empty.
+    TEST_ASSERT_TRUE(devices.bootstrapDevice("11:22:33:44:55:66", true));
+    V1DeviceStore rebooted;
+    TEST_ASSERT_TRUE(rebooted.begin(&fs));
+    TEST_ASSERT_EQUAL_UINT(1, rebooted.listDevices().size());
+    TEST_ASSERT_EQUAL_STRING("11:22:33:44:55:66", rebooted.listDevices()[0].address.c_str());
+}
+
+void test_delete_preserves_other_devices_and_actual_rediscovery_uses_defaults() {
+    fs::FS fs(g_tempRoot);
+    V1DeviceStore devices;
+    TEST_ASSERT_TRUE(devices.begin(&fs));
+    TEST_ASSERT_TRUE(devices.setDeviceName("AA:BB:CC:DD:EE:FF", "Old metadata"));
+    TEST_ASSERT_TRUE(devices.setDeviceDefaultProfile("AA:BB:CC:DD:EE:FF", 3));
+    TEST_ASSERT_TRUE(devices.setDeviceName("11:22:33:44:55:66", "Survivor"));
+    writeFileFromString(fs, "/known_v1.txt", "AA:BB:CC:DD:EE:FF\n");
+    TEST_ASSERT_TRUE(devices.removeDevice("AA:BB:CC:DD:EE:FF"));
+    V1DeviceStore rebooted;
+    TEST_ASSERT_TRUE(rebooted.begin(&fs));
+    TEST_ASSERT_TRUE(rebooted.bootstrapDevice("AA:BB:CC:DD:EE:FF", false));
+    TEST_ASSERT_EQUAL_UINT(1, rebooted.listDevices().size());
+    TEST_ASSERT_EQUAL_STRING("Survivor", rebooted.listDevices()[0].name.c_str());
+    TEST_ASSERT_TRUE(rebooted.touchDeviceInMemory("AA:BB:CC:DD:EE:FF"));
+    TEST_ASSERT_TRUE(rebooted.flushPendingSave());
+    for (const auto& device : rebooted.listDevices()) {
+        if (device.address == "AA:BB:CC:DD:EE:FF") {
+            TEST_ASSERT_EQUAL_STRING("", device.name.c_str());
+            TEST_ASSERT_EQUAL_UINT8(0, device.defaultProfile);
+        }
+    }
+    TEST_ASSERT_EQUAL_UINT(2, rebooted.listDevices().size());
+}
+
+void test_both_boot_paths_use_catalog_bootstrap_and_connection_still_discovers() {
+    for (const char* path : {"/src/drive_runtime.cpp", "/src/maintenance_runtime.cpp"}) {
+        std::ifstream input(std::string(PROJECT_DIR) + path);
+        const std::string source((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+        TEST_ASSERT_TRUE(source.find("bootstrapDevice(restoredLastKnownV1, degradedFallback.length() > 0)") != std::string::npos);
+        if (std::string(path).find("drive_runtime") != std::string::npos) {
+            TEST_ASSERT_TRUE(source.find("self.devices_.touchDeviceInMemory(address)",
+                                        source.find("void DriveRuntime::onV1Connected()")) != std::string::npos);
+        }
+    }
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_deleted_last_legacy_device_stays_deleted_after_reload);
+    RUN_TEST(test_empty_legacy_v1_catalog_overrides_legacy_text_import);
+    RUN_TEST(test_newer_empty_littlefs_catalog_overrides_stale_sd_and_legacy_text);
+    RUN_TEST(test_missing_and_invalid_catalogs_still_import_legacy_text);
+    RUN_TEST(test_empty_rollback_catalog_remains_authoritative);
+    RUN_TEST(test_bootstrap_distinguishes_history_from_actual_degraded_connection);
+    RUN_TEST(test_delete_preserves_other_devices_and_actual_rediscovery_uses_defaults);
+    RUN_TEST(test_both_boot_paths_use_catalog_bootstrap_and_connection_still_discovers);
     RUN_TEST(test_touch_defers_device_write_until_flush_and_reloads_saved_record);
     RUN_TEST(test_failed_deferred_promotion_preserves_live_store_and_retry_succeeds);
     RUN_TEST(test_load_uses_valid_rollback_when_live_store_is_invalid);

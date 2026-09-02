@@ -65,6 +65,8 @@ void ObdRuntimeModule::forgetDevice() {}
 #include "../../src/modules/wifi/wifi_display_colors_api_service.cpp"
 #include "../../src/modules/gps/gps_api_service.cpp"
 #include "../../src/modules/obd/obd_api_service.cpp"
+#include "../../src/modules/wifi/backup_snapshot_cache.cpp"
+#include "../../src/modules/wifi/backup_api_service.cpp"
 
 namespace {
 
@@ -2793,9 +2795,10 @@ void test_not_ready_profile_catalog_is_unsafe_for_http_and_first_sd_backup() {
     TEST_ASSERT_FALSE(fs.exists(SETTINGS_BACKUP_PATH));
 }
 
-void test_interrupted_restore_after_credentials_reboots_to_old_settings_and_secret() {
+void assert_interrupted_restore_after_credentials_recovers(bool sd) {
     fs::FS fs(g_tempRoot);
-    storage.setFilesystem(&fs, true);
+    storage.setFilesystem(&fs, sd);
+    storage.setLittleFS(&fs);
     TEST_ASSERT_TRUE(profiles.begin(storage));
     SettingsManager manager(storage, profiles);
     TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "OldNet", "old-password", "Old", 0));
@@ -2822,6 +2825,14 @@ void test_interrupted_restore_after_credentials_reboots_to_old_settings_and_secr
     TEST_ASSERT_EQUAL_STRING("OldNet", rebooted.get().wifiStaSlots[0].ssid.c_str());
     TEST_ASSERT_EQUAL_STRING("old-password", rebooted.getWifiStaSlotPassword(0).c_str());
     TEST_ASSERT_FALSE(fs.exists("/v1restore_transaction.json"));
+}
+
+void test_interrupted_restore_after_credentials_reboots_to_old_settings_and_secret() {
+    assert_interrupted_restore_after_credentials_recovers(true);
+}
+
+void test_interrupted_littlefs_restore_after_credentials_recovers() {
+    assert_interrupted_restore_after_credentials_recovers(false);
 }
 
 void test_restore_transaction_journal_is_mirrored_and_cleared_on_recovery() {
@@ -2953,7 +2964,7 @@ void test_restore_password_write_failure_does_not_create_partial_network() {
     TEST_ASSERT_EQUAL_STRING("", rebooted.getWifiStaSlotPassword(0).c_str());
 }
 
-void test_restore_sd_secret_promotion_failure_preserves_old_pair() {
+void assert_restore_sd_secret_rename_failure_preserves_old_pair(size_t failingRename) {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
     TEST_ASSERT_TRUE(profiles.begin(storage));
@@ -2969,7 +2980,7 @@ void test_restore_sd_secret_promotion_failure_preserves_old_pair() {
 
     const size_t renameBefore = fs::g_mock_fs_rename_state.renameCalls;
     // Journal promotion, old-secret removal, then new-secret promotion.
-    fs::mock_fail_rename_on_call(renameBefore + 3);
+    fs::mock_fail_rename_on_call(renameBefore + failingRename);
     TEST_ASSERT_FALSE(manager.applyBackupDocument(doc, true).success);
     fs::mock_reset_fs_rename_state();
 
@@ -2978,6 +2989,14 @@ void test_restore_sd_secret_promotion_failure_preserves_old_pair() {
     rebooted.checkAndRestoreFromSD();
     TEST_ASSERT_EQUAL_STRING("OldNet", rebooted.get().wifiStaSlots[0].ssid.c_str());
     TEST_ASSERT_EQUAL_STRING("old-password", rebooted.getWifiStaSlotPassword(0).c_str());
+}
+
+void test_restore_sd_secret_promotion_failure_preserves_old_pair() {
+    assert_restore_sd_secret_rename_failure_preserves_old_pair(3);
+}
+
+void test_restore_sd_secret_removal_failure_preserves_old_pair() {
+    assert_restore_sd_secret_rename_failure_preserves_old_pair(2);
 }
 
 void test_busy_profile_delete_leaves_profile_and_assignments_durable() {
@@ -3606,8 +3625,140 @@ void test_mutation_gate_blocks_same_name_profile_until_pending_journal_cleanup_s
     TEST_ASSERT_EQUAL_UINT8(92, preserved.settings.bytes[0]);
 }
 
+BackupApiService::BackupRuntime actualBackupRuntime(SettingsManager& manager) {
+    BackupApiService::BackupRuntime runtime{};
+    runtime.ctx = &manager;
+    runtime.getBackupRevision = [](void* ctx) { return static_cast<SettingsManager*>(ctx)->backupRevision(); };
+    runtime.getCatalogRevision = [](void*) { return profiles.catalogRevision(); };
+    runtime.buildDocument = [](JsonDocument& doc, uint32_t nowMs, void* ctx) {
+        const auto result = BackupPayloadBuilder::buildBackupDocument(
+            doc, static_cast<SettingsManager*>(ctx)->get(), profiles,
+            BackupPayloadBuilder::BackupTransport::HttpDownload, nowMs);
+        return BackupApiService::BackupSnapshotBuildResult{result.safeToCommit};
+    };
+    runtime.applyBackup = [](const JsonDocument& doc, bool defer, int& count, void* ctx) {
+        const auto result = static_cast<SettingsManager*>(ctx)->applyBackupDocument(
+            doc, defer, SettingsRestoreWatchdog{&BackupApiService::feedTaskWatchdog, nullptr});
+        count = result.profilesRestored;
+        return result.success;
+    };
+    runtime.syncAfterRestore = [](void*) {}; // Runtime peripherals are outside this persistence fixture.
+    return runtime;
+}
+
+void assert_generated_http_backup_round_trip(bool sd) {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, sd);
+    storage.setLittleFS(&fs);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager source(storage, profiles);
+    source.mutableSettings().brightness = 61;
+    BackupApiService::BackupSnapshotCache cache;
+    WebServer download(80);
+    BackupApiService::handleApiBackup(download, cache, actualBackupRuntime(source), nullptr, nullptr);
+    BackupApiService::releaseBackupSnapshotCache(cache);
+    TEST_ASSERT_EQUAL_INT(200, download.lastStatusCode);
+    JsonDocument exported;
+    TEST_ASSERT_FALSE(deserializeJson(exported, download.lastBody));
+    TEST_ASSERT_TRUE(exported["wifiStaSlots"].is<JsonArrayConst>());
+    TEST_ASSERT_EQUAL_UINT(0, exported["wifiStaSlots"].size());
+    TEST_ASSERT_TRUE(exported["_crc32"].isNull()); // HTTP exports intentionally omit the SD checksum.
+
+    SettingsManager target(storage, profiles);
+    WebServer upload(80);
+    upload.setArg("plain", download.lastBody);
+    BackupApiService::handleApiRestore(upload, actualBackupRuntime(target), nullptr, nullptr, nullptr, nullptr);
+    TEST_ASSERT_EQUAL_INT(200, upload.lastStatusCode);
+    TEST_ASSERT_EQUAL_UINT8(61, target.get().brightness);
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_EQUAL_UINT8(61, rebooted.get().brightness);
+    TEST_ASSERT_FALSE(fs.exists(WIFI_CLIENT_SD_SECRET_PATH));
+}
+
+void test_generated_http_backup_round_trip_on_littlefs() { assert_generated_http_backup_round_trip(false); }
+void test_generated_http_backup_round_trip_on_sd() { assert_generated_http_backup_round_trip(true); }
+
+void test_littlefs_restore_preserves_matches_clears_changes_and_accepts_explicit_secrets() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, false);
+    storage.setLittleFS(&fs);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "SavedNet", "saved-password", "Saved", 0));
+    JsonDocument doc;
+    JsonObject slot = doc["wifiStaSlots"].to<JsonArray>().add<JsonObject>();
+    slot["index"] = 0;
+    slot["ssid"] = "SavedNet";
+    TEST_ASSERT_TRUE(manager.applyBackupDocument(doc, true).success);
+    TEST_ASSERT_EQUAL_STRING("saved-password", manager.getWifiStaSlotPassword(0).c_str());
+    slot["ssid"] = "OtherNet";
+    TEST_ASSERT_TRUE(manager.applyBackupDocument(doc, true).success);
+    TEST_ASSERT_EQUAL_STRING("", manager.getWifiStaSlotPassword(0).c_str());
+    slot["passwordObf"] = encodeObfuscatedForStorage("explicit-password");
+    TEST_ASSERT_TRUE(manager.applyBackupDocument(doc, true).success);
+    TEST_ASSERT_EQUAL_STRING("explicit-password", manager.getWifiStaSlotPassword(0).c_str());
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_EQUAL_STRING("OtherNet", rebooted.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("explicit-password", rebooted.getWifiStaSlotPassword(0).c_str());
+
+    JsonDocument legacy;
+    legacy["stationSSID"] = "LegacyNet";
+    legacy["stationPassword"] = "legacy-password";
+    TEST_ASSERT_TRUE(rebooted.applyBackupDocument(legacy, true).success);
+    SettingsManager legacyReboot(storage, profiles);
+    legacyReboot.load();
+    TEST_ASSERT_EQUAL_STRING("LegacyNet", legacyReboot.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("legacy-password", legacyReboot.getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_FALSE(fs.exists(WIFI_CLIENT_SD_SECRET_PATH));
+}
+
+void test_network_restore_with_unavailable_storage_preserves_credentials() {
+    TEST_ASSERT_TRUE(storeWifiClientPasswordObfToNvs(encodeObfuscatedForStorage("saved-password"), 0));
+    V1Settings current;
+    current.wifiStaSlots[0].ssid = "SavedNet";
+    JsonDocument doc;
+    doc["wifiStaSlots"].to<JsonArray>();
+    TEST_ASSERT_FALSE(applyBackupNetworkFields(doc, current, storage, BackupRestoreScope::Full, true));
+    TEST_ASSERT_EQUAL_STRING("SavedNet", current.wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("saved-password", settings.getWifiStaSlotPassword(0).c_str());
+}
+
+void test_littlefs_restore_nvs_failure_rolls_back_credentials_and_settings() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, false);
+    storage.setLittleFS(&fs);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "OldNet", "old-password", "Old", 0));
+    const uint8_t oldBrightness = manager.get().brightness;
+    JsonDocument doc;
+    doc["brightness"] = 61;
+    JsonObject slot = doc["wifiStaSlots"].to<JsonArray>().add<JsonObject>();
+    slot["index"] = 0;
+    slot["ssid"] = "NewNet";
+    slot["passwordObf"] = encodeObfuscatedForStorage("new-password");
+    mock_preferences::set_fail_writes_for_key(kNvsBrightness);
+    TEST_ASSERT_FALSE(manager.applyBackupDocument(doc, true).success);
+    mock_preferences::set_fail_writes_for_key(nullptr);
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_EQUAL_UINT8(oldBrightness, rebooted.get().brightness);
+    TEST_ASSERT_EQUAL_STRING("OldNet", rebooted.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("old-password", rebooted.getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_FALSE(fs.exists(WIFI_CLIENT_SD_SECRET_PATH));
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_generated_http_backup_round_trip_on_littlefs);
+    RUN_TEST(test_generated_http_backup_round_trip_on_sd);
+    RUN_TEST(test_littlefs_restore_preserves_matches_clears_changes_and_accepts_explicit_secrets);
+    RUN_TEST(test_network_restore_with_unavailable_storage_preserves_credentials);
+    RUN_TEST(test_littlefs_restore_nvs_failure_rolls_back_credentials_and_settings);
+    RUN_TEST(test_interrupted_littlefs_restore_after_credentials_recovers);
+    RUN_TEST(test_restore_sd_secret_removal_failure_preserves_old_pair);
     RUN_TEST(test_fresh_nvs_load_matches_authoritative_constructor_defaults);
     RUN_TEST(test_empty_wifi_slot_backup_is_not_an_automatic_recovery_source);
     RUN_TEST(test_configured_wifi_slot_missing_priority_uses_slot_index);

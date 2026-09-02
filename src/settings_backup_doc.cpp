@@ -378,6 +378,15 @@ void applyBackupSignalBarColors(const JsonDocument& doc, V1Settings& settings) {
 
 bool applyBackupNetworkFields(const JsonDocument& doc, V1Settings& settings, StorageManager& storage,
                               BackupRestoreScope scope, bool clearSdSecret) {
+    const bool hasSlotDocument = doc["wifiStaSlots"].is<JsonArrayConst>();
+    const String legacySsid = legacyWifiClientSsidFromBackupDoc(doc);
+    const bool synchronizeSecrets = clearSdSecret && (hasSlotDocument || legacySsid.length() > 0);
+    if (synchronizeSecrets && !storage.isReady()) {
+        return false;
+    }
+    // Healthy LittleFS fallback still restores NVS credentials; only their
+    // optional SD mirror is absent. Errors accessing selected SD remain failures.
+    const bool synchronizeSdSecrets = synchronizeSecrets && storage.isSDCard();
     if (doc["apPassword"].is<const char*>()) {
         const String decoded = decodeObfuscatedFromStorage(doc["apPassword"].as<String>());
         if (decoded.length() >= MIN_AP_PASSWORD_LEN) settings.apPassword = sanitizeApPasswordValue(decoded);
@@ -386,17 +395,15 @@ bool applyBackupNetworkFields(const JsonDocument& doc, V1Settings& settings, Sto
     bool clientEnabled = false;
     const bool enabledExplicit = parseBoolVariant(doc["wifiClientEnabled"], clientEnabled);
     if (enabledExplicit) settings.wifiClientEnabled = clientEnabled;
-    const bool hasSlotDocument = doc["wifiStaSlots"].is<JsonArrayConst>();
     bool restoredSlots = false;
     if (hasSlotDocument) {
-        if (!restoreWifiStaSlotsFromBackupDoc(doc, settings, storage, clearSdSecret)) {
+        if (!restoreWifiStaSlotsFromBackupDoc(doc, settings, storage, synchronizeSdSecrets)) {
             return false;
         }
         restoredSlots = true;
     }
-    const String legacySsid = legacyWifiClientSsidFromBackupDoc(doc);
     if (!restoredSlots && legacySsid.length() > 0) {
-        if (!clearWifiStaSlotPasswordsForRestore(storage, clearSdSecret)) {
+        if (!clearWifiStaSlotPasswordsForRestore(storage, synchronizeSdSecrets)) {
             return false;
         }
         for (WifiStaSlot& slot : settings.wifiStaSlots) slot = WifiStaSlot();
@@ -416,10 +423,7 @@ bool applyBackupNetworkFields(const JsonDocument& doc, V1Settings& settings, Sto
         return false;
     }
 
-    if (clearSdSecret && (hasSlotDocument || legacySsid.length() > 0)) {
-        if (!storage.isReady() || !storage.isSDCard()) {
-            return false;
-        }
+    if (synchronizeSdSecrets) {
         Preferences passwordPrefs;
         if (!passwordPrefs.begin(WIFI_CLIENT_NS, true)) {
             return false;

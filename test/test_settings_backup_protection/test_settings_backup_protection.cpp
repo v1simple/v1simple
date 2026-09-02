@@ -433,9 +433,11 @@ void test_atomic_write_serialized_payload_succeeds() {
 
 void test_payload_release_is_idempotent() {
     SerializedSettingsBackupPayload payload;
+    payload.requestToken = 123;
     // Release on empty payload should be safe
     releaseSerializedSettingsBackupPayload(payload);
     TEST_ASSERT_NULL(payload.data);
+    TEST_ASSERT_EQUAL_UINT32(0, payload.requestToken);
 
     // Double release should be safe
     releaseSerializedSettingsBackupPayload(payload);

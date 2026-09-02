@@ -5,9 +5,14 @@
 #include "settings_internals.h"
 #include "backup_payload_builder.h"
 #include "psram_freertos_alloc.h"
+#include "settings_backup_revision.h"
 
 #include <atomic>
 #include <esp_heap_caps.h>
+
+namespace {
+void publishBackupRequest();
+}
 
 // Obfuscation constants — declared extern in settings_internals.h
 const char XOR_KEY[] = "V1G2-S3cr3t-K3y!";
@@ -415,6 +420,7 @@ void releaseSerializedSettingsBackupPayload(SerializedSettingsBackupPayload& pay
     payload.protectExistingBackupFromUnsafeProfileSnapshot = false;
     payload.snapshotMs = 0;
     payload.backupRevision = 0;
+    payload.requestToken = 0;
     payload.markCompleted = nullptr;
     payload.completionContext = nullptr;
     payload.profilesBackedUp = 0;
@@ -437,6 +443,7 @@ bool SettingsManager::backupToSD() {
     if (!fs)
         return false;
 
+    publishBackupRequest();
     const uint32_t snapshotRevision = backupDueRevision_;
     SerializedSettingsBackupPayload payload;
     // V1ProfileManager owns the complete, bounded profile snapshot transaction.
@@ -543,10 +550,19 @@ struct DeferredSettingsBackupState {
     std::atomic<bool> pendingRequest{false};
     std::atomic<bool> writerRetryPending{false};
     std::atomic<bool> shutdownRequested{false};
+    std::atomic<uint32_t> requestToken{0};
     uint32_t nextAttemptAtMs = 0;
 };
 
 DeferredSettingsBackupState gDeferredSettingsBackupState;
+
+void publishBackupRequest() {
+    // Settings requests and snapshots have one main-task producer. This is
+    // separate from NVS due revisions: profile/manual backups may share one.
+    const uint32_t next = settings_backup_revision::next(
+        gDeferredSettingsBackupState.requestToken.load(std::memory_order_relaxed));
+    gDeferredSettingsBackupState.requestToken.store(next, std::memory_order_release);
+}
 
 bool isDeferredBackupRetryDue(uint32_t nowMs, uint32_t targetMs) {
     return static_cast<int32_t>(nowMs - targetMs) >= 0;
@@ -580,6 +596,15 @@ bool writeDeferredBackupPayloadNow(const SerializedSettingsBackupPayload& payloa
         return false;
     }
 
+    if (payload.requestToken == 0 ||
+        payload.requestToken != gDeferredSettingsBackupState.requestToken.load(std::memory_order_acquire)) {
+        return false; // Rebuild current state; never complete or requeue these old bytes.
+    }
+    const auto markCompleted = [&]() {
+        return payload.markCompleted == nullptr ||
+               payload.markCompleted(payload.backupRevision, payload.completionContext);
+    };
+
     if (payload.protectExistingBackupFromProvisionalNvs) {
         JsonDocument existingBackup;
         const char* existingBackupPath = nullptr;
@@ -587,7 +612,7 @@ bool writeDeferredBackupPayloadNow(const SerializedSettingsBackupPayload& payloa
             Serial.printf(
                 "[Settings] Restore pending; skipping deferred overwrite of SD backup %s from provisional NVS\n",
                 existingBackupPath ? existingBackupPath : "(unknown)");
-            return true;
+            return markCompleted();
         }
     }
 
@@ -596,14 +621,11 @@ bool writeDeferredBackupPayloadNow(const SerializedSettingsBackupPayload& payloa
         return false;
     }
 
-    return writeBackupAtomically(fs, payload);
+    return writeBackupAtomically(fs, payload) && markCompleted();
 }
 
 bool processDeferredBackupQueueItem(SerializedSettingsBackupPayload& payload, StorageManager& storage) {
-    bool ok = writeDeferredBackupPayloadNow(payload, storage);
-    if (ok && payload.markCompleted != nullptr) {
-        ok = payload.markCompleted(payload.backupRevision, payload.completionContext);
-    }
+    const bool ok = writeDeferredBackupPayloadNow(payload, storage);
     if (!ok) {
         gDeferredSettingsBackupState.writerRetryPending.store(true, std::memory_order_relaxed);
     }
@@ -769,6 +791,7 @@ void resetDeferredSettingsBackupStateForTest() {
     gDeferredSettingsBackupState.pendingRequest.store(false, std::memory_order_relaxed);
     gDeferredSettingsBackupState.writerRetryPending.store(false, std::memory_order_relaxed);
     gDeferredSettingsBackupState.shutdownRequested.store(false, std::memory_order_relaxed);
+    gDeferredSettingsBackupState.requestToken.store(0, std::memory_order_relaxed);
     gDeferredSettingsBackupState.nextAttemptAtMs = 0;
 }
 
@@ -835,6 +858,7 @@ bool SettingsManager::saveDeferredBackup() {
 }
 
 void SettingsManager::requestDeferredBackupFromCurrentState() {
+    publishBackupRequest();
     gDeferredSettingsBackupState.pendingRequest.store(true, std::memory_order_relaxed);
     clearDeferredBackupRetry();
 }
@@ -873,6 +897,7 @@ void SettingsManager::serviceDeferredBackup(uint32_t nowMs) {
         return;
     }
 
+    const uint32_t requestToken = gDeferredSettingsBackupState.requestToken.load(std::memory_order_acquire);
     SerializedSettingsBackupPayload payload;
     // The profile manager performs the zero-wait SD admission and holds the
     // mutex through the complete catalog snapshot. Busy/unreadable snapshots
@@ -883,6 +908,7 @@ void SettingsManager::serviceDeferredBackup(uint32_t nowMs) {
     }
     payload.protectExistingBackupFromProvisionalNvs = restorePending_;
     payload.backupRevision = backupDueRevision_;
+    payload.requestToken = requestToken;
     payload.markCompleted = markDeferredBackupRevisionCompleted;
     payload.completionContext = nullptr;
 

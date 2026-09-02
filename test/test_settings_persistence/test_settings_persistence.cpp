@@ -3643,6 +3643,9 @@ BackupApiService::BackupRuntime actualBackupRuntime(SettingsManager& manager) {
         return result.success;
     };
     runtime.syncAfterRestore = [](void*) {}; // Runtime peripherals are outside this persistence fixture.
+    runtime.isStorageReady = [](void*) { return storage.isReady(); };
+    runtime.isSDCard = [](void*) { return storage.isSDCard(); };
+    runtime.backupToSD = [](void* ctx) { return static_cast<SettingsManager*>(ctx)->backupToSD(); };
     return runtime;
 }
 
@@ -3750,8 +3753,85 @@ void test_littlefs_restore_nvs_failure_rolls_back_credentials_and_settings() {
     TEST_ASSERT_FALSE(fs.exists(WIFI_CLIENT_SD_SECRET_PATH));
 }
 
+void assert_actual_http_save_backup_order(bool oldWriterLate) {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    WifiDisplayColorsApiService::Runtime displayRuntime{};
+    displayRuntime.getSettings = [](void* ctx) -> const V1Settings& { return static_cast<SettingsManager*>(ctx)->get(); };
+    displayRuntime.getSettingsCtx = &manager;
+    displayRuntime.applySettingsUpdate = [](const DisplaySettingsUpdate& update, void* ctx) {
+        return static_cast<SettingsManager*>(ctx)->applyDisplaySettingsUpdate(
+            update, SettingsPersistMode::ImmediateNvsDeferredBackup);
+    };
+    displayRuntime.applySettingsUpdateCtx = &manager;
+    WebServer displaySave(80);
+    displaySave.setArg("brightness", "61");
+    WifiDisplayColorsApiService::handleApiSave(displaySave, displayRuntime, nullptr, nullptr);
+    TEST_ASSERT_EQUAL_INT(200, displaySave.lastStatusCode);
+    manager.serviceDeferredBackup(1000);
+    if (!oldWriterLate) TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
+
+    WifiSettingsApiService::Runtime deviceRuntime{};
+    deviceRuntime.ctx = &manager;
+    deviceRuntime.getSettings = [](void* ctx) -> const V1Settings& { return static_cast<SettingsManager*>(ctx)->get(); };
+    deviceRuntime.applySettingsUpdate = [](const DeviceSettingsUpdate& update, void* ctx) {
+        return static_cast<SettingsManager*>(ctx)->applyDeviceSettingsUpdate(update, SettingsPersistMode::Immediate);
+    };
+    WebServer deviceSave(80);
+    deviceSave.setArg("autoPowerOffMinutes", "9");
+    WifiSettingsApiService::handleApiDeviceSettingsSave(deviceSave, deviceRuntime);
+    TEST_ASSERT_EQUAL_INT(200, deviceSave.lastStatusCode);
+    if (oldWriterLate) {
+        const bool accepted = runDeferredSettingsBackupWriterOnceForTest(storage);
+        JsonDocument backup;
+        TEST_ASSERT_TRUE(loadJsonFile(fs, SETTINGS_BACKUP_PATH, backup));
+        TEST_ASSERT_EQUAL_INT(9, backup["autoPowerOffMinutes"].as<int>());
+        TEST_ASSERT_FALSE(accepted);
+        manager.serviceDeferredBackup(2000);
+        TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
+    }
+    JsonDocument backup;
+    TEST_ASSERT_TRUE(loadJsonFile(fs, SETTINGS_BACKUP_PATH, backup));
+    TEST_ASSERT_EQUAL_INT(9, backup["autoPowerOffMinutes"].as<int>());
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_EQUAL_UINT8(9, rebooted.get().autoPowerOffMinutes);
+    TEST_ASSERT_FALSE(rebooted.deferredBackupPending());
+}
+
+void test_actual_http_saves_keep_new_backup_when_old_writer_runs_first() { assert_actual_http_save_backup_order(false); }
+void test_actual_http_saves_keep_new_backup_when_old_writer_runs_last() { assert_actual_http_save_backup_order(true); }
+
+void test_actual_backup_now_preserves_same_due_profile_snapshot() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    V1Profile road("Road");
+    road.description = "Old profile";
+    TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
+    SettingsManager manager(storage, profiles);
+    manager.requestDeferredBackupFromCurrentState();
+    manager.serviceDeferredBackup(1000);
+    road.description = "New profile";
+    TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
+    WebServer backupNow(80);
+    BackupApiService::handleApiBackupNow(backupNow, actualBackupRuntime(manager), nullptr, nullptr, nullptr, nullptr);
+    TEST_ASSERT_EQUAL_INT(200, backupNow.lastStatusCode);
+    const bool accepted = runDeferredSettingsBackupWriterOnceForTest(storage);
+    JsonDocument backup;
+    TEST_ASSERT_TRUE(loadJsonFile(fs, SETTINGS_BACKUP_PATH, backup));
+    TEST_ASSERT_EQUAL_STRING("New profile", backup["profiles"][0]["description"].as<const char*>());
+    TEST_ASSERT_FALSE(accepted);
+    TEST_ASSERT_EQUAL_UINT32(0, manager.backupDueRevision());
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_actual_http_saves_keep_new_backup_when_old_writer_runs_first);
+    RUN_TEST(test_actual_http_saves_keep_new_backup_when_old_writer_runs_last);
+    RUN_TEST(test_actual_backup_now_preserves_same_due_profile_snapshot);
     RUN_TEST(test_generated_http_backup_round_trip_on_littlefs);
     RUN_TEST(test_generated_http_backup_round_trip_on_sd);
     RUN_TEST(test_littlefs_restore_preserves_matches_clears_changes_and_accepts_explicit_secrets);

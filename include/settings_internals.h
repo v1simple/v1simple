@@ -68,6 +68,7 @@ struct SerializedSettingsBackupPayload {
     bool protectExistingBackupFromUnsafeProfileSnapshot = false;
     uint32_t snapshotMs = 0;
     uint32_t backupRevision = 0;
+    uint32_t requestToken = 0;
     MarkCompleted markCompleted = nullptr;
     void* completionContext = nullptr;
     int profilesBackedUp = 0;

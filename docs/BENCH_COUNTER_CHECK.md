@@ -34,6 +34,10 @@ acceptance, including unscoped display responses. Blink planes may permit more
 than one value. The supplied scenario is hashed in the result and semantically
 cross-checked; older windows do not retain its original file hash.
 
+A canonical empty-table clear followed by an ordered idle display can establish
+post-replay idle context. The original scenario count stays in the evidence;
+partial, conflicting or ambiguously ordered table updates remain unresolved.
+
 Idle interpretation requires separately established `stealthEnabled=false`.
 Without that evidence, idle expectations stay unresolved. When already known,
 pass `--configuration path/to/configuration-evidence.json` containing:

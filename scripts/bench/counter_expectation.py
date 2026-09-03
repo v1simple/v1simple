@@ -133,7 +133,8 @@ def build_counter_timeline(scenario: dict, stimulus_records: list[dict],
 
     Malformed, missing, duplicate or terminally lost delivery is an evidence
     error. Backpressure retries are permitted. Unscoped accepted display packets
-    remain in the timeline; an unscoped alert table makes its context unresolved.
+    remain in the timeline. Only a canonical, ordered empty-table clear followed
+    by an idle display can establish unscoped table context.
     """
     _require(isinstance(scenario, dict) and type(scenario.get("schemaVersion")) is int
              and scenario["schemaVersion"] == 1,
@@ -214,7 +215,8 @@ def build_counter_timeline(scenario: dict, stimulus_records: list[dict],
                 track["accepted_ns"] = now
                 accepted.append({"global_tx_sequence": tx, "packet_id": packet_id,
                                  "payload_hex": raw.hex(), "stimulus_sequence": sequence,
-                                 "display_requested_ns": track["requested_ns"], "display_accepted_ns": now})
+                                 "display_requested_ns": track["requested_ns"],
+                                 "display_attempted_ns": attempted, "display_accepted_ns": now})
         else:
             raise CounterEvidenceError("terminal loss or unsupported delivery state")
     _require(all(track["accepted_ns"] is not None for track in tracks.values())
@@ -252,6 +254,10 @@ def counter_expectation_at(timeline: dict, capture_ns: int, *,
            for item in timeline["accepted"]):
         result["fields"] = _unknown("display transmission is pending at capture time")
         return result
+    if any(item["packet_id"] == 0x43 and item["display_requested_ns"] <= capture_ns < item["display_accepted_ns"]
+           for item in timeline["accepted"]):
+        result["fields"] = _unknown("alert-table transmission is pending at capture time")
+        return result
     if stimulus["all_accepted_ns"] > capture_ns:
         result["fields"] = _unknown("current stimulus notifications were not all accepted by capture time")
         return result
@@ -262,22 +268,50 @@ def counter_expectation_at(timeline: dict, capture_ns: int, *,
     display = displays[-1]
     result["input"].update({key: value for key, value in display.items() if key != "stimulus_sequence"})
     result["input"]["display_stimulus_sequence"] = display["stimulus_sequence"]
-    if any(item["packet_id"] == 0x43 and item["stimulus_sequence"] is None
-           and item["display_accepted_ns"] >= stimulus["all_accepted_ns"] for item in events):
-        result["fields"] = _unknown("unscoped alert table superseded validated scenario context")
-        return result
+    alert_count = stimulus["alert_count"]
+    later_rows = [item for item in events if item["packet_id"] == 0x43
+                  and item["display_accepted_ns"] >= stimulus["all_accepted_ns"]]
+    if later_rows:
+        # A complete count-zero row clears both published rows and assembly
+        # cache (packet_parser_alerts.cpp). No partial/nonempty table assembly
+        # is inferred here. Queued requests can precede earlier acceptance;
+        # actual updateValue call bounds establish ordering under backpressure.
+        previous_end = stimulus["all_accepted_ns"]
+        previous_tx = max(item["global_tx_sequence"] for item in events
+                          if item["stimulus_sequence"] == stimulus["stimulus_sequence"])
+        for row in later_rows:
+            raw, _, payload = _packet(row["payload_hex"])
+            if (row["stimulus_sequence"] is not None or raw[1:3] != bytes((0xD8, 0xEA))
+                    or payload != bytes(7) or row["display_attempted_ns"] < previous_end
+                    or row["global_tx_sequence"] <= previous_tx):
+                result["fields"] = _unknown("unscoped table is not a canonical ordered empty clear")
+                return result
+            previous_end, previous_tx = row["display_accepted_ns"], row["global_tx_sequence"]
+        _, _, display_data = _packet(display["payload_hex"])
+        # Zero radar rows do not clear display-only laser. Require an actually
+        # subsequent idle band/arrow image; its mute bit is unrelated to count.
+        if (display["display_attempted_ns"] < previous_end or display["global_tx_sequence"] <= previous_tx
+                or len(display_data) != 8 or (display_data[3] | display_data[4]) & 0xEF):
+            result["fields"] = _unknown("empty clear lacks a subsequent compatible idle display")
+            return result
+        alert_count = 0
+        result["input"]["effective_alert_count"] = 0
+        result["input"]["post_stimulus_clear"] = dict(later_rows[-1])
+        result["comparison_basis"].append(
+            "A canonical accepted zero-alert clear and subsequent idle display establish empty table context; "
+            "the authored stimulus alert count is retained separately.")
     if display["stimulus_sequence"] not in (None, stimulus["stimulus_sequence"]):
         result["fields"] = _unknown("accepted display belongs to a different stimulus")
         return result
     decoded = decode_counter_packet(display["payload_hex"])
     result["permitted_pairs"] = decoded["permitted_pairs"]
-    if any(pair["count"] not in (None, stimulus["alert_count"]) for pair in decoded["permitted_pairs"]):
+    if any(pair["count"] not in (None, alert_count) for pair in decoded["permitted_pairs"]):
         result["fields"] = _unknown("unscoped counter digit disagrees with current scenario context")
         return result
-    if stimulus["alert_count"] and any(pair["mode"] is not None for pair in decoded["permitted_pairs"]):
+    if alert_count and any(pair["mode"] is not None for pair in decoded["permitted_pairs"]):
         result["fields"] = _unknown("mode glyph during declared live alerts is outside the simple count replay rule")
         return result
-    if stimulus["alert_count"] == 0 and stealth_enabled is not False:
+    if alert_count == 0 and stealth_enabled is not False:
         result["fields"] = _unknown("idle counter requires independently established stealthEnabled=false")
         return result
     result["fields"] = decoded["fields"]

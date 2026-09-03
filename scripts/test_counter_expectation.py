@@ -22,6 +22,10 @@ def display(first, second=None):
     return packet(0x31, [first, first if second is None else second, 1, 0x24, 0x24, 12, 12, 0x40])
 
 
+def idle_display(mask=0x38, bands=0):
+    return packet(0x31, [mask, mask, 0, bands, bands, 12, 12, 0x40])
+
+
 def emission(tx, payload, requested, accepted, sequence=None, ordinal=None):
     base = dict(schemaVersion=3, globalTxSequence=tx, payloadHex=payload,
                 payloadSha256=hashlib.sha256(bytes.fromhex(payload)).hexdigest(), characteristic="B2CE")
@@ -187,6 +191,67 @@ class CounterExpectationTests(unittest.TestCase):
         data = fixture(); data[2].extend(emission(5, packet(0x43, [0] * 7), 220, 225))
         result = counter_expectation_at(build_counter_timeline(*data), 230, stealth_enabled=False)
         self.assertIn("unresolved", result["fields"]["mode"])
+
+    def test_ordered_empty_clear_and_idle_preserve_authored_scenario(self):
+        # The authored scenario ends live. Post-replay clear/idle are real
+        # unscoped packets, not invented changes to that last scenario sample.
+        data = fixture()
+        data[0]["samples"].pop(); data[1].pop(); del data[2][4:]
+        # Requests may queue before the previous notification is accepted.
+        data[2].extend(emission(3, packet(0x43, [0] * 7), 112, 118))
+        data[2].extend(emission(4, idle_display(), 113, 120))
+        original = copy.deepcopy(data)
+        timeline = build_counter_timeline(*data)
+        result = counter_expectation_at(timeline, 130, stealth_enabled=False)
+        self.assertEqual(result["fields"], {"count": {"allowed": [None]}, "mode": {"allowed": ["L"]}})
+        self.assertEqual(result["input"]["alert_count"], 1)
+        self.assertEqual(result["input"]["effective_alert_count"], 0)
+        self.assertEqual(result["input"]["post_stimulus_clear"]["global_tx_sequence"], 3)
+        self.assertEqual(data, original)
+        for setting in (True, None):
+            self.assertIn("unresolved", counter_expectation_at(timeline, 130, stealth_enabled=setting)["fields"]["mode"])
+
+    def test_empty_refreshes_with_subsequent_idle_are_coherent(self):
+        data = fixture()
+        data[2].extend(emission(5, packet(0x43, [0] * 7), 220, 225))
+        data[2].extend(emission(6, packet(0x43, [0] * 7), 221, 228))
+        data[2].extend(emission(7, idle_display(0x77, bands=0x10), 222, 230))
+        result = counter_expectation_at(build_counter_timeline(*data), 240, stealth_enabled=False)
+        self.assertEqual(result["fields"]["mode"], {"allowed": ["A"]})
+        self.assertEqual(result["input"]["post_stimulus_clear"]["global_tx_sequence"], 6)
+
+    def test_partial_nonempty_noncanonical_and_contradictory_tables_stay_unknown(self):
+        rows = ([0], [0x12, 0x5E, 0x56, 1, 0, 0x24, 0x80],
+                [0x11, 0x5E, 0x56, 1, 0, 0x24, 0x80], [0x10, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0x80])
+        for row in rows:
+            for clear_after in (False, True):
+                with self.subTest(row=row, clear_after=clear_after):
+                    data = fixture()
+                    data[2].extend(emission(5, packet(0x43, row), 220, 225))
+                    if clear_after:
+                        data[2].extend(emission(6, packet(0x43, [0] * 7), 226, 230))
+                    data[2].extend(emission(7, idle_display(), 231, 235))
+                    result = counter_expectation_at(build_counter_timeline(*data), 240, stealth_enabled=False)
+                    self.assertIn("unresolved", result["fields"]["mode"])
+
+    def test_clear_order_pending_delivery_and_display_laser_stay_unknown(self):
+        cases = ((220, 225, 221, 230, 224, 0),  # Clear still pending at sample.
+                 (220, 235, 226, 230, 240, 0),  # Idle was accepted before clear.
+                 (220, 225, 221, 225, 240, 0),  # Accepted calls overlap.
+                 (220, 225, 226, 230, 240, 1))  # Radar clear does not clear laser.
+        for clear_request, clear_accept, idle_request, idle_accept, capture, bands in cases:
+            with self.subTest(case=(clear_accept, idle_accept, capture, bands)):
+                data = fixture()
+                data[2].extend(emission(5, packet(0x43, [0] * 7), clear_request, clear_accept))
+                data[2].extend(emission(6, idle_display(bands=bands), idle_request, idle_accept))
+                result = counter_expectation_at(build_counter_timeline(*data), capture, stealth_enabled=False)
+                self.assertIn("unresolved", result["fields"]["mode"])
+        data = fixture()
+        data[2].extend(emission(6, packet(0x43, [0] * 7), 220, 225))
+        data[2].extend(emission(5, idle_display(), 226, 230))
+        self.assertIn("unresolved", counter_expectation_at(build_counter_timeline(*data), 240,
+                                                          stealth_enabled=False)["fields"]["mode"])
 
     def test_unscoped_numeric_disagreement_is_unknown(self):
         data = fixture(); data[2].extend(emission(5, display(0x5B), 120, 125))

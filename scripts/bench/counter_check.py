@@ -80,6 +80,35 @@ def select_frame(rows: list[dict], target_ns: int) -> tuple[int, dict]:
     return selected, rows[selected]
 
 
+def select_automatic_frame(rows: list[dict], target_ns: int, interval: dict, timeline: dict,
+                           stealth_enabled: bool | None) -> tuple[int, dict, dict]:
+    """Select the closest input-resolved midpoint neighbor before reading pixels."""
+    times = [row["host_capture_ns"] for row in rows]
+    if not times or target_ns < times[0] or target_ns > times[-1] + rows[-1]["duration_ns"]:
+        raise ValueError("interval midpoint is outside the camera recording")
+    position = bisect_left(times, target_ns)
+    candidates = [i for i in (position - 1, position) if 0 <= i < len(rows)]
+    eligible = []
+    for index in candidates:
+        row = rows[index]
+        capture_ns = row["host_capture_ns"]
+        if not (interval["start_capture_ns"] <= capture_ns < interval["end_capture_ns"]):
+            continue
+        if abs(capture_ns - target_ns) > row["duration_ns"]:
+            continue
+        requirement = counter_expectation_at(timeline, capture_ns, stealth_enabled=stealth_enabled)
+        fields = requirement.get("fields")
+        if (not isinstance(fields, dict)
+                or any(not isinstance(fields.get(name), dict)
+                       or not isinstance(fields[name].get("allowed"), list)
+                       or not fields[name]["allowed"] for name in REQUIRED_FIELDS)):
+            continue
+        eligible.append((index, row, requirement))
+    if not eligible:
+        raise ValueError("no input-resolved frame within one source-frame duration of the interval midpoint")
+    return min(eligible, key=lambda item: (abs(item[1]["host_capture_ns"] - target_ns), item[0]))
+
+
 def decode_frames(ffmpeg: str, video: Path, indices: list[int], width: int, height: int) -> dict[int, bytes]:
     indices = sorted(set(indices))
     if not indices:
@@ -302,16 +331,21 @@ def analyze(run_dir: Path, offsets: list[float] | None, out_dir: Path,
                 target = (interval["midpoint_capture_ns"] if isinstance(interval, dict)
                           else origin + round(offset * 1_000_000_000))
                 samples[number]["target_capture_ns"] = target
-                index, row = select_frame(rows, target)
+                if isinstance(interval, dict):
+                    index, row, requirement = select_automatic_frame(
+                        rows, target, interval, timeline, stealth_enabled)
+                else:
+                    index, row = select_frame(rows, target)
+                    requirement = None
                 if index in used_indices:
                     raise ValueError("request resolves to a frame already selected by another sample")
                 used_indices.add(index)
-                selected[number] = (index, row)
+                selected[number] = (index, row, requirement)
             except ValueError as exc:
                 samples[number]["error"] = str(exc)
-        pixels = decode_frames(ffmpeg, video, [index for index, _ in selected.values()], width, height)
+        pixels = decode_frames(ffmpeg, video, [index for index, _, _ in selected.values()], width, height)
         (out_dir / "frames").mkdir()
-        for number, (index, row) in selected.items():
+        for number, (index, row, requirement) in selected.items():
             image_path = out_dir / "frames" / f"{number + 1:04d}.png"
             identity = {"frame_id": samples[number]["frame_id"], "image_sha256": None,
                         "source_frame_seq": row["frame_seq"], "capture_ns": row["host_capture_ns"]}
@@ -321,7 +355,9 @@ def analyze(run_dir: Path, offsets: list[float] | None, out_dir: Path,
                 samples[number].update(**identity, video_frame_index=index, image=f"frames/{image_path.name}")
                 # Pixel observation never receives packet expectations.
                 reading = observe(pixels[index], width, height, registration)
-                requirement = counter_expectation_at(timeline, row["host_capture_ns"], stealth_enabled=stealth_enabled)
+                if requirement is None:
+                    requirement = counter_expectation_at(
+                        timeline, row["host_capture_ns"], stealth_enabled=stealth_enabled)
                 expected["frames"][number] = {**identity, "fields": requirement["fields"]}
                 observed["frames"].append({**identity, "inference_status": "complete",
                                            "anomalies": reading.get("anomalies", []), "fields": reading["fields"]})
@@ -336,8 +372,8 @@ def analyze(run_dir: Path, offsets: list[float] | None, out_dir: Path,
         if comparison["result"] != "FAIL":
             comparison["result"] = "INCONCLUSIVE"
         comparison["errors"] = errors + comparison["errors"]
-    basis = ("Count/mode agreement with recorded host input at every bounded live count/mute interval midpoint; "
-             "no response deadline or DUT-receipt claim." if automatic else
+    basis = ("Count/mode agreement with recorded host input at the closest qualifying bracketing frame near each "
+             "fixed live count/mute interval midpoint; no response deadline or DUT-receipt claim." if automatic else
              "Count/mode agreement with recorded host input at requested samples; no response deadline or DUT-receipt claim.")
     result = {**comparison, "kind": "sampled_counter_check", "selection_mode": "automatic_live_intervals" if automatic else "explicit_offsets",
               "full_run_correctness": "not_evaluated", "comparison_basis": basis,

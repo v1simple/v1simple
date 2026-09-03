@@ -9,9 +9,14 @@ does not run for a bench command without replay-camera evidence; that path print
 
 The automatic check divides the validated recorded input into maximal live-alert
 intervals with the same count and mute state, then fixes each interval's temporal
-midpoint before decoding pixels. Every selected interval remains in the
-denominator. Missing input identity, an interval without a recorded end, or an
-unreadable frame makes the result `INCONCLUSIVE`.
+midpoint before decoding pixels. Of the immediate timestamped frames before and
+after that midpoint, it deterministically chooses the closest one whose existing
+count and mode expectations are resolved, provided the frame is inside the same
+interval and within its own one-frame duration of the midpoint. If neither frame
+qualifies, the interval remains unresolved without inspecting either frame's
+pixels. Every selected interval remains in the denominator. Missing input
+identity, an interval without a recorded end, or an unreadable selected frame
+makes the result `INCONCLUSIVE`.
 
 The same automatic mode can be run offline against a retained replay directory
 containing `window_result.json`. It reads original recordings and starts no

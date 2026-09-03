@@ -91,6 +91,12 @@ class CounterCheckTests(unittest.TestCase):
         self.assertTrue((output / "report.md").is_file())
         return result, output, decoding, observing
 
+    def bracket_automatic_midpoint(self):
+        for row, capture_ns in zip(self.rows, (1_400_000_000, 1_510_000_000, 2_500_000_000)):
+            row["host_capture_ns"] = capture_ns
+            row["callback_host_ns"] = capture_ns + 100
+        self.bind()
+
     def test_matching_input_and_pixels_bind_exact_frames_and_narrow_scope(self):
         result, output, decoding, observing = self.analyze()
         self.assertEqual(result["result"], "PASS")
@@ -117,6 +123,86 @@ class CounterCheckTests(unittest.TestCase):
         self.assertEqual(interval["midpoint_capture_ns"], 1_500_000_000)
         self.assertEqual(interval["source_indices"], [0])
         self.assertEqual((interval["alert_count"], interval["muted"]), (1, False))
+
+    def test_automatic_selection_uses_closest_resolved_midpoint_neighbor(self):
+        self.bracket_automatic_midpoint()
+        resolved = {"fields": {"count": {"allowed": [1]}, "mode": {"allowed": [None]}}}
+        unresolved = {"fields": {name: {"unresolved": "pending"} for name in ("count", "mode")}}
+
+        def expectation_at(_, capture_ns, **__):
+            return unresolved if capture_ns == 1_510_000_000 else resolved
+
+        def decode_after_expectations(_ffmpeg, _video, indices, width, height):
+            self.assertEqual([call.args[1] for call in expectation.call_args_list],
+                             [1_400_000_000, 1_510_000_000])
+            return {i: bytes([i + 1]) * width * height * 3 for i in indices}
+
+        with patch.object(check, "counter_expectation_at", side_effect=expectation_at) as expectation:
+            result, _, decoding, observing = self.analyze(
+                None, configuration=False, decoder=decode_after_expectations)
+        self.assertEqual(result["result"], "PASS")
+        self.assertEqual(result["samples"][0]["target_capture_ns"], 1_500_000_000)
+        self.assertEqual(result["samples"][0]["capture_ns"], 1_400_000_000)
+        self.assertEqual(decoding.call_args.args[2], [0])
+        self.assertEqual(observing.call_count, 1)
+        self.assertEqual(expectation.call_count, 2)  # Both candidates checked once; selected result was cached.
+
+        with patch.object(check, "counter_expectation_at", side_effect=expectation_at) as expectation:
+            explicit, _, decoding, observing = self.analyze((.5,), configuration=False)
+        self.assertEqual(explicit["result"], "INCONCLUSIVE")
+        self.assertEqual(explicit["samples"][0]["capture_ns"], 1_510_000_000)
+        self.assertEqual(decoding.call_args.args[2], [1])
+        self.assertEqual(observing.call_count, 1)
+        self.assertEqual(expectation.call_count, 1)
+
+    def test_automatic_selection_rejects_out_of_bounds_neighbors_without_pixels(self):
+        self.bracket_automatic_midpoint()
+        self.rows[0]["host_capture_ns"] = 900_000_000
+        self.rows[0]["callback_host_ns"] = 900_000_100
+        self.bind()
+        resolved = {"fields": {"count": {"allowed": [1]}, "mode": {"allowed": [None]}}}
+        unresolved = {"fields": {name: {"unresolved": "pending"} for name in ("count", "mode")}}
+
+        def expectation_at(_, capture_ns, **__):
+            return unresolved if capture_ns == 1_510_000_000 else resolved
+
+        with patch.object(check, "counter_expectation_at", side_effect=expectation_at) as expectation:
+            result, _, decoding, observing = self.analyze(None, configuration=False)
+        self.assertEqual(result["result"], "INCONCLUSIVE")
+        self.assertEqual(result["counts"]["unresolved"], 2)
+        self.assertEqual(decoding.call_args.args[2], [])
+        observing.assert_not_called()
+        self.assertEqual(expectation.call_count, 1)  # The out-of-interval frame was rejected first.
+
+        rows = [{"host_capture_ns": 90_000_000, "duration_ns": 5_000_000},
+                {"host_capture_ns": 110_000_000, "duration_ns": 5_000_000}]
+        interval = {"start_capture_ns": 80_000_000, "end_capture_ns": 120_000_000}
+        with patch.object(check, "counter_expectation_at", return_value=resolved) as expectation:
+            with self.assertRaisesRegex(ValueError, "one source-frame duration"):
+                check.select_automatic_frame(rows, 100_000_000, interval, {}, None)
+        expectation.assert_not_called()
+
+    def test_automatic_selection_never_retries_after_pixel_result(self):
+        self.bracket_automatic_midpoint()
+        resolved = {"fields": {"count": {"allowed": [1]}, "mode": {"allowed": [None]}}}
+        readings = (
+            ({"anomalies": [], "fields": {name: {"state": "unreadable"} for name in ("count", "mode")}},
+             "INCONCLUSIVE"),
+            ({"anomalies": ["foreign stroke"], "fields": {
+                "count": {"state": "readable", "value": 1}, "mode": {"state": "readable", "value": None}}},
+             "INCONCLUSIVE"),
+            ({"anomalies": [], "fields": {
+                "count": {"state": "readable", "value": 2}, "mode": {"state": "readable", "value": None}}},
+             "FAIL"),
+        )
+        for reading, verdict in readings:
+            with self.subTest(verdict=verdict, reading=reading), \
+                    patch.object(check, "counter_expectation_at", return_value=resolved) as expectation:
+                result, _, decoding, observing = self.analyze(None, reader=lambda *_: reading, configuration=False)
+                self.assertEqual(result["result"], verdict)
+                self.assertEqual(decoding.call_args.args[2], [1])
+                self.assertEqual(observing.call_count, 1)
+                self.assertEqual(expectation.call_count, 2)
 
     def test_automatic_supported_mismatch_is_fail(self):
         def wrong(*_):

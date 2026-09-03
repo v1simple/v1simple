@@ -94,6 +94,20 @@ class CounterReaderTests(unittest.TestCase):
         self.assertIn("interiors", result["reason"])
         self.assertIn("b", result["segments"])
 
+    def test_left_stroke_edge_does_not_overlap_middle_interior(self):
+        # A narrower upper-left stroke has a tapered-end allowance reaching
+        # the middle row. Its dark left margin and its right tip are neither a
+        # broken f segment nor an illuminated g segment.
+        rgb = picture("de")
+        paint(rgb, (210, 204, 218, 234))
+        result = self.read(rgb)
+        self.assertEqual(result["glyph"], "L", result["reason"])
+        self.assertEqual(result["segments"]["f"]["active_ratio"], 1)
+        self.assertEqual(result["segments"]["g"]["active_ratio"], 0)
+        # Damage inside the corrected f interior must still be refused.
+        paint(rgb, (211, 209, 215, 216), bytes((0, 0, 0)))
+        self.assert_unknown(self.read(rgb))
+
     def test_whole_cell_foreign_ink_abstains(self):
         rgb = picture("bc")
         # A second narrow '1' in the same cell misses every sampled interior.

@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / "scripts" / "bench"))
 import camera_preflight as preflight_module  # noqa: E402
 import run_window as run_window_module  # noqa: E402
 from camera_artifacts import build_capture_manifest  # noqa: E402
+from camera_capture import VIDEO_EXPOSURE, CameraCapture  # noqa: E402
 from camera_registration import (  # noqa: E402
     DISPLAY_CROP_HEIGHT,
     DISPLAY_CROP_WIDTH,
@@ -171,7 +172,7 @@ class FakeCamera:
             "auto_exposure_priority": 0,
             "focus_abs": 306,
             "video_exposure_time_abs": 50,
-            "gain": 0,
+            "gain": 128,
             "framerate": 200,
             "input_pixel_format": "nv12",
             "video_size": "1280x720",
@@ -261,6 +262,33 @@ def with_calibrator(fake: Any, callback: Any) -> Any:
         return callback()
     finally:
         preflight_module.calibrate_display_crop = original
+
+
+def test_video_gain_is_configured_reported_and_validated() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        camera = CameraCapture(Path(tmp) / "camera", 1)
+        controls: dict[str, int] = {}
+        camera._set_control = lambda name, value: controls.__setitem__(name, value)
+        camera._get_control_value = lambda name: controls[name]
+        camera._configure(VIDEO_EXPOSURE)
+        assert_true(controls["gain"] == 128, "video gain was not configured to 128")
+        assert_true(camera.profile()["gain"] == 128, "reported video gain differs from configuration")
+        assert_true(camera._validate_live_profile()["gain"] == 128, "configured gain was not admitted")
+
+        controls["gain"] = 0
+        try:
+            camera._validate_live_profile()
+        except RuntimeError as exc:
+            assert_true("gain=0 (expected 128)" in str(exc), f"wrong gain mismatch: {exc}")
+        else:
+            raise AssertionError("live gain 0 was admitted")
+
+        stale = FakeCamera(Path(tmp) / "stale", 1, profile_updates={"gain": 0})
+        result = run_camera_preflight(stale)
+        assert_true(result["result"] == "INCONCLUSIVE", "old gain profile passed preflight")
+        mismatch = result["diagnostics"][0]["measured"]["mismatched_fields"]["gain"]
+        assert_true(mismatch == {"measured": 0, "expected": 128}, f"wrong gain evidence: {result}")
+        assert_true(stale.start_calls == 0, "old gain profile opened the camera")
 
 
 def test_dynamic_fixture_records_crop_exposure_and_hash() -> None:
@@ -715,6 +743,7 @@ def test_capture_identity_owns_preflight_and_smoke_has_no_product_dependencies()
 
 
 def main() -> int:
+    test_video_gain_is_configured_reported_and_validated()
     test_dynamic_fixture_records_crop_exposure_and_hash()
     test_reseated_dut_position_and_scale_are_applied_before_capture()
     test_registration_refusal_codes_are_precise()

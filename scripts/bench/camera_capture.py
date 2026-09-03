@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from artifact_privacy import REDACTED_NAME, sanitize_artifact_value
-from camera_contract import EXPECTED_CAMERA_NAME
+from camera_contract import EXPECTED_CAMERA_NAME, EXPECTED_CAMERA_PROFILE
 from camera_timing import VIDEO_TIMING_VERIFICATION_SCHEMA, verify_video_file
 
 
@@ -186,7 +186,7 @@ class CameraCapture:
             "auto_exposure_priority": 0,
             "focus_abs": self.focus,
             "video_exposure_time_abs": VIDEO_EXPOSURE,
-            "gain": 0,
+            "gain": EXPECTED_CAMERA_PROFILE["gain"],
             "framerate": self.framerate,
             "input_pixel_format": self.input_pixel_format,
             "video_size": self.video_size,
@@ -301,7 +301,7 @@ class CameraCapture:
             ("gamma", 128),
             ("contrast", 64),
             ("saturation", 78),
-            ("gain", 0 if video_profile else 190),
+            ("gain", EXPECTED_CAMERA_PROFILE["gain"] if video_profile else 190),
             ("sharpness", 128),
         ]
         if video_profile:
@@ -322,7 +322,7 @@ class CameraCapture:
             "auto-exposure-mode": 8,
             "auto-exposure-priority": 0,
             "exposure-time-abs": VIDEO_EXPOSURE,
-            "gain": 0,
+            "gain": EXPECTED_CAMERA_PROFILE["gain"],
             "auto-white-balance-temp": False,
             "white-balance-temp": 4650,
         }

@@ -6,7 +6,7 @@ EXPECTED_CAMERA_PROFILE = {
     "auto_exposure_priority": 0,
     "focus_abs": 306,
     "video_exposure_time_abs": 50,
-    "gain": 0,
+    "gain": 128,
     "framerate": 200,
     "input_pixel_format": "nv12",
     "video_size": "1280x720",

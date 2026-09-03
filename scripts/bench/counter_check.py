@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare count/mode pixels with replay input at explicitly requested samples.
+"""Compare count/mode pixels with replay input at fixed or automatic samples.
 
 Requires ffmpeg/ffprobe. Reads existing recordings only; no hardware or inference
 service is started. Results cover two fields at the saved frames, not complete
@@ -111,32 +111,139 @@ def save_json(path: Path, value: dict) -> None:
     _publish_new(path, sanitize_artifact_value(value, run_dir=path.parent))
 
 
-def analyze(run_dir: Path, offsets: list[float], out_dir: Path, configuration: Path | None = None) -> dict:
+def _display_mute(notification: dict, *, live: bool) -> bool:
+    """Read mute state from an already validated display packet."""
+    if notification.get("kind") != "display_frame":
+        raise ValueError("automatic selection requires a display notification")
+    raw = bytes.fromhex(notification.get("bytesHex", ""))
+    data = raw[5:-2]
+    if len(data) != 8:
+        raise ValueError("automatic selection requires an eight-byte display payload")
+    muted = bool(data[5] & 0x01)
+    if live:
+        planes = [bool(data[index] & 0x10) for index in (3, 4)]
+        if planes[0] != planes[1] or planes[0] != muted:
+            raise ValueError("automatic selection found contradictory display mute fields")
+    return muted
+
+
+def select_live_intervals(stimulus_records: list[dict], timeline: dict) -> list[dict]:
+    """Choose every bounded count/mute live interval using recorded input only."""
+    recorded: dict[int, dict] = {}
+    for record in stimulus_records:
+        source_index = record.get("sourceIndex")
+        notifications = record.get("notifications")
+        if type(source_index) is not int or source_index in recorded or not isinstance(notifications, list):
+            raise ValueError("automatic selection found invalid stimulus identity")
+        displays = [notification for notification in notifications
+                    if isinstance(notification, dict) and notification.get("kind") == "display_frame"]
+        if len(displays) != 1:
+            raise ValueError("automatic selection requires one display notification per stimulus")
+        recorded[source_index] = displays[0]
+
+    states = []
+    for item in timeline.get("stimuli", []):
+        source_index = item.get("source_index")
+        display = recorded.get(source_index)
+        if display is None:
+            raise ValueError("automatic selection cannot bind the validated stimulus timeline")
+        alert_count = item.get("alert_count")
+        states.append({
+            "source_index": source_index,
+            "requested_ns": item.get("stimulus_requested_ns"),
+            "alert_count": alert_count,
+            "muted": _display_mute(display, live=type(alert_count) is int and alert_count > 0),
+        })
+    if len(states) != len(recorded) or not states:
+        raise ValueError("automatic selection cannot bind every recorded stimulus")
+
+    origin = states[0]["requested_ns"]
+    intervals = []
+    index = 0
+    while index < len(states):
+        state = states[index]
+        end_index = index + 1
+        while (end_index < len(states)
+               and states[end_index]["alert_count"] == state["alert_count"]
+               and states[end_index]["muted"] == state["muted"]):
+            end_index += 1
+        if type(state["alert_count"]) is not int or state["alert_count"] < 0:
+            raise ValueError("automatic selection found an invalid alert count")
+        if state["alert_count"]:
+            if end_index == len(states):
+                raise ValueError("automatic selection found a live interval without a recorded end")
+            start_ns = state["requested_ns"]
+            end_ns = states[end_index]["requested_ns"]
+            if type(start_ns) is not int or type(end_ns) is not int or end_ns <= start_ns:
+                raise ValueError("automatic selection found invalid interval bounds")
+            midpoint_ns = start_ns + (end_ns - start_ns) // 2
+            intervals.append({
+                "start_capture_ns": start_ns,
+                "end_capture_ns": end_ns,
+                "midpoint_capture_ns": midpoint_ns,
+                "midpoint_offset_seconds": (midpoint_ns - origin) / 1_000_000_000,
+                "alert_count": state["alert_count"],
+                "muted": state["muted"],
+                "source_indices": [item["source_index"] for item in states[index:end_index]],
+            })
+        index = end_index
+    if not intervals or len(intervals) > 128:
+        raise ValueError("automatic selection requires 1 to 128 bounded live-alert intervals")
+    return intervals
+
+
+def _add_samples(expected: dict, samples: list[dict], offsets: list[float],
+                 intervals: list[dict] | None = None) -> None:
+    for number, offset in enumerate(offsets, 1):
+        identity = {"frame_id": f"sample-{number:04d}", "image_sha256": None,
+                    "source_frame_seq": None, "capture_ns": None}
+        expected["frames"].append({**identity, "fields": {name: {"unresolved": "sample evidence unavailable"}
+                                                           for name in REQUIRED_FIELDS}})
+        safe_offset = offset if type(offset) in (float, int) and math.isfinite(offset) else str(offset)
+        sample = {"frame_id": identity["frame_id"], "requested_offset_seconds": safe_offset}
+        if intervals is not None:
+            sample["live_interval"] = intervals[number - 1]
+        samples.append(sample)
+
+
+def analyze(run_dir: Path, offsets: list[float] | None, out_dir: Path,
+            configuration: Path | None = None) -> dict:
+    automatic = offsets is None
+    offsets = [] if automatic else list(offsets)
     source: dict[str, Any] = {}
     expected = {"schema_version": 1, "source": source, "required_fields": REQUIRED_FIELDS,
                 "excluded_fields": {name: "outside this count/mode-only observation scope" for name in FIELDS if name not in REQUIRED_FIELDS},
                 "frames": []}
     observed = {"schema_version": 1, "source": source, "anomaly_scope": REQUIRED_FIELDS, "frames": []}
-    samples = []
-    for number, offset in enumerate(offsets, 1):
-        identity = {"frame_id": f"sample-{number:04d}", "image_sha256": None,
-                    "source_frame_seq": None, "capture_ns": None}
-        expected["frames"].append({**identity, "fields": {name: {"unresolved": "sample evidence unavailable"} for name in REQUIRED_FIELDS}})
-        safe_offset = offset if type(offset) in (float, int) and math.isfinite(offset) else str(offset)
-        samples.append({"frame_id": identity["frame_id"], "requested_offset_seconds": safe_offset})
+    samples: list[dict] = []
+    if not automatic:
+        _add_samples(expected, samples, offsets)
     errors: list[str] = []
     evidence: dict[str, Any] = {}
     try:
-        if not offsets or len(offsets) > 128 or len(set(offsets)) != len(offsets) or any(not math.isfinite(x) or x < 0 for x in offsets):
+        if (not automatic and (not offsets or len(offsets) > 128 or len(set(offsets)) != len(offsets)
+                               or any(not math.isfinite(x) or x < 0 for x in offsets))):
             raise ValueError("supply 1 to 128 distinct finite nonnegative sample offsets")
-        ffmpeg, ffprobe = shutil.which("ffmpeg"), shutil.which("ffprobe")
-        if not ffmpeg or not ffprobe:
-            raise ValueError("ffmpeg and ffprobe are required")
         window_path = run_dir / "window_result.json"
         window = read_json(window_path)
         evidence["window_result_sha256"] = sha256_file(window_path)
         evidence["runtime_identity"] = window.get("runtime_identity")
         evidence["runtime_qualification"] = window.get("runtime_qualification")
+        stimulus_path = owned_input(run_dir, window["artifacts"]["replay_stimulus"])
+        delivery_path = owned_input(run_dir, window["artifacts"]["replay_delivery"])
+        scenario_path = run_dir / "replay_scenario.json"
+        stimulus, delivery = read_records(stimulus_path), read_records(delivery_path)
+        scenario = read_json(scenario_path)
+        timeline = build_counter_timeline(scenario, stimulus, delivery)
+        if automatic:
+            intervals = select_live_intervals(stimulus, timeline)
+            offsets = [interval["midpoint_offset_seconds"] for interval in intervals]
+            _add_samples(expected, samples, offsets, intervals)
+        evidence.update(replay_delivery_sha256=sha256_file(delivery_path), scenario_sha256=sha256_file(scenario_path),
+                        scenario_binding="Scenario semantics cross-checked against hash-bound stimulus and delivery; original window does not own the scenario file hash.")
+        ffmpeg, ffprobe = shutil.which("ffmpeg"), shutil.which("ffprobe")
+        if not ffmpeg or not ffprobe:
+            raise ValueError("ffmpeg and ffprobe are required")
         camera_dir = run_dir / "camera"
         manifest_path = camera_dir / "capture_manifest.json"
         read_json(manifest_path)  # Reject contradictory duplicate keys before the shared loader.
@@ -147,13 +254,6 @@ def analyze(run_dir: Path, offsets: list[float], out_dir: Path, configuration: P
         evidence["capture_manifest_sha256"] = sha256_file(manifest_path)
         evidence["capture_id"] = manifest["capture_id"]
         entries = manifest["identity"]["artifacts"]
-        stimulus_path = owned_input(run_dir, window["artifacts"]["replay_stimulus"])
-        delivery_path = owned_input(run_dir, window["artifacts"]["replay_delivery"])
-        scenario_path = run_dir / "replay_scenario.json"
-        stimulus, delivery = read_records(stimulus_path), read_records(delivery_path)
-        timeline = build_counter_timeline(read_json(scenario_path), stimulus, delivery)
-        evidence.update(replay_delivery_sha256=sha256_file(delivery_path), scenario_sha256=sha256_file(scenario_path),
-                        scenario_binding="Scenario semantics cross-checked against hash-bound stimulus and delivery; original window does not own the scenario file hash.")
         source.update(run_id=manifest["capture_id"], video_sha256=entries["video"]["sha256"],
                       stimulus_sha256=sha256_file(stimulus_path))
         stealth_enabled = None
@@ -198,7 +298,9 @@ def analyze(run_dir: Path, offsets: list[float], out_dir: Path, configuration: P
             try:
                 if not math.isfinite(offset * 1_000_000_000):
                     raise ValueError("sample offset is outside the camera recording")
-                target = origin + round(offset * 1_000_000_000)
+                interval = samples[number].get("live_interval")
+                target = (interval["midpoint_capture_ns"] if isinstance(interval, dict)
+                          else origin + round(offset * 1_000_000_000))
                 samples[number]["target_capture_ns"] = target
                 index, row = select_frame(rows, target)
                 if index in used_indices:
@@ -234,8 +336,11 @@ def analyze(run_dir: Path, offsets: list[float], out_dir: Path, configuration: P
         if comparison["result"] != "FAIL":
             comparison["result"] = "INCONCLUSIVE"
         comparison["errors"] = errors + comparison["errors"]
-    result = {**comparison, "kind": "sampled_counter_check", "full_run_correctness": "not_evaluated",
-              "comparison_basis": "Count/mode agreement with recorded host input at requested samples; no response deadline or DUT-receipt claim.",
+    basis = ("Count/mode agreement with recorded host input at every bounded live count/mute interval midpoint; "
+             "no response deadline or DUT-receipt claim." if automatic else
+             "Count/mode agreement with recorded host input at requested samples; no response deadline or DUT-receipt claim.")
+    result = {**comparison, "kind": "sampled_counter_check", "selection_mode": "automatic_live_intervals" if automatic else "explicit_offsets",
+              "full_run_correctness": "not_evaluated", "comparison_basis": basis,
               "evidence": evidence, "samples": samples,
               "implementation_sha256": {p.name: sha256_file(p) for p in (Path(__file__), Path(__file__).with_name("counter_reader.py"), Path(__file__).with_name("counter_expectation.py"))}}
     save_json(out_dir / "expected.json", expected)
@@ -272,13 +377,15 @@ def write_report(path: Path, result: dict) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", type=Path, required=True, help="replay directory containing window_result.json")
-    parser.add_argument("--at", type=float, nargs="+", required=True, help="seconds after the first replay request; sampled times, not deadlines")
+    selection = parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--at", type=float, nargs="+", help="seconds after the first replay request; sampled times, not deadlines")
+    selection.add_argument("--auto", action="store_true", help="sample each bounded live count/mute interval midpoint")
     parser.add_argument("--configuration", type=Path, help="window-bound display configuration evidence; missing idle configuration stays unknown")
     parser.add_argument("--out", type=Path, required=True, help="new output directory; never overwrites a prior analysis")
     args = parser.parse_args()
     try:
         args.out.mkdir(parents=True, exist_ok=False)
-        result = analyze(args.run_dir, args.at, args.out, args.configuration)
+        result = analyze(args.run_dir, None if args.auto else args.at, args.out, args.configuration)
     except (OSError, ValueError) as exc:
         print(sanitize_artifact_value(str(exc), run_dir=args.out), file=sys.stderr)
         return 2

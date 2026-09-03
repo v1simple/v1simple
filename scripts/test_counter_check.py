@@ -85,7 +85,8 @@ class CounterCheckTests(unittest.TestCase):
              patch.object(check, "probe_all_video_frames", return_value=self.encoded), \
              patch.object(check, "decode_frames", side_effect=decoder or decode) as decoding, \
              patch.object(check, "observe", side_effect=reader or observe) as observing:
-            result = check.analyze(self.run, list(offsets), output, self.configuration if configuration else None)
+            selected_offsets = None if offsets is None else list(offsets)
+            result = check.analyze(self.run, selected_offsets, output, self.configuration if configuration else None)
         self.assertEqual(json.loads((output / "result.json").read_text())["result"], result["result"])
         self.assertTrue((output / "report.md").is_file())
         return result, output, decoding, observing
@@ -104,6 +105,64 @@ class CounterCheckTests(unittest.TestCase):
         for sample in result["samples"]:
             self.assertEqual(sample["image_sha256"], sha256_file(output / sample["image"]))
         self.assertEqual(result["evidence"]["runtime_qualification"]["status"], "collection_only")
+
+    def test_automatic_selection_uses_each_bounded_live_interval_midpoint(self):
+        result, _, decoding, observing = self.analyze(None, configuration=False)
+        self.assertEqual(result["result"], "PASS")
+        self.assertEqual(result["selection_mode"], "automatic_live_intervals")
+        self.assertEqual(result["counts"]["required"], 2)
+        self.assertEqual(decoding.call_args.args[2], [0])
+        self.assertEqual(observing.call_count, 1)
+        interval = result["samples"][0]["live_interval"]
+        self.assertEqual(interval["midpoint_capture_ns"], 1_500_000_000)
+        self.assertEqual(interval["source_indices"], [0])
+        self.assertEqual((interval["alert_count"], interval["muted"]), (1, False))
+
+    def test_automatic_supported_mismatch_is_fail(self):
+        def wrong(*_):
+            return {"anomalies": [], "fields": {"count": {"state": "readable", "value": 2},
+                                                 "mode": {"state": "readable", "value": None}}}
+        result, _, _, _ = self.analyze(None, reader=wrong, configuration=False)
+        self.assertEqual(result["result"], "FAIL")
+        self.assertEqual((result["counts"]["mismatched"], result["counts"]["matched"]), (1, 1))
+
+    def test_live_interval_selector_partitions_only_on_count_and_mute(self):
+        timeline = {"stimuli": [
+            {"source_index": 0, "stimulus_requested_ns": 100, "alert_count": 1},
+            {"source_index": 1, "stimulus_requested_ns": 200, "alert_count": 1},
+            {"source_index": 2, "stimulus_requested_ns": 300, "alert_count": 1},
+            {"source_index": 3, "stimulus_requested_ns": 400, "alert_count": 2},
+            {"source_index": 4, "stimulus_requested_ns": 500, "alert_count": 2},
+            {"source_index": 5, "stimulus_requested_ns": 600, "alert_count": 0},
+        ]}
+        mute_states = (False, False, True, True, True, True)
+
+        def display(muted):
+            image = 0x10 if muted else 0
+            soft_mute = 1 if muted else 0
+            raw = bytes((0xAA, 0xD8, 0xEA, 0x31, 9, 6, 6, 0, image, image, soft_mute, 0, 0, 0, 0xAB))
+            return {"kind": "display_frame", "bytesHex": raw.hex()}
+
+        stimuli = [{"sourceIndex": index, "notifications": [display(muted)]}
+                    for index, muted in enumerate(mute_states)]
+        intervals = check.select_live_intervals(stimuli, timeline)
+        self.assertEqual([(item["alert_count"], item["muted"], item["source_indices"])
+                          for item in intervals], [
+                              (1, False, [0, 1]),
+                              (1, True, [2]),
+                              (2, True, [3, 4]),
+                          ])
+        self.assertEqual([item["midpoint_capture_ns"] for item in intervals], [200, 350, 500])
+
+    def test_automatic_selection_refuses_terminal_live_interval(self):
+        self.scenario["samples"].pop()
+        self.stimulus.pop()
+        self.delivery = [record for record in self.delivery if record.get("stimulusSequence") != 2]
+        self.bind()
+        result, _, _, observing = self.analyze(None, configuration=False)
+        self.assertEqual(result["result"], "INCONCLUSIVE")
+        self.assertIn("without a recorded end", " ".join(result["errors"]))
+        observing.assert_not_called()
 
     def test_mismatch_is_a_sampled_discrepancy_and_survives_another_unknown(self):
         def wrong_or_unknown(rgb, *_):
@@ -175,6 +234,17 @@ class CounterCheckTests(unittest.TestCase):
                 self.assertEqual(result["result"], "INCONCLUSIVE")
                 self.assertEqual(result["counts"]["unresolved"], 4)
                 observing.assert_not_called()
+
+    def test_automatic_selection_keeps_interval_denominator_when_camera_is_missing(self):
+        changed = copy.deepcopy(self.window)
+        changed["camera"] = None
+        self.write(self.run / "window_result.json", changed)
+        result, _, _, observing = self.analyze(None, configuration=False)
+        self.assertEqual(result["result"], "INCONCLUSIVE")
+        self.assertEqual(result["counts"]["required"], 2)
+        self.assertEqual(result["counts"]["unresolved"], 2)
+        self.assertEqual(len(result["samples"]), 1)
+        observing.assert_not_called()
 
     def test_scenario_swap_cannot_relabel_recorded_wire_input(self):
         self.scenario["samples"][0]["alerts"] = []

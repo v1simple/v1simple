@@ -17,6 +17,9 @@ CAMERA_REQUESTED=0
 FLASH=1
 COLLECTION_ONLY=0
 COLLECTION_ONLY_REASON=""
+COUNTER_REQUIRED=0
+COUNTER_RESULT="NOT_EVALUATED"
+COUNTER_PRINTED=0
 
 usage() {
   printf 'Usage: ./bench.sh --all|--replay [--camera] [--no-flash]\n'
@@ -106,6 +109,10 @@ publish_latest() {
 finish() {
   local verdict="$1"
   local status="$2"
+  if [[ "$COUNTER_PRINTED" -eq 0 ]]; then
+    printf '[bench] sampled live counter: %s\n' "$COUNTER_RESULT"
+    COUNTER_PRINTED=1
+  fi
   if ! publish_latest; then
     verdict="FAIL (collection): could not update the latest evidence link"
     status=2
@@ -170,6 +177,9 @@ if [[ "$CAMERA_REQUESTED" -eq 1 ]]; then
     fi
   fi
 fi
+if [[ "$CAMERA_REQUESTED" -eq 1 && "$CAMERA_ENABLED" -eq 1 ]]; then
+  COUNTER_REQUIRED=1
+fi
 
 if ! command -v xcrun >/dev/null 2>&1; then
   finish 'FAIL (emulator): Xcode command line tools are required to build v1replay' 2
@@ -230,12 +240,13 @@ result_path = Path(sys.argv[1]).resolve()
 suite = sys.argv[2]
 
 payload = json.loads(result_path.read_text(encoding="utf-8"))
+window_result = payload.get("result")
 completion = payload.get("completion") or {}
 duration = completion.get("duration_seconds")
 serial_lines = completion.get("serial_lines_observed")
-if isinstance(duration, (int, float)) and isinstance(serial_lines, int):
+if isinstance(window_result, str) and isinstance(duration, (int, float)) and isinstance(serial_lines, int):
     print(
-        f"[bench] {suite} external window: {duration:g}s"
+        f"[bench] {suite} collection: {window_result} | {duration:g}s"
         f" | serial lines observed {serial_lines}"
     )
 
@@ -261,10 +272,56 @@ if isinstance(camera, dict) and camera.get("result") == "CAPTURED":
     writer_drops = stats.get("writer_backpressure_drops")
     if all(isinstance(value, (int, float)) for value in (frames, fps, capture_drops, writer_drops)):
         print(
-            f"[bench] {suite} camera: {int(frames):,} frames @ {float(fps):.1f}fps"
+            f"[bench] {suite} camera integrity: CAPTURED | {int(frames):,} frames @ {float(fps):.1f}fps"
             f" | capture drops {int(capture_drops)} | writer drops {int(writer_drops)}"
         )
 PY
+}
+
+read_counter_result() {
+  python3 - "$1" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+try:
+    payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+    result = payload["result"]
+    counts = payload["counts"]
+    values = [counts[name] for name in ("matched", "mismatched", "unresolved", "required")]
+    if result not in ("PASS", "FAIL", "INCONCLUSIVE") or any(type(value) is not int or value < 0 for value in values):
+        raise ValueError("invalid counter result")
+except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+    result, values = "INCONCLUSIVE", [0, 0, 0, 0]
+print("\t".join([result, *(str(value) for value in values)]))
+PY
+}
+
+run_counter_check() {
+  local replay_dir="$1"
+  local counter_dir="$replay_dir/counter-check"
+  local counter_status=0
+  local matched=0
+  local mismatched=0
+  local unresolved=0
+  local required=0
+
+  printf '[bench] sampled live counter: analyzing replay camera evidence...\n'
+  python3 "$ROOT_DIR/scripts/bench/counter_check.py" \
+    --run-dir "$replay_dir" \
+    --auto \
+    --out "$counter_dir" \
+    >> "$RUN_LOG" 2>&1 || counter_status=$?
+  IFS=$'\t' read -r COUNTER_RESULT matched mismatched unresolved required \
+    < <(read_counter_result "$counter_dir/result.json" 2>/dev/null)
+  case "$COUNTER_RESULT:$counter_status" in
+    PASS:0|FAIL:1|INCONCLUSIVE:2) ;;
+    *) COUNTER_RESULT="INCONCLUSIVE" ;;
+  esac
+  printf 'sampled live counter: result=%s exit=%s\n' "$COUNTER_RESULT" "$counter_status" >> "$RUN_LOG"
+  printf '[bench] sampled live counter: %s | %s matched, %s mismatched, %s unresolved / %s required\n' \
+    "$COUNTER_RESULT" "$matched" "$mismatched" "$unresolved" "$required"
+  COUNTER_PRINTED=1
 }
 
 print_visual_summary() {
@@ -338,6 +395,7 @@ for suite in "${SUITES[@]}"; do
     fi
     if [[ "$suite" == "replay" && "$CAMERA_ENABLED" -eq 1 ]]; then
       print_visual_summary
+      run_counter_check "$step_dir"
     fi
     continue
   fi
@@ -347,6 +405,9 @@ for suite in "${SUITES[@]}"; do
     fi
     COLLECTION_ONLY=1
     COLLECTION_ONLY_REASON="$reason"
+    if [[ "$suite" == "replay" && "$CAMERA_ENABLED" -eq 1 ]]; then
+      run_counter_check "$step_dir"
+    fi
     continue
   fi
 
@@ -367,5 +428,18 @@ if [[ "$COLLECTION_ONLY" -eq 1 ]]; then
 fi
 if [[ "$CAMERA_REQUESTED" -eq 1 && "$CAMERA_ENABLED" -eq 0 ]]; then
   finish 'PASS-PARTIAL (skipped: camera unplugged)' 1
+fi
+if [[ "$COUNTER_REQUIRED" -eq 1 ]]; then
+  case "$COUNTER_RESULT" in
+    PASS)
+      finish 'PASS (sampled live counter)' 0
+      ;;
+    FAIL)
+      finish 'FAIL (sampled live counter)' 2
+      ;;
+    INCONCLUSIVE|NOT_EVALUATED)
+      finish 'INCONCLUSIVE (sampled live counter)' 1
+      ;;
+  esac
 fi
 finish 'PASS' 0

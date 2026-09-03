@@ -10,8 +10,10 @@ import io
 import json
 import os
 import stat
+import subprocess
 import sys
 import tempfile
+import textwrap
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -762,6 +764,160 @@ def test_bench_cli_collection_only_branch_has_no_pass_verdict() -> None:
     assert_true("PASS" not in branch, branch)
 
 
+def run_bench_cli_fixture(window_result: str, counter_result: str, *,
+                          camera: bool = True, visual_exit: int = 0) -> tuple[subprocess.CompletedProcess[str], int, int]:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        bench = root / "bench.sh"
+        bench.write_bytes((ROOT / "bench.sh").read_bytes())
+        bench.chmod(0o755)
+        fake_bin = root / "bin"
+        fake_bin.mkdir()
+
+        git = fake_bin / "git"
+        git.write_text(textwrap.dedent("""\
+            #!/usr/bin/env bash
+            if [[ "$1" == "status" ]]; then exit 0; fi
+            if [[ "$1" == "rev-parse" && "$2" == "--short" ]]; then printf '0123456\\n'; exit 0; fi
+            if [[ "$1" == "rev-parse" && "$2" == "--abbrev-ref" ]]; then printf 'main\\n'; exit 0; fi
+            if [[ "$1" == "rev-parse" ]]; then printf '0123456789abcdef0123456789abcdef01234567\\n'; exit 0; fi
+            exit 1
+        """), encoding="utf-8")
+        git.chmod(0o755)
+        profiler = fake_bin / "system_profiler"
+        profiler.write_text("#!/bin/sh\nprintf 'Global Shutter Camera\\n'\n", encoding="utf-8")
+        profiler.chmod(0o755)
+        xcrun = fake_bin / "xcrun"
+        xcrun.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        xcrun.chmod(0o755)
+
+        window_status = {"PASS": 0, "COLLECTION_ONLY": 1, "FAIL": 2}[window_result]
+        window = {
+            "result": window_result,
+            "failure_kind": "collection" if window_result == "FAIL" else "none",
+            "qualification_reason": "fixture runtime artifact is unlinked" if window_result == "COLLECTION_ONLY" else None,
+            "error": "fixture collection failed" if window_result == "FAIL" else None,
+            "completion": {"duration_seconds": 1, "serial_lines_observed": 4},
+            "runtime_identity": {"git_sha": "0123456789abcdef0123456789abcdef01234567", "image_id": "123456789"},
+            "runtime_qualification": {"mode": "fixture", "status": "collection_only" if window_result == "COLLECTION_ONLY" else "qualified"},
+            "camera": ({"result": "CAPTURED", "recorder_stats": {"frames_appended": 200,
+                        "capture_drops": 0, "writer_backpressure_drops": 0},
+                        "video_probe": {"average_frame_rate": 200.0}} if camera else None),
+        }
+        counter_counts = {
+            "PASS": {"matched": 2, "mismatched": 0, "unresolved": 0, "required": 2},
+            "FAIL": {"matched": 1, "mismatched": 1, "unresolved": 0, "required": 2},
+            "INCONCLUSIVE": {"matched": 1, "mismatched": 0, "unresolved": 1, "required": 2},
+        }[counter_result]
+        window_path = root / "window.json"
+        counter_path = root / "counter.json"
+        window_path.write_text(json.dumps(window), encoding="utf-8")
+        counter_path.write_text(json.dumps({"result": counter_result, "counts": counter_counts}), encoding="utf-8")
+        counter_marker = root / "counter.calls"
+        visual_marker = root / "visual.calls"
+
+        python = fake_bin / "python3"
+        python.write_text(textwrap.dedent(f"""\
+            #!/usr/bin/env bash
+            set -uo pipefail
+            fixture_root="$(cd "$(dirname "$0")/.." && pwd)"
+            if [[ "${{1:-}}" == "-c" ]]; then printf 'fixture\\n'; exit 0; fi
+            if [[ "${{1:-}}" == "-" ]]; then exec {sys.executable} "$@"; fi
+            if [[ "${{1:-}}" == */scripts/bench/run_logged.py ]]; then
+              if [[ " $* " == *"/tools/v1replay/scripts/build.sh"* ]]; then
+                mkdir -p "$fixture_root/tools/v1replay/.build"
+                printf '#!/bin/sh\\nexit 0\\n' > "$fixture_root/tools/v1replay/.build/v1replay"
+                chmod +x "$fixture_root/tools/v1replay/.build/v1replay"
+                exit 0
+              fi
+              if [[ " $* " == *"/scripts/bench/run_window.py"* ]]; then
+                args=("$@")
+                for ((index=0; index<${{#args[@]}}; index++)); do
+                  if [[ "${{args[index]}}" == "--out-dir" ]]; then out="${{args[index+1]}}"; fi
+                done
+                mkdir -p "$out"
+                cp "$FAKE_WINDOW_JSON" "$out/window_result.json"
+                exit "$FAKE_WINDOW_EXIT"
+              fi
+            fi
+            if [[ "${{1:-}}" == */scripts/bench/counter_check.py ]]; then
+              args=("$@")
+              for ((index=0; index<${{#args[@]}}; index++)); do
+                if [[ "${{args[index]}}" == "--out" ]]; then out="${{args[index+1]}}"; fi
+              done
+              [[ ! -e "$out" ]] || exit 9
+              mkdir -p "$out"
+              cp "$FAKE_COUNTER_JSON" "$out/result.json"
+              printf 'called\\n' >> "$FAKE_COUNTER_MARKER"
+              exit "$FAKE_COUNTER_EXIT"
+            fi
+            if [[ "${{1:-}}" == */scripts/bench/visual_run_check.py ]]; then
+              printf 'called\\n' >> "$FAKE_VISUAL_MARKER"
+              exit "$FAKE_VISUAL_EXIT"
+            fi
+            exec {sys.executable} "$@"
+        """), encoding="utf-8")
+        python.chmod(0o755)
+        device = root / "device"
+        device.touch()
+        environment = dict(os.environ)
+        environment.update(
+            PATH=str(fake_bin) + os.pathsep + environment.get("PATH", ""),
+            DEVICE_PORT=str(device),
+            BENCH_ARTIFACT_ROOT=str(root / "artifacts"),
+            BENCH_REPLAY_DURATION_SECONDS="1",
+            BENCH_POST_UPLOAD_SETTLE_SECONDS="0",
+            FAKE_WINDOW_JSON=str(window_path),
+            FAKE_WINDOW_EXIT=str(window_status),
+            FAKE_COUNTER_JSON=str(counter_path),
+            FAKE_COUNTER_EXIT=str({"PASS": 0, "FAIL": 1, "INCONCLUSIVE": 2}[counter_result]),
+            FAKE_COUNTER_MARKER=str(counter_marker),
+            FAKE_VISUAL_MARKER=str(visual_marker),
+            FAKE_VISUAL_EXIT=str(visual_exit),
+        )
+        arguments = [str(bench), "--replay", "--no-flash"]
+        if camera:
+            arguments.append("--camera")
+        process = subprocess.run(arguments, cwd=root, env=environment, capture_output=True, text=True)
+        counter_calls = len(counter_marker.read_text().splitlines()) if counter_marker.exists() else 0
+        visual_calls = len(visual_marker.read_text().splitlines()) if visual_marker.exists() else 0
+        return process, counter_calls, visual_calls
+
+
+def test_bench_cli_propagates_counter_verdicts_with_fixed_precedence() -> None:
+    cases = [
+        ("PASS", "PASS", 0, "PASS (sampled live counter)"),
+        ("PASS", "INCONCLUSIVE", 1, "INCONCLUSIVE (sampled live counter)"),
+        ("PASS", "FAIL", 2, "FAIL (sampled live counter)"),
+        ("COLLECTION_ONLY", "FAIL", 1, "COLLECTION-ONLY (unqualified:"),
+    ]
+    for window, counter, status, final in cases:
+        process, counter_calls, _ = run_bench_cli_fixture(window, counter, visual_exit=2)
+        assert_true(process.returncode == status, f"{window}/{counter}: {process.stdout} {process.stderr}")
+        assert_true(counter_calls == 1, f"counter ran {counter_calls} times for {window}/{counter}")
+        assert_true(f"[bench] sampled live counter: {counter} |" in process.stdout, process.stdout)
+        assert_true(final in process.stdout.splitlines()[-1], process.stdout)
+
+    process, counter_calls, visual_calls = run_bench_cli_fixture("PASS", "PASS", visual_exit=2)
+    assert_true(process.returncode == 0, process.stdout)
+    assert_true((counter_calls, visual_calls) == (1, 1), process.stdout)
+    assert_true("visual timing unavailable" in process.stdout, process.stdout)
+
+
+def test_bench_cli_preserves_non_camera_and_hard_collection_results() -> None:
+    process, counter_calls, visual_calls = run_bench_cli_fixture("PASS", "PASS", camera=False)
+    assert_true(process.returncode == 0, process.stdout)
+    assert_true((counter_calls, visual_calls) == (0, 0), process.stdout)
+    assert_true("[bench] sampled live counter: NOT_EVALUATED" in process.stdout, process.stdout)
+    assert_true(process.stdout.splitlines()[-1] == "PASS", process.stdout)
+
+    process, counter_calls, _ = run_bench_cli_fixture("FAIL", "PASS")
+    assert_true(process.returncode == 2, process.stdout)
+    assert_true(counter_calls == 0, process.stdout)
+    assert_true("[bench] sampled live counter: NOT_EVALUATED" in process.stdout, process.stdout)
+    assert_true(process.stdout.splitlines()[-1].startswith("FAIL ("), process.stdout)
+
+
 class FakeClock:
     def __init__(self) -> None:
         self.now = 0.0
@@ -894,6 +1050,8 @@ def main() -> int:
     test_top_level_pass_is_vetoed_by_empty_delivery_stream()
     test_clean_source_preserves_qualified_pass_behavior()
     test_bench_cli_collection_only_branch_has_no_pass_verdict()
+    test_bench_cli_propagates_counter_verdicts_with_fixed_precedence()
+    test_bench_cli_preserves_non_camera_and_hard_collection_results()
     test_serial_boundary_waits_for_attach_time_boot_past_initial_observation()
     test_missing_and_malformed_boot_identity_fail()
     test_conflicting_boot_identities_fail()

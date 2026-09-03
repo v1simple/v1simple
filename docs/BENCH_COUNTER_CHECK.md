@@ -1,9 +1,31 @@
 # Sampled count/mode check
 
-Run this offline command against a retained `bench.sh --replay --camera` replay
-directory containing `window_result.json`. It reads original recordings and
-starts no hardware or inference service. Python 3.10+, `ffmpeg`, and `ffprobe`
-must be available.
+`./bench.sh --replay --camera` runs the sampled live-counter check once after a
+replay-camera window publishes qualified or collection-only evidence. It writes
+new evidence under `replay/counter-check/` and prints collection, runtime
+qualification, camera integrity, and the sampled counter result separately. It
+does not run for a bench command without replay-camera evidence; that path prints
+`sampled live counter: NOT_EVALUATED` and keeps its prior exit behavior.
+
+The automatic check divides the validated recorded input into maximal live-alert
+intervals with the same count and mute state, then fixes each interval's temporal
+midpoint before decoding pixels. Every selected interval remains in the
+denominator. Missing input identity, an interval without a recorded end, or an
+unreadable frame makes the result `INCONCLUSIVE`.
+
+The same automatic mode can be run offline against a retained replay directory
+containing `window_result.json`. It reads original recordings and starts no
+hardware or inference service. Python 3.10+, `ffmpeg`, and `ffprobe` must be
+available.
+
+```sh
+python3 scripts/bench/counter_check.py \
+  --run-dir path/to/run/replay \
+  --auto \
+  --out path/to/new-counter-result
+```
+
+Explicit offsets remain available for bounded diagnosis:
 
 ```sh
 python3 scripts/bench/counter_check.py \
@@ -12,7 +34,7 @@ python3 scripts/bench/counter_check.py \
   --out path/to/new-counter-result
 ```
 
-Choose sample times before inspecting their pixels. `--at` specifies seconds
+Choose explicit sample times before inspecting their pixels. `--at` specifies seconds
 after the first recorded replay request. These are sampled times, not response
 deadlines. The command selects the nearest timestamped original frame, retains
 its decoded RGB pixels as a PNG, and joins observations to input expectations
@@ -59,10 +81,16 @@ tested or substitute defaults.
 verification, runtime qualification and implementation hashes. `expected.json`
 and `observed.json` remain separate for review.
 
-Exit **0 / PASS** means every requested count/mode check matched. **1 / FAIL**
+For the offline command, exit **0 / PASS** means every requested count/mode check matched. **1 / FAIL**
 means a supported sample differs from recorded input; this alone does not locate
 a firmware defect. **2 / INCONCLUSIVE** means evidence was insufficient or the
 output could not be written. A supported mismatch is retained even when another
 sample is unresolved. Other display fields, unsampled intervals, DUT receipt,
 response latency and full-run correctness are not evaluated. The command does
 not promote the original bench verdict or firmware qualification.
+
+For `bench.sh`, a hard collection failure exits **2**. Collection-only evidence
+exits **1** regardless of the separately printed counter result. With qualified
+collection, sampled-counter `PASS`, `INCONCLUSIVE`, and `FAIL` exit **0**, **1**,
+and **2**, respectively. The existing visual timing summary remains independent
+and cannot change this correctness result.

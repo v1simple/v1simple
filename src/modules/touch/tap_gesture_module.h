@@ -19,7 +19,7 @@ class TapGestureModule {
                PacketParser* parser, AutoPushModule* autoPushModule, AlertPersistenceModule* alertPersistenceModule,
                DisplayMode* displayModePtr, QuietCoordinatorModule* quietCoordinator);
 
-    void process(unsigned long nowMs);
+    void process(unsigned long nowMs, bool profileCycleAllowed = true);
 
     // Drop pending taps and mute retries across a higher-priority presentation
     // interval so they cannot fire when normal input resumes.
@@ -43,6 +43,7 @@ class TapGestureModule {
     static constexpr unsigned long TAP_DEBOUNCE_MS = 150;
 
     unsigned long nextTouchPollMs_ = 0;
+    uint32_t observedAlertLifetime_ = 0;
     bool pendingMuteCommand_ = false;
     bool pendingMuteValue_ = false;
     unsigned long pendingMuteLastAttemptMs_ = 0;

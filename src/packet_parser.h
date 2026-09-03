@@ -50,6 +50,10 @@ class PacketParser {
     // InfDisplayData even when the table has zero rows.
     bool hasAlerts() const { return alertCount_ > 0 || hasDisplayLaserAlert(); }
 
+    // Changes on aggregate alert start/end and session reset, including when
+    // multiple publications occur before a consumer next observes the parser.
+    uint32_t alertLifetime() const { return alertLifetime_; }
+
     // Check if V1 firmware supports volume display
     // Show volume if we've received volume data OR confirmed firmware version 4.1028+
     bool supportsVolume() const {
@@ -83,6 +87,7 @@ class PacketParser {
 
     std::array<AlertData, MAX_ALERTS> alerts_;
     size_t alertCount_;
+    uint32_t alertLifetime_ = 0;
     uint8_t displayMuteConfirmCount_ = 0; // consecutive display packets with mute bit set
     std::array<std::array<uint8_t, 8>, RAW_ALERT_INDEX_SLOTS> alertChunks_; // raw alert rows by payload index
     std::array<bool, RAW_ALERT_INDEX_SLOTS> alertChunkPresent_;

@@ -19,11 +19,24 @@ void TapGestureModule::begin(TouchHandler* touchHandler, SettingsManager* settin
     alertPersistence_ = alertPersistenceModule;
     displayMode_ = displayModePtr;
     quiet_ = quietCoordinator;
+    observedAlertLifetime_ = parser_ ? parser_->alertLifetime() : 0;
 }
 
-void TapGestureModule::process(unsigned long nowMs) {
+void TapGestureModule::process(unsigned long nowMs, bool profileCycleAllowed) {
     if (!touch_ || !settings_ || !display_ || !ble_ || !parser_ || !autoPush_ || !alertPersistence_ || !displayMode_) {
         return;
+    }
+
+    const uint32_t lifetime = parser_->alertLifetime();
+    if (lifetime != observedAlertLifetime_) {
+        // One captured lifetime owns both pending mute and partial idle taps.
+        // Check before poll throttling so even a brief episode cancels them.
+        observedAlertLifetime_ = lifetime;
+        tapCount_ = 0;
+        pendingMuteCommand_ = false;
+    }
+    if (!profileCycleAllowed) {
+        tapCount_ = 0;
     }
 
     if (static_cast<int32_t>(nowMs - nextTouchPollMs_) < 0) {
@@ -105,6 +118,9 @@ void TapGestureModule::process(unsigned long nowMs) {
 
     if (newTapEdge) {
         const bool hasActiveAlert = parser_->hasAlerts();
+        if (!hasActiveAlert && !profileCycleAllowed) {
+            return;
+        }
 
         if (nowMs - lastTapTime_ >= TAP_DEBOUNCE_MS) {
             if (nowMs - lastTapTime_ <= TAP_WINDOW_MS) {

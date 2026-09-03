@@ -22,6 +22,7 @@ void PacketParser::resetAlertAssembly() {
 }
 
 void PacketParser::resetAlertState() {
+    ++alertLifetime_;
     // InfDisplayData is session-scoped too. Do not let a laser snapshot from
     // the closed link become live again before the new session sends data.
     displayState_.activeBands = BAND_NONE;

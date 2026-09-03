@@ -26,6 +26,7 @@ public:
     std::vector<AlertData> alerts;
     AlertData priorityAlert;
     bool hasAlertsFlag = false;
+    uint32_t alertLifetimeValue = 0;
     int parseCalls = 0;
     bool parseReturnValue = true;
     std::vector<std::vector<uint8_t>> parsedPackets;
@@ -36,6 +37,7 @@ public:
         alerts.clear();
         priorityAlert = AlertData();
         hasAlertsFlag = false;
+        alertLifetimeValue = 0;
         parseCalls = 0;
         parseReturnValue = true;
         parsedPackets.clear();
@@ -47,6 +49,7 @@ public:
 
     // Test helpers — set state
     void setAlerts(const std::vector<AlertData>& a) {
+        const bool hadAlerts = hasAlerts();
         alerts = a;
         hasAlertsFlag = !alerts.empty();
         if (hasAlertsFlag) {
@@ -54,16 +57,26 @@ public:
                 [](const AlertData& alert) { return alert.isPriority; });
             priorityAlert = (it != alerts.end()) ? *it : alerts[0];
         }
+        if (hadAlerts != hasAlerts()) {
+            ++alertLifetimeValue;
+        }
     }
 
     void setMuted(bool m)              { state.muted = m; }
-    void setActiveBands(uint8_t bands) { state.activeBands = bands; }
+    void setActiveBands(uint8_t bands) {
+        const bool hadAlerts = hasAlerts();
+        state.activeBands = bands;
+        if (hadAlerts != hasAlerts()) {
+            ++alertLifetimeValue;
+        }
+    }
     void setMainVolume(uint8_t vol)    { state.mainVolume = vol; state.hasVolumeData = true; }
     void setMuteVolume(uint8_t vol)    { state.muteVolume = vol; }
 
     // Parser interface
     bool hasDisplayLaserAlert() const { return (state.activeBands & BAND_LASER) != 0; }
     bool hasAlerts()     const { return hasAlertsFlag || hasDisplayLaserAlert(); }
+    uint32_t alertLifetime() const { return alertLifetimeValue; }
     int  getAlertCount() const { return static_cast<int>(alerts.size()); }
     AlertData getPriorityAlert() const {
         if (!hasDisplayLaserAlert()) return priorityAlert;
@@ -106,6 +119,7 @@ public:
     void resetAlertAssembly() { resetAlertAssemblyCalls++; }
     int resetAlertStateCalls = 0;
     void resetAlertState() {
+        ++alertLifetimeValue;
         resetAlertStateCalls++;
         alerts.clear();
         priorityAlert = AlertData();

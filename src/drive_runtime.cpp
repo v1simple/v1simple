@@ -372,7 +372,11 @@ void DriveRuntime::processPower(uint32_t nowMs) {
 }
 
 bool DriveRuntime::processTouch(uint32_t nowMs) {
-    return touchUi_.process(nowMs, digitalRead(BOOT_BUTTON_GPIO) == LOW);
+    const bool inSettings = touchUi_.process(nowMs, digitalRead(BOOT_BUTTON_GPIO) == LOW);
+    if (inSettings) {
+        tapGesture_.suspendForPresentationOwner();
+    }
+    return inSettings;
 }
 
 void DriveRuntime::servicePowerDisplayOwnership(uint32_t nowMs) {
@@ -414,7 +418,8 @@ bool DriveRuntime::preemptSettingsForLiveAlert() {
 }
 
 void DriveRuntime::processTapGesture(uint32_t nowMs) {
-    tapGesture_.process(nowMs);
+    const bool alpLiveAlert = alp_.ownsLaserDisplay() && alp_.currentEvent().active;
+    tapGesture_.process(nowMs, !alpLiveAlert);
 }
 
 void DriveRuntime::openBootReadyGate(uint32_t nowMs) {

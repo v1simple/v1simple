@@ -26,7 +26,8 @@ ON_MIN = 0.9
 # from its top-left corner. Coordinates describe interiors, not font templates.
 PATCHES = {
     "a": (-.84772727, -.55769231, -.79318182, -.50961538),
-    "b": (-.76931818, -.44230769, -.75227273, -.32692308),
+    # Stay inside b's vertical stroke instead of sampling its antialiased edge.
+    "b": (-.7625, -.44230769, -.75227273, -.32692308),
     "c": (-.77613636, -.125, -.75568182, .00961538),
     "d": (-.87159091, .07692308, -.78977273, .125),
     "e": (-.88522727, -.125, -.87159091, -.00961538),

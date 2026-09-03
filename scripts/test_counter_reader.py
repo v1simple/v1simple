@@ -94,6 +94,16 @@ class CounterReaderTests(unittest.TestCase):
         self.assertIn("interiors", result["reason"])
         self.assertIn("b", result["segments"])
 
+    def test_upper_right_stroke_edge_stays_inside_b_interior(self):
+        # A complete upper-right stroke starts two columns inside the old
+        # sampling rectangle. Those dark edge columns are not segment damage.
+        rgb = picture("c")
+        paint(rgb, (243, 205, 249, 226))
+        result = self.read(rgb)
+        self.assertEqual(result["glyph"], "1", result["reason"])
+        self.assertEqual(result["segments"]["b"]["active_ratio"], 1)
+        self.assertEqual(result["alignment"]["patches_xyxy"]["b"], [243, 210, 246, 222])
+
     def test_left_stroke_edge_does_not_overlap_middle_interior(self):
         # A narrower upper-left stroke has a tapered-end allowance reaching
         # the middle row. Its dark left margin and its right tip are neither a

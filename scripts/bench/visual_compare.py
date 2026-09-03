@@ -4,6 +4,9 @@
 The caller verifies original artifacts and supplies independently reviewed rules
 and qualified observations. A readable value is an observation, not a confidence
 score. This module neither reads pixels nor establishes a reader's reliability.
+Optional observed.anomaly_scope lists exactly the required fields and limits
+anomaly review to those fields. Omission retains full-frame review. Field-level
+review does not establish pixel coverage beyond the reader's declared limits.
 
 Offline usage: python3 scripts/bench/visual_compare.py --expected expected.json
     --observed observed.json --out new-result.json
@@ -152,6 +155,16 @@ def compare(expected: Any, observed: Any) -> dict[str, Any]:
         identity_problem = identity_problem or "invalid declared field scope"
         required, excluded = list(FIELDS), {}
 
+    anomaly_scope = observed.get("anomaly_scope", "full_frame")
+    if "anomaly_scope" in observed and not (
+        isinstance(anomaly_scope, list) and anomaly_scope
+        and all(isinstance(field, str) for field in anomaly_scope)
+        and len(set(anomaly_scope)) == len(anomaly_scope)
+        and set(anomaly_scope) == set(required)
+    ):
+        errors.append("anomaly_scope must list each required field exactly once")
+    anomaly_review = "declared-field" if "anomaly_scope" in observed else "full-frame"
+
     expected_frames, observed_frames = expected.get("frames"), observed.get("frames")
     if not isinstance(expected_frames, list) or not expected_frames:
         errors.append("expected scope requires a nonempty frame list")
@@ -191,7 +204,7 @@ def compare(expected: Any, observed: Any) -> dict[str, Any]:
             problem = problem or "fields outside schema v1"
         anomalies = actual.get("anomalies")
         if not isinstance(anomalies, list) or anomalies:
-            errors.append(f"{frame_id}: full-frame anomaly review is unresolved")
+            errors.append(f"{frame_id}: {anomaly_review} anomaly review is unresolved")
         checks = []
         for field in required:
             check = _field_result(field, expected_fields.get(field), actual_fields.get(field), problem)
@@ -210,7 +223,8 @@ def compare(expected: Any, observed: Any) -> dict[str, Any]:
         "schema_version": 1,
         "kind": "sampled_frame_comparison",
         "scope": {"meaning": "declared fields at retained sampled frames only",
-                  "required_fields": required, "excluded_fields": excluded},
+                  "required_fields": required, "excluded_fields": excluded,
+                  "anomaly_scope": anomaly_scope},
         "result": verdict,
         "source": expected.get("source"),
         "input_content_sha256": {"expected": expected_hash, "observed": observed_hash},

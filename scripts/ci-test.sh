@@ -154,6 +154,9 @@ run_step "Camera artifact regression suite" python3 scripts/test_camera_artifact
 run_step "Camera preflight regression suite" python3 scripts/test_camera_preflight.py
 run_step "Bench window regression suite" python3 scripts/test_bench_window.py
 run_step "Sampled visual comparison regression suite" python3 scripts/test_visual_compare.py
+run_step "Counter pixel reader regression suite" python3 scripts/test_counter_reader.py
+run_step "Counter input expectation regression suite" python3 scripts/test_counter_expectation.py
+run_step "Recorded counter check regression suite" python3 scripts/test_counter_check.py
 run_step "LittleFS compatibility regression suite" python3 scripts/test_check_littlefs_image_compatibility.py
 run_step "Commit metadata regression suite" python3 scripts/test_check_public_commit_metadata.py
 run_step "App-only upload offset regression suite" python3 scripts/test_force_app_upload_offset.py

@@ -101,6 +101,9 @@ only what happened on the connected setup. Camera evidence establishes visible
 screen behavior for that recorded run. None proves every detector, power, RF,
 or vehicle environment.
 
+For an existing replay recording, the [sampled counter check](docs/BENCH_COUNTER_CHECK.md)
+compares recorded count/mode pixels with independently decoded replay input.
+
 Keep changes focused, read [AGENTS.md](AGENTS.md), run the complete gate, inspect
 the final diff, and say whether hardware or camera evidence was collected.
 

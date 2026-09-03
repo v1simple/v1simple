@@ -201,6 +201,39 @@ class VisualCompareTests(unittest.TestCase):
         del self.observed["frames"][0]["anomalies"]
         self.check("FAIL", matched=17, mismatched=1)
 
+    def test_explicit_anomaly_scope_limits_review_to_required_fields(self) -> None:
+        self.expected["required_fields"] = ["count", "mode"]
+        self.expected["excluded_fields"] = {field: "outside counter reader scope"
+                                             for field in FIELDS if field not in ("count", "mode")}
+        self.observed["anomaly_scope"] = ["mode", "count"]
+        result = self.check("PASS", matched=4, attempted=4, excluded=14)
+        self.assertEqual(result["scope"]["anomaly_scope"], ["mode", "count"])
+        self.observed["frames"][0]["anomalies"] = ["uncertain glyph alignment"]
+        result = self.check("INCONCLUSIVE", matched=4, attempted=4, excluded=14)
+        self.assertIn("declared-field anomaly review is unresolved", result["errors"][0])
+        del self.observed["frames"][0]["anomalies"]
+        self.check("INCONCLUSIVE", matched=4, attempted=4, excluded=14)
+        self.observed["frames"][1]["fields"]["count"]["value"] = 7
+        self.check("FAIL", matched=3, mismatched=1, attempted=4, excluded=14)
+
+    def test_invalid_anomaly_scope_cannot_pass_or_shrink_field_checks(self) -> None:
+        self.expected["required_fields"] = ["count", "mode"]
+        self.expected["excluded_fields"] = {field: "outside counter reader scope"
+                                             for field in FIELDS if field not in ("count", "mode")}
+        for scope in (None, [], "full_frame", {}, ["count"], ["count", "mode", "muted"],
+                      ["count", "mode", "mode"], ["count", ["mode"]], ["count", "unknown"]):
+            with self.subTest(scope=scope):
+                self.observed["anomaly_scope"] = scope
+                result = self.check("INCONCLUSIVE", matched=4, attempted=4, excluded=14)
+                self.assertTrue(any("anomaly_scope" in error for error in result["errors"]))
+
+    def test_absent_anomaly_scope_keeps_full_frame_review(self) -> None:
+        result = self.check("PASS", matched=18)
+        self.assertEqual(result["scope"]["anomaly_scope"], "full_frame")
+        del self.observed["frames"][0]["anomalies"]
+        result = self.check("INCONCLUSIVE", matched=18)
+        self.assertIn("full-frame anomaly review is unresolved", result["errors"][0])
+
     def test_empty_scope_malformed_schema_and_non_json_input_cannot_pass(self) -> None:
         for observed in ({}, {**self.observed, "schema_version": True},
                          {**self.observed, "non_json": float("nan")}):

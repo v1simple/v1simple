@@ -17,6 +17,7 @@ import textwrap
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "bench"))
@@ -765,7 +766,13 @@ def test_bench_cli_collection_only_branch_has_no_pass_verdict() -> None:
 
 
 def run_bench_cli_fixture(window_result: str, counter_result: str, *,
-                          camera: bool = True, visual_exit: int = 0) -> tuple[subprocess.CompletedProcess[str], int, int]:
+                          encounter_result: str = "PASS", camera: bool = True,
+                          camera_present: bool = True, visual_exit: int = 0,
+                          encounter_exit: int | None = None,
+                          encounter_payload: dict | None = None,
+                          write_encounter_result: bool = True,
+                          interrupt_encounter: bool = False,
+                          run_all: bool = False) -> tuple[subprocess.CompletedProcess[str], int, int, int]:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         bench = root / "bench.sh"
@@ -785,7 +792,7 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
         """), encoding="utf-8")
         git.chmod(0o755)
         profiler = fake_bin / "system_profiler"
-        profiler.write_text("#!/bin/sh\nprintf 'Global Shutter Camera\\n'\n", encoding="utf-8")
+        profiler.write_text("#!/bin/sh\nprintf '" + ("Global Shutter Camera" if camera_present else "none") + "\\n'\n", encoding="utf-8")
         profiler.chmod(0o755)
         xcrun = fake_bin / "xcrun"
         xcrun.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
@@ -800,6 +807,7 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
             "completion": {"duration_seconds": 1, "serial_lines_observed": 4},
             "runtime_identity": {"git_sha": "0123456789abcdef0123456789abcdef01234567", "image_id": "123456789"},
             "runtime_qualification": {"mode": "fixture", "status": "collection_only" if window_result == "COLLECTION_ONLY" else "qualified"},
+            "emulator": {"notification_delivery": {"requested": 10, "delivered": 10, "dropped": 0, "skipped": 0}},
             "camera": ({"result": "CAPTURED", "recorder_stats": {"frames_appended": 200,
                         "capture_drops": 0, "writer_backpressure_drops": 0},
                         "video_probe": {"average_frame_rate": 200.0}} if camera else None),
@@ -813,7 +821,25 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
         counter_path = root / "counter.json"
         window_path.write_text(json.dumps(window), encoding="utf-8")
         counter_path.write_text(json.dumps({"result": counter_result, "counts": counter_counts}), encoding="utf-8")
+        encounter_path = root / "encounter.json"
+        fields = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
+                  "main_bars", "secondary", "muted_badge")
+        field_status = {"PASS": "MATCH", "FAIL": "DIFFERENCE", "INCONCLUSIVE": "UNRESOLVED"}[encounter_result]
+        samples = [{"frame_id": f"{number:04d}", "comparison": {"checks": {
+            field: {"status": (field_status if number == 2 and field == "primary_frequency" else "MATCH"),
+                    "reason": "fixture frequency observation"}
+            for field in fields}, "joint_state": {"status": "MATCH"}}} for number in (1, 2)]
+        field_counts = {"MATCH": 14} if encounter_result == "PASS" else {"MATCH": 13, field_status: 1}
+        encounter = encounter_payload if encounter_payload is not None else {
+            "kind": "sampled_encounter_check", "result": encounter_result,
+            "counts": {"required": 14, "fields": field_counts, "joint_states": {"MATCH": 2}},
+            "samples": samples, "errors": [],
+            "coverage": {"requests": 2, "selected_unique_frames": 2, "unique_frames": 2,
+                         "regions": [{"maximum_unobserved_gap_seconds": .5}]},
+        }
+        encounter_path.write_text(json.dumps(encounter), encoding="utf-8")
         counter_marker = root / "counter.calls"
+        encounter_marker = root / "encounter.calls"
         visual_marker = root / "visual.calls"
 
         python = fake_bin / "python3"
@@ -851,6 +877,22 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
               printf 'called\\n' >> "$FAKE_COUNTER_MARKER"
               exit "$FAKE_COUNTER_EXIT"
             fi
+            if [[ "${{1:-}}" == */scripts/bench/encounter_check.py ]]; then
+              args=("$@")
+              for ((index=0; index<${{#args[@]}}; index++)); do
+                if [[ "${{args[index]}}" == "--out" ]]; then out="${{args[index+1]}}"; fi
+                if [[ "${{args[index]}}" == "--run-dir" ]]; then run="${{args[index+1]}}"; fi
+              done
+              [[ -e "$run/window_result.json" && ! -e "$out" ]] || exit 9
+              mkdir -p "$out"
+              if [[ "$FAKE_ENCOUNTER_WRITE" == 1 ]]; then
+                cp "$FAKE_ENCOUNTER_JSON" "$out/result.json"
+                printf '<title>fixture encounter report</title>\\n' > "$out/report.html"
+              fi
+              printf 'called\\n' >> "$FAKE_ENCOUNTER_MARKER"
+              if [[ "$FAKE_ENCOUNTER_INTERRUPT" == 1 ]]; then kill -TERM "$PPID"; fi
+              exit "$FAKE_ENCOUNTER_EXIT"
+            fi
             if [[ "${{1:-}}" == */scripts/bench/visual_run_check.py ]]; then
               printf 'called\\n' >> "$FAKE_VISUAL_MARKER"
               exit "$FAKE_VISUAL_EXIT"
@@ -865,6 +907,7 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
             PATH=str(fake_bin) + os.pathsep + environment.get("PATH", ""),
             DEVICE_PORT=str(device),
             BENCH_ARTIFACT_ROOT=str(root / "artifacts"),
+            BENCH_DURATION_SECONDS="1",
             BENCH_REPLAY_DURATION_SECONDS="1",
             BENCH_POST_UPLOAD_SETTLE_SECONDS="0",
             FAKE_WINDOW_JSON=str(window_path),
@@ -872,50 +915,116 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
             FAKE_COUNTER_JSON=str(counter_path),
             FAKE_COUNTER_EXIT=str({"PASS": 0, "FAIL": 1, "INCONCLUSIVE": 2}[counter_result]),
             FAKE_COUNTER_MARKER=str(counter_marker),
+            FAKE_ENCOUNTER_JSON=str(encounter_path),
+            FAKE_ENCOUNTER_EXIT=str(encounter_exit if encounter_exit is not None else {"PASS": 0, "FAIL": 1, "INCONCLUSIVE": 2}[encounter_result]),
+            FAKE_ENCOUNTER_MARKER=str(encounter_marker),
+            FAKE_ENCOUNTER_WRITE=str(int(write_encounter_result)),
+            FAKE_ENCOUNTER_INTERRUPT=str(int(interrupt_encounter)),
             FAKE_VISUAL_MARKER=str(visual_marker),
             FAKE_VISUAL_EXIT=str(visual_exit),
         )
-        arguments = [str(bench), "--replay", "--no-flash"]
+        arguments = [str(bench), "--all" if run_all else "--replay", "--no-flash"]
         if camera:
             arguments.append("--camera")
         process = subprocess.run(arguments, cwd=root, env=environment, capture_output=True, text=True)
         counter_calls = len(counter_marker.read_text().splitlines()) if counter_marker.exists() else 0
+        encounter_calls = len(encounter_marker.read_text().splitlines()) if encounter_marker.exists() else 0
         visual_calls = len(visual_marker.read_text().splitlines()) if visual_marker.exists() else 0
-        return process, counter_calls, visual_calls
+        return process, counter_calls, encounter_calls, visual_calls
 
 
-def test_bench_cli_propagates_counter_verdicts_with_fixed_precedence() -> None:
+def test_bench_cli_propagates_encounter_verdicts_with_fixed_precedence() -> None:
     cases = [
-        ("PASS", "PASS", 0, "PASS (sampled live counter)"),
-        ("PASS", "INCONCLUSIVE", 1, "INCONCLUSIVE (sampled live counter)"),
-        ("PASS", "FAIL", 2, "FAIL (sampled live counter)"),
+        ("PASS", "PASS", 0, "PASS (sampled encounter checks)"),
+        ("PASS", "INCONCLUSIVE", 1, "INCONCLUSIVE (sampled encounter checks)"),
+        ("PASS", "FAIL", 2, "FAIL (sampled encounter checks)"),
+        ("COLLECTION_ONLY", "PASS", 1, "COLLECTION-ONLY (unqualified:"),
+        ("COLLECTION_ONLY", "INCONCLUSIVE", 1, "COLLECTION-ONLY (unqualified:"),
         ("COLLECTION_ONLY", "FAIL", 1, "COLLECTION-ONLY (unqualified:"),
     ]
-    for window, counter, status, final in cases:
-        process, counter_calls, _ = run_bench_cli_fixture(window, counter, visual_exit=2)
-        assert_true(process.returncode == status, f"{window}/{counter}: {process.stdout} {process.stderr}")
-        assert_true(counter_calls == 1, f"counter ran {counter_calls} times for {window}/{counter}")
-        assert_true(f"[bench] sampled live counter: {counter} |" in process.stdout, process.stdout)
+    for window, encounter, status, final in cases:
+        process, counter_calls, encounter_calls, _ = run_bench_cli_fixture(window, "PASS", encounter_result=encounter, visual_exit=2)
+        assert_true(process.returncode == status, f"{window}/{encounter}: {process.stdout} {process.stderr}")
+        assert_true((counter_calls, encounter_calls) == (1, 1), process.stdout)
+        assert_true("[bench] sampled live counter: PASS |" in process.stdout, process.stdout)
+        assert_true(f"[bench] sampled encounter checks: {encounter} |" in process.stdout, process.stdout)
+        assert_true("2 requests | 2 selected, 2 decoded original frames | largest unobserved gap 0.500s" in process.stdout, process.stdout)
+        assert_true("host input acceptance: 10 / 10 packets" in process.stdout, process.stdout)
+        assert_true("DUT receipt not observed" in process.stdout, process.stdout)
+        assert_true("encounter-check/report.html" in process.stdout, process.stdout)
+        if encounter != "PASS":
+            assert_true("encounter-check/report.html#sample=0002" in process.stdout, process.stdout)
+            assert_true("fixture frequency observation" in process.stdout, process.stdout)
         assert_true(final in process.stdout.splitlines()[-1], process.stdout)
 
-    process, counter_calls, visual_calls = run_bench_cli_fixture("PASS", "PASS", visual_exit=2)
+    process, counter_calls, encounter_calls, visual_calls = run_bench_cli_fixture("PASS", "FAIL", visual_exit=2, run_all=True)
     assert_true(process.returncode == 0, process.stdout)
-    assert_true((counter_calls, visual_calls) == (1, 1), process.stdout)
+    assert_true((counter_calls, encounter_calls, visual_calls) == (1, 1, 1), process.stdout)
+    assert_true("[bench] sampled live counter: FAIL |" in process.stdout, process.stdout)
     assert_true("visual timing unavailable" in process.stdout, process.stdout)
 
 
 def test_bench_cli_preserves_non_camera_and_hard_collection_results() -> None:
-    process, counter_calls, visual_calls = run_bench_cli_fixture("PASS", "PASS", camera=False)
+    process, counter_calls, encounter_calls, visual_calls = run_bench_cli_fixture("PASS", "PASS", camera=False)
     assert_true(process.returncode == 0, process.stdout)
-    assert_true((counter_calls, visual_calls) == (0, 0), process.stdout)
+    assert_true((counter_calls, encounter_calls, visual_calls) == (0, 0, 0), process.stdout)
     assert_true("[bench] sampled live counter: NOT_EVALUATED" in process.stdout, process.stdout)
+    assert_true("[bench] sampled encounter checks: NOT_EVALUATED" in process.stdout, process.stdout)
     assert_true(process.stdout.splitlines()[-1] == "PASS", process.stdout)
 
-    process, counter_calls, _ = run_bench_cli_fixture("FAIL", "PASS")
+    process, counter_calls, encounter_calls, visual_calls = run_bench_cli_fixture("FAIL", "PASS")
     assert_true(process.returncode == 2, process.stdout)
-    assert_true(counter_calls == 0, process.stdout)
+    assert_true((counter_calls, encounter_calls, visual_calls) == (0, 0, 0), process.stdout)
     assert_true("[bench] sampled live counter: NOT_EVALUATED" in process.stdout, process.stdout)
     assert_true(process.stdout.splitlines()[-1].startswith("FAIL ("), process.stdout)
+
+
+def test_bench_cli_keeps_missing_and_interrupted_encounter_evidence_inconclusive() -> None:
+    process, counter_calls, encounter_calls, visual_calls = run_bench_cli_fixture("PASS", "PASS", camera_present=False)
+    assert_true(process.returncode == 1, process.stdout)
+    assert_true((counter_calls, encounter_calls, visual_calls) == (0, 0, 0), process.stdout)
+    assert_true("sampled encounter checks: INCONCLUSIVE | requested camera evidence is unavailable" in process.stdout, process.stdout)
+
+    for options in (
+        {"write_encounter_result": False, "encounter_exit": 130},
+        {"encounter_exit": 2},
+        {"encounter_payload": {"result": "PASS"}},
+        {"interrupt_encounter": True},
+    ):
+        process, counter_calls, encounter_calls, _ = run_bench_cli_fixture("PASS", "PASS", **options)
+        assert_true(process.returncode == 1, f"{options}: {process.stdout} {process.stderr}")
+        assert_true((counter_calls, encounter_calls) == (1, 1), process.stdout)
+        assert_true("sampled encounter checks: INCONCLUSIVE" in process.stdout, process.stdout)
+        assert_true(process.stdout.splitlines()[-1] == "INCONCLUSIVE (sampled encounter checks)", process.stdout)
+
+
+def test_bench_cli_preserves_joint_state_failures_and_vetoes_incomplete_pass() -> None:
+    payload = {
+        "kind": "sampled_encounter_check", "result": "FAIL", "errors": [],
+        "counts": {"required": 7, "fields": {"MATCH": 7}, "joint_states": {"DIFFERENCE": 1}},
+        "coverage": {"requests": 1, "selected_unique_frames": 1, "unique_frames": 1,
+                     "regions": [{"maximum_unobserved_gap_seconds": .5}]},
+        "samples": [{"frame_id": "0001", "comparison": {
+            "checks": {name: {"status": "MATCH"} for name in (
+                "counter_glyph", "primary_frequency", "active_bands", "main_arrows",
+                "main_bars", "secondary", "muted_badge")},
+            "joint_state": {"status": "DIFFERENCE", "reason": "fixture mixed blink phases"}}}],
+    }
+    process, _, _, _ = run_bench_cli_fixture("PASS", "PASS", encounter_result="FAIL", encounter_payload=payload)
+    assert_true(process.returncode == 2, process.stdout)
+    assert_true("7 match / 7 required field checks" in process.stdout, process.stdout)
+    assert_true("joint display: fixture mixed blink phases" in process.stdout, process.stdout)
+    assert_true("report.html#sample=0001" in process.stdout, process.stdout)
+
+    payload["result"] = "PASS"
+    for decoded in (1, 0):
+        payload["coverage"]["unique_frames"] = decoded
+        if decoded == 0:
+            payload["counts"]["joint_states"] = {"MATCH": 1}
+            payload["samples"][0]["comparison"]["joint_state"] = {"status": "MATCH"}
+        process, _, _, _ = run_bench_cli_fixture("PASS", "PASS", encounter_payload=payload)
+        assert_true(process.returncode == 1, process.stdout)
+        assert_true("sampled encounter checks: INCONCLUSIVE" in process.stdout, process.stdout)
 
 
 class FakeClock:
@@ -941,6 +1050,7 @@ class FakeSerialObserver:
         self.read_count = 0
         self.identity_tracker = RuntimeIdentityTracker()
         self.timeline = FakeTimeline()
+        self.reset_performed = False
 
     @property
     def boot_marker_count(self) -> int:
@@ -1023,6 +1133,96 @@ def test_serial_boundary_fails_if_detected_startup_never_reaches_boot_identity()
         raise AssertionError("incomplete startup was admitted to the evidence window")
 
 
+def test_native_usb_reset_refuses_other_ports_before_control_changes() -> None:
+    calls = []
+    ports = SimpleNamespace(comports=lambda: [SimpleNamespace(device="/fixture", vid=0x303A, pid=0x1001)])
+    with mock.patch.dict(sys.modules, {
+        "serial.tools": SimpleNamespace(list_ports=ports),
+    }), mock.patch.object(run_window_module.time, "sleep", lambda seconds: calls.append(("wait", seconds))):
+        port = SimpleNamespace(port="/fixture", dtr=False,
+                               setRTS=lambda value: calls.append(("RTS", value)),
+                               setDTR=lambda value: calls.append(("DTR", value)))
+        reset, metadata = run_window_module.native_usb_reset_strategy(port)
+        assert_true(not calls, "loading reset strategy changed device state")
+        reset()
+        assert_true(calls == [("RTS", True), ("DTR", False), ("wait", 0.1),
+                              ("RTS", False), ("DTR", False)], str(calls))
+        assert_true(metadata["usb_vid"] == 0x303A and metadata["usb_pid"] == 0x1001, str(metadata))
+        ports.comports = lambda: [SimpleNamespace(device="/fixture", vid=0x1234, pid=0x1001)]
+        try:
+            run_window_module.native_usb_reset_strategy(port)
+        except RuntimeError as exc:
+            assert_true("native USB Serial/JTAG" in str(exc), str(exc))
+        else:
+            raise AssertionError("reset admitted an unrelated USB device")
+        assert_true(len(calls) == 5, "unrelated USB device reached reset strategy")
+
+
+def test_explicit_reset_records_request_before_control_and_never_completes_failure() -> None:
+    for fail in (False, True):
+        events = []
+        observer = run_window_module.BenchSerial.__new__(run_window_module.BenchSerial)
+        observer.ser = SimpleNamespace(reset_input_buffer=lambda: events.append("drain"))
+        observer.identity_tracker = RuntimeIdentityTracker()
+        observer.identity_tracker.identity = dict(RUNTIME_IDENTITY)
+        observer.timeline = SimpleNamespace(record=lambda event, **_fields: events.append(event))
+
+        def reset() -> None:
+            events.append("control_reset")
+            if fail:
+                raise OSError("unsupported RTS")
+
+        try:
+            observer.reset_for_boot(reset_factory=lambda _: (reset, {"strategy": "fixture"}))
+        except OSError:
+            assert_true(fail, "successful reset raised")
+        expected = ["drain", "serial_reset_requested", "control_reset"]
+        if not fail:
+            expected.append("serial_reset_completed")
+        assert_true(events == expected, str(events))
+        assert_true(observer.reset_performed is not fail, "reset failure acquired a completed anchor")
+        assert_true(observer.runtime_identity is None, "pre-reset identity survived")
+
+
+def test_explicit_boundary_requires_fresh_usb_reset_and_refuses_intervening_failure() -> None:
+    rom = "ESP-ROM:esp32s3-20210327"
+    reason = "rst:0x15 (USB_UART_CHIP_RESET),boot:0xa (SPI_FAST_FLASH_BOOT)"
+    boot = "BOOT bootId=4 uptimeMs=2053 reset=USB git=2f32dda image=04904e028"
+    ready = "[Boot] Ready gate opened at 2380 ms"
+    complete = "[Boot] setup total: 2262 ms"
+    cases = [
+        ([rom, reason, boot, ready, complete], None),
+        ([boot], "preceded fresh reset-to-ready"),
+        ([rom, boot], "preceded fresh reset-to-ready"),
+        ([rom, "rst:0xc (RTC_SW_CPU_RST),boot:0xa (SPI_FAST_FLASH_BOOT)", boot], "unexpected reset reason"),
+        ([rom, reason, rom, reason, boot], "repeated ROM start"),
+        ([rom, reason, "Guru Meditation Error: panic", boot], "panic or brownout"),
+        ([rom, reason, boot.replace("reset=USB", "reset=PANIC")], "reset reason does not match"),
+        ([rom, reason, boot.replace("reset=USB", "reset=SW")], "reset reason does not match"),
+        ([rom, reason, boot, ready], "was not observed"),
+        ([rom, reason, boot, complete], "was not observed"),
+        ([rom, reason, boot, "Guru Meditation Error: panic", ready, complete], "panic or brownout"),
+        ([rom, reason, boot, boot, ready, complete], "repeated runtime BOOT"),
+    ]
+    for lines, error in cases:
+        clock = FakeClock()
+        observer = FakeSerialObserver(clock, dict(enumerate(lines, start=1)))
+        observer.reset_performed = True
+        action = lambda: establish_serial_boundary(observer, 5, monotonic=clock.monotonic,
+                                                    require_explicit_reset=True)
+        if error:
+            assert_identity_failure(action, error)
+            assert_true(not observer.timeline.events, "failed startup published a verified boundary")
+        else:
+            result = action()
+            assert_true(result["reset_anchored"] is True, str(result))
+            assert_true(result["runtime_identity"]["boot_id"] == 4, str(result))
+            assert_true(observer.read_count == 5, "boundary returned before normal setup completed")
+    observer = FakeSerialObserver(FakeClock(), {})
+    assert_identity_failure(lambda: establish_serial_boundary(observer, 5, require_explicit_reset=True),
+                            "explicit serial reset did not complete")
+
+
 def main() -> int:
     test_file_artifact_owns_raw_bytes()
     test_replay_stimulus_is_persisted_as_raw_ndjson_once()
@@ -1050,12 +1250,17 @@ def main() -> int:
     test_top_level_pass_is_vetoed_by_empty_delivery_stream()
     test_clean_source_preserves_qualified_pass_behavior()
     test_bench_cli_collection_only_branch_has_no_pass_verdict()
-    test_bench_cli_propagates_counter_verdicts_with_fixed_precedence()
+    test_bench_cli_propagates_encounter_verdicts_with_fixed_precedence()
     test_bench_cli_preserves_non_camera_and_hard_collection_results()
+    test_bench_cli_keeps_missing_and_interrupted_encounter_evidence_inconclusive()
+    test_bench_cli_preserves_joint_state_failures_and_vetoes_incomplete_pass()
     test_serial_boundary_waits_for_attach_time_boot_past_initial_observation()
     test_missing_and_malformed_boot_identity_fail()
     test_conflicting_boot_identities_fail()
     test_serial_boundary_fails_if_detected_startup_never_reaches_boot_identity()
+    test_native_usb_reset_refuses_other_ports_before_control_changes()
+    test_explicit_reset_records_request_before_control_and_never_completes_failure()
+    test_explicit_boundary_requires_fresh_usb_reset_and_refuses_intervening_failure()
     print("bench window tests passed")
     return 0
 

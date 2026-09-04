@@ -35,6 +35,12 @@ SettingsPersistResult persistSettingsByMode(SettingsManager& manager, SettingsPe
 
 } // namespace
 
+void SettingsManager::noteDisplayConfigurationMutation() {
+    if (displayConfigurationRevision_ != UINT32_MAX) {
+        ++displayConfigurationRevision_;
+    }
+}
+
 SettingsPersistResult SettingsManager::finishSettingsMutation(const V1Settings& before, bool changed,
                                                                SettingsPersistMode persistMode) {
     if (!changed) {
@@ -43,6 +49,14 @@ SettingsPersistResult SettingsManager::finishSettingsMutation(const V1Settings& 
         return result;
     }
 
+    const auto previousSlot = before.autoPushSlotView(before.activeSlot);
+    const auto currentSlot = settings_.autoPushSlotView(settings_.activeSlot);
+    if (before.activeSlot != settings_.activeSlot || before.stealthEnabled != settings_.stealthEnabled ||
+        previousSlot.priorityArrow != currentSlot.priorityArrow || previousSlot.alertPersist != currentSlot.alertPersist) {
+        // Count the attempt before persistence; a failed write can roll values
+        // back, but must not make A -> B -> A look unchanged to a bench capture.
+        noteDisplayConfigurationMutation();
+    }
     SettingsPersistResult result = persistSettingsByMode(*this, persistMode);
     if (!result.success && persistMode != SettingsPersistMode::Deferred) {
         settings_ = before;
@@ -94,6 +108,8 @@ bool SettingsManager::getSlotPriorityArrowOnly(int slotNum) const {
 bool SettingsManager::applyAutoPushSlotUpdate(const AutoPushSlotUpdate& update, SettingsPersistMode persistMode) {
     bool changed = false;
     V1Settings::AutoPushSlotView slot = settings_.autoPushSlotView(update.slot);
+    const bool previousPriorityArrow = slot.priorityArrow;
+    const uint8_t previousAlertPersist = slot.alertPersist;
 
     if (update.hasName) {
         changed |= assignIfChanged(slot.name, sanitizeSlotNameValue(update.name));
@@ -134,6 +150,11 @@ bool SettingsManager::applyAutoPushSlotUpdate(const AutoPushSlotUpdate& update, 
     }
 
     if (changed) {
+        if (V1Settings::normalizeAutoPushSlotIndex(update.slot) ==
+                V1Settings::normalizeAutoPushSlotIndex(settings_.activeSlot) &&
+            (previousPriorityArrow != slot.priorityArrow || previousAlertPersist != slot.alertPersist)) {
+            noteDisplayConfigurationMutation();
+        }
         persistSettingsByMode(*this, persistMode);
     }
 

@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""Synthetic control images for the offline encounter reader.
+
+These are image-reader checks, not camera, panel, or firmware evidence.
+"""
+from pathlib import Path
+import sys
+import unittest
+from unittest.mock import patch
+
+import numpy as np
+from PIL import Image, ImageDraw
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "bench"))
+import encounter_reader as reader
+from test_counter_reader import picture, registration
+
+WIDTH, HEIGHT = 1280, 720
+REGISTRATION = registration(x=376, y=192, w=220, h=79)
+ORANGE = (220, 100, 10)
+# Full synthetic digit strokes, independently drawn as shapes. In particular,
+# tests do not import or paint only the observer's sampling rectangles.
+DIGITS = {"0": "abcdef", "1": "bc", "2": "abdeg", "3": "abcdg",
+          "4": "bcfg", "5": "acdfg", "6": "acdefg", "7": "abc",
+          "8": "abcdefg", "9": "abcdfg"}
+STROKES = {"a": (5, 255, 64, 273), "b": (46, 271, 64, 301),
+           "c": (45, 315, 62, 345), "d": (0, 347, 61, 361),
+           "e": (0, 316, 18, 345), "f": (0, 271, 18, 300),
+           "g": (5, 300, 60, 314)}
+
+
+def display(frequency="68.902"):
+    im = Image.frombytes("RGB", (WIDTH, HEIGHT), bytes(picture("bc", REGISTRATION)))
+    draw = ImageDraw.Draw(im)
+    draw.rectangle((220, 338, 290, 355), fill=(0, 230, 20))
+    draw.rectangle((1010, 420, 1140, 436), fill=(0, 230, 20))
+    if frequency is not None:
+        for origin, digit in zip((454, 520, 616, 688, 764), frequency.replace(".", "")):
+            for segment in DIGITS[digit]:
+                x1, y1, x2, y2 = STROKES[segment]
+                draw.rectangle((origin + x1, y1, origin + x2, y2), fill=ORANGE)
+        draw.ellipse((585, 347, 602, 361), fill=ORANGE)
+    return im
+
+
+def arrow(im, direction, color=ORANGE):
+    draw = ImageDraw.Draw(im)
+    shapes = {
+        "front": ((987, 289), (1077, 187), (1165, 289), (1123, 289), (1123, 301), (1034, 301), (1034, 289)),
+        "side": ((988, 328), (1029, 297), (1029, 314), (1127, 314), (1127, 297), (1166, 329), (1127, 360), (1127, 343), (1029, 343), (1029, 360)),
+        "rear": ((1028, 367), (1050, 367), (1050, 358), (1103, 358), (1103, 367), (1128, 367), (1077, 398)),
+    }
+    draw.polygon(shapes[direction], fill=color)
+
+
+def bars(im, count):
+    draw = ImageDraw.Draw(im)
+    for n, y in enumerate((398, 361, 324, 287, 249, 212)):
+        draw.rectangle((885, y, 952, y + 18), fill=(90, 230, 20) if n < count else (12, 15, 14))
+
+
+def card(im, left, direction, count):
+    draw = ImageDraw.Draw(im)
+    draw.rectangle((left, 366, left + 228, 451), fill=(0, 0, 80))
+    draw.rectangle((left + 53, 382, left + 215, 407), fill=(210, 210, 210))
+    if direction == "side":
+        draw.rectangle((left + 18, 391, left + 40, 398), fill="white")
+    elif direction == "front":
+        draw.polygon(((left + 29, 385), (left + 17, 406), (left + 41, 406)), fill="white")
+    else:
+        draw.polygon(((left + 17, 385), (left + 41, 385), (left + 29, 407)), fill="white")
+    draw.rectangle((left + 15, 426, left + 215, 443), fill=(10, 10, 10))
+    for i in range(count):
+        draw.rectangle((left + 16 + 33 * i, 426, left + 44 + 33 * i, 443), fill=(90, 240, 30))
+
+
+def ocr_result(*texts):
+    return [{"rows": [{"candidates": [{"text": text, "confidence": 1.0}]}]} for text in texts]
+
+
+class EncounterReaderTests(unittest.TestCase):
+    def read(self, im):
+        return reader.observe(im.tobytes(), *im.size, REGISTRATION)
+
+    def test_arbitrary_frequency_digits_and_explicit_visible_absence(self):
+        # Includes digits not present in the original labeled recordings.
+        for frequency in ("68.902", "12.345", "97.681"):
+            with self.subTest(frequency=frequency):
+                observed = self.read(display(frequency))["primary_frequency"]
+                self.assertEqual((observed["state"], observed["value"]), ("readable", frequency), observed)
+        observed = self.read(display(None))
+        self.assertEqual(observed["primary_frequency"]["state"], "absent")
+        self.assertIsNone(observed["primary_frequency"]["value"])
+        self.assertEqual(observed["secondary"]["value"], [])
+        self.assertEqual(observed["main_bars"]["value"], 0)
+
+    def test_erased_whole_stroke_changes_observed_digit(self):
+        im = display("98.902")
+        # Remove f completely: a true image change from 9 to 3.
+        ImageDraw.Draw(im).rectangle((454, 271, 474, 299), fill="black")
+        observed = self.read(im)["primary_frequency"]
+        self.assertEqual(observed["state"], "readable", observed)
+        self.assertEqual(observed["value"], "38.902")
+
+    def test_fading_center_stroke_refuses_while_uniform_eight_is_readable(self):
+        # Both dim centers exceed the absolute illuminated-pixel threshold.
+        # A decoder that only combines on segments would wrongly certify 8.
+        for brightness in (115, 175):
+            im = display("34.700")
+            ImageDraw.Draw(im).rectangle((693, 300, 748, 314), fill=(brightness, 15, 10))
+            observed = self.read(im)["primary_frequency"]
+            self.assertEqual(observed["state"], "ambiguous", observed)
+            self.assertIsNone(observed["value"])
+            self.assertIn("inconsistent illuminated", observed["reason"])
+        im = display("34.700")
+        ImageDraw.Draw(im).rectangle((693, 300, 748, 314), fill=ORANGE)
+        observed = self.read(im)["primary_frequency"]
+        self.assertEqual(observed["state"], "readable", observed)
+        self.assertEqual(observed["value"], "34.780")
+
+    def test_partial_stroke_and_foreign_ink_refuse(self):
+        partial = display()
+        ImageDraw.Draw(partial).rectangle((507, 325, 513, 330), fill="black")
+        foreign = display()
+        ImageDraw.Draw(foreign).rectangle((480, 276, 488, 293), fill=ORANGE)
+        dim = Image.fromarray((np.asarray(display()).astype(float) * .13).astype(np.uint8))
+        for im in (partial, foreign, dim):
+            observed = self.read(im)["primary_frequency"]
+            self.assertIn(observed["state"], ("ambiguous", "unreadable"), observed)
+            self.assertIsNone(observed["value"])
+
+    def test_black_occluded_and_white_frames_are_unknown_not_absent(self):
+        occluded = display()
+        ImageDraw.Draw(occluded).rectangle((180, 180, 1170, 460), fill="black")
+        for im in (Image.new("RGB", (WIDTH, HEIGHT)), Image.new("RGB", (WIDTH, HEIGHT), "white"), occluded):
+            observed = self.read(im)
+            for name in reader.FIELDS:
+                self.assertEqual(observed[name]["state"], "unreadable", (name, observed[name]))
+                self.assertIsNone(observed[name]["value"])
+
+    def test_arrows_and_bar_counts_follow_changed_pixels(self):
+        for direction in ("front", "side", "rear"):
+            for count in (1, 3, 6):
+                im = display()
+                arrow(im, direction)
+                bars(im, count)
+                observed = self.read(im)
+                self.assertEqual(observed["main_arrows"]["value"], [direction], observed["main_arrows"])
+                self.assertEqual(observed["main_bars"]["value"], count, observed["main_bars"])
+        im = display()
+        arrow(im, "front", (25, 10, 10))
+        self.assertEqual(self.read(im)["main_arrows"]["state"], "ambiguous")
+
+    def test_noncontiguous_and_partial_bars_refuse(self):
+        im = display()
+        bars(im, 4)
+        ImageDraw.Draw(im).rectangle((885, 361, 952, 379), fill="black")
+        self.assertEqual(self.read(im)["main_bars"]["state"], "ambiguous")
+        im = display()
+        bars(im, 3)
+        ImageDraw.Draw(im).rectangle((885, 362, 952, 367), fill="black")
+        self.assertEqual(self.read(im)["main_bars"]["state"], "ambiguous")
+
+    def test_secondary_associations_follow_card_positions(self):
+        im = display()
+        card(im, 393, "side", 3)
+        card(im, 640, "rear", 1)
+        with patch.object(reader, "_ocr", return_value=ocr_result("K 23.456", "Ka 36.789")):
+            result = self.read(im)["secondary"]
+        self.assertEqual(result["state"], "readable", result)
+        self.assertEqual(result["value"], [
+            {"band": "K", "frequency": "23.456", "direction": "side", "bars": 3},
+            {"band": "Ka", "frequency": "36.789", "direction": "rear", "bars": 1}])
+        with patch.object(reader, "_ocr", return_value=ocr_result("Ka 36.789", "K 23.456")):
+            swapped = self.read(im)["secondary"]["value"]
+        self.assertEqual(swapped[0]["frequency"], "36.789")
+        self.assertEqual(swapped[0]["direction"], "side")
+        self.assertEqual(swapped[1]["frequency"], "23.456")
+        ImageDraw.Draw(im).rectangle((640, 366, 870, 453), fill="black")
+        with patch.object(reader, "_ocr", return_value=ocr_result("K 23.456")):
+            self.assertEqual(len(self.read(im)["secondary"]["value"]), 1)
+
+    def test_ocr_failure_or_malformed_frequency_is_unknown_not_empty(self):
+        im = display()
+        card(im, 393, "front", 4)
+        for response in (None, ocr_result("K 23456"), ocr_result("K 2?.456")):
+            with patch.object(reader, "_ocr", return_value=response):
+                result = self.read(im)["secondary"]
+            self.assertEqual(result["state"], "unreadable", result)
+            self.assertIsNone(result["value"])
+            self.assertEqual(len(result["partial_cards"]), 1)
+
+    def test_expected_values_cannot_be_supplied(self):
+        with self.assertRaises(TypeError):
+            reader.observe(display().tobytes(), WIDTH, HEIGHT, REGISTRATION, expected="68.902")
+        for registration_value in (None, {}, {**REGISTRATION, "result": "FAIL"}):
+            result = reader.observe(display().tobytes(), WIDTH, HEIGHT, registration_value)
+            self.assertTrue(all(result[f]["state"] == "unreadable" for f in reader.FIELDS))
+
+
+if __name__ == "__main__":
+    unittest.main()

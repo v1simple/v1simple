@@ -498,17 +498,35 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
     class FakeSerial:
         def __init__(self, *_args: Any) -> None:
             events["serial"] += 1
-            self.boot_marker_count = 1
+            self.boot_marker_count = 0
             self.line_count = 0
             self.timeline = _args[-1]
-            self.runtime_identity = {
-                "boot_id": 42,
-                "git_sha": "2f32dda",
-                "image_id": "04904e028",
-            }
+            self.runtime_identity = None
+            self.reset_performed = False
+            self.boot_lines: list[str] = []
+
+        def reset_for_boot(self) -> None:
+            self.timeline.record("serial_reset_requested", strategy="fixture")
+            self.reset_performed = True
+            self.boot_lines = [
+                "ESP-ROM:esp32s3-20210327",
+                "rst:0x15 (USB_UART_CHIP_RESET),boot:0xa (SPI_FAST_FLASH_BOOT)",
+                "BOOT bootId=42 uptimeMs=2336 reset=USB git=2f32dda image=04904e028",
+                "[Boot] Ready gate opened at 2380 ms",
+                "[Boot] setup total: 2262 ms",
+            ]
+            self.timeline.record("serial_reset_completed", strategy="fixture")
 
         def read_line(self, _timeout: float) -> str:
-            return ""
+            line = self.boot_lines.pop(0) if self.boot_lines else ""
+            if line.startswith("BOOT "):
+                self.boot_marker_count += 1
+                self.runtime_identity = {
+                    "boot_id": 42,
+                    "git_sha": "2f32dda",
+                    "image_id": "04904e028",
+                }
+            return line
 
         def close(self) -> None:
             pass

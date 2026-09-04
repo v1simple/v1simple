@@ -17,9 +17,11 @@ CAMERA_REQUESTED=0
 FLASH=1
 COLLECTION_ONLY=0
 COLLECTION_ONLY_REASON=""
-COUNTER_REQUIRED=0
 COUNTER_RESULT="NOT_EVALUATED"
 COUNTER_PRINTED=0
+ENCOUNTER_RESULT="NOT_EVALUATED"
+ENCOUNTER_PRINTED=0
+ENCOUNTER_REASON=""
 
 usage() {
   printf 'Usage: ./bench.sh --all|--replay [--camera] [--no-flash]\n'
@@ -59,6 +61,10 @@ done
 [[ "$DURATION_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail_usage
 [[ "$REPLAY_DURATION_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail_usage
 [[ "$POST_UPLOAD_SETTLE_SECONDS" =~ ^[0-9]+$ ]] || fail_usage
+if [[ "$CAMERA_REQUESTED" -eq 1 ]]; then
+  ENCOUNTER_RESULT="INCONCLUSIVE"
+  ENCOUNTER_REASON="requested camera evidence is unavailable"
+fi
 
 SAFE_BOARD_ID="$(PYTHONPATH="$ROOT_DIR/scripts/bench" python3 -c \
   'import sys; from artifact_privacy import privacy_safe_identifier; print(privacy_safe_identifier(sys.argv[1], namespace="board"))' \
@@ -112,6 +118,12 @@ finish() {
   if [[ "$COUNTER_PRINTED" -eq 0 ]]; then
     printf '[bench] sampled live counter: %s\n' "$COUNTER_RESULT"
     COUNTER_PRINTED=1
+  fi
+  if [[ "$ENCOUNTER_PRINTED" -eq 0 ]]; then
+    printf '[bench] sampled encounter checks: %s' "$ENCOUNTER_RESULT"
+    [[ -n "$ENCOUNTER_REASON" ]] && printf ' | %s' "$ENCOUNTER_REASON"
+    printf '\n'
+    ENCOUNTER_PRINTED=1
   fi
   if ! publish_latest; then
     verdict="FAIL (collection): could not update the latest evidence link"
@@ -177,10 +189,6 @@ if [[ "$CAMERA_REQUESTED" -eq 1 ]]; then
     fi
   fi
 fi
-if [[ "$CAMERA_REQUESTED" -eq 1 && "$CAMERA_ENABLED" -eq 1 ]]; then
-  COUNTER_REQUIRED=1
-fi
-
 if ! command -v xcrun >/dev/null 2>&1; then
   finish 'FAIL (emulator): Xcode command line tools are required to build v1replay' 2
 fi
@@ -262,6 +270,13 @@ if all(isinstance(value, str) and value for value in (runtime_git, runtime_image
         f" | {mode} {status}"
     )
 
+delivery = (payload.get("emulator") or {}).get("notification_delivery") or {}
+if all(type(delivery.get(key)) is int for key in ("delivered", "requested", "dropped", "skipped")):
+    print(
+        f"[bench] {suite} host input acceptance: {delivery['delivered']} / {delivery['requested']} packets"
+        f" | dropped {delivery['dropped']} | skipped {delivery['skipped']} | DUT receipt not observed"
+    )
+
 camera = payload.get("camera")
 if isinstance(camera, dict) and camera.get("result") == "CAPTURED":
     stats = camera.get("recorder_stats") or {}
@@ -322,6 +337,112 @@ run_counter_check() {
   printf '[bench] sampled live counter: %s | %s matched, %s mismatched, %s unresolved / %s required\n' \
     "$COUNTER_RESULT" "$matched" "$mismatched" "$unresolved" "$required"
   COUNTER_PRINTED=1
+}
+
+read_encounter_result() {
+  python3 - "$1" "$2" "$SIGNALLED" <<'PY'
+import json
+import math
+import re
+import sys
+from pathlib import Path
+
+result, tally, required, requests, selected, decoded, gap, first_id, reason = (
+    "INCONCLUSIVE", "counts unavailable", "?", "?", "?", "?", "?", "-", ""
+)
+try:
+    payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+    counts, coverage = payload["counts"], payload["coverage"]
+    fields, joint = counts["fields"], counts["joint_states"]
+    samples, errors = payload["samples"], payload["errors"]
+    required, requests = counts["required"], coverage["requests"]
+    selected, decoded = coverage["selected_unique_frames"], coverage["unique_frames"]
+    allowed = {"MATCH", "DIFFERENCE", "UNRESOLVED", "CONDITIONAL", "PREVIOUS_INPUT_STATE", "TRANSITION_DIFFERENCE"}
+    if (payload["kind"] != "sampled_encounter_check"
+            or payload["result"] not in ("PASS", "FAIL", "INCONCLUSIVE")
+            or not isinstance(fields, dict) or not isinstance(joint, dict)
+            or not set(fields).issubset(allowed)
+            or any(type(n) is not int or n < 0 for n in [required, requests, selected, decoded, *fields.values(), *joint.values()])
+            or required != requests * 7 or sum(fields.values()) != required
+            or not 0 <= decoded <= selected <= requests
+            or not isinstance(samples, list) or len(samples) != requests
+            or not isinstance(errors, list)):
+        raise ValueError("invalid encounter result or coverage")
+    computed = ("FAIL" if fields.get("DIFFERENCE", 0) or joint.get("DIFFERENCE", 0) else
+                "INCONCLUSIVE" if errors or not required or decoded != selected
+                or fields.get("MATCH", 0) != required
+                or any(n for status, n in joint.items() if status not in ("MATCH", "NOT_EVALUATED")) else "PASS")
+    if payload["result"] != computed:
+        raise ValueError("encounter verdict disagrees with its required evidence")
+    result = computed
+    tally = ", ".join(f"{value} {key.lower().replace('_', ' ')}" for key, value in fields.items()) or "no evaluable samples"
+    gaps = [region["maximum_unobserved_gap_seconds"] for region in coverage["regions"]]
+    if any(type(value) not in (int, float) or not math.isfinite(value) or value < 0 for value in gaps):
+        raise ValueError("invalid observed coverage gaps")
+    gap = f"{max(gaps):.3f}s" if gaps else "unavailable"
+    for sample in samples:
+        checks = sample.get("comparison", {}).get("checks", {})
+        issues = [(name, check) for name, check in checks.items() if check.get("status") != "MATCH"]
+        joint_check = sample.get("comparison", {}).get("joint_state", {})
+        if joint_check.get("status") not in (None, "MATCH", "NOT_EVALUATED"):
+            issues.append(("joint display", joint_check))
+        if issues:
+            name, check = issues[0]
+            first_id = str(sample["frame_id"])
+            if not re.fullmatch(r"[A-Za-z0-9_-]+", first_id):
+                raise ValueError("invalid sample identity")
+            reason = f"sample {first_id}, {name}: {check.get('reason') or check.get('status')}"
+            break
+    if errors:
+        reason = str(errors[0])
+    if (result, int(sys.argv[2])) not in (("PASS", 0), ("FAIL", 1), ("INCONCLUSIVE", 2)):
+        result, reason = "INCONCLUSIVE", f"analysis exit {sys.argv[2]} did not match its retained result"
+    if sys.argv[3] == "1" and result == "PASS":
+        result, reason = "INCONCLUSIVE", "analysis interrupted; completion was not established"
+except (OSError, KeyError, TypeError, ValueError, AttributeError, json.JSONDecodeError):
+    result, tally, required, requests, selected, decoded, gap, first_id, reason = (
+        "INCONCLUSIVE", "counts unavailable", "?", "?", "?", "?", "?", "-",
+        f"analysis result is missing, unreadable or inconsistent (exit {sys.argv[2]}; see bench.log)"
+    )
+reason = " ".join(reason.split())[:240] or "-"
+print("\t".join(map(str, (result, tally, required, requests, selected, decoded, gap, first_id, reason))))
+PY
+}
+
+run_encounter_check() {
+  local replay_dir="$1"
+  local encounter_dir="$replay_dir/encounter-check"
+  local encounter_status=0
+  local tally="counts unavailable" required="?" requests="?" selected="?" decoded="?" gap="?" first_id="-" reason="-"
+  if [[ "$SIGNALLED" -eq 1 ]]; then
+    ENCOUNTER_REASON="analysis interrupted before the encounter check"
+    return
+  fi
+  printf '[bench] sampled encounter checks: analyzing replay camera evidence...\n'
+  python3 "$ROOT_DIR/scripts/bench/encounter_check.py" \
+    --run-dir "$replay_dir" \
+    --out "$encounter_dir" \
+    >> "$RUN_LOG" 2>&1 || encounter_status=$?
+  IFS=$'\t' read -r ENCOUNTER_RESULT tally required requests selected decoded gap first_id reason \
+    < <(read_encounter_result "$encounter_dir/result.json" "$encounter_status" 2>/dev/null)
+  case "$ENCOUNTER_RESULT" in
+    PASS|FAIL|INCONCLUSIVE) ;;
+    *) ENCOUNTER_RESULT="INCONCLUSIVE"; reason="could not read the encounter result; see bench.log" ;;
+  esac
+  printf 'sampled encounter checks: result=%s exit=%s\n' "$ENCOUNTER_RESULT" "$encounter_status" >> "$RUN_LOG"
+  printf '[bench] sampled encounter checks: %s | %s / %s required field checks\n' \
+    "$ENCOUNTER_RESULT" "$tally" "$required"
+  printf '[bench] encounter coverage: %s requests | %s selected, %s decoded original frames | largest unobserved gap %s\n' \
+    "$requests" "$selected" "$decoded" "$gap"
+  [[ "$reason" == "-" ]] || printf '[bench] encounter attention: %s\n' "$reason"
+  if [[ -f "$encounter_dir/report.html" ]]; then
+    local fragment=""
+    [[ "$first_id" == "-" ]] || fragment="#sample=$first_id"
+    printf '[bench] encounter report: %s/report.html%s\n' "$encounter_dir" "$fragment"
+  else
+    printf '[bench] encounter report unavailable; see %s\n' "$RUN_LOG"
+  fi
+  ENCOUNTER_PRINTED=1
 }
 
 print_visual_summary() {
@@ -394,8 +515,9 @@ for suite in "${SUITES[@]}"; do
       printf '%s: external evidence summary unavailable\n' "$suite" >> "$RUN_LOG"
     fi
     if [[ "$suite" == "replay" && "$CAMERA_ENABLED" -eq 1 ]]; then
-      print_visual_summary
       run_counter_check "$step_dir"
+      run_encounter_check "$step_dir"
+      [[ "$SIGNALLED" -eq 1 ]] || print_visual_summary
     fi
     continue
   fi
@@ -407,6 +529,7 @@ for suite in "${SUITES[@]}"; do
     COLLECTION_ONLY_REASON="$reason"
     if [[ "$suite" == "replay" && "$CAMERA_ENABLED" -eq 1 ]]; then
       run_counter_check "$step_dir"
+      run_encounter_check "$step_dir"
     fi
     continue
   fi
@@ -429,16 +552,16 @@ fi
 if [[ "$CAMERA_REQUESTED" -eq 1 && "$CAMERA_ENABLED" -eq 0 ]]; then
   finish 'PASS-PARTIAL (skipped: camera unplugged)' 1
 fi
-if [[ "$COUNTER_REQUIRED" -eq 1 ]]; then
-  case "$COUNTER_RESULT" in
+if [[ "$CAMERA_REQUESTED" -eq 1 ]]; then
+  case "$ENCOUNTER_RESULT" in
     PASS)
-      finish 'PASS (sampled live counter)' 0
+      finish 'PASS (sampled encounter checks)' 0
       ;;
     FAIL)
-      finish 'FAIL (sampled live counter)' 2
+      finish 'FAIL (sampled encounter checks)' 2
       ;;
     INCONCLUSIVE|NOT_EVALUATED)
-      finish 'INCONCLUSIVE (sampled live counter)' 1
+      finish 'INCONCLUSIVE (sampled encounter checks)' 1
       ;;
   esac
 fi

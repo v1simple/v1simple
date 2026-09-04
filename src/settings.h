@@ -771,6 +771,7 @@ class SettingsManager {
 #ifdef UNIT_TEST
     // Test-only mutable access for fixture seeding.
     V1Settings& mutableSettings() { return settings_; }
+    void utSetDisplayConfigurationRevision(uint32_t revision) { displayConfigurationRevision_ = revision; }
     void utInterruptWifiCredentialBeforeSettingsCommit(bool enabled) {
         wifiCredentialInterruptBeforeSettingsCommit_ = enabled;
     }
@@ -798,6 +799,9 @@ class SettingsManager {
 #endif
     uint32_t backupRevision() const { return backupRevisionCounter_; }
     uint32_t backupDueRevision() const { return backupDueRevision_; }
+    // Normal-runtime display policy mutations, independent of NVS success.
+    // Saturation means continuity can no longer be established from this value.
+    uint32_t displayConfigurationRevision() const { return displayConfigurationRevision_; }
 
     uint8_t getApTimeoutMinutes() const { return settings_.apTimeoutMinutes; }
     SettingsPersistResult setActiveSlot(int slot,
@@ -918,6 +922,7 @@ class SettingsManager {
     V1ProfileManager* profiles_;
     V1Settings settings_;
     Preferences preferences_;
+    uint32_t displayConfigurationRevision_ = 0;
     uint32_t backupRevisionCounter_ = 1;
     uint32_t backupDueRevision_ = 0;
     uint32_t backupCompletedRevision_ = 0;
@@ -952,6 +957,7 @@ class SettingsManager {
     void clearDeferredPersistState();
     SettingsPersistResult finishSettingsMutation(const V1Settings& before, bool changed,
                                                   SettingsPersistMode persistMode);
+    void noteDisplayConfigurationMutation();
     void markRestorePending(const char* reason);
     void clearRestorePending();
     bool resolveWifiCredentialTransaction();

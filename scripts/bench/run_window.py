@@ -812,8 +812,38 @@ def run_upload(port: str, skip_web: bool) -> None:
     subprocess.run(command, cwd=ROOT, check=True)
 
 
+def native_usb_reset_strategy(port: Any) -> tuple[Any, dict[str, Any]]:
+    """Normal-application reset for ESP32-S3 native USB Serial/JTAG."""
+    try:
+        from serial.tools import list_ports
+    except ImportError as exc:
+        raise RuntimeError("bench reset requires pyserial in the bench Python environment") from exc
+    device = os.path.realpath(port.port)
+    matches = [item for item in list_ports.comports() if os.path.realpath(item.device) == device]
+    if len(matches) != 1 or (matches[0].vid, matches[0].pid) != (0x303A, 0x1001):
+        raise RuntimeError("bench reset requires the ESP32-S3 native USB Serial/JTAG port (303a:1001)")
+    def reset() -> None:
+        # The inspected esptool 5.3.0 HardReset(uses_usb=False) sequence:
+        # assert RTS for 100 ms, release RTS, retaining DTR on each change.
+        # ESP32S3ROM uses uses_usb=True only for OTG; USBJTAGSerialReset enters
+        # download mode. Keep this small sequence here to need only pyserial.
+        port.setRTS(True)
+        port.setDTR(port.dtr)
+        time.sleep(0.1)
+        port.setRTS(False)
+        port.setDTR(port.dtr)
+
+    return reset, {
+        "strategy": "esp32s3_usb_serial_jtag_hard_reset",
+        "sequence_basis": "esptool_5.3.0_HardReset_uses_usb_false",
+        "usb_vid": 0x303A,
+        "usb_pid": 0x1001,
+        "uses_usb_otg": False,
+    }
+
+
 class BenchSerial:
-    """Read-only serial continuity observer; it never sends firmware commands."""
+    """Serial continuity observer with an explicit reset, never firmware commands."""
 
     def __init__(self, port: str, baud: int, log_path: Path, timeline: BenchTimeline):
         if serial is None:
@@ -831,6 +861,18 @@ class BenchSerial:
         self.timeline = timeline
         self.identity_tracker = RuntimeIdentityTracker()
         self.line_count = 0
+        self.reset_performed = False
+
+    def reset_for_boot(self, *, reset_factory: Callable[..., Any] | None = None) -> None:
+        strategy, metadata = (reset_factory or native_usb_reset_strategy)(self.ser)
+        self.reset_performed = False
+        self.ser.reset_input_buffer()
+        self.identity_tracker = RuntimeIdentityTracker()
+        self.timeline.record("serial_reset_requested", **metadata)
+        # A failed control-line operation must never acquire a timing anchor.
+        strategy()
+        self.timeline.record("serial_reset_completed", **metadata)
+        self.reset_performed = True
 
     @property
     def boot_marker_count(self) -> int:
@@ -867,6 +909,7 @@ def establish_serial_boundary(
     ready_timeout_s: float,
     *,
     monotonic: Callable[[], float] = time.monotonic,
+    require_explicit_reset: bool = False,
 ) -> dict[str, Any]:
     """Keep an attach-time boot outside the external evidence window."""
     if ready_timeout_s <= 0:
@@ -876,19 +919,56 @@ def establish_serial_boundary(
     readiness_deadline = started + ready_timeout_s
     initial_boot_markers = observer.boot_marker_count
     startup_detected = False
+    rom_start_observed = False
+    reset_reason_observed = False
+    ready_gate_observed = False
+    setup_completed = False
+    if require_explicit_reset and not observer.reset_performed:
+        raise RuntimeIdentityFailure("explicit serial reset did not complete")
 
     while True:
         if observer.runtime_identity is not None:
-            mode = "startup_completed" if startup_detected else "identity_observed"
-            break
+            if require_explicit_reset and not (rom_start_observed and reset_reason_observed):
+                raise RuntimeIdentityFailure("runtime BOOT identity preceded fresh reset-to-ready evidence")
+            if not require_explicit_reset or (ready_gate_observed and setup_completed):
+                mode = "startup_completed" if startup_detected else "identity_observed"
+                break
 
         now = monotonic()
         if now >= readiness_deadline:
+            if require_explicit_reset and observer.runtime_identity is not None:
+                raise RuntimeIdentityFailure("normal-runtime ready/setup evidence was not observed after explicit reset")
             raise RuntimeIdentityFailure(
                 "runtime BOOT identity was not observed before the external evidence window"
             )
 
         line = observer.read_line(min(0.25, readiness_deadline - now))
+        if require_explicit_reset:
+            if re.search(r"Guru Meditation|panic(?:ked|'ed)|assert(?:ion)? failed|abort\(\)|stack canary|Brownout", line, re.IGNORECASE):
+                raise RuntimeIdentityFailure("panic or brownout before reset-to-ready completed")
+            if line.startswith("ESP-ROM:"):
+                if rom_start_observed or not line.startswith("ESP-ROM:esp32s3-"):
+                    raise RuntimeIdentityFailure("unexpected or repeated ROM start after explicit reset")
+                rom_start_observed = True
+            if line.startswith("rst:"):
+                if (not rom_start_observed or reset_reason_observed
+                        or "rst:0x15 (USB_UART_CHIP_RESET)" not in line
+                        or "SPI_FAST_FLASH_BOOT" not in line):
+                    raise RuntimeIdentityFailure("unexpected reset reason or boot mode after explicit reset")
+                reset_reason_observed = True
+            if line.startswith(BOOT_RECORD_PREFIX):
+                if observer.boot_marker_count != initial_boot_markers + 1:
+                    raise RuntimeIdentityFailure("repeated runtime BOOT before reset-to-ready completed")
+                if not re.search(r"(?:^| )reset=USB(?: |$)", line):
+                    raise RuntimeIdentityFailure("runtime BOOT reset reason does not match explicit USB reset")
+            if re.fullmatch(r"\[Boot\] Ready gate opened at [0-9]+ ms(?: \(timeout\))?", line):
+                if observer.runtime_identity is None:
+                    raise RuntimeIdentityFailure("ready gate preceded runtime BOOT identity")
+                ready_gate_observed = True
+            if re.fullmatch(r"\[Boot\] setup total: [0-9]+ ms", line):
+                if observer.runtime_identity is None:
+                    raise RuntimeIdentityFailure("setup completion preceded runtime BOOT identity")
+                setup_completed = True
         if line.startswith(BOOT_START_PREFIXES):
             startup_detected = True
 
@@ -898,6 +978,8 @@ def establish_serial_boundary(
         "boot_markers_observed": observer.boot_marker_count - initial_boot_markers,
         "runtime_identity": observer.runtime_identity,
         "duration_seconds": max(0.0, monotonic() - started),
+        "reset_anchored": require_explicit_reset and rom_start_observed and reset_reason_observed
+                          and ready_gate_observed and setup_completed,
     }
     observer.timeline.record("serial_boundary_established", **result)
     return result
@@ -1178,7 +1260,8 @@ def collect_live(
                     raise CameraPreflightFailure(preflight, camera_result)
 
             observer = BenchSerial(port, args.baud, out_dir / "bench_serial.log", timeline)
-            establish_serial_boundary(observer, args.ready_timeout_seconds)
+            observer.reset_for_boot()
+            establish_serial_boundary(observer, args.ready_timeout_seconds, require_explicit_reset=True)
             assert observer.runtime_identity is not None
             runtime_qualification = qualify_runtime_identity(
                 observer.runtime_identity,

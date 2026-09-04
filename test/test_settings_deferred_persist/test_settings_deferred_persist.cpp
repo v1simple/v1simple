@@ -342,8 +342,91 @@ void test_filtered_cleanup_rejects_present_unreadable_key_and_preserves_pending_
     }
 }
 
+void test_display_configuration_revision_preserves_changes_between_serial_samples() {
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_EQUAL_UINT32(0u, manager.displayConfigurationRevision());
+    manager.setStealthEnabled(true, SettingsPersistMode::Deferred);
+    manager.setStealthEnabled(false, SettingsPersistMode::Deferred);
+    TEST_ASSERT_FALSE(manager.get().stealthEnabled);
+    TEST_ASSERT_EQUAL_UINT32(2u, manager.displayConfigurationRevision());
+
+    manager.setActiveSlot(1, SettingsPersistMode::Deferred);
+    manager.setActiveSlot(0, SettingsPersistMode::Deferred);
+    TEST_ASSERT_EQUAL_INT(0, manager.get().activeSlot);
+    TEST_ASSERT_EQUAL_UINT32(4u, manager.displayConfigurationRevision());
+    // Coalesced persistence has not run, so its revision cannot prove this.
+    TEST_ASSERT_EQUAL_UINT32(1u, manager.backupRevision());
+}
+
+void test_display_configuration_revision_tracks_effective_policy_and_ignores_noops() {
+    SettingsManager manager(storage, profiles);
+    manager.setStealthEnabled(false, SettingsPersistMode::Deferred);
+    manager.setActiveSlot(0, SettingsPersistMode::Deferred);
+    DeviceSettingsUpdate unrelated;
+    unrelated.hasProxyName = true;
+    unrelated.proxyName = "Changed";
+    manager.applyDeviceSettingsUpdate(unrelated, SettingsPersistMode::Deferred);
+
+    AutoPushSlotUpdate inactive;
+    inactive.slot = 1;
+    inactive.hasPriorityArrowOnly = true;
+    inactive.priorityArrowOnly = !manager.getSlotPriorityArrowOnly(1);
+    manager.applyAutoPushSlotUpdate(inactive, SettingsPersistMode::Deferred);
+    TEST_ASSERT_EQUAL_UINT32(0u, manager.displayConfigurationRevision());
+
+    AutoPushStateUpdate selection;
+    selection.hasActiveSlot = true;
+    selection.activeSlot = 1;
+    manager.applyAutoPushStateUpdate(selection, SettingsPersistMode::Deferred);
+    TEST_ASSERT_EQUAL_UINT32(1u, manager.displayConfigurationRevision());
+    manager.applyAutoPushSlotUpdate(inactive, SettingsPersistMode::Deferred);
+    TEST_ASSERT_EQUAL_UINT32(1u, manager.displayConfigurationRevision());
+    inactive.priorityArrowOnly = !inactive.priorityArrowOnly;
+    inactive.hasAlertPersist = true;
+    inactive.alertPersist = manager.getSlotAlertPersistSec(1) == 0 ? 3 : 0;
+    manager.applyAutoPushSlotUpdate(inactive, SettingsPersistMode::Deferred);
+    TEST_ASSERT_EQUAL_UINT32(2u, manager.displayConfigurationRevision());
+
+    AudioSettingsUpdate quiet;
+    quiet.hasStealthEnabled = true;
+    quiet.stealthEnabled = true;
+    manager.applyAudioSettingsUpdate(quiet, SettingsPersistMode::Deferred);
+    TEST_ASSERT_EQUAL_UINT32(3u, manager.displayConfigurationRevision());
+}
+
+void test_display_configuration_revision_is_not_rolled_back_by_failed_persistence() {
+    SettingsManager manager(storage, profiles);
+    mock_preferences::set_fail_writes(true);
+    const auto result = manager.setStealthEnabled(true);
+    TEST_ASSERT_FALSE(result.success);
+    TEST_ASSERT_FALSE(manager.get().stealthEnabled);
+    TEST_ASSERT_EQUAL_UINT32(1u, manager.displayConfigurationRevision());
+
+    AutoPushSlotUpdate update;
+    update.slot = 0;
+    update.hasPriorityArrowOnly = true;
+    const bool originalArrowPolicy = manager.getSlotPriorityArrowOnly(0);
+    update.priorityArrowOnly = !originalArrowPolicy;
+    TEST_ASSERT_FALSE(manager.applyAutoPushSlotUpdatePersisted(update).success);
+    TEST_ASSERT_EQUAL(originalArrowPolicy, manager.getSlotPriorityArrowOnly(0));
+    TEST_ASSERT_EQUAL_UINT32(2u, manager.displayConfigurationRevision());
+}
+
+void test_display_configuration_revision_saturates_instead_of_reusing_a_value() {
+    SettingsManager manager(storage, profiles);
+    manager.utSetDisplayConfigurationRevision(UINT32_MAX - 1u);
+    manager.setStealthEnabled(true, SettingsPersistMode::Deferred);
+    TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, manager.displayConfigurationRevision());
+    manager.setStealthEnabled(false, SettingsPersistMode::Deferred);
+    TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, manager.displayConfigurationRevision());
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_display_configuration_revision_preserves_changes_between_serial_samples);
+    RUN_TEST(test_display_configuration_revision_tracks_effective_policy_and_ignores_noops);
+    RUN_TEST(test_display_configuration_revision_is_not_rolled_back_by_failed_persistence);
+    RUN_TEST(test_display_configuration_revision_saturates_instead_of_reusing_a_value);
     RUN_TEST(test_filtered_fallback_cleanup_preserves_other_persisted_and_pending_addresses);
     RUN_TEST(test_filtered_fallback_cleanup_cancels_pending_only_address);
     RUN_TEST(test_failed_filtered_fallback_cleanup_preserves_durable_and_pending_intent);

@@ -96,6 +96,7 @@ not promote the original bench verdict or firmware qualification.
 
 For `bench.sh`, a hard collection failure exits **2**. Collection-only evidence
 exits **1** regardless of the separately printed counter result. With qualified
-collection, sampled-counter `PASS`, `INCONCLUSIVE`, and `FAIL` exit **0**, **1**,
-and **2**, respectively. The existing visual timing summary remains independent
-and cannot change this correctness result.
+camera collection, the broader [sampled encounter check](BENCH_ENCOUNTER_CHECK.md)
+controls the command outcome: its `PASS`, `INCONCLUSIVE`, and `FAIL` exit **0**,
+**1**, and **2**, respectively. The narrow counter and existing image-change
+timing results remain separate and cannot raise the encounter result.

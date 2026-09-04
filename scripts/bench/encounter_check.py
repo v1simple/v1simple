@@ -1,0 +1,422 @@
+#!/usr/bin/env python3
+"""Read and compare a sampled V1 encounter from an existing camera recording.
+
+No hardware is operated. Selection uses packet changes and a declared cadence,
+before pixels are read. A disagreement is with recorded host input; it does not
+locate a firmware defect or establish a response deadline.
+"""
+from __future__ import annotations
+
+import argparse
+from collections import Counter
+import json
+import math
+from pathlib import Path
+import platform
+import shutil
+import subprocess
+import sys
+import tempfile
+
+from artifact_privacy import sanitize_artifact_value
+from camera_artifacts import load_capture_manifest, sha256_file, verify_capture_files
+from camera_timing import validate_frame_sidecar
+from counter_check import owned_input, read_json, read_records, save_json, select_frame, write_png
+from encounter_expectation import build_encounter_timeline, encounter_expectation_at, compare_sample
+from encounter_configuration import recorded_snapshots, configuration_for_samples
+
+FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
+          "main_bars", "secondary", "muted_badge")
+PROBES = (-.05, .05, .15, .35)
+MAX_SAMPLES = 5000
+
+
+def require(condition: bool, reason: str) -> None:
+    if not condition:
+        raise ValueError(reason)
+
+
+def load_run(run: Path) -> dict:
+    """Reuse the capture's hash-bound timing verification, not an unbound cache."""
+    window_path = run / "window_result.json"
+    window = read_json(window_path)
+    stimulus_path = owned_input(run, window["artifacts"]["replay_stimulus"])
+    delivery_path = owned_input(run, window["artifacts"]["replay_delivery"])
+    scenario_path = run / "replay_scenario.json"
+    stimulus, delivery = read_records(stimulus_path), read_records(delivery_path)
+    scenario = read_json(scenario_path)
+    timeline = build_encounter_timeline(scenario, stimulus, delivery)
+    camera = run / "camera"
+    manifest_path = camera / "capture_manifest.json"
+    read_json(manifest_path)  # Reject duplicate JSON keys before the shared loader.
+    manifest = load_capture_manifest(manifest_path)
+    require(window.get("camera", {}).get("capture_id") == manifest["capture_id"],
+            "camera capture belongs to a different replay window")
+    verify_capture_files(camera, manifest)
+    entries = manifest["identity"]["artifacts"]
+    preflight = read_json(camera / entries["preflight"]["path"])
+    registration = preflight.get("registration", {})
+    require(preflight.get("result") == registration.get("result") == "PASS",
+            "camera registration did not pass")
+    records = read_records(camera / entries["frame_timing"]["path"])
+    validate_frame_sidecar(records)
+    require(all(r["phase"] == "recording" for r in records), "mixed camera phases")
+    rows = [r for r in records if r["status"] == "written"]
+    require(bool(rows) and all(b["host_capture_ns"] > a["host_capture_ns"]
+                              for a, b in zip(rows, rows[1:])), "nonincreasing capture timestamps")
+    timing = read_json(camera / entries["video_timing_verification"]["path"])
+    require(timing.get("status") == "verified", "encoded video timing was not verified")
+    for key in ("timestamp_error_count", "missing_encoded_frame_count", "extra_encoded_frame_count",
+                "duration_mismatch_count"):
+        require(type(timing.get(key)) is int and timing[key] == 0, f"video timing: {key} is not zero")
+    require(timing.get("written_frame_count") == timing.get("encoded_frame_count") == len(rows),
+            "timing verification does not describe all written frames")
+    require(timing.get("source_frame_count") == len(records), "source-frame denominator differs")
+    require(not any(r["status"] == "timestamp_error" for r in records), "camera timestamp errors")
+    probe = manifest["capture"]["video_probe"]
+    width, height = probe["width"], probe["height"]
+    require(type(width) is int and type(height) is int and 1 <= width <= 4096 and 1 <= height <= 2160,
+            "unsupported camera dimensions")
+    require(f"{width}x{height}" == manifest["identity"]["camera"]["profile"].get("video_size"),
+            "video dimensions differ from the capture profile")
+    identity = {
+        "window_result_sha256": sha256_file(window_path), "capture_id": manifest["capture_id"],
+        "capture_manifest_sha256": sha256_file(manifest_path),
+        "stimulus_sha256": sha256_file(stimulus_path), "delivery_sha256": sha256_file(delivery_path),
+        "scenario_sha256": sha256_file(scenario_path),
+        "camera_artifacts": {k: {"sha256": v["sha256"], "size_bytes": v["size_bytes"]}
+                             for k, v in entries.items()},
+        "runtime_identity": window.get("runtime_identity"),
+        "recorded_runtime_qualification": window.get("runtime_qualification"),
+        "recorded_collection_result": window.get("result"),
+    }
+    recorded_configuration = None
+    timeline_artifact = window.get("artifacts", {}).get("bench_timeline")
+    if timeline_artifact:
+        try:
+            timeline_path = owned_input(run, timeline_artifact)
+            recorded_configuration = recorded_snapshots(read_records(timeline_path), window.get("runtime_identity"))
+            identity["configuration_timeline_sha256"] = sha256_file(timeline_path)
+        except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
+            recorded_configuration = {"status": "unavailable", "reason": f"configuration timeline could not be verified: {exc}"}
+    return dict(identity=identity, stimulus=stimulus, timeline=timeline, rows=rows, timing=timing,
+                video=camera / entries["video"]["path"], width=width, height=height,
+                registration=registration, recorded_configuration=recorded_configuration)
+
+
+def select_samples(stimulus: list[dict], rows: list[dict], ranges: list[tuple[float, float]],
+                   cadence: float) -> list[dict]:
+    """Freeze every packet-state midpoint, regular hold, and fixed edge probe."""
+    require(math.isfinite(cadence) and cadence > 0, "cadence must be positive and finite")
+    require(bool(stimulus), "no recorded stimulus")
+    origin = stimulus[0]["requestedHostMonotonicNs"]
+    # Packet bytes, not expectedDisplay and not count alone, define changes.
+    states = []
+    for item in stimulus:
+        signature = tuple((n["kind"], n["bytesHex"]) for n in item["notifications"])
+        if not states or signature != states[-1]["signature"]:
+            states.append(dict(start=(item["requestedHostMonotonicNs"] - origin) / 1e9,
+                               signature=signature))
+    camera_end = (rows[-1]["host_capture_ns"] + rows[-1]["duration_ns"] - origin) / 1e9
+    targets: dict[int, set[str]] = {}
+
+    def add(offset, reason):
+        ns = origin + round(offset * 1e9)
+        targets.setdefault(ns, set()).add(reason)
+        require(len(targets) <= MAX_SAMPLES, "selection exceeds 5000 samples; narrow the range or cadence")
+
+    for start, end in ranges:
+        require(all(math.isfinite(x) for x in (start, end)) and 0 <= start < end <= camera_end,
+                "range must be finite, increasing, nonnegative, and inside the recorded camera window")
+        for index, state in enumerate(states):
+            stop = states[index + 1]["start"] if index + 1 < len(states) else camera_end
+            lo, hi = max(start, state["start"]), min(end, stop)
+            if lo < hi:
+                add((lo + hi) / 2, "packet-state midpoint")
+            if index and start <= state["start"] < end:
+                for delta in PROBES:
+                    if start <= state["start"] + delta < end:
+                        add(state["start"] + delta, "transition probe")
+        offset = start + min(.5, cadence / 2, (end - start) / 2)
+        while offset < end:
+            add(offset, "regular hold")
+            offset += cadence
+    samples = []
+    for number, (target, reasons) in enumerate(sorted(targets.items()), 1):
+        sample = dict(frame_id=f"{number:04d}", target_capture_ns=target,
+                      requested_offset_seconds=(target - origin) / 1e9, selection_reasons=sorted(reasons),
+                      role="transition" if reasons == {"transition probe"} else "held")
+        try:
+            index, row = select_frame(rows, target)
+            sample.update(video_frame_index=index, source_frame_seq=row["frame_seq"],
+                          capture_ns=row["host_capture_ns"],
+                          offset_seconds=(row["host_capture_ns"] - origin) / 1e9)
+        except ValueError as exc:
+            sample["selection_error"] = str(exc)
+        samples.append(sample)
+    require(bool(samples), "selection contains no samples")
+    return samples
+
+
+def balanced_selection(indices: list[int]) -> str:
+    require(bool(indices), "empty frame extraction")
+    if len(indices) == 1:
+        return f"eq(n,{indices[0]})"
+    midpoint = len(indices) // 2
+    return f"({balanced_selection(indices[:midpoint])}+{balanced_selection(indices[midpoint:])})"
+
+
+def stream_frames(video: Path, indices: list[int], width: int, height: int):
+    """Decode selected originals once, keeping only one RGB frame in memory."""
+    indices = sorted(set(indices))
+    if not indices:
+        return
+    ffmpeg = shutil.which("ffmpeg")
+    require(ffmpeg is not None, "ffmpeg is required")
+    command = [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-i", str(video),
+               "-map", "0:v:0", "-vf", f"select='{balanced_selection(indices)}'",
+               "-fps_mode", "passthrough", "-frames:v", str(len(indices)),
+               "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+    with tempfile.TemporaryFile() as errors:
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=errors)
+        try:
+            for index in indices:
+                pixels = process.stdout.read(width * height * 3)
+                require(len(pixels) == width * height * 3, "decoder stopped before all selected frames")
+                yield index, pixels
+            require(not process.stdout.read(1), "decoder returned additional unselected pixels")
+            require(process.wait() == 0, "video decoder failed")
+        finally:
+            process.stdout.close()
+            if process.poll() is None:
+                process.terminate()
+                process.wait()
+
+
+def configuration_for(path: Path | None, identity: dict, samples: list[dict]) -> dict | None:
+    if path is None:
+        return None
+    document = read_json(path)
+    require(document.get("window_result_sha256") == identity["window_result_sha256"]
+            and document.get("runtime_identity") == identity["runtime_identity"],
+            "configuration does not identify this exact window and boot")
+    require(document.get("status") == "verified" and isinstance(document.get("basis"), str)
+            and bool(document["basis"].strip()), "configuration requires a stated independent verification basis")
+    coverage = document.get("coverage", {})
+    times = [s["capture_ns"] for s in samples if "capture_ns" in s]
+    require(times and type(coverage.get("start_capture_ns")) is int
+            and type(coverage.get("end_capture_ns")) is int
+            and coverage["start_capture_ns"] <= min(times) <= max(times) <= coverage["end_capture_ns"],
+            "configuration does not cover the selected observations")
+    require(isinstance(document.get("settings"), dict), "configuration settings must be an object")
+    return document
+
+
+def unresolved(reason: str) -> dict:
+    return {"fields": {name: {"state": "unreadable", "value": None, "reason": reason} for name in FIELDS}}
+
+
+def summarize(samples: list[dict], errors: list[str]) -> tuple[str, dict]:
+    counts = Counter()
+    joint_counts = Counter()
+    roles = {role: Counter() for role in ("held", "transition")}
+    for sample in samples:
+        checks = sample.get("comparison", {}).get("checks", {})
+        for field in FIELDS:
+            status = checks.get(field, {}).get("status", "UNRESOLVED")
+            counts[status] += 1
+            roles[sample["role"]][status] += 1
+        joint = sample.get("comparison", {}).get("joint_state", {}).get("status")
+        if joint:
+            joint_counts[joint] += 1
+    verdict = ("FAIL" if counts["DIFFERENCE"] or joint_counts["DIFFERENCE"] else
+               "INCONCLUSIVE" if errors or any(counts[k] for k in counts if k != "MATCH")
+               or any(joint_counts[k] for k in joint_counts if k not in ("MATCH", "NOT_EVALUATED"))
+               or not samples else "PASS")
+    return verdict, {"required": len(samples) * len(FIELDS), "fields": dict(counts),
+                     "joint_states": dict(joint_counts), "by_role": {k: dict(v) for k, v in roles.items()}}
+
+
+def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cadence: float,
+            configuration: Path | None = None, transition_only: bool = False) -> dict:
+    samples, errors, evidence = [], [], {}
+    method = {p.name: sha256_file(p) for p in Path(__file__).parent.glob("*.py")}
+    for p in Path(__file__).parent.glob("encounter_*.swift"):
+        method[p.name] = sha256_file(p)
+    (out / "method").mkdir()
+    for name, digest in method.items():
+        source = Path(__file__).with_name(name)
+        shutil.copyfile(source, out / "method" / name)
+        require(sha256_file(out / "method" / name) == digest, "analysis source changed while being retained")
+    result = dict(schema_version=1, kind="sampled_encounter_check", full_run_correctness="not_evaluated",
+                  selection_mode="transition_windows" if transition_only else "encounter_samples",
+                  response_deadline="not_evaluated", reader_qualification="see independent validation; not established by this run",
+                  comparison_basis="Sampled display agreement with recorded host input. Host acceptance is not DUT receipt. Transition probes impose no response deadline.",
+                  implementation_sha256=method, environment=dict(python=platform.python_version(), system=platform.platform()))
+    try:
+        data = load_run(run)
+        evidence = {**data["identity"], "video_timing": data["timing"],
+                    "timing_basis": "hash-bound original capture verification and validated source sidecar"}
+        origin = data["stimulus"][0]["requestedHostMonotonicNs"]
+        if ranges is None:
+            end = (data["stimulus"][-1]["requestedHostMonotonicNs"] - origin) / 1e9
+            ranges = [(0, end)]
+        samples = select_samples(data["stimulus"], data["rows"], ranges, cadence)
+        if transition_only:
+            for sample in samples:
+                sample["role"] = "transition"
+        recorded_config = configuration_for_samples(data.get("recorded_configuration"), samples)
+        evidence["recorded_configuration"] = recorded_config
+        config = recorded_config if recorded_config.get("status") == "verified" else None
+        if configuration is not None:
+            require((data.get("recorded_configuration") or {}).get("status") != "available" or config is not None,
+                    "supplied static configuration cannot override incomplete or changing recorded CFG coverage")
+            supplied = configuration_for(configuration, evidence, samples)
+            if config:
+                require(all(config["settings"].get(k) == v for k, v in supplied["settings"].items()),
+                        "supplied configuration contradicts recorded normal-runtime settings")
+            config = supplied
+        if config:
+            evidence["configuration"] = dict(config)
+            if configuration is not None:
+                evidence["configuration"]["sha256"] = sha256_file(configuration)
+        # Immutable input-only selection is published before any reader call.
+        save_json(out / "selection.json", dict(schema_version=1, identity=data["identity"], ranges=ranges,
+                                               cadence_seconds=cadence, transition_offsets_seconds=PROBES, samples=samples))
+        by_index = {}
+        for sample in samples:
+            if "video_frame_index" in sample:
+                by_index.setdefault(sample["video_frame_index"], []).append(sample)
+        (out / "frames").mkdir()
+        import encounter_reader
+        observe = encounter_reader.observe
+        if hasattr(encounter_reader, "prepare_reader"):
+            evidence["reader"] = encounter_reader.prepare_reader(out / "reader-cache")
+        total = len(by_index)
+        for number, (index, pixels) in enumerate(stream_frames(data["video"], list(by_index), data["width"], data["height"]), 1):
+            image = out / "frames" / f"{index:06d}.png"
+            write_png(image, pixels, data["width"], data["height"])
+            image_hash = sha256_file(image)
+            # The pixel reader receives no expected values, packet data or timestamps.
+            try:
+                reading = observe(pixels, data["width"], data["height"], data["registration"])
+                if "fields" not in reading:
+                    reading = {"fields": {name: reading.get(name) for name in FIELDS},
+                               "diagnostics": {k: v for k, v in reading.items() if k not in FIELDS}}
+            except Exception as exc:
+                reading = unresolved(f"reader failed: {type(exc).__name__}: {exc}")
+            for sample in by_index[index]:
+                requirement = encounter_expectation_at(data["timeline"], sample["capture_ns"],
+                                                       configuration=config["settings"] if config else None)
+                sample.update(image=f"frames/{image.name}", image_sha256=image_hash, observed=reading, expected=requirement)
+                sample["comparison"] = compare_sample(requirement, reading, role=sample["role"])
+            if number == 1 or number % 25 == 0 or number == total:
+                print(f"Read {number}/{total} selected original frames", flush=True)
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError, ImportError) as exc:
+        errors.append(f"{type(exc).__name__}: {exc}")
+    except KeyboardInterrupt:
+        errors.append("Analysis interrupted; unfinished required samples remain unresolved")
+    for sample in samples:
+        if "comparison" not in sample:
+            reason = sample.get("selection_error") or "analysis did not reach this required sample"
+            sample["comparison"] = {"checks": {f: {"status": "UNRESOLVED", "reason": reason} for f in FIELDS}}
+    verdict, counts = summarize(samples, errors)
+    selected_unique = len({s["video_frame_index"] for s in samples if "video_frame_index" in s})
+    unique = len({s["video_frame_index"] for s in samples if "observed" in s})
+    coverage = []
+    for start, end in ranges or []:
+        times = sorted({s["offset_seconds"] for s in samples if "observed" in s
+                        and start <= s["offset_seconds"] <= end})
+        boundaries = [start, *times, end]
+        coverage.append(dict(start_seconds=start, end_seconds=end, unique_frames=len(times),
+                             maximum_unobserved_gap_seconds=max(b - a for a, b in zip(boundaries, boundaries[1:]))))
+    result.update(result=verdict, counts=counts, evidence=evidence, errors=errors, samples=samples,
+                  coverage=dict(requests=len(samples), selected_unique_frames=selected_unique,
+                                unique_frames=unique, regions=coverage))
+    save_json(out / "result.json", result)
+    result = read_json(out / "result.json")  # Render only the same sanitized data that was retained.
+    write_report(out, result)
+    return result
+
+
+def write_report(out: Path, result: dict) -> None:
+    counts = result["counts"]
+    tally = ", ".join(f"{value} {key.lower().replace('_', ' ')}" for key, value in counts["fields"].items())
+    config = result.get("evidence", {}).get("configuration")
+    config_summary = ("Recorded display settings: " + json.dumps(config["settings"], sort_keys=True)
+                      if config else "Display settings unresolved: " + result.get("evidence", {}).get(
+                          "recorded_configuration", {}).get("reason", "independent configuration unavailable"))
+    lines = [f"# Sampled encounter: {result['result']}", "", result["comparison_basis"], "", config_summary, "",
+             f"{tally or 'No evaluable samples'} / {counts['required']} required field checks.", "",
+             f"{result['coverage']['requests']} requests, {result['coverage']['selected_unique_frames']} selected and "
+             f"{result['coverage']['unique_frames']} decoded original frames with reader attempts. "
+             "Unknowns remain in the denominator; duplicate frames are not independent trials.", "",
+             "[Open the visual review](report.html). It shows each original image beside its input expectations and pixel readings.", "",
+             "A FAIL identifies sampled input/display disagreement. It does not establish its cause or a timing violation. "
+             "A PASS covers these samples and fields only. Reader accuracy requires separate validation.", "",
+             "| Region (seconds) | Decoded samples | Largest gap between decoded samples |", "| --- | ---: | ---: |"]
+    for region in result["coverage"]["regions"]:
+        lines.append(f"| {region['start_seconds']:g}–{region['end_seconds']:g} | {region['unique_frames']} | {region['maximum_unobserved_gap_seconds']:.3f}s |")
+    if result["errors"]:
+        lines += ["", "Analysis errors:", ""] + ["- " + e for e in result["errors"]]
+    lines += ["", "| Sample | Time | Role | Checks needing attention | Original |", "| --- | ---: | --- | --- | --- |"]
+    for sample in result["samples"]:
+        issues = [f"{f}: {c['status']}" for f, c in sample["comparison"]["checks"].items() if c["status"] != "MATCH"]
+        joint = sample["comparison"].get("joint_state", {}).get("status")
+        if joint and joint not in ("MATCH", "NOT_EVALUATED"):
+            issues.append("joint display: " + joint)
+        link = f"[frame]({sample['image']})" if "image" in sample else "unavailable"
+        lines.append(f"| {sample['frame_id']} | {sample.get('offset_seconds',sample['requested_offset_seconds']):.3f}s | {sample['role']} | {'; '.join(issues) or 'all matched'} | {link} |")
+    (out / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    payload = json.dumps(result, ensure_ascii=True).replace("<", "\\u003c")
+    page = r'''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Recorded encounter review</title><style>
+*{box-sizing:border-box}body{margin:0;background:#10151b;color:#e7edf4;font:15px system-ui,sans-serif}
+header{padding:24px 28px;border-bottom:1px solid #35414d}h1{font-size:25px;margin:0 0 10px}p{line-height:1.5;color:#b7c4d1;max-width:1000px}
+main{display:grid;grid-template-columns:240px 1fr;gap:22px;padding:22px}nav{max-height:78vh;overflow:auto}button,select{font:inherit;color:inherit;background:#1b2630;border:1px solid #425161;border-radius:6px;padding:8px;cursor:pointer}nav button{display:block;width:100%;text-align:left;margin:5px 0}button[aria-current=true]{border-color:#69c5ff;background:#1c394e}.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}img{width:100%;max-height:53vh;object-fit:contain;background:#000;border-radius:7px}table{width:100%;border-collapse:collapse;margin-top:18px}td,th{text-align:left;vertical-align:top;padding:10px;border-bottom:1px solid #35414d}th{color:#9dafbf}td{white-space:pre-wrap;overflow-wrap:anywhere}.MATCH{color:#8edfbe}.DIFFERENCE,.JOINT_DIFFERENCE{color:#ff9292}.UNRESOLVED,.CONDITIONAL{color:#f2cf83}.PREVIOUS_INPUT_STATE,.TRANSITION_DIFFERENCE{color:#bcb1ff}small{color:#9dafbf}.empty{padding:30px}@media(max-width:800px){main{display:block}nav{max-height:180px;margin-bottom:20px}table{font-size:12px}td,th{padding:6px}}
+</style><header><h1 id="title"></h1><p id="summary"></p><p>Original camera observations against recorded host input. Samples leave gaps. Transition probes establish no response deadline; an input/display disagreement does not locate its cause. Automatic reader accuracy is qualified separately.</p></header>
+<main><aside><label>Show <select id="filter"><option value="all">All samples</option><option value="attention">Needs attention</option><option value="held">Held samples</option><option value="transition">Transitions</option></select></label><nav id="samples"></nav></aside>
+<section><div class="toolbar"><button id="prev">← Previous</button><button id="next">Next →</button><strong id="sampleTitle"></strong><a id="original">Open original</a></div><img id="frame" alt="Unmodified selected camera frame"><p id="detail"></p><table><thead><tr><th>Display field</th><th>Permitted input state</th><th>Observed pixels</th><th>Judgment</th></tr></thead><tbody id="checks"></tbody></table><p id="joint"></p></section></main>
+<script>const result=PAYLOAD;const all=result.samples;let selected=0,visible=[];
+const el=id=>document.getElementById(id);const fmt=x=>x===undefined?'unavailable':JSON.stringify(x,null,2);
+el('title').textContent='Sampled encounter: '+result.result;el('summary').textContent=Object.entries(result.counts.fields).map(([k,v])=>v+' '+k.toLowerCase().replaceAll('_',' ')).join(' · ')+' / '+result.counts.required+' required checks. '+result.coverage.unique_frames+' unique original frames.';
+function needsAttention(s){let joint=s.comparison.joint_state?.status;return Object.values(s.comparison.checks).some(c=>c.status!=='MATCH')||(joint&&!['MATCH','NOT_EVALUATED'].includes(joint))}
+function renderList(){let f=el('filter').value;visible=all.map((s,i)=>[s,i]).filter(([s])=>f==='all'||s.role===f||(f==='attention'&&needsAttention(s)));el('samples').replaceChildren();for(const [s,i]of visible){let b=document.createElement('button');b.textContent=(s.offset_seconds??s.requested_offset_seconds).toFixed(3)+' s · '+s.role;b.onclick=()=>show(i);b.setAttribute('aria-current',i===selected);el('samples').append(b)}}
+function show(i){if(!all.length)return;selected=Math.max(0,Math.min(i,all.length-1));let s=all[selected];el('sampleTitle').textContent='Sample '+s.frame_id+' · '+(s.offset_seconds??s.requested_offset_seconds).toFixed(3)+' s';if(s.image){el('frame').src=s.image;el('frame').hidden=false;el('original').href=s.image}else{el('frame').hidden=true;el('original').removeAttribute('href')}el('detail').textContent=s.role+'; '+s.selection_reasons.join(', ')+'. Source frame '+(s.source_frame_seq??'unavailable')+'.';el('checks').replaceChildren();for(const [name,c]of Object.entries(s.comparison.checks)){let row=document.createElement('tr');let expected=s.expected?.fields?.[name];let observed=s.observed?.fields?.[name];let values=[name.replaceAll('_',' '),expected?.unresolved??fmt(expected?.allowed),observed?(observed.state+': '+fmt(observed.value)):'not read',c.status+(c.reason?'\n'+c.reason:'')];for(let n=0;n<4;n++){let cell=document.createElement('td');cell.textContent=values[n];if(n===3)cell.className=c.status;row.append(cell)}el('checks').append(row)}el('joint').textContent=s.comparison.joint_state?'Coherent display state: '+fmt(s.comparison.joint_state):'';renderList()}
+el('filter').onchange=renderList;el('prev').onclick=()=>{let p=visible.findIndex(([,i])=>i===selected);if(p>0)show(visible[p-1][1])};el('next').onclick=()=>{let p=visible.findIndex(([,i])=>i===selected);if(p+1<visible.length)show(visible[p+1][1])};document.addEventListener('keydown',e=>{if(e.key==='ArrowLeft')el('prev').click();if(e.key==='ArrowRight')el('next').click()});function openLinkedSample(){let id=new URLSearchParams(location.hash.slice(1)).get('sample');let index=all.findIndex(s=>s.frame_id===id);show(index<0?0:index)}window.addEventListener('hashchange',openLinkedSample);openLinkedSample();renderList();</script></html>'''
+    (out / "report.html").write_text(page.replace("PAYLOAD", payload), encoding="utf-8")
+
+
+def parse_range(value: str) -> tuple[float, float]:
+    try:
+        start, end = map(float, value.split(":"))
+        require(math.isfinite(start) and math.isfinite(end) and 0 <= start < end, "invalid range")
+        return start, end
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("use nonnegative START:END seconds, with START < END") from exc
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--run-dir", type=Path, required=True, help="retained replay directory with window_result.json")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--range", type=parse_range, action="append", dest="ranges", help="START:END seconds from first replay request; repeat for separate regions")
+    selection.add_argument("--transition-window", type=parse_range, action="append", help="inspect START:END as transition observations; differences impose no response deadline")
+    parser.add_argument("--cadence", type=float, default=2, help="regular sample interval in seconds (default 2), in addition to packet-state midpoints and edge probes")
+    parser.add_argument("--configuration", type=Path, help="independently verified, exact-window display settings; missing settings stay unknown")
+    parser.add_argument("--out", type=Path, required=True, help="new result directory; existing results are never replaced")
+    args = parser.parse_args()
+    try:
+        args.out.mkdir(parents=True, exist_ok=False)
+        result = analyze(args.run_dir, args.out, args.transition_window or args.ranges, args.cadence,
+                         args.configuration, transition_only=bool(args.transition_window))
+    except (OSError, ValueError) as exc:
+        print(sanitize_artifact_value(str(exc), run_dir=args.out), file=sys.stderr)
+        return 2
+    print(f"{result['result']} — sampled encounter: {result['counts']['fields']} / {result['counts']['required']} required checks")
+    print("Open report.html for original images, expected states, pixel readings and unresolved checks.")
+    return {"PASS": 0, "FAIL": 1, "INCONCLUSIVE": 2}[result["result"]]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

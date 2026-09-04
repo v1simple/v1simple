@@ -157,6 +157,9 @@ run_step "Sampled visual comparison regression suite" python3 scripts/test_visua
 run_step "Counter pixel reader regression suite" python3 scripts/test_counter_reader.py
 run_step "Counter input expectation regression suite" python3 scripts/test_counter_expectation.py
 run_step "Recorded counter check regression suite" python3 scripts/test_counter_check.py
+run_step "Encounter pixel reader regression suite" python3 scripts/test_encounter_reader.py
+run_step "Encounter input expectation regression suite" python3 scripts/test_encounter_expectation.py
+run_step "Recorded encounter check regression suite" python3 scripts/test_encounter_check.py
 run_step "LittleFS compatibility regression suite" python3 scripts/test_check_littlefs_image_compatibility.py
 run_step "Commit metadata regression suite" python3 scripts/test_check_public_commit_metadata.py
 run_step "App-only upload offset regression suite" python3 scripts/test_force_app_upload_offset.py

@@ -287,6 +287,7 @@ void DriveRuntime::start(uint32_t setupStartMs, uint32_t stageStartedMs, esp_res
     Serial.println(previousShutdownClean ? "[Boot] Previous shutdown was clean"
                                          : "[Boot] Previous shutdown was UNCLEAN (no clean-shutdown marker)");
     const uint32_t bootId = nextBootId();
+    bootId_ = bootId;
     HealthCounters::reset();
     (void)health_.begin(storage_, bootId, getRuntimeImageId(), resetReasonToString(resetReason),
                         previousShutdownClean, preservedPanicEvidencePresent(resetReason));
@@ -298,6 +299,8 @@ void DriveRuntime::start(uint32_t setupStartMs, uint32_t stageStartedMs, esp_res
     initializeTouchAndUi();
     logBootStage("ui_modules", setupStartMs, stageStartedMs);
     logBootIdentity(bootId, resetReason);
+    lastDisplayConfigurationLogMs_ = millis() - 1000u;
+    logDisplayConfiguration(millis());
     Serial.println("[WiFi] Off in normal runtime - BOOT long-press reboots to maintenance");
 
     Serial.println("Initializing touch handler...");
@@ -637,6 +640,33 @@ void DriveRuntime::processPeriodicMaintenance(uint32_t nowMs, bool bleConnected,
     }
     if (bleConnected && admitPersistence) {
         connectedPersistenceWindowStartedMs_ = nowMs;
+    }
+    if (!hardPressure) {
+        logDisplayConfiguration(millis());
+    }
+}
+
+void DriveRuntime::logDisplayConfiguration(uint32_t nowMs) {
+    if (static_cast<uint32_t>(nowMs - lastDisplayConfigurationLogMs_) < 1000u) {
+        return;
+    }
+    lastDisplayConfigurationLogMs_ = nowMs;
+    const V1Settings& settings = settings_.get();
+    const unsigned activeSlot = V1Settings::normalizeAutoPushSlotIndex(settings.activeSlot);
+    char line[192];
+    const int length = snprintf(
+        line, sizeof(line),
+        "CFG bootId=%lu uptimeMs=%lu revision=%lu activeSlot=%u stealthEnabled=%u "
+        "priorityArrowOnly=%u alertPersistenceSeconds=%u\n",
+        static_cast<unsigned long>(bootId_), static_cast<unsigned long>(nowMs),
+        static_cast<unsigned long>(settings_.displayConfigurationRevision()), activeSlot,
+        static_cast<unsigned>(settings.stealthEnabled),
+        static_cast<unsigned>(settings_.getSlotPriorityArrowOnly(activeSlot)),
+        static_cast<unsigned>(settings_.getSlotAlertPersistSec(activeSlot)));
+    // Serial already has a zero TX timeout. Skip unavailable space instead of
+    // delaying alert work; the collector must retain missing evidence as unknown.
+    if (length > 0 && static_cast<size_t>(length) < sizeof(line) && Serial.availableForWrite() >= length) {
+        Serial.write(reinterpret_cast<const uint8_t*>(line), static_cast<size_t>(length));
     }
 }
 

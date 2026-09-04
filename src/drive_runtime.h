@@ -152,6 +152,7 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     bool isProxyFullyStopped() const override { return ble_.isProxyFullyStopped(); }
     bool preservedPanicEvidencePresent(esp_reset_reason_t resetReason) const;
     void logBootStage(const char* stage, uint32_t setupStartMs, uint32_t& stageStartedMs) const;
+    void logDisplayConfiguration(uint32_t nowMs);
 
     SettingsManager& settings_;
     V1ProfileManager& profiles_;
@@ -197,5 +198,7 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
 
     bool connectedPersistenceWindowAnchored_ = false;
     uint32_t connectedPersistenceWindowStartedMs_ = 0;
+    uint32_t bootId_ = 0;
+    uint32_t lastDisplayConfigurationLogMs_ = 0;
     bool active_ = false;
 };

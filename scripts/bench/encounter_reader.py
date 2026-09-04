@@ -23,7 +23,7 @@ import counter_reader
 
 FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
-METHOD_VERSION = 2
+METHOD_VERSION = 3
 _ocr_binary = None
 _ocr_setup = None
 
@@ -188,6 +188,86 @@ def _bars(pixels, boxes):
     return field("readable", states.count("on"), bars=measurements)
 
 
+def _card_bars(pixels, left):
+    """Locate one six-cell meter by its perimeter, then read its interiors.
+
+    Registration never scores a proposed filled/hollow state or bar count.
+    A shared grid prevents independently moving each crop onto convenient ink.
+    The outer strokes are excluded from the interiors, including their camera
+    fringe; partial, faint and noncontiguous fills still refuse a count.
+    """
+    level = pixels.level((left + 8, 419, left + 221, 450))
+    sy, sx = level.shape[0] / 31, level.shape[1] / 213
+    vertical = np.diff(np.median(level[:, round(8 * sx):round(202 * sx)], axis=1))
+    top_candidates = range(round(3 * sy), round(10 * sy))
+    bottom_candidates = range(round(19 * sy), round(28 * sy))
+    top_edge = max(top_candidates, key=lambda y: vertical[y])
+    bottom_edge = min(bottom_candidates, key=lambda y: vertical[y])
+    top, bottom = top_edge + 1, bottom_edge + 1
+    if vertical[top_edge] < 12 or vertical[bottom_edge] > -12 or bottom - top < 10 * sy:
+        return field("ambiguous", reason="secondary meter perimeter is not resolved")
+    band = max(1, round(2 * sy))
+    perimeter = np.median(np.concatenate((level[top:top + band], level[bottom - band:bottom])), axis=0)
+    # A two-pixel edge contrast is less sensitive to the subpixel placement of
+    # an outline than an adjacent-pixel derivative.
+    edge = np.zeros(len(perimeter))
+    edge[2:-1] = (perimeter[2:-1] + perimeter[3:] - perimeter[:-3] - perimeter[1:-2]) / 2
+    best = None
+    for origin in np.arange(4, 11, .5):
+        for pitch in np.arange(32, 35.01, .25):
+            cells = [(round((origin + i * pitch) * sx),
+                      round((origin + i * pitch + pitch * 19 / 21) * sx)) for i in range(6)]
+            if cells[0][0] < 1 or cells[-1][1] >= len(edge):
+                continue
+            contrasts = [v for start, end in cells for v in (edge[start], -edge[end])]
+            score = float(np.mean(np.clip(contrasts, -60, 60)))
+            if best is None or score > best[0]:
+                best = (score, cells, contrasts)
+    # Three complete perimeter pairs establish the shared origin and pitch;
+    # very dark outlines in other cells must not count as illuminated bars.
+    supported_cells = sum(a > 5 and b > 5 for a, b in zip(best[2][::2], best[2][1::2])) if best else 0
+    if best is None or best[0] < 12 or supported_cells < 3:
+        return field("ambiguous", reason="secondary meter six-cell outline is not resolved",
+                     perimeter_score=round(best[0], 2) if best else None,
+                     perimeter_edges=[round(v, 2) for v in best[2]] if best else [])
+    inset_x, inset_y = max(2, round(4 * sx)), max(2, round(4 * sy))
+    states, measurements = [], []
+    for start, end in best[1]:
+        interior = level[top + inset_y:bottom - inset_y, start + inset_x:end - inset_x]
+        if min(interior.shape) < 2:
+            return field("ambiguous", reason="secondary meter interior is too small")
+        # Keep local partial drawing visible rather than accepting its average.
+        quadrants = [part for half in np.array_split(interior, 2, axis=0)
+                     for part in np.array_split(half, 2, axis=1)]
+        readings = [_fill(part) for part in quadrants]
+        state = readings[0][0] if len({s for s, _ in readings}) == 1 else "partial"
+        # Percentiles can hide a narrow but coherent partial stroke. Three
+        # neighboring contrary pixels in either direction retain that evidence.
+        contrary = interior >= 45 if state == "off" else interior <= 32
+        run = min(3, *contrary.shape)
+        if state in ("on", "off") and (
+                any(np.any(np.all(contrary[y:y + run], axis=0)) for y in range(contrary.shape[0] - run + 1)) or
+                any(np.any(np.all(contrary[:, x:x + run], axis=1)) for x in range(contrary.shape[1] - run + 1))):
+            state = "partial"
+        # Sample meter padding beyond the outline's immediate camera fringe.
+        background = np.concatenate((level[max(0, top - 2 * band):top - band, start + inset_x:end - inset_x].ravel(),
+                                     level[bottom + band:bottom + 2 * band, start + inset_x:end - inset_x].ravel()))
+        contrast = float(np.median(interior) - np.median(background))
+        # Eight levels is the declared local-contrast detection floor. This
+        # measurement does not distinguish arbitrarily faint ink from noise.
+        if state == "off" and contrast >= 8:
+            state = "partial"
+        states.append(state)
+        measurements.append({"state": state, "quadrants": [d for _, d in readings],
+                             "background_contrast": round(contrast, 2),
+                             "interior": [start + inset_x, top + inset_y, end - inset_x, bottom - inset_y]})
+    diagnostics = {"bars": measurements, "perimeter_score": round(best[0], 2),
+                   "grid": {"top": top, "bottom": bottom, "cells": best[1]}}
+    if "partial" in states or states != sorted(states, key=lambda v: v != "on"):
+        return field("ambiguous", reason="partial, faint or noncontiguous secondary strength bars", **diagnostics)
+    return field("readable", states.count("on"), **diagnostics)
+
+
 def _arrows(pixels):
     # Disjoint interiors distinguish a filled arrow from inactive outlines.
     boxes = {"front": ((1064, 225, 1084, 247), (1035, 274, 1055, 284), (1100, 274, 1118, 284)),
@@ -221,8 +301,7 @@ def _secondary(pixels):
         if float(np.percentile(region, 99)) < 25:
             continue
         # Card interiors retain their individual row association throughout.
-        bars = _bars(pixels, [(left + 19 + i * 33, 430, left + 38 + i * 33, 439)
-                               for i in range(6)])
+        bars = _card_bars(pixels, left)
         arrow_rgb = pixels.crop((left + 17, 385, left + 41, 407))
         # White/gray symbol ink, rather than the colored card background.
         arrow = arrow_rgb.min(axis=2).astype(float)
@@ -240,7 +319,7 @@ def _secondary(pixels):
         text_visible = float(np.percentile(text.max(axis=2), 90)) >= 45
         cards.append({"slot": slot, "band": None, "frequency": None, "direction": direction,
                       "bars": bars.get("value"), "text_visible": text_visible,
-                      "bars_state": bars["state"]})
+                      "bars_state": bars["state"], "bar_reading": bars})
         text_crops.append(text)
     if not cards:
         return field("readable", [])

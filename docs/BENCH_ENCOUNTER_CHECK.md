@@ -8,8 +8,8 @@ beside one another. The normal camera bench invokes it after recording. The
 standalone analyzer operates on retained recordings without flashing or starting
 a capture.
 
-This is a calibrated, sampled instrument for the current registered display
-layout. It is useful for finding and inspecting input/display disagreements;
+This is a calibrated instrument for the current registered display layout, with
+sampled checks and bounded consecutive-frame review. It is useful for finding and inspecting input/display disagreements;
 it is not a general vision model or a whole-firmware certification.
 
 ## Normal bench use
@@ -54,6 +54,13 @@ uses the local macOS Apple Vision framework and Swift compiler. Other platforms,
 or execution environments that block Vision, retain unknown card text. There is
 no remote inference or model download. The geometric readers continue to work.
 
+Reader version 3 locates the six secondary meter cells from their shared perimeter
+before counting filled interiors. It excludes outlined edges and their camera
+fringe, checks interior quadrants and nearby background, and refuses partial,
+faint or noncontiguous fills. Registration never scores the expected bar count.
+The main meter, frequency reader and text OCR are unchanged. This improves the
+demonstrated secondary-bar limitation; it does not qualify every display field.
+
 ```sh
 python3 scripts/bench/encounter_check.py \
   --run-dir path/to/run/replay \
@@ -76,19 +83,44 @@ not become independent trials.
 Limit the scope with repeated `--range START:END` arguments; offsets are seconds
 from the first replay request. `--cadence` controls the regular sample interval.
 
-For a closer look at a transition, use an explicit observation window:
+For a closer look at a transition, select every recorded frame in an explicit
+observation window:
 
 ```sh
 python3 scripts/bench/encounter_check.py \
   --run-dir path/to/run/replay \
-  --transition-window 32.95:33.50 --cadence 0.005 \
+  --transition-window 32.95:33.50 --all-frames \
   --out path/to/new-handoff-detail
 ```
 
-This requests approximately one observation per 200 fps source frame. Actual
-source timestamps, duplicates, unavailable requests and observed gaps remain
-visible. A transition window reports current, previous, differing and unreadable
-content; it does not turn host acceptance into a device response deadline.
+`--all-frames` selects each original video frame whose source capture timestamp
+falls inside the declared range, including its start and excluding its end. It
+uses source indices and timestamps directly: a nominal 5 ms cadence can miss
+closely spaced frames or select another frame twice. Overlapping ranges still
+select each source image once. At least one explicit `--range` or
+`--transition-window` is required, and selection stops before reading pixels if
+it would exceed 5,000 frames. `--cadence` does not apply in this mode. Default
+sampling remains unchanged.
+
+The report shows available, selected and read frame counts; actual first and
+last timestamps; unrecorded source drops; and the largest gap, including range
+boundaries. Complete recorded-frame coverage means every available image in that
+range received a reader attempt, including images whose fields remain unreadable.
+It does not recover dropped frames or establish what happened between exposures.
+
+Use the frame slider or arrow buttons to step through original images. Named
+changes jump to the first image with that literal reading. Per-field spans group
+only adjacent source frames with identical states, values and refusal reasons.
+Every one-frame difference or unreadable state remains in the history; gaps break
+spans. There is no smoothing, majority vote, value carry-forward or repair using
+the expected input. These timestamps describe first and last observed readings,
+not a qualified response latency.
+
+A transition window reports current, previous, differing and unreadable content;
+it does not turn host acceptance into a device response deadline. Using
+`--all-frames --range` treats every selected image as a held observation; use
+`--transition-window` for an observational
+handoff review without a response deadline.
 
 ## Interpret the result
 

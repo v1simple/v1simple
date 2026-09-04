@@ -69,9 +69,11 @@ def card(im, left, direction, count):
         draw.polygon(((left + 29, 385), (left + 17, 406), (left + 41, 406)), fill="white")
     else:
         draw.polygon(((left + 17, 385), (left + 41, 385), (left + 29, 407)), fill="white")
-    draw.rectangle((left + 15, 426, left + 215, 443), fill=(10, 10, 10))
-    for i in range(count):
-        draw.rectangle((left + 16 + 33 * i, 426, left + 44 + 33 * i, 443), fill=(90, 240, 30))
+    draw.rectangle((left + 12, 419, left + 218, 448), fill=(10, 10, 10))
+    for i in range(6):
+        rect = (left + 16 + 33 * i, 426, left + 44 + 33 * i, 443)
+        draw.rectangle(rect, fill=(90, 240, 30) if i < count else None,
+                       outline=(35, 85, 25), width=2)
 
 
 def ocr_result(*texts):
@@ -189,6 +191,66 @@ class EncounterReaderTests(unittest.TestCase):
             self.assertEqual(result["state"], "unreadable", result)
             self.assertIsNone(result["value"])
             self.assertEqual(len(result["partial_cards"]), 1)
+
+    def test_secondary_filled_and_outlined_shapes_survive_small_translations(self):
+        # Complete rectangles, drawn independently of the reader's fit or crops.
+        for count in range(7):
+            for dx, dy in ((0, 0), (-2, -2), (2, 2)):
+                with self.subTest(count=count, shift=(dx, dy)):
+                    im = display()
+                    card(im, 640, "rear", count)
+                    meter = im.crop((650, 417, 860, 450))
+                    ImageDraw.Draw(im).rectangle((650, 417, 860, 450), fill=(10, 10, 10))
+                    im.paste(meter, (650 + dx, 417 + dy))
+                    result = reader._card_bars(reader.Pixels(im.tobytes(), WIDTH, HEIGHT, REGISTRATION), 640)
+                    self.assertEqual((result["state"], result["value"]), ("readable", count), result)
+
+    def test_secondary_partial_faint_and_noncontiguous_fills_refuse(self):
+        for kind in ("partial_left", "partial_right", "faint", "noncontiguous"):
+            with self.subTest(kind=kind):
+                im = display()
+                card(im, 640, "rear", 2)
+                draw = ImageDraw.Draw(im)
+                left = 640 + 16 + 3 * 33
+                if kind == "partial_left":
+                    draw.rectangle((left + 4, 430, left + 10, 435), fill=(220, 100, 10))
+                elif kind == "partial_right":
+                    draw.rectangle((left + 19, 434, left + 24, 439), fill=(220, 100, 10))
+                elif kind == "faint":
+                    draw.rectangle((left + 2, 428, left + 26, 441), fill=(25, 14, 10))
+                else:
+                    draw.rectangle((left, 426, left + 28, 443), fill=(90, 240, 30))
+                result = reader._card_bars(reader.Pixels(im.tobytes(), WIDTH, HEIGHT, REGISTRATION), 640)
+                self.assertEqual(result["state"], "ambiguous", result)
+                self.assertIsNone(result["value"])
+
+    def test_secondary_uniform_muted_fill_and_unresolved_perimeter(self):
+        im = display()
+        card(im, 393, "side", 0)
+        draw = ImageDraw.Draw(im)
+        for i in range(4):
+            draw.rectangle((409 + i * 33, 426, 437 + i * 33, 443), fill=(90, 90, 90))
+        result = reader._card_bars(reader.Pixels(im.tobytes(), WIDTH, HEIGHT, REGISTRATION), 393)
+        self.assertEqual((result["state"], result["value"]), ("readable", 4), result)
+        draw.rectangle((402, 419, 612, 449), fill=(90, 90, 90))
+        result = reader._card_bars(reader.Pixels(im.tobytes(), WIDTH, HEIGHT, REGISTRATION), 393)
+        self.assertEqual(result["state"], "ambiguous", result)
+
+    def test_secondary_narrow_partial_stroke_in_next_bar_is_not_absence(self):
+        for kind in ("vertical", "horizontal", "faint"):
+            with self.subTest(kind=kind):
+                im = display()
+                card(im, 640, "rear", 2)
+                draw = ImageDraw.Draw(im)
+                if kind == "vertical":
+                    draw.rectangle((726, 430, 726, 439), fill=(220, 100, 10))
+                elif kind == "horizontal":
+                    draw.rectangle((726, 434, 745, 434), fill=(220, 100, 10))
+                else:
+                    draw.rectangle((724, 428, 748, 441), fill=(18, 10, 10))
+                result = reader._card_bars(reader.Pixels(im.tobytes(), WIDTH, HEIGHT, REGISTRATION), 640)
+                self.assertEqual(result["state"], "ambiguous", result)
+                self.assertIsNone(result["value"])
 
     def test_expected_values_cannot_be_supplied(self):
         with self.assertRaises(TypeError):

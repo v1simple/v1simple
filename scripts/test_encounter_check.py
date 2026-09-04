@@ -173,6 +173,64 @@ class EncounterCheckTests(unittest.TestCase):
             with self.subTest(ranges=ranges,cadence=cadence), self.assertRaises(ValueError):
                 check.select_samples(stimulus, rows, ranges, cadence)
 
+    def test_all_frames_uses_source_indices_with_irregular_timing_and_exclusive_end(self):
+        stimulus, _ = inputs()
+        rows = [dict(host_capture_ns=1_000_000_000 + offset, duration_ns=5_000_000, frame_seq=i + 1)
+                for i, offset in enumerate([0, 2_000_000, 4_900_000, 10_500_000, 11_000_000, 20_000_000])]
+        # The two closely spaced frames cannot both be selected by a 5 ms grid.
+        selected = check.select_all_frames(stimulus, rows, [(0, .02), (.002, .011)])
+        self.assertEqual([s["video_frame_index"] for s in selected], [0, 1, 2, 3, 4])
+        self.assertEqual([s["capture_ns"] for s in selected], [r["host_capture_ns"] for r in rows[:5]])
+        self.assertEqual(len({s["source_frame_seq"] for s in selected}), 5)
+        self.assertTrue(all(s["target_capture_ns"] == s["capture_ns"] for s in selected))
+        for ranges in ([], [(0, .026)], [(float("nan"), .02)]):
+            with self.assertRaises(ValueError):
+                check.select_all_frames(stimulus, rows, ranges)
+        with patch.object(check, "MAX_SAMPLES", 4), self.assertRaises(ValueError):
+            check.select_all_frames(stimulus, rows, [(0, .02)])
+
+    def test_literal_spans_retain_one_frame_wrong_state_unknown_and_source_gaps(self):
+        stimulus, rows = inputs()
+        samples = check.select_all_frames(stimulus, rows, [(0, .07)])
+        for sample, value in zip(samples, [2, 2, 8, 2, None, 2, 2]):
+            sample["observed"] = {"fields": {f: dict(state="read", value=0) for f in check.FIELDS}}
+            sample["observed"]["fields"]["main_bars"] = dict(
+                state="unreadable" if value is None else "read", value=value)
+        spans, changes = check.observation_history(samples)
+        bars = spans["main_bars"]
+        self.assertEqual([span["observed"]["value"] for span in bars], [2, 8, 2, None, 2])
+        self.assertEqual([span["frame_count"] for span in bars], [2, 1, 1, 1, 2])
+        self.assertEqual(bars[1]["first"], bars[1]["last"])
+        self.assertEqual([c["video_frame_index"] for c in changes], [0, 2, 3, 4, 5])
+        # Identical readings either side of a dropped source frame must not form one span.
+        samples[-1]["source_frame_seq"] += 1
+        spans, changes = check.observation_history(samples)
+        self.assertEqual([span["frame_count"] for span in spans["main_bars"]][-2:], [1, 1])
+        self.assertFalse(changes[-1]["consecutive_with_previous"])
+        self.assertEqual(changes[-1]["fields"], {})
+
+    def test_all_frame_coverage_separates_source_drops_and_unfinished_reader(self):
+        stimulus, rows = inputs()
+        samples = check.select_all_frames(stimulus, rows, [(0, .035)])
+        source_records = [{**r, "status": "written"} for r in rows]
+        source_records.append(dict(status="capture_drop", host_capture_ns=1_015_000_000))
+        data = dict(stimulus=stimulus, rows=rows, source_records=source_records)
+        for sample in samples:
+            sample["observed"] = check.unresolved("pixel control")
+        region = check.observation_coverage(samples, [(0, .035)], data, True)[0]
+        self.assertTrue(region["complete_recorded_frame_coverage"])
+        self.assertEqual(region["available_recorded_frames"], 4)
+        self.assertEqual(region["unrecorded_source_frames"], 1)
+        self.assertEqual(region["first_selected_offset_seconds"], 0)
+        self.assertEqual(region["last_selected_offset_seconds"], .03)
+        self.assertAlmostEqual(region["maximum_capture_gap_seconds"], .01)
+        del samples[-1]["observed"]
+        region = check.observation_coverage(samples, [(0, .035)], data, True)[0]
+        self.assertFalse(region["complete_recorded_frame_coverage"])
+        self.assertEqual(region["unread_recorded_source_frames"], [4])
+        self.assertEqual(region["last_observed_offset_seconds"], .02)
+        self.assertAlmostEqual(region["maximum_unobserved_gap_seconds"], .015)
+
     def test_mismatch_survives_unknowns_and_joint_conflict_survives_field_matches(self):
         a = dict(role="held", comparison=comparison())
         b = dict(role="held", comparison=comparison("UNRESOLVED"))
@@ -241,6 +299,42 @@ class EncounterCheckTests(unittest.TestCase):
             if shutil.which("node"):
                 script = re.search(r"<script>(.*?)</script>",(out/"report.html").read_text(),re.S).group(1)
                 subprocess.run([shutil.which("node"),"--check"],input=script,text=True,check=True,capture_output=True)
+
+    def test_all_frame_analysis_freezes_complete_selection_and_keeps_transition_observational(self):
+        stimulus, rows = inputs()
+        data = dict(stimulus=stimulus, rows=rows, identity={}, timing={}, timeline={},
+                    video=Path("unused.mov"), width=2, height=2, registration={})
+        seen_roles = []
+        with tempfile.TemporaryDirectory() as temporary:
+            out = Path(temporary)
+            def stream(_video, indices, _width, _height):
+                frozen = json.loads((out / "selection.json").read_text())
+                self.assertEqual(frozen["selection_mode"], "all_recorded_frames")
+                self.assertIsNone(frozen["cadence_seconds"])
+                self.assertEqual(indices, [0, 1, 2, 3])
+                for index in indices:
+                    yield index, bytes(12)
+            def compare(_requirement, _reading, role):
+                seen_roles.append(role)
+                return comparison("TRANSITION_DIFFERENCE")
+            module = types.SimpleNamespace(observe=lambda *args: check.unresolved("control"))
+            with patch.object(check, "load_run", return_value=data), patch.object(check, "stream_frames", side_effect=stream), \
+                 patch.object(check, "encounter_expectation_at", return_value={}), \
+                 patch.object(check, "compare_sample", side_effect=compare), \
+                 patch.dict(sys.modules, {"encounter_reader": module}):
+                result = check.analyze(Path("unused"), out, [(0, .04)], 2, transition_only=True, all_frames=True)
+            self.assertEqual(seen_roles, ["transition"] * 4)
+            self.assertEqual(result["result"], "INCONCLUSIVE")
+            self.assertEqual(result["response_deadline"], "not_evaluated")
+            self.assertTrue(result["coverage"]["regions"][0]["complete_recorded_frame_coverage"])
+            self.assertEqual(result["counts"]["required"], 28)
+            self.assertEqual(result["observed_state_spans"]["main_bars"][0]["frame_count"], 4)
+            page = (out / "report.html").read_text()
+            for text in ("Observed changes", "Per-field observed spans", 'id="scrub"'):
+                self.assertIn(text, page)
+            if shutil.which("node"):
+                script = re.search(r"<script>(.*?)</script>", page, re.S).group(1)
+                subprocess.run([shutil.which("node"), "--check"], input=script, text=True, check=True, capture_output=True)
 
     @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg unavailable")
     def test_many_selected_frames_decode_without_flat_expression_depth_failure(self):

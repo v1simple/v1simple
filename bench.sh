@@ -418,11 +418,12 @@ run_encounter_check() {
     ENCOUNTER_REASON="analysis interrupted before the encounter check"
     return
   fi
-  printf '[bench] sampled encounter checks: analyzing replay camera evidence...\n'
+  printf '[bench] sampled encounter checks and consecutive transitions: analyzing replay camera evidence...\n'
   python3 "$ROOT_DIR/scripts/bench/encounter_check.py" \
     --run-dir "$replay_dir" \
+    --inspect-transitions \
     --out "$encounter_dir" \
-    >> "$RUN_LOG" 2>&1 || encounter_status=$?
+    2>&1 | tee -a "$RUN_LOG" || encounter_status=$?
   IFS=$'\t' read -r ENCOUNTER_RESULT tally required requests selected decoded gap first_id reason \
     < <(read_encounter_result "$encounter_dir/result.json" "$encounter_status" 2>/dev/null)
   case "$ENCOUNTER_RESULT" in
@@ -443,17 +444,6 @@ run_encounter_check() {
     printf '[bench] encounter report unavailable; see %s\n' "$RUN_LOG"
   fi
   ENCOUNTER_PRINTED=1
-}
-
-print_visual_summary() {
-  local visual_status=0
-  printf '[bench] visual timing: analyzing replay camera evidence...\n'
-  python3 "$ROOT_DIR/scripts/bench/visual_run_check.py" "$RUN_DIR" \
-    2>> "$RUN_LOG" || visual_status=$?
-  printf 'visual timing: exit=%s\n' "$visual_status" >> "$RUN_LOG"
-  if [[ "$visual_status" -ne 0 ]]; then
-    printf '[bench] visual timing unavailable; collection verdict is unchanged (see bench.log)\n'
-  fi
 }
 
 V1REPLAY_EXECUTABLE="$ROOT_DIR/tools/v1replay/.build/v1replay"
@@ -517,7 +507,6 @@ for suite in "${SUITES[@]}"; do
     if [[ "$suite" == "replay" && "$CAMERA_ENABLED" -eq 1 ]]; then
       run_counter_check "$step_dir"
       run_encounter_check "$step_dir"
-      [[ "$SIGNALLED" -eq 1 ]] || print_visual_summary
     fi
     continue
   fi

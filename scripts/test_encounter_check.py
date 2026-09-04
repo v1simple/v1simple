@@ -209,6 +209,41 @@ class EncounterCheckTests(unittest.TestCase):
         self.assertFalse(changes[-1]["consecutive_with_previous"])
         self.assertEqual(changes[-1]["fields"], {})
 
+    def test_transition_review_keeps_held_requirements_and_every_input_window_frame(self):
+        stimulus, rows = inputs()
+        held = check.select_samples(stimulus, rows, [(0, 9)], 2)
+        samples, windows = check.select_transition_review(stimulus, rows, [(0, 9)], 2)
+        self.assertEqual(windows, [(0, .5), (2.95, 3.5)])
+        by_target = {s["target_capture_ns"]: s for s in samples}
+        for original in held:
+            sample = by_target[original["target_capture_ns"]]
+            self.assertEqual(sample["role"], original["role"])
+            self.assertEqual(sample.get("video_frame_index"), original.get("video_frame_index"))
+        indices = {s["video_frame_index"] for s in samples if "video_frame_index" in s}
+        self.assertTrue(set(range(50)) <= indices)
+        self.assertTrue(set(range(295, 350)) <= indices)
+        self.assertEqual(len({s["frame_id"] for s in samples}), len(samples))
+
+    def test_transition_review_does_not_drop_unavailable_required_sample(self):
+        stimulus, rows = inputs()
+        rows = [r for r in rows if not 1_300_000_000 < r["host_capture_ns"] < 1_700_000_000]
+        samples, _ = check.select_transition_review(stimulus, rows, [(0, 9)], 2)
+        missing = next(s for s in samples if s["requested_offset_seconds"] == .5)
+        self.assertIn("selection_error", missing)
+        self.assertNotIn("video_frame_index", missing)
+
+    def test_compact_review_retains_partial_observations_without_changing_measurements(self):
+        reading = {"state": "ambiguous", "value": None, "reason": "side faint",
+                   "visible_directions": ["front"], "direction_states": {"side": {"state": "faint"}},
+                   "arrows": {"private_measurement": [1, 2, 3]}}
+        result = {"samples": [{"comparison": comparison(), "observed": {"fields": {"main_arrows": reading}}}]}
+        payload = check.review_payload(result)
+        retained = payload["samples"][0]["observed"]["fields"]["main_arrows"]
+        self.assertEqual(retained["direction_states"], reading["direction_states"])
+        self.assertIsNone(retained["value"])
+        self.assertNotIn("arrows", retained)
+        self.assertIn("arrows", result["samples"][0]["observed"]["fields"]["main_arrows"])
+
     def test_all_frame_coverage_separates_source_drops_and_unfinished_reader(self):
         stimulus, rows = inputs()
         samples = check.select_all_frames(stimulus, rows, [(0, .035)])

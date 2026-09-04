@@ -260,5 +260,146 @@ class EncounterReaderTests(unittest.TestCase):
             self.assertTrue(all(result[f]["state"] == "unreadable" for f in reader.FIELDS))
 
 
+class FrequencyContrastControls(unittest.TestCase):
+    def frequency(self, image):
+        return reader._frequency(reader.Pixels(image.tobytes(), *image.size, REGISTRATION))
+
+    def test_spatial_brightness_variation_with_one_saturated_stroke(self):
+        image = display("68.902")
+        pixels = np.array(image)
+        region = pixels[250:363, 445:840].astype(float)
+        gain = np.linspace(.92, 1.06, region.shape[1])[None, :, None]
+        pixels[250:363, 445:840] = np.minimum(region * gain, 255).astype(np.uint8)
+        image = Image.fromarray(pixels)
+        ImageDraw.Draw(image).rectangle((769, 255, 828, 273), fill=(255, 116, 12))
+        observed = self.frequency(image)
+        self.assertEqual((observed["state"], observed["value"]), ("readable", "68.902"), observed)
+
+    def test_bright_lingering_stroke_among_dim_new_strokes_refuses(self):
+        pixels = np.array(display("34.700"))
+        pixels[250:363, 445:840] = (pixels[250:363, 445:840].astype(float) * .795).astype(np.uint8)
+        image = Image.fromarray(pixels)
+        ImageDraw.Draw(image).rectangle((693, 300, 748, 314), fill=ORANGE)
+        observed = self.frequency(image)
+        self.assertEqual((observed["state"], observed["value"]), ("ambiguous", None), observed)
+        self.assertIn("inconsistent illuminated", observed["reason"])
+
+    def test_dim_lingering_stroke_with_same_color_ratio_refuses(self):
+        image = display("34.700")
+        ImageDraw.Draw(image).rectangle((693, 300, 748, 314), fill=tuple(round(c * .795) for c in ORANGE))
+        observed = self.frequency(image)
+        self.assertEqual((observed["state"], observed["value"]), ("ambiguous", None), observed)
+
+    def test_all_numeric_glyphs_in_each_cell(self):
+        for position in range(5):
+            for digit in "0123456789":
+                digits = list("01234")
+                digits[position] = digit
+                frequency = "".join(digits[:2]) + "." + "".join(digits[2:])
+                observed = self.frequency(display(frequency))
+                self.assertEqual((observed["state"], observed["value"]), ("readable", frequency), observed)
+
+
+class MainArrowReaderTests(unittest.TestCase):
+    def read(self, im):
+        return reader._arrows(reader.Pixels(im.tobytes(), *im.size, REGISTRATION))
+
+    def test_all_direction_combinations_and_neutral_filled_arrows(self):
+        for mask in range(8):
+            for color in (ORANGE, (140, 140, 140)):
+                im = display()
+                wanted = []
+                for n, direction in enumerate(('front', 'side', 'rear')):
+                    if mask & (1 << n):
+                        arrow(im, direction, color)
+                        wanted.append(direction)
+                observed = self.read(im)
+                self.assertEqual((observed['state'], observed['value']), ('readable', wanted), observed)
+                self.assertEqual(observed['visible_directions'], wanted)
+                self.assertEqual(set(observed['direction_states']), {'front', 'side', 'rear'})
+
+    def test_changed_direction_follows_image_without_expectation(self):
+        for direction in ('front', 'side', 'rear'):
+            im = display()
+            arrow(im, direction)
+            self.assertEqual(self.read(im)['value'], [direction])
+
+    def test_wrong_color_is_measured_without_a_color_correctness_claim(self):
+        for color, name in (((20, 180, 20), 'green'), ((10, 20, 180), 'blue'),
+                            ((180, 30, 10), 'warm'), ((150, 150, 150), 'neutral')):
+            im = display()
+            arrow(im, 'front', color)
+            observed = self.read(im)
+            self.assertEqual(observed['value'], ['front'])
+            self.assertEqual(observed['direction_states']['front']['color'], name)
+            self.assertEqual(observed['direction_states']['front']['rgb_median'], list(color))
+            self.assertIn('no color correctness contract', observed['color_qualification'])
+
+    def test_faint_fill_never_becomes_absence(self):
+        for direction in ('front', 'side', 'rear'):
+            for color in ((25, 10, 10), (10, 25, 10), (10, 10, 25)):
+                im = display()
+                arrow(im, direction, color)
+                observed = self.read(im)
+                self.assertEqual((observed['state'], observed['value']), ('ambiguous', None), observed)
+                self.assertEqual(observed['direction_states'][direction]['state'], 'faint')
+
+    def test_faint_side_does_not_hide_filled_front_or_unlit_rear(self):
+        im = display()
+        arrow(im, 'front')
+        arrow(im, 'side', (25, 10, 10))
+        observed = self.read(im)
+        self.assertEqual(observed['state'], 'ambiguous')
+        self.assertEqual(observed['visible_directions'], ['front'])
+        self.assertEqual({k: v['state'] for k, v in observed['direction_states'].items()},
+                         {'front': 'filled', 'side': 'faint', 'rear': 'unlit'})
+
+    def test_partial_shape_outside_old_probes_refuses(self):
+        im = display()
+        arrow(im, 'front')
+        # Thin missing fill between the original probes; must remain visible.
+        ImageDraw.Draw(im).rectangle((1072, 250, 1072, 267), fill='black')
+        observed = self.read(im)
+        self.assertEqual((observed['state'], observed['value']), ('ambiguous', None), observed)
+        self.assertEqual(observed['direction_states']['front']['state'], 'partial')
+
+    def test_narrow_bright_partial_shape_is_not_absence(self):
+        im = display()
+        ImageDraw.Draw(im).rectangle((1072, 250, 1072, 267), fill=ORANGE)
+        observed = self.read(im)
+        self.assertEqual((observed['state'], observed['value']), ('ambiguous', None), observed)
+
+    def test_old_probe_rectangles_cannot_masquerade_as_whole_arrow(self):
+        im = display()
+        draw = ImageDraw.Draw(im)
+        for box in ((1064, 225, 1084, 247), (1035, 274, 1055, 284), (1100, 274, 1118, 284)):
+            draw.rectangle(box, fill=ORANGE)
+        observed = self.read(im)
+        self.assertEqual((observed['state'], observed['value']), ('ambiguous', None), observed)
+
+    def test_dim_resting_and_outlined_shapes_are_not_active(self):
+        for outlined in (False, True):
+            im = display()
+            if outlined:
+                ImageDraw.Draw(im).polygon(((987, 289), (1077, 187), (1165, 289),
+                    (1123, 289), (1123, 301), (1034, 301), (1034, 289)), outline=(120, 120, 120), width=2)
+            else:
+                for direction in ('front', 'side', 'rear'):
+                    arrow(im, direction, (17, 17, 17))
+            observed = self.read(im)
+            self.assertEqual((observed['state'], observed['value']), ('readable', []), observed)
+
+    def test_sequence_has_no_smoothing_or_carried_direction(self):
+        sequence = []
+        for color in (ORANGE, (25, 10, 10), None, ORANGE):
+            im = display()
+            if color is not None:
+                arrow(im, 'front', color)
+            observed = self.read(im)
+            sequence.append((observed['state'], observed['value']))
+        self.assertEqual(sequence, [('readable', ['front']), ('ambiguous', None),
+                                    ('readable', []), ('readable', ['front'])])
+
+
 if __name__ == "__main__":
     unittest.main()

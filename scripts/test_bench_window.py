@@ -879,10 +879,13 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
             fi
             if [[ "${{1:-}}" == */scripts/bench/encounter_check.py ]]; then
               args=("$@")
+              transition_review=0
               for ((index=0; index<${{#args[@]}}; index++)); do
                 if [[ "${{args[index]}}" == "--out" ]]; then out="${{args[index+1]}}"; fi
                 if [[ "${{args[index]}}" == "--run-dir" ]]; then run="${{args[index+1]}}"; fi
+                if [[ "${{args[index]}}" == "--inspect-transitions" ]]; then transition_review=1; fi
               done
+              [[ "$transition_review" == 1 ]] || exit 9
               [[ -e "$run/window_result.json" && ! -e "$out" ]] || exit 9
               mkdir -p "$out"
               if [[ "$FAKE_ENCOUNTER_WRITE" == 1 ]]; then
@@ -959,9 +962,9 @@ def test_bench_cli_propagates_encounter_verdicts_with_fixed_precedence() -> None
 
     process, counter_calls, encounter_calls, visual_calls = run_bench_cli_fixture("PASS", "FAIL", visual_exit=2, run_all=True)
     assert_true(process.returncode == 0, process.stdout)
-    assert_true((counter_calls, encounter_calls, visual_calls) == (1, 1, 1), process.stdout)
+    assert_true((counter_calls, encounter_calls, visual_calls) == (1, 1, 0), process.stdout)
     assert_true("[bench] sampled live counter: FAIL |" in process.stdout, process.stdout)
-    assert_true("visual timing unavailable" in process.stdout, process.stdout)
+    assert_true("visual timing" not in process.stdout, process.stdout)
 
 
 def test_bench_cli_preserves_non_camera_and_hard_collection_results() -> None:

@@ -9,7 +9,8 @@ standalone analyzer operates on retained recordings without flashing or starting
 a capture.
 
 This is a calibrated instrument for the current registered display layout, with
-sampled checks and bounded consecutive-frame review. It is useful for finding and inspecting input/display disagreements;
+sampled checks and bounded consecutive-frame review. It is useful for finding
+and inspecting input/display disagreements;
 it is not a general vision model or a whole-firmware certification.
 
 ## Normal bench use
@@ -32,7 +33,9 @@ camera integrity, the narrow counter result and `sampled encounter checks`.
 It prints field-check counts, original-frame coverage, the largest unobserved
 gap, and a link into `replay/encounter-check/report.html` at the first sample
 needing attention. Original images, input expectations, pixel observations and
-unknown reasons remain available there.
+unknown reasons remain available there. The normal command also selects every
+recorded image around input changes and includes event summaries in this report.
+Reader progress is printed during this denser analysis and retained in the run log.
 
 | Bench outcome | Exit |
 | --- | ---: |
@@ -44,8 +47,10 @@ unknown reasons remain available there.
 
 A command without `--camera` retains its collection behavior and prints content
 `NOT_EVALUATED`. The counter check retains its own result and report; it cannot
-raise the encounter result. The optional image-change timing summary remains
-separate and does not establish the latency of correct output.
+raise the encounter result. The former image-change timing summary is no longer
+invoked automatically. Its standalone command and historical ledger retain their
+original meaning; they do not qualify the latency of correct content. Current
+event timing uses the hash-verified camera/input path described below.
 
 ## Recheck a recording
 
@@ -54,12 +59,21 @@ uses the local macOS Apple Vision framework and Swift compiler. Other platforms,
 or execution environments that block Vision, retain unknown card text. There is
 no remote inference or model download. The geometric readers continue to work.
 
-Reader version 3 locates the six secondary meter cells from their shared perimeter
+Reader version 4 tolerates ordinary variation in frequency-segment brightness
+without using a single saturated stroke as the reference for every digit.
+Both brighter and darker lingering strokes can still make a frequency ambiguous.
+Main arrows now inspect inset shape interiors as well as the original probes,
+and retain each direction's filled, partial, faint or unlit observation. A faint
+direction does not hide a clearly filled direction beside it. Color is reported
+as an observation; the checker does not establish color correctness.
+
+The secondary reader locates the six meter cells from their shared perimeter
 before counting filled interiors. It excludes outlined edges and their camera
 fringe, checks interior quadrants and nearby background, and refuses partial,
 faint or noncontiguous fills. Registration never scores the expected bar count.
-The main meter, frequency reader and text OCR are unchanged. This improves the
-demonstrated secondary-bar limitation; it does not qualify every display field.
+The faint-fill guard has an eight-intensity-level local-contrast floor; it does
+not distinguish arbitrarily faint ink from noise. Main strength and text OCR
+retain their established methods.
 
 ```sh
 python3 scripts/bench/encounter_check.py \
@@ -82,6 +96,23 @@ not become independent trials.
 
 Limit the scope with repeated `--range START:END` arguments; offsets are seconds
 from the first replay request. `--cadence` controls the regular sample interval.
+
+To inspect transitions automatically, use the same mode as the normal bench:
+
+```sh
+python3 scripts/bench/encounter_check.py \
+  --run-dir path/to/run/replay --inspect-transitions \
+  --out path/to/new-encounter-review
+```
+
+This preserves every default held-sample requirement and adds each recorded
+frame from 50 ms before through 500 ms after every change in authored packet
+bytes. Windows are clipped to the requested range and next input change. The
+initial input also receives a window. These bounds are inspection coverage,
+never response deadlines. Selection is frozen before decoding; unreadable
+frames do not trigger a search for a more convenient answer. The command refuses
+more than 20,000 observations before reading pixels; `--range` bounds larger work.
+Coverage outside these windows remains sampled.
 
 For a closer look at a transition, select every recorded frame in an explicit
 observation window:
@@ -108,7 +139,9 @@ boundaries. Complete recorded-frame coverage means every available image in that
 range received a reader attempt, including images whose fields remain unreadable.
 It does not recover dropped frames or establish what happened between exposures.
 
-Use the frame slider or arrow buttons to step through original images. Named
+Use the frame slider or arrow buttons to step through original images. Slowed
+playback uses recorded timestamp spacing and stops at an unobserved source gap;
+it does not interpolate frames. Named
 changes jump to the first image with that literal reading. Per-field spans group
 only adjacent source frames with identical states, values and refusal reasons.
 Every one-frame difference or unreadable state remains in the history; gaps break
@@ -121,6 +154,32 @@ it does not turn host acceptance into a device response deadline. Using
 `--all-frames --range` treats every selected image as a held observation; use
 `--transition-window` for an observational
 handoff review without a response deadline.
+
+## Explain each input event
+
+The **What happened** view groups unchanged repeated packets into one input event.
+It reports the first original image where all seven fields and their checked
+joint state agree, first correct readings by field, earlier differing content,
+and subsequent differing or unresolved spans. One-frame changes remain present.
+Permitted blink alternatives remain permitted; they are not repaired or smoothed.
+Partial arrow/card details remain available even when the combined field is unreadable.
+
+Pending input cannot establish a completed response. Where the contract requires
+two accepted displays to confirm mute, the target is not complete before that
+second input. A superseding or unscoped table/display request ends the event.
+An event with no correctly observed image is explicitly distinguished from a
+proved missing alert. The report shows unread recorded images and source drops
+throughout each event, including any remainder beyond a dense inspection window.
+
+Timing is **host-send-to-first-correct-capture**, using the completing
+notification's attempted/accepted send bounds and the original camera timestamp.
+It also reports whether every recorded image from the event request to that
+capture was read. With an incomplete prefix, this is only a sampled observation
+time. Even a complete prefix cannot rule out earlier correctness during an
+unreadable image or between exposures. Exposure integration, DUT receipt and
+absolute clock error are unestablished, so physical appearance latency and deadline
+compliance remain unqualified. No nominal 200 fps interval or UVC exposure setting
+is silently converted into a physical uncertainty bound.
 
 ## Interpret the result
 

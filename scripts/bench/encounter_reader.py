@@ -17,13 +17,13 @@ import tempfile
 
 import numpy as np
 import PIL
-from PIL import Image, ImageOps
+from PIL import Image, ImageDraw, ImageOps
 
 import counter_reader
 
 FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
-METHOD_VERSION = 3
+METHOD_VERSION = 4
 _ocr_binary = None
 _ocr_setup = None
 
@@ -146,9 +146,11 @@ def _frequency(pixels):
     if not all(d is not None and d.isdigit() for d in digits):
         return field("unreadable", reason="frequency does not form five canonical numeric glyphs", cells=details)
     # An old fading stroke can otherwise turn a clear outer 0 into a valid 8.
-    # Require comparable illuminated levels; do not choose a digit by dropping
-    # the weaker stroke. The whole frequency is ambiguous when levels differ.
-    if medians and min(medians) < max(medians) * .85:
+    # Use the median lit level so one saturated stroke does not define all
+    # other strokes as fading. Bound both tails: a dim old stroke or a bright
+    # lingering stroke among dimmer new strokes still makes the field ambiguous.
+    reference = float(np.median(medians)) if medians else 0.0
+    if medians and (min(medians) < reference * .85 or max(medians) > reference / .85):
         return field("ambiguous", reason="inconsistent illuminated frequency segment levels", cells=details)
     # The two enclosed holes of every seven-segment cell must stay clear.
     # Extra central ink cannot borrow a valid answer from the sampled strokes.
@@ -269,30 +271,78 @@ def _card_bars(pixels, left):
 
 
 def _arrows(pixels):
-    # Disjoint interiors distinguish a filled arrow from inactive outlines.
+    # The three old probes retain their measured threshold contract. Inset
+    # whole-glyph interiors also witness fill between those probes, so three
+    # isolated bright rectangles cannot masquerade as an intact direction.
     boxes = {"front": ((1064, 225, 1084, 247), (1035, 274, 1055, 284), (1100, 274, 1118, 284)),
              "side": ((1050, 322, 1095, 332), (1008, 321, 1022, 331), (1135, 321, 1149, 331)),
              "rear": ((1063, 380, 1086, 386), (1044, 369, 1057, 374), (1096, 369, 1109, 374))}
-    arrows, diagnostics = [], {}
-    for name, patches in boxes.items():
-        states = [_fill(pixels.level(box)) for box in patches]
-        diagnostics[name] = [{"state": s, **d} for s, d in states]
-        if all(s == "on" for s, _ in states):
-            arrows.append(name)
-        elif not all(s == "off" for s, _ in states):
-            return field("ambiguous", reason="partial or dim main arrow shape", arrows=diagnostics)
-        else:
-            # A consistently red-tinted interior is not certified unlit even
-            # when it is too dim to qualify as a readable arrow.
-            tint = []
-            for box in patches:
-                colors = pixels.crop(box).astype(int)
-                redness = colors[:, :, 0] - np.maximum(colors[:, :, 1], colors[:, :, 2])
-                tint.append(float(np.percentile(redness, 10)))
-            if min(tint) > 0:
-                return field("ambiguous", reason="faint colored main arrow interior", arrows=diagnostics)
-    return field("readable", arrows, arrows=diagnostics)
+    interiors = {
+        "front": ((1008, 278), (1077, 203), (1144, 278), (1115, 278),
+                  (1115, 292), (1042, 292), (1042, 278)),
+        "side": ((1003, 328), (1022, 313), (1022, 320), (1135, 320),
+                 (1135, 313), (1152, 329), (1135, 343), (1135, 337),
+                 (1022, 337), (1022, 344)),
+        "rear": ((1044, 372), (1059, 372), (1059, 366), (1093, 366),
+                 (1093, 372), (1112, 372), (1077, 391)),
+    }
+    region = (990, 190, 1165, 400)
+    rgb = pixels.crop(region)
+    height, width = rgb.shape[:2]
+    levels = rgb.max(axis=2)
+    arrows, diagnostics, directions = [], {}, {}
 
+    def coherent(mask):
+        # Ignore an isolated noisy pixel, but retain a thin three-pixel stroke.
+        return bool(np.any(mask[:, :-2] & mask[:, 1:-1] & mask[:, 2:]) or
+                    np.any(mask[:-2] & mask[1:-1] & mask[2:]))
+
+    for name, patches in boxes.items():
+        readings = [_fill(pixels.level(box)) for box in patches]
+        diagnostics[name] = [{"state": state, **detail} for state, detail in readings]
+        mask_image = Image.new("1", (width, height))
+        ImageDraw.Draw(mask_image).polygon([
+            ((x - region[0]) * width / (region[2] - region[0]),
+             (y - region[1]) * height / (region[3] - region[1]))
+            for x, y in interiors[name]], fill=1)
+        mask = np.asarray(mask_image, dtype=bool)
+        interior_state, level_detail = _fill(levels[mask])
+        colors = rgb[mask].astype(int)
+        medians = np.median(colors, axis=0)
+        maximum, minimum = max(medians), min(medians)
+        dominant = int(np.argmax(medians))
+        color = "neutral" if maximum - minimum < max(8, maximum * .15) else (
+            "warm" if dominant == 0 else "green" if dominant == 1 else "blue")
+        # Preserve the existing faint warm-fill refusal and extend it to other
+        # coherent colored fills. Neutral resting glyphs are not active arrows.
+        red_tint, colored_tint = [], []
+        for box in patches:
+            patch = pixels.crop(box).astype(int)
+            red_tint.append(float(np.percentile(patch[:, :, 0] -
+                                                np.maximum(patch[:, :, 1], patch[:, :, 2]), 10)))
+            channels = [c for c in range(3) if c != dominant]
+            colored_tint.append(float(np.percentile(patch[:, :, dominant] -
+                                                    np.maximum(patch[:, :, channels[0]], patch[:, :, channels[1]]), 10)))
+        all_on = all(state == "on" for state, _ in readings)
+        all_off = all(state == "off" for state, _ in readings)
+        if all_on and interior_state == "on" and not coherent(mask & (levels <= 32)):
+            state = "filled"
+            arrows.append(name)
+        elif all_off and interior_state == "off" and not coherent(mask & (levels >= 45)):
+            state = "faint" if min(red_tint) > 0 or min(colored_tint) >= 8 else "unlit"
+        else:
+            state = "partial"
+        directions[name] = {"state": state, "color": color,
+                            "rgb_median": [round(float(v), 2) for v in medians],
+                            "interior": level_detail}
+    unresolved = [name for name, detail in directions.items() if detail["state"] in ("partial", "faint")]
+    # Complete all three observations before deciding whether the combined
+    # field is readable. A faint side arrow must not hide a clear front arrow.
+    reason = "; ".join(f"{name} arrow {directions[name]['state']}" for name in unresolved) or None
+    return field("ambiguous" if unresolved else "readable", None if unresolved else arrows,
+                 reason=reason, arrows=diagnostics, direction_states=directions,
+                 visible_directions=arrows,
+                 color_qualification="observed color only; no color correctness contract")
 
 def _secondary(pixels):
     cards, text_crops = [], []
@@ -325,6 +375,7 @@ def _secondary(pixels):
         return field("readable", [])
     recognized = _ocr(text_crops)
     for card, result in zip(cards, recognized or [{} for _ in cards]):
+        card["ocr_observation"] = result
         candidates = []
         for row in result.get("rows", []):
             for candidate in row.get("candidates", []):

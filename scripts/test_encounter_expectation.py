@@ -197,6 +197,154 @@ class EncounterExpectationTests(unittest.TestCase):
             self.assertEqual(result["status"], "INCONCLUSIVE")
         self.assertTrue(self.expected(capture=1_015_000_000)["input"]["ready"])
 
+    def test_identical_pending_repeat_uses_prior_accepted_state_and_retains_send_provenance(self):
+        from bench.counter_expectation import counter_expectation_at
+        data = recording([([alert()], [6, 6, 1, 0x24, 0x24, 12, 12, 0x40])] * 2)
+        timeline = build_encounter_timeline(*data)
+        original = copy.deepcopy(timeline)
+        for capture in (2_000_000_000, 2_003_000_000, 2_014_000_000):
+            expected = encounter_expectation_at(timeline, capture)
+            self.assertTrue(expected["input"]["ready"], expected)
+            self.assertEqual(compare_sample(expected, literals())["status"], "MATCH")
+            self.assertEqual(expected["input"]["stimulus_sequence"], 1)
+            self.assertEqual(expected["input"]["capture_ns"], capture)
+            self.assertEqual(expected["input"]["all_accepted_ns"], 1_015_000_000)
+            proof = expected["input"]["equivalent_pending_repeat"]
+            self.assertEqual(proof["requested_stimulus_sequences"], [2])
+            self.assertFalse(proof["pending_delivery_qualified"])
+            strict = counter_expectation_at(timeline, capture, stealth_enabled=False)
+            self.assertTrue(all("unresolved" in field for field in strict["fields"].values()))
+        self.assertEqual(timeline, original)
+
+    def test_partial_identical_table_does_not_invent_a_different_presentation(self):
+        rows = [alert("ka", 34700), alert("k", 24150, "SIDE", 144, False)]
+        data = recording([(rows, [91, 91, 1, 0x22, 0x22, 12, 12, 0x40])] * 2)
+        timeline = build_encounter_timeline(*data)
+        prior = encounter_expectation_at(timeline, 1_500_000_000)
+        # One row is accepted; the second row and display are not yet sent.
+        pending = encounter_expectation_at(timeline, 2_006_000_000)
+        self.assertTrue(pending["input"]["ready"], pending)
+        for key in ("fields", "joint_states", "secondary_policy"):
+            self.assertEqual(pending[key], prior[key])
+
+    def test_changed_row_or_display_never_borrows_prior_accepted_state(self):
+        first = ([alert()], [6, 6, 1, 0x24, 0x24, 12, 12, 0x40])
+        for second in (([alert(frequency=24200)], first[1]),
+                       ([alert(rssi=194)], first[1]),
+                       (first[0], [6, 6, 3, 0x24, 0x24, 12, 12, 0x40])):
+            expected = self.expected(recording([first, second]), capture=2_014_000_000)
+            self.assertFalse(expected["input"]["ready"], expected)
+            self.assertEqual(compare_sample(expected, literals())["counts"], {"UNRESOLVED": 7})
+
+    def test_identical_pending_mute_repeat_cannot_supply_second_confirmation(self):
+        data = recording([([alert()], [6, 6, 1, 0x34, 0x34, 13, 12, 0x40])] * 3)
+        timeline = build_encounter_timeline(*data)
+        second = encounter_expectation_at(timeline, 2_014_000_000)
+        self.assertFalse(second["input"]["ready"], second)
+        third = encounter_expectation_at(timeline, 3_014_000_000)
+        self.assertTrue(third["input"]["ready"], third)
+        self.assertEqual(third["input"]["stimulus_sequence"], 2)
+        self.assertEqual(third["fields"]["muted_badge"], {"allowed": [True]})
+
+    def test_changed_intervening_request_cannot_be_hidden_by_later_identical_repeat(self):
+        first = ([alert()], [6, 6, 1, 0x24, 0x24, 12, 12, 0x40])
+        data = recording([first, ([alert(frequency=24200)], first[1]), first])
+        # The changed middle state is still queued while an identical copy of
+        # the original state is requested. Equality of only the endpoints is
+        # insufficient: either in-flight packet set could reach the display.
+        for event in data[2]:
+            if event["stimulusSequence"] == 2 and event["state"] == "notification_accepted":
+                event["hostMonotonicNs"] += 1_200_000_000
+                event["attemptedHostMonotonicNs"] += 1_200_000_000
+        expected = self.expected(data, capture=3_014_000_000)
+        self.assertFalse(expected["input"]["ready"], expected)
+
+    def test_intervening_unscoped_packet_blocks_identical_repeat_equivalence(self):
+        for request, accepted in ((1_500_000_000, 1_600_000_000),
+                                  (2_010_000_000, 2_100_000_000)):
+            data = recording([([alert()], [6, 6, 1, 0x24, 0x24, 12, 12, 0x40])] * 2)
+            extra = {key: value for key, value in data[2][-1].items()
+                     if key not in ("state", "hostMonotonicNs", "attemptedHostMonotonicNs")}
+            extra.update(globalTxSequence=5, stimulusSequence=None, emissionOrdinal=None)
+            data[2].extend([dict(extra, state="notification_requested", hostMonotonicNs=request),
+                            dict(extra, state="notification_accepted", hostMonotonicNs=accepted,
+                                 attemptedHostMonotonicNs=accepted - 1)])
+            expected = self.expected(data, capture=2_014_000_000)
+            self.assertFalse(expected["input"]["ready"], expected)
+
+    def test_unscoped_table_inside_prior_assembly_blocks_identical_repeat_equivalence(self):
+        first = ([alert()], [6, 6, 1, 0x24, 0x24, 12, 12, 0x40])
+        data = recording([first, first])
+        # The scoped row publishes 24.150 at 1.005 s, but a complete unscoped
+        # one-row table publishes 24.200 before that state's display at 1.015 s.
+        # Acceptance of the final display cannot certify the earlier table.
+        for event in data[2]:
+            if event["globalTxSequence"] > 1:
+                event["globalTxSequence"] += 1
+        payload = packet(0x43, [0x11, 24200 >> 8, 24200 & 255, 1, 1, 0x24, 0x80])
+        extra = dict(schemaVersion=3, globalTxSequence=2, payloadHex=payload,
+                     payloadSha256=hashlib.sha256(bytes.fromhex(payload)).hexdigest(),
+                     characteristic="B2CE", stimulusSequence=None, emissionOrdinal=None)
+        data[2].extend([
+            dict(extra, state="notification_requested", hostMonotonicNs=1_007_000_000),
+            dict(extra, state="notification_accepted", hostMonotonicNs=1_010_000_000,
+                 attemptedHostMonotonicNs=1_009_999_999),
+        ])
+        data[2].sort(key=lambda event: event["hostMonotonicNs"])
+        expected = self.expected(data, capture=2_003_000_000)
+        self.assertFalse(expected["input"]["ready"], expected)
+
+    def test_unscoped_cached_row_before_prior_assembly_blocks_repeat_equivalence(self):
+        rows = [alert("ka", 34700), alert("k", 24150, "SIDE", 144, False)]
+        data = recording([(rows, [91, 91, 1, 0x22, 0x22, 12, 12, 0x40])] * 2)
+        for event in data[2]:
+            event["globalTxSequence"] += 1
+        # A fresh row2/count2 exists before the scoped request. Its row1 can
+        # publish with that cached row, clear the cache, and leave the scoped
+        # row2 partial. The later display does not establish table provenance.
+        payload = packet(0x43, [0x22, 24200 >> 8, 24200 & 255, 144, 144, 0x44, 0])
+        extra = dict(schemaVersion=3, globalTxSequence=1, payloadHex=payload,
+                     payloadSha256=hashlib.sha256(bytes.fromhex(payload)).hexdigest(),
+                     characteristic="B2CE", stimulusSequence=None, emissionOrdinal=None)
+        data[2].extend([
+            dict(extra, state="notification_requested", hostMonotonicNs=990_000_000),
+            dict(extra, state="notification_accepted", hostMonotonicNs=995_000_000,
+                 attemptedHostMonotonicNs=994_999_999),
+        ])
+        data[2].sort(key=lambda event: event["hostMonotonicNs"])
+        expected = self.expected(data, capture=2_003_000_000)
+        self.assertFalse(expected["input"]["ready"], expected)
+
+    def test_completed_historical_interleaving_blocks_repeat_equivalence(self):
+        display = [91, 91, 1, 0x22, 0x22, 12, 12, 0x40]
+        def rows(frequency):
+            return [alert("ka", 34700), alert("k", frequency, "SIDE", 144, False)]
+        data = recording([(rows(24150), display), (rows(24200), display),
+                          (rows(24300), display), (rows(24300), display)])
+        data[1][0]["requestedHostMonotonicNs"] = 1_990_000_000
+        # Assemblies 1 and 2 overlap but both finish before assembly 3 starts.
+        # Row1 of 2 plus row2 of 1 can publish and clear the cache; row2 of 2
+        # then survives to combine with row1 of 3. Completion timestamps alone
+        # cannot establish a clean baseline for the pending fourth repeat.
+        times = ((1_991_000_000, 1_995_000_000),
+                 (2_006_000_000, 2_010_000_000),
+                 (2_016_000_000, 2_020_000_000))
+        for event in data[2]:
+            if event["stimulusSequence"] == 1:
+                requested, accepted = times[event["emissionOrdinal"]]
+                event["hostMonotonicNs"] = requested if event["state"] == "notification_requested" else accepted
+                if event["state"] == "notification_accepted":
+                    event["attemptedHostMonotonicNs"] = accepted - 1
+        ordered = sorted((event for event in data[2] if event["state"] == "notification_requested"),
+                         key=lambda event: event["hostMonotonicNs"])
+        transmissions = {(event["stimulusSequence"], event["emissionOrdinal"]): index
+                         for index, event in enumerate(ordered, 1)}
+        for event in data[2]:
+            event["globalTxSequence"] = transmissions[event["stimulusSequence"], event["emissionOrdinal"]]
+        data[2].sort(key=lambda event: event["hostMonotonicNs"])
+        expected = self.expected(data, capture=4_003_000_000)
+        self.assertFalse(expected["input"]["ready"], expected)
+
     def test_idle_policy_unknown_and_bound_zero_persistence(self):
         data = recording([([], [56, 56, 0, 0, 0, 12, 12, 0x40])])
         observed = literals(counter_glyph="L", primary_frequency="--.---", active_bands=[], main_arrows=[], main_bars=0)

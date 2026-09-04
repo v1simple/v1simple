@@ -161,6 +161,7 @@ run_step "Encounter pixel reader regression suite" python3 scripts/test_encounte
 run_step "Encounter input expectation regression suite" python3 scripts/test_encounter_expectation.py
 run_step "Recorded encounter check regression suite" python3 scripts/test_encounter_check.py
 run_step "Encounter sequence interpretation regression suite" python3 scripts/test_encounter_sequence.py
+run_step "Encounter evidence assessment regression suite" python3 scripts/test_encounter_assessment.py
 run_step "LittleFS compatibility regression suite" python3 scripts/test_check_littlefs_image_compatibility.py
 run_step "Commit metadata regression suite" python3 scripts/test_check_public_commit_metadata.py
 run_step "App-only upload offset regression suite" python3 scripts/test_force_app_upload_offset.py

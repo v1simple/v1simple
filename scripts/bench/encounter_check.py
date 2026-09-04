@@ -477,8 +477,9 @@ def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cade
                                   ranges=[(origin + round(a * 1e9), origin + round(b * 1e9)) for a, b in ranges or []]) if data else {}
     errors.extend("Sequence interpretation: " + reason for reason in sequence.get("errors", []))
     verdict, counts = summarize(samples, errors)
+    from encounter_assessment import assess
     result.update(result=verdict, counts=counts, evidence=evidence, errors=errors, samples=samples,
-                  sequence=sequence,
+                  sequence=sequence, assessment=assess(samples, errors, sequence),
                   observed_state_spans=spans, observed_changes=changes,
                   coverage=dict(requests=len(samples), selected_unique_frames=selected_unique,
                                 unique_frames=unique, regions=coverage,
@@ -492,7 +493,7 @@ def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cade
 def review_payload(result):
     """Keep the viewer responsive while full measurements stay in result.json."""
     payload = {key: result[key] for key in ("result", "selection_mode", "counts", "coverage",
-               "observed_state_spans", "observed_changes", "sequence") if key in result}
+               "observed_state_spans", "observed_changes", "sequence", "assessment") if key in result}
     payload["samples"] = []
     for sample in result["samples"]:
         item = {key: value for key, value in sample.items() if key not in ("observed", "expected", "comparison")}
@@ -537,8 +538,22 @@ def write_report(out: Path, result: dict) -> None:
              "Unknowns remain in the denominator; duplicate frames are not independent trials.", "",
              "[Open the visual review](report.html). It shows each original image beside its input expectations and pixel readings.", "",
              "A FAIL identifies sampled input/display disagreement. It does not establish its cause or a timing violation. "
-             "A PASS covers these samples and fields only. Reader accuracy requires separate validation.", "",
-             "| Region (seconds, end exclusive) | Decoded / recorded frames | First–last selected | Largest gap, including boundaries | All recorded frames read |", "| --- | ---: | --- | ---: | --- |"]
+             "A PASS covers these samples and fields only. Reader accuracy requires separate validation.", ""]
+    assessment = result.get("assessment")
+    if assessment:
+        held, response = assessment["held"], assessment["event_response"]
+        lines += ["## What can be judged", "",
+                  f"Held observations: **{held['status']}** across {held['required']} required field checks.", "",
+                  f"Event targets observed: **{response['status']}** — {response['observed']} / {response['required']}.", "",
+                  "An observed target proves that the content appeared in an analyzed image before the event ended. "
+                  "It does not establish timely response or continued correctness. Transition differences and unknowns "
+                  "remain below. These separate answers do not replace the aggregate verdict or establish tool acceptance.", ""]
+        for issue in held["issues"]:
+            point = issue["first"]
+            link = f"[sample {point['frame_id']}](report.html#sample={point['frame_id']})"
+            lines.append(f"- {issue['field']}: {issue['reason']} ({len(issue['frame_ids'])} held observation(s); first {link}).")
+        lines.append("")
+    lines += ["| Region (seconds, end exclusive) | Decoded / recorded frames | First–last selected | Largest gap, including boundaries | All recorded frames read |", "| --- | ---: | --- | ---: | --- |"]
     for region in result["coverage"]["regions"]:
         bounds = (f"{region['first_selected_offset_seconds']:.6f}–{region['last_selected_offset_seconds']:.6f}s"
                   if region['first_selected_offset_seconds'] is not None else "none")
@@ -584,13 +599,14 @@ def write_report(out: Path, result: dict) -> None:
 *{box-sizing:border-box}body{margin:0;background:#10151b;color:#e7edf4;font:15px system-ui,sans-serif}
 header{padding:24px 28px;border-bottom:1px solid #35414d}h1{font-size:25px;margin:0 0 10px}p{line-height:1.5;color:#b7c4d1;max-width:1000px}
 main{display:grid;grid-template-columns:240px 1fr;gap:22px;padding:22px}nav{max-height:78vh;overflow:auto}button,select{font:inherit;color:inherit;background:#1b2630;border:1px solid #425161;border-radius:6px;padding:8px;cursor:pointer}nav button{display:block;width:100%;text-align:left;margin:5px 0}button[aria-current=true]{border-color:#69c5ff;background:#1c394e}.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}img{width:100%;max-height:53vh;object-fit:contain;background:#000;border-radius:7px}table{width:100%;border-collapse:collapse;margin-top:18px}td,th{text-align:left;vertical-align:top;padding:10px;border-bottom:1px solid #35414d}th{color:#9dafbf}td{white-space:pre-wrap;overflow-wrap:anywhere}.MATCH{color:#8edfbe}.DIFFERENCE,.JOINT_DIFFERENCE{color:#ff9292}.UNRESOLVED,.CONDITIONAL{color:#f2cf83}.PREVIOUS_INPUT_STATE,.TRANSITION_DIFFERENCE{color:#bcb1ff}small{color:#9dafbf}.empty{padding:30px}a{color:#8dcfff}summary{cursor:pointer;margin:16px 0}#scrub{width:100%;margin:10px 0}#changes{max-height:250px;overflow:auto}#changes button{display:block;margin:6px 0;width:100%;text-align:left}.history{max-height:400px;overflow:auto}#changed{color:#e7edf4}@media(max-width:800px){main{display:block}nav{max-height:180px;margin-bottom:20px}table{font-size:12px}td,th{padding:6px}}
-</style><header><h1 id="title"></h1><p id="summary"></p><p id="coverage"></p><p>Original camera observations against recorded host input. Frames cannot show what happened between exposures. Transition observations establish no response deadline; an input/display disagreement does not locate its cause. Automatic reader accuracy is qualified separately.</p></header>
+</style><header><h1 id="title"></h1><p id="summary"></p><p id="coverage"></p><p>Original camera observations against recorded host input. Frames cannot show what happened between exposures. Transition observations establish no response deadline; an input/display disagreement does not locate its cause. Automatic reader accuracy is qualified separately.</p><section id="assessment" hidden><h2>What can be judged</h2><p id="heldAssessment"></p><p id="responseAssessment"></p><p id="afterAssessment"></p><div id="heldIssues" class="toolbar"></div><p>These are separate evidence claims. A target appearing once does not establish timely response, continued correctness or tool acceptance. The aggregate verdict and all transition observations are retained.</p></section></header>
 <section id="eventReview" style="padding:20px 28px;border-bottom:1px solid #35414d"><h2>What happened</h2><label>Input event <select id="eventSelect"></select></label><p id="eventSummary"></p><p id="eventTiming"></p><p id="eventCoverage"></p><div id="eventLinks" class="toolbar"></div><details><summary>First correctly observed content by field</summary><div id="eventFields"></div></details><details><summary>Changes after the first correct image</summary><div id="eventAfter" class="history"></div></details></section>
 <main><aside><label>Show <select id="filter"><option value="all">All samples</option><option value="attention">Needs attention</option><option value="held">Held samples</option><option value="transition">Transitions</option></select></label><nav id="samples"></nav></aside>
 <section><div class="toolbar"><button id="prev">← Previous</button><button id="next">Next →</button><button id="play">Play consecutive frames</button><label>Playback <select id="speed"><option value="20">20× slower</option><option value="10">10× slower</option><option value="5">5× slower</option></select></label><strong id="sampleTitle"></strong><a id="original">Open original</a></div><label>Original frame <input id="scrub" type="range" min="0" max="0" step="1" value="0"></label><img id="frame" alt="Unmodified selected camera frame"><p id="detail"></p><p id="changed"></p><details open><summary>Observed changes — jump to the original frame</summary><div id="changes"></div></details><details><summary>Per-field observed spans — every brief state and unreadable frame retained</summary><p>Adjacent source frames with exactly the same literal reading are grouped for review only. A one-frame state is retained. Gaps break spans. First and last timestamps bound the readings; no value is carried across an unreadable frame, and these spans do not establish response latency.</p><label>Display field <select id="spanField"></select></label><div class="history"><table><thead><tr><th>First–last reading</th><th>Source frames</th><th>Count</th><th>Literal reading</th></tr></thead><tbody id="spans"></tbody></table></div></details><table><thead><tr><th>Display field</th><th>Permitted input state</th><th>Observed pixels</th><th>Judgment</th></tr></thead><tbody id="checks"></tbody></table><p id="joint"></p></section></main>
 <script>const result=PAYLOAD;const all=result.samples;let selected=0,visible=[];const navButtons=new Map();
 const el=id=>document.getElementById(id);const fmt=x=>x===undefined?'unavailable':JSON.stringify(x,null,2);const names={counter_glyph:'Counter / mode',primary_frequency:'Primary frequency',active_bands:'Active bands',main_arrows:'Main arrows',main_bars:'Main strength',secondary:'Secondary cards',muted_badge:'MUTED badge'};const literal=o=>o.state+': '+JSON.stringify(o.value)+(o.reason?' ('+o.reason+')':'');const seconds=x=>x===null?'none':x.toFixed(6)+' s';const changes=result.observed_changes||[];const events=result.sequence?.events||[];
 el('title').textContent=(result.selection_mode==='input_transition_review'?'Encounter with consecutive transitions: ':result.selection_mode==='all_recorded_frames'?'Consecutive-frame encounter: ':'Sampled encounter: ')+result.result;el('summary').textContent=Object.entries(result.counts.fields).map(([k,v])=>v+' '+k.toLowerCase().replaceAll('_',' ')).join(' · ')+' / '+result.counts.required+' required checks. '+result.coverage.unique_frames+' unique original frames.';
+if(result.assessment){const a=result.assessment;el('assessment').hidden=false;el('heldAssessment').textContent='Held observations: '+a.held.status+' · '+a.held.required+' required field checks.';el('responseAssessment').textContent='Event targets observed: '+a.event_response.status+' · '+a.event_response.observed+'/'+a.event_response.required+'.';el('afterAssessment').textContent='After the first correct image: '+a.after_correct.differing_spans+' differing and '+a.after_correct.unresolved_spans+' unresolved spans retained.';for(const issue of a.held.issues){const b=document.createElement('button');b.textContent=(names[issue.field]||issue.field)+': '+issue.reason+' · '+issue.frame_ids.length+' held observation(s)';b.onclick=()=>show(all.findIndex(s=>s.frame_id===issue.first.frame_id));el('heldIssues').append(b)}}
 el('coverage').textContent=result.coverage.regions.map(r=>r.start_seconds+'–'+r.end_seconds+' s (end exclusive): '+r.unique_frames+'/'+r.available_recorded_frames+' recorded frames read'+(r.complete_recorded_frame_coverage===null?' (sampled)':r.complete_recorded_frame_coverage?' (complete within range)':' (incomplete)')+'. Selected '+seconds(r.first_selected_offset_seconds)+' to '+seconds(r.last_selected_offset_seconds)+'. Read '+seconds(r.first_observed_offset_seconds)+' to '+seconds(r.last_observed_offset_seconds)+'. Largest gap including boundaries '+seconds(r.maximum_unobserved_gap_seconds)+'. '+r.unrecorded_source_frames+' source frames not recorded.').join(' ');
 
 const eventName=e=>{const p=e.wire_rows.find(r=>r.priority);return p?p.band+' '+p.frequency+' primary · '+e.wire_rows.length+' alerts':'No live radar alerts'};

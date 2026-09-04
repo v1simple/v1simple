@@ -164,7 +164,16 @@ and subsequent differing or unresolved spans. One-frame changes remain present.
 Permitted blink alternatives remain permitted; they are not repaired or smoothed.
 Partial arrow/card details remain available even when the combined field is unreadable.
 
-Pending input cannot establish a completed response. Where the contract requires
+Pending input cannot establish a new completed response. A byte-identical resend
+can retain the previously completed input expectation only when all intervening
+requests and overlapping transmissions belong to that same complete packet state
+and the presentation policy is unchanged. Unscoped traffic, changed packets and
+mute's second-display confirmation cannot use this exception. The report retains
+the pending transmission and the earlier accepted source; it does not move the
+image or claim that the resend has completed. The separate counter checker retains
+its existing stricter readiness rule.
+
+Where the contract requires
 two accepted displays to confirm mute, the target is not complete before that
 second input. A superseding or unscoped table/display request ends the event.
 An event with no correctly observed image is explicitly distinguished from a
@@ -182,6 +191,19 @@ compliance remain unqualified. No nominal 200 fps interval or UVC exposure setti
 is silently converted into a physical uncertainty bound.
 
 ## Interpret the result
+
+The report's **What can be judged** section separates held-observation agreement
+from whether each input target appeared in an analyzed image before the event
+ended. It links grouped held failures or unknowns directly to their original
+images. A target observed once does not establish response speed or continued
+correctness; later differing and unresolved spans remain visible and counted.
+Missing observations and analysis errors prevent a complete execution claim.
+
+The existing aggregate below remains strict: any unresolved required field or
+nonmatching transition observation prevents `PASS`. This includes partial drawing
+and preceding states during transitions that have no response deadline. The
+separate assessments explain what was established and what blocked judgment;
+they do not upgrade that aggregate or establish acceptance of the tool.
 
 | Result | Meaning |
 | --- | --- |

@@ -217,6 +217,66 @@ def _presentation(rows, display, muted, configuration, historical):
             "wire": {"rows": deepcopy(rows), "display": deepcopy(display)}}
 
 
+def _equivalent_pending_repeat(timeline, capture_ns):
+    """Keep a qualified accepted state while only identical input is in flight.
+
+    This does not qualify the pending send or change the counter instrument's
+    contract. Complete packet equality preserves the table, display planes and
+    other presentation inputs. Mute confirmation is stateful, so its first
+    repeated display remains unresolved until the second display is accepted.
+    """
+    requested = [state for state in timeline["states"]
+                 if state["stimulus_requested_ns"] <= capture_ns]
+    previous = next((state for state in reversed(requested)
+                     if state["all_accepted_ns"] <= capture_ns), None)
+    if previous is None:
+        return None
+    # Earlier partial tables can leave assembly-cache rows behind even after
+    # later complete packet sets were sent. This exception supports only a
+    # serialized, scoped history; it does not infer recovery of that cache.
+    if any(event["packet_id"] in (0x31, 0x43) and event["stimulus_sequence"] is None
+           and event["display_requested_ns"] <= capture_ns for event in timeline["accepted"]):
+        return None
+    history = [state for state in requested
+               if state["stimulus_sequence"] <= previous["stimulus_sequence"]]
+    if any(left["all_accepted_ns"] > right["stimulus_requested_ns"]
+           for left, right in zip(history, history[1:])):
+        return None
+    repeats = [state for state in requested
+               if state["stimulus_sequence"] > previous["stimulus_sequence"]]
+    if not repeats or any(state["packet_signature"] != previous["packet_signature"] for state in repeats):
+        return None
+    members = {previous["stimulus_sequence"], *(state["stimulus_sequence"] for state in repeats)}
+    # Qualify the earlier table's assembly as well as the later resend. A
+    # foreign row accepted before that table's display could replace its rows;
+    # completion of the display alone does not prove the authored table won.
+    overlapping = [event for event in timeline["accepted"]
+                   if event["display_requested_ns"] <= capture_ns
+                   and event["display_accepted_ns"] >= previous["stimulus_requested_ns"]]
+    if any(event["stimulus_sequence"] not in members for event in overlapping):
+        return None
+    prior = counter_expectation_at(timeline, previous["all_accepted_ns"], stealth_enabled=False)
+    if (any("unresolved" in field for field in prior["fields"].values())
+            or prior["input"].get("display_stimulus_sequence") != previous["stimulus_sequence"]):
+        return None
+    display = next(event for event in reversed(timeline["accepted"])
+                   if event["packet_id"] == 0x31 and event["display_accepted_ns"] <= capture_ns)
+    if display["decoded_display"]["mute_bit"] and display["consecutive_muted_displays"] < 2:
+        return None
+    prior = deepcopy(prior)
+    prior["input"]["equivalent_pending_repeat"] = {
+        "basis": "Previously qualified complete input remains applicable; every intervening requested "
+                 "packet set is byte-identical and cannot change the mute confirmation state.",
+        "requested_stimulus_sequences": [state["stimulus_sequence"] for state in repeats],
+        "accepted_stimulus_sequence": previous["stimulus_sequence"],
+        "accepted_state_ns": previous["all_accepted_ns"],
+        "pending_global_tx_sequences": [event["global_tx_sequence"] for event in overlapping
+                                        if event["display_accepted_ns"] > capture_ns],
+        "pending_delivery_qualified": False,
+    }
+    return prior
+
+
 def encounter_expectation_at(timeline, capture_ns, configuration=None):
     """Expected visible radar context at a source-frame timestamp, without pixels.
 
@@ -230,6 +290,13 @@ def encounter_expectation_at(timeline, capture_ns, configuration=None):
     counter = counter_expectation_at(timeline, capture_ns, stealth_enabled=False)
     reason = next((field["unresolved"] for field in counter["fields"].values()
                    if "unresolved" in field), None)
+    if reason in ("display transmission is pending at capture time",
+                  "alert-table transmission is pending at capture time",
+                  "current stimulus notifications were not all accepted by capture time"):
+        equivalent = _equivalent_pending_repeat(timeline, capture_ns)
+        if equivalent is not None:
+            equivalent["input"]["equivalent_pending_repeat"]["strict_counter_unresolved_reason"] = reason
+            counter, reason = equivalent, None
     input_info = {**counter["input"], "ready": reason is None,
                   "unresolved": reason, "capture_ns": capture_ns}
     result = {"input": input_info, "live": None, "fields": {

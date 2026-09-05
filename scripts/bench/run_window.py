@@ -912,7 +912,18 @@ class BenchSerial:
             # USB reset can end an interrupted load line with CR before the
             # new ROM banner. Preserve both logical lines and their order;
             # never discard a preceding panic or repeated boot marker.
-            self._pending_lines = raw.decode("utf-8", errors="replace").rstrip("\r\n").split("\r")
+            self._pending_lines = []
+            for line in raw.decode("utf-8", errors="replace").rstrip("\r\n").split("\r"):
+                # Native USB reset can interrupt a ROM loader write without
+                # any line terminator before the next exact ROM banner. Split
+                # only that loader grammar and preserve both pieces. Unknown
+                # prefixes, panic text and extra banners remain intact for the
+                # boundary gates to reject; never search past arbitrary text.
+                interrupted_load = re.fullmatch(
+                    r"(load:0x[0-9a-f]+(?:,len:0x[0-9a-f]+)?)"
+                    r"(ESP-ROM:esp32s3-20210327)", line)
+                self._pending_lines.extend(
+                    interrupted_load.groups() if interrupted_load else [line])
         text = self._pending_lines.pop(0)
         safe = redact_artifact_text(text)
         self.log.write(safe + "\n")
@@ -975,7 +986,7 @@ def establish_serial_boundary(
             if re.search(r"Guru Meditation|panic(?:ked|'ed)|assert(?:ion)? failed|abort\(\)|stack canary|Brownout", line, re.IGNORECASE):
                 raise RuntimeIdentityFailure("panic or brownout before reset-to-ready completed")
             if line.startswith("ESP-ROM:"):
-                if rom_start_observed or not line.startswith("ESP-ROM:esp32s3-"):
+                if rom_start_observed or not re.fullmatch(r"ESP-ROM:esp32s3-[0-9]{8}", line):
                     raise RuntimeIdentityFailure("unexpected or repeated ROM start after explicit reset")
                 rom_start_observed = True
             if line.startswith("rst:"):
@@ -1168,7 +1179,12 @@ class V1Emulator:
         completed = lifecycle_completed and (
             self.mode != "bench" or notification_delivery["complete"]
         )
-        raw = self.log_path.read_text(encoding="utf-8", errors="replace")
+        try:
+            raw = self.log_path.read_text(encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            if self.process is not None:
+                raise
+            raw = ""
         safe = sanitize_artifact_value(raw, run_dir=self.log_path.parent)
         if safe != raw:
             self.log_path.write_text(safe, encoding="utf-8")

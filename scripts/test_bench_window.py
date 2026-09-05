@@ -468,6 +468,23 @@ def test_requested_dropped_complete_stopped_is_not_completed() -> None:
     assert_true(delivery["dropped"] == 1, str(delivery))
 
 
+def test_emulator_cleanup_before_start_preserves_primary_failure() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        emulator = V1Emulator(Path("unused"), Path(tmp), "replay", "scenario", lease_fd=9, scenario="",
+                              machine_event=lambda _payload: None)
+        result = emulator.finish(window_completed=False)
+        assert_true(result["started"] is False and result["completed"] is False, str(result))
+        assert_true(result["lifecycle_completed"] is False, str(result))
+        assert_true(not emulator.log_path.exists(), "cleanup invented replay evidence")
+        emulator.process = SimpleNamespace(poll=lambda: 0)
+        try:
+            emulator.finish(window_completed=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise AssertionError("missing started-emulator evidence was suppressed")
+
+
 def test_requested_accepted_complete_stopped_is_completed() -> None:
     result = finish_replay_fixture(
         ["notification_requested", "notification_accepted", "complete", "stopped"]
@@ -1513,6 +1530,68 @@ def test_serial_carriage_return_framing_preserves_reset_evidence_and_failures() 
             assert_true(observer.log.getvalue().splitlines() == lines, "serial log dropped a fragment")
 
 
+def test_serial_interrupted_loader_framing_requires_one_exact_rom_banner() -> None:
+    rom = "ESP-ROM:esp32s3-20210327"
+    reason = "rst:0x15 (USB_UART_CHIP_RESET),boot:0xa (SPI_FAST_FLASH_BOOT)"
+    suffix = ["Build:Mar 27 2021", reason,
+              "BOOT bootId=4 uptimeMs=2053 reset=USB git=2f32dda image=04904e028",
+              "[Boot] Ready gate opened at 2380 ms", "[Boot] setup total: 2262 ms"]
+    cases = [
+        ("load:0x3fce2" + rom, suffix, ["load:0x3fce2", rom], None),
+        ("load:0x3fce2820,len:0x10cc" + rom, suffix,
+         ["load:0x3fce2820,len:0x10cc", rom], None),
+        ("notice " + rom, suffix, None, "unexpected reset reason"),
+        ("load:0xnothex" + rom, suffix, None, "unexpected reset reason"),
+        ("load:0x3fce2" + rom + rom, suffix, None, "unexpected reset reason"),
+        ("load:0x3fce2" + rom + "Guru Meditation Error: panic", suffix,
+         None, "panic or brownout"),
+        ("Guru Meditation Error: panic" + rom, suffix, None, "panic or brownout"),
+        (rom + rom, suffix, None, "unexpected or repeated ROM start"),
+        (rom + "garbage", suffix, None, "unexpected or repeated ROM start"),
+        ("ESP-ROM:esp32-20210327", suffix, None, "unexpected or repeated ROM start"),
+        ("load:0x3fce2" + rom,
+         [suffix[0], "rst:0xc (RTC_SW_CPU_RST),boot:0xa (SPI_FAST_FLASH_BOOT)", *suffix[2:]],
+         None, "unexpected reset reason"),
+        ("load:0x3fce2" + rom, [suffix[0], reason, rom, *suffix[2:]],
+         None, "unexpected or repeated ROM start"),
+    ]
+    for first, ending, expected_prefix, error in cases:
+        chunks = iter([(first + "\r\n").encode(),
+                       *[(line + "\r\n").encode() for line in ending]])
+        observer = run_window_module.BenchSerial.__new__(run_window_module.BenchSerial)
+        clock = FakeClock()
+        received = []
+
+        def read() -> bytes:
+            clock.now += 0.01
+            return next(chunks, b"")
+
+        def record(event, **fields):
+            received.append((event, fields))
+            return {"host_monotonic_ns": int(clock.now * 1e9)}
+
+        observer.ser = SimpleNamespace(timeout=0.25, readline=read)
+        observer.log = io.StringIO()
+        observer.timeline = SimpleNamespace(record=record)
+        observer.identity_tracker = RuntimeIdentityTracker()
+        observer.line_count = 0
+        observer._pending_lines = []
+        observer.reset_performed = True
+        action = lambda: establish_serial_boundary(observer, 5, monotonic=clock.monotonic,
+                                                    require_explicit_reset=True)
+        if error:
+            assert_identity_failure(action, error)
+            assert_true(not any(event == "serial_boundary_established" for event, _ in received),
+                        "interrupted-loader framing hid a failed reset boundary")
+        else:
+            result = action()
+            assert_true(result["reset_anchored"] and observer.boot_marker_count == 1, str(result))
+            lines = [fields["line"] for event, fields in received if event == "serial_receive"]
+            assert_true(lines == [*expected_prefix, *ending], str(lines))
+            assert_true(observer.log.getvalue().splitlines() == lines,
+                        "interrupted loader or fresh ROM evidence was discarded")
+
+
 def main() -> int:
     test_file_artifact_owns_raw_bytes()
     test_replay_stimulus_is_persisted_as_raw_ndjson_once()
@@ -1527,6 +1606,7 @@ def main() -> int:
     test_post_window_configuration_timeout_covers_clock_allowance()
     test_replay_process_requests_raw_machine_and_scenario_evidence()
     test_requested_dropped_complete_stopped_is_not_completed()
+    test_emulator_cleanup_before_start_preserves_primary_failure()
     test_requested_accepted_complete_stopped_is_completed()
     test_radio_lease_excludes_concurrent_owners_and_rejects_symlink_parent()
     test_runner_source_is_external_only_and_serial_is_read_only()
@@ -1556,6 +1636,7 @@ def main() -> int:
     test_explicit_reset_records_request_before_control_and_never_completes_failure()
     test_explicit_boundary_requires_fresh_usb_reset_and_refuses_intervening_failure()
     test_serial_carriage_return_framing_preserves_reset_evidence_and_failures()
+    test_serial_interrupted_loader_framing_requires_one_exact_rom_banner()
     print("bench window tests passed")
     return 0
 

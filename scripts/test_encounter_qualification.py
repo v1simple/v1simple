@@ -573,7 +573,7 @@ class QualificationTests(unittest.TestCase):
 
     @staticmethod
     def generic_temporal_literal(classifier, eligible, *, indeterminate=False):
-        if classifier == "v1-main-bar-adjacent-redraw-v1":
+        if classifier == "v1-main-bar-adjacent-redraw-v2":
             return ({
                 "left_endpoint_bar_count": 2,
                 "right_endpoint_bar_count": 3,
@@ -599,7 +599,7 @@ class QualificationTests(unittest.TestCase):
                 "direction": "RISING",
                 "confidence": "HIGH",
             }))
-        if classifier == "v1-muted-badge-rising-fill-v1":
+        if classifier == "v1-muted-badge-rising-fill-v2":
             return ({
                 "left_endpoint_badge": "ABSENT",
                 "right_endpoint_badge": "PRESENT",
@@ -625,7 +625,7 @@ class QualificationTests(unittest.TestCase):
                 "outside_badge_content_change": "NO",
                 "confidence": "HIGH",
             }))
-        if classifier == "v1-unmute-stable-frequency-sweep-v1":
+        if classifier == "v1-unmute-stable-frequency-sweep-v2":
             return ({
                 "left_endpoint_frequency": "34.700",
                 "right_endpoint_frequency": "34.700",
@@ -667,7 +667,9 @@ class QualificationTests(unittest.TestCase):
                                     clip_path_swap=False, empty_readme=False,
                                     record_tamper=None, rejection_code="UNCLOSED_RUN",
                                     clip_mapping_tamper=None,
-                                    indeterminate_rejects=False):
+                                    indeterminate_rejects=False,
+                                    recording_maximum_interval_ns=5_000_000,
+                                    source_gap_at_index=None):
         temporal_root = self.root / f"temporal-v2-{classifier}"
         repository_spec = (Path(__file__).resolve().parent / "bench" / "temporal_specs" /
                            f"{classifier}.json")
@@ -729,7 +731,10 @@ class QualificationTests(unittest.TestCase):
             f"{temporal_root.name}/sources/selection.json",
             [] if selection_tamper == "wrong_type" else selection_document)
         capture_id = "d" * 64
-        maximum_source_interval_ns = 5_000_000
+        def source_time(index):
+            shift = (10_000_000 if source_gap_at_index is not None
+                     and index >= source_gap_at_index else 0)
+            return 1_000_000_000 + index * 5_000_000 + shift
         analysis_indices = sorted({value for index in range(item_count)
                                    for value in (9 + index * 3, 10 + index * 3,
                                                  11 + index * 3, 12 + index * 3)})
@@ -740,14 +745,13 @@ class QualificationTests(unittest.TestCase):
                 "selection_mode": "qualification_temporal_candidates",
                 "samples": [{"video_frame_index": value,
                              "source_frame_seq": 1000 + value,
-                             "capture_ns": 1_000_000_000 +
-                                 value * maximum_source_interval_ns}
+                             "capture_ns": source_time(value)}
                             for value in analysis_indices],
             })
         record_context = {
             "capture_id": capture_id,
             "selection_manifest_sha256": digest(analysis_selection_path),
-            "verified_maximum_source_interval_ns": maximum_source_interval_ns,
+            "verified_maximum_source_interval_ns": recording_maximum_interval_ns,
             "reader_method_version": READER["method_version"],
             "reader_sha256": self.method["encounter_reader.py"],
             "redraw_probe_method_version": 1,
@@ -758,7 +762,7 @@ class QualificationTests(unittest.TestCase):
             return {
                 "video_frame_index": video_index,
                 "source_frame_seq": 1000 + video_index,
-                "capture_ns": 1_000_000_000 + video_index * maximum_source_interval_ns,
+                "capture_ns": source_time(video_index),
             }
 
         for index in range(item_count):
@@ -778,7 +782,7 @@ class QualificationTests(unittest.TestCase):
                 indices = [10, 11, 12]
             event_id = "event-0000" if duplicate_candidate and index == 1 else f"event-{index:04d}"
             full_indices = ([indices[0] - 1, *indices]
-                            if classifier == "v1-unmute-stable-frequency-sweep-v1"
+                            if classifier == "v1-unmute-stable-frequency-sweep-v2"
                             and machine_admitted else list(indices))
             clip = temporal_root / "sources" / "clips" / f"{opaque_id}.bin"
             clip.parent.mkdir(parents=True, exist_ok=True)
@@ -820,7 +824,7 @@ class QualificationTests(unittest.TestCase):
                 }
                 if malformed_admitted_record and index == 0:
                     record["raw_affected_fields"] = []
-                if classifier == "v1-main-bar-adjacent-redraw-v1":
+                if classifier == "v1-main-bar-adjacent-redraw-v2":
                     profile = spec_document["profile"]
                     constants = spec_document["constants"]
                     record.update({
@@ -843,13 +847,13 @@ class QualificationTests(unittest.TestCase):
                             str(cell): 1.0 for cell in range(6) if cell != 2},
                         "maximum_endpoint_span_ns":
                             constants["authored_display_update_ns"] +
-                            maximum_source_interval_ns,
+                            min(recording_maximum_interval_ns, 10_000_000),
                         "profile_schema": {
                             "rows": profile["rows"], "columns": profile["columns"],
                             "sample": profile["sample"]},
                         "profile_boxes": profile["bar_boxes_bottom_to_top"],
                     })
-                elif classifier == "v1-muted-badge-rising-fill-v1":
+                elif classifier == "v1-muted-badge-rising-fill-v2":
                     stable_fields = copy.deepcopy(expected_state()["fields"])
                     stable_fields.pop("muted_badge")
                     signature = {
@@ -1082,7 +1086,7 @@ class QualificationTests(unittest.TestCase):
                     "capture_id": capture_id,
                     "video_timing_verification_result": {
                         "status": "verified",
-                        "maximum_source_interval_ns": maximum_source_interval_ns,
+                        "maximum_source_interval_ns": recording_maximum_interval_ns,
                     },
                 },
             })
@@ -1284,14 +1288,16 @@ class QualificationTests(unittest.TestCase):
         }
         return self.write_json("qualification.json", manifest)
 
-    def verify(self, path):
+    def verify(self, path, *, source_gap_at_index=None):
         def regenerated(image_path, _registration):
             return copy.deepcopy(self.reader_observations[digest(image_path)])
 
         def retained_rows(_classifier_id, _paths, _sources, _window, _selection, _items):
             return {index: {
                 "source_frame_seq": 1000 + index,
-                "capture_ns": 1_000_000_000 + index * 5_000_000,
+                "capture_ns": 1_000_000_000 + index * 5_000_000 + (
+                    10_000_000 if source_gap_at_index is not None
+                    and index >= source_gap_at_index else 0),
             } for index in range(1000)}
 
         with (patch.object(encounter_qualification, "_observe_image", side_effect=regenerated),
@@ -1337,9 +1343,9 @@ class QualificationTests(unittest.TestCase):
 
     def test_each_generic_temporal_v2_bundle_qualifies(self):
         classifiers = (
-            "v1-main-bar-adjacent-redraw-v1",
-            "v1-muted-badge-rising-fill-v1",
-            "v1-unmute-stable-frequency-sweep-v1",
+            "v1-main-bar-adjacent-redraw-v2",
+            "v1-muted-badge-rising-fill-v2",
+            "v1-unmute-stable-frequency-sweep-v2",
         )
         for classifier in classifiers:
             with self.subTest(classifier=classifier):
@@ -1347,6 +1353,26 @@ class QualificationTests(unittest.TestCase):
                 result = self.verify(self.write_bundle(temporal=temporal))
                 self.assertEqual(result["status"], "QUALIFIED", result["errors"])
                 self.assertEqual(result["temporal_classifiers"][classifier]["total"], 10)
+
+    def test_recording_gap_does_not_relax_each_admitted_support_chain(self):
+        for classifier in TEMPORAL_V2_OBSERVER_RUBRICS:
+            with self.subTest(classifier=classifier):
+                temporal, _ = self.generic_temporal_validation(
+                    classifier, recording_maximum_interval_ns=15_000_000)
+                result = self.verify(self.write_bundle(temporal=temporal))
+                self.assertEqual(result["status"], "QUALIFIED", result["errors"])
+
+                # All record points and retained source times agree. The single
+                # 15 ms gap is now inside the first admitted chain, whose total
+                # span still fits. Its accurate recording-wide binding must not
+                # make that local gap an acceptable transition observation.
+                temporal, _ = self.generic_temporal_validation(
+                    classifier, recording_maximum_interval_ns=15_000_000,
+                    source_gap_at_index=11)
+                result = self.verify(self.write_bundle(temporal=temporal),
+                                     source_gap_at_index=11)
+                self.assertEqual(result["status"], "REJECTED")
+                self.assertIn("local source gap bound", result["errors"][0])
 
     def test_generic_classifiers_cannot_use_arrow_schema_v1(self):
         for classifier in TEMPORAL_V2_OBSERVER_RUBRICS:
@@ -1358,7 +1384,7 @@ class QualificationTests(unittest.TestCase):
                 self.assertIn("schema version 1 is unsupported", result["errors"][0])
 
     def test_generic_temporal_binds_every_dependency_in_each_freeze(self):
-        classifier = "v1-main-bar-adjacent-redraw-v1"
+        classifier = "v1-main-bar-adjacent-redraw-v2"
         for artifact in ("seal", "pre_pixel_freeze", "frozen_classifier_result"):
             for name in CLASSIFIER_IMPLEMENTATION_FILES[classifier]:
                 with self.subTest(artifact=artifact, implementation=name):
@@ -1369,7 +1395,7 @@ class QualificationTests(unittest.TestCase):
                     self.assertTrue(result["errors"])
 
     def test_generic_temporal_binds_reader_in_each_freeze(self):
-        classifier = "v1-muted-badge-rising-fill-v1"
+        classifier = "v1-muted-badge-rising-fill-v2"
         for artifact in ("seal", "pre_pixel_freeze", "frozen_classifier_result"):
             with self.subTest(artifact=artifact):
                 temporal, _ = self.generic_temporal_validation(
@@ -1379,7 +1405,7 @@ class QualificationTests(unittest.TestCase):
                 self.assertTrue(result["errors"])
 
     def test_generic_temporal_authenticates_blind_capture_boundary(self):
-        classifier = "v1-main-bar-adjacent-redraw-v1"
+        classifier = "v1-main-bar-adjacent-redraw-v2"
         for tamper in ("capture_bench", "capture_source", "capture_window", "capture_pixels"):
             with self.subTest(tamper=tamper):
                 temporal, _ = self.generic_temporal_validation(
@@ -1389,7 +1415,7 @@ class QualificationTests(unittest.TestCase):
                 self.assertIn("qualification capture", result["errors"][0])
 
     def test_generic_temporal_selection_is_complete_and_well_formed(self):
-        classifier = "v1-main-bar-adjacent-redraw-v1"
+        classifier = "v1-main-bar-adjacent-redraw-v2"
         for tamper in ("reordered", "wrong_type"):
             with self.subTest(tamper=tamper):
                 temporal, _ = self.generic_temporal_validation(
@@ -1401,7 +1427,7 @@ class QualificationTests(unittest.TestCase):
                                 result["errors"])
 
     def test_generic_temporal_cannot_duplicate_one_candidate_to_meet_minima(self):
-        classifier = "v1-main-bar-adjacent-redraw-v1"
+        classifier = "v1-main-bar-adjacent-redraw-v2"
         temporal, _ = self.generic_temporal_validation(
             classifier, duplicate_candidate=True)
         result = self.verify(self.write_bundle(temporal=temporal))
@@ -1409,7 +1435,7 @@ class QualificationTests(unittest.TestCase):
         self.assertIn("source candidate is duplicated", result["errors"][0])
 
     def test_generic_temporal_spec_cannot_contradict_supported_minima_or_rubric(self):
-        classifier = "v1-main-bar-adjacent-redraw-v1"
+        classifier = "v1-main-bar-adjacent-redraw-v2"
         temporal, _ = self.generic_temporal_validation(
             classifier, contradictory_spec=True)
         result = self.verify(self.write_bundle(temporal=temporal))
@@ -1417,7 +1443,7 @@ class QualificationTests(unittest.TestCase):
         self.assertIn("specification validation contract differs", result["errors"][0])
 
     def test_generic_temporal_blind_protocol_and_malformed_record_reject_cleanly(self):
-        classifier = "v1-main-bar-adjacent-redraw-v1"
+        classifier = "v1-main-bar-adjacent-redraw-v2"
         for options in ({"blind_protocol_tamper": True},
                         {"malformed_admitted_record": True}):
             with self.subTest(options=options):
@@ -1428,18 +1454,18 @@ class QualificationTests(unittest.TestCase):
 
     def test_generic_temporal_validates_complete_classifier_record_invariants(self):
         cases = (
-            ("v1-main-bar-adjacent-redraw-v1", "bar_changed_index"),
-            ("v1-main-bar-adjacent-redraw-v1", "bar_expectation"),
-            ("v1-main-bar-adjacent-redraw-v1", "reader_binding"),
-            ("v1-main-bar-adjacent-redraw-v1", "selection_binding"),
-            ("v1-main-bar-adjacent-redraw-v1", "extra_field"),
-            ("v1-main-bar-adjacent-redraw-v1", "analysis_result"),
-            ("v1-muted-badge-rising-fill-v1", "badge_direction"),
-            ("v1-muted-badge-rising-fill-v1", "stable_fields"),
-            ("v1-muted-badge-rising-fill-v1", "support_sequence"),
-            ("v1-unmute-stable-frequency-sweep-v1", "frequency_masks"),
-            ("v1-unmute-stable-frequency-sweep-v1", "support_timestamp"),
-            ("v1-unmute-stable-frequency-sweep-v1", "rejected_field"),
+            ("v1-main-bar-adjacent-redraw-v2", "bar_changed_index"),
+            ("v1-main-bar-adjacent-redraw-v2", "bar_expectation"),
+            ("v1-main-bar-adjacent-redraw-v2", "reader_binding"),
+            ("v1-main-bar-adjacent-redraw-v2", "selection_binding"),
+            ("v1-main-bar-adjacent-redraw-v2", "extra_field"),
+            ("v1-main-bar-adjacent-redraw-v2", "analysis_result"),
+            ("v1-muted-badge-rising-fill-v2", "badge_direction"),
+            ("v1-muted-badge-rising-fill-v2", "stable_fields"),
+            ("v1-muted-badge-rising-fill-v2", "support_sequence"),
+            ("v1-unmute-stable-frequency-sweep-v2", "frequency_masks"),
+            ("v1-unmute-stable-frequency-sweep-v2", "support_timestamp"),
+            ("v1-unmute-stable-frequency-sweep-v2", "rejected_field"),
         )
         for classifier, tamper in cases:
             with self.subTest(classifier=classifier, tamper=tamper):
@@ -1450,7 +1476,7 @@ class QualificationTests(unittest.TestCase):
                 self.assertTrue(result["errors"])
 
     def test_generic_temporal_derives_clip_path_identity_and_exact_instructions(self):
-        classifier = "v1-main-bar-adjacent-redraw-v1"
+        classifier = "v1-main-bar-adjacent-redraw-v2"
         for options in ({"clip_path_swap": True}, {"empty_readme": True}):
             with self.subTest(options=options):
                 temporal, _ = self.generic_temporal_validation(classifier, **options)
@@ -1476,12 +1502,12 @@ class QualificationTests(unittest.TestCase):
                 for allowed in rubric["allowed_literals"].values():
                     for literal in allowed:
                         self.assertIn(literal, instructions)
-        badge = temporal_v2_observer_instructions("v1-muted-badge-rising-fill-v1")
+        badge = temporal_v2_observer_instructions("v1-muted-badge-rising-fill-v2")
         self.assertIn("Uniform palette or brightness recoloring caused by mute is allowed", badge)
         self.assertIn("frequency, band, direction, bar geometry or count", badge)
 
     def test_generic_temporal_binds_clip_frame_mapping(self):
-        classifier = "v1-main-bar-adjacent-redraw-v1"
+        classifier = "v1-main-bar-adjacent-redraw-v2"
         for tamper in ("source_gap", "target_position"):
             with self.subTest(tamper=tamper):
                 temporal, _ = self.generic_temporal_validation(
@@ -1491,8 +1517,8 @@ class QualificationTests(unittest.TestCase):
                 self.assertIn("mapping", result["errors"][0])
 
     def test_generic_mute_rejection_contract_includes_event_scope(self):
-        for classifier in ("v1-muted-badge-rising-fill-v1",
-                           "v1-unmute-stable-frequency-sweep-v1"):
+        for classifier in ("v1-muted-badge-rising-fill-v2",
+                           "v1-unmute-stable-frequency-sweep-v2"):
             with self.subTest(classifier=classifier):
                 temporal, _ = self.generic_temporal_validation(
                     classifier, rejection_code="EVENT_SCOPE")
@@ -1500,7 +1526,7 @@ class QualificationTests(unittest.TestCase):
                 self.assertEqual(result["status"], "QUALIFIED", result["errors"])
 
     def test_generic_temporal_binds_code_owned_rubric(self):
-        classifier = "v1-unmute-stable-frequency-sweep-v1"
+        classifier = "v1-unmute-stable-frequency-sweep-v2"
         artifacts = ("seal", "pre_pixel_freeze", "frozen_classifier_result",
                      "observer_manifest", "completed_observations")
         for artifact in artifacts:
@@ -1525,7 +1551,7 @@ class QualificationTests(unittest.TestCase):
             "outcome": lambda document: document["comparisons"][0].update(
                 comparison_outcome="FALSE_ADMIT"),
         }
-        classifier = "v1-main-bar-adjacent-redraw-v1"
+        classifier = "v1-main-bar-adjacent-redraw-v2"
         for name, mutation in mutations.items():
             with self.subTest(tamper=name):
                 temporal, context = self.generic_temporal_validation(classifier)
@@ -1536,8 +1562,8 @@ class QualificationTests(unittest.TestCase):
 
     def test_generic_temporal_false_admission_is_rejected_with_minima_met(self):
         cases = (
-            ("v1-main-bar-adjacent-redraw-v1", {"false_admit": True}),
-            ("v1-unmute-stable-frequency-sweep-v1", {"claim_mismatch": True}),
+            ("v1-main-bar-adjacent-redraw-v2", {"false_admit": True}),
+            ("v1-unmute-stable-frequency-sweep-v2", {"claim_mismatch": True}),
         )
         for classifier, options in cases:
             with self.subTest(classifier=classifier):
@@ -1578,7 +1604,7 @@ class QualificationTests(unittest.TestCase):
                 self.assertEqual(result["status"], "REJECTED")
 
     def test_generic_temporal_malformed_reference_and_nonfinite_json_reject_cleanly(self):
-        classifier = "v1-main-bar-adjacent-redraw-v1"
+        classifier = "v1-main-bar-adjacent-redraw-v2"
         temporal, _ = self.generic_temporal_validation(classifier)
         temporal[classifier]["source_artifacts"]["selection"] = "not-an-evidence-reference"
         result = self.verify(self.write_bundle(temporal=temporal))

@@ -1,5 +1,5 @@
 {
-  "classifier_id": "v1-unmute-stable-frequency-sweep-v1",
+  "classifier_id": "v1-unmute-stable-frequency-sweep-v2",
   "deadline_observation_semantics": "TARGET_ACQUISITION_TRANSITION",
   "constants": {
     "component_progress_max": 1.1,
@@ -9,7 +9,8 @@
     "maximum_hole_ink_fraction": 0.1,
     "maximum_support_chain_span_ns": 50000000,
     "maximum_total_backward_motion": 0.15,
-    "maximum_verified_source_interval_ns": 10000000,
+    "maximum_recording_interval_ns": 1000000000,
+    "maximum_support_interval_ns": 10000000,
     "stable_support_frames_each_side": 2
   },
   "identity": {
@@ -24,7 +25,8 @@
     "The candidate is one maximal nonempty primary_frequency ambiguous run with exact reason inconsistent illuminated frequency segment levels; unreadable and other ambiguity reasons are never redraws.",
     "Only the contiguous subset product-unresolved solely in primary_frequency is claimed; other full-run frames remain support and cannot be excused.",
     "Two immediate same-value readable frequency supports precede and follow the full field run.",
-    "Video and source indices are consecutive, every gap is within the verified maximum of 10 ms, and the full support chain spans at most 50 ms.",
+    "The authenticated recording-wide maximum source interval is retained exactly and is no greater than the 1 s sanity ceiling; it does not loosen a candidate chain.",
+    "Video and source indices are consecutive, every gap is no greater than the smaller of the verified recording-wide maximum and the fixed 10 ms support-chain maximum, and the full support chain spans at most 50 ms.",
     "Every chain frame has the exact expected five canonical masks, no partial segment, every expected-off segment off, both holes per digit at or below 0.10 ink fraction, and a clearly on decimal.",
     "Every expected-on segment endpoint median rises by at least 50 intensity levels.",
     "Every lit-segment component stays within normalized progress -0.10 through 1.10, has no backward step over 0.10, and has no more than 0.15 total backward motion; components may advance asynchronously.",

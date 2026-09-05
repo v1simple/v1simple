@@ -75,19 +75,19 @@ CLASSIFIER_IMPLEMENTATION_FILES = {
     # appends its records unchanged. Wrapper drift can suppress a result (fail closed)
     # but the qualified record authority remains encounter_arrow_transition.py.
     "v1-arrow-phase-edge-v2": ("encounter_arrow_transition.py",),
-    "v1-main-bar-adjacent-redraw-v1": (
+    "v1-main-bar-adjacent-redraw-v2": (
         "encounter_temporal.py", "encounter_bar_transition.py", "encounter_redraw_probe.py"),
-    "v1-muted-badge-rising-fill-v1": (
+    "v1-muted-badge-rising-fill-v2": (
         "encounter_temporal.py", "encounter_mute_redraw_transition.py",
         "encounter_redraw_probe.py"),
-    "v1-unmute-stable-frequency-sweep-v1": (
+    "v1-unmute-stable-frequency-sweep-v2": (
         "encounter_temporal.py", "encounter_mute_redraw_transition.py",
         "encounter_redraw_probe.py"),
     "secondary-closed-meter-corroboration-v1": ("encounter_temporal.py",),
 }
 
 TEMPORAL_V2_OBSERVER_RUBRICS = {
-    "v1-main-bar-adjacent-redraw-v1": {
+    "v1-main-bar-adjacent-redraw-v2": {
         "raw_affected_fields": ["main_bars"],
         "observer_eligibility_rule": (
             "COHERENT_SINGLE_BOUNDARY_ADJACENT_REDRAW with BOTH_CLEAR endpoints, "
@@ -134,7 +134,7 @@ TEMPORAL_V2_OBSERVER_RUBRICS = {
             "confidence": ("HIGH", "MEDIUM", "LOW"),
         },
     },
-    "v1-muted-badge-rising-fill-v1": {
+    "v1-muted-badge-rising-fill-v2": {
         "raw_affected_fields": ["muted_badge"],
         "observer_eligibility_rule": (
             "COHERENT_BADGE_RISING_FILL with BOTH_CLEAR endpoints, RISING direction, "
@@ -184,7 +184,7 @@ TEMPORAL_V2_OBSERVER_RUBRICS = {
             "confidence": ("HIGH", "MEDIUM", "LOW"),
         },
     },
-    "v1-unmute-stable-frequency-sweep-v1": {
+    "v1-unmute-stable-frequency-sweep-v2": {
         "raw_affected_fields": ["primary_frequency"],
         "observer_eligibility_rule": (
             "COHERENT_STABLE_FREQUENCY_ILLUMINATION_SWEEP with BOTH_CLEAR endpoints, "
@@ -239,20 +239,20 @@ TEMPORAL_V2_OBSERVER_RUBRICS = {
 }
 
 _TEMPORAL_V2_REJECTION_CODES = {
-    "v1-main-bar-adjacent-redraw-v1": {
+    "v1-main-bar-adjacent-redraw-v2": {
         "UNCLOSED_RUN", "SOURCE_GAP", "ENDPOINT_SPAN", "UNSTABLE_ENDPOINT",
         "NOT_ADJACENT_COUNTS", "EXPECTATION_SIGNATURE", "NOT_BOUNDARY_ONLY",
         "UNCHANGED_CELL_MOTION", "ENDPOINT_SEPARATION", "PROJECTION_RANGE",
         "NORMALIZED_RESIDUAL", "MAXIMUM_BACKWARD_STEP", "TOTAL_BACKWARD_MOTION",
         "BOUNDARY_MEDIAN_BACKTRACK",
     },
-    "v1-muted-badge-rising-fill-v1": {
+    "v1-muted-badge-rising-fill-v2": {
         "EVENT_SCOPE", "UNCLOSED_RUN", "SOURCE_GAP", "SUPPORT_SPAN", "LEFT_SUPPORT", "RIGHT_SUPPORT",
         "PRODUCT_FIELD_SCOPE", "PROFILE_SCHEMA", "PROFILE_READER_MISMATCH",
         "ENDPOINT_SEPARATION", "PROGRESS_RANGE", "MAXIMUM_BACKWARD_STEP",
         "TOTAL_BACKWARD_MOTION",
     },
-    "v1-unmute-stable-frequency-sweep-v1": {
+    "v1-unmute-stable-frequency-sweep-v2": {
         "EVENT_SCOPE", "UNCLOSED_RUN", "SOURCE_GAP", "SUPPORT_SPAN", "EXPECTED_FREQUENCY",
         "STABLE_FREQUENCY_SUPPORT", "NO_PRODUCT_CLAIM", "NONCONTIGUOUS_PRODUCT_CLAIM",
         "FREQUENCY_PROFILE", "ENDPOINT_SEPARATION", "PROGRESS_RANGE",
@@ -877,7 +877,7 @@ def _temporal_v2_observer_result(classifier_id: str, observation: Any) -> tuple[
         _require(literal[name] in allowed,
                  f"temporal observer literal {name} is invalid for {classifier_id}")
 
-    if classifier_id == "v1-main-bar-adjacent-redraw-v1":
+    if classifier_id == "v1-main-bar-adjacent-redraw-v2":
         counts = (literal["left_endpoint_bar_count"],
                   literal["right_endpoint_bar_count"])
         _require(all(value is None or (type(value) is int and 0 <= value <= 6)
@@ -887,9 +887,9 @@ def _temporal_v2_observer_result(classifier_id: str, observation: Any) -> tuple[
                         and abs(counts[1] - counts[0]) == 1
                         and literal["direction"] ==
                             ("RISING" if counts[1] > counts[0] else "FALLING"))
-    elif classifier_id == "v1-muted-badge-rising-fill-v1":
+    elif classifier_id == "v1-muted-badge-rising-fill-v2":
         relationship = True
-    elif classifier_id == "v1-unmute-stable-frequency-sweep-v1":
+    elif classifier_id == "v1-unmute-stable-frequency-sweep-v2":
         frequencies = (literal["left_endpoint_frequency"],
                        literal["right_endpoint_frequency"])
         _require(all(value is None or (isinstance(value, str)
@@ -939,7 +939,7 @@ def _temporal_v2_claim_matches_record(classifier_id: str, spec_sha256: str,
             or record.get("raw_affected_fields") !=
                 TEMPORAL_V2_OBSERVER_RUBRICS[classifier_id]["raw_affected_fields"]):
         return False
-    if classifier_id == "v1-main-bar-adjacent-redraw-v1":
+    if classifier_id == "v1-main-bar-adjacent-redraw-v2":
         endpoints = record.get("endpoint_values")
         return (isinstance(endpoints, list) and len(endpoints) == 2
                 and all(type(value) is int and 0 <= value <= 6 for value in endpoints)
@@ -948,10 +948,10 @@ def _temporal_v2_claim_matches_record(classifier_id: str, spec_sha256: str,
     signature = record.get("event_signature")
     if not isinstance(signature, dict):
         return False
-    if classifier_id == "v1-muted-badge-rising-fill-v1":
+    if classifier_id == "v1-muted-badge-rising-fill-v2":
         return (signature.get("previous_muted_badge") is False
                 and signature.get("target_muted_badge") is True)
-    if classifier_id == "v1-unmute-stable-frequency-sweep-v1":
+    if classifier_id == "v1-unmute-stable-frequency-sweep-v2":
         return (literal["left_endpoint_frequency"] ==
                 signature.get("stable_primary_frequency") ==
                 literal["right_endpoint_frequency"])
@@ -1014,9 +1014,9 @@ def _validate_temporal_v2_capture(capture: Any, window: Any, capture_path: Path,
 
 _SOURCE_FRAMEHASH_CACHE: dict[tuple[str, str], tuple[str, ...]] = {}
 _TEMPORAL_V2_INSET_LOGICAL = {
-    "v1-main-bar-adjacent-redraw-v1": (860, 185, 980, 440),
-    "v1-muted-badge-rising-fill-v1": (480, 155, 710, 285),
-    "v1-unmute-stable-frequency-sweep-v1": (425, 225, 845, 390),
+    "v1-main-bar-adjacent-redraw-v2": (860, 185, 980, 440),
+    "v1-muted-badge-rising-fill-v2": (480, 155, 710, 285),
+    "v1-unmute-stable-frequency-sweep-v2": (425, 225, 845, 390),
 }
 
 
@@ -1245,10 +1245,13 @@ def _temporal_v2_context_binding(classifier_id: str, spec_document: dict[str, An
              f"temporal classifier context sources are malformed for {classifier_id}")
     capture_id = _digest(camera.get("capture_id"), f"{classifier_id} capture")
     maximum_interval = timing.get("maximum_source_interval_ns")
-    configured_maximum = constants.get("maximum_verified_source_interval_ns")
+    configured_maximum = constants.get("maximum_recording_interval_ns")
+    support_maximum = constants.get("maximum_support_interval_ns")
     _require(timing.get("status") == "verified"
              and type(maximum_interval) is int
              and type(configured_maximum) is int
+             and type(support_maximum) is int
+             and 0 < support_maximum <= configured_maximum
              and 0 < maximum_interval <= configured_maximum
              and identity.get("reader_method_version") == reader.get("method_version")
              and identity.get("reader_sha256") == implementation.get("encounter_reader.py")
@@ -1265,6 +1268,24 @@ def _temporal_v2_context_binding(classifier_id: str, spec_document: dict[str, An
         "redraw_probe_method_version": identity["redraw_probe_method_version"],
         "redraw_probe_sha256": implementation["encounter_redraw_probe.py"],
     }
+
+
+def _validate_temporal_support_chain(first: int, last: int,
+                                       source_rows: dict[int, dict[str, int]],
+                                       maximum_gap_ns: int) -> None:
+    """Bind a local transition's timing to its actual authenticated source rows."""
+    chain = [source_rows.get(index) for index in range(first, last + 1)]
+    _require(bool(chain) and all(isinstance(row, dict) for row in chain),
+             "temporal support chain is missing source frames")
+    # The authenticated map is keyed by video index; requiring every key in
+    # this consecutive range also rules out a missing or skipped video frame.
+    _require(all(type(row.get("source_frame_seq")) is int
+                 and type(row.get("capture_ns")) is int for row in chain),
+             "temporal support chain has malformed source identity")
+    _require(all(right["source_frame_seq"] == left["source_frame_seq"] + 1
+                 and 0 < right["capture_ns"] - left["capture_ns"] <= maximum_gap_ns
+                 for left, right in zip(chain, chain[1:])),
+             "temporal support chain exceeds its local source gap bound")
 
 
 def _validate_temporal_v2_common_record(classifier_id: str, spec_sha256: str,
@@ -1305,14 +1326,18 @@ def _validate_temporal_v2_bar_record(record: dict[str, Any], target_indices: lis
     for name, index in (("left_support", first - 2), ("left_endpoint", first - 1),
                         ("right_endpoint", last + 1), ("right_support", last + 2)):
         _require_point(record.get(name), index, name, source_rows)
+    local_gap = min(context["verified_maximum_source_interval_ns"],
+                    constants["maximum_support_interval_ns"])
+    _validate_temporal_support_chain(first - 2, last + 2, source_rows, local_gap)
+    maximum_span = constants["authored_display_update_ns"] + local_gap
+    _require(source_rows[last + 1]["capture_ns"] - source_rows[first - 1]["capture_ns"]
+             <= maximum_span, "temporal main-bar endpoints exceed their local span bound")
     _require(isinstance(profile, dict)
              and record.get("profile_schema") == {
                  "rows": profile.get("rows"), "columns": profile.get("columns"),
                  "sample": profile.get("sample")}
              and record.get("profile_boxes") == profile.get("bar_boxes_bottom_to_top")
-             and record.get("maximum_endpoint_span_ns") ==
-                 constants.get("authored_display_update_ns") +
-                 context["verified_maximum_source_interval_ns"],
+             and record.get("maximum_endpoint_span_ns") == maximum_span,
              "temporal main-bar profile contract differs")
     separation = record.get("endpoint_separation_rms")
     projections = record.get("projections")
@@ -1386,7 +1411,7 @@ def _validate_temporal_v2_fill_record(classifier_id: str, record: dict[str, Any]
              and isinstance(signature.get("joint_states"), list)
              and bool(signature["joint_states"]),
              "temporal mute redraw event signature is malformed")
-    if classifier_id == "v1-muted-badge-rising-fill-v1":
+    if classifier_id == "v1-muted-badge-rising-fill-v2":
         _require(signature["previous_muted_badge"] is False
                  and signature["target_muted_badge"] is True,
                  "temporal badge redraw direction is inconsistent")
@@ -1418,6 +1443,12 @@ def _validate_temporal_v2_fill_record(classifier_id: str, record: dict[str, Any]
     for point, index in zip([*supports[0], *supports[1]],
                             (first - 2, first - 1, last + 1, last + 2)):
         _require_point(point, index, "support", source_rows)
+    local_gap = min(context["verified_maximum_source_interval_ns"],
+                    constants["maximum_support_interval_ns"])
+    _validate_temporal_support_chain(first - 2, last + 2, source_rows, local_gap)
+    _require(source_rows[last + 2]["capture_ns"] - source_rows[first - 2]["capture_ns"]
+             <= constants["maximum_support_chain_span_ns"],
+             "temporal redraw support chain exceeds its local span bound")
     separation = record.get("endpoint_component_separation")
     progress = record.get("component_progress")
     totals = record.get("total_backward_motion_by_component")
@@ -1464,12 +1495,12 @@ def _validate_temporal_v2_record(classifier_id: str, spec_sha256: str,
         _require_point(record.get("first"), target_indices[0], "rejected first", source_rows)
         _require_point(record.get("last"), target_indices[-1], "rejected last", source_rows)
         return
-    required = (_BAR_RECORD_KEYS if classifier_id == "v1-main-bar-adjacent-redraw-v1"
-                else _BADGE_RECORD_KEYS if classifier_id == "v1-muted-badge-rising-fill-v1"
+    required = (_BAR_RECORD_KEYS if classifier_id == "v1-main-bar-adjacent-redraw-v2"
+                else _BADGE_RECORD_KEYS if classifier_id == "v1-muted-badge-rising-fill-v2"
                 else _FREQUENCY_RECORD_KEYS)
     _validate_temporal_v2_common_record(
         classifier_id, spec_sha256, record, target_indices, context, required, source_rows)
-    if classifier_id == "v1-main-bar-adjacent-redraw-v1":
+    if classifier_id == "v1-main-bar-adjacent-redraw-v2":
         _validate_temporal_v2_bar_record(
             record, target_indices, context, spec_document, source_rows)
     else:

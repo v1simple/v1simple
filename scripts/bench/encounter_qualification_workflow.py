@@ -45,12 +45,12 @@ def _default_manifest_path() -> Path:
 
 DEFAULT_MANIFEST = _default_manifest_path()
 TARGET_CLASSIFIERS = (
-    "v1-main-bar-adjacent-redraw-v1",
-    "v1-muted-badge-rising-fill-v1",
+    "v1-main-bar-adjacent-redraw-v2",
+    "v1-muted-badge-rising-fill-v2",
 )
 FIELD_BY_CLASSIFIER = {
-    "v1-main-bar-adjacent-redraw-v1": "main_bars",
-    "v1-muted-badge-rising-fill-v1": "muted_badge",
+    "v1-main-bar-adjacent-redraw-v2": "main_bars",
+    "v1-muted-badge-rising-fill-v2": "muted_badge",
 }
 SPEC_BY_CLASSIFIER = {
     classifier: BENCH_DIR / "temporal_specs" / f"{classifier}.json"
@@ -418,7 +418,7 @@ def _candidate_records(temporal: dict[str, Any], classifier_id: str) -> list[dic
             continue
         target = deepcopy(record.get("video_frame_indices"))
         full = (deepcopy(record.get("full_field_run_indices"))
-                if classifier_id == "v1-unmute-stable-frequency-sweep-v1" else deepcopy(target))
+                if classifier_id == "v1-unmute-stable-frequency-sweep-v2" else deepcopy(target))
         admitted.append({"decision": "ADMITTED", "record": deepcopy(record),
                          "indices": target, "full_indices": full})
     field = FIELD_BY_CLASSIFIER[classifier_id]
@@ -471,9 +471,9 @@ def _raw_box(logical: tuple[int, int, int, int], registration: dict[str, Any],
 
 def _logical_inset(classifier_id: str) -> tuple[int, int, int, int]:
     return {
-        "v1-main-bar-adjacent-redraw-v1": (860, 185, 980, 440),
-        "v1-muted-badge-rising-fill-v1": (480, 155, 710, 285),
-        "v1-unmute-stable-frequency-sweep-v1": (425, 225, 845, 390),
+        "v1-main-bar-adjacent-redraw-v2": (860, 185, 980, 440),
+        "v1-muted-badge-rising-fill-v2": (480, 155, 710, 285),
+        "v1-unmute-stable-frequency-sweep-v2": (425, 225, 845, 390),
     }[classifier_id]
 
 
@@ -828,6 +828,24 @@ def _prepare_classifier(stage: Path, campaign_root: Path, campaign: dict[str, An
     }
 
 
+def _validate_capture_classifier_contexts(campaign: dict[str, Any],
+                                           window: dict[str, Any]) -> None:
+    """Reject incompatible metadata before reading any qualification pixels."""
+    import encounter_bar_transition as bar
+    import encounter_mute_redraw_transition as mute
+
+    for classifier_id, classify in (
+            (bar.CLASSIFIER_ID, bar.classify_main_bar_runs),
+            (mute.BADGE_CLASSIFIER_ID, mute.classify_mute_redraw_runs)):
+        # Selection does not exist yet. This digest checks only context shape;
+        # empty samples cannot produce a classification or a retained claim.
+        context = _classifier_context(campaign, classifier_id, window, "0" * 64)
+        result = classify([], [], context)
+        _require(result.get("errors") == [],
+                 f"capture classifier context rejected for {classifier_id}: "
+                 + "; ".join(result.get("errors", [])))
+
+
 def prepare(campaign_path: Path, run_dir: Path) -> dict[str, Any]:
     """Read the reserved capture once and make isolated all-candidate packets."""
     from encounter_check import analyze, load_run
@@ -836,6 +854,7 @@ def prepare(campaign_path: Path, run_dir: Path) -> dict[str, Any]:
     _verify_frozen_source(campaign_root, campaign, require_unallowlisted=True)
     run_dir = run_dir.resolve()
     capture, window = _validate_capture(run_dir, campaign)
+    _validate_capture_classifier_contexts(campaign, window)
     destination = campaign_root / "prepared"
     summary: dict[str, Any] = {}
 
@@ -856,7 +875,9 @@ def prepare(campaign_path: Path, run_dir: Path) -> dict[str, Any]:
                  "camera analysis contains errors: " + "; ".join(result.get("errors", [])))
         temporal = result.get("temporal_classification")
         _require(isinstance(temporal, dict) and temporal.get("errors") == [],
-                 "temporal classifier execution contains errors")
+                 "temporal classifier execution contains errors: " + "; ".join(
+                     temporal.get("errors", []) if isinstance(temporal, dict)
+                     else ["classification is missing"]))
         _require(result.get("evidence", {}).get("reader") == campaign.get("reader_runtime"),
                  "analysis reader runtime differs from freeze")
         analysis_method = result.get("implementation_sha256")
@@ -925,7 +946,9 @@ def _rederive_analysis(prepared: Path, prepared_doc: dict[str, Any],
                          reader_qualification=None)
         _require(result.get("errors") == []
                  and result.get("temporal_classification", {}).get("errors") == [],
-                 "qualification reanalysis contains errors")
+                 "qualification reanalysis contains errors: " + "; ".join(
+                     result.get("errors", [])
+                     + result.get("temporal_classification", {}).get("errors", [])))
         _require((output / "selection.json").is_file()
                  and sha256(output / "selection.json") ==
                      prepared_doc.get("analysis_selection_sha256"),

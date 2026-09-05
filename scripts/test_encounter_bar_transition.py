@@ -99,21 +99,22 @@ def context(**changes):
     return value
 
 
-def classify(samples):
+def classify(samples, **context_changes):
     return bars.classify_main_bar_runs(
         samples, [{"event_id": "event-0001", "start_ns": 0, "end_ns": 1_000_000_000}],
-        context())
+        context(**context_changes))
 
 
 class BarTransitionTests(unittest.TestCase):
     def test_candidate_identity_and_numeric_gates_are_explicit(self):
-        self.assertEqual(bars.CLASSIFIER_ID, "v1-main-bar-adjacent-redraw-v1")
+        self.assertEqual(bars.CLASSIFIER_ID, "v1-main-bar-adjacent-redraw-v2")
         spec = ROOT / "scripts" / "bench" / "temporal_specs" / f"{bars.CLASSIFIER_ID}.json"
         self.assertEqual(bars.CLASSIFIER_SPEC_SHA256,
                          hashlib.sha256(spec.read_bytes()).hexdigest())
         self.assertEqual(bars.PROFILE_REDRAW_PROBE_SHA256, hashlib.sha256(
             (ROOT / "scripts" / "bench" / "encounter_redraw_probe.py").read_bytes()).hexdigest())
-        self.assertEqual(bars.MAXIMUM_VERIFIED_SOURCE_INTERVAL_NS, 10_000_000)
+        self.assertEqual(bars.MAXIMUM_RECORDING_SOURCE_INTERVAL_NS, 1_000_000_000)
+        self.assertEqual(bars.MAXIMUM_SUPPORT_CHAIN_INTERVAL_NS, 10_000_000)
         self.assertEqual(bars.AUTHORED_DISPLAY_UPDATE_NS, 50_000_000)
         self.assertEqual(bars.STABLE_SUPPORT_FRAMES_EACH_SIDE, 2)
         self.assertEqual(bars.ENDPOINT_SEPARATION_RMS_MIN, 20.0)
@@ -132,7 +133,7 @@ class BarTransitionTests(unittest.TestCase):
         self.assertEqual(result["rejected_runs"], [])
         self.assertEqual(len(result["classifications"]), 1)
         record = result["classifications"][0]
-        self.assertEqual(record["classifier_id"], "v1-main-bar-adjacent-redraw-v1")
+        self.assertEqual(record["classifier_id"], "v1-main-bar-adjacent-redraw-v2")
         self.assertEqual(record["classifier_spec_sha256"], bars.CLASSIFIER_SPEC_SHA256)
         self.assertEqual(record["status"], "QUALIFIED_CAPTURE_TRANSITION")
         self.assertNotIn("candidate_only", record)
@@ -141,6 +142,23 @@ class BarTransitionTests(unittest.TestCase):
         self.assertEqual(record["endpoint_values"], [2, 3])
         self.assertEqual(record["changed_bar_index"], 2)
         self.assertEqual(samples, frozen)
+
+    def test_recording_wide_gap_does_not_loosen_or_reject_local_support(self):
+        result = classify(chain(), verified_maximum_source_interval_ns=15_000_000)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(len(result["classifications"]), 1, result)
+        record = result["classifications"][0]
+        self.assertEqual(record["verified_maximum_source_interval_ns"], 15_000_000)
+        self.assertEqual(record["maximum_endpoint_span_ns"], 60_000_000)
+
+        local_gap = chain()
+        for sample in local_gap[3:]:
+            sample["capture_ns"] += 10_000_000
+        rejected = classify(
+            local_gap, verified_maximum_source_interval_ns=15_000_000)
+        self.assertEqual(rejected["errors"], [])
+        self.assertEqual(rejected["classifications"], [])
+        self.assertEqual(rejected["rejected_runs"][0]["code"], "SOURCE_GAP")
 
     def test_decrement_and_temporal_integration_emit_the_same_bounded_candidate(self):
         samples = chain((0.25, 0.8), previous=4, current=3)
@@ -244,7 +262,7 @@ class BarTransitionTests(unittest.TestCase):
                          "BOUNDARY_MEDIAN_BACKTRACK")
         invalid = bars.classify_main_bar_runs(
             chain(), [{"event_id": "e", "start_ns": 0, "end_ns": 100_000_000}],
-            context(verified_maximum_source_interval_ns=10_000_001))
+            context(verified_maximum_source_interval_ns=1_000_000_001))
         self.assertEqual(invalid["classifications"], [])
         self.assertTrue(invalid["errors"])
         wrong_reader = bars.classify_main_bar_runs(

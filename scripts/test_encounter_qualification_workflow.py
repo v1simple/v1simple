@@ -36,6 +36,33 @@ from camera_contract import EXPECTED_CAMERA_NAME
 
 
 class QualificationWorkflowTests(unittest.TestCase):
+    def test_capture_context_is_checked_before_retention_or_pixel_analysis(self):
+        import encounter_reader
+        from encounter_check import analyze
+
+        campaign = {
+            "reader_runtime": {"method_version": encounter_reader.METHOD_VERSION},
+            "implementation_sha256": workflow.method_hashes(),
+        }
+        window = {"camera": {
+            "capture_id": "a" * 64,
+            "video_timing_verification_result": {"maximum_source_interval_ns": 15_000_000},
+        }}
+        workflow._validate_capture_classifier_contexts(campaign, window)
+        campaign["reader_runtime"]["method_version"] = -1
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with (patch.object(workflow, "_campaign", return_value=(root, campaign)),
+                  patch.object(workflow, "_verify_frozen_source"),
+                  patch.object(workflow, "_validate_capture", return_value=({}, window)),
+                  patch.object(workflow, "_retain_replay_run") as retain,
+                  patch("encounter_check.analyze", wraps=analyze) as pixels):
+                with self.assertRaisesRegex(workflow.WorkflowError, "capture classifier context rejected"):
+                    workflow.prepare(root, root / "run")
+            retain.assert_not_called()
+            pixels.assert_not_called()
+            self.assertFalse((root / "prepared").exists())
+
     def test_base_manifest_is_pinned_and_drift_stops_before_observation_access(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -91,12 +118,12 @@ class QualificationWorkflowTests(unittest.TestCase):
         self.assertEqual(
             workflow.TARGET_CLASSIFIERS,
             (
-                "v1-main-bar-adjacent-redraw-v1",
-                "v1-muted-badge-rising-fill-v1",
+                "v1-main-bar-adjacent-redraw-v2",
+                "v1-muted-badge-rising-fill-v2",
             ),
         )
         self.assertNotIn(
-            "v1-unmute-stable-frequency-sweep-v1",
+            "v1-unmute-stable-frequency-sweep-v2",
             workflow.classifier_identity(),
         )
 
@@ -178,7 +205,7 @@ class QualificationWorkflowTests(unittest.TestCase):
             observer = root / "observer_packet"
             clip = observer / "clips/OPAQUE123456.mov"
             source_indices, size = workflow._build_clip(
-                video, clip, "v1-main-bar-adjacent-redraw-v1", [4, 5, 6], 12,
+                video, clip, "v1-main-bar-adjacent-redraw-v2", [4, 5, 6], 12,
                 registration, 1280, 720)
             item = {
                 "opaque_id": "OPAQUE123456", "clip": "clips/OPAQUE123456.mov",
@@ -191,7 +218,7 @@ class QualificationWorkflowTests(unittest.TestCase):
                 "full_run_clip_frame_indices": [source_indices.index(value)
                                                  for value in (4, 5, 6)],
                 "inset_source_box": list(workflow._raw_box(
-                    workflow._logical_inset("v1-main-bar-adjacent-redraw-v1"),
+                    workflow._logical_inset("v1-main-bar-adjacent-redraw-v2"),
                     registration, 1280, 720)),
             }
             manifest_path = observer / "manifest.json"
@@ -208,7 +235,7 @@ class QualificationWorkflowTests(unittest.TestCase):
                 "observer_manifest": manifest_path,
             }
             source_rows = encounter_qualification._validate_temporal_v2_media(
-                "v1-main-bar-adjacent-redraw-v1", paths,
+                "v1-main-bar-adjacent-redraw-v2", paths,
                 {"video_timing_verification": timing},
                 {"camera": {"capture_id": capture_manifest["capture_id"],
                             "video_timing_verification_result": timing}},
@@ -223,7 +250,7 @@ class QualificationWorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(
                     encounter_qualification.QualificationError, "clip probe failed"):
                 encounter_qualification._validate_temporal_v2_media(
-                    "v1-main-bar-adjacent-redraw-v1", paths,
+                    "v1-main-bar-adjacent-redraw-v2", paths,
                     {"video_timing_verification": timing},
                     {"camera": {"capture_id": capture_manifest["capture_id"],
                                 "video_timing_verification_result": timing}},
@@ -248,7 +275,7 @@ class QualificationWorkflowTests(unittest.TestCase):
                                return_value=json.dumps(probe))):
                 source, size = workflow._build_clip(
                     Path("reserved.mp4"), destination,
-                    "v1-main-bar-adjacent-redraw-v1", [50, 51, 52], 100,
+                    "v1-main-bar-adjacent-redraw-v2", [50, 51, 52], 100,
                     {"landmark_bounds": [376, 192, 595, 270]}, 1280, 720)
 
             self.assertEqual(source, list(range(30, 73)))
@@ -262,7 +289,7 @@ class QualificationWorkflowTests(unittest.TestCase):
             "test_complete_exact_bundle_qualifies")
         helper.setUp()
         self.addCleanup(helper.tearDown)
-        classifier = "v1-main-bar-adjacent-redraw-v1"
+        classifier = "v1-main-bar-adjacent-redraw-v2"
         seeded_temporal, seeded = helper.generic_temporal_validation(classifier)
         seeded_entry = seeded_temporal[classifier]
         spec_path = helper.root / seeded_entry["spec"]["path"]

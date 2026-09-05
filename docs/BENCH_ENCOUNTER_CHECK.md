@@ -254,6 +254,15 @@ probe image; the implementation inventory separately binds the Base64 source
 file bytes. Rewrapping the same image leaves runtime identity unchanged, and a
 changed source file or decoded image still invalidates its respective binding.
 
+The version 2 bar and mute-redraw candidates preserve the recording-wide maximum
+source interval as evidence. Their support chains separately require consecutive
+video/source indices and every local capture interval at most 10 ms. The bar
+endpoint span is limited to 50 ms plus the smaller of that bound and the actual
+recording maximum; mute-redraw support spans remain limited to 50 ms. The
+qualification verifier rechecks these bounds against the authenticated source
+timestamps. A gap outside a candidate does not disable that candidate, and the
+product's event-window timing requirements remain unchanged.
+
 The gate can verify retained bytes and rerun deterministic reader and comparison
 code. It cannot reconstruct what a human observer was shown. The statements
 that labels were completed before key access and that the observer did not

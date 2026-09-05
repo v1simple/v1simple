@@ -12,16 +12,17 @@ import math
 import re
 
 
-BADGE_CLASSIFIER_ID = "v1-muted-badge-rising-fill-v1"
-BADGE_CLASSIFIER_SPEC_SHA256 = "1d0dd336f64e9d933cdea5c0c032da50458be5ea4a0e2062ead5b54ac1ecdaa5"
-FREQUENCY_CLASSIFIER_ID = "v1-unmute-stable-frequency-sweep-v1"
-FREQUENCY_CLASSIFIER_SPEC_SHA256 = "e76688014745a42bbc2cebb067c047c6cae61351dd8156f25055562a4dfd3e46"
+BADGE_CLASSIFIER_ID = "v1-muted-badge-rising-fill-v2"
+BADGE_CLASSIFIER_SPEC_SHA256 = "72c63f0c7195323795ef8484bcad553ee432aa5cb2e34386c35b99a1c3e20264"
+FREQUENCY_CLASSIFIER_ID = "v1-unmute-stable-frequency-sweep-v2"
+FREQUENCY_CLASSIFIER_SPEC_SHA256 = "86a500954c2f1397080957c648217a6269664f2faadd5edbb6d2d7bd774ef28a"
 
 PROFILE_READER_METHOD_VERSION = 5
 PROFILE_READER_SHA256 = "3427f8bb80fe25f4d88b4709113f353a60ebb6eef8ae1c18c7326fc8b1259e55"
 PROFILE_REDRAW_PROBE_METHOD_VERSION = 1
 PROFILE_REDRAW_PROBE_SHA256 = "4b623360af63afe5c51f154ed5ce57325476b8419bc165bc8a5ee9ef7f55da24"
-MAXIMUM_CAPTURE_GAP_NS = 10_000_000
+MAXIMUM_RECORDING_SOURCE_INTERVAL_NS = 1_000_000_000
+MAXIMUM_SUPPORT_CHAIN_INTERVAL_NS = 10_000_000
 MAXIMUM_SUPPORT_CHAIN_SPAN_NS = 50_000_000
 STABLE_SUPPORT_FRAMES_EACH_SIDE = 2
 
@@ -92,7 +93,7 @@ def _context(value):
     if (_SHA256.fullmatch(str(value["capture_id"])) is None
             or _SHA256.fullmatch(str(value["selection_manifest_sha256"])) is None
             or type(value["verified_maximum_source_interval_ns"]) is not int
-            or not 0 < value["verified_maximum_source_interval_ns"] <= MAXIMUM_CAPTURE_GAP_NS
+            or not 0 < value["verified_maximum_source_interval_ns"] <= MAXIMUM_RECORDING_SOURCE_INTERVAL_NS
             or value["reader_method_version"] != PROFILE_READER_METHOD_VERSION
             or value["reader_sha256"] != PROFILE_READER_SHA256
             or value["redraw_probe_method_version"] != PROFILE_REDRAW_PROBE_METHOD_VERSION
@@ -173,7 +174,8 @@ def _runs(selected, field, reason):
         while stop < len(selected):
             following = _reading(selected[stop], field)
             if (following.get("state") != "ambiguous" or following.get("reason") != reason
-                    or not _consecutive(selected[stop - 1], selected[stop], MAXIMUM_CAPTURE_GAP_NS)):
+                    or not _consecutive(selected[stop - 1], selected[stop],
+                                        MAXIMUM_SUPPORT_CHAIN_INTERVAL_NS)):
                 break
             stop += 1
         yield index, stop
@@ -185,7 +187,8 @@ def _support_chain(selected, first, stop, context):
             or stop + STABLE_SUPPORT_FRAMES_EACH_SIDE > len(selected):
         return None, "UNCLOSED_RUN", "redraw run lacks two immediate support frames on each side"
     chain = selected[first - 2:stop + 2]
-    gap = context["verified_maximum_source_interval_ns"]
+    gap = min(context["verified_maximum_source_interval_ns"],
+              MAXIMUM_SUPPORT_CHAIN_INTERVAL_NS)
     if not all(_consecutive(left, right, gap) for left, right in zip(chain, chain[1:])):
         return None, "SOURCE_GAP", "redraw support chain crosses an unobserved source position"
     if chain[-1]["capture_ns"] - chain[0]["capture_ns"] > MAXIMUM_SUPPORT_CHAIN_SPAN_NS:

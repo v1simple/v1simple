@@ -13,8 +13,8 @@ import math
 import re
 
 
-CLASSIFIER_ID = "v1-main-bar-adjacent-redraw-v1"
-CLASSIFIER_SPEC_SHA256 = "cdd4a64fb0707429b5d16fd1a7fb2928086ca055f4c0da5298d0304539856df7"
+CLASSIFIER_ID = "v1-main-bar-adjacent-redraw-v2"
+CLASSIFIER_SPEC_SHA256 = "2db75d016eb3962137489d636a9090d541c0f303452aa6bce83f517da71cc170"
 CLASSIFIER_STATUS = "QUALIFIED_CAPTURE_TRANSITION"
 
 PROFILE_READER_METHOD_VERSION = 5
@@ -22,7 +22,8 @@ PROFILE_READER_SHA256 = "3427f8bb80fe25f4d88b4709113f353a60ebb6eef8ae1c18c7326fc
 PROFILE_REDRAW_PROBE_METHOD_VERSION = 1
 PROFILE_REDRAW_PROBE_SHA256 = "4b623360af63afe5c51f154ed5ce57325476b8419bc165bc8a5ee9ef7f55da24"
 
-MAXIMUM_VERIFIED_SOURCE_INTERVAL_NS = 10_000_000
+MAXIMUM_RECORDING_SOURCE_INTERVAL_NS = 1_000_000_000
+MAXIMUM_SUPPORT_CHAIN_INTERVAL_NS = 10_000_000
 AUTHORED_DISPLAY_UPDATE_NS = 50_000_000
 STABLE_SUPPORT_FRAMES_EACH_SIDE = 2
 ENDPOINT_SEPARATION_RMS_MIN = 20.0
@@ -197,7 +198,7 @@ def _context(value):
     if (_SHA256.fullmatch(str(value["capture_id"])) is None
             or _SHA256.fullmatch(str(value["selection_manifest_sha256"])) is None
             or type(value["verified_maximum_source_interval_ns"]) is not int
-            or not 0 < value["verified_maximum_source_interval_ns"] <= MAXIMUM_VERIFIED_SOURCE_INTERVAL_NS
+            or not 0 < value["verified_maximum_source_interval_ns"] <= MAXIMUM_RECORDING_SOURCE_INTERVAL_NS
             or value["reader_method_version"] != PROFILE_READER_METHOD_VERSION
             or value["reader_sha256"] != PROFILE_READER_SHA256
             or value["redraw_probe_method_version"] != PROFILE_REDRAW_PROBE_METHOD_VERSION
@@ -226,7 +227,8 @@ def _classify(event_id, selected, first, stop, context):
         return None, _reject(event_id, run, "UNCLOSED_RUN",
                              "main-bar run lacks two readable support frames on each side")
     chain = selected[first - 2:stop + 2]
-    maximum_gap = context["verified_maximum_source_interval_ns"]
+    maximum_gap = min(context["verified_maximum_source_interval_ns"],
+                      MAXIMUM_SUPPORT_CHAIN_INTERVAL_NS)
     if not all(_consecutive(left, right, maximum_gap)
                for left, right in zip(chain, chain[1:])):
         return None, _reject(event_id, run, "SOURCE_GAP",
@@ -349,7 +351,7 @@ def _classify(event_id, selected, first, stop, context):
         "maximum_boundary_median_backward_step": max(backward_median_steps, default=0.0),
         "unchanged_cell_profile_diameter_rms": unchanged_diameters,
         "maximum_endpoint_span_ns": AUTHORED_DISPLAY_UPDATE_NS + maximum_gap,
-        "verified_maximum_source_interval_ns": maximum_gap,
+        "verified_maximum_source_interval_ns": context["verified_maximum_source_interval_ns"],
         "profile_schema": deepcopy(PROFILE_SCHEMA),
         "profile_boxes": [list(box) for box in MAIN_BAR_BOXES],
         "redraw_probe_method_version": context["redraw_probe_method_version"],

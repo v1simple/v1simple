@@ -39,13 +39,15 @@ def event(previous, current):
             "previous_target": target(previous), "target": target(current)}
 
 
-def context():
-    return {"capture_id": "a" * 64, "selection_manifest_sha256": "b" * 64,
-            "verified_maximum_source_interval_ns": 5_000_000,
-            "reader_method_version": redraw.PROFILE_READER_METHOD_VERSION,
-            "reader_sha256": redraw.PROFILE_READER_SHA256,
-            "redraw_probe_method_version": redraw.PROFILE_REDRAW_PROBE_METHOD_VERSION,
-            "redraw_probe_sha256": redraw.PROFILE_REDRAW_PROBE_SHA256}
+def context(**changes):
+    value = {"capture_id": "a" * 64, "selection_manifest_sha256": "b" * 64,
+             "verified_maximum_source_interval_ns": 5_000_000,
+             "reader_method_version": redraw.PROFILE_READER_METHOD_VERSION,
+             "reader_sha256": redraw.PROFILE_READER_SHA256,
+             "redraw_probe_method_version": redraw.PROFILE_REDRAW_PROBE_METHOD_VERSION,
+             "redraw_probe_sha256": redraw.PROFILE_REDRAW_PROBE_SHA256}
+    value.update(changes)
+    return value
 
 
 def comparisons(field, unresolved=True, other_difference=None):
@@ -154,6 +156,11 @@ class MuteRedrawTests(unittest.TestCase):
             (spec_root / f"{redraw.FREQUENCY_CLASSIFIER_ID}.json").read_bytes()).hexdigest())
         self.assertEqual(redraw.PROFILE_REDRAW_PROBE_SHA256, hashlib.sha256(
             (ROOT / "scripts" / "bench" / "encounter_redraw_probe.py").read_bytes()).hexdigest())
+        self.assertEqual(redraw.BADGE_CLASSIFIER_ID, "v1-muted-badge-rising-fill-v2")
+        self.assertEqual(redraw.FREQUENCY_CLASSIFIER_ID,
+                         "v1-unmute-stable-frequency-sweep-v2")
+        self.assertEqual(redraw.MAXIMUM_RECORDING_SOURCE_INTERVAL_NS, 1_000_000_000)
+        self.assertEqual(redraw.MAXIMUM_SUPPORT_CHAIN_INTERVAL_NS, 10_000_000)
 
     def test_badge_rising_fill_is_candidate_and_input_is_immutable(self):
         samples = badge_samples()
@@ -166,6 +173,33 @@ class MuteRedrawTests(unittest.TestCase):
         self.assertEqual(record["video_frame_indices"], [12])
         self.assertEqual(record["raw_affected_fields"], ["muted_badge"])
         self.assertEqual(samples, frozen)
+
+    def test_recording_wide_gap_does_not_loosen_or_reject_local_support(self):
+        result = redraw.classify_mute_redraw_runs(
+            badge_samples(), [event(False, True)],
+            context(verified_maximum_source_interval_ns=15_000_000))
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(len(result["classifications"]), 1, result)
+        self.assertEqual(result["classifications"][0][
+            "verified_maximum_source_interval_ns"], 15_000_000)
+
+        local_gap = badge_samples()
+        for sample in local_gap[2:]:
+            sample["capture_ns"] += 10_000_000
+        rejected = redraw.classify_mute_redraw_runs(
+            local_gap, [event(False, True)],
+            context(verified_maximum_source_interval_ns=15_000_000))
+        self.assertEqual(rejected["errors"], [])
+        self.assertEqual(rejected["classifications"], [])
+        self.assertEqual(rejected["rejected_runs"][0]["code"], "SOURCE_GAP")
+
+        frequency = redraw.classify_mute_redraw_runs(
+            frequency_samples(), [event(True, False)],
+            context(verified_maximum_source_interval_ns=15_000_000))
+        self.assertEqual(frequency["errors"], [])
+        self.assertEqual(len(frequency["classifications"]), 1, frequency)
+        self.assertEqual(frequency["classifications"][0][
+            "verified_maximum_source_interval_ns"], 15_000_000)
 
     def test_badge_reverse_event_and_backtracking_are_rejected(self):
         result = redraw.classify_mute_redraw_runs(
@@ -231,6 +265,12 @@ class MuteRedrawTests(unittest.TestCase):
     def test_context_mismatch_refuses_all_classification(self):
         invalid = context()
         invalid["redraw_probe_method_version"] = 2
+        result = redraw.classify_mute_redraw_runs(
+            badge_samples(), [event(False, True)], invalid)
+        self.assertEqual(result["classifications"], [])
+        self.assertRegex(result["errors"][0], "frozen optical profile")
+
+        invalid = context(verified_maximum_source_interval_ns=1_000_000_001)
         result = redraw.classify_mute_redraw_runs(
             badge_samples(), [event(False, True)], invalid)
         self.assertEqual(result["classifications"], [])

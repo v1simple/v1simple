@@ -1,5 +1,5 @@
 {
-  "classifier_id": "v1-main-bar-adjacent-redraw-v1",
+  "classifier_id": "v1-main-bar-adjacent-redraw-v2",
   "deadline_observation_semantics": "TARGET_ACQUISITION_TRANSITION",
   "constants": {
     "authored_display_update_ns": 50000000,
@@ -7,7 +7,8 @@
     "endpoint_separation_rms_min": 20.0,
     "maximum_backward_step": 0.05,
     "maximum_total_backward_motion": 0.1,
-    "maximum_verified_source_interval_ns": 10000000,
+    "maximum_recording_interval_ns": 1000000000,
+    "maximum_support_interval_ns": 10000000,
     "normalized_residual_max": 0.15,
     "projection_max": 1.05,
     "projection_min": -0.05,
@@ -22,8 +23,9 @@
   },
   "mandatory_gates_in_order": [
     "The candidate is one maximal nonempty main_bars ambiguous run with the exact ordinary-reader reason; unreadable frames are never redraws.",
-    "Two immediate readable support frames precede and follow the run, with consecutive video and source indices and every capture gap within the verified maximum of 10 ms.",
-    "The nearest endpoints span no more than one 50 ms display update plus the verified source interval.",
+    "The authenticated recording-wide maximum source interval is retained exactly and is no greater than the 1 s sanity ceiling; it does not loosen a candidate chain.",
+    "Two immediate readable support frames precede and follow the run, with consecutive video and source indices and every capture gap no greater than the smaller of the verified recording-wide maximum and the fixed 10 ms support-chain maximum.",
+    "The nearest endpoints span no more than one 50 ms display update plus that effective support-chain interval bound.",
     "One identical ready singleton previous/current main-bar expectation covers the support chain and matches stable oriented endpoint counts which differ by exactly one.",
     "The fixed expectation-blind probe reproduces all six ordinary-reader fill diagnostics and retains the declared six 4 by 4 max-channel-median profiles.",
     "Only the changing boundary cell is partial in every run frame; the other five cells remain definite, contiguous, and in their common endpoint states.",

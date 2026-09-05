@@ -9,6 +9,13 @@ fault-control, and arrow qualifications are resolved from the current manifest
 and reused after their references and hashes are verified; no dated evidence
 path or provenance JSON is entered by hand.
 
+The version 2 bar and badge candidates retain the actual recording-wide maximum
+source interval, but require every adjacent support-frame interval in each
+claimed transition to be at most 10 ms. The verifier checks those frames directly
+against the authenticated sidecar. A larger interval elsewhere in pre-roll or
+the recording tail does not invalidate a complete local transition. Product
+event windows still enforce their own unchanged camera-gap requirements.
+
 The ordinary primary-frequency reader remains part of every product event. The
 candidate stable-frequency temporal exception is deliberately not published by
 this workflow: the first physical campaign supplied seven varied unmute events
@@ -67,7 +74,9 @@ python3 scripts/bench/encounter_qualification_workflow.py prepare \
   --run-dir "/absolute/path/printed/by/bench/replay"
 ```
 
-`prepare` authenticates the clean capture, retains a hash-inventoried replay
+`prepare` authenticates the clean capture and checks its classifier context
+before reading pixels. A context mismatch reports its reason before the long
+analysis starts. It retains a hash-inventoried replay
 tree (capture manifest, exact video, source-frame timing and replay inputs),
 runs the frozen analyzer once, keeps the analyzer result and pre-pixel
 `analysis-selection.json`, and includes every admitted and rejected candidate.

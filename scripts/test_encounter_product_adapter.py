@@ -144,7 +144,7 @@ class EncounterProductAdapterTests(unittest.TestCase):
         self.assertEqual([event["source_previous_target"] for event in result["events"]],
                          [None, first["target"], same["target"]])
 
-    def test_isolated_changed_event_with_current_pre_anchor_cannot_pass(self):
+    def test_legacy_response_claim_refuses_a_preexisting_target(self):
         prior = sequence_event("event-0001", ANCHOR, target(frequency="24.100"))
         current = sequence_event("event-0002", ANCHOR + 1_000 * MS,
                                  target(frequency="24.200"))
@@ -163,7 +163,8 @@ class EncounterProductAdapterTests(unittest.TestCase):
                             for item in adapted["events"][0]["observations"]))
 
         judged = judge_visible_event_presentation(
-            adapted["events"], fatal_integrity_errors=adapted["errors"])
+            adapted["events"], fatal_integrity_errors=adapted["errors"],
+            policy_id="v1-normal-x-k-ka-blink96-v2")
         self.assertNotEqual(judged["result"], "PASS")
         self.assertEqual(judged["events"][0]["reason_code"], "TARGET_PREEXISTED")
 
@@ -267,9 +268,13 @@ class EncounterProductAdapterTests(unittest.TestCase):
         regressed = next(item for item in result["events"][1]["observations"]
                          if item["capture_ns"] == current_anchor + 50 * MS)
         self.assertEqual(regressed["raw_status"], "PREVIOUS")
-        policy = load_policy()
-        classifier_id = policy["qualified_temporal_classifier_ids"][0]
-        classifier = policy["qualified_temporal_classifiers"][classifier_id]
+        policy = load_policy("v1-normal-x-k-ka-blink96-v2")
+        classifier_id = "fixture-arrow-phase-edge"
+        classifier = {"classifier_spec_sha256": "a" * 64,
+                      "raw_affected_fields": ["main_arrows"],
+                      "deadline_observation_semantics": "LEGAL_PRESENTATION_TRANSITION"}
+        policy["qualified_temporal_classifier_ids"] = [classifier_id]
+        policy["qualified_temporal_classifiers"] = {classifier_id: classifier}
         arrow_claim = {
             "event_id": current["event_id"],
             "classifier_id": classifier_id,
@@ -278,8 +283,9 @@ class EncounterProductAdapterTests(unittest.TestCase):
             "video_frame_indices": [regressed["video_frame_index"]],
             "raw_affected_fields": ["main_arrows"],
         }
-        judged = judge_visible_event_presentation(
-            result["events"], temporal_classifications=[arrow_claim])
+        with patch("encounter_product.load_policy", return_value=policy):
+            judged = judge_visible_event_presentation(
+                result["events"], temporal_classifications=[arrow_claim])
         self.assertEqual((judged["result"], judged["events"][1]["reason_code"]),
                          ("FAIL", "REGRESSION_AFTER_CURRENT"))
         self.assertTrue(judged["execution"]["temporal_classification_errors"])

@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Build a blind temporal-reader qualification from one reserved camera run.
+"""Build static-reader and blind temporal-reader qualification evidence.
+
+``reanalyze-static`` rereads an immutable blind static bundle with the current
+reader, keeps the original labels and source artifacts unchanged, and emits a
+new static-only manifest only after the complete verifier accepts it.
 
 The three stages keep the useful boundary explicit:
 
@@ -31,6 +35,8 @@ import sys
 import tempfile
 from typing import Any, Callable
 
+from encounter_arrow_transition import CLASSIFIER_ID as ARROW_CLASSIFIER_ID
+
 
 BENCH_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BENCH_DIR.parents[1]
@@ -51,10 +57,11 @@ TARGET_CLASSIFIERS = (
 FIELD_BY_CLASSIFIER = {
     "v1-main-bar-adjacent-redraw-v2": "main_bars",
     "v1-muted-badge-rising-fill-v2": "muted_badge",
+    ARROW_CLASSIFIER_ID: "main_arrows",
 }
 SPEC_BY_CLASSIFIER = {
     classifier: BENCH_DIR / "temporal_specs" / f"{classifier}.json"
-    for classifier in TARGET_CLASSIFIERS
+    for classifier in FIELD_BY_CLASSIFIER
 }
 BLIND_PROTOCOL = {
     "observations_completed_before_key_access": True,
@@ -249,13 +256,28 @@ def reader_runtime(cache: Path) -> dict[str, Any]:
 
 
 def classifier_identity() -> dict[str, tuple[str, str]]:
+    import encounter_arrow_transition as arrow
     import encounter_bar_transition as bar
     import encounter_mute_redraw_transition as mute
 
     return {
+        arrow.CLASSIFIER_ID: (arrow.CLASSIFIER_ID, arrow.CLASSIFIER_SPEC_SHA256),
         bar.CLASSIFIER_ID: (bar.CLASSIFIER_ID, bar.CLASSIFIER_SPEC_SHA256),
         mute.BADGE_CLASSIFIER_ID: (mute.BADGE_CLASSIFIER_ID, mute.BADGE_CLASSIFIER_SPEC_SHA256),
     }
+
+
+def _selected_classifiers(values) -> tuple[str, ...]:
+    _require(isinstance(values, (list, tuple)) and bool(values)
+             and all(isinstance(value, str) and value in FIELD_BY_CLASSIFIER for value in values)
+             and len(values) == len(set(values)), "qualification classifier selection is invalid")
+    return tuple(sorted(values))
+
+
+def _campaign_classifiers(campaign: dict[str, Any]) -> tuple[str, ...]:
+    classifiers = campaign.get("classifiers")
+    _require(isinstance(classifiers, dict), "campaign classifier binding is missing")
+    return _selected_classifiers(list(classifiers))
 
 
 def _atomic_directory(destination: Path, builder: Callable[[Path], None]) -> None:
@@ -276,6 +298,7 @@ def _campaign(path: Path) -> tuple[Path, dict[str, Any]]:
     _require(isinstance(document, dict) and document.get("schema_version") == 1
              and document.get("kind") == CAMPAIGN_NAME,
              "unsupported qualification campaign")
+    _campaign_classifiers(document)
     return root, document
 
 
@@ -299,11 +322,12 @@ def _verify_frozen_source(root: Path, campaign: dict[str, Any], *, require_unall
     if require_unallowlisted:
         policy = load_policy(DEFAULT_POLICY_ID, POLICY_PATH)
         allowed = set(policy.get("qualified_temporal_classifier_ids", []))
-        _require(not allowed.intersection(TARGET_CLASSIFIERS),
+        _require(not allowed.intersection(_campaign_classifiers(campaign)),
                  "candidate classifier was allowlisted before blind finalization")
 
 
-def freeze(destination: Path, base_manifest: Path | None = None) -> dict[str, Any]:
+def freeze(destination: Path, base_manifest: Path | None = None, *,
+           classifier_ids: list[str] | tuple[str, ...] = TARGET_CLASSIFIERS) -> dict[str, Any]:
     """Verify the retained base, then freeze without opening a new capture."""
     from camera_contract import EXPECTED_CAMERA_NAME, EXPECTED_CAMERA_PROFILE
     from encounter_product import DEFAULT_POLICY_ID, load_policy
@@ -314,13 +338,14 @@ def freeze(destination: Path, base_manifest: Path | None = None) -> dict[str, An
 
     commit, clean = git_identity()
     _require(clean, "qualification freeze requires a clean source tree")
+    targets = _selected_classifiers(classifier_ids)
     policy = load_policy(DEFAULT_POLICY_ID, POLICY_PATH)
     allowed = set(policy.get("qualified_temporal_classifier_ids", []))
-    _require(not allowed.intersection(TARGET_CLASSIFIERS),
+    _require(not allowed.intersection(targets),
              "candidate classifier is already allowlisted")
     method = method_hashes()
     identities = classifier_identity()
-    _require(set(identities) == set(TARGET_CLASSIFIERS), "classifier identities differ from workflow")
+    _require(set(targets) <= set(identities), "classifier identities differ from workflow")
 
     summary: dict[str, Any] = {}
 
@@ -336,7 +361,7 @@ def freeze(destination: Path, base_manifest: Path | None = None) -> dict[str, An
             "bench_source_sha256": sha256(BENCH_PATH),
         }
         classifiers: dict[str, Any] = {}
-        for classifier_id in TARGET_CLASSIFIERS:
+        for classifier_id in targets:
             seed = root / "frozen" / classifier_id
             spec_source = SPEC_BY_CLASSIFIER[classifier_id]
             spec = read_json(spec_source)
@@ -386,7 +411,7 @@ def freeze(destination: Path, base_manifest: Path | None = None) -> dict[str, An
         }
         write_json(root / "campaign.json", document)
         summary.update(campaign=str(destination.resolve()), source_git_sha=commit,
-                       classifiers=list(TARGET_CLASSIFIERS),
+                       classifiers=list(targets),
                        base_qualification="VERIFIED", reserved_capture_pixel_files_opened=0)
 
     _atomic_directory(destination.resolve(), build)
@@ -474,6 +499,7 @@ def _logical_inset(classifier_id: str) -> tuple[int, int, int, int]:
         "v1-main-bar-adjacent-redraw-v2": (860, 185, 980, 440),
         "v1-muted-badge-rising-fill-v2": (480, 155, 710, 285),
         "v1-unmute-stable-frequency-sweep-v2": (425, 225, 845, 390),
+        ARROW_CLASSIFIER_ID: (990, 190, 1165, 400),
     }[classifier_id]
 
 
@@ -633,15 +659,18 @@ def _classifier_context(campaign: dict[str, Any], classifier_id: str,
     spec = read_json(SPEC_BY_CLASSIFIER[classifier_id])
     identity = spec["identity"]
     timing = window["camera"]["video_timing_verification_result"]
-    return {
+    context = {
         "capture_id": window["camera"]["capture_id"],
         "selection_manifest_sha256": analysis_selection_sha,
         "verified_maximum_source_interval_ns": timing["maximum_source_interval_ns"],
         "reader_method_version": campaign["reader_runtime"]["method_version"],
         "reader_sha256": campaign["implementation_sha256"]["encounter_reader.py"],
-        "redraw_probe_method_version": identity["redraw_probe_method_version"],
-        "redraw_probe_sha256": campaign["implementation_sha256"]["encounter_redraw_probe.py"],
     }
+    if "redraw_probe_method_version" in identity:
+        context.update(
+            redraw_probe_method_version=identity["redraw_probe_method_version"],
+            redraw_probe_sha256=campaign["implementation_sha256"]["encounter_redraw_probe.py"])
+    return context
 
 
 def _prepare_classifier(stage: Path, campaign_root: Path, campaign: dict[str, Any],
@@ -831,16 +860,20 @@ def _prepare_classifier(stage: Path, campaign_root: Path, campaign: dict[str, An
 def _validate_capture_classifier_contexts(campaign: dict[str, Any],
                                            window: dict[str, Any]) -> None:
     """Reject incompatible metadata before reading any qualification pixels."""
+    import encounter_arrow_transition as arrow
     import encounter_bar_transition as bar
     import encounter_mute_redraw_transition as mute
 
-    for classifier_id, classify in (
-            (bar.CLASSIFIER_ID, bar.classify_main_bar_runs),
-            (mute.BADGE_CLASSIFIER_ID, mute.classify_mute_redraw_runs)):
+    classifiers = {
+        arrow.CLASSIFIER_ID: arrow.classify_arrow_runs,
+        bar.CLASSIFIER_ID: bar.classify_main_bar_runs,
+        mute.BADGE_CLASSIFIER_ID: mute.classify_mute_redraw_runs,
+    }
+    for classifier_id in _campaign_classifiers(campaign):
         # Selection does not exist yet. This digest checks only context shape;
         # empty samples cannot produce a classification or a retained claim.
         context = _classifier_context(campaign, classifier_id, window, "0" * 64)
-        result = classify([], [], context)
+        result = classifiers[classifier_id]([], [], context)
         _require(result.get("errors") == [],
                  f"capture classifier context rejected for {classifier_id}: "
                  + "; ".join(result.get("errors", [])))
@@ -869,8 +902,9 @@ def prepare(campaign_path: Path, run_dir: Path) -> dict[str, Any]:
         runtime = reader_runtime(analysis / "reader-cache")
         _require(runtime == campaign.get("reader_runtime"),
                  "analysis reader runtime changed after freeze")
-        result = analyze(retained_run, analysis, None, 2, inspect_transitions=True,
-                         reader_qualification=None)
+        result = analyze(
+            retained_run, analysis, None, 2, inspect_transitions=True,
+            reader_qualification=None, temporal_classifier_ids=_campaign_classifiers(campaign))
         _require(result.get("errors") == [],
                  "camera analysis contains errors: " + "; ".join(result.get("errors", [])))
         temporal = result.get("temporal_classification")
@@ -899,7 +933,7 @@ def prepare(campaign_path: Path, run_dir: Path) -> dict[str, Any]:
         capture_path = retained_run / "qualification_capture.json"
         window_path = retained_run / "window_result.json"
         classifiers = []
-        for classifier_id in TARGET_CLASSIFIERS:
+        for classifier_id in _campaign_classifiers(campaign):
             candidates = _candidate_records(temporal, classifier_id)
             classifiers.append(_prepare_classifier(
                 stage, campaign_root, campaign, classifier_id, candidates,
@@ -944,8 +978,9 @@ def _rederive_analysis(prepared: Path, prepared_doc: dict[str, Any],
     try:
         _require(reader_runtime(output / "reader-cache") == campaign.get("reader_runtime"),
                  "qualification reanalysis reader runtime differs before pixel reading")
-        result = analyze(replay, output, None, 2, inspect_transitions=True,
-                         reader_qualification=None)
+        result = analyze(
+            replay, output, None, 2, inspect_transitions=True,
+            reader_qualification=None, temporal_classifier_ids=_campaign_classifiers(campaign))
         _require(result.get("errors") == []
                  and result.get("temporal_classification", {}).get("errors") == [],
                  "qualification reanalysis contains errors: " + "; ".join(
@@ -1007,7 +1042,7 @@ def _validate_pre_key_sources(prepared: Path, prepared_doc: dict[str, Any],
     result: dict[str, dict[str, Path]] = {}
     for item in prepared_doc.get("classifiers", []):
         classifier_id = item.get("classifier_id") if isinstance(item, dict) else None
-        _require(classifier_id in TARGET_CLASSIFIERS,
+        _require(classifier_id in _campaign_classifiers(campaign) and classifier_id not in result,
                  "prepared classifier set is malformed")
         classifier_root = prepared / item["classifier_root"]
         paths = _source_paths(classifier_root)
@@ -1116,7 +1151,7 @@ def _validate_pre_key_sources(prepared: Path, prepared_doc: dict[str, Any],
             classifier_id, paths,
             {"video_timing_verification": timing}, window, analysis_selection, manifest_items)
         result[classifier_id] = paths
-    _require(set(result) == set(TARGET_CLASSIFIERS),
+    _require(set(result) == set(_campaign_classifiers(campaign)),
              "prepared classifier set differs from workflow")
     return result
 
@@ -1332,7 +1367,7 @@ def _publish_comparison_tree(prepared: Path, prepared_doc: dict[str, Any],
 
     _atomic_directory(destination, build)
     entries: dict[str, dict[str, Any]] = {}
-    for classifier_id in TARGET_CLASSIFIERS:
+    for classifier_id in comparisons:
         bundle = destination / classifier_id
         sources = _source_paths(bundle)
         entries[classifier_id] = {
@@ -1370,9 +1405,12 @@ def _consume_campaign(prepared: Path, prepared_doc: dict[str, Any],
     return marker
 
 
-def _resolve_base_evidence(base_path: Path,
-                           current_method: dict[str, str]) -> tuple[dict[str, Path], dict[str, Any]]:
-    """Resolve and authenticate retained static/arrow evidence without duplicating it."""
+def _resolve_base_evidence(base_path: Path) -> tuple[dict[str, Path], dict[str, Any]]:
+    """Resolve byte-bound static and carried temporal entries without duplication.
+
+    The complete qualification verifier owns their reader and classifier proof.
+    A static-only base is valid when qualifying the first temporal classifier.
+    """
     base_root = base_path.parent.resolve()
     base = read_json(base_path)
     _require(base.get("kind") == "encounter_reader_qualification", "base manifest is invalid")
@@ -1380,58 +1418,39 @@ def _resolve_base_evidence(base_path: Path,
     for name in ("field_validation", "visible_secondary_validation", "fault_controls"):
         top[name] = resolve_reference(base_root, base.get(name), f"base {name}")
     temporal = base.get("temporal_classifiers")
-    _require(isinstance(temporal, dict) and "v1-arrow-phase-edge-v2" in temporal,
-             "base manifest has no arrow qualification")
-    arrow = temporal["v1-arrow-phase-edge-v2"]
-    validation_source = resolve_reference(base_root, arrow.get("validation"), "base arrow validation")
-    source_root = validation_source.parent
-    spec_source = resolve_reference(base_root, arrow.get("spec"), "base arrow spec")
-    try:
-        spec_source.relative_to(source_root)
-    except ValueError as exc:
-        raise WorkflowError("base arrow spec is outside its validation tree") from exc
-    source_artifacts = {}
-    for name, value in arrow.get("source_artifacts", {}).items():
-        original = resolve_reference(source_root, value, f"base arrow {name}")
-        source_artifacts[name] = reference(original, source_root)
-    from encounter_qualification import CLASSIFIER_IMPLEMENTATION_FILES
-    dependencies = CLASSIFIER_IMPLEMENTATION_FILES["v1-arrow-phase-edge-v2"]
-    _require(dependencies == ("encounter_arrow_transition.py",),
-             "arrow carry-forward dependency boundary changed; fresh qualification is required")
-    validation = read_json(validation_source)
-    declared = validation.get("source_artifacts")
-    _require(isinstance(declared, dict)
-             and declared.get("classifier_source_sha256") ==
-                 current_method["encounter_arrow_transition.py"],
-             "base arrow qualification uses a different classifier implementation")
-    for artifact_name in ("pre_pixel_freeze", "frozen_classifier_result", "seal"):
-        retained = read_json(resolve_reference(
-            source_root, arrow["source_artifacts"][artifact_name],
-            f"base arrow {artifact_name}"))
-        field = ("classifier", "source_sha256") if artifact_name == "pre_pixel_freeze" else None
-        if field is None:
-            bound = retained.get("classifier_source_sha256")
-        else:
-            classifier = retained.get(field[0])
-            bound = classifier.get(field[1]) if isinstance(classifier, dict) else None
-        _require(bound == current_method["encounter_arrow_transition.py"],
-                 f"base arrow {artifact_name} uses a different classifier implementation")
-    arrow_entry = {
-        "classifier_spec_sha256": arrow["classifier_spec_sha256"],
-        "spec": spec_source,
-        "validation": validation_source,
-        "source_artifacts": source_artifacts,
-    }
-    return top, arrow_entry
+    _require(isinstance(temporal, dict), "base temporal qualification map is malformed")
+    entries = {}
+    for classifier_id, entry in temporal.items():
+        _require(isinstance(entry, dict), "base temporal qualification entry is malformed")
+        validation_source = resolve_reference(
+            base_root, entry.get("validation"), f"base {classifier_id} validation")
+        source_root = validation_source.parent
+        spec_source = resolve_reference(base_root, entry.get("spec"), f"base {classifier_id} spec")
+        try:
+            spec_source.relative_to(source_root)
+        except ValueError as exc:
+            raise WorkflowError("base temporal spec is outside its validation tree") from exc
+        sources = entry.get("source_artifacts")
+        _require(isinstance(sources, dict), "base temporal sources are malformed")
+        entries[classifier_id] = {
+            "classifier_spec_sha256": entry["classifier_spec_sha256"],
+            "spec": spec_source,
+            "validation": validation_source,
+            "source_artifacts": {
+                name: reference(resolve_reference(source_root, value, f"base {classifier_id} {name}"),
+                                source_root)
+                for name, value in sources.items()},
+        }
+    return top, entries
 
 
 def validate_base_evidence(base_path: Path, method: dict[str, str],
                            runtime: dict[str, Any], camera: dict[str, Any],
                            policy: dict[str, Any]) -> None:
-    """Rerun retained static/arrow proof under this method before reserving a capture."""
+    """Rerun every retained base proof under this method before using it."""
     from encounter_qualification import verify_qualification
 
-    _resolve_base_evidence(base_path, method)
+    _resolve_base_evidence(base_path)
     base = read_json(base_path)
     _require(base.get("reader", {}).get("runtime") == runtime,
              "base static qualification uses a different reader runtime")
@@ -1458,14 +1477,357 @@ def validate_base_evidence(base_path: Path, method: dict[str, str],
              "retained base qualification rejected: " + "; ".join(verified.get("errors", [])))
 
 
+def _copy_static_reference(source_root: Path, destination_root: Path, value: Any,
+                           name: str, copied: dict[Path, str]) -> None:
+    """Copy one hash-bound static input while preserving its relative path."""
+    source = resolve_reference(source_root, value, name)
+    _require(not source.is_symlink(), f"{name} is a symbolic link")
+    relative = Path(value["path"])
+    destination = destination_root / relative
+    expected = value["sha256"]
+    if destination in copied:
+        _require(copied[destination] == expected,
+                 f"static evidence path is reused with different bytes: {relative}")
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+    _require(sha256(destination) == expected,
+             f"static evidence changed while copying: {relative}")
+    copied[destination] = expected
+
+
+def _copy_static_inputs(source_root: Path, destination_root: Path,
+                        document: dict[str, Any], kind: str) -> None:
+    copied: dict[Path, str] = {}
+    sources = document.get("source_artifacts")
+    if kind == "fault" and sources is None:
+        sources = {}
+    _require(isinstance(sources, dict), f"source {kind} evidence has no source artifacts")
+    for name, value in sources.items():
+        _copy_static_reference(source_root, destination_root, value,
+                               f"source {kind} {name}", copied)
+    collection_name = {"field": "frames", "secondary": "items", "fault": "cases"}[kind]
+    records = document.get(collection_name)
+    _require(isinstance(records, list) and bool(records),
+             f"source {kind} evidence has no retained images")
+    for index, record in enumerate(records):
+        _require(isinstance(record, dict), f"source {kind} record is malformed")
+        _copy_static_reference(source_root, destination_root, record.get("image"),
+                               f"source {kind} image {index}", copied)
+
+
+def _bind_current_static_method(document: dict[str, Any], runtime: dict[str, Any],
+                                method: dict[str, str], camera: dict[str, Any]) -> None:
+    from encounter_qualification import CORE_READER_FILES
+
+    binding = document.get("method")
+    _require(isinstance(binding, dict), "static evidence has no method binding")
+    _require(all(name in method for name in CORE_READER_FILES),
+             "current static reader implementation is incomplete")
+    binding["method_version"] = runtime.get("method_version")
+    binding["files"] = {name: method[name] for name in CORE_READER_FILES}
+    document["reader"] = deepcopy(runtime)
+    document["camera"] = deepcopy(camera)
+
+
+def _reanalyze_field_document(source: Path, destination: Path,
+                              runtime: dict[str, Any], method: dict[str, str],
+                              camera: dict[str, Any]) -> dict[str, Any]:
+    from encounter_qualification import FIELDS, _derived_field_status, _observe_image
+
+    document = read_json(source)
+    _require(isinstance(document, dict), "source field validation is malformed")
+    _copy_static_inputs(source.parent, destination.parent, document, "field")
+    selection = read_json(resolve_reference(
+        destination.parent, document["source_artifacts"].get("selection"),
+        "copied field selection"))
+    registration = selection.get("registration") if isinstance(selection, dict) else None
+    _require(isinstance(registration, dict) and registration.get("result") == "PASS",
+             "source field validation registration is unavailable")
+    totals: Counter[str] = Counter()
+    fields = {field: Counter() for field in FIELDS}
+    for frame in document["frames"]:
+        image = resolve_reference(destination.parent, frame.get("image"),
+                                  f"field image {frame.get('frame_id')}")
+        observed = _observe_image(image, registration)
+        checks = frame.get("checks")
+        _require(isinstance(checks, list), "source field checks are malformed")
+        by_field = {check.get("field"): check for check in checks if isinstance(check, dict)}
+        _require(len(by_field) == len(checks) and set(by_field) == set(FIELDS),
+                 "source field frame does not check every field")
+        for field in FIELDS:
+            reading = observed.get(field)
+            _require(isinstance(reading, dict), f"current reader omitted {field}")
+            check = by_field[field]
+            check["observed"] = deepcopy(reading)
+            check["status"] = _derived_field_status(field, reading, check.get("reference"))
+            totals[check["status"]] += 1
+            fields[field][check["status"]] += 1
+    document["counts"] = dict(totals)
+    document["fields"] = {field: dict(fields[field]) for field in FIELDS}
+    document["unique_original_frames"] = len(document["frames"])
+    document["required_field_labels"] = len(document["frames"]) * len(FIELDS)
+    document.pop("method_freeze_sha256", None)
+    document.pop("source_validation_sha256", None)
+    _bind_current_static_method(document, runtime, method, camera)
+    write_json(destination, document)
+    return document
+
+
+def _reanalyze_secondary_document(source: Path, destination: Path,
+                                  runtime: dict[str, Any], method: dict[str, str],
+                                  camera: dict[str, Any]) -> dict[str, Any]:
+    from encounter_qualification import (
+        _blind_secondary_reference, _derived_field_status, _observe_image)
+
+    document = read_json(source)
+    _require(isinstance(document, dict), "source visible-secondary validation is malformed")
+    _copy_static_inputs(source.parent, destination.parent, document, "secondary")
+    registration = document.get("registration")
+    _require(isinstance(registration, dict) and registration.get("result") == "PASS",
+             "source visible-secondary registration is unavailable")
+    counts: Counter[str] = Counter()
+    for item in document["items"]:
+        image = resolve_reference(destination.parent, item.get("image"),
+                                  f"secondary image {item.get('source_image')}")
+        observed = _observe_image(image, registration).get("secondary")
+        _require(isinstance(observed, dict), "current reader omitted secondary")
+        primary = _blind_secondary_reference(item.get("blind_label"))
+        item["observed"] = deepcopy(observed)
+        item["primary_reference"] = primary
+        item["status"] = _derived_field_status("secondary", observed, item.get("reference"))
+        counts[item["status"]] += 1
+    document["counts"] = dict(counts)
+    document["unique_original_frames"] = len(document["items"])
+    _bind_current_static_method(document, runtime, method, camera)
+    sealed_reference = document["source_artifacts"].get("sealed_key")
+    sealed = read_json(resolve_reference(
+        destination.parent, sealed_reference, "copied visible-secondary sealed key"))
+    source_implementation = (sealed.get("implementation")
+                             if isinstance(sealed, dict) else None)
+    source_setup = (source_implementation.get("reader_setup")
+                    if isinstance(source_implementation, dict) else None)
+    _require(isinstance(source_setup, dict)
+             and isinstance(source_implementation.get("reader_sha256"), str),
+             "source visible-secondary reader identity is unavailable")
+    document["reader_reanalysis"] = {
+        "kind": "complete_exact_reader_reread",
+        "source_sealed_key_sha256": sealed_reference["sha256"],
+        "source_method_version": source_setup["method_version"],
+        "source_reader_sha256": source_implementation["reader_sha256"],
+        "current_method_version": runtime.get("method_version"),
+        "current_reader_sha256": method.get("encounter_reader.py"),
+        "complete_source_set_reread": True,
+    }
+    write_json(destination, document)
+    return document
+
+
+def _fault_control_demonstrated(case: dict[str, Any], comparison: dict[str, Any]) -> bool:
+    from encounter_qualification import REQUIRED_FAULT_CONTROLS, FIELDS
+
+    desired, required_fields, required_unresolved = REQUIRED_FAULT_CONTROLS[case["name"]]
+    checks = comparison.get("checks")
+    if not isinstance(checks, dict) or set(checks) != set(FIELDS):
+        return False
+    passed = comparison.get("status") == desired
+    passed = passed and all(checks[field].get("status") == "DIFFERENCE"
+                            for field in required_fields)
+    passed = passed and all(checks[field].get("status") == "UNRESOLVED"
+                            for field in required_unresolved)
+    if desired == "MATCH":
+        passed = passed and all(checks[field].get("status") == "MATCH" for field in FIELDS)
+    if desired == "INCONCLUSIVE":
+        passed = passed and not any(
+            checks[field].get("status") == "DIFFERENCE" for field in FIELDS)
+    return passed
+
+
+def _reanalyze_fault_document(source: Path, destination: Path,
+                              runtime: dict[str, Any], method: dict[str, str],
+                              camera: dict[str, Any]) -> dict[str, Any]:
+    from encounter_expectation import compare_sample
+    from encounter_qualification import FIELDS, REQUIRED_FAULT_CONTROLS, _observe_image
+
+    document = read_json(source)
+    _require(isinstance(document, dict), "source fault controls are malformed")
+    _copy_static_inputs(source.parent, destination.parent, document, "fault")
+    registration = document.get("registration")
+    _require(isinstance(registration, dict) and registration.get("result") == "PASS",
+             "source fault-control registration is unavailable")
+    cases = document.get("cases")
+    _require(isinstance(cases, list), "source fault-control cases are malformed")
+    by_name = {case.get("name"): case for case in cases if isinstance(case, dict)}
+    _require(len(by_name) == len(cases) and set(by_name) == set(REQUIRED_FAULT_CONTROLS),
+             "source fault controls do not cover the product contract")
+    demonstrated = 0
+    for name, case in by_name.items():
+        desired, differences, unresolved = REQUIRED_FAULT_CONTROLS[name]
+        image = resolve_reference(destination.parent, case.get("image"),
+                                  f"fault-control image {name}")
+        regenerated = _observe_image(image, registration)
+        observed = {field: deepcopy(regenerated.get(field)) for field in FIELDS}
+        _require(all(isinstance(value, dict) for value in observed.values()),
+                 f"current reader omitted a field for fault control {name}")
+        comparison = compare_sample(document.get("expected"), observed, role="held")
+        case["desired_status"] = desired
+        case["required_differences"] = list(differences)
+        case["required_unresolved"] = list(unresolved)
+        case["observed"] = observed
+        case["comparison"] = comparison
+        case["demonstrated"] = _fault_control_demonstrated(case, comparison)
+        demonstrated += int(case["demonstrated"])
+    document["required"] = len(REQUIRED_FAULT_CONTROLS)
+    document["demonstrated"] = demonstrated
+    _bind_current_static_method(document, runtime, method, camera)
+    write_json(destination, document)
+    return document
+
+
+def _verification_summary(verification: dict[str, Any]) -> dict[str, Any]:
+    keys = ("status", "errors", "qualification_id", "field_validation",
+            "visible_secondary_validation", "fault_controls", "temporal_classifiers")
+    summary = {key: deepcopy(verification[key]) for key in keys if key in verification}
+    for key in ("field_validation", "visible_secondary_validation", "fault_controls"):
+        if isinstance(summary.get(key), dict):
+            summary[key].pop("path", None)
+    return summary
+
+
+def reanalyze_static(source_manifest: Path, destination: Path) -> dict[str, Any]:
+    """Reread immutable static evidence and publish only a verified current bundle."""
+    import encounter_reader
+    from encounter_product import DEFAULT_POLICY_ID, load_policy
+    from encounter_qualification import verify_qualification
+
+    source_manifest = source_manifest.resolve()
+    destination = destination.resolve()
+    _require(source_manifest.is_file(), f"source qualification manifest is missing: {source_manifest}")
+    _require(not destination.exists(), f"destination already exists: {destination}")
+    commit, clean = git_identity()
+    _require(clean, "static reanalysis requires a clean source tree")
+    method = method_hashes()
+    policy = load_policy(DEFAULT_POLICY_ID, POLICY_PATH)
+    _require(policy.get("qualified_temporal_classifier_ids") == []
+             and policy.get("qualified_temporal_classifiers") == {},
+             "static reanalysis requires a default policy with no temporal allowlist")
+    source_hash = sha256(source_manifest)
+    source_top, _source_temporal = _resolve_base_evidence(source_manifest)
+    source_document = read_json(source_manifest)
+    _require(isinstance(source_document, dict)
+             and isinstance(source_document.get("reader"), dict)
+             and isinstance(source_document.get("camera"), dict),
+             "source qualification identity is malformed")
+    camera = deepcopy(source_document["camera"])
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    stage = Path(tempfile.mkdtemp(prefix=f".{destination.name}-", dir=destination.parent))
+    candidate = stage / ".static-qualification-candidate.json"
+    try:
+        runtime = reader_runtime(stage / "reader-cache")
+        paths = {
+            "field_validation": stage / "field" / source_top["field_validation"].name,
+            "visible_secondary_validation": (
+                stage / "secondary" / source_top["visible_secondary_validation"].name),
+            "fault_controls": stage / "fault" / source_top["fault_controls"].name,
+        }
+        # One helper serves the complete reread and the verifier's independent
+        # second pass. Pixel inputs and reader decisions remain identical.
+        with encounter_reader.analysis_session():
+            _reanalyze_field_document(
+                source_top["field_validation"], paths["field_validation"],
+                runtime, method, camera)
+            _reanalyze_secondary_document(
+                source_top["visible_secondary_validation"],
+                paths["visible_secondary_validation"], runtime, method, camera)
+            _reanalyze_fault_document(
+                source_top["fault_controls"], paths["fault_controls"],
+                runtime, method, camera)
+            manifest = {
+                "schema_version": 1,
+                "kind": "encounter_reader_qualification",
+                "qualification_id": f"encounter-reader-static-{commit[:12]}-{source_hash[:12]}",
+                "reader": {
+                    "method_version": runtime.get("method_version"),
+                    "implementation_sha256": method,
+                    "runtime": runtime,
+                },
+                "camera": camera,
+                "field_validation": reference(paths["field_validation"], stage),
+                "visible_secondary_validation": reference(
+                    paths["visible_secondary_validation"], stage),
+                "fault_controls": reference(paths["fault_controls"], stage),
+                "temporal_classifiers": {},
+            }
+            write_json(candidate, manifest)
+            verification = verify_qualification(
+                candidate, implementation_sha256=method, reader_runtime=runtime,
+                camera_name=camera.get("name"), camera_profile=camera.get("profile"),
+                policy=policy, bench_source_sha256=sha256(BENCH_PATH))
+        final_commit, final_clean = git_identity()
+        _require(final_clean and final_commit == commit,
+                 "source tree changed during static reanalysis")
+        _require(method_hashes() == method,
+                 "reader implementation changed during static reanalysis")
+        _require(sha256(source_manifest) == source_hash,
+                 "source qualification manifest changed during static reanalysis")
+        diagnostic = {
+            "schema_version": 1,
+            "kind": "static_reader_reanalysis_result",
+            "status": verification.get("status"),
+            "source_git_sha": commit,
+            "source_manifest_sha256": source_hash,
+            "policy_id": DEFAULT_POLICY_ID,
+            "reader_method_version": runtime.get("method_version"),
+            "verification": _verification_summary(verification),
+        }
+        if verification.get("status") != "QUALIFIED":
+            candidate.rename(stage / "rejected-candidate.json")
+            write_json(stage / "reanalysis-result.json", diagnostic)
+            stage.rename(destination)
+            raise WorkflowError(
+                "static reanalysis rejected; diagnostics retained at " + str(destination))
+        manifest_path = stage / "encounter-reader.json"
+        candidate.rename(manifest_path)
+        diagnostic["manifest"] = manifest_path.name
+        diagnostic["manifest_sha256"] = sha256(manifest_path)
+        write_json(stage / "reanalysis-result.json", diagnostic)
+        stage.rename(destination)
+        return {
+            "status": "QUALIFIED",
+            "qualification_id": manifest["qualification_id"],
+            "manifest": str(destination / manifest_path.name),
+            "manifest_sha256": diagnostic["manifest_sha256"],
+            "source_manifest_sha256": source_hash,
+            "policy_id": DEFAULT_POLICY_ID,
+            "temporal_classifiers": [],
+        }
+    except BaseException as exc:
+        if stage.exists():
+            try:
+                write_json(stage / "reanalysis-result.json", {
+                    "schema_version": 1,
+                    "kind": "static_reader_reanalysis_result",
+                    "status": "ERROR",
+                    "source_git_sha": commit,
+                    "source_manifest_sha256": source_hash,
+                    "policy_id": DEFAULT_POLICY_ID,
+                    "error": str(exc),
+                })
+                stage.rename(destination)
+            except OSError:
+                shutil.rmtree(stage, ignore_errors=True)
+        raise
+
+
 def _prospective_policy(campaign: dict[str, Any]) -> tuple[dict[str, Any], bytes, dict[str, Any]]:
     policy_document = read_json(POLICY_PATH)
     policy = policy_document["policies"][campaign["policy_id"]]
     ids = list(policy["qualified_temporal_classifier_ids"])
     specs = deepcopy(policy["qualified_temporal_classifiers"])
-    _require(not set(ids).intersection(TARGET_CLASSIFIERS),
+    targets = _campaign_classifiers(campaign)
+    _require(not set(ids).intersection(targets),
              "candidate policy entries already exist before finalization")
-    for classifier_id in TARGET_CLASSIFIERS:
+    for classifier_id in targets:
         spec = read_json(SPEC_BY_CLASSIFIER[classifier_id])
         ids.append(classifier_id)
         specs[classifier_id] = {
@@ -1638,7 +2000,7 @@ def finalize(campaign_path: Path, base_manifest: Path, manifest_path: Path) -> d
         matrices = {
             classifier_id: read_json(
                 prepared / "qualified" / classifier_id / "comparison.json")["confusion_matrix"]
-            for classifier_id in TARGET_CLASSIFIERS
+            for classifier_id in _campaign_classifiers(campaign)
         }
         result = {
             "schema_version": 1,
@@ -1675,7 +2037,12 @@ def finalize(campaign_path: Path, base_manifest: Path, manifest_path: Path) -> d
     prospective_method = method_hashes(policy_bytes)
     base_manifest = base_manifest.resolve()
     _require(base_manifest.is_file(), "base qualification manifest is missing")
-    static_top, arrow_entry = _resolve_base_evidence(base_manifest, prospective_method)
+    validate_base_evidence(
+        base_manifest, method_hashes(), campaign["reader_runtime"], campaign["camera"],
+        load_policy(campaign["policy_id"], POLICY_PATH))
+    static_top, carried_temporal = _resolve_base_evidence(base_manifest)
+    _require(not set(carried_temporal).intersection(_campaign_classifiers(campaign)),
+             "qualification target already appears in the retained base")
     base = read_json(base_manifest)
     _require(base.get("reader", {}).get("runtime") == campaign["reader_runtime"],
              "base static qualification uses a different reader runtime")
@@ -1714,12 +2081,13 @@ def finalize(campaign_path: Path, base_manifest: Path, manifest_path: Path) -> d
     temporal_entries = _publish_comparison_tree(prepared, prepared_doc, comparisons)
     root = manifest_path.parent
     temporal_manifest = {
-        "v1-arrow-phase-edge-v2": {
-            "classifier_spec_sha256": arrow_entry["classifier_spec_sha256"],
-            "spec": reference(arrow_entry["spec"], root),
-            "validation": reference(arrow_entry["validation"], root),
-            "source_artifacts": arrow_entry["source_artifacts"],
+        classifier_id: {
+            "classifier_spec_sha256": entry["classifier_spec_sha256"],
+            "spec": reference(entry["spec"], root),
+            "validation": reference(entry["validation"], root),
+            "source_artifacts": entry["source_artifacts"],
         }
+        for classifier_id, entry in carried_temporal.items()
     }
     for classifier_id, entry in temporal_entries.items():
         temporal_manifest[classifier_id] = {
@@ -1781,8 +2149,10 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     freeze_parser = commands.add_parser("freeze", help="freeze code, runtime and blind rubric")
     freeze_parser.add_argument("--out", type=Path, required=True, help="new ignored campaign directory")
+    freeze_parser.add_argument("--classifier", action="append", choices=sorted(FIELD_BY_CLASSIFIER),
+                               dest="classifiers", help="classifier to qualify; repeat to select several (default: bar and badge)")
     freeze_parser.add_argument("--base-manifest", type=Path, default=_default_manifest_path(),
-                               help="retained static and arrow evidence to verify before capture")
+                               help="retained static and any carried temporal evidence to verify before capture")
     prepare_parser = commands.add_parser("prepare", help="read one reserved capture and make blind packets")
     prepare_parser.add_argument("--campaign", type=Path, required=True)
     prepare_parser.add_argument("--run-dir", type=Path, required=True,
@@ -1791,9 +2161,15 @@ def build_parser() -> argparse.ArgumentParser:
     finalize_parser.add_argument("--campaign", type=Path, required=True)
     default_manifest = _default_manifest_path()
     finalize_parser.add_argument("--base-manifest", type=Path, default=default_manifest,
-                                 help="existing manifest supplying retained static and arrow evidence")
+                                 help="existing manifest supplying retained static and carried temporal evidence")
     finalize_parser.add_argument("--manifest", type=Path, default=default_manifest,
                                  help="qualification manifest to publish")
+    static_parser = commands.add_parser(
+        "reanalyze-static", help="reread immutable static evidence with the current reader")
+    static_parser.add_argument("--source-manifest", type=Path, default=default_manifest,
+                               help="existing qualification supplying immutable static evidence")
+    static_parser.add_argument("--out", type=Path, required=True,
+                               help="new ignored directory for the verified static-only bundle")
     return parser
 
 
@@ -1803,11 +2179,14 @@ def main() -> int:
     args = build_parser().parse_args()
     try:
         if args.command == "freeze":
-            result = freeze(args.out, args.base_manifest)
+            result = freeze(args.out, args.base_manifest,
+                            classifier_ids=args.classifiers if args.classifiers is not None else TARGET_CLASSIFIERS)
         elif args.command == "prepare":
             result = prepare(args.campaign, args.run_dir)
-        else:
+        elif args.command == "finalize":
             result = finalize(args.campaign, args.base_manifest, args.manifest)
+        else:
+            result = reanalyze_static(args.source_manifest, args.out)
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
     except (WorkflowError, QualificationError, KeyError, TypeError, OSError) as exc:

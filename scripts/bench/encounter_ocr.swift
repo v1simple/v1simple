@@ -3,11 +3,25 @@
 import Foundation
 import Vision
 import AppKit
+import Darwin
 
-while let line = readLine() {
+func processLine(_ line: String) {
+    var requestID: String? = nil
     do {
-        guard let data = line.data(using: .utf8),
-              let input = try JSONSerialization.jsonObject(with: data) as? [String] else {
+        guard let data = line.data(using: .utf8) else {
+            throw NSError(domain: "encounterOCR", code: 1)
+        }
+        let value = try JSONSerialization.jsonObject(with: data)
+        let input: [String]
+        if let legacy = value as? [String] {
+            input = legacy
+        } else if let envelope = value as? [String: Any],
+                  Set(envelope.keys) == Set(["request_id", "crops"]),
+                  let identifier = envelope["request_id"] as? String,
+                  let crops = envelope["crops"] as? [String] {
+            requestID = identifier
+            input = crops
+        } else {
             throw NSError(domain: "encounterOCR", code: 1)
         }
         var output: [[String: Any]] = []
@@ -33,10 +47,17 @@ while let line = readLine() {
             }
             output.append(["revision": request.revision, "rows": rows])
         }
-        let bytes = try JSONSerialization.data(withJSONObject: ["crops": output], options: [.sortedKeys])
+        var response: [String: Any] = ["crops": output]
+        if let identifier = requestID { response["request_id"] = identifier }
+        let bytes = try JSONSerialization.data(withJSONObject: response, options: [.sortedKeys])
         print(String(data: bytes, encoding: .utf8)!)
     } catch {
         let bytes = try! JSONSerialization.data(withJSONObject: ["error": "local Vision OCR failed", "detail": String(describing: error)])
         print(String(data: bytes, encoding: .utf8)!)
     }
+    fflush(stdout)
+}
+
+while let line = readLine() {
+    autoreleasepool { processLine(line) }
 }

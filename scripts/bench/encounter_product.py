@@ -54,7 +54,7 @@ from typing import Any
 
 
 SCHEMA_VERSION = 1
-DEFAULT_POLICY_ID = "v1-normal-x-k-ka-blink96-v2"
+DEFAULT_POLICY_ID = "v1-normal-x-k-ka-blink96-v3"
 DEFAULT_POLICY_PATH = Path(__file__).with_name("visible_event_policies.json")
 
 _EVENT_MODES = {"CHANGED", "UNCHANGED", "BASELINE"}
@@ -106,7 +106,7 @@ def load_policy(policy_id: str = DEFAULT_POLICY_ID, path: Path = DEFAULT_POLICY_
              "unknown visible-event policy")
     policy = deepcopy(policies[policy_id])
     _require(policy.get("contract_id") == "VISIBLE_EVENT_PRESENTATION"
-             and policy.get("contract_version") in {1, 2}, "unsupported visible-event contract")
+             and policy.get("contract_version") in {1, 2, 3}, "unsupported visible-event contract")
     contract_version = policy["contract_version"]
     appearance = _integer(policy.get("appearance_deadline_ns"), "appearance deadline", 1)
     verification = _integer(policy.get("verification_duration_ns"), "verification duration", 1)
@@ -128,6 +128,11 @@ def load_policy(policy_id: str = DEFAULT_POLICY_ID, path: Path = DEFAULT_POLICY_
                  "appearance observation bracket exceeds the qualified source-marker gap")
         _require(hold == appearance + observation_bracket + verification + guard,
                  "minimum event hold disagrees with observable timing bounds")
+    if contract_version == 3:
+        _require(policy.get("pre_deadline_observations") == "diagnostic_only"
+                 and policy.get("verification_anchor") ==
+                     "first_source_marker_at_or_after_nominal_deadline",
+                 "unsupported functional observation window")
     _require(policy.get("clock") == "host_monotonic_capture_marker"
              and policy.get("input_anchor") == "first_complete_target_input_all_accepted_ns",
              "unsupported visible-event clock or anchor")
@@ -180,6 +185,9 @@ def _contract(policy_id: str, policy: dict[str, Any]) -> dict[str, Any]:
             maximum_appearance_observation_bracket_ns=(
                 policy["maximum_appearance_observation_bracket_ns"]),
         )
+    if policy["contract_version"] == 3:
+        result["pre_deadline_observations"] = policy["pre_deadline_observations"]
+        result["verification_anchor"] = policy["verification_anchor"]
     return result
 
 
@@ -448,6 +456,7 @@ def _judge_event(raw: dict[str, Any], policy: dict[str, Any],
         return result
     anchor, deadline = timing["anchor_ns"], timing["deadline_ns"]
     observable_contract = policy["contract_version"] >= 2
+    functional_contract = policy["contract_version"] == 3
     deadline_index = next((index for index, item in enumerate(observations)
                            if item["capture_ns"] >= deadline), None)
     deadline_marker = observations[deadline_index] if deadline_index is not None else None
@@ -486,7 +495,7 @@ def _judge_event(raw: dict[str, Any], policy: dict[str, Any],
             "first_current_offset_from_nominal_deadline_ns": None,
         }
     before = [item for item in observations if item["capture_ns"] < anchor]
-    if raw["mode"] in {"CHANGED", "UNCHANGED"}:
+    if not functional_contract and raw["mode"] in {"CHANGED", "UNCHANGED"}:
         preceding = before[-1] if before else None
         expected = "PREVIOUS" if raw["mode"] == "CHANGED" else "CURRENT"
         if raw["mode"] == "CHANGED" and any(item["raw_status"] == "CURRENT" for item in before):
@@ -495,6 +504,16 @@ def _judge_event(raw: dict[str, Any], policy: dict[str, Any],
                 or preceding["raw_status"] != expected:
             _append_once(blockers, "NO_QUALIFIED_PRECEDING_STATE")
 
+    if functional_contract:
+        if deadline_marker is not None:
+            result["verification_end_ns"] = deadline_marker["capture_ns"] + policy["verification_duration_ns"]
+        pre_deadline = [item for item in observations if anchor <= item["capture_ns"] < deadline]
+        result["acquisition_observations"] = {
+            "meaning": "Diagnostic optical observations before the functional deadline; no atomic redraw or firmware-cause claim.",
+            "raw_status_counts": dict(Counter(item["raw_status"] for item in pre_deadline)),
+            "first_current_correct": deepcopy(next((item for item in pre_deadline
+                                                    if item["raw_status"] == "CURRENT"), None)),
+        }
     state = "WAITING"
     first: dict | None = None
     closing: dict | None = None
@@ -518,8 +537,35 @@ def _judge_event(raw: dict[str, Any], policy: dict[str, Any],
         for classification in explicit or []:
             if classification not in result["temporal_classifications"]:
                 result["temporal_classifications"].append(deepcopy(classification))
-        if first is not None and capture > first["capture_ns"] + policy["verification_duration_ns"]:
+        if functional_contract and capture < deadline:
+            # Keep every raw image and derived reading. A physical redraw before
+            # its allowed response deadline is not a functional failure.
+            continue
+        if (functional_contract and item is deadline_marker and raw_status == "UNRESOLVED"
+                and explicit and all(policy["qualified_temporal_classifiers"][record["classifier_id"]][
+                    "deadline_observation_semantics"] == "LEGAL_PRESENTATION_TRANSITION"
+                                     for record in explicit)):
+            # Both optical endpoint phases are already legal target content.
+            # This starts verification without inventing a raw CURRENT image.
+            first = item
+            state = "VERIFYING"
+            result["verification_end_ns"] = capture + policy["verification_duration_ns"]
+            result["response_acquisition"]["qualified_deadline_transition"] = deepcopy(item)
+            acquisition_accepted = deadline_bracket_valid
+            acquisition_at_observation_marker = True
+            result["response_acquisition"]["status"] = "QUALIFIED_LEGAL_PHASE_AT_DEADLINE_CAPTURE"
+            continue
+        after_verification = (
+            functional_contract and result["verification_end_ns"] is not None
+            and capture >= result["verification_end_ns"]
+        ) or (not functional_contract and first is not None
+              and capture > first["capture_ns"] + policy["verification_duration_ns"])
+        if after_verification:
             if closing is not None:
+                continue
+            if (functional_contract and capture - result["verification_end_ns"]
+                    > policy["maximum_source_marker_gap_ns"]):
+                _append_once(blockers, "VERIFICATION_DURATION_NOT_OBSERVED")
                 continue
             if raw_status == "DEFINITE_OTHER":
                 code = "IMPOSSIBLE_JOINT_STATE" if item.get("joint_impossible") else "UNEXPECTED_VISIBLE_STATE"
@@ -566,12 +612,17 @@ def _judge_event(raw: dict[str, Any], policy: dict[str, Any],
                 failure = ("PREVIOUS_STATE_AFTER_DEADLINE", item)
                 break
         elif raw_status == "CURRENT":
+            if functional_contract and first is not None and result["first_current_correct"] is None:
+                result["first_current_correct"] = deepcopy(item)
+                result["response_acquisition"]["first_current_capture_ns"] = capture
+                result["response_acquisition"]["first_current_offset_from_nominal_deadline_ns"] = capture - deadline
             if item["joint_state_id"] not in seen_phases:
                 seen_phases.append(item["joint_state_id"])
             if state == "WAITING":
                 first = item
                 result["first_current_correct"] = deepcopy(item)
-                result["verification_end_ns"] = capture + policy["verification_duration_ns"]
+                if not functional_contract:
+                    result["verification_end_ns"] = capture + policy["verification_duration_ns"]
                 if observable_contract:
                     result["response_acquisition"]["first_current_capture_ns"] = capture
                     result["response_acquisition"][
@@ -638,7 +689,8 @@ def _judge_event(raw: dict[str, Any], policy: dict[str, Any],
             result["response_acquisition"]["status"] = "DEADLINE_CAPTURE_BRACKET_NOT_ESTABLISHED"
 
     if first is not None and closing is None:
-        verify_end = first["capture_ns"] + policy["verification_duration_ns"]
+        verify_end = (result["verification_end_ns"] if functional_contract else
+                      first["capture_ns"] + policy["verification_duration_ns"])
         closing = next((item for item in observations
                         if item["capture_ns"] >= verify_end and item["raw_status"] == "CURRENT"), None)
         if closing is not None and closing["joint_state_id"] not in seen_phases:
@@ -678,6 +730,8 @@ def _judge_event(raw: dict[str, Any], policy: dict[str, Any],
         pass_reason = ("CURRENT_AT_FIRST_POST_DEADLINE_CAPTURE_AND_VERIFIED"
                        if acquisition_at_observation_marker
                        else "PRESENTED_BY_DEADLINE_AND_VERIFIED")
+        if functional_contract and result["response_acquisition"].get("qualified_deadline_transition"):
+            pass_reason = "LEGAL_PHASE_AT_DEADLINE_AND_VERIFIED"
         result.update(result="PASS", reason_code=pass_reason, reasons=[pass_reason])
     return result
 

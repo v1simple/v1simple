@@ -11,8 +11,19 @@ import unittest
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "bench"))
-from encounter_product import (DEFAULT_POLICY_ID, DEFAULT_POLICY_PATH,
-                               judge_visible_event_presentation, load_policy)
+from encounter_product import (DEFAULT_POLICY_PATH,
+                               judge_visible_event_presentation as judge_current_contract,
+                               load_policy as load_current_policy)
+
+# Preserve the historical acquisition/coherence contract regressions explicitly.
+DEFAULT_POLICY_ID = "v1-normal-x-k-ka-blink96-v2"
+
+def judge_visible_event_presentation(*args, **kwargs):
+    kwargs.setdefault("policy_id", DEFAULT_POLICY_ID)
+    return judge_current_contract(*args, **kwargs)
+
+def load_policy(policy_id=DEFAULT_POLICY_ID, path=DEFAULT_POLICY_PATH):
+    return load_current_policy(policy_id, path)
 
 
 MS = 1_000_000

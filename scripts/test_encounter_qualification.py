@@ -128,7 +128,8 @@ class QualificationTests(unittest.TestCase):
     def reference(path, root):
         return {"path": str(path.relative_to(root)), "sha256": digest(path)}
 
-    def field_validation(self, *, wrong=False):
+    def field_validation(self, *, wrong=False, empty_control_count=6,
+                         ghost_partial_identity=False):
         manifest_frames = []
         blind_frames = []
         frames = []
@@ -143,12 +144,22 @@ class QualificationTests(unittest.TestCase):
             checks = []
             for field in FIELDS:
                 reference = literal(field)
+                if field == "secondary" and index < empty_control_count:
+                    reference = {"state": "readable", "value": []}
                 blind[field] = copy.deepcopy(reference)
                 observed = copy.deepcopy(reference)
                 status = "AGREEMENT"
                 if wrong and index == 0 and field == "counter_glyph":
                     observed = {"state": "readable", "value": "8"}
                     status = "WRONG_ASSERTION"
+                if ghost_partial_identity and index == 0 and field == "secondary":
+                    observed = {
+                        "state": "unreadable", "value": None,
+                        "reason": "partial card",
+                        "partial_cards": [{"band": "Ka", "frequency": "34.700",
+                                           "direction": None, "bars": None}],
+                    }
+                    status = "READER_REFUSAL"
                 checks.append({"field": field, "status": status,
                                "observed": observed, "reference": reference})
                 totals[status] += 1
@@ -199,14 +210,18 @@ class QualificationTests(unittest.TestCase):
             "frames": frames,
         }
 
-    def visible_secondary_validation(self, *, empty=False, wrong=False):
+    def visible_secondary_validation(self, *, empty=False, wrong=False,
+                                     wrong_partial=False, partial_identity_count=6,
+                                     unresolved_partial=False,
+                                     unresolved_full_assertion=False,
+                                     reanalysis=False):
         packet_id = "secondary-packet-test-v1"
         image_integrity = {}
         single_labels = []
         single_hidden = []
         items = []
         counts = Counter()
-        for index in range(6):
+        for index in range(12):
             source_image = f"opaque-secondary-{index:02d}.png"
             retained = self.write_image(f"secondary/images/{source_image}", source_image)
             image_sha = digest(retained)
@@ -218,24 +233,53 @@ class QualificationTests(unittest.TestCase):
                 "bar_count": 3,
                 "meter_cells": ["lit", "lit", "lit", "unlit", "unlit", "unlit"],
             }]
+            if unresolved_partial and index == 6:
+                cards[0] = {
+                    "band": "uncertain", "frequency": "uncertain",
+                    "direction": "uncertain", "bar_count": None,
+                    "meter_cells": ["uncertain"] * 6,
+                }
+            if unresolved_full_assertion and index == 5:
+                cards[0]["direction"] = "uncertain"
             blind_label = {
                 "image": source_image,
                 "display_visibility": "visible",
                 "card_count": len(cards),
                 "cards": cards,
             }
-            reference_value = [] if empty else [copy.deepcopy(CARD)]
-            reference = {"state": "readable", "value": reference_value}
+            reference = encounter_qualification._blind_secondary_reference(blind_label)
             observed = copy.deepcopy(reference)
+            if unresolved_full_assertion and index == 5:
+                observed = {
+                    "state": "readable",
+                    "value": [{"band": "Ka", "frequency": "34.700",
+                               "direction": "front", "bars": 3}],
+                }
             if wrong and index == 0:
                 observed["value"][0]["bars"] = 4
-            status = "AGREEMENT" if observed == reference else "WRONG_ASSERTION"
+            if not empty and index >= 6:
+                identity_index = index - 6
+                observed = {
+                    "state": "unreadable", "value": None,
+                    "reason": "direction and bars are unresolved",
+                    "partial_cards": [{
+                        "band": "Ka" if identity_index < partial_identity_count else None,
+                        "frequency": "34.700" if identity_index < partial_identity_count else None,
+                        "direction": None, "bars": None,
+                    }],
+                }
+                if wrong_partial and index == 6:
+                    observed["partial_cards"][0].update(band="K", frequency="24.150")
+            status = encounter_qualification._derived_field_status(
+                "secondary", observed, reference)
             counts[status] += 1
             self.reader_observations[image_sha] = {"secondary": copy.deepcopy(observed)}
             single_labels.append({"item_id": f"single-{index:02d}", "frame": blind_label})
+            source_observed = (copy.deepcopy(reference) if reanalysis
+                               else copy.deepcopy(observed))
             single_hidden.append({"item_id": f"single-{index:02d}",
                                   "image": source_image,
-                                  "machine_secondary": copy.deepcopy(observed)})
+                                  "machine_secondary": source_observed})
             items.append({
                 "item_id": source_image,
                 "source_image": source_image,
@@ -259,6 +303,11 @@ class QualificationTests(unittest.TestCase):
         })
         hidden = self.write_json("secondary/sources/sealed-key.json", {
             "packet_id": packet_id,
+            "implementation": {
+                "reader_sha256": "d" * 64 if reanalysis
+                else self.method["encounter_reader.py"],
+                "reader_setup": {"method_version": 4 if reanalysis else 5},
+            },
             "sequences": [],
             "single_frame_controls": single_hidden,
         })
@@ -269,7 +318,7 @@ class QualificationTests(unittest.TestCase):
             "sealed_key": self.reference(hidden, self.root),
             "adjudication": self.reference(adjudication, self.root),
         }
-        return {
+        document = {
             "schema_version": 1,
             "kind": "independent_visible_secondary_validation",
             "reader": copy.deepcopy(READER),
@@ -292,6 +341,17 @@ class QualificationTests(unittest.TestCase):
             "counts": dict(counts),
             "items": items,
         }
+        if reanalysis:
+            document["reader_reanalysis"] = {
+                "kind": "complete_exact_reader_reread",
+                "source_sealed_key_sha256": sources["sealed_key"]["sha256"],
+                "source_method_version": 4,
+                "source_reader_sha256": "d" * 64,
+                "current_method_version": READER["method_version"],
+                "current_reader_sha256": self.method["encounter_reader.py"],
+                "complete_source_set_reread": True,
+            }
+        return document
 
     def fault_controls(self, *, broken_control=None):
         expected = expected_state()
@@ -573,6 +633,23 @@ class QualificationTests(unittest.TestCase):
 
     @staticmethod
     def generic_temporal_literal(classifier, eligible, *, indeterminate=False):
+        if classifier == "v1-arrow-phase-edge-v3":
+            return ({
+                "center_class": "COHERENT_SINGLE_DIRECTION_ON_OFF_EDGE",
+                "endpoint_support": "BOTH_CLEAR",
+                "extra_direction_motion": "NO",
+                "confidence": "HIGH",
+            } if eligible else ({
+                "center_class": "VISUALLY_INDETERMINATE",
+                "endpoint_support": "INDETERMINATE",
+                "extra_direction_motion": "INDETERMINATE",
+                "confidence": "LOW",
+            } if indeterminate else {
+                "center_class": "NOT_COHERENT_SINGLE_DIRECTION_ON_OFF_EDGE",
+                "endpoint_support": "BOTH_CLEAR",
+                "extra_direction_motion": "YES",
+                "confidence": "HIGH",
+            }))
         if classifier == "v1-main-bar-adjacent-redraw-v2":
             return ({
                 "left_endpoint_bar_count": 2,
@@ -674,17 +751,23 @@ class QualificationTests(unittest.TestCase):
         repository_spec = (Path(__file__).resolve().parent / "bench" / "temporal_specs" /
                            f"{classifier}.json")
         spec_document = json.loads(repository_spec.read_text(encoding="utf-8"))
-        spec_document["identity"] = {
+        spec_identity = {
             "reader_method_version": READER["method_version"],
             "reader_sha256": self.method["encounter_reader.py"],
-            "redraw_probe_method_version": 1,
-            "redraw_probe_sha256": self.method["encounter_redraw_probe.py"],
         }
+        if classifier != "v1-arrow-phase-edge-v3":
+            spec_identity.update(
+                redraw_probe_method_version=1,
+                redraw_probe_sha256=self.method["encounter_redraw_probe.py"])
+        spec_document["identity"] = spec_identity
         if contradictory_spec:
-            spec_document["validation"].update(
-                minimum_blind_true_admits=50,
-                minimum_blind_true_rejects=50,
-                observer_eligibility_rule="NEVER_ELIGIBLE")
+            if classifier == "v1-arrow-phase-edge-v3":
+                spec_document["qualification_requirements"]["minimum_blind_true_admits"] = 50
+            else:
+                spec_document["validation"].update(
+                    minimum_blind_true_admits=50,
+                    minimum_blind_true_rejects=50,
+                    observer_eligibility_rule="NEVER_ELIGIBLE")
         spec = self.write_json(f"{temporal_root.name}/spec.json", spec_document)
         spec_sha = digest(spec)
         implementation_binding = {
@@ -754,9 +837,11 @@ class QualificationTests(unittest.TestCase):
             "verified_maximum_source_interval_ns": recording_maximum_interval_ns,
             "reader_method_version": READER["method_version"],
             "reader_sha256": self.method["encounter_reader.py"],
-            "redraw_probe_method_version": 1,
-            "redraw_probe_sha256": self.method["encounter_redraw_probe.py"],
         }
+        if classifier != "v1-arrow-phase-edge-v3":
+            record_context.update(
+                redraw_probe_method_version=1,
+                redraw_probe_sha256=self.method["encounter_redraw_probe.py"])
 
         def point(video_index):
             return {
@@ -824,7 +909,39 @@ class QualificationTests(unittest.TestCase):
                 }
                 if malformed_admitted_record and index == 0:
                     record["raw_affected_fields"] = []
-                if classifier == "v1-main-bar-adjacent-redraw-v2":
+                if classifier == "v1-arrow-phase-edge-v3":
+                    constants = spec_document["constants"]
+                    record.update({
+                        "left_support": point(indices[0] - 2),
+                        "left_endpoint": point(indices[0] - 1),
+                        "right_endpoint": point(indices[-1] + 1),
+                        "right_support": point(indices[-1] + 2),
+                        "endpoint_values": [[], ["front"]],
+                        "changed_direction": "front",
+                        "arrow_expectation_signature": {
+                            "allowed_arrow_sets": [[], ["front"]],
+                            "joint_arrow_phases": [[], ["front"]],
+                        },
+                        "endpoint_separation_rms": 60.0,
+                        "projections": [0.25, 0.5, 0.75],
+                        "normalized_residuals": [0.01, 0.01, 0.01],
+                        "maximum_backward_step": 0.0,
+                        "total_backward_motion": 0.0,
+                        "extra_direction_profile_diameter_rms": {
+                            "side": 1.0, "rear": 1.0},
+                        "maximum_endpoint_span_ns":
+                            constants["authored_blink_phase_ns"] +
+                            recording_maximum_interval_ns,
+                        "profile_schema": {
+                            "rows": 4, "columns": 4, "cells": 16,
+                            "sample": "max-channel cell median"},
+                        "profile_reference_bounds": {
+                            "front": [1008, 203, 1145, 293],
+                            "side": [1003, 313, 1153, 345],
+                            "rear": [1044, 366, 1113, 392],
+                        },
+                    })
+                elif classifier == "v1-main-bar-adjacent-redraw-v2":
                     profile = spec_document["profile"]
                     constants = spec_document["constants"]
                     record.update({
@@ -1343,6 +1460,7 @@ class QualificationTests(unittest.TestCase):
 
     def test_each_generic_temporal_v2_bundle_qualifies(self):
         classifiers = (
+            "v1-arrow-phase-edge-v3",
             "v1-main-bar-adjacent-redraw-v2",
             "v1-muted-badge-rising-fill-v2",
             "v1-unmute-stable-frequency-sweep-v2",
@@ -1355,7 +1473,8 @@ class QualificationTests(unittest.TestCase):
                 self.assertEqual(result["temporal_classifiers"][classifier]["total"], 10)
 
     def test_recording_gap_does_not_relax_each_admitted_support_chain(self):
-        for classifier in TEMPORAL_V2_OBSERVER_RUBRICS:
+        classifiers = set(TEMPORAL_V2_OBSERVER_RUBRICS) - {"v1-arrow-phase-edge-v3"}
+        for classifier in classifiers:
             with self.subTest(classifier=classifier):
                 temporal, _ = self.generic_temporal_validation(
                     classifier, recording_maximum_interval_ns=15_000_000)
@@ -1685,6 +1804,56 @@ class QualificationTests(unittest.TestCase):
         secondary = self.visible_secondary_validation(wrong=True)
         result = self.verify(self.write_bundle(secondary=secondary))
         self.assertIn("wrong reader assertion", result["errors"][0])
+
+    def test_partial_secondary_identity_is_recomputed_from_exact_reader(self):
+        secondary = self.visible_secondary_validation(reanalysis=True)
+        item = secondary["items"][6]
+        item["observed"]["partial_cards"][0]["frequency"] = "35.500"
+        result = self.verify(self.write_bundle(secondary=secondary))
+        self.assertIn("observation differs from exact reader", result["errors"][0])
+
+    def test_wrong_partial_secondary_identity_is_rejected(self):
+        secondary = self.visible_secondary_validation(wrong_partial=True)
+        result = self.verify(self.write_bundle(secondary=secondary))
+        self.assertIn("wrong partial identity", result["errors"][0])
+
+    def test_partial_identity_without_resolved_blind_identity_is_rejected(self):
+        secondary = self.visible_secondary_validation(unresolved_partial=True)
+        result = self.verify(self.write_bundle(secondary=secondary))
+        self.assertIn("partial secondary identity without a resolved blind reference",
+                      result["errors"][0])
+
+    def test_full_secondary_assertion_without_resolved_blind_card_is_rejected(self):
+        secondary = self.visible_secondary_validation(unresolved_full_assertion=True)
+        result = self.verify(self.write_bundle(secondary=secondary))
+        self.assertIn("asserted visible-secondary content without a resolved blind reference",
+                      result["errors"][0])
+
+    def test_unknown_partial_secondary_identity_does_not_count_as_agreement(self):
+        secondary = self.visible_secondary_validation(partial_identity_count=4)
+        result = self.verify(self.write_bundle(secondary=secondary))
+        self.assertIn("too few blind agreements on partial secondary identities",
+                      result["errors"][0])
+
+    def test_partial_secondary_identity_on_blind_empty_control_is_rejected(self):
+        document = self.field_validation(ghost_partial_identity=True)
+        result = self.verify(self.write_bundle(document))
+        self.assertIn("partial secondary identity on a blind empty control",
+                      result["errors"][0])
+
+    def test_too_few_blind_empty_secondary_controls_are_rejected(self):
+        document = self.field_validation(empty_control_count=4)
+        result = self.verify(self.write_bundle(document))
+        self.assertIn("too few blind empty-secondary presence controls", result["errors"][0])
+
+    def test_complete_old_reader_reanalysis_is_explicitly_bound(self):
+        secondary = self.visible_secondary_validation(reanalysis=True)
+        result = self.verify(self.write_bundle(secondary=secondary))
+        self.assertEqual(result["status"], "QUALIFIED")
+        self.assertTrue(result["visible_secondary_validation"]["reader_reanalysis"])
+        secondary["reader_reanalysis"]["source_reader_sha256"] = "e" * 64
+        result = self.verify(self.write_bundle(secondary=secondary))
+        self.assertIn("reanalysis binding differs", result["errors"][0])
 
     def test_visible_secondary_source_hash_tamper_is_rejected(self):
         secondary = self.visible_secondary_validation()

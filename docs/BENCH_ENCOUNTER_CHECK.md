@@ -2,12 +2,12 @@
 
 The visible encounter check is an external optical test of the V1 display. It
 uses the replay input record as the requested state, reads the recorded screen,
-and judges whether each supported display event appeared on time and remained
+and judges whether each supported display event was correct at the bounded deadline observation and remained
 correct through a complete blink cycle. The reader is outside the firmware and
 receives only the registered RGB image. It does not receive the expected value,
 packet bytes, or timestamps while reading pixels.
 
-The primary bench answer is the qualified `VISIBLE_EVENT_PRESENTATION/v2`
+The primary bench answer is the qualified `VISIBLE_EVENT_PRESENTATION/v3`
 verdict. A raw frame result remains in the report for diagnosis, but it does not
 control the product verdict. `INCONCLUSIVE` at the product layer is a failure of
 the testing product to answer the question. Repair the reader, qualification,
@@ -67,6 +67,35 @@ not a product `PASS`. A missing camera is a hard qualification-capture failure.
 The separation prevents classifier choices from being adjusted after seeing the
 reserved pixels, which is the value of this distinct mode.
 
+When a reader changes, the maintained static reread preserves the old blind
+sources and recomputes all evidence under a clean, committed implementation:
+
+```sh
+python3 scripts/bench/encounter_qualification_workflow.py reanalyze-static \
+  --source-manifest .artifacts/bench/qualification/encounter-reader.json \
+  --out .artifacts/bench/qualification/new-static-reader
+```
+
+This requires the new default policy to have no temporal allowances. It publishes
+`encounter-reader.json` inside the new directory only after real verification;
+a rejected reread remains diagnostic. Prior labels must not have been used to
+tune the changed reader. Otherwise use a fresh independently labeled corpus.
+A previously qualified temporal reader needs its own matching proof:
+
+```sh
+python3 scripts/bench/encounter_qualification_workflow.py freeze \
+  --classifier v1-arrow-phase-edge-v3 \
+  --base-manifest .artifacts/bench/qualification/new-static-reader/encounter-reader.json \
+  --out .artifacts/bench/qualification/new-arrow-campaign
+```
+
+After the reserved capture, use that campaign with `prepare --campaign ...
+--run-dir ...`, complete only its opaque observer packet, then use `finalize
+--campaign ... --base-manifest ... --manifest ...`. The workflow freezes the
+chosen targets, verifies original source pixels and the complete blind result,
+and publishes only the independently supported policy entries. Ordinary product
+analysis never invokes unqualified experimental readers.
+
 The reader qualification manifest defaults to:
 
 ```text
@@ -100,7 +129,7 @@ existing collection result and prints the encounter product as `NOT_EVALUATED`.
 
 ## Exact visible-event contract
 
-The tracked policy profile is `v1-normal-x-k-ka-blink96-v2`. Timing values are
+The tracked policy profile is `v1-normal-x-k-ka-blink96-v3`. Timing values are
 fixed by that profile; the command line cannot loosen them.
 
 | Contract point | Exact value |
@@ -110,20 +139,18 @@ fixed by that profile; the command line cannot loosen them.
 | Nominal appearance deadline | anchor + 100 ms |
 | Observable deadline decision | first source marker at or after the nominal deadline |
 | Maximum deadline-marker bracket | 10 ms |
-| Verification duration | 192 ms from the first correct frame |
+| Verification duration | 192 ms from the sole deadline observation |
 | Maximum accepted source-marker gap | 10 ms |
 | Required event hold | 312 ms after the anchor |
 | Selected event window | `[anchor - 10 ms, min(anchor + 312 ms, actual event end))` |
 
 The 100 ms appearance bound is two declared 50 ms display-update intervals. The
 192 ms verification interval covers two 96 ms image phases. The 10 ms source
-bound is two periods of the fixed 200 fps camera profile. Because the camera is
-a discrete observer, version 2 gives the deadline exactly one observation
-opportunity: when no earlier frame is fully current, the first recorded source
-marker at or after 100 ms is decisive. Its gap from the immediately preceding
-marker must be no more than 10 ms. The required 312 ms hold is the nominal
-appearance bound, one deadline-observation bracket, the full-cycle verification
-interval, and one closing source guard combined.
+bound is two periods of the fixed 200 fps camera profile. Version 3 gives the
+deadline exactly one observation opportunity: the first recorded source marker
+at or after 100 ms. Its gap from the immediately preceding marker must be no more
+than 10 ms. The 312 ms hold includes the nominal deadline, one observation
+bracket, the full verification interval, and one closing source guard.
 
 An input event begins with the initial authored packet set or with a change from
 the preceding set. Byte-identical repeats remain in that event, and a target is
@@ -142,42 +169,39 @@ the event at its real end. A clipped event cannot pass: it is `INCONCLUSIVE`
 unless complete readable evidence separately proves a definite visible
 violation, which remains `FAIL`.
 
-For a changed event, the last source frame before the anchor must show the
-previous target within 10 ms. For an unchanged resend, it must show the current
-target. A fully current marker at or before 100 ms establishes acquisition
-directly. Otherwise, the first source marker at or after 100 ms must be fully
-current and its bracket with the preceding marker must be no more than 10 ms.
-An unresolved first post-deadline marker is `INCONCLUSIVE`; a previous or
-definitely other state is `FAIL`. A later marker never replaces that sole
-deadline observation. From the accepted first correct frame, the reader must
-observe 192 ms of continued legal presentation, including every required shared
-blink phase and a closing correct frame no more than 10 ms after verification.
+The requested target must be correct at that sole deadline marker. A qualified
+legal blink transition can establish legal presentation there without assigning
+an invented readable value to its raw image. A transition still acquiring the
+new target at the deadline fails. An unqualified unreadable deadline stays
+`INCONCLUSIVE`; a later correct image cannot replace it.
 
-The baseline event has no qualified previous target. Its non-current or
-unresolved frames before acquisition remain in the raw evidence but do not make
-the later verified target incoherent. The first deadline observation still has
-the strict outcomes above. After the first current marker, an unqualified
-unknown blocks verification and a definite non-current state fails. Changed
-events retain strict mixed-state and prior-state checks throughout acquisition.
+Verification always starts at the deadline marker, including when that marker
+is unreadable. Every subsequent original through 192 ms must be current or a
+specifically qualified legal transition. Every required shared blink phase must
+be observed, and a closing correct original must occur at or after the exact
+verification end, within 10 ms. A missing image or unqualified unknown blocks
+`PASS`; a supported wrong state in that interval is `FAIL` even beside other
+unknowns. Images after an established closing marker cannot retroactively change
+that bounded event result.
 
-A definite unexpected state, impossible combination, previous state after the
-deadline, or regression after correctness is a product failure. A target never
-seen by the deadline is a failure when complete readable evidence makes that
-absence decidable. Missing frames, reader refusals, unqualified transitions, an
-unsupported target, incomplete timing/configuration identity, or an incomplete
-verification interval produce `INCONCLUSIVE`.
+All pre-deadline images remain available as optical acquisition diagnostics.
+They neither establish nor prevent the functional verdict. In particular,
+canvas composition and transfer to the physical panel do not prove atomic
+visible pixel replacement. A mixed camera image during the allowed response
+interval therefore cannot, by itself, establish a firmware defect. A target
+already present before input can establish correct deadline content; this does
+not prove that the firmware reacted to that input. Versions 1 and 2 remain
+available as historical policies with stricter acquisition/coherence semantics.
 
 These timestamps bind accepted host input and camera capture markers. They do
 not measure DUT receipt, exposure integration, panel scanout, or the instant a
-human first sees a pixel. A version 2 event that first becomes fully current on
-the post-deadline observation reports both source markers and their interval-
-censored bracket. Its `PASS` means the first observable deadline marker was
-current within the declared source bound; it does not prove physical appearance
-by exactly 100 ms.
+human first sees a pixel. A `PASS` establishes the stated camera-observed target
+and continued presentation; it does not prove physical appearance by exactly
+100 ms or qualify untested firmware functions.
 
-## Reader V5
+## Reader V6
 
-Reader V5 is a fixed-layout instrument calibrated from the registered `SCAN`
+Reader V6 is a fixed-layout instrument calibrated from the registered `SCAN`
 landmark. It first requires two lit display witnesses so a dark or occluded
 screen cannot be interpreted as valid absence. It records literal states such
 as `readable`, `absent`, `ambiguous`, and `unreadable`; a refusal is never
@@ -196,13 +220,17 @@ continues to come from the literal probes and shape interior.
 Secondary cards keep slot, text, direction, and strength associated in one
 record. Their six-cell meters are located by a shared perimeter grid without
 scoring any expected fill count. Cell interiors, quadrants, nearby background,
-and contiguous fill order decide the bar count. Partial cells retain every
+and contiguous fill order decide the bar count. Secondary arrows use their
+complete padded triangle or rectangle geometry; clipped or partial shapes refuse.
+The meter background uses the renderer padding beyond its outline fringe. Partial cells retain every
 compatible count for possible sequence-level corroboration, while the raw frame
 remains unresolved. A local contrast difference below eight intensity levels is
 outside the meter's stated detection floor.
 
 Only the small secondary-card text uses local Apple Vision OCR. Accepted text
-must be visible and have at least 0.5 confidence. After removing whitespace and
+must be visible and have at least 0.5 confidence. One bounded helper serves the
+analysis, with a request identity for each unchanged crop list. A failed request
+closes that session without retrying or replacing an unreadable result. After removing whitespace and
 normalizing visually identical Latin/Cyrillic band letters, it must exactly
 match Ka, K, Ku, X, or L followed by two digits, a literal decimal, and three
 digits. Product scope remains X, K, and Ka. The reader never inserts digits or
@@ -224,11 +252,11 @@ outside the bundle, hash mismatch, altered subtotal, or inconsistent derived
 decision rejects qualification. The bundle must establish all of the following:
 
 - exact hashes for `encounter_reader.py`, `encounter_ocr.swift`,
-  `counter_reader.py`, `encounter_runtime_probe.py`, and
+  `encounter_ocr_session.py`, `counter_reader.py`, `encounter_runtime_probe.py`, and
   `encounter_ocr_probe.b64`, as well as `encounter_qualification.py`,
   `encounter_expectation.py`, and every temporal implementation named by the
   active policy;
-- exact Reader V5 runtime identity, including NumPy and Pillow versions, OCR
+- exact Reader V6 runtime identity, including NumPy and Pillow versions, OCR
   source and compiled-binary identity;
 - an operational OCR probe, not compilation alone: the compiled helper must
   read the fixed representative probe as `K24.150` at confidence 0.5 or higher;
@@ -242,7 +270,11 @@ decision rejects qualification. The bundle must establish all of the following:
 - a separately blinded visible-secondary set with at least five unique,
   nonempty card displays that agree with the reader, zero wrong assertions, and
   retained byte-bound packet manifest, completed blind labels, sealed key,
-  adjudication record, and source images;
+  adjudication record, and source images; at least five distinct partially read
+  cards must have independently supported literal band/frequency identities, and
+  at least five independently labeled empty-card images must produce no such
+  presence assertion. Unreadable direction or strength never supplies a missing
+  identity, and these partial assertions cannot establish a match;
 - all ten required product fault controls; and
 - exactly the temporal classifiers listed by the active visible-event policy,
   with no omitted or extra classifier.
@@ -301,7 +333,9 @@ affected field. Duplicate, partial, extra, malformed, or off-event claims are
 rejected and prevent `PASS`; a separately proved event failure still controls
 the overall result.
 
-The active policy currently allows only `v1-arrow-phase-edge-v2`. It accepts a
+The new policy starts without temporal allowances until fresh qualification is
+published. The arrow candidate `v1-arrow-phase-edge-v3` retains the v2 optical
+rules under the current reader binding; it cannot inherit the old proof. It accepts a
 maximal ambiguous arrow run only when two readable source-consecutive support
 frames exist on each side, the endpoints are the two permitted blink phases,
 and exactly one direction changes. Endpoint separation must be at least 52 RMS
@@ -317,11 +351,12 @@ Every policy-listed classifier must also carry a byte-bound blind validation.
 The verifier checks the pre-pixel freeze, frozen classifier output, completed
 observer labels, observer manifest and instructions, restricted hidden key,
 seal, selection, and every referenced clip. It derives each true-admit,
-false-admit, true-reject, and false-reject classification from the observer's
+false-admit, true-reject, false-reject, and abstention classification from the observer's
 literal labels and frozen classifier decision, then rebuilds the decision lists,
 confusion matrix, denominators, rates, numerical minima, and allowlist decision.
 Qualification requires zero false admissions, at least five true admissions,
-at least five true rejections, and an integrity pass. A supplied named-sentinel
+at least five true rejections, and an integrity pass. A visually indeterminate
+reference is an abstention, never a manufactured true rejection. A supplied named-sentinel
 audit must have zero violations.
 
 The verifier independently checks each retained clip's bytes and size. The

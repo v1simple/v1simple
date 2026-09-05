@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "bench"))
 import encounter_reader as reader
@@ -191,6 +191,97 @@ class EncounterReaderTests(unittest.TestCase):
             self.assertEqual(result["state"], "unreadable", result)
             self.assertIsNone(result["value"])
             self.assertEqual(len(result["partial_cards"]), 1)
+
+    def test_secondary_complete_triangles_follow_pixels_with_padding_and_blur(self):
+        # Renderer-owned 12 by 12 triangles project to about 20 by 20 pixels.
+        # Draw full symbols; the reader does not supply these coordinates.
+        for direction in ("front", "rear"):
+            for dx, dy in ((0, 0), (-2, -2), (2, 2)):
+                for brightness in (70, 220):
+                    with self.subTest(direction=direction, shift=(dx, dy), level=brightness):
+                        im = display()
+                        card(im, 393, direction, 1)
+                        crop = Image.new("RGB", (37, 39), (25, 25, 25))
+                        draw = ImageDraw.Draw(crop)
+                        vertices = ((19, 8), (9, 28), (29, 28)) if direction == "front" else (
+                            (9, 10), (29, 10), (19, 30))
+                        draw.polygon([(x + dx, y + dy) for x, y in vertices],
+                                     fill=(brightness,) * 3)
+                        crop = crop.filter(ImageFilter.GaussianBlur(.65))
+                        im.paste(crop, (403, 377))
+                        result = reader._card_direction(
+                            reader.Pixels(im.tobytes(), WIDTH, HEIGHT, REGISTRATION), 393)
+                        self.assertEqual((result["state"], result["value"]),
+                                         ("readable", direction), result)
+
+    def test_secondary_side_rectangle_keeps_its_renderer_row(self):
+        for dx, dy in ((0, 0), (-2, -2), (2, 2)):
+            im = display()
+            card(im, 393, "side", 1)
+            region = im.crop((403, 377, 440, 416))
+            ImageDraw.Draw(im).rectangle((403, 377, 439, 415), fill=(0, 0, 80))
+            im.paste(region, (403 + dx, 377 + dy))
+            result = reader._card_direction(
+                reader.Pixels(im.tobytes(), WIDTH, HEIGHT, REGISTRATION), 393)
+            self.assertEqual((result["state"], result["value"]), ("readable", "side"), result)
+
+    def test_secondary_remaining_triangle_base_is_not_side_direction(self):
+        for clear_y in range(392, 399):
+            im = display()
+            card(im, 393, "rear", 1)
+            draw = ImageDraw.Draw(im)
+            draw.rectangle((403, 377, 439, 415), fill=(25, 25, 25))
+            draw.polygon(((412, 387), (432, 387), (422, 407)), fill="white")
+            draw.rectangle((403, clear_y, 439, 415), fill=(25, 25, 25))
+            result = reader._card_direction(
+                reader.Pixels(im.tobytes(), WIDTH, HEIGHT, REGISTRATION), 393)
+            self.assertEqual((result["state"], result["value"]), ("ambiguous", None), result)
+
+    def test_secondary_partial_wrong_blank_and_faint_shapes_refuse(self):
+        for kind in ("missing_center", "foreign_corner", "rectangle", "diamond",
+                     "cropped", "blank", "faint"):
+            with self.subTest(kind=kind):
+                im = display()
+                card(im, 393, "rear", 1)
+                draw = ImageDraw.Draw(im)
+                draw.rectangle((403, 377, 439, 415), fill=(25, 25, 25))
+                if kind not in ("blank", "rectangle", "diamond"):
+                    draw.polygon(((412, 387), (432, 387), (422, 407)),
+                                 fill=(29, 29, 29) if kind == "faint" else "white")
+                if kind == "missing_center":
+                    draw.rectangle((419, 393, 424, 398), fill=(25, 25, 25))
+                elif kind == "foreign_corner":
+                    draw.rectangle((412, 400, 417, 405), fill="white")
+                elif kind == "rectangle":
+                    draw.rectangle((412, 387, 432, 407), fill="white")
+                elif kind == "diamond":
+                    draw.polygon(((422, 387), (432, 397), (422, 407), (412, 397)), fill="white")
+                elif kind == "cropped":
+                    draw.rectangle((403, 399, 439, 415), fill=(25, 25, 25))
+                result = reader._card_direction(
+                    reader.Pixels(im.tobytes(), WIDTH, HEIGHT, REGISTRATION), 393)
+                self.assertEqual((result["state"], result["value"]), ("ambiguous", None), result)
+
+    def test_secondary_meter_uses_full_padding_past_outline_undershoot(self):
+        for faint_fill in (False, True):
+            with self.subTest(faint_fill=faint_fill):
+                im = display()
+                card(im, 393, "side", 0)
+                draw = ImageDraw.Draw(im)
+                draw.rectangle((405, 419, 611, 450), fill=(20, 20, 20))
+                for index in range(6):
+                    x = 409 + 33 * index
+                    draw.rectangle((x, 426, x + 28, 443), outline=(35, 85, 25), width=2)
+                    # A dark two-row compression fringe cannot define all of
+                    # the local background; the remaining padding is intact.
+                    draw.rectangle((x + 4, 422, x + 24, 423), fill=(5, 5, 5))
+                    draw.rectangle((x + 4, 446, x + 24, 447), fill=(5, 5, 5))
+                if faint_fill:
+                    draw.rectangle((411, 428, 435, 441), fill=(28, 28, 28))
+                result = reader._card_bars(
+                    reader.Pixels(im.tobytes(), WIDTH, HEIGHT, REGISTRATION), 393)
+                self.assertEqual((result["state"], result["value"]),
+                                 ("ambiguous", None) if faint_fill else ("readable", 0), result)
 
     def test_secondary_filled_and_outlined_shapes_survive_small_translations(self):
         # Complete rectangles, drawn independently of the reader's fit or crops.

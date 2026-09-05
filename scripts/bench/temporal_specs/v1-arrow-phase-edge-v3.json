@@ -1,0 +1,248 @@
+{
+  "constants": {
+    "authored_blink_phase_ns": 96000000,
+    "endpoint_separation_rms_min": 52.0,
+    "extra_direction_profile_diameter_rms_max": 8.0,
+    "maximum_backward_step": 0.05,
+    "maximum_total_backward_motion": 0.1,
+    "normalized_residual_max": 0.15,
+    "projection_max": 1.05,
+    "projection_min": -0.05,
+    "stable_readable_support_frames_each_side": 2
+  },
+  "equations": {
+    "backward_step": "max(0,alpha_j-alpha_(j+1)) for alpha sequence [0, alpha(run...), 1]",
+    "d": "R-L",
+    "endpoint_separation_rms": "S=sqrt(sum_i(d_i^2)/n)",
+    "extra_direction_profile_diameter_rms": "max over all pairs y,z in the full support chain of sqrt(sum_i((y_i-z_i)^2)/n)",
+    "maximum_endpoint_span_ns": "authored_blink_phase_ns + verified_capture_maximum_source_interval_ns",
+    "n": "16",
+    "normalized_residual": "rho(x)=E(x)/S",
+    "projection": "alpha(x)=sum_i((x_i-L_i)*d_i)/sum_i(d_i^2)",
+    "projection_fit": "x_hat=L+alpha(x)*d",
+    "residual_rms": "E(x)=sqrt(sum_i((x_i-x_hat_i)^2)/n)",
+    "total_backward_motion": "sum_j(max(0,alpha_j-alpha_(j+1)))"
+  },
+  "mandatory_gates_in_order": [
+    "capture identity, registration, exact encoded/source timing, zero timestamp/missing/extra/duration errors, and immutable input-only selection manifest are verified",
+    "deduplicate by video_frame_index; conflicting observations for one source image abort all classification",
+    "candidate is a maximal nonempty main_arrows ambiguous run inside one predeclared input-only sequence event; unreadable is never an arrow phase edge",
+    "two source-consecutive readable support frames immediately precede and two immediately follow the run; each side has one stable endpoint value",
+    "every neighboring video_frame_index and source_frame_seq increments by exactly one, capture_ns strictly increases, and each gap is at most the verified capture maximum source interval",
+    "nearest endpoint span is at most 96000000 + verified capture maximum source interval nanoseconds",
+    "the resolved main-arrow expectation is identical throughout the support chain and is exactly the two endpoint phase sets",
+    "endpoint arrow sets differ by exactly one direction",
+    "nearest endpoint and same-side support direction states are definite and agree with their readable arrow-set values",
+    "every run frame is ambiguous solely because the changed direction is partial or faint; every extra direction stays in its endpoint definite state",
+    "all profiles contain 16 finite values in [0,255] with the same 4x4 schema and direction reference bounds",
+    "changed-direction endpoint separation S is at least 52.0",
+    "every changed-direction run profile has -0.05 <= alpha <= 1.05 and rho <= 0.15",
+    "the alpha sequence including endpoints has no backward step above 0.05 and total backward motion at most 0.10",
+    "each extra direction has profile diameter RMS at most 8.0 across the full support chain",
+    "raw observations remain unchanged; the qualified record affects main_arrows only and is honored only when classifier_id is explicitly policy-listed"
+  ],
+  "numeric_comparison": "Use unrounded float64 metrics for inclusive comparisons. Round only retained display diagnostics.",
+  "profile": {
+    "cells": 16,
+    "columns": 4,
+    "finite_range": [
+      0.0,
+      255.0
+    ],
+    "reference_bounds_must_match": true,
+    "rows": 4,
+    "sample": "float64 from retained max-channel cell medians rounded by reader to 0.01"
+  },
+  "record_fields": [
+    "event_id",
+    "classifier_id",
+    "classifier_spec_sha256",
+    "status=QUALIFIED_CAPTURE_TRANSITION",
+    "raw_affected_fields=[main_arrows]",
+    "video_frame_indices",
+    "first",
+    "last",
+    "left_support",
+    "left_endpoint",
+    "right_endpoint",
+    "right_support",
+    "endpoint_values",
+    "changed_direction",
+    "arrow_expectation_signature",
+    "endpoint_separation_rms",
+    "projections",
+    "normalized_residuals",
+    "maximum_backward_step",
+    "total_backward_motion",
+    "extra_direction_profile_diameter_rms",
+    "maximum_endpoint_span_ns",
+    "verified_maximum_source_interval_ns",
+    "profile_schema",
+    "profile_reference_bounds",
+    "capture_id",
+    "selection_manifest_sha256",
+    "reader_method_version",
+    "reader_sha256",
+    "basis"
+  ],
+  "scope": {
+    "claim": "a maximal raw ambiguous run is a captured presentation between two expressly permitted arrow phases; no individual ambiguous frame is assigned an endpoint value",
+    "directions": [
+      "front",
+      "side",
+      "rear"
+    ],
+    "does_not_claim": [
+      "whole-display correctness",
+      "color correctness",
+      "DUT receipt",
+      "response latency",
+      "firmware cause"
+    ],
+    "field": "main_arrows",
+    "layout": "registered V1 display"
+  },
+  "synthetic_profile_basis": {
+    "off": [
+      10.0,
+      10.0,
+      10.0,
+      10.0,
+      10.0,
+      10.0,
+      10.0,
+      10.0,
+      10.0,
+      10.0,
+      10.0,
+      10.0,
+      10.0,
+      10.0,
+      10.0,
+      10.0
+    ],
+    "on": [
+      10.0,
+      90.0,
+      90.0,
+      10.0,
+      10.0,
+      90.0,
+      90.0,
+      10.0,
+      90.0,
+      90.0,
+      90.0,
+      90.0,
+      90.0,
+      90.0,
+      90.0,
+      90.0
+    ]
+  },
+  "synthetic_vectors": [
+    {
+      "construction": "L=off; R=on; run=lerp(L,R,[0.20,0.60,0.95]); extra directions constant",
+      "expected": "QUALIFIED",
+      "name": "ideal_monotone_fade"
+    },
+    {
+      "construction": "L=off; R has 31.0 in the twelve on cells and 10.0 elsewhere; run=lerp(L,R,[0.5])",
+      "expected_rejection": "ENDPOINT_SEPARATION",
+      "name": "low_endpoint_separation"
+    },
+    {
+      "construction": "L=off; R=on; sole run profile equals L except cells 1,2,5,6 equal R",
+      "expected_rejection": "NORMALIZED_RESIDUAL",
+      "name": "fragment_not_glyph"
+    },
+    {
+      "construction": "L=off; R=on; run=lerp(L,R,[0.5]) plus 30.0 in cells 0,3,4,7",
+      "expected_rejection": "NORMALIZED_RESIDUAL",
+      "name": "orthogonal_background_flash"
+    },
+    {
+      "construction": "L=off; R=on; run=lerp(L,R,[0.20,0.80,0.70])",
+      "expected_rejection": "MAXIMUM_BACKWARD_STEP",
+      "name": "single_large_backtrack"
+    },
+    {
+      "construction": "L=off; R=on; run=lerp(L,R,[0.20,0.16,0.40,0.36,0.60,0.55,0.80])",
+      "expected_rejection": "TOTAL_BACKWARD_MOTION",
+      "name": "cumulative_small_backtracks"
+    },
+    {
+      "construction": "L=off; R=on; run=lerp(L,R,[1.06])",
+      "expected_rejection": "PROJECTION_RANGE",
+      "name": "projection_extrapolation"
+    },
+    {
+      "construction": "valid target fade; one extra direction changes uniformly from 10.0 to 18.0 then back without changing its definite raw state",
+      "expected": "QUALIFIED_NUMERIC_BOUNDARY_ONLY",
+      "name": "extra_direction_subthreshold_boundary"
+    },
+    {
+      "construction": "valid target fade; one extra direction changes uniformly from 10.0 to 18.01 then back",
+      "expected_rejection": "EXTRA_DIRECTION_MOTION",
+      "name": "extra_direction_motion"
+    },
+    {
+      "construction": "readable endpoints are {front} and {side}",
+      "expected_rejection": "NOT_ONE_DIRECTION_PHASE_EDGE",
+      "name": "two_direction_exchange"
+    },
+    {
+      "construction": "one or more of the four stable readable support frames is absent",
+      "expected_rejection": "UNCLOSED_RUN",
+      "name": "open_or_one-sided_run"
+    },
+    {
+      "construction": "a neighboring source_frame_seq or video_frame_index skips, or capture gap exceeds verified maximum",
+      "expected_rejection": "SOURCE_GAP",
+      "name": "source_gap"
+    },
+    {
+      "construction": "nearest endpoint capture span is 96000000 + verified maximum source interval + 1 ns",
+      "expected_rejection": "ENDPOINT_SPAN",
+      "name": "persistent_ambiguity"
+    },
+    {
+      "construction": "target profile is valid but an extra direction is partial or faint in any run frame",
+      "expected_rejection": "EXTRA_DIRECTION_STATE",
+      "name": "unexpected_direction_refusal"
+    },
+    {
+      "construction": "the support chain lacks one identical exact two-phase expectation signature",
+      "expected_rejection": "EXPECTATION_SIGNATURE",
+      "name": "different_or_unresolved_expectation"
+    },
+    {
+      "construction": "one profile has a different direction bound, length, NaN, infinity, or out-of-range value",
+      "expected_rejection": "INVALID_PROFILE",
+      "name": "profile_schema_or_nan"
+    },
+    {
+      "construction": "L=off; R differs only in the twelve glyph cells by 52/sqrt(12/16); run=lerp(L,R,[0.5])",
+      "expected": "QUALIFIED_NUMERIC_BOUNDARY_ONLY",
+      "name": "v2_endpoint_separation_inclusive_boundary"
+    },
+    {
+      "construction": "L=off; R differs only in the twelve glyph cells by 51.999/sqrt(12/16); run=lerp(L,R,[0.5])",
+      "expected_rejection": "ENDPOINT_SEPARATION",
+      "name": "v2_endpoint_separation_below_boundary"
+    }
+  ],
+  "schema_version": 2,
+  "classifier_id": "v1-arrow-phase-edge-v3",
+  "deadline_observation_semantics": "LEGAL_PRESENTATION_TRANSITION",
+  "qualification_requirements": {
+    "minimum_blind_true_admits": 5,
+    "minimum_blind_true_rejects": 5,
+    "maximum_false_admits": 0
+  },
+  "change_scope": "The v2 optical equations and thresholds are unchanged. This is a new reader binding and requires fresh schema-2 blind qualification; visually indeterminate clips abstain.",
+  "identity": {
+    "reader_method_version": 6,
+    "reader_sha256": "17988f82323e53a6d3a507cf101606e546ce61caa2d815cf0ca7024fdeffad98"
+  }
+}

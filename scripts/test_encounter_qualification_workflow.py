@@ -7,6 +7,7 @@ import json
 import io
 import hashlib
 import os
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 import shutil
 import subprocess
@@ -53,6 +54,39 @@ class QualificationWorkflowTests(unittest.TestCase):
             pixels.assert_not_called()
             self.assertEqual(list(prepared.glob(".qualification-reanalysis-*")), [])
 
+    def test_reanalysis_explicitly_requests_only_frozen_candidate_classifiers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prepared = Path(directory)
+            inventory = prepared / "replay-input-manifest.json"
+            inventory.write_text("{}\n")
+            selection_bytes = b"{}\n"
+            document = {
+                "replay_input_manifest_sha256": workflow.sha256(inventory),
+                "analysis_selection_sha256": hashlib.sha256(selection_bytes).hexdigest(),
+            }
+            campaign = {"reader_runtime": {"method_version": 5},
+                        "implementation_sha256": {},
+                        "classifiers": {name: {} for name in workflow.TARGET_CLASSIFIERS}}
+            calls = []
+
+            def analyze(_run, output, _ranges, _cadence, **options):
+                calls.append(options)
+                (output / "selection.json").write_bytes(selection_bytes)
+                return {"errors": [], "temporal_classification": {"errors": []},
+                        "evidence": {"reader": campaign["reader_runtime"]},
+                        "implementation_sha256": {}}
+
+            with (patch.object(workflow, "_verify_replay_inputs"),
+                  patch.object(workflow, "reader_runtime",
+                               return_value=campaign["reader_runtime"]),
+                  patch("encounter_check.analyze", side_effect=analyze)):
+                workflow._rederive_analysis(prepared, document, campaign)
+            self.assertEqual(calls, [{
+                "inspect_transitions": True,
+                "reader_qualification": None,
+                "temporal_classifier_ids": workflow.TARGET_CLASSIFIERS,
+            }])
+
     def test_capture_context_is_checked_before_retention_or_pixel_analysis(self):
         import encounter_reader
         from encounter_check import analyze
@@ -60,6 +94,7 @@ class QualificationWorkflowTests(unittest.TestCase):
         campaign = {
             "reader_runtime": {"method_version": encounter_reader.METHOD_VERSION},
             "implementation_sha256": workflow.method_hashes(),
+            "classifiers": {name: {} for name in workflow.TARGET_CLASSIFIERS},
         }
         window = {"camera": {
             "capture_id": "a" * 64,
@@ -143,6 +178,130 @@ class QualificationWorkflowTests(unittest.TestCase):
             "v1-unmute-stable-frequency-sweep-v2",
             workflow.classifier_identity(),
         )
+        self.assertIn(workflow.ARROW_CLASSIFIER_ID, workflow.classifier_identity())
+
+    def test_arrow_selection_is_explicit_and_frozen_in_the_campaign(self):
+        import encounter_reader
+
+        arrow = workflow.ARROW_CLASSIFIER_ID
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "campaign"
+            base = root / "static-only.json"
+            workflow.write_json(base, {"kind": "encounter_reader_qualification",
+                                       "temporal_classifiers": {}})
+            with (patch.object(workflow, "git_identity", return_value=("a" * 40, True)),
+                  patch.object(workflow, "reader_runtime", return_value={
+                      "method_version": encounter_reader.METHOD_VERSION}),
+                  patch.object(workflow, "validate_base_evidence") as verify):
+                workflow.freeze(destination, base, classifier_ids=[arrow])
+            campaign = workflow.read_json(destination / "campaign.json")
+            self.assertEqual(workflow._campaign_classifiers(campaign), (arrow,))
+            self.assertEqual(campaign["base_manifest_sha256"], workflow.sha256(base))
+            self.assertEqual(set(campaign["classifiers"]), {arrow})
+            self.assertEqual(verify.call_args.args[0], base.resolve())
+            frozen = campaign["classifiers"][arrow]
+            self.assertEqual(frozen["spec"]["sha256"],
+                             workflow.sha256(workflow.SPEC_BY_CLASSIFIER[arrow]))
+            self.assertEqual(frozen["implementation_sha256"], {
+                name: workflow.method_hashes()[name]
+                for name in CLASSIFIER_IMPLEMENTATION_FILES[arrow]})
+        for values in ([], [arrow, arrow], ["invented-classifier"]):
+            with self.subTest(values=values), self.assertRaises(workflow.WorkflowError):
+                workflow._selected_classifiers(values)
+
+    def test_static_only_base_still_requires_full_qualification_verification(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            camera = {"name": "test camera", "profile": {}}
+            base = {"kind": "encounter_reader_qualification", "temporal_classifiers": {},
+                    "reader": {"runtime": {}}, "camera": camera}
+            for name in ("field_validation", "visible_secondary_validation", "fault_controls"):
+                source = root / f"{name}.json"
+                source.write_text("{}\n")
+                base[name] = workflow.reference(source, root)
+            manifest = root / "manifest.json"
+            workflow.write_json(manifest, base)
+            static, temporal = workflow._resolve_base_evidence(manifest)
+            self.assertEqual(set(static), {"field_validation", "visible_secondary_validation", "fault_controls"})
+            self.assertEqual(temporal, {})
+            with patch.object(encounter_qualification, "verify_qualification", return_value={
+                    "status": "REJECTED", "errors": ["unproven static reader"]}) as verify:
+                with self.assertRaisesRegex(workflow.WorkflowError, "unproven static reader"):
+                    workflow.validate_base_evidence(manifest, {}, {}, camera, {})
+                verify.assert_called_once()
+            self.assertEqual(list(root.glob(".base-qualification-*")), [])
+
+    def test_failed_base_reverification_stops_before_key_consumption(self):
+        from encounter_product import DEFAULT_POLICY_ID
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = root / "base.json"
+            base.write_text("{}\n")
+            campaign_root = root / "campaign"
+            campaign = {"kind": workflow.CAMPAIGN_NAME, "schema_version": 1,
+                        "base_manifest_sha256": workflow.sha256(base),
+                        "policy_id": DEFAULT_POLICY_ID, "reader_runtime": {}, "camera": {},
+                        "classifiers": {workflow.ARROW_CLASSIFIER_ID: {}}}
+            workflow.write_json(campaign_root / "campaign.json", campaign)
+            workflow.write_json(campaign_root / "prepared/prepared.json", {
+                "kind": workflow.PREPARED_NAME,
+                "campaign_sha256": workflow.sha256(campaign_root / "campaign.json")})
+            with (patch.object(workflow, "_verify_frozen_source"),
+                  patch.object(workflow, "_completed_observations", return_value={}),
+                  patch.object(workflow, "_validate_pre_key_sources", return_value={}),
+                  patch.object(workflow, "_prospective_policy", return_value=({}, b"{}", {})),
+                  patch.object(workflow, "validate_base_evidence", side_effect=
+                               workflow.WorkflowError("base source pixels changed")),
+                  patch.object(workflow, "_consume_campaign") as consume,
+                  patch.object(workflow, "_rederive_analysis") as reread):
+                with self.assertRaisesRegex(workflow.WorkflowError, "base source pixels changed"):
+                    workflow.finalize(campaign_root, base, root / "published.json")
+                consume.assert_not_called()
+                reread.assert_not_called()
+
+    def test_arrow_reanalysis_does_not_enable_inactive_bar_or_badge(self):
+        arrow = workflow.ARROW_CLASSIFIER_ID
+        with tempfile.TemporaryDirectory() as directory:
+            prepared = Path(directory)
+            inventory = prepared / "replay-input-manifest.json"
+            inventory.write_text("{}\n")
+            selection_bytes = b"{}\n"
+            document = {"replay_input_manifest_sha256": workflow.sha256(inventory),
+                        "analysis_selection_sha256": hashlib.sha256(selection_bytes).hexdigest()}
+            campaign = {"reader_runtime": {}, "implementation_sha256": {},
+                        "classifiers": {arrow: {}}}
+
+            def analyze(_run, output, _ranges, _cadence, **options):
+                self.assertEqual(options["temporal_classifier_ids"], (arrow,))
+                (output / "selection.json").write_bytes(selection_bytes)
+                return {"errors": [], "temporal_classification": {"errors": []},
+                        "evidence": {"reader": {}}, "implementation_sha256": {}}
+
+            with (patch.object(workflow, "_verify_replay_inputs"),
+                  patch.object(workflow, "reader_runtime", return_value={}),
+                  patch("encounter_check.analyze", side_effect=analyze)):
+                workflow._rederive_analysis(prepared, document, campaign)
+
+    def test_prospective_policy_adds_only_the_frozen_arrow_target(self):
+        arrow = workflow.ARROW_CLASSIFIER_ID
+        with tempfile.TemporaryDirectory() as directory:
+            policy_path = Path(directory) / "policy.json"
+            workflow.write_json(policy_path, {"policies": {"selected": {
+                "qualified_temporal_classifier_ids": [], "qualified_temporal_classifiers": {}}}})
+            original = policy_path.read_bytes()
+            campaign = {"policy_id": "selected", "classifiers": {arrow: {
+                "spec": {"sha256": workflow.sha256(workflow.SPEC_BY_CLASSIFIER[arrow])}}}}
+            with patch.object(workflow, "POLICY_PATH", policy_path):
+                _, _, prospective = workflow._prospective_policy(campaign)
+            self.assertEqual(prospective["qualified_temporal_classifier_ids"], [arrow])
+            self.assertEqual(set(prospective["qualified_temporal_classifiers"]), {arrow})
+            self.assertEqual(prospective["qualified_temporal_classifiers"][arrow], {
+                "classifier_spec_sha256": campaign["classifiers"][arrow]["spec"]["sha256"],
+                "deadline_observation_semantics": "LEGAL_PRESENTATION_TRANSITION",
+                "raw_affected_fields": ["main_arrows"]})
+            self.assertEqual(policy_path.read_bytes(), original)
 
     def test_manifest_defaults_follow_bench_environment(self):
         with patch.dict(os.environ, {"BENCH_ARTIFACT_ROOT": "/tmp/bench-owned"}, clear=False):
@@ -158,6 +317,11 @@ class QualificationWorkflowTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),
                          "ffmpeg and ffprobe are required")
     def test_lossless_observer_media_is_bound_to_retained_video_and_sidecar(self):
+        for classifier in ("v1-main-bar-adjacent-redraw-v2", workflow.ARROW_CLASSIFIER_ID):
+            with self.subTest(classifier=classifier):
+                self._lossless_media_round_trip(classifier)
+
+    def _lossless_media_round_trip(self, classifier):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             camera = root / "capture"
@@ -222,7 +386,7 @@ class QualificationWorkflowTests(unittest.TestCase):
             observer = root / "observer_packet"
             clip = observer / "clips/OPAQUE123456.mov"
             source_indices, size = workflow._build_clip(
-                video, clip, "v1-main-bar-adjacent-redraw-v2", [4, 5, 6], 12,
+                video, clip, classifier, [4, 5, 6], 12,
                 registration, 1280, 720)
             item = {
                 "opaque_id": "OPAQUE123456", "clip": "clips/OPAQUE123456.mov",
@@ -235,7 +399,7 @@ class QualificationWorkflowTests(unittest.TestCase):
                 "full_run_clip_frame_indices": [source_indices.index(value)
                                                  for value in (4, 5, 6)],
                 "inset_source_box": list(workflow._raw_box(
-                    workflow._logical_inset("v1-main-bar-adjacent-redraw-v2"),
+                    workflow._logical_inset(classifier),
                     registration, 1280, 720)),
             }
             manifest_path = observer / "manifest.json"
@@ -252,7 +416,7 @@ class QualificationWorkflowTests(unittest.TestCase):
                 "observer_manifest": manifest_path,
             }
             source_rows = encounter_qualification._validate_temporal_v2_media(
-                "v1-main-bar-adjacent-redraw-v2", paths,
+                classifier, paths,
                 {"video_timing_verification": timing},
                 {"camera": {"capture_id": capture_manifest["capture_id"],
                             "video_timing_verification_result": timing}},
@@ -267,7 +431,7 @@ class QualificationWorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(
                     encounter_qualification.QualificationError, "clip probe failed"):
                 encounter_qualification._validate_temporal_v2_media(
-                    "v1-main-bar-adjacent-redraw-v2", paths,
+                    classifier, paths,
                     {"video_timing_verification": timing},
                     {"camera": {"capture_id": capture_manifest["capture_id"],
                                 "video_timing_verification_result": timing}},
@@ -302,11 +466,16 @@ class QualificationWorkflowTests(unittest.TestCase):
             self.assertIn("setpts=N/(25*TB)", graph)
 
     def test_prepare_classifier_output_passes_the_real_v2_verifier(self):
+        self._prepared_classifier_round_trip("v1-main-bar-adjacent-redraw-v2")
+
+    def test_prepare_arrow_packet_passes_the_real_verifier(self):
+        self._prepared_classifier_round_trip(workflow.ARROW_CLASSIFIER_ID)
+
+    def _prepared_classifier_round_trip(self, classifier):
         helper = qualification_test_support.QualificationTests(
             "test_complete_exact_bundle_qualifies")
         helper.setUp()
         self.addCleanup(helper.tearDown)
-        classifier = "v1-main-bar-adjacent-redraw-v2"
         seeded_temporal, seeded = helper.generic_temporal_validation(classifier)
         seeded_entry = seeded_temporal[classifier]
         spec_path = helper.root / seeded_entry["spec"]["path"]
@@ -511,6 +680,197 @@ class QualificationWorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(workflow.WorkflowError, "already consumed"):
                 workflow._write_exclusive_json(marker, {"state": "replacement"})
             self.assertEqual(workflow.read_json(marker), {"state": "consumed"})
+
+    def _static_reanalysis_fixture(self, destination, *, observation_mutator=None,
+                                   helper=None, source_manifest=None,
+                                   method_version=6, reader_sha="e" * 64):
+        if helper is None:
+            helper = qualification_test_support.QualificationTests(
+                "test_complete_exact_bundle_qualifies")
+            helper.setUp()
+            self.addCleanup(helper.tearDown)
+        if source_manifest is None:
+            source_manifest = helper.write_bundle()
+        current_method = dict(helper.method)
+        current_method["encounter_reader.py"] = reader_sha
+        current_runtime = dict(qualification_test_support.READER)
+        current_runtime["method_version"] = method_version
+        session_state = {"active": False, "entries": 0, "verified": False}
+
+        @contextmanager
+        def analysis_session():
+            self.assertFalse(session_state["active"])
+            session_state["active"] = True
+            session_state["entries"] += 1
+            try:
+                yield
+            finally:
+                session_state["active"] = False
+
+        def regenerated(image_path, _registration):
+            self.assertTrue(session_state["active"])
+            observation = json.loads(json.dumps(
+                helper.reader_observations[qualification_test_support.digest(image_path)]))
+            return observation_mutator(observation) if observation_mutator else observation
+
+        real_verify = encounter_qualification.verify_qualification
+
+        def verify(*args, **kwargs):
+            self.assertTrue(session_state["active"])
+            session_state["verified"] = True
+            return real_verify(*args, **kwargs)
+
+        empty_policy = {
+            "qualified_temporal_classifier_ids": [],
+            "qualified_temporal_classifiers": {},
+        }
+        patches = (
+            patch.object(workflow, "git_identity", return_value=("f" * 40, True)),
+            patch.object(workflow, "method_hashes", return_value=current_method),
+            patch.object(workflow, "reader_runtime", return_value=current_runtime),
+            patch.object(encounter_qualification, "_observe_image", side_effect=regenerated),
+            patch("encounter_product.load_policy", return_value=empty_policy),
+            patch("encounter_reader.analysis_session", side_effect=analysis_session),
+            patch.object(encounter_qualification, "verify_qualification", side_effect=verify),
+        )
+        return (helper, source_manifest, current_method, current_runtime, patches,
+                session_state)
+
+    def test_static_reanalysis_publishes_only_verified_current_bundle(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "static-v6"
+            helper, source, method, runtime, patches, session = (
+                self._static_reanalysis_fixture(destination))
+            source_bytes = {path.relative_to(helper.root): path.read_bytes()
+                            for path in helper.root.rglob("*") if path.is_file()}
+            with ExitStack() as stack:
+                for item in patches:
+                    stack.enter_context(item)
+                result = workflow.reanalyze_static(source, destination)
+
+            self.assertEqual(result["status"], "QUALIFIED")
+            self.assertEqual(session,
+                             {"active": False, "entries": 1, "verified": True})
+            manifest_path = destination / "encounter-reader.json"
+            self.assertTrue(manifest_path.is_file())
+            manifest = workflow.read_json(manifest_path)
+            self.assertEqual(manifest["reader"]["method_version"], 6)
+            self.assertEqual(manifest["reader"]["implementation_sha256"], method)
+            self.assertEqual(manifest["temporal_classifiers"], {})
+            secondary_path = workflow.resolve_reference(
+                destination, manifest["visible_secondary_validation"], "secondary")
+            secondary = workflow.read_json(secondary_path)
+            self.assertEqual(secondary["reader_reanalysis"], {
+                "kind": "complete_exact_reader_reread",
+                "source_sealed_key_sha256":
+                    secondary["source_artifacts"]["sealed_key"]["sha256"],
+                "source_method_version": 5,
+                "source_reader_sha256": "a" * 64,
+                "current_method_version": 6,
+                "current_reader_sha256": "e" * 64,
+                "complete_source_set_reread": True,
+            })
+            diagnostic = workflow.read_json(destination / "reanalysis-result.json")
+            self.assertEqual(diagnostic["verification"]["status"], "QUALIFIED")
+            self.assertEqual(
+                diagnostic["verification"]["visible_secondary_validation"][
+                    "partial_secondary_identity_agreement_frames"], 6)
+            self.assertEqual(
+                {path.relative_to(helper.root): path.read_bytes()
+                 for path in helper.root.rglob("*") if path.is_file()},
+                source_bytes)
+
+    def test_static_reanalysis_retains_rejection_without_publishing_manifest(self):
+        def wrong_partial_identity(observation):
+            secondary = observation.get("secondary")
+            partial = secondary.get("partial_cards") if isinstance(secondary, dict) else None
+            if isinstance(partial, list) and partial and partial[0].get("band") is not None:
+                partial[0]["band"] = "K"
+                partial[0]["frequency"] = "24.150"
+            return observation
+
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "rejected-static-v6"
+            _helper, source, _method, _runtime, patches, session = (
+                self._static_reanalysis_fixture(
+                    destination, observation_mutator=wrong_partial_identity))
+            with ExitStack() as stack:
+                for item in patches:
+                    stack.enter_context(item)
+                with self.assertRaisesRegex(workflow.WorkflowError,
+                                            "diagnostics retained"):
+                    workflow.reanalyze_static(source, destination)
+            self.assertEqual(session,
+                             {"active": False, "entries": 1, "verified": True})
+            self.assertTrue(destination.is_dir())
+            self.assertFalse((destination / "encounter-reader.json").exists())
+            self.assertTrue((destination / "rejected-candidate.json").is_file())
+            diagnostic = workflow.read_json(destination / "reanalysis-result.json")
+            self.assertEqual(diagnostic["status"], "REJECTED")
+            self.assertIn("wrong partial identity",
+                          diagnostic["verification"]["errors"][0])
+
+    def test_static_reanalysis_refuses_publish_if_reader_changes_during_reread(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "changed-static-v6"
+            _helper, source, method, _runtime, patches, session = (
+                self._static_reanalysis_fixture(destination))
+            changed = dict(method)
+            changed["encounter_reader.py"] = "d" * 64
+            with ExitStack() as stack:
+                for index, item in enumerate(patches):
+                    if index != 1:
+                        stack.enter_context(item)
+                stack.enter_context(patch.object(
+                    workflow, "method_hashes", side_effect=[method, changed]))
+                with self.assertRaisesRegex(workflow.WorkflowError,
+                                            "implementation changed during"):
+                    workflow.reanalyze_static(source, destination)
+            self.assertEqual(session,
+                             {"active": False, "entries": 1, "verified": True})
+            self.assertFalse((destination / "encounter-reader.json").exists())
+            diagnostic = workflow.read_json(destination / "reanalysis-result.json")
+            self.assertEqual(diagnostic["status"], "ERROR")
+
+    def test_static_reanalysis_can_reuse_a_prior_current_reader_reread(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first = root / "static-v6"
+            helper, source, _method, _runtime, patches, _session = (
+                self._static_reanalysis_fixture(first))
+            with ExitStack() as stack:
+                for item in patches:
+                    stack.enter_context(item)
+                workflow.reanalyze_static(source, first)
+
+            first_manifest = first / "encounter-reader.json"
+            second = root / "static-v7"
+            (_helper, chained_source, _method, _runtime, patches, session) = (
+                self._static_reanalysis_fixture(
+                    second, helper=helper, source_manifest=first_manifest,
+                    method_version=7, reader_sha="d" * 64))
+            with ExitStack() as stack:
+                for item in patches:
+                    stack.enter_context(item)
+                result = workflow.reanalyze_static(chained_source, second)
+
+            self.assertEqual(result["status"], "QUALIFIED")
+            self.assertEqual(session,
+                             {"active": False, "entries": 1, "verified": True})
+            manifest = workflow.read_json(second / "encounter-reader.json")
+            secondary = workflow.read_json(workflow.resolve_reference(
+                second, manifest["visible_secondary_validation"], "secondary"))
+            self.assertEqual(secondary["reader_reanalysis"]["source_method_version"], 5)
+            self.assertEqual(secondary["reader_reanalysis"]["source_reader_sha256"], "a" * 64)
+            self.assertEqual(secondary["reader_reanalysis"]["current_method_version"], 7)
+            self.assertEqual(secondary["reader_reanalysis"]["current_reader_sha256"], "d" * 64)
+
+    def test_static_reanalysis_cli_is_explicit_and_bounded(self):
+        args = workflow.build_parser().parse_args([
+            "reanalyze-static", "--source-manifest", "old.json", "--out", "new-static"])
+        self.assertEqual(args.command, "reanalyze-static")
+        self.assertEqual(args.source_manifest, Path("old.json"))
+        self.assertEqual(args.out, Path("new-static"))
 
     def test_cli_reports_qualification_rejection_without_traceback(self):
         class Parser:

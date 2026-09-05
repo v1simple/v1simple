@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from contextlib import nullcontext
 from copy import deepcopy
 import json
 import math
@@ -558,7 +559,8 @@ def summarize(samples: list[dict], errors: list[str]) -> tuple[str, dict]:
 
 def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cadence: float,
             configuration: Path | None = None, transition_only: bool = False, all_frames: bool = False,
-            inspect_transitions: bool = False, reader_qualification: Path | None = None) -> dict:
+            inspect_transitions: bool = False, reader_qualification: Path | None = None,
+            temporal_classifier_ids: list[str] | tuple[str, ...] | None = None) -> dict:
     samples, errors, evidence, data, transition_windows, held_windows, config = [], [], {}, None, [], [], None
     product_policy, product_definitions, product_windows = None, [], []
     qualification = {"schema_version": 1, "kind": "encounter_reader_qualification_verification",
@@ -703,38 +705,39 @@ def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cade
                 bench_source_sha256=sha256_file(Path(__file__).parents[2] / "bench.sh"))
             evidence["reader_qualification"] = qualification
         total = len(by_index)
-        for number, (index, pixels) in enumerate(stream_frames(data["video"], list(by_index), data["width"], data["height"]), 1):
-            image = out / "frames" / f"{index:06d}.png"
-            write_png(image, pixels, data["width"], data["height"])
-            image_hash = sha256_file(image)
-            # The pixel reader receives no expected values, packet data or timestamps.
-            try:
-                reading = observe(pixels, data["width"], data["height"], data["registration"])
-                if "fields" not in reading:
-                    reading = {"fields": {name: reading.get(name) for name in FIELDS},
-                               "diagnostics": {k: v for k, v in reading.items() if k not in FIELDS}}
-            except Exception as exc:
-                reading = unresolved(f"reader failed: {type(exc).__name__}: {exc}")
-            # Fixed, expectation-blind spatial measurements are retained
-            # separately from the single-frame field decisions. A probe
-            # failure cannot downgrade or replace the ordinary reader result.
-            try:
-                reading["redraw_profiles"] = encounter_redraw_probe.observe(
-                    pixels, data["width"], data["height"], data["registration"])
-            except Exception as exc:
-                reading["redraw_profiles"] = {
-                    "schema_version": 1,
-                    "method_version": encounter_redraw_probe.METHOD_VERSION,
-                    "status": "unavailable",
-                    "reason": f"redraw probe failed: {type(exc).__name__}: {exc}",
-                }
-            for sample in by_index[index]:
-                requirement = encounter_expectation_at(data["timeline"], sample["capture_ns"],
-                                                       configuration=config["settings"] if config else None)
-                sample.update(image=f"frames/{image.name}", image_sha256=image_hash, observed=reading, expected=requirement)
-                sample["comparison"] = compare_sample(requirement, reading, role=sample["role"])
-            if number == 1 or number % 25 == 0 or number == total:
-                print(f"Read {number}/{total} selected original frames", flush=True)
+        with getattr(encounter_reader, "analysis_session", nullcontext)():
+            for number, (index, pixels) in enumerate(stream_frames(data["video"], list(by_index), data["width"], data["height"]), 1):
+                image = out / "frames" / f"{index:06d}.png"
+                write_png(image, pixels, data["width"], data["height"])
+                image_hash = sha256_file(image)
+                # The pixel reader receives no expected values, packet data or timestamps.
+                try:
+                    reading = observe(pixels, data["width"], data["height"], data["registration"])
+                    if "fields" not in reading:
+                        reading = {"fields": {name: reading.get(name) for name in FIELDS},
+                                   "diagnostics": {k: v for k, v in reading.items() if k not in FIELDS}}
+                except Exception as exc:
+                    reading = unresolved(f"reader failed: {type(exc).__name__}: {exc}")
+                # Fixed, expectation-blind spatial measurements are retained
+                # separately from the single-frame field decisions. A probe
+                # failure cannot downgrade or replace the ordinary reader result.
+                try:
+                    reading["redraw_profiles"] = encounter_redraw_probe.observe(
+                        pixels, data["width"], data["height"], data["registration"])
+                except Exception as exc:
+                    reading["redraw_profiles"] = {
+                        "schema_version": 1,
+                        "method_version": encounter_redraw_probe.METHOD_VERSION,
+                        "status": "unavailable",
+                        "reason": f"redraw probe failed: {type(exc).__name__}: {exc}",
+                    }
+                for sample in by_index[index]:
+                    requirement = encounter_expectation_at(data["timeline"], sample["capture_ns"],
+                                                           configuration=config["settings"] if config else None)
+                    sample.update(image=f"frames/{image.name}", image_sha256=image_hash, observed=reading, expected=requirement)
+                    sample["comparison"] = compare_sample(requirement, reading, role=sample["role"])
+                if number == 1 or number % 25 == 0 or number == total:
+                    print(f"Read {number}/{total} selected original frames", flush=True)
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, ImportError) as exc:
         errors.append(f"{type(exc).__name__}: {exc}")
     except KeyboardInterrupt:
@@ -765,6 +768,9 @@ def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cade
             and "selection_manifest_sha256" in evidence):
         from encounter_temporal import classify_temporal
         import encounter_reader
+        requested_temporal_classifiers = (
+            product_policy.get("qualified_temporal_classifier_ids", [])
+            if temporal_classifier_ids is None else temporal_classifier_ids)
         temporal = classify_temporal(samples, sequence, arrow_context={
             "capture_id": data["identity"]["capture_id"],
             "selection_manifest_sha256": evidence["selection_manifest_sha256"],
@@ -773,7 +779,7 @@ def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cade
             "reader_sha256": method["encounter_reader.py"],
             "redraw_probe_method_version": encounter_redraw_probe.METHOD_VERSION,
             "redraw_probe_sha256": method["encounter_redraw_probe.py"],
-        })
+        }, classifier_ids=requested_temporal_classifiers)
         eligible = {window["event_id"] for window in product_windows}
         # Retain each event intact: mode and previous_target describe its place
         # in the full sequence even when product ranges select only that event.
@@ -862,7 +868,7 @@ def review_payload(result):
         compact["events"] = [{key: deepcopy(event[key]) for key in
                               ("event_id", "mode", "result", "reason_code", "reasons",
                                "deadline_ns", "verification_end_ns", "observed_joint_state_ids",
-                               "response_acquisition", "first_current_correct",
+                               "response_acquisition", "acquisition_observations", "first_current_correct",
                                "closing_current_correct", "first_decisive_marker")
                               if key in event}
                              for event in judgment.get("events", []) if isinstance(event, dict)]
@@ -936,16 +942,26 @@ def write_report(out: Path, result: dict) -> None:
             lines += [f"The unqualified diagnostic candidate was **{candidate.get('result')}** "
                       f"(`{candidate.get('reason_code')}`). It is retained for development and is not the product verdict.", ""]
         if primary.get("events"):
-            lines += ["| Required visible event | Result | Reason |", "| --- | --- | --- |"]
+            lines += ["| Required visible event | Result | Reason | Original evidence |", "| --- | --- | --- | --- |"]
             for event in primary["events"]:
+                points = [("Decisive image", event.get("first_decisive_marker")),
+                          ("Deadline", (event.get("response_acquisition") or {}).get(
+                              "deadline_capture_marker_bracket", {}).get("end")),
+                          ("Closing image", event.get("closing_current_correct"))]
+                links = [f"[{label}](report.html#sample={point['frame_id']})"
+                         for label, point in points if point and point.get("frame_id")]
                 lines.append(f"| {event.get('event_id', 'unavailable')} | **{event.get('result', 'INCONCLUSIVE')}** | "
-                             f"`{event.get('reason_code', 'unavailable')}` |")
+                             f"`{event.get('reason_code', 'unavailable')}` | {'; '.join(links)} |")
             lines.append("")
-        lines += ["A `PASS` means every required event was current by the nominal deadline marker or at the sole "
-                  "bounded camera observation immediately after it, and remained correct through the full "
-                  "verification interval. A `FAIL` means trusted evidence established a "
-                  "specific visible violation. `INCONCLUSIVE` means the testing product did not deliver a verdict.", "",
-                  "## Raw reader evidence", ""]
+        pass_scope = (
+            "A `PASS` means every required target was correct or in a qualified legal blink phase "
+            "at the sole bounded deadline observation, then stayed correct through 192 ms and a closing image. "
+            "Pre-deadline optical observations remain diagnostic. "
+            if contract.get("version", 0) >= 3 else
+            "A `PASS` means every required event met its declared acquisition and continued-presentation contract. ")
+        lines += [pass_scope + "A `FAIL` means trusted evidence established a specific violation in that scope. "
+                  "`INCONCLUSIVE` means the testing product did not deliver a verdict for all required observations.",
+                  "", "## Raw reader evidence", ""]
     lines += [result["comparison_basis"], "", config_summary, "",
              f"{tally or 'No evaluable samples'} / {counts['required']} required field checks.", "",
              f"{result['coverage']['requests']} requests, {result['coverage']['selected_unique_frames']} selected and "
@@ -1016,7 +1032,7 @@ def write_report(out: Path, result: dict) -> None:
 header{padding:24px 28px;border-bottom:1px solid #35414d}h1{font-size:25px;margin:0 0 10px}p{line-height:1.5;color:#b7c4d1;max-width:1000px}
 main{display:grid;grid-template-columns:240px 1fr;gap:22px;padding:22px}nav{max-height:78vh;overflow:auto}button,select{font:inherit;color:inherit;background:#1b2630;border:1px solid #425161;border-radius:6px;padding:8px;cursor:pointer}nav button{display:block;width:100%;text-align:left;margin:5px 0}button[aria-current=true]{border-color:#69c5ff;background:#1c394e}.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}img{width:100%;max-height:53vh;object-fit:contain;background:#000;border-radius:7px}table{width:100%;border-collapse:collapse;margin-top:18px}td,th{text-align:left;vertical-align:top;padding:10px;border-bottom:1px solid #35414d}th{color:#9dafbf}td{white-space:pre-wrap;overflow-wrap:anywhere}.MATCH{color:#8edfbe}.DIFFERENCE,.JOINT_DIFFERENCE{color:#ff9292}.UNRESOLVED,.CONDITIONAL{color:#f2cf83}.PREVIOUS_INPUT_STATE,.TRANSITION_DIFFERENCE{color:#bcb1ff}small{color:#9dafbf}.empty{padding:30px}a{color:#8dcfff}summary{cursor:pointer;margin:16px 0}#scrub{width:100%;margin:10px 0}#changes{max-height:250px;overflow:auto}#changes button{display:block;margin:6px 0;width:100%;text-align:left}.history{max-height:400px;overflow:auto}#changed{color:#e7edf4}@media(max-width:800px){main{display:block}nav{max-height:180px;margin-bottom:20px}table{font-size:12px}td,th{padding:6px}}
 </style><header><h1 id="title"></h1><p id="summary"></p><p id="coverage"></p><p>Original camera observations against recorded host input. Frames cannot show what happened between exposures. The visible-event product verdict requires exact reader qualification; missing or stale qualification is a product failure and appears as INCONCLUSIVE.</p><section id="assessment" hidden><h2>What can be judged</h2><p id="heldAssessment"></p><p id="responseAssessment"></p><p id="afterAssessment"></p><div id="heldIssues" class="toolbar"></div><p>These are separate evidence claims. A target appearing once does not establish timely response, continued correctness or tool acceptance. The aggregate verdict and all transition observations are retained.</p></section></header>
-<section id="eventReview" style="padding:20px 28px;border-bottom:1px solid #35414d"><h2>What happened</h2><label>Input event <select id="eventSelect"></select></label><p id="eventSummary"></p><p id="eventTiming"></p><p id="eventCoverage"></p><div id="eventLinks" class="toolbar"></div><details><summary>First correctly observed content by field</summary><div id="eventFields"></div></details><details><summary>Changes after the first correct image</summary><div id="eventAfter" class="history"></div></details></section>
+<section id="eventReview" style="padding:20px 28px;border-bottom:1px solid #35414d"><h2>What happened</h2><label>Input event <select id="eventSelect"></select></label><p id="eventJudgment"></p><div id="productEventLinks" class="toolbar"></div><p id="eventSummary"></p><p id="eventTiming"></p><p id="eventCoverage"></p><div id="eventLinks" class="toolbar"></div><details><summary>First correctly observed content by field</summary><div id="eventFields"></div></details><details><summary>Changes after the first correct image</summary><div id="eventAfter" class="history"></div></details></section>
 <main><aside><label>Show <select id="filter"><option value="all">All samples</option><option value="attention">Needs attention</option><option value="held">Held samples</option><option value="transition">Transitions</option></select></label><nav id="samples"></nav></aside>
 <section><div class="toolbar"><button id="prev">← Previous</button><button id="next">Next →</button><button id="play">Play consecutive frames</button><label>Playback <select id="speed"><option value="20">20× slower</option><option value="10">10× slower</option><option value="5">5× slower</option></select></label><strong id="sampleTitle"></strong><a id="original">Open original</a></div><label>Original frame <input id="scrub" type="range" min="0" max="0" step="1" value="0"></label><img id="frame" alt="Unmodified selected camera frame"><p id="detail"></p><p id="changed"></p><details open><summary>Observed changes — jump to the original frame</summary><div id="changes"></div></details><details><summary>Per-field observed spans — every brief state and unreadable frame retained</summary><p>Adjacent source frames with exactly the same literal reading are grouped for review only. A one-frame state is retained. Gaps break spans. First and last timestamps bound the readings; no value is carried across an unreadable frame, and these spans do not establish response latency.</p><label>Display field <select id="spanField"></select></label><div class="history"><table><thead><tr><th>First–last reading</th><th>Source frames</th><th>Count</th><th>Literal reading</th></tr></thead><tbody id="spans"></tbody></table></div></details><table><thead><tr><th>Display field</th><th>Permitted input state</th><th>Observed pixels</th><th>Judgment</th></tr></thead><tbody id="checks"></tbody></table><p id="joint"></p></section></main>
 <script>const result=PAYLOAD;const all=result.samples;let selected=0,visible=[];const navButtons=new Map();
@@ -1026,9 +1042,9 @@ if(result.assessment){const a=result.assessment;el('assessment').hidden=false;el
 el('coverage').textContent=result.coverage.regions.map(r=>r.start_seconds+'–'+r.end_seconds+' s (end exclusive): '+r.unique_frames+'/'+r.available_recorded_frames+' recorded frames read'+(r.complete_recorded_frame_coverage===null?' (sampled)':r.complete_recorded_frame_coverage?' (complete within range)':' (incomplete)')+'. Selected '+seconds(r.first_selected_offset_seconds)+' to '+seconds(r.last_selected_offset_seconds)+'. Read '+seconds(r.first_observed_offset_seconds)+' to '+seconds(r.last_observed_offset_seconds)+'. Largest gap including boundaries '+seconds(r.maximum_unobserved_gap_seconds)+'. '+r.unrecorded_source_frames+' source frames not recorded.').join(' ');
 
 const eventName=e=>{const p=e.wire_rows.find(r=>r.priority);return p?p.band+' '+p.frequency+' primary · '+e.wire_rows.length+' alerts':'No live radar alerts'};
-const jump=(parent,point,label)=>{if(!point)return;let b=document.createElement('button');b.textContent=label+' · '+seconds(point.offset_seconds);b.onclick=()=>show(all.findIndex(s=>s.frame_id===point.frame_id));parent.append(b)};
-for(let i=0;i<events.length;i++){let option=document.createElement('option');option.value=i;option.textContent=events[i].event_id+' · '+eventName(events[i]);el('eventSelect').append(option)}
-function renderEvent(){const e=events[Number(el('eventSelect').value)];if(!e){el('eventReview').hidden=true;return}el('eventSummary').textContent=e.summary;const t=e.timing;el('eventTiming').textContent=t.status==='observed_capture_marker'?'The first correct recorded image was '+t.host_send_to_first_correct_capture_ms.map(x=>x.toFixed(3)).join('–')+' ms after the completing notification send call. '+(t.complete_recorded_frame_prefix?'Every recorded image from the event request through that image was read. ':'Earlier recorded images were not all read; this is a sampled observation time. ')+t.physical_appearance_reason:'First-correct timing unavailable: '+t.reason;const c=e.coverage;el('eventCoverage').textContent=c.read_recorded_frames+'/'+c.available_recorded_frames+' recorded images read across this entire input event; '+c.unrecorded_source_frames+' source frames not recorded; largest gap '+c.maximum_gap_between_read_markers_ms.toFixed(3)+' ms. A correct image does not establish correctness through an unobserved gap.';el('eventLinks').replaceChildren();jump(el('eventLinks'),e.preceding_observation,'Before input');jump(el('eventLinks'),e.last_definite_not_correct_before_first,'Last observed different state before correct');jump(el('eventLinks'),e.first_correct,'First all-required correct');el('eventFields').replaceChildren();for(const [name,point]of Object.entries(e.first_correct_by_field)){if(point)jump(el('eventFields'),point,names[name]);else{const p=document.createElement('p');p.textContent=names[name]+': no supported correct reading';el('eventFields').append(p)}}el('eventAfter').replaceChildren();for(const change of e.changes_after_correct){const detail=e.observation_spans[change.span_index];let label=change.status.replaceAll('_',' ').toLowerCase();if(change.not_correct_fields.length)label+=' · differing '+change.not_correct_fields.map(n=>names[n]).join(', ');if(change.unresolved_fields.length)label+=' · unresolved '+change.unresolved_fields.map(n=>names[n]).join(', ');label+=' · '+detail.frame_count+' consecutive frame(s)';jump(el('eventAfter'),change.first,label)}if(!e.changes_after_correct.length)el('eventAfter').textContent='No later change was observed in the selected images.'}
+const jump=(parent,point,label)=>{if(!point)return;const index=all.findIndex(s=>s.frame_id===point.frame_id);if(index<0)return;let b=document.createElement('button');b.textContent=label+' · '+seconds(point.offset_seconds??all[index].offset_seconds??null);b.onclick=()=>show(index);parent.append(b)};
+for(let i=0;i<events.length;i++){let option=document.createElement('option');option.value=i;const verdict=product?.events?.find(e=>e.event_id===events[i].event_id);option.textContent=(verdict?verdict.result+' · ':'')+events[i].event_id+' · '+eventName(events[i]);el('eventSelect').append(option)}
+function renderEvent(){const e=events[Number(el('eventSelect').value)];if(!e){el('eventReview').hidden=true;return}const verdict=product?.events?.find(v=>v.event_id===e.event_id);el('eventJudgment').textContent=verdict?verdict.result+' · '+verdict.reason_code.replaceAll('_',' ').toLowerCase():product?'No qualified judgment for this event.':'';el('productEventLinks').replaceChildren();if(verdict){jump(el('productEventLinks'),verdict.first_decisive_marker,'Decisive image');jump(el('productEventLinks'),verdict.response_acquisition?.deadline_capture_marker_bracket?.end,'Deadline observation');jump(el('productEventLinks'),verdict.closing_current_correct,'Closing observation')}el('eventSummary').textContent=e.summary;const t=e.timing;el('eventTiming').textContent=t.status==='observed_capture_marker'?'The first correct recorded image was '+t.host_send_to_first_correct_capture_ms.map(x=>x.toFixed(3)).join('–')+' ms after the completing notification send call. '+(t.complete_recorded_frame_prefix?'Every recorded image from the event request through that image was read. ':'Earlier recorded images were not all read; this is a sampled observation time. ')+t.physical_appearance_reason:'First-correct timing unavailable: '+t.reason;const c=e.coverage;el('eventCoverage').textContent=c.read_recorded_frames+'/'+c.available_recorded_frames+' recorded images read across this entire input event; '+c.unrecorded_source_frames+' source frames not recorded; largest gap '+c.maximum_gap_between_read_markers_ms.toFixed(3)+' ms. A correct image does not establish correctness through an unobserved gap.';el('eventLinks').replaceChildren();jump(el('eventLinks'),e.preceding_observation,'Before input');jump(el('eventLinks'),e.last_definite_not_correct_before_first,'Last observed different state before correct');jump(el('eventLinks'),e.first_correct,'First all-required correct');el('eventFields').replaceChildren();for(const [name,point]of Object.entries(e.first_correct_by_field)){if(point)jump(el('eventFields'),point,names[name]);else{const p=document.createElement('p');p.textContent=names[name]+': no supported correct reading';el('eventFields').append(p)}}el('eventAfter').replaceChildren();for(const change of e.changes_after_correct){const detail=e.observation_spans[change.span_index];let label=change.status.replaceAll('_',' ').toLowerCase();if(change.not_correct_fields.length)label+=' · differing '+change.not_correct_fields.map(n=>names[n]).join(', ');if(change.unresolved_fields.length)label+=' · unresolved '+change.unresolved_fields.map(n=>names[n]).join(', ');label+=' · '+detail.frame_count+' consecutive frame(s)';jump(el('eventAfter'),change.first,label)}if(!e.changes_after_correct.length)el('eventAfter').textContent='No later change was observed in the selected images.'}
 el('eventSelect').onchange=()=>{stopPlayback();renderEvent();const e=events[Number(el('eventSelect').value)];const point=e?.observation_spans[0]?.first;if(point)show(all.findIndex(s=>s.frame_id===point.frame_id))};renderEvent();
 
 let playback=null;function stopPlayback(){if(playback!==null)clearTimeout(playback);playback=null;el('play').textContent='Play consecutive frames'}
@@ -1088,7 +1104,13 @@ def main() -> int:
         print(sanitize_artifact_value(str(exc), run_dir=args.out), file=sys.stderr)
         return 2
     label = "encounter with consecutive transitions" if args.inspect_transitions else "consecutive-frame encounter" if args.all_frames else "sampled encounter"
-    print(f"{result['result']} — {label}: {result['counts']['fields']} / {result['counts']['required']} required checks")
+    if result.get("primary_judgment"):
+        counts = result["primary_judgment"]["counts"]
+        print(f"{result['result']} — visible events: {counts['passed']} passed, "
+              f"{counts['failed']} failed, {counts['inconclusive']} inconclusive "
+              f"/ {counts['required_events']} required events")
+    else:
+        print(f"{result['result']} — {label}: {result['counts']['fields']} / {result['counts']['required']} required checks")
     print("Open report.html for original images, expected states, pixel readings and unresolved checks.")
     return {"PASS": 0, "FAIL": 1, "INCONCLUSIVE": 2}[result["result"]]
 

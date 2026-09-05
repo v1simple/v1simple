@@ -7,6 +7,7 @@ import hashlib
 import sys
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "bench"))
@@ -161,6 +162,22 @@ class MuteRedrawTests(unittest.TestCase):
                          "v1-unmute-stable-frequency-sweep-v2")
         self.assertEqual(redraw.MAXIMUM_RECORDING_SOURCE_INTERVAL_NS, 1_000_000_000)
         self.assertEqual(redraw.MAXIMUM_SUPPORT_CHAIN_INTERVAL_NS, 10_000_000)
+
+    def test_unrequested_frequency_path_never_runs(self):
+        calls = []
+        original = redraw._runs
+        def runs(samples, field, reason):
+            calls.append(field)
+            if field == "primary_frequency":
+                raise RuntimeError("unrequested candidate is broken")
+            return original(samples, field, reason)
+        with patch.object(redraw, "_runs", side_effect=runs):
+            result = redraw.classify_mute_redraw_runs(
+                badge_samples(), [event(False, True)], context(),
+                classifier_ids=[redraw.BADGE_CLASSIFIER_ID])
+        self.assertEqual(calls, ["muted_badge"])
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(len(result["classifications"]), 1)
 
     def test_badge_rising_fill_is_candidate_and_input_is_immutable(self):
         samples = badge_samples()

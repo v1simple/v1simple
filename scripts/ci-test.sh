@@ -157,12 +157,14 @@ run_step "Sampled visual comparison regression suite" python3 scripts/test_visua
 run_step "Counter pixel reader regression suite" python3 scripts/test_counter_reader.py
 run_step "Counter input expectation regression suite" python3 scripts/test_counter_expectation.py
 run_step "Recorded counter check regression suite" python3 scripts/test_counter_check.py
+run_step "Encounter OCR session regression suite" python3 scripts/test_encounter_ocr_session.py
 run_step "Encounter pixel reader regression suite" python3 scripts/test_encounter_reader.py
 run_step "Encounter input expectation regression suite" python3 scripts/test_encounter_expectation.py
 run_step "Recorded encounter check regression suite" python3 scripts/test_encounter_check.py
 run_step "Encounter sequence interpretation regression suite" python3 scripts/test_encounter_sequence.py
 run_step "Encounter evidence assessment regression suite" python3 scripts/test_encounter_assessment.py
 run_step "Encounter product regression suite" python3 scripts/test_encounter_product.py
+run_step "Encounter functional deadline regression suite" python3 scripts/test_encounter_functional_product.py
 run_step "Encounter product adapter regression suite" python3 scripts/test_encounter_product_adapter.py
 run_step "Encounter temporal classifier regression suite" python3 scripts/test_encounter_temporal.py
 run_step "Encounter arrow transition regression suite" python3 scripts/test_encounter_arrow_transition.py

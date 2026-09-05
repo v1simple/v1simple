@@ -28,7 +28,7 @@ except ImportError:
 
 
 SCHEMA_VERSION = 1
-CORE_READER_FILES = ("encounter_reader.py", "encounter_ocr.swift", "counter_reader.py")
+CORE_READER_FILES = ("encounter_reader.py", "encounter_ocr.swift", "encounter_ocr_session.py", "counter_reader.py")
 OCR_RUNTIME_FILES = ("encounter_runtime_probe.py", "encounter_ocr_probe.b64")
 QUALIFICATION_LOGIC_FILES = ("encounter_qualification.py", "encounter_expectation.py")
 FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
@@ -36,6 +36,8 @@ FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
 MINIMUM_BLIND_FRAMES = 20
 MINIMUM_AGREEMENTS_PER_FIELD = 10
 MINIMUM_NONEMPTY_SECONDARY_AGREEMENTS = 5
+MINIMUM_PARTIAL_SECONDARY_IDENTITY_AGREEMENTS = 5
+MINIMUM_EMPTY_SECONDARY_PRESENCE_CONTROLS = 5
 MINIMUM_TEMPORAL_POSITIVES = 5
 MINIMUM_TEMPORAL_NEGATIVES = 5
 VISIBLE_SECONDARY_SOURCE_NAMES = (
@@ -75,6 +77,7 @@ CLASSIFIER_IMPLEMENTATION_FILES = {
     # appends its records unchanged. Wrapper drift can suppress a result (fail closed)
     # but the qualified record authority remains encounter_arrow_transition.py.
     "v1-arrow-phase-edge-v2": ("encounter_arrow_transition.py",),
+    "v1-arrow-phase-edge-v3": ("encounter_arrow_transition.py",),
     "v1-main-bar-adjacent-redraw-v2": (
         "encounter_temporal.py", "encounter_bar_transition.py", "encounter_redraw_probe.py"),
     "v1-muted-badge-rising-fill-v2": (
@@ -87,6 +90,45 @@ CLASSIFIER_IMPLEMENTATION_FILES = {
 }
 
 TEMPORAL_V2_OBSERVER_RUBRICS = {
+    "v1-arrow-phase-edge-v3": {
+        "raw_affected_fields": ["main_arrows"],
+        "observer_eligibility_rule": (
+            "COHERENT_SINGLE_DIRECTION_ON_OFF_EDGE with BOTH_CLEAR endpoints, "
+            "NO extra-direction motion, and HIGH confidence"),
+        "eligibility_detail": (
+            "Eligible only when two stable clear endpoint frames on each side differ by one "
+            "direction, the intervening run is one coherent fill or clear of that direction, "
+            "every other direction stays unchanged, and confidence is HIGH."),
+        "field_guidance": {
+            "center_class": (
+                "Classify only the target run between the stable endpoints; do not assign its "
+                "frames either endpoint value."),
+            "endpoint_support": (
+                "BOTH_CLEAR requires two stable, mutually agreeing frames on each side."),
+            "extra_direction_motion": (
+                "YES if any direction other than the one changing between endpoints also moves."),
+            "confidence": "Use HIGH only when every required visual fact is clear.",
+        },
+        "literal_fields": (
+            "center_class", "endpoint_support", "extra_direction_motion", "confidence"),
+        "required_literals": {
+            "center_class": "COHERENT_SINGLE_DIRECTION_ON_OFF_EDGE",
+            "endpoint_support": "BOTH_CLEAR",
+            "extra_direction_motion": "NO",
+            "confidence": "HIGH",
+        },
+        "allowed_literals": {
+            "center_class": (
+                "COHERENT_SINGLE_DIRECTION_ON_OFF_EDGE",
+                "NOT_COHERENT_SINGLE_DIRECTION_ON_OFF_EDGE",
+                "VISUALLY_INDETERMINATE"),
+            "endpoint_support": (
+                "BOTH_CLEAR", "LEFT_UNCLEAR", "RIGHT_UNCLEAR", "BOTH_UNCLEAR",
+                "INDETERMINATE"),
+            "extra_direction_motion": ("NO", "YES", "INDETERMINATE"),
+            "confidence": ("HIGH", "MEDIUM", "LOW"),
+        },
+    },
     "v1-main-bar-adjacent-redraw-v2": {
         "raw_affected_fields": ["main_bars"],
         "observer_eligibility_rule": (
@@ -239,6 +281,13 @@ TEMPORAL_V2_OBSERVER_RUBRICS = {
 }
 
 _TEMPORAL_V2_REJECTION_CODES = {
+    "v1-arrow-phase-edge-v3": {
+        "UNCLOSED_RUN", "SOURCE_GAP", "ENDPOINT_SPAN", "UNSTABLE_ENDPOINT",
+        "NOT_ONE_DIRECTION_PHASE_EDGE", "EXPECTATION_SIGNATURE", "EXTRA_DIRECTION_STATE",
+        "INVALID_PROFILE", "ENDPOINT_SEPARATION", "PROJECTION_RANGE",
+        "NORMALIZED_RESIDUAL", "MAXIMUM_BACKWARD_STEP", "TOTAL_BACKWARD_MOTION",
+        "EXTRA_DIRECTION_MOTION",
+    },
     "v1-main-bar-adjacent-redraw-v2": {
         "UNCLOSED_RUN", "SOURCE_GAP", "ENDPOINT_SPAN", "UNSTABLE_ENDPOINT",
         "NOT_ADJACENT_COUNTS", "EXPECTATION_SIGNATURE", "NOT_BOUNDARY_ONLY",
@@ -271,6 +320,17 @@ _BAR_RECORD_KEYS = {
     "maximum_endpoint_span_ns", "verified_maximum_source_interval_ns", "profile_schema",
     "profile_boxes", "redraw_probe_method_version", "redraw_probe_sha256", "capture_id",
     "selection_manifest_sha256", "reader_method_version", "reader_sha256", "basis",
+}
+_ARROW_RECORD_KEYS = {
+    "event_id", "classifier_id", "classifier_spec_sha256", "status",
+    "raw_affected_fields", "video_frame_indices", "first", "last", "left_support",
+    "left_endpoint", "right_endpoint", "right_support", "endpoint_values",
+    "changed_direction", "arrow_expectation_signature", "endpoint_separation_rms",
+    "projections", "normalized_residuals", "maximum_backward_step",
+    "total_backward_motion", "extra_direction_profile_diameter_rms",
+    "maximum_endpoint_span_ns", "verified_maximum_source_interval_ns", "profile_schema",
+    "profile_reference_bounds", "capture_id", "selection_manifest_sha256",
+    "reader_method_version", "reader_sha256", "basis",
 }
 _BADGE_RECORD_KEYS = {
     "event_id", "classifier_id", "classifier_spec_sha256", "status",
@@ -448,6 +508,81 @@ def _literal_observation(observed: Any) -> dict[str, Any]:
     return {"state": observed.get("state"), "value": deepcopy(observed.get("value"))}
 
 
+def _partial_secondary_cards(observed: Any) -> list[dict[str, Any]] | None:
+    """Return the literal partial-card data that can make a product disagreement."""
+    _require(isinstance(observed, dict), "reader observation is malformed")
+    partial = observed.get("partial_cards")
+    if partial is None:
+        return None
+    _require(isinstance(partial, list) and len(partial) <= 2,
+             "reader partial secondary cards are malformed")
+    normalized = []
+    for card in partial:
+        _require(isinstance(card, dict)
+                 and set(card) >= {"band", "frequency", "direction", "bars"},
+                 "reader partial secondary card lacks associated fields")
+        band = card.get("band")
+        _require(band is None or isinstance(band, str)
+                 and band.casefold() in ("x", "k", "ka"),
+                 "reader partial secondary card has an invalid band")
+        if band is not None:
+            band = {"x": "X", "k": "K", "ka": "Ka"}[band.casefold()]
+        frequency = card.get("frequency")
+        _require(frequency is None or isinstance(frequency, str)
+                 and re.fullmatch(r"(?:[0-9]{1,2}\.[0-9]{3}|--\.---)", frequency) is not None,
+                 "reader partial secondary card has an invalid frequency")
+        direction = card.get("direction")
+        _require(direction is None or isinstance(direction, str)
+                 and direction.casefold() in ("front", "side", "rear"),
+                 "reader partial secondary card has an invalid direction")
+        if direction is not None:
+            direction = direction.casefold()
+        bars = card.get("bars")
+        _require(bars is None or type(bars) is int and 0 <= bars <= 6,
+                 "reader partial secondary card has an invalid bar count")
+        normalized.append({"band": band, "frequency": frequency,
+                           "direction": direction, "bars": bars})
+    return normalized
+
+
+def _product_observation(field: str, observed: Any) -> dict[str, Any]:
+    """Retain exactly the observation data consumed by the product comparator."""
+    result = _literal_observation(observed)
+    if field == "secondary":
+        result["partial_cards"] = _partial_secondary_cards(observed)
+    return result
+
+
+def _partial_secondary_identities(observed: Any) -> list[tuple[str, str]]:
+    """Return only literal identities that the no-secondary product check can assert."""
+    _require(isinstance(observed, dict), "reader observation is malformed")
+    if observed.get("state") not in ("unreadable", "ambiguous"):
+        return []
+    partial = _partial_secondary_cards(observed) or []
+    return [(card["band"], card["frequency"]) for card in partial
+            if card["band"] is not None and card["frequency"] is not None]
+
+
+def _blind_secondary_identities(frame: Any) -> tuple[Counter[tuple[str, str]], int]:
+    """Extract independently resolved identities and count unresolved blind cards."""
+    if not isinstance(frame, dict) or frame.get("display_visibility") != "visible":
+        return Counter(), 1
+    cards = frame.get("cards")
+    if not isinstance(cards, list) or frame.get("card_count") != len(cards):
+        return Counter(), 1
+    resolved: Counter[tuple[str, str]] = Counter()
+    unresolved = 0
+    for card in cards:
+        band = card.get("band") if isinstance(card, dict) else None
+        frequency = card.get("frequency") if isinstance(card, dict) else None
+        if (band in ("X", "K", "Ka") and isinstance(frequency, str)
+                and re.fullmatch(r"[0-9]{1,2}\.[0-9]{3}", frequency) is not None):
+            resolved[(band, frequency)] += 1
+        else:
+            unresolved += 1
+    return resolved, unresolved
+
+
 def _normalized(field: str, value: Any) -> Any:
     if field in ("active_bands", "main_arrows") and isinstance(value, list):
         return sorted(str(item).casefold() for item in value)
@@ -508,6 +643,38 @@ def _blind_secondary_reference(frame: Any) -> dict[str, Any]:
     return {"state": "readable", "value": value}
 
 
+def _visible_secondary_reanalysis_binding(document: dict[str, Any], hidden: Any,
+                                           reader: dict[str, Any],
+                                           implementation: dict[str, str],
+                                           sealed_key_sha256: str) -> bool:
+    """Validate an explicit reread of immutable labels made for an older reader."""
+    binding = document.get("reader_reanalysis")
+    if binding is None:
+        return False
+    source_implementation = hidden.get("implementation") if isinstance(hidden, dict) else None
+    source_setup = (source_implementation.get("reader_setup")
+                    if isinstance(source_implementation, dict) else None)
+    _require(isinstance(source_setup, dict),
+             "visible-secondary reanalysis has no source reader setup")
+    expected = {
+        "kind": "complete_exact_reader_reread",
+        "source_sealed_key_sha256": sealed_key_sha256,
+        "source_method_version": source_setup.get("method_version"),
+        "source_reader_sha256": source_implementation.get("reader_sha256"),
+        "current_method_version": reader.get("method_version"),
+        "current_reader_sha256": implementation.get("encounter_reader.py"),
+        "complete_source_set_reread": True,
+    }
+    _require(binding == expected,
+             "visible-secondary reanalysis binding differs from source and current readers")
+    _require((expected["source_method_version"], expected["source_reader_sha256"]) !=
+             (expected["current_method_version"], expected["current_reader_sha256"]),
+             "visible-secondary reanalysis does not identify a different reader")
+    _digest(expected["source_reader_sha256"], "visible-secondary source reader")
+    _digest(expected["current_reader_sha256"], "visible-secondary current reader")
+    return True
+
+
 def _validate_controls(controls: Any, evidence_root: Path) -> dict[str, Any]:
     _require(isinstance(controls, dict) and isinstance(controls.get("cases"), list),
              "field validation has no fault controls")
@@ -540,8 +707,9 @@ def _validate_controls(controls: Any, evidence_root: Path) -> dict[str, Any]:
         retained_fields = case.get("observed", {}).get("fields", case.get("observed"))
         regenerated_fields = regenerated.get("fields", regenerated)
         _require(isinstance(retained_fields, dict) and isinstance(regenerated_fields, dict)
-                 and all(_literal_observation(retained_fields.get(field)) ==
-                         _literal_observation(regenerated_fields.get(field)) for field in FIELDS),
+                 and all(_product_observation(field, retained_fields.get(field)) ==
+                         _product_observation(field, regenerated_fields.get(field))
+                         for field in FIELDS),
                  f"fault control {name} observation differs from exact reader")
         try:
             derived = compare_sample(expected, case.get("observed"), role="held")
@@ -629,6 +797,7 @@ def _validate_field_evidence(document: Any, reader: dict[str, Any], camera: dict
     frame_ids, image_hashes = set(), set()
     totals: Counter[str] = Counter()
     per_field = {field: Counter() for field in FIELDS}
+    empty_secondary_presence_controls = 0
     for frame in frames:
         _require(isinstance(frame, dict) and isinstance(frame.get("frame_id"), str),
                  "field-validation frame is malformed")
@@ -655,8 +824,8 @@ def _validate_field_evidence(document: Any, reader: dict[str, Any], camera: dict
                  "field-validation frame does not label every field exactly once")
         for field in FIELDS:
             check = by_field[field]
-            _require(_literal_observation(check.get("observed")) ==
-                     _literal_observation(regenerated.get(field)),
+            _require(_product_observation(field, check.get("observed")) ==
+                     _product_observation(field, regenerated.get(field)),
                      f"field-validation observation differs from exact reader for {field}")
             _require(check.get("reference") == source_label.get(field),
                      f"field-validation blind source label differs for {field}")
@@ -666,6 +835,12 @@ def _validate_field_evidence(document: Any, reader: dict[str, Any], camera: dict
                      f"blind status does not follow its literal labels for {field}")
             totals[status] += 1
             per_field[field][status] += 1
+            if (field == "secondary" and isinstance(check.get("reference"), dict)
+                    and check["reference"].get("state") == "readable"
+                    and check["reference"].get("value") == []):
+                _require(not _partial_secondary_identities(check.get("observed")),
+                         "reader asserted a partial secondary identity on a blind empty control")
+                empty_secondary_presence_controls += 1
     _require(document.get("unique_original_frames") == len(frames)
              and document.get("required_field_labels") == len(frames) * len(FIELDS),
              "field-validation denominators are inconsistent")
@@ -681,9 +856,12 @@ def _validate_field_evidence(document: Any, reader: dict[str, Any], camera: dict
     for field in FIELDS:
         _require(per_field[field]["AGREEMENT"] >= MINIMUM_AGREEMENTS_PER_FIELD,
                  f"too few blind agreements for {field}")
+    _require(empty_secondary_presence_controls >= MINIMUM_EMPTY_SECONDARY_PRESENCE_CONTROLS,
+             "too few blind empty-secondary presence controls")
     return {"unique_original_frames": len(frames), "required_field_labels": len(frames) * len(FIELDS),
             "counts": dict(totals), "agreements_by_field": {
-                field: per_field[field]["AGREEMENT"] for field in FIELDS}}
+                field: per_field[field]["AGREEMENT"] for field in FIELDS},
+            "empty_secondary_presence_controls": empty_secondary_presence_controls}
 
 
 def _validate_visible_secondary_evidence(document: Any, reader: dict[str, Any],
@@ -778,6 +956,8 @@ def _validate_visible_secondary_evidence(document: Any, reader: dict[str, Any],
     hidden_by_image = flatten_hidden()
     _require(set(image_integrity) == set(blind_by_image) == set(hidden_by_image),
              "visible-secondary source image sets differ")
+    is_reanalysis = _visible_secondary_reanalysis_binding(
+        document, hidden, reader, implementation, source_artifacts["sealed_key"]["sha256"])
     adjudication = source_documents["adjudication"]
     adjudicated_items = adjudication.get("items") if isinstance(adjudication, dict) else None
     _require(isinstance(adjudicated_items, list),
@@ -791,6 +971,8 @@ def _validate_visible_secondary_evidence(document: Any, reader: dict[str, Any],
              "too few blind visible-secondary frames")
     item_ids, image_hashes, changed_references = set(), set(), set()
     counts: Counter[str] = Counter()
+    partial_identity_agreement_frames = 0
+    partial_identity_assertions = 0
     for item in items:
         _require(isinstance(item, dict) and isinstance(item.get("item_id"), str),
                  "visible-secondary item is malformed")
@@ -811,12 +993,26 @@ def _validate_visible_secondary_evidence(document: Any, reader: dict[str, Any],
                  "visible-secondary retained image identity differs")
         _require(item.get("blind_label") == blind_by_image[source_image],
                  "visible-secondary retained blind label differs")
-        _require(item.get("observed") == hidden_by_image[source_image],
-                 "visible-secondary retained reader observation differs")
+        if is_reanalysis:
+            _product_observation("secondary", hidden_by_image[source_image])
+        else:
+            _require(item.get("observed") == hidden_by_image[source_image],
+                     "visible-secondary retained reader observation differs")
         regenerated = _observe_image(image_path, registration).get("secondary")
-        _require(_literal_observation(item.get("observed")) ==
-                 _literal_observation(regenerated),
+        _require(_product_observation("secondary", item.get("observed")) ==
+                 _product_observation("secondary", regenerated),
                  "visible-secondary observation differs from exact reader")
+        asserted_identities = Counter(_partial_secondary_identities(item.get("observed")))
+        if asserted_identities:
+            blind_identities, unresolved_blind_cards = _blind_secondary_identities(
+                blind_by_image[source_image])
+            unmatched = asserted_identities - blind_identities
+            if unmatched:
+                _require(unresolved_blind_cards == 0,
+                         "reader asserted a partial secondary identity without a resolved blind reference")
+                _require(False, "blind visible-secondary validation contains a wrong partial identity")
+            partial_identity_agreement_frames += 1
+            partial_identity_assertions += sum(asserted_identities.values())
         primary_reference = _blind_secondary_reference(blind_by_image[source_image])
         _require(item.get("primary_reference") == primary_reference,
                  "visible-secondary primary reference was not independently derived")
@@ -844,6 +1040,8 @@ def _validate_visible_secondary_evidence(document: Any, reader: dict[str, Any],
              "visible-secondary denominators are inconsistent")
     _require(counts["WRONG_ASSERTION"] == 0,
              "blind visible-secondary validation contains a wrong reader assertion")
+    _require(counts["ASSERTION_WITHOUT_RESOLVED_REFERENCE"] == 0,
+             "reader asserted visible-secondary content without a resolved blind reference")
     nonempty_agreements = sum(
         item.get("status") == "AGREEMENT"
         and isinstance(item.get("reference"), dict)
@@ -851,8 +1049,13 @@ def _validate_visible_secondary_evidence(document: Any, reader: dict[str, Any],
         and bool(item["reference"]["value"]) for item in items)
     _require(nonempty_agreements >= MINIMUM_NONEMPTY_SECONDARY_AGREEMENTS,
              "too few blind agreements on visible secondary cards")
+    _require(partial_identity_agreement_frames >= MINIMUM_PARTIAL_SECONDARY_IDENTITY_AGREEMENTS,
+             "too few blind agreements on partial secondary identities")
     return {"unique_original_frames": len(items), "counts": dict(counts),
-            "nonempty_secondary_agreements": nonempty_agreements}
+            "nonempty_secondary_agreements": nonempty_agreements,
+            "partial_secondary_identity_agreement_frames": partial_identity_agreement_frames,
+            "partial_secondary_identity_assertions": partial_identity_assertions,
+            "reader_reanalysis": is_reanalysis}
 
 
 def _validate_fault_evidence(document: Any, reader: dict[str, Any], camera: dict[str, Any],
@@ -877,7 +1080,9 @@ def _temporal_v2_observer_result(classifier_id: str, observation: Any) -> tuple[
         _require(literal[name] in allowed,
                  f"temporal observer literal {name} is invalid for {classifier_id}")
 
-    if classifier_id == "v1-main-bar-adjacent-redraw-v2":
+    if classifier_id == "v1-arrow-phase-edge-v3":
+        relationship = True
+    elif classifier_id == "v1-main-bar-adjacent-redraw-v2":
         counts = (literal["left_endpoint_bar_count"],
                   literal["right_endpoint_bar_count"])
         _require(all(value is None or (type(value) is int and 0 <= value <= 6)
@@ -939,6 +1144,11 @@ def _temporal_v2_claim_matches_record(classifier_id: str, spec_sha256: str,
             or record.get("raw_affected_fields") !=
                 TEMPORAL_V2_OBSERVER_RUBRICS[classifier_id]["raw_affected_fields"]):
         return False
+    if classifier_id == "v1-arrow-phase-edge-v3":
+        endpoints = record.get("endpoint_values")
+        return (isinstance(endpoints, list) and len(endpoints) == 2
+                and all(isinstance(value, list) for value in endpoints)
+                and len(set(endpoints[0]) ^ set(endpoints[1])) == 1)
     if classifier_id == "v1-main-bar-adjacent-redraw-v2":
         endpoints = record.get("endpoint_values")
         return (isinstance(endpoints, list) and len(endpoints) == 2
@@ -1014,6 +1224,7 @@ def _validate_temporal_v2_capture(capture: Any, window: Any, capture_path: Path,
 
 _SOURCE_FRAMEHASH_CACHE: dict[tuple[str, str], tuple[str, ...]] = {}
 _TEMPORAL_V2_INSET_LOGICAL = {
+    "v1-arrow-phase-edge-v3": (990, 190, 1165, 400),
     "v1-main-bar-adjacent-redraw-v2": (860, 185, 980, 440),
     "v1-muted-badge-rising-fill-v2": (480, 155, 710, 285),
     "v1-unmute-stable-frequency-sweep-v2": (425, 225, 845, 390),
@@ -1245,16 +1456,28 @@ def _temporal_v2_context_binding(classifier_id: str, spec_document: dict[str, An
              f"temporal classifier context sources are malformed for {classifier_id}")
     capture_id = _digest(camera.get("capture_id"), f"{classifier_id} capture")
     maximum_interval = timing.get("maximum_source_interval_ns")
+    common_valid = (timing.get("status") == "verified"
+                    and type(maximum_interval) is int
+                    and 0 < maximum_interval <= 1_000_000_000
+                    and identity.get("reader_method_version") == reader.get("method_version")
+                    and identity.get("reader_sha256") == implementation.get("encounter_reader.py"))
+    if classifier_id == "v1-arrow-phase-edge-v3":
+        _require(common_valid and set(identity) == {"reader_method_version", "reader_sha256"},
+                 f"temporal classifier context identity differs for {classifier_id}")
+        return {
+            "capture_id": capture_id,
+            "selection_manifest_sha256": references["analysis_selection"]["sha256"],
+            "verified_maximum_source_interval_ns": maximum_interval,
+            "reader_method_version": reader["method_version"],
+            "reader_sha256": implementation["encounter_reader.py"],
+        }
     configured_maximum = constants.get("maximum_recording_interval_ns")
     support_maximum = constants.get("maximum_support_interval_ns")
-    _require(timing.get("status") == "verified"
-             and type(maximum_interval) is int
+    _require(common_valid
              and type(configured_maximum) is int
              and type(support_maximum) is int
              and 0 < support_maximum <= configured_maximum
              and 0 < maximum_interval <= configured_maximum
-             and identity.get("reader_method_version") == reader.get("method_version")
-             and identity.get("reader_sha256") == implementation.get("encounter_reader.py")
              and type(identity.get("redraw_probe_method_version")) is int
              and identity.get("redraw_probe_sha256") ==
                  implementation.get("encounter_redraw_probe.py"),
@@ -1382,6 +1605,77 @@ def _validate_temporal_v2_bar_record(record: dict[str, Any], target_indices: lis
              "temporal main-bar unchanged-cell metrics are invalid")
 
 
+def _validate_temporal_v2_arrow_record(record: dict[str, Any], target_indices: list[int],
+                                       context: dict[str, Any], spec_document: dict[str, Any],
+                                       source_rows: dict[int, dict[str, int]]) -> None:
+    constants = spec_document["constants"]
+    directions = {"front", "side", "rear"}
+    endpoints = record.get("endpoint_values")
+    _require(isinstance(endpoints, list) and len(endpoints) == 2
+             and all(isinstance(value, list)
+                     and value == sorted(value)
+                     and len(value) == len(set(value))
+                     and set(value) <= directions for value in endpoints),
+             "temporal arrow endpoint record is malformed")
+    endpoint_sets = {tuple(value) for value in endpoints}
+    changed = set(endpoints[0]) ^ set(endpoints[1])
+    signature = record.get("arrow_expectation_signature")
+    expected_phases = [list(value) for value in sorted(endpoint_sets)]
+    _require(len(endpoint_sets) == 2 and len(changed) == 1
+             and record.get("changed_direction") == next(iter(changed))
+             and signature == {"allowed_arrow_sets": expected_phases,
+                               "joint_arrow_phases": expected_phases},
+             "temporal arrow phase association is inconsistent")
+    first, last = target_indices[0], target_indices[-1]
+    for name, index in (("left_support", first - 2), ("left_endpoint", first - 1),
+                        ("right_endpoint", last + 1), ("right_support", last + 2)):
+        _require_point(record.get(name), index, name, source_rows)
+    maximum_gap = context["verified_maximum_source_interval_ns"]
+    _validate_temporal_support_chain(first - 2, last + 2, source_rows, maximum_gap)
+    maximum_span = constants["authored_blink_phase_ns"] + maximum_gap
+    _require(source_rows[last + 1]["capture_ns"] - source_rows[first - 1]["capture_ns"]
+             <= maximum_span, "temporal arrow endpoints exceed their span bound")
+    _require(record.get("maximum_endpoint_span_ns") == maximum_span
+             and record.get("profile_schema") == {
+                 "rows": 4, "columns": 4, "cells": 16,
+                 "sample": "max-channel cell median"},
+             "temporal arrow profile contract differs")
+    bounds = record.get("profile_reference_bounds")
+    _require(isinstance(bounds, dict) and set(bounds) == directions
+             and all(isinstance(value, list) and len(value) == 4
+                     and all(type(coordinate) is int for coordinate in value)
+                     for value in bounds.values()),
+             "temporal arrow profile bounds are malformed")
+    separation = record.get("endpoint_separation_rms")
+    projections = record.get("projections")
+    residuals = record.get("normalized_residuals")
+    _require(_finite_number(separation)
+             and separation >= constants["endpoint_separation_rms_min"]
+             and isinstance(projections, list) and len(projections) == len(target_indices)
+             and isinstance(residuals, list) and len(residuals) == len(target_indices)
+             and all(_finite_number(value)
+                     and constants["projection_min"] <= value <= constants["projection_max"]
+                     for value in projections)
+             and all(_finite_number(value)
+                     and 0 <= value <= constants["normalized_residual_max"]
+                     for value in residuals),
+             "temporal arrow interpolation metrics are invalid")
+    path = [0.0, *projections, 1.0]
+    backwards = [max(0.0, left - right) for left, right in zip(path, path[1:])]
+    _require(record.get("maximum_backward_step") == max(backwards, default=0.0)
+             and record["maximum_backward_step"] <= constants["maximum_backward_step"]
+             and record.get("total_backward_motion") == sum(backwards)
+             and record["total_backward_motion"] <= constants["maximum_total_backward_motion"],
+             "temporal arrow projection motion is inconsistent")
+    diameters = record.get("extra_direction_profile_diameter_rms")
+    expected_extra = directions - {record["changed_direction"]}
+    _require(isinstance(diameters, dict) and set(diameters) == expected_extra
+             and all(_finite_number(value) and 0 <= value <=
+                     constants["extra_direction_profile_diameter_rms_max"]
+                     for value in diameters.values()),
+             "temporal arrow extra-direction metrics are invalid")
+
+
 _DIGIT_MASKS = {
     "0": "abcdef", "1": "bc", "2": "abdeg", "3": "abcdg", "4": "bcfg",
     "5": "acdfg", "6": "acdefg", "7": "abc", "8": "abcdefg", "9": "abcdfg",
@@ -1495,12 +1789,16 @@ def _validate_temporal_v2_record(classifier_id: str, spec_sha256: str,
         _require_point(record.get("first"), target_indices[0], "rejected first", source_rows)
         _require_point(record.get("last"), target_indices[-1], "rejected last", source_rows)
         return
-    required = (_BAR_RECORD_KEYS if classifier_id == "v1-main-bar-adjacent-redraw-v2"
+    required = (_ARROW_RECORD_KEYS if classifier_id == "v1-arrow-phase-edge-v3"
+                else _BAR_RECORD_KEYS if classifier_id == "v1-main-bar-adjacent-redraw-v2"
                 else _BADGE_RECORD_KEYS if classifier_id == "v1-muted-badge-rising-fill-v2"
                 else _FREQUENCY_RECORD_KEYS)
     _validate_temporal_v2_common_record(
         classifier_id, spec_sha256, record, target_indices, context, required, source_rows)
-    if classifier_id == "v1-main-bar-adjacent-redraw-v2":
+    if classifier_id == "v1-arrow-phase-edge-v3":
+        _validate_temporal_v2_arrow_record(
+            record, target_indices, context, spec_document, source_rows)
+    elif classifier_id == "v1-main-bar-adjacent-redraw-v2":
         _validate_temporal_v2_bar_record(
             record, target_indices, context, spec_document, source_rows)
     else:
@@ -1520,17 +1818,34 @@ def _validate_temporal_v2(document: dict[str, Any], classifier_id: str,
              f"temporal validation identity differs for {classifier_id}")
     spec_validation = (spec_document.get("validation")
                        if isinstance(spec_document, dict) else None)
-    _require(isinstance(spec_document, dict)
-             and spec_document.get("schema_version") == 1
-             and spec_document.get("classifier_id") == classifier_id
-             and isinstance(spec_validation, dict)
-             and spec_validation.get("minimum_blind_true_admits") ==
-                 MINIMUM_TEMPORAL_POSITIVES
-             and spec_validation.get("minimum_blind_true_rejects") ==
-                 MINIMUM_TEMPORAL_NEGATIVES
-             and spec_validation.get("required_false_admits") == 0
-             and spec_validation.get("observer_eligibility_rule") ==
-                 TEMPORAL_V2_OBSERVER_RUBRICS[classifier_id]["observer_eligibility_rule"],
+    if classifier_id == "v1-arrow-phase-edge-v3":
+        requirements = (spec_document.get("qualification_requirements")
+                        if isinstance(spec_document, dict) else None)
+        valid_specification = (
+            isinstance(spec_document, dict)
+            and spec_document.get("schema_version") == 2
+            and spec_document.get("classifier_id") == classifier_id
+            and spec_document.get("deadline_observation_semantics") ==
+                "LEGAL_PRESENTATION_TRANSITION"
+            and requirements == {
+                "minimum_blind_true_admits": MINIMUM_TEMPORAL_POSITIVES,
+                "minimum_blind_true_rejects": MINIMUM_TEMPORAL_NEGATIVES,
+                "maximum_false_admits": 0,
+            })
+    else:
+        valid_specification = (
+            isinstance(spec_document, dict)
+            and spec_document.get("schema_version") == 1
+            and spec_document.get("classifier_id") == classifier_id
+            and isinstance(spec_validation, dict)
+            and spec_validation.get("minimum_blind_true_admits") ==
+                MINIMUM_TEMPORAL_POSITIVES
+            and spec_validation.get("minimum_blind_true_rejects") ==
+                MINIMUM_TEMPORAL_NEGATIVES
+            and spec_validation.get("required_false_admits") == 0
+            and spec_validation.get("observer_eligibility_rule") ==
+                TEMPORAL_V2_OBSERVER_RUBRICS[classifier_id]["observer_eligibility_rule"])
+    _require(valid_specification,
              f"temporal specification validation contract differs for {classifier_id}")
 
     implementation_binding = {

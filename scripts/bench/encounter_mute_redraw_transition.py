@@ -13,12 +13,12 @@ import re
 
 
 BADGE_CLASSIFIER_ID = "v1-muted-badge-rising-fill-v2"
-BADGE_CLASSIFIER_SPEC_SHA256 = "72c63f0c7195323795ef8484bcad553ee432aa5cb2e34386c35b99a1c3e20264"
+BADGE_CLASSIFIER_SPEC_SHA256 = "901367b4cf331f60ea03d5548b2d4bf68ecc2466abb1fde86264bd9588cba89e"
 FREQUENCY_CLASSIFIER_ID = "v1-unmute-stable-frequency-sweep-v2"
-FREQUENCY_CLASSIFIER_SPEC_SHA256 = "86a500954c2f1397080957c648217a6269664f2faadd5edbb6d2d7bd774ef28a"
+FREQUENCY_CLASSIFIER_SPEC_SHA256 = "c1f3e2a7217f8c5fb649a8139860b5794f82ecc4f03c9a459c5f4cb87f2220e5"
 
-PROFILE_READER_METHOD_VERSION = 5
-PROFILE_READER_SHA256 = "3427f8bb80fe25f4d88b4709113f353a60ebb6eef8ae1c18c7326fc8b1259e55"
+PROFILE_READER_METHOD_VERSION = 6
+PROFILE_READER_SHA256 = "17988f82323e53a6d3a507cf101606e546ce61caa2d815cf0ca7024fdeffad98"
 PROFILE_REDRAW_PROBE_METHOD_VERSION = 1
 PROFILE_REDRAW_PROBE_SHA256 = "4b623360af63afe5c51f154ed5ce57325476b8419bc165bc8a5ee9ef7f55da24"
 MAXIMUM_RECORDING_SOURCE_INTERVAL_NS = 1_000_000_000
@@ -423,10 +423,14 @@ def _reject(event, field, run, code, reason):
             "first": _point(run[0]), "last": _point(run[-1]), "reason": reason}
 
 
-def classify_mute_redraw_runs(samples, events, context):
+def classify_mute_redraw_runs(samples, events, context, *, classifier_ids=None):
     """Return badge/frequency candidates and stable refusals; never mutate input."""
     result = {"classifications": [], "rejected_runs": [], "errors": []}
     try:
+        requested = set((BADGE_CLASSIFIER_ID, FREQUENCY_CLASSIFIER_ID)
+                        if classifier_ids is None else classifier_ids)
+        if not requested <= {BADGE_CLASSIFIER_ID, FREQUENCY_CLASSIFIER_ID}:
+            raise ValueError("unknown mute redraw classifier requested")
         context = _context(context)
         originals = _unique_originals(samples)
         if not isinstance(events, list):
@@ -440,37 +444,39 @@ def classify_mute_redraw_runs(samples, events, context):
                         if type(sample.get("capture_ns")) is int
                         and event["start_ns"] <= sample["capture_ns"] < event["end_ns"]]
 
-            badge_signature = _mute_event_signature(event, False, True)
-            for first, stop in _runs(selected, "muted_badge", "partial muted badge"):
-                run = selected[first:stop]
-                if badge_signature is None:
-                    result["rejected_runs"].append(_reject(
-                        event, "muted_badge", run, "EVENT_SCOPE",
-                        "badge redraw is not the frozen mute-on-only event shape"))
-                    continue
-                record, code, reason = _badge_record(
-                    event, selected, first, stop, context, badge_signature)
-                if record is None:
-                    result["rejected_runs"].append(_reject(event, "muted_badge", run, code, reason))
-                else:
-                    result["classifications"].append(record)
+            if BADGE_CLASSIFIER_ID in requested:
+                badge_signature = _mute_event_signature(event, False, True)
+                for first, stop in _runs(selected, "muted_badge", "partial muted badge"):
+                    run = selected[first:stop]
+                    if badge_signature is None:
+                        result["rejected_runs"].append(_reject(
+                            event, "muted_badge", run, "EVENT_SCOPE",
+                            "badge redraw is not the frozen mute-on-only event shape"))
+                        continue
+                    record, code, reason = _badge_record(
+                        event, selected, first, stop, context, badge_signature)
+                    if record is None:
+                        result["rejected_runs"].append(_reject(event, "muted_badge", run, code, reason))
+                    else:
+                        result["classifications"].append(record)
 
-            frequency_signature = _mute_event_signature(event, True, False)
-            for first, stop in _runs(selected, "primary_frequency",
-                                     "inconsistent illuminated frequency segment levels"):
-                run = selected[first:stop]
-                if frequency_signature is None:
-                    result["rejected_runs"].append(_reject(
-                        event, "primary_frequency", run, "EVENT_SCOPE",
-                        "frequency redraw is not the frozen unmute-only event shape"))
-                    continue
-                record, code, reason = _frequency_record(
-                    event, selected, first, stop, context, frequency_signature)
-                if record is None:
-                    result["rejected_runs"].append(_reject(
-                        event, "primary_frequency", run, code, reason))
-                else:
-                    result["classifications"].append(record)
+            if FREQUENCY_CLASSIFIER_ID in requested:
+                frequency_signature = _mute_event_signature(event, True, False)
+                for first, stop in _runs(selected, "primary_frequency",
+                                         "inconsistent illuminated frequency segment levels"):
+                    run = selected[first:stop]
+                    if frequency_signature is None:
+                        result["rejected_runs"].append(_reject(
+                            event, "primary_frequency", run, "EVENT_SCOPE",
+                            "frequency redraw is not the frozen unmute-only event shape"))
+                        continue
+                    record, code, reason = _frequency_record(
+                        event, selected, first, stop, context, frequency_signature)
+                    if record is None:
+                        result["rejected_runs"].append(_reject(
+                            event, "primary_frequency", run, code, reason))
+                    else:
+                        result["classifications"].append(record)
     except (KeyError, TypeError, ValueError) as exc:
         result["classifications"] = []
         result["errors"].append(f"{type(exc).__name__}: {exc}")

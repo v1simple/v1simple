@@ -92,8 +92,11 @@ class ArrowTransitionTests(unittest.TestCase):
         self.assertEqual(record["raw_affected_fields"], ["main_arrows"])
         self.assertEqual(samples, frozen)
 
-    def test_v2_identity_and_endpoint_separation_boundary_are_frozen(self):
-        self.assertEqual(arrow.CLASSIFIER_ID, "v1-arrow-phase-edge-v2")
+    def test_v3_binding_preserves_v2_endpoint_separation_boundary(self):
+        self.assertEqual(arrow.CLASSIFIER_ID, "v1-arrow-phase-edge-v3")
+        import hashlib
+        spec = Path(arrow.__file__).with_name("temporal_specs") / "v1-arrow-phase-edge-v3.json"
+        self.assertEqual(arrow.CLASSIFIER_SPEC_SHA256, hashlib.sha256(spec.read_bytes()).hexdigest())
         self.assertEqual(arrow.ENDPOINT_SEPARATION_RMS_MIN, 52.0)
         boundary = endpoint_at_separation(52.0)
         below = endpoint_at_separation(51.999)

@@ -165,7 +165,8 @@ class BarTransitionTests(unittest.TestCase):
         direct = classify(samples)
         integrated = temporal.classify_temporal(
             samples, {"events": [{"event_id": "event-0001", "start_ns": 0,
-                                   "end_ns": 1_000_000_000}]}, context())
+                                   "end_ns": 1_000_000_000}]}, context(),
+            classifier_ids=[bars.CLASSIFIER_ID])
         self.assertEqual(len(direct["classifications"]), 1, direct)
         matches = [item for item in integrated["classifications"]
                    if item.get("classifier_id") == bars.CLASSIFIER_ID]

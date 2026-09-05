@@ -62,7 +62,9 @@ class EncounterTemporalTests(unittest.TestCase):
         context = {"capture_id": "capture"}
         with patch("encounter_arrow_transition.classify_arrow_runs",
                    return_value=arrow) as classify:
-            result = temporal.classify_temporal(samples, sequence(), context)
+            result = temporal.classify_temporal(
+                samples, sequence(), context,
+                classifier_ids=[temporal.ARROW_CLASSIFIER_ID])
         classify.assert_called_once_with(samples, sequence()["events"], context)
         self.assertIs(result["classifications"][0], arrow["classifications"][0])
         self.assertIs(result["rejected_runs"][0], arrow["rejected_runs"][0])
@@ -70,7 +72,8 @@ class EncounterTemporalTests(unittest.TestCase):
     def test_singleton_compatible_count_with_equal_endpoints_is_corroborated(self):
         samples = [sample(1, readable()), sample(2, ambiguous([3])), sample(3, readable())]
         frozen = deepcopy(samples)
-        result = temporal.classify_temporal(samples, sequence())
+        result = temporal.classify_temporal(
+            samples, sequence(), classifier_ids=[temporal.SECONDARY_CLASSIFIER_ID])
         self.assertEqual(result["errors"], [])
         self.assertEqual(len(result["classifications"]), 1)
         record = result["classifications"][0]
@@ -84,18 +87,21 @@ class EncounterTemporalTests(unittest.TestCase):
     def test_two_frame_intersection_must_uniquely_equal_both_endpoints(self):
         samples = [sample(1, readable()), sample(2, ambiguous([3, 4])),
                    sample(3, ambiguous([2, 3])), sample(4, readable())]
-        result = temporal.classify_temporal(samples, sequence())
+        result = temporal.classify_temporal(
+            samples, sequence(), classifier_ids=[temporal.SECONDARY_CLASSIFIER_ID])
         self.assertEqual(len(result["classifications"]), 1)
         self.assertEqual(result["classifications"][0]["video_frame_indices"], [2, 3])
         for candidates in ([3, 4], [2, 3]):
             rejected = temporal.classify_temporal(
-                [sample(1, readable()), sample(2, ambiguous(candidates)), sample(3, readable())], sequence())
+                [sample(1, readable()), sample(2, ambiguous(candidates)), sample(3, readable())],
+                sequence(), classifier_ids=[temporal.SECONDARY_CLASSIFIER_ID])
             self.assertEqual(rejected["classifications"], [])
 
     def test_one_ambiguous_meter_can_close_while_other_card_stays_exact(self):
         samples = [sample(1, two_cards(3)), sample(2, two_cards(None, [3, 4])),
                    sample(3, two_cards(None, [2, 3])), sample(4, two_cards(3))]
-        result = temporal.classify_temporal(samples, sequence())
+        result = temporal.classify_temporal(
+            samples, sequence(), classifier_ids=[temporal.SECONDARY_CLASSIFIER_ID])
         self.assertEqual(len(result["classifications"]), 1, result)
         self.assertEqual(result["classifications"][0]["resolved_value"], two_cards(3)["value"])
 
@@ -108,20 +114,23 @@ class EncounterTemporalTests(unittest.TestCase):
         ]
         for samples in cases:
             with self.subTest(samples=samples):
-                result = temporal.classify_temporal(samples, sequence())
+                result = temporal.classify_temporal(
+                    samples, sequence(), classifier_ids=[temporal.SECONDARY_CLASSIFIER_ID])
                 self.assertEqual(result["classifications"], [])
                 self.assertTrue(result["rejected_runs"])
 
     def test_definite_wrong_bar_count_is_never_a_temporal_candidate(self):
         samples = [sample(1, readable(3)), sample(2, readable(4)), sample(3, readable(3))]
-        result = temporal.classify_temporal(samples, sequence())
+        result = temporal.classify_temporal(
+            samples, sequence(), classifier_ids=[temporal.SECONDARY_CLASSIFIER_ID])
         self.assertEqual(result["classifications"], [])
         self.assertEqual(result["rejected_runs"], [])
 
     def test_duplicate_source_identity_with_conflicting_pixels_aborts_classification(self):
         samples = [sample(1, readable()), sample(2, ambiguous([3])),
                    {**sample(2, readable(4)), "frame_id": "duplicate"}, sample(3, readable())]
-        result = temporal.classify_temporal(samples, sequence())
+        result = temporal.classify_temporal(
+            samples, sequence(), classifier_ids=[temporal.SECONDARY_CLASSIFIER_ID])
         self.assertEqual(result["classifications"], [])
         self.assertTrue(result["errors"])
 
@@ -137,9 +146,71 @@ class EncounterTemporalTests(unittest.TestCase):
         malformed[1]["observed"]["fields"]["secondary"]["cards"][0]["slot"] = 1
         for samples in (gap, long_span, malformed):
             with self.subTest(samples=samples):
-                result = temporal.classify_temporal(samples, sequence(end_ns=100_000_000))
+                result = temporal.classify_temporal(
+                    samples, sequence(end_ns=100_000_000),
+                    classifier_ids=[temporal.SECONDARY_CLASSIFIER_ID])
                 self.assertEqual(result["classifications"], [])
                 self.assertTrue(result["rejected_runs"])
+
+    def test_unrequested_candidate_failure_is_isolated_but_requested_failure_is_retained(self):
+        samples = [{
+            "frame_id": "1", "video_frame_index": 1, "source_frame_seq": 2,
+            "capture_ns": 5_000_000,
+            "observed": {"fields": {
+                "main_arrows": {"state": "ambiguous"},
+                "main_bars": {"state": "ambiguous"},
+            }},
+        }]
+        arrow = {"classifications": [], "rejected_runs": [], "errors": []}
+        broken_bar = {"classifications": [], "rejected_runs": [],
+                      "errors": ["candidate bar classifier failed"]}
+        with (patch("encounter_arrow_transition.classify_arrow_runs", return_value=arrow),
+              patch("encounter_bar_transition.classify_main_bar_runs",
+                    return_value=broken_bar) as classify_bar):
+            ordinary = temporal.classify_temporal(
+                samples, sequence(), {}, classifier_ids=[temporal.ARROW_CLASSIFIER_ID])
+        classify_bar.assert_not_called()
+        self.assertEqual(ordinary["errors"], [])
+
+        with patch("encounter_bar_transition.classify_main_bar_runs",
+                   return_value=broken_bar) as classify_bar:
+            requested = temporal.classify_temporal(
+                samples, sequence(), {}, classifier_ids=[temporal.BAR_CLASSIFIER_ID])
+        classify_bar.assert_called_once()
+        self.assertEqual(requested["errors"], ["candidate bar classifier failed"])
+
+    def test_shared_mute_module_cannot_emit_an_unrequested_frequency_candidate(self):
+        samples = [{
+            "frame_id": "1", "video_frame_index": 1, "source_frame_seq": 2,
+            "capture_ns": 5_000_000,
+            "observed": {"fields": {
+                "muted_badge": {"state": "ambiguous"},
+                "primary_frequency": {"state": "ambiguous"},
+            }},
+        }]
+        returned = {
+            "classifications": [
+                {"classifier_id": temporal.BADGE_CLASSIFIER_ID},
+                {"classifier_id": temporal.FREQUENCY_CLASSIFIER_ID},
+            ],
+            "rejected_runs": [
+                {"field": "muted_badge"}, {"field": "primary_frequency"},
+            ],
+            "errors": [],
+        }
+
+        def classify(scoped, _events, _context, *, classifier_ids):
+            self.assertEqual(classifier_ids, [temporal.BADGE_CLASSIFIER_ID])
+            self.assertEqual(scoped, samples)
+            return returned
+
+        with patch("encounter_mute_redraw_transition.classify_mute_redraw_runs",
+                   side_effect=classify):
+            result = temporal.classify_temporal(
+                samples, sequence(), {}, classifier_ids=[temporal.BADGE_CLASSIFIER_ID])
+        self.assertEqual(result["classifications"],
+                         [{"classifier_id": temporal.BADGE_CLASSIFIER_ID}])
+        self.assertEqual(result["rejected_runs"], [{"field": "muted_badge"}])
 
 
 if __name__ == "__main__":

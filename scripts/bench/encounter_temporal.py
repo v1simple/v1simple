@@ -13,6 +13,17 @@ import re
 
 SECONDARY_CLASSIFIER_ID = "secondary-closed-meter-corroboration-v1"
 SECONDARY_CLASSIFIER_SPEC_SHA256 = "31621b3356c3646094cf93bf95360f693ba91dd429a0c207e1ee7101c25153b0"
+ARROW_CLASSIFIER_ID = "v1-arrow-phase-edge-v3"
+BAR_CLASSIFIER_ID = "v1-main-bar-adjacent-redraw-v2"
+BADGE_CLASSIFIER_ID = "v1-muted-badge-rising-fill-v2"
+FREQUENCY_CLASSIFIER_ID = "v1-unmute-stable-frequency-sweep-v2"
+CLASSIFIER_IDS = (
+    SECONDARY_CLASSIFIER_ID,
+    ARROW_CLASSIFIER_ID,
+    BAR_CLASSIFIER_ID,
+    BADGE_CLASSIFIER_ID,
+    FREQUENCY_CLASSIFIER_ID,
+)
 SECONDARY_MAX_ADJACENT_CAPTURE_GAP_NS = 10_000_000
 SECONDARY_MAX_ENDPOINT_SPAN_NS = 50_000_000
 _CARD_BANDS = {"X", "K", "Ka"}
@@ -150,49 +161,63 @@ def _secondary(left, run, right):
     return deepcopy(endpoints), None
 
 
-def classify_temporal(samples, sequence, arrow_context=None):
+def _requested_classifier_ids(value):
+    if (not isinstance(value, (list, tuple))
+            or any(not isinstance(item, str) or not item for item in value)
+            or len(value) != len(set(value))):
+        raise ValueError("temporal classifier request is malformed")
+    unknown = set(value) - set(CLASSIFIER_IDS)
+    if unknown:
+        raise ValueError("unknown temporal classifier requested: " + ", ".join(sorted(unknown)))
+    return set(value)
+
+
+def classify_temporal(samples, sequence, arrow_context=None, *, classifier_ids):
     """Return field-specific temporal records; never mutate raw sample evidence."""
     result = {"schema_version": 1, "classifications": [], "rejected_runs": [], "errors": []}
     try:
+        requested = _requested_classifier_ids(classifier_ids)
         originals = _unique_originals(samples)
-        for event in sequence.get("events", []):
-            start, end = event.get("start_ns"), event.get("end_ns")
-            if type(start) is not int or type(end) is not int or start >= end:
-                raise ValueError("temporal event bounds are invalid")
-            selected = [sample for sample in originals
-                        if type(sample.get("capture_ns")) is int and start <= sample["capture_ns"] < end]
-            for first, stop in _ambiguous_runs(selected, "secondary"):
-                run = selected[first:stop]
-                reason = None
-                if first == 0 or stop == len(selected):
-                    reason = "ambiguous secondary run has no two immediate endpoints"
-                else:
-                    left, right = selected[first - 1], selected[stop]
-                    chain = [left, *run, right]
-                    if not all(_consecutive(a, b) for a, b in zip(chain, chain[1:])):
-                        reason = "secondary run or its endpoints cross an unobserved source position"
+        if SECONDARY_CLASSIFIER_ID in requested:
+            for event in sequence.get("events", []):
+                start, end = event.get("start_ns"), event.get("end_ns")
+                if type(start) is not int or type(end) is not int or start >= end:
+                    raise ValueError("temporal event bounds are invalid")
+                selected = [sample for sample in originals
+                            if type(sample.get("capture_ns")) is int and start <= sample["capture_ns"] < end]
+                for first, stop in _ambiguous_runs(selected, "secondary"):
+                    run = selected[first:stop]
+                    reason = None
+                    if first == 0 or stop == len(selected):
+                        reason = "ambiguous secondary run has no two immediate endpoints"
                     else:
-                        resolved, reason = _secondary(left, run, right)
-                if reason:
-                    result["rejected_runs"].append({"event_id": event.get("event_id"),
-                        "field": "secondary", "first": _point(run[0]), "last": _point(run[-1]),
-                        "reason": reason})
-                    continue
-                result["classifications"].append({
-                    "event_id": event.get("event_id"),
-                    "classifier_id": SECONDARY_CLASSIFIER_ID,
-                    "classifier_spec_sha256": SECONDARY_CLASSIFIER_SPEC_SHA256,
-                    "status": "QUALIFIED_CAPTURE_TRANSITION",
-                    "raw_affected_fields": ["secondary"],
-                    "video_frame_indices": [sample["video_frame_index"] for sample in run],
-                    "first": _point(run[0]), "last": _point(run[-1]),
-                    "left_endpoint": _point(left), "right_endpoint": _point(right),
-                    "resolved_value": resolved,
-                    "basis": "Source-consecutive ambiguous meter frames preserve complete card identity; "
-                             "their definite cells intersect at the one readable bar count present on both endpoints. "
-                             "Raw frames remain unresolved."
-                })
-        if any(_reading(sample, "main_arrows").get("state") == "ambiguous"
+                        left, right = selected[first - 1], selected[stop]
+                        chain = [left, *run, right]
+                        if not all(_consecutive(a, b) for a, b in zip(chain, chain[1:])):
+                            reason = "secondary run or its endpoints cross an unobserved source position"
+                        else:
+                            resolved, reason = _secondary(left, run, right)
+                    if reason:
+                        result["rejected_runs"].append({"event_id": event.get("event_id"),
+                            "field": "secondary", "first": _point(run[0]), "last": _point(run[-1]),
+                            "reason": reason})
+                        continue
+                    result["classifications"].append({
+                        "event_id": event.get("event_id"),
+                        "classifier_id": SECONDARY_CLASSIFIER_ID,
+                        "classifier_spec_sha256": SECONDARY_CLASSIFIER_SPEC_SHA256,
+                        "status": "QUALIFIED_CAPTURE_TRANSITION",
+                        "raw_affected_fields": ["secondary"],
+                        "video_frame_indices": [sample["video_frame_index"] for sample in run],
+                        "first": _point(run[0]), "last": _point(run[-1]),
+                        "left_endpoint": _point(left), "right_endpoint": _point(right),
+                        "resolved_value": resolved,
+                        "basis": "Source-consecutive ambiguous meter frames preserve complete card identity; "
+                                 "their definite cells intersect at the one readable bar count present on both endpoints. "
+                                 "Raw frames remain unresolved."
+                    })
+        if ARROW_CLASSIFIER_ID in requested and any(
+               _reading(sample, "main_arrows").get("state") == "ambiguous"
                for sample in originals):
             try:
                 from .encounter_arrow_transition import classify_arrow_runs
@@ -202,7 +227,8 @@ def classify_temporal(samples, sequence, arrow_context=None):
             result["classifications"].extend(arrow["classifications"])
             result["rejected_runs"].extend(arrow["rejected_runs"])
             result["errors"].extend(arrow["errors"])
-        if any(_reading(sample, "main_bars").get("state") == "ambiguous"
+        if BAR_CLASSIFIER_ID in requested and any(
+               _reading(sample, "main_bars").get("state") == "ambiguous"
                for sample in originals):
             try:
                 from .encounter_bar_transition import classify_main_bar_runs
@@ -212,17 +238,27 @@ def classify_temporal(samples, sequence, arrow_context=None):
             result["classifications"].extend(bars["classifications"])
             result["rejected_runs"].extend(bars["rejected_runs"])
             result["errors"].extend(bars["errors"])
+        mute_fields = []
+        if BADGE_CLASSIFIER_ID in requested:
+            mute_fields.append("muted_badge")
+        if FREQUENCY_CLASSIFIER_ID in requested:
+            mute_fields.append("primary_frequency")
         if any(_reading(sample, field).get("state") == "ambiguous"
-               for sample in originals
-               for field in ("muted_badge", "primary_frequency")):
+               for sample in originals for field in mute_fields):
             try:
                 from .encounter_mute_redraw_transition import classify_mute_redraw_runs
             except ImportError:
                 from encounter_mute_redraw_transition import classify_mute_redraw_runs
             mute_redraw = classify_mute_redraw_runs(
-                originals, sequence.get("events", []), arrow_context)
-            result["classifications"].extend(mute_redraw["classifications"])
-            result["rejected_runs"].extend(mute_redraw["rejected_runs"])
+                originals, sequence.get("events", []), arrow_context,
+                classifier_ids=sorted(requested & {BADGE_CLASSIFIER_ID, FREQUENCY_CLASSIFIER_ID}))
+            result["classifications"].extend(
+                record for record in mute_redraw["classifications"]
+                if record.get("classifier_id") in requested)
+            requested_fields = set(mute_fields)
+            result["rejected_runs"].extend(
+                record for record in mute_redraw["rejected_runs"]
+                if record.get("field") in requested_fields)
             result["errors"].extend(mute_redraw["errors"])
     except (KeyError, TypeError, ValueError) as exc:
         result["classifications"] = []

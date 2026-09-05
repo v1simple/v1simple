@@ -7,6 +7,7 @@ The calibration is relative to the SCAN landmark, as in counter_reader.
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 import hashlib
 import io
 import json
@@ -23,9 +24,10 @@ import counter_reader
 
 FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
-METHOD_VERSION = 5
+METHOD_VERSION = 6
 _ocr_binary = None
 _ocr_setup = None
+_ocr_session = None
 
 
 def field(state, value=None, reason=None, **diagnostics):
@@ -66,6 +68,24 @@ def prepare_reader(cache_dir: Path | None = None) -> dict:
     return dict(info)
 
 
+@contextmanager
+def analysis_session():
+    """Reuse one OCR helper for this analysis, with no retry after failure."""
+    global _ocr_session
+    from encounter_ocr_session import OCRSession
+    prepare_reader()
+    prior = _ocr_session
+    if prior is not None or _ocr_binary is None:
+        yield
+        return
+    with OCRSession(_ocr_binary) as session:
+        _ocr_session = session
+        try:
+            yield
+        finally:
+            _ocr_session = prior
+
+
 def _ocr(crops):
     prepare_reader()
     if _ocr_binary is None:
@@ -79,6 +99,8 @@ def _ocr(crops):
         stream = io.BytesIO()
         image.save(stream, format="PNG")
         encoded.append(base64.b64encode(stream.getvalue()).decode("ascii"))
+    if _ocr_session is not None:
+        return _ocr_session.request(encoded)
     try:
         completed = subprocess.run([str(_ocr_binary)], input=json.dumps(encoded) + "\n",
                                    text=True, capture_output=True, timeout=20)
@@ -262,9 +284,12 @@ def _card_bars(pixels, left):
                 any(np.any(np.all(contrary[y:y + run], axis=0)) for y in range(contrary.shape[0] - run + 1)) or
                 any(np.any(np.all(contrary[:, x:x + run], axis=1)) for x in range(contrary.shape[1] - run + 1))):
             state = "partial"
-        # Sample meter padding beyond the outline's immediate camera fringe.
-        background = np.concatenate((level[max(0, top - 2 * band):top - band, start + inset_x:end - inset_x].ravel(),
-                                     level[bottom + band:bottom + 2 * band, start + inset_x:end - inset_x].ravel()))
+        # The renderer leaves four display pixels of meter padding above and
+        # below its ten-pixel bars. Use that padding beyond the camera fringe;
+        # a thin strip immediately outside a bright outline can sample only
+        # its compression undershoot and invent a faint interior fill.
+        background = np.concatenate((level[max(0, top - 3 * band):top - band, start + inset_x:end - inset_x].ravel(),
+                                     level[bottom + band:bottom + 3 * band, start + inset_x:end - inset_x].ravel()))
         contrast = float(np.median(interior) - np.median(background))
         # Eight levels is the declared local-contrast detection floor. This
         # measurement does not distinguish arbitrarily faint ink from noise.
@@ -370,6 +395,66 @@ def _arrows(pixels):
                  visible_directions=arrows,
                  color_qualification="observed color only; no color correctness contract")
 
+def _card_direction(pixels, left):
+    """Read the complete renderer-owned triangle or horizontal rectangle.
+
+    The card renderer uses a 12 by 12 triangle or 12 by 4 rectangle. Locate
+    the neutral symbol within its padded layout region, then verify the whole
+    shape. Fixed top/bottom strips can cut off a translated triangle's tip.
+    Neither the crop nor the threshold depends on a proposed direction.
+    """
+    rgb = pixels.crop((left + 10, 377, left + 47, 416))
+    level = rgb.min(axis=2).astype(float)
+    floor, ceiling = np.percentile(level, [10, 99])
+    bright = level > max(30, floor + .4 * (ceiling - floor))
+    # Two agreeing pixels locate the extent without promoting isolated noise.
+    ys = np.flatnonzero(bright.sum(axis=1) >= 2)
+    xs = np.flatnonzero(bright.sum(axis=0) >= 2)
+    if not len(xs) or not len(ys):
+        return field("ambiguous", reason="secondary direction has no resolved symbol")
+    x1, x2, y1, y2 = int(xs[0]), int(xs[-1]) + 1, int(ys[0]), int(ys[-1]) + 1
+    sx, sy = level.shape[1] / 37, level.shape[0] / 39
+    width, height = (x2 - x1) / sx, (y2 - y1) / sy
+    diagnostics = {"symbol_bounds": [x1, y1, x2, y2],
+                   "reference_size": [round(width, 2), round(height, 2)]}
+    # The source symbol projects to about 20 pixels wide in this registration.
+    # The padded region must contain all of it; a cropped shape is unknown.
+    if (x1 == 0 or y1 == 0 or x2 == level.shape[1] or y2 == level.shape[0] or
+            not 16 <= width <= 27):
+        return field("ambiguous", reason="secondary direction extent is unresolved", **diagnostics)
+    glyph = bright[y1:y2, x1:x2]
+    yy, xx = np.mgrid[:glyph.shape[0], :glyph.shape[1]]
+    xx = (xx + .5) / glyph.shape[1]
+    yy = (yy + .5) / glyph.shape[0]
+    matches = []
+    for name in ("front", "rear", "side"):
+        if name == "side":
+            center_y = (y1 + y2) / (2 * sy)
+            # A remaining triangle base can resemble a short rectangle, but
+            # lies above/below the renderer's central side-arrow row.
+            if not 4 <= height <= 10 or width / height < 2 or not 15 <= center_y <= 21:
+                continue
+            inner = (xx > .15) & (xx < .85) & (yy > .15) & (yy < .85)
+            outer = np.zeros(glyph.shape, dtype=bool)
+        else:
+            if not 17 <= height <= 28 or not .7 <= width / height <= 1.4:
+                continue
+            half_width = (yy if name == "front" else 1 - yy) / 2
+            distance = np.abs(xx - .5) - half_width
+            stable_rows = (yy > .1) & (yy < .9)
+            inner = (distance < -.12) & stable_rows
+            outer = (distance > .12) & stable_rows
+        # Leave the camera fringe out of both tests, but require the complete
+        # interior and background corners rather than a top-heavy blob.
+        if (inner.any() and float(glyph[inner].mean()) >= .95 and
+                (not outer.any() or float(glyph[outer].mean()) <= .05)):
+            matches.append(name)
+    diagnostics["shape_matches"] = matches
+    if len(matches) != 1:
+        return field("ambiguous", reason="secondary direction is partial or noncanonical", **diagnostics)
+    return field("readable", matches[0], **diagnostics)
+
+
 def _secondary(pixels):
     cards, text_crops = [], []
     for slot, left in enumerate((393, 640)):
@@ -378,25 +463,16 @@ def _secondary(pixels):
             continue
         # Card interiors retain their individual row association throughout.
         bars = _card_bars(pixels, left)
-        arrow_rgb = pixels.crop((left + 17, 385, left + 41, 407))
-        # White/gray symbol ink, rather than the colored card background.
-        arrow = arrow_rgb.min(axis=2).astype(float)
-        floor, ceiling = np.percentile(arrow, [10, 99])
-        bright = arrow > max(30, floor + .4 * (ceiling - floor))
-        rows = bright.mean(axis=1)
-        if float(bright.mean()) < .10:
-            direction = None
-        else:
-            top, middle, bottom = float(rows[:6].mean()), float(rows[7:13].mean()), float(rows[-6:].mean())
-            direction = "side" if middle > .40 and top < .20 and bottom < .20 else (
-                "front" if bottom > top + .20 else "rear" if top > bottom + .20 else None)
+        arrow_reading = _card_direction(pixels, left)
+        direction = arrow_reading["value"]
         text = pixels.crop((left + 47, 377, left + 228, 413))
         # Very dark text is not made certain by contrast enhancement and OCR.
         text_visible = float(np.percentile(text.max(axis=2), 90)) >= 45
         cards.append({"slot": slot, "band": None, "frequency": None, "direction": direction,
                       "bars": bars.get("value"), "compatible_bars": bars.get("compatible_counts"),
                       "text_visible": text_visible,
-                      "bars_state": bars["state"], "bar_reading": bars})
+                      "bars_state": bars["state"], "bar_reading": bars,
+                      "direction_reading": arrow_reading})
         text_crops.append(text)
     if not cards:
         return field("readable", [])

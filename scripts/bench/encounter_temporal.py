@@ -12,17 +12,25 @@ import re
 
 
 SECONDARY_CLASSIFIER_ID = "secondary-closed-meter-corroboration-v1"
+SECONDARY_CONTEXT_CLASSIFIER_ID = "v1-secondary-closed-context-v2"
+SECONDARY_OPTICAL_CLASSIFIER_ID = "v1-secondary-text-optical-bridge-v1"
 SECONDARY_CLASSIFIER_SPEC_SHA256 = "31621b3356c3646094cf93bf95360f693ba91dd429a0c207e1ee7101c25153b0"
 ARROW_CLASSIFIER_ID = "v1-arrow-phase-edge-v3"
+ARROW_ACQUISITION_CLASSIFIER_ID = "v1-arrow-target-acquisition-v1"
 BAR_CLASSIFIER_ID = "v1-main-bar-adjacent-redraw-v2"
 BADGE_CLASSIFIER_ID = "v1-muted-badge-rising-fill-v2"
 FREQUENCY_CLASSIFIER_ID = "v1-unmute-stable-frequency-sweep-v2"
+FREQUENCY_CONTEXT_CLASSIFIER_ID = "v1-stable-frequency-closed-context-v3"
 CLASSIFIER_IDS = (
     SECONDARY_CLASSIFIER_ID,
+    SECONDARY_CONTEXT_CLASSIFIER_ID,
+    SECONDARY_OPTICAL_CLASSIFIER_ID,
     ARROW_CLASSIFIER_ID,
+    ARROW_ACQUISITION_CLASSIFIER_ID,
     BAR_CLASSIFIER_ID,
     BADGE_CLASSIFIER_ID,
     FREQUENCY_CLASSIFIER_ID,
+    FREQUENCY_CONTEXT_CLASSIFIER_ID,
 )
 SECONDARY_MAX_ADJACENT_CAPTURE_GAP_NS = 10_000_000
 SECONDARY_MAX_ENDPOINT_SPAN_NS = 50_000_000
@@ -172,6 +180,19 @@ def _requested_classifier_ids(value):
     return set(value)
 
 
+def _tagged_rejections(records, classifier_id):
+    """Attach dispatcher provenance without mutating classifier-owned records."""
+    tagged = []
+    for record in records:
+        if not isinstance(record, dict):
+            raise ValueError(f"{classifier_id} emitted a malformed rejection")
+        owner = record.get("classifier_id")
+        if owner is not None and owner != classifier_id:
+            raise ValueError(f"{classifier_id} emitted rejection for {owner}")
+        tagged.append({**deepcopy(record), "classifier_id": classifier_id})
+    return tagged
+
+
 def classify_temporal(samples, sequence, arrow_context=None, *, classifier_ids):
     """Return field-specific temporal records; never mutate raw sample evidence."""
     result = {"schema_version": 1, "classifications": [], "rejected_runs": [], "errors": []}
@@ -199,6 +220,7 @@ def classify_temporal(samples, sequence, arrow_context=None, *, classifier_ids):
                             resolved, reason = _secondary(left, run, right)
                     if reason:
                         result["rejected_runs"].append({"event_id": event.get("event_id"),
+                            "classifier_id": SECONDARY_CLASSIFIER_ID,
                             "field": "secondary", "first": _point(run[0]), "last": _point(run[-1]),
                             "reason": reason})
                         continue
@@ -216,6 +238,32 @@ def classify_temporal(samples, sequence, arrow_context=None, *, classifier_ids):
                                  "their definite cells intersect at the one readable bar count present on both endpoints. "
                                  "Raw frames remain unresolved."
                     })
+        if SECONDARY_CONTEXT_CLASSIFIER_ID in requested and any(
+               _reading(sample, "secondary").get("state") == "unreadable"
+               for sample in originals):
+            try:
+                from .encounter_secondary_context import classify_secondary_context_runs
+            except ImportError:
+                from encounter_secondary_context import classify_secondary_context_runs
+            secondary_context = classify_secondary_context_runs(
+                originals, sequence.get("events", []), arrow_context)
+            result["classifications"].extend(secondary_context["classifications"])
+            result["rejected_runs"].extend(_tagged_rejections(
+                secondary_context["rejected_runs"], SECONDARY_CONTEXT_CLASSIFIER_ID))
+            result["errors"].extend(secondary_context["errors"])
+        if SECONDARY_OPTICAL_CLASSIFIER_ID in requested and any(
+               _reading(sample, "secondary").get("state") == "unreadable"
+               for sample in originals):
+            try:
+                from .encounter_secondary_optical_bridge import classify_secondary_optical_bridge
+            except ImportError:
+                from encounter_secondary_optical_bridge import classify_secondary_optical_bridge
+            secondary_optical = classify_secondary_optical_bridge(
+                originals, sequence.get("events", []), arrow_context)
+            result["classifications"].extend(secondary_optical["classifications"])
+            result["rejected_runs"].extend(_tagged_rejections(
+                secondary_optical["rejected_runs"], SECONDARY_OPTICAL_CLASSIFIER_ID))
+            result["errors"].extend(secondary_optical["errors"])
         if ARROW_CLASSIFIER_ID in requested and any(
                _reading(sample, "main_arrows").get("state") == "ambiguous"
                for sample in originals):
@@ -225,8 +273,22 @@ def classify_temporal(samples, sequence, arrow_context=None, *, classifier_ids):
                 from encounter_arrow_transition import classify_arrow_runs
             arrow = classify_arrow_runs(originals, sequence.get("events", []), arrow_context)
             result["classifications"].extend(arrow["classifications"])
-            result["rejected_runs"].extend(arrow["rejected_runs"])
+            result["rejected_runs"].extend(_tagged_rejections(
+                arrow["rejected_runs"], ARROW_CLASSIFIER_ID))
             result["errors"].extend(arrow["errors"])
+        if ARROW_ACQUISITION_CLASSIFIER_ID in requested and any(
+               _reading(sample, "main_arrows").get("state") == "ambiguous"
+               for sample in originals):
+            try:
+                from .encounter_arrow_acquisition import classify_arrow_acquisition_runs
+            except ImportError:
+                from encounter_arrow_acquisition import classify_arrow_acquisition_runs
+            acquisition = classify_arrow_acquisition_runs(
+                originals, sequence.get("events", []), arrow_context)
+            result["classifications"].extend(acquisition["classifications"])
+            result["rejected_runs"].extend(_tagged_rejections(
+                acquisition["rejected_runs"], ARROW_ACQUISITION_CLASSIFIER_ID))
+            result["errors"].extend(acquisition["errors"])
         if BAR_CLASSIFIER_ID in requested and any(
                _reading(sample, "main_bars").get("state") == "ambiguous"
                for sample in originals):
@@ -236,7 +298,8 @@ def classify_temporal(samples, sequence, arrow_context=None, *, classifier_ids):
                 from encounter_bar_transition import classify_main_bar_runs
             bars = classify_main_bar_runs(originals, sequence.get("events", []), arrow_context)
             result["classifications"].extend(bars["classifications"])
-            result["rejected_runs"].extend(bars["rejected_runs"])
+            result["rejected_runs"].extend(_tagged_rejections(
+                bars["rejected_runs"], BAR_CLASSIFIER_ID))
             result["errors"].extend(bars["errors"])
         mute_fields = []
         if BADGE_CLASSIFIER_ID in requested:
@@ -256,10 +319,26 @@ def classify_temporal(samples, sequence, arrow_context=None, *, classifier_ids):
                 record for record in mute_redraw["classifications"]
                 if record.get("classifier_id") in requested)
             requested_fields = set(mute_fields)
-            result["rejected_runs"].extend(
-                record for record in mute_redraw["rejected_runs"]
-                if record.get("field") in requested_fields)
+            for record in mute_redraw["rejected_runs"]:
+                owner = ({"muted_badge": BADGE_CLASSIFIER_ID,
+                          "primary_frequency": FREQUENCY_CLASSIFIER_ID}
+                         .get(record.get("field")))
+                if owner in requested and record.get("field") in requested_fields:
+                    result["rejected_runs"].extend(_tagged_rejections([record], owner))
             result["errors"].extend(mute_redraw["errors"])
+        if FREQUENCY_CONTEXT_CLASSIFIER_ID in requested and any(
+               _reading(sample, "primary_frequency").get("state") == "ambiguous"
+               for sample in originals):
+            try:
+                from .encounter_frequency_context import classify_frequency_context_runs
+            except ImportError:
+                from encounter_frequency_context import classify_frequency_context_runs
+            frequency_context = classify_frequency_context_runs(
+                originals, sequence.get("events", []), arrow_context)
+            result["classifications"].extend(frequency_context["classifications"])
+            result["rejected_runs"].extend(_tagged_rejections(
+                frequency_context["rejected_runs"], FREQUENCY_CONTEXT_CLASSIFIER_ID))
+            result["errors"].extend(frequency_context["errors"])
     except (KeyError, TypeError, ValueError) as exc:
         result["classifications"] = []
         result["errors"].append(f"{type(exc).__name__}: {exc}")

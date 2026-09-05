@@ -1,0 +1,77 @@
+{
+  "classifier_id": "v1-secondary-closed-context-v2",
+  "deadline_observation_semantics": "LEGAL_PRESENTATION_TRANSITION",
+  "schema_version": 1,
+  "scope": {
+    "claim": "A bounded raw secondary-card refusal is a compatible meter redraw inside one stable, exact current-target card presentation.",
+    "does_not_claim": [
+      "a value for any unreadable frame",
+      "target acquisition",
+      "a card with unresolved text or direction",
+      "an arbitrary partial meter pattern",
+      "whole-display correctness",
+      "DUT receipt",
+      "firmware cause"
+    ],
+    "field": "secondary",
+    "layout": "registered V1 display",
+    "maximum_cards": 2,
+    "minimum_cards": 1
+  },
+  "identity": {
+    "reader_method_version": 7,
+    "reader_sha256": "f4efd6a1df4daefb3e7271a2e229e80f7378ba8b7a824dea1593aa0581f20b7c"
+  },
+  "constants": {
+    "authored_display_update_ns": 50000000,
+    "maximum_interleaved_readable_frames": 2,
+    "maximum_recording_interval_ns": 1000000000,
+    "maximum_support_chain_interval_ns": 10000000,
+    "maximum_support_chain_span_ns": 80000000,
+    "stable_support_frames_each_side": 2
+  },
+  "mandatory_gates_in_order": [
+    "The event's first-correct marker first binds exactly to one retained raw sample whose every field and joint comparison is MATCH. That sample is a hard episode boundary used only to exclude acquisition: a pre-current refusal is never joined to a post-current refusal, and neither side is retried with alternate support.",
+    "On each side of that fixed boundary, the candidate context contains one or more maximal nonempty secondary unreadable runs with exact reader reason secondary card text, direction, or bars are not fully readable and raw value null. Neighboring runs join only when separated by at most two raw-readable frames; three readable frames or any other raw state ends the context without a retry.",
+    "Two immediate readable anchor frames precede and follow the full context.",
+    "The authenticated recording-wide maximum source interval is retained exactly and is no greater than the 1 s sanity ceiling; it does not loosen a candidate chain.",
+    "Video and source indices are consecutive, each context gap is no greater than the smaller of the verified recording-wide maximum and 10 ms, the first-to-last refusal span is no greater than one 50 ms display update plus that effective gap, and the full anchored context spans at most 80 ms.",
+    "All four anchor frames contain the same one-or-two-card readable value and self-consistent exact card, OCR, direction, and six-cell meter evidence.",
+    "The support-derived value is established before expectations are consulted, then equals the event target and every anchor, interleaved-readable, and refusal sample's one exact current secondary expectation.",
+    "Every anchor and interleaved-readable frame is an exact current secondary comparison and has no definite difference, previous-input state, or transition difference in any field. Every claimed refusal is current-target unresolved in secondary and likewise has no definite difference, previous-input state, or transition difference in any field; MATCH, UNRESOLVED, and CONDITIONAL are the only permitted per-field states, and joint state is MATCH or UNRESOLVED.",
+    "Every claimed refusal is at or after the bound first-current capture time. A pre-current candidate remains an explicit TARGET_ACQUISITION_CONTEXT rejection; it is never emitted by this LEGAL_PRESENTATION_TRANSITION classifier.",
+    "Every interleaved-readable frame contains the same self-consistent exact card, OCR, direction, and six-cell meter value as all four anchors.",
+    "Every refusal frame preserves the support-derived card count, slot, band, canonical frequency, direction, visible text, unique OCR identity, and readable direction identity.",
+    "Each refusal-frame card meter is either exactly readable at the support count or contains at least one partial cell while all definite cells remain compatible with the support count. Its recomputed compatible counts exactly match both retained compatible-count fields and contain the support count. At least one card meter is partial in every claimed frame.",
+    "For every card slot, intersecting the recomputed compatible counts across every refusal in the complete context yields exactly the one support-derived current count.",
+    "Each output record claims secondary only for one contiguous maximal refusal run. It retains the complete anchored context, all context refusal indices, and every interleaved readable index so no noncontiguous readable frame is relabelled or hidden. An unresolved non-secondary field requires its own exact qualified evidence before product policy can cover that frame.",
+    "Raw observations remain unchanged; each record affects secondary only and is usable only through an exact qualified product-policy allowlist entry. LEGAL_PRESENTATION_TRANSITION may support continuity after current presentation is established but cannot prove target acquisition or independently contribute a field value."
+  ],
+  "profile": {
+    "bands": [
+      "X",
+      "K",
+      "Ka"
+    ],
+    "directions": [
+      "front",
+      "side",
+      "rear"
+    ],
+    "frequency_pattern": "DD.DDD",
+    "meter_cells": 6,
+    "meter_states": [
+      "on",
+      "off",
+      "partial"
+    ],
+    "closure_rule": "per-slot intersection of all refusal-frame compatible counts in the bounded context equals the support-derived count",
+    "interleaved_readable_frames": "exact current secondary context only"
+  },
+  "validation": {
+    "minimum_blind_true_admits": 5,
+    "minimum_blind_true_rejects": 5,
+    "observer_eligibility_rule": "SAME_CURRENT_CARD_CONTEXT with BOTH_CLEAR support pairs, coherent partial-meter redraw, EXACT_COUNT_CLOSURE, and HIGH confidence",
+    "required_false_admits": 0
+  }
+}

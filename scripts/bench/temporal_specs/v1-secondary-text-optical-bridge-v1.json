@@ -1,0 +1,73 @@
+{
+  "classifier_id": "v1-secondary-text-optical-bridge-v1",
+  "deadline_observation_semantics": "LEGAL_PRESENTATION_TRANSITION",
+  "schema_version": 1,
+  "scope": {
+    "claim": "One raw secondary OCR identity refusal preserves the exact visible full card text and exact current card state inside a five-frame source-consecutive readable bracket.",
+    "does_not_claim": [
+      "a raw reader value for the refusal frame",
+      "an identity when the visible text changes or fades",
+      "an OCR refusal other than one missing band token beside an exact frequency token",
+      "target acquisition",
+      "whole-display correctness",
+      "DUT receipt",
+      "firmware cause"
+    ],
+    "field": "secondary",
+    "layout": "registered V1 display",
+    "maximum_cards": 2,
+    "minimum_cards": 1
+  },
+  "identity": {
+    "reader_method_version": 7,
+    "reader_sha256": "f4efd6a1df4daefb3e7271a2e229e80f7378ba8b7a824dea1593aa0581f20b7c",
+    "secondary_probe_method_version": 1,
+    "secondary_probe_sha256": "e4fed63ff3ad90e569f4f9992b35ef1275d2c6c54fd35ec56bdc4159a60f5f4b"
+  },
+  "constants": {
+    "minimum_ocr_confidence": 0.95,
+    "maximum_recording_interval_ns": 1000000000,
+    "maximum_support_chain_interval_ns": 10000000,
+    "maximum_support_chain_span_ns": 25000000,
+    "stable_support_frames_each_side": 2,
+    "profile_rows": 9,
+    "profile_columns": 46,
+    "profile_channels": 3,
+    "profile_byte_count": 1242,
+    "maximum_support_pair_rms": 4.0,
+    "maximum_support_component_span": 16,
+    "maximum_target_support_rms": 4.0,
+    "maximum_target_envelope_excursion": 8
+  },
+  "mandatory_gates_in_order": [
+    "The target is one raw secondary unreadable frame with null value, the exact frozen Reader7 secondary-card refusal reason, available OCR, and visible text. Exactly one card has null band and frequency, no accepted OCR identity, one unambiguous confidence-at-least-0.95 DD.DDD raw OCR token, and exact readable direction and six-cell meter evidence. Every other card is fully and uniquely readable.",
+    "The two immediate source frames before and two immediate source frames after the target are all raw-readable exact secondary observations of the same one-or-two-card state. Video and source indices are consecutive, each gap is no greater than the smaller of the authenticated recording-wide maximum and 10 ms, and the complete five-frame bracket spans at most 25 ms.",
+    "All four support frames have every field and joint comparison MATCH. The target has secondary as its sole UNRESOLVED field and every other field and joint comparison MATCH.",
+    "The support-derived exact card state is established before expectations are consulted, then equals the event target and the one exact current secondary expectation attached to every frame in the bracket.",
+    "The event first-correct marker binds to one earlier retained sample whose every field and joint comparison is MATCH, and the refusal occurs at or after that capture. This classifier cannot establish target acquisition or excuse a missed deadline.",
+    "Every support and target carries the exact dedicated secondary-probe schema, fixed full-text boxes, canonical 1242-byte base64 profile per slot, and matching profile SHA-256. The probe identity exactly matches this specification.",
+    "For the identity-refused slot, support pair RMS is at most 4 levels and every component spans at most 16 levels across the four supports. Target-to-support RMS is at most 4 levels for every support, and no target component lies more than 8 levels outside the component-wise support envelope.",
+    "The target card's raw frequency-only OCR token equals the support-derived frequency; its exact direction and meter evidence and every fully readable sibling card equal the support-derived state. The optical comparison therefore supplies evidence for the visibly present band glyph rather than deriving a band from frequency.",
+    "Raw observations remain unchanged. The record affects secondary only, has LEGAL_PRESENTATION_TRANSITION semantics, and is usable only through an exact qualified product-policy allowlist entry."
+  ],
+  "profile": {
+    "boxes": [
+      [440, 377, 621, 413],
+      [687, 377, 868, 413]
+    ],
+    "rows": 9,
+    "columns": 46,
+    "channels": ["red", "green", "blue"],
+    "order": "row-major cells with RGB-interleaved uint8 components",
+    "sample": "rounded arithmetic mean of registered RGB pixels",
+    "normalization": "none",
+    "encoding": "canonical base64"
+  },
+  "validation": {
+    "minimum_blind_true_admits": 5,
+    "minimum_blind_true_rejects": 5,
+    "observer_eligibility_rule": "SAME_COMPLETE_CARD_TEXT_THROUGHOUT with BOTH_CLEAR support pairs, CENTER_COMPLETE_TEXT_CLEAR, NO_DIRECTION_OR_METER_CHANGE, and HIGH confidence",
+    "required_band_coverage": ["X", "K", "Ka"],
+    "required_false_admits": 0
+  }
+}

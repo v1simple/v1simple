@@ -67,7 +67,31 @@ class EncounterTemporalTests(unittest.TestCase):
                 classifier_ids=[temporal.ARROW_CLASSIFIER_ID])
         classify.assert_called_once_with(samples, sequence()["events"], context)
         self.assertIs(result["classifications"][0], arrow["classifications"][0])
-        self.assertIs(result["rejected_runs"][0], arrow["rejected_runs"][0])
+        self.assertEqual(result["rejected_runs"][0], {
+            **arrow["rejected_runs"][0], "classifier_id": temporal.ARROW_CLASSIFIER_ID})
+
+    def test_arrow_acquisition_records_are_forwarded_without_wrapper_mutation(self):
+        samples = [{
+            "frame_id": "1", "video_frame_index": 1, "source_frame_seq": 2,
+            "capture_ns": 5_000_000,
+            "observed": {"fields": {"main_arrows": {"state": "ambiguous"}}},
+        }]
+        acquisition = {
+            "classifications": [{"opaque_acquisition_record": {"value": 1}}],
+            "rejected_runs": [{"opaque_acquisition_rejection": [1, 2]}],
+            "errors": [],
+        }
+        context = {"capture_id": "capture"}
+        with patch("encounter_arrow_acquisition.classify_arrow_acquisition_runs",
+                   return_value=acquisition) as classify:
+            result = temporal.classify_temporal(
+                samples, sequence(), context,
+                classifier_ids=[temporal.ARROW_ACQUISITION_CLASSIFIER_ID])
+        classify.assert_called_once_with(samples, sequence()["events"], context)
+        self.assertIs(result["classifications"][0], acquisition["classifications"][0])
+        self.assertEqual(result["rejected_runs"][0], {
+            **acquisition["rejected_runs"][0],
+            "classifier_id": temporal.ARROW_ACQUISITION_CLASSIFIER_ID})
 
     def test_singleton_compatible_count_with_equal_endpoints_is_corroborated(self):
         samples = [sample(1, readable()), sample(2, ambiguous([3])), sample(3, readable())]
@@ -83,6 +107,52 @@ class EncounterTemporalTests(unittest.TestCase):
         self.assertEqual(record["video_frame_indices"], [2])
         self.assertEqual(record["resolved_value"], readable()["value"])
         self.assertEqual(samples, frozen)
+
+    def test_secondary_context_records_are_forwarded_without_wrapper_mutation(self):
+        samples = [{
+            "frame_id": "1", "video_frame_index": 1, "source_frame_seq": 2,
+            "capture_ns": 5_000_000,
+            "observed": {"fields": {"secondary": {"state": "unreadable"}}},
+        }]
+        classified = {
+            "classifications": [{"opaque_secondary_record": {"value": 1}}],
+            "rejected_runs": [{"opaque_secondary_rejection": [1, 2]}],
+            "errors": [],
+        }
+        context = {"capture_id": "capture"}
+        with patch("encounter_secondary_context.classify_secondary_context_runs",
+                   return_value=classified) as classify:
+            result = temporal.classify_temporal(
+                samples, sequence(), context,
+                classifier_ids=[temporal.SECONDARY_CONTEXT_CLASSIFIER_ID])
+        classify.assert_called_once_with(samples, sequence()["events"], context)
+        self.assertIs(result["classifications"][0], classified["classifications"][0])
+        self.assertEqual(result["rejected_runs"][0], {
+            **classified["rejected_runs"][0],
+            "classifier_id": temporal.SECONDARY_CONTEXT_CLASSIFIER_ID})
+
+    def test_secondary_optical_records_are_forwarded_without_wrapper_mutation(self):
+        samples = [{
+            "frame_id": "1", "video_frame_index": 1, "source_frame_seq": 2,
+            "capture_ns": 5_000_000,
+            "observed": {"fields": {"secondary": {"state": "unreadable"}}},
+        }]
+        classified = {
+            "classifications": [{"opaque_secondary_optical_record": {"value": 1}}],
+            "rejected_runs": [{"opaque_secondary_optical_rejection": [1, 2]}],
+            "errors": [],
+        }
+        context = {"capture_id": "capture"}
+        with patch("encounter_secondary_optical_bridge.classify_secondary_optical_bridge",
+                   return_value=classified) as classify:
+            result = temporal.classify_temporal(
+                samples, sequence(), context,
+                classifier_ids=[temporal.SECONDARY_OPTICAL_CLASSIFIER_ID])
+        classify.assert_called_once_with(samples, sequence()["events"], context)
+        self.assertIs(result["classifications"][0], classified["classifications"][0])
+        self.assertEqual(result["rejected_runs"][0], {
+            **classified["rejected_runs"][0],
+            "classifier_id": temporal.SECONDARY_OPTICAL_CLASSIFIER_ID})
 
     def test_two_frame_intersection_must_uniquely_equal_both_endpoints(self):
         samples = [sample(1, readable()), sample(2, ambiguous([3, 4])),
@@ -210,7 +280,31 @@ class EncounterTemporalTests(unittest.TestCase):
                 samples, sequence(), {}, classifier_ids=[temporal.BADGE_CLASSIFIER_ID])
         self.assertEqual(result["classifications"],
                          [{"classifier_id": temporal.BADGE_CLASSIFIER_ID}])
-        self.assertEqual(result["rejected_runs"], [{"field": "muted_badge"}])
+        self.assertEqual(result["rejected_runs"], [{
+            "field": "muted_badge", "classifier_id": temporal.BADGE_CLASSIFIER_ID}])
+
+    def test_closed_frequency_records_are_forwarded_without_wrapper_mutation(self):
+        samples = [{
+            "frame_id": "1", "video_frame_index": 1, "source_frame_seq": 2,
+            "capture_ns": 5_000_000,
+            "observed": {"fields": {"primary_frequency": {"state": "ambiguous"}}},
+        }]
+        classified = {
+            "classifications": [{"opaque_frequency_record": {"value": 1}}],
+            "rejected_runs": [{"opaque_frequency_rejection": [1, 2]}],
+            "errors": [],
+        }
+        context = {"capture_id": "capture"}
+        with patch("encounter_frequency_context.classify_frequency_context_runs",
+                   return_value=classified) as classify:
+            result = temporal.classify_temporal(
+                samples, sequence(), context,
+                classifier_ids=[temporal.FREQUENCY_CONTEXT_CLASSIFIER_ID])
+        classify.assert_called_once_with(samples, sequence()["events"], context)
+        self.assertIs(result["classifications"][0], classified["classifications"][0])
+        self.assertEqual(result["rejected_runs"][0], {
+            **classified["rejected_runs"][0],
+            "classifier_id": temporal.FREQUENCY_CONTEXT_CLASSIFIER_ID})
 
 
 if __name__ == "__main__":

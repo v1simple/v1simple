@@ -1,0 +1,67 @@
+{
+  "classifier_id": "v1-arrow-target-acquisition-v1",
+  "deadline_observation_semantics": "TARGET_ACQUISITION_TRANSITION",
+  "schema_version": 1,
+  "scope": {
+    "claim": "A raw arrow refusal lies on a bounded captured optical path from prior-target arrow content to one permitted current-target state, proving target acquisition is still in progress.",
+    "does_not_claim": [
+      "a value for any ambiguous frame",
+      "whole-display correctness",
+      "a legal blink-phase transition",
+      "DUT receipt",
+      "firmware cause"
+    ],
+    "field": "main_arrows",
+    "layout": "registered V1 display"
+  },
+  "identity": {
+    "reader_method_version": 7,
+    "reader_sha256": "f4efd6a1df4daefb3e7271a2e229e80f7378ba8b7a824dea1593aa0581f20b7c"
+  },
+  "constants": {
+    "authored_display_update_ns": 50000000,
+    "endpoint_separation_rms_min": 52.0,
+    "maximum_backward_step": 0.05,
+    "maximum_recording_interval_ns": 1000000000,
+    "maximum_support_interval_ns": 10000000,
+    "maximum_total_backward_motion": 0.1,
+    "normalized_residual_max": 0.5,
+    "projection_max": 1.05,
+    "projection_min": -0.05,
+    "stable_pair_profile_diameter_rms_max": 8.0,
+    "support_search_frames_each_side": 8,
+    "unchanged_direction_profile_diameter_rms_max": 8.0
+  },
+  "mandatory_gates_in_order": [
+    "The candidate is a maximal nonempty main_arrows ambiguous run; unreadable frames are never acquisition evidence.",
+    "The authenticated recording-wide maximum source interval is no greater than the 1 s sanity ceiling and each candidate gap is no greater than the smaller of that value and 10 ms.",
+    "Within eight source positions on each side, the nearest two-frame stable readable pair is selected without retrying a farther pair after endpoint validation.",
+    "Each support pair has one arrow value and profile diameter no greater than 8 RMS for every direction.",
+    "The complete support chain is source-consecutive and nearest endpoints span no more than one 50 ms display update plus the effective source interval.",
+    "One identical ready prior/current arrow expectation covers the chain and the two expectation sets differ.",
+    "The right endpoint is a permitted current phase; the left endpoint is not a current phase and equals either one prior phase or the union of that prior phase with the right current phase.",
+    "Every claimed raw frame is current-target unresolved in main_arrows and every field check is either MATCH or UNRESOLVED; prior-input and transition-difference evidence is excluded.",
+    "For every claimed frame, the frozen reader state of at least one changed direction differs from that direction's current endpoint state. The record retains the exact changed-direction states and the nonempty derived set of noncurrent changed directions for each claimed frame; a surrounding transition cannot prove that an already-current deadline frame is still acquiring.",
+    "Every transition member has a valid fixed 4 by 4 profile for all three directions and is readable or ambiguous, never unreadable.",
+    "Every changed direction has endpoint separation at least 52 RMS, projection from -0.05 through 1.05, normalized residual at most 0.50, no backward step over 0.05, and total backward motion at most 0.10. The residual allowance admits spatially progressive glyph drawing while rejecting paths outside the endpoint-defined shape.",
+    "Every unchanged direction has full-chain profile diameter no greater than 8 RMS.",
+    "Raw observations remain unchanged; the record carries and exactly matches one-way TARGET_ACQUISITION_TRANSITION semantics, affects main_arrows only, may prove deadline failure, and cannot excuse another unresolved field or contribute to PASS."
+  ],
+  "profile": {
+    "cells": 16,
+    "columns": 4,
+    "finite_range": [
+      0.0,
+      255.0
+    ],
+    "reference_bounds_must_match": true,
+    "rows": 4,
+    "sample": "float64 from retained max-channel cell medians rounded by reader to 0.01"
+  },
+  "validation": {
+    "minimum_blind_true_admits": 5,
+    "minimum_blind_true_rejects": 5,
+    "observer_eligibility_rule": "BOTH_CLEAR endpoints, PRIOR_OR_PRIOR_PLUS_CURRENT to CURRENT direction, coherent changed-direction motion, EVERY_CLAIMED_FRAME_HAS_NONCURRENT_CHANGED_DIRECTION, no unchanged-direction motion, and HIGH confidence",
+    "required_false_admits": 0
+  }
+}

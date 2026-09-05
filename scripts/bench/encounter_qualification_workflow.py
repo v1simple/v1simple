@@ -35,7 +35,12 @@ import sys
 import tempfile
 from typing import Any, Callable
 
+from encounter_arrow_acquisition import CLASSIFIER_ID as ARROW_ACQUISITION_CLASSIFIER_ID
 from encounter_arrow_transition import CLASSIFIER_ID as ARROW_CLASSIFIER_ID
+from encounter_frequency_context import CLASSIFIER_ID as FREQUENCY_CONTEXT_CLASSIFIER_ID
+from encounter_secondary_context import CLASSIFIER_ID as SECONDARY_CONTEXT_CLASSIFIER_ID
+from encounter_secondary_optical_bridge import CLASSIFIER_ID as SECONDARY_OPTICAL_CLASSIFIER_ID
+from encounter_qualification import temporal_observer_clip_source_indices
 
 
 BENCH_DIR = Path(__file__).resolve().parent
@@ -51,13 +56,20 @@ def _default_manifest_path() -> Path:
 
 DEFAULT_MANIFEST = _default_manifest_path()
 TARGET_CLASSIFIERS = (
-    "v1-main-bar-adjacent-redraw-v2",
-    "v1-muted-badge-rising-fill-v2",
+    ARROW_CLASSIFIER_ID,
+    ARROW_ACQUISITION_CLASSIFIER_ID,
+    FREQUENCY_CONTEXT_CLASSIFIER_ID,
+    SECONDARY_CONTEXT_CLASSIFIER_ID,
+    SECONDARY_OPTICAL_CLASSIFIER_ID,
 )
 FIELD_BY_CLASSIFIER = {
     "v1-main-bar-adjacent-redraw-v2": "main_bars",
     "v1-muted-badge-rising-fill-v2": "muted_badge",
     ARROW_CLASSIFIER_ID: "main_arrows",
+    ARROW_ACQUISITION_CLASSIFIER_ID: "main_arrows",
+    FREQUENCY_CONTEXT_CLASSIFIER_ID: "primary_frequency",
+    SECONDARY_CONTEXT_CLASSIFIER_ID: "secondary",
+    SECONDARY_OPTICAL_CLASSIFIER_ID: "secondary",
 }
 SPEC_BY_CLASSIFIER = {
     classifier: BENCH_DIR / "temporal_specs" / f"{classifier}.json"
@@ -237,6 +249,16 @@ def method_hashes(policy_bytes: bytes | None = None) -> dict[str, str]:
     return dict(sorted(result.items()))
 
 
+def static_method_hashes(inventory: dict[str, str] | None = None) -> dict[str, str]:
+    """Select the exact implementation inventory exercised by static evidence."""
+    from encounter_qualification import STATIC_READER_IMPLEMENTATION_FILES
+
+    inventory = method_hashes() if inventory is None else inventory
+    _require(all(name in inventory for name in STATIC_READER_IMPLEMENTATION_FILES),
+             "static reader implementation inventory is incomplete")
+    return {name: inventory[name] for name in STATIC_READER_IMPLEMENTATION_FILES}
+
+
 def reader_runtime(cache: Path) -> dict[str, Any]:
     from encounter_reader import prepare_reader
     from encounter_runtime_probe import probe_ocr_runtime
@@ -256,14 +278,30 @@ def reader_runtime(cache: Path) -> dict[str, Any]:
 
 
 def classifier_identity() -> dict[str, tuple[str, str]]:
+    import encounter_arrow_acquisition as arrow_acquisition
     import encounter_arrow_transition as arrow
     import encounter_bar_transition as bar
+    import encounter_frequency_context as frequency_context
     import encounter_mute_redraw_transition as mute
+    import encounter_secondary_context as secondary_context
+    import encounter_secondary_optical_bridge as secondary_optical
 
     return {
+        arrow_acquisition.CLASSIFIER_ID: (
+            arrow_acquisition.CLASSIFIER_ID,
+            arrow_acquisition.CLASSIFIER_SPEC_SHA256),
         arrow.CLASSIFIER_ID: (arrow.CLASSIFIER_ID, arrow.CLASSIFIER_SPEC_SHA256),
         bar.CLASSIFIER_ID: (bar.CLASSIFIER_ID, bar.CLASSIFIER_SPEC_SHA256),
+        frequency_context.CLASSIFIER_ID: (
+            frequency_context.CLASSIFIER_ID,
+            frequency_context.CLASSIFIER_SPEC_SHA256),
         mute.BADGE_CLASSIFIER_ID: (mute.BADGE_CLASSIFIER_ID, mute.BADGE_CLASSIFIER_SPEC_SHA256),
+        secondary_context.CLASSIFIER_ID: (
+            secondary_context.CLASSIFIER_ID,
+            secondary_context.CLASSIFIER_SPEC_SHA256),
+        secondary_optical.CLASSIFIER_ID: (
+            secondary_optical.CLASSIFIER_ID,
+            secondary_optical.CLASSIFIER_SPEC_SHA256),
     }
 
 
@@ -442,14 +480,33 @@ def _candidate_records(temporal: dict[str, Any], classifier_id: str) -> list[dic
         if not isinstance(record, dict) or record.get("classifier_id") != classifier_id:
             continue
         target = deepcopy(record.get("video_frame_indices"))
-        full = (deepcopy(record.get("full_field_run_indices"))
-                if classifier_id == "v1-unmute-stable-frequency-sweep-v2" else deepcopy(target))
+        if classifier_id == "v1-unmute-stable-frequency-sweep-v2":
+            full = deepcopy(record.get("full_field_run_indices"))
+        elif classifier_id == ARROW_ACQUISITION_CLASSIFIER_ID:
+            full = deepcopy(record.get("full_transition_indices"))
+        elif classifier_id == FREQUENCY_CONTEXT_CLASSIFIER_ID:
+            full = deepcopy(record.get("context_frame_indices"))
+        elif classifier_id == SECONDARY_CONTEXT_CLASSIFIER_ID:
+            full = deepcopy(record.get("full_context_indices"))
+        elif classifier_id == SECONDARY_OPTICAL_CLASSIFIER_ID:
+            left = record.get("left_support")
+            right = record.get("right_support")
+            full = ([point.get("video_frame_index") for point in [*left, *right]]
+                    if isinstance(left, list) and isinstance(right, list) else [])
+            if isinstance(target, list) and len(target) == 1 and len(full) == 4:
+                full = [*full[:2], target[0], *full[2:]]
+        else:
+            full = deepcopy(target)
         admitted.append({"decision": "ADMITTED", "record": deepcopy(record),
                          "indices": target, "full_indices": full})
     field = FIELD_BY_CLASSIFIER[classifier_id]
     rejected = []
     for record in temporal.get("rejected_runs", []):
-        if not isinstance(record, dict) or record.get("field") != field:
+        _require(isinstance(record, dict)
+                 and isinstance(record.get("classifier_id"), str)
+                 and bool(record["classifier_id"]),
+                 "temporal rejection lacks classifier provenance")
+        if record.get("classifier_id") != classifier_id or record.get("field") != field:
             continue
         first = record.get("first", {}).get("video_frame_index")
         last = record.get("last", {}).get("video_frame_index")
@@ -500,17 +557,30 @@ def _logical_inset(classifier_id: str) -> tuple[int, int, int, int]:
         "v1-muted-badge-rising-fill-v2": (480, 155, 710, 285),
         "v1-unmute-stable-frequency-sweep-v2": (425, 225, 845, 390),
         ARROW_CLASSIFIER_ID: (990, 190, 1165, 400),
+        ARROW_ACQUISITION_CLASSIFIER_ID: (990, 190, 1165, 400),
+        FREQUENCY_CONTEXT_CLASSIFIER_ID: (425, 225, 845, 390),
+        SECONDARY_CONTEXT_CLASSIFIER_ID: (385, 360, 880, 460),
+        SECONDARY_OPTICAL_CLASSIFIER_ID: (385, 360, 880, 460),
     }[classifier_id]
 
 
+def _observer_clip_source_indices(
+        target_indices: list[int], source_rows: dict[int, dict[str, int]]) -> list[int]:
+    """Return the shared decision-independent observer window for a target run."""
+    try:
+        return temporal_observer_clip_source_indices(target_indices, source_rows)
+    except Exception as exc:
+        raise WorkflowError(str(exc)) from exc
+
+
 def _build_clip(video: Path, destination: Path, classifier_id: str,
-                target_indices: list[int], frame_count: int, registration: dict[str, Any],
+                target_indices: list[int], source_rows: dict[int, dict[str, int]],
+                registration: dict[str, Any],
                 width: int, height: int) -> tuple[list[int], int]:
     ffmpeg, ffprobe = shutil.which("ffmpeg"), shutil.which("ffprobe")
     _require(ffmpeg is not None and ffprobe is not None, "ffmpeg and ffprobe are required")
-    first = max(0, target_indices[0] - 20)
-    last = min(frame_count - 1, target_indices[-1] + 20)
-    source_indices = list(range(first, last + 1))
+    source_indices = _observer_clip_source_indices(target_indices, source_rows)
+    first, last = source_indices[0], source_indices[-1]
     left, top, right, bottom = _raw_box(
         _logical_inset(classifier_id), registration, width, height)
     crop_width, crop_height = right - left, bottom - top
@@ -670,6 +740,11 @@ def _classifier_context(campaign: dict[str, Any], classifier_id: str,
         context.update(
             redraw_probe_method_version=identity["redraw_probe_method_version"],
             redraw_probe_sha256=campaign["implementation_sha256"]["encounter_redraw_probe.py"])
+    if "secondary_probe_method_version" in identity:
+        context.update(
+            secondary_probe_method_version=identity["secondary_probe_method_version"],
+            secondary_probe_sha256=
+                campaign["implementation_sha256"]["encounter_secondary_probe.py"])
     return context
 
 
@@ -707,6 +782,11 @@ def _prepare_classifier(stage: Path, campaign_root: Path, campaign: dict[str, An
     random.SystemRandom().shuffle(paired)
     manifest_items: list[dict[str, Any]] = []
     hidden_items: list[dict[str, Any]] = []
+    source_rows = {
+        index: {"source_frame_seq": row["frame_seq"],
+                "capture_ns": row["host_capture_ns"]}
+        for index, row in enumerate(data["rows"])
+    }
     for candidate, opaque_id in paired:
         target = candidate["indices"]
         full_run = candidate["full_indices"]
@@ -714,8 +794,8 @@ def _prepare_classifier(stage: Path, campaign_root: Path, campaign: dict[str, An
                  f"classifier candidate leaves the encoded video: {classifier_id}")
         clip = clips / f"{opaque_id}.mov"
         clip_indices, size = _build_clip(
-            data["video"], clip, classifier_id, full_run,
-            data["timing"]["encoded_frame_count"], data["registration"],
+            data["video"], clip, classifier_id, target,
+            source_rows, data["registration"],
             data["width"], data["height"])
         clip_hash = sha256(clip)
         target_clip_indices = [clip_indices.index(value) for value in target]
@@ -730,8 +810,6 @@ def _prepare_classifier(stage: Path, campaign_root: Path, campaign: dict[str, An
             "target_run_video_indices": target,
             "clip_source_video_indices": clip_indices,
             "target_run_clip_frame_indices": target_clip_indices,
-            "full_run_video_indices": full_run,
-            "full_run_clip_frame_indices": full_run_clip_indices,
             "inset_source_box": inset_source_box,
         })
         record = candidate["record"]
@@ -860,14 +938,23 @@ def _prepare_classifier(stage: Path, campaign_root: Path, campaign: dict[str, An
 def _validate_capture_classifier_contexts(campaign: dict[str, Any],
                                            window: dict[str, Any]) -> None:
     """Reject incompatible metadata before reading any qualification pixels."""
+    import encounter_arrow_acquisition as arrow_acquisition
     import encounter_arrow_transition as arrow
     import encounter_bar_transition as bar
+    import encounter_frequency_context as frequency_context
     import encounter_mute_redraw_transition as mute
+    import encounter_secondary_context as secondary_context
+    import encounter_secondary_optical_bridge as secondary_optical
 
     classifiers = {
+        arrow_acquisition.CLASSIFIER_ID: arrow_acquisition.classify_arrow_acquisition_runs,
         arrow.CLASSIFIER_ID: arrow.classify_arrow_runs,
         bar.CLASSIFIER_ID: bar.classify_main_bar_runs,
+        frequency_context.CLASSIFIER_ID: frequency_context.classify_frequency_context_runs,
         mute.BADGE_CLASSIFIER_ID: mute.classify_mute_redraw_runs,
+        secondary_context.CLASSIFIER_ID: secondary_context.classify_secondary_context_runs,
+        secondary_optical.CLASSIFIER_ID:
+            secondary_optical.classify_secondary_optical_bridge,
     }
     for classifier_id in _campaign_classifiers(campaign):
         # Selection does not exist yet. This digest checks only context shape;
@@ -1038,6 +1125,7 @@ def _validate_pre_key_sources(prepared: Path, prepared_doc: dict[str, Any],
         TEMPORAL_SOURCE_HASH_FIELDS, _validate_temporal_v2_capture,
         _validate_temporal_v2_media,
     )
+    from camera_timing import load_frame_sidecar
 
     result: dict[str, dict[str, Path]] = {}
     for item in prepared_doc.get("classifiers", []):
@@ -1058,6 +1146,13 @@ def _validate_pre_key_sources(prepared: Path, prepared_doc: dict[str, Any],
         capture = read_json(paths["qualification_capture"])
         window = read_json(paths["window_result"])
         timing = read_json(paths["video_timing_verification"])
+        frame_records = load_frame_sidecar(paths["frame_timing"])
+        source_rows = {
+            index: {"source_frame_seq": row["frame_seq"],
+                    "capture_ns": row["host_capture_ns"]}
+            for index, row in enumerate(
+                record for record in frame_records if record.get("status") == "written")
+        }
         pre_pixel = read_json(paths["pre_pixel_freeze"])
         spec_hash = campaign["classifiers"][classifier_id]["spec"]["sha256"]
         implementation = campaign["classifiers"][classifier_id]["implementation_sha256"]
@@ -1109,28 +1204,22 @@ def _validate_pre_key_sources(prepared: Path, prepared_doc: dict[str, Any],
             _require(set(value) == {
                          "opaque_id", "clip", "sha256", "size_bytes",
                          "target_run_video_indices", "clip_source_video_indices",
-                         "target_run_clip_frame_indices", "full_run_video_indices",
-                         "full_run_clip_frame_indices", "inset_source_box"},
+                         "target_run_clip_frame_indices", "inset_source_box"},
                      f"pre-key observer mapping shape differs: {value.get('opaque_id')}")
             source = value["clip_source_video_indices"]
             target = value["target_run_video_indices"]
-            full = value["full_run_video_indices"]
+            expected_source = (_observer_clip_source_indices(target, source_rows)
+                               if isinstance(target, list) and target else [])
             _require(isinstance(source, list) and bool(source)
                      and all(type(index) is int and index >= 0 for index in source)
                      and all(right == left + 1 for left, right in zip(source, source[1:]))
                      and isinstance(target, list) and bool(target)
                      and all(type(index) is int for index in target)
                      and all(right == left + 1 for left, right in zip(target, target[1:]))
-                     and isinstance(full, list) and bool(full)
-                     and all(type(index) is int for index in full)
-                     and all(right == left + 1 for left, right in zip(full, full[1:]))
+                     and source == expected_source
                      and all(type(index) is int and index in source for index in target)
-                     and all(type(index) is int and index in source for index in full)
-                     and all(index in full for index in target)
                      and value["target_run_clip_frame_indices"] ==
                          [source.index(index) for index in target]
-                     and value["full_run_clip_frame_indices"] ==
-                         [source.index(index) for index in full]
                      and isinstance(value["clip"], str)
                      and Path(value["clip"]).parent == Path("clips")
                      and Path(value["clip"]).stem == value["opaque_id"]
@@ -1161,6 +1250,8 @@ def _matrix_document(classifier_id: str, spec_hash: str, source_paths: dict[str,
                      hidden: dict[str, Any]) -> dict[str, Any]:
     from encounter_qualification import (
         TEMPORAL_SOURCE_HASH_FIELDS, TEMPORAL_V2_INTEGRITY_CHECKS,
+        _temporal_v2_frequency_context_band,
+        _temporal_v2_secondary_optical_band,
         _temporal_v2_claim_matches_record, _temporal_v2_observer_ground_truth,
     )
 
@@ -1170,6 +1261,13 @@ def _matrix_document(classifier_id: str, spec_hash: str, source_paths: dict[str,
                    ("true_admit", "false_admit", "true_reject", "false_reject",
                     "abstain")}
     ground_truth_counts: Counter[str] = Counter()
+    frequency_branches = ("intact_mask", "partial_expected_on_segments")
+    branch_outcomes = ({branch: Counter() for branch in frequency_branches}
+                       if classifier_id == FREQUENCY_CONTEXT_CLASSIFIER_ID else {})
+    true_admit_bands: set[str] = set()
+    analysis_result = (read_json(source_paths["analysis_result"])
+                       if (branch_outcomes
+                           or classifier_id == SECONDARY_OPTICAL_CLASSIFIER_ID) else {})
     by_hidden = {item["opaque_id"]: item for item in hidden["items"]}
     by_observation = {item["opaque_id"]: item for item in observations["observations"]}
     for manifest_item in manifest["items"]:
@@ -1194,6 +1292,19 @@ def _matrix_document(classifier_id: str, spec_hash: str, source_paths: dict[str,
         else:
             outcome = "ABSTAIN"
         outcome_ids[outcome.casefold()].append(opaque_id)
+        if (classifier_id == SECONDARY_OPTICAL_CLASSIFIER_ID
+                and decision == "ADMITTED"):
+            band = _temporal_v2_secondary_optical_band(record, analysis_result)
+            if outcome == "TRUE_ADMIT":
+                true_admit_bands.add(band)
+        if branch_outcomes:
+            branch = record.get("branch")
+            _require(branch in branch_outcomes,
+                     f"frozen frequency-context branch is invalid: {opaque_id}")
+            branch_outcomes[branch][outcome.casefold()] += 1
+            if outcome == "TRUE_ADMIT":
+                true_admit_bands.add(
+                    _temporal_v2_frequency_context_band(record, analysis_result))
         record_hash = canonical_sha256(record)
         comparisons.append({
             "opaque_id": opaque_id,
@@ -1231,8 +1342,6 @@ def _matrix_document(classifier_id: str, spec_hash: str, source_paths: dict[str,
                  and manifest_item.get("clip_source_video_indices") == clip_source
                  and manifest_item.get("target_run_clip_frame_indices") == target_clip
                  and target_clip == expected_target_clip
-                 and manifest_item.get("full_run_video_indices") == full_run
-                 and manifest_item.get("full_run_clip_frame_indices") == full_run_clip
                  and full_run_clip == expected_full_run_clip,
                  f"observer clip mapping differs: {opaque_id}")
         clip_checks.append({
@@ -1245,8 +1354,6 @@ def _matrix_document(classifier_id: str, spec_hash: str, source_paths: dict[str,
             "target_run_video_indices": target,
             "clip_source_video_indices": clip_source,
             "target_run_clip_frame_indices": target_clip,
-            "full_run_video_indices": full_run,
-            "full_run_clip_frame_indices": full_run_clip,
             "path_matches_id": path_matches,
             "source_frame_indices_match_target_run": source_matches,
             "target_run_inside_clip": inside,
@@ -1261,8 +1368,54 @@ def _matrix_document(classifier_id: str, spec_hash: str, source_paths: dict[str,
     indeterminate = ground_truth_counts["INDETERMINATE"]
     negatives_or_uncertain = definite_negatives + indeterminate
     scored = matrix["total"] - matrix["abstain"]
+    branch_fields: dict[str, Any] = {}
+    branch_allowed = True
+    if branch_outcomes:
+        branch_matrices = {
+            branch: {
+                **{name: counts[name] for name in outcome_ids},
+                "total": sum(counts.values()),
+            }
+            for branch, counts in branch_outcomes.items()
+        }
+        branch_minima = {
+            branch: {
+                "required_true_admit_minimum": 5,
+                "required_true_reject_minimum": 5,
+                "required_false_admits": 0,
+                "observed_true_admit": values["true_admit"],
+                "observed_true_reject": values["true_reject"],
+                "observed_false_admit": values["false_admit"],
+                "true_admit_minimum_met": values["true_admit"] >= 5,
+                "true_reject_minimum_met": values["true_reject"] >= 5,
+                "false_admit_requirement_met": values["false_admit"] == 0,
+            }
+            for branch, values in branch_matrices.items()
+        }
+        required_bands = ["X", "K", "Ka"]
+        band_coverage = [band for band in required_bands if band in true_admit_bands]
+        branch_allowed = (
+            all(values["false_admit"] == 0
+                and values["true_admit"] >= 5 and values["true_reject"] >= 5
+                for values in branch_matrices.values())
+            and band_coverage == required_bands)
+        branch_fields = {
+            "branch_confusion_matrices": branch_matrices,
+            "branch_numerical_minima": branch_minima,
+            "true_admit_band_coverage": band_coverage,
+            "required_band_coverage_met": band_coverage == required_bands,
+        }
+    coverage_allowed = True
+    if classifier_id == SECONDARY_OPTICAL_CLASSIFIER_ID:
+        required_bands = ["X", "K", "Ka"]
+        band_coverage = [band for band in required_bands if band in true_admit_bands]
+        coverage_allowed = band_coverage == required_bands
+        branch_fields = {
+            "true_admit_band_coverage": band_coverage,
+            "required_band_coverage_met": coverage_allowed,
+        }
     allowed = (matrix["false_admit"] == 0 and matrix["true_admit"] >= 5
-               and matrix["true_reject"] >= 5)
+               and matrix["true_reject"] >= 5 and branch_allowed and coverage_allowed)
     return {
         "schema_version": 2,
         "classifier_id": classifier_id,
@@ -1278,6 +1431,7 @@ def _matrix_document(classifier_id: str, spec_hash: str, source_paths: dict[str,
         },
         "confusion_matrix": matrix,
         **{f"{name}_ids": values for name, values in outcome_ids.items()},
+        **branch_fields,
         "denominators": {
             "classifier_admissions": admissions,
             "classifier_rejections": rejections,
@@ -1434,6 +1588,7 @@ def _resolve_base_evidence(base_path: Path) -> tuple[dict[str, Path], dict[str, 
         _require(isinstance(sources, dict), "base temporal sources are malformed")
         entries[classifier_id] = {
             "classifier_spec_sha256": entry["classifier_spec_sha256"],
+            "implementation_sha256": deepcopy(entry.get("implementation_sha256")),
             "spec": spec_source,
             "validation": validation_source,
             "source_artifacts": {
@@ -1460,7 +1615,7 @@ def validate_base_evidence(base_path: Path, method: dict[str, str],
     # The verifier re-reads source pixels and rederives the proof under the
     # current method. This permits orchestration changes, not inherited claims.
     candidate = deepcopy(base)
-    candidate["reader"]["implementation_sha256"] = method
+    candidate["reader"]["implementation_sha256"] = static_method_hashes(method)
     with tempfile.NamedTemporaryFile(
             prefix=".base-qualification-", suffix=".json", dir=base_path.parent,
             delete=False) as stream:
@@ -1707,6 +1862,7 @@ def reanalyze_static(source_manifest: Path, destination: Path) -> dict[str, Any]
     commit, clean = git_identity()
     _require(clean, "static reanalysis requires a clean source tree")
     method = method_hashes()
+    static_method = static_method_hashes(method)
     policy = load_policy(DEFAULT_POLICY_ID, POLICY_PATH)
     _require(policy.get("qualified_temporal_classifier_ids") == []
              and policy.get("qualified_temporal_classifiers") == {},
@@ -1735,20 +1891,20 @@ def reanalyze_static(source_manifest: Path, destination: Path) -> dict[str, Any]
         with encounter_reader.analysis_session():
             _reanalyze_field_document(
                 source_top["field_validation"], paths["field_validation"],
-                runtime, method, camera)
+                runtime, static_method, camera)
             _reanalyze_secondary_document(
                 source_top["visible_secondary_validation"],
-                paths["visible_secondary_validation"], runtime, method, camera)
+                paths["visible_secondary_validation"], runtime, static_method, camera)
             _reanalyze_fault_document(
                 source_top["fault_controls"], paths["fault_controls"],
-                runtime, method, camera)
+                runtime, static_method, camera)
             manifest = {
                 "schema_version": 1,
                 "kind": "encounter_reader_qualification",
                 "qualification_id": f"encounter-reader-static-{commit[:12]}-{source_hash[:12]}",
                 "reader": {
                     "method_version": runtime.get("method_version"),
-                    "implementation_sha256": method,
+                    "implementation_sha256": static_method,
                     "runtime": runtime,
                 },
                 "camera": camera,
@@ -1835,6 +1991,9 @@ def _prospective_policy(campaign: dict[str, Any]) -> tuple[dict[str, Any], bytes
             "deadline_observation_semantics": spec["deadline_observation_semantics"],
             "raw_affected_fields": [spec["scope"]["field"]],
         }
+        if "verification_closure_semantics" in spec:
+            specs[classifier_id]["verification_closure_semantics"] = spec[
+                "verification_closure_semantics"]
     policy["qualified_temporal_classifier_ids"] = ids
     policy["qualified_temporal_classifiers"] = specs
     return policy_document, json_bytes(policy_document), policy
@@ -2035,6 +2194,7 @@ def finalize(campaign_path: Path, base_manifest: Path, manifest_path: Path) -> d
              "blind campaign already contains post-key results; a fresh campaign is required")
     _policy_document, policy_bytes, policy = _prospective_policy(campaign)
     prospective_method = method_hashes(policy_bytes)
+    prospective_static_method = static_method_hashes(prospective_method)
     base_manifest = base_manifest.resolve()
     _require(base_manifest.is_file(), "base qualification manifest is missing")
     validate_base_evidence(
@@ -2083,6 +2243,7 @@ def finalize(campaign_path: Path, base_manifest: Path, manifest_path: Path) -> d
     temporal_manifest = {
         classifier_id: {
             "classifier_spec_sha256": entry["classifier_spec_sha256"],
+            "implementation_sha256": deepcopy(entry["implementation_sha256"]),
             "spec": reference(entry["spec"], root),
             "validation": reference(entry["validation"], root),
             "source_artifacts": entry["source_artifacts"],
@@ -2092,6 +2253,8 @@ def finalize(campaign_path: Path, base_manifest: Path, manifest_path: Path) -> d
     for classifier_id, entry in temporal_entries.items():
         temporal_manifest[classifier_id] = {
             "classifier_spec_sha256": entry["classifier_spec_sha256"],
+            "implementation_sha256": deepcopy(
+                campaign["classifiers"][classifier_id]["implementation_sha256"]),
             "spec": reference(entry["spec"], root),
             "validation": reference(entry["validation"], root),
             "source_artifacts": entry["source_artifacts"],
@@ -2104,7 +2267,7 @@ def finalize(campaign_path: Path, base_manifest: Path, manifest_path: Path) -> d
             f"{prepared_doc['capture_id'][:12]}"),
         "reader": {
             "method_version": campaign["reader_runtime"]["method_version"],
-            "implementation_sha256": prospective_method,
+            "implementation_sha256": prospective_static_method,
             "runtime": campaign["reader_runtime"],
         },
         "camera": campaign["camera"],
@@ -2149,8 +2312,11 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     freeze_parser = commands.add_parser("freeze", help="freeze code, runtime and blind rubric")
     freeze_parser.add_argument("--out", type=Path, required=True, help="new ignored campaign directory")
-    freeze_parser.add_argument("--classifier", action="append", choices=sorted(FIELD_BY_CLASSIFIER),
-                               dest="classifiers", help="classifier to qualify; repeat to select several (default: bar and badge)")
+    freeze_parser.add_argument(
+        "--classifier", action="append", choices=sorted(FIELD_BY_CLASSIFIER),
+        dest="classifiers", help=(
+            "classifier to qualify; repeat to select several "
+            "(default: the five current target classifiers)"))
     freeze_parser.add_argument("--base-manifest", type=Path, default=_default_manifest_path(),
                                help="retained static and any carried temporal evidence to verify before capture")
     prepare_parser = commands.add_parser("prepare", help="read one reserved capture and make blind packets")

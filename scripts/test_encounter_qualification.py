@@ -18,11 +18,11 @@ from encounter_runtime_probe import probe_image_sha256
 import encounter_qualification
 from encounter_qualification import (
     CLASSIFIER_IMPLEMENTATION_FILES,
+    COMMON_TEMPORAL_IMPLEMENTATION_FILES,
     CORE_READER_FILES,
     FIELDS,
-    OCR_RUNTIME_FILES,
-    QUALIFICATION_LOGIC_FILES,
     REQUIRED_FAULT_CONTROLS,
+    STATIC_READER_IMPLEMENTATION_FILES,
     TEMPORAL_SOURCE_HASH_FIELDS,
     TEMPORAL_V2_INTEGRITY_CHECKS,
     TEMPORAL_V2_OBSERVER_RUBRICS,
@@ -101,12 +101,16 @@ class QualificationTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.root = Path(self.directory.name)
-        names = (*CORE_READER_FILES, *OCR_RUNTIME_FILES, *QUALIFICATION_LOGIC_FILES,
-                 "encounter_temporal.py", "encounter_arrow_transition.py",
+        names = (*STATIC_READER_IMPLEMENTATION_FILES,
+                 *COMMON_TEMPORAL_IMPLEMENTATION_FILES,
+                 "encounter_arrow_transition.py",
+                 "encounter_arrow_acquisition.py",
                  "encounter_bar_transition.py", "encounter_mute_redraw_transition.py",
-                 "encounter_redraw_probe.py")
+                 "encounter_redraw_probe.py", "encounter_frequency_context.py",
+                 "encounter_secondary_context.py",
+                 "encounter_secondary_optical_bridge.py", "encounter_secondary_probe.py")
         self.method = {name: SHA for name in names}
-        self.policy = {"qualified_temporal_classifiers": {}}
+        self.policy = {"contract_version": 3, "qualified_temporal_classifiers": {}}
         self.reader_observations = {}
 
     def tearDown(self):
@@ -618,12 +622,19 @@ class QualificationTests(unittest.TestCase):
         comparison_path = self.write_json("temporal/comparison.json", comparison_document)
         entry = {
             "classifier_spec_sha256": spec_sha,
+            "implementation_sha256": {
+                name: self.method[name]
+                for name in CLASSIFIER_IMPLEMENTATION_FILES[classifier]
+            },
             "spec": self.reference(spec, self.root),
             "validation": self.reference(comparison_path, self.root),
             "source_artifacts": relative_refs,
         }
-        self.policy = {"qualified_temporal_classifiers": {
-            classifier: {"classifier_spec_sha256": spec_sha}}}
+        self.policy = {"contract_version": 1, "qualified_temporal_classifiers": {
+            classifier: {
+                "classifier_spec_sha256": spec_sha,
+                "raw_affected_fields": ["main_arrows"],
+            }}}
         return {classifier: entry}, {
             "classifier": classifier,
             "comparison": comparison_path,
@@ -633,6 +644,88 @@ class QualificationTests(unittest.TestCase):
 
     @staticmethod
     def generic_temporal_literal(classifier, eligible, *, indeterminate=False):
+        if classifier == "v1-stable-frequency-closed-context-v3":
+            return ({
+                "frequency_glyph_relation": "SAME_FREQUENCY_GLYPHS_THROUGHOUT",
+                "endpoint_support": "BOTH_CLEAR",
+                "target_content": "LEGAL_TARGET_CONTENT",
+                "confidence": "HIGH",
+            } if eligible else ({
+                "frequency_glyph_relation": "VISUALLY_INDETERMINATE",
+                "endpoint_support": "INDETERMINATE",
+                "target_content": "INDETERMINATE",
+                "confidence": "LOW",
+            } if indeterminate else {
+                "frequency_glyph_relation": "FREQUENCY_GLYPHS_CHANGE",
+                "endpoint_support": "BOTH_CLEAR",
+                "target_content": "NOT_LEGAL_TARGET_CONTENT",
+                "confidence": "HIGH",
+            }))
+        if classifier == "v1-arrow-target-acquisition-v1":
+            return ({
+                "endpoint_support": "BOTH_CLEAR",
+                "endpoint_relation": "PRIOR_OR_PRIOR_PLUS_CURRENT_TO_CURRENT",
+                "transition_class": "COHERENT_CHANGED_DIRECTION_MOTION",
+                "claimed_frame_acquisition": (
+                    "EVERY_CLAIMED_FRAME_HAS_NONCURRENT_CHANGED_DIRECTION"),
+                "unchanged_direction_motion": "NO",
+                "confidence": "HIGH",
+            } if eligible else ({
+                "endpoint_support": "INDETERMINATE",
+                "endpoint_relation": "INDETERMINATE",
+                "transition_class": "VISUALLY_INDETERMINATE",
+                "claimed_frame_acquisition": "VISUALLY_INDETERMINATE",
+                "unchanged_direction_motion": "INDETERMINATE",
+                "confidence": "LOW",
+            } if indeterminate else {
+                "endpoint_support": "BOTH_CLEAR",
+                "endpoint_relation": "OTHER_ENDPOINT_RELATION",
+                "transition_class": "NONCOHERENT_CHANGED_DIRECTION_MOTION",
+                "claimed_frame_acquisition": (
+                    "A_CLAIMED_FRAME_IS_CURRENT_IN_ALL_CHANGED_DIRECTIONS"),
+                "unchanged_direction_motion": "YES",
+                "confidence": "HIGH",
+            }))
+        if classifier == "v1-secondary-closed-context-v2":
+            return ({
+                "card_context": "SAME_CURRENT_CARD_CONTEXT",
+                "support_pairs": "BOTH_CLEAR",
+                "meter_redraw": "COHERENT_PARTIAL_METER_REDRAW",
+                "count_closure": "EXACT_COUNT_CLOSURE",
+                "confidence": "HIGH",
+            } if eligible else ({
+                "card_context": "VISUALLY_INDETERMINATE",
+                "support_pairs": "INDETERMINATE",
+                "meter_redraw": "VISUALLY_INDETERMINATE",
+                "count_closure": "INDETERMINATE",
+                "confidence": "LOW",
+            } if indeterminate else {
+                "card_context": "CARD_CONTEXT_CHANGES",
+                "support_pairs": "BOTH_CLEAR",
+                "meter_redraw": "INCOMPATIBLE_METER_CONTENT",
+                "count_closure": "COUNT_NOT_UNIQUELY_CLOSED",
+                "confidence": "HIGH",
+            }))
+        if classifier == "v1-secondary-text-optical-bridge-v1":
+            return ({
+                "support_pairs": "BOTH_CLEAR",
+                "center_text": "CENTER_COMPLETE_TEXT_CLEAR",
+                "card_text_relation": "SAME_COMPLETE_CARD_TEXT_THROUGHOUT",
+                "direction_or_meter_change": "NO_DIRECTION_OR_METER_CHANGE",
+                "confidence": "HIGH",
+            } if eligible else ({
+                "support_pairs": "INDETERMINATE",
+                "center_text": "VISUALLY_INDETERMINATE",
+                "card_text_relation": "VISUALLY_INDETERMINATE",
+                "direction_or_meter_change": "VISUALLY_INDETERMINATE",
+                "confidence": "LOW",
+            } if indeterminate else {
+                "support_pairs": "BOTH_CLEAR",
+                "center_text": "CENTER_COMPLETE_TEXT_NOT_CLEAR",
+                "card_text_relation": "CARD_TEXT_CHANGES",
+                "direction_or_meter_change": "DIRECTION_OR_METER_CHANGE",
+                "confidence": "HIGH",
+            }))
         if classifier == "v1-arrow-phase-edge-v3":
             return ({
                 "center_class": "COHERENT_SINGLE_DIRECTION_ON_OFF_EDGE",
@@ -746,7 +839,11 @@ class QualificationTests(unittest.TestCase):
                                     clip_mapping_tamper=None,
                                     indeterminate_rejects=False,
                                     recording_maximum_interval_ns=5_000_000,
-                                    source_gap_at_index=None):
+                                    source_gap_at_index=None,
+                                    frequency_branch_imbalance=False,
+                                    frequency_missing_band=False,
+                                    optical_missing_band=False,
+                                    observer_claim_tamper=False):
         temporal_root = self.root / f"temporal-v2-{classifier}"
         repository_spec = (Path(__file__).resolve().parent / "bench" / "temporal_specs" /
                            f"{classifier}.json")
@@ -755,7 +852,13 @@ class QualificationTests(unittest.TestCase):
             "reader_method_version": READER["method_version"],
             "reader_sha256": self.method["encounter_reader.py"],
         }
-        if classifier != "v1-arrow-phase-edge-v3":
+        if classifier == "v1-secondary-text-optical-bridge-v1":
+            spec_identity.update(
+                secondary_probe_method_version=1,
+                secondary_probe_sha256=self.method["encounter_secondary_probe.py"])
+        elif classifier not in {
+                "v1-arrow-phase-edge-v3", "v1-arrow-target-acquisition-v1",
+                "v1-secondary-closed-context-v2"}:
             spec_identity.update(
                 redraw_probe_method_version=1,
                 redraw_probe_sha256=self.method["encounter_redraw_probe.py"])
@@ -763,6 +866,11 @@ class QualificationTests(unittest.TestCase):
         if contradictory_spec:
             if classifier == "v1-arrow-phase-edge-v3":
                 spec_document["qualification_requirements"]["minimum_blind_true_admits"] = 50
+            elif classifier == "v1-arrow-target-acquisition-v1":
+                spec_document["deadline_observation_semantics"] = "LEGAL_PRESENTATION_TRANSITION"
+            elif classifier == "v1-stable-frequency-closed-context-v3":
+                spec_document["validation"]["branch_gates"]["intact_mask"][
+                    "minimum_blind_true_admits"] = 50
             else:
                 spec_document["validation"].update(
                     minimum_blind_true_admits=50,
@@ -800,7 +908,16 @@ class QualificationTests(unittest.TestCase):
                        ("true_admit", "false_admit", "true_reject", "false_reject",
                         "abstain")}
         ground_truth_counts = Counter()
-        item_count = 11 if false_admit or claim_mismatch else 10
+        frequency_context = classifier == "v1-stable-frequency-closed-context-v3"
+        secondary_optical = classifier == "v1-secondary-text-optical-bridge-v1"
+        if secondary_optical and rejection_code == "UNCLOSED_RUN":
+            rejection_code = "UNCLOSED_BRACKET"
+        item_count = ((21 if false_admit or claim_mismatch else 20)
+                      if frequency_context else
+                      (11 if false_admit or claim_mismatch else 10))
+        branch_by_opaque = {}
+        band_by_opaque = {}
+        analysis_events = []
         affected = TEMPORAL_V2_OBSERVER_RUBRICS[classifier]["raw_affected_fields"]
         selection_document = {
             "schema_version": 2,
@@ -819,8 +936,7 @@ class QualificationTests(unittest.TestCase):
                      and index >= source_gap_at_index else 0)
             return 1_000_000_000 + index * 5_000_000 + shift
         analysis_indices = sorted({value for index in range(item_count)
-                                   for value in (9 + index * 3, 10 + index * 3,
-                                                 11 + index * 3, 12 + index * 3)})
+                                   for value in range(8 + index * 3, 15 + index * 3)})
         analysis_selection_path = self.write_json(
             f"{temporal_root.name}/sources/analysis-selection.json", {
                 "schema_version": 1,
@@ -838,7 +954,13 @@ class QualificationTests(unittest.TestCase):
             "reader_method_version": READER["method_version"],
             "reader_sha256": self.method["encounter_reader.py"],
         }
-        if classifier != "v1-arrow-phase-edge-v3":
+        if classifier == "v1-secondary-text-optical-bridge-v1":
+            record_context.update(
+                secondary_probe_method_version=1,
+                secondary_probe_sha256=self.method["encounter_secondary_probe.py"])
+        elif classifier not in {
+                "v1-arrow-phase-edge-v3", "v1-arrow-target-acquisition-v1",
+                "v1-secondary-closed-context-v2"}:
             record_context.update(
                 redraw_probe_method_version=1,
                 redraw_probe_sha256=self.method["encounter_redraw_probe.py"])
@@ -852,21 +974,110 @@ class QualificationTests(unittest.TestCase):
 
         for index in range(item_count):
             opaque_id = f"opaque-{index:02d}"
-            claim_mismatch_item = claim_mismatch and index == 10
-            visually_eligible = index < 5 or claim_mismatch_item
-            machine_admitted = visually_eligible or (false_admit and index == 10)
+            extra_index = 20 if frequency_context else 10
+            claim_mismatch_item = claim_mismatch and index == extra_index
+            visually_eligible = ((index < 20 and index % 10 < 5) or claim_mismatch_item
+                                 if frequency_context else
+                                 index < 5 or claim_mismatch_item)
+            machine_admitted = visually_eligible or (false_admit and index == extra_index)
             decision = "ADMITTED" if machine_admitted else "REJECTED"
+            branch = ("intact_mask" if frequency_branch_imbalance or index < 10
+                      else "partial_expected_on_segments")
+            admitted_band_order = (["X", "K", "X", "K", "X"]
+                                   if (frequency_missing_band or optical_missing_band) else
+                                   ["X", "K", "Ka", "X", "K"])
+            band = (admitted_band_order[index % 5]
+                    if (frequency_context
+                        or classifier == "v1-secondary-text-optical-bridge-v1")
+                    and visually_eligible
+                    else "Ka")
+            frequency = {"X": "10.525", "K": "24.150", "Ka": "34.700"}[band]
+            if frequency_context:
+                branch_by_opaque[opaque_id] = branch
+                band_by_opaque[opaque_id] = band
+            elif secondary_optical:
+                band_by_opaque[opaque_id] = band
             literal_observation = self.generic_temporal_literal(
                 classifier, visually_eligible,
                 indeterminate=indeterminate_rejects and not visually_eligible)
+            observer_indeterminate = indeterminate_rejects and not visually_eligible
+            if classifier == "v1-arrow-phase-edge-v3":
+                literal_observation.update(
+                    left_endpoint_directions=None if observer_indeterminate else [],
+                    right_endpoint_directions=(None if observer_indeterminate else
+                                               (["side"] if observer_claim_tamper and index == 0
+                                                else ["front"])))
+            elif classifier == "v1-arrow-target-acquisition-v1":
+                literal_observation.update(
+                    left_endpoint_directions=(None if observer_indeterminate
+                                              else ["front", "side"]),
+                    right_endpoint_directions=(None if observer_indeterminate else
+                                               (["side"] if observer_claim_tamper and index == 0
+                                                else ["front"])))
+            elif classifier == "v1-stable-frequency-closed-context-v3":
+                literal_observation["observed_frequency"] = (
+                    None if observer_indeterminate else
+                    "35.500" if observer_claim_tamper and index == 0 else frequency)
+            elif classifier in {
+                    "v1-secondary-closed-context-v2",
+                    "v1-secondary-text-optical-bridge-v1"}:
+                observed_card = {
+                    "band": band, "frequency": frequency,
+                    "direction": "front",
+                    "bars": 4 if observer_claim_tamper and index == 0 else 3,
+                }
+                if classifier == "v1-secondary-closed-context-v2":
+                    literal_observation["observed_cards"] = (
+                        None if observer_indeterminate else [observed_card])
+                else:
+                    literal_observation["support_cards"] = (
+                        None if observer_indeterminate else [copy.deepcopy(observed_card)])
+                    literal_observation["center_cards"] = (
+                        None if observer_indeterminate else [copy.deepcopy(observed_card)])
             _, ground_truth = encounter_qualification._temporal_v2_observer_ground_truth(
                 classifier, {"opaque_id": opaque_id, **literal_observation})
             ground_truth_counts[ground_truth] += 1
-            indices = [10 + index * 3, 11 + index * 3, 12 + index * 3]
+            indices = ([11 + index * 3]
+                       if classifier == "v1-secondary-text-optical-bridge-v1" else
+                       [10 + index * 3, 11 + index * 3, 12 + index * 3])
             if duplicate_candidate and index == 1:
                 indices = [10, 11, 12]
             event_id = "event-0000" if duplicate_candidate and index == 1 else f"event-{index:04d}"
-            full_indices = ([indices[0] - 1, *indices]
+            if frequency_context:
+                analysis_events.append({
+                    "event_id": event_id,
+                    "mode": "UNCHANGED",
+                    "changed_fields": [],
+                    "target": {"fields": {
+                        "primary_frequency": {"allowed": [frequency]}}},
+                    "wire_rows": [{
+                        "band": band.casefold(),
+                        "frequencyMHz": int(frequency.replace(".", "")),
+                        "priority": True,
+                    }],
+                })
+            elif classifier in {
+                    "v1-secondary-closed-context-v2",
+                    "v1-secondary-text-optical-bridge-v1"}:
+                support_card = {
+                    "band": band, "frequency": frequency,
+                    "direction": "front", "bars": 3}
+                analysis_events.append({
+                    "event_id": event_id,
+                    "mode": "UNCHANGED",
+                    "changed_fields": [],
+                    "first_correct": point(indices[0] - 3),
+                    "target": {"fields": {
+                        "secondary": {"allowed": [[copy.deepcopy(support_card)]]}}},
+                })
+            full_indices = ([indices[0] - 2, indices[0] - 1, *indices,
+                             indices[-1] + 1, indices[-1] + 2]
+                            if classifier == "v1-secondary-closed-context-v2"
+                            and machine_admitted else
+                            list(range(indices[0] - 2, indices[0] + 3))
+                            if classifier == "v1-secondary-text-optical-bridge-v1"
+                            and machine_admitted else
+                            [indices[0] - 1, *indices]
                             if classifier == "v1-unmute-stable-frequency-sweep-v2"
                             and machine_admitted else list(indices))
             clip = temporal_root / "sources" / "clips" / f"{opaque_id}.bin"
@@ -874,7 +1085,14 @@ class QualificationTests(unittest.TestCase):
             clip.write_bytes(f"qualified generic temporal clip {opaque_id}".encode("ascii"))
             clip_sha = digest(clip)
             size = clip.stat().st_size
-            clip_source_indices = list(range(max(0, indices[0] - 10), indices[-1] + 11))
+            fixture_source_rows = {
+                value: {"source_frame_seq": 1000 + value,
+                        "capture_ns": source_time(value)}
+                for value in range(1000)
+            }
+            clip_source_indices = (
+                encounter_qualification.temporal_observer_clip_source_indices(
+                    indices, fixture_source_rows))
             target_clip_indices = [clip_source_indices.index(value) for value in indices]
             if clip_mapping_tamper == "source_gap" and index == 0:
                 clip_source_indices[1] += 1
@@ -888,9 +1106,6 @@ class QualificationTests(unittest.TestCase):
                 "target_run_video_indices": indices,
                 "clip_source_video_indices": clip_source_indices,
                 "target_run_clip_frame_indices": target_clip_indices,
-                "full_run_video_indices": full_indices,
-                "full_run_clip_frame_indices": [
-                    clip_source_indices.index(value) for value in full_indices],
                 "inset_source_box": [10, 10, 20, 20],
             })
             observations.append({"opaque_id": opaque_id, **literal_observation})
@@ -939,6 +1154,213 @@ class QualificationTests(unittest.TestCase):
                             "front": [1008, 203, 1145, 293],
                             "side": [1003, 313, 1153, 345],
                             "rear": [1044, 366, 1113, 392],
+                        },
+                    })
+                elif classifier == "v1-arrow-target-acquisition-v1":
+                    constants = spec_document["constants"]
+                    changed = "side"
+                    record.update({
+                        "deadline_observation_semantics":
+                            "TARGET_ACQUISITION_TRANSITION",
+                        "full_transition_indices": full_indices,
+                        "left_support": [point(indices[0] - 2), point(indices[0] - 1)],
+                        "right_support": [point(indices[-1] + 1), point(indices[-1] + 2)],
+                        "endpoint_values": [["front", "side"], ["front"]],
+                        "endpoint_phase_basis": {
+                            "previous_phase": ["side"],
+                            "current_phase": ["front"],
+                            "left_phase": ["front", "side"],
+                            "right_phase": ["front"],
+                        },
+                        "changed_directions": [changed],
+                        "arrow_expectation_signature": {
+                            "previous_arrow_sets": [["side"]],
+                            "current_arrow_sets": [["front"]],
+                        },
+                        "direction_metrics": {changed: {
+                            "endpoint_separation_rms": 60.0,
+                            "projections": [0.25, 0.5, 0.75],
+                            "normalized_residuals": [0.01, 0.01, 0.01],
+                            "maximum_backward_step": 0.0,
+                            "total_backward_motion": 0.0,
+                        }},
+                        "claimed_frame_acquisition_proof": [{
+                            "video_frame_index": value,
+                            "changed_direction_states": {changed: "partial"},
+                            "noncurrent_changed_directions": [changed],
+                        } for value in indices],
+                        "unchanged_direction_profile_diameter_rms": {
+                            "front": 1.0, "rear": 1.0},
+                        "maximum_endpoint_span_ns":
+                            constants["authored_display_update_ns"] +
+                            min(recording_maximum_interval_ns,
+                                constants["maximum_support_interval_ns"]),
+                        "support_search_frames_each_side":
+                            constants["support_search_frames_each_side"],
+                        "profile_schema": {
+                            "rows": 4, "columns": 4, "cells": 16,
+                            "sample": "max-channel cell median"},
+                        "profile_reference_bounds": {
+                            "front": [1008, 203, 1145, 293],
+                            "side": [1003, 313, 1153, 345],
+                            "rear": [1044, 366, 1113, 392],
+                        },
+                    })
+                elif classifier == "v1-stable-frequency-closed-context-v3":
+                    constants = spec_document["constants"]
+                    masks = [encounter_qualification._DIGIT_MASKS[digit]
+                             for digit in frequency.replace(".", "")]
+                    segment_evidence = ([] if branch == "intact_mask" else [{
+                        "digit_index": 1,
+                        "segment": "b",
+                        "p10": 36.0,
+                        "off_reference_p90": 10.0,
+                        "separation": 26.0,
+                    }])
+                    record.update({
+                        "deadline_observation_semantics": "LEGAL_PRESENTATION_TRANSITION",
+                        "verification_closure_semantics":
+                            "RAW_CURRENT_BRACKETED_UNRESOLVED_VERIFICATION_BOUNDARY",
+                        "branch": branch,
+                        "left_support": [point(indices[0] - 2), point(indices[0] - 1)],
+                        "right_support": [point(indices[-1] + 1), point(indices[-1] + 2)],
+                        "context_frame_indices": full_indices,
+                        "context_observed_branches": [branch],
+                        "support_derived_frequency": frequency,
+                        "support_derived_digit_masks": masks,
+                        "ambiguity_reason": spec_document["branches"][branch][
+                            "ambiguity_reason"],
+                        "partial_segment_evidence": [{
+                            "video_frame_index": value,
+                            "segments": copy.deepcopy(segment_evidence),
+                        } for value in indices],
+                        "maximum_partial_expected_on_segments":
+                            constants["maximum_partial_expected_on_segments"],
+                        "partial_off_separation_min":
+                            constants["partial_off_separation_min"],
+                        "maximum_refusal_run_span_ns":
+                            constants["maximum_refusal_run_span_ns"],
+                        "maximum_support_chain_span_ns":
+                            constants["maximum_support_chain_span_ns"],
+                        "event_signature": {
+                            "mode": "UNCHANGED", "changed_fields": [],
+                            "current_primary_frequency": frequency,
+                        },
+                    })
+                elif classifier == "v1-secondary-text-optical-bridge-v1":
+                    constants = spec_document["constants"]
+                    profile = spec_document["profile"]
+                    support = [{
+                        "band": band, "frequency": frequency,
+                        "direction": "front", "bars": 3}]
+                    record.update({
+                        "deadline_observation_semantics":
+                            "LEGAL_PRESENTATION_TRANSITION",
+                        "left_support": [point(indices[0] - 2), point(indices[0] - 1)],
+                        "right_support": [point(indices[0] + 1), point(indices[0] + 2)],
+                        "current_presentation_established": point(indices[0] - 3),
+                        "deficient_slot": 0,
+                        "raw_frequency_only_ocr": {
+                            "text": frequency,
+                            "normalized_frequency": frequency,
+                            "confidence": 1.0,
+                        },
+                        "support_derived_secondary": support,
+                        "resolved_value": copy.deepcopy(support),
+                        "profile_schema": {
+                            "rows": profile["rows"],
+                            "columns": profile["columns"],
+                            "channels": profile["channels"],
+                            "order": profile["order"],
+                            "sample": profile["sample"],
+                            "normalization": profile["normalization"],
+                        },
+                        "profile_reference_bounds": profile["boxes"][0],
+                        "profile_sha256s": [str(value) * 64 for value in "abcde"],
+                        "profile_metrics": {
+                            "maximum_support_pair_rms": 0.0,
+                            "maximum_support_component_span": 0,
+                            "maximum_target_support_rms": 0.0,
+                            "maximum_target_envelope_excursion": 0,
+                            "target_envelope_violation_count": 0,
+                        },
+                        "profile_limits": {
+                            "maximum_support_pair_rms":
+                                constants["maximum_support_pair_rms"],
+                            "maximum_support_component_span":
+                                constants["maximum_support_component_span"],
+                            "maximum_target_support_rms":
+                                constants["maximum_target_support_rms"],
+                            "maximum_target_envelope_excursion":
+                                constants["maximum_target_envelope_excursion"],
+                        },
+                        "maximum_support_chain_span_ns":
+                            constants["maximum_support_chain_span_ns"],
+                        "maximum_support_chain_interval_ns":
+                            min(recording_maximum_interval_ns,
+                                constants["maximum_support_chain_interval_ns"]),
+                        "event_signature": {
+                            "mode": "UNCHANGED",
+                            "changed_fields": [],
+                            "current_secondary": copy.deepcopy(support),
+                        },
+                    })
+                elif classifier == "v1-secondary-closed-context-v2":
+                    constants = spec_document["constants"]
+                    support = [copy.deepcopy(CARD)]
+                    meter_states = (
+                        ["on", "on", "partial", "off", "off", "off"],
+                        ["on", "on", "on", "partial", "off", "off"],
+                        ["on", "on", "partial", "off", "off", "off"],
+                    )
+                    meter_evidence = []
+                    for value, states in zip(indices, meter_states):
+                        compatible = [count for count in range(7) if all(
+                            state == "partial"
+                            or (state == "on" and cell < count)
+                            or (state == "off" and cell >= count)
+                            for cell, state in enumerate(states))]
+                        meter_evidence.append({
+                            "video_frame_index": value,
+                            "cards": [{
+                                "slot": 0,
+                                "state": "partial",
+                                "bars": None,
+                                "partial_cells": [states.index("partial")],
+                                "compatible_bars": compatible,
+                                "cell_states": list(states),
+                            }],
+                        })
+                    record.update({
+                        "deadline_observation_semantics":
+                            "LEGAL_PRESENTATION_TRANSITION",
+                        "full_context_indices": full_indices,
+                        "context_refusal_indices": indices,
+                        "interleaved_readable_indices": [],
+                        "context_first": point(indices[0]),
+                        "context_last": point(indices[-1]),
+                        "left_support": [point(full_indices[0]), point(full_indices[1])],
+                        "right_support": [point(full_indices[-2]), point(full_indices[-1])],
+                        "current_presentation_established": point(indices[0] - 3),
+                        "support_derived_secondary": support,
+                        "resolved_value": copy.deepcopy(support),
+                        "partial_meter_evidence": meter_evidence,
+                        "compatible_bar_intersections": [[CARD["bars"]]],
+                        "maximum_interleaved_readable_frames":
+                            constants["maximum_interleaved_readable_frames"],
+                        "maximum_context_refusal_span_ns":
+                            constants["authored_display_update_ns"] +
+                            min(recording_maximum_interval_ns,
+                                constants["maximum_support_chain_interval_ns"]),
+                        "maximum_support_chain_span_ns":
+                            constants["maximum_support_chain_span_ns"],
+                        "maximum_support_chain_interval_ns":
+                            min(recording_maximum_interval_ns,
+                                constants["maximum_support_chain_interval_ns"]),
+                        "event_signature": {
+                            "mode": "UNCHANGED",
+                            "changed_fields": [],
+                            "current_secondary": copy.deepcopy(support),
                         },
                     })
                 elif classifier == "v1-main-bar-adjacent-redraw-v2":
@@ -1044,6 +1466,58 @@ class QualificationTests(unittest.TestCase):
                         record["left_support"][0]["source_frame_seq"] += 7
                     elif record_tamper == "support_timestamp":
                         record["right_support"][1]["capture_ns"] += 1
+                    elif record_tamper == "acquisition_phase":
+                        record["endpoint_phase_basis"]["previous_phase"] = ["rear"]
+                    elif record_tamper == "acquisition_motion":
+                        record["direction_metrics"]["side"]["projections"] = [
+                            0.25, 0.75, 0.5]
+                    elif record_tamper == "acquisition_unchanged":
+                        record["unchanged_direction_profile_diameter_rms"]["front"] = 9.0
+                    elif record_tamper == "acquisition_claim_order":
+                        record["claimed_frame_acquisition_proof"].reverse()
+                    elif record_tamper == "acquisition_claim_state_keys":
+                        record["claimed_frame_acquisition_proof"][0][
+                            "changed_direction_states"]["rear"] = "unlit"
+                    elif record_tamper == "acquisition_claim_noncurrent":
+                        record["claimed_frame_acquisition_proof"][0][
+                            "noncurrent_changed_directions"] = []
+                    elif record_tamper == "frequency_context_branch":
+                        record["branch"] = "invented_branch"
+                    elif record_tamper == "frequency_context_masks":
+                        record["support_derived_digit_masks"][0] = "abcdefg"
+                    elif record_tamper == "frequency_context_partial":
+                        record["partial_segment_evidence"][0]["segments"] = [{
+                            "digit_index": 3, "segment": "e", "p10": 20.0,
+                            "off_reference_p90": 10.0, "separation": 10.0}]
+                    elif record_tamper == "frequency_context_closure":
+                        record["verification_closure_semantics"] = "INVENTED_CLOSURE"
+                    elif record_tamper == "secondary_context_established":
+                        record["current_presentation_established"]["capture_ns"] = (
+                            record["context_first"]["capture_ns"] + 1)
+                    elif record_tamper == "secondary_context_event_binding":
+                        record["current_presentation_established"]["video_frame_index"] += 1
+                    elif record_tamper == "secondary_context_indices":
+                        record["interleaved_readable_indices"] = [indices[1]]
+                    elif record_tamper == "secondary_context_closure":
+                        record["compatible_bar_intersections"] = [[2, 3]]
+                    elif record_tamper == "secondary_optical_bracket":
+                        record["left_support"][0]["video_frame_index"] += 1
+                    elif record_tamper == "secondary_optical_established":
+                        record["current_presentation_established"]["video_frame_index"] += 1
+                    elif record_tamper == "secondary_optical_slot":
+                        record["deficient_slot"] = 1
+                    elif record_tamper == "secondary_optical_ocr":
+                        record["raw_frequency_only_ocr"]["normalized_frequency"] = "35.500"
+                    elif record_tamper == "secondary_optical_profile":
+                        record["profile_sha256s"][0] = "not-a-digest"
+                    elif record_tamper == "secondary_optical_profile_schema":
+                        record["profile_schema"]["rows"] = 8
+                    elif record_tamper == "secondary_optical_metrics":
+                        record["profile_metrics"]["maximum_target_support_rms"] = 5.0
+                    elif record_tamper == "secondary_optical_limits":
+                        record["profile_limits"]["maximum_target_support_rms"] = 5.0
+                    elif record_tamper == "secondary_optical_event_signature":
+                        record["event_signature"]["current_secondary"] = []
                     elif record_tamper == "reader_binding":
                         record["reader_sha256"] = "b" * 64
                     elif record_tamper == "selection_binding":
@@ -1051,12 +1525,15 @@ class QualificationTests(unittest.TestCase):
                     elif record_tamper == "extra_field":
                         record["contradictory_extra_field"] = True
                 admitted_records.append(record)
-                claim_matches = visually_eligible and not claim_mismatch_item
+                claim_matches = (visually_eligible and not claim_mismatch_item
+                                 and not (observer_claim_tamper and index == 0))
                 code = None
             else:
                 record = {
                     "event_id": event_id,
+                    "classifier_id": classifier,
                     "field": affected[0],
+                    **({"branch": branch} if frequency_context else {}),
                     "code": rejection_code,
                     "first": point(indices[0]),
                     "last": point(indices[-1]),
@@ -1081,6 +1558,8 @@ class QualificationTests(unittest.TestCase):
                 "full_run_clip_frame_indices": [
                     clip_source_indices.index(value) for value in full_indices],
             })
+            if clip_mapping_tamper == "hidden_full_position" and index == 0:
+                hidden_items[-1]["full_run_clip_frame_indices"][0] += 1
             if machine_admitted:
                 outcome = ("TRUE_ADMIT" if visually_eligible and claim_matches
                            else "FALSE_ADMIT")
@@ -1113,9 +1592,6 @@ class QualificationTests(unittest.TestCase):
                 "target_run_video_indices": indices,
                 "clip_source_video_indices": clip_source_indices,
                 "target_run_clip_frame_indices": target_clip_indices,
-                "full_run_video_indices": full_indices,
-                "full_run_clip_frame_indices": [
-                    clip_source_indices.index(value) for value in full_indices],
                 "path_matches_id": True,
                 "source_frame_indices_match_target_run": True,
                 "target_run_inside_clip": True,
@@ -1263,6 +1739,7 @@ class QualificationTests(unittest.TestCase):
         source_paths["analysis_result"] = self.write_json(
             f"{temporal_root.name}/sources/analysis-result.json", {
                 "evidence": {"selection_manifest_sha256": digest(analysis_selection_path)},
+                "sequence": {"events": analysis_events},
                 "temporal_classification": {
                     "schema_version": 1,
                     "classifications": ([] if record_tamper == "analysis_result" else
@@ -1308,8 +1785,68 @@ class QualificationTests(unittest.TestCase):
         indeterminate = ground_truth_counts["INDETERMINATE"]
         negatives_or_uncertain = definite_negatives + indeterminate
         scored = matrix["total"] - matrix["abstain"]
+        branch_fields = {}
+        branch_allowed = True
+        if frequency_context:
+            branch_counts = {
+                branch: Counter() for branch in
+                ("intact_mask", "partial_expected_on_segments")}
+            true_admit_bands = set()
+            for comparison in comparisons:
+                opaque_id = comparison["opaque_id"]
+                outcome = comparison["comparison_outcome"]
+                branch_counts[branch_by_opaque[opaque_id]][outcome.casefold()] += 1
+                if outcome == "TRUE_ADMIT":
+                    true_admit_bands.add(band_by_opaque[opaque_id])
+            branch_matrices = {
+                branch: {
+                    **{name: counts[name] for name in outcome_ids},
+                    "total": sum(counts.values()),
+                }
+                for branch, counts in branch_counts.items()
+            }
+            branch_minima = {
+                branch: {
+                    "required_true_admit_minimum": 5,
+                    "required_true_reject_minimum": 5,
+                    "required_false_admits": 0,
+                    "observed_true_admit": values["true_admit"],
+                    "observed_true_reject": values["true_reject"],
+                    "observed_false_admit": values["false_admit"],
+                    "true_admit_minimum_met": values["true_admit"] >= 5,
+                    "true_reject_minimum_met": values["true_reject"] >= 5,
+                    "false_admit_requirement_met": values["false_admit"] == 0,
+                }
+                for branch, values in branch_matrices.items()
+            }
+            required_bands = ["X", "K", "Ka"]
+            band_coverage = [band for band in required_bands if band in true_admit_bands]
+            branch_allowed = (
+                all(values["false_admit"] == 0
+                    and values["true_admit"] >= 5 and values["true_reject"] >= 5
+                    for values in branch_matrices.values())
+                and band_coverage == required_bands)
+            branch_fields = {
+                "branch_confusion_matrices": branch_matrices,
+                "branch_numerical_minima": branch_minima,
+                "true_admit_band_coverage": band_coverage,
+                "required_band_coverage_met": band_coverage == required_bands,
+            }
+        coverage_allowed = True
+        if secondary_optical:
+            true_admit_bands = {
+                band_by_opaque[comparison["opaque_id"]]
+                for comparison in comparisons
+                if comparison["comparison_outcome"] == "TRUE_ADMIT"}
+            required_bands = ["X", "K", "Ka"]
+            band_coverage = [band for band in required_bands if band in true_admit_bands]
+            coverage_allowed = band_coverage == required_bands
+            branch_fields = {
+                "true_admit_band_coverage": band_coverage,
+                "required_band_coverage_met": coverage_allowed,
+            }
         allowed = (matrix["false_admit"] == 0 and matrix["true_admit"] >= 5
-                   and matrix["true_reject"] >= 5)
+                   and matrix["true_reject"] >= 5 and branch_allowed and coverage_allowed)
         comparison_document = {
             "schema_version": schema_version,
             "classifier_id": classifier,
@@ -1325,6 +1862,7 @@ class QualificationTests(unittest.TestCase):
             },
             "confusion_matrix": matrix,
             **{f"{name}_ids": ids for name, ids in outcome_ids.items()},
+            **branch_fields,
             "denominators": {
                 "classifier_admissions": admissions,
                 "classifier_rejections": rejections,
@@ -1367,12 +1905,26 @@ class QualificationTests(unittest.TestCase):
             f"{temporal_root.name}/comparison.json", comparison_document)
         entry = {
             "classifier_spec_sha256": spec_sha,
+            "implementation_sha256": {
+                name: self.method[name]
+                for name in CLASSIFIER_IMPLEMENTATION_FILES[classifier]
+            },
             "spec": self.reference(spec, self.root),
             "validation": self.reference(comparison_path, self.root),
             "source_artifacts": relative_refs,
         }
-        self.policy = {"qualified_temporal_classifiers": {
-            classifier: {"classifier_spec_sha256": spec_sha}}}
+        policy_spec = {
+            "classifier_spec_sha256": spec_sha,
+            "deadline_observation_semantics":
+                spec_document["deadline_observation_semantics"],
+            "raw_affected_fields": copy.deepcopy(
+                TEMPORAL_V2_OBSERVER_RUBRICS[classifier]["raw_affected_fields"]),
+        }
+        if "verification_closure_semantics" in spec_document:
+            policy_spec["verification_closure_semantics"] = spec_document[
+                "verification_closure_semantics"]
+        self.policy = {"contract_version": 3, "qualified_temporal_classifiers": {
+            classifier: policy_spec}}
         return {classifier: entry}, {
             "classifier": classifier,
             "comparison": comparison_path,
@@ -1394,7 +1946,9 @@ class QualificationTests(unittest.TestCase):
             "qualification_id": "test-reader-v1",
             "reader": {
                 "method_version": 5,
-                "implementation_sha256": copy.deepcopy(self.method),
+                "implementation_sha256": {
+                    name: self.method[name] for name in STATIC_READER_IMPLEMENTATION_FILES
+                },
                 "runtime": copy.deepcopy(READER),
             },
             "camera": copy.deepcopy(CAMERA),
@@ -1461,6 +2015,9 @@ class QualificationTests(unittest.TestCase):
     def test_each_generic_temporal_v2_bundle_qualifies(self):
         classifiers = (
             "v1-arrow-phase-edge-v3",
+            "v1-arrow-target-acquisition-v1",
+            "v1-stable-frequency-closed-context-v3",
+            "v1-secondary-closed-context-v2",
             "v1-main-bar-adjacent-redraw-v2",
             "v1-muted-badge-rising-fill-v2",
             "v1-unmute-stable-frequency-sweep-v2",
@@ -1470,7 +2027,10 @@ class QualificationTests(unittest.TestCase):
                 temporal, _ = self.generic_temporal_validation(classifier)
                 result = self.verify(self.write_bundle(temporal=temporal))
                 self.assertEqual(result["status"], "QUALIFIED", result["errors"])
-                self.assertEqual(result["temporal_classifiers"][classifier]["total"], 10)
+                expected_total = (
+                    20 if classifier == "v1-stable-frequency-closed-context-v3" else 10)
+                self.assertEqual(
+                    result["temporal_classifiers"][classifier]["total"], expected_total)
 
     def test_recording_gap_does_not_relax_each_admitted_support_chain(self):
         classifiers = set(TEMPORAL_V2_OBSERVER_RUBRICS) - {"v1-arrow-phase-edge-v3"}
@@ -1573,6 +2133,29 @@ class QualificationTests(unittest.TestCase):
 
     def test_generic_temporal_validates_complete_classifier_record_invariants(self):
         cases = (
+            ("v1-arrow-target-acquisition-v1", "acquisition_phase"),
+            ("v1-arrow-target-acquisition-v1", "acquisition_motion"),
+            ("v1-arrow-target-acquisition-v1", "acquisition_unchanged"),
+            ("v1-arrow-target-acquisition-v1", "acquisition_claim_order"),
+            ("v1-arrow-target-acquisition-v1", "acquisition_claim_state_keys"),
+            ("v1-arrow-target-acquisition-v1", "acquisition_claim_noncurrent"),
+            ("v1-stable-frequency-closed-context-v3", "frequency_context_branch"),
+            ("v1-stable-frequency-closed-context-v3", "frequency_context_masks"),
+            ("v1-stable-frequency-closed-context-v3", "frequency_context_partial"),
+            ("v1-stable-frequency-closed-context-v3", "frequency_context_closure"),
+            ("v1-secondary-closed-context-v2", "secondary_context_established"),
+            ("v1-secondary-closed-context-v2", "secondary_context_event_binding"),
+            ("v1-secondary-closed-context-v2", "secondary_context_indices"),
+            ("v1-secondary-closed-context-v2", "secondary_context_closure"),
+            ("v1-secondary-text-optical-bridge-v1", "secondary_optical_bracket"),
+            ("v1-secondary-text-optical-bridge-v1", "secondary_optical_established"),
+            ("v1-secondary-text-optical-bridge-v1", "secondary_optical_slot"),
+            ("v1-secondary-text-optical-bridge-v1", "secondary_optical_ocr"),
+            ("v1-secondary-text-optical-bridge-v1", "secondary_optical_profile"),
+            ("v1-secondary-text-optical-bridge-v1", "secondary_optical_profile_schema"),
+            ("v1-secondary-text-optical-bridge-v1", "secondary_optical_metrics"),
+            ("v1-secondary-text-optical-bridge-v1", "secondary_optical_limits"),
+            ("v1-secondary-text-optical-bridge-v1", "secondary_optical_event_signature"),
             ("v1-main-bar-adjacent-redraw-v2", "bar_changed_index"),
             ("v1-main-bar-adjacent-redraw-v2", "bar_expectation"),
             ("v1-main-bar-adjacent-redraw-v2", "reader_binding"),
@@ -1609,10 +2192,10 @@ class QualificationTests(unittest.TestCase):
                 instructions = temporal_v2_observer_instructions(classifier)
                 self.assertIn("clip_source_video_indices entry", instructions)
                 self.assertIn("target_run_clip_frame_indices", instructions)
-                self.assertIn("full_run_clip_frame_indices", instructions)
-                self.assertIn("Never treat a full-run frame", instructions)
-                self.assertIn("exact zero-based clip frames in the complete optical transition",
-                              instructions)
+                self.assertNotIn("full_run", instructions)
+                self.assertIn("same classifier-independent rule", instructions)
+                self.assertIn("within 300 ms before", instructions)
+                self.assertIn("authenticated capture timing", instructions)
                 self.assertIn("Do not make that attestation if it is not true", instructions)
                 self.assertIn("Allowed:", instructions)
                 self.assertIn("Eligibility:", instructions)
@@ -1624,16 +2207,300 @@ class QualificationTests(unittest.TestCase):
         badge = temporal_v2_observer_instructions("v1-muted-badge-rising-fill-v2")
         self.assertIn("Uniform palette or brightness recoloring caused by mute is allowed", badge)
         self.assertIn("frequency, band, direction, bar geometry or count", badge)
+        acquisition = temporal_v2_observer_instructions(
+            "v1-arrow-target-acquisition-v1")
+        for requirement in (
+                "BOTH_CLEAR", "PRIOR_OR_PRIOR_PLUS_CURRENT_TO_CURRENT",
+                "COHERENT_CHANGED_DIRECTION_MOTION",
+                "EVERY_CLAIMED_FRAME_HAS_NONCURRENT_CHANGED_DIRECTION",
+                "unchanged_direction_motion", "HIGH"):
+            self.assertIn(requirement, acquisition)
+        frequency = temporal_v2_observer_instructions(
+            "v1-stable-frequency-closed-context-v3")
+        for requirement in (
+                "SAME_FREQUENCY_GLYPHS_THROUGHOUT", "BOTH_CLEAR",
+                "LEGAL_TARGET_CONTENT", "HIGH", "Do not infer or record the machine branch"):
+            self.assertIn(requirement, frequency)
+        secondary = temporal_v2_observer_instructions(
+            "v1-secondary-closed-context-v2")
+        for requirement in (
+                "SAME_CURRENT_CARD_CONTEXT", "BOTH_CLEAR",
+                "COHERENT_PARTIAL_METER_REDRAW", "EXACT_COUNT_CLOSURE", "HIGH"):
+            self.assertIn(requirement, secondary)
+        optical = temporal_v2_observer_instructions(
+            "v1-secondary-text-optical-bridge-v1")
+        for requirement in (
+                "BOTH_CLEAR", "CENTER_COMPLETE_TEXT_CLEAR",
+                "SAME_COMPLETE_CARD_TEXT_THROUGHOUT",
+                "NO_DIRECTION_OR_METER_CHANGE", "HIGH"):
+            self.assertIn(requirement, optical)
+
+    def test_frequency_context_requires_each_branch_and_all_bands(self):
+        classifier = "v1-stable-frequency-closed-context-v3"
+        cases = (
+            {"frequency_branch_imbalance": True},
+            {"false_admit": True},
+            {"frequency_missing_band": True},
+        )
+        for options in cases:
+            with self.subTest(options=options):
+                temporal, _ = self.generic_temporal_validation(classifier, **options)
+                result = self.verify(self.write_bundle(temporal=temporal))
+                self.assertEqual(result["status"], "REJECTED")
+                self.assertIn("integrity failed", result["errors"][0])
+
+    def test_frequency_context_strata_tampering_is_rejected(self):
+        classifier = "v1-stable-frequency-closed-context-v3"
+        temporal, context = self.generic_temporal_validation(classifier)
+        self.rewrite_temporal_comparison(
+            temporal, context,
+            lambda document: document["branch_confusion_matrices"]["intact_mask"].update(
+                true_admit=6))
+        result = self.verify(self.write_bundle(temporal=temporal))
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertIn("strata were not independently derived", result["errors"][0])
+
+        temporal, context = self.generic_temporal_validation(classifier)
+        self.rewrite_temporal_comparison(
+            temporal, context,
+            lambda document: document.update(true_admit_band_coverage=["X", "K", "Ka", "Ku"]))
+        result = self.verify(self.write_bundle(temporal=temporal))
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertIn("strata were not independently derived", result["errors"][0])
+
+    def test_frequency_context_spec_and_rejection_contract_are_exact(self):
+        classifier = "v1-stable-frequency-closed-context-v3"
+        temporal, _ = self.generic_temporal_validation(classifier)
+        self.policy["qualified_temporal_classifiers"][classifier][
+            "verification_closure_semantics"] = "INVENTED_CLOSURE"
+        result = self.verify(self.write_bundle(temporal=temporal))
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertIn("policy contract differs", result["errors"][0])
+
+        temporal, _ = self.generic_temporal_validation(
+            classifier, contradictory_spec=True)
+        result = self.verify(self.write_bundle(temporal=temporal))
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertIn("specification validation contract differs", result["errors"][0])
+
+        temporal, _ = self.generic_temporal_validation(
+            classifier, rejection_code="SUPPORT_GEOMETRY")
+        self.assertEqual(
+            self.verify(self.write_bundle(temporal=temporal))["status"], "QUALIFIED")
+        temporal, _ = self.generic_temporal_validation(
+            classifier, rejection_code="INVENTED_REJECTION")
+        result = self.verify(self.write_bundle(temporal=temporal))
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertIn("rejected classifier record shape differs", result["errors"][0])
+
+    def test_arrow_acquisition_spec_semantics_and_rejection_codes_are_exact(self):
+        classifier = "v1-arrow-target-acquisition-v1"
+        temporal, _ = self.generic_temporal_validation(
+            classifier, contradictory_spec=True)
+        result = self.verify(self.write_bundle(temporal=temporal))
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertIn("specification validation contract differs", result["errors"][0])
+
+        temporal, _ = self.generic_temporal_validation(
+            classifier, rejection_code="UNCHANGED_DIRECTION_MOTION")
+        self.assertEqual(
+            self.verify(self.write_bundle(temporal=temporal))["status"], "QUALIFIED")
+        temporal, _ = self.generic_temporal_validation(
+            classifier, rejection_code="INVENTED_REJECTION")
+        result = self.verify(self.write_bundle(temporal=temporal))
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertIn("rejected classifier record shape differs", result["errors"][0])
+
+    def test_secondary_context_spec_and_rejection_codes_are_exact(self):
+        classifier = "v1-secondary-closed-context-v2"
+        temporal, _ = self.generic_temporal_validation(
+            classifier, contradictory_spec=True)
+        result = self.verify(self.write_bundle(temporal=temporal))
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertIn("specification validation contract differs", result["errors"][0])
+
+        temporal, _ = self.generic_temporal_validation(
+            classifier, rejection_code="METER_COMPATIBILITY")
+        self.assertEqual(
+            self.verify(self.write_bundle(temporal=temporal))["status"], "QUALIFIED")
+        temporal, _ = self.generic_temporal_validation(
+            classifier, rejection_code="INVENTED_REJECTION")
+        result = self.verify(self.write_bundle(temporal=temporal))
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertIn("rejected classifier record shape differs", result["errors"][0])
+
+    def test_secondary_optical_requires_all_bands_and_zero_false_admits(self):
+        classifier = "v1-secondary-text-optical-bridge-v1"
+        for options in ({"optical_missing_band": True}, {"false_admit": True}):
+            with self.subTest(options=options):
+                temporal, _ = self.generic_temporal_validation(classifier, **options)
+                result = self.verify(self.write_bundle(temporal=temporal))
+                self.assertEqual(result["status"], "REJECTED")
+                self.assertIn("integrity failed", result["errors"][0])
+
+    def test_secondary_optical_band_coverage_tampering_is_rejected(self):
+        classifier = "v1-secondary-text-optical-bridge-v1"
+        temporal, context = self.generic_temporal_validation(classifier)
+        self.rewrite_temporal_comparison(
+            temporal, context,
+            lambda document: document.update(true_admit_band_coverage=["X", "K", "Ka", "Ku"]))
+        result = self.verify(self.write_bundle(temporal=temporal))
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertIn("band coverage was not independently derived", result["errors"][0])
+
+    def test_secondary_optical_spec_and_rejection_codes_are_exact(self):
+        classifier = "v1-secondary-text-optical-bridge-v1"
+        repository_spec = (Path(__file__).resolve().parent / "bench" / "temporal_specs" /
+                           f"{classifier}.json")
+        self.assertEqual(digest(repository_spec),
+                         "f8bbbb1cb962ed404143d7e2a3a0ef05e4c68eeb1adc5c069b284b82ac40060a")
+        temporal, _ = self.generic_temporal_validation(classifier, contradictory_spec=True)
+        result = self.verify(self.write_bundle(temporal=temporal))
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertIn("specification validation contract differs", result["errors"][0])
+
+        temporal, _ = self.generic_temporal_validation(
+            classifier, rejection_code="OPTICAL_DIFFERENCE")
+        self.assertEqual(
+            self.verify(self.write_bundle(temporal=temporal))["status"], "QUALIFIED")
+        temporal, _ = self.generic_temporal_validation(
+            classifier, rejection_code="INVENTED_REJECTION")
+        result = self.verify(self.write_bundle(temporal=temporal))
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertIn("rejected classifier record shape differs", result["errors"][0])
+
+    def test_secondary_optical_owner_and_probe_drift_are_rejected(self):
+        classifier = "v1-secondary-text-optical-bridge-v1"
+        temporal, _ = self.generic_temporal_validation(classifier)
+        path = self.write_bundle(temporal=temporal)
+        for name in ("encounter_secondary_optical_bridge.py", "encounter_secondary_probe.py"):
+            with self.subTest(name=name):
+                self.method[name] = "c" * 64
+                try:
+                    result = self.verify(path)
+                finally:
+                    self.method[name] = SHA
+                self.assertEqual(result["status"], "REJECTED")
+                self.assertIn(
+                    f"running temporal implementation differs: {name}", result["errors"][0])
+
+    def test_policy_classifier_contract_must_exactly_match_spec_and_rubric(self):
+        classifier = "v1-secondary-closed-context-v2"
+        mutations = (
+            lambda value: value.update(raw_affected_fields=["main_arrows"]),
+            lambda value: value.update(
+                deadline_observation_semantics="TARGET_ACQUISITION_TRANSITION"),
+            lambda value: value.update(unrecognized_policy_claim=True),
+        )
+        for contract_version in (2, 3):
+            for mutate in mutations:
+                with self.subTest(contract_version=contract_version, mutation=mutate):
+                    temporal, _ = self.generic_temporal_validation(classifier)
+                    self.policy["contract_version"] = contract_version
+                    mutate(self.policy["qualified_temporal_classifiers"][classifier])
+                    result = self.verify(self.write_bundle(temporal=temporal))
+                    self.assertEqual(result["status"], "REJECTED")
+                    self.assertIn("policy contract differs", result["errors"][0])
+
+    def test_legacy_v1_policy_classifier_shape_remains_exact(self):
+        temporal, context = self.temporal_validation()
+        classifier = context["classifier"]
+        self.assertEqual(
+            self.verify(self.write_bundle(temporal=temporal))["status"], "QUALIFIED")
+        self.policy["qualified_temporal_classifiers"][classifier][
+            "deadline_observation_semantics"] = "LEGAL_PRESENTATION_TRANSITION"
+        result = self.verify(self.write_bundle(temporal=temporal))
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertIn("policy contract differs", result["errors"][0])
+
+    def test_policy_classifier_spec_hash_must_match_qualified_spec(self):
+        classifier = "v1-secondary-closed-context-v2"
+        temporal, _ = self.generic_temporal_validation(classifier)
+        self.policy["qualified_temporal_classifiers"][classifier][
+            "classifier_spec_sha256"] = "b" * 64
+        result = self.verify(self.write_bundle(temporal=temporal))
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertIn("temporal specification differs", result["errors"][0])
 
     def test_generic_temporal_binds_clip_frame_mapping(self):
         classifier = "v1-main-bar-adjacent-redraw-v2"
-        for tamper in ("source_gap", "target_position"):
+        for tamper in ("source_gap", "target_position", "hidden_full_position"):
             with self.subTest(tamper=tamper):
                 temporal, _ = self.generic_temporal_validation(
                     classifier, clip_mapping_tamper=tamper)
                 result = self.verify(self.write_bundle(temporal=temporal))
                 self.assertEqual(result["status"], "REJECTED")
                 self.assertIn("mapping", result["errors"][0])
+
+    def test_target_observer_transcription_must_match_the_frozen_visible_claim(self):
+        classifiers = (
+            "v1-arrow-phase-edge-v3",
+            "v1-arrow-target-acquisition-v1",
+            "v1-stable-frequency-closed-context-v3",
+            "v1-secondary-closed-context-v2",
+            "v1-secondary-text-optical-bridge-v1",
+        )
+        for classifier in classifiers:
+            with self.subTest(classifier=classifier):
+                temporal, context = self.generic_temporal_validation(
+                    classifier, observer_claim_tamper=True)
+                comparison = json.loads(context["comparison"].read_text(encoding="utf-8"))
+                self.assertEqual(comparison["confusion_matrix"]["false_admit"], 1)
+                result = self.verify(self.write_bundle(temporal=temporal))
+                self.assertEqual(result["status"], "REJECTED")
+
+    def test_target_observer_transcription_schema_is_exact(self):
+        valid_card = copy.deepcopy(CARD)
+        cases = (
+            ("v1-arrow-phase-edge-v3", {
+                "left_endpoint_directions": [],
+                "right_endpoint_directions": ["side", "front"],
+            }),
+            ("v1-arrow-target-acquisition-v1", {
+                "left_endpoint_directions": ["front", "side"],
+                "right_endpoint_directions": ["invented"],
+            }),
+            ("v1-stable-frequency-closed-context-v3", {
+                "observed_frequency": "34.7",
+            }),
+            ("v1-secondary-closed-context-v2", {
+                "observed_cards": [{**valid_card, "extra": True}],
+            }),
+            ("v1-secondary-text-optical-bridge-v1", {
+                "support_cards": [valid_card],
+                "center_cards": [{**valid_card, "bars": 7}],
+            }),
+        )
+        for classifier, mutation in cases:
+            with self.subTest(classifier=classifier):
+                observation = {
+                    "opaque_id": "opaque",
+                    **self.generic_temporal_literal(classifier, True),
+                    **mutation,
+                }
+                for name in TEMPORAL_V2_OBSERVER_RUBRICS[classifier]["literal_fields"]:
+                    observation.setdefault(name, None)
+                with self.assertRaises(encounter_qualification.QualificationError):
+                    encounter_qualification._temporal_v2_observer_result(
+                        classifier, observation)
+
+    def test_arrow_transcription_uses_visual_direction_order_without_losing_set_identity(self):
+        classifier = "v1-arrow-phase-edge-v3"
+        literal = {
+            **self.generic_temporal_literal(classifier, True),
+            "left_endpoint_directions": ["front", "rear"],
+            "right_endpoint_directions": ["front", "side", "rear"],
+        }
+        record = {
+            "classifier_id": classifier,
+            "classifier_spec_sha256": "a" * 64,
+            "status": "QUALIFIED_CAPTURE_TRANSITION",
+            "raw_affected_fields": ["main_arrows"],
+            # Classifier records use Python lexical ordering.
+            "endpoint_values": [["front", "rear"], ["front", "rear", "side"]],
+        }
+        self.assertTrue(encounter_qualification._temporal_v2_claim_matches_record(
+            classifier, "a" * 64, literal, record))
 
     def test_generic_mute_rejection_contract_includes_event_scope(self):
         for classifier in ("v1-muted-badge-rising-fill-v2",
@@ -1681,6 +2548,8 @@ class QualificationTests(unittest.TestCase):
 
     def test_generic_temporal_false_admission_is_rejected_with_minima_met(self):
         cases = (
+            ("v1-arrow-target-acquisition-v1", {"false_admit": True}),
+            ("v1-secondary-closed-context-v2", {"false_admit": True}),
             ("v1-main-bar-adjacent-redraw-v2", {"false_admit": True}),
             ("v1-unmute-stable-frequency-sweep-v2", {"claim_mismatch": True}),
         )
@@ -1697,14 +2566,19 @@ class QualificationTests(unittest.TestCase):
                 temporal, context = self.generic_temporal_validation(
                     classifier, indeterminate_rejects=True)
                 comparison = json.loads(context["comparison"].read_text(encoding="utf-8"))
+                expected_rejections = (
+                    10 if classifier == "v1-stable-frequency-closed-context-v3" else 5)
                 self.assertEqual(comparison["confusion_matrix"]["true_reject"], 0)
-                self.assertEqual(comparison["confusion_matrix"]["abstain"], 5)
-                self.assertEqual(comparison["denominators"]["observer_indeterminate"], 5)
+                self.assertEqual(
+                    comparison["confusion_matrix"]["abstain"], expected_rejections)
+                self.assertEqual(
+                    comparison["denominators"]["observer_indeterminate"], expected_rejections)
                 self.assertFalse(comparison["numerical_minima"]["true_reject_minimum_met"])
                 self.assertTrue(all(
                     item["observer_ground_truth"] == "INDETERMINATE"
                     and item["comparison_outcome"] == "ABSTAIN"
-                    for item in comparison["comparisons"][5:]))
+                    for item in comparison["comparisons"]
+                    if item["frozen_classifier_decision"] == "REJECTED"))
                 result = self.verify(self.write_bundle(temporal=temporal))
                 self.assertEqual(result["status"], "REJECTED")
                 self.assertIn("integrity failed", result["errors"][0])
@@ -1757,6 +2631,123 @@ class QualificationTests(unittest.TestCase):
         path = self.write_bundle()
         self.method["encounter_reader.py"] = "c" * 64
         self.assertIn("running implementation differs", self.verify(path)["errors"][0])
+
+    def test_each_static_dependency_drift_is_rejected(self):
+        for name in STATIC_READER_IMPLEMENTATION_FILES:
+            with self.subTest(name=name):
+                path = self.write_bundle()
+                original = self.method[name]
+                self.method[name] = "c" * 64
+                try:
+                    result = self.verify(path)
+                finally:
+                    self.method[name] = original
+                self.assertEqual(result["status"], "REJECTED")
+                self.assertIn(f"running implementation differs: {name}", result["errors"][0])
+
+    def test_static_qualification_ignores_non_static_implementation_drift(self):
+        path = self.write_bundle()
+        for name in (
+                *COMMON_TEMPORAL_IMPLEMENTATION_FILES,
+                "encounter_arrow_acquisition.py", "encounter_frequency_context.py",
+                "encounter_secondary_context.py", "encounter_bar_transition.py",
+                "encounter_report.py",
+                "visible_event_policies.json"):
+            with self.subTest(name=name):
+                self.method[name] = "c" * 64
+                self.assertEqual(self.verify(path)["status"], "QUALIFIED")
+
+    def test_published_static_implementation_inventory_must_be_exact(self):
+        mutations = (
+            lambda binding: binding.pop("camera_contract.py"),
+            lambda binding: binding.update({"encounter_report.py": SHA}),
+        )
+        for mutate in mutations:
+            with self.subTest(mutation=mutate):
+                path = self.write_bundle()
+                manifest = json.loads(path.read_text(encoding="utf-8"))
+                mutate(manifest["reader"]["implementation_sha256"])
+                path.write_text(json.dumps(manifest), encoding="utf-8")
+                result = self.verify(path)
+                self.assertEqual(result["status"], "REJECTED")
+                self.assertIn("exact static implementation inventory", result["errors"][0])
+
+    def test_temporal_qualification_binds_owner_and_isolates_other_owners(self):
+        cases = (
+            ("v1-arrow-phase-edge-v3", "encounter_arrow_transition.py",
+             "encounter_arrow_acquisition.py"),
+            ("v1-arrow-target-acquisition-v1", "encounter_arrow_acquisition.py",
+             "encounter_arrow_transition.py"),
+        )
+        for classifier, owned, unrelated in cases:
+            with self.subTest(classifier=classifier):
+                temporal, _ = self.generic_temporal_validation(classifier)
+                path = self.write_bundle(temporal=temporal)
+
+                self.method[unrelated] = "c" * 64
+                self.assertEqual(self.verify(path)["status"], "QUALIFIED")
+                self.method[owned] = "c" * 64
+                result = self.verify(path)
+                self.assertEqual(result["status"], "REJECTED")
+                self.assertIn("running temporal implementation differs", result["errors"][0])
+                self.method[owned] = SHA
+                self.method[unrelated] = SHA
+
+        classifier = "v1-stable-frequency-closed-context-v3"
+        temporal, _ = self.generic_temporal_validation(classifier)
+        path = self.write_bundle(temporal=temporal)
+        self.method["encounter_arrow_transition.py"] = "c" * 64
+        self.assertEqual(self.verify(path)["status"], "QUALIFIED")
+        for owned in ("encounter_frequency_context.py", "encounter_redraw_probe.py"):
+            self.method[owned] = "c" * 64
+            result = self.verify(path)
+            self.assertEqual(result["status"], "REJECTED")
+            self.assertIn("running temporal implementation differs", result["errors"][0])
+            self.method[owned] = SHA
+        self.method["encounter_arrow_transition.py"] = SHA
+
+    def test_every_classifier_binds_every_common_temporal_dependency(self):
+        for classifier in TEMPORAL_V2_OBSERVER_RUBRICS:
+            self.assertLessEqual(
+                set(COMMON_TEMPORAL_IMPLEMENTATION_FILES),
+                set(CLASSIFIER_IMPLEMENTATION_FILES[classifier]))
+        classifier = "v1-arrow-phase-edge-v3"
+        for name in COMMON_TEMPORAL_IMPLEMENTATION_FILES:
+            with self.subTest(name=name):
+                temporal, _ = self.generic_temporal_validation(classifier)
+                path = self.write_bundle(temporal=temporal)
+                self.method[name] = "c" * 64
+                try:
+                    result = self.verify(path)
+                finally:
+                    self.method[name] = SHA
+                self.assertEqual(result["status"], "REJECTED")
+                self.assertIn(
+                    f"running temporal implementation differs: {name}", result["errors"][0])
+
+    def test_temporal_implementation_inventory_must_be_exact(self):
+        for classifier, owned in (
+                ("v1-arrow-phase-edge-v3", "encounter_arrow_transition.py"),
+                ("v1-arrow-target-acquisition-v1", "encounter_arrow_acquisition.py"),
+                ("v1-stable-frequency-closed-context-v3", "encounter_frequency_context.py"),
+                ("v1-stable-frequency-closed-context-v3", "encounter_redraw_probe.py"),
+                ("v1-secondary-closed-context-v2", "encounter_secondary_context.py"),
+                ("v1-secondary-closed-context-v2", "encounter_check.py"),
+                ("v1-secondary-text-optical-bridge-v1",
+                 "encounter_secondary_optical_bridge.py"),
+                ("v1-secondary-text-optical-bridge-v1",
+                 "encounter_secondary_probe.py")):
+            mutations = (
+                lambda binding, name=owned: binding.pop(name),
+                lambda binding: binding.update({"encounter_bar_transition.py": SHA}),
+            )
+            for mutate in mutations:
+                with self.subTest(classifier=classifier, mutation=mutate):
+                    temporal, _ = self.generic_temporal_validation(classifier)
+                    mutate(temporal[classifier]["implementation_sha256"])
+                    result = self.verify(self.write_bundle(temporal=temporal))
+                    self.assertEqual(result["status"], "REJECTED")
+                    self.assertIn("temporal implementation inventory differs", result["errors"][0])
 
     def test_camera_profile_drift_is_rejected(self):
         path = self.write_bundle()

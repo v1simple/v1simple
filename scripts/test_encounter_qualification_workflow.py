@@ -27,6 +27,8 @@ import encounter_qualification
 import encounter_qualification_workflow as workflow
 from encounter_qualification import (
     CLASSIFIER_IMPLEMENTATION_FILES,
+    COMMON_TEMPORAL_IMPLEMENTATION_FILES,
+    STATIC_READER_IMPLEMENTATION_FILES,
     TEMPORAL_SOURCE_HASH_FIELDS,
     TEMPORAL_V2_OBSERVER_RUBRICS,
     temporal_v2_observer_instructions,
@@ -84,7 +86,7 @@ class QualificationWorkflowTests(unittest.TestCase):
             self.assertEqual(calls, [{
                 "inspect_transitions": True,
                 "reader_qualification": None,
-                "temporal_classifier_ids": workflow.TARGET_CLASSIFIERS,
+                "temporal_classifier_ids": tuple(sorted(workflow.TARGET_CLASSIFIERS)),
             }])
 
     def test_capture_context_is_checked_before_retention_or_pixel_analysis(self):
@@ -152,17 +154,24 @@ class QualificationWorkflowTests(unittest.TestCase):
 
     def test_workflow_and_analysis_bind_every_required_runtime_source(self):
         from encounter_check import analyze
-        from encounter_qualification import CORE_READER_FILES, OCR_RUNTIME_FILES, QUALIFICATION_LOGIC_FILES
-
         frozen = workflow.method_hashes()
+        static = workflow.static_method_hashes(frozen)
+        self.assertEqual(set(static), set(STATIC_READER_IMPLEMENTATION_FILES))
+        self.assertIn("encounter_qualification.py", static)
+        self.assertLessEqual(
+            {"encounter_assessment.py", "visual_compare.py", "artifact_privacy.py"},
+            set(COMMON_TEMPORAL_IMPLEMENTATION_FILES))
+        self.assertNotIn("encounter_bar_transition.py", static)
+        self.assertNotIn(workflow.POLICY_PATH.name, static)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             # A missing run stops before pixels, while retaining the real method inventory.
             result = analyze(root / "missing-run", root, None, 2)
             self.assertTrue(result["errors"])
-            for name in (*CORE_READER_FILES, *OCR_RUNTIME_FILES, *QUALIFICATION_LOGIC_FILES):
+            for name in STATIC_READER_IMPLEMENTATION_FILES:
                 expected = hashlib.sha256((BENCH_DIR / name).read_bytes()).hexdigest()
                 self.assertEqual(frozen[name], expected)
+                self.assertEqual(static[name], expected)
                 self.assertEqual(result["implementation_sha256"][name], expected)
                 self.assertEqual((root / "method" / name).read_bytes(), (BENCH_DIR / name).read_bytes())
 
@@ -170,8 +179,11 @@ class QualificationWorkflowTests(unittest.TestCase):
         self.assertEqual(
             workflow.TARGET_CLASSIFIERS,
             (
-                "v1-main-bar-adjacent-redraw-v2",
-                "v1-muted-badge-rising-fill-v2",
+                "v1-arrow-phase-edge-v3",
+                "v1-arrow-target-acquisition-v1",
+                "v1-stable-frequency-closed-context-v3",
+                "v1-secondary-closed-context-v2",
+                "v1-secondary-text-optical-bridge-v1",
             ),
         )
         self.assertNotIn(
@@ -179,6 +191,223 @@ class QualificationWorkflowTests(unittest.TestCase):
             workflow.classifier_identity(),
         )
         self.assertIn(workflow.ARROW_CLASSIFIER_ID, workflow.classifier_identity())
+        self.assertIn(
+            workflow.ARROW_ACQUISITION_CLASSIFIER_ID, workflow.classifier_identity())
+        self.assertIn(
+            workflow.SECONDARY_CONTEXT_CLASSIFIER_ID, workflow.classifier_identity())
+        self.assertIn(
+            workflow.SECONDARY_OPTICAL_CLASSIFIER_ID, workflow.classifier_identity())
+        self.assertNotIn("v1-main-bar-adjacent-redraw-v2", workflow.TARGET_CLASSIFIERS)
+        self.assertNotIn("v1-muted-badge-rising-fill-v2", workflow.TARGET_CLASSIFIERS)
+        self.assertNotIn("v1-unmute-stable-frequency-sweep-v2", workflow.TARGET_CLASSIFIERS)
+
+    def test_arrow_acquisition_uses_its_exact_spec_and_implementation(self):
+        classifier = workflow.ARROW_ACQUISITION_CLASSIFIER_ID
+        identity = workflow.classifier_identity()[classifier]
+        self.assertEqual(identity, (
+            classifier, workflow.sha256(workflow.SPEC_BY_CLASSIFIER[classifier])))
+        self.assertEqual(
+            CLASSIFIER_IMPLEMENTATION_FILES[classifier],
+            (*COMMON_TEMPORAL_IMPLEMENTATION_FILES,
+             "encounter_arrow_acquisition.py"))
+
+    def test_arrow_acquisition_capture_context_dispatches_to_its_classifier(self):
+        import encounter_arrow_acquisition
+        import encounter_reader
+
+        classifier = workflow.ARROW_ACQUISITION_CLASSIFIER_ID
+        campaign = {
+            "reader_runtime": {"method_version": encounter_reader.METHOD_VERSION},
+            "implementation_sha256": workflow.method_hashes(),
+            "classifiers": {classifier: {}},
+        }
+        window = {"camera": {
+            "capture_id": "a" * 64,
+            "video_timing_verification_result": {
+                "status": "verified", "maximum_source_interval_ns": 5_000_000},
+        }}
+        with patch(
+                "encounter_arrow_acquisition.classify_arrow_acquisition_runs",
+                wraps=encounter_arrow_acquisition.classify_arrow_acquisition_runs) as classify:
+            workflow._validate_capture_classifier_contexts(campaign, window)
+        classify.assert_called_once()
+
+    def test_arrow_acquisition_uses_complete_transition_for_observer_context(self):
+        classifier = workflow.ARROW_ACQUISITION_CLASSIFIER_ID
+        record = {
+            "classifier_id": classifier,
+            "video_frame_indices": [11, 12],
+            "full_transition_indices": [10, 11, 12, 13],
+        }
+        candidates = workflow._candidate_records(
+            {"classifications": [record], "rejected_runs": []}, classifier)
+        self.assertEqual(candidates[0]["indices"], [11, 12])
+        self.assertEqual(candidates[0]["full_indices"], [10, 11, 12, 13])
+        self.assertEqual(
+            workflow._logical_inset(classifier),
+            workflow._logical_inset(workflow.ARROW_CLASSIFIER_ID))
+
+    def test_frequency_context_uses_exact_dependencies_context_and_inset(self):
+        classifier = workflow.FREQUENCY_CONTEXT_CLASSIFIER_ID
+        identity = workflow.classifier_identity()[classifier]
+        self.assertEqual(identity, (
+            classifier, workflow.sha256(workflow.SPEC_BY_CLASSIFIER[classifier])))
+        self.assertEqual(CLASSIFIER_IMPLEMENTATION_FILES[classifier], (
+            *COMMON_TEMPORAL_IMPLEMENTATION_FILES,
+            "encounter_frequency_context.py", "encounter_redraw_probe.py"))
+        record = {
+            "classifier_id": classifier,
+            "video_frame_indices": [11, 12],
+            "context_frame_indices": [10, 11, 12, 13],
+        }
+        candidates = workflow._candidate_records(
+            {"classifications": [record], "rejected_runs": []}, classifier)
+        self.assertEqual(candidates[0]["indices"], [11, 12])
+        self.assertEqual(candidates[0]["full_indices"], [10, 11, 12, 13])
+        self.assertEqual(
+            workflow._logical_inset(classifier),
+            workflow._logical_inset("v1-unmute-stable-frequency-sweep-v2"))
+
+    def test_frequency_context_capture_context_dispatches_to_its_classifier(self):
+        import encounter_frequency_context
+        import encounter_reader
+
+        classifier = workflow.FREQUENCY_CONTEXT_CLASSIFIER_ID
+        campaign = {
+            "reader_runtime": {"method_version": encounter_reader.METHOD_VERSION},
+            "implementation_sha256": workflow.method_hashes(),
+            "classifiers": {classifier: {}},
+        }
+        window = {"camera": {
+            "capture_id": "a" * 64,
+            "video_timing_verification_result": {
+                "status": "verified", "maximum_source_interval_ns": 5_000_000},
+        }}
+        with patch(
+                "encounter_frequency_context.classify_frequency_context_runs",
+                wraps=encounter_frequency_context.classify_frequency_context_runs) as classify:
+            workflow._validate_capture_classifier_contexts(campaign, window)
+        classify.assert_called_once()
+
+    def test_secondary_context_uses_exact_dependencies_context_and_inset(self):
+        classifier = workflow.SECONDARY_CONTEXT_CLASSIFIER_ID
+        identity = workflow.classifier_identity()[classifier]
+        self.assertEqual(identity, (
+            classifier, workflow.sha256(workflow.SPEC_BY_CLASSIFIER[classifier])))
+        self.assertEqual(CLASSIFIER_IMPLEMENTATION_FILES[classifier], (
+            *COMMON_TEMPORAL_IMPLEMENTATION_FILES, "encounter_secondary_context.py"))
+        record = {
+            "classifier_id": classifier,
+            "video_frame_indices": [11, 12],
+            "full_context_indices": [9, 10, 11, 12, 13, 14],
+        }
+        candidates = workflow._candidate_records(
+            {"classifications": [record], "rejected_runs": []}, classifier)
+        self.assertEqual(candidates[0]["indices"], [11, 12])
+        self.assertEqual(candidates[0]["full_indices"], [9, 10, 11, 12, 13, 14])
+        self.assertEqual(workflow._logical_inset(classifier), (385, 360, 880, 460))
+
+    def test_secondary_context_capture_context_dispatches_to_its_classifier(self):
+        import encounter_reader
+        import encounter_secondary_context
+
+        classifier = workflow.SECONDARY_CONTEXT_CLASSIFIER_ID
+        campaign = {
+            "reader_runtime": {"method_version": encounter_reader.METHOD_VERSION},
+            "implementation_sha256": workflow.method_hashes(),
+            "classifiers": {classifier: {}},
+        }
+        window = {"camera": {
+            "capture_id": "a" * 64,
+            "video_timing_verification_result": {
+                "status": "verified", "maximum_source_interval_ns": 5_000_000},
+        }}
+        with patch(
+                "encounter_secondary_context.classify_secondary_context_runs",
+                wraps=encounter_secondary_context.classify_secondary_context_runs) as classify:
+            workflow._validate_capture_classifier_contexts(campaign, window)
+        classify.assert_called_once()
+
+    def test_secondary_optical_uses_exact_dependencies_context_and_inset(self):
+        classifier = workflow.SECONDARY_OPTICAL_CLASSIFIER_ID
+        identity = workflow.classifier_identity()[classifier]
+        self.assertEqual(identity, (
+            classifier, workflow.sha256(workflow.SPEC_BY_CLASSIFIER[classifier])))
+        self.assertEqual(CLASSIFIER_IMPLEMENTATION_FILES[classifier], (
+            *COMMON_TEMPORAL_IMPLEMENTATION_FILES,
+            "encounter_secondary_optical_bridge.py", "encounter_secondary_probe.py"))
+        record = {
+            "classifier_id": classifier,
+            "video_frame_indices": [11],
+            "left_support": [
+                {"video_frame_index": 9}, {"video_frame_index": 10}],
+            "right_support": [
+                {"video_frame_index": 12}, {"video_frame_index": 13}],
+        }
+        candidates = workflow._candidate_records(
+            {"classifications": [record], "rejected_runs": []}, classifier)
+        self.assertEqual(candidates[0]["indices"], [11])
+        self.assertEqual(candidates[0]["full_indices"], [9, 10, 11, 12, 13])
+        self.assertEqual(workflow._logical_inset(classifier), (385, 360, 880, 460))
+
+    def test_secondary_optical_capture_context_dispatches_to_its_classifier(self):
+        import encounter_reader
+        import encounter_secondary_optical_bridge
+
+        classifier = workflow.SECONDARY_OPTICAL_CLASSIFIER_ID
+        campaign = {
+            "reader_runtime": {"method_version": encounter_reader.METHOD_VERSION},
+            "implementation_sha256": workflow.method_hashes(),
+            "classifiers": {classifier: {}},
+        }
+        window = {"camera": {
+            "capture_id": "a" * 64,
+            "video_timing_verification_result": {
+                "status": "verified", "maximum_source_interval_ns": 5_000_000},
+        }}
+        with patch(
+                "encounter_secondary_optical_bridge.classify_secondary_optical_bridge",
+                wraps=encounter_secondary_optical_bridge.classify_secondary_optical_bridge
+                ) as classify:
+            workflow._validate_capture_classifier_contexts(campaign, window)
+        classify.assert_called_once()
+
+    def test_same_field_rejections_require_and_use_classifier_provenance(self):
+        target = workflow.ARROW_ACQUISITION_CLASSIFIER_ID
+        point = lambda index: {"video_frame_index": index}
+        records = [{
+            "event_id": "one", "classifier_id": workflow.ARROW_CLASSIFIER_ID,
+            "field": "main_arrows", "code": "OTHER", "first": point(1),
+            "last": point(2), "reason": "other classifier",
+        }, {
+            "event_id": "two", "classifier_id": target,
+            "field": "main_arrows", "code": "OWN", "first": point(4),
+            "last": point(5), "reason": "target classifier",
+        }]
+        candidates = workflow._candidate_records(
+            {"classifications": [], "rejected_runs": records}, target)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["record"]["classifier_id"], target)
+        del records[0]["classifier_id"]
+        with self.assertRaisesRegex(workflow.WorkflowError, "classifier provenance"):
+            workflow._candidate_records(
+                {"classifications": [], "rejected_runs": records}, target)
+
+        secondary_target = workflow.SECONDARY_OPTICAL_CLASSIFIER_ID
+        secondary_records = [{
+            "event_id": "context", "classifier_id": workflow.SECONDARY_CONTEXT_CLASSIFIER_ID,
+            "field": "secondary", "code": "OTHER", "first": point(7),
+            "last": point(7), "reason": "other secondary classifier",
+        }, {
+            "event_id": "optical", "classifier_id": secondary_target,
+            "field": "secondary", "code": "OWN", "first": point(9),
+            "last": point(9), "reason": "target secondary classifier",
+        }]
+        candidates = workflow._candidate_records(
+            {"classifications": [], "rejected_runs": secondary_records},
+            secondary_target)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["record"]["event_id"], "optical")
 
     def test_arrow_selection_is_explicit_and_frozen_in_the_campaign(self):
         import encounter_reader
@@ -198,6 +427,10 @@ class QualificationWorkflowTests(unittest.TestCase):
             campaign = workflow.read_json(destination / "campaign.json")
             self.assertEqual(workflow._campaign_classifiers(campaign), (arrow,))
             self.assertEqual(campaign["base_manifest_sha256"], workflow.sha256(base))
+            self.assertEqual(campaign["implementation_sha256"], workflow.method_hashes())
+            self.assertGreater(
+                set(campaign["implementation_sha256"]),
+                set(STATIC_READER_IMPLEMENTATION_FILES))
             self.assertEqual(set(campaign["classifiers"]), {arrow})
             self.assertEqual(verify.call_args.args[0], base.resolve())
             frozen = campaign["classifiers"][arrow]
@@ -225,12 +458,35 @@ class QualificationWorkflowTests(unittest.TestCase):
             static, temporal = workflow._resolve_base_evidence(manifest)
             self.assertEqual(set(static), {"field_validation", "visible_secondary_validation", "fault_controls"})
             self.assertEqual(temporal, {})
-            with patch.object(encounter_qualification, "verify_qualification", return_value={
-                    "status": "REJECTED", "errors": ["unproven static reader"]}) as verify:
+            seen = {}
+
+            def reject(candidate_path, **_kwargs):
+                seen["candidate"] = workflow.read_json(candidate_path)
+                return {"status": "REJECTED", "errors": ["unproven static reader"]}
+
+            with patch.object(
+                    encounter_qualification, "verify_qualification", side_effect=reject) as verify:
                 with self.assertRaisesRegex(workflow.WorkflowError, "unproven static reader"):
-                    workflow.validate_base_evidence(manifest, {}, {}, camera, {})
+                    workflow.validate_base_evidence(
+                        manifest, workflow.method_hashes(), {}, camera, {})
                 verify.assert_called_once()
+                self.assertEqual(
+                    set(seen["candidate"]["reader"]["implementation_sha256"]),
+                    set(STATIC_READER_IMPLEMENTATION_FILES))
             self.assertEqual(list(root.glob(".base-qualification-*")), [])
+
+    def test_carried_temporal_evidence_preserves_its_classifier_inventory(self):
+        helper = qualification_test_support.QualificationTests(
+            "test_complete_exact_bundle_qualifies")
+        helper.setUp()
+        self.addCleanup(helper.tearDown)
+        classifier = workflow.ARROW_CLASSIFIER_ID
+        temporal, _ = helper.generic_temporal_validation(classifier)
+        _static, carried = workflow._resolve_base_evidence(
+            helper.write_bundle(temporal=temporal))
+        self.assertEqual(
+            carried[classifier]["implementation_sha256"],
+            temporal[classifier]["implementation_sha256"])
 
     def test_failed_base_reverification_stops_before_key_consumption(self):
         from encounter_product import DEFAULT_POLICY_ID
@@ -302,6 +558,84 @@ class QualificationWorkflowTests(unittest.TestCase):
                 "deadline_observation_semantics": "LEGAL_PRESENTATION_TRANSITION",
                 "raw_affected_fields": ["main_arrows"]})
             self.assertEqual(policy_path.read_bytes(), original)
+
+    def test_prospective_policy_publishes_arrow_acquisition_semantics(self):
+        classifier = workflow.ARROW_ACQUISITION_CLASSIFIER_ID
+        with tempfile.TemporaryDirectory() as directory:
+            policy_path = Path(directory) / "policy.json"
+            workflow.write_json(policy_path, {"policies": {"selected": {
+                "qualified_temporal_classifier_ids": [],
+                "qualified_temporal_classifiers": {}}}})
+            campaign = {"policy_id": "selected", "classifiers": {classifier: {
+                "spec": {"sha256": workflow.sha256(
+                    workflow.SPEC_BY_CLASSIFIER[classifier])}}}}
+            with patch.object(workflow, "POLICY_PATH", policy_path):
+                _, _, prospective = workflow._prospective_policy(campaign)
+        self.assertEqual(prospective["qualified_temporal_classifier_ids"], [classifier])
+        self.assertEqual(prospective["qualified_temporal_classifiers"][classifier], {
+            "classifier_spec_sha256": campaign["classifiers"][classifier]["spec"]["sha256"],
+            "deadline_observation_semantics": "TARGET_ACQUISITION_TRANSITION",
+            "raw_affected_fields": ["main_arrows"],
+        })
+
+    def test_prospective_policy_publishes_frequency_context_semantics(self):
+        classifier = workflow.FREQUENCY_CONTEXT_CLASSIFIER_ID
+        with tempfile.TemporaryDirectory() as directory:
+            policy_path = Path(directory) / "policy.json"
+            workflow.write_json(policy_path, {"policies": {"selected": {
+                "qualified_temporal_classifier_ids": [],
+                "qualified_temporal_classifiers": {}}}})
+            campaign = {"policy_id": "selected", "classifiers": {classifier: {
+                "spec": {"sha256": workflow.sha256(
+                    workflow.SPEC_BY_CLASSIFIER[classifier])}}}}
+            with patch.object(workflow, "POLICY_PATH", policy_path):
+                _, _, prospective = workflow._prospective_policy(campaign)
+        self.assertEqual(prospective["qualified_temporal_classifier_ids"], [classifier])
+        self.assertEqual(prospective["qualified_temporal_classifiers"][classifier], {
+            "classifier_spec_sha256": campaign["classifiers"][classifier]["spec"]["sha256"],
+            "deadline_observation_semantics": "LEGAL_PRESENTATION_TRANSITION",
+            "verification_closure_semantics":
+                "RAW_CURRENT_BRACKETED_UNRESOLVED_VERIFICATION_BOUNDARY",
+            "raw_affected_fields": ["primary_frequency"],
+        })
+
+    def test_prospective_policy_publishes_secondary_context_semantics(self):
+        classifier = workflow.SECONDARY_CONTEXT_CLASSIFIER_ID
+        with tempfile.TemporaryDirectory() as directory:
+            policy_path = Path(directory) / "policy.json"
+            workflow.write_json(policy_path, {"policies": {"selected": {
+                "qualified_temporal_classifier_ids": [],
+                "qualified_temporal_classifiers": {}}}})
+            campaign = {"policy_id": "selected", "classifiers": {classifier: {
+                "spec": {"sha256": workflow.sha256(
+                    workflow.SPEC_BY_CLASSIFIER[classifier])}}}}
+            with patch.object(workflow, "POLICY_PATH", policy_path):
+                _, _, prospective = workflow._prospective_policy(campaign)
+        self.assertEqual(prospective["qualified_temporal_classifier_ids"], [classifier])
+        self.assertEqual(prospective["qualified_temporal_classifiers"][classifier], {
+            "classifier_spec_sha256": campaign["classifiers"][classifier]["spec"]["sha256"],
+            "deadline_observation_semantics": "LEGAL_PRESENTATION_TRANSITION",
+            "raw_affected_fields": ["secondary"],
+        })
+
+    def test_prospective_policy_publishes_secondary_optical_semantics(self):
+        classifier = workflow.SECONDARY_OPTICAL_CLASSIFIER_ID
+        with tempfile.TemporaryDirectory() as directory:
+            policy_path = Path(directory) / "policy.json"
+            workflow.write_json(policy_path, {"policies": {"selected": {
+                "qualified_temporal_classifier_ids": [],
+                "qualified_temporal_classifiers": {}}}})
+            campaign = {"policy_id": "selected", "classifiers": {classifier: {
+                "spec": {"sha256": workflow.sha256(
+                    workflow.SPEC_BY_CLASSIFIER[classifier])}}}}
+            with patch.object(workflow, "POLICY_PATH", policy_path):
+                _, _, prospective = workflow._prospective_policy(campaign)
+        self.assertEqual(prospective["qualified_temporal_classifier_ids"], [classifier])
+        self.assertEqual(prospective["qualified_temporal_classifiers"][classifier], {
+            "classifier_spec_sha256": campaign["classifiers"][classifier]["spec"]["sha256"],
+            "deadline_observation_semantics": "LEGAL_PRESENTATION_TRANSITION",
+            "raw_affected_fields": ["secondary"],
+        })
 
     def test_manifest_defaults_follow_bench_environment(self):
         with patch.dict(os.environ, {"BENCH_ARTIFACT_ROOT": "/tmp/bench-owned"}, clear=False):
@@ -385,8 +719,13 @@ class QualificationWorkflowTests(unittest.TestCase):
 
             observer = root / "observer_packet"
             clip = observer / "clips/OPAQUE123456.mov"
+            source_rows = {
+                index: {"source_frame_seq": index + 1,
+                        "capture_ns": 1_000_000_000 + index * 5_000_000}
+                for index in range(12)
+            }
             source_indices, size = workflow._build_clip(
-                video, clip, classifier, [4, 5, 6], 12,
+                video, clip, classifier, [4, 5, 6], source_rows,
                 registration, 1280, 720)
             item = {
                 "opaque_id": "OPAQUE123456", "clip": "clips/OPAQUE123456.mov",
@@ -395,9 +734,6 @@ class QualificationWorkflowTests(unittest.TestCase):
                 "clip_source_video_indices": source_indices,
                 "target_run_clip_frame_indices": [source_indices.index(value)
                                                    for value in (4, 5, 6)],
-                "full_run_video_indices": [4, 5, 6],
-                "full_run_clip_frame_indices": [source_indices.index(value)
-                                                 for value in (4, 5, 6)],
                 "inset_source_box": list(workflow._raw_box(
                     workflow._logical_inset(classifier),
                     registration, 1280, 720)),
@@ -437,7 +773,7 @@ class QualificationWorkflowTests(unittest.TestCase):
                                 "video_timing_verification_result": timing}},
                     selection, [item])
 
-    def test_build_clip_retains_twenty_context_frames_and_slows_for_review(self):
+    def test_build_clip_retains_fixed_time_context_and_slows_for_review(self):
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary) / "clip.mov"
             commands = []
@@ -448,28 +784,63 @@ class QualificationWorkflowTests(unittest.TestCase):
 
             probe = {"streams": [{
                 "codec_name": "png", "pix_fmt": "rgb24", "width": 1720, "height": 720,
-                "nb_frames": "43", "r_frame_rate": "25/1",
+                "nb_frames": "100", "r_frame_rate": "25/1",
             }]}
+            source_rows = {
+                index: {"source_frame_seq": index + 1,
+                        "capture_ns": 1_000_000_000 + index * 5_000_000}
+                for index in range(100)
+            }
             with (patch.object(workflow.shutil, "which", side_effect=lambda name: f"/{name}"),
                   patch.object(workflow.subprocess, "run", side_effect=run),
                   patch.object(workflow.subprocess, "check_output",
                                return_value=json.dumps(probe))):
                 source, size = workflow._build_clip(
                     Path("reserved.mp4"), destination,
-                    "v1-main-bar-adjacent-redraw-v2", [50, 51, 52], 100,
+                    "v1-main-bar-adjacent-redraw-v2", [50, 51, 52], source_rows,
                     {"landmark_bounds": [376, 192, 595, 270]}, 1280, 720)
 
-            self.assertEqual(source, list(range(30, 73)))
+            self.assertEqual(source, list(range(100)))
             self.assertEqual(size, len(b"observer clip"))
             graph = commands[0][commands[0].index("-filter_complex") + 1]
-            self.assertIn("trim=start_frame=30:end_frame=73", graph)
+            self.assertIn("trim=start_frame=0:end_frame=100", graph)
             self.assertIn("setpts=N/(25*TB)", graph)
+
+    def test_observer_window_is_decision_and_full_run_independent(self):
+        source_rows = {
+            index: {"source_frame_seq": index + 1,
+                    "capture_ns": 1_000_000_000 + index * 1_000_000}
+            for index in range(801)
+        }
+        candidates = (
+            {"decision": "ADMITTED", "indices": [400, 401],
+             "full_indices": list(range(100, 702))},
+            {"decision": "REJECTED", "indices": [400, 401],
+             "full_indices": [400, 401]},
+        )
+        windows = [workflow._observer_clip_source_indices(
+            candidate["indices"], source_rows) for candidate in candidates]
+        self.assertEqual(windows[0], windows[1])
+        self.assertEqual(windows[0], list(range(100, 702)))
+        self.assertGreater(len(windows[0]), 40)
 
     def test_prepare_classifier_output_passes_the_real_v2_verifier(self):
         self._prepared_classifier_round_trip("v1-main-bar-adjacent-redraw-v2")
 
     def test_prepare_arrow_packet_passes_the_real_verifier(self):
         self._prepared_classifier_round_trip(workflow.ARROW_CLASSIFIER_ID)
+
+    def test_prepare_arrow_acquisition_packet_passes_the_real_verifier(self):
+        self._prepared_classifier_round_trip(workflow.ARROW_ACQUISITION_CLASSIFIER_ID)
+
+    def test_prepare_frequency_context_packet_passes_the_real_verifier(self):
+        self._prepared_classifier_round_trip(workflow.FREQUENCY_CONTEXT_CLASSIFIER_ID)
+
+    def test_prepare_secondary_context_packet_passes_the_real_verifier(self):
+        self._prepared_classifier_round_trip(workflow.SECONDARY_CONTEXT_CLASSIFIER_ID)
+
+    def test_prepare_secondary_optical_packet_passes_the_real_verifier(self):
+        self._prepared_classifier_round_trip(workflow.SECONDARY_OPTICAL_CLASSIFIER_ID)
 
     def _prepared_classifier_round_trip(self, classifier):
         helper = qualification_test_support.QualificationTests(
@@ -519,10 +890,9 @@ class QualificationWorkflowTests(unittest.TestCase):
         stage.mkdir()
         opaque_ids = [item["opaque_id"] for item in hidden["items"]]
 
-        def build_clip(_video, destination, _classifier, target, frame_count,
+        def build_clip(_video, destination, _classifier, target, source_rows,
                        _registration, _width, _height):
-            first, last = max(0, target[0] - 20), min(frame_count - 1, target[-1] + 20)
-            source_indices = list(range(first, last + 1))
+            source_indices = workflow._observer_clip_source_indices(target, source_rows)
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(f"workflow clip {destination.stem}".encode("ascii"))
             return source_indices, destination.stat().st_size
@@ -530,7 +900,10 @@ class QualificationWorkflowTests(unittest.TestCase):
         fake_data = {
             "video": Path("reserved.mp4"),
             "retained_capture": helper.root / "retained-capture",
-            "timing": {"encoded_frame_count": 100},
+            "timing": {"encoded_frame_count": 1000},
+            "rows": [{"frame_seq": 1000 + index,
+                      "host_capture_ns": 1_000_000_000 + index * 5_000_000}
+                     for index in range(1000)],
             "registration": {"landmark_bounds": [376, 192, 595, 270]},
             "width": 1280,
             "height": 720,
@@ -572,6 +945,20 @@ class QualificationWorkflowTests(unittest.TestCase):
                         workflow_sources["completed_observations"])
         manifest = workflow.read_json(workflow_sources["observer_manifest"])
         prepared_hidden = workflow.read_json(workflow_sources["restricted_hidden_key"])
+        readme = workflow_sources["observer_readme"].read_text(encoding="utf-8")
+        self.assertNotIn("full_run", readme)
+        hidden_by_id = {item["opaque_id"]: item for item in prepared_hidden["items"]}
+        for item in manifest["items"]:
+            self.assertNotIn("full_run_video_indices", item)
+            self.assertNotIn("full_run_clip_frame_indices", item)
+            hidden_item = hidden_by_id[item["opaque_id"]]
+            self.assertIn("full_run_video_indices", hidden_item)
+            self.assertIn("full_run_clip_frame_indices", hidden_item)
+            self.assertEqual(
+                hidden_item["full_run_clip_frame_indices"],
+                [item["clip_source_video_indices"].index(value)
+                 for value in hidden_item["full_run_video_indices"]],
+            )
         completed = workflow.read_json(workflow_sources["completed_observations"])
         comparison = workflow._matrix_document(
             classifier, seeded_entry["classifier_spec_sha256"], workflow_sources,
@@ -580,6 +967,7 @@ class QualificationWorkflowTests(unittest.TestCase):
         workflow.write_json(comparison_path, comparison)
         entry = {
             "classifier_spec_sha256": seeded_entry["classifier_spec_sha256"],
+            "implementation_sha256": implementation,
             "spec": helper.reference(classifier_root / "spec.json", helper.root),
             "validation": helper.reference(comparison_path, helper.root),
             "source_artifacts": {
@@ -626,9 +1014,12 @@ class QualificationWorkflowTests(unittest.TestCase):
                     workflow.read_json(paths["completed_observations"]),
                     workflow.read_json(paths["restricted_hidden_key"]),
                 )
+                expected_rejections = (
+                    10 if classifier == workflow.FREQUENCY_CONTEXT_CLASSIFIER_ID else 5)
                 self.assertEqual(document["confusion_matrix"]["true_reject"], 0)
-                self.assertEqual(document["confusion_matrix"]["abstain"], 5)
-                self.assertEqual(document["denominators"]["observer_indeterminate"], 5)
+                self.assertEqual(document["confusion_matrix"]["abstain"], expected_rejections)
+                self.assertEqual(
+                    document["denominators"]["observer_indeterminate"], expected_rejections)
                 self.assertFalse(document["integrity_pass"])
                 self.assertFalse(document["allowlist_decision"]["allowlist_exact_classifier"])
     def test_atomic_publish_restores_both_files_when_postcheck_fails(self):
@@ -721,6 +1112,7 @@ class QualificationWorkflowTests(unittest.TestCase):
             return real_verify(*args, **kwargs)
 
         empty_policy = {
+            "contract_version": 3,
             "qualified_temporal_classifier_ids": [],
             "qualified_temporal_classifiers": {},
         }
@@ -755,7 +1147,9 @@ class QualificationWorkflowTests(unittest.TestCase):
             self.assertTrue(manifest_path.is_file())
             manifest = workflow.read_json(manifest_path)
             self.assertEqual(manifest["reader"]["method_version"], 6)
-            self.assertEqual(manifest["reader"]["implementation_sha256"], method)
+            self.assertEqual(
+                manifest["reader"]["implementation_sha256"],
+                workflow.static_method_hashes(method))
             self.assertEqual(manifest["temporal_classifiers"], {})
             secondary_path = workflow.resolve_reference(
                 destination, manifest["visible_secondary_validation"], "secondary")

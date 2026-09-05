@@ -178,11 +178,16 @@ new target at the deadline fails. An unqualified unreadable deadline stays
 Verification always starts at the deadline marker, including when that marker
 is unreadable. Every subsequent original through 192 ms must be current or a
 specifically qualified legal transition. Every required shared blink phase must
-be observed, and a closing correct original must occur at or after the exact
-verification end, within 10 ms. A missing image or unqualified unknown blocks
-`PASS`; a supported wrong state in that interval is `FAIL` even beside other
-unknowns. Images after an established closing marker cannot retroactively change
-that bounded event result.
+be observed. The first marker at or after the exact verification end must occur
+within 10 ms and normally must be raw current. A separately qualified frequency
+closure may cover a complete contiguous unresolved run across that boundary only
+when raw-current originals immediately bracket the run, every run frame belongs
+to the one exact-current classifier record, and all source gaps remain within 10
+ms. The later bracket frame remains the reported raw-current closing observation;
+no raw status is rewritten. A missing image or unqualified unknown blocks `PASS`;
+a supported wrong state in that interval is `FAIL` even beside other unknowns.
+Images after an established closing proof cannot retroactively change that
+bounded event result.
 
 All pre-deadline images remain available as optical acquisition diagnostics.
 They neither establish nor prevent the functional verdict. In particular,

@@ -6,7 +6,10 @@ raw ``UNRESOLVED`` frame is excused only when the caller supplies an explicit
 qualified-classification record whose classifier is listed by the selected
 policy and whose source frames belong exactly to that event.  Disjoint
 classifiers may jointly qualify a frame only when their accepted field claims
-cover that frame's raw affected fields exactly.
+cover that frame's raw affected fields exactly.  At the sole deadline marker,
+a qualified target-acquisition transition in any implicated field is already
+enough to prove a late target.  That one-way failure evidence never excuses the
+frame or contributes to a pass.
 
 Input event records use this compact boundary schema::
 
@@ -67,6 +70,8 @@ _SHA256 = re.compile(r"[0-9a-f]{64}")
 _DEADLINE_TRANSITION_SEMANTICS = {
     "LEGAL_PRESENTATION_TRANSITION", "TARGET_ACQUISITION_TRANSITION",
 }
+_VERIFICATION_CLOSURE_SEMANTICS = (
+    "RAW_CURRENT_BRACKETED_UNRESOLVED_VERIFICATION_BOUNDARY")
 
 
 def _require(condition: bool, reason: str) -> None:
@@ -156,6 +161,10 @@ def load_policy(policy_id: str = DEFAULT_POLICY_ID, path: Path = DEFAULT_POLICY_
             _require(spec.get("deadline_observation_semantics") in
                      _DEADLINE_TRANSITION_SEMANTICS,
                      f"invalid deadline transition semantics for {classifier_id}")
+        closure_semantics = spec.get("verification_closure_semantics")
+        if closure_semantics is not None:
+            _require(closure_semantics == _VERIFICATION_CLOSURE_SEMANTICS,
+                     f"invalid verification closure semantics for {classifier_id}")
     _require(isinstance(policy.get("scope"), dict) and isinstance(policy.get("basis"), list),
              "visible-event policy lacks scope or basis")
     return policy
@@ -243,19 +252,34 @@ def _classification_shape(record: Any) -> str | None:
         return "classification has invalid raw affected fields"
     if len(fields) != len(set(fields)):
         return "classification has duplicate raw affected fields"
+    closure_semantics = record.get("verification_closure_semantics")
+    if closure_semantics is not None:
+        if closure_semantics != _VERIFICATION_CLOSURE_SEMANTICS:
+            return "classification has invalid verification closure semantics"
+        context = record.get("context_frame_indices")
+        if (not isinstance(context, list) or not context
+                or any(type(value) is not int or value < 0 for value in context)
+                or context != sorted(set(context))
+                or any(right != left + 1 for left, right in zip(context, context[1:]))
+                or not set(indices).issubset(context)):
+            return "classification has invalid verification closure context"
     return None
 
 
 def _classification_map(records: Any, events: list[Any],
-                        allowed: dict[str, dict]) -> tuple[dict[tuple[str, int], list[dict]], list[dict]]:
+                        allowed: dict[str, dict]) -> tuple[
+                            dict[tuple[str, int], list[dict]],
+                            dict[tuple[str, int], list[dict]],
+                            list[dict],
+                        ]:
     """Validate explicit qualifications without deriving any classification."""
     errors: list[dict] = []
     qualified: dict[tuple[str, int], list[dict]] = {}
     if records is None:
         records = []
     if not isinstance(records, list):
-        return {}, [{"code": "INVALID_TEMPORAL_CLASSIFICATION_MAP",
-                     "reason": "temporal classifications must be a list"}]
+        return {}, {}, [{"code": "INVALID_TEMPORAL_CLASSIFICATION_MAP",
+                         "reason": "temporal classifications must be a list"}]
     event_observations: dict[str, dict[int, dict]] = {}
     for event in events:
         if not isinstance(event, dict) or not isinstance(event.get("event_id"), str):
@@ -280,7 +304,14 @@ def _classification_map(records: Any, events: list[Any],
             continue
         spec = allowed[record["classifier_id"]]
         if record.get("classifier_spec_sha256") != spec["classifier_spec_sha256"] \
-                or set(record["raw_affected_fields"]) != set(spec["raw_affected_fields"]):
+                or set(record["raw_affected_fields"]) != set(spec["raw_affected_fields"]) \
+                or ("deadline_observation_semantics" in record
+                    and record["deadline_observation_semantics"] !=
+                    spec.get("deadline_observation_semantics")) \
+                or (("verification_closure_semantics" in record
+                     or "verification_closure_semantics" in spec)
+                    and record.get("verification_closure_semantics") !=
+                    spec.get("verification_closure_semantics")):
             errors.append({"code": "TEMPORAL_CLASSIFIER_SPEC_MISMATCH", "record_index": record_index,
                            "event_id": record["event_id"], "classifier_id": record["classifier_id"]})
             continue
@@ -314,17 +345,111 @@ def _classification_map(records: Any, events: list[Any],
             continue
         for index in record["video_frame_indices"]:
             accepted_by_frame.setdefault((record["event_id"], index), []).append(record)
+    target_acquisition: dict[tuple[str, int], list[dict]] = {}
     for key, accepted in accepted_by_frame.items():
         raw_fields = set(event_observations[key[0]][key[1]].get("raw_affected_fields", []))
         accepted_fields = {field for record in accepted for field in record["raw_affected_fields"]}
         if accepted_fields == raw_fields:
             qualified[key] = deepcopy(accepted)
-    return qualified, errors
+        target_records = [record for record in accepted
+                          if allowed[record["classifier_id"]].get(
+                              "deadline_observation_semantics") ==
+                          "TARGET_ACQUISITION_TRANSITION"]
+        if target_records:
+            target_acquisition[key] = deepcopy(target_records)
+    return qualified, target_acquisition, errors
 
 
 def _append_once(values: list[str], value: str) -> None:
     if value not in values:
         values.append(value)
+
+
+def _verification_closure_at(
+    position: int,
+    observations: list[dict],
+    event_id: str,
+    verification_end_ns: int,
+    qualified: dict[tuple[str, int], list[dict]],
+    policy: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Prove one unresolved verification boundary from a closed raw-current bracket."""
+    boundary = observations[position]
+    if (boundary["raw_status"] != "UNRESOLVED"
+            or not verification_end_ns <= boundary["capture_ns"]
+            <= verification_end_ns + policy["maximum_source_marker_gap_ns"]):
+        return None
+
+    def closure_record(at: int) -> dict | None:
+        item = observations[at]
+        records = qualified.get((event_id, item["video_frame_index"]), [])
+        if len(records) != 1:
+            return None
+        record = records[0]
+        spec = policy["qualified_temporal_classifiers"].get(record["classifier_id"], {})
+        if (record.get("verification_closure_semantics") !=
+                _VERIFICATION_CLOSURE_SEMANTICS
+                or spec.get("verification_closure_semantics") !=
+                _VERIFICATION_CLOSURE_SEMANTICS):
+            return None
+        return record
+
+    record = closure_record(position)
+    if record is None:
+        return None
+    start = position
+    while start > 0 and observations[start - 1]["raw_status"] == "UNRESOLVED" \
+            and closure_record(start - 1) is not None:
+        start -= 1
+    stop = position + 1
+    while stop < len(observations) and observations[stop]["raw_status"] == "UNRESOLVED" \
+            and closure_record(stop) is not None:
+        stop += 1
+    if start == 0 or stop >= len(observations):
+        return None
+    left, right = observations[start - 1], observations[stop]
+    if (left["raw_status"] != "CURRENT" or right["raw_status"] != "CURRENT"
+            or not left["capture_ns"] < verification_end_ns
+            or any(right_item["video_frame_index"] != left_item["video_frame_index"] + 1
+                   or right_item["source_frame_seq"] != left_item["source_frame_seq"] + 1
+                   or right_item["capture_ns"] - left_item["capture_ns"]
+                   > policy["maximum_source_marker_gap_ns"]
+                   for left_item, right_item in zip(
+                       observations[start - 1:stop], observations[start:stop + 1]))):
+        return None
+    run_indices = [item["video_frame_index"] for item in observations[start:stop]]
+    records = [closure_record(at) for at in range(start, stop)]
+    if (any(item is None for item in records)
+            or any(item != record for item in records)
+            or record.get("video_frame_indices") != run_indices):
+        return None
+    bracket_indices = [left["video_frame_index"], *run_indices,
+                       right["video_frame_index"]]
+    retained_context = [
+        *(point.get("video_frame_index") for point in record.get("left_support", [])
+          if isinstance(point, dict)),
+        *record.get("context_frame_indices", []),
+        *(point.get("video_frame_index") for point in record.get("right_support", [])
+          if isinstance(point, dict)),
+    ]
+    if not set(bracket_indices).issubset(retained_context):
+        return None
+    for key, expected in (("first", observations[start]),
+                          ("last", observations[stop - 1])):
+        point = record.get(key)
+        if not isinstance(point, dict) or any(
+                point.get(field) != expected.get(field) for field in (
+                    "frame_id", "video_frame_index", "source_frame_seq", "capture_ns")):
+            return None
+    return {
+        "semantics": _VERIFICATION_CLOSURE_SEMANTICS,
+        "verification_boundary": deepcopy(boundary),
+        "left_raw_current": deepcopy(left),
+        "right_raw_current": deepcopy(right),
+        "classified_video_frame_indices": run_indices,
+        "classifier_id": record["classifier_id"],
+        "classifier_spec_sha256": record["classifier_spec_sha256"],
+    }
 
 
 def _event_evidence(raw: dict[str, Any], policy: dict[str, Any]) -> tuple[dict[str, Any], list[dict], list[str]]:
@@ -425,7 +550,8 @@ def _event_evidence(raw: dict[str, Any], policy: dict[str, Any]) -> tuple[dict[s
 
 
 def _judge_event(raw: dict[str, Any], policy: dict[str, Any],
-                 qualified: dict[tuple[str, int], list[dict]]) -> dict[str, Any]:
+                 qualified: dict[tuple[str, int], list[dict]],
+                 target_acquisition: dict[tuple[str, int], list[dict]]) -> dict[str, Any]:
     event_id = raw.get("event_id") if isinstance(raw.get("event_id"), str) else "invalid-event"
     try:
         timing, observations, blockers = _event_evidence(raw, policy)
@@ -442,6 +568,7 @@ def _judge_event(raw: dict[str, Any], policy: dict[str, Any],
         "first_current_correct": None,
         "response_acquisition": None,
         "verification_end_ns": None,
+        "verification_closure_proof": None,
         "closing_current_correct": None,
         "raw_status_counts": dict(Counter(item["raw_status"] for item in observations)),
         "raw_observations": deepcopy(observations),
@@ -522,29 +649,43 @@ def _judge_event(raw: dict[str, Any], policy: dict[str, Any],
     unknown_before_deadline = False
     acquisition_accepted = False
     acquisition_at_observation_marker = False
-    for item in observations:
+    for observation_position, item in enumerate(observations):
         capture = item["capture_ns"]
         if capture < anchor:
             continue
         raw_status = item["raw_status"]
         explicit = qualified.get((event_id, item["video_frame_index"]))
-        derived = "QUALIFIED_CAPTURE_TRANSITION" if raw_status == "UNRESOLVED" and explicit else raw_status
+        target_evidence = target_acquisition.get((event_id, item["video_frame_index"]))
+        legal_explicit = (explicit if explicit and all(
+            policy["qualified_temporal_classifiers"][record["classifier_id"]].get(
+                "deadline_observation_semantics",
+                "LEGAL_PRESENTATION_TRANSITION" if not observable_contract else None)
+            == "LEGAL_PRESENTATION_TRANSITION" for record in explicit) else None)
+        derived = ("QUALIFIED_CAPTURE_TRANSITION"
+                   if raw_status == "UNRESOLVED" and legal_explicit else raw_status)
         result["derived_observations"].append({
             "frame_id": item["frame_id"], "video_frame_index": item["video_frame_index"],
             "source_frame_seq": item["source_frame_seq"], "capture_ns": capture,
             "raw_status": raw_status, "derived_status": derived,
         })
-        for classification in explicit or []:
+        for classification in legal_explicit or []:
             if classification not in result["temporal_classifications"]:
                 result["temporal_classifications"].append(deepcopy(classification))
+        if observable_contract and item is deadline_marker and raw_status == "UNRESOLVED" \
+                and target_evidence:
+            for classification in target_evidence:
+                if classification not in result["temporal_classifications"]:
+                    result["temporal_classifications"].append(deepcopy(classification))
+            result["response_acquisition"]["status"] = (
+                "FIRST_POST_DEADLINE_CAPTURE_TARGET_IN_TRANSITION")
+            failure = ("TARGET_IN_TRANSITION_AT_DEADLINE_CAPTURE", item)
+            break
         if functional_contract and capture < deadline:
             # Keep every raw image and derived reading. A physical redraw before
             # its allowed response deadline is not a functional failure.
             continue
         if (functional_contract and item is deadline_marker and raw_status == "UNRESOLVED"
-                and explicit and all(policy["qualified_temporal_classifiers"][record["classifier_id"]][
-                    "deadline_observation_semantics"] == "LEGAL_PRESENTATION_TRANSITION"
-                                     for record in explicit)):
+                and legal_explicit):
             # Both optical endpoint phases are already legal target content.
             # This starts verification without inventing a raw CURRENT image.
             first = item
@@ -563,6 +704,16 @@ def _judge_event(raw: dict[str, Any], policy: dict[str, Any],
         if after_verification:
             if closing is not None:
                 continue
+            if functional_contract and raw_status == "UNRESOLVED" and legal_explicit:
+                closure_proof = _verification_closure_at(
+                    observation_position, observations, event_id,
+                    result["verification_end_ns"], qualified, policy)
+                if closure_proof is not None:
+                    result["verification_closure_proof"] = closure_proof
+                    closing = closure_proof["right_raw_current"]
+                    if closing["joint_state_id"] not in seen_phases:
+                        seen_phases.append(closing["joint_state_id"])
+                    continue
             if (functional_contract and capture - result["verification_end_ns"]
                     > policy["maximum_source_marker_gap_ns"]):
                 _append_once(blockers, "VERIFICATION_DURATION_NOT_OBSERVED")
@@ -578,7 +729,7 @@ def _judge_event(raw: dict[str, Any], policy: dict[str, Any],
                 closing = item
                 if item["joint_state_id"] not in seen_phases:
                     seen_phases.append(item["joint_state_id"])
-            elif raw_status == "UNRESOLVED" and explicit is None:
+            elif raw_status == "UNRESOLVED" and legal_explicit is None:
                 _append_once(blockers, "UNCLASSIFIED_VISIBLE_INTERVAL")
             continue
         if raw_status == "DEFINITE_OTHER":
@@ -675,7 +826,7 @@ def _judge_event(raw: dict[str, Any], policy: dict[str, Any],
                 _append_once(blockers, "DEADLINE_OBSERVATION_UNRESOLVED")
                 result["response_acquisition"]["status"] = (
                     "FIRST_POST_DEADLINE_CAPTURE_UNRESOLVED")
-            if explicit is None:
+            if legal_explicit is None:
                 _append_once(blockers, "UNCLASSIFIED_VISIBLE_INTERVAL")
                 if capture <= deadline:
                     unknown_before_deadline = True
@@ -718,8 +869,9 @@ def _judge_event(raw: dict[str, Any], policy: dict[str, Any],
         result.update(result="INCONCLUSIVE", reason_code=blockers[0] if blockers else "DEADLINE_NOT_ESTABLISHED",
                       reasons=blockers or ["DEADLINE_NOT_ESTABLISHED"])
         return result
-    if closing is None or closing["capture_ns"] - result["verification_end_ns"] \
-            > policy["maximum_source_marker_gap_ns"]:
+    if (result["verification_closure_proof"] is None
+            and (closing is None or closing["capture_ns"] - result["verification_end_ns"]
+                 > policy["maximum_source_marker_gap_ns"])):
         _append_once(blockers, "VERIFICATION_DURATION_NOT_OBSERVED")
     missing_phases = [phase for phase in raw["required_joint_state_ids"] if phase not in seen_phases]
     if missing_phases:
@@ -782,7 +934,7 @@ def judge_visible_event_presentation(
     if not isinstance(events, list):
         errors.append("events are not a list")
         frozen_events = []
-    qualified, classification_errors = _classification_map(
+    qualified, target_acquisition, classification_errors = _classification_map(
         frozen_classifications, frozen_events, policy["qualified_temporal_classifiers"])
     result["execution"]["fatal_integrity_errors"] = errors
     result["execution"]["temporal_classification_errors"] = classification_errors
@@ -793,7 +945,7 @@ def judge_visible_event_presentation(
         result["result"] = "INCONCLUSIVE"
         result["reason_code"] = "FATAL_EVIDENCE_INTEGRITY"
         return result
-    judged = [_judge_event(raw, policy, qualified) if isinstance(raw, dict)
+    judged = [_judge_event(raw, policy, qualified, target_acquisition) if isinstance(raw, dict)
               else _inconclusive_event(raw, f"invalid-event-{index + 1}", "INVALID_EVENT_EVIDENCE",
                                        "event is not an object")
               for index, raw in enumerate(frozen_events)]

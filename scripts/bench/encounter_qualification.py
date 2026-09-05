@@ -30,7 +30,14 @@ except ImportError:
 SCHEMA_VERSION = 1
 CORE_READER_FILES = ("encounter_reader.py", "encounter_ocr.swift", "encounter_ocr_session.py", "counter_reader.py")
 OCR_RUNTIME_FILES = ("encounter_runtime_probe.py", "encounter_ocr_probe.b64")
-QUALIFICATION_LOGIC_FILES = ("encounter_qualification.py", "encounter_expectation.py")
+STATIC_READER_IMPLEMENTATION_FILES = (
+    *CORE_READER_FILES,
+    *OCR_RUNTIME_FILES,
+    "encounter_expectation.py",
+    "counter_expectation.py",
+    "camera_contract.py",
+    "encounter_qualification.py",
+)
 FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
 MINIMUM_BLIND_FRAMES = 20
@@ -40,6 +47,7 @@ MINIMUM_PARTIAL_SECONDARY_IDENTITY_AGREEMENTS = 5
 MINIMUM_EMPTY_SECONDARY_PRESENCE_CONTROLS = 5
 MINIMUM_TEMPORAL_POSITIVES = 5
 MINIMUM_TEMPORAL_NEGATIVES = 5
+TEMPORAL_OBSERVER_CONTEXT_NS_EACH_SIDE = 300_000_000
 VISIBLE_SECONDARY_SOURCE_NAMES = (
     "packet_manifest", "blind_labels", "sealed_key", "adjudication")
 TEMPORAL_SOURCE_NAMES = (
@@ -72,21 +80,46 @@ TEMPORAL_SOURCE_HASH_FIELDS = {
     "analysis_result": "analysis_result_sha256",
 }
 
+COMMON_TEMPORAL_IMPLEMENTATION_FILES = (
+    "encounter_check.py",
+    "encounter_sequence.py",
+    "encounter_temporal.py",
+    "encounter_configuration.py",
+    "encounter_product_adapter.py",
+    "encounter_product.py",
+    "camera_artifacts.py",
+    "camera_timing.py",
+    "counter_check.py",
+    "encounter_assessment.py",
+    "visual_compare.py",
+    "artifact_privacy.py",
+)
+
 CLASSIFIER_IMPLEMENTATION_FILES = {
-    # encounter_temporal passes originals/events/context into the arrow classifier and
-    # appends its records unchanged. Wrapper drift can suppress a result (fail closed)
-    # but the qualified record authority remains encounter_arrow_transition.py.
-    "v1-arrow-phase-edge-v2": ("encounter_arrow_transition.py",),
-    "v1-arrow-phase-edge-v3": ("encounter_arrow_transition.py",),
+    "v1-arrow-phase-edge-v2": (
+        *COMMON_TEMPORAL_IMPLEMENTATION_FILES, "encounter_arrow_transition.py"),
+    "v1-arrow-phase-edge-v3": (
+        *COMMON_TEMPORAL_IMPLEMENTATION_FILES, "encounter_arrow_transition.py"),
+    "v1-arrow-target-acquisition-v1": (
+        *COMMON_TEMPORAL_IMPLEMENTATION_FILES, "encounter_arrow_acquisition.py"),
+    "v1-stable-frequency-closed-context-v3": (
+        *COMMON_TEMPORAL_IMPLEMENTATION_FILES,
+        "encounter_frequency_context.py", "encounter_redraw_probe.py"),
     "v1-main-bar-adjacent-redraw-v2": (
-        "encounter_temporal.py", "encounter_bar_transition.py", "encounter_redraw_probe.py"),
+        *COMMON_TEMPORAL_IMPLEMENTATION_FILES,
+        "encounter_bar_transition.py", "encounter_redraw_probe.py"),
     "v1-muted-badge-rising-fill-v2": (
-        "encounter_temporal.py", "encounter_mute_redraw_transition.py",
+        *COMMON_TEMPORAL_IMPLEMENTATION_FILES, "encounter_mute_redraw_transition.py",
         "encounter_redraw_probe.py"),
     "v1-unmute-stable-frequency-sweep-v2": (
-        "encounter_temporal.py", "encounter_mute_redraw_transition.py",
+        *COMMON_TEMPORAL_IMPLEMENTATION_FILES, "encounter_mute_redraw_transition.py",
         "encounter_redraw_probe.py"),
-    "secondary-closed-meter-corroboration-v1": ("encounter_temporal.py",),
+    "v1-secondary-closed-context-v2": (
+        *COMMON_TEMPORAL_IMPLEMENTATION_FILES, "encounter_secondary_context.py"),
+    "v1-secondary-text-optical-bridge-v1": (
+        *COMMON_TEMPORAL_IMPLEMENTATION_FILES,
+        "encounter_secondary_optical_bridge.py", "encounter_secondary_probe.py"),
+    "secondary-closed-meter-corroboration-v1": COMMON_TEMPORAL_IMPLEMENTATION_FILES,
 }
 
 TEMPORAL_V2_OBSERVER_RUBRICS = {
@@ -100,6 +133,10 @@ TEMPORAL_V2_OBSERVER_RUBRICS = {
             "direction, the intervening run is one coherent fill or clear of that direction, "
             "every other direction stays unchanged, and confidence is HIGH."),
         "field_guidance": {
+            "left_endpoint_directions": (
+                "Transcribe the complete visible direction set in the clear left endpoint."),
+            "right_endpoint_directions": (
+                "Transcribe the complete visible direction set in the clear right endpoint."),
             "center_class": (
                 "Classify only the target run between the stable endpoints; do not assign its "
                 "frames either endpoint value."),
@@ -110,7 +147,8 @@ TEMPORAL_V2_OBSERVER_RUBRICS = {
             "confidence": "Use HIGH only when every required visual fact is clear.",
         },
         "literal_fields": (
-            "center_class", "endpoint_support", "extra_direction_motion", "confidence"),
+            "left_endpoint_directions", "right_endpoint_directions", "center_class",
+            "endpoint_support", "extra_direction_motion", "confidence"),
         "required_literals": {
             "center_class": "COHERENT_SINGLE_DIRECTION_ON_OFF_EDGE",
             "endpoint_support": "BOTH_CLEAR",
@@ -126,6 +164,220 @@ TEMPORAL_V2_OBSERVER_RUBRICS = {
                 "BOTH_CLEAR", "LEFT_UNCLEAR", "RIGHT_UNCLEAR", "BOTH_UNCLEAR",
                 "INDETERMINATE"),
             "extra_direction_motion": ("NO", "YES", "INDETERMINATE"),
+            "confidence": ("HIGH", "MEDIUM", "LOW"),
+        },
+    },
+    "v1-arrow-target-acquisition-v1": {
+        "raw_affected_fields": ["main_arrows"],
+        "observer_eligibility_rule": (
+            "BOTH_CLEAR endpoints, PRIOR_OR_PRIOR_PLUS_CURRENT to CURRENT direction, "
+            "coherent changed-direction motion, "
+            "EVERY_CLAIMED_FRAME_HAS_NONCURRENT_CHANGED_DIRECTION, "
+            "no unchanged-direction motion, and HIGH confidence"),
+        "eligibility_detail": (
+            "Eligible only when two stable clear endpoint frames on each side show a transition "
+            "from a prior arrow phase, or that prior phase plus the current phase, to the current "
+            "phase; every changed direction moves coherently, every claimed target frame retains "
+            "at least one noncurrent changed direction, every unchanged direction stays still, "
+            "and confidence is HIGH."),
+        "field_guidance": {
+            "left_endpoint_directions": (
+                "Transcribe the complete visible direction set in the clear left endpoint."),
+            "right_endpoint_directions": (
+                "Transcribe the complete visible direction set in the clear right endpoint."),
+            "endpoint_support": (
+                "BOTH_CLEAR requires two stable, mutually agreeing frames on each side."),
+            "endpoint_relation": (
+                "Use PRIOR_OR_PRIOR_PLUS_CURRENT_TO_CURRENT only when the left endpoint is a prior "
+                "phase or its union with the right current phase, and the right endpoint is current."),
+            "transition_class": (
+                "Judge all changed arrow directions across the complete optical transition."),
+            "claimed_frame_acquisition": (
+                "Use EVERY_CLAIMED_FRAME_HAS_NONCURRENT_CHANGED_DIRECTION only when each marked "
+                "target frame visibly differs from the current endpoint in at least one changed "
+                "direction."),
+            "unchanged_direction_motion": (
+                "YES if any arrow direction unchanged between endpoints moves visibly."),
+            "confidence": "Use HIGH only when every required visual fact is clear.",
+        },
+        "literal_fields": (
+            "left_endpoint_directions", "right_endpoint_directions", "endpoint_support",
+            "endpoint_relation", "transition_class",
+            "claimed_frame_acquisition", "unchanged_direction_motion", "confidence"),
+        "required_literals": {
+            "endpoint_support": "BOTH_CLEAR",
+            "endpoint_relation": "PRIOR_OR_PRIOR_PLUS_CURRENT_TO_CURRENT",
+            "transition_class": "COHERENT_CHANGED_DIRECTION_MOTION",
+            "claimed_frame_acquisition": (
+                "EVERY_CLAIMED_FRAME_HAS_NONCURRENT_CHANGED_DIRECTION"),
+            "unchanged_direction_motion": "NO",
+            "confidence": "HIGH",
+        },
+        "allowed_literals": {
+            "endpoint_support": (
+                "BOTH_CLEAR", "LEFT_UNCLEAR", "RIGHT_UNCLEAR", "BOTH_UNCLEAR",
+                "INDETERMINATE"),
+            "endpoint_relation": (
+                "PRIOR_OR_PRIOR_PLUS_CURRENT_TO_CURRENT", "OTHER_ENDPOINT_RELATION",
+                "INDETERMINATE"),
+            "transition_class": (
+                "COHERENT_CHANGED_DIRECTION_MOTION", "NONCOHERENT_CHANGED_DIRECTION_MOTION",
+                "VISUALLY_INDETERMINATE"),
+            "claimed_frame_acquisition": (
+                "EVERY_CLAIMED_FRAME_HAS_NONCURRENT_CHANGED_DIRECTION",
+                "A_CLAIMED_FRAME_IS_CURRENT_IN_ALL_CHANGED_DIRECTIONS",
+                "VISUALLY_INDETERMINATE"),
+            "unchanged_direction_motion": ("NO", "YES", "INDETERMINATE"),
+            "confidence": ("HIGH", "MEDIUM", "LOW"),
+        },
+    },
+    "v1-stable-frequency-closed-context-v3": {
+        "raw_affected_fields": ["primary_frequency"],
+        "observer_eligibility_rule": (
+            "SAME_FREQUENCY_GLYPHS_THROUGHOUT with BOTH_CLEAR endpoints, "
+            "LEGAL_TARGET_CONTENT, and HIGH confidence"),
+        "eligibility_detail": (
+            "Eligible only when two clear same-frequency supports close each side, every frame "
+            "between them preserves those same frequency glyphs, the content is a legal current "
+            "target, and confidence is HIGH. Do not infer or record the machine branch."),
+        "field_guidance": {
+            "observed_frequency": (
+                "Transcribe the exact five frequency digits and decimal visible in the context."),
+            "frequency_glyph_relation": (
+                "Judge the complete closed context and use SAME_FREQUENCY_GLYPHS_THROUGHOUT only "
+                "when the same five frequency digits and decimal persist throughout."),
+            "endpoint_support": (
+                "BOTH_CLEAR requires two stable, mutually agreeing frequency frames on each side."),
+            "target_content": (
+                "LEGAL_TARGET_CONTENT requires the shown frequency to be one permitted current "
+                "target; do not use a machine branch label."),
+            "confidence": "Use HIGH only when every required visual fact is clear.",
+        },
+        "literal_fields": (
+            "observed_frequency", "frequency_glyph_relation", "endpoint_support",
+            "target_content", "confidence"),
+        "required_literals": {
+            "frequency_glyph_relation": "SAME_FREQUENCY_GLYPHS_THROUGHOUT",
+            "endpoint_support": "BOTH_CLEAR",
+            "target_content": "LEGAL_TARGET_CONTENT",
+            "confidence": "HIGH",
+        },
+        "allowed_literals": {
+            "frequency_glyph_relation": (
+                "SAME_FREQUENCY_GLYPHS_THROUGHOUT", "FREQUENCY_GLYPHS_CHANGE",
+                "VISUALLY_INDETERMINATE"),
+            "endpoint_support": (
+                "BOTH_CLEAR", "LEFT_UNCLEAR", "RIGHT_UNCLEAR", "BOTH_UNCLEAR",
+                "INDETERMINATE"),
+            "target_content": (
+                "LEGAL_TARGET_CONTENT", "NOT_LEGAL_TARGET_CONTENT", "INDETERMINATE"),
+            "confidence": ("HIGH", "MEDIUM", "LOW"),
+        },
+    },
+    "v1-secondary-closed-context-v2": {
+        "raw_affected_fields": ["secondary"],
+        "observer_eligibility_rule": (
+            "SAME_CURRENT_CARD_CONTEXT with BOTH_CLEAR support pairs, coherent partial-meter "
+            "redraw, EXACT_COUNT_CLOSURE, and HIGH confidence"),
+        "eligibility_detail": (
+            "Eligible only when both support pairs clearly show the same current one-or-two-card "
+            "presentation, every marked refusal preserves that card identity through a coherent "
+            "partial-meter redraw, the complete context uniquely closes each meter on the support "
+            "count, and confidence is HIGH."),
+        "field_guidance": {
+            "observed_cards": (
+                "Transcribe the complete one-or-two-card presentation in slot order, including "
+                "band, frequency, direction, and bar count for each card."),
+            "card_context": (
+                "SAME_CURRENT_CARD_CONTEXT requires identical card count, slot, band, frequency, "
+                "direction, and readable text throughout the complete marked context."),
+            "support_pairs": (
+                "BOTH_CLEAR requires two stable, mutually agreeing readable frames on each side."),
+            "meter_redraw": (
+                "COHERENT_PARTIAL_METER_REDRAW requires every marked refusal to preserve the card "
+                "identity and show at least one partial strength cell compatible with the endpoints."),
+            "count_closure": (
+                "EXACT_COUNT_CLOSURE requires the complete context to leave exactly the support "
+                "bar count possible for every card."),
+            "confidence": "Use HIGH only when every required visual fact is clear.",
+        },
+        "literal_fields": (
+            "observed_cards", "card_context", "support_pairs", "meter_redraw",
+            "count_closure", "confidence"),
+        "required_literals": {
+            "card_context": "SAME_CURRENT_CARD_CONTEXT",
+            "support_pairs": "BOTH_CLEAR",
+            "meter_redraw": "COHERENT_PARTIAL_METER_REDRAW",
+            "count_closure": "EXACT_COUNT_CLOSURE",
+            "confidence": "HIGH",
+        },
+        "allowed_literals": {
+            "card_context": (
+                "SAME_CURRENT_CARD_CONTEXT", "CARD_CONTEXT_CHANGES",
+                "VISUALLY_INDETERMINATE"),
+            "support_pairs": (
+                "BOTH_CLEAR", "LEFT_UNCLEAR", "RIGHT_UNCLEAR", "BOTH_UNCLEAR",
+                "INDETERMINATE"),
+            "meter_redraw": (
+                "COHERENT_PARTIAL_METER_REDRAW", "INCOMPATIBLE_METER_CONTENT",
+                "VISUALLY_INDETERMINATE"),
+            "count_closure": (
+                "EXACT_COUNT_CLOSURE", "COUNT_NOT_UNIQUELY_CLOSED", "INDETERMINATE"),
+            "confidence": ("HIGH", "MEDIUM", "LOW"),
+        },
+    },
+    "v1-secondary-text-optical-bridge-v1": {
+        "raw_affected_fields": ["secondary"],
+        "observer_eligibility_rule": (
+            "SAME_COMPLETE_CARD_TEXT_THROUGHOUT with BOTH_CLEAR support pairs, "
+            "CENTER_COMPLETE_TEXT_CLEAR, NO_DIRECTION_OR_METER_CHANGE, and HIGH confidence"),
+        "eligibility_detail": (
+            "Eligible only when two clear support frames on each side and the center frame show "
+            "the same complete one-or-two-card text, the center text is complete and clear, "
+            "direction and meter content do not change, and confidence is HIGH."),
+        "field_guidance": {
+            "support_cards": (
+                "Transcribe the complete one-or-two-card presentation in support slot order, "
+                "including band, frequency, direction, and bar count for each card."),
+            "center_cards": (
+                "Independently transcribe the complete center-frame card presentation in slot "
+                "order, including band, frequency, direction, and bar count for each card."),
+            "support_pairs": (
+                "BOTH_CLEAR requires two stable, mutually agreeing readable frames on each side."),
+            "center_text": (
+                "CENTER_COMPLETE_TEXT_CLEAR requires the complete band and frequency text to be "
+                "visibly clear in the marked center frame."),
+            "card_text_relation": (
+                "SAME_COMPLETE_CARD_TEXT_THROUGHOUT requires every support and center frame to "
+                "show the identical complete text for every card."),
+            "direction_or_meter_change": (
+                "Use NO_DIRECTION_OR_METER_CHANGE only when direction and all meter cells remain "
+                "visibly unchanged through the complete five-frame bracket."),
+            "confidence": "Use HIGH only when every required visual fact is clear.",
+        },
+        "literal_fields": (
+            "support_cards", "center_cards", "support_pairs", "center_text", "card_text_relation",
+            "direction_or_meter_change", "confidence"),
+        "required_literals": {
+            "support_pairs": "BOTH_CLEAR",
+            "center_text": "CENTER_COMPLETE_TEXT_CLEAR",
+            "card_text_relation": "SAME_COMPLETE_CARD_TEXT_THROUGHOUT",
+            "direction_or_meter_change": "NO_DIRECTION_OR_METER_CHANGE",
+            "confidence": "HIGH",
+        },
+        "allowed_literals": {
+            "support_pairs": (
+                "BOTH_CLEAR", "LEFT_UNCLEAR", "RIGHT_UNCLEAR", "BOTH_UNCLEAR",
+                "INDETERMINATE"),
+            "center_text": (
+                "CENTER_COMPLETE_TEXT_CLEAR", "CENTER_COMPLETE_TEXT_NOT_CLEAR",
+                "VISUALLY_INDETERMINATE"),
+            "card_text_relation": (
+                "SAME_COMPLETE_CARD_TEXT_THROUGHOUT", "CARD_TEXT_CHANGES",
+                "VISUALLY_INDETERMINATE"),
+            "direction_or_meter_change": (
+                "NO_DIRECTION_OR_METER_CHANGE", "DIRECTION_OR_METER_CHANGE",
+                "VISUALLY_INDETERMINATE"),
             "confidence": ("HIGH", "MEDIUM", "LOW"),
         },
     },
@@ -288,6 +540,32 @@ _TEMPORAL_V2_REJECTION_CODES = {
         "NORMALIZED_RESIDUAL", "MAXIMUM_BACKWARD_STEP", "TOTAL_BACKWARD_MOTION",
         "EXTRA_DIRECTION_MOTION",
     },
+    "v1-arrow-target-acquisition-v1": {
+        "UNCLOSED_RUN", "SOURCE_GAP", "ENDPOINT_SPAN", "EXPECTATION_SIGNATURE",
+        "NOT_ACQUISITION_ENDPOINTS", "NO_PRODUCT_CLAIM", "NONCONTIGUOUS_PRODUCT_CLAIM",
+        "TRANSITION_READING", "INVALID_PROFILE", "ENDPOINT_SEPARATION",
+        "PROJECTION_RANGE", "NORMALIZED_RESIDUAL", "MAXIMUM_BACKWARD_STEP",
+        "TOTAL_BACKWARD_MOTION", "UNCHANGED_DIRECTION_MOTION",
+        "CLAIMED_FRAME_AT_CURRENT_ENDPOINT",
+    },
+    "v1-stable-frequency-closed-context-v3": {
+        "RUN_SPAN", "UNCLOSED_RUN", "SOURCE_GAP", "SUPPORT_SPAN", "SUPPORT_VALUE",
+        "SUPPORT_COMPARISON", "SUPPORT_GEOMETRY", "TARGET_MISMATCH", "CONTEXT_GEOMETRY",
+        "PRODUCT_FIELD_SCOPE", "READER_REASON", "FREQUENCY_GEOMETRY", "BRANCH_GEOMETRY",
+        "NONCONTIGUOUS_PRODUCT_CLAIM",
+    },
+    "v1-secondary-closed-context-v2": {
+        "EMPTY_EPISODE", "UNCLOSED_RUN", "SOURCE_GAP", "CONTEXT_SPAN",
+        "SUPPORT_SPAN", "SUPPORT_VALUE", "SUPPORT_COMPARISON", "TARGET_MISMATCH",
+        "TARGET_ACQUISITION_CONTEXT", "INTERIOR_CONTEXT", "PRODUCT_FIELD_SCOPE",
+        "CARD_REDRAW_CONTEXT", "METER_COMPATIBILITY", "NONCONTIGUOUS_PRODUCT_CLAIM",
+    },
+    "v1-secondary-text-optical-bridge-v1": {
+        "UNCLOSED_BRACKET", "SOURCE_GAP", "SUPPORT_SPAN", "SUPPORT_VALUE",
+        "SUPPORT_COMPARISON", "PRODUCT_FIELD_SCOPE", "TARGET_MISMATCH",
+        "TARGET_ACQUISITION_CONTEXT", "CARD_EVIDENCE", "OPTICAL_PROFILE",
+        "OPTICAL_DIFFERENCE",
+    },
     "v1-main-bar-adjacent-redraw-v2": {
         "UNCLOSED_RUN", "SOURCE_GAP", "ENDPOINT_SPAN", "UNSTABLE_ENDPOINT",
         "NOT_ADJACENT_COUNTS", "EXPECTATION_SIGNATURE", "NOT_BOUNDARY_ONLY",
@@ -332,6 +610,56 @@ _ARROW_RECORD_KEYS = {
     "profile_reference_bounds", "capture_id", "selection_manifest_sha256",
     "reader_method_version", "reader_sha256", "basis",
 }
+_ARROW_ACQUISITION_RECORD_KEYS = {
+    "event_id", "classifier_id", "classifier_spec_sha256", "status",
+    "deadline_observation_semantics", "raw_affected_fields", "video_frame_indices",
+    "first", "last",
+    "full_transition_indices", "left_support", "right_support", "endpoint_values",
+    "endpoint_phase_basis", "changed_directions", "arrow_expectation_signature",
+    "direction_metrics", "claimed_frame_acquisition_proof",
+    "unchanged_direction_profile_diameter_rms",
+    "maximum_endpoint_span_ns", "support_search_frames_each_side",
+    "verified_maximum_source_interval_ns", "profile_schema", "profile_reference_bounds",
+    "capture_id", "selection_manifest_sha256", "reader_method_version", "reader_sha256",
+    "basis",
+}
+_FREQUENCY_CONTEXT_RECORD_KEYS = {
+    "event_id", "classifier_id", "classifier_spec_sha256", "status",
+    "deadline_observation_semantics", "verification_closure_semantics", "branch",
+    "raw_affected_fields",
+    "video_frame_indices", "first", "last", "left_support", "right_support",
+    "context_frame_indices", "context_observed_branches", "support_derived_frequency",
+    "support_derived_digit_masks", "ambiguity_reason", "partial_segment_evidence",
+    "maximum_partial_expected_on_segments", "partial_off_separation_min",
+    "maximum_refusal_run_span_ns", "maximum_support_chain_span_ns",
+    "verified_maximum_source_interval_ns", "capture_id", "selection_manifest_sha256",
+    "reader_method_version", "reader_sha256", "redraw_probe_method_version",
+    "redraw_probe_sha256", "event_signature", "basis",
+}
+_SECONDARY_CONTEXT_RECORD_KEYS = {
+    "event_id", "classifier_id", "classifier_spec_sha256", "status",
+    "deadline_observation_semantics", "raw_affected_fields", "video_frame_indices",
+    "first", "last", "full_context_indices", "context_refusal_indices",
+    "interleaved_readable_indices", "context_first", "context_last", "left_support",
+    "right_support", "current_presentation_established", "support_derived_secondary",
+    "resolved_value", "partial_meter_evidence", "compatible_bar_intersections",
+    "maximum_interleaved_readable_frames", "maximum_context_refusal_span_ns",
+    "maximum_support_chain_span_ns", "maximum_support_chain_interval_ns",
+    "verified_maximum_source_interval_ns", "capture_id", "selection_manifest_sha256",
+    "reader_method_version", "reader_sha256", "event_signature", "basis",
+}
+_SECONDARY_OPTICAL_RECORD_KEYS = {
+    "event_id", "classifier_id", "classifier_spec_sha256", "status",
+    "deadline_observation_semantics", "raw_affected_fields", "video_frame_indices",
+    "first", "last", "left_support", "right_support",
+    "current_presentation_established", "deficient_slot", "raw_frequency_only_ocr",
+    "support_derived_secondary", "resolved_value", "profile_schema",
+    "profile_reference_bounds", "profile_sha256s", "profile_metrics", "profile_limits",
+    "maximum_support_chain_span_ns", "maximum_support_chain_interval_ns",
+    "verified_maximum_source_interval_ns", "capture_id", "selection_manifest_sha256",
+    "reader_method_version", "reader_sha256", "secondary_probe_method_version",
+    "secondary_probe_sha256", "event_signature", "basis",
+}
 _BADGE_RECORD_KEYS = {
     "event_id", "classifier_id", "classifier_spec_sha256", "status",
     "raw_affected_fields", "video_frame_indices", "first", "last", "left_support",
@@ -345,7 +673,9 @@ _FREQUENCY_RECORD_KEYS = _BADGE_RECORD_KEYS | {
     "full_field_run_indices", "full_field_run_first", "full_field_run_last",
     "expected_digit_masks",
 }
-_REJECTION_RECORD_KEYS = {"event_id", "field", "code", "first", "last", "reason"}
+_REJECTION_RECORD_KEYS = {
+    "event_id", "classifier_id", "field", "code", "first", "last", "reason"}
+_BRANCHED_REJECTION_RECORD_KEYS = _REJECTION_RECORD_KEYS | {"branch"}
 
 REQUIRED_FAULT_CONTROLS = {
     "unchanged_original": ("MATCH", (), ()),
@@ -415,6 +745,38 @@ def _canonical_sha256(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def temporal_observer_clip_source_indices(
+        target_indices: list[int], source_rows: dict[int, dict[str, int]]) -> list[int]:
+    """Derive the observer window only from the target and authenticated source time.
+
+    Every supported record validator bounds its outermost required visual
+    support chain to at most 300 ms and requires the target to lie inside that
+    chain, so this includes every valid support frame without consulting the
+    classifier-selected full run.
+    """
+    _require(isinstance(source_rows, dict) and bool(source_rows)
+             and set(source_rows) == set(range(len(source_rows)))
+             and all(isinstance(source_rows[index], dict)
+                     and type(source_rows[index].get("capture_ns")) is int
+                     for index in range(len(source_rows)))
+             and all(source_rows[index + 1]["capture_ns"] >
+                     source_rows[index]["capture_ns"]
+                     for index in range(len(source_rows) - 1)),
+             "observer source timing is invalid")
+    _require(isinstance(target_indices, list) and bool(target_indices)
+             and all(type(value) is int and value in source_rows
+                     for value in target_indices)
+             and all(right == left + 1
+                     for left, right in zip(target_indices, target_indices[1:])),
+             "observer target run is invalid")
+    first_capture_ns = source_rows[target_indices[0]]["capture_ns"]
+    last_capture_ns = source_rows[target_indices[-1]]["capture_ns"]
+    lower = first_capture_ns - TEMPORAL_OBSERVER_CONTEXT_NS_EACH_SIDE
+    upper = last_capture_ns + TEMPORAL_OBSERVER_CONTEXT_NS_EACH_SIDE
+    return [index for index in range(len(source_rows))
+            if lower <= source_rows[index]["capture_ns"] <= upper]
+
+
 def temporal_v2_observer_instructions(classifier_id: str) -> str:
     rubric = TEMPORAL_V2_OBSERVER_RUBRICS.get(classifier_id)
     if not isinstance(rubric, dict):
@@ -426,14 +788,13 @@ def temporal_v2_observer_instructions(classifier_id: str) -> str:
         "Before opening the hidden key or any machine output, inspect every opaque clip "
         "once in manifest order.\n"
         "Each manifest item maps its clip to the reserved run. clip_source_video_indices entry "
-        "N is the original run video index shown at zero-based clip frame N. "
-        "full_run_clip_frame_indices lists the exact zero-based clip frames in the complete "
-        "optical transition and must map to full_run_video_indices. Judge transition motion in "
-        "that full run. target_run_clip_frame_indices maps the classifier-claimed subset to "
-        "target_run_video_indices; it can begin after the full run begins. Never treat a full-run "
-        "frame outside the claimed subset as endpoint support. Use only frames outside the full "
-        "run to establish two stable, mutually agreeing endpoint-support frames immediately "
-        "before and after the transition.\n"
+        "N is the original run video index shown at zero-based clip frame N. Every clip uses the "
+        "same classifier-independent rule: all consecutive recorded frames within 300 ms before "
+        "the target run's first frame through 300 ms after its last frame according to the "
+        "authenticated capture timing, bounded only by the recording. "
+        "target_run_clip_frame_indices maps "
+        "the target run to target_run_video_indices. Use the visible surrounding frames to judge "
+        "the rubric's endpoint, bracket, context, and transition requirements.\n"
         "Record exactly one listed literal for each field below; preserve spelling and case.\n"
         "After completing every observation, and still before receiving any hidden key or "
         "machine output, set observations.json blind_protocol to exactly: "
@@ -443,7 +804,15 @@ def temporal_v2_observer_instructions(classifier_id: str) -> str:
     ]
     for field in rubric["literal_fields"]:
         allowed = rubric["allowed_literals"].get(field)
-        if allowed is None and "bar_count" in field:
+        if allowed is None and field.endswith("_directions"):
+            allowed_text = (
+                "JSON array containing each visible direction once in front, side, rear order, "
+                "or JSON null")
+        elif allowed is None and field.endswith("_cards"):
+            allowed_text = (
+                "JSON array of one or two slot-ordered objects with exactly band, frequency, "
+                "direction, and integer bars 0 through 6, or JSON null")
+        elif allowed is None and "bar_count" in field:
             allowed_text = "integer 0 through 6, or JSON null"
         elif allowed is None and "frequency" in field:
             allowed_text = "canonical DD.DDD string, or JSON null"
@@ -1067,6 +1436,27 @@ def _validate_fault_evidence(document: Any, reader: dict[str, Any], camera: dict
     return _validate_controls(document, evidence_root)
 
 
+_OBSERVER_DIRECTION_ORDER = ("front", "side", "rear")
+
+
+def _valid_observer_direction_set(value: Any) -> bool:
+    return (isinstance(value, list)
+            and value == [name for name in _OBSERVER_DIRECTION_ORDER if name in value]
+            and len(value) == len(set(value)))
+
+
+def _valid_observer_cards(value: Any) -> bool:
+    return (isinstance(value, list) and 1 <= len(value) <= 2
+            and all(isinstance(card, dict)
+                    and set(card) == {"band", "frequency", "direction", "bars"}
+                    and card.get("band") in {"X", "K", "Ka"}
+                    and isinstance(card.get("frequency"), str)
+                    and re.fullmatch(r"[0-9]{2}\.[0-9]{3}", card["frequency"]) is not None
+                    and card.get("direction") in _OBSERVER_DIRECTION_ORDER
+                    and type(card.get("bars")) is int and 0 <= card["bars"] <= 6
+                    for card in value))
+
+
 def _temporal_v2_observer_result(classifier_id: str, observation: Any) -> tuple[dict[str, Any], bool]:
     rubric = TEMPORAL_V2_OBSERVER_RUBRICS.get(classifier_id)
     _require(isinstance(rubric, dict),
@@ -1080,8 +1470,33 @@ def _temporal_v2_observer_result(classifier_id: str, observation: Any) -> tuple[
         _require(literal[name] in allowed,
                  f"temporal observer literal {name} is invalid for {classifier_id}")
 
-    if classifier_id == "v1-arrow-phase-edge-v3":
-        relationship = True
+    if classifier_id in {"v1-arrow-phase-edge-v3", "v1-arrow-target-acquisition-v1"}:
+        endpoints = (literal["left_endpoint_directions"],
+                     literal["right_endpoint_directions"])
+        _require(all(value is None or _valid_observer_direction_set(value)
+                     for value in endpoints),
+                 f"temporal observer arrow endpoints are invalid for {classifier_id}")
+        relationship = (all(isinstance(value, list) for value in endpoints)
+                        and (len(set(endpoints[0]) ^ set(endpoints[1])) == 1
+                             if classifier_id == "v1-arrow-phase-edge-v3"
+                             else endpoints[0] != endpoints[1]))
+    elif classifier_id == "v1-stable-frequency-closed-context-v3":
+        frequency = literal["observed_frequency"]
+        _require(frequency is None or (isinstance(frequency, str)
+                                       and re.fullmatch(r"[0-9]{2}\.[0-9]{3}", frequency)),
+                 f"temporal observer frequency is invalid for {classifier_id}")
+        relationship = frequency is not None
+    elif classifier_id == "v1-secondary-closed-context-v2":
+        cards = literal["observed_cards"]
+        _require(cards is None or _valid_observer_cards(cards),
+                 f"temporal observer cards are invalid for {classifier_id}")
+        relationship = cards is not None
+    elif classifier_id == "v1-secondary-text-optical-bridge-v1":
+        support_cards, center_cards = literal["support_cards"], literal["center_cards"]
+        _require(all(value is None or _valid_observer_cards(value)
+                     for value in (support_cards, center_cards)),
+                 f"temporal observer cards are invalid for {classifier_id}")
+        relationship = (support_cards is not None and support_cards == center_cards)
     elif classifier_id == "v1-main-bar-adjacent-redraw-v2":
         counts = (literal["left_endpoint_bar_count"],
                   literal["right_endpoint_bar_count"])
@@ -1129,7 +1544,7 @@ def _temporal_v2_observer_ground_truth(
             and ("INDETERMINATE" in value or "UNCLEAR" in value))
         for value in literal.values())
     definite_negative = (
-        literal.get("endpoint_support") == "BOTH_CLEAR"
+        literal.get("endpoint_support", literal.get("support_pairs")) == "BOTH_CLEAR"
         and literal.get("confidence") == "HIGH"
         and not unresolved
     )
@@ -1146,9 +1561,85 @@ def _temporal_v2_claim_matches_record(classifier_id: str, spec_sha256: str,
         return False
     if classifier_id == "v1-arrow-phase-edge-v3":
         endpoints = record.get("endpoint_values")
+        observed_endpoints = [literal.get("left_endpoint_directions"),
+                              literal.get("right_endpoint_directions")]
         return (isinstance(endpoints, list) and len(endpoints) == 2
                 and all(isinstance(value, list) for value in endpoints)
+                and all(isinstance(value, list) for value in observed_endpoints)
+                and all(set(machine) == set(observed) for machine, observed in zip(
+                    endpoints, observed_endpoints))
                 and len(set(endpoints[0]) ^ set(endpoints[1])) == 1)
+    if classifier_id == "v1-arrow-target-acquisition-v1":
+        endpoints = record.get("endpoint_values")
+        observed_endpoints = [literal.get("left_endpoint_directions"),
+                              literal.get("right_endpoint_directions")]
+        phase = record.get("endpoint_phase_basis")
+        changed = record.get("changed_directions")
+        required_literals = TEMPORAL_V2_OBSERVER_RUBRICS[classifier_id][
+            "required_literals"]
+        return (all(literal.get(name) == expected
+                    for name, expected in required_literals.items())
+                and record.get("deadline_observation_semantics") ==
+                    "TARGET_ACQUISITION_TRANSITION"
+                and isinstance(endpoints, list) and len(endpoints) == 2
+                and all(isinstance(value, list) for value in endpoints)
+                and all(isinstance(value, list) for value in observed_endpoints)
+                and all(set(machine) == set(observed) for machine, observed in zip(
+                    endpoints, observed_endpoints))
+                and isinstance(phase, dict)
+                and phase.get("left_phase") == endpoints[0]
+                and phase.get("right_phase") == endpoints[1]
+                and phase.get("current_phase") == endpoints[1]
+                and phase.get("left_phase") in (
+                    phase.get("previous_phase"),
+                    sorted(set(phase.get("previous_phase", [])) | set(endpoints[1])))
+                and isinstance(changed, list) and bool(changed)
+                and changed == sorted(set(endpoints[0]) ^ set(endpoints[1])))
+    if classifier_id == "v1-stable-frequency-closed-context-v3":
+        signature = record.get("event_signature")
+        frequency = record.get("support_derived_frequency")
+        required_literals = TEMPORAL_V2_OBSERVER_RUBRICS[classifier_id][
+            "required_literals"]
+        return (all(literal.get(name) == expected
+                    for name, expected in required_literals.items())
+                and record.get("deadline_observation_semantics") ==
+                    "LEGAL_PRESENTATION_TRANSITION"
+                and record.get("verification_closure_semantics") ==
+                    "RAW_CURRENT_BRACKETED_UNRESOLVED_VERIFICATION_BOUNDARY"
+                and record.get("branch") in {
+                    "intact_mask", "partial_expected_on_segments"}
+                and isinstance(frequency, str)
+                and re.fullmatch(r"[0-9]{2}\.[0-9]{3}", frequency) is not None
+                and literal.get("observed_frequency") == frequency
+                and isinstance(signature, dict)
+                and signature.get("current_primary_frequency") == frequency)
+    if classifier_id == "v1-secondary-closed-context-v2":
+        required_literals = TEMPORAL_V2_OBSERVER_RUBRICS[classifier_id][
+            "required_literals"]
+        return (all(literal.get(name) == expected
+                    for name, expected in required_literals.items())
+                and record.get("deadline_observation_semantics") ==
+                    "LEGAL_PRESENTATION_TRANSITION"
+                and literal.get("observed_cards") ==
+                    record.get("support_derived_secondary")
+                and record.get("support_derived_secondary") == record.get("resolved_value"))
+    if classifier_id == "v1-secondary-text-optical-bridge-v1":
+        required_literals = TEMPORAL_V2_OBSERVER_RUBRICS[classifier_id][
+            "required_literals"]
+        support = record.get("support_derived_secondary")
+        slot = record.get("deficient_slot")
+        raw_ocr = record.get("raw_frequency_only_ocr")
+        return (all(literal.get(name) == expected
+                    for name, expected in required_literals.items())
+                and record.get("deadline_observation_semantics") ==
+                    "LEGAL_PRESENTATION_TRANSITION"
+                and support == record.get("resolved_value")
+                and isinstance(support, list)
+                and literal.get("support_cards") == support
+                and literal.get("center_cards") == support
+                and type(slot) is int and 0 <= slot < len(support)
+                and isinstance(raw_ocr, dict)
+                and raw_ocr.get("normalized_frequency") == support[slot].get("frequency"))
     if classifier_id == "v1-main-bar-adjacent-redraw-v2":
         endpoints = record.get("endpoint_values")
         return (isinstance(endpoints, list) and len(endpoints) == 2
@@ -1225,6 +1716,10 @@ def _validate_temporal_v2_capture(capture: Any, window: Any, capture_path: Path,
 _SOURCE_FRAMEHASH_CACHE: dict[tuple[str, str], tuple[str, ...]] = {}
 _TEMPORAL_V2_INSET_LOGICAL = {
     "v1-arrow-phase-edge-v3": (990, 190, 1165, 400),
+    "v1-arrow-target-acquisition-v1": (990, 190, 1165, 400),
+    "v1-stable-frequency-closed-context-v3": (425, 225, 845, 390),
+    "v1-secondary-closed-context-v2": (385, 360, 880, 460),
+    "v1-secondary-text-optical-bridge-v1": (385, 360, 880, 460),
     "v1-main-bar-adjacent-redraw-v2": (860, 185, 980, 440),
     "v1-muted-badge-rising-fill-v2": (480, 155, 710, 285),
     "v1-unmute-stable-frequency-sweep-v2": (425, 225, 845, 390),
@@ -1391,9 +1886,13 @@ def _validate_temporal_v2_media(classifier_id: str, source_paths: dict[str, Path
                      and clip.stat().st_size == item["size_bytes"],
                      f"temporal observer clip size differs: {opaque_id}")
             indices = item.get("clip_source_video_indices")
+            target = item.get("target_run_video_indices")
+            expected_indices = (temporal_observer_clip_source_indices(target, row_by_index)
+                                if isinstance(target, list) and target else [])
             _require(isinstance(indices, list) and bool(indices)
                      and all(type(index) is int and 0 <= index < len(source_hashes)
-                             for index in indices),
+                             for index in indices)
+                     and indices == expected_indices,
                      f"temporal observer clip source range is invalid: {opaque_id}")
             stream = _ffprobe_lossless_clip(clip)
             _require(stream.get("codec_name") == "png" and stream.get("pix_fmt") == "rgb24"
@@ -1471,9 +1970,70 @@ def _temporal_v2_context_binding(classifier_id: str, spec_document: dict[str, An
             "reader_method_version": reader["method_version"],
             "reader_sha256": implementation["encounter_reader.py"],
         }
+    if classifier_id == "v1-arrow-target-acquisition-v1":
+        configured_maximum = constants.get("maximum_recording_interval_ns")
+        support_maximum = constants.get("maximum_support_interval_ns")
+        _require(common_valid
+                 and set(identity) == {"reader_method_version", "reader_sha256"}
+                 and type(configured_maximum) is int
+                 and type(support_maximum) is int
+                 and 0 < support_maximum <= configured_maximum
+                 and 0 < maximum_interval <= configured_maximum,
+                 f"temporal classifier context identity differs for {classifier_id}")
+        return {
+            "capture_id": capture_id,
+            "selection_manifest_sha256": references["analysis_selection"]["sha256"],
+            "verified_maximum_source_interval_ns": maximum_interval,
+            "reader_method_version": reader["method_version"],
+            "reader_sha256": implementation["encounter_reader.py"],
+        }
+    if classifier_id == "v1-secondary-text-optical-bridge-v1":
+        configured_maximum = constants.get("maximum_recording_interval_ns")
+        support_maximum = constants.get("maximum_support_chain_interval_ns")
+        _require(common_valid
+                 and set(identity) == {
+                     "reader_method_version", "reader_sha256",
+                     "secondary_probe_method_version", "secondary_probe_sha256"}
+                 and type(configured_maximum) is int
+                 and type(support_maximum) is int
+                 and 0 < support_maximum <= configured_maximum
+                 and 0 < maximum_interval <= configured_maximum
+                 and type(identity.get("secondary_probe_method_version")) is int
+                 and identity.get("secondary_probe_sha256") ==
+                     implementation.get("encounter_secondary_probe.py"),
+                 f"temporal classifier context identity differs for {classifier_id}")
+        return {
+            "capture_id": capture_id,
+            "selection_manifest_sha256": references["analysis_selection"]["sha256"],
+            "verified_maximum_source_interval_ns": maximum_interval,
+            "reader_method_version": reader["method_version"],
+            "reader_sha256": implementation["encounter_reader.py"],
+            "secondary_probe_method_version": identity["secondary_probe_method_version"],
+            "secondary_probe_sha256": implementation["encounter_secondary_probe.py"],
+        }
+    if classifier_id == "v1-secondary-closed-context-v2":
+        configured_maximum = constants.get("maximum_recording_interval_ns")
+        support_maximum = constants.get("maximum_support_chain_interval_ns")
+        _require(common_valid
+                 and set(identity) == {"reader_method_version", "reader_sha256"}
+                 and type(configured_maximum) is int
+                 and type(support_maximum) is int
+                 and 0 < support_maximum <= configured_maximum
+                 and 0 < maximum_interval <= configured_maximum,
+                 f"temporal classifier context identity differs for {classifier_id}")
+        return {
+            "capture_id": capture_id,
+            "selection_manifest_sha256": references["analysis_selection"]["sha256"],
+            "verified_maximum_source_interval_ns": maximum_interval,
+            "reader_method_version": reader["method_version"],
+            "reader_sha256": implementation["encounter_reader.py"],
+        }
     configured_maximum = constants.get("maximum_recording_interval_ns")
     support_maximum = constants.get("maximum_support_interval_ns")
     _require(common_valid
+             and set(identity) == {
+                 "reader_method_version", "reader_sha256",
+                 "redraw_probe_method_version", "redraw_probe_sha256"}
              and type(configured_maximum) is int
              and type(support_maximum) is int
              and 0 < support_maximum <= configured_maximum
@@ -1676,10 +2236,606 @@ def _validate_temporal_v2_arrow_record(record: dict[str, Any], target_indices: l
              "temporal arrow extra-direction metrics are invalid")
 
 
+def _validate_temporal_v2_arrow_acquisition_record(
+        record: dict[str, Any], target_indices: list[int], context: dict[str, Any],
+        spec_document: dict[str, Any], source_rows: dict[int, dict[str, int]]) -> None:
+    constants = spec_document["constants"]
+    profile = spec_document.get("profile")
+    directions = {"front", "side", "rear"}
+
+    def phase(value: Any) -> tuple[str, ...] | None:
+        if (not isinstance(value, list) or value != sorted(value)
+                or len(value) != len(set(value)) or not set(value) <= directions):
+            return None
+        return tuple(value)
+
+    endpoints = record.get("endpoint_values")
+    signature = record.get("arrow_expectation_signature")
+    endpoint_basis = record.get("endpoint_phase_basis")
+    _require(isinstance(endpoints, list) and len(endpoints) == 2
+             and all(phase(value) is not None for value in endpoints)
+             and isinstance(signature, dict)
+             and set(signature) == {"previous_arrow_sets", "current_arrow_sets"}
+             and all(isinstance(values, list) and bool(values)
+                     and all(phase(value) is not None for value in values)
+                     and len({tuple(value) for value in values}) == len(values)
+                     for values in signature.values())
+             and isinstance(endpoint_basis, dict)
+             and set(endpoint_basis) == {
+                 "previous_phase", "current_phase", "left_phase", "right_phase"}
+             and all(phase(value) is not None for value in endpoint_basis.values()),
+             "temporal arrow acquisition endpoint record is malformed")
+    left, right = map(tuple, endpoints)
+    previous = {tuple(value) for value in signature["previous_arrow_sets"]}
+    current = {tuple(value) for value in signature["current_arrow_sets"]}
+    prior = tuple(endpoint_basis["previous_phase"])
+    _require(previous != current and prior in previous and prior != right
+             and right in current and left not in current
+             and tuple(endpoint_basis["current_phase"]) == right
+             and tuple(endpoint_basis["left_phase"]) == left
+             and tuple(endpoint_basis["right_phase"]) == right
+             and left in {prior, tuple(sorted(set(prior) | set(right)))},
+             "temporal arrow acquisition phase association is inconsistent")
+    changed = sorted(set(left) ^ set(right))
+    _require(bool(changed) and record.get("changed_directions") == changed,
+             "temporal arrow acquisition changed directions are inconsistent")
+    claimed_proof = record.get("claimed_frame_acquisition_proof")
+    _require(isinstance(claimed_proof, list)
+             and len(claimed_proof) == len(target_indices),
+             "temporal arrow acquisition claimed-frame proof is incomplete")
+    for proof, video_index in zip(claimed_proof, target_indices):
+        states = proof.get("changed_direction_states") if isinstance(proof, dict) else None
+        noncurrent = proof.get("noncurrent_changed_directions") if isinstance(proof, dict) else None
+        _require(isinstance(proof, dict)
+                 and set(proof) == {
+                     "video_frame_index", "changed_direction_states",
+                     "noncurrent_changed_directions"}
+                 and proof.get("video_frame_index") == video_index
+                 and isinstance(states, dict) and set(states) == set(changed)
+                 and all(state in {"filled", "unlit", "partial", "faint"}
+                         for state in states.values())
+                 and noncurrent == sorted(
+                     direction for direction, state in states.items()
+                     if state != ("filled" if direction in right else "unlit"))
+                 and bool(noncurrent),
+                 "temporal arrow acquisition claimed-frame proof is malformed")
+
+    full_indices = record.get("full_transition_indices")
+    _require(isinstance(full_indices, list) and bool(full_indices)
+             and all(type(value) is int for value in full_indices)
+             and all(next_value == value + 1
+                     for value, next_value in zip(full_indices, full_indices[1:]))
+             and all(value in full_indices for value in target_indices),
+             "temporal arrow acquisition full transition is invalid")
+    supports = record.get("left_support"), record.get("right_support")
+    _require(all(isinstance(value, list) and len(value) == 2 for value in supports),
+             "temporal arrow acquisition support record is malformed")
+    for point, index in zip([*supports[0], *supports[1]],
+                            (full_indices[0] - 2, full_indices[0] - 1,
+                             full_indices[-1] + 1, full_indices[-1] + 2)):
+        _require_point(point, index, "arrow acquisition support", source_rows)
+    local_gap = min(context["verified_maximum_source_interval_ns"],
+                    constants["maximum_support_interval_ns"])
+    _validate_temporal_support_chain(
+        full_indices[0] - 2, full_indices[-1] + 2, source_rows, local_gap)
+    maximum_span = constants["authored_display_update_ns"] + local_gap
+    _require(source_rows[full_indices[-1] + 1]["capture_ns"]
+             - source_rows[full_indices[0] - 1]["capture_ns"] <= maximum_span
+             and record.get("maximum_endpoint_span_ns") == maximum_span
+             and record.get("support_search_frames_each_side") ==
+                 constants["support_search_frames_each_side"],
+             "temporal arrow acquisition support span is inconsistent")
+
+    _require(isinstance(profile, dict)
+             and profile.get("rows") == 4 and profile.get("columns") == 4
+             and profile.get("cells") == 16
+             and profile.get("finite_range") == [0.0, 255.0]
+             and profile.get("reference_bounds_must_match") is True
+             and record.get("profile_schema") == {
+                 "rows": 4, "columns": 4, "cells": 16,
+                 "sample": "max-channel cell median"},
+             "temporal arrow acquisition profile contract differs")
+    bounds = record.get("profile_reference_bounds")
+    _require(isinstance(bounds, dict) and set(bounds) == directions
+             and all(isinstance(value, list) and len(value) == 4
+                     and all(type(coordinate) is int for coordinate in value)
+                     for value in bounds.values()),
+             "temporal arrow acquisition profile bounds are malformed")
+
+    metrics = record.get("direction_metrics")
+    metric_keys = {
+        "endpoint_separation_rms", "projections", "normalized_residuals",
+        "maximum_backward_step", "total_backward_motion"}
+    _require(isinstance(metrics, dict) and set(metrics) == set(changed),
+             "temporal arrow acquisition direction metrics are incomplete")
+    for direction, values in metrics.items():
+        _require(isinstance(values, dict) and set(values) == metric_keys,
+                 f"temporal arrow acquisition metrics are malformed for {direction}")
+        separation = values["endpoint_separation_rms"]
+        projections = values["projections"]
+        residuals = values["normalized_residuals"]
+        _require(_finite_number(separation)
+                 and separation >= constants["endpoint_separation_rms_min"]
+                 and isinstance(projections, list) and len(projections) == len(full_indices)
+                 and isinstance(residuals, list) and len(residuals) == len(full_indices)
+                 and all(_finite_number(value)
+                         and constants["projection_min"] <= value <= constants["projection_max"]
+                         for value in projections)
+                 and all(_finite_number(value)
+                         and 0 <= value <= constants["normalized_residual_max"]
+                         for value in residuals),
+                 f"temporal arrow acquisition optical path is invalid for {direction}")
+        path = [0.0, *projections, 1.0]
+        backwards = [max(0.0, before - after)
+                     for before, after in zip(path, path[1:])]
+        _require(values["maximum_backward_step"] == max(backwards, default=0.0)
+                 and values["maximum_backward_step"] <= constants["maximum_backward_step"]
+                 and values["total_backward_motion"] == sum(backwards)
+                 and values["total_backward_motion"] <=
+                     constants["maximum_total_backward_motion"],
+                 f"temporal arrow acquisition motion is inconsistent for {direction}")
+    unchanged = record.get("unchanged_direction_profile_diameter_rms")
+    _require(isinstance(unchanged, dict) and set(unchanged) == directions - set(changed)
+             and all(_finite_number(value) and 0 <= value <=
+                     constants["unchanged_direction_profile_diameter_rms_max"]
+                     for value in unchanged.values()),
+             "temporal arrow acquisition unchanged-direction metrics are invalid")
+
+
 _DIGIT_MASKS = {
     "0": "abcdef", "1": "bc", "2": "abdeg", "3": "abcdg", "4": "bcfg",
     "5": "acdfg", "6": "acdefg", "7": "abc", "8": "abcdefg", "9": "abcdfg",
 }
+
+
+def _validate_temporal_v2_frequency_context_record(
+        record: dict[str, Any], target_indices: list[int], context: dict[str, Any],
+        spec_document: dict[str, Any], source_rows: dict[int, dict[str, int]]) -> None:
+    constants = spec_document["constants"]
+    branches = spec_document.get("branches")
+    profile = spec_document.get("profile")
+    branch = record.get("branch")
+    reasons = {
+        "intact_mask": "inconsistent illuminated frequency segment levels",
+        "partial_expected_on_segments": "partial or dim frequency segment interiors",
+    }
+    _require(branch in reasons
+             and branches == {
+                 "intact_mask": {
+                     "ambiguity_reason": reasons["intact_mask"],
+                     "maximum_partial_expected_on_segments": 0,
+                 },
+                 "partial_expected_on_segments": {
+                     "ambiguity_reason": reasons["partial_expected_on_segments"],
+                     "maximum_partial_expected_on_segments": 2,
+                     "minimum_partial_to_off_separation": 13.0,
+                 },
+             }
+             and record.get("deadline_observation_semantics") ==
+                 "LEGAL_PRESENTATION_TRANSITION"
+             and spec_document.get("verification_closure_semantics") ==
+                 "RAW_CURRENT_BRACKETED_UNRESOLVED_VERIFICATION_BOUNDARY"
+             and record.get("verification_closure_semantics") ==
+                 spec_document.get("verification_closure_semantics")
+             and record.get("ambiguity_reason") == reasons[branch],
+             "temporal frequency-context branch contract differs")
+    _require(constants.get("stable_support_frames_each_side") == 2
+             and constants.get("maximum_partial_expected_on_segments") == 2
+             and constants.get("partial_off_separation_min") == 13.0
+             and constants.get("reader_on_p10_min") == 45.0
+             and constants.get("reader_off_p90_max") == 32.0
+             and constants.get("maximum_hole_ink_fraction") == 0.1
+             and constants.get("maximum_refusal_run_span_ns") == 75_000_000
+             and constants.get("maximum_support_chain_span_ns") == 300_000_000,
+             "temporal frequency-context constants differ")
+    _require(profile == {
+                 "decimal_box": [590, 349, 599, 357],
+                 "digit_origins": [454, 520, 616, 688, 764],
+                 "finite_range": [0.0, 255.0],
+                 "hole_bounds_per_digit": [[28, 278, 40, 292], [28, 322, 40, 338]],
+                 "sample": "max-channel segment p10, median, and p90",
+                 "segments": ["a", "b", "c", "d", "e", "f", "g"],
+             },
+             "temporal frequency-context profile contract differs")
+
+    frequency = record.get("support_derived_frequency")
+    _require(isinstance(frequency, str)
+             and re.fullmatch(r"[0-9]{2}\.[0-9]{3}", frequency) is not None,
+             "temporal frequency-context support value is malformed")
+    expected_masks = [_DIGIT_MASKS[digit] for digit in frequency.replace(".", "")]
+    _require(record.get("support_derived_digit_masks") == expected_masks,
+             "temporal frequency-context digit masks differ from its support value")
+    signature = record.get("event_signature")
+    _require(isinstance(signature, dict)
+             and set(signature) == {"mode", "changed_fields", "current_primary_frequency"}
+             and signature.get("mode") in {"BASELINE", "UNCHANGED", "CHANGED"}
+             and isinstance(signature.get("changed_fields"), list)
+             and len(signature["changed_fields"]) == len(set(signature["changed_fields"]))
+             and set(signature["changed_fields"]) <= set(FIELDS)
+             and signature.get("current_primary_frequency") == frequency,
+             "temporal frequency-context event signature is malformed")
+
+    full_indices = record.get("context_frame_indices")
+    _require(isinstance(full_indices, list) and bool(full_indices)
+             and all(type(value) is int for value in full_indices)
+             and all(right == left + 1 for left, right in zip(full_indices, full_indices[1:]))
+             and all(value in full_indices for value in target_indices),
+             "temporal frequency-context closed run is invalid")
+    observed_branches = record.get("context_observed_branches")
+    _require(isinstance(observed_branches, list)
+             and observed_branches == sorted(observed_branches)
+             and len(observed_branches) == len(set(observed_branches))
+             and branch in observed_branches
+             and set(observed_branches) <= set(reasons),
+             "temporal frequency-context observed branches are malformed")
+    supports = record.get("left_support"), record.get("right_support")
+    _require(all(isinstance(value, list) and len(value) == 2 for value in supports),
+             "temporal frequency-context support record is malformed")
+    for point, index in zip([*supports[0], *supports[1]],
+                            (full_indices[0] - 2, full_indices[0] - 1,
+                             full_indices[-1] + 1, full_indices[-1] + 2)):
+        _require_point(point, index, "frequency-context support", source_rows)
+    local_gap = min(context["verified_maximum_source_interval_ns"],
+                    constants["maximum_support_interval_ns"])
+    _validate_temporal_support_chain(
+        full_indices[0] - 2, full_indices[-1] + 2, source_rows, local_gap)
+    _require(source_rows[target_indices[-1]]["capture_ns"]
+             - source_rows[target_indices[0]]["capture_ns"] <=
+                 constants["maximum_refusal_run_span_ns"]
+             and source_rows[full_indices[-1] + 2]["capture_ns"]
+             - source_rows[full_indices[0] - 2]["capture_ns"] <=
+                 constants["maximum_support_chain_span_ns"]
+             and record.get("maximum_refusal_run_span_ns") ==
+                 constants["maximum_refusal_run_span_ns"]
+             and record.get("maximum_support_chain_span_ns") ==
+                 constants["maximum_support_chain_span_ns"]
+             and record.get("maximum_partial_expected_on_segments") ==
+                 constants["maximum_partial_expected_on_segments"]
+             and record.get("partial_off_separation_min") ==
+                 constants["partial_off_separation_min"],
+             "temporal frequency-context span or threshold binding differs")
+
+    evidence = record.get("partial_segment_evidence")
+    _require(isinstance(evidence, list) and len(evidence) == len(target_indices),
+             "temporal frequency-context partial evidence is incomplete")
+    for item, video_index in zip(evidence, target_indices):
+        segments = item.get("segments") if isinstance(item, dict) else None
+        _require(isinstance(item, dict)
+                 and set(item) == {"video_frame_index", "segments"}
+                 and item.get("video_frame_index") == video_index
+                 and isinstance(segments, list)
+                 and len(segments) == len({
+                     (value.get("digit_index"), value.get("segment"))
+                     for value in segments if isinstance(value, dict)}),
+                 "temporal frequency-context partial evidence item is malformed")
+        for value in segments:
+            _require(isinstance(value, dict)
+                     and set(value) == {
+                         "digit_index", "segment", "p10", "off_reference_p90", "separation"}
+                     and type(value["digit_index"]) is int and 0 <= value["digit_index"] < 5
+                     and value["segment"] in _DIGIT_MASKS[frequency.replace(".", "")[
+                         value["digit_index"]]]
+                     and _finite_number(value["p10"])
+                     and 0 <= value["p10"] <= 255
+                     and _finite_number(value["off_reference_p90"])
+                     and _finite_number(value["separation"])
+                     and 0 <= value["off_reference_p90"] <=
+                         constants["reader_off_p90_max"]
+                     and value["separation"] ==
+                         value["p10"] - value["off_reference_p90"]
+                     and value["separation"] >= constants["partial_off_separation_min"],
+                     "temporal frequency-context partial segment is malformed")
+        _require((branch == "intact_mask" and segments == [])
+                 or (branch == "partial_expected_on_segments"
+                     and 1 <= len(segments) <=
+                         constants["maximum_partial_expected_on_segments"]),
+                 "temporal frequency-context partial evidence disagrees with its branch")
+
+
+def _validate_temporal_v2_secondary_context_record(
+        record: dict[str, Any], target_indices: list[int], context: dict[str, Any],
+        spec_document: dict[str, Any], source_rows: dict[int, dict[str, int]]) -> None:
+    constants = spec_document.get("constants")
+    profile = spec_document.get("profile")
+    _require(constants == {
+                 "authored_display_update_ns": 50_000_000,
+                 "maximum_interleaved_readable_frames": 2,
+                 "maximum_recording_interval_ns": 1_000_000_000,
+                 "maximum_support_chain_interval_ns": 10_000_000,
+                 "maximum_support_chain_span_ns": 80_000_000,
+                 "stable_support_frames_each_side": 2,
+             }
+             and profile == {
+                 "bands": ["X", "K", "Ka"],
+                 "directions": ["front", "side", "rear"],
+                 "frequency_pattern": "DD.DDD",
+                 "meter_cells": 6,
+                 "meter_states": ["on", "off", "partial"],
+                 "closure_rule": (
+                     "per-slot intersection of all refusal-frame compatible counts in the "
+                     "bounded context equals the support-derived count"),
+                 "interleaved_readable_frames": "exact current secondary context only",
+             }
+             and record.get("deadline_observation_semantics") ==
+                 "LEGAL_PRESENTATION_TRANSITION",
+             "temporal secondary-context specification contract differs")
+
+    def card(value: Any) -> bool:
+        return (isinstance(value, dict)
+                and set(value) == {"band", "frequency", "direction", "bars"}
+                and value.get("band") in {"X", "K", "Ka"}
+                and isinstance(value.get("frequency"), str)
+                and re.fullmatch(r"[0-9]{2}\.[0-9]{3}", value["frequency"]) is not None
+                and value.get("direction") in {"front", "side", "rear"}
+                and type(value.get("bars")) is int and 0 <= value["bars"] <= 6)
+
+    support_value = record.get("support_derived_secondary")
+    _require(isinstance(support_value, list) and 1 <= len(support_value) <= 2
+             and all(card(value) for value in support_value)
+             and record.get("resolved_value") == support_value,
+             "temporal secondary-context support value is malformed")
+    signature = record.get("event_signature")
+    _require(isinstance(signature, dict)
+             and set(signature) == {"mode", "changed_fields", "current_secondary"}
+             and signature.get("mode") in {"BASELINE", "UNCHANGED", "CHANGED"}
+             and isinstance(signature.get("changed_fields"), list)
+             and len(signature["changed_fields"]) == len(set(signature["changed_fields"]))
+             and set(signature["changed_fields"]) <= set(FIELDS)
+             and signature.get("current_secondary") == support_value,
+             "temporal secondary-context event signature is malformed")
+
+    full_indices = record.get("full_context_indices")
+    refusals = record.get("context_refusal_indices")
+    readable = record.get("interleaved_readable_indices")
+    _require(isinstance(full_indices, list) and len(full_indices) >= 5
+             and all(type(value) is int for value in full_indices)
+             and all(right == left + 1 for left, right in zip(full_indices, full_indices[1:]))
+             and isinstance(refusals, list) and bool(refusals)
+             and refusals == sorted(set(refusals))
+             and isinstance(readable, list) and readable == sorted(set(readable))
+             and set(refusals).isdisjoint(readable)
+             and set(refusals) | set(readable) == set(full_indices[2:-2])
+             and all(value in refusals for value in target_indices),
+             "temporal secondary-context indices are malformed")
+    _require_point(record.get("context_first"), refusals[0],
+                   "secondary context first", source_rows)
+    _require_point(record.get("context_last"), refusals[-1],
+                   "secondary context last", source_rows)
+    supports = record.get("left_support"), record.get("right_support")
+    _require(all(isinstance(value, list) and len(value) == 2 for value in supports),
+             "temporal secondary-context support record is malformed")
+    for point, video_index in zip([*supports[0], *supports[1]],
+                                  [*full_indices[:2], *full_indices[-2:]]):
+        _require_point(point, video_index, "secondary context support", source_rows)
+    established = record.get("current_presentation_established")
+    _require_point(established, established.get("video_frame_index")
+                   if isinstance(established, dict) else -1,
+                   "secondary current-presentation")
+    _require(established["capture_ns"] <= source_rows[refusals[0]]["capture_ns"],
+             "temporal secondary context precedes current presentation")
+
+    local_gap = min(context["verified_maximum_source_interval_ns"],
+                    constants["maximum_support_chain_interval_ns"])
+    _validate_temporal_support_chain(full_indices[0], full_indices[-1], source_rows, local_gap)
+    _require(source_rows[refusals[-1]]["capture_ns"]
+             - source_rows[refusals[0]]["capture_ns"] <=
+                 constants["authored_display_update_ns"] + local_gap
+             and source_rows[full_indices[-1]]["capture_ns"]
+             - source_rows[full_indices[0]]["capture_ns"] <=
+                 constants["maximum_support_chain_span_ns"]
+             and record.get("maximum_interleaved_readable_frames") ==
+                 constants["maximum_interleaved_readable_frames"]
+             and record.get("maximum_context_refusal_span_ns") ==
+                 constants["authored_display_update_ns"] + local_gap
+             and record.get("maximum_support_chain_span_ns") ==
+                 constants["maximum_support_chain_span_ns"]
+             and record.get("maximum_support_chain_interval_ns") == local_gap,
+             "temporal secondary-context timing contract differs")
+
+    def compatible_counts(states: list[str]) -> list[int]:
+        return [count for count in range(7) if all(
+            state == "partial" or (state == "on" and index < count)
+            or (state == "off" and index >= count)
+            for index, state in enumerate(states))]
+
+    evidence = record.get("partial_meter_evidence")
+    _require(isinstance(evidence, list) and len(evidence) == len(refusals),
+             "temporal secondary-context meter evidence is incomplete")
+    compatible_by_slot: list[list[set[int]]] = [[] for _ in support_value]
+    for item, video_index in zip(evidence, refusals):
+        cards = item.get("cards") if isinstance(item, dict) else None
+        _require(isinstance(item, dict)
+                 and set(item) == {"video_frame_index", "cards"}
+                 and item.get("video_frame_index") == video_index
+                 and isinstance(cards, list) and len(cards) == len(support_value),
+                 "temporal secondary-context meter frame is malformed")
+        partial_seen = False
+        for slot, (meter, expected) in enumerate(zip(cards, support_value)):
+            states = meter.get("cell_states") if isinstance(meter, dict) else None
+            meter_state = meter.get("state") if isinstance(meter, dict) else None
+            compatible = compatible_counts(states) if (
+                isinstance(states, list) and len(states) == 6
+                and all(state in {"on", "off", "partial"} for state in states)) else None
+            common = (isinstance(meter, dict)
+                      and meter.get("slot") == slot
+                      and compatible is not None
+                      and meter.get("compatible_bars") == compatible
+                      and expected["bars"] in compatible)
+            if meter_state == "readable":
+                valid = (common
+                         and set(meter) == {
+                             "slot", "state", "bars", "compatible_bars", "cell_states"}
+                         and meter.get("bars") == expected["bars"]
+                         and compatible == [expected["bars"]]
+                         and states == ["on" if index < expected["bars"] else "off"
+                                        for index in range(6)])
+            else:
+                partials = ([index for index, state in enumerate(states)
+                             if state == "partial"] if compatible is not None else [])
+                valid = (common
+                         and set(meter) == {
+                             "slot", "state", "bars", "partial_cells",
+                             "compatible_bars", "cell_states"}
+                         and meter_state == "partial"
+                         and meter.get("bars") is None
+                         and meter.get("partial_cells") == partials
+                         and bool(partials))
+                partial_seen = partial_seen or valid
+            _require(valid, "temporal secondary-context meter evidence is malformed")
+            compatible_by_slot[slot].append(set(compatible))
+        _require(partial_seen,
+                 "temporal secondary-context refusal contains no partial meter")
+    intersections = [sorted(set.intersection(*values)) for values in compatible_by_slot]
+    _require(intersections == [[value["bars"]] for value in support_value]
+             and record.get("compatible_bar_intersections") == intersections,
+             "temporal secondary-context count closure differs")
+
+
+def _validate_temporal_v2_secondary_optical_record(
+        record: dict[str, Any], target_indices: list[int], context: dict[str, Any],
+        spec_document: dict[str, Any], source_rows: dict[int, dict[str, int]]) -> None:
+    constants = spec_document.get("constants")
+    profile = spec_document.get("profile")
+    expected_constants = {
+        "minimum_ocr_confidence": 0.95,
+        "maximum_recording_interval_ns": 1_000_000_000,
+        "maximum_support_chain_interval_ns": 10_000_000,
+        "maximum_support_chain_span_ns": 25_000_000,
+        "stable_support_frames_each_side": 2,
+        "profile_rows": 9,
+        "profile_columns": 46,
+        "profile_channels": 3,
+        "profile_byte_count": 1242,
+        "maximum_support_pair_rms": 4.0,
+        "maximum_support_component_span": 16,
+        "maximum_target_support_rms": 4.0,
+        "maximum_target_envelope_excursion": 8,
+    }
+    expected_profile = {
+        "boxes": [[440, 377, 621, 413], [687, 377, 868, 413]],
+        "rows": 9,
+        "columns": 46,
+        "channels": ["red", "green", "blue"],
+        "order": "row-major cells with RGB-interleaved uint8 components",
+        "sample": "rounded arithmetic mean of registered RGB pixels",
+        "normalization": "none",
+        "encoding": "canonical base64",
+    }
+    _require(constants == expected_constants and profile == expected_profile
+             and record.get("deadline_observation_semantics") ==
+                 "LEGAL_PRESENTATION_TRANSITION",
+             "temporal secondary optical specification contract differs")
+    _require(len(target_indices) == 1,
+             "temporal secondary optical record must identify one center frame")
+
+    def card(value: Any) -> bool:
+        return (isinstance(value, dict)
+                and set(value) == {"band", "frequency", "direction", "bars"}
+                and value.get("band") in {"X", "K", "Ka"}
+                and isinstance(value.get("frequency"), str)
+                and re.fullmatch(r"[0-9]{2}\.[0-9]{3}", value["frequency"]) is not None
+                and value.get("direction") in {"front", "side", "rear"}
+                and type(value.get("bars")) is int and 0 <= value["bars"] <= 6)
+
+    support = record.get("support_derived_secondary")
+    slot = record.get("deficient_slot")
+    _require(isinstance(support, list) and 1 <= len(support) <= 2
+             and all(card(value) for value in support)
+             and record.get("resolved_value") == support
+             and type(slot) is int and 0 <= slot < len(support),
+             "temporal secondary optical support value or deficient slot is malformed")
+    raw_ocr = record.get("raw_frequency_only_ocr")
+    confidence = raw_ocr.get("confidence") if isinstance(raw_ocr, dict) else None
+    text = raw_ocr.get("text") if isinstance(raw_ocr, dict) else None
+    normalized = raw_ocr.get("normalized_frequency") if isinstance(raw_ocr, dict) else None
+    _require(isinstance(raw_ocr, dict)
+             and set(raw_ocr) == {"text", "normalized_frequency", "confidence"}
+             and isinstance(text, str)
+             and isinstance(normalized, str)
+             and re.fullmatch(r"[0-9]{2}\.[0-9]{3}", normalized) is not None
+             and re.sub(r"\s", "", text) == normalized
+             and _finite_number(confidence)
+             and confidence >= constants["minimum_ocr_confidence"]
+             and normalized == support[slot]["frequency"],
+             "temporal secondary optical frequency-only OCR evidence is malformed")
+
+    target_index = target_indices[0]
+    supports = record.get("left_support"), record.get("right_support")
+    _require(all(isinstance(value, list) and len(value) == 2 for value in supports),
+             "temporal secondary optical support record is malformed")
+    support_indices = [target_index - 2, target_index - 1,
+                       target_index + 1, target_index + 2]
+    for point, video_index in zip([*supports[0], *supports[1]], support_indices):
+        _require_point(point, video_index, "secondary optical support", source_rows)
+    local_gap = min(context["verified_maximum_source_interval_ns"],
+                    constants["maximum_support_chain_interval_ns"])
+    _validate_temporal_support_chain(
+        target_index - 2, target_index + 2, source_rows, local_gap)
+    _require(source_rows[target_index + 2]["capture_ns"]
+             - source_rows[target_index - 2]["capture_ns"] <=
+                 constants["maximum_support_chain_span_ns"]
+             and record.get("maximum_support_chain_span_ns") ==
+                 constants["maximum_support_chain_span_ns"]
+             and record.get("maximum_support_chain_interval_ns") == local_gap,
+             "temporal secondary optical bracket timing differs")
+    established = record.get("current_presentation_established")
+    established_index = (established.get("video_frame_index")
+                         if isinstance(established, dict) else -1)
+    _require_point(established, established_index,
+                   "secondary optical current-presentation", source_rows)
+    _require(established_index <= target_index
+             and established["capture_ns"] <= source_rows[target_index]["capture_ns"],
+             "temporal secondary optical refusal precedes current presentation")
+
+    expected_schema = {name: value for name, value in expected_profile.items()
+                       if name not in {"boxes", "encoding"}}
+    hashes = record.get("profile_sha256s")
+    _require(record.get("profile_schema") == expected_schema
+             and record.get("profile_reference_bounds") == profile["boxes"][slot]
+             and isinstance(hashes, list) and len(hashes) == 5
+             and all(isinstance(value, str)
+                     and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+                     for value in hashes),
+             "temporal secondary optical profile identity is malformed")
+    expected_limits = {
+        "maximum_support_pair_rms": constants["maximum_support_pair_rms"],
+        "maximum_support_component_span": constants["maximum_support_component_span"],
+        "maximum_target_support_rms": constants["maximum_target_support_rms"],
+        "maximum_target_envelope_excursion": constants[
+            "maximum_target_envelope_excursion"],
+    }
+    metrics = record.get("profile_metrics")
+    _require(record.get("profile_limits") == expected_limits
+             and isinstance(metrics, dict)
+             and set(metrics) == {
+                 "maximum_support_pair_rms", "maximum_support_component_span",
+                 "maximum_target_support_rms", "maximum_target_envelope_excursion",
+                 "target_envelope_violation_count"}
+             and _finite_number(metrics.get("maximum_support_pair_rms"))
+             and 0 <= metrics["maximum_support_pair_rms"] <=
+                 expected_limits["maximum_support_pair_rms"]
+             and type(metrics.get("maximum_support_component_span")) is int
+             and 0 <= metrics["maximum_support_component_span"] <=
+                 expected_limits["maximum_support_component_span"]
+             and _finite_number(metrics.get("maximum_target_support_rms"))
+             and 0 <= metrics["maximum_target_support_rms"] <=
+                 expected_limits["maximum_target_support_rms"]
+             and type(metrics.get("maximum_target_envelope_excursion")) is int
+             and 0 <= metrics["maximum_target_envelope_excursion"] <=
+                 expected_limits["maximum_target_envelope_excursion"]
+             and type(metrics.get("target_envelope_violation_count")) is int
+             and metrics["target_envelope_violation_count"] == 0,
+             "temporal secondary optical profile metrics or limits are malformed")
+    signature = record.get("event_signature")
+    _require(isinstance(signature, dict)
+             and set(signature) == {"mode", "changed_fields", "current_secondary"}
+             and signature.get("mode") in {"BASELINE", "UNCHANGED", "CHANGED"}
+             and isinstance(signature.get("changed_fields"), list)
+             and all(isinstance(value, str) for value in signature["changed_fields"])
+             and len(signature["changed_fields"]) == len(set(signature["changed_fields"]))
+             and set(signature["changed_fields"]) <= set(FIELDS)
+             and signature.get("current_secondary") == support,
+             "temporal secondary optical event signature is malformed")
 
 
 def _validate_temporal_v2_fill_record(classifier_id: str, record: dict[str, Any],
@@ -1780,8 +2936,15 @@ def _validate_temporal_v2_record(classifier_id: str, spec_sha256: str,
                                  source_rows: dict[int, dict[str, int]]) -> None:
     if decision == "REJECTED":
         field = TEMPORAL_V2_OBSERVER_RUBRICS[classifier_id]["raw_affected_fields"][0]
-        _require(set(record) == _REJECTION_RECORD_KEYS
+        rejection_keys = (_BRANCHED_REJECTION_RECORD_KEYS
+                          if classifier_id == "v1-stable-frequency-closed-context-v3"
+                          else _REJECTION_RECORD_KEYS)
+        branch_valid = (record.get("branch") in {
+                            "intact_mask", "partial_expected_on_segments"}
+                        if classifier_id == "v1-stable-frequency-closed-context-v3" else True)
+        _require(set(record) == rejection_keys and branch_valid
                  and isinstance(record.get("event_id"), str) and bool(record["event_id"])
+                 and record.get("classifier_id") == classifier_id
                  and record.get("field") == field
                  and record.get("code") in _TEMPORAL_V2_REJECTION_CODES[classifier_id]
                  and isinstance(record.get("reason"), str) and bool(record["reason"]),
@@ -1790,6 +2953,14 @@ def _validate_temporal_v2_record(classifier_id: str, spec_sha256: str,
         _require_point(record.get("last"), target_indices[-1], "rejected last", source_rows)
         return
     required = (_ARROW_RECORD_KEYS if classifier_id == "v1-arrow-phase-edge-v3"
+                else _ARROW_ACQUISITION_RECORD_KEYS
+                    if classifier_id == "v1-arrow-target-acquisition-v1"
+                else _FREQUENCY_CONTEXT_RECORD_KEYS
+                    if classifier_id == "v1-stable-frequency-closed-context-v3"
+                else _SECONDARY_CONTEXT_RECORD_KEYS
+                    if classifier_id == "v1-secondary-closed-context-v2"
+                else _SECONDARY_OPTICAL_RECORD_KEYS
+                    if classifier_id == "v1-secondary-text-optical-bridge-v1"
                 else _BAR_RECORD_KEYS if classifier_id == "v1-main-bar-adjacent-redraw-v2"
                 else _BADGE_RECORD_KEYS if classifier_id == "v1-muted-badge-rising-fill-v2"
                 else _FREQUENCY_RECORD_KEYS)
@@ -1798,12 +2969,135 @@ def _validate_temporal_v2_record(classifier_id: str, spec_sha256: str,
     if classifier_id == "v1-arrow-phase-edge-v3":
         _validate_temporal_v2_arrow_record(
             record, target_indices, context, spec_document, source_rows)
+    elif classifier_id == "v1-arrow-target-acquisition-v1":
+        _validate_temporal_v2_arrow_acquisition_record(
+            record, target_indices, context, spec_document, source_rows)
+    elif classifier_id == "v1-stable-frequency-closed-context-v3":
+        _validate_temporal_v2_frequency_context_record(
+            record, target_indices, context, spec_document, source_rows)
+    elif classifier_id == "v1-secondary-closed-context-v2":
+        _validate_temporal_v2_secondary_context_record(
+            record, target_indices, context, spec_document, source_rows)
+    elif classifier_id == "v1-secondary-text-optical-bridge-v1":
+        _validate_temporal_v2_secondary_optical_record(
+            record, target_indices, context, spec_document, source_rows)
     elif classifier_id == "v1-main-bar-adjacent-redraw-v2":
         _validate_temporal_v2_bar_record(
             record, target_indices, context, spec_document, source_rows)
     else:
         _validate_temporal_v2_fill_record(
             classifier_id, record, target_indices, context, spec_document, source_rows)
+
+
+def _temporal_v2_frequency_context_band(
+        record: dict[str, Any], analysis_result: dict[str, Any]) -> str:
+    """Derive the admitted primary band from the retained input event, not observer data."""
+    sequence = analysis_result.get("sequence")
+    events = sequence.get("events") if isinstance(sequence, dict) else None
+    _require(isinstance(events, list) and all(isinstance(event, dict) for event in events),
+             "retained frequency-context events are malformed")
+    matching = [event for event in events if event.get("event_id") == record.get("event_id")]
+    _require(len(matching) == 1, "frequency-context record event identity is ambiguous")
+    event = matching[0]
+    rows = event.get("wire_rows")
+    primaries = ([row for row in rows
+                  if isinstance(row, dict) and row.get("priority") is True]
+                 if isinstance(rows, list) else [])
+    _require(len(primaries) == 1, "frequency-context event lacks one primary input row")
+    primary = primaries[0]
+    raw_band = primary.get("band")
+    frequency_mhz = primary.get("frequencyMHz")
+    _require(isinstance(raw_band, str) and raw_band.casefold() in {"x", "k", "ka"}
+             and type(frequency_mhz) is int and 0 <= frequency_mhz <= 65_535,
+             "frequency-context primary input identity is malformed")
+    band = {"x": "X", "k": "K", "ka": "Ka"}[raw_band.casefold()]
+    frequency = f"{frequency_mhz // 1000:02d}.{frequency_mhz % 1000:03d}"
+    signature = record.get("event_signature")
+    target = event.get("target")
+    fields = target.get("fields") if isinstance(target, dict) else None
+    frequency_target = fields.get("primary_frequency") if isinstance(fields, dict) else None
+    _require(record.get("support_derived_frequency") == frequency
+             and isinstance(signature, dict)
+             and signature.get("mode") == event.get("mode")
+             and signature.get("changed_fields") == event.get("changed_fields")
+             and signature.get("current_primary_frequency") == frequency
+             and isinstance(frequency_target, dict)
+             and frequency_target.get("allowed") == [frequency],
+             "frequency-context record differs from its retained primary event")
+    return band
+
+
+def _validate_temporal_v2_secondary_context_event(
+        record: dict[str, Any], analysis_result: dict[str, Any]) -> None:
+    """Bind post-acquisition secondary evidence to the retained event boundary."""
+    sequence = analysis_result.get("sequence")
+    events = sequence.get("events") if isinstance(sequence, dict) else None
+    _require(isinstance(events, list) and all(isinstance(event, dict) for event in events),
+             "retained secondary-context events are malformed")
+    matching = [event for event in events if event.get("event_id") == record.get("event_id")]
+    _require(len(matching) == 1, "secondary-context record event identity is ambiguous")
+    event = matching[0]
+    first_correct = event.get("first_correct")
+    established = record.get("current_presentation_established")
+    point_keys = {
+        "frame_id", "video_frame_index", "source_frame_seq", "capture_ns",
+        "offset_seconds", "image"}
+    signature = record.get("event_signature")
+    target = event.get("target")
+    fields = target.get("fields") if isinstance(target, dict) else None
+    secondary_target = fields.get("secondary") if isinstance(fields, dict) else None
+    _require(isinstance(first_correct, dict)
+             and set(first_correct) <= point_keys
+             and isinstance(established, dict)
+             and all(established.get(name) == value
+                     for name, value in first_correct.items())
+             and isinstance(signature, dict)
+             and signature.get("mode") == event.get("mode")
+             and signature.get("changed_fields") == event.get("changed_fields")
+             and isinstance(secondary_target, dict)
+             and secondary_target.get("allowed") == [record.get("support_derived_secondary")],
+             "secondary-context record differs from its retained current event")
+
+
+def _temporal_v2_secondary_optical_band(
+        record: dict[str, Any], analysis_result: dict[str, Any]) -> str:
+    """Bind the optical bridge and its coverage band to one retained current event."""
+    sequence = analysis_result.get("sequence")
+    events = sequence.get("events") if isinstance(sequence, dict) else None
+    _require(isinstance(events, list) and all(isinstance(event, dict) for event in events),
+             "retained secondary optical events are malformed")
+    matching = [event for event in events if event.get("event_id") == record.get("event_id")]
+    _require(len(matching) == 1, "secondary optical record event identity is ambiguous")
+    event = matching[0]
+    first_correct = event.get("first_correct")
+    established = record.get("current_presentation_established")
+    point_keys = {
+        "frame_id", "video_frame_index", "source_frame_seq", "capture_ns",
+        "offset_seconds", "image", "image_sha256"}
+    signature = record.get("event_signature")
+    support = record.get("support_derived_secondary")
+    slot = record.get("deficient_slot")
+    target = event.get("target")
+    fields = target.get("fields") if isinstance(target, dict) else None
+    secondary_target = fields.get("secondary") if isinstance(fields, dict) else None
+    _require(isinstance(first_correct, dict) and bool(first_correct)
+             and set(first_correct) <= point_keys
+             and isinstance(established, dict)
+             and all(established.get(name) == value
+                     for name, value in first_correct.items())
+             and isinstance(signature, dict)
+             and signature.get("mode") == event.get("mode")
+             and signature.get("changed_fields") == event.get("changed_fields")
+             and signature.get("current_secondary") == support
+             and isinstance(secondary_target, dict)
+             and secondary_target.get("allowed") == [support]
+             and isinstance(support, list)
+             and type(slot) is int and 0 <= slot < len(support),
+             "secondary optical record differs from its retained current event")
+    band = support[slot].get("band")
+    _require(band in {"X", "K", "Ka"},
+             "secondary optical deficient-slot band is malformed")
+    return band
 
 
 def _validate_temporal_v2(document: dict[str, Any], classifier_id: str,
@@ -1832,6 +3126,82 @@ def _validate_temporal_v2(document: dict[str, Any], classifier_id: str,
                 "minimum_blind_true_rejects": MINIMUM_TEMPORAL_NEGATIVES,
                 "maximum_false_admits": 0,
             })
+    elif classifier_id == "v1-arrow-target-acquisition-v1":
+        valid_specification = (
+            isinstance(spec_document, dict)
+            and spec_document.get("schema_version") == 1
+            and spec_document.get("classifier_id") == classifier_id
+            and spec_document.get("deadline_observation_semantics") ==
+                "TARGET_ACQUISITION_TRANSITION"
+            and spec_document.get("scope", {}).get("field") == "main_arrows"
+            and isinstance(spec_validation, dict)
+            and spec_validation.get("minimum_blind_true_admits") ==
+                MINIMUM_TEMPORAL_POSITIVES
+            and spec_validation.get("minimum_blind_true_rejects") ==
+                MINIMUM_TEMPORAL_NEGATIVES
+            and spec_validation.get("required_false_admits") == 0
+            and spec_validation.get("observer_eligibility_rule") ==
+                TEMPORAL_V2_OBSERVER_RUBRICS[classifier_id]["observer_eligibility_rule"])
+    elif classifier_id == "v1-secondary-text-optical-bridge-v1":
+        valid_specification = (
+            isinstance(spec_document, dict)
+            and spec_document.get("schema_version") == 1
+            and spec_document.get("classifier_id") == classifier_id
+            and spec_document.get("deadline_observation_semantics") ==
+                "LEGAL_PRESENTATION_TRANSITION"
+            and spec_document.get("scope", {}).get("field") == "secondary"
+            and spec_document.get("scope", {}).get("minimum_cards") == 1
+            and spec_document.get("scope", {}).get("maximum_cards") == 2
+            and spec_validation == {
+                "minimum_blind_true_admits": MINIMUM_TEMPORAL_POSITIVES,
+                "minimum_blind_true_rejects": MINIMUM_TEMPORAL_NEGATIVES,
+                "observer_eligibility_rule":
+                    TEMPORAL_V2_OBSERVER_RUBRICS[classifier_id][
+                        "observer_eligibility_rule"],
+                "required_band_coverage": ["X", "K", "Ka"],
+                "required_false_admits": 0,
+            })
+    elif classifier_id == "v1-secondary-closed-context-v2":
+        valid_specification = (
+            isinstance(spec_document, dict)
+            and spec_document.get("schema_version") == 1
+            and spec_document.get("classifier_id") == classifier_id
+            and spec_document.get("deadline_observation_semantics") ==
+                "LEGAL_PRESENTATION_TRANSITION"
+            and spec_document.get("scope", {}).get("field") == "secondary"
+            and spec_document.get("scope", {}).get("minimum_cards") == 1
+            and spec_document.get("scope", {}).get("maximum_cards") == 2
+            and spec_validation == {
+                "minimum_blind_true_admits": MINIMUM_TEMPORAL_POSITIVES,
+                "minimum_blind_true_rejects": MINIMUM_TEMPORAL_NEGATIVES,
+                "observer_eligibility_rule":
+                    TEMPORAL_V2_OBSERVER_RUBRICS[classifier_id][
+                        "observer_eligibility_rule"],
+                "required_false_admits": 0,
+            })
+    elif classifier_id == "v1-stable-frequency-closed-context-v3":
+        branch_gate = {
+            "minimum_blind_true_admits": MINIMUM_TEMPORAL_POSITIVES,
+            "minimum_blind_true_rejects": MINIMUM_TEMPORAL_NEGATIVES,
+            "required_false_admits": 0,
+        }
+        valid_specification = (
+            isinstance(spec_document, dict)
+            and spec_document.get("schema_version") == 1
+            and spec_document.get("classifier_id") == classifier_id
+            and spec_document.get("deadline_observation_semantics") ==
+                "LEGAL_PRESENTATION_TRANSITION"
+            and spec_document.get("verification_closure_semantics") ==
+                "RAW_CURRENT_BRACKETED_UNRESOLVED_VERIFICATION_BOUNDARY"
+            and spec_document.get("scope", {}).get("field") == "primary_frequency"
+            and isinstance(spec_validation, dict)
+            and spec_validation.get("branch_gates") == {
+                "intact_mask": branch_gate,
+                "partial_expected_on_segments": branch_gate,
+            }
+            and spec_validation.get("required_band_coverage") == ["X", "K", "Ka"]
+            and spec_validation.get("observer_eligibility_rule") ==
+                TEMPORAL_V2_OBSERVER_RUBRICS[classifier_id]["observer_eligibility_rule"])
     else:
         valid_specification = (
             isinstance(spec_document, dict)
@@ -2032,9 +3402,16 @@ def _validate_temporal_v2(document: dict[str, Any], classifier_id: str,
         value for value in analysis_temporal.get("classifications", [])
         if isinstance(value, dict) and value.get("classifier_id") == classifier_id]
     field = TEMPORAL_V2_OBSERVER_RUBRICS[classifier_id]["raw_affected_fields"][0]
+    all_analysis_rejected = analysis_temporal.get("rejected_runs", [])
+    _require(isinstance(all_analysis_rejected, list)
+             and all(isinstance(value, dict)
+                     and isinstance(value.get("classifier_id"), str)
+                     and bool(value["classifier_id"])
+                     for value in all_analysis_rejected),
+             f"retained analyzer rejections lack classifier provenance for {classifier_id}")
     analysis_rejected = [
-        value for value in analysis_temporal.get("rejected_runs", [])
-        if isinstance(value, dict) and value.get("field") == field]
+        value for value in all_analysis_rejected
+        if value.get("classifier_id") == classifier_id and value.get("field") == field]
     _require(canonical(analysis_admitted) == canonical(frozen.get("classifications", []))
              and canonical(analysis_rejected) == canonical(frozen.get("rejected_runs", [])),
              f"frozen classifier output differs from retained analyzer result for {classifier_id}")
@@ -2046,7 +3423,12 @@ def _validate_temporal_v2(document: dict[str, Any], classifier_id: str,
              and set(checks) == set(TEMPORAL_V2_INTEGRITY_CHECKS)
              and all(checks[name] is True for name in TEMPORAL_V2_INTEGRITY_CHECKS)
              and isinstance(clip_checks, list)
-             and all(isinstance(item, dict) for item in clip_checks),
+             and all(isinstance(item, dict) and set(item) == {
+                 "opaque_id", "actual_sha256", "hidden_key_sha256", "sealed_sha256",
+                 "actual_size_bytes", "sealed_size_bytes", "target_run_video_indices",
+                 "clip_source_video_indices", "target_run_clip_frame_indices",
+                 "path_matches_id", "source_frame_indices_match_target_run",
+                 "target_run_inside_clip"} for item in clip_checks),
              f"temporal integrity record failed for {classifier_id}")
     clip_by_id = {item.get("opaque_id"): item for item in clip_checks}
     _require(len(clip_by_id) == len(clip_checks) and set(clip_by_id) == set(ids[0]),
@@ -2057,6 +3439,11 @@ def _validate_temporal_v2(document: dict[str, Any], classifier_id: str,
                    ("true_admit", "false_admit", "true_reject", "false_reject",
                     "abstain")}
     ground_truth_counts: Counter[str] = Counter()
+    frequency_branches = ("intact_mask", "partial_expected_on_segments")
+    branch_outcomes = ({branch: Counter() for branch in frequency_branches}
+                       if classifier_id == "v1-stable-frequency-closed-context-v3"
+                       else {})
+    true_admit_bands: set[str] = set()
     retained_clip_paths: set[Path] = set()
     retained_clip_hashes: set[str] = set()
     retained_candidates: set[tuple[Any, ...]] = set()
@@ -2066,8 +3453,7 @@ def _validate_temporal_v2(document: dict[str, Any], classifier_id: str,
         _require(set(manifest_item) == {
                      "opaque_id", "clip", "sha256", "size_bytes",
                      "target_run_video_indices", "clip_source_video_indices",
-                     "target_run_clip_frame_indices", "full_run_video_indices",
-                     "full_run_clip_frame_indices", "inset_source_box"},
+                     "target_run_clip_frame_indices", "inset_source_box"},
                  f"temporal observer manifest item differs for {opaque_id}")
         manifest_sha = _digest(manifest_item.get("sha256"), f"temporal clip {opaque_id}")
         _require(hidden_item.get("clip_sha256") == manifest_sha,
@@ -2102,13 +3488,17 @@ def _validate_temporal_v2(document: dict[str, Any], classifier_id: str,
                  f"temporal manifest target indices differ for {opaque_id}")
         clip_source_indices = manifest_item.get("clip_source_video_indices")
         target_clip_indices = manifest_item.get("target_run_clip_frame_indices")
-        full_run_indices = manifest_item.get("full_run_video_indices")
-        full_run_clip_indices = manifest_item.get("full_run_clip_frame_indices")
+        full_run_indices = hidden_item.get("full_run_video_indices")
+        full_run_clip_indices = hidden_item.get("full_run_clip_frame_indices")
+        expected_clip_source_indices = temporal_observer_clip_source_indices(
+            target_indices, source_rows)
         _require(isinstance(clip_source_indices, list) and bool(clip_source_indices)
                  and all(type(value) is int and value >= 0 for value in clip_source_indices)
                  and all(right == left + 1
                          for left, right in zip(clip_source_indices, clip_source_indices[1:])),
                  f"temporal clip source mapping is invalid for {opaque_id}")
+        _require(clip_source_indices == expected_clip_source_indices,
+                 f"temporal observer clip does not use the fixed target context for {opaque_id}")
         expected_target_clip_indices = [
             offset for offset, source_index in enumerate(clip_source_indices)
             if source_index in set(target_indices)
@@ -2134,8 +3524,7 @@ def _validate_temporal_v2(document: dict[str, Any], classifier_id: str,
                  and [clip_source_indices[offset] for offset in full_run_clip_indices] ==
                      full_run_indices
                  and all(value in full_run_indices for value in target_indices)
-                 and hidden_item.get("full_run_video_indices") == full_run_indices
-                 and hidden_item.get("full_run_clip_frame_indices") == full_run_clip_indices,
+                 and all(value in clip_source_indices for value in full_run_indices),
                  f"temporal clip full-run mapping differs for {opaque_id}")
         clip_audit = clip_by_id[opaque_id]
         _require(clip_audit.get("actual_sha256") == manifest_sha
@@ -2146,8 +3535,6 @@ def _validate_temporal_v2(document: dict[str, Any], classifier_id: str,
                  and clip_audit.get("target_run_video_indices") == target_indices
                  and clip_audit.get("clip_source_video_indices") == clip_source_indices
                  and clip_audit.get("target_run_clip_frame_indices") == target_clip_indices
-                 and clip_audit.get("full_run_video_indices") == full_run_indices
-                 and clip_audit.get("full_run_clip_frame_indices") == full_run_clip_indices
                  and all(clip_audit.get(name) is True for name in
                          ("path_matches_id", "source_frame_indices_match_target_run",
                           "target_run_inside_clip")),
@@ -2161,6 +3548,13 @@ def _validate_temporal_v2(document: dict[str, Any], classifier_id: str,
         _require(decision in ("ADMITTED", "REJECTED"),
                  f"temporal frozen decision is invalid for {opaque_id}")
         record = hidden_item.get("frozen_classifier_record")
+        _require(set(hidden_item) == {
+                     "opaque_id", "clip_sha256", "frozen_classifier_decision",
+                     "frozen_classifier_record", "frozen_classifier_record_sha256",
+                     "target_run_video_indices", "clip_source_video_indices",
+                     "target_run_clip_frame_indices", "full_run_video_indices",
+                     "full_run_clip_frame_indices"},
+                 f"temporal hidden item shape differs for {opaque_id}")
         _require(isinstance(record, dict), f"temporal frozen record is missing for {opaque_id}")
         record_sha = _canonical_sha256(record)
         _require(hidden_item.get("frozen_classifier_record_sha256") == record_sha,
@@ -2168,11 +3562,20 @@ def _validate_temporal_v2(document: dict[str, Any], classifier_id: str,
         _validate_temporal_v2_record(
             classifier_id, spec_sha256, record, target_indices, context_binding,
             spec_document, decision, source_rows)
+        admitted_band = None
         if decision == "ADMITTED":
             _require(record.get("video_frame_indices") == target_indices,
                      f"temporal admitted record target indices differ for {opaque_id}")
             claim_matches = _temporal_v2_claim_matches_record(
                 classifier_id, spec_sha256, literal, record)
+            if classifier_id == "v1-secondary-closed-context-v2":
+                _validate_temporal_v2_secondary_context_event(record, analysis_result)
+            elif classifier_id == "v1-secondary-text-optical-bridge-v1":
+                _require(full_run_indices == list(range(
+                             target_indices[0] - 2, target_indices[0] + 3)),
+                         f"temporal secondary optical five-frame bracket differs for {opaque_id}")
+                admitted_band = _temporal_v2_secondary_optical_band(
+                    record, analysis_result)
         else:
             first = record.get("first")
             last = record.get("last")
@@ -2213,6 +3616,14 @@ def _validate_temporal_v2(document: dict[str, Any], classifier_id: str,
                  f"temporal comparison was not independently derived for {opaque_id}")
         outcomes[key] += 1
         outcome_ids[key].append(opaque_id)
+        if outcome == "TRUE_ADMIT" and admitted_band is not None:
+            true_admit_bands.add(admitted_band)
+        if branch_outcomes:
+            branch = record["branch"]
+            branch_outcomes[branch][key] += 1
+            if outcome == "TRUE_ADMIT":
+                true_admit_bands.add(
+                    _temporal_v2_frequency_context_band(record, analysis_result))
 
     matrix = {name: outcomes[name] for name in outcome_ids}
     matrix["total"] = len(comparisons)
@@ -2269,9 +3680,57 @@ def _validate_temporal_v2(document: dict[str, Any], classifier_id: str,
              and minima.get("true_reject_minimum_met") is
                  (matrix["true_reject"] >= MINIMUM_TEMPORAL_NEGATIVES),
              f"temporal minima were not independently derived for {classifier_id}")
+    branch_allowed = True
+    if branch_outcomes:
+        branch_matrices = {
+            branch: {
+                **{name: counts[name] for name in outcome_ids},
+                "total": sum(counts.values()),
+            }
+            for branch, counts in branch_outcomes.items()
+        }
+        branch_minima = {
+            branch: {
+                "required_true_admit_minimum": MINIMUM_TEMPORAL_POSITIVES,
+                "required_true_reject_minimum": MINIMUM_TEMPORAL_NEGATIVES,
+                "required_false_admits": 0,
+                "observed_true_admit": values["true_admit"],
+                "observed_true_reject": values["true_reject"],
+                "observed_false_admit": values["false_admit"],
+                "true_admit_minimum_met":
+                    values["true_admit"] >= MINIMUM_TEMPORAL_POSITIVES,
+                "true_reject_minimum_met":
+                    values["true_reject"] >= MINIMUM_TEMPORAL_NEGATIVES,
+                "false_admit_requirement_met": values["false_admit"] == 0,
+            }
+            for branch, values in branch_matrices.items()
+        }
+        required_bands = spec_validation["required_band_coverage"]
+        band_coverage = [band for band in required_bands if band in true_admit_bands]
+        branch_allowed = (
+            all(values["false_admit"] == 0
+                and values["true_admit"] >= MINIMUM_TEMPORAL_POSITIVES
+                and values["true_reject"] >= MINIMUM_TEMPORAL_NEGATIVES
+                for values in branch_matrices.values())
+            and band_coverage == required_bands)
+        _require(document.get("branch_confusion_matrices") == branch_matrices
+                 and document.get("branch_numerical_minima") == branch_minima
+                 and document.get("true_admit_band_coverage") == band_coverage
+                 and document.get("required_band_coverage_met") is
+                     (band_coverage == required_bands),
+                 f"temporal frequency-context strata were not independently derived for {classifier_id}")
+    coverage_allowed = True
+    if classifier_id == "v1-secondary-text-optical-bridge-v1":
+        required_bands = spec_validation["required_band_coverage"]
+        band_coverage = [band for band in required_bands if band in true_admit_bands]
+        coverage_allowed = band_coverage == required_bands
+        _require(document.get("true_admit_band_coverage") == band_coverage
+                 and document.get("required_band_coverage_met") is coverage_allowed,
+                 "temporal secondary optical band coverage was not independently derived")
     allowed = (matrix["false_admit"] == 0
                and matrix["true_admit"] >= MINIMUM_TEMPORAL_POSITIVES
-               and matrix["true_reject"] >= MINIMUM_TEMPORAL_NEGATIVES)
+               and matrix["true_reject"] >= MINIMUM_TEMPORAL_NEGATIVES
+               and branch_allowed and coverage_allowed)
     _require(document.get("integrity_pass") is True and allowed,
              f"temporal validation integrity failed for {classifier_id}")
     decision = document.get("allowlist_decision")
@@ -2544,9 +4003,8 @@ def verify_qualification(path: Path | None, *, implementation_sha256: dict[str, 
                  and isinstance(reader.get("runtime"), dict),
                  "reader qualification identity is malformed")
         implementation = reader["implementation_sha256"]
-        _require(set((*CORE_READER_FILES, *OCR_RUNTIME_FILES, *QUALIFICATION_LOGIC_FILES))
-                 <= set(implementation),
-                 "reader qualification omits core implementation files")
+        _require(set(implementation) == set(STATIC_READER_IMPLEMENTATION_FILES),
+                 "reader qualification does not bind the exact static implementation inventory")
         for name, digest in implementation.items():
             _digest(digest, f"reader implementation {name}")
             _require(implementation_sha256.get(name) == digest,
@@ -2590,6 +4048,9 @@ def verify_qualification(path: Path | None, *, implementation_sha256: dict[str, 
 
         qualified_specs = policy.get("qualified_temporal_classifiers")
         _require(isinstance(qualified_specs, dict), "visible-event policy classifiers are malformed")
+        contract_version = policy.get("contract_version")
+        _require(contract_version in {1, 2, 3},
+                 "visible-event policy contract version is malformed")
         temporal = manifest.get("temporal_classifiers")
         _require(isinstance(temporal, dict) and set(temporal) == set(qualified_specs),
                  "qualification temporal classifiers differ from the visible-event policy")
@@ -2604,19 +4065,50 @@ def verify_qualification(path: Path | None, *, implementation_sha256: dict[str, 
             spec_sha = _digest(policy_spec.get("classifier_spec_sha256"), classifier_id)
             _require(entry.get("classifier_spec_sha256") == spec_sha,
                      f"temporal specification differs: {classifier_id}")
-            for name in CLASSIFIER_IMPLEMENTATION_FILES[classifier_id]:
-                _require(implementation.get(name) == implementation_sha256.get(name),
-                         f"temporal implementation is not bound: {name}")
+            classifier_implementation = entry.get("implementation_sha256")
+            expected_implementation = set(CLASSIFIER_IMPLEMENTATION_FILES[classifier_id])
+            _require(isinstance(classifier_implementation, dict)
+                     and set(classifier_implementation) == expected_implementation,
+                     f"temporal implementation inventory differs: {classifier_id}")
+            for name, digest in classifier_implementation.items():
+                _digest(digest, f"{classifier_id} implementation {name}")
+                _require(implementation_sha256.get(name) == digest,
+                         f"running temporal implementation differs: {name}")
+            bound_implementation = {**implementation, **classifier_implementation}
             spec_path, spec_document = _evidence(
                 manifest_path.parent, entry.get("spec"), f"{classifier_id} specification")
             _require(_sha256(spec_path) == spec_sha,
                      f"temporal specification hash differs: {classifier_id}")
+            raw_fields = (TEMPORAL_V2_OBSERVER_RUBRICS[classifier_id]["raw_affected_fields"]
+                          if classifier_id in TEMPORAL_V2_OBSERVER_RUBRICS
+                          else ["main_arrows"])
+            expected_policy_spec = {
+                "classifier_spec_sha256": spec_sha,
+                "raw_affected_fields": raw_fields,
+            }
+            if contract_version >= 2:
+                semantics = (spec_document.get("deadline_observation_semantics")
+                             if isinstance(spec_document, dict) else None)
+                _require(semantics in {
+                             "LEGAL_PRESENTATION_TRANSITION",
+                             "TARGET_ACQUISITION_TRANSITION"},
+                         f"temporal specification semantics are invalid: {classifier_id}")
+                expected_policy_spec["deadline_observation_semantics"] = semantics
+            closure_semantics = (spec_document.get("verification_closure_semantics")
+                                 if isinstance(spec_document, dict) else None)
+            if closure_semantics is not None:
+                _require(closure_semantics ==
+                         "RAW_CURRENT_BRACKETED_UNRESOLVED_VERIFICATION_BOUNDARY",
+                         f"temporal verification closure semantics are invalid: {classifier_id}")
+                expected_policy_spec["verification_closure_semantics"] = closure_semantics
+            _require(policy_spec == expected_policy_spec,
+                     f"temporal policy contract differs from qualification: {classifier_id}")
             comparison_path, comparison = _evidence(
                 manifest_path.parent, entry.get("validation"),
                 f"{classifier_id} validation")
             temporal_summary[classifier_id] = _validate_temporal(
                 comparison, classifier_id, spec_sha, comparison_path.parent, entry,
-                implementation, reader["runtime"], bench_source_sha256, spec_document)
+                bound_implementation, reader["runtime"], bench_source_sha256, spec_document)
 
         result.update(status="QUALIFIED", qualification_id=qualification_id,
                       manifest_sha256=_sha256(manifest_path), manifest_path=str(manifest_path),

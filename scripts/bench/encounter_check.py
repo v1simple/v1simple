@@ -565,6 +565,8 @@ def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cade
             temporal_classifier_ids: list[str] | tuple[str, ...] | None = None) -> dict:
     samples, errors, evidence, data, transition_windows, held_windows, config = [], [], {}, None, [], [], None
     product_policy, product_definitions, product_windows = None, [], []
+    requested_temporal_classifiers, secondary_profiles_requested = [], False
+    secondary_probe = None
     qualification = {"schema_version": 1, "kind": "encounter_reader_qualification_verification",
                      "status": "REJECTED", "errors": ["reader qualification was not evaluated"]}
     method = {p.name: sha256_file(p) for p in Path(__file__).parent.glob("*.py")}
@@ -668,6 +670,14 @@ def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cade
                 "verification_duration_ns": product_policy["verification_duration_ns"],
                 "minimum_post_completion_hold_ns": product_policy["minimum_post_completion_hold_ns"],
             }
+        requested_temporal_classifiers = (
+            (product_policy.get("qualified_temporal_classifier_ids", [])
+             if temporal_classifier_ids is None else temporal_classifier_ids)
+            if inspect_transitions and product_policy is not None else [])
+        secondary_profiles_requested = (
+            "v1-secondary-text-optical-bridge-v1" in requested_temporal_classifiers)
+        if secondary_profiles_requested:
+            import encounter_secondary_probe as secondary_probe
         # Immutable input-only selection is published before any reader call.
         save_json(out / "selection.json", dict(schema_version=1, identity=data["identity"], ranges=ranges,
                                                selection_mode=result["selection_mode"],
@@ -733,6 +743,17 @@ def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cade
                         "status": "unavailable",
                         "reason": f"redraw probe failed: {type(exc).__name__}: {exc}",
                     }
+                if secondary_profiles_requested:
+                    try:
+                        reading["secondary_profiles"] = secondary_probe.observe(
+                            pixels, data["width"], data["height"], data["registration"])
+                    except Exception as exc:
+                        reading["secondary_profiles"] = {
+                            "schema_version": 1,
+                            "method_version": secondary_probe.METHOD_VERSION,
+                            "status": "unavailable",
+                            "reason": f"secondary probe failed: {type(exc).__name__}: {exc}",
+                        }
                 for sample in by_index[index]:
                     requirement = encounter_expectation_at(data["timeline"], sample["capture_ns"],
                                                            configuration=config["settings"] if config else None)
@@ -770,10 +791,7 @@ def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cade
             and "selection_manifest_sha256" in evidence):
         from encounter_temporal import classify_temporal
         import encounter_reader
-        requested_temporal_classifiers = (
-            product_policy.get("qualified_temporal_classifier_ids", [])
-            if temporal_classifier_ids is None else temporal_classifier_ids)
-        temporal = classify_temporal(samples, sequence, arrow_context={
+        classifier_context = {
             "capture_id": data["identity"]["capture_id"],
             "selection_manifest_sha256": evidence["selection_manifest_sha256"],
             "verified_maximum_source_interval_ns": data["timing"]["maximum_source_interval_ns"],
@@ -781,7 +799,14 @@ def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cade
             "reader_sha256": method["encounter_reader.py"],
             "redraw_probe_method_version": encounter_redraw_probe.METHOD_VERSION,
             "redraw_probe_sha256": method["encounter_redraw_probe.py"],
-        }, classifier_ids=requested_temporal_classifiers)
+        }
+        if secondary_probe is not None:
+            classifier_context.update(
+                secondary_probe_method_version=secondary_probe.METHOD_VERSION,
+                secondary_probe_sha256=method["encounter_secondary_probe.py"])
+        temporal = classify_temporal(
+            samples, sequence, arrow_context=classifier_context,
+            classifier_ids=requested_temporal_classifiers)
         eligible = {window["event_id"] for window in product_windows}
         # Retain each event intact: mode and previous_target describe its place
         # in the full sequence even when product ranges select only that event.
@@ -871,7 +896,8 @@ def review_payload(result):
                               ("event_id", "mode", "result", "reason_code", "reasons",
                                "deadline_ns", "verification_end_ns", "observed_joint_state_ids",
                                "response_acquisition", "acquisition_observations", "first_current_correct",
-                               "closing_current_correct", "first_decisive_marker")
+                               "verification_closure_proof", "closing_current_correct",
+                               "first_decisive_marker")
                               if key in event}
                              for event in judgment.get("events", []) if isinstance(event, dict)]
         return compact
@@ -949,15 +975,19 @@ def write_report(out: Path, result: dict) -> None:
                 points = [("Decisive image", event.get("first_decisive_marker")),
                           ("Deadline", (event.get("response_acquisition") or {}).get(
                               "deadline_capture_marker_bracket", {}).get("end")),
-                          ("Closing image", event.get("closing_current_correct"))]
+                          ("Verification boundary", (event.get("verification_closure_proof") or {}).get(
+                              "verification_boundary")),
+                          ("Closing observation", event.get("closing_current_correct"))]
                 links = [f"[{label}](report.html#sample={point['frame_id']})"
                          for label, point in points if point and point.get("frame_id")]
                 lines.append(f"| {event.get('event_id', 'unavailable')} | **{event.get('result', 'INCONCLUSIVE')}** | "
                              f"`{event.get('reason_code', 'unavailable')}` | {'; '.join(links)} |")
             lines.append("")
         pass_scope = (
-            "A `PASS` means every required target was correct or in a qualified legal blink phase "
-            "at the sole bounded deadline observation, then stayed correct through 192 ms and a closing image. "
+            "A `PASS` means every required target was correct or in a qualified legal display phase "
+            "at the sole bounded deadline observation, then remained raw-current or in a qualified legal "
+            "display phase through 192 ms and ended with either a timely raw-current observation or an "
+            "exactly qualified unresolved boundary run immediately bracketed by raw-current observations. "
             "Pre-deadline optical observations remain diagnostic. "
             if contract.get("version", 0) >= 3 else
             "A `PASS` means every required event met its declared acquisition and continued-presentation contract. ")
@@ -1046,7 +1076,7 @@ el('coverage').textContent=result.coverage.regions.map(r=>r.start_seconds+'–'+
 const eventName=e=>{const p=e.wire_rows.find(r=>r.priority);return p?p.band+' '+p.frequency+' primary · '+e.wire_rows.length+' alerts':'No live radar alerts'};
 const jump=(parent,point,label)=>{if(!point)return;const index=all.findIndex(s=>s.frame_id===point.frame_id);if(index<0)return;let b=document.createElement('button');b.textContent=label+' · '+seconds(point.offset_seconds??all[index].offset_seconds??null);b.onclick=()=>show(index);parent.append(b)};
 for(let i=0;i<events.length;i++){let option=document.createElement('option');option.value=i;const verdict=product?.events?.find(e=>e.event_id===events[i].event_id);option.textContent=(verdict?verdict.result+' · ':'')+events[i].event_id+' · '+eventName(events[i]);el('eventSelect').append(option)}
-function renderEvent(){const e=events[Number(el('eventSelect').value)];if(!e){el('eventReview').hidden=true;return}const verdict=product?.events?.find(v=>v.event_id===e.event_id);el('eventJudgment').textContent=verdict?verdict.result+' · '+verdict.reason_code.replaceAll('_',' ').toLowerCase():product?'No qualified judgment for this event.':'';el('productEventLinks').replaceChildren();if(verdict){jump(el('productEventLinks'),verdict.first_decisive_marker,'Decisive image');jump(el('productEventLinks'),verdict.response_acquisition?.deadline_capture_marker_bracket?.end,'Deadline observation');jump(el('productEventLinks'),verdict.closing_current_correct,'Closing observation')}el('eventSummary').textContent=e.summary;const t=e.timing;el('eventTiming').textContent=t.status==='observed_capture_marker'?'The first correct recorded image was '+t.host_send_to_first_correct_capture_ms.map(x=>x.toFixed(3)).join('–')+' ms after the completing notification send call. '+(t.complete_recorded_frame_prefix?'Every recorded image from the event request through that image was read. ':'Earlier recorded images were not all read; this is a sampled observation time. ')+t.physical_appearance_reason:'First-correct timing unavailable: '+t.reason;const c=e.coverage;el('eventCoverage').textContent=c.read_recorded_frames+'/'+c.available_recorded_frames+' recorded images read across this entire input event; '+c.unrecorded_source_frames+' source frames not recorded; largest gap '+c.maximum_gap_between_read_markers_ms.toFixed(3)+' ms. A correct image does not establish correctness through an unobserved gap.';el('eventLinks').replaceChildren();jump(el('eventLinks'),e.preceding_observation,'Before input');jump(el('eventLinks'),e.last_definite_not_correct_before_first,'Last observed different state before correct');jump(el('eventLinks'),e.first_correct,'First all-required correct');el('eventFields').replaceChildren();for(const [name,point]of Object.entries(e.first_correct_by_field)){if(point)jump(el('eventFields'),point,names[name]);else{const p=document.createElement('p');p.textContent=names[name]+': no supported correct reading';el('eventFields').append(p)}}el('eventAfter').replaceChildren();for(const change of e.changes_after_correct){const detail=e.observation_spans[change.span_index];let label=change.status.replaceAll('_',' ').toLowerCase();if(change.not_correct_fields.length)label+=' · differing '+change.not_correct_fields.map(n=>names[n]).join(', ');if(change.unresolved_fields.length)label+=' · unresolved '+change.unresolved_fields.map(n=>names[n]).join(', ');label+=' · '+detail.frame_count+' consecutive frame(s)';jump(el('eventAfter'),change.first,label)}if(!e.changes_after_correct.length)el('eventAfter').textContent='No later change was observed in the selected images.'}
+function renderEvent(){const e=events[Number(el('eventSelect').value)];if(!e){el('eventReview').hidden=true;return}const verdict=product?.events?.find(v=>v.event_id===e.event_id);el('eventJudgment').textContent=verdict?verdict.result+' · '+verdict.reason_code.replaceAll('_',' ').toLowerCase():product?'No qualified judgment for this event.':'';el('productEventLinks').replaceChildren();if(verdict){jump(el('productEventLinks'),verdict.first_decisive_marker,'Decisive image');jump(el('productEventLinks'),verdict.response_acquisition?.deadline_capture_marker_bracket?.end,'Deadline observation');jump(el('productEventLinks'),verdict.verification_closure_proof?.verification_boundary,'Verification boundary');jump(el('productEventLinks'),verdict.closing_current_correct,'Closing observation')}el('eventSummary').textContent=e.summary;const t=e.timing;el('eventTiming').textContent=t.status==='observed_capture_marker'?'The first correct recorded image was '+t.host_send_to_first_correct_capture_ms.map(x=>x.toFixed(3)).join('–')+' ms after the completing notification send call. '+(t.complete_recorded_frame_prefix?'Every recorded image from the event request through that image was read. ':'Earlier recorded images were not all read; this is a sampled observation time. ')+t.physical_appearance_reason:'First-correct timing unavailable: '+t.reason;const c=e.coverage;el('eventCoverage').textContent=c.read_recorded_frames+'/'+c.available_recorded_frames+' recorded images read across this entire input event; '+c.unrecorded_source_frames+' source frames not recorded; largest gap '+c.maximum_gap_between_read_markers_ms.toFixed(3)+' ms. A correct image does not establish correctness through an unobserved gap.';el('eventLinks').replaceChildren();jump(el('eventLinks'),e.preceding_observation,'Before input');jump(el('eventLinks'),e.last_definite_not_correct_before_first,'Last observed different state before correct');jump(el('eventLinks'),e.first_correct,'First all-required correct');el('eventFields').replaceChildren();for(const [name,point]of Object.entries(e.first_correct_by_field)){if(point)jump(el('eventFields'),point,names[name]);else{const p=document.createElement('p');p.textContent=names[name]+': no supported correct reading';el('eventFields').append(p)}}el('eventAfter').replaceChildren();for(const change of e.changes_after_correct){const detail=e.observation_spans[change.span_index];let label=change.status.replaceAll('_',' ').toLowerCase();if(change.not_correct_fields.length)label+=' · differing '+change.not_correct_fields.map(n=>names[n]).join(', ');if(change.unresolved_fields.length)label+=' · unresolved '+change.unresolved_fields.map(n=>names[n]).join(', ');label+=' · '+detail.frame_count+' consecutive frame(s)';jump(el('eventAfter'),change.first,label)}if(!e.changes_after_correct.length)el('eventAfter').textContent='No later change was observed in the selected images.'}
 el('eventSelect').onchange=()=>{stopPlayback();renderEvent();const e=events[Number(el('eventSelect').value)];const point=e?.observation_spans[0]?.first;if(point)show(all.findIndex(s=>s.frame_id===point.frame_id))};renderEvent();
 
 let playback=null;function stopPlayback(){if(playback!==null)clearTimeout(playback);playback=null;el('play').textContent='Play consecutive frames'}

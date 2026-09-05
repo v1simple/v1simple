@@ -134,21 +134,27 @@ def qualification(event, indices, *, classifier_id=TEST_CLASSIFIER, fields=("mai
 
 @contextmanager
 def policy_allowing(*classifier_ids, fields_by_classifier=None,
-                    semantics_by_classifier=None):
+                    semantics_by_classifier=None, closure_by_classifier=None,
+                    policy_id=DEFAULT_POLICY_ID):
     fields_by_classifier = fields_by_classifier or {}
     semantics_by_classifier = semantics_by_classifier or {}
+    closure_by_classifier = closure_by_classifier or {}
     document = json.loads(DEFAULT_POLICY_PATH.read_text(encoding="utf-8"))
-    document["policies"][DEFAULT_POLICY_ID][
+    document["policies"][policy_id][
         "qualified_temporal_classifier_ids"] = list(classifier_ids)
-    document["policies"][DEFAULT_POLICY_ID][
-        "qualified_temporal_classifiers"] = {
-            classifier_id: {"classifier_spec_sha256": TEST_CLASSIFIER_SPEC_SHA256,
-                            "deadline_observation_semantics": semantics_by_classifier.get(
-                                classifier_id, "LEGAL_PRESENTATION_TRANSITION"),
-                            "raw_affected_fields": list(
-                                fields_by_classifier.get(classifier_id, ("main_arrows",)))}
-            for classifier_id in classifier_ids
+    entries = {}
+    for classifier_id in classifier_ids:
+        entries[classifier_id] = {
+            "classifier_spec_sha256": TEST_CLASSIFIER_SPEC_SHA256,
+            "deadline_observation_semantics": semantics_by_classifier.get(
+                classifier_id, "LEGAL_PRESENTATION_TRANSITION"),
+            "raw_affected_fields": list(
+                fields_by_classifier.get(classifier_id, ("main_arrows",))),
         }
+        if classifier_id in closure_by_classifier:
+            entries[classifier_id]["verification_closure_semantics"] = (
+                closure_by_classifier[classifier_id])
+    document["policies"][policy_id]["qualified_temporal_classifiers"] = entries
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "policies.json"
         path.write_text(json.dumps(document), encoding="utf-8")
@@ -522,6 +528,194 @@ class VisibleEventProductTests(unittest.TestCase):
                          ("INCONCLUSIVE", "UNCLASSIFIED_VISIBLE_INTERVAL"))
         self.assertEqual(result["execution"]["temporal_classification_errors"], [])
         self.assertEqual(result["events"][0]["temporal_classifications"], [])
+
+    def test_27a_partial_target_acquisition_evidence_proves_deadline_failure(self):
+        event = make_event(first_current_ns=105 * MS)
+        frame = set_observation(event, 100 * MS, "UNRESOLVED",
+                                fields=("main_arrows", "main_bars"))
+        record = qualification(event, [frame["video_frame_index"]], fields=("main_arrows",))
+        with policy_allowing(
+                TEST_CLASSIFIER,
+                fields_by_classifier={TEST_CLASSIFIER: ("main_arrows",)},
+                semantics_by_classifier={
+                    TEST_CLASSIFIER: "TARGET_ACQUISITION_TRANSITION"}) as policy_path:
+            result = judge_visible_event_presentation(
+                [event], temporal_classifications=[record], policy_path=policy_path)
+        judged = result["events"][0]
+        self.assertEqual((result["result"], judged["reason_code"]),
+                         ("FAIL", "TARGET_IN_TRANSITION_AT_DEADLINE_CAPTURE"))
+        self.assertEqual(judged["derived_observations"][-1]["derived_status"], "UNRESOLVED")
+        self.assertEqual(judged["temporal_classifications"], [record])
+
+    def test_27b_partial_target_acquisition_evidence_cannot_excuse_verification(self):
+        event = make_event(first_current_ns=20 * MS)
+        frame = set_observation(event, 105 * MS, "UNRESOLVED",
+                                fields=("main_arrows", "main_bars"))
+        record = qualification(event, [frame["video_frame_index"]], fields=("main_arrows",))
+        with policy_allowing(
+                TEST_CLASSIFIER,
+                fields_by_classifier={TEST_CLASSIFIER: ("main_arrows",)},
+                semantics_by_classifier={
+                    TEST_CLASSIFIER: "TARGET_ACQUISITION_TRANSITION"}) as policy_path:
+            result = judge_visible_event_presentation(
+                [event], temporal_classifications=[record], policy_path=policy_path)
+        judged = result["events"][0]
+        self.assertEqual((result["result"], judged["reason_code"]),
+                         ("INCONCLUSIVE", "UNCLASSIFIED_VISIBLE_INTERVAL"))
+        self.assertEqual(judged["temporal_classifications"], [])
+
+    def test_27c_exact_target_acquisition_evidence_cannot_excuse_verification(self):
+        event = make_event(first_current_ns=20 * MS)
+        frame = set_observation(event, 105 * MS, "UNRESOLVED", fields=("main_arrows",))
+        record = qualification(event, [frame["video_frame_index"]], fields=("main_arrows",))
+        with policy_allowing(
+                TEST_CLASSIFIER,
+                fields_by_classifier={TEST_CLASSIFIER: ("main_arrows",)},
+                semantics_by_classifier={
+                    TEST_CLASSIFIER: "TARGET_ACQUISITION_TRANSITION"}) as policy_path:
+            result = judge_visible_event_presentation(
+                [event], temporal_classifications=[record], policy_path=policy_path)
+        judged = result["events"][0]
+        self.assertEqual((result["result"], judged["reason_code"]),
+                         ("INCONCLUSIVE", "UNCLASSIFIED_VISIBLE_INTERVAL"))
+        self.assertEqual(judged["temporal_classifications"], [])
+
+    def test_27d_functional_contract_requires_raw_current_closing_marker(self):
+        event = make_event(first_current_ns=20 * MS)
+        indices = set_range(event, 295 * MS, "UNRESOLVED", fields=("primary_frequency",))
+        record = qualification(event, indices, fields=("primary_frequency",))
+        policy_id = "v1-normal-x-k-ka-blink96-v3"
+        with policy_allowing(
+                TEST_CLASSIFIER,
+                fields_by_classifier={TEST_CLASSIFIER: ("primary_frequency",)},
+                policy_id=policy_id) as policy_path:
+            result = judge_current_contract(
+                [event], temporal_classifications=[record], policy_id=policy_id,
+                policy_path=policy_path)
+        judged = result["events"][0]
+        self.assertEqual((result["result"], judged["reason_code"]),
+                         ("INCONCLUSIVE", "VERIFICATION_DURATION_NOT_OBSERVED"))
+        self.assertIsNone(judged["closing_current_correct"])
+        self.assertEqual(judged["temporal_classifications"], [record])
+
+    def test_27e_closed_exact_current_run_can_cross_the_verification_boundary(self):
+        event = make_event(first_current_ns=20 * MS)
+        run = [set_observation(event, offset * MS, "UNRESOLVED",
+                               fields=("primary_frequency",))
+               for offset in (295, 300)]
+        record = qualification(
+            event, [point["video_frame_index"] for point in run],
+            fields=("primary_frequency",))
+        record.update(
+            verification_closure_semantics=(
+                "RAW_CURRENT_BRACKETED_UNRESOLVED_VERIFICATION_BOUNDARY"),
+            context_frame_indices=[observation_at(event, offset * MS)["video_frame_index"]
+                                   for offset in (290, 295, 300, 305)],
+            first={key: run[0][key] for key in (
+                "frame_id", "video_frame_index", "source_frame_seq", "capture_ns")},
+            last={key: run[-1][key] for key in (
+                "frame_id", "video_frame_index", "source_frame_seq", "capture_ns")},
+        )
+        policy_id = "v1-normal-x-k-ka-blink96-v3"
+        with policy_allowing(
+                TEST_CLASSIFIER,
+                fields_by_classifier={TEST_CLASSIFIER: ("primary_frequency",)},
+                closure_by_classifier={TEST_CLASSIFIER:
+                    "RAW_CURRENT_BRACKETED_UNRESOLVED_VERIFICATION_BOUNDARY"},
+                policy_id=policy_id) as policy_path:
+            result = judge_current_contract(
+                [event], temporal_classifications=[record], policy_id=policy_id,
+                policy_path=policy_path)
+        judged = result["events"][0]
+        self.assertEqual(result["result"], "PASS")
+        self.assertEqual(judged["verification_closure_proof"][
+            "classified_video_frame_indices"], record["video_frame_indices"])
+        self.assertEqual(judged["closing_current_correct"]["raw_status"], "CURRENT")
+        self.assertEqual(judged["closing_current_correct"]["capture_ns"], ANCHOR + 305 * MS)
+        self.assertEqual([point["raw_status"] for point in run],
+                         ["UNRESOLVED", "UNRESOLVED"])
+
+    def test_27f_closure_requires_complete_context_and_raw_current_bracket(self):
+        for mutation, expected in (("missing_context", "INCONCLUSIVE"),
+                                   ("wrong_right", "INCONCLUSIVE")):
+            with self.subTest(mutation=mutation):
+                event = make_event(first_current_ns=20 * MS)
+                run = [set_observation(event, offset * MS, "UNRESOLVED",
+                                       fields=("primary_frequency",))
+                       for offset in (295, 300)]
+                record = qualification(
+                    event, [point["video_frame_index"] for point in run],
+                    fields=("primary_frequency",))
+                context = [observation_at(event, offset * MS)["video_frame_index"]
+                           for offset in (290, 295, 300, 305)]
+                if mutation == "missing_context":
+                    context.remove(run[-1]["video_frame_index"])
+                else:
+                    set_observation(event, 305 * MS, "DEFINITE_OTHER",
+                                    fields=("primary_frequency",))
+                record.update(
+                    verification_closure_semantics=(
+                        "RAW_CURRENT_BRACKETED_UNRESOLVED_VERIFICATION_BOUNDARY"),
+                    context_frame_indices=context,
+                    first={key: run[0][key] for key in (
+                        "frame_id", "video_frame_index", "source_frame_seq", "capture_ns")},
+                    last={key: run[-1][key] for key in (
+                        "frame_id", "video_frame_index", "source_frame_seq", "capture_ns")},
+                )
+                policy_id = "v1-normal-x-k-ka-blink96-v3"
+                with policy_allowing(
+                        TEST_CLASSIFIER,
+                        fields_by_classifier={TEST_CLASSIFIER: ("primary_frequency",)},
+                        closure_by_classifier={TEST_CLASSIFIER:
+                            "RAW_CURRENT_BRACKETED_UNRESOLVED_VERIFICATION_BOUNDARY"},
+                        policy_id=policy_id) as policy_path:
+                    judged = judge_current_contract(
+                        [event], temporal_classifications=[record], policy_id=policy_id,
+                        policy_path=policy_path)
+                self.assertEqual(judged["result"], expected)
+
+    def test_27g_contract_v1_classifier_without_deadline_semantics_still_evaluates(self):
+        event = make_event(first_current_ns=20 * MS)
+        event["end_ns"] = ANCHOR + 302 * MS
+        event["selection_window"]["end_ns"] = ANCHOR + 302 * MS
+        event["observations"] = [
+            item for item in event["observations"]
+            if item["capture_ns"] < ANCHOR + 302 * MS
+        ]
+        refresh_coverage(event)
+        frame = set_observation(event, 100 * MS, "UNRESOLVED", fields=("main_arrows",))
+        record = qualification(
+            event, [frame["video_frame_index"]],
+            classifier_id="v1-arrow-phase-edge-v2", fields=("main_arrows",))
+        record["classifier_spec_sha256"] = (
+            "31bd3c3e4e470036813e0016ed807828367b0e1b7f18d39d1b13f0a2b4a46edd")
+
+        result = judge_current_contract(
+            [event], temporal_classifications=[record],
+            policy_id="v1-normal-x-k-ka-blink96-v1")
+
+        self.assertEqual((result["result"], result["reason_code"]),
+                         ("PASS", "ALL_REQUIRED_EVENTS_PASSED"))
+        self.assertEqual(result["events"][0]["reason_code"],
+                         "PRESENTED_BY_DEADLINE_AND_VERIFIED")
+        self.assertEqual(result["execution"]["temporal_classification_errors"], [])
+
+    def test_27f_record_carried_semantics_must_match_policy(self):
+        event = make_event(first_current_ns=20 * MS)
+        frame = set_observation(event, 105 * MS, "UNRESOLVED", fields=("main_arrows",))
+        record = qualification(event, [frame["video_frame_index"]], fields=("main_arrows",))
+        record["deadline_observation_semantics"] = "TARGET_ACQUISITION_TRANSITION"
+        with policy_allowing(
+                TEST_CLASSIFIER,
+                fields_by_classifier={TEST_CLASSIFIER: ("main_arrows",)},
+                semantics_by_classifier={
+                    TEST_CLASSIFIER: "LEGAL_PRESENTATION_TRANSITION"}) as policy_path:
+            result = judge_visible_event_presentation(
+                [event], temporal_classifications=[record], policy_path=policy_path)
+        self.assertEqual(result["result"], "INCONCLUSIVE")
+        self.assertEqual(
+            result["execution"]["temporal_classification_errors"][0]["code"],
+            "TEMPORAL_CLASSIFIER_SPEC_MISMATCH")
 
     def test_28_record_field_must_exist_on_every_claimed_raw_frame(self):
         event = make_event(first_current_ns=20 * MS)

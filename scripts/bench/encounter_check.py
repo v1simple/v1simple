@@ -689,7 +689,7 @@ def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cade
             reader_cache = out / "reader-cache"
             evidence["reader"] = encounter_reader.prepare_reader(reader_cache)
             from encounter_runtime_probe import probe_ocr_runtime
-            probe = probe_ocr_runtime(reader_cache, evidence["reader"])
+            probe = probe_ocr_runtime(evidence["reader"])
             evidence["reader"]["ocr_compiled"] = evidence["reader"].get("ocr_available") is True
             evidence["reader"]["ocr_runtime_probe"] = probe
             evidence["reader"]["ocr_available"] = (

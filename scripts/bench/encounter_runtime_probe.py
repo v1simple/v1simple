@@ -32,12 +32,14 @@ def _normalized(text: Any) -> str:
         str.maketrans({"К": "K", "к": "K", "а": "a", "А": "A", "Х": "X", "х": "x"}))
 
 
-def probe_ocr_runtime(cache_dir: Path, setup: dict[str, Any]) -> dict[str, Any]:
+def probe_ocr_runtime(setup: dict[str, Any]) -> dict[str, Any]:
     """Prove the compiled helper can recognize one representative fixed crop.
 
     Compilation alone is insufficient: macOS Vision may reject requests in a
     restricted execution environment.  The retained probe is display content,
     contains no expected run data, and is never used to classify a DUT frame.
+    Probe the active helper: prepare_reader may reuse it across analyses that
+    request different cache directories in the same process.
     """
     result: dict[str, Any] = {
         "status": "unavailable",
@@ -51,8 +53,9 @@ def probe_ocr_runtime(cache_dir: Path, setup: dict[str, Any]) -> dict[str, Any]:
         source_sha = setup.get("ocr_source_sha256")
         if not isinstance(source_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", source_sha):
             raise RuntimeError("OCR source identity is unavailable")
-        binary = Path(cache_dir) / ("vision-" + source_sha[:16])
-        if not binary.is_file():
+        import encounter_reader
+        binary = encounter_reader._ocr_binary
+        if not isinstance(binary, Path) or not binary.is_file():
             raise RuntimeError("OCR helper binary is unavailable")
         binary_sha = hashlib.sha256(binary.read_bytes()).hexdigest()
         if binary_sha != setup.get("ocr_binary_sha256"):

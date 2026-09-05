@@ -235,7 +235,7 @@ def reader_runtime(cache: Path) -> dict[str, Any]:
     from encounter_runtime_probe import probe_ocr_runtime
 
     runtime = prepare_reader(cache)
-    probe = probe_ocr_runtime(cache, runtime)
+    probe = probe_ocr_runtime(runtime)
     runtime["ocr_compiled"] = runtime.get("ocr_available") is True
     runtime["ocr_runtime_probe"] = probe
     runtime["ocr_available"] = runtime["ocr_compiled"] and probe.get("status") == "operational"
@@ -942,6 +942,8 @@ def _rederive_analysis(prepared: Path, prepared_doc: dict[str, Any],
     _verify_replay_inputs(replay, inventory)
     output = Path(tempfile.mkdtemp(prefix=".qualification-reanalysis-", dir=prepared))
     try:
+        _require(reader_runtime(output / "reader-cache") == campaign.get("reader_runtime"),
+                 "qualification reanalysis reader runtime differs before pixel reading")
         result = analyze(replay, output, None, 2, inspect_transitions=True,
                          reader_qualification=None)
         _require(result.get("errors") == []

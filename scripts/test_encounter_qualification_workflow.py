@@ -36,6 +36,23 @@ from camera_contract import EXPECTED_CAMERA_NAME
 
 
 class QualificationWorkflowTests(unittest.TestCase):
+    def test_reanalysis_runtime_mismatch_stops_before_pixel_reading(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prepared = Path(directory)
+            inventory = prepared / "replay-input-manifest.json"
+            inventory.write_text("{}\n")
+            document = {"replay_input_manifest_sha256": workflow.sha256(inventory)}
+            campaign = {"reader_runtime": {"method_version": 5, "ocr_available": True}}
+            with (patch.object(workflow, "_verify_replay_inputs"),
+                  patch.object(workflow, "reader_runtime", return_value={
+                      "method_version": 5, "ocr_available": False}),
+                  patch("encounter_check.analyze") as pixels):
+                with self.assertRaisesRegex(workflow.WorkflowError,
+                                            "runtime differs before pixel reading"):
+                    workflow._rederive_analysis(prepared, document, campaign)
+            pixels.assert_not_called()
+            self.assertEqual(list(prepared.glob(".qualification-reanalysis-*")), [])
+
     def test_capture_context_is_checked_before_retention_or_pixel_analysis(self):
         import encounter_reader
         from encounter_check import analyze

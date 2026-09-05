@@ -1402,6 +1402,7 @@ def test_explicit_reset_records_request_before_control_and_never_completes_failu
         observer.ser = SimpleNamespace(reset_input_buffer=lambda: events.append("drain"))
         observer.identity_tracker = RuntimeIdentityTracker()
         observer.identity_tracker.identity = dict(RUNTIME_IDENTITY)
+        observer._pending_lines = ["BOOT stale pre-reset fragment"]
 
         def record(event, **_fields):
             events.append(event)
@@ -1424,6 +1425,7 @@ def test_explicit_reset_records_request_before_control_and_never_completes_failu
         assert_true(events == expected, str(events))
         assert_true(observer.reset_performed is not fail, "reset failure acquired a completed anchor")
         assert_true(observer.runtime_identity is None, "pre-reset identity survived")
+        assert_true(observer._pending_lines == [], "pre-reset line fragment survived")
 
 
 def test_explicit_boundary_requires_fresh_usb_reset_and_refuses_intervening_failure() -> None:
@@ -1463,6 +1465,49 @@ def test_explicit_boundary_requires_fresh_usb_reset_and_refuses_intervening_fail
     observer = FakeSerialObserver(FakeClock(), {})
     assert_identity_failure(lambda: establish_serial_boundary(observer, 5, require_explicit_reset=True),
                             "explicit serial reset did not complete")
+
+
+def test_serial_carriage_return_framing_preserves_reset_evidence_and_failures() -> None:
+    rom = "ESP-ROM:esp32s3-20210327"
+    suffix = ["rst:0x15 (USB_UART_CHIP_RESET),boot:0xa (SPI_FAST_FLASH_BOOT)",
+              "BOOT bootId=4 uptimeMs=2053 reset=USB git=2f32dda image=04904e028",
+              "[Boot] Ready gate opened at 2380 ms", "[Boot] setup total: 2262 ms"]
+    for prefix, error in (("load:0x3fce2820,len:0x10cc", None),
+                          ("Guru Meditation Error: panic", "panic or brownout"),
+                          (rom, "repeated ROM start")):
+        chunks = iter([(prefix + "\r" + rom + "\n").encode(),
+                       *[(line + "\r\n").encode() for line in suffix]])
+        observer = run_window_module.BenchSerial.__new__(run_window_module.BenchSerial)
+        clock = FakeClock()
+        received = []
+
+        def read() -> bytes:
+            clock.now += 0.01
+            return next(chunks, b"")
+
+        def record(event, **fields):
+            received.append((event, fields))
+            return {"host_monotonic_ns": int(clock.now * 1e9)}
+
+        observer.ser = SimpleNamespace(timeout=0.25, readline=read)
+        observer.log = io.StringIO()
+        observer.timeline = SimpleNamespace(record=record)
+        observer.identity_tracker = RuntimeIdentityTracker()
+        observer.line_count = 0
+        observer._pending_lines = []
+        observer.reset_performed = True
+        action = lambda: establish_serial_boundary(observer, 5, monotonic=clock.monotonic,
+                                                    require_explicit_reset=True)
+        if error:
+            assert_identity_failure(action, error)
+            assert_true(not any(event == "serial_boundary_established" for event, _ in received),
+                        "framing hid a failed reset boundary")
+        else:
+            result = action()
+            assert_true(result["reset_anchored"] and observer.boot_marker_count == 1, str(result))
+            lines = [fields["line"] for event, fields in received if event == "serial_receive"]
+            assert_true(lines == [prefix, rom, *suffix], str(lines))
+            assert_true(observer.log.getvalue().splitlines() == lines, "serial log dropped a fragment")
 
 
 def main() -> int:
@@ -1507,6 +1552,7 @@ def main() -> int:
     test_native_usb_reset_refuses_other_ports_before_control_changes()
     test_explicit_reset_records_request_before_control_and_never_completes_failure()
     test_explicit_boundary_requires_fresh_usb_reset_and_refuses_intervening_failure()
+    test_serial_carriage_return_framing_preserves_reset_evidence_and_failures()
     print("bench window tests passed")
     return 0
 

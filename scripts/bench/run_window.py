@@ -875,11 +875,13 @@ class BenchSerial:
         self.reset_performed = False
         self.reset_requested_ns: int | None = None
         self.last_receive_ns: int | None = None
+        self._pending_lines: list[str] = []
 
     def reset_for_boot(self, *, reset_factory: Callable[..., Any] | None = None) -> None:
         strategy, metadata = (reset_factory or native_usb_reset_strategy)(self.ser)
         self.reset_performed = False
         self.ser.reset_input_buffer()
+        self._pending_lines = []
         self.identity_tracker = RuntimeIdentityTracker()
         request = self.timeline.record("serial_reset_requested", **metadata)
         if (
@@ -902,11 +904,16 @@ class BenchSerial:
         return self.identity_tracker.identity
 
     def read_line(self, timeout_s: float = 0.25) -> str:
-        self.ser.timeout = timeout_s
-        raw = self.ser.readline()
-        if not raw:
-            return ""
-        text = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+        if not self._pending_lines:
+            self.ser.timeout = timeout_s
+            raw = self.ser.readline()
+            if not raw:
+                return ""
+            # USB reset can end an interrupted load line with CR before the
+            # new ROM banner. Preserve both logical lines and their order;
+            # never discard a preceding panic or repeated boot marker.
+            self._pending_lines = raw.decode("utf-8", errors="replace").rstrip("\r\n").split("\r")
+        text = self._pending_lines.pop(0)
         safe = redact_artifact_text(text)
         self.log.write(safe + "\n")
         self.log.flush()

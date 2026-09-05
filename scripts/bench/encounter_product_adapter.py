@@ -21,6 +21,9 @@ except ImportError:
 SCHEMA_VERSION = 1
 WINDOW_LEAD_NS = 10_000_000
 WINDOW_AFTER_ANCHOR_NS = 312_000_000
+# The existing secondary support-chain bound. These originals can only close
+# a qualified unresolved verification boundary, never extend the product hold.
+AUXILIARY_CLOSURE_CONTEXT_NS = 80_000_000
 
 _DEFINITE = {"DIFFERENCE"}
 _UNCERTAIN = {"UNRESOLVED", "CONDITIONAL"}
@@ -305,9 +308,9 @@ def adapt_sequence_events(sequence: dict, source_window_originals: list[dict],
     """Build compact VISIBLE_EVENT_PRESENTATION inputs without selecting frames.
 
     ``source_window_originals`` must contain every written source image in the
-    union of ``[anchor - 10 ms, min(anchor + 312 ms, event end))`` and no other
-    images.  Event clipping remains visible through the unchanged full declared
-    selection window and the original sequence ``end_ns``.
+    union of ``[anchor - 10 ms, min(anchor + 392 ms, event end))`` and no other
+    images. The final 80 ms is separate auxiliary closure evidence. Event
+    clipping remains visible through the unchanged 312 ms product window.
     """
     result = {"schema_version": SCHEMA_VERSION, "kind": "encounter_product_adapter",
               "events": [], "errors": []}
@@ -334,7 +337,8 @@ def adapt_sequence_events(sequence: dict, source_window_originals: list[dict],
         _require(len(event_ids) == len(set(event_ids)), "encounter sequence has duplicate event ids")
         expected_union = set()
         for _, _, _, anchor, event_end, _, _, _ in shaped:
-            start, end = anchor - WINDOW_LEAD_NS, min(anchor + WINDOW_AFTER_ANCHOR_NS, event_end)
+            start, end = anchor - WINDOW_LEAD_NS, min(
+                anchor + WINDOW_AFTER_ANCHOR_NS + AUXILIARY_CLOSURE_CONTEXT_NS, event_end)
             expected_union.update(index for index, row in enumerate(written)
                                   if start <= row["host_capture_ns"] < end)
         _require(set(originals) == expected_union,
@@ -351,6 +355,11 @@ def adapt_sequence_events(sequence: dict, source_window_originals: list[dict],
             observations = [_adapt_observation(originals[index], target, previous_target,
                                                mode, current_phases, prior_phases)
                             for index in indices]
+            closure_start = anchor + WINDOW_AFTER_ANCHOR_NS
+            closure_end = max(closure_start, min(
+                closure_start + AUXILIARY_CLOSURE_CONTEXT_NS, event_end))
+            closure_indices = [index for index, row in enumerate(written)
+                               if closure_start <= row["host_capture_ns"] < closure_end]
             result["events"].append({
                 "event_id": event_id,
                 "mode": mode,
@@ -364,6 +373,14 @@ def adapt_sequence_events(sequence: dict, source_window_originals: list[dict],
                 "coverage": _coverage(start, effective_end, indices, originals,
                                       written, frozen_records),
                 "observations": observations,
+                "closure_context": {
+                    "selection_window": {"start_ns": closure_start, "end_ns": closure_end},
+                    "observations": [_adapt_observation(
+                        originals[index], target, previous_target, mode,
+                        current_phases, prior_phases) for index in closure_indices],
+                    "coverage": _coverage(closure_start, closure_end, closure_indices,
+                                          originals, written, frozen_records),
+                },
                 "source_target": deepcopy(target),
                 "source_previous_target": deepcopy(previous_target),
                 "source_sequence_event": deepcopy(source_event),

@@ -12,9 +12,10 @@ from copy import deepcopy
 import re
 
 
-CLASSIFIER_ID = "v1-secondary-closed-context-v2"
-CLASSIFIER_SPEC_SHA256 = "8f3af5bdcb8a89b5fc43ec9103b16ad6a074fc7373cb169694c920454df53f8c"
+CLASSIFIER_ID = "v1-secondary-closed-context-v3"
+CLASSIFIER_SPEC_SHA256 = "464542ae31277827eb5919c42f65c7f359235ab764388f5c66332b2c4a9b907c"
 DEADLINE_OBSERVATION_SEMANTICS = "LEGAL_PRESENTATION_TRANSITION"
+VERIFICATION_CLOSURE_SEMANTICS = "RAW_CURRENT_BRACKETED_UNRESOLVED_VERIFICATION_BOUNDARY"
 
 PROFILE_READER_METHOD_VERSION = 7
 PROFILE_READER_SHA256 = "f4efd6a1df4daefb3e7271a2e229e80f7378ba8b7a824dea1593aa0581f20b7c"
@@ -438,11 +439,14 @@ def _record(event, selected, first, stop, context):
             "classifier_spec_sha256": CLASSIFIER_SPEC_SHA256,
             "status": "QUALIFIED_CAPTURE_TRANSITION",
             "deadline_observation_semantics": DEADLINE_OBSERVATION_SEMANTICS,
+            "verification_closure_semantics": VERIFICATION_CLOSURE_SEMANTICS,
+            "auxiliary_closure_context_ns": MAXIMUM_SUPPORT_CHAIN_SPAN_NS,
             "raw_affected_fields": ["secondary"],
             "video_frame_indices": indices,
             "first": _point(run[0]),
             "last": _point(run[-1]),
             "full_context_indices": full_context_indices,
+            "context_frame_indices": full_context_indices,
             "context_refusal_indices": refusal_indices,
             "interleaved_readable_indices": readable_indices,
             "context_first": _point(refusals[0]),

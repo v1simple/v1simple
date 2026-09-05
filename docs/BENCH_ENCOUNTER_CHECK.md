@@ -84,7 +84,7 @@ A previously qualified temporal reader needs its own matching proof:
 
 ```sh
 python3 scripts/bench/encounter_qualification_workflow.py freeze \
-  --classifier v1-arrow-phase-edge-v3 \
+  --classifier v1-arrow-phase-edge-v4 \
   --base-manifest .artifacts/bench/qualification/new-static-reader/encounter-reader.json \
   --out .artifacts/bench/qualification/new-arrow-campaign
 ```
@@ -95,6 +95,14 @@ After the reserved capture, use that campaign with `prepare --campaign ...
 chosen targets, verifies original source pixels and the complete blind result,
 and publishes only the independently supported policy entries. Ordinary product
 analysis never invokes unqualified experimental readers.
+
+Qualification capture uses a separate fixed 264-second replay covering X/K/Ka
+as primary and in both secondary positions; the ordinary product replay is
+unchanged. After reading the reserved recording, `prepare` checks whether the
+candidate counts can possibly meet the frozen branch and band minima. An
+impossible campaign exits 2 before clip generation and preserves its recording,
+analysis and `preparation-stopped.json`. Sufficient counts never establish
+qualification: every candidate still requires independent blind observation.
 
 The reader qualification manifest defaults to:
 
@@ -143,6 +151,7 @@ fixed by that profile; the command line cannot loosen them.
 | Maximum accepted source-marker gap | 10 ms |
 | Required event hold | 312 ms after the anchor |
 | Selected event window | `[anchor - 10 ms, min(anchor + 312 ms, actual event end))` |
+| Separate closure context | `[anchor + 312 ms, min(anchor + 392 ms, actual event end))`, when nonempty |
 
 The 100 ms appearance bound is two declared 50 ms display-update intervals. The
 192 ms verification interval covers two 96 ms image phases. The 10 ms source
@@ -151,6 +160,9 @@ deadline exactly one observation opportunity: the first recorded source marker
 at or after 100 ms. Its gap from the immediately preceding marker must be no more
 than 10 ms. The 312 ms hold includes the nominal deadline, one observation
 bracket, the full verification interval, and one closing source guard.
+The additional 80 ms is bounded supporting evidence for an explicitly qualified
+secondary transition at the verification boundary. It cannot acquire a late
+target or extend the response deadline or verification period.
 
 An input event begins with the initial authored packet set or with a change from
 the preceding set. Byte-identical repeats remain in that event, and a target is
@@ -161,8 +173,9 @@ that establishes the final muted target. A changed authored packet set or an
 unscoped alert-table/display request ends the current event.
 
 Selection is frozen from input timestamps before any product-window pixels are
-read. Every written source frame in the union of the exact event windows must be
-selected and read. The adapter rejects missing or extra event-window originals.
+read. Every written source frame in the union of the exact event windows and
+closure context must be selected and read. The adapter rejects missing or extra
+originals and retains ordinary and supporting observations separately.
 It also checks source-frame sequence, video index, capture timestamp, boundary
 coverage, recorded drops, and actual marker spacing. A superseding input clips
 the event at its real end. A clipped event cannot pass: it is `INCONCLUSIVE`
@@ -354,12 +367,13 @@ rejected and prevent `PASS`; a separately proved event failure still controls
 the overall result.
 
 The new policy starts without temporal allowances until fresh qualification is
-published. The arrow candidate `v1-arrow-phase-edge-v3` retains the v2 optical
-rules under the current reader binding; it cannot inherit the old proof. It accepts a
+published. The arrow candidate `v1-arrow-phase-edge-v4` measures the complete
+fixed support chain; it cannot inherit the old proof. It accepts a
 maximal ambiguous arrow run only when two readable source-consecutive support
 frames exist on each side, the endpoints are the two permitted blink phases,
-and exactly one direction changes. Endpoint separation must be at least 52 RMS
-levels. Each ambiguous 4-by-4 profile for the changing direction must project
+and exactly one direction changes. Separation of the two outer fixed supports
+must be at least 52 RMS levels. Every interior 4-by-4 profile, including readable
+frames already fading, must project
 between -0.05 and 1.05 of the endpoint path with normalized residual no greater
 than 0.15. A backward step may not exceed 0.05, total backward motion may not
 exceed 0.10, and every unchanged direction must stay within an 8 RMS profile
@@ -384,8 +398,14 @@ recorded checks that its path matches the opaque ID, its source-frame count
 matches the declared range, and its target run lies inside the clip remain
 retained audit declarations and must all report success.
 
-The secondary-card corroboration classifier remains diagnostic and is not
-listed by the policy. Its output therefore cannot change a visible-event verdict.
+The secondary candidate `v1-secondary-closed-context-v3` requires explicit
+qualification for verification closure. The exact maximal unresolved run must
+be bounded by immediate raw-current observations with consecutive source and
+video indices and gaps no greater than 10 ms. Its record must cover every
+affected field and retain the complete support. Using the separate tail also
+requires an exact 80 ms capability bound in both record and policy. Generic
+transitions cannot close verification. Until qualified and published, secondary
+candidate output cannot change an ordinary visible-event verdict.
 
 ## Product result and raw evidence
 

@@ -75,7 +75,7 @@ def fixture(events, value_at=None, *, extra_offsets=(), dropped_offsets=()):
     points = set()
     for event in events:
         anchor = event["target_basis"]["first_complete_target_input_ns"]
-        stop = min(anchor + 312 * MS, event["end_ns"])
+        stop = min(anchor + 392 * MS, event["end_ns"])
         points.update(range(anchor - 10 * MS, stop, 5 * MS))
     points.update(extra_offsets)
     dropped = set(dropped_offsets)
@@ -92,7 +92,7 @@ def fixture(events, value_at=None, *, extra_offsets=(), dropped_offsets=()):
         matching = next((event for event in events
                          if event["target_basis"]["first_complete_target_input_ns"] - 10 * MS
                          <= capture < min(event["target_basis"]["first_complete_target_input_ns"]
-                                          + 312 * MS, event["end_ns"])), None)
+                                          + 392 * MS, event["end_ns"])), None)
         if matching is None:
             continue
         anchor = matching["target_basis"]["first_complete_target_input_ns"]
@@ -114,6 +114,37 @@ def adapt(events, value_at=None, **kwargs):
 
 
 class EncounterProductAdapterTests(unittest.TestCase):
+    def test_auxiliary_union_is_complete_separate_and_clipped_before_next_input(self):
+        for event_end in (ANCHOR + 345 * MS, ANCHOR + 500 * MS):
+            with self.subTest(event_end=event_end):
+                event = sequence_event("event-0001", ANCHOR, target(), end=event_end)
+                sequence, originals, records = fixture([event])
+                result = adapter.adapt_sequence_events(sequence, originals, records)
+                self.assertEqual(result["errors"], [])
+                product = result["events"][0]
+                context = product["closure_context"]
+                self.assertEqual(product["selection_window"]["end_ns"], ANCHOR + 312 * MS)
+                self.assertEqual(context["selection_window"], {
+                    "start_ns": ANCHOR + 312 * MS,
+                    "end_ns": min(event_end, ANCHOR + 392 * MS)})
+                self.assertEqual(context["observations"][0]["capture_ns"], ANCHOR + 315 * MS)
+                self.assertEqual(len(product["observations"]), 65)
+                self.assertTrue(context["coverage"]["complete_recorded_frame_coverage"])
+                self.assertTrue(all(point["capture_ns"] < event_end
+                                    for point in context["observations"]))
+                # A read source tail frame cannot silently disappear while the
+                # fixed ordinary product window remains otherwise complete.
+                removed = [point for point in originals if point["capture_ns"] != ANCHOR + 315 * MS]
+                rejected = adapter.adapt_sequence_events(sequence, removed, records)
+                self.assertEqual(rejected["events"], [])
+                self.assertIn("exact written-frame union", rejected["errors"][0])
+                # The next input is a hard membership boundary, not a hint.
+                changed_sequence = copy.deepcopy(sequence)
+                changed_sequence["events"][0]["end_ns"] = ANCHOR + 330 * MS
+                rejected = adapter.adapt_sequence_events(changed_sequence, originals, records)
+                self.assertEqual(rejected["events"], [])
+                self.assertIn("exact written-frame union", rejected["errors"][0])
+
     def test_exact_half_open_window_and_original_evidence_are_preserved(self):
         event = sequence_event("event-0001", ANCHOR, target())
         outside = ANCHOR + 312 * MS
@@ -319,7 +350,7 @@ class EncounterProductAdapterTests(unittest.TestCase):
                 self.assertTrue(result["errors"])
 
         sequence, originals, records = fixture(
-            [event], extra_offsets=(ANCHOR + 312 * MS,))
+            [event], extra_offsets=(event["end_ns"],))
         outside_index = len([record for record in records if record["status"] == "written"]) - 1
         outside_row = [record for record in records if record["status"] == "written"][-1]
         originals.append({"frame_id": "outside-window", "video_frame_index": outside_index,

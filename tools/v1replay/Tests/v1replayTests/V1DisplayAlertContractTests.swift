@@ -3,6 +3,79 @@ import XCTest
 
 final class V1DisplayAlertContractTests: XCTestCase {
 
+    func testReaderQualificationLeavesTheNormalResolvedStimulusUnchanged() throws {
+        // Retained before adding the separate reader exercise; covers every
+        // normal alert, mute, volume, mode, timing and blink value.
+        XCTAssertEqual(sha256Hex(try BenchScenario.make().resolvedScenarioEvidenceData()),
+                       "144b04f4cced4461578168c9b162e97a02bf34973e9918c73b4a972888935f6f")
+    }
+
+    func testReaderQualificationEmitsEveryBandInEveryDisplayRole() throws {
+        let encounter = BenchScenario.makeReaderQualification()
+        XCTAssertEqual(encounter.samples.count, 792)
+        XCTAssertEqual(encounter.duration, 263.0 + 2.0 / 3.0, accuracy: 0.000_001)
+        XCTAssertLessThan(encounter.duration, 276)
+        XCTAssertTrue(encounter.samples.prefix(12).allSatisfy { $0.alerts.isEmpty })
+        XCTAssertTrue(encounter.samples.suffix(60).allSatisfy { $0.alerts.isEmpty })
+        let state = V1.Session.ControlState(mode: .advancedLogic, mainVolume: 4,
+                                           mutedVolume: 0, savedMainVolume: 4,
+                                           savedMutedVolume: 0)
+        let identities: [UInt8: Int] = [0x08: 10_525, 0x04: 24_150, 0x02: 34_700]
+        var roles = Set<String>()
+        var directions = Set<UInt8>()
+        var phases: [String: Int] = [:]
+        var previousPackets: [[UInt8]]?
+        for (index, sample) in encounter.samples.enumerated() {
+            XCTAssertEqual(sample.sourceIndex, index)
+            XCTAssertEqual(sample.offset, Double(index) / 3.0, accuracy: 0.000_001)
+            let plan = V1.PlaybackPacketPlan(
+                sample: sample, controlState: state, displayOn: true, muted: sample.muted,
+                blinkBogey: false, blinkArrow: sample.scenarioArrowBlink)
+            if (12..<732).contains(index) {
+                let relative = index - 12
+                let step = (relative / 6) % 5
+                let rowCount = step == 0 ? 1 : step == 1 ? 2 : 3
+                let rows = try plan.alertTablePackets.map(IndependentFrame.decode)
+                XCTAssertEqual(rows.count, rowCount)
+                XCTAssertEqual(sample.muted, step == 3)
+                XCTAssertEqual(sample.scenarioArrowBlink, rowCount > 1)
+                XCTAssertEqual(rows.map { $0.payload[6] & 0x80 },
+                               [0x80] + Array(repeating: UInt8(0), count: rowCount - 1))
+                var frequencies = Set<Int>()
+                for (slot, row) in rows.enumerated() {
+                    XCTAssertEqual(row.packetID, 0x43)
+                    XCTAssertEqual(row.payload[0], UInt8(((slot + 1) << 4) | rowCount))
+                    let frequency = Int(row.payload[1]) * 256 + Int(row.payload[2])
+                    let band = row.payload[5] & 0x1F
+                    XCTAssertEqual(identities[band], frequency)
+                    frequencies.insert(frequency)
+                    roles.insert("\(band):\(slot)")
+                    directions.insert(row.payload[5] & 0xE0)
+                }
+                XCTAssertEqual(frequencies.count, rowCount)
+                if relative % 6 != 0 {
+                    XCTAssertEqual(plan.emissions.map(\.bytes), previousPackets,
+                                   "two-second held state changed before the next authored step")
+                }
+                phases[sample.phase, default: 0] += 1
+            }
+            previousPackets = plan.emissions.map(\.bytes)
+        }
+        XCTAssertEqual(roles, Set(["8:0", "8:1", "8:2", "4:0", "4:1", "4:2",
+                                  "2:0", "2:1", "2:2"]))
+        XCTAssertEqual(directions, Set([0x20, 0x40, 0x80]))
+        XCTAssertEqual(phases.count, 5)
+        XCTAssertTrue(phases.values.allSatisfy { $0 == 144 })
+        let resolved = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: encounter.resolvedScenarioEvidenceData()) as? [String: Any])
+        let retained = try XCTUnwrap(resolved["samples"] as? [[String: Any]])
+        XCTAssertEqual(retained.count, 792)
+        XCTAssertEqual(retained[12]["phase"] as? String, "reader_qualification_primary")
+        XCTAssertEqual(retained[24]["phase"] as? String, "reader_qualification_two_cards")
+        XCTAssertEqual((retained[24]["alerts"] as? [[String: Any]])?.map { $0["band"] as? String },
+                       ["x", "k", "ka"])
+    }
+
     func testHandshakeClearEarlyStartQueuesBeforePolling() {
         var state = HandshakeClearDeliveryState()
 

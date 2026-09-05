@@ -271,6 +271,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--post-upload-settle-seconds", type=int, default=90)
     parser.add_argument("--replay-executable", default="")
     parser.add_argument("--scenario", default="")
+    parser.add_argument("--reader-qualification", action="store_true",
+                        help="use the fixed generated reader-qualification replay")
     blink_group = parser.add_mutually_exclusive_group()
     blink_group.add_argument(
         "--blink-profile", choices=["scenario", "steady", "stress"], default=None
@@ -1016,13 +1018,17 @@ class V1Emulator:
         lease_fd: int,
         scenario: str,
         machine_event: Callable[[dict[str, Any]], None],
+        reader_qualification: bool = False,
     ) -> None:
+        if reader_qualification and (suite != "replay" or scenario):
+            raise ValueError("reader qualification requires replay without an external scenario")
         self.executable = executable
         self.suite = suite
         self.mode = "bench" if suite == "replay" else "idle"
         self.blink_profile = blink_profile
         self.lease_fd = lease_fd
         self.scenario = scenario
+        self.reader_qualification = reader_qualification
         self.machine_event = machine_event
         self.log_path = out_dir / "v1replay.log"
         self.scenario_path = (
@@ -1073,6 +1079,8 @@ class V1Emulator:
         if self.mode == "bench":
             if self.scenario:
                 command.extend(["--scenario", self.scenario])
+            if self.reader_qualification:
+                command.append("--reader-qualification")
             assert self.scenario_path is not None
             command.extend(["--scenario-evidence", str(self.scenario_path)])
         command.extend(
@@ -1341,6 +1349,7 @@ def collect_live(
             lease_fd=lease.fd,
             scenario=args.scenario,
             machine_event=lambda payload: timeline.record_external(payload, "v1replay"),
+            reader_qualification=args.reader_qualification,
         )
         emulator_result: dict[str, Any] = {}
         camera_result: dict[str, Any] = {}
@@ -1542,6 +1551,8 @@ def main() -> int:
         return fail("post-upload settle duration cannot be negative")
     if args.suite != "replay" and args.scenario:
         return fail("--scenario is valid only for replay")
+    if args.reader_qualification and (args.suite != "replay" or args.scenario):
+        return fail("reader qualification requires replay without an external scenario")
     if args.git_worktree_clean != "1":
         return fail(
             "source worktree is dirty; qualification requires an exact clean source state",

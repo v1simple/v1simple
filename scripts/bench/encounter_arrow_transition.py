@@ -12,8 +12,8 @@ import math
 import re
 
 
-CLASSIFIER_ID = "v1-arrow-phase-edge-v3"
-CLASSIFIER_SPEC_SHA256 = "88bbfe87c6e1c54f7578e2f2380a5490b59ba977acefef34c811964af1fb9849"
+CLASSIFIER_ID = "v1-arrow-phase-edge-v4"
+CLASSIFIER_SPEC_SHA256 = "aa60e40aa6433a5be3bd3f89b25fe2e9a95bab9e16646e41ec10133730975587"
 PROFILE_READER_METHOD_VERSION = 7
 PROFILE_READER_SHA256 = "f4efd6a1df4daefb3e7271a2e229e80f7378ba8b7a824dea1593aa0581f20b7c"
 
@@ -226,15 +226,18 @@ def _classify(event_id, selected, first, stop, context):
                   for direction in _DIRECTIONS}
     if any(len(bounds) != 1 for bounds in references.values()):
         return None, _reject(event_id, run, "INVALID_PROFILE", "arrow profile reference bounds change inside support")
-    left = left_profiles[changed_direction][0]
-    right = right_profiles[changed_direction][0]
+    # The nearest readable image can already be partway through a fade. Fit
+    # the entire fixed support chain, including those readable inner images,
+    # between its outer supports. Never search for brighter anchors.
+    left = all_profiles[0][changed_direction][0]
+    right = all_profiles[-1][changed_direction][0]
     delta = [b - a for a, b in zip(left, right)]
     separation = _rms(delta)
     if separation < ENDPOINT_SEPARATION_RMS_MIN:
         return None, _reject(event_id, run, "ENDPOINT_SEPARATION", "arrow endpoint profiles are not sufficiently separated")
     denominator = sum(value * value for value in delta)
     projections, residuals = [], []
-    for profiles in run_profiles:
+    for profiles in all_profiles[1:-1]:
         current = profiles[changed_direction][0]
         alpha = sum((value - base) * change for value, base, change in zip(current, left, delta)) / denominator
         fitted = [base + alpha * change for base, change in zip(left, delta)]
@@ -271,6 +274,7 @@ def _classify(event_id, selected, first, stop, context):
         "changed_direction": changed_direction,
         "arrow_expectation_signature": deepcopy(signature),
         "endpoint_separation_rms": separation,
+        "profile_frame_indices": [sample["video_frame_index"] for sample in chain[1:-1]],
         "projections": projections,
         "normalized_residuals": residuals,
         "maximum_backward_step": maximum_backward,
@@ -286,7 +290,7 @@ def _classify(event_id, selected, first, stop, context):
         "selection_manifest_sha256": context["selection_manifest_sha256"],
         "reader_method_version": context["reader_method_version"],
         "reader_sha256": context["reader_sha256"],
-        "basis": "A maximal raw arrow refusal follows the measured monotone profile path between two source-consecutive permitted blink phases; raw frames remain unresolved.",
+        "basis": "The whole fixed support chain, including its readable inner images, follows the measured monotone profile path between its outer supports in two permitted blink phases; only the maximal raw refusal is classified and raw frames remain unresolved.",
     }
     return record, None
 

@@ -608,6 +608,9 @@ for suite in "${SUITES[@]}"; do
   if [[ "$CAMERA_ENABLED" -eq 1 ]]; then
     args+=(--camera)
   fi
+  if [[ "$QUALIFICATION_CAPTURE" -eq 1 ]]; then
+    args+=(--reader-qualification)
+  fi
   if [[ "$FLASH" -eq 1 && "$first_suite" -eq 1 ]]; then
     args+=(--upload)
   fi

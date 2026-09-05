@@ -281,7 +281,9 @@ def select_product_event_windows(samples, stimulus, rows, ranges, definitions, p
     Events outside an explicitly requested range are omitted rather than
     partially sampled.  An event superseded before the policy window ends is
     still selected through its real end so the product judge can report the
-    clipped episode as inconclusive.
+    clipped episode as inconclusive. A separate fixed 80 ms context after the
+    product window is selected for qualified verification-boundary closure; it
+    also stops at the actual next input and never extends the product deadline.
     """
     require(bool(stimulus) and bool(rows), "product selection has no input or camera records")
     require(isinstance(definitions, list) and isinstance(policy, dict),
@@ -293,6 +295,7 @@ def select_product_event_windows(samples, stimulus, rows, ranges, definitions, p
     hold = policy.get("minimum_post_completion_hold_ns")
     require(type(gap) is int and gap > 0 and type(hold) is int and hold > 0,
             "product selection policy has invalid bounds")
+    from encounter_product_adapter import AUXILIARY_CLOSURE_CONTEXT_NS
     windows, bounds = [], []
     for definition in definitions:
         basis = definition.get("target_basis") if isinstance(definition, dict) else None
@@ -302,14 +305,16 @@ def select_product_event_windows(samples, stimulus, rows, ranges, definitions, p
             continue
         start, policy_end = anchor - gap, anchor + hold
         selected_end = min(policy_end, end)
+        closure_end = min(policy_end + AUXILIARY_CLOSURE_CONTEXT_NS, end)
         # A manual range is a declared product scope only when it contains the
         # complete available event window without a hole.
-        if not any(lo <= start and selected_end <= hi for lo, hi in range_bounds):
+        if not any(lo <= start and closure_end <= hi for lo, hi in range_bounds):
             continue
         windows.append({"event_id": definition["event_id"], "start_ns": start,
                         "end_ns": policy_end, "selected_end_ns": selected_end,
+                        "closure_context_end_ns": closure_end,
                         "anchor_ns": anchor, "clipped_by_event_end": end < policy_end})
-        bounds.append((start, selected_end))
+        bounds.append((start, closure_end))
     if not bounds:
         return samples, []
     dense = _select_all_frames_in_bounds(origin, rows, bounds, len(rows))
@@ -318,7 +323,7 @@ def select_product_event_windows(samples, stimulus, rows, ranges, definitions, p
         if sample["video_frame_index"] in present:
             continue
         sample.update(role="transition",
-                      selection_reasons=["every recorded frame in an exact product event window"])
+                      selection_reasons=["every recorded frame in an exact product event window and bounded closure context"])
         samples.append(sample)
         present.add(sample["video_frame_index"])
     samples.sort(key=lambda sample: sample["target_capture_ns"])
@@ -490,7 +495,8 @@ def product_configuration_scope(stimulus: list[dict], policy: dict) -> list[dict
 def product_window_samples(samples: list[dict], windows: list[dict]) -> list[dict]:
     """Return only recorded observations which can affect product events."""
     return [sample for sample in samples if "capture_ns" in sample and any(
-        window["start_ns"] <= sample["capture_ns"] < window["selected_end_ns"]
+        window["start_ns"] <= sample["capture_ns"] < window.get(
+            "closure_context_end_ns", window["selected_end_ns"])
         for window in windows)]
 
 
@@ -509,7 +515,9 @@ def product_temporal_submissions(records: list[dict], events: list[dict],
                                  qualified_ids: set[str]) -> list[dict]:
     """Drop only internally generated records made redundant by decisive evidence."""
     observations = {event["event_id"]: {
-        item["video_frame_index"]: item for item in event.get("observations", [])
+        item["video_frame_index"]: item for item in [
+            *event.get("observations", []),
+            *event.get("closure_context", {}).get("observations", [])]
         if isinstance(item, dict) and type(item.get("video_frame_index")) is int}
         for event in events if isinstance(event, dict) and isinstance(event.get("event_id"), str)}
     submitted = []
@@ -818,7 +826,8 @@ def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cade
             index = sample.get("video_frame_index")
             capture = sample.get("capture_ns")
             if (type(index) is int and type(capture) is int and
-                    any(window["start_ns"] <= capture < window["selected_end_ns"]
+                    any(window["start_ns"] <= capture < window.get(
+                        "closure_context_end_ns", window["selected_end_ns"])
                         for window in product_windows)):
                 originals.setdefault(index, sample)
         from encounter_product_adapter import adapt_sequence_events

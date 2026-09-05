@@ -198,6 +198,10 @@ class SecondaryContextTests(unittest.TestCase):
         self.assertEqual(record["resolved_value"], [card_value()])
         self.assertEqual(record["deadline_observation_semantics"],
                          "LEGAL_PRESENTATION_TRANSITION")
+        self.assertEqual(record["verification_closure_semantics"],
+                         "RAW_CURRENT_BRACKETED_UNRESOLVED_VERIFICATION_BOUNDARY")
+        self.assertEqual(record["auxiliary_closure_context_ns"], 80_000_000)
+        self.assertEqual(record["context_frame_indices"], record["full_context_indices"])
         self.assertEqual(record["partial_meter_evidence"][0]["cards"][0], {
             "slot": 0, "state": "partial", "bars": None,
             "partial_cells": [5], "compatible_bars": [3],

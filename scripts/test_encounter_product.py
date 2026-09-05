@@ -134,11 +134,12 @@ def qualification(event, indices, *, classifier_id=TEST_CLASSIFIER, fields=("mai
 
 @contextmanager
 def policy_allowing(*classifier_ids, fields_by_classifier=None,
-                    semantics_by_classifier=None, closure_by_classifier=None,
+                    semantics_by_classifier=None, closure_by_classifier=None, auxiliary_by_classifier=None,
                     policy_id=DEFAULT_POLICY_ID):
     fields_by_classifier = fields_by_classifier or {}
     semantics_by_classifier = semantics_by_classifier or {}
     closure_by_classifier = closure_by_classifier or {}
+    auxiliary_by_classifier = auxiliary_by_classifier or {}
     document = json.loads(DEFAULT_POLICY_PATH.read_text(encoding="utf-8"))
     document["policies"][policy_id][
         "qualified_temporal_classifier_ids"] = list(classifier_ids)
@@ -151,6 +152,8 @@ def policy_allowing(*classifier_ids, fields_by_classifier=None,
             "raw_affected_fields": list(
                 fields_by_classifier.get(classifier_id, ("main_arrows",))),
         }
+        if classifier_id in auxiliary_by_classifier:
+            entries[classifier_id]["auxiliary_closure_context_ns"] = auxiliary_by_classifier[classifier_id]
         if classifier_id in closure_by_classifier:
             entries[classifier_id]["verification_closure_semantics"] = (
                 closure_by_classifier[classifier_id])
@@ -737,6 +740,117 @@ class VisibleEventProductTests(unittest.TestCase):
         self.assertEqual([item["code"] for item in errors],
                          ["TEMPORAL_CLASSIFICATION_RAW_MISMATCH"])
         self.assertEqual(result["events"][0]["temporal_classifications"], [])
+
+
+class AuxiliaryVerificationClosureTests(unittest.TestCase):
+    POLICY = "v1-normal-x-k-ka-blink96-v3"
+    SEMANTICS = "RAW_CURRENT_BRACKETED_UNRESOLVED_VERIFICATION_BOUNDARY"
+
+    def fixture(self, *, tail_refusal=False):
+        event = make_event(first_current_ns=20 * MS)
+        event["end_ns"] = ANCHOR + 500 * MS
+        last = event["observations"][-1]
+        tail = []
+        for step, offset in enumerate(range(315, 392, 5), 1):
+            point = copy.deepcopy(last)
+            point.update(frame_id=f"tail-{step}", video_frame_index=last["video_frame_index"] + step,
+                         source_frame_seq=last["source_frame_seq"] + step,
+                         capture_ns=ANCHOR + offset * MS)
+            tail.append(point)
+        event["closure_context"] = {
+            "selection_window": {"start_ns": ANCHOR + 312 * MS, "end_ns": ANCHOR + 392 * MS},
+            "observations": tail,
+        }
+        run = [set_observation(event, offset * MS, "UNRESOLVED", fields=("secondary",))
+               for offset in (295, 300, 305, 310)]
+        if tail_refusal:
+            tail[0].update(raw_status="UNRESOLVED", raw_affected_fields=["secondary"])
+            tail[0].pop("joint_state_id", None)
+            run.append(tail[0])
+        record = qualification(event, [point["video_frame_index"] for point in run],
+                               fields=("secondary",))
+        record.update(
+            verification_closure_semantics=self.SEMANTICS,
+            auxiliary_closure_context_ns=80 * MS,
+            context_frame_indices=list(range(run[0]["video_frame_index"] - 1,
+                                             run[-1]["video_frame_index"] + 2)),
+            first=copy.deepcopy(run[0]), last=copy.deepcopy(run[-1]),
+        )
+        return event, record
+
+    def judge(self, event, record, *, generic=False, unqualified=False):
+        with policy_allowing(
+                *([] if unqualified else [TEST_CLASSIFIER]),
+                fields_by_classifier={TEST_CLASSIFIER: ("secondary",)},
+                closure_by_classifier={} if generic else {TEST_CLASSIFIER: self.SEMANTICS},
+                auxiliary_by_classifier={} if generic else {TEST_CLASSIFIER: 80 * MS},
+                policy_id=self.POLICY) as policy_path:
+            return judge_current_contract(
+                [event], temporal_classifications=[record], policy_id=self.POLICY,
+                policy_path=policy_path)
+
+    def test_complete_secondary_run_can_close_only_with_separate_auxiliary_current(self):
+        for tail_refusal in (False, True):
+            with self.subTest(tail_refusal=tail_refusal):
+                event, record = self.fixture(tail_refusal=tail_refusal)
+                frozen = copy.deepcopy(event)
+                result = self.judge(event, record)
+                judged = result["events"][0]
+                self.assertEqual(result["result"], "PASS", judged["reasons"])
+                self.assertEqual(judged["verification_end_ns"], ANCHOR + 292 * MS)
+                self.assertEqual(judged["window"]["selection_end_ns"], ANCHOR + 312 * MS)
+                self.assertEqual(judged["closing_current_correct"]["capture_ns"],
+                                 ANCHOR + (320 if tail_refusal else 315) * MS)
+                self.assertEqual(judged["first_current_correct"]["capture_ns"], ANCHOR + 100 * MS)
+                self.assertEqual(judged["raw_observations"], frozen["observations"])
+                self.assertEqual(event, frozen)
+                self.assertTrue(all(point["capture_ns"] < ANCHOR + 312 * MS
+                                    for point in judged["derived_observations"]))
+
+    def test_auxiliary_closure_refuses_incomplete_or_contradictory_evidence(self):
+        for mutation in ("missing_tail", "skipped_video", "skipped_source", "source_gap",
+                         "uncovered_field", "previous", "other", "wrong_context",
+                         "nonmaximal_run", "next_input", "extra_tail", "generic", "unqualified"):
+            with self.subTest(mutation=mutation):
+                event, record = self.fixture(tail_refusal=True)
+                tail = event["closure_context"]["observations"]
+                if mutation == "missing_tail":
+                    event.pop("closure_context")
+                elif mutation == "skipped_video":
+                    tail.pop(0)
+                elif mutation == "skipped_source":
+                    tail[1]["source_frame_seq"] += 1
+                elif mutation == "source_gap":
+                    tail[1]["capture_ns"] += 11 * MS
+                elif mutation == "uncovered_field":
+                    tail[0]["raw_affected_fields"].append("primary_frequency")
+                elif mutation in {"previous", "other"}:
+                    tail[1]["raw_status"] = "PREVIOUS" if mutation == "previous" else "DEFINITE_OTHER"
+                    tail[1]["raw_affected_fields"] = ["secondary"]
+                elif mutation == "wrong_context":
+                    record["context_frame_indices"].pop()
+                elif mutation == "nonmaximal_run":
+                    record["video_frame_indices"].pop()
+                elif mutation == "next_input":
+                    event["end_ns"] = ANCHOR + 320 * MS
+                elif mutation == "extra_tail":
+                    tail[-1]["capture_ns"] = ANCHOR + 392 * MS
+                elif mutation == "generic":
+                    record.pop("verification_closure_semantics")
+                    record.pop("auxiliary_closure_context_ns")
+                result = self.judge(event, record, generic=mutation == "generic",
+                                    unqualified=mutation == "unqualified")
+                self.assertNotEqual(result["result"], "PASS")
+
+    def test_auxiliary_current_cannot_establish_late_acquisition_or_hide_core_failure(self):
+        for status in ("DEFINITE_OTHER", "PREVIOUS", "UNRESOLVED"):
+            with self.subTest(status=status):
+                event, record = self.fixture()
+                set_observation(event, 100 * MS, status, fields=("secondary",))
+                result = self.judge(event, record)
+                self.assertNotEqual(result["result"], "PASS")
+                if status != "UNRESOLVED":
+                    self.assertEqual(result["result"], "FAIL")
 
 
 if __name__ == "__main__":

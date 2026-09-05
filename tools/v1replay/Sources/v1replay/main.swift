@@ -24,7 +24,8 @@ struct Arguments {
     static let booleanFlags: Set<String> = [
         "loop", "paused", "no-alerts", "always-alerts", "no-wait",
         "no-checksum", "log-packets", "blink-bogey", "blink-arrow", "synthetic", "bench",
-        "exit-on-complete", "machine-events", "handshake-only", "help", "h", "version"
+        "exit-on-complete", "machine-events", "handshake-only", "reader-qualification",
+        "help", "h", "version"
     ]
 
     init(_ argv: [String]) {
@@ -185,6 +186,9 @@ func loadEncounter(path selectedPath: String? = nil) throws -> Encounter {
 
 func validateBenchOptions() throws {
     _ = try makeArrowBlinkProfile(benchDefault: true)
+    if args.bool("reader-qualification") && args.optionalString("scenario") != nil {
+        throw ReplayError.message("--reader-qualification cannot be combined with --scenario")
+    }
     if args.bool("synthetic") {
         throw ReplayError.message("bench cannot be combined with synthetic")
     }
@@ -256,6 +260,8 @@ func runHelp() {
       --exit-on-complete   stop after one complete replay (for bench automation)
       --machine-events     emit stable completion events for an external runner
       --scenario <path>    external encounter for managed bench playback
+      --reader-qualification
+                           fixed 264-second X/K/Ka reader exercise for bench
       --scenario-evidence P
                            write path-free resolved scenario JSON as raw evidence
       --handshake-only     runner preflight: one clear alert row, then stay quiet
@@ -422,6 +428,9 @@ func runExport() throws {
     }
 
     let bench = args.bool("bench")
+    if args.bool("reader-qualification") && !bench {
+        throw ReplayError.message("--reader-qualification export requires --bench")
+    }
     if bench {
         try validateBenchOptions()
     }
@@ -431,7 +440,8 @@ func runExport() throws {
         if let scenarioPath = args.optionalString("scenario") {
             encounter = try loadEncounter(path: scenarioPath)
         } else {
-            encounter = BenchScenario.make()
+            encounter = args.bool("reader-qualification")
+                ? BenchScenario.makeReaderQualification() : BenchScenario.make()
         }
     } else if args.bool("synthetic") {
         encounter = Encounter.syntheticDemo()
@@ -542,6 +552,9 @@ func runPlay(idleOnly: Bool,
     if !bench && args.optionalString("scenario") != nil {
         throw ReplayError.message("--scenario is available only in bench mode")
     }
+    if !bench && args.bool("reader-qualification") {
+        throw ReplayError.message("--reader-qualification is available only in bench mode")
+    }
     if idleOnly && args.optionalString("scenario-evidence") != nil {
         throw ReplayError.message("--scenario-evidence requires replay playback")
     }
@@ -559,7 +572,8 @@ func runPlay(idleOnly: Bool,
         if let scenarioPath = args.optionalString("scenario") {
             encounter = try loadEncounter(path: scenarioPath)
         } else {
-            encounter = BenchScenario.make()
+            encounter = args.bool("reader-qualification")
+                ? BenchScenario.makeReaderQualification() : BenchScenario.make()
         }
     } else if synthetic {
         encounter = Encounter.syntheticDemo()

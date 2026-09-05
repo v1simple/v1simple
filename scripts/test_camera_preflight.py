@@ -466,6 +466,7 @@ def make_live_args() -> SimpleNamespace:
         ready_timeout_seconds=1,
         completion_grace_seconds=1,
         scenario="",
+        reader_qualification=False,
     )
 
 

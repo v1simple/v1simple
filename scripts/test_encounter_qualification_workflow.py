@@ -39,6 +39,73 @@ from camera_contract import EXPECTED_CAMERA_NAME
 
 
 class QualificationWorkflowTests(unittest.TestCase):
+    def test_insufficient_candidates_preserve_analysis_without_creating_observer_packets(self):
+        classifier = workflow.ARROW_CLASSIFIER_ID
+        campaign = {"reader_runtime": {"method_version": 7},
+                    "implementation_sha256": {}, "classifiers": {classifier: {}}}
+        result = {"errors": [], "evidence": {"reader": campaign["reader_runtime"]},
+                  "implementation_sha256": {}, "temporal_classification": {
+                      "errors": [], "classifications": [{"classifier_id": classifier}] * 4,
+                      "rejected_runs": [{"classifier_id": classifier}] * 8}}
+
+        def analyze(_run, output, *_args, **_kwargs):
+            workflow.write_json(output / "result.json", result)
+            workflow.write_json(output / "selection.json", {"frozen": True})
+            (output / "original.png").write_bytes(b"retained original evidence")
+            return result
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with (patch.object(workflow, "_campaign", return_value=(root, campaign)),
+                  patch.object(workflow, "_verify_frozen_source"),
+                  patch.object(workflow, "_validate_capture", return_value=({}, {})),
+                  patch.object(workflow, "_validate_capture_classifier_contexts"),
+                  patch.object(workflow, "_retain_replay_run"),
+                  patch.object(workflow, "reader_runtime", return_value=campaign["reader_runtime"]),
+                  patch("encounter_check.analyze", side_effect=analyze),
+                  patch.object(workflow, "_prepare_classifier") as packets):
+                summary = workflow.prepare(root, root / "run")
+            packets.assert_not_called()
+            self.assertEqual(summary["status"], "INSUFFICIENT_CANDIDATE_COVERAGE")
+            retained = root / "prepared/restricted/analysis"
+            self.assertEqual(workflow.read_json(retained / "result.json"), result)
+            self.assertEqual((retained / "original.png").read_bytes(), b"retained original evidence")
+            self.assertEqual(summary["analysis_result_sha256"], workflow.sha256(retained / "result.json"))
+            self.assertFalse((root / "prepared/prepared.json").exists())
+            self.assertFalse((root / "prepared/classifiers").exists())
+            # The stopped evidence occupies the frozen campaign destination;
+            # another recording cannot silently replace this exposed attempt.
+            self.assertTrue((root / "prepared/preparation-stopped.json").is_file())
+
+    def test_candidate_coverage_checks_frequency_branches_and_bands_before_blind_work(self):
+        classifier = workflow.FREQUENCY_CONTEXT_CLASSIFIER_ID
+        admitted = [{"classifier_id": classifier, "branch": "intact_mask", "band": "X"}] * 10
+        rejected = [{"classifier_id": classifier, "branch": branch}
+                    for branch in ("intact_mask", "partial_expected_on_segments") for _ in range(5)]
+        result = {"temporal_classification": {"classifications": admitted, "rejected_runs": rejected}}
+        with patch.object(encounter_qualification, "_temporal_v2_frequency_context_band",
+                          side_effect=lambda record, _: record["band"]):
+            coverage = workflow._candidate_coverage(result, (classifier,))
+            self.assertFalse(coverage["qualification_possible"])
+            self.assertTrue(any("partial_expected_on_segments" in reason for reason in coverage["blockers"]))
+            self.assertTrue(any("K, Ka" in reason for reason in coverage["blockers"]))
+            admitted.extend({"classifier_id": classifier, "branch": "partial_expected_on_segments", "band": band}
+                            for band in ("K", "Ka", "X", "K", "Ka"))
+            coverage = workflow._candidate_coverage(result, (classifier,))
+        self.assertTrue(coverage["qualification_possible"])
+        self.assertNotIn("allowlist_decision", coverage)
+
+    def test_optical_candidate_count_cannot_replace_promised_band_coverage(self):
+        classifier = workflow.SECONDARY_OPTICAL_CLASSIFIER_ID
+        result = {"temporal_classification": {
+            "classifications": [{"classifier_id": classifier, "band": "K"}] * 6,
+            "rejected_runs": [{"classifier_id": classifier}] * 6}}
+        with patch.object(encounter_qualification, "_temporal_v2_secondary_optical_band",
+                          side_effect=lambda record, _: record["band"]):
+            coverage = workflow._candidate_coverage(result, (classifier,))
+        self.assertFalse(coverage["qualification_possible"])
+        self.assertEqual(coverage["classifiers"][classifier]["admitted_candidate_bands"], ["K"])
+
     def test_reanalysis_runtime_mismatch_stops_before_pixel_reading(self):
         with tempfile.TemporaryDirectory() as directory:
             prepared = Path(directory)
@@ -179,10 +246,10 @@ class QualificationWorkflowTests(unittest.TestCase):
         self.assertEqual(
             workflow.TARGET_CLASSIFIERS,
             (
-                "v1-arrow-phase-edge-v3",
+                "v1-arrow-phase-edge-v4",
                 "v1-arrow-target-acquisition-v1",
                 "v1-stable-frequency-closed-context-v3",
-                "v1-secondary-closed-context-v2",
+            "v1-secondary-closed-context-v3",
                 "v1-secondary-text-optical-bridge-v1",
             ),
         )
@@ -616,6 +683,9 @@ class QualificationWorkflowTests(unittest.TestCase):
             "classifier_spec_sha256": campaign["classifiers"][classifier]["spec"]["sha256"],
             "deadline_observation_semantics": "LEGAL_PRESENTATION_TRANSITION",
             "raw_affected_fields": ["secondary"],
+            "verification_closure_semantics":
+                "RAW_CURRENT_BRACKETED_UNRESOLVED_VERIFICATION_BOUNDARY",
+            "auxiliary_closure_context_ns": 80_000_000,
         })
 
     def test_prospective_policy_publishes_secondary_optical_semantics(self):

@@ -351,7 +351,7 @@ def _write_executable(path: Path) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
-def test_replay_process_requests_raw_machine_and_scenario_evidence() -> None:
+def capture_replay_command(scenario: str, reader_qualification: bool) -> list[str]:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         executable = root / "build" / "v1replay"
@@ -380,8 +380,9 @@ def test_replay_process_requests_raw_machine_and_scenario_evidence() -> None:
             "replay",
             "scenario",
             lease_fd=9,
-            scenario="fixture.json",
+            scenario=scenario,
             machine_event=lambda _payload: None,
+            reader_qualification=reader_qualification,
         )
         try:
             emulator.start()
@@ -393,6 +394,23 @@ def test_replay_process_requests_raw_machine_and_scenario_evidence() -> None:
         assert_true("--machine-events" in captured, str(captured))
         assert_true("--scenario-evidence" in captured, str(captured))
         assert_true("--owner-pid" in captured, str(captured))
+        return captured
+
+
+def test_replay_process_requests_raw_machine_and_scenario_evidence() -> None:
+    for scenario, qualification in (("fixture.json", False), ("", False), ("", True)):
+        command = capture_replay_command(scenario, qualification)
+        assert_true(("--reader-qualification" in command) is qualification, str(command))
+        assert_true(("--scenario" in command) is bool(scenario), str(command))
+    for suite, scenario in (("core", ""), ("display", ""), ("replay", "fixture.json")):
+        try:
+            V1Emulator(Path("fixture"), Path("fixture"), suite, "scenario", lease_fd=9,
+                       scenario=scenario, reader_qualification=True,
+                       machine_event=lambda _payload: None)
+        except ValueError as exc:
+            assert_true("reader qualification requires replay" in str(exc), str(exc))
+        else:
+            raise AssertionError("reader qualification accepted incompatible stimulus")
 
 
 def finish_replay_fixture(states: list[str]) -> dict[str, Any]:
@@ -634,6 +652,7 @@ def test_main_writes_collection_only_and_returns_exit_one_for_unlinked_no_flash(
             post_upload_settle_seconds=0,
             suite="core",
             scenario="",
+            reader_qualification=False,
             replay_executable="fixture-replay",
             git_sha=GIT_SHA,
             git_ref="main",
@@ -698,6 +717,7 @@ def test_dirty_source_vetoes_qualification_before_collection() -> None:
             post_upload_settle_seconds=0,
             suite="core",
             scenario="",
+            reader_qualification=False,
             replay_executable="fixture-replay",
             git_sha=GIT_SHA,
             git_ref="main",
@@ -749,6 +769,7 @@ def run_replay_delivery_verdict(
             post_upload_settle_seconds=0,
             suite="replay",
             scenario="fixture.json",
+            reader_qualification=False,
             replay_executable="fixture-replay",
             git_sha=GIT_SHA,
             git_ref="main",
@@ -836,6 +857,7 @@ def test_clean_source_preserves_qualified_pass_behavior() -> None:
             post_upload_settle_seconds=0,
             suite="core",
             scenario="",
+            reader_qualification=False,
             replay_executable="fixture-replay",
             git_sha=GIT_SHA,
             git_ref="main",
@@ -1017,9 +1039,12 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
               fi
               if [[ " $* " == *"/scripts/bench/run_window.py"* ]]; then
                 args=("$@")
+                reader_qualification=0
                 for ((index=0; index<${{#args[@]}}; index++)); do
                   if [[ "${{args[index]}}" == "--out-dir" ]]; then out="${{args[index+1]}}"; fi
+                  if [[ "${{args[index]}}" == "--reader-qualification" ]]; then reader_qualification=1; fi
                 done
+                [[ "$reader_qualification" == "{int(qualification_capture)}" ]] || exit 12
                 mkdir -p "$out"
                 cp "$FAKE_WINDOW_JSON" "$out/window_result.json"
                 exit "$FAKE_WINDOW_EXIT"

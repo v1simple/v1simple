@@ -364,11 +364,12 @@ class EncounterCheckTests(unittest.TestCase):
             initial, stimulus, rows, [(0, 2)], definitions, policy)
         self.assertEqual(windows, [{"event_id": "event-0001", "start_ns": 1_090_000_000,
                                     "end_ns": 1_412_000_000, "selected_end_ns": 1_412_000_000,
+                                    "closure_context_end_ns": 1_492_000_000,
                                     "anchor_ns": 1_100_000_000, "clipped_by_event_end": False}])
         product = [sample for sample in samples if
-                   "every recorded frame in an exact product event window" in sample["selection_reasons"]]
+                   "every recorded frame in an exact product event window and bounded closure context" in sample["selection_reasons"]]
         self.assertEqual([sample["capture_ns"] for sample in product],
-                         list(range(1_090_000_000, 1_420_000_000, 10_000_000)))
+                         list(range(1_090_000_000, 1_500_000_000, 10_000_000)))
         self.assertEqual(len(samples), len({sample["frame_id"] for sample in samples}))
 
     def test_product_window_preserves_clipped_episode_for_inconclusive_judgment(self):
@@ -382,6 +383,24 @@ class EncounterCheckTests(unittest.TestCase):
         self.assertTrue(windows[0]["clipped_by_event_end"])
         self.assertEqual(windows[0]["selected_end_ns"], 1_250_000_000)
         self.assertEqual(samples[-1]["capture_ns"], 1_240_000_000)
+
+    def test_product_auxiliary_tail_clips_at_next_input_and_must_fit_declared_range(self):
+        stimulus, rows = inputs()
+        event = {"event_id": "event-0001", "end_ns": 1_440_000_000,
+                 "target_basis": {"first_complete_target_input_ns": 1_100_000_000}}
+        policy = {"maximum_source_marker_gap_ns": 10_000_000,
+                  "minimum_post_completion_hold_ns": 312_000_000}
+        samples, windows = check.select_product_event_windows(
+            [], stimulus, rows, [(0, 2)], [event], policy)
+        self.assertEqual(windows[0]["end_ns"], 1_412_000_000)
+        self.assertEqual(windows[0]["closure_context_end_ns"], 1_440_000_000)
+        self.assertEqual(samples[-1]["capture_ns"], 1_430_000_000)
+        self.assertEqual(check.product_window_samples(samples, windows), samples)
+        # Having the ordinary window but excluding its frozen auxiliary tail
+        # cannot silently become a smaller pixel-dependent selection.
+        _, windows = check.select_product_event_windows(
+            [], stimulus, rows, [(0, 0.42)], [event], policy)
+        self.assertEqual(windows, [])
 
     def test_default_product_scope_refuses_a_missing_derived_event_window(self):
         definitions = [{"event_id": "event-0001"}, {"event_id": "event-0002"}]

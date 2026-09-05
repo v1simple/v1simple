@@ -11,6 +11,50 @@ import Foundation
 enum BenchScenario {
     static let cadenceHz = 3
     static let durationSeconds = 276
+    static let readerQualificationDurationSeconds = 264
+
+    /// A fixed optical-reader exercise, separate from the normal product replay.
+    /// Each band occupies the primary position and both secondary slots. These
+    /// are actual display changes and stable holds, not manufactured OCR errors.
+    static func makeReaderQualification() -> Encounter {
+        let identities: [(V1.Band, UInt16)] = [(.x, 10_525), (.k, 24_150), (.ka, 34_700)]
+        let roles = [[0, 1, 2], [0, 2, 1], [1, 0, 2],
+                     [1, 2, 0], [2, 0, 1], [2, 1, 0]]
+        let directions: [V1.Direction] = [.front, .side, .rear]
+        let strengths = [2, 4, 6]
+        var samples: [TimedSample] = []
+        for tick in 0..<(readerQualificationDurationSeconds * cadenceHz) {
+            let second = tick / cadenceHz
+            var alerts: [ReplayAlert] = []
+            var muted = false
+            var phase = "reader_qualification_idle"
+            // Four seconds of clear input, then four repetitions of the six
+            // role permutations in ten-second blocks, then twenty seconds clear.
+            if (4..<244).contains(second) {
+                let block = (second - 4) / 10
+                let repetition = block / roles.count
+                let step = ((second - 4) % 10) / 2
+                let role = roles[block % roles.count]
+                let changed = step >= 3 ? 1 : 0
+                let order = step == 4 ? [role[1], role[0], role[2]] : role
+                let count = step == 0 ? 1 : step == 1 ? 2 : 3
+                phase = ["reader_qualification_primary", "reader_qualification_one_card",
+                         "reader_qualification_two_cards", "reader_qualification_redraw",
+                         "reader_qualification_handoff"][step]
+                muted = step == 3
+                alerts = order.prefix(count).enumerated().map { slot, identityIndex in
+                    let identity = identities[identityIndex]
+                    let state = (identityIndex + repetition + changed) % 3
+                    return alert(identity.0, identity.1, strengths[state], directions[state],
+                                 priority: slot == 0)
+                }
+            }
+            samples.append(TimedSample(
+                offset: Double(tick) / Double(cadenceHz), phase: phase, muted: muted,
+                alerts: alerts, scenarioArrowBlink: alerts.count > 1, sourceIndex: tick))
+        }
+        return Encounter(origin: .syntheticBench, samples: samples)
+    }
 
     struct MuteQualificationAlert {
         let band: V1.Band

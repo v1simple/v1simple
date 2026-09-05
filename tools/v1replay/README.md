@@ -57,6 +57,7 @@ Generated stimuli require no data file:
 .build/v1replay bench --blink-profile steady
 .build/v1replay bench --blink-profile stress
 .build/v1replay bench --exit-on-complete
+.build/v1replay bench --reader-qualification
 .build/v1replay bench --scenario /external/input.json \
   --scenario-evidence /external/run/replay_scenario.json --machine-events
 .build/v1replay export --bench --format csv
@@ -65,8 +66,8 @@ Generated stimuli require no data file:
 .build/v1replay crib
 ```
 
-Without `--scenario`, `bench` uses the generated Phase 0 stimulus. It runs at
-approximately 3 Hz for 276 seconds
+Without `--scenario` or `--reader-qualification`, `bench` uses the generated
+Phase 0 stimulus. It runs at approximately 3 Hz for 276 seconds
 and covers a resting lead, K and Ka ramps, a priority handoff, complete two- and
 three-row alert tables, card removal and restoration, a long Ka approach, and a
 32-second resting tail. The scenario owns those idle periods, so generic
@@ -81,7 +82,19 @@ through the complete external evidence window, and then stops its process group.
 Core and display windows use the same managed emulator in idle mode, so the
 complete bench never depends on a physical V1.
 
-Bench playback defaults to the `scenario` priority-arrow blink profile. As a
+`./bench.sh --replay --camera --qualification-capture` selects the separate
+264-second generated reader exercise. It includes four repetitions of all six
+X/K/Ka primary and secondary role permutations. Each ten-second block contains
+two-second holds for primary alone, one card, two cards, a direction/bar change
+with mute, and a priority handoff with unmute. Every band occupies both secondary
+slots; each alert identity is unique and the priority row is explicit. Four
+seconds of clear input precede the matrix and twenty seconds follow it. The
+normal product replay remains unchanged. The existing resolved scenario evidence
+retains the exact selected values and their hash. These authored cases provide
+coverage opportunities; they do not guarantee particular camera or OCR errors.
+The capture mode continues to withhold all automatic pixel analysis.
+
+Normal bench playback defaults to the `scenario` priority-arrow blink profile. As a
 provisional generated assumption, it blinks only during the 19-second authored
 multi-alert interval (57 samples) and leaves all single-alert periods steady.
 This is deliberately isolated in `BenchScenario.swift` so later external input

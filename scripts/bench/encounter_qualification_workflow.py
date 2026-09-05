@@ -966,6 +966,52 @@ def _validate_capture_classifier_contexts(campaign: dict[str, Any],
                  + "; ".join(result.get("errors", [])))
 
 
+def _candidate_coverage(result: dict[str, Any], classifier_ids: tuple[str, ...]) -> dict[str, Any]:
+    """Stop impossible campaigns before clip work; counts never grant qualification."""
+    from encounter_qualification import (
+        _temporal_v2_frequency_context_band, _temporal_v2_secondary_optical_band,
+    )
+
+    temporal = result["temporal_classification"]
+    coverage, blockers = {}, []
+    for classifier_id in classifier_ids:
+        admitted = [record for record in temporal["classifications"]
+                    if record.get("classifier_id") == classifier_id]
+        rejected = [record for record in temporal["rejected_runs"]
+                    if record.get("classifier_id") == classifier_id]
+        counts = {"admitted_candidates": len(admitted), "rejected_candidates": len(rejected)}
+        coverage[classifier_id] = counts
+        # These are upper bounds on blind true admits/rejects. Five candidates
+        # cannot promise five correct labels; fewer than five cannot supply them.
+        if len(admitted) < 5 or len(rejected) < 5:
+            blockers.append(f"{classifier_id}: needs at least 5 admitted and 5 rejected "
+                            f"candidates; has {len(admitted)} and {len(rejected)}")
+        if classifier_id == FREQUENCY_CONTEXT_CLASSIFIER_ID:
+            counts["branches"] = {}
+            for branch in ("intact_mask", "partial_expected_on_segments"):
+                positives = sum(record.get("branch") == branch for record in admitted)
+                negatives = sum(record.get("branch") == branch for record in rejected)
+                counts["branches"][branch] = {
+                    "admitted_candidates": positives, "rejected_candidates": negatives}
+                if positives < 5 or negatives < 5:
+                    blockers.append(f"{classifier_id}/{branch}: needs at least 5 admitted "
+                                    f"and 5 rejected candidates; has {positives} and {negatives}")
+        band_reader = ({FREQUENCY_CONTEXT_CLASSIFIER_ID: _temporal_v2_frequency_context_band,
+                        SECONDARY_OPTICAL_CLASSIFIER_ID: _temporal_v2_secondary_optical_band}
+                       .get(classifier_id))
+        if band_reader is not None:
+            bands = {band_reader(record, result) for record in admitted}
+            counts["admitted_candidate_bands"] = [band for band in ("X", "K", "Ka") if band in bands]
+            missing = [band for band in ("X", "K", "Ka") if band not in bands]
+            if missing:
+                blockers.append(f"{classifier_id}: no admitted candidate for {', '.join(missing)}")
+    return {"schema_version": 1, "kind": "temporal_candidate_coverage",
+            "qualification_possible": not blockers,
+            "meaning": "Candidate counts can rule out qualification, never establish it. "
+                       "Every admitted and rejected candidate still requires blind observation.",
+            "classifiers": coverage, "blockers": blockers}
+
+
 def prepare(campaign_path: Path, run_dir: Path) -> dict[str, Any]:
     """Read the reserved capture once and make isolated all-candidate packets."""
     from encounter_check import analyze, load_run
@@ -1008,6 +1054,17 @@ def prepare(campaign_path: Path, run_dir: Path) -> dict[str, Any]:
                      f"analysis implementation differs from freeze: {name}")
         analysis_selection = analysis / "selection.json"
         _require(analysis_selection.is_file(), "analysis did not retain its pre-pixel selection")
+        coverage = _candidate_coverage(result, _campaign_classifiers(campaign))
+        write_json(analysis / "candidate-coverage.json", coverage)
+        if not coverage["qualification_possible"]:
+            summary.update(
+                status="INSUFFICIENT_CANDIDATE_COVERAGE",
+                retained_evidence=str(destination),
+                analysis_result_sha256=sha256(analysis / "result.json"),
+                candidate_coverage=coverage,
+            )
+            write_json(stage / "preparation-stopped.json", summary)
+            return
         data = load_run(retained_run)
         retained_capture = retained_run / "camera"
         from camera_artifacts import load_capture_manifest
@@ -1039,6 +1096,7 @@ def prepare(campaign_path: Path, run_dir: Path) -> dict[str, Any]:
         }
         write_json(stage / "prepared.json", prepared)
         summary.update(
+            status="READY_FOR_BLIND_OBSERVATION",
             prepared=str(destination), capture_id=prepared["capture_id"],
             observer_packets=[str(destination / item["observer_packet"])
                               for item in classifiers],
@@ -2012,6 +2070,9 @@ def _prospective_policy(campaign: dict[str, Any]) -> tuple[dict[str, Any], bytes
         if "verification_closure_semantics" in spec:
             specs[classifier_id]["verification_closure_semantics"] = spec[
                 "verification_closure_semantics"]
+        if "auxiliary_closure_context_ns" in spec:
+            specs[classifier_id]["auxiliary_closure_context_ns"] = spec[
+                "auxiliary_closure_context_ns"]
     policy["qualified_temporal_classifier_ids"] = ids
     policy["qualified_temporal_classifiers"] = specs
     return policy_document, json_bytes(policy_document), policy
@@ -2372,6 +2433,8 @@ def main() -> int:
         else:
             result = reanalyze_static(args.source_manifest, args.out)
         print(json.dumps(result, indent=2, sort_keys=True))
+        if result.get("status") == "INSUFFICIENT_CANDIDATE_COVERAGE":
+            return 2
         return 0
     except (WorkflowError, QualificationError, KeyError, TypeError, OSError) as exc:
         print(f"qualification workflow failed: {exc}", file=sys.stderr)

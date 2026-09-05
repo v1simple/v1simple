@@ -11,6 +11,11 @@ a qualified target-acquisition transition in any implicated field is already
 enough to prove a late target.  That one-way failure evidence never excuses the
 frame or contributes to a pass.
 
+Optional ``closure_context`` retains input-selected originals after the ordinary
+product window. Only an exact policy-bound secondary closure can use this tail
+to bracket an unresolved verification boundary. The tail never enters ordinary
+acquisition or verification observation processing.
+
 Input event records use this compact boundary schema::
 
     {
@@ -72,6 +77,7 @@ _DEADLINE_TRANSITION_SEMANTICS = {
 }
 _VERIFICATION_CLOSURE_SEMANTICS = (
     "RAW_CURRENT_BRACKETED_UNRESOLVED_VERIFICATION_BOUNDARY")
+AUXILIARY_CLOSURE_CONTEXT_NS = 80_000_000
 
 
 def _require(condition: bool, reason: str) -> None:
@@ -165,6 +171,11 @@ def load_policy(policy_id: str = DEFAULT_POLICY_ID, path: Path = DEFAULT_POLICY_
         if closure_semantics is not None:
             _require(closure_semantics == _VERIFICATION_CLOSURE_SEMANTICS,
                      f"invalid verification closure semantics for {classifier_id}")
+        if "auxiliary_closure_context_ns" in spec:
+            _require(closure_semantics == _VERIFICATION_CLOSURE_SEMANTICS
+                     and fields == ["secondary"]
+                     and spec["auxiliary_closure_context_ns"] == AUXILIARY_CLOSURE_CONTEXT_NS,
+                     f"invalid auxiliary closure context for {classifier_id}")
     _require(isinstance(policy.get("scope"), dict) and isinstance(policy.get("basis"), list),
              "visible-event policy lacks scope or basis")
     return policy
@@ -287,6 +298,9 @@ def _classification_map(records: Any, events: list[Any],
         observations = event.get("observations")
         if not isinstance(observations, list):
             continue
+        auxiliary = event.get("closure_context", {})
+        if isinstance(auxiliary, dict) and isinstance(auxiliary.get("observations", []), list):
+            observations = [*observations, *auxiliary.get("observations", [])]
         by_index = {item.get("video_frame_index"): item for item in observations
                     if isinstance(item, dict) and type(item.get("video_frame_index")) is int}
         event_observations[event["event_id"]] = by_index
@@ -311,7 +325,9 @@ def _classification_map(records: Any, events: list[Any],
                 or (("verification_closure_semantics" in record
                      or "verification_closure_semantics" in spec)
                     and record.get("verification_closure_semantics") !=
-                    spec.get("verification_closure_semantics")):
+                    spec.get("verification_closure_semantics")) \
+                or record.get("auxiliary_closure_context_ns") != spec.get(
+                    "auxiliary_closure_context_ns"):
             errors.append({"code": "TEMPORAL_CLASSIFIER_SPEC_MISMATCH", "record_index": record_index,
                            "event_id": record["event_id"], "classifier_id": record["classifier_id"]})
             continue
@@ -372,6 +388,7 @@ def _verification_closure_at(
     verification_end_ns: int,
     qualified: dict[tuple[str, int], list[dict]],
     policy: dict[str, Any],
+    selection_end_ns: int,
 ) -> dict[str, Any] | None:
     """Prove one unresolved verification boundary from a closed raw-current bracket."""
     boundary = observations[position]
@@ -408,6 +425,13 @@ def _verification_closure_at(
     if start == 0 or stop >= len(observations):
         return None
     left, right = observations[start - 1], observations[stop]
+    if right["capture_ns"] >= selection_end_ns:
+        spec = policy["qualified_temporal_classifiers"].get(record["classifier_id"], {})
+        if (record.get("auxiliary_closure_context_ns") != AUXILIARY_CLOSURE_CONTEXT_NS
+                or spec.get("auxiliary_closure_context_ns") != AUXILIARY_CLOSURE_CONTEXT_NS
+                or right["capture_ns"] >= selection_end_ns + AUXILIARY_CLOSURE_CONTEXT_NS
+                or right["capture_ns"] - left["capture_ns"] > AUXILIARY_CLOSURE_CONTEXT_NS):
+            return None
     if (left["raw_status"] != "CURRENT" or right["raw_status"] != "CURRENT"
             or not left["capture_ns"] < verification_end_ns
             or any(right_item["video_frame_index"] != left_item["video_frame_index"] + 1
@@ -452,7 +476,7 @@ def _verification_closure_at(
     }
 
 
-def _event_evidence(raw: dict[str, Any], policy: dict[str, Any]) -> tuple[dict[str, Any], list[dict], list[str]]:
+def _event_evidence(raw: dict[str, Any], policy: dict[str, Any]) -> tuple[dict[str, Any], list[dict], list[dict], list[str]]:
     """Validate one event and return normalized timing, observations and blockers."""
     event_id = raw.get("event_id")
     _require(isinstance(event_id, str) and bool(event_id), "event has no stable id")
@@ -476,11 +500,20 @@ def _event_evidence(raw: dict[str, Any], policy: dict[str, Any]) -> tuple[dict[s
     phases = _strings(raw.get("required_joint_state_ids"), "required joint-state ids")
     observations = raw.get("observations")
     _require(isinstance(observations, list) and bool(observations), "event has no original observations")
+    closure_context = raw.get("closure_context", {})
+    _require(isinstance(closure_context, dict), "invalid auxiliary closure context")
+    auxiliary = closure_context.get("observations", [])
+    _require(isinstance(auxiliary, list), "invalid auxiliary closure observations")
+    closure_end = max(selection_end, min(selection_end + AUXILIARY_CLOSURE_CONTEXT_NS, end))
+    if closure_context:
+        _require(closure_context.get("selection_window") == {
+                    "start_ns": selection_end, "end_ns": closure_end},
+                 "auxiliary closure context disagrees with fixed bound or next input")
     normalized: list[dict] = []
     prior_capture = None
     prior_video = None
     prior_source = None
-    for item in observations:
+    for position, item in enumerate([*observations, *auxiliary]):
         _require(isinstance(item, dict), "event observation is not an object")
         point = deepcopy(item)
         _require(isinstance(point.get("frame_id"), str) and bool(point["frame_id"]),
@@ -488,7 +521,9 @@ def _event_evidence(raw: dict[str, Any], policy: dict[str, Any]) -> tuple[dict[s
         video = _integer(point.get("video_frame_index"), "video frame index")
         source = _integer(point.get("source_frame_seq"), "source frame sequence", 1)
         capture = _integer(point.get("capture_ns"), "capture timestamp")
-        _require(selection_start <= capture < selection_end, "observation lies outside frozen selection window")
+        lo, hi = ((selection_start, selection_end) if position < len(observations)
+                  else (selection_end, closure_end))
+        _require(lo <= capture < hi, "observation lies outside frozen selection window")
         _require(capture < end, "observation occurs after the event was superseded")
         _require(point.get("raw_status") in _RAW_STATUSES, "observation has invalid raw status")
         if point["raw_status"] == "CURRENT":
@@ -503,6 +538,8 @@ def _event_evidence(raw: dict[str, Any], policy: dict[str, Any]) -> tuple[dict[s
                      "event observations are not strictly ordered originals")
         normalized.append(point)
         prior_capture, prior_video, prior_source = capture, video, source
+    auxiliary = normalized[len(observations):]
+    normalized = normalized[:len(observations)]
     coverage = raw.get("coverage")
     _require(isinstance(coverage, dict), "event coverage is missing")
     for key in ("available_recorded_frames", "selected_recorded_frames", "read_recorded_frames",
@@ -546,7 +583,7 @@ def _event_evidence(raw: dict[str, Any], policy: dict[str, Any]) -> tuple[dict[s
     if normalized[0]["capture_ns"] - selection_start > gap \
             or selection_end - normalized[-1]["capture_ns"] > gap:
         _append_once(blockers, "SOURCE_BOUNDARY_GAP")
-    return timing, normalized, blockers
+    return timing, normalized, auxiliary, blockers
 
 
 def _judge_event(raw: dict[str, Any], policy: dict[str, Any],
@@ -554,7 +591,7 @@ def _judge_event(raw: dict[str, Any], policy: dict[str, Any],
                  target_acquisition: dict[tuple[str, int], list[dict]]) -> dict[str, Any]:
     event_id = raw.get("event_id") if isinstance(raw.get("event_id"), str) else "invalid-event"
     try:
-        timing, observations, blockers = _event_evidence(raw, policy)
+        timing, observations, auxiliary, blockers = _event_evidence(raw, policy)
     except (KeyError, TypeError, ValueError) as exc:
         return _inconclusive_event(raw, event_id, "INVALID_EVENT_EVIDENCE", str(exc))
     result = {
@@ -562,6 +599,7 @@ def _judge_event(raw: dict[str, Any], policy: dict[str, Any],
         "mode": raw["mode"],
         "target_basis": deepcopy(raw["target_basis"]),
         "window": timing,
+        "closure_context": deepcopy(raw.get("closure_context", {})),
         "coverage": deepcopy(raw["coverage"]),
         "required_joint_state_ids": list(raw["required_joint_state_ids"]),
         "observed_joint_state_ids": [],
@@ -706,8 +744,9 @@ def _judge_event(raw: dict[str, Any], policy: dict[str, Any],
                 continue
             if functional_contract and raw_status == "UNRESOLVED" and legal_explicit:
                 closure_proof = _verification_closure_at(
-                    observation_position, observations, event_id,
-                    result["verification_end_ns"], qualified, policy)
+                    observation_position, [*observations, *auxiliary], event_id,
+                    result["verification_end_ns"], qualified, policy,
+                    timing["selection_end_ns"])
                 if closure_proof is not None:
                     result["verification_closure_proof"] = closure_proof
                     closing = closure_proof["right_raw_current"]

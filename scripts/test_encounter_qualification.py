@@ -687,7 +687,7 @@ class QualificationTests(unittest.TestCase):
                 "unchanged_direction_motion": "YES",
                 "confidence": "HIGH",
             }))
-        if classifier == "v1-secondary-closed-context-v2":
+        if classifier == "v1-secondary-closed-context-v3":
             return ({
                 "card_context": "SAME_CURRENT_CARD_CONTEXT",
                 "support_pairs": "BOTH_CLEAR",
@@ -727,7 +727,7 @@ class QualificationTests(unittest.TestCase):
                 "direction_or_meter_change": "DIRECTION_OR_METER_CHANGE",
                 "confidence": "HIGH",
             }))
-        if classifier == "v1-arrow-phase-edge-v3":
+        if classifier == "v1-arrow-phase-edge-v4":
             return ({
                 "center_class": "COHERENT_SINGLE_DIRECTION_ON_OFF_EDGE",
                 "endpoint_support": "BOTH_CLEAR",
@@ -858,14 +858,14 @@ class QualificationTests(unittest.TestCase):
                 secondary_probe_method_version=1,
                 secondary_probe_sha256=self.method["encounter_secondary_probe.py"])
         elif classifier not in {
-                "v1-arrow-phase-edge-v3", "v1-arrow-target-acquisition-v1",
-                "v1-secondary-closed-context-v2"}:
+                "v1-arrow-phase-edge-v4", "v1-arrow-target-acquisition-v1",
+                "v1-secondary-closed-context-v3"}:
             spec_identity.update(
                 redraw_probe_method_version=1,
                 redraw_probe_sha256=self.method["encounter_redraw_probe.py"])
         spec_document["identity"] = spec_identity
         if contradictory_spec:
-            if classifier == "v1-arrow-phase-edge-v3":
+            if classifier == "v1-arrow-phase-edge-v4":
                 spec_document["qualification_requirements"]["minimum_blind_true_admits"] = 50
             elif classifier == "v1-arrow-target-acquisition-v1":
                 spec_document["deadline_observation_semantics"] = "LEGAL_PRESENTATION_TRANSITION"
@@ -960,8 +960,8 @@ class QualificationTests(unittest.TestCase):
                 secondary_probe_method_version=1,
                 secondary_probe_sha256=self.method["encounter_secondary_probe.py"])
         elif classifier not in {
-                "v1-arrow-phase-edge-v3", "v1-arrow-target-acquisition-v1",
-                "v1-secondary-closed-context-v2"}:
+                "v1-arrow-phase-edge-v4", "v1-arrow-target-acquisition-v1",
+                "v1-secondary-closed-context-v3"}:
             record_context.update(
                 redraw_probe_method_version=1,
                 redraw_probe_sha256=self.method["encounter_redraw_probe.py"])
@@ -1002,7 +1002,7 @@ class QualificationTests(unittest.TestCase):
                 classifier, visually_eligible,
                 indeterminate=indeterminate_rejects and not visually_eligible)
             observer_indeterminate = indeterminate_rejects and not visually_eligible
-            if classifier == "v1-arrow-phase-edge-v3":
+            if classifier == "v1-arrow-phase-edge-v4":
                 literal_observation.update(
                     left_endpoint_directions=None if observer_indeterminate else [],
                     right_endpoint_directions=(None if observer_indeterminate else
@@ -1020,14 +1020,14 @@ class QualificationTests(unittest.TestCase):
                     None if observer_indeterminate else
                     "35.500" if observer_claim_tamper and index == 0 else frequency)
             elif classifier in {
-                    "v1-secondary-closed-context-v2",
+                    "v1-secondary-closed-context-v3",
                     "v1-secondary-text-optical-bridge-v1"}:
                 observed_card = {
                     "band": band, "frequency": frequency,
                     "direction": "front",
                     "bars": 4 if observer_claim_tamper and index == 0 else 3,
                 }
-                if classifier == "v1-secondary-closed-context-v2":
+                if classifier == "v1-secondary-closed-context-v3":
                     literal_observation["observed_cards"] = (
                         None if observer_indeterminate else [observed_card])
                 else:
@@ -1053,12 +1053,12 @@ class QualificationTests(unittest.TestCase):
                         "primary_frequency": {"allowed": [frequency]}}},
                     "wire_rows": [{
                         "band": band.casefold(),
-                        "frequencyMHz": int(frequency.replace(".", "")),
+                        "frequency": frequency,
                         "priority": True,
                     }],
                 })
             elif classifier in {
-                    "v1-secondary-closed-context-v2",
+                    "v1-secondary-closed-context-v3",
                     "v1-secondary-text-optical-bridge-v1"}:
                 support_card = {
                     "band": band, "frequency": frequency,
@@ -1073,7 +1073,7 @@ class QualificationTests(unittest.TestCase):
                 })
             full_indices = ([indices[0] - 2, indices[0] - 1, *indices,
                              indices[-1] + 1, indices[-1] + 2]
-                            if classifier == "v1-secondary-closed-context-v2"
+                            if classifier == "v1-secondary-closed-context-v3"
                             and machine_admitted else
                             list(range(indices[0] - 2, indices[0] + 3))
                             if classifier == "v1-secondary-text-optical-bridge-v1"
@@ -1125,7 +1125,7 @@ class QualificationTests(unittest.TestCase):
                 }
                 if malformed_admitted_record and index == 0:
                     record["raw_affected_fields"] = []
-                if classifier == "v1-arrow-phase-edge-v3":
+                if classifier == "v1-arrow-phase-edge-v4":
                     constants = spec_document["constants"]
                     record.update({
                         "left_support": point(indices[0] - 2),
@@ -1139,8 +1139,9 @@ class QualificationTests(unittest.TestCase):
                             "joint_arrow_phases": [[], ["front"]],
                         },
                         "endpoint_separation_rms": 60.0,
-                        "projections": [0.25, 0.5, 0.75],
-                        "normalized_residuals": [0.01, 0.01, 0.01],
+                        "profile_frame_indices": list(range(indices[0] - 1, indices[-1] + 2)),
+                        "projections": [0.0, 0.25, 0.5, 0.75, 1.0],
+                        "normalized_residuals": [0.0, 0.01, 0.01, 0.01, 0.0],
                         "maximum_backward_step": 0.0,
                         "total_backward_motion": 0.0,
                         "extra_direction_profile_diameter_rms": {
@@ -1306,7 +1307,7 @@ class QualificationTests(unittest.TestCase):
                             "current_secondary": copy.deepcopy(support),
                         },
                     })
-                elif classifier == "v1-secondary-closed-context-v2":
+                elif classifier == "v1-secondary-closed-context-v3":
                     constants = spec_document["constants"]
                     support = [copy.deepcopy(CARD)]
                     meter_states = (
@@ -1335,6 +1336,9 @@ class QualificationTests(unittest.TestCase):
                     record.update({
                         "deadline_observation_semantics":
                             "LEGAL_PRESENTATION_TRANSITION",
+                        "verification_closure_semantics": spec_document["verification_closure_semantics"],
+                        "auxiliary_closure_context_ns": spec_document["auxiliary_closure_context_ns"],
+                        "context_frame_indices": full_indices,
                         "full_context_indices": full_indices,
                         "context_refusal_indices": indices,
                         "interleaved_readable_indices": [],
@@ -1921,6 +1925,8 @@ class QualificationTests(unittest.TestCase):
             "raw_affected_fields": copy.deepcopy(
                 TEMPORAL_V2_OBSERVER_RUBRICS[classifier]["raw_affected_fields"]),
         }
+        if "auxiliary_closure_context_ns" in spec_document:
+            policy_spec["auxiliary_closure_context_ns"] = spec_document["auxiliary_closure_context_ns"]
         if "verification_closure_semantics" in spec_document:
             policy_spec["verification_closure_semantics"] = spec_document[
                 "verification_closure_semantics"]
@@ -2015,10 +2021,10 @@ class QualificationTests(unittest.TestCase):
 
     def test_each_generic_temporal_v2_bundle_qualifies(self):
         classifiers = (
-            "v1-arrow-phase-edge-v3",
+            "v1-arrow-phase-edge-v4",
             "v1-arrow-target-acquisition-v1",
             "v1-stable-frequency-closed-context-v3",
-            "v1-secondary-closed-context-v2",
+            "v1-secondary-closed-context-v3",
             "v1-main-bar-adjacent-redraw-v2",
             "v1-muted-badge-rising-fill-v2",
             "v1-unmute-stable-frequency-sweep-v2",
@@ -2034,7 +2040,7 @@ class QualificationTests(unittest.TestCase):
                     result["temporal_classifiers"][classifier]["total"], expected_total)
 
     def test_recording_gap_does_not_relax_each_admitted_support_chain(self):
-        classifiers = set(TEMPORAL_V2_OBSERVER_RUBRICS) - {"v1-arrow-phase-edge-v3"}
+        classifiers = set(TEMPORAL_V2_OBSERVER_RUBRICS) - {"v1-arrow-phase-edge-v4"}
         for classifier in classifiers:
             with self.subTest(classifier=classifier):
                 temporal, _ = self.generic_temporal_validation(
@@ -2144,10 +2150,10 @@ class QualificationTests(unittest.TestCase):
             ("v1-stable-frequency-closed-context-v3", "frequency_context_masks"),
             ("v1-stable-frequency-closed-context-v3", "frequency_context_partial"),
             ("v1-stable-frequency-closed-context-v3", "frequency_context_closure"),
-            ("v1-secondary-closed-context-v2", "secondary_context_established"),
-            ("v1-secondary-closed-context-v2", "secondary_context_event_binding"),
-            ("v1-secondary-closed-context-v2", "secondary_context_indices"),
-            ("v1-secondary-closed-context-v2", "secondary_context_closure"),
+            ("v1-secondary-closed-context-v3", "secondary_context_established"),
+            ("v1-secondary-closed-context-v3", "secondary_context_event_binding"),
+            ("v1-secondary-closed-context-v3", "secondary_context_indices"),
+            ("v1-secondary-closed-context-v3", "secondary_context_closure"),
             ("v1-secondary-text-optical-bridge-v1", "secondary_optical_bracket"),
             ("v1-secondary-text-optical-bridge-v1", "secondary_optical_established"),
             ("v1-secondary-text-optical-bridge-v1", "secondary_optical_slot"),
@@ -2223,7 +2229,7 @@ class QualificationTests(unittest.TestCase):
                 "LEGAL_TARGET_CONTENT", "HIGH", "Do not infer or record the machine branch"):
             self.assertIn(requirement, frequency)
         secondary = temporal_v2_observer_instructions(
-            "v1-secondary-closed-context-v2")
+            "v1-secondary-closed-context-v3")
         for requirement in (
                 "SAME_CURRENT_CARD_CONTEXT", "BOTH_CLEAR",
                 "COHERENT_PARTIAL_METER_REDRAW", "EXACT_COUNT_CLOSURE", "HIGH"):
@@ -2235,6 +2241,25 @@ class QualificationTests(unittest.TestCase):
                 "SAME_COMPLETE_CARD_TEXT_THROUGHOUT",
                 "NO_DIRECTION_OR_METER_CHANGE", "HIGH"):
             self.assertIn(requirement, optical)
+
+    def test_frequency_context_band_uses_actual_decoded_wire_row_schema(self):
+        from encounter_expectation import _row
+        from test_encounter_expectation import packet
+
+        for band, mask, mhz in (("X", 8, 10525), ("K", 4, 24150), ("Ka", 2, 34700)):
+            row = _row(packet(0x43, [0x11, mhz >> 8, mhz & 255, 1, 1, mask | 32, 128]))
+            frequency = row["frequency"]
+            record = {"event_id": "event-0001", "support_derived_frequency": frequency,
+                      "event_signature": {"mode": "CHANGED", "changed_fields": ["primary_frequency"],
+                                          "current_primary_frequency": frequency}}
+            event = {"event_id": "event-0001", "mode": "CHANGED", "changed_fields": ["primary_frequency"],
+                     "wire_rows": [row], "target": {"fields": {"primary_frequency": {"allowed": [frequency]}}}}
+            result = {"sequence": {"events": [event]}}
+            self.assertEqual(encounter_qualification._temporal_v2_frequency_context_band(record, result), band)
+            row["frequency"] = "10.526"
+            with self.assertRaisesRegex(encounter_qualification.QualificationError,
+                                        "differs from its retained primary event"):
+                encounter_qualification._temporal_v2_frequency_context_band(record, result)
 
     def test_frequency_context_requires_each_branch_and_all_bands(self):
         classifier = "v1-stable-frequency-closed-context-v3"
@@ -2313,7 +2338,15 @@ class QualificationTests(unittest.TestCase):
         self.assertIn("rejected classifier record shape differs", result["errors"][0])
 
     def test_secondary_context_spec_and_rejection_codes_are_exact(self):
-        classifier = "v1-secondary-closed-context-v2"
+        classifier = "v1-secondary-closed-context-v3"
+        for field, value in (("verification_closure_semantics", "INVENTED_CLOSURE"),
+                             ("auxiliary_closure_context_ns", 80_000_001)):
+            with self.subTest(field=field):
+                temporal, _ = self.generic_temporal_validation(classifier)
+                self.policy["qualified_temporal_classifiers"][classifier][field] = value
+                result = self.verify(self.write_bundle(temporal=temporal))
+                self.assertEqual(result["status"], "REJECTED")
+                self.assertIn("policy contract differs", result["errors"][0])
         temporal, _ = self.generic_temporal_validation(
             classifier, contradictory_spec=True)
         result = self.verify(self.write_bundle(temporal=temporal))
@@ -2386,7 +2419,7 @@ class QualificationTests(unittest.TestCase):
                     f"running temporal implementation differs: {name}", result["errors"][0])
 
     def test_policy_classifier_contract_must_exactly_match_spec_and_rubric(self):
-        classifier = "v1-secondary-closed-context-v2"
+        classifier = "v1-secondary-closed-context-v3"
         mutations = (
             lambda value: value.update(raw_affected_fields=["main_arrows"]),
             lambda value: value.update(
@@ -2415,7 +2448,7 @@ class QualificationTests(unittest.TestCase):
         self.assertIn("policy contract differs", result["errors"][0])
 
     def test_policy_classifier_spec_hash_must_match_qualified_spec(self):
-        classifier = "v1-secondary-closed-context-v2"
+        classifier = "v1-secondary-closed-context-v3"
         temporal, _ = self.generic_temporal_validation(classifier)
         self.policy["qualified_temporal_classifiers"][classifier][
             "classifier_spec_sha256"] = "b" * 64
@@ -2435,10 +2468,10 @@ class QualificationTests(unittest.TestCase):
 
     def test_target_observer_transcription_must_match_the_frozen_visible_claim(self):
         classifiers = (
-            "v1-arrow-phase-edge-v3",
+            "v1-arrow-phase-edge-v4",
             "v1-arrow-target-acquisition-v1",
             "v1-stable-frequency-closed-context-v3",
-            "v1-secondary-closed-context-v2",
+            "v1-secondary-closed-context-v3",
             "v1-secondary-text-optical-bridge-v1",
         )
         for classifier in classifiers:
@@ -2453,7 +2486,7 @@ class QualificationTests(unittest.TestCase):
     def test_target_observer_transcription_schema_is_exact(self):
         valid_card = copy.deepcopy(CARD)
         cases = (
-            ("v1-arrow-phase-edge-v3", {
+            ("v1-arrow-phase-edge-v4", {
                 "left_endpoint_directions": [],
                 "right_endpoint_directions": ["side", "front"],
             }),
@@ -2464,7 +2497,7 @@ class QualificationTests(unittest.TestCase):
             ("v1-stable-frequency-closed-context-v3", {
                 "observed_frequency": "34.7",
             }),
-            ("v1-secondary-closed-context-v2", {
+            ("v1-secondary-closed-context-v3", {
                 "observed_cards": [{**valid_card, "extra": True}],
             }),
             ("v1-secondary-text-optical-bridge-v1", {
@@ -2486,7 +2519,7 @@ class QualificationTests(unittest.TestCase):
                         classifier, observation)
 
     def test_arrow_transcription_uses_visual_direction_order_without_losing_set_identity(self):
-        classifier = "v1-arrow-phase-edge-v3"
+        classifier = "v1-arrow-phase-edge-v4"
         literal = {
             **self.generic_temporal_literal(classifier, True),
             "left_endpoint_directions": ["front", "rear"],
@@ -2550,7 +2583,7 @@ class QualificationTests(unittest.TestCase):
     def test_generic_temporal_false_admission_is_rejected_with_minima_met(self):
         cases = (
             ("v1-arrow-target-acquisition-v1", {"false_admit": True}),
-            ("v1-secondary-closed-context-v2", {"false_admit": True}),
+            ("v1-secondary-closed-context-v3", {"false_admit": True}),
             ("v1-main-bar-adjacent-redraw-v2", {"false_admit": True}),
             ("v1-unmute-stable-frequency-sweep-v2", {"claim_mismatch": True}),
         )
@@ -2675,7 +2708,7 @@ class QualificationTests(unittest.TestCase):
 
     def test_temporal_qualification_binds_owner_and_isolates_other_owners(self):
         cases = (
-            ("v1-arrow-phase-edge-v3", "encounter_arrow_transition.py",
+            ("v1-arrow-phase-edge-v4", "encounter_arrow_transition.py",
              "encounter_arrow_acquisition.py"),
             ("v1-arrow-target-acquisition-v1", "encounter_arrow_acquisition.py",
              "encounter_arrow_transition.py"),
@@ -2712,7 +2745,7 @@ class QualificationTests(unittest.TestCase):
             self.assertLessEqual(
                 set(COMMON_TEMPORAL_IMPLEMENTATION_FILES),
                 set(CLASSIFIER_IMPLEMENTATION_FILES[classifier]))
-        classifier = "v1-arrow-phase-edge-v3"
+        classifier = "v1-arrow-phase-edge-v4"
         for name in COMMON_TEMPORAL_IMPLEMENTATION_FILES:
             with self.subTest(name=name):
                 temporal, _ = self.generic_temporal_validation(classifier)
@@ -2728,12 +2761,12 @@ class QualificationTests(unittest.TestCase):
 
     def test_temporal_implementation_inventory_must_be_exact(self):
         for classifier, owned in (
-                ("v1-arrow-phase-edge-v3", "encounter_arrow_transition.py"),
+                ("v1-arrow-phase-edge-v4", "encounter_arrow_transition.py"),
                 ("v1-arrow-target-acquisition-v1", "encounter_arrow_acquisition.py"),
                 ("v1-stable-frequency-closed-context-v3", "encounter_frequency_context.py"),
                 ("v1-stable-frequency-closed-context-v3", "encounter_redraw_probe.py"),
-                ("v1-secondary-closed-context-v2", "encounter_secondary_context.py"),
-                ("v1-secondary-closed-context-v2", "encounter_check.py"),
+                ("v1-secondary-closed-context-v3", "encounter_secondary_context.py"),
+                ("v1-secondary-closed-context-v3", "encounter_check.py"),
                 ("v1-secondary-text-optical-bridge-v1",
                  "encounter_secondary_optical_bridge.py"),
                 ("v1-secondary-text-optical-bridge-v1",

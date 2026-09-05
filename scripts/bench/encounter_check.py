@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Read sampled or consecutive V1 encounter frames from an existing recording.
+"""Evaluate visible V1 encounters from an existing recording.
 
-No hardware is operated. Selection uses packet changes and a declared cadence,
-or every recorded frame in explicit bounds, before pixels are read. A disagreement is with recorded host input; it does not
-locate a firmware defect or establish a response deadline.
+No hardware is operated. With --inspect-transitions, evaluate every original
+in fixed event windows under the qualified deadline and verification policy.
+Other modes retain sampled or consecutive frame comparisons for diagnosis.
+Selection is frozen before pixels are read. The clock binds host acceptance
+and camera markers; it does not measure DUT receipt or locate a firmware defect.
 """
 from __future__ import annotations
 
@@ -1082,7 +1084,7 @@ def main() -> int:
     selection.add_argument("--transition-window", type=parse_range, action="append", help="inspect START:END as transition observations; differences impose no response deadline")
     parser.add_argument("--cadence", type=float, default=2, help="regular sample interval in seconds (default 2), in addition to packet-state midpoints and edge probes")
     parser.add_argument("--all-frames", action="store_true", help="select every recorded source frame in explicit --range or --transition-window bounds; cadence is not used; at most 5000 frames")
-    parser.add_argument("--inspect-transitions", action="store_true", help="retain held samples and inspect every recorded frame from 50 ms before through 500 ms after each input change; at most 20000 observations; this is not a response deadline")
+    parser.add_argument("--inspect-transitions", action="store_true", help="evaluate exact visible-event windows under the qualified policy, and retain consecutive input-change context for diagnosis; selection is bounded by the actual source recording")
     parser.add_argument("--configuration", type=Path, help="independently verified, exact-window display settings; missing settings stay unknown")
     parser.add_argument("--reader-qualification", type=Path,
                         help="exact retained qualification manifest for the reader, camera profile, controls and policy classifiers")

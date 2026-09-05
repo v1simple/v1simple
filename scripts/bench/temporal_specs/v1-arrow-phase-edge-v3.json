@@ -242,7 +242,7 @@
   },
   "change_scope": "The v2 optical equations and thresholds are unchanged. This is a new reader binding and requires fresh schema-2 blind qualification; visually indeterminate clips abstain.",
   "identity": {
-    "reader_method_version": 6,
-    "reader_sha256": "17988f82323e53a6d3a507cf101606e546ce61caa2d815cf0ca7024fdeffad98"
+    "reader_method_version": 7,
+    "reader_sha256": "f4efd6a1df4daefb3e7271a2e229e80f7378ba8b7a824dea1593aa0581f20b7c"
   }
 }

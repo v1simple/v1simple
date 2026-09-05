@@ -192,6 +192,68 @@ class EncounterReaderTests(unittest.TestCase):
             self.assertIsNone(result["value"])
             self.assertEqual(len(result["partial_cards"]), 1)
 
+    def test_dim_card_content_does_not_become_empty_or_invent_text(self):
+        for left in (393, 640):
+            for shape in ("text", "meter", "lower_border", "background"):
+                with self.subTest(left=left, shape=shape):
+                    im = display()
+                    draw = ImageDraw.Draw(im)
+                    draw.rectangle((393, 366, 870, 462), fill=(8, 8, 8))
+                    if shape == "text":
+                        for x in range(left + 56, left + 205, 18):
+                            draw.rectangle((x, 382, x + 9, 405), fill=(20, 20, 20))
+                    elif shape == "meter":
+                        for x in range(left + 16, left + 205, 33):
+                            draw.rectangle((x, 426, x + 27, 441), outline=(20, 20, 20), width=2)
+                    elif shape == "lower_border":
+                        draw.line((left + 8, 450, left + 220, 450), fill=(20, 20, 20), width=2)
+                    else:
+                        draw.rectangle((left + 8, 377, left + 220, 451), fill=(20, 20, 20))
+                    # Even a confident OCR response cannot make this dim ink
+                    # readable. Presence and identity have separate evidence.
+                    with patch.object(reader, "_ocr", return_value=ocr_result("K 23.456")):
+                        result = self.read(im)["secondary"]
+                    self.assertEqual(result["state"], "unreadable", result)
+                    self.assertIsNone(result["value"])
+                    self.assertEqual(len(result["partial_cards"]), 1)
+                    self.assertIsNone(result["partial_cards"][0]["frequency"])
+
+    def test_dim_presence_uses_local_background_and_excludes_upper_light_spill(self):
+        for background in (0, 8, 15):
+            im = display()
+            draw = ImageDraw.Draw(im)
+            draw.rectangle((393, 366, 870, 462), fill=(background,) * 3)
+            draw.rectangle((401, 366, 614, 373), fill=(24, 0, 0))
+            with patch.object(reader, "_ocr", return_value=None):
+                result = self.read(im)["secondary"]
+            self.assertEqual((result["state"], result["value"]), ("readable", []), result)
+
+    def test_presence_floor_is_explicit_for_broad_dim_content(self):
+        for contrast in (7, 8):
+            im = display()
+            draw = ImageDraw.Draw(im)
+            draw.rectangle((393, 366, 870, 462), fill=(8, 8, 8))
+            draw.rectangle((410, 380, 600, 448), fill=(8 + contrast,) * 3)
+            with patch.object(reader, "_ocr", return_value=None):
+                result = self.read(im)["secondary"]
+            self.assertEqual(result["state"], "readable" if contrast == 7 else "unreadable", result)
+
+    def test_panel_black_and_gutter_light_cannot_erase_or_invent_dim_presence(self):
+        for panel, gutter, ink, expected in ((12, 12, None, "readable"),
+                                             (8, 15, 20, "unreadable"),
+                                             (8, 15, None, "readable")):
+            im = display()
+            draw = ImageDraw.Draw(im)
+            draw.rectangle((393, 366, 870, 453), fill=(panel,) * 3)
+            draw.rectangle((393, 455, 870, 462), fill="black")
+            draw.rectangle((628, 382, 633, 442), fill=(gutter,) * 3)
+            if ink is not None:
+                for x in range(449, 598, 18):
+                    draw.rectangle((x, 382, x + 9, 405), fill=(ink,) * 3)
+            with patch.object(reader, "_ocr", return_value=None):
+                result = self.read(im)["secondary"]
+            self.assertEqual(result["state"], expected, result)
+
     def test_secondary_complete_triangles_follow_pixels_with_padding_and_blur(self):
         # Renderer-owned 12 by 12 triangles project to about 20 by 20 pixels.
         # Draw full symbols; the reader does not supply these coordinates.
@@ -295,6 +357,77 @@ class EncounterReaderTests(unittest.TestCase):
                     im.paste(meter, (650 + dx, 417 + dy))
                     result = reader._card_bars(reader.Pixels(im.tobytes(), WIDTH, HEIGHT, REGISTRATION), 640)
                     self.assertEqual((result["state"], result["value"]), ("readable", count), result)
+
+    def test_secondary_faint_marks_survive_every_interior_placement(self):
+        # The retained and synthetic meter interiors have these two sizes.
+        # Full faint shapes must remain evidence when crossing quadrant edges.
+        for shape in ((9, 22), (10, 22)):
+            marks = [(3, 3, False), (3, 3, True)]
+            marks += [(1, length, False) for length in range(5, shape[1] + 1)]
+            marks += [(length, 1, False) for length in range(5, shape[0] + 1)]
+            for height, width, attenuated in marks:
+                for y in range(shape[0] - height + 1):
+                    for x in range(shape[1] - width + 1):
+                        interior = np.full(shape, 10.0)
+                        interior[y:y + height, x:x + width] = 40
+                        if attenuated:
+                            interior[y:y + height, x + 1] = 30
+                        self.assertTrue(reader._card_spatial_ink(interior),
+                                        (shape, height, width, attenuated, x, y))
+
+    def test_secondary_spatial_ink_cannot_disappear_when_pixels_brighten(self):
+        # Every binary 3x3 pattern, including split marks at the quadrant edge.
+        # Raising a pixel through the bright threshold must not fragment ink.
+        for pattern in range(512):
+            interior = np.full((10, 22), 10.0)
+            for bit in range(9):
+                if pattern & (1 << bit):
+                    interior[4 + bit // 3, 8 + bit % 3] = 40
+            before = reader._card_spatial_ink(interior)
+            for bit in range(9):
+                changed = interior.copy()
+                y, x = 4 + bit // 3, 8 + bit % 3
+                changed[y, x] = 50 if changed[y, x] == 40 else 40
+                after = reader._card_spatial_ink(changed)
+                self.assertFalse(before and not after, (pattern, bit))
+
+    def test_secondary_meter_spatial_resolution_and_independent_guards(self):
+        for kind in ("crossing3x3", "attenuated3x3", "diagonal5", "brightened_line7",
+                     "bright_line3", "dark_line3", "two_bright2x2", "five_local_pixels",
+                     "four_local_pixels", "two_weak2x2"):
+            with self.subTest(kind=kind):
+                im = display()
+                card(im, 393, "side", 3)
+                draw = ImageDraw.Draw(im)
+                if kind == "crossing3x3":
+                    draw.rectangle((515, 434, 517, 436), fill=(40, 40, 40))
+                elif kind == "attenuated3x3":
+                    draw.rectangle((515, 435, 517, 437), fill=(40, 40, 40))
+                    draw.rectangle((516, 435, 516, 437), fill=(30, 30, 30))
+                elif kind == "diagonal5":
+                    draw.line((514, 431, 518, 435), fill=(40, 40, 40))
+                elif kind == "brightened_line7":
+                    draw.line((513, 435, 519, 435), fill=(40, 40, 40))
+                    draw.point((516, 435), fill=(50, 50, 50))
+                elif kind == "bright_line3":
+                    draw.line((513, 435, 515, 435), fill=(50, 50, 50))
+                elif kind == "dark_line3":
+                    draw.line((419, 431, 419, 433), fill=(10, 10, 10))
+                elif kind in ("two_bright2x2", "two_weak2x2"):
+                    level = 50 if kind == "two_bright2x2" else 40
+                    draw.rectangle((513, 435, 514, 436), fill=(level,) * 3)
+                    draw.rectangle((518, 435, 519, 436), fill=(level,) * 3)
+                else:
+                    end = 437 if kind == "five_local_pixels" else 436
+                    draw.line((515, 435, 515, end), fill=(40, 40, 40))
+                    draw.line((517, 435, 517, 436), fill=(40, 40, 40))
+                result = reader._card_bars(
+                    reader.Pixels(im.tobytes(), WIDTH, HEIGHT, REGISTRATION), 393)
+                # These explicitly retained small/dispersed marks fall below
+                # the declared midlevel spatial floor. Bright guards stay stricter.
+                below_floor = kind in ("four_local_pixels", "two_weak2x2")
+                self.assertEqual((result["state"], result["value"]),
+                                 ("readable", 3) if below_floor else ("ambiguous", None), result)
 
     def test_secondary_partial_faint_and_noncontiguous_fills_refuse(self):
         for kind in ("partial_left", "partial_right", "faint", "noncontiguous"):

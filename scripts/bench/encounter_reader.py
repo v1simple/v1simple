@@ -24,7 +24,7 @@ import counter_reader
 
 FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
-METHOD_VERSION = 6
+METHOD_VERSION = 7
 _ocr_binary = None
 _ocr_setup = None
 _ocr_session = None
@@ -223,6 +223,31 @@ def _compatible_bar_counts(states):
         for index, state in enumerate(states))]
 
 
+def _card_spatial_ink(interior):
+    """Witness a faint mark independently of the quadrant boundaries."""
+    support = interior > 32  # Include bright pixels so brightening cannot split a mark.
+    if min(support.shape) >= 3:
+        windows = np.lib.stride_tricks.sliding_window_view(support, (3, 3))
+        if np.any(windows.sum(axis=(-1, -2)) >= 5):
+            return True
+    unseen = set(map(tuple, np.argwhere(support)))
+    while unseen:
+        stack = [unseen.pop()]
+        area = 0
+        while stack:
+            y, x = stack.pop()
+            area += 1
+            if area >= 5:
+                return True
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    point = (y + dy, x + dx)
+                    if point in unseen:
+                        unseen.remove(point)
+                        stack.append(point)
+    return False
+
+
 def _card_bars(pixels, left):
     """Locate one six-cell meter by its perimeter, then read its interiors.
 
@@ -276,6 +301,17 @@ def _card_bars(pixels, left):
                      for part in np.array_split(half, 2, axis=1)]
         readings = [_fill(part) for part in quadrants]
         state = readings[0][0] if len({s for s, _ in readings}) == 1 else "partial"
+        spatial_ink = _card_spatial_ink(interior)
+        if state != "on":
+            # Midlevel ink has a declared spatial resolution: five connected
+            # pixels, or five pixels within any 3x3 neighborhood. Smaller or
+            # more dispersed marks may read off; this is not proof of noise.
+            # Keep bright-pixel percentile evidence and all-on acceptance.
+            bright_only = np.where((interior > 32) & (interior < 45), 32, interior)
+            bright_quadrants = [part for half in np.array_split(bright_only, 2, axis=0)
+                                for part in np.array_split(half, 2, axis=1)]
+            state = "off" if (not spatial_ink and all(
+                _fill(part)[0] == "off" for part in bright_quadrants)) else "partial"
         # Percentiles can hide a narrow but coherent partial stroke. Three
         # neighboring contrary pixels in either direction retain that evidence.
         contrary = interior >= 45 if state == "off" else interior <= 32
@@ -297,6 +333,7 @@ def _card_bars(pixels, left):
             state = "partial"
         states.append(state)
         measurements.append({"state": state, "quadrants": [d for _, d in readings],
+                             "spatial_ink_supported": spatial_ink,
                              "background_contrast": round(contrast, 2),
                              "interior": [start + inset_x, top + inset_y, end - inset_x, bottom - inset_y]})
     diagnostics = {"bars": measurements, "perimeter_score": round(best[0], 2),
@@ -460,7 +497,22 @@ def _secondary(pixels):
     for slot, left in enumerate((393, 640)):
         region = pixels.level((left, 366, left + 230, 453))
         if float(np.percentile(region, 99)) < 25:
-            continue
+            # Dim remnants can remain well below the absolute text-reading
+            # threshold. Test the card content and lower border against the
+            # panel background before asserting absence. The upper
+            # padding is excluded because primary-frequency light spills there.
+            # At least one percent of this fixed area must stand eight levels
+            # above its local background; smaller/fainter marks are outside
+            # this presence measurement. This never supplies card identity.
+            content = pixels.level((left + 8, 377, left + 221, 453))
+            # The ten-display-pixel gutter between cards remains on-panel.
+            # Also retain a darker within-card background if adjacent bright
+            # content spills into that gutter. Off-panel black is not a valid
+            # reference for a panel with an elevated black level.
+            gutter = pixels.level((628, 382, 634, 443))
+            background = min(float(np.median(gutter)), float(np.percentile(content, 10)))
+            if float(np.percentile(content, 99)) - background < 8:
+                continue
         # Card interiors retain their individual row association throughout.
         bars = _card_bars(pixels, left)
         arrow_reading = _card_direction(pixels, left)

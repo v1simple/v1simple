@@ -199,9 +199,9 @@ human first sees a pixel. A `PASS` establishes the stated camera-observed target
 and continued presentation; it does not prove physical appearance by exactly
 100 ms or qualify untested firmware functions.
 
-## Reader V6
+## Reader V7
 
-Reader V6 is a fixed-layout instrument calibrated from the registered `SCAN`
+Reader V7 is a fixed-layout instrument calibrated from the registered `SCAN`
 landmark. It first requires two lit display witnesses so a dark or occluded
 screen cannot be interpreted as valid absence. It records literal states such
 as `readable`, `absent`, `ambiguous`, and `unreadable`; a refusal is never
@@ -226,6 +226,21 @@ The meter background uses the renderer padding beyond its outline fringe. Partia
 compatible count for possible sequence-level corroboration, while the raw frame
 remains unresolved. A local contrast difference below eight intensity levels is
 outside the meter's stated detection floor.
+
+Midlevel meter ink also has a spatial detection floor: five connected pixels,
+or five pixels within a 3-by-3 neighborhood, above intensity 32. This detects
+small dim marks independently of their position within the cell. Smaller or
+more dispersed weak marks can read off; this does not establish that they are
+camera noise. The bright-stroke and local-contrast guards still apply.
+
+A dim card cannot be declared empty solely because it falls below the text
+reader's brightness threshold. Before making that assertion, the reader checks
+the fixed content and lower-border area against the on-panel background in the
+inter-card gutter and the darker part of its own interior.
+Content occupying at least one percent of that area and eight intensity levels
+above its local background prevents an empty reading. That evidence alone
+supplies no band, frequency, direction, or strength; smaller or fainter remnants
+are outside this presence measurement.
 
 Only the small secondary-card text uses local Apple Vision OCR. Accepted text
 must be visible and have at least 0.5 confidence. One bounded helper serves the

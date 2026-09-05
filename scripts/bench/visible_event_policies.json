@@ -1,0 +1,119 @@
+{
+  "kind": "visible_event_policies",
+  "policies": {
+    "v1-normal-x-k-ka-blink96-v1": {
+      "appearance_deadline_ns": 100000000,
+      "basis": [
+        {
+          "path": "include/config.h",
+          "reason": "Two declared 50 ms display-update intervals bound target appearance.",
+          "symbol": "DISPLAY_UPDATE_MS",
+          "value_ms": 50
+        },
+        {
+          "path": "src/display.h",
+          "reason": "Two 96 ms image phases form the required full-cycle verification interval.",
+          "symbol": "BLINK_INTERVAL_MS",
+          "value_ms": 96
+        },
+        {
+          "path": "scripts/bench/camera_contract.py",
+          "reason": "Two periods of the fixed 200 fps profile are the maximum accepted source-marker gap.",
+          "symbol": "EXPECTED_CAMERA_PROFILE.framerate",
+          "value_fps": 200
+        }
+      ],
+      "clock": "host_monotonic_capture_marker",
+      "contract_id": "VISIBLE_EVENT_PRESENTATION",
+      "contract_version": 1,
+      "input_anchor": "first_complete_target_input_all_accepted_ns",
+      "maximum_source_marker_gap_ns": 10000000,
+      "minimum_post_completion_hold_ns": 302000000,
+      "qualified_temporal_classifier_ids": [
+        "v1-arrow-phase-edge-v2"
+      ],
+      "qualified_temporal_classifiers": {
+        "v1-arrow-phase-edge-v2": {
+          "classifier_spec_sha256": "31bd3c3e4e470036813e0016ed807828367b0e1b7f18d39d1b13f0a2b4a46edd",
+          "raw_affected_fields": [
+            "main_arrows"
+          ]
+        }
+      },
+      "range_guard_ns": 10000000,
+      "scope": {
+        "audio_evaluated": false,
+        "bands": [
+          "X",
+          "K",
+          "Ka"
+        ],
+        "maximum_secondary_cards": 2,
+        "minimum_same_band_frequency_separation_mhz": 5,
+        "runtime": "normal",
+        "source": "V1"
+      },
+      "temporal_classification": "explicit_qualified_map_only",
+      "verification_duration_ns": 192000000
+    },
+    "v1-normal-x-k-ka-blink96-v2": {
+      "appearance_deadline_ns": 100000000,
+      "basis": [
+        {
+          "path": "include/config.h",
+          "reason": "Two declared 50 ms display-update intervals bound target appearance.",
+          "symbol": "DISPLAY_UPDATE_MS",
+          "value_ms": 50
+        },
+        {
+          "path": "src/display.h",
+          "reason": "Two 96 ms image phases form the required full-cycle verification interval.",
+          "symbol": "BLINK_INTERVAL_MS",
+          "value_ms": 96
+        },
+        {
+          "path": "scripts/bench/camera_contract.py",
+          "reason": "Two periods of the fixed 200 fps profile bound source-marker gaps and the sole first-marker-at-or-after-deadline observation bracket.",
+          "symbol": "EXPECTED_CAMERA_PROFILE.framerate",
+          "value_fps": 200
+        }
+      ],
+      "clock": "host_monotonic_capture_marker",
+      "contract_id": "VISIBLE_EVENT_PRESENTATION",
+      "contract_version": 2,
+      "input_anchor": "first_complete_target_input_all_accepted_ns",
+      "maximum_source_marker_gap_ns": 10000000,
+      "minimum_post_completion_hold_ns": 312000000,
+      "qualified_temporal_classifier_ids": [
+        "v1-arrow-phase-edge-v2"
+      ],
+      "qualified_temporal_classifiers": {
+        "v1-arrow-phase-edge-v2": {
+          "classifier_spec_sha256": "31bd3c3e4e470036813e0016ed807828367b0e1b7f18d39d1b13f0a2b4a46edd",
+          "deadline_observation_semantics": "LEGAL_PRESENTATION_TRANSITION",
+          "raw_affected_fields": [
+            "main_arrows"
+          ]
+        }
+      },
+      "range_guard_ns": 10000000,
+      "scope": {
+        "audio_evaluated": false,
+        "bands": [
+          "X",
+          "K",
+          "Ka"
+        ],
+        "maximum_secondary_cards": 2,
+        "minimum_same_band_frequency_separation_mhz": 5,
+        "runtime": "normal",
+        "source": "V1"
+      },
+      "temporal_classification": "explicit_qualified_map_only",
+      "verification_duration_ns": 192000000,
+      "appearance_decision_rule": "first_source_marker_at_or_after_nominal_deadline",
+      "maximum_appearance_observation_bracket_ns": 10000000
+    }
+  },
+  "schema_version": 1
+}

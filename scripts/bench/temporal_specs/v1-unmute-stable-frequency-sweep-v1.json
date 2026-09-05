@@ -1,0 +1,55 @@
+{
+  "classifier_id": "v1-unmute-stable-frequency-sweep-v1",
+  "deadline_observation_semantics": "TARGET_ACQUISITION_TRANSITION",
+  "constants": {
+    "component_progress_max": 1.1,
+    "component_progress_min": -0.1,
+    "component_separation_min": 50.0,
+    "maximum_backward_step": 0.1,
+    "maximum_hole_ink_fraction": 0.1,
+    "maximum_support_chain_span_ns": 50000000,
+    "maximum_total_backward_motion": 0.15,
+    "maximum_verified_source_interval_ns": 10000000,
+    "stable_support_frames_each_side": 2
+  },
+  "identity": {
+    "reader_method_version": 5,
+    "reader_sha256": "3427f8bb80fe25f4d88b4709113f353a60ebb6eef8ae1c18c7326fc8b1259e55",
+    "redraw_probe_method_version": 1,
+    "redraw_probe_sha256": "4b623360af63afe5c51f154ed5ce57325476b8419bc165bc8a5ee9ef7f55da24"
+  },
+  "mandatory_gates_in_order": [
+    "The event is CHANGED, every supported visible field is resolved and unchanged except muted_badge true to false, and the joint-state alternatives are unchanged.",
+    "Previous and current primary_frequency are the same single canonical DD.DDD value.",
+    "The candidate is one maximal nonempty primary_frequency ambiguous run with exact reason inconsistent illuminated frequency segment levels; unreadable and other ambiguity reasons are never redraws.",
+    "Only the contiguous subset product-unresolved solely in primary_frequency is claimed; other full-run frames remain support and cannot be excused.",
+    "Two immediate same-value readable frequency supports precede and follow the full field run.",
+    "Video and source indices are consecutive, every gap is within the verified maximum of 10 ms, and the full support chain spans at most 50 ms.",
+    "Every chain frame has the exact expected five canonical masks, no partial segment, every expected-off segment off, both holes per digit at or below 0.10 ink fraction, and a clearly on decimal.",
+    "Every expected-on segment endpoint median rises by at least 50 intensity levels.",
+    "Every lit-segment component stays within normalized progress -0.10 through 1.10, has no backward step over 0.10, and has no more than 0.15 total backward motion; components may advance asynchronously.",
+    "The record affects primary_frequency only, changes no raw observation, and is usable only through an exact product-policy allowlist entry."
+  ],
+  "profile": {
+    "decimal_box": [590, 349, 599, 357],
+    "digit_origins": [454, 520, 616, 688, 764],
+    "finite_range": [0.0, 255.0],
+    "hole_bounds_per_digit": [[28, 278, 40, 292], [28, 322, 40, 338]],
+    "sample": "max-channel segment median",
+    "segments": ["a", "b", "c", "d", "e", "f", "g"]
+  },
+  "schema_version": 1,
+  "scope": {
+    "claim": "A maximal raw same-frequency refusal is a coherent captured gray-to-bright illumination sweep during unmute.",
+    "direction": "muted true to false only",
+    "does_not_claim": ["a value for any ambiguous frame", "arbitrary frequency changes", "whole-display correctness", "DUT receipt", "physical appearance time", "firmware cause"],
+    "field": "primary_frequency",
+    "layout": "registered V1 display"
+  },
+  "validation": {
+    "minimum_blind_true_admits": 5,
+    "minimum_blind_true_rejects": 5,
+    "observer_eligibility_rule": "COHERENT_STABLE_FREQUENCY_ILLUMINATION_SWEEP with BOTH_CLEAR endpoints, SAME_GLYPHS, and HIGH confidence",
+    "required_false_admits": 0
+  }
+}

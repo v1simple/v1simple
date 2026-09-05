@@ -455,9 +455,12 @@ def _compare_fields(expected, observed):
     phases = expected.get("joint_states", [])
     keys = set(phases[0]) if phases else set()
     if keys and keys <= normalized.keys():
-        agrees = any(all(normalized[key] == _normalize(key, phase[key]) for key in keys) for phase in phases)
-        joint = {"status": "MATCH" if agrees else "DIFFERENCE", "fields": sorted(keys)}
-        if not agrees:
+        matched = next((index for index, phase in enumerate(phases)
+                        if all(normalized[key] == _normalize(key, phase[key]) for key in keys)), None)
+        joint = {"status": "MATCH" if matched is not None else "DIFFERENCE", "fields": sorted(keys)}
+        if matched is not None:
+            joint["state_id"] = f"phase-{matched + 1}"
+        else:
             joint["reason"] = "counter/band/arrow combination is not one permitted shared blink phase"
     elif not keys:
         joint = {"status": "NOT_EVALUATED", "reason": "no resolved joint blink scope"}

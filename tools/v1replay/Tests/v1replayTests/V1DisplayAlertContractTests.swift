@@ -384,12 +384,68 @@ final class V1DisplayAlertContractTests: XCTestCase {
         let expected = [
             DetectorMuteCheckpoint(replaySecond: 185, muted: true),
             DetectorMuteCheckpoint(replaySecond: 189, muted: false),
+            DetectorMuteCheckpoint(replaySecond: 202, muted: true),
+            DetectorMuteCheckpoint(replaySecond: 203, muted: false),
+            DetectorMuteCheckpoint(replaySecond: 205, muted: true),
+            DetectorMuteCheckpoint(replaySecond: 206, muted: false),
+            DetectorMuteCheckpoint(replaySecond: 208, muted: true),
+            DetectorMuteCheckpoint(replaySecond: 209, muted: false),
+            DetectorMuteCheckpoint(replaySecond: 211, muted: true),
+            DetectorMuteCheckpoint(replaySecond: 212, muted: false),
+            DetectorMuteCheckpoint(replaySecond: 214, muted: true),
+            DetectorMuteCheckpoint(replaySecond: 215, muted: false),
+            DetectorMuteCheckpoint(replaySecond: 217, muted: true),
+            DetectorMuteCheckpoint(replaySecond: 218, muted: false),
+            DetectorMuteCheckpoint(replaySecond: 220, muted: true),
+            DetectorMuteCheckpoint(replaySecond: 221, muted: false),
+            DetectorMuteCheckpoint(replaySecond: 222, muted: true),
+            DetectorMuteCheckpoint(replaySecond: 223, muted: false),
+            DetectorMuteCheckpoint(replaySecond: 225, muted: true),
+            DetectorMuteCheckpoint(replaySecond: 226, muted: false),
+            DetectorMuteCheckpoint(replaySecond: 228, muted: true),
+            DetectorMuteCheckpoint(replaySecond: 229, muted: false),
+            DetectorMuteCheckpoint(replaySecond: 231, muted: true),
+            DetectorMuteCheckpoint(replaySecond: 232, muted: false),
+            DetectorMuteCheckpoint(replaySecond: 234, muted: true),
+            DetectorMuteCheckpoint(replaySecond: 235, muted: false),
+            DetectorMuteCheckpoint(replaySecond: 237, muted: true),
+            DetectorMuteCheckpoint(replaySecond: 238, muted: false),
+            DetectorMuteCheckpoint(replaySecond: 240, muted: true),
+            DetectorMuteCheckpoint(replaySecond: 241, muted: false),
         ]
         XCTAssertEqual(BenchScenario.detectorMuteCheckpoints, expected)
         XCTAssertEqual(encounter.detectorMuteCheckpoints, expected)
         XCTAssertEqual(encounter.detectorMuteCheckpoints.map(\.machineEventLine), [
             "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":185,\"muted\":true}",
             "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":189,\"muted\":false}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":202,\"muted\":true}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":203,\"muted\":false}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":205,\"muted\":true}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":206,\"muted\":false}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":208,\"muted\":true}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":209,\"muted\":false}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":211,\"muted\":true}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":212,\"muted\":false}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":214,\"muted\":true}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":215,\"muted\":false}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":217,\"muted\":true}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":218,\"muted\":false}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":220,\"muted\":true}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":221,\"muted\":false}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":222,\"muted\":true}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":223,\"muted\":false}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":225,\"muted\":true}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":226,\"muted\":false}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":228,\"muted\":true}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":229,\"muted\":false}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":231,\"muted\":true}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":232,\"muted\":false}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":234,\"muted\":true}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":235,\"muted\":false}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":237,\"muted\":true}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":238,\"muted\":false}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":240,\"muted\":true}",
+            "V1REPLAY_EVENT {\"state\":\"detector_mute\",\"replaySecond\":241,\"muted\":false}",
         ])
 
         let control = V1.Session().controlState
@@ -398,10 +454,13 @@ final class V1DisplayAlertContractTests: XCTestCase {
             let sample = encounter.samples[sampleIndex]
             XCTAssertEqual(encounter.detectorMuteCheckpoint(at: sampleIndex), checkpoint)
             XCTAssertEqual(sample.muted, checkpoint.muted)
-            XCTAssertEqual(sample.priorityAlert?.frequencyMHz, 34_700)
-            XCTAssertEqual(sample.priorityAlert?.band.mask, V1.Band.ka.mask)
-            XCTAssertEqual(sample.priorityAlert?.direction.rawValue, V1.Direction.front.rawValue)
-            XCTAssertEqual(sample.priorityAlert?.strength, 6)
+            XCTAssertEqual(sample.alerts.count, 1)
+            if checkpoint.replaySecond < 200 {
+                XCTAssertEqual(sample.priorityAlert?.frequencyMHz, 34_700)
+                XCTAssertEqual(sample.priorityAlert?.band.mask, V1.Band.ka.mask)
+                XCTAssertEqual(sample.priorityAlert?.direction, .front)
+                XCTAssertEqual(sample.priorityAlert?.strength, 6)
+            }
 
             let plan = V1.PlaybackPacketPlan(
                 sample: sample,
@@ -419,9 +478,171 @@ final class V1DisplayAlertContractTests: XCTestCase {
         }
 
         XCTAssertTrue(encounter.samples[(185 * 3)..<(189 * 3)].allSatisfy(\.muted))
-        XCTAssertTrue(encounter.samples[(189 * 3)...].allSatisfy { !$0.muted })
+        XCTAssertTrue(encounter.samples[(189 * 3)..<(202 * 3)].allSatisfy { !$0.muted })
+        XCTAssertTrue(encounter.samples[(241 * 3)...].allSatisfy { !$0.muted })
         XCTAssertNil(encounter.detectorMuteCheckpoint(at: 185 * 3 + 1))
         XCTAssertNil(encounter.detectorMuteCheckpoint(at: 189 * 3 + 1))
+
+        XCTAssertEqual(BenchScenario.muteQualificationCycles.count, 14)
+        XCTAssertEqual(encounter.samples.filter { $0.phase == "mute_qualification" }.count, 126)
+        XCTAssertEqual(BenchScenario.muteQualificationCycles.filter { !$0.startsMuted }.count, 7)
+        XCTAssertEqual(BenchScenario.muteQualificationCycles.filter(\.startsMuted).count, 7)
+
+        typealias AlertSpec = (
+            bandMask: UInt8,
+            frequencyMHz: UInt16,
+            strength: Int,
+            direction: V1.Direction
+        )
+        let expectedCycles: [(
+            entry: AlertSpec,
+            muteCommit: AlertSpec,
+            unmuted: AlertSpec
+        )] = [
+            ((V1.Band.x.mask, 10_525, 2, .front),
+             (V1.Band.x.mask, 10_525, 2, .front),
+             (V1.Band.x.mask, 10_525, 2, .front)),
+            ((V1.Band.k.mask, 24_150, 5, .side),
+             (V1.Band.k.mask, 24_150, 5, .side),
+             (V1.Band.k.mask, 24_150, 5, .side)),
+            ((V1.Band.ka.mask, 34_700, 3, .rear),
+             (V1.Band.ka.mask, 34_700, 3, .rear),
+             (V1.Band.ka.mask, 34_700, 3, .rear)),
+            ((V1.Band.ka.mask, 35_500, 6, .side),
+             (V1.Band.ka.mask, 35_500, 6, .side),
+             (V1.Band.ka.mask, 35_500, 6, .side)),
+            ((V1.Band.x.mask, 10_525, 4, .rear),
+             (V1.Band.x.mask, 10_525, 4, .rear),
+             (V1.Band.x.mask, 10_525, 4, .rear)),
+            ((V1.Band.k.mask, 24_150, 1, .front),
+             (V1.Band.k.mask, 24_150, 1, .front),
+             (V1.Band.k.mask, 24_150, 1, .front)),
+            ((V1.Band.ka.mask, 34_700, 5, .rear),
+             (V1.Band.ka.mask, 34_700, 5, .rear),
+             (V1.Band.ka.mask, 34_700, 5, .rear)),
+            ((V1.Band.x.mask, 10_525, 1, .front),
+             (V1.Band.ka.mask, 34_700, 4, .rear),
+             (V1.Band.k.mask, 24_150, 6, .side)),
+            ((V1.Band.k.mask, 24_150, 6, .side),
+             (V1.Band.x.mask, 10_525, 3, .front),
+             (V1.Band.ka.mask, 35_500, 1, .rear)),
+            ((V1.Band.ka.mask, 35_500, 1, .rear),
+             (V1.Band.k.mask, 24_150, 4, .side),
+             (V1.Band.x.mask, 10_525, 6, .front)),
+            ((V1.Band.x.mask, 10_525, 6, .side),
+             (V1.Band.ka.mask, 34_700, 3, .front),
+             (V1.Band.k.mask, 24_150, 1, .rear)),
+            ((V1.Band.k.mask, 24_150, 1, .rear),
+             (V1.Band.x.mask, 10_525, 4, .side),
+             (V1.Band.ka.mask, 35_500, 6, .front)),
+            ((V1.Band.ka.mask, 35_500, 6, .front),
+             (V1.Band.k.mask, 24_150, 3, .rear),
+             (V1.Band.x.mask, 10_525, 1, .side)),
+            ((V1.Band.x.mask, 10_525, 1, .rear),
+             (V1.Band.ka.mask, 34_700, 4, .side),
+             (V1.Band.k.mask, 24_150, 6, .front)),
+        ]
+
+        func assertAlert(_ actual: BenchScenario.MuteQualificationAlert,
+                         _ expected: AlertSpec) {
+            XCTAssertEqual(actual.band.mask, expected.bandMask)
+            XCTAssertEqual(actual.frequencyMHz, expected.frequencyMHz)
+            XCTAssertEqual(actual.strength, expected.strength)
+            XCTAssertEqual(actual.direction, expected.direction)
+        }
+
+        func packetPlan(at sampleIndex: Int) -> V1.PlaybackPacketPlan {
+            let sample = encounter.samples[sampleIndex]
+            return V1.PlaybackPacketPlan(
+                sample: sample,
+                controlState: control,
+                displayOn: true,
+                muted: sample.muted,
+                blinkBogey: false,
+                blinkArrow: false
+            )
+        }
+
+        func assertRawMute(_ plan: V1.PlaybackPacketPlan,
+                           _ expectedMuted: Bool) throws {
+            let frame = try IndependentFrame.decode(plan.displayPacket)
+            XCTAssertEqual(frame.payload[3] & 0x10, expectedMuted ? 0x10 : 0x00)
+            XCTAssertEqual(frame.payload[5] & 0x01, expectedMuted ? 0x01 : 0x00)
+        }
+
+        for (index, cycle) in BenchScenario.muteQualificationCycles.enumerated() {
+            let expectedCycle = expectedCycles[index]
+            XCTAssertEqual(cycle.startSecond, 201 + index * 3)
+            XCTAssertEqual(cycle.startsMuted, index >= 7)
+            assertAlert(cycle.entryAlert, expectedCycle.entry)
+            assertAlert(cycle.muteCommitAlert, expectedCycle.muteCommit)
+            assertAlert(cycle.unmutedAlert, expectedCycle.unmuted)
+
+            let start = cycle.startSecond * BenchScenario.cadenceHz
+            for local in 0..<9 {
+                let sample = encounter.samples[start + local]
+                let expectedAlert = local == 0 ? cycle.entryAlert
+                    : local < 3 ? cycle.muteCommitAlert
+                    : cycle.unmutedAlert
+                let expectedMuted = cycle.startsMuted ? local < 3 : (3..<6).contains(local)
+                XCTAssertEqual(sample.phase, "mute_qualification")
+                XCTAssertEqual(sample.muted, expectedMuted)
+                XCTAssertEqual(sample.alerts.count, 1)
+                XCTAssertEqual(sample.priorityAlert?.band.mask, expectedAlert.band.mask)
+                XCTAssertEqual(sample.priorityAlert?.frequencyMHz, expectedAlert.frequencyMHz)
+                XCTAssertEqual(sample.priorityAlert?.strength, expectedAlert.strength)
+                XCTAssertEqual(sample.priorityAlert?.direction, expectedAlert.direction)
+                XCTAssertEqual(sample.priorityAlert?.isPriority, true)
+                XCTAssertNil(sample.detectorVolume)
+                XCTAssertNil(sample.detectorMode)
+                XCTAssertFalse(sample.scenarioArrowBlink)
+            }
+
+            if cycle.startsMuted {
+                XCTAssertNotEqual(cycle.entryAlert.band.mask, cycle.muteCommitAlert.band.mask)
+                XCTAssertNotEqual(cycle.entryAlert.frequencyMHz,
+                                  cycle.muteCommitAlert.frequencyMHz)
+                XCTAssertGreaterThanOrEqual(
+                    abs(cycle.entryAlert.strength - cycle.muteCommitAlert.strength), 2
+                )
+                XCTAssertNotEqual(cycle.entryAlert.direction, cycle.muteCommitAlert.direction)
+                XCTAssertNotEqual(cycle.muteCommitAlert.band.mask, cycle.unmutedAlert.band.mask)
+                XCTAssertNotEqual(cycle.muteCommitAlert.frequencyMHz,
+                                  cycle.unmutedAlert.frequencyMHz)
+                XCTAssertGreaterThanOrEqual(
+                    abs(cycle.muteCommitAlert.strength - cycle.unmutedAlert.strength), 2
+                )
+                XCTAssertNotEqual(cycle.muteCommitAlert.direction,
+                                  cycle.unmutedAlert.direction)
+
+                let firstRawMute = packetPlan(at: start)
+                let secondRawMute = packetPlan(at: start + 1)
+                let heldRawMute = packetPlan(at: start + 2)
+                let rawUnmute = packetPlan(at: start + 3)
+                try assertRawMute(firstRawMute, true)
+                try assertRawMute(secondRawMute, true)
+                try assertRawMute(heldRawMute, true)
+                try assertRawMute(rawUnmute, false)
+                XCTAssertNotEqual(firstRawMute.alertTablePackets,
+                                  secondRawMute.alertTablePackets)
+                XCTAssertNotEqual(firstRawMute.displayPacket, secondRawMute.displayPacket)
+                XCTAssertEqual(secondRawMute.emissions, heldRawMute.emissions)
+                XCTAssertNotEqual(secondRawMute.alertTablePackets,
+                                  rawUnmute.alertTablePackets)
+                XCTAssertNotEqual(secondRawMute.displayPacket, rawUnmute.displayPacket)
+            } else {
+                XCTAssertEqual(cycle.entryAlert.band.mask, cycle.muteCommitAlert.band.mask)
+                XCTAssertEqual(cycle.entryAlert.frequencyMHz,
+                               cycle.muteCommitAlert.frequencyMHz)
+                XCTAssertEqual(cycle.entryAlert.strength, cycle.muteCommitAlert.strength)
+                XCTAssertEqual(cycle.entryAlert.direction, cycle.muteCommitAlert.direction)
+                XCTAssertEqual(cycle.muteCommitAlert.band.mask, cycle.unmutedAlert.band.mask)
+                XCTAssertEqual(cycle.muteCommitAlert.frequencyMHz,
+                               cycle.unmutedAlert.frequencyMHz)
+                XCTAssertEqual(cycle.muteCommitAlert.strength, cycle.unmutedAlert.strength)
+                XCTAssertEqual(cycle.muteCommitAlert.direction, cycle.unmutedAlert.direction)
+            }
+        }
     }
 
     func testDetectorMuteCheckpointPreservesFractionalReplayOffset() {

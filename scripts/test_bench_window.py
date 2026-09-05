@@ -772,7 +772,10 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
                           encounter_payload: dict | None = None,
                           write_encounter_result: bool = True,
                           interrupt_encounter: bool = False,
-                          run_all: bool = False) -> tuple[subprocess.CompletedProcess[str], int, int, int]:
+                          run_all: bool = False,
+                          qualification_capture: bool = False,
+                          capture_records: list[dict | None] | None = None,
+                          ) -> tuple[subprocess.CompletedProcess[str], int, int, int]:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         bench = root / "bench.sh"
@@ -837,6 +840,40 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
             "coverage": {"requests": 2, "selected_unique_frames": 2, "unique_frames": 2,
                          "regions": [{"maximum_unobserved_gap_seconds": .5}]},
         }
+        if isinstance(encounter, dict) and "counts" in encounter:
+            raw_result = encounter.get("result", encounter_result)
+            encounter.setdefault("raw_frame_result", raw_result)
+            product_reason = {"PASS": "ALL_REQUIRED_EVENTS_PASSED",
+                              "FAIL": "TARGET_LATE",
+                              "INCONCLUSIVE": "UNCLASSIFIED_VISIBLE_INTERVAL"}.get(raw_result,
+                                                                                     "NO_REQUIRED_EVENTS")
+            point_id = encounter["samples"][-1]["frame_id"] if encounter.get("samples") else "0001"
+            event = {"event_id": "event-0001", "result": raw_result,
+                     "reason_code": product_reason,
+                     "first_decisive_marker": {"frame_id": point_id}}
+            product_counts = {"required_events": 1,
+                              "passed": int(raw_result == "PASS"),
+                              "failed": int(raw_result == "FAIL"),
+                              "inconclusive": int(raw_result == "INCONCLUSIVE")}
+            encounter.setdefault("reader_qualification", {"schema_version": 1,
+                                                           "kind": "encounter_reader_qualification_verification",
+                                                           "status": "QUALIFIED", "errors": []})
+            encounter.setdefault("primary_judgment", {
+                "schema_version": 1, "kind": "visible_event_presentation",
+                "contract": {"id": "VISIBLE_EVENT_PRESENTATION", "version": 2,
+                             "clock": "host_monotonic_capture_marker",
+                             "anchor": "first_complete_target_input_all_accepted_ns",
+                             "appearance_deadline_ns": 100_000_000,
+                             "appearance_decision_rule":
+                                 "first_source_marker_at_or_after_nominal_deadline",
+                             "maximum_appearance_observation_bracket_ns": 10_000_000,
+                             "verification_duration_ns": 192_000_000,
+                             "maximum_source_marker_gap_ns": 10_000_000,
+                             "minimum_post_completion_hold_ns": 312_000_000},
+                "execution": {"status": "COMPLETE", "fatal_integrity_errors": [],
+                              "temporal_classification_errors": []},
+                "events": [event], "counts": product_counts,
+                "result": raw_result, "reason_code": product_reason})
         encounter_path.write_text(json.dumps(encounter), encoding="utf-8")
         counter_marker = root / "counter.calls"
         encounter_marker = root / "encounter.calls"
@@ -880,12 +917,14 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
             if [[ "${{1:-}}" == */scripts/bench/encounter_check.py ]]; then
               args=("$@")
               transition_review=0
+              reader_qualification=0
               for ((index=0; index<${{#args[@]}}; index++)); do
                 if [[ "${{args[index]}}" == "--out" ]]; then out="${{args[index+1]}}"; fi
                 if [[ "${{args[index]}}" == "--run-dir" ]]; then run="${{args[index+1]}}"; fi
                 if [[ "${{args[index]}}" == "--inspect-transitions" ]]; then transition_review=1; fi
+                if [[ "${{args[index]}}" == "--reader-qualification" ]]; then reader_qualification=1; fi
               done
-              [[ "$transition_review" == 1 ]] || exit 9
+              [[ "$transition_review" == 1 && "$reader_qualification" == 1 ]] || exit 9
               [[ -e "$run/window_result.json" && ! -e "$out" ]] || exit 9
               mkdir -p "$out"
               if [[ "$FAKE_ENCOUNTER_WRITE" == 1 ]]; then
@@ -929,18 +968,23 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
         arguments = [str(bench), "--all" if run_all else "--replay", "--no-flash"]
         if camera:
             arguments.append("--camera")
+        if qualification_capture:
+            arguments.append("--qualification-capture")
         process = subprocess.run(arguments, cwd=root, env=environment, capture_output=True, text=True)
         counter_calls = len(counter_marker.read_text().splitlines()) if counter_marker.exists() else 0
         encounter_calls = len(encounter_marker.read_text().splitlines()) if encounter_marker.exists() else 0
         visual_calls = len(visual_marker.read_text().splitlines()) if visual_marker.exists() else 0
+        if capture_records is not None:
+            records = list((root / "artifacts").glob("*/runs/*/replay/qualification_capture.json"))
+            capture_records.append(json.loads(records[0].read_text(encoding="utf-8")) if len(records) == 1 else None)
         return process, counter_calls, encounter_calls, visual_calls
 
 
 def test_bench_cli_propagates_encounter_verdicts_with_fixed_precedence() -> None:
     cases = [
-        ("PASS", "PASS", 0, "PASS (sampled encounter checks)"),
-        ("PASS", "INCONCLUSIVE", 1, "INCONCLUSIVE (sampled encounter checks)"),
-        ("PASS", "FAIL", 2, "FAIL (sampled encounter checks)"),
+        ("PASS", "PASS", 0, "PASS (visible encounter product)"),
+        ("PASS", "INCONCLUSIVE", 1, "INCONCLUSIVE (visible encounter product)"),
+        ("PASS", "FAIL", 2, "FAIL (visible encounter product)"),
         ("COLLECTION_ONLY", "PASS", 1, "COLLECTION-ONLY (unqualified:"),
         ("COLLECTION_ONLY", "INCONCLUSIVE", 1, "COLLECTION-ONLY (unqualified:"),
         ("COLLECTION_ONLY", "FAIL", 1, "COLLECTION-ONLY (unqualified:"),
@@ -950,14 +994,14 @@ def test_bench_cli_propagates_encounter_verdicts_with_fixed_precedence() -> None
         assert_true(process.returncode == status, f"{window}/{encounter}: {process.stdout} {process.stderr}")
         assert_true((counter_calls, encounter_calls) == (1, 1), process.stdout)
         assert_true("[bench] sampled live counter: PASS |" in process.stdout, process.stdout)
-        assert_true(f"[bench] sampled encounter checks: {encounter} |" in process.stdout, process.stdout)
+        assert_true(f"[bench] visible encounter product: {encounter} |" in process.stdout, process.stdout)
         assert_true("2 requests | 2 selected, 2 decoded original frames | largest unobserved gap 0.500s" in process.stdout, process.stdout)
         assert_true("host input acceptance: 10 / 10 packets" in process.stdout, process.stdout)
         assert_true("DUT receipt not observed" in process.stdout, process.stdout)
         assert_true("encounter-check/report.html" in process.stdout, process.stdout)
         if encounter != "PASS":
             assert_true("encounter-check/report.html#sample=0002" in process.stdout, process.stdout)
-            assert_true("fixture frequency observation" in process.stdout, process.stdout)
+            assert_true("event-0001:" in process.stdout, process.stdout)
         assert_true(final in process.stdout.splitlines()[-1], process.stdout)
 
     process, counter_calls, encounter_calls, visual_calls = run_bench_cli_fixture("PASS", "FAIL", visual_exit=2, run_all=True)
@@ -972,7 +1016,7 @@ def test_bench_cli_preserves_non_camera_and_hard_collection_results() -> None:
     assert_true(process.returncode == 0, process.stdout)
     assert_true((counter_calls, encounter_calls, visual_calls) == (0, 0, 0), process.stdout)
     assert_true("[bench] sampled live counter: NOT_EVALUATED" in process.stdout, process.stdout)
-    assert_true("[bench] sampled encounter checks: NOT_EVALUATED" in process.stdout, process.stdout)
+    assert_true("[bench] visible encounter product: NOT_EVALUATED" in process.stdout, process.stdout)
     assert_true(process.stdout.splitlines()[-1] == "PASS", process.stdout)
 
     process, counter_calls, encounter_calls, visual_calls = run_bench_cli_fixture("FAIL", "PASS")
@@ -982,11 +1026,54 @@ def test_bench_cli_preserves_non_camera_and_hard_collection_results() -> None:
     assert_true(process.stdout.splitlines()[-1].startswith("FAIL ("), process.stdout)
 
 
+def test_bench_cli_qualification_capture_withholds_all_pixel_readers() -> None:
+    records: list[dict | None] = []
+    process, counter_calls, encounter_calls, visual_calls = run_bench_cli_fixture(
+        "PASS", "PASS", qualification_capture=True, capture_records=records)
+    assert_true(process.returncode == 0, process.stdout + process.stderr)
+    assert_true((counter_calls, encounter_calls, visual_calls) == (0, 0, 0), process.stdout)
+    assert_true("camera pixels retained unread; automatic pixel readers disabled" in process.stdout,
+                process.stdout)
+    assert_true("sampled live counter: NOT_EVALUATED" in process.stdout, process.stdout)
+    assert_true("visible encounter product: NOT_EVALUATED" in process.stdout, process.stdout)
+    assert_true(process.stdout.splitlines()[-1] ==
+                "QUALIFICATION-CAPTURED (pixels withheld; visible product NOT_EVALUATED)",
+                process.stdout)
+    assert_true(len(records) == 1 and isinstance(records[0], dict), str(records))
+    record = records[0]
+    assert isinstance(record, dict)
+    assert_true(record["kind"] == "blind_visible_reader_qualification_capture", str(record))
+    assert_true(record["source_git_sha"] == "0123456789abcdef0123456789abcdef01234567",
+                str(record))
+    assert_true(record["collection"]["result"] == "PASS" and
+                record["collection"]["camera_result"] == "CAPTURED", str(record))
+    assert_true(record["pixel_analysis"] == {
+        "status": "WITHHELD_BY_CAPTURE_MODE",
+        "executed": [],
+        "disabled": ["counter_check", "encounter_check"],
+        "analyzer_outputs_present": False,
+    }, str(record))
+    assert_true(record["visible_product_eligible"] is False, str(record))
+
+    absent, counter_calls, encounter_calls, visual_calls = run_bench_cli_fixture(
+        "PASS", "PASS", qualification_capture=True, camera_present=False)
+    assert_true(absent.returncode == 2, absent.stdout + absent.stderr)
+    assert_true((counter_calls, encounter_calls, visual_calls) == (0, 0, 0), absent.stdout)
+    assert_true(absent.stdout.splitlines()[-1] ==
+                "FAIL (qualification capture): requested camera is unavailable", absent.stdout)
+
+    invalid, counter_calls, encounter_calls, visual_calls = run_bench_cli_fixture(
+        "PASS", "PASS", camera=False, qualification_capture=True)
+    assert_true(invalid.returncode == 2, invalid.stdout + invalid.stderr)
+    assert_true((counter_calls, encounter_calls, visual_calls) == (0, 0, 0), invalid.stdout)
+    assert_true(invalid.stdout.startswith("FAIL (collection): usage:"), invalid.stdout)
+
+
 def test_bench_cli_keeps_missing_and_interrupted_encounter_evidence_inconclusive() -> None:
     process, counter_calls, encounter_calls, visual_calls = run_bench_cli_fixture("PASS", "PASS", camera_present=False)
     assert_true(process.returncode == 1, process.stdout)
     assert_true((counter_calls, encounter_calls, visual_calls) == (0, 0, 0), process.stdout)
-    assert_true("sampled encounter checks: INCONCLUSIVE | requested camera evidence is unavailable" in process.stdout, process.stdout)
+    assert_true("visible encounter product: INCONCLUSIVE | requested camera evidence is unavailable" in process.stdout, process.stdout)
 
     for options in (
         {"write_encounter_result": False, "encounter_exit": 130},
@@ -997,8 +1084,8 @@ def test_bench_cli_keeps_missing_and_interrupted_encounter_evidence_inconclusive
         process, counter_calls, encounter_calls, _ = run_bench_cli_fixture("PASS", "PASS", **options)
         assert_true(process.returncode == 1, f"{options}: {process.stdout} {process.stderr}")
         assert_true((counter_calls, encounter_calls) == (1, 1), process.stdout)
-        assert_true("sampled encounter checks: INCONCLUSIVE" in process.stdout, process.stdout)
-        assert_true(process.stdout.splitlines()[-1] == "INCONCLUSIVE (sampled encounter checks)", process.stdout)
+        assert_true("visible encounter product: INCONCLUSIVE" in process.stdout, process.stdout)
+        assert_true(process.stdout.splitlines()[-1] == "INCONCLUSIVE (visible encounter product)", process.stdout)
 
 
 def test_bench_cli_preserves_joint_state_failures_and_vetoes_incomplete_pass() -> None:
@@ -1015,8 +1102,8 @@ def test_bench_cli_preserves_joint_state_failures_and_vetoes_incomplete_pass() -
     }
     process, _, _, _ = run_bench_cli_fixture("PASS", "PASS", encounter_result="FAIL", encounter_payload=payload)
     assert_true(process.returncode == 2, process.stdout)
-    assert_true("7 match / 7 required field checks" in process.stdout, process.stdout)
-    assert_true("joint display: fixture mixed blink phases" in process.stdout, process.stdout)
+    assert_true("0 passed, 1 failed, 0 inconclusive / 1 required visible events" in process.stdout, process.stdout)
+    assert_true("event-0001: TARGET_LATE" in process.stdout, process.stdout)
     assert_true("report.html#sample=0001" in process.stdout, process.stdout)
 
     payload["result"] = "PASS"
@@ -1027,7 +1114,7 @@ def test_bench_cli_preserves_joint_state_failures_and_vetoes_incomplete_pass() -
             payload["samples"][0]["comparison"]["joint_state"] = {"status": "MATCH"}
         process, _, _, _ = run_bench_cli_fixture("PASS", "PASS", encounter_payload=payload)
         assert_true(process.returncode == 1, process.stdout)
-        assert_true("sampled encounter checks: INCONCLUSIVE" in process.stdout, process.stdout)
+        assert_true("visible encounter product: INCONCLUSIVE" in process.stdout, process.stdout)
 
 
 class FakeClock:
@@ -1255,6 +1342,7 @@ def main() -> int:
     test_bench_cli_collection_only_branch_has_no_pass_verdict()
     test_bench_cli_propagates_encounter_verdicts_with_fixed_precedence()
     test_bench_cli_preserves_non_camera_and_hard_collection_results()
+    test_bench_cli_qualification_capture_withholds_all_pixel_readers()
     test_bench_cli_keeps_missing_and_interrupted_encounter_evidence_inconclusive()
     test_bench_cli_preserves_joint_state_failures_and_vetoes_incomplete_pass()
     test_serial_boundary_waits_for_attach_time_boot_past_initial_observation()

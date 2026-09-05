@@ -212,8 +212,9 @@ class EncounterCheckTests(unittest.TestCase):
     def test_transition_review_keeps_held_requirements_and_every_input_window_frame(self):
         stimulus, rows = inputs()
         held = check.select_samples(stimulus, rows, [(0, 9)], 2)
-        samples, windows = check.select_transition_review(stimulus, rows, [(0, 9)], 2)
+        samples, windows, held_windows = check.select_transition_review(stimulus, rows, [(0, 9)], 2, 10_000_000)
         self.assertEqual(windows, [(0, .5), (2.95, 3.5)])
+        self.assertTrue(held_windows)
         by_target = {s["target_capture_ns"]: s for s in samples}
         for original in held:
             sample = by_target[original["target_capture_ns"]]
@@ -222,15 +223,99 @@ class EncounterCheckTests(unittest.TestCase):
         indices = {s["video_frame_index"] for s in samples if "video_frame_index" in s}
         self.assertTrue(set(range(50)) <= indices)
         self.assertTrue(set(range(295, 350)) <= indices)
+        # Every held point receives a fixed input-only neighborhood.  A target
+        # at .5 s therefore includes the source images around 0.394--0.606 s.
+        self.assertTrue(set(range(40, 61)) <= indices)
         self.assertEqual(len({s["frame_id"] for s in samples}), len(samples))
 
     def test_transition_review_does_not_drop_unavailable_required_sample(self):
         stimulus, rows = inputs()
         rows = [r for r in rows if not 1_300_000_000 < r["host_capture_ns"] < 1_700_000_000]
-        samples, _ = check.select_transition_review(stimulus, rows, [(0, 9)], 2)
+        samples, _, _ = check.select_transition_review(stimulus, rows, [(0, 9)], 2, 10_000_000)
         missing = next(s for s in samples if s["requested_offset_seconds"] == .5)
         self.assertIn("selection_error", missing)
         self.assertNotIn("video_frame_index", missing)
+
+    def test_held_context_requires_verified_interval_and_is_frozen_for_every_hold(self):
+        stimulus, rows = inputs()
+        for value in (None, 0, -1, 1_000_000_001, 1.5):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                check.select_transition_review(stimulus, rows, [(0, 9)], 2, value)
+        samples, _, held_windows = check.select_transition_review(
+            stimulus, rows, [(0, 9)], 2, 10_000_000)
+        held = check.select_samples(stimulus, rows, [(0, 9)], 2)
+        held = [sample for sample in held if sample["role"] == "held" and "offset_seconds" in sample]
+        self.assertEqual(len(held_windows), len(held))
+        for sample in held:
+            radius = (check.BLINK_PHASE_NS + 10_000_000) / 1e9
+            self.assertTrue(any(start <= sample["offset_seconds"] <= end
+                                and end - start <= 2 * radius + 2e-9
+                                for start, end in held_windows))
+        self.assertTrue(any("fixed context around a held checkpoint" in sample["selection_reasons"]
+                            for sample in samples if sample["role"] == "transition"))
+
+    def test_held_context_boundary_uses_integer_capture_time_for_its_reason(self):
+        origin = 185_778_852_652_625
+        center = origin + 6_334_780_708
+        boundary = center - 111_000_000
+        stimulus = [dict(requestedHostMonotonicNs=origin,
+                         notifications=[dict(kind="display_frame", bytesHex="a")])]
+        rows = [dict(host_capture_ns=value, duration_ns=5_000_000, frame_seq=index + 1)
+                for index, value in enumerate((boundary, center, origin + 6_834_780_708))]
+        samples, _, _ = check.select_transition_review(
+            stimulus, rows, [(5.834780708, 6.834780708)], 10, 15_000_000)
+        selected_boundary = next(sample for sample in samples if sample.get("capture_ns") == boundary)
+        self.assertIn("fixed context around a held checkpoint", selected_boundary["selection_reasons"])
+        self.assertTrue(all(sample["selection_reasons"] for sample in samples))
+
+    def test_product_windows_use_exact_input_anchor_and_keep_raw_selection_fixed(self):
+        stimulus, rows = inputs()
+        initial = check.select_samples(stimulus, rows, [(0, 2)], 2)
+        definitions = [{"event_id": "event-0001", "end_ns": 1_500_000_000,
+                        "target_basis": {"first_complete_target_input_ns": 1_100_000_000}},
+                       {"event_id": "outside", "end_ns": 4_000_000_000,
+                        "target_basis": {"first_complete_target_input_ns": 3_000_000_000}}]
+        policy = {"maximum_source_marker_gap_ns": 10_000_000,
+                  "minimum_post_completion_hold_ns": 312_000_000}
+        samples, windows = check.select_product_event_windows(
+            initial, stimulus, rows, [(0, 2)], definitions, policy)
+        self.assertEqual(windows, [{"event_id": "event-0001", "start_ns": 1_090_000_000,
+                                    "end_ns": 1_412_000_000, "selected_end_ns": 1_412_000_000,
+                                    "anchor_ns": 1_100_000_000, "clipped_by_event_end": False}])
+        product = [sample for sample in samples if
+                   "every recorded frame in an exact product event window" in sample["selection_reasons"]]
+        self.assertEqual([sample["capture_ns"] for sample in product],
+                         list(range(1_090_000_000, 1_420_000_000, 10_000_000)))
+        self.assertEqual(len(samples), len({sample["frame_id"] for sample in samples}))
+
+    def test_product_window_preserves_clipped_episode_for_inconclusive_judgment(self):
+        stimulus, rows = inputs()
+        definitions = [{"event_id": "event-0001", "end_ns": 1_250_000_000,
+                        "target_basis": {"first_complete_target_input_ns": 1_100_000_000}}]
+        samples, windows = check.select_product_event_windows(
+            [], stimulus, rows, [(0, 2)], definitions,
+            {"maximum_source_marker_gap_ns": 10_000_000,
+             "minimum_post_completion_hold_ns": 312_000_000})
+        self.assertTrue(windows[0]["clipped_by_event_end"])
+        self.assertEqual(windows[0]["selected_end_ns"], 1_250_000_000)
+        self.assertEqual(samples[-1]["capture_ns"], 1_240_000_000)
+
+    def test_default_product_scope_refuses_a_missing_derived_event_window(self):
+        definitions = [{"event_id": "event-0001"}, {"event_id": "event-0002"}]
+        windows = [{"event_id": "event-0001"}]
+        with self.assertRaisesRegex(ValueError, "event-0002"):
+            check.require_complete_product_windows(definitions, windows)
+
+    def test_internal_temporal_submission_drops_only_fully_decisive_records(self):
+        event = {"event_id": "event-0001", "observations": [
+            {"video_frame_index": 10, "raw_status": "PREVIOUS"},
+            {"video_frame_index": 11, "raw_status": "UNRESOLVED"},
+        ]}
+        record = lambda index: {"event_id": "event-0001", "classifier_id": "allowed",
+                                "video_frame_indices": [index]}
+        submitted = check.product_temporal_submissions(
+            [record(10), record(11)], [event], {"allowed"})
+        self.assertEqual(submitted, [record(11)])
 
     def test_compact_review_retains_partial_observations_without_changing_measurements(self):
         reading = {"state": "ambiguous", "value": None, "reason": "side faint",
@@ -300,6 +385,67 @@ class EncounterCheckTests(unittest.TestCase):
             path.write_text(json.dumps(settings))
             with self.assertRaises(ValueError):
                 check.configuration_for(path,{**identity,"runtime_identity":{"boot_id":7,"image_id":"b"}},[dict(capture_ns=150)])
+
+    def test_configuration_accepts_only_typed_supported_settings(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "settings.json"
+            identity = dict(window_result_sha256="a" * 64,
+                            runtime_identity=dict(boot_id=7, image_id="b"))
+            base = {**identity, "status": "verified", "basis": "independent readback",
+                    "coverage": dict(start_capture_ns=100, end_capture_ns=200)}
+            valid = [
+                {"stealthEnabled": False},
+                {"priorityArrowOnly": True},
+                {"alertPersistenceSeconds": 0},
+                {"stealthEnabled": True, "priorityArrowOnly": False,
+                 "alertPersistenceSeconds": 5},
+            ]
+            for settings in valid:
+                with self.subTest(valid=settings):
+                    path.write_text(json.dumps({**base, "settings": settings}))
+                    self.assertEqual(check.configuration_for(
+                        path, identity, [dict(capture_ns=150)])["settings"], settings)
+            invalid = [
+                {}, {"unknown": False}, {"stealthEnabled": 0},
+                {"priorityArrowOnly": "false"}, {"alertPersistenceSeconds": True},
+                {"alertPersistenceSeconds": -1}, {"alertPersistenceSeconds": 6},
+            ]
+            for settings in invalid:
+                with self.subTest(invalid=settings):
+                    path.write_text(json.dumps({**base, "settings": settings}))
+                    with self.assertRaises(ValueError):
+                        check.configuration_for(path, identity, [dict(capture_ns=150)])
+
+    def test_default_range_includes_recording_tail_after_final_request(self):
+        stimulus = [dict(requestedHostMonotonicNs=1_000_000_000,
+                         notifications=[dict(kind="display_frame", bytesHex="a")]),
+                    dict(requestedHostMonotonicNs=2_000_000_000,
+                         notifications=[dict(kind="display_frame", bytesHex="b")])]
+        rows = [dict(host_capture_ns=900_000_000, duration_ns=5_000_000, frame_seq=1),
+                dict(host_capture_ns=2_500_000_000, duration_ns=5_000_000, frame_seq=2)]
+        self.assertEqual(check.full_camera_range(stimulus, rows), [(-.1, 1.505)])
+        selected = check.select_samples(stimulus, rows,
+                                        check.full_camera_range(stimulus, rows), 2)
+        self.assertLess(check.full_camera_range(stimulus, rows)[0][0], 0)
+        self.assertGreater(max(sample["requested_offset_seconds"] for sample in selected), 1)
+        self.assertGreater(check.full_camera_range(stimulus, rows)[0][1],
+                           (stimulus[-1]["requestedHostMonotonicNs"] -
+                            stimulus[0]["requestedHostMonotonicNs"]) / 1e9)
+
+    def test_product_configuration_excludes_diagnostic_preroll_and_tail(self):
+        stimulus = [dict(requestedHostMonotonicNs=1_000_000_000),
+                    dict(requestedHostMonotonicNs=2_000_000_000)]
+        policy = {"maximum_source_marker_gap_ns": 10_000_000,
+                  "minimum_post_completion_hold_ns": 312_000_000}
+        self.assertEqual(check.product_configuration_scope(stimulus, policy), [
+            {"capture_ns": 990_000_000}, {"capture_ns": 2_312_000_000}])
+        samples = [dict(capture_ns=value) for value in
+                   (900_000_000, 995_000_000, 1_100_000_000, 2_250_000_000, 2_500_000_000)]
+        windows = [dict(start_ns=990_000_000, selected_end_ns=1_200_000_000),
+                   dict(start_ns=2_200_000_000, selected_end_ns=2_312_000_000)]
+        self.assertEqual([sample["capture_ns"] for sample in
+                          check.product_window_samples(samples, windows)],
+                         [995_000_000, 1_100_000_000, 2_250_000_000])
 
     def test_interrupted_decoder_keeps_all_selected_checks_and_frozen_selection(self):
         stimulus, rows = inputs()

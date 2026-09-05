@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
 ARTIFACT_ROOT="${BENCH_ARTIFACT_ROOT:-$ROOT_DIR/.artifacts/bench}"
+ENCOUNTER_QUALIFICATION="${BENCH_ENCOUNTER_QUALIFICATION:-$ARTIFACT_ROOT/qualification/encounter-reader.json}"
 BOARD_ID="${BENCH_BOARD_ID:-release}"
 DURATION_SECONDS="${BENCH_DURATION_SECONDS:-300}"
 REPLAY_DURATION_SECONDS="${BENCH_REPLAY_DURATION_SECONDS:-300}"
@@ -17,6 +18,7 @@ CAMERA_REQUESTED=0
 FLASH=1
 COLLECTION_ONLY=0
 COLLECTION_ONLY_REASON=""
+QUALIFICATION_CAPTURE=0
 COUNTER_RESULT="NOT_EVALUATED"
 COUNTER_PRINTED=0
 ENCOUNTER_RESULT="NOT_EVALUATED"
@@ -24,11 +26,11 @@ ENCOUNTER_PRINTED=0
 ENCOUNTER_REASON=""
 
 usage() {
-  printf 'Usage: ./bench.sh --all|--replay [--camera] [--no-flash]\n'
+  printf 'Usage: ./bench.sh --all|--replay [--camera] [--no-flash] [--qualification-capture]\n'
 }
 
 fail_usage() {
-  printf 'FAIL (collection): usage: ./bench.sh --all|--replay [--camera] [--no-flash]\n'
+  printf 'FAIL (collection): usage: ./bench.sh --all|--replay [--camera] [--no-flash] [--qualification-capture]\n'
   exit 2
 }
 
@@ -46,6 +48,9 @@ while [[ $# -gt 0 ]]; do
     --no-flash)
       FLASH=0
       ;;
+    --qualification-capture)
+      QUALIFICATION_CAPTURE=1
+      ;;
     -h|--help)
       usage
       exit 0
@@ -58,10 +63,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ $((RUN_ALL + RUN_REPLAY)) -eq 1 ]] || fail_usage
+if [[ "$QUALIFICATION_CAPTURE" -eq 1 \
+      && ("$RUN_REPLAY" -ne 1 || "$RUN_ALL" -ne 0 || "$CAMERA_REQUESTED" -ne 1) ]]; then
+  fail_usage
+fi
 [[ "$DURATION_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail_usage
 [[ "$REPLAY_DURATION_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail_usage
 [[ "$POST_UPLOAD_SETTLE_SECONDS" =~ ^[0-9]+$ ]] || fail_usage
-if [[ "$CAMERA_REQUESTED" -eq 1 ]]; then
+if [[ "$CAMERA_REQUESTED" -eq 1 && "$QUALIFICATION_CAPTURE" -eq 0 ]]; then
   ENCOUNTER_RESULT="INCONCLUSIVE"
   ENCOUNTER_REASON="requested camera evidence is unavailable"
 fi
@@ -120,7 +129,7 @@ finish() {
     COUNTER_PRINTED=1
   fi
   if [[ "$ENCOUNTER_PRINTED" -eq 0 ]]; then
-    printf '[bench] sampled encounter checks: %s' "$ENCOUNTER_RESULT"
+    printf '[bench] visible encounter product: %s' "$ENCOUNTER_RESULT"
     [[ -n "$ENCOUNTER_REASON" ]] && printf ' | %s' "$ENCOUNTER_REASON"
     printf '\n'
     ENCOUNTER_PRINTED=1
@@ -368,19 +377,96 @@ try:
             or not isinstance(samples, list) or len(samples) != requests
             or not isinstance(errors, list)):
         raise ValueError("invalid encounter result or coverage")
-    computed = ("FAIL" if fields.get("DIFFERENCE", 0) or joint.get("DIFFERENCE", 0) else
+    sample_ids = {str(sample.get("frame_id")) for sample in samples if isinstance(sample, dict)}
+    if (len(sample_ids) != len(samples)
+            or any(re.fullmatch(r"[A-Za-z0-9_-]+", value) is None for value in sample_ids)):
+        raise ValueError("invalid or duplicate encounter sample identity")
+    raw_computed = ("FAIL" if fields.get("DIFFERENCE", 0) or joint.get("DIFFERENCE", 0) else
                 "INCONCLUSIVE" if errors or not required or decoded != selected
                 or fields.get("MATCH", 0) != required
                 or any(n for status, n in joint.items() if status not in ("MATCH", "NOT_EVALUATED")) else "PASS")
-    if payload["result"] != computed:
-        raise ValueError("encounter verdict disagrees with its required evidence")
+    if payload.get("raw_frame_result") != raw_computed:
+        raise ValueError("raw encounter result disagrees with its required evidence")
+
+    product = payload["primary_judgment"]
+    qualification = payload["reader_qualification"]
+    if (not isinstance(product, dict)
+            or product.get("kind") != "visible_event_presentation"
+            or product.get("result") not in ("PASS", "FAIL", "INCONCLUSIVE")
+            or not isinstance(product.get("events"), list)
+            or not isinstance(product.get("counts"), dict)
+            or not isinstance(product.get("execution"), dict)
+            or not isinstance(qualification, dict)
+            or qualification.get("status") not in ("QUALIFIED", "REJECTED")):
+        raise ValueError("visible-event product judgment is malformed")
+    contract = product.get("contract", {})
+    if (contract.get("id") != "VISIBLE_EVENT_PRESENTATION" or contract.get("version") != 2
+            or contract.get("appearance_deadline_ns") != 100_000_000
+            or contract.get("appearance_decision_rule") != "first_source_marker_at_or_after_nominal_deadline"
+            or contract.get("maximum_appearance_observation_bracket_ns") != 10_000_000
+            or contract.get("verification_duration_ns") != 192_000_000
+            or contract.get("maximum_source_marker_gap_ns") != 10_000_000
+            or contract.get("minimum_post_completion_hold_ns") != 312_000_000
+            or contract.get("clock") != "host_monotonic_capture_marker"
+            or contract.get("anchor") != "first_complete_target_input_all_accepted_ns"):
+        raise ValueError("visible-event product contract is not the supported exact policy")
+    event_results = [event.get("result") for event in product["events"] if isinstance(event, dict)]
+    if len(event_results) != len(product["events"]) or any(
+            value not in ("PASS", "FAIL", "INCONCLUSIVE") for value in event_results):
+        raise ValueError("visible-event product events are malformed")
+    product_counts = {"required_events": len(event_results),
+                      "passed": event_results.count("PASS"),
+                      "failed": event_results.count("FAIL"),
+                      "inconclusive": event_results.count("INCONCLUSIVE")}
+    if product["counts"] != product_counts:
+        raise ValueError("visible-event product counts disagree with its events")
+    fatal = product["execution"].get("fatal_integrity_errors")
+    classification_errors = product["execution"].get("temporal_classification_errors")
+    if (not isinstance(fatal, list) or not isinstance(classification_errors, list)
+            or any(not isinstance(value, (str, dict)) for value in [*fatal, *classification_errors])):
+        raise ValueError("visible-event product integrity errors are malformed")
+    if fatal:
+        computed, computed_reason = "INCONCLUSIVE", "FATAL_EVIDENCE_INTEGRITY"
+    elif not event_results:
+        computed, computed_reason = "INCONCLUSIVE", "NO_REQUIRED_EVENTS"
+    elif product_counts["failed"]:
+        first = next(event for event in product["events"] if event["result"] == "FAIL")
+        computed, computed_reason = "FAIL", first.get("reason_code")
+    elif product_counts["inconclusive"] or classification_errors:
+        first = next((event for event in product["events"] if event["result"] == "INCONCLUSIVE"), None)
+        computed, computed_reason = ("INCONCLUSIVE",
+                                     first.get("reason_code") if first else "INVALID_TEMPORAL_CLASSIFICATION")
+    else:
+        computed, computed_reason = "PASS", "ALL_REQUIRED_EVENTS_PASSED"
+    if payload["result"] != computed or product["result"] != computed \
+            or product.get("reason_code") != computed_reason:
+        raise ValueError("visible-event product verdict disagrees with its required evidence")
+    if computed in ("PASS", "FAIL") and qualification.get("status") != "QUALIFIED":
+        raise ValueError("unqualified reader produced a decisive product verdict")
+    if qualification.get("status") != "QUALIFIED" and not any(
+            isinstance(value, str) and value.startswith("Reader qualification:") for value in fatal):
+        raise ValueError("reader qualification failure is absent from product integrity")
     result = computed
-    tally = ", ".join(f"{value} {key.lower().replace('_', ' ')}" for key, value in fields.items()) or "no evaluable samples"
+    required = product_counts["required_events"]
+    tally = (f"{product_counts['passed']} passed, {product_counts['failed']} failed, "
+             f"{product_counts['inconclusive']} inconclusive")
     gaps = [region["maximum_unobserved_gap_seconds"] for region in coverage["regions"]]
     if any(type(value) not in (int, float) or not math.isfinite(value) or value < 0 for value in gaps):
         raise ValueError("invalid observed coverage gaps")
     gap = f"{max(gaps):.3f}s" if gaps else "unavailable"
-    for sample in samples:
+    if fatal:
+        reason = str(fatal[0])
+    for event in product["events"] if reason == "" else []:
+        if event["result"] == "PASS":
+            continue
+        reason = f"{event.get('event_id', 'event')}: {event.get('reason_code', event['result'])}"
+        point = event.get("first_decisive_marker") or event.get("first_current_correct")
+        if isinstance(point, dict) and isinstance(point.get("frame_id"), str):
+            first_id = point["frame_id"]
+            if first_id not in sample_ids:
+                raise ValueError("product evidence references an unknown sample")
+        break
+    for sample in samples if reason == "" else []:
         checks = sample.get("comparison", {}).get("checks", {})
         issues = [(name, check) for name, check in checks.items() if check.get("status") != "MATCH"]
         joint_check = sample.get("comparison", {}).get("joint_state", {})
@@ -418,10 +504,11 @@ run_encounter_check() {
     ENCOUNTER_REASON="analysis interrupted before the encounter check"
     return
   fi
-  printf '[bench] sampled encounter checks and consecutive transitions: analyzing replay camera evidence...\n'
+  printf '[bench] visible encounter product: analyzing exact event windows and raw camera evidence...\n'
   python3 "$ROOT_DIR/scripts/bench/encounter_check.py" \
     --run-dir "$replay_dir" \
     --inspect-transitions \
+    --reader-qualification "$ENCOUNTER_QUALIFICATION" \
     --out "$encounter_dir" \
     2>&1 | tee -a "$RUN_LOG" || encounter_status=$?
   IFS=$'\t' read -r ENCOUNTER_RESULT tally required requests selected decoded gap first_id reason \
@@ -430,8 +517,9 @@ run_encounter_check() {
     PASS|FAIL|INCONCLUSIVE) ;;
     *) ENCOUNTER_RESULT="INCONCLUSIVE"; reason="could not read the encounter result; see bench.log" ;;
   esac
-  printf 'sampled encounter checks: result=%s exit=%s\n' "$ENCOUNTER_RESULT" "$encounter_status" >> "$RUN_LOG"
-  printf '[bench] sampled encounter checks: %s | %s / %s required field checks\n' \
+  printf 'visible encounter product: result=%s exit=%s qualification=%s\n' \
+    "$ENCOUNTER_RESULT" "$encounter_status" "$ENCOUNTER_QUALIFICATION" >> "$RUN_LOG"
+  printf '[bench] visible encounter product: %s | %s / %s required visible events\n' \
     "$ENCOUNTER_RESULT" "$tally" "$required"
   printf '[bench] encounter coverage: %s requests | %s selected, %s decoded original frames | largest unobserved gap %s\n' \
     "$requests" "$selected" "$decoded" "$gap"
@@ -444,6 +532,53 @@ run_encounter_check() {
     printf '[bench] encounter report unavailable; see %s\n' "$RUN_LOG"
   fi
   ENCOUNTER_PRINTED=1
+}
+
+write_qualification_capture_record() {
+  local replay_dir="$1"
+  python3 - "$replay_dir/window_result.json" "$replay_dir/qualification_capture.json" \
+    "$GIT_SHA" "$ROOT_DIR/bench.sh" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+window_path = Path(sys.argv[1])
+record_path = Path(sys.argv[2])
+git_sha = sys.argv[3]
+bench_path = Path(sys.argv[4])
+window = json.loads(window_path.read_text(encoding="utf-8"))
+if window.get("result") != "PASS" or (window.get("camera") or {}).get("result") != "CAPTURED":
+    raise SystemExit("qualified blind capture record requires a passing collection with captured camera evidence")
+if record_path.exists():
+    raise SystemExit("blind capture record already exists")
+for forbidden in ("counter-check", "encounter-check"):
+    if (record_path.parent / forbidden).exists():
+        raise SystemExit(f"pixel analyzer output already exists: {forbidden}")
+
+digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+record = {
+    "schema_version": 1,
+    "kind": "blind_visible_reader_qualification_capture",
+    "capture_mode": "--qualification-capture",
+    "source_git_sha": git_sha,
+    "bench_source_sha256": digest(bench_path),
+    "collection": {
+        "result": "PASS",
+        "camera_result": "CAPTURED",
+        "window_result": window_path.name,
+        "window_result_sha256": digest(window_path),
+    },
+    "pixel_analysis": {
+        "status": "WITHHELD_BY_CAPTURE_MODE",
+        "executed": [],
+        "disabled": ["counter_check", "encounter_check"],
+        "analyzer_outputs_present": False,
+    },
+    "visible_product_eligible": False,
+}
+record_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
 }
 
 V1REPLAY_EXECUTABLE="$ROOT_DIR/tools/v1replay/.build/v1replay"
@@ -505,8 +640,15 @@ for suite in "${SUITES[@]}"; do
       printf '%s: external evidence summary unavailable\n' "$suite" >> "$RUN_LOG"
     fi
     if [[ "$suite" == "replay" && "$CAMERA_ENABLED" -eq 1 ]]; then
-      run_counter_check "$step_dir"
-      run_encounter_check "$step_dir"
+      if [[ "$QUALIFICATION_CAPTURE" -eq 1 ]]; then
+        if ! write_qualification_capture_record "$step_dir" >> "$RUN_LOG" 2>&1; then
+          finish 'FAIL (qualification capture): could not retain the blind-capture record' 2
+        fi
+        printf '[bench] qualification capture: camera pixels retained unread; automatic pixel readers disabled\n'
+      else
+        run_counter_check "$step_dir"
+        run_encounter_check "$step_dir"
+      fi
     fi
     continue
   fi
@@ -516,7 +658,8 @@ for suite in "${SUITES[@]}"; do
     fi
     COLLECTION_ONLY=1
     COLLECTION_ONLY_REASON="$reason"
-    if [[ "$suite" == "replay" && "$CAMERA_ENABLED" -eq 1 ]]; then
+    if [[ "$suite" == "replay" && "$CAMERA_ENABLED" -eq 1 \
+          && "$QUALIFICATION_CAPTURE" -eq 0 ]]; then
       run_counter_check "$step_dir"
       run_encounter_check "$step_dir"
     fi
@@ -539,18 +682,24 @@ if [[ "$COLLECTION_ONLY" -eq 1 ]]; then
   finish "COLLECTION-ONLY (unqualified: $COLLECTION_ONLY_REASON)" 1
 fi
 if [[ "$CAMERA_REQUESTED" -eq 1 && "$CAMERA_ENABLED" -eq 0 ]]; then
+  if [[ "$QUALIFICATION_CAPTURE" -eq 1 ]]; then
+    finish 'FAIL (qualification capture): requested camera is unavailable' 2
+  fi
   finish 'PASS-PARTIAL (skipped: camera unplugged)' 1
+fi
+if [[ "$QUALIFICATION_CAPTURE" -eq 1 ]]; then
+  finish 'QUALIFICATION-CAPTURED (pixels withheld; visible product NOT_EVALUATED)' 0
 fi
 if [[ "$CAMERA_REQUESTED" -eq 1 ]]; then
   case "$ENCOUNTER_RESULT" in
     PASS)
-      finish 'PASS (sampled encounter checks)' 0
+      finish 'PASS (visible encounter product)' 0
       ;;
     FAIL)
-      finish 'FAIL (sampled encounter checks)' 2
+      finish 'FAIL (visible encounter product)' 2
       ;;
     INCONCLUSIVE|NOT_EVALUATED)
-      finish 'INCONCLUSIVE (sampled encounter checks)' 1
+      finish 'INCONCLUSIVE (visible encounter product)' 1
       ;;
   esac
 fi

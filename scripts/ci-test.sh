@@ -162,6 +162,16 @@ run_step "Encounter input expectation regression suite" python3 scripts/test_enc
 run_step "Recorded encounter check regression suite" python3 scripts/test_encounter_check.py
 run_step "Encounter sequence interpretation regression suite" python3 scripts/test_encounter_sequence.py
 run_step "Encounter evidence assessment regression suite" python3 scripts/test_encounter_assessment.py
+run_step "Encounter product regression suite" python3 scripts/test_encounter_product.py
+run_step "Encounter product adapter regression suite" python3 scripts/test_encounter_product_adapter.py
+run_step "Encounter temporal classifier regression suite" python3 scripts/test_encounter_temporal.py
+run_step "Encounter arrow transition regression suite" python3 scripts/test_encounter_arrow_transition.py
+run_step "Encounter bar transition regression suite" python3 scripts/test_encounter_bar_transition.py
+run_step "Encounter mute redraw transition regression suite" python3 scripts/test_encounter_mute_redraw_transition.py
+run_step "Encounter redraw probe regression suite" python3 scripts/test_encounter_redraw_probe.py
+run_step "Encounter runtime probe regression suite" python3 scripts/test_encounter_runtime_probe.py
+run_step "Encounter qualification regression suite" python3 scripts/test_encounter_qualification.py
+run_step "Encounter qualification workflow regression suite" python3 scripts/test_encounter_qualification_workflow.py
 run_step "LittleFS compatibility regression suite" python3 scripts/test_check_littlefs_image_compatibility.py
 run_step "Commit metadata regression suite" python3 scripts/test_check_public_commit_metadata.py
 run_step "App-only upload offset regression suite" python3 scripts/test_force_app_upload_offset.py

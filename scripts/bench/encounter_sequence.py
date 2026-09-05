@@ -156,6 +156,41 @@ def _target(group, timeline, configuration):
     return deepcopy(expected), basis
 
 
+def product_event_targets(timeline, source_records, configuration=None):
+    """Derive product event targets and anchors entirely from validated input.
+
+    This function never receives samples or pixels.  Its output is therefore
+    safe to use when freezing exact camera-selection windows before decoding.
+    """
+    definitions = []
+    previous_target = None
+    for group in event_windows(timeline, source_records):
+        target, basis = _target(group, timeline, configuration)
+        current_policy = _policy(target) if target is not None else None
+        previous_policy = _policy(previous_target) if previous_target is not None else None
+        supported = bool(target is not None and basis is not None and
+                         all(isinstance(spec, dict) and "allowed" in spec
+                             for spec in target.get("fields", {}).values()) and
+                         len(target.get("fields", {})) == len(FIELDS) and
+                         target.get("joint_states"))
+        mode = ("BASELINE" if previous_target is None else
+                "UNCHANGED" if current_policy == previous_policy else "CHANGED")
+        if target is not None:
+            target["previous_input"] = previous_policy
+        definitions.append({"event_id": group["event_id"], "start_ns": group["start_ns"],
+                            "end_ns": group["end_ns"], "end_reason": group["end_reason"],
+                            "stimulus_sequences": [state["stimulus_sequence"] for state in group["states"]],
+                            "wire_rows": deepcopy(group["states"][0].get("rows", [])),
+                            "mode": mode, "supported": supported, "target_basis": basis,
+                            "target": target, "target_policy": current_policy,
+                            "previous_target_policy": previous_policy,
+                            "required_joint_state_ids": [
+                                f"phase-{index + 1}" for index, _ in enumerate(
+                                    target.get("joint_states", []) if target else [])]})
+        previous_target = target
+    return definitions
+
+
 def _coverage(start, end, written, samples, source_records):
     available = {i: r for i, r in enumerate(written) if start <= r["host_capture_ns"] < end}
     selected = {s["video_frame_index"]: s for s in samples if start <= s["capture_ns"] < end}
@@ -243,21 +278,23 @@ def interpret_sequence(samples, timeline, source_records, configuration=None, ra
         for start, end in ranges or []:
             _require(type(start) is int and type(end) is int and start < end,
                      "invalid declared observation range")
-        groups = event_windows(timeline, source_records)
+        definitions = product_event_targets(timeline, source_records, configuration)
         previous_target = None
-        for group in groups:
-            start, end = group["start_ns"], group["end_ns"]
+        for definition in definitions:
+            start, end = definition["start_ns"], definition["end_ns"]
             if end <= start:
                 continue
-            target, basis = _target(group, timeline, configuration)
-            if target is not None:
-                target["previous_input"] = previous_target
+            target, basis = definition["target"], definition["target_basis"]
             selected = [s for s in originals if start <= s["capture_ns"] < end]
-            event = {"event_id": group["event_id"], "start_ns": start, "end_ns": end,
-                     "end_reason": group["end_reason"],
-                     "stimulus_sequences": [s["stimulus_sequence"] for s in group["states"]],
-                     "target": _policy(target) if target else None, "target_basis": basis,
-                     "wire_rows": deepcopy(group["states"][0].get("rows", [])),
+            event = {"event_id": definition["event_id"], "start_ns": start, "end_ns": end,
+                     "end_reason": definition["end_reason"],
+                     "stimulus_sequences": definition["stimulus_sequences"],
+                     "mode": definition["mode"], "supported": definition["supported"],
+                     "target": definition["target_policy"],
+                     "previous_target": definition["previous_target_policy"],
+                     "target_basis": basis,
+                     "required_joint_state_ids": definition["required_joint_state_ids"],
+                     "wire_rows": definition["wire_rows"],
                      "changed_fields": [name for name in FIELDS if target is not None and (
                          previous_target is None or target["fields"][name] != previous_target["fields"][name])],
                      "first_correct": None, "last_definite_not_correct_before_first": None,
@@ -319,6 +356,8 @@ def interpret_sequence(samples, timeline, source_records, configuration=None, ra
                                                  for lo, hi in ranges or [] if max(start, lo) < min(end, hi)]
             first = event["first_correct"]
             prefix = _coverage(start, first["capture_ns"] + 1, written, originals, source_records) if first else coverage
+            group = {"states": [state for state in timeline["states"]
+                                if state["stimulus_sequence"] in definition["stimulus_sequences"]]}
             event["timing"] = _timing(group, basis, first, event["last_definite_not_correct_before_first"], timeline, prefix)
             event["observation_counts"] = dict(counts)
             event["uncertainty_before_first_correct"] = [

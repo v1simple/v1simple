@@ -11,6 +11,89 @@ import Foundation
 enum BenchScenario {
     static let cadenceHz = 3
     static let durationSeconds = 276
+
+    struct MuteQualificationAlert {
+        let band: V1.Band
+        let frequencyMHz: UInt16
+        let strength: Int
+        let direction: V1.Direction
+    }
+
+    struct MuteQualificationCycle {
+        let startSecond: Int
+        let startsMuted: Bool
+        let entryAlert: MuteQualificationAlert
+        let muteCommitAlert: MuteQualificationAlert
+        let unmutedAlert: MuteQualificationAlert
+    }
+
+    private static func qualificationAlert(_ band: V1.Band, _ frequencyMHz: UInt16,
+                                           _ strength: Int, _ direction: V1.Direction
+    ) -> MuteQualificationAlert {
+        MuteQualificationAlert(band: band, frequencyMHz: frequencyMHz,
+                               strength: strength, direction: direction)
+    }
+
+    private static func isolatedMuteCycle(_ startSecond: Int, _ alert: MuteQualificationAlert
+    ) -> MuteQualificationCycle {
+        MuteQualificationCycle(startSecond: startSecond, startsMuted: false,
+                               entryAlert: alert, muteCommitAlert: alert,
+                               unmutedAlert: alert)
+    }
+
+    private static func negativeMuteCycle(_ startSecond: Int,
+                                          _ entry: MuteQualificationAlert,
+                                          _ muteCommit: MuteQualificationAlert,
+                                          _ unmuted: MuteQualificationAlert
+    ) -> MuteQualificationCycle {
+        MuteQualificationCycle(startSecond: startSecond, startsMuted: true,
+                               entryAlert: entry, muteCommitAlert: muteCommit,
+                               unmutedAlert: unmuted)
+    }
+
+    // The first seven cycles isolate mute-on and unmute while alert content is
+    // fixed. In each of the last seven, packet zero supplies the first raw mute
+    // bit, packet one changes alert content while supplying the second raw mute
+    // bit which commits the firmware's debounce, and packet three changes alert
+    // content again while unmuting. The resulting full-display clips therefore
+    // contain both positive redraws and visible content-change negative controls.
+    static let muteQualificationCycles = [
+        isolatedMuteCycle(201, qualificationAlert(.x, 10_525, 2, .front)),
+        isolatedMuteCycle(204, qualificationAlert(.k, 24_150, 5, .side)),
+        isolatedMuteCycle(207, qualificationAlert(.ka, 34_700, 3, .rear)),
+        isolatedMuteCycle(210, qualificationAlert(.ka, 35_500, 6, .side)),
+        isolatedMuteCycle(213, qualificationAlert(.x, 10_525, 4, .rear)),
+        isolatedMuteCycle(216, qualificationAlert(.k, 24_150, 1, .front)),
+        isolatedMuteCycle(219, qualificationAlert(.ka, 34_700, 5, .rear)),
+        negativeMuteCycle(222,
+            qualificationAlert(.x, 10_525, 1, .front),
+            qualificationAlert(.ka, 34_700, 4, .rear),
+            qualificationAlert(.k, 24_150, 6, .side)),
+        negativeMuteCycle(225,
+            qualificationAlert(.k, 24_150, 6, .side),
+            qualificationAlert(.x, 10_525, 3, .front),
+            qualificationAlert(.ka, 35_500, 1, .rear)),
+        negativeMuteCycle(228,
+            qualificationAlert(.ka, 35_500, 1, .rear),
+            qualificationAlert(.k, 24_150, 4, .side),
+            qualificationAlert(.x, 10_525, 6, .front)),
+        negativeMuteCycle(231,
+            qualificationAlert(.x, 10_525, 6, .side),
+            qualificationAlert(.ka, 34_700, 3, .front),
+            qualificationAlert(.k, 24_150, 1, .rear)),
+        negativeMuteCycle(234,
+            qualificationAlert(.k, 24_150, 1, .rear),
+            qualificationAlert(.x, 10_525, 4, .side),
+            qualificationAlert(.ka, 35_500, 6, .front)),
+        negativeMuteCycle(237,
+            qualificationAlert(.ka, 35_500, 6, .front),
+            qualificationAlert(.k, 24_150, 3, .rear),
+            qualificationAlert(.x, 10_525, 1, .side)),
+        negativeMuteCycle(240,
+            qualificationAlert(.x, 10_525, 1, .rear),
+            qualificationAlert(.ka, 34_700, 4, .side),
+            qualificationAlert(.k, 24_150, 6, .front)),
+    ]
     static let detectorVolumeCheckpoints = [
         DetectorVolumeCheckpoint(replaySecond: 244, mainVolume: 4, muteVolume: 0),
         DetectorVolumeCheckpoint(replaySecond: 250, mainVolume: 7, muteVolume: 0),
@@ -21,7 +104,13 @@ enum BenchScenario {
     static let detectorMuteCheckpoints = [
         DetectorMuteCheckpoint(replaySecond: 185, muted: true),
         DetectorMuteCheckpoint(replaySecond: 189, muted: false),
-    ]
+    ] + muteQualificationCycles.flatMap { cycle in
+        let muteOn = cycle.startsMuted ? cycle.startSecond : cycle.startSecond + 1
+        return [
+            DetectorMuteCheckpoint(replaySecond: Double(muteOn), muted: true),
+            DetectorMuteCheckpoint(replaySecond: Double(muteOn + 1), muted: false),
+        ]
+    }
     static let detectorModeCheckpoints = [
         DetectorModeCheckpoint(replaySecond: 260, mode: .advancedLogic),
         DetectorModeCheckpoint(replaySecond: 264, mode: .allBogeys),
@@ -174,6 +263,16 @@ enum BenchScenario {
                 phase = "handoff_clear"
                 alerts = []
 
+            case 201..<243:
+                phase = "mute_qualification"
+                let cycle = muteQualificationCycles[(second - 201) / 3]
+                let localTick = tick - cycle.startSecond * cadenceHz
+                let state = localTick == 0 ? cycle.entryAlert
+                    : localTick < cadenceHz ? cycle.muteCommitAlert
+                    : cycle.unmutedAlert
+                alerts = [alert(state.band, state.frequencyMHz, state.strength,
+                                state.direction, priority: true)]
+
             case 59..<244:
                 phase = "duke_shaped_approach"
                 let local = tick - 59 * cadenceHz
@@ -219,7 +318,8 @@ enum BenchScenario {
             "priority_handoff": 30,
             "three_bogeys": 30,
             "handoff_clear": 30,
-            "duke_shaped_approach": 555,
+            "duke_shaped_approach": 429,
+            "mute_qualification": 126,
             "idle_tail": 96,
         ])
         precondition(samples.filter { !$0.alerts.isEmpty }.count == 708)
@@ -275,16 +375,74 @@ enum BenchScenario {
         precondition(observedMuteCheckpoints == detectorMuteCheckpoints)
         let beforeMute = samples[..<(185 * cadenceHz)]
         let mutedPlateau = samples[(185 * cadenceHz)..<(189 * cadenceHz)]
-        let afterMute = samples[(189 * cadenceHz)...]
+        let betweenMuteCampaigns = samples[(189 * cadenceHz)..<(202 * cadenceHz)]
+        let afterMuteCampaign = samples[(243 * cadenceHz)...]
         precondition(beforeMute.allSatisfy { !$0.muted })
         precondition(mutedPlateau.allSatisfy(\.muted))
-        precondition(afterMute.allSatisfy { !$0.muted })
+        precondition(betweenMuteCampaigns.allSatisfy { !$0.muted })
+        precondition(afterMuteCampaign.allSatisfy { !$0.muted })
         for sample in mutedPlateau {
             precondition(sample.phase == "duke_shaped_approach")
             precondition(sample.priorityAlert?.frequencyMHz == 34_700)
             precondition(sample.priorityAlert?.band.mask == V1.Band.ka.mask)
             precondition(sample.priorityAlert?.direction.rawValue == V1.Direction.front.rawValue)
             precondition(sample.priorityAlert?.strength == 6)
+        }
+
+        precondition(muteQualificationCycles.count == 14)
+        precondition(Set(muteQualificationCycles.map { $0.entryAlert.band.mask }) ==
+                     Set([V1.Band.x.mask, V1.Band.k.mask, V1.Band.ka.mask]))
+        let positives = muteQualificationCycles.prefix(7)
+        let negatives = muteQualificationCycles.suffix(7)
+        precondition(positives.count == 7 && positives.allSatisfy { !$0.startsMuted })
+        precondition(negatives.count == 7 && negatives.allSatisfy(\.startsMuted))
+        func sameAlert(_ left: MuteQualificationAlert,
+                       _ right: MuteQualificationAlert) -> Bool {
+            left.band.mask == right.band.mask &&
+                left.frequencyMHz == right.frequencyMHz &&
+                left.strength == right.strength &&
+                left.direction == right.direction
+        }
+        func contentChange(_ left: MuteQualificationAlert,
+                           _ right: MuteQualificationAlert) -> Bool {
+            left.band.mask != right.band.mask &&
+                left.frequencyMHz != right.frequencyMHz &&
+                abs(left.strength - right.strength) >= 2 &&
+                left.direction != right.direction
+        }
+        precondition(positives.allSatisfy {
+            sameAlert($0.entryAlert, $0.muteCommitAlert) &&
+                sameAlert($0.muteCommitAlert, $0.unmutedAlert)
+        })
+        precondition(negatives.allSatisfy {
+            contentChange($0.entryAlert, $0.muteCommitAlert) &&
+                contentChange($0.muteCommitAlert, $0.unmutedAlert)
+        })
+        for (index, cycle) in muteQualificationCycles.enumerated() {
+            precondition(cycle.startSecond == 201 + index * 3)
+            let start = cycle.startSecond * cadenceHz
+            let first = samples[start..<(start + cadenceHz)]
+            let second = samples[(start + cadenceHz)..<(start + 2 * cadenceHz)]
+            let third = samples[(start + 2 * cadenceHz)..<(start + 3 * cadenceHz)]
+            precondition(first.allSatisfy { $0.muted == cycle.startsMuted })
+            precondition(second.allSatisfy { $0.muted == !cycle.startsMuted })
+            precondition(third.allSatisfy { !$0.muted })
+            for localTick in 0..<(3 * cadenceHz) {
+                let sample = samples[start + localTick]
+                let expected = localTick == 0 ? cycle.entryAlert
+                    : localTick < cadenceHz ? cycle.muteCommitAlert
+                    : cycle.unmutedAlert
+                precondition(sample.priorityAlert?.band.mask == expected.band.mask)
+                precondition(sample.priorityAlert?.frequencyMHz == expected.frequencyMHz)
+                precondition(sample.priorityAlert?.strength == expected.strength)
+                precondition(sample.priorityAlert?.direction == expected.direction)
+                precondition(sample.phase == "mute_qualification")
+                precondition(sample.alerts.count == 1)
+                precondition(sample.priorityAlert?.isPriority == true)
+                precondition(sample.detectorVolume == nil)
+                precondition(sample.detectorMode == nil)
+                precondition(!sample.scenarioArrowBlink)
+            }
         }
 
         precondition(samples[..<(260 * cadenceHz)].allSatisfy { $0.detectorMode == nil })

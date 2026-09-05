@@ -236,6 +236,20 @@ class EncounterReaderTests(unittest.TestCase):
         result = reader._card_bars(reader.Pixels(im.tobytes(), WIDTH, HEIGHT, REGISTRATION), 393)
         self.assertEqual(result["state"], "ambiguous", result)
 
+    def test_secondary_whole_fills_allow_independently_configured_brightness(self):
+        # Firmware fills each active cell with its own configurable color.  A
+        # dim complete cell remains active; only spatially incomplete fill is
+        # ambiguous.
+        im = display()
+        card(im, 393, "side", 0)
+        draw = ImageDraw.Draw(im)
+        for index, level in enumerate((240, 55, 230, 60)):
+            draw.rectangle((409 + index * 33, 426, 437 + index * 33, 443),
+                           fill=(level, level, level))
+        result = reader._card_bars(
+            reader.Pixels(im.tobytes(), WIDTH, HEIGHT, REGISTRATION), 393)
+        self.assertEqual((result["state"], result["value"]), ("readable", 4), result)
+
     def test_secondary_narrow_partial_stroke_in_next_bar_is_not_absence(self):
         for kind in ("vertical", "horizontal", "faint"):
             with self.subTest(kind=kind):
@@ -251,6 +265,20 @@ class EncounterReaderTests(unittest.TestCase):
                 result = reader._card_bars(reader.Pixels(im.tobytes(), WIDTH, HEIGHT, REGISTRATION), 640)
                 self.assertEqual(result["state"], "ambiguous", result)
                 self.assertIsNone(result["value"])
+
+    def test_secondary_compatibility_never_changes_an_ambiguous_literal(self):
+        self.assertEqual(reader._compatible_bar_counts(
+            ["on", "on", "on", "partial", "off", "off"]), [3, 4])
+        self.assertEqual(reader._compatible_bar_counts(
+            ["on", "on", "on", "off", "off", "partial"]), [3])
+        self.assertEqual(reader._compatible_bar_counts(
+            ["on", "on", "off", "on", "off", "off"]), [])
+        im = display()
+        card(im, 640, "rear", 2)
+        ImageDraw.Draw(im).rectangle((726, 430, 726, 439), fill=(220, 100, 10))
+        result = reader._card_bars(reader.Pixels(im.tobytes(), WIDTH, HEIGHT, REGISTRATION), 640)
+        self.assertEqual((result["state"], result["value"]), ("ambiguous", None), result)
+        self.assertIn("compatible_counts", result)
 
     def test_expected_values_cannot_be_supplied(self):
         with self.assertRaises(TypeError):
@@ -274,6 +302,21 @@ class FrequencyContrastControls(unittest.TestCase):
         ImageDraw.Draw(image).rectangle((769, 255, 828, 273), fill=(255, 116, 12))
         observed = self.frequency(image)
         self.assertEqual((observed["state"], observed["value"]), ("readable", "68.902"), observed)
+
+    def test_complete_digits_with_different_brightness_are_readable(self):
+        image = display("34.700")
+        draw = ImageDraw.Draw(image)
+        for origin, digit, level in zip((454, 520, 616, 688, 764), "34700",
+                                        (100, 125, 150, 180, 220)):
+            color = (level, round(level * .45), max(5, round(level * .05)))
+            for segment in DIGITS[digit]:
+                x1, y1, x2, y2 = STROKES[segment]
+                draw.rectangle((origin + x1, y1, origin + x2, y2), fill=color)
+        observed = self.frequency(image)
+        self.assertEqual((observed["state"], observed["value"]), ("readable", "34.700"), observed)
+        illuminated = [segment["median"] for digit in observed["cells"]
+                       for segment in digit["segments"].values() if segment["state"] == "on"]
+        self.assertLess(min(illuminated), float(np.median(illuminated)) * .85)
 
     def test_bright_lingering_stroke_among_dim_new_strokes_refuses(self):
         pixels = np.array(display("34.700"))
@@ -323,6 +366,22 @@ class MainArrowReaderTests(unittest.TestCase):
             im = display()
             arrow(im, direction)
             self.assertEqual(self.read(im)['value'], [direction])
+
+    def test_arrow_profile_is_fixed_expected_blind_and_does_not_change_literal_state(self):
+        dark = self.read(display())
+        lit_image = display()
+        arrow(lit_image, "front")
+        lit = self.read(lit_image)
+        for observed in (dark, lit):
+            for direction in ("front", "side", "rear"):
+                profile = observed["direction_states"][direction]["profile"]
+                self.assertEqual((profile["rows"], profile["columns"]), (4, 4))
+                self.assertEqual(len(profile["max_channel_medians"]), 16)
+                self.assertEqual(len(profile["reference_bounds"]), 4)
+        self.assertEqual((dark["state"], dark["value"]), ("readable", []))
+        self.assertEqual((lit["state"], lit["value"]), ("readable", ["front"]))
+        self.assertNotEqual(dark["direction_states"]["front"]["profile"]["max_channel_medians"],
+                            lit["direction_states"]["front"]["profile"]["max_channel_medians"])
 
     def test_wrong_color_is_measured_without_a_color_correctness_claim(self):
         for color, name in (((20, 180, 20), 'green'), ((10, 20, 180), 'blue'),

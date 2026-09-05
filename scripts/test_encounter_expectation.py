@@ -83,6 +83,7 @@ class EncounterExpectationTests(unittest.TestCase):
         self.assertEqual(result["status"], "MATCH")
         self.assertEqual(result["counts"], {"MATCH": 7})
         self.assertEqual(result["joint_state"]["status"], "MATCH")
+        self.assertEqual(result["joint_state"]["state_id"], "phase-1")
         self.assertEqual(data, original)
 
     def test_wrong_live_field_survives_other_unreadable_fields(self):
@@ -180,7 +181,9 @@ class EncounterExpectationTests(unittest.TestCase):
         self.assertEqual(result["joint_state"]["status"], "DIFFERENCE")
         self.assertEqual(result["status"], "DIFFERENCE")
         impossible["counter_glyph"] = {"state": "absent"}
-        self.assertEqual(compare_sample(expected, impossible)["status"], "MATCH")
+        off = compare_sample(expected, impossible)
+        self.assertEqual(off["status"], "MATCH")
+        self.assertEqual(off["joint_state"]["state_id"], "phase-2")
 
     def test_priority_arrow_setting_unknown_does_not_invent_projection(self):
         data = recording([([alert()], [6, 6, 1, 0x64, 0x64, 12, 12, 0x40])])

@@ -23,7 +23,7 @@ import counter_reader
 
 FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
-METHOD_VERSION = 4
+METHOD_VERSION = 5
 _ocr_binary = None
 _ocr_setup = None
 
@@ -127,17 +127,18 @@ def _frequency(pixels):
                "c": (51, 324, 56, 337), "d": (17, 350, 40, 355),
                "e": (7, 324, 12, 337), "f": (7, 280, 11, 293),
                "g": (18, 303, 41, 309)}
-    digits, details, medians = [], [], []
+    digits, details, illuminated_by_digit = [], [], []
     for origin in x_origins:
-        mask, measurements = "", {}
+        mask, measurements, illuminated = "", {}, []
         for name, (x1, y1, x2, y2) in patches.items():
             state, values = _fill(pixels.level((origin + x1, y1, origin + x2, y2)))
             measurements[name] = {"state": state, **values}
             if state == "on":
                 mask += name
-                medians.append(values["median"])
+                illuminated.append(values["median"])
         details.append({"mask": mask, "segments": measurements})
         digits.append(counter_reader.MASKS.get(mask))
+        illuminated_by_digit.append(illuminated)
     region = pixels.level((448, 252, 840, 362))
     if float(np.percentile(region, 99.5)) <= 32:
         return field("absent", reason="visible registered frequency region has no lit glyph", cells=details)
@@ -146,12 +147,14 @@ def _frequency(pixels):
     if not all(d is not None and d.isdigit() for d in digits):
         return field("unreadable", reason="frequency does not form five canonical numeric glyphs", cells=details)
     # An old fading stroke can otherwise turn a clear outer 0 into a valid 8.
-    # Use the median lit level so one saturated stroke does not define all
-    # other strokes as fading. Bound both tails: a dim old stroke or a bright
-    # lingering stroke among dimmer new strokes still makes the field ambiguous.
-    reference = float(np.median(medians)) if medians else 0.0
-    if medians and (min(medians) < reference * .85 or max(medians) > reference / .85):
-        return field("ambiguous", reason="inconsistent illuminated frequency segment levels", cells=details)
+    # Compare strokes within their own digit so a real panel illumination ramp
+    # cannot make one complete cell look like a remnant in another. Bound both
+    # tails within every cell: dim or bright lingering strokes remain ambiguous.
+    for illuminated in illuminated_by_digit:
+        reference = float(np.median(illuminated)) if illuminated else 0.0
+        if illuminated and (min(illuminated) < reference * .85 or
+                            max(illuminated) > reference / .85):
+            return field("ambiguous", reason="inconsistent illuminated frequency segment levels", cells=details)
     # The two enclosed holes of every seven-segment cell must stay clear.
     # Extra central ink cannot borrow a valid answer from the sampled strokes.
     for origin in x_origins:
@@ -188,6 +191,14 @@ def _bars(pixels, boxes):
     if "partial" in states or states != sorted(states, key=lambda v: v != "on"):
         return field("ambiguous", reason="partial or noncontiguous strength bars", bars=measurements)
     return field("readable", states.count("on"), bars=measurements)
+
+
+def _compatible_bar_counts(states):
+    """Counts consistent with definite cells in a contiguous six-cell meter."""
+    return [count for count in range(7) if all(
+        state == "partial" or (state == "on" and index < count) or
+        (state == "off" and index >= count)
+        for index, state in enumerate(states))]
 
 
 def _card_bars(pixels, left):
@@ -264,7 +275,8 @@ def _card_bars(pixels, left):
                              "background_contrast": round(contrast, 2),
                              "interior": [start + inset_x, top + inset_y, end - inset_x, bottom - inset_y]})
     diagnostics = {"bars": measurements, "perimeter_score": round(best[0], 2),
-                   "grid": {"top": top, "bottom": bottom, "cells": best[1]}}
+                   "grid": {"top": top, "bottom": bottom, "cells": best[1]},
+                   "compatible_counts": _compatible_bar_counts(states)}
     if "partial" in states or states != sorted(states, key=lambda v: v != "on"):
         return field("ambiguous", reason="partial, faint or noncontiguous secondary strength bars", **diagnostics)
     return field("readable", states.count("on"), **diagnostics)
@@ -306,6 +318,17 @@ def _arrows(pixels):
              (y - region[1]) * height / (region[3] - region[1]))
             for x, y in interiors[name]], fill=1)
         mask = np.asarray(mask_image, dtype=bool)
+        # Retain a compact, expectation-blind spatial witness for sequence
+        # interpretation.  The grid covers the fixed direction polygon's
+        # bounding box, including its background corners.  It does not change
+        # this frame's filled/partial/faint/unlit decision.
+        polygon = interiors[name]
+        profile_bounds = (min(x for x, _ in polygon), min(y for _, y in polygon),
+                          max(x for x, _ in polygon) + 1, max(y for _, y in polygon) + 1)
+        profile_level = pixels.level(profile_bounds)
+        profile = [round(float(np.median(cell)), 2)
+                   for row in np.array_split(profile_level, 4, axis=0)
+                   for cell in np.array_split(row, 4, axis=1)]
         interior_state, level_detail = _fill(levels[mask])
         colors = rgb[mask].astype(int)
         medians = np.median(colors, axis=0)
@@ -334,7 +357,10 @@ def _arrows(pixels):
             state = "partial"
         directions[name] = {"state": state, "color": color,
                             "rgb_median": [round(float(v), 2) for v in medians],
-                            "interior": level_detail}
+                            "interior": level_detail,
+                            "profile": {"rows": 4, "columns": 4,
+                                        "reference_bounds": list(profile_bounds),
+                                        "max_channel_medians": profile}}
     unresolved = [name for name, detail in directions.items() if detail["state"] in ("partial", "faint")]
     # Complete all three observations before deciding whether the combined
     # field is readable. A faint side arrow must not hide a clear front arrow.
@@ -368,7 +394,8 @@ def _secondary(pixels):
         # Very dark text is not made certain by contrast enhancement and OCR.
         text_visible = float(np.percentile(text.max(axis=2), 90)) >= 45
         cards.append({"slot": slot, "band": None, "frequency": None, "direction": direction,
-                      "bars": bars.get("value"), "text_visible": text_visible,
+                      "bars": bars.get("value"), "compatible_bars": bars.get("compatible_counts"),
+                      "text_visible": text_visible,
                       "bars_state": bars["state"], "bar_reading": bars})
         text_crops.append(text)
     if not cards:

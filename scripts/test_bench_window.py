@@ -33,9 +33,11 @@ from run_window import (  # noqa: E402
     V1Emulator,
     V1RadioLease,
     establish_serial_boundary,
+    collect_post_window_configuration,
     file_artifact,
     parse_runtime_boot_identity,
     notification_delivery_problem,
+    post_window_configuration_timeout_s,
     publish_replay_delivery_evidence,
     publish_replay_stimulus_evidence,
     qualify_runtime_identity,
@@ -222,6 +224,126 @@ def test_timeline_keeps_ordered_external_events_and_scrubs_private_paths() -> No
             ),
             "external machine event was not retained",
         )
+
+
+class TailClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class TailObserver:
+    def __init__(
+        self,
+        timeline: BenchTimeline,
+        lines: list[str],
+        *,
+        reboot_on_read: bool = False,
+    ) -> None:
+        self.timeline = timeline
+        self.lines = list(lines)
+        self.reboot_on_read = reboot_on_read
+        self.reset_requested_ns = 1_000_000_000
+        self.runtime_identity = {"boot_id": 7}
+        self.boot_marker_count = 1
+        self.line_count = 0
+        self.last_receive_ns: int | None = None
+        self.clock: TailClock | None = None
+        self.receive_ns: list[int] = []
+
+    def read_line(self, _timeout_s: float) -> str:
+        assert self.clock is not None
+        self.clock.now += 0.1
+        if not self.lines:
+            return ""
+        line = self.lines.pop(0)
+        self.line_count += 1
+        received = self.timeline.record("serial_receive", line=line)
+        self.last_receive_ns = (
+            self.receive_ns.pop(0)
+            if self.receive_ns
+            else received["host_monotonic_ns"]
+        )
+        if self.reboot_on_read:
+            self.boot_marker_count += 1
+        return line
+
+
+def cfg_line(*, boot_id: int = 7, uptime_ms: int = 1000, revision: int = 2) -> str:
+    return (
+        f"CFG bootId={boot_id} uptimeMs={uptime_ms} revision={revision} "
+        "activeSlot=1 stealthEnabled=0 priorityArrowOnly=1 "
+        "alertPersistenceSeconds=0"
+    )
+
+
+def test_post_window_configuration_requires_conservative_same_boot_emission() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        timeline = BenchTimeline(Path(tmp) / BENCH_TIMELINE_NAME)
+        clock = TailClock()
+        observer = TailObserver(
+            timeline,
+            [cfg_line(uptime_ms=1000), cfg_line(uptime_ms=3000)],
+        )
+        observer.clock = clock
+        result = collect_post_window_configuration(
+            observer,  # type: ignore[arg-type]
+            required_after_ns=3_000_000_000,
+            timeout_s=1.0,
+            timeline=timeline,
+            monotonic=clock,
+        )
+        timeline.close()
+        assert_true(result["status"] == "verified", str(result))
+        assert_true(result["snapshot_uptime_ms"] == 3000, str(result))
+        records = [json.loads(line) for line in timeline.path.read_text().splitlines()]
+        assert_true(
+            any(
+                record.get("event") == "serial_receive"
+                and "uptimeMs=3000" in record.get("line", "")
+                for record in records
+            ),
+            "qualifying raw CFG line was not retained in the owned timeline",
+        )
+
+
+def test_post_window_configuration_fails_closed() -> None:
+    cases = {
+        "old uptime": ([cfg_line(uptime_ms=1000)], False, []),
+        "wrong boot": ([cfg_line(boot_id=8, uptime_ms=3000)], False, []),
+        "malformed": (["CFG bootId=7"], False, []),
+        "reboot": ([cfg_line(uptime_ms=3000)], True, []),
+        "future uptime": ([cfg_line(uptime_ms=3000)], False, [2_000_000_000]),
+    }
+    for name, (lines, reboot, receive_ns) in cases.items():
+        with tempfile.TemporaryDirectory() as tmp:
+            timeline = BenchTimeline(Path(tmp) / BENCH_TIMELINE_NAME)
+            clock = TailClock()
+            observer = TailObserver(timeline, lines, reboot_on_read=reboot)
+            observer.clock = clock
+            observer.receive_ns = list(receive_ns)
+            try:
+                collect_post_window_configuration(
+                    observer,  # type: ignore[arg-type]
+                    required_after_ns=3_000_000_000,
+                    timeout_s=0.5,
+                    timeline=timeline,
+                    monotonic=clock,
+                )
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError(f"{name} post-window evidence was accepted")
+            finally:
+                timeline.close()
+
+
+def test_post_window_configuration_timeout_covers_clock_allowance() -> None:
+    assert_true(post_window_configuration_timeout_s(1) == 10.0, "short tail")
+    assert_true(post_window_configuration_timeout_s(300) == 10.0, "five-minute tail")
+    assert_true(post_window_configuration_timeout_s(3600) > 75.0, "long-run clock tail")
 
 
 def _write_executable(path: Path) -> None:
@@ -1255,7 +1377,12 @@ def test_explicit_reset_records_request_before_control_and_never_completes_failu
         observer.ser = SimpleNamespace(reset_input_buffer=lambda: events.append("drain"))
         observer.identity_tracker = RuntimeIdentityTracker()
         observer.identity_tracker.identity = dict(RUNTIME_IDENTITY)
-        observer.timeline = SimpleNamespace(record=lambda event, **_fields: events.append(event))
+
+        def record(event, **_fields):
+            events.append(event)
+            return {"host_monotonic_ns": 1_000_000_000}
+
+        observer.timeline = SimpleNamespace(record=record)
 
         def reset() -> None:
             events.append("control_reset")
@@ -1322,6 +1449,9 @@ def main() -> int:
     test_delivery_summary_vetoes_empty_instrumentation_stream()
     test_runner_logs_are_confined_to_the_run_directory()
     test_timeline_keeps_ordered_external_events_and_scrubs_private_paths()
+    test_post_window_configuration_requires_conservative_same_boot_emission()
+    test_post_window_configuration_fails_closed()
+    test_post_window_configuration_timeout_covers_clock_allowance()
     test_replay_process_requests_raw_machine_and_scenario_evidence()
     test_requested_dropped_complete_stopped_is_not_completed()
     test_requested_accepted_complete_stopped_is_completed()

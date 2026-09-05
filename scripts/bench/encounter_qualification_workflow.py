@@ -47,12 +47,10 @@ DEFAULT_MANIFEST = _default_manifest_path()
 TARGET_CLASSIFIERS = (
     "v1-main-bar-adjacent-redraw-v1",
     "v1-muted-badge-rising-fill-v1",
-    "v1-unmute-stable-frequency-sweep-v1",
 )
 FIELD_BY_CLASSIFIER = {
     "v1-main-bar-adjacent-redraw-v1": "main_bars",
     "v1-muted-badge-rising-fill-v1": "muted_badge",
-    "v1-unmute-stable-frequency-sweep-v1": "primary_frequency",
 }
 SPEC_BY_CLASSIFIER = {
     classifier: BENCH_DIR / "temporal_specs" / f"{classifier}.json"
@@ -256,8 +254,6 @@ def classifier_identity() -> dict[str, tuple[str, str]]:
     return {
         bar.CLASSIFIER_ID: (bar.CLASSIFIER_ID, bar.CLASSIFIER_SPEC_SHA256),
         mute.BADGE_CLASSIFIER_ID: (mute.BADGE_CLASSIFIER_ID, mute.BADGE_CLASSIFIER_SPEC_SHA256),
-        mute.FREQUENCY_CLASSIFIER_ID: (
-            mute.FREQUENCY_CLASSIFIER_ID, mute.FREQUENCY_CLASSIFIER_SPEC_SHA256),
     }
 
 

@@ -36,6 +36,19 @@ from camera_contract import EXPECTED_CAMERA_NAME
 
 
 class QualificationWorkflowTests(unittest.TestCase):
+    def test_workflow_targets_only_physically_supported_temporal_candidates(self):
+        self.assertEqual(
+            workflow.TARGET_CLASSIFIERS,
+            (
+                "v1-main-bar-adjacent-redraw-v1",
+                "v1-muted-badge-rising-fill-v1",
+            ),
+        )
+        self.assertNotIn(
+            "v1-unmute-stable-frequency-sweep-v1",
+            workflow.classifier_identity(),
+        )
+
     def test_manifest_defaults_follow_bench_environment(self):
         with patch.dict(os.environ, {"BENCH_ARTIFACT_ROOT": "/tmp/bench-owned"}, clear=False):
             os.environ.pop("BENCH_ENCOUNTER_QUALIFICATION", None)

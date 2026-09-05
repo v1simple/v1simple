@@ -18,6 +18,20 @@ CLOCK_ALLOWANCE_DENOMINATOR = 100
 RESET_ALLOWANCE_NS = 100_000_000
 
 
+def emitted_lower_bound_ns(reset_ns: int, uptime_ms: int) -> int:
+    """Conservatively bound when a CFG snapshot must have been emitted."""
+    if type(reset_ns) is not int or reset_ns <= 0:
+        raise ValueError("reset timestamp is unavailable")
+    if type(uptime_ms) is not int or not 0 <= uptime_ms <= UINT32_MAX:
+        raise ValueError("CFG uptime is invalid")
+    return reset_ns + max(
+        0,
+        uptime_ms * 1_000_000 * CLOCK_ALLOWANCE_NUMERATOR
+        // CLOCK_ALLOWANCE_DENOMINATOR
+        - RESET_ALLOWANCE_NS,
+    )
+
+
 def parse_snapshot(line: str) -> dict | None:
     if not line.startswith("CFG ") and line != "CFG":
         return None
@@ -79,8 +93,7 @@ def recorded_snapshots(records: list[dict], runtime_identity: dict | None) -> di
             # error plus 100 ms before using uptime as a lower emission bound.
             # Receive time is only an upper bound: buffered old records cannot
             # prove that settings remained stable through a later image.
-            emitted_lower_ns = reset_ns + max(0, snapshot["uptimeMs"] * 1_000_000 *
-                CLOCK_ALLOWANCE_NUMERATOR // CLOCK_ALLOWANCE_DENOMINATOR - RESET_ALLOWANCE_NS)
+            emitted_lower_ns = emitted_lower_bound_ns(reset_ns, snapshot["uptimeMs"])
             if received < completed_ns or emitted_lower_ns > received:
                 raise ValueError("CFG uptime contradicts its reset/receive bounds")
             if snapshots:

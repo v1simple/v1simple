@@ -65,6 +65,56 @@ class EncounterCheckTests(unittest.TestCase):
         self.assertEqual(result["status"],"unavailable")
         self.assertIn("changed",result["reason"])
 
+    def test_long_run_configuration_needs_a_fresh_closing_bracket(self):
+        opening = self.configuration_records(
+            [{"uptimeMs": 1000}, {"uptimeMs": 41000}]
+        )
+        opening[4]["host_monotonic_ns"] = 42_000_000_000
+        sample = [dict(capture_ns=281_500_000_000)]
+        source = configuration.recorded_snapshots(opening, {"boot_id":7})
+        self.assertEqual(
+            configuration.configuration_for_samples(source, sample)["status"],
+            "unavailable",
+        )
+
+        closing = self.configuration_records(
+            [
+                {"uptimeMs": 1000},
+                {"uptimeMs": 41000},
+                {"uptimeMs": 305000},
+            ]
+        )
+        closing[4]["host_monotonic_ns"] = 42_000_000_000
+        closing[5]["host_monotonic_ns"] = 306_000_000_000
+        verified = configuration.configuration_for_samples(
+            configuration.recorded_snapshots(closing, {"boot_id":7}), sample
+        )
+        self.assertEqual(verified["status"], "verified")
+
+        changed = [dict(record) for record in closing]
+        changed[-1] = dict(changed[-1])
+        changed[-1]["line"] = changed[-1]["line"].replace(
+            "revision=2", "revision=3"
+        )
+        self.assertEqual(
+            configuration.configuration_for_samples(
+                configuration.recorded_snapshots(changed, {"boot_id":7}), sample
+            )["status"],
+            "unavailable",
+        )
+
+        late_old = [dict(record) for record in closing]
+        late_old[-1] = dict(late_old[-1])
+        late_old[-1]["line"] = late_old[-1]["line"].replace(
+            "uptimeMs=305000", "uptimeMs=42000"
+        )
+        self.assertEqual(
+            configuration.configuration_for_samples(
+                configuration.recorded_snapshots(late_old, {"boot_id":7}), sample
+            )["status"],
+            "unavailable",
+        )
+
     def test_malformed_wrong_boot_and_inconsistent_configuration_are_refused(self):
         for changes in ({"bootId":8},{"revision":4294967295},{"stealthEnabled":2},
                         {"activeSlot":3},{"alertPersistenceSeconds":6},{"uptimeMs":1},

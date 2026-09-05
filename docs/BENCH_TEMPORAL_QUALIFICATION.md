@@ -1,13 +1,19 @@
 # Blind temporal reader qualification
 
 This workflow turns one clean `--qualification-capture` into blind schema-v2
-evidence for the main-bar redraw, muted-badge fill, and stable-frequency sweep
-classifiers. It publishes those classifier versions only when all three pass the
-code-owned rubric with zero false admissions, at least five true admissions,
+evidence for the main-bar redraw and muted-badge fill classifiers. It publishes
+those classifier versions only when both pass the code-owned rubric with zero
+false admissions, at least five true admissions,
 and at least five definite true rejections each. The existing field, secondary-card,
 fault-control, and arrow qualifications are resolved from the current manifest
 and reused after their references and hashes are verified; no dated evidence
 path or provenance JSON is entered by hand.
+
+The ordinary primary-frequency reader remains part of every product event. The
+candidate stable-frequency temporal exception is deliberately not published by
+this workflow: the first physical campaign supplied seven varied unmute events
+but did not support that classifier's frozen admission rule. Frequency redraw
+frames therefore remain explicit unknowns unless the raw reader resolves them.
 
 Run every command from the repository root.
 
@@ -30,7 +36,7 @@ python3 scripts/bench/encounter_qualification_workflow.py freeze --out "$CAMPAIG
 
 `freeze` compiles and probes the OCR helper, records the exact reader,
 classifier, specification, bench, camera, and observer-rubric identities, and
-confirms that none of the three candidate classifiers is allowlisted. It does
+confirms that neither candidate classifier is allowlisted. It does
 not open a camera recording.
 
 ## 2. Make one reserved camera capture
@@ -65,7 +71,7 @@ It makes one observer packet per classifier at:
 $CAMPAIGN/prepared/classifiers/<classifier-id>/source/observer_packet/
 ```
 
-Give the observer only those three `observer_packet` directories. Each contains
+Give the observer only those two `observer_packet` directories. Each contains
 `README.txt`, `manifest.json`, `observations.json`, and opaque slow-playback
 clips. It contains no machine decision, rejection reason, hidden key, expected
 literal, packet value, or comparison result. The sibling `restricted`
@@ -79,9 +85,7 @@ For every item, the observer frame-steps the clip using the manifest mappings:
 - `full_run_clip_frame_indices` gives the complete optical transition and maps
   exactly to `full_run_video_indices`.
 - `target_run_clip_frame_indices` maps the classifier-claimed subset to
-  `target_run_video_indices`. For a frequency sweep, this subset can start
-  after the full optical run begins. A frame inside the full run is never
-  endpoint support merely because it lies outside the claimed subset.
+  `target_run_video_indices`.
 - The frames outside the full run provide endpoint context. The observer follows the
   exact allowed literals and eligibility rules in `README.txt` and replaces
   each template `null` with an allowed literal or value. A dynamic endpoint may
@@ -102,7 +106,7 @@ or an indeterminate clip remains a false admission and fails qualification.
 
 ## 4. Finalize and publish only a passing bundle
 
-After all three observation files are complete, run:
+After both observation files are complete, run:
 
 ```sh
 python3 scripts/bench/encounter_qualification_workflow.py finalize \
@@ -119,7 +123,7 @@ qualification analysis.
 Only after those checks pass does `finalize` durably mark the campaign
 `CONSUMED` and open the restricted analyzer result and hidden key. It then
 derives all comparisons, denominators, rates, clip audits, and allowlist
-decisions in memory and publishes the three comparison bundles as one atomic
+decisions in memory and publishes the two comparison bundles as one atomic
 directory. The carried arrow evidence is accepted only while the exact
 `encounter_arrow_transition.py` dependency remains unchanged; a regression
 proves the temporal wrapper forwards arrow records without mutation.
@@ -156,6 +160,6 @@ hash. Then run the ordinary product path:
 ```
 
 The product outcome is the final `PASS`, `FAIL`, or `INCONCLUSIVE` visible
-encounter result. The qualification campaign proves the three exact reader
+encounter result. The qualification campaign proves the two exact reader
 classifier versions; the normal run still has to establish collection,
 runtime, camera, and visible-event behavior for that run.

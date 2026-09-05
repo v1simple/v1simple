@@ -9,6 +9,7 @@ import fcntl
 import glob
 import hashlib
 import json
+import math
 import os
 import pwd
 import re
@@ -30,6 +31,12 @@ from artifact_privacy import (
 from camera_artifacts import build_capture_manifest, publish_capture_manifest
 from camera_capture import CameraCapture
 from camera_preflight import run_camera_preflight
+from encounter_configuration import (
+    CLOCK_ALLOWANCE_DENOMINATOR,
+    CLOCK_ALLOWANCE_NUMERATOR,
+    emitted_lower_bound_ns,
+    parse_snapshot,
+)
 
 try:
     import serial  # type: ignore
@@ -63,6 +70,7 @@ REPLAY_DELIVERY_EVENT_STATES = frozenset(
 RUNTIME_IMAGE_ID_HEX_LENGTH = 9
 RUNTIME_IMAGE_ID_BASIS = "firmware.elf_sha256_lowercase_hex_prefix"
 RUN_PROGRESS_INTERVAL_S = 15
+POST_WINDOW_CONFIGURATION_TAIL_MIN_S = 10.0
 BOOT_RECORD_PREFIX = "BOOT "
 GIT_IDENTITY_RE = re.compile(r"[0-9a-f]{7,40}")
 RUNTIME_IMAGE_ID_RE = re.compile(r"[0-9a-f]{9}")
@@ -301,7 +309,7 @@ class BenchTimeline:
         self.handle = path.open("x", encoding="utf-8")
         self.record("timeline_opened")
 
-    def record(self, event: str, **fields: Any) -> None:
+    def record(self, event: str, **fields: Any) -> dict[str, Any]:
         payload = sanitize_artifact_value(
             {
                 "schema_version": 1,
@@ -313,6 +321,7 @@ class BenchTimeline:
         )
         self.handle.write(json.dumps(payload, separators=(",", ":"), allow_nan=False) + "\n")
         self.handle.flush()
+        return payload
 
     def record_external(self, payload: dict[str, Any], source: str) -> None:
         self.record("external_event", source=source, payload=payload)
@@ -862,13 +871,21 @@ class BenchSerial:
         self.identity_tracker = RuntimeIdentityTracker()
         self.line_count = 0
         self.reset_performed = False
+        self.reset_requested_ns: int | None = None
+        self.last_receive_ns: int | None = None
 
     def reset_for_boot(self, *, reset_factory: Callable[..., Any] | None = None) -> None:
         strategy, metadata = (reset_factory or native_usb_reset_strategy)(self.ser)
         self.reset_performed = False
         self.ser.reset_input_buffer()
         self.identity_tracker = RuntimeIdentityTracker()
-        self.timeline.record("serial_reset_requested", **metadata)
+        request = self.timeline.record("serial_reset_requested", **metadata)
+        if (
+            not isinstance(request, dict)
+            or type(request.get("host_monotonic_ns")) is not int
+        ):
+            raise RuntimeError("serial reset timeline anchor is unavailable")
+        self.reset_requested_ns = request["host_monotonic_ns"]
         # A failed control-line operation must never acquire a timing anchor.
         strategy()
         self.timeline.record("serial_reset_completed", **metadata)
@@ -892,7 +909,8 @@ class BenchSerial:
         self.log.write(safe + "\n")
         self.log.flush()
         self.line_count += 1
-        self.timeline.record("serial_receive", line=safe)
+        received = self.timeline.record("serial_receive", line=safe)
+        self.last_receive_ns = received["host_monotonic_ns"]
         self.identity_tracker.observe(text)
         return text
 
@@ -1184,6 +1202,93 @@ def _finish_camera(
     return result
 
 
+def collect_post_window_configuration(
+    observer: BenchSerial,
+    *,
+    required_after_ns: int,
+    timeout_s: float,
+    timeline: BenchTimeline,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> dict[str, Any]:
+    """Require a same-boot CFG emission conservatively later than the external window."""
+    if timeout_s <= 0:
+        raise ValueError("configuration tail timeout must be positive")
+    if type(required_after_ns) is not int or required_after_ns <= 0:
+        raise ValueError("external window completion timestamp is invalid")
+    reset_ns = observer.reset_requested_ns
+    runtime_identity = observer.runtime_identity
+    if (
+        type(reset_ns) is not int
+        or not isinstance(runtime_identity, dict)
+        or type(runtime_identity.get("boot_id")) is not int
+    ):
+        raise RuntimeError("post-window configuration lacks reset-bound runtime identity")
+    expected_boot_id = runtime_identity["boot_id"]
+    initial_boot_markers = observer.boot_marker_count
+    initial_line_count = observer.line_count
+    started = monotonic()
+    deadline = started + timeout_s
+    timeline.record(
+        "post_window_configuration_started",
+        required_after_ns=required_after_ns,
+        timeout_seconds=timeout_s,
+    )
+    while monotonic() < deadline:
+        remaining = deadline - monotonic()
+        line = observer.read_line(min(0.25, max(0.0, remaining)))
+        if observer.boot_marker_count != initial_boot_markers:
+            raise RuntimeError("board rebooted before post-window configuration was bounded")
+        if not line:
+            continue
+        try:
+            snapshot = parse_snapshot(line)
+        except ValueError as exc:
+            raise RuntimeError(f"post-window configuration is malformed: {exc}") from exc
+        if snapshot is None:
+            continue
+        if snapshot["bootId"] != expected_boot_id:
+            raise RuntimeError("post-window configuration identifies a different boot")
+        lower_ns = emitted_lower_bound_ns(reset_ns, snapshot["uptimeMs"])
+        received_ns = observer.last_receive_ns
+        if type(received_ns) is not int or lower_ns > received_ns:
+            raise RuntimeError(
+                "post-window configuration uptime contradicts its reset/receive bounds"
+            )
+        if lower_ns <= required_after_ns:
+            continue
+        result = {
+            "status": "verified",
+            "same_boot": True,
+            "lines_observed": observer.line_count - initial_line_count,
+            "snapshot_uptime_ms": snapshot["uptimeMs"],
+            "snapshot_revision": snapshot["revision"],
+            "emitted_lower_ns": lower_ns,
+            "received_ns": received_ns,
+            "required_after_ns": required_after_ns,
+            "duration_seconds": monotonic() - started,
+        }
+        timeline.record("post_window_configuration_completed", **result)
+        return result
+    raise RuntimeError(
+        "no same-boot CFG snapshot was conservatively emitted after the external evidence window"
+    )
+
+
+def post_window_configuration_timeout_s(elapsed_since_reset_s: float) -> float:
+    """Cover clock allowance and the next CFG cadence after the evidence window."""
+    if (
+        type(elapsed_since_reset_s) not in (int, float)
+        or not math.isfinite(elapsed_since_reset_s)
+        or elapsed_since_reset_s <= 0
+    ):
+        raise ValueError("elapsed reset-bound duration must be positive")
+    minimum_rate = CLOCK_ALLOWANCE_NUMERATOR / CLOCK_ALLOWANCE_DENOMINATOR
+    return max(
+        POST_WINDOW_CONFIGURATION_TAIL_MIN_S,
+        elapsed_since_reset_s * (1.0 / (minimum_rate * minimum_rate) - 1.0) + 3.0,
+    )
+
+
 def collect_live(
     args: argparse.Namespace,
     out_dir: Path,
@@ -1241,6 +1346,7 @@ def collect_live(
         camera_result: dict[str, Any] = {}
         collection_completed = False
         completion: dict[str, Any] = {}
+        external_window_completed_ns: int | None = None
         try:
             if camera is not None:
                 preflight = run_camera_preflight(camera)
@@ -1308,7 +1414,8 @@ def collect_live(
                 "process_session_continuous": True,
                 "runtime_identity_continuous": True,
             }
-            timeline.record("external_window_completed", **completion)
+            completed_event = timeline.record("external_window_completed", **completion)
+            external_window_completed_ns = completed_event["host_monotonic_ns"]
         finally:
             primary_error = sys.exc_info()[1]
             cleanup_errors: list[Exception] = []
@@ -1316,6 +1423,28 @@ def collect_live(
                 emulator_result = emulator.finish(collection_completed)
             except Exception as exc:  # noqa: BLE001
                 cleanup_errors.append(exc)
+            if (
+                observer is not None
+                and camera is not None
+                and collection_completed
+                and type(external_window_completed_ns) is int
+            ):
+                try:
+                    completion["post_window_configuration"] = (
+                        collect_post_window_configuration(
+                            observer,
+                            required_after_ns=external_window_completed_ns,
+                            timeout_s=post_window_configuration_timeout_s(
+                                (external_window_completed_ns - observer.reset_requested_ns)
+                                / 1_000_000_000
+                                if type(observer.reset_requested_ns) is int
+                                else args.duration_seconds
+                            ),
+                            timeline=timeline,
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    cleanup_errors.append(exc)
             if observer is not None:
                 try:
                     observer.close()

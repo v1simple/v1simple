@@ -7,6 +7,7 @@ import hashlib
 import json
 import sys
 import tempfile
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -471,7 +472,9 @@ def make_live_args() -> SimpleNamespace:
 def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> None:
     events = {"serial": 0, "emulator_start": 0}
     cameras: list[FakeCamera] = []
+    serials: list[Any] = []
     pending_profile_updates: list[dict[str, Any]] = []
+    emit_configuration = {"value": True}
 
     class FakeEmulator:
         def __init__(self, *_args: Any, **_kwargs: Any) -> None:
@@ -498,15 +501,20 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
     class FakeSerial:
         def __init__(self, *_args: Any) -> None:
             events["serial"] += 1
+            serials.append(self)
             self.boot_marker_count = 0
             self.line_count = 0
             self.timeline = _args[-1]
             self.runtime_identity = None
             self.reset_performed = False
+            self.reset_requested_ns: int | None = None
+            self.last_receive_ns: int | None = None
             self.boot_lines: list[str] = []
+            self.closed = False
 
         def reset_for_boot(self) -> None:
-            self.timeline.record("serial_reset_requested", strategy="fixture")
+            request = self.timeline.record("serial_reset_requested", strategy="fixture")
+            self.reset_requested_ns = request["host_monotonic_ns"]
             self.reset_performed = True
             self.boot_lines = [
                 "ESP-ROM:esp32s3-20210327",
@@ -518,7 +526,22 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
             self.timeline.record("serial_reset_completed", strategy="fixture")
 
         def read_line(self, _timeout: float) -> str:
-            line = self.boot_lines.pop(0) if self.boot_lines else ""
+            time.sleep(min(_timeout, 0.01))
+            if self.boot_lines:
+                line = self.boot_lines.pop(0)
+            elif not emit_configuration["value"]:
+                return ""
+            else:
+                assert self.reset_requested_ns is not None
+                uptime_ms = (time.monotonic_ns() - self.reset_requested_ns) // 1_000_000
+                line = (
+                    f"CFG bootId=42 uptimeMs={uptime_ms} revision=2 "
+                    "activeSlot=1 stealthEnabled=0 priorityArrowOnly=1 "
+                    "alertPersistenceSeconds=0"
+                )
+            received = self.timeline.record("serial_receive", line=line)
+            self.last_receive_ns = received["host_monotonic_ns"]
+            self.line_count += 1
             if line.startswith("BOOT "):
                 self.boot_marker_count += 1
                 self.runtime_identity = {
@@ -529,7 +552,7 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
             return line
 
         def close(self) -> None:
-            pass
+            self.closed = True
 
     class FakeLease:
         fd = 42
@@ -547,6 +570,9 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
         "retain_build_upload_artifacts": run_window_module.retain_build_upload_artifacts,
         "wait_for_port": run_window_module.wait_for_port,
         "V1RadioLease": run_window_module.V1RadioLease,
+        "post_window_configuration_timeout_s": (
+            run_window_module.post_window_configuration_timeout_s
+        ),
     }
     run_window_module.CameraCapture = lambda out, duration: (  # type: ignore[assignment]
         cameras.append(
@@ -640,6 +666,47 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
             assert_true(
                 events == {"serial": 1, "emulator_start": 1},
                 f"wrong pass lifecycle: {events}",
+            )
+
+            emit_configuration["value"] = False
+            run_window_module.post_window_configuration_timeout_s = (  # type: ignore[assignment]
+                lambda _elapsed: 0.05
+            )
+            tail_artifacts: dict[str, Any] = {}
+            try:
+                with_calibrator(
+                    calibrate,
+                    lambda: collect_live(
+                        make_live_args(), root / "missing-configuration-tail", tail_artifacts
+                    ),
+                )
+            except RuntimeError as exc:
+                assert_true(
+                    "no same-boot CFG snapshot" in str(exc),
+                    f"wrong missing-tail failure: {exc}",
+                )
+            else:
+                raise AssertionError("missing post-window configuration was accepted")
+            failed_camera = cameras[-1]
+            assert_true(
+                failed_camera.stop_calls == 1 and not failed_camera.running,
+                "tail failure did not close and retain the camera capture",
+            )
+            assert_true(serials[-1].closed, "tail failure did not close serial")
+            assert_true(
+                "bench_timeline" in tail_artifacts,
+                f"tail failure lost owned evidence: {tail_artifacts}",
+            )
+            timeline_path = root / "missing-configuration-tail" / "bench_timeline.ndjson"
+            tail_events = [
+                json.loads(line)["event"]
+                for line in timeline_path.read_text(encoding="utf-8").splitlines()
+            ]
+            assert_true(
+                "external_window_completed" in tail_events
+                and "post_window_configuration_started" in tail_events
+                and "post_window_configuration_completed" not in tail_events,
+                f"tail failure lifecycle was not retained: {tail_events}",
             )
     finally:
         for name, value in originals.items():

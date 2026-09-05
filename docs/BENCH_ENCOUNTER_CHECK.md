@@ -377,7 +377,10 @@ Without an explicit range, analysis uses the entire recorded camera interval,
 including the pre-roll before the first request and the tail after the final
 request, so the first and final input events can retain their complete windows.
 Selection stops before pixel reading if the input-selected checkpoint set would
-exceed 5,000 observations or the combined dense review would exceed 20,000.
+exceed 5,000 observations. Automatic dense review retains every original frame
+in its selected windows, bounded by the recording's frame count. It may exceed
+20,000 images in a normal five-minute recording. Repeated checkpoint requests
+for the same image remain distinct requirements, while that image is read once.
 Use `--range START:END` to bound a larger recording; a product event is included
 only when the range contains its complete available event window.
 Explicit range values are nonnegative seconds from the first replay request;

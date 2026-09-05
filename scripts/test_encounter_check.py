@@ -286,6 +286,39 @@ class EncounterCheckTests(unittest.TestCase):
         self.assertIn("selection_error", missing)
         self.assertNotIn("video_frame_index", missing)
 
+    def test_dense_automatic_review_keeps_complete_recording_above_old_frame_cap(self):
+        origin = 1_000_000_000
+        rows = [dict(host_capture_ns=origin + index * 5_000_000,
+                     duration_ns=5_000_000, frame_seq=index + 1)
+                for index in range(22000)]
+        stimulus = [dict(requestedHostMonotonicNs=origin + index * 500_000_000,
+                         notifications=[dict(kind="display_frame", bytesHex=str(index))])
+                    for index in range(220)]
+        # Adjacent input windows cover the full 110-second recording. Neither
+        # a frame budget nor overlapping held windows may truncate that union.
+        samples, _, _ = check.select_transition_review(
+            stimulus, rows, [(0, 110)], 2, 20_000_000)
+        indices = {sample["video_frame_index"] for sample in samples
+                   if "video_frame_index" in sample}
+        self.assertEqual(indices, set(range(22000)))
+        self.assertLessEqual(len(samples), len(rows) + check.MAX_SAMPLES)
+
+        # Product windows independently exceed the former cap. Every source
+        # image through the last complete event still belongs to the review.
+        definitions = [
+            {"event_id": f"event-{index}",
+             "end_ns": origin + 10_000_000 + (index + 1) * 312_000_000,
+             "target_basis": {
+                 "first_complete_target_input_ns": origin + 10_000_000 + index * 312_000_000}}
+            for index in range(350)]
+        product, windows = check.select_product_event_windows(
+            [], stimulus, rows, [(0, 110)], definitions,
+            {"maximum_source_marker_gap_ns": 10_000_000,
+             "minimum_post_completion_hold_ns": 312_000_000})
+        self.assertEqual(len(windows), 350)
+        self.assertEqual([sample["video_frame_index"] for sample in product],
+                         list(range(21842)))
+
     def test_held_context_requires_verified_interval_and_is_frozen_for_every_hold(self):
         stimulus, rows = inputs()
         for value in (None, 0, -1, 1_000_000_001, 1.5):

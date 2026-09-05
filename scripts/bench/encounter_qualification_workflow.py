@@ -852,7 +852,8 @@ def prepare(campaign_path: Path, run_dir: Path) -> dict[str, Any]:
                  "analysis reader runtime changed after freeze")
         result = analyze(retained_run, analysis, None, 2, inspect_transitions=True,
                          reader_qualification=None)
-        _require(result.get("errors") == [], "camera analysis contains errors")
+        _require(result.get("errors") == [],
+                 "camera analysis contains errors: " + "; ".join(result.get("errors", [])))
         temporal = result.get("temporal_classification")
         _require(isinstance(temporal, dict) and temporal.get("errors") == [],
                  "temporal classifier execution contains errors")

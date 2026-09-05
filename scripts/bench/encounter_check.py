@@ -31,7 +31,6 @@ FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
 PROBES = (-.05, .05, .15, .35)
 MAX_SAMPLES = 5000
-MAX_TRANSITION_FRAMES = 20000
 TRANSITION_BEFORE = .05
 TRANSITION_AFTER = .50
 BLINK_PHASE_NS = 96_000_000
@@ -211,6 +210,7 @@ def select_transition_review(stimulus, rows, ranges, cadence, maximum_source_int
 
     Windows are chosen from packet bytes and time before observing any pixels.
     The half-second inspection window is a coverage choice, never a deadline.
+    Dense work is bounded by the recording, plus the original checkpoint set.
     """
     require(type(maximum_source_interval_ns) is int and 0 < maximum_source_interval_ns <= 1_000_000_000,
             "verified maximum source interval is required for held context")
@@ -249,7 +249,7 @@ def select_transition_review(stimulus, rows, ranges, cadence, maximum_source_int
                 held_windows_ns.append((lo, hi))
     present = {s["video_frame_index"] for s in samples if "video_frame_index" in s}
     dense_windows_ns = [*windows_ns, *held_windows_ns]
-    dense = (_select_all_frames_in_bounds(origin, rows, dense_windows_ns, MAX_TRANSITION_FRAMES)
+    dense = (_select_all_frames_in_bounds(origin, rows, dense_windows_ns, len(rows))
              if dense_windows_ns else [])
     for sample in dense:
         if sample["video_frame_index"] in present:
@@ -263,8 +263,6 @@ def select_transition_review(stimulus, rows, ranges, cadence, maximum_source_int
         require(bool(reasons), "selected dense frame has no input-only selection reason")
         sample.update(role="transition", selection_reasons=reasons)
         samples.append(sample)
-    require(len(samples) <= MAX_TRANSITION_FRAMES,
-            "transition review exceeds 20000 observations; use an explicit range")
     samples.sort(key=lambda s: s["target_capture_ns"])
     for index, sample in enumerate(samples, 1):
         sample["frame_id"] = f"{index:04d}"
@@ -311,7 +309,7 @@ def select_product_event_windows(samples, stimulus, rows, ranges, definitions, p
         bounds.append((start, selected_end))
     if not bounds:
         return samples, []
-    dense = _select_all_frames_in_bounds(origin, rows, bounds, MAX_TRANSITION_FRAMES)
+    dense = _select_all_frames_in_bounds(origin, rows, bounds, len(rows))
     present = {sample["video_frame_index"] for sample in samples if "video_frame_index" in sample}
     for sample in dense:
         if sample["video_frame_index"] in present:
@@ -320,8 +318,6 @@ def select_product_event_windows(samples, stimulus, rows, ranges, definitions, p
                       selection_reasons=["every recorded frame in an exact product event window"])
         samples.append(sample)
         present.add(sample["video_frame_index"])
-    require(len(samples) <= MAX_TRANSITION_FRAMES,
-            "product event review exceeds 20000 observations; narrow the range")
     samples.sort(key=lambda sample: sample["target_capture_ns"])
     for index, sample in enumerate(samples, 1):
         sample["frame_id"] = f"{index:04d}"

@@ -161,6 +161,44 @@ class EncounterExpectationTests(unittest.TestCase):
         observed["secondary"]["value"][0]["frequency"] = "24.125"
         self.assertEqual(compare_sample(expected, observed)["checks"]["secondary"]["status"], "DIFFERENCE")
 
+    def test_identified_unreadable_card_contradicts_no_card_target(self):
+        expected = self.expected(config={"alertPersistenceSeconds": 0})
+        observed = literals()
+        observed["secondary"] = {
+            "state": "unreadable", "value": None,
+            "reason": "card direction and bars are not fully readable",
+            "partial_cards": [dict(band="Ka", frequency="34.700", direction=None, bars=None)],
+        }
+        original = copy.deepcopy(observed)
+        result = compare_sample(expected, observed)
+        self.assertEqual(result["status"], "DIFFERENCE")
+        check = result["checks"]["secondary"]
+        self.assertEqual(check["status"], "DIFFERENCE")
+        self.assertEqual(check["observed"][0]["direction"], None)
+        self.assertEqual(check["observed"][0]["bars"], None)
+        self.assertEqual(observed, original)
+
+        # A permitted card with unreadable details cannot become a match, and
+        # unestablished retirement cannot be treated as expired by host time.
+        required, _ = self.two_cards()
+        for allowed_target in (required, self.expected()):
+            self.assertEqual(compare_sample(allowed_target, observed)["checks"]["secondary"]["status"],
+                             "UNRESOLVED")
+
+    def test_unidentified_or_malformed_card_does_not_prove_presence(self):
+        expected = self.expected(config={"alertPersistenceSeconds": 0})
+        card = dict(band="Ka", frequency="34.700", direction=None, bars=None)
+        for partial in (None, [], [{}], [dict(card, band=None)], [dict(card, frequency=None)],
+                        [dict(card, frequency="unknown")], [dict(card, bars=8)]):
+            with self.subTest(partial=partial):
+                observed = literals()
+                observed["secondary"] = {"state": "unreadable", "partial_cards": partial}
+                self.assertEqual(compare_sample(expected, observed)["checks"]["secondary"]["status"],
+                                 "UNRESOLVED")
+        observed["secondary"] = {"state": "invalid", "partial_cards": [card]}
+        self.assertEqual(compare_sample(expected, observed)["checks"]["secondary"]["status"],
+                         "UNRESOLVED")
+
     def test_partial_extra_does_not_displace_a_complete_required_card(self):
         data = recording([([alert("ka", 34700), alert("k", 24150, "SIDE", 164, False)],
                            [91, 91, 31, 0x22, 0x22, 12, 12, 0x40])])

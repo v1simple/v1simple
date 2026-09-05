@@ -451,6 +451,26 @@ def _compare_fields(expected, observed):
             checks[name] = {**check, "observed": actual, "expected": spec}
         except EncounterEvidenceError as error:
             checks[name] = {"status": "UNRESOLVED", "reason": str(error)}
+            # An identified card contradicts a no-card target even if its
+            # direction or strength cannot be read. Preserve those unknowns;
+            # this establishes presence, never a complete card or a match.
+            reading = observed.get(name)
+            if (name == "secondary" and spec.get("allowed") == [[]]
+                    and expected["secondary_policy"].get("retirement_unknown") is False
+                    and isinstance(reading, dict)
+                    and reading.get("state") in ("unreadable", "ambiguous")):
+                try:
+                    partial = _normalize("secondary", reading.get("partial_cards"))
+                except EncounterEvidenceError:
+                    continue
+                if any(card["band"] is not None and card["frequency"] is not None
+                       for card in partial):
+                    checks[name] = {
+                        "status": "DIFFERENCE",
+                        "reason": "identified secondary card visible when accepted input permits none; "
+                                  "remaining card details are unresolved",
+                        "observed": partial, "expected": spec,
+                    }
     joint = {"status": "UNRESOLVED", "reason": "joint blink fields are not all readable/resolved"}
     phases = expected.get("joint_states", [])
     keys = set(phases[0]) if phases else set()

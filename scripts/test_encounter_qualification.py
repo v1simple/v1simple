@@ -310,7 +310,8 @@ class QualificationTests(unittest.TestCase):
             "implementation": {
                 "reader_sha256": "d" * 64 if reanalysis
                 else self.method["encounter_reader.py"],
-                "reader_setup": {"method_version": 4 if reanalysis else 5},
+                "reader_setup": ({"method_version": 4} if reanalysis
+                                 else copy.deepcopy(READER)),
             },
             "sequences": [],
             "single_frame_controls": single_hidden,

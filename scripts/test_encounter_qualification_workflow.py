@@ -1174,6 +1174,55 @@ class QualificationWorkflowTests(unittest.TestCase):
                  for path in helper.root.rglob("*") if path.is_file()},
                 source_bytes)
 
+    def test_static_reanalysis_rebinds_changed_qualification_with_same_reader(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "static-same-reader"
+            helper, source, method, _runtime, patches, session = (
+                self._static_reanalysis_fixture(
+                    destination, method_version=5, reader_sha="a" * 64))
+            method["encounter_qualification.py"] = "f" * 64
+            with ExitStack() as stack:
+                for item in patches:
+                    stack.enter_context(item)
+                result = workflow.reanalyze_static(source, destination)
+
+            self.assertEqual(result["status"], "QUALIFIED")
+            self.assertEqual(session,
+                             {"active": False, "entries": 1, "verified": True})
+            manifest = workflow.read_json(destination / "encounter-reader.json")
+            self.assertEqual(
+                manifest["reader"]["implementation_sha256"]["encounter_qualification.py"],
+                "f" * 64)
+            secondary = workflow.read_json(workflow.resolve_reference(
+                destination, manifest["visible_secondary_validation"], "secondary"))
+            self.assertNotIn("reader_reanalysis", secondary)
+            diagnostic = workflow.read_json(destination / "reanalysis-result.json")
+            self.assertFalse(
+                diagnostic["verification"]["visible_secondary_validation"][
+                    "reader_reanalysis"])
+
+    def test_static_reanalysis_does_not_hide_unversioned_reader_helper_change(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "static-helper-drift"
+            _helper, source, method, _runtime, patches, _session = (
+                self._static_reanalysis_fixture(
+                    destination, method_version=5, reader_sha="a" * 64))
+            method["encounter_ocr_session.py"] = "f" * 64
+            with ExitStack() as stack:
+                for item in patches:
+                    stack.enter_context(item)
+                with self.assertRaisesRegex(workflow.WorkflowError,
+                                            "diagnostics retained"):
+                    workflow.reanalyze_static(source, destination)
+
+            candidate = workflow.read_json(destination / "rejected-candidate.json")
+            secondary = workflow.read_json(workflow.resolve_reference(
+                destination, candidate["visible_secondary_validation"], "secondary"))
+            self.assertIn("reader_reanalysis", secondary)
+            diagnostic = workflow.read_json(destination / "reanalysis-result.json")
+            self.assertIn("does not identify a different reader",
+                          diagnostic["verification"]["errors"][0])
+
     def test_static_reanalysis_retains_rejection_without_publishing_manifest(self):
         def wrong_partial_identity(observation):
             secondary = observation.get("secondary")

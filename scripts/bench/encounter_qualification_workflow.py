@@ -1733,10 +1733,12 @@ def _reanalyze_secondary_document(source: Path, destination: Path,
                                   runtime: dict[str, Any], method: dict[str, str],
                                   camera: dict[str, Any]) -> dict[str, Any]:
     from encounter_qualification import (
-        _blind_secondary_reference, _derived_field_status, _observe_image)
+        CORE_READER_FILES, _blind_secondary_reference, _derived_field_status, _observe_image)
 
     document = read_json(source)
     _require(isinstance(document, dict), "source visible-secondary validation is malformed")
+    source_reader = deepcopy(document.get("reader"))
+    source_method = deepcopy(document.get("method"))
     _copy_static_inputs(source.parent, destination.parent, document, "secondary")
     registration = document.get("registration")
     _require(isinstance(registration, dict) and registration.get("result") == "PASS",
@@ -1765,15 +1767,31 @@ def _reanalyze_secondary_document(source: Path, destination: Path,
     _require(isinstance(source_setup, dict)
              and isinstance(source_implementation.get("reader_sha256"), str),
              "source visible-secondary reader identity is unavailable")
-    document["reader_reanalysis"] = {
-        "kind": "complete_exact_reader_reread",
-        "source_sealed_key_sha256": sealed_reference["sha256"],
-        "source_method_version": source_setup["method_version"],
-        "source_reader_sha256": source_implementation["reader_sha256"],
-        "current_method_version": runtime.get("method_version"),
-        "current_reader_sha256": method.get("encounter_reader.py"),
-        "complete_source_set_reread": True,
-    }
+    current_core_files = {name: method.get(name) for name in CORE_READER_FILES}
+    same_reader = (
+        source_reader == runtime
+        and isinstance(source_method, dict)
+        and source_method.get("method_version") == runtime.get("method_version")
+        and source_method.get("files") == current_core_files
+        and source_setup == runtime
+        and source_implementation["reader_sha256"] == method.get("encounter_reader.py")
+    )
+    if same_reader:
+        # A qualification-logic change can require a fresh verification even
+        # when the exact pixel reader is unchanged. In that case the verifier
+        # requires each regenerated observation to match the sealed original;
+        # describing it as a different-reader reread would be false.
+        document.pop("reader_reanalysis", None)
+    else:
+        document["reader_reanalysis"] = {
+            "kind": "complete_exact_reader_reread",
+            "source_sealed_key_sha256": sealed_reference["sha256"],
+            "source_method_version": source_setup["method_version"],
+            "source_reader_sha256": source_implementation["reader_sha256"],
+            "current_method_version": runtime.get("method_version"),
+            "current_reader_sha256": method.get("encounter_reader.py"),
+            "complete_source_set_reread": True,
+        }
     write_json(destination, document)
     return document
 

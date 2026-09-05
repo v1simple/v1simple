@@ -249,7 +249,10 @@ decision rejects qualification. The bundle must establish all of the following:
 
 The OCR probe proves that the local framework can execute a representative
 request in this environment. It is not a DUT observation and is never used to
-classify a bench frame.
+classify a bench frame. Runtime identity uses the SHA-256 of the exact decoded
+probe image; the implementation inventory separately binds the Base64 source
+file bytes. Rewrapping the same image leaves runtime identity unchanged, and a
+changed source file or decoded image still invalidates its respective binding.
 
 The gate can verify retained bytes and rerun deterministic reader and comparison
 code. It cannot reconstruct what a human observer was shown. The statements

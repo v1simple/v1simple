@@ -15,6 +15,16 @@ PROBE_FILE = "encounter_ocr_probe.b64"
 EXPECTED_TEXT = "K24.150"
 
 
+def probe_image_bytes() -> bytes:
+    """Return the exact probe image, independent of its source-file encoding."""
+    encoded = b"".join(Path(__file__).with_name(PROBE_FILE).read_bytes().split())
+    return base64.b64decode(encoded, validate=True)
+
+
+def probe_image_sha256() -> str:
+    return hashlib.sha256(probe_image_bytes()).hexdigest()
+
+
 def _normalized(text: Any) -> str:
     if not isinstance(text, str):
         return ""
@@ -29,14 +39,13 @@ def probe_ocr_runtime(cache_dir: Path, setup: dict[str, Any]) -> dict[str, Any]:
     restricted execution environment.  The retained probe is display content,
     contains no expected run data, and is never used to classify a DUT frame.
     """
-    probe = Path(__file__).with_name(PROBE_FILE)
-    probe_bytes = probe.read_bytes()
     result: dict[str, Any] = {
         "status": "unavailable",
-        "probe_sha256": hashlib.sha256(probe_bytes).hexdigest(),
         "expected_text": EXPECTED_TEXT,
     }
     try:
+        probe_bytes = probe_image_bytes()
+        result["probe_sha256"] = hashlib.sha256(probe_bytes).hexdigest()
         if setup.get("ocr_available") is not True:
             raise RuntimeError("OCR helper did not compile")
         source_sha = setup.get("ocr_source_sha256")
@@ -48,8 +57,7 @@ def probe_ocr_runtime(cache_dir: Path, setup: dict[str, Any]) -> dict[str, Any]:
         binary_sha = hashlib.sha256(binary.read_bytes()).hexdigest()
         if binary_sha != setup.get("ocr_binary_sha256"):
             raise RuntimeError("OCR helper binary identity differs")
-        encoded = b"".join(probe_bytes.split()).decode("ascii")
-        base64.b64decode(encoded, validate=True)
+        encoded = base64.b64encode(probe_bytes).decode("ascii")
         completed = subprocess.run([str(binary)], input=json.dumps([encoded]) + "\n",
                                    text=True, capture_output=True, timeout=20)
         payload = json.loads(completed.stdout)

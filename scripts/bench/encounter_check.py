@@ -572,6 +572,8 @@ def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cade
         method[p.name] = sha256_file(p)
     for p in Path(__file__).parent.glob("encounter_*.png"):
         method[p.name] = sha256_file(p)
+    for p in Path(__file__).parent.glob("encounter_*.b64"):
+        method[p.name] = sha256_file(p)
     policy_path = Path(__file__).with_name("visible_event_policies.json")
     if policy_path.is_file():
         method[policy_path.name] = sha256_file(policy_path)

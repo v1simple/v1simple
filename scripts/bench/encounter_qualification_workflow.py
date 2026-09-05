@@ -223,6 +223,7 @@ def method_hashes(policy_bytes: bytes | None = None) -> dict[str, str]:
     files = list(BENCH_DIR.glob("*.py"))
     files += list(BENCH_DIR.glob("encounter_*.swift"))
     files += list(BENCH_DIR.glob("encounter_*.png"))
+    files += list(BENCH_DIR.glob("encounter_*.b64"))
     result = {path.name: sha256(path) for path in files}
     result[POLICY_PATH.name] = (hashlib.sha256(policy_bytes).hexdigest()
                                        if policy_bytes is not None else sha256(POLICY_PATH))
@@ -302,8 +303,8 @@ def _verify_frozen_source(root: Path, campaign: dict[str, Any], *, require_unall
                  "candidate classifier was allowlisted before blind finalization")
 
 
-def freeze(destination: Path) -> dict[str, Any]:
-    """Freeze the exact method and observer contract without opening camera pixels."""
+def freeze(destination: Path, base_manifest: Path | None = None) -> dict[str, Any]:
+    """Verify the retained base, then freeze without opening a new capture."""
     from camera_contract import EXPECTED_CAMERA_NAME, EXPECTED_CAMERA_PROFILE
     from encounter_product import DEFAULT_POLICY_ID, load_policy
     from encounter_qualification import (
@@ -325,6 +326,9 @@ def freeze(destination: Path) -> dict[str, Any]:
 
     def build(root: Path) -> None:
         runtime = reader_runtime(root / "reader-cache")
+        camera = {"name": EXPECTED_CAMERA_NAME, "profile": EXPECTED_CAMERA_PROFILE}
+        base_path = (base_manifest or _default_manifest_path()).resolve()
+        validate_base_evidence(base_path, method, runtime, camera, policy)
         reader_binding = {
             "method_version": runtime.get("method_version"),
             "source_sha256": method["encounter_reader.py"],
@@ -376,12 +380,14 @@ def freeze(destination: Path) -> dict[str, Any]:
             "implementation_sha256": method,
             "reader_runtime": runtime,
             "reader_binding": reader_binding,
-            "camera": {"name": EXPECTED_CAMERA_NAME, "profile": EXPECTED_CAMERA_PROFILE},
+            "camera": camera,
+            "base_manifest_sha256": sha256(base_path),
             "classifiers": classifiers,
         }
         write_json(root / "campaign.json", document)
         summary.update(campaign=str(destination.resolve()), source_git_sha=commit,
-                       classifiers=list(TARGET_CLASSIFIERS), pixel_files_opened=0)
+                       classifiers=list(TARGET_CLASSIFIERS),
+                       base_qualification="VERIFIED", reserved_capture_pixel_files_opened=0)
 
     _atomic_directory(destination.resolve(), build)
     return summary
@@ -1393,6 +1399,39 @@ def _resolve_base_evidence(base_path: Path,
     return top, arrow_entry
 
 
+def validate_base_evidence(base_path: Path, method: dict[str, str],
+                           runtime: dict[str, Any], camera: dict[str, Any],
+                           policy: dict[str, Any]) -> None:
+    """Rerun retained static/arrow proof under this method before reserving a capture."""
+    from encounter_qualification import verify_qualification
+
+    _resolve_base_evidence(base_path, method)
+    base = read_json(base_path)
+    _require(base.get("reader", {}).get("runtime") == runtime,
+             "base static qualification uses a different reader runtime")
+    _require(base.get("camera") == camera,
+             "base static qualification uses a different camera")
+    # Retain every original label, comparison, source reference and runtime.
+    # The verifier re-reads source pixels and rederives the proof under the
+    # current method. This permits orchestration changes, not inherited claims.
+    candidate = deepcopy(base)
+    candidate["reader"]["implementation_sha256"] = method
+    with tempfile.NamedTemporaryFile(
+            prefix=".base-qualification-", suffix=".json", dir=base_path.parent,
+            delete=False) as stream:
+        candidate_path = Path(stream.name)
+        stream.write(json_bytes(candidate))
+    try:
+        verified = verify_qualification(
+            candidate_path, implementation_sha256=method, reader_runtime=runtime,
+            camera_name=camera["name"], camera_profile=camera["profile"],
+            policy=policy, bench_source_sha256=sha256(BENCH_PATH))
+    finally:
+        candidate_path.unlink(missing_ok=True)
+    _require(verified.get("status") == "QUALIFIED",
+             "retained base qualification rejected: " + "; ".join(verified.get("errors", [])))
+
+
 def _prospective_policy(campaign: dict[str, Any]) -> tuple[dict[str, Any], bytes, dict[str, Any]]:
     policy_document = read_json(POLICY_PATH)
     policy = policy_document["policies"][campaign["policy_id"]]
@@ -1592,6 +1631,8 @@ def finalize(campaign_path: Path, base_manifest: Path, manifest_path: Path) -> d
     _verify_frozen_source(
         campaign_root, campaign, require_unallowlisted=True,
         runtime_cache=campaign_root / "reader-cache")
+    _require(campaign.get("base_manifest_sha256") == sha256(base_manifest.resolve()),
+             "base qualification changed after freeze")
     prepared = campaign_root / "prepared"
     prepared_doc = read_json(prepared / "prepared.json")
     _require(prepared_doc.get("kind") == PREPARED_NAME
@@ -1714,6 +1755,8 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     freeze_parser = commands.add_parser("freeze", help="freeze code, runtime and blind rubric")
     freeze_parser.add_argument("--out", type=Path, required=True, help="new ignored campaign directory")
+    freeze_parser.add_argument("--base-manifest", type=Path, default=_default_manifest_path(),
+                               help="retained static and arrow evidence to verify before capture")
     prepare_parser = commands.add_parser("prepare", help="read one reserved capture and make blind packets")
     prepare_parser.add_argument("--campaign", type=Path, required=True)
     prepare_parser.add_argument("--run-dir", type=Path, required=True,
@@ -1734,7 +1777,7 @@ def main() -> int:
     args = build_parser().parse_args()
     try:
         if args.command == "freeze":
-            result = freeze(args.out)
+            result = freeze(args.out, args.base_manifest)
         elif args.command == "prepare":
             result = prepare(args.campaign, args.run_dir)
         else:

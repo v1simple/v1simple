@@ -2215,8 +2215,12 @@ def verify_qualification(path: Path | None, *, implementation_sha256: dict[str, 
                  and isinstance(runtime_probe, dict)
                  and runtime_probe.get("status") == "operational",
                  "reader OCR is not operational")
-        _require(runtime_probe.get("probe_sha256") ==
-                 implementation.get("encounter_ocr_probe.b64"),
+        from encounter_runtime_probe import probe_image_sha256
+        try:
+            probe_digest = probe_image_sha256()
+        except (OSError, ValueError) as exc:
+            raise QualificationError("reader OCR probe source is unavailable or invalid") from exc
+        _require(runtime_probe.get("probe_sha256") == probe_digest,
                  "reader OCR probe identity differs")
         camera = manifest.get("camera")
         expected_camera = {"name": camera_name, "profile": deepcopy(camera_profile)}

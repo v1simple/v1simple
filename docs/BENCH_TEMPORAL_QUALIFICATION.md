@@ -34,10 +34,16 @@ CAMPAIGN="$ARTIFACT_ROOT/qualification/temporal-v2-$(git rev-parse --short HEAD)
 python3 scripts/bench/encounter_qualification_workflow.py freeze --out "$CAMPAIGN"
 ```
 
-`freeze` compiles and probes the OCR helper, records the exact reader,
+`freeze` first reruns the retained static and arrow qualification under the
+current reader, runtime, and camera profile. A missing or incompatible base
+stops before a new capture is reserved. It preserves the original blind labels
+and source references and pins the verified base manifest for finalization.
+
+It compiles and probes the OCR helper, records the exact reader,
 classifier, specification, bench, camera, and observer-rubric identities, and
 confirms that neither candidate classifier is allowlisted. It does
-not open a camera recording.
+not open the new qualification recording. The base check does read the existing
+qualification images and clips.
 
 ## 2. Make one reserved camera capture
 

@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "bench"))
 from encounter_expectation import compare_sample
+from encounter_runtime_probe import probe_image_sha256
 import encounter_qualification
 from encounter_qualification import (
     CLASSIFIER_IMPLEMENTATION_FILES,
@@ -39,7 +40,10 @@ READER = {
     "ocr_source_sha256": "b" * 64,
     "ocr_available": True,
     "ocr_compiled": True,
-    "ocr_runtime_probe": {"status": "operational", "probe_sha256": SHA},
+    "ocr_runtime_probe": {
+        "status": "operational",
+        "probe_sha256": probe_image_sha256(),
+    },
 }
 CAMERA = {
     "name": "Global Shutter Camera",
@@ -1312,6 +1316,18 @@ class QualificationTests(unittest.TestCase):
 
     def test_complete_exact_bundle_qualifies(self):
         self.assertEqual(self.verify(self.write_bundle())["status"], "QUALIFIED")
+
+    def test_probe_image_drift_or_invalid_source_rejects_qualification(self):
+        path = self.write_bundle()
+        with patch("encounter_runtime_probe.probe_image_sha256", return_value="0" * 64):
+            result = self.verify(path)
+            self.assertEqual(result["status"], "REJECTED")
+            self.assertIn("probe identity differs", result["errors"][0])
+        for error in (OSError("missing"), ValueError("invalid encoding")):
+            with patch("encounter_runtime_probe.probe_image_sha256", side_effect=error):
+                result = self.verify(path)
+                self.assertEqual(result["status"], "REJECTED")
+                self.assertIn("probe source is unavailable or invalid", result["errors"][0])
 
     def test_complete_temporal_bundle_qualifies(self):
         temporal, _ = self.temporal_validation()

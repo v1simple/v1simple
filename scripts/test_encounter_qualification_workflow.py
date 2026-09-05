@@ -36,6 +36,57 @@ from camera_contract import EXPECTED_CAMERA_NAME
 
 
 class QualificationWorkflowTests(unittest.TestCase):
+    def test_base_manifest_is_pinned_and_drift_stops_before_observation_access(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "campaign"
+            base = root / "base.json"
+            base.write_text('{"qualification_id":"original"}')
+            expected = workflow.sha256(base)
+            with (patch.object(workflow, "git_identity", return_value=("a" * 40, True)),
+                  patch.object(workflow, "reader_runtime", return_value={"method_version": 5}),
+                  patch.object(workflow, "validate_base_evidence")):
+                workflow.freeze(destination, base)
+            campaign = workflow.read_json(destination / "campaign.json")
+            self.assertEqual(campaign["base_manifest_sha256"], expected)
+            base.write_text('{"qualification_id":"replacement"}')
+            with (patch.object(workflow, "_verify_frozen_source"),
+                  patch.object(workflow, "_completed_observations") as observations):
+                with self.assertRaisesRegex(workflow.WorkflowError, "base qualification changed"):
+                    workflow.finalize(destination, base, root / "published.json")
+            observations.assert_not_called()
+            self.assertFalse((destination / "prepared" / workflow.CONSUMED_NAME).exists())
+
+    def test_failed_base_preflight_does_not_reserve_a_campaign(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "campaign"
+            base = Path(directory) / "base.json"
+            with (patch.object(workflow, "git_identity", return_value=("a" * 40, True)),
+                  patch.object(workflow, "reader_runtime", return_value={"method_version": 5}),
+                  patch.object(workflow, "validate_base_evidence",
+                               side_effect=workflow.WorkflowError("retained base rejected")) as verify):
+                with self.assertRaisesRegex(workflow.WorkflowError, "retained base rejected"):
+                    workflow.freeze(destination, base)
+            self.assertFalse(destination.exists())
+            verify.assert_called_once()
+            self.assertEqual(verify.call_args.args[0], base.resolve())
+
+    def test_workflow_and_analysis_bind_every_required_runtime_source(self):
+        from encounter_check import analyze
+        from encounter_qualification import CORE_READER_FILES, OCR_RUNTIME_FILES, QUALIFICATION_LOGIC_FILES
+
+        frozen = workflow.method_hashes()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            # A missing run stops before pixels, while retaining the real method inventory.
+            result = analyze(root / "missing-run", root, None, 2)
+            self.assertTrue(result["errors"])
+            for name in (*CORE_READER_FILES, *OCR_RUNTIME_FILES, *QUALIFICATION_LOGIC_FILES):
+                expected = hashlib.sha256((BENCH_DIR / name).read_bytes()).hexdigest()
+                self.assertEqual(frozen[name], expected)
+                self.assertEqual(result["implementation_sha256"][name], expected)
+                self.assertEqual((root / "method" / name).read_bytes(), (BENCH_DIR / name).read_bytes())
+
     def test_workflow_targets_only_physically_supported_temporal_candidates(self):
         self.assertEqual(
             workflow.TARGET_CLASSIFIERS,

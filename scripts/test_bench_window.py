@@ -1472,11 +1472,14 @@ def test_serial_carriage_return_framing_preserves_reset_evidence_and_failures() 
     suffix = ["rst:0x15 (USB_UART_CHIP_RESET),boot:0xa (SPI_FAST_FLASH_BOOT)",
               "BOOT bootId=4 uptimeMs=2053 reset=USB git=2f32dda image=04904e028",
               "[Boot] Ready gate opened at 2380 ms", "[Boot] setup total: 2262 ms"]
-    for prefix, error in (("load:0x3fce2820,len:0x10cc", None),
-                          ("Guru Meditation Error: panic", "panic or brownout"),
-                          (rom, "repeated ROM start")):
+    for prefix, trailing, error in (("load:0x3fce2820,len:0x10cc", "", None),
+                          ("Guru Meditation Error: panic", "", "panic or brownout"),
+                          (rom, "", "repeated ROM start"),
+                          ("load:0x3fce2820,len:0x10cc", rom, "repeated ROM start"),
+                          ("load:0x3fce2820,len:0x10cc", "Guru Meditation Error: panic", "panic or brownout")):
+        ending = suffix[:-1] + [suffix[-1] + ("\r" + trailing if trailing else "")]
         chunks = iter([(prefix + "\r" + rom + "\n").encode(),
-                       *[(line + "\r\n").encode() for line in suffix]])
+                       *[(line + "\r\n").encode() for line in ending]])
         observer = run_window_module.BenchSerial.__new__(run_window_module.BenchSerial)
         clock = FakeClock()
         received = []

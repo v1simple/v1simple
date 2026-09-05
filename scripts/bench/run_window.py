@@ -957,7 +957,8 @@ def establish_serial_boundary(
         if observer.runtime_identity is not None:
             if require_explicit_reset and not (rom_start_observed and reset_reason_observed):
                 raise RuntimeIdentityFailure("runtime BOOT identity preceded fresh reset-to-ready evidence")
-            if not require_explicit_reset or (ready_gate_observed and setup_completed):
+            if not require_explicit_reset or (ready_gate_observed and setup_completed
+                                             and not getattr(observer, "_pending_lines", [])):
                 mode = "startup_completed" if startup_detected else "identity_observed"
                 break
 

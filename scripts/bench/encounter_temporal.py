@@ -20,7 +20,7 @@ ARROW_ACQUISITION_CLASSIFIER_ID = "v1-arrow-target-acquisition-v1"
 BAR_CLASSIFIER_ID = "v1-main-bar-adjacent-redraw-v2"
 BADGE_CLASSIFIER_ID = "v1-muted-badge-rising-fill-v2"
 FREQUENCY_CLASSIFIER_ID = "v1-unmute-stable-frequency-sweep-v2"
-FREQUENCY_CONTEXT_CLASSIFIER_ID = "v1-stable-frequency-closed-context-v3"
+FREQUENCY_CONTEXT_CLASSIFIER_ID = "v1-stable-frequency-intact-context-v1"
 CLASSIFIER_IDS = (
     SECONDARY_CLASSIFIER_ID,
     SECONDARY_CONTEXT_CLASSIFIER_ID,

@@ -261,7 +261,7 @@ func runHelp() {
       --machine-events     emit stable completion events for an external runner
       --scenario <path>    external encounter for managed bench playback
       --reader-qualification
-                           fixed 264-second X/K/Ka reader exercise for bench
+                           fixed 68-second X/K/Ka reader exercise for bench
       --scenario-evidence P
                            write path-free resolved scenario JSON as raw evidence
       --handshake-only     runner preflight: one clear alert row, then stay quiet

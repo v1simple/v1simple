@@ -47,6 +47,10 @@ MINIMUM_PARTIAL_SECONDARY_IDENTITY_AGREEMENTS = 5
 MINIMUM_EMPTY_SECONDARY_PRESENCE_CONTROLS = 5
 MINIMUM_TEMPORAL_POSITIVES = 5
 MINIMUM_TEMPORAL_NEGATIVES = 5
+TEMPORAL_CANDIDATE_SELECTION = {
+    "rule": "ALL_ADMISSIONS_AND_HASHED_REJECTIONS_V1",
+    "maximum_rejections": 12,
+}
 TEMPORAL_OBSERVER_CONTEXT_NS_EACH_SIDE = 300_000_000
 VISIBLE_SECONDARY_SOURCE_NAMES = (
     "packet_manifest", "blind_labels", "sealed_key", "adjudication")
@@ -80,6 +84,40 @@ TEMPORAL_SOURCE_HASH_FIELDS = {
     "analysis_result": "analysis_result_sha256",
 }
 
+def select_temporal_rejections(classifier_id, capture_id, records):
+    """Select negative controls without observer labels; admissions are never sampled."""
+    def rank(record):
+        if (not isinstance(record, dict)
+                or any(not isinstance(record.get(name), dict)
+                       or type(record[name].get("video_frame_index")) is not int
+                       for name in ("first", "last"))):
+            raise ValueError("temporal rejection identity is malformed")
+        identity = {
+            "capture_id": capture_id,
+            "classifier_id": classifier_id,
+            "first_video_frame_index": record.get("first", {}).get("video_frame_index"),
+            "last_video_frame_index": record.get("last", {}).get("video_frame_index"),
+        }
+        return (_canonical_sha256(identity), _canonical_sha256(record))
+    return sorted(records, key=rank)[:TEMPORAL_CANDIDATE_SELECTION["maximum_rejections"]]
+
+
+def temporal_selection_document(admitted_count, rejected_count, opaque_ids):
+    if any(type(value) is not int or value < 0 for value in (admitted_count, rejected_count)):
+        raise ValueError("temporal candidate denominators are invalid")
+    return {
+        "schema_version": 3,
+        "kind": "blind_temporal_classifier_selection",
+        "candidate_selection": deepcopy(TEMPORAL_CANDIDATE_SELECTION),
+        "candidate_counts": {"admitted": admitted_count, "rejected": rejected_count},
+        "selected_counts": {
+            "admitted": admitted_count,
+            "rejected": min(rejected_count, TEMPORAL_CANDIDATE_SELECTION["maximum_rejections"]),
+        },
+        "opaque_ids": opaque_ids,
+    }
+
+
 COMMON_TEMPORAL_IMPLEMENTATION_FILES = (
     "encounter_check.py",
     "encounter_sequence.py",
@@ -105,6 +143,9 @@ CLASSIFIER_IMPLEMENTATION_FILES = {
     "v1-arrow-target-acquisition-v1": (
         *COMMON_TEMPORAL_IMPLEMENTATION_FILES, "encounter_arrow_acquisition.py"),
     "v1-stable-frequency-closed-context-v3": (
+        *COMMON_TEMPORAL_IMPLEMENTATION_FILES,
+        "encounter_frequency_context.py", "encounter_redraw_probe.py"),
+    "v1-stable-frequency-intact-context-v1": (
         *COMMON_TEMPORAL_IMPLEMENTATION_FILES,
         "encounter_frequency_context.py", "encounter_redraw_probe.py"),
     "v1-main-bar-adjacent-redraw-v2": (
@@ -239,15 +280,17 @@ TEMPORAL_V2_OBSERVER_RUBRICS = {
             "confidence": ("HIGH", "MEDIUM", "LOW"),
         },
     },
-    "v1-stable-frequency-closed-context-v3": {
+    "v1-stable-frequency-intact-context-v1": {
         "raw_affected_fields": ["primary_frequency"],
         "observer_eligibility_rule": (
-            "SAME_FREQUENCY_GLYPHS_THROUGHOUT with BOTH_CLEAR endpoints, "
+            "SAME_FREQUENCY_GLYPHS_THROUGHOUT with ALL_SEGMENTS_COMPLETE, BOTH_CLEAR endpoints, "
             "LEGAL_TARGET_CONTENT, and HIGH confidence"),
         "eligibility_detail": (
             "Eligible only when two clear same-frequency supports close each side, every frame "
-            "between them preserves those same frequency glyphs, the content is a legal current "
-            "target, and confidence is HIGH. Do not infer or record the machine branch."),
+            "between them preserves those same frequency glyphs with every illuminated segment "
+            "complete, the content is a legal current target, and confidence is HIGH. Partial "
+            "segments anywhere in the complete closing context are ineligible. Do not infer "
+            "or record the machine branch."),
         "field_guidance": {
             "observed_frequency": (
                 "Transcribe the exact five frequency digits and decimal visible in the context."),
@@ -256,16 +299,21 @@ TEMPORAL_V2_OBSERVER_RUBRICS = {
                 "when the same five frequency digits and decimal persist throughout."),
             "endpoint_support": (
                 "BOTH_CLEAR requires two stable, mutually agreeing frequency frames on each side."),
+            "segment_integrity": (
+                "ALL_SEGMENTS_COMPLETE requires every illuminated segment to retain its full "
+                "shape throughout the entire closing context, including both support pairs. "
+                "A readable number with a partial or disappearing stroke does not qualify."),
             "target_content": (
                 "LEGAL_TARGET_CONTENT requires the shown frequency to be one permitted current "
                 "target; do not use a machine branch label."),
             "confidence": "Use HIGH only when every required visual fact is clear.",
         },
         "literal_fields": (
-            "observed_frequency", "frequency_glyph_relation", "endpoint_support",
+            "observed_frequency", "frequency_glyph_relation", "segment_integrity", "endpoint_support",
             "target_content", "confidence"),
         "required_literals": {
             "frequency_glyph_relation": "SAME_FREQUENCY_GLYPHS_THROUGHOUT",
+            "segment_integrity": "ALL_SEGMENTS_COMPLETE",
             "endpoint_support": "BOTH_CLEAR",
             "target_content": "LEGAL_TARGET_CONTENT",
             "confidence": "HIGH",
@@ -274,6 +322,8 @@ TEMPORAL_V2_OBSERVER_RUBRICS = {
             "frequency_glyph_relation": (
                 "SAME_FREQUENCY_GLYPHS_THROUGHOUT", "FREQUENCY_GLYPHS_CHANGE",
                 "VISUALLY_INDETERMINATE"),
+            "segment_integrity": (
+                "ALL_SEGMENTS_COMPLETE", "PARTIAL_OR_MISSING_SEGMENT", "INDETERMINATE"),
             "endpoint_support": (
                 "BOTH_CLEAR", "LEFT_UNCLEAR", "RIGHT_UNCLEAR", "BOTH_UNCLEAR",
                 "INDETERMINATE"),
@@ -556,10 +606,10 @@ _TEMPORAL_V2_REJECTION_CODES = {
         "TOTAL_BACKWARD_MOTION", "UNCHANGED_DIRECTION_MOTION",
         "CLAIMED_FRAME_AT_CURRENT_ENDPOINT",
     },
-    "v1-stable-frequency-closed-context-v3": {
+    "v1-stable-frequency-intact-context-v1": {
         "RUN_SPAN", "UNCLOSED_RUN", "SOURCE_GAP", "SUPPORT_SPAN", "SUPPORT_VALUE",
         "SUPPORT_COMPARISON", "SUPPORT_GEOMETRY", "TARGET_MISMATCH", "CONTEXT_GEOMETRY",
-        "PRODUCT_FIELD_SCOPE", "READER_REASON", "FREQUENCY_GEOMETRY", "BRANCH_GEOMETRY",
+        "PRODUCT_FIELD_SCOPE", "READER_REASON", "FREQUENCY_GEOMETRY",
         "NONCONTIGUOUS_PRODUCT_CLAIM",
     },
     "v1-secondary-closed-context-v3": {
@@ -637,8 +687,7 @@ _FREQUENCY_CONTEXT_RECORD_KEYS = {
     "raw_affected_fields",
     "video_frame_indices", "first", "last", "left_support", "right_support",
     "context_frame_indices", "context_observed_branches", "support_derived_frequency",
-    "support_derived_digit_masks", "ambiguity_reason", "partial_segment_evidence",
-    "maximum_partial_expected_on_segments", "partial_off_separation_min",
+    "support_derived_digit_masks", "ambiguity_reason",
     "maximum_refusal_run_span_ns", "maximum_support_chain_span_ns",
     "verified_maximum_source_interval_ns", "capture_id", "selection_manifest_sha256",
     "reader_method_version", "reader_sha256", "redraw_probe_method_version",
@@ -1489,7 +1538,7 @@ def _temporal_v2_observer_result(classifier_id: str, observation: Any) -> tuple[
                         and (len(set(endpoints[0]) ^ set(endpoints[1])) == 1
                              if classifier_id == "v1-arrow-phase-edge-v4"
                              else endpoints[0] != endpoints[1]))
-    elif classifier_id == "v1-stable-frequency-closed-context-v3":
+    elif classifier_id == "v1-stable-frequency-intact-context-v1":
         frequency = literal["observed_frequency"]
         _require(frequency is None or (isinstance(frequency, str)
                                        and re.fullmatch(r"[0-9]{2}\.[0-9]{3}", frequency)),
@@ -1604,7 +1653,7 @@ def _temporal_v2_claim_matches_record(classifier_id: str, spec_sha256: str,
                     sorted(set(phase.get("previous_phase", [])) | set(endpoints[1])))
                 and isinstance(changed, list) and bool(changed)
                 and changed == sorted(set(endpoints[0]) ^ set(endpoints[1])))
-    if classifier_id == "v1-stable-frequency-closed-context-v3":
+    if classifier_id == "v1-stable-frequency-intact-context-v1":
         signature = record.get("event_signature")
         frequency = record.get("support_derived_frequency")
         required_literals = TEMPORAL_V2_OBSERVER_RUBRICS[classifier_id][
@@ -1615,8 +1664,7 @@ def _temporal_v2_claim_matches_record(classifier_id: str, spec_sha256: str,
                     "LEGAL_PRESENTATION_TRANSITION"
                 and record.get("verification_closure_semantics") ==
                     "RAW_CURRENT_BRACKETED_UNRESOLVED_VERIFICATION_BOUNDARY"
-                and record.get("branch") in {
-                    "intact_mask", "partial_expected_on_segments"}
+                and record.get("branch") == "intact_mask"
                 and isinstance(frequency, str)
                 and re.fullmatch(r"[0-9]{2}\.[0-9]{3}", frequency) is not None
                 and literal.get("observed_frequency") == frequency
@@ -1729,7 +1777,7 @@ _SOURCE_FRAMEHASH_CACHE: dict[tuple[str, str], tuple[str, ...]] = {}
 _TEMPORAL_V2_INSET_LOGICAL = {
     "v1-arrow-phase-edge-v4": (990, 190, 1165, 400),
     "v1-arrow-target-acquisition-v1": (990, 190, 1165, 400),
-    "v1-stable-frequency-closed-context-v3": (425, 225, 845, 390),
+    "v1-stable-frequency-intact-context-v1": (425, 225, 845, 390),
     "v1-secondary-closed-context-v3": (385, 360, 880, 460),
     "v1-secondary-text-optical-bridge-v1": (385, 360, 880, 460),
     "v1-main-bar-adjacent-redraw-v2": (860, 185, 980, 440),
@@ -2408,20 +2456,12 @@ def _validate_temporal_v2_frequency_context_record(
     branches = spec_document.get("branches")
     profile = spec_document.get("profile")
     branch = record.get("branch")
-    reasons = {
-        "intact_mask": "inconsistent illuminated frequency segment levels",
-        "partial_expected_on_segments": "partial or dim frequency segment interiors",
-    }
+    reasons = {"intact_mask": "inconsistent illuminated frequency segment levels"}
     _require(branch in reasons
              and branches == {
                  "intact_mask": {
                      "ambiguity_reason": reasons["intact_mask"],
                      "maximum_partial_expected_on_segments": 0,
-                 },
-                 "partial_expected_on_segments": {
-                     "ambiguity_reason": reasons["partial_expected_on_segments"],
-                     "maximum_partial_expected_on_segments": 2,
-                     "minimum_partial_to_off_separation": 13.0,
                  },
              }
              and record.get("deadline_observation_semantics") ==
@@ -2432,14 +2472,15 @@ def _validate_temporal_v2_frequency_context_record(
                  spec_document.get("verification_closure_semantics")
              and record.get("ambiguity_reason") == reasons[branch],
              "temporal frequency-context branch contract differs")
-    _require(constants.get("stable_support_frames_each_side") == 2
-             and constants.get("maximum_partial_expected_on_segments") == 2
-             and constants.get("partial_off_separation_min") == 13.0
-             and constants.get("reader_on_p10_min") == 45.0
-             and constants.get("reader_off_p90_max") == 32.0
-             and constants.get("maximum_hole_ink_fraction") == 0.1
-             and constants.get("maximum_refusal_run_span_ns") == 75_000_000
-             and constants.get("maximum_support_chain_span_ns") == 300_000_000,
+    _require(constants == {
+                 "stable_support_frames_each_side": 2,
+                 "reader_on_p10_min": 45.0, "reader_off_p90_max": 32.0,
+                 "maximum_hole_ink_fraction": 0.1,
+                 "maximum_recording_interval_ns": 1_000_000_000,
+                 "maximum_support_interval_ns": 10_000_000,
+                 "maximum_refusal_run_span_ns": 75_000_000,
+                 "maximum_support_chain_span_ns": 300_000_000,
+             },
              "temporal frequency-context constants differ")
     _require(profile == {
                  "decimal_box": [590, 349, 599, 357],
@@ -2475,11 +2516,7 @@ def _validate_temporal_v2_frequency_context_record(
              and all(value in full_indices for value in target_indices),
              "temporal frequency-context closed run is invalid")
     observed_branches = record.get("context_observed_branches")
-    _require(isinstance(observed_branches, list)
-             and observed_branches == sorted(observed_branches)
-             and len(observed_branches) == len(set(observed_branches))
-             and branch in observed_branches
-             and set(observed_branches) <= set(reasons),
+    _require(observed_branches == ["intact_mask"],
              "temporal frequency-context observed branches are malformed")
     supports = record.get("left_support"), record.get("right_support")
     _require(all(isinstance(value, list) and len(value) == 2 for value in supports),
@@ -2501,48 +2538,9 @@ def _validate_temporal_v2_frequency_context_record(
              and record.get("maximum_refusal_run_span_ns") ==
                  constants["maximum_refusal_run_span_ns"]
              and record.get("maximum_support_chain_span_ns") ==
-                 constants["maximum_support_chain_span_ns"]
-             and record.get("maximum_partial_expected_on_segments") ==
-                 constants["maximum_partial_expected_on_segments"]
-             and record.get("partial_off_separation_min") ==
-                 constants["partial_off_separation_min"],
+                 constants["maximum_support_chain_span_ns"],
              "temporal frequency-context span or threshold binding differs")
 
-    evidence = record.get("partial_segment_evidence")
-    _require(isinstance(evidence, list) and len(evidence) == len(target_indices),
-             "temporal frequency-context partial evidence is incomplete")
-    for item, video_index in zip(evidence, target_indices):
-        segments = item.get("segments") if isinstance(item, dict) else None
-        _require(isinstance(item, dict)
-                 and set(item) == {"video_frame_index", "segments"}
-                 and item.get("video_frame_index") == video_index
-                 and isinstance(segments, list)
-                 and len(segments) == len({
-                     (value.get("digit_index"), value.get("segment"))
-                     for value in segments if isinstance(value, dict)}),
-                 "temporal frequency-context partial evidence item is malformed")
-        for value in segments:
-            _require(isinstance(value, dict)
-                     and set(value) == {
-                         "digit_index", "segment", "p10", "off_reference_p90", "separation"}
-                     and type(value["digit_index"]) is int and 0 <= value["digit_index"] < 5
-                     and value["segment"] in _DIGIT_MASKS[frequency.replace(".", "")[
-                         value["digit_index"]]]
-                     and _finite_number(value["p10"])
-                     and 0 <= value["p10"] <= 255
-                     and _finite_number(value["off_reference_p90"])
-                     and _finite_number(value["separation"])
-                     and 0 <= value["off_reference_p90"] <=
-                         constants["reader_off_p90_max"]
-                     and value["separation"] ==
-                         value["p10"] - value["off_reference_p90"]
-                     and value["separation"] >= constants["partial_off_separation_min"],
-                     "temporal frequency-context partial segment is malformed")
-        _require((branch == "intact_mask" and segments == [])
-                 or (branch == "partial_expected_on_segments"
-                     and 1 <= len(segments) <=
-                         constants["maximum_partial_expected_on_segments"]),
-                 "temporal frequency-context partial evidence disagrees with its branch")
 
 
 def _validate_temporal_v2_secondary_context_record(
@@ -2957,11 +2955,10 @@ def _validate_temporal_v2_record(classifier_id: str, spec_sha256: str,
     if decision == "REJECTED":
         field = TEMPORAL_V2_OBSERVER_RUBRICS[classifier_id]["raw_affected_fields"][0]
         rejection_keys = (_BRANCHED_REJECTION_RECORD_KEYS
-                          if classifier_id == "v1-stable-frequency-closed-context-v3"
+                          if classifier_id == "v1-stable-frequency-intact-context-v1"
                           else _REJECTION_RECORD_KEYS)
-        branch_valid = (record.get("branch") in {
-                            "intact_mask", "partial_expected_on_segments"}
-                        if classifier_id == "v1-stable-frequency-closed-context-v3" else True)
+        branch_valid = (record.get("branch") == "intact_mask"
+                        if classifier_id == "v1-stable-frequency-intact-context-v1" else True)
         _require(set(record) == rejection_keys and branch_valid
                  and isinstance(record.get("event_id"), str) and bool(record["event_id"])
                  and record.get("classifier_id") == classifier_id
@@ -2976,7 +2973,7 @@ def _validate_temporal_v2_record(classifier_id: str, spec_sha256: str,
                 else _ARROW_ACQUISITION_RECORD_KEYS
                     if classifier_id == "v1-arrow-target-acquisition-v1"
                 else _FREQUENCY_CONTEXT_RECORD_KEYS
-                    if classifier_id == "v1-stable-frequency-closed-context-v3"
+                    if classifier_id == "v1-stable-frequency-intact-context-v1"
                 else _SECONDARY_CONTEXT_RECORD_KEYS
                     if classifier_id == "v1-secondary-closed-context-v3"
                 else _SECONDARY_OPTICAL_RECORD_KEYS
@@ -2992,7 +2989,7 @@ def _validate_temporal_v2_record(classifier_id: str, spec_sha256: str,
     elif classifier_id == "v1-arrow-target-acquisition-v1":
         _validate_temporal_v2_arrow_acquisition_record(
             record, target_indices, context, spec_document, source_rows)
-    elif classifier_id == "v1-stable-frequency-closed-context-v3":
+    elif classifier_id == "v1-stable-frequency-intact-context-v1":
         _validate_temporal_v2_frequency_context_record(
             record, target_indices, context, spec_document, source_rows)
     elif classifier_id == "v1-secondary-closed-context-v3":
@@ -3205,7 +3202,7 @@ def _validate_temporal_v2(document: dict[str, Any], classifier_id: str,
                         "observer_eligibility_rule"],
                 "required_false_admits": 0,
             })
-    elif classifier_id == "v1-stable-frequency-closed-context-v3":
+    elif classifier_id == "v1-stable-frequency-intact-context-v1":
         branch_gate = {
             "minimum_blind_true_admits": MINIMUM_TEMPORAL_POSITIVES,
             "minimum_blind_true_rejects": MINIMUM_TEMPORAL_NEGATIVES,
@@ -3223,7 +3220,6 @@ def _validate_temporal_v2(document: dict[str, Any], classifier_id: str,
             and isinstance(spec_validation, dict)
             and spec_validation.get("branch_gates") == {
                 "intact_mask": branch_gate,
-                "partial_expected_on_segments": branch_gate,
             }
             and spec_validation.get("required_band_coverage") == ["X", "K", "Ka"]
             and spec_validation.get("observer_eligibility_rule") ==
@@ -3317,7 +3313,8 @@ def _validate_temporal_v2(document: dict[str, Any], classifier_id: str,
                  "implementation_sha256": implementation_binding,
              }
              and pre_pixel.get("reader_binding") == reader_binding
-             and pre_pixel.get("observer_rubric_sha256") == rubric_sha256,
+             and pre_pixel.get("observer_rubric_sha256") == rubric_sha256
+             and pre_pixel.get("candidate_selection") == TEMPORAL_CANDIDATE_SELECTION,
              f"temporal pre-pixel freeze differs for {classifier_id}")
     _require(hidden.get("do_not_provide_to_observer") is True
              and hidden.get("classifier_id") == classifier_id
@@ -3368,10 +3365,14 @@ def _validate_temporal_v2(document: dict[str, Any], classifier_id: str,
              and observer_manifest.get("item_count") == len(ids[0]),
              f"temporal blind record identities differ for {classifier_id}")
     selection = sources["selection"]
-    _require(selection.get("schema_version") == 2
-             and selection.get("kind") == "blind_temporal_classifier_selection"
-             and selection.get("selection_rule") == "ALL_FROZEN_CANDIDATES"
-             and selection.get("opaque_ids") == ids[0],
+    frozen_admitted = frozen.get("classifications")
+    frozen_rejected = frozen.get("rejected_runs")
+    _require(all(isinstance(values, list) and all(isinstance(item, dict) for item in values)
+                 for values in (frozen_admitted, frozen_rejected)),
+             f"temporal frozen candidate inventory is malformed for {classifier_id}")
+    _require(selection == temporal_selection_document(
+                 len(frozen_admitted), len(frozen_rejected), ids[0])
+             and len(ids[0]) == sum(selection["selected_counts"].values()),
              f"temporal selection differs from the frozen candidate set for {classifier_id}")
     analysis_selection = sources["analysis_selection"]
     analysis_samples = analysis_selection.get("samples")
@@ -3413,8 +3414,9 @@ def _validate_temporal_v2(document: dict[str, Any], classifier_id: str,
                         if item.get("frozen_classifier_decision") == "REJECTED"]
     canonical = lambda values: Counter(
         json.dumps(value, sort_keys=True, separators=(",", ":")) for value in values)
-    _require(canonical(admitted_records) == canonical(frozen.get("classifications", []))
-             and canonical(rejected_records) == canonical(frozen.get("rejected_runs", [])),
+    _require(canonical(admitted_records) == canonical(frozen_admitted)
+             and canonical(rejected_records) == canonical(select_temporal_rejections(
+                 classifier_id, context_binding["capture_id"], frozen_rejected)),
              f"temporal hidden decisions differ from frozen classifier output for {classifier_id}")
     analysis_result = sources["analysis_result"]
     analysis_temporal = analysis_result.get("temporal_classification")
@@ -3465,9 +3467,9 @@ def _validate_temporal_v2(document: dict[str, Any], classifier_id: str,
                    ("true_admit", "false_admit", "true_reject", "false_reject",
                     "abstain")}
     ground_truth_counts: Counter[str] = Counter()
-    frequency_branches = ("intact_mask", "partial_expected_on_segments")
+    frequency_branches = ("intact_mask",)
     branch_outcomes = ({branch: Counter() for branch in frequency_branches}
-                       if classifier_id == "v1-stable-frequency-closed-context-v3"
+                       if classifier_id == "v1-stable-frequency-intact-context-v1"
                        else {})
     true_admit_bands: set[str] = set()
     retained_clip_paths: set[Path] = set()

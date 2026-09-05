@@ -645,19 +645,22 @@ class QualificationTests(unittest.TestCase):
 
     @staticmethod
     def generic_temporal_literal(classifier, eligible, *, indeterminate=False):
-        if classifier == "v1-stable-frequency-closed-context-v3":
+        if classifier == "v1-stable-frequency-intact-context-v1":
             return ({
                 "frequency_glyph_relation": "SAME_FREQUENCY_GLYPHS_THROUGHOUT",
+                "segment_integrity": "ALL_SEGMENTS_COMPLETE",
                 "endpoint_support": "BOTH_CLEAR",
                 "target_content": "LEGAL_TARGET_CONTENT",
                 "confidence": "HIGH",
             } if eligible else ({
                 "frequency_glyph_relation": "VISUALLY_INDETERMINATE",
+                "segment_integrity": "INDETERMINATE",
                 "endpoint_support": "INDETERMINATE",
                 "target_content": "INDETERMINATE",
                 "confidence": "LOW",
             } if indeterminate else {
                 "frequency_glyph_relation": "FREQUENCY_GLYPHS_CHANGE",
+                "segment_integrity": "ALL_SEGMENTS_COMPLETE",
                 "endpoint_support": "BOTH_CLEAR",
                 "target_content": "NOT_LEGAL_TARGET_CONTENT",
                 "confidence": "HIGH",
@@ -841,10 +844,11 @@ class QualificationTests(unittest.TestCase):
                                     indeterminate_rejects=False,
                                     recording_maximum_interval_ns=5_000_000,
                                     source_gap_at_index=None,
-                                    frequency_branch_imbalance=False,
+                                    frequency_below_minimum=False,
                                     frequency_missing_band=False,
                                     optical_missing_band=False,
-                                    observer_claim_tamper=False):
+                                    observer_claim_tamper=False,
+                                    extra_rejected_candidates=0):
         temporal_root = self.root / f"temporal-v2-{classifier}"
         repository_spec = (Path(__file__).resolve().parent / "bench" / "temporal_specs" /
                            f"{classifier}.json")
@@ -869,7 +873,7 @@ class QualificationTests(unittest.TestCase):
                 spec_document["qualification_requirements"]["minimum_blind_true_admits"] = 50
             elif classifier == "v1-arrow-target-acquisition-v1":
                 spec_document["deadline_observation_semantics"] = "LEGAL_PRESENTATION_TRANSITION"
-            elif classifier == "v1-stable-frequency-closed-context-v3":
+            elif classifier == "v1-stable-frequency-intact-context-v1":
                 spec_document["validation"]["branch_gates"]["intact_mask"][
                     "minimum_blind_true_admits"] = 50
             else:
@@ -909,23 +913,20 @@ class QualificationTests(unittest.TestCase):
                        ("true_admit", "false_admit", "true_reject", "false_reject",
                         "abstain")}
         ground_truth_counts = Counter()
-        frequency_context = classifier == "v1-stable-frequency-closed-context-v3"
+        frequency_context = classifier == "v1-stable-frequency-intact-context-v1"
         secondary_optical = classifier == "v1-secondary-text-optical-bridge-v1"
         if secondary_optical and rejection_code == "UNCLOSED_RUN":
             rejection_code = "UNCLOSED_BRACKET"
-        item_count = ((21 if false_admit or claim_mismatch else 20)
-                      if frequency_context else
-                      (11 if false_admit or claim_mismatch else 10))
+        item_count = (11 if false_admit or claim_mismatch else 10) + extra_rejected_candidates
         branch_by_opaque = {}
         band_by_opaque = {}
         analysis_events = []
         affected = TEMPORAL_V2_OBSERVER_RUBRICS[classifier]["raw_affected_fields"]
-        selection_document = {
-            "schema_version": 2,
-            "kind": "blind_temporal_classifier_selection",
-            "selection_rule": "ALL_FROZEN_CANDIDATES",
-            "opaque_ids": [f"opaque-{index:02d}" for index in range(item_count)],
-        }
+        admitted_count = (4 if frequency_context and frequency_below_minimum else 5)
+        admitted_count += int(bool(false_admit or claim_mismatch))
+        selection_document = encounter_qualification.temporal_selection_document(
+            admitted_count, item_count - admitted_count,
+            [f"opaque-{index:02d}" for index in range(item_count)])
         if selection_tamper == "reordered":
             selection_document["opaque_ids"].reverse()
         selection_path = self.write_json(
@@ -975,15 +976,13 @@ class QualificationTests(unittest.TestCase):
 
         for index in range(item_count):
             opaque_id = f"opaque-{index:02d}"
-            extra_index = 20 if frequency_context else 10
+            extra_index = 10
             claim_mismatch_item = claim_mismatch and index == extra_index
-            visually_eligible = ((index < 20 and index % 10 < 5) or claim_mismatch_item
-                                 if frequency_context else
-                                 index < 5 or claim_mismatch_item)
+            visually_eligible = (index < (4 if frequency_context and frequency_below_minimum else 5)
+                                 or claim_mismatch_item)
             machine_admitted = visually_eligible or (false_admit and index == extra_index)
             decision = "ADMITTED" if machine_admitted else "REJECTED"
-            branch = ("intact_mask" if frequency_branch_imbalance or index < 10
-                      else "partial_expected_on_segments")
+            branch = "intact_mask"
             admitted_band_order = (["X", "K", "X", "K", "X"]
                                    if (frequency_missing_band or optical_missing_band) else
                                    ["X", "K", "Ka", "X", "K"])
@@ -1015,7 +1014,7 @@ class QualificationTests(unittest.TestCase):
                     right_endpoint_directions=(None if observer_indeterminate else
                                                (["side"] if observer_claim_tamper and index == 0
                                                 else ["front"])))
-            elif classifier == "v1-stable-frequency-closed-context-v3":
+            elif classifier == "v1-stable-frequency-intact-context-v1":
                 literal_observation["observed_frequency"] = (
                     None if observer_indeterminate else
                     "35.500" if observer_claim_tamper and index == 0 else frequency)
@@ -1208,17 +1207,10 @@ class QualificationTests(unittest.TestCase):
                             "rear": [1044, 366, 1113, 392],
                         },
                     })
-                elif classifier == "v1-stable-frequency-closed-context-v3":
+                elif classifier == "v1-stable-frequency-intact-context-v1":
                     constants = spec_document["constants"]
                     masks = [encounter_qualification._DIGIT_MASKS[digit]
                              for digit in frequency.replace(".", "")]
-                    segment_evidence = ([] if branch == "intact_mask" else [{
-                        "digit_index": 1,
-                        "segment": "b",
-                        "p10": 36.0,
-                        "off_reference_p90": 10.0,
-                        "separation": 26.0,
-                    }])
                     record.update({
                         "deadline_observation_semantics": "LEGAL_PRESENTATION_TRANSITION",
                         "verification_closure_semantics":
@@ -1232,14 +1224,6 @@ class QualificationTests(unittest.TestCase):
                         "support_derived_digit_masks": masks,
                         "ambiguity_reason": spec_document["branches"][branch][
                             "ambiguity_reason"],
-                        "partial_segment_evidence": [{
-                            "video_frame_index": value,
-                            "segments": copy.deepcopy(segment_evidence),
-                        } for value in indices],
-                        "maximum_partial_expected_on_segments":
-                            constants["maximum_partial_expected_on_segments"],
-                        "partial_off_separation_min":
-                            constants["partial_off_separation_min"],
                         "maximum_refusal_run_span_ns":
                             constants["maximum_refusal_run_span_ns"],
                         "maximum_support_chain_span_ns":
@@ -1491,9 +1475,7 @@ class QualificationTests(unittest.TestCase):
                     elif record_tamper == "frequency_context_masks":
                         record["support_derived_digit_masks"][0] = "abcdefg"
                     elif record_tamper == "frequency_context_partial":
-                        record["partial_segment_evidence"][0]["segments"] = [{
-                            "digit_index": 3, "segment": "e", "p10": 20.0,
-                            "off_reference_p90": 10.0, "separation": 10.0}]
+                        record["context_observed_branches"].append("partial_expected_on_segments")
                     elif record_tamper == "frequency_context_closure":
                         record["verification_closure_semantics"] = "INVENTED_CLOSURE"
                     elif record_tamper == "secondary_context_established":
@@ -1602,6 +1584,39 @@ class QualificationTests(unittest.TestCase):
                 "target_run_inside_clip": True,
             })
 
+        if extra_rejected_candidates:
+            # The analysis and frozen result keep the entire candidate inventory;
+            # only the observer packet and its comparison are sampled.
+            selected_rejections = encounter_qualification.select_temporal_rejections(
+                classifier, capture_id, rejected_records)
+            if selection_tamper == "all_rejections":
+                selected_rejections = rejected_records
+            elif selection_tamper == "reselected_rejection":
+                excluded = next(record for record in rejected_records
+                                if record not in selected_rejections)
+                selected_rejections[-1] = excluded
+            selected_records = [*admitted_records, *selected_rejections]
+            selected_admitted_count = len(admitted_records)
+            if selection_tamper == "omitted_admission":
+                selected_records.remove(admitted_records[-1])
+                selected_admitted_count -= 1
+            selected_hashes = {canonical_digest(record) for record in selected_records}
+            selected_ids = {item["opaque_id"] for item in hidden_items
+                            if item["frozen_classifier_record_sha256"] in selected_hashes}
+            manifest_items = [item for item in manifest_items if item["opaque_id"] in selected_ids]
+            hidden_items = [item for item in hidden_items if item["opaque_id"] in selected_ids]
+            observations = [item for item in observations if item["opaque_id"] in selected_ids]
+            comparisons = [item for item in comparisons if item["opaque_id"] in selected_ids]
+            clip_checks = [item for item in clip_checks if item["opaque_id"] in selected_ids]
+            outcome_ids = {name: [item["opaque_id"] for item in comparisons
+                                  if item["comparison_outcome"].casefold() == name]
+                           for name in outcome_ids}
+            ground_truth_counts = Counter(item["observer_ground_truth"] for item in comparisons)
+            self.write_json(f"{temporal_root.name}/sources/selection.json",
+                            encounter_qualification.temporal_selection_document(
+                                selected_admitted_count, len(rejected_records),
+                                [item["opaque_id"] for item in manifest_items]))
+
         if clip_path_swap:
             for name in ("clip", "sha256", "size_bytes"):
                 manifest_items[0][name], manifest_items[1][name] = (
@@ -1659,6 +1674,7 @@ class QualificationTests(unittest.TestCase):
                 },
                 "reader_binding": retained_reader("pre_pixel_freeze"),
                 "observer_rubric_sha256": retained_rubric("pre_pixel_freeze"),
+                "candidate_selection": copy.deepcopy(encounter_qualification.TEMPORAL_CANDIDATE_SELECTION),
             })
         source_paths["restricted_hidden_key"] = self.write_json(
             f"{temporal_root.name}/sources/restricted-hidden-key.json", {
@@ -1795,7 +1811,7 @@ class QualificationTests(unittest.TestCase):
         if frequency_context:
             branch_counts = {
                 branch: Counter() for branch in
-                ("intact_mask", "partial_expected_on_segments")}
+                ("intact_mask",)}
             true_admit_bands = set()
             for comparison in comparisons:
                 opaque_id = comparison["opaque_id"]
@@ -2023,7 +2039,7 @@ class QualificationTests(unittest.TestCase):
         classifiers = (
             "v1-arrow-phase-edge-v4",
             "v1-arrow-target-acquisition-v1",
-            "v1-stable-frequency-closed-context-v3",
+            "v1-stable-frequency-intact-context-v1",
             "v1-secondary-closed-context-v3",
             "v1-main-bar-adjacent-redraw-v2",
             "v1-muted-badge-rising-fill-v2",
@@ -2034,8 +2050,7 @@ class QualificationTests(unittest.TestCase):
                 temporal, _ = self.generic_temporal_validation(classifier)
                 result = self.verify(self.write_bundle(temporal=temporal))
                 self.assertEqual(result["status"], "QUALIFIED", result["errors"])
-                expected_total = (
-                    20 if classifier == "v1-stable-frequency-closed-context-v3" else 10)
+                expected_total = 10
                 self.assertEqual(
                     result["temporal_classifiers"][classifier]["total"], expected_total)
 
@@ -2112,6 +2127,34 @@ class QualificationTests(unittest.TestCase):
                                     for word in ("selection differs", "source document")),
                                 result["errors"])
 
+    def test_generic_temporal_retains_full_inventory_but_scores_exact_selected_rejections(self):
+        classifier = "v1-main-bar-adjacent-redraw-v2"
+        temporal, context = self.generic_temporal_validation(
+            classifier, extra_rejected_candidates=8)
+        frozen = json.loads(context["source_paths"]["frozen_classifier_result"].read_text())
+        selection = json.loads(context["source_paths"]["selection"].read_text())
+        comparison = json.loads(context["comparison"].read_text())
+        self.assertEqual(len(frozen["classifications"]), 5)
+        self.assertEqual(len(frozen["rejected_runs"]), 13)
+        self.assertEqual(selection["candidate_counts"], {"admitted": 5, "rejected": 13})
+        self.assertEqual(selection["selected_counts"], {"admitted": 5, "rejected": 12})
+        self.assertEqual(comparison["confusion_matrix"]["true_reject"], 12)
+        self.assertEqual(comparison["confusion_matrix"]["total"], 17)
+        self.assertEqual(self.verify(self.write_bundle(temporal=temporal))["status"], "QUALIFIED")
+
+        for tamper, boundary in (
+                ("all_rejections", "selection differs from the frozen candidate set"),
+                ("omitted_admission", "selection differs from the frozen candidate set"),
+                ("reselected_rejection", "hidden decisions differ from frozen classifier output")):
+            with self.subTest(tamper=tamper):
+                # The fixture recomputes packet counts, outcome denominators,
+                # source hashes, the seal, and the comparison references.
+                temporal, _ = self.generic_temporal_validation(
+                    classifier, extra_rejected_candidates=8, selection_tamper=tamper)
+                result = self.verify(self.write_bundle(temporal=temporal))
+                self.assertEqual(result["status"], "REJECTED")
+                self.assertIn(boundary, result["errors"][0])
+
     def test_generic_temporal_cannot_duplicate_one_candidate_to_meet_minima(self):
         classifier = "v1-main-bar-adjacent-redraw-v2"
         temporal, _ = self.generic_temporal_validation(
@@ -2146,10 +2189,10 @@ class QualificationTests(unittest.TestCase):
             ("v1-arrow-target-acquisition-v1", "acquisition_claim_order"),
             ("v1-arrow-target-acquisition-v1", "acquisition_claim_state_keys"),
             ("v1-arrow-target-acquisition-v1", "acquisition_claim_noncurrent"),
-            ("v1-stable-frequency-closed-context-v3", "frequency_context_branch"),
-            ("v1-stable-frequency-closed-context-v3", "frequency_context_masks"),
-            ("v1-stable-frequency-closed-context-v3", "frequency_context_partial"),
-            ("v1-stable-frequency-closed-context-v3", "frequency_context_closure"),
+            ("v1-stable-frequency-intact-context-v1", "frequency_context_branch"),
+            ("v1-stable-frequency-intact-context-v1", "frequency_context_masks"),
+            ("v1-stable-frequency-intact-context-v1", "frequency_context_partial"),
+            ("v1-stable-frequency-intact-context-v1", "frequency_context_closure"),
             ("v1-secondary-closed-context-v3", "secondary_context_established"),
             ("v1-secondary-closed-context-v3", "secondary_context_event_binding"),
             ("v1-secondary-closed-context-v3", "secondary_context_indices"),
@@ -2223,7 +2266,7 @@ class QualificationTests(unittest.TestCase):
                 "unchanged_direction_motion", "HIGH"):
             self.assertIn(requirement, acquisition)
         frequency = temporal_v2_observer_instructions(
-            "v1-stable-frequency-closed-context-v3")
+            "v1-stable-frequency-intact-context-v1")
         for requirement in (
                 "SAME_FREQUENCY_GLYPHS_THROUGHOUT", "BOTH_CLEAR",
                 "LEGAL_TARGET_CONTENT", "HIGH", "Do not infer or record the machine branch"):
@@ -2261,10 +2304,10 @@ class QualificationTests(unittest.TestCase):
                                         "differs from its retained primary event"):
                 encounter_qualification._temporal_v2_frequency_context_band(record, result)
 
-    def test_frequency_context_requires_each_branch_and_all_bands(self):
-        classifier = "v1-stable-frequency-closed-context-v3"
+    def test_frequency_context_requires_intact_minima_and_all_bands(self):
+        classifier = "v1-stable-frequency-intact-context-v1"
         cases = (
-            {"frequency_branch_imbalance": True},
+            {"frequency_below_minimum": True},
             {"false_admit": True},
             {"frequency_missing_band": True},
         )
@@ -2276,7 +2319,7 @@ class QualificationTests(unittest.TestCase):
                 self.assertIn("integrity failed", result["errors"][0])
 
     def test_frequency_context_strata_tampering_is_rejected(self):
-        classifier = "v1-stable-frequency-closed-context-v3"
+        classifier = "v1-stable-frequency-intact-context-v1"
         temporal, context = self.generic_temporal_validation(classifier)
         self.rewrite_temporal_comparison(
             temporal, context,
@@ -2294,8 +2337,24 @@ class QualificationTests(unittest.TestCase):
         self.assertEqual(result["status"], "REJECTED")
         self.assertIn("strata were not independently derived", result["errors"][0])
 
+    def test_frequency_context_observer_must_see_complete_segments(self):
+        classifier = "v1-stable-frequency-intact-context-v1"
+        for integrity, eligible in (("ALL_SEGMENTS_COMPLETE", True),
+                                    ("PARTIAL_OR_MISSING_SEGMENT", False),
+                                    ("INDETERMINATE", False)):
+            with self.subTest(integrity=integrity):
+                observation = {
+                    "opaque_id": "opaque",
+                    **self.generic_temporal_literal(classifier, True),
+                    "observed_frequency": "34.700",
+                    "segment_integrity": integrity,
+                }
+                _, observed_eligible = encounter_qualification._temporal_v2_observer_result(
+                    classifier, observation)
+                self.assertEqual(observed_eligible, eligible)
+
     def test_frequency_context_spec_and_rejection_contract_are_exact(self):
-        classifier = "v1-stable-frequency-closed-context-v3"
+        classifier = "v1-stable-frequency-intact-context-v1"
         temporal, _ = self.generic_temporal_validation(classifier)
         self.policy["qualified_temporal_classifiers"][classifier][
             "verification_closure_semantics"] = "INVENTED_CLOSURE"
@@ -2470,7 +2529,7 @@ class QualificationTests(unittest.TestCase):
         classifiers = (
             "v1-arrow-phase-edge-v4",
             "v1-arrow-target-acquisition-v1",
-            "v1-stable-frequency-closed-context-v3",
+            "v1-stable-frequency-intact-context-v1",
             "v1-secondary-closed-context-v3",
             "v1-secondary-text-optical-bridge-v1",
         )
@@ -2494,7 +2553,7 @@ class QualificationTests(unittest.TestCase):
                 "left_endpoint_directions": ["front", "side"],
                 "right_endpoint_directions": ["invented"],
             }),
-            ("v1-stable-frequency-closed-context-v3", {
+            ("v1-stable-frequency-intact-context-v1", {
                 "observed_frequency": "34.7",
             }),
             ("v1-secondary-closed-context-v3", {
@@ -2600,8 +2659,7 @@ class QualificationTests(unittest.TestCase):
                 temporal, context = self.generic_temporal_validation(
                     classifier, indeterminate_rejects=True)
                 comparison = json.loads(context["comparison"].read_text(encoding="utf-8"))
-                expected_rejections = (
-                    10 if classifier == "v1-stable-frequency-closed-context-v3" else 5)
+                expected_rejections = 5
                 self.assertEqual(comparison["confusion_matrix"]["true_reject"], 0)
                 self.assertEqual(
                     comparison["confusion_matrix"]["abstain"], expected_rejections)
@@ -2727,7 +2785,7 @@ class QualificationTests(unittest.TestCase):
                 self.method[owned] = SHA
                 self.method[unrelated] = SHA
 
-        classifier = "v1-stable-frequency-closed-context-v3"
+        classifier = "v1-stable-frequency-intact-context-v1"
         temporal, _ = self.generic_temporal_validation(classifier)
         path = self.write_bundle(temporal=temporal)
         self.method["encounter_arrow_transition.py"] = "c" * 64
@@ -2763,8 +2821,8 @@ class QualificationTests(unittest.TestCase):
         for classifier, owned in (
                 ("v1-arrow-phase-edge-v4", "encounter_arrow_transition.py"),
                 ("v1-arrow-target-acquisition-v1", "encounter_arrow_acquisition.py"),
-                ("v1-stable-frequency-closed-context-v3", "encounter_frequency_context.py"),
-                ("v1-stable-frequency-closed-context-v3", "encounter_redraw_probe.py"),
+                ("v1-stable-frequency-intact-context-v1", "encounter_frequency_context.py"),
+                ("v1-stable-frequency-intact-context-v1", "encounter_redraw_probe.py"),
                 ("v1-secondary-closed-context-v3", "encounter_secondary_context.py"),
                 ("v1-secondary-closed-context-v3", "encounter_check.py"),
                 ("v1-secondary-text-optical-bridge-v1",

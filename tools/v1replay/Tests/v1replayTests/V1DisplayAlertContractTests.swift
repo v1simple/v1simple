@@ -10,70 +10,119 @@ final class V1DisplayAlertContractTests: XCTestCase {
                        "144b04f4cced4461578168c9b162e97a02bf34973e9918c73b4a972888935f6f")
     }
 
-    func testReaderQualificationEmitsEveryBandInEveryDisplayRole() throws {
+    func testReaderQualificationHasFixedHoldsAndTwelveSecondsOfCardBlink() throws {
         let encounter = BenchScenario.makeReaderQualification()
-        XCTAssertEqual(encounter.samples.count, 792)
-        XCTAssertEqual(encounter.duration, 263.0 + 2.0 / 3.0, accuracy: 0.000_001)
-        XCTAssertLessThan(encounter.duration, 276)
+        XCTAssertEqual(encounter.samples.count, 204)
+        XCTAssertEqual(encounter.duration, 67.0 + 2.0 / 3.0, accuracy: 0.000_001)
         XCTAssertTrue(encounter.samples.prefix(12).allSatisfy { $0.alerts.isEmpty })
-        XCTAssertTrue(encounter.samples.suffix(60).allSatisfy { $0.alerts.isEmpty })
+        XCTAssertTrue(encounter.samples.suffix(12).allSatisfy { $0.alerts.isEmpty })
         let state = V1.Session.ControlState(mode: .advancedLogic, mainVolume: 4,
                                            mutedVolume: 0, savedMainVolume: 4,
                                            savedMutedVolume: 0)
-        let identities: [UInt8: Int] = [0x08: 10_525, 0x04: 24_150, 0x02: 34_700]
-        var roles = Set<String>()
-        var directions = Set<UInt8>()
-        var phases: [String: Int] = [:]
         var previousPackets: [[UInt8]]?
+        var roles = Set<String>()
+        let identities: [UInt8: Int] = [0x08: 10_525, 0x04: 24_150, 0x02: 34_700]
         for (index, sample) in encounter.samples.enumerated() {
             XCTAssertEqual(sample.sourceIndex, index)
             XCTAssertEqual(sample.offset, Double(index) / 3.0, accuracy: 0.000_001)
             let plan = V1.PlaybackPacketPlan(
                 sample: sample, controlState: state, displayOn: true, muted: sample.muted,
                 blinkBogey: false, blinkArrow: sample.scenarioArrowBlink)
-            if (12..<732).contains(index) {
-                let relative = index - 12
-                let step = (relative / 6) % 5
-                let rowCount = step == 0 ? 1 : step == 1 ? 2 : 3
+            let display = try IndependentFrame.decode(plan.displayPacket)
+            let blinking = (156..<192).contains(index)
+            XCTAssertEqual(sample.scenarioArrowBlink, blinking)
+            XCTAssertEqual(display.payload[0], display.payload[1], "bogey glyph must stay steady")
+            XCTAssertEqual(display.payload[3] != display.payload[4], blinking)
+            if (12..<192).contains(index), index % 6 != 0 {
+                XCTAssertEqual(plan.emissions.map(\.bytes), previousPackets,
+                               "a two-second held input changed before its next authored step")
+            }
+            if blinking {
+                let rowCount = ((index - 156) / 6) % 2 == 0 ? 2 : 3
                 let rows = try plan.alertTablePackets.map(IndependentFrame.decode)
                 XCTAssertEqual(rows.count, rowCount)
-                XCTAssertEqual(sample.muted, step == 3)
-                XCTAssertEqual(sample.scenarioArrowBlink, rowCount > 1)
+                XCTAssertFalse(sample.muted)
                 XCTAssertEqual(rows.map { $0.payload[6] & 0x80 },
                                [0x80] + Array(repeating: UInt8(0), count: rowCount - 1))
-                var frequencies = Set<Int>()
                 for (slot, row) in rows.enumerated() {
                     XCTAssertEqual(row.packetID, 0x43)
                     XCTAssertEqual(row.payload[0], UInt8(((slot + 1) << 4) | rowCount))
                     let frequency = Int(row.payload[1]) * 256 + Int(row.payload[2])
                     let band = row.payload[5] & 0x1F
                     XCTAssertEqual(identities[band], frequency)
-                    frequencies.insert(frequency)
                     roles.insert("\(band):\(slot)")
-                    directions.insert(row.payload[5] & 0xE0)
                 }
-                XCTAssertEqual(frequencies.count, rowCount)
-                if relative % 6 != 0 {
-                    XCTAssertEqual(plan.emissions.map(\.bytes), previousPackets,
-                                   "two-second held state changed before the next authored step")
-                }
-                phases[sample.phase, default: 0] += 1
             }
             previousPackets = plan.emissions.map(\.bytes)
         }
         XCTAssertEqual(roles, Set(["8:0", "8:1", "8:2", "4:0", "4:1", "4:2",
                                   "2:0", "2:1", "2:2"]))
-        XCTAssertEqual(directions, Set([0x20, 0x40, 0x80]))
-        XCTAssertEqual(phases.count, 5)
-        XCTAssertTrue(phases.values.allSatisfy { $0 == 144 })
         let resolved = try XCTUnwrap(JSONSerialization.jsonObject(
             with: encounter.resolvedScenarioEvidenceData()) as? [String: Any])
         let retained = try XCTUnwrap(resolved["samples"] as? [[String: Any]])
-        XCTAssertEqual(retained.count, 792)
-        XCTAssertEqual(retained[12]["phase"] as? String, "reader_qualification_primary")
-        XCTAssertEqual(retained[24]["phase"] as? String, "reader_qualification_two_cards")
-        XCTAssertEqual((retained[24]["alerts"] as? [[String: Any]])?.map { $0["band"] as? String },
+        XCTAssertEqual(retained.count, 204)
+        XCTAssertEqual(retained[12]["phase"] as? String, "reader_qualification_frequency_low")
+        XCTAssertEqual(retained[120]["phase"] as? String, "reader_qualification_direction_acquisition")
+        XCTAssertEqual(retained[156]["phase"] as? String, "reader_qualification_one_card")
+        XCTAssertEqual((retained[162]["alerts"] as? [[String: Any]])?.map { $0["band"] as? String },
                        ["x", "k", "ka"])
+    }
+
+    func testReaderQualificationIsolatesPrimaryStrengthMuteAndDirectionOperations() throws {
+        let samples = BenchScenario.makeReaderQualification().samples
+        let state = V1.Session.ControlState(mode: .advancedLogic, mainVolume: 4,
+                                           mutedVolume: 0, savedMainVolume: 4,
+                                           savedMutedVolume: 0)
+        let frequencies = [10_525, 24_150, 34_700]
+        let bands: [UInt8] = [0x08, 0x04, 0x02]
+        let rawStrengths: [[UInt8]] = [
+            [0x9B, 0xAF, 0xC1, 0xC1, 0xC1, 0xAF],
+            [0x8C, 0x9F, 0xB3, 0xB3, 0xB3, 0x9F],
+            [0x93, 0xA1, 0xAF, 0xAF, 0xAF, 0xA1],
+        ]
+        let ledPatterns: [UInt8] = [0x03, 0x0F, 0x3F, 0x3F, 0x3F, 0x0F]
+        for bandIndex in 0..<3 {
+            for step in 0..<6 {
+                let sample = samples[12 + bandIndex * 36 + step * 6]
+                let plan = V1.PlaybackPacketPlan(
+                    sample: sample, controlState: state, displayOn: true, muted: sample.muted,
+                    blinkBogey: false, blinkArrow: sample.scenarioArrowBlink)
+                XCTAssertEqual(plan.alertTablePackets.count, 1)
+                let row = try IndependentFrame.decode(plan.alertTablePackets[0])
+                let display = try IndependentFrame.decode(plan.displayPacket)
+                XCTAssertEqual(row.payload[0], 0x11)
+                XCTAssertEqual(Int(row.payload[1]) * 256 + Int(row.payload[2]), frequencies[bandIndex])
+                XCTAssertEqual(row.payload[5] & 0x1F, bands[bandIndex])
+                XCTAssertEqual(row.payload[5] & 0xE0, step == 5 ? 0x80 : 0x20)
+                XCTAssertEqual(row.payload[3], step == 5 ? 0 : rawStrengths[bandIndex][step])
+                XCTAssertEqual(row.payload[4], step == 5 ? rawStrengths[bandIndex][step] : 0)
+                XCTAssertEqual(row.payload[6] & 0x80, 0x80)
+                XCTAssertEqual(display.payload[2], ledPatterns[step])
+                XCTAssertEqual(display.payload[3] & 0x10 != 0, step == 3)
+                XCTAssertEqual(display.payload[5] & 0x01 != 0, step == 3)
+                XCTAssertEqual(display.payload[3], display.payload[4])
+            }
+        }
+        var previousDirection: UInt8 = 0x80
+        var directedChanges = Set<String>()
+        for second in stride(from: 40, to: 52, by: 2) {
+            let sample = samples[second * 3]
+            let plan = V1.PlaybackPacketPlan(
+                sample: sample, controlState: state, displayOn: true, muted: sample.muted,
+                blinkBogey: false, blinkArrow: sample.scenarioArrowBlink)
+            let row = try IndependentFrame.decode(plan.alertTablePackets[0])
+            let display = try IndependentFrame.decode(plan.displayPacket)
+            XCTAssertEqual(plan.alertTablePackets.count, 1)
+            XCTAssertEqual(Int(row.payload[1]) * 256 + Int(row.payload[2]), 34_700)
+            XCTAssertEqual(row.payload[5] & 0x1F, 0x02)
+            XCTAssertEqual(display.payload[2], 0x0F)
+            XCTAssertEqual(display.payload[3] & 0x10, 0)
+            XCTAssertEqual(display.payload[3], display.payload[4])
+            let direction = row.payload[5] & 0xE0
+            directedChanges.insert("\(previousDirection):\(direction)")
+            previousDirection = direction
+        }
+        XCTAssertEqual(directedChanges, Set(["128:32", "32:64", "64:32", "32:128", "128:64", "64:128"]))
     }
 
     func testHandshakeClearEarlyStartQueuesBeforePolling() {

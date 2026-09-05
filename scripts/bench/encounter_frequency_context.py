@@ -13,8 +13,8 @@ import math
 import re
 
 
-CLASSIFIER_ID = "v1-stable-frequency-closed-context-v3"
-CLASSIFIER_SPEC_SHA256 = "2870acc076f13c186535a47807f9bb55695c929c14599846a4b92034cf50006c"
+CLASSIFIER_ID = "v1-stable-frequency-intact-context-v1"
+CLASSIFIER_SPEC_SHA256 = "cc8b2c094781c67b8ef47bbb7d4e07a6c41adb2194702889790736d0e52a02c4"
 DEADLINE_OBSERVATION_SEMANTICS = "LEGAL_PRESENTATION_TRANSITION"
 VERIFICATION_CLOSURE_SEMANTICS = (
     "RAW_CURRENT_BRACKETED_UNRESOLVED_VERIFICATION_BOUNDARY")
@@ -29,23 +29,16 @@ MAXIMUM_SUPPORT_CHAIN_INTERVAL_NS = 10_000_000
 MAXIMUM_REFUSAL_RUN_SPAN_NS = 75_000_000
 MAXIMUM_SUPPORT_CHAIN_SPAN_NS = 300_000_000
 STABLE_SUPPORT_FRAMES_EACH_SIDE = 2
-MAXIMUM_PARTIAL_EXPECTED_ON_SEGMENTS = 2
 MAXIMUM_HOLE_INK_FRACTION = 0.10
 
-# Reader7 calls a segment on when p10 >= 45 and off when p90 <= 32.  The
-# difference between those independently frozen reader thresholds is 13.  A
-# partial expected-on segment must keep its darkest core percentile at least
-# that same 13 levels above the brightest expected-off core percentile.  This
-# separation is derived from the reader contract, not from retained outcomes.
+# These are the unchanged reader7 segment thresholds. This capability cannot
+# resolve any partial segment, in either its claimed run or closing context.
 READER_ON_P10_MIN = 45.0
 READER_OFF_P90_MAX = 32.0
-PARTIAL_OFF_SEPARATION_MIN = READER_ON_P10_MIN - READER_OFF_P90_MAX
 
 BRANCH_INTACT_MASK = "intact_mask"
-BRANCH_PARTIAL_EXPECTED_ON = "partial_expected_on_segments"
 _BRANCH_REASON = {
     BRANCH_INTACT_MASK: "inconsistent illuminated frequency segment levels",
-    BRANCH_PARTIAL_EXPECTED_ON: "partial or dim frequency segment interiors",
 }
 
 _FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
@@ -163,7 +156,7 @@ def _segment(detail):
     return {"state": derived, "p10": values[0], "median": values[1], "p90": values[2]}
 
 
-def _frame_geometry(sample, masks, *, allow_partial):
+def _frame_geometry(sample, masks):
     root = _profiles(sample)
     frequency = root.get("primary_frequency") if isinstance(root, dict) else None
     cells = frequency.get("cells") if isinstance(frequency, dict) else None
@@ -174,15 +167,14 @@ def _frame_geometry(sample, masks, *, allow_partial):
             or not isinstance(raw_cells, list) or len(raw_cells) != 5
             or not isinstance(decimal, dict) or set(decimal) != {"state", "p10", "median", "p90"}
             or decimal.get("state") != "on"):
-        return None, "frequency frame lacks the fixed five-digit profile and on decimal"
+        return "frequency frame lacks the fixed five-digit profile and on decimal"
     decimal_detail = _segment(decimal)
     if decimal_detail is None or decimal_detail["state"] != "on":
-        return None, "frequency decimal is not a valid on segment"
+        return "frequency decimal is not a valid on segment"
 
-    parsed = []
     expected_off_p90 = []
-    for digit_index, (origin, cell, raw_cell, expected_mask) in enumerate(zip(
-            _FREQUENCY_ORIGINS, cells, raw_cells, masks)):
+    for origin, cell, raw_cell, expected_mask in zip(
+            _FREQUENCY_ORIGINS, cells, raw_cells, masks):
         segments = cell.get("segments") if isinstance(cell, dict) else None
         raw_segments = raw_cell.get("segments") if isinstance(raw_cell, dict) else None
         holes = cell.get("hole_ink_fractions") if isinstance(cell, dict) else None
@@ -192,50 +184,23 @@ def _frame_geometry(sample, masks, *, allow_partial):
                 or len(holes) != 2 or any(_number(value) is None
                                          or float(value) > MAXIMUM_HOLE_INK_FRACTION
                                          for value in holes)):
-            return None, "frequency cells lack exact origins, segments, or clear holes"
-        digit = {}
+            return "frequency cells lack exact origins, segments, or clear holes"
         for name in _SEGMENTS:
             detail = _segment(segments[name])
             raw_detail = raw_segments[name]
             if detail is None or not isinstance(raw_detail, dict) \
                     or raw_detail != segments[name]:
-                return None, "frequency profile disagrees with raw segment evidence"
-            digit[name] = detail
-            if name not in expected_mask:
-                if detail["state"] != "off":
-                    return None, "an expected-off frequency segment is not off"
+                return "frequency profile disagrees with raw segment evidence"
+            expected_state = "on" if name in expected_mask else "off"
+            if detail["state"] != expected_state:
+                return "frequency segment is not its exact intact on/off state"
+            if expected_state == "off":
                 expected_off_p90.append(detail["p90"])
-        raw_mask = raw_cell.get("mask")
-        derived_mask = "".join(name for name in _SEGMENTS if digit[name]["state"] == "on")
-        if raw_mask != derived_mask:
-            return None, "frequency raw mask disagrees with its segment states"
-        parsed.append((digit_index, expected_mask, digit))
-
-    off_reference = max(expected_off_p90, default=None)
-    if off_reference is None or off_reference > READER_OFF_P90_MAX:
-        return None, "frequency frame has no valid expected-off reference"
-    partials = []
-    for digit_index, expected_mask, digit in parsed:
-        for name in expected_mask:
-            detail = digit[name]
-            if detail["state"] == "off":
-                return None, "an expected-on frequency segment is fully off"
-            if detail["state"] == "partial":
-                if not allow_partial:
-                    return None, "intact frequency geometry contains a partial expected-on segment"
-                separation = detail["p10"] - off_reference
-                if separation < PARTIAL_OFF_SEPARATION_MIN:
-                    return None, "a partial expected-on segment lacks frozen off-segment separation"
-                partials.append({
-                    "digit_index": digit_index,
-                    "segment": name,
-                    "p10": detail["p10"],
-                    "off_reference_p90": off_reference,
-                    "separation": separation,
-                })
-    if len(partials) > MAXIMUM_PARTIAL_EXPECTED_ON_SEGMENTS:
-        return None, "frequency frame exceeds the partial expected-on segment cap"
-    return partials, None
+        if raw_cell.get("mask") != expected_mask:
+            return "frequency raw mask disagrees with its segment states"
+    if not expected_off_p90 or max(expected_off_p90) > READER_OFF_P90_MAX:
+        return "frequency frame has no valid expected-off reference"
+    return None
 
 
 def _comparison_matches(sample, *, refusal):
@@ -332,7 +297,6 @@ def _current_target_frequency(event, run, support_value):
 
 
 def _context_geometry(chain, masks, support_value, claimed_indices):
-    observed_branches = set()
     for sample in chain[2:-2]:
         if sample["video_frame_index"] in claimed_indices:
             continue
@@ -340,29 +304,18 @@ def _context_geometry(chain, masks, support_value, claimed_indices):
         if reading.get("state") == "readable":
             if reading.get("value") != support_value or reading.get("reason") is not None \
                     or not _comparison_matches(sample, refusal=False):
-                return None, None, "an interior readable frame is not the same exact current frequency"
-            partials, geometry_reason = _frame_geometry(sample, masks, allow_partial=False)
-            if partials is None:
-                return None, None, geometry_reason
-            continue
-        branch = next((name for name, reason in _BRANCH_REASON.items()
-                       if reading.get("state") == "ambiguous"
-                       and reading.get("value") is None and reading.get("reason") == reason), None)
-        if branch is None or not _comparison_matches(sample, refusal=True):
-            return None, None, "an interior refusal is outside the frozen frequency-only branches"
-        partials, geometry_reason = _frame_geometry(
-            sample, masks, allow_partial=(branch == BRANCH_PARTIAL_EXPECTED_ON))
-        if partials is None:
-            return None, None, geometry_reason
-        if branch == BRANCH_INTACT_MASK and partials:
-            return None, None, "an intact interior refusal contains partial geometry"
-        if branch == BRANCH_PARTIAL_EXPECTED_ON and not partials:
-            return None, None, "a partial interior refusal contains no partial expected-on segment"
-        observed_branches.add(branch)
-    return sorted(observed_branches), [sample["video_frame_index"] for sample in chain[2:-2]], None
+                return None, "an interior readable frame is not the same exact current frequency"
+        elif (reading.get("state") != "ambiguous" or reading.get("value") is not None
+              or reading.get("reason") != _BRANCH_REASON[BRANCH_INTACT_MASK]
+              or not _comparison_matches(sample, refusal=True)):
+            return None, "an interior refusal is outside the intact-only frequency scope"
+        geometry_reason = _frame_geometry(sample, masks)
+        if geometry_reason is not None:
+            return None, geometry_reason
+    return [sample["video_frame_index"] for sample in chain[2:-2]], None
 
 
-def _record(event, selected, first, stop, context, branch):
+def _record(event, selected, first, stop, context):
     run = selected[first:stop]
     chain, code, reason = _support_chain(selected, first, stop, context)
     if chain is None:
@@ -376,21 +329,20 @@ def _record(event, selected, first, stop, context, branch):
     # Geometry is established from the support-derived value before the event
     # or per-sample target is consulted.
     for sample in chain[:2] + chain[-2:]:
-        partials, geometry_reason = _frame_geometry(sample, masks, allow_partial=False)
-        if partials is None:
+        geometry_reason = _frame_geometry(sample, masks)
+        if geometry_reason is not None:
             return None, "SUPPORT_GEOMETRY", geometry_reason
 
     _, code, reason = _current_target_frequency(event, chain[2:-2], support_value)
     if code is not None:
         return None, code, reason
     claimed_indices = {sample["video_frame_index"] for sample in run}
-    context_branches, context_indices, geometry_reason = _context_geometry(
+    context_indices, geometry_reason = _context_geometry(
         chain, masks, support_value, claimed_indices)
-    if context_branches is None:
+    if context_indices is None:
         return None, "CONTEXT_GEOMETRY", geometry_reason
 
-    expected_reason = _BRANCH_REASON[branch]
-    partial_evidence = []
+    expected_reason = _BRANCH_REASON[BRANCH_INTACT_MASK]
     for sample in run:
         reading = _reading(sample)
         if not _comparison_matches(sample, refusal=True):
@@ -398,16 +350,9 @@ def _record(event, selected, first, stop, context, branch):
         if reading.get("state") != "ambiguous" or reading.get("value") is not None \
                 or reading.get("reason") != expected_reason:
             return None, "READER_REASON", "frequency refusal does not match its frozen branch reason"
-        partials, geometry_reason = _frame_geometry(
-            sample, masks, allow_partial=(branch == BRANCH_PARTIAL_EXPECTED_ON))
-        if partials is None:
+        geometry_reason = _frame_geometry(sample, masks)
+        if geometry_reason is not None:
             return None, "FREQUENCY_GEOMETRY", geometry_reason
-        if branch == BRANCH_INTACT_MASK and partials:
-            return None, "BRANCH_GEOMETRY", "intact-mask branch contains partial segment evidence"
-        if branch == BRANCH_PARTIAL_EXPECTED_ON and not partials:
-            return None, "BRANCH_GEOMETRY", "partial branch contains no partial expected-on segment"
-        partial_evidence.append({"video_frame_index": sample["video_frame_index"],
-                                 "segments": partials})
 
     indices = [sample["video_frame_index"] for sample in run]
     if any(right != left + 1 for left, right in zip(indices, indices[1:])):
@@ -419,7 +364,7 @@ def _record(event, selected, first, stop, context, branch):
         "status": "QUALIFIED_CAPTURE_TRANSITION",
         "deadline_observation_semantics": DEADLINE_OBSERVATION_SEMANTICS,
         "verification_closure_semantics": VERIFICATION_CLOSURE_SEMANTICS,
-        "branch": branch,
+        "branch": BRANCH_INTACT_MASK,
         "raw_affected_fields": ["primary_frequency"],
         "video_frame_indices": indices,
         "first": _point(run[0]),
@@ -427,13 +372,10 @@ def _record(event, selected, first, stop, context, branch):
         "left_support": [_point(sample) for sample in chain[:2]],
         "right_support": [_point(sample) for sample in chain[-2:]],
         "context_frame_indices": context_indices,
-        "context_observed_branches": sorted(set(context_branches) | {branch}),
+        "context_observed_branches": [BRANCH_INTACT_MASK],
         "support_derived_frequency": support_value,
         "support_derived_digit_masks": masks,
         "ambiguity_reason": expected_reason,
-        "partial_segment_evidence": partial_evidence,
-        "maximum_partial_expected_on_segments": MAXIMUM_PARTIAL_EXPECTED_ON_SEGMENTS,
-        "partial_off_separation_min": PARTIAL_OFF_SEPARATION_MIN,
         "maximum_refusal_run_span_ns": MAXIMUM_REFUSAL_RUN_SPAN_NS,
         "maximum_support_chain_span_ns": MAXIMUM_SUPPORT_CHAIN_SPAN_NS,
         "verified_maximum_source_interval_ns": context["verified_maximum_source_interval_ns"],
@@ -448,13 +390,13 @@ def _record(event, selected, first, stop, context, branch):
             "changed_fields": deepcopy(event.get("changed_fields")),
             "current_primary_frequency": support_value,
         },
-        "basis": "A bounded raw frequency refusal retains the exact support-derived canonical glyph geometry between source-consecutive same-value readable supports; raw frames remain unresolved.",
+        "basis": "A bounded raw frequency refusal and its entire closing context retain intact support-derived canonical glyphs with no partial segments between source-consecutive same-value readable supports; raw frames remain unresolved.",
     }, None, None
 
 
-def _reject(event, run, branch, code, reason):
+def _reject(event, run, code, reason):
     return {"event_id": event.get("event_id"), "field": "primary_frequency",
-            "branch": branch, "code": code, "first": _point(run[0]),
+            "branch": BRANCH_INTACT_MASK, "code": code, "first": _point(run[0]),
             "last": _point(run[-1]), "reason": reason}
 
 
@@ -474,16 +416,13 @@ def classify_frequency_context_runs(samples, events, context):
             selected = [sample for sample in originals
                         if type(sample.get("capture_ns")) is int
                         and event["start_ns"] <= sample["capture_ns"] < event["end_ns"]]
-            for branch, reason in _BRANCH_REASON.items():
-                for first, stop in _runs(selected, reason):
-                    run = selected[first:stop]
-                    record, code, explanation = _record(
-                        event, selected, first, stop, context, branch)
-                    if record is None:
-                        result["rejected_runs"].append(
-                            _reject(event, run, branch, code, explanation))
-                    else:
-                        result["classifications"].append(record)
+            for first, stop in _runs(selected, _BRANCH_REASON[BRANCH_INTACT_MASK]):
+                run = selected[first:stop]
+                record, code, explanation = _record(event, selected, first, stop, context)
+                if record is None:
+                    result["rejected_runs"].append(_reject(event, run, code, explanation))
+                else:
+                    result["classifications"].append(record)
     except (KeyError, TypeError, ValueError) as exc:
         result["classifications"] = []
         result["errors"].append(f"{type(exc).__name__}: {exc}")

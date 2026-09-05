@@ -129,15 +129,15 @@ def sample(index, *, readable=True, value="34.700", reason=None, partials=(),
     }
 
 
-def chain(*, branch=frequency.BRANCH_INTACT_MASK, run_length=1, partials=((3, "e"),),
+def chain(*, reason=frequency._BRANCH_REASON[frequency.BRANCH_INTACT_MASK],
+          run_length=1, partials=(),
           gap_ns=5_000_000):
-    reason = frequency._BRANCH_REASON[branch]
     values = []
     for offset in range(run_length + 4):
         readable = offset < 2 or offset >= run_length + 2
         values.append(sample(
             10 + offset, readable=readable, reason=None if readable else reason,
-            partials=() if readable or branch == frequency.BRANCH_INTACT_MASK else partials,
+            partials=() if readable else partials,
             capture_ns=10_000_000 + offset * gap_ns))
     return values
 
@@ -147,7 +147,7 @@ class FrequencyContextTests(unittest.TestCase):
         return frequency.classify_frequency_context_runs(
             samples, [current_event or event()], current_context or context())
 
-    def test_frozen_spec_identity_threshold_basis_and_separate_branch_gates(self):
+    def test_frozen_intact_only_spec_preserves_reader_and_support_thresholds(self):
         spec_path = (ROOT / "scripts" / "bench" / "temporal_specs" /
                      f"{frequency.CLASSIFIER_ID}.json")
         self.assertEqual(frequency.CLASSIFIER_SPEC_SHA256,
@@ -156,13 +156,17 @@ class FrequencyContextTests(unittest.TestCase):
                          "LEGAL_PRESENTATION_TRANSITION")
         self.assertEqual(frequency.VERIFICATION_CLOSURE_SEMANTICS,
                          "RAW_CURRENT_BRACKETED_UNRESOLVED_VERIFICATION_BOUNDARY")
-        self.assertEqual(frequency.PARTIAL_OFF_SEPARATION_MIN, 13.0)
-        self.assertEqual(frequency.PARTIAL_OFF_SEPARATION_MIN,
-                         frequency.READER_ON_P10_MIN - frequency.READER_OFF_P90_MAX)
         spec = json.loads(spec_path.read_text())
-        self.assertEqual(set(spec["validation"]["branch_gates"]),
-                         {frequency.BRANCH_INTACT_MASK,
-                          frequency.BRANCH_PARTIAL_EXPECTED_ON})
+        previous = spec_path.with_name("v1-stable-frequency-closed-context-v3.json")
+        self.assertEqual(hashlib.sha256(previous.read_bytes()).hexdigest(),
+                         "2870acc076f13c186535a47807f9bb55695c929c14599846a4b92034cf50006c")
+        old_constants = json.loads(previous.read_text())["constants"]
+        self.assertTrue(all(value == old_constants[key]
+                            for key, value in spec["constants"].items()))
+        self.assertEqual(spec["validation"]["branch_gates"], {
+            "intact_mask": {"minimum_blind_true_admits": 5,
+                            "minimum_blind_true_rejects": 5, "required_false_admits": 0}})
+        self.assertEqual(spec["validation"]["required_band_coverage"], ["X", "K", "Ka"])
 
     def test_intact_candidate_derives_support_value_and_preserves_input(self):
         samples = chain()
@@ -179,65 +183,55 @@ class FrequencyContextTests(unittest.TestCase):
                          frequency.VERIFICATION_CLOSURE_SEMANTICS)
         self.assertEqual(record["context_frame_indices"], [12])
         self.assertEqual(record["raw_affected_fields"], ["primary_frequency"])
-        self.assertEqual(record["partial_segment_evidence"],
-                         [{"video_frame_index": 12, "segments": []}])
+        self.assertNotIn("partial_segment_evidence", record)
         self.assertEqual(samples, frozen)
 
-    def test_partial_branch_records_one_or_two_direct_expected_on_segments(self):
-        for partials in [((3, "e"),), ((3, "e"), (4, "b"))]:
-            with self.subTest(partials=partials):
-                result = self.classify(chain(
-                    branch=frequency.BRANCH_PARTIAL_EXPECTED_ON, partials=partials))
-                self.assertEqual(result["errors"], [])
-                self.assertEqual(len(result["classifications"]), 1, result)
-                record = result["classifications"][0]
-                self.assertEqual(record["branch"], frequency.BRANCH_PARTIAL_EXPECTED_ON)
-                evidence = record["partial_segment_evidence"][0]["segments"]
-                self.assertEqual({(item["digit_index"], item["segment"])
-                                  for item in evidence}, set(partials))
-                self.assertTrue(all(item["separation"] >= 13.0 for item in evidence))
-
-    def test_alternating_refusals_share_closed_context_but_keep_contiguous_claims(self):
-        samples = [sample(10), sample(11)]
-        samples.append(sample(
-            12, readable=False,
-            reason=frequency._BRANCH_REASON[frequency.BRANCH_PARTIAL_EXPECTED_ON],
-            partials=((3, "e"),)))
-        samples.append(sample(13))
-        samples.append(sample(
-            14, readable=False,
-            reason=frequency._BRANCH_REASON[frequency.BRANCH_INTACT_MASK]))
-        samples.extend([sample(15), sample(16)])
+    def test_partial_runs_never_generate_admissions(self):
+        samples = chain(reason="partial or dim frequency segment interiors", partials=((3, "e"),))
+        frozen = deepcopy(samples)
         result = self.classify(samples)
+        self.assertEqual(result["classifications"], [])
         self.assertEqual(result["errors"], [])
-        self.assertEqual([(record["branch"], record["video_frame_indices"])
-                          for record in result["classifications"]],
-                         [(frequency.BRANCH_INTACT_MASK, [14]),
-                          (frequency.BRANCH_PARTIAL_EXPECTED_ON, [12])])
-        self.assertTrue(all(record["context_observed_branches"] == [
-            frequency.BRANCH_INTACT_MASK, frequency.BRANCH_PARTIAL_EXPECTED_ON]
-                            for record in result["classifications"]))
+        self.assertEqual(samples, frozen)
 
-    def test_partial_branch_rejects_geometry_that_does_not_directly_preserve_value(self):
+    def test_partial_closing_context_cannot_support_an_intact_run(self):
+        for partial_reason in ("partial or dim frequency segment interiors",
+                               frequency._BRANCH_REASON[frequency.BRANCH_INTACT_MASK]):
+            with self.subTest(reason=partial_reason):
+                samples = [sample(10), sample(11), sample(
+                    12, readable=False, reason=partial_reason, partials=((3, "e"),)), sample(13),
+                    sample(14, readable=False,
+                           reason=frequency._BRANCH_REASON[frequency.BRANCH_INTACT_MASK]),
+                    sample(15), sample(16)]
+                result = self.classify(samples)
+                self.assertEqual(result["errors"], [])
+                self.assertEqual(result["classifications"], [])
+                self.assertIn("CONTEXT_GEOMETRY", {r["code"] for r in result["rejected_runs"]})
+
+    def test_intact_scope_rejects_partial_or_corrupted_pixels_even_with_intact_reason(self):
         cases = {
-            "too_many": {"partials": ((0, "a"), (1, "b"), (3, "e"))},
-            "fully_off": {"partials": (), "fully_off": ((3, "e"),)},
-            "unexpected_partial": {"partials": ((3, "e"),),
-                                   "unexpected_partial": ((0, "f"),)},
-            "separation": {"partials": ((3, "e"),), "off": 25.0,
-                           "partial_p10": 36.0},
-            "decimal": {"partials": ((3, "e"),), "decimal": "off"},
-            "holes": {"partials": ((3, "e"),), "hole": 0.11},
+            "partial": {"partials": ((3, "e"),)},
+            "fully_off": {"fully_off": ((3, "e"),)},
+            "unexpected_partial": {"unexpected_partial": ((0, "f"),)},
+            "decimal": {"decimal": "off"},
+            "holes": {"hole": 0.11},
         }
-        reason = frequency._BRANCH_REASON[frequency.BRANCH_PARTIAL_EXPECTED_ON]
         for name, changes in cases.items():
             with self.subTest(name=name):
-                samples = chain(branch=frequency.BRANCH_PARTIAL_EXPECTED_ON)
-                samples[2] = sample(12, readable=False, reason=reason,
+                samples = chain()
+                samples[2] = sample(12, readable=False,
+                                    reason=frequency._BRANCH_REASON[frequency.BRANCH_INTACT_MASK],
                                     capture_ns=samples[2]["capture_ns"], **changes)
                 result = self.classify(samples)
                 self.assertEqual(result["classifications"], [])
                 self.assertEqual(result["rejected_runs"][0]["code"], "FREQUENCY_GEOMETRY")
+
+    def test_readable_support_with_partial_geometry_is_rejected(self):
+        samples = chain()
+        samples[0] = sample(10, partials=((3, "e"),), capture_ns=samples[0]["capture_ns"])
+        result = self.classify(samples)
+        self.assertEqual(result["classifications"], [])
+        self.assertEqual(result["rejected_runs"][0]["code"], "SUPPORT_GEOMETRY")
 
     def test_support_is_derived_before_current_target_is_consulted(self):
         samples = chain()

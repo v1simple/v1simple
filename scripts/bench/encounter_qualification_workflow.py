@@ -11,7 +11,7 @@ The three stages keep the useful boundary explicit:
   observer rubric without reading a camera recording.
 * ``prepare`` runs the frozen reader/classifiers once on a capture made with
   ``bench.sh --qualification-capture`` and creates opaque observer packets for
-  every admitted and rejected candidate.
+  every admission and the frozen selection of rejections.
 * ``finalize`` consumes completed blind observations, derives the qualification
   matrices, verifies a complete bundle, and publishes the policy and manifest
   together.  It never asks a person to manufacture provenance JSON.
@@ -40,7 +40,10 @@ from encounter_arrow_transition import CLASSIFIER_ID as ARROW_CLASSIFIER_ID
 from encounter_frequency_context import CLASSIFIER_ID as FREQUENCY_CONTEXT_CLASSIFIER_ID
 from encounter_secondary_context import CLASSIFIER_ID as SECONDARY_CONTEXT_CLASSIFIER_ID
 from encounter_secondary_optical_bridge import CLASSIFIER_ID as SECONDARY_OPTICAL_CLASSIFIER_ID
-from encounter_qualification import temporal_observer_clip_source_indices
+from encounter_qualification import (
+    TEMPORAL_CANDIDATE_SELECTION, select_temporal_rejections,
+    temporal_observer_clip_source_indices, temporal_selection_document,
+)
 
 
 BENCH_DIR = Path(__file__).resolve().parent
@@ -60,7 +63,6 @@ TARGET_CLASSIFIERS = (
     ARROW_ACQUISITION_CLASSIFIER_ID,
     FREQUENCY_CONTEXT_CLASSIFIER_ID,
     SECONDARY_CONTEXT_CLASSIFIER_ID,
-    SECONDARY_OPTICAL_CLASSIFIER_ID,
 )
 FIELD_BY_CLASSIFIER = {
     "v1-main-bar-adjacent-redraw-v2": "main_bars",
@@ -337,6 +339,8 @@ def _campaign(path: Path) -> tuple[Path, dict[str, Any]]:
              and document.get("kind") == CAMPAIGN_NAME,
              "unsupported qualification campaign")
     _campaign_classifiers(document)
+    _require(document.get("candidate_selection") == TEMPORAL_CANDIDATE_SELECTION,
+             "campaign candidate selection differs from the frozen workflow")
     return root, document
 
 
@@ -423,6 +427,7 @@ def freeze(destination: Path, base_manifest: Path | None = None, *,
                                "implementation_sha256": implementation},
                 "reader_binding": deepcopy(reader_binding),
                 "observer_rubric_sha256": rubric_hash,
+                "candidate_selection": deepcopy(TEMPORAL_CANDIDATE_SELECTION),
             }
             pre_path = seed / "pre-pixel-freeze.json"
             write_json(pre_path, pre_pixel)
@@ -438,7 +443,7 @@ def freeze(destination: Path, base_manifest: Path | None = None, *,
             "kind": CAMPAIGN_NAME,
             "source_git_sha": commit,
             "policy_id": DEFAULT_POLICY_ID,
-            "selection_rule": "ALL_FROZEN_CANDIDATES",
+            "candidate_selection": deepcopy(TEMPORAL_CANDIDATE_SELECTION),
             "bench_source_sha256": sha256(BENCH_PATH),
             "implementation_sha256": method,
             "reader_runtime": runtime,
@@ -533,6 +538,14 @@ def _candidate_records(temporal: dict[str, Any], classifier_id: str) -> list[dic
                  and all(value in full_indices for value in indices),
                  f"invalid full classifier candidate: {classifier_id}")
     return candidates
+
+
+def _observer_candidates(candidates, classifier_id, capture_id):
+    rejected = [item["record"] for item in candidates if item["decision"] == "REJECTED"]
+    selected = {canonical_sha256(record) for record in
+                select_temporal_rejections(classifier_id, capture_id, rejected)}
+    return [item for item in candidates if item["decision"] == "ADMITTED"
+            or canonical_sha256(item["record"]) in selected]
 
 
 def _raw_box(logical: tuple[int, int, int, int], registration: dict[str, Any],
@@ -775,10 +788,13 @@ def _prepare_classifier(stage: Path, campaign_root: Path, campaign: dict[str, An
     shutil.copyfile(analysis_selection, source_root / "analysis-selection.json")
     shutil.copyfile(capture_path, source_root / "qualification-capture.json")
     shutil.copyfile(window_path, source_root / "window_result.json")
-    shutil.copyfile(data["analysis_result_path"], restricted / "analysis-result.json")
+    _link_or_copy(data["analysis_result_path"], restricted / "analysis-result.json")
 
-    opaque = _opaque_ids(len(candidates))
-    paired = list(zip(candidates, opaque))
+    admitted = [item["record"] for item in candidates if item["decision"] == "ADMITTED"]
+    rejected = [item["record"] for item in candidates if item["decision"] == "REJECTED"]
+    selected_candidates = _observer_candidates(candidates, classifier_id, window["camera"]["capture_id"])
+    opaque = _opaque_ids(len(selected_candidates))
+    paired = list(zip(selected_candidates, opaque))
     random.SystemRandom().shuffle(paired)
     manifest_items: list[dict[str, Any]] = []
     hidden_items: list[dict[str, Any]] = []
@@ -861,18 +877,10 @@ def _prepare_classifier(stage: Path, campaign_root: Path, campaign: dict[str, An
     }
     hidden_path = restricted / "hidden-key.json"
     write_json(hidden_path, hidden)
-    selection = {
-        "schema_version": 2,
-        "kind": "blind_temporal_classifier_selection",
-        "selection_rule": "ALL_FROZEN_CANDIDATES",
-        "opaque_ids": [item["opaque_id"] for item in manifest_items],
-    }
+    selection = temporal_selection_document(
+        len(admitted), len(rejected), [item["opaque_id"] for item in manifest_items])
     selection_path = source_root / "selection.json"
     write_json(selection_path, selection)
-    admitted = [item["frozen_classifier_record"] for item in hidden_items
-                if item["frozen_classifier_decision"] == "ADMITTED"]
-    rejected = [item["frozen_classifier_record"] for item in hidden_items
-                if item["frozen_classifier_decision"] == "REJECTED"]
     implementation = campaign["classifiers"][classifier_id]["implementation_sha256"]
     frozen_result = {
         "classifier_id": classifier_id,
@@ -930,6 +938,7 @@ def _prepare_classifier(stage: Path, campaign_root: Path, campaign: dict[str, An
         "candidate_count": len(candidates),
         "admitted_count": len(admitted),
         "rejected_count": len(rejected),
+        "observer_candidate_count": len(selected_candidates),
         "observer_packet": str(observer.relative_to(stage)),
         "classifier_root": str(classifier_root.relative_to(stage)),
     }
@@ -988,7 +997,7 @@ def _candidate_coverage(result: dict[str, Any], classifier_ids: tuple[str, ...])
                             f"candidates; has {len(admitted)} and {len(rejected)}")
         if classifier_id == FREQUENCY_CONTEXT_CLASSIFIER_ID:
             counts["branches"] = {}
-            for branch in ("intact_mask", "partial_expected_on_segments"):
+            for branch in read_json(SPEC_BY_CLASSIFIER[classifier_id])["validation"]["branch_gates"]:
                 positives = sum(record.get("branch") == branch for record in admitted)
                 negatives = sum(record.get("branch") == branch for record in rejected)
                 counts["branches"][branch] = {
@@ -1013,7 +1022,7 @@ def _candidate_coverage(result: dict[str, Any], classifier_ids: tuple[str, ...])
 
 
 def prepare(campaign_path: Path, run_dir: Path) -> dict[str, Any]:
-    """Read the reserved capture once and make isolated all-candidate packets."""
+    """Read the reserved capture once and make isolated, frozen-selection packets."""
     from encounter_check import analyze, load_run
 
     campaign_root, campaign = _campaign(campaign_path)
@@ -1102,7 +1111,8 @@ def prepare(campaign_path: Path, run_dir: Path) -> dict[str, Any]:
                               for item in classifiers],
             counts={item["classifier_id"]: {
                 "candidates": item["candidate_count"], "admitted": item["admitted_count"],
-                "rejected": item["rejected_count"]} for item in classifiers},
+                "rejected": item["rejected_count"],
+                "observer_candidates": item["observer_candidate_count"]} for item in classifiers},
         )
 
     _atomic_directory(destination, build)
@@ -1233,6 +1243,7 @@ def _validate_pre_key_sources(prepared: Path, prepared_doc: dict[str, Any],
                                     "implementation_sha256": implementation},
                      "reader_binding": campaign["reader_binding"],
                      "observer_rubric_sha256": rubric_hash,
+                     "candidate_selection": deepcopy(TEMPORAL_CANDIDATE_SELECTION),
                  }, f"pre-key freeze differs: {classifier_id}")
         _require(set(manifest) == {
                      "schema_version", "kind", "classifier_id", "classifier_spec_sha256",
@@ -1252,10 +1263,10 @@ def _validate_pre_key_sources(prepared: Path, prepared_doc: dict[str, Any],
         ids = [value.get("opaque_id") for value in manifest_items]
         _require(all(isinstance(value, str) and value for value in ids)
                  and len(ids) == len(set(ids))
-                 and selection == {"schema_version": 2,
-                                   "kind": "blind_temporal_classifier_selection",
-                                   "selection_rule": "ALL_FROZEN_CANDIDATES",
-                                   "opaque_ids": ids}
+                 and selection == temporal_selection_document(
+                     selection.get("candidate_counts", {}).get("admitted"),
+                     selection.get("candidate_counts", {}).get("rejected"), ids)
+                 and len(ids) == sum(selection["selected_counts"].values())
                  and [value.get("opaque_id") for value in observations["observations"]] == ids,
                  f"pre-key blind identities differ: {classifier_id}")
         for value in manifest_items:
@@ -1319,7 +1330,8 @@ def _matrix_document(classifier_id: str, spec_hash: str, source_paths: dict[str,
                    ("true_admit", "false_admit", "true_reject", "false_reject",
                     "abstain")}
     ground_truth_counts: Counter[str] = Counter()
-    frequency_branches = ("intact_mask", "partial_expected_on_segments")
+    frequency_branches = tuple(read_json(SPEC_BY_CLASSIFIER[FREQUENCY_CONTEXT_CLASSIFIER_ID])[
+        "validation"]["branch_gates"])
     branch_outcomes = ({branch: Counter() for branch in frequency_branches}
                        if classifier_id == FREQUENCY_CONTEXT_CLASSIFIER_ID else {})
     true_admit_bands: set[str] = set()
@@ -2395,7 +2407,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--classifier", action="append", choices=sorted(FIELD_BY_CLASSIFIER),
         dest="classifiers", help=(
             "classifier to qualify; repeat to select several "
-            "(default: the five current target classifiers)"))
+            "(default: the four current target classifiers)"))
     freeze_parser.add_argument("--base-manifest", type=Path, default=_default_manifest_path(),
                                help="retained static and any carried temporal evidence to verify before capture")
     prepare_parser = commands.add_parser("prepare", help="read one reserved capture and make blind packets")

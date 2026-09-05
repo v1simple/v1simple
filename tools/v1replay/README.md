@@ -82,14 +82,14 @@ through the complete external evidence window, and then stops its process group.
 Core and display windows use the same managed emulator in idle mode, so the
 complete bench never depends on a physical V1.
 
-`./bench.sh --replay --camera --qualification-capture` selects the separate
-264-second generated reader exercise. It includes four repetitions of all six
-X/K/Ka primary and secondary role permutations. Each ten-second block contains
-two-second holds for primary alone, one card, two cards, a direction/bar change
-with mute, and a priority handoff with unmute. Every band occupies both secondary
-slots; each alert identity is unique and the priority row is explicit. Four
-seconds of clear input precede the matrix and twenty seconds follow it. The
-normal product replay remains unchanged. The existing resolved scenario evidence
+`BENCH_REPLAY_DURATION_SECONDS=80 ./bench.sh --replay --camera --qualification-capture`
+selects the separate 68-second generated reader exercise. It holds each X/K/Ka
+primary frequency while isolating strength, mute-color, and direction changes,
+then exercises every directed arrow change. A final 12-second card/blink matrix
+places every band in the primary and both secondary slots, with unique alert
+identities and an explicit priority row. Four seconds of clear input precede
+and follow the exercise. The normal product replay remains unchanged.
+The existing resolved scenario evidence
 retains the exact selected values and their hash. These authored cases provide
 coverage opportunities; they do not guarantee particular camera or OCR errors.
 The capture mode continues to withhold all automatic pixel analysis.

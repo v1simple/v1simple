@@ -1,0 +1,115 @@
+{
+  "classifier_id": "v1-stable-frequency-intact-context-v1",
+  "deadline_observation_semantics": "LEGAL_PRESENTATION_TRANSITION",
+  "verification_closure_semantics": "RAW_CURRENT_BRACKETED_UNRESOLVED_VERIFICATION_BOUNDARY",
+  "branches": {
+    "intact_mask": {
+      "ambiguity_reason": "inconsistent illuminated frequency segment levels",
+      "maximum_partial_expected_on_segments": 0
+    }
+  },
+  "constants": {
+    "maximum_hole_ink_fraction": 0.1,
+    "maximum_recording_interval_ns": 1000000000,
+    "maximum_refusal_run_span_ns": 75000000,
+    "maximum_support_chain_span_ns": 300000000,
+    "maximum_support_interval_ns": 10000000,
+    "reader_off_p90_max": 32.0,
+    "reader_on_p10_min": 45.0,
+    "stable_support_frames_each_side": 2
+  },
+  "identity": {
+    "reader_method_version": 7,
+    "reader_sha256": "f4efd6a1df4daefb3e7271a2e229e80f7378ba8b7a824dea1593aa0581f20b7c",
+    "redraw_probe_method_version": 1,
+    "redraw_probe_sha256": "4b623360af63afe5c51f154ed5ce57325476b8419bc165bc8a5ee9ef7f55da24"
+  },
+  "mandatory_gates_in_order": [
+    "The candidate is one maximal nonempty primary_frequency ambiguous run with exactly the intact_mask reason: inconsistent illuminated frequency segment levels. Partial or dim segment refusals and other reader reasons are outside candidate scope and never generate an admission.",
+    "The refusal lies in the nearest source-consecutive episode closed by two readable supports on each side; all four independently derive the same canonical DD.DDD value before any current target is consulted.",
+    "The support-derived value then exactly equals the event current target and every interior sample current target.",
+    "Every claimed frame is product-unresolved solely in primary_frequency, no field is DIFFERENCE, every other field is MATCH, and joint state is MATCH or is UNRESOLVED while primary_frequency is the sole unresolved field.",
+    "All four support frames are exact current comparisons with joint state MATCH.",
+    "The authenticated recording-wide maximum source interval is retained exactly and is no greater than the 1 s sanity ceiling; it does not loosen a candidate chain.",
+    "Video and source indices are consecutive, every gap is no greater than the smaller of the verified recording-wide maximum and the fixed 10 ms support-chain maximum, the refusal run spans at most 75 ms, and the full support chain spans at most 300 ms.",
+    "Every support and interior frame has the fixed five digit origins, seven segment measurements that exactly reproduce the raw masks, an on decimal, and two clear holes per digit. Every intervening readable frame is the same exact current value; every intervening refusal has exactly the intact_mask reason. Partial refusal context is rejected.",
+    "Every support and interior expected-off segment is off and every expected-on segment is on according to the unchanged reader7 thresholds. Any partial segment, fully off expected-on segment, or unexpected-on segment rejects the candidate.",
+    "The record identifies only intact_mask for both its claimed run and closing context, affects primary_frequency only, and contains one contiguous unique refusal run with its exact source-consecutive context.",
+    "The RAW_CURRENT_BRACKETED_UNRESOLVED_VERIFICATION_BOUNDARY claim can close a verification boundary only when the product judge independently finds raw CURRENT observations immediately around the complete classified refusal run and every record covering that run contains those exact bracket indices. It changes no raw observation and is usable only through an exact product-policy allowlist entry."
+  ],
+  "profile": {
+    "decimal_box": [
+      590,
+      349,
+      599,
+      357
+    ],
+    "digit_origins": [
+      454,
+      520,
+      616,
+      688,
+      764
+    ],
+    "finite_range": [
+      0.0,
+      255.0
+    ],
+    "hole_bounds_per_digit": [
+      [
+        28,
+        278,
+        40,
+        292
+      ],
+      [
+        28,
+        322,
+        40,
+        338
+      ]
+    ],
+    "sample": "max-channel segment p10, median, and p90",
+    "segments": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e",
+      "f",
+      "g"
+    ]
+  },
+  "schema_version": 1,
+  "scope": {
+    "claim": "A bounded raw frequency refusal preserves intact support-derived canonical glyphs throughout its complete source-consecutive same-value closing context, with no partial segment dependency.",
+    "does_not_claim": [
+      "partial or dim segment resolution in either claimed frames or closing context",
+      "a raw reader value for any ambiguous frame",
+      "an arbitrary frequency change",
+      "whole-display correctness",
+      "DUT receipt",
+      "physical appearance time",
+      "a full redraw",
+      "firmware cause"
+    ],
+    "field": "primary_frequency",
+    "layout": "registered V1 display"
+  },
+  "validation": {
+    "branch_gates": {
+      "intact_mask": {
+        "minimum_blind_true_admits": 5,
+        "minimum_blind_true_rejects": 5,
+        "required_false_admits": 0
+      }
+    },
+    "observer_eligibility_rule": "SAME_FREQUENCY_GLYPHS_THROUGHOUT with ALL_SEGMENTS_COMPLETE, BOTH_CLEAR endpoints, LEGAL_TARGET_CONTENT, and HIGH confidence",
+    "required_band_coverage": [
+      "X",
+      "K",
+      "Ka"
+    ]
+  },
+  "change_scope": "A separate intact-only capability. Partial-segment refusal runs are outside candidate scope, and partial segments or partial-reason refusals anywhere in a candidate closing context reject that candidate. Historical v3 evidence and gates remain unchanged; this identity requires independent qualification."
+}

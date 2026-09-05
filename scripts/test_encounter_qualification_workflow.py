@@ -39,6 +39,29 @@ from camera_contract import EXPECTED_CAMERA_NAME
 
 
 class QualificationWorkflowTests(unittest.TestCase):
+    def test_blind_selection_keeps_every_admission_and_reproducible_negative_sample(self):
+        classifier = workflow.ARROW_CLASSIFIER_ID
+        candidates = [{
+            "decision": "ADMITTED" if index < 25 else "REJECTED",
+            "record": {"classifier_id": classifier,
+                       "first": {"video_frame_index": index * 3},
+                       "last": {"video_frame_index": index * 3 + 1}},
+        } for index in range(90)]
+        selected = workflow._observer_candidates(candidates, classifier, "a" * 64)
+        self.assertEqual([value for value in selected if value["decision"] == "ADMITTED"],
+                         candidates[:25])
+        negatives = lambda values: {
+            value["record"]["first"]["video_frame_index"]
+            for value in values if value["decision"] == "REJECTED"}
+        self.assertEqual(len(negatives(selected)), 12)
+        self.assertEqual(negatives(selected), negatives(workflow._observer_candidates(
+            list(reversed(candidates)), classifier, "a" * 64)))
+        self.assertNotEqual(negatives(selected), negatives(workflow._observer_candidates(
+            candidates, classifier, "b" * 64)))
+        document = workflow.temporal_selection_document(25, 65, list(range(37)))
+        self.assertEqual(document["candidate_counts"], {"admitted": 25, "rejected": 65})
+        self.assertEqual(document["selected_counts"], {"admitted": 25, "rejected": 12})
+
     def test_insufficient_candidates_preserve_analysis_without_creating_observer_packets(self):
         classifier = workflow.ARROW_CLASSIFIER_ID
         campaign = {"reader_runtime": {"method_version": 7},
@@ -77,19 +100,18 @@ class QualificationWorkflowTests(unittest.TestCase):
             # another recording cannot silently replace this exposed attempt.
             self.assertTrue((root / "prepared/preparation-stopped.json").is_file())
 
-    def test_candidate_coverage_checks_frequency_branches_and_bands_before_blind_work(self):
+    def test_candidate_coverage_checks_intact_frequency_and_bands_before_blind_work(self):
         classifier = workflow.FREQUENCY_CONTEXT_CLASSIFIER_ID
         admitted = [{"classifier_id": classifier, "branch": "intact_mask", "band": "X"}] * 10
-        rejected = [{"classifier_id": classifier, "branch": branch}
-                    for branch in ("intact_mask", "partial_expected_on_segments") for _ in range(5)]
+        rejected = [{"classifier_id": classifier, "branch": "intact_mask"} for _ in range(5)]
         result = {"temporal_classification": {"classifications": admitted, "rejected_runs": rejected}}
         with patch.object(encounter_qualification, "_temporal_v2_frequency_context_band",
                           side_effect=lambda record, _: record["band"]):
             coverage = workflow._candidate_coverage(result, (classifier,))
             self.assertFalse(coverage["qualification_possible"])
-            self.assertTrue(any("partial_expected_on_segments" in reason for reason in coverage["blockers"]))
+            self.assertEqual(set(coverage["classifiers"][classifier]["branches"]), {"intact_mask"})
             self.assertTrue(any("K, Ka" in reason for reason in coverage["blockers"]))
-            admitted.extend({"classifier_id": classifier, "branch": "partial_expected_on_segments", "band": band}
+            admitted.extend({"classifier_id": classifier, "branch": "intact_mask", "band": band}
                             for band in ("K", "Ka", "X", "K", "Ka"))
             coverage = workflow._candidate_coverage(result, (classifier,))
         self.assertTrue(coverage["qualification_possible"])
@@ -242,15 +264,14 @@ class QualificationWorkflowTests(unittest.TestCase):
                 self.assertEqual(result["implementation_sha256"][name], expected)
                 self.assertEqual((root / "method" / name).read_bytes(), (BENCH_DIR / name).read_bytes())
 
-    def test_workflow_targets_only_physically_supported_temporal_candidates(self):
+    def test_workflow_targets_only_product_contributing_temporal_candidates(self):
         self.assertEqual(
             workflow.TARGET_CLASSIFIERS,
             (
                 "v1-arrow-phase-edge-v4",
                 "v1-arrow-target-acquisition-v1",
-                "v1-stable-frequency-closed-context-v3",
-            "v1-secondary-closed-context-v3",
-                "v1-secondary-text-optical-bridge-v1",
+                "v1-stable-frequency-intact-context-v1",
+                "v1-secondary-closed-context-v3",
             ),
         )
         self.assertNotIn(
@@ -564,6 +585,7 @@ class QualificationWorkflowTests(unittest.TestCase):
             base.write_text("{}\n")
             campaign_root = root / "campaign"
             campaign = {"kind": workflow.CAMPAIGN_NAME, "schema_version": 1,
+                        "candidate_selection": dict(workflow.TEMPORAL_CANDIDATE_SELECTION),
                         "base_manifest_sha256": workflow.sha256(base),
                         "policy_id": DEFAULT_POLICY_ID, "reader_runtime": {}, "camera": {},
                         "classifiers": {workflow.ARROW_CLASSIFIER_ID: {}}}
@@ -1084,8 +1106,7 @@ class QualificationWorkflowTests(unittest.TestCase):
                     workflow.read_json(paths["completed_observations"]),
                     workflow.read_json(paths["restricted_hidden_key"]),
                 )
-                expected_rejections = (
-                    10 if classifier == workflow.FREQUENCY_CONTEXT_CLASSIFIER_ID else 5)
+                expected_rejections = 5
                 self.assertEqual(document["confusion_matrix"]["true_reject"], 0)
                 self.assertEqual(document["confusion_matrix"]["abstain"], expected_rejections)
                 self.assertEqual(

@@ -11,15 +11,27 @@ import Foundation
 enum BenchScenario {
     static let cadenceHz = 3
     static let durationSeconds = 276
-    static let readerQualificationDurationSeconds = 264
+    static let readerQualificationDurationSeconds = 68
 
     /// A fixed optical-reader exercise, separate from the normal product replay.
-    /// Each band occupies the primary position and both secondary slots. These
-    /// are actual display changes and stable holds, not manufactured OCR errors.
+    /// Strength, mute color and direction changes exercise full display flushes
+    /// while the primary frequency stays fixed. Only the final card-role matrix
+    /// requests blinking. Optical reader refusals and qualification minima remain
+    /// measured outcomes; no input operation guarantees an ambiguous camera image.
     static func makeReaderQualification() -> Encounter {
         let identities: [(V1.Band, UInt16)] = [(.x, 10_525), (.k, 24_150), (.ka, 34_700)]
-        let roles = [[0, 1, 2], [0, 2, 1], [1, 0, 2],
-                     [1, 2, 0], [2, 0, 1], [2, 1, 0]]
+        let frequencyStates: [(Int, V1.Direction, Bool, String)] = [
+            (2, .front, false, "reader_qualification_frequency_low"),
+            (4, .front, false, "reader_qualification_frequency_middle"),
+            (6, .front, false, "reader_qualification_frequency_high"),
+            (6, .front, true, "reader_qualification_frequency_muted"),
+            (6, .front, false, "reader_qualification_frequency_unmuted"),
+            (4, .rear, false, "reader_qualification_frequency_direction"),
+        ]
+        // The preceding Ka primary ends rear-facing. This sequence exercises
+        // each of the six directed changes exactly once with all else fixed.
+        let acquisitionDirections: [V1.Direction] = [.front, .side, .front, .rear, .side, .rear]
+        let roles = [[0, 1, 2], [1, 2, 0], [2, 0, 1]]
         let directions: [V1.Direction] = [.front, .side, .rear]
         let strengths = [2, 4, 6]
         var samples: [TimedSample] = []
@@ -27,31 +39,32 @@ enum BenchScenario {
             let second = tick / cadenceHz
             var alerts: [ReplayAlert] = []
             var muted = false
+            var blink = false
             var phase = "reader_qualification_idle"
-            // Four seconds of clear input, then four repetitions of the six
-            // role permutations in ten-second blocks, then twenty seconds clear.
-            if (4..<244).contains(second) {
-                let block = (second - 4) / 10
-                let repetition = block / roles.count
-                let step = ((second - 4) % 10) / 2
-                let role = roles[block % roles.count]
-                let changed = step >= 3 ? 1 : 0
-                let order = step == 4 ? [role[1], role[0], role[2]] : role
-                let count = step == 0 ? 1 : step == 1 ? 2 : 3
-                phase = ["reader_qualification_primary", "reader_qualification_one_card",
-                         "reader_qualification_two_cards", "reader_qualification_redraw",
-                         "reader_qualification_handoff"][step]
-                muted = step == 3
-                alerts = order.prefix(count).enumerated().map { slot, identityIndex in
+            if (4..<40).contains(second) {
+                let identity = identities[(second - 4) / 12]
+                let state = frequencyStates[((second - 4) % 12) / 2]
+                alerts = [alert(identity.0, identity.1, state.0, state.1, priority: true)]
+                muted = state.2
+                phase = state.3
+            } else if (40..<52).contains(second) {
+                alerts = [alert(.ka, 34_700, 4, acquisitionDirections[(second - 40) / 2],
+                                priority: true)]
+                phase = "reader_qualification_direction_acquisition"
+            } else if (52..<64).contains(second) {
+                let role = roles[(second - 52) / 4]
+                let count = (second - 52) % 4 < 2 ? 2 : 3
+                alerts = role.prefix(count).enumerated().map { slot, identityIndex in
                     let identity = identities[identityIndex]
-                    let state = (identityIndex + repetition + changed) % 3
-                    return alert(identity.0, identity.1, strengths[state], directions[state],
-                                 priority: slot == 0)
+                    return alert(identity.0, identity.1, strengths[identityIndex],
+                                 directions[identityIndex], priority: slot == 0)
                 }
+                blink = true
+                phase = count == 2 ? "reader_qualification_one_card" : "reader_qualification_two_cards"
             }
             samples.append(TimedSample(
                 offset: Double(tick) / Double(cadenceHz), phase: phase, muted: muted,
-                alerts: alerts, scenarioArrowBlink: alerts.count > 1, sourceIndex: tick))
+                alerts: alerts, scenarioArrowBlink: blink, sourceIndex: tick))
         }
         return Encounter(origin: .syntheticBench, samples: samples)
     }

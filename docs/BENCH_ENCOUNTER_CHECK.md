@@ -53,7 +53,7 @@ reader, first freeze the candidate classifier, selection rule, observer rubric,
 and implementation hashes, then run:
 
 ```sh
-./bench.sh --replay --camera --qualification-capture
+BENCH_REPLAY_DURATION_SECONDS=80 ./bench.sh --replay --camera --qualification-capture
 ```
 
 This mode performs the same clean-source, runtime, replay-delivery, and camera
@@ -96,13 +96,24 @@ chosen targets, verifies original source pixels and the complete blind result,
 and publishes only the independently supported policy entries. Ordinary product
 analysis never invokes unqualified experimental readers.
 
-Qualification capture uses a separate fixed 264-second replay covering X/K/Ka
-as primary and in both secondary positions; the ordinary product replay is
-unchanged. After reading the reserved recording, `prepare` checks whether the
+Qualification capture uses a separate fixed 68-second replay covering X/K/Ka
+as primary and in both secondary positions. It isolates strength, mute-color,
+direction, and card/blink changes; the 80-second collection allows replay startup
+and completion. The ordinary product replay is unchanged. The default campaign
+targets arrow phase, arrow acquisition, secondary-card context, and frequency
+context with complete digit segments. Partial-segment frequency reconstruction
+and optical-card bridging remain outside this qualification scope.
+
+After reading the reserved recording, `prepare` checks whether the
 candidate counts can possibly meet the frozen branch and band minima. An
 impossible campaign exits 2 before clip generation and preserves its recording,
 analysis and `preparation-stopped.json`. Sufficient counts never establish
-qualification: every candidate still requires independent blind observation.
+qualification: every admission requires independent blind observation, together
+with up to 12 rejected candidates per classifier selected by the frozen hash
+rule. Complete admission and rejection counts remain in the evidence, and
+verification independently reconstructs the selection. Qualification still
+requires at least five true admissions, five true rejections, no false
+admissions, and each classifier's specified band coverage.
 
 The reader qualification manifest defaults to:
 

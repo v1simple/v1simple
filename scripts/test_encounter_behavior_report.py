@@ -150,14 +150,15 @@ class EncounterBehaviorReportTests(unittest.TestCase):
         # Execute the actual report script against a minimal isolated document.
         # This verifies rendered text and navigation without a browser dependency.
         prelude = '''const assert=require('node:assert/strict');
-const elements=new Map(),listeners={};
-function element(id){if(!elements.has(id))elements.set(id,{id,value:id==='filter'?'all':'',innerHTML:'',textContent:'',readyState:0,addEventListener(){},removeAttribute(){},scrollIntoView(){}});return elements.get(id);}
+const elements=new Map(),listeners={},scrolls=[];
+function element(id){if(!elements.has(id))elements.set(id,{id,value:id==='filter'?'all':'',innerHTML:'',textContent:'',readyState:0,addEventListener(){},removeAttribute(){},scrollIntoView(options){scrolls.push({id,options});}});return elements.get(id);}
 global.document={getElementById:element,addEventListener(){}};
 global.window={addEventListener:(name,fn)=>listeners[name]=fn};
 global.location={hash:'#event=event-2'};
 element('behavior-data').textContent=''' + json.dumps(json.dumps(payload)) + ';\n'
         assertions = r'''
 assert.equal(activeIndex,1);
+assert.deepEqual(scrolls,[{id:'event-content',options:{block:'start'}}]);
 assert.equal(inputText(report.events[0]),'Primary input: K 24.150 side · row strength 3');
 assert.match(element('event-content').innerHTML,/Strength bars<\/td><td>4/);
 assert.match(element('event-content').innerHTML,/<h2>event-2<\/h2>/);
@@ -193,6 +194,14 @@ assert.equal(safeLocalReport('//example.com/evil.html'),null);
         completed = subprocess.run([shutil.which("node")], input=prelude + script + assertions,
                                    text=True, capture_output=True)
         self.assertEqual(completed.returncode, 0, completed.stderr)
+        for initial_hash in ("", "#event=missing"):
+            with self.subTest(initial_hash=initial_hash):
+                overview_prelude = prelude.replace("hash:'#event=event-2'",
+                                                   "hash:" + json.dumps(initial_hash))
+                completed = subprocess.run([shutil.which("node")],
+                    input=overview_prelude + script + "\nassert.equal(activeIndex,0);assert.deepEqual(scrolls,[]);",
+                    text=True, capture_output=True)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
 
 
 if __name__ == "__main__":

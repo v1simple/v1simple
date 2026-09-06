@@ -235,23 +235,32 @@ TEMPORAL_V2_OBSERVER_RUBRICS = {
             "EVERY_CLAIMED_FRAME_HAS_NONCURRENT_CHANGED_DIRECTION, "
             "no unchanged-direction motion, and HIGH confidence"),
         "eligibility_detail": (
-            "Eligible only when two stable clear endpoint frames on each side show a transition "
+            "Eligible only when the designated two stable clear endpoint frames on each side show a transition "
             "from a prior arrow phase, or that prior phase plus the current phase, to the current "
             "phase; every changed direction moves coherently, every claimed target frame retains "
             "at least one noncurrent changed direction, every unchanged direction stays still, "
             "and confidence is HIGH."),
         "field_guidance": {
             "left_endpoint_directions": (
-                "Transcribe the complete visible direction set in the clear left endpoint."),
+                "Transcribe the complete visible direction set in left_support_clip_frame_indices. "
+                "[] is a valid clear endpoint with no lit arrows; missing or unclear support is null."),
             "right_endpoint_directions": (
-                "Transcribe the complete visible direction set in the clear right endpoint."),
+                "Transcribe the complete visible direction set in right_support_clip_frame_indices. "
+                "[] is a valid clear endpoint with no lit arrows; missing or unclear support is null."),
             "endpoint_support": (
-                "BOTH_CLEAR requires two stable, mutually agreeing frames on each side."),
+                "BOTH_CLEAR requires the designated two stable, mutually agreeing frames on each side. "
+                "Use only left_support_clip_frame_indices and right_support_clip_frame_indices; "
+                "do not substitute a later plateau or search farther for clearer endpoints. "
+                "An empty support-index array means missing support, not an all-unlit endpoint. "
+                "Missing or unclear designated support stays indeterminate."),
             "endpoint_relation": (
                 "Use PRIOR_OR_PRIOR_PLUS_CURRENT_TO_CURRENT only when the left endpoint is a prior "
                 "phase or its union with the right current phase, and the right endpoint is current."),
             "transition_class": (
-                "Judge all changed arrow directions across the complete optical transition."),
+                "Judge all changed arrow directions across exactly full_run_clip_frame_indices. "
+                "The rest of the clip is orientation context, not a substitute local transition. "
+                "These indices identify a dense interval of retained original video frames; "
+                "they do not assert that a machine measured or accepted those frames."),
             "claimed_frame_acquisition": (
                 "Use EVERY_CLAIMED_FRAME_HAS_NONCURRENT_CHANGED_DIRECTION only when each marked "
                 "target frame visibly differs from the current endpoint in at least one changed "
@@ -815,13 +824,14 @@ def _canonical_sha256(value: Any) -> str:
 
 
 def temporal_observer_clip_source_indices(
-        target_indices: list[int], source_rows: dict[int, dict[str, int]]) -> list[int]:
-    """Derive the observer window only from the target and authenticated source time.
+        target_indices: list[int], source_rows: dict[int, dict[str, int]],
+        scope_indices: list[int] | None = None) -> list[int]:
+    """Derive the observer window from authenticated time and optional local scope.
 
     Every supported record validator bounds its outermost required visual
     support chain to at most 300 ms and requires the target to lie inside that
-    chain, so this includes every valid support frame without consulting the
-    classifier-selected full run.
+    chain. Acquisition refusals may have more distant pre-gate supports; their
+    explicit scope extends the same window without choosing different supports.
     """
     _require(isinstance(source_rows, dict) and bool(source_rows)
              and set(source_rows) == set(range(len(source_rows)))
@@ -842,8 +852,72 @@ def temporal_observer_clip_source_indices(
     last_capture_ns = source_rows[target_indices[-1]]["capture_ns"]
     lower = first_capture_ns - TEMPORAL_OBSERVER_CONTEXT_NS_EACH_SIDE
     upper = last_capture_ns + TEMPORAL_OBSERVER_CONTEXT_NS_EACH_SIDE
-    return [index for index in range(len(source_rows))
-            if lower <= source_rows[index]["capture_ns"] <= upper]
+    indices = [index for index in range(len(source_rows))
+               if lower <= source_rows[index]["capture_ns"] <= upper]
+    if scope_indices is not None:
+        _require(isinstance(scope_indices, list) and bool(scope_indices)
+                 and all(type(value) is int and value in source_rows for value in scope_indices),
+                 "observer local scope leaves retained source frames")
+        indices = list(range(min(indices[0], min(scope_indices)),
+                             max(indices[-1], max(scope_indices)) + 1))
+    return indices
+
+
+ACQUISITION_OBSERVER_SCOPE_FIELDS = {
+    "full_run_clip_frame_indices", "left_support_clip_frame_indices",
+    "right_support_clip_frame_indices",
+}
+
+
+def temporal_acquisition_observer_scope(
+        item: dict[str, Any], observation: dict[str, Any] | None = None
+) -> dict[str, list[int]]:
+    """Validate public local geometry without reading a decision or hidden key."""
+    source = item.get("clip_source_video_indices")
+    target = item.get("target_run_clip_frame_indices")
+    _require(isinstance(source, list) and bool(source)
+             and all(type(value) is int and value >= 0 for value in source)
+             and all(right == left + 1 for left, right in zip(source, source[1:])),
+             "acquisition observer scope source mapping is invalid")
+    for name in (*sorted(ACQUISITION_OBSERVER_SCOPE_FIELDS), "target_run_clip_frame_indices"):
+        values = item.get(name)
+        support = name in {"left_support_clip_frame_indices", "right_support_clip_frame_indices"}
+        _require(isinstance(values, list)
+                 and (len(values) in (0, 2) if support else bool(values))
+                 and all(type(value) is int and 0 <= value < len(source) for value in values)
+                 and all(right == left + 1 for left, right in zip(values, values[1:])),
+                 f"acquisition observer scope is invalid: {name}")
+    full = item["full_run_clip_frame_indices"]
+    left = item["left_support_clip_frame_indices"]
+    right = item["right_support_clip_frame_indices"]
+    _require([source[index] for index in target] == item.get("target_run_video_indices")
+             and all(index in full for index in target)
+             and (left[-1] + 1 == full[0] if left else full[0] == target[0])
+             and (right[0] - 1 == full[-1] if right else full[-1] == target[-1]),
+             "acquisition observer scope does not bound its local target transition")
+    if observation is not None:
+        for side, indices in (("left", left), ("right", right)):
+            if not indices:
+                _require(observation.get(f"{side}_endpoint_directions") is None
+                         and observation.get("endpoint_support") in {
+                             f"{side.upper()}_UNCLEAR", "BOTH_UNCLEAR", "INDETERMINATE"},
+                         "missing acquisition observer support must remain indeterminate")
+    return {"full_transition_indices": [source[index] for index in full],
+            "left_support": [source[index] for index in left],
+            "right_support": [source[index] for index in right]}
+
+
+def _validate_temporal_v2_acquisition_scope_binding(
+        item: dict[str, Any], record: dict[str, Any], full_run: list[int]) -> None:
+    scope = temporal_acquisition_observer_scope(item)
+    _require(scope["full_transition_indices"] == record.get("full_transition_indices") == full_run,
+             "acquisition observer full-run scope differs from the frozen record")
+    for side in ("left_support", "right_support"):
+        points = record.get(side)
+        _require(isinstance(points, list) and len(points) in (0, 2)
+                 and all(isinstance(point, dict) for point in points)
+                 and scope[side] == [point.get("video_frame_index") for point in points],
+                 f"acquisition observer {side} scope differs from the frozen record")
 
 
 def temporal_v2_observer_instructions(classifier_id: str) -> str:
@@ -871,6 +945,14 @@ def temporal_v2_observer_instructions(classifier_id: str) -> str:
         "observer_received_machine_output=false, observer_received_hidden_key=false. "
         "Do not make that attestation if it is not true.\n"
     ]
+    if classifier_id == "v1-arrow-target-acquisition-v1":
+        lines.append(
+            "For acquisition clips, deterministically extend that 300 ms context interval "
+            "to include every designated full_run_clip_frame_indices, "
+            "left_support_clip_frame_indices, and right_support_clip_frame_indices frame, "
+            "retaining every original video ordinal between the outer boundaries. "
+            "This same scope-union rule applies to every item. These three arrays use "
+            "zero-based clip-frame indices and identify the exact local interval and support pairs.\n")
     for field in rubric["literal_fields"]:
         allowed = rubric["allowed_literals"].get(field)
         if allowed is None and field.endswith("_directions"):
@@ -1958,7 +2040,12 @@ def _validate_temporal_v2_media(classifier_id: str, source_paths: dict[str, Path
                      f"temporal observer clip size differs: {opaque_id}")
             indices = item.get("clip_source_video_indices")
             target = item.get("target_run_video_indices")
-            expected_indices = (temporal_observer_clip_source_indices(target, row_by_index)
+            scope = (temporal_acquisition_observer_scope(item)
+                     if classifier_id == "v1-arrow-target-acquisition-v1" else None)
+            expected_indices = (temporal_observer_clip_source_indices(
+                                    target, row_by_index,
+                                    [index for values in scope.values() for index in values]
+                                    if scope is not None else None)
                                 if isinstance(target, list) and target else [])
             _require(isinstance(indices, list) and bool(indices)
                      and all(type(index) is int and 0 <= index < len(source_hashes)
@@ -2968,6 +3055,9 @@ def _validate_temporal_v2_record(classifier_id: str, spec_sha256: str,
         rejection_keys = (_BRANCHED_REJECTION_RECORD_KEYS
                           if classifier_id == "v1-stable-frequency-intact-context-v1"
                           else _REJECTION_RECORD_KEYS)
+        if classifier_id == "v1-arrow-target-acquisition-v1":
+            rejection_keys = rejection_keys | {
+                "full_transition_indices", "left_support", "right_support"}
         branch_valid = (record.get("branch") == "intact_mask"
                         if classifier_id == "v1-stable-frequency-intact-context-v1" else True)
         _require(set(record) == rejection_keys and branch_valid
@@ -2979,6 +3069,16 @@ def _validate_temporal_v2_record(classifier_id: str, spec_sha256: str,
                  "temporal rejected classifier record shape differs")
         _require_point(record.get("first"), target_indices[0], "rejected first", source_rows)
         _require_point(record.get("last"), target_indices[-1], "rejected last", source_rows)
+        if classifier_id == "v1-arrow-target-acquisition-v1":
+            supports = [record.get(side) for side in ("left_support", "right_support")]
+            _require(all(isinstance(pair, list) and len(pair) in (0, 2) for pair in supports)
+                     and (record["code"] == "UNCLOSED_RUN") == any(not pair for pair in supports),
+                     "acquisition rejected support availability differs")
+            for pair in supports:
+                for point in pair:
+                    _require(isinstance(point, dict), "acquisition rejected support is malformed")
+                    _require_point(point, point.get("video_frame_index"),
+                                   "acquisition rejected support", source_rows)
         return
     required = (_ARROW_RECORD_KEYS if classifier_id == "v1-arrow-phase-edge-v5"
                 else _ARROW_ACQUISITION_RECORD_KEYS
@@ -3492,7 +3592,9 @@ def _validate_temporal_v2(document: dict[str, Any], classifier_id: str,
         _require(set(manifest_item) == {
                      "opaque_id", "clip", "sha256", "size_bytes",
                      "target_run_video_indices", "clip_source_video_indices",
-                     "target_run_clip_frame_indices", "inset_source_box"},
+                     "target_run_clip_frame_indices", "inset_source_box"} |
+                     (ACQUISITION_OBSERVER_SCOPE_FIELDS
+                      if classifier_id == "v1-arrow-target-acquisition-v1" else set()),
                  f"temporal observer manifest item differs for {opaque_id}")
         manifest_sha = _digest(manifest_item.get("sha256"), f"temporal clip {opaque_id}")
         _require(hidden_item.get("clip_sha256") == manifest_sha,
@@ -3529,8 +3631,11 @@ def _validate_temporal_v2(document: dict[str, Any], classifier_id: str,
         target_clip_indices = manifest_item.get("target_run_clip_frame_indices")
         full_run_indices = hidden_item.get("full_run_video_indices")
         full_run_clip_indices = hidden_item.get("full_run_clip_frame_indices")
+        scope = (temporal_acquisition_observer_scope(manifest_item)
+                 if classifier_id == "v1-arrow-target-acquisition-v1" else None)
         expected_clip_source_indices = temporal_observer_clip_source_indices(
-            target_indices, source_rows)
+            target_indices, source_rows,
+            [index for values in scope.values() for index in values] if scope is not None else None)
         _require(isinstance(clip_source_indices, list) and bool(clip_source_indices)
                  and all(type(value) is int and value >= 0 for value in clip_source_indices)
                  and all(right == left + 1
@@ -3579,6 +3684,8 @@ def _validate_temporal_v2(document: dict[str, Any], classifier_id: str,
                           "target_run_inside_clip")),
                  f"temporal clip audit differs for {opaque_id}")
 
+        if classifier_id == "v1-arrow-target-acquisition-v1":
+            temporal_acquisition_observer_scope(manifest_item, observation)
         literal, ground_truth = _temporal_v2_observer_ground_truth(
             classifier_id, observation)
         eligible = ground_truth == "ELIGIBLE"
@@ -3601,6 +3708,9 @@ def _validate_temporal_v2(document: dict[str, Any], classifier_id: str,
         _validate_temporal_v2_record(
             classifier_id, spec_sha256, record, target_indices, context_binding,
             spec_document, decision, source_rows)
+        if classifier_id == "v1-arrow-target-acquisition-v1":
+            _validate_temporal_v2_acquisition_scope_binding(
+                manifest_item, record, full_run_indices)
         admitted_band = None
         if decision == "ADMITTED":
             _require(record.get("video_frame_indices") == target_indices,

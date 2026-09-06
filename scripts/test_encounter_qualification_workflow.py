@@ -335,6 +335,69 @@ class QualificationWorkflowTests(unittest.TestCase):
             workflow._logical_inset(classifier),
             workflow._logical_inset(workflow.ARROW_CLASSIFIER_ID))
 
+    def test_acquisition_source_gap_keeps_dense_retained_video_scope(self):
+        import encounter_arrow_acquisition
+        from test_encounter_arrow_acquisition import union_chain, classify
+
+        samples = union_chain()
+        for item in samples[3:]:
+            item["video_frame_index"] += 1
+            item["source_frame_seq"] += 1
+            item["capture_ns"] += 5_000_000
+        result = classify(samples)
+        self.assertEqual(result["classifications"], [])
+        record = result["rejected_runs"][0]
+        self.assertEqual(record["code"], "SOURCE_GAP")
+        self.assertEqual(record["full_transition_indices"], [2, 3, 4])
+        self.assertEqual([item["video_frame_index"] for item in samples], [0, 1, 2, 4, 5, 6])
+        record["classifier_id"] = encounter_arrow_acquisition.CLASSIFIER_ID
+        candidate = workflow._candidate_records(result, encounter_arrow_acquisition.CLASSIFIER_ID)[0]
+        self.assertEqual(candidate["indices"], [2, 3, 4])
+        self.assertEqual(candidate["full_indices"], [2, 3, 4])
+        source = list(range(8))
+        item = {"clip_source_video_indices": source,
+                "target_run_video_indices": candidate["indices"],
+                "target_run_clip_frame_indices": candidate["indices"],
+                "full_run_clip_frame_indices": candidate["full_indices"],
+                "left_support_clip_frame_indices": [0, 1],
+                "right_support_clip_frame_indices": [5, 6]}
+        workflow._validate_temporal_v2_acquisition_scope_binding(
+            item, record, candidate["full_indices"])
+        self.assertTrue(all(index in source for index in record["full_transition_indices"]))
+        admitted = classify(union_chain())["classifications"][0]
+        self.assertEqual(admitted["full_transition_indices"], [2, 3])
+
+    def test_acquisition_scope_includes_distant_original_support_after_source_gap(self):
+        from test_encounter_arrow_acquisition import union_chain, classify
+
+        samples = union_chain()
+        for item in samples[4:]:
+            item["capture_ns"] += 400_000_000
+        record = classify(samples)["rejected_runs"][0]
+        self.assertEqual(record["code"], "SOURCE_GAP")
+        self.assertEqual([point["video_frame_index"] for point in record["right_support"]], [4, 5])
+        source_rows = {item["video_frame_index"]: {
+            "source_frame_seq": item["source_frame_seq"], "capture_ns": item["capture_ns"]}
+            for item in samples}
+        original = workflow._observer_clip_source_indices([2, 3], source_rows)
+        self.assertEqual(original, [0, 1, 2, 3])
+        scope = [*record["full_transition_indices"],
+                 *[point["video_frame_index"] for side in ("left_support", "right_support")
+                   for point in record[side]]]
+        expanded = workflow._observer_clip_source_indices([2, 3], source_rows, scope)
+        self.assertEqual(expanded, [0, 1, 2, 3, 4, 5])
+        self.assertTrue(all(index in source_rows for index in expanded))
+        item = {"clip_source_video_indices": expanded, "target_run_video_indices": [2, 3],
+                "target_run_clip_frame_indices": [2, 3], "full_run_clip_frame_indices": [2, 3],
+                "left_support_clip_frame_indices": [0, 1], "right_support_clip_frame_indices": [4, 5]}
+        public_scope = workflow.temporal_acquisition_observer_scope(item)
+        self.assertEqual(workflow._observer_clip_source_indices(
+            [2, 3], source_rows, [index for values in public_scope.values() for index in values]), expanded)
+        workflow._validate_temporal_v2_acquisition_scope_binding(
+            item, record, record["full_transition_indices"])
+        with self.assertRaisesRegex(workflow.WorkflowError, "leaves retained source"):
+            workflow._observer_clip_source_indices([2, 3], source_rows, [6])
+
     def test_frequency_context_uses_exact_dependencies_context_and_inset(self):
         classifier = workflow.FREQUENCY_CONTEXT_CLASSIFIER_ID
         identity = workflow.classifier_identity()[classifier]
@@ -471,11 +534,15 @@ class QualificationWorkflowTests(unittest.TestCase):
             "event_id": "two", "classifier_id": target,
             "field": "main_arrows", "code": "OWN", "first": point(4),
             "last": point(5), "reason": "target classifier",
+            "full_transition_indices": [3, 4, 5, 6],
+            "left_support": [point(1), point(2)],
+            "right_support": [point(7), point(8)],
         }]
         candidates = workflow._candidate_records(
             {"classifications": [], "rejected_runs": records}, target)
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["record"]["classifier_id"], target)
+        self.assertEqual(candidates[0]["full_indices"], [3, 4, 5, 6])
         del records[0]["classifier_id"]
         with self.assertRaisesRegex(workflow.WorkflowError, "classifier provenance"):
             workflow._candidate_records(
@@ -743,7 +810,8 @@ class QualificationWorkflowTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),
                          "ffmpeg and ffprobe are required")
     def test_lossless_observer_media_is_bound_to_retained_video_and_sidecar(self):
-        for classifier in ("v1-main-bar-adjacent-redraw-v2", workflow.ARROW_CLASSIFIER_ID):
+        for classifier in ("v1-main-bar-adjacent-redraw-v2", workflow.ARROW_CLASSIFIER_ID,
+                           workflow.ARROW_ACQUISITION_CLASSIFIER_ID):
             with self.subTest(classifier=classifier):
                 self._lossless_media_round_trip(classifier)
 
@@ -830,6 +898,10 @@ class QualificationWorkflowTests(unittest.TestCase):
                     workflow._logical_inset(classifier),
                     registration, 1280, 720)),
             }
+            if classifier == workflow.ARROW_ACQUISITION_CLASSIFIER_ID:
+                item.update(full_run_clip_frame_indices=[4, 5, 6],
+                            left_support_clip_frame_indices=[2, 3],
+                            right_support_clip_frame_indices=[7, 8])
             manifest_path = observer / "manifest.json"
             workflow.write_json(manifest_path, {"items": [item]})
             selection = {"samples": [{
@@ -983,8 +1055,8 @@ class QualificationWorkflowTests(unittest.TestCase):
         opaque_ids = [item["opaque_id"] for item in hidden["items"]]
 
         def build_clip(_video, destination, _classifier, target, source_rows,
-                       _registration, _width, _height):
-            source_indices = workflow._observer_clip_source_indices(target, source_rows)
+                       _registration, _width, _height, scope_indices=None):
+            source_indices = workflow._observer_clip_source_indices(target, source_rows, scope_indices)
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(f"workflow clip {destination.stem}".encode("ascii"))
             return source_indices, destination.stat().st_size
@@ -1038,11 +1110,24 @@ class QualificationWorkflowTests(unittest.TestCase):
         manifest = workflow.read_json(workflow_sources["observer_manifest"])
         prepared_hidden = workflow.read_json(workflow_sources["restricted_hidden_key"])
         readme = workflow_sources["observer_readme"].read_text(encoding="utf-8")
-        self.assertNotIn("full_run", readme)
+        if classifier == workflow.ARROW_ACQUISITION_CLASSIFIER_ID:
+            self.assertIn("full_run_clip_frame_indices", readme)
+        else:
+            self.assertNotIn("full_run", readme)
         hidden_by_id = {item["opaque_id"]: item for item in prepared_hidden["items"]}
         for item in manifest["items"]:
             self.assertNotIn("full_run_video_indices", item)
-            self.assertNotIn("full_run_clip_frame_indices", item)
+            if classifier == workflow.ARROW_ACQUISITION_CLASSIFIER_ID:
+                self.assertEqual(
+                    set(item) - {"opaque_id", "clip", "sha256", "size_bytes",
+                                 "target_run_video_indices", "clip_source_video_indices",
+                                 "target_run_clip_frame_indices", "inset_source_box"},
+                    workflow.ACQUISITION_OBSERVER_SCOPE_FIELDS)
+                workflow._validate_temporal_v2_acquisition_scope_binding(
+                    item, hidden_by_id[item["opaque_id"]]["frozen_classifier_record"],
+                    hidden_by_id[item["opaque_id"]]["full_run_video_indices"])
+            else:
+                self.assertNotIn("full_run_clip_frame_indices", item)
             hidden_item = hidden_by_id[item["opaque_id"]]
             self.assertIn("full_run_video_indices", hidden_item)
             self.assertIn("full_run_clip_frame_indices", hidden_item)
@@ -1052,6 +1137,34 @@ class QualificationWorkflowTests(unittest.TestCase):
                  for value in hidden_item["full_run_video_indices"]],
             )
         completed = workflow.read_json(workflow_sources["completed_observations"])
+        if classifier == workflow.ARROW_ACQUISITION_CLASSIFIER_ID:
+            campaign["bench_source_sha256"] = "c" * 64
+            prepared_document = {"classifiers": [{"classifier_id": classifier,
+                "classifier_root": f"classifiers/{classifier}"}]}
+            completed_sources = {classifier: {"manifest": manifest, "document": completed}}
+            read_json = workflow.read_json
+
+            def public_read(path):
+                self.assertNotIn(path, [workflow_sources[name] for name in (
+                    "restricted_hidden_key", "frozen_classifier_result", "analysis_result")])
+                return read_json(path)
+
+            with (patch.object(workflow, "read_json", side_effect=public_read),
+                  patch("camera_timing.load_frame_sidecar", return_value=[
+                      {**row, "status": "written"} for row in fake_data["rows"]]),
+                  patch("encounter_qualification._validate_temporal_v2_capture"),
+                  patch("encounter_qualification._validate_temporal_v2_media")):
+                validated = workflow._validate_pre_key_sources(
+                    stage, prepared_document, campaign, completed_sources)
+                self.assertEqual(set(validated), {classifier})
+                for field in sorted(workflow.ACQUISITION_OBSERVER_SCOPE_FIELDS):
+                    held = manifest["items"][0].pop(field)
+                    try:
+                        with self.assertRaisesRegex(workflow.WorkflowError, "mapping shape"):
+                            workflow._validate_pre_key_sources(
+                                stage, prepared_document, campaign, completed_sources)
+                    finally:
+                        manifest["items"][0][field] = held
         comparison = workflow._matrix_document(
             classifier, seeded_entry["classifier_spec_sha256"], workflow_sources,
             manifest, completed, prepared_hidden)

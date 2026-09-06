@@ -848,7 +848,8 @@ class QualificationTests(unittest.TestCase):
                                     frequency_missing_band=False,
                                     optical_missing_band=False,
                                     observer_claim_tamper=False,
-                                    extra_rejected_candidates=0):
+                                    extra_rejected_candidates=0,
+                                    acquisition_scope_tamper=None):
         temporal_root = self.root / f"temporal-v2-{classifier}"
         repository_spec = (Path(__file__).resolve().parent / "bench" / "temporal_specs" /
                            f"{classifier}.json")
@@ -917,6 +918,10 @@ class QualificationTests(unittest.TestCase):
         secondary_optical = classifier == "v1-secondary-text-optical-bridge-v1"
         if secondary_optical and rejection_code == "UNCLOSED_RUN":
             rejection_code = "UNCLOSED_BRACKET"
+        if classifier == "v1-arrow-target-acquisition-v1" and rejection_code == "UNCLOSED_RUN":
+            # Definite-negative controls have designated clear support, so they
+            # cannot represent a run rejected for missing support.
+            rejection_code = "NOT_ACQUISITION_ENDPOINTS"
         item_count = (11 if false_admit or claim_mismatch else 10) + extra_rejected_candidates
         branch_by_opaque = {}
         band_by_opaque = {}
@@ -1110,6 +1115,15 @@ class QualificationTests(unittest.TestCase):
                 "target_run_clip_frame_indices": target_clip_indices,
                 "inset_source_box": [10, 10, 20, 20],
             })
+            if classifier == "v1-arrow-target-acquisition-v1":
+                manifest_items[-1].update({
+                    "full_run_clip_frame_indices": [clip_source_indices.index(value)
+                                                    for value in full_indices],
+                    "left_support_clip_frame_indices": [clip_source_indices.index(value)
+                        for value in (full_indices[0] - 2, full_indices[0] - 1)],
+                    "right_support_clip_frame_indices": [clip_source_indices.index(value)
+                        for value in (full_indices[-1] + 1, full_indices[-1] + 2)],
+                })
             observations.append({"opaque_id": opaque_id, **literal_observation})
             if machine_admitted:
                 record = {
@@ -1549,6 +1563,12 @@ class QualificationTests(unittest.TestCase):
                     "last": point(indices[-1]),
                     "reason": "Synthetic rejected qualification control.",
                 }
+                if classifier == "v1-arrow-target-acquisition-v1":
+                    record.update({
+                        "full_transition_indices": full_indices,
+                        "left_support": [point(full_indices[0] - 2), point(full_indices[0] - 1)],
+                        "right_support": [point(full_indices[-1] + 1), point(full_indices[-1] + 2)],
+                    })
                 if record_tamper == "rejected_field" and index == 5:
                     record["field"] = "invented_field"
                 rejected_records.append(record)
@@ -1570,6 +1590,26 @@ class QualificationTests(unittest.TestCase):
             })
             if clip_mapping_tamper == "hidden_full_position" and index == 0:
                 hidden_items[-1]["full_run_clip_frame_indices"][0] += 1
+            if acquisition_scope_tamper is not None and index == acquisition_scope_tamper[2]:
+                field, mutation, _ = acquisition_scope_tamper
+                if mutation == "missing":
+                    del manifest_items[-1][field]
+                elif mutation == "shifted":
+                    manifest_items[-1][field] = [value + 1 for value in manifest_items[-1][field]]
+                elif mutation == "expanded_hidden":
+                    hidden_items[-1]["full_run_video_indices"] = [full_indices[0] - 1, *full_indices]
+                    hidden_items[-1]["full_run_clip_frame_indices"] = [
+                        clip_source_indices.index(value)
+                        for value in hidden_items[-1]["full_run_video_indices"]]
+                elif mutation == "expanded_public_and_hidden":
+                    hidden_items[-1]["full_run_video_indices"] = [full_indices[0] - 1, *full_indices]
+                    hidden_items[-1]["full_run_clip_frame_indices"] = [
+                        clip_source_indices.index(value)
+                        for value in hidden_items[-1]["full_run_video_indices"]]
+                    manifest_items[-1]["full_run_clip_frame_indices"] = copy.deepcopy(
+                        hidden_items[-1]["full_run_clip_frame_indices"])
+                    manifest_items[-1]["left_support_clip_frame_indices"] = [
+                        value - 1 for value in manifest_items[-1]["left_support_clip_frame_indices"]]
             if machine_admitted:
                 outcome = ("TRUE_ADMIT" if visually_eligible and claim_matches
                            else "FALSE_ADMIT")
@@ -2275,7 +2315,8 @@ class QualificationTests(unittest.TestCase):
                 instructions = temporal_v2_observer_instructions(classifier)
                 self.assertIn("clip_source_video_indices entry", instructions)
                 self.assertIn("target_run_clip_frame_indices", instructions)
-                self.assertNotIn("full_run", instructions)
+                if classifier != "v1-arrow-target-acquisition-v1":
+                    self.assertNotIn("full_run", instructions)
                 self.assertIn("same classifier-independent rule", instructions)
                 self.assertIn("within 300 ms before", instructions)
                 self.assertIn("authenticated capture timing", instructions)
@@ -2303,7 +2344,10 @@ class QualificationTests(unittest.TestCase):
                 "BOTH_CLEAR", "PRIOR_OR_PRIOR_PLUS_CURRENT_TO_CURRENT",
                 "COHERENT_CHANGED_DIRECTION_MOTION",
                 "EVERY_CLAIMED_FRAME_HAS_NONCURRENT_CHANGED_DIRECTION",
-                "unchanged_direction_motion", "HIGH"):
+                "unchanged_direction_motion", "HIGH",
+                "full_run_clip_frame_indices", "left_support_clip_frame_indices",
+                "right_support_clip_frame_indices", "[] is a valid clear endpoint",
+                "do not substitute a later plateau", "Missing or unclear designated support"):
             self.assertIn(requirement, acquisition)
         frequency = temporal_v2_observer_instructions(
             "v1-stable-frequency-intact-context-v1")
@@ -2435,6 +2479,117 @@ class QualificationTests(unittest.TestCase):
         result = self.verify(self.write_bundle(temporal=temporal))
         self.assertEqual(result["status"], "REJECTED")
         self.assertIn("rejected classifier record shape differs", result["errors"][0])
+
+    def test_acquisition_public_scope_validates_all_local_mappings_without_key(self):
+        item = {
+            "clip_source_video_indices": list(range(100, 140)),
+            "target_run_video_indices": [110, 111],
+            "target_run_clip_frame_indices": [10, 11],
+            "full_run_clip_frame_indices": [9, 10, 11, 12],
+            "left_support_clip_frame_indices": [7, 8],
+            "right_support_clip_frame_indices": [13, 14],
+        }
+        scope = encounter_qualification.temporal_acquisition_observer_scope(item)
+        self.assertEqual(scope, {"full_transition_indices": [109, 110, 111, 112],
+                                 "left_support": [107, 108], "right_support": [113, 114]})
+        for name in sorted(encounter_qualification.ACQUISITION_OBSERVER_SCOPE_FIELDS):
+            for mutation in ("missing", "shifted", "boolean", "out_of_clip", "duplicate"):
+                with self.subTest(name=name, mutation=mutation):
+                    damaged = copy.deepcopy(item)
+                    if mutation == "missing":
+                        del damaged[name]
+                    elif mutation == "shifted":
+                        damaged[name] = [value + 1 for value in damaged[name]]
+                    elif mutation == "boolean":
+                        damaged[name][0] = True
+                    elif mutation == "out_of_clip":
+                        damaged[name][-1] = len(item["clip_source_video_indices"])
+                    else:
+                        damaged[name][1] = damaged[name][0]
+                    with self.assertRaises(encounter_qualification.QualificationError):
+                        encounter_qualification.temporal_acquisition_observer_scope(
+                            damaged, {"opaque_id": "local", **self.generic_temporal_literal(
+                                "v1-arrow-target-acquisition-v1", True)})
+
+    def test_acquisition_verifier_rejects_changed_scope_for_admissions_and_rejections(self):
+        classifier = "v1-arrow-target-acquisition-v1"
+        alterations = [(field, mutation)
+                       for field in sorted(encounter_qualification.ACQUISITION_OBSERVER_SCOPE_FIELDS)
+                       for mutation in ("missing", "shifted")]
+        alterations.extend(("full_run_clip_frame_indices", mutation) for mutation in
+                           ("expanded_hidden", "expanded_public_and_hidden"))
+        for selected_index in (0, 5):
+            for field, mutation in alterations:
+                with self.subTest(index=selected_index, field=field, mutation=mutation):
+                    temporal, _ = self.generic_temporal_validation(
+                        classifier, acquisition_scope_tamper=(field, mutation, selected_index))
+                    result = self.verify(self.write_bundle(temporal=temporal))
+                    self.assertEqual(result["status"], "REJECTED", result)
+                    self.assertTrue(any(word in result["errors"][0]
+                                        for word in ("scope", "manifest item", "local target")),
+                                    result["errors"])
+
+    def test_acquisition_scope_binds_each_record_mapping_and_exact_full_run(self):
+        item = {
+            "clip_source_video_indices": list(range(100, 140)),
+            "target_run_video_indices": [110, 111],
+            "target_run_clip_frame_indices": [10, 11],
+            "full_run_clip_frame_indices": [9, 10, 11, 12],
+            "left_support_clip_frame_indices": [7, 8],
+            "right_support_clip_frame_indices": [13, 14],
+        }
+        record = {"full_transition_indices": [109, 110, 111, 112],
+                  "left_support": [{"video_frame_index": value} for value in [107, 108]],
+                  "right_support": [{"video_frame_index": value} for value in [113, 114]]}
+        bind = encounter_qualification._validate_temporal_v2_acquisition_scope_binding
+        bind(item, record, record["full_transition_indices"])
+        for field in ("full_transition_indices", "left_support", "right_support"):
+            with self.subTest(field=field):
+                damaged = copy.deepcopy(record)
+                if field == "full_transition_indices":
+                    damaged[field].insert(0, 108)
+                else:
+                    for point in damaged[field]:
+                        point["video_frame_index"] += 1
+                with self.assertRaises(encounter_qualification.QualificationError):
+                    bind(item, damaged, record["full_transition_indices"])
+        expanded = copy.deepcopy(item)
+        expanded["full_run_clip_frame_indices"].insert(0, 8)
+        expanded["left_support_clip_frame_indices"] = [6, 7]
+        # A structurally consistent public/hidden superset still differs from
+        # the actual classifier record; mere containment must not qualify.
+        encounter_qualification.temporal_acquisition_observer_scope(expanded)
+        with self.assertRaisesRegex(encounter_qualification.QualificationError, "full-run scope"):
+            bind(expanded, record, [108, 109, 110, 111, 112])
+
+    def test_acquisition_missing_pairs_cannot_supply_definite_negative_controls(self):
+        classifier = "v1-arrow-target-acquisition-v1"
+        item = {"clip_source_video_indices": list(range(100, 140)),
+                "target_run_video_indices": [110, 111],
+                "target_run_clip_frame_indices": [10, 11],
+                "full_run_clip_frame_indices": [10, 11],
+                "left_support_clip_frame_indices": [8, 9],
+                "right_support_clip_frame_indices": [12, 13]}
+        for missing in ("left", "right"):
+            with self.subTest(missing=missing):
+                damaged = copy.deepcopy(item)
+                damaged[f"{missing}_support_clip_frame_indices"] = []
+                literal = {"opaque_id": "local", **self.generic_temporal_literal(classifier, False)}
+                literal.update(left_endpoint_directions=["front", "side"],
+                               right_endpoint_directions=["front"])
+                with self.assertRaisesRegex(encounter_qualification.QualificationError,
+                                             "must remain indeterminate"):
+                    encounter_qualification.temporal_acquisition_observer_scope(damaged, literal)
+                literal[f"{missing}_endpoint_directions"] = None
+                literal["endpoint_support"] = f"{missing.upper()}_UNCLEAR"
+                encounter_qualification.temporal_acquisition_observer_scope(damaged, literal)
+                self.assertEqual(encounter_qualification._temporal_v2_observer_ground_truth(
+                    classifier, literal)[1], "INDETERMINATE")
+        literal = {"opaque_id": "local", **self.generic_temporal_literal(classifier, True)}
+        literal["left_endpoint_directions"] = ["front"]
+        literal["right_endpoint_directions"] = []
+        encounter_qualification.temporal_acquisition_observer_scope(item, literal)
+        self.assertTrue(encounter_qualification._temporal_v2_observer_result(classifier, literal)[1])
 
     def test_secondary_context_spec_and_rejection_codes_are_exact(self):
         classifier = "v1-secondary-closed-context-v3"

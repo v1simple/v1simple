@@ -105,6 +105,56 @@ def classify(samples):
 
 
 class ArrowAcquisitionTests(unittest.TestCase):
+    def test_rejections_keep_the_same_pre_gate_scope_as_admissions(self):
+        samples = union_chain()
+        admitted = classify(samples)["classifications"][0]
+        for failure in ("expectation", "claim", "motion"):
+            with self.subTest(failure=failure):
+                rejected_samples = deepcopy(samples)
+                if failure == "expectation":
+                    rejected_samples[2]["expected"] = {}
+                elif failure == "claim":
+                    for item in rejected_samples[2:4]:
+                        item["comparison"]["checks"]["main_bars"]["status"] = "DIFFERENCE"
+                else:
+                    rejected_samples[2]["observed"]["fields"]["main_arrows"]["direction_states"][
+                        "front"]["profile"]["max_channel_medians"] = [255.0] * 16
+                result = classify(rejected_samples)
+                self.assertEqual(result["classifications"], [])
+                rejected = result["rejected_runs"][0]
+                for name in ("full_transition_indices", "left_support", "right_support"):
+                    self.assertEqual(rejected[name], admitted[name])
+
+    def test_missing_support_is_explicit_on_each_side(self):
+        for start, stop, missing in ((1, 6, {"left"}), (0, 5, {"right"}),
+                                     (1, 5, {"left", "right"})):
+            with self.subTest(missing=missing):
+                result = classify(union_chain()[start:stop])
+                self.assertEqual(result["classifications"], [])
+                rejected = result["rejected_runs"][0]
+                self.assertEqual(rejected["code"], "UNCLOSED_RUN")
+                self.assertEqual(rejected["full_transition_indices"], [2, 3])
+                for side, expected in (("left", [0, 1]), ("right", [4, 5])):
+                    self.assertEqual([point["video_frame_index"]
+                                      for point in rejected[f"{side}_support"]],
+                                     [] if side in missing else expected)
+
+    def test_local_unlit_endpoint_is_not_replaced_by_later_rear_plateau(self):
+        samples = union_chain()
+        dark = {"front": OFF, "side": OFF, "rear": OFF}
+        samples[4:] = [sample(index, "readable", [], dark) for index in (4, 5)]
+        samples.extend(sample(index, "readable", ["rear"],
+                              {"front": OFF, "side": OFF, "rear": ON})
+                       for index in (6, 7))
+        for item in samples:
+            item["expected"] = expected(previous=(("front", "side"),), current=(("rear",),))
+        result = classify(samples)
+        self.assertEqual(result["classifications"], [])
+        rejected = result["rejected_runs"][0]
+        self.assertEqual(rejected["code"], "NOT_ACQUISITION_ENDPOINTS")
+        self.assertEqual(rejected["full_transition_indices"], [2, 3])
+        self.assertEqual([point["video_frame_index"] for point in rejected["right_support"]], [4, 5])
+
     def test_outgoing_union_fade_is_one_way_failure_evidence(self):
         samples = union_chain()
         frozen = deepcopy(samples)

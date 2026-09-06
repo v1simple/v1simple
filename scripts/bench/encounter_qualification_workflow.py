@@ -41,6 +41,8 @@ from encounter_frequency_context import CLASSIFIER_ID as FREQUENCY_CONTEXT_CLASS
 from encounter_secondary_context import CLASSIFIER_ID as SECONDARY_CONTEXT_CLASSIFIER_ID
 from encounter_secondary_optical_bridge import CLASSIFIER_ID as SECONDARY_OPTICAL_CLASSIFIER_ID
 from encounter_qualification import (
+    ACQUISITION_OBSERVER_SCOPE_FIELDS, temporal_acquisition_observer_scope,
+    _validate_temporal_v2_acquisition_scope_binding,
     TEMPORAL_CANDIDATE_SELECTION, select_temporal_rejections,
     temporal_observer_clip_source_indices, temporal_selection_document,
 )
@@ -519,7 +521,9 @@ def _candidate_records(temporal: dict[str, Any], classifier_id: str) -> list[dic
                  f"malformed rejected candidate: {classifier_id}")
         rejected.append({"decision": "REJECTED", "record": deepcopy(record),
                          "indices": list(range(first, last + 1)),
-                         "full_indices": list(range(first, last + 1))})
+                         "full_indices": (deepcopy(record.get("full_transition_indices"))
+                                          if classifier_id == ARROW_ACQUISITION_CLASSIFIER_ID
+                                          else list(range(first, last + 1)))})
     candidates = [*admitted, *rejected]
     seen: set[tuple[int, ...]] = set()
     for item in candidates:
@@ -578,10 +582,11 @@ def _logical_inset(classifier_id: str) -> tuple[int, int, int, int]:
 
 
 def _observer_clip_source_indices(
-        target_indices: list[int], source_rows: dict[int, dict[str, int]]) -> list[int]:
+        target_indices: list[int], source_rows: dict[int, dict[str, int]],
+        scope_indices: list[int] | None = None) -> list[int]:
     """Return the shared decision-independent observer window for a target run."""
     try:
-        return temporal_observer_clip_source_indices(target_indices, source_rows)
+        return temporal_observer_clip_source_indices(target_indices, source_rows, scope_indices)
     except Exception as exc:
         raise WorkflowError(str(exc)) from exc
 
@@ -589,10 +594,11 @@ def _observer_clip_source_indices(
 def _build_clip(video: Path, destination: Path, classifier_id: str,
                 target_indices: list[int], source_rows: dict[int, dict[str, int]],
                 registration: dict[str, Any],
-                width: int, height: int) -> tuple[list[int], int]:
+                width: int, height: int,
+                scope_indices: list[int] | None = None) -> tuple[list[int], int]:
     ffmpeg, ffprobe = shutil.which("ffmpeg"), shutil.which("ffprobe")
     _require(ffmpeg is not None and ffprobe is not None, "ffmpeg and ffprobe are required")
-    source_indices = _observer_clip_source_indices(target_indices, source_rows)
+    source_indices = _observer_clip_source_indices(target_indices, source_rows, scope_indices)
     first, last = source_indices[0], source_indices[-1]
     left, top, right, bottom = _raw_box(
         _logical_inset(classifier_id), registration, width, height)
@@ -809,10 +815,14 @@ def _prepare_classifier(stage: Path, campaign_root: Path, campaign: dict[str, An
         _require(full_run[-1] < data["timing"]["encoded_frame_count"],
                  f"classifier candidate leaves the encoded video: {classifier_id}")
         clip = clips / f"{opaque_id}.mov"
+        scope_indices = ([*full_run, *[point["video_frame_index"]
+                          for side in ("left_support", "right_support")
+                          for point in candidate["record"][side]]]
+                         if classifier_id == ARROW_ACQUISITION_CLASSIFIER_ID else None)
         clip_indices, size = _build_clip(
             data["video"], clip, classifier_id, target,
             source_rows, data["registration"],
-            data["width"], data["height"])
+            data["width"], data["height"], scope_indices)
         clip_hash = sha256(clip)
         target_clip_indices = [clip_indices.index(value) for value in target]
         full_run_clip_indices = [clip_indices.index(value) for value in full_run]
@@ -829,6 +839,16 @@ def _prepare_classifier(stage: Path, campaign_root: Path, campaign: dict[str, An
             "inset_source_box": inset_source_box,
         })
         record = candidate["record"]
+        if classifier_id == ARROW_ACQUISITION_CLASSIFIER_ID:
+            manifest_items[-1].update({
+                "full_run_clip_frame_indices": full_run_clip_indices,
+                **{f"{side}_clip_frame_indices": [
+                    clip_indices.index(point["video_frame_index"])
+                    for point in record[side]]
+                   for side in ("left_support", "right_support")},
+            })
+            _validate_temporal_v2_acquisition_scope_binding(
+                manifest_items[-1], record, full_run)
         hidden_items.append({
             "opaque_id": opaque_id,
             "clip_sha256": clip_hash,
@@ -1273,11 +1293,18 @@ def _validate_pre_key_sources(prepared: Path, prepared_doc: dict[str, Any],
             _require(set(value) == {
                          "opaque_id", "clip", "sha256", "size_bytes",
                          "target_run_video_indices", "clip_source_video_indices",
-                         "target_run_clip_frame_indices", "inset_source_box"},
+                         "target_run_clip_frame_indices", "inset_source_box"} |
+                         (ACQUISITION_OBSERVER_SCOPE_FIELDS
+                          if classifier_id == ARROW_ACQUISITION_CLASSIFIER_ID else set()),
                      f"pre-key observer mapping shape differs: {value.get('opaque_id')}")
             source = value["clip_source_video_indices"]
             target = value["target_run_video_indices"]
-            expected_source = (_observer_clip_source_indices(target, source_rows)
+            scope = (temporal_acquisition_observer_scope(value)
+                     if classifier_id == ARROW_ACQUISITION_CLASSIFIER_ID else None)
+            expected_source = (_observer_clip_source_indices(
+                                   target, source_rows,
+                                   [index for values in scope.values() for index in values]
+                                   if scope is not None else None)
                                if isinstance(target, list) and target else [])
             _require(isinstance(source, list) and bool(source)
                      and all(type(index) is int and index >= 0 for index in source)
@@ -1301,6 +1328,10 @@ def _validate_pre_key_sources(prepared: Path, prepared_doc: dict[str, Any],
                      and all(type(coordinate) is int
                              for coordinate in value["inset_source_box"]),
                      f"pre-key observer mapping differs: {value['opaque_id']}")
+            if classifier_id == ARROW_ACQUISITION_CLASSIFIER_ID:
+                observation = next(item for item in observations["observations"]
+                                   if item["opaque_id"] == value["opaque_id"])
+                temporal_acquisition_observer_scope(value, observation)
         _validate_temporal_v2_capture(
             capture, window, paths["qualification_capture"], paths["window_result"],
             {"window_result": {"sha256": sha256(paths["window_result"])}},
@@ -1345,6 +1376,11 @@ def _matrix_document(classifier_id: str, spec_hash: str, source_paths: dict[str,
         _require(opaque_id in by_hidden and opaque_id in by_observation,
                  f"blind item identities differ: {classifier_id}")
         hidden_item, observation = by_hidden[opaque_id], by_observation[opaque_id]
+        if classifier_id == ARROW_ACQUISITION_CLASSIFIER_ID:
+            temporal_acquisition_observer_scope(manifest_item, observation)
+            _validate_temporal_v2_acquisition_scope_binding(
+                manifest_item, hidden_item["frozen_classifier_record"],
+                hidden_item["full_run_video_indices"])
         literal, ground_truth = _temporal_v2_observer_ground_truth(
             classifier_id, observation)
         eligible = ground_truth == "ELIGIBLE"

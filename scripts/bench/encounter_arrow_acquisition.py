@@ -44,9 +44,10 @@ def _point(sample):
     return {key: deepcopy(sample[key]) for key in _POINT_KEYS if key in sample}
 
 
-def _reject(event_id, run, code, reason):
+def _reject(event_id, run, code, reason, scope):
     return {"event_id": event_id, "field": "main_arrows", "code": code,
-            "first": _point(run[0]), "last": _point(run[-1]), "reason": reason}
+            "first": _point(run[0]), "last": _point(run[-1]), "reason": reason,
+            **deepcopy(scope)}
 
 
 def _reading(sample):
@@ -272,51 +273,69 @@ def _classify(event_id, selected, first, stop, context):
               MAXIMUM_SUPPORT_CHAIN_INTERVAL_NS)
     left_pair = _nearest_left_pair(selected, first, gap)
     right_pair = _nearest_right_pair(selected, stop, gap)
+    # This is the dense observer interval of retained video ordinals, including
+    # on SOURCE_GAP refusals; it does not invent classifier measurements. A
+    # missing side ends at the raw run boundary, without a substitute plateau.
+    transition_first = (selected[left_pair[1]]["video_frame_index"] + 1
+                        if left_pair is not None else raw_run[0]["video_frame_index"])
+    transition_stop = (selected[right_pair[0]]["video_frame_index"]
+                       if right_pair is not None else raw_run[-1]["video_frame_index"] + 1)
+    scope = {
+        "full_transition_indices": list(range(transition_first, transition_stop)),
+        "left_support": ([_point(selected[index]) for index in left_pair[:2]]
+                         if left_pair is not None else []),
+        "right_support": ([_point(selected[index]) for index in right_pair[:2]]
+                          if right_pair is not None else []),
+    }
+
+    def reject(code, reason):
+        return None, _reject(event_id, raw_run, code, reason, scope)
+
     if left_pair is None or right_pair is None:
-        return None, _reject(event_id, raw_run, "UNCLOSED_RUN",
+        return reject("UNCLOSED_RUN",
                              "arrow acquisition lacks a nearby stable pair on each side")
     left_first, left_endpoint_index, left_measured = left_pair
     right_endpoint_index, right_last, right_measured = right_pair
     chain = selected[left_first:right_last + 1]
     if not all(_consecutive(left, right, gap) for left, right in zip(chain, chain[1:])):
-        return None, _reject(event_id, raw_run, "SOURCE_GAP",
+        return reject("SOURCE_GAP",
                              "arrow acquisition support crosses an unobserved source position")
     left_endpoint = selected[left_endpoint_index]
     right_endpoint = selected[right_endpoint_index]
     if right_endpoint["capture_ns"] - left_endpoint["capture_ns"] \
             > AUTHORED_DISPLAY_UPDATE_NS + gap:
-        return None, _reject(event_id, raw_run, "ENDPOINT_SPAN",
+        return reject("ENDPOINT_SPAN",
                              "arrow acquisition endpoints exceed one display update plus the source interval")
 
     signatures = [_expectation_signature(sample) for sample in chain]
     signature = signatures[0]
     if signature is None or any(value != signature for value in signatures):
-        return None, _reject(event_id, raw_run, "EXPECTATION_SIGNATURE",
+        return reject("EXPECTATION_SIGNATURE",
                              "arrow acquisition lacks one unchanged prior/current expectation")
     left_value = left_measured[1]["value"]
     right_value = right_measured[0]["value"]
     endpoint_phase = _endpoint_pair(left_value, right_value, signature)
     if endpoint_phase is None:
-        return None, _reject(event_id, raw_run, "NOT_ACQUISITION_ENDPOINTS",
+        return reject("NOT_ACQUISITION_ENDPOINTS",
                              "nearest stable arrow states do not run from prior-target content to current content")
 
     claim = [sample for sample in raw_run if _claimable(sample)]
     if not claim:
-        return None, _reject(event_id, raw_run, "NO_PRODUCT_CLAIM",
+        return reject("NO_PRODUCT_CLAIM",
                              "arrow acquisition has no product-unresolved member")
     if any(right["video_frame_index"] != left["video_frame_index"] + 1
            for left, right in zip(claim, claim[1:])):
-        return None, _reject(event_id, raw_run, "NONCONTIGUOUS_PRODUCT_CLAIM",
+        return reject("NONCONTIGUOUS_PRODUCT_CLAIM",
                              "arrow acquisition product members are not contiguous")
 
     transition = selected[left_endpoint_index + 1:right_endpoint_index]
     measured = [_arrow_measurement(sample, definite=False) for sample in transition]
     if any(item is None for item in measured):
-        return None, _reject(event_id, raw_run, "TRANSITION_READING",
+        return reject("TRANSITION_READING",
                              "arrow acquisition contains an unreadable or malformed transition member")
     changed = tuple(sorted(set(left_value) ^ set(right_value)))
     if not changed:
-        return None, _reject(event_id, raw_run, "NOT_ACQUISITION_ENDPOINTS",
+        return reject("NOT_ACQUISITION_ENDPOINTS",
                              "arrow acquisition endpoints are identical")
     all_profiles = [left_measured[0]["profiles"], left_measured[1]["profiles"],
                     *(item["profiles"] for item in measured),
@@ -324,7 +343,7 @@ def _classify(event_id, selected, first, stop, context):
     bounds = {direction: {profiles[direction][1] for profiles in all_profiles}
               for direction in _DIRECTIONS}
     if any(len(value) != 1 for value in bounds.values()):
-        return None, _reject(event_id, raw_run, "INVALID_PROFILE",
+        return reject("INVALID_PROFILE",
                              "arrow acquisition profile bounds change inside support")
 
     metrics = {}
@@ -334,7 +353,7 @@ def _classify(event_id, selected, first, stop, context):
             [item["profiles"][direction][0] for item in measured],
             right_measured[0]["profiles"][direction][0])
         if result is None:
-            return None, _reject(event_id, raw_run, code, f"{direction}: {reason}")
+            return reject(code, f"{direction}: {reason}")
         metrics[direction] = result
     unchanged = {
         direction: _diameter([profiles[direction][0] for profiles in all_profiles])
@@ -342,7 +361,7 @@ def _classify(event_id, selected, first, stop, context):
     }
     if any(value > UNCHANGED_DIRECTION_PROFILE_DIAMETER_RMS_MAX
            for value in unchanged.values()):
-        return None, _reject(event_id, raw_run, "UNCHANGED_DIRECTION_MOTION",
+        return reject("UNCHANGED_DIRECTION_MOTION",
                              "an unchanged arrow direction moves beyond the frozen profile bound")
 
     transition_by_index = {
@@ -353,16 +372,16 @@ def _classify(event_id, selected, first, stop, context):
     for sample in claim:
         measurement = transition_by_index.get(sample["video_frame_index"])
         if measurement is None:
-            return None, _reject(
-                event_id, raw_run, "TRANSITION_READING",
+            return reject(
+                "TRANSITION_READING",
                 "a claimed arrow frame is not inside the measured transition")
         states = {direction: measurement["states"][direction] for direction in changed}
         noncurrent = sorted(
             direction for direction, state in states.items()
             if state != ("filled" if direction in right_value else "unlit"))
         if not noncurrent:
-            return None, _reject(
-                event_id, raw_run, "CLAIMED_FRAME_AT_CURRENT_ENDPOINT",
+            return reject(
+                "CLAIMED_FRAME_AT_CURRENT_ENDPOINT",
                 "a claimed arrow frame has the current endpoint state in every changed direction")
         claimed_frame_proof.append({
             "video_frame_index": sample["video_frame_index"],
@@ -379,9 +398,7 @@ def _classify(event_id, selected, first, stop, context):
         "raw_affected_fields": ["main_arrows"],
         "video_frame_indices": [sample["video_frame_index"] for sample in claim],
         "first": _point(claim[0]), "last": _point(claim[-1]),
-        "full_transition_indices": [sample["video_frame_index"] for sample in transition],
-        "left_support": [_point(selected[left_first]), _point(left_endpoint)],
-        "right_support": [_point(right_endpoint), _point(selected[right_last])],
+        **scope,
         "endpoint_values": [list(left_value), list(right_value)],
         "endpoint_phase_basis": endpoint_phase,
         "changed_directions": list(changed),

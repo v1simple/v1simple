@@ -53,6 +53,8 @@ def copy_reference(source, destination):
     source, destination = Path(source).resolve(), Path(destination)
     document = json.loads(source.read_bytes())
     refs = [document[name] for name in ("protocol", "blind_manifest", "observations")]
+    if "selection_before_reading" in document:
+        refs.append(document["selection_before_reading"])
     refs += [item["image"] for item in document["items"]]
     destination.parent.mkdir(parents=True, exist_ok=True)
     for ref in refs:
@@ -79,6 +81,8 @@ def validate_reference(path, original_manifest, original_observations, method, r
     _require(reference.get("frozen_reader_files") == {name: method[name] for name in CORE_READER_FILES},
              "reader changed after the independent observation packet was frozen")
     _artifact(path.parent, reference["protocol"])
+    if "selection_before_reading" in reference:
+        _artifact(path.parent, reference["selection_before_reading"])
     manifest_path = _artifact(path.parent, reference["blind_manifest"])
     manifest = json.loads(manifest_path.read_bytes())
     labels = json.loads(_artifact(path.parent, reference["observations"]).read_bytes())

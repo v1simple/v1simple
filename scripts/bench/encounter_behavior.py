@@ -44,7 +44,8 @@ def event_findings(event, observation, contract):
     for name, field in observation["fields"].items():
         end = field["end_state"]
         terminal = end.get("last_definite_observation")
-        if ending_observed and terminal and end.get("last_definite_matches_target") is False:
+        acquisition_only = complete_target is None and bool(end.get("unresolved_suffix"))
+        if ending_observed and terminal and end.get("last_definite_matches_target") is False and not acquisition_only:
             intervals = field["difference_intervals"]
             matching_literal = [s for s in intervals if s["last"]["observed"] == terminal["observed"]]
             first = matching_literal[0]["first"] if matching_literal else terminal
@@ -82,6 +83,10 @@ def event_findings(event, observation, contract):
                    and s["judgment"].get("joint_state") in ({"MATCH"} | DIFFERENT)]
     ending_joint = joint_spans[-1] if ending_observed and joint_spans and joint_spans[-1]["judgment"]["joint_state"] in DIFFERENT \
         and not joint_spans[-1]["judgment"].get("not_correct_fields") else None
+    if ending_joint and first is None and event["observation_spans"][-1] is not ending_joint:
+        # With no complete target, a later unreadable joint phase leaves only
+        # an acquisition observation, not a supported contradictory ending.
+        ending_joint = None
     if ending_joint:
         findings.append({"field": "joint_state", "kind": "ending_difference",
                          "expected": deepcopy((event.get("target") or {}).get("joint_states")),

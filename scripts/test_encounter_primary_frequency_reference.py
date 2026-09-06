@@ -11,7 +11,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent / "bench"))
-from encounter_primary_frequency_reference import BLIND_PROTOCOL, CONTROL_STATES, validate_reference
+from encounter_primary_frequency_reference import BLIND_PROTOCOL, CONTROL_STATES, copy_reference, validate_reference
 from encounter_qualification import CORE_READER_FILES
 
 
@@ -100,6 +100,27 @@ class PrimaryFrequencyReferenceTests(unittest.TestCase):
             self.assertEqual(result["summary"]["held_out_dash_agreements"], 2)
             self.assertEqual(result["summary"]["items"], 9)
             self.assertEqual(args[2].read_bytes(), original)
+
+    def test_optional_frozen_selection_is_copied_and_missing_or_changed_bytes_reject(self):
+        for failure in ("missing", "changed"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temp:
+                args, document, readings = fixture(Path(temp))
+                selection = write(args[0].parent / "selection-before-reading.json", {"frozen_before_pixel_access": True})
+                document["selection_before_reading"] = {"path": selection.name, "sha256": sha(selection)}
+                write(args[0], document)
+                copied = Path(temp) / "retained/reference.json"
+                copy_reference(args[0], copied)
+                retained_selection = copied.parent / selection.name
+                self.assertEqual(retained_selection.read_bytes(), selection.read_bytes())
+                validate_reference(copied, *args[1:])
+                if failure == "missing":
+                    retained_selection.unlink()
+                else:
+                    retained_selection.write_text("changed selection")
+                with self.assertRaises(ValueError):
+                    validate_reference(copied, *args[1:])
+                with self.assertRaises(ValueError):
+                    copy_reference(copied, Path(temp) / "invalid-copy/reference.json")
 
     def test_unresolved_adjudication_is_preserved_without_forcing_a_dash_label(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -77,6 +77,36 @@ class BehaviorTests(unittest.TestCase):
         self.assertEqual(verdict, "MEASUREMENT_INCOMPLETE")
         self.assertEqual(summary["targets_observed"], 0)
 
+    def test_unknown_ending_after_only_wrong_acquisition_remains_incomplete(self):
+        unknown = literals()
+        unknown["main_bars"] = {"state": "unreadable", "reason": "reader refusal"}
+        wrong = literals(main_bars=4)
+        event, out = measured([1.02, 1.025, 1.03], [wrong, unknown, unknown])
+        self.assertIsNone(event["first_correct"])
+        self.assertEqual(out["findings"], [])
+        field = out["observation"]["fields"]["main_bars"]
+        self.assertEqual(field["counts"]["different_frames"], 1)
+        self.assertEqual(len(field["end_state"]["unresolved_suffix"]), 1)
+        self.assertEqual(summarize([out], [], {"status": "QUALIFIED"})[0], "MEASUREMENT_INCOMPLETE")
+        event, out = measured([1.02, 1.025, 1.03], [wrong, unknown, wrong])
+        self.assertIsNone(event["first_correct"])
+        self.assertEqual(out["findings"][0]["kind"], "ending_difference")
+        self.assertEqual(summarize([out], [], {"status": "QUALIFIED"})[0], "DIFFERENCES_FOUND")
+
+    def test_unknown_joint_ending_does_not_promote_initial_mixed_phase(self):
+        inputs = recording([([alert()], [6, 0, 1, 0x24, 0, 12, 12, 0x40])])
+        mixed = literals(active_bands=[], main_arrows=[])
+        unknown = deepcopy(mixed)
+        unknown["counter_glyph"] = {"state": "unreadable", "reason": "partial counter"}
+        event, out = measured([1.02, 1.025, 1.03], [mixed, unknown, unknown], inputs=inputs)
+        self.assertIsNone(event["first_correct"])
+        self.assertEqual(out["findings"], [])
+        self.assertEqual(summarize([out], [], {"status": "QUALIFIED"})[0], "MEASUREMENT_INCOMPLETE")
+        event, out = measured([1.02, 1.025, 1.03], [mixed, unknown, mixed], inputs=inputs)
+        self.assertIsNone(event["first_correct"])
+        self.assertEqual((out["findings"][0]["field"], out["findings"][0]["kind"]),
+                         ("joint_state", "ending_difference"))
+
     def test_permitted_joint_blink_is_not_a_departure(self):
         inputs = recording([([alert()], [6, 0, 1, 0x24, 0, 12, 12, 0x40])])
         off = literals(active_bands=[], main_arrows=[])

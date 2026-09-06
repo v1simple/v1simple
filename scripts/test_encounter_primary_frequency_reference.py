@@ -11,7 +11,8 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent / "bench"))
-from encounter_primary_frequency_reference import BLIND_PROTOCOL, CONTROL_STATES, copy_reference, validate_reference
+from encounter_primary_frequency_reference import (BLIND_PROTOCOL, CONTROL_STATES, copy_reference,
+                                                    reference_reread_binding, validate_reference)
 from encounter_qualification import CORE_READER_FILES
 
 
@@ -199,6 +200,58 @@ class PrimaryFrequencyReferenceTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     validate_reference(*args)
 
+    def test_current_reread_preserves_historical_packet_and_does_not_claim_new_heldout_data(self):
+        with tempfile.TemporaryDirectory() as temp:
+            args, document, readings = fixture(Path(temp))
+            frozen_packet = args[0].read_bytes()
+            frozen_labels = (args[0].parent / "observations.json").read_bytes()
+            args[3][CORE_READER_FILES[0]] = "d" * 64
+            with self.assertRaisesRegex(ValueError, "reader changed"):
+                validate_reference(*args)
+            binding = reference_reread_binding(args[0], args[3])
+            seen = []
+            original_observe = args[-1]
+            args[-1] = lambda image, registration: (seen.append(sha(image)), original_observe(image, registration))[1]
+            result = validate_reference(*args, reader_reanalysis=binding)
+            self.assertEqual(len(seen), len(document["items"]))
+            self.assertEqual(set(seen), {item["image"]["sha256"] for item in document["items"]})
+            self.assertEqual(result["summary"]["reader_reanalysis"], binding)
+            self.assertIn("Original frozen reader only", binding["held_out_provenance"])
+            self.assertEqual(binding["historical_frozen_reader_files"], document["frozen_reader_files"])
+            self.assertEqual(args[0].read_bytes(), frozen_packet)
+            self.assertEqual((args[0].parent / "observations.json").read_bytes(), frozen_labels)
+
+    def test_reread_rejects_stale_binding_changed_input_and_new_reader_false_assertions(self):
+        for failure in ("binding_hash", "binding_reader", "partial_reread", "changed_reference", "changed_image", "false_assertion"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temp:
+                args, document, readings = fixture(Path(temp))
+                args[3][CORE_READER_FILES[0]] = "d" * 64
+                binding = reference_reread_binding(args[0], args[3])
+                if failure == "binding_hash": binding["reference_sha256"] = "e" * 64
+                elif failure == "binding_reader": binding["current_reader_files"][CORE_READER_FILES[0]] = "e" * 64
+                elif failure == "partial_reread": binding["complete_source_set_reread"] = False
+                elif failure == "changed_reference":
+                    document["frozen_reader_files"][CORE_READER_FILES[1]] = "e" * 64
+                    write(args[0], document)
+                elif failure == "changed_image":
+                    (args[0].parent / document["items"][0]["image"]["path"]).write_bytes(b"changed original")
+                else:
+                    item = next(item for item in document["items"] if item["role"] == "partial_decimal_control")
+                    readings[item["image"]["sha256"]]["primary_frequency"] = {"state": "readable", "value": "--.---"}
+                with self.assertRaises(ValueError):
+                    validate_reference(*args, reader_reanalysis=binding)
+
+    def test_qualification_rejects_reread_binding_without_independent_packet(self):
+        from test_encounter_qualification import QualificationTests
+        helper = QualificationTests("test_complete_exact_bundle_qualifies")
+        helper.setUp()
+        self.addCleanup(helper.tearDown)
+        field = helper.field_validation()
+        field["primary_frequency_reader_reanalysis"] = {"kind": "complete_exact_reader_reread"}
+        result = helper.verify(helper.write_bundle(field))
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertTrue(any("lacks its independent reference" in error for error in result["errors"]), result)
+
     def test_real_workflow_and_verifier_preserve_original_and_explicit_adjudication(self):
         import encounter_qualification_workflow as workflow
         from test_encounter_qualification_workflow import QualificationWorkflowTests
@@ -231,15 +284,25 @@ class PrimaryFrequencyReferenceTests(unittest.TestCase):
             self.assertEqual(frequency["reference"]["value"], "--.---")
             self.assertEqual(frequency["original_reference"]["value"], "34.700")
             self.assertEqual(new_field["primary_frequency_adjudication"]["held_out_dash_agreements"], 2)
-            # A later host-only reanalysis carries the same independent packet,
-            # not an untraceable copy of its corrected labels.
+            # A later reader rereads the same independent packet. Its original
+            # held-out declaration still belongs to the historical reader.
             second = Path(temp) / "qualified-again"
-            _, chained_source, _, _, chained_patches, _ = support._static_reanalysis_fixture(
-                second, helper=helper, source_manifest=Path(result["manifest"]))
+            _, chained_source, new_method, _, chained_patches, _ = support._static_reanalysis_fixture(
+                second, helper=helper, source_manifest=Path(result["manifest"]), method_version=7, reader_sha="d" * 64)
             with ExitStack() as stack:
                 for item in chained_patches:
                     stack.enter_context(item)
-                self.assertEqual(workflow.reanalyze_static(chained_source, second)["status"], "QUALIFIED")
+                chained = workflow.reanalyze_static(chained_source, second)
+                self.assertEqual(chained["status"], "QUALIFIED")
+            chained_manifest = workflow.read_json(Path(chained["manifest"]))
+            chained_field_path = workflow.resolve_reference(second, chained_manifest["field_validation"], "field")
+            chained_field = workflow.read_json(chained_field_path)
+            retained_packet = workflow.resolve_reference(chained_field_path.parent,
+                chained_field["source_artifacts"]["primary_frequency_reference"], "packet")
+            self.assertEqual(retained_packet.read_bytes(), args[0].read_bytes())
+            self.assertEqual(chained_field["primary_frequency_reader_reanalysis"], reference_reread_binding(retained_packet, new_method))
+            self.assertEqual(chained_field["primary_frequency_adjudication"]["reader_reanalysis"],
+                             chained_field["primary_frequency_reader_reanalysis"])
             parsed = workflow.build_parser().parse_args([
                 "reanalyze-static", "--out", str(second), "--primary-frequency-reference", str(args[0])])
             self.assertEqual(parsed.primary_frequency_reference, args[0])

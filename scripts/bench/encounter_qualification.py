@@ -1312,13 +1312,15 @@ def _validate_field_evidence(document: Any, reader: dict[str, Any], camera: dict
                 supplement,
                 _evidence_file(evidence_root, source_artifacts["blind_manifest"], "original blind manifest"),
                 _evidence_file(evidence_root, source_artifacts["blind_observations"], "original blind labels"),
-                implementation, registration, _observe_image)
+                implementation, registration, _observe_image,
+                reader_reanalysis=document.get("primary_frequency_reader_reanalysis"))
         except (OSError, ValueError, KeyError, TypeError) as exc:
             raise QualificationError(str(exc)) from exc
         _require(document.get("primary_frequency_adjudication") == adjudication["summary"],
                  "primary frequency adjudication summary differs from its independent evidence")
     else:
-        _require("primary_frequency_adjudication" not in document,
+        _require("primary_frequency_adjudication" not in document
+                 and "primary_frequency_reader_reanalysis" not in document,
                  "primary frequency adjudication lacks its independent reference")
     frames = document.get("frames")
     _require(isinstance(frames, list) and len(frames) >= MINIMUM_BLIND_FRAMES,

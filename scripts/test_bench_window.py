@@ -656,12 +656,12 @@ def test_no_flash_git_mismatch_fails() -> None:
     )
 
 
-def resident_fixture(root: Path) -> tuple[Path, Path, dict[str, Any], dict[str, Any]]:
+def resident_fixture(root: Path, *, upload: bool = True) -> tuple[Path, Path, dict[str, Any], dict[str, Any]]:
     recording = root / "recorded"
     recording.mkdir()
     source_git = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     identity = {**RUNTIME_IDENTITY, "git_sha": source_git[:7]}
-    manifest = build_upload_artifact(identity["image_id"], upload_performed=True)
+    manifest = build_upload_artifact(identity["image_id"], upload_performed=upload)
     manifest.update(schema_version=1, kind="bench_build_upload_artifacts")
     manifest["files"][0]["size_bytes"] = 1000
     app = bytearray(288)
@@ -679,7 +679,7 @@ def resident_fixture(root: Path) -> tuple[Path, Path, dict[str, Any], dict[str, 
     window = {"result": "PASS", "evidence_contract": "external_only", "git_sha": source_git,
               "git_ref": "main", "git_worktree_clean": True, "runtime_identity": identity,
               "runtime_qualification": qualify_runtime_identity(
-                  identity, intended_git_sha=source_git, build_upload=manifest, upload=True),
+                  identity, intended_git_sha=source_git, build_upload=manifest, upload=upload),
               "artifacts": {"bench_serial": file_artifact(serial_path)}}
     write_resident_fixture(recording, window, manifest)
     return recording, image, window, manifest
@@ -725,7 +725,7 @@ def test_resident_upload_reference_rejects_unbound_evidence() -> None:
         ("source", "source requires a full git"),
         ("source_mismatch", "does not match intended source"),
         ("dirty", "source was not clean"),
-        ("mode", "not a qualified upload"),
+        ("mode", "upload flag does not match collection mode"),
         ("manifest", "reference bytes do not match build_upload"),
         ("embedded_manifest", "embedded upload manifest differs"),
         ("serial", "reference bytes do not match bench_serial"),
@@ -771,6 +771,62 @@ def test_resident_upload_reference_rejects_unbound_evidence() -> None:
             assert_identity_failure(
                 lambda: run_window_module.retain_resident_artifacts(recording, image, output), expected)
             assert_true(not list(output.iterdir()), "rejected provenance published reference files: " + case)
+
+
+def test_resident_original_no_flash_reference_preserves_identity_without_upload_claim() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        recording, image, window, manifest = resident_fixture(root, upload=False)
+        window["tooling_source"] = {"git_sha": window["git_sha"], "git_worktree_clean": True}
+        write_resident_fixture(recording, window, manifest)
+        output = root / "fresh"
+        output.mkdir()
+        result = run_window_module.retain_resident_artifacts(recording, image, output)
+        provenance = result["resident_provenance"]
+        assert_true(result["upload_performed"] is False, str(result))
+        assert_true(provenance["kind"] == "qualified_prior_no_flash_application", str(provenance))
+        assert_true(provenance["reference_collection_mode"] == "no_flash", str(provenance))
+        assert_true("uploaded" not in provenance["application_binding"], str(provenance))
+        assert_true(provenance["source_git_sha"] == window["git_sha"], str(provenance))
+        qualified = qualify_runtime_identity({**window["runtime_identity"], "boot_id": 43},
+            intended_git_sha=provenance["source_git_sha"], build_upload=result, upload=False)
+        assert_true(qualified["status"] == "qualified" and qualified["mode"] == "no_flash", str(qualified))
+        for name, record in provenance["reference_files"].items():
+            original = image if name == "firmware.bin" else recording / name
+            assert_true((output / record["path"]).read_bytes() == original.read_bytes(), name)
+
+
+def test_resident_no_flash_reference_rejects_mode_drift_chaining_and_unbound_evidence() -> None:
+    for case, expected in (("flag", "upload flag does not match"),
+                           ("nonboolean_flag", "upload flag does not match"),
+                           ("tooling", "tooling source differs"),
+                           ("chain", "chained resident references"),
+                           ("binary", "application bytes do not match"),
+                           ("serial", "reference bytes do not match bench_serial"),
+                           ("qualification", "qualification differs from its evidence")):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            recording, image, window, manifest = resident_fixture(root, upload=False)
+            if case == "flag":
+                manifest["upload_performed"] = True
+            elif case == "nonboolean_flag":
+                manifest["upload_performed"] = 0
+            elif case == "tooling":
+                window["tooling_source"] = {"git_sha": "1" * 40, "git_worktree_clean": True}
+            elif case == "chain":
+                manifest["resident_provenance"] = {"source_git_sha": window["git_sha"]}
+            elif case == "qualification":
+                window["runtime_qualification"]["artifact_image_id"] = "111111111"
+            write_resident_fixture(recording, window, manifest)
+            if case == "binary":
+                image.write_bytes(image.read_bytes() + b"tampered")
+            elif case == "serial":
+                with (recording / "bench_serial.log").open("a") as handle:
+                    handle.write("changed\n")
+            output = root / "fresh"
+            output.mkdir()
+            assert_identity_failure(lambda: run_window_module.retain_resident_artifacts(recording, image, output), expected)
+            assert_true(not list(output.iterdir()), "rejected reference published files: " + case)
 
 
 def test_resident_reference_cli_requires_pair_without_upload() -> None:
@@ -2111,6 +2167,8 @@ def main() -> int:
     test_no_flash_git_mismatch_fails()
     test_resident_upload_reference_binds_original_bytes_and_fresh_identity()
     test_resident_upload_reference_rejects_unbound_evidence()
+    test_resident_original_no_flash_reference_preserves_identity_without_upload_claim()
+    test_resident_no_flash_reference_rejects_mode_drift_chaining_and_unbound_evidence()
     test_resident_reference_cli_requires_pair_without_upload()
     test_resident_collection_keeps_tooling_identity_separate_and_never_uploads()
     test_main_writes_collection_only_and_returns_exit_one_for_unlinked_no_flash()

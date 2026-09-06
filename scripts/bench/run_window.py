@@ -545,11 +545,12 @@ def qualify_runtime_identity(
 
 
 def retain_resident_artifacts(recording: Path, image: Path, out_dir: Path) -> dict[str, Any]:
-    """Bind an exact application binary to an independently retained upload.
+    """Bind an exact application binary to an original qualified recording.
 
-    No source or image identifier is supplied by the caller. The old, qualified
-    upload and its hashed serial record own those identifiers. The full binary
+    No source or image identifier is supplied by the caller. The qualified
+    recording and its hashed serial record own those identifiers. The full binary
     hash is checked before its ESP-IDF application descriptor is inspected.
+    A no-flash reference establishes identity linkage, not an upload operation.
     """
     def require(condition: bool, reason: str) -> None:
         if not condition:
@@ -565,24 +566,30 @@ def retain_resident_artifacts(recording: Path, image: Path, out_dir: Path) -> di
 
     recording = recording.resolve(strict=True)
     window_raw = (recording / "window_result.json").read_bytes()
-    window = json_object(window_raw, "upload window")
+    window = json_object(window_raw, "reference window")
     source_git = window.get("git_sha")
     require(isinstance(source_git, str) and re.fullmatch(r"[0-9a-f]{40}", source_git) is not None,
             "recorded source requires a full git commit")
     require(window.get("git_worktree_clean") is True, "recorded source was not clean")
+    tooling = window.get("tooling_source")
+    require(tooling is None or (isinstance(tooling, dict) and tooling.get("git_sha") == source_git
+                               and tooling.get("git_worktree_clean") is True),
+            "reference tooling source differs from firmware source")
     commit = subprocess.run(["git", "rev-parse", "--verify", source_git + "^{commit}"],
                             cwd=ROOT, capture_output=True, text=True)
     require(commit.returncode == 0 and commit.stdout.strip() == source_git,
             "recorded source commit is unavailable")
     require(window.get("result") == "PASS" and window.get("evidence_contract") == "external_only",
-            "reference was not a successful external upload window")
+            "reference was not a successful external recording")
     previous = window.get("runtime_qualification")
     require(isinstance(previous, dict) and previous.get("status") == "qualified"
-            and previous.get("mode") == "upload" and previous.get("artifact_linked") is True
+            and previous.get("mode") in ("upload", "no_flash") and previous.get("artifact_linked") is True
             and previous.get("git_match") is True and previous.get("image_match") is True,
-            "reference was not a qualified upload")
+            "reference was not a qualified upload or no-flash recording")
+    reference_mode = previous["mode"]
+    reference_upload = reference_mode == "upload"
     artifacts = window.get("artifacts")
-    require(isinstance(artifacts, dict), "upload artifact records are missing")
+    require(isinstance(artifacts, dict), "reference artifact records are missing")
 
     def retained_bytes(key: str, name: str) -> bytes:
         record = artifacts.get(key)
@@ -598,11 +605,13 @@ def retain_resident_artifacts(recording: Path, image: Path, out_dir: Path) -> di
         return raw
 
     manifest_raw = retained_bytes("build_upload", BUILD_UPLOAD_ARTIFACTS_NAME)
-    manifest = json_object(manifest_raw, "upload manifest")
+    manifest = json_object(manifest_raw, "build manifest")
     require(manifest.get("schema_version") == 1
             and manifest.get("kind") == "bench_build_upload_artifacts"
-            and manifest.get("upload_performed") is True and manifest.get("missing") == [],
-            "invalid or incomplete upload manifest")
+            and manifest.get("missing") == [], "invalid or incomplete build manifest")
+    require(manifest.get("upload_performed") is reference_upload,
+            "reference upload flag does not match collection mode")
+    require("resident_provenance" not in manifest, "chained resident references are not supported")
     require(all(artifacts["build_upload"].get(key) == value for key, value in manifest.items()),
             "embedded upload manifest differs from retained bytes")
     serial_raw = retained_bytes("bench_serial", "bench_serial.log")
@@ -610,9 +619,9 @@ def retain_resident_artifacts(recording: Path, image: Path, out_dir: Path) -> di
     for line in serial_raw.decode("utf-8", errors="strict").splitlines():
         tracker.observe(line)
     require(tracker.boot_marker_count == 1 and tracker.identity == window.get("runtime_identity"),
-            "reference serial runtime identity differs from upload window")
+            "reference serial runtime identity differs from reference window")
     qualified = qualify_runtime_identity(tracker.identity or {}, intended_git_sha=source_git,
-                                         build_upload=manifest, upload=True)
+                                         build_upload=manifest, upload=reference_upload)
     require(all(previous.get(key) == qualified.get(key) for key in
                 ("status", "mode", "git_match", "artifact_linked", "image_match", "artifact_image_id", "artifact")),
             "reference runtime qualification differs from its evidence")
@@ -629,7 +638,7 @@ def retain_resident_artifacts(recording: Path, image: Path, out_dir: Path) -> di
     app_raw = image.read_bytes()
     require(len(app_raw) == binary_record["size_bytes"]
             and hashlib.sha256(app_raw).hexdigest() == binary_record["sha256"],
-            "application bytes do not match uploaded firmware.bin")
+            "application bytes do not match retained firmware.bin")
     # ESP32-S3: 24-byte image header, 8-byte first segment header, followed
     # by esp_app_desc_t. Its magic and 32-byte app_elf_sha256 layout are
     # defined by ESP-IDF and esptool's _parse_app_info; no arbitrary search.
@@ -641,7 +650,7 @@ def retain_resident_artifacts(recording: Path, image: Path, out_dir: Path) -> di
             and struct.unpack_from("<I", app_raw, 32)[0] == 0xABCD5432,
             "application descriptor is missing from the first DROM segment")
     require(app_raw[176:208].hex() == elf_record["sha256"],
-            "application descriptor does not match uploaded firmware ELF hash")
+            "application descriptor does not match retained firmware ELF hash")
 
     reference_dir = out_dir / "resident_reference"
     reference_dir.mkdir(exist_ok=False)
@@ -654,11 +663,13 @@ def retain_resident_artifacts(recording: Path, image: Path, out_dir: Path) -> di
         references[name] = {**file_artifact(path), "path": path.relative_to(out_dir).as_posix()}
     payload = {**manifest, "upload_performed": False,
                "resident_provenance": {
-                   "schema_version": 1, "kind": "qualified_prior_upload_application",
+                   "schema_version": 1, "kind": "qualified_prior_" + reference_mode + "_application",
+                   "reference_collection_mode": reference_mode,
                    "source_git_sha": source_git, "source_git_ref": window.get("git_ref", ""),
                    "source_worktree_clean": True, "reference_runtime_identity": tracker.identity,
                    "application_elf_sha256": elf_record["sha256"],
-                   "application_binding": "exact_uploaded_binary_sha256_and_embedded_full_elf_sha256",
+                   "application_binding": ("exact_uploaded_binary_sha256_and_embedded_full_elf_sha256" if reference_upload
+                                           else "exact_recorded_binary_sha256_and_embedded_full_elf_sha256"),
                    "reference_files": references}}
     path = out_dir / BUILD_UPLOAD_ARTIFACTS_NAME
     with path.open("x", encoding="utf-8") as handle:

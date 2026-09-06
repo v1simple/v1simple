@@ -1816,13 +1816,20 @@ def _reanalyze_field_document(source: Path, destination: Path,
         copy_reference(primary_frequency_reference, retained)
         document["source_artifacts"]["primary_frequency_reference"] = reference(retained, destination.parent)
     if "primary_frequency_reference" in document["source_artifacts"]:
-        from encounter_primary_frequency_reference import validate_reference
+        from encounter_primary_frequency_reference import reference_reread_binding, validate_reference
         try:
+            frequency_reference = resolve_reference(
+                destination.parent, document["source_artifacts"]["primary_frequency_reference"], "frequency reference")
+            binding = reference_reread_binding(frequency_reference, method)
+            if binding is None:
+                document.pop("primary_frequency_reader_reanalysis", None)
+            else:
+                document["primary_frequency_reader_reanalysis"] = binding
             adjudication = validate_reference(
-                resolve_reference(destination.parent, document["source_artifacts"]["primary_frequency_reference"], "frequency reference"),
+                frequency_reference,
                 resolve_reference(destination.parent, document["source_artifacts"]["blind_manifest"], "original blind manifest"),
                 resolve_reference(destination.parent, document["source_artifacts"]["blind_observations"], "original blind labels"),
-                method, registration, _observe_image)
+                method, registration, _observe_image, reader_reanalysis=binding)
         except (OSError, ValueError, KeyError, TypeError) as exc:
             raise WorkflowError(str(exc)) from exc
         document["primary_frequency_adjudication"] = adjudication["summary"]

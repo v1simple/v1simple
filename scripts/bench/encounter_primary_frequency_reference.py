@@ -5,6 +5,7 @@ from collections import Counter
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
 
 
@@ -66,7 +67,32 @@ def copy_reference(source, destination):
     shutil.copyfile(source, destination)
 
 
-def validate_reference(path, original_manifest, original_observations, method, registration, observe):
+def reference_reread_binding(path, method):
+    """Describe a current-reader regression check without changing the old freeze.
+
+    The independent packet remains the original observer's work. Its held-out
+    development separation belongs to that historical reader, not the new one.
+    """
+    from encounter_qualification import CORE_READER_FILES
+
+    path = Path(path).resolve()
+    reference = json.loads(path.read_bytes())
+    frozen = reference.get("frozen_reader_files")
+    current = {name: method.get(name) for name in CORE_READER_FILES}
+    _require(isinstance(frozen, dict) and set(frozen) == set(CORE_READER_FILES)
+             and all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+                     for value in (*frozen.values(), *current.values())),
+             "historical or current reader freeze is incomplete")
+    if frozen == current:
+        return None
+    return {"kind": "complete_exact_reader_reread", "reference_sha256": _sha(path),
+            "historical_frozen_reader_files": frozen, "current_reader_files": current,
+            "complete_source_set_reread": True,
+            "held_out_provenance": "Original frozen reader only; current reader is checked against retained independent labels."}
+
+
+def validate_reference(path, original_manifest, original_observations, method, registration, observe,
+                       *, reader_reanalysis=None):
     """Re-read an explicit independent supplement, returning only supported overrides."""
     from encounter_qualification import CORE_READER_FILES, _derived_field_status
 
@@ -78,8 +104,13 @@ def validate_reference(path, original_manifest, original_observations, method, r
     _require(reference.get("original_blind_manifest_sha256") == _sha(original_manifest)
              and reference.get("original_blind_observations_sha256") == _sha(original_observations),
              "supplement does not bind the unchanged original references")
-    _require(reference.get("frozen_reader_files") == {name: method[name] for name in CORE_READER_FILES},
-             "reader changed after the independent observation packet was frozen")
+    if reader_reanalysis is None:
+        _require(reference.get("frozen_reader_files") == {name: method[name] for name in CORE_READER_FILES},
+                 "reader changed after the independent observation packet was frozen")
+    else:
+        expected_binding = reference_reread_binding(path, method)
+        _require(expected_binding is not None and reader_reanalysis == expected_binding,
+                 "reader reread binding differs from immutable reference or current reader")
     _artifact(path.parent, reference["protocol"])
     if "selection_before_reading" in reference:
         _artifact(path.parent, reference["selection_before_reading"])
@@ -150,4 +181,5 @@ def validate_reference(path, original_manifest, original_observations, method, r
     _require(all(roles[role] for role in CONTROL_STATES), "missing dash/decimal fault-control coverage")
     return {"overrides": overrides, "summary": {"items": len(items), "roles": dict(roles),
             "counts": dict(counts), "held_out_dash_agreements": held_out_dashes,
-            "adjudicated_original_references": len(overrides)}}
+            "adjudicated_original_references": len(overrides),
+            **({"reader_reanalysis": reader_reanalysis} if reader_reanalysis is not None else {})}}

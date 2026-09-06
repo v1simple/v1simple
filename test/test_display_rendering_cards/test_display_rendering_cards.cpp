@@ -275,6 +275,107 @@ void test_secondary_frequency_jitter_refreshes_slot_without_duplicate() {
     settings.slotAlertPersistSec[0] = 0;
 }
 
+// A vanished priority may become a card only when the user enabled persistence.
+void test_priority_replacement_honors_zero_and_positive_persistence() {
+    for (uint8_t persistSec : {0, 2}) {
+        resetDisplayForTest();
+        settings.slotAlertPersistSec[0] = persistSec;
+        AlertData old = AlertData::create(BAND_KA, DIR_REAR, 4, 0, 35500, true, true);
+        AlertData next = AlertData::create(BAND_K, DIR_SIDE, 2, 0, 24150, true, true);
+        display.ut_drawSecondaryAlertCards(&old, 1, old, false);
+        canvas()->resetCounters();
+        display.ut_resetDrawnRegion();
+        display.ut_drawSecondaryAlertCards(&next, 1, next, false);
+        auto& cards = display.ut_elementCaches().cards;
+        TEST_ASSERT_EQUAL_INT(persistSec == 0 ? 0 : 1, cards.lastDrawnCount);
+        if (persistSec == 0) {
+            TEST_ASSERT_TRUE_MESSAGE(display.ut_drawnRegionEmpty(),
+                "zero persistence must not paint a vanished priority and schedule a later clear");
+            TEST_ASSERT_EQUAL_UINT(0u, canvas()->fillRectCalls.size());
+        } else {
+            TEST_ASSERT_EQUAL_UINT32(35500, cards.lastDrawnPositions[0].frequency);
+            TEST_ASSERT_TRUE(cards.lastDrawnPositions[0].isGraced);
+            mockMillis += 2000;
+            display.ut_drawSecondaryAlertCards(&next, 1, next, false);
+            TEST_ASSERT_EQUAL_INT(1, cards.lastDrawnCount);
+            ++mockMillis;
+            display.ut_drawSecondaryAlertCards(&next, 1, next, false);
+            TEST_ASSERT_EQUAL_INT(0, cards.lastDrawnCount);
+        }
+    }
+    settings.slotAlertPersistSec[0] = 0;
+}
+
+void test_zero_persistence_clears_missing_secondary_in_same_millisecond() {
+    for (uint8_t initialPersistSec : {0, 2}) {
+        resetDisplayForTest();
+        settings.slotAlertPersistSec[0] = initialPersistSec;
+        AlertData p = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700, true, true);
+        AlertData s = AlertData::create(BAND_K, DIR_SIDE, 2, 0, 24150, true, false);
+        AlertData both[] = {p, s};
+        display.ut_drawSecondaryAlertCards(both, 2, p, false);
+        TEST_ASSERT_EQUAL_INT(1, display.ut_elementCaches().cards.lastDrawnCount);
+        settings.slotAlertPersistSec[0] = 0;
+        canvas()->resetCounters();
+        display.ut_resetDrawnRegion();
+        display.ut_drawSecondaryAlertCards(&p, 1, p, false);
+        TEST_ASSERT_EQUAL_INT(0, display.ut_elementCaches().cards.lastDrawnCount);
+        TEST_ASSERT_EQUAL_UINT8(BAND_NONE, display.ut_elementCaches().cards.lastDrawnPositions[0].band);
+        TEST_ASSERT_GREATER_THAN_UINT(0u, canvas()->fillRectCalls.size());
+        TEST_ASSERT_FALSE(display.ut_drawnRegionEmpty());
+    }
+}
+
+void test_zero_persistence_releases_absent_slots_for_new_live_cards_immediately() {
+    settings.slotAlertPersistSec[0] = 0;
+    AlertData p = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700, true, true);
+    AlertData old1 = AlertData::create(BAND_K, DIR_REAR, 2, 0, 24150, true, false);
+    AlertData old2 = AlertData::create(BAND_X, DIR_SIDE, 3, 0, 10525, true, false);
+    AlertData before[] = {p, old1, old2};
+    display.ut_drawSecondaryAlertCards(before, 3, p, false);
+    TEST_ASSERT_EQUAL_INT(2, display.ut_elementCaches().cards.lastDrawnCount);
+    AlertData next1 = AlertData::create(BAND_K, DIR_FRONT, 3, 0, 24170, true, false);
+    AlertData next2 = AlertData::create(BAND_KA, DIR_REAR, 5, 0, 35500, true, false);
+    AlertData after[] = {p, next1, next2};
+    display.ut_drawSecondaryAlertCards(after, 3, p, false);
+    const auto& cards = display.ut_elementCaches().cards;
+    TEST_ASSERT_EQUAL_INT(2, cards.lastDrawnCount);
+    TEST_ASSERT_EQUAL_UINT32(24170, cards.lastDrawnPositions[0].frequency);
+    TEST_ASSERT_EQUAL_UINT32(35500, cards.lastDrawnPositions[1].frequency);
+    TEST_ASSERT_FALSE(cards.lastDrawnPositions[0].isGraced);
+    TEST_ASSERT_FALSE(cards.lastDrawnPositions[1].isGraced);
+}
+
+// ALP supplies a synthetic laser priority and the full live radar list.
+void test_synthetic_laser_keeps_live_radar_cards_and_is_not_graced_on_exit() {
+    for (uint8_t persistSec : {0, 2}) {
+        resetDisplayForTest();
+        settings.slotAlertPersistSec[0] = persistSec;
+        AlertData radar = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700, true, true);
+        AlertData secondary = AlertData::create(BAND_K, DIR_REAR, 2, 0, 24150, true, false);
+        AlertData laser = AlertData::create(BAND_LASER, DIR_FRONT, 8, 0, 0, true, true);
+        AlertData radarRows[] = {radar, secondary};
+        display.ut_drawSecondaryAlertCards(radarRows, 2, radar, false);
+        ++mockMillis;
+        display.ut_drawSecondaryAlertCards(radarRows, 2, laser, false);
+        const auto& cards = display.ut_elementCaches().cards;
+        TEST_ASSERT_EQUAL_INT(2, cards.lastDrawnCount);
+        TEST_ASSERT_EQUAL_UINT32(24150, cards.lastDrawnPositions[0].frequency);
+        TEST_ASSERT_EQUAL_UINT32(34700, cards.lastDrawnPositions[1].frequency);
+        TEST_ASSERT_FALSE(cards.lastDrawnPositions[0].isGraced);
+        TEST_ASSERT_FALSE(cards.lastDrawnPositions[1].isGraced);
+        ++mockMillis;
+        display.ut_drawSecondaryAlertCards(radarRows, 2, radar, false);
+        TEST_ASSERT_EQUAL_INT(1, cards.lastDrawnCount);
+        TEST_ASSERT_EQUAL_UINT32(24150, cards.lastDrawnPositions[0].frequency);
+        TEST_ASSERT_FALSE(cards.lastDrawnPositions[0].isGraced);
+        for (const CardSlot& slot : cards.slots) {
+            TEST_ASSERT_FALSE(slot.lastSeen > 0 && slot.alert.band == BAND_LASER);
+        }
+    }
+    settings.slotAlertPersistSec[0] = 0;
+}
+
 void test_promoted_secondary_releases_its_card_for_the_still_live_old_priority() {
     for (uint8_t persistSec : {0, 2}) {
         for (uint32_t promotionJitter : {0u, 4u}) {
@@ -562,6 +663,10 @@ int main(int, char**) {
     RUN_TEST(test_card_clear_repaints_and_resets_previous_drawn_card_state);
     RUN_TEST(test_priority_frequency_jitter_does_not_admit_ghost_card);
     RUN_TEST(test_secondary_frequency_jitter_refreshes_slot_without_duplicate);
+    RUN_TEST(test_priority_replacement_honors_zero_and_positive_persistence);
+    RUN_TEST(test_zero_persistence_clears_missing_secondary_in_same_millisecond);
+    RUN_TEST(test_zero_persistence_releases_absent_slots_for_new_live_cards_immediately);
+    RUN_TEST(test_synthetic_laser_keeps_live_radar_cards_and_is_not_graced_on_exit);
     RUN_TEST(test_promoted_secondary_releases_its_card_for_the_still_live_old_priority);
     RUN_TEST(test_promoted_secondary_leaves_capacity_to_grace_the_vanished_old_priority);
     RUN_TEST(test_new_live_card_uses_promoted_slot_before_new_old_priority_grace);

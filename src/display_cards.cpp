@@ -79,7 +79,8 @@ SecondaryCardFrame evolveSecondaryCardState(CardsRenderCache& cache, const Alert
         }
         // Refresh first: continuity jitter can move this slot onto the new priority.
         if (alertMatchesPriority(slot.alert, priority) ||
-            (!stillExists && (expireForVisualPreview || (now - slot.lastSeen) > gracePeriodMs))) {
+            (!stillExists && (expireForVisualPreview || gracePeriodMs == 0 ||
+                             (now - slot.lastSeen) > gracePeriodMs))) {
             slot = CardSlot();
         }
     }
@@ -105,7 +106,8 @@ SecondaryCardFrame evolveSecondaryCardState(CardsRenderCache& cache, const Alert
     }
 
     // Live rows use released capacity before a vanished priority receives grace.
-    if (!expireForVisualPreview && cache.lastPriority.isValid && cache.lastPriority.band != BAND_NONE) {
+    if (!expireForVisualPreview && gracePeriodMs > 0 &&
+        cache.lastPriority.isValid && cache.lastPriority.band != BAND_NONE) {
         const bool priorityChanged = !alertsIdentityMatch(cache.lastPriority, priority);
         bool oldPriorityGone = true;
         for (int i = 0; alerts && i < alertCount; ++i) {
@@ -166,10 +168,6 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
     const V1Settings& settings = settings_.get();
     uint8_t persistSec = settings_.getSlotAlertPersistSec(settings.activeSlot);
     unsigned long gracePeriodMs = persistSec * 1000UL;
-
-    if (gracePeriodMs == 0) {
-        gracePeriodMs = 1; // Preserve immediate expiry without a zero-length special case.
-    }
 
     unsigned long now = millis();
 

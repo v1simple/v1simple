@@ -15,6 +15,7 @@ import pwd
 import re
 import signal
 import stat
+import struct
 import subprocess
 import sys
 import time
@@ -267,6 +268,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--git-worktree-clean", choices=["0", "1"], default="0")
     parser.add_argument("--segment", default="last")
     parser.add_argument("--upload", action="store_true")
+    parser.add_argument("--resident-recording", default="",
+                        help="prior qualified upload recording for the installed image")
+    parser.add_argument("--resident-image", default="",
+                        help="exact application binary retained from or read back against that upload")
     parser.add_argument("--skip-web", action="store_true")
     parser.add_argument("--post-upload-settle-seconds", type=int, default=90)
     parser.add_argument("--replay-executable", default="")
@@ -281,7 +286,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--camera", action="store_true")
     parser.add_argument("--ready-timeout-seconds", type=int, default=45)
     parser.add_argument("--completion-grace-seconds", type=int, default=45)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if bool(args.resident_recording) != bool(args.resident_image) or (
+        args.resident_recording and args.upload
+    ):
+        parser.error("--resident-recording and --resident-image require each other and no upload")
+    return args
 
 
 def utc_now() -> str:
@@ -530,6 +540,128 @@ def qualify_runtime_identity(
     )
     qualification.update({"status": "collection_only", "reason": reason})
     return qualification
+
+
+def retain_resident_artifacts(recording: Path, image: Path, out_dir: Path) -> dict[str, Any]:
+    """Bind an exact application binary to an independently retained upload.
+
+    No source or image identifier is supplied by the caller. The old, qualified
+    upload and its hashed serial record own those identifiers. The full binary
+    hash is checked before its ESP-IDF application descriptor is inspected.
+    """
+    def require(condition: bool, reason: str) -> None:
+        if not condition:
+            raise RuntimeIdentityFailure("resident provenance: " + reason)
+
+    def json_object(raw: bytes, label: str) -> dict[str, Any]:
+        try:
+            value = json.loads(raw)
+        except (ValueError, UnicodeError) as exc:
+            raise RuntimeIdentityFailure("resident provenance: invalid " + label) from exc
+        require(isinstance(value, dict), "invalid " + label)
+        return value
+
+    recording = recording.resolve(strict=True)
+    window_raw = (recording / "window_result.json").read_bytes()
+    window = json_object(window_raw, "upload window")
+    source_git = window.get("git_sha")
+    require(isinstance(source_git, str) and re.fullmatch(r"[0-9a-f]{40}", source_git) is not None,
+            "recorded source requires a full git commit")
+    require(window.get("git_worktree_clean") is True, "recorded source was not clean")
+    commit = subprocess.run(["git", "rev-parse", "--verify", source_git + "^{commit}"],
+                            cwd=ROOT, capture_output=True, text=True)
+    require(commit.returncode == 0 and commit.stdout.strip() == source_git,
+            "recorded source commit is unavailable")
+    require(window.get("result") == "PASS" and window.get("evidence_contract") == "external_only",
+            "reference was not a successful external upload window")
+    previous = window.get("runtime_qualification")
+    require(isinstance(previous, dict) and previous.get("status") == "qualified"
+            and previous.get("mode") == "upload" and previous.get("artifact_linked") is True
+            and previous.get("git_match") is True and previous.get("image_match") is True,
+            "reference was not a qualified upload")
+    artifacts = window.get("artifacts")
+    require(isinstance(artifacts, dict), "upload artifact records are missing")
+
+    def retained_bytes(key: str, name: str) -> bytes:
+        record = artifacts.get(key)
+        require(isinstance(record, dict) and record.get("path") == name,
+                "invalid reference path for " + key)
+        path = recording / name
+        require(not path.is_symlink() and path.resolve().parent == recording,
+                "reference artifact escapes recording")
+        raw = path.read_bytes()
+        require(type(record.get("size_bytes")) is int and record["size_bytes"] == len(raw)
+                and record.get("sha256") == hashlib.sha256(raw).hexdigest(),
+                "reference bytes do not match " + key)
+        return raw
+
+    manifest_raw = retained_bytes("build_upload", BUILD_UPLOAD_ARTIFACTS_NAME)
+    manifest = json_object(manifest_raw, "upload manifest")
+    require(manifest.get("schema_version") == 1
+            and manifest.get("kind") == "bench_build_upload_artifacts"
+            and manifest.get("upload_performed") is True and manifest.get("missing") == [],
+            "invalid or incomplete upload manifest")
+    require(all(artifacts["build_upload"].get(key) == value for key, value in manifest.items()),
+            "embedded upload manifest differs from retained bytes")
+    serial_raw = retained_bytes("bench_serial", "bench_serial.log")
+    tracker = RuntimeIdentityTracker()
+    for line in serial_raw.decode("utf-8", errors="strict").splitlines():
+        tracker.observe(line)
+    require(tracker.boot_marker_count == 1 and tracker.identity == window.get("runtime_identity"),
+            "reference serial runtime identity differs from upload window")
+    qualified = qualify_runtime_identity(tracker.identity or {}, intended_git_sha=source_git,
+                                         build_upload=manifest, upload=True)
+    require(all(previous.get(key) == qualified.get(key) for key in
+                ("status", "mode", "git_match", "artifact_linked", "image_match", "artifact_image_id", "artifact")),
+            "reference runtime qualification differs from its evidence")
+    files = manifest["files"]
+    def file_record(name: str) -> dict[str, Any]:
+        matches = [item for item in files if isinstance(item, dict) and item.get("name") == name]
+        require(len(matches) == 1, "missing or duplicate " + name)
+        record = matches[0]
+        require(type(record.get("size_bytes")) is int and record["size_bytes"] > 0
+                and isinstance(record.get("sha256"), str)
+                and SHA256_RE.fullmatch(record["sha256"]) is not None, "invalid " + name)
+        return record
+    binary_record, elf_record = file_record("firmware.bin"), file_record("firmware.elf")
+    app_raw = image.read_bytes()
+    require(len(app_raw) == binary_record["size_bytes"]
+            and hashlib.sha256(app_raw).hexdigest() == binary_record["sha256"],
+            "application bytes do not match uploaded firmware.bin")
+    # ESP32-S3: 24-byte image header, 8-byte first segment header, followed
+    # by esp_app_desc_t. Its magic and 32-byte app_elf_sha256 layout are
+    # defined by ESP-IDF and esptool's _parse_app_info; no arbitrary search.
+    require(len(app_raw) >= 288 and app_raw[0] == 0xE9 and 1 <= app_raw[1] <= 16
+            and struct.unpack_from("<H", app_raw, 12)[0] == 9,
+            "application is not a supported ESP32-S3 image")
+    address, length = struct.unpack_from("<II", app_raw, 24)
+    require(0x3C000000 <= address < 0x3D000000 and 256 <= length <= len(app_raw) - 32
+            and struct.unpack_from("<I", app_raw, 32)[0] == 0xABCD5432,
+            "application descriptor is missing from the first DROM segment")
+    require(app_raw[176:208].hex() == elf_record["sha256"],
+            "application descriptor does not match uploaded firmware ELF hash")
+
+    reference_dir = out_dir / "resident_reference"
+    reference_dir.mkdir(exist_ok=False)
+    references = {}
+    for name, raw in (("window_result.json", window_raw), (BUILD_UPLOAD_ARTIFACTS_NAME, manifest_raw),
+                      ("bench_serial.log", serial_raw), ("firmware.bin", app_raw)):
+        path = reference_dir / name
+        with path.open("xb") as handle:
+            handle.write(raw)
+        references[name] = {**file_artifact(path), "path": path.relative_to(out_dir).as_posix()}
+    payload = {**manifest, "upload_performed": False,
+               "resident_provenance": {
+                   "schema_version": 1, "kind": "qualified_prior_upload_application",
+                   "source_git_sha": source_git, "source_git_ref": window.get("git_ref", ""),
+                   "source_worktree_clean": True, "reference_runtime_identity": tracker.identity,
+                   "application_elf_sha256": elf_record["sha256"],
+                   "application_binding": "exact_uploaded_binary_sha256_and_embedded_full_elf_sha256",
+                   "reference_files": references}}
+    path = out_dir / BUILD_UPLOAD_ARTIFACTS_NAME
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return {**file_artifact(path), **payload}
 
 
 def write_window_result(out_dir: Path, payload: dict[str, Any]) -> None:
@@ -1358,12 +1490,23 @@ def collect_live(
         out_dir / REPLAY_STIMULUS_NAME,
         out_dir / REPLAY_DELIVERY_NAME,
         out_dir / REPLAY_SCENARIO_EVIDENCE_NAME,
+        out_dir / "resident_reference",
     ]
     if args.camera:
         reserved.append(out_dir / "camera")
     existing = [path.name for path in reserved if path.exists()]
     if existing:
         raise RuntimeError("refusing to reuse existing live evidence: " + ", ".join(existing))
+
+    resident_recording = getattr(args, "resident_recording", "")
+    resident_image = getattr(args, "resident_image", "")
+    if bool(resident_recording) != bool(resident_image) or (resident_recording and args.upload):
+        raise RuntimeIdentityFailure("resident reference requires both paths and no upload")
+    intended_git_sha = args.git_sha
+    if resident_recording:
+        artifacts["build_upload"] = retain_resident_artifacts(
+            Path(resident_recording), Path(resident_image), out_dir)
+        intended_git_sha = artifacts["build_upload"]["resident_provenance"]["source_git_sha"]
 
     with V1RadioLease() as lease:
         assert lease.fd is not None
@@ -1377,7 +1520,7 @@ def collect_live(
             deadline = time.monotonic() + args.post_upload_settle_seconds
             while time.monotonic() < deadline:
                 time.sleep(min(1.0, deadline - time.monotonic()))
-        else:
+        elif not resident_recording:
             artifacts["build_upload"] = retain_build_upload_artifacts(out_dir)
 
         timeline = BenchTimeline(out_dir / BENCH_TIMELINE_NAME)
@@ -1426,10 +1569,14 @@ def collect_live(
             assert observer.runtime_identity is not None
             runtime_qualification = qualify_runtime_identity(
                 observer.runtime_identity,
-                intended_git_sha=args.git_sha,
+                intended_git_sha=intended_git_sha,
                 build_upload=artifacts["build_upload"],
                 upload=args.upload,
             )
+            if resident_recording and runtime_qualification.get("status") != "qualified":
+                raise RuntimeIdentityFailure("fresh runtime does not match resident upload reference",
+                                             identity=observer.runtime_identity,
+                                             qualification=runtime_qualification)
             initial_boot_markers = observer.boot_marker_count
 
             emulator.start()
@@ -1617,6 +1764,7 @@ def main() -> int:
 
     try:
         result = collect_live(args, out_dir, artifacts)
+        resident = artifacts.get("build_upload", {}).get("resident_provenance", {})
         qualification = result["runtime_qualification"]
         delivery_summary = result["emulator"].get("notification_delivery")
         delivery_problem = notification_delivery_problem(
@@ -1639,9 +1787,11 @@ def main() -> int:
                 "suite": args.suite,
                 "duration_seconds": args.duration_seconds,
                 "board_id": args.board_id,
-                "git_sha": args.git_sha,
-                "git_ref": args.git_ref,
+                "git_sha": resident.get("source_git_sha", args.git_sha),
+                "git_ref": resident.get("source_git_ref", args.git_ref),
                 "git_worktree_clean": args.git_worktree_clean == "1",
+                "tooling_source": {"git_sha": args.git_sha, "git_ref": args.git_ref,
+                                   "git_worktree_clean": args.git_worktree_clean == "1"},
                 "device_port": redact_artifact_text(result["port"]),
                 "completion": result["completion"],
                 "emulator": result["emulator"],

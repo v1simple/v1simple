@@ -400,6 +400,8 @@ def observation_coverage(samples: list[dict], ranges: list[tuple[float, float]],
 
 def balanced_selection(indices: list[int]) -> str:
     require(bool(indices), "empty frame extraction")
+    if len(indices) > 1 and indices[-1] - indices[0] + 1 == len(indices):
+        return f"between(n,{indices[0]},{indices[-1]})"
     if len(indices) == 1:
         return f"eq(n,{indices[0]})"
     midpoint = len(indices) // 2
@@ -1197,11 +1199,17 @@ def main() -> int:
     parser.add_argument("--cadence", type=float, default=2, help="regular sample interval in seconds (default 2), in addition to packet-state midpoints and edge probes")
     parser.add_argument("--all-frames", action="store_true", help="select every recorded source frame in explicit --range or --transition-window bounds; cadence is not used; at most 5000 frames")
     parser.add_argument("--inspect-transitions", action="store_true", help="evaluate exact visible-event windows under the qualified policy, and retain consecutive input-change context for diagnosis; selection is bounded by the actual source recording")
+    parser.add_argument("--observe-behavior", action="store_true", help="read every recorded image of authored input events and report actual behavior without a response deadline")
+    parser.add_argument("--compare-to", type=Path, help="compare behavior with an earlier result.json from the same inputs and reader")
     parser.add_argument("--configuration", type=Path, help="independently verified, exact-window display settings; missing settings stay unknown")
     parser.add_argument("--reader-qualification", type=Path,
                         help="exact retained qualification manifest for the reader, camera profile, controls and policy classifiers")
     parser.add_argument("--out", type=Path, required=True, help="new result directory; existing results are never replaced")
     args = parser.parse_args()
+    if args.compare_to and not args.observe_behavior:
+        parser.error("--compare-to requires --observe-behavior")
+    if args.observe_behavior and (args.inspect_transitions or args.all_frames or args.transition_window):
+        parser.error("--observe-behavior owns full event selection; use --range for a bounded subset")
     if args.all_frames and not (args.ranges or args.transition_window):
         parser.error("--all-frames requires explicit --range or --transition-window bounds")
     if args.all_frames and args.cadence != 2:
@@ -1210,7 +1218,12 @@ def main() -> int:
         parser.error("--inspect-transitions cannot be combined with --all-frames or --transition-window")
     try:
         args.out.mkdir(parents=True, exist_ok=False)
-        result = analyze(args.run_dir, args.out, args.transition_window or args.ranges, args.cadence,
+        if args.observe_behavior:
+            from encounter_behavior import analyze_behavior
+            result = analyze_behavior(args.run_dir, args.out, args.ranges,
+                                      args.configuration, args.reader_qualification, args.compare_to)
+        else:
+            result = analyze(args.run_dir, args.out, args.transition_window or args.ranges, args.cadence,
                          args.configuration, transition_only=bool(args.transition_window), all_frames=args.all_frames,
                          inspect_transitions=args.inspect_transitions,
                          reader_qualification=args.reader_qualification)
@@ -1218,7 +1231,15 @@ def main() -> int:
         print(sanitize_artifact_value(str(exc), run_dir=args.out), file=sys.stderr)
         return 2
     label = "encounter with consecutive transitions" if args.inspect_transitions else "consecutive-frame encounter" if args.all_frames else "sampled encounter"
-    if result.get("primary_judgment"):
+    if args.observe_behavior:
+        counts = result["summary"]
+        print(f"{result['result']} — {counts['targets_observed']}/{counts['events']} complete display targets observed; "
+              f"{counts['events_with_findings']} events with contrary content; "
+              f"{counts['unresolved_frames']} frames contain unresolved observations. "
+              f"Read {counts['read_frames']}/{counts['available_frames']} recorded event frames.")
+        print("Open report.html for actual transitions, original images, source explanations and build comparison.")
+        return {"NO_DIFFERENCES_OBSERVED": 0, "DIFFERENCES_FOUND": 1, "MEASUREMENT_INCOMPLETE": 2}[result["result"]]
+    elif result.get("primary_judgment"):
         counts = result["primary_judgment"]["counts"]
         print(f"{result['result']} — visible events: {counts['passed']} passed, "
               f"{counts['failed']} failed, {counts['inconclusive']} inconclusive "

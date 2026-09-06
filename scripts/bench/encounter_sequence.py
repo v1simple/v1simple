@@ -18,7 +18,7 @@ except ImportError:
 
 _DEFINITE = {"DIFFERENCE", "PREVIOUS_INPUT_STATE", "TRANSITION_DIFFERENCE"}
 _POINT_KEYS = ("frame_id", "video_frame_index", "source_frame_seq", "capture_ns",
-               "offset_seconds", "image")
+               "offset_seconds", "image", "image_sha256")
 _BASIS = (
     "Literal recorded-frame observations against validated V1 packet-state events. "
     "No response deadline is applied. Host-send-to-capture intervals are not DUT "

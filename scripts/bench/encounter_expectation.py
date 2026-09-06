@@ -82,7 +82,8 @@ def _display(hex_text):
                        "main_arrows": [label for bit, label in _DIRECTIONS.items() if searching and mask & bit]})
     return {"phases": phases, "main_bars": min(6, _LED_BARS[data[2]]),
             "mute_bit": bool(data[3] & 16), "soft_muted": bool(data[5] & 1),
-            "system_status": searching, "image1": data[3], "image2": data[4]}
+            "system_status": searching, "main_volume": data[7] >> 4,
+            "image1": data[3], "image2": data[4]}
 
 
 def _card(row):
@@ -199,7 +200,14 @@ def _presentation(rows, display, muted, configuration, historical):
         if configuration.get("stealthEnabled") is False:
             fields["counter_glyph"] = {"allowed": _unique([phase["counter_glyph"] for phase in phases])}
             if configuration.get("alertPersistenceSeconds") == 0:
-                fields["primary_frequency"] = {"allowed": [None, "--.---"]}
+                # update(DisplayState) draws the dash frequency whenever the
+                # accepted volume is nonzero. At zero, its warning state machine
+                # can replace this region; proxy/speed-mute context and warning
+                # phase are not established by these seven-field inputs.
+                fields["primary_frequency"] = (
+                    {"allowed": ["--.---"]} if display["main_volume"] > 0 else
+                    {"unresolved": "zero-volume warning can replace the idle frequency; "
+                                   "its runtime context and phase are unestablished"})
                 fields["main_bars"] = {"allowed": [display["main_bars"]]}
                 fields["active_bands"] = {"allowed": [display["phases"][0]["active_bands"]]}
                 fields["main_arrows"] = {"allowed": [[]]}

@@ -15,9 +15,12 @@ PORT="${DEVICE_PORT:-}"
 RUN_ALL=0
 RUN_REPLAY=0
 ANALYZE_RECORDING=""
+COMPARE_TO=""
 ANALYSIS_RANGES=()
 CAMERA_REQUESTED=0
 FLASH=1
+RESIDENT_RECORDING=""
+RESIDENT_IMAGE=""
 COLLECTION_ONLY=0
 COLLECTION_ONLY_REASON=""
 QUALIFICATION_CAPTURE=0
@@ -28,8 +31,9 @@ ENCOUNTER_PRINTED=0
 ENCOUNTER_REASON=""
 
 usage() {
-  printf 'Usage: ./bench.sh --all|--replay [--camera] [--no-flash] [--qualification-capture]\n'
-  printf '       ./bench.sh --analyze-recording DIR [--range START:END ...]\n'
+  printf 'Usage: ./bench.sh --all|--replay [--camera] [--no-flash] [--compare-to RESULT_JSON] [--qualification-capture]\n'
+  printf '       ./bench.sh --analyze-recording DIR [--range START:END ...] [--compare-to RESULT_JSON]\n'
+  printf '       --no-flash may use --resident-recording DIR --resident-image FILE to verify a prior uploaded image\n'
 }
 
 fail_usage() {
@@ -55,11 +59,26 @@ while [[ $# -gt 0 ]]; do
       ANALYSIS_RANGES+=(--range "$2")
       shift
       ;;
+    --compare-to)
+      [[ $# -ge 2 && -z "$COMPARE_TO" && -n "$2" ]] || fail_usage
+      COMPARE_TO="$2"
+      shift
+      ;;
     --camera)
       CAMERA_REQUESTED=1
       ;;
     --no-flash)
       FLASH=0
+      ;;
+    --resident-recording)
+      [[ $# -ge 2 && -z "$RESIDENT_RECORDING" && -n "$2" ]] || fail_usage
+      RESIDENT_RECORDING="$2"
+      shift
+      ;;
+    --resident-image)
+      [[ $# -ge 2 && -z "$RESIDENT_IMAGE" && -n "$2" ]] || fail_usage
+      RESIDENT_IMAGE="$2"
+      shift
       ;;
     --qualification-capture)
       QUALIFICATION_CAPTURE=1
@@ -75,6 +94,11 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+if [[ -n "$RESIDENT_RECORDING" || -n "$RESIDENT_IMAGE" ]]; then
+  [[ -n "$RESIDENT_RECORDING" && -n "$RESIDENT_IMAGE" && "$FLASH" -eq 0 \
+     && -z "$ANALYZE_RECORDING" ]] || fail_usage
+fi
+
 if [[ -n "$ANALYZE_RECORDING" ]]; then
   [[ $((RUN_ALL + RUN_REPLAY + CAMERA_REQUESTED + QUALIFICATION_CAPTURE)) -eq 0 && "$FLASH" -eq 1 ]] || fail_usage
 else
@@ -84,11 +108,14 @@ if [[ "$QUALIFICATION_CAPTURE" -eq 1 \
       && ("$RUN_REPLAY" -ne 1 || "$RUN_ALL" -ne 0 || "$CAMERA_REQUESTED" -ne 1) ]]; then
   fail_usage
 fi
+if [[ -n "$COMPARE_TO" ]]; then
+  [[ "$QUALIFICATION_CAPTURE" -eq 0 && ( -n "$ANALYZE_RECORDING" || "$CAMERA_REQUESTED" -eq 1 ) ]] || fail_usage
+fi
 [[ "$DURATION_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail_usage
 [[ "$REPLAY_DURATION_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail_usage
 [[ "$POST_UPLOAD_SETTLE_SECONDS" =~ ^[0-9]+$ ]] || fail_usage
 if [[ "$CAMERA_REQUESTED" -eq 1 && "$QUALIFICATION_CAPTURE" -eq 0 ]]; then
-  ENCOUNTER_RESULT="INCONCLUSIVE"
+  ENCOUNTER_RESULT="MEASUREMENT_INCOMPLETE"
   ENCOUNTER_REASON="requested camera evidence is unavailable"
 fi
 
@@ -146,7 +173,7 @@ finish() {
     COUNTER_PRINTED=1
   fi
   if [[ "$ENCOUNTER_PRINTED" -eq 0 ]]; then
-    printf '[bench] visible encounter product: %s' "$ENCOUNTER_RESULT"
+    printf '[bench] visual behavior: %s' "$ENCOUNTER_RESULT"
     [[ -n "$ENCOUNTER_REASON" ]] && printf ' | %s' "$ENCOUNTER_REASON"
     printf '\n'
     ENCOUNTER_PRINTED=1
@@ -322,202 +349,151 @@ run_counter_check() {
 }
 
 read_encounter_result() {
-  python3 - "$1" "$2" "$SIGNALLED" <<'PY'
+  python3 - "$1" "$2" "$SIGNALLED" <<'PYRESULT'
 import json
 import math
 import re
 import sys
 from pathlib import Path
 
-result, tally, required, requests, selected, decoded, gap, first_id, reason = (
-    "INCONCLUSIVE", "counts unavailable", "?", "?", "?", "?", "?", "-", ""
-)
+result, counts, first_id, reason = "MEASUREMENT_INCOMPLETE", ["?"] * 8, "-", ""
 try:
     payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-    counts, coverage = payload["counts"], payload["coverage"]
-    fields, joint = counts["fields"], counts["joint_states"]
-    samples, errors = payload["samples"], payload["errors"]
-    required, requests = counts["required"], coverage["requests"]
-    selected, decoded = coverage["selected_unique_frames"], coverage["unique_frames"]
-    allowed = {"MATCH", "DIFFERENCE", "UNRESOLVED", "CONDITIONAL", "PREVIOUS_INPUT_STATE", "TRANSITION_DIFFERENCE"}
-    if (payload["kind"] != "sampled_encounter_check"
-            or payload["result"] not in ("PASS", "FAIL", "INCONCLUSIVE")
-            or not isinstance(fields, dict) or not isinstance(joint, dict)
-            or not set(fields).issubset(allowed)
-            or any(type(n) is not int or n < 0 for n in [required, requests, selected, decoded, *fields.values(), *joint.values()])
-            or required != requests * 7 or sum(fields.values()) != required
-            or not 0 <= decoded <= selected <= requests
-            or not isinstance(samples, list) or len(samples) != requests
-            or not isinstance(errors, list)):
-        raise ValueError("invalid encounter result or coverage")
-    sample_ids = {str(sample.get("frame_id")) for sample in samples if isinstance(sample, dict)}
-    if (len(sample_ids) != len(samples)
-            or any(re.fullmatch(r"[A-Za-z0-9_-]+", value) is None for value in sample_ids)):
-        raise ValueError("invalid or duplicate encounter sample identity")
-    raw_computed = ("FAIL" if fields.get("DIFFERENCE", 0) or joint.get("DIFFERENCE", 0) else
-                "INCONCLUSIVE" if errors or not required or decoded != selected
-                or fields.get("MATCH", 0) != required
-                or any(n for status, n in joint.items() if status not in ("MATCH", "NOT_EVALUATED")) else "PASS")
-    if payload.get("raw_frame_result") != raw_computed:
-        raise ValueError("raw encounter result disagrees with its required evidence")
-
-    product = payload["primary_judgment"]
+    summary, events, errors = payload["summary"], payload["events"], payload["errors"]
     qualification = payload["reader_qualification"]
-    if (not isinstance(product, dict)
-            or product.get("kind") != "visible_event_presentation"
-            or product.get("result") not in ("PASS", "FAIL", "INCONCLUSIVE")
-            or not isinstance(product.get("events"), list)
-            or not isinstance(product.get("counts"), dict)
-            or not isinstance(product.get("execution"), dict)
-            or not isinstance(qualification, dict)
-            or qualification.get("status") not in ("QUALIFIED", "REJECTED")):
-        raise ValueError("visible-event product judgment is malformed")
-    contract = product.get("contract", {})
-    if (contract.get("id") != "VISIBLE_EVENT_PRESENTATION" or contract.get("version") != 3
-            or contract.get("appearance_deadline_ns") != 100_000_000
-            or contract.get("appearance_decision_rule") != "first_source_marker_at_or_after_nominal_deadline"
-            or contract.get("maximum_appearance_observation_bracket_ns") != 10_000_000
-            or contract.get("verification_duration_ns") != 192_000_000
-            or contract.get("maximum_source_marker_gap_ns") != 10_000_000
-            or contract.get("minimum_post_completion_hold_ns") != 312_000_000
-            or contract.get("clock") != "host_monotonic_capture_marker"
-            or contract.get("anchor") != "first_complete_target_input_all_accepted_ns"
-            or contract.get("pre_deadline_observations") != "diagnostic_only"
-            or contract.get("verification_anchor") != "first_source_marker_at_or_after_nominal_deadline"):
-        raise ValueError("visible-event product contract is not the supported exact policy")
-    event_results = [event.get("result") for event in product["events"] if isinstance(event, dict)]
-    if len(event_results) != len(product["events"]) or any(
-            value not in ("PASS", "FAIL", "INCONCLUSIVE") for value in event_results):
-        raise ValueError("visible-event product events are malformed")
-    product_counts = {"required_events": len(event_results),
-                      "passed": event_results.count("PASS"),
-                      "failed": event_results.count("FAIL"),
-                      "inconclusive": event_results.count("INCONCLUSIVE")}
-    if product["counts"] != product_counts:
-        raise ValueError("visible-event product counts disagree with its events")
-    fatal = product["execution"].get("fatal_integrity_errors")
-    classification_errors = product["execution"].get("temporal_classification_errors")
-    if (not isinstance(fatal, list) or not isinstance(classification_errors, list)
-            or any(not isinstance(value, (str, dict)) for value in [*fatal, *classification_errors])):
-        raise ValueError("visible-event product integrity errors are malformed")
-    if fatal:
-        computed, computed_reason = "INCONCLUSIVE", "FATAL_EVIDENCE_INTEGRITY"
-    elif not event_results:
-        computed, computed_reason = "INCONCLUSIVE", "NO_REQUIRED_EVENTS"
-    elif product_counts["failed"]:
-        first = next(event for event in product["events"] if event["result"] == "FAIL")
-        computed, computed_reason = "FAIL", first.get("reason_code")
-    elif product_counts["inconclusive"] or classification_errors:
-        first = next((event for event in product["events"] if event["result"] == "INCONCLUSIVE"), None)
-        computed, computed_reason = ("INCONCLUSIVE",
-                                     first.get("reason_code") if first else "INVALID_TEMPORAL_CLASSIFICATION")
-    else:
-        computed, computed_reason = "PASS", "ALL_REQUIRED_EVENTS_PASSED"
-    if payload["result"] != computed or product["result"] != computed \
-            or product.get("reason_code") != computed_reason:
-        raise ValueError("visible-event product verdict disagrees with its required evidence")
-    if computed in ("PASS", "FAIL") and qualification.get("status") != "QUALIFIED":
-        raise ValueError("unqualified reader produced a decisive product verdict")
-    if qualification.get("status") != "QUALIFIED" and not any(
-            isinstance(value, str) and value.startswith("Reader qualification:") for value in fatal):
-        raise ValueError("reader qualification failure is absent from product integrity")
-    result = computed
-    required = product_counts["required_events"]
-    tally = (f"{product_counts['passed']} passed, {product_counts['failed']} failed, "
-             f"{product_counts['inconclusive']} inconclusive")
-    gaps = [region["maximum_unobserved_gap_seconds"] for region in coverage["regions"]]
-    if any(type(value) not in (int, float) or not math.isfinite(value) or value < 0 for value in gaps):
-        raise ValueError("invalid observed coverage gaps")
-    gap = f"{max(gaps):.3f}s" if gaps else "unavailable"
-    if fatal:
-        reason = str(fatal[0])
-    for event in product["events"] if reason == "" else []:
-        if event["result"] == "PASS":
-            continue
-        reason = f"{event.get('event_id', 'event')}: {event.get('reason_code', event['result'])}"
-        point = event.get("first_decisive_marker") or event.get("first_current_correct")
-        if isinstance(point, dict) and isinstance(point.get("frame_id"), str):
-            first_id = point["frame_id"]
-            if first_id not in sample_ids:
-                raise ValueError("product evidence references an unknown sample")
-        break
-    for sample in samples if reason == "" else []:
-        checks = sample.get("comparison", {}).get("checks", {})
-        issues = [(name, check) for name, check in checks.items() if check.get("status") != "MATCH"]
-        joint_check = sample.get("comparison", {}).get("joint_state", {})
-        if joint_check.get("status") not in (None, "MATCH", "NOT_EVALUATED"):
-            issues.append(("joint display", joint_check))
-        if issues:
-            name, check = issues[0]
-            first_id = str(sample["frame_id"])
-            if not re.fullmatch(r"[A-Za-z0-9_-]+", first_id):
-                raise ValueError("invalid sample identity")
-            reason = f"sample {first_id}, {name}: {check.get('reason') or check.get('status')}"
-            break
+    evidence = payload["evidence"]
+    identity = evidence.get("runtime_identity", {}) if isinstance(evidence, dict) else {}
+    if (payload.get("schema_version") != 1 or payload.get("kind") != "firmware_visual_behavior"
+            or not isinstance(summary, dict) or not isinstance(events, list)
+            or not isinstance(errors, list) or any(not isinstance(e, str) for e in errors)
+            or not isinstance(qualification, dict) or qualification.get("status") not in ("QUALIFIED", "REJECTED")
+            or not isinstance(identity, dict) or any(not isinstance(identity.get(k), str) or not identity[k]
+                                                     for k in ("git_sha", "image_id"))):
+        raise ValueError("unsupported visual behavior summary")
+    names = ("events", "targets_observed", "events_with_findings", "findings",
+             "unresolved_frames", "unresolved_field_observations", "read_frames", "available_frames")
+    if any(type(summary.get(key)) is not int or summary[key] < 0 for key in (*names, "events_without_complete_target")):
+        raise ValueError("visual behavior counts are malformed")
+    expected = dict.fromkeys(names, 0)
+    expected["events"] = len(events)
+    ids, coverage_complete = set(), True
+    for event in events:
+        eid, observation, findings, coverage = event["event_id"], event["observation"], event["findings"], event["coverage"]
+        if (not isinstance(eid, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", eid) or eid in ids
+                or not isinstance(observation, dict) or type(observation.get("target_observed")) is not bool
+                or not isinstance(findings, list) or any(not isinstance(f, dict) or not f.get("field")
+                                                       or not f.get("kind") for f in findings)
+                or not isinstance(coverage, dict)):
+            raise ValueError("visual behavior event is malformed or duplicated")
+        ids.add(eid)
+        fields = observation["fields"]
+        if not isinstance(fields, dict) or set(fields) != {
+                "counter_glyph", "primary_frequency", "active_bands", "main_arrows",
+                "main_bars", "secondary", "muted_badge"}:
+            raise ValueError("visual field measurements are missing")
+        unknown_fields = 0
+        for field in fields.values():
+            values = field["counts"]
+            if not isinstance(values, dict) or any(type(values.get(k)) is not int or values[k] < 0
+                    for k in ("matching_frames", "different_frames", "unresolved_frames")):
+                raise ValueError("visual field counts are malformed")
+            unknown_fields += values["unresolved_frames"]
+        available, read, unresolved = coverage["available_recorded_frames"], coverage["read_recorded_frames"], event["unresolved_frames"]
+        unrecorded = coverage["unrecorded_source_frames"]
+        if (any(type(n) is not int or n < 0 for n in (available, read, unresolved, unrecorded))
+                or read > available or unresolved > available
+                or type(coverage.get("complete_recorded_frame_coverage")) is not bool
+                or coverage["complete_recorded_frame_coverage"] != (available > 0 and read == available)):
+            raise ValueError("visual event coverage is inconsistent")
+        coverage_complete &= coverage["complete_recorded_frame_coverage"] and unrecorded == 0
+        expected["targets_observed"] += int(observation["target_observed"])
+        expected["events_with_findings"] += int(bool(findings))
+        expected["findings"] += len(findings)
+        expected["unresolved_frames"] += unresolved
+        expected["unresolved_field_observations"] += unknown_fields
+        expected["read_frames"] += read
+        expected["available_frames"] += available
+        if first_id == "-" and (findings or not observation["target_observed"]):
+            first_id = eid
+            reason = (f"{eid}: {findings[0].get('reason') or findings[0]['kind']}" if findings
+                      else f"{eid}: complete target was not observed")
+    missing = len(events) - expected["targets_observed"]
+    if any(summary[key] != value for key, value in expected.items()) or summary["events_without_complete_target"] != missing:
+        raise ValueError("visual behavior counts disagree with event evidence")
+    computed = ("MEASUREMENT_INCOMPLETE" if errors or qualification["status"] != "QUALIFIED" else
+                "DIFFERENCES_FOUND" if expected["findings"] else
+                "MEASUREMENT_INCOMPLETE" if not events or missing or not coverage_complete else
+                "NO_DIFFERENCES_OBSERVED")
+    if payload.get("result") != computed:
+        raise ValueError("visual behavior result disagrees with event evidence")
+    result, counts = computed, [expected[name] for name in names]
     if errors:
-        reason = str(errors[0])
-    if (result, int(sys.argv[2])) not in (("PASS", 0), ("FAIL", 1), ("INCONCLUSIVE", 2)):
-        result, reason = "INCONCLUSIVE", f"analysis exit {sys.argv[2]} did not match its retained result"
-    if sys.argv[3] == "1" and result == "PASS":
-        result, reason = "INCONCLUSIVE", "analysis interrupted; completion was not established"
-except (OSError, KeyError, TypeError, ValueError, AttributeError, json.JSONDecodeError) as exc:
+        reason = errors[0]
+    elif qualification["status"] != "QUALIFIED":
+        reason = "reader qualification was rejected"
+    if (result, int(sys.argv[2])) not in (("NO_DIFFERENCES_OBSERVED", 0), ("DIFFERENCES_FOUND", 1), ("MEASUREMENT_INCOMPLETE", 2)):
+        result, reason = "MEASUREMENT_INCOMPLETE", f"analysis exit {sys.argv[2]} did not match its retained result"
+    if sys.argv[3] == "1":
+        result, reason = "MEASUREMENT_INCOMPLETE", "analysis interrupted; completion was not established"
+except (OSError, KeyError, TypeError, ValueError, AttributeError) as exc:
     detail = str(exc) if type(exc) is ValueError else "missing or malformed evidence"
-    result, tally, required, requests, selected, decoded, gap, first_id, reason = (
-        "INCONCLUSIVE", "counts unavailable", "?", "?", "?", "?", "?", "-",
+    result, counts, first_id, reason = (
+        "MEASUREMENT_INCOMPLETE", ["?"] * 8, "-",
         f"analysis result rejected: {detail} (exit {sys.argv[2]}; see bench.log)"
     )
 reason = " ".join(reason.split())[:240] or "-"
-print("\t".join(map(str, (result, tally, required, requests, selected, decoded, gap, first_id, reason))))
-PY
+print("\t".join(map(str, (result, *counts, first_id, reason))))
+PYRESULT
 }
 
 run_encounter_check() {
   local replay_dir="$1"
   local encounter_dir="${2:-$replay_dir/encounter-check}"
   local encounter_status=0
-  local tally="counts unavailable" required="?" requests="?" selected="?" decoded="?" gap="?" first_id="-" reason="-"
+  local events="?" targets="?" affected="?" findings="?" unresolved="?" unresolved_fields="?" read_frames="?" available="?" first_id="-" reason="-"
+  local comparison_args=()
+  [[ -z "$COMPARE_TO" ]] || comparison_args+=(--compare-to "$COMPARE_TO")
   if [[ "$SIGNALLED" -eq 1 ]]; then
-    ENCOUNTER_REASON="analysis interrupted before the encounter check"
+    ENCOUNTER_REASON="analysis interrupted before the visual behavior check"
     return
   fi
-  printf '[bench] visible encounter product: analyzing exact event windows and raw camera evidence...\n'
+  printf '[bench] visual behavior: comparing controlled input with recorded display observations...\n'
   python3 "$ROOT_DIR/scripts/bench/encounter_check.py" \
     --run-dir "$replay_dir" \
-    --inspect-transitions \
+    --observe-behavior \
     --reader-qualification "$ENCOUNTER_QUALIFICATION" \
     --out "$encounter_dir" \
-    "${ANALYSIS_RANGES[@]}" \
+    "${ANALYSIS_RANGES[@]}" "${comparison_args[@]}" \
     2>&1 | tee -a "$RUN_LOG" || encounter_status=$?
-  IFS=$'\t' read -r ENCOUNTER_RESULT tally required requests selected decoded gap first_id reason \
+  IFS=$'\t' read -r ENCOUNTER_RESULT events targets affected findings unresolved unresolved_fields read_frames available first_id reason \
     < <(read_encounter_result "$encounter_dir/result.json" "$encounter_status" 2>/dev/null)
   case "$ENCOUNTER_RESULT" in
-    PASS|FAIL|INCONCLUSIVE) ;;
-    *) ENCOUNTER_RESULT="INCONCLUSIVE"; reason="could not read the encounter result; see bench.log" ;;
+    NO_DIFFERENCES_OBSERVED|DIFFERENCES_FOUND|MEASUREMENT_INCOMPLETE) ;;
+    *) ENCOUNTER_RESULT="MEASUREMENT_INCOMPLETE"; reason="could not read the visual behavior result; see bench.log" ;;
   esac
-  printf 'visible encounter product: result=%s exit=%s qualification=%s\n' \
+  printf 'visual behavior: result=%s exit=%s qualification=%s\n' \
     "$ENCOUNTER_RESULT" "$encounter_status" "$ENCOUNTER_QUALIFICATION" >> "$RUN_LOG"
-  printf '[bench] visible encounter product: %s | %s / %s required visible events\n' \
-    "$ENCOUNTER_RESULT" "$tally" "$required"
-  printf '[bench] timing: the 100 ms requirement is unvalidated; a timing-only failure does not identify a firmware fault\n'
-  printf '[bench] encounter coverage: %s requests | %s selected, %s decoded original frames | largest unobserved gap %s\n' \
-    "$requests" "$selected" "$decoded" "$gap"
-  [[ "$reason" == "-" ]] || printf '[bench] encounter attention: %s\n' "$reason"
+  printf '[bench] visual behavior: %s | target observed %s/%s events | %s events with %s findings\n' \
+    "$ENCOUNTER_RESULT" "$targets" "$events" "$affected" "$findings"
+  printf '[bench] coverage: %s/%s recorded frames read | %s unresolved frames (%s field observations)\n' \
+    "$read_frames" "$available" "$unresolved" "$unresolved_fields"
+  [[ "$reason" == "-" ]] || printf '[bench] attention: %s\n' "$reason"
   if [[ -f "$encounter_dir/report.html" ]]; then
     local fragment=""
-    [[ "$first_id" == "-" ]] || fragment="#sample=$first_id"
-    printf '[bench] encounter report: %s/report.html%s\n' "$encounter_dir" "$fragment"
+    [[ "$first_id" == "-" ]] || fragment="#event=$first_id"
+    printf '[bench] visual report: %s/report.html%s\n' "$encounter_dir" "$fragment"
   else
-    printf '[bench] encounter report unavailable; see %s\n' "$RUN_LOG"
+    printf '[bench] visual report unavailable; see %s\n' "$RUN_LOG"
   fi
   ENCOUNTER_PRINTED=1
 }
 
 finish_encounter_product() {
-  local label="${1:-visible encounter product}"
+  local label="${1:-visual behavior}"
   case "$ENCOUNTER_RESULT" in
-    PASS) finish "PASS ($label)" 0 ;;
-    FAIL) finish "FAIL ($label)" 2 ;;
-    *) finish "INCONCLUSIVE ($label)" 1 ;;
+    NO_DIFFERENCES_OBSERVED) finish "NO_DIFFERENCES_OBSERVED ($label)" 0 ;;
+    DIFFERENCES_FOUND) finish "DIFFERENCES_FOUND ($label)" 1 ;;
+    *) finish "MEASUREMENT_INCOMPLETE ($label)" 2 ;;
   esac
 }
 
@@ -574,7 +550,7 @@ if [[ -n "$ANALYZE_RECORDING" ]]; then
     "$GIT_SHA" "$GIT_WORKTREE_CLEAN" >> "$RUN_LOG"
   print_window_summary "$ANALYZE_RECORDING/window_result.json" 'OFFLINE recorded' 2>/dev/null || true
   run_encounter_check "$ANALYZE_RECORDING" "$RUN_DIR/encounter-check"
-  finish_encounter_product 'OFFLINE recorded visible encounter product'
+  finish_encounter_product 'OFFLINE recorded visual behavior'
 fi
 
 if [[ "$GIT_WORKTREE_CLEAN" -ne 1 ]]; then
@@ -655,6 +631,9 @@ for suite in "${SUITES[@]}"; do
   fi
   if [[ "$FLASH" -eq 1 && "$first_suite" -eq 1 ]]; then
     args+=(--upload)
+  fi
+  if [[ -n "$RESIDENT_RECORDING" ]]; then
+    args+=(--resident-recording "$RESIDENT_RECORDING" --resident-image "$RESIDENT_IMAGE")
   fi
 
   leg_note=""

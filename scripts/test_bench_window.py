@@ -7,9 +7,11 @@ import contextlib
 import fcntl
 import hashlib
 import io
+import itertools
 import json
 import os
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -22,7 +24,6 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "bench"))
 
-from encounter_product import judge_visible_event_presentation  # noqa: E402
 import run_window as run_window_module  # noqa: E402
 from run_window import (  # noqa: E402
     BENCH_TIMELINE_NAME,
@@ -655,6 +656,201 @@ def test_no_flash_git_mismatch_fails() -> None:
     )
 
 
+def resident_fixture(root: Path) -> tuple[Path, Path, dict[str, Any], dict[str, Any]]:
+    recording = root / "recorded"
+    recording.mkdir()
+    source_git = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    identity = {**RUNTIME_IDENTITY, "git_sha": source_git[:7]}
+    manifest = build_upload_artifact(identity["image_id"], upload_performed=True)
+    manifest.update(schema_version=1, kind="bench_build_upload_artifacts")
+    manifest["files"][0]["size_bytes"] = 1000
+    app = bytearray(288)
+    app[0:2] = bytes([0xE9, 1])
+    struct.pack_into("<H", app, 12, 9)
+    struct.pack_into("<II", app, 24, 0x3C000020, 256)
+    struct.pack_into("<I", app, 32, 0xABCD5432)
+    app[176:208] = bytes.fromhex(manifest["files"][0]["sha256"])
+    image = root / "application.bin"
+    image.write_bytes(app)
+    manifest["files"].append({"name": "firmware.bin", "size_bytes": len(app),
+                              "sha256": hashlib.sha256(app).hexdigest()})
+    serial_path = recording / "bench_serial.log"
+    serial_path.write_text(f"BOOT bootId=42 git={identity['git_sha']} image={identity['image_id']}\n")
+    window = {"result": "PASS", "evidence_contract": "external_only", "git_sha": source_git,
+              "git_ref": "main", "git_worktree_clean": True, "runtime_identity": identity,
+              "runtime_qualification": qualify_runtime_identity(
+                  identity, intended_git_sha=source_git, build_upload=manifest, upload=True),
+              "artifacts": {"bench_serial": file_artifact(serial_path)}}
+    write_resident_fixture(recording, window, manifest)
+    return recording, image, window, manifest
+
+
+def write_resident_fixture(recording: Path, window: dict[str, Any], manifest: dict[str, Any]) -> None:
+    path = recording / "build_upload_artifacts.json"
+    path.write_text(json.dumps(manifest))
+    window["artifacts"]["build_upload"] = {**file_artifact(path), **manifest}
+    (recording / "window_result.json").write_text(json.dumps(window))
+
+
+def test_resident_upload_reference_binds_original_bytes_and_fresh_identity() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        recording, image, window, _manifest = resident_fixture(root)
+        output = root / "fresh"
+        output.mkdir()
+        result = run_window_module.retain_resident_artifacts(recording, image, output)
+        provenance = result["resident_provenance"]
+        assert_true(not result["upload_performed"], str(result))
+        assert_true(provenance["source_git_sha"] == window["git_sha"], str(provenance))
+        for name, record in provenance["reference_files"].items():
+            original = image if name == "firmware.bin" else recording / name
+            retained = output / record["path"]
+            assert_true(retained.read_bytes() == original.read_bytes(), name)
+            assert_true(record["sha256"] == hashlib.sha256(original.read_bytes()).hexdigest(), name)
+        fresh = {**window["runtime_identity"], "boot_id": 43}
+        qualified = qualify_runtime_identity(fresh, intended_git_sha=provenance["source_git_sha"],
+                                            build_upload=result, upload=False)
+        assert_true(qualified["status"] == "qualified", str(qualified))
+        assert_identity_failure(lambda: qualify_runtime_identity(
+            {**fresh, "git_sha": "1234567"}, intended_git_sha=provenance["source_git_sha"],
+            build_upload=result, upload=False), "does not match intended source")
+        wrong_image = qualify_runtime_identity(
+            {**fresh, "image_id": "111111111"}, intended_git_sha=provenance["source_git_sha"],
+            build_upload=result, upload=False)
+        assert_true(wrong_image["status"] != "qualified", str(wrong_image))
+
+
+def test_resident_upload_reference_rejects_unbound_evidence() -> None:
+    for case, expected in (
+        ("source", "source requires a full git"),
+        ("source_mismatch", "does not match intended source"),
+        ("dirty", "source was not clean"),
+        ("mode", "not a qualified upload"),
+        ("manifest", "reference bytes do not match build_upload"),
+        ("embedded_manifest", "embedded upload manifest differs"),
+        ("serial", "reference bytes do not match bench_serial"),
+        ("serial_identity", "serial runtime identity differs"),
+        ("binary", "application bytes do not match"),
+        ("descriptor", "descriptor does not match"),
+        ("descriptor_magic", "descriptor is missing"),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            recording, image, window, manifest = resident_fixture(root)
+            if case == "source":
+                window["git_sha"] = window["git_sha"][:7]
+            elif case == "source_mismatch":
+                window["runtime_identity"]["git_sha"] = "1234567"
+                path = recording / "bench_serial.log"
+                path.write_text(f"BOOT bootId=42 git=1234567 image={RUNTIME_IDENTITY['image_id']}\n")
+                window["artifacts"]["bench_serial"] = file_artifact(path)
+            elif case == "dirty":
+                window["git_worktree_clean"] = False
+            elif case == "mode":
+                window["runtime_qualification"]["mode"] = "no_flash"
+            elif case == "serial_identity":
+                window["runtime_identity"]["boot_id"] = 99
+            elif case in ("binary", "descriptor", "descriptor_magic"):
+                changed = bytearray(image.read_bytes())
+                changed[32 if case == "descriptor_magic" else 176] ^= 1
+                image.write_bytes(changed)
+                if case != "binary":
+                    manifest["files"][1]["sha256"] = hashlib.sha256(changed).hexdigest()
+            write_resident_fixture(recording, window, manifest)
+            if case == "manifest":
+                with (recording / "build_upload_artifacts.json").open("a") as handle:
+                    handle.write(" ")
+            elif case == "embedded_manifest":
+                window["artifacts"]["build_upload"]["upload_performed"] = False
+                (recording / "window_result.json").write_text(json.dumps(window))
+            elif case == "serial":
+                with (recording / "bench_serial.log").open("a") as handle:
+                    handle.write("changed\n")
+            output = root / "fresh"
+            output.mkdir()
+            assert_identity_failure(
+                lambda: run_window_module.retain_resident_artifacts(recording, image, output), expected)
+            assert_true(not list(output.iterdir()), "rejected provenance published reference files: " + case)
+
+
+def test_resident_reference_cli_requires_pair_without_upload() -> None:
+    required = ["run_window.py", "--suite", "replay", "--out-dir", "unused"]
+    for options in (("--resident-recording", "ref"), ("--resident-image", "app"),
+                    ("--resident-recording", "ref", "--resident-image", "app", "--upload")):
+        with mock.patch.object(sys, "argv", required + list(options)), contextlib.redirect_stderr(io.StringIO()):
+            try:
+                run_window_module.parse_args()
+            except SystemExit as exc:
+                assert_true(exc.code == 2, str(exc))
+            else:
+                raise AssertionError("invalid resident CLI accepted")
+    for options in (("--replay", "--resident-recording", "ref", "--resident-image", "app"),
+                    ("--replay", "--no-flash", "--resident-recording", "ref"),
+                    ("--replay", "--no-flash", "--resident-image", "app"),
+                    ("--analyze-recording", "old", "--no-flash", "--resident-recording", "ref",
+                     "--resident-image", "app")):
+        completed = subprocess.run([str(ROOT / "bench.sh"), *options], capture_output=True, text=True)
+        assert_true(completed.returncode == 2 and "usage" in completed.stdout, completed.stdout)
+
+
+def test_resident_collection_keeps_tooling_identity_separate_and_never_uploads() -> None:
+    for fresh_change in ({}, {"git_sha": "1234567"}, {"image_id": "111111111"}):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            recording, image, window, _manifest = resident_fixture(root)
+            output = root / "fresh"
+            args = SimpleNamespace(
+                board_id="fixture", blink_arrow=False, blink_profile="steady",
+                out_dir=str(output), runner_stdout_log="", runner_stderr_log="",
+                duration_seconds=1, ready_timeout_seconds=1, post_upload_settle_seconds=0,
+                suite="core", scenario="", reader_qualification=False,
+                replay_executable="fixture-replay", git_sha="f" * 40,
+                git_ref="newer-tooling", git_worktree_clean="1", upload=False,
+                resident_recording=str(recording), resident_image=str(image),
+                camera=False, port="fixture-port", baud=115200,
+            )
+            fresh = {**window["runtime_identity"], "boot_id": 43, **fresh_change}
+            observer = mock.Mock(runtime_identity=fresh, boot_marker_count=1, line_count=1)
+            emulator = mock.Mock()
+            emulator.finish.return_value = {"lifecycle_completed": True}
+            lease = mock.MagicMock()
+            lease.__enter__.return_value.fd = 1
+            with contextlib.ExitStack() as stack:
+                for name, value in (
+                    ("parse_args", lambda: args), ("install_signal_handlers", lambda: None),
+                    ("serial", object()), ("V1RadioLease", lambda: lease),
+                    ("wait_for_port", lambda *_: "fixture-port"),
+                    ("BenchSerial", lambda *_: observer), ("V1Emulator", lambda *a, **k: emulator),
+                    ("establish_serial_boundary", lambda *a, **k: None),
+                ):
+                    stack.enter_context(mock.patch.object(run_window_module, name, value))
+                upload = stack.enter_context(mock.patch.object(run_window_module, "run_upload"))
+                local_artifact = stack.enter_context(mock.patch.object(
+                    run_window_module, "retain_build_upload_artifacts"))
+                stack.enter_context(mock.patch.object(
+                    run_window_module.time, "monotonic", side_effect=itertools.count(0, 2)))
+                stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+                status = run_window_module.main()
+            payload = json.loads((output / "window_result.json").read_text())
+            upload.assert_not_called()
+            local_artifact.assert_not_called()
+            observer.reset_for_boot.assert_called_once()
+            if fresh_change:
+                assert_true(status == 3 and payload["failure_kind"] == "runtime_identity", str(payload))
+                emulator.start.assert_not_called()
+            else:
+                assert_true(status == 0 and payload["result"] == "PASS", str(payload))
+                assert_true(payload["git_sha"] == window["git_sha"] != args.git_sha, str(payload))
+                assert_true(payload["git_ref"] == "main", str(payload))
+                assert_true(payload["tooling_source"] == {
+                    "git_sha": args.git_sha, "git_ref": args.git_ref, "git_worktree_clean": True,
+                }, str(payload))
+                assert_true(payload["runtime_identity"] == fresh, str(payload))
+                assert_true(payload["runtime_qualification"]["mode"] == "no_flash", str(payload))
+                emulator.start.assert_called_once()
+                emulator.finish.assert_called_once_with(True)
+
+
 def test_main_writes_collection_only_and_returns_exit_one_for_unlinked_no_flash() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
@@ -928,7 +1124,7 @@ def test_bench_cli_collection_only_branch_has_no_pass_verdict() -> None:
 
 
 def run_bench_cli_fixture(window_result: str, counter_result: str, *,
-                          encounter_result: str = "PASS", camera: bool = True,
+                          encounter_result: str = "NO_DIFFERENCES_OBSERVED", camera: bool = True,
                           camera_present: bool = True, visual_exit: int = 0,
                           encounter_exit: int | None = None,
                           encounter_payload: dict | None = None,
@@ -936,6 +1132,7 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
                           interrupt_encounter: bool = False,
                           run_all: bool = False,
                           offline: bool = False,
+                          compare: bool = False,
                           analysis_ranges: tuple[str, ...] = (),
                           extra_arguments: tuple[str, ...] = (),
                           qualification_capture: bool = False,
@@ -990,46 +1187,7 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
         window_path.write_text(json.dumps(window), encoding="utf-8")
         counter_path.write_text(json.dumps({"result": counter_result, "counts": counter_counts}), encoding="utf-8")
         encounter_path = root / "encounter.json"
-        fields = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
-                  "main_bars", "secondary", "muted_badge")
-        field_status = {"PASS": "MATCH", "FAIL": "DIFFERENCE", "INCONCLUSIVE": "UNRESOLVED"}[encounter_result]
-        samples = [{"frame_id": f"{number:04d}", "comparison": {"checks": {
-            field: {"status": (field_status if number == 2 and field == "primary_frequency" else "MATCH"),
-                    "reason": "fixture frequency observation"}
-            for field in fields}, "joint_state": {"status": "MATCH"}}} for number in (1, 2)]
-        field_counts = {"MATCH": 14} if encounter_result == "PASS" else {"MATCH": 13, field_status: 1}
-        encounter = encounter_payload if encounter_payload is not None else {
-            "kind": "sampled_encounter_check", "result": encounter_result,
-            "counts": {"required": 14, "fields": field_counts, "joint_states": {"MATCH": 2}},
-            "samples": samples, "errors": [],
-            "coverage": {"requests": 2, "selected_unique_frames": 2, "unique_frames": 2,
-                         "regions": [{"maximum_unobserved_gap_seconds": .5}]},
-        }
-        if isinstance(encounter, dict) and "counts" in encounter:
-            raw_result = encounter.get("result", encounter_result)
-            encounter.setdefault("raw_frame_result", raw_result)
-            product_reason = {"PASS": "ALL_REQUIRED_EVENTS_PASSED",
-                              "FAIL": "TARGET_LATE",
-                              "INCONCLUSIVE": "UNCLASSIFIED_VISIBLE_INTERVAL"}.get(raw_result,
-                                                                                     "NO_REQUIRED_EVENTS")
-            point_id = encounter["samples"][-1]["frame_id"] if encounter.get("samples") else "0001"
-            event = {"event_id": "event-0001", "result": raw_result,
-                     "reason_code": product_reason,
-                     "first_decisive_marker": {"frame_id": point_id}}
-            product_counts = {"required_events": 1,
-                              "passed": int(raw_result == "PASS"),
-                              "failed": int(raw_result == "FAIL"),
-                              "inconclusive": int(raw_result == "INCONCLUSIVE")}
-            encounter.setdefault("reader_qualification", {"schema_version": 1,
-                                                           "kind": "encounter_reader_qualification_verification",
-                                                           "status": "QUALIFIED", "errors": []})
-            encounter.setdefault("primary_judgment", {
-                "schema_version": 1, "kind": "visible_event_presentation",
-                "contract": judge_visible_event_presentation([])["contract"],
-                "execution": {"status": "COMPLETE", "fatal_integrity_errors": [],
-                              "temporal_classification_errors": []},
-                "events": [event], "counts": product_counts,
-                "result": raw_result, "reason_code": product_reason})
+        encounter = encounter_payload if encounter_payload is not None else generated_encounter_payload((encounter_result,))
         encounter_path.write_text(json.dumps(encounter), encoding="utf-8")
         counter_marker = root / "counter.calls"
         encounter_marker = root / "encounter.calls"
@@ -1079,7 +1237,8 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
             fi
             if [[ "${{1:-}}" == */scripts/bench/encounter_check.py ]]; then
               args=("$@")
-              transition_review=0
+              behavior_review=0
+              comparison=""
               reader_qualification=0
               for ((index=0; index<${{#args[@]}}; index++)); do
                 if [[ "${{args[index]}}" == "--range" ]]; then
@@ -1087,10 +1246,11 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
                 fi
                 if [[ "${{args[index]}}" == "--out" ]]; then out="${{args[index+1]}}"; fi
                 if [[ "${{args[index]}}" == "--run-dir" ]]; then run="${{args[index+1]}}"; fi
-                if [[ "${{args[index]}}" == "--inspect-transitions" ]]; then transition_review=1; fi
+                if [[ "${{args[index]}}" == "--observe-behavior" ]]; then behavior_review=1; fi
+                if [[ "${{args[index]}}" == "--compare-to" ]]; then comparison="${{args[index+1]}}"; fi
                 if [[ "${{args[index]}}" == "--reader-qualification" ]]; then reader_qualification=1; fi
               done
-              [[ "$transition_review" == 1 && "$reader_qualification" == 1 ]] || exit 9
+              [[ "$behavior_review" == 1 && "$reader_qualification" == 1 && "$comparison" == "$FAKE_COMPARE_TO" ]] || exit 9
               [[ -e "$run/window_result.json" && ! -e "$out" ]] || exit 9
               mkdir -p "$out"
               if [[ "$FAKE_ENCOUNTER_WRITE" == 1 ]]; then
@@ -1118,6 +1278,8 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
         (recorded / "window_result.json").write_bytes(window_path.read_bytes())
         if offline:
             profiler.write_text("#!/bin/sh\nprintf 'called\\n' >> \"$FAKE_HARDWARE_MARKER\"\nexit 97\n", encoding="utf-8")
+        baseline_path = root / "baseline.json"
+        baseline_path.write_text(json.dumps(encounter), encoding="utf-8")
         environment = dict(os.environ)
         environment.update(
             PATH=str(fake_bin) + os.pathsep + environment.get("PATH", ""),
@@ -1127,6 +1289,7 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
             BENCH_REPLAY_DURATION_SECONDS="1",
             BENCH_POST_UPLOAD_SETTLE_SECONDS="0",
             FAKE_OFFLINE=str(int(offline)),
+            FAKE_COMPARE_TO=str(baseline_path) if compare else "",
             FAKE_HARDWARE_MARKER=str(hardware_marker),
             FAKE_RANGE_MARKER=str(range_marker),
             FAKE_WINDOW_JSON=str(window_path),
@@ -1135,7 +1298,7 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
             FAKE_COUNTER_EXIT=str({"PASS": 0, "FAIL": 1, "INCONCLUSIVE": 2}[counter_result]),
             FAKE_COUNTER_MARKER=str(counter_marker),
             FAKE_ENCOUNTER_JSON=str(encounter_path),
-            FAKE_ENCOUNTER_EXIT=str(encounter_exit if encounter_exit is not None else {"PASS": 0, "FAIL": 1, "INCONCLUSIVE": 2}[encounter_result]),
+            FAKE_ENCOUNTER_EXIT=str(encounter_exit if encounter_exit is not None else {"NO_DIFFERENCES_OBSERVED": 0, "DIFFERENCES_FOUND": 1, "MEASUREMENT_INCOMPLETE": 2}[encounter_result]),
             FAKE_ENCOUNTER_MARKER=str(encounter_marker),
             FAKE_ENCOUNTER_WRITE=str(int(write_encounter_result)),
             FAKE_ENCOUNTER_INTERRUPT=str(int(interrupt_encounter)),
@@ -1144,6 +1307,8 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
         )
         arguments = ([str(bench), "--analyze-recording", str(recorded)] if offline else
                      [str(bench), "--all" if run_all else "--replay", "--no-flash"])
+        if compare:
+            arguments.extend(("--compare-to", str(baseline_path)))
         for value in analysis_ranges:
             arguments.extend(("--range", value))
         arguments.extend(extra_arguments)
@@ -1173,81 +1338,93 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
 
 
 def generated_encounter_payload(outcomes: tuple[str, ...]) -> dict:
-    """Run the current product evaluator on existing realistic event fixtures."""
-    from collections import Counter
-    from test_encounter_product import MS, make_event, set_observation
-
-    events, samples = [], []
+    """Use the real observation adapter for the behavior-entrypoint contract."""
+    from bench.encounter_observation import summarize_event_observations
+    from encounter_behavior import event_findings, summarize
     fields = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
               "main_bars", "secondary", "muted_badge")
-    statuses = {"CURRENT": "MATCH", "PREVIOUS": "PREVIOUS_INPUT_STATE",
-                "DEFINITE_OTHER": "DIFFERENCE", "UNRESOLVED": "UNRESOLVED"}
+    events = []
     for number, outcome in enumerate(outcomes, 1):
-        event = make_event(event_id=f"event-{number:04d}", first_current_ns=0)
-        if outcome != "PASS":
-            set_observation(event, 100 * MS,
-                            "DEFINITE_OTHER" if outcome == "FAIL" else "UNRESOLVED",
-                            fields=("primary_frequency",))
-        for observation in event["observations"]:
-            observation["frame_id"] = f"event-{number:04d}-" + observation["frame_id"]
-            status = statuses[observation["raw_status"]]
-            samples.append({"frame_id": observation["frame_id"], "comparison": {
-                "checks": {field: {"status": status} for field in fields},
-                "joint_state": {"status": "MATCH"}}})
-        events.append(event)
-    product = judge_visible_event_presentation(events)
-    counts = Counter(check["status"] for sample in samples
-                     for check in sample["comparison"]["checks"].values())
-    raw = ("FAIL" if counts["DIFFERENCE"] else
-           "PASS" if counts["MATCH"] == len(samples) * 7 else "INCONCLUSIVE")
-    return {
-        "kind": "sampled_encounter_check", "result": product["result"],
-        "primary_judgment": product, "raw_frame_result": raw, "errors": [],
-        "reader_qualification": {"status": "QUALIFIED", "errors": []},
-        "samples": samples,
-        "counts": {"required": len(samples) * 7, "fields": dict(counts),
-                   "joint_states": {"MATCH": len(samples)}},
-        "coverage": {"requests": len(samples), "selected_unique_frames": len(samples),
-                     "unique_frames": len(samples),
-                     "regions": [{"maximum_unobserved_gap_seconds": .005}]},
-    }
+        first = {"frame_id": f"{number:04d}-1", "capture_ns": 10_000_000, "image": "frames/1.png"}
+        last = {"frame_id": f"{number:04d}-2", "capture_ns": 20_000_000, "image": "frames/2.png"}
+        different = outcome == "DIFFERENCES_FOUND"
+        unknown = outcome in ("MEASUREMENT_INCOMPLETE", "TRANSIENT_UNKNOWN")
+        missing_target = outcome == "MEASUREMENT_INCOMPLETE"
+        checks = {name: "MATCH" for name in fields}
+        checks["primary_frequency"] = "DIFFERENCE" if different else "UNRESOLVED" if unknown else "MATCH"
+        target = {"fields": {name: {"allowed": [1]} for name in fields}}
+        coverage = {"available_recorded_frames": 2, "read_recorded_frames": 2,
+                    "complete_recorded_frame_coverage": True, "unrecorded_source_frames": 0}
+        sequence_event = {"event_id": f"event-{number:04d}", "start_ns": 0, "end_ns": 1_000_000_000,
+                          "target_basis": {"first_complete_target_input_ns": 0}, "target": target,
+                          "first_correct": None if missing_target else first, "coverage": coverage,
+                          "observation_spans": [{"first": first, "last": last, "frame_count": 2,
+                             "judgment": {"status": "NOT_CORRECT" if different else "UNRESOLVED" if unknown else "CORRECT",
+                                          "fields": checks},
+                             "observed": {name: {"state": "ambiguous" if unknown and name == "primary_frequency" else "readable",
+                                                  "value": 2 if different and name == "primary_frequency" else 1} for name in fields}}]}
+        if not missing_target and (different or unknown):
+            from copy import deepcopy
+            first_span = deepcopy(sequence_event["observation_spans"][0])
+            first_span.update(last=first, frame_count=1)
+            first_span["judgment"].update(status="CORRECT", fields={name: "MATCH" for name in fields})
+            first_span["observed"] = {name: {"state": "readable", "value": 1} for name in fields}
+            second_span = sequence_event["observation_spans"][0]
+            second_span.update(first=last, frame_count=1)
+            sequence_event["observation_spans"] = [first_span, second_span]
+        observation = summarize_event_observations(sequence_event)
+        observation["first_target_ms"] = None if missing_target else 10
+        findings = event_findings(sequence_event, observation, {"field_rule_ids": {}})
+        events.append({"event_id": sequence_event["event_id"], "input_key": [number], "target": target,
+                       "observation": observation, "findings": findings, "coverage": coverage,
+                       "unresolved_frames": 2 if missing_target else 1 if unknown else 0})
+    qualification = {"status": "QUALIFIED"}
+    result, summary = summarize(events, [], qualification)
+    return {"schema_version": 1, "kind": "firmware_visual_behavior", "errors": [],
+            "result": result, "reader_qualification": qualification,
+            "evidence": {"runtime_identity": {"git_sha": "0123456", "image_id": "123456789"}},
+            "events": events, "summary": summary}
 
 
 def test_bench_cli_consumes_current_producer_results_online_and_offline() -> None:
-    for outcomes in (("PASS",), ("FAIL",), ("INCONCLUSIVE",),
-                     ("PASS", "FAIL", "INCONCLUSIVE")):
+    for outcomes in (("NO_DIFFERENCES_OBSERVED",), ("DIFFERENCES_FOUND",), ("MEASUREMENT_INCOMPLETE",),
+                     ("NO_DIFFERENCES_OBSERVED", "DIFFERENCES_FOUND", "MEASUREMENT_INCOMPLETE")):
         payload = generated_encounter_payload(outcomes)
-        result = payload["result"]
-        counts = payload["primary_judgment"]["counts"]
-        expected_counts = (f"{counts['passed']} passed, {counts['failed']} failed, "
-                           f"{counts['inconclusive']} inconclusive / "
-                           f"{counts['required_events']} required visible events")
+        result, counts = payload["result"], payload["summary"]
+        expected = (f"target observed {counts['targets_observed']}/{counts['events']} events | "
+                    f"{counts['events_with_findings']} events with {counts['findings']} findings")
         for offline in (False, True):
             process, counter_calls, encounter_calls, _ = run_bench_cli_fixture(
                 "PASS", "PASS", encounter_result=result, encounter_payload=payload,
                 offline=offline, analysis_ranges=("4.99:5.40", "8.99:9.34") if offline else ())
-            assert_true(process.returncode == {"PASS": 0, "FAIL": 2, "INCONCLUSIVE": 1}[result],
+            assert_true(process.returncode == {"NO_DIFFERENCES_OBSERVED": 0, "DIFFERENCES_FOUND": 1, "MEASUREMENT_INCOMPLETE": 2}[result],
                         process.stdout + process.stderr)
-            assert_true(expected_counts in process.stdout, process.stdout)
+            assert_true(expected in process.stdout, process.stdout)
             assert_true(encounter_calls == 1 and counter_calls == int(not offline), process.stdout)
+            assert_true("100 ms" not in process.stdout, process.stdout)
             if offline:
                 assert_true("OFFLINE recorded firmware analysis" in process.stdout, process.stdout)
                 assert_true("OFFLINE recorded runtime: git " in process.stdout, process.stdout)
-                assert_true(process.stdout.splitlines()[-1] ==
-                            f"{result} (OFFLINE recorded visible encounter product)", process.stdout)
+                assert_true(process.stdout.splitlines()[-1] == f"{result} (OFFLINE recorded visual behavior)", process.stdout)
 
 
 def test_bench_cli_rejects_old_or_incomplete_product_contract_explicitly() -> None:
-    for key, value in (("version", 2), ("pre_deadline_observations", "acceptance"),
-                       ("verification_anchor", "first_current_correct")):
-        payload = generated_encounter_payload(("PASS",))
-        payload["primary_judgment"]["contract"][key] = value
+    for change in ({"kind": "sampled_encounter_check"}, {"schema_version": 2}):
+        payload = generated_encounter_payload(("NO_DIFFERENCES_OBSERVED",))
+        payload.update(change)
         process, _, _, _ = run_bench_cli_fixture("PASS", "PASS", encounter_payload=payload)
-        assert_true(process.returncode == 1, process.stdout)
-        assert_true("visible-event product contract is not the supported exact policy" in process.stdout,
-                    process.stdout)
-        assert_true(process.stdout.splitlines()[-1] == "INCONCLUSIVE (visible encounter product)",
-                    process.stdout)
+        assert_true(process.returncode == 2, process.stdout)
+        assert_true("unsupported visual behavior summary" in process.stdout, process.stdout)
+        assert_true(process.stdout.splitlines()[-1] == "MEASUREMENT_INCOMPLETE (visual behavior)", process.stdout)
+
+
+def test_bench_cli_forwards_build_comparison_only_for_visual_analysis() -> None:
+    for offline in (True, False):
+        process, _, calls, _ = run_bench_cli_fixture("PASS", "PASS", compare=True, offline=offline)
+        assert_true(process.returncode == 0 and calls == 1, process.stdout + process.stderr)
+    for options in ({"camera": False}, {"qualification_capture": True}):
+        process, _, calls, _ = run_bench_cli_fixture("PASS", "PASS", compare=True, **options)
+        assert_true(process.returncode == 2 and calls == 0, process.stdout + process.stderr)
 
 
 def test_bench_cli_offline_mode_rejects_hardware_flags_and_live_ranges() -> None:
@@ -1264,33 +1441,23 @@ def test_bench_cli_offline_mode_rejects_hardware_flags_and_live_ranges() -> None
 
 
 def test_bench_cli_propagates_encounter_verdicts_with_fixed_precedence() -> None:
-    cases = [
-        ("PASS", "PASS", 0, "PASS (visible encounter product)"),
-        ("PASS", "INCONCLUSIVE", 1, "INCONCLUSIVE (visible encounter product)"),
-        ("PASS", "FAIL", 2, "FAIL (visible encounter product)"),
-        ("COLLECTION_ONLY", "PASS", 1, "COLLECTION-ONLY (unqualified:"),
-        ("COLLECTION_ONLY", "INCONCLUSIVE", 1, "COLLECTION-ONLY (unqualified:"),
-        ("COLLECTION_ONLY", "FAIL", 1, "COLLECTION-ONLY (unqualified:"),
-    ]
-    for window, encounter, status, final in cases:
-        process, counter_calls, encounter_calls, _ = run_bench_cli_fixture(window, "PASS", encounter_result=encounter, visual_exit=2)
-        assert_true(process.returncode == status, f"{window}/{encounter}: {process.stdout} {process.stderr}")
-        assert_true((counter_calls, encounter_calls) == (1, 1), process.stdout)
-        assert_true("[bench] sampled live counter: PASS |" in process.stdout, process.stdout)
-        assert_true(f"[bench] visible encounter product: {encounter} |" in process.stdout, process.stdout)
-        assert_true("2 requests | 2 selected, 2 decoded original frames | largest unobserved gap 0.500s" in process.stdout, process.stdout)
-        assert_true("host input acceptance: 10 / 10 packets" in process.stdout, process.stdout)
-        assert_true("DUT receipt not observed" in process.stdout, process.stdout)
-        assert_true("encounter-check/report.html" in process.stdout, process.stdout)
-        if encounter != "PASS":
-            assert_true("encounter-check/report.html#sample=0002" in process.stdout, process.stdout)
-            assert_true("event-0001:" in process.stdout, process.stdout)
-        assert_true(final in process.stdout.splitlines()[-1], process.stdout)
-
+    for window in ("PASS", "COLLECTION_ONLY"):
+        for result, status in (("NO_DIFFERENCES_OBSERVED", 0), ("DIFFERENCES_FOUND", 1), ("MEASUREMENT_INCOMPLETE", 2)):
+            process, counter_calls, encounter_calls, _ = run_bench_cli_fixture(window, "PASS", encounter_result=result)
+            assert_true(process.returncode == (1 if window == "COLLECTION_ONLY" else status), process.stdout)
+            assert_true((counter_calls, encounter_calls) == (1, 1), process.stdout)
+            assert_true(f"[bench] visual behavior: {result} |" in process.stdout, process.stdout)
+            assert_true("2/2 recorded frames read" in process.stdout, process.stdout)
+            assert_true("host input acceptance: 10 / 10 packets" in process.stdout, process.stdout)
+            assert_true("DUT receipt not observed" in process.stdout, process.stdout)
+            assert_true("encounter-check/report.html" in process.stdout, process.stdout)
+            if result != "NO_DIFFERENCES_OBSERVED":
+                assert_true("encounter-check/report.html#event=event-0001" in process.stdout, process.stdout)
+            final = "COLLECTION-ONLY (unqualified:" if window == "COLLECTION_ONLY" else result + " (visual behavior)"
+            assert_true(final in process.stdout.splitlines()[-1], process.stdout)
     process, counter_calls, encounter_calls, visual_calls = run_bench_cli_fixture("PASS", "FAIL", visual_exit=2, run_all=True)
     assert_true(process.returncode == 0, process.stdout)
     assert_true((counter_calls, encounter_calls, visual_calls) == (1, 1, 0), process.stdout)
-    assert_true("[bench] sampled live counter: FAIL |" in process.stdout, process.stdout)
     assert_true("visual timing" not in process.stdout, process.stdout)
 
 
@@ -1299,7 +1466,7 @@ def test_bench_cli_preserves_non_camera_and_hard_collection_results() -> None:
     assert_true(process.returncode == 0, process.stdout)
     assert_true((counter_calls, encounter_calls, visual_calls) == (0, 0, 0), process.stdout)
     assert_true("[bench] sampled live counter: NOT_EVALUATED" in process.stdout, process.stdout)
-    assert_true("[bench] visible encounter product: NOT_EVALUATED" in process.stdout, process.stdout)
+    assert_true("[bench] visual behavior: NOT_EVALUATED" in process.stdout, process.stdout)
     assert_true(process.stdout.splitlines()[-1] == "PASS", process.stdout)
 
     process, counter_calls, encounter_calls, visual_calls = run_bench_cli_fixture("FAIL", "PASS")
@@ -1318,7 +1485,7 @@ def test_bench_cli_qualification_capture_withholds_all_pixel_readers() -> None:
     assert_true("camera pixels retained unread; automatic pixel readers disabled" in process.stdout,
                 process.stdout)
     assert_true("sampled live counter: NOT_EVALUATED" in process.stdout, process.stdout)
-    assert_true("visible encounter product: NOT_EVALUATED" in process.stdout, process.stdout)
+    assert_true("visual behavior: NOT_EVALUATED" in process.stdout, process.stdout)
     assert_true(process.stdout.splitlines()[-1] ==
                 "QUALIFICATION-CAPTURED (pixels withheld; visible product NOT_EVALUATED)",
                 process.stdout)
@@ -1353,51 +1520,58 @@ def test_bench_cli_qualification_capture_withholds_all_pixel_readers() -> None:
 
 
 def test_bench_cli_keeps_missing_and_interrupted_encounter_evidence_inconclusive() -> None:
-    process, counter_calls, encounter_calls, visual_calls = run_bench_cli_fixture("PASS", "PASS", camera_present=False)
-    assert_true(process.returncode == 1, process.stdout)
-    assert_true((counter_calls, encounter_calls, visual_calls) == (0, 0, 0), process.stdout)
-    assert_true("visible encounter product: INCONCLUSIVE | requested camera evidence is unavailable" in process.stdout, process.stdout)
-
-    for options in (
-        {"write_encounter_result": False, "encounter_exit": 130},
-        {"encounter_exit": 2},
-        {"encounter_payload": {"result": "PASS"}},
-        {"interrupt_encounter": True},
-    ):
+    process, counter_calls, encounter_calls, _ = run_bench_cli_fixture("PASS", "PASS", camera_present=False)
+    assert_true(process.returncode == 1 and (counter_calls, encounter_calls) == (0, 0), process.stdout)
+    assert_true("visual behavior: MEASUREMENT_INCOMPLETE | requested camera evidence is unavailable" in process.stdout, process.stdout)
+    for options in ({"write_encounter_result": False, "encounter_exit": 130}, {"encounter_exit": 2},
+                    {"encounter_payload": {"result": "NO_DIFFERENCES_OBSERVED"}}, {"interrupt_encounter": True}):
         process, counter_calls, encounter_calls, _ = run_bench_cli_fixture("PASS", "PASS", **options)
-        assert_true(process.returncode == 1, f"{options}: {process.stdout} {process.stderr}")
+        assert_true(process.returncode == 2, process.stdout + process.stderr)
         assert_true((counter_calls, encounter_calls) == (1, 1), process.stdout)
-        assert_true("visible encounter product: INCONCLUSIVE" in process.stdout, process.stdout)
-        assert_true(process.stdout.splitlines()[-1] == "INCONCLUSIVE (visible encounter product)", process.stdout)
+        assert_true(process.stdout.splitlines()[-1] == "MEASUREMENT_INCOMPLETE (visual behavior)", process.stdout)
 
 
 def test_bench_cli_preserves_joint_state_failures_and_vetoes_incomplete_pass() -> None:
-    payload = {
-        "kind": "sampled_encounter_check", "result": "FAIL", "errors": [],
-        "counts": {"required": 7, "fields": {"MATCH": 7}, "joint_states": {"DIFFERENCE": 1}},
-        "coverage": {"requests": 1, "selected_unique_frames": 1, "unique_frames": 1,
-                     "regions": [{"maximum_unobserved_gap_seconds": .5}]},
-        "samples": [{"frame_id": "0001", "comparison": {
-            "checks": {name: {"status": "MATCH"} for name in (
-                "counter_glyph", "primary_frequency", "active_bands", "main_arrows",
-                "main_bars", "secondary", "muted_badge")},
-            "joint_state": {"status": "DIFFERENCE", "reason": "fixture mixed blink phases"}}}],
-    }
-    process, _, _, _ = run_bench_cli_fixture("PASS", "PASS", encounter_result="FAIL", encounter_payload=payload)
-    assert_true(process.returncode == 2, process.stdout)
-    assert_true("0 passed, 1 failed, 0 inconclusive / 1 required visible events" in process.stdout, process.stdout)
-    assert_true("event-0001: TARGET_LATE" in process.stdout, process.stdout)
-    assert_true("report.html#sample=0001" in process.stdout, process.stdout)
+    payload = generated_encounter_payload(("DIFFERENCES_FOUND", "MEASUREMENT_INCOMPLETE"))
+    payload["events"][0]["findings"][0]["field"] = "joint_state"
+    process, _, _, _ = run_bench_cli_fixture("PASS", "PASS", encounter_result="DIFFERENCES_FOUND", encounter_payload=payload)
+    assert_true(process.returncode == 1, process.stdout)
+    assert_true("1 events with 1 findings" in process.stdout and "2 unresolved frames" in process.stdout, process.stdout)
+    for mutation in (
+        lambda p: p["summary"].update(findings=0),
+        lambda p: p["summary"].update(targets_observed=0),
+        lambda p: p["summary"].update(read_frames=100),
+        lambda p: p["summary"].update(unresolved_frames=0),
+        lambda p: p.update(result="NO_DIFFERENCES_OBSERVED"),
+        lambda p: p["events"][0]["observation"]["fields"].pop("main_arrows"),
+        lambda p: p["evidence"].update(runtime_identity={}),
+        lambda p: p["reader_qualification"].update(status="REJECTED"),
+    ):
+        from copy import deepcopy
+        changed = deepcopy(payload)
+        mutation(changed)
+        process, _, _, _ = run_bench_cli_fixture("PASS", "PASS", encounter_result="DIFFERENCES_FOUND", encounter_payload=changed)
+        assert_true(process.returncode == 2 and "analysis result rejected" in process.stdout, process.stdout)
 
-    payload["result"] = "PASS"
-    for decoded in (1, 0):
-        payload["coverage"]["unique_frames"] = decoded
-        if decoded == 0:
-            payload["counts"]["joint_states"] = {"MATCH": 1}
-            payload["samples"][0]["comparison"]["joint_state"] = {"status": "MATCH"}
-        process, _, _, _ = run_bench_cli_fixture("PASS", "PASS", encounter_payload=payload)
-        assert_true(process.returncode == 1, process.stdout)
-        assert_true("visible encounter product: INCONCLUSIVE" in process.stdout, process.stdout)
+    # An unresolved transition stays visible without becoming an invented
+    # response deadline after the target has independently been observed.
+    transient = generated_encounter_payload(("TRANSIENT_UNKNOWN",))
+    process, _, _, _ = run_bench_cli_fixture("PASS", "PASS", encounter_payload=transient)
+    assert_true(process.returncode == 0 and "1 unresolved frames" in process.stdout, process.stdout)
+
+    from encounter_behavior import summarize
+    dropped = generated_encounter_payload(("NO_DIFFERENCES_OBSERVED",))
+    dropped["events"][0]["coverage"]["unrecorded_source_frames"] = 1
+    dropped["result"], dropped["summary"] = summarize(dropped["events"], [], dropped["reader_qualification"])
+    process, _, _, _ = run_bench_cli_fixture("PASS", "PASS", encounter_result=dropped["result"], encounter_payload=dropped)
+    assert_true(process.returncode == 2 and "analysis result rejected" not in process.stdout, process.stdout)
+
+    incomplete = generated_encounter_payload(("DIFFERENCES_FOUND",))
+    incomplete["errors"] = ["Incomplete capture evidence"]
+    incomplete["result"] = "MEASUREMENT_INCOMPLETE"
+    process, _, _, _ = run_bench_cli_fixture("PASS", "PASS", encounter_result="MEASUREMENT_INCOMPLETE", encounter_payload=incomplete)
+    assert_true(process.returncode == 2 and "1 events with 1 findings" in process.stdout, process.stdout)
+
 
 
 class FakeClock:
@@ -1747,6 +1921,10 @@ def main() -> int:
     test_no_flash_git_match_with_linked_resident_artifact_is_qualified()
     test_no_flash_git_match_with_unlinked_resident_artifact_is_collection_only()
     test_no_flash_git_mismatch_fails()
+    test_resident_upload_reference_binds_original_bytes_and_fresh_identity()
+    test_resident_upload_reference_rejects_unbound_evidence()
+    test_resident_reference_cli_requires_pair_without_upload()
+    test_resident_collection_keeps_tooling_identity_separate_and_never_uploads()
     test_main_writes_collection_only_and_returns_exit_one_for_unlinked_no_flash()
     test_dirty_source_vetoes_qualification_before_collection()
     test_top_level_pass_is_vetoed_by_delivery_loss_counters()
@@ -1756,6 +1934,7 @@ def main() -> int:
     test_bench_cli_collection_only_branch_has_no_pass_verdict()
     test_bench_cli_consumes_current_producer_results_online_and_offline()
     test_bench_cli_rejects_old_or_incomplete_product_contract_explicitly()
+    test_bench_cli_forwards_build_comparison_only_for_visual_analysis()
     test_bench_cli_offline_mode_rejects_hardware_flags_and_live_ranges()
     test_bench_cli_propagates_encounter_verdicts_with_fixed_precedence()
     test_bench_cli_preserves_non_camera_and_hard_collection_results()

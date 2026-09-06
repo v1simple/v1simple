@@ -414,6 +414,29 @@ class EncounterExpectationTests(unittest.TestCase):
                                                                    "alertPersistenceSeconds": 0}), observed)
                          ["checks"]["active_bands"]["status"], "DIFFERENCE")
 
+    def test_idle_frequency_requires_drawn_dashes_when_volume_is_nonzero(self):
+        config = {"stealthEnabled": False, "alertPersistenceSeconds": 0}
+        data = recording([([], [56, 56, 0, 0, 0, 12, 12, 0x40])])
+        observed = literals(counter_glyph="L", primary_frequency="--.---",
+                            active_bands=[], main_arrows=[], main_bars=0)
+        expected = self.expected(data, config=config)
+        self.assertEqual(compare_sample(expected, observed)["status"], "MATCH")
+        observed["primary_frequency"] = {"state": "absent", "value": None}
+        self.assertEqual(compare_sample(expected, observed)["checks"]["primary_frequency"]["status"],
+                         "DIFFERENCE")
+
+    def test_idle_zero_volume_warning_is_unresolved_not_blank_permission(self):
+        config = {"stealthEnabled": False, "alertPersistenceSeconds": 0}
+        data = recording([([], [56, 56, 0, 0, 0, 12, 12, 0x00])])
+        expected = self.expected(data, config=config)
+        for reading in ({"state": "absent", "value": None},
+                        {"state": "readable", "value": "--.---"}):
+            observed = literals(counter_glyph="L", active_bands=[], main_arrows=[], main_bars=0)
+            observed["primary_frequency"] = reading
+            check = compare_sample(expected, observed)["checks"]["primary_frequency"]
+            self.assertEqual(check["status"], "UNRESOLVED")
+            self.assertIn("zero-volume warning", check["reason"])
+
     def test_near_same_band_rows_refused_in_distinct_card_scope(self):
         # Firmware suppresses identity matches within 2 MHz and maintains card
         # continuity within 5 MHz, so these rows do not imply distinct cards.

@@ -97,7 +97,7 @@ run_camera_recorder_checks() {
   "${xcrun_driver[@]}" swiftc -module-cache-path "$module_cache" -typecheck "$recorder"
   "${xcrun_driver[@]}" swift -module-cache-path "$module_cache" "$recorder" --self-test-timing
   "${xcrun_driver[@]}" swift -module-cache-path "$module_cache" "$recorder" --self-test-writer
-  "${xcrun_driver[@]}" swift -module-cache-path "$module_cache" "$recorder" --self-test-raw-nv12
+  "${xcrun_driver[@]}" swift -module-cache-path "$module_cache" "$recorder" --self-test-raw-frames
 }
 
 PIO_CMD="${PIO_CMD:-pio}"

@@ -3,7 +3,8 @@
 
 ``reanalyze-static`` rereads an immutable blind static bundle with the current
 reader, keeps the original labels and source artifacts unchanged, and emits a
-new static-only manifest only after the complete verifier accepts it.
+new static-only manifest only after the complete verifier accepts it. An explicit
+independent frequency supplement can adjudicate a label while retaining its original.
 
 The three stages keep the useful boundary explicit:
 
@@ -1767,6 +1768,9 @@ def _copy_static_inputs(source_root: Path, destination_root: Path,
     for name, value in sources.items():
         _copy_static_reference(source_root, destination_root, value,
                                f"source {kind} {name}", copied)
+        if kind == "field" and name == "primary_frequency_reference":
+            from encounter_primary_frequency_reference import copy_reference
+            copy_reference(resolve_reference(source_root, value, name), destination_root / value["path"])
     collection_name = {"field": "frames", "secondary": "items", "fault": "cases"}[kind]
     records = document.get(collection_name)
     _require(isinstance(records, list) and bool(records),
@@ -1793,7 +1797,7 @@ def _bind_current_static_method(document: dict[str, Any], runtime: dict[str, Any
 
 def _reanalyze_field_document(source: Path, destination: Path,
                               runtime: dict[str, Any], method: dict[str, str],
-                              camera: dict[str, Any]) -> dict[str, Any]:
+                              camera: dict[str, Any], primary_frequency_reference: Path | None = None) -> dict[str, Any]:
     from encounter_qualification import FIELDS, _derived_field_status, _observe_image
 
     document = read_json(source)
@@ -1805,6 +1809,23 @@ def _reanalyze_field_document(source: Path, destination: Path,
     registration = selection.get("registration") if isinstance(selection, dict) else None
     _require(isinstance(registration, dict) and registration.get("result") == "PASS",
              "source field validation registration is unavailable")
+    adjudication = None
+    if primary_frequency_reference is not None:
+        from encounter_primary_frequency_reference import copy_reference
+        retained = destination.parent / "source/primary-frequency/reference.json"
+        copy_reference(primary_frequency_reference, retained)
+        document["source_artifacts"]["primary_frequency_reference"] = reference(retained, destination.parent)
+    if "primary_frequency_reference" in document["source_artifacts"]:
+        from encounter_primary_frequency_reference import validate_reference
+        try:
+            adjudication = validate_reference(
+                resolve_reference(destination.parent, document["source_artifacts"]["primary_frequency_reference"], "frequency reference"),
+                resolve_reference(destination.parent, document["source_artifacts"]["blind_manifest"], "original blind manifest"),
+                resolve_reference(destination.parent, document["source_artifacts"]["blind_observations"], "original blind labels"),
+                method, registration, _observe_image)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise WorkflowError(str(exc)) from exc
+        document["primary_frequency_adjudication"] = adjudication["summary"]
     totals: Counter[str] = Counter()
     fields = {field: Counter() for field in FIELDS}
     for frame in document["frames"]:
@@ -1820,6 +1841,9 @@ def _reanalyze_field_document(source: Path, destination: Path,
             reading = observed.get(field)
             _require(isinstance(reading, dict), f"current reader omitted {field}")
             check = by_field[field]
+            if field == "primary_frequency" and adjudication and frame["frame_id"] in adjudication["overrides"]:
+                check.setdefault("original_reference", deepcopy(check.get("reference")))
+                check["reference"] = deepcopy(adjudication["overrides"][frame["frame_id"]])
             check["observed"] = deepcopy(reading)
             check["status"] = _derived_field_status(field, reading, check.get("reference"))
             totals[check["status"]] += 1
@@ -1973,7 +1997,8 @@ def _verification_summary(verification: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
-def reanalyze_static(source_manifest: Path, destination: Path) -> dict[str, Any]:
+def reanalyze_static(source_manifest: Path, destination: Path,
+                     primary_frequency_reference: Path | None = None) -> dict[str, Any]:
     """Reread immutable static evidence and publish only a verified current bundle."""
     import encounter_reader
     from encounter_product import DEFAULT_POLICY_ID, load_policy
@@ -2015,7 +2040,7 @@ def reanalyze_static(source_manifest: Path, destination: Path) -> dict[str, Any]
         with encounter_reader.analysis_session():
             _reanalyze_field_document(
                 source_top["field_validation"], paths["field_validation"],
-                runtime, static_method, camera)
+                runtime, static_method, camera, primary_frequency_reference)
             _reanalyze_secondary_document(
                 source_top["visible_secondary_validation"],
                 paths["visible_secondary_validation"], runtime, static_method, camera)
@@ -2463,6 +2488,8 @@ def build_parser() -> argparse.ArgumentParser:
                                help="existing qualification supplying immutable static evidence")
     static_parser.add_argument("--out", type=Path, required=True,
                                help="new ignored directory for the verified static-only bundle")
+    static_parser.add_argument("--primary-frequency-reference", type=Path,
+                               help="explicit independent frequency adjudication; original labels stay unchanged")
     return parser
 
 
@@ -2479,7 +2506,7 @@ def main() -> int:
         elif args.command == "finalize":
             result = finalize(args.campaign, args.base_manifest, args.manifest)
         else:
-            result = reanalyze_static(args.source_manifest, args.out)
+            result = reanalyze_static(args.source_manifest, args.out, args.primary_frequency_reference)
         print(json.dumps(result, indent=2, sort_keys=True))
         if result.get("status") == "INSUFFICIENT_CANDIDATE_COVERAGE":
             return 2

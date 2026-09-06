@@ -20,6 +20,8 @@ _SOURCES = {
     "src/packet_parser_alerts.cpp": "4963cc3e1213db986fcc956d86bd391911ce29dbba0c8b681ec519147e87ef92",
     "src/display.h": "32d955848c3a80fb127a1ccda0efd7b7f14353fa77c10acc21421d9d5128652c",
     "src/display_frequency.cpp": "c1c0d897d8ff4fa19b29faca70805a1fb684076e7726a72596bad0d8df1f03da",
+    "include/color_themes.h": "bd0448752777d5faaf9c329de3ac2138fb12333f9232841f30e4544834eea012",
+    "include/display_palette.h": "e9bb062aa27a6af0f280a5db8a0ed17965a99ad408b593a5c12605f80862b6fa",
     "src/display_bands.cpp": "68a49007928004f9b7302d909c2d36bf5cc798fbc19b8015714e4d36fabb1afd",
     "src/display_arrow.cpp": "a99be71867e8f1a887795783c61dd2f1a5254d9a1220e6aa641bf7b45d51cf8c",
     "src/display_cards.cpp": "0e8aa435f9607b77ec755f365e25a1a85f7573d9d69c1ef634654f0a91938ce3",
@@ -50,9 +52,14 @@ _RULES = {
         "a phase disagreement is different from a wrong literal glyph."),
     "primary_frequency": _rule(["primary_frequency"],
         "The usable priority row is selected by its priority flag. Its MHz integer renders with "
-        "three decimal GHz digits. Ordinary resting mode renders --.---, subject to the zero-volume warning.",
+        "three decimal GHz digits. Ordinary resting dispatch calls the zero-frequency renderer, "
+        "which requests --.--- in dark gray, subject to the zero-volume warning. A reader's "
+        "no-bright-glyph observation does not establish that these dark strokes are absent.",
         [("src/packet_parser_alerts.cpp", 397, 435), ("src/display_frequency.cpp", 124, 131),
-         ("src/display_update.cpp", 856, 858)],
+         ("src/display_update.cpp", 342, 348), ("src/display_update.cpp", 684, 702),
+         ("src/display_update.cpp", 856, 858),
+         ("src/display_frequency.cpp", 139, 145), ("include/display_palette.h", 19, 21),
+         ("include/color_themes.h", 28, 33)],
         "If the wrong threat is primary, inspect priority selection and frame composition; if the "
         "right threat has wrong digits, inspect frequency drawing, cache invalidation and physical delivery."),
     "active_bands": _rule(["active_bands"],
@@ -143,12 +150,17 @@ _RULES = {
         "Use the observed acquisition, transition and clear sequence to locate the affected path. "
         "A measured interval becomes a timing defect only against an independently supported requirement."),
     "idle_volume_warning": _rule(["primary_frequency"],
-        "At positive main volume, normal resting draws --.---. At zero volume, a separate "
+        "At positive main volume, normal resting requests --.--- in PALETTE_GRAY (RGB565 0x1082), "
+        "then draws bars/arrows, clears retired cards and dispatches the resting frame. At zero volume, a separate "
         "runtime warning can replace that region, depending on fresh BLE/proxy/speed-mute context. "
-        "A blank region is not generally equivalent to the dash frequency.",
-        [("src/display_update.cpp", 639, 647), ("src/display_update.cpp", 684, 689)],
-        "Establish the accepted main volume before judging idle frequency. Zero-volume warning "
-        "behavior requires its own runtime context; do not label a warning image as a correct blank."),
+        "A dark-region reader result is not a measured absence of this faint placeholder.",
+        [("src/modules/display/render_frame_composer.cpp", 165, 174),
+         ("src/display_update.cpp", 342, 348), ("src/display_update.cpp", 639, 647),
+         ("src/display_update.cpp", 684, 702), ("src/display_frequency.cpp", 124, 145),
+         ("include/display_palette.h", 19, 21), ("include/color_themes.h", 28, 33)],
+        "Establish the accepted main volume and a reader qualified for dark idle strokes before "
+        "calling the placeholder missing. The numeric reader's brightness threshold cannot establish "
+        "this failure. Zero-volume warning behavior separately requires its runtime context."),
     "connect_card_deferral": _rule(["secondary"],
         "The display pipeline can defer secondary cards during BLE connect-burst settling. "
         "This is a runtime condition, not a fixed camera deadline.",

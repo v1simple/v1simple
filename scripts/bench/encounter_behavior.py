@@ -22,6 +22,7 @@ from encounter_build_comparison import compare_behavior_runs
 from encounter_configuration import configuration_for_samples
 from encounter_expectation import FIELDS, encounter_expectation_at
 from encounter_observation import summarize_event_observations
+from encounter_phase_observation import measure_event_phases
 from encounter_sequence import interpret_sequence, product_event_targets, _literal, _status
 
 
@@ -39,10 +40,11 @@ def event_findings(event, observation, contract):
     """
     findings = []
     complete_target = event.get("first_correct")
+    ending_observed = event.get("coverage", {}).get("complete_recorded_frame_coverage") is True
     for name, field in observation["fields"].items():
         end = field["end_state"]
         terminal = end.get("last_definite_observation")
-        if terminal and end.get("last_definite_matches_target") is False:
+        if ending_observed and terminal and end.get("last_definite_matches_target") is False:
             intervals = field["difference_intervals"]
             matching_literal = [s for s in intervals if s["last"]["observed"] == terminal["observed"]]
             first = matching_literal[0]["first"] if matching_literal else terminal
@@ -56,7 +58,7 @@ def event_findings(event, observation, contract):
         for interval in field["post_target_departures"]:
             if complete_target is None or interval["first"]["capture_ns"] <= complete_target["capture_ns"]:
                 continue  # One field can match before source-explained whole-display acquisition finishes.
-            if terminal and terminal.get("observed") == interval["last"]["observed"] \
+            if ending_observed and terminal and terminal.get("observed") == interval["last"]["observed"] \
                     and end.get("last_definite_matches_target") is False:
                 continue  # Already indexed, with its full earlier/later history.
             key = (name, json.dumps(interval["first"]["observed"], sort_keys=True))
@@ -78,7 +80,7 @@ def event_findings(event, observation, contract):
                    if anchor is not None and s["first"]["capture_ns"] >= anchor
                    and s["judgment"].get("status") in ("CORRECT", "NOT_CORRECT", "UNRESOLVED")
                    and s["judgment"].get("joint_state") in ({"MATCH"} | DIFFERENT)]
-    ending_joint = joint_spans[-1] if joint_spans and joint_spans[-1]["judgment"]["joint_state"] in DIFFERENT \
+    ending_joint = joint_spans[-1] if ending_observed and joint_spans and joint_spans[-1]["judgment"]["joint_state"] in DIFFERENT \
         and not joint_spans[-1]["judgment"].get("not_correct_fields") else None
     if ending_joint:
         findings.append({"field": "joint_state", "kind": "ending_difference",
@@ -116,12 +118,17 @@ def summarize(events, errors, qualification):
                                              for f in e["observation"]["fields"].values()),
         "read_frames": sum(e["coverage"]["read_recorded_frames"] for e in events),
         "available_frames": sum(e["coverage"]["available_recorded_frames"] for e in events),
+        "events_with_unobserved_blink_phases": sum(
+            len(e.get("phase_observation", {}).get("required_phase_ids", [])) > 1 and
+            set(e["phase_observation"]["required_phase_ids"]) != set(e["phase_observation"]["observed_phase_ids"])
+            for e in events),
     }
     complete = bool(events) and all(e["coverage"]["complete_recorded_frame_coverage"]
                                    and not e["coverage"]["unrecorded_source_frames"] for e in events)
     result = ("MEASUREMENT_INCOMPLETE" if errors or qualification.get("status") != "QUALIFIED" or not events else
               "DIFFERENCES_FOUND" if summary["findings"] else
-              "MEASUREMENT_INCOMPLETE" if summary["events_without_complete_target"] or not complete else
+              "MEASUREMENT_INCOMPLETE" if summary["events_without_complete_target"] or
+              summary["events_with_unobserved_blink_phases"] or not complete else
               "NO_DIFFERENCES_OBSERVED")
     return result, summary
 
@@ -136,7 +143,8 @@ def _input_key(definition, data):
             "next_authored_offset_seconds": following["replayOffsetSeconds"] if following else None}
 
 
-def analyze_behavior(run, out, ranges=None, configuration=None, reader_qualification=None, compare_to=None):
+def analyze_behavior(run, out, ranges=None, configuration=None, reader_qualification=None, compare_to=None,
+                     reuse_readings=None):
     # Import shared acquisition only here: encounter_check also exposes this
     # product through its command-line entry point.
     import encounter_check as capture
@@ -157,7 +165,7 @@ def analyze_behavior(run, out, ranges=None, configuration=None, reader_qualifica
     result = {"schema_version": 1, "kind": "firmware_visual_behavior", "events": [], "errors": [],
               "evidence": {}, "reader_method": {k: method[k] for k in (
                   *STATIC_READER_IMPLEMENTATION_FILES, "encounter_sequence.py",
-                  "encounter_observation.py", "encounter_behavior.py")},
+                  "encounter_observation.py", "encounter_phase_observation.py", "encounter_behavior.py")},
               "implementation_sha256": method, "reader_qualification": {"status": "REJECTED"},
               "scope": {"measured_fields": list(FIELDS),
                         "meaning": "Counter glyph, frequency, active bands, active arrow directions, strength bars, secondary cards and MUTED badge across the authored input sequence.",
@@ -218,6 +226,11 @@ def analyze_behavior(run, out, ranges=None, configuration=None, reader_qualifica
         result["original_video"] = {"path": "original.mov", "sha256": sha256_file(data["video"]),
                                     "meaning": "Unchanged capture; browser seeking is context. Retained lossless PNGs identify exact witness frames."}
         (out / "frames").mkdir()
+        reused = None
+        if reuse_readings:
+            from encounter_reading_reuse import load_reusable_readings
+            reused = load_reusable_readings(reuse_readings, data, method, samples, out)
+            result["evidence"]["reused_readings"] = reused["provenance"]
         definition_index, previous, previous_signature = 0, None, None
         retained = set()
 
@@ -226,8 +239,13 @@ def analyze_behavior(run, out, ranges=None, configuration=None, reader_qualifica
             if index in retained:
                 return
             path = out / sample["image"]
-            write_png(path, pixels, data["width"], data["height"])
-            sample["image_sha256"] = sha256_file(path)
+            if reused:
+                original = reused["originals"].get(index)
+                capture.require(original is not None and path.is_file(), "reused readings lack an exact required original witness")
+                sample["image_sha256"] = original["image_sha256"]
+            else:
+                write_png(path, pixels, data["width"], data["height"])
+                sample["image_sha256"] = sha256_file(path)
             row = data["rows"][index]
             result["samples_index"].append({"frame_index": index, "video_frame_index": index,
                 "frame_id": sample["frame_id"], "source_frame_seq": sample["source_frame_seq"],
@@ -236,16 +254,18 @@ def analyze_behavior(run, out, ranges=None, configuration=None, reader_qualifica
                 "video_seconds": row["video_pts_value"] / row["video_pts_timescale"]})
             retained.add(index)
 
+        frame_stream = (((s["video_frame_index"], None) for s in samples) if reused else capture.stream_frames(
+            data["video"], [s["video_frame_index"] for s in samples], data["width"], data["height"]))
         with gzip.open(out / "readings.ndjson.gz", "xt", encoding="utf-8") as raw, \
                 getattr(encounter_reader, "analysis_session", nullcontext)():
-            for number, (sample, (index, pixels)) in enumerate(zip(samples, capture.stream_frames(
-                    data["video"], [s["video_frame_index"] for s in samples], data["width"], data["height"]), strict=True), 1):
+            for number, (sample, (index, pixels)) in enumerate(zip(samples, frame_stream, strict=True), 1):
                 while definitions[definition_index]["end_ns"] <= sample["capture_ns"]:
                     definition_index += 1
                 definition = definitions[definition_index]
                 # Reader gets only original pixels and fixed camera geometry.
                 try:
-                    reading = encounter_reader.observe(pixels, data["width"], data["height"], data["registration"])
+                    reading = reused["readings"][index] if reused else encounter_reader.observe(
+                        pixels, data["width"], data["height"], data["registration"])
                     if "fields" not in reading:
                         reading = {"fields": {name: reading.get(name) for name in FIELDS},
                                    "diagnostics": {k: v for k, v in reading.items() if k not in FIELDS}}
@@ -290,6 +310,8 @@ def analyze_behavior(run, out, ranges=None, configuration=None, reader_qualifica
                           and (s["judgment"].get("unresolved_fields") or s["judgment"].get("joint_state") == "UNRESOLVED"
                                or s["judgment"].get("status") in ("INPUT_UNRESOLVED", "UNREAD")))
             findings = event_findings(event, observation, result["behavior_contract"])
+            phases = measure_event_phases(event, result["behavior_contract"])
+            findings.extend(phases["findings"])
             for finding in findings:
                 detail = by_frame[finding["last"]["video_frame_index"]]["observed"]["fields"].get(finding["field"])
                 if detail and detail.get("state") != "readable":
@@ -298,6 +320,7 @@ def analyze_behavior(run, out, ranges=None, configuration=None, reader_qualifica
                                      "wire_rows": event["wire_rows"], "start_ns": event["start_ns"], "end_ns": event["end_ns"],
                                      "target": event["target"], "observation": observation,
                                      "findings": findings,
+                                     "phase_observation": phases,
                                      "coverage": event["coverage"], "unresolved_frames": unknown,
                                      "observation_spans": event["observation_spans"]})
         if ranges:

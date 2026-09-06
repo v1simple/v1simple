@@ -29,7 +29,9 @@ def report_fixture():
             "reader_method": {"version": 9}, "summary": {"events": 1, "targets_observed": 1,
                 "events_with_findings": 1, "unresolved_field_observations": 1},
             "events": [{"event_id": "event-1", "start_ns": 0, "end_ns": 100_000_000,
-                "input_key": "sole K24.150", "target": {"fields": {"secondary": {"allowed": [[]]}}},
+                "input_key": "sole K24.150", "wire_rows": [{"band": "K", "frequency": "24.150",
+                    "direction": "side", "bars": 3, "priority": True}],
+                "target": {"fields": {"secondary": {"allowed": [[]]}, "main_bars": {"allowed": [4]}}},
                 "observation": observed, "observation_spans": measured["observation_spans"],
                 "findings": [{"field": "secondary", "kind": "ending_difference", "expected": [],
                               "observed": ["Ka34.700"], "first": wrong, "last": wrong,
@@ -122,6 +124,15 @@ class EncounterBehaviorReportTests(unittest.TestCase):
         second = copy.deepcopy(current["events"][0])
         second.update(event_id="event-2", input_key="another input")
         current["events"].append(second)
+        first_point = current["events"][0]["observation"]["first_target_observation"]
+        last_point = current["events"][0]["findings"][0]["last"]
+        current["events"][0]["phase_observation"] = {
+            "required_phase_ids": ["phase-1", "phase-2"], "observed_phase_ids": ["phase-1"],
+            "phase_counts": {"phase-1": 3, "phase-2": 0},
+            "first_observations": {"phase-1": first_point}, "last_observations": {"phase-1": last_point},
+            "alternation_count": 0, "unresolved_frames": 3, "source_toggle_ms": 96,
+            "contiguous_phase_spans": [{"phase_id": "phase-1", "first": first_point,
+                "last": last_point, "frame_count": 3, "duration_ms": 15.0}]}
         baseline = copy.deepcopy(current)
         baseline["evidence"]["runtime_identity"]["git_sha"] = "baseline1"
         baseline["events"][0]["observation"]["first_target_ms"] = 20.0
@@ -133,6 +144,8 @@ class EncounterBehaviorReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             page = write_behavior_report(Path(folder), current).read_text()
         payload = embedded(page)
+        self.assertEqual(payload["events"][0]["phase_observation"],
+                         current["events"][0]["phase_observation"])
         script = re.search(r'<script>(.*?)</script>', page, re.S).group(1)
         # Execute the actual report script against a minimal isolated document.
         # This verifies rendered text and navigation without a browser dependency.
@@ -145,6 +158,8 @@ global.location={hash:'#event=event-2'};
 element('behavior-data').textContent=''' + json.dumps(json.dumps(payload)) + ';\n'
         assertions = r'''
 assert.equal(activeIndex,1);
+assert.equal(inputText(report.events[0]),'Primary input: K 24.150 side · row strength 3');
+assert.match(element('event-content').innerHTML,/Strength bars<\/td><td>4/);
 assert.match(element('event-content').innerHTML,/<h2>event-2<\/h2>/);
 assert.match(element('method').innerHTML,/Every recorded event image was read/);
 assert.match(element('method').innerHTML,/audio · RF/);
@@ -160,7 +175,17 @@ assert.match(element('comparison').innerHTML,/\.\.\/baseline\/frames\/4.png/);
 assert.match(element('comparison').innerHTML,/data-compare-event="0"/);
 assert.match(element('comparison').innerHTML,/Unresolved field readings/);
 location.hash='#event=event-1';listeners.hashchange();assert.equal(activeIndex,0);
+assert.match(element('event-content').innerHTML,/1 \/ 2 required joint phases observed/);
+assert.match(element('event-content').innerHTML,/0 phase alternations/);
+assert.match(element('event-content').innerHTML,/3 unresolved joint-phase frames/);
+assert.match(element('event-content').innerHTML,/Recorded source toggles every 96 ms/);
+assert.match(element('event-content').innerHTML,/Required: phase-1, phase-2. Observed: phase-1/);
+assert.match(element('event-content').innerHTML,/Contiguous readable phase observations/);
+assert.match(element('event-content').innerHTML,/15.000 ms/);
+assert.match(element('event-content').innerHTML,/data-frame="4"/);
+assert.equal(phaseHTML({phase_observation:{required_phase_ids:['phase-1']}}),'');
 selectEvent(1);assert.equal(location.hash,'#event=event-2');
+assert.doesNotMatch(element('event-content').innerHTML,/Visible blink function/);
 location.hash='#event=missing';listeners.hashchange();assert.equal(activeIndex,1);
 assert.equal(safeLocalReport('javascript:evil.html'),null);
 assert.equal(safeLocalReport('//example.com/evil.html'),null);

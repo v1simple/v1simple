@@ -37,6 +37,7 @@ STATIC_READER_IMPLEMENTATION_FILES = (
     "counter_expectation.py",
     "camera_contract.py",
     "encounter_qualification.py",
+    "encounter_primary_frequency_reference.py",
 )
 FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
@@ -1284,7 +1285,8 @@ def _validate_field_evidence(document: Any, reader: dict[str, Any], camera: dict
     _validate_method_binding(document, reader, camera, implementation, "field validation")
     source_artifacts = document.get("source_artifacts")
     required_sources = ("blind_manifest", "blind_observations", "selection")
-    _require(isinstance(source_artifacts, dict) and set(source_artifacts) == set(required_sources),
+    _require(isinstance(source_artifacts, dict) and set(required_sources) <= set(source_artifacts)
+             and set(source_artifacts) <= {*required_sources, "primary_frequency_reference"},
              "field validation source artifacts are incomplete")
     source_documents = {}
     for name in required_sources:
@@ -1300,6 +1302,24 @@ def _validate_field_evidence(document: Any, reader: dict[str, Any], camera: dict
     registration = source_documents["selection"].get("registration")
     _require(isinstance(registration, dict) and registration.get("result") == "PASS",
              "field validation has no qualified retained registration")
+    adjudication = None
+    if "primary_frequency_reference" in source_artifacts:
+        from encounter_primary_frequency_reference import validate_reference
+        supplement = _evidence_file(evidence_root, source_artifacts["primary_frequency_reference"],
+                                    "primary frequency reference")
+        try:
+            adjudication = validate_reference(
+                supplement,
+                _evidence_file(evidence_root, source_artifacts["blind_manifest"], "original blind manifest"),
+                _evidence_file(evidence_root, source_artifacts["blind_observations"], "original blind labels"),
+                implementation, registration, _observe_image)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise QualificationError(str(exc)) from exc
+        _require(document.get("primary_frequency_adjudication") == adjudication["summary"],
+                 "primary frequency adjudication summary differs from its independent evidence")
+    else:
+        _require("primary_frequency_adjudication" not in document,
+                 "primary frequency adjudication lacks its independent reference")
     frames = document.get("frames")
     _require(isinstance(frames, list) and len(frames) >= MINIMUM_BLIND_FRAMES,
              "too few blind field-validation frames")
@@ -1347,7 +1367,12 @@ def _validate_field_evidence(document: Any, reader: dict[str, Any], camera: dict
             _require(_product_observation(field, check.get("observed")) ==
                      _product_observation(field, regenerated.get(field)),
                      f"field-validation observation differs from exact reader for {field}")
-            _require(check.get("reference") == source_label.get(field),
+            expected_reference = source_label.get(field)
+            if field == "primary_frequency" and adjudication and frame["frame_id"] in adjudication["overrides"]:
+                _require(check.get("original_reference") == expected_reference,
+                         "primary frequency correction did not preserve the original label")
+                expected_reference = adjudication["overrides"][frame["frame_id"]]
+            _require(check.get("reference") == expected_reference,
                      f"field-validation blind source label differs for {field}")
             status = check.get("status")
             _require(status in _FIELD_STATUSES, f"invalid blind status for {field}")
@@ -1381,7 +1406,8 @@ def _validate_field_evidence(document: Any, reader: dict[str, Any], camera: dict
     return {"unique_original_frames": len(frames), "required_field_labels": len(frames) * len(FIELDS),
             "counts": dict(totals), "agreements_by_field": {
                 field: per_field[field]["AGREEMENT"] for field in FIELDS},
-            "empty_secondary_presence_controls": empty_secondary_presence_controls}
+            "empty_secondary_presence_controls": empty_secondary_presence_controls,
+            **({"primary_frequency_adjudication": adjudication["summary"]} if adjudication else {})}
 
 
 def _validate_visible_secondary_evidence(document: Any, reader: dict[str, Any],

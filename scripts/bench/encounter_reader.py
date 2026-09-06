@@ -24,7 +24,7 @@ import counter_reader
 
 FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
-METHOD_VERSION = 9
+METHOD_VERSION = 10
 _ocr_binary = None
 _ocr_setup = None
 _ocr_session = None
@@ -164,6 +164,60 @@ def _frequency_lower_left(pixels, box, absence_guard):
                    "absence_guard": {"state": guard_state, **guard_values}}
 
 
+def _dark_frequency_placeholder(pixels, details):
+    # The dash font is centered independently of numeric text. These fixed
+    # stroke and decimal interiors follow the registered image geometry; no
+    # input, firmware state, expected text or neighboring frame is consulted.
+    strokes = []
+    for left, right in ((480, 508), (556, 584), (648, 676), (726, 754), (804, 832)):
+        background = float(np.median(np.concatenate([
+            pixels.level((left, 280, right, 290)).ravel(),
+            pixels.level((left, 327, right, 338)).ravel()])))
+        body = pixels.level((left, 304, right, 309))
+        parts = [part for row in np.array_split(body, 2, axis=0)
+                 for part in np.array_split(row, 3, axis=1)]
+        measures = [{"p10": round(float(np.percentile(part, 10)), 2),
+                     "median": round(float(np.median(part)), 2)} for part in parts]
+        complete = all(part["median"] >= background + 3 and part["p10"] >= background + 1
+                       for part in measures)
+        strokes.append({"background": background, "parts": measures, "complete": complete})
+    decimal_background = float(np.median(pixels.level((606, 334, 622, 340))))
+    decimal = pixels.level((610, 350, 618, 356))
+    decimal_parts = [part for row in np.array_split(decimal, 2, axis=0)
+                     for part in np.array_split(row, 2, axis=1)]
+    decimal_levels = [{"p10": round(float(np.percentile(part, 10)), 2),
+                       "median": round(float(np.median(part)), 2)} for part in decimal_parts]
+    decimal_complete = all(part["median"] >= decimal_background + 2
+                           and part["p10"] >= decimal_background + 1 for part in decimal_levels)
+    # The remaining upper/lower glyph body must be dark. A numeric remnant
+    # cannot borrow five horizontal strokes to become a dash-only literal.
+    background = float(np.median(pixels.level((448, 270, 840, 290))))
+    extra_contrast = 0.0
+    guards = ((448, 258, 840, 292), (448, 321, 840, 341),
+              (448, 347, 600, 359), (632, 347, 840, 359),
+              (524, 294, 540, 318), (598, 294, 634, 318),
+              (688, 294, 712, 318), (772, 294, 788, 318))
+    for box in guards:
+        windows = np.lib.stride_tricks.sliding_window_view(pixels.level(box), (4, 4))[::2, ::2]
+        contrast = float(np.max(np.median(windows, axis=(-2, -1)))) - background
+        extra_contrast = max(extra_contrast, contrast)
+    diagnostics = {"strokes": strokes, "decimal": {"background": decimal_background,
+                    "parts": decimal_levels, "complete": decimal_complete},
+                   "maximum_extra_body_contrast": round(extra_contrast, 2),
+                   "basis": "Five fixed dash interiors and a separate decimal against local background; "
+                            "all stroke sections required. Contrast below the retained limits is unresolved."}
+    if all(stroke["complete"] for stroke in strokes) and decimal_complete and extra_contrast < 3:
+        return field("readable", "--.---", cells=details, dark_placeholder=diagnostics)
+    possible_strokes = any(part["median"] - stroke["background"] >= 1.5
+                           for stroke in strokes for part in stroke["parts"])
+    possible_decimal = any(part["median"] - decimal_background >= 1.5 for part in decimal_levels)
+    if possible_strokes or possible_decimal or extra_contrast >= 3:
+        return field("ambiguous", reason="dark frequency marks do not establish five complete dashes and decimal",
+                     cells=details, dark_placeholder=diagnostics)
+    return field("absent", reason="visible registered frequency region has no supported glyph contrast",
+                 cells=details, dark_placeholder=diagnostics)
+
+
 def _frequency(pixels):
     # Five fixed seven-segment cells, with the decimal separately witnessed.
     x_origins = (454, 520, 616, 688, 764)
@@ -190,7 +244,7 @@ def _frequency(pixels):
         illuminated_by_digit.append(illuminated)
     region = pixels.level((448, 252, 840, 362))
     if float(np.percentile(region, 99.5)) <= 32:
-        return field("absent", reason="visible registered frequency region has no lit glyph", cells=details)
+        return _dark_frequency_placeholder(pixels, details)
     if any(v["state"] == "partial" for d in details for v in d["segments"].values()):
         return field("ambiguous", reason="partial or dim frequency segment interiors", cells=details)
     if not all(d is not None and d.isdigit() for d in digits):

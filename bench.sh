@@ -16,6 +16,7 @@ RUN_ALL=0
 RUN_REPLAY=0
 ANALYZE_RECORDING=""
 COMPARE_TO=""
+REUSE_READINGS=""
 ANALYSIS_RANGES=()
 CAMERA_REQUESTED=0
 FLASH=1
@@ -32,7 +33,7 @@ ENCOUNTER_REASON=""
 
 usage() {
   printf 'Usage: ./bench.sh --all|--replay [--camera] [--no-flash] [--compare-to RESULT_JSON] [--qualification-capture]\n'
-  printf '       ./bench.sh --analyze-recording DIR [--range START:END ...] [--compare-to RESULT_JSON]\n'
+  printf '       ./bench.sh --analyze-recording DIR [--range START:END ...] [--compare-to RESULT_JSON] [--reuse-readings RESULT_JSON]\n'
   printf '       --no-flash may use --resident-recording DIR --resident-image FILE to verify a prior uploaded image\n'
 }
 
@@ -64,6 +65,11 @@ while [[ $# -gt 0 ]]; do
       COMPARE_TO="$2"
       shift
       ;;
+    --reuse-readings)
+      [[ $# -ge 2 && -z "$REUSE_READINGS" && -n "$2" ]] || fail_usage
+      REUSE_READINGS="$2"
+      shift
+      ;;
     --camera)
       CAMERA_REQUESTED=1
       ;;
@@ -93,6 +99,8 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+[[ -z "$REUSE_READINGS" || -n "$ANALYZE_RECORDING" ]] || fail_usage
 
 if [[ -n "$RESIDENT_RECORDING" || -n "$RESIDENT_IMAGE" ]]; then
   [[ -n "$RESIDENT_RECORDING" && -n "$RESIDENT_IMAGE" && "$FLASH" -eq 0 \
@@ -376,7 +384,7 @@ try:
         raise ValueError("visual behavior counts are malformed")
     expected = dict.fromkeys(names, 0)
     expected["events"] = len(events)
-    ids, coverage_complete = set(), True
+    ids, coverage_complete, missing_blink_phases = set(), True, 0
     for event in events:
         eid, observation, findings, coverage = event["event_id"], event["observation"], event["findings"], event["coverage"]
         if (not isinstance(eid, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", eid) or eid in ids
@@ -386,6 +394,14 @@ try:
                 or not isinstance(coverage, dict)):
             raise ValueError("visual behavior event is malformed or duplicated")
         ids.add(eid)
+        phases = event.get("phase_observation", {})
+        required_phases, observed_phases = phases.get("required_phase_ids", []), phases.get("observed_phase_ids", [])
+        if (not isinstance(required_phases, list) or not isinstance(observed_phases, list)
+                or any(not isinstance(p, str) for p in required_phases + observed_phases)
+                or not set(observed_phases) <= set(required_phases)):
+            raise ValueError("blink phase observations are malformed")
+        event_missing_phases = len(required_phases) > 1 and set(required_phases) != set(observed_phases)
+        missing_blink_phases += int(event_missing_phases)
         fields = observation["fields"]
         if not isinstance(fields, dict) or set(fields) != {
                 "counter_glyph", "primary_frequency", "active_bands", "main_arrows",
@@ -413,16 +429,19 @@ try:
         expected["unresolved_field_observations"] += unknown_fields
         expected["read_frames"] += read
         expected["available_frames"] += available
-        if first_id == "-" and (findings or not observation["target_observed"]):
+        if first_id == "-" and (findings or not observation["target_observed"] or event_missing_phases):
             first_id = eid
             reason = (f"{eid}: {findings[0].get('reason') or findings[0]['kind']}" if findings
+                      else f"{eid}: required blink phases were not observed" if event_missing_phases
                       else f"{eid}: complete target was not observed")
     missing = len(events) - expected["targets_observed"]
     if any(summary[key] != value for key, value in expected.items()) or summary["events_without_complete_target"] != missing:
         raise ValueError("visual behavior counts disagree with event evidence")
+    if summary.get("events_with_unobserved_blink_phases", 0) != missing_blink_phases:
+        raise ValueError("blink phase count disagrees with event evidence")
     computed = ("MEASUREMENT_INCOMPLETE" if errors or qualification["status"] != "QUALIFIED" else
                 "DIFFERENCES_FOUND" if expected["findings"] else
-                "MEASUREMENT_INCOMPLETE" if not events or missing or not coverage_complete else
+                "MEASUREMENT_INCOMPLETE" if not events or missing or missing_blink_phases or not coverage_complete else
                 "NO_DIFFERENCES_OBSERVED")
     if payload.get("result") != computed:
         raise ValueError("visual behavior result disagrees with event evidence")
@@ -453,6 +472,7 @@ run_encounter_check() {
   local events="?" targets="?" affected="?" findings="?" unresolved="?" unresolved_fields="?" read_frames="?" available="?" first_id="-" reason="-"
   local comparison_args=()
   [[ -z "$COMPARE_TO" ]] || comparison_args+=(--compare-to "$COMPARE_TO")
+  [[ -z "$REUSE_READINGS" ]] || comparison_args+=(--reuse-readings "$REUSE_READINGS")
   if [[ "$SIGNALLED" -eq 1 ]]; then
     ENCOUNTER_REASON="analysis interrupted before the visual behavior check"
     return

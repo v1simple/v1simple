@@ -119,6 +119,31 @@ class BuildComparisonTests(unittest.TestCase):
         self.assertNotIn("fixed", event)
         self.assertNotIn("passed", event)
 
+    def test_same_held_blink_phase_compares_extent_without_inventing_new_content(self):
+        old = behavior()
+        held = {**finding(ms=250), "field": "joint_state", "kind": "blink_phase_held",
+                "observed": {"phase_id": "phase-1", "phase": {"counter_glyph": "1"},
+                             "frame_count": 60, "readable_span_ms": 295}}
+        old["events"][0]["findings"] = [held]
+        new = deepcopy(old)
+        new["events"][0]["findings"][0]["observed"].update(frame_count=80, readable_span_ms=395)
+        new["events"][0]["findings"][0]["last"] = witness(645)
+        result = compare_behavior_runs(new, old)["events"][0]
+        self.assertFalse(result["content_changed"])
+        self.assertTrue(result["timing_changed"])
+        self.assertEqual(result["newly_observed_findings"], [])
+        self.assertEqual(result["current"]["findings"][0]["observed"]["frame_count"], 80)
+
+    def test_missing_blink_phase_is_visible_in_build_comparison(self):
+        old = behavior()
+        old["events"][0]["phase_observation"] = {"required_phase_ids": ["phase-1", "phase-2"],
+                                                "observed_phase_ids": ["phase-1", "phase-2"]}
+        new = deepcopy(old)
+        new["events"][0]["phase_observation"]["observed_phase_ids"] = ["phase-1"]
+        result = compare_behavior_runs(new, old)["events"][0]
+        self.assertTrue(result["content_changed"])
+        self.assertEqual(result["current"]["phase_observation"]["observed_phase_ids"], ["phase-1"])
+
     def test_acquisition_differences_are_not_promoted_into_classified_findings(self):
         old, new = behavior(), behavior()
         new["events"][0]["observation"]["fields"]["secondary"]["difference_intervals"] = [

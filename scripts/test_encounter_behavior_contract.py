@@ -34,6 +34,13 @@ class BehaviorContractTests(unittest.TestCase):
             self.assertIn(f"/blob/{recorded}/", location["url"])
             self.assertTrue(location["excerpt"])
         self.assertIn("gracePeriodMs = 1", rule["locations"][2]["excerpt"])
+        idle = result["rules"]["idle_volume_warning"]
+        self.assertIn("0x1082", idle["statement"])
+        self.assertIn("brightness threshold cannot establish", idle["repair_direction"])
+        self.assertTrue(any("drawFrequency(0, BAND_NONE" in location["excerpt"]
+                            for location in idle["locations"]))
+        self.assertTrue(any(".colorGray = 0x1082" in location["excerpt"]
+                            for location in idle["locations"]))
 
     def test_same_rules_across_distinct_recorded_firmware_builds(self):
         older = contract.behavior_contract(ROOT, "d50ae47")

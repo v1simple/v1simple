@@ -1133,6 +1133,7 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
                           run_all: bool = False,
                           offline: bool = False,
                           compare: bool = False,
+                          reuse: bool = False,
                           analysis_ranges: tuple[str, ...] = (),
                           extra_arguments: tuple[str, ...] = (),
                           qualification_capture: bool = False,
@@ -1239,6 +1240,7 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
               args=("$@")
               behavior_review=0
               comparison=""
+              reading_reuse=""
               reader_qualification=0
               for ((index=0; index<${{#args[@]}}; index++)); do
                 if [[ "${{args[index]}}" == "--range" ]]; then
@@ -1248,9 +1250,10 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
                 if [[ "${{args[index]}}" == "--run-dir" ]]; then run="${{args[index+1]}}"; fi
                 if [[ "${{args[index]}}" == "--observe-behavior" ]]; then behavior_review=1; fi
                 if [[ "${{args[index]}}" == "--compare-to" ]]; then comparison="${{args[index+1]}}"; fi
+                if [[ "${{args[index]}}" == "--reuse-readings" ]]; then reading_reuse="${{args[index+1]}}"; fi
                 if [[ "${{args[index]}}" == "--reader-qualification" ]]; then reader_qualification=1; fi
               done
-              [[ "$behavior_review" == 1 && "$reader_qualification" == 1 && "$comparison" == "$FAKE_COMPARE_TO" ]] || exit 9
+              [[ "$behavior_review" == 1 && "$reader_qualification" == 1 && "$comparison" == "$FAKE_COMPARE_TO" && "$reading_reuse" == "$FAKE_REUSE_READINGS" ]] || exit 9
               [[ -e "$run/window_result.json" && ! -e "$out" ]] || exit 9
               mkdir -p "$out"
               if [[ "$FAKE_ENCOUNTER_WRITE" == 1 ]]; then
@@ -1290,6 +1293,7 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
             BENCH_POST_UPLOAD_SETTLE_SECONDS="0",
             FAKE_OFFLINE=str(int(offline)),
             FAKE_COMPARE_TO=str(baseline_path) if compare else "",
+            FAKE_REUSE_READINGS=str(baseline_path) if reuse else "",
             FAKE_HARDWARE_MARKER=str(hardware_marker),
             FAKE_RANGE_MARKER=str(range_marker),
             FAKE_WINDOW_JSON=str(window_path),
@@ -1309,6 +1313,8 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
                      [str(bench), "--all" if run_all else "--replay", "--no-flash"])
         if compare:
             arguments.extend(("--compare-to", str(baseline_path)))
+        if reuse:
+            arguments.extend(("--reuse-readings", str(baseline_path)))
         for value in analysis_ranges:
             arguments.extend(("--range", value))
         arguments.extend(extra_arguments)
@@ -1425,6 +1431,63 @@ def test_bench_cli_forwards_build_comparison_only_for_visual_analysis() -> None:
     for options in ({"camera": False}, {"qualification_capture": True}):
         process, _, calls, _ = run_bench_cli_fixture("PASS", "PASS", compare=True, **options)
         assert_true(process.returncode == 2 and calls == 0, process.stdout + process.stderr)
+
+
+def test_bench_cli_forwards_reading_reuse_only_for_offline_analysis() -> None:
+    for compare in (False, True):
+        process, counter_calls, calls, _ = run_bench_cli_fixture(
+            "PASS", "PASS", offline=True, reuse=True, compare=compare, analysis_ranges=("0:1",))
+        assert_true(process.returncode == 0 and counter_calls == 0 and calls == 1, process.stdout + process.stderr)
+    for options in ({}, {"camera": False}, {"qualification_capture": True}):
+        process, counter_calls, calls, _ = run_bench_cli_fixture("PASS", "PASS", reuse=True, **options)
+        assert_true(process.returncode == 2 and counter_calls == calls == 0, process.stdout + process.stderr)
+
+
+def test_bench_cli_consumes_real_phase_observations_without_an_acquisition_deadline() -> None:
+    from copy import deepcopy
+    from encounter_behavior import event_findings, summarize
+    from encounter_behavior_contract import behavior_contract
+    from encounter_observation import summarize_event_observations
+    from encounter_phase_observation import measure_event_phases
+    from test_encounter_expectation import alert, literals, recording
+    from test_encounter_sequence import sequence
+
+    contract = behavior_contract(ROOT, "ee6b401")
+    on, off = literals(), literals(active_bands=[], main_arrows=[])
+    off["counter_glyph"] = {"state": "absent"}
+    inputs = recording([([alert()], [6, 0, 1, 0x24, 0, 12, 12, 0x40])])
+    cases = [
+        ("phase_not_observed", [deepcopy(on) for _ in range(20)], "MEASUREMENT_INCOMPLETE", 1),
+        ("phase_held", [deepcopy(on) for _ in range(121)], "DIFFERENCES_FOUND", 1),
+        ("alternating", [deepcopy(on if (i * 5 // 96) % 2 == 0 else off) for i in range(121)], "NO_DIFFERENCES_OBSERVED", 0),
+    ]
+    for name, values, expected_result, missing in cases:
+        seq, *_ = sequence([1.02 + i * .005 for i in range(len(values))], values, inputs=inputs)
+        assert_true(not seq["errors"], str(seq["errors"]))
+        event = seq["events"][0]
+        observation = summarize_event_observations(event)
+        observation["first_target_ms"] = (
+            observation["first_target_observation"]["capture_ns"] - observation["input_anchor_ns"]) / 1e6
+        phases = measure_event_phases(event, contract)
+        findings = event_findings(event, observation, contract) + phases["findings"]
+        if name == "phase_held":
+            assert_true(findings and findings[0]["kind"] == "blink_phase_held", str(findings))
+        else:
+            assert_true(not findings, str(findings))
+        payload = generated_encounter_payload(("NO_DIFFERENCES_OBSERVED",))
+        payload["events"] = [{"event_id": event["event_id"], "input_key": [1], "target": event["target"],
+                               "observation": observation, "phase_observation": phases,
+                               "findings": findings, "coverage": event["coverage"], "unresolved_frames": 0}]
+        payload["result"], payload["summary"] = summarize(payload["events"], [], payload["reader_qualification"])
+        assert_true(payload["result"] == expected_result and payload["summary"]["events_with_unobserved_blink_phases"] == missing,
+                    str(payload["summary"]))
+        process, _, calls, _ = run_bench_cli_fixture("PASS", "PASS", encounter_result=payload["result"], encounter_payload=payload)
+        assert_true(process.returncode == {"NO_DIFFERENCES_OBSERVED": 0, "DIFFERENCES_FOUND": 1, "MEASUREMENT_INCOMPLETE": 2}[expected_result]
+                    and calls == 1 and "analysis result rejected" not in process.stdout, name + ": " + process.stdout)
+        if name == "phase_not_observed":
+            payload["summary"]["events_with_unobserved_blink_phases"] = 0
+            process, _, _, _ = run_bench_cli_fixture("PASS", "PASS", encounter_result=expected_result, encounter_payload=payload)
+            assert_true(process.returncode == 2 and "blink phase count disagrees" in process.stdout, process.stdout)
 
 
 def test_bench_cli_offline_mode_rejects_hardware_flags_and_live_ranges() -> None:
@@ -1935,6 +1998,8 @@ def main() -> int:
     test_bench_cli_consumes_current_producer_results_online_and_offline()
     test_bench_cli_rejects_old_or_incomplete_product_contract_explicitly()
     test_bench_cli_forwards_build_comparison_only_for_visual_analysis()
+    test_bench_cli_forwards_reading_reuse_only_for_offline_analysis()
+    test_bench_cli_consumes_real_phase_observations_without_an_acquisition_deadline()
     test_bench_cli_offline_mode_rejects_hardware_flags_and_live_ranges()
     test_bench_cli_propagates_encounter_verdicts_with_fixed_precedence()
     test_bench_cli_preserves_non_camera_and_hard_collection_results()

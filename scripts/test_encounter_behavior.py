@@ -97,6 +97,15 @@ class BehaviorTests(unittest.TestCase):
         self.assertEqual(summarize([out], [], {"status": "QUALIFIED"})[0], "MEASUREMENT_INCOMPLETE")
         self.assertEqual(summarize([out], [], {"status": "REJECTED"})[0], "MEASUREMENT_INCOMPLETE")
 
+    def test_truncated_selection_cannot_call_early_acquisition_an_ending_difference(self):
+        event, out = measured([1.02, 1.025, 1.03],
+                              [literals(main_bars=4), literals(main_bars=4), literals()], selected={0, 1})
+        self.assertEqual(out["findings"], [])
+        self.assertEqual(summarize([out], [], {"status": "QUALIFIED"})[0], "MEASUREMENT_INCOMPLETE")
+        event, out = measured([1.02, 1.025, 1.03],
+                              [literals(), literals(main_bars=4), literals()], selected={0, 1})
+        self.assertEqual(out["findings"][0]["kind"], "departure_after_target")
+
     def test_ordinary_producer_reads_all_frames_retains_exact_witnesses_and_full_raw_readings(self):
         _, _, timeline, rows = sequence([1.02, 1.025, 1.03], [literals()] * 3)
         stimuli = [{"stimulusSequence": s["stimulus_sequence"], "replayOffsetSeconds": i,
@@ -110,7 +119,11 @@ class BehaviorTests(unittest.TestCase):
             video = run / "original.mov"
             video.write_bytes(b"test acquisition stub")
             (run / "window_result.json").write_text("{}")
-            data = dict(identity={"runtime_identity": {"git_sha": "ee6b401", "image_id": "example", "boot_id": 1}},
+            identity = {"runtime_identity": {"git_sha": "ee6b401", "image_id": "example", "boot_id": 1},
+                        "capture_id": "fixture", "camera_artifacts": {},
+                        **{key: "0" * 64 for key in ("capture_manifest_sha256", "window_result_sha256",
+                            "stimulus_sha256", "delivery_sha256", "scenario_sha256")}}
+            data = dict(identity=identity,
                         stimulus=stimuli, timeline=timeline, source_records=rows, rows=rows, timing={},
                         video=video, width=1, height=1, registration={"fixed": True},
                         camera_name="fixture", camera_profile={})
@@ -123,6 +136,14 @@ class BehaviorTests(unittest.TestCase):
                  patch("encounter_check.stream_frames", return_value=iter([(i, bytes([i, 0, 0])) for i in range(3)])), \
                  patch("encounter_reader.observe", return_value={"fields": literals()}) as reader:
                 result = analyze_behavior(run, out)
+                reused_out = Path(folder) / "reused"
+                reused_out.mkdir()
+                with patch("encounter_reader.observe", side_effect=AssertionError("reuse must not reinterpret pixels")):
+                    reused = analyze_behavior(run, reused_out, reuse_readings=out / "result.json")
+                self.assertEqual(reused["errors"], [])
+                self.assertEqual(reused["summary"], result["summary"])
+                self.assertEqual(reused["events"], result["events"])
+                self.assertEqual(reused["evidence"]["reused_readings"]["readings_reused"], 3)
                 def failed_decoder():
                     yield from [(i, bytes([i, 0, 0])) for i in range(3)]
                     raise ValueError("decoder failed after its final image")

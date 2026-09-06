@@ -168,6 +168,9 @@ run_step "Encounter behavior regression suite" python3 scripts/test_encounter_be
 run_step "Encounter recorded source contract regression suite" python3 scripts/test_encounter_behavior_contract.py
 run_step "Encounter build comparison regression suite" python3 scripts/test_encounter_build_comparison.py
 run_step "Encounter behavior report regression suite" python3 scripts/test_encounter_behavior_report.py
+run_step "Encounter blink phase observation regression suite" python3 scripts/test_encounter_phase_observation.py
+run_step "Encounter independent reading reuse regression suite" python3 scripts/test_encounter_reading_reuse.py
+run_step "Encounter independent frequency reference regression suite" python3 scripts/test_encounter_primary_frequency_reference.py
 run_step "Encounter evidence assessment regression suite" python3 scripts/test_encounter_assessment.py
 run_step "Encounter product regression suite" python3 scripts/test_encounter_product.py
 run_step "Encounter functional deadline regression suite" python3 scripts/test_encounter_functional_product.py

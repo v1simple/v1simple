@@ -1201,6 +1201,7 @@ def main() -> int:
     parser.add_argument("--inspect-transitions", action="store_true", help="evaluate exact visible-event windows under the qualified policy, and retain consecutive input-change context for diagnosis; selection is bounded by the actual source recording")
     parser.add_argument("--observe-behavior", action="store_true", help="read every recorded image of authored input events and report actual behavior without a response deadline")
     parser.add_argument("--compare-to", type=Path, help="compare behavior with an earlier result.json from the same inputs and reader")
+    parser.add_argument("--reuse-readings", type=Path, help="reuse verified independent readings of this exact recording; inputs and behavior are compared anew")
     parser.add_argument("--configuration", type=Path, help="independently verified, exact-window display settings; missing settings stay unknown")
     parser.add_argument("--reader-qualification", type=Path,
                         help="exact retained qualification manifest for the reader, camera profile, controls and policy classifiers")
@@ -1208,6 +1209,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.compare_to and not args.observe_behavior:
         parser.error("--compare-to requires --observe-behavior")
+    if args.reuse_readings and not args.observe_behavior:
+        parser.error("--reuse-readings requires --observe-behavior")
     if args.observe_behavior and (args.inspect_transitions or args.all_frames or args.transition_window):
         parser.error("--observe-behavior owns full event selection; use --range for a bounded subset")
     if args.all_frames and not (args.ranges or args.transition_window):
@@ -1221,7 +1224,7 @@ def main() -> int:
         if args.observe_behavior:
             from encounter_behavior import analyze_behavior
             result = analyze_behavior(args.run_dir, args.out, args.ranges,
-                                      args.configuration, args.reader_qualification, args.compare_to)
+                                      args.configuration, args.reader_qualification, args.compare_to, args.reuse_readings)
         else:
             result = analyze(args.run_dir, args.out, args.transition_window or args.ranges, args.cadence,
                          args.configuration, transition_only=bool(args.transition_window), all_frames=args.all_frames,

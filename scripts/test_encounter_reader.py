@@ -104,6 +104,40 @@ class EncounterReaderTests(unittest.TestCase):
         self.assertEqual(observed["secondary"]["value"], [])
         self.assertEqual(observed["main_bars"]["value"], 0)
 
+    def test_dark_placeholder_requires_all_dashes_and_decimal(self):
+        def placeholder(background=8, ink=15):
+            im = display(None)
+            draw = ImageDraw.Draw(im)
+            draw.rectangle((448, 252, 848, 362), fill=(background,) * 3)
+            for left, right in ((471, 518), (546, 592), (637, 686), (716, 765), (791, 839)):
+                draw.polygon(((left + 4, 299), (right - 4, 299), (right, 305),
+                              (right - 4, 313), (left, 313), (left, 305)), fill=(ink,) * 3)
+            draw.ellipse((605, 346, 622, 360), fill=(ink,) * 3)
+            return im
+
+        for background in (0, 8, 15):
+            observed = self.read(placeholder(background, background + 7))["primary_frequency"]
+            self.assertEqual((observed["state"], observed["value"]), ("readable", "--.---"), observed)
+            self.assertEqual(len(observed["cells"]), 5)
+            blank = placeholder(background, background)
+            self.assertEqual(self.read(blank)["primary_frequency"]["state"], "absent")
+        for erased in ((468, 294, 523, 318), (488, 294, 499, 318),
+                       (470, 299, 520, 306), (603, 344, 625, 362), (603, 344, 614, 362)):
+            im = placeholder()
+            ImageDraw.Draw(im).rectangle(erased, fill=(8, 8, 8))
+            observed = self.read(im)["primary_frequency"]
+            self.assertEqual(observed["state"], "ambiguous", (erased, observed))
+            self.assertIsNone(observed["value"])
+        low = self.read(placeholder(8, 10))["primary_frequency"]
+        self.assertEqual(low["state"], "ambiguous", low)
+        for box in ((475, 258, 501, 271), (504, 275, 514, 294), (478, 347, 503, 359),
+                    (472, 299, 839, 313)):
+            im = placeholder()
+            ImageDraw.Draw(im).rectangle(box, fill=(15, 15, 15))
+            observed = self.read(im)["primary_frequency"]
+            self.assertEqual(observed["state"], "ambiguous", (box, observed))
+            self.assertIsNone(observed["value"])
+
     def test_erased_whole_stroke_changes_observed_digit(self):
         im = display("98.902")
         # Remove f completely: a true image change from 9 to 3.

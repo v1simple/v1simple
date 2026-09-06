@@ -17,6 +17,13 @@ historical analysis. They do not control ordinary live or offline bench results.
 Old recordings and reports remain intact; use a new analysis directory when
 rechecking them with the current tool.
 
+For blinking inputs, the report also measures the distinct visible phases and
+their alternations. A readable phase held longer than a complete source-defined
+blink cycle is reported with its original images when the source and continuous
+recorded observations support that finding. This uses the owning blink code;
+it does not impose a new acquisition deadline. Unreadable or missing images
+break the evidence for a continuously held phase.
+
 ## Run against installed firmware
 
 When the current tooling and retained local build match the installed image:
@@ -61,6 +68,19 @@ This writes a new ordinary run directory, leaves the recording unchanged and
 identifies the recorded firmware. It does not evaluate today's connected DUT.
 Repeat `--range START:END` to select intervals in seconds from the first replay
 request. Without ranges, the analyzer examines the full authored sequence.
+
+When only input interpretation or behavior comparison has changed, reuse the
+independent readings of that exact recording without repeating image recognition:
+
+```sh
+./bench.sh --analyze-recording /path/to/retained/replay \
+  --reuse-readings /path/to/earlier/encounter-check/result.json
+```
+
+The tool verifies the recording, image-reader implementation, complete raw
+readings and original witnesses against their retained hashes. It compares
+inputs and behavior anew; it never reuses old expectations or verdicts. A
+different capture or changed reader is rejected. This option is offline only.
 
 Compare the new observation with an earlier behavior result:
 
@@ -138,13 +158,18 @@ recording and cannot establish behavior of unexercised firmware paths.
 
 ## Reader and retained evidence
 
-Reader V9 uses the registered `SCAN` landmark and fixed pixel geometry. It
+Reader V10 uses the registered `SCAN` landmark and fixed pixel geometry. It
 requires visible screen witnesses before interpreting absence. Definite
 canonical frequency strokes determine literal digits even with uneven
 brightness; brightness anomalies remain available separately. Partial strokes
 refuse a digit. Bars require supported cell geometry and contiguous fill.
 Arrow measurements retain each direction independently, including partial or
 faint color without inventing its physical cause.
+
+The dark idle `--.---` placeholder is measured against local background, with
+all five dash interiors and the separate decimal required. A region below the
+numeric reader's brightness threshold is no longer automatically called blank.
+Partial dark marks remain unresolved.
 
 Secondary-card text uses local Apple Vision OCR. Accepted text must satisfy the
 fixed visible format; expected values never repair OCR output. No remote image
@@ -155,6 +180,12 @@ The default qualification manifest is
 `BENCH_ENCOUNTER_QUALIFICATION` when using another retained qualification.
 Qualification binds the pixel-reading method to independently checked reference
 images and controls. It does not impose a firmware response deadline.
+
+An explicit `reanalyze-static --primary-frequency-reference` supplement can
+correct a prior frequency reference using independently recorded observations.
+It retains the original reference unchanged and requires held-out original
+images plus missing, partial and invalid glyph/decimal controls. Corrected
+references and reader refusals remain visible in the qualification evidence.
 
 Existing `--qualification-capture` remains available for retaining camera pixels
 without running either automatic pixel reader. It cannot be combined with

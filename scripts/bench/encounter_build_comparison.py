@@ -64,7 +64,12 @@ def _finding(finding, observation, run):
 
 
 def _finding_key(finding):
-    return _json({key: finding.get(key) for key in ("field", "kind", "expected", "observed")})
+    value = {key: finding.get(key) for key in ("field", "kind", "expected", "observed")}
+    if finding.get("kind") == "blink_phase_held" and isinstance(value["observed"], dict):
+        # A different number of frames showing the same held phase is a
+        # changed extent, not a newly appearing content defect.
+        value["observed"] = {key: value["observed"].get(key) for key in ("phase_id", "phase")}
+    return _json(value)
 
 
 def _snapshot(event, run):
@@ -81,6 +86,7 @@ def _snapshot(event, run):
         }
     return {"event_id": event["event_id"], "target_observed": observation["target_observed"],
             "first_target_ms": observation["first_target_ms"], "fields": fields,
+            "phase_observation": deepcopy(event.get("phase_observation", {})),
             "findings": [_finding(f, observation, run) for f in event["findings"]],
             "coverage": deepcopy(event.get("coverage", observation.get("coverage", {})))}
 
@@ -191,7 +197,9 @@ def compare_behavior_runs(current, baseline):
         timing = {"baseline_ms": old["first_target_ms"], "current_ms": new["first_target_ms"],
                   "difference_ms": (new["first_target_ms"] - old["first_target_ms"]
                                     if _number(new["first_target_ms"]) and _number(old["first_target_ms"]) else None)}
-        content_changed = bool(added or removed or new["target_observed"] != old["target_observed"] or any(
+        phase_coverage_changed = any(new["phase_observation"].get(key) != old["phase_observation"].get(key)
+                                     for key in ("required_phase_ids", "observed_phase_ids"))
+        content_changed = bool(added or removed or phase_coverage_changed or new["target_observed"] != old["target_observed"] or any(
             (new["fields"][name]["target_observed"], new["fields"][name]["last_definite_matches_target"])
             != (old["fields"][name]["target_observed"], old["fields"][name]["last_definite_matches_target"])
             for name in new["fields"]))

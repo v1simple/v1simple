@@ -67,6 +67,16 @@ not a product `PASS`. A missing camera is a hard qualification-capture failure.
 The separation prevents classifier choices from being adjusted after seeing the
 reserved pixels, which is the value of this distinct mode.
 
+For a bounded encoding diagnosis, set `BENCH_CAMERA_RAW_NV12_FRAME_INDICES` to a
+comma-separated list of up to 128 unique, nonnegative recording frame indices.
+The recorder then saves those camera buffers before H.264 encoding under
+`camera/raw_nv12/`, with packed active Y and interleaved CbCr bytes, source timing,
+plane layout, and color metadata in `manifest.json`. Indices start at zero and
+count successfully appended recording frames; preflight and dropped frames do
+not advance them. Missing snapshots or write errors are explicit failures.
+This optional evidence lets a diagnosis compare the same image before and after
+compression. It does not enable a reader or qualify a firmware result.
+
 When a reader changes, the maintained static reread preserves the old blind
 sources and recomputes all evidence under a clean, committed implementation:
 

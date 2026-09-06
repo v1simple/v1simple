@@ -28,6 +28,8 @@ struct Options {
     let statsMarker: URL
     let finalizeTimeoutSeconds: TimeInterval
     let preflightFinalizeTimeoutSeconds: TimeInterval
+    let rawNV12OutputDirectory: URL?
+    let rawNV12FrameIndices: [Int]
 }
 
 func argument(_ name: String) -> String {
@@ -45,6 +47,25 @@ func parseVideoSize(_ value: String) -> (Int32, Int32) {
         exit(2)
     }
     return (parts[0], parts[1])
+}
+
+enum RawNV12Error: String, Error {
+    case invalidSelection, invalidLayout, unsupportedPixelFormat, lockFailed
+    case missingImageBuffer, nonemptyOutputDirectory, incompleteSelection, invalidMetadata
+}
+
+let maximumRawNV12Snapshots = 128
+
+func parseRawNV12Indices(_ value: String) throws -> [Int] {
+    let parts = value.split(separator: ",", omittingEmptySubsequences: false)
+    guard (1...maximumRawNV12Snapshots).contains(parts.count) else { throw RawNV12Error.invalidSelection }
+    let indices = try parts.map { part -> Int in
+        guard !part.isEmpty, part.utf8.allSatisfy({ (48...57).contains($0) }),
+              let index = Int(part), index >= 0 else { throw RawNV12Error.invalidSelection }
+        return index
+    }
+    guard Set(indices).count == indices.count else { throw RawNV12Error.invalidSelection }
+    return indices.sorted()
 }
 
 func parseOptions() -> Options {
@@ -75,6 +96,23 @@ func parseOptions() -> Options {
         fputs("unsupported pixel format \(pixelFormatName)\n", stderr)
         exit(2)
     }
+    var rawDirectory: URL?
+    var rawIndices: [Int] = []
+    let hasRawDirectory = CommandLine.arguments.contains("--raw-nv12-output-dir")
+    let hasRawIndices = CommandLine.arguments.contains("--raw-nv12-frame-indices")
+    if hasRawDirectory || hasRawIndices {
+        guard hasRawDirectory && hasRawIndices && pixelFormatName == "nv12" else {
+            fputs("raw NV12 diagnostics require both snapshot options and --pixel-format nv12\n", stderr)
+            exit(2)
+        }
+        do {
+            rawIndices = try parseRawNV12Indices(argument("--raw-nv12-frame-indices"))
+        } catch {
+            fputs("raw NV12 indices must be 1-128 unique nonnegative recording frame indices\n", stderr)
+            exit(2)
+        }
+        rawDirectory = URL(fileURLWithPath: argument("--raw-nv12-output-dir"), isDirectory: true)
+    }
     return Options(
         deviceName: argument("--device-name"),
         width: width,
@@ -96,7 +134,9 @@ func parseOptions() -> Options {
         failureMarker: URL(fileURLWithPath: argument("--failure-marker")),
         statsMarker: URL(fileURLWithPath: argument("--stats-marker")),
         finalizeTimeoutSeconds: finalizeTimeoutSeconds,
-        preflightFinalizeTimeoutSeconds: preflightFinalizeTimeoutSeconds
+        preflightFinalizeTimeoutSeconds: preflightFinalizeTimeoutSeconds,
+        rawNV12OutputDirectory: rawDirectory,
+        rawNV12FrameIndices: rawIndices
     )
 }
 
@@ -259,6 +299,9 @@ func sanitizedError(_ error: Error?) -> [String: Any] {
         "domain": nsError.domain,
         "code": nsError.code,
     ]
+    if let rawError = error as? RawNV12Error {
+        payload["reason"] = rawError.rawValue
+    }
     if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
         payload["underlying"] = [
             "domain": underlying.domain,
@@ -266,6 +309,334 @@ func sanitizedError(_ error: Error?) -> [String: Any] {
         ]
     }
     return payload
+}
+
+// This diagnostic copies active NV12 bytes before the encoder can discard or
+// quantize tiny marks. It never retains a camera buffer on the disk queue.
+func copyActivePlane(_ base: UnsafeRawPointer, stride: Int, rowBytes: Int, rows: Int) throws -> Data {
+    let (size, overflow) = rowBytes.multipliedReportingOverflow(by: rows)
+    let (_, strideOverflow) = stride.multipliedReportingOverflow(by: rows)
+    guard rowBytes > 0, rows > 0, stride >= rowBytes, !overflow, !strideOverflow else {
+        throw RawNV12Error.invalidLayout
+    }
+    var data = Data(count: size)
+    data.withUnsafeMutableBytes { destination in
+        for row in 0..<rows {
+            destination.baseAddress!.advanced(by: row * rowBytes).copyMemory(
+                from: base.advanced(by: row * stride), byteCount: rowBytes
+            )
+        }
+    }
+    return data
+}
+
+func rawNV12Copy(_ buffer: CVPixelBuffer, formatDescription: CMFormatDescription?) throws
+    -> (bytes: Data, metadata: [String: Any]) {
+    let format = CVPixelBufferGetPixelFormatType(buffer)
+    guard format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+            || format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange else {
+        throw RawNV12Error.unsupportedPixelFormat
+    }
+    let width = CVPixelBufferGetWidth(buffer), height = CVPixelBufferGetHeight(buffer)
+    guard width > 0, height > 0, width % 2 == 0, height % 2 == 0,
+          CVPixelBufferGetPlaneCount(buffer) == 2,
+          CVPixelBufferGetWidthOfPlane(buffer, 0) == width,
+          CVPixelBufferGetHeightOfPlane(buffer, 0) == height,
+          CVPixelBufferGetWidthOfPlane(buffer, 1) == width / 2,
+          CVPixelBufferGetHeightOfPlane(buffer, 1) == height / 2 else {
+        throw RawNV12Error.invalidLayout
+    }
+    guard CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess else {
+        throw RawNV12Error.lockFailed
+    }
+    defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+    var bytes = Data(), planes: [[String: Any]] = []
+    for plane in 0..<2 {
+        guard let base = CVPixelBufferGetBaseAddressOfPlane(buffer, plane) else {
+            throw RawNV12Error.invalidLayout
+        }
+        let rows = CVPixelBufferGetHeightOfPlane(buffer, plane)
+        let stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, plane)
+        let active = try copyActivePlane(base, stride: stride, rowBytes: width, rows: rows)
+        planes.append([
+            "plane": plane, "components": plane == 0 ? "Y" : "CbCr",
+            "width_samples": CVPixelBufferGetWidthOfPlane(buffer, plane), "height": rows,
+            "source_bytes_per_row": stride, "stored_bytes_per_row": width,
+            "offset_bytes": bytes.count, "size_bytes": active.count,
+        ])
+        bytes.append(active)
+    }
+    let colorKeys = [kCVImageBufferYCbCrMatrixKey, kCVImageBufferColorPrimariesKey,
+                     kCVImageBufferTransferFunctionKey, kCVImageBufferChromaLocationTopFieldKey,
+                     kCVImageBufferChromaLocationBottomFieldKey]
+    func colors(_ values: [String: Any]) -> [String: Any] {
+        var result: [String: Any] = [:]
+        for key in colorKeys {
+            result[key as String] = values[key as String] ?? NSNull()
+        }
+        return result
+    }
+    let propagated = CVBufferCopyAttachments(buffer, .shouldPropagate) as? [String: Any] ?? [:]
+    let nonpropagated = CVBufferCopyAttachments(buffer, .shouldNotPropagate) as? [String: Any] ?? [:]
+    let extensions = formatDescription.flatMap {
+        CMFormatDescriptionGetExtensions($0) as? [String: Any]
+    } ?? [:]
+    var formatColors = colors(extensions)
+    formatColors[kCMFormatDescriptionExtension_FullRangeVideo as String] =
+        extensions[kCMFormatDescriptionExtension_FullRangeVideo as String] ?? NSNull()
+    let metadata: [String: Any] = [
+        "width": width, "height": height, "layout": "NV12_Y_then_interleaved_CbCr",
+        "pixel_format": format, "pixel_format_fourcc": format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ? "420v" : "420f",
+        "nominal_range": format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ? "video" : "full",
+        "planes": planes, "size_bytes": bytes.count,
+        "image_buffer_attachments": ["should_propagate": colors(propagated),
+                                     "should_not_propagate": colors(nonpropagated)],
+        "format_description_color_extensions": formatColors,
+    ]
+    guard JSONSerialization.isValidJSONObject(metadata) else { throw RawNV12Error.invalidMetadata }
+    return (bytes, metadata)
+}
+
+final class RawNV12Snapshots {
+    private let directory: URL
+    private let requestedIndices: [Int]
+    private let selected: Set<Int>
+    private let diskQueue: DispatchQueue
+    // Only the capture queue uses submitted; all remaining mutable state belongs
+    // to diskQueue. At most 128 owned frame copies can be pending.
+    private var submitted: Set<Int> = []
+    private var frames: [[String: Any]] = []
+    private var failures: [[String: Any]] = []
+    private var firstFailure: Error?
+
+    init(directory: URL, indices: [Int],
+         diskQueue: DispatchQueue = DispatchQueue(label: "v1simple.camera.raw-nv12", qos: .utility)) throws {
+        guard (1...maximumRawNV12Snapshots).contains(indices.count), indices.allSatisfy({ $0 >= 0 }),
+              Set(indices).count == indices.count else { throw RawNV12Error.invalidSelection }
+        self.directory = directory
+        self.requestedIndices = indices.sorted()
+        self.selected = Set(indices)
+        self.diskQueue = diskQueue
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        guard try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty else {
+            throw RawNV12Error.nonemptyOutputDirectory
+        }
+        try writeManifest(result: "IN_PROGRESS")
+    }
+
+    private func writeManifest(result: String) throws {
+        let saved = Set(frames.compactMap { $0["video_frame_index"] as? Int })
+        try writeMarker(directory.appendingPathComponent("manifest.json"), [
+            "schema_version": 1, "kind": "diagnostic_raw_nv12_snapshots",
+            "result": result, "phase": "recording", "index_basis": "zero_based_successfully_appended_recording_frames",
+            "requested_video_frame_indices": requestedIndices,
+            "missing_video_frame_indices": requestedIndices.filter { !saved.contains($0) },
+            "frames": frames, "failures": failures,
+        ])
+    }
+
+    func captureAppended(_ buffer: CVPixelBuffer?, formatDescription: CMFormatDescription?,
+                         videoFrameIndex: Int, timingRecord: [String: Any],
+                         onFailure: @escaping (Error) -> Void) {
+        guard timingRecord["phase"] as? String == "recording",
+              timingRecord["status"] as? String == "written",
+              selected.contains(videoFrameIndex), submitted.insert(videoFrameIndex).inserted else { return }
+        let copied: Result<(bytes: Data, metadata: [String: Any]), Error> = Result {
+            guard let buffer else { throw RawNV12Error.missingImageBuffer }
+            return try rawNV12Copy(buffer, formatDescription: formatDescription)
+        }
+        // The closure captures only copied Data and scalar metadata, not buffer
+        // or formatDescription. No disk write or wait occurs on the capture queue.
+        diskQueue.async {
+            do {
+                let snapshot = try copied.get()
+                let name = String(format: "frame-%06d.nv12", videoFrameIndex)
+                try snapshot.bytes.write(to: self.directory.appendingPathComponent(name), options: .withoutOverwriting)
+                var record = timingRecord
+                record.merge(snapshot.metadata) { _, value in value }
+                record["video_frame_index"] = videoFrameIndex
+                record["source_frame_seq"] = timingRecord["frame_seq"] ?? NSNull()
+                record["file"] = name
+                self.frames.append(record)
+                try self.writeManifest(result: self.firstFailure == nil ? "IN_PROGRESS" : "FAILED")
+            } catch {
+                self.firstFailure = self.firstFailure ?? error
+                self.failures.append(["code": "snapshot_failed", "video_frame_index": videoFrameIndex,
+                                      "error": sanitizedError(error)])
+                try? self.writeManifest(result: "FAILED")
+                onFailure(error)
+            }
+        }
+    }
+
+    func finish(_ completion: @escaping (Error?) -> Void) {
+        diskQueue.async {
+            let saved = Set(self.frames.compactMap { $0["video_frame_index"] as? Int })
+            let missing = self.requestedIndices.filter { !saved.contains($0) }
+            if !missing.isEmpty {
+                self.firstFailure = self.firstFailure ?? RawNV12Error.incompleteSelection
+                self.failures.append(["code": "requested_frames_not_written", "video_frame_indices": missing])
+            }
+            do {
+                try self.writeManifest(result: self.firstFailure == nil ? "PASS" : "FAILED")
+            } catch {
+                self.firstFailure = self.firstFailure ?? error
+            }
+            completion(self.firstFailure)
+        }
+    }
+}
+
+func runRawNV12SelfTest() -> Never {
+    func require(_ condition: Bool, _ code: Int) throws {
+        if !condition { throw NSError(domain: "v1simple.camera.raw-nv12.selftest", code: code) }
+    }
+    func finish(_ snapshots: RawNV12Snapshots) throws -> Error? {
+        let completed = DispatchSemaphore(value: 0)
+        var result: Error?
+        snapshots.finish { result = $0; completed.signal() }
+        try require(completed.wait(timeout: .now() + 5) == .success, 1)
+        return result
+    }
+    func manifest(_ directory: URL) throws -> [String: Any] {
+        let data = try Data(contentsOf: directory.appendingPathComponent("manifest.json"))
+        return try JSONSerialization.jsonObject(with: data) as! [String: Any]
+    }
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+        "v1simple-raw-nv12-selftest-\(UUID().uuidString)", isDirectory: true
+    )
+    do {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let boundary = (0..<128).map(String.init).joined(separator: ",")
+        try require(try parseRawNV12Indices(boundary) == Array(0..<128), 2)
+        for invalid in [boundary + ",128", "", "-1", "1,1", "1,", "1.0", " 1"] {
+            do {
+                _ = try parseRawNV12Indices(invalid)
+                throw NSError(domain: "v1simple.camera.raw-nv12.selftest", code: 3)
+            } catch RawNV12Error.invalidSelection { }
+        }
+        do {
+            _ = try RawNV12Snapshots(directory: directory, indices: Array(0...128))
+            throw NSError(domain: "v1simple.camera.raw-nv12.selftest", code: 4)
+        } catch RawNV12Error.invalidSelection { }
+
+        // A small native buffer with padded rows proves the stored layout has
+        // neither padding nor any pixel conversion. UV is interleaved CbCr.
+        var created: CVPixelBuffer?
+        let attributes = [kCVPixelBufferBytesPerRowAlignmentKey as String: 16] as CFDictionary
+        try require(CVPixelBufferCreate(kCFAllocatorDefault, 6, 4,
+                    kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                    attributes, &created) == kCVReturnSuccess, 5)
+        let buffer = created!
+        func fill(_ usePattern: Bool) throws {
+            try require(CVPixelBufferLockBaseAddress(buffer, []) == kCVReturnSuccess, 6)
+            defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+            for plane in 0..<2 {
+                let stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, plane)
+                let rows = CVPixelBufferGetHeightOfPlane(buffer, plane)
+                try require(stride > 6, 7)
+                let base = CVPixelBufferGetBaseAddressOfPlane(buffer, plane)!
+                memset(base, 0xED, stride * rows)
+                if usePattern {
+                    for row in 0..<rows {
+                        for column in 0..<6 {
+                            base.storeBytes(of: UInt8(plane * 80 + row * 6 + column),
+                                            toByteOffset: row * stride + column, as: UInt8.self)
+                        }
+                    }
+                }
+            }
+        }
+        try fill(true)
+        CVBufferSetAttachment(buffer, kCVImageBufferYCbCrMatrixKey,
+                              kCVImageBufferYCbCrMatrix_ITU_R_709_2, .shouldPropagate)
+        var format: CMVideoFormatDescription?
+        try require(CMVideoFormatDescriptionCreateForImageBuffer(
+                    allocator: kCFAllocatorDefault, imageBuffer: buffer,
+                    formatDescriptionOut: &format) == noErr, 8)
+        let expected = Data((0..<24).map(UInt8.init) + (80..<92).map(UInt8.init))
+        let copied = try rawNV12Copy(buffer, formatDescription: format)
+        let planes = copied.metadata["planes"] as! [[String: Any]]
+        let attachments = copied.metadata["image_buffer_attachments"] as! [String: [String: Any]]
+        try require(copied.bytes == expected && copied.metadata["nominal_range"] as? String == "video"
+                    && copied.metadata["pixel_format_fourcc"] as? String == "420v"
+                    && planes[0]["size_bytes"] as? Int == 24
+                    && planes[1]["offset_bytes"] as? Int == 24
+                    && planes[1]["stored_bytes_per_row"] as? Int == 6
+                    && attachments["should_propagate"]?[kCVImageBufferYCbCrMatrixKey as String] as? String
+                        == kCVImageBufferYCbCrMatrix_ITU_R_709_2 as String, 9)
+
+        let diskQueue = DispatchQueue(label: "v1simple.camera.raw-nv12.selftest")
+        let snapshots = try RawNV12Snapshots(directory: directory, indices: [2, 0], diskQueue: diskQueue)
+        // A suspended disk queue makes capture return before any disk write.
+        // Mutating the source afterward proves queued writes own their bytes.
+        diskQueue.suspend()
+        var callbackFailure: Error?
+        func submit(_ index: Int, _ sequence: Int, phase: String = "recording",
+                    status: String = "written", image: CVPixelBuffer? = buffer) {
+            snapshots.captureAppended(image, formatDescription: format, videoFrameIndex: index,
+                timingRecord: ["phase": phase, "status": status, "frame_seq": sequence,
+                               "source_pts_value": 1_000 + sequence, "source_pts_timescale": 600,
+                               "source_duration_value": 5, "source_duration_timescale": 600,
+                               "callback_host_ns": 40_000 + sequence, "host_capture_ns": 39_000 + sequence,
+                               "video_pts_value": index * 5, "video_pts_timescale": 600]) {
+                    callbackFailure = $0
+                }
+        }
+        submit(0, 4, phase: "preflight", image: nil)
+        submit(0, 8, status: "writer_drop", image: nil)
+        submit(0, 9)
+        submit(1, 11, image: nil)
+        submit(2, 12, status: "capture_drop", image: nil)
+        submit(2, 13)
+        submit(2, 14, image: nil) // Duplicate submission must not replace the source.
+        do { try fill(false) } catch { diskQueue.resume(); throw error }
+        diskQueue.resume()
+        try require(try finish(snapshots) == nil && callbackFailure == nil, 10)
+        let saved = try manifest(directory)
+        let frames = saved["frames"] as! [[String: Any]]
+        try require(saved["result"] as? String == "PASS" && frames.count == 2
+                    && saved["requested_video_frame_indices"] as? [Int] == [0, 2]
+                    && saved["missing_video_frame_indices"] as? [Int] == []
+                    && frames.compactMap { $0["video_frame_index"] as? Int } == [0, 2]
+                    && frames.compactMap { $0["source_frame_seq"] as? Int } == [9, 13]
+                    && frames[1]["source_pts_value"] as? Int == 1_013
+                    && frames[1]["source_pts_timescale"] as? Int == 600
+                    && frames[1]["host_capture_ns"] as? Int == 39_013
+                    && frames[1]["video_pts_value"] as? Int == 10, 11)
+        for frame in frames {
+            try require(try Data(contentsOf: directory.appendingPathComponent(frame["file"] as! String)) == expected, 12)
+        }
+        try require(try FileManager.default.contentsOfDirectory(atPath: directory.path).count == 3, 13)
+        do {
+            _ = try RawNV12Snapshots(directory: directory, indices: [0])
+            throw NSError(domain: "v1simple.camera.raw-nv12.selftest", code: 14)
+        } catch RawNV12Error.nonemptyOutputDirectory { }
+
+        let missingDirectory = directory.appendingPathComponent("missing")
+        let missing = try RawNV12Snapshots(directory: missingDirectory, indices: Array(0..<128))
+        try require(try finish(missing) != nil, 15)
+        let missingManifest = try manifest(missingDirectory)
+        try require(missingManifest["result"] as? String == "FAILED"
+                    && missingManifest["missing_video_frame_indices"] as? [Int] == Array(0..<128), 16)
+        let failureDirectory = directory.appendingPathComponent("write-failure")
+        let failure = try RawNV12Snapshots(directory: failureDirectory, indices: [0])
+        let collision = failureDirectory.appendingPathComponent("frame-000000.nv12")
+        try Data([7]).write(to: collision)
+        failure.captureAppended(buffer, formatDescription: format, videoFrameIndex: 0,
+                                timingRecord: ["phase": "recording", "status": "written", "frame_seq": 20]) {
+            callbackFailure = $0
+        }
+        try require(try finish(failure) != nil && callbackFailure != nil, 17)
+        try require(try manifest(failureDirectory)["result"] as? String == "FAILED"
+                    && Data(contentsOf: collision) == Data([7]), 18)
+    } catch {
+        let nsError = error as NSError
+        fputs("camera recorder raw NV12 self-test: FAIL \(nsError.domain) \(nsError.code)\n", stderr)
+        exit(1)
+    }
+    print("camera recorder raw NV12 self-test: PASS")
+    exit(0)
 }
 
 func runTimingSelfTest() -> Never {
@@ -601,6 +972,7 @@ final class FrameRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private let width: Int32
     private let height: Int32
     private let frameRate: Int32
+    private let rawNV12Snapshots: RawNV12Snapshots?
     private let hostClock = CMClockGetHostTimeClock()
     private var synchronizationClock: CMClock?
     private var outputURL: URL?
@@ -623,10 +995,11 @@ final class FrameRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private var maxCallbackGapMilliseconds = 0.0
     private var timeline = SourcePresentationTimeline()
 
-    init(width: Int32, height: Int32, frameRate: Int32) {
+    init(width: Int32, height: Int32, frameRate: Int32, rawNV12Snapshots: RawNV12Snapshots? = nil) {
         self.width = width
         self.height = height
         self.frameRate = frameRate
+        self.rawNV12Snapshots = rawNV12Snapshots
     }
 
     func setSynchronizationClock(_ clock: CMClock) {
@@ -806,6 +1179,16 @@ final class FrameRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
 
         frameCount += 1
         prepared.record["status"] = "written"
+        rawNV12Snapshots?.captureAppended(
+            CMSampleBufferGetImageBuffer(sampleBuffer),
+            formatDescription: CMSampleBufferGetFormatDescription(sampleBuffer),
+            videoFrameIndex: frameCount - 1, timingRecord: prepared.record
+        ) { error in
+            self.queue.async {
+                self.recordFailure(code: "raw_nv12_snapshot_failed",
+                                   message: "diagnostic raw NV12 snapshot failed", error: error)
+            }
+        }
         guard appendTimingRecord(prepared.record) else { return }
         if frameCount == 1, let readyMarker {
             if let firstFrameMarker {
@@ -1136,6 +1519,22 @@ final class FrameRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     }
 
     private func completeStop(_ completed: DispatchSemaphore) {
+        if phase == "recording", let rawNV12Snapshots {
+            rawNV12Snapshots.finish { error in
+                self.queue.async {
+                    if let error {
+                        self.recordFailure(code: "raw_nv12_finalize_failed",
+                                           message: "diagnostic raw NV12 output failed to finalize", error: error)
+                    }
+                    self.completeStopMarkers(completed)
+                }
+            }
+        } else {
+            completeStopMarkers(completed)
+        }
+    }
+
+    private func completeStopMarkers(_ completed: DispatchSemaphore) {
         if let timingSidecarHandle {
             do {
                 try timingSidecarHandle.synchronize()
@@ -1228,6 +1627,9 @@ if CommandLine.arguments.contains("--self-test-timing") {
 if CommandLine.arguments.contains("--self-test-writer") {
     runWriterSelfTest()
 }
+if CommandLine.arguments.contains("--self-test-raw-nv12") {
+    runRawNV12SelfTest()
+}
 
 let options = parseOptions()
 let fileManager = FileManager.default
@@ -1247,6 +1649,18 @@ for url in [
     options.statsMarker,
 ] {
     try? fileManager.removeItem(at: url)
+}
+
+let rawNV12Snapshots: RawNV12Snapshots?
+do {
+    rawNV12Snapshots = try options.rawNV12OutputDirectory.map {
+        try RawNV12Snapshots(directory: $0, indices: options.rawNV12FrameIndices)
+    }
+} catch {
+    try? writeMarker(options.failureMarker, ["result": "CAPTURE_FAILED",
+                     "code": "raw_nv12_setup_failed", "error": sanitizedError(error)])
+    fputs("raw NV12 diagnostic output could not be initialized\n", stderr)
+    exit(3)
 }
 
 let discovery = AVCaptureDevice.DiscoverySession(
@@ -1294,7 +1708,8 @@ session.addInput(input)
 let videoOutput = AVCaptureVideoDataOutput()
 videoOutput.alwaysDiscardsLateVideoFrames = true
 videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: options.pixelFormat]
-let recorder = FrameRecorder(width: options.width, height: options.height, frameRate: options.frameRate)
+let recorder = FrameRecorder(width: options.width, height: options.height, frameRate: options.frameRate,
+                             rawNV12Snapshots: rawNV12Snapshots)
 videoOutput.setSampleBufferDelegate(recorder, queue: recorder.queue)
 guard session.canAddOutput(videoOutput) else {
     fputs("video output was rejected\n", stderr)

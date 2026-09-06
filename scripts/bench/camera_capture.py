@@ -138,6 +138,10 @@ class CameraCapture:
         self.ffprobe = shutil.which("ffprobe")
         self.swift = shutil.which("swift")
         self.native_recorder = Path(__file__).with_name("camera_recorder.swift").resolve()
+        # Optional before-encoding evidence for a bounded capture diagnostic.
+        # The recorder validates the frozen index list before opening a camera.
+        self.raw_nv12_frame_indices = os.environ.get("BENCH_CAMERA_RAW_NV12_FRAME_INDICES", "").strip()
+        self.raw_nv12_dir = self.out_dir / "raw_nv12"
         self.video_path = self.out_dir / f"evidence_exp{VIDEO_EXPOSURE}.mov"
         self.native_preflight_path = self.out_dir / ".camera_preflight.mov"
         self.frame_timing_path = self.out_dir / "frame_timing.ndjson"
@@ -213,6 +217,11 @@ class CameraCapture:
             "errors": self.errors,
         }
         payload.update(extra)
+        if self.raw_nv12_frame_indices:
+            payload["raw_nv12_diagnostic"] = {
+                "manifest": "raw_nv12/manifest.json",
+                "scope": "Selected pre-encoding camera bytes; diagnostic evidence only",
+            }
         self.out_dir.mkdir(parents=True, exist_ok=True)
         safe_payload = sanitize_artifact_value(payload, run_dir=self.out_dir)
         if safe_payload.get("camera_name") != EXPECTED_CAMERA_NAME:
@@ -593,6 +602,11 @@ class CameraCapture:
                 "--preflight-finalize-timeout-seconds",
                 str(CAMERA_NATIVE_PREFLIGHT_FINALIZE_TIMEOUT_S),
             ]
+            if self.raw_nv12_frame_indices:
+                command.extend([
+                    "--raw-nv12-output-dir", str(self.raw_nv12_dir),
+                    "--raw-nv12-frame-indices", self.raw_nv12_frame_indices,
+                ])
             self.process = subprocess.Popen(
                 command,
                 stdout=self.log_handle,

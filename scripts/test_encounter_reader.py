@@ -130,6 +130,12 @@ class EncounterReaderTests(unittest.TestCase):
             self.assertIsNone(observed["value"])
         low = self.read(placeholder(8, 10))["primary_frequency"]
         self.assertEqual(low["state"], "ambiguous", low)
+        uneven = placeholder()
+        ImageDraw.Draw(uneven).rectangle((480, 304, 489, 306), fill=(10, 10, 10))
+        observed = self.read(uneven)["primary_frequency"]
+        self.assertEqual((observed["state"], observed["value"]), ("readable", "--.---"), observed)
+        ImageDraw.Draw(uneven).rectangle((480, 304, 489, 306), fill=(8, 8, 8))
+        self.assertEqual(self.read(uneven)["primary_frequency"]["state"], "ambiguous")
         for box in ((475, 258, 501, 271), (504, 275, 514, 294), (478, 347, 503, 359),
                     (472, 299, 839, 313)):
             im = placeholder()

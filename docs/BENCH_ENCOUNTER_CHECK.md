@@ -158,7 +158,7 @@ recording and cannot establish behavior of unexercised firmware paths.
 
 ## Reader and retained evidence
 
-Reader V10 uses the registered `SCAN` landmark and fixed pixel geometry. It
+Reader V11 uses the registered `SCAN` landmark and fixed pixel geometry. It
 requires visible screen witnesses before interpreting absence. Definite
 canonical frequency strokes determine literal digits even with uneven
 brightness; brightness anomalies remain available separately. Partial strokes

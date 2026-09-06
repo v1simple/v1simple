@@ -24,7 +24,7 @@ import counter_reader
 
 FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
-METHOD_VERSION = 10
+METHOD_VERSION = 11
 _ocr_binary = None
 _ocr_setup = None
 _ocr_session = None
@@ -178,9 +178,17 @@ def _dark_frequency_placeholder(pixels, details):
                  for part in np.array_split(row, 3, axis=1)]
         measures = [{"p10": round(float(np.percentile(part, 10)), 2),
                      "median": round(float(np.median(part)), 2)} for part in parts]
-        complete = all(part["median"] >= background + 3 and part["p10"] >= background + 1
-                       for part in measures)
-        strokes.append({"background": background, "parts": measures, "complete": complete})
+        body_median = float(np.median(body))
+        # Eight-bit capture/compression can vary an intact stroke by one level
+        # across a small subdivision. Require contrast throughout the shape,
+        # and stronger contrast in the whole body, without requiring uniform
+        # illumination. An erased section still fails; uniformly faint marks
+        # still lack the whole-body witness.
+        complete = (body_median >= background + 3
+                    and all(part["median"] >= background + 2 and part["p10"] >= background + 1
+                            for part in measures))
+        strokes.append({"background": background, "body_median": body_median,
+                        "parts": measures, "complete": complete})
     decimal_background = float(np.median(pixels.level((606, 334, 622, 340))))
     decimal = pixels.level((610, 350, 618, 356))
     decimal_parts = [part for row in np.array_split(decimal, 2, axis=0)

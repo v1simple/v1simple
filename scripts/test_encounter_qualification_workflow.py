@@ -268,7 +268,7 @@ class QualificationWorkflowTests(unittest.TestCase):
         self.assertEqual(
             workflow.TARGET_CLASSIFIERS,
             (
-                "v1-arrow-phase-edge-v4",
+                "v1-arrow-phase-edge-v5",
                 "v1-arrow-target-acquisition-v1",
                 "v1-stable-frequency-intact-context-v1",
                 "v1-secondary-closed-context-v3",

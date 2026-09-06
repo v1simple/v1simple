@@ -730,7 +730,7 @@ class QualificationTests(unittest.TestCase):
                 "direction_or_meter_change": "DIRECTION_OR_METER_CHANGE",
                 "confidence": "HIGH",
             }))
-        if classifier == "v1-arrow-phase-edge-v4":
+        if classifier == "v1-arrow-phase-edge-v5":
             return ({
                 "center_class": "COHERENT_SINGLE_DIRECTION_ON_OFF_EDGE",
                 "endpoint_support": "BOTH_CLEAR",
@@ -862,14 +862,14 @@ class QualificationTests(unittest.TestCase):
                 secondary_probe_method_version=1,
                 secondary_probe_sha256=self.method["encounter_secondary_probe.py"])
         elif classifier not in {
-                "v1-arrow-phase-edge-v4", "v1-arrow-target-acquisition-v1",
+                "v1-arrow-phase-edge-v5", "v1-arrow-target-acquisition-v1",
                 "v1-secondary-closed-context-v3"}:
             spec_identity.update(
                 redraw_probe_method_version=1,
                 redraw_probe_sha256=self.method["encounter_redraw_probe.py"])
         spec_document["identity"] = spec_identity
         if contradictory_spec:
-            if classifier == "v1-arrow-phase-edge-v4":
+            if classifier == "v1-arrow-phase-edge-v5":
                 spec_document["qualification_requirements"]["minimum_blind_true_admits"] = 50
             elif classifier == "v1-arrow-target-acquisition-v1":
                 spec_document["deadline_observation_semantics"] = "LEGAL_PRESENTATION_TRANSITION"
@@ -937,8 +937,10 @@ class QualificationTests(unittest.TestCase):
             shift = (10_000_000 if source_gap_at_index is not None
                      and index >= source_gap_at_index else 0)
             return 1_000_000_000 + index * 5_000_000 + shift
+        support_padding = 3 if classifier == "v1-arrow-phase-edge-v5" else 2
         analysis_indices = sorted({value for index in range(item_count)
-                                   for value in range(8 + index * 3, 15 + index * 3)})
+                                   for value in range(10 + index * 3 - support_padding,
+                                                      13 + index * 3 + support_padding)})
         analysis_selection_path = self.write_json(
             f"{temporal_root.name}/sources/analysis-selection.json", {
                 "schema_version": 1,
@@ -961,7 +963,7 @@ class QualificationTests(unittest.TestCase):
                 secondary_probe_method_version=1,
                 secondary_probe_sha256=self.method["encounter_secondary_probe.py"])
         elif classifier not in {
-                "v1-arrow-phase-edge-v4", "v1-arrow-target-acquisition-v1",
+                "v1-arrow-phase-edge-v5", "v1-arrow-target-acquisition-v1",
                 "v1-secondary-closed-context-v3"}:
             record_context.update(
                 redraw_probe_method_version=1,
@@ -1001,7 +1003,7 @@ class QualificationTests(unittest.TestCase):
                 classifier, visually_eligible,
                 indeterminate=indeterminate_rejects and not visually_eligible)
             observer_indeterminate = indeterminate_rejects and not visually_eligible
-            if classifier == "v1-arrow-phase-edge-v4":
+            if classifier == "v1-arrow-phase-edge-v5":
                 literal_observation.update(
                     left_endpoint_directions=None if observer_indeterminate else [],
                     right_endpoint_directions=(None if observer_indeterminate else
@@ -1124,13 +1126,13 @@ class QualificationTests(unittest.TestCase):
                 }
                 if malformed_admitted_record and index == 0:
                     record["raw_affected_fields"] = []
-                if classifier == "v1-arrow-phase-edge-v4":
+                if classifier == "v1-arrow-phase-edge-v5":
                     constants = spec_document["constants"]
                     record.update({
-                        "left_support": point(indices[0] - 2),
-                        "left_endpoint": point(indices[0] - 1),
-                        "right_endpoint": point(indices[-1] + 1),
-                        "right_support": point(indices[-1] + 2),
+                        "left_support": point(indices[0] - 3),
+                        "left_endpoint": point(indices[0] - 2),
+                        "right_endpoint": point(indices[-1] + 2),
+                        "right_support": point(indices[-1] + 3),
                         "endpoint_values": [[], ["front"]],
                         "changed_direction": "front",
                         "arrow_expectation_signature": {
@@ -1138,9 +1140,9 @@ class QualificationTests(unittest.TestCase):
                             "joint_arrow_phases": [[], ["front"]],
                         },
                         "endpoint_separation_rms": 60.0,
-                        "profile_frame_indices": list(range(indices[0] - 1, indices[-1] + 2)),
-                        "projections": [0.0, 0.25, 0.5, 0.75, 1.0],
-                        "normalized_residuals": [0.0, 0.01, 0.01, 0.01, 0.0],
+                        "profile_frame_indices": list(range(indices[0] - 2, indices[-1] + 3)),
+                        "projections": [0.0, 0.1, 0.25, 0.5, 0.75, 0.95, 1.0],
+                        "normalized_residuals": [0.0, 0.01, 0.01, 0.01, 0.01, 0.01, 0.0],
                         "maximum_backward_step": 0.0,
                         "total_backward_motion": 0.0,
                         "extra_direction_profile_diameter_rms": {
@@ -1439,7 +1441,28 @@ class QualificationTests(unittest.TestCase):
                             spec_document["constants"]["maximum_support_chain_span_ns"],
                     })
                 if index == 0:
-                    if record_tamper == "bar_changed_index":
+                    if record_tamper == "arrow_left_guard":
+                        record["left_support"] = point(indices[0] - 2)
+                    elif record_tamper == "arrow_right_guard":
+                        record["right_support"] = point(indices[-1] + 2)
+                    elif record_tamper == "arrow_left_endpoint":
+                        record["left_endpoint"] = point(indices[0] - 1)
+                    elif record_tamper == "arrow_right_endpoint":
+                        record["right_endpoint"] = point(indices[-1] + 1)
+                    elif record_tamper == "arrow_guard_sequence":
+                        record["left_support"]["source_frame_seq"] += 1
+                    elif record_tamper == "arrow_guard_timestamp":
+                        record["right_support"]["capture_ns"] += 1
+                    elif record_tamper == "arrow_inner_metrics":
+                        for name in ("profile_frame_indices", "projections", "normalized_residuals"):
+                            del record[name][1]
+                    elif record_tamper == "arrow_projection_bound":
+                        record["projections"][-2] = 1.06
+                    elif record_tamper == "arrow_residual_bound":
+                        record["normalized_residuals"][1] = 0.151
+                    elif record_tamper == "arrow_endpoint_span":
+                        record["maximum_endpoint_span_ns"] += 1
+                    elif record_tamper == "bar_changed_index":
                         record["changed_bar_index"] = 5
                     elif record_tamper == "bar_expectation":
                         record["main_bar_expectation_signature"] = {
@@ -2037,7 +2060,7 @@ class QualificationTests(unittest.TestCase):
 
     def test_each_generic_temporal_v2_bundle_qualifies(self):
         classifiers = (
-            "v1-arrow-phase-edge-v4",
+            "v1-arrow-phase-edge-v5",
             "v1-arrow-target-acquisition-v1",
             "v1-stable-frequency-intact-context-v1",
             "v1-secondary-closed-context-v3",
@@ -2055,7 +2078,7 @@ class QualificationTests(unittest.TestCase):
                     result["temporal_classifiers"][classifier]["total"], expected_total)
 
     def test_recording_gap_does_not_relax_each_admitted_support_chain(self):
-        classifiers = set(TEMPORAL_V2_OBSERVER_RUBRICS) - {"v1-arrow-phase-edge-v4"}
+        classifiers = set(TEMPORAL_V2_OBSERVER_RUBRICS) - {"v1-arrow-phase-edge-v5"}
         for classifier in classifiers:
             with self.subTest(classifier=classifier):
                 temporal, _ = self.generic_temporal_validation(
@@ -2183,6 +2206,16 @@ class QualificationTests(unittest.TestCase):
 
     def test_generic_temporal_validates_complete_classifier_record_invariants(self):
         cases = (
+            ("v1-arrow-phase-edge-v5", "arrow_left_guard"),
+            ("v1-arrow-phase-edge-v5", "arrow_right_guard"),
+            ("v1-arrow-phase-edge-v5", "arrow_left_endpoint"),
+            ("v1-arrow-phase-edge-v5", "arrow_right_endpoint"),
+            ("v1-arrow-phase-edge-v5", "arrow_guard_sequence"),
+            ("v1-arrow-phase-edge-v5", "arrow_guard_timestamp"),
+            ("v1-arrow-phase-edge-v5", "arrow_inner_metrics"),
+            ("v1-arrow-phase-edge-v5", "arrow_projection_bound"),
+            ("v1-arrow-phase-edge-v5", "arrow_residual_bound"),
+            ("v1-arrow-phase-edge-v5", "arrow_endpoint_span"),
             ("v1-arrow-target-acquisition-v1", "acquisition_phase"),
             ("v1-arrow-target-acquisition-v1", "acquisition_motion"),
             ("v1-arrow-target-acquisition-v1", "acquisition_unchanged"),
@@ -2254,6 +2287,13 @@ class QualificationTests(unittest.TestCase):
                 for allowed in rubric["allowed_literals"].values():
                     for literal in allowed:
                         self.assertIn(literal, instructions)
+        arrow = temporal_v2_observer_instructions("v1-arrow-phase-edge-v5")
+        for requirement in (
+                "first and last zero-based target clip-frame indices",
+                "[a-3,a-2]", "[b+2,b+3]", "[a-3,b+3]", "a-1 and b+1",
+                "Do not search farther", "[] is a valid clear endpoint",
+                "equal brightness is not required", "Missing or unclear support"):
+            self.assertIn(requirement, arrow)
         badge = temporal_v2_observer_instructions("v1-muted-badge-rising-fill-v2")
         self.assertIn("Uniform palette or brightness recoloring caused by mute is allowed", badge)
         self.assertIn("frequency, band, direction, bar geometry or count", badge)
@@ -2527,7 +2567,7 @@ class QualificationTests(unittest.TestCase):
 
     def test_target_observer_transcription_must_match_the_frozen_visible_claim(self):
         classifiers = (
-            "v1-arrow-phase-edge-v4",
+            "v1-arrow-phase-edge-v5",
             "v1-arrow-target-acquisition-v1",
             "v1-stable-frequency-intact-context-v1",
             "v1-secondary-closed-context-v3",
@@ -2545,7 +2585,7 @@ class QualificationTests(unittest.TestCase):
     def test_target_observer_transcription_schema_is_exact(self):
         valid_card = copy.deepcopy(CARD)
         cases = (
-            ("v1-arrow-phase-edge-v4", {
+            ("v1-arrow-phase-edge-v5", {
                 "left_endpoint_directions": [],
                 "right_endpoint_directions": ["side", "front"],
             }),
@@ -2578,7 +2618,7 @@ class QualificationTests(unittest.TestCase):
                         classifier, observation)
 
     def test_arrow_transcription_uses_visual_direction_order_without_losing_set_identity(self):
-        classifier = "v1-arrow-phase-edge-v4"
+        classifier = "v1-arrow-phase-edge-v5"
         literal = {
             **self.generic_temporal_literal(classifier, True),
             "left_endpoint_directions": ["front", "rear"],
@@ -2766,7 +2806,7 @@ class QualificationTests(unittest.TestCase):
 
     def test_temporal_qualification_binds_owner_and_isolates_other_owners(self):
         cases = (
-            ("v1-arrow-phase-edge-v4", "encounter_arrow_transition.py",
+            ("v1-arrow-phase-edge-v5", "encounter_arrow_transition.py",
              "encounter_arrow_acquisition.py"),
             ("v1-arrow-target-acquisition-v1", "encounter_arrow_acquisition.py",
              "encounter_arrow_transition.py"),
@@ -2803,7 +2843,7 @@ class QualificationTests(unittest.TestCase):
             self.assertLessEqual(
                 set(COMMON_TEMPORAL_IMPLEMENTATION_FILES),
                 set(CLASSIFIER_IMPLEMENTATION_FILES[classifier]))
-        classifier = "v1-arrow-phase-edge-v4"
+        classifier = "v1-arrow-phase-edge-v5"
         for name in COMMON_TEMPORAL_IMPLEMENTATION_FILES:
             with self.subTest(name=name):
                 temporal, _ = self.generic_temporal_validation(classifier)
@@ -2819,7 +2859,7 @@ class QualificationTests(unittest.TestCase):
 
     def test_temporal_implementation_inventory_must_be_exact(self):
         for classifier, owned in (
-                ("v1-arrow-phase-edge-v4", "encounter_arrow_transition.py"),
+                ("v1-arrow-phase-edge-v5", "encounter_arrow_transition.py"),
                 ("v1-arrow-target-acquisition-v1", "encounter_arrow_acquisition.py"),
                 ("v1-stable-frequency-intact-context-v1", "encounter_frequency_context.py"),
                 ("v1-stable-frequency-intact-context-v1", "encounter_redraw_probe.py"),

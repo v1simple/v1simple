@@ -12,8 +12,8 @@ import math
 import re
 
 
-CLASSIFIER_ID = "v1-arrow-phase-edge-v4"
-CLASSIFIER_SPEC_SHA256 = "aa60e40aa6433a5be3bd3f89b25fe2e9a95bab9e16646e41ec10133730975587"
+CLASSIFIER_ID = "v1-arrow-phase-edge-v5"
+CLASSIFIER_SPEC_SHA256 = "1efab4983cfe178563ffa76b38c1b9857a28de3aef82033bc30948af90e1a702"
 PROFILE_READER_METHOD_VERSION = 7
 PROFILE_READER_SHA256 = "f4efd6a1df4daefb3e7271a2e229e80f7378ba8b7a824dea1593aa0581f20b7c"
 
@@ -26,6 +26,7 @@ MAXIMUM_BACKWARD_STEP = 0.05
 MAXIMUM_TOTAL_BACKWARD_MOTION = 0.10
 EXTRA_DIRECTION_PROFILE_DIAMETER_RMS_MAX = 8.0
 STABLE_SUPPORT_FRAMES_EACH_SIDE = 2
+_SUPPORT_CONTEXT_FRAMES_EACH_SIDE = STABLE_SUPPORT_FRAMES_EACH_SIDE + 1
 
 _DIRECTIONS = ("front", "side", "rear")
 _DEFINITE_STATES = {"filled", "unlit"}
@@ -186,9 +187,11 @@ def _runs(samples):
 
 def _classify(event_id, selected, first, stop, context):
     run = selected[first:stop]
-    if first < STABLE_SUPPORT_FRAMES_EACH_SIDE or stop + STABLE_SUPPORT_FRAMES_EACH_SIDE > len(selected):
-        return None, _reject(event_id, run, "UNCLOSED_RUN", "arrow run lacks two readable support frames on each side")
-    chain = selected[first - 2:stop + 2]
+    if (first < _SUPPORT_CONTEXT_FRAMES_EACH_SIDE or
+            stop + _SUPPORT_CONTEXT_FRAMES_EACH_SIDE > len(selected)):
+        return None, _reject(event_id, run, "UNCLOSED_RUN", "arrow run lacks its fixed three-frame context on each side")
+    chain = selected[first - _SUPPORT_CONTEXT_FRAMES_EACH_SIDE:
+                     stop + _SUPPORT_CONTEXT_FRAMES_EACH_SIDE]
     maximum_gap = context["verified_maximum_source_interval_ns"]
     if not all(_consecutive(left, right, maximum_gap) for left, right in zip(chain, chain[1:])):
         return None, _reject(event_id, run, "SOURCE_GAP", "arrow support chain crosses an unobserved source position")
@@ -208,6 +211,11 @@ def _classify(event_id, selected, first, stop, context):
     if len(changed) != 1:
         return None, _reject(event_id, run, "NOT_ONE_DIRECTION_PHASE_EDGE", "arrow endpoints do not differ by exactly one direction")
     changed_direction = next(iter(changed))
+    inner = [_definite_reading(sample) for sample in (chain[2], chain[-3])]
+    if any(value is None for value in inner):
+        return None, _reject(event_id, run, "UNCLOSED_RUN", "arrow images nearest the run are not definite and readable")
+    if any(value[0] not in (left_value, right_value) for value in inner):
+        return None, _reject(event_id, run, "EXTRA_DIRECTION_STATE", "an inner readable image changes an extra direction")
     signatures = [_expectation_signature(sample) for sample in chain]
     signature = signatures[0]
     endpoint_sets = {left_value, right_value}
@@ -221,14 +229,15 @@ def _classify(event_id, selected, first, stop, context):
         if profiles is None:
             return None, _reject(event_id, run, "EXTRA_DIRECTION_STATE", "raw arrow refusal is not solely the changed direction")
         run_profiles.append(profiles)
-    all_profiles = [definite[0][1], left_profiles, *run_profiles, right_profiles, definite[3][1]]
+    all_profiles = [definite[0][1], left_profiles, inner[0][1], *run_profiles,
+                    inner[1][1], right_profiles, definite[3][1]]
     references = {direction: {profiles[direction][1] for profiles in all_profiles}
                   for direction in _DIRECTIONS}
     if any(len(bounds) != 1 for bounds in references.values()):
         return None, _reject(event_id, run, "INVALID_PROFILE", "arrow profile reference bounds change inside support")
-    # The nearest readable image can already be partway through a fade. Fit
-    # the entire fixed support chain, including those readable inner images,
-    # between its outer supports. Never search for brighter anchors.
+    # For target [a,b], the fixed support pairs are [a-3,a-2] and [b+2,b+3].
+    # Fit every image in [a-3,b+3], including the nearest readable images
+    # a-1 and b+1. Neither brightness changes nor faint tails move the anchors.
     left = all_profiles[0][changed_direction][0]
     right = all_profiles[-1][changed_direction][0]
     delta = [b - a for a, b in zip(left, right)]
@@ -290,7 +299,7 @@ def _classify(event_id, selected, first, stop, context):
         "selection_manifest_sha256": context["selection_manifest_sha256"],
         "reader_method_version": context["reader_method_version"],
         "reader_sha256": context["reader_sha256"],
-        "basis": "The whole fixed support chain, including its readable inner images, follows the measured monotone profile path between its outer supports in two permitted blink phases; only the maximal raw refusal is classified and raw frames remain unresolved.",
+        "basis": "For target [a,b], the full fixed chain [a-3,b+3], including the nearest readable images a-1 and b+1, follows the measured monotone profile path between outer supports a-3 and b+3. The agreeing support pairs are [a-3,a-2] and [b+2,b+3]; only the maximal raw refusal is classified and raw frames remain unresolved.",
     }
     return record, None
 

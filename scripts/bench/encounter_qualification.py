@@ -140,6 +140,8 @@ CLASSIFIER_IMPLEMENTATION_FILES = {
         *COMMON_TEMPORAL_IMPLEMENTATION_FILES, "encounter_arrow_transition.py"),
     "v1-arrow-phase-edge-v4": (
         *COMMON_TEMPORAL_IMPLEMENTATION_FILES, "encounter_arrow_transition.py"),
+    "v1-arrow-phase-edge-v5": (
+        *COMMON_TEMPORAL_IMPLEMENTATION_FILES, "encounter_arrow_transition.py"),
     "v1-arrow-target-acquisition-v1": (
         *COMMON_TEMPORAL_IMPLEMENTATION_FILES, "encounter_arrow_acquisition.py"),
     "v1-stable-frequency-closed-context-v3": (
@@ -168,29 +170,38 @@ CLASSIFIER_IMPLEMENTATION_FILES = {
 }
 
 TEMPORAL_V2_OBSERVER_RUBRICS = {
-    "v1-arrow-phase-edge-v4": {
+    "v1-arrow-phase-edge-v5": {
         "raw_affected_fields": ["main_arrows"],
         "observer_eligibility_rule": (
             "COHERENT_SINGLE_DIRECTION_ON_OFF_EDGE with BOTH_CLEAR endpoints, "
             "NO extra-direction motion, and HIGH confidence"),
         "eligibility_detail": (
-            "Eligible only when two clear readable frames on each side agree on that side's "
-            "direction set, the two sides differ by one direction, and the entire bracket "
-            "between the outer supports is one coherent fill or clear of that direction, "
-            "including the inner readable frames. Every other direction stays unchanged, "
-            "and confidence is HIGH."),
+            "Let a and b be the first and last zero-based target clip-frame indices in "
+            "target_run_clip_frame_indices. Use only the fixed left support pair [a-3,a-2] "
+            "and right support pair [b+2,b+3]. Both frames in each pair must be clearly "
+            "readable and agree on that side's direction set. The two sides must differ "
+            "by one direction, and every consecutive frame in the full checked bracket "
+            "[a-3,b+3], including the nearer frames a-1 and b+1, must show one coherent "
+            "fill or clear of that direction. Every other direction stays unchanged, "
+            "and confidence is HIGH. Do not search farther for clearer support or replace "
+            "a fixed frame. Missing or unclear support requires uncertainty."),
         "field_guidance": {
             "left_endpoint_directions": (
-                "Transcribe the complete visible direction set in the clear left endpoint."),
+                "Transcribe the complete visible direction set at the left endpoint a-2. "
+                "[] is a valid clear endpoint when no direction is visibly active; use "
+                "JSON null when the direction set is uncertain."),
             "right_endpoint_directions": (
-                "Transcribe the complete visible direction set in the clear right endpoint."),
+                "Transcribe the complete visible direction set at the right endpoint b+2. "
+                "[] is a valid clear endpoint when no direction is visibly active; use "
+                "JSON null when the direction set is uncertain."),
             "center_class": (
-                "Inspect the entire bracket between the outer fixed support frames, including "
-                "the nearest readable frames on both sides of the target run. Do not assign "
-                "the target run's frames either endpoint value."),
+                "Inspect every consecutive frame of [a-3,b+3], including a-1 and b+1. "
+                "Broader clip context can identify directions but cannot supply replacement "
+                "support. Do not assign the target run's frames either endpoint value."),
             "endpoint_support": (
-                "BOTH_CLEAR requires two clearly readable frames on each side agreeing on "
-                "direction presence; brightness may change through the coherent fade."),
+                "BOTH_CLEAR requires the exact pairs [a-3,a-2] and [b+2,b+3] to be "
+                "clearly readable and agree on direction presence. Brightness may change "
+                "through the coherent fade; equal brightness is not required."),
             "extra_direction_motion": (
                 "YES if any direction other than the one changing between endpoints also moves."),
             "confidence": "Use HIGH only when every required visual fact is clear.",
@@ -591,7 +602,7 @@ TEMPORAL_V2_OBSERVER_RUBRICS = {
 }
 
 _TEMPORAL_V2_REJECTION_CODES = {
-    "v1-arrow-phase-edge-v4": {
+    "v1-arrow-phase-edge-v5": {
         "UNCLOSED_RUN", "SOURCE_GAP", "ENDPOINT_SPAN", "UNSTABLE_ENDPOINT",
         "NOT_ONE_DIRECTION_PHASE_EDGE", "EXPECTATION_SIGNATURE", "EXTRA_DIRECTION_STATE",
         "INVALID_PROFILE", "ENDPOINT_SEPARATION", "PROJECTION_RANGE",
@@ -1528,7 +1539,7 @@ def _temporal_v2_observer_result(classifier_id: str, observation: Any) -> tuple[
         _require(literal[name] in allowed,
                  f"temporal observer literal {name} is invalid for {classifier_id}")
 
-    if classifier_id in {"v1-arrow-phase-edge-v4", "v1-arrow-target-acquisition-v1"}:
+    if classifier_id in {"v1-arrow-phase-edge-v5", "v1-arrow-target-acquisition-v1"}:
         endpoints = (literal["left_endpoint_directions"],
                      literal["right_endpoint_directions"])
         _require(all(value is None or _valid_observer_direction_set(value)
@@ -1536,7 +1547,7 @@ def _temporal_v2_observer_result(classifier_id: str, observation: Any) -> tuple[
                  f"temporal observer arrow endpoints are invalid for {classifier_id}")
         relationship = (all(isinstance(value, list) for value in endpoints)
                         and (len(set(endpoints[0]) ^ set(endpoints[1])) == 1
-                             if classifier_id == "v1-arrow-phase-edge-v4"
+                             if classifier_id == "v1-arrow-phase-edge-v5"
                              else endpoints[0] != endpoints[1]))
     elif classifier_id == "v1-stable-frequency-intact-context-v1":
         frequency = literal["observed_frequency"]
@@ -1617,7 +1628,7 @@ def _temporal_v2_claim_matches_record(classifier_id: str, spec_sha256: str,
             or record.get("raw_affected_fields") !=
                 TEMPORAL_V2_OBSERVER_RUBRICS[classifier_id]["raw_affected_fields"]):
         return False
-    if classifier_id == "v1-arrow-phase-edge-v4":
+    if classifier_id == "v1-arrow-phase-edge-v5":
         endpoints = record.get("endpoint_values")
         observed_endpoints = [literal.get("left_endpoint_directions"),
                               literal.get("right_endpoint_directions")]
@@ -1775,7 +1786,7 @@ def _validate_temporal_v2_capture(capture: Any, window: Any, capture_path: Path,
 
 _SOURCE_FRAMEHASH_CACHE: dict[tuple[str, str], tuple[str, ...]] = {}
 _TEMPORAL_V2_INSET_LOGICAL = {
-    "v1-arrow-phase-edge-v4": (990, 190, 1165, 400),
+    "v1-arrow-phase-edge-v5": (990, 190, 1165, 400),
     "v1-arrow-target-acquisition-v1": (990, 190, 1165, 400),
     "v1-stable-frequency-intact-context-v1": (425, 225, 845, 390),
     "v1-secondary-closed-context-v3": (385, 360, 880, 460),
@@ -2020,7 +2031,7 @@ def _temporal_v2_context_binding(classifier_id: str, spec_document: dict[str, An
                     and 0 < maximum_interval <= 1_000_000_000
                     and identity.get("reader_method_version") == reader.get("method_version")
                     and identity.get("reader_sha256") == implementation.get("encounter_reader.py"))
-    if classifier_id == "v1-arrow-phase-edge-v4":
+    if classifier_id == "v1-arrow-phase-edge-v5":
         _require(common_valid and set(identity) == {"reader_method_version", "reader_sha256"},
                  f"temporal classifier context identity differs for {classifier_id}")
         return {
@@ -2247,13 +2258,13 @@ def _validate_temporal_v2_arrow_record(record: dict[str, Any], target_indices: l
                                "joint_arrow_phases": expected_phases},
              "temporal arrow phase association is inconsistent")
     first, last = target_indices[0], target_indices[-1]
-    for name, index in (("left_support", first - 2), ("left_endpoint", first - 1),
-                        ("right_endpoint", last + 1), ("right_support", last + 2)):
+    for name, index in (("left_support", first - 3), ("left_endpoint", first - 2),
+                        ("right_endpoint", last + 2), ("right_support", last + 3)):
         _require_point(record.get(name), index, name, source_rows)
     maximum_gap = context["verified_maximum_source_interval_ns"]
-    _validate_temporal_support_chain(first - 2, last + 2, source_rows, maximum_gap)
+    _validate_temporal_support_chain(first - 3, last + 3, source_rows, maximum_gap)
     maximum_span = constants["authored_blink_phase_ns"] + maximum_gap
-    _require(source_rows[last + 1]["capture_ns"] - source_rows[first - 1]["capture_ns"]
+    _require(source_rows[last + 2]["capture_ns"] - source_rows[first - 2]["capture_ns"]
              <= maximum_span, "temporal arrow endpoints exceed their span bound")
     _require(record.get("maximum_endpoint_span_ns") == maximum_span
              and record.get("profile_schema") == {
@@ -2271,9 +2282,9 @@ def _validate_temporal_v2_arrow_record(record: dict[str, Any], target_indices: l
     residuals = record.get("normalized_residuals")
     _require(_finite_number(separation)
              and separation >= constants["endpoint_separation_rms_min"]
-             and record.get("profile_frame_indices") == list(range(first - 1, last + 2))
-             and isinstance(projections, list) and len(projections) == len(target_indices) + 2
-             and isinstance(residuals, list) and len(residuals) == len(target_indices) + 2
+             and record.get("profile_frame_indices") == list(range(first - 2, last + 3))
+             and isinstance(projections, list) and len(projections) == len(target_indices) + 4
+             and isinstance(residuals, list) and len(residuals) == len(target_indices) + 4
              and all(_finite_number(value)
                      and constants["projection_min"] <= value <= constants["projection_max"]
                      for value in projections)
@@ -2969,7 +2980,7 @@ def _validate_temporal_v2_record(classifier_id: str, spec_sha256: str,
         _require_point(record.get("first"), target_indices[0], "rejected first", source_rows)
         _require_point(record.get("last"), target_indices[-1], "rejected last", source_rows)
         return
-    required = (_ARROW_RECORD_KEYS if classifier_id == "v1-arrow-phase-edge-v4"
+    required = (_ARROW_RECORD_KEYS if classifier_id == "v1-arrow-phase-edge-v5"
                 else _ARROW_ACQUISITION_RECORD_KEYS
                     if classifier_id == "v1-arrow-target-acquisition-v1"
                 else _FREQUENCY_CONTEXT_RECORD_KEYS
@@ -2983,7 +2994,7 @@ def _validate_temporal_v2_record(classifier_id: str, spec_sha256: str,
                 else _FREQUENCY_RECORD_KEYS)
     _validate_temporal_v2_common_record(
         classifier_id, spec_sha256, record, target_indices, context, required, source_rows)
-    if classifier_id == "v1-arrow-phase-edge-v4":
+    if classifier_id == "v1-arrow-phase-edge-v5":
         _validate_temporal_v2_arrow_record(
             record, target_indices, context, spec_document, source_rows)
     elif classifier_id == "v1-arrow-target-acquisition-v1":
@@ -3132,7 +3143,7 @@ def _validate_temporal_v2(document: dict[str, Any], classifier_id: str,
              f"temporal validation identity differs for {classifier_id}")
     spec_validation = (spec_document.get("validation")
                        if isinstance(spec_document, dict) else None)
-    if classifier_id == "v1-arrow-phase-edge-v4":
+    if classifier_id == "v1-arrow-phase-edge-v5":
         requirements = (spec_document.get("qualification_requirements")
                         if isinstance(spec_document, dict) else None)
         valid_specification = (

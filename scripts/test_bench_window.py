@@ -1536,12 +1536,24 @@ def test_serial_interrupted_loader_framing_requires_one_exact_rom_banner() -> No
     suffix = ["Build:Mar 27 2021", reason,
               "BOOT bootId=4 uptimeMs=2053 reset=USB git=2f32dda image=04904e028",
               "[Boot] Ready gate opened at 2380 ms", "[Boot] setup total: 2262 ms"]
-    cases = [
-        ("load:0x3fce2" + rom, suffix, ["load:0x3fce2", rom], None),
-        ("load:0x3fce2820,len:0x10cc" + rom, suffix,
-         ["load:0x3fce2820,len:0x10cc", rom], None),
-        ("notice " + rom, suffix, None, "unexpected reset reason"),
-        ("load:0xnothex" + rom, suffix, None, "unexpected reset reason"),
+    # Every nonempty byte position is a possible interruption, including within
+    # "load:0x", the comma and "len:0x". Do not special-case observed fragments.
+    loader_lines = ("load:0x3fce2820,len:0x10cc", "load:0xA,len:0xB")
+    prefixes = sorted({line[:stop] for line in loader_lines for stop in range(1, len(line) + 1)})
+    cases = [(prefix + rom, suffix, [prefix, rom], None) for prefix in prefixes]
+    cases += [(prefix + rom + rom, suffix, None, "unexpected reset reason")
+              for prefix in prefixes]
+    cases += [(prefix + "Guru Meditation Error: panic" + rom, suffix,
+               None, "panic or brownout") for prefix in prefixes]
+    invalid_prefixes = ("", "notice ", "load:0xnothex", "load:0x,len:0x1",
+                        "load:0x1;len:0x2", "load:0x1,len:1", "load:0x1,len:0xG",
+                        "load:0x1,len:0x2,", "load:0x1 len:0x2", "load:0x1,len:0x2 ")
+    for prefix in invalid_prefixes:
+        assert_true(not run_window_module._is_rom_loader_prefix(prefix),
+                    f"invalid ROM loader prefix accepted: {prefix!r}")
+    cases += [(prefix + rom, suffix, None, "unexpected reset reason")
+              for prefix in invalid_prefixes if prefix]
+    cases += [
         ("load:0x3fce2" + rom + rom, suffix, None, "unexpected reset reason"),
         ("load:0x3fce2" + rom + "Guru Meditation Error: panic", suffix,
          None, "panic or brownout"),

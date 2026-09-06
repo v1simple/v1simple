@@ -853,6 +853,29 @@ def native_usb_reset_strategy(port: Any) -> tuple[Any, dict[str, Any]]:
     }
 
 
+def _is_rom_loader_prefix(text: str) -> bool:
+    """Whether nonempty text can prefix ``load:0xHEX,len:0xHEX``.
+
+    USB reset can interrupt the old loader write at any byte, including inside
+    a fixed field label. Recognize the prefix language, not just complete fields.
+    """
+    header, length_header = "load:0x", "len:0x"
+    if not text:
+        return False
+    if header.startswith(text):
+        return True
+    if not text.startswith(header):
+        return False
+    address, comma, length = text[len(header):].partition(",")
+    hexadecimal = "0123456789abcdefABCDEF"
+    if not address or any(value not in hexadecimal for value in address):
+        return False
+    if not comma or length_header.startswith(length):
+        return True
+    return (length.startswith(length_header)
+            and all(value in hexadecimal for value in length[len(length_header):]))
+
+
 class BenchSerial:
     """Serial continuity observer with an explicit reset, never firmware commands."""
 
@@ -919,11 +942,10 @@ class BenchSerial:
                 # only that loader grammar and preserve both pieces. Unknown
                 # prefixes, panic text and extra banners remain intact for the
                 # boundary gates to reject; never search past arbitrary text.
-                interrupted_load = re.fullmatch(
-                    r"(load:0x[0-9a-f]+(?:,len:0x[0-9a-f]+)?)"
-                    r"(ESP-ROM:esp32s3-20210327)", line)
+                rom_banner = "ESP-ROM:esp32s3-20210327"
+                loader_prefix = line[:-len(rom_banner)] if line.endswith(rom_banner) else ""
                 self._pending_lines.extend(
-                    interrupted_load.groups() if interrupted_load else [line])
+                    [loader_prefix, rom_banner] if _is_rom_loader_prefix(loader_prefix) else [line])
         text = self._pending_lines.pop(0)
         safe = redact_artifact_text(text)
         self.log.write(safe + "\n")

@@ -864,10 +864,11 @@ def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cade
                 "Reader qualification: " + reason for reason in qualification.get(
                     "errors", ["reader is not qualified"])]], policy_path=policy_path)
         verdict = product_judgment["result"]
-    from encounter_assessment import assess
+    from encounter_assessment import assess, event_findings
     result.update(result=verdict, raw_frame_result=raw_verdict, counts=counts,
                   evidence=evidence, errors=errors, samples=samples,
                   sequence=sequence, assessment=assess(samples, errors, sequence),
+                  event_findings=event_findings(sequence, product_judgment),
                   temporal_classification=temporal,
                   product_adapter={"schema_version": product_adapter.get("schema_version"),
                                    "kind": product_adapter.get("kind"),
@@ -893,7 +894,11 @@ def review_payload(result):
     """Keep the viewer responsive while full measurements stay in result.json."""
     payload = {key: result[key] for key in ("result", "raw_frame_result", "selection_mode", "counts",
                "coverage", "reader_qualification", "product_adapter", "observed_state_spans",
-               "observed_changes", "sequence", "assessment") if key in result}
+               "observed_changes", "sequence", "assessment", "event_findings") if key in result}
+    evidence = result.get("evidence", {})
+    identity = evidence.get("runtime_identity") or {}
+    payload["recorded_firmware"] = {key: identity.get(key) for key in ("git_sha", "image_id", "boot_id")}
+    payload["reader_method_version"] = evidence.get("reader", {}).get("method_version")
 
     def compact_judgment(judgment):
         if not isinstance(judgment, dict):
@@ -932,7 +937,8 @@ def review_payload(result):
             if not isinstance(reading, dict):
                 continue
             fields[name] = {key: reading[key] for key in ("state", "value", "reason", "direction_states",
-                            "visible_directions", "color_qualification", "partial_cards") if key in reading}
+                            "visible_directions", "color_qualification", "partial_cards",
+                            "sampled_illumination") if key in reading}
             if "cards" in reading:
                 fields[name]["cards"] = [{key: card[key] for key in ("slot", "band", "frequency", "direction",
                                        "bars", "compatible_bars", "bars_state", "text_visible") if key in card}
@@ -949,6 +955,14 @@ def event_title(event):
             if primary else "No live radar alerts")
 
 
+def finding_point(point, anchor):
+    if not point:
+        return "not observed"
+    label = (f"+{(point['capture_ns'] - anchor) / 1e6:.3f} ms" if anchor is not None
+             else f"frame {point['frame_id']}")
+    return f"[{label}](report.html#sample={point['frame_id']})"
+
+
 def write_report(out: Path, result: dict) -> None:
     counts = result["counts"]
     tally = ", ".join(f"{value} {key.lower().replace('_', ' ')}" for key, value in counts["fields"].items())
@@ -960,6 +974,33 @@ def write_report(out: Path, result: dict) -> None:
              "Encounter with consecutive transitions" if result["selection_mode"] == "input_transition_review" else
              "Consecutive-frame encounter" if result["selection_mode"] == "all_recorded_frames" else "Sampled encounter")
     lines = [f"# {title}: {result['result']}", ""]
+    identity = result.get("evidence", {}).get("runtime_identity") or {}
+    lines += [f"Recorded firmware: commit `{identity.get('git_sha', 'unavailable')}`, "
+              f"image `{identity.get('image_id', 'unavailable')}`, boot `{identity.get('boot_id', 'unavailable')}`. "
+              "These findings describe that recording.", ""]
+    findings = result.get("event_findings", [])
+    if findings:
+        lines += ["## Observed display information", "",
+                  "These are literal observations after complete host input acceptance. Differences during "
+                  "acquisition are not automatically firmware faults. Times identify recorded camera markers; "
+                  "DUT receipt and execution time are not measured. Unreadable fields remain separate, even "
+                  "when other fields demonstrate a difference. Coverage is limited to the selected originals.", "",
+                  "| Input event | First complete target observed | Latest different information | Unanswered fields |",
+                  "| --- | --- | --- | --- |"]
+        for finding in findings:
+            anchor = finding["input_anchor_ns"]
+            different = "; ".join(
+                f"{item['field'].replace('_', ' ')} {finding_point(item['last'], anchor)}"
+                for item in finding["differences"]) or "none observed"
+            unknown = "; ".join(f"{item['field'].replace('_', ' ')}: {item['frames']} frames"
+                                for item in finding["unresolved"]) or "none in these observations"
+            lines.append(f"| {finding['event_id']} | {finding_point(finding['first_correct'], anchor)} | "
+                         f"{different} | {unknown} |")
+        lines += ["", "## Timed policy comparison", "",
+                  "The retained 100 ms boundary is **an unvalidated requirement**. `DISPLAY_UPDATE_MS` "
+                  "services connection state and does not establish this response bound. A policy failure "
+                  "based only on this boundary is not a proven firmware timing defect. The boundary and "
+                  "historical verdicts have not been loosened.", ""]
     primary = result.get("primary_judgment")
     if primary:
         product_counts = primary.get("counts", {})
@@ -1072,18 +1113,50 @@ def write_report(out: Path, result: dict) -> None:
 *{box-sizing:border-box}body{margin:0;background:#10151b;color:#e7edf4;font:15px system-ui,sans-serif}
 header{padding:24px 28px;border-bottom:1px solid #35414d}h1{font-size:25px;margin:0 0 10px}p{line-height:1.5;color:#b7c4d1;max-width:1000px}
 main{display:grid;grid-template-columns:240px 1fr;gap:22px;padding:22px}nav{max-height:78vh;overflow:auto}button,select{font:inherit;color:inherit;background:#1b2630;border:1px solid #425161;border-radius:6px;padding:8px;cursor:pointer}nav button{display:block;width:100%;text-align:left;margin:5px 0}button[aria-current=true]{border-color:#69c5ff;background:#1c394e}.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}img{width:100%;max-height:53vh;object-fit:contain;background:#000;border-radius:7px}table{width:100%;border-collapse:collapse;margin-top:18px}td,th{text-align:left;vertical-align:top;padding:10px;border-bottom:1px solid #35414d}th{color:#9dafbf}td{white-space:pre-wrap;overflow-wrap:anywhere}.MATCH{color:#8edfbe}.DIFFERENCE,.JOINT_DIFFERENCE{color:#ff9292}.UNRESOLVED,.CONDITIONAL{color:#f2cf83}.PREVIOUS_INPUT_STATE,.TRANSITION_DIFFERENCE{color:#bcb1ff}small{color:#9dafbf}.empty{padding:30px}a{color:#8dcfff}summary{cursor:pointer;margin:16px 0}#scrub{width:100%;margin:10px 0}#changes{max-height:250px;overflow:auto}#changes button{display:block;margin:6px 0;width:100%;text-align:left}.history{max-height:400px;overflow:auto}#changed{color:#e7edf4}@media(max-width:800px){main{display:block}nav{max-height:180px;margin-bottom:20px}table{font-size:12px}td,th{padding:6px}}
-</style><header><h1 id="title"></h1><p id="summary"></p><p id="coverage"></p><p>Original camera observations against recorded host input. Frames cannot show what happened between exposures. The visible-event product verdict requires exact reader qualification; missing or stale qualification is a product failure and appears as INCONCLUSIVE.</p><section id="assessment" hidden><h2>What can be judged</h2><p id="heldAssessment"></p><p id="responseAssessment"></p><p id="afterAssessment"></p><div id="heldIssues" class="toolbar"></div><p>These are separate evidence claims. A target appearing once does not establish timely response, continued correctness or tool acceptance. The aggregate verdict and all transition observations are retained.</p></section></header>
+</style><header><h1 id="title"></h1><p id="summary"></p><p id="coverage"></p><p id="recordedFirmware"></p><section id="findings" hidden><h2>Observed display information</h2><p>Each row separates the target being seen, definite different information, and reader uncertainty. A difference during acquisition is an observation, not automatically a firmware fault. Times are from complete host input acceptance to recorded camera markers; DUT receipt is not measured. Click a witness to see the original and its expected and observed fields.</p><div class="history"><table><thead><tr><th>Input event</th><th>First complete target</th><th>Latest different information</th><th>Unanswered fields</th></tr></thead><tbody id="findingRows"></tbody></table></div></section><p id="timingRequirement" hidden>The 100 ms boundary is an unvalidated requirement. DISPLAY_UPDATE_MS services connection state, not alert rendering. Timing-only policy failures do not prove firmware timing defects. The retained policy comparison appears separately below; historical verdicts are unchanged.</p><p>Original camera observations against recorded host input. Frames cannot show what happened between exposures. The visible-event product verdict requires exact reader qualification; missing or stale qualification is a product failure and appears as INCONCLUSIVE.</p><section id="assessment" hidden><h2>What can be judged</h2><p id="heldAssessment"></p><p id="responseAssessment"></p><p id="afterAssessment"></p><div id="heldIssues" class="toolbar"></div><p>These are separate evidence claims. A target appearing once does not establish timely response, continued correctness or tool acceptance. The aggregate verdict and all transition observations are retained.</p></section></header>
 <section id="eventReview" style="padding:20px 28px;border-bottom:1px solid #35414d"><h2>What happened</h2><label>Input event <select id="eventSelect"></select></label><p id="eventJudgment"></p><div id="productEventLinks" class="toolbar"></div><p id="eventSummary"></p><p id="eventTiming"></p><p id="eventCoverage"></p><div id="eventLinks" class="toolbar"></div><details><summary>First correctly observed content by field</summary><div id="eventFields"></div></details><details><summary>Changes after the first correct image</summary><div id="eventAfter" class="history"></div></details></section>
 <main><aside><label>Show <select id="filter"><option value="all">All samples</option><option value="attention">Needs attention</option><option value="held">Held samples</option><option value="transition">Transitions</option></select></label><nav id="samples"></nav></aside>
 <section><div class="toolbar"><button id="prev">← Previous</button><button id="next">Next →</button><button id="play">Play consecutive frames</button><label>Playback <select id="speed"><option value="20">20× slower</option><option value="10">10× slower</option><option value="5">5× slower</option></select></label><strong id="sampleTitle"></strong><a id="original">Open original</a></div><label>Original frame <input id="scrub" type="range" min="0" max="0" step="1" value="0"></label><img id="frame" alt="Unmodified selected camera frame"><p id="detail"></p><p id="changed"></p><details open><summary>Observed changes — jump to the original frame</summary><div id="changes"></div></details><details><summary>Per-field observed spans — every brief state and unreadable frame retained</summary><p>Adjacent source frames with exactly the same literal reading are grouped for review only. A one-frame state is retained. Gaps break spans. First and last timestamps bound the readings; no value is carried across an unreadable frame, and these spans do not establish response latency.</p><label>Display field <select id="spanField"></select></label><div class="history"><table><thead><tr><th>First–last reading</th><th>Source frames</th><th>Count</th><th>Literal reading</th></tr></thead><tbody id="spans"></tbody></table></div></details><table><thead><tr><th>Display field</th><th>Permitted input state</th><th>Observed pixels</th><th>Judgment</th></tr></thead><tbody id="checks"></tbody></table><p id="joint"></p></section></main>
 <script>const result=PAYLOAD;const all=result.samples;let selected=0,visible=[];const navButtons=new Map();
 const el=id=>document.getElementById(id);const fmt=x=>x===undefined?'unavailable':JSON.stringify(x,null,2);const names={counter_glyph:'Counter / mode',primary_frequency:'Primary frequency',active_bands:'Active bands',main_arrows:'Main arrows',main_bars:'Main strength',secondary:'Secondary cards',muted_badge:'MUTED badge'};const literal=o=>o.state+': '+JSON.stringify(o.value)+(o.reason?' ('+o.reason+')':'');const seconds=x=>x===null?'none':x.toFixed(6)+' s';const changes=result.observed_changes||[];const events=result.sequence?.events||[];const product=result.primary_judgment;
-el('title').textContent=(product?'Visible encounter product: ':result.selection_mode==='input_transition_review'?'Encounter with consecutive transitions: ':result.selection_mode==='all_recorded_frames'?'Consecutive-frame encounter: ':'Sampled encounter: ')+result.result;if(product){const c=product.counts||{};const q=result.reader_qualification||{};el('summary').textContent=(c.passed||0)+' passed · '+(c.failed||0)+' failed · '+(c.inconclusive||0)+' inconclusive / '+(c.required_events||0)+' required visible events. Reason '+product.reason_code+'. Reader qualification '+(q.status||'REJECTED')+'. Raw frame result '+result.raw_frame_result+'.'}else{el('summary').textContent=Object.entries(result.counts.fields).map(([k,v])=>v+' '+k.toLowerCase().replaceAll('_',' ')).join(' · ')+' / '+result.counts.required+' required checks. '+result.coverage.unique_frames+' unique original frames.'}
+el('title').textContent=(product?'Recorded display evaluation · timed policy: ':result.selection_mode==='input_transition_review'?'Encounter with consecutive transitions: ':result.selection_mode==='all_recorded_frames'?'Consecutive-frame encounter: ':'Sampled encounter: ')+result.result;if(product){const c=product.counts||{};const q=result.reader_qualification||{};el('summary').textContent=(c.passed||0)+' passed · '+(c.failed||0)+' failed · '+(c.inconclusive||0)+' inconclusive / '+(c.required_events||0)+' required visible events. Reason '+product.reason_code+'. Reader qualification '+(q.status||'REJECTED')+'. Raw frame result '+result.raw_frame_result+'.'}else{el('summary').textContent=Object.entries(result.counts.fields).map(([k,v])=>v+' '+k.toLowerCase().replaceAll('_',' ')).join(' · ')+' / '+result.counts.required+' required checks. '+result.coverage.unique_frames+' unique original frames.'}
 if(result.assessment){const a=result.assessment;el('assessment').hidden=false;el('heldAssessment').textContent='Held observations: '+a.held.status+' · '+a.held.required+' required field checks.';el('responseAssessment').textContent='Event targets observed: '+a.event_response.status+' · '+a.event_response.observed+'/'+a.event_response.required+'.';el('afterAssessment').textContent='After the first correct image: '+a.after_correct.differing_spans+' differing and '+a.after_correct.unresolved_spans+' unresolved spans retained.';for(const issue of a.held.issues){const b=document.createElement('button');b.textContent=(names[issue.field]||issue.field)+': '+issue.reason+' · '+issue.frame_ids.length+' held observation(s)';b.onclick=()=>show(all.findIndex(s=>s.frame_id===issue.first.frame_id));el('heldIssues').append(b)}}
 el('coverage').textContent=result.coverage.regions.map(r=>r.start_seconds+'–'+r.end_seconds+' s (end exclusive): '+r.unique_frames+'/'+r.available_recorded_frames+' recorded frames read'+(r.complete_recorded_frame_coverage===null?' (sampled)':r.complete_recorded_frame_coverage?' (complete within range)':' (incomplete)')+'. Selected '+seconds(r.first_selected_offset_seconds)+' to '+seconds(r.last_selected_offset_seconds)+'. Read '+seconds(r.first_observed_offset_seconds)+' to '+seconds(r.last_observed_offset_seconds)+'. Largest gap including boundaries '+seconds(r.maximum_unobserved_gap_seconds)+'. '+r.unrecorded_source_frames+' source frames not recorded.').join(' ');
 
 const eventName=e=>{const p=e.wire_rows.find(r=>r.priority);return p?p.band+' '+p.frequency+' primary · '+e.wire_rows.length+' alerts':'No live radar alerts'};
 const jump=(parent,point,label)=>{if(!point)return;const index=all.findIndex(s=>s.frame_id===point.frame_id);if(index<0)return;let b=document.createElement('button');b.textContent=label+' · '+seconds(point.offset_seconds??all[index].offset_seconds??null);b.onclick=()=>show(index);parent.append(b)};
+const firmware=result.recorded_firmware||{};
+el('recordedFirmware').textContent='Recorded firmware: '+(firmware.git_sha||'source unavailable')+' · image '+(firmware.image_id||'unavailable')+' · boot '+(firmware.boot_id??'unavailable')+' · reader '+(result.reader_method_version??'unavailable')+'. These findings describe that recording.';
+if(product)el('timingRequirement').hidden=false;
+const findings=result.event_findings||[];
+if(findings.length){
+  el('findings').hidden=false;
+  for(const finding of findings){
+    const row=document.createElement('tr');
+    const input=document.createElement('td');
+    const priority=finding.input.find(item=>item.priority);
+    input.textContent=finding.event_id+' · '+(priority?priority.band+' '+priority.frequency+' · '+finding.input.length+' alerts':'No live radar alerts');
+    row.append(input);
+    const marker=(cell,point,label)=>{
+      if(!point){cell.append(document.createTextNode(label+': not observed'));return}
+      const time=finding.input_anchor_ns===null?'': ' · +'+((point.capture_ns-finding.input_anchor_ns)/1e6).toFixed(3)+' ms';
+      jump(cell,point,label+time);
+    };
+    const correct=document.createElement('td');marker(correct,finding.first_correct,'All required fields');row.append(correct);
+    const different=document.createElement('td');
+    for(const item of finding.differences){
+      marker(different,item.last,names[item.field]||'Joint display state');
+      const value=item.last_observed;
+      if(value){const text=document.createElement('p');text.textContent=JSON.stringify(value.value);different.append(text)}
+    }
+    if(!finding.differences.length)different.textContent='None observed';
+    row.append(different);
+    const unknown=document.createElement('td');
+    for(const item of finding.unresolved)marker(unknown,item.first,(names[item.field]||'Joint display state')+' · '+item.frames+' frames');
+    if(!finding.unresolved.length)unknown.textContent='None in these observations';
+    row.append(unknown);el('findingRows').append(row);
+  }
+}
 for(let i=0;i<events.length;i++){let option=document.createElement('option');option.value=i;const verdict=product?.events?.find(e=>e.event_id===events[i].event_id);option.textContent=(verdict?verdict.result+' · ':'')+events[i].event_id+' · '+eventName(events[i]);el('eventSelect').append(option)}
 function renderEvent(){const e=events[Number(el('eventSelect').value)];if(!e){el('eventReview').hidden=true;return}const verdict=product?.events?.find(v=>v.event_id===e.event_id);el('eventJudgment').textContent=verdict?verdict.result+' · '+verdict.reason_code.replaceAll('_',' ').toLowerCase():product?'No qualified judgment for this event.':'';el('productEventLinks').replaceChildren();if(verdict){jump(el('productEventLinks'),verdict.first_decisive_marker,'Decisive image');jump(el('productEventLinks'),verdict.response_acquisition?.deadline_capture_marker_bracket?.end,'Deadline observation');jump(el('productEventLinks'),verdict.verification_closure_proof?.verification_boundary,'Verification boundary');jump(el('productEventLinks'),verdict.closing_current_correct,'Closing observation')}el('eventSummary').textContent=e.summary;const t=e.timing;el('eventTiming').textContent=t.status==='observed_capture_marker'?'The first correct recorded image was '+t.host_send_to_first_correct_capture_ms.map(x=>x.toFixed(3)).join('–')+' ms after the completing notification send call. '+(t.complete_recorded_frame_prefix?'Every recorded image from the event request through that image was read. ':'Earlier recorded images were not all read; this is a sampled observation time. ')+t.physical_appearance_reason:'First-correct timing unavailable: '+t.reason;const c=e.coverage;el('eventCoverage').textContent=c.read_recorded_frames+'/'+c.available_recorded_frames+' recorded images read across this entire input event; '+c.unrecorded_source_frames+' source frames not recorded; largest gap '+c.maximum_gap_between_read_markers_ms.toFixed(3)+' ms. A correct image does not establish correctness through an unobserved gap.';el('eventLinks').replaceChildren();jump(el('eventLinks'),e.preceding_observation,'Before input');jump(el('eventLinks'),e.last_definite_not_correct_before_first,'Last observed different state before correct');jump(el('eventLinks'),e.first_correct,'First all-required correct');el('eventFields').replaceChildren();for(const [name,point]of Object.entries(e.first_correct_by_field)){if(point)jump(el('eventFields'),point,names[name]);else{const p=document.createElement('p');p.textContent=names[name]+': no supported correct reading';el('eventFields').append(p)}}el('eventAfter').replaceChildren();for(const change of e.changes_after_correct){const detail=e.observation_spans[change.span_index];let label=change.status.replaceAll('_',' ').toLowerCase();if(change.not_correct_fields.length)label+=' · differing '+change.not_correct_fields.map(n=>names[n]).join(', ');if(change.unresolved_fields.length)label+=' · unresolved '+change.unresolved_fields.map(n=>names[n]).join(', ');label+=' · '+detail.frame_count+' consecutive frame(s)';jump(el('eventAfter'),change.first,label)}if(!e.changes_after_correct.length)el('eventAfter').textContent='No later change was observed in the selected images.'}
 el('eventSelect').onchange=()=>{stopPlayback();renderEvent();const e=events[Number(el('eventSelect').value)];const point=e?.observation_spans[0]?.first;if(point)show(all.findIndex(s=>s.frame_id===point.frame_id))};renderEvent();
@@ -1092,7 +1165,7 @@ let playback=null;function stopPlayback(){if(playback!==null)clearTimeout(playba
 function playNext(){const here=all[selected];let nextIndex=selected+1;while(nextIndex<all.length&&all[nextIndex].video_frame_index===here.video_frame_index)nextIndex++;const next=all[nextIndex];if(!next||next.video_frame_index!==here.video_frame_index+1||next.source_frame_seq!==here.source_frame_seq+1){stopPlayback();return}const delay=(next.capture_ns-here.capture_ns)/1e6*Number(el('speed').value);playback=setTimeout(()=>{show(nextIndex,true);playNext()},delay)}
 el('play').onclick=()=>{if(playback!==null){stopPlayback();return}el('play').textContent='Pause';playNext()};el('speed').onchange=stopPlayback;
 
-function readingText(name,o){if(!o)return'not read';let text=o.state+': '+fmt(o.value)+(o.reason?'\n'+o.reason:'');if(name==='main_arrows'&&o.direction_states)text+='\n'+Object.entries(o.direction_states).map(([n,d])=>n+': '+d.state+' ('+d.color+')').join('\n');if(name==='secondary'&&o.cards)text+='\n'+o.cards.map(c=>'Card '+(c.slot+1)+': '+(c.band&&c.frequency?c.band+' '+c.frequency:'text unresolved')+', '+(c.direction||'direction unresolved')+', '+(c.bars_state==='readable'?c.bars+' bars':'bars '+c.bars_state)).join('\n');return text}
+function readingText(name,o){if(!o)return'not read';let text=o.state+': '+fmt(o.value)+(o.reason?'\n'+o.reason:'');if(o.sampled_illumination&&!o.sampled_illumination.within_sampled_ratio_bounds)text+='\nUnequal sampled stroke brightness; literal value retained. '+o.sampled_illumination.meaning;if(name==='main_arrows'&&o.direction_states)text+='\n'+Object.entries(o.direction_states).map(([n,d])=>n+': '+d.state+' ('+d.color+')').join('\n');if(name==='secondary'&&o.cards)text+='\n'+o.cards.map(c=>'Card '+(c.slot+1)+': '+(c.band&&c.frequency?c.band+' '+c.frequency:'text unresolved')+', '+(c.direction||'direction unresolved')+', '+(c.bars_state==='readable'?c.bars+' bars':'bars '+c.bars_state)).join('\n');return text}
 if(result.coverage.transition_windows?.length){const windows=result.coverage.transition_windows;el('coverage').textContent+=' Consecutive input-change windows: '+windows.filter(w=>w.complete_recorded_frame_coverage).length+'/'+windows.length+' had every recorded frame read. Each window is a declared inspection interval, not a response deadline.'}
 
 el('scrub').max=Math.max(0,all.length-1);el('scrub').oninput=e=>show(Number(e.target.value));

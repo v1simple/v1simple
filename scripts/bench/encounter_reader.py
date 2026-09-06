@@ -24,7 +24,7 @@ import counter_reader
 
 FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
-METHOD_VERSION = 8
+METHOD_VERSION = 9
 _ocr_binary = None
 _ocr_setup = None
 _ocr_session = None
@@ -195,25 +195,36 @@ def _frequency(pixels):
         return field("ambiguous", reason="partial or dim frequency segment interiors", cells=details)
     if not all(d is not None and d.isdigit() for d in digits):
         return field("unreadable", reason="frequency does not form five canonical numeric glyphs", cells=details)
-    # An old fading stroke can otherwise turn a clear outer 0 into a valid 8.
-    # Compare strokes within their own digit so a real panel illumination ramp
-    # cannot make one complete cell look like a remnant in another. Bound both
-    # tails within every cell: dim or bright lingering strokes remain ambiguous.
-    for illuminated in illuminated_by_digit:
+    # Definite strokes determine literal content. An extra complete middle
+    # stroke makes an observed 8, which the independent input comparison can
+    # reject when the requested digit is 0. Unequal sampled brightness alone
+    # does not change that literal; retain it without claiming physical
+    # illumination uniformity or a settled panel response.
+    anomalies = []
+    for cell_index, illuminated in enumerate(illuminated_by_digit):
         reference = float(np.median(illuminated)) if illuminated else 0.0
-        if illuminated and (min(illuminated) < reference * .85 or
-                            max(illuminated) > reference / .85):
-            return field("ambiguous", reason="inconsistent illuminated frequency segment levels", cells=details)
+        for name, segment in details[cell_index]["segments"].items():
+            if segment["state"] == "on" and (segment["median"] < reference * .85 or
+                                              segment["median"] > reference / .85):
+                anomalies.append({"cell": cell_index + 1, "segment": name,
+                                  "median": segment["median"], "reference_median": reference,
+                                  "ratio": round(segment["median"] / reference, 6)})
+    illumination = {"within_sampled_ratio_bounds": not anomalies,
+                    "ratio_bounds": [.85, 1 / .85], "anomalies": anomalies,
+                    "meaning": "sampled stroke brightness only; physical uniformity and settling are not evaluated"}
     # The two enclosed holes of every seven-segment cell must stay clear.
     # Extra central ink cannot borrow a valid answer from the sampled strokes.
     for origin in x_origins:
         for top, bottom in ((278, 292), (322, 338)):
             if float(np.mean(pixels.level((origin + 28, top, origin + 40, bottom)) > 40)) > .10:
-                return field("ambiguous", reason="frequency ink enters a glyph background interior", cells=details)
+                return field("ambiguous", reason="frequency ink enters a glyph background interior", cells=details,
+                             sampled_illumination=illumination)
     decimal, _ = _fill(pixels.level((590, 349, 599, 357)))
     if decimal != "on":
-        return field("ambiguous", reason="frequency decimal is not clearly visible", cells=details)
-    return field("readable", "".join(digits[:2]) + "." + "".join(digits[2:]), cells=details)
+        return field("ambiguous", reason="frequency decimal is not clearly visible", cells=details,
+                     sampled_illumination=illumination)
+    return field("readable", "".join(digits[:2]) + "." + "".join(digits[2:]), cells=details,
+                 sampled_illumination=illumination)
 
 
 def _bands(pixels):

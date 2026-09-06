@@ -14,6 +14,8 @@ PIO_CMD="${PIO_CMD:-pio}"
 PORT="${DEVICE_PORT:-}"
 RUN_ALL=0
 RUN_REPLAY=0
+ANALYZE_RECORDING=""
+ANALYSIS_RANGES=()
 CAMERA_REQUESTED=0
 FLASH=1
 COLLECTION_ONLY=0
@@ -27,6 +29,7 @@ ENCOUNTER_REASON=""
 
 usage() {
   printf 'Usage: ./bench.sh --all|--replay [--camera] [--no-flash] [--qualification-capture]\n'
+  printf '       ./bench.sh --analyze-recording DIR [--range START:END ...]\n'
 }
 
 fail_usage() {
@@ -41,6 +44,16 @@ while [[ $# -gt 0 ]]; do
       ;;
     --replay)
       RUN_REPLAY=1
+      ;;
+    --analyze-recording)
+      [[ $# -ge 2 && -z "$ANALYZE_RECORDING" && -n "$2" ]] || fail_usage
+      ANALYZE_RECORDING="$2"
+      shift
+      ;;
+    --range)
+      [[ $# -ge 2 && -n "$2" ]] || fail_usage
+      ANALYSIS_RANGES+=(--range "$2")
+      shift
       ;;
     --camera)
       CAMERA_REQUESTED=1
@@ -62,7 +75,11 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-[[ $((RUN_ALL + RUN_REPLAY)) -eq 1 ]] || fail_usage
+if [[ -n "$ANALYZE_RECORDING" ]]; then
+  [[ $((RUN_ALL + RUN_REPLAY + CAMERA_REQUESTED + QUALIFICATION_CAPTURE)) -eq 0 && "$FLASH" -eq 1 ]] || fail_usage
+else
+  [[ $((RUN_ALL + RUN_REPLAY)) -eq 1 && ${#ANALYSIS_RANGES[@]} -eq 0 ]] || fail_usage
+fi
 if [[ "$QUALIFICATION_CAPTURE" -eq 1 \
       && ("$RUN_REPLAY" -ne 1 || "$RUN_ALL" -ne 0 || "$CAMERA_REQUESTED" -ne 1) ]]; then
   fail_usage
@@ -142,10 +159,6 @@ finish() {
   exit "$status"
 }
 
-if [[ "$GIT_WORKTREE_CLEAN" -ne 1 ]]; then
-  printf 'qualification: source worktree is dirty; exact source identity is unavailable\n' >> "$RUN_LOG"
-  finish 'FAIL (qualification): source worktree is dirty; commit or remove relevant changes before bench qualification' 2
-fi
 
 SIGNALLED=0
 handle_signal() {
@@ -181,46 +194,6 @@ detect_usb_port() {
     | awk '/^\/dev\// && /usbmodem|ttyACM|ttyUSB|usbserial|SLAB_USBtoUART/ {print $1; exit}'
 }
 
-PORT="$(detect_usb_port || true)"
-if [[ -z "$PORT" ]]; then
-  printf 'board: missing\n' >> "$RUN_LOG"
-  finish 'PASS-PARTIAL (skipped: board missing)' 1
-fi
-
-CAMERA_ENABLED=0
-if [[ "$CAMERA_REQUESTED" -eq 1 ]]; then
-  CAMERA_ENABLED=1
-  if command -v system_profiler >/dev/null 2>&1; then
-    CAMERA_NAME="${BENCH_CAMERA_NAME:-Global Shutter Camera}"
-    if ! system_profiler SPCameraDataType 2>/dev/null \
-      | grep -F -- "$CAMERA_NAME" >/dev/null; then
-      CAMERA_ENABLED=0
-    fi
-  fi
-fi
-if ! command -v xcrun >/dev/null 2>&1; then
-  finish 'FAIL (emulator): Xcode command line tools are required to build v1replay' 2
-fi
-if [[ "$FLASH" -eq 1 ]] && ! command -v "$PIO_CMD" >/dev/null 2>&1; then
-  finish 'FAIL (collection): PlatformIO is required to build and flash the firmware' 2
-fi
-
-printf '[bench] building v1replay emulator...\n'
-printf 'v1replay build: started\n' >> "$RUN_LOG"
-build_status=0
-python3 "$ROOT_DIR/scripts/bench/run_logged.py" \
-  --stdout "$RUN_DIR/v1replay_build.log" \
-  --stderr "$RUN_DIR/v1replay_build.err" \
-  --combined "$RUN_LOG" \
-  --quiet \
-  -- "$ROOT_DIR/tools/v1replay/scripts/build.sh" >/dev/null 2>&1 || build_status=$?
-printf 'v1replay build: exit=%s\n' "$build_status" >> "$RUN_LOG"
-if [[ "$SIGNALLED" -eq 1 ]]; then
-  finish 'FAIL (collection): interrupted' 2
-fi
-if [[ "$build_status" -ne 0 || ! -x "$ROOT_DIR/tools/v1replay/.build/v1replay" ]]; then
-  finish 'FAIL (emulator): v1replay build failed' 2
-fi
 
 read_window_result() {
   python3 - "$1" <<'PY'
@@ -400,7 +373,7 @@ try:
             or qualification.get("status") not in ("QUALIFIED", "REJECTED")):
         raise ValueError("visible-event product judgment is malformed")
     contract = product.get("contract", {})
-    if (contract.get("id") != "VISIBLE_EVENT_PRESENTATION" or contract.get("version") != 2
+    if (contract.get("id") != "VISIBLE_EVENT_PRESENTATION" or contract.get("version") != 3
             or contract.get("appearance_deadline_ns") != 100_000_000
             or contract.get("appearance_decision_rule") != "first_source_marker_at_or_after_nominal_deadline"
             or contract.get("maximum_appearance_observation_bracket_ns") != 10_000_000
@@ -408,7 +381,9 @@ try:
             or contract.get("maximum_source_marker_gap_ns") != 10_000_000
             or contract.get("minimum_post_completion_hold_ns") != 312_000_000
             or contract.get("clock") != "host_monotonic_capture_marker"
-            or contract.get("anchor") != "first_complete_target_input_all_accepted_ns"):
+            or contract.get("anchor") != "first_complete_target_input_all_accepted_ns"
+            or contract.get("pre_deadline_observations") != "diagnostic_only"
+            or contract.get("verification_anchor") != "first_source_marker_at_or_after_nominal_deadline"):
         raise ValueError("visible-event product contract is not the supported exact policy")
     event_results = [event.get("result") for event in product["events"] if isinstance(event, dict)]
     if len(event_results) != len(product["events"]) or any(
@@ -485,10 +460,11 @@ try:
         result, reason = "INCONCLUSIVE", f"analysis exit {sys.argv[2]} did not match its retained result"
     if sys.argv[3] == "1" and result == "PASS":
         result, reason = "INCONCLUSIVE", "analysis interrupted; completion was not established"
-except (OSError, KeyError, TypeError, ValueError, AttributeError, json.JSONDecodeError):
+except (OSError, KeyError, TypeError, ValueError, AttributeError, json.JSONDecodeError) as exc:
+    detail = str(exc) if type(exc) is ValueError else "missing or malformed evidence"
     result, tally, required, requests, selected, decoded, gap, first_id, reason = (
         "INCONCLUSIVE", "counts unavailable", "?", "?", "?", "?", "?", "-",
-        f"analysis result is missing, unreadable or inconsistent (exit {sys.argv[2]}; see bench.log)"
+        f"analysis result rejected: {detail} (exit {sys.argv[2]}; see bench.log)"
     )
 reason = " ".join(reason.split())[:240] or "-"
 print("\t".join(map(str, (result, tally, required, requests, selected, decoded, gap, first_id, reason))))
@@ -497,7 +473,7 @@ PY
 
 run_encounter_check() {
   local replay_dir="$1"
-  local encounter_dir="$replay_dir/encounter-check"
+  local encounter_dir="${2:-$replay_dir/encounter-check}"
   local encounter_status=0
   local tally="counts unavailable" required="?" requests="?" selected="?" decoded="?" gap="?" first_id="-" reason="-"
   if [[ "$SIGNALLED" -eq 1 ]]; then
@@ -510,6 +486,7 @@ run_encounter_check() {
     --inspect-transitions \
     --reader-qualification "$ENCOUNTER_QUALIFICATION" \
     --out "$encounter_dir" \
+    "${ANALYSIS_RANGES[@]}" \
     2>&1 | tee -a "$RUN_LOG" || encounter_status=$?
   IFS=$'\t' read -r ENCOUNTER_RESULT tally required requests selected decoded gap first_id reason \
     < <(read_encounter_result "$encounter_dir/result.json" "$encounter_status" 2>/dev/null)
@@ -521,6 +498,7 @@ run_encounter_check() {
     "$ENCOUNTER_RESULT" "$encounter_status" "$ENCOUNTER_QUALIFICATION" >> "$RUN_LOG"
   printf '[bench] visible encounter product: %s | %s / %s required visible events\n' \
     "$ENCOUNTER_RESULT" "$tally" "$required"
+  printf '[bench] timing: the 100 ms requirement is unvalidated; a timing-only failure does not identify a firmware fault\n'
   printf '[bench] encounter coverage: %s requests | %s selected, %s decoded original frames | largest unobserved gap %s\n' \
     "$requests" "$selected" "$decoded" "$gap"
   [[ "$reason" == "-" ]] || printf '[bench] encounter attention: %s\n' "$reason"
@@ -532,6 +510,15 @@ run_encounter_check() {
     printf '[bench] encounter report unavailable; see %s\n' "$RUN_LOG"
   fi
   ENCOUNTER_PRINTED=1
+}
+
+finish_encounter_product() {
+  local label="${1:-visible encounter product}"
+  case "$ENCOUNTER_RESULT" in
+    PASS) finish "PASS ($label)" 0 ;;
+    FAIL) finish "FAIL ($label)" 2 ;;
+    *) finish "INCONCLUSIVE ($label)" 1 ;;
+  esac
 }
 
 write_qualification_capture_record() {
@@ -580,6 +567,61 @@ record = {
 record_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
 }
+
+if [[ -n "$ANALYZE_RECORDING" ]]; then
+  printf '[bench] OFFLINE recorded firmware analysis; no current DUT evaluation or new physical qualification\n'
+  printf 'analysis_mode: OFFLINE_RECORDED_FIRMWARE\nanalysis_git_sha: %s\nanalysis_worktree_clean: %s\n' \
+    "$GIT_SHA" "$GIT_WORKTREE_CLEAN" >> "$RUN_LOG"
+  print_window_summary "$ANALYZE_RECORDING/window_result.json" 'OFFLINE recorded' 2>/dev/null || true
+  run_encounter_check "$ANALYZE_RECORDING" "$RUN_DIR/encounter-check"
+  finish_encounter_product 'OFFLINE recorded visible encounter product'
+fi
+
+if [[ "$GIT_WORKTREE_CLEAN" -ne 1 ]]; then
+  printf 'qualification: source worktree is dirty; exact source identity is unavailable\n' >> "$RUN_LOG"
+  finish 'FAIL (qualification): source worktree is dirty; commit or remove relevant changes before bench qualification' 2
+fi
+
+PORT="$(detect_usb_port || true)"
+if [[ -z "$PORT" ]]; then
+  printf 'board: missing\n' >> "$RUN_LOG"
+  finish 'PASS-PARTIAL (skipped: board missing)' 1
+fi
+
+CAMERA_ENABLED=0
+if [[ "$CAMERA_REQUESTED" -eq 1 ]]; then
+  CAMERA_ENABLED=1
+  if command -v system_profiler >/dev/null 2>&1; then
+    CAMERA_NAME="${BENCH_CAMERA_NAME:-Global Shutter Camera}"
+    if ! system_profiler SPCameraDataType 2>/dev/null \
+      | grep -F -- "$CAMERA_NAME" >/dev/null; then
+      CAMERA_ENABLED=0
+    fi
+  fi
+fi
+if ! command -v xcrun >/dev/null 2>&1; then
+  finish 'FAIL (emulator): Xcode command line tools are required to build v1replay' 2
+fi
+if [[ "$FLASH" -eq 1 ]] && ! command -v "$PIO_CMD" >/dev/null 2>&1; then
+  finish 'FAIL (collection): PlatformIO is required to build and flash the firmware' 2
+fi
+
+printf '[bench] building v1replay emulator...\n'
+printf 'v1replay build: started\n' >> "$RUN_LOG"
+build_status=0
+python3 "$ROOT_DIR/scripts/bench/run_logged.py" \
+  --stdout "$RUN_DIR/v1replay_build.log" \
+  --stderr "$RUN_DIR/v1replay_build.err" \
+  --combined "$RUN_LOG" \
+  --quiet \
+  -- "$ROOT_DIR/tools/v1replay/scripts/build.sh" >/dev/null 2>&1 || build_status=$?
+printf 'v1replay build: exit=%s\n' "$build_status" >> "$RUN_LOG"
+if [[ "$SIGNALLED" -eq 1 ]]; then
+  finish 'FAIL (collection): interrupted' 2
+fi
+if [[ "$build_status" -ne 0 || ! -x "$ROOT_DIR/tools/v1replay/.build/v1replay" ]]; then
+  finish 'FAIL (emulator): v1replay build failed' 2
+fi
 
 V1REPLAY_EXECUTABLE="$ROOT_DIR/tools/v1replay/.build/v1replay"
 SUITES=(core display replay)
@@ -694,16 +736,6 @@ if [[ "$QUALIFICATION_CAPTURE" -eq 1 ]]; then
   finish 'QUALIFICATION-CAPTURED (pixels withheld; visible product NOT_EVALUATED)' 0
 fi
 if [[ "$CAMERA_REQUESTED" -eq 1 ]]; then
-  case "$ENCOUNTER_RESULT" in
-    PASS)
-      finish 'PASS (visible encounter product)' 0
-      ;;
-    FAIL)
-      finish 'FAIL (visible encounter product)' 2
-      ;;
-    INCONCLUSIVE|NOT_EVALUATED)
-      finish 'INCONCLUSIVE (visible encounter product)' 1
-      ;;
-  esac
+  finish_encounter_product
 fi
 finish 'PASS' 0

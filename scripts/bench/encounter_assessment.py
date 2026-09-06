@@ -138,6 +138,61 @@ def _after_correct(events):
     return result
 
 
+def event_findings(sequence, product):
+    """Index literal witnesses independently of the timed policy verdict.
+
+    Differences during acquisition are measurements, not automatically firmware
+    faults. Keep the last original witness as well as the first: a card still
+    present seconds later must not be buried behind an early transition image.
+    """
+    decisions = {event["event_id"]: event for event in (product or {}).get("events", [])}
+    findings = []
+    for event in sequence.get("events", []):
+        if product is not None and event["event_id"] not in decisions:
+            continue
+        if product is None and not _declared(event):
+            continue
+        differences, unknowns = {}, {}
+        target = event.get("target") or {}
+        for span in event.get("observation_spans", []):
+            judgment = span.get("judgment", {})
+            # A target still being sent is not yet an expected screen state.
+            status = judgment.get("status")
+            if status == "INPUT_IN_PROGRESS":
+                continue
+            comparable = status in ("CORRECT", "NOT_CORRECT", "UNRESOLVED")
+            wrong = list(judgment.get("not_correct_fields", [])) if comparable else []
+            if comparable and judgment.get("joint_state") in _DEFINITE:
+                wrong.append("joint_state")
+            for name in wrong:
+                observed = deepcopy(span.get("observed", {}).get(name))
+                group = differences.setdefault(name, {
+                    "field": name, "frames": 0, "first": deepcopy(span["first"]),
+                    "first_observed": observed,
+                    "expected": deepcopy(target.get("joint_states") if name == "joint_state"
+                                         else target.get("fields", {}).get(name)),
+                })
+                group.update(last=deepcopy(span["last"]), last_observed=observed)
+                group["frames"] += span["frame_count"]
+            unresolved = list(judgment.get("unresolved_fields", [])) if comparable else list(FIELDS)
+            if judgment.get("joint_state") in ("UNRESOLVED", "CONDITIONAL", "NOT_EVALUATED"):
+                unresolved.append("joint_state")
+            for name in unresolved:
+                group = unknowns.setdefault(name, {"field": name, "frames": 0,
+                                                  "first": deepcopy(span["first"])})
+                group["frames"] += span["frame_count"]
+                group["last"] = deepcopy(span["last"])
+        findings.append({"event_id": event["event_id"],
+                         "policy_result": decisions.get(event["event_id"], {}).get("result"),
+                         "input": deepcopy(event.get("wire_rows", [])),
+                         "input_anchor_ns": (event.get("target_basis") or {}).get("first_complete_target_input_ns"),
+                         "first_correct": deepcopy(event.get("first_correct")),
+                         "differences": list(differences.values()),
+                         "unresolved": list(unknowns.values()),
+                         "coverage": deepcopy(event.get("coverage", {}))})
+    return findings
+
+
 def assess(samples, errors, sequence):
     """Summarize existing comparisons and event observations without new readings.
 

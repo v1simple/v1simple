@@ -22,6 +22,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "bench"))
 
+from encounter_product import judge_visible_event_presentation  # noqa: E402
 import run_window as run_window_module  # noqa: E402
 from run_window import (  # noqa: E402
     BENCH_TIMELINE_NAME,
@@ -934,6 +935,9 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
                           write_encounter_result: bool = True,
                           interrupt_encounter: bool = False,
                           run_all: bool = False,
+                          offline: bool = False,
+                          analysis_ranges: tuple[str, ...] = (),
+                          extra_arguments: tuple[str, ...] = (),
                           qualification_capture: bool = False,
                           capture_records: list[dict | None] | None = None,
                           ) -> tuple[subprocess.CompletedProcess[str], int, int, int]:
@@ -1021,16 +1025,7 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
                                                            "status": "QUALIFIED", "errors": []})
             encounter.setdefault("primary_judgment", {
                 "schema_version": 1, "kind": "visible_event_presentation",
-                "contract": {"id": "VISIBLE_EVENT_PRESENTATION", "version": 2,
-                             "clock": "host_monotonic_capture_marker",
-                             "anchor": "first_complete_target_input_all_accepted_ns",
-                             "appearance_deadline_ns": 100_000_000,
-                             "appearance_decision_rule":
-                                 "first_source_marker_at_or_after_nominal_deadline",
-                             "maximum_appearance_observation_bracket_ns": 10_000_000,
-                             "verification_duration_ns": 192_000_000,
-                             "maximum_source_marker_gap_ns": 10_000_000,
-                             "minimum_post_completion_hold_ns": 312_000_000},
+                "contract": judge_visible_event_presentation([])["contract"],
                 "execution": {"status": "COMPLETE", "fatal_integrity_errors": [],
                               "temporal_classification_errors": []},
                 "events": [event], "counts": product_counts,
@@ -1048,6 +1043,10 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
             if [[ "${{1:-}}" == "-c" ]]; then printf 'fixture\\n'; exit 0; fi
             if [[ "${{1:-}}" == "-" ]]; then exec {sys.executable} "$@"; fi
             if [[ "${{1:-}}" == */scripts/bench/run_logged.py ]]; then
+              if [[ "$FAKE_OFFLINE" == 1 ]]; then
+                printf 'hardware called\\n' >> "$FAKE_HARDWARE_MARKER"
+                exit 97
+              fi
               if [[ " $* " == *"/tools/v1replay/scripts/build.sh"* ]]; then
                 mkdir -p "$fixture_root/tools/v1replay/.build"
                 printf '#!/bin/sh\\nexit 0\\n' > "$fixture_root/tools/v1replay/.build/v1replay"
@@ -1083,6 +1082,9 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
               transition_review=0
               reader_qualification=0
               for ((index=0; index<${{#args[@]}}; index++)); do
+                if [[ "${{args[index]}}" == "--range" ]]; then
+                  printf '%s\\n' "${{args[index+1]}}" >> "$FAKE_RANGE_MARKER"
+                fi
                 if [[ "${{args[index]}}" == "--out" ]]; then out="${{args[index+1]}}"; fi
                 if [[ "${{args[index]}}" == "--run-dir" ]]; then run="${{args[index+1]}}"; fi
                 if [[ "${{args[index]}}" == "--inspect-transitions" ]]; then transition_review=1; fi
@@ -1107,7 +1109,15 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
         """), encoding="utf-8")
         python.chmod(0o755)
         device = root / "device"
-        device.touch()
+        if not offline:
+            device.touch()
+        hardware_marker = root / "hardware.calls"
+        range_marker = root / "ranges.calls"
+        recorded = root / "recorded"
+        recorded.mkdir()
+        (recorded / "window_result.json").write_bytes(window_path.read_bytes())
+        if offline:
+            profiler.write_text("#!/bin/sh\nprintf 'called\\n' >> \"$FAKE_HARDWARE_MARKER\"\nexit 97\n", encoding="utf-8")
         environment = dict(os.environ)
         environment.update(
             PATH=str(fake_bin) + os.pathsep + environment.get("PATH", ""),
@@ -1116,6 +1126,9 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
             BENCH_DURATION_SECONDS="1",
             BENCH_REPLAY_DURATION_SECONDS="1",
             BENCH_POST_UPLOAD_SETTLE_SECONDS="0",
+            FAKE_OFFLINE=str(int(offline)),
+            FAKE_HARDWARE_MARKER=str(hardware_marker),
+            FAKE_RANGE_MARKER=str(range_marker),
             FAKE_WINDOW_JSON=str(window_path),
             FAKE_WINDOW_EXIT=str(window_status),
             FAKE_COUNTER_JSON=str(counter_path),
@@ -1129,12 +1142,27 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
             FAKE_VISUAL_MARKER=str(visual_marker),
             FAKE_VISUAL_EXIT=str(visual_exit),
         )
-        arguments = [str(bench), "--all" if run_all else "--replay", "--no-flash"]
-        if camera:
+        arguments = ([str(bench), "--analyze-recording", str(recorded)] if offline else
+                     [str(bench), "--all" if run_all else "--replay", "--no-flash"])
+        for value in analysis_ranges:
+            arguments.extend(("--range", value))
+        arguments.extend(extra_arguments)
+        if camera and not offline:
             arguments.append("--camera")
         if qualification_capture:
             arguments.append("--qualification-capture")
         process = subprocess.run(arguments, cwd=root, env=environment, capture_output=True, text=True)
+        if offline:
+            assert_true(not hardware_marker.exists(), "offline analysis called hardware")
+            assert_true(sorted(child.name for child in recorded.iterdir()) == ["window_result.json"],
+                        "offline analysis wrote into the retained recording")
+            assert_true((recorded / "window_result.json").read_bytes() == window_path.read_bytes(),
+                        "offline analysis changed retained collection evidence")
+            if encounter_marker.exists():
+                outputs = list((root / "artifacts").glob("*/runs/*/encounter-check/result.json"))
+                assert_true(len(outputs) == 1, "offline output is not in a new ordinary run directory")
+                ranges = range_marker.read_text().splitlines() if range_marker.exists() else []
+                assert_true(ranges == list(analysis_ranges), "offline ranges were not forwarded exactly")
         counter_calls = len(counter_marker.read_text().splitlines()) if counter_marker.exists() else 0
         encounter_calls = len(encounter_marker.read_text().splitlines()) if encounter_marker.exists() else 0
         visual_calls = len(visual_marker.read_text().splitlines()) if visual_marker.exists() else 0
@@ -1142,6 +1170,97 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
             records = list((root / "artifacts").glob("*/runs/*/replay/qualification_capture.json"))
             capture_records.append(json.loads(records[0].read_text(encoding="utf-8")) if len(records) == 1 else None)
         return process, counter_calls, encounter_calls, visual_calls
+
+
+def generated_encounter_payload(outcomes: tuple[str, ...]) -> dict:
+    """Run the current product evaluator on existing realistic event fixtures."""
+    from collections import Counter
+    from test_encounter_product import MS, make_event, set_observation
+
+    events, samples = [], []
+    fields = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
+              "main_bars", "secondary", "muted_badge")
+    statuses = {"CURRENT": "MATCH", "PREVIOUS": "PREVIOUS_INPUT_STATE",
+                "DEFINITE_OTHER": "DIFFERENCE", "UNRESOLVED": "UNRESOLVED"}
+    for number, outcome in enumerate(outcomes, 1):
+        event = make_event(event_id=f"event-{number:04d}", first_current_ns=0)
+        if outcome != "PASS":
+            set_observation(event, 100 * MS,
+                            "DEFINITE_OTHER" if outcome == "FAIL" else "UNRESOLVED",
+                            fields=("primary_frequency",))
+        for observation in event["observations"]:
+            observation["frame_id"] = f"event-{number:04d}-" + observation["frame_id"]
+            status = statuses[observation["raw_status"]]
+            samples.append({"frame_id": observation["frame_id"], "comparison": {
+                "checks": {field: {"status": status} for field in fields},
+                "joint_state": {"status": "MATCH"}}})
+        events.append(event)
+    product = judge_visible_event_presentation(events)
+    counts = Counter(check["status"] for sample in samples
+                     for check in sample["comparison"]["checks"].values())
+    raw = ("FAIL" if counts["DIFFERENCE"] else
+           "PASS" if counts["MATCH"] == len(samples) * 7 else "INCONCLUSIVE")
+    return {
+        "kind": "sampled_encounter_check", "result": product["result"],
+        "primary_judgment": product, "raw_frame_result": raw, "errors": [],
+        "reader_qualification": {"status": "QUALIFIED", "errors": []},
+        "samples": samples,
+        "counts": {"required": len(samples) * 7, "fields": dict(counts),
+                   "joint_states": {"MATCH": len(samples)}},
+        "coverage": {"requests": len(samples), "selected_unique_frames": len(samples),
+                     "unique_frames": len(samples),
+                     "regions": [{"maximum_unobserved_gap_seconds": .005}]},
+    }
+
+
+def test_bench_cli_consumes_current_producer_results_online_and_offline() -> None:
+    for outcomes in (("PASS",), ("FAIL",), ("INCONCLUSIVE",),
+                     ("PASS", "FAIL", "INCONCLUSIVE")):
+        payload = generated_encounter_payload(outcomes)
+        result = payload["result"]
+        counts = payload["primary_judgment"]["counts"]
+        expected_counts = (f"{counts['passed']} passed, {counts['failed']} failed, "
+                           f"{counts['inconclusive']} inconclusive / "
+                           f"{counts['required_events']} required visible events")
+        for offline in (False, True):
+            process, counter_calls, encounter_calls, _ = run_bench_cli_fixture(
+                "PASS", "PASS", encounter_result=result, encounter_payload=payload,
+                offline=offline, analysis_ranges=("4.99:5.40", "8.99:9.34") if offline else ())
+            assert_true(process.returncode == {"PASS": 0, "FAIL": 2, "INCONCLUSIVE": 1}[result],
+                        process.stdout + process.stderr)
+            assert_true(expected_counts in process.stdout, process.stdout)
+            assert_true(encounter_calls == 1 and counter_calls == int(not offline), process.stdout)
+            if offline:
+                assert_true("OFFLINE recorded firmware analysis" in process.stdout, process.stdout)
+                assert_true("OFFLINE recorded runtime: git " in process.stdout, process.stdout)
+                assert_true(process.stdout.splitlines()[-1] ==
+                            f"{result} (OFFLINE recorded visible encounter product)", process.stdout)
+
+
+def test_bench_cli_rejects_old_or_incomplete_product_contract_explicitly() -> None:
+    for key, value in (("version", 2), ("pre_deadline_observations", "acceptance"),
+                       ("verification_anchor", "first_current_correct")):
+        payload = generated_encounter_payload(("PASS",))
+        payload["primary_judgment"]["contract"][key] = value
+        process, _, _, _ = run_bench_cli_fixture("PASS", "PASS", encounter_payload=payload)
+        assert_true(process.returncode == 1, process.stdout)
+        assert_true("visible-event product contract is not the supported exact policy" in process.stdout,
+                    process.stdout)
+        assert_true(process.stdout.splitlines()[-1] == "INCONCLUSIVE (visible encounter product)",
+                    process.stdout)
+
+
+def test_bench_cli_offline_mode_rejects_hardware_flags_and_live_ranges() -> None:
+    for arguments in (("--replay",), ("--all",), ("--camera",), ("--no-flash",),
+                      ("--qualification-capture",)):
+        process, counter_calls, encounter_calls, _ = run_bench_cli_fixture(
+            "PASS", "PASS", offline=True, extra_arguments=arguments)
+        assert_true(process.returncode == 2 and counter_calls == encounter_calls == 0,
+                    process.stdout + process.stderr)
+    process, counter_calls, encounter_calls, _ = run_bench_cli_fixture(
+        "PASS", "PASS", analysis_ranges=("0:1",))
+    assert_true(process.returncode == 2 and counter_calls == encounter_calls == 0,
+                process.stdout + process.stderr)
 
 
 def test_bench_cli_propagates_encounter_verdicts_with_fixed_precedence() -> None:
@@ -1635,6 +1754,9 @@ def main() -> int:
     test_top_level_pass_is_vetoed_by_empty_delivery_stream()
     test_clean_source_preserves_qualified_pass_behavior()
     test_bench_cli_collection_only_branch_has_no_pass_verdict()
+    test_bench_cli_consumes_current_producer_results_online_and_offline()
+    test_bench_cli_rejects_old_or_incomplete_product_contract_explicitly()
+    test_bench_cli_offline_mode_rejects_hardware_flags_and_live_ranges()
     test_bench_cli_propagates_encounter_verdicts_with_fixed_precedence()
     test_bench_cli_preserves_non_camera_and_hard_collection_results()
     test_bench_cli_qualification_capture_withholds_all_pixel_readers()

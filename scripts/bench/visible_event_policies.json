@@ -116,12 +116,13 @@
     },
     "v1-normal-x-k-ka-blink96-v3": {
       "appearance_deadline_ns": 100000000,
+      "appearance_requirement_status": "UNVALIDATED",
       "basis": [
         {
-          "path": "include/config.h",
-          "reason": "Two declared 50 ms display-update intervals bound target appearance.",
-          "symbol": "DISPLAY_UPDATE_MS",
-          "value_ms": 50
+          "path": "scripts/bench/visible_event_policies.json",
+          "reason": "Retained 100 ms assessment boundary, not an established firmware requirement. DISPLAY_UPDATE_MS services connection state; it does not schedule live alert rendering or bound host-to-display response.",
+          "symbol": "appearance_deadline_ns",
+          "value_ms": 100
         },
         {
           "path": "src/display.h",

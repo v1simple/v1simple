@@ -13,6 +13,7 @@ from PIL import Image, ImageDraw, ImageFilter
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "bench"))
 import encounter_reader as reader
+from encounter_expectation import compare_sample
 from test_counter_reader import picture, registration
 
 WIDTH, HEIGHT = 1280, 720
@@ -80,6 +81,13 @@ def ocr_result(*texts):
     return [{"rows": [{"candidates": [{"text": text, "confidence": 1.0}]}]} for text in texts]
 
 
+def compare_frequency(observed, expected_value):
+    expected = {"fields": {name: {"unresolved": "outside this frequency control"}
+                           for name in reader.FIELDS}, "joint_states": []}
+    expected["fields"]["primary_frequency"] = {"allowed": [expected_value]}
+    return compare_sample(expected, {"primary_frequency": observed})["checks"]["primary_frequency"]
+
+
 class EncounterReaderTests(unittest.TestCase):
     def read(self, im):
         return reader.observe(im.tobytes(), *im.size, REGISTRATION)
@@ -104,21 +112,23 @@ class EncounterReaderTests(unittest.TestCase):
         self.assertEqual(observed["state"], "readable", observed)
         self.assertEqual(observed["value"], "38.902")
 
-    def test_fading_center_stroke_refuses_while_uniform_eight_is_readable(self):
+    def test_complete_extra_center_changes_literal_and_rejects_requested_zero(self):
         # Both dim centers exceed the absolute illuminated-pixel threshold.
-        # A decoder that only combines on segments would wrongly certify 8.
+        # Their visible 8 must disagree with the requested 0; recognition gets
+        # no expected value and does not mistake this for uniform illumination.
         for brightness in (115, 175):
             im = display("34.700")
             ImageDraw.Draw(im).rectangle((693, 300, 748, 314), fill=(brightness, 15, 10))
             observed = self.read(im)["primary_frequency"]
-            self.assertEqual(observed["state"], "ambiguous", observed)
-            self.assertIsNone(observed["value"])
-            self.assertIn("inconsistent illuminated", observed["reason"])
+            self.assertEqual((observed["state"], observed["value"]), ("readable", "34.780"), observed)
+            self.assertEqual(compare_frequency(observed, "34.700")["status"], "DIFFERENCE")
+            self.assertFalse(observed["sampled_illumination"]["within_sampled_ratio_bounds"])
         im = display("34.700")
         ImageDraw.Draw(im).rectangle((693, 300, 748, 314), fill=ORANGE)
         observed = self.read(im)["primary_frequency"]
         self.assertEqual(observed["state"], "readable", observed)
         self.assertEqual(observed["value"], "34.780")
+        self.assertTrue(observed["sampled_illumination"]["within_sampled_ratio_bounds"])
 
     def test_partial_stroke_and_foreign_ink_refuse(self):
         partial = display()
@@ -542,20 +552,42 @@ class FrequencyContrastControls(unittest.TestCase):
                        for segment in digit["segments"].values() if segment["state"] == "on"]
         self.assertLess(min(illuminated), float(np.median(illuminated)) * .85)
 
-    def test_bright_lingering_stroke_among_dim_new_strokes_refuses(self):
+    def test_bright_lingering_stroke_is_a_literal_mismatch_with_anomaly(self):
         pixels = np.array(display("34.700"))
         pixels[250:363, 445:840] = (pixels[250:363, 445:840].astype(float) * .795).astype(np.uint8)
         image = Image.fromarray(pixels)
         ImageDraw.Draw(image).rectangle((693, 300, 748, 314), fill=ORANGE)
         observed = self.frequency(image)
-        self.assertEqual((observed["state"], observed["value"]), ("ambiguous", None), observed)
-        self.assertIn("inconsistent illuminated", observed["reason"])
+        self.assertEqual((observed["state"], observed["value"]), ("readable", "34.780"), observed)
+        self.assertEqual(compare_frequency(observed, "34.700")["status"], "DIFFERENCE")
+        self.assertFalse(observed["sampled_illumination"]["within_sampled_ratio_bounds"])
+        self.assertEqual([(item["cell"], item["segment"]) for item in
+                          observed["sampled_illumination"]["anomalies"]], [(4, "g")])
 
-    def test_dim_lingering_stroke_with_same_color_ratio_refuses(self):
+    def test_dim_lingering_stroke_is_a_literal_mismatch_with_anomaly(self):
         image = display("34.700")
         ImageDraw.Draw(image).rectangle((693, 300, 748, 314), fill=tuple(round(c * .795) for c in ORANGE))
         observed = self.frequency(image)
-        self.assertEqual((observed["state"], observed["value"]), ("ambiguous", None), observed)
+        self.assertEqual((observed["state"], observed["value"]), ("readable", "34.780"), observed)
+        self.assertEqual(compare_frequency(observed, "34.700")["status"], "DIFFERENCE")
+        self.assertFalse(observed["sampled_illumination"]["within_sampled_ratio_bounds"])
+
+    def test_unequal_complete_glyph_keeps_literal_and_brightness_anomaly(self):
+        image = display("71.111")
+        draw = ImageDraw.Draw(image)
+        for origin, digit in zip((454, 520, 616, 688, 764), "71111"):
+            for segment in DIGITS[digit]:
+                x1, y1, x2, y2 = STROKES[segment]
+                draw.rectangle((origin + x1, y1, origin + x2, y2), fill=(175, 79, 8))
+        # A complete top stroke with a brighter core still conveys 7. It is
+        # wrong for an input requesting 1, but not a different digit from 7.
+        draw.rectangle((472, 261, 494, 265), fill=ORANGE)
+        observed = self.frequency(image)
+        self.assertEqual((observed["state"], observed["value"]), ("readable", "71.111"), observed)
+        self.assertEqual(compare_frequency(observed, "71.111")["status"], "MATCH")
+        self.assertEqual(compare_frequency(observed, "11.111")["status"], "DIFFERENCE")
+        self.assertEqual([(item["cell"], item["segment"]) for item in
+                          observed["sampled_illumination"]["anomalies"]], [(1, "a")])
 
     def test_all_numeric_glyphs_in_each_cell(self):
         for position in range(5):

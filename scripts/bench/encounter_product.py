@@ -190,6 +190,7 @@ def _contract(policy_id: str, policy: dict[str, Any]) -> dict[str, Any]:
         "clock": policy["clock"],
         "anchor": policy["input_anchor"],
         "appearance_deadline_ns": policy["appearance_deadline_ns"],
+        "appearance_requirement_status": policy.get("appearance_requirement_status", "UNVALIDATED"),
         "verification_duration_ns": policy["verification_duration_ns"],
         "maximum_source_marker_gap_ns": policy["maximum_source_marker_gap_ns"],
         "range_guard_ns": policy["range_guard_ns"],

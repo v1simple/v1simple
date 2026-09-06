@@ -11,6 +11,13 @@ from encounter_product import judge_visible_event_presentation as judge, load_po
 
 
 class FunctionalProductTests(unittest.TestCase):
+    def test_timing_assumption_is_explicit_without_changing_the_observation_boundary(self):
+        result = judge([make_event()])
+        self.assertEqual(result["contract"]["appearance_requirement_status"], "UNVALIDATED")
+        self.assertEqual(result["contract"]["appearance_deadline_ns"], 100 * MS)
+        self.assertEqual(result["contract"]["verification_duration_ns"], 192 * MS)
+        self.assertEqual(result["result"], "PASS")
+
     def qualified(self, event, point, semantics):
         policy = load_policy()
         policy["qualified_temporal_classifier_ids"] = [TEST_CLASSIFIER]

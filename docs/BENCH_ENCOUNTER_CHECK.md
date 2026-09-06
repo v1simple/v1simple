@@ -10,9 +10,15 @@ packet bytes, or timestamps while reading pixels.
 The primary bench answer is the qualified `VISIBLE_EVENT_PRESENTATION/v3`
 verdict. A raw frame result remains in the report for diagnosis, but it does not
 control the product verdict. `INCONCLUSIVE` at the product layer is a failure of
-the testing product to answer the question. Repair the reader, qualification,
-capture, configuration evidence, or unsupported scope before treating that run
-as useful product evidence.
+the testing product to answer the question. Known differences in other fields
+remain useful evidence; an unresolved required event still blocks completion.
+
+**The 100 ms appearance requirement is unvalidated.** Its original justification
+used `DISPLAY_UPDATE_MS`, which services connection state, not live alert
+rendering. The existing boundary and policy verdicts are retained for comparison;
+they do not establish firmware timing compliance. The report separately indexes
+first complete target observations, latest differing-field witnesses and reader
+unknowns. It does not turn every acquisition image into a firmware failure.
 
 This product currently covers normal-runtime V1 X, K, and Ka presentation with
 exactly one primary alert whenever alerts are live and at most two associated
@@ -32,6 +38,19 @@ junk/photo rows, or layouts outside the registered display. Those events remain
 unsupported rather than receiving a convenient answer.
 
 ## Run the product
+
+To evaluate an existing recording through the same analyzer and result consumer,
+without operating hardware:
+
+```sh
+./bench.sh --analyze-recording /path/to/retained/replay
+```
+
+The command writes a new result directory and identifies the recorded firmware.
+It leaves the source recording intact and does not evaluate the current connected
+DUT. Repeat `--range START:END` to evaluate preselected intervals in seconds from
+the first replay request. Without ranges, the full existing event selection is
+used. Original images, observations and policy results remain in the report.
 
 The normal replay and camera bench is:
 
@@ -176,8 +195,9 @@ fixed by that profile; the command line cannot loosen them.
 | Selected event window | `[anchor - 10 ms, min(anchor + 312 ms, actual event end))` |
 | Separate closure context | `[anchor + 312 ms, min(anchor + 392 ms, actual event end))`, when nonempty |
 
-The 100 ms appearance bound is two declared 50 ms display-update intervals. The
-192 ms verification interval covers two 96 ms image phases. The 10 ms source
+The 100 ms appearance boundary is a retained analysis parameter with an
+unvalidated requirement, not a bound established by the firmware's connection
+service cadence. The 192 ms verification interval covers two 96 ms image phases. The 10 ms source
 bound is two periods of the fixed 200 fps camera profile. Version 3 gives the
 deadline exactly one observation opportunity: the first recorded source marker
 at or after 100 ms. Its gap from the immediately preceding marker must be no more
@@ -242,7 +262,7 @@ and continued presentation; it does not prove physical appearance by exactly
 
 ## Reader V7
 
-Reader V7 is a fixed-layout instrument calibrated from the registered `SCAN`
+Reader V9 is a fixed-layout instrument calibrated from the registered `SCAN`
 landmark. It first requires two lit display witnesses so a dark or occluded
 screen cannot be interpreted as valid absence. It records literal states such
 as `readable`, `absent`, `ambiguous`, and `unreadable`; a refusal is never
@@ -250,8 +270,12 @@ converted to absence.
 
 The counter, five-digit primary frequency, band labels, main bars, arrows, and
 mute badge use fixed geometric measurements. Frequency digits require canonical
-seven-segment masks, a visible decimal, clear glyph interiors, and consistent
-illuminated strokes within each digit. Main and secondary strength meters
+seven-segment masks, a visible decimal and clear glyph interiors. Definite
+complete strokes determine the literal digits even when sampled brightness is
+unequal. A complete extra middle stroke that forms an 8 is read as 8 and fails
+the independent comparison when the input requested 0. Brightness anomalies
+remain visible in the report; reading the value does not certify optical
+uniformity or panel settling. Partial strokes still refuse. Main and secondary strength meters
 require contiguous filled cells and reject partial strokes. Arrow decisions use
 fixed probes plus each glyph interior; all three directions are measured before
 the combined field is resolved. The reader retains a 4-by-4 arrow intensity

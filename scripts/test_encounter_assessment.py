@@ -6,7 +6,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from bench.encounter_assessment import assess
+from bench.encounter_assessment import assess, event_findings
 from bench.encounter_expectation import FIELDS
 
 
@@ -38,6 +38,48 @@ def span(first, status="CORRECT", count=1, wrong=None, unknown=None):
 
 
 class EncounterAssessmentTests(unittest.TestCase):
+    def test_event_findings_keep_wrong_and_unreadable_beside_correct_and_preserve_last_witness(self):
+        first, later, last = sample(1), sample(2), sample(3)
+        wrong = span(later, "NOT_CORRECT", wrong=["secondary"], unknown=["main_arrows"])
+        wrong["observed"]["secondary"] = {"state": "readable", "value": ["Ka34.700"]}
+        final = copy.deepcopy(wrong)
+        final.update(first=point(last), last=point(last))
+        pending = copy.deepcopy(wrong)
+        pending["judgment"]["status"] = "INPUT_IN_PROGRESS"
+        item = event(first, [pending, span(first), wrong, final])
+        item["target"] = {"fields": {"secondary": {"allowed": [[]]}}}
+        item["target_basis"] = {"first_complete_target_input_ns": 10}
+        untouched = copy.deepcopy(item)
+        findings = event_findings({"events": [item]}, {"events": [
+            {"event_id": "event-1", "result": "FAIL"}]})
+        self.assertEqual(item, untouched)
+        finding = findings[0]
+        self.assertEqual(finding["first_correct"], point(first))
+        self.assertEqual(finding["differences"][0]["frames"], 2)
+        self.assertEqual(finding["differences"][0]["first"], point(later))
+        self.assertEqual(finding["differences"][0]["last"], point(last))
+        self.assertEqual(finding["differences"][0]["expected"], {"allowed": [[]]})
+        self.assertEqual(finding["unresolved"][0]["frames"], 2)
+        self.assertEqual(finding["unresolved"][0]["field"], "main_arrows")
+
+    def test_event_findings_keep_unobserved_required_event_and_exclude_outside_policy_scope(self):
+        missing = event(None)
+        outside = event(sample(1))
+        outside["event_id"] = "outside"
+        result = event_findings({"events": [missing, outside]}, {"events": [
+            {"event_id": "event-1", "result": "INCONCLUSIVE"}]})
+        self.assertEqual(len(result), 1)
+        self.assertIsNone(result[0]["first_correct"])
+        self.assertEqual(result[0]["policy_result"], "INCONCLUSIVE")
+
+    def test_event_findings_do_not_hide_unread_images_or_unresolved_input(self):
+        for status in ("UNREAD", "INPUT_UNRESOLVED"):
+            item = event(None, [span(sample(1), status, wrong=["secondary"])])
+            finding = event_findings({"events": [item]}, None)[0]
+            self.assertEqual(finding["differences"], [])
+            self.assertEqual({u["field"] for u in finding["unresolved"]}, set(FIELDS))
+            self.assertTrue(all(u["frames"] == 1 for u in finding["unresolved"]))
+
     def test_held_failure_survives_unknown_and_successful_event_response(self):
         first = sample(1)
         wrong = sample(2, changes={"main_bars": {"status": "DIFFERENCE", "reason": "wrong strength"},

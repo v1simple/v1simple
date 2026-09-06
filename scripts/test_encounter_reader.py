@@ -143,6 +143,29 @@ class EncounterReaderTests(unittest.TestCase):
             observed = self.read(im)["primary_frequency"]
             self.assertEqual(observed["state"], "ambiguous", (box, observed))
             self.assertIsNone(observed["value"])
+        verticals = placeholder()
+        draw = ImageDraw.Draw(verticals)
+        draw.rectangle((504, 271, 514, 301), fill=(15, 15, 15))
+        draw.rectangle((504, 315, 514, 345), fill=(15, 15, 15))
+        self.assertEqual(self.read(verticals)["primary_frequency"]["state"], "ambiguous")
+
+    def test_empty_frequency_background_boundary_and_gradient_are_not_glyphs(self):
+        boundary = display(None)
+        draw = ImageDraw.Draw(boundary)
+        draw.rectangle((448, 252, 848, 362), fill=(18, 18, 18))
+        draw.rectangle((448, 252, 833, 362), fill=(0, 0, 0))
+        gradient = display(None)
+        draw = ImageDraw.Draw(gradient)
+        for x in range(448, 849):
+            value = (x - 448) // 20
+            draw.line((x, 252, x, 362), fill=(value,) * 3)
+        for im in (boundary, gradient):
+            observed = self.read(im)["primary_frequency"]
+            self.assertEqual(observed["state"], "absent", observed)
+            # A genuine isolated dim mark inside the glyph body still refuses.
+            ImageDraw.Draw(im).rectangle((650, 275, 658, 290), fill=(25, 25, 25))
+            observed = self.read(im)["primary_frequency"]
+            self.assertEqual(observed["state"], "ambiguous", observed)
 
     def test_erased_whole_stroke_changes_observed_digit(self):
         im = display("98.902")

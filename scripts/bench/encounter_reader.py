@@ -24,7 +24,7 @@ import counter_reader
 
 FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
-METHOD_VERSION = 11
+METHOD_VERSION = 12
 _ocr_binary = None
 _ocr_setup = None
 _ocr_session = None
@@ -199,15 +199,28 @@ def _dark_frequency_placeholder(pixels, details):
                            and part["p10"] >= decimal_background + 1 for part in decimal_levels)
     # The remaining upper/lower glyph body must be dark. A numeric remnant
     # cannot borrow five horizontal strokes to become a dash-only literal.
-    background = float(np.median(pixels.level((448, 270, 840, 290))))
     extra_contrast = 0.0
-    guards = ((448, 258, 840, 292), (448, 321, 840, 341),
-              (448, 347, 600, 359), (632, 347, 840, 359),
+    # Upper/lower guards cover the numeric glyph bodies (x454..828), with
+    # right padding to832. The coarse frequency ROI extends past those bodies
+    # into background beside the bar column; that margin is not glyph ink.
+    guards = ((454, 258, 832, 292), (454, 321, 832, 341),
+              (454, 347, 600, 359), (632, 347, 832, 359),
               (524, 294, 540, 318), (598, 294, 634, 318),
               (688, 294, 712, 318), (772, 294, 788, 318))
     for box in guards:
-        windows = np.lib.stride_tricks.sliding_window_view(pixels.level(box), (4, 4))[::2, ::2]
-        contrast = float(np.max(np.median(windows, axis=(-2, -1)))) - background
+        # Compare each column with its own background level over the full
+        # glyph height. A clear boundary or horizontal lighting gradient must
+        # not turn ordinary background into an extra stroke. Short glyph
+        # remnants still stand above their column's unpainted pixels. The
+        # lower-middle percentile resists dark quantization outliers. Cap it
+        # with neighboring column backgrounds so stacked vertical remnants
+        # cannot raise their own baseline and disappear from this check.
+        full_height = pixels.level((box[0], 252, box[2], 362))
+        neighbors = np.lib.stride_tricks.sliding_window_view(
+            np.pad(np.median(full_height, axis=0), (15, 15), mode="edge"), 31)
+        background = np.minimum(np.percentile(full_height, 40, axis=0), np.median(neighbors, axis=1))
+        windows = np.lib.stride_tricks.sliding_window_view(pixels.level(box) - background, (4, 4))[::2, ::2]
+        contrast = float(np.max(np.median(windows, axis=(-2, -1))))
         extra_contrast = max(extra_contrast, contrast)
     diagnostics = {"strokes": strokes, "decimal": {"background": decimal_background,
                     "parts": decimal_levels, "complete": decimal_complete},

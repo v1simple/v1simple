@@ -116,7 +116,8 @@ done
 if [[ "$PERSISTENCE_COVERAGE" -eq 1 ]]; then
   [[ "$RUN_REPLAY" -eq 1 && "$RUN_ALL" -eq 0 && "$CAMERA_REQUESTED" -eq 1 \
      && "$QUALIFICATION_CAPTURE" -eq 0 && -z "$ANALYZE_RECORDING" ]] || fail_usage
-  REPLAY_DURATION_SECONDS=64
+  # Leave connection/handshake time around the complete 64-second input sequence.
+  REPLAY_DURATION_SECONDS=90
 fi
 
 if [[ -n "$RESIDENT_RECORDING" || -n "$RESIDENT_IMAGE" ]]; then

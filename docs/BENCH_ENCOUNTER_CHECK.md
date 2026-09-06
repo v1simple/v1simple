@@ -40,8 +40,8 @@ When the current tooling and retained local build match the installed image:
 ./bench.sh --replay --camera --no-flash
 ```
 
-When tooling has advanced since the firmware upload, use that prior qualified
-upload recording and its exact application binary:
+When tooling has advanced since the firmware build, use its original qualified
+upload or no-flash recording and its exact application binary:
 
 ```sh
 ./bench.sh --replay --camera --no-flash \
@@ -54,11 +54,13 @@ capture and automatic analysis. It does not upload firmware. The source tree
 must be clean; commit the tested tooling before collection.
 
 The resident options require each other. The collector verifies the prior clean
-source commit, upload manifest, serial record, application bytes and embedded
+source commit, build manifest, serial record, application bytes and embedded
 ELF hash before operating the device. Its fresh BOOT must match that source and
 image. Each new run retains the reference evidence under `resident_reference/`.
 The exercised firmware identity and current tooling identity are recorded
 separately. Settings are observed independently in the fresh collection.
+Use the original recording for that build, not a later recording which itself
+references another build. A no-flash reference does not claim an upload occurred.
 
 **Without `--no-flash`, `--replay --camera` builds and flashes firmware.**
 `--all --camera` also runs the existing core and display collection legs; visual
@@ -76,6 +78,33 @@ This writes a new ordinary run directory, leaves the recording unchanged and
 identifies the recorded firmware. It does not evaluate today's connected DUT.
 Repeat `--range START:END` to select intervals in seconds from the first replay
 request. Without ranges, the analyzer examines the full authored sequence.
+
+Analysis uses four independent frame readers and returns every reading in its
+original order. `--reader-workers 1` selects serial processing for comparison;
+values 1–8 are supported. Worker failure does not trigger a silent retry. The
+recorded pixels, timestamps and uncertainty rules are the same for every setting.
+
+## Observe configured persistence
+
+Use the normal WebUI to set the active Auto-Push slot's Alert persistence to
+2 seconds, then reboot to normal operation. Record the old setting so it can be
+restored afterward. Run the 64-second radar sequence in its 90-second collection:
+
+```sh
+./bench.sh --replay --camera --no-flash --persistence-coverage \
+  --resident-recording /path/to/original/qualified/replay \
+  --resident-image /path/to/firmware.bin
+```
+
+The report shows primary retention then clearing, live-alert preemption and
+secondary-card retirement, with first/last original images and observed times.
+Positive persistence is evaluated as a sequence of display stages; a single
+fixed idle target cannot describe it. Missing or unreadable required stages
+remain incomplete. Dim numeric glyphs still require supported reader evidence;
+enabling the scenario does not establish that those glyphs can be read.
+This sequence does not exercise the separate wired ALP input.
+
+## Reuse independent readings
 
 When only input interpretation or behavior comparison has changed, reuse the
 independent readings of that exact recording without repeating image recognition:

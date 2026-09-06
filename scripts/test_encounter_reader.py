@@ -567,6 +567,115 @@ class FrequencyContrastControls(unittest.TestCase):
                 self.assertEqual((observed["state"], observed["value"]), ("readable", frequency), observed)
 
 
+class FrequencyEStrokeControls(unittest.TestCase):
+    # These controls alter the independently drawn whole stroke from STROKES,
+    # not the reader's measurement rectangles. They exercise longitudinal
+    # damage; the rectangular fixture does not establish camera/font taper.
+    ORIGINS = (454, 520, 616, 688, 764)
+
+    def frequency(self, image):
+        return reader._frequency(reader.Pixels(image.tobytes(), *image.size, REGISTRATION))
+
+    def image_with_digit(self, position, digit):
+        digits = list("11111")
+        digits[position] = digit
+        frequency = "".join(digits[:2]) + "." + "".join(digits[2:])
+        return display(frequency), frequency
+
+    def erase_e(self, image, position):
+        x1, y1, x2, y2 = STROKES["e"]
+        origin = self.ORIGINS[position]
+        ImageDraw.Draw(image).rectangle((origin + x1, y1, origin + x2, y2), fill="black")
+
+    def assert_refused(self, observed):
+        summary = {key: observed[key] for key in ("state", "value", "reason")}
+        self.assertIn(observed["state"], ("ambiguous", "unreadable"), summary)
+        self.assertIsNone(observed["value"], summary)
+
+    def test_whole_lower_left_removal_reads_changed_glyph_or_refuses(self):
+        for position in range(5):
+            for digit in "0268":
+                with self.subTest(position=position, digit=digit):
+                    image, _ = self.image_with_digit(position, digit)
+                    self.erase_e(image, position)
+                    observed = self.frequency(image)
+                    # Complete loss of e turns 6 into 5 and 8 into 9. A
+                    # reader must report those visible changes, not restore
+                    # the digit originally painted by this fixture.
+                    if digit in "68":
+                        _, changed = self.image_with_digit(position, {"6": "5", "8": "9"}[digit])
+                        self.assertEqual((observed["state"], observed["value"]),
+                                         ("readable", changed), observed)
+                    else:
+                        self.assert_refused(observed)
+
+    def test_shortened_cut_and_isolated_middle_strokes_refuse(self):
+        for position in range(5):
+            for digit in "0268":
+                for damage in ("missing_top", "missing_bottom", "middle_cut", "middle_only",
+                               "right_half_only"):
+                    with self.subTest(position=position, digit=digit, damage=damage):
+                        image, _ = self.image_with_digit(position, digit)
+                        origin = self.ORIGINS[position]
+                        x1, top, x2, bottom = STROKES["e"]
+                        draw = ImageDraw.Draw(image)
+                        if damage == "middle_only":
+                            self.erase_e(image, position)
+                            # Keep only the middle half of the whole shape.
+                            # This still spans the old short interior probe.
+                            margin = (bottom - top + 1) // 4
+                            draw.rectangle((origin + x1, top + margin,
+                                            origin + x2, bottom - margin), fill=ORANGE)
+                        elif damage == "right_half_only":
+                            self.erase_e(image, position)
+                            # The remaining side of a damaged stroke must not
+                            # become absence when its central witness is dark.
+                            midpoint = (x1 + x2) // 2
+                            draw.rectangle((origin + midpoint, top,
+                                            origin + x2, bottom), fill=ORANGE)
+                        else:
+                            low, high = {"missing_top": (top, 323),
+                                         "missing_bottom": (337, bottom),
+                                         "middle_cut": (328, 332)}[damage]
+                            draw.rectangle((origin + x1, low, origin + x2, high), fill="black")
+                        self.assert_refused(self.frequency(image))
+
+    def test_absent_lower_left_stroke_with_dim_fragment_refuses(self):
+        for position in range(5):
+            for digit in "134579":
+                for side in ("whole_width", "right_half"):
+                    with self.subTest(position=position, digit=digit, side=side):
+                        image, _ = self.image_with_digit(position, digit)
+                        origin = self.ORIGINS[position]
+                        left = origin if side == "whole_width" else origin + 9
+                        # A dim remnant above the off threshold must not be
+                        # discarded just because the rest of this stroke is off.
+                        ImageDraw.Draw(image).rectangle((left, 326, origin + 18, 335),
+                                                        fill=(38, 17, 5))
+                        self.assert_refused(self.frequency(image))
+
+    def test_absent_lower_left_strokes_tolerate_dark_background(self):
+        for position in range(5):
+            for digit in "134579":
+                with self.subTest(position=position, digit=digit):
+                    image, frequency = self.image_with_digit(position, digit)
+                    origin = self.ORIGINS[position]
+                    x1, y1, x2, y2 = STROKES["e"]
+                    ImageDraw.Draw(image).rectangle((origin + x1, y1, origin + x2, y2),
+                                                    fill=(20, 9, 2))
+                    observed = self.frequency(image)
+                    self.assertEqual((observed["state"], observed["value"]),
+                                     ("readable", frequency), observed)
+
+    def test_frequency_shift_without_registration_change_refuses(self):
+        for dx, dy in ((12, 0), (-12, 0), (0, 12)):
+            with self.subTest(dx=dx, dy=dy):
+                image = display("68.902")
+                shifted = image.transform(image.size, Image.Transform.AFFINE,
+                                          (1, 0, dx, 0, 1, dy))
+                self.assert_refused(self.frequency(shifted))
+
+
 class MainArrowReaderTests(unittest.TestCase):
     def read(self, im):
         return reader._arrows(reader.Pixels(im.tobytes(), *im.size, REGISTRATION))

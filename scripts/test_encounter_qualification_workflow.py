@@ -179,12 +179,16 @@ class QualificationWorkflowTests(unittest.TestCase):
             }])
 
     def test_capture_context_is_checked_before_retention_or_pixel_analysis(self):
-        import encounter_reader
+        import encounter_arrow_transition
         from encounter_check import analyze
 
+        # Exercise the temporal classifiers' frozen reader contract, not the
+        # latest static reader, which may deliberately be unsupported by them.
+        supported_version = encounter_arrow_transition.PROFILE_READER_METHOD_VERSION
         campaign = {
-            "reader_runtime": {"method_version": encounter_reader.METHOD_VERSION},
-            "implementation_sha256": workflow.method_hashes(),
+            "reader_runtime": {"method_version": supported_version},
+            "implementation_sha256": {**workflow.method_hashes(),
+                                      "encounter_reader.py": encounter_arrow_transition.PROFILE_READER_SHA256},
             "classifiers": {name: {} for name in workflow.TARGET_CLASSIFIERS},
         }
         window = {"camera": {
@@ -192,7 +196,7 @@ class QualificationWorkflowTests(unittest.TestCase):
             "video_timing_verification_result": {"maximum_source_interval_ns": 15_000_000},
         }}
         workflow._validate_capture_classifier_contexts(campaign, window)
-        campaign["reader_runtime"]["method_version"] = -1
+        campaign["reader_runtime"]["method_version"] = supported_version + 1
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             with (patch.object(workflow, "_campaign", return_value=(root, campaign)),
@@ -301,12 +305,12 @@ class QualificationWorkflowTests(unittest.TestCase):
 
     def test_arrow_acquisition_capture_context_dispatches_to_its_classifier(self):
         import encounter_arrow_acquisition
-        import encounter_reader
 
         classifier = workflow.ARROW_ACQUISITION_CLASSIFIER_ID
         campaign = {
-            "reader_runtime": {"method_version": encounter_reader.METHOD_VERSION},
-            "implementation_sha256": workflow.method_hashes(),
+            "reader_runtime": {"method_version": encounter_arrow_acquisition.PROFILE_READER_METHOD_VERSION},
+            "implementation_sha256": {**workflow.method_hashes(),
+                                      "encounter_reader.py": encounter_arrow_acquisition.PROFILE_READER_SHA256},
             "classifiers": {classifier: {}},
         }
         window = {"camera": {
@@ -421,12 +425,12 @@ class QualificationWorkflowTests(unittest.TestCase):
 
     def test_frequency_context_capture_context_dispatches_to_its_classifier(self):
         import encounter_frequency_context
-        import encounter_reader
 
         classifier = workflow.FREQUENCY_CONTEXT_CLASSIFIER_ID
         campaign = {
-            "reader_runtime": {"method_version": encounter_reader.METHOD_VERSION},
-            "implementation_sha256": workflow.method_hashes(),
+            "reader_runtime": {"method_version": encounter_frequency_context.PROFILE_READER_METHOD_VERSION},
+            "implementation_sha256": {**workflow.method_hashes(),
+                                      "encounter_reader.py": encounter_frequency_context.PROFILE_READER_SHA256},
             "classifiers": {classifier: {}},
         }
         window = {"camera": {
@@ -459,13 +463,13 @@ class QualificationWorkflowTests(unittest.TestCase):
         self.assertEqual(workflow._logical_inset(classifier), (385, 360, 880, 460))
 
     def test_secondary_context_capture_context_dispatches_to_its_classifier(self):
-        import encounter_reader
         import encounter_secondary_context
 
         classifier = workflow.SECONDARY_CONTEXT_CLASSIFIER_ID
         campaign = {
-            "reader_runtime": {"method_version": encounter_reader.METHOD_VERSION},
-            "implementation_sha256": workflow.method_hashes(),
+            "reader_runtime": {"method_version": encounter_secondary_context.PROFILE_READER_METHOD_VERSION},
+            "implementation_sha256": {**workflow.method_hashes(),
+                                      "encounter_reader.py": encounter_secondary_context.PROFILE_READER_SHA256},
             "classifiers": {classifier: {}},
         }
         window = {"camera": {
@@ -502,13 +506,13 @@ class QualificationWorkflowTests(unittest.TestCase):
         self.assertEqual(workflow._logical_inset(classifier), (385, 360, 880, 460))
 
     def test_secondary_optical_capture_context_dispatches_to_its_classifier(self):
-        import encounter_reader
         import encounter_secondary_optical_bridge
 
         classifier = workflow.SECONDARY_OPTICAL_CLASSIFIER_ID
         campaign = {
-            "reader_runtime": {"method_version": encounter_reader.METHOD_VERSION},
-            "implementation_sha256": workflow.method_hashes(),
+            "reader_runtime": {"method_version": encounter_secondary_optical_bridge.PROFILE_READER_METHOD_VERSION},
+            "implementation_sha256": {**workflow.method_hashes(),
+                                      "encounter_reader.py": encounter_secondary_optical_bridge.PROFILE_READER_SHA256},
             "classifiers": {classifier: {}},
         }
         window = {"camera": {

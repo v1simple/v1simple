@@ -24,7 +24,7 @@ import counter_reader
 
 FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
-METHOD_VERSION = 7
+METHOD_VERSION = 8
 _ocr_binary = None
 _ocr_setup = None
 _ocr_session = None
@@ -142,18 +142,45 @@ def _fill(values, on=45, off=32):
                    "p90": round(float(high), 2)}
 
 
+def _frequency_lower_left(pixels, box, absence_guard):
+    # The tapered lower-left stroke needs a centered, longitudinal witness.
+    # A short patch on its right edge rejects complete dim glyphs and can
+    # accept an isolated middle fragment. Require all three body sections to
+    # agree, with the same photometric limits as the other six strokes.
+    left, top, right, bottom = box
+    boundaries = (top, top + (bottom - top) // 3,
+                  top + 2 * (bottom - top) // 3, bottom)
+    sections = [pixels.level((left, start, right, end))
+                for start, end in zip(boundaries, boundaries[1:])]
+    states = [_fill(section)[0] for section in sections]
+    state = states[0] if len(set(states)) == 1 else "partial"
+    # Moving the positive witness must not hide a remnant on the old right
+    # support. Both supports must be dark before this stroke can be absent.
+    guard_state, guard_values = _fill(pixels.level(absence_guard))
+    if state == "off" and guard_state != "off":
+        state = "partial"
+    _, values = _fill(np.concatenate([section.ravel() for section in sections]))
+    return state, {**values, "longitudinal_states": states,
+                   "absence_guard": {"state": guard_state, **guard_values}}
+
+
 def _frequency(pixels):
     # Five fixed seven-segment cells, with the decimal separately witnessed.
     x_origins = (454, 520, 616, 688, 764)
     patches = {"a": (18, 261, 41, 266), "b": (52, 280, 57, 293),
                "c": (51, 324, 56, 337), "d": (17, 350, 40, 355),
-               "e": (7, 324, 12, 337), "f": (7, 280, 11, 293),
+               "e": (4, 316, 8, 344), "f": (7, 280, 11, 293),
                "g": (18, 303, 41, 309)}
     digits, details, illuminated_by_digit = [], [], []
     for origin in x_origins:
         mask, measurements, illuminated = "", {}, []
         for name, (x1, y1, x2, y2) in patches.items():
-            state, values = _fill(pixels.level((origin + x1, y1, origin + x2, y2)))
+            box = (origin + x1, y1, origin + x2, y2)
+            if name == "e":
+                state, values = _frequency_lower_left(
+                    pixels, box, (origin + 7, 324, origin + 12, 337))
+            else:
+                state, values = _fill(pixels.level(box))
             measurements[name] = {"state": state, **values}
             if state == "on":
                 mask += name

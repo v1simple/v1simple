@@ -5,7 +5,7 @@ Only then are those readings compared with the event's source-grounded target.
 """
 from __future__ import annotations
 
-from contextlib import nullcontext
+from contextlib import closing
 from copy import deepcopy
 import gzip
 import json
@@ -21,6 +21,7 @@ from encounter_behavior_contract import behavior_contract
 from encounter_build_comparison import compare_behavior_runs
 from encounter_configuration import configuration_for_samples
 from encounter_expectation import FIELDS, encounter_expectation_at
+from encounter_frame_workers import observe_frames
 from encounter_observation import summarize_event_observations
 from encounter_phase_observation import measure_event_phases
 from encounter_sequence import interpret_sequence, product_event_targets, _literal, _status
@@ -149,7 +150,7 @@ def _input_key(definition, data):
 
 
 def analyze_behavior(run, out, ranges=None, configuration=None, reader_qualification=None, compare_to=None,
-                     reuse_readings=None):
+                     reuse_readings=None, workers=1):
     # Import shared acquisition only here: encounter_check also exposes this
     # product through its command-line entry point.
     import encounter_check as capture
@@ -170,7 +171,8 @@ def analyze_behavior(run, out, ranges=None, configuration=None, reader_qualifica
     result = {"schema_version": 1, "kind": "firmware_visual_behavior", "events": [], "errors": [],
               "evidence": {}, "reader_method": {k: method[k] for k in (
                   *STATIC_READER_IMPLEMENTATION_FILES, "encounter_sequence.py",
-                  "encounter_observation.py", "encounter_phase_observation.py", "encounter_behavior.py")},
+                  "encounter_observation.py", "encounter_phase_observation.py", "encounter_behavior.py",
+                  "encounter_frame_workers.py", "encounter_persistence.py")},
               "implementation_sha256": method, "reader_qualification": {"status": "REJECTED"},
               "scope": {"measured_fields": list(FIELDS),
                         "meaning": "Counter glyph, frequency, active bands, active arrow directions, strength bars, secondary cards and MUTED badge across the authored input sequence.",
@@ -207,6 +209,9 @@ def analyze_behavior(run, out, ranges=None, configuration=None, reader_qualifica
         result["evidence"]["configuration"] = configuration_value
         capture.require(configuration_value.get("status") == "verified", "Effective display settings are not established across the authored events: " + configuration_value.get("reason", "unavailable"))
         settings = configuration_value["settings"]
+        capture.require(not window.get("emulator", {}).get("persistence_coverage") or
+                        settings.get("alertPersistenceSeconds", 0) > 0,
+                        "The persistence coverage recording requires a positive Alert persistence setting; the recorded setting is zero.")
         definitions = product_event_targets(data["timeline"], data["source_records"], settings)
         save_json(out / "selection.json", {"schema_version": 1, "kind": "authored_event_full_frame_selection",
                                            "identity": data["identity"], "bounds_ns": bounds,
@@ -259,18 +264,22 @@ def analyze_behavior(run, out, ranges=None, configuration=None, reader_qualifica
                 "video_seconds": row["video_pts_value"] / row["video_pts_timescale"]})
             retained.add(index)
 
-        frame_stream = (((s["video_frame_index"], None) for s in samples) if reused else capture.stream_frames(
-            data["video"], [s["video_frame_index"] for s in samples], data["width"], data["height"]))
-        with gzip.open(out / "readings.ndjson.gz", "xt", encoding="utf-8") as raw, \
-                getattr(encounter_reader, "analysis_session", nullcontext)():
-            for number, (sample, (index, pixels)) in enumerate(zip(samples, frame_stream, strict=True), 1):
+        frame_stream = (((s["video_frame_index"], None, reused["readings"][s["video_frame_index"]], None)
+                         for s in samples) if reused else observe_frames(capture.stream_frames(
+            data["video"], [s["video_frame_index"] for s in samples], data["width"], data["height"]),
+            data["width"], data["height"], data["registration"], out / "reader-cache", workers=workers))
+        result["evidence"]["frame_processing"] = {
+            "workers": 0 if reused else workers, "order": "original recorded frame order",
+            "maximum_pending_frames": 0 if reused else (1 if workers == 1 else workers * 2)}
+        with closing(frame_stream), gzip.open(out / "readings.ndjson.gz", "xt", encoding="utf-8") as raw:
+            for number, (sample, (index, pixels, reading, reader_error)) in enumerate(zip(samples, frame_stream, strict=True), 1):
                 while definitions[definition_index]["end_ns"] <= sample["capture_ns"]:
                     definition_index += 1
                 definition = definitions[definition_index]
                 # Reader gets only original pixels and fixed camera geometry.
                 try:
-                    reading = reused["readings"][index] if reused else encounter_reader.observe(
-                        pixels, data["width"], data["height"], data["registration"])
+                    if reader_error:
+                        reading = capture.unresolved(reader_error)
                     if "fields" not in reading:
                         reading = {"fields": {name: reading.get(name) for name in FIELDS},
                                    "diagnostics": {k: v for k, v in reading.items() if k not in FIELDS}}
@@ -343,6 +352,12 @@ def analyze_behavior(run, out, ranges=None, configuration=None, reader_qualifica
     except KeyboardInterrupt:
         result["errors"].append("Analysis interrupted; the unfinished run does not establish display behavior")
     result["result"], result["summary"] = summarize(result["events"], result["errors"], result["reader_qualification"])
+    if configuration_value and configuration_value.get("settings", {}).get("alertPersistenceSeconds", 0) > 0:
+        from encounter_persistence import measure_persistence_behavior, persistence_result
+        result["persistence"] = measure_persistence_behavior(result["events"], configuration_value["settings"])
+        result["result"] = persistence_result(result["events"], result["errors"],
+                                               result["reader_qualification"], result["persistence"])
+        result["scope"]["meaning"] = result["persistence"]["scope"]
     save_json(out / "result.json", result)
     result = read_json(out / "result.json")
     write_behavior_report(out, result)

@@ -1202,6 +1202,8 @@ def main() -> int:
     parser.add_argument("--observe-behavior", action="store_true", help="read every recorded image of authored input events and report actual behavior without a response deadline")
     parser.add_argument("--compare-to", type=Path, help="compare behavior with an earlier result.json from the same inputs and reader")
     parser.add_argument("--reuse-readings", type=Path, help="reuse verified independent readings of this exact recording; inputs and behavior are compared anew")
+    parser.add_argument("--reader-workers", type=int, choices=range(1, 9), default=4,
+                        help="bounded independent frame readers for --observe-behavior (1–8)")
     parser.add_argument("--configuration", type=Path, help="independently verified, exact-window display settings; missing settings stay unknown")
     parser.add_argument("--reader-qualification", type=Path,
                         help="exact retained qualification manifest for the reader, camera profile, controls and policy classifiers")
@@ -1224,7 +1226,8 @@ def main() -> int:
         if args.observe_behavior:
             from encounter_behavior import analyze_behavior
             result = analyze_behavior(args.run_dir, args.out, args.ranges,
-                                      args.configuration, args.reader_qualification, args.compare_to, args.reuse_readings)
+                                      args.configuration, args.reader_qualification, args.compare_to, args.reuse_readings,
+                                      workers=args.reader_workers)
         else:
             result = analyze(args.run_dir, args.out, args.transition_window or args.ranges, args.cadence,
                          args.configuration, transition_only=bool(args.transition_window), all_frames=args.all_frames,

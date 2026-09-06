@@ -278,6 +278,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scenario", default="")
     parser.add_argument("--reader-qualification", action="store_true",
                         help="use the fixed generated reader-qualification replay")
+    parser.add_argument("--persistence-coverage", action="store_true",
+                        help="use the fixed radar persistence and live-preemption replay")
     blink_group = parser.add_mutually_exclusive_group()
     blink_group.add_argument(
         "--blink-profile", choices=["scenario", "steady", "stress"], default=None
@@ -1192,7 +1194,10 @@ class V1Emulator:
         scenario: str,
         machine_event: Callable[[dict[str, Any]], None],
         reader_qualification: bool = False,
+        persistence_coverage: bool = False,
     ) -> None:
+        if persistence_coverage and (suite != "replay" or scenario or reader_qualification):
+            raise ValueError("persistence coverage requires ordinary replay without an external scenario")
         if reader_qualification and (suite != "replay" or scenario):
             raise ValueError("reader qualification requires replay without an external scenario")
         self.executable = executable
@@ -1202,6 +1207,7 @@ class V1Emulator:
         self.lease_fd = lease_fd
         self.scenario = scenario
         self.reader_qualification = reader_qualification
+        self.persistence_coverage = persistence_coverage
         self.machine_event = machine_event
         self.log_path = out_dir / "v1replay.log"
         self.scenario_path = (
@@ -1254,6 +1260,8 @@ class V1Emulator:
                 command.extend(["--scenario", self.scenario])
             if self.reader_qualification:
                 command.append("--reader-qualification")
+            if self.persistence_coverage:
+                command.append("--persistence-coverage")
             assert self.scenario_path is not None
             command.extend(["--scenario-evidence", str(self.scenario_path)])
         command.extend(
@@ -1348,6 +1356,7 @@ class V1Emulator:
             "lifecycle_completed": lifecycle_completed,
             "mode": self.mode,
             "blink_profile": self.blink_profile,
+            "persistence_coverage": self.persistence_coverage,
             "managed_stop": process_was_running,
             "graceful_stop_confirmed": stopped and returncode == 0,
             "returncode": returncode,
@@ -1539,6 +1548,7 @@ def collect_live(
             scenario=args.scenario,
             machine_event=lambda payload: timeline.record_external(payload, "v1replay"),
             reader_qualification=args.reader_qualification,
+            persistence_coverage=getattr(args, "persistence_coverage", False),
         )
         emulator_result: dict[str, Any] = {}
         camera_result: dict[str, Any] = {}
@@ -1746,6 +1756,9 @@ def main() -> int:
         return fail("--scenario is valid only for replay")
     if args.reader_qualification and (args.suite != "replay" or args.scenario):
         return fail("reader qualification requires replay without an external scenario")
+    if getattr(args, "persistence_coverage", False) and (
+            args.suite != "replay" or args.scenario or args.reader_qualification):
+        return fail("persistence coverage requires ordinary replay without an external scenario")
     if args.git_worktree_clean != "1":
         return fail(
             "source worktree is dirty; qualification requires an exact clean source state",

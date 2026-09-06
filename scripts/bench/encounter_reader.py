@@ -24,7 +24,7 @@ import counter_reader
 
 FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
-METHOD_VERSION = 12
+METHOD_VERSION = 13
 _ocr_binary = None
 _ocr_setup = None
 _ocr_session = None
@@ -669,6 +669,26 @@ def _secondary(pixels):
     return field("readable", values, cards=cards)
 
 
+def _visibility_witness(colors):
+    """Resolve a spatially extended green label without counting its glyph ink.
+
+    RSSI digits differ in occupied area. A visible narrow digit must not veto
+    every other field merely because it paints fewer pixels than a wide one.
+    Require coherent bright green support spread in both dimensions instead;
+    isolated pixels or one surviving fragment do not establish this witness.
+    """
+    colors = colors.astype(int)
+    green = ((colors[:, :, 1] > 100) &
+             (colors[:, :, 1] - np.maximum(colors[:, :, 0], colors[:, :, 2]) > 30))
+    blocks = np.lib.stride_tricks.sliding_window_view(green, (2, 2)).all(axis=(-2, -1))
+    ys, xs = np.nonzero(blocks)
+    height, width = green.shape
+    extent = [int(xs.max() - xs.min() + 2), int(ys.max() - ys.min() + 2)] if len(xs) else [0, 0]
+    resolved = (len(xs) >= 12 and extent[0] >= width * .30 and extent[1] >= height * .15)
+    return {"resolved": bool(resolved), "lit_fraction": float(np.mean(green)),
+            "coherent_blocks": len(xs), "coherent_extent": extent}
+
+
 def observe(rgb: bytes, width: int, height: int, registration: dict) -> dict:
     """Read a whole RGB24 frame. Accepts no timeline, stimulus, or expected values.
 
@@ -684,13 +704,11 @@ def observe(rgb: bytes, width: int, height: int, registration: dict) -> dict:
     result["counter_glyph"] = field(counter["state"], counter.get("glyph"), counter.get("reason"))
     try:
         pixels = Pixels(rgb, width, height, registration)
-        witnesses = []
-        for box in ((202, 297, 298, 363), (1000, 415, 1150, 445)):
-            colors = pixels.crop(box).astype(int)
-            green = (colors[:, :, 1] > 100) & (colors[:, :, 1] - np.maximum(colors[:, :, 0], colors[:, :, 2]) > 30)
-            witnesses.append(float(np.mean(green)))
-        result["visibility"] = {"witness_lit_fractions": witnesses}
-        if min(witnesses) < .05:
+        witnesses = [_visibility_witness(pixels.crop(box))
+                     for box in ((202, 297, 298, 363), (1000, 415, 1150, 445))]
+        result["visibility"] = {"witness_lit_fractions": [w["lit_fraction"] for w in witnesses],
+                                "spatial_witnesses": witnesses}
+        if not all(w["resolved"] for w in witnesses):
             return {**{name: field("unreadable", reason="registered display visibility witnesses are dark or occluded")
                        for name in FIELDS}, "method_version": METHOD_VERSION, "visibility": result["visibility"]}
         result["primary_frequency"] = _frequency(pixels)

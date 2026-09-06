@@ -25,6 +25,8 @@ RESIDENT_IMAGE=""
 COLLECTION_ONLY=0
 COLLECTION_ONLY_REASON=""
 QUALIFICATION_CAPTURE=0
+PERSISTENCE_COVERAGE=0
+READER_WORKERS="${BENCH_READER_WORKERS:-4}"
 COUNTER_RESULT="NOT_EVALUATED"
 COUNTER_PRINTED=0
 ENCOUNTER_RESULT="NOT_EVALUATED"
@@ -32,9 +34,10 @@ ENCOUNTER_PRINTED=0
 ENCOUNTER_REASON=""
 
 usage() {
-  printf 'Usage: ./bench.sh --all|--replay [--camera] [--no-flash] [--compare-to RESULT_JSON] [--qualification-capture]\n'
+  printf 'Usage: ./bench.sh --all|--replay [--camera] [--no-flash] [--compare-to RESULT_JSON] [--qualification-capture|--persistence-coverage]\n'
   printf '       ./bench.sh --analyze-recording DIR [--range START:END ...] [--compare-to RESULT_JSON] [--reuse-readings RESULT_JSON]\n'
   printf '       --no-flash may use --resident-recording DIR --resident-image FILE to verify a prior uploaded image\n'
+  printf '       --reader-workers 1..8 selects bounded offline frame readers\n'
 }
 
 fail_usage() {
@@ -89,6 +92,14 @@ while [[ $# -gt 0 ]]; do
     --qualification-capture)
       QUALIFICATION_CAPTURE=1
       ;;
+    --persistence-coverage)
+      PERSISTENCE_COVERAGE=1
+      ;;
+    --reader-workers)
+      [[ $# -ge 2 && -n "$2" ]] || fail_usage
+      READER_WORKERS="$2"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -101,6 +112,12 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -z "$REUSE_READINGS" || -n "$ANALYZE_RECORDING" ]] || fail_usage
+[[ "$READER_WORKERS" =~ ^[1-8]$ ]] || fail_usage
+if [[ "$PERSISTENCE_COVERAGE" -eq 1 ]]; then
+  [[ "$RUN_REPLAY" -eq 1 && "$RUN_ALL" -eq 0 && "$CAMERA_REQUESTED" -eq 1 \
+     && "$QUALIFICATION_CAPTURE" -eq 0 && -z "$ANALYZE_RECORDING" ]] || fail_usage
+  REPLAY_DURATION_SECONDS=64
+fi
 
 if [[ -n "$RESIDENT_RECORDING" || -n "$RESIDENT_IMAGE" ]]; then
   [[ -n "$RESIDENT_RECORDING" && -n "$RESIDENT_IMAGE" && "$FLASH" -eq 0 \
@@ -454,6 +471,27 @@ try:
                 "DIFFERENCES_FOUND" if expected["findings"] else
                 "MEASUREMENT_INCOMPLETE" if not events or missing or missing_blink_phases or not coverage_complete else
                 "NO_DIFFERENCES_OBSERVED")
+    if "persistence" in payload:
+        from scripts.bench.encounter_persistence import measure_persistence_behavior, persistence_result
+        configuration = evidence.get("configuration", {})
+        if configuration.get("status") != "verified":
+            raise ValueError("persistence configuration is unverified")
+        measurement = measure_persistence_behavior(events, configuration.get("settings", {}))
+        if payload["persistence"] != measurement:
+            raise ValueError("persistence result disagrees with retained observations")
+        computed = persistence_result(events, errors, qualification, measurement)
+        ordinary_attention = (first_id, reason)
+        first_id, reason = "-", measurement.get("reason", "-")
+        for case in measurement.get("cases", []):
+            if case["findings"] or case.get("missing_stages") or not case.get("stage_order_observed"):
+                first_id = case["event_id"]
+                reason = (f"{first_id}: {case['findings'][0]['reason']}" if case["findings"] else
+                          f"{first_id}: persistence stages not fully observed: {', '.join(case.get('missing_stages', []))}")
+                break
+        if first_id == "-" and computed != "NO_DIFFERENCES_OBSERVED":
+            original_event = next((event for event in events if event["event_id"] == ordinary_attention[0]), None)
+            if original_event and (original_event["findings"] or original_event.get("wire_rows")):
+                first_id, reason = ordinary_attention
     if payload.get("result") != computed:
         raise ValueError("visual behavior result disagrees with event evidence")
     result, counts = computed, [expected[name] for name in names]
@@ -492,6 +530,7 @@ run_encounter_check() {
   "$BENCH_PYTHON" "$ROOT_DIR/scripts/bench/encounter_check.py" \
     --run-dir "$replay_dir" \
     --observe-behavior \
+    --reader-workers "$READER_WORKERS" \
     --reader-qualification "$ENCOUNTER_QUALIFICATION" \
     --out "$encounter_dir" \
     "${ANALYSIS_RANGES[@]}" "${comparison_args[@]}" \
@@ -508,6 +547,20 @@ run_encounter_check() {
     "$ENCOUNTER_RESULT" "$targets" "$events" "$affected" "$findings"
   printf '[bench] coverage: %s/%s recorded frames read | %s unresolved frames (%s field observations)\n' \
     "$read_frames" "$available" "$unresolved" "$unresolved_fields"
+  "$BENCH_PYTHON" - "$encounter_dir/result.json" <<'PERSISTENCE_SUMMARY'
+import json, sys
+from pathlib import Path
+try:
+    measured = json.loads(Path(sys.argv[1]).read_text()).get("persistence")
+    if measured:
+        summary = measured.get("summary", {})
+        print(f"[bench] persistence: {measured['result']} | "
+              f"{summary.get('complete_sequences', 0)}/{summary.get('cases', 0)} required sequences observed | "
+              f"{summary.get('findings', 0)} sequence findings")
+        print("[bench] persistence uses ordered display stages; the fixed-target totals above are supporting comparisons.")
+except (OSError, ValueError, KeyError, TypeError):
+    pass  # The authoritative validator above already rejects absent or malformed results.
+PERSISTENCE_SUMMARY
   [[ "$reason" == "-" ]] || printf '[bench] attention: %s\n' "$reason"
   if [[ -f "$encounter_dir/report.html" ]]; then
     local fragment=""
@@ -659,6 +712,9 @@ for suite in "${SUITES[@]}"; do
   fi
   if [[ "$QUALIFICATION_CAPTURE" -eq 1 ]]; then
     args+=(--reader-qualification)
+  fi
+  if [[ "$PERSISTENCE_COVERAGE" -eq 1 ]]; then
+    args+=(--persistence-coverage)
   fi
   if [[ "$FLASH" -eq 1 && "$first_suite" -eq 1 ]]; then
     args+=(--upload)

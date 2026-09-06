@@ -1294,6 +1294,13 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
             printf '%s\\n' "$FAKE_BENCH_PYTHON"
         """), encoding="utf-8")
         bootstrap.chmod(0o755)
+        if "persistence" in encounter:
+            # The terminal validator recomputes the actual adapter, even when
+            # acquisition itself is replaced by this no-hardware fixture.
+            modules = root / "scripts" / "bench"
+            modules.mkdir()
+            for name in ("encounter_persistence.py", "encounter_expectation.py", "counter_expectation.py"):
+                (modules / name).write_bytes((ROOT / "scripts" / "bench" / name).read_bytes())
         device = root / "device"
         if not offline:
             device.touch()
@@ -1494,6 +1501,52 @@ def test_bench_cli_rejects_old_or_incomplete_product_contract_explicitly() -> No
         assert_true(process.returncode == 2, process.stdout)
         assert_true("unsupported visual behavior summary" in process.stdout, process.stdout)
         assert_true(process.stdout.splitlines()[-1] == "MEASUREMENT_INCOMPLETE (visual behavior)", process.stdout)
+
+
+def test_bench_cli_recomputes_positive_persistence_sequences_and_preserves_other_gates() -> None:
+    from copy import deepcopy
+    from bench.encounter_persistence import measure_persistence_behavior, persistence_result
+    from encounter_behavior import summarize
+    from test_encounter_persistence import CONFIG, K, event, live, span
+
+    def payload_for(outcome):
+        payload = generated_encounter_payload(("MEASUREMENT_INCOMPLETE", "NO_DIFFERENCES_OBSERVED", "MEASUREMENT_INCOMPLETE"))
+        release = [span(1, "24.150"), span(2, "24.150") if outcome == "retained" else span(2)]
+        literal = [event(1, [], [span(1), span(2)]), event(2, [K], [live(1, K), live(2, K)]), event(3, [], release)]
+        for original, measured in zip(payload["events"], literal):
+            measured["observation"] = {**original["observation"], "input_anchor_ns": 1}
+            measured["coverage"] = original["coverage"]
+            measured["unresolved_frames"] = original["unresolved_frames"]
+            measured["findings"] = []
+            measured["phase_observation"] = {"required_phase_ids": ["phase-1"], "observed_phase_ids": ["phase-1"]}
+        if outcome == "live_missing":
+            literal[1]["observation"]["target_observed"] = False
+        if outcome == "coverage_missing":
+            literal[1]["coverage"]["unrecorded_source_frames"] = 1
+        if outcome == "phase_missing":
+            literal[1]["phase_observation"]["required_phase_ids"].append("phase-2")
+        payload["events"] = literal
+        payload["evidence"]["configuration"] = {"status": "verified", "settings": CONFIG}
+        payload["persistence"] = measure_persistence_behavior(literal, CONFIG)
+        _, payload["summary"] = summarize(literal, [], payload["reader_qualification"])
+        payload["result"] = persistence_result(literal, [], payload["reader_qualification"], payload["persistence"])
+        return payload
+
+    for outcome, expected in (("complete", "NO_DIFFERENCES_OBSERVED"), ("retained", "DIFFERENCES_FOUND"),
+                              ("live_missing", "MEASUREMENT_INCOMPLETE"), ("coverage_missing", "MEASUREMENT_INCOMPLETE"),
+                              ("phase_missing", "MEASUREMENT_INCOMPLETE")):
+        payload = payload_for(outcome)
+        assert_true(payload["result"] == expected, str(payload))
+        process, _, calls, _ = run_bench_cli_fixture("PASS", "PASS", encounter_result=expected,
+                                                   encounter_payload=payload, offline=True)
+        assert_true(process.returncode == {"NO_DIFFERENCES_OBSERVED": 0, "DIFFERENCES_FOUND": 1, "MEASUREMENT_INCOMPLETE": 2}[expected]
+                    and calls == 1 and "analysis result rejected" not in process.stdout,
+                    outcome + ": " + process.stdout + process.stderr)
+        assert_true("persistence:" in process.stdout and "100 ms" not in process.stdout, process.stdout)
+    forged = deepcopy(payload_for("retained"))
+    forged["persistence"]["summary"]["findings"] = 0
+    process, _, _, _ = run_bench_cli_fixture("PASS", "PASS", encounter_result=forged["result"], encounter_payload=forged, offline=True)
+    assert_true(process.returncode == 2 and "persistence result disagrees" in process.stdout, process.stdout + process.stderr)
 
 
 def test_bench_cli_forwards_build_comparison_only_for_visual_analysis() -> None:
@@ -2070,6 +2123,7 @@ def main() -> int:
     test_bench_cli_uses_selected_reader_environment_and_rejects_before_work()
     test_bench_cli_consumes_current_producer_results_online_and_offline()
     test_bench_cli_rejects_old_or_incomplete_product_contract_explicitly()
+    test_bench_cli_recomputes_positive_persistence_sequences_and_preserves_other_gates()
     test_bench_cli_forwards_build_comparison_only_for_visual_analysis()
     test_bench_cli_forwards_reading_reuse_only_for_offline_analysis()
     test_bench_cli_consumes_real_phase_observations_without_an_acquisition_deadline()

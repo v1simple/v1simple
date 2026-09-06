@@ -24,7 +24,7 @@ struct Arguments {
     static let booleanFlags: Set<String> = [
         "loop", "paused", "no-alerts", "always-alerts", "no-wait",
         "no-checksum", "log-packets", "blink-bogey", "blink-arrow", "synthetic", "bench",
-        "exit-on-complete", "machine-events", "handshake-only", "reader-qualification",
+        "exit-on-complete", "machine-events", "handshake-only", "reader-qualification", "persistence-coverage",
         "help", "h", "version"
     ]
 
@@ -186,6 +186,10 @@ func loadEncounter(path selectedPath: String? = nil) throws -> Encounter {
 
 func validateBenchOptions() throws {
     _ = try makeArrowBlinkProfile(benchDefault: true)
+    if args.bool("persistence-coverage") &&
+        (args.bool("reader-qualification") || args.optionalString("scenario") != nil) {
+        throw ReplayError.message("--persistence-coverage cannot be combined with --reader-qualification or --scenario")
+    }
     if args.bool("reader-qualification") && args.optionalString("scenario") != nil {
         throw ReplayError.message("--reader-qualification cannot be combined with --scenario")
     }
@@ -260,6 +264,9 @@ func runHelp() {
       --exit-on-complete   stop after one complete replay (for bench automation)
       --machine-events     emit stable completion events for an external runner
       --scenario <path>    external encounter for managed bench playback
+      --persistence-coverage
+                           64s ordinary radar sequence for configured persistence;
+                           does not change device settings or impose timing limits
       --reader-qualification
                            fixed 68-second X/K/Ka reader exercise for bench
       --scenario-evidence P
@@ -431,6 +438,9 @@ func runExport() throws {
     if args.bool("reader-qualification") && !bench {
         throw ReplayError.message("--reader-qualification export requires --bench")
     }
+    if args.bool("persistence-coverage") && !bench {
+        throw ReplayError.message("--persistence-coverage export requires --bench")
+    }
     if bench {
         try validateBenchOptions()
     }
@@ -440,7 +450,7 @@ func runExport() throws {
         if let scenarioPath = args.optionalString("scenario") {
             encounter = try loadEncounter(path: scenarioPath)
         } else {
-            encounter = args.bool("reader-qualification")
+            encounter = args.bool("persistence-coverage") ? PersistenceScenario.make() : args.bool("reader-qualification")
                 ? BenchScenario.makeReaderQualification() : BenchScenario.make()
         }
     } else if args.bool("synthetic") {
@@ -555,6 +565,9 @@ func runPlay(idleOnly: Bool,
     if !bench && args.bool("reader-qualification") {
         throw ReplayError.message("--reader-qualification is available only in bench mode")
     }
+    if !bench && args.bool("persistence-coverage") {
+        throw ReplayError.message("--persistence-coverage is available only in bench mode")
+    }
     if idleOnly && args.optionalString("scenario-evidence") != nil {
         throw ReplayError.message("--scenario-evidence requires replay playback")
     }
@@ -572,7 +585,7 @@ func runPlay(idleOnly: Bool,
         if let scenarioPath = args.optionalString("scenario") {
             encounter = try loadEncounter(path: scenarioPath)
         } else {
-            encounter = args.bool("reader-qualification")
+            encounter = args.bool("persistence-coverage") ? PersistenceScenario.make() : args.bool("reader-qualification")
                 ? BenchScenario.makeReaderQualification() : BenchScenario.make()
         }
     } else if synthetic {

@@ -36,6 +36,8 @@ _SOURCES = {
     "src/modules/ble/connection_state_cadence_module.cpp": "1d2f38d2088acb075b367d72fe6ad48521cd587674d87e553b15d290aa876dfb",
 }
 
+_FIXED_CARD_SOURCE = "e1dc5de71275f7c342af1a3d771b171e0c674c8d428e16788bdf7588464d241e"
+
 
 def _rule(fields, statement, locations, repair_direction):
     return {"fields": fields, "statement": statement, "locations": locations,
@@ -169,6 +171,34 @@ _RULES = {
         "their absence to card parsing or drawing. Persistent absence later is a separate observation."),
 }
 
+# The zero-persistence repair changes retirement policy and subsequent line
+# locations. Keep the earlier explanation bound to the earlier source bytes.
+_FIXED_CARD_RULE_UPDATES = {
+    "retired_card": {
+        "statement": "With persistence zero, a missing card slot is released on the current card render. "
+                     "A vanished previous priority receives card grace only when persistence is positive. "
+                     "Live rows use released capacity first. With positive persistence, missing slots expire "
+                     "when elapsed time since last seen exceeds the configured interval. These are renderer "
+                     "state rules; they do not by themselves establish physical delivery.",
+        "locations": [("src/display_cards.cpp", 69, 85), ("src/display_cards.cpp", 88, 110),
+                      ("src/display_cards.cpp", 119, 139), ("src/display_cards.cpp", 168, 172),
+                      ("src/display_cards.cpp", 309, 324)],
+        "repair_direction": "For an obsolete card at persistence zero, verify the recorded setting and "
+                            "live-row identity, then inspect card clearing and physical dispatch. Preserve "
+                            "live-card admission and positive persistence; the earlier zero-to-1-ms admission "
+                            "defect is already corrected in this source.",
+    },
+    "secondary": {
+        "locations": [("include/display_visual_contract.h", 11, 25), ("src/packet_parser_alerts.cpp", 117, 145),
+                      ("src/display_cards.cpp", 29, 47), ("src/display_cards.cpp", 88, 110),
+                      ("src/display_cards.cpp", 266, 285)],
+    },
+    "physical_dispatch": {
+        "locations": [("src/display_cards.cpp", 309, 323), ("src/display_update.cpp", 893, 924),
+                      ("src/display_update.cpp", 927, 933)],
+    },
+}
+
 
 def _git(repo_root, *args):
     return subprocess.run(["git", "-C", str(repo_root), *args], capture_output=True,
@@ -203,12 +233,18 @@ def behavior_contract(repo_root, firmware_commit):
             data = _git(repo_root, "show", f"{commit}:{path}")
             digest = hashlib.sha256(data).hexdigest()
             contents[path] = data.decode("utf-8").splitlines()
+            if path == "src/display_cards.cpp" and digest == _FIXED_CARD_SOURCE:
+                reviewed_hash = _FIXED_CARD_SOURCE
             state = "VERIFIED" if digest == reviewed_hash else "UNREVIEWED"
         except (OSError, subprocess.SubprocessError, UnicodeError):
             digest, state = None, "UNAVAILABLE"
         base["sources"][path] = {"sha256": digest, "reviewed_sha256": reviewed_hash,
                                   "status": state, "git_object": f"{commit}:{path}"}
-    for rule_id, definition in _RULES.items():
+    definitions = deepcopy(_RULES)
+    if base["sources"]["src/display_cards.cpp"]["sha256"] == _FIXED_CARD_SOURCE:
+        for rule_id, update in _FIXED_CARD_RULE_UPDATES.items():
+            definitions[rule_id].update(update)
+    for rule_id, definition in definitions.items():
         rule = deepcopy(definition)
         verified = all(base["sources"][path]["status"] == "VERIFIED"
                        for path, _, _ in definition["locations"])

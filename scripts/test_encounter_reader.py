@@ -204,6 +204,34 @@ class EncounterReaderTests(unittest.TestCase):
             self.assertIn(observed["state"], ("ambiguous", "unreadable"), observed)
             self.assertIsNone(observed["value"])
 
+    def test_visibility_follows_coherent_label_extent_not_digit_ink_density(self):
+        im = display()
+        draw = ImageDraw.Draw(im)
+        draw.rectangle((202, 297, 298, 363), fill="black")
+        # Narrow bright characters occupy less than five percent of this ROI.
+        # Independent full strokes span its label area, as real RSSI text does.
+        for x in (212, 242, 272):
+            draw.rectangle((x, 339, x + 2, 352), fill=(0, 230, 20))
+        observed = self.read(im)
+        self.assertLess(observed["visibility"]["witness_lit_fractions"][0], .05)
+        self.assertEqual(observed["primary_frequency"]["value"], "68.902")
+        self.assertEqual(observed["secondary"]["value"], [])
+        # A fragment or scattered bright noise cannot stand in for that label.
+        for kind in ("fragment", "noise", "dim", "one_label_occluded"):
+            changed = im.copy()
+            draw = ImageDraw.Draw(changed)
+            draw.rectangle((202, 297, 298, 363), fill="black")
+            if kind == "fragment":
+                draw.rectangle((242, 339, 247, 352), fill=(0, 230, 20))
+            elif kind == "noise":
+                for x in range(210, 290, 4):
+                    for y in range(335, 357, 4):
+                        draw.point((x, y), fill=(0, 230, 20))
+            elif kind == "dim":
+                draw.rectangle((210, 338, 289, 355), fill=(0, 90, 20))
+            refused = self.read(changed)
+            self.assertTrue(all(refused[name]["state"] == "unreadable" for name in reader.FIELDS), kind)
+
     def test_black_occluded_and_white_frames_are_unknown_not_absent(self):
         occluded = display()
         ImageDraw.Draw(occluded).rectangle((180, 180, 1170, 460), fill="black")

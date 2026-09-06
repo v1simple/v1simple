@@ -166,6 +166,8 @@ run_step "Recorded encounter check regression suite" python3 scripts/test_encoun
 run_step "Encounter sequence interpretation regression suite" python3 scripts/test_encounter_sequence.py
 run_step "Encounter literal observation regression suite" python3 scripts/test_encounter_observation.py
 run_step "Encounter behavior regression suite" python3 scripts/test_encounter_behavior.py
+run_step "Encounter ordered frame reader regression suite" python3 scripts/test_encounter_frame_workers.py
+run_step "Encounter persistence sequence regression suite" python3 scripts/test_encounter_persistence.py
 run_step "Encounter recorded source contract regression suite" python3 scripts/test_encounter_behavior_contract.py
 run_step "Encounter build comparison regression suite" python3 scripts/test_encounter_build_comparison.py
 run_step "Encounter behavior report regression suite" python3 scripts/test_encounter_behavior_report.py

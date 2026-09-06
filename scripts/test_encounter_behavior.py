@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """A useful behavior report must separate acquisition, contradiction and unknowns."""
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import gzip
 import json
@@ -174,6 +175,16 @@ class BehaviorTests(unittest.TestCase):
                 self.assertEqual(reused["summary"], result["summary"])
                 self.assertEqual(reused["events"], result["events"])
                 self.assertEqual(reused["evidence"]["reused_readings"]["readings_reused"], 3)
+                parallel_out = Path(folder) / "parallel"
+                parallel_out.mkdir()
+                with patch("encounter_frame_workers.ProcessPoolExecutor", side_effect=lambda **kw: ThreadPoolExecutor(kw["max_workers"])), \
+                     patch("encounter_frame_workers._read", side_effect=lambda job: (job[0], {"fields": literals()}, None, None)), \
+                     patch("encounter_check.stream_frames", return_value=iter([(i, bytes([i, 0, 0])) for i in range(3)])):
+                    parallel = analyze_behavior(run, parallel_out, workers=2)
+                for key in ("events", "summary", "samples_index", "errors"):
+                    self.assertEqual(parallel[key], result[key])
+                self.assertEqual(gzip.decompress((parallel_out / "readings.ndjson.gz").read_bytes()),
+                                 gzip.decompress((out / "readings.ndjson.gz").read_bytes()))
                 def failed_decoder():
                     yield from [(i, bytes([i, 0, 0])) for i in range(3)]
                     raise ValueError("decoder failed after its final image")

@@ -51,6 +51,42 @@ class BehaviorContractTests(unittest.TestCase):
         for path in older["sources"]:
             self.assertEqual(older["sources"][path]["sha256"], newer["sources"][path]["sha256"])
 
+    def test_zero_persistence_repair_has_its_own_reviewed_explanation(self):
+        before = contract.behavior_contract(ROOT, "d67bad1")
+        after = contract.behavior_contract(ROOT, "9dba7dc")
+        self.assertEqual(before["status"], "VERIFIED")
+        self.assertEqual(after["status"], "VERIFIED")
+        self.assertEqual(before["comparison_key"], after["comparison_key"])
+        self.assertIn("Zero is converted to 1 ms", before["rules"]["retired_card"]["statement"])
+        rule = after["rules"]["retired_card"]
+        self.assertIn("released on the current card render", rule["statement"])
+        self.assertIn("only when persistence is positive", rule["statement"])
+        self.assertIn("already corrected", rule["repair_direction"])
+        self.assertIn("gracePeriodMs == 0", rule["locations"][0]["excerpt"])
+        self.assertIn("gracePeriodMs > 0", rule["locations"][1]["excerpt"])
+        self.assertNotIn("gracePeriodMs = 1", "\n".join(loc["excerpt"] for loc in rule["locations"]))
+        self.assertEqual(after["sources"]["src/display_cards.cpp"]["sha256"], contract._FIXED_CARD_SOURCE)
+        for name in ("secondary", "physical_dispatch"):
+            self.assertEqual(before["rules"][name]["statement"], after["rules"][name]["statement"])
+        self.assertIn("FILL_RECT", after["rules"]["physical_dispatch"]["locations"][0]["excerpt"])
+
+    def test_further_card_source_change_does_not_inherit_repair_explanation(self):
+        real_git = contract._git
+
+        def changed(root, *args):
+            data = real_git(root, *args)
+            if args[0] == "show" and args[1].endswith(":src/display_cards.cpp"):
+                return data + b"\n// unreviewed change\n"
+            return data
+
+        with patch.object(contract, "_git", side_effect=changed):
+            result = contract.behavior_contract(ROOT, "9dba7dc")
+        self.assertEqual(result["status"], "UNREVIEWED")
+        for name in ("secondary", "retired_card", "physical_dispatch"):
+            self.assertEqual(result["rules"][name]["status"], "UNREVIEWED")
+            self.assertNotIn("already corrected", result["rules"][name]["repair_direction"])
+            self.assertTrue(all(loc["excerpt"] is None for loc in result["rules"][name]["locations"]))
+
     def test_invalid_revision_never_reaches_git(self):
         with patch.object(contract, "_git") as call:
             for revision in (None, "HEAD", "--help", "abc", "ee6b401:path", "$(bad)"):

@@ -38,6 +38,7 @@ def event_findings(event, observation, contract):
     visible; neither a lone match nor a terminal unknown proves a healthy hold.
     """
     findings = []
+    complete_target = event.get("first_correct")
     for name, field in observation["fields"].items():
         end = field["end_state"]
         terminal = end.get("last_definite_observation")
@@ -53,6 +54,8 @@ def event_findings(event, observation, contract):
                                        "Read the source rule and acquisition history before assigning its cause.",
                              "rule_ids": contract.get("field_rule_ids", {}).get(name, [])})
         for interval in field["post_target_departures"]:
+            if complete_target is None or interval["first"]["capture_ns"] <= complete_target["capture_ns"]:
+                continue  # One field can match before source-explained whole-display acquisition finishes.
             if terminal and terminal.get("observed") == interval["last"]["observed"] \
                     and end.get("last_definite_matches_target") is False:
                 continue  # Already indexed, with its full earlier/later history.
@@ -65,7 +68,7 @@ def event_findings(event, observation, contract):
                                  "expected": deepcopy((event.get("target") or {}).get("fields", {}).get(name)),
                                  "observed": deepcopy(interval["first"]["observed"]),
                                  "first": interval["first"], "last": interval["last"],
-                                 "reason": "A definite contrary value appeared after this field had matched the current input. "
+                                 "reason": "A definite contrary value appeared after the complete display target had matched the current input. "
                                            "The original frames show its extent; camera transition effects and firmware cause remain distinct.",
                                  "rule_ids": contract.get("field_rule_ids", {}).get(name, [])})
     # Individually allowed blink fields must also belong to one coherent phase.
@@ -152,7 +155,9 @@ def analyze_behavior(run, out, ranges=None, configuration=None, reader_qualifica
             shutil.copyfile(source, method_dir / source.name)
             capture.require(sha256_file(method_dir / source.name) == method[source.name], "method changed while retained")
     result = {"schema_version": 1, "kind": "firmware_visual_behavior", "events": [], "errors": [],
-              "evidence": {}, "reader_method": {k: method[k] for k in STATIC_READER_IMPLEMENTATION_FILES},
+              "evidence": {}, "reader_method": {k: method[k] for k in (
+                  *STATIC_READER_IMPLEMENTATION_FILES, "encounter_sequence.py",
+                  "encounter_observation.py", "encounter_behavior.py")},
               "implementation_sha256": method, "reader_qualification": {"status": "REJECTED"},
               "scope": {"measured_fields": list(FIELDS),
                         "meaning": "Counter glyph, frequency, active bands, active arrow directions, strength bars, secondary cards and MUTED badge across the authored input sequence.",

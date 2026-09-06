@@ -52,6 +52,14 @@ class BehaviorTests(unittest.TestCase):
         self.assertEqual(out["findings"][0]["kind"], "departure_after_target")
         self.assertEqual(out["findings"][0]["observed"]["value"], "24.200")
 
+    def test_per_field_match_during_mixed_acquisition_does_not_start_a_hold(self):
+        first = literals(primary_frequency="24.200")
+        mixed = literals(primary_frequency="24.200", main_bars=4)
+        event, out = measured([1.02, 1.025, 1.2], [first, mixed, literals()])
+        self.assertEqual(out["findings"], [])
+        self.assertEqual(out["observation"]["fields"]["main_bars"]["counts"]["different_frames"], 1)
+        self.assertEqual(event["first_correct"]["capture_ns"], 1_200_000_000)
+
     def test_unknown_suffix_does_not_erase_wrong_content_or_claim_recovery(self):
         unknown = literals()
         unknown["main_bars"] = {"state": "unreadable", "reason": "partial repaint"}

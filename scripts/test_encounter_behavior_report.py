@@ -12,6 +12,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from bench.encounter_behavior_report import write_behavior_report
+from bench.encounter_build_comparison import compare_behavior_runs
 from bench.encounter_observation import summarize_event_observations
 from test_encounter_observation import event, span
 
@@ -106,6 +107,65 @@ class EncounterBehaviorReportTests(unittest.TestCase):
             page = write_behavior_report(Path(folder), report_fixture()).read_text()
         script = re.search(r'<script>(.*?)</script>', page, re.S).group(1)
         completed = subprocess.run([shutil.which("node"), "--check"], input=script,
+                                   text=True, capture_output=True)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    @unittest.skipUnless(shutil.which("node"), "Node is required for executable report navigation")
+    def test_structured_scope_hash_navigation_and_actual_build_comparison_are_usable(self):
+        current = report_fixture()
+        current["scope"] = {"meaning": "Every recorded event image was read.",
+                            "not_measured": ["audio", "RF"], "timing": "Observed camera markers only."}
+        current["summary"].update(read_frames=20, available_frames=21, unresolved_frames=2)
+        current["evidence"]["configuration"] = {"settings": {"persistence": 0}}
+        current["behavior_contract"]["comparison_key"] = "ordinary-seven-fields"
+        current["events"][0]["observation"]["first_target_ms"] = 5.0
+        second = copy.deepcopy(current["events"][0])
+        second.update(event_id="event-2", input_key="another input")
+        current["events"].append(second)
+        baseline = copy.deepcopy(current)
+        baseline["evidence"]["runtime_identity"]["git_sha"] = "baseline1"
+        baseline["events"][0]["observation"]["first_target_ms"] = 20.0
+        baseline["events"][0]["findings"] = []
+        baseline["events"][1]["findings"][0]["observed"] = ["K24.150"]
+        current["comparison"] = compare_behavior_runs(current, baseline)
+        self.assertTrue(current["comparison"]["compatible"])
+        current["comparison"]["baseline_report"] = "../baseline/report.html"
+        with tempfile.TemporaryDirectory() as folder:
+            page = write_behavior_report(Path(folder), current).read_text()
+        payload = embedded(page)
+        script = re.search(r'<script>(.*?)</script>', page, re.S).group(1)
+        # Execute the actual report script against a minimal isolated document.
+        # This verifies rendered text and navigation without a browser dependency.
+        prelude = '''const assert=require('node:assert/strict');
+const elements=new Map(),listeners={};
+function element(id){if(!elements.has(id))elements.set(id,{id,value:id==='filter'?'all':'',innerHTML:'',textContent:'',readyState:0,addEventListener(){},removeAttribute(){},scrollIntoView(){}});return elements.get(id);}
+global.document={getElementById:element,addEventListener(){}};
+global.window={addEventListener:(name,fn)=>listeners[name]=fn};
+global.location={hash:'#event=event-2'};
+element('behavior-data').textContent=''' + json.dumps(json.dumps(payload)) + ';\n'
+        assertions = r'''
+assert.equal(activeIndex,1);
+assert.match(element('event-content').innerHTML,/<h2>event-2<\/h2>/);
+assert.match(element('method').innerHTML,/Every recorded event image was read/);
+assert.match(element('method').innerHTML,/audio · RF/);
+assert.doesNotMatch(element('method').innerHTML,/\[object Object\]/);
+assert.match(element('coverage-summary').textContent,/20 \/ 21/);
+assert.match(element('comparison').innerHTML,/baseline1/);
+assert.match(element('comparison').innerHTML,/Newly observed findings/);
+assert.match(element('comparison').innerHTML,/Previously seen, absent here/);
+assert.match(element('comparison').innerHTML,/Baseline: \+20.000 ms/);
+assert.match(element('comparison').innerHTML,/Current: \+5.000 ms/);
+assert.match(element('comparison').innerHTML,/\.\.\/baseline\/report.html#event=event-1/);
+assert.match(element('comparison').innerHTML,/\.\.\/baseline\/frames\/4.png/);
+assert.match(element('comparison').innerHTML,/data-compare-event="0"/);
+assert.match(element('comparison').innerHTML,/Unresolved field readings/);
+location.hash='#event=event-1';listeners.hashchange();assert.equal(activeIndex,0);
+selectEvent(1);assert.equal(location.hash,'#event=event-2');
+location.hash='#event=missing';listeners.hashchange();assert.equal(activeIndex,1);
+assert.equal(safeLocalReport('javascript:evil.html'),null);
+assert.equal(safeLocalReport('//example.com/evil.html'),null);
+'''
+        completed = subprocess.run([shutil.which("node")], input=prelude + script + assertions,
                                    text=True, capture_output=True)
         self.assertEqual(completed.returncode, 0, completed.stderr)
 

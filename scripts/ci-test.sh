@@ -153,6 +153,7 @@ section "Python Regression Tests"
 # script and workflow regressions in the full gate without expanding --fast.
 run_step "Camera artifact regression suite" python3 scripts/test_camera_artifacts.py
 run_step "Camera preflight regression suite" python3 scripts/test_camera_preflight.py
+run_step "Bench Python environment regression suite" python3 scripts/test_bench_python.py
 run_step "Bench window regression suite" python3 scripts/test_bench_window.py
 run_step "Sampled visual comparison regression suite" python3 scripts/test_visual_compare.py
 run_step "Counter pixel reader regression suite" python3 scripts/test_counter_reader.py

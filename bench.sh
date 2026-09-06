@@ -127,7 +127,18 @@ if [[ "$CAMERA_REQUESTED" -eq 1 && "$QUALIFICATION_CAPTURE" -eq 0 ]]; then
   ENCOUNTER_REASON="requested camera evidence is unavailable"
 fi
 
-SAFE_BOARD_ID="$(PYTHONPATH="$ROOT_DIR/scripts/bench" python3 -c \
+runtime_args=()
+if [[ -n "$ANALYZE_RECORDING" || ( "$CAMERA_REQUESTED" -eq 1 && "$QUALIFICATION_CAPTURE" -eq 0 ) ]]; then
+  runtime_args+=("$ENCOUNTER_QUALIFICATION")
+fi
+BENCH_PYTHON="$("$ROOT_DIR/scripts/bench_python.sh" "${runtime_args[@]}")" || {
+  printf 'MEASUREMENT_INCOMPLETE (reader environment)\n'
+  exit 2
+}
+unset PYTHONHOME PYTHONPATH
+export PYTHONNOUSERSITE=1
+
+SAFE_BOARD_ID="$(PYTHONPATH="$ROOT_DIR/scripts/bench" "$BENCH_PYTHON" -c \
   'import sys; from artifact_privacy import privacy_safe_identifier; print(privacy_safe_identifier(sys.argv[1], namespace="board"))' \
   "$BOARD_ID" 2>/dev/null)" || {
   printf 'FAIL (collection): could not create the private-safe board identity\n'
@@ -231,7 +242,7 @@ detect_usb_port() {
 
 
 read_window_result() {
-  python3 - "$1" <<'PY'
+  "$BENCH_PYTHON" - "$1" <<'PY'
 import json
 import re
 import sys
@@ -256,7 +267,7 @@ PY
 }
 
 print_window_summary() {
-  python3 - "$1" "$2" "$ROOT_DIR" <<'PY'
+  "$BENCH_PYTHON" - "$1" "$2" "$ROOT_DIR" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -311,7 +322,7 @@ PY
 }
 
 read_counter_result() {
-  python3 - "$1" <<'PY'
+  "$BENCH_PYTHON" - "$1" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -339,7 +350,7 @@ run_counter_check() {
   local required=0
 
   printf '[bench] sampled live counter: analyzing replay camera evidence...\n'
-  python3 "$ROOT_DIR/scripts/bench/counter_check.py" \
+  "$BENCH_PYTHON" "$ROOT_DIR/scripts/bench/counter_check.py" \
     --run-dir "$replay_dir" \
     --auto \
     --out "$counter_dir" \
@@ -357,7 +368,7 @@ run_counter_check() {
 }
 
 read_encounter_result() {
-  python3 - "$1" "$2" "$SIGNALLED" <<'PYRESULT'
+  "$BENCH_PYTHON" - "$1" "$2" "$SIGNALLED" <<'PYRESULT'
 import json
 import math
 import re
@@ -478,7 +489,7 @@ run_encounter_check() {
     return
   fi
   printf '[bench] visual behavior: comparing controlled input with recorded display observations...\n'
-  python3 "$ROOT_DIR/scripts/bench/encounter_check.py" \
+  "$BENCH_PYTHON" "$ROOT_DIR/scripts/bench/encounter_check.py" \
     --run-dir "$replay_dir" \
     --observe-behavior \
     --reader-qualification "$ENCOUNTER_QUALIFICATION" \
@@ -519,7 +530,7 @@ finish_encounter_product() {
 
 write_qualification_capture_record() {
   local replay_dir="$1"
-  python3 - "$replay_dir/window_result.json" "$replay_dir/qualification_capture.json" \
+  "$BENCH_PYTHON" - "$replay_dir/window_result.json" "$replay_dir/qualification_capture.json" \
     "$GIT_SHA" "$ROOT_DIR/bench.sh" <<'PY'
 import hashlib
 import json
@@ -605,7 +616,7 @@ fi
 printf '[bench] building v1replay emulator...\n'
 printf 'v1replay build: started\n' >> "$RUN_LOG"
 build_status=0
-python3 "$ROOT_DIR/scripts/bench/run_logged.py" \
+"$BENCH_PYTHON" "$ROOT_DIR/scripts/bench/run_logged.py" \
   --stdout "$RUN_DIR/v1replay_build.log" \
   --stderr "$RUN_DIR/v1replay_build.err" \
   --combined "$RUN_LOG" \
@@ -629,7 +640,7 @@ for suite in "${SUITES[@]}"; do
   suite_duration="$DURATION_SECONDS"
   [[ "$suite" == "replay" ]] && suite_duration="$REPLAY_DURATION_SECONDS"
   args=(
-    python3 "$ROOT_DIR/scripts/bench/run_window.py"
+    "$BENCH_PYTHON" "$ROOT_DIR/scripts/bench/run_window.py"
     --suite "$suite"
     --duration-seconds "$suite_duration"
     --out-dir "$step_dir"
@@ -661,7 +672,7 @@ for suite in "${SUITES[@]}"; do
   printf '[bench] %s leg: %ss collection%s\n' "$suite" "$suite_duration" "$leg_note"
   printf '%s: started\n' "$suite" >> "$RUN_LOG"
   runner_status=0
-  python3 "$ROOT_DIR/scripts/bench/run_logged.py" \
+  "$BENCH_PYTHON" "$ROOT_DIR/scripts/bench/run_logged.py" \
     --stdout "$step_dir/run.log" \
     --stderr "$step_dir/run.err" \
     --combined "$RUN_LOG" \

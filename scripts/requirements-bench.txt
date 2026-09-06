@@ -1,0 +1,4 @@
+# Pixel dependencies must match the independently qualified reader runtime.
+numpy==2.5.1
+Pillow==12.0.0
+pyserial==3.5

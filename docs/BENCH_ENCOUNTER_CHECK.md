@@ -26,6 +26,14 @@ break the evidence for a continuously held phase.
 
 ## Run against installed firmware
 
+The command manages an isolated Python environment in `.artifacts/bench/python`,
+with the exact image-library versions in `scripts/requirements-bench.txt`.
+First use installs those packages (network access may be needed). Subsequent
+runs use that environment regardless of the terminal's active Python or
+PlatformIO environment. Before camera collection or offline analysis, the
+command checks those versions against the reader qualification. It does not
+change the qualification or silently accept different dependencies.
+
 When the current tooling and retained local build match the installed image:
 
 ```sh

@@ -1138,6 +1138,8 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
                           extra_arguments: tuple[str, ...] = (),
                           qualification_capture: bool = False,
                           capture_records: list[dict | None] | None = None,
+                          reader_environment_ok: bool = True,
+                          environment_records: list[dict] | None = None,
                           ) -> tuple[subprocess.CompletedProcess[str], int, int, int]:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -1194,7 +1196,9 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
         encounter_marker = root / "encounter.calls"
         visual_marker = root / "visual.calls"
 
-        python = fake_bin / "python3"
+        runtime = root / "runtime"
+        runtime.mkdir()
+        python = runtime / "python3"
         python.write_text(textwrap.dedent(f"""\
             #!/usr/bin/env bash
             set -uo pipefail
@@ -1207,12 +1211,14 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
                 exit 97
               fi
               if [[ " $* " == *"/tools/v1replay/scripts/build.sh"* ]]; then
+                printf 'called\\n' >> "$FAKE_BUILD_MARKER"
                 mkdir -p "$fixture_root/tools/v1replay/.build"
                 printf '#!/bin/sh\\nexit 0\\n' > "$fixture_root/tools/v1replay/.build/v1replay"
                 chmod +x "$fixture_root/tools/v1replay/.build/v1replay"
                 exit 0
               fi
               if [[ " $* " == *"/scripts/bench/run_window.py"* ]]; then
+                printf 'called\\n' >> "$FAKE_WINDOW_MARKER"
                 args=("$@")
                 reader_qualification=0
                 for ((index=0; index<${{#args[@]}}; index++)); do
@@ -1271,10 +1277,31 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
             exec {sys.executable} "$@"
         """), encoding="utf-8")
         python.chmod(0o755)
+        ambient_python = fake_bin / "python3"
+        ambient_python.write_text(
+            '#!/bin/sh\nprintf "called\\n" >> "$FAKE_AMBIENT_PYTHON_MARKER"\nexit 97\n',
+            encoding="utf-8")
+        ambient_python.chmod(0o755)
+        bootstrap = root / "scripts" / "bench_python.sh"
+        bootstrap.parent.mkdir()
+        bootstrap.write_text(textwrap.dedent("""\
+            #!/usr/bin/env bash
+            printf '%s\\n' "${1:-}" >> "$FAKE_BOOTSTRAP_MARKER"
+            if [[ "$FAKE_READER_ENVIRONMENT_OK" != 1 ]]; then
+              printf 'reader environment differs: numpy_version expected 2.5.1, found 2.5.2\\n' >&2
+              exit 2
+            fi
+            printf '%s\\n' "$FAKE_BENCH_PYTHON"
+        """), encoding="utf-8")
+        bootstrap.chmod(0o755)
         device = root / "device"
         if not offline:
             device.touch()
         hardware_marker = root / "hardware.calls"
+        build_marker = root / "build.calls"
+        window_marker = root / "window.calls"
+        bootstrap_marker = root / "bootstrap.calls"
+        ambient_python_marker = root / "ambient-python.calls"
         range_marker = root / "ranges.calls"
         recorded = root / "recorded"
         recorded.mkdir()
@@ -1292,6 +1319,12 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
             BENCH_REPLAY_DURATION_SECONDS="1",
             BENCH_POST_UPLOAD_SETTLE_SECONDS="0",
             FAKE_OFFLINE=str(int(offline)),
+            FAKE_READER_ENVIRONMENT_OK=str(int(reader_environment_ok)),
+            FAKE_BENCH_PYTHON=str(python),
+            FAKE_BOOTSTRAP_MARKER=str(bootstrap_marker),
+            FAKE_AMBIENT_PYTHON_MARKER=str(ambient_python_marker),
+            FAKE_BUILD_MARKER=str(build_marker),
+            FAKE_WINDOW_MARKER=str(window_marker),
             FAKE_COMPARE_TO=str(baseline_path) if compare else "",
             FAKE_REUSE_READINGS=str(baseline_path) if reuse else "",
             FAKE_HARDWARE_MARKER=str(hardware_marker),
@@ -1337,10 +1370,49 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
         counter_calls = len(counter_marker.read_text().splitlines()) if counter_marker.exists() else 0
         encounter_calls = len(encounter_marker.read_text().splitlines()) if encounter_marker.exists() else 0
         visual_calls = len(visual_marker.read_text().splitlines()) if visual_marker.exists() else 0
+        if environment_records is not None:
+            environment_records.append({
+                "qualification_arguments": bootstrap_marker.read_text().splitlines() if bootstrap_marker.exists() else [],
+                "build_calls": len(build_marker.read_text().splitlines()) if build_marker.exists() else 0,
+                "window_calls": len(window_marker.read_text().splitlines()) if window_marker.exists() else 0,
+                "ambient_python_calls": len(ambient_python_marker.read_text().splitlines()) if ambient_python_marker.exists() else 0,
+                "hardware_calls": len(hardware_marker.read_text().splitlines()) if hardware_marker.exists() else 0,
+            })
         if capture_records is not None:
             records = list((root / "artifacts").glob("*/runs/*/replay/qualification_capture.json"))
             capture_records.append(json.loads(records[0].read_text(encoding="utf-8")) if len(records) == 1 else None)
         return process, counter_calls, encounter_calls, visual_calls
+
+
+def test_bench_cli_uses_selected_reader_environment_and_rejects_before_work() -> None:
+    for offline in (False, True):
+        records: list[dict] = []
+        process, counter_calls, encounter_calls, _ = run_bench_cli_fixture(
+            "PASS", "PASS", offline=offline, environment_records=records)
+        assert_true(process.returncode == 0, process.stdout + process.stderr)
+        assert_true((counter_calls, encounter_calls) == (0 if offline else 1, 1), process.stdout)
+        selected = records[0]
+        assert_true(len(selected["qualification_arguments"]) == 1
+                    and selected["qualification_arguments"][0].endswith("/qualification/encounter-reader.json"),
+                    str(selected))
+        assert_true(selected["ambient_python_calls"] == 0,
+                    "bench escaped its selected reader environment: " + str(selected))
+        assert_true(selected["build_calls"] == selected["window_calls"] == (0 if offline else 1), str(selected))
+
+        records.clear()
+        process, counter_calls, encounter_calls, visual_calls = run_bench_cli_fixture(
+            "PASS", "PASS", offline=offline, reader_environment_ok=False,
+            environment_records=records)
+        assert_true(process.returncode == 2, process.stdout + process.stderr)
+        assert_true("MEASUREMENT_INCOMPLETE (reader environment)" in process.stdout,
+                    process.stdout + process.stderr)
+        assert_true("numpy_version expected 2.5.1, found 2.5.2" in process.stderr,
+                    process.stdout + process.stderr)
+        assert_true((counter_calls, encounter_calls, visual_calls) == (0, 0, 0), process.stdout)
+        rejected = records[0]
+        assert_true(len(rejected["qualification_arguments"]) == 1, str(rejected))
+        assert_true(all(rejected[key] == 0 for key in (
+            "build_calls", "window_calls", "ambient_python_calls", "hardware_calls")), str(rejected))
 
 
 def generated_encounter_payload(outcomes: tuple[str, ...]) -> dict:
@@ -1995,6 +2067,7 @@ def main() -> int:
     test_top_level_pass_is_vetoed_by_empty_delivery_stream()
     test_clean_source_preserves_qualified_pass_behavior()
     test_bench_cli_collection_only_branch_has_no_pass_verdict()
+    test_bench_cli_uses_selected_reader_environment_and_rejects_before_work()
     test_bench_cli_consumes_current_producer_results_online_and_offline()
     test_bench_cli_rejects_old_or_incomplete_product_contract_explicitly()
     test_bench_cli_forwards_build_comparison_only_for_visual_analysis()

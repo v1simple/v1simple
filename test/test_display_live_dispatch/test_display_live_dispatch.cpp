@@ -39,8 +39,28 @@ std::vector<DisplayLayout::DisplayRect> regionalTransfers;
 class RecordingCanvas : public Arduino_Canvas {
   public:
     RecordingCanvas() : Arduino_Canvas(SCREEN_WIDTH, SCREEN_HEIGHT, nullptr) {}
+    struct TextCall { std::string text; uint16_t color; };
+    struct FlushSnapshot {
+        std::vector<FillRectCall> rectangles;
+        std::vector<FillTriangleCall> triangles;
+        std::vector<TextCall> text;
+    };
     std::vector<std::string> printed;
-    void print(const char* text) override { printed.emplace_back(text); }
+    std::vector<TextCall> textCalls;
+    std::vector<FlushSnapshot> flushSnapshots;
+    uint16_t textColor = TFT_WHITE;
+    void setTextColor(uint16_t color) override { textColor = color; }
+    void setTextColor(uint16_t color, uint16_t) override { textColor = color; }
+    void print(const char* text) override {
+        printed.emplace_back(text);
+        textCalls.push_back({text, textColor});
+    }
+    void flush() override {
+        // These are actual source paint requests at dispatch time. The mock
+        // does not rasterize glyphs/triangles or model panel scan and response.
+        flushSnapshots.push_back({fillRectCalls, fillTriangleCalls, textCalls});
+        Arduino_Canvas::flush();
+    }
 };
 
 V1Display::V1Display(SettingsManager& injectedSettings) : settings_(injectedSettings) {
@@ -108,6 +128,8 @@ RecordingCanvas* canvas() { return static_cast<RecordingCanvas*>(display.testCan
 void clearObservations() {
     canvas()->resetCounters();
     canvas()->printed.clear();
+    canvas()->textCalls.clear();
+    canvas()->flushSnapshots.clear();
     regionalTransfers.clear();
     display.ut_fontMgr().segment7.resetRecordedCalls();
 }
@@ -238,11 +260,98 @@ void test_live_pending_draw_full_flushes_even_when_frame_itself_is_unchanged() {
     TEST_ASSERT_TRUE(display.ut_drawnRegionEmpty());
 }
 
+// Ordinary replay transitions that briefly showed FRONT+SIDE and Ka+X in
+// recorded acquisition images. They have no configured alert persistence.
+// The claim here stops at the complete source paint/flush boundary; it does
+// not attribute mixed optical observations to firmware, panel or camera.
+void test_front_to_side_replaces_outgoing_active_paint_before_full_flush() {
+    settings.slotAlertPersistSec[0] = 0;
+    const auto front = AlertData::create(BAND_K, DIR_FRONT, 3, 0, 24150, true, true);
+    const auto side = AlertData::create(BAND_K, DIR_SIDE, 3, 0, 24150, true, true);
+    showLive(front, nullptr, 4);
+    clearObservations();
+    showLive(side, nullptr, 4);
+
+    TEST_ASSERT_EQUAL_UINT(1, canvas()->flushSnapshots.size());
+    TEST_ASSERT_EQUAL_INT(1, canvas()->getFlushCount());
+    TEST_ASSERT_TRUE(regionalTransfers.empty());
+    const auto& sent = canvas()->flushSnapshots.front();
+    // Front triangle, left/right side heads, rear triangle. Assert geometry as
+    // well as order so a missing or extra direction cannot satisfy the colors.
+    TEST_ASSERT_EQUAL_UINT(4, sent.triangles.size());
+    const auto& frontPaint = sent.triangles[0];
+    const auto& leftPaint = sent.triangles[1];
+    const auto& rightPaint = sent.triangles[2];
+    const auto& rearPaint = sent.triangles[3];
+    TEST_ASSERT_TRUE(frontPaint.y0 < frontPaint.y1 && frontPaint.y1 == frontPaint.y2);
+    TEST_ASSERT_TRUE(leftPaint.x0 < leftPaint.x1 && leftPaint.x1 == leftPaint.x2);
+    TEST_ASSERT_TRUE(rightPaint.x0 > rightPaint.x1 && rightPaint.x1 == rightPaint.x2);
+    TEST_ASSERT_TRUE(rearPaint.y0 > rearPaint.y1 && rearPaint.y1 == rearPaint.y2);
+    TEST_ASSERT_EQUAL_HEX16(TFT_DARKGREY, frontPaint.color);
+    TEST_ASSERT_EQUAL_HEX16(settings.get().colorArrowSide, leftPaint.color);
+    TEST_ASSERT_EQUAL_HEX16(settings.get().colorArrowSide, rightPaint.color);
+    TEST_ASSERT_EQUAL_HEX16(TFT_DARKGREY, rearPaint.color);
+    const bool fullClusterCleared = std::any_of(sent.rectangles.begin(), sent.rectangles.end(),
+        [&](const Arduino_Canvas::FillRectCall& r) {
+            return r.color == TFT_BLACK &&
+                   r.x <= frontPaint.x1 && r.x + r.w > frontPaint.x2 &&
+                   r.y <= frontPaint.y0 && r.y + r.h > rearPaint.y0;
+        });
+    TEST_ASSERT_TRUE_MESSAGE(fullClusterCleared, "the prior active cluster must be cleared before dispatch");
+    TEST_ASSERT_FALSE(display.ut_elementCaches().arrow.showFront);
+    TEST_ASSERT_TRUE(display.ut_elementCaches().arrow.showSide);
+    TEST_ASSERT_FALSE(display.ut_elementCaches().arrow.showRear);
+
+    clearObservations();
+    showLive(side, nullptr, 4);
+    TEST_ASSERT_TRUE(canvas()->fillTriangleCalls.empty());
+    TEST_ASSERT_TRUE(canvas()->flushSnapshots.empty());
+    TEST_ASSERT_TRUE(regionalTransfers.empty());
+}
+
+void test_ka_to_x_replaces_outgoing_active_band_before_full_flush() {
+    settings.slotAlertPersistSec[0] = 0;
+    const auto ka = AlertData::create(BAND_KA, DIR_SIDE, 4, 0, 34700, true, true);
+    const auto x = AlertData::create(BAND_X, DIR_FRONT, 2, 0, 10525, true, true);
+    showLive(ka, nullptr, 5);
+    clearObservations();
+    showLive(x, nullptr, 2);
+
+    TEST_ASSERT_EQUAL_UINT(1, canvas()->flushSnapshots.size());
+    TEST_ASSERT_EQUAL_INT(1, canvas()->getFlushCount());
+    TEST_ASSERT_TRUE(regionalTransfers.empty());
+    const auto& sent = canvas()->flushSnapshots.front();
+    unsigned kaPaints = 0;
+    unsigned xPaints = 0;
+    for (const auto& call : sent.text) {
+        if (call.text == "Ka") {
+            ++kaPaints;
+            TEST_ASSERT_EQUAL_HEX16(TFT_DARKGREY, call.color);
+        }
+        if (call.text == "X") {
+            ++xPaints;
+            TEST_ASSERT_EQUAL_HEX16(settings.get().colorBandX, call.color);
+        }
+    }
+    TEST_ASSERT_EQUAL_UINT(1, kaPaints);
+    TEST_ASSERT_EQUAL_UINT(1, xPaints);
+    TEST_ASSERT_EQUAL_INT(BAND_X, display.ut_elementCaches().bands.lastMask);
+    TEST_ASSERT_EQUAL_INT(0, display.ut_elementCaches().cards.lastDrawnCount);
+
+    clearObservations();
+    showLive(x, nullptr, 2);
+    TEST_ASSERT_TRUE(canvas()->textCalls.empty());
+    TEST_ASSERT_TRUE(canvas()->flushSnapshots.empty());
+    TEST_ASSERT_TRUE(regionalTransfers.empty());
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_event0007_new_x_with_unchanged_ka_primary_paints_and_full_flushes);
     RUN_TEST(test_event0010_new_x_with_unchanged_k_primary_paints_and_full_flushes);
     RUN_TEST(test_live_counter_only_change_full_flushes_then_cache_hit_skips);
     RUN_TEST(test_live_pending_draw_full_flushes_even_when_frame_itself_is_unchanged);
+    RUN_TEST(test_front_to_side_replaces_outgoing_active_paint_before_full_flush);
+    RUN_TEST(test_ka_to_x_replaces_outgoing_active_band_before_full_flush);
     return UNITY_END();
 }

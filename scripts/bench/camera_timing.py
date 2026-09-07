@@ -464,6 +464,8 @@ def probe_all_video_frames(ffprobe: str, video_path: Path) -> list[dict[str, Any
             ffprobe,
             "-v",
             "error",
+            "-threads",
+            "4",
             "-select_streams",
             "v:0",
             "-show_frames",

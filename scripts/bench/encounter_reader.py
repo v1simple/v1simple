@@ -24,7 +24,7 @@ import counter_reader
 
 FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
-METHOD_VERSION = 19
+METHOD_VERSION = 20
 _ocr_binary = None
 _ocr_setup = None
 _ocr_session = None
@@ -315,6 +315,21 @@ def _dim_numeric_frequency(pixels, origins, patches, placeholder):
     return field("readable", "".join(digits[:2]) + "." + "".join(digits[2:]), dim_numeric=diagnostics)
 
 
+def _retain_frequency_placeholder_evidence(reading, placeholder):
+    # A numeric fallback may refuse shifted dash shapes after the independent
+    # dash reader already observed every stroke. Keep that evidence without
+    # changing the fallback's verdict or overriding a successful numeric read.
+    if reading["state"] not in ("ambiguous", "unreadable") or not placeholder or placeholder["state"] != "ambiguous":
+        return reading
+    witness = placeholder["dark_placeholder"]
+    if not all(stroke["complete"] for stroke in witness["strokes"]) or not witness["decimal"]["complete"]:
+        return reading
+    return {**reading,
+            "reason": "Five complete dash strokes and the decimal are observed; additional pixel contrast "
+                      "prevents confirming a cleared frequency field.",
+            "dark_placeholder": witness}
+
+
 def _frequency(pixels):
     # Five fixed seven-segment cells, with the decimal separately witnessed.
     x_origins = (454, 520, 616, 688, 764)
@@ -352,15 +367,18 @@ def _frequency(pixels):
     if not any(segment["state"] == "on" for cell in details for segment in cell["segments"].values()):
         if placeholder["state"] == "absent":
             return placeholder
-        return _dim_numeric_frequency(pixels, x_origins, patches, placeholder)
+        reading = _dim_numeric_frequency(pixels, x_origins, patches, placeholder)
+        return _retain_frequency_placeholder_evidence(reading, placeholder)
     if any(v["state"] == "partial" for d in details for v in d["segments"].values()):
         # Complete local-contrast strokes can straddle the absolute bright
         # threshold. Require the same literal geometry and empty-space guards
         # as dim numbers; brightness alone does not erase a readable literal.
         unresolved = field("ambiguous", reason="partial or dim frequency segment interiors", cells=details)
-        return _dim_numeric_frequency(pixels, x_origins, patches, unresolved)
+        reading = _dim_numeric_frequency(pixels, x_origins, patches, unresolved)
+        return _retain_frequency_placeholder_evidence(reading, placeholder)
     if not numeric_digits:
-        return field("unreadable", reason="frequency does not form five canonical numeric glyphs", cells=details)
+        reading = field("unreadable", reason="frequency does not form five canonical numeric glyphs", cells=details)
+        return _retain_frequency_placeholder_evidence(reading, placeholder)
     # Definite strokes determine literal content. An extra complete middle
     # stroke makes an observed 8, which the independent input comparison can
     # reject when the requested digit is 0. Unequal sampled brightness alone

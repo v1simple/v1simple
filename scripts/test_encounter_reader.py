@@ -282,8 +282,10 @@ class EncounterReaderTests(unittest.TestCase):
                 observed = self.read(frequency_placeholder(8, ink))["primary_frequency"]
                 self.assertEqual((observed["state"], observed["value"]), ("readable", "--.---"), observed)
 
-    def test_bright_placeholder_preserves_partial_and_colored_remnant_refusals(self):
-        for ink in (48, 72, 220):
+    def test_placeholder_preserves_partial_and_colored_remnant_refusals(self):
+        complete_reason = ("Five complete dash strokes and the decimal are observed; additional pixel contrast "
+                           "prevents confirming a cleared frequency field.")
+        for ink in (15, 48, 72, 220):
             for erased in ((488, 294, 499, 318), (470, 299, 520, 306),
                            (603, 344, 625, 362), (603, 344, 614, 362)):
                 with self.subTest(ink=ink, erased=erased):
@@ -292,14 +294,28 @@ class EncounterReaderTests(unittest.TestCase):
                     observed = self.read(image)["primary_frequency"]
                     self.assertIn(observed["state"], ("ambiguous", "unreadable"), observed)
                     self.assertIsNone(observed["value"])
+                    self.assertNotEqual(observed["reason"], complete_reason, observed)
             for color in ((15, 8, 8), (8, 15, 8), (8, 8, 15),
                           (220, 8, 8), (8, 220, 8), (8, 8, 220)):
                 with self.subTest(ink=ink, remnant=color):
                     image = frequency_placeholder(8, ink)
                     ImageDraw.Draw(image).rectangle((650, 275, 658, 290), fill=color)
                     observed = self.read(image)["primary_frequency"]
-                    self.assertIn(observed["state"], ("ambiguous", "unreadable"), observed)
-                    self.assertIsNone(observed["value"])
+                    self.assertEqual((observed["state"], observed["value"]), ("ambiguous", None), observed)
+                    self.assertEqual(observed["reason"], complete_reason, observed)
+                    witness = observed["dark_placeholder"]
+                    self.assertTrue(all(stroke["complete"] for stroke in witness["strokes"]))
+                    self.assertTrue(witness["decimal"]["complete"])
+                    self.assertGreaterEqual(witness["maximum_extra_body_contrast"], 3)
+
+    def test_numeric_literals_keep_their_reads_and_explanations(self):
+        for literal in ("24.150", "34.700", "12.345"):
+            for fixture in (display, dim_frequency):
+                with self.subTest(literal=literal, fixture=fixture.__name__):
+                    observed = self.read(fixture(literal))["primary_frequency"]
+                    self.assertEqual((observed["state"], observed["value"]), ("readable", literal), observed)
+                    self.assertIsNone(observed["reason"])
+                    self.assertNotIn("dark_placeholder", observed)
 
     def test_empty_frequency_background_boundary_and_gradient_are_not_glyphs(self):
         boundary = display(None)

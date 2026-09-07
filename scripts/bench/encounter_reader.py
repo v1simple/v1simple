@@ -24,7 +24,7 @@ import counter_reader
 
 FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
-METHOD_VERSION = 15
+METHOD_VERSION = 16
 _ocr_binary = None
 _ocr_setup = None
 _ocr_session = None
@@ -765,7 +765,19 @@ def _card_initial_from_crop(level, scale=(1., 1.)):
 
 
 def _card_initial_witness(pixels, left):
-    return _card_initial_from_crop(pixels.level((left + 53, 377, left + 75, 413)), pixels.scale)
+    # Include the complete glyph with background padding. A saturated band
+    # channel can broaden its strokes; independent camera channels retain
+    # sharper edges. Every definite channel reading must agree.
+    rgb = pixels.crop((left + 51, 377, left + 79, 413))
+    channels, matches = {}, set()
+    levels = {"combined": pixels.level((left + 53, 377, left + 75, 413)),
+              **{name: rgb[:, :, index] for index, name in enumerate(("red", "green", "blue"))}}
+    for channel, level in levels.items():
+        initial, witness = _card_initial_from_crop(level.astype(float), pixels.scale)
+        channels[channel] = {"initial": initial, **witness}
+        if initial is not None:
+            matches.add(initial)
+    return (next(iter(matches)) if len(matches) == 1 else None), {"channels": channels}
 
 
 def _secondary(pixels):

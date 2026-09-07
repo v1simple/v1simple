@@ -441,6 +441,40 @@ class EncounterReaderTests(unittest.TestCase):
                     self.assertIsNone(result["partial_cards"][0]["band"])
                     self.assertEqual(result["partial_cards"][0]["frequency"], "10.525")
 
+    def test_secondary_letter_remains_visible_in_unsaturated_channels(self):
+        for glyph, missing in (("X", ()), ("K", ()), ("X", ((0, 0),))):
+            im = display()
+            card(im, 393, "rear", 2)
+            card_band_glyph(im, 393, glyph, missing=missing)
+            rgb = np.asarray(im).copy()
+            # A clipped channel carries no letter contrast; other channels
+            # still contain either the complete glyph or the declared damage.
+            rgb[377:413, 444:472, 1] = 255
+            with patch.object(reader, "_ocr", return_value=ocr_result("K10.525")):
+                result = self.read(Image.fromarray(rgb))["secondary"]
+            if missing:
+                self.assertEqual(result["state"], "unreadable", result)
+            else:
+                self.assertEqual(result["value"][0]["band"], glyph, result)
+        green = display()
+        card(green, 393, "rear", 2)
+        card_band_glyph(green, 393, "K")
+        red = green.copy()
+        card_band_glyph(red, 393, "X")
+        conflict = np.asarray(green).copy()
+        conflict[377:413, 444:472, 0] = np.asarray(red)[377:413, 444:472, 0]
+        with patch.object(reader, "_ocr", return_value=ocr_result("K10.525")):
+            self.assertEqual(self.read(Image.fromarray(conflict))["secondary"]["state"], "unreadable")
+
+    def test_secondary_letter_padding_keeps_the_complete_glyph(self):
+        im = display()
+        card(im, 393, "rear", 2)
+        ImageDraw.Draw(im).rectangle((444, 377, 480, 413), fill=(0, 0, 80))
+        card_band_glyph(im, 398, "X")
+        with patch.object(reader, "_ocr", return_value=ocr_result("X10.525")):
+            result = self.read(im)["secondary"]
+        self.assertEqual(result["value"][0]["band"], "X", result)
+
     def test_secondary_blank_partial_and_faint_x_refuse_forced_k(self):
         for kind in ("blank", "upper_half", "lower_half", "faint"):
             im = display()

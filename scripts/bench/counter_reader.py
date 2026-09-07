@@ -31,8 +31,10 @@ PATCHES = {
     "c": (-.77613636, -.125, -.75568182, .00961538),
     "d": (-.87159091, .07692308, -.78977273, .125),
     "e": (-.88522727, -.125, -.87159091, -.00961538),
-    # Stay inside f's vertical stroke and clear its tapered end when sampling g.
-    "f": (-.87159091, -.45192308, -.85795455, -.31730769),
+    # Sample f below its tapered top junction with a; retain the vertical
+    # body so true partial f interiors still refuse. The V1SevenX f body
+    # spans font y463..661, below a's y685..780 contour.
+    "f": (-.87159091, -.40384615, -.85795455, -.31730769),
     "g": (-.83409091, -.25961538, -.78636364, -.21153846),
 }
 BACKGROUND = (-.84090909, -.43269231, -.80681818, -.31730769)

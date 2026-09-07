@@ -24,7 +24,7 @@ import counter_reader
 
 FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
-METHOD_VERSION = 16
+METHOD_VERSION = 17
 _ocr_binary = None
 _ocr_setup = None
 _ocr_session = None

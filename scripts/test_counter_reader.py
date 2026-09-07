@@ -118,6 +118,16 @@ class CounterReaderTests(unittest.TestCase):
         paint(rgb, (211, 209, 215, 216), bytes((0, 0, 0)))
         self.assert_unknown(self.read(rgb))
 
+    def test_top_stroke_junction_does_not_light_upper_left_body(self):
+        # The top stroke's tapered junction can occupy a few pixels above
+        # the upper-left stem. It is not an illuminated vertical f body.
+        rgb = picture("abdeg")
+        paint(rgb, (211, 209, 213, 212))
+        self.assertEqual(self.read(rgb)["glyph"], "2")
+        # A fragment in the actual vertical body remains indeterminate.
+        paint(rgb, (211, 214, 213, 220))
+        self.assert_unknown(self.read(rgb))
+
     def test_whole_cell_foreign_ink_abstains(self):
         rgb = picture("bc")
         # A second narrow '1' in the same cell misses every sampled interior.

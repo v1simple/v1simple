@@ -24,7 +24,7 @@ import counter_reader
 
 FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
-METHOD_VERSION = 14
+METHOD_VERSION = 15
 _ocr_binary = None
 _ocr_setup = None
 _ocr_session = None
@@ -345,7 +345,11 @@ def _frequency(pixels):
             return placeholder
         return _dim_numeric_frequency(pixels, x_origins, patches, placeholder)
     if any(v["state"] == "partial" for d in details for v in d["segments"].values()):
-        return field("ambiguous", reason="partial or dim frequency segment interiors", cells=details)
+        # Complete local-contrast strokes can straddle the absolute bright
+        # threshold. Require the same literal geometry and empty-space guards
+        # as dim numbers; brightness alone does not erase a readable literal.
+        unresolved = field("ambiguous", reason="partial or dim frequency segment interiors", cells=details)
+        return _dim_numeric_frequency(pixels, x_origins, patches, unresolved)
     if not all(d is not None and d.isdigit() for d in digits):
         return field("unreadable", reason="frequency does not form five canonical numeric glyphs", cells=details)
     # Definite strokes determine literal content. An extra complete middle

@@ -171,6 +171,28 @@ class EncounterReaderTests(unittest.TestCase):
             self.assertIn(observed["state"], ("ambiguous", "unreadable"), observed)
             self.assertIsNone(observed["value"])
 
+    def test_complete_gray_strokes_can_straddle_the_bright_threshold(self):
+        image = dim_frequency("24.150", ink=60)
+        draw = ImageDraw.Draw(image)
+        for origin, digit in zip((454, 520, 616, 688, 764), "24150"):
+            for name in DIGITS[digit]:
+                if name in "bcef":
+                    left, top, right, bottom = STROKES[name]
+                    draw.rectangle((origin + left + 3, top, origin + right - 3, bottom), fill=(40,) * 3)
+        observed = self.read(image)["primary_frequency"]
+        self.assertEqual((observed["state"], observed["value"]), ("readable", "24.150"), observed)
+        wrong = image.copy()
+        ImageDraw.Draw(wrong).rectangle((769, 303, 824, 311), fill=(60,) * 3)
+        observed = self.read(wrong)["primary_frequency"]
+        self.assertEqual((observed["state"], observed["value"]), ("readable", "24.158"), observed)
+        self.assertEqual(compare_frequency(observed, "24.150")["status"], "DIFFERENCE")
+        for rect in ((475, 255, 492, 273), (585, 347, 594, 362)):
+            partial = image.copy()
+            ImageDraw.Draw(partial).rectangle(rect, fill=(9,) * 3)
+            observed = self.read(partial)["primary_frequency"]
+            self.assertIn(observed["state"], ("ambiguous", "unreadable"), observed)
+            self.assertIsNone(observed["value"])
+
     def test_dim_numeric_dot_support_allows_rounded_corner_pixels(self):
         image = dim_frequency("24.150")
         # Two corner pixels of a dot can blend with background while its body

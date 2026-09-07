@@ -68,6 +68,7 @@ void DriveRuntime::initializeStorageAndProfiles() {
         audio_init_sd(storage_);
 
         if (settings_.checkAndRestoreFromSD()) {
+            display_.updateColorTheme();
             display_.setBrightness(settings_.get().brightness);
         }
 

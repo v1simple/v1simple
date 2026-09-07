@@ -177,6 +177,8 @@ void initializeSharedHardware(esp_reset_reason_t resetReason, bool maintenanceBo
     logBootStage("display", setupStartMs, stageStartedMs);
 
     settings.begin();
+    // Display initialization precedes NVS loading; apply the saved foregrounds now.
+    driveRuntime.display().updateColorTheme();
     driveRuntime.power().begin(&batteryManager, &driveRuntime.display(), &settings);
     driveRuntime.power().logStartupStatus();
     logBootStage("settings", setupStartMs, stageStartedMs);

@@ -218,6 +218,42 @@ void test_maintenance_runtime_uses_typed_constructor_dependencies_without_provid
     TEST_ASSERT_EQUAL(std::string::npos, header.find("struct Providers"));
 }
 
+// The hardware entry point is not built by this native suite. Protect the
+// production load/refresh wiring: default palette copies made by display.begin()
+// must not survive NVS loading or either boot owner's later SD restoration.
+void test_shared_boot_refreshes_saved_palette_before_boot_presentation() {
+    const std::string body = extractFunctionBody(readFile(projectRoot() + "/src/main.cpp"),
+                                                  "void initializeSharedHardware(");
+    const size_t displayAt = body.find("driveRuntime.display().begin()");
+    const size_t settingsAt = body.find("settings.begin();");
+    const size_t paletteAt = body.find("driveRuntime.display().updateColorTheme();");
+    const size_t presentationAt = body.find("if (maintenanceBoot)");
+
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, displayAt);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, settingsAt);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, paletteAt);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, presentationAt);
+    TEST_ASSERT_TRUE(displayAt < settingsAt);
+    TEST_ASSERT_TRUE(settingsAt < paletteAt);
+    TEST_ASSERT_TRUE(paletteAt < presentationAt);
+}
+
+void test_drive_boot_refreshes_palette_after_successful_sd_restore() {
+    const std::string body = extractFunctionBody(readFile(projectRoot() + "/src/drive_runtime.cpp"),
+                                                  "void DriveRuntime::initializeStorageAndProfiles()");
+    const std::string restored = extractFunctionBody(body, "if (settings_.checkAndRestoreFromSD())");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, restored.find("display_.updateColorTheme();"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, restored.find("display_.setBrightness(settings_.get().brightness)"));
+}
+
+void test_maintenance_boot_refreshes_palette_after_successful_sd_restore() {
+    const std::string body = extractFunctionBody(readFile(projectRoot() + "/src/maintenance_runtime.cpp"),
+                                                  "void MaintenanceRuntime::initializeStorageAndProfiles()");
+    const std::string restored = extractFunctionBody(body, "if (settings_.checkAndRestoreFromSD())");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, restored.find("display_.updateColorTheme();"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, restored.find("display_.setBrightness(settings_.get().brightness)"));
+}
+
 void test_maintenance_runtime_start_reaches_saved_network_auto_join() {
     const std::string runtime = readFile(projectRoot() + "/src/maintenance_runtime.cpp");
     const std::string lifecycle = readFile(projectRoot() + "/src/wifi_manager_lifecycle.cpp");
@@ -282,6 +318,9 @@ int main() {
     RUN_TEST(test_power_presentation_suppresses_maintenance_wifi_service);
     RUN_TEST(test_maintenance_service_wires_routes_settings_and_runtime_status_once);
     RUN_TEST(test_maintenance_runtime_uses_typed_constructor_dependencies_without_provider_table);
+    RUN_TEST(test_shared_boot_refreshes_saved_palette_before_boot_presentation);
+    RUN_TEST(test_drive_boot_refreshes_palette_after_successful_sd_restore);
+    RUN_TEST(test_maintenance_boot_refreshes_palette_after_successful_sd_restore);
     RUN_TEST(test_maintenance_runtime_start_reaches_saved_network_auto_join);
     RUN_TEST(test_saved_network_test_persists_enable_before_replacing_runtime_activity);
     RUN_TEST(test_explicit_disconnect_arms_session_suppression_and_enable_test_clear_it);

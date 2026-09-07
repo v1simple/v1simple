@@ -140,6 +140,7 @@ void MaintenanceRuntime::initializeStorageAndProfiles() {
         Serial.println("[Setup] Maintenance boot: skipping audio buffer/voice init");
 
         if (settings_.checkAndRestoreFromSD()) {
+            display_.updateColorTheme();
             display_.setBrightness(settings_.get().brightness);
         }
 

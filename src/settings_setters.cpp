@@ -496,8 +496,8 @@ SettingsPersistResult SettingsManager::resetDisplaySettings(SettingsPersistMode 
     for (int barIndex = 0; barIndex < SIGNAL_BAR_COLOR_COUNT; ++barIndex) {
         settings_.colorBars[barIndex] = kBarDefaults[barIndex];
     }
-    settings_.colorMuted = 0x3186;
-    settings_.colorPersisted = 0x2945;
+    settings_.colorMuted = 0x4A49;
+    settings_.colorPersisted = 0x4208;
     settings_.colorVolumeMain = 0xF800; // Red — matches constructor & NVS default
     settings_.colorVolumeMute = 0x7BEF; // Grey — matches constructor & NVS default
     settings_.colorRssiV1 = 0x07E0;

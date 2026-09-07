@@ -331,8 +331,8 @@ struct V1Settings {
           colorBleDisconnected(0x001F),                               // Blue (BLE disconnected)
           // One color per six physical segments, weakest to strongest.
           colorBars{0x07E0, 0x07E0, 0xFFE0, 0xFFE0, 0xF800, 0xF800},
-          colorMuted(0x3186),                   // Dark grey (muted alerts) — matches NVS default
-          colorPersisted(0x2945),               // Subdued grey (persisted alerts) — matches NVS default
+          colorMuted(0x4A49),                   // Subdued grey (muted alerts) — matches NVS default
+          colorPersisted(0x4208),               // Subdued grey (persisted alerts) — matches NVS default
           colorVolumeMain(0xF800),              // Red (volume bar) — matches NVS default
           colorVolumeMute(0x7BEF),              // Grey (muted volume) — matches NVS default
           colorRssiV1(0x07E0),                  // Green (V1 RSSI label) — matches NVS default

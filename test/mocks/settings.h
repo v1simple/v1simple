@@ -52,7 +52,7 @@ struct V1Settings {
     uint16_t colorPhoto = 0xF81F;
     uint16_t colorMuted = 0x8410;
     uint16_t colorBogey = 0xFFE0;
-    uint16_t colorPersisted = 0x2945;
+    uint16_t colorPersisted = 0x4208;
     uint16_t colorFrequency = 0xFFFF;
     bool freqUseBandColor = true;
     // Band indicator colors (match real settings.h defaults)

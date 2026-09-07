@@ -29,7 +29,7 @@ inline const ColorPalette& STANDARD() {
     static constexpr ColorPalette palette = {
         .bg = 0x0000,       // Black
         .text = 0xFFFF,     // White
-        .colorGray = 0x2104 // Subdued gray (resting)
+        .colorGray = 0x3186 // Subdued gray (resting)
     };
     return palette;
 }

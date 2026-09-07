@@ -24,7 +24,7 @@ import counter_reader
 
 FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
-METHOD_VERSION = 18
+METHOD_VERSION = 19
 _ocr_binary = None
 _ocr_setup = None
 _ocr_session = None
@@ -339,9 +339,18 @@ def _frequency(pixels):
         details.append({"mask": mask, "segments": measurements})
         digits.append(counter_reader.MASKS.get(mask))
         illuminated_by_digit.append(illuminated)
-    if not any(segment["state"] == "on" for cell in details for segment in cell["segments"].values()):
+    numeric_digits = all(d is not None and d.isdigit() for d in digits)
+    placeholder = None
+    if not numeric_digits:
+        # Dashes have their own centering. A complete dash can illuminate a
+        # numeric middle-stroke patch without becoming a numeric glyph. Keep
+        # the full dash, decimal and extra-ink proof independent of that
+        # absolute brightness crossing; definite numbers retain their route.
         placeholder = _dark_frequency_placeholder(pixels, details)
-        if placeholder["state"] in ("readable", "absent"):
+        if placeholder["state"] == "readable":
+            return placeholder
+    if not any(segment["state"] == "on" for cell in details for segment in cell["segments"].values()):
+        if placeholder["state"] == "absent":
             return placeholder
         return _dim_numeric_frequency(pixels, x_origins, patches, placeholder)
     if any(v["state"] == "partial" for d in details for v in d["segments"].values()):
@@ -350,7 +359,7 @@ def _frequency(pixels):
         # as dim numbers; brightness alone does not erase a readable literal.
         unresolved = field("ambiguous", reason="partial or dim frequency segment interiors", cells=details)
         return _dim_numeric_frequency(pixels, x_origins, patches, unresolved)
-    if not all(d is not None and d.isdigit() for d in digits):
+    if not numeric_digits:
         return field("unreadable", reason="frequency does not form five canonical numeric glyphs", cells=details)
     # Definite strokes determine literal content. An extra complete middle
     # stroke makes an observed 8, which the independent input comparison can

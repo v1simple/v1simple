@@ -66,6 +66,17 @@ def dim_frequency(frequency="24.150", ink=22):
     return image
 
 
+def frequency_placeholder(background=8, ink=15):
+    image = display(None)
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((448, 252, 848, 362), fill=(background,) * 3)
+    for left, right in ((471, 518), (546, 592), (637, 686), (716, 765), (791, 839)):
+        draw.polygon(((left + 4, 299), (right - 4, 299), (right, 305),
+                      (right - 4, 313), (left, 313), (left, 305)), fill=(ink,) * 3)
+    draw.ellipse((605, 346, 622, 360), fill=(ink,) * 3)
+    return image
+
+
 def arrow(im, direction, color=ORANGE):
     draw = ImageDraw.Draw(im)
     shapes = {
@@ -226,16 +237,7 @@ class EncounterReaderTests(unittest.TestCase):
         self.assertEqual(observed["main_bars"]["value"], 0)
 
     def test_dark_placeholder_requires_all_dashes_and_decimal(self):
-        def placeholder(background=8, ink=15):
-            im = display(None)
-            draw = ImageDraw.Draw(im)
-            draw.rectangle((448, 252, 848, 362), fill=(background,) * 3)
-            for left, right in ((471, 518), (546, 592), (637, 686), (716, 765), (791, 839)):
-                draw.polygon(((left + 4, 299), (right - 4, 299), (right, 305),
-                              (right - 4, 313), (left, 313), (left, 305)), fill=(ink,) * 3)
-            draw.ellipse((605, 346, 622, 360), fill=(ink,) * 3)
-            return im
-
+        placeholder = frequency_placeholder
         for background in (0, 8, 15):
             observed = self.read(placeholder(background, background + 7))["primary_frequency"]
             self.assertEqual((observed["state"], observed["value"]), ("readable", "--.---"), observed)
@@ -271,6 +273,33 @@ class EncounterReaderTests(unittest.TestCase):
         draw.rectangle((504, 271, 514, 301), fill=(15, 15, 15))
         draw.rectangle((504, 315, 514, 345), fill=(15, 15, 15))
         self.assertEqual(self.read(verticals)["primary_frequency"]["state"], "ambiguous")
+
+    def test_complete_placeholder_survives_the_numeric_brightness_boundary(self):
+        # Whole dash glyphs have their own centering. Brightening one cannot
+        # make numeric sampling patches authoritative for that different shape.
+        for ink in (15, 32, 44, 45, 48, 72, 220):
+            with self.subTest(ink=ink):
+                observed = self.read(frequency_placeholder(8, ink))["primary_frequency"]
+                self.assertEqual((observed["state"], observed["value"]), ("readable", "--.---"), observed)
+
+    def test_bright_placeholder_preserves_partial_and_colored_remnant_refusals(self):
+        for ink in (48, 72, 220):
+            for erased in ((488, 294, 499, 318), (470, 299, 520, 306),
+                           (603, 344, 625, 362), (603, 344, 614, 362)):
+                with self.subTest(ink=ink, erased=erased):
+                    image = frequency_placeholder(8, ink)
+                    ImageDraw.Draw(image).rectangle(erased, fill=(8, 8, 8))
+                    observed = self.read(image)["primary_frequency"]
+                    self.assertIn(observed["state"], ("ambiguous", "unreadable"), observed)
+                    self.assertIsNone(observed["value"])
+            for color in ((15, 8, 8), (8, 15, 8), (8, 8, 15),
+                          (220, 8, 8), (8, 220, 8), (8, 8, 220)):
+                with self.subTest(ink=ink, remnant=color):
+                    image = frequency_placeholder(8, ink)
+                    ImageDraw.Draw(image).rectangle((650, 275, 658, 290), fill=color)
+                    observed = self.read(image)["primary_frequency"]
+                    self.assertIn(observed["state"], ("ambiguous", "unreadable"), observed)
+                    self.assertIsNone(observed["value"])
 
     def test_empty_frequency_background_boundary_and_gradient_are_not_glyphs(self):
         boundary = display(None)

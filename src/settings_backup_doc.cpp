@@ -710,7 +710,7 @@ bool validateBackupNetworkCredentialFields(const JsonDocument& doc) {
 
 bool validateBackupDocumentForApply(const JsonDocument& doc, const V1Settings& current, V1ProfileManager& profiles,
                                     std::vector<V1Profile>& incomingProfiles,
-                                    std::vector<V1Profile>& existingProfiles) {
+                                    std::vector<V1Profile>& existingProfiles, bool replaceProfiles = false) {
     if (!doc.is<JsonObjectConst>()) {
         return false;
     }
@@ -725,7 +725,8 @@ bool validateBackupDocumentForApply(const JsonDocument& doc, const V1Settings& c
             return false;
         }
     }
-    if (!doc["profiles"].isNull() && !doc["profiles"].is<JsonArrayConst>()) {
+    if ((replaceProfiles && !doc["profiles"].is<JsonArrayConst>()) ||
+        (!doc["profiles"].isNull() && !doc["profiles"].is<JsonArrayConst>())) {
         return false;
     }
     if (!validateBackupNetworkCredentialFields(doc)) {
@@ -740,8 +741,10 @@ bool validateBackupDocumentForApply(const JsonDocument& doc, const V1Settings& c
         }
         availableNames.reserve(existingProfiles.size() +
                                (doc["profiles"].is<JsonArrayConst>() ? doc["profiles"].size() : 0));
-        for (const V1Profile& profile : existingProfiles) {
-            availableNames.push_back(profileCanonicalCollisionKey(profile.name));
+        if (!replaceProfiles) {
+            for (const V1Profile& profile : existingProfiles) {
+                availableNames.push_back(profileCanonicalCollisionKey(profile.name));
+            }
         }
     }
 
@@ -812,10 +815,9 @@ bool restoreProfileSnapshot(V1ProfileManager& profiles, const std::vector<V1Prof
     }
     bool restored = true;
     for (const V1Profile& profile : current) {
-        const String key = profileCanonicalCollisionKey(profile.name);
         bool existedBefore = false;
         for (const V1Profile& prior : before) {
-            existedBefore |= profileCanonicalCollisionKey(prior.name) == key;
+            existedBefore |= prior.name == profile.name;
         }
         if (!existedBefore) {
             restored = profiles.deleteProfileResult(profile.name, 250).success() && restored;
@@ -1662,7 +1664,8 @@ ProfileOperationResult SettingsManager::deleteProfileAndReferences(const String&
 }
 
 SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocument& doc, bool deferBackupRewrite,
-                                                               const SettingsRestoreWatchdog& watchdog) {
+                                                               const SettingsRestoreWatchdog& watchdog,
+                                                               SettingsBackupScope scope) {
     SettingsBackupApplyResult result;
     // Fed at restore phase boundaries only — see SettingsRestoreWatchdog.
     auto feedWatchdog = [&watchdog]() {
@@ -1685,18 +1688,19 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
     const uint64_t restoreWatermarkBefore = restoreCommitWatermark_;
     std::vector<V1Profile> incomingProfiles;
     std::vector<V1Profile> profilesBefore;
-    if (!validateBackupDocumentForApply(doc, settingsBefore, *profiles_, incomingProfiles, profilesBefore)) {
+    const bool profilesOnly = scope == SettingsBackupScope::ProfilesOnly;
+    if (!validateBackupDocumentForApply(doc, settingsBefore, *profiles_, incomingProfiles, profilesBefore, profilesOnly)) {
         Serial.println("[Settings] ERROR: Backup document failed transaction validation");
         return result;
     }
     RestoreCredentialSnapshot credentialsBefore;
-    if (!captureRestoreCredentialSnapshot(*storage_, credentialsBefore)) {
+    if (!profilesOnly && !captureRestoreCredentialSnapshot(*storage_, credentialsBefore)) {
         Serial.println("[Settings] ERROR: Failed to snapshot credential stores before restore");
         return result;
     }
 
-    const bool credentialsMutated = restoreMutatesCredentials(doc);
-    const bool profilesMutated = !incomingProfiles.empty();
+    const bool credentialsMutated = !profilesOnly && restoreMutatesCredentials(doc);
+    const bool profilesMutated = !incomingProfiles.empty() || (profilesOnly && !profilesBefore.empty());
     const bool externalStoresMutated = credentialsMutated || profilesMutated;
     bool journalWritten = false;
     uint64_t restoreToken = 0;
@@ -1729,7 +1733,8 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
         }
     };
 
-    if (!applyBackupNetworkFields(doc, settings_, *storage_, BackupRestoreScope::Full, deferBackupRewrite)) {
+    if (!profilesOnly &&
+        !applyBackupNetworkFields(doc, settings_, *storage_, BackupRestoreScope::Full, deferBackupRewrite)) {
         Serial.println("[Settings] ERROR: Network credential restore failed; rolling back document");
         rollback();
         return result;
@@ -1744,13 +1749,44 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
     }
 #endif
 
-    applyBackupDisplayFields(doc, settings_, BackupRestoreScope::Full);
-    applyBackupAudioFields(doc, settings_, BackupRestoreScope::Full);
+    if (!profilesOnly) {
+        applyBackupDisplayFields(doc, settings_, BackupRestoreScope::Full);
+        applyBackupAudioFields(doc, settings_, BackupRestoreScope::Full);
+    }
     applyBackupProfileSlotFields(doc, settings_, BackupRestoreScope::Full);
-    applyBackupObdFields(doc, settings_, BackupRestoreScope::Full);
-    applyBackupAlpAndGpsFields(doc, settings_);
-    healBackupRestoreConflicts(settings_, "restored");
+    if (!profilesOnly) {
+        applyBackupObdFields(doc, settings_, BackupRestoreScope::Full);
+        applyBackupAlpAndGpsFields(doc, settings_);
+        healBackupRestoreConflicts(settings_, "restored");
+    } else {
+        const auto beforeSlot = settingsBefore.autoPushSlotView(settingsBefore.activeSlot);
+        const auto afterSlot = settings_.autoPushSlotView(settings_.activeSlot);
+        // As with ordinary settings setters, count an attempted A -> B -> A
+        // even if persistence later rolls back; this is not a durable revision.
+        if ((settingsBefore.activeSlot != settings_.activeSlot || beforeSlot.alertPersist != afterSlot.alertPersist ||
+             beforeSlot.priorityArrow != afterSlot.priorityArrow) && displayConfigurationRevision_ != UINT32_MAX) {
+            ++displayConfigurationRevision_;
+        }
+    }
     feedWatchdog();
+
+    if (profilesOnly) {
+        // Exact catalog replacement shares the same rollback snapshot and NVS
+        // commit watermark as the profile writes below. Retire absent names
+        // first so a case-only name replacement can be saved and recovered.
+        for (const V1Profile& prior : profilesBefore) {
+            bool retained = false;
+            for (const V1Profile& incoming : incomingProfiles) {
+                retained |= prior.name == incoming.name;
+            }
+            if (!retained && !profiles_->deleteProfileResult(prior.name, 250).success()) {
+                Serial.println("[Settings] ERROR: Profile replacement failed; rolling back document");
+                rollback();
+                return result;
+            }
+            feedWatchdog();
+        }
+    }
 
     int profilesProcessed = 0;
     for (const V1Profile& profile : incomingProfiles) {

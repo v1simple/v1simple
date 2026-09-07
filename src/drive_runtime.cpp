@@ -160,6 +160,16 @@ void DriveRuntime::requestMaintenanceBootRestart() {
     ESP.restart();
 }
 
+bool DriveRuntime::usbMaintenanceAllowed() const {
+    return active_ && state_.bootReady && !usbTailBusy_ && !power_.ownsDisplayPresentation() &&
+           !parser_.hasAlerts() && !alp_.isAlertActive() && !state_.alpSignalActive &&
+           !bleQueue_.isBackpressured();
+}
+
+void DriveRuntime::requestUsbMaintenanceBoot() {
+    if (usbMaintenanceAllowed()) requestMaintenanceBootRestart();
+}
+
 void DriveRuntime::initializeTouchAndUi() {
     autoPush_.begin(&settings_, &profiles_, &ble_, &display_, &quiet_);
 
@@ -615,6 +625,7 @@ DriveLoopDispatch DriveRuntime::processConnectionDispatch(bool powerPresentation
 void DriveRuntime::processPeriodicMaintenance(uint32_t nowMs, bool bleConnected, bool bleBackpressure,
                                               bool loopOverloaded, bool forceTailBleDrainPending) {
     const bool hardPressure = bleBackpressure || loopOverloaded || forceTailBleDrainPending;
+    usbTailBusy_ = hardPressure;
     if (!bleConnected) {
         connectedPersistenceWindowAnchored_ = false;
         connectedPersistenceWindowStartedMs_ = 0;

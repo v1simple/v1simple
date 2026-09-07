@@ -495,6 +495,11 @@ struct SettingsBackupApplyResult {
     int profilesRestored = 0;
 };
 
+enum class SettingsBackupScope : uint8_t {
+    Full,
+    ProfilesOnly,
+};
+
 /// Optional task-watchdog feed for applyBackupDocument().
 ///
 /// A full restore rewrites the WiFi credential NVS namespace, re-saves every
@@ -895,7 +900,8 @@ class SettingsManager {
     bool deferredBackupRetryScheduled() const;
     uint32_t deferredBackupNextAttemptAtMs() const;
     SettingsBackupApplyResult applyBackupDocument(const JsonDocument& doc, bool deferBackupRewrite,
-                                                  const SettingsRestoreWatchdog& watchdog = SettingsRestoreWatchdog{});
+                                                  const SettingsRestoreWatchdog& watchdog = SettingsRestoreWatchdog{},
+                                                  SettingsBackupScope scope = SettingsBackupScope::Full);
     bool restoreFromSD();
     bool checkAndRestoreFromSD(); // Call after storage is mounted to retry restore
     // Before starting a new external mutation, converge every recoverable

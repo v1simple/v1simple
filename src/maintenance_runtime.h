@@ -46,6 +46,10 @@ class MaintenanceRuntime : public PowerLifecycle {
     void stop();
 
     bool active() const { return active_; }
+    uint32_t bootId() const { return bootId_; }
+    bool usbConfigurationAllowed() const;
+    void requestUsbNormalBoot();
+    void recordUsbActivity(uint32_t nowMs);
 
   private:
     friend class MaintenanceWifiCoordinator;
@@ -98,6 +102,7 @@ class MaintenanceRuntime : public PowerLifecycle {
     WifiMaintenanceRecoveryModule wifiRecovery_;
 
     String shownIp_;
+    uint32_t bootId_ = 0;
     uint32_t bootButtonPressStartMs_ = 0;
     bool bootButtonReleaseRequired_ = false;
     bool shownStation_ = false;

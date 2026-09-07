@@ -21,6 +21,7 @@
 #include "runtime_coordinator.h"
 #include "settings.h"
 #include "storage_manager.h"
+#include "usb_profile_runtime.h"
 #include "v1_devices.h"
 #include "v1_profiles.h"
 #include "wifi_manager.h"
@@ -43,6 +44,7 @@ MaintenanceRuntime maintenanceRuntime(
     driveRuntime.preview(), driveRuntime.power(), batteryManager, driveRuntime.touch(), driveRuntime.ble(), driveRuntime.parser(),
     driveRuntime.autoPush(), driveRuntime.obd(), driveRuntime.speed(), driveRuntime.gps(), driveRuntime.quiet(),
     productEventLog, healthJournal, driveRuntime.state());
+UsbProfileRuntime usbProfiles(driveRuntime, maintenanceRuntime, settings, profiles);
 
 bool& loopWatchdogRegistered() {
     static bool registered = false;
@@ -223,4 +225,5 @@ void setup() {
 void loop() {
     MainLoopWatchdogFeedOnExit watchdogFeed;
     MainRuntimeCoordinator::tick(driveRuntime, maintenanceRuntime, []() { return millis(); });
+    usbProfiles.tick(millis());
 }

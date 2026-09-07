@@ -59,6 +59,9 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     void tick();
     void stop();
     bool active() const { return active_; }
+    uint32_t bootId() const { return bootId_; }
+    bool usbMaintenanceAllowed() const;
+    void requestUsbMaintenanceBoot();
 
     void resetConnectionCadence();
     void showInitialScanningScreen();
@@ -199,6 +202,7 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     bool connectedPersistenceWindowAnchored_ = false;
     uint32_t connectedPersistenceWindowStartedMs_ = 0;
     uint32_t bootId_ = 0;
+    bool usbTailBusy_ = true;
     uint32_t lastDisplayConfigurationLogMs_ = 0;
     bool active_ = false;
 };

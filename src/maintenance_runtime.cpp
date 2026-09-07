@@ -200,6 +200,7 @@ void MaintenanceRuntime::start(uint32_t setupStartMs, esp_reset_reason_t resetRe
     Serial.println(previousShutdownClean ? "[Boot] Previous shutdown was clean"
                                          : "[Boot] Previous shutdown was UNCLEAN (no clean-shutdown marker)");
     const uint32_t bootId = nextBootId();
+    bootId_ = bootId;
     HealthCounters::reset();
     (void)health_.begin(storage_, bootId, getRuntimeImageId(), resetReasonToString(resetReason),
                         previousShutdownClean, preservedPanicEvidencePresent(resetReason));
@@ -283,6 +284,18 @@ void MaintenanceRuntime::restartNormal(const char* reason) {
         Serial.println("[MaintBoot] WARN: restart continuing without final persistence writes");
     }
     ESP.restart();
+}
+
+bool MaintenanceRuntime::usbConfigurationAllowed() const {
+    return active_ && state_.bootReady && !power_.ownsDisplayPresentation();
+}
+
+void MaintenanceRuntime::requestUsbNormalBoot() {
+    if (usbConfigurationAllowed()) restartNormal("USB profile session complete");
+}
+
+void MaintenanceRuntime::recordUsbActivity(uint32_t nowMs) {
+    if (active_) state_.maintenanceLastUiActivityMs = nowMs == 0 ? 1 : nowMs;
 }
 
 bool MaintenanceRuntime::startMaintenanceWifi() {

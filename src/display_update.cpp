@@ -6,9 +6,8 @@
  * The element caches (V1Display::elementCaches_) are the sole caching layer. Each draw
  * function checks "did my inputs change?" and skips the draw if not. Mode
  * transitions invalidate all element caches via prepareFullRedrawNoClear().
- * Resting/persisted steady-state frames consume the same drawnRegion_ signal
- * as the live path, but only choose between full-panel flush and no flush; they
- * intentionally do not introduce partial-panel pushes.
+ * Live, resting and persisted frames use drawnRegion_ to choose between a
+ * full-panel transfer for changed pixels and no transfer for cache hits.
  */
 
 #include "display.h"
@@ -34,204 +33,6 @@
 using DisplayLayout::PRIMARY_ZONE_HEIGHT;
 
 namespace {
-
-struct DispatchRectList {
-    DrawnRegion::Rect rects[DrawnRegion::MAX_RECTS]{};
-    uint8_t count = 0;
-};
-
-bool clipToFramebuffer(DrawnRegion::Rect& rect) {
-    int16_t x = rect.x;
-    int16_t y = rect.y;
-    int16_t w = rect.w;
-    int16_t h = rect.h;
-    if (w <= 0 || h <= 0)
-        return false;
-    if (x < 0) {
-        w = static_cast<int16_t>(w + x);
-        x = 0;
-    }
-    if (y < 0) {
-        h = static_cast<int16_t>(h + y);
-        y = 0;
-    }
-    if (w <= 0 || h <= 0)
-        return false;
-    if (x >= SCREEN_WIDTH || y >= SCREEN_HEIGHT)
-        return false;
-    if (x + w > SCREEN_WIDTH) {
-        w = static_cast<int16_t>(SCREEN_WIDTH - x);
-    }
-    if (y + h > SCREEN_HEIGHT) {
-        h = static_cast<int16_t>(SCREEN_HEIGHT - y);
-    }
-    if (w <= 0 || h <= 0)
-        return false;
-    rect.x = x;
-    rect.y = y;
-    rect.w = w;
-    rect.h = h;
-    return true;
-}
-
-int16_t rectRight(const DrawnRegion::Rect& rect) {
-    return static_cast<int16_t>(rect.x + rect.w);
-}
-
-int16_t rectBottom(const DrawnRegion::Rect& rect) {
-    return static_cast<int16_t>(rect.y + rect.h);
-}
-
-bool rectsOverlapOrTouch(const DrawnRegion::Rect& a, const DrawnRegion::Rect& b) {
-    return a.x <= rectRight(b) && rectRight(a) >= b.x && a.y <= rectBottom(b) && rectBottom(a) >= b.y;
-}
-
-DrawnRegion::Rect unionRect(const DrawnRegion::Rect& a, const DrawnRegion::Rect& b) {
-    const int16_t x0 = (a.x < b.x) ? a.x : b.x;
-    const int16_t y0 = (a.y < b.y) ? a.y : b.y;
-    const int16_t x1 = (rectRight(a) > rectRight(b)) ? rectRight(a) : rectRight(b);
-    const int16_t y1 = (rectBottom(a) > rectBottom(b)) ? rectBottom(a) : rectBottom(b);
-    return DrawnRegion::Rect{
-        x0,
-        y0,
-        static_cast<int16_t>(x1 - x0),
-        static_cast<int16_t>(y1 - y0),
-        static_cast<uint8_t>(a.sourceMask | b.sourceMask),
-    };
-}
-
-bool addMergedRect(DispatchRectList& list, DrawnRegion::Rect rect) {
-    if (!clipToFramebuffer(rect)) {
-        return true;
-    }
-
-    for (uint8_t i = 0; i < list.count; ++i) {
-        if (!rectsOverlapOrTouch(list.rects[i], rect)) {
-            continue;
-        }
-        rect = unionRect(list.rects[i], rect);
-        list.rects[i] = list.rects[static_cast<uint8_t>(list.count - 1)];
-        --list.count;
-        i = 0xFF; // restart merge scan after unsigned increment wraps to 0
-    }
-
-    if (list.count >= DrawnRegion::MAX_RECTS) {
-        return false;
-    }
-    list.rects[list.count++] = rect;
-    return true;
-}
-
-bool buildDispatchRectList(const DrawnRegion& region, DispatchRectList& list) {
-    if (region.overflowed()) {
-        return false;
-    }
-    for (uint8_t i = 0; i < region.rectCount(); ++i) {
-        if (!addMergedRect(list, region.rectAt(i))) {
-            return false;
-        }
-    }
-    return true;
-}
-
-uint32_t rectListAreaPx(const DispatchRectList& list) {
-    uint32_t total = 0;
-    for (uint8_t i = 0; i < list.count; ++i) {
-        total += list.rects[i].areaPx();
-    }
-    return total;
-}
-
-uint32_t rectListRowCalls(const DispatchRectList& list) {
-    uint32_t total = 0;
-    for (uint8_t i = 0; i < list.count; ++i) {
-        total += static_cast<uint32_t>(list.rects[i].w);
-    }
-    return total;
-}
-
-// V1Display::flushRegion() issues one draw16bitRGBBitmap per physical row, and
-// under the rotation-1 canvas physical rows == logical *width* (px per call ==
-// logical height). Cost is therefore driven by row-call count, not by area.
-// Fitted against displayPartialFlushWorstUs* over 23 bench replay runs:
-//
-//     us ~= w * (kFlushRowCallUs + h * kFlushRowPixelNs / 1000)
-//
-//     shape        predicted   measured
-//      70 x  22         3850       3858
-//     145 x  54         9425       8781
-//     147 x 172        15288      15517
-//     300 x 133        27300      25678
-//     230 x 133        20930      45977   <-- see note
-//
-// The 230x133 region costs ~202 us per row call against ~88 us for 300x133 at
-// the same 133 px per call. That discrepancy is not explained, so the estimate
-// is low for this shape by 2.2x. The routing decision is unaffected (20930
-// already exceeds a full flush) but do not read the estimate as accurate here.
-constexpr uint32_t kFlushRowCallUs = 48;
-constexpr uint32_t kFlushRowPixelNs = 330;
-
-// Typical full-canvas flush with the QSPI byte-swap/DMA overlap patch active
-// (scripts/patch_arduino_gfx_qspi.py). This is a MEDIAN, and the full-flush
-// distribution has a long tail -- over 812 windows: median 17,732, p90 19,591,
-// p99 35,474, max 47,322 us. The tail is not understood; it is unrelated to
-// region shape and clusters early in a run alongside signal-bar churn.
-//
-// The median is the right value for a routing decision (compare expected
-// costs), but do not read this constant as "a full flush takes 17.7 ms" -- one
-// in a hundred takes twice that. Without the QSPI patch the median is
-// ~33,200 us; raise this to match if the patch is ever removed, or partial
-// flushes that would still have been cheaper get sent to the full path.
-constexpr uint32_t kFullFlushUs = 17700;
-
-uint32_t estimatedFlushRegionUs(uint32_t w, uint32_t h) {
-    return w * (kFlushRowCallUs + (h * kFlushRowPixelNs) / 1000u);
-}
-
-uint32_t estimatedRectListFlushUs(const DispatchRectList& list) {
-    uint32_t total = 0;
-    for (uint8_t i = 0; i < list.count; ++i) {
-        total += estimatedFlushRegionUs(static_cast<uint32_t>(list.rects[i].w), static_cast<uint32_t>(list.rects[i].h));
-    }
-    return total;
-}
-
-bool shouldUseMultiRectDispatch(const DrawnRegion& region, uint32_t partialAreaCap, bool arrowPainted,
-                                DispatchRectList& list) {
-    if (arrowPainted || region.rectCount() < 2) {
-        return false;
-    }
-    if (!buildDispatchRectList(region, list)) {
-        return false;
-    }
-    if (list.count < 2 || list.count > 6) {
-        return false;
-    }
-
-    const uint32_t totalArea = rectListAreaPx(list);
-    const uint32_t totalRows = rectListRowCalls(list);
-    const uint32_t unionArea = region.areaPx();
-    const uint32_t unionRows = static_cast<uint32_t>(region.w());
-    if (totalArea == 0 || totalRows == 0 || totalArea >= partialAreaCap) {
-        return false;
-    }
-
-    // A split is only worth issuing if the whole set still beats one full push.
-    // The area and row heuristics below compare the split against the union
-    // bbox; neither bounds it against DISPLAY_FLUSH().
-    if (estimatedRectListFlushUs(list) >= kFullFlushUs) {
-        return false;
-    }
-
-    // The AXS15231B partial path is row-call sensitive. Only split when the
-    // item-owned windows avoid enough dead air to beat the current union bbox.
-    if (unionArea >= partialAreaCap) {
-        return totalArea < unionArea && totalRows <= unionRows + 32u;
-    }
-
-    const uint32_t perRectPenaltyRows = 8u * static_cast<uint32_t>(list.count - 1);
-    return (totalArea * 100u < unionArea * 85u) && (totalRows + perRectPenaltyRows < unionRows);
-}
 
 #if defined(DISPLAY_WAVESHARE_349)
 uint8_t batteryVoltageBand(uint16_t millivolts) {
@@ -616,8 +417,6 @@ void V1Display::update(const DisplayState& state) {
     // repaints. A queued external draw still forces the safe full push below.
     const bool hadPendingExternalDraws = !drawnRegion_.empty();
     drawnRegion_.reset();
-    arrowVisibilityForceFullFlush_ = false;
-    arrowPaintedThisFrame_ = false;
 
     // In resting mode, never show muted visual — apps commonly set volume to 0
     // when idle, adjusting on new alerts.
@@ -730,8 +529,6 @@ void V1Display::updatePersisted(const AlertData& alert, const DisplayState& stat
     // by prior frames. Persisted mode still uses only full-panel or no flush.
     const bool hadPendingExternalDraws = !drawnRegion_.empty();
     drawnRegion_.reset();
-    arrowVisibilityForceFullFlush_ = false;
-    arrowPaintedThisFrame_ = false;
 
     const bool needsFullRedraw = currentScreen_ != ScreenMode::Persisted || dirty_.resetTracking;
 
@@ -796,37 +593,16 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
     // live frame (for example setBLEProxyStatus(), which draws into the
     // framebuffer and intentionally leaves flushing to the display pipeline).
     // Then reset the per-frame accumulator so this update only records pixels
-    // it actually repaints. The queued region is merged back before dispatch.
+    // it actually repaints. A queued draw also requires a full canvas transfer.
     //
     // The end of this function resets drawnRegion_ after consuming it; that is
     // what makes a non-empty entry region mean "external pending draw" rather
     // than "the previous live frame already flushed this area."
-    DrawnRegion pendingExternalDraws = drawnRegion_;
-    const bool hadPendingExternalDraws = !pendingExternalDraws.empty();
+    const bool hadPendingExternalDraws = !drawnRegion_.empty();
     drawnRegion_.reset();
-    arrowVisibilityForceFullFlush_ = false;
-    arrowPaintedThisFrame_ = false;
 
     const V1Settings& s = settings_.get();
     const bool needsFullRedraw = currentScreen_ != ScreenMode::Live || dirty_.resetTracking;
-
-    // Correctness override for V1 blink frames. Diag14 proved the framebuffer
-    // paints Image1/Image2 arrow phases correctly, but the panel still looked
-    // steady when those changes were delivered through repeated small
-    // flushRegion() windows. Prior AXS15231B partial-window attempts were
-    // unstable on-device, so live arrow/band blink frames that actually changed
-    // pixels use the proven full canvas push.
-    //
-    // Cache-hit frames still skip flushing. V1 sends display packets
-    // faster than the 96 ms blink cadence, so forcing a full flush merely
-    // because flashBits are present would waste SPI time and risk higher-priority
-    // BLE ingest/drain without changing the visible image.
-    //
-    // Kept separate from needsFullRedraw so EnterLive logging / screen
-    // transition recording (gated by needsFullRedraw below) only fire on
-    // actual mode transitions, not every blink frame.
-    const bool blinkForceFullFlush = (state.flashBits != 0) || (state.bandFlashBits != 0);
-
 
     dirty_.multiAlert = true;
     multiAlertMode_ = true;
@@ -877,51 +653,15 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
 
     drawSecondaryAlertCards(allAlerts, alertCount, priority, state.muted);
 
-    // Leaf renderers annotate painted regions. Mode changes and unreliable
-    // small-window updates use full flushes; other frames skip, split, union,
-    // or full-flush according to the annotated regions and estimated cost.
-    constexpr uint32_t kPartialFlushAreaCap =
-        static_cast<uint32_t>(SCREEN_WIDTH) * static_cast<uint32_t>(SCREEN_HEIGHT) / 2;
-
-    if (hadPendingExternalDraws) {
-        const uint8_t pendingSources =
-            static_cast<uint8_t>(pendingExternalDraws.sourceMask() | DisplayDirtyRegionSource::External);
-        drawnRegion_.add(pendingExternalDraws.x(), pendingExternalDraws.y(), pendingExternalDraws.w(),
-                         pendingExternalDraws.h(), pendingSources);
-    }
-
-    // Small-window signal-bar updates are unreliable on this panel.
-    const bool signalBarsPainted = (drawnRegion_.sourceMask() & DisplayDirtyRegionSource::SignalBars) != 0;
-    const bool smallWindowForceFullFlush =
-        blinkForceFullFlush || signalBarsPainted ||
-        (arrowVisibilityForceFullFlush_ && drawnRegion_.areaPx() < kPartialFlushAreaCap);
-    DispatchRectList multiRectDispatch;
-    const bool useMultiRectDispatch =
-        !needsFullRedraw && !smallWindowForceFullFlush &&
-        shouldUseMultiRectDispatch(drawnRegion_, kPartialFlushAreaCap, arrowPaintedThisFrame_, multiRectDispatch);
-
-    const bool nothingToFlush = displayFrameHasNothingToFlush(needsFullRedraw, drawnRegion_.empty());
+    // Counter/card-only changes can paint the correct canvas while regional
+    // transfers leave the previous image on AXS15231B. Use the same full-canvas
+    // transfer as resting/persisted frames whenever pixels changed. Element
+    // cache hits still skip both painting and transfer; input cadence alone
+    // must not trigger another panel push.
+    const bool nothingToFlush = displayFrameHasNothingToFlush(
+        needsFullRedraw, !hadPendingExternalDraws && drawnRegion_.empty());
     if (!nothingToFlush) {
-        if (needsFullRedraw) {
-            DISPLAY_FLUSH();
-        } else if (smallWindowForceFullFlush) {
-            // Bypass partial flush only when this blink-bearing or arrow
-            // visibility-changing frame painted pixels. Cache-hit blink packets
-            // above still skip. Direction-set changes repaint active/resting arrow
-            // states; if the previous frame was a blink-off PALETTE_BG phase, a
-            // missed small-window partial flush leaves the resting glyph blank.
-            DISPLAY_FLUSH();
-        } else if (useMultiRectDispatch) {
-            for (uint8_t i = 0; i < multiRectDispatch.count; ++i) {
-                const DrawnRegion::Rect& rect = multiRectDispatch.rects[i];
-                flushRegion(rect.x, rect.y, rect.w, rect.h);
-            }
-        } else if (estimatedFlushRegionUs(static_cast<uint32_t>(drawnRegion_.w()),
-                                          static_cast<uint32_t>(drawnRegion_.h())) >= kFullFlushUs) {
-            DISPLAY_FLUSH();
-        } else {
-            flushRegion(drawnRegion_.x(), drawnRegion_.y(), drawnRegion_.w(), drawnRegion_.h());
-        }
+        DISPLAY_FLUSH();
     }
 
     // Consume the live-frame region after dispatch. This prevents the next
@@ -929,8 +669,6 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
     // work, while still allowing external setters between frames to queue a
     // region for the next pipeline-owned flush.
     drawnRegion_.reset();
-    arrowVisibilityForceFullFlush_ = false;
-    arrowPaintedThisFrame_ = false;
 
     dirty_.resetTracking = false;
     currentScreen_ = ScreenMode::Live;

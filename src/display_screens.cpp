@@ -30,7 +30,6 @@ void V1Display::showMaintenanceMode(const char* ipAddress, bool stationMode) {
     multiAlertMode_ = false;
     persistedMode_ = false;
     drawnRegion_.reset();
-    arrowVisibilityForceFullFlush_ = false;
 
     drawBaseFrame();
 
@@ -323,7 +322,6 @@ void V1Display::showStealth(float speedMph, bool speedValid) {
     // Pending external draws require a full stealth repaint before cache skipping.
     const bool hadPendingExternalDraws = !drawnRegion_.empty();
     drawnRegion_.reset();
-    arrowVisibilityForceFullFlush_ = false;
 
     if (currentScreen_ == ScreenMode::Stealth && !dirty_.resetTracking && !hadPendingExternalDraws &&
         lastStealthPaletteRevision_ == paletteRevision_ && lastStealthSpeedValid_ == displaySpeedValid &&

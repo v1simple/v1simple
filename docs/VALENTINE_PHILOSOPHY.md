@@ -179,7 +179,7 @@ silently drop, delay, or downgrade a real threat.
 |---|---|---|
 | Never downgrade a live threat (#6, corollary) | `src/modules/display/render_frame_composer.cpp`, `synthesizeAlpPrimaryState()` | A live ALP laser event composes with `muted = false` before downstream rendering. |
 | Direction is truth (#2) | `src/display_arrow.cpp`, the ALP color-override block | Laser-direction color overrides never suppress the V1's own radar-band direction arrows. Each source keeps its authoritative direction. |
-| The display must not lie by going stale (#7) | `src/display_update.cpp`, the region-union partial-flush dispatch | Blink, arrow-visibility, and signal-bar changes bypass the partial route, while mode transitions force a full redraw. |
+| The display must not lie by going stale (#7) | `src/display_update.cpp`, changed-frame dispatch | Changed live, resting and persisted frames use full-canvas transfers; unchanged frames skip transfer, and mode transitions force a full redraw. |
 | Fidelity to the V1 (#1, #7) | `test/test_protocol_spec_conformance/test_protocol_spec_conformance.cpp`, user-bytes section | Pins the V1 profile command bits. A wrong row means a profile push could silently disable a detection band. |
 
 ---

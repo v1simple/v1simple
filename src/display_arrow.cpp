@@ -22,8 +22,8 @@
 //
 // Mirrors the clear-region math inside drawDirectionArrow (the full-redraw
 // `FILL_RECT(clearLeft, totalTop, ...)` path). Exposed as a static helper so
-// the live-update orchestrator can flushRegion() over exactly the pixels that
-// drawDirectionArrow may have touched, without duplicating layout constants.
+// the owning frame can track the pixels drawDirectionArrow may have touched
+// without duplicating layout constants.
 //
 // The layout helper must remain a superset of every arrow draw and clear path.
 // Over-reporting a few pixels is safe; under-reporting leaves stale pixels.
@@ -148,13 +148,6 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
     const bool frontVisibilityChanged = elementCaches_.arrow.valid && (showFront != elementCaches_.arrow.showFront);
     const bool sideVisibilityChanged = elementCaches_.arrow.valid && (showSide != elementCaches_.arrow.showSide);
     const bool rearVisibilityChanged = elementCaches_.arrow.valid && (showRear != elementCaches_.arrow.showRear);
-    if (frontVisibilityChanged || sideVisibilityChanged || rearVisibilityChanged) {
-        // A direction-set change can promote a just-blinked-off active arrow
-        // from PALETTE_BG back to the dim resting glyph.  That transition must
-        // latch reliably on the panel; update(priority, ...) will use this
-        // flag to avoid the flaky small-window partial path for this frame.
-        arrowVisibilityForceFullFlush_ = true;
-    }
     const bool blinkOffChanged = elementCaches_.arrow.valid && ((blinkOffFront != elementCaches_.arrow.blinkOffFront) ||
                                                                 (blinkOffSide != elementCaches_.arrow.blinkOffSide) ||
                                                                 (blinkOffRear != elementCaches_.arrow.blinkOffRear));
@@ -170,11 +163,9 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
     if (!anyChanged) {
         return;
     }
-    arrowPaintedThisFrame_ = true;
     // Past the cache early-return: this call is going to paint pixels into the
     // arrow region. Contribute the cluster bounding rect to the per-frame
-    // DrawnRegion union so update(priority, ...)'s dispatch can flushRegion()
-    // exactly the pixels we touched.
+    // DrawnRegion so the owning frame sends the changed canvas to the panel.
     {
         const DisplayLayout::DisplayRect r = V1Display::arrowBoundingRect(raisedLayout);
         drawnRegion_.add(r.x, r.y, r.w, r.h, DisplayDirtyRegionSource::Arrows);

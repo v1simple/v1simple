@@ -165,8 +165,8 @@ class V1Display {
     void flushRegion(int16_t x, int16_t y, int16_t w, int16_t h); // Partial flush to reduce SPI traffic
 
     // Logical bounding rect of the direction-arrow cluster. Exposed so the
-    // live-update path can flushRegion() over exactly what drawDirectionArrow's
-    // clear/redraw covers. raisedLayout mirrors drawDirectionArrow's internal
+    // owning frame can track exactly what drawDirectionArrow's clear/redraw
+    // covers. raisedLayout mirrors drawDirectionArrow's internal
     // gate (true when dirty_.multiAlert is set, i.e. in every Live-mode frame).
     //
     // Returns DisplayLayout::DisplayRect (generic rect type shared with the
@@ -268,25 +268,10 @@ class V1Display {
     bool multiAlertMode_ = false;          // True while rendering a live multi-alert frame
     bool persistedMode_ = false;           // True when drawing persisted alerts (uses PALETTE_PERSISTED)
     bool speedVolZeroActive_ = false;      // Suppress VOL 0 warning during speed-mute vol 0
-    // Per-frame render instrumentation (not DisplayDirtyFlags-governed).
-    // Each update path resets drawnRegion_ at frame entry and each leaf draw
-    // function that actually draws (past its cache early-return) calls
-    // drawnRegion_.add(x, y, w, h) with the rect it touched. Live alert frames
-    // pick between DISPLAY_FLUSH, cache-hit-skip, or flushRegion(union).
-    // Resting/persisted frames consume the same signal only to skip unchanged
-    // frames; when any pixels changed they still use the safer full flush.
+    // Leaf renderers record pixels actually painted after their cache checks.
+    // Live, resting and persisted frames use this to skip unchanged canvases;
+    // changed frames and pending external draws use a full-panel transfer.
     DrawnRegion drawnRegion_;
-    // Set by drawDirectionArrow() when the live V1 arrow direction set changes
-    // (active ↔ resting). Those frames clear and repaint the full arrow glyph
-    // cluster; on AXS15231B, delivering that repaint via a small partial window
-    // can leave a just-blinked-off arrow black instead of restoring its dim
-    // resting glyph. Reset at the top of each live update().
-    bool arrowVisibilityForceFullFlush_ = false;
-    // Set by drawDirectionArrow() when the arrow cluster repaints this frame.
-    // Multi-rect dispatch keeps arrow-bearing frames on the historical
-    // union/full path so the known-good arrow behavior remains isolated from
-    // item-rect experiments.
-    bool arrowPaintedThisFrame_ = false;
 
 #if defined(DISPLAY_WAVESHARE_349)
     struct RestingNoOpKey {

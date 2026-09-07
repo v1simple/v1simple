@@ -1127,5 +1127,71 @@ class MainArrowReaderTests(unittest.TestCase):
                                     ('readable', []), ('readable', ['front'])])
 
 
+class MutedBadgeShapeControls(unittest.TestCase):
+    # Frozen61×16 source rasters after both opaque GFX prints, not reader
+    # sample rectangles. Each row repeats twice; the eighth row is blank.
+    # drawMuteIcon: classic font size2, MC datum, pens(250,10),(251,10).
+    WORD_ROWS = {
+        "MUTED": (0x1c0cc0cffcffcff0,0x1f3cc0ccccc00c0c,0x1cccc0c0c0c00c0c,
+                  0x1cccc0c0c0ff0c0c,0x1cccc0c0c0c00c0c,0x1c0cc0c0c0c00c0c,0x1c0c3f00c0ffcff0),
+        "METER": (0x1c0cffcffcffcff0,0x1f3cc00cccc00c0c,0x1cccc000c0c00c0c,
+                  0x1cccff00c0ff0ff0,0x1cccc000c0c00cc0,0x1c0cc000c0c00c30,0x1c0cffc0c0ffcc0c),
+    }
+    REGISTRATION = registration(x=382,y=193,w=220,h=80)
+
+    def picture(self,kind):
+        source = np.full((172,640),8,dtype=np.uint8)
+        fill = 28 if kind == "faint_fragment" else 41
+        # Independent source rounded raster:225,5,110,26,radius5.
+        for row,inset in enumerate((3,2,1,*([0]*20),1,2,3)):
+            source[5+row,225+inset:335-inset] = fill
+        if kind != "bare_rectangle":
+            rows = self.WORD_ROWS["METER" if kind == "wrong_word" else "MUTED"]
+            for row,bits in enumerate(rows):
+                for column in range(61):
+                    if kind == "faint_fragment" and (row >= 2 or column >= 11):
+                        continue
+                    if bits & (1 << (60-column)):
+                        source[10+row*2:12+row*2,250+column] = 8
+        if kind == "left_half_arrival":
+            source[5:31,280:335] = 8
+        elif kind == "cropped_D":
+            source[5:31,303:335] = 8
+        elif kind == "occlusion_T_E":
+            source[10:24,279:292] = 8
+        elif kind == "missing_T_stem":
+            source[14:22,279:281] = fill
+        # Fixed camera sampling from source SCAN ink bounds. No fit to pixels,
+        # template scores, reader output or expected state participates here.
+        camera = np.asarray(display(None)).copy()
+        anchor = (382*1280/960,193*720/540)
+        scales = (220*1280/960/185,80*720/540/65)
+        yy,xx = np.mgrid[:720,:1280]
+        sx = np.floor((xx+.5-anchor[0])/scales[0]+198).astype(int)
+        sy = np.floor((yy+.5-anchor[1])/scales[1]+48).astype(int)
+        selected = (sx >= 223) & (sx < 337) & (sy >= 3) & (sy < 33)
+        camera[selected] = source[sy[selected],sx[selected],None]
+        return camera
+
+    def test_dim_complete_word_and_fallback_negatives(self):
+        for kind in ("complete","left_half_arrival","cropped_D","occlusion_T_E",
+                     "missing_T_stem","wrong_word","bare_rectangle","faint_fragment"):
+            with self.subTest(kind=kind):
+                rgb = self.picture(kind)
+                pixels = reader.Pixels(rgb.tobytes(),WIDTH,HEIGHT,self.REGISTRATION)
+                result = reader._muted_badge(pixels)
+                self.assertIn("shape",result,"Control must exercise the dim fallback")
+                expected = ("readable",True) if kind == "complete" else ("ambiguous",None)
+                self.assertEqual((result["state"],result["value"]),expected,result)
+
+    def test_badge_outside_image_refuses_locally(self):
+        image = display(None)
+        pixels = reader.Pixels(image.tobytes(),WIDTH,HEIGHT,
+                               registration(x=930,y=193,w=220,h=80))
+        complete,detail = reader._muted_badge_shape(pixels)
+        self.assertFalse(complete)
+        self.assertEqual(detail["reason"],"registered MUTED badge leaves the image")
+
+
 if __name__ == "__main__":
     unittest.main()

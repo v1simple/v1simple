@@ -24,7 +24,7 @@ import counter_reader
 
 FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
-METHOD_VERSION = 17
+METHOD_VERSION = 18
 _ocr_binary = None
 _ocr_setup = None
 _ocr_session = None
@@ -873,6 +873,92 @@ def _visibility_witness(colors):
             "coherent_blocks": len(xs), "coherent_extent": extent}
 
 
+def _muted_badge_shape(pixels):
+    """Prove the complete fixed MUTED word and badge using glyph contrast."""
+    # Classic GFX columns at size2, printed opaquely twice by drawMuteIcon.
+    font = ((0x7f,0x02,0x1c,0x02,0x7f), (0x3f,0x40,0x40,0x40,0x3f),
+            (0x03,0x01,0x7f,0x01,0x03), (0x7f,0x49,0x49,0x49,0x41),
+            (0x7f,0x41,0x41,0x41,0x3e))
+    # Source coordinates222,2..338,34 include three pixels around the badge.
+    native_image = Image.new("L", (116,32))
+    draw = ImageDraw.Draw(native_image)
+    # Exact row extents of Arduino_GFX's radius5 fill+outline raster.
+    for row,inset in enumerate((3,2,1,*([0]*20),1,2,3)):
+        draw.line((3+inset,3+row,112-inset,3+row), fill=255)
+    for pen in (250,251):
+        for index,columns in enumerate(font):
+            for column in range(6):
+                bits = columns[column] if column < 5 else 0
+                for row in range(8):
+                    x, y = pen + index*12 + column*2 - 222, 10 + row*2 - 2
+                    draw.rectangle((x,y,x+1,y+1), fill=0 if bits & (1 << row) else 255)
+    native = np.asarray(native_image)
+    yy,xx = np.mgrid[:32,:116]
+    native_masks = [native > 0, (native == 0) & ((xx < 28) | (xx >= 88) | (yy < 8) | (yy >= 24))]
+    for index in range(5):
+        native_masks.append((native == 0) & (xx >= 28+index*12) & (xx < 40+index*12)
+                            & (yy >= 8) & (yy < 24))
+    # Existing SCAN source ink anchor198,48 and185×65 extent bounds the search
+    # region; the visible badge perimeter below positions the fixed word.
+    # Positive/negative glyph cores use the existing one-pixel erosion and
+    # one-image-pixel sampling-position allowance used by the card witness.
+    scale = (pixels.scale[0]*220*4/3/185, pixels.scale[1]*79*4/3/65)
+    left = int(np.floor(pixels.anchor[0]+(222-198)*scale[0]))
+    right = int(np.ceil(pixels.anchor[0]+(338-198)*scale[0]))
+    top = int(np.floor(pixels.anchor[1]+(2-48)*scale[1]))
+    bottom = int(np.ceil(pixels.anchor[1]+(34-48)*scale[1]))
+    if not (0 <= left < right <= pixels.image.shape[1] and 0 <= top < bottom <= pixels.image.shape[0]):
+        return False, {"reason":"registered MUTED badge leaves the image"}
+    level = pixels.image[top:bottom,left:right].max(axis=2).astype(float)
+    low,high = np.percentile(level,[20,95])
+    if high-low < 24:
+        return False, {"reason":"MUTED glyph contrast is insufficient","contrast":float(high-low)}
+    actual = level > (low+high)/2
+    # As in the existing card glyph witness, locate the visible component
+    # before comparing its complete source shape. Each edge has only the
+    # existing one-camera-pixel sampling allowance; no scale search.
+    ys,xs = np.nonzero(actual)
+    if not len(xs):
+        return False, {"reason":"MUTED badge perimeter is absent"}
+    bx1,by1,bx2,by2 = int(xs.min()),int(ys.min()),int(xs.max()+1),int(ys.max()+1)
+    if abs((bx2-bx1)-110*scale[0]) > 2 or abs((by2-by1)-26*scale[1]) > 2:
+        return False, {"reason":"MUTED badge perimeter extent is incomplete",
+                       "extent":[bx2-bx1,by2-by1],"predicted_extent":[110*scale[0],26*scale[1]]}
+    local_scale = ((bx2-bx1)/110,(by2-by1)/26)
+    cy,cx = np.mgrid[top:bottom,left:right]
+    best = None
+    for dy in (-1,0,1):
+        for dx in (-1,0,1):
+            source_x = np.floor((cx+.5-(left+bx1)-dx)/local_scale[0]+3).astype(int)
+            source_y = np.floor((cy+.5-(top+by1)-dy)/local_scale[1]+3).astype(int)
+            valid = (source_x >= 0) & (source_x < 116) & (source_y >= 0) & (source_y < 32)
+            scores = []
+            for index,mask in enumerate(native_masks):
+                mapped = np.zeros(actual.shape,dtype=np.uint8)
+                mapped[valid] = mask[source_y[valid],source_x[valid]]*255
+                core = np.asarray(Image.fromarray(mapped).filter(ImageFilter.MinFilter(3))) > 0
+                scores.append(float((actual if index == 0 else ~actual)[core].mean()) if core.any() else 0.)
+            if best is None or min(scores) > min(best["scores"]):
+                best = {"scores":scores,"offset":[dx,dy]}
+            # Dark lettering is the glyph ink; gray fill is its background.
+            # Reuse the existing complete-card-letter proof: all glyph ink,
+            # At most 2% contrary background. External background stays exact.
+            if scores[0] >= .98 and all(score == 1. for score in scores[1:]):
+                return True, {"contrast":float(high-low),"bounds":[left,top,right,bottom],
+                              "scores":scores,"offset":[dx,dy]}
+    return False, {"contrast":float(high-low),"bounds":[left,top,right,bottom],**best}
+
+
+def _muted_badge(pixels):
+    badge = pixels.level((569,216,617,228))
+    fraction = float(np.mean(badge > 45))
+    if fraction > .3 or float(np.percentile(badge,95)) < 25:
+        return field("readable",fraction > .3)
+    complete,diagnostics = _muted_badge_shape(pixels)
+    return (field("readable",True,shape=diagnostics) if complete
+            else field("ambiguous",reason="partial muted badge",shape=diagnostics))
+
+
 def observe(rgb: bytes, width: int, height: int, registration: dict) -> dict:
     """Read a whole RGB24 frame. Accepts no timeline, stimulus, or expected values.
 
@@ -899,9 +985,7 @@ def observe(rgb: bytes, width: int, height: int, registration: dict) -> dict:
         result["active_bands"] = _bands(pixels)
         result["main_arrows"] = _arrows(pixels)
         result["main_bars"] = _bars(pixels, [(900, y, 937, y + 10) for y in (400, 363, 326, 289, 251, 214)])
-        badge = pixels.level((569, 216, 617, 228))
-        fraction = float(np.mean(badge > 45))
-        result["muted_badge"] = field("readable", fraction > .3) if fraction > .3 or float(np.percentile(badge, 95)) < 25 else field("ambiguous", reason="partial muted badge")
+        result["muted_badge"] = _muted_badge(pixels)
         result["secondary"] = _secondary(pixels)
     except (ValueError, IndexError) as error:
         return {name: field("unreadable", reason=str(error)) for name in FIELDS}

@@ -1240,9 +1240,15 @@ def main() -> int:
     if args.observe_behavior:
         counts = result["summary"]
         print(f"{result['result']} — {counts['targets_observed']}/{counts['events']} complete display targets observed; "
-              f"{counts['events_with_findings']} events with contrary content; "
+              f"{counts['events_with_findings']} events with ending or post-target findings; "
               f"{counts['unresolved_frames']} frames have unresolved field comparisons. "
               f"Read {counts['read_frames']}/{counts['available_frames']} recorded event frames.")
+        interval = counts.get("interval_coverage", {}).get("counts", {})
+        if interval.get("after_complete_input_frames"):
+            print(f"Recorded matches: {interval['matching_frames']}/{interval['after_complete_input_frames']} "
+                  f"frames after complete host input. Unresolved: {interval['unresolved_before_target_frames']} "
+                  f"before first target, {interval['unresolved_after_target_frames']} after. "
+                  f"Other acquisition content: {interval['other_acquisition_observed_frames']} frames; cause unassigned.")
         print("Open report.html for actual transitions, original images, source explanations and build comparison.")
         return {"NO_DIFFERENCES_OBSERVED": 0, "DIFFERENCES_FOUND": 1, "MEASUREMENT_INCOMPLETE": 2}[result["result"]]
     elif result.get("primary_judgment"):

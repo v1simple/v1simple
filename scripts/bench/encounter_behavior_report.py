@@ -11,7 +11,80 @@ from pathlib import Path
 
 
 _WITNESS_KEYS = ("frame_id", "frame_index", "video_frame_index", "source_frame_seq",
-                 "capture_ns", "image", "observed", "comparison_status")
+                 "capture_ns", "image", "image_sha256", "observed", "comparison_status")
+
+_INTERVAL_COUNTS = (
+    "after_complete_input_frames", "before_complete_input_frames", "unanchored_frames",
+    "matching_frames", "previous_input_acquisition_frames", "other_acquisition_frames",
+    "unresolved_before_target_frames", "unresolved_after_target_frames",
+    "contrary_after_target_frames", "unpartitioned_after_input_frames",
+    "other_acquisition_observed_frames", "partly_unresolved_other_acquisition_frames",
+)
+
+
+def interval_coverage(event):
+    """Count existing judgments, without assigning acquisition content a cause.
+
+    The six comparison buckets are disjoint. Other acquisition observations also
+    include known differences beside unresolved fields; they are a separate,
+    overlapping index into the unchanged original observation spans.
+    """
+    observation = event.get("observation", {})
+    anchor = observation.get("input_anchor_ns", event.get("target_basis", {}).get("first_complete_target_input_ns"))
+    first = observation.get("first_target_observation") or event.get("first_correct")
+    first_ns = first.get("capture_ns") if first else None
+    counts = dict.fromkeys(_INTERVAL_COUNTS, 0)
+    acquisition = []
+    for index, span in enumerate(event.get("observation_spans", [])):
+        count = span["frame_count"]
+        start, end = span["first"]["capture_ns"], span["last"]["capture_ns"]
+        if anchor is None or start < anchor <= end:
+            # Never interpolate frame times across an unavailable input boundary.
+            counts["unanchored_frames"] += count
+            continue
+        if end < anchor:
+            counts["before_complete_input_frames"] += count
+            continue
+        counts["after_complete_input_frames"] += count
+        if first_ns is not None and start < first_ns <= end:
+            counts["unpartitioned_after_input_frames"] += count
+            continue
+        before = first_ns is None or start < first_ns
+        judgment = span.get("judgment", {})
+        fields = judgment.get("fields", {})
+        joint = judgment.get("joint_state")
+        other = [name for name, status in fields.items()
+                 if status in ("DIFFERENCE", "TRANSITION_DIFFERENCE")]
+        other_joint = joint in ("DIFFERENCE", "TRANSITION_DIFFERENCE")
+        unknown = (not fields or judgment.get("status") not in ("CORRECT", "NOT_CORRECT", "UNRESOLVED")
+                   or any(status not in ("MATCH", "PREVIOUS_INPUT_STATE", "DIFFERENCE", "TRANSITION_DIFFERENCE")
+                          for status in fields.values()) or joint == "UNRESOLVED"
+                   or any(reading.get("state") in ("ambiguous", "unreadable")
+                          for reading in span.get("observed", {}).values()))
+        if before and (other or other_joint):
+            counts["other_acquisition_observed_frames"] += count
+            if unknown:
+                counts["partly_unresolved_other_acquisition_frames"] += count
+            acquisition.append({"span_index": index, "fields": other,
+                                "joint_state": other_joint, "partly_unresolved": unknown})
+        if unknown:
+            key = "unresolved_before_target_frames" if before else "unresolved_after_target_frames"
+        elif judgment.get("status") == "CORRECT":
+            key = "matching_frames"
+        elif before:
+            key = "other_acquisition_frames" if other or other_joint else "previous_input_acquisition_frames"
+        else:
+            key = "contrary_after_target_frames"
+        counts[key] += count
+    return {"input_anchor_ns": anchor, "first_target_capture_ns": first_ns,
+            "counts": counts, "other_acquisition_observations": acquisition}
+
+
+def summarize_interval_coverage(events):
+    measurements = [interval_coverage(event) for event in events]
+    return {"counts": {key: sum(item["counts"][key] for item in measurements) for key in _INTERVAL_COUNTS},
+            "events_with_other_acquisition_observations": sum(bool(item["other_acquisition_observations"])
+                                                            for item in measurements)}
 
 
 def _witness(value):
@@ -79,7 +152,9 @@ def _payload(result):
                                 if key in reading}
                          for name, reading in span.get("observed", {}).items()}}
             for span in event.get("observation_spans", [])]
+        item["interval_coverage"] = interval_coverage(event)
         payload["events"].append(item)
+    payload.setdefault("summary", {})["interval_coverage"] = summarize_interval_coverage(payload["events"])
     payload["samples_index"] = [{key: deepcopy(sample[key]) for key in (
         "frame_index", "video_frame_index", "capture_ns", "image", "event_id", "video_seconds") if key in sample}
         for sample in result.get("samples_index", [])]
@@ -112,11 +187,11 @@ _HTML = r'''<!doctype html>
 @media(max-width:650px){header{padding:20px 16px}.layout{display:block}.sidebar{position:relative;max-height:300px;border-right:0;border-bottom:1px solid var(--line)}.event-list{display:flex;gap:8px;overflow:auto}.event-button{min-width:170px}.filters{grid-template-columns:1fr 1fr}.filters .small{grid-column:1/-1}.stats{gap:6px}.stat{padding:9px}.stat b{font-size:23px}.viewer-controls{gap:5px}}
 </style></head><body>
 <header><h1>Firmware visual behavior</h1><p class="muted">Known replay inputs, independently read physical display, and evidence for each finding.</p><p id="overall-result"></p>
-<div class="identity" id="identity"></div><div class="stats" id="stats"></div><p class="small muted" id="coverage-summary"></p>
+<div class="identity" id="identity"></div><div class="stats" id="stats"></div><p class="small muted" id="coverage-summary"></p><div id="interval-summary"></div>
 <details><summary>Tested scope, settings and method</summary><div id="method"></div></details><div id="global-errors"></div>
 </header><div class="layout"><aside class="sidebar" aria-label="Event index"><div class="filters">
 <input id="search" type="search" aria-label="Search events" placeholder="Search input, field or event…">
-<select id="filter" aria-label="Filter events"><option value="all">All events</option><option value="findings">With findings</option><option value="unknown">With unresolved comparisons</option><option value="missing">Complete target not seen</option><option value="observed">Complete target seen</option></select>
+<select id="filter" aria-label="Filter events"><option value="all">All events</option><option value="findings">With findings</option><option value="acquisition">With other acquisition content</option><option value="unknown">With unresolved comparisons</option><option value="missing">Complete target not seen</option><option value="observed">Complete target seen</option></select>
 <div class="small muted" id="list-count"></div></div><div class="event-list" id="event-list"></div></aside>
 <main><div id="comparison"></div><section class="panel" id="event-content"></section>
 <section class="panel" id="viewer"><div class="viewer-top"><h2>Original camera evidence</h2><a id="original-link" target="_blank" rel="noopener">Open unchanged original image ↗</a></div>
@@ -156,9 +231,10 @@ function identity(){const evidence=report.evidence||{},runtime=evidence.runtime_
  const sha=runtime.git_sha||runtime.firmware_commit||runtime.commit||'unidentified',image=runtime.image_id||runtime.elf_sha256||runtime.image_sha256||'unidentified';
  $('identity').innerHTML='<span>Recorded firmware <strong>'+esc(sha)+'</strong></span><span>Image <strong>'+esc(image)+'</strong></span>'+(runtime.boot_id!==undefined?'<span>Boot <strong>'+esc(runtime.boot_id)+'</strong></span>':'');
  const target=report.summary?.targets_observed??events.filter(e=>ob(e).target_observed).length,persistent=report.summary?.events_with_findings??events.filter(e=>findingList(e).some(isPersistent)).length,unknown=report.summary?.unresolved_field_observations??events.reduce((n,e)=>n+unresolved(e),0);
- $('stats').innerHTML=[[events.length,'authored input events'],[report.persistence?(report.persistence.summary?.complete_sequences??0)+' / '+(report.persistence.summary?.cases??0):target+' / '+events.length,report.persistence?'persistence sequences observed':'complete target observed'],[report.persistence?events.filter(e=>findingList(e).length).length:persistent,'events with contrary content'],[unknown.toLocaleString(),'unresolved field comparisons']].map(([n,label])=>'<div class="stat"><b>'+esc(n)+'</b><span>'+esc(label)+'</span></div>').join('');
+ $('stats').innerHTML=[[events.length,'authored input events'],[report.persistence?(report.persistence.summary?.complete_sequences??0)+' / '+(report.persistence.summary?.cases??0):target+' / '+events.length,report.persistence?'persistence sequences observed':'complete target observed'],[report.persistence?events.filter(e=>findingList(e).length).length:persistent,'events with ending/post-target findings'],[unknown.toLocaleString(),'unresolved field comparisons']].map(([n,label])=>'<div class="stat"><b>'+esc(n)+'</b><span>'+esc(label)+'</span></div>').join('');
  const read=report.summary?.read_frames,available=report.summary?.available_frames;
  $('coverage-summary').textContent=Number.isFinite(read)&&Number.isFinite(available)?read.toLocaleString()+' / '+available.toLocaleString()+' recorded event frames analyzed. '+(report.summary?.unresolved_frames??'Uncounted')+' frames have unresolved field comparisons. An unresolved comparison can mean unreadable pixels or no single permitted field value.'+(report.persistence?' Persistence uses the ordered stages below.':''):'';
+ $('interval-summary').innerHTML=intervalCountsHTML(report.summary?.interval_coverage,'Across the full input intervals');
  const outcome=report.result||report.status||report.summary?.result;
  $('overall-result').textContent=({DIFFERENCES_FOUND:'Physical display differences were found. Inspect the event findings and original witnesses below.',MEASUREMENT_INCOMPLETE:'Measurement is incomplete. Missing targets, evidence or coverage are identified below.',NO_DIFFERENCES_OBSERVED:'No definite ending or post-target content findings. Earlier differences and unreadable frames remain explicit; this does not establish correctness throughout the whole interval.'})[outcome]||'';
  const scope=report.scope||report.behavior_contract?.scope||'Visible V1 display behavior in the controlled replay.';
@@ -167,7 +243,7 @@ function identity(){const evidence=report.evidence||{},runtime=evidence.runtime_
  if(report.errors?.length)$('global-errors').innerHTML='<div class="notice"><strong>Analysis limitations</strong><pre>'+esc(json(report.errors))+'</pre></div>';
 }
 function renderIndex(){const query=$('search').value.toLowerCase(),filter=$('filter').value;
- const visible=events.map((e,i)=>({e,i})).filter(({e})=>{const match=!query||JSON.stringify([e.event_id,e.input_key,e.input,e.wire_rows,e.target,e.findings]).toLowerCase().includes(query);return match&&(filter==='all'||filter==='findings'&&findingList(e).length||filter==='unknown'&&unresolved(e)||filter==='missing'&&!targetSeen(e)||filter==='observed'&&targetSeen(e));});
+ const visible=events.map((e,i)=>({e,i})).filter(({e})=>{const match=!query||JSON.stringify([e.event_id,e.input_key,e.input,e.wire_rows,e.target,e.findings,...(e.interval_coverage?.other_acquisition_observations||[]).map(a=>e.observation_spans?.[a.span_index]?.observed)]).toLowerCase().includes(query);return match&&(filter==='all'||filter==='acquisition'&&e.interval_coverage?.other_acquisition_observations?.length||filter==='findings'&&findingList(e).length||filter==='unknown'&&unresolved(e)||filter==='missing'&&!targetSeen(e)||filter==='observed'&&targetSeen(e));});
  $('list-count').textContent=visible.length+' of '+events.length+' events';
  $('event-list').innerHTML=visible.map(({e,i})=>{const finds=findingList(e).length,seen=targetSeen(e);return '<button class="event-button '+(i===activeIndex?'active':'')+'" data-event="'+i+'"><b>'+esc(e.event_id)+'</b><span class="tag '+(finds?'bad':seen?'':'warn')+'">'+esc(finds?finds+' finding'+(finds===1?'':'s'):seen?(persistenceCases(e).length?'Sequence observed':'Target observed'):(persistenceCases(e).length?'Sequence incomplete':'Target not seen'))+'</span><span>'+esc(inputText(e).slice(0,130))+'</span></button>';}).join('')||'<div class="empty">No events match this filter.</div>';
 }
@@ -178,6 +254,12 @@ function persistenceHTML(e){const cases=persistenceCases(e);if(!cases.length)ret
  return '<h3>Configured persistence sequence</h3><p>'+esc(report.persistence.configured_seconds)+' second setting. Stages below are measured from literal images; offsets do not locate DUT receipt or exact timer expiry.</p>'+cases.map(c=>'<h3>'+esc(c.kind.replace(/_/g,' '))+'</h3><p>Required order: '+esc(c.required_stages.join(' → '))+'. '+(c.stage_order_observed?'Observed in order.':'Required sequence not fully observed.')+'</p>'+(c.missing_stages?.length?'<p class="notice">Missing observations: '+esc(c.missing_stages.join(', '))+'</p>':'')+'<div class="table-wrap"><table><thead><tr><th>Observed stage</th><th>Frames</th><th>First original</th><th>Last original</th></tr></thead><tbody>'+Object.entries(c.stages||{}).map(([name,stage])=>'<tr><td>'+esc(name.replace(/_/g,' '))+'</td><td>'+esc(stage.frames)+'</td><td>'+witness(e,stage.first)+'</td><td>'+witness(e,stage.last)+'</td></tr>').join('')+'</tbody></table></div>').join('')+'<p class="small muted">The fixed-target field table below is supporting detail. Positive persistence is evaluated as an ordered sequence, because its idle presentation changes while the input stays empty.</p>';
 }
 function findingHTML(e,f){return '<article class="finding '+(isPersistent(f)?'':'neutral')+'"><h3>'+esc(labels[f.field]||f.field||'Display')+' · '+esc((f.kind||'Observation').replace(/_/g,' '))+'</h3><p>'+esc(f.reason||'')+'</p><div class="facts"><div><b>Expected from input / source</b><pre class="literal">'+esc(valueText(f.expected))+'</pre></div><div><b>Observed in the physical image</b><pre class="literal">'+esc(literal(f.observed))+'</pre></div></div>'+(f.observation_detail?'<details><summary>Independent partial-content reading</summary><pre>'+esc(valueText(f.observation_detail))+'</pre></details>':'')+'<div>'+witness(e,f.first,'First witness')+' '+witness(e,f.last,'Last witness')+'</div></article>';}
+function intervalCountsHTML(measurement,title){if(!measurement)return '';const c=measurement.counts||{},total=c.after_complete_input_frames||0;
+ const rows=[['matching_frames','Complete readable matches'],['previous_input_acquisition_frames','Readable acquisition with previous-input values'],['other_acquisition_frames','Readable acquisition with other content'],['unresolved_before_target_frames','Unresolved before first complete target'],['unresolved_after_target_frames','Unresolved after first complete target'],['contrary_after_target_frames','Readable contrary content after target'],['unpartitioned_after_input_frames','Ordering not established']];
+ return '<h3>'+esc(title)+'</h3><p>'+esc(total.toLocaleString())+' recorded frames after complete host input. Each frame is counted once in the table.</p><div class="table-wrap"><table><thead><tr><th>Recorded comparison</th><th>Frames / after-input frames</th></tr></thead><tbody>'+rows.filter(([key])=>key!=='unpartitioned_after_input_frames'||c[key]).map(([key,label])=>'<tr><td>'+esc(label)+'</td><td>'+esc((c[key]||0).toLocaleString())+' / '+esc(total.toLocaleString())+'</td></tr>').join('')+'</tbody></table></div><p class="small muted">'+esc(c.before_complete_input_frames||0)+' frames preceded complete host input; '+esc(c.unanchored_frames||0)+' could not be placed relative to that boundary. Missing or unrecorded frames remain in capture coverage. These are comparisons, not response-time requirements. A previous-input value is recognized here; this does not establish that the entire intermediate display is permitted by source.</p>'+(c.other_acquisition_observed_frames?'<p class="notice">Other acquisition content was observed in '+esc(c.other_acquisition_observed_frames)+' frames, including '+esc(c.partly_unresolved_other_acquisition_frames||0)+' that also had unresolved comparisons. These overlap the table counts; original observations appear in the affected events. Their physical cause is unassigned.</p>':'');}
+function acquisitionHTML(e){const refs=e.interval_coverage?.other_acquisition_observations||[];if(!refs.length)return '';
+ const rows=refs.flatMap(ref=>{const s=e.observation_spans?.[ref.span_index];if(!s)return [];const names=[...ref.fields,...(ref.joint_state?['joint_state']:[])];return names.map(name=>{const joint=name==='joint_state',observed=joint?Object.fromEntries(['counter_glyph','active_bands','main_arrows'].map(k=>[labels[k],literal(s.observed?.[k])])):s.observed?.[name],expected=joint?e.target?.joint_states:e.target?.fields?.[name];return '<tr><td>'+esc(labels[name]||name)+(ref.partly_unresolved?'<p class="small muted">Partly unresolved frame</p>':'')+'</td><td><pre class="literal">'+esc(literal(observed))+'</pre></td><td><pre class="literal">'+esc(valueText(expected))+'</pre></td><td>'+esc(s.frame_count)+'</td><td>'+witness(e,s.first,'First original')+' '+witness(e,s.last,'Last original')+'</td></tr>';});}).join('');
+ return '<h3>Acquisition observations with cause unassigned</h3><p>The following definite content did not match the current or preceding field value or shared display phase. Its timing during acquisition does not make it source-permitted. Camera exposure, panel response, input sequencing and firmware cause remain distinct; these observations do not add firmware-failure findings.</p><div class="table-wrap"><table><thead><tr><th>Field / relationship</th><th>Observed literal content</th><th>Current expected content</th><th>Frames</th><th>Unchanged original witnesses</th></tr></thead><tbody>'+rows+'</tbody></table></div>';}
 function phaseHTML(e){const p=e.phase_observation;if(!p||!Array.isArray(p.required_phase_ids)||p.required_phase_ids.length<2)return '';
  const required=p.required_phase_ids,observed=p.observed_phase_ids||[],alternations=p.alternation_count??p.alternations?.length??0;
  const rows=required.map(id=>'<tr><td>'+esc(id)+'</td><td>'+esc(p.phase_counts?.[id]||0)+'</td><td>'+witness(e,p.first_observations?.[id],'First')+'</td><td>'+witness(e,p.last_observations?.[id],'Last')+'</td></tr>').join('');
@@ -188,10 +270,10 @@ function selectEvent(index,updateHash=true){if(!events[index])return;activeIndex
  const start=Number.isFinite(e.start_ns)?e.start_ns:anchor(e),end=e.end_ns??e.coverage?.end_ns??o.coverage?.end_ns;
  activeFrames=(report.samples_index||[]).filter(s=>s.event_id===e.event_id||(!s.event_id&&Number.isFinite(start)&&Number.isFinite(end)&&s.capture_ns>=start&&s.capture_ns<end));
  const seenFrames=new Set(activeFrames.map(frameNo));
- for(const w of [first,...findingList(e).flatMap(f=>[f.first,f.last]),...Object.values(e.phase_observation?.first_observations||{}),...Object.values(e.phase_observation?.last_observations||{}),...(e.phase_observation?.contiguous_phase_spans||[]).flatMap(s=>[s.first,s.last]),...Object.values(o.fields||{}).flatMap(f=>[f.first_target_observation,f.latest_contrary_observation,f.end_state?.last_observation,...(f.unresolved_intervals||[]).flatMap(u=>[u.first,u.last])])])if(isFrame(w)&&!seenFrames.has(frameNo(w))){activeFrames.push(w);seenFrames.add(frameNo(w));frameMap.set(frameNo(w),w);}
+ for(const w of [first,...(e.interval_coverage?.other_acquisition_observations||[]).flatMap(a=>{const s=e.observation_spans?.[a.span_index];return s?[s.first,s.last]:[];}),...findingList(e).flatMap(f=>[f.first,f.last]),...Object.values(e.phase_observation?.first_observations||{}),...Object.values(e.phase_observation?.last_observations||{}),...(e.phase_observation?.contiguous_phase_spans||[]).flatMap(s=>[s.first,s.last]),...Object.values(o.fields||{}).flatMap(f=>[f.first_target_observation,f.latest_contrary_observation,f.end_state?.last_observation,...(f.unresolved_intervals||[]).flatMap(u=>[u.first,u.last])])])if(isFrame(w)&&!seenFrames.has(frameNo(w))){activeFrames.push(w);seenFrames.add(frameNo(w));frameMap.set(frameNo(w),w);}
  activeFrames.sort((a,b)=>frameNo(a)-frameNo(b));
  const expected=e.target?.fields||e.target||{},count=findingList(e).length;
- $('event-content').innerHTML='<div class="event-heading"><h2>'+esc(e.event_id)+'</h2><span class="tag '+(count?'bad':targetSeen(e)?'':'warn')+'">'+esc(count?count+' contrary-content finding'+(count===1?'':'s'):targetSeen(e)?(persistenceCases(e).length?'Required sequence observed':'Complete target observed'):(persistenceCases(e).length?'Sequence incomplete':'Complete target not observed'))+'</span></div><div class="facts"><div><h3>Controlled input</h3><pre class="reading literal">'+esc(inputText(e))+'</pre><details><summary>Accepted input details</summary><pre>'+esc(plain(e.input||e.wire_rows||e.input_key||{}))+'</pre></details></div><div><h3>Expected display</h3>'+expectedTable(expected)+'</div></div><h3>Observed response</h3><p>'+(persistenceCases(e).length?'The required display stages and original witnesses are shown below.':first?'The first complete target was read at '+witness(e,first)+'.':'No complete target was read in this event. Individual matching, differing and unreadable fields remain below.')+'</p>'+(o.target_already_correct_in_preceding_observation?'<p class="notice">The target also matched the preceding image. This does not establish a new visual response to this input.</p>':'')+'<p class="small muted">Offsets use complete host input as zero. Partial transitions are retained as measurements, not automatically treated as firmware faults.</p>'+persistenceHTML(e)+phaseHTML(e)+findingList(e).map(f=>findingHTML(e,f)).join('')+'<details><summary>Event coverage and ending boundary</summary><pre>'+esc(json(e.coverage||o.coverage||{}))+'</pre></details>';
+ $('event-content').innerHTML='<div class="event-heading"><h2>'+esc(e.event_id)+'</h2><span class="tag '+(count?'bad':targetSeen(e)?'':'warn')+'">'+esc(count?count+' contrary-content finding'+(count===1?'':'s'):targetSeen(e)?(persistenceCases(e).length?'Required sequence observed':'Complete target observed'):(persistenceCases(e).length?'Sequence incomplete':'Complete target not observed'))+'</span></div><div class="facts"><div><h3>Controlled input</h3><pre class="reading literal">'+esc(inputText(e))+'</pre><details><summary>Accepted input details</summary><pre>'+esc(plain(e.input||e.wire_rows||e.input_key||{}))+'</pre></details></div><div><h3>Expected display</h3>'+expectedTable(expected)+'</div></div><h3>Observed response</h3><p>'+(persistenceCases(e).length?'The required display stages and original witnesses are shown below.':first?'The first complete target was read at '+witness(e,first)+'.':'No complete target was read in this event. Individual matching, differing and unreadable fields remain below.')+'</p>'+(o.target_already_correct_in_preceding_observation?'<p class="notice">The target also matched the preceding image. This does not establish a new visual response to this input.</p>':'')+'<p class="small muted">Offsets use complete host input as zero. Partial transitions are retained as measurements, not automatically treated as firmware faults.</p>'+intervalCountsHTML(e.interval_coverage,'Complete input interval')+acquisitionHTML(e)+persistenceHTML(e)+phaseHTML(e)+findingList(e).map(f=>findingHTML(e,f)).join('')+'<details><summary>Event coverage and ending boundary</summary><pre>'+esc(json(e.coverage||o.coverage||{}))+'</pre></details>';
  renderFields(e);renderSources(e);const selected=first&&activeFrames.findIndex(s=>frameNo(s)===frameNo(first));showFrame(Number.isInteger(selected)&&selected>=0?selected:0);if(updateHash)$('event-content').scrollIntoView({block:'start'});}
 function renderFields(e){const o=ob(e);
  const rows=fields.filter(name=>o.fields?.[name]).map(name=>{const f=o.fields[name],end=f.end_state||{},unknownEnd=(end.unresolved_suffix||[]).reduce((n,s)=>n+s.frame_count,0),counts=f.counts||{},bracket=f.first_target_capture_bracket;

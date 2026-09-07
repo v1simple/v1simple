@@ -53,6 +53,34 @@ def embedded(page):
 
 
 class EncounterBehaviorReportTests(unittest.TestCase):
+    def test_old_result_regeneration_exposes_acquisition_without_rewriting_original_findings(self):
+        result = report_fixture()
+        measured = event([span(1, "PREVIOUS_INPUT_STATE", ["front"]),
+                          span(2, "TRANSITION_DIFFERENCE", ["front", "side"], last=4),
+                          span(5, value=["side"])], first=5)
+        measured["observation_spans"][1]["judgment"]["joint_state"] = "TRANSITION_DIFFERENCE"
+        measured["observation_spans"][1]["first"]["image_sha256"] = "a" * 64
+        result["events"][0].update(observation=summarize_event_observations(measured),
+                                   observation_spans=measured["observation_spans"])
+        untouched = copy.deepcopy(result)
+        with tempfile.TemporaryDirectory() as folder:
+            payload = embedded(write_behavior_report(Path(folder), result).read_text())
+        self.assertEqual(result, untouched)
+        self.assertEqual(payload["result"], result["result"])
+        self.assertEqual(payload["events"][0]["findings"], result["events"][0]["findings"])
+        item = payload["events"][0]
+        self.assertEqual(item["interval_coverage"]["counts"]["after_complete_input_frames"], 5)
+        self.assertEqual(item["interval_coverage"]["counts"]["other_acquisition_observed_frames"], 3)
+        ref = item["interval_coverage"]["other_acquisition_observations"][0]
+        self.assertEqual(ref["fields"], ["main_arrows"])
+        self.assertTrue(ref["joint_state"])
+        witness = item["observation_spans"][ref["span_index"]]
+        self.assertEqual(witness["observed"]["main_arrows"]["value"], ["front", "side"])
+        self.assertEqual(witness["first"]["image"], "frames/2.png")
+        self.assertEqual(witness["first"]["image_sha256"], "a" * 64)
+        self.assertEqual(witness["last"]["image"], "frames/4.png")
+        self.assertEqual(payload["summary"]["interval_coverage"]["events_with_other_acquisition_observations"], 1)
+
     def test_report_keeps_real_observations_expected_values_identity_and_unknown_suffix_distinct(self):
         result = report_fixture()
         unchanged = copy.deepcopy(result)
@@ -166,6 +194,9 @@ assert.match(element('method').innerHTML,/Every recorded event image was read/);
 assert.match(element('method').innerHTML,/audio · RF/);
 assert.doesNotMatch(element('method').innerHTML,/\[object Object\]/);
 assert.match(element('coverage-summary').textContent,/20 \/ 21/);
+assert.match(element('interval-summary').innerHTML,/Across the full input intervals/);
+assert.match(element('interval-summary').innerHTML,/Unresolved after first complete target/);
+assert.match(element('stats').innerHTML,/events with ending\/post-target findings/);
 assert.match(element('comparison').innerHTML,/baseline1/);
 assert.match(element('comparison').innerHTML,/Newly observed findings/);
 assert.match(element('comparison').innerHTML,/Previously seen, absent here/);
@@ -184,6 +215,17 @@ assert.match(element('event-content').innerHTML,/Required: phase-1, phase-2. Obs
 assert.match(element('event-content').innerHTML,/Contiguous readable phase observations/);
 assert.match(element('event-content').innerHTML,/15.000 ms/);
 assert.match(element('event-content').innerHTML,/data-frame="4"/);
+const acquisitionEvent=JSON.parse(JSON.stringify(report.events[0]));
+acquisitionEvent.interval_coverage={other_acquisition_observations:[{span_index:1,fields:['secondary'],joint_state:true,partly_unresolved:true}]};
+const acquisition=acquisitionHTML(acquisitionEvent);
+assert.match(acquisition,/Acquisition observations with cause unassigned/);
+assert.match(acquisition,/Secondary cards/);
+assert.match(acquisition,/Shared display phase/);
+assert.match(acquisition,/Ka34.700/);
+assert.match(acquisition,/data-frame="2"/);
+assert.match(acquisition,/data-frame="4"/);
+assert.match(acquisition,/Partly unresolved frame/);
+assert.match(acquisition,/does not make it source-permitted/);
 assert.equal(phaseHTML({phase_observation:{required_phase_ids:['phase-1']}}),'');
 selectEvent(1);assert.equal(location.hash,'#event=event-2');
 assert.doesNotMatch(element('event-content').innerHTML,/Visible blink function/);

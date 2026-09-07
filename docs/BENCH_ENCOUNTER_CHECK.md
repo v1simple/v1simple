@@ -147,15 +147,24 @@ small behavior summary for subsequent comparisons.
 | Visual result | Meaning | Exit |
 | --- | --- | ---: |
 | `DIFFERENCES_FOUND` | Qualified evidence contains supported discrepancy findings. Other unknowns remain visible. | 1 |
-| `NO_DIFFERENCES_OBSERVED` | Every requested target was observed, recorded-frame coverage completed, and no supported discrepancy was found. | 0 |
+| `NO_DIFFERENCES_OBSERVED` | Required target/phase or persistence-stage observations and recorded-frame coverage completed, with no supported content findings. Other acquisition content and unreadable intervals can remain. | 0 |
 | `MEASUREMENT_INCOMPLETE` | Evidence, qualification, coverage or an unobserved complete target prevents that answer. | 2 |
 
 These are observation results, not a blanket firmware-health certification.
-Unresolved transition images remain in the report even when every target was
-later observed. A first match does not establish the whole hold correct, and a
+Unresolved images before and after the first target remain in the report. A
+first match does not establish the whole hold correct, and a
 camera image that spans an ordinary transition does not automatically prove a
 firmware defect. Later definite departures and supported contradictory final
 content remain visible.
+
+The full-interval table partitions recorded frames after complete host input
+into matches, previous-input acquisition values, other acquisition content,
+unresolved frames before or after the first target, and later contrary content.
+Earlier frames and unavailable input boundaries are counted separately.
+Acquisition literals that match neither current nor preceding values have their
+own original-image witnesses, including when another field is unreadable.
+Acquisition timing does not make those literals source-permitted; their physical
+cause remains unassigned. No response deadline is introduced.
 
 The console reports targets observed per event, events with findings, total
 findings, read/available recorded frames, unresolved frames and unresolved field

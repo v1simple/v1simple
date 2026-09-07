@@ -18,6 +18,7 @@ from artifact_privacy import sanitize_artifact_value
 from camera_artifacts import sha256_file
 from counter_check import read_json, save_json, write_png
 from encounter_behavior_contract import behavior_contract
+from encounter_behavior_report import interval_coverage, summarize_interval_coverage
 from encounter_build_comparison import compare_behavior_runs
 from encounter_configuration import configuration_for_samples
 from encounter_expectation import FIELDS, encounter_expectation_at
@@ -59,7 +60,7 @@ def event_findings(event, observation, contract):
                              "rule_ids": contract.get("field_rule_ids", {}).get(name, [])})
         for interval in field["post_target_departures"]:
             if complete_target is None or interval["first"]["capture_ns"] <= complete_target["capture_ns"]:
-                continue  # One field can match before source-explained whole-display acquisition finishes.
+                continue  # Acquisition observations are indexed separately; their physical cause is unassigned.
             if ending_observed and terminal and terminal.get("observed") == interval["last"]["observed"] \
                     and end.get("last_definite_matches_target") is False:
                 continue  # Already indexed, with its full earlier/later history.
@@ -114,6 +115,7 @@ def event_findings(event, observation, contract):
 
 def summarize(events, errors, qualification):
     summary = {
+        "interval_coverage": summarize_interval_coverage(events),
         "events": len(events),
         "targets_observed": sum(e["observation"]["target_observed"] for e in events),
         "events_with_findings": sum(bool(e["findings"]) for e in events),
@@ -337,6 +339,7 @@ def analyze_behavior(run, out, ranges=None, configuration=None, reader_qualifica
                                      "phase_observation": phases,
                                      "coverage": event["coverage"], "unresolved_frames": unknown,
                                      "observation_spans": event["observation_spans"]})
+            result["events"][-1]["interval_coverage"] = interval_coverage(result["events"][-1])
         if ranges:
             result["scope"]["requested_ranges_seconds"] = ranges
             result["scope"]["meaning"] += " Only the explicitly selected range was read; event totals retain their full input bounds."

@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "bench"))
 from encounter_behavior import analyze_behavior, event_findings, summarize
+from encounter_behavior_report import interval_coverage
 from encounter_observation import summarize_event_observations
 from test_encounter_sequence import sequence
 from test_encounter_expectation import literals, alert, recording
@@ -29,6 +30,65 @@ def measured(times, values, **kwargs):
 
 
 class BehaviorTests(unittest.TestCase):
+    def test_full_interval_counts_keep_other_acquisition_beside_unknown_and_existing_findings(self):
+        inputs = recording([([alert()], [6, 6, 1, 0x24, 0x24, 12, 12, 0x40]),
+                            ([alert("k", 24150, "SIDE")], [6, 6, 1, 0x44, 0x44, 12, 12, 0x40])])
+        side = literals(main_arrows=["side"])
+        other = literals(main_arrows=["front", "side"])
+        mixed = deepcopy(other)
+        mixed["primary_frequency"] = {"state": "unreadable", "reason": "partial frequency"}
+        unknown = deepcopy(side)
+        unknown["primary_frequency"] = mixed["primary_frequency"]
+        measured, *_ = sequence([1.02, 2.012, 2.020, 2.025, 2.030, 2.035, 2.040, 2.045, 2.050, 2.055],
+                                 [literals(), literals(), literals(), other, mixed, unknown,
+                                  side, unknown, literals(main_arrows=["rear"]), side], inputs=inputs)
+        event = measured["events"][1]
+        before = deepcopy(event)
+        findings = event_findings(event, summarize_event_observations(event), {})
+        result = interval_coverage(event)
+        self.assertEqual(event, before)
+        self.assertEqual(findings, event_findings(event, summarize_event_observations(event), {}))
+        self.assertEqual([(f["field"], f["kind"]) for f in findings],
+                         [("main_arrows", "departure_after_target")])
+        counts = result["counts"]
+        self.assertEqual(counts["after_complete_input_frames"], 8)
+        self.assertEqual(counts["before_complete_input_frames"], 1)
+        self.assertEqual([counts[key] for key in (
+            "matching_frames", "previous_input_acquisition_frames", "other_acquisition_frames",
+            "unresolved_before_target_frames", "unresolved_after_target_frames", "contrary_after_target_frames")],
+            [2, 1, 1, 2, 1, 1])
+        self.assertEqual(counts["other_acquisition_observed_frames"], 2)
+        self.assertEqual(counts["partly_unresolved_other_acquisition_frames"], 1)
+        refs = result["other_acquisition_observations"]
+        self.assertEqual([ref["partly_unresolved"] for ref in refs], [False, True])
+        for ref in refs:
+            self.assertEqual(ref["fields"], ["main_arrows"])
+            self.assertEqual(event["observation_spans"][ref["span_index"]]["observed"]["main_arrows"]["value"],
+                             ["front", "side"])
+
+    def test_interval_without_target_or_anchor_never_invents_a_hold_or_input_boundary(self):
+        wrong = literals(main_arrows=["front", "side"])
+        unknown = deepcopy(wrong)
+        unknown["primary_frequency"] = {"state": "ambiguous"}
+        event, _ = measured([1.02, 1.025], [wrong, unknown])
+        coverage = interval_coverage(event)
+        self.assertIsNone(coverage["first_target_capture_ns"])
+        self.assertEqual(coverage["counts"]["other_acquisition_frames"], 1)
+        self.assertEqual(coverage["counts"]["unresolved_before_target_frames"], 1)
+        self.assertEqual(coverage["counts"]["unresolved_after_target_frames"], 0)
+        event["target_basis"] = {}
+        unknown_anchor = interval_coverage(event)
+        self.assertEqual(unknown_anchor["counts"]["unanchored_frames"], 2)
+        self.assertEqual(unknown_anchor["counts"]["after_complete_input_frames"], 0)
+        self.assertEqual(unknown_anchor["other_acquisition_observations"], [])
+
+    def test_input_boundary_inside_retained_span_is_not_interpolated(self):
+        event, _ = measured([1.02, 1.025], [literals(), literals()])
+        event["target_basis"]["first_complete_target_input_ns"] = 1_022_000_000
+        result = interval_coverage(event)
+        self.assertEqual(result["counts"]["unanchored_frames"], 2)
+        self.assertEqual(result["counts"]["after_complete_input_frames"], 0)
+
     def test_late_but_complete_target_has_measurement_without_invented_failure(self):
         event, out = measured([1.02, 1.2, 1.5], [literals(main_bars=4), literals(), literals()])
         self.assertEqual(out["findings"], [])
@@ -197,6 +257,8 @@ class BehaviorTests(unittest.TestCase):
             self.assertEqual(result["errors"], [])
             self.assertEqual(result["result"], "NO_DIFFERENCES_OBSERVED")
             self.assertEqual(result["summary"]["read_frames"], 3)
+            self.assertEqual(result["summary"]["interval_coverage"]["counts"]["matching_frames"], 3)
+            self.assertEqual(result["events"][0]["interval_coverage"]["counts"]["after_complete_input_frames"], 3)
             self.assertEqual([s["frame_index"] for s in result["samples_index"]], [0, 2])
             self.assertEqual(reader.call_count, 6)
             self.assertEqual(reader.call_args.args, (bytes([2, 0, 0]), 1, 1, {"fixed": True}))

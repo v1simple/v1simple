@@ -25,7 +25,10 @@ ON_MIN = 0.9
 # Source-pixel calibration in units of SCAN landmark width/height, measured
 # from its top-left corner. Coordinates describe interiors, not font templates.
 PATCHES = {
-    "a": (-.84772727, -.55769231, -.79318182, -.50961538),
+    # Stay inside the V1SevenX top contour (font y685..780), below its upper
+    # edge. Small SCAN-height rounding changes must not sample background as
+    # a broken top body. Keep the original support below as an absence guard.
+    "a": (-.84772727, -.53846154, -.79318182, -.49038461),
     # Stay inside b's vertical stroke instead of sampling its antialiased edge.
     "b": (-.7625, -.44230769, -.75227273, -.32692308),
     "c": (-.77613636, -.125, -.75568182, .00961538),
@@ -37,6 +40,7 @@ PATCHES = {
     "f": (-.87159091, -.40384615, -.85795455, -.31730769),
     "g": (-.83409091, -.25961538, -.78636364, -.21153846),
 }
+A_ABSENCE_GUARD = (-.84772727, -.55769231, -.79318182, -.50961538)
 BACKGROUND = (-.84090909, -.43269231, -.80681818, -.31730769)
 CELL = (-.92954545, -.63461538, -.70454545, .22115385)
 # Broad stroke envelopes cover tapered ends and antialiasing. They only reject
@@ -112,13 +116,14 @@ def observe(rgb: bytes, width: int, height: int, registration: dict) -> dict:
                 for i, value in enumerate(box)]
 
     boxes = {name: mapped(box) for name, box in PATCHES.items()}
+    a_absence_box = mapped(A_ABSENCE_GUARD)
     envelopes = [mapped(box) for box in ENVELOPES]
     background_box, cell_box = mapped(BACKGROUND), mapped(CELL)
     alignment = {"kind": "landmark_scale_xy", "landmark_bounds": bounds,
                  "scale_xy": list(actual_scales), "cell_xyxy": cell_box,
                  "patches_xyxy": boxes, "envelopes_xyxy": envelopes,
                  "background_xyxy": background_box}
-    for box in [cell_box, background_box, *boxes.values(), *envelopes]:
+    for box in [cell_box, background_box, a_absence_box, *boxes.values(), *envelopes]:
         if not (0 <= box[0] < box[2] <= width and 0 <= box[1] < box[3] <= height):
             return _result("unreadable", "counter sampling region leaves the source frame",
                            alignment=alignment, segments={}, mask="")
@@ -134,9 +139,14 @@ def observe(rgb: bytes, width: int, height: int, registration: dict) -> dict:
         segments[name] = {"active_ratio": sum(v > CHROMA_FLOOR for v in values) / len(values),
                           "minimum": min(values), "median": statistics.median(values),
                           "maximum": max(values)}
+    a_absence_values = scores(a_absence_box)
+    a_absence_ratio = sum(v > CHROMA_FLOOR for v in a_absence_values) / len(a_absence_values)
+    segments["a"]["absence_guard"] = {"xyxy": a_absence_box, "active_ratio": a_absence_ratio}
     background = statistics.median(scores(background_box))
     contrast = max(item["median"] for item in segments.values()) - background
     partial = [name for name, item in segments.items() if OFF_MAX < item["active_ratio"] < ON_MIN]
+    if segments["a"]["active_ratio"] <= OFF_MAX and a_absence_ratio > OFF_MAX:
+        partial.append("a")
     mask = "".join(name for name, item in segments.items() if item["active_ratio"] >= ON_MIN)
     diagnostics = {"alignment": alignment, "segments": segments, "mask": mask,
                    "orange_contrast": contrast, "background_median": background}

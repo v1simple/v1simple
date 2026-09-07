@@ -5,6 +5,8 @@ from pathlib import Path
 import sys
 import unittest
 
+from PIL import Image, ImageDraw
+
 sys.path.insert(0, str(Path(__file__).resolve().parent / "bench"))
 from counter_reader import observe
 
@@ -93,6 +95,31 @@ class CounterReaderTests(unittest.TestCase):
         self.assert_unknown(result)
         self.assertIn("interiors", result["reason"])
         self.assertIn("b", result["segments"])
+
+    def test_top_stroke_taper_keeps_the_positive_witness_inside_its_body(self):
+        # Complete top contour, shaped after V1SevenX's five-point a glyph.
+        # Its upper edge is below the old patch's first row. Paint the whole
+        # tapered stroke, not the reader's sampling rectangle.
+        image = Image.frombytes("RGB", (WIDTH, HEIGHT), bytes(picture("bdeg")))
+        ImageDraw.Draw(image).polygon(((216, 199), (243, 200), (236, 209),
+                                     (217, 209), (211, 204)), fill=tuple(ORANGE))
+        result = self.read(image.tobytes())
+        self.assertEqual(result["glyph"], "2", result["reason"])
+        self.assertEqual(result["segments"]["a"]["active_ratio"], 1)
+        # A real break through the body still refuses the numeric reading.
+        ImageDraw.Draw(image).rectangle((220, 201, 232, 203), fill=(0, 0, 0))
+        damaged = self.read(image.tobytes())
+        self.assert_unknown(damaged)
+        self.assertIn("a", damaged["reason"])
+
+    def test_top_only_remnant_cannot_disappear_when_the_interior_moves(self):
+        rgb = picture("bc")
+        # Only the top strip remains. The corrected body is dark, but this
+        # visible fragment on the original support must prevent a clean1.
+        paint(rgb, (213, 198, 241, 200))
+        result = self.read(rgb)
+        self.assert_unknown(result)
+        self.assertIn("a", result["reason"])
 
     def test_upper_right_stroke_edge_stays_inside_b_interior(self):
         # A complete upper-right stroke starts two columns inside the old

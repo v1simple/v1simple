@@ -1812,7 +1812,9 @@ def _reanalyze_field_document(source: Path, destination: Path,
     adjudication = None
     if primary_frequency_reference is not None:
         from encounter_primary_frequency_reference import copy_reference
-        retained = destination.parent / "source/primary-frequency/reference.json"
+        # Preserve the copied historical packet when an explicit supplement
+        # reuses its artifact names with newly frozen labels or images.
+        retained = destination.parent / f"source/primary-frequency-{sha256(primary_frequency_reference)}/reference.json"
         copy_reference(primary_frequency_reference, retained)
         document["source_artifacts"]["primary_frequency_reference"] = reference(retained, destination.parent)
     if "primary_frequency_reference" in document["source_artifacts"]:

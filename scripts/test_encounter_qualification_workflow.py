@@ -1382,6 +1382,47 @@ class QualificationWorkflowTests(unittest.TestCase):
                  for path in helper.root.rglob("*") if path.is_file()},
                 source_bytes)
 
+    def test_explicit_frequency_supplement_preserves_colliding_historical_names(self):
+        helper = qualification_test_support.QualificationTests("test_complete_exact_bundle_qualifies")
+        helper.setUp()
+        self.addCleanup(helper.tearDown)
+        source = helper.root / "field.json"
+        document = helper.field_validation()
+
+        def packet(directory, label):
+            directory.mkdir(parents=True)
+            refs = {}
+            for name in ("protocol", "blind_manifest", "observations"):
+                artifact = directory / (name + ".json")
+                artifact.write_text(json.dumps({"label": label}))
+                refs[name] = workflow.reference(artifact, directory)
+            path = directory / "reference.json"
+            workflow.write_json(path, {**refs, "items": []})
+            return path
+
+        old = packet(helper.root / "source/primary-frequency", "historical")
+        new = packet(helper.root / "supplement", "new independent labels")
+        document["source_artifacts"]["primary_frequency_reference"] = workflow.reference(old, helper.root)
+        workflow.write_json(source, document)
+        original = {p: p.read_bytes() for p in old.parent.iterdir()}
+        first = helper.root / "first/field.json"
+        second = helper.root / "second/field.json"
+        with patch("encounter_primary_frequency_reference.reference_reread_binding", return_value=None), \
+             patch("encounter_primary_frequency_reference.validate_reference", return_value={"summary": {}, "overrides": {}}), \
+             patch.object(encounter_qualification, "_observe_image", side_effect=lambda p, _r: helper.reader_observations[qualification_test_support.digest(p)]):
+            result = workflow._reanalyze_field_document(
+                source, first, qualification_test_support.READER, helper.method,
+                qualification_test_support.CAMERA, new)
+            repeated = workflow._reanalyze_field_document(
+                first, second, qualification_test_support.READER, helper.method,
+                qualification_test_support.CAMERA, new)
+        for output, current in ((first, result), (second, repeated)):
+            selected = workflow.resolve_reference(output.parent, current["source_artifacts"]["primary_frequency_reference"], "supplement")
+            self.assertEqual(selected.read_bytes(), new.read_bytes())
+            self.assertEqual((selected.parent / "observations.json").read_bytes(), (new.parent / "observations.json").read_bytes())
+        self.assertEqual((first.parent / "source/primary-frequency/observations.json").read_bytes(), original[old.parent / "observations.json"])
+        self.assertEqual({p: p.read_bytes() for p in old.parent.iterdir()}, original)
+
     def test_static_reanalysis_rebinds_changed_qualification_with_same_reader(self):
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary) / "static-same-reader"

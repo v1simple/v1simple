@@ -129,16 +129,20 @@ def build_encounter_timeline(scenario, stimulus, delivery):
                          "wire soft-mute state disagrees with authored input")
             states.append({**timing, "rows": rows, "display": display,
                            "packet_signature": [n["bytesHex"].lower() for n in notifications]})
+        first_authored_attempt_ns = min(event["display_attempted_ns"] for event in timeline["accepted"]
+                                        if event["stimulus_sequence"] is not None)
         muted_run = 0
         for event in timeline["accepted"]:
             if event["packet_id"] in (0x02, 0x3D):
-                # Replay's version/volume handshake precedes the encounter.
-                # These packets do not encode any of the seven checked fields.
+                # A queued stimulus request can precede completion of replay's
+                # startup handshake. Require the handshake to finish before
+                # any authored packet's successful send attempt: version sets
+                # parser capabilities and volume can affect the idle display.
                 _, packet_id, payload = _packet(event["payload_hex"])
                 valid = (bool(re.fullmatch(rb"[vV][0-9]\.[0-9]{4}", payload)) if packet_id == 0x02
                          else len(payload) == 4 and all(value <= 9 for value in payload))
                 _require(valid and event["stimulus_sequence"] is None and
-                         event["display_accepted_ns"] < states[0]["stimulus_requested_ns"],
+                         event["display_accepted_ns"] < first_authored_attempt_ns,
                          "unsupported encounter version/volume handshake")
                 continue
             _require(event["packet_id"] in (0x31, 0x43), "unsupported accepted encounter packet")

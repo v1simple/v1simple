@@ -63,6 +63,23 @@ def single():
     return recording([([alert()], [6, 6, 1, 0x24, 0x24, 12, 12, 0x40])])
 
 
+def add_handshakes(data, entries):
+    """Add startup packets with explicit request and completion times."""
+    for event in data[2]:
+        event["globalTxSequence"] += len(entries)
+    for tx, (packet_id, payload, requested, accepted) in enumerate(entries, 1):
+        raw = packet(packet_id, payload)
+        base = dict(schemaVersion=3, globalTxSequence=tx, payloadHex=raw,
+                    payloadSha256=hashlib.sha256(bytes.fromhex(raw)).hexdigest(),
+                    characteristic="B2CE", stimulusSequence=None, emissionOrdinal=None)
+        data[2].extend([
+            dict(base, state="notification_requested", hostMonotonicNs=requested),
+            dict(base, state="notification_accepted", hostMonotonicNs=accepted,
+                 attemptedHostMonotonicNs=accepted - 1),
+        ])
+    data[2].sort(key=lambda event: event["hostMonotonicNs"])
+
+
 def literals(**changes):
     # Independent known screen context, never copied from expected output.
     values = dict(counter_glyph="1", primary_frequency="24.150", active_bands=["K"],
@@ -85,6 +102,51 @@ class EncounterExpectationTests(unittest.TestCase):
         self.assertEqual(result["joint_state"]["status"], "MATCH")
         self.assertEqual(result["joint_state"]["state_id"], "phase-1")
         self.assertEqual(data, original)
+
+    def test_startup_handshake_may_complete_after_stimulus_is_queued(self):
+        for accepted in (999_000_000, 1_002_000_000, 1_004_899_998):
+            data = single()
+            add_handshakes(data, [
+                (0x02, b"v4.1038", 998_000_000, accepted),
+                (0x3D, [4, 0, 4, 0], 998_100_000, accepted + 100_000),
+            ])
+            original = copy.deepcopy(data)
+            with self.subTest(accepted=accepted):
+                expected = self.expected(data)
+                self.assertTrue(expected["input"]["ready"])
+                for key in ("fields", "joint_states", "secondary_policy"):
+                    self.assertEqual(expected[key], self.expected()[key])
+                self.assertEqual(compare_sample(expected, literals())["status"], "MATCH")
+                self.assertEqual(data, original)
+
+    def test_startup_handshake_must_finish_before_first_authored_send_attempt(self):
+        # The first row is attempted at 1.004999999 s and accepted at 1.005 s.
+        # An overlapping handshake is unsupported even before row acceptance.
+        for accepted in (1_004_999_999, 1_005_000_000, 1_010_000_000):
+            for packet_id, payload in ((0x02, b"v4.1038"), (0x3D, [4, 0, 4, 0])):
+                data = single()
+                add_handshakes(data, [(packet_id, payload, 998_000_000, accepted)])
+                with self.subTest(packet_id=packet_id, accepted=accepted):
+                    with self.assertRaisesRegex(EncounterEvidenceError,
+                                                "unsupported encounter version/volume handshake"):
+                        build_encounter_timeline(*data)
+
+    def test_startup_handshake_format_and_unscoped_requirements_remain_strict(self):
+        for packet_id, payload in ((0x02, b"v4.103"), (0x02, b"S4.1038"),
+                                   (0x3D, [4, 0, 4]), (0x3D, [4, 0, 4, 10])):
+            data = single()
+            add_handshakes(data, [(packet_id, payload, 998_000_000, 1_002_000_000)])
+            with self.subTest(packet_id=packet_id, payload=payload):
+                with self.assertRaisesRegex(EncounterEvidenceError,
+                                            "unsupported encounter version/volume handshake"):
+                    build_encounter_timeline(*data)
+        data = single()
+        add_handshakes(data, [(0x02, b"v4.1038", 998_000_000, 1_002_000_000)])
+        for event in data[2]:
+            if event["globalTxSequence"] == 1:
+                event.update(stimulusSequence=1, emissionOrdinal=0)
+        with self.assertRaisesRegex(EncounterEvidenceError, "planned/delivered packet mismatch"):
+            build_encounter_timeline(*data)
 
     def test_wrong_live_field_survives_other_unreadable_fields(self):
         observed = literals(primary_frequency="35.500")

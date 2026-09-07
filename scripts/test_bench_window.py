@@ -1780,7 +1780,7 @@ def test_bench_cli_preserves_joint_state_failures_and_vetoes_incomplete_pass() -
     payload["events"][0]["findings"][0]["field"] = "joint_state"
     process, _, _, _ = run_bench_cli_fixture("PASS", "PASS", encounter_result="DIFFERENCES_FOUND", encounter_payload=payload)
     assert_true(process.returncode == 1, process.stdout)
-    assert_true("1 events with 1 findings" in process.stdout and "2 unresolved frames" in process.stdout, process.stdout)
+    assert_true("1 events with 1 findings" in process.stdout and "2 frames with unresolved comparisons" in process.stdout, process.stdout)
     for mutation in (
         lambda p: p["summary"].update(findings=0),
         lambda p: p["summary"].update(targets_observed=0),
@@ -1801,7 +1801,7 @@ def test_bench_cli_preserves_joint_state_failures_and_vetoes_incomplete_pass() -
     # response deadline after the target has independently been observed.
     transient = generated_encounter_payload(("TRANSIENT_UNKNOWN",))
     process, _, _, _ = run_bench_cli_fixture("PASS", "PASS", encounter_payload=transient)
-    assert_true(process.returncode == 0 and "1 unresolved frames" in process.stdout, process.stdout)
+    assert_true(process.returncode == 0 and "1 frames with unresolved comparisons" in process.stdout, process.stdout)
 
     from encounter_behavior import summarize
     dropped = generated_encounter_payload(("NO_DIFFERENCES_OBSERVED",))

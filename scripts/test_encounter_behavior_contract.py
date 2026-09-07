@@ -51,6 +51,33 @@ class BehaviorContractTests(unittest.TestCase):
         for path in older["sources"]:
             self.assertEqual(older["sources"][path]["sha256"], newer["sources"][path]["sha256"])
 
+    def test_reviewed_resting_brightness_keeps_old_value_and_rejects_further_drift(self):
+        real_git = contract._git
+        for further_change in (False, True):
+            def changed(root, *args):
+                data = real_git(root, *args)
+                if args[0] == "show" and args[1].endswith(":include/color_themes.h"):
+                    data = data.replace(b"0x1082 // Dark gray (resting)",
+                                        b"0x2104 // Subdued gray (resting)")
+                    if further_change:
+                        data = data.replace(b"0x2104", b"0x3186")
+                return data
+
+            with patch.object(contract, "_git", side_effect=changed):
+                result = contract.behavior_contract(ROOT, "ee6b401")
+            idle = result["rules"]["idle_volume_warning"]
+            self.assertNotIn("0x1082", idle["statement"])
+            if further_change:
+                self.assertEqual(idle["status"], "UNREVIEWED")
+                self.assertNotIn("0x2104", idle["statement"])
+                self.assertTrue(all(loc["excerpt"] is None for loc in idle["locations"]))
+            else:
+                self.assertEqual(result["status"], "VERIFIED")
+                self.assertIn("0x2104", idle["statement"])
+                self.assertTrue(any(".colorGray = 0x2104" in loc["excerpt"] for loc in idle["locations"]))
+        original = contract.behavior_contract(ROOT, "ee6b401")
+        self.assertIn("0x1082", original["rules"]["idle_volume_warning"]["statement"])
+
     def test_zero_persistence_repair_has_its_own_reviewed_explanation(self):
         before = contract.behavior_contract(ROOT, "d67bad1")
         after = contract.behavior_contract(ROOT, "9dba7dc")
@@ -86,6 +113,48 @@ class BehaviorContractTests(unittest.TestCase):
             self.assertEqual(result["rules"][name]["status"], "UNREVIEWED")
             self.assertNotIn("already corrected", result["rules"][name]["repair_direction"])
             self.assertTrue(all(loc["excerpt"] is None for loc in result["rules"][name]["locations"]))
+
+    def test_full_canvas_revision_preserves_rules_and_explains_changed_delivery(self):
+        before = contract.behavior_contract(ROOT, "9dba7dc")
+        after = contract.behavior_contract(ROOT, "ef2b3f2")
+        self.assertEqual(after["status"], "VERIFIED")
+        self.assertEqual(before["comparison_key"], after["comparison_key"])
+        for name in before["rules"]:
+            if name != "physical_dispatch":
+                self.assertEqual(before["rules"][name]["statement"], after["rules"][name]["statement"], name)
+        for path, digest in contract._CURRENT_SOURCE_VARIANTS.items():
+            self.assertEqual(after["sources"][path]["reviewed_sha256"], digest)
+        self.assertIn("partial push", before["rules"]["physical_dispatch"]["statement"])
+        dispatch = after["rules"]["physical_dispatch"]
+        self.assertIn("full-canvas transfers", dispatch["statement"])
+        self.assertIn("counter_glyph", dispatch["fields"])
+        self.assertIn("former regional-transfer path is removed", dispatch["repair_direction"])
+        self.assertNotIn("full-versus-partial", after["rules"]["main_arrows"]["repair_direction"])
+        excerpts = "\n".join(loc["excerpt"] for loc in dispatch["locations"])
+        self.assertIn("DISPLAY_FLUSH()", excerpts)
+        self.assertIn("hadPendingExternalDraws", excerpts)
+        self.assertIn("drawnRegion_.reset()", excerpts)
+        self.assertNotIn("flushRegion(", excerpts)
+        for name in ("counter_glyph", "primary_frequency", "main_arrows", "muted_badge",
+                     "shared_blink", "persistence_and_clear", "response_timing", "idle_volume_warning"):
+            old = before["rules"][name]["locations"]
+            new = after["rules"][name]["locations"]
+            self.assertEqual([loc["excerpt"] for loc in old], [loc["excerpt"] for loc in new], name)
+
+    def test_each_current_owner_still_rejects_unreviewed_source_changes(self):
+        real_git = contract._git
+        for path in contract._CURRENT_SOURCE_VARIANTS:
+            def changed(root, *args):
+                data = real_git(root, *args)
+                return data + b"\n// unreviewed change\n" if args[0] == "show" and args[1].endswith(":" + path) else data
+
+            with self.subTest(path=path), patch.object(contract, "_git", side_effect=changed):
+                result = contract.behavior_contract(ROOT, "ef2b3f2")
+            self.assertEqual(result["sources"][path]["status"], "UNREVIEWED")
+            for rule in result["rules"].values():
+                if any(loc["path"] == path for loc in rule["locations"]):
+                    self.assertEqual(rule["status"], "UNREVIEWED")
+                    self.assertTrue(all(loc["excerpt"] is None for loc in rule["locations"]))
 
     def test_invalid_revision_never_reaches_git(self):
         with patch.object(contract, "_git") as call:

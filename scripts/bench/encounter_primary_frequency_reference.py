@@ -23,6 +23,10 @@ CONTROL_STATES = {
     "missing_decimal_control": {"ambiguous", "unreadable"},
     "partial_decimal_control": {"ambiguous", "unreadable"},
 }
+SUPPLEMENTAL_CONTROL_STATES = {
+    "extra_ink_control": {"ambiguous", "unreadable"},
+    "occluded_camera_control": {"ambiguous", "unreadable"},
+}
 # These are literal missing-character controls, not valid placeholder readings.
 CONTROL_WRONG_LITERALS = {
     "missing_glyph_control": {"-.---", "--.--"},
@@ -56,6 +60,7 @@ def copy_reference(source, destination):
     refs = [document[name] for name in ("protocol", "blind_manifest", "observations")]
     if "selection_before_reading" in document:
         refs.append(document["selection_before_reading"])
+    refs += document.get("provenance_artifacts", [])
     refs += [item["image"] for item in document["items"]]
     destination.parent.mkdir(parents=True, exist_ok=True)
     for ref in refs:
@@ -114,6 +119,8 @@ def validate_reference(path, original_manifest, original_observations, method, r
     _artifact(path.parent, reference["protocol"])
     if "selection_before_reading" in reference:
         _artifact(path.parent, reference["selection_before_reading"])
+    for artifact in reference.get("provenance_artifacts", []):
+        _artifact(path.parent, artifact)
     manifest_path = _artifact(path.parent, reference["blind_manifest"])
     manifest = json.loads(manifest_path.read_bytes())
     labels = json.loads(_artifact(path.parent, reference["observations"]).read_bytes())
@@ -143,7 +150,8 @@ def validate_reference(path, original_manifest, original_observations, method, r
                  and isinstance(label.get("reason"), str)
                  and (isinstance(label.get("value"), str) if label["state"] == "readable" else label.get("value") is None),
                  "invalid literal primary-frequency label")
-        image_registration = reference.get("registration", registration) if role == "held_out_original" else registration
+        default_registration = reference.get("registration", registration) if role == "held_out_original" else registration
+        image_registration = item.get("registration", default_registration)
         _require(isinstance(image_registration, dict) and image_registration.get("result") == "PASS",
                  "original image registration is unavailable")
         observed = observe(image, image_registration)["primary_frequency"]
@@ -156,23 +164,30 @@ def validate_reference(path, original_manifest, original_observations, method, r
                      and originals[source_id]["image_sha256"] == digest,
                      "correction is not an exact original field image")
             overrides[source_id] = label
-        elif role == "held_out_original":
+        elif role in ("held_out_original", "retained_original"):
             origin = item.get("origin", {})
             _require(digest not in {f["image_sha256"] for f in originals.values()}
                      and isinstance(origin.get("capture_id"), str) and origin["capture_id"]
                      and type(origin.get("video_frame_index")) is int and origin["video_frame_index"] >= 0
                      and isinstance(origin.get("video_sha256"), str) and len(origin["video_sha256"]) == 64
-                     and item.get("not_used_for_reader_development") is True,
-                     "held-out original identity or development separation is missing")
-            held_out_dashes += int(status == "AGREEMENT" and label.get("value") == "--.---")
+                     and (item.get("not_used_for_reader_development") is True if role == "held_out_original"
+                          else isinstance(item.get("development_provenance"), str) and item["development_provenance"]),
+                     "original identity or development provenance is missing")
+            held_out_dashes += int(role == "held_out_original" and status == "AGREEMENT" and label.get("value") == "--.---")
+        elif role == "wrong_literal_control":
+            _require(isinstance(item.get("operation"), (str, dict)) and item["operation"]
+                     and label.get("state") == "readable" and re.fullmatch(r"[0-9]{2}\.[0-9]{3}", label["value"])
+                     and status == "AGREEMENT", "complete contrary literal was not read exactly")
         else:
-            _require(role in CONTROL_STATES and isinstance(item.get("operation"), (str, dict)) and item["operation"],
+            allowed_states = CONTROL_STATES.get(role, SUPPLEMENTAL_CONTROL_STATES.get(role))
+            _require(allowed_states is not None and isinstance(item.get("operation"), (str, dict)) and item["operation"],
                      "control role or declared image operation is missing")
-            reference_supported = (label.get("state") in CONTROL_STATES[role]
-                                   or (label.get("state") == "unresolved" and "ambiguous" in CONTROL_STATES[role])
+            reference_supported = (label.get("state") in allowed_states
+                                   or (label.get("state") == "unresolved" and "ambiguous" in allowed_states)
                                    or (label.get("state") == "readable"
-                                       and label.get("value") in CONTROL_WRONG_LITERALS.get(role, set())))
-            _require(observed.get("state") in CONTROL_STATES[role]
+                                       and (label.get("value") in CONTROL_WRONG_LITERALS.get(role, set())
+                                            or role == "extra_ink_control" and re.fullmatch(r"[0-9]{2}\.[0-9]{3}", label["value"]))))
+            _require(observed.get("state") in allowed_states
                      and reference_supported,
                      f"control did not safely distinguish missing/invalid pixels: {frame_id}")
         roles[role] += 1

@@ -308,5 +308,107 @@ class PrimaryFrequencyReferenceTests(unittest.TestCase):
             self.assertEqual(parsed.primary_frequency_reference, args[0])
 
 
+class RetainedFrequencySupplementTests(unittest.TestCase):
+    """Retain independently labelled multi-capture evidence without false admissions."""
+
+    @staticmethod
+    def append(args, document, readings, role, label, observed=None):
+        packet = args[0].parent
+        frame_id = 'new-' + str(len(document['items']))
+        image = packet / (frame_id + '.png')
+        image.write_bytes(('different opaque pixels ' + frame_id).encode())
+        image_ref = {'path': image.name, 'sha256': sha(image)}
+        item = {'frame_id': frame_id, 'role': role, 'image': image_ref,
+                'operation': {'declared_pixel_change': role},
+                'registration': {'result': 'PASS', 'landmark_bounds': [382, 193, 601, 272]}}
+        if role == 'retained_original':
+            item.update(origin={'capture_id': 'other-capture', 'video_frame_index': 12484,
+                                'video_sha256': 'b' * 64},
+                        development_provenance='Independently labelled before a prior reader; current complete reread.')
+        document['items'].append(item)
+        manifest_path = packet / document['blind_manifest']['path']
+        manifest = json.loads(manifest_path.read_bytes())
+        manifest['frames'].append({'frame_id': frame_id, 'image': image_ref})
+        write(manifest_path, manifest)
+        document['blind_manifest']['sha256'] = sha(manifest_path)
+        labels_path = packet / document['observations']['path']
+        labels = json.loads(labels_path.read_bytes())
+        labels['frames'].append({'frame_id': frame_id, 'image_sha256': image_ref['sha256'],
+                                 'primary_frequency': deepcopy(label)})
+        write(labels_path, labels)
+        document['observations']['sha256'] = sha(labels_path)
+        readings[image_ref['sha256']] = {'primary_frequency': deepcopy(label if observed is None else observed)}
+        write(args[0], document)
+        return item
+
+    def test_retained_original_uses_own_registration_and_preserves_safe_refusal(self):
+        with tempfile.TemporaryDirectory() as temp:
+            args, document, readings = fixture(Path(temp))
+            label = {'state': 'readable', 'value': '24.150', 'reason': 'Independent full literal'}
+            refusal = {'state': 'ambiguous', 'value': None, 'reason': 'One stroke not resolved'}
+            item = self.append(args, document, readings, 'retained_original', label, refusal)
+            seen = []
+            def observe(image, registration):
+                if sha(image) == item['image']['sha256']:
+                    seen.append(registration)
+                return deepcopy(readings[sha(image)])
+            args[-1] = observe
+            result = validate_reference(*args)
+            self.assertEqual(seen, [item['registration']])
+            self.assertEqual(result['summary']['counts']['READER_REFUSAL'], 1)
+            self.assertEqual(result['summary']['held_out_dash_agreements'], 2)
+            readings[item['image']['sha256']]['primary_frequency'] = {**label, 'value': '24.158'}
+            with self.assertRaises(ValueError):
+                validate_reference(*args)
+
+    def test_new_ambiguous_original_cannot_support_any_assertion(self):
+        with tempfile.TemporaryDirectory() as temp:
+            args, document, readings = fixture(Path(temp))
+            label = {'state': 'ambiguous', 'value': None, 'reason': 'Independent observer could not establish complete marks'}
+            item = self.append(args, document, readings, 'retained_original', label)
+            validate_reference(*args)
+            for state, value in [('readable', '--.---'), ('readable', '24.150'), ('absent', None)]:
+                with self.subTest(state=state, value=value):
+                    readings[item['image']['sha256']]['primary_frequency'] = {'state': state, 'value': value}
+                    with self.assertRaises(ValueError):
+                        validate_reference(*args)
+
+    def test_dim_controls_preserve_complete_wrong_literal_and_refuse_extra_or_occluded_ink(self):
+        with tempfile.TemporaryDirectory() as temp:
+            args, document, readings = fixture(Path(temp))
+            numeric = {'state': 'readable', 'value': '24.158', 'reason': 'Visible complete extra middle stroke'}
+            refusal = {'state': 'ambiguous', 'value': None, 'reason': 'Incomplete or hidden display'}
+            wrong = self.append(args, document, readings, 'wrong_literal_control', numeric)
+            extra = self.append(args, document, readings, 'extra_ink_control',
+                                {**numeric, 'value': '24.150', 'reason': 'Literal with a separate square inside a hole'}, refusal)
+            hidden = self.append(args, document, readings, 'occluded_camera_control', refusal)
+            validate_reference(*args)
+            for item, output in [(wrong, refusal), (wrong, {**numeric, 'value': '24.150'}),
+                                 (extra, {**numeric, 'value': '24.150'}),
+                                 (hidden, {'state': 'absent', 'value': None})]:
+                with self.subTest(role=item['role'], output=output):
+                    key = item['image']['sha256']
+                    previous = readings[key]['primary_frequency']
+                    readings[key]['primary_frequency'] = output
+                    with self.assertRaises(ValueError):
+                        validate_reference(*args)
+                    readings[key]['primary_frequency'] = previous
+
+    def test_historical_packets_are_copied_byte_for_byte_and_tampering_rejects(self):
+        with tempfile.TemporaryDirectory() as temp:
+            args, document, readings = fixture(Path(temp))
+            historical = write(args[0].parent / 'history/first-observer.json', {'state': 'ambiguous', 'never_relabelled': True})
+            document['provenance_artifacts'] = [{'path': 'history/first-observer.json', 'sha256': sha(historical)}]
+            write(args[0], document)
+            copied = Path(temp) / 'copied/reference.json'
+            copy_reference(args[0], copied)
+            self.assertEqual((copied.parent / 'history/first-observer.json').read_bytes(), historical.read_bytes())
+            validate_reference(copied, *args[1:])
+            (copied.parent / 'history/first-observer.json').write_text('silently changed observer')
+            with self.assertRaises(ValueError):
+                validate_reference(copied, *args[1:])
+            with self.assertRaises(ValueError):
+                copy_reference(copied, Path(temp) / 'invalid/reference.json')
+
 if __name__ == "__main__":
     unittest.main()

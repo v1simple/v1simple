@@ -18,13 +18,13 @@ import tempfile
 
 import numpy as np
 import PIL
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
 import counter_reader
 
 FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
-METHOD_VERSION = 13
+METHOD_VERSION = 14
 _ocr_binary = None
 _ocr_setup = None
 _ocr_session = None
@@ -120,7 +120,7 @@ class Pixels:
                       (y2 - y1 + 1) / 79 * height / 720)
         self.anchor = (x1 * width / 960, y1 * height / 540)
 
-    def crop(self, box):
+    def _bounds(self, box):
         result = []
         for i, v in enumerate(box):
             axis = i % 2
@@ -129,6 +129,10 @@ class Pixels:
         x1, y1, x2, y2 = result
         if not 0 <= x1 < x2 <= self.image.shape[1] or not 0 <= y1 < y2 <= self.image.shape[0]:
             raise ValueError("registered display region leaves the image")
+        return x1, y1, x2, y2
+
+    def crop(self, box):
+        x1, y1, x2, y2 = self._bounds(box)
         return self.image[y1:y2, x1:x2]
 
     def level(self, box):
@@ -179,24 +183,19 @@ def _dark_frequency_placeholder(pixels, details):
         measures = [{"p10": round(float(np.percentile(part, 10)), 2),
                      "median": round(float(np.median(part)), 2)} for part in parts]
         body_median = float(np.median(body))
-        # Eight-bit capture/compression can vary an intact stroke by one level
-        # across a small subdivision. Require contrast throughout the shape,
-        # and stronger contrast in the whole body, without requiring uniform
-        # illumination. An erased section still fails; uniformly faint marks
-        # still lack the whole-body witness.
-        complete = (body_median >= background + 3
-                    and all(part["median"] >= background + 2 and part["p10"] >= background + 1
-                            for part in measures))
+        # Use the same complete local-contrast witness as dim numeric strokes.
+        stroke_state, local_contrast = _dim_frequency_stroke(pixels, (left, 304, right, 309))
+        complete = stroke_state == "on"
         strokes.append({"background": background, "body_median": body_median,
-                        "parts": measures, "complete": complete})
+                        "parts": measures, "complete": complete, "local_contrast": local_contrast})
     decimal_background = float(np.median(pixels.level((606, 334, 622, 340))))
     decimal = pixels.level((610, 350, 618, 356))
     decimal_parts = [part for row in np.array_split(decimal, 2, axis=0)
                      for part in np.array_split(row, 2, axis=1)]
     decimal_levels = [{"p10": round(float(np.percentile(part, 10)), 2),
                        "median": round(float(np.median(part)), 2)} for part in decimal_parts]
-    decimal_complete = all(part["median"] >= decimal_background + 2
-                           and part["p10"] >= decimal_background + 1 for part in decimal_levels)
+    decimal_contrast = _dim_frequency_contrast(pixels, (610, 350, 618, 356))
+    decimal_complete = float(np.percentile(decimal_contrast, 10)) >= 3
     # The remaining upper/lower glyph body must be dark. A numeric remnant
     # cannot borrow five horizontal strokes to become a dash-only literal.
     extra_contrast = 0.0
@@ -239,6 +238,83 @@ def _dark_frequency_placeholder(pixels, details):
                  cells=details, dark_placeholder=diagnostics)
 
 
+def _dim_frequency_contrast(pixels, box):
+    """Fixed geometry against column-local background, never an expected glyph."""
+    left, top, right, bottom = box
+    full_box = (left - 15, 252, right + 15, 362)
+    full = pixels.level(full_box)
+    outer_left, _, _, _ = pixels._bounds(full_box)
+    inner_left, _, inner_right, _ = pixels._bounds((left, 252, right, 362))
+    start, stop = inner_left - outer_left, inner_right - outer_left
+    radius = max(1, round(15 * pixels.scale[0]))
+    columns = np.median(full, axis=0)
+    neighbors = np.lib.stride_tricks.sliding_window_view(
+        np.pad(columns, (radius, radius), mode="edge"), 2 * radius + 1)[start:stop]
+    # The same background witness as dark dashes: neighboring columns keep a
+    # stacked vertical stroke from raising its own background to its ink level.
+    # Slice transformed image columns, not registered-coordinate distances.
+    background = np.minimum(np.percentile(full[:, start:stop], 40, axis=0),
+                            np.median(neighbors, axis=1))
+    return pixels.level(box) - background[None, :]
+
+
+def _dim_frequency_stroke(pixels, box):
+    contrast = _dim_frequency_contrast(pixels, box)
+    # Reuse the retained dark-mark 3-level contrast witness and 2-level
+    # background allowance. Require every longitudinal third, not only a
+    # central sample, to distinguish complete strokes from dim fragments.
+    axis = 1 if contrast.shape[1] > contrast.shape[0] else 0
+    parts = np.array_split(contrast, 3, axis=axis)
+    measurements = [{"p10": round(float(np.percentile(part, 10)), 2),
+                     "p90": round(float(np.percentile(part, 90)), 2)} for part in parts]
+    coherent = (float(np.max(np.median(np.lib.stride_tricks.sliding_window_view(
+        contrast, (3, 3)), axis=(-2, -1)))) if min(contrast.shape) >= 3
+        else float(np.max(contrast)))
+    if all(part["p10"] >= 3 for part in measurements):
+        state = "on"
+    elif all(part["p90"] <= 2 for part in measurements) and coherent <= 2:
+        state = "off"
+    else:
+        state = "partial"
+    return state, {"thirds": measurements, "maximum_coherent_contrast": round(coherent, 2)}
+
+
+def _dim_numeric_frequency(pixels, origins, patches, placeholder):
+    details, digits = [], []
+    for origin in origins:
+        mask, segments = "", {}
+        for name, (left, top, right, bottom) in patches.items():
+            state, values = _dim_frequency_stroke(pixels, (origin + left, top, origin + right, bottom))
+            if name == "e" and state == "off":
+                guard, guard_values = _dim_frequency_stroke(pixels, (origin + 7, 324, origin + 12, 337))
+                values["absence_guard"] = {"state": guard, **guard_values}
+                if guard != "off":
+                    state = "partial"
+            segments[name] = {"state": state, **values}
+            if state == "on":
+                mask += name
+        details.append({"mask": mask, "segments": segments})
+        digits.append(counter_reader.MASKS.get(mask))
+    diagnostics = {"cells": details,
+                   "basis": "Fixed numeric strokes and decimal against local background; literal shape only, not gray palette fidelity."}
+    if any(s["state"] == "partial" for cell in details for s in cell["segments"].values()):
+        return field("ambiguous", reason="incomplete dim numeric stroke contrast", dim_numeric=diagnostics)
+    if not all(d is not None and d.isdigit() for d in digits):
+        return {**placeholder, "dim_numeric": diagnostics}
+    for origin in origins:
+        for top, bottom in ((278, 292), (322, 338)):
+            state, _ = _dim_frequency_stroke(pixels, (origin + 28, top, origin + 40, bottom))
+            if state != "off":
+                return field("ambiguous", reason="dim numeric ink enters a glyph background interior", dim_numeric=diagnostics)
+    decimal = _dim_frequency_contrast(pixels, (590, 349, 599, 357))
+    # Use the same whole-dot coverage statistic as the bright numeric reader.
+    # Quadrant percentiles over-weight the rounded dot's corner pixels; an
+    # erased quarter or half still fails this unchanged contrast requirement.
+    if float(np.percentile(decimal, 10)) < 3:
+        return field("ambiguous", reason="dim numeric decimal is not complete", dim_numeric=diagnostics)
+    return field("readable", "".join(digits[:2]) + "." + "".join(digits[2:]), dim_numeric=diagnostics)
+
+
 def _frequency(pixels):
     # Five fixed seven-segment cells, with the decimal separately witnessed.
     x_origins = (454, 520, 616, 688, 764)
@@ -263,9 +339,11 @@ def _frequency(pixels):
         details.append({"mask": mask, "segments": measurements})
         digits.append(counter_reader.MASKS.get(mask))
         illuminated_by_digit.append(illuminated)
-    region = pixels.level((448, 252, 840, 362))
-    if float(np.percentile(region, 99.5)) <= 32:
-        return _dark_frequency_placeholder(pixels, details)
+    if not any(segment["state"] == "on" for cell in details for segment in cell["segments"].values()):
+        placeholder = _dark_frequency_placeholder(pixels, details)
+        if placeholder["state"] in ("readable", "absent"):
+            return placeholder
+        return _dim_numeric_frequency(pixels, x_origins, patches, placeholder)
     if any(v["state"] == "partial" for d in details for v in d["segments"].values()):
         return field("ambiguous", reason="partial or dim frequency segment interiors", cells=details)
     if not all(d is not None and d.isdigit() for d in digits):
@@ -605,6 +683,87 @@ def _card_direction(pixels, left):
     return field("readable", matches[0], **diagnostics)
 
 
+# Classic GFX 5x7 font printed at size 2 by display_cards.cpp.
+_CARD_INITIALS = {"X": (0x63, 0x14, 0x08, 0x14, 0x63)}
+
+
+def _card_initial_from_crop(level, scale=(1., 1.)):
+    low, high = np.percentile(level, [20, 95])
+    if high < 45 or high - low < 24:
+        return None, {"reason": "first band glyph contrast is insufficient"}
+    support = level > (low + high) / 2
+    unseen = set(map(tuple, np.argwhere(support)))
+    components = []
+    while unseen:
+        stack = [unseen.pop()]
+        component = set(stack)
+        while stack:
+            y, x = stack.pop()
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    point = (y+dy, x+dx)
+                    if point in unseen:
+                        unseen.remove(point)
+                        component.add(point)
+                        stack.append(point)
+        components.append(component)
+    components.sort(key=len, reverse=True)
+    if not components:
+        return None, {"reason": "first band glyph has disconnected ink"}
+    ys, xs = np.array(list(components[0])).T
+    if not len(xs):
+        return None, {"reason": "first band glyph is absent"}
+    left, top, right, bottom = min(xs), min(ys), max(xs) + 1, max(ys) + 1
+    if (left == 0 or top == 0 or right == level.shape[1] or bottom == level.shape[0]
+            or not 13 <= (right-left)/scale[0] <= 23
+            or not 18 <= (bottom-top)/scale[1] <= 28):
+        return None, {"reason": "first band glyph extent is incomplete"}
+    actual = support[top:bottom, left:right]
+    matches, scores = [], {}
+    for name, columns in _CARD_INITIALS.items():
+        raster = np.array([[(column >> row) & 1 for column in columns]
+                           for row in range(7)], dtype=np.uint8) * 255
+        template = Image.fromarray(raster).resize((right-left, bottom-top), Image.Resampling.NEAREST)
+        best = None
+        # One image pixel accounts for sampling position within the measured
+        # glyph extent. This is not a search over surrounding text or frames.
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                shifted = Image.new("L", template.size)
+                shifted.paste(template, (dx, dy))
+                interior = np.asarray(shifted.filter(ImageFilter.MinFilter(3))) > 0
+                exterior = np.asarray(shifted.filter(ImageFilter.MaxFilter(5))) == 0
+                if not interior.any() or not exterior.any():
+                    continue
+                filled = float(actual[interior].mean())
+                stray = float(actual[exterior].mean())
+                if best is None or filled - stray > best[0] - best[1]:
+                    best = (filled, stray, dx, dy)
+        scores[name] = best
+        if best is not None and best[0] == 1. and best[1] <= .02:
+            matches.append(name)
+    # This supports an existing OCR K prefix; it does not decode K by itself.
+    # Classic K has a full left stem through every font row. X has background
+    # in its middle left rows, including when the X raster is damaged.
+    stem_rows = []
+    for row in range(7):
+        y1, y2 = (round((row+t)*actual.shape[0]/7) for t in (.3, .7))
+        x1, x2 = (round(t*actual.shape[1]) for t in (.06, .16))
+        patch = actual[y1:max(y1+1,y2), x1:max(x1+1,x2)]
+        stem_rows.append(float(patch.mean()))
+    stem = all(value == 1. for value in stem_rows)
+    if stem:
+        matches.append("K")
+    return (matches[0] if len(matches) == 1 else None), {
+        "bounds": [int(left), int(top), int(right), int(bottom)],
+        "contrast": float(high-low), "shape_scores": scores, "k_stem_rows": stem_rows,
+    }
+
+
+def _card_initial_witness(pixels, left):
+    return _card_initial_from_crop(pixels.level((left + 53, 377, left + 75, 413)), pixels.scale)
+
+
 def _secondary(pixels):
     cards, text_crops = [], []
     for slot, left in enumerate((393, 640)):
@@ -660,6 +819,15 @@ def _secondary(pixels):
         card["ocr_candidates"] = candidates
         if len(unique) == 1 and card["text_visible"]:
             card["band"], card["frequency"] = next(iter(unique))
+            if card["band"] in ("X", "K"):
+                initial, witness = _card_initial_witness(pixels, (393, 640)[card["slot"]])
+                card["band_witness"] = witness
+                # Resolve the demonstrated X/K confusion from label pixels;
+                # the independently recognized frequency is never changed.
+                if initial == "X":
+                    card["band"] = "X"
+                elif card["band"] != "K" or initial != "K":
+                    card["band"] = None
     complete = all(all(c[k] is not None for k in ("band", "frequency", "direction", "bars"))
                    and c["bars_state"] == "readable" for c in cards)
     values = [{k: c[k] for k in ("band", "frequency", "direction", "bars")} for c in cards]

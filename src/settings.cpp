@@ -268,8 +268,8 @@ void SettingsManager::load() {
     loadSignalBarColors();
     settings_.colorMuted =
         sanitizeRgb565Color(preferences_.getUShort(kNvsColorMuted, 0x3186), 0x3186); // Dark grey muted color
-    settings_.colorPersisted = sanitizeRgb565Color(preferences_.getUShort(kNvsColorPersisted, 0x18C3),
-                                                   0x18C3); // Darker grey for persisted alerts
+    settings_.colorPersisted = sanitizeRgb565Color(preferences_.getUShort(kNvsColorPersisted, 0x2945),
+                                                   0x2945); // Subdued grey for persisted alerts
     settings_.colorVolumeMain =
         sanitizeRgb565Color(preferences_.getUShort(kNvsColorVolumeMain, 0xF800), 0xF800); // Red for main volume
     settings_.colorVolumeMute =

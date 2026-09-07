@@ -37,6 +37,30 @@ _SOURCES = {
 }
 
 _FIXED_CARD_SOURCE = "e1dc5de71275f7c342af1a3d771b171e0c674c8d428e16788bdf7588464d241e"
+# The user-requested resting brightness change keeps the same rendering path.
+_BRIGHTER_IDLE_SOURCE = "40c867f15aec9f3e917722bed02fcf81b6294ae911521ec9f8d6ddb38b232940"
+
+# Full-canvas delivery removes regional-dispatch bookkeeping; USB maintenance
+# adds quiet admission checks. The mapped rendering/phase/cadence blocks below
+# are byte-identical at their new locations. Delivery itself is explained below.
+_CURRENT_SOURCE_VARIANTS = {
+    "src/display.h": "3dec19395c2f48c898c2b748c40aecc0510b0549c583cf3f5250a63160a20769",
+    "src/display_arrow.cpp": "9b8e85fd7d5661489eb497d84a31f5bb4196c16f3763082d343e3c7f4c70b594",
+    "src/display_update.cpp": "8f1d8b605710806699c5a8d11ebc253db63d0da179dffe473bd25d16e8e5b118",
+    "src/drive_runtime.cpp": "c26be992012bb399ec41e146e2765591650b9f638558d67c147d5e03ad626f9b",
+}
+_CURRENT_LOCATION_RANGES = {
+    "src/display.h": {(381, 400): (366, 385), (407, 430): (392, 415)},
+    "src/display_update.cpp": {
+        (570, 579): (371, 380), (342, 348): (143, 149),
+        (684, 702): (483, 501), (856, 858): (632, 634),
+        (834, 844): (610, 620), (622, 634): (421, 433),
+        (590, 593): (391, 394), (745, 768): (542, 565),
+        (639, 647): (438, 446),
+        (893, 924): (654, 665), (927, 933): (667, 676),
+    },
+    "src/drive_runtime.cpp": {(574, 594): (584, 604), (598, 611): (608, 621)},
+}
 
 
 def _rule(fields, statement, locations, repair_direction):
@@ -235,6 +259,10 @@ def behavior_contract(repo_root, firmware_commit):
             contents[path] = data.decode("utf-8").splitlines()
             if path == "src/display_cards.cpp" and digest == _FIXED_CARD_SOURCE:
                 reviewed_hash = _FIXED_CARD_SOURCE
+            if path == "include/color_themes.h" and digest == _BRIGHTER_IDLE_SOURCE:
+                reviewed_hash = _BRIGHTER_IDLE_SOURCE
+            if path in _CURRENT_SOURCE_VARIANTS and digest == _CURRENT_SOURCE_VARIANTS[path]:
+                reviewed_hash = _CURRENT_SOURCE_VARIANTS[path]
             state = "VERIFIED" if digest == reviewed_hash else "UNREVIEWED"
         except (OSError, subprocess.SubprocessError, UnicodeError):
             digest, state = None, "UNAVAILABLE"
@@ -244,6 +272,33 @@ def behavior_contract(repo_root, firmware_commit):
     if base["sources"]["src/display_cards.cpp"]["sha256"] == _FIXED_CARD_SOURCE:
         for rule_id, update in _FIXED_CARD_RULE_UPDATES.items():
             definitions[rule_id].update(update)
+    if base["sources"]["include/color_themes.h"]["sha256"] == _BRIGHTER_IDLE_SOURCE:
+        idle = definitions["idle_volume_warning"]
+        idle["statement"] = idle["statement"].replace("RGB565 0x1082", "RGB565 0x2104")
+    for definition in definitions.values():
+        locations = []
+        for path, start, end in definition["locations"]:
+            if path in _CURRENT_LOCATION_RANGES and base["sources"][path]["sha256"] == _CURRENT_SOURCE_VARIANTS[path]:
+                start, end = _CURRENT_LOCATION_RANGES[path].get((start, end), (start, end))
+            locations.append((path, start, end))
+        definition["locations"] = locations
+    if base["sources"]["src/display_update.cpp"]["sha256"] == _CURRENT_SOURCE_VARIANTS["src/display_update.cpp"]:
+        dispatch = definitions["physical_dispatch"]
+        dispatch["fields"].insert(0, "counter_glyph")
+        dispatch["statement"] = (
+            "Live, resting and persisted frames use full-canvas transfers when pixels change. "
+            "Live counter/card changes and card clears therefore use the same full-panel path; "
+            "mode transitions and pending external draws also force a transfer. Unchanged cache-hit "
+            "frames skip transfer. The renderer consumes its dirty state after dispatch.")
+        dispatch["repair_direction"] = (
+            "If a correct painted counter or card still differs on the panel, inspect cache invalidation "
+            "and full-canvas delivery. The former regional-transfer path is removed from live updates. "
+            "Source and host dispatch tests establish the requested transfer; camera evidence must "
+            "establish the visible result, and does not by itself locate a failed SPI write.")
+        dispatch["locations"].append(("src/display_update.cpp", 592, 605))
+        definitions["main_arrows"]["repair_direction"] = (
+            "Separate active color, grey resting shape and blink-off erase. For a retained outgoing "
+            "color inspect direction/phase invalidation and full-canvas display delivery.")
     for rule_id, definition in definitions.items():
         rule = deepcopy(definition)
         verified = all(base["sources"][path]["status"] == "VERIFIED"

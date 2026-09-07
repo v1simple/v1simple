@@ -471,7 +471,7 @@ void applyBackupDisplayFields(const JsonDocument& doc, V1Settings& settings, Bac
         {"colorBleConnected", &V1Settings::colorBleConnected, 0x07E0, false},
         {"colorBleDisconnected", &V1Settings::colorBleDisconnected, 0x001F, false},
         {"colorMuted", &V1Settings::colorMuted, 0x3186, false},
-        {"colorPersisted", &V1Settings::colorPersisted, 0x18C3, false},
+        {"colorPersisted", &V1Settings::colorPersisted, 0x2945, false},
         {"colorVolumeMain", &V1Settings::colorVolumeMain, 0xF800, false},
         {"colorVolumeMute", &V1Settings::colorVolumeMute, 0x7BEF, false},
         {"colorRssiV1", &V1Settings::colorRssiV1, 0x07E0, false},

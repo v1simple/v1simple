@@ -546,7 +546,7 @@ run_encounter_check() {
     "$ENCOUNTER_RESULT" "$encounter_status" "$ENCOUNTER_QUALIFICATION" >> "$RUN_LOG"
   printf '[bench] visual behavior: %s | target observed %s/%s events | %s events with %s findings\n' \
     "$ENCOUNTER_RESULT" "$targets" "$events" "$affected" "$findings"
-  printf '[bench] coverage: %s/%s recorded frames read | %s unresolved frames (%s field observations)\n' \
+  printf '[bench] coverage: %s/%s recorded frames read | %s frames with unresolved comparisons (%s field comparisons)\n' \
     "$read_frames" "$available" "$unresolved" "$unresolved_fields"
   "$BENCH_PYTHON" - "$encounter_dir/result.json" <<'PERSISTENCE_SUMMARY'
 import json, sys

@@ -44,6 +44,28 @@ def display(frequency="68.902"):
     return im
 
 
+def dim_frequency(frequency="24.150", ink=22):
+    """Full narrow-stroke glyphs, with visible labels left illuminated.
+
+    The earlier bright fixture uses wide touching rectangles. The registered
+    display's dim glyph bodies are narrower and have visible background beside
+    vertical strokes; this fixture draws whole strokes, not reader patches.
+    """
+    image = display(None)
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((448, 252, 840, 362), fill=(9, 9, 9))
+    for origin, digit in zip((454, 520, 616, 688, 764), frequency.replace(".", "")):
+        for name in DIGITS[digit]:
+            left, top, right, bottom = STROKES[name]
+            if name in "bcef":
+                left, right = left + 3, right - 3
+            else:
+                top, bottom = top + 3, bottom - 3
+            draw.rectangle((origin + left, top, origin + right, bottom), fill=(ink, ink, ink))
+    draw.ellipse((585, 347, 602, 361), fill=(ink, ink, ink))
+    return image
+
+
 def arrow(im, direction, color=ORANGE):
     draw = ImageDraw.Draw(im)
     shapes = {
@@ -60,10 +82,28 @@ def bars(im, count):
         draw.rectangle((885, y, 952, y + 18), fill=(90, 230, 20) if n < count else (12, 15, 14))
 
 
+CARD_INITIALS = {
+    "X": ("#...#", "#...#", ".#.#.", "..#..", ".#.#.", "#...#", "#...#"),
+    "K": ("#...#", "#..#.", "#.#..", "##...", "#.#..", "#..#.", "#...#"),
+}
+
+
+def card_band_glyph(im, left, glyph, missing=()):
+    draw = ImageDraw.Draw(im)
+    draw.rectangle((left + 53, 377, left + 80, 413), fill=(0, 0, 80))
+    for y, row in enumerate(CARD_INITIALS[glyph]):
+        for x, ink in enumerate(row):
+            if ink == "#" and (x, y) not in missing:
+                draw.rectangle((left + 56 + x * 3, 384 + y * 3,
+                                left + 58 + x * 3, 386 + y * 3), fill=(210, 210, 210))
+
+
 def card(im, left, direction, count):
     draw = ImageDraw.Draw(im)
     draw.rectangle((left, 366, left + 228, 451), fill=(0, 0, 80))
-    draw.rectangle((left + 53, 382, left + 215, 407), fill=(210, 210, 210))
+    draw.rectangle((left + 81, 382, left + 215, 407), fill=(210, 210, 210))
+    # The OCR prefix has an independent visible glyph; its digits remain mocked.
+    card_band_glyph(im, left, "K")
     if direction == "side":
         draw.rectangle((left + 18, 391, left + 40, 398), fill="white")
     elif direction == "front":
@@ -91,6 +131,65 @@ def compare_frequency(observed, expected_value):
 class EncounterReaderTests(unittest.TestCase):
     def read(self, im):
         return reader.observe(im.tobytes(), *im.size, REGISTRATION)
+
+    def test_dim_numeric_literals_and_complete_contrary_stroke(self):
+        for value in ("24.150", "12.345", "97.681"):
+            observed = self.read(dim_frequency(value))["primary_frequency"]
+            self.assertEqual((observed["state"], observed["value"]), ("readable", value), observed)
+        wrong = dim_frequency("24.150")
+        # The full independently drawn middle stroke changes the last 0 to8.
+        ImageDraw.Draw(wrong).rectangle((769, 300, 824, 314), fill=(22, 22, 22))
+        observed = self.read(wrong)["primary_frequency"]
+        self.assertEqual((observed["state"], observed["value"]), ("readable", "24.158"), observed)
+        self.assertEqual(compare_frequency(observed, "24.150")["status"], "DIFFERENCE")
+
+    def test_medium_gray_numeric_content_and_partial_controls(self):
+        image = dim_frequency("24.150", ink=40)
+        observed = self.read(image)["primary_frequency"]
+        self.assertEqual((observed["state"], observed["value"]), ("readable", "24.150"), observed)
+        wrong = image.copy()
+        ImageDraw.Draw(wrong).rectangle((769, 300, 824, 314), fill=(40, 40, 40))
+        observed = self.read(wrong)["primary_frequency"]
+        self.assertEqual((observed["state"], observed["value"]), ("readable", "24.158"), observed)
+        self.assertEqual(compare_frequency(observed, "24.150")["status"], "DIFFERENCE")
+        for rect, color in (((475, 255, 492, 273), (9, 9, 9)),
+                            ((585, 347, 594, 362), (9, 9, 9)),
+                            ((482, 278, 494, 292), (40, 40, 40))):
+            partial = image.copy()
+            ImageDraw.Draw(partial).rectangle(rect, fill=color)
+            observed = self.read(partial)["primary_frequency"]
+            self.assertIn(observed["state"], ("ambiguous", "unreadable"), observed)
+            self.assertIsNone(observed["value"])
+
+    def test_dim_numeric_partial_stroke_decimal_and_foreign_ink_refuse(self):
+        for rect, color in (((475, 255, 492, 273), (9, 9, 9)),
+                            ((585, 347, 594, 362), (9, 9, 9)),
+                            ((482, 278, 494, 292), (22, 22, 22))):
+            image = dim_frequency()
+            ImageDraw.Draw(image).rectangle(rect, fill=color)
+            observed = self.read(image)["primary_frequency"]
+            self.assertIn(observed["state"], ("ambiguous", "unreadable"), observed)
+            self.assertIsNone(observed["value"])
+
+    def test_dim_numeric_dot_support_allows_rounded_corner_pixels(self):
+        image = dim_frequency("24.150")
+        # Two corner pixels of a dot can blend with background while its body
+        # stays complete. An erased half-dot is rejected by the separate test.
+        ImageDraw.Draw(image).line((598, 349, 598, 350), fill=(9, 9, 9))
+        observed = self.read(image)["primary_frequency"]
+        self.assertEqual((observed["state"], observed["value"]), ("readable", "24.150"), observed)
+
+    def test_dim_numeric_registration_rounding_keeps_background_aligned(self):
+        image = dim_frequency()
+        anchor = 376 * 4 / 3
+        for width in (219, 220, 221):
+            scale = width / 220
+            transformed = image.transform(image.size, Image.Transform.AFFINE,
+                (1 / scale, 0, anchor * (1 - 1 / scale), 0, 1, 0),
+                resample=Image.Resampling.NEAREST)
+            registered = registration(x=376, y=192, w=width, h=79)
+            observed = reader.observe(transformed.tobytes(), *transformed.size, registered)["primary_frequency"]
+            self.assertEqual((observed["state"], observed["value"]), ("readable", "24.150"), observed)
 
     def test_arbitrary_frequency_digits_and_explicit_visible_absence(self):
         # Includes digits not present in the original labeled recordings.
@@ -133,7 +232,9 @@ class EncounterReaderTests(unittest.TestCase):
         uneven = placeholder()
         ImageDraw.Draw(uneven).rectangle((480, 304, 489, 306), fill=(10, 10, 10))
         observed = self.read(uneven)["primary_frequency"]
-        self.assertEqual((observed["state"], observed["value"]), ("readable", "--.---"), observed)
+        # A two-level subsection is not a complete dim stroke. Preserve the
+        # marks as uncertainty, just as for numeric strokes at this contrast.
+        self.assertEqual((observed["state"], observed["value"]), ("ambiguous", None), observed)
         ImageDraw.Draw(uneven).rectangle((480, 304, 489, 306), fill=(8, 8, 8))
         self.assertEqual(self.read(uneven)["primary_frequency"]["state"], "ambiguous")
         for box in ((475, 258, 501, 271), (504, 275, 514, 294), (478, 347, 503, 359),
@@ -282,6 +383,60 @@ class EncounterReaderTests(unittest.TestCase):
         ImageDraw.Draw(im).rectangle((640, 366, 870, 453), fill="black")
         with patch.object(reader, "_ocr", return_value=ocr_result("K 23.456")):
             self.assertEqual(len(self.read(im)["secondary"]["value"]), 1)
+
+    def test_secondary_x_k_prefix_follows_visible_letter_not_frequency(self):
+        im = display()
+        card(im, 393, "rear", 2)
+        card_band_glyph(im, 393, "X")
+        for frequency in ("10.525", "24.150", "73.246"):
+            with patch.object(reader, "_ocr", return_value=ocr_result("K" + frequency)):
+                result = self.read(im)["secondary"]
+            self.assertEqual(result["state"], "readable", result)
+            self.assertEqual(result["value"][0]["band"], "X")
+            self.assertEqual(result["value"][0]["frequency"], frequency)
+        card_band_glyph(im, 393, "K")
+        with patch.object(reader, "_ocr", return_value=ocr_result("K10.525")):
+            result = self.read(im)["secondary"]
+        self.assertEqual(result["value"][0]["band"], "K")
+        self.assertEqual(result["value"][0]["frequency"], "10.525")
+        with patch.object(reader, "_ocr", return_value=ocr_result("Ka35.500")):
+            self.assertEqual(self.read(im)["secondary"]["value"][0]["band"], "Ka")
+        with patch.object(reader, "_ocr", return_value=ocr_result("X10.525")):
+            self.assertEqual(self.read(im)["secondary"]["state"], "unreadable")
+
+    def test_secondary_each_missing_x_font_cell_refuses_forced_k(self):
+        for y, row in enumerate(CARD_INITIALS["X"]):
+            for x, ink in enumerate(row):
+                if ink != "#":
+                    continue
+                with self.subTest(x=x, y=y):
+                    im = display()
+                    card(im, 393, "rear", 2)
+                    card_band_glyph(im, 393, "X", missing=[(x, y)])
+                    with patch.object(reader, "_ocr", return_value=ocr_result("K10.525")):
+                        result = self.read(im)["secondary"]
+                    self.assertEqual(result["state"], "unreadable", result)
+                    self.assertIsNone(result["partial_cards"][0]["band"])
+                    self.assertEqual(result["partial_cards"][0]["frequency"], "10.525")
+
+    def test_secondary_blank_partial_and_faint_x_refuse_forced_k(self):
+        for kind in ("blank", "upper_half", "lower_half", "faint"):
+            im = display()
+            card(im, 393, "rear", 2)
+            card_band_glyph(im, 393, "X")
+            draw = ImageDraw.Draw(im)
+            if kind == "faint":
+                for y, row in enumerate(CARD_INITIALS["X"]):
+                    for x, ink in enumerate(row):
+                        if ink == "#":
+                            draw.rectangle((449 + x * 3, 384 + y * 3,
+                                            451 + x * 3, 386 + y * 3), fill=(0, 0, 92))
+            else:
+                top, bottom = {"blank": (377, 413), "upper_half": (377, 395),
+                               "lower_half": (395, 413)}[kind]
+                draw.rectangle((446, top, 473, bottom), fill=(0, 0, 80))
+            with patch.object(reader, "_ocr", return_value=ocr_result("K10.525")):
+                self.assertEqual(self.read(im)["secondary"]["state"], "unreadable", kind)
 
     def test_ocr_failure_or_malformed_frequency_is_unknown_not_empty(self):
         im = display()

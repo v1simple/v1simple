@@ -174,7 +174,7 @@ assert.match(element('comparison').innerHTML,/Current: \+5.000 ms/);
 assert.match(element('comparison').innerHTML,/\.\.\/baseline\/report.html#event=event-1/);
 assert.match(element('comparison').innerHTML,/\.\.\/baseline\/frames\/4.png/);
 assert.match(element('comparison').innerHTML,/data-compare-event="0"/);
-assert.match(element('comparison').innerHTML,/Unresolved field readings/);
+assert.match(element('comparison').innerHTML,/Unresolved field comparisons/);
 location.hash='#event=event-1';listeners.hashchange();assert.equal(activeIndex,0);
 assert.match(element('event-content').innerHTML,/1 \/ 2 required joint phases observed/);
 assert.match(element('event-content').innerHTML,/0 phase alternations/);

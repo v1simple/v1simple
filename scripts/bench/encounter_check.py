@@ -1241,7 +1241,7 @@ def main() -> int:
         counts = result["summary"]
         print(f"{result['result']} — {counts['targets_observed']}/{counts['events']} complete display targets observed; "
               f"{counts['events_with_findings']} events with contrary content; "
-              f"{counts['unresolved_frames']} frames contain unresolved observations. "
+              f"{counts['unresolved_frames']} frames have unresolved field comparisons. "
               f"Read {counts['read_frames']}/{counts['available_frames']} recorded event frames.")
         print("Open report.html for actual transitions, original images, source explanations and build comparison.")
         return {"NO_DIFFERENCES_OBSERVED": 0, "DIFFERENCES_FOUND": 1, "MEASUREMENT_INCOMPLETE": 2}[result["result"]]

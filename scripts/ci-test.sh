@@ -176,9 +176,6 @@ run_step "Encounter blink phase observation regression suite" python3 scripts/te
 run_step "Encounter independent reading reuse regression suite" python3 scripts/test_encounter_reading_reuse.py
 run_step "Encounter independent frequency reference regression suite" python3 scripts/test_encounter_primary_frequency_reference.py
 run_step "Encounter evidence assessment regression suite" python3 scripts/test_encounter_assessment.py
-run_step "Encounter product regression suite" python3 scripts/test_encounter_product.py
-run_step "Encounter functional deadline regression suite" python3 scripts/test_encounter_functional_product.py
-run_step "Encounter product adapter regression suite" python3 scripts/test_encounter_product_adapter.py
 run_step "Encounter temporal classifier regression suite" python3 scripts/test_encounter_temporal.py
 run_step "Encounter arrow transition regression suite" python3 scripts/test_encounter_arrow_transition.py
 run_step "Encounter bar transition regression suite" python3 scripts/test_encounter_bar_transition.py

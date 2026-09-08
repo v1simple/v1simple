@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Evaluate visible V1 encounters from an existing recording.
 
-No hardware is operated. With --inspect-transitions, evaluate every original
-in fixed event windows under the qualified deadline and verification policy.
-Other modes retain sampled or consecutive frame comparisons for diagnosis.
+No hardware is operated. --observe-behavior compares recorded display events
+with controlled inputs. Other modes retain sampled or consecutive frame
+comparisons for diagnosis. No appearance deadline is imposed.
 Selection is frozen before pixels are read. The clock binds host acceptance
 and camera markers; it does not measure DUT receipt or locate a firmware defect.
 """
@@ -34,9 +34,6 @@ FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
 PROBES = (-.05, .05, .15, .35)
 MAX_SAMPLES = 5000
-TRANSITION_BEFORE = .05
-TRANSITION_AFTER = .50
-BLINK_PHASE_NS = 96_000_000
 
 
 def require(condition: bool, reason: str) -> None:
@@ -208,130 +205,6 @@ def select_all_frames(stimulus: list[dict], rows: list[dict],
     return _select_all_frames_in_bounds(origin, rows, bounds, limit)
 
 
-def select_transition_review(stimulus, rows, ranges, cadence, maximum_source_interval_ns):
-    """Add every recorded frame around input changes without replacing held checks.
-
-    Windows are chosen from packet bytes and time before observing any pixels.
-    The half-second inspection window is a coverage choice, never a deadline.
-    Dense work is bounded by the recording, plus the original checkpoint set.
-    """
-    require(type(maximum_source_interval_ns) is int and 0 < maximum_source_interval_ns <= 1_000_000_000,
-            "verified maximum source interval is required for held context")
-    samples = select_samples(stimulus, rows, ranges, cadence)
-    origin = stimulus[0]["requestedHostMonotonicNs"]
-    range_bounds = [(origin + round(start * 1e9), origin + round(end * 1e9))
-                    for start, end in ranges]
-    changes, prior = [], None
-    for item in stimulus:
-        signature = tuple((n["kind"], n["bytesHex"]) for n in item["notifications"])
-        if signature != prior:
-            changes.append(item["requestedHostMonotonicNs"])
-        prior = signature
-    windows_ns = []
-    for index, change in enumerate(changes):
-        next_change = changes[index + 1] if index + 1 < len(changes) else 2 ** 63 - 1
-        for start, end in range_bounds:
-            lo = max(start, change - round(TRANSITION_BEFORE * 1e9))
-            hi = min(end, change + round(TRANSITION_AFTER * 1e9), next_change)
-            if lo < hi:
-                windows_ns.append((lo, hi))
-    # A held point can land inside the display's authored 96 ms blink edge.
-    # Select its neighborhood before reading pixels so the sequence layer can
-    # distinguish a closed legal phase transition from an isolated refusal.
-    # One verified worst source interval beyond the phase prevents timestamp
-    # alignment from omitting the first camera observation past that phase.
-    context_ns = BLINK_PHASE_NS + maximum_source_interval_ns
-    held_windows_ns = []
-    for sample in samples:
-        if sample.get("role") != "held" or "capture_ns" not in sample:
-            continue
-        center = sample["capture_ns"]
-        for start, end in range_bounds:
-            lo, hi = max(start, center - context_ns), min(end, center + context_ns + 1)
-            if lo < hi:
-                held_windows_ns.append((lo, hi))
-    present = {s["video_frame_index"] for s in samples if "video_frame_index" in s}
-    dense_windows_ns = [*windows_ns, *held_windows_ns]
-    dense = (_select_all_frames_in_bounds(origin, rows, dense_windows_ns, len(rows))
-             if dense_windows_ns else [])
-    for sample in dense:
-        if sample["video_frame_index"] in present:
-            continue
-        capture = sample["capture_ns"]
-        reasons = []
-        if any(start <= capture < end for start, end in windows_ns):
-            reasons.append("every recorded frame around an input change")
-        if any(start <= capture < end for start, end in held_windows_ns):
-            reasons.append("fixed context around a held checkpoint")
-        require(bool(reasons), "selected dense frame has no input-only selection reason")
-        sample.update(role="transition", selection_reasons=reasons)
-        samples.append(sample)
-    samples.sort(key=lambda s: s["target_capture_ns"])
-    for index, sample in enumerate(samples, 1):
-        sample["frame_id"] = f"{index:04d}"
-    windows = [((start - origin) / 1e9, (end - origin) / 1e9) for start, end in windows_ns]
-    held_windows = [((start - origin) / 1e9, (end - origin) / 1e9)
-                    for start, end in held_windows_ns]
-    return samples, windows, held_windows
-
-
-def select_product_event_windows(samples, stimulus, rows, ranges, definitions, policy):
-    """Union exact input-anchored product windows into a frozen selection.
-
-    Events outside an explicitly requested range are omitted rather than
-    partially sampled.  An event superseded before the policy window ends is
-    still selected through its real end so the product judge can report the
-    clipped episode as inconclusive. A separate fixed 80 ms context after the
-    product window is selected for qualified verification-boundary closure; it
-    also stops at the actual next input and never extends the product deadline.
-    """
-    require(bool(stimulus) and bool(rows), "product selection has no input or camera records")
-    require(isinstance(definitions, list) and isinstance(policy, dict),
-            "product selection definition is malformed")
-    origin = stimulus[0]["requestedHostMonotonicNs"]
-    range_bounds = [(origin + round(start * 1e9), origin + round(end * 1e9))
-                    for start, end in ranges]
-    gap = policy.get("maximum_source_marker_gap_ns")
-    hold = policy.get("minimum_post_completion_hold_ns")
-    require(type(gap) is int and gap > 0 and type(hold) is int and hold > 0,
-            "product selection policy has invalid bounds")
-    from encounter_product_adapter import AUXILIARY_CLOSURE_CONTEXT_NS
-    windows, bounds = [], []
-    for definition in definitions:
-        basis = definition.get("target_basis") if isinstance(definition, dict) else None
-        anchor = basis.get("first_complete_target_input_ns") if isinstance(basis, dict) else None
-        end = definition.get("end_ns") if isinstance(definition, dict) else None
-        if type(anchor) is not int or type(end) is not int or end <= anchor:
-            continue
-        start, policy_end = anchor - gap, anchor + hold
-        selected_end = min(policy_end, end)
-        closure_end = min(policy_end + AUXILIARY_CLOSURE_CONTEXT_NS, end)
-        # A manual range is a declared product scope only when it contains the
-        # complete available event window without a hole.
-        if not any(lo <= start and closure_end <= hi for lo, hi in range_bounds):
-            continue
-        windows.append({"event_id": definition["event_id"], "start_ns": start,
-                        "end_ns": policy_end, "selected_end_ns": selected_end,
-                        "closure_context_end_ns": closure_end,
-                        "anchor_ns": anchor, "clipped_by_event_end": end < policy_end})
-        bounds.append((start, closure_end))
-    if not bounds:
-        return samples, []
-    dense = _select_all_frames_in_bounds(origin, rows, bounds, len(rows))
-    present = {sample["video_frame_index"] for sample in samples if "video_frame_index" in sample}
-    for sample in dense:
-        if sample["video_frame_index"] in present:
-            continue
-        sample.update(role="transition",
-                      selection_reasons=["every recorded frame in an exact product event window and bounded closure context"])
-        samples.append(sample)
-        present.add(sample["video_frame_index"])
-    samples.sort(key=lambda sample: sample["target_capture_ns"])
-    for index, sample in enumerate(samples, 1):
-        sample["frame_id"] = f"{index:04d}"
-    return samples, windows
-
-
 def observation_history(samples: list[dict]) -> tuple[dict, list[dict]]:
     """Run-length encode literal readings only; preserve one-frame states and refusals."""
     spans = {field: [] for field in FIELDS}
@@ -482,68 +355,6 @@ def full_camera_range(stimulus: list[dict], rows: list[dict]) -> list[tuple[floa
     return [((start_ns - origin) / 1e9, (end_ns - origin) / 1e9)]
 
 
-def product_configuration_scope(stimulus: list[dict], policy: dict) -> list[dict]:
-    """Bound setting proof to product input/window time, excluding diagnostics."""
-    require(bool(stimulus) and isinstance(policy, dict),
-            "product configuration scope has no input or policy")
-    gap = policy.get("maximum_source_marker_gap_ns")
-    hold = policy.get("minimum_post_completion_hold_ns")
-    require(type(gap) is int and gap > 0 and type(hold) is int and hold > 0,
-            "product configuration policy has invalid bounds")
-    return [{"capture_ns": stimulus[0]["requestedHostMonotonicNs"] - gap},
-            {"capture_ns": stimulus[-1]["requestedHostMonotonicNs"] + hold}]
-
-
-def product_window_samples(samples: list[dict], windows: list[dict]) -> list[dict]:
-    """Return only recorded observations which can affect product events."""
-    return [sample for sample in samples if "capture_ns" in sample and any(
-        window["start_ns"] <= sample["capture_ns"] < window.get(
-            "closure_context_end_ns", window["selected_end_ns"])
-        for window in windows)]
-
-
-def require_complete_product_windows(definitions: list[dict], windows: list[dict]) -> None:
-    """Refuse a default full-run product denominator with any missing event."""
-    definition_ids = [item.get("event_id") for item in definitions if isinstance(item, dict)]
-    window_ids = [item.get("event_id") for item in windows if isinstance(item, dict)]
-    missing = [event_id for event_id in definition_ids if event_id not in window_ids]
-    require(len(definition_ids) == len(definitions) and len(definition_ids) == len(set(definition_ids))
-            and window_ids == definition_ids,
-            "default product scope lacks an exact window for derived event(s): "
-            + ", ".join(str(event_id) for event_id in missing or definition_ids))
-
-
-def product_temporal_submissions(records: list[dict], events: list[dict],
-                                 qualified_ids: set[str]) -> list[dict]:
-    """Drop only internally generated records made redundant by decisive evidence."""
-    observations = {event["event_id"]: {
-        item["video_frame_index"]: item for item in [
-            *event.get("observations", []),
-            *event.get("closure_context", {}).get("observations", [])]
-        if isinstance(item, dict) and type(item.get("video_frame_index")) is int}
-        for event in events if isinstance(event, dict) and isinstance(event.get("event_id"), str)}
-    submitted = []
-    for record in records:
-        if not isinstance(record, dict):
-            submitted.append(record)
-            continue
-        if record.get("classifier_id") not in qualified_ids:
-            continue
-        members = observations.get(record.get("event_id"))
-        indices = record.get("video_frame_indices")
-        if members is None:
-            continue
-        if not isinstance(indices, list) or any(type(index) is not int for index in indices):
-            submitted.append(record)
-            continue
-        if not set(indices) <= set(members):
-            continue
-        if indices and all(members[index].get("raw_status") != "UNRESOLVED" for index in indices):
-            continue
-        submitted.append(record)
-    return submitted
-
-
 def unresolved(reason: str) -> dict:
     return {"fields": {name: {"state": "unreadable", "value": None, "reason": reason} for name in FIELDS}}
 
@@ -570,15 +381,9 @@ def summarize(samples: list[dict], errors: list[str]) -> tuple[str, dict]:
 
 
 def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cadence: float,
-            configuration: Path | None = None, transition_only: bool = False, all_frames: bool = False,
-            inspect_transitions: bool = False, reader_qualification: Path | None = None,
-            temporal_classifier_ids: list[str] | tuple[str, ...] | None = None) -> dict:
-    samples, errors, evidence, data, transition_windows, held_windows, config = [], [], {}, None, [], [], None
-    product_policy, product_definitions, product_windows = None, [], []
-    requested_temporal_classifiers, secondary_profiles_requested = [], False
-    secondary_probe = None
-    qualification = {"schema_version": 1, "kind": "encounter_reader_qualification_verification",
-                     "status": "REJECTED", "errors": ["reader qualification was not evaluated"]}
+            configuration: Path | None = None, transition_only: bool = False,
+            all_frames: bool = False) -> dict:
+    samples, errors, evidence, data, config = [], [], {}, None, None
     method = {p.name: sha256_file(p) for p in Path(__file__).parent.glob("*.py")}
     for p in Path(__file__).parent.glob("encounter_*.swift"):
         method[p.name] = sha256_file(p)
@@ -586,16 +391,13 @@ def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cade
         method[p.name] = sha256_file(p)
     for p in Path(__file__).parent.glob("encounter_*.b64"):
         method[p.name] = sha256_file(p)
-    policy_path = Path(__file__).with_name("visible_event_policies.json")
-    if policy_path.is_file():
-        method[policy_path.name] = sha256_file(policy_path)
     (out / "method").mkdir()
     for name, digest in method.items():
         source = Path(__file__).with_name(name)
         shutil.copyfile(source, out / "method" / name)
         require(sha256_file(out / "method" / name) == digest, "analysis source changed while being retained")
     result = dict(schema_version=1, kind="sampled_encounter_check", full_run_correctness="not_evaluated",
-                  selection_mode="input_transition_review" if inspect_transitions else "all_recorded_frames" if all_frames else "transition_windows" if transition_only else "encounter_samples",
+                  selection_mode="all_recorded_frames" if all_frames else "transition_windows" if transition_only else "encounter_samples",
                   response_deadline="not_evaluated", reader_qualification="see independent validation; not established by this run",
                   comparison_basis=("Consecutive recorded-frame" if all_frames else "Sampled") +
                   " display agreement with recorded host input. Host acceptance is not DUT receipt. Transition observations impose no response deadline.",
@@ -606,34 +408,15 @@ def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cade
                     "timing_basis": "hash-bound original capture verification and validated source sidecar"}
         origin = data["stimulus"][0]["requestedHostMonotonicNs"]
         require(not all_frames or ranges is not None, "all-frame selection requires an explicit bounded range")
-        default_product_scope = ranges is None
         if ranges is None:
             ranges = full_camera_range(data["stimulus"], data["rows"])
-        require(not inspect_transitions or not (all_frames or transition_only),
-                "automatic transition review cannot be combined with explicit all-frame or transition-only selection")
-        if inspect_transitions:
-            samples, transition_windows, held_windows = select_transition_review(
-                data["stimulus"], data["rows"], ranges, cadence,
-                data["timing"].get("maximum_source_interval_ns"))
-        else:
-            held_windows = []
-            samples = (select_all_frames(data["stimulus"], data["rows"], ranges) if all_frames else
-                       select_samples(data["stimulus"], data["rows"], ranges, cadence))
+        samples = (select_all_frames(data["stimulus"], data["rows"], ranges) if all_frames else
+                   select_samples(data["stimulus"], data["rows"], ranges, cadence))
         if transition_only:
             for sample in samples:
                 sample["role"] = "transition"
-        scope_policy = None
-        configuration_samples = samples
-        if inspect_transitions:
-            from encounter_product import DEFAULT_POLICY_ID, load_policy
-            scope_policy = load_policy(DEFAULT_POLICY_ID, policy_path)
-            # Pre-roll and recording tail are diagnostic camera coverage.  They
-            # do not need display-setting proof.  Establish the revision at the
-            # input episode first; exact product windows are checked below once
-            # they can be derived from those settings.
-            configuration_samples = product_configuration_scope(data["stimulus"], scope_policy)
         recorded_config = configuration_for_samples(
-            data.get("recorded_configuration"), configuration_samples)
+            data.get("recorded_configuration"), samples)
         evidence["recorded_configuration"] = recorded_config
         config = recorded_config if recorded_config.get("status") == "verified" else None
         if configuration is not None:
@@ -648,58 +431,11 @@ def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cade
             evidence["configuration"] = dict(config)
             if configuration is not None:
                 evidence["configuration"]["sha256"] = sha256_file(configuration)
-        if inspect_transitions and config:
-            from encounter_sequence import product_event_targets
-            product_policy = scope_policy
-            product_definitions = product_event_targets(
-                data["timeline"], data.get("source_records", data["rows"]), config["settings"])
-            samples, product_windows = select_product_event_windows(
-                samples, data["stimulus"], data["rows"], ranges,
-                product_definitions, product_policy)
-            if default_product_scope:
-                require_complete_product_windows(product_definitions, product_windows)
-            # The settings proof must surround the larger exact-window union,
-            # not only the earlier sampled review.
-            product_samples = product_window_samples(samples, product_windows)
-            extended_config = configuration_for_samples(
-                data.get("recorded_configuration"), product_samples)
-            require(extended_config.get("status") == "verified" and
-                    extended_config.get("revision") == config.get("revision") and
-                    extended_config.get("settings") == config.get("settings"),
-                    "recorded configuration does not cover every exact product event window")
-            config = extended_config
-            evidence["configuration"] = dict(config)
-            evidence["visible_event_policy"] = {
-                "profile_id": DEFAULT_POLICY_ID,
-                "source_sha256": method[policy_path.name],
-                "contract_version": product_policy["contract_version"],
-                "appearance_deadline_ns": product_policy["appearance_deadline_ns"],
-                "appearance_decision_rule": product_policy.get("appearance_decision_rule"),
-                "maximum_appearance_observation_bracket_ns": product_policy.get(
-                    "maximum_appearance_observation_bracket_ns"),
-                "verification_duration_ns": product_policy["verification_duration_ns"],
-                "minimum_post_completion_hold_ns": product_policy["minimum_post_completion_hold_ns"],
-            }
-        requested_temporal_classifiers = (
-            (product_policy.get("qualified_temporal_classifier_ids", [])
-             if temporal_classifier_ids is None else temporal_classifier_ids)
-            if inspect_transitions and product_policy is not None else [])
-        secondary_profiles_requested = (
-            "v1-secondary-text-optical-bridge-v1" in requested_temporal_classifiers)
-        if secondary_profiles_requested:
-            import encounter_secondary_probe as secondary_probe
         # Immutable input-only selection is published before any reader call.
         save_json(out / "selection.json", dict(schema_version=1, identity=data["identity"], ranges=ranges,
                                                selection_mode=result["selection_mode"],
                                                cadence_seconds=None if all_frames else cadence,
                                                transition_offsets_seconds=[] if all_frames else PROBES,
-                                               consecutive_transition_windows=transition_windows,
-                                               held_context_radius_ns=(BLINK_PHASE_NS + data["timing"]["maximum_source_interval_ns"])
-                                                   if inspect_transitions else None,
-                                               held_context_windows=held_windows,
-                                               product_event_windows=product_windows,
-                                               product_event_ids=[window["event_id"] for window in product_windows],
-                                               visible_event_policy_sha256=method.get(policy_path.name),
                                                samples=samples))
         evidence["selection_manifest_sha256"] = sha256_file(out / "selection.json")
         by_index = {}
@@ -718,14 +454,6 @@ def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cade
             evidence["reader"]["ocr_runtime_probe"] = probe
             evidence["reader"]["ocr_available"] = (
                 evidence["reader"]["ocr_compiled"] and probe.get("status") == "operational")
-        if inspect_transitions and product_policy is not None:
-            from encounter_qualification import verify_qualification
-            qualification = verify_qualification(
-                reader_qualification, implementation_sha256=method,
-                reader_runtime=evidence.get("reader", {}), camera_name=data["camera_name"],
-                camera_profile=data["camera_profile"], policy=product_policy,
-                bench_source_sha256=sha256_file(Path(__file__).parents[2] / "bench.sh"))
-            evidence["reader_qualification"] = qualification
         total = len(by_index)
         with getattr(encounter_reader, "analysis_session", nullcontext)():
             for number, (index, pixels) in enumerate(stream_frames(data["video"], list(by_index), data["width"], data["height"]), 1):
@@ -753,17 +481,6 @@ def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cade
                         "status": "unavailable",
                         "reason": f"redraw probe failed: {type(exc).__name__}: {exc}",
                     }
-                if secondary_profiles_requested:
-                    try:
-                        reading["secondary_profiles"] = secondary_probe.observe(
-                            pixels, data["width"], data["height"], data["registration"])
-                    except Exception as exc:
-                        reading["secondary_profiles"] = {
-                            "schema_version": 1,
-                            "method_version": secondary_probe.METHOD_VERSION,
-                            "status": "unavailable",
-                            "reason": f"secondary probe failed: {type(exc).__name__}: {exc}",
-                        }
                 for sample in by_index[index]:
                     requirement = encounter_expectation_at(data["timeline"], sample["capture_ns"],
                                                            configuration=config["settings"] if config else None)
@@ -792,100 +509,14 @@ def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cade
     errors.extend("Sequence interpretation: " + reason for reason in sequence.get("errors", []))
     verdict, counts = summarize(samples, errors)
     raw_verdict = verdict
-    temporal = {"schema_version": 1, "classifications": [], "rejected_runs": [], "errors": []}
-    product_adapter = {"schema_version": 1, "kind": "encounter_product_adapter",
-                       "events": [], "errors": []}
-    product_candidate = None
-    product_judgment = None
-    if (inspect_transitions and data and product_policy is not None
-            and "selection_manifest_sha256" in evidence):
-        from encounter_temporal import classify_temporal
-        import encounter_reader
-        classifier_context = {
-            "capture_id": data["identity"]["capture_id"],
-            "selection_manifest_sha256": evidence["selection_manifest_sha256"],
-            "verified_maximum_source_interval_ns": data["timing"]["maximum_source_interval_ns"],
-            "reader_method_version": encounter_reader.METHOD_VERSION,
-            "reader_sha256": method["encounter_reader.py"],
-            "redraw_probe_method_version": encounter_redraw_probe.METHOD_VERSION,
-            "redraw_probe_sha256": method["encounter_redraw_probe.py"],
-        }
-        if secondary_probe is not None:
-            classifier_context.update(
-                secondary_probe_method_version=secondary_probe.METHOD_VERSION,
-                secondary_probe_sha256=method["encounter_secondary_probe.py"])
-        temporal = classify_temporal(
-            samples, sequence, arrow_context=classifier_context,
-            classifier_ids=requested_temporal_classifiers)
-        eligible = {window["event_id"] for window in product_windows}
-        # Retain each event intact: mode and previous_target describe its place
-        # in the full sequence even when product ranges select only that event.
-        scoped_sequence = {**sequence,
-                           "events": [event for event in sequence.get("events", [])
-                                      if event.get("event_id") in eligible]}
-        originals = {}
-        for sample in samples:
-            index = sample.get("video_frame_index")
-            capture = sample.get("capture_ns")
-            if (type(index) is int and type(capture) is int and
-                    any(window["start_ns"] <= capture < window.get(
-                        "closure_context_end_ns", window["selected_end_ns"])
-                        for window in product_windows)):
-                originals.setdefault(index, sample)
-        from encounter_product_adapter import adapt_sequence_events
-        product_adapter = adapt_sequence_events(
-            scoped_sequence, [originals[index] for index in sorted(originals)],
-            data.get("source_records", data["rows"]))
-        qualified_ids = set(product_policy.get("qualified_temporal_classifier_ids", []))
-        submitted = product_temporal_submissions(
-            temporal.get("classifications", []), product_adapter.get("events", []), qualified_ids)
-        product_integrity_errors = [*errors, *product_adapter.get("errors", []),
-                                    *temporal.get("errors", [])]
-        from encounter_product import judge_visible_event_presentation
-        product_candidate = judge_visible_event_presentation(
-            product_adapter.get("events", []), temporal_classifications=submitted,
-            fatal_integrity_errors=product_integrity_errors,
-            policy_path=policy_path)
-        # A bounded independent reader qualification is required before this
-        # candidate judgment can control the bench exit status.
-        product_judgment = judge_visible_event_presentation(
-            product_adapter.get("events", []), temporal_classifications=submitted,
-            fatal_integrity_errors=[*product_integrity_errors, *(
-                [] if qualification.get("status") == "QUALIFIED" else
-                ["Reader qualification: " + reason for reason in
-                 qualification.get("errors", ["reader is not qualified"])])],
-            policy_path=policy_path)
-        verdict = product_judgment["result"]
-    elif inspect_transitions:
-        from encounter_product import judge_visible_event_presentation
-        blockers = [*errors, "visible-event product judgment could not be constructed"]
-        product_candidate = judge_visible_event_presentation(
-            [], fatal_integrity_errors=blockers, policy_path=policy_path)
-        product_judgment = judge_visible_event_presentation(
-            [], fatal_integrity_errors=[*blockers, *[
-                "Reader qualification: " + reason for reason in qualification.get(
-                    "errors", ["reader is not qualified"])]], policy_path=policy_path)
-        verdict = product_judgment["result"]
     from encounter_assessment import assess, event_findings
     result.update(result=verdict, raw_frame_result=raw_verdict, counts=counts,
                   evidence=evidence, errors=errors, samples=samples,
                   sequence=sequence, assessment=assess(samples, errors, sequence),
-                  event_findings=event_findings(sequence, product_judgment),
-                  temporal_classification=temporal,
-                  product_adapter={"schema_version": product_adapter.get("schema_version"),
-                                   "kind": product_adapter.get("kind"),
-                                   "errors": product_adapter.get("errors", []),
-                                   "event_count": len(product_adapter.get("events", []))},
-                  product_candidate_judgment=product_candidate,
-                  primary_judgment=product_judgment,
-                  reader_qualification=qualification,
+                  event_findings=event_findings(sequence, None),
                   observed_state_spans=spans, observed_changes=changes,
                   coverage=dict(requests=len(samples), selected_unique_frames=selected_unique,
-                                unique_frames=unique, regions=coverage,
-                                transition_windows=observation_coverage(samples, transition_windows, data, True) if data else [],
-                                held_context_radius_ns=(BLINK_PHASE_NS + data["timing"]["maximum_source_interval_ns"])
-                                    if data and inspect_transitions else None,
-                                held_context_windows=observation_coverage(samples, held_windows, data, True) if data else []))
+                                unique_frames=unique, regions=coverage))
     save_json(out / "result.json", result)
     result = read_json(out / "result.json")  # Render only the same sanitized data that was retained.
     write_report(out, result)
@@ -998,11 +629,7 @@ def write_report(out: Path, result: dict) -> None:
                                 for item in finding["unresolved"]) or "none in these observations"
             lines.append(f"| {finding['event_id']} | {finding_point(finding['first_correct'], anchor)} | "
                          f"{different} | {unknown} |")
-        lines += ["", "## Timed policy comparison", "",
-                  "The retained 100 ms boundary is **an unvalidated requirement**. `DISPLAY_UPDATE_MS` "
-                  "services connection state and does not establish this response bound. A policy failure "
-                  "based only on this boundary is not a proven firmware timing defect. The boundary and "
-                  "historical verdicts have not been loosened.", ""]
+    # Retain display compatibility for historical result documents; no grading runs here.
     primary = result.get("primary_judgment")
     if primary:
         product_counts = primary.get("counts", {})
@@ -1115,7 +742,7 @@ def write_report(out: Path, result: dict) -> None:
 *{box-sizing:border-box}body{margin:0;background:#10151b;color:#e7edf4;font:15px system-ui,sans-serif}
 header{padding:24px 28px;border-bottom:1px solid #35414d}h1{font-size:25px;margin:0 0 10px}p{line-height:1.5;color:#b7c4d1;max-width:1000px}
 main{display:grid;grid-template-columns:240px 1fr;gap:22px;padding:22px}nav{max-height:78vh;overflow:auto}button,select{font:inherit;color:inherit;background:#1b2630;border:1px solid #425161;border-radius:6px;padding:8px;cursor:pointer}nav button{display:block;width:100%;text-align:left;margin:5px 0}button[aria-current=true]{border-color:#69c5ff;background:#1c394e}.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}img{width:100%;max-height:53vh;object-fit:contain;background:#000;border-radius:7px}table{width:100%;border-collapse:collapse;margin-top:18px}td,th{text-align:left;vertical-align:top;padding:10px;border-bottom:1px solid #35414d}th{color:#9dafbf}td{white-space:pre-wrap;overflow-wrap:anywhere}.MATCH{color:#8edfbe}.DIFFERENCE,.JOINT_DIFFERENCE{color:#ff9292}.UNRESOLVED,.CONDITIONAL{color:#f2cf83}.PREVIOUS_INPUT_STATE,.TRANSITION_DIFFERENCE{color:#bcb1ff}small{color:#9dafbf}.empty{padding:30px}a{color:#8dcfff}summary{cursor:pointer;margin:16px 0}#scrub{width:100%;margin:10px 0}#changes{max-height:250px;overflow:auto}#changes button{display:block;margin:6px 0;width:100%;text-align:left}.history{max-height:400px;overflow:auto}#changed{color:#e7edf4}@media(max-width:800px){main{display:block}nav{max-height:180px;margin-bottom:20px}table{font-size:12px}td,th{padding:6px}}
-</style><header><h1 id="title"></h1><p id="summary"></p><p id="coverage"></p><p id="recordedFirmware"></p><section id="findings" hidden><h2>Observed display information</h2><p>Each row separates the target being seen, definite different information, and reader uncertainty. A difference during acquisition is an observation, not automatically a firmware fault. Times are from complete host input acceptance to recorded camera markers; DUT receipt is not measured. Click a witness to see the original and its expected and observed fields.</p><div class="history"><table><thead><tr><th>Input event</th><th>First complete target</th><th>Latest different information</th><th>Unanswered fields</th></tr></thead><tbody id="findingRows"></tbody></table></div></section><p id="timingRequirement" hidden>The 100 ms boundary is an unvalidated requirement. DISPLAY_UPDATE_MS services connection state, not alert rendering. Timing-only policy failures do not prove firmware timing defects. The retained policy comparison appears separately below; historical verdicts are unchanged.</p><p>Original camera observations against recorded host input. Frames cannot show what happened between exposures. The visible-event product verdict requires exact reader qualification; missing or stale qualification is a product failure and appears as INCONCLUSIVE.</p><section id="assessment" hidden><h2>What can be judged</h2><p id="heldAssessment"></p><p id="responseAssessment"></p><p id="afterAssessment"></p><div id="heldIssues" class="toolbar"></div><p>These are separate evidence claims. A target appearing once does not establish timely response, continued correctness or tool acceptance. The aggregate verdict and all transition observations are retained.</p></section></header>
+</style><header><h1 id="title"></h1><p id="summary"></p><p id="coverage"></p><p id="recordedFirmware"></p><section id="findings" hidden><h2>Observed display information</h2><p>Each row separates the target being seen, definite different information, and reader uncertainty. A difference during acquisition is an observation, not automatically a firmware fault. Times are from complete host input acceptance to recorded camera markers; DUT receipt is not measured. Click a witness to see the original and its expected and observed fields.</p><div class="history"><table><thead><tr><th>Input event</th><th>First complete target</th><th>Latest different information</th><th>Unanswered fields</th></tr></thead><tbody id="findingRows"></tbody></table></div></section><p>Original camera observations against recorded host input. Frames cannot show what happened between exposures. The visible-event product verdict requires exact reader qualification; missing or stale qualification is a product failure and appears as INCONCLUSIVE.</p><section id="assessment" hidden><h2>What can be judged</h2><p id="heldAssessment"></p><p id="responseAssessment"></p><p id="afterAssessment"></p><div id="heldIssues" class="toolbar"></div><p>These are separate evidence claims. A target appearing once does not establish timely response, continued correctness or tool acceptance. The aggregate verdict and all transition observations are retained.</p></section></header>
 <section id="eventReview" style="padding:20px 28px;border-bottom:1px solid #35414d"><h2>What happened</h2><label>Input event <select id="eventSelect"></select></label><p id="eventJudgment"></p><div id="productEventLinks" class="toolbar"></div><p id="eventSummary"></p><p id="eventTiming"></p><p id="eventCoverage"></p><div id="eventLinks" class="toolbar"></div><details><summary>First correctly observed content by field</summary><div id="eventFields"></div></details><details><summary>Changes after the first correct image</summary><div id="eventAfter" class="history"></div></details></section>
 <main><aside><label>Show <select id="filter"><option value="all">All samples</option><option value="attention">Needs attention</option><option value="held">Held samples</option><option value="transition">Transitions</option></select></label><nav id="samples"></nav></aside>
 <section><div class="toolbar"><button id="prev">← Previous</button><button id="next">Next →</button><button id="play">Play consecutive frames</button><label>Playback <select id="speed"><option value="20">20× slower</option><option value="10">10× slower</option><option value="5">5× slower</option></select></label><strong id="sampleTitle"></strong><a id="original">Open original</a></div><label>Original frame <input id="scrub" type="range" min="0" max="0" step="1" value="0"></label><img id="frame" alt="Unmodified selected camera frame"><p id="detail"></p><p id="changed"></p><details open><summary>Observed changes — jump to the original frame</summary><div id="changes"></div></details><details><summary>Per-field observed spans — every brief state and unreadable frame retained</summary><p>Adjacent source frames with exactly the same literal reading are grouped for review only. A one-frame state is retained. Gaps break spans. First and last timestamps bound the readings; no value is carried across an unreadable frame, and these spans do not establish response latency.</p><label>Display field <select id="spanField"></select></label><div class="history"><table><thead><tr><th>First–last reading</th><th>Source frames</th><th>Count</th><th>Literal reading</th></tr></thead><tbody id="spans"></tbody></table></div></details><table><thead><tr><th>Display field</th><th>Permitted input state</th><th>Observed pixels</th><th>Judgment</th></tr></thead><tbody id="checks"></tbody></table><p id="joint"></p></section></main>
@@ -1129,7 +756,6 @@ const eventName=e=>{const p=e.wire_rows.find(r=>r.priority);return p?p.band+' '+
 const jump=(parent,point,label)=>{if(!point)return;const index=all.findIndex(s=>s.frame_id===point.frame_id);if(index<0)return;let b=document.createElement('button');b.textContent=label+' · '+seconds(point.offset_seconds??all[index].offset_seconds??null);b.onclick=()=>show(index);parent.append(b)};
 const firmware=result.recorded_firmware||{};
 el('recordedFirmware').textContent='Recorded firmware: '+(firmware.git_sha||'source unavailable')+' · image '+(firmware.image_id||'unavailable')+' · boot '+(firmware.boot_id??'unavailable')+' · reader '+(result.reader_method_version??'unavailable')+'. These findings describe that recording.';
-if(product)el('timingRequirement').hidden=false;
 const findings=result.event_findings||[];
 if(findings.length){
   el('findings').hidden=false;
@@ -1198,7 +824,6 @@ def main() -> int:
     selection.add_argument("--transition-window", type=parse_range, action="append", help="inspect START:END as transition observations; differences impose no response deadline")
     parser.add_argument("--cadence", type=float, default=2, help="regular sample interval in seconds (default 2), in addition to packet-state midpoints and edge probes")
     parser.add_argument("--all-frames", action="store_true", help="select every recorded source frame in explicit --range or --transition-window bounds; cadence is not used; at most 5000 frames")
-    parser.add_argument("--inspect-transitions", action="store_true", help="evaluate exact visible-event windows under the qualified policy, and retain consecutive input-change context for diagnosis; selection is bounded by the actual source recording")
     parser.add_argument("--observe-behavior", action="store_true", help="read every recorded image of authored input events and report actual behavior without a response deadline")
     parser.add_argument("--compare-to", type=Path, help="compare behavior with an earlier result.json from the same inputs and reader")
     parser.add_argument("--reuse-readings", type=Path, help="reuse verified independent readings of this exact recording; inputs and behavior are compared anew")
@@ -1206,21 +831,19 @@ def main() -> int:
                         help="bounded independent frame readers for --observe-behavior (1–8)")
     parser.add_argument("--configuration", type=Path, help="independently verified, exact-window display settings; missing settings stay unknown")
     parser.add_argument("--reader-qualification", type=Path,
-                        help="exact retained qualification manifest for the reader, camera profile, controls and policy classifiers")
+                        help="exact retained qualification manifest for the behavior reader, camera profile and controls")
     parser.add_argument("--out", type=Path, required=True, help="new result directory; existing results are never replaced")
     args = parser.parse_args()
     if args.compare_to and not args.observe_behavior:
         parser.error("--compare-to requires --observe-behavior")
     if args.reuse_readings and not args.observe_behavior:
         parser.error("--reuse-readings requires --observe-behavior")
-    if args.observe_behavior and (args.inspect_transitions or args.all_frames or args.transition_window):
+    if args.observe_behavior and (args.all_frames or args.transition_window):
         parser.error("--observe-behavior owns full event selection; use --range for a bounded subset")
     if args.all_frames and not (args.ranges or args.transition_window):
         parser.error("--all-frames requires explicit --range or --transition-window bounds")
     if args.all_frames and args.cadence != 2:
         parser.error("--cadence cannot be combined with --all-frames")
-    if args.inspect_transitions and (args.all_frames or args.transition_window):
-        parser.error("--inspect-transitions cannot be combined with --all-frames or --transition-window")
     try:
         args.out.mkdir(parents=True, exist_ok=False)
         if args.observe_behavior:
@@ -1230,13 +853,11 @@ def main() -> int:
                                       workers=args.reader_workers)
         else:
             result = analyze(args.run_dir, args.out, args.transition_window or args.ranges, args.cadence,
-                         args.configuration, transition_only=bool(args.transition_window), all_frames=args.all_frames,
-                         inspect_transitions=args.inspect_transitions,
-                         reader_qualification=args.reader_qualification)
+                         args.configuration, transition_only=bool(args.transition_window), all_frames=args.all_frames)
     except (OSError, ValueError) as exc:
         print(sanitize_artifact_value(str(exc), run_dir=args.out), file=sys.stderr)
         return 2
-    label = "encounter with consecutive transitions" if args.inspect_transitions else "consecutive-frame encounter" if args.all_frames else "sampled encounter"
+    label = "consecutive-frame encounter" if args.all_frames else "sampled encounter"
     if args.observe_behavior:
         counts = result["summary"]
         print(f"{result['result']} — {counts['targets_observed']}/{counts['events']} complete display targets observed; "
@@ -1251,13 +872,7 @@ def main() -> int:
                   f"Other acquisition content: {interval['other_acquisition_observed_frames']} frames; cause unassigned.")
         print("Open report.html for actual transitions, original images, source explanations and build comparison.")
         return {"NO_DIFFERENCES_OBSERVED": 0, "DIFFERENCES_FOUND": 1, "MEASUREMENT_INCOMPLETE": 2}[result["result"]]
-    elif result.get("primary_judgment"):
-        counts = result["primary_judgment"]["counts"]
-        print(f"{result['result']} — visible events: {counts['passed']} passed, "
-              f"{counts['failed']} failed, {counts['inconclusive']} inconclusive "
-              f"/ {counts['required_events']} required events")
-    else:
-        print(f"{result['result']} — {label}: {result['counts']['fields']} / {result['counts']['required']} required checks")
+    print(f"{result['result']} — {label}: {result['counts']['fields']} / {result['counts']['required']} required checks")
     print("Open report.html for original images, expected states, pixel readings and unresolved checks.")
     return {"PASS": 0, "FAIL": 1, "INCONCLUSIVE": 2}[result["result"]]
 

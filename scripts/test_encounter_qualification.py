@@ -2900,14 +2900,6 @@ class QualificationTests(unittest.TestCase):
         self.assertEqual(result["status"], "REJECTED")
         self.assertIn("non-finite", result["errors"][0])
 
-    def test_repository_policy_uses_only_supported_classifier_versions(self):
-        policy_path = Path(__file__).resolve().parent / "bench" / "visible_event_policies.json"
-        policies = json.loads(policy_path.read_text(encoding="utf-8"))["policies"]
-        for policy in policies.values():
-            identifiers = policy["qualified_temporal_classifier_ids"]
-            self.assertEqual(set(identifiers), set(policy["qualified_temporal_classifiers"]))
-            self.assertLessEqual(set(identifiers), set(CLASSIFIER_IMPLEMENTATION_FILES))
-        self.assertNotIn("v1-arrow-phase-edge-v1", CLASSIFIER_IMPLEMENTATION_FILES)
 
     def test_missing_bundle_is_rejected(self):
         result = self.verify(None)

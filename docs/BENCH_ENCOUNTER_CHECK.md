@@ -13,7 +13,8 @@ measurements from complete host input acceptance to camera capture markers.
 They are not firmware-only latency measurements or pass/fail deadlines.
 
 The former `VISIBLE_EVENT_PRESENTATION/v3` policy and its 100 ms deadline are
-historical analysis. They do not control ordinary live or offline bench results.
+removed from the executable tool, along with `--inspect-transitions` and its
+`freeze` / `prepare` / `finalize` qualification workflow.
 Old recordings and reports remain intact; use a new analysis directory when
 rechecking them with the current tool.
 
@@ -236,6 +237,6 @@ references and reader refusals remain visible in the qualification evidence.
 Existing `--qualification-capture` remains available for retaining camera pixels
 without running either automatic pixel reader. It cannot be combined with
 `--compare-to`; `QUALIFICATION-CAPTURED` means the recording exists, not that
-firmware behavior passed. Reader qualification workflows and old policy
-implementation remain available for their explicit purposes and historical
-reproduction, outside the normal observation result.
+firmware behavior passed. Static reader qualification remains available through
+`reanalyze-static`. Historical policy code remains in Git history and retained
+run method snapshots; current analyses use `--observe-behavior`.

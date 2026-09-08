@@ -51,6 +51,9 @@ The reader recognizes orange digits and `A`, `L`, `l` in the registered counter
 slot. It uses the recorded SCAN landmark geometry, never packet expectations or
 a transform search. Blank, dim, partial or unsupported observations remain
 unknown. A numeric glyph implies no mode glyph in that same slot, and vice versa.
+Lower vertical samples avoid the font's sloping left edges. Their original
+supports remain absence guards: a fragment left beside a dark interior remains
+unknown, rather than disappearing into a different clean digit.
 This calibration has limited development-recording coverage; it is not a
 general OCR reader. Its interior and stray-ink checks cannot detect every
 displacement or every defect outside the sampled regions.

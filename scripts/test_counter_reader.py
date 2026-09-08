@@ -47,6 +47,31 @@ def picture(mask, reg=None):
     return rgb
 
 
+def tapered_lower_strokes(mask, reg=None):
+    """Whole c/e contours independent of the reader's interior rectangles.
+
+    The six/seven-point outlines follow V1SevenX c/e: the left body leans
+    inward near the middle junction and outward near the lower junction.
+    Coordinates use the same reference scene as STROKES, with the left edge
+    one or two pixels inside the previous c/e sampling support.
+    """
+    bounds = (reg or registration())["landmark_bounds"]
+    image = Image.frombytes("RGB", (WIDTH, HEIGHT), bytes(picture(mask.replace("c", "").replace("e", ""), reg)))
+    draw = ImageDraw.Draw(image)
+    contours = {
+        "c": ((244, 234), (250, 238), (248, 263), (245, 267), (238, 259), (241, 240)),
+        "e": ((209, 233), (216, 238), (214, 263), (207, 267), (208, 240), (209, 235), (209, 234)),
+    }
+    for name in mask:
+        if name in contours:
+            points = [tuple(round((bounds[i] + (v * .75 - (350 if i == 0 else 192))
+                                   * ((bounds[2] - bounds[0] + 1) / 220 if i == 0
+                                      else (bounds[3] - bounds[1] + 1) / 78)) / .75)
+                            for i, v in enumerate(point)) for point in contours[name]]
+            draw.polygon(points, fill=tuple(ORANGE))
+    return image.tobytes()
+
+
 class CounterReaderTests(unittest.TestCase):
     def read(self, rgb, reg=None):
         return observe(bytes(rgb), WIDTH, HEIGHT, reg or registration())
@@ -130,6 +155,46 @@ class CounterReaderTests(unittest.TestCase):
         self.assertEqual(result["glyph"], "1", result["reason"])
         self.assertEqual(result["segments"]["b"]["active_ratio"], 1)
         self.assertEqual(result["alignment"]["patches_xyxy"]["b"], [243, 210, 246, 222])
+
+    def test_lower_stroke_tapers_keep_complete_glyphs_readable_across_registration_rounding(self):
+        for reg in (registration(), registration(h=79), registration(h=80),
+                    registration(x=382, w=222, h=79), registration(x=382, y=194, w=222, h=80)):
+            for mask, glyph in (("bc", "1"), ("abdeg", "2"), ("acdfg", "5"),
+                                ("acdefg", "6"), ("abcdfg", "9"), ("abcdefg", "8"),
+                                ("def", "L"), ("de", "l")):
+                with self.subTest(registration=reg, glyph=glyph):
+                    result = self.read(tapered_lower_strokes(mask, reg), reg)
+                    self.assertEqual(result["state"], "readable", result["reason"])
+                    self.assertEqual(result["glyph"], glyph)
+
+    def test_lower_stroke_body_breaks_still_refuse(self):
+        for mask, name, gap in (("bc", "c", (239, 248, 248, 252)),
+                                ("abdeg", "e", (207, 248, 215, 252))):
+            with self.subTest(segment=name):
+                rgb = bytearray(tapered_lower_strokes(mask))
+                paint(rgb, gap, bytes((0, 0, 0)))
+                result = self.read(rgb)
+                self.assert_unknown(result)
+                self.assertIn(name, result["reason"])
+
+    def test_lower_left_edge_remnants_cannot_become_absent_segments(self):
+        for mask, name, remnant in (("abdeg", "c", (239, 243, 241, 257)),
+                                    ("acdfg", "e", (207, 243, 208, 255))):
+            with self.subTest(segment=name):
+                rgb = picture(mask)
+                paint(rgb, remnant)
+                result = self.read(rgb)
+                self.assert_unknown(result)
+                self.assertIn(name, result["reason"])
+
+    def test_missing_and_extra_lower_strokes_do_not_preserve_the_old_literal(self):
+        # A complete extra e changes 5 to 6; removing it changes 6 to 5.
+        # Observation reports the visible content, never the previous value.
+        self.assertEqual(self.read(tapered_lower_strokes("acdfg"))["glyph"], "5")
+        self.assertEqual(self.read(tapered_lower_strokes("acdefg"))["glyph"], "6")
+        # Missing c from 1 and an extra c on 2 are noncanonical masks.
+        for mask in ("b", "abcdeg"):
+            self.assert_unknown(self.read(tapered_lower_strokes(mask)))
 
     def test_left_stroke_edge_does_not_overlap_middle_interior(self):
         # A narrower upper-left stroke has a tapered-end allowance reaching

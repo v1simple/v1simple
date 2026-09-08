@@ -205,13 +205,27 @@ recording and cannot establish behavior of unexercised firmware paths.
 
 ## Reader and retained evidence
 
-Reader V12 uses the registered `SCAN` landmark and fixed pixel geometry. It
+The reader uses the registered `SCAN` landmark and fixed pixel geometry. It
 requires visible screen witnesses before interpreting absence. Definite
 canonical frequency strokes determine literal digits even with uneven
 brightness; brightness anomalies remain available separately. Partial strokes
 refuse a digit. Bars require supported cell geometry and contiguous fill.
 Arrow measurements retain each direction independently, including partial or
 faint color without inventing its physical cause.
+
+Main labels, arrows and bars distinguish painted resting gray from active ink.
+For the calibrated camera profile, neutral resting interiors occupy levels
+55–110, bright active ink starts at 120, and saturated colored ink retains the
+45-level floor. Neutral ink between those ranges remains unresolved. Whole
+interiors and contrary-stroke checks reject mixed activity; a visible gray
+background is not counted as an alert. These limits do not qualify arbitrary
+user colors or exposure settings, and do not change frequency or card thresholds.
+Resting-body checks tolerate at most one connected midlevel excursion fitting
+within 4×2 source pixels (either orientation), with all channels below 130 and
+no dark pixel. Such small excursions occur in otherwise clear original images;
+their physical origin is unknown. Bright ink, dark holes, larger or attached
+marks, and multiple coherent excursions remain unresolved. This is a declared
+spatial limit, not pixel-perfect drawing validation.
 
 The dark idle `--.---` placeholder is measured against local background, with
 all five dash interiors and the separate decimal required. A region below the

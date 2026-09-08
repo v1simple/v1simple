@@ -31,16 +31,24 @@ PATCHES = {
     "a": (-.84772727, -.53846154, -.79318182, -.49038461),
     # Stay inside b's vertical stroke instead of sampling its antialiased edge.
     "b": (-.7625, -.44230769, -.75227273, -.32692308),
-    "c": (-.77613636, -.125, -.75568182, .00961538),
+    # V1SevenX c/e lean left toward their lower ends. Keep their positive
+    # witnesses right of that sloping edge through the full sampled height.
+    "c": (-.76931818, -.125, -.75568182, .00961538),
     "d": (-.87159091, .07692308, -.78977273, .125),
-    "e": (-.88522727, -.125, -.87159091, -.00961538),
+    "e": (-.88181818, -.125, -.87159091, -.00961538),
     # Sample f below its tapered top junction with a; retain the vertical
     # body so true partial f interiors still refuse. The V1SevenX f body
     # spans font y463..661, below a's y685..780 contour.
     "f": (-.87159091, -.40384615, -.85795455, -.31730769),
     "g": (-.83409091, -.25961538, -.78636364, -.21153846),
 }
-A_ABSENCE_GUARD = (-.84772727, -.55769231, -.79318182, -.50961538)
+# Retain the original supports when a corrected interior is dark: a fragment
+# left behind at an old edge must not disappear into a clean absent segment.
+ABSENCE_GUARDS = {
+    "a": (-.84772727, -.55769231, -.79318182, -.50961538),
+    "c": (-.77613636, -.125, -.75568182, .00961538),
+    "e": (-.88522727, -.125, -.87159091, -.00961538),
+}
 BACKGROUND = (-.84090909, -.43269231, -.80681818, -.31730769)
 CELL = (-.92954545, -.63461538, -.70454545, .22115385)
 # Broad stroke envelopes cover tapered ends and antialiasing. They only reject
@@ -116,14 +124,14 @@ def observe(rgb: bytes, width: int, height: int, registration: dict) -> dict:
                 for i, value in enumerate(box)]
 
     boxes = {name: mapped(box) for name, box in PATCHES.items()}
-    a_absence_box = mapped(A_ABSENCE_GUARD)
+    absence_boxes = {name: mapped(box) for name, box in ABSENCE_GUARDS.items()}
     envelopes = [mapped(box) for box in ENVELOPES]
     background_box, cell_box = mapped(BACKGROUND), mapped(CELL)
     alignment = {"kind": "landmark_scale_xy", "landmark_bounds": bounds,
                  "scale_xy": list(actual_scales), "cell_xyxy": cell_box,
                  "patches_xyxy": boxes, "envelopes_xyxy": envelopes,
                  "background_xyxy": background_box}
-    for box in [cell_box, background_box, a_absence_box, *boxes.values(), *envelopes]:
+    for box in [cell_box, background_box, *absence_boxes.values(), *boxes.values(), *envelopes]:
         if not (0 <= box[0] < box[2] <= width and 0 <= box[1] < box[3] <= height):
             return _result("unreadable", "counter sampling region leaves the source frame",
                            alignment=alignment, segments={}, mask="")
@@ -139,14 +147,17 @@ def observe(rgb: bytes, width: int, height: int, registration: dict) -> dict:
         segments[name] = {"active_ratio": sum(v > CHROMA_FLOOR for v in values) / len(values),
                           "minimum": min(values), "median": statistics.median(values),
                           "maximum": max(values)}
-    a_absence_values = scores(a_absence_box)
-    a_absence_ratio = sum(v > CHROMA_FLOOR for v in a_absence_values) / len(a_absence_values)
-    segments["a"]["absence_guard"] = {"xyxy": a_absence_box, "active_ratio": a_absence_ratio}
+    for name, box in absence_boxes.items():
+        values = scores(box)
+        segments[name]["absence_guard"] = {
+            "xyxy": box, "active_ratio": sum(v > CHROMA_FLOOR for v in values) / len(values)}
     background = statistics.median(scores(background_box))
     contrast = max(item["median"] for item in segments.values()) - background
     partial = [name for name, item in segments.items() if OFF_MAX < item["active_ratio"] < ON_MIN]
-    if segments["a"]["active_ratio"] <= OFF_MAX and a_absence_ratio > OFF_MAX:
-        partial.append("a")
+    for name in absence_boxes:
+        if (segments[name]["active_ratio"] <= OFF_MAX
+                and segments[name]["absence_guard"]["active_ratio"] > OFF_MAX):
+            partial.append(name)
     mask = "".join(name for name, item in segments.items() if item["active_ratio"] >= ON_MIN)
     diagnostics = {"alignment": alignment, "segments": segments, "mask": mask,
                    "orange_contrast": contrast, "background_median": background}

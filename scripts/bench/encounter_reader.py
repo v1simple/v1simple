@@ -24,7 +24,7 @@ import counter_reader
 
 FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
-METHOD_VERSION = 22
+METHOD_VERSION = 23
 _ocr_binary = None
 _ocr_setup = None
 _ocr_session = None
@@ -144,6 +144,85 @@ def _fill(values, on=45, off=32):
     state = "on" if low >= on else "off" if high <= off else "partial"
     return state, {"p10": round(float(low), 2), "median": round(float(median), 2),
                    "p90": round(float(high), 2)}
+
+
+def _main_activity(rgb):
+    """Fixed camera palette for main labels, arrows and strength bars only.
+
+    Resting gray is visibly painted, not an active fill. The retained camera
+    controls put it around 75..100 and muted active ink around 135..150.
+    Leave 110..120 unresolved for neutral ink; preserve colored fills down to
+    the existing 45-level floor. This does not calibrate arbitrary user colors
+    or exposure settings, and must not change numeric/card stroke thresholds.
+    """
+    rgb = rgb.astype(float)
+    level = rgb.max(axis=-1)
+    chroma = level - rgb.min(axis=-1)
+    # Saturated alert colors remain far from gray, including its NV12 chroma
+    # fringe. Small channel imbalances in gray are not independent alerts.
+    colored = chroma >= np.maximum(20, level * .5)
+    return {"on": (level >= 120) | ((level >= 45) & colored),
+            "resting": (level >= 55) & (level <= 110) & ~colored,
+            "dark": level <= 32}
+
+
+def _main_fill(rgb):
+    activity = _main_activity(rgb)
+    fractions = {name: float(mask.mean()) for name, mask in activity.items()}
+    state = next((name for name, fraction in fractions.items() if fraction >= .9), "partial")
+    _, levels = _fill(rgb.max(axis=-1))
+    return state, {**levels, "activity_fractions": {k: round(v, 4) for k, v in fractions.items()}}
+
+
+def _main_contrary(activity, state):
+    # Indeterminate boundary pixels are not proof of an opposite appearance.
+    # The 90% interior requirement still limits how many may be indeterminate.
+    return np.logical_or.reduce([mask for name, mask in activity.items() if name != state])
+
+
+def _coherent_line(mask):
+    """Keep a thin three-pixel stroke even when percentiles would hide it."""
+    return bool(np.any(mask[:, :-2] & mask[:, 1:-1] & mask[:, 2:]) or
+                np.any(mask[:-2] & mask[1:-1] & mask[2:]))
+
+
+def _main_contrary_supported(rgb, activity, state, interior=None):
+    contrary = _main_contrary(activity, state)
+    if interior is not None:
+        contrary &= interior
+    if state != "resting" or not _coherent_line(contrary):
+        return _coherent_line(contrary)
+    # Resting originals contain isolated midlevel 4x1 rows and 4x2 chroma
+    # blocks. Their camera/panel origin is not established. Declare a bounded
+    # measurement resolution: at most ONE such component, below level130,
+    # may coexist with the already-required >=90% resting interior. Bright
+    # ink, dark holes, larger/attached marks and multiple components refuse.
+    # Traverse complete 8-connected components, not just their straight runs.
+    pending = set(map(tuple, np.argwhere(contrary)))
+    allowances = 0
+    while pending:
+        stack = [pending.pop()]
+        component = []
+        while stack:
+            y, x = stack.pop()
+            component.append((y, x))
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    neighbor = (y + dy, x + dx)
+                    if neighbor in pending:
+                        pending.remove(neighbor)
+                        stack.append(neighbor)
+        yy, xx = np.asarray(component).T
+        height, width = int(yy.max() - yy.min() + 1), int(xx.max() - xx.min() + 1)
+        shape = np.zeros((height, width), dtype=bool)
+        shape[yy - yy.min(), xx - xx.min()] = True
+        if not _coherent_line(shape):
+            continue
+        allowances += 1
+        if (allowances > 1 or len(component) > 8 or min(height, width) > 2 or max(height, width) > 4
+                or activity["dark"][yy, xx].any() or rgb[yy, xx].max() >= 130):
+            return True
+    return False
 
 
 def _frequency_lower_left(pixels, box, absence_guard):
@@ -425,13 +504,26 @@ def _bands(pixels):
     bands, diagnostics = [], {}
     for name, box in (("L", (317, 188, 355, 245)), ("Ka", (315, 253, 407, 310)),
                       ("K", (314, 319, 363, 377)), ("X", (313, 384, 363, 440))):
-        level = pixels.level(box)
-        fraction = float(np.mean(level > 45))
+        rgb = pixels.crop(box)
+        level = rgb.max(axis=2)
+        activity = _main_activity(rgb)
+        fraction = float(activity["on"].mean())
+        # The one-pixel inset excludes the optical fringe of the whole label,
+        # independently of which band or activity state is expected. A mixed
+        # resting/active glyph must not pass merely because a fragment is lit.
+        support = level > 45
+        interior = np.zeros_like(support)
+        interior[1:-1, 1:-1] = np.lib.stride_tricks.sliding_window_view(
+            support, (3, 3)).all(axis=(-1, -2))
+        state, detail = _main_fill(rgb[interior]) if interior.any() else ("dark", {})
+        if state in ("on", "resting") and _main_contrary_supported(rgb, activity, state, interior):
+            state = "partial"
         dim = float(np.mean(level > 25))
-        diagnostics[name] = {"lit_fraction": round(fraction, 4), "dim_fraction": round(dim, 4)}
-        if fraction > .12:
+        diagnostics[name] = {"lit_fraction": round(fraction, 4), "dim_fraction": round(dim, 4),
+                             "interior_state": state, "interior": detail}
+        if fraction > .12 and state == "on":
             bands.append(name)
-        elif dim > .05:
+        elif dim > .05 and not (state == "resting" and fraction <= .05):
             return field("ambiguous", reason="partial or dim band label", bands=diagnostics)
     return field("readable", bands, bands=diagnostics)
 
@@ -439,8 +531,12 @@ def _bands(pixels):
 def _bars(pixels, boxes):
     states, measurements = [], []
     for box in boxes:
-        state, data = _fill(pixels.level(box))
-        states.append(state)
+        rgb = pixels.crop(box)
+        state, data = _main_fill(rgb)
+        if state != "partial" and _main_contrary_supported(rgb, _main_activity(rgb), state):
+            state = "partial"
+        states.append("off" if state in ("dark", "resting") else state)
+        data["appearance"] = state
         measurements.append(data)
     if "partial" in states or states != sorted(states, key=lambda v: v != "on"):
         return field("ambiguous", reason="partial or noncontiguous strength bars", bars=measurements)
@@ -577,9 +673,9 @@ def _card_bars(pixels, left):
 
 
 def _arrows(pixels):
-    # The three old probes retain their measured threshold contract. Inset
-    # whole-glyph interiors also witness fill between those probes, so three
-    # isolated bright rectangles cannot masquerade as an intact direction.
+    # Probes and inset whole-glyph interiors share the main palette. Fill
+    # between the probes keeps isolated bright rectangles from masquerading
+    # as an intact direction.
     boxes = {"front": ((1064, 225, 1084, 247), (1035, 274, 1055, 284), (1100, 274, 1118, 284)),
              "side": ((1050, 322, 1095, 332), (1008, 321, 1022, 331), (1135, 321, 1149, 331)),
              "rear": ((1063, 380, 1086, 386), (1044, 369, 1057, 374), (1096, 369, 1109, 374))}
@@ -596,15 +692,11 @@ def _arrows(pixels):
     rgb = pixels.crop(region)
     height, width = rgb.shape[:2]
     levels = rgb.max(axis=2)
+    activity = _main_activity(rgb)
     arrows, diagnostics, directions = [], {}, {}
 
-    def coherent(mask):
-        # Ignore an isolated noisy pixel, but retain a thin three-pixel stroke.
-        return bool(np.any(mask[:, :-2] & mask[:, 1:-1] & mask[:, 2:]) or
-                    np.any(mask[:-2] & mask[1:-1] & mask[2:]))
-
     for name, patches in boxes.items():
-        readings = [_fill(pixels.level(box)) for box in patches]
+        readings = [_main_fill(pixels.crop(box)) for box in patches]
         diagnostics[name] = [{"state": state, **detail} for state, detail in readings]
         mask_image = Image.new("1", (width, height))
         ImageDraw.Draw(mask_image).polygon([
@@ -623,7 +715,7 @@ def _arrows(pixels):
         profile = [round(float(np.median(cell)), 2)
                    for row in np.array_split(profile_level, 4, axis=0)
                    for cell in np.array_split(row, 4, axis=1)]
-        interior_state, level_detail = _fill(levels[mask])
+        interior_state, level_detail = _main_fill(rgb[mask])
         colors = rgb[mask].astype(int)
         medians = np.median(colors, axis=0)
         maximum, minimum = max(medians), min(medians)
@@ -641,11 +733,14 @@ def _arrows(pixels):
             colored_tint.append(float(np.percentile(patch[:, :, dominant] -
                                                     np.maximum(patch[:, :, channels[0]], patch[:, :, channels[1]]), 10)))
         all_on = all(state == "on" for state, _ in readings)
-        all_off = all(state == "off" for state, _ in readings)
-        if all_on and interior_state == "on" and not coherent(mask & (levels <= 32)):
+        all_dark = all(state == "dark" for state, _ in readings)
+        all_resting = all(state == "resting" for state, _ in readings)
+        if all_on and interior_state == "on" and not _main_contrary_supported(rgb, activity, "on", mask):
             state = "filled"
             arrows.append(name)
-        elif all_off and interior_state == "off" and not coherent(mask & (levels >= 45)):
+        elif all_resting and interior_state == "resting" and not _main_contrary_supported(rgb, activity, "resting", mask):
+            state = "unlit"
+        elif all_dark and interior_state == "dark" and not _coherent_line(mask & (levels >= 45)):
             state = "faint" if min(red_tint) > 0 or min(colored_tint) >= 8 else "unlit"
         else:
             state = "partial"

@@ -1199,6 +1199,137 @@ class MainArrowReaderTests(unittest.TestCase):
                                     ('readable', []), ('readable', ['front'])])
 
 
+class MainActivityPaletteControls(unittest.TestCase):
+    RESTING = (80, 95, 82)
+
+    def pixels(self, image):
+        return reader.Pixels(image.tobytes(), *image.size, REGISTRATION)
+
+    def resting_display(self):
+        image = display()
+        for direction in ('front', 'side', 'rear'):
+            arrow(image, direction, self.RESTING)
+        draw = ImageDraw.Draw(image)
+        for y in (398, 361, 324, 287, 249, 212):
+            draw.rectangle((885, y, 952, y + 18), fill=self.RESTING)
+        return image
+
+    def main_bars(self, image):
+        return reader._bars(self.pixels(image),
+                            [(900, y, 937, y + 10) for y in (400, 363, 326, 289, 251, 214)])
+
+    def test_resting_gray_and_all_active_directions_and_counts(self):
+        for color in (ORANGE, (140, 140, 140), (90, 20, 10)):
+            for mask in range(8):
+                image = self.resting_display()
+                wanted = []
+                for index, direction in enumerate(('front', 'side', 'rear')):
+                    if mask & (1 << index):
+                        arrow(image, direction, color)
+                        wanted.append(direction)
+                observed = reader._arrows(self.pixels(image))
+                self.assertEqual((observed['state'], observed['value']), ('readable', wanted), observed)
+            for count in range(7):
+                image = self.resting_display()
+                draw = ImageDraw.Draw(image)
+                for y in (398, 361, 324, 287, 249, 212)[:count]:
+                    draw.rectangle((885, y, 952, y + 18), fill=color)
+                observed = self.main_bars(image)
+                self.assertEqual((observed['state'], observed['value']), ('readable', count), observed)
+
+    def test_blink_off_stays_black_while_other_arrows_rest(self):
+        image = self.resting_display()
+        arrow(image, 'front', (0, 0, 0))
+        observed = reader._arrows(self.pixels(image))
+        self.assertEqual((observed['state'], observed['value']), ('readable', []), observed)
+        self.assertTrue(all(p['state'] == 'dark' for p in observed['arrows']['front']))
+        self.assertTrue(all(p['state'] == 'resting' for p in observed['arrows']['side']))
+
+    def test_opposite_partial_strokes_still_refuse_on_gray_background(self):
+        for active in (False, True):
+            for color in (ORANGE, (140, 140, 140), (90, 20, 10)):
+                image = self.resting_display()
+                if active:
+                    arrow(image, 'front', color)
+                ImageDraw.Draw(image).rectangle((1072, 250, 1072, 267),
+                    fill=self.RESTING if active else color)
+                self.assertEqual(reader._arrows(self.pixels(image))['state'], 'ambiguous')
+                image = self.resting_display()
+                draw = ImageDraw.Draw(image)
+                if active:
+                    draw.rectangle((885, 398, 952, 416), fill=color)
+                draw.rectangle((910, 401, 910, 408), fill=self.RESTING if active else color)
+                self.assertEqual(self.main_bars(image)['state'], 'ambiguous')
+
+    def test_indeterminate_gray_and_missing_resting_body_are_not_active(self):
+        for color in ((115, 115, 115), (40, 40, 40)):
+            image = self.resting_display()
+            arrow(image, 'front', color)
+            self.assertEqual(reader._arrows(self.pixels(image))['state'], 'ambiguous')
+            ImageDraw.Draw(image).rectangle((885, 398, 952, 416), fill=color)
+            self.assertEqual(self.main_bars(image)['state'], 'ambiguous')
+        image = self.resting_display()
+        ImageDraw.Draw(image).rectangle((1072, 250, 1072, 267), fill='black')
+        self.assertEqual(reader._arrows(self.pixels(image))['state'], 'ambiguous')
+
+    def test_resting_midlevel_excursion_resolution_is_bounded(self):
+        for shape in ((4, 2), (2, 4), (4, 1)):
+            for color in ((125, 125, 125), (45, 100, 40)):
+                image = self.resting_display()
+                width, height = shape
+                ImageDraw.Draw(image).rectangle((1070, 250, 1069 + width, 249 + height), fill=color)
+                observed = reader._arrows(self.pixels(image))
+                self.assertEqual((observed['state'], observed['value']), ('readable', []), observed)
+        for kind in ('bright', 'dark', 'long', 'dense', 'attached', 'multiple'):
+            image = self.resting_display()
+            draw = ImageDraw.Draw(image)
+            rect = (1070, 250, 1073, 251)
+            color = (140,) * 3 if kind == 'bright' else (0,) * 3 if kind == 'dark' else (125,) * 3
+            if kind == 'long':
+                rect = (1070, 250, 1074, 250)
+            elif kind == 'dense':
+                rect = (1070, 250, 1072, 252)
+            draw.rectangle(rect, fill=color)
+            if kind == 'attached':
+                draw.rectangle((1074, 252, 1075, 253), fill=color)
+            elif kind == 'multiple':
+                draw.rectangle((1080, 260, 1083, 261), fill=color)
+            self.assertEqual(reader._arrows(self.pixels(image))['state'], 'ambiguous', kind)
+
+    def test_label_activity_requires_consistent_ink_in_the_slot(self):
+        # Independent L-shaped marks occupy the four label slots. This tests
+        # activity, not recognition of the actual printed font or laser scope.
+        origins = {'L': (323, 193), 'Ka': (325, 260), 'K': (323, 326), 'X': (323, 391)}
+        for wanted in (None, *origins):
+            for color in (ORANGE, (140, 140, 140)):
+                image = display()
+                draw = ImageDraw.Draw(image)
+                for name, (x, y) in origins.items():
+                    ink = color if name == wanted else self.RESTING
+                    draw.rectangle((x, y, x + 10, y + 43), fill=ink)
+                    draw.rectangle((x, y + 33, x + (65 if name == 'Ka' else 25), y + 43), fill=ink)
+                observed = reader._bands(self.pixels(image))
+                self.assertEqual((observed['state'], observed['value']),
+                                 ('readable', [] if wanted is None else [wanted]), observed)
+                if wanted is not None:
+                    x, y = origins[wanted]
+                    draw.rectangle((x, y, x + 10, y + 21), fill=self.RESTING)
+                    self.assertEqual(reader._bands(self.pixels(image))['state'], 'ambiguous')
+
+    def test_thin_opposite_label_stroke_cannot_hide_in_resting_ink(self):
+        for width in (1, 2, 3):
+            for active in (False, True):
+                for color in (ORANGE, (140, 140, 140), (90, 20, 10)):
+                    image = display()
+                    draw = ImageDraw.Draw(image)
+                    ink = color if active else self.RESTING
+                    draw.rectangle((323, 326, 333, 369), fill=ink)
+                    draw.rectangle((323, 359, 348, 369), fill=ink)
+                    draw.rectangle((327, 330, 327 + width - 1, 346),
+                                   fill=self.RESTING if active else color)
+                    self.assertEqual(reader._bands(self.pixels(image))['state'], 'ambiguous')
+
+
 class MutedBadgeShapeControls(unittest.TestCase):
     # Frozen61×16 source rasters after both opaque GFX prints, not reader
     # sample rectangles. Each row repeats twice; the eighth row is blank.

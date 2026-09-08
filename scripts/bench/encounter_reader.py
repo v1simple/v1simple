@@ -146,7 +146,55 @@ def _fill(values, on=45, off=32):
                    "p90": round(float(high), 2)}
 
 
-def _main_activity(rgb):
+_MAIN_BAND_BOXES = (("L", (317, 188, 355, 245)), ("Ka", (315, 253, 407, 310)),
+                    ("K", (314, 319, 363, 377)), ("X", (313, 384, 363, 440)))
+
+
+def _main_palette(pixels):
+    """Measure resting ink from L, which is inactive in the supported radar layout.
+
+    Older muted ink overlaps the new resting gray in absolute brightness. A
+    fixed pixel reference distinguishes the two palettes without consulting
+    input, firmware identity or a proposed alert. Laser is outside this reader's
+    scope; an illuminated/unclear L reference cannot qualify this calibration.
+    """
+    if not hasattr(pixels, "_main_palette_reference"):
+        rgb = pixels.crop((317, 188, 355, 245)).astype(float)
+        level = rgb.max(axis=2)
+        foreground = np.median(rgb[level >= np.percentile(level, 75)], axis=0)
+        peak = float(np.percentile(level, 95))
+        neutral = foreground.max() - foreground.min() < max(20, foreground.max() * .5)
+        gray = False if peak <= 32 else True if 55 <= peak <= 110 and neutral else None
+        # Band labels remain painted even in blink-OFF. A gray L alongside
+        # absent/dark radar labels is inconsistent with this resting palette;
+        # it must not turn an older muted display into three false absences.
+        labels = {name: pixels.level(box) for name, box in _MAIN_BAND_BOXES[1:]}
+        label_support = {name: float(np.mean(values > 45)) for name, values in labels.items()}
+        dark_labels = [name for name, values in labels.items() if np.percentile(values, 95) <= 32]
+        background = float(np.median(pixels.level((342, 195, 351, 220))))
+        # A bright reference must contain both L strokes and its empty upper
+        # right corner. These fixed interiors reject an erased/partial L or a
+        # uniformly painted rectangle. They do not recognize arbitrary fonts.
+        stem = pixels.level((323, 195, 330, 224))
+        foot = pixels.level((333, 232, 346, 237))
+        contrast = [float(np.median(part)) - background for part in (
+            *np.array_split(stem, 3, axis=0), *np.array_split(foot, 2, axis=1))]
+        if gray is True and (min(contrast) < 24 or any(fraction <= .12 for fraction in label_support.values())):
+            gray = None
+        # Old L is only a few camera levels above background, insufficient for
+        # the bright shape witness. Require another dark band reference too.
+        # Erasing L alone on a gray display cannot select the older palette.
+        # An older frame with all three radar labels lit remains unresolved.
+        if gray is False and not dark_labels:
+            gray = None
+        pixels._main_palette_reference = {"gray_resting": gray, "reference": "inactive L in radar-only layout",
+            "p95": round(peak, 2), "foreground_rgb_median": [round(float(v), 2) for v in foreground],
+            "radar_label_support": {name: round(value, 4) for name, value in label_support.items()},
+            "dark_radar_references": dark_labels, "l_body_contrast": [round(v, 2) for v in contrast]}
+    return pixels._main_palette_reference
+
+
+def _main_activity(rgb, gray_resting):
     """Fixed camera palette for main labels, arrows and strength bars only.
 
     Resting gray is visibly painted, not an active fill. The retained camera
@@ -157,6 +205,8 @@ def _main_activity(rgb):
     """
     rgb = rgb.astype(float)
     level = rgb.max(axis=-1)
+    if not gray_resting:
+        return {"on": level >= 45, "resting": np.zeros_like(level, dtype=bool), "dark": level <= 32}
     chroma = level - rgb.min(axis=-1)
     # Saturated alert colors remain far from gray, including its NV12 chroma
     # fringe. Small channel imbalances in gray are not independent alerts.
@@ -166,8 +216,8 @@ def _main_activity(rgb):
             "dark": level <= 32}
 
 
-def _main_fill(rgb):
-    activity = _main_activity(rgb)
+def _main_fill(rgb, gray_resting):
+    activity = _main_activity(rgb, gray_resting)
     fractions = {name: float(mask.mean()) for name, mask in activity.items()}
     state = next((name for name, fraction in fractions.items() if fraction >= .9), "partial")
     _, levels = _fill(rgb.max(axis=-1))
@@ -501,12 +551,14 @@ def _frequency(pixels):
 
 
 def _bands(pixels):
+    palette = _main_palette(pixels)
+    if palette["gray_resting"] is None:
+        return field("ambiguous", reason="resting palette reference is unresolved", palette_reference=palette)
     bands, diagnostics = [], {}
-    for name, box in (("L", (317, 188, 355, 245)), ("Ka", (315, 253, 407, 310)),
-                      ("K", (314, 319, 363, 377)), ("X", (313, 384, 363, 440))):
+    for name, box in _MAIN_BAND_BOXES:
         rgb = pixels.crop(box)
         level = rgb.max(axis=2)
-        activity = _main_activity(rgb)
+        activity = _main_activity(rgb, palette["gray_resting"])
         fraction = float(activity["on"].mean())
         # The one-pixel inset excludes the optical fringe of the whole label,
         # independently of which band or activity state is expected. A mixed
@@ -515,7 +567,7 @@ def _bands(pixels):
         interior = np.zeros_like(support)
         interior[1:-1, 1:-1] = np.lib.stride_tricks.sliding_window_view(
             support, (3, 3)).all(axis=(-1, -2))
-        state, detail = _main_fill(rgb[interior]) if interior.any() else ("dark", {})
+        state, detail = _main_fill(rgb[interior], palette["gray_resting"]) if interior.any() else ("dark", {})
         if state in ("on", "resting") and _main_contrary_supported(rgb, activity, state, interior):
             state = "partial"
         dim = float(np.mean(level > 25))
@@ -524,23 +576,26 @@ def _bands(pixels):
         if fraction > .12 and state == "on":
             bands.append(name)
         elif dim > .05 and not (state == "resting" and fraction <= .05):
-            return field("ambiguous", reason="partial or dim band label", bands=diagnostics)
-    return field("readable", bands, bands=diagnostics)
+            return field("ambiguous", reason="partial or dim band label", bands=diagnostics, palette_reference=palette)
+    return field("readable", bands, bands=diagnostics, palette_reference=palette)
 
 
 def _bars(pixels, boxes):
+    palette = _main_palette(pixels)
+    if palette["gray_resting"] is None:
+        return field("ambiguous", reason="resting palette reference is unresolved", palette_reference=palette)
     states, measurements = [], []
     for box in boxes:
         rgb = pixels.crop(box)
-        state, data = _main_fill(rgb)
-        if state != "partial" and _main_contrary_supported(rgb, _main_activity(rgb), state):
+        state, data = _main_fill(rgb, palette["gray_resting"])
+        if state != "partial" and _main_contrary_supported(rgb, _main_activity(rgb, palette["gray_resting"]), state):
             state = "partial"
         states.append("off" if state in ("dark", "resting") else state)
         data["appearance"] = state
         measurements.append(data)
     if "partial" in states or states != sorted(states, key=lambda v: v != "on"):
-        return field("ambiguous", reason="partial or noncontiguous strength bars", bars=measurements)
-    return field("readable", states.count("on"), bars=measurements)
+        return field("ambiguous", reason="partial or noncontiguous strength bars", bars=measurements, palette_reference=palette)
+    return field("readable", states.count("on"), bars=measurements, palette_reference=palette)
 
 
 def _compatible_bar_counts(states):
@@ -673,6 +728,9 @@ def _card_bars(pixels, left):
 
 
 def _arrows(pixels):
+    palette = _main_palette(pixels)
+    if palette["gray_resting"] is None:
+        return field("ambiguous", reason="resting palette reference is unresolved", palette_reference=palette)
     # Probes and inset whole-glyph interiors share the main palette. Fill
     # between the probes keeps isolated bright rectangles from masquerading
     # as an intact direction.
@@ -692,11 +750,11 @@ def _arrows(pixels):
     rgb = pixels.crop(region)
     height, width = rgb.shape[:2]
     levels = rgb.max(axis=2)
-    activity = _main_activity(rgb)
+    activity = _main_activity(rgb, palette["gray_resting"])
     arrows, diagnostics, directions = [], {}, {}
 
     for name, patches in boxes.items():
-        readings = [_main_fill(pixels.crop(box)) for box in patches]
+        readings = [_main_fill(pixels.crop(box), palette["gray_resting"]) for box in patches]
         diagnostics[name] = [{"state": state, **detail} for state, detail in readings]
         mask_image = Image.new("1", (width, height))
         ImageDraw.Draw(mask_image).polygon([
@@ -715,7 +773,7 @@ def _arrows(pixels):
         profile = [round(float(np.median(cell)), 2)
                    for row in np.array_split(profile_level, 4, axis=0)
                    for cell in np.array_split(row, 4, axis=1)]
-        interior_state, level_detail = _main_fill(rgb[mask])
+        interior_state, level_detail = _main_fill(rgb[mask], palette["gray_resting"])
         colors = rgb[mask].astype(int)
         medians = np.median(colors, axis=0)
         maximum, minimum = max(medians), min(medians)
@@ -757,6 +815,7 @@ def _arrows(pixels):
     return field("ambiguous" if unresolved else "readable", None if unresolved else arrows,
                  reason=reason, arrows=diagnostics, direction_states=directions,
                  visible_directions=arrows,
+                 palette_reference=palette,
                  color_qualification="observed color only; no color correctness contract")
 
 def _card_direction(pixels, left):

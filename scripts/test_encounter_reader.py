@@ -35,6 +35,10 @@ def display(frequency="68.902"):
     draw = ImageDraw.Draw(im)
     draw.rectangle((220, 338, 290, 355), fill=(0, 230, 20))
     draw.rectangle((1010, 420, 1140, 436), fill=(0, 230, 20))
+    # The radar layout always paints its inactive L reference, even with no
+    # alerts. A blank reference is a damaged fixture, not a resting display.
+    draw.rectangle((323, 193, 333, 236), fill=(17, 17, 17))
+    draw.rectangle((323, 226, 348, 236), fill=(17, 17, 17))
     if frequency is not None:
         for origin, digit in zip((454, 520, 616, 688, 764), frequency.replace(".", "")):
             for segment in DIGITS[digit]:
@@ -1201,6 +1205,13 @@ class MainArrowReaderTests(unittest.TestCase):
 
 class MainActivityPaletteControls(unittest.TestCase):
     RESTING = (80, 95, 82)
+    LABEL_ORIGINS = {'L': (323, 193), 'Ka': (325, 260), 'K': (323, 326), 'X': (323, 391)}
+
+    def labels(self, image, ink):
+        draw = ImageDraw.Draw(image)
+        for name, (x, y) in self.LABEL_ORIGINS.items():
+            draw.rectangle((x, y, x + 10, y + 43), fill=ink)
+            draw.rectangle((x, y + 33, x + (65 if name == 'Ka' else 25), y + 43), fill=ink)
 
     def pixels(self, image):
         return reader.Pixels(image.tobytes(), *image.size, REGISTRATION)
@@ -1209,6 +1220,7 @@ class MainActivityPaletteControls(unittest.TestCase):
         image = display()
         for direction in ('front', 'side', 'rear'):
             arrow(image, direction, self.RESTING)
+        self.labels(image, self.RESTING)
         draw = ImageDraw.Draw(image)
         for y in (398, 361, 324, 287, 249, 212):
             draw.rectangle((885, y, 952, y + 18), fill=self.RESTING)
@@ -1300,7 +1312,7 @@ class MainActivityPaletteControls(unittest.TestCase):
         # Independent L-shaped marks occupy the four label slots. This tests
         # activity, not recognition of the actual printed font or laser scope.
         origins = {'L': (323, 193), 'Ka': (325, 260), 'K': (323, 326), 'X': (323, 391)}
-        for wanted in (None, *origins):
+        for wanted in (None, 'Ka', 'K', 'X'):
             for color in (ORANGE, (140, 140, 140)):
                 image = display()
                 draw = ImageDraw.Draw(image)
@@ -1320,7 +1332,7 @@ class MainActivityPaletteControls(unittest.TestCase):
         for width in (1, 2, 3):
             for active in (False, True):
                 for color in (ORANGE, (140, 140, 140), (90, 20, 10)):
-                    image = display()
+                    image = self.resting_display()
                     draw = ImageDraw.Draw(image)
                     ink = color if active else self.RESTING
                     draw.rectangle((323, 326, 333, 369), fill=ink)
@@ -1328,6 +1340,71 @@ class MainActivityPaletteControls(unittest.TestCase):
                     draw.rectangle((327, 330, 327 + width - 1, 346),
                                    fill=self.RESTING if active else color)
                     self.assertEqual(reader._bands(self.pixels(image))['state'], 'ambiguous')
+
+    def test_old_muted_ink_does_not_borrow_the_new_resting_palette(self):
+        for gray_reference, expected_directions, expected_bars, expected_bands in (
+                (False, ['front'], 6, ['Ka']), (True, [], 0, [])):
+            image = display()
+            self.labels(image, self.RESTING if gray_reference else (17, 17, 17))
+            draw = ImageDraw.Draw(image)
+            arrow(image, 'front', (90, 90, 90))
+            for y in (398, 361, 324, 287, 249, 212):
+                draw.rectangle((885, y, 952, y + 18), fill=(90, 90, 90))
+            draw.rectangle((325, 260, 335, 303), fill=(75, 75, 75))
+            draw.rectangle((325, 293, 390, 303), fill=(75, 75, 75))
+            self.assertEqual(reader._arrows(self.pixels(image))['value'], expected_directions)
+            self.assertEqual(self.main_bars(image)['value'], expected_bars)
+            self.assertEqual(reader._bands(self.pixels(image))['value'], expected_bands)
+
+    def test_gray_reference_cannot_override_dark_mandatory_band_bodies(self):
+        image = display()
+        self.labels(image, (17, 17, 17))
+        draw = ImageDraw.Draw(image)
+        arrow(image, 'front', (90, 90, 90))
+        for y in (398, 361, 324, 287, 249, 212):
+            draw.rectangle((885, y, 952, y + 18), fill=(90, 90, 90))
+        draw.rectangle((325, 260, 335, 303), fill=(75, 75, 75))
+        draw.rectangle((325, 293, 390, 303), fill=(75, 75, 75))
+        # Only L changes. The active Ka/front/six-bar pixels remain identical.
+        draw.rectangle((323, 193, 333, 236), fill=self.RESTING)
+        draw.rectangle((323, 226, 348, 236), fill=self.RESTING)
+        for value in (reader._arrows(self.pixels(image)), reader._bands(self.pixels(image)), self.main_bars(image)):
+            self.assertEqual((value['state'], value['value']), ('ambiguous', None), value)
+
+    def test_erased_partial_or_uniform_l_cannot_select_a_palette(self):
+        for kind in ('erased', 'stem_missing', 'foot_missing', 'uniform'):
+            image = self.resting_display()
+            draw = ImageDraw.Draw(image)
+            box = {'erased': (317, 188, 355, 245), 'stem_missing': (320, 190, 334, 223),
+                   'foot_missing': (334, 226, 350, 240), 'uniform': (317, 188, 355, 245)}[kind]
+            draw.rectangle(box, fill=self.RESTING if kind == 'uniform' else (0, 0, 0))
+            for value in (reader._arrows(self.pixels(image)), reader._bands(self.pixels(image)), self.main_bars(image)):
+                self.assertEqual((value['state'], value['value']), ('ambiguous', None), (kind, value))
+
+    def test_old_palette_needs_another_dark_band_reference(self):
+        image = display()
+        self.labels(image, ORANGE)
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((317, 188, 355, 245), fill=(0, 0, 0))
+        draw.rectangle((323, 193, 333, 236), fill=(17, 17, 17))
+        draw.rectangle((323, 226, 348, 236), fill=(17, 17, 17))
+        self.assertIsNone(reader._main_palette(self.pixels(image))['gray_resting'])
+
+    def test_gray_palette_requires_each_permanent_band_label(self):
+        for name in ('Ka', 'K', 'X'):
+            image = self.resting_display()
+            x, y = self.LABEL_ORIGINS[name]
+            ImageDraw.Draw(image).rectangle((x - 3, y - 3, x + 68, y + 47), fill=(0, 0, 0))
+            self.assertIsNone(reader._main_palette(self.pixels(image))['gray_resting'], name)
+
+    def test_unresolved_or_active_l_reference_refuses_radar_palette(self):
+        for color in ((40, 40, 40), (115, 115, 115), ORANGE, (140, 140, 140)):
+            image = self.resting_display()
+            draw = ImageDraw.Draw(image)
+            draw.rectangle((323, 193, 333, 236), fill=color)
+            draw.rectangle((323, 226, 348, 236), fill=color)
+            for value in (reader._arrows(self.pixels(image)), reader._bands(self.pixels(image)), self.main_bars(image)):
+                self.assertEqual((value['state'], value['value']), ('ambiguous', None), value)
 
 
 class MutedBadgeShapeControls(unittest.TestCase):

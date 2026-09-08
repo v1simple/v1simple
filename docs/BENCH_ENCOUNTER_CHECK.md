@@ -214,6 +214,16 @@ Arrow measurements retain each direction independently, including partial or
 faint color without inventing its physical cause.
 
 Main labels, arrows and bars distinguish painted resting gray from active ink.
+The L label supplies a per-image resting reference within this radar-only scope.
+A dark L and at least one other dark band label select the older palette, where
+muted active ink can be as dim as the new resting gray. A neutral gray L selects
+the brighter palette only when its stem and foot have local contrast and every
+radar label has painted support. These checks prevent an erased L or a gray L
+beside dark band bodies from selecting the wrong palette. An illuminated or
+unclear reference leaves these measurements unresolved. Older frames with all
+three radar labels lit lack the second dark reference and also remain unresolved.
+The reference uses pixels only, without packet expectations or firmware-version
+selection; the very dim older L is not claimed to have a verified font shape.
 For the calibrated camera profile, neutral resting interiors occupy levels
 55–110, bright active ink starts at 120, and saturated colored ink retains the
 45-level floor. Neutral ink between those ranges remains unresolved. Whole

@@ -282,6 +282,33 @@ class EncounterReaderTests(unittest.TestCase):
                 observed = self.read(frequency_placeholder(8, ink))["primary_frequency"]
                 self.assertEqual((observed["state"], observed["value"]), ("readable", "--.---"), observed)
 
+    def test_placeholder_gap_guards_leave_the_same_dash_edge_clearance(self):
+        # Small chroma shoulders outside the complete third dash belong to
+        # the same six-pixel optical margin used beside the first dash.
+        # Keep all five full glyphs and the separate decimal in this fixture.
+        for shoulder in ((631, 303, 633, 315), (688, 303, 691, 310)):
+            with self.subTest(shoulder=shoulder):
+                image = frequency_placeholder()
+                ImageDraw.Draw(image).rectangle(shoulder, fill=(8, 9, 12))
+                observed = self.read(image)["primary_frequency"]
+                self.assertEqual((observed["state"], observed["value"]),
+                                 ("readable", "--.---"), observed)
+
+    def test_placeholder_rejects_numeric_middle_stroke_extensions(self):
+        # Whole numeric middle strokes start to the left of the independently
+        # centered dashes. The third cell leaves only a three-pixel extension,
+        # which is too narrow for the broad absence guards' 4x4 windows.
+        for left, right in ((538, 561), (634, 657), (706, 729), (782, 805)):
+            for color in ((15, 8, 8), (8, 15, 8), (8, 8, 15), (15, 15, 15)):
+                with self.subTest(stroke=(left, right), color=color):
+                    image = frequency_placeholder()
+                    overlay = Image.new("RGB", image.size)
+                    ImageDraw.Draw(overlay).rectangle((left, 303, right, 309), fill=color)
+                    image = Image.fromarray(np.maximum(np.asarray(image), np.asarray(overlay)))
+                    observed = self.read(image)["primary_frequency"]
+                    self.assertEqual((observed["state"], observed["value"]),
+                                     ("ambiguous", None), observed)
+
     def test_placeholder_preserves_partial_and_colored_remnant_refusals(self):
         complete_reason = ("Five complete dash strokes and the decimal are observed; additional pixel contrast "
                            "prevents confirming a cleared frequency field.")

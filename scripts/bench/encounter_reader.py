@@ -24,7 +24,7 @@ import counter_reader
 
 FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
-METHOD_VERSION = 21
+METHOD_VERSION = 22
 _ocr_binary = None
 _ocr_setup = None
 _ocr_session = None
@@ -202,10 +202,14 @@ def _dark_frequency_placeholder(pixels, details):
     # Upper/lower guards cover the numeric glyph bodies (x454..828), with
     # right padding to832. The coarse frequency ROI extends past those bodies
     # into background beside the bar column; that margin is not glyph ink.
+    # Leave the same six-pixel optical margin on both sides of the third
+    # complete dash (x637..686) as beside the first. Its recorded chroma
+    # shoulders otherwise enter the empty-space guards. Keep the other gaps
+    # intact: they also witness numeric middle strokes extending past dashes.
     guards = ((454, 258, 832, 292), (454, 321, 832, 341),
               (454, 347, 600, 359), (632, 347, 832, 359),
-              (524, 294, 540, 318), (598, 294, 634, 318),
-              (688, 294, 712, 318), (772, 294, 788, 318))
+              (524, 294, 540, 318), (598, 294, 631, 318),
+              (692, 294, 712, 318), (772, 294, 788, 318))
     for box in guards:
         # Compare each column with its own background level over the full
         # glyph height. A clear boundary or horizontal lighting gradient must
@@ -221,8 +225,14 @@ def _dark_frequency_placeholder(pixels, details):
         windows = np.lib.stride_tricks.sliding_window_view(pixels.level(box) - background, (4, 4))[::2, ::2]
         contrast = float(np.max(np.median(windows, axis=(-2, -1))))
         extra_contrast = max(extra_contrast, contrast)
+    # The third numeric middle stroke starts at x634, before its independently
+    # centered dash at x637. This thin extension cannot fill a broad 4x4
+    # guard window. Observe its full fixed support at the same contrast limit.
+    thin_middle_contrast = float(np.median(_dim_frequency_contrast(pixels, (634, 303, 637, 309))))
+    extra_contrast = max(extra_contrast, thin_middle_contrast)
     diagnostics = {"strokes": strokes, "decimal": {"background": decimal_background,
                     "parts": decimal_levels, "complete": decimal_complete},
+                   "thin_middle_body_contrast": round(thin_middle_contrast, 2),
                    "maximum_extra_body_contrast": round(extra_contrast, 2),
                    "basis": "Five fixed dash interiors and a separate decimal against local background; "
                             "all stroke sections required. Contrast below the retained limits is unresolved."}

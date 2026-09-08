@@ -12,7 +12,8 @@
 #include "../mocks/display_driver.h"
 #include "../mocks/Arduino.h"
 #include "../mocks/settings.h"
-#include "../mocks/packet_parser.h"
+#include "../../src/packet_parser.h"
+#include "../../include/band_utils.h"
 
 #ifndef ARDUINO
 unsigned long mockMillis = 0;
@@ -45,14 +46,7 @@ void V1Display::setPreviewIndicatorOverridesActive(bool active) {
 }
 
 const char* V1Display::bandToString(Band band) {
-    switch (band) {
-        case BAND_LASER: return "LASER";
-        case BAND_KA: return "Ka";
-        case BAND_K: return "K";
-        case BAND_KU: return "Ku";
-        case BAND_X: return "X";
-        default: return "";
-    }
+    return bandName(band);
 }
 
 uint16_t V1Display::getBandColor(Band band) {
@@ -87,6 +81,8 @@ void V1Display::drawGpsIndicator() {
 }
 
 #include "../../src/display_cards.cpp"
+#include "../../src/packet_parser.cpp"
+#include "../../src/packet_parser_alerts.cpp"
 
 V1Display display(settings);
 
@@ -706,6 +702,41 @@ void test_card_meter_lit_segments_use_their_own_stored_colors() {
     }
 }
 
+void test_parsed_ku_secondary_uses_production_band_name_and_frequency() {
+    class TextCanvas : public Arduino_Canvas {
+      public:
+        TextCanvas() : Arduino_Canvas(SCREEN_WIDTH, SCREEN_HEIGHT, nullptr) {}
+        std::vector<std::string> labels;
+        void print(const char* text) override { labels.emplace_back(text); }
+    };
+    PacketParser parser;
+    auto addRow = [&parser](uint8_t index, uint16_t frequency, uint8_t bandAndDirection, bool priority) {
+        std::vector<uint8_t> packet = {
+            0xAA, 0xDA, 0xE4, 0x43, 9, static_cast<uint8_t>((index << 4) | 2),
+            static_cast<uint8_t>(frequency >> 8), static_cast<uint8_t>(frequency),
+            0xA0, 0, bandAndDirection, static_cast<uint8_t>(priority ? 0x80 : 0), 0};
+        uint8_t checksum = 0;
+        for (uint8_t byte : packet) {
+            checksum += byte;
+        }
+        packet.push_back(checksum);
+        packet.push_back(0xAB);
+        TEST_ASSERT_TRUE(parser.parse(packet.data(), packet.size(), 1000));
+    };
+    addRow(1, 34700, 0x22, true);
+    addRow(2, 13450, 0x90, false);
+    TEST_ASSERT_EQUAL_UINT(2, parser.getAlertCount());
+    TEST_ASSERT_EQUAL_INT(BAND_KU, parser.getAllAlerts()[1].band);
+    auto* text = new TextCanvas;
+    display.setTestCanvas(text);
+    display.ut_drawSecondaryAlertCards(parser.getAllAlerts().data(), parser.getAlertCount(),
+                                       parser.getPriorityAlert(), false);
+    TEST_ASSERT_EQUAL_INT(1, display.ut_elementCaches().cards.lastDrawnCount);
+    TEST_ASSERT_EQUAL_UINT(2, text->labels.size());
+    TEST_ASSERT_EQUAL_STRING("Ku", text->labels[0].c_str());
+    TEST_ASSERT_EQUAL_STRING("13.450", text->labels[1].c_str());
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_empty_card_clear_is_noop_when_no_cards_were_drawn);
@@ -730,5 +761,6 @@ int main(int, char**) {
     RUN_TEST(test_card_meter_projection_is_monotonic_and_reaches_both_endpoints);
     RUN_TEST(test_card_meter_clamps_strength_above_full_scale);
     RUN_TEST(test_card_meter_lit_segments_use_their_own_stored_colors);
+    RUN_TEST(test_parsed_ku_secondary_uses_production_band_name_and_frequency);
     return UNITY_END();
 }

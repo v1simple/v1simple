@@ -35,7 +35,6 @@ static constexpr uint32_t AUX_WINDOW_MIN_MS = 200;
 static constexpr uint32_t AUX_COMMAND_TIMEOUT_MS = 180;
 static constexpr uint32_t VIN_COMMAND_TIMEOUT_MS = 250;
 static constexpr uint32_t EOT_STALE_MS = 10000;
-static constexpr uint8_t BUFFER_OVERFLOWS_BEFORE_DISCONNECT = 2;
 
 // ── ECU idle detection (car-off / petrol stop) ─────────────────
 static constexpr uint8_t ECU_IDLE_BACKOFF_THRESHOLD = 6;      // backoff cycles before entering ECU_IDLE

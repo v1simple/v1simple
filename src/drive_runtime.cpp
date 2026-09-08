@@ -730,7 +730,7 @@ void DriveRuntime::writeCleanShutdownMarker() {
 }
 
 void DriveRuntime::resumePersistenceAfterAbortedShutdownPhase() {
-    resumePersistenceAfterAbortedShutdown(events_);
+    resumePersistenceAfterAbortedShutdown(events_, health_);
 }
 
 void DriveRuntime::resumeDriveBleAfterAbortedShutdown() {

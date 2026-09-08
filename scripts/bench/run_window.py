@@ -1495,12 +1495,7 @@ def post_window_configuration_timeout_s(elapsed_since_reset_s: float) -> float:
     )
 
 
-def collect_live(
-    args: argparse.Namespace,
-    out_dir: Path,
-    artifacts: dict[str, Any],
-) -> dict[str, Any]:
-    out_dir.mkdir(parents=True, exist_ok=True)
+def require_unused_live_evidence(out_dir: Path, *, camera: bool) -> None:
     reserved = [
         out_dir / "bench_serial.log",
         out_dir / BENCH_TIMELINE_NAME,
@@ -1512,11 +1507,20 @@ def collect_live(
         out_dir / REPLAY_SCENARIO_EVIDENCE_NAME,
         out_dir / "resident_reference",
     ]
-    if args.camera:
+    if camera:
         reserved.append(out_dir / "camera")
     existing = [path.name for path in reserved if path.exists()]
     if existing:
-        raise RuntimeError("refusing to reuse existing live evidence: " + ", ".join(existing))
+        raise FileExistsError("refusing to reuse existing live evidence: " + ", ".join(existing))
+
+
+def collect_live(
+    args: argparse.Namespace,
+    out_dir: Path,
+    artifacts: dict[str, Any],
+) -> dict[str, Any]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    require_unused_live_evidence(out_dir, camera=args.camera)
 
     resident_recording = getattr(args, "resident_recording", "")
     resident_image = getattr(args, "resident_image", "")
@@ -1735,6 +1739,13 @@ def main() -> int:
 
     out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    # Refusal must not adopt an earlier recording as this run's writable output,
+    # including when argument validation would otherwise write a failure result.
+    try:
+        require_unused_live_evidence(out_dir, camera=args.camera)
+    except FileExistsError as exc:
+        print(f"[bench] {exc}", file=sys.stderr, flush=True)
+        return 3
     artifacts: dict[str, Any] = {}
 
     def fail(message: str, *, result: str = "COLLECTION_FAILED", **fields: Any) -> int:
@@ -1849,6 +1860,9 @@ def main() -> int:
             print(f"[bench] fail: {delivery_problem}", file=sys.stderr, flush=True)
             return 2
         return 0
+    except FileExistsError as exc:
+        print(f"[bench] {exc}", file=sys.stderr, flush=True)
+        return 3
     except RuntimeIdentityFailure as exc:
         return fail(
             str(exc),

@@ -53,6 +53,7 @@
     let barEditor = $state({ mode: 'advanced', bottom: 0x07e0, middle: 0xffe0, top: 0xf800 });
     let stealthEnabled = $state(false);
     let loading = $state(true);
+    let colorsLoaded = $state(false);
     let saving = $state(false);
     let message = $state(null);
     let stealthSaveRequestId = 0;
@@ -136,6 +137,8 @@
 
     async function fetchColors({ detectMode = false } = {}) {
         loading = true;
+        colorsLoaded = false;
+        message = null;
         try {
             const res = await fetchWithTimeout(DISPLAY_SETTINGS_ENDPOINT);
             if (res.ok) {
@@ -144,19 +147,26 @@
                 // Auto-detect simple vs advanced only on initial load; refetches
                 // after save/reset must not override an explicit mode choice.
                 syncBarEditorFromColors({ keepMode: !detectMode });
+                colorsLoaded = true;
             } else {
                 message = { type: 'error', text: 'Failed to load colors' };
             }
-            const quietRes = await fetchWithTimeout(QUIET_SETTINGS_ENDPOINT);
-            if (quietRes.ok) {
-                const quietData = await quietRes.json();
-                stealthEnabled = quietData.stealthEnabled ?? false;
-            }
         } catch (_) {
             message = { type: 'error', text: 'Failed to load colors' };
-        } finally {
-            loading = false;
         }
+        if (colorsLoaded) {
+            try {
+                const quietRes = await fetchWithTimeout(QUIET_SETTINGS_ENDPOINT);
+                if (quietRes.ok) {
+                    const quietData = await quietRes.json();
+                    stealthEnabled = quietData.stealthEnabled ?? false;
+                }
+            } catch (_) {
+                message = { type: 'error', text: 'Failed to load stealth setting' };
+            }
+        }
+        loading = false;
+        return colorsLoaded;
     }
 
     function handleHexInput(key, value) {
@@ -172,6 +182,7 @@
     }
 
     async function saveColors() {
+        if (saving || loading || !colorsLoaded) return;
         saving = true;
         message = null;
         try {
@@ -184,9 +195,9 @@
                 message = { type: 'error', text: 'Failed to save colors' };
                 return;
             }
-            // Refetch first so a failed refetch can't clobber the success message.
-            await fetchColors();
-            message = { type: 'success', text: 'Colors saved! Previewing on display...' };
+            if (await fetchColors()) {
+                message = { type: 'success', text: 'Colors saved! Previewing on display...' };
+            }
             // Firmware holds the save preview ~5.5s with band cycling; clear just
             // after it would expire anyway so the UI never truncates the preview.
             setTimeout(() => {
@@ -227,10 +238,9 @@
             }
             colors = cloneDefaultColors();
             syncBarEditorFromColors({ keepMode: true });
-            // Refetch first so a failed refetch can't clobber the success message
-            // (same policy as saveColors — the reset itself already succeeded).
-            await fetchColors();
-            message = { type: 'success', text: 'Colors reset to defaults!' };
+            if (await fetchColors()) {
+                message = { type: 'success', text: 'Colors reset to defaults!' };
+            }
         } catch (_) {
             message = { type: 'error', text: 'Failed to reset' };
         } finally {
@@ -279,6 +289,19 @@
     {#if loading}
         <div class="state-loading">
             <span class="loading loading-lg loading-spinner"></span>
+        </div>
+    {:else if !colorsLoaded}
+        <div class="surface-card">
+            <div class="card-body items-start">
+                <p>Load the saved colors before making changes.</p>
+                <button
+                    class="btn btn-primary"
+                    onclick={() => fetchColors({ detectMode: true })}
+                    disabled={saving}
+                >
+                    Retry
+                </button>
+            </div>
         </div>
     {:else}
         <div class="surface-card">

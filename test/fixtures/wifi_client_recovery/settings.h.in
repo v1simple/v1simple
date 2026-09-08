@@ -1,0 +1,30 @@
+#pragma once
+#include "Arduino.h"
+
+@SLOT_METADATA@
+
+// Storage is already ready and one ordinary saved network is configured. These
+// boundaries do not simulate persistence; the tests exercise connection ownership.
+struct V1Settings {
+    bool wifiClientEnabled = true;
+    String wifiClientSSID = "Saved";
+    WifiStaSlot wifiStaSlots[kWifiStaSlotCount];
+    bool hasConfiguredWifiStaSlot() const {
+        for (const auto& slot : wifiStaSlots) {
+            if (slot.isConfigured()) return true;
+        }
+        return false;
+    }
+};
+
+class SettingsManager {
+  public:
+    V1Settings value;
+    const V1Settings& get() const { return value; }
+    bool resolveStorageTransactionsForMutation() { return true; }
+    String getWifiStaSlotPassword(size_t) const { return "password"; }
+    String getWifiClientPassword() const { return "password"; }
+    bool setWifiStaSlotCredentials(size_t, const String&, const String&, const String&, uint8_t) { return true; }
+    bool setWifiClientCredentials(const String&, const String&) { return true; }
+    bool markWifiStaSlotConnected(size_t, uint32_t) { return true; }
+};

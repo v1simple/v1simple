@@ -65,6 +65,36 @@ void test_boot_rotation_is_bounded_to_one_previous_file() {
     TEST_ASSERT_TRUE(readFile("health.log").rfind("# health_schema=1\nBOOT,", 0) == 0);
 }
 
+void test_aborted_shutdown_records_resume_and_later_final_counters_in_same_boot() {
+    fs::FS filesystem(root);
+    StorageManager storage;
+    storage.reset();
+    storage.setFilesystem(&filesystem, true);
+    HealthJournal journal;
+    TEST_ASSERT_TRUE(journal.begin(storage, 42, "img", "POWERON", false, false));
+    journal.ready(1000);
+    journal.resumeAfterAbortedShutdown(1500); // No preceding END to cancel.
+    journal.end(2000);
+    journal.end(2100); // END remains idempotent until an actual resume.
+    journal.resumeAfterAbortedShutdown(3000);
+    journal.resumeAfterAbortedShutdown(3100);
+    HealthCounters::recordInputDrop(7);
+    HealthCounters::recordEventDrop(3);
+    journal.ready(4000); // Resume must not invent a new boot/ready interval.
+    journal.end(9000);
+    journal.end(9100);
+
+    TEST_ASSERT_EQUAL_STRING("# health_schema=1\n"
+                             "BOOT,boot=42,image=img,reset=POWERON,previous=UNCLEAN,panic=NONE\n"
+                             "READY,boot=42,ms=1000\n"
+                             "END,boot=42,ms=2000,result=CLEAN,input_drop=0,event_drop=0,"
+                             "event_shutdown_fail=0,event_retention_full=0\n"
+                             "RESUME,boot=42,ms=3000\n"
+                             "END,boot=42,ms=9000,result=CLEAN,input_drop=7,event_drop=3,"
+                             "event_shutdown_fail=0,event_retention_full=0\n",
+                             readFile("health.log").c_str());
+}
+
 void test_lock_failure_disables_journal_for_boot_without_retry() {
     fs::FS filesystem(root);
     StorageManager storage;
@@ -77,7 +107,7 @@ void test_lock_failure_disables_journal_for_boot_without_retry() {
     TEST_ASSERT_EQUAL_UINT32(1, StorageManager::mockSdLockState.blockingAcquireCalls);
 }
 void test_short_writes_are_quarantined_before_next_boot_append() {
-    for (int stage = 0; stage < 4; ++stage) {
+    for (int stage = 0; stage < 5; ++stage) {
         setUp();
         if (stage == 1) {
             std::ofstream(root / "health.log", std::ios::binary) << "# health_schema=1\n";
@@ -92,8 +122,11 @@ void test_short_writes_are_quarantined_before_next_boot_append() {
             TEST_ASSERT_FALSE(journal.begin(storage, 1, "img", "SW", false, false));
         } else {
             TEST_ASSERT_TRUE(journal.begin(storage, 1, "img", "SW", false, false));
+            if (stage == 4) journal.end(5);
             fs::mock_set_fs_write_budget(1);
-            stage == 2 ? journal.ready(10) : journal.end(10);
+            if (stage == 2) journal.ready(10);
+            else if (stage == 3) journal.end(10);
+            else journal.resumeAfterAbortedShutdown(10);
             TEST_ASSERT_FALSE(journal.enabled());
         }
         const std::string damaged = readFile("health.log");
@@ -108,6 +141,7 @@ void test_short_writes_are_quarantined_before_next_boot_append() {
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_boot_ready_end_schema_and_drop_aggregates);
+    RUN_TEST(test_aborted_shutdown_records_resume_and_later_final_counters_in_same_boot);
     RUN_TEST(test_boot_rotation_is_bounded_to_one_previous_file);
     RUN_TEST(test_lock_failure_disables_journal_for_boot_without_retry);
     RUN_TEST(test_short_writes_are_quarantined_before_next_boot_append);

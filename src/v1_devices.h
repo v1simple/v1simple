@@ -16,7 +16,7 @@ struct V1DeviceRecord {
     String address;
     String name;
     uint8_t defaultProfile = 0; // 0=none/global slot, 1..3=auto-push slot override
-    uint32_t lastSeenMs = 0;
+    uint32_t lastSeenMs = 0; // Informational uptime; durable list order owns recency.
 };
 
 // Normalize BLE address to canonical upper-case AA:BB:CC:DD:EE:FF.
@@ -81,7 +81,7 @@ class V1DeviceStore {
     bool upsertDeviceInternal(const String& address, bool persistNow);
 
     int findDeviceIndex(const String& normalizedAddress) const;
-    void sortAndTrim();
+    void trimToCapacity();
 
     bool dirty_ = false;
     bool mirrorDirty_ = false;

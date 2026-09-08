@@ -84,6 +84,32 @@ describe('devices route page', () => {
         unmount();
     });
 
+    it('displays the submitted name when the input changes during a pending save', async () => {
+        let finishSave;
+        const pendingSave = new Promise((resolve) => (finishSave = resolve));
+        const fetchMock = installDefaultFetch([
+            { method: 'POST', match: '/api/v1/devices/name', respond: () => pendingSave }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText('Daily Driver');
+        await fireEvent.click(screen.getByRole('button', { name: /^rename$/i }));
+        const input = await screen.findByDisplayValue('Daily Driver');
+        await fireEvent.input(input, { target: { value: '  SentName  ' } });
+        await fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+        await fireEvent.input(input, { target: { value: 'NeverSentName' } });
+        finishSave(jsonResponse({ success: true }));
+
+        await screen.findByText('Device name saved.');
+        expect(screen.getByRole('heading', { name: 'SentName' })).toBeInTheDocument();
+        expect(screen.queryByText('NeverSentName')).not.toBeInTheDocument();
+        const saveCall = fetchMock.mock.calls.find(
+            ([url, init]) => url === '/api/v1/devices/name' && init?.method === 'POST'
+        );
+        expect(saveCall[1].body.get('name')).toBe('SentName');
+        unmount();
+    });
+
     it('restores the saved default profile when saving the override fails', async () => {
         installDefaultFetch([
             {

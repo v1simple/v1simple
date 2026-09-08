@@ -62,7 +62,7 @@ bool completeLoggingForControlledRestart(ProductEventLog& events, HealthJournal&
 
 /// Restore shared persistence admission and the unclean marker after the
 /// hardware shutdown tail returns without powering down or entering deep sleep.
-void resumePersistenceAfterAbortedShutdown(ProductEventLog& events);
+void resumePersistenceAfterAbortedShutdown(ProductEventLog& events, HealthJournal& health);
 
 /// Emit the privacy-safe identity line shared by normal and maintenance boots.
 void logBootIdentity(uint32_t bootId, esp_reset_reason_t resetReason);

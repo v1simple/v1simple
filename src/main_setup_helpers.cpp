@@ -64,9 +64,10 @@ bool completeLoggingForControlledRestart(ProductEventLog& events, HealthJournal&
     return true;
 }
 
-void resumePersistenceAfterAbortedShutdown(ProductEventLog& events) {
+void resumePersistenceAfterAbortedShutdown(ProductEventLog& events, HealthJournal& health) {
     Serial.println("[Battery] Shutdown aborted; restoring persistence services...");
     markUncleanShutdown();
+    health.resumeAfterAbortedShutdown(millis());
     if (events.enabled() && !events.resumeAfterAbortedShutdown(750)) {
         Serial.println("[ProductEvents] ERROR: writer admission could not be restored after shutdown abort");
     }

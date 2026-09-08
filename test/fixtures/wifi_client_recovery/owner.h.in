@@ -1,0 +1,50 @@
+#pragma once
+#include "Arduino.h"
+#include "WiFi.h"
+#include "settings.h"
+#include "modules/wifi/wifi_scan_result_owner.h"
+#include "modules/wifi/wifi_maintenance_link_policy.h"
+#include "modules/wifi/wifi_maintenance_interface_policy.h"
+#include "modules/wifi/wifi_setup_network_policy.h"
+#include "modules/wifi/wifi_reconnect_policy.h"
+#include "modules/wifi/wifi_sta_slot_policy.h"
+
+// Same result as production for this fixture's ordinary five-character SSID.
+inline String sanitizeWifiClientSsidValue(const String& ssid) { return ssid.substring(0, 32); }
+
+@CLIENT_STATE@
+
+class WiFiManager {
+  public:
+    SettingsManager settings_;
+    bool maintenanceBootMode_ = true;
+    bool isSetupModeActive() const { return true; }
+    bool isWifiServiceActive() const { return true; }
+    unsigned long lowDmaCooldownRemainingMs() const { return 0; }
+    struct FakeServer { void handleClient() {} } server_;
+    void checkAutoTimeout() {}
+    struct FakeBle { bool isConnected() const { return false; } };
+    FakeBle* bleRuntime_ = nullptr;
+    bool (*isV1Connected_)(void*) = nullptr;
+    void* isV1ConnectedCtx_ = nullptr;
+    bool wasAutoStarted_ = false;
+
+    void runOwnerPass();
+    int findConfiguredSlotBySsid(const String&) const;
+    bool connectToNetwork(const String&, const String&, bool = true, int = -1, bool = false);
+    void disconnectFromNetwork();
+    void clearPendingWifiConnectState();
+    void processWifiClientConnectPhase();
+    bool beginMaintenanceAutoConnectScan(bool);
+    void processMaintenanceAutoConnect();
+    bool queueNextMaintenanceAutoConnectSlot();
+    void finishMaintenanceAutoConnect(const char*, bool);
+    void applyDeferredMaintenanceStaRadioDrop();
+    void cancelMaintenanceAutoConnect(const char*);
+    void scheduleMaintenanceAutoConnectRetry(unsigned long);
+    bool maintenanceAddressCollision() const;
+    void checkWifiClientStatus();
+
+@CONNECTION_FIELDS@
+@RECONNECT_FIELDS@
+};

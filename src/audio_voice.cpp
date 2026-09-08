@@ -260,6 +260,8 @@ int getGHz(AlertBand band, uint16_t freqMHz) {
         return 36;
     case AlertBand::K:
         return 24; // K band is 24.x GHz
+    case AlertBand::KU:
+        return 13; // Ku band is 13.x GHz
     case AlertBand::X:
         return 10; // X band is 10.x GHz
     default:
@@ -277,6 +279,8 @@ static const char* getBandClipFile(AlertBand band) {
         return "band_k.mul";
     case AlertBand::X:
         return "band_x.mul";
+    case AlertBand::KU:
+        return nullptr; // No Ku recording; never substitute another band's name.
     }
     return nullptr;
 }
@@ -319,7 +323,7 @@ void play_alert_voice(AlertBand band, AlertDirection direction) {
     params.numClips = 0;
     const char* bandFile = getBandClipFile(band);
     const char* dirFile = getDirectionClipFile(direction);
-    if (!bandFile || !dirFile) {
+    if (!dirFile || (!bandFile && band != AlertBand::KU)) {
         return;
     }
     appendAudioClip(params, bandFile);
@@ -386,23 +390,7 @@ static AudioPlaybackResult play_frequency_voice_impl(AlertBand band, uint16_t fr
 
     // 1. Band clip (if mode includes band)
     if (mode == VOICE_MODE_BAND_ONLY || mode == VOICE_MODE_BAND_FREQ) {
-        const char* bandFile = nullptr;
-        switch (band) {
-        case AlertBand::KA:
-            bandFile = "band_ka.mul";
-            break;
-        case AlertBand::K:
-            bandFile = "band_k.mul";
-            break;
-        case AlertBand::X:
-            bandFile = "band_x.mul";
-            break;
-        default:
-            break;
-        }
-        if (bandFile) {
-            snprintf(params.filePaths[params.numClips++], 48, "%s/%s", AUDIO_PATH, bandFile);
-        }
+        appendAudioClip(params, getBandClipFile(band));
     }
 
     // 2-4. Frequency clips (if mode includes frequency)
@@ -487,24 +475,8 @@ void play_band_only(AlertBand band) {
     SDAudioTaskParams params;
     params.numClips = 0;
 
-    const char* bandFile = nullptr;
-    switch (band) {
-    case AlertBand::LASER:
-        bandFile = "band_laser.mul";
-        break;
-    case AlertBand::KA:
-        bandFile = "band_ka.mul";
-        break;
-    case AlertBand::K:
-        bandFile = "band_k.mul";
-        break;
-    case AlertBand::X:
-        bandFile = "band_x.mul";
-        break;
-    }
-
-    if (bandFile) {
-        snprintf(params.filePaths[params.numClips++], 48, "%s/%s", AUDIO_PATH, bandFile);
+    if (!appendAudioClip(params, getBandClipFile(band))) {
+        return;
     }
 
     // Start task using pre-allocated global params
@@ -633,23 +605,7 @@ static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t 
     params.numClips = 0;
 
     // 1. Band clip
-    const char* bandFile = nullptr;
-    switch (band) {
-    case AlertBand::KA:
-        bandFile = "band_ka.mul";
-        break;
-    case AlertBand::K:
-        bandFile = "band_k.mul";
-        break;
-    case AlertBand::X:
-        bandFile = "band_x.mul";
-        break;
-    default:
-        break;
-    }
-    if (bandFile) {
-        snprintf(params.filePaths[params.numClips++], 48, "%s/%s", AUDIO_PATH, bandFile);
-    }
+    appendAudioClip(params, getBandClipFile(band));
 
     // 2-4. Frequency clips (GHz token reuses two-digit number clips)
     int ghz = getGHz(band, freqMHz);

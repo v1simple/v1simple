@@ -6,7 +6,8 @@ enum class AlertBand : uint8_t {
     LASER = 0,
     KA = 1,
     K = 2,
-    X = 3
+    X = 3,
+    KU = 4
 };
 
 enum class AlertDirection : uint8_t {

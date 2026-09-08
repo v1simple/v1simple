@@ -136,6 +136,21 @@ void HealthJournal::end(uint32_t nowMs) {
     endWritten_ = true;
 }
 
+void HealthJournal::resumeAfterAbortedShutdown(uint32_t nowMs) {
+    if (!enabled_ || !endWritten_) {
+        return;
+    }
+    char line[96];
+    const int length = std::snprintf(line, sizeof(line), "RESUME,boot=%lu,ms=%lu\n",
+                                     static_cast<unsigned long>(bootId_), static_cast<unsigned long>(nowMs));
+    if (length <= 0 || static_cast<size_t>(length) >= sizeof(line) ||
+        !appendLine(line, static_cast<size_t>(length))) {
+        disable();
+        return;
+    }
+    endWritten_ = false;
+}
+
 bool HealthJournal::appendLine(const char* line, size_t length) {
     if (!storage_ || !storage_->getFilesystem()) {
         return false;

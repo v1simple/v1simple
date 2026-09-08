@@ -10,6 +10,8 @@ inline const char* bandName(Band band) {
         return "Ka";
     case BAND_K:
         return "K";
+    case BAND_KU:
+        return "Ku";
     case BAND_X:
         return "X";
     default:

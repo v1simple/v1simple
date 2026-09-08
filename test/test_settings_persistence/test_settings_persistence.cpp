@@ -21,6 +21,7 @@
 #include "../../src/modules/gps/gps_runtime_module.h"
 #include "../../src/modules/obd/obd_api_service.h"
 #include "../../src/modules/obd/obd_runtime_module.h"
+#include "../../src/modules/obd/obd_settings_sync_module.h"
 
 #ifndef ARDUINO
 SerialClass Serial;
@@ -48,6 +49,15 @@ void GpsRuntimeModule::setEnabled(bool enabled) { enabled_ = enabled; }
 void GpsRuntimeModule::setBaud(uint32_t baud) { baud_ = baud; }
 ObdRuntimeStatus ObdRuntimeModule::snapshot(uint32_t) const { return {}; }
 void ObdRuntimeModule::forgetDevice() {}
+// Supply the learned runtime address at the transport boundary; exercise the
+// real synchronizer, touch gesture, settings owner and NVS persistence below.
+void ObdRuntimeModule::begin(ObdBleClient*, bool enabled, const char* savedAddress, uint8_t savedAddrType,
+                             int8_t) {
+    enabled_ = enabled;
+    strncpy(savedAddress_, savedAddress, sizeof(savedAddress_) - 1);
+    savedAddress_[sizeof(savedAddress_) - 1] = '\0';
+    savedAddrType_ = savedAddrType;
+}
 
 #include "../../src/v1_profiles.cpp"
 #include "../../src/backup_payload_builder.cpp"
@@ -65,6 +75,7 @@ void ObdRuntimeModule::forgetDevice() {}
 #include "../../src/modules/wifi/wifi_display_colors_api_service.cpp"
 #include "../../src/modules/gps/gps_api_service.cpp"
 #include "../../src/modules/obd/obd_api_service.cpp"
+#include "../../src/modules/obd/obd_settings_sync_module.cpp"
 #include "../../src/modules/wifi/backup_snapshot_cache.cpp"
 #include "../../src/modules/wifi/backup_api_service.cpp"
 #include "../mocks/ble_client.h"
@@ -3911,6 +3922,7 @@ void test_profile_taps_preserve_accepted_state_when_persistence_fails() {
     input.triple(1000);
     mock_preferences::set_fail_writes_for_key(nullptr);
     TEST_ASSERT_EQUAL_INT(0, manager.get().activeSlot);
+    TEST_ASSERT_FALSE(manager.deferredPersistPending());
     SettingsManager reloaded(storage, profiles);
     reloaded.load();
     TEST_ASSERT_EQUAL_INT(0, reloaded.get().activeSlot);
@@ -3920,6 +3932,90 @@ void test_profile_taps_preserve_accepted_state_when_persistence_fails() {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(DisplayMode::LIVE), static_cast<int>(input.mode));
     input.advancePush(2000);
     TEST_ASSERT_EQUAL_INT(0, input.ble.writeUserBytesCalls);
+}
+
+void assertProfileTapPreservesLearnedObdAddress(bool failSlotWrite) {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    seedTapProfiles(manager);
+    ProfileTapHarness input(manager);
+    ObdRuntimeModule obd;
+    obd.begin(nullptr, true, "AA:BB:CC:DD:EE:FF", 1, -90);
+    ObdSettingsSyncModule sync;
+    sync.begin(&manager, &obd);
+    sync.process(1000);
+    mockMillis = 6000;
+    sync.process(6000);
+    TEST_ASSERT_TRUE(manager.deferredPersistPending());
+    const uint32_t dueMs = manager.deferredPersistNextAttemptAtMs();
+    TEST_ASSERT_EQUAL_UINT32(6750, dueMs);
+
+    if (failSlotWrite) mock_preferences::set_fail_writes_for_key(kNvsActiveSlot);
+    input.triple(6000);
+    mock_preferences::set_fail_writes_for_key(nullptr);
+    TEST_ASSERT_EQUAL_INT(failSlotWrite ? 0 : 1, manager.get().activeSlot);
+    TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF", manager.get().obdSavedAddress.c_str());
+    TEST_ASSERT_EQUAL(failSlotWrite, manager.deferredPersistPending());
+    if (failSlotWrite) {
+        TEST_ASSERT_FALSE(manager.deferredPersistRetryScheduled());
+        TEST_ASSERT_EQUAL_UINT32(dueMs, manager.deferredPersistNextAttemptAtMs());
+        // A matching RAM address makes the synchronizer a no-op, so the
+        // original obligation must survive the unrelated failed slot write.
+        sync.process(6600);
+        manager.serviceDeferredPersist(dueMs - 1);
+        TEST_ASSERT_TRUE(manager.deferredPersistPending());
+        SettingsManager beforeDeadline(storage, profiles);
+        beforeDeadline.load();
+        TEST_ASSERT_EQUAL_STRING("", beforeDeadline.get().obdSavedAddress.c_str());
+    }
+    manager.serviceDeferredPersist(dueMs);
+    TEST_ASSERT_FALSE(manager.deferredPersistPending());
+    SettingsManager reloaded(storage, profiles);
+    reloaded.load();
+    TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF", reloaded.get().obdSavedAddress.c_str());
+    TEST_ASSERT_EQUAL_UINT8(1, reloaded.get().obdSavedAddrType);
+    TEST_ASSERT_EQUAL_INT(failSlotWrite ? 0 : 1, reloaded.get().activeSlot);
+}
+
+void test_failed_profile_tap_retains_earlier_obd_sync_save_and_deadline() {
+    assertProfileTapPreservesLearnedObdAddress(true);
+}
+
+void test_successful_profile_tap_commits_earlier_obd_sync_save() {
+    assertProfileTapPreservesLearnedObdAddress(false);
+}
+
+void test_failed_immediate_mutation_retains_earlier_deferred_retry() {
+    for (SettingsPersistMode mode : {SettingsPersistMode::Immediate,
+                                    SettingsPersistMode::ImmediateNvsDeferredBackup}) {
+        resetRuntimeState();
+        SettingsManager manager(storage, profiles);
+        TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+        ObdSettingsUpdate learned;
+        learned.hasSavedAddress = true;
+        learned.savedAddress = "AA:BB:CC:DD:EE:FF";
+        TEST_ASSERT_TRUE(manager.applyObdSettingsUpdate(learned, SettingsPersistMode::Deferred).success);
+        mock_preferences::set_fail_writes_for_key(kNvsActiveSlot);
+        manager.serviceDeferredPersist(manager.deferredPersistNextAttemptAtMs());
+        const uint32_t retryMs = manager.deferredPersistNextAttemptAtMs();
+        TEST_ASSERT_TRUE(manager.deferredPersistRetryScheduled());
+        TEST_ASSERT_FALSE(manager.setActiveSlot(1, mode).success);
+        TEST_ASSERT_EQUAL_INT(0, manager.get().activeSlot);
+        TEST_ASSERT_TRUE(manager.deferredPersistPending());
+        TEST_ASSERT_TRUE(manager.deferredPersistRetryScheduled());
+        TEST_ASSERT_EQUAL_UINT32(retryMs, manager.deferredPersistNextAttemptAtMs());
+        mock_preferences::set_fail_writes_for_key(nullptr);
+        manager.serviceDeferredPersist(retryMs - 1);
+        TEST_ASSERT_TRUE(manager.deferredPersistPending());
+        manager.serviceDeferredPersist(retryMs);
+        TEST_ASSERT_FALSE(manager.deferredPersistPending());
+        SettingsManager reloaded(storage, profiles);
+        reloaded.load();
+        TEST_ASSERT_EQUAL_INT(0, reloaded.get().activeSlot);
+        TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF", reloaded.get().obdSavedAddress.c_str());
+    }
 }
 
 void test_profile_taps_decline_busy_cycle_then_accept_fresh_cycle() {
@@ -3986,6 +4082,9 @@ void test_profile_taps_keep_local_selection_when_offline_or_auto_push_disabled()
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_failed_profile_tap_retains_earlier_obd_sync_save_and_deadline);
+    RUN_TEST(test_successful_profile_tap_commits_earlier_obd_sync_save);
+    RUN_TEST(test_failed_immediate_mutation_retains_earlier_deferred_retry);
     RUN_TEST(test_profile_taps_preserve_accepted_state_when_persistence_fails);
     RUN_TEST(test_profile_taps_decline_busy_cycle_then_accept_fresh_cycle);
     RUN_TEST(test_profile_taps_keep_local_selection_when_offline_or_auto_push_disabled);

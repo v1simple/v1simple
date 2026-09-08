@@ -66,6 +66,32 @@ def test_file_artifact_owns_raw_bytes() -> None:
         )
 
 
+def test_reused_live_output_refusal_preserves_existing_evidence() -> None:
+    for extra_args in ([], ["--duration-seconds", "0"]):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            retained = {
+                "window_result.json": b'{"result":"PASS","sentinel":"original run"}\n',
+                "bench_serial.log": b"original serial bytes\n",
+            }
+            for name, data in retained.items():
+                (out_dir / name).write_bytes(data)
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "scripts/bench/run_window.py"),
+                 "--suite", "replay", "--out-dir", str(out_dir),
+                 "--git-worktree-clean", "1", "--replay-executable", "/unused/replay",
+                 *extra_args],
+                capture_output=True, text=True,
+            )
+            assert_true(result.returncode == 3, result.stderr)
+            assert_true("refusing to reuse existing live evidence" in result.stderr, result.stderr)
+            assert_true(set(path.name for path in out_dir.iterdir()) == set(retained),
+                        "refusal created new artifacts in an existing recording")
+            for name, data in retained.items():
+                assert_true((out_dir / name).read_bytes() == data,
+                            f"refusal overwrote retained {name}")
+
+
 def test_replay_stimulus_is_persisted_as_raw_ndjson_once() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
@@ -911,6 +937,7 @@ def test_main_writes_collection_only_and_returns_exit_one_for_unlinked_no_flash(
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
         args = SimpleNamespace(
+            camera=False,
             board_id="fixture",
             blink_arrow=False,
             blink_profile="steady",
@@ -976,6 +1003,7 @@ def test_dirty_source_vetoes_qualification_before_collection() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
         args = SimpleNamespace(
+            camera=False,
             board_id="fixture",
             blink_arrow=False,
             blink_profile="steady",
@@ -1028,6 +1056,7 @@ def run_replay_delivery_verdict(
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
         args = SimpleNamespace(
+            camera=False,
             board_id="fixture",
             blink_arrow=False,
             blink_profile="scenario",
@@ -1116,6 +1145,7 @@ def test_clean_source_preserves_qualified_pass_behavior() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
         args = SimpleNamespace(
+            camera=False,
             board_id="fixture",
             blink_arrow=False,
             blink_profile="steady",
@@ -2143,6 +2173,7 @@ def test_serial_interrupted_loader_framing_requires_one_exact_rom_banner() -> No
 
 def main() -> int:
     test_file_artifact_owns_raw_bytes()
+    test_reused_live_output_refusal_preserves_existing_evidence()
     test_replay_stimulus_is_persisted_as_raw_ndjson_once()
     test_replay_delivery_is_persisted_with_explicit_loss_denominators()
     test_delivery_summary_counts_attempts_and_vetoes_dropped_or_skipped()

@@ -55,6 +55,8 @@ class HealthJournal {
                bool previousClean, bool panicEvidencePresent);
     void ready(uint32_t nowMs);
     void end(uint32_t nowMs);
+    // Cancel the preceding END after a shutdown abort; retain this boot's counters.
+    void resumeAfterAbortedShutdown(uint32_t nowMs);
 
     bool enabled() const { return enabled_; }
     uint32_t bootId() const { return bootId_; }

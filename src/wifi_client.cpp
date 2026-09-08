@@ -1058,9 +1058,12 @@ void WiFiManager::checkWifiClientStatus() {
             if (decision == WifiMaintenanceLinkPolicy::Decision::ReconcilePhysicalConnection) {
                 const int slotIndex = findConfiguredSlotBySsid(WiFi.SSID());
                 if (slotIndex >= 0) {
-                    cancelMaintenanceAutoConnect("physical_reconnect");
+                    // Publish the recovered link before scan cancellation can
+                    // retire STA based on the stale DISCONNECTED app state.
                     wifiClientState_ = WIFI_CLIENT_CONNECTED;
                     currentConnectedSlotIndex_ = slotIndex;
+                    cancelMaintenanceAutoConnect("physical_reconnect");
+                    maintenanceAutoConnectStaDropGate_.clear();
                     wifiReconnectFailures_ = 0;
                     maintenanceAutoConnectRetryAtMs_ = 0;
                     Serial.println("[WiFiClient] Reconciled framework STA auto-reconnect");

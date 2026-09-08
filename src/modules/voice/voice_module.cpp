@@ -75,7 +75,7 @@ static AlertBand toAudioBand(Band band) {
     case BAND_K:
         return AlertBand::K;
     case BAND_KU:
-        return AlertBand::K; // No Ku audio asset; speak as K.
+        return AlertBand::KU;
     case BAND_X:
         return AlertBand::X;
     default:

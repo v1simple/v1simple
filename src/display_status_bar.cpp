@@ -280,10 +280,14 @@ void V1Display::drawProfileIndicator(int slot) {
     drawnRegion_.add(profileRect.x, profileRect.y, profileRect.w, profileRect.h, DisplayDirtyRegionSource::Status);
     FILL_RECT(profileRect.x, profileRect.y, profileRect.w, profileRect.h, PALETTE_BG);
 
-    // Use built-in font (OFR font subset doesn't have all letters for profile names)
-    TFT_CALL(setTextSize)(2); // Size 2 = ~12px per char
+    // Keep every accepted name (up to 20 characters) inside the cleared region.
+    // The built-in font advances 6 pixels per character at size 1; long names
+    // use that size so changing or hiding them cannot leave pixels outside it.
+    const size_t nameLength = strlen(name);
+    const uint8_t textSize = nameLength * 12 <= static_cast<size_t>(profileRect.w) ? 2 : 1;
+    TFT_CALL(setTextSize)(textSize);
     TFT_CALL(setTextColor)(color, PALETTE_BG);
-    int16_t nameWidth = strlen(name) * 12; // size 2 = ~12px per char
+    const int16_t nameWidth = static_cast<int16_t>(nameLength * 6 * textSize);
     int textX = cx - nameWidth / 2;
     GFX_setTextDatum(TL_DATUM);
     GFX_drawString(tft_, name, textX, profileRect.y);

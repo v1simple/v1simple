@@ -112,14 +112,7 @@ int V1DeviceStore::findDeviceIndex(const String& normalizedAddress) const {
     return -1;
 }
 
-void V1DeviceStore::sortAndTrim() {
-    std::sort(devices_.begin(), devices_.end(), [](const V1DeviceRecord& lhs, const V1DeviceRecord& rhs) {
-        if (lhs.lastSeenMs != rhs.lastSeenMs) {
-            return lhs.lastSeenMs > rhs.lastSeenMs;
-        }
-        return lhs.address < rhs.address;
-    });
-
+void V1DeviceStore::trimToCapacity() {
     if (devices_.size() > MAX_DEVICES) {
         devices_.resize(MAX_DEVICES);
     }
@@ -246,11 +239,15 @@ V1DeviceStore::StoreSnapshot V1DeviceStore::readStore(fs::FS& filesystem) const 
         }
     }
 
-    std::sort(snapshot.devices.begin(), snapshot.devices.end(), [](const V1DeviceRecord& lhs,
-                                                                  const V1DeviceRecord& rhs) {
-        if (lhs.lastSeenMs != rhs.lastSeenMs) return lhs.lastSeenMs > rhs.lastSeenMs;
-        return lhs.address < rhs.address;
-    });
+    // Existing v2 catalogs already serialize newest first. Retain that durable
+    // order: persisted millis() values cannot be compared across boots or wrap.
+    if (snapshot.legacy) {
+        std::sort(snapshot.devices.begin(), snapshot.devices.end(), [](const V1DeviceRecord& lhs,
+                                                                      const V1DeviceRecord& rhs) {
+            if (lhs.lastSeenMs != rhs.lastSeenMs) return lhs.lastSeenMs > rhs.lastSeenMs;
+            return lhs.address < rhs.address;
+        });
+    }
     if (snapshot.devices.size() > MAX_DEVICES) snapshot.devices.resize(MAX_DEVICES);
     return snapshot;
 }
@@ -437,7 +434,11 @@ bool V1DeviceStore::migrateLegacyFiles(fs::FS* sourceFs) {
         return false;
     }
 
-    sortAndTrim();
+    // Legacy text has no recency information; retain its deterministic order.
+    std::sort(devices_.begin(), devices_.end(), [](const V1DeviceRecord& lhs, const V1DeviceRecord& rhs) {
+        return lhs.address < rhs.address;
+    });
+    trimToCapacity();
     return true;
 }
 
@@ -507,9 +508,13 @@ bool V1DeviceStore::upsertDeviceInternal(const String& address, bool persistNow)
         device.address = normalizedAddress;
         device.lastSeenMs = nowMs;
         devices_.push_back(device);
+        index = static_cast<int>(devices_.size()) - 1;
     }
 
-    sortAndTrim();
+    // The most recent sighting leads the persisted list, even just after boot
+    // or millis() rollover. Evict only the least recently seen tail entry.
+    std::rotate(devices_.begin(), devices_.begin() + index, devices_.begin() + index + 1);
+    trimToCapacity();
     dirty_ = true;
     if (!persistNow) {
         return true;
@@ -555,12 +560,12 @@ bool V1DeviceStore::setDeviceName(const String& address, const String& name) {
         V1DeviceRecord device;
         device.address = normalizedAddress;
         device.lastSeenMs = millis();
-        devices_.push_back(device);
-        index = static_cast<int>(devices_.size()) - 1;
+        devices_.insert(devices_.begin(), device);
+        index = 0;
     }
 
     devices_[index].name = safeName;
-    sortAndTrim();
+    trimToCapacity();
     dirty_ = true;
     return persistDirtyStore();
 }
@@ -580,12 +585,12 @@ bool V1DeviceStore::setDeviceDefaultProfile(const String& address, uint8_t defau
         V1DeviceRecord device;
         device.address = normalizedAddress;
         device.lastSeenMs = millis();
-        devices_.push_back(device);
-        index = static_cast<int>(devices_.size()) - 1;
+        devices_.insert(devices_.begin(), device);
+        index = 0;
     }
 
     devices_[index].defaultProfile = clampDefaultProfileValue(defaultProfile);
-    sortAndTrim();
+    trimToCapacity();
     dirty_ = true;
     return persistDirtyStore();
 }

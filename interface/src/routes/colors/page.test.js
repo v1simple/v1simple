@@ -129,6 +129,49 @@ describe('colors route page', () => {
         unmount();
     });
 
+    it.each(['http', 'network'])(
+        'prevents default-color saves after an initial %s failure and preserves colors on retry',
+        async (failure) => {
+            let displayReads = 0;
+            const savedColors = { ...cloneDefaultColors(), bogey: 2016, brightness: 70 };
+            const fetchMock = installDefaultFetch([
+                {
+                    method: 'GET',
+                    match: DISPLAY_SETTINGS_ENDPOINT,
+                    respond: () => {
+                        if (displayReads++ === 0) {
+                            if (failure === 'network') throw new Error('offline');
+                            return jsonResponse({}, 503);
+                        }
+                        return jsonResponse(savedColors);
+                    }
+                }
+            ]);
+            const { unmount } = render(Page);
+
+            await screen.findByText('Failed to load colors');
+            expect(screen.queryByRole('button', { name: /save colors/i })).not.toBeInTheDocument();
+            expect(screen.queryByRole('slider')).not.toBeInTheDocument();
+            expect(
+                fetchMock.mock.calls.some(
+                    ([url, init]) => url === DISPLAY_SETTINGS_ENDPOINT && init?.method === 'POST'
+                )
+            ).toBe(false);
+
+            await fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+            const saveButton = await screen.findByRole('button', { name: /save colors/i });
+            await fireEvent.input(screen.getByRole('slider'), { target: { value: '100' } });
+            await fireEvent.click(saveButton);
+            await screen.findByText('Colors saved! Previewing on display...');
+            const saveCall = fetchMock.mock.calls.find(
+                ([url, init]) => url === DISPLAY_SETTINGS_ENDPOINT && init?.method === 'POST'
+            );
+            expect(saveCall[1].body.get('brightness')).toBe('100');
+            expect(saveCall[1].body.get('bogey')).toBe('2016');
+            unmount();
+        }
+    );
+
     it('disables battery percentage when the battery icon is hidden', async () => {
         installDefaultFetch([
             {

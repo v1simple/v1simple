@@ -255,9 +255,10 @@ void ObdRuntimeModule::handlePollingResponse(uint32_t nowMs) {
     }
 
     const ObdCommandKind kind = activeCommand_.kind;
+    const bool responseOverflowed = bleOverflowed_;
     bool handled = false;
 
-    if (bleOverflowed_) {
+    if (responseOverflowed) {
         bufferOverflowCount_++;
         handled = false;
     } else {
@@ -281,12 +282,10 @@ void ObdRuntimeModule::handlePollingResponse(uint32_t nowMs) {
         return;
     }
 
-    if (bufferOverflowCount_ >= obd::BUFFER_OVERFLOWS_BEFORE_DISCONNECT) {
-        handlePollingError(nowMs, false, ObdFailureReason::BUFFER_OVERFLOW);
-    } else {
-        handlePollingError(nowMs, false,
-                           bleOverflowed_ ? ObdFailureReason::BUFFER_OVERFLOW : ObdFailureReason::COMMAND_RESPONSE);
-    }
+    // The response reset clears bleOverflowed_. Its lifetime counter is only
+    // diagnostic: old overflows must not change this command's recovery policy.
+    handlePollingError(nowMs, false,
+                       responseOverflowed ? ObdFailureReason::BUFFER_OVERFLOW : ObdFailureReason::COMMAND_RESPONSE);
 }
 
 // ======================================================================

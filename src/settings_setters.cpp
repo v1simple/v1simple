@@ -60,7 +60,8 @@ SettingsPersistResult SettingsManager::finishSettingsMutation(const V1Settings& 
     SettingsPersistResult result = persistSettingsByMode(*this, persistMode);
     if (!result.success && persistMode != SettingsPersistMode::Deferred) {
         settings_ = before;
-        clearDeferredPersistState();
+        // A failed immediate save leaves any earlier deferred mutation in
+        // this snapshot. Preserve its pending/retry state and original due time.
     }
     return result;
 }

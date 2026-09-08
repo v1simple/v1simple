@@ -79,6 +79,133 @@ void tearDown() {
     }
 }
 
+String catalogAddress(unsigned int index) {
+    char address[18];
+    snprintf(address, sizeof(address), "00:00:00:00:00:%02X", index);
+    return String(address);
+}
+
+void seedDeviceCatalog(V1DeviceStore& devices, unsigned int count) {
+    for (unsigned int index = 0; index < count; ++index) {
+        mockMillis = 100000 + index;
+        TEST_ASSERT_TRUE(devices.upsertDevice(catalogAddress(index)));
+    }
+}
+
+bool catalogContains(const V1DeviceStore& devices, const String& address) {
+    for (const auto& record : devices.listDevices()) {
+        if (record.address == address) return true;
+    }
+    return false;
+}
+
+void test_new_device_survives_cross_boot_capacity_for_every_insertion_path() {
+    for (unsigned int count : {16u, 15u}) {
+        for (int action = 0; action < 4; ++action) {
+            const auto root = g_tempRoot / (std::to_string(count) + "_" + std::to_string(action));
+            std::filesystem::create_directories(root);
+            fs::FS fs(root);
+            V1DeviceStore priorBoot;
+            TEST_ASSERT_TRUE(priorBoot.begin(&fs));
+            seedDeviceCatalog(priorBoot, count);
+            mockMillis = 1000;
+            V1DeviceStore currentBoot;
+            TEST_ASSERT_TRUE(currentBoot.begin(&fs));
+            const String added = "AA:BB:CC:DD:EE:FF";
+            if (action == 0) TEST_ASSERT_TRUE(currentBoot.setDeviceName(added, "Newest detector"));
+            if (action == 1) TEST_ASSERT_TRUE(currentBoot.setDeviceDefaultProfile(added, 2));
+            if (action == 2) TEST_ASSERT_TRUE(currentBoot.upsertDevice(added));
+            if (action == 3) {
+                TEST_ASSERT_TRUE(currentBoot.touchDeviceInMemory(added));
+                TEST_ASSERT_TRUE(currentBoot.hasPendingSave());
+                TEST_ASSERT_TRUE(currentBoot.flushPendingSave());
+            }
+            TEST_ASSERT_TRUE(catalogContains(currentBoot, added));
+            V1DeviceStore reloaded;
+            TEST_ASSERT_TRUE(reloaded.begin(&fs));
+            const auto records = reloaded.listDevices();
+            TEST_ASSERT_EQUAL_UINT(16, records.size());
+            TEST_ASSERT_EQUAL_STRING(added.c_str(), records.front().address.c_str());
+            TEST_ASSERT_EQUAL_UINT32(1000, records.front().lastSeenMs);
+            if (action == 0) TEST_ASSERT_EQUAL_STRING("Newest detector", records.front().name.c_str());
+            if (action == 1) TEST_ASSERT_EQUAL_UINT8(2, records.front().defaultProfile);
+            TEST_ASSERT_EQUAL(count == 15, catalogContains(reloaded, catalogAddress(0)));
+            TEST_ASSERT_TRUE(catalogContains(reloaded, catalogAddress(count - 1)));
+        }
+    }
+}
+
+void test_recency_survives_successive_boots_and_existing_device_metadata_edits() {
+    fs::FS fs(g_tempRoot);
+    V1DeviceStore original;
+    TEST_ASSERT_TRUE(original.begin(&fs));
+    seedDeviceCatalog(original, 16);
+    mockMillis = 1000;
+    V1DeviceStore secondBoot;
+    TEST_ASSERT_TRUE(secondBoot.begin(&fs));
+    TEST_ASSERT_TRUE(secondBoot.touchDeviceInMemory(catalogAddress(0)));
+    TEST_ASSERT_TRUE(secondBoot.flushPendingSave());
+
+    mockMillis = 5;
+    V1DeviceStore thirdBoot;
+    TEST_ASSERT_TRUE(thirdBoot.begin(&fs));
+    TEST_ASSERT_EQUAL_STRING(catalogAddress(0).c_str(), thirdBoot.listDevices().front().address.c_str());
+    // Editing metadata is not another sighting and must not alter recency.
+    const auto beforeEdit = thirdBoot.listDevices();
+    TEST_ASSERT_TRUE(thirdBoot.setDeviceName(catalogAddress(1), "Oldest edited"));
+    TEST_ASSERT_TRUE(thirdBoot.setDeviceDefaultProfile(catalogAddress(1), 3));
+    const auto afterEdit = thirdBoot.listDevices();
+    for (size_t index = 0; index < beforeEdit.size(); ++index) {
+        TEST_ASSERT_EQUAL_STRING(beforeEdit[index].address.c_str(), afterEdit[index].address.c_str());
+        TEST_ASSERT_EQUAL_UINT32(beforeEdit[index].lastSeenMs, afterEdit[index].lastSeenMs);
+    }
+    TEST_ASSERT_TRUE(thirdBoot.upsertDevice("AA:BB:CC:DD:EE:FF"));
+    TEST_ASSERT_FALSE(catalogContains(thirdBoot, catalogAddress(1)));
+    TEST_ASSERT_TRUE(catalogContains(thirdBoot, catalogAddress(0)));
+
+    mockMillis = 0;
+    V1DeviceStore fourthBoot;
+    TEST_ASSERT_TRUE(fourthBoot.begin(&fs));
+    TEST_ASSERT_TRUE(fourthBoot.upsertDevice("11:22:33:44:55:66"));
+    V1DeviceStore reloaded;
+    TEST_ASSERT_TRUE(reloaded.begin(&fs));
+    const auto records = reloaded.listDevices();
+    TEST_ASSERT_EQUAL_UINT(16, records.size());
+    TEST_ASSERT_EQUAL_STRING("11:22:33:44:55:66", records[0].address.c_str());
+    TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF", records[1].address.c_str());
+    TEST_ASSERT_EQUAL_STRING(catalogAddress(0).c_str(), records[2].address.c_str());
+    TEST_ASSERT_FALSE(catalogContains(reloaded, catalogAddress(2)));
+}
+
+void test_device_recency_survives_mirror_recovery_and_millis_wrap() {
+    std::filesystem::create_directories(g_tempRoot / "sd");
+    std::filesystem::create_directories(g_tempRoot / "little");
+    fs::FS sd(g_tempRoot / "sd"), little(g_tempRoot / "little");
+    V1DeviceStore initial;
+    TEST_ASSERT_TRUE(initial.begin(&sd, &little));
+    seedDeviceCatalog(initial, 16);
+    V1DeviceStore offline;
+    TEST_ASSERT_TRUE(offline.begin(&little));
+    mockMillis = UINT32_MAX - 1;
+    TEST_ASSERT_TRUE(offline.upsertDevice(catalogAddress(0)));
+    mockMillis = 0;
+    TEST_ASSERT_TRUE(offline.upsertDevice(catalogAddress(1)));
+    TEST_ASSERT_TRUE(offline.upsertDevice("AA:BB:CC:DD:EE:FF"));
+    V1DeviceStore returned;
+    TEST_ASSERT_TRUE(returned.begin(&sd, &little));
+    TEST_ASSERT_EQUAL_STRING(readFileToString(little, "/v1devices.json").c_str(),
+                             readFileToString(sd, "/v1devices.json").c_str());
+    TEST_ASSERT_TRUE(sd.rename("/v1devices.json", "/v1devices.json.prev"));
+    writeFileFromString(sd, "/v1devices.json", "invalid");
+    V1DeviceStore recovered;
+    TEST_ASSERT_TRUE(recovered.begin(&sd));
+    const auto records = recovered.listDevices();
+    TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF", records[0].address.c_str());
+    TEST_ASSERT_EQUAL_STRING(catalogAddress(1).c_str(), records[1].address.c_str());
+    TEST_ASSERT_EQUAL_STRING(catalogAddress(0).c_str(), records[2].address.c_str());
+    TEST_ASSERT_FALSE(catalogContains(recovered, catalogAddress(2)));
+}
+
 void test_touch_defers_device_write_until_flush_and_reloads_saved_record() {
     fs::FS fs(g_tempRoot);
     V1DeviceStore devices;
@@ -479,6 +606,9 @@ void test_both_boot_paths_use_catalog_bootstrap_and_connection_still_discovers()
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_new_device_survives_cross_boot_capacity_for_every_insertion_path);
+    RUN_TEST(test_recency_survives_successive_boots_and_existing_device_metadata_edits);
+    RUN_TEST(test_device_recency_survives_mirror_recovery_and_millis_wrap);
     RUN_TEST(test_deleted_last_legacy_device_stays_deleted_after_reload);
     RUN_TEST(test_empty_legacy_v1_catalog_overrides_legacy_text_import);
     RUN_TEST(test_newer_empty_littlefs_catalog_overrides_stale_sd_and_legacy_text);

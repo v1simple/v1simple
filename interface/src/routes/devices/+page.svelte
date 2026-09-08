@@ -86,11 +86,12 @@
     }
 
     async function saveName(address) {
+        const submittedName = editName.trim();
         busyAddress = address;
         try {
             const formData = new FormData();
             formData.append('address', address);
-            formData.append('name', editName.trim());
+            formData.append('name', submittedName);
 
             const res = await fetchWithTimeout('/api/v1/devices/name', {
                 method: 'POST',
@@ -102,7 +103,7 @@
             }
 
             devices = devices.map((device) =>
-                device.address === address ? { ...device, name: editName.trim() } : device
+                device.address === address ? { ...device, name: submittedName } : device
             );
             message = { type: 'success', text: 'Device name saved.' };
             cancelRename();

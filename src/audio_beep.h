@@ -5,7 +5,7 @@
 #include "settings.h" // For VoiceAlertMode enum
 
 // Band types for voice alerts
-enum class AlertBand : uint8_t { LASER = 0, KA = 1, K = 2, X = 3 };
+enum class AlertBand : uint8_t { LASER = 0, KA = 1, K = 2, X = 3, KU = 4 };
 
 // Direction types for voice alerts
 enum class AlertDirection : uint8_t { AHEAD = 0, BEHIND = 1, SIDE = 2 };
@@ -36,6 +36,8 @@ void play_alert_voice(AlertBand band, AlertDirection direction);
 //   BAND_FREQ: "Ka 34 7 49"
 // direction appended if includeDirection is true: "ahead", "behind", "side"
 // bogeyCount appended if > 1: "2 bogeys", "3 bogeys", etc.
+// Ku has no band-name recording: omit that token, retaining frequency,
+// direction and count when requested. A pure Ku band-only request is unavailable.
 // freqMHz: frequency in MHz (e.g., 34749 for 34.749 GHz)
 // Returns immediately if already playing, audio disabled, or SD not available
 void play_frequency_voice(AlertBand band, uint16_t freqMHz, AlertDirection direction, VoiceAlertMode mode,

@@ -437,7 +437,7 @@ void MaintenanceRuntime::writeCleanShutdownMarker() {
 }
 
 void MaintenanceRuntime::resumePersistenceAfterAbortedShutdownPhase() {
-    resumePersistenceAfterAbortedShutdown(events_);
+    resumePersistenceAfterAbortedShutdown(events_, health_);
 }
 
 void MaintenanceRuntime::resumeMaintenanceWifiAfterAbortedShutdown() {

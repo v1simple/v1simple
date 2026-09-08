@@ -7,6 +7,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <string>
 
 #include "../mocks/Arduino.h"
 #include "../../src/modules/gps/gps_runtime_status.h"
@@ -127,6 +128,21 @@ struct Fixture {
     void sendResponse(const char* response, uint32_t deltaMs = 1) {
         runtime.onBleData(reinterpret_cast<const uint8_t*>(response), strlen(response));
         advance(deltaMs);
+    }
+
+    void sendNextSpeedResponse(const char* response) {
+        if (runtime.getState() == ObdConnectionState::ERROR_BACKOFF) {
+            advance(obd::ERROR_PAUSE_MS);
+        }
+        TEST_ASSERT_EQUAL(ObdConnectionState::POLLING, runtime.getState());
+        advance(obd::POLL_INTERVAL_MS + 1);
+        if (runtime.snapshot(nowMs).commandInFlight == ObdCommandKind::NONE) {
+            startSpeedCommand();
+        } else {
+            advance(); // consume the current command's transport write result
+        }
+        TEST_ASSERT_EQUAL(ObdCommandKind::SPEED, runtime.snapshot(nowMs).commandInFlight);
+        sendResponse(response);
     }
 };
 
@@ -406,6 +422,64 @@ void test_searching_response_extends_wait_and_accepts_delayed_elm_reply() {
     TEST_ASSERT_EQUAL_UINT32(0, status.pollErrors);
 }
 
+void test_current_overflow_is_classified_before_response_state_is_cleared() {
+    Fixture fixture;
+    fixture.bootToPolling();
+    const std::string response = std::string(300, ' ') + "41 0D 32\r>";
+    fixture.sendNextSpeedResponse(response.c_str());
+
+    const ObdRuntimeStatus status = fixture.runtime.snapshot(fixture.nowMs);
+    TEST_ASSERT_EQUAL(ObdFailureReason::BUFFER_OVERFLOW, status.lastFailure);
+    TEST_ASSERT_EQUAL_UINT32(1, status.bufferOverflows);
+    TEST_ASSERT_EQUAL_UINT32(1, status.pollErrors);
+    TEST_ASSERT_EQUAL_UINT32(0, status.pollCount);
+    TEST_ASSERT_FALSE(status.speedValid);
+    TEST_ASSERT_EQUAL_UINT32(0, fixture.runtime.getDisconnectCallCountForTest());
+}
+
+void test_historical_overflows_do_not_change_later_no_data_recovery() {
+    // Both cases exercise discovery, initialization, response processing and
+    // backoff through the owner. Historical counters must stay diagnostic.
+    for (const bool priorOverflows : {false, true}) {
+        Fixture fixture;
+        fixture.bootToPolling();
+        if (priorOverflows) {
+            const std::string response = std::string(300, ' ') + "41 0D 32\r>";
+            fixture.sendNextSpeedResponse(response.c_str());
+            fixture.sendNextSpeedResponse(response.c_str());
+            fixture.sendNextSpeedResponse("41 0D 32\r>");
+            TEST_ASSERT_TRUE(fixture.runtime.snapshot(fixture.nowMs).speedValid);
+        }
+
+        for (unsigned error = 0; error < 10; ++error) {
+            fixture.sendNextSpeedResponse("NO DATA\r>");
+        }
+        fixture.advance(); // apply any requested disconnect through the owner
+        const ObdRuntimeStatus status = fixture.runtime.snapshot(fixture.nowMs);
+        TEST_ASSERT_EQUAL(ObdConnectionState::ERROR_BACKOFF, status.state);
+        TEST_ASSERT_EQUAL(ObdFailureReason::COMMAND_RESPONSE, status.lastFailure);
+        TEST_ASSERT_EQUAL_UINT32(priorOverflows ? 2 : 0, status.bufferOverflows);
+        TEST_ASSERT_EQUAL_UINT32(priorOverflows ? 12 : 10, status.pollErrors);
+        TEST_ASSERT_EQUAL_UINT32(0, fixture.runtime.getDisconnectCallCountForTest());
+    }
+}
+
+void test_repeated_current_overflows_still_disconnect_the_transport() {
+    Fixture fixture;
+    fixture.bootToPolling();
+    const std::string response = std::string(300, ' ') + "41 0D 32\r>";
+    for (unsigned error = 0; error < obd::ERRORS_BEFORE_DISCONNECT; ++error) {
+        fixture.sendNextSpeedResponse(response.c_str());
+    }
+    fixture.advance();
+
+    const ObdRuntimeStatus status = fixture.runtime.snapshot(fixture.nowMs);
+    TEST_ASSERT_EQUAL(ObdConnectionState::DISCONNECTED, status.state);
+    TEST_ASSERT_EQUAL(ObdFailureReason::BUFFER_OVERFLOW, status.lastFailure);
+    TEST_ASSERT_EQUAL_UINT32(obd::ERRORS_BEFORE_DISCONNECT, status.bufferOverflows);
+    TEST_ASSERT_EQUAL_UINT32(1, fixture.runtime.getDisconnectCallCountForTest());
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_initial_connection_runs_discovery_init_and_acquires_speed);
@@ -423,5 +497,8 @@ int main() {
     RUN_TEST(test_malformed_complete_response_is_rejected_without_speed_update);
     RUN_TEST(test_partial_response_completed_before_timeout_is_accepted);
     RUN_TEST(test_searching_response_extends_wait_and_accepts_delayed_elm_reply);
+    RUN_TEST(test_current_overflow_is_classified_before_response_state_is_cleared);
+    RUN_TEST(test_historical_overflows_do_not_change_later_no_data_recovery);
+    RUN_TEST(test_repeated_current_overflows_still_disconnect_the_transport);
     return UNITY_END();
 }

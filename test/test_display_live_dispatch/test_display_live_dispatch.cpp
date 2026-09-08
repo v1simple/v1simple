@@ -188,6 +188,50 @@ void assertXPaintAndSafeDispatch(const AlertData& primary, uint8_t mainBars) {
         "new live counter/card pixels must use the full-canvas panel transfer");
     TEST_ASSERT_TRUE(changedRegions.empty());
 }
+
+void assertPriorityArrowPresentation(bool priorityOnly, Direction transmittedArrows,
+                                     Direction priorityArrow, Direction expectedArrows) {
+    // Select a nondefault slot with an opposing inactive-slot policy. The main
+    // display must follow the user's active slot while retaining the rear X card.
+    settings.mutableSettings().activeSlot = 1;
+    settings.slotPriorityArrowOnly[0] = !priorityOnly;
+    settings.slotPriorityArrowOnly[1] = priorityOnly;
+    RenderFrame frame;
+    frame.primaryKind = RenderFramePrimaryKind::V1_LIVE;
+    frame.v1Priority = AlertData::create(BAND_K, DIR_FRONT, 4, 0, 24150, true, true);
+    frame.primaryState = stateFor(frame.v1Priority, '2', 4);
+    frame.primaryState.arrows = transmittedArrows;
+    frame.primaryState.priorityArrow = priorityArrow;
+    frame.cardCount = 1;
+    frame.cards[0].kind = RenderFrameCard::Kind::V1;
+    frame.cards[0].v1Alert = AlertData::create(BAND_X, DIR_REAR, 0, 2, 10525, true, false);
+    display.renderFrame(frame);
+
+    TEST_ASSERT_EQUAL_UINT(1, canvas()->flushSnapshots.size());
+    TEST_ASSERT_TRUE(regionalTransfers.empty());
+    const auto& sent = canvas()->flushSnapshots.front();
+    // The main cluster is painted before the card's own direction symbol.
+    TEST_ASSERT_TRUE(sent.triangles.size() >= 4);
+    TEST_ASSERT_TRUE(sent.triangles[0].y0 < sent.triangles[0].y1);
+    TEST_ASSERT_TRUE(sent.triangles[1].x0 < sent.triangles[1].x1);
+    TEST_ASSERT_TRUE(sent.triangles[2].x0 > sent.triangles[2].x1);
+    TEST_ASSERT_TRUE(sent.triangles[3].y0 > sent.triangles[3].y1);
+    TEST_ASSERT_EQUAL_HEX16((expectedArrows & DIR_FRONT) ? settings.get().colorArrowFront : TFT_DARKGREY,
+                           sent.triangles[0].color);
+    TEST_ASSERT_EQUAL_HEX16((expectedArrows & DIR_SIDE) ? settings.get().colorArrowSide : TFT_DARKGREY,
+                           sent.triangles[1].color);
+    TEST_ASSERT_EQUAL_HEX16((expectedArrows & DIR_SIDE) ? settings.get().colorArrowSide : TFT_DARKGREY,
+                           sent.triangles[2].color);
+    TEST_ASSERT_EQUAL_HEX16((expectedArrows & DIR_REAR) ? settings.get().colorArrowRear : TFT_DARKGREY,
+                           sent.triangles[3].color);
+    TEST_ASSERT_EQUAL_INT(1, display.ut_elementCaches().cards.lastDrawnCount);
+    const auto& card = display.ut_elementCaches().cards.lastDrawnPositions[0];
+    TEST_ASSERT_EQUAL_INT(BAND_X, card.band);
+    TEST_ASSERT_EQUAL_UINT32(10525, card.frequency);
+    TEST_ASSERT_EQUAL_INT(DIR_REAR, card.direction);
+    TEST_ASSERT_FALSE(card.isGraced);
+    TEST_ASSERT_TRUE(std::find(canvas()->printed.begin(), canvas()->printed.end(), "10.525") != canvas()->printed.end());
+}
 } // namespace
 
 void setUp() {
@@ -345,6 +389,26 @@ void test_ka_to_x_replaces_outgoing_active_band_before_full_flush() {
     TEST_ASSERT_TRUE(regionalTransfers.empty());
 }
 
+void test_priority_arrow_disabled_keeps_all_transmitted_directions() {
+    const auto allDirections = static_cast<Direction>(DIR_FRONT | DIR_SIDE | DIR_REAR);
+    assertPriorityArrowPresentation(false, allDirections, DIR_FRONT, allDirections);
+}
+
+void test_priority_arrow_enabled_filters_main_directions_but_keeps_secondary() {
+    assertPriorityArrowPresentation(true, static_cast<Direction>(DIR_FRONT | DIR_SIDE | DIR_REAR),
+                                    DIR_FRONT, DIR_FRONT);
+}
+
+void test_priority_arrow_enabled_does_not_invent_untransmitted_priority_direction() {
+    assertPriorityArrowPresentation(true, static_cast<Direction>(DIR_SIDE | DIR_REAR),
+                                    DIR_FRONT, DIR_NONE);
+}
+
+void test_priority_arrow_enabled_with_no_priority_direction_keeps_main_arrows_inactive() {
+    assertPriorityArrowPresentation(true, static_cast<Direction>(DIR_FRONT | DIR_SIDE | DIR_REAR),
+                                    DIR_NONE, DIR_NONE);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_event0007_new_x_with_unchanged_ka_primary_paints_and_full_flushes);
@@ -353,5 +417,9 @@ int main() {
     RUN_TEST(test_live_pending_draw_full_flushes_even_when_frame_itself_is_unchanged);
     RUN_TEST(test_front_to_side_replaces_outgoing_active_paint_before_full_flush);
     RUN_TEST(test_ka_to_x_replaces_outgoing_active_band_before_full_flush);
+    RUN_TEST(test_priority_arrow_disabled_keeps_all_transmitted_directions);
+    RUN_TEST(test_priority_arrow_enabled_filters_main_directions_but_keeps_secondary);
+    RUN_TEST(test_priority_arrow_enabled_does_not_invent_untransmitted_priority_direction);
+    RUN_TEST(test_priority_arrow_enabled_with_no_priority_direction_keeps_main_arrows_inactive);
     return UNITY_END();
 }

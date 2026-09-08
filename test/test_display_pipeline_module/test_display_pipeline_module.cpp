@@ -857,6 +857,86 @@ void test_handle_parsed_suppresses_synthetic_alert_during_alp_warm_up() {
     TEST_ASSERT_EQUAL(0, display.lastAlertUpdateCount);
 }
 
+static void assertV1AlpOwnershipLifecycle(bool restoreOwner) {
+    const auto render = [&](uint32_t now) {
+        mockMillis = now;
+        mockMicros = now * 1000UL;
+        display.reset();
+        if (restoreOwner) {
+            TEST_ASSERT_TRUE(module.restoreCurrentOwner(now));
+        } else {
+            module.handleParsed(now);
+        }
+        TEST_ASSERT_TRUE(display.hasLastRenderFrame);
+    };
+    settings.alpAlertPersistSec = 2;
+    settings.slotAlertPersistSec[0] = 0;
+    parser.state.activeBands = BAND_LASER;
+    parser.state.arrows = DIR_REAR;
+    parser.state.muted = true;
+    parser.setAlerts({makeKAlert(24148)});
+    alpModule.testSetEnabled(true);
+    alpModule.testSetState(AlpState::ALERT_ACTIVE, 1000);
+    alpModule.testOpenSession(AlpGunType::UNKNOWN, true, AlpLaserDirection::UNKNOWN, 1000);
+
+    // Warm-up suppression belongs to ALP alone; V1 laser and radar remain visible.
+    render(1000);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(BAND_LASER, display.lastRenderFrame.v1Priority.band);
+    TEST_ASSERT_EQUAL(1, display.lastRenderFrame.cardCount);
+    TEST_ASSERT_EQUAL(24148, display.lastRenderFrame.cards[0].v1Alert.frequency);
+    TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
+
+    alpModule.testOpenSession(AlpGunType::PL3_PROLITE, false, AlpLaserDirection::FRONT, 1200);
+    render(1200);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_FALSE(display.lastRenderFrame.primaryState.muted);
+    TEST_ASSERT_EQUAL(DIR_FRONT, display.lastRenderFrame.primaryState.arrows);
+    TEST_ASSERT_EQUAL(1, display.lastRenderFrame.cardCount);
+    TEST_ASSERT_EQUAL(24148, display.lastRenderFrame.cards[0].v1Alert.frequency);
+
+    // The ALP tail cannot retain ownership against the still-live V1 laser.
+    alpModule.testSetState(AlpState::TEARDOWN, 1300);
+    alpModule.testCloseSession(1300);
+    render(1300);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(BAND_LASER, display.lastRenderFrame.v1Priority.band);
+    TEST_ASSERT_EQUAL(DIR_REAR, display.lastRenderFrame.v1Priority.direction);
+    TEST_ASSERT_EQUAL(1, display.lastRenderFrame.cardCount);
+    TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
+
+    parser.state.activeBands = BAND_NONE;
+    parser.setAlerts({});
+    render(1400);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_PERSISTED, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastRenderFrame.alpPrimary.gun);
+    TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
+
+    AlertData weak = makeKAlert(24150);
+    weak.frontStrength = 1;
+    parser.setAlerts({weak});
+    render(1500);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(24150, display.lastRenderFrame.v1Priority.frequency);
+    TEST_ASSERT_EQUAL(1, display.lastRenderFrame.v1Priority.frontStrength);
+
+    // V1 ownership must not restart the original ALP persistence window.
+    parser.setAlerts({});
+    render(3299);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_PERSISTED, display.lastRenderFrame.primaryKind);
+    render(3300);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_FALSE(display.lastAlpLaserEvent.active);
+}
+
+void test_parsed_owner_preserves_live_v1_across_alp_warmup_and_persistence() {
+    assertV1AlpOwnershipLifecycle(false);
+}
+
+void test_restored_owner_preserves_live_v1_across_alp_warmup_and_persistence() {
+    assertV1AlpOwnershipLifecycle(true);
+}
+
 void test_handle_parsed_clears_alp_projection_during_teardown_gap() {
     // TEARDOWN without a gun ID is a phantom session — display must clear.
     // (TEARDOWN *with* a gun keeps the display alive; see updateCurrentEvent.)
@@ -1361,6 +1441,8 @@ int main() {
     RUN_TEST(test_handle_parsed_keeps_v1_cards_when_alp_is_primary);
     RUN_TEST(test_handle_parsed_does_not_synthesize_when_alp_inactive);
     RUN_TEST(test_handle_parsed_suppresses_synthetic_alert_during_alp_warm_up);
+    RUN_TEST(test_parsed_owner_preserves_live_v1_across_alp_warmup_and_persistence);
+    RUN_TEST(test_restored_owner_preserves_live_v1_across_alp_warmup_and_persistence);
     RUN_TEST(test_handle_parsed_clears_alp_projection_during_teardown_gap);
     RUN_TEST(test_handle_parsed_keeps_alp_alert_live_until_normal_listening_heartbeat_returns);
     RUN_TEST(test_handle_parsed_clears_stale_alp_presentation_after_listening_hold_dwell);

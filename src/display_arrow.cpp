@@ -110,7 +110,7 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
     // Dim resting arrows are intentionally visible when their V1 direction bit
     // is not active.  Blink OFF is handled separately by blinkOffXxx and must
     // still erase to PALETTE_BG so the V1 Image1/Image2 blink is visible.
-    uint16_t offCol = TFT_DARKGREY;
+    uint16_t offCol = PALETTE_GRAY;
 
     // ── ALP laser-direction color override ─────────────────────────────────
     //

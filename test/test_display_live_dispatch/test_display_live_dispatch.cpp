@@ -216,13 +216,14 @@ void assertPriorityArrowPresentation(bool priorityOnly, Direction transmittedArr
     TEST_ASSERT_TRUE(sent.triangles[1].x0 < sent.triangles[1].x1);
     TEST_ASSERT_TRUE(sent.triangles[2].x0 > sent.triangles[2].x1);
     TEST_ASSERT_TRUE(sent.triangles[3].y0 > sent.triangles[3].y1);
-    TEST_ASSERT_EQUAL_HEX16((expectedArrows & DIR_FRONT) ? settings.get().colorArrowFront : TFT_DARKGREY,
+    const uint16_t restingGray = ColorThemes::STANDARD().colorGray;
+    TEST_ASSERT_EQUAL_HEX16((expectedArrows & DIR_FRONT) ? settings.get().colorArrowFront : restingGray,
                            sent.triangles[0].color);
-    TEST_ASSERT_EQUAL_HEX16((expectedArrows & DIR_SIDE) ? settings.get().colorArrowSide : TFT_DARKGREY,
+    TEST_ASSERT_EQUAL_HEX16((expectedArrows & DIR_SIDE) ? settings.get().colorArrowSide : restingGray,
                            sent.triangles[1].color);
-    TEST_ASSERT_EQUAL_HEX16((expectedArrows & DIR_SIDE) ? settings.get().colorArrowSide : TFT_DARKGREY,
+    TEST_ASSERT_EQUAL_HEX16((expectedArrows & DIR_SIDE) ? settings.get().colorArrowSide : restingGray,
                            sent.triangles[2].color);
-    TEST_ASSERT_EQUAL_HEX16((expectedArrows & DIR_REAR) ? settings.get().colorArrowRear : TFT_DARKGREY,
+    TEST_ASSERT_EQUAL_HEX16((expectedArrows & DIR_REAR) ? settings.get().colorArrowRear : restingGray,
                            sent.triangles[3].color);
     TEST_ASSERT_EQUAL_INT(1, display.ut_elementCaches().cards.lastDrawnCount);
     const auto& card = display.ut_elementCaches().cards.lastDrawnPositions[0];
@@ -331,10 +332,10 @@ void test_front_to_side_replaces_outgoing_active_paint_before_full_flush() {
     TEST_ASSERT_TRUE(leftPaint.x0 < leftPaint.x1 && leftPaint.x1 == leftPaint.x2);
     TEST_ASSERT_TRUE(rightPaint.x0 > rightPaint.x1 && rightPaint.x1 == rightPaint.x2);
     TEST_ASSERT_TRUE(rearPaint.y0 > rearPaint.y1 && rearPaint.y1 == rearPaint.y2);
-    TEST_ASSERT_EQUAL_HEX16(TFT_DARKGREY, frontPaint.color);
+    TEST_ASSERT_EQUAL_HEX16(ColorThemes::STANDARD().colorGray, frontPaint.color);
     TEST_ASSERT_EQUAL_HEX16(settings.get().colorArrowSide, leftPaint.color);
     TEST_ASSERT_EQUAL_HEX16(settings.get().colorArrowSide, rightPaint.color);
-    TEST_ASSERT_EQUAL_HEX16(TFT_DARKGREY, rearPaint.color);
+    TEST_ASSERT_EQUAL_HEX16(ColorThemes::STANDARD().colorGray, rearPaint.color);
     const bool fullClusterCleared = std::any_of(sent.rectangles.begin(), sent.rectangles.end(),
         [&](const Arduino_Canvas::FillRectCall& r) {
             return r.color == TFT_BLACK &&
@@ -370,7 +371,7 @@ void test_ka_to_x_replaces_outgoing_active_band_before_full_flush() {
     for (const auto& call : sent.text) {
         if (call.text == "Ka") {
             ++kaPaints;
-            TEST_ASSERT_EQUAL_HEX16(TFT_DARKGREY, call.color);
+            TEST_ASSERT_EQUAL_HEX16(ColorThemes::STANDARD().colorGray, call.color);
         }
         if (call.text == "X") {
             ++xPaints;

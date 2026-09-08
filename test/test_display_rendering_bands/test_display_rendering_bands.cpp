@@ -378,9 +378,9 @@ void test_drawSignalBars_unlit_bars_use_dark_gray() {
     display.ut_drawVerticalSignalBars(4, 0, BAND_KA, false);
 
     const auto& calls = canvas()->fillRoundRectCalls;
-    // Bars 4-5 (past strength) must use 0x1082 (off-color)
+    // Bars 4-5 (past strength) use the same resting gray as the idle frequency.
     for (int i = 4; i < 6; ++i) {
-        TEST_ASSERT_EQUAL_UINT16(0x1082, calls[i].color);
+        TEST_ASSERT_EQUAL_UINT16(ColorThemes::STANDARD().colorGray, calls[i].color);
     }
 }
 
@@ -397,9 +397,9 @@ void test_drawSignalBars_muted_uses_muted_color() {
     for (int i = 0; i < 4; ++i) {
         TEST_ASSERT_EQUAL_UINT16(expectedMuted, calls[i].color);
     }
-    // Unlit bars still use 0x1082
+    // Unlit bars retain the resting palette gray even during a muted alert.
     for (int i = 4; i < 6; ++i) {
-        TEST_ASSERT_EQUAL_UINT16(0x1082, calls[i].color);
+        TEST_ASSERT_EQUAL_UINT16(ColorThemes::STANDARD().colorGray, calls[i].color);
     }
 }
 
@@ -434,7 +434,7 @@ void test_drawSignalBars_max_of_front_rear_used() {
     const auto& calls = canvas()->fillRoundRectCalls;
     TEST_ASSERT_EQUAL_UINT(6u, calls.size());
     TEST_ASSERT_EQUAL_UINT16(expectedBarColor(4), calls[4].color);  // i=4 → 5th bar from bottom
-    TEST_ASSERT_EQUAL_UINT16(0x1082, calls[5].color);               // i=5 → unlit
+    TEST_ASSERT_EQUAL_UINT16(ColorThemes::STANDARD().colorGray, calls[5].color); // i=5 → unlit
 }
 
 void test_drawSignalBars_strength_6_lights_all_6_bars() {

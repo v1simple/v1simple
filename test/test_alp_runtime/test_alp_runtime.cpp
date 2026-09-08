@@ -11,6 +11,7 @@
  */
 
 #include <unity.h>
+#include <initializer_list>
 
 #include "../../src/modules/alp/alp_runtime_module.h"
 #include "../../src/modules/alp/alp_runtime_module.cpp"
@@ -278,6 +279,17 @@ void test_last_valid_frame_ms_updates_on_valid_frame() {
     processAt(1234);
 
     TEST_ASSERT_EQUAL_UINT32(1234, alpRuntimeModule.lastValidFrameMs());
+}
+
+void test_unknown_header_checksum_collision_does_not_count_as_valid_activity() {
+    beginEnabled();
+    const uint8_t collision[] = {0x68, 0x00, 0x98, 0x00};
+    TEST_ASSERT_TRUE(alpValidateChecksum(collision[0], collision[1], collision[2], collision[3]));
+    inject(collision, sizeof(collision));
+    processAt(1234);
+    TEST_ASSERT_EQUAL_UINT32(0, alpRuntimeModule.lastValidFrameMs());
+    TEST_ASSERT_EQUAL_UINT32(0, alpRuntimeModule.testGetFirstFrameMs());
+    TEST_ASSERT_EQUAL(AlpState::IDLE, alpRuntimeModule.getState());
 }
 
 void test_checksum_validation_pass() {
@@ -1024,6 +1036,44 @@ void test_noise_recovery_preserves_burst_before_trailing_heartbeat() {
         TEST_ASSERT_EQUAL_UINT(0, alpRuntimeModule.testGetRingLen());
         if (variant != 2) {
             TEST_ASSERT_EQUAL(AlpState::TEARDOWN, alpRuntimeModule.getState());
+        }
+    }
+}
+
+void test_checksum_collision_prefix_preserves_deploy_at_every_input_split() {
+    const uint8_t data[] = {0x68, 0x00, 0x98, 0x00, 0xE3, 0x7B};
+    for (bool recovering : {false, true}) {
+        for (size_t prefix : {0U, 2U}) { // Noisy input and clean deploy control.
+            const size_t length = sizeof(data) - prefix;
+            for (size_t split = 0; split <= length; ++split) {
+                resetModule();
+                SystemEventBus bus;
+                bus.reset();
+                alpRuntimeModule.setEventBus(&bus);
+                if (recovering) {
+                    beginUnknownTargetedSession();
+                    uint8_t noise[64];
+                    memset(noise, 0xFF, sizeof(noise));
+                    inject(noise, sizeof(noise));
+                    processAt(2100);
+                    TEST_ASSERT_EQUAL(AlpState::NOISE_WINDOW, alpRuntimeModule.getState());
+                } else {
+                    beginEnabled();
+                }
+                const uint32_t generation = alpRuntimeModule.snapshot().detectGeneration;
+                (void)bus.consumeAlpStateChanged();
+                inject(data + prefix, split);
+                processAt(2200);
+                inject(data + prefix + split, length - split);
+                processAt(2201);
+
+                TEST_ASSERT_EQUAL(AlpState::ALERT_ACTIVE, alpRuntimeModule.getState());
+                TEST_ASSERT_TRUE(alpRuntimeModule.currentEvent().active);
+                TEST_ASSERT_FALSE(alpRuntimeModule.currentSession().isWarmUp);
+                TEST_ASSERT_EQUAL_UINT32(generation + 1, alpRuntimeModule.snapshot().detectGeneration);
+                TEST_ASSERT_TRUE(bus.consumeAlpStateChanged());
+                TEST_ASSERT_EQUAL_UINT(0, alpRuntimeModule.testGetRingLen());
+            }
         }
     }
 }
@@ -3179,6 +3229,8 @@ int main(int argc, char** argv) {
     RUN_TEST(test_checksum_calculation);
     RUN_TEST(test_checksum_validation_pass);
     RUN_TEST(test_checksum_validation_fail);
+    RUN_TEST(test_unknown_header_checksum_collision_does_not_count_as_valid_activity);
+    RUN_TEST(test_checksum_collision_prefix_preserves_deploy_at_every_input_split);
     RUN_TEST(test_last_valid_frame_ms_ignores_checksum_noise);
     RUN_TEST(test_last_valid_frame_ms_updates_on_valid_frame);
 

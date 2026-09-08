@@ -514,9 +514,9 @@ void AlpRuntimeModule::drainUart(uint32_t nowMs) {
 }
 
 // ── Ring buffer parsing ──────────────────────────────────────────────
-// All frames are 4 bytes with 7-bit checksum. On valid checksum, dispatch
-// by byte0. On invalid checksum, advance 1 byte to resync. Consecutive
-// checksum failures from ALERT_ACTIVE trigger NOISE_WINDOW transition.
+// All frames are 4 bytes with a supported header and 7-bit checksum.
+// On invalid framing or checksum, advance 1 byte to resync. Consecutive
+// rejected candidates from ALERT_ACTIVE trigger NOISE_WINDOW transition.
 
 void AlpRuntimeModule::parseRingBuffer(uint32_t nowMs) {
     // Every attempt consumes at least one byte; drain all complete candidates
@@ -528,7 +528,7 @@ void AlpRuntimeModule::parseRingBuffer(uint32_t nowMs) {
         if (tryParseFrame(nowMs))
             continue;
 
-        // Checksum failed — noise or misalignment
+        // Framing or checksum failed — noise or misalignment
         consecutiveBadChecksums_++;
 
         // UART flood happens in BOTH DLI (detection-circuit crosstalk) and
@@ -557,7 +557,7 @@ void AlpRuntimeModule::parseRingBuffer(uint32_t nowMs) {
     }
 }
 
-// ── Frame parser (checksum-validated dispatch) ───────────────────────
+// ── Frame parser (header- and checksum-validated dispatch) ───────────
 
 bool AlpRuntimeModule::tryParseFrame(uint32_t nowMs) {
     if (ringLen_ < FRAME_LEN)
@@ -568,8 +568,15 @@ bool AlpRuntimeModule::tryParseFrame(uint32_t nowMs) {
     const uint8_t b2 = ringBuf_[2];
     const uint8_t cs = ringBuf_[3];
 
-    // Validate checksum — the core integrity check
-    if (!alpValidateChecksum(b0, b1, b2, cs))
+    const bool isHeartbeat = b0 == HEARTBEAT_SINGLE_0 || b0 == HEARTBEAT_PAIRED_0 ||
+                             b0 == HEARTBEAT_TRIPLE_0 || b0 == SETUP_BYTE0_A8 || b0 == SETUP_BYTE0_F0;
+    const bool isGunCandidate = b0 >= 0xC8 && b0 <= 0xCE;
+    const bool isRegister = b0 >= 0xD0 && b0 <= 0xD3;
+    const bool supportedHeader = b0 == ALERT_BYTE0 || isHeartbeat || isGunCandidate || isRegister ||
+                                 b0 == DISCOVERY_BYTE0;
+    // A checksum collision on an unknown header can overlap a real alert.
+    // Reject it before consuming four bytes or changing any valid-frame state.
+    if (!supportedHeader || !alpValidateChecksum(b0, b1, b2, cs))
         return false;
 
     // Valid frame — reset bad checksum counter
@@ -590,19 +597,14 @@ bool AlpRuntimeModule::tryParseFrame(uint32_t nowMs) {
     // Dispatch by byte0 range
     if (b0 == ALERT_BYTE0) {
         handleAlertFrame(b1, b2, nowMs);
-    } else if (b0 == HEARTBEAT_SINGLE_0 || b0 == HEARTBEAT_PAIRED_0 || b0 == HEARTBEAT_TRIPLE_0 ||
-               b0 == SETUP_BYTE0_A8 || b0 == SETUP_BYTE0_F0) {
+    } else if (isHeartbeat) {
         handleHeartbeatFrame(b0, b1, nowMs);
-    } else if (b0 >= 0xC8 && b0 <= 0xCE) {
+    } else if (isGunCandidate) {
         handleGunCandidate(b0, b1, b2, nowMs);
-    } else if (b0 >= 0xD0 && b0 <= 0xD3) {
+    } else if (isRegister) {
         handleRegisterFrame(b2, nowMs);
     } else if (b0 == DISCOVERY_BYTE0) {
         handleDiscoveryFrame(nowMs);
-    } else {
-        // Valid checksum but unrecognized byte0 — treat as sign of life
-        lastHeartbeatMs_ = nowMs;
-        lastFrameMs_ = nowMs;
     }
 
     consumeBytes(FRAME_LEN);

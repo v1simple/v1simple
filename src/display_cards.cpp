@@ -66,7 +66,9 @@ void resetCardTemporalState(CardsRenderCache& cache) {
 SecondaryCardFrame evolveSecondaryCardState(CardsRenderCache& cache, const AlertData* alerts, int alertCount,
                                             const AlertData& priority, unsigned long now, unsigned long gracePeriodMs,
                                             bool expireForVisualPreview) {
-    for (CardSlot& slot : cache.slots) {
+    bool slotIsLive[2]{};
+    for (int c = 0; c < 2; ++c) {
+        CardSlot& slot = cache.slots[c];
         if (slot.lastSeen == 0) continue;
         bool stillExists = false;
         for (int i = 0; alerts && i < alertCount; ++i) {
@@ -83,6 +85,7 @@ SecondaryCardFrame evolveSecondaryCardState(CardsRenderCache& cache, const Alert
                              (now - slot.lastSeen) > gracePeriodMs))) {
             slot = CardSlot();
         }
+        slotIsLive[c] = stillExists && slot.lastSeen > 0;
     }
 
     for (int i = 0; alerts && i < alertCount; ++i) {
@@ -95,12 +98,28 @@ SecondaryCardFrame evolveSecondaryCardState(CardsRenderCache& cache, const Alert
             }
         }
         if (!found) {
-            for (CardSlot& slot : cache.slots) {
-                if (slot.lastSeen == 0) {
-                    slot.alert = alerts[i];
-                    slot.lastSeen = now;
+            int target = -1;
+            for (int c = 0; c < 2; ++c) {
+                if (cache.slots[c].lastSeen == 0) {
+                    target = c;
                     break;
                 }
+            }
+            // Live beats persisted: grace may use spare capacity, never hide
+            // a live arrival. Use snapshot membership, not lastSeen == now,
+            // because consecutive frames can arrive in the same millisecond.
+            if (target < 0) {
+                for (int c = 0; c < 2; ++c) {
+                    if (!slotIsLive[c]) {
+                        target = c;
+                        break;
+                    }
+                }
+            }
+            if (target >= 0) {
+                cache.slots[target].alert = alerts[i];
+                cache.slots[target].lastSeen = now;
+                slotIsLive[target] = true;
             }
         }
     }

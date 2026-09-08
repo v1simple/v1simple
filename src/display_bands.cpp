@@ -104,7 +104,7 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
 
     auto colorForCell = [&](uint8_t mask, bool cellMuted, int index) -> uint16_t {
         const bool active = (mask & DisplayVisualContract::bandCellMask(mask, index)) != 0;
-        return active ? (cellMuted ? PALETTE_MUTED_OR_PERSISTED : cells[index].color) : PALETTE_GRAY;
+        return active ? (cellMuted ? PALETTE_MUTED_OR_PERSISTED : cells[index].color) : TFT_DARKGREY;
     };
 
     auto overlapsGpsBadge = [&](int16_t rectY) -> bool {
@@ -230,7 +230,7 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
         const bool isActive = (effectiveBandMask & DisplayVisualContract::bandCellMask(effectiveBandMask, i)) != 0;
         int labelY = startY + i * spacing;
         labelY += s_bandBaselineAdjust;
-        uint16_t col = isActive ? (muted ? PALETTE_MUTED_OR_PERSISTED : cells[i].color) : PALETTE_GRAY;
+        uint16_t col = isActive ? (muted ? PALETTE_MUTED_OR_PERSISTED : cells[i].color) : TFT_DARKGREY;
         // Draw foreground only. Arduino_GFX custom-font drawChar() fills the full
         // xAdvance × yAdvance advance box from the line top. FreeSansBold24's
         // yAdvance (~56 px) exceeds the 43 px cell pitch, so a two-arg
@@ -328,7 +328,7 @@ void V1Display::drawVerticalSignalBars(uint8_t frontStrength, uint8_t rearStreng
 
         uint16_t fillColor;
         if (!isLit) {
-            fillColor = PALETTE_GRAY;
+            fillColor = 0x1082;
         } else if (muted) {
             fillColor = PALETTE_MUTED;
         } else {

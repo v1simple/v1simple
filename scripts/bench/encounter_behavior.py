@@ -365,5 +365,5 @@ def analyze_behavior(run, out, ranges=None, configuration=None, reader_qualifica
         result["scope"]["meaning"] = result["persistence"]["scope"]
     save_json(out / "result.json", result)
     result = read_json(out / "result.json")
-    write_behavior_report(out, result)
+    write_behavior_report(out, result, run_dir=run, reader_qualification=reader_qualification)
     return result

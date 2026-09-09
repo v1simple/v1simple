@@ -58,6 +58,7 @@ Generated stimuli require no data file:
 .build/v1replay bench --blink-profile stress
 .build/v1replay bench --exit-on-complete
 .build/v1replay bench --reader-qualification
+.build/v1replay bench --persistence-coverage
 .build/v1replay bench --scenario /external/input.json \
   --scenario-evidence /external/run/replay_scenario.json --machine-events
 .build/v1replay export --bench --format csv
@@ -66,11 +67,13 @@ Generated stimuli require no data file:
 .build/v1replay crib
 ```
 
-Without `--scenario` or `--reader-qualification`, `bench` uses the generated
-Phase 0 stimulus. It runs at approximately 3 Hz for 276 seconds
+Without `--scenario`, `--reader-qualification`, or `--persistence-coverage`,
+`bench` uses the generated Phase 0 stimulus. It runs at approximately 3 Hz for 276 seconds
 and covers a resting lead, K and Ka ramps, a priority handoff, complete two- and
-three-row alert tables, card removal and restoration, a long Ka approach, and a
-32-second resting tail. The scenario owns those idle periods, so generic
+three-row alert tables, card removal and restoration, a long Ka approach,
+42 seconds of X/K/Ka mute and content-change exercises, and a 32-second tail
+without alerts. That tail also changes detector volume and mode settings.
+The scenario owns those idle periods, so generic
 `--idle-lead` and `--idle-tail` values are not added to it. It waits for the
 display subscription and the firmware's alert-data request before starting;
 if either becomes unavailable during playback, its clock pauses until both are
@@ -94,6 +97,12 @@ retains the exact selected values and their hash. These authored cases provide
 coverage opportunities; they do not guarantee particular camera or OCR errors.
 The capture mode continues to withhold all automatic pixel analysis.
 
+`--persistence-coverage` selects a separate 64-second ordinary radar sequence
+for observing the configured Alert persistence. It does not change that setting
+or establish that persisted content was displayed correctly. Use the
+[bench persistence command](../../docs/BENCH_ENCOUNTER_CHECK.md#observe-configured-persistence)
+to retain the setting, capture the screen and analyze its display stages.
+
 Normal bench playback defaults to the `scenario` priority-arrow blink profile. As a
 provisional generated assumption, it blinks only during the 19-second authored
 multi-alert interval (57 samples) and leaves all single-alert periods steady.
@@ -106,8 +115,9 @@ control. `--blink-arrow` remains a legacy alias for the stress profile.
 
 The long approach derives only the aggregate cadence, approximate durations,
 and strength envelope recorded during diagnosis: roughly 95 seconds mostly at
-one bar, a rise toward three bars, a 20-second six-bar plateau, and a collapse
-back toward one. Its broad direction transitions are authored deterministic
+one bar, a rise toward three bars, and a 20-second six-bar plateau. The final
+part of the approach is interrupted by the separate mute exercise at seconds
+201–243. Its broad direction transitions are authored deterministic
 stimulus because the private input's exact direction sequence is not available.
 It is not a sample-for-sample copy and no replay fixture is stored here.
 
@@ -156,7 +166,7 @@ not create `expected.csv` or any other artifact.
 offset_s,phase,active_alert_count,priority_frequency_mhz,priority_band,priority_direction,priority_bars,scenario_arrow_blink,card_1_frequency_mhz,card_1_direction,card_1_bars,card_2_frequency_mhz,card_2_direction,card_2_bars
 ```
 
-Frequencies are integer MHz, bands are stable `K`/`Ka` tokens, directions are
+Frequencies are integer MHz, bands are stable `X`/`K`/`Ka` tokens, directions are
 `FRONT`, `SIDE`, or `REAR`, and absent priority/card fields are empty. The
 `scenario_arrow_blink` column records authored scenario intent independently of
 an explicit steady or stress control. Priority fields drive the main display

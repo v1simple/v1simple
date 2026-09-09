@@ -3,11 +3,15 @@ from __future__ import annotations
 
 from collections import Counter
 from copy import deepcopy
+import ctypes
+import errno
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
+import sys
 
 
 BLIND_PROTOCOL = {
@@ -54,8 +58,44 @@ def _artifact(root, ref):
     return path
 
 
+def _clone_file(source, destination):
+    """Return False only when native copy-on-write is unavailable."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        clone = ctypes.CDLL(None, use_errno=True).clonefile
+    except AttributeError:
+        return False
+    clone.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int)
+    clone.restype = ctypes.c_int
+    if clone(os.fsencode(source), os.fsencode(destination), 0) == 0:
+        return True
+    error = ctypes.get_errno()
+    if error in (errno.ENOTSUP, errno.ENOSYS, errno.EXDEV):
+        return False
+    raise OSError(error, os.strerror(error), str(destination))
+
+
+def copy_evidence(source, destination, expected_sha256):
+    """Retain independent file semantics and exact bytes without duplicate blocks."""
+    source, destination = Path(source), Path(destination)
+    _require(not source.is_symlink() and source.is_file()
+             and _sha(source) == expected_sha256, "missing, indirect or changed copy source")
+    _require(not destination.is_symlink(), "copy destination is a symbolic link")
+    if destination.exists():
+        _require(destination.is_file() and _sha(destination) == expected_sha256,
+                 "copied artifact path collision")
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not _clone_file(source, destination):
+        shutil.copy2(source, destination)
+    _require(not destination.is_symlink() and destination.is_file()
+             and _sha(destination) == expected_sha256, "artifact changed while copying")
+
+
 def copy_reference(source, destination):
     """Copy only hash-bound packet inputs, including original/control PNGs."""
+    _require(not Path(source).is_symlink(), "reference is a symbolic link")
     source, destination = Path(source).resolve(), Path(destination)
     document = json.loads(source.read_bytes())
     refs = [document[name] for name in ("protocol", "blind_manifest", "observations")]
@@ -73,10 +113,8 @@ def copy_reference(source, destination):
     for ref in refs:
         original = _artifact(source.parent, ref)
         target = destination.parent / ref["path"]
-        target.parent.mkdir(parents=True, exist_ok=True)
-        _require(not target.exists() or _sha(target) == ref["sha256"], "copied artifact path collision")
-        shutil.copyfile(original, target)
-    shutil.copyfile(source, destination)
+        copy_evidence(original, target, ref["sha256"])
+    copy_evidence(source, destination, _sha(source))
 
 
 def reference_reread_binding(path, method):

@@ -3,8 +3,11 @@
 
 These are image-reader checks, not camera, panel, or firmware evidence.
 """
+import hashlib
 from pathlib import Path
+import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -141,6 +144,100 @@ def compare_frequency(observed, expected_value):
                            for name in reader.FIELDS}, "joint_states": []}
     expected["fields"]["primary_frequency"] = {"allowed": [expected_value]}
     return compare_sample(expected, {"primary_frequency": observed})["checks"]["primary_frequency"]
+
+
+class PrepareReaderTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.cache = Path(temporary.name) / "reader-cache"
+        self.cache.mkdir()
+        # These belong to earlier invocations or another concurrent owner.
+        for name in ("modules/retained.pcm", "swift-modules-other/owned.pcm", "evidence.txt"):
+            retained = self.cache / name
+            retained.parent.mkdir(parents=True, exist_ok=True)
+            retained.write_bytes(name.encode())
+        self.original = self.snapshot()
+        for target, value in (("_ocr_setup", None), ("_ocr_binary", None)):
+            active_patch = patch.object(reader, target, value)
+            active_patch.start()
+            self.addCleanup(active_patch.stop)
+        runtime_patch = patch("encounter_frequency_idle.runtime", return_value={})
+        runtime_patch.start()
+        self.addCleanup(runtime_patch.stop)
+        self.module_paths = []
+
+    def snapshot(self):
+        return {str(path.relative_to(self.cache)): path.read_bytes() if path.is_file() else None
+                for path in self.cache.rglob("*")}
+
+    def fake_compile(self, args, *, capture_output, timeout):
+        self.assertEqual(args[0:3], ["/usr/bin/swiftc", "-O", "-module-cache-path"])
+        self.assertTrue(capture_output)
+        self.assertEqual(timeout, 180)
+        modules = Path(args[3])
+        self.assertEqual(modules.parent, self.cache)
+        self.assertTrue(modules.is_dir())
+        self.assertNotIn(modules, self.module_paths)
+        self.module_paths.append(modules)
+        nested = modules / "nested" / "compiled.pcm"
+        nested.parent.mkdir()
+        nested.write_bytes(b"temporary Swift modules")
+        return Path(args[args.index("-o") + 1])
+
+    def test_success_keeps_binary_and_removes_only_owned_module_cache(self):
+        def compile_helper(args, **kwargs):
+            self.fake_compile(args, **kwargs).write_bytes(b"OCR executable")
+            return subprocess.CompletedProcess(args, 0)
+
+        with patch.object(reader.subprocess, "run", side_effect=compile_helper) as compiler:
+            result = reader.prepare_reader(self.cache)
+            self.assertEqual(reader.prepare_reader(self.cache), result)
+        compiler.assert_called_once()
+        self.assertTrue(result["ocr_available"])
+        self.assertEqual(result["ocr_binary_sha256"], hashlib.sha256(b"OCR executable").hexdigest())
+        expected = dict(self.original)
+        expected[reader._ocr_binary.name] = b"OCR executable"
+        self.assertEqual(self.snapshot(), expected)
+        self.assertFalse(self.module_paths[0].exists())
+
+    def test_failed_compilations_remove_unique_owned_caches_and_preserve_existing_files(self):
+        for failure in ("exit", "timeout", "oserror"):
+            with self.subTest(failure=failure):
+                reader._ocr_setup = None
+
+                def compile_helper(args, **kwargs):
+                    self.fake_compile(args, **kwargs)
+                    if failure == "timeout":
+                        raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+                    if failure == "oserror":
+                        raise OSError("compiler unavailable")
+                    return subprocess.CompletedProcess(args, 1)
+
+                with patch.object(reader.subprocess, "run", side_effect=compile_helper):
+                    result = reader.prepare_reader(self.cache)
+                self.assertFalse(result["ocr_available"])
+                self.assertEqual(result["ocr_error"], "local OCR helper unavailable")
+                self.assertIsNone(reader._ocr_binary)
+                self.assertEqual(self.snapshot(), self.original)
+                self.assertTrue(all(not path.exists() for path in self.module_paths))
+        self.assertEqual(len(set(self.module_paths)), 3)
+
+    def test_existing_binary_needs_no_compiler_or_new_module_cache(self):
+        source = Path(reader.__file__).with_name("encounter_ocr.swift")
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        binary = self.cache / ("vision-" + digest[:16])
+        binary.write_bytes(b"retained OCR executable")
+        expected = self.snapshot()
+        with patch.object(reader.subprocess, "run") as compiler, \
+                patch.object(reader.tempfile, "TemporaryDirectory") as modules:
+            result = reader.prepare_reader(self.cache)
+        compiler.assert_not_called()
+        modules.assert_not_called()
+        self.assertTrue(result["ocr_available"])
+        self.assertEqual(reader._ocr_binary, binary)
+        self.assertEqual(result["ocr_binary_sha256"], hashlib.sha256(binary.read_bytes()).hexdigest())
+        self.assertEqual(self.snapshot(), expected)
 
 
 class EncounterReaderTests(unittest.TestCase):

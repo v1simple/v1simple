@@ -205,6 +205,10 @@ publish_latest() {
 finish() {
   local verdict="$1"
   local status="$2"
+  if ! publish_latest; then
+    verdict="FAIL (collection): could not update the latest evidence link"
+    status=2
+  fi
   if [[ "$COUNTER_PRINTED" -eq 0 ]]; then
     printf '[bench] sampled live counter: %s\n' "$COUNTER_RESULT"
     COUNTER_PRINTED=1
@@ -214,10 +218,8 @@ finish() {
     [[ -n "$ENCOUNTER_REASON" ]] && printf ' | %s' "$ENCOUNTER_REASON"
     printf '\n'
     ENCOUNTER_PRINTED=1
-  fi
-  if ! publish_latest; then
-    verdict="FAIL (collection): could not update the latest evidence link"
-    status=2
+  elif [[ "$verdict" != "$ENCOUNTER_RESULT"* ]]; then
+    printf '[bench] visual behavior: %s\n' "$ENCOUNTER_RESULT"
   fi
   printf '%s\n' "$verdict"
   exit "$status"
@@ -535,7 +537,14 @@ run_encounter_check() {
     --reader-qualification "$ENCOUNTER_QUALIFICATION" \
     --out "$encounter_dir" \
     "${ANALYSIS_RANGES[@]}" "${comparison_args[@]}" \
-    2>&1 | tee -a "$RUN_LOG" || encounter_status=$?
+    2>&1 | tee -a "$RUN_LOG" | awk '
+      /^Read [0-9]+\/[0-9]+ original event frames$/ {
+        split($2, count, "/"); percent = int(100 * count[1] / count[2]);
+        if (count[1] == 1 || percent >= next_percent || count[1] == count[2]) {
+          printf "[bench] display analysis: %d%% (%s frames read)\n", percent, $2;
+          fflush(); next_percent = (int(percent / 10) + 1) * 10;
+        }
+      }' || encounter_status=$?
   IFS=$'\t' read -r ENCOUNTER_RESULT events targets affected findings unresolved unresolved_fields read_frames available first_id reason \
     < <(read_encounter_result "$encounter_dir/result.json" "$encounter_status" 2>/dev/null)
   case "$ENCOUNTER_RESULT" in
@@ -544,10 +553,11 @@ run_encounter_check() {
   esac
   printf 'visual behavior: result=%s exit=%s qualification=%s\n' \
     "$ENCOUNTER_RESULT" "$encounter_status" "$ENCOUNTER_QUALIFICATION" >> "$RUN_LOG"
-  printf '[bench] visual behavior: %s | target observed %s/%s events | %s events with %s findings\n' \
-    "$ENCOUNTER_RESULT" "$targets" "$events" "$affected" "$findings"
+  printf '[bench] display: target observed %s/%s events | findings %s | affected events %s\n' \
+    "$targets" "$events" "$findings" "$affected"
   printf '[bench] coverage: %s/%s recorded frames read | %s frames with unresolved comparisons (%s field comparisons)\n' \
     "$read_frames" "$available" "$unresolved" "$unresolved_fields"
+  printf '[bench] limits: unresolved comparisons remain unknown; observed targets do not grade every frame.\n'
   "$BENCH_PYTHON" - "$encounter_dir/result.json" <<'PERSISTENCE_SUMMARY'
 import json, sys
 from pathlib import Path

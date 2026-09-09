@@ -6,8 +6,12 @@ deadline. It keeps expected input and independently observed content separate.
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
+from html import escape
 import json
+import os
 from pathlib import Path
+from urllib.parse import quote
 
 
 _WITNESS_KEYS = ("frame_id", "frame_index", "video_frame_index", "source_frame_seq",
@@ -161,7 +165,68 @@ def _payload(result):
     return payload
 
 
-def write_behavior_report(out: Path, result: dict) -> Path:
+def _evidence_links(destination, result, run_dir, reader_qualification):
+    """Link retained files, without copying evidence or following an active qualification later."""
+    base, groups = destination.parent, []
+
+    def group(title, entries):
+        links = []
+        for label, path in entries:
+            if path is not None and Path(path).is_file():
+                href = quote(os.path.relpath(path, base))
+                links.append(f'<li><a href="{escape(href, quote=True)}">{escape(label)}</a></li>')
+        if links:
+            groups.append(f'<h3>{escape(title)}</h3><ul>{"".join(links)}</ul>')
+
+    group("Analysis", [(label, base / name) for label, name in (
+        ("Complete machine result and source hashes", "result.json"),
+        ("Every recorded frame reading and diagnostic (compressed)", "readings.ndjson.gz"),
+        ("Frame selection frozen before reading", "selection.json"),
+        ("Unchanged original recording", "original.mov"),
+        ("Retained reader source", "method/encounter_reader.py"))])
+    log = next((parent / "bench.log" for parent in (base.parent, base.parent.parent)
+                if (parent / "bench.log").is_file()), None)
+    group("Bench log", [("Full collection and analysis log", log)])
+    if run_dir is not None:
+        run = Path(run_dir)
+        group("Recorded collection", [(label, run / name) for label, name in (
+            ("Collection, recorded firmware and camera result", "window_result.json"),
+            ("Build and image identity", "build_upload_artifacts.json"),
+            ("Device serial log", "bench_serial.log"),
+            ("Effective settings timeline", "bench_timeline.ndjson"),
+            ("Authored replay scenario", "replay_scenario.json"),
+            ("Replay inputs", "replay_stimulus.ndjson"),
+            ("Host notification delivery", "replay_delivery.ndjson"),
+            ("Sampled counter report", "counter-check/report.md"),
+            ("Camera source manifest", "camera/capture_manifest.json"),
+            ("Original camera frame timing", "camera/frame_timing.ndjson"),
+            ("Camera timing verification", "camera/video_timing_verification.json"))])
+    qualification = result.get("reader_qualification", {})
+    qualification_entries = []
+    if reader_qualification is not None:
+        manifest_path = Path(reader_qualification)
+        try:
+            original = manifest_path.read_bytes()
+            if hashlib.sha256(original).hexdigest() == qualification.get("manifest_sha256"):
+                manifest = json.loads(original)
+                for key, label in (("field_validation", "Independent field reference validation"),
+                                   ("visible_secondary_validation", "Independent secondary-card reference validation"),
+                                   ("fault_controls", "Reader fault controls")):
+                    reference = manifest.get(key, {})
+                    path = manifest_path.parent / reference["path"]
+                    if hashlib.sha256(path.read_bytes()).hexdigest() == reference.get("sha256"):
+                        qualification_entries.append((label, path))
+        except (OSError, ValueError, KeyError, TypeError):
+            pass  # Missing detail links cannot change the retained result.
+    group("Reader qualification evidence", qualification_entries)
+    recorded = {key: qualification[key] for key in ("status", "qualification_id", "manifest_sha256", "errors")
+                if key in qualification}
+    if recorded:
+        groups.append('<h3>Recorded qualification</h3><pre>' + escape(json.dumps(recorded, indent=2)) + '</pre>')
+    return "".join(groups) or '<p>No separately retained evidence files are available beside this report.</p>'
+
+
+def write_behavior_report(out: Path, result: dict, *, run_dir=None, reader_qualification=None) -> Path:
     """Write one self-contained report and return its path.
 
     Original images remain separate unchanged files referenced by the supplied
@@ -174,7 +239,9 @@ def write_behavior_report(out: Path, result: dict) -> Path:
     # Report content includes arbitrary observed text. A literal closing script
     # or HTML tag must never turn that data into executable markup.
     data = data.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
-    destination.write_text(_HTML.replace("__RESULT_JSON__", data), encoding="utf-8")
+    links = _evidence_links(destination, result, run_dir, reader_qualification)
+    destination.write_text(_HTML.replace("__RESULT_JSON__", data, 1).replace("__EVIDENCE_LINKS__", links, 1),
+                           encoding="utf-8")
     return destination
 
 
@@ -189,6 +256,7 @@ _HTML = r'''<!doctype html>
 <header><h1>Firmware visual behavior</h1><p class="muted">Known replay inputs, independently read physical display, and evidence for each finding.</p><p id="overall-result"></p>
 <div class="identity" id="identity"></div><div class="stats" id="stats"></div><p class="small muted" id="coverage-summary"></p><div id="interval-summary"></div>
 <details><summary>Tested scope, settings and method</summary><div id="method"></div></details><div id="global-errors"></div>
+<details><summary>Detailed evidence</summary><p class="small muted">Original readings, collection records and reference evidence remain separate files. Missing or unreadable comparisons remain unknown.</p>__EVIDENCE_LINKS__</details>
 </header><div class="layout"><aside class="sidebar" aria-label="Event index"><div class="filters">
 <input id="search" type="search" aria-label="Search events" placeholder="Search input, field or event…">
 <select id="filter" aria-label="Filter events"><option value="all">All events</option><option value="findings">With findings</option><option value="acquisition">With other acquisition content</option><option value="unknown">With unresolved comparisons</option><option value="missing">Complete target not seen</option><option value="observed">Complete target seen</option></select>

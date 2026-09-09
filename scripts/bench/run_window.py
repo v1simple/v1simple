@@ -358,15 +358,27 @@ def retain_build_upload_artifacts(
     for name in BUILD_UPLOAD_FILES:
         path = build_dir / name
         if not path.is_file():
+            if name == "firmware.bin":
+                raise FileNotFoundError("application binary is missing; exact image cannot be retained")
             missing.append(name)
             continue
-        files.append(
-            {
-                "name": name,
-                "size_bytes": path.stat().st_size,
-                "sha256": sha256_file(path),
-            }
-        )
+        artifact = {
+            "name": name,
+            "size_bytes": path.stat().st_size,
+            "sha256": sha256_file(path),
+        }
+        if name == "firmware.bin":
+            if artifact["size_bytes"] == 0:
+                raise RuntimeError("application binary is empty; exact image cannot be retained")
+            retained = out_dir / name
+            with path.open("rb") as source, retained.open("xb") as destination:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    destination.write(chunk)
+            copy = file_artifact(retained)
+            if any(copy[key] != artifact[key] for key in ("sha256", "size_bytes")):
+                raise RuntimeError("application binary changed while retaining its exact image")
+            artifact["path"] = copy["path"]
+        files.append(artifact)
     elf_sha = next((item["sha256"] for item in files if item["name"] == "firmware.elf"), "")
     payload = {
         "schema_version": 1,
@@ -1500,6 +1512,7 @@ def require_unused_live_evidence(out_dir: Path, *, camera: bool) -> None:
         out_dir / "bench_serial.log",
         out_dir / BENCH_TIMELINE_NAME,
         out_dir / BUILD_UPLOAD_ARTIFACTS_NAME,
+        out_dir / "firmware.bin",
         out_dir / "window_result.json",
         out_dir / "v1replay.log",
         out_dir / REPLAY_STIMULUS_NAME,
@@ -1509,7 +1522,7 @@ def require_unused_live_evidence(out_dir: Path, *, camera: bool) -> None:
     ]
     if camera:
         reserved.append(out_dir / "camera")
-    existing = [path.name for path in reserved if path.exists()]
+    existing = [path.name for path in reserved if path.exists() or path.is_symlink()]
     if existing:
         raise FileExistsError("refusing to reuse existing live evidence: " + ", ".join(existing))
 

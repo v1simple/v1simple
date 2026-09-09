@@ -29,6 +29,26 @@ from encounter_qualification import (
 import test_encounter_qualification as qualification_test_support
 
 class QualificationWorkflowTests(unittest.TestCase):
+    def test_static_copy_reuses_identical_files_and_rejects_changed_destinations(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source" / "image.png"
+            source.parent.mkdir()
+            source.write_bytes(b"retained camera original")
+            value = {"path": source.name, "sha256": workflow.sha256(source)}
+            destination_root = root / "destination"
+            copied = {}
+            workflow._copy_static_reference(source.parent, destination_root, value, "image", copied)
+            destination = destination_root / source.name
+            self.assertFalse(source.samefile(destination))
+            with patch("encounter_primary_frequency_reference._clone_file", side_effect=AssertionError("rewritten")), \
+                    patch("encounter_primary_frequency_reference.shutil.copy2", side_effect=AssertionError("rewritten")):
+                workflow._copy_static_reference(source.parent, destination_root, value, "image", copied)
+            destination.write_bytes(b"later changed destination")
+            with self.assertRaisesRegex(workflow.WorkflowError, "path collision"):
+                workflow._copy_static_reference(source.parent, destination_root, value, "image", copied)
+            self.assertEqual(source.read_bytes(), b"retained camera original")
+
     def test_removed_deadline_campaign_commands_are_not_available(self):
         for command in ("freeze", "prepare", "finalize"):
             with self.subTest(command=command), patch.object(sys, "stderr", io.StringIO()):

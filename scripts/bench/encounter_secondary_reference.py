@@ -6,9 +6,8 @@ from copy import deepcopy
 import json
 from pathlib import Path
 import re
-import shutil
 
-from encounter_primary_frequency_reference import _artifact, _item_registration, _sha
+from encounter_primary_frequency_reference import _artifact, _item_registration, _sha, copy_evidence
 
 BLIND_PROTOCOL = {
     "labels_completed_before_key_access": True,
@@ -50,6 +49,7 @@ def _packet(path):
 
 def copy_reference(source, destination):
     """Copy the complete secondary subset and all retained provenance by hash."""
+    _require(not Path(source).is_symlink(), "reference is a symbolic link")
     source, destination = Path(source).resolve(), Path(destination)
     document, manifest_path, packet = _packet(source)
     refs = [document[name] for name in
@@ -58,17 +58,15 @@ def copy_reference(source, destination):
     for item in document["items"]:
         refs.append(item["image"])
         refs += [item["startup_calibration"][name] for name in ("preflight", "still")]
-    sources = [(_artifact(source.parent, ref), Path(ref["path"])) for ref in refs]
+    sources = [(_artifact(source.parent, ref), Path(ref["path"]), ref["sha256"]) for ref in refs]
     for record in packet.values():
         image = _artifact(manifest_path.parent, {"path": record.get("image"), "sha256": record.get("sha256")})
-        sources.append((image, image.relative_to(source.parent)))
+        sources.append((image, image.relative_to(source.parent), record["sha256"]))
     destination.parent.mkdir(parents=True, exist_ok=True)
-    for original, relative in sources:
+    for original, relative, expected in sources:
         target = destination.parent / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        _require(not target.exists() or _sha(target) == _sha(original), "copied artifact path collision")
-        shutil.copyfile(original, target)
-    shutil.copyfile(source, destination)
+        copy_evidence(original, target, expected)
+    copy_evidence(source, destination, _sha(source))
 
 
 def reference_reread_binding(path, method):

@@ -44,6 +44,10 @@ When the current tooling and retained local build match the installed image:
 When tooling has advanced since the firmware build, use its original qualified
 upload or no-flash recording and its exact application binary:
 
+New original recordings retain that binary as `replay/firmware.bin`, checked
+against the build manifest. Older recordings may require a separately retained
+exact binary if they predate this preservation.
+
 ```sh
 ./bench.sh --replay --camera --no-flash \
   --resident-recording /path/to/prior/upload/replay \
@@ -140,10 +144,26 @@ not proof of a repair. Independent run-clock offsets are not timing changes.
 
 ## Read the result
 
-The console links `encounter-check/report.html`. The report retains original
-frame witnesses so an observed symptom can be traced to the input and expected
-behavior, then checked after a firmware change. `result.json` contains the same
-small behavior summary for subsequent comparisons.
+The console gives brief progress, target and coverage counts, unresolved
+comparisons, one final outcome, and the main `encounter-check/report.html` path.
+The report retains original frame witnesses so an observed symptom can be
+traced to the input and expected behavior, then checked after a firmware change.
+Its **Detailed evidence** section links the full readings, original recording,
+collection and sampled-counter reports, settings and input records, logs, and
+hash-checked qualification documents when available. It also shows the recorded
+qualification identity. `result.json` retains the behavior summary for subsequent
+comparisons.
+
+Keep the analysis directory, its source replay directory and retained
+qualification documents together with their relative locations intact. The
+report depends on those linked files; moving or deleting them can break access
+to the original evidence.
+
+New qualification copies use independent copy-on-write files on supported macOS
+filesystems, with ordinary copies as the fallback. Their bytes are checked
+against retained hashes. Compiler module scratch is removed after compilation;
+the OCR executable remains cached. These storage changes preserve original
+recordings, readings, witness images and retained qualification evidence.
 
 | Visual result | Meaning | Exit |
 | --- | --- | ---: |

@@ -2,10 +2,11 @@
 
 `./bench.sh --replay --camera` runs the sampled live-counter check once after a
 replay-camera window publishes qualified or collection-only evidence. It writes
-new evidence under `replay/counter-check/` and prints collection, runtime
-qualification, camera integrity, and the sampled counter result separately. It
-does not run for a bench command without replay-camera evidence; that path prints
-`sampled live counter: NOT_EVALUATED` and keeps its prior exit behavior.
+new evidence under `replay/counter-check/`. Collection, runtime qualification,
+camera integrity and the sampled counter result remain separate evidence.
+The [main visual report](BENCH_ENCOUNTER_CHECK.md#read-the-result) links the
+sampled-counter report under **Detailed evidence** when available.
+Commands without replay-camera evidence do not evaluate the counter.
 
 The automatic check divides the validated recorded input into maximal live-alert
 intervals with the same count and mute state, then fixes each interval's temporal
@@ -98,8 +99,9 @@ response latency and full-run correctness are not evaluated. The command does
 not promote the original bench verdict or firmware qualification.
 
 For `bench.sh`, a hard collection failure exits **2**. Collection-only evidence
-exits **1** regardless of the separately printed counter result. With qualified
-camera collection, the broader [sampled encounter check](BENCH_ENCOUNTER_CHECK.md)
-controls the command outcome: its `PASS`, `INCONCLUSIVE`, and `FAIL` exit **0**,
-**1**, and **2**, respectively. The narrow counter and existing image-change
-timing results remain separate and cannot raise the encounter result.
+exits **1** regardless of the separate counter result. With qualified
+camera collection, the [encounter check](BENCH_ENCOUNTER_CHECK.md#read-the-result)
+controls the command outcome using its own visual-result names and exit codes.
+It reads every recorded frame in the authored event intervals. The sampled
+counter's `PASS`, `FAIL`, and `INCONCLUSIVE` remain separate and cannot change
+that visual result; image-change timing is also separate.

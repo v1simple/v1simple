@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """The user-facing report preserves real distinctions and executable evidence."""
 import copy
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -106,13 +107,66 @@ class EncounterBehaviorReportTests(unittest.TestCase):
 
     def test_observed_text_cannot_escape_json_or_become_html(self):
         result = report_fixture()
-        attack = '</script><script>alert("unexpected")</script>&<img onerror="attack()">'
+        attack = '</script><script>alert("unexpected")</script>&<img onerror="attack()">__EVIDENCE_LINKS__'
         result["events"][0]["findings"][0]["observed"] = attack
         with tempfile.TemporaryDirectory() as folder:
             page = write_behavior_report(Path(folder) / "specific.html", result).read_text()
         self.assertNotIn(attack, page)
         self.assertEqual(embedded(page)["events"][0]["findings"][0]["observed"], attack)
         self.assertEqual(page.count('<script>'), 1)
+
+    def test_main_report_links_existing_evidence_and_bound_references_without_copying(self):
+        result = report_fixture()
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            run = root / "recorded run"
+            out = root / "analysis" / "encounter-check"
+            out.mkdir(parents=True)
+            references = root / "qualification" / "retained refs"
+            references.mkdir(parents=True)
+            files = [out / name for name in ("result.json", "readings.ndjson.gz", "selection.json", "original.mov")]
+            files += [out.parent / "bench.log", run / "window_result.json", run / "counter-check" / "report.md"]
+            files += [references / name for name in ("fields.json", "secondary.json", "controls.json")]
+            for path in files:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"retained original bytes")
+            manifest = {key: {"path": "retained refs/" + name,
+                               "sha256": hashlib.sha256((references / name).read_bytes()).hexdigest()}
+                        for key, name in (("field_validation", "fields.json"),
+                                          ("visible_secondary_validation", "secondary.json"),
+                                          ("fault_controls", "controls.json"))}
+            active = references.parent / "encounter-reader.json"
+            active.write_text(json.dumps(manifest))
+            result["reader_qualification"] = {"status": "QUALIFIED", "qualification_id": "frozen-reader",
+                "manifest_sha256": hashlib.sha256(active.read_bytes()).hexdigest(), "errors": []}
+            before = copy.deepcopy(result)
+            page = write_behavior_report(out, result, run_dir=run, reader_qualification=active).read_text()
+            self.assertEqual(result, before)
+            self.assertIn('<summary>Detailed evidence</summary>', page)
+            for link in ("result.json", "readings.ndjson.gz", "selection.json", "original.mov", "../bench.log",
+                         "../../recorded%20run/window_result.json", "../../recorded%20run/counter-check/report.md",
+                         "../../qualification/retained%20refs/fields.json",
+                         "../../qualification/retained%20refs/secondary.json",
+                         "../../qualification/retained%20refs/controls.json"):
+                self.assertIn(f'href="{link}"', page)
+            self.assertNotIn('href="../../qualification/encounter-reader.json"', page)
+            self.assertNotIn('href="../../recorded%20run/bench_serial.log"', page)
+            self.assertIn("frozen-reader", page)
+            self.assertTrue(all(path.read_bytes() == b"retained original bytes" for path in files))
+            self.assertEqual({p.name for p in out.iterdir()}, {"result.json", "readings.ndjson.gz", "selection.json", "original.mov", "report.html"})
+            (references / "secondary.json").write_bytes(b"different bytes")
+            changed = write_behavior_report(out, result, run_dir=run, reader_qualification=active).read_text()
+            self.assertNotIn('href="../../qualification/retained%20refs/secondary.json"', changed)
+            self.assertIn('href="../../qualification/retained%20refs/controls.json"', changed)
+            (references / "secondary.json").write_bytes(b"retained original bytes")
+            write_behavior_report(out, result, run_dir=run, reader_qualification=active)
+            # The already written report keeps links into retained evidence,
+            # even when the replaceable active qualification moves on.
+            active.write_text('{}')
+            self.assertEqual((out / "report.html").read_text(), page)
+            regenerated = write_behavior_report(out, result, run_dir=run, reader_qualification=active).read_text()
+            self.assertNotIn('href="../../qualification/retained%20refs/fields.json"', regenerated)
+            self.assertIn("frozen-reader", regenerated)
 
     def test_report_omits_raw_image_profiles_but_keeps_every_uncertainty_interval(self):
         result = report_fixture()

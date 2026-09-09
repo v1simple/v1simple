@@ -398,6 +398,9 @@ class SecondaryReferenceTests(unittest.TestCase):
             dest = Path(temp) / "copy/reference.json"; copy_reference(path, dest)
             self.assertEqual(before, {p.relative_to(dest.parent): p.read_bytes() for p in dest.parent.rglob("*") if p.is_file()})
             self.assertEqual(validate_reference(path, method, observe), validate_reference(dest, method, observe))
+            with patch("encounter_primary_frequency_reference._clone_file", side_effect=AssertionError("rewritten")), \
+                    patch("encounter_primary_frequency_reference.shutil.copy2", side_effect=AssertionError("rewritten")):
+                copy_reference(path, dest)
 
 
 if __name__ == "__main__": unittest.main()

@@ -66,6 +66,116 @@ def test_file_artifact_owns_raw_bytes() -> None:
         )
 
 
+def test_build_artifacts_retain_exact_application_after_build_cache_changes() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        recording, image, window, _ = resident_fixture(root)
+        build = root / "build-cache"
+        build.mkdir()
+        for name in run_window_module.BUILD_UPLOAD_FILES:
+            (build / name).write_bytes(("synthetic build output: " + name).encode())
+        app = bytearray(image.read_bytes())
+        app[176:208] = bytes.fromhex(run_window_module.sha256_file(build / "firmware.elf"))
+        original = build / "firmware.bin"
+        original.write_bytes(app)
+        result = run_window_module.retain_build_upload_artifacts(recording, build, upload_performed=True)
+        manifest = json.loads((recording / run_window_module.BUILD_UPLOAD_ARTIFACTS_NAME).read_text())
+        record = next(item for item in manifest["files"] if item["name"] == "firmware.bin")
+        retained = recording / record["path"]
+        assert_true(record["path"] == "firmware.bin" and record["size_bytes"] == len(app)
+                    and record["sha256"] == hashlib.sha256(app).hexdigest(), str(record))
+        assert_true(file_artifact(retained) == {key: record[key] for key in ("path", "size_bytes", "sha256")}, str(record))
+        assert_true(not original.samefile(retained), "retained application aliases mutable build output")
+        assert_true(result["schema_version"] == 1 and result["missing"] == [], str(result))
+        assert_true(all("path" not in item for item in manifest["files"] if item["name"] != "firmware.bin"),
+                    "retention expanded to unrelated build outputs")
+        original.write_bytes(b"next build replaced this image")
+        assert_true(retained.read_bytes() == app, "later build changed retained application")
+        original.unlink()
+        image.unlink()
+        assert_true(retained.read_bytes() == app, "cache cleanup removed retained application")
+        # Exercise the actual no-flash reference consumer with the newly retained
+        # binary. The miniature image is a host fixture, not target firmware proof.
+        identity = {**window["runtime_identity"], "image_id": result["expected_runtime_image_id"]}
+        serial_path = recording / "bench_serial.log"
+        serial_path.write_text(f"BOOT bootId=42 git={identity['git_sha']} image={identity['image_id']}\n")
+        window["runtime_identity"] = identity
+        window["artifacts"]["bench_serial"] = file_artifact(serial_path)
+        window["runtime_qualification"] = qualify_runtime_identity(
+            identity, intended_git_sha=window["git_sha"], build_upload=manifest, upload=True)
+        assert_true(window["runtime_qualification"]["status"] == "qualified", str(window))
+        write_resident_fixture(recording, window, manifest)
+        fresh = root / "fresh"
+        fresh.mkdir()
+        reference = run_window_module.retain_resident_artifacts(recording, retained, fresh)
+        copied = fresh / reference["resident_provenance"]["reference_files"]["firmware.bin"]["path"]
+        assert_true(copied.read_bytes() == app, "retained application is unusable for the exact-image reference")
+
+
+def test_build_application_retention_refuses_missing_empty_changed_or_failed_copy() -> None:
+    for failure in ("missing", "empty", "hash", "size", "copy", "existing"):
+        with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as patches:
+            root = Path(tmp)
+            build, recording = root / "build-cache", root / "recording"
+            build.mkdir(); recording.mkdir()
+            original, retained = build / "firmware.bin", recording / "firmware.bin"
+            if failure != "missing":
+                original.write_bytes(b"" if failure == "empty" else b"original application")
+            if failure in ("hash", "size"):
+                real_sha = run_window_module.sha256_file
+                def change_source(path: Path) -> str:
+                    digest = real_sha(path)
+                    if path == original:
+                        path.write_bytes(b"X" * path.stat().st_size if failure == "hash" else b"short")
+                    return digest
+                patches.enter_context(mock.patch.object(run_window_module, "sha256_file", side_effect=change_source))
+            elif failure == "copy":
+                real_open = Path.open
+                def fail_copy(path: Path, *args: Any, **kwargs: Any) -> Any:
+                    if path == retained and args == ("xb",):
+                        raise OSError("copy destination unavailable")
+                    return real_open(path, *args, **kwargs)
+                patches.enter_context(mock.patch.object(Path, "open", fail_copy))
+            elif failure == "existing":
+                retained.write_bytes(b"previously retained application")
+            try:
+                run_window_module.retain_build_upload_artifacts(recording, build, upload_performed=True)
+            except (OSError, RuntimeError):
+                pass
+            else:
+                raise AssertionError("retention accepted " + failure)
+            assert_true(not (recording / run_window_module.BUILD_UPLOAD_ARTIFACTS_NAME).exists(),
+                        "failed retention published a trusted manifest: " + failure)
+            if failure == "existing":
+                assert_true(retained.read_bytes() == b"previously retained application", "retention overwrote prior bytes")
+
+
+def test_live_collection_refuses_a_retained_application_before_starting() -> None:
+    for dangling_link in (False, True):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            retained = out_dir / "firmware.bin"
+            if dangling_link:
+                retained.symlink_to(out_dir / "unavailable.bin")
+            else:
+                retained.write_bytes(b"partial or complete previous application")
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "scripts/bench/run_window.py"),
+                 "--suite", "replay", "--out-dir", str(out_dir), "--upload",
+                 "--git-worktree-clean", "1", "--replay-executable", "/unused/replay"],
+                capture_output=True, text=True,
+            )
+            assert_true(result.returncode == 3, result.stderr)
+            assert_true("refusing to reuse existing live evidence: firmware.bin" in result.stderr, result.stderr)
+            assert_true(list(out_dir.iterdir()) == [retained], "refusal added artifacts to the original recording")
+            if dangling_link:
+                assert_true(retained.is_symlink() and retained.readlink() == out_dir / "unavailable.bin",
+                            "refusal changed the occupied path")
+            else:
+                assert_true(retained.read_bytes() == b"partial or complete previous application",
+                            "refusal changed the original recording")
+
+
 def test_reused_live_output_refusal_preserves_existing_evidence() -> None:
     for extra_args in ([], ["--duration-seconds", "0"]):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1226,6 +1336,7 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
                           capture_records: list[dict | None] | None = None,
                           reader_environment_ok: bool = True,
                           environment_records: list[dict] | None = None,
+                          analysis_logs: list[str] | None = None,
                           ) -> tuple[subprocess.CompletedProcess[str], int, int, int]:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -1353,6 +1464,11 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
                 printf '<title>fixture encounter report</title>\\n' > "$out/report.html"
               fi
               printf 'called\\n' >> "$FAKE_ENCOUNTER_MARKER"
+              printf 'Reader diagnostic: retained in bench.log\\n'
+              for ((frame=1; frame<=10001; frame+=500)); do
+                printf 'Read %s/10001 original event frames\\n' "$frame"
+              done
+              printf 'Standalone analyzer summary: retained in bench.log\\n'
               if [[ "$FAKE_ENCOUNTER_INTERRUPT" == 1 ]]; then kill -TERM "$PPID"; fi
               exit "$FAKE_ENCOUNTER_EXIT"
             fi
@@ -1474,6 +1590,8 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
         if capture_records is not None:
             records = list((root / "artifacts").glob("*/runs/*/replay/qualification_capture.json"))
             capture_records.append(json.loads(records[0].read_text(encoding="utf-8")) if len(records) == 1 else None)
+        if analysis_logs is not None:
+            analysis_logs.extend(path.read_text() for path in (root / "artifacts").glob("*/runs/*/bench.log"))
         return process, counter_calls, encounter_calls, visual_calls
 
 
@@ -1563,7 +1681,7 @@ def test_bench_cli_consumes_current_producer_results_online_and_offline() -> Non
         payload = generated_encounter_payload(outcomes)
         result, counts = payload["result"], payload["summary"]
         expected = (f"target observed {counts['targets_observed']}/{counts['events']} events | "
-                    f"{counts['events_with_findings']} events with {counts['findings']} findings")
+                    f"findings {counts['findings']} | affected events {counts['events_with_findings']}")
         for offline in (False, True):
             process, counter_calls, encounter_calls, _ = run_bench_cli_fixture(
                 "PASS", "PASS", encounter_result=result, encounter_payload=payload,
@@ -1577,6 +1695,21 @@ def test_bench_cli_consumes_current_producer_results_online_and_offline() -> Non
                 assert_true("OFFLINE recorded firmware analysis" in process.stdout, process.stdout)
                 assert_true("OFFLINE recorded runtime: git " in process.stdout, process.stdout)
                 assert_true(process.stdout.splitlines()[-1] == f"{result} (OFFLINE recorded visual behavior)", process.stdout)
+
+
+def test_bench_cli_keeps_full_diagnostics_with_brief_console_and_one_verdict() -> None:
+    logs: list[str] = []
+    process, _, _, _ = run_bench_cli_fixture("PASS", "PASS", analysis_logs=logs)
+    assert_true(process.returncode == 0, process.stdout + process.stderr)
+    assert_true(len(logs) == 1 and logs[0].count("original event frames") == 21, str(logs))
+    for detail in ("Reader diagnostic: retained in bench.log", "Standalone analyzer summary: retained in bench.log"):
+        assert_true(detail in logs[0] and detail not in process.stdout, process.stdout)
+    progress = [line for line in process.stdout.splitlines() if "[bench] display analysis:" in line]
+    assert_true(len(progress) == 11, str(progress))
+    assert_true("0% (1/10001" in progress[0] and "100% (10001/10001" in progress[-1], str(progress))
+    assert_true(process.stdout.count("NO_DIFFERENCES_OBSERVED") == 1, process.stdout)
+    assert_true("unresolved comparisons remain unknown" in process.stdout, process.stdout)
+    assert_true("encounter-check/report.html" in process.stdout, process.stdout)
 
 
 def test_bench_cli_rejects_old_or_incomplete_product_contract_explicitly() -> None:
@@ -1720,7 +1853,9 @@ def test_bench_cli_propagates_encounter_verdicts_with_fixed_precedence() -> None
             process, counter_calls, encounter_calls, _ = run_bench_cli_fixture(window, "PASS", encounter_result=result)
             assert_true(process.returncode == (1 if window == "COLLECTION_ONLY" else status), process.stdout)
             assert_true((counter_calls, encounter_calls) == (1, 1), process.stdout)
-            assert_true(f"[bench] visual behavior: {result} |" in process.stdout, process.stdout)
+            assert_true("[bench] display: target observed" in process.stdout, process.stdout)
+            if window == "COLLECTION_ONLY":
+                assert_true(f"[bench] visual behavior: {result}" in process.stdout, process.stdout)
             assert_true("2/2 recorded frames read" in process.stdout, process.stdout)
             assert_true("host input acceptance: 10 / 10 packets" in process.stdout, process.stdout)
             assert_true("DUT receipt not observed" in process.stdout, process.stdout)
@@ -1810,7 +1945,7 @@ def test_bench_cli_preserves_joint_state_failures_and_vetoes_incomplete_pass() -
     payload["events"][0]["findings"][0]["field"] = "joint_state"
     process, _, _, _ = run_bench_cli_fixture("PASS", "PASS", encounter_result="DIFFERENCES_FOUND", encounter_payload=payload)
     assert_true(process.returncode == 1, process.stdout)
-    assert_true("1 events with 1 findings" in process.stdout and "2 frames with unresolved comparisons" in process.stdout, process.stdout)
+    assert_true("findings 1 | affected events 1" in process.stdout and "2 frames with unresolved comparisons" in process.stdout, process.stdout)
     for mutation in (
         lambda p: p["summary"].update(findings=0),
         lambda p: p["summary"].update(targets_observed=0),
@@ -1844,7 +1979,7 @@ def test_bench_cli_preserves_joint_state_failures_and_vetoes_incomplete_pass() -
     incomplete["errors"] = ["Incomplete capture evidence"]
     incomplete["result"] = "MEASUREMENT_INCOMPLETE"
     process, _, _, _ = run_bench_cli_fixture("PASS", "PASS", encounter_result="MEASUREMENT_INCOMPLETE", encounter_payload=incomplete)
-    assert_true(process.returncode == 2 and "1 events with 1 findings" in process.stdout, process.stdout)
+    assert_true(process.returncode == 2 and "findings 1 | affected events 1" in process.stdout, process.stdout)
 
 
 
@@ -2173,6 +2308,9 @@ def test_serial_interrupted_loader_framing_requires_one_exact_rom_banner() -> No
 
 def main() -> int:
     test_file_artifact_owns_raw_bytes()
+    test_build_artifacts_retain_exact_application_after_build_cache_changes()
+    test_build_application_retention_refuses_missing_empty_changed_or_failed_copy()
+    test_live_collection_refuses_a_retained_application_before_starting()
     test_reused_live_output_refusal_preserves_existing_evidence()
     test_replay_stimulus_is_persisted_as_raw_ndjson_once()
     test_replay_delivery_is_persisted_with_explicit_loss_denominators()
@@ -2211,6 +2349,7 @@ def main() -> int:
     test_bench_cli_collection_only_branch_has_no_pass_verdict()
     test_bench_cli_uses_selected_reader_environment_and_rejects_before_work()
     test_bench_cli_consumes_current_producer_results_online_and_offline()
+    test_bench_cli_keeps_full_diagnostics_with_brief_console_and_one_verdict()
     test_bench_cli_rejects_old_or_incomplete_product_contract_explicitly()
     test_bench_cli_recomputes_positive_persistence_sequences_and_preserves_other_gates()
     test_bench_cli_forwards_build_comparison_only_for_visual_analysis()

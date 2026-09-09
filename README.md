@@ -93,7 +93,7 @@ Never add that file or its values to this repository.
 ```sh
 ./scripts/ci-test.sh                   # complete local code, test, and build gate
 ./scripts/run_device_tests.sh --quick  # connected-board boot and heap checks
-./bench.sh --all|--replay [--camera] [--no-flash]  # HIL suites (--replay: replay leg only), raw evidence, one verdict
+./bench.sh --all|--replay [--camera] [--no-flash]  # HIL suites (--replay: replay leg only) and recorded evidence
 ```
 
 Automated tests establish code behavior. Device tests and bench runs establish
@@ -103,11 +103,14 @@ or vehicle environment.
 
 With `--camera`, the replay leg automatically runs the
 [encounter check](docs/BENCH_ENCOUNTER_CHECK.md): it reads threat information and
-associated alert cards, compares them with replay input, and links to original
-images with explicit gaps and unknowns. It can also recheck an existing recording.
+associated alert cards across every recorded frame in the authored event
+intervals, compares them with replay input, and links to original images with
+explicit gaps and unknowns. It can also recheck an existing recording.
 The [sampled counter check](docs/BENCH_COUNTER_CHECK.md) retains its narrower
-count/mode scope and separate result. Qualified camera runs use the sampled
-encounter judgment; missing or incomplete required evidence stays inconclusive.
+count/mode scope and separate result. Qualified camera runs report
+`NO_DIFFERENCES_OBSERVED`, `DIFFERENCES_FOUND`, or `MEASUREMENT_INCOMPLETE`.
+Unreadable frames remain explicit; they do not by themselves prove incorrect
+firmware behavior.
 
 Keep changes focused, read [AGENTS.md](AGENTS.md), run the complete gate, inspect
 the final diff, and say whether hardware or camera evidence was collected.

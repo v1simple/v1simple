@@ -210,7 +210,9 @@ def _resolve_base_evidence(base_path: Path) -> tuple[dict[str, Path], dict[str, 
 def _copy_static_reference(source_root: Path, destination_root: Path, value: Any,
                            name: str, copied: dict[Path, str]) -> None:
     """Copy one hash-bound static input while preserving its relative path."""
-    source = resolve_reference(source_root, value, name)
+    from encounter_primary_frequency_reference import copy_evidence
+    resolve_reference(source_root, value, name)
+    source = source_root / value["path"]
     _require(not source.is_symlink(), f"{name} is a symbolic link")
     relative = Path(value["path"])
     destination = destination_root / relative
@@ -218,11 +220,10 @@ def _copy_static_reference(source_root: Path, destination_root: Path, value: Any
     if destination in copied:
         _require(copied[destination] == expected,
                  f"static evidence path is reused with different bytes: {relative}")
-        return
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, destination)
-    _require(sha256(destination) == expected,
-             f"static evidence changed while copying: {relative}")
+    try:
+        copy_evidence(source, destination, expected)
+    except ValueError as exc:
+        raise WorkflowError(f"static evidence copy refused: {relative}: {exc}") from exc
     copied[destination] = expected
 
 

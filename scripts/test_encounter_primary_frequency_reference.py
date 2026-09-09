@@ -2,8 +2,10 @@
 """Independent reference corrections preserve history and reject false admissions."""
 from contextlib import ExitStack
 from copy import deepcopy
+import errno
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -15,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent / "bench"))
 from encounter_primary_frequency_reference import (BLIND_PROTOCOL, CONTROL_STATES, copy_reference,
                                                     reference_reread_binding, validate_reference)
+import encounter_primary_frequency_reference as frequency_reference
 from encounter_qualification import CORE_READER_FILES, LEGACY_CORE_READER_FILES
 
 
@@ -81,6 +84,110 @@ def fixture(root, original_manifest=None, original_observations=None, original_i
     args = [path, original_manifest, original_observations, method, {"result": "PASS"},
             lambda image, registration: deepcopy(readings[sha(image)])]
     return args, document, readings
+
+
+class EvidenceCopyTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.source = self.root / "original.png"
+        self.source.write_bytes(b"retained original pixels")
+        self.expected = sha(self.source)
+        self.destination = self.root / "copy" / "original.png"
+
+    def test_portable_fallback_retains_separate_files_and_metadata(self):
+        os.utime(self.source, ns=(1_000_000_000, 2_000_000_000))
+        with patch.object(frequency_reference.sys, "platform", "unsupported"):
+            frequency_reference.copy_evidence(self.source, self.destination, self.expected)
+        self.assertEqual(sha(self.destination), self.expected)
+        self.assertEqual(self.destination.stat().st_mtime_ns, self.source.stat().st_mtime_ns)
+        self.assertFalse(self.source.samefile(self.destination))
+        self.destination.write_bytes(b"later destination edit")
+        self.assertEqual(sha(self.source), self.expected)
+        self.source.write_bytes(b"later source edit")
+        self.assertEqual(self.destination.read_bytes(), b"later destination edit")
+
+    def test_identical_destination_is_reused_without_rewriting(self):
+        self.destination.parent.mkdir()
+        self.destination.write_bytes(self.source.read_bytes())
+        os.utime(self.destination, ns=(3_000_000_000, 4_000_000_000))
+        before = self.destination.stat()
+        with patch.object(frequency_reference, "_clone_file") as clone, \
+                patch.object(frequency_reference.shutil, "copy2") as copy:
+            frequency_reference.copy_evidence(self.source, self.destination, self.expected)
+        clone.assert_not_called()
+        copy.assert_not_called()
+        after = self.destination.stat()
+        self.assertEqual((after.st_ino, after.st_mtime_ns, after.st_ctime_ns),
+                         (before.st_ino, before.st_mtime_ns, before.st_ctime_ns))
+
+    def test_mismatched_source_or_destination_is_refused_without_overwriting(self):
+        with self.assertRaisesRegex(ValueError, "changed copy source"):
+            frequency_reference.copy_evidence(self.source, self.destination, "0" * 64)
+        self.assertFalse(self.destination.exists())
+        self.destination.parent.mkdir()
+        self.destination.write_bytes(b"different retained evidence")
+        with self.assertRaisesRegex(ValueError, "path collision"):
+            frequency_reference.copy_evidence(self.source, self.destination, self.expected)
+        self.assertEqual(self.destination.read_bytes(), b"different retained evidence")
+        self.assertEqual(sha(self.source), self.expected)
+
+    def test_symbolic_link_sources_and_destinations_are_refused(self):
+        source_link = self.root / "source-link.png"
+        source_link.symlink_to(self.source)
+        with self.assertRaisesRegex(ValueError, "indirect"):
+            frequency_reference.copy_evidence(source_link, self.destination, self.expected)
+        self.destination.parent.mkdir()
+        for target in (self.source, self.root / "missing.png"):
+            with self.subTest(target=target.name):
+                self.destination.symlink_to(target)
+                with self.assertRaisesRegex(ValueError, "symbolic link"):
+                    frequency_reference.copy_evidence(self.source, self.destination, self.expected)
+                self.assertTrue(self.destination.is_symlink())
+                self.destination.unlink()
+
+    def test_changed_copy_bytes_are_rejected(self):
+        def bad_copy(source, destination):
+            destination.write_bytes(b"changed bytes")
+        with patch.object(frequency_reference, "_clone_file", return_value=False), \
+                patch.object(frequency_reference.shutil, "copy2", side_effect=bad_copy):
+            with self.assertRaisesRegex(ValueError, "changed while copying"):
+                frequency_reference.copy_evidence(self.source, self.destination, self.expected)
+        self.assertEqual(sha(self.source), self.expected)
+
+    def test_native_fallback_is_limited_to_unsupported_clone_operations(self):
+        for error in (errno.ENOTSUP, errno.ENOSYS, errno.EXDEV, errno.EACCES,
+                      errno.EPERM, errno.ENOSPC, errno.EIO):
+            with self.subTest(error=error), \
+                    patch.object(frequency_reference.sys, "platform", "darwin"), \
+                    patch.object(frequency_reference.ctypes, "CDLL") as library, \
+                    patch.object(frequency_reference.ctypes, "get_errno", return_value=error), \
+                    patch.object(frequency_reference.shutil, "copy2") as copy:
+                library.return_value.clonefile.return_value = -1
+                if error in (errno.ENOTSUP, errno.ENOSYS, errno.EXDEV):
+                    copy.side_effect = lambda source, dest: dest.write_bytes(source.read_bytes())
+                    frequency_reference.copy_evidence(self.source, self.destination, self.expected)
+                    copy.assert_called_once_with(self.source, self.destination)
+                    self.destination.unlink()
+                else:
+                    with self.assertRaises(OSError) as failure:
+                        frequency_reference.copy_evidence(self.source, self.destination, self.expected)
+                    self.assertEqual(failure.exception.errno, error)
+                    copy.assert_not_called()
+                    self.assertFalse(self.destination.exists())
+
+    @unittest.skipUnless(sys.platform == "darwin", "native clonefile requires macOS")
+    def test_native_clone_retains_independent_bytes(self):
+        self.destination.parent.mkdir()
+        if not frequency_reference._clone_file(self.source, self.destination):
+            self.skipTest("temporary filesystem does not support clonefile")
+        self.assertEqual(sha(self.destination), self.expected)
+        self.assertFalse(self.source.samefile(self.destination))
+        self.destination.write_bytes(b"changed clone")
+        self.assertEqual(sha(self.source), self.expected)
+        self.source.write_bytes(b"changed original")
+        self.assertEqual(self.destination.read_bytes(), b"changed clone")
 
 
 class PrimaryFrequencyReferenceTests(unittest.TestCase):
@@ -593,6 +700,9 @@ class RetainedFrequencySupplementTests(unittest.TestCase):
             copy_reference(args[0], copied)
             self.assertEqual((copied.parent / 'history/first-observer.json').read_bytes(), historical.read_bytes())
             validate_reference(copied, *args[1:])
+            with patch.object(frequency_reference, "_clone_file", side_effect=AssertionError("rewritten")), \
+                    patch.object(frequency_reference.shutil, "copy2", side_effect=AssertionError("rewritten")):
+                copy_reference(args[0], copied)
             (copied.parent / 'history/first-observer.json').write_text('silently changed observer')
             with self.assertRaises(ValueError):
                 validate_reference(copied, *args[1:])

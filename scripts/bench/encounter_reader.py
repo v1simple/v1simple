@@ -56,11 +56,12 @@ def prepare_reader(cache_dir: Path | None = None) -> dict:
     try:
         cache.mkdir(parents=True, exist_ok=True)
         if not binary.is_file():
-            result = subprocess.run(["/usr/bin/swiftc", "-O", "-module-cache-path",
-                                     str(cache / "modules"), str(source), "-o", str(binary)],
-                                    capture_output=True, timeout=180)
-            if result.returncode:
-                raise RuntimeError("local OCR helper compilation failed")
+            with tempfile.TemporaryDirectory(prefix="swift-modules-", dir=cache) as modules:
+                result = subprocess.run(["/usr/bin/swiftc", "-O", "-module-cache-path",
+                                         modules, str(source), "-o", str(binary)],
+                                        capture_output=True, timeout=180)
+                if result.returncode:
+                    raise RuntimeError("local OCR helper compilation failed")
         _ocr_binary = binary
         info["ocr_available"] = True
         info["ocr_binary_sha256"] = hashlib.sha256(binary.read_bytes()).hexdigest()

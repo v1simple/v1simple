@@ -189,6 +189,10 @@ class V1BLEClient {
 
     // Request V1 to start sending alert data
     bool requestAlertData();
+    bool needsAlertDataStartRecovery() const {
+        return bleState_ == BLEState::CONNECTED && connectedFollowupStep_ == ConnectedFollowupStep::NONE &&
+               !alertDataRequestGate_.hasSuccessfulSend(sessionGeneration());
+    }
 
     // Request V1 version information through the selected short command
     // characteristic; the short reply is expected on B2CE.

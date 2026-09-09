@@ -16,7 +16,7 @@ class AlertPersistenceModule;
  * Responsibilities:
  * - Detect connect/disconnect transitions
  * - Clear partial and published parser alert state on disconnect
- * - Re-request alert data when traffic stops
+ * - Recover failed alert startup and re-request alert data when traffic stops
  * - Notify power module of connection changes
  * - Refresh display indicators when disconnected
  */

@@ -193,7 +193,7 @@ describe('colors route page', () => {
         unmount();
     });
 
-    it('posts colors and clears the preview after save', async () => {
+    it('lets firmware expire the save preview without cancelling a newer manual preview', async () => {
         vi.useFakeTimers();
         const fetchMock = installDefaultFetch();
         const { unmount } = render(Page);
@@ -208,18 +208,29 @@ describe('colors route page', () => {
             ([url, init]) => url === DISPLAY_SETTINGS_ENDPOINT && init?.method === 'POST'
         );
         expect(saveCall?.[1]?.body?.get('obd')).toBe(String(cloneDefaultColors().obd));
-        // Clear fires after the firmware's ~5.5s preview hold has expired.
-        await vi.advanceTimersByTimeAsync(6000);
-        await waitFor(() => {
-            expect(
-                fetchMock.mock.calls.some(
-                    ([url, init]) =>
-                        url === DISPLAY_PREVIEW_CLEAR_ENDPOINT && init?.method === 'POST'
-                )
-            ).toBe(true);
-        });
+        // The save hold has ended on the device. A new Preview owns its own
+        // lifetime and must survive the old browser's six-second deadline.
+        await vi.advanceTimersByTimeAsync(5900);
+        await fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+        expect(
+            fetchMock.mock.calls.some(
+                ([url, init]) => url === DISPLAY_PREVIEW_ENDPOINT && init?.method === 'POST'
+            )
+        ).toBe(true);
+        await vi.advanceTimersByTimeAsync(100);
+        expect(
+            fetchMock.mock.calls.some(
+                ([url, init]) => url === DISPLAY_PREVIEW_CLEAR_ENDPOINT && init?.method === 'POST'
+            )
+        ).toBe(false);
 
         unmount();
+        await vi.advanceTimersByTimeAsync(6000);
+        expect(
+            fetchMock.mock.calls.some(
+                ([url, init]) => url === DISPLAY_PREVIEW_CLEAR_ENDPOINT && init?.method === 'POST'
+            )
+        ).toBe(false);
     });
 
     it('runs preview and reset actions', async () => {

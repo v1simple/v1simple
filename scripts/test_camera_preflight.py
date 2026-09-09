@@ -877,6 +877,50 @@ def test_capture_identity_owns_preflight_and_smoke_has_no_product_dependencies()
         assert_true(made[0].start_calls == 1 and made[0].stop_calls == 1, "smoke lifecycle was duplicated")
 
 
+def test_smoke_interrupt_stops_recorder_during_admission_and_recording() -> None:
+    for phase in ("start", "registration", "recording"):
+        with tempfile.TemporaryDirectory() as tmp:
+            made: list[FakeCamera] = []
+
+            class InterruptedCamera(FakeCamera):
+                def start(self) -> bool:
+                    started = super().start()
+                    if phase == "start":
+                        raise KeyboardInterrupt
+                    return started
+
+            def factory(out_dir: Path, duration: int) -> FakeCamera:
+                camera = InterruptedCamera(out_dir, duration, smoke_capture_ok=True)
+                made.append(camera)
+                return camera
+
+            def calibrate(_path: Path, _ffmpeg: str) -> tuple[float, float, dict[str, Any]]:
+                if phase == "registration":
+                    raise KeyboardInterrupt
+                return 0.0, 0.0, {}
+
+            def interrupted_sleep(_seconds: float) -> None:
+                raise KeyboardInterrupt
+
+            try:
+                with_calibrator(
+                    calibrate,
+                    lambda: run_camera_smoke(
+                        Path(tmp) / "smoke", camera_factory=factory, sleep=interrupted_sleep
+                    ),
+                )
+            except KeyboardInterrupt:
+                pass
+            else:
+                raise AssertionError(f"{phase} interrupt was swallowed")
+            assert_true(
+                made[0].stop_calls == 1 and not made[0].running,
+                f"{phase} interrupt left the admitted recorder running",
+            )
+            assert_true(not (Path(tmp) / "smoke" / "camera_smoke.json").exists(),
+                        "interrupted smoke published a completed result")
+
+
 def test_smoke_cli_refuses_reused_directory_without_changing_owned_evidence() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -934,6 +978,7 @@ def main() -> int:
     test_profile_mismatch_refuses_before_camera_start()
     test_collect_refusal_never_opens_product_path_and_pass_continues_once()
     test_capture_identity_owns_preflight_and_smoke_has_no_product_dependencies()
+    test_smoke_interrupt_stops_recorder_during_admission_and_recording()
     test_smoke_cli_refuses_reused_directory_without_changing_owned_evidence()
     print("camera preflight tests passed")
     return 0

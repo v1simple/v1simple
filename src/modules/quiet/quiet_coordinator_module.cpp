@@ -41,6 +41,7 @@ void QuietCoordinatorModule::reset() {
     speedVolActive_ = false;
     speedVolSavedOriginal_ = 0xFF;
     speedVolSavedMuteVol_ = 0;
+    speedVolBaselineUpdated_ = false;
     pendingSpeedVolRestoreVol_ = 0xFF;
     pendingSpeedVolRestoreMuteVol_ = 0;
     pendingSpeedVolRestoreSetMs_ = 0;
@@ -149,6 +150,7 @@ bool QuietCoordinatorModule::sendAutoPushVolume(uint8_t volume, uint8_t muteVolu
         if (pendingSpeedVolRestoreVol_ != 0xFF) {
             pendingSpeedVolRestoreVol_ = volume;
             pendingSpeedVolRestoreMuteVol_ = muteVolume;
+            speedVolBaselineUpdated_ = true;
         }
         return sendVolume(QuietOwner::AutoPush, volume, muteVolume);
     }
@@ -166,6 +168,7 @@ bool QuietCoordinatorModule::sendAutoPushVolume(uint8_t volume, uint8_t muteVolu
 
     speedVolSavedOriginal_ = volume;
     speedVolSavedMuteVol_ = muteVolume;
+    speedVolBaselineUpdated_ = true;
     desired_.volumeOwner = QuietOwner::SpeedVolume;
     desired_.volume = temporaryVolume;
     desired_.muteVolume = muteVolume;

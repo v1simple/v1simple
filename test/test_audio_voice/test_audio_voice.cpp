@@ -1,6 +1,7 @@
 // Exercise the real voice decision and complete clip composer through worker
 // admission. The existing task fake records notification without running I2S.
 #include <unity.h>
+#include <chrono>
 #include <filesystem>
 #include <initializer_list>
 #include <string>
@@ -33,7 +34,10 @@ AudioI2cResult set_speaker_amp(bool, TickType_t) { return AudioI2cResult::Ok; }
 void audio_log_i2c_failure(const char*, AudioI2cResult) {}
 
 static SettingsManager settings;
-static fs::FS audioFiles{std::filesystem::path(PROJECT_DIR) / "data"};
+static const std::filesystem::path audioRoot =
+    std::filesystem::temp_directory_path() /
+    ("v1simple_audio_voice_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+static fs::FS audioFiles{audioRoot};
 static StorageManager audioStorage;
 
 void setUp() {
@@ -53,7 +57,7 @@ static void expectClips(std::initializer_list<const char*> expected) {
     for (const char* clip : expected) {
         const std::string path = std::string("/audio/") + clip;
         TEST_ASSERT_EQUAL_STRING(path.c_str(), g_sdAudioTaskParams.filePaths[index++]);
-        TEST_ASSERT_TRUE_MESSAGE(audioFiles.exists(path.c_str()), "Every selected clip must be shipped");
+        TEST_ASSERT_TRUE_MESSAGE(audioFiles.exists(path.c_str()), "Every selected clip must exist in source assets");
     }
     TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
 }
@@ -157,6 +161,9 @@ void test_existing_band_frequency_mappings_are_unchanged() {
 }
 
 int main() {
+    // Native tests run before web/LittleFS staging, including on a clean checkout.
+    std::filesystem::copy(std::filesystem::path(PROJECT_DIR) / "tools" / "freq_audio" / "mulaw",
+                          audioRoot / "audio", std::filesystem::copy_options::recursive);
     UNITY_BEGIN();
     RUN_TEST(test_ku_priority_preserves_band_and_composes_true_frequency);
     RUN_TEST(test_ku_frequency_only_keeps_edge_frequency_and_count);
@@ -166,5 +173,7 @@ int main() {
     RUN_TEST(test_simple_ku_alert_uses_only_available_direction);
     RUN_TEST(test_ku_escalation_preserves_frequency_and_breakdown);
     RUN_TEST(test_existing_band_frequency_mappings_are_unchanged);
-    return UNITY_END();
+    const int result = UNITY_END();
+    std::filesystem::remove_all(audioRoot);
+    return result;
 }

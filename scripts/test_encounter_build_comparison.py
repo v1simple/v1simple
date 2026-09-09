@@ -8,6 +8,8 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from bench.encounter_build_comparison import compare_behavior_runs
 from bench.encounter_capability import frequency_capability, frequency_capability_summary
+from bench.encounter_persistence import measure_persistence_behavior
+from test_encounter_persistence import event as persistence_event, span, live, card, K, KA, CONFIG
 
 
 def witness(ms, value=None):
@@ -40,7 +42,91 @@ def finding(value="Ka34.700", ms=250):
             "first": witness(ms), "last": witness(ms + 100), "reason": "Unexpected retired card"}
 
 
+def persistence_behavior(spans, rows=()):
+    result = behavior()
+    result["evidence"]["configuration"]["settings"] = dict(CONFIG)
+    result["persistence"] = measure_persistence_behavior([
+        persistence_event(1, [K], []), persistence_event(2, list(rows), spans)], CONFIG)
+    for case in result["persistence"]["cases"]:
+        case["event_id"] = result["events"][0]["event_id"]
+    return result
+
+
 class BuildComparisonTests(unittest.TestCase):
+    def test_persistence_findings_and_their_absence_keep_content_and_originals(self):
+        for old, new, kind in (
+            (persistence_behavior([span(1, "24.150"), span(2)]),
+             persistence_behavior([span(1, "24.150"), span(2, "24.150")]), "primary_retirement"),
+            (persistence_behavior([live(1, cards=[card(K)]), live(2)], [KA]),
+             persistence_behavior([live(1, cards=[card(K)]), live(2, cards=[card(K)])], [KA]), "secondary_retirement"),
+        ):
+            with self.subTest(kind=kind):
+                before = deepcopy((new, old))
+                changed = compare_behavior_runs(new, old)["events"][0]
+                self.assertEqual((new, old), before)
+                self.assertTrue(changed["content_changed"])
+                finding = changed["newly_observed_findings"][0]
+                self.assertEqual(finding["persistence_kind"], kind)
+                self.assertEqual(finding["kind"], "ending_content")
+                self.assertEqual(finding["last"]["image"], "frames/2.png")
+                self.assertEqual(finding["last"]["run"], "current")
+                reverse = compare_behavior_runs(old, new)["events"][0]
+                self.assertEqual(reverse["newly_observed_findings"], [])
+                self.assertEqual(reverse["previously_observed_findings_absent"][0]["last"]["run"], "baseline")
+                self.assertNotIn("fixed", reverse)
+
+    def test_persistence_unreadable_ending_is_unknown_not_repaired_content(self):
+        old = persistence_behavior([span(1, "24.150"), span(2, "24.150")])
+        unknown = span(2)
+        unknown["observed"]["primary_frequency"] = {"state": "unreadable"}
+        new = persistence_behavior([span(1, "24.150"), unknown])
+        changed = compare_behavior_runs(new, old)["events"][0]
+        self.assertEqual(changed["newly_observed_findings"], [])
+        self.assertTrue(changed["uncertainty_changed"])
+        self.assertTrue(changed["current"]["persistence"][0]["unresolved_ending"])
+        self.assertEqual(changed["current"]["persistence"][0]["missing_stages"], ["cleared"])
+        self.assertEqual(changed["current"]["persistence"][0]["stages"]["unresolved"]["frames"], 1)
+
+    def test_persistence_stage_changes_and_relative_timing_remain_observations(self):
+        old = persistence_behavior([span(1, "24.150"), span(2)])
+        for new, content, timing in (
+            (deepcopy(old), False, False),
+            (persistence_behavior([span(1, "24.150"), span(500)]), False, True),
+            (persistence_behavior([span(1), span(2)]), True, True),
+        ):
+            changed = compare_behavior_runs(new, old)["events"][0]
+            self.assertEqual(changed["content_changed"], content)
+            self.assertEqual(changed["timing_changed"], timing)
+            self.assertEqual(changed["newly_observed_findings"], [])
+        shifted = deepcopy(old)
+        case = shifted["persistence"]["cases"][0]
+        case["input_anchor_ns"] += 10_000_000_000
+        for stage in case["stages"].values():
+            for key in ("first", "last"):
+                stage[key]["capture_ns"] += 10_000_000_000
+        self.assertFalse(compare_behavior_runs(shifted, old)["events"][0]["changed"])
+
+    def test_positive_persistence_requires_supported_measurements_in_both_analyses(self):
+        old = persistence_behavior([span(1, "24.150"), span(2)])
+        for mutate in (
+            lambda s: s.pop("persistence"),
+            lambda s: s["persistence"].update(schema_version=2),
+            lambda s: s["persistence"].update(reason="unsupported presentation"),
+            lambda s: s["persistence"].update(cases=None),
+            lambda s: s["persistence"]["cases"][0].pop("findings"),
+            lambda s: s["persistence"]["cases"][0].update(event_id=[]),
+        ):
+            baseline = deepcopy(old)
+            mutate(baseline)
+            compared = compare_behavior_runs(old, baseline)
+            self.assertEqual(compared["status"], "INCOMPATIBLE")
+            self.assertTrue(any("baseline:" in reason and "persistence" in reason for reason in compared["reasons"]))
+            self.assertEqual(compared["events"], [])
+        self.assertEqual(compare_behavior_runs(behavior(), behavior())["summary"]["changed_events"], 0)
+        legacy = behavior()
+        legacy["persistence"] = None
+        self.assertEqual(compare_behavior_runs(legacy, behavior())["summary"]["changed_events"], 0)
+
     def test_frequency_capability_requires_a_recorded_boolean_and_keeps_reason_one_line(self):
         for value in (None, {}, {"qualified": 1}, {"qualified": "true"}, []):
             with self.subTest(value=value):

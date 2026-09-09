@@ -65,11 +65,14 @@ def _finding(finding, observation, run):
             "first": _witness(finding.get("first"), run),
             "last": _witness(finding.get("last"), run),
             "first_ms": _time(finding.get("first"), anchor),
-            "last_ms": _time(finding.get("last"), anchor)}
+            "last_ms": _time(finding.get("last"), anchor),
+            **({"persistence_kind": finding["persistence_kind"]} if "persistence_kind" in finding else {})}
 
 
 def _finding_key(finding):
     value = {key: finding.get(key) for key in ("field", "kind", "expected", "observed")}
+    if "persistence_kind" in finding:
+        value["persistence_kind"] = finding["persistence_kind"]
     if finding.get("kind") == "blink_phase_held" and isinstance(value["observed"], dict):
         # A different number of frames showing the same held phase is a
         # changed extent, not a newly appearing content defect.
@@ -77,7 +80,13 @@ def _finding_key(finding):
     return _json(value)
 
 
-def _snapshot(event, run):
+def _persistence_cases(summary, event_id):
+    if summary["evidence"]["configuration"]["settings"].get("alertPersistenceSeconds", 0) == 0:
+        return []
+    return [case for case in summary.get("persistence", {}).get("cases", []) if case["event_id"] == event_id]
+
+
+def _snapshot(event, run, cases):
     observation = event["observation"]
     fields = {}
     for name, field in observation["fields"].items():
@@ -89,10 +98,23 @@ def _snapshot(event, run):
             "unresolved_suffix_frames": sum(item.get("frame_count", 0) for item in
                                              field.get("end_state", {}).get("unresolved_suffix", [])),
         }
+    findings = [_finding(f, observation, run) for f in event["findings"]]
+    persistence = []
+    for case in cases:
+        for finding in case["findings"]:
+            findings.append(_finding({**finding, "field": "persistence", "persistence_kind": case["kind"],
+                "expected": case["required_stages"], "observed": finding.get("observed", finding["stage"])}, case, run))
+        persistence.append({**{key: deepcopy(case[key]) for key in (
+            "kind", "required_stages", "observed_stages", "missing_stages", "stage_order_observed",
+            "unresolved_ending", "complete_recorded_frame_coverage")},
+            "stages": {stage: {"frames": state["frames"],
+                               "first_ms": _time(state.get("first"), case.get("input_anchor_ns")),
+                               "last_ms": _time(state.get("last"), case.get("input_anchor_ns"))}
+                       for stage, state in case["stages"].items()}})
     return {"event_id": event["event_id"], "target_observed": observation["target_observed"],
             "first_target_ms": observation["first_target_ms"], "fields": fields,
             "phase_observation": deepcopy(event.get("phase_observation", {})),
-            "findings": [_finding(f, observation, run) for f in event["findings"]],
+            "findings": findings, "persistence": persistence,
             "coverage": deepcopy(event.get("coverage", observation.get("coverage", {})))}
 
 
@@ -156,6 +178,42 @@ def _validate(summary, label):
     return reasons
 
 
+def _validate_persistence(summary, label):
+    seconds = summary["evidence"]["configuration"]["settings"].get("alertPersistenceSeconds", 0)
+    if seconds == 0:
+        return []
+    measurement = summary.get("persistence")
+    if (type(seconds) is not int or not 1 <= seconds <= 5
+            or summary["evidence"]["configuration"]["settings"].get("stealthEnabled") is not False
+            or not isinstance(measurement, dict) or measurement.get("schema_version") != 1
+            or measurement.get("kind") != "radar_persistence_sequences"
+            or measurement.get("configured_seconds") != seconds or measurement.get("reason")
+            or not isinstance(measurement.get("cases"), list)):
+        return [f"{label}: supported persistence measurements are missing; reanalyze the recording"]
+    ids = {event["event_id"] for event in summary["events"]}
+    seen = set()
+    for case in measurement["cases"]:
+        if (not isinstance(case, dict) or not isinstance(case.get("event_id"), str) or case["event_id"] not in ids
+                or case.get("kind") not in ("initial_idle", "primary_retirement", "secondary_retirement",
+                                            "live_preemption", "live_secondary_preserved")):
+            return [f"{label}: persistence case identity is unsupported"]
+        key = (case["event_id"], case["kind"])
+        if (key in seen or any(not isinstance(case.get(name), list)
+                              or any(not isinstance(stage, str) for stage in case[name])
+                              for name in ("required_stages", "observed_stages", "missing_stages"))
+                or not case["required_stages"]
+                or any(type(case.get(name)) is not bool for name in (
+                    "stage_order_observed", "unresolved_ending", "complete_recorded_frame_coverage"))
+                or not isinstance(case.get("stages"), dict)
+                or any(not isinstance(state, dict) or type(state.get("frames")) is not int or state["frames"] < 0
+                       for state in case["stages"].values())
+                or not isinstance(case.get("findings"), list)
+                or any(not isinstance(f, dict) or not f.get("kind") or not f.get("stage") for f in case["findings"])):
+            return [f"{label}: persistence measurements are malformed"]
+        seen.add(key)
+    return []
+
+
 def compare_behavior_runs(current, baseline):
     """Return factual differences, or explain why the runs cannot be compared.
 
@@ -209,8 +267,20 @@ def compare_behavior_runs(current, baseline):
     if result["reasons"]:
         return result
 
+    result["reasons"] = _validate_persistence(current, "current") + _validate_persistence(baseline, "baseline")
+    if result["reasons"]:
+        return result
     for new_event, old_event in zip(current["events"], baseline["events"]):
-        new, old = _snapshot(new_event, "current"), _snapshot(old_event, "baseline")
+        new_cases = _persistence_cases(current, new_event["event_id"])
+        old_cases = _persistence_cases(baseline, old_event["event_id"])
+        if [(c["kind"], c["required_stages"]) for c in new_cases] != [(c["kind"], c["required_stages"]) for c in old_cases]:
+            result["reasons"].append("persistence sequence requirements differ")
+    if result["reasons"]:
+        return result
+
+    for new_event, old_event in zip(current["events"], baseline["events"]):
+        new = _snapshot(new_event, "current", _persistence_cases(current, new_event["event_id"]))
+        old = _snapshot(old_event, "baseline", _persistence_cases(baseline, old_event["event_id"]))
         old_findings = {_finding_key(f): f for f in old["findings"]}
         new_findings = {_finding_key(f): f for f in new["findings"]}
         added = [new_findings[key] for key in sorted(new_findings.keys() - old_findings.keys())]
@@ -233,6 +303,14 @@ def compare_behavior_runs(current, baseline):
             != (old["fields"][name]["counts"].get("unresolved_frames"), old["fields"][name]["unresolved_suffix_frames"])
             for name in new["fields"])
         coverage_changed = _coverage_facts(new["coverage"]) != _coverage_facts(old["coverage"])
+        for new_case, old_case in zip(new["persistence"], old["persistence"]):
+            content_changed |= any(new_case[key] != old_case[key] for key in (
+                "observed_stages", "missing_stages", "stage_order_observed"))
+            timing_changed |= {stage: (state["first_ms"], state["last_ms"]) for stage, state in new_case["stages"].items()} != {
+                stage: (state["first_ms"], state["last_ms"]) for stage, state in old_case["stages"].items()}
+            uncertainty_changed |= (new_case["unresolved_ending"], new_case["stages"].get("unresolved", {}).get("frames", 0)) != (
+                old_case["unresolved_ending"], old_case["stages"].get("unresolved", {}).get("frames", 0))
+            coverage_changed |= new_case["complete_recorded_frame_coverage"] != old_case["complete_recorded_frame_coverage"]
         result["events"].append({"event_id": new["event_id"], "baseline_event_id": old["event_id"],
                                  "input_key": deepcopy(new_event["input_key"]), "baseline": old, "current": new,
                                  "appearance": timing, "newly_observed_findings": added,

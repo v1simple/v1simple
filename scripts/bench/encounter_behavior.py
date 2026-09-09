@@ -346,13 +346,6 @@ def analyze_behavior(run, out, ranges=None, configuration=None, reader_qualifica
         if ranges:
             result["scope"]["requested_ranges_seconds"] = ranges
             result["scope"]["meaning"] += " Only the explicitly selected range was read; event totals retain their full input bounds."
-        if compare_to:
-            baseline = read_json(compare_to)
-            result["comparison"] = compare_behavior_runs(result, baseline)
-            result["comparison"]["baseline_result_sha256"] = sha256_file(compare_to)
-            # Keep the paired originals accessible without copying large runs.
-            # Relative paths are local output references, not public metadata.
-            result["comparison"]["baseline_report"] = os.path.relpath(compare_to.parent / "report.html", out)
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, ImportError, subprocess.SubprocessError) as exc:
         result["errors"].append(f"{type(exc).__name__}: {exc}")
     except KeyboardInterrupt:
@@ -364,6 +357,20 @@ def analyze_behavior(run, out, ranges=None, configuration=None, reader_qualifica
         result["result"] = persistence_result(result["events"], result["errors"],
                                                result["reader_qualification"], result["persistence"])
         result["scope"]["meaning"] = result["persistence"]["scope"]
+    if compare_to:
+        try:
+            baseline = read_json(compare_to)
+            result["comparison"] = compare_behavior_runs(result, baseline)
+            result["comparison"]["baseline_result_sha256"] = sha256_file(compare_to)
+            # Keep the paired originals accessible without copying large runs.
+            # Relative paths are local output references, not public metadata.
+            result["comparison"]["baseline_report"] = os.path.relpath(compare_to.parent / "report.html", out)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            result["errors"].append(f"{type(exc).__name__}: {exc}")
+            result["result"] = "MEASUREMENT_INCOMPLETE"
+        except KeyboardInterrupt:
+            result["errors"].append("Comparison interrupted; the unfinished run does not establish display behavior")
+            result["result"] = "MEASUREMENT_INCOMPLETE"
     save_json(out / "result.json", result)
     result = read_json(out / "result.json")
     write_behavior_report(out, result, run_dir=run, reader_qualification=reader_qualification)

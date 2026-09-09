@@ -48,7 +48,7 @@ void V1BLEClient::processConnectedFollowup() {
                 return;
             }
             logNonCriticalFollowupFailure(followupRequestAlertFailLog_,
-                                          "[BLE] Alert-data request retry timed out (non-critical)");
+                                          "[BLE] Alert-data start deferred to stream recovery");
         }
         connectedFollowupNextAttemptMs_ = 0;
         connectedFollowupSendDeadlineMs_ = 0;

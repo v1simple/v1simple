@@ -16,6 +16,8 @@ from bench.encounter_behavior_report import write_behavior_report
 from bench.encounter_build_comparison import compare_behavior_runs
 from bench.encounter_observation import summarize_event_observations
 from test_encounter_observation import event, span
+from test_encounter_build_comparison import persistence_behavior
+from test_encounter_persistence import span as persistence_span
 
 
 def report_fixture():
@@ -264,7 +266,14 @@ class EncounterBehaviorReportTests(unittest.TestCase):
         baseline["events"][0]["observation"]["first_target_ms"] = 20.0
         baseline["events"][0]["findings"] = []
         baseline["events"][1]["findings"][0]["observed"] = ["K24.150"]
-        current["comparison"] = compare_behavior_runs(current, baseline)
+        comparison_current = copy.deepcopy(current)
+        for summary, spans in ((comparison_current, [persistence_span(1, "24.150"), persistence_span(2, "24.150")]),
+                               (baseline, [persistence_span(1, "24.150"), persistence_span(2)])):
+            persistence = persistence_behavior(spans)
+            summary["evidence"]["configuration"] = persistence["evidence"]["configuration"]
+            summary["persistence"] = persistence["persistence"]
+            summary["persistence"]["cases"][0]["event_id"] = "event-1"
+        current["comparison"] = compare_behavior_runs(comparison_current, baseline)
         self.assertTrue(current["comparison"]["compatible"])
         current["comparison"]["baseline_report"] = "../baseline/report.html"
         with tempfile.TemporaryDirectory() as folder:
@@ -307,6 +316,10 @@ assert.match(element('comparison').innerHTML,/Unresolved field comparisons/);
 assert.match(element('comparison').innerHTML,/Unknown-count comparisons are unreliable/);
 assert.match(element('comparison').innerHTML,/availability differs/);
 assert.match(element('comparison').innerHTML,/counter_edges/);
+assert.match(element('comparison').innerHTML,/retained_primary/);
+assert.match(element('comparison').innerHTML,/Field, persistence and coverage changes/);
+assert.deepEqual(report.comparison.events[0].current.persistence[0].missing_stages,['cleared']);
+assert.equal(report.comparison.events[0].newly_observed_findings.find(f=>f.persistence_kind).last.run,'current');
 delete report.comparison.unknown_count_comparison;renderComparison();
 assert.match(element('comparison').innerHTML,/analysis capability metadata was not recorded/);
 assert.match(element('comparison').innerHTML,/Newly observed findings/);

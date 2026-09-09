@@ -121,6 +121,10 @@ void SettingsManager::healWifiClientSettings(fs::FS* fs, bool hasSdBackup, const
     const bool keysMissing = !keyPresence.enabledKeyPresent || (legacySsidKeyRequired && !keyPresence.ssidKeyPresent);
     const bool missingCurrentSsid = settings_.wifiClientSSID.length() == 0;
 
+    // A successful Forget may precede its SD backup. Healthy, explicitly
+    // disabled NVS is authoritative even while the card still has old slots.
+    if (!keysMissing && !settings_.wifiClientEnabled) return;
+
     if (keysMissing && !missingCurrentSsid) {
         settings_.wifiClientEnabled = true;
         Serial.println("[Settings] HEAL: repairing missing WiFi client keys from in-memory SSID");

@@ -196,13 +196,15 @@ bool ConnectionStateModule::process(unsigned long nowMs) {
         presentPendingOwner(nowMs, false, sessionGeneration);
     }
 
-    // If connected but not seeing traffic, periodically re-request alert data
+    // Display traffic can stay fresh even when the initial alert-start writes
+    // failed. Once followups finish, keep trying at the existing recovery cadence.
     if (isConnected && bleQueue_) {
         unsigned long lastRx = bleQueue_->getLastRxMillis();
         bool dataStale = (nowMs - lastRx) > DATA_STALE_MS;
+        const bool alertStartMissing = ble_->needsAlertDataStartRecovery();
         bool canRequest = (nowMs - lastDataRequestMs_) > DATA_REQUEST_INTERVAL_MS;
 
-        if (dataStale && canRequest) {
+        if ((dataStale || alertStartMissing) && canRequest) {
             ble_->requestAlertData();
             lastDataRequestMs_ = nowMs;
         }

@@ -21,6 +21,7 @@ bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs, const Spee
     const auto& smState = speedMute.getState();
 
     const bool wantsActive = smState.muteActive;
+    bool startingSpeedVolume = false;
 
     if (wantsActive && !speedVolActive_) {
         const DisplayState& ds = parser_->getDisplayState();
@@ -36,10 +37,38 @@ bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs, const Spee
             return false;
         }
         pendingSpeedVolRestoreVol_ = 0xFF;
-        speedVolSavedOriginal_ = ds.mainVolume;
-        speedVolSavedMuteVol_ = ds.muteVolume;
+        speedVolBaselineUpdated_ = desired_.volumeOwner == QuietOwner::AutoPush;
+        // An accepted AutoPush may precede its detector echo. Carry that
+        // pending pair; after confirmation, later observed volume is authoritative.
+        const bool pendingAutoPush = speedVolBaselineUpdated_ && desired_.volumePending;
+        speedVolSavedOriginal_ = pendingAutoPush ? desired_.volume : ds.mainVolume;
+        speedVolSavedMuteVol_ = pendingAutoPush ? desired_.muteVolume : ds.muteVolume;
         speedVolActive_ = true;
         speedVolLastRetryMs_ = nowMs;
+        startingSpeedVolume = true;
+    }
+
+    // Speed owns all volume writes, but must not hide the end of an alert
+    // episode from fade. Carry the underlying restore pair without lifting
+    // the speed override, and discard any unsent fade from the old episode.
+    if (volumeFade && parser_ && (speedVolActive_ || pendingSpeedVolRestoreVol_ != 0xFF) &&
+        !parser_->hasAlerts()) {
+        const VolumeFadeAction cleared = volumeFade->releaseClearedAlert();
+        pendingFadeAction_ = false;
+        if (cleared.type == VolumeFadeAction::Type::RESTORE && !speedVolBaselineUpdated_) {
+            if (speedVolActive_) {
+                speedVolSavedOriginal_ = cleared.restoreVolume;
+                speedVolSavedMuteVol_ = cleared.restoreMuteVolume;
+            } else {
+                pendingSpeedVolRestoreVol_ = cleared.restoreVolume;
+                pendingSpeedVolRestoreMuteVol_ = cleared.restoreMuteVolume;
+                pendingSpeedVolRestoreSetMs_ = nowMs;
+                volumeFade->setBaselineHint(cleared.restoreVolume, cleared.restoreMuteVolume, nowMs);
+            }
+        }
+    }
+
+    if (startingSpeedVolume) {
         sendVolume(QuietOwner::SpeedVolume, smSettings.v1Volume, speedVolSavedMuteVol_);
         Serial.printf("[SpeedVol] DROP: %d -> %d\n", speedVolSavedOriginal_, smSettings.v1Volume);
         updateSpeedVolPresentation(&speedMute);

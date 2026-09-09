@@ -99,6 +99,7 @@ class QuietCoordinatorModule {
     bool speedVolActive_ = false;
     uint8_t speedVolSavedOriginal_ = 0xFF;
     uint8_t speedVolSavedMuteVol_ = 0;
+    bool speedVolBaselineUpdated_ = false; // A newer AutoPush pair supersedes the captured fade baseline.
     uint8_t pendingSpeedVolRestoreVol_ = 0xFF;
     uint8_t pendingSpeedVolRestoreMuteVol_ = 0;
     uint32_t pendingSpeedVolRestoreSetMs_ = 0;

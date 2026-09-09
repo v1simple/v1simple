@@ -27,7 +27,6 @@
         ARROW_FIELDS,
         BADGE_FIELDS,
         BAND_FIELDS,
-        DISPLAY_PREVIEW_CLEAR_ENDPOINT,
         DISPLAY_PREVIEW_ENDPOINT,
         DISPLAY_SETTINGS_ENDPOINT,
         DISPLAY_SETTINGS_RESET_ENDPOINT,
@@ -198,15 +197,7 @@
             if (await fetchColors()) {
                 message = { type: 'success', text: 'Colors saved! Previewing on display...' };
             }
-            // Firmware holds the save preview ~5.5s with band cycling; clear just
-            // after it would expire anyway so the UI never truncates the preview.
-            setTimeout(() => {
-                fetchWithTimeout(DISPLAY_PREVIEW_CLEAR_ENDPOINT, { method: 'POST' }).catch(
-                    (error) => {
-                        console.warn('Failed to clear display color preview', error);
-                    }
-                );
-            }, 6000);
+            // Firmware owns the save preview's 5.5s hold and expiration.
         } catch (_) {
             message = { type: 'error', text: 'Connection error' };
         } finally {

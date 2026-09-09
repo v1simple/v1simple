@@ -403,6 +403,54 @@ void test_real_module_data_stale_boundary_is_exclusive() {
     TEST_ASSERT_EQUAL(1, bleClient.requestAlertDataCalls);
 }
 
+void test_real_module_recovers_failed_alert_start_with_fresh_display_traffic() {
+    ConnectionStateModule real;
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
+    real.handleConnected(10000, bleClient.sessionGeneration());
+    bleClient.alertDataRequestSent = false;
+    bleClient.requestAlertDataResult = false;
+    bleClient.setConnectBurstSettling(true);
+
+    // Optional post-connect requests retain their turn while display traffic
+    // continues. The recovery owner must take over once those requests finish.
+    for (unsigned long now = 10000; now <= 12000; now += 50) {
+        bleQueueModule.setLastRxMillis(now);
+        real.process(now);
+    }
+    TEST_ASSERT_EQUAL(0, bleClient.requestAlertDataCalls);
+    bleClient.setConnectBurstSettling(false);
+    real.process(12000);
+    TEST_ASSERT_EQUAL(1, bleClient.requestAlertDataCalls);
+
+    // Failed writes remain retryable, at the existing exclusive 1000 ms
+    // cadence, even though every pass sees new display data.
+    for (unsigned long now = 12001; now <= 13000; ++now) {
+        bleQueueModule.setLastRxMillis(now);
+        real.process(now);
+    }
+    TEST_ASSERT_EQUAL(1, bleClient.requestAlertDataCalls);
+    bleQueueModule.setLastRxMillis(13001);
+    real.process(13001);
+    TEST_ASSERT_EQUAL(2, bleClient.requestAlertDataCalls);
+
+    bleClient.requestAlertDataResult = true;
+    bleQueueModule.setLastRxMillis(14002);
+    real.process(14002);
+    TEST_ASSERT_EQUAL(3, bleClient.requestAlertDataCalls);
+    TEST_ASSERT_FALSE(bleClient.needsAlertDataStartRecovery());
+    for (unsigned long now = 14003; now <= 20000; now += 50) {
+        bleQueueModule.setLastRxMillis(now);
+        real.process(now);
+    }
+    TEST_ASSERT_EQUAL(3, bleClient.requestAlertDataCalls);
+
+    // A disconnected link gets no recovery writes.
+    bleClient.setConnected(false);
+    bleClient.alertDataRequestSent = false;
+    real.process(22000);
+    TEST_ASSERT_EQUAL(3, bleClient.requestAlertDataCalls);
+}
+
 void test_real_module_session_open_invalidates_detector_version() {
     ConnectionStateModule real;
     real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
@@ -736,6 +784,7 @@ void runAllTests() {
 
     // Real-module mutation pins
     RUN_TEST(test_real_module_data_stale_boundary_is_exclusive);
+    RUN_TEST(test_real_module_recovers_failed_alert_start_with_fresh_display_traffic);
     RUN_TEST(test_real_module_session_open_invalidates_detector_version);
     RUN_TEST(test_real_module_disconnect_clears_ble_display_state);
     RUN_TEST(test_real_module_immediate_connect_defers_display_but_commits_state);

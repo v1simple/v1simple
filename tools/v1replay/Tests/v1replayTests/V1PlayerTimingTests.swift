@@ -4,9 +4,16 @@ import XCTest
 final class V1PlayerTimingTests: XCTestCase {
     private enum ProbeError: Error { case failed(String) }
     private struct Recording: Decodable {
+        struct Packet: Decodable {
+            let bytes: [UInt8]
+            let phase: String
+            let sequence: Int
+            let ordinal: Int
+        }
         let offsets: [Double]
         let times: [Double]
         let starts: [Double]
+        let packets: [Packet]
     }
 
     // Compile the real engine once, replacing only its hardware adapter. Keeping
@@ -120,6 +127,39 @@ final class V1PlayerTimingTests: XCTestCase {
             XCTAssertTrue(result.starts.isEmpty, mode)
         }
     }
+
+    func testIdleTailClearsLiveTableBeforeIdleDisplayAndPreservesTimelineEvidence() throws {
+        for mode in ["tail", "zero-tail"] {
+            let result = try record(mode)
+            let timeline = result.packets.filter { $0.sequence > 0 }
+            XCTAssertEqual(timeline.map { $0.bytes[3] }, [0x43, 0x31, 0x43, 0x31], mode)
+            XCTAssertEqual(timeline.map { $0.sequence }, [1, 1, 2, 2], mode)
+            XCTAssertEqual(timeline.map { $0.ordinal }, [0, 1, 0, 1], mode)
+            let lastLiveRow = try XCTUnwrap(timeline.last { $0.bytes[3] == 0x43 })
+            XCTAssertEqual(lastLiveRow.bytes[5], 0x11, "Final sample must retain a live alert")
+
+            let clears = result.packets.indices.filter {
+                result.packets[$0].bytes[3] == 0x43 && result.packets[$0].bytes[5] == 0
+            }
+            XCTAssertEqual(clears.count, 1, mode)
+            let clear = try XCTUnwrap(clears.first)
+            let firstIdle = try XCTUnwrap(result.packets.firstIndex {
+                $0.bytes[3] == 0x31 && $0.sequence == -1
+            })
+            XCTAssertLessThan(clear, firstIdle, "The previous live table must clear before idle display traffic")
+            XCTAssertEqual(result.packets[clear].sequence, -1)
+            XCTAssertEqual(result.offsets, [0.0, 0.05], mode)
+            XCTAssertEqual(result.starts.count, 1, mode)
+        }
+    }
+
+    func testIdleTailPreservesAlertStreamOptions() throws {
+        for mode in ["tail-display-only", "tail-no-start"] {
+            let result = try record(mode)
+            XCTAssertFalse(result.packets.isEmpty, mode)
+            XCTAssertTrue(result.packets.allSatisfy { $0.bytes[3] == 0x31 }, mode)
+        }
+    }
 }
 
 private let probeSource = #"""
@@ -153,9 +193,12 @@ final class V1Peripheral {
         lock.lock(); defer { lock.unlock() }
         return session.applyDetectorCurrentVolume(main: value.mainVolume, muted: value.muteVolume)
     }
+    var capture: (([UInt8], Int?, Int?) -> Void)?
     func ensureHandshakeClear(_ bytes: [UInt8]) {}
     func sendDisplay(_ bytes: [UInt8], stimulusSequence: Int? = nil,
-                     emissionOrdinal: Int? = nil, intendedHostMonotonicNs: UInt64? = nil) {}
+                     emissionOrdinal: Int? = nil, intendedHostMonotonicNs: UInt64? = nil) {
+        capture?(bytes, stimulusSequence, emissionOrdinal)
+    }
     func sendLong(_ bytes: [UInt8], stimulusSequence: Int? = nil,
                   emissionOrdinal: Int? = nil, intendedHostMonotonicNs: UInt64? = nil) {}
 }
@@ -171,7 +214,9 @@ final class V1Peripheral {
 
     static func main() throws {
         let mode = CommandLine.arguments[1]
-        let offsets = mode == "empty" ? [] : (mode == "zero" ? [0.0, 0.2] : [0.4, 0.6])
+        let tailMode = ["tail", "zero-tail", "tail-display-only", "tail-no-start"].contains(mode)
+        let offsets = tailMode ? [0.0, 0.05] :
+            (mode == "empty" ? [] : (mode == "zero" ? [0.0, 0.2] : [0.4, 0.6]))
         let encounter = Encounter(origin: .externalInput, samples: offsets.enumerated().map {
             TimedSample(offset: $0.element, phase: "test", muted: false,
                         alerts: [ReplayAlert(band: .ka, frequencyMHz: 34_700, strength: 3,
@@ -179,13 +224,15 @@ final class V1Peripheral {
         })
         var options = Player.Options()
         options.idleLead = ["lead", "restart", "loop"].contains(mode) ? 0.1 : 0
-        options.idleTail = mode == "loop" ? 0.1 : 0
+        options.idleTail = mode == "loop" || (tailMode && mode != "zero-tail") ? 0.1 : 0
         options.idleHz = 20
-        options.waitForAlertData = true
+        options.waitForAlertData = mode != "tail-no-start"
+        options.sendAlerts = mode != "tail-display-only"
         options.speed = mode == "double" ? 2 : 1
         options.loop = mode == "loop"
         options.startPaused = ["pause", "step"].contains(mode)
         let peripheral = V1Peripheral()
+        if mode == "tail-no-start" { peripheral.setReady(false) }
         peripheral.failThirdCheck = mode == "retry"
         let player = Player(encounter: encounter, peripheral: peripheral, options: options)
         if mode == "seek-zero" { player.seek(to: 0) }
@@ -193,10 +240,24 @@ final class V1Peripheral {
         if mode == "retry" { player.step() }
         let lock = NSLock()
         let arrived = DispatchSemaphore(value: 0)
+        let finishedIdle = DispatchSemaphore(value: 0)
         var times: [Double] = []
         var emittedOffsets: [Double] = []
         var starts: [Double] = []
+        var packets: [[String: Any]] = []
         let started = nowSeconds()
+        if tailMode {
+            peripheral.capture = { bytes, sequence, ordinal in
+                let phase = player.snapshot.phase.rawValue
+                lock.lock()
+                packets.append(["bytes": bytes, "phase": phase,
+                                "sequence": sequence ?? -1, "ordinal": ordinal ?? -1])
+                lock.unlock()
+                if phase == Player.Phase.finished.rawValue && bytes[3] == 0x31 {
+                    finishedIdle.signal()
+                }
+            }
+        }
         player.onReplayStarted = { time in
             lock.lock(); starts.append(time - started); lock.unlock()
         }
@@ -243,10 +304,14 @@ final class V1Peripheral {
         for _ in 0..<expected {
             precondition(arrived.wait(timeout: .now() + 2) == .success, "missing emission")
         }
+        if tailMode {
+            precondition(finishedIdle.wait(timeout: .now() + 2) == .success, "missing finished idle")
+        }
         player.stop()
         Thread.sleep(forTimeInterval: 0.03)
         lock.lock()
-        let output: [String: Any] = ["times": times, "offsets": emittedOffsets, "starts": starts]
+        let output: [String: Any] = ["times": times, "offsets": emittedOffsets, "starts": starts,
+                                     "packets": packets]
         lock.unlock()
         let data = try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys])
         print(String(decoding: data, as: UTF8.self))

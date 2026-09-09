@@ -70,6 +70,10 @@ class VolumeFadeModule {
     // Main decision method
     VolumeFadeAction process(const VolumeFadeContext& ctx);
 
+    // End a cleared alert while another volume owner suppresses fade commands.
+    // That owner must carry any returned restore pair until it releases volume.
+    VolumeFadeAction releaseClearedAlert();
+
     /// Inject a one-shot baseline hint from an external volume owner.
     /// If a new alert arrives before the V1 echoes back the true volume,
     /// VolumeFade uses this hint instead of the stale DisplayState value.

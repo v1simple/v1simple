@@ -14,8 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "bench"))
 from encounter_behavior import analyze_behavior, event_findings, summarize
 from encounter_behavior_report import interval_coverage
 from encounter_observation import summarize_event_observations
-from test_encounter_sequence import sequence
+from test_encounter_sequence import sequence, camera
 from test_encounter_expectation import literals, alert, recording
+from encounter_expectation import build_encounter_timeline
 
 
 def measured(times, values, **kwargs):
@@ -30,6 +31,73 @@ def measured(times, values, **kwargs):
 
 
 class BehaviorTests(unittest.TestCase):
+    def test_producer_comparison_includes_new_persistence_ending_content(self):
+        inputs = recording([
+            ([alert()], [6, 6, 1, 0x24, 0x24, 12, 12, 0x40]),
+            ([], [56, 56, 0, 0, 0, 12, 12, 0x40]),
+            ([alert("ka", 34700)], [6, 6, 1, 0x22, 0x22, 12, 12, 0x40]),
+        ])
+        inputs[0]["samples"][2]["offsetSeconds"] = 9
+        inputs[1][2].update(replayOffsetSeconds=9, requestedHostMonotonicNs=10_000_000_000)
+        for delivery in inputs[2]:
+            if delivery["stimulusSequence"] == 3:
+                for key in ("hostMonotonicNs", "attemptedHostMonotonicNs"):
+                    if key in delivery:
+                        delivery[key] += 7_000_000_000
+        timeline = build_encounter_timeline(*inputs)
+        rows = camera([1.03, 2.03, 2.035, 9.99, 10.03])
+        for index, row in enumerate(rows):
+            row.update(video_pts_value=index, video_pts_timescale=200)
+        held = literals(counter_glyph="L", primary_frequency="24.150", active_bands=[], main_arrows=[], main_bars=0)
+        cleared = deepcopy(held)
+        cleared["primary_frequency"]["value"] = "--.---"
+        final = literals(primary_frequency="34.700", active_bands=["Ka"])
+        results = {}
+        with tempfile.TemporaryDirectory() as folder:
+            for name, values in (
+                ("baseline", [literals(), held, cleared, cleared, final]),
+                ("control", [literals(), held, cleared, cleared, final]),
+                ("held", [literals(), held, held, held, final]),
+            ):
+                run, out = Path(folder) / name / "run", Path(folder) / name / "analysis"
+                run.mkdir(parents=True)
+                out.mkdir()
+                (run / "window_result.json").write_text("{}")
+                video = run / "original.mov"
+                video.write_bytes(b"synthetic acquisition fixture")
+                identity = {"runtime_identity": {"git_sha": "fixture", "image_id": "fixture", "boot_id": 1},
+                            "capture_id": name, "camera_artifacts": {},
+                            **{key: "0" * 64 for key in ("capture_manifest_sha256", "window_result_sha256",
+                                "stimulus_sha256", "delivery_sha256", "scenario_sha256")}}
+                data = dict(identity=identity, stimulus=inputs[1], timeline=timeline, rows=rows,
+                            source_records=rows, timing={}, video=video, width=1, height=1,
+                            registration={}, camera_name="fixture", camera_profile={})
+                with patch("encounter_check.load_run", return_value=data), \
+                     patch("encounter_behavior.behavior_contract", return_value={
+                         "comparison_key": "fixture", "rules": {}, "field_rule_ids": {}}), \
+                     patch("encounter_behavior.configuration_for_samples", return_value={"status": "verified", "settings": {
+                         "stealthEnabled": False, "priorityArrowOnly": False, "alertPersistenceSeconds": 2}}), \
+                     patch("encounter_reader.prepare_reader", return_value={"ocr_available": True}), \
+                     patch("encounter_runtime_probe.probe_ocr_runtime", return_value={"status": "operational"}), \
+                     patch("encounter_qualification.verify_qualification", return_value={"status": "QUALIFIED"}), \
+                     patch("encounter_check.stream_frames", return_value=iter(
+                         (i, bytes([i, 0, 0])) for i in range(len(rows)))), \
+                     patch("encounter_reader.observe", side_effect=[{"fields": deepcopy(value)} for value in values]):
+                    results[name] = analyze_behavior(run, out, compare_to=(
+                        Path(folder) / "baseline/analysis/result.json" if name != "baseline" else None))
+                self.assertEqual(results[name]["errors"], [])
+            self.assertEqual(results["baseline"]["result"], "NO_DIFFERENCES_OBSERVED")
+            self.assertEqual(results["control"]["comparison"]["summary"]["changed_events"], 0)
+            changed = results["held"]
+            self.assertEqual(changed["result"], "DIFFERENCES_FOUND")
+            self.assertEqual(changed["persistence"]["summary"]["findings"], 1)
+            self.assertEqual(changed["comparison"]["summary"]["content_changed_events"], 1)
+            findings = changed["comparison"]["events"][1]["newly_observed_findings"]
+            self.assertEqual([(f["kind"], f["observed"]) for f in findings],
+                             [("ending_content", "retained_primary")])
+            self.assertEqual(findings[0]["last"]["run"], "current")
+            self.assertEqual(findings[0]["last"]["capture_ns"], 9_990_000_000)
+
     def test_full_interval_counts_keep_other_acquisition_beside_unknown_and_existing_findings(self):
         inputs = recording([([alert()], [6, 6, 1, 0x24, 0x24, 12, 12, 0x40]),
                             ([alert("k", 24150, "SIDE")], [6, 6, 1, 0x44, 0x44, 12, 12, 0x40])])

@@ -2608,6 +2608,79 @@ void test_interrupted_forget_all_reboots_with_every_slot_and_password_restored()
     TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiTxnReady));
 }
 
+void check_successful_wifi_forget_survives_boot(bool failBackupWrite) {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "SavedOpenNetwork", "", "Saved", 0));
+    const std::string backupBefore = readFileToString(fs, SETTINGS_BACKUP_PATH);
+
+    // A mounted card can accept secret removal but fail the main backup write.
+    if (failBackupWrite) fs::mock_set_fs_write_budget(0);
+    WifiClientApiService::Runtime runtime;
+    runtime.forgetClient = [](void* ctx) {
+        return static_cast<SettingsManager*>(ctx)->clearWifiClientCredentials();
+    };
+    runtime.forgetClientCtx = &manager;
+    WebServer server;
+    WifiClientApiService::handleApiForget(server, runtime, nullptr, nullptr, nullptr, nullptr);
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    TEST_ASSERT_FALSE(manager.get().wifiClientEnabled);
+    TEST_ASSERT_FALSE(manager.get().hasConfiguredWifiStaSlot());
+    TEST_ASSERT_FALSE(fs.exists(WIFI_CLIENT_SD_SECRET_PATH));
+    if (failBackupWrite) {
+        TEST_ASSERT_EQUAL_STRING(backupBefore.c_str(), readFileToString(fs, SETTINGS_BACKUP_PATH).c_str());
+    }
+
+    // Reboot before the deferred backup retry, then let the card accept writes.
+    resetDeferredSettingsBackupStateForTest();
+    fs::mock_reset_fs_write_budget();
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_TRUE(rebooted.getNvsDiagnostic().healthy);
+    TEST_ASSERT_FALSE(rebooted.get().wifiClientEnabled);
+    TEST_ASSERT_FALSE(rebooted.get().hasConfiguredWifiStaSlot());
+    rebooted.checkAndRestoreFromSD();
+    TEST_ASSERT_FALSE(rebooted.get().wifiClientEnabled);
+    TEST_ASSERT_FALSE(rebooted.get().hasConfiguredWifiStaSlot());
+    TEST_ASSERT_EQUAL_STRING("", rebooted.get().wifiClientSSID.c_str());
+    JsonDocument backupAfter;
+    TEST_ASSERT_TRUE(loadJsonFile(fs, SETTINGS_BACKUP_PATH, backupAfter));
+    TEST_ASSERT_FALSE(backupAfter["wifiClientEnabled"].as<bool>());
+    TEST_ASSERT_EQUAL_STRING("", backupAfter["wifiClientSSID"].as<const char*>());
+}
+
+void test_successful_wifi_forget_survives_failed_sd_backup_and_reboot() {
+    check_successful_wifi_forget_survives_boot(true);
+}
+
+void test_successful_wifi_forget_survives_completed_sd_backup_and_reboot() {
+    check_successful_wifi_forget_survives_boot(false);
+}
+
+void test_missing_legacy_wifi_keys_still_recover_from_sd_backup() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "LegacyOpenNetwork", "", "Saved", 0));
+    Preferences prefs;
+    TEST_ASSERT_TRUE(prefs.begin(activeNamespaceOrEmpty().c_str(), false));
+    TEST_ASSERT_TRUE(prefs.remove(kNvsWifiClientEnabled));
+    TEST_ASSERT_FALSE(prefs.isKey(kNvsWifiClientSsid));
+    TEST_ASSERT_TRUE(prefs.remove(kNvsWifiStaSlotSsid[0]));
+    prefs.end();
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_TRUE(rebooted.getNvsDiagnostic().healthy);
+    TEST_ASSERT_FALSE(rebooted.get().hasConfiguredWifiStaSlot());
+    rebooted.checkAndRestoreFromSD();
+    TEST_ASSERT_TRUE(rebooted.get().wifiClientEnabled);
+    TEST_ASSERT_EQUAL_STRING("LegacyOpenNetwork", rebooted.get().wifiClientSSID.c_str());
+}
+
 void test_restore_crc_mismatch_rejects_before_any_mutation() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
@@ -4304,6 +4377,9 @@ int main() {
     RUN_TEST(test_interrupted_wifi_credential_transaction_reboots_to_old_complete_pair);
     RUN_TEST(test_short_wifi_secret_write_preserves_prior_secret_and_reboots_consistently);
     RUN_TEST(test_interrupted_forget_all_reboots_with_every_slot_and_password_restored);
+    RUN_TEST(test_successful_wifi_forget_survives_failed_sd_backup_and_reboot);
+    RUN_TEST(test_successful_wifi_forget_survives_completed_sd_backup_and_reboot);
+    RUN_TEST(test_missing_legacy_wifi_keys_still_recover_from_sd_backup);
     RUN_TEST(test_restore_crc_mismatch_rejects_before_any_mutation);
     RUN_TEST(test_restore_dangling_assignment_rejects_before_any_mutation);
     RUN_TEST(test_restore_persist_failure_rolls_back_settings_profiles_and_reboot_state);

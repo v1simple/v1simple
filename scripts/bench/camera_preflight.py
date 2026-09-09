@@ -243,11 +243,14 @@ def run_camera_smoke(
     except FileExistsError:
         raise FileExistsError("refusing to reuse an existing camera smoke output directory") from None
     camera = camera_factory(out_dir, 1)
-    preflight = run_camera_preflight(camera)
-    if preflight.get("result") != "PASS":
-        return preflight, 3
-    sleep(CALIBRATION_VIDEO_TIME_S + 0.5)
-    capture = camera.stop(collection_completed=False)
+    try:
+        preflight = run_camera_preflight(camera)
+        if preflight.get("result") != "PASS":
+            return preflight, 3
+        sleep(CALIBRATION_VIDEO_TIME_S + 0.5)
+    finally:
+        # Admission can start a detached recorder before returning or raising.
+        capture = camera.stop(collection_completed=False)
     passed = capture.get("result") == "CAPTURED"
     artifacts: dict[str, Any] = {}
     ownership_error = ""

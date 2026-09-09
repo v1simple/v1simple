@@ -29,6 +29,8 @@ public:
     int setModeCalls = 0;
     uint8_t lastModeValue = 0;
     int requestAlertDataCalls = 0;
+    bool alertDataRequestSent = true;
+    bool requestAlertDataResult = true;
     int processProxyQueueCalls = 0;
     int onUserBytesReceivedCalls = 0;
     bool bootReadyFlag = true;  // Default true to preserve existing test behavior
@@ -69,6 +71,8 @@ public:
         setModeCalls = 0;
         lastModeValue = 0;
         requestAlertDataCalls = 0;
+        alertDataRequestSent = true;
+        requestAlertDataResult = true;
         processProxyQueueCalls = 0;
         onUserBytesReceivedCalls = 0;
         bootReadyFlag = true;
@@ -193,7 +197,11 @@ public:
     
     void requestAlertData() {
         requestAlertDataCalls++;
+        if (requestAlertDataResult) {
+            alertDataRequestSent = true;
+        }
     }
+    bool needsAlertDataStartRecovery() const { return !alertDataRequestSent && !connectBurstSettling; }
 
     void processProxyQueue() {
         processProxyQueueCalls++;

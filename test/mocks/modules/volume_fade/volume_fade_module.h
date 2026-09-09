@@ -52,6 +52,11 @@ public:
     
     bool isTracking() const { return tracking; }
 
+    VolumeFadeAction releaseClearedAlert() {
+        tracking = false;
+        return {};
+    }
+
     VolumeFadeAction process(const VolumeFadeContext& ctx) {
         ++processCalls;
         lastContext = ctx;

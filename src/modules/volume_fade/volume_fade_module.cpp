@@ -219,6 +219,17 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
     return action;
 }
 
+VolumeFadeAction VolumeFadeModule::releaseClearedAlert() {
+    VolumeFadeAction action;
+    if (originalVolume_ != 0xFF && (fadeActive_ || pendingRestoreVolume_ != 0xFF)) {
+        action.type = VolumeFadeAction::Type::RESTORE;
+        action.restoreVolume = originalVolume_;
+        action.restoreMuteVolume = originalMuteVolume_;
+    }
+    reset();
+    return action;
+}
+
 void VolumeFadeModule::resetSessionState() {
     alertStartMs_ = 0;
     originalVolume_ = 0xFF;

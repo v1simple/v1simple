@@ -9,8 +9,12 @@ class BleAlertDataRequestGate {
   public:
     static constexpr uint32_t MIN_INTERVAL_MS = 1000;
 
+    bool hasSuccessfulSend(uint32_t sessionGeneration) const {
+        return hasSuccessfulSend_ && sessionGeneration == sessionGeneration_;
+    }
+
     bool permits(uint32_t sessionGeneration, uint32_t nowMs) const {
-        if (!hasSuccessfulSend_ || sessionGeneration != sessionGeneration_) {
+        if (!hasSuccessfulSend(sessionGeneration)) {
             return true;
         }
         return static_cast<uint32_t>(nowMs - lastSuccessfulSendMs_) >= MIN_INTERVAL_MS;

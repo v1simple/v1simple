@@ -283,15 +283,18 @@ final class Player {
             case .restart:
                 continue
             case .completed:
+                // Idle display frames do not clear the receiver's alert table.
+                // Retire the last live sample before entering the idle tail.
+                if sendEmptyAlertTable() {
+                    lock.lock(); _packetsSent += 1; lock.unlock()
+                }
                 switch emitIdle(seconds: options.idleTail, phase: .idleTail) {
                 case .aborted:
                     return
                 case .restart:
                     continue
                 case .completed:
-                    if sendEmptyAlertTable() {
-                        lock.lock(); _packetsSent += 1; lock.unlock()
-                    }
+                    break
                 }
             }
 

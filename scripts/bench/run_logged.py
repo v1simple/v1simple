@@ -54,6 +54,8 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="write sanitized logs without copying child output to the terminal",
     )
+    parser.add_argument("--terminal-prefix", action="append", default=[],
+                        help="with --quiet, still show sanitized lines starting with this prefix")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.command and args.command[0] == "--":
@@ -69,13 +71,14 @@ def copy_stream(
     own_log: BinaryIO,
     combined_log: BinaryIO,
     combined_lock: threading.Lock,
+    terminal_prefixes: tuple[bytes, ...] | None = None,
 ) -> None:
     while True:
         chunk = source.readline()
         if not chunk:
             break
         safe_chunk = redact_artifact_bytes(chunk)
-        if terminal is not None:
+        if terminal is not None and (terminal_prefixes is None or safe_chunk.startswith(terminal_prefixes)):
             terminal.write(safe_chunk)
             terminal.flush()
         own_log.write(safe_chunk)
@@ -144,14 +147,16 @@ def main() -> int:
         assert process.stdout is not None
         assert process.stderr is not None
         lock = threading.Lock()
+        terminal_prefixes = tuple(prefix.encode("utf-8") for prefix in args.terminal_prefix) if args.quiet else None
         stdout_thread = threading.Thread(
             target=copy_stream,
             args=(
                 process.stdout,
-                None if args.quiet else sys.stdout.buffer,
+                sys.stdout.buffer,
                 stdout_log,
                 combined_log,
                 lock,
+                terminal_prefixes,
             ),
             daemon=True,
         )
@@ -159,10 +164,11 @@ def main() -> int:
             target=copy_stream,
             args=(
                 process.stderr,
-                None if args.quiet else sys.stderr.buffer,
+                sys.stderr.buffer,
                 stderr_log,
                 combined_log,
                 lock,
+                terminal_prefixes,
             ),
             daemon=True,
         )

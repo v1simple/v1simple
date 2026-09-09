@@ -7,6 +7,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from bench.encounter_build_comparison import compare_behavior_runs
+from bench.encounter_capability import frequency_capability, frequency_capability_summary
 
 
 def witness(ms, value=None):
@@ -40,6 +41,65 @@ def finding(value="Ka34.700", ms=250):
 
 
 class BuildComparisonTests(unittest.TestCase):
+    def test_frequency_capability_requires_a_recorded_boolean_and_keeps_reason_one_line(self):
+        for value in (None, {}, {"qualified": 1}, {"qualified": "true"}, []):
+            with self.subTest(value=value):
+                self.assertEqual(frequency_capability(value)["status"], "NOT_RECORDED")
+                self.assertIn("was not recorded", frequency_capability_summary(value))
+        self.assertEqual(frequency_capability({"qualified": True}), {"status": "AVAILABLE", "reason": None})
+        unavailable = {"qualified": False, "reason": "startup geometry\n refused: counter_edges"}
+        self.assertEqual(frequency_capability(unavailable),
+                         {"status": "UNAVAILABLE", "reason": "startup geometry refused: counter_edges"})
+        self.assertEqual(frequency_capability_summary(unavailable),
+                         "Calibrated frequency fallback unavailable: startup geometry refused: counter_edges")
+        self.assertEqual(frequency_capability({"qualified": False, "reason": None})["reason"],
+                         "startup calibration did not qualify")
+
+    def test_different_calibrated_capability_marks_counts_unreliable_without_hiding_findings(self):
+        old, new = behavior(), behavior()
+        old["evidence"]["primary_frequency_calibration"] = {"qualified": True}
+        new["evidence"]["primary_frequency_calibration"] = {"qualified": False, "reason": "counter_edges"}
+        new["events"][0]["findings"] = [finding()]
+        new["events"][0]["observation"]["fields"]["secondary"]["counts"]["unresolved_frames"] = 7
+        untouched = deepcopy((new, old))
+        result = compare_behavior_runs(new, old)
+        self.assertEqual((new, old), untouched)
+        self.assertEqual(result["status"], "COMPARED")
+        self.assertTrue(result["compatible"])
+        self.assertEqual(result["unknown_count_comparison"]["status"], "UNRELIABLE")
+        self.assertEqual(result["unknown_count_comparison"]["current"]["status"], "UNAVAILABLE")
+        self.assertEqual(result["unknown_count_comparison"]["baseline"]["status"], "AVAILABLE")
+        self.assertIn("availability differs", result["unknown_count_comparison"]["reason"])
+        measured = result["events"][0]
+        self.assertTrue(measured["uncertainty_changed"])
+        self.assertEqual(measured["current"]["fields"]["secondary"]["counts"]["unresolved_frames"], 7)
+        self.assertEqual(measured["newly_observed_findings"][0]["observed"], ["Ka34.700"])
+
+    def test_same_recorded_capability_does_not_claim_identical_image_quality(self):
+        for qualified in (True, False):
+            with self.subTest(qualified=qualified):
+                old, new = behavior(), behavior()
+                for result in (old, new):
+                    result["evidence"]["primary_frequency_calibration"] = {"qualified": qualified}
+                measured = compare_behavior_runs(new, old)
+                self.assertEqual(measured["unknown_count_comparison"]["status"], "COMPARABLE")
+                self.assertIn("image quality and coverage can still differ", measured["unknown_count_comparison"]["basis"])
+                self.assertEqual(measured["summary"]["changed_events"], 0)
+
+    def test_missing_analysis_capability_is_not_inferred_from_capture_or_legacy_absence(self):
+        old, new = behavior(), behavior()
+        for result in (old, new):
+            result["evidence"]["reader_capabilities_at_capture"] = {
+                "primary_frequency_calibration": {"qualified": True}}
+        for add_current in (False, True):
+            if add_current:
+                new["evidence"]["primary_frequency_calibration"] = {"qualified": True}
+            measured = compare_behavior_runs(new, old)
+            self.assertTrue(measured["compatible"])
+            self.assertEqual(measured["unknown_count_comparison"]["status"], "UNRELIABLE")
+            self.assertEqual(measured["unknown_count_comparison"]["baseline"]["status"], "NOT_RECORDED")
+            self.assertIn("not recorded", measured["unknown_count_comparison"]["reason"])
+
     def test_different_firmware_tooling_and_boot_are_provenance_not_incompatibility(self):
         old, new = behavior(), behavior()
         new["evidence"]["runtime_identity"] = {"git_sha": "2222222", "image_id": "987654321", "boot_id": 99}

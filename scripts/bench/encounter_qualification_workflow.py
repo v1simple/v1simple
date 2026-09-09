@@ -265,6 +265,10 @@ def _bind_current_static_method(document: dict[str, Any], runtime: dict[str, Any
              "current static reader implementation is incomplete")
     binding["method_version"] = runtime.get("method_version")
     binding["files"] = {name: method[name] for name in CORE_READER_FILES}
+    if "reserved_validation" in binding:
+        binding["reserved_validation"] = (
+            "Retained historical independent labels are reused for current-reader regression; "
+            "this reanalysis does not establish a new held-out trial.")
     document["reader"] = deepcopy(runtime)
     document["camera"] = deepcopy(camera)
 

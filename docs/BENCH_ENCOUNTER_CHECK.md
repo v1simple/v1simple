@@ -141,11 +141,22 @@ The comparison shows changed target observations, newly observed and no-longer
 observed discrepancy literals, appearance and occurrence times, unresolved
 measurements and coverage. A disappeared finding beside unreadable images is
 not proof of a repair. Independent run-clock offsets are not timing changes.
+If calibrated frequency fallback availability differs or was not recorded,
+the comparison marks unknown-count comparisons as unreliable while retaining
+the observed content findings. Equal availability alone does not establish equal
+image quality or coverage.
 
 ## Read the result
 
 The console gives brief progress, target and coverage counts, unresolved
 comparisons, one final outcome, and the main `encounter-check/report.html` path.
+Before a live collection, one line states whether the calibrated frequency
+fallback is available and gives its refusal reason when unavailable. This is
+separate from camera admission: collection can continue with the ordinary
+reader. The report shows capture-time availability alongside the analysis's
+independent recomputation; historical captures without this check say it was
+not recorded. An unavailable fallback can increase unreadable-frame counts
+without establishing a firmware error.
 The report retains original frame witnesses so an observed symptom can be
 traced to the input and expected behavior, then checked after a firmware change.
 Its **Detailed evidence** section links the full readings, original recording,
@@ -267,8 +278,12 @@ startup SCAN shape with a retained reference using OpenCV. A separate startup
 counter validates the alignment. Both the original startup still and its
 preflight metadata must be bound to the recording. This correction applies only
 to the primary-frequency field; other fields keep their existing registration.
-If calibration refuses, the ordinary reader remains in use and the reason is
-retained in the report evidence.
+Preflight evaluates this existing calibration from the session startup still
+before the replay starts and retains the diagnostic in `reader_capabilities`.
+Analysis always recomputes from the original hash-bound still; it never trusts
+the saved diagnostic as its transform. If calibration refuses or its image
+libraries are unavailable, the ordinary reader remains in use and the reason
+is shown before collection and retained in the report evidence.
 
 The additional idle reading requires a Stb-tester template match, every dash
 and the decimal, and a separate check for extra gray or red strokes. Its fixed
@@ -299,6 +314,8 @@ The default qualification manifest is
 `BENCH_ENCOUNTER_QUALIFICATION` when using another retained qualification.
 Qualification binds the pixel-reading method to independently checked reference
 images and controls. It does not impose a firmware response deadline.
+Reanalysis of preserved historical labels is current-reader regression evidence;
+rebinding a newer reader does not make those labels a new held-out trial.
 
 An explicit `reanalyze-static --primary-frequency-reference` supplement can
 correct a prior frequency reference using independently recorded observations.

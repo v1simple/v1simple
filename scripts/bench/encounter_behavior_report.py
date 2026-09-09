@@ -13,6 +13,11 @@ import os
 from pathlib import Path
 from urllib.parse import quote
 
+try:
+    from .encounter_capability import frequency_capability, frequency_capability_summary
+except ImportError:
+    from encounter_capability import frequency_capability, frequency_capability_summary
+
 
 _WITNESS_KEYS = ("frame_id", "frame_index", "video_frame_index", "source_frame_seq",
                  "capture_ns", "image", "image_sha256", "observed", "comparison_status")
@@ -226,6 +231,24 @@ def _evidence_links(destination, result, run_dir, reader_qualification):
     return "".join(groups) or '<p>No separately retained evidence files are available beside this report.</p>'
 
 
+def _frequency_capability_html(result):
+    evidence = result.get("evidence")
+    evidence = evidence if isinstance(evidence, dict) else {}
+    analysis = evidence.get("primary_frequency_calibration")
+    captured = evidence.get("reader_capabilities_at_capture")
+    capture = captured.get("primary_frequency_calibration") if isinstance(captured, dict) else None
+    unavailable = frequency_capability(analysis)["status"] != "AVAILABLE"
+    details = json.dumps({"analysis_recomputation": analysis, "recorded_at_capture": capture}, indent=2)
+    return ('<section id="frequency-capability"' + (' class="notice"' if unavailable else '') + '>'
+            '<p><strong>This analysis: ' + escape(frequency_capability_summary(analysis)) + '</strong></p>'
+            '<p class="small">At capture: ' + escape(frequency_capability_summary(capture)) + '</p>'
+            '<p class="small">This optional fallback supports primary-frequency readings, including the idle '
+            'placeholder. Its absence can increase unreadable-frame counts without establishing a display error. '
+            'The analysis recomputes availability from the retained startup image; capture-time evidence is separate.</p>'
+            '<details><summary>Startup frequency calibration diagnostics</summary><pre>' + escape(details) +
+            '</pre></details></section>')
+
+
 def write_behavior_report(out: Path, result: dict, *, run_dir=None, reader_qualification=None) -> Path:
     """Write one self-contained report and return its path.
 
@@ -240,7 +263,9 @@ def write_behavior_report(out: Path, result: dict, *, run_dir=None, reader_quali
     # or HTML tag must never turn that data into executable markup.
     data = data.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
     links = _evidence_links(destination, result, run_dir, reader_qualification)
-    destination.write_text(_HTML.replace("__RESULT_JSON__", data, 1).replace("__EVIDENCE_LINKS__", links, 1),
+    capability = _frequency_capability_html(result)
+    destination.write_text(_HTML.replace("__RESULT_JSON__", data, 1).replace("__EVIDENCE_LINKS__", links, 1)
+                           .replace("__FREQUENCY_CAPABILITY__", capability, 1),
                            encoding="utf-8")
     return destination
 
@@ -254,7 +279,7 @@ _HTML = r'''<!doctype html>
 @media(max-width:650px){header{padding:20px 16px}.layout{display:block}.sidebar{position:relative;max-height:300px;border-right:0;border-bottom:1px solid var(--line)}.event-list{display:flex;gap:8px;overflow:auto}.event-button{min-width:170px}.filters{grid-template-columns:1fr 1fr}.filters .small{grid-column:1/-1}.stats{gap:6px}.stat{padding:9px}.stat b{font-size:23px}.viewer-controls{gap:5px}}
 </style></head><body>
 <header><h1>Firmware visual behavior</h1><p class="muted">Known replay inputs, independently read physical display, and evidence for each finding.</p><p id="overall-result"></p>
-<div class="identity" id="identity"></div><div class="stats" id="stats"></div><p class="small muted" id="coverage-summary"></p><div id="interval-summary"></div>
+<div class="identity" id="identity"></div><div class="stats" id="stats"></div><p class="small muted" id="coverage-summary"></p>__FREQUENCY_CAPABILITY__<div id="interval-summary"></div>
 <details><summary>Tested scope, settings and method</summary><div id="method"></div></details><div id="global-errors"></div>
 <details><summary>Detailed evidence</summary><p class="small muted">Original readings, collection records and reference evidence remain separate files. Missing or unreadable comparisons remain unknown.</p>__EVIDENCE_LINKS__</details>
 </header><div class="layout"><aside class="sidebar" aria-label="Event index"><div class="filters">
@@ -367,6 +392,8 @@ function showFrame(position){const e=events[activeIndex];framePosition=Math.max(
 }
 function jumpFrame(number){let position=activeFrames.findIndex(s=>frameNo(s)===number);if(position<0&&frameMap.has(number)){activeFrames.push(frameMap.get(number));activeFrames.sort((a,b)=>frameNo(a)-frameNo(b));position=activeFrames.findIndex(s=>frameNo(s)===number);}if(position>=0){showFrame(position);$('viewer').scrollIntoView({behavior:'smooth',block:'start'});}}
 function renderComparison(){const comparison=report.comparison;if(!comparison)return;const changes=(comparison.events||[]).filter(e=>e.changed),baselinePath=safeLocalReport(comparison.baseline_report);
+ const capability=comparison.unknown_count_comparison||{status:'UNRELIABLE',reason:'Unknown-count comparisons are unreliable: analysis capability metadata was not recorded.'};
+ const capabilityHTML='<div class="'+(capability.status==='COMPARABLE'?'small muted':'notice')+'"><strong>'+esc(capability.reason)+'</strong>'+(capability.basis?'<p>'+esc(capability.basis)+'</p>':'')+'<details><summary>Calibrated frequency fallback in each analysis</summary><pre>'+esc(json(capability))+'</pre></details></div>';
  const identity=run=>{const r=run?.runtime_identity||{};return 'Firmware '+(r.git_sha||'unidentified')+' · image '+(r.image_id||'unidentified');};
  const baselineEventLink=(id,label)=>baselinePath?'<a href="'+esc(baselinePath+'#event='+encodeURIComponent(id))+'" target="_blank" rel="noopener">'+esc(label)+'</a>':esc(label);
  const fieldUnknown=run=>Object.values(run?.fields||{}).reduce((v,f)=>({frames:v.frames+(f.counts?.unresolved_frames||0),suffix:v.suffix+(f.unresolved_suffix_frames||0)}),{frames:0,suffix:0});
@@ -374,7 +401,7 @@ function renderComparison(){const comparison=report.comparison;if(!comparison)re
    const image=safeImage(w),folder=baselinePath?baselinePath.slice(0,baselinePath.lastIndexOf('/')+1):null;return folder!==null&&image&&!image.startsWith('/')&&!image.split('/').includes('..')?'<a class="witness" href="'+esc(folder+image)+'" target="_blank" rel="noopener">Baseline original '+frameNo(w)+' · '+esc(ms(finding.last_ms))+'</a>':baselineEventLink(e.baseline_event_id,'Baseline event');};
  const findings=(items,e,run)=>items.length?items.map(f=>'<p><strong>'+esc(labels[f.field]||f.field)+'</strong>: '+esc(literal(f.observed))+'<br>'+findingWitness(f,e,run)+'</p>').join(''):'<span class="muted">none</span>';
  const rows=changes.map(e=>{const i=events.findIndex(item=>item.event_id===e.event_id),a=e.appearance||{},oldUnknown=fieldUnknown(e.baseline),newUnknown=fieldUnknown(e.current);return '<tr><td>'+(i<0?esc(e.event_id):'<button data-event="'+i+'">'+esc(e.event_id)+'</button>')+'<p>'+baselineEventLink(e.baseline_event_id,'Baseline event')+'</p></td><td>Baseline: '+esc(ms(a.baseline_ms))+'<br>Current: '+esc(ms(a.current_ms))+(Number.isFinite(a.difference_ms)?'<p>Measured change: '+esc(ms(a.difference_ms))+'</p>':'')+'</td><td>'+findings(e.newly_observed_findings||[],e,'current')+'</td><td>'+findings(e.previously_observed_findings_absent||[],e,'baseline')+'</td><td>Unresolved field comparisons: '+oldUnknown.frames+' → '+newUnknown.frames+'<br>Ending unresolved: '+oldUnknown.suffix+' → '+newUnknown.suffix+(e.coverage_changed?'<p class="tag warn">Coverage changed</p>':'')+'<details><summary>Field and coverage changes</summary><pre>'+esc(json({baseline:{fields:e.baseline?.fields,coverage:e.baseline?.coverage},current:{fields:e.current?.fields,coverage:e.current?.coverage}}))+'</pre></details></td></tr>';}).join('');
- $('comparison').innerHTML='<section class="panel"><h2>Firmware comparison</h2><div class="facts"><p><strong>Baseline</strong><br>'+esc(identity(comparison.baseline))+'</p><p><strong>Current</strong><br>'+esc(identity(comparison.current))+'</p></div><p>'+esc(comparison.basis||'Like-for-like event observations.')+'</p>'+(comparison.reasons?.length?'<div class="notice">'+esc(comparison.reasons.join('; '))+'</div>':'')+(comparison.compatible?'<p>'+changes.length+' changed event observations / '+(comparison.summary?.compared_events??comparison.events?.length??0)+' comparable events. Timing differences are measurements; absent findings do not establish a repair.</p>':'')+(rows?'<div class="table-wrap"><table><thead><tr><th>Event</th><th>First complete target</th><th>Newly observed findings</th><th>Previously seen, absent here</th><th>Uncertainty and coverage</th></tr></thead><tbody>'+rows+'</tbody></table></div>':'<p class="muted">'+(comparison.compatible?'No changed observations.':'These recordings cannot be compared under the same input and measurement rules.')+'</p>')+'</section>';
+ $('comparison').innerHTML='<section class="panel"><h2>Firmware comparison</h2><div class="facts"><p><strong>Baseline</strong><br>'+esc(identity(comparison.baseline))+'</p><p><strong>Current</strong><br>'+esc(identity(comparison.current))+'</p></div><p>'+esc(comparison.basis||'Like-for-like event observations.')+'</p>'+(comparison.reasons?.length?'<div class="notice">'+esc(comparison.reasons.join('; '))+'</div>':'')+capabilityHTML+(comparison.compatible?'<p>'+changes.length+' changed event observations / '+(comparison.summary?.compared_events??comparison.events?.length??0)+' comparable events. Timing differences are measurements; absent findings do not establish a repair.</p>':'')+(rows?'<div class="table-wrap"><table><thead><tr><th>Event</th><th>First complete target</th><th>Newly observed findings</th><th>Previously seen, absent here</th><th>Uncertainty and coverage</th></tr></thead><tbody>'+rows+'</tbody></table></div>':'<p class="muted">'+(comparison.compatible?'No changed observations.':'These recordings cannot be compared under the same input and measurement rules.')+'</p>')+'</section>';
 }
 document.addEventListener('click',event=>{const compareButton=event.target.closest('[data-compare-event]');if(compareButton){selectEvent(Number(compareButton.dataset.compareEvent));jumpFrame(Number(compareButton.dataset.frame));return;}const eventButton=event.target.closest('[data-event]');if(eventButton){selectEvent(Number(eventButton.dataset.event));return;}const frameButton=event.target.closest('[data-frame]');if(frameButton)jumpFrame(Number(frameButton.dataset.frame));});
 $('search').addEventListener('input',renderIndex);$('filter').addEventListener('change',renderIndex);$('frame-slider').addEventListener('input',event=>showFrame(Number(event.target.value)));$('prev-frame').addEventListener('click',()=>showFrame(framePosition-1));$('next-frame').addEventListener('click',()=>showFrame(framePosition+1));

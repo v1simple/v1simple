@@ -12,6 +12,11 @@ import json
 import math
 from pathlib import PurePosixPath
 
+try:
+    from .encounter_capability import frequency_capability
+except ImportError:
+    from encounter_capability import frequency_capability
+
 
 def _json(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
@@ -174,6 +179,22 @@ def compare_behavior_runs(current, baseline):
     for label, summary in (("current", current), ("baseline", baseline)):
         result[label] = {"runtime_identity": deepcopy(summary["evidence"]["runtime_identity"]),
                          "tooling_source": deepcopy(summary["evidence"].get("tooling_source", summary.get("tooling_source")))}
+    capabilities = {label: frequency_capability(summary["evidence"].get("primary_frequency_calibration"))
+                    for label, summary in (("current", current), ("baseline", baseline))}
+    states = {capability["status"] for capability in capabilities.values()}
+    if "NOT_RECORDED" in states:
+        reason = "Unknown-count comparisons are unreliable: calibrated frequency fallback availability " \
+                 "was not recorded for one or both analyses."
+    elif len(states) > 1:
+        reason = "Unknown-count comparisons are unreliable: calibrated frequency fallback availability differs."
+    else:
+        reason = "Both analyses recorded the same calibrated frequency fallback availability."
+    result["unknown_count_comparison"] = {
+        "status": "COMPARABLE" if len(states) == 1 and "NOT_RECORDED" not in states else "UNRELIABLE",
+        "reason": reason, **capabilities,
+        "basis": "This checks reader capability only; image quality and coverage can still differ. "
+                 "Observed counts and content findings are retained. This is not a firmware verdict.",
+    }
     for name, a, b in (
         ("effective settings", current["evidence"]["configuration"]["settings"], baseline["evidence"]["configuration"]["settings"]),
         ("reader method", current["reader_method"], baseline["reader_method"]),

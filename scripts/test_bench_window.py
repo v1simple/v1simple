@@ -10,6 +10,7 @@ import io
 import itertools
 import json
 import os
+import select
 import stat
 import struct
 import subprocess
@@ -1423,6 +1424,9 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
                   if [[ "${{args[index]}}" == "--reader-qualification" ]]; then reader_qualification=1; fi
                 done
                 [[ "$reader_qualification" == "{int(qualification_capture)}" ]] || exit 12
+                if [[ "{int(camera)}" == 1 ]]; then
+                  printf '[bench] frequency reading: Calibrated frequency fallback unavailable: counter_edges (before collection)\\n'
+                fi
                 mkdir -p "$out"
                 cp "$FAKE_WINDOW_JSON" "$out/window_result.json"
                 exit "$FAKE_WINDOW_EXIT"
@@ -1465,6 +1469,7 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
               fi
               printf 'called\\n' >> "$FAKE_ENCOUNTER_MARKER"
               printf 'Reader diagnostic: retained in bench.log\\n'
+              printf '[bench] frequency reading: Calibrated frequency fallback unavailable: counter_edges\\n'
               for ((frame=1; frame<=10001; frame+=500)); do
                 printf 'Read %s/10001 original event frames\\n' "$frame"
               done
@@ -1710,6 +1715,11 @@ def test_bench_cli_keeps_full_diagnostics_with_brief_console_and_one_verdict() -
     assert_true(process.stdout.count("NO_DIFFERENCES_OBSERVED") == 1, process.stdout)
     assert_true("unresolved comparisons remain unknown" in process.stdout, process.stdout)
     assert_true("encounter-check/report.html" in process.stdout, process.stdout)
+    readiness = "[bench] frequency reading: Calibrated frequency fallback unavailable: counter_edges"
+    assert_true(process.stdout.count(readiness) == 2, "capture or analysis capability was hidden: " + process.stdout)
+    assert_true(process.stdout.index(readiness + " (before collection)") < process.stdout.index("visual behavior: comparing"),
+                "capture capability was delayed until analysis")
+    assert_true(readiness in logs[0], "analysis capability was not retained in the detailed log")
 
 
 def test_bench_cli_rejects_old_or_incomplete_product_contract_explicitly() -> None:
@@ -2306,7 +2316,43 @@ def test_serial_interrupted_loader_framing_requires_one_exact_rom_banner() -> No
                         "interrupted loader or fresh ROM evidence was discarded")
 
 
+def test_managed_runner_shows_readiness_before_child_finishes() -> None:
+    """Exercise the real quiet wrapper: early capability is visible; diagnostics stay logged."""
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        release = root / "release"
+        child = (
+            "import pathlib,sys,time\n"
+            "print('ordinary detailed output', flush=True)\n"
+            "print('detailed stderr', file=sys.stderr, flush=True)\n"
+            "print('[bench] frequency reading: Calibrated frequency fallback UNAVAILABLE', flush=True)\n"
+            "deadline=time.monotonic()+10\n"
+            "while not pathlib.Path(sys.argv[1]).exists() and time.monotonic()<deadline: time.sleep(.01)\n"
+        )
+        logs = [root / name for name in ("stdout.log", "stderr.log", "combined.log")]
+        process = subprocess.Popen([
+            sys.executable, str(ROOT / "scripts/bench/run_logged.py"),
+            "--stdout", str(logs[0]), "--stderr", str(logs[1]), "--combined", str(logs[2]),
+            "--quiet", "--terminal-prefix", "[bench] frequency reading:",
+            "--", sys.executable, "-c", child, str(release),
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            ready, _, _ = select.select([process.stdout], [], [], 5)
+            assert_true(bool(ready), "readiness remained hidden while collection was running")
+            line = process.stdout.readline()
+            assert_true(line.startswith("[bench] frequency reading:") and "UNAVAILABLE" in line, line)
+            assert_true(process.poll() is None, "readiness was delayed until the child completed")
+        finally:
+            release.touch()
+            remaining, errors = process.communicate(timeout=15)
+        assert_true(process.returncode == 0 and not remaining and not errors, "quiet wrapper exposed unrelated output")
+        assert_true("ordinary detailed output" in logs[0].read_text(), "stdout log lost full detail")
+        assert_true("detailed stderr" in logs[1].read_text(), "stderr log lost full detail")
+        assert_true("UNAVAILABLE" in logs[2].read_text(), "combined log lost early capability")
+
+
 def main() -> int:
+    test_managed_runner_shows_readiness_before_child_finishes()
     test_file_artifact_owns_raw_bytes()
     test_build_artifacts_retain_exact_application_after_build_cache_changes()
     test_build_application_retention_refuses_missing_empty_changed_or_failed_copy()

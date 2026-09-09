@@ -187,6 +187,7 @@ def analyze_behavior(run, out, ranges=None, configuration=None, reader_qualifica
         window = read_json(run / "window_result.json")
         result["evidence"] = {**data["identity"], "video_timing": data["timing"],
                               "primary_frequency_calibration": data["registration"].get("primary_frequency_calibration"),
+                              "reader_capabilities_at_capture": data.get("reader_capabilities_at_capture"),
                               "recorded_tooling_source": window.get("tooling_source")}
         result["evidence"]["tooling_source"] = {
             "git_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),

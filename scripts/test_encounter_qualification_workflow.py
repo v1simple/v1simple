@@ -228,6 +228,43 @@ class QualificationWorkflowTests(unittest.TestCase):
         self.assertEqual((first.parent / "source/primary-frequency/observations.json").read_bytes(), original[old.parent / "observations.json"])
         self.assertEqual({p: p.read_bytes() for p in old.parent.iterdir()}, original)
 
+    def test_reanalysis_describes_historical_labels_without_claiming_a_new_blind_trial(self):
+        helper = qualification_test_support.QualificationTests("test_complete_exact_bundle_qualifies")
+        helper.setUp()
+        self.addCleanup(helper.tearDown)
+        historical = helper.field_validation()
+        historical["method"]["reserved_validation"] = "Current reader was sealed before independent labels."
+        source = helper.write_bundle(document=historical)
+        before = {p.relative_to(helper.root): p.read_bytes()
+                  for p in helper.root.rglob("*") if p.is_file()}
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "current-reader"
+            _, _, _, _, patches, _ = self._static_reanalysis_fixture(
+                destination, helper=helper, source_manifest=source)
+            with ExitStack() as stack:
+                for item in patches:
+                    stack.enter_context(item)
+                result = workflow.reanalyze_static(source, destination)
+            self.assertEqual(result["status"], "QUALIFIED")
+            manifest = workflow.read_json(destination / "encounter-reader.json")
+            field_path = workflow.resolve_reference(
+                destination, manifest["field_validation"], "field validation")
+            current = workflow.read_json(field_path)
+            wording = current["method"]["reserved_validation"]
+            self.assertNotEqual(wording, historical["method"]["reserved_validation"])
+            self.assertIn("historical independent labels", wording)
+            self.assertIn("current-reader regression", wording)
+            self.assertIn("does not establish a new held-out trial", wording)
+            self.assertEqual(current["method"]["method_version"], 6)
+            self.assertEqual(current["frames"], historical["frames"])
+            self.assertEqual(current["source_artifacts"], historical["source_artifacts"])
+            for name, reference in current["source_artifacts"].items():
+                copied = workflow.resolve_reference(field_path.parent, reference, name)
+                original = workflow.resolve_reference(helper.root, reference, name)
+                self.assertEqual(copied.read_bytes(), original.read_bytes())
+        self.assertEqual({p.relative_to(helper.root): p.read_bytes()
+                          for p in helper.root.rglob("*") if p.is_file()}, before)
+
     def test_static_reanalysis_rebinds_changed_qualification_with_same_reader(self):
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary) / "static-same-reader"

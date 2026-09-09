@@ -118,6 +118,7 @@ def load_run(run: Path) -> dict:
     return dict(identity=identity, stimulus=stimulus, timeline=timeline, rows=rows, source_records=records, timing=timing,
                 video=camera / entries["video"]["path"], width=width, height=height,
                 registration=registration, recorded_configuration=recorded_configuration,
+                reader_capabilities_at_capture=preflight.get("reader_capabilities"),
                 camera_name=manifest["identity"]["camera"].get("name"),
                 camera_profile=manifest["identity"]["camera"].get("profile"))
 
@@ -415,6 +416,7 @@ def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cade
         data = load_run(run)
         evidence = {**data["identity"], "video_timing": data["timing"],
                     "primary_frequency_calibration": data["registration"].get("primary_frequency_calibration"),
+                    "reader_capabilities_at_capture": data.get("reader_capabilities_at_capture"),
                     "timing_basis": "hash-bound original capture verification and validated source sidecar"}
         origin = data["stimulus"][0]["requestedHostMonotonicNs"]
         require(not all_frames or ranges is not None, "all-frame selection requires an explicit bounded range")
@@ -870,6 +872,9 @@ def main() -> int:
     label = "consecutive-frame encounter" if args.all_frames else "sampled encounter"
     if args.observe_behavior:
         counts = result["summary"]
+        from encounter_capability import frequency_capability_summary
+        print("[bench] frequency reading: " + frequency_capability_summary(
+            result.get("evidence", {}).get("primary_frequency_calibration")))
         print(f"{result['result']} — {counts['targets_observed']}/{counts['events']} complete display targets observed; "
               f"{counts['events_with_findings']} events with ending or post-target findings; "
               f"{counts['unresolved_frames']} frames have unresolved field comparisons. "

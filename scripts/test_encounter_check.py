@@ -172,6 +172,24 @@ class EncounterCheckTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             check.load_run(fixture.run)
 
+    def test_capture_capability_is_provenance_and_analysis_recomputes_geometry(self):
+        fixture, _ = self.bound_run()
+        self.assertIsNone(check.load_run(fixture.run)["reader_capabilities_at_capture"])
+        preflight_path = fixture.camera / "camera_preflight.json"
+        preflight = json.loads(preflight_path.read_text())
+        still = fixture.camera / fixture.camera_result["session_start_still"]
+        preflight["source_still"] = {"name": still.name, "sha256": hashlib.sha256(still.read_bytes()).hexdigest()}
+        captured = {"primary_frequency_calibration": {"qualified": True, "matrix_reference_to_observed": "not trusted"}}
+        preflight["reader_capabilities"] = captured
+        fixture.write(preflight_path, preflight)
+        fixture.bind()
+        observed_registration = {"result": "PASS", "primary_frequency_calibration": {"qualified": False, "reason": "counter_edges"}}
+        fake_reader = types.SimpleNamespace(registration_for_camera=lambda p, s: observed_registration)
+        with patch.dict(sys.modules, {"encounter_frequency_idle": fake_reader}):
+            data = check.load_run(fixture.run)
+        self.assertEqual(data["reader_capabilities_at_capture"], captured)
+        self.assertEqual(data["registration"], observed_registration)
+
     def test_configuration_uses_owned_timeline_and_refuses_modified_bytes(self):
         fixture, _ = self.bound_run()
         timeline = fixture.run/"bench_timeline.ndjson"

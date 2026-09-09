@@ -538,6 +538,7 @@ run_encounter_check() {
     --out "$encounter_dir" \
     "${ANALYSIS_RANGES[@]}" "${comparison_args[@]}" \
     2>&1 | tee -a "$RUN_LOG" | awk '
+      /^\[bench\] frequency reading:/ { print; fflush(); next }
       /^Read [0-9]+\/[0-9]+ original event frames$/ {
         split($2, count, "/"); percent = int(100 * count[1] / count[2]);
         if (count[1] == 1 || percent >= next_percent || count[1] == count[2]) {
@@ -744,7 +745,8 @@ for suite in "${SUITES[@]}"; do
     --stderr "$step_dir/run.err" \
     --combined "$RUN_LOG" \
     --quiet \
-    -- "${args[@]}" >/dev/null 2>&1 || runner_status=$?
+    --terminal-prefix '[bench] frequency reading:' \
+    -- "${args[@]}" || runner_status=$?
   printf '%s: exit=%s\n' "$suite" "$runner_status" >> "$RUN_LOG"
   first_suite=0
 

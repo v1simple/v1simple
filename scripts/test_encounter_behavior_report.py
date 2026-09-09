@@ -54,6 +54,48 @@ def embedded(page):
 
 
 class EncounterBehaviorReportTests(unittest.TestCase):
+    def test_report_and_comparison_support_the_direct_bench_entrypoint_imports(self):
+        completed = subprocess.run(
+            [sys.executable, "-c", "import encounter_behavior_report; import encounter_build_comparison; "
+             "import encounter_behavior"],
+            cwd=Path(__file__).resolve().parent / "bench", capture_output=True, text=True)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_frequency_capability_is_prominent_and_capture_is_distinct_from_recomputation(self):
+        result = report_fixture()
+        result["evidence"]["primary_frequency_calibration"] = {
+            "qualified": False, "reason": "startup geometry validation refused: counter_edges",
+            "counter_edges": {"observed_to_reference_p95_pixels": 3.0}}
+        result["evidence"]["reader_capabilities_at_capture"] = {
+            "primary_frequency_calibration": {"qualified": True}}
+        untouched = copy.deepcopy(result)
+        with tempfile.TemporaryDirectory() as folder:
+            page = write_behavior_report(Path(folder), result).read_text()
+        self.assertEqual(result, untouched)
+        self.assertLess(page.index('id="coverage-summary"'), page.index('id="frequency-capability"'))
+        self.assertLess(page.index('id="frequency-capability"'), page.index('id="interval-summary"'))
+        section = re.search(r'<section id="frequency-capability".*?</section>', page, re.S).group(0)
+        self.assertIn('class="notice"', section)
+        self.assertIn("This analysis: Calibrated frequency fallback unavailable", section)
+        self.assertIn("At capture: Calibrated frequency fallback available.", section)
+        self.assertIn("counter_edges", section)
+        self.assertIn("observed_to_reference_p95_pixels", section)
+        self.assertEqual(embedded(page)["result"], untouched["result"])
+        self.assertEqual(embedded(page)["events"][0]["findings"], untouched["events"][0]["findings"])
+
+    def test_legacy_capture_capability_stays_not_recorded_and_reason_is_escaped(self):
+        result = report_fixture()
+        result["evidence"]["primary_frequency_calibration"] = {"qualified": True}
+        with tempfile.TemporaryDirectory() as folder:
+            page = write_behavior_report(Path(folder), result).read_text()
+            self.assertIn("At capture: Calibrated frequency fallback availability was not recorded.", page)
+            self.assertIn("This analysis: Calibrated frequency fallback available.", page)
+            result["evidence"]["primary_frequency_calibration"] = {"qualified": False, "reason": "<unavailable>\nretry"}
+            page = write_behavior_report(Path(folder), result).read_text()
+        self.assertIn("fallback unavailable: &lt;unavailable&gt; retry", page)
+        self.assertNotIn("<unavailable>", page)
+        self.assertNotIn("reader_capabilities_at_capture", embedded(page)["evidence"])
+
     def test_old_result_regeneration_exposes_acquisition_without_rewriting_original_findings(self):
         result = report_fixture()
         measured = event([span(1, "PREVIOUS_INPUT_STATE", ["front"]),
@@ -200,6 +242,7 @@ class EncounterBehaviorReportTests(unittest.TestCase):
         current["scope"] = {"meaning": "Every recorded event image was read.",
                             "not_measured": ["audio", "RF"], "timing": "Observed camera markers only."}
         current["summary"].update(read_frames=20, available_frames=21, unresolved_frames=2)
+        current["evidence"]["primary_frequency_calibration"] = {"qualified": False, "reason": "counter_edges"}
         current["evidence"]["configuration"] = {"settings": {"persistence": 0}}
         current["behavior_contract"]["comparison_key"] = "ordinary-seven-fields"
         current["events"][0]["observation"]["first_target_ms"] = 5.0
@@ -216,6 +259,7 @@ class EncounterBehaviorReportTests(unittest.TestCase):
             "contiguous_phase_spans": [{"phase_id": "phase-1", "first": first_point,
                 "last": last_point, "frame_count": 3, "duration_ms": 15.0}]}
         baseline = copy.deepcopy(current)
+        baseline["evidence"]["primary_frequency_calibration"] = {"qualified": True}
         baseline["evidence"]["runtime_identity"]["git_sha"] = "baseline1"
         baseline["events"][0]["observation"]["first_target_ms"] = 20.0
         baseline["events"][0]["findings"] = []
@@ -260,6 +304,12 @@ assert.match(element('comparison').innerHTML,/\.\.\/baseline\/report.html#event=
 assert.match(element('comparison').innerHTML,/\.\.\/baseline\/frames\/4.png/);
 assert.match(element('comparison').innerHTML,/data-compare-event="0"/);
 assert.match(element('comparison').innerHTML,/Unresolved field comparisons/);
+assert.match(element('comparison').innerHTML,/Unknown-count comparisons are unreliable/);
+assert.match(element('comparison').innerHTML,/availability differs/);
+assert.match(element('comparison').innerHTML,/counter_edges/);
+delete report.comparison.unknown_count_comparison;renderComparison();
+assert.match(element('comparison').innerHTML,/analysis capability metadata was not recorded/);
+assert.match(element('comparison').innerHTML,/Newly observed findings/);
 location.hash='#event=event-1';listeners.hashchange();assert.equal(activeIndex,0);
 assert.match(element('event-content').innerHTML,/1 \/ 2 required joint phases observed/);
 assert.match(element('event-content').innerHTML,/0 phase alternations/);

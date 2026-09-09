@@ -15,6 +15,7 @@ from artifact_privacy import REDACTED_NAME, sanitize_artifact_value
 from camera_artifacts import CameraArtifactConflict, sha256_file
 from camera_capture import CALIBRATION_VIDEO_TIME_S, CameraCapture, utc_now
 from camera_contract import EXPECTED_CAMERA_NAME, EXPECTED_CAMERA_PROFILE
+from encounter_capability import frequency_capability_summary
 from camera_registration import (
     REGISTRATION_HEIGHT,
     REGISTRATION_WIDTH,
@@ -189,11 +190,18 @@ def run_camera_preflight(camera: CameraCapture) -> dict[str, Any]:
             },
             "diagnostics": [],
         }
+        payload["reader_capabilities"] = {
+            "primary_frequency_calibration": evaluate_frequency_calibration(
+                payload, camera.preflight_path)
+        }
         try:
             payload = _publish_safe_payload(camera.preflight_result_path, payload)
         except Exception:
             camera.abort("preflight_artifact_publish_failed")
             raise
+        print("[bench] frequency reading: " + frequency_capability_summary(
+            payload["reader_capabilities"]["primary_frequency_calibration"]) +
+            " (before collection)", flush=True)
         return payload
 
     payload = _failure_payload(camera, diagnostic)
@@ -202,6 +210,25 @@ def run_camera_preflight(camera: CameraCapture) -> dict[str, Any]:
     finally:
         camera.abort(str(diagnostic["code"]))
     return payload
+
+
+def evaluate_frequency_calibration(preflight: dict[str, Any], still: Path) -> dict[str, Any]:
+    """Expose the existing optional reader capability before collection.
+
+    This diagnostic neither changes camera admission nor supplies a trusted
+    transform to analysis. Analysis recomputes from the original bound still.
+    """
+    try:
+        from encounter_frequency_idle import registration_for_camera
+
+        calibration = registration_for_camera(preflight, still)["primary_frequency_calibration"]
+        # The enclosing immutable preflight binds this diagnostic. Avoid saving
+        # a hash of its unfinished document as though it identified the final one.
+        calibration.pop("preflight_document_sha256", None)
+        return calibration
+    except Exception as exc:
+        return {"qualified": False,
+                "reason": "startup frequency calibration unavailable: " + str(exc)}
 
 
 def run_camera_smoke(

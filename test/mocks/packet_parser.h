@@ -71,6 +71,14 @@ public:
         }
     }
     void setMainVolume(uint8_t vol)    { state.mainVolume = vol; state.hasVolumeData = true; }
+    void resetVolumeState() {
+        state.mainVolume = 0;
+        state.muteVolume = 0;
+        state.savedMainVolume = 0;
+        state.savedMuteVolume = 0;
+        state.hasVolumeData = false;
+        state.hasSavedVolume = false;
+    }
     void setMuteVolume(uint8_t vol)    { state.muteVolume = vol; }
 
     // Parser interface

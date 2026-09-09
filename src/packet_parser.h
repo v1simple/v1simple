@@ -69,6 +69,9 @@ class PacketParser {
     // Invalidate detector-version knowledge at a V1 session boundary.
     void resetV1Version();
 
+    // Volume values are authoritative only within the link that reported them.
+    void resetVolumeState();
+
     // Observe complete V1 alert tables. The callback runs on the parser path,
     // so it must remain non-blocking and allocation-free.
     void setAlertTableObserver(AlertTableObserver observer, void* context = nullptr) {

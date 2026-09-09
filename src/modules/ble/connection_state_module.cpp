@@ -44,6 +44,7 @@ void ConnectionStateModule::setDisplayOwnerRestoreCallback(DisplayOwnerRestoreCa
 void ConnectionStateModule::handleSessionOpened(uint32_t sessionGeneration) {
     if (parser_) {
         parser_->resetV1Version();
+        parser_->resetVolumeState();
     }
     if (bleQueue_) {
         bleQueue_->openSession(sessionGeneration);
@@ -62,6 +63,7 @@ void ConnectionStateModule::handleSessionClosed(unsigned long nowMs, uint32_t se
         bleQueue_->closeSession();
     }
     parser_->resetAlertState();
+    parser_->resetVolumeState();
     if (alertPersistence_) {
         alertPersistence_->clearPersistence();
     }

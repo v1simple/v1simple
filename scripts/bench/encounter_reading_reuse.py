@@ -45,15 +45,16 @@ def _owned(root, name, digest=None):
     return path
 
 
-def load_reusable_readings(prior_result_path, current_data, current_method, selected_samples, out):
+def load_reusable_readings(prior_result_path, current_data, current_method, selected_samples, out,
+                          *, reader_runtime=None):
     """Validate the complete prior reading stream, then link selected witnesses."""
     try:
-        return _load(prior_result_path, current_data, current_method, selected_samples, out)
+        return _load(prior_result_path, current_data, current_method, selected_samples, out, reader_runtime)
     except (KeyError, TypeError, AttributeError, EOFError, UnicodeError) as exc:
         raise ValueError("reading reuse: malformed or incomplete retained evidence") from exc
 
 
-def _load(prior_result_path, current_data, current_method, selected_samples, out):
+def _load(prior_result_path, current_data, current_method, selected_samples, out, reader_runtime):
     prior_path, out = Path(prior_result_path).resolve(strict=True), Path(out).resolve(strict=True)
     root = prior_path.parent
     result_bytes = prior_path.read_bytes()
@@ -63,6 +64,12 @@ def _load(prior_result_path, current_data, current_method, selected_samples, out
              and prior.get("errors") == [] and prior.get("reader_qualification", {}).get("status") == "QUALIFIED",
              "prior analysis was not complete with a qualified reader")
     evidence, identity = prior["evidence"], current_data["identity"]
+    _require(isinstance(reader_runtime, dict) and bool(reader_runtime)
+             and evidence.get("reader") == reader_runtime,
+             "pixel-reader runtime differs or is unavailable")
+    calibration = current_data.get("registration", {}).get("primary_frequency_calibration")
+    _require(evidence.get("primary_frequency_calibration") == calibration,
+             "startup frequency calibration differs")
     identity_keys = ("capture_id", "capture_manifest_sha256", "runtime_identity", "camera_artifacts",
                      "window_result_sha256", "stimulus_sha256", "delivery_sha256", "scenario_sha256")
     _require(all(identity.get(k) is not None and evidence.get(k) == identity[k] for k in identity_keys),
@@ -146,7 +153,9 @@ def _load(prior_result_path, current_data, current_method, selected_samples, out
         "prior_result": os.path.relpath(prior_path, out),
         "prior_result_sha256": hashlib.sha256(result_bytes).hexdigest(),
         "readings_sha256": evidence["readings_sha256"], "selection_sha256": evidence["selection_sha256"],
-        "reader_method": method, "source_identity": {k: identity[k] for k in identity_keys},
+        "reader_method": method, "reader_runtime": reader_runtime,
+        "primary_frequency_calibration": calibration,
+        "source_identity": {k: identity[k] for k in identity_keys},
         "dependency_inventory": {"pixel_reader": list(CORE_READER_FILES),
                                  "ocr_runtime_probe": list(OCR_RUNTIME_FILES),
                                  "counter_geometry": ["camera_contract.py"]},

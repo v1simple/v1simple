@@ -28,7 +28,14 @@ except ImportError:
 
 
 SCHEMA_VERSION = 1
-CORE_READER_FILES = ("encounter_reader.py", "encounter_ocr.swift", "encounter_ocr_session.py", "counter_reader.py")
+LEGACY_CORE_READER_FILES = (
+    "encounter_reader.py", "encounter_ocr.swift", "encounter_ocr_session.py", "counter_reader.py")
+READER24_CORE_READER_FILES = (
+    *LEGACY_CORE_READER_FILES,
+    "encounter_frequency_geometry.py", "encounter_frequency_model.b64", "encounter_frequency_idle.py",
+    "encounter_frequency_residual.py", "encounter_frequency_residual.b64")
+CORE_READER_FILES = (
+    *READER24_CORE_READER_FILES, "encounter_card_text.py", "encounter_frequency_numeric.py")
 OCR_RUNTIME_FILES = ("encounter_runtime_probe.py", "encounter_ocr_probe.b64")
 STATIC_READER_IMPLEMENTATION_FILES = (
     *CORE_READER_FILES,
@@ -38,6 +45,7 @@ STATIC_READER_IMPLEMENTATION_FILES = (
     "camera_contract.py",
     "encounter_qualification.py",
     "encounter_primary_frequency_reference.py",
+    "encounter_secondary_reference.py",
 )
 FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
@@ -1322,6 +1330,24 @@ def _validate_field_evidence(document: Any, reader: dict[str, Any], camera: dict
         _require("primary_frequency_adjudication" not in document
                  and "primary_frequency_reader_reanalysis" not in document,
                  "primary frequency adjudication lacks its independent reference")
+    if reader.get("method_version", 0) >= 24:
+        # Old image references cannot exercise a startup-calibrated branch.
+        # These counts come from the verifier's exact reread above; every
+        # assertion must still agree with its independent literal label.
+        coverage = (adjudication or {}).get("summary", {}).get("calibrated_idle_coverage", {})
+        startup_hashes = coverage.get("qualified_startup_image_sha256", [])
+        _require(isinstance(startup_hashes, list) and len(set(startup_hashes)) >= 2,
+                 "calibrated idle reader needs at least two qualified startup image sources")
+        _require(type(coverage.get("calibrated_idle_acceptances")) is int
+                 and coverage["calibrated_idle_acceptances"] >= 10,
+                 "calibrated idle reader needs at least ten independently labelled actual acceptances")
+        _require(type(coverage.get("residual_ink_refusals")) is int
+                 and coverage["residual_ink_refusals"] >= 1,
+                 "calibrated idle reader needs a demonstrated residual-ink refusal")
+        if reader.get("method_version", 0) >= 25:
+            _require(type(coverage.get("calibrated_numeric_decimal_acceptances")) is int
+                     and coverage["calibrated_numeric_decimal_acceptances"] > 0,
+                     "numeric decimal reader needs an independently labelled actual acceptance")
     frames = document.get("frames")
     _require(isinstance(frames, list) and len(frames) >= MINIMUM_BLIND_FRAMES,
              "too few blind field-validation frames")
@@ -1599,11 +1625,36 @@ def _validate_visible_secondary_evidence(document: Any, reader: dict[str, Any],
              "too few blind agreements on visible secondary cards")
     _require(partial_identity_agreement_frames >= MINIMUM_PARTIAL_SECONDARY_IDENTITY_AGREEMENTS,
              "too few blind agreements on partial secondary identities")
-    return {"unique_original_frames": len(items), "counts": dict(counts),
+    supplement_summary = None
+    if "secondary_reference" in document:
+        from encounter_secondary_reference import validate_reference
+        supplement = _evidence_file(evidence_root, document["secondary_reference"], "secondary reference")
+        try:
+            supplement_summary = validate_reference(
+                supplement, implementation, _observe_image, camera=camera,
+                reader_reanalysis=document.get("secondary_reference_reanalysis"))
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            raise QualificationError(str(exc)) from exc
+        _require(document.get("secondary_reference_summary") == supplement_summary,
+                 "secondary reference summary differs from complete exact reread")
+    else:
+        _require("secondary_reference_summary" not in document
+                 and "secondary_reference_reanalysis" not in document,
+                 "secondary reference summary lacks its independent originals")
+    if reader.get("method_version", 0) >= 25:
+        _require(supplement_summary is not None and supplement_summary["split_text_agreements"] > 0,
+                 "secondary reference does not exercise the split-text reader against independent originals")
+    if reader.get("method_version", 0) >= 26:
+        _require(supplement_summary is not None and supplement_summary["band_pixel_agreements"] > 0,
+                 "secondary reference does not exercise the complete-band reader against independent originals")
+    result = {"unique_original_frames": len(items), "counts": dict(counts),
             "nonempty_secondary_agreements": nonempty_agreements,
             "partial_secondary_identity_agreement_frames": partial_identity_agreement_frames,
             "partial_secondary_identity_assertions": partial_identity_assertions,
             "reader_reanalysis": is_reanalysis}
+    if supplement_summary is not None:
+        result["secondary_reference"] = supplement_summary
+    return result
 
 
 def _validate_fault_evidence(document: Any, reader: dict[str, Any], camera: dict[str, Any],

@@ -239,6 +239,11 @@ def _copy_static_inputs(source_root: Path, destination_root: Path,
         if kind == "field" and name == "primary_frequency_reference":
             from encounter_primary_frequency_reference import copy_reference
             copy_reference(resolve_reference(source_root, value, name), destination_root / value["path"])
+    if kind == "secondary" and "secondary_reference" in document:
+        from encounter_secondary_reference import copy_reference
+        value = document["secondary_reference"]
+        copy_reference(resolve_reference(source_root, value, "secondary reference"),
+                       destination_root / value["path"])
     collection_name = {"field": "frames", "secondary": "items", "fault": "cases"}[kind]
     records = document.get(collection_name)
     _require(isinstance(records, list) and bool(records),
@@ -338,7 +343,7 @@ def _reanalyze_field_document(source: Path, destination: Path,
 
 def _reanalyze_secondary_document(source: Path, destination: Path,
                                   runtime: dict[str, Any], method: dict[str, str],
-                                  camera: dict[str, Any]) -> dict[str, Any]:
+                                  camera: dict[str, Any], secondary_reference: Path | None = None) -> dict[str, Any]:
     from encounter_qualification import (
         CORE_READER_FILES, _blind_secondary_reference, _derived_field_status, _observe_image)
 
@@ -347,6 +352,11 @@ def _reanalyze_secondary_document(source: Path, destination: Path,
     source_reader = deepcopy(document.get("reader"))
     source_method = deepcopy(document.get("method"))
     _copy_static_inputs(source.parent, destination.parent, document, "secondary")
+    if secondary_reference is not None:
+        from encounter_secondary_reference import copy_reference
+        retained = destination.parent / f"source/secondary-reference-{sha256(secondary_reference)}/reference.json"
+        copy_reference(secondary_reference, retained)
+        document["secondary_reference"] = reference(retained, destination.parent)
     registration = document.get("registration")
     _require(isinstance(registration, dict) and registration.get("result") == "PASS",
              "source visible-secondary registration is unavailable")
@@ -399,6 +409,19 @@ def _reanalyze_secondary_document(source: Path, destination: Path,
             "current_reader_sha256": method.get("encounter_reader.py"),
             "complete_source_set_reread": True,
         }
+    if "secondary_reference" in document:
+        from encounter_secondary_reference import reference_reread_binding, validate_reference
+        supplement = resolve_reference(destination.parent, document["secondary_reference"], "secondary reference")
+        try:
+            binding = reference_reread_binding(supplement, method)
+            if binding is None:
+                document.pop("secondary_reference_reanalysis", None)
+            else:
+                document["secondary_reference_reanalysis"] = binding
+            document["secondary_reference_summary"] = validate_reference(
+                supplement, method, _observe_image, camera=camera, reader_reanalysis=binding)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            raise WorkflowError(str(exc)) from exc
     write_json(destination, document)
     return document
 
@@ -475,7 +498,8 @@ def _verification_summary(verification: dict[str, Any]) -> dict[str, Any]:
 
 
 def reanalyze_static(source_manifest: Path, destination: Path,
-                     primary_frequency_reference: Path | None = None) -> dict[str, Any]:
+                     primary_frequency_reference: Path | None = None,
+                     secondary_reference: Path | None = None) -> dict[str, Any]:
     """Reread immutable static evidence and publish only a verified current bundle."""
     import encounter_reader
     from encounter_qualification import verify_qualification
@@ -485,9 +509,9 @@ def reanalyze_static(source_manifest: Path, destination: Path,
     _require(source_manifest.is_file(), f"source qualification manifest is missing: {source_manifest}")
     _require(not destination.exists(), f"destination already exists: {destination}")
     commit, clean = git_identity()
-    _require(clean, "static reanalysis requires a clean source tree")
     method = method_hashes()
     static_method = static_method_hashes(method)
+    method_digest = hashlib.sha256(json_bytes(static_method)).hexdigest()
     policy = {"contract_version": 3, "qualified_temporal_classifiers": {}}
     source_hash = sha256(source_manifest)
     source_top, _source_temporal = _resolve_base_evidence(source_manifest)
@@ -516,14 +540,16 @@ def reanalyze_static(source_manifest: Path, destination: Path,
                 runtime, static_method, camera, primary_frequency_reference)
             _reanalyze_secondary_document(
                 source_top["visible_secondary_validation"],
-                paths["visible_secondary_validation"], runtime, static_method, camera)
+                paths["visible_secondary_validation"], runtime, static_method, camera, secondary_reference)
             _reanalyze_fault_document(
                 source_top["fault_controls"], paths["fault_controls"],
                 runtime, static_method, camera)
             manifest = {
                 "schema_version": 1,
                 "kind": "encounter_reader_qualification",
-                "qualification_id": f"encounter-reader-static-{commit[:12]}-{source_hash[:12]}",
+                "qualification_id": f"encounter-reader-static-{method_digest[:12]}-{source_hash[:12]}",
+                "source": {"git_sha": commit, "worktree_clean": clean,
+                           "static_method_sha256": method_digest},
                 "reader": {
                     "method_version": runtime.get("method_version"),
                     "implementation_sha256": static_method,
@@ -542,8 +568,8 @@ def reanalyze_static(source_manifest: Path, destination: Path,
                 camera_name=camera.get("name"), camera_profile=camera.get("profile"),
                 policy=policy, bench_source_sha256=sha256(BENCH_PATH))
         final_commit, final_clean = git_identity()
-        _require(final_clean and final_commit == commit,
-                 "source tree changed during static reanalysis")
+        _require(final_commit == commit and final_clean == clean,
+                 "source tree identity changed during static reanalysis")
         _require(method_hashes() == method,
                  "reader implementation changed during static reanalysis")
         _require(sha256(source_manifest) == source_hash,
@@ -553,6 +579,8 @@ def reanalyze_static(source_manifest: Path, destination: Path,
             "kind": "static_reader_reanalysis_result",
             "status": verification.get("status"),
             "source_git_sha": commit,
+            "source_worktree_clean": clean,
+            "static_method_sha256": method_digest,
             "source_manifest_sha256": source_hash,
             "reader_method_version": runtime.get("method_version"),
             "verification": _verification_summary(verification),
@@ -585,6 +613,8 @@ def reanalyze_static(source_manifest: Path, destination: Path,
                     "kind": "static_reader_reanalysis_result",
                     "status": "ERROR",
                     "source_git_sha": commit,
+                    "source_worktree_clean": clean,
+                    "static_method_sha256": method_digest,
                     "source_manifest_sha256": source_hash,
                     "error": str(exc),
                 })
@@ -606,6 +636,8 @@ def build_parser() -> argparse.ArgumentParser:
                                help="new ignored directory for the verified static-only bundle")
     static_parser.add_argument("--primary-frequency-reference", type=Path,
                                help="explicit independent frequency adjudication; original labels stay unchanged")
+    static_parser.add_argument("--secondary-reference", type=Path,
+                               help="additional independent card originals; historical packet stays unchanged")
     return parser
 
 
@@ -614,7 +646,8 @@ def main() -> int:
 
     args = build_parser().parse_args()
     try:
-        result = reanalyze_static(args.source_manifest, args.out, args.primary_frequency_reference)
+        result = reanalyze_static(args.source_manifest, args.out, args.primary_frequency_reference,
+                                 args.secondary_reference)
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
     except (WorkflowError, QualificationError, KeyError, TypeError, OSError) as exc:

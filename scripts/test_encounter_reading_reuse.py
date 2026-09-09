@@ -14,6 +14,8 @@ from bench.encounter_reading_reuse import PIXEL_READER_FILES, load_reusable_read
 from bench.encounter_qualification import FIELDS, STATIC_READER_IMPLEMENTATION_FILES
 
 
+READER_RUNTIME = {"method_version": 24, "opencv_version": "fixture-runtime"}
+
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -45,7 +47,8 @@ def fixture(root):
     image.write_bytes(b"\x89PNG\r\n\x1a\nretained original bytes")
     result = {"schema_version": 1, "kind": "firmware_visual_behavior", "result": "DIFFERENCES_FOUND", "errors": [],
               "reader_qualification": {"status": "QUALIFIED"}, "reader_method": method, "implementation_sha256": method,
-              "evidence": {**identity, "selection_sha256": digest(prior / "selection.json")},
+              "evidence": {**identity, "reader": deepcopy(READER_RUNTIME),
+                           "selection_sha256": digest(prior / "selection.json")},
               "samples_index": [{**samples[0], "frame_index": 0, "image": "frames/000000.png", "image_sha256": digest(image)}],
               "events": [{"old_expected_state": "never reused"}]}
     write_records(prior, result, records)
@@ -65,11 +68,47 @@ def write_records(prior, result, records):
 
 
 class ReadingReuseTests(unittest.TestCase):
+    def test_runtime_and_recomputed_startup_calibration_must_match(self):
+        for case in ("missing_runtime", "changed_runtime", "missing_prior_runtime",
+                     "changed_matrix", "changed_startup", "missing_prior_calibration"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                prior, out, result, data, method, samples, _ = fixture(Path(tmp))
+                calibration = {"qualified": True, "source_still_sha256": "a" * 64,
+                               "matrix_reference_to_observed": [[1, 0, 0], [0, 1, 0], [0, 0, 1]]}
+                data["registration"] = {"primary_frequency_calibration": deepcopy(calibration)}
+                result["evidence"]["primary_frequency_calibration"] = deepcopy(calibration)
+                runtime = deepcopy(READER_RUNTIME)
+                if case == "missing_runtime": runtime = None
+                elif case == "changed_runtime": runtime["opencv_version"] = "different-runtime"
+                elif case == "missing_prior_runtime": result["evidence"].pop("reader")
+                elif case == "changed_matrix":
+                    data["registration"]["primary_frequency_calibration"]["matrix_reference_to_observed"][0][2] = 1
+                elif case == "changed_startup":
+                    data["registration"]["primary_frequency_calibration"]["source_still_sha256"] = "b" * 64
+                else: result["evidence"].pop("primary_frequency_calibration")
+                write_result(prior, result)
+                with self.assertRaises(ValueError):
+                    load_reusable_readings(prior / "result.json", data, method, samples, out,
+                                           reader_runtime=runtime)
+                self.assertEqual(list(out.iterdir()), [])
+
+    def test_matching_startup_geometry_and_runtime_are_retained_in_reuse_provenance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prior, out, result, data, method, samples, _ = fixture(Path(tmp))
+            calibration = {"qualified": False, "reason": "independent startup landmark disagrees"}
+            data["registration"] = {"primary_frequency_calibration": deepcopy(calibration)}
+            result["evidence"]["primary_frequency_calibration"] = deepcopy(calibration)
+            write_result(prior, result)
+            reused = load_reusable_readings(prior / "result.json", data, method, samples, out,
+                                           reader_runtime=READER_RUNTIME)
+            self.assertEqual(reused["provenance"]["reader_runtime"], READER_RUNTIME)
+            self.assertEqual(reused["provenance"]["primary_frequency_calibration"], calibration)
+
     def test_exact_literals_and_originals_are_reused_without_expected_states(self):
         with tempfile.TemporaryDirectory() as tmp:
             prior, out, result, data, method, samples, records = fixture(Path(tmp))
             unchanged = deepcopy((data, method, samples))
-            reused = load_reusable_readings(prior / "result.json", data, method, samples, out)
+            reused = load_reusable_readings(prior / "result.json", data, method, samples, out, reader_runtime=READER_RUNTIME)
             self.assertEqual((data, method, samples), unchanged)
             self.assertEqual(reused["readings"], {i: record["observed"] for i, record in enumerate(records)})
             self.assertEqual(set(reused), {"readings", "originals", "provenance"})
@@ -89,7 +128,7 @@ class ReadingReuseTests(unittest.TestCase):
             method["encounter_behavior.py"] = "new rules do not change pixel readings"
             for name in set(STATIC_READER_IMPLEMENTATION_FILES) - set(PIXEL_READER_FILES):
                 method[name] = "new expectations and qualification do not change retained literals"
-            reused = load_reusable_readings(prior / "result.json", data, method, samples[1:], out)
+            reused = load_reusable_readings(prior / "result.json", data, method, samples[1:], out, reader_runtime=READER_RUNTIME)
             self.assertEqual(reused["readings"], {1: records[1]["observed"]})
             self.assertEqual(reused["originals"], {})
             self.assertNotIn("events", reused)
@@ -106,7 +145,7 @@ class ReadingReuseTests(unittest.TestCase):
                     else:
                         (prior / "method" / name).write_text("changed actual reader")
                     with self.assertRaises(ValueError):
-                        load_reusable_readings(prior / "result.json", data, method, samples, out)
+                        load_reusable_readings(prior / "result.json", data, method, samples, out, reader_runtime=READER_RUNTIME)
                     self.assertEqual(list(out.iterdir()), [])
 
     def test_different_capture_firmware_method_and_unqualified_or_failed_analysis_reject(self):
@@ -125,7 +164,7 @@ class ReadingReuseTests(unittest.TestCase):
                 else: data["identity"][case + "_sha256"] = "d" * 64
                 write_result(prior, result)
                 with self.assertRaises(ValueError):
-                    load_reusable_readings(prior / "result.json", data, method, samples, out)
+                    load_reusable_readings(prior / "result.json", data, method, samples, out, reader_runtime=READER_RUNTIME)
                 self.assertEqual(list(out.iterdir()), [])
 
     def test_complete_stream_must_match_prior_selection_and_current_original_sidecar(self):
@@ -144,7 +183,7 @@ class ReadingReuseTests(unittest.TestCase):
                 else: records[0] = []
                 write_records(prior, result, records)
                 with self.assertRaises(ValueError):
-                    load_reusable_readings(prior / "result.json", data, method, samples, out)
+                    load_reusable_readings(prior / "result.json", data, method, samples, out, reader_runtime=READER_RUNTIME)
                 self.assertEqual(list(out.iterdir()), [])
 
     def test_raw_and_selection_hashes_and_original_witness_paths_are_bound(self):
@@ -169,7 +208,7 @@ class ReadingReuseTests(unittest.TestCase):
                     result["evidence"]["readings_sha256"] = digest(raw)
                 write_result(prior, result)
                 with self.assertRaises(ValueError):
-                    load_reusable_readings(prior / "result.json", data, method, samples, out)
+                    load_reusable_readings(prior / "result.json", data, method, samples, out, reader_runtime=READER_RUNTIME)
                 if case == "output_exists":
                     self.assertEqual((out / "frames/000000.png").read_bytes(), b"do not replace")
                 else:

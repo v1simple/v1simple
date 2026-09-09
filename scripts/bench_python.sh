@@ -30,8 +30,10 @@ if [[ ! -x "$BENCH_PYTHON" ]]; then
 fi
 if ! dependencies_match; then
   printf '[bench] installing the fixed bench dependencies...\n' >&2
+  # Stb-tester publishes a pure-Python source distribution; compiled pixel
+  # dependencies must still install from wheels.
   "$BENCH_PYTHON" -I -m pip --isolated install --disable-pip-version-check \
-    --no-input --only-binary=:all: --retries 1 --timeout 30 -r "$REQUIREMENTS" >&2
+    --no-input --only-binary=:all: --no-binary=stbt-core --retries 1 --timeout 30 -r "$REQUIREMENTS" >&2
   dependencies_match
 fi
 
@@ -43,10 +45,16 @@ import json
 import sys
 import numpy
 import PIL
+import cv2
+import importlib.metadata
+from _stbt.config import get_config
 try:
     with open(sys.argv[1], encoding="utf-8") as stream:
         qualified = json.load(stream)["reader"]["runtime"]
-    actual = {"numpy_version": numpy.__version__, "pillow_version": PIL.__version__}
+    actual = {"numpy_version": numpy.__version__, "pillow_version": PIL.__version__,
+              "opencv_version": cv2.__version__,
+              "stbt_core_version": importlib.metadata.version("stbt-core"),
+              "stbt_pyramid_levels": get_config("match", "pyramid_levels", type_=int)}
     differences = [f"{key}: qualified {qualified.get(key)!r}, running {value!r}"
                    for key, value in actual.items() if qualified.get(key) != value]
     if differences:

@@ -22,6 +22,8 @@ class BenchPythonTests(unittest.TestCase):
         import numpy
         import PIL
         import serial
+        import cv2
+        from _stbt.config import get_config
         import venv
         venv_root = self.root / ".artifacts/bench/python"
         venv.EnvBuilder(with_pip=False).create(venv_root)
@@ -29,14 +31,16 @@ class BenchPythonTests(unittest.TestCase):
         site_dir = next(venv_root.glob("lib/python*/site-packages"))
         # Reuse installed packages in this disposable fixture without downloads.
         package_dirs = sorted({str(Path(module.__file__).parent.parent)
-                               for module in (numpy, PIL, serial)})
+                               for module in (numpy, PIL, serial, cv2)})
         (site_dir / "fixture-packages.pth").write_text("\n".join(package_dirs) + "\n")
         versions = json.loads(subprocess.check_output([str(self.python), "-I", "-c",
-            'import importlib.metadata,json; print(json.dumps({name:importlib.metadata.version(name) for name in ("numpy","Pillow","pyserial")}))'], text=True))
+            'import importlib.metadata,json; print(json.dumps({name:importlib.metadata.version(name) for name in ("numpy","Pillow","pyserial","opencv-python","stbt-core")}))'], text=True))
         (scripts / "requirements-bench.txt").write_text(
             "".join(f"{name}=={version}\n" for name, version in versions.items()))
         self.qualification = self.root / "qualification.json"
-        self.runtime = {"numpy_version": versions["numpy"], "pillow_version": versions["Pillow"]}
+        self.runtime = {"numpy_version": versions["numpy"], "pillow_version": versions["Pillow"],
+                        "opencv_version": cv2.__version__, "stbt_core_version": versions["stbt-core"],
+                        "stbt_pyramid_levels": get_config("match", "pyramid_levels", type_=int)}
         self.qualification.write_text(json.dumps({"reader": {"runtime": self.runtime}}))
         foreign = self.root / "foreign"
         foreign.mkdir()

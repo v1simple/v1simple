@@ -153,7 +153,8 @@ section "Python Regression Tests"
 # script and workflow regressions in the full gate without expanding --fast.
 run_step "Camera artifact regression suite" python3 scripts/test_camera_artifacts.py
 run_step "Camera preflight regression suite" python3 scripts/test_camera_preflight.py
-run_step "Bench Python environment regression suite" python3 scripts/test_bench_python.py
+BENCH_READER_PYTHON="$(./scripts/bench_python.sh)" || exit 1
+run_step "Bench Python environment regression suite" "$BENCH_READER_PYTHON" scripts/test_bench_python.py
 run_step "USB profile host regression suite" python3 scripts/test_usb_profiles.py
 run_step "Bench window regression suite" python3 scripts/test_bench_window.py
 run_step "Sampled visual comparison regression suite" python3 scripts/test_visual_compare.py
@@ -162,6 +163,12 @@ run_step "Counter input expectation regression suite" python3 scripts/test_count
 run_step "Recorded counter check regression suite" python3 scripts/test_counter_check.py
 run_step "Encounter OCR session regression suite" python3 scripts/test_encounter_ocr_session.py
 run_step "Encounter pixel reader regression suite" python3 scripts/test_encounter_reader.py
+run_step "Encounter frequency geometry regression suite" "$BENCH_READER_PYTHON" scripts/test_encounter_frequency_geometry.py
+run_step "Encounter frequency residual regression suite" "$BENCH_READER_PYTHON" scripts/test_encounter_frequency_residual.py
+run_step "Encounter calibrated idle integration suite" "$BENCH_READER_PYTHON" scripts/test_encounter_frequency_idle.py
+run_step "Encounter numeric decimal geometry suite" "$BENCH_READER_PYTHON" scripts/test_encounter_frequency_numeric.py
+run_step "Encounter split card text suite" "$BENCH_READER_PYTHON" scripts/test_encounter_card_text.py
+run_step "Encounter independent card reference suite" "$BENCH_READER_PYTHON" scripts/test_encounter_secondary_reference.py
 run_step "Encounter input expectation regression suite" python3 scripts/test_encounter_expectation.py
 run_step "Recorded encounter check regression suite" python3 scripts/test_encounter_check.py
 run_step "Encounter sequence interpretation regression suite" python3 scripts/test_encounter_sequence.py

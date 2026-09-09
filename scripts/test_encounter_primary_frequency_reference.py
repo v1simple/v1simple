@@ -8,12 +8,14 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent / "bench"))
 from encounter_primary_frequency_reference import (BLIND_PROTOCOL, CONTROL_STATES, copy_reference,
                                                     reference_reread_binding, validate_reference)
-from encounter_qualification import CORE_READER_FILES
+from encounter_qualification import CORE_READER_FILES, LEGACY_CORE_READER_FILES
 
 
 def sha(path):
@@ -82,6 +84,193 @@ def fixture(root, original_manifest=None, original_observations=None, original_i
 
 
 class PrimaryFrequencyReferenceTests(unittest.TestCase):
+    def test_version_24_cannot_qualify_from_old_only_references(self):
+        import encounter_qualification_workflow as workflow
+        from test_encounter_qualification_workflow import QualificationWorkflowTests
+        support = QualificationWorkflowTests("test_static_reanalysis_publishes_only_verified_current_bundle")
+        self.addCleanup(support.doCleanups)
+        with tempfile.TemporaryDirectory() as temp:
+            destination = Path(temp) / "qualified"
+            _, source, _, _, patches, _ = support._static_reanalysis_fixture(destination, method_version=24)
+            with ExitStack() as stack:
+                for item in patches:
+                    stack.enter_context(item)
+                with self.assertRaisesRegex(workflow.WorkflowError, "static reanalysis rejected"):
+                    workflow.reanalyze_static(source, destination)
+            diagnostic = workflow.read_json(destination / "reanalysis-result.json")
+            self.assertTrue(any("two qualified startup" in error
+                                for error in diagnostic["verification"]["errors"]), diagnostic)
+            self.assertFalse((destination / "encounter-reader.json").exists())
+
+    def test_version_24_branch_coverage_is_derived_from_exact_reread_not_packet_claims(self):
+        import encounter_qualification_workflow as workflow
+        from test_encounter_qualification_workflow import QualificationWorkflowTests
+        for case in ("complete", "one_source", "nine_acceptances", "no_residual_refusal"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temp:
+                support = QualificationWorkflowTests("test_static_reanalysis_publishes_only_verified_current_bundle")
+                self.addCleanup(support.doCleanups)
+                destination = Path(temp) / "qualified"
+                helper, source, method, _, patches, _ = support._static_reanalysis_fixture(destination, method_version=24)
+                field_path = workflow.resolve_reference(source.parent, workflow.read_json(source)["field_validation"], "field")
+                field = workflow.read_json(field_path)
+                original_manifest = workflow.resolve_reference(field_path.parent, field["source_artifacts"]["blind_manifest"], "manifest")
+                original_labels = workflow.resolve_reference(field_path.parent, field["source_artifacts"]["blind_observations"], "labels")
+                original_image = workflow.resolve_reference(field_path.parent, field["frames"][0]["image"], "image")
+                args, document, readings = fixture(Path(temp) / "supplement", original_manifest, original_labels,
+                    original_image, field["frames"][0]["frame_id"], method, helper.reader_observations)
+                registration, _, _ = self.startup_input(args, document)
+                first_startup = deepcopy(document["items"][1]["startup_calibration"])
+                packet = args[0].parent
+                second_still = packet / "startup/second.jpg"
+                second_still.write_bytes(b"another original startup image")
+                second_preflight = write(packet / "startup/second-preflight.json", {
+                    "result": "PASS", "registration": registration,
+                    "source_still": {"name": second_still.name, "sha256": sha(second_still)}})
+                second_startup = {
+                    "preflight": {"path": "startup/second-preflight.json", "sha256": sha(second_preflight)},
+                    "still": {"path": "startup/second.jpg", "sha256": sha(second_still)}}
+                accepted = {"state": "readable", "value": "--.---", "reason": "Independent literal",
+                            "calibrated_idle": {"calibration_qualified": True, "accepted": True}}
+                for item in document["items"][1:3]:
+                    readings[item["image"]["sha256"]]["primary_frequency"] = deepcopy(accepted)
+                for index in range(8):
+                    item = RetainedFrequencySupplementTests.append(args, document, readings, "retained_original",
+                        {"state": "readable", "value": "--.---", "reason": "Independent literal"}, accepted)
+                    item["registration"] = deepcopy(registration)
+                    item["startup_calibration"] = deepcopy(first_startup if case == "one_source" else second_startup)
+                if case == "nine_acceptances":
+                    # A readable old-path result cannot count as use of the new branch.
+                    readings[document["items"][-1]["image"]["sha256"]]["primary_frequency"].pop("calibrated_idle")
+                refused = {"state": "ambiguous", "value": None, "reason": "Visible residual ink",
+                           "calibrated_idle": {"calibration_qualified": True, "accepted": False,
+                                               "residual_ink": {"clear": False}}}
+                if case == "no_residual_refusal":
+                    refused["calibrated_idle"] = {"calibration_qualified": True, "accepted": False,
+                                                   "template_match": False}
+                item = RetainedFrequencySupplementTests.append(args, document, readings, "extra_ink_control",
+                    {"state": "ambiguous", "value": None, "reason": "Independent extra ink observation"}, refused)
+                item["registration"] = deepcopy(registration)
+                item["startup_calibration"] = deepcopy(first_startup)
+                # A packet-authored success claim is deliberately not authoritative.
+                document["calibrated_idle_coverage"] = {"qualified": True,
+                    "qualified_startup_image_sha256": ["a" * 64, "b" * 64],
+                    "calibrated_idle_acceptances": 100, "residual_ink_refusals": 100}
+                write(args[0], document)
+                def calibrate(preflight, path):
+                    return {**preflight["registration"], "primary_frequency_calibration": {"qualified": True}}
+                with ExitStack() as stack:
+                    for item in patches:
+                        stack.enter_context(item)
+                    stack.enter_context(patch.dict(sys.modules, {
+                        "encounter_frequency_idle": SimpleNamespace(registration_for_camera=calibrate)}))
+                    if case == "complete":
+                        result = workflow.reanalyze_static(source, destination, args[0])
+                        self.assertEqual(result["status"], "QUALIFIED")
+                    else:
+                        with self.assertRaisesRegex(workflow.WorkflowError, "static reanalysis rejected"):
+                            workflow.reanalyze_static(source, destination, args[0])
+                diagnostic = workflow.read_json(destination / "reanalysis-result.json")
+                if case == "complete":
+                    coverage = diagnostic["verification"]["field_validation"]["primary_frequency_adjudication"]["calibrated_idle_coverage"]
+                    self.assertEqual(len(coverage["qualified_startup_image_sha256"]), 2)
+                    self.assertEqual(coverage["calibrated_idle_acceptances"], 10)
+                    self.assertEqual(coverage["residual_ink_refusals"], 1)
+                else:
+                    expected = {"one_source": "two qualified startup", "nine_acceptances": "ten independently labelled",
+                                "no_residual_refusal": "residual-ink refusal"}[case]
+                    self.assertTrue(any(expected in error for error in diagnostic["verification"]["errors"]), diagnostic)
+
+    def test_historical_four_file_inventory_is_explicit_and_current_inventory_is_complete(self):
+        with tempfile.TemporaryDirectory() as temp:
+            args, document, _ = fixture(Path(temp))
+            document["frozen_reader_files"] = {name: args[3][name] for name in LEGACY_CORE_READER_FILES}
+            write(args[0], document)
+            historical = args[0].read_bytes()
+            binding = reference_reread_binding(args[0], args[3])
+            self.assertEqual(set(binding["historical_frozen_reader_files"]), set(LEGACY_CORE_READER_FILES))
+            self.assertEqual(set(binding["current_reader_files"]), set(CORE_READER_FILES))
+            validate_reference(*args, reader_reanalysis=binding)
+            self.assertEqual(args[0].read_bytes(), historical)
+            for missing in CORE_READER_FILES:
+                method = dict(args[3])
+                method.pop(missing)
+                with self.subTest(missing=missing), self.assertRaises(ValueError):
+                    reference_reread_binding(args[0], method)
+            for inventory in (LEGACY_CORE_READER_FILES[:-1], (*LEGACY_CORE_READER_FILES, CORE_READER_FILES[-1])):
+                document["frozen_reader_files"] = {name: args[3][name] for name in inventory}
+                write(args[0], document)
+                with self.subTest(inventory=inventory), self.assertRaises(ValueError):
+                    reference_reread_binding(args[0], args[3])
+
+    @staticmethod
+    def startup_input(args, document):
+        packet = args[0].parent
+        still = packet / "startup/session.jpg"
+        still.parent.mkdir()
+        still.write_bytes(b"original startup pixels")
+        registration = {"result": "PASS", "landmark_bounds": [382, 194, 603, 273]}
+        preflight = write(packet / "startup/preflight.json", {
+            "result": "PASS", "registration": registration,
+            "source_still": {"name": still.name, "sha256": sha(still)}})
+        startup = {"preflight": {"path": str(preflight.relative_to(packet)), "sha256": sha(preflight)},
+                   "still": {"path": str(still.relative_to(packet)), "sha256": sha(still)}}
+        for item in document["items"][1:3]:
+            item["registration"] = deepcopy(registration)
+            item["startup_calibration"] = deepcopy(startup)
+        write(args[0], document)
+        return registration, preflight, still
+
+    def test_startup_sources_are_copied_and_geometry_is_recomputed_once_per_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            args, document, _ = fixture(Path(temp))
+            registration, preflight, still = self.startup_input(args, document)
+            destination = Path(temp) / "retained/reference.json"
+            copy_reference(args[0], destination)
+            self.assertEqual((destination.parent / "startup/session.jpg").read_bytes(), still.read_bytes())
+            self.assertEqual((destination.parent / "startup/preflight.json").read_bytes(), preflight.read_bytes())
+            calls, observations = [], []
+            def calibrate(source, path):
+                calls.append((source, path))
+                return {**source["registration"], "primary_frequency_calibration": {"qualified": True}}
+            original = args[-1]
+            def observe(image, geometry):
+                observations.append(deepcopy(geometry))
+                return original(image, geometry)
+            with patch.dict(sys.modules, {"encounter_frequency_idle": SimpleNamespace(registration_for_camera=calibrate)}):
+                validate_reference(destination, *args[1:-1], observe)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0][0], json.loads(preflight.read_bytes()))
+            self.assertEqual(calls[0][1], (destination.parent / "startup/session.jpg").resolve())
+            self.assertEqual(sum("primary_frequency_calibration" in row for row in observations), 2)
+            self.assertEqual(observations[0], args[4])
+
+    def test_stored_or_mismatched_startup_geometry_cannot_enter_the_reader(self):
+        for case in ("stored_matrix", "changed_still", "wrong_source_hash", "wrong_source_name",
+                     "different_registration", "failed_preflight", "missing_ref", "changed_other_geometry"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temp:
+                args, document, _ = fixture(Path(temp))
+                registration, preflight, still = self.startup_input(args, document)
+                first = document["items"][1]
+                source = json.loads(preflight.read_bytes())
+                if case == "stored_matrix": first["registration"]["primary_frequency_calibration"] = {"qualified": True}
+                elif case == "changed_still": still.write_bytes(b"different pixels")
+                elif case == "wrong_source_hash": source["source_still"]["sha256"] = "b" * 64
+                elif case == "wrong_source_name": source["source_still"]["name"] = "different.jpg"
+                elif case == "different_registration": first["registration"]["landmark_bounds"][0] += 1
+                elif case == "failed_preflight": source["result"] = "FAIL"
+                elif case == "missing_ref": first["startup_calibration"].pop("still")
+                write(preflight, source)
+                for item in document["items"][1:3]:
+                    item["startup_calibration"]["preflight"]["sha256"] = sha(preflight)
+                write(args[0], document)
+                def calibrate(source, path):
+                    result = {**source["registration"], "primary_frequency_calibration": {"qualified": True}}
+                    if case == "changed_other_geometry": result["landmark_bounds"] = [0, 0, 1, 1]
+                    return result
+                with patch.dict(sys.modules, {"encounter_frequency_idle": SimpleNamespace(registration_for_camera=calibrate)}):
+                    with self.assertRaises(ValueError):
+                        validate_reference(*args)
+
     @staticmethod
     def replace_label(args, document, role, label):
         item = next(item for item in document["items"] if item["role"] == role)

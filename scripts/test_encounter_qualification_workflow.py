@@ -309,6 +309,39 @@ class QualificationWorkflowTests(unittest.TestCase):
             diagnostic = workflow.read_json(destination / "reanalysis-result.json")
             self.assertEqual(diagnostic["status"], "ERROR")
 
+    def test_static_reanalysis_records_stable_uncommitted_method_truthfully(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "pending-method"
+            _, source, method, _, patches, _ = self._static_reanalysis_fixture(destination)
+            with ExitStack() as stack:
+                for index, item in enumerate(patches):
+                    if index != 0:
+                        stack.enter_context(item)
+                stack.enter_context(patch.object(workflow, "git_identity", return_value=("f" * 40, False)))
+                workflow.reanalyze_static(source, destination)
+            manifest = workflow.read_json(destination / "encounter-reader.json")
+            diagnostic = workflow.read_json(destination / "reanalysis-result.json")
+            self.assertFalse(manifest["source"]["worktree_clean"])
+            self.assertFalse(diagnostic["source_worktree_clean"])
+            self.assertEqual(manifest["source"]["static_method_sha256"],
+                             hashlib.sha256(workflow.json_bytes(workflow.static_method_hashes(method))).hexdigest())
+            self.assertIn(manifest["source"]["static_method_sha256"][:12], manifest["qualification_id"])
+
+    def test_dirty_static_method_still_rejects_changed_reader_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "changed-pending-method"
+            _, source, method, _, patches, _ = self._static_reanalysis_fixture(destination)
+            changed = {**method, "encounter_reader.py": "d" * 64}
+            with ExitStack() as stack:
+                for index, item in enumerate(patches):
+                    if index not in (0, 1):
+                        stack.enter_context(item)
+                stack.enter_context(patch.object(workflow, "git_identity", return_value=("f" * 40, False)))
+                stack.enter_context(patch.object(workflow, "method_hashes", side_effect=[method, changed]))
+                with self.assertRaisesRegex(workflow.WorkflowError, "implementation changed during"):
+                    workflow.reanalyze_static(source, destination)
+            self.assertFalse((destination / "encounter-reader.json").exists())
+
     def test_static_reanalysis_can_reuse_a_prior_current_reader_reread(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -354,7 +387,7 @@ class QualificationWorkflowTests(unittest.TestCase):
             @staticmethod
             def parse_args():
                 return Namespace(command="reanalyze-static", source_manifest=Path("source"),
-                                 out=Path("output"), primary_frequency_reference=None)
+                                 out=Path("output"), primary_frequency_reference=None, secondary_reference=None)
 
         error = encounter_qualification.QualificationError("capture boundary rejected")
         stderr = io.StringIO()

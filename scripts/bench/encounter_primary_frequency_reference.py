@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
@@ -62,6 +63,12 @@ def copy_reference(source, destination):
         refs.append(document["selection_before_reading"])
     refs += document.get("provenance_artifacts", [])
     refs += [item["image"] for item in document["items"]]
+    for item in document["items"]:
+        startup = item.get("startup_calibration")
+        if startup is not None:
+            _require(isinstance(startup, dict) and set(startup) == {"preflight", "still"},
+                     "startup calibration inputs are incomplete")
+            refs += [startup["preflight"], startup["still"]]
     destination.parent.mkdir(parents=True, exist_ok=True)
     for ref in refs:
         original = _artifact(source.parent, ref)
@@ -78,13 +85,15 @@ def reference_reread_binding(path, method):
     The independent packet remains the original observer's work. Its held-out
     development separation belongs to that historical reader, not the new one.
     """
-    from encounter_qualification import CORE_READER_FILES
+    from encounter_qualification import CORE_READER_FILES, LEGACY_CORE_READER_FILES, READER24_CORE_READER_FILES
 
     path = Path(path).resolve()
     reference = json.loads(path.read_bytes())
     frozen = reference.get("frozen_reader_files")
     current = {name: method.get(name) for name in CORE_READER_FILES}
-    _require(isinstance(frozen, dict) and set(frozen) == set(CORE_READER_FILES)
+    _require(isinstance(frozen, dict)
+             and set(frozen) in (set(LEGACY_CORE_READER_FILES), set(READER24_CORE_READER_FILES),
+                                 set(CORE_READER_FILES))
              and all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
                      for value in (*frozen.values(), *current.values())),
              "historical or current reader freeze is incomplete")
@@ -94,6 +103,39 @@ def reference_reread_binding(path, method):
             "historical_frozen_reader_files": frozen, "current_reader_files": current,
             "complete_source_set_reread": True,
             "held_out_provenance": "Original frozen reader only; current reader is checked against retained independent labels."}
+
+
+def _item_registration(item, registration, root, calibrations):
+    """Recompute frequency geometry from retained startup pixels, never a matrix."""
+    _require(isinstance(registration, dict) and registration.get("result") == "PASS",
+             "original image registration is unavailable")
+    _require("primary_frequency_calibration" not in registration,
+             "stored frequency calibration cannot replace retained startup inputs")
+    startup = item.get("startup_calibration")
+    if startup is None:
+        return registration
+    _require(isinstance(startup, dict) and set(startup) == {"preflight", "still"},
+             "startup calibration inputs are incomplete")
+    preflight_path = _artifact(root, startup["preflight"])
+    still_path = _artifact(root, startup["still"])
+    preflight = json.loads(preflight_path.read_bytes())
+    _require(isinstance(preflight, dict) and preflight.get("result") == "PASS"
+             and preflight.get("registration") == registration,
+             "startup preflight differs from original image registration")
+    source = preflight.get("source_still")
+    _require(isinstance(source, dict) and source.get("name") == still_path.name
+             and source.get("sha256") == startup["still"]["sha256"],
+             "startup preflight identifies a different original still")
+    key = (startup["preflight"]["sha256"], startup["still"]["sha256"])
+    if key not in calibrations:
+        from encounter_frequency_idle import registration_for_camera
+        calibrated = registration_for_camera(preflight, still_path)
+        _require(isinstance(calibrated, dict)
+                 and {k: v for k, v in calibrated.items() if k != "primary_frequency_calibration"} == registration
+                 and isinstance(calibrated.get("primary_frequency_calibration"), dict),
+                 "startup frequency calibration changed other image registration")
+        calibrations[key] = calibrated
+    return deepcopy(calibrations[key])
 
 
 def validate_reference(path, original_manifest, original_observations, method, registration, observe,
@@ -135,7 +177,8 @@ def validate_reference(path, original_manifest, original_observations, method, r
     _require(len(set(ids)) == len(ids) == len(packet) == len(manifest["frames"])
              == len(observations) == len(labels["frames"])
              and set(ids) == set(packet) == set(observations), "packet/label identities are incomplete or duplicated")
-    overrides, roles, counts, hashes = {}, Counter(), Counter(), set()
+    overrides, roles, counts, hashes, calibrations = {}, Counter(), Counter(), set(), {}
+    coverage, qualified_startups = Counter(), set()
     held_out_dashes = 0
     for item in items:
         frame_id, role, image_ref = item["frame_id"], item["role"], item["image"]
@@ -152,12 +195,34 @@ def validate_reference(path, original_manifest, original_observations, method, r
                  "invalid literal primary-frequency label")
         default_registration = reference.get("registration", registration) if role == "held_out_original" else registration
         image_registration = item.get("registration", default_registration)
-        _require(isinstance(image_registration, dict) and image_registration.get("result") == "PASS",
-                 "original image registration is unavailable")
+        image_registration = _item_registration(item, image_registration, path.parent, calibrations)
         observed = observe(image, image_registration)["primary_frequency"]
         status = _derived_field_status("primary_frequency", observed, label)
         _require(status not in ("WRONG_ASSERTION", "ASSERTION_WITHOUT_RESOLVED_REFERENCE"),
                  f"reader contradicts the independent label: {frame_id}")
+        if item.get("startup_calibration") is not None:
+            coverage["startup_items"] += 1
+            calibration = image_registration["primary_frequency_calibration"]
+            if calibration.get("qualified") is True:
+                qualified_startups.add(item["startup_calibration"]["still"]["sha256"])
+                if (observed.get("calibrated_numeric_decimal", {}).get("accepted") is True
+                        and status == "AGREEMENT" and observed.get("state") == "readable"
+                        and re.fullmatch(r"[0-9]{2}\.[0-9]{3}", observed.get("value", ""))):
+                    coverage["calibrated_numeric_decimal_acceptances"] += 1
+                diagnostic = observed.get("calibrated_idle", {})
+                if diagnostic.get("calibration_qualified") is True:
+                    if (diagnostic.get("accepted") is True and status == "AGREEMENT"
+                            and observed.get("state") == "readable" and observed.get("value") == "--.---"):
+                        coverage["calibrated_idle_acceptances"] += 1
+                    elif observed.get("state") in {"ambiguous", "unreadable"}:
+                        if diagnostic.get("residual_ink", {}).get("clear") is False:
+                            coverage["residual_ink_refusals"] += 1
+                        elif diagnostic.get("template_match") is False:
+                            coverage["template_refusals"] += 1
+                        elif diagnostic.get("complete_dash_decimal_witness") is False:
+                            coverage["incomplete_witness_refusals"] += 1
+            else:
+                coverage["calibration_refusals"] += 1
         if role == "reference_correction":
             source_id = item.get("source_frame_id")
             _require(source_id in originals and source_id not in overrides
@@ -197,4 +262,10 @@ def validate_reference(path, original_manifest, original_observations, method, r
     return {"overrides": overrides, "summary": {"items": len(items), "roles": dict(roles),
             "counts": dict(counts), "held_out_dash_agreements": held_out_dashes,
             "adjudicated_original_references": len(overrides),
+            "calibrated_idle_coverage": {
+                "qualified_startup_image_sha256": sorted(qualified_startups),
+                **{key: coverage[key] for key in ("startup_items", "calibrated_idle_acceptances",
+                    "calibrated_numeric_decimal_acceptances",
+                    "residual_ink_refusals", "template_refusals", "incomplete_witness_refusals",
+                    "calibration_refusals")}},
             **({"reader_reanalysis": reader_reanalysis} if reader_reanalysis is not None else {})}}

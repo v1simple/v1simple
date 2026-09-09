@@ -63,6 +63,15 @@ def load_run(run: Path) -> dict:
     registration = preflight.get("registration", {})
     require(preflight.get("result") == registration.get("result") == "PASS",
             "camera registration did not pass")
+    startup = preflight.get("source_still")
+    if startup is not None:
+        require(isinstance(startup, dict) and any(
+                    entry.get("path") == startup.get("name") and
+                    entry.get("sha256") == startup.get("sha256")
+                    for entry in entries.values()),
+                "startup calibration image is not bound to the recording")
+        from encounter_frequency_idle import registration_for_camera
+        registration = registration_for_camera(preflight, camera / startup["name"])
     records = read_records(camera / entries["frame_timing"]["path"])
     validate_frame_sidecar(records)
     require(all(r["phase"] == "recording" for r in records), "mixed camera phases")
@@ -405,6 +414,7 @@ def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cade
     try:
         data = load_run(run)
         evidence = {**data["identity"], "video_timing": data["timing"],
+                    "primary_frequency_calibration": data["registration"].get("primary_frequency_calibration"),
                     "timing_basis": "hash-bound original capture verification and validated source sidecar"}
         origin = data["stimulus"][0]["requestedHostMonotonicNs"]
         require(not all_frames or ranges is not None, "all-frame selection requires an explicit bounded range")

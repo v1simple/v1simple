@@ -24,7 +24,7 @@ import counter_reader
 
 FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
-METHOD_VERSION = 23
+METHOD_VERSION = 26
 _ocr_binary = None
 _ocr_setup = None
 _ocr_session = None
@@ -47,10 +47,12 @@ def prepare_reader(cache_dir: Path | None = None) -> dict:
     digest = hashlib.sha256(source.read_bytes()).hexdigest()
     cache = Path(cache_dir) if cache_dir is not None else Path(tempfile.gettempdir()) / "encounter-reader-cache"
     binary = cache / ("vision-" + digest[:16])
+    from encounter_frequency_idle import runtime as frequency_runtime
     info = {"method_version": METHOD_VERSION, "ocr": "Apple Vision",
             "ocr_revision": 3, "ocr_language_correction": False,
             "ocr_source_sha256": digest, "ocr_available": False,
-            "numpy_version": np.__version__, "pillow_version": PIL.__version__}
+            "numpy_version": np.__version__, "pillow_version": PIL.__version__,
+            **frequency_runtime()}
     try:
         cache.mkdir(parents=True, exist_ok=True)
         if not binary.is_file():
@@ -1022,6 +1024,13 @@ def _secondary(pixels):
                 if match and candidate.get("confidence", 0) >= .5:
                     band, frequency = match.groups()
                     candidates.append(({"ka": "Ka", "k": "K", "ku": "Ku", "x": "X", "l": "L"}[band.lower()], frequency))
+        if not candidates:
+            from encounter_card_text import split_card_text
+            candidates, card["split_text_observation"] = split_card_text(result)
+        if not candidates:
+            from encounter_card_text import complete_card_band
+            candidates, card["band_pixel_observation"] = complete_card_band(
+                pixels, (393, 640)[card["slot"]], result)
         unique = set(candidates)
         card["ocr_candidates"] = candidates
         if len(unique) == 1 and card["text_visible"]:
@@ -1031,7 +1040,10 @@ def _secondary(pixels):
                 card["band_witness"] = witness
                 # Resolve the demonstrated X/K confusion from label pixels;
                 # the independently recognized frequency is never changed.
-                if initial == "X":
+                if card.get("band_pixel_observation", {}).get("accepted") and initial != "K":
+                    # Conflicting pixel witnesses leave the new band unknown.
+                    card["band"] = None
+                elif initial == "X":
                     card["band"] = "X"
                 elif card["band"] != "K" or initial != "K":
                     card["band"] = None
@@ -1172,7 +1184,11 @@ def observe(rgb: bytes, width: int, height: int, registration: dict) -> dict:
         if not all(w["resolved"] for w in witnesses):
             return {**{name: field("unreadable", reason="registered display visibility witnesses are dark or occluded")
                        for name in FIELDS}, "method_version": METHOD_VERSION, "visibility": result["visibility"]}
-        result["primary_frequency"] = _frequency(pixels)
+        from encounter_frequency_idle import refine
+        result["primary_frequency"] = refine(_frequency(pixels), rgb, width, height, registration)
+        from encounter_frequency_numeric import refine as refine_numeric_decimal
+        result["primary_frequency"] = refine_numeric_decimal(
+            result["primary_frequency"], rgb, width, height, registration)
         result["active_bands"] = _bands(pixels)
         result["main_arrows"] = _arrows(pixels)
         result["main_bars"] = _bars(pixels, [(900, y, 937, y + 10) for y in (400, 363, 326, 289, 251, 214)])

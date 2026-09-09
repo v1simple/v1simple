@@ -482,6 +482,90 @@ class EncounterReaderTests(unittest.TestCase):
         with patch.object(reader, "_ocr", return_value=ocr_result("K 23.456")):
             self.assertEqual(len(self.read(im)["secondary"]["value"]), 1)
 
+    def test_secondary_band_fallback_waits_for_both_older_text_paths(self):
+        image = display()
+        card(image, 393, "side", 3)
+        combined = ocr_result("K24.150")[0]
+        split = {"rows": [
+            {"box": [.03, .2, .14, .85], "candidates": [{"text": "K", "confidence": 1.}]},
+            {"box": [.13, .03, .81, .85], "candidates": [{"text": "24.150", "confidence": 1.}]}]}
+        ambiguous = ocr_result("K24.150")[0]
+        ambiguous["rows"][0]["candidates"].append({"text": "K24.151", "confidence": 1.})
+        for observation, state in ((combined, "readable"), (split, "readable"),
+                                   (ambiguous, "unreadable")):
+            with self.subTest(observation=observation), \
+                    patch.object(reader, "_ocr", return_value=[observation]), \
+                    patch("encounter_card_text.complete_card_band") as fallback:
+                result = reader._secondary(reader.Pixels(image.tobytes(), WIDTH, HEIGHT, REGISTRATION))
+            fallback.assert_not_called()
+            self.assertEqual(result["state"], state, result)
+            self.assertNotIn("band_pixel_observation", result["cards"][0])
+
+    def test_secondary_complete_band_fallback_keeps_numeric_ocr_literal(self):
+        from encounter_card_text import complete_card_band
+        image = display()
+        card(image, 393, "side", 3)
+        for frequency in ("23.456", "35.500"):
+            observation = {"rows": [{"box": [.124, .027, .812, .85],
+                           "candidates": [{"text": frequency, "confidence": 1.}]}]}
+            with self.subTest(frequency=frequency), \
+                    patch.object(reader, "_ocr", return_value=[observation]), \
+                    patch("encounter_card_text.complete_card_band", wraps=complete_card_band) as fallback:
+                result = reader._secondary(reader.Pixels(image.tobytes(), WIDTH, HEIGHT, REGISTRATION))
+            fallback.assert_called_once()
+            self.assertEqual(result["state"], "readable", result)
+            self.assertEqual(result["value"], [{"band": "K", "frequency": frequency,
+                                              "direction": "side", "bars": 3}])
+            self.assertEqual(result["cards"][0]["ocr_observation"], observation)
+            self.assertEqual(result["cards"][0]["band_pixel_observation"]["method"],
+                             "complete_card_band/v1")
+
+    def test_secondary_complete_band_conflicting_initial_refuses_instead_of_X(self):
+        image = display()
+        card(image, 393, "side", 3)
+        observation = {"rows": [{"box": [.124, .027, .812, .85],
+                       "candidates": [{"text": "24.150", "confidence": 1.}]}]}
+        for initial in ("X", None):
+            with self.subTest(initial=initial), \
+                    patch.object(reader, "_ocr", return_value=[observation]), \
+                    patch.object(reader, "_card_initial_witness", return_value=(initial, {})):
+                result = reader._secondary(reader.Pixels(image.tobytes(), WIDTH, HEIGHT, REGISTRATION))
+            self.assertTrue(result["cards"][0]["band_pixel_observation"]["accepted"])
+            self.assertEqual(result["state"], "unreadable", result)
+            self.assertIsNone(result["partial_cards"][0]["band"])
+            self.assertEqual(result["partial_cards"][0]["frequency"], "24.150")
+
+    def test_secondary_complete_band_cannot_bypass_other_field_guards(self):
+        # These integration controls inject a successful band observation so a
+        # reader-stage refusal cannot conceal accidental removal of a guard.
+        for guard in ("bars", "direction", "text_visible"):
+            image = display()
+            card(image, 393, "side", 3)
+            if guard == "text_visible":
+                ImageDraw.Draw(image).rectangle((440, 377, 621, 413), fill=(24, 24, 24))
+            with self.subTest(guard=guard), \
+                    patch.object(reader, "_ocr", return_value=ocr_result("24.150")), \
+                    patch("encounter_card_text.complete_card_band", return_value=(
+                        [("K", "24.150")], {"method": "complete_card_band/v1", "accepted": True})), \
+                    patch.object(reader, "_card_initial_witness", return_value=("K", {})), \
+                    patch.object(reader, "_card_bars", wraps=reader._card_bars) as meter, \
+                    patch.object(reader, "_card_direction", wraps=reader._card_direction) as direction:
+                if guard == "bars":
+                    meter.return_value = reader.field("ambiguous", reason="partial meter control")
+                if guard == "direction":
+                    direction.return_value = reader.field("ambiguous", reason="partial direction control")
+                result = reader._secondary(reader.Pixels(image.tobytes(), WIDTH, HEIGHT, REGISTRATION))
+            self.assertEqual(result["state"], "unreadable", result)
+            self.assertIsNone(result["value"])
+            detail = result["cards"][0]
+            if guard == "text_visible":
+                self.assertFalse(detail["text_visible"])
+                self.assertIsNone(detail["band"])
+                self.assertIsNone(detail["frequency"])
+            else:
+                self.assertEqual((detail["band"], detail["frequency"]), ("K", "24.150"))
+                self.assertIsNone(detail[guard])
+
     def test_secondary_x_k_prefix_follows_visible_letter_not_frequency(self):
         im = display()
         card(im, 393, "rear", 2)

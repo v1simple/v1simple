@@ -242,9 +242,37 @@ all five dash interiors and the separate decimal required. A region below the
 numeric reader's brightness threshold is no longer automatically called blank.
 Partial dark marks remain unresolved.
 
+For unresolved frequency readings, a second fixed check aligns the complete
+startup SCAN shape with a retained reference using OpenCV. A separate startup
+counter validates the alignment. Both the original startup still and its
+preflight metadata must be bound to the recording. This correction applies only
+to the primary-frequency field; other fields keep their existing registration.
+If calibration refuses, the ordinary reader remains in use and the reason is
+retained in the report evidence.
+
+The additional idle reading requires a Stb-tester template match, every dash
+and the decimal, and a separate check for extra gray or red strokes. Its fixed
+background envelope was learned from development images, with a three-level
+additional contrast margin. That margin is above measured background texture;
+it is not a guarantee to detect every three-level mark. No neighboring frames,
+expected values, timing thresholds or per-run model training participate.
+Existing definite readings are retained. Model assets and image-library
+versions are included in qualification and invalidate incompatible cached
+readings. Stb-tester uses supplied images only, with capture and OCR disabled.
+
+When all five original numeric glyphs are definite and only the decimal is
+unresolved, the startup alignment can also recheck the numeric field. The same
+reader must observe the decimal and clear glyph interiors, and repeat the
+original five digits exactly. This route does not admit dim, noncanonical or
+mixed-stroke refusals. Existing definite readings remain unchanged.
+
 Secondary-card text uses local Apple Vision OCR. Accepted text must satisfy the
 fixed visible format; expected values never repair OCR output. No remote image
 model or network service participates in the reader.
+When OCR returns the band and complete frequency as two separate observations,
+their unique literal candidates may be joined only with consistent left-to-right
+and same-line geometry. Missing letters, digits or punctuation are not supplied.
+The original band-glyph, direction and bar checks still apply.
 
 The default qualification manifest is
 `.artifacts/bench/qualification/encounter-reader.json`. Override it with
@@ -257,6 +285,25 @@ correct a prior frequency reference using independently recorded observations.
 It retains the original reference unchanged and requires held-out original
 images plus missing, partial and invalid glyph/decimal controls. Corrected
 references and reader refusals remain visible in the qualification evidence.
+Frequency supplements can retain per-image startup sources; verification
+recomputes their calibration rather than trusting a stored transform. The
+current method must demonstrate calibrated admissions and residual-stroke
+refusals on independently labeled images from multiple startup sources.
+An additional secondary-card reference can retain new opaque image observations
+without replacing the historical card packet. Verification checks the exact
+original crops, per-image startup inputs, complete card values and partial
+identities. Reader 25 must demonstrate actual independently supported numeric
+decimal and split-card admissions; saved summary counts cannot supply that proof.
+Reader 26 additionally requires an independently supported complete-band pixel
+reading. Its missing-band fallback is limited to a complete K glyph and the
+single-letter prefix spacing beside an unchanged, uniquely recognized numeric
+token. A K-shaped initial alone cannot supply the band; suffix, damaged-letter,
+visibility, direction and bar uncertainty remain explicit.
+
+Static reanalysis may validate uncommitted tooling. It records the actual Git
+state and exact method digest, and refuses publication if the source changes
+during verification. This allows the pending implementation to be tested before
+commit. The clean-source requirement for physical collection remains in place.
 
 Existing `--qualification-capture` remains available for retaining camera pixels
 without running either automatic pixel reader. It cannot be combined with

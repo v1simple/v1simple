@@ -186,6 +186,7 @@ def analyze_behavior(run, out, ranges=None, configuration=None, reader_qualifica
         data = capture.load_run(run)
         window = read_json(run / "window_result.json")
         result["evidence"] = {**data["identity"], "video_timing": data["timing"],
+                              "primary_frequency_calibration": data["registration"].get("primary_frequency_calibration"),
                               "recorded_tooling_source": window.get("tooling_source")}
         result["evidence"]["tooling_source"] = {
             "git_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
@@ -241,7 +242,8 @@ def analyze_behavior(run, out, ranges=None, configuration=None, reader_qualifica
         reused = None
         if reuse_readings:
             from encounter_reading_reuse import load_reusable_readings
-            reused = load_reusable_readings(reuse_readings, data, method, samples, out)
+            reused = load_reusable_readings(reuse_readings, data, method, samples, out,
+                                            reader_runtime=runtime)
             result["evidence"]["reused_readings"] = reused["provenance"]
         definition_index, previous, previous_signature = 0, None, None
         retained = set()

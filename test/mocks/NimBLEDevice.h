@@ -346,7 +346,13 @@ public:
         return notifyResult_;
     }
     bool writeValue(const uint8_t*, size_t, bool) { return writeValueResult_; }
-    NimBLEAttValue getValue() const { return value_; }
+    NimBLEAttValue getValue() const {
+        if (getValueEntryHook_) {
+            getValueEntryHook_();
+        }
+        return value_;
+    }
+    void setGetValueEntryHook(std::function<void()> hook) { getValueEntryHook_ = std::move(hook); }
     NimBLEUUID getUUID() const { return NimBLEUUID(uuid_.c_str()); }
     void setValue(const uint8_t* data, size_t size) { value_.assign(data, size); }
     void setNotifyResult(bool ok) { notifyResult_ = ok; }
@@ -355,6 +361,7 @@ public:
 private:
     std::string uuid_;
     NimBLECharacteristicCallbacks* callbacks_ = nullptr;
+    std::function<void()> getValueEntryHook_;
     NimBLEAttValue value_;
     bool notifyResult_ = true;
     bool writeValueResult_ = true;

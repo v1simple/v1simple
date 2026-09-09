@@ -41,14 +41,16 @@ inline uint16_t lerpRgb565(uint16_t a, uint16_t b, uint8_t num, uint8_t den) {
 // Compatibility translation for settings and API payloads written while the
 // display exposed eight addressable colours. Runtime rendering stays six-cell.
 inline void expandSixBarColorsToEight(const uint16_t configured[6], uint16_t out[8]) {
-    for (int i = 0; i < 8; ++i) {
-        const int scaled = i * 5;
-        const int idx = scaled / 7;
-        const int rem = scaled % 7;
-        out[i] = (rem == 0 || idx >= 5)
-                     ? configured[idx]
-                     : lerpRgb565(configured[idx], configured[idx + 1], static_cast<uint8_t>(rem), 7);
-    }
+    // Preserve each physical color at the index selected by collapse below.
+    // Interpolate only the two extra legacy cells, so a read/save is lossless.
+    out[0] = configured[0];
+    out[1] = configured[1];
+    out[2] = lerpRgb565(configured[1], configured[2], 1, 2);
+    out[3] = configured[2];
+    out[4] = configured[3];
+    out[5] = lerpRgb565(configured[3], configured[4], 1, 2);
+    out[6] = configured[4];
+    out[7] = configured[5];
 }
 
 inline void collapseEightBarColorsToSix(const uint16_t configured[8], uint16_t out[6]) {

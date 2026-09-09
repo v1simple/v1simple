@@ -70,7 +70,7 @@ bool toRestoreDocument(const JsonDocument& source, JsonDocument& target, String&
         uint8_t bytes[V1SettingsJson::kSettingsByteCount];
         if (!exactKeys(profile, {"name", "description", "rawBytes", "displayOn", "mainVolume", "mutedVolume"}) ||
             !canonicalName(profile["name"], name) ||
-            !stringWithin(profile["description"], MAX_PROFILE_DESCRIPTION_LEN) ||
+            !stringWithin(profile["description"], kUsbProfileDocumentMaxBytes) ||
             !profile["displayOn"].is<bool>() || !profileVolume(profile["mainVolume"]) ||
             !profileVolume(profile["mutedVolume"]) || !V1SettingsJson::parseRawBytes(profile["rawBytes"], bytes)) {
             error = "Invalid profile fields";

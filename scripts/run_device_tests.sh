@@ -46,7 +46,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --cooldown-seconds N"
       echo "             Wait N seconds between suites (default: ${DEVICE_SUITE_COOLDOWN_SECONDS:-5})"
       echo "  --out-dir PATH"
-      echo "             Write all run artifacts to PATH"
+      echo "             Write all run artifacts to PATH (must be empty)"
       echo ""
       echo "Environment:"
       echo "  DEVICE_SUITE_COOLDOWN_SECONDS"
@@ -186,6 +186,13 @@ if [[ -z "$OUT_DIR" ]]; then
   OUT_DIR="$ROOT_DIR/.artifacts/test_reports/device_$timestamp"
 fi
 mkdir -p "$OUT_DIR"
+# Refuse reuse before truncating evidence or starting PlatformIO. A prior suite
+# report must never stand in for a current invocation that failed to produce one.
+if [[ -n "$(ls -A "$OUT_DIR")" ]]; then
+  echo "Device test output directory must be empty: $OUT_DIR" >&2
+  echo "Choose a new directory; existing evidence has been preserved." >&2
+  exit 1
+fi
 MAIN_LOG="$OUT_DIR/device.log"
 METRICS_NDJSON="$OUT_DIR/metrics.ndjson"
 MANIFEST_JSON="$OUT_DIR/manifest.json"

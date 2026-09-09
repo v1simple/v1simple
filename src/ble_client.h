@@ -382,6 +382,7 @@ class V1BLEClient {
         size_t length;
         uint16_t charUUID;
         uint32_t tsMs;
+        uint32_t sessionGeneration; // Phone commands belong to one V1 connection.
     };
     ProxyPacket* proxyQueue_ = nullptr;
 
@@ -585,7 +586,8 @@ class V1BLEClient {
 
     // Queue phone->V1 commands from BLE callback context
     bool enqueuePhoneCommand(const uint8_t* data, size_t length, uint16_t sourceCharUUID);
-    bool enqueuePhoneCommandForEpoch(const uint8_t* data, size_t length, uint16_t sourceCharUUID, uint32_t queueEpoch);
+    bool enqueuePhoneCommandForEpoch(const uint8_t* data, size_t length, uint16_t sourceCharUUID, uint32_t queueEpoch,
+                                    uint32_t sessionGeneration);
     int processPhoneCommandQueue();
     // Diagnostic helper to log negotiated connection parameters
     void logConnParams(const char* tag);

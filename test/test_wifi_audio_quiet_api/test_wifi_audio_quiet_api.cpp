@@ -1,4 +1,5 @@
 #include <unity.h>
+#include <algorithm>
 
 #include "../mocks/Arduino.h"
 #include "../mocks/WebServer.h"
@@ -251,6 +252,52 @@ void test_display_reset_reports_persist_failure_without_live_effects() {
     TEST_ASSERT_EQUAL_INT(0, probe.previewCalls);
 }
 
+void test_display_legacy_read_save_preserves_all_six_colors() {
+    Probe probe;
+    const uint16_t colors[6] = {0xF800, 0x07E0, 0x001F, 0xFFE0, 0xF81F, 0x07FF};
+    std::copy(colors, colors + 6, probe.settings.colorBars);
+    WebServer get(80);
+    WifiDisplayColorsApiService::handleApiGet(get, makeDisplayRuntime(probe));
+    TEST_ASSERT_EQUAL_INT(200, get.lastStatusCode);
+    JsonDocument response;
+    TEST_ASSERT_FALSE(deserializeJson(response, get.lastBody.c_str()));
+
+    WebServer save(80);
+    for (int i = 1; i <= 8; ++i) {
+        const String key = String("barS") + String(i);
+        save.setArg(key, String(response[key].as<unsigned>()));
+    }
+    WifiDisplayColorsApiService::handleApiSave(save, makeDisplayRuntime(probe), nullptr, nullptr);
+    TEST_ASSERT_EQUAL_INT(200, save.lastStatusCode);
+    TEST_ASSERT_EQUAL_UINT16_ARRAY(colors, probe.displayUpdate.colorBars, 6);
+}
+
+void test_display_partial_legacy_save_preserves_omitted_colors_and_modern_precedence() {
+    const uint16_t colors[6] = {0xF800, 0x07E0, 0x001F, 0xFFE0, 0xF81F, 0x07FF};
+    for (bool modernOverride : {false, true}) {
+        Probe probe;
+        std::copy(colors, colors + 6, probe.settings.colorBars);
+        WebServer save(80);
+        save.setArg("barS1", "65535");
+        if (modernOverride) save.setArg("bar1", "12345");
+        WifiDisplayColorsApiService::handleApiSave(save, makeDisplayRuntime(probe), nullptr, nullptr);
+        TEST_ASSERT_EQUAL_INT(200, save.lastStatusCode);
+        TEST_ASSERT_EQUAL_UINT16(modernOverride ? 12345 : 65535, probe.displayUpdate.colorBars[0]);
+        TEST_ASSERT_EQUAL_UINT16_ARRAY(colors + 1, probe.displayUpdate.colorBars + 1, 5);
+    }
+}
+
+void test_display_modern_partial_save_does_not_update_other_bars() {
+    Probe probe;
+    WebServer save(80);
+    save.setArg("bar1", "65535");
+    WifiDisplayColorsApiService::handleApiSave(save, makeDisplayRuntime(probe), nullptr, nullptr);
+    TEST_ASSERT_EQUAL_INT(200, save.lastStatusCode);
+    TEST_ASSERT_TRUE(probe.displayUpdate.hasColorBar[0]);
+    TEST_ASSERT_EQUAL_UINT16(65535, probe.displayUpdate.colorBars[0]);
+    for (int i = 1; i < 6; ++i) TEST_ASSERT_FALSE(probe.displayUpdate.hasColorBar[i]);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_quiet_get_preserves_its_exact_field_set);
@@ -262,5 +309,8 @@ int main() {
     RUN_TEST(test_device_settings_post_reports_persist_failure);
     RUN_TEST(test_display_save_reports_persist_failure_without_live_effects);
     RUN_TEST(test_display_reset_reports_persist_failure_without_live_effects);
+    RUN_TEST(test_display_legacy_read_save_preserves_all_six_colors);
+    RUN_TEST(test_display_partial_legacy_save_preserves_omitted_colors_and_modern_precedence);
+    RUN_TEST(test_display_modern_partial_save_does_not_update_other_bars);
     return UNITY_END();
 }

@@ -81,8 +81,15 @@ void V1Display::drawGpsIndicator() {
 }
 
 #include "../../src/display_cards.cpp"
+#include "../../src/display_top_counter.cpp"
+#include "../../src/display_frequency.cpp"
+#include "../../src/display_frequency_digit_atlas.cpp"
+#include "../../src/display_frequency_raster_cache.cpp"
 #include "../../src/packet_parser.cpp"
 #include "../../src/packet_parser_alerts.cpp"
+
+// Top-counter font priming is outside these frequency/card tests.
+bool DisplayFontManager::getTopCounterBounds(char, bool, int&, int&) { return false; }
 
 V1Display display(settings);
 
@@ -771,6 +778,76 @@ void test_parsed_ku_secondary_uses_production_band_name_and_frequency() {
     TEST_ASSERT_EQUAL_STRING("13.450", text->labels[1].c_str());
 }
 
+// Rasterize the straight border and segment interiors needed by these tests.
+// This checks shared framebuffer ownership, not panel or font raster fidelity.
+class FrequencyCardCanvas : public Arduino_Canvas {
+  public:
+    FrequencyCardCanvas() : Arduino_Canvas(SCREEN_WIDTH, SCREEN_HEIGHT, nullptr) {}
+    void drawRoundRect(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r, uint16_t color) override {
+        Arduino_Canvas::fillRect(x + r, y, w - 2 * r, 1, color);
+        Arduino_Canvas::fillRect(x + r, y + h - 1, w - 2 * r, 1, color);
+    }
+    void fillRoundRect(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r, uint16_t color) override {
+        Arduino_Canvas::fillRoundRect(x, y, w, h, r, color);
+        Arduino_Canvas::fillRect(x + r, y, w - 2 * r, h, color);
+    }
+    void fillCircle(int16_t x, int16_t y, int16_t r, uint16_t color) override {
+        TEST_ASSERT_LESS_THAN_INT(DisplayLayout::CONTENT_BOTTOM_Y, y + r);
+        Arduino_Canvas::fillCircle(x, y, r, color);
+    }
+    uint16_t pixel(int x, int y) { return getFramebuffer()[x * CANVAS_WIDTH + CANVAS_WIDTH - 1 - y]; }
+};
+
+void test_frequency_updates_preserve_cached_card_border() {
+    for (bool fontReady : {false, true}) {
+        resetDisplayForTest();
+        auto* pixels = new FrequencyCardCanvas;
+        display.setTestCanvas(pixels);
+        display.ut_fontMgr().segment7Ready = fontReady;
+        AlertData primary = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700, true, true);
+        const AlertData secondary = AlertData::create(BAND_X, DIR_REAR, 0, 2, 10525, true, false);
+        AlertData alerts[2] = {primary, secondary};
+        display.ut_drawFrequency(primary.frequency, primary.band);
+        display.ut_drawSecondaryAlertCards(alerts, 2, primary, false);
+        const auto card = DisplayLayout::cardRect(0);
+        std::vector<uint16_t> before;
+        for (int x = card.x + 5; x < card.x + card.w - 5; ++x) {
+            TEST_ASSERT_NOT_EQUAL(0, pixels->pixel(x, card.y));
+            before.push_back(pixels->pixel(x, card.y));
+        }
+        pixels->resetCounters();
+        mockMillis += 100;
+        primary.frequency = alerts[0].frequency = 34701;
+        display.ut_drawFrequency(primary.frequency, primary.band);
+        display.ut_drawSecondaryAlertCards(alerts, 2, primary, false);
+        for (int x = card.x + 5; x < card.x + card.w - 5; ++x) {
+            TEST_ASSERT_EQUAL_UINT16(before[x - card.x - 5], pixels->pixel(x, card.y));
+        }
+        for (const auto& call : pixels->fillRoundRectCalls) {
+            TEST_ASSERT_FALSE(call.x == card.x && call.y == card.y && call.w == card.w && call.h == card.h);
+        }
+        pixels->resetCounters();
+        display.ut_drawFrequency(primary.frequency, primary.band);
+        TEST_ASSERT_TRUE(pixels->fillRectCalls.empty());
+        TEST_ASSERT_TRUE(pixels->fillRoundRectCalls.empty());
+    }
+}
+
+void test_fallback_shorter_text_clears_previous_text_extent() {
+    auto* pixels = new FrequencyCardCanvas;
+    display.setTestCanvas(pixels);
+    display.ut_fontMgr().segment7Ready = false;
+    display.ut_drawFrequency(0, BAND_LASER);
+    display.ut_drawFrequency(0, BAND_LASER, "LTI");
+    const std::vector<uint16_t> after(pixels->getFramebuffer(),
+                                     pixels->getFramebuffer() + CANVAS_WIDTH * CANVAS_HEIGHT);
+    resetDisplayForTest();
+    pixels = new FrequencyCardCanvas;
+    display.setTestCanvas(pixels);
+    display.ut_drawFrequency(0, BAND_LASER, "LTI");
+    TEST_ASSERT_EQUAL_UINT16_ARRAY(pixels->getFramebuffer(), after.data(), after.size());
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_empty_card_clear_is_noop_when_no_cards_were_drawn);
@@ -797,5 +874,7 @@ int main(int, char**) {
     RUN_TEST(test_card_meter_clamps_strength_above_full_scale);
     RUN_TEST(test_card_meter_lit_segments_use_their_own_stored_colors);
     RUN_TEST(test_parsed_ku_secondary_uses_production_band_name_and_frequency);
+    RUN_TEST(test_frequency_updates_preserve_cached_card_border);
+    RUN_TEST(test_fallback_shorter_text_clears_previous_text_extent);
     return UNITY_END();
 }

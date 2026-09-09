@@ -226,6 +226,80 @@ describe('settings route page', () => {
         unmount();
     });
 
+    it.each([
+        ['connection failure', false],
+        ['API failure', true]
+    ])('requires a successful settings retry after %s before saving', async (failure, disableTimeouts) => {
+        let reads = 0;
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/device/settings',
+                respond: () => {
+                    if (++reads <= 2) {
+                        return failure === 'connection failure'
+                            ? Promise.reject(new Error('settings unavailable'))
+                            : jsonResponse({ error: 'settings unavailable' }, 500);
+                    }
+                    return jsonResponse({
+                        ap_ssid: 'OriginalAP',
+                        ap_password: '********',
+                        autoPowerOffMinutes: 30,
+                        apTimeoutMinutes: 15
+                    });
+                }
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText('Failed to load settings');
+        const save = screen.getByRole('button', { name: /save settings/i });
+        expect(save).toBeDisabled();
+        expect(screen.getByLabelText('AP Name')).toBeDisabled();
+        expect(screen.getByLabelText(/minutes after disconnect/i)).toBeDisabled();
+        await fireEvent.click(save);
+        expect(fetchMock.mock.calls.some(([url, init]) =>
+            url === '/api/device/settings' && init?.method === 'POST')).toBe(false);
+        await screen.findByText('Garage');
+        expect(screen.getByRole('button', { name: /download backup/i })).toBeEnabled();
+
+        await fireEvent.click(screen.getByRole('button', { name: /retry settings/i }));
+        await screen.findByRole('button', { name: /retry settings/i });
+        expect(screen.getByText('Failed to load settings')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /save settings/i })).toBeDisabled();
+        await fireEvent.click(screen.getByRole('button', { name: /retry settings/i }));
+        await screen.findByDisplayValue('OriginalAP');
+        expect(screen.queryByText('Failed to load settings')).not.toBeInTheDocument();
+        expect(screen.getByLabelText(/minutes after disconnect/i)).toHaveValue(30);
+        expect(screen.getByLabelText('Auto-off after (minutes)')).toHaveValue('15');
+
+        await fireEvent.input(screen.getByLabelText('AP Name'), { target: { value: 'ChosenAP' } });
+        await fireEvent.input(screen.getByLabelText('AP Password'), {
+            target: { value: 'ChosenPassword' }
+        });
+        if (disableTimeouts) {
+            await fireEvent.input(screen.getByLabelText(/minutes after disconnect/i), {
+                target: { value: '0' }
+            });
+            await fireEvent.click(screen.getByRole('checkbox', {
+                name: /disable ap inactivity timeout/i
+            }));
+        }
+        await fireEvent.click(screen.getByRole('button', { name: /save settings/i }));
+        await screen.findByText('Settings saved! New AP credentials apply the next time the AP starts.');
+        const posts = fetchMock.mock.calls.filter(([url, init]) =>
+            url === '/api/device/settings' && init?.method === 'POST');
+        expect(posts).toHaveLength(1);
+        expect(Object.fromEntries(posts[0][1].body)).toEqual({
+            ap_ssid: 'ChosenAP',
+            ap_password: 'ChosenPassword',
+            autoPowerOffMinutes: disableTimeouts ? '0' : '30',
+            apTimeoutMinutes: disableTimeouts ? '0' : '15'
+        });
+
+        unmount();
+    });
+
     it('shows WiFi status load errors in the page alert', async () => {
         installFetchMock(
             [
@@ -413,9 +487,11 @@ describe('settings route page', () => {
         unmount();
     });
 
-    it('caps a stalled saved-network test at a 20-second wall-clock deadline', async () => {
+    it.each(['headers', 'body'])('caps stalled WiFi %s at a 20-second test deadline and permits retry', async (stall) => {
         vi.useFakeTimers();
         let statusCalls = 0;
+        let stalled = true;
+        const signals = [];
         installDefaultFetch([
             {
                 method: 'GET',
@@ -424,6 +500,24 @@ describe('settings route page', () => {
                     statusCalls += 1;
                     if (statusCalls === 1) {
                         return jsonResponse({ enabled: true, state: 'disconnected' });
+                    }
+                    if (!stalled) {
+                        return jsonResponse({
+                            enabled: true,
+                            state: 'connected',
+                            connectedSSID: 'HomeWifi',
+                            connectedSlotIndex: 0
+                        });
+                    }
+
+                    signals.push(init.signal);
+                    if (stall === 'body') {
+                        return new Response(new ReadableStream({
+                            start(controller) {
+                                init.signal.addEventListener('abort', () =>
+                                    controller.error(new Error('status body aborted')), { once: true });
+                            }
+                        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
                     }
 
                     return new Promise((resolve, reject) => {
@@ -452,6 +546,56 @@ describe('settings route page', () => {
         expect(screen.getByText('Connection test timed out for HomeWifi')).toBeInTheDocument();
         expect(screen.getAllByRole('button', { name: /^Test$/i })[0]).toBeEnabled();
         expect(statusCalls).toBeLessThanOrEqual(9);
+        expect(signals.every((signal) => signal.aborted)).toBe(true);
+
+        stalled = false;
+        await fireEvent.click(screen.getAllByRole('button', { name: /^Test$/i })[0]);
+        await screen.findByText('Connected to HomeWifi');
+        expect(screen.getAllByRole('button', { name: /^Test$/i })[0]).toBeEnabled();
+
+        unmount();
+    });
+
+    it.each(['headers', 'body'])('bounds the initial WiFi status %s and recovers on a later request', async (stall) => {
+        vi.useFakeTimers();
+        let statusCalls = 0;
+        let initialSignal;
+        installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/wifi/status',
+                respond: ({ init }) => {
+                    if (++statusCalls > 1) {
+                        return jsonResponse({ enabled: true, state: 'connected',
+                            connectedSSID: 'HomeWifi', connectedSlotIndex: 0 });
+                    }
+                    initialSignal = init.signal;
+                    if (stall === 'headers') {
+                        return new Promise((resolve, reject) => {
+                            init.signal.addEventListener('abort', () =>
+                                reject(new Error('status headers aborted')), { once: true });
+                        });
+                    }
+                    return new Response(new ReadableStream({
+                        start(controller) {
+                            init.signal.addEventListener('abort', () =>
+                                controller.error(new Error('status body aborted')), { once: true });
+                        }
+                    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+                }
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByLabelText('AP Name');
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(initialSignal.aborted).toBe(true);
+        expect(screen.getByText('Failed to load WiFi status')).toBeInTheDocument();
+        const wifiCard = screen.getByText('WiFi Client').closest('.surface-card');
+        await fireEvent.click(wifiCard.querySelector('input[type="checkbox"]'));
+        await screen.findByText('Garage');
+        expect(screen.getByText(/Connected to HomeWifi • Slot 1/)).toBeInTheDocument();
+        expect(screen.queryByText('Failed to load WiFi status')).not.toBeInTheDocument();
 
         unmount();
     });

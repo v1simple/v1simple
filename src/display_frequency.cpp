@@ -338,24 +338,40 @@ void V1Display::renderFrequencyPresentation(const FrequencyPresentation& present
 void V1Display::renderFrequencyFallback(const FrequencyPresentation& presentation) {
     const float scale = DisplayLayout::FREQUENCY_FALLBACK_SCALE;
     const SegMetrics metrics = segMetrics(scale);
-    const int y = DisplayLayout::frequencyFallbackY(metrics.digitH);
+    // The decimal point includes its bottom pixel; keep it above the card row.
+    const int y = std::min(DisplayLayout::frequencyFallbackY(metrics.digitH),
+                           DisplayLayout::CONTENT_BOTTOM_Y - metrics.digitH - 1);
     const int width = measureSevenSegmentText(presentation.text, scale);
     const int leftMargin = DisplayLayout::FREQUENCY_FALLBACK_LEFT_MARGIN;
     const int maxWidth = DisplayLayout::frequencyFallbackMaxWidth();
     int x = leftMargin + (maxWidth - width) / 2;
     if (x < leftMargin) x = leftMargin;
 
+    // Erase both old and new text extents, within this renderer's content lane.
+    // Unchanged secondary cards are cached and cannot repair an overlapping clear.
+    int clearLeft = x - 4;
+    int clearRight = x + width + 4;
+    if (elementCaches_.frequency.valid && elementCaches_.frequency.lastDrawWidth > 0) {
+        clearLeft = std::min(clearLeft, elementCaches_.frequency.lastDrawX - 4);
+        clearRight = std::max(clearRight, elementCaches_.frequency.lastDrawX +
+                                             elementCaches_.frequency.lastDrawWidth + 4);
+    }
+    clearLeft = std::max(clearLeft, DisplayLayout::CONTENT_LEFT_MARGIN);
+    clearRight = std::min(clearRight, DisplayLayout::CONTENT_LEFT_MARGIN + DisplayLayout::CONTENT_AVAILABLE_WIDTH);
+    const int clearY = y - 4;
+    const int clearBottom = std::min(y + metrics.digitH + 4, DisplayLayout::CONTENT_BOTTOM_Y);
+    drawnRegion_.add(static_cast<int16_t>(clearLeft), static_cast<int16_t>(clearY),
+                     static_cast<int16_t>(clearRight - clearLeft), static_cast<int16_t>(clearBottom - clearY),
+                     DisplayDirtyRegionSource::Frequency);
+    FILL_RECT(clearLeft, clearY, clearRight - clearLeft, clearBottom - clearY, PALETTE_BG);
+
     if (presentation.alpOverride || presentation.band == BAND_LASER) {
-        drawnRegion_.add(static_cast<int16_t>(x - 4), static_cast<int16_t>(y - 4), static_cast<int16_t>(width + 8),
-                         static_cast<int16_t>(metrics.digitH + 8), DisplayDirtyRegionSource::Frequency);
-        FILL_RECT(x - 4, y - 4, width + 8, metrics.digitH + 8, PALETTE_BG);
         draw14SegmentText(presentation.text, x, y, scale, presentation.color, PALETTE_BG);
     } else {
-        drawnRegion_.add(static_cast<int16_t>(x - 2), static_cast<int16_t>(y), static_cast<int16_t>(width + 4),
-                         static_cast<int16_t>(metrics.digitH + 4), DisplayDirtyRegionSource::Frequency);
-        FILL_RECT(x - 2, y, width + 4, metrics.digitH + 4, PALETTE_BG);
         drawSevenSegmentText(presentation.text, x, y, scale, presentation.color, PALETTE_BG);
     }
+    elementCaches_.frequency.lastDrawX = x;
+    elementCaches_.frequency.lastDrawWidth = width;
 }
 
 void V1Display::prewarmFrequencyDigitAtlas() {

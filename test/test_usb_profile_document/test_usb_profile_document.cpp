@@ -29,6 +29,7 @@ inline bool canConvertFromJson(JsonVariantConst src, const ::String&) { return s
 #include "../../src/settings_backup_doc.cpp"
 #include "../../src/settings_restore.cpp"
 #include "../../src/usb_profile_document.cpp"
+#include "../../src/modules/wifi/wifi_v1_profile_api_service.cpp"
 
 SerialClass Serial;
 unsigned long mockMillis = 1000;
@@ -251,7 +252,8 @@ void test_invalid_complete_bundle_never_mutates_settings_profiles_or_credentials
         [](JsonDocument& d) { d["slots"].as<JsonArray>().remove(2); },
         [](JsonDocument& d) { d["profiles"][0]["rawBytes"][5] = 256; },
         [](JsonDocument& d) { d["profiles"][0]["rawBytes"].as<JsonArray>().remove(5); },
-        [](JsonDocument& d) { d["profiles"][0]["description"] = std::string(161, 'a'); },
+        [](JsonDocument& d) { d["profiles"][0]["description"] = 161; },
+        [](JsonDocument& d) { d["profiles"][0]["description"] = std::string("note\0tail", 9); },
         [](JsonDocument& d) { d["profiles"][0]["name"] = "../Original"; },
         [](JsonDocument& d) { d["profiles"][0]["mutedVolume"] = 10; },
         [](JsonDocument& d) { d["profiles"][0]["extra"] = true; },
@@ -261,7 +263,7 @@ void test_invalid_complete_bundle_never_mutates_settings_profiles_or_credentials
             d["profiles"].as<JsonArray>().add(copy.as<JsonObjectConst>());
             d["profiles"][d["profiles"].size() - 1]["name"] = "ORIGINAL";
         },
-        [](JsonDocument& d) { d["padding"] = std::string(kUsbProfileDocumentMaxBytes, 'x'); },
+        [](JsonDocument& d) { d["profiles"][0]["description"] = std::string(kUsbProfileDocumentMaxBytes, 'x'); },
     };
     for (const auto& fault : faults) {
         JsonDocument broken;
@@ -414,8 +416,110 @@ void test_export_refuses_failed_recovery_then_exports_recovered_complete_state()
     TEST_ASSERT_FALSE(secondaryFs->exists("/v1restore_transaction.json"));
 }
 
+
+void test_http_profile_metadata_round_trips_storage_usb_and_backup_without_truncation() {
+    WifiV1ProfileApiService::Runtime runtime{};
+    runtime.parseSettingsJson = [](const JsonObject& object, uint8_t bytes[6], void*) {
+        V1UserSettings parsed;
+        if (!profileManager->jsonToSettings(object, parsed)) return false;
+        memcpy(bytes, parsed.bytes, 6);
+        return true;
+    };
+    runtime.saveProfile = [](const String& name, const String& description, bool displayOn,
+                            uint8_t mainVolume, uint8_t mutedVolume, const uint8_t bytes[6],
+                            String& error, void*) {
+        V1Profile profile(name);
+        profile.description = description;
+        profile.displayOn = displayOn;
+        profile.mainVolume = mainVolume;
+        profile.mutedVolume = mutedVolume;
+        memcpy(profile.settings.bytes, bytes, 6);
+        const auto result = profileManager->saveProfile(profile);
+        error = result.error;
+        return result.success;
+    };
+    for (const std::string& description : {std::string(160, 'a'), std::string(161, 'b'),
+                                           std::string(1024, 'c') + " \xc3\xa9\n"}) {
+        JsonDocument request;
+        request["name"] = "Road";
+        request["description"] = description;
+        request["displayOn"] = true;
+        request["mainVolume"] = 255;
+        request["mutedVolume"] = 255;
+        request["settings"]["xBand"] = true;
+        WebServer server(80);
+        server.setArg("plain", jsonText(request));
+        WifiV1ProfileApiService::handleApiProfileSave(server, runtime, nullptr, nullptr);
+        TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+        reboot();
+        V1Profile stored;
+        TEST_ASSERT_TRUE(profileManager->loadProfile("Road", stored));
+        TEST_ASSERT_EQUAL_STRING(description.c_str(), stored.description.c_str());
+
+        JsonDocument usb;
+        String error;
+        TEST_ASSERT_TRUE_MESSAGE(buildUsbProfileDocument(usb, *manager, *profileManager, error), error.c_str());
+        stored.description = "Intervening edit";
+        TEST_ASSERT_TRUE(profileManager->saveProfile(stored).success);
+        TEST_ASSERT_TRUE_MESSAGE(applyUsbProfileDocument(*manager, *profileManager, usb, error).success, error.c_str());
+        TEST_ASSERT_TRUE(profileManager->loadProfile("Road", stored));
+        TEST_ASSERT_EQUAL_STRING(description.c_str(), stored.description.c_str());
+
+        JsonDocument backup;
+        const auto built = BackupPayloadBuilder::buildBackupDocument(
+            backup, manager->get(), *profileManager, BackupPayloadBuilder::BackupTransport::HttpDownload, 1000);
+        TEST_ASSERT_TRUE(built.safeToCommit);
+        stored.description = "Another edit";
+        TEST_ASSERT_TRUE(profileManager->saveProfile(stored).success);
+        TEST_ASSERT_TRUE(manager->applyBackupDocument(backup, true).success);
+        reboot();
+        TEST_ASSERT_TRUE(profileManager->loadProfile("Road", stored));
+        TEST_ASSERT_EQUAL_STRING(description.c_str(), stored.description.c_str());
+    }
+}
+
+void test_interrupted_restore_recovers_long_description_from_journal() {
+    seed();
+    JsonDocument incoming;
+    replacement(incoming);
+    V1Profile original;
+    TEST_ASSERT_TRUE(profileManager->loadProfile("Original", original));
+    const std::string description = std::string(1024, 'r') + " \xc3\xa9\n";
+    original.description = description.c_str();
+    TEST_ASSERT_TRUE(profileManager->saveProfile(original).success);
+    manager->utInterruptRestoreAfterProfiles(true);
+    String error;
+    TEST_ASSERT_FALSE(applyUsbProfileDocument(*manager, *profileManager, incoming, error).success);
+    TEST_ASSERT_TRUE(primaryFs->exists("/v1restore_transaction.json"));
+    reboot();
+    V1Profile recovered;
+    TEST_ASSERT_TRUE(profileManager->loadProfile("Original", recovered));
+    TEST_ASSERT_EQUAL_STRING(description.c_str(), recovered.description.c_str());
+    TEST_ASSERT_EQUAL_MEMORY(original.settings.bytes, recovered.settings.bytes, 6);
+    TEST_ASSERT_FALSE(primaryFs->exists("/v1restore_transaction.json"));
+}
+
+void test_profile_file_size_limit_still_rejects_oversized_metadata_without_loss() {
+    seed();
+    const String before = snapshot();
+    JsonDocument incoming;
+    replacement(incoming);
+    // The whole bundle fits USB's envelope, but the stored profile would
+    // exceed its existing 4096-byte file limit. Restore must roll back.
+    incoming["profiles"][0]["description"] = std::string(4096, 'x');
+    TEST_ASSERT_LESS_THAN(kUsbProfileDocumentMaxBytes, measureJson(incoming));
+    String error;
+    TEST_ASSERT_FALSE(applyUsbProfileDocument(*manager, *profileManager, incoming, error).success);
+    TEST_ASSERT_EQUAL_STRING(before.c_str(), snapshot().c_str());
+    reboot();
+    TEST_ASSERT_EQUAL_STRING(before.c_str(), snapshot().c_str());
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_http_profile_metadata_round_trips_storage_usb_and_backup_without_truncation);
+    RUN_TEST(test_interrupted_restore_recovers_long_description_from_journal);
+    RUN_TEST(test_profile_file_size_limit_still_rejects_oversized_metadata_without_loss);
     RUN_TEST(test_bundle_round_trip_replaces_catalog_and_preserves_unrelated_state);
     RUN_TEST(test_invalid_complete_bundle_never_mutates_settings_profiles_or_credentials);
     RUN_TEST(test_nvs_failure_rolls_back_created_deleted_profiles_and_settings);

@@ -160,12 +160,15 @@
     }
 
     async function saveDeviceName(address) {
+        if (renaming) return;
+
+        const submittedName = editName.trim();
         renaming = true;
         obdMessage = null;
         try {
             const formData = new FormData();
             formData.append('address', address);
-            formData.append('name', editName.trim());
+            formData.append('name', submittedName);
 
             const res = await fetchWithTimeout('/api/obd/devices/name', {
                 method: 'POST',
@@ -177,7 +180,7 @@
             }
 
             savedDevices = savedDevices.map((device) =>
-                device.address === address ? { ...device, name: editName.trim() } : device
+                device.address === address ? { ...device, name: submittedName } : device
             );
             obdMessage = { type: 'success', text: 'OBD device name saved.' };
             cancelRename();

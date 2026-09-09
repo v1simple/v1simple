@@ -44,7 +44,7 @@ bool restoreProfileEntryFromBackup(const JsonDocument& backup, const String& can
             Serial.printf("[Settings] Backup profile corrupt name='%s'\n", canonicalName.c_str());
             return false;
         }
-        profile.description = sanitizeProfileDescriptionValue(entry["description"] | "");
+        profile.description = entry["description"] | "";
         bool displayOn = true;
         if (parseBoolVariant(entry["displayOn"], displayOn)) profile.displayOn = displayOn;
         if (entry["mainVolume"].is<int>()) profile.mainVolume = clampSlotVolumeValue(entry["mainVolume"]);

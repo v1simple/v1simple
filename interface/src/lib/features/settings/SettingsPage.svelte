@@ -21,6 +21,7 @@
     });
 
     let loading = $state(true);
+    let settingsLoaded = $state(false);
     let saving = $state(false);
     let message = $state(null);
     let restoreFile = $state(null);
@@ -152,10 +153,13 @@
     }
 
     async function fetchSettings({ force = false } = {}) {
+        if (!settingsLoaded) loading = true;
         try {
             const data = force ? await invalidateDeviceSettings() : await refreshDeviceSettings();
             if (!data) throw new Error('settings request failed');
             settings = { ...settings, ...data };
+            settingsLoaded = true;
+            clearMessageText('Failed to load settings');
         } catch (e) {
             message = { type: 'error', text: 'Failed to load settings' };
         } finally {
@@ -180,9 +184,17 @@
 
         const request = (async () => {
             try {
-                const res = await fetchWithTimeout('/api/wifi/status', {}, timeoutMs);
+                const res = await fetchWithTimeout(
+                    '/api/wifi/status',
+                    {},
+                    timeoutMs,
+                    async (response) => ({
+                        ok: response.ok,
+                        data: response.ok ? await response.json() : null
+                    })
+                );
                 if (res.ok) {
-                    const data = await res.json();
+                    const data = res.data;
                     const normalizedStatus =
                         data && typeof data === 'object' && !Array.isArray(data) ? { ...data } : {};
                     if (typeof normalizedStatus.enabled !== 'boolean') {
@@ -790,6 +802,8 @@
     }
 
     async function saveSettings() {
+        if (!settingsLoaded || saving) return;
+
         saving = true;
         message = null;
 
@@ -926,8 +940,14 @@
             <span class="loading loading-lg loading-spinner"></span>
         </div>
     {:else}
+        {#if !settingsLoaded}
+            <button class="btn btn-outline" onclick={() => fetchSettings({ force: true })}>
+                Retry settings
+            </button>
+        {/if}
+
         <!-- AP Settings -->
-        <div class="surface-card">
+        <fieldset class="surface-card" disabled={!settingsLoaded}>
             <div class="card-body">
                 <CardSectionHead
                     title="Access Point (AP)"
@@ -998,7 +1018,7 @@
                     {/if}
                 </div>
             </div>
-        </div>
+        </fieldset>
 
         <!-- WiFi Client (Saved Networks) -->
         <div class="surface-card">
@@ -1338,10 +1358,16 @@
             </div>
         {/if}
 
-        <SettingsAutoPowerOffCard {settings} />
+        <fieldset disabled={!settingsLoaded}>
+            <SettingsAutoPowerOffCard {settings} />
+        </fieldset>
 
         <!-- Save Button -->
-        <button class="btn btn-block btn-primary" onclick={saveSettings} disabled={saving}>
+        <button
+            class="btn btn-block btn-primary"
+            onclick={saveSettings}
+            disabled={saving || !settingsLoaded}
+        >
             {#if saving}
                 <span class="loading loading-sm loading-spinner"></span>
             {/if}

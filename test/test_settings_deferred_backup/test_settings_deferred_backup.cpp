@@ -909,8 +909,93 @@ void test_failed_persist_and_absent_sd_attempt_do_not_invalidate_queued_snapshot
     TEST_ASSERT_FALSE(manager.deferredBackupPending());
 }
 
+
+void test_partial_profile_loss_preserves_backups_until_assigned_profile_recovers() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    V1Profile road("Road");
+    const std::string description = std::string(161, 'r') + " \xc3\xa9\n";
+    road.description = description.c_str();
+    TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
+    TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("Spare")).success);
+    SettingsManager source(storage, profiles);
+    source.mutableSettings().slot2_comfort.profileName = "Road";
+    TEST_ASSERT_TRUE(source.saveDeferredBackup());
+    TEST_ASSERT_TRUE(source.backupToSD());
+    JsonDocument good;
+    TEST_ASSERT_TRUE(loadJsonFile(fs, SETTINGS_BACKUP_PATH, good));
+    String goodJson;
+    serializeJson(good, goodJson);
+    TEST_ASSERT_FALSE(fs.exists(SETTINGS_BACKUP_PREV_PATH));
+    TEST_ASSERT_TRUE(fs.remove("/v1profiles/Road.json"));
+    TEST_ASSERT_TRUE(fs.remove("/v1profiles/Road.json.meta"));
+
+    for (int slot = 0; slot < 3; ++slot) {
+        for (int index = 0; index < 3; ++index) source.mutableSettings().autoPushSlotView(index).config.profileName = "";
+        source.mutableSettings().autoPushSlotView(slot).config.profileName = "Road";
+        JsonDocument download;
+        const auto result = BackupPayloadBuilder::buildBackupDocument(
+            download, source.get(), profiles, BackupPayloadBuilder::BackupTransport::HttpDownload, 1000);
+        TEST_ASSERT_EQUAL_INT(1, result.profilesBackedUp);
+        TEST_ASSERT_FALSE(result.safeToCommit);
+        // A second ordinary backup attempt must not rotate away the last
+        // recoverable copy merely because the unrelated Spare survives.
+        TEST_ASSERT_FALSE(source.backupToSD());
+        TEST_ASSERT_FALSE(source.backupToSD());
+        JsonDocument preserved;
+        TEST_ASSERT_TRUE(loadJsonFile(fs, SETTINGS_BACKUP_PATH, preserved));
+        String preservedJson;
+        serializeJson(preserved, preservedJson);
+        TEST_ASSERT_EQUAL_STRING(goodJson.c_str(), preservedJson.c_str());
+        TEST_ASSERT_FALSE(fs.exists(SETTINGS_BACKUP_PREV_PATH));
+    }
+    source.requestDeferredBackupFromCurrentState();
+    source.serviceDeferredBackup(1000);
+    TEST_ASSERT_EQUAL_UINT(0, deferredSettingsBackupQueueDepthForTest());
+    TEST_ASSERT_TRUE(source.deferredBackupPending());
+
+    // A normal later boot can recover the assigned profile and its complete
+    // metadata from the preserved backup, then admit healthy backups again.
+    resetDeferredSettingsBackupStateForTest();
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    rebooted.checkAndRestoreFromSD();
+    V1Profile recovered;
+    TEST_ASSERT_TRUE(profiles.loadProfile("Road", recovered));
+    TEST_ASSERT_EQUAL_STRING(description.c_str(), recovered.description.c_str());
+    TEST_ASSERT_TRUE(rebooted.backupToSD());
+    JsonDocument download;
+    TEST_ASSERT_TRUE(BackupPayloadBuilder::buildBackupDocument(
+        download, rebooted.get(), profiles, BackupPayloadBuilder::BackupTransport::HttpDownload, 2000).safeToCommit);
+    TEST_ASSERT_EQUAL_UINT(2, download["profiles"].size());
+}
+
+void test_backup_accepts_empty_unassigned_and_complete_canonical_references() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager source(storage, profiles);
+    JsonDocument doc;
+    auto result = BackupPayloadBuilder::buildBackupDocument(
+        doc, source.get(), profiles, BackupPayloadBuilder::BackupTransport::HttpDownload, 1000);
+    TEST_ASSERT_TRUE(result.safeToCommit);
+    TEST_ASSERT_TRUE(result.profileCatalogGenuinelyEmpty);
+    TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("Road")).success);
+    for (int slot = 0; slot < 3; ++slot) source.mutableSettings().autoPushSlotView(slot).config.profileName = " Road ";
+    result = BackupPayloadBuilder::buildBackupDocument(
+        doc, source.get(), profiles, BackupPayloadBuilder::BackupTransport::HttpDownload, 1000);
+    TEST_ASSERT_TRUE(result.safeToCommit);
+    TEST_ASSERT_TRUE(source.applyBackupDocument(doc, true).success);
+    for (int slot = 0; slot < 3; ++slot) {
+        TEST_ASSERT_EQUAL_STRING("Road", source.get().autoPushSlotView(slot).config.profileName.c_str());
+    }
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_partial_profile_loss_preserves_backups_until_assigned_profile_recovers);
+    RUN_TEST(test_backup_accepts_empty_unassigned_and_complete_canonical_references);
     RUN_TEST(test_old_worker_before_new_immediate_backup);
     RUN_TEST(test_old_worker_after_new_immediate_backup);
     RUN_TEST(test_old_worker_cannot_replace_promoted_backup_when_completion_marker_failed);

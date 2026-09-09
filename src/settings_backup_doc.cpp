@@ -621,7 +621,9 @@ bool parseBackupProfile(JsonObjectConst source, V1Profile& profile) {
         if (!source["description"].is<const char*>()) {
             return false;
         }
-        profile.description = sanitizeProfileDescriptionValue(source["description"].as<String>());
+        // Descriptions already accepted by profile storage must round trip,
+        // including through the rollback journal that uses this parser.
+        profile.description = source["description"].as<String>();
     }
     if (!source["displayOn"].isNull()) {
         bool displayOn = true;

@@ -89,6 +89,8 @@ V1BLEClient::V1BLEClient()
     , proxyQueuesInPsram_(false)
     , dataCallback_(nullptr)
     , connectImmediateCallback_(nullptr)
+    , sessionOpenedCallback_(nullptr)
+    , sessionClosedCallback_(nullptr)
     , connectStableCallback_(nullptr)
     , targetAddress_()
     , lastScanStart_(0)
@@ -119,7 +121,6 @@ void V1BLEClient::hardResetBLEClient() {
     setBLEState(BLEState::DISCONNECTED);
 }
 
-void V1BLEClient::cleanupConnection() {}
 void V1BLEClient::completeHardResetBLEClient() {}
 
 void V1BLEClient::setProxyClientConnected(bool connectedState) {
@@ -159,6 +160,52 @@ void setUp() {
 }
 
 void tearDown() {}
+
+namespace {
+
+void admitPhoneCommands(V1BLEClient& client) {
+    client.connected_.store(true, std::memory_order_release);
+    client.sessionGeneration_.store(1, std::memory_order_release);
+    client.sessionPublicationGate_.open(1);
+}
+
+void openPhoneCommandSession(V1BLEClient& client, NimBLEClient& link) {
+    client.pClient_ = &link;
+    TEST_ASSERT_TRUE(client.connectToServer());
+    link.setConnected(true);
+    client.connected_.store(true, std::memory_order_release);
+    client.activeConnectionHandle_.store(link.getConnHandle(), std::memory_order_release);
+    client.bleState_ = BLEState::CONNECTED;
+    client.proxyClientConnected_.store(true, std::memory_order_release);
+}
+
+void closePhoneCommandSession(V1BLEClient& client, NimBLEClient& link) {
+    V1BLEClient::ClientCallbacks callbacks;
+    callbacks.onDisconnect(&link, 0);
+    link.setConnected(false);
+    client.beginClientQuiesce();
+    client.processClientQuiesce();
+    TEST_ASSERT_EQUAL(BLEState::DISCONNECTED, client.bleState_);
+    client.disconnectProxyPhones();
+    client.drainProxyCallbackEvents();
+}
+
+void preparePhoneCommandSession(V1BLEClient& client, NimBLEClient& link) {
+    TEST_ASSERT_TRUE(client.allocateProxyQueues());
+    client.phoneCmdMutex_ = xSemaphoreCreateMutex();
+    client.bleMutex_ = xSemaphoreCreateMutex();
+    openPhoneCommandSession(client, link);
+}
+
+void writePhoneMute(V1BLEClient& client, NimBLECharacteristic& characteristic) {
+    const uint8_t muteOn[] = {0xAA, 0xDA, 0xE6, 0x34, 0x01, 0x9F, 0xAB};
+    characteristic.setValue(muteOn, sizeof(muteOn));
+    NimBLEConnInfo phone;
+    V1BLEClient::ProxyWriteCallbacks callback(&client);
+    callback.onWrite(&characteristic, phone);
+}
+
+}  // namespace
 
 void test_ble_timing_members_and_constants_use_uint32() {
     V1BLEClient client;
@@ -317,7 +364,7 @@ void test_pending_release_gates_queue_producers_and_consumers() {
     observeProxyQueueRelease(client);
     client.proxyEnabled_ = true;
     client.proxyClientConnected_.store(true, std::memory_order_relaxed);
-    client.connected_.store(true, std::memory_order_relaxed);
+    admitPhoneCommands(client);
     const uint8_t notify[] = {0xAA, 0x55, 0x10};
     const uint8_t command[] = {0x11};
     TEST_ASSERT_TRUE(client.enqueuePhoneCommand(command, sizeof(command), 0xB2CE));
@@ -370,6 +417,7 @@ void test_reallocated_queues_reject_callbacks_from_the_previous_epoch() {
     observeProxyQueueRelease(client);
     client.proxyEnabled_ = true;
     client.proxyClientConnected_.store(true, std::memory_order_relaxed);
+    admitPhoneCommands(client);
     const uint32_t staleEpoch = client.proxyQueueEpoch_.load(std::memory_order_acquire);
     const uint8_t packet[] = {0xAA, 0x55, 0x10};
 
@@ -379,7 +427,7 @@ void test_reallocated_queues_reject_callbacks_from_the_previous_epoch() {
     TEST_ASSERT_TRUE(client.allocateProxyQueues());
     TEST_ASSERT_NOT_EQUAL(staleEpoch, client.proxyQueueEpoch_.load(std::memory_order_acquire));
 
-    TEST_ASSERT_FALSE(client.enqueuePhoneCommandForEpoch(packet, sizeof(packet), 0xB2CE, staleEpoch));
+    TEST_ASSERT_FALSE(client.enqueuePhoneCommandForEpoch(packet, sizeof(packet), 0xB2CE, staleEpoch, 1));
     client.forwardToProxyForEpoch(packet, sizeof(packet), 0xB2CE, staleEpoch);
     TEST_ASSERT_EQUAL_UINT32(0, client.phone2v1QueueCount_);
     TEST_ASSERT_EQUAL_UINT32(0, client.proxyQueueCount_);
@@ -395,6 +443,7 @@ void test_missing_phone_queue_rejects_command() {
     V1BLEClient client;
     TEST_ASSERT_TRUE(client.allocateProxyQueues());
     client.phoneCmdMutex_ = xSemaphoreCreateMutex();
+    admitPhoneCommands(client);
     heap_caps_free(client.phone2v1Queue_);
     client.phone2v1Queue_ = nullptr;
     const uint32_t queueEpoch = client.proxyQueueEpoch_.load(std::memory_order_acquire);
@@ -402,7 +451,7 @@ void test_missing_phone_queue_rejects_command() {
     TEST_ASSERT_TRUE(client.proxyEpochObserver_.accepts(queueEpoch));
 
     const uint8_t packet[] = {0x11};
-    TEST_ASSERT_FALSE(client.enqueuePhoneCommandForEpoch(packet, sizeof(packet), 0xB2CE, queueEpoch));
+    TEST_ASSERT_FALSE(client.enqueuePhoneCommandForEpoch(packet, sizeof(packet), 0xB2CE, queueEpoch, 1));
 
 }
 
@@ -465,6 +514,7 @@ void test_phone_command_rejects_missing_lock() {
     const uint8_t cmd[] = {0x11};
 
     TEST_ASSERT_TRUE(client.allocateProxyQueues());
+    admitPhoneCommands(client);
     client.phoneCmdMutex_ = nullptr;
     TEST_ASSERT_FALSE(client.enqueuePhoneCommand(cmd, sizeof(cmd), 0xB2CE));
 
@@ -475,7 +525,7 @@ void test_phone_command_overflow_drops_oldest_and_keeps_newest() {
 
     TEST_ASSERT_TRUE(client.allocateProxyQueues());
     client.phoneCmdMutex_ = xSemaphoreCreateMutex();
-    client.connected_ = true;
+    admitPhoneCommands(client);
 
     for (uint8_t i = 1; i <= V1BLEClient::PHONE_CMD_QUEUE_SIZE + 1; ++i) {
         TEST_ASSERT_TRUE(client.enqueuePhoneCommand(&i, 1, 0xB2CE));
@@ -498,7 +548,7 @@ void test_phone_command_reports_ble_failure() {
 
     TEST_ASSERT_TRUE(client.allocateProxyQueues());
     client.phoneCmdMutex_ = xSemaphoreCreateMutex();
-    client.connected_ = true;
+    admitPhoneCommands(client);
     TEST_ASSERT_TRUE(client.enqueuePhoneCommand(cmd, sizeof(cmd), 0xB2CE));
 
     g_sendCommandResult = SendResult::FAILED;
@@ -641,9 +691,8 @@ void test_forward_to_proxy_immediate_queues_until_main_loop_send() {
 
 void test_proxy_write_callback_queues_command() {
     V1BLEClient client;
-    TEST_ASSERT_TRUE(client.allocateProxyQueues());
-    client.connected_.store(true, std::memory_order_relaxed);
-    client.phoneCmdMutex_ = xSemaphoreCreateMutex();
+    NimBLEClient link;
+    preparePhoneCommandSession(client, link);
     NimBLECharacteristic writeCharacteristic(V1_COMMAND_WRITE_UUID);
     const uint8_t command[] = {0x11, 0x22};
     writeCharacteristic.setValue(command, sizeof(command));
@@ -652,6 +701,114 @@ void test_proxy_write_callback_queues_command() {
 
     callbacks.onWrite(&writeCharacteristic, connInfo);
 
+    TEST_ASSERT_EQUAL_UINT32(1, client.phone2v1QueueCount_);
+    TEST_ASSERT_EQUAL_INT(1, client.processPhoneCommandQueue());
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(command, g_lastSentCommand.data(), sizeof(command));
+}
+
+void test_queued_phone_command_does_not_cross_reconnect() {
+    V1BLEClient client;
+    NimBLEClient link;
+    preparePhoneCommandSession(client, link);
+    NimBLECharacteristic characteristic(V1_COMMAND_WRITE_UUID);
+    writePhoneMute(client, characteristic);
+    TEST_ASSERT_EQUAL_UINT32(1, client.phone2v1QueueCount_);
+
+    closePhoneCommandSession(client, link);
+    // The ordinary loop drains before its connection-state dispatch. An
+    // extended disconnected interval must not let old commands survive.
+    for (int i = 0; i < 100; ++i) {
+        mockMillis += 50;
+        TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+    }
+    openPhoneCommandSession(client, link);
+    client.proxyClientConnected_.store(false, std::memory_order_release);
+    TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+    TEST_ASSERT_TRUE(g_sentCommandHistory.empty());
+    TEST_ASSERT_EQUAL_UINT32(0, client.phone2v1QueueCount_);
+}
+
+void test_pending_phone_command_does_not_cross_reconnect() {
+    V1BLEClient client;
+    NimBLEClient link;
+    preparePhoneCommandSession(client, link);
+    NimBLECharacteristic characteristic(V1_COMMAND_WRITE_UUID);
+    writePhoneMute(client, characteristic);
+    g_sendCommandResult = SendResult::NOT_YET;
+    TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+    TEST_ASSERT_EQUAL_UINT32(0, client.phone2v1QueueCount_);
+
+    closePhoneCommandSession(client, link);
+    openPhoneCommandSession(client, link);
+    resetPhoneCommandSendState();
+    TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+    TEST_ASSERT_TRUE(g_sentCommandHistory.empty());
+}
+
+void test_phone_command_retry_and_new_reconnect_command_are_preserved() {
+    V1BLEClient client;
+    NimBLEClient link;
+    preparePhoneCommandSession(client, link);
+    NimBLECharacteristic characteristic(V1_COMMAND_WRITE_UUID);
+    writePhoneMute(client, characteristic);
+    g_sendCommandResult = SendResult::NOT_YET;
+    TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+    g_sendCommandResult = SendResult::SENT;
+    TEST_ASSERT_EQUAL_INT(1, client.processPhoneCommandQueue());
+    TEST_ASSERT_EQUAL_UINT32(2, g_sentCommandHistory.size());
+
+    closePhoneCommandSession(client, link);
+    openPhoneCommandSession(client, link);
+    resetPhoneCommandSendState();
+    writePhoneMute(client, characteristic);
+    TEST_ASSERT_EQUAL_INT(1, client.processPhoneCommandQueue());
+    TEST_ASSERT_EQUAL_UINT32(1, g_sentCommandHistory.size());
+}
+
+void test_new_phone_command_is_sent_behind_retired_queue_entries() {
+    V1BLEClient client;
+    NimBLEClient link;
+    preparePhoneCommandSession(client, link);
+    NimBLECharacteristic characteristic(V1_COMMAND_WRITE_UUID);
+    writePhoneMute(client, characteristic);
+    writePhoneMute(client, characteristic);
+    closePhoneCommandSession(client, link);
+    openPhoneCommandSession(client, link);
+
+    const uint8_t muteOff[] = {0xAA, 0xDA, 0xE6, 0x35, 0x01, 0xA0, 0xAB};
+    characteristic.setValue(muteOff, sizeof(muteOff));
+    NimBLEConnInfo phone;
+    V1BLEClient::ProxyWriteCallbacks callback(&client);
+    callback.onWrite(&characteristic, phone);
+
+    // The first drain after reconnect must select the new command even when
+    // retired commands are ahead of it; clearing the whole ring would lose it.
+    TEST_ASSERT_EQUAL_INT(1, client.processPhoneCommandQueue());
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(muteOff, g_lastSentCommand.data(), sizeof(muteOff));
+    TEST_ASSERT_EQUAL_UINT32(1, g_sentCommandHistory.size());
+    TEST_ASSERT_EQUAL_UINT32(0, client.phone2v1QueueCount_);
+}
+
+void test_phone_callback_cannot_join_a_later_v1_session() {
+    V1BLEClient client;
+    NimBLEClient link;
+    preparePhoneCommandSession(client, link);
+    NimBLECharacteristic characteristic(V1_COMMAND_WRITE_UUID);
+    // Pause the real callback after entry but before its queue write. The
+    // main-loop owner closes and opens a V1 session during that interval.
+    characteristic.setGetValueEntryHook([&]() {
+        closePhoneCommandSession(client, link);
+        openPhoneCommandSession(client, link);
+    });
+    writePhoneMute(client, characteristic);
+    TEST_ASSERT_EQUAL_UINT32(0, client.phone2v1QueueCount_);
+    TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+    TEST_ASSERT_TRUE(g_sentCommandHistory.empty());
+
+    characteristic.setGetValueEntryHook(nullptr);
+    writePhoneMute(client, characteristic);
+    TEST_ASSERT_EQUAL_INT(1, client.processPhoneCommandQueue());
+    TEST_ASSERT_EQUAL_UINT32(1, g_sentCommandHistory.size());
 }
 
 void test_notify_callback_preserves_source_characteristic_for_proxy_forwarding() {
@@ -727,6 +884,11 @@ int main(int argc, char** argv) {
     RUN_TEST(test_proxy_custom_name_does_not_adopt_v1_advertised_name);
     RUN_TEST(test_forward_to_proxy_immediate_queues_until_main_loop_send);
     RUN_TEST(test_proxy_write_callback_queues_command);
+    RUN_TEST(test_queued_phone_command_does_not_cross_reconnect);
+    RUN_TEST(test_pending_phone_command_does_not_cross_reconnect);
+    RUN_TEST(test_phone_command_retry_and_new_reconnect_command_are_preserved);
+    RUN_TEST(test_new_phone_command_is_sent_behind_retired_queue_entries);
+    RUN_TEST(test_phone_callback_cannot_join_a_later_v1_session);
     RUN_TEST(test_notify_callback_preserves_source_characteristic_for_proxy_forwarding);
 
     return UNITY_END();

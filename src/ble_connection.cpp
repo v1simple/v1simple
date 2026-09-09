@@ -478,6 +478,40 @@ void V1BLEClient::beginClientQuiesce(bool requestHardReset) {
     }
 }
 
+// Full cleanup of BLE connection state - call before retry or after failures
+void V1BLEClient::cleanupConnection() {
+    // processClientQuiesce() is the sole caller. It reaches this point only
+    // after discovery has exited and an active link has delivered its
+    // disconnect callback. Remote attribute pointers are main-loop-owned, so
+    // no callback can clear one between a check and dereference.
+    pDisplayDataChar_ = nullptr;
+    pCommandChar_ = nullptr;
+    pCommandCharLong_ = nullptr;
+    pRemoteService_ = nullptr;
+    scanStopResultsCleared_ = false;
+    // Publish null callback mappings before a future connect can delete/rebuild
+    // NimBLE's cached service objects.
+    notifyShortCharId_.store(0, std::memory_order_release);
+    notifyShortChar_.store(nullptr, std::memory_order_release);
+    notifyLongCharId_.store(0, std::memory_order_release);
+    notifyLongChar_.store(nullptr, std::memory_order_release);
+    connected_.store(false, std::memory_order_release);
+    {
+        SemaphoreGuard lock(bleMutex_, pdMS_TO_TICKS(20)); // COLD: disconnect cleanup
+        if (lock.locked()) {
+            shouldConnect_ = false;
+        }
+    }
+
+    // 5. Clear stale phone command state (prevents sending commands from previous session)
+    phoneCmdPendingClear_ = true;
+
+    connectInProgress_ = false;
+    connectedFollowupStep_ = ConnectedFollowupStep::NONE;
+    v1FirmwareVersion_.store(0, std::memory_order_release);
+    versionRequestStartedMs_ = 0;
+}
+
 void V1BLEClient::processClientQuiesce() {
     if (quiesceAwaitingConnectCancel_) {
         if (!asyncConnectPending_.load(std::memory_order_acquire)) {

@@ -465,6 +465,11 @@ class V1Display {
     // updateColorTheme(), which increments the same counter.
     void ut_bumpPaletteRevision() { ++paletteRevision_; }
     // Public wrappers for private rendering methods (native integration tests only)
+    void ut_drawFrequency(uint32_t frequency, Band band, const char* alpText = nullptr) {
+        alpFreqOverride_ = alpText != nullptr;
+        snprintf(alpFreqText_, sizeof(alpFreqText_), "%s", alpText ? alpText : "");
+        drawFrequency(frequency, band);
+    }
     bool ut_drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFlashBits = 0) {
         return drawBandIndicators(bandMask, muted, bandFlashBits);
     }

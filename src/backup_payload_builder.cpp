@@ -236,11 +236,18 @@ BuildResult buildBackupDocument(JsonDocument& doc, const V1Settings& settings, c
             appendProfile(profilesArr, profile);
             result.profilesBackedUp++;
         }
-        const bool hasConfiguredReferences = settings.slot0_default.profileName.length() > 0 ||
-                                             settings.slot1_highway.profileName.length() > 0 ||
-                                             settings.slot2_comfort.profileName.length() > 0;
-        if (!snapshotResult.success() || (hasConfiguredReferences && result.profilesBackedUp == 0)) {
-            result.safeToCommit = false;
+        result.safeToCommit = snapshotResult.success();
+        for (int slot = 0; slot < 3; ++slot) {
+            const String& assigned = settings.autoPushSlotView(slot).config.profileName;
+            if (assigned.length() == 0) continue;
+            String canonical;
+            bool found = false;
+            if (canonicalizeProfileName(assigned, canonical) == ProfileNameStatus::Valid) {
+                for (const V1Profile& profile : profileSnapshot) found |= profile.name == canonical;
+            }
+            // An unrelated survivor must not let an incomplete catalog replace
+            // the last backup containing a configured profile.
+            if (!found) result.safeToCommit = false;
         }
     } else {
         result.profileStatus = ProfileStorageStatus::Busy;

@@ -8,9 +8,10 @@ function countCalls(fetchMock, url) {
     return fetchMock.mock.calls.filter(([requestUrl]) => requestUrl === url).length;
 }
 
-function installDefaultFetch() {
+function installDefaultFetch(overrides = []) {
     return installFetchMock(
         [
+            ...overrides,
             {
                 method: 'GET',
                 match: '/api/obd/config',
@@ -123,6 +124,74 @@ describe('obd route page', () => {
         expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith('/api/gps'))).toBe(
             false
         );
+
+        unmount();
+    });
+
+    it('confirms the submitted OBD name when the input changes during a pending save', async () => {
+        let resolveRename;
+        const pendingRename = new Promise((resolve) => {
+            resolveRename = resolve;
+        });
+        const fetchMock = installDefaultFetch([
+            { method: 'POST', match: '/api/obd/devices/name', respond: () => pendingRename }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText('Truck Adapter');
+        await fireEvent.click(screen.getByRole('button', { name: /^rename$/i }));
+        const input = screen.getByDisplayValue('Truck Adapter');
+        await fireEvent.input(input, { target: { value: '  Submitted name  ' } });
+        await fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+        await fireEvent.input(input, { target: { value: 'Later edit' } });
+
+        resolveRename(jsonResponse({ success: true }));
+        await screen.findByText('OBD device name saved.');
+        expect(screen.getByText('Submitted name')).toBeInTheDocument();
+        expect(screen.queryByText('Later edit')).not.toBeInTheDocument();
+        const posts = fetchMock.mock.calls.filter(([url]) => url === '/api/obd/devices/name');
+        expect(posts).toHaveLength(1);
+        expect(posts[0][1].body.get('name')).toBe('Submitted name');
+
+        unmount();
+    });
+
+    it('ignores repeated Enter while renaming and permits a corrected retry after failure', async () => {
+        let resolveRename;
+        const pendingRename = new Promise((resolve) => {
+            resolveRename = resolve;
+        });
+        let renameCalls = 0;
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'POST',
+                match: '/api/obd/devices/name',
+                respond: () =>
+                    ++renameCalls === 1 ? pendingRename : jsonResponse({ success: true })
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText('Truck Adapter');
+        await fireEvent.click(screen.getByRole('button', { name: /^rename$/i }));
+        const input = screen.getByDisplayValue('Truck Adapter');
+        await fireEvent.input(input, { target: { value: 'First name' } });
+        await fireEvent.keyDown(input, { key: 'Enter' });
+        await fireEvent.keyDown(input, { key: 'Enter' });
+        expect(renameCalls).toBe(1);
+        resolveRename(jsonResponse({ success: false }, 500));
+        await screen.findByText('Failed to save OBD device name.');
+        expect(screen.queryByText('OBD device name saved.')).not.toBeInTheDocument();
+
+        await fireEvent.input(input, { target: { value: 'Retry name' } });
+        await fireEvent.keyDown(input, { key: 'Enter' });
+        await screen.findByText('OBD device name saved.');
+        expect(screen.getByText('Retry name')).toBeInTheDocument();
+        expect(
+            fetchMock.mock.calls
+                .filter(([url]) => url === '/api/obd/devices/name')
+                .map(([, init]) => init.body.get('name'))
+        ).toEqual(['First name', 'Retry name']);
 
         unmount();
     });

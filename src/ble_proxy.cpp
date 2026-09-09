@@ -320,11 +320,13 @@ void V1BLEClient::ProxyWriteCallbacks::onWrite(NimBLECharacteristic* pCharacteri
     if (!pCharacteristic || !bleClient) {
         return;
     }
+    const uint32_t sessionGeneration = bleClient->sessionGeneration_.load(std::memory_order_acquire);
     const uint32_t queueEpoch = bleClient->proxyQueueEpoch_.load(std::memory_order_acquire);
     BleProxyEpochObserver::CallbackLease callbackLease(bleClient->proxyEpochObserver_,
                                                        BleProxyCallbackDirection::ProxyToV1, queueEpoch);
 
-    if (!bleClient->connected_.load(std::memory_order_relaxed)) {
+    if (!bleClient->connected_.load(std::memory_order_acquire) ||
+        !bleClient->sessionPublicationGate_.accepts(sessionGeneration)) {
         return;
     }
 
@@ -342,7 +344,7 @@ void V1BLEClient::ProxyWriteCallbacks::onWrite(NimBLECharacteristic* pCharacteri
     memcpy(cmdBuf, rawData, rawLen);
 
     // Enqueue for main-loop processing to avoid BLE callback blocking
-    bleClient->enqueuePhoneCommandForEpoch(cmdBuf, rawLen, sourceChar, queueEpoch);
+    bleClient->enqueuePhoneCommandForEpoch(cmdBuf, rawLen, sourceChar, queueEpoch, sessionGeneration);
 }
 
 bool V1BLEClient::allocateProxyQueues() {
@@ -712,22 +714,26 @@ int V1BLEClient::processProxyQueue() {
 }
 
 bool V1BLEClient::enqueuePhoneCommand(const uint8_t* data, size_t length, uint16_t sourceCharUUID) {
-    return enqueuePhoneCommandForEpoch(data, length, sourceCharUUID, proxyQueueEpoch_.load(std::memory_order_acquire));
+    const uint32_t sessionGeneration = sessionGeneration_.load(std::memory_order_acquire);
+    return enqueuePhoneCommandForEpoch(data, length, sourceCharUUID, proxyQueueEpoch_.load(std::memory_order_acquire),
+                                      sessionGeneration);
 }
 
 bool V1BLEClient::enqueuePhoneCommandForEpoch(const uint8_t* data, size_t length, uint16_t sourceCharUUID,
-                                              uint32_t queueEpoch) {
+                                             uint32_t queueEpoch, uint32_t sessionGeneration) {
     if (!data || length == 0 || length > 32) {
         return false;
     }
-    if (proxyQueueReleasePending_.load(std::memory_order_acquire) || !proxyEpochObserver_.accepts(queueEpoch)) {
+    if (proxyQueueReleasePending_.load(std::memory_order_acquire) || !proxyEpochObserver_.accepts(queueEpoch) ||
+        !connected_.load(std::memory_order_acquire) || !sessionPublicationGate_.accepts(sessionGeneration)) {
         return false;
     }
 
     if (!phoneCmdMutex_ || xSemaphoreTake(phoneCmdMutex_, 0) != pdTRUE) {
         return false;
     }
-    if (proxyQueueReleasePending_.load(std::memory_order_acquire) || !proxyEpochObserver_.accepts(queueEpoch)) {
+    if (proxyQueueReleasePending_.load(std::memory_order_acquire) || !proxyEpochObserver_.accepts(queueEpoch) ||
+        !connected_.load(std::memory_order_acquire) || !sessionPublicationGate_.accepts(sessionGeneration)) {
         xSemaphoreGive(phoneCmdMutex_);
         return false;
     }
@@ -746,6 +752,7 @@ bool V1BLEClient::enqueuePhoneCommandForEpoch(const uint8_t* data, size_t length
     memcpy(pkt.data, data, length);
     pkt.length = length;
     pkt.charUUID = sourceCharUUID;
+    pkt.sessionGeneration = sessionGeneration;
     phone2v1QueueHead_ = (phone2v1QueueHead_ + 1) % PHONE_CMD_QUEUE_SIZE;
     phone2v1QueueCount_++;
     xSemaphoreGive(phoneCmdMutex_);
@@ -763,9 +770,10 @@ int V1BLEClient::processPhoneCommandQueue() {
     static uint16_t pendingCharUUID = 0;
     static bool hasPending = false;
 
-    // Clear stale state from previous connection session
-    if (phoneCmdPendingClear_) {
-        phoneCmdPendingClear_ = false;
+    // Queue allocation and V1 connection lifetimes are separate. Preserve the
+    // callback's V1 generation through retries so neither can cross reconnect.
+    if (phoneCmdPendingClear_.exchange(false, std::memory_order_acq_rel) ||
+        (hasPending && !sessionPublicationGate_.accepts(pendingPkt.sessionGeneration))) {
         hasPending = false;
         pendingPkt.length = 0;
     }
@@ -779,19 +787,26 @@ int V1BLEClient::processPhoneCommandQueue() {
         configASSERT(pendingPkt.length <= sizeof(pendingPkt.data)); // Belt-and-suspenders: validated at enqueue
         memcpy(pktCopy.data, pendingPkt.data, pendingPkt.length);
         pktCopy.length = pendingPkt.length;
+        pktCopy.sessionGeneration = pendingPkt.sessionGeneration;
         charUUID = pendingCharUUID;
         hasPacket = true;
     } else if (phoneCmdMutex_ && xSemaphoreTake(phoneCmdMutex_, 0) == pdTRUE) {
-        // Dequeue one packet under lock
-        if (phone2v1QueueCount_ > 0) {
+        // Discard retired sessions under the queue lock before selecting the
+        // next command. At most PHONE_CMD_QUEUE_SIZE entries can be visited.
+        while (phone2v1QueueCount_ > 0) {
             ProxyPacket& pkt = phone2v1Queue_[phone2v1QueueTail_];
+            phone2v1QueueTail_ = (phone2v1QueueTail_ + 1) % PHONE_CMD_QUEUE_SIZE;
+            phone2v1QueueCount_--;
+            if (!sessionPublicationGate_.accepts(pkt.sessionGeneration)) {
+                continue;
+            }
             configASSERT(pkt.length <= sizeof(pkt.data)); // Belt-and-suspenders: validated at enqueue
             memcpy(pktCopy.data, pkt.data, pkt.length);
             pktCopy.length = pkt.length;
+            pktCopy.sessionGeneration = pkt.sessionGeneration;
             charUUID = pkt.charUUID;
-            phone2v1QueueTail_ = (phone2v1QueueTail_ + 1) % PHONE_CMD_QUEUE_SIZE;
-            phone2v1QueueCount_--;
             hasPacket = true;
+            break;
         }
         xSemaphoreGive(phoneCmdMutex_);
     }
@@ -799,7 +814,9 @@ int V1BLEClient::processPhoneCommandQueue() {
     if (!hasPacket) {
         return 0;
     }
-    if (proxyQueueReleasePending_.load(std::memory_order_acquire)) {
+    if (proxyQueueReleasePending_.load(std::memory_order_acquire) ||
+        !sessionPublicationGate_.accepts(pktCopy.sessionGeneration)) {
+        hasPending = false;
         return 0;
     }
 
@@ -813,6 +830,7 @@ int V1BLEClient::processPhoneCommandQueue() {
             // (counter incremented in SemaphoreGuard)
             memcpy(pendingPkt.data, pktCopy.data, pktCopy.length);
             pendingPkt.length = pktCopy.length;
+            pendingPkt.sessionGeneration = pktCopy.sessionGeneration;
             pendingCharUUID = charUUID;
             hasPending = true;
             return 0;
@@ -860,6 +878,7 @@ int V1BLEClient::processPhoneCommandQueue() {
         // Pacing: store in pending for next iteration
         memcpy(pendingPkt.data, pktCopy.data, pktCopy.length);
         pendingPkt.length = pktCopy.length;
+        pendingPkt.sessionGeneration = pktCopy.sessionGeneration;
         pendingCharUUID = charUUID;
         hasPending = true;
         return 0;

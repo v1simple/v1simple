@@ -478,8 +478,12 @@ void DisplayPipelineModule::refreshBlinkTick(uint32_t nowMs) {
     }
     const V1Settings& settingsRef = settings_->get();
     RenderFrame frame = buildRenderFrame(nowMs, settingsRef);
-    // Idle frames contain no blink sources.
-    if (frame.primaryKind == RenderFramePrimaryKind::IDLE || frame.primaryKind == RenderFramePrimaryKind::NONE) {
+    if (frame.primaryKind == RenderFramePrimaryKind::NONE) {
+        return;
+    }
+    // Resting counters can blink after the alert table clears. Stealth owns
+    // the idle screen when enabled, so its hidden counter must not wake it.
+    if (frame.primaryKind == RenderFramePrimaryKind::IDLE && settingsRef.stealthEnabled && speedSelector_) {
         return;
     }
     renderComposedFrame(nowMs, frame);

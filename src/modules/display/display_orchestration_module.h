@@ -42,9 +42,8 @@ struct DisplayOrchestrationRefreshContext {
 
 struct DisplayOrchestrationRefreshResult {
     // When true, DriveRuntime should call the renderer's blink refresh this
-    // loop. Set by processLightweightRefresh when V1 has live blink sources
-    // active and no parsed frame ran. Throttled internally to ~80 ms so the
-    // renderer's 96 ms BLINK toggle has a fresh chance each period.
+    // loop. Set when the V1 counter or live alert indicators blink and no
+    // parsed frame ran. Uses the renderer's existing 96 ms phase timestamp.
     bool runBlinkRefresh = false;
 };
 

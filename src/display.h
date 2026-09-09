@@ -383,6 +383,7 @@ class V1Display {
     // last phase transition to avoid competing cadence clocks.
     unsigned long getLastBlinkToggleMs() const { return lastBlinkToggleMs_; }
     static constexpr unsigned long getBlinkIntervalMs() { return BLINK_INTERVAL_MS; }
+    bool isStealthScreen() const { return currentScreen_ == ScreenMode::Stealth; }
 
   private:
     // Defined inline so rendering TUs (display_arrow.cpp, display_bands.cpp) that

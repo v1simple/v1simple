@@ -26,6 +26,7 @@ enum class DisplayMockPresentation : uint8_t {
     NONE,
     SCANNING,
     RESTING,
+    STEALTH,
     DISCONNECTED,
     MAINTENANCE,
     CONTENT,
@@ -88,6 +89,7 @@ public:
     unsigned long lastBlinkToggleMs = 0;
     unsigned long getLastBlinkToggleMs() const { return lastBlinkToggleMs; }
     static constexpr unsigned long getBlinkIntervalMs() { return 96; }
+    bool isStealthScreen() const { return lifecycleState_.presentation == DisplayMockPresentation::STEALTH; }
     uint32_t renderSeq = 0;
 
     // Call tracking
@@ -309,7 +311,11 @@ public:
                 return;
 
             case RenderFramePrimaryKind::IDLE:
-                update(frame.primaryState);
+                if (frame.stealthMode) {
+                    recordPresentation(DisplayMockPresentation::STEALTH, DisplayMockOperation::UPDATE_CONTENT);
+                } else {
+                    update(frame.primaryState);
+                }
                 return;
 
             case RenderFramePrimaryKind::V1_LIVE:

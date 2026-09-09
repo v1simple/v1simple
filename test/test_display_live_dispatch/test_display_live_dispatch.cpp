@@ -11,7 +11,7 @@
 #include "../mocks/display_driver.h"
 #include "../mocks/Arduino.h"
 #include "../mocks/settings.h"
-#include "../mocks/packet_parser.h"
+#include "../../src/packet_parser.h"
 #include "../mocks/battery_manager.h"
 
 unsigned long mockMillis = 0;
@@ -90,7 +90,17 @@ void V1Display::drawAlpIndicator() {}
 void V1Display::drawProfileIndicator(int) {}
 void V1Display::syncTopIndicators(uint32_t) {}
 bool V1Display::hasFreshBleContext(uint32_t) const { return false; }
-void V1Display::showStealth(float, bool) {}
+static int stealthDrawCalls = 0;
+void V1Display::showStealth(float, bool) {
+    ++stealthDrawCalls;
+    currentScreen_ = ScreenMode::Stealth;
+}
+void V1Display::showScanning() {}
+void V1Display::setBleContext(const DisplayBleContext& context) { bleCtx_ = context; }
+void V1Display::setBLEProxyStatus(bool, bool, bool) {}
+void V1Display::setSpeedVolZeroActive(bool active) { speedVolZeroActive_ = active; }
+void V1Display::setAlpLaserEvent(const AlpLaserEvent&) {}
+void V1Display::forceNextRedraw() { dirty_.resetTracking = true; }
 const char* V1Display::bandToString(Band band) {
     switch (band) {
     case BAND_KA: return "Ka";
@@ -119,6 +129,24 @@ bool DisplayFontManager::getTopCounterBounds(char, bool, int& xMin, int& xMax) {
 #include "../../src/display_bands.cpp"
 #include "../../src/display_arrow.cpp"
 #include "../../src/display_update.cpp"
+#include "../../src/packet_parser.cpp"
+#include "../../src/packet_parser_alerts.cpp"
+#include "../../include/display_mode.h"
+#include "../mocks/ble_client.h"
+#include "../../src/modules/alert_persistence/alert_persistence_module.h"
+#include "../../src/modules/speed/speed_source_selector.h"
+#include "../../src/modules/speed_mute/speed_mute_module.h"
+#include "../../src/modules/volume_fade/volume_fade_module.h"
+#include "../../src/modules/display/display_preview_module.h"
+#include "../../src/modules/display/display_restore_module.h"
+#include "../../src/modules/display/display_orchestration_module.cpp"
+
+// Preview/restore lifecycle is inert except for the ownership flag under test.
+DisplayPreviewModule::DisplayPreviewModule() = default;
+void DisplayPreviewModule::update() {}
+void DisplayPreviewModule::requestHold(uint32_t) { previewActive_ = true; }
+void DisplayPreviewModule::cancel() { previewActive_ = false; }
+bool DisplayRestoreModule::process() { return false; }
 
 V1Display display(settings);
 
@@ -237,6 +265,7 @@ void assertPriorityArrowPresentation(bool priorityOnly, Direction transmittedArr
 void setUp() {
     mockMillis = mockMicros = 1000;
     settings = SettingsManager{};
+    stealthDrawCalls = 0;
     settings.slotAlertPersistSec[0] = 2;
     display.~V1Display();
     new (&display) V1Display(settings);
@@ -409,6 +438,176 @@ void test_priority_arrow_enabled_with_no_priority_direction_keeps_main_arrows_in
                                     DIR_NONE, DIR_NONE);
 }
 
+namespace {
+struct CounterBlinkRuntime {
+    PacketParser parser;
+    V1BLEClient ble;
+    AlertPersistenceModule persistence;
+    VoiceModule voice;
+    AlpRuntimeModule alp;
+    SpeedSourceSelector speed;
+    DisplayMode mode = DisplayMode::IDLE;
+    DisplayPipelineModule pipeline;
+    DisplayPreviewModule preview;
+    DisplayOrchestrationModule orchestration;
+
+    CounterBlinkRuntime() {
+        settings.slotAlertPersistSec[0] = 0;
+        DisplayPipelineDependencies dependencies;
+        dependencies.displayMode = &mode;
+        dependencies.display = &display;
+        dependencies.parser = &parser;
+        dependencies.settings = &settings;
+        dependencies.ble = &ble;
+        dependencies.alertPersistence = &persistence;
+        dependencies.voice = &voice;
+        dependencies.alp = &alp;
+        dependencies.speedSelector = &speed;
+        pipeline.begin(dependencies);
+        orchestration.begin(&display, &ble, nullptr, &preview, nullptr, &parser, &settings,
+                            nullptr, nullptr, nullptr, &pipeline);
+    }
+
+    void feed(uint8_t id, std::initializer_list<uint8_t> payload, uint32_t nowMs = 10000) {
+        std::vector<uint8_t> packet{0xAA, 0xD6, 0xEA, id, static_cast<uint8_t>(payload.size() + 1)};
+        packet.insert(packet.end(), payload);
+        uint8_t checksum = 0;
+        for (uint8_t value : packet) checksum = static_cast<uint8_t>(checksum + value);
+        packet.push_back(checksum);
+        packet.push_back(0xAB);
+        mockMillis = nowMs;
+        TEST_ASSERT_TRUE(parser.parse(packet.data(), packet.size(), nowMs));
+    }
+
+    void counter(uint8_t on, uint8_t off, uint8_t bandArrows = 0) {
+        // Complete InfDisplayData packet; aux0 keeps system-status/display-on
+        // set, and aux2 supplies the known main/mute volume pair 6/2.
+        feed(PACKET_ID_DISPLAY_DATA, {on, off, 0, bandArrows, bandArrows, 0x0C, 0, 0x62});
+        pipeline.handleParsed(static_cast<uint32_t>(mockMillis));
+    }
+
+    bool refresh(uint32_t nowMs, DisplayOrchestrationRefreshContext context = {}) {
+        mockMillis = nowMs;
+        context.nowMs = nowMs;
+        const bool requested = orchestration.processLightweightRefresh(context).runBlinkRefresh;
+        if (requested) pipeline.refreshBlinkTick(nowMs);
+        return requested;
+    }
+};
+
+void assertCounterBlinkCycle(CounterBlinkRuntime& runtime, const char* on) {
+    TEST_ASSERT_EQUAL_STRING(on, display.ut_elementCaches().topCounter.lastText);
+    TEST_ASSERT_EQUAL_STRING(on, display.ut_fontMgr().segment7.lastPrinted);
+    TEST_ASSERT_EQUAL_INT(1, canvas()->getFlushCount());
+    clearObservations();
+    TEST_ASSERT_FALSE(runtime.refresh(10095));
+    TEST_ASSERT_TRUE(canvas()->flushSnapshots.empty());
+    TEST_ASSERT_TRUE(runtime.refresh(10096));
+    TEST_ASSERT_EQUAL_STRING(" ", display.ut_elementCaches().topCounter.lastText);
+    TEST_ASSERT_EQUAL_STRING(" ", display.ut_fontMgr().segment7.lastPrinted);
+    TEST_ASSERT_EQUAL_UINT(1, canvas()->flushSnapshots.size());
+    TEST_ASSERT_FALSE(canvas()->flushSnapshots[0].rectangles.empty());
+    TEST_ASSERT_TRUE(regionalTransfers.empty());
+    clearObservations();
+    TEST_ASSERT_FALSE(runtime.refresh(10096));
+    TEST_ASSERT_TRUE(canvas()->flushSnapshots.empty());
+    TEST_ASSERT_TRUE(runtime.refresh(10192));
+    TEST_ASSERT_EQUAL_STRING(on, display.ut_fontMgr().segment7.lastPrinted);
+    TEST_ASSERT_EQUAL_UINT(1, canvas()->flushSnapshots.size());
+}
+} // namespace
+
+void test_idle_junk_counter_blinks_through_parser_pipeline_and_transfer() {
+    CounterBlinkRuntime runtime;
+    runtime.counter(0x1E, 0); // J / blank; no radar rows exist.
+    TEST_ASSERT_FALSE(runtime.parser.hasAlerts());
+    assertCounterBlinkCycle(runtime, "J");
+}
+
+void test_idle_steady_counter_does_not_request_extra_transfers() {
+    CounterBlinkRuntime runtime;
+    runtime.counter(0x06, 0x06); // Steady 1, both images agree.
+    clearObservations();
+    TEST_ASSERT_FALSE(runtime.refresh(10096));
+    TEST_ASSERT_FALSE(runtime.refresh(10192));
+    TEST_ASSERT_EQUAL_STRING("1", display.ut_elementCaches().topCounter.lastText);
+    TEST_ASSERT_TRUE(canvas()->flushSnapshots.empty());
+}
+
+void test_live_counter_keeps_existing_blink_cadence() {
+    CounterBlinkRuntime runtime;
+    runtime.feed(PACKET_ID_ALERT_DATA, {0x11, 0x87, 0x8C, 0xAC, 0, 0x22, 0x80});
+    runtime.counter(0x06, 0, 0x22);
+    TEST_ASSERT_TRUE(runtime.parser.hasAlerts());
+    assertCounterBlinkCycle(runtime, "1");
+}
+
+void test_idle_counter_blink_respects_splash_preview_and_runtime_gates() {
+    CounterBlinkRuntime runtime;
+    runtime.counter(0x1E, 0);
+    clearObservations();
+    DisplayOrchestrationRefreshContext context;
+    context.bootSplashHoldActive = true;
+    TEST_ASSERT_FALSE(runtime.refresh(10096, context));
+    context = {};
+    context.pipelineRanThisLoop = true;
+    TEST_ASSERT_FALSE(runtime.refresh(10096, context));
+    context = {};
+    context.overloadLateThisLoop = true;
+    TEST_ASSERT_FALSE(runtime.refresh(10096, context));
+    runtime.preview.requestHold(1000);
+    TEST_ASSERT_FALSE(runtime.refresh(10096));
+    runtime.preview.cancel();
+    runtime.ble.setConnected(false);
+    TEST_ASSERT_FALSE(runtime.refresh(10096));
+    TEST_ASSERT_TRUE(canvas()->flushSnapshots.empty());
+    TEST_ASSERT_EQUAL_STRING("J", display.ut_elementCaches().topCounter.lastText);
+    runtime.ble.setConnected(true);
+    TEST_ASSERT_TRUE(runtime.refresh(10096));
+    TEST_ASSERT_EQUAL_STRING(" ", display.ut_elementCaches().topCounter.lastText);
+    TEST_ASSERT_EQUAL_UINT(1, canvas()->flushSnapshots.size());
+}
+
+void test_idle_blink_refresh_does_not_replace_stealth_owner() {
+    CounterBlinkRuntime runtime;
+    settings.mutableSettings().stealthEnabled = true;
+    runtime.counter(0x1E, 0);
+    TEST_ASSERT_EQUAL_INT(1, stealthDrawCalls);
+    clearObservations();
+    TEST_ASSERT_FALSE(runtime.refresh(10096));
+    TEST_ASSERT_FALSE(runtime.refresh(10097));
+    TEST_ASSERT_FALSE(runtime.refresh(10192));
+    runtime.pipeline.refreshBlinkTick(10192); // Defensive direct entry also preserves ownership.
+    TEST_ASSERT_EQUAL_INT(1, stealthDrawCalls);
+    TEST_ASSERT_TRUE(canvas()->flushSnapshots.empty());
+    TEST_ASSERT_EQUAL_STRING("", display.ut_elementCaches().topCounter.lastText);
+}
+
+void test_live_v1_counter_blinks_after_taking_stealth_screen() {
+    CounterBlinkRuntime runtime;
+    settings.mutableSettings().stealthEnabled = true;
+    runtime.counter(0x1E, 0);
+    TEST_ASSERT_TRUE(display.isStealthScreen());
+    runtime.feed(PACKET_ID_ALERT_DATA, {0x11, 0x87, 0x8C, 0xAC, 0, 0x22, 0x80});
+    runtime.counter(0x06, 0, 0x22);
+    TEST_ASSERT_FALSE(display.isStealthScreen());
+    assertCounterBlinkCycle(runtime, "1");
+}
+
+void test_live_alp_counter_blinks_after_taking_stealth_screen() {
+    CounterBlinkRuntime runtime;
+    settings.mutableSettings().stealthEnabled = true;
+    runtime.counter(0x1E, 0);
+    TEST_ASSERT_TRUE(display.isStealthScreen());
+    runtime.alp.testSetEnabled(true);
+    runtime.alp.testSetState(AlpState::ALERT_ACTIVE);
+    runtime.alp.testOpenSession(AlpGunType::MARKSMAN_ULTRALYTE, false, AlpLaserDirection::FRONT);
+    runtime.counter(0x1E, 0);
+    TEST_ASSERT_FALSE(runtime.parser.hasAlerts());
+    TEST_ASSERT_FALSE(display.isStealthScreen());
+    assertCounterBlinkCycle(runtime, "J");
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_event0007_new_x_with_unchanged_ka_primary_paints_and_full_flushes);
@@ -421,5 +620,12 @@ int main() {
     RUN_TEST(test_priority_arrow_enabled_filters_main_directions_but_keeps_secondary);
     RUN_TEST(test_priority_arrow_enabled_does_not_invent_untransmitted_priority_direction);
     RUN_TEST(test_priority_arrow_enabled_with_no_priority_direction_keeps_main_arrows_inactive);
+    RUN_TEST(test_idle_junk_counter_blinks_through_parser_pipeline_and_transfer);
+    RUN_TEST(test_idle_steady_counter_does_not_request_extra_transfers);
+    RUN_TEST(test_live_counter_keeps_existing_blink_cadence);
+    RUN_TEST(test_idle_counter_blink_respects_splash_preview_and_runtime_gates);
+    RUN_TEST(test_idle_blink_refresh_does_not_replace_stealth_owner);
+    RUN_TEST(test_live_v1_counter_blinks_after_taking_stealth_screen);
+    RUN_TEST(test_live_alp_counter_blinks_after_taking_stealth_screen);
     return UNITY_END();
 }

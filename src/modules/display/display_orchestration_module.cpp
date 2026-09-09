@@ -121,7 +121,8 @@ DisplayOrchestrationModule::processLightweightRefresh(const DisplayOrchestration
         return result;
     }
 
-    // Determine whether a renderable priority alert exists for blink refresh.
+    // The counter may blink without an alert row (for example J / blank after
+    // junk-out). Band/arrow refresh still requires a renderable live priority.
     const bool loopHasAlerts = parser_->hasAlerts();
     AlertData loopPriority;
     const bool loopHasRenderablePriority = loopHasAlerts && parser_->getRenderablePriorityAlert(loopPriority);
@@ -129,14 +130,18 @@ DisplayOrchestrationModule::processLightweightRefresh(const DisplayOrchestration
     // Blink-refresh tick.
     // A lightweight owner refresh lets the renderer advance its 96 ms blink
     // phase even when V1 packets arrive more slowly. Request it only when a
-    // live blink source exists, the full pipeline did not run, and presentation
+    // visible blink source exists, the full pipeline did not run, and presentation
     // is not suppressed by a higher-priority state.
     if (!ctx.pipelineRanThisLoop && !ctx.bootSplashHoldActive && !ctx.overloadLateThisLoop && !preview_->isRunning() &&
-        ble_->isConnected() && loopHasRenderablePriority) {
+        ble_->isConnected()) {
         const DisplayState liveState = parser_->getDisplayState();
-        const bool flashActive = (liveState.flashBits != 0) || (liveState.bandFlashBits != 0) ||
-                                 (parser_->getAlertCount() > 1 && liveState.priorityArrow != DIR_NONE) ||
-                                 (liveState.bogeyCounterByte != liveState.bogeyCounterByte2);
+        const bool counterBlink = !display_->isStealthScreen() &&
+                                  (liveState.bogeyCounterByte != liveState.bogeyCounterByte2 ||
+                                   liveState.bogeyCounterDot != liveState.bogeyCounterDot2);
+        const bool flashActive = counterBlink ||
+                                 (loopHasRenderablePriority &&
+                                  ((liveState.flashBits != 0) || (liveState.bandFlashBits != 0) ||
+                                   (parser_->getAlertCount() > 1 && liveState.priorityArrow != DIR_NONE)));
         if (flashActive) {
             const uint32_t lastToggle = static_cast<uint32_t>(display_->getLastBlinkToggleMs());
             const uint32_t sinceToggle = ctx.nowMs - lastToggle;

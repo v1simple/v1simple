@@ -47,6 +47,14 @@ SettingsManager settings(storage, profiles);
 #include "../../src/settings_backup.cpp"
 #include "../../src/settings_backup_doc.cpp"
 #include "../../src/settings_restore.cpp"
+#include "../../src/touch_handler.cpp"
+#include "../mocks/display.h"
+#include "../../src/modules/touch/touch_ui_module.cpp"
+
+// The real touch/settings path runs below; only audio and physical display/I2C
+// interfaces are substituted. Persistence failures use the Preferences boundary.
+void audio_set_volume(uint8_t) {}
+void play_test_voice() {}
 
 namespace {
 
@@ -77,6 +85,41 @@ String activeNamespaceOrEmpty() {
     return mock_preferences::getString(SETTINGS_NS_META, "active", "");
 }
 
+bool processSliderInput(TouchUiModule& ui, uint32_t nowMs, bool bootPressed) {
+    mockMillis = nowMs;
+    return ui.process(nowMs, bootPressed);
+}
+
+void openAndAdjustBrightness(SettingsManager& manager, V1Display& display, TouchHandler& touch,
+                             TouchUiModule& ui) {
+    Wire.resetMock();
+    TEST_ASSERT_TRUE(touch.begin());
+    display.activeSliderFromTouch = 0; // y=80 is the production brightness hit region.
+    ui.begin(&display, &touch, &manager, {});
+    processSliderInput(ui, 1000, true);
+    TEST_ASSERT_TRUE(processSliderInput(ui, 1400, false));
+
+    // A real controller packet passes through TouchHandler before the UI maps
+    // x=40 to maximum brightness. Entering the menu already observed release.
+    std::vector<uint8_t> touchBytes(32, 0);
+    touchBytes[1] = 1;
+    touchBytes[3] = 40;
+    touchBytes[5] = 80;
+    Wire.queueRequestFrom(touchBytes.size(), touchBytes);
+    TEST_ASSERT_TRUE(processSliderInput(ui, 1600, false));
+    TEST_ASSERT_EQUAL_UINT8(255, display.lastSettingsBrightness);
+}
+
+void closeBrightnessSliders(TouchUiModule& ui, uint32_t pressAtMs = 2200) {
+    processSliderInput(ui, pressAtMs, true);
+    TEST_ASSERT_FALSE(processSliderInput(ui, pressAtMs + 400u, false));
+}
+
+void serviceSliderPersistence(SettingsManager& manager, uint32_t nowMs) {
+    mockMillis = nowMs;
+    manager.serviceDeferredPersist(nowMs);
+}
+
 }  // namespace
 
 void setUp() {
@@ -89,6 +132,105 @@ void setUp() {
 void tearDown() {
     std::filesystem::remove_all(g_tempRoot);
     resetDeferredSettingsBackupStateForTest();
+}
+
+void assertSliderExitReloadsSelectedBrightness(bool failWrite, bool preempt) {
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    TEST_ASSERT_EQUAL_UINT8(200, manager.get().brightness);
+    TEST_ASSERT_FALSE(manager.deferredPersistPending());
+    V1Display display;
+    TouchHandler touch;
+    TouchUiModule ui;
+    openAndAdjustBrightness(manager, display, touch, ui);
+    if (failWrite) mock_preferences::set_fail_writes_for_key(kNvsBrightness);
+
+    if (preempt) {
+        mockMillis = 2200;
+        TEST_ASSERT_TRUE(ui.preemptForLiveAlert());
+        serviceSliderPersistence(manager, 3000);
+    } else {
+        closeBrightnessSliders(ui);
+    }
+    TEST_ASSERT_EQUAL_INT(1, display.hideBrightnessSliderCalls);
+    TEST_ASSERT_EQUAL_UINT8(255, manager.get().brightness);
+
+    mock_preferences::set_fail_writes_for_key(nullptr);
+    serviceSliderPersistence(manager, 10000);
+    SettingsManager reloaded(storage, profiles);
+    reloaded.load();
+    TEST_ASSERT_EQUAL_UINT8(255, reloaded.get().brightness);
+    TEST_ASSERT_FALSE(manager.deferredPersistPending());
+}
+
+void test_successful_slider_exit_persists_selected_brightness() {
+    assertSliderExitReloadsSelectedBrightness(false, false);
+}
+
+void test_failed_slider_exit_retries_and_reloads_selected_brightness() {
+    assertSliderExitReloadsSelectedBrightness(true, false);
+}
+
+void test_alert_preemption_retries_and_reloads_selected_brightness() {
+    assertSliderExitReloadsSelectedBrightness(true, true);
+}
+
+void test_failed_slider_exit_retries_persistent_failure_with_backoff() {
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    V1Display display;
+    TouchHandler touch;
+    TouchUiModule ui;
+    openAndAdjustBrightness(manager, display, touch, ui);
+    mock_preferences::set_fail_writes_for_key(kNvsBrightness);
+    closeBrightnessSliders(ui);
+    TEST_ASSERT_TRUE(manager.deferredPersistPending());
+    const uint32_t firstDueMs = manager.deferredPersistNextAttemptAtMs();
+    TEST_ASSERT_EQUAL_UINT32(3350u, firstDueMs);
+    serviceSliderPersistence(manager, firstDueMs);
+    TEST_ASSERT_TRUE(manager.deferredPersistRetryScheduled());
+    const uint32_t retryMs = manager.deferredPersistNextAttemptAtMs();
+    TEST_ASSERT_EQUAL_UINT32(firstDueMs + 1000u, retryMs);
+    serviceSliderPersistence(manager, retryMs - 1u);
+    TEST_ASSERT_EQUAL_UINT32(retryMs, manager.deferredPersistNextAttemptAtMs());
+    SettingsManager beforeRecovery(storage, profiles);
+    beforeRecovery.load();
+    TEST_ASSERT_EQUAL_UINT8(200, beforeRecovery.get().brightness);
+
+    mock_preferences::set_fail_writes_for_key(nullptr);
+    serviceSliderPersistence(manager, retryMs);
+    SettingsManager reloaded(storage, profiles);
+    reloaded.load();
+    TEST_ASSERT_EQUAL_UINT8(255, reloaded.get().brightness);
+    TEST_ASSERT_FALSE(manager.deferredPersistPending());
+}
+
+void test_failed_slider_exit_preserves_earlier_deferred_retry_and_values() {
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    V1Display display;
+    TouchHandler touch;
+    TouchUiModule ui;
+    openAndAdjustBrightness(manager, display, touch, ui);
+    ObdSettingsUpdate learned;
+    learned.hasSavedAddress = true;
+    learned.savedAddress = "AA:BB:CC:DD:EE:FF";
+    TEST_ASSERT_TRUE(manager.applyObdSettingsUpdate(learned, SettingsPersistMode::Deferred).success);
+    mock_preferences::set_fail_writes_for_key(kNvsBrightness);
+    serviceSliderPersistence(manager, manager.deferredPersistNextAttemptAtMs());
+    const uint32_t retryMs = manager.deferredPersistNextAttemptAtMs();
+    TEST_ASSERT_TRUE(manager.deferredPersistRetryScheduled());
+    closeBrightnessSliders(ui, 2600);
+    TEST_ASSERT_TRUE(manager.deferredPersistPending());
+    TEST_ASSERT_TRUE(manager.deferredPersistRetryScheduled());
+    TEST_ASSERT_EQUAL_UINT32(retryMs, manager.deferredPersistNextAttemptAtMs());
+
+    mock_preferences::set_fail_writes_for_key(nullptr);
+    serviceSliderPersistence(manager, retryMs);
+    SettingsManager reloaded(storage, profiles);
+    reloaded.load();
+    TEST_ASSERT_EQUAL_UINT8(255, reloaded.get().brightness);
+    TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF", reloaded.get().obdSavedAddress.c_str());
 }
 
 void test_deferred_batch_updates_coalesce_to_single_persist_and_request_backup() {
@@ -423,6 +565,11 @@ void test_display_configuration_revision_saturates_instead_of_reusing_a_value() 
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_successful_slider_exit_persists_selected_brightness);
+    RUN_TEST(test_failed_slider_exit_retries_and_reloads_selected_brightness);
+    RUN_TEST(test_alert_preemption_retries_and_reloads_selected_brightness);
+    RUN_TEST(test_failed_slider_exit_retries_persistent_failure_with_backoff);
+    RUN_TEST(test_failed_slider_exit_preserves_earlier_deferred_retry_and_values);
     RUN_TEST(test_display_configuration_revision_preserves_changes_between_serial_samples);
     RUN_TEST(test_display_configuration_revision_tracks_effective_policy_and_ignores_noops);
     RUN_TEST(test_display_configuration_revision_is_not_rolled_back_by_failed_persistence);

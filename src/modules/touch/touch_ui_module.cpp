@@ -186,17 +186,23 @@ void TouchUiModule::exitAdjustModeAndSave(bool deferPersistence) {
     brightnessAdjustMode_ = false;
     settings_->updateBrightness(brightnessAdjustValue_);
     settings_->updateVoiceVolume(volumeAdjustValue_);
+    bool persisted = false;
     if (deferPersistence) {
         settings_->requestDeferredPersist();
     } else {
-        const bool persisted = settings_->saveDeferredBackup();
-        (void)persisted;
+        persisted = settings_->saveDeferredBackup();
+        if (!persisted && !settings_->deferredPersistPending()) {
+            // Keep the chosen values until NVS recovers. An existing deferred
+            // save already owns a retry/deadline; do not postpone that work.
+            settings_->requestDeferredPersist();
+        }
     }
     audio_set_volume(volumeAdjustValue_);
     display_->hideBrightnessSlider();
     if (callbacks_.restoreDisplay)
         callbacks_.restoreDisplay(callbacks_.restoreDisplayCtx);
-    Serial.printf("[Settings] Saved brightness: %d, volume: %d\n", brightnessAdjustValue_, volumeAdjustValue_);
+    Serial.printf("[Settings] %s brightness: %d, volume: %d\n", persisted ? "Saved" : "Pending save for",
+                  brightnessAdjustValue_, volumeAdjustValue_);
 }
 
 bool TouchUiModule::handleSliderTouch(unsigned long nowMs) {

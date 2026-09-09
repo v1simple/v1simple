@@ -190,6 +190,7 @@ class ObdRuntimeModule {
     bool getLastWriteWithResponseForTest() const { return testLastWriteWithResponse_; }
     void setTestBleConnected(bool connected) { testBleConnected_ = connected; }
     void deferNextTransportResultForTest() { testDeferNextTransportResult_ = true; }
+    ObdTransportOp pendingTransportOpForTest() const { return pendingTransportOp_; }
     void completePendingTransportForTest(bool success, bool timedOut = false, int bleError = 0,
                                          int securityError = 0);
 #endif

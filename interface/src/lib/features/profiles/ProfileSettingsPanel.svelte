@@ -5,6 +5,7 @@
     let {
         editingSettings,
         currentProfile,
+        savingProfile = null,
         editedSettings = $bindable(null),
         editDescription = $bindable(''),
         oncancelEditing,
@@ -427,8 +428,8 @@
             {#if editingSettings}
                 <button class="btn btn-ghost btn-sm" onclick={oncancelEditing}> Cancel </button>
                 {#if currentProfile?.name}
-                    <button class="btn btn-primary btn-sm" onclick={onsaveEditedProfile}>
-                        Save Profile
+                    <button class="btn btn-primary btn-sm" onclick={onsaveEditedProfile} disabled={!!savingProfile}>
+                        {savingProfile ? `Saving ${savingProfile}...` : 'Save Profile'}
                     </button>
                 {:else}
                     <button class="btn btn-primary btn-sm" onclick={onshowSaveDialog}>

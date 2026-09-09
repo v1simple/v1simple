@@ -28,12 +28,14 @@ private func emit(_ fields: [String]) {
 @main
 struct ProtocolContractProducer {
     static func main() {
-        let bands: [(V1.Band, UInt16)] = [
-            (.laser, 0),
-            (.ka, 34_700),
-            (.k, 24_150),
-            (.x, 10_525),
-            (.ku, 13_450),
+        // Display lamp bits are an independent contract: Ku shares K's lamp,
+        // while alert-table bit 4 means Ku and display bit 4 means mute.
+        let bands: [(V1.Band, UInt16, Int)] = [
+            (.laser, 0, 0x01),
+            (.ka, 34_700, 0x02),
+            (.k, 24_150, 0x04),
+            (.x, 10_525, 0x08),
+            (.ku, 13_450, 0x04),
         ]
         let directions: [(V1.Direction, Int)] = [
             (.front, 1),
@@ -41,7 +43,7 @@ struct ProtocolContractProducer {
             (.rear, 4),
         ]
 
-        for (band, frequency) in bands {
+        for (band, frequency, expectedBand) in bands {
             for (direction, decodedDirection) in directions {
                 for bars in 0...8 {
                     for muted in [false, true] {
@@ -56,15 +58,13 @@ struct ProtocolContractProducer {
                                 displayOn: true,
                                 blinkArrow: blinkArrow
                             )
-                            let expectedBand = band.mask == V1.Band.ku.mask ? 0 : Int(band.mask)
-                            let expectedMuted = muted || band.mask == V1.Band.ku.mask
                             emit([
                                 "display",
                                 band.name,
                                 String(expectedBand),
                                 String(decodedDirection),
                                 String(bars),
-                                expectedMuted ? "1" : "0",
+                                muted ? "1" : "0",
                                 muted ? "1" : "0",
                                 blinkArrow ? String(direction.rawValue) : "0",
                                 packetHex(frame.packet(header: .broadcastInformation, checksum: true)),

@@ -3,6 +3,42 @@ import XCTest
 
 final class V1DisplayAlertContractTests: XCTestCase {
 
+    /// Public behavior IDs: `V1-ALERT-TABLE-001` and `V1-DISPLAY-FRAME-001`.
+    func testKuAlertKeepsItsTableIdentityAndUsesSharedKDisplayWithoutChangingMute() throws {
+        let control = V1.Session.ControlState(
+            mode: .advancedLogic, mainVolume: 4, mutedVolume: 0,
+            savedMainVolume: 4, savedMutedVolume: 0)
+        let directions: [(V1.Direction, UInt8)] = [(.front, 0x20), (.side, 0x40), (.rear, 0x80)]
+        for (direction, directionBit) in directions {
+            for muted in [false, true] {
+                for blinking in [false, true] {
+                    let sample = TimedSample(
+                        offset: 0, phase: "ku-contract", muted: muted,
+                        alerts: [ReplayAlert(band: .ku, frequencyMHz: 13_450, strength: 4,
+                                             direction: direction, isPriority: true)],
+                        sourceIndex: 0)
+                    let plan = V1.PlaybackPacketPlan(
+                        sample: sample, controlState: control, displayOn: true, muted: muted,
+                        blinkBogey: false, blinkArrow: blinking)
+                    XCTAssertEqual(plan.alertTablePackets.count, 1)
+                    let row = try IndependentFrame.decode(plan.alertTablePackets[0])
+                    XCTAssertEqual(row.packetID, 0x43)
+                    XCTAssertEqual(row.payload[0], 0x11)
+                    XCTAssertEqual(Array(row.payload[1...2]), [0x34, 0x8A])
+                    XCTAssertEqual(row.payload[5], 0x10 | directionBit)
+                    XCTAssertEqual(row.payload[6] & 0x80, 0x80)
+                    let display = try IndependentFrame.decode(plan.displayPacket)
+                    XCTAssertEqual(display.packetID, 0x31)
+                    // ID43 bit 4 is Ku; ID31 bit 4 is mute and Ku uses the K lamp.
+                    let bandAndMute: UInt8 = muted ? 0x14 : 0x04
+                    XCTAssertEqual(display.payload[3], bandAndMute | directionBit)
+                    XCTAssertEqual(display.payload[4], blinking ? bandAndMute : bandAndMute | directionBit)
+                    XCTAssertEqual(display.payload[5] & 0x01, muted ? 0x01 : 0x00)
+                }
+            }
+        }
+    }
+
     func testReaderQualificationLeavesTheNormalResolvedStimulusUnchanged() throws {
         // Retained before adding the separate reader exercise; covers every
         // normal alert, mute, volume, mode, timing and blink value.

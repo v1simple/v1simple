@@ -170,6 +170,48 @@ void test_initial_connection_runs_discovery_init_and_acquires_speed() {
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 62.1371f, status.speedMph);
 }
 
+void test_due_speed_poll_waits_for_rssi_without_write_errors() {
+    // Run ordinary 1 ms updates with successful asynchronous transport. The
+    // 1 ms RSSI control and 8 ms RSSI case use the same 20 ms speed responses;
+    // natural polling phase drift eventually overlaps RSSI and a due poll.
+    for (uint32_t rssiLatencyMs : {1u, 8u}) {
+        Fixture fixture;
+        fixture.bootToPolling();
+        ObdTransportOp pending = ObdTransportOp::NONE;
+        uint32_t issuedMs = 0;
+        uint32_t responseAtMs = 0;
+        uint32_t rssiReads = 0;
+        for (uint32_t nowMs = fixture.nowMs + 1; nowMs < 120000; ++nowMs) {
+            const uint32_t latency = pending == ObdTransportOp::RSSI_READ ? rssiLatencyMs : 1;
+            if (pending != ObdTransportOp::NONE && nowMs - issuedMs >= latency) {
+                fixture.runtime.completePendingTransportForTest(true);
+                if (pending == ObdTransportOp::WRITE) responseAtMs = issuedMs + 20;
+                pending = ObdTransportOp::NONE;
+            }
+            if (responseAtMs != 0 && nowMs == responseAtMs) {
+                fixture.runtime.onBleData(reinterpret_cast<const uint8_t*>("41 0D 50\r>"), 10);
+                responseAtMs = 0;
+            }
+            fixture.runtime.deferNextTransportResultForTest();
+            fixture.update(nowMs);
+            const auto next = fixture.runtime.pendingTransportOpForTest();
+            if (next != ObdTransportOp::NONE && pending == ObdTransportOp::NONE) {
+                pending = next;
+                issuedMs = nowMs;
+                if (next == ObdTransportOp::RSSI_READ) ++rssiReads;
+            }
+            const auto status = fixture.runtime.snapshot(nowMs);
+            TEST_ASSERT_EQUAL_UINT32(0, status.pollErrors);
+            TEST_ASSERT_EQUAL(ObdConnectionState::POLLING, status.state);
+        }
+        const auto status = fixture.runtime.snapshot(fixture.nowMs);
+        TEST_ASSERT_GREATER_THAN_UINT32(200, status.pollCount);
+        TEST_ASSERT_GREATER_THAN_UINT32(50, rssiReads);
+        TEST_ASSERT_EQUAL_UINT32(0, status.staleSpeedCount);
+        TEST_ASSERT_TRUE(status.speedValid);
+    }
+}
+
 void test_manual_scan_times_out_to_idle_and_discards_candidate_session() {
     Fixture fixture;
     fixture.begin(true, "");
@@ -483,6 +525,7 @@ void test_repeated_current_overflows_still_disconnect_the_transport() {
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_initial_connection_runs_discovery_init_and_acquires_speed);
+    RUN_TEST(test_due_speed_poll_waits_for_rssi_without_write_errors);
     RUN_TEST(test_manual_scan_times_out_to_idle_and_discards_candidate_session);
     RUN_TEST(test_connection_timeout_disconnects_and_enters_retry_state);
     RUN_TEST(test_discovery_transport_timeout_is_classified_as_discovery_failure);

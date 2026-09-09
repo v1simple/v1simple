@@ -4,6 +4,9 @@ import copy
 import unittest
 
 from bench.encounter_persistence import measure_persistence_behavior, persistence_result
+from bench.encounter_observation import summarize_event_observations
+from test_encounter_expectation import alert, literals, recording
+from test_encounter_sequence import sequence
 
 
 K = {"band": "K", "frequency": "24.150", "direction": "front", "bars": 3, "priority": True}
@@ -50,6 +53,51 @@ def live(number, row=KA, cards=None):
 class PersistenceTests(unittest.TestCase):
     def measure(self, events):
         return measure_persistence_behavior(events, CONFIG)
+
+    def test_live_set_order_agrees_with_ordinary_wire_comparison(self):
+        config = {**CONFIG, "priorityArrowOnly": False}
+        for band, frequency, direction, mask, bands, arrows in (
+                ("k", 24200, "FRONT", 0xa4, ["K"], ["front", "rear"]),
+                ("ka", 34700, "FRONT", 0xa6, ["K", "Ka"], ["front", "rear"]),
+                ("k", 24200, "SIDE", 0xc4, ["K"], ["rear", "side"])):
+            for reverse in (False, True):
+                with self.subTest(band=band, direction=direction, reverse=reverse):
+                    inputs = recording([
+                        ([alert(direction=direction), alert(band, frequency, "REAR", priority=False)],
+                         [91, 91, 1, mask, mask, 12, 12, 0x40])])
+                    observed = literals(
+                        counter_glyph="2", active_bands=bands[::-1] if reverse else bands,
+                        main_arrows=arrows[::-1] if reverse else arrows,
+                        secondary=[{"band": "Ka" if band == "ka" else "K",
+                                    "frequency": f"{frequency // 1000}.{frequency % 1000:03}",
+                                    "direction": "rear", "bars": 1}])
+                    output, *_ = sequence([1.03, 1.035, 1.04], [observed] * 3,
+                                          inputs=inputs, config=config)
+                    self.assertEqual(output["errors"], [])
+                    current = output["events"][0]
+                    self.assertEqual(current["observation_counts"], {"CORRECT": 3})
+                    current["observation"] = summarize_event_observations(current)
+                    self.assertTrue(current["observation"]["target_observed"])
+                    current["phase_observation"] = {
+                        "required_phase_ids": ["phase-1"], "observed_phase_ids": ["phase-1"]}
+                    before = copy.deepcopy(current)
+                    measured = measure_persistence_behavior([current], config)
+                    self.assertEqual(current, before)
+                    self.assertEqual(measured["result"], "NO_DIFFERENCES_OBSERVED")
+                    self.assertEqual(measured["cases"][0]["observed_stages"], ["live_target"])
+                    self.assertEqual(persistence_result(
+                        [current], [], {"status": "QUALIFIED"}, measured), "NO_DIFFERENCES_OBSERVED")
+
+    def test_live_set_normalization_preserves_real_band_and_direction_differences(self):
+        for field, wrong in (("active_bands", ["X"]), ("main_arrows", ["rear"])):
+            with self.subTest(field=field):
+                wrong_span = live(2)
+                wrong_span["observed"][field]["value"] = wrong
+                measured = self.measure([
+                    event(1, [K], []), event(2, [], [span(1, "24.150")], duration=1),
+                    event(3, [KA], [live(1), wrong_span])])
+                self.assertEqual(measured["result"], "DIFFERENCES_FOUND")
+                self.assertTrue(measured["cases"][-1]["findings"])
 
     def test_primary_retention_then_clear_has_exact_originals_and_observed_timing(self):
         result = self.measure([event(1, [K], []), event(2, [], [span(1, "24.150"), span(2)])])

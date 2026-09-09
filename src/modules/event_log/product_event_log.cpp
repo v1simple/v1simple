@@ -75,9 +75,11 @@ bool ProductEventLog::begin(uint32_t bootId, StorageManager& storage) {
     writerExitClean_.store(false, std::memory_order_release);
     stopFailureRecorded_.store(false, std::memory_order_release);
     retentionExhausted_.store(false, std::memory_order_release);
-    pendingGapCount_.store(0, std::memory_order_relaxed);
-    pendingGapFirstMs_.store(0, std::memory_order_relaxed);
-    pendingGapLastMs_.store(0, std::memory_order_relaxed);
+    lockGap();
+    pendingGapCount_ = 0;
+    pendingGapFirstMs_ = 0;
+    pendingGapLastMs_ = 0;
+    unlockGap();
     storage_ = &storage;
     bootId_ = bootId;
     eventFile_ = File();
@@ -247,26 +249,48 @@ bool ProductEventLog::enqueue(const ProductEvent& event) {
     return true;
 }
 
+void ProductEventLog::lockGap() {
+#ifdef UNIT_TEST
+    while (gapLock_.test_and_set(std::memory_order_acquire)) {}
+#else
+    portENTER_CRITICAL(&gapMux_);
+#endif
+}
+
+void ProductEventLog::unlockGap() {
+#ifdef UNIT_TEST
+    gapLock_.clear(std::memory_order_release);
+#else
+    portEXIT_CRITICAL(&gapMux_);
+#endif
+}
+
 void ProductEventLog::noteDrop(uint32_t nowMs) {
     HealthCounters::recordEventDrop();
-    uint32_t expected = 0;
-    (void)pendingGapFirstMs_.compare_exchange_strong(expected, nowMs, std::memory_order_relaxed);
-    pendingGapLastMs_.store(nowMs, std::memory_order_relaxed);
-    pendingGapCount_.fetch_add(1, std::memory_order_release);
+    lockGap();
+    if (pendingGapCount_ == 0) pendingGapFirstMs_ = nowMs;
+    pendingGapLastMs_ = nowMs;
+    ++pendingGapCount_;
+    unlockGap();
 }
 
 bool ProductEventLog::takeGap(ProductEvent& event) {
-    const uint32_t lost = pendingGapCount_.exchange(0, std::memory_order_acq_rel);
+    lockGap();
+    const uint32_t lost = pendingGapCount_;
+    const uint32_t firstMs = pendingGapFirstMs_;
+    const uint32_t lastMs = pendingGapLastMs_;
+    pendingGapCount_ = 0;
+    unlockGap();
     if (lost == 0) {
         return false;
     }
     event = ProductEvent{};
-    event.ms = pendingGapLastMs_.exchange(0, std::memory_order_relaxed);
+    event.ms = lastMs;
     event.source = ProductEventSource::SYS;
     event.kind = ProductEventKind::GAP;
     event.sequence = ++gapSequence_;
     event.data.gap.lost = lost;
-    event.data.gap.firstMs = pendingGapFirstMs_.exchange(0, std::memory_order_relaxed);
+    event.data.gap.firstMs = firstMs;
     event.data.gap.lastMs = event.ms;
     return true;
 }

@@ -230,6 +230,36 @@ void test_drawBandIndicators_clearing_ku_bit_invalidates_cache() {
     TEST_ASSERT_EQUAL_UINT(1u, canvas()->fillRectCalls.size());
 }
 
+void test_drawBandIndicators_ku_obeys_the_shared_k_flash_bit() {
+    class TextCanvas : public Arduino_Canvas {
+      public:
+        TextCanvas() : Arduino_Canvas(SCREEN_WIDTH, SCREEN_HEIGHT, nullptr) {}
+        struct TextCall { std::string text; uint16_t color; };
+        std::vector<TextCall> calls;
+        uint16_t color = 0;
+        void setTextColor(uint16_t value) override { color = value; }
+        void print(const char* text) override { calls.push_back({text, color}); }
+    };
+    for (uint8_t bandMask : {uint8_t(BAND_K), uint8_t(BAND_K | BAND_KU), uint8_t(BAND_KU)}) {
+        auto* text = new TextCanvas;
+        display.setTestCanvas(text);
+        display.ut_elementCaches().bands.valid = false;
+        for (bool phase : {true, false, true}) {
+            text->calls.clear();
+            display.ut_setBlinkState(phase, mockMillis);
+            display.ut_drawBandIndicators(bandMask, false, BAND_K);
+
+            // ID31 has a K LED and flash bit, but no separate Ku LED. The
+            // synthetic Ku bit must not keep that shared cell illuminated.
+            TEST_ASSERT_EQUAL_UINT(4u, text->calls.size());
+            TEST_ASSERT_EQUAL_HEX16(phase ? settings.get().colorBandK : TFT_DARKGREY,
+                                   text->calls[2].color);
+            TEST_ASSERT_EQUAL_STRING(phase && (bandMask & BAND_KU) ? "Ku" : "K",
+                                     text->calls[2].text.c_str());
+        }
+    }
+}
+
 void test_drawBandIndicators_band_move_clears_only_changed_cells() {
     display.ut_elementCaches().bands.valid = false;
     display.ut_drawBandIndicators(BAND_LASER, false, 0);
@@ -554,6 +584,7 @@ int main() {
     RUN_TEST(test_drawBandIndicators_muted_change_invalidates_cache);
     RUN_TEST(test_drawBandIndicators_ku_bit_invalidates_cache_vs_plain_k);
     RUN_TEST(test_drawBandIndicators_clearing_ku_bit_invalidates_cache);
+    RUN_TEST(test_drawBandIndicators_ku_obeys_the_shared_k_flash_bit);
     RUN_TEST(test_drawBandIndicators_band_move_clears_only_changed_cells);
     RUN_TEST(test_drawBandIndicators_band_move_preserves_drawn_card0);
     RUN_TEST(test_drawBandIndicators_full_stack_clear_preserves_drawn_card0);

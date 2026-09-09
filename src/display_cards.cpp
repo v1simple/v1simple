@@ -451,7 +451,10 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
 
         // Update position tracking for V1 card
         elementCaches_.cards.lastDrawnPositions[i].band = alert.band;
-        elementCaches_.cards.lastDrawnPositions[i].frequency = alert.frequency;
+        // Meter-only updates must not move the frequency text's redraw baseline.
+        if (needsFullRedraw) {
+            elementCaches_.cards.lastDrawnPositions[i].frequency = alert.frequency;
+        }
         elementCaches_.cards.lastDrawnPositions[i].direction = alert.direction;
         elementCaches_.cards.lastDrawnPositions[i].isGraced = isGraced;
         elementCaches_.cards.lastDrawnPositions[i].wasMuted = muted;

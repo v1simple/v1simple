@@ -70,22 +70,28 @@ String sanitizeObdSavedNameValue(const String& raw) {
 }
 
 static void migrateLegacyWifiStaSlotNvs(const String& activeNs, const WifiStaSlot& slot0, bool legacySsidKeyPresent) {
-    if (activeNs.length() == 0) {
+    if (activeNs.length() == 0 || slot0.ssid.length() == 0) {
         return;
     }
 
     if (legacySsidKeyPresent) {
         Preferences settingsPrefs;
         if (settingsPrefs.begin(activeNs.c_str(), false)) {
-            if (slot0.ssid.length() > 0) {
-                settingsPrefs.putString(kNvsWifiStaSlotSsid[0], slot0.ssid);
-                settingsPrefs.putString(kNvsWifiStaSlotLabel[0], slot0.label);
-                settingsPrefs.putUChar(kNvsWifiStaSlotPriority[0], slot0.priority);
-                settingsPrefs.putUInt(kNvsWifiStaSlotLastConnected[0], slot0.lastConnectedAtSec);
+            // Publish the SSID last so an interrupted copy still loads the legacy
+            // slot defaults. Keep its source until every destination write commits.
+            const bool copied =
+                settingsPrefs.putString(kNvsWifiStaSlotLabel[0], slot0.label) == slot0.label.length() &&
+                settingsPrefs.isKey(kNvsWifiStaSlotLabel[0]) &&
+                settingsPrefs.getString(kNvsWifiStaSlotLabel[0], "") == slot0.label &&
+                settingsPrefs.putUChar(kNvsWifiStaSlotPriority[0], slot0.priority) == sizeof(slot0.priority) &&
+                settingsPrefs.putUInt(kNvsWifiStaSlotLastConnected[0], slot0.lastConnectedAtSec) ==
+                    sizeof(slot0.lastConnectedAtSec) &&
+                settingsPrefs.putString(kNvsWifiStaSlotSsid[0], slot0.ssid) == slot0.ssid.length() &&
+                settingsPrefs.getString(kNvsWifiStaSlotSsid[0], "") == slot0.ssid;
+            if (copied && settingsPrefs.remove(kNvsWifiClientSsid)) {
+                Serial.println("[Settings] Migrated legacy WiFi client SSID into STA slot 0");
             }
-            settingsPrefs.remove(kNvsWifiClientSsid);
             settingsPrefs.end();
-            Serial.println("[Settings] Migrated legacy WiFi client SSID into STA slot 0");
         }
     }
 
@@ -95,11 +101,18 @@ static void migrateLegacyWifiStaSlotNvs(const String& activeNs, const WifiStaSlo
     }
     const bool legacyPasswordKeyPresent = wifiPrefs.isKey(kNvsWifiPassword);
     if (legacyPasswordKeyPresent) {
-        if (slot0.ssid.length() > 0 && !wifiPrefs.isKey(kNvsWifiStaSlotPassword[0])) {
-            wifiPrefs.putString(kNvsWifiStaSlotPassword[0], wifiPrefs.getString(kNvsWifiPassword, ""));
+        bool copied = wifiPrefs.isKey(kNvsWifiStaSlotPassword[0]);
+        if (!copied) {
+            const String password = wifiPrefs.getString(kNvsWifiPassword, "");
+            // A successful empty-string write returns zero too; verify key presence
+            // and readback before removing the legacy open-network credential.
+            copied = wifiPrefs.putString(kNvsWifiStaSlotPassword[0], password) == password.length() &&
+                     wifiPrefs.isKey(kNvsWifiStaSlotPassword[0]) &&
+                     wifiPrefs.getString(kNvsWifiStaSlotPassword[0], "") == password;
         }
-        wifiPrefs.remove(kNvsWifiPassword);
-        Serial.println("[Settings] Migrated legacy WiFi client password into STA slot 0");
+        if (copied && wifiPrefs.remove(kNvsWifiPassword)) {
+            Serial.println("[Settings] Migrated legacy WiFi client password into STA slot 0");
+        }
     }
     wifiPrefs.end();
 }

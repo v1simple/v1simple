@@ -10,9 +10,9 @@ from __future__ import annotations
 from copy import deepcopy
 
 try:
-    from .encounter_expectation import _observed, EncounterEvidenceError
+    from .encounter_expectation import _normalize, _observed, EncounterEvidenceError
 except ImportError:
-    from encounter_expectation import _observed, EncounterEvidenceError
+    from encounter_expectation import _normalize, _observed, EncounterEvidenceError
 
 
 def _card(row):
@@ -75,11 +75,12 @@ def _stage_for_live(span, event, retired):
         if not known:
             return "unresolved"
         values[name] = value
-    if any(values[name] not in target.get("fields", {}).get(name, {}).get("allowed", [])
+    if any(values[name] not in [_normalize(name, value) for value in
+                               target.get("fields", {}).get(name, {}).get("allowed", [])]
            for name in values if name != "secondary"):
         return "other_display_content"
     phases = target.get("joint_states", [])
-    if not any(all(values[name] == value for name, value in phase.items()) for phase in phases):
+    if not any(all(values[name] == _normalize(name, value) for name, value in phase.items()) for phase in phases):
         return "contrary_content"
     required = target.get("secondary_policy", {}).get("required", [])
     cards = values["secondary"]

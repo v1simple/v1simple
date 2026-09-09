@@ -224,6 +224,11 @@ bool ObdRuntimeModule::speedDue(uint32_t nowMs) const {
 }
 
 bool ObdRuntimeModule::startSpeedCommand(uint32_t nowMs) {
+    // RSSI shares the transport worker. Keep the poll due until that request
+    // and its result are consumed; waiting for admission is not a write error.
+    if (transportRequestActive_ || transportDisconnectPending_ || readyTransportResult_.ready) {
+        return false;
+    }
     if (!startCommand(ObdCommandKind::SPEED, ParserKind::SIMPLE, obd::SPEED_POLL_CMD, 0x41, 0x0D, 0x0000,
                       obd::POLL_TIMEOUT_MS, obd::POLL_COMMAND_RETRIES, nowMs)) {
         handlePollingError(nowMs, false, ObdFailureReason::WRITE);

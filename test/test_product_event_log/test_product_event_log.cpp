@@ -120,6 +120,61 @@ void test_queue_is_single_static_bounded_and_full_coalesces_gap() {
     log.resetForTest();
 }
 
+void test_gap_preserves_zero_timestamp_at_clock_wrap() {
+    ProductEventLog log;
+    TEST_ASSERT_FALSE(log.enqueueForTest(endEvent(0)));
+    TEST_ASSERT_FALSE(log.enqueueForTest(endEvent(1)));
+    ProductEvent gap{};
+    TEST_ASSERT_TRUE(log.takeGapForTest(gap));
+    TEST_ASSERT_EQUAL_UINT32(2, gap.data.gap.lost);
+    TEST_ASSERT_EQUAL_UINT32(0, gap.data.gap.firstMs);
+    TEST_ASSERT_EQUAL_UINT32(1, gap.data.gap.lastMs);
+    TEST_ASSERT_FALSE(log.takeGapForTest(gap));
+}
+
+void test_concurrent_queue_drops_keep_count_and_time_range_together() {
+    fs::FS filesystem(root);
+    StorageManager storage = makeStorage(filesystem);
+    ProductEventLog log;
+    TEST_ASSERT_TRUE(log.begin(10, storage));
+    for (size_t i = 0; i < ProductEventLog::kQueueCapacity; ++i) {
+        TEST_ASSERT_TRUE(log.enqueueForTest(endEvent(100 + i)));
+    }
+
+    constexpr uint32_t firstMs = 1000;
+    constexpr uint32_t drops = 200000;
+    std::atomic<bool> done{false};
+    bool allRejected = true;
+    std::thread producer([&]() {
+        for (uint32_t i = 0; i < drops; ++i) {
+            if (log.enqueueForTest(endEvent(firstMs + i))) allRejected = false;
+            if (i % 7 == 0) std::this_thread::yield();
+        }
+        done.store(true, std::memory_order_release);
+    });
+
+    uint32_t total = 0;
+    uint32_t invalid = 0;
+    auto consume = [&]() {
+        ProductEvent gap{};
+        if (!log.takeGapForTest(gap)) return;
+        // Every row must describe exactly its contiguous group of rejected
+        // inputs, with no timestamps taken from either neighboring group.
+        if (gap.data.gap.firstMs != firstMs + total ||
+            gap.data.gap.lastMs != firstMs + total + gap.data.gap.lost - 1 ||
+            gap.ms != gap.data.gap.lastMs) ++invalid;
+        total += gap.data.gap.lost;
+    };
+    while (!done.load(std::memory_order_acquire)) consume();
+    producer.join();
+    consume();
+    log.resetForTest();
+    TEST_ASSERT_TRUE(allRejected);
+    TEST_ASSERT_EQUAL_UINT32(drops, total);
+    TEST_ASSERT_EQUAL_UINT32(drops, HealthCounters::eventDrops());
+    TEST_ASSERT_EQUAL_UINT32(0, invalid);
+}
+
 void test_event_file_is_lazy_and_uses_exact_combined_schema() {
     fs::FS filesystem(root);
     StorageManager storage = makeStorage(filesystem);
@@ -422,6 +477,8 @@ int main() {
     UNITY_BEGIN();
     RUN_TEST(test_start_creates_one_self_owned_writer);
     RUN_TEST(test_queue_is_single_static_bounded_and_full_coalesces_gap);
+    RUN_TEST(test_gap_preserves_zero_timestamp_at_clock_wrap);
+    RUN_TEST(test_concurrent_queue_drops_keep_count_and_time_range_together);
     RUN_TEST(test_event_file_is_lazy_and_uses_exact_combined_schema);
     RUN_TEST(test_first_write_failure_disables_writer_without_retry);
     RUN_TEST(test_stop_before_begin_is_successful_and_idempotent);

@@ -19,6 +19,7 @@
     let showSaveDialog = $state(false);
     let saveName = $state('');
     let saveDescription = $state('');
+    let savingProfile = $state(null);
     let editingSettings = $state(false);
     let editedSettings = $state(null);
     let editDescription = $state('');
@@ -89,6 +90,7 @@
     }
 
     async function saveCurrentProfile() {
+        if (savingProfile) return;
         const validatedName = validateProfileName(saveName);
         if (validatedName.error) {
             message = { type: 'error', text: validatedName.error };
@@ -103,6 +105,7 @@
             return;
         }
 
+        savingProfile = validatedName.canonical;
         try {
             const payload = {
                 name: validatedName.canonical,
@@ -119,7 +122,10 @@
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify(payload)
-            });
+            }, undefined, async (response) => ({
+                ok: response.ok,
+                error: response.ok ? null : await response.text()
+            }));
 
             if (res.ok) {
                 const canonicalName = validatedName.canonical;
@@ -132,11 +138,12 @@
                 message = { type: 'success', text: `Profile "${canonicalName}" saved` };
                 showSaveDialog = false;
             } else {
-                const error = await res.text();
-                message = { type: 'error', text: `Failed to save: ${error}` };
+                message = { type: 'error', text: `Failed to save: ${res.error}` };
             }
         } catch (e) {
             message = { type: 'error', text: 'Connection error' };
+        } finally {
+            savingProfile = null;
         }
     }
 
@@ -208,20 +215,25 @@
     }
 
     async function saveEditedProfile() {
+        if (savingProfile) return;
         if (!editedSettings || !currentProfile || !currentProfile.name) {
             message = { type: 'error', text: 'No profile loaded to save' };
             return;
         }
 
-        message = { type: 'info', text: `Saving ${currentProfile.name}...` };
+        const profile = currentProfile;
+        const editSession = editedSettings;
+        const savedSettings = { ...editedSettings };
+        savingProfile = profile.name;
+        message = { type: 'info', text: `Saving ${profile.name}...` };
         try {
             const payload = {
-                name: currentProfile.name,
+                name: profile.name,
                 description: editDescription.trim(),
-                displayOn: currentProfile.displayOn,
-                mainVolume: currentProfile.mainVolume,
-                mutedVolume: currentProfile.mutedVolume,
-                settings: toApiSettings(editedSettings)
+                displayOn: profile.displayOn,
+                mainVolume: profile.mainVolume,
+                mutedVolume: profile.mutedVolume,
+                settings: toApiSettings(savedSettings)
             };
 
             const res = await fetchWithTimeout('/api/v1/profile', {
@@ -230,24 +242,31 @@
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify(payload)
-            });
+            }, undefined, async (response) => ({
+                ok: response.ok,
+                error: response.ok ? null : await response.text()
+            }));
 
             if (res.ok) {
-                recordSavedProfile(currentProfile.name, payload.description, payload.displayOn);
-                message = { type: 'success', text: `Profile "${currentProfile.name}" saved` };
-                currentProfile = {
-                    ...currentProfile,
-                    description: editDescription.trim(),
-                    settings: { ...editedSettings }
-                };
-                editingSettings = false;
-                editedSettings = null;
+                recordSavedProfile(payload.name, payload.description, payload.displayOn);
+                message = { type: 'success', text: `Profile "${payload.name}" saved` };
+                if (editedSettings === editSession) {
+                    const draftUnchanged = editDescription.trim() === payload.description &&
+                        Object.entries(savedSettings).every(([key, value]) => editedSettings[key] === value);
+                    currentProfile = {
+                        ...profile,
+                        description: payload.description,
+                        settings: savedSettings
+                    };
+                    if (draftUnchanged) cancelEditing();
+                }
             } else {
-                const error = await res.text();
-                message = { type: 'error', text: `Failed to save: ${error}` };
+                message = { type: 'error', text: `Failed to save: ${res.error}` };
             }
         } catch (e) {
             message = { type: 'error', text: 'Connection error' };
+        } finally {
+            savingProfile = null;
         }
     }
 
@@ -291,6 +310,7 @@
 
     <ProfileSaveDialog
         open={showSaveDialog}
+        {savingProfile}
         bind:saveName
         bind:saveDescription
         oncancel={closeSaveDialog}
@@ -300,6 +320,7 @@
     <ProfileSettingsPanel
         {editingSettings}
         {currentProfile}
+        {savingProfile}
         bind:editedSettings
         bind:editDescription
         oncancelEditing={cancelEditing}

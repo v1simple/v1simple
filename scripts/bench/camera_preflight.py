@@ -238,6 +238,10 @@ def run_camera_smoke(
     sleep: Callable[[float], None] = time.sleep,
 ) -> tuple[dict[str, Any], int]:
     """Exercise camera start, recorder handoff, registration, and clean stop."""
+    try:
+        out_dir.mkdir(parents=True)
+    except FileExistsError:
+        raise FileExistsError("refusing to reuse an existing camera smoke output directory") from None
     camera = camera_factory(out_dir, 1)
     preflight = run_camera_preflight(camera)
     if preflight.get("result") != "PASS":
@@ -306,7 +310,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    payload, returncode = run_camera_smoke(Path(args.out_dir).resolve())
+    try:
+        payload, returncode = run_camera_smoke(Path(args.out_dir).resolve())
+    except FileExistsError as exc:
+        print(f"camera smoke INCONCLUSIVE: {exc}")
+        return 3
     diagnostic = payload.get("diagnostics") or []
     suffix = f": {diagnostic[0].get('message') or diagnostic[0].get('code')}" if diagnostic else ""
     print(f"camera smoke {payload['result']}{suffix}")

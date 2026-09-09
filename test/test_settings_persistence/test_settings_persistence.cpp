@@ -68,6 +68,7 @@ void ObdRuntimeModule::begin(ObdBleClient*, bool enabled, const char* savedAddre
 #include "../../src/settings_backup.cpp"
 #include "../../src/settings_backup_doc.cpp"
 #include "../../src/settings_restore.cpp"
+#include "../../src/usb_profile_document.cpp"
 #include "../../src/modules/wifi/wifi_client_api_service.cpp"
 #include "../../src/modules/wifi/wifi_settings_api_service.cpp"
 #include "../../src/modules/wifi/wifi_audio_api_service.cpp"
@@ -1316,6 +1317,69 @@ void test_legacy_wifi_client_credentials_migrate_to_slot0() {
     TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(activeNs.c_str(), kNvsWifiStaSlotSsid[0]));
     TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiPassword));
     TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiStaSlotPassword[0]));
+}
+
+void assertLegacyWifiMigrationRetries(const char* failedKey, bool fullNvs = false,
+                                      const char* password = "placeholder") {
+    resetRuntimeState();
+    writeHealthySettingsCopy(SETTINGS_NS_LEGACY, 100, 10);
+    Preferences legacy;
+    TEST_ASSERT_TRUE(legacy.begin(SETTINGS_NS_LEGACY, false));
+    TEST_ASSERT_GREATER_THAN(0, legacy.putString(kNvsWifiClientSsid, "LegacyNet"));
+    TEST_ASSERT_GREATER_THAN(0, legacy.putBool(kNvsWifiClientEnabled, true));
+    legacy.end();
+    Preferences credentials;
+    TEST_ASSERT_TRUE(credentials.begin(WIFI_CLIENT_NS, false));
+    credentials.putString(kNvsWifiPassword, encodeObfuscatedForStorage(password));
+    TEST_ASSERT_TRUE(credentials.isKey(kNvsWifiPassword));
+    credentials.end();
+
+    mock_preferences::set_fail_writes_for_key(failedKey);
+    if (fullNvs) mock_preferences::set_entry_limit(mock_preferences::totalEntryCount());
+    for (int boot = 0; boot < 2; ++boot) {
+        SettingsManager interrupted(storage, profiles);
+        interrupted.begin();
+        TEST_ASSERT_EQUAL_STRING("LegacyNet", interrupted.get().wifiStaSlots[0].ssid.c_str());
+        TEST_ASSERT_EQUAL_STRING(password, interrupted.getWifiClientPassword().c_str());
+        if (fullNvs || failedKey != kNvsWifiStaSlotPassword[0]) {
+            TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(SETTINGS_NS_LEGACY, kNvsWifiClientSsid));
+        }
+        if (fullNvs || failedKey == kNvsWifiStaSlotPassword[0]) {
+            TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiPassword));
+        }
+    }
+
+    mock_preferences::set_fail_writes_for_key(nullptr);
+    mock_preferences::set_entry_limit(0);
+    SettingsManager retried(storage, profiles);
+    retried.begin();
+    TEST_ASSERT_EQUAL_STRING("LegacyNet", retried.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("Saved", retried.get().wifiStaSlots[0].label.c_str());
+    TEST_ASSERT_EQUAL_STRING(password, retried.getWifiClientPassword().c_str());
+    TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(SETTINGS_NS_LEGACY, kNvsWifiClientSsid));
+    TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(SETTINGS_NS_LEGACY, kNvsWifiStaSlotSsid[0]));
+    TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiPassword));
+    TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiStaSlotPassword[0]));
+    SettingsManager rebooted(storage, profiles);
+    rebooted.begin();
+    TEST_ASSERT_EQUAL_STRING("LegacyNet", rebooted.get().wifiClientSSID.c_str());
+    TEST_ASSERT_EQUAL_STRING(password, rebooted.getWifiClientPassword().c_str());
+}
+
+void test_legacy_wifi_migration_retries_failed_settings_writes() {
+    for (const char* key : {kNvsWifiStaSlotSsid[0], kNvsWifiStaSlotLabel[0],
+                            kNvsWifiStaSlotPriority[0], kNvsWifiStaSlotLastConnected[0]}) {
+        assertLegacyWifiMigrationRetries(key);
+    }
+}
+
+void test_legacy_wifi_migration_retries_failed_password_write() {
+    assertLegacyWifiMigrationRetries(kNvsWifiStaSlotPassword[0]);
+    assertLegacyWifiMigrationRetries(kNvsWifiStaSlotPassword[0], false, "");
+}
+
+void test_legacy_wifi_migration_preserves_credentials_when_nvs_is_full() {
+    assertLegacyWifiMigrationRetries(nullptr, true);
 }
 
 void test_apply_backup_document_unifies_restore_field_coverage_and_profile_restore() {
@@ -3702,6 +3766,64 @@ void assert_generated_http_backup_round_trip(bool sd) {
 void test_generated_http_backup_round_trip_on_littlefs() { assert_generated_http_backup_round_trip(false); }
 void test_generated_http_backup_round_trip_on_sd() { assert_generated_http_backup_round_trip(true); }
 
+void assertHttpRestoreRejectsWrongProfileCase(bool includesProfiles) {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    V1Profile original("Road");
+    original.description = "Saved profile";
+    TEST_ASSERT_TRUE(profiles.saveProfile(original).success);
+    SettingsManager manager(storage, profiles);
+    manager.mutableSettings().brightness = 61;
+    manager.mutableSettings().slot0_default.profileName = "Road";
+    manager.mutableSettings().slot1_highway.profileName = "Road";
+    manager.mutableSettings().slot2_comfort.profileName = "Road";
+    TEST_ASSERT_TRUE(manager.save());
+    JsonDocument doc;
+    TEST_ASSERT_TRUE(BackupPayloadBuilder::buildBackupDocument(
+        doc, manager.get(), profiles, BackupPayloadBuilder::BackupTransport::HttpDownload, 1000).safeToCommit);
+    if (!includesProfiles) doc.remove("profiles");
+
+    const auto upload = [&]() {
+        String body;
+        serializeJson(doc, body);
+        WebServer server(80);
+        server.setArg("plain", body);
+        BackupApiService::handleApiRestore(server, actualBackupRuntime(manager), nullptr, nullptr, nullptr, nullptr);
+        return server.lastStatusCode;
+    };
+    TEST_ASSERT_EQUAL_INT(200, upload()); // Exact spelling remains a valid restore.
+    const char* keys[] = {"slot0ProfileName", "slot1ProfileName", "slot2ProfileName"};
+    for (const char* key : keys) {
+        doc[key] = "road";
+        doc["brightness"] = 77;
+        if (includesProfiles) doc["profiles"][0]["description"] = "Uncommitted replacement";
+        TEST_ASSERT_EQUAL_INT(500, upload());
+        TEST_ASSERT_EQUAL_UINT8(61, manager.get().brightness);
+        SettingsManager rebooted(storage, profiles);
+        rebooted.begin();
+        TEST_ASSERT_EQUAL_UINT8(61, rebooted.get().brightness);
+        TEST_ASSERT_EQUAL_STRING("Road", rebooted.get().slot0_default.profileName.c_str());
+        TEST_ASSERT_EQUAL_STRING("Road", rebooted.get().slot1_highway.profileName.c_str());
+        TEST_ASSERT_EQUAL_STRING("Road", rebooted.get().slot2_comfort.profileName.c_str());
+        V1Profile retained;
+        TEST_ASSERT_TRUE(profiles.loadProfile("Road", retained));
+        TEST_ASSERT_EQUAL_STRING("Saved profile", retained.description.c_str());
+        JsonDocument exported;
+        String error;
+        TEST_ASSERT_TRUE_MESSAGE(buildUsbProfileDocument(exported, rebooted, profiles, error), error.c_str());
+        doc[key] = "Road";
+    }
+}
+
+void test_http_restore_rejects_case_mismatched_included_profile_reference() {
+    assertHttpRestoreRejectsWrongProfileCase(true);
+}
+
+void test_http_restore_rejects_case_mismatched_existing_profile_reference() {
+    assertHttpRestoreRejectsWrongProfileCase(false);
+}
+
 void test_littlefs_restore_preserves_matches_clears_changes_and_accepts_explicit_secrets() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, false);
@@ -4082,6 +4204,11 @@ void test_profile_taps_keep_local_selection_when_offline_or_auto_push_disabled()
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_legacy_wifi_migration_retries_failed_settings_writes);
+    RUN_TEST(test_legacy_wifi_migration_retries_failed_password_write);
+    RUN_TEST(test_legacy_wifi_migration_preserves_credentials_when_nvs_is_full);
+    RUN_TEST(test_http_restore_rejects_case_mismatched_included_profile_reference);
+    RUN_TEST(test_http_restore_rejects_case_mismatched_existing_profile_reference);
     RUN_TEST(test_failed_profile_tap_retains_earlier_obd_sync_save_and_deadline);
     RUN_TEST(test_successful_profile_tap_commits_earlier_obd_sync_save);
     RUN_TEST(test_failed_immediate_mutation_retains_earlier_deferred_retry);

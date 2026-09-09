@@ -57,10 +57,10 @@ SOFTWARE.
 Versions below come from `platformio.ini`:
 
 - ArduinoJson 7.4.3 — MIT — `licenses/ArduinoJson-LICENSE.txt`
-- NimBLE-Arduino 2.5.0 — Apache-2.0 —
+- NimBLE-Arduino 2.5.1 — Apache-2.0 —
   `licenses/NimBLE-Arduino-LICENSE.txt` and
   `licenses/NimBLE-Arduino-NOTICE.txt`
-- GFX Library for Arduino 1.6.5 — BSD —
+- GFX Library for Arduino 1.6.7 — BSD —
   `licenses/Arduino-GFX-LICENSE.txt`
 - OpenFontRender commit `a9acf5498ed058a034acaa1becbad790627b9ec1` —
   FreeType Project License, with separately marked MIT files —
@@ -79,10 +79,10 @@ The lockfile resolves these direct build inputs:
 - @fontsource-variable/geist 5.3.0 — SIL Open Font License 1.1. The
   maintenance web bundle embeds its Latin variable WOFF2. See
   `licenses/Geist-OFL-1.1.txt`.
-- Svelte 5.55.9 — MIT — `licenses/Svelte-LICENSE.md`
-- SvelteKit 2.61.1 — MIT — `licenses/SvelteKit-LICENSE.txt`
-- daisyUI 5.5.20 — MIT — `licenses/daisyUI-LICENSE.txt`
-- Tailwind CSS 4.3.0 — MIT — `licenses/Tailwind-CSS-LICENSE.txt`
+- Svelte 5.56.8 — MIT — `licenses/Svelte-LICENSE.md`
+- SvelteKit 2.70.2 — MIT — `licenses/SvelteKit-LICENSE.txt`
+- daisyUI 5.7.16 — MIT — `licenses/daisyUI-LICENSE.txt`
+- Tailwind CSS 4.3.3 — MIT — `licenses/Tailwind-CSS-LICENSE.txt`
 
 Those entries do not establish the complete contents of generated web chunks
 or enumerate build-only packages.

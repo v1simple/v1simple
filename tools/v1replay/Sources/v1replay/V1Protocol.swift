@@ -355,7 +355,10 @@ enum V1 {
             f.bogeyImage1 = V1.bogeyGlyph(forCount: bogeyCount)
             f.bogeyImage2 = blinkPlane ? 0x00 : f.bogeyImage1
             f.ledBitmap = V1.ledBitmap(bars: bars)
-            var image = band.mask | direction.rawValue
+            // Ku is bit 4 in alert rows, but shares the K lamp in display data;
+            // display bit 4 belongs exclusively to mute.
+            let displayBand = band.mask == Band.ku.mask ? Band.k.mask : band.mask
+            var image = displayBand | direction.rawValue
             if muted { image |= V1.muteBit }
             f.image1 = image
             f.image2 = blinkArrow ? (image & ~direction.rawValue) : image

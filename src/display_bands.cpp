@@ -48,6 +48,10 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
     uint8_t effectiveBandMask = bandMask;
     if (!blinkPhase_) {
         effectiveBandMask &= ~bandFlashBits;
+        // Ku uses the V1's K LED, so its synthetic bit shares K's off phase.
+        if (bandFlashBits & BAND_K) {
+            effectiveBandMask &= ~BAND_KU;
+        }
     }
 
     if (elementCaches_.bands.valid && effectiveBandMask == elementCaches_.bands.lastMask &&

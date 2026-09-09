@@ -271,6 +271,40 @@ void test_secondary_frequency_jitter_refreshes_slot_without_duplicate() {
     settings.slotAlertPersistSec[0] = 0;
 }
 
+void test_secondary_frequency_drift_repaints_text_despite_bar_updates() {
+    class TextCanvas : public Arduino_Canvas {
+      public:
+        TextCanvas() : Arduino_Canvas(SCREEN_WIDTH, SCREEN_HEIGHT, nullptr) {}
+        std::string frequency;
+        void print(const char* text) override {
+            if (std::strncmp(text, "24.", 3) == 0) {
+                frequency = text;
+            }
+        }
+    };
+    for (bool changeBars : {false, true}) {
+        resetDisplayForTest();
+        auto* text = new TextCanvas;
+        display.setTestCanvas(text);
+        AlertData priority = cardAlert();
+        for (uint32_t step = 0; step <= 10; ++step) {
+            // Each 3 MHz step is one continuing bogey. The visible text must
+            // catch up once cumulative drift exceeds its 5 MHz hysteresis,
+            // including when intervening frames repaint only the meter.
+            AlertData secondary = AlertData::create(BAND_K, DIR_SIDE,
+                changeBars && step % 2 ? 4 : 2, 0, 24150 + step * 3, true, false);
+            AlertData alerts[] = {priority, secondary};
+            mockMillis += 100;
+            display.ut_drawSecondaryAlertCards(alerts, 2, priority, false);
+
+            char expected[10];
+            std::snprintf(expected, sizeof(expected), "24.%03u", 150 + (step / 2) * 6);
+            TEST_ASSERT_EQUAL_STRING(expected, text->frequency.c_str());
+            TEST_ASSERT_EQUAL_INT(1, display.ut_elementCaches().cards.lastDrawnCount);
+        }
+    }
+}
+
 // A vanished priority may become a card only when the user enabled persistence.
 void test_priority_replacement_honors_zero_and_positive_persistence() {
     for (uint8_t persistSec : {0, 2}) {
@@ -743,6 +777,7 @@ int main(int, char**) {
     RUN_TEST(test_card_clear_repaints_and_resets_previous_drawn_card_state);
     RUN_TEST(test_priority_frequency_jitter_does_not_admit_ghost_card);
     RUN_TEST(test_secondary_frequency_jitter_refreshes_slot_without_duplicate);
+    RUN_TEST(test_secondary_frequency_drift_repaints_text_despite_bar_updates);
     RUN_TEST(test_priority_replacement_honors_zero_and_positive_persistence);
     RUN_TEST(test_zero_persistence_clears_missing_secondary_in_same_millisecond);
     RUN_TEST(test_zero_persistence_releases_absent_slots_for_new_live_cards_immediately);

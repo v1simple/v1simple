@@ -743,7 +743,7 @@ bool validateBackupDocumentForApply(const JsonDocument& doc, const V1Settings& c
                                (doc["profiles"].is<JsonArrayConst>() ? doc["profiles"].size() : 0));
         if (!replaceProfiles) {
             for (const V1Profile& profile : existingProfiles) {
-                availableNames.push_back(profileCanonicalCollisionKey(profile.name));
+                availableNames.push_back(profile.name);
             }
         }
     }
@@ -769,10 +769,10 @@ bool validateBackupDocumentForApply(const JsonDocument& doc, const V1Settings& c
             incomingProfiles.push_back(profile);
             bool alreadyAvailable = false;
             for (const String& available : availableNames) {
-                alreadyAvailable |= available == collisionKey;
+                alreadyAvailable |= available == profile.name;
             }
             if (!alreadyAvailable) {
-                availableNames.push_back(collisionKey);
+                availableNames.push_back(profile.name);
             }
         }
     }
@@ -796,10 +796,11 @@ bool validateBackupDocumentForApply(const JsonDocument& doc, const V1Settings& c
         if (canonicalizeProfileName(assigned, canonical) != ProfileNameStatus::Valid) {
             return false;
         }
-        const String collisionKey = profileCanonicalCollisionKey(canonical);
+        // References must preserve the catalog spelling used by profile loads
+        // and USB export; case folding is only for detecting name collisions.
         bool found = false;
         for (const String& available : availableNames) {
-            found |= available == collisionKey;
+            found |= available == canonical;
         }
         if (!found) {
             return false;

@@ -7,6 +7,8 @@ import hashlib
 import contextlib
 import io
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -875,6 +877,53 @@ def test_capture_identity_owns_preflight_and_smoke_has_no_product_dependencies()
         assert_true(made[0].start_calls == 1 and made[0].stop_calls == 1, "smoke lifecycle was duplicated")
 
 
+def test_smoke_cli_refuses_reused_directory_without_changing_owned_evidence() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        smoke_dir = root / "smoke"
+        with patch.object(preflight_module, "calibrate_display_crop",
+                          return_value=(0, 0, {"result": "PASS"})), patch.object(
+                preflight_module, "evaluate_frequency_calibration",
+                return_value={"qualified": False, "reason": "synthetic fixture"}):
+            original, code = run_camera_smoke(
+                smoke_dir,
+                camera_factory=lambda out, duration: FakeCamera(out, duration, smoke_capture_ok=True),
+                sleep=lambda _seconds: None)
+        assert_true(code == 0, "initial synthetic smoke did not pass")
+        before = {path.name: path.read_bytes() for path in smoke_dir.iterdir()}
+        for entry in original["artifacts"].values():
+            assert_true(hashlib.sha256(before[entry["path"]]).hexdigest() == entry["sha256"],
+                        "initial smoke artifact hash differs")
+        # Missing external tools makes the real CLI stop before camera discovery.
+        environment = {**os.environ, "PATH": str(root / "no-tools"),
+                       "BENCH_UVC_UTIL": str(root / "no-uvc-tool")}
+
+        def invoke(directory: Path) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [sys.executable, str(ROOT / "scripts/bench/camera_preflight.py"),
+                 "--out-dir", str(directory)], env=environment, capture_output=True,
+                text=True, timeout=15)
+
+        control_dir = root / "new-smoke"
+        control = invoke(control_dir)
+        result = json.loads((control_dir / "camera_result.json").read_text())
+        assert_true(control.returncode == 3 and result["result"] == "CAPTURE_FAILED",
+                    "new output did not preserve its ordinary capture-start failure")
+        retry = invoke(smoke_dir)
+        after = {path.name: path.read_bytes() for path in smoke_dir.iterdir()}
+        assert_true(after == before, "smoke retry changed existing evidence")
+        assert_true(retry.returncode == 3 and "refusing to reuse" in retry.stdout,
+                    f"smoke retry did not report output refusal: {retry.stdout} {retry.stderr}")
+        with patch.object(preflight_module, "run_camera_preflight") as start:
+            try:
+                run_camera_smoke(smoke_dir)
+            except FileExistsError:
+                pass
+            else:
+                raise AssertionError("existing smoke directory was admitted")
+            start.assert_not_called()
+
+
 def main() -> int:
     test_frequency_capability_is_saved_and_shown_without_changing_admission()
     test_video_gain_is_configured_reported_and_validated()
@@ -885,6 +934,7 @@ def main() -> int:
     test_profile_mismatch_refuses_before_camera_start()
     test_collect_refusal_never_opens_product_path_and_pass_continues_once()
     test_capture_identity_owns_preflight_and_smoke_has_no_product_dependencies()
+    test_smoke_cli_refuses_reused_directory_without_changing_owned_evidence()
     print("camera preflight tests passed")
     return 0
 

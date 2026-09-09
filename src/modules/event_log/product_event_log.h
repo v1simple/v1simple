@@ -92,6 +92,8 @@ class ProductEventLog {
     bool flushIfDue(bool force);
     bool takeGap(ProductEvent& event);
     void noteDrop(uint32_t nowMs);
+    void lockGap();
+    void unlockGap();
     void disableWriter();
     void recordStopFailure();
     void recordRetentionExhaustion(uint32_t dropped);
@@ -115,9 +117,16 @@ class ProductEventLog {
     std::atomic<bool> writerExitClean_{false};
     std::atomic<bool> stopFailureRecorded_{false};
     std::atomic<bool> retentionExhausted_{false};
-    std::atomic<uint32_t> pendingGapCount_{0};
-    std::atomic<uint32_t> pendingGapFirstMs_{0};
-    std::atomic<uint32_t> pendingGapLastMs_{0};
+    // Count and timestamps describe one group and must move together. The
+    // critical section only copies/updates these words, never storage or I/O.
+    uint32_t pendingGapCount_ = 0;
+    uint32_t pendingGapFirstMs_ = 0;
+    uint32_t pendingGapLastMs_ = 0;
+#ifdef UNIT_TEST
+    std::atomic_flag gapLock_ = ATOMIC_FLAG_INIT;
+#else
+    portMUX_TYPE gapMux_ = portMUX_INITIALIZER_UNLOCKED;
+#endif
 
     File eventFile_;
     bool dirty_ = false;

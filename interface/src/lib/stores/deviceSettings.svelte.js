@@ -47,7 +47,10 @@ function syncSettingsPoll() {
 }
 
 async function fetchDeviceSettingsOnce(fetchVersion) {
-    const res = await fetchWithTimeout('/api/device/settings');
+    const res = await fetchWithTimeout('/api/device/settings', {}, undefined, async (response) => ({
+        ok: response.ok,
+        data: response.ok ? await response.json() : null
+    }));
     if (fetchVersion !== stateVersion || settingsConsumerCount <= 0) return undefined;
 
     if (!res.ok) {
@@ -55,11 +58,9 @@ async function fetchDeviceSettingsOnce(fetchVersion) {
         return undefined;
     }
 
-    const data = await res.json();
-    if (fetchVersion !== stateVersion || settingsConsumerCount <= 0) return undefined;
-    deviceSettings.set(data);
+    deviceSettings.set(res.data);
     deviceSettingsError.set(null);
-    return data;
+    return res.data;
 }
 
 export function refreshDeviceSettings() {

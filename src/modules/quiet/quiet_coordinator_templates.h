@@ -85,6 +85,12 @@ bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs, VolumeFadeL
     if (!volumeFade || !parser_) {
         return false;
     }
+    // An alert may arrive before the first volume-bearing packet. Do not
+    // capture the default 0/0 pair as a restore baseline; a received zero
+    // remains a valid user volume, as it does for the speed-volume owner.
+    if (!parser_->getDisplayState().hasVolumeData) {
+        return false;
+    }
 
     const bool hasAlerts = parser_->hasAlerts();
     AlertData priority;

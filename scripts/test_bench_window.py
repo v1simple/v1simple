@@ -2165,6 +2165,7 @@ def test_explicit_boundary_requires_fresh_usb_reset_and_refuses_intervening_fail
     complete = "[Boot] setup total: 2262 ms"
     cases = [
         ([rom, reason, boot, ready, complete], None),
+        ([reason, boot, ready, complete], None),
         ([boot], "preceded fresh reset-to-ready"),
         ([rom, boot], "preceded fresh reset-to-ready"),
         ([rom, "rst:0xc (RTC_SW_CPU_RST),boot:0xa (SPI_FAST_FLASH_BOOT)", boot], "unexpected reset reason"),
@@ -2253,6 +2254,8 @@ def test_serial_interrupted_loader_framing_requires_one_exact_rom_banner() -> No
     loader_lines = ("load:0x3fce2820,len:0x10cc", "load:0xA,len:0xB")
     prefixes = sorted({line[:stop] for line in loader_lines for stop in range(1, len(line) + 1)})
     cases = [(prefix + rom, suffix, [prefix, rom], None) for prefix in prefixes]
+    reset_prefixes = sorted({reason[:stop] for stop in range(1, len(reason))})
+    cases += [(prefix + rom, suffix, [prefix, rom], None) for prefix in reset_prefixes]
     cases += [(prefix + rom + rom, suffix, None, "unexpected reset reason")
               for prefix in prefixes]
     cases += [(prefix + "Guru Meditation Error: panic" + rom, suffix,
@@ -2263,6 +2266,8 @@ def test_serial_interrupted_loader_framing_requires_one_exact_rom_banner() -> No
     for prefix in invalid_prefixes:
         assert_true(not run_window_module._is_rom_loader_prefix(prefix),
                     f"invalid ROM loader prefix accepted: {prefix!r}")
+        assert_true(not run_window_module._is_interrupted_usb_reset_prefix(prefix),
+                    f"invalid USB reset prefix accepted: {prefix!r}")
     cases += [(prefix + rom, suffix, None, "unexpected reset reason")
               for prefix in invalid_prefixes if prefix]
     cases += [

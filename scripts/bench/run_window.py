@@ -1033,6 +1033,12 @@ def _is_rom_loader_prefix(text: str) -> bool:
             and all(value in hexadecimal for value in length[len(length_header):]))
 
 
+def _is_interrupted_usb_reset_prefix(text: str) -> bool:
+    """Whether text is a strict prefix of the expected USB reset record."""
+    expected = "rst:0x15 (USB_UART_CHIP_RESET),boot:0xa (SPI_FAST_FLASH_BOOT)"
+    return bool(text) and len(text) < len(expected) and expected.startswith(text)
+
+
 class BenchSerial:
     """Serial continuity observer with an explicit reset, never firmware commands."""
 
@@ -1102,7 +1108,10 @@ class BenchSerial:
                 rom_banner = "ESP-ROM:esp32s3-20210327"
                 loader_prefix = line[:-len(rom_banner)] if line.endswith(rom_banner) else ""
                 self._pending_lines.extend(
-                    [loader_prefix, rom_banner] if _is_rom_loader_prefix(loader_prefix) else [line])
+                    [loader_prefix, rom_banner]
+                    if (_is_rom_loader_prefix(loader_prefix)
+                        or _is_interrupted_usb_reset_prefix(loader_prefix))
+                    else [line])
         text = self._pending_lines.pop(0)
         safe = redact_artifact_text(text)
         self.log.write(safe + "\n")
@@ -1145,7 +1154,7 @@ def establish_serial_boundary(
 
     while True:
         if observer.runtime_identity is not None:
-            if require_explicit_reset and not (rom_start_observed and reset_reason_observed):
+            if require_explicit_reset and not reset_reason_observed:
                 raise RuntimeIdentityFailure("runtime BOOT identity preceded fresh reset-to-ready evidence")
             if not require_explicit_reset or (ready_gate_observed and setup_completed
                                              and not getattr(observer, "_pending_lines", [])):
@@ -1169,7 +1178,11 @@ def establish_serial_boundary(
                     raise RuntimeIdentityFailure("unexpected or repeated ROM start after explicit reset")
                 rom_start_observed = True
             if line.startswith("rst:"):
-                if (not rom_start_observed or reset_reason_observed
+                if _is_interrupted_usb_reset_prefix(line):
+                    # Preserve a partial pre-banner reset write in the evidence
+                    # log without treating it as the fresh reset reason.
+                    continue
+                if (reset_reason_observed
                         or "rst:0x15 (USB_UART_CHIP_RESET)" not in line
                         or "SPI_FAST_FLASH_BOOT" not in line):
                     raise RuntimeIdentityFailure("unexpected reset reason or boot mode after explicit reset")
@@ -1196,8 +1209,9 @@ def establish_serial_boundary(
         "boot_markers_observed": observer.boot_marker_count - initial_boot_markers,
         "runtime_identity": observer.runtime_identity,
         "duration_seconds": max(0.0, monotonic() - started),
-        "reset_anchored": require_explicit_reset and rom_start_observed and reset_reason_observed
-                          and ready_gate_observed and setup_completed,
+        "rom_start_observed": rom_start_observed,
+        "reset_anchored": require_explicit_reset and reset_reason_observed and ready_gate_observed
+                          and setup_completed,
     }
     observer.timeline.record("serial_boundary_established", **result)
     return result

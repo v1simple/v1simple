@@ -7,8 +7,8 @@
 // V1 was reporting laser. Found 2026-08-06; reproduced by compiling this file's
 // subject directly and dumping its routing table.
 //
-// Qualifies under the test policy as (a) pinning a bug that actually happened
-// and (c) guarding a Tier-0 invariant.
+// This suite pins a bug that actually reached main and protects the
+// safety-critical invariant that a live threat must remain visible.
 
 #include <unity.h>
 

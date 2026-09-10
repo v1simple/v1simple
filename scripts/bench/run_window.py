@@ -1039,6 +1039,17 @@ def _is_interrupted_usb_reset_prefix(text: str) -> bool:
     return bool(text) and len(text) < len(expected) and expected.startswith(text)
 
 
+def _is_rom_saved_pc_prefix(text: str) -> bool:
+    """Whether nonempty text can prefix ``Saved PC:0xHEX``."""
+    header = "Saved PC:0x"
+    if not text:
+        return False
+    if header.startswith(text):
+        return True
+    return (text.startswith(header)
+            and all(value in "0123456789abcdefABCDEF" for value in text[len(header):]))
+
+
 class BenchSerial:
     """Serial continuity observer with an explicit reset, never firmware commands."""
 
@@ -1110,7 +1121,8 @@ class BenchSerial:
                 self._pending_lines.extend(
                     [loader_prefix, rom_banner]
                     if (_is_rom_loader_prefix(loader_prefix)
-                        or _is_interrupted_usb_reset_prefix(loader_prefix))
+                        or _is_interrupted_usb_reset_prefix(loader_prefix)
+                        or _is_rom_saved_pc_prefix(loader_prefix))
                     else [line])
         text = self._pending_lines.pop(0)
         safe = redact_artifact_text(text)
@@ -1177,6 +1189,10 @@ def establish_serial_boundary(
                 if rom_start_observed or not re.fullmatch(r"ESP-ROM:esp32s3-[0-9]{8}", line):
                     raise RuntimeIdentityFailure("unexpected or repeated ROM start after explicit reset")
                 rom_start_observed = True
+                # Bytes delivered before the first exact ROM banner can be
+                # delayed output from the upload reset. The fresh reset reason
+                # must follow this banner when the banner is available.
+                reset_reason_observed = False
             if line.startswith("rst:"):
                 if _is_interrupted_usb_reset_prefix(line):
                     # Preserve a partial pre-banner reset write in the evidence

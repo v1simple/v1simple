@@ -77,10 +77,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends --yes ffmpeg
 
+      - name: Install ShellCheck 0.11.0
+        run: |
+          curl --fail --location --silent --show-error \
+            https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz \
+            --output /tmp/shellcheck-v0.11.0.tar.xz
+          tar -xJf /tmp/shellcheck-v0.11.0.tar.xz -C /tmp
+          sudo install /tmp/shellcheck-v0.11.0/shellcheck /usr/local/bin/shellcheck
+          shellcheck --version
+
       - name: Install Python toolchain
         run: |
           python3 -m venv --copies "$HOME/.platformio/penv"
-          "$HOME/.platformio/penv/bin/python" -m pip install "platformio==6.1.19" "esptool==5.3.0" "cryptography>=41" "Pillow>=10.4,<13" "numpy>=2,<3" "littlefs-python==0.18.0"
+          "$HOME/.platformio/penv/bin/python" -m pip install "platformio==6.1.19" "esptool==5.3.0" "ruff==0.16.0" "cryptography>=41" "Pillow>=10.4,<13" "numpy>=2,<3" "littlefs-python==0.18.0"
           echo "$HOME/.platformio/penv/bin" >> "$GITHUB_PATH"
 
       - name: Run ci-test.sh

@@ -1,0 +1,13 @@
+target-version = "py312"
+
+[lint]
+select = ["E9", "F63", "F7", "F82"]
+
+[lint.per-file-ignores]
+"scripts/enforce_reorder_warning.py" = ["F821"]
+"scripts/force_app_upload_offset.py" = ["F821"]
+"scripts/get_git_sha.py" = ["F821"]
+"scripts/patch_arduino_gfx_qspi.py" = ["F821"]
+"scripts/patch_nimble_conn_handles.py" = ["F821"]
+"scripts/patch_openfontrender.py" = ["F821"]
+"scripts/test_delay.py" = ["F821"]

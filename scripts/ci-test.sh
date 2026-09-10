@@ -100,6 +100,19 @@ run_camera_recorder_checks() {
   "${xcrun_driver[@]}" swift -module-cache-path "$module_cache" "$recorder" --self-test-raw-frames
 }
 
+run_tracked_shellcheck() {
+  local tracked_scripts=()
+  local script
+  while IFS= read -r -d '' script; do
+    tracked_scripts+=("$script")
+  done < <(git ls-files -z '*.sh')
+  if [[ "${#tracked_scripts[@]}" -eq 0 ]]; then
+    echo "No tracked shell scripts found; refusing a zero-file pass." >&2
+    return 1
+  fi
+  shellcheck --severity=error "${tracked_scripts[@]}"
+}
+
 PIO_CMD="${PIO_CMD:-pio}"
 if ! command -v "$PIO_CMD" >/dev/null 2>&1; then
   echo -e "${RED}PlatformIO not found in PATH.${NC}" >&2
@@ -148,6 +161,8 @@ fi
 
 section "Static Analysis"
 run_step "Firmware static analysis" "$PIO_CMD" check -e waveshare-349 --fail-on-defect=medium
+run_step "Python tooling lint" ruff check scripts/ tools/
+run_step "Tracked shell lint" run_tracked_shellcheck
 
 section "Python Regression Tests"
 # Safety-critical guard regressions already run inline above. Keep the remaining

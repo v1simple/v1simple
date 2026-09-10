@@ -35,8 +35,6 @@ DisplayLayout::DisplayRect V1Display::arrowBoundingRect(bool raisedLayout) {
 // Draw large direction arrow (t4s3 style)
 // flashBits indicates which arrows should blink (from image1 & ~image2)
 void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits, uint16_t frontColorOverride) {
-    const bool forceFullRedraw = !elementCaches_.arrow.valid;
-
     // Advance the shared blink phase. drawBandIndicators calls this same
     // helper so arrows and band labels toggle in lockstep — they describe
     // the same underlying V1 signal via flashBits / bandFlashBits.

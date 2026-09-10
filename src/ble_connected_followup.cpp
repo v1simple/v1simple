@@ -154,7 +154,6 @@ void V1BLEClient::processConnectedFollowup() {
     }
     case ConnectedFollowupStep::NOTIFY_STABLE_CALLBACK:
         if (connectStableCallback_) {
-            const uint32_t startUs = micros();
             connectStableCallback_();
         }
         connectedFollowupStep_ = ConnectedFollowupStep::BACKUP_BONDS;

@@ -18,7 +18,6 @@ void V1BLEClient::ScanCallbacks::onResult(const NimBLEAdvertisedDevice* advertis
 
     const std::string& name = advertisedDevice->getName();
     const std::string& addrStr = advertisedDevice->getAddress().toString();
-    int rssi = advertisedDevice->getRSSI();
 
     // Ignore our own proxy advertisement to avoid self-connect loops
     if (bleClient->proxyEnabled_) {

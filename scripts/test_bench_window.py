@@ -2192,7 +2192,8 @@ def test_explicit_boundary_requires_fresh_usb_reset_and_refuses_intervening_fail
             result = action()
             assert_true(result["reset_anchored"] is True, str(result))
             assert_true(result["runtime_identity"]["boot_id"] == 4, str(result))
-            assert_true(observer.read_count == 5, "boundary returned before normal setup completed")
+            assert_true(observer.read_count == len(lines),
+                        "boundary returned before normal setup completed")
     observer = FakeSerialObserver(FakeClock(), {})
     assert_identity_failure(lambda: establish_serial_boundary(observer, 5, require_explicit_reset=True),
                             "explicit serial reset did not complete")

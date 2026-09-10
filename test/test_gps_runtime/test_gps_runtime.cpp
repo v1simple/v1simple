@@ -67,6 +67,20 @@ void test_valid_gga_sets_quality_without_speed_sample() {
     TEST_ASSERT_EQUAL_UINT32(0, status.fixAgeMs);
 }
 
+void test_gga_rejects_signed_and_overflowing_unsigned_fields() {
+    TEST_ASSERT_FALSE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPGGA,123520,4807.038,N,01131.000,E,-1,-1,0.9,545.4,M,46.9,M,,*74", 2100));
+    TEST_ASSERT_FALSE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPGGA,123520,4807.038,N,01131.000,E,4294967296,08,0.9,545.4,M,46.9,M,,*72", 2200));
+    TEST_ASSERT_FALSE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPGGA,123520,4807.038,N,01131.000,E,1,4294967296,0.9,545.4,M,46.9,M,,*4B", 2300));
+
+    const GpsRuntimeStatus status = gpsRuntimeModule.snapshot(2300);
+    TEST_ASSERT_FALSE(status.hasFix);
+    TEST_ASSERT_EQUAL_UINT8(0, status.satellites);
+    TEST_ASSERT_EQUAL_UINT32(3, status.parseFailures);
+}
+
 void test_bad_checksum_is_rejected_and_counted() {
     const bool accepted = gpsRuntimeModule.injectNmeaSentenceForTest(
         "$GPRMC,123519,A,4807.038,N,01131.000,E,010.0,084.4,230394,003.1,W*00", 3000);
@@ -204,6 +218,7 @@ int main() {
     UNITY_BEGIN();
     RUN_TEST(test_valid_rmc_updates_speed_and_fix);
     RUN_TEST(test_valid_gga_sets_quality_without_speed_sample);
+    RUN_TEST(test_gga_rejects_signed_and_overflowing_unsigned_fields);
     RUN_TEST(test_bad_checksum_is_rejected_and_counted);
     RUN_TEST(test_fix_loss_invalidates_speed_sample);
     RUN_TEST(test_invalid_coordinate_is_rejected);

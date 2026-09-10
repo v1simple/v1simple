@@ -454,12 +454,18 @@ bool GpsRuntimeModule::parseUIntStrict(const char* text, uint32_t& out) {
         return false;
     }
 
-    char* end = nullptr;
-    const unsigned long parsed = std::strtoul(text, &end, 10);
-    if (end == text || *end != '\0') {
-        return false;
+    uint32_t parsed = 0;
+    for (const char* cursor = text; *cursor != '\0'; ++cursor) {
+        if (*cursor < '0' || *cursor > '9') {
+            return false;
+        }
+        const uint32_t digit = static_cast<uint32_t>(*cursor - '0');
+        if (parsed > (UINT32_MAX - digit) / 10U) {
+            return false;
+        }
+        parsed = (parsed * 10U) + digit;
     }
-    out = static_cast<uint32_t>(parsed);
+    out = parsed;
     return true;
 }
 

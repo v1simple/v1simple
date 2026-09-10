@@ -174,6 +174,61 @@ void test_session_reset_discards_old_queue_and_partial_buffer() {
     TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::inputDrops());
 }
 
+void test_stale_stamped_packets_cannot_trigger_downstream_effects() {
+    beginQueue();
+    queue.openSession(kSession + 1);
+    preview.running = true;
+    parser.hasAlertsFlag = true;
+    parser.state.hasV1Version = true;
+    parser.state.v1FirmwareVersion = 0x12345678;
+
+    const std::vector<uint8_t> staleVersion = makeFrame(PACKET_ID_RESP_VERSION, 6, 0x41);
+    const std::vector<uint8_t> staleUserBytes = makeFrame(PACKET_ID_RESP_USER_BYTES, 6, 0x42);
+    TEST_ASSERT_TRUE(
+        queue.enqueueStampedForTest(staleVersion.data(), staleVersion.size(), kCharacteristic, kSession));
+    TEST_ASSERT_TRUE(
+        queue.enqueueStampedForTest(staleUserBytes.data(), staleUserBytes.size(), kCharacteristic, kSession));
+
+    queue.process();
+
+    TEST_ASSERT_EQUAL_INT(0, parser.parseCalls);
+    TEST_ASSERT_EQUAL_INT(0, profiles.setCurrentSettingsCalls);
+    TEST_ASSERT_EQUAL_INT(0, client.onUserBytesReceivedCalls);
+    TEST_ASSERT_EQUAL_UINT32(0, client.v1FirmwareVersion());
+    TEST_ASSERT_EQUAL_INT(0, power.onV1DataReceivedCalls);
+    TEST_ASSERT_EQUAL_INT(0, preview.cancelCalls);
+    TEST_ASSERT_TRUE(preview.running);
+    TEST_ASSERT_FALSE(queue.consumeParsedFlag());
+}
+
+void test_only_successfully_parsed_alert_packets_trigger_runtime_effects() {
+    beginQueue();
+    preview.running = true;
+    parser.hasAlertsFlag = true;
+    const std::vector<uint8_t> accepted = makeFrame(0x60, 4, 0x51);
+
+    TEST_ASSERT_TRUE(queue.tryOnNotify(accepted.data(), accepted.size(), kCharacteristic, kSession, 450));
+    queue.process();
+
+    TEST_ASSERT_EQUAL_INT(1, parser.parseCalls);
+    TEST_ASSERT_EQUAL_INT(1, power.onV1DataReceivedCalls);
+    TEST_ASSERT_EQUAL_INT(1, preview.cancelCalls);
+    TEST_ASSERT_FALSE(preview.running);
+    TEST_ASSERT_TRUE(queue.consumeParsedFlag());
+
+    parser.parseReturnValue = false;
+    preview.running = true;
+    const std::vector<uint8_t> rejected = makeFrame(0x61, 4, 0x52);
+    TEST_ASSERT_TRUE(queue.tryOnNotify(rejected.data(), rejected.size(), kCharacteristic, kSession, 451));
+    queue.process();
+
+    TEST_ASSERT_EQUAL_INT(2, parser.parseCalls);
+    TEST_ASSERT_EQUAL_INT(1, power.onV1DataReceivedCalls);
+    TEST_ASSERT_EQUAL_INT(1, preview.cancelCalls);
+    TEST_ASSERT_TRUE(preview.running);
+    TEST_ASSERT_FALSE(queue.consumeParsedFlag());
+}
+
 void test_queue_saturation_counts_only_rejected_admission_and_preserves_head() {
     beginQueue(2);
     const std::vector<uint8_t> first = makeFrame(0x5B, 3, 0x61);
@@ -221,6 +276,8 @@ int main(int, char**) {
     RUN_TEST(test_partial_frame_across_notifications_is_reassembled_once);
     RUN_TEST(test_multiple_frames_in_one_notification_are_all_parsed_in_order);
     RUN_TEST(test_session_reset_discards_old_queue_and_partial_buffer);
+    RUN_TEST(test_stale_stamped_packets_cannot_trigger_downstream_effects);
+    RUN_TEST(test_only_successfully_parsed_alert_packets_trigger_runtime_effects);
     RUN_TEST(test_queue_saturation_counts_only_rejected_admission_and_preserves_head);
     RUN_TEST(test_malformed_input_resynchronizes_to_following_valid_frame);
     return UNITY_END();

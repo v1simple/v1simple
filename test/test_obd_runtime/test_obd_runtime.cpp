@@ -522,6 +522,21 @@ void test_repeated_current_overflows_still_disconnect_the_transport() {
     TEST_ASSERT_EQUAL_UINT32(1, fixture.runtime.getDisconnectCallCountForTest());
 }
 
+void test_transport_binding_is_idempotent_but_rejects_rebinding() {
+    int firstClient = 0;
+    int firstRuntime = 0;
+    int secondClient = 0;
+    int secondRuntime = 0;
+
+    TEST_ASSERT_TRUE(obdTransportBindingAccepted(false, nullptr, nullptr, &firstClient, &firstRuntime));
+    TEST_ASSERT_TRUE(
+        obdTransportBindingAccepted(true, &firstClient, &firstRuntime, &firstClient, &firstRuntime));
+    TEST_ASSERT_FALSE(
+        obdTransportBindingAccepted(true, &firstClient, &firstRuntime, &secondClient, &firstRuntime));
+    TEST_ASSERT_FALSE(
+        obdTransportBindingAccepted(true, &firstClient, &firstRuntime, &firstClient, &secondRuntime));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_initial_connection_runs_discovery_init_and_acquires_speed);
@@ -543,5 +558,6 @@ int main() {
     RUN_TEST(test_current_overflow_is_classified_before_response_state_is_cleared);
     RUN_TEST(test_historical_overflows_do_not_change_later_no_data_recovery);
     RUN_TEST(test_repeated_current_overflows_still_disconnect_the_transport);
+    RUN_TEST(test_transport_binding_is_idempotent_but_rejects_rebinding);
     return UNITY_END();
 }

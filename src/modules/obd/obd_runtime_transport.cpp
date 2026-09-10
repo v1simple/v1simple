@@ -41,6 +41,19 @@ extern "C" {
 
 using ObdStringUtils::copyString;
 
+namespace {
+
+// The production transport task is intentionally firmware-lifetime and bound
+// to one OBD client/runtime pair. Repeated setup with the same dependencies is
+// idempotent; silently accepting a different pair would leave the task calling
+// the original objects while the caller believes the new binding is active.
+bool obdTransportBindingAccepted(bool taskActive, const void* boundClient, const void* boundRuntime,
+                                 const void* requestedClient, const void* requestedRuntime) {
+    return !taskActive || (boundClient == requestedClient && boundRuntime == requestedRuntime);
+}
+
+} // namespace
+
 #ifndef UNIT_TEST
 constexpr UBaseType_t OBD_TRANSPORT_QUEUE_DEPTH = 1;
 constexpr uint32_t OBD_TRANSPORT_STACK_SIZE = 8192;
@@ -218,6 +231,12 @@ void obdTransportTaskEntry(void* param) {
 bool ensureObdTransportRuntime(ObdBleClient* bleClient, ObdRuntimeModule* runtime) {
     if (!bleClient || !runtime) {
         Serial.println("[OBD] ERROR: transport dependencies not provided");
+        return false;
+    }
+
+    if (!obdTransportBindingAccepted(sObdTransport.task != nullptr, sObdTransport.context.bleClient,
+                                     sObdTransport.context.runtime, bleClient, runtime)) {
+        Serial.println("[OBD] ERROR: transport runtime cannot be rebound after task creation");
         return false;
     }
 

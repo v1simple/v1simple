@@ -14,6 +14,12 @@ class DisplayPreviewModule;
 class PowerModule;
 class V1ProfileManager;
 
+// V1 notification integration boundary, not a generic byte queue. This module
+// owns notification-session admission, frame reassembly, parser dispatch, and
+// the immediate effects of accepted parsed frames: profile synchronization,
+// firmware-version reporting, V1 activity notification to power management,
+// preview cancellation when an alert becomes live, and the parsed-work signal
+// consumed by the display pipeline.
 class BleQueueModule {
   public:
     struct Config {
@@ -51,7 +57,8 @@ class BleQueueModule {
     void openSession(uint32_t sessionGeneration);
     void closeSession();
 
-    // Drain queue, frame packets, parse, and forward to display pipeline.
+    // Drain and frame admitted notifications, parse complete packets, apply the
+    // integration effects documented above, and signal display work.
     void process();
 
 

@@ -166,10 +166,14 @@ run_step "Encounter OCR session regression suite" python3 scripts/test_encounter
 run_step "Encounter pixel reader regression suite" python3 scripts/test_encounter_reader.py
 run_step "Encounter frequency geometry regression suite" "$BENCH_READER_PYTHON" scripts/test_encounter_frequency_geometry.py
 run_step "Encounter frequency residual regression suite" "$BENCH_READER_PYTHON" scripts/test_encounter_frequency_residual.py
+run_step "Encounter frequency context regression suite" python3 scripts/test_encounter_frequency_context.py
 run_step "Encounter calibrated idle integration suite" "$BENCH_READER_PYTHON" scripts/test_encounter_frequency_idle.py
 run_step "Encounter numeric decimal geometry suite" "$BENCH_READER_PYTHON" scripts/test_encounter_frequency_numeric.py
 run_step "Encounter split card text suite" "$BENCH_READER_PYTHON" scripts/test_encounter_card_text.py
 run_step "Encounter independent card reference suite" "$BENCH_READER_PYTHON" scripts/test_encounter_secondary_reference.py
+run_step "Encounter secondary context regression suite" python3 scripts/test_encounter_secondary_context.py
+run_step "Encounter secondary optical bridge regression suite" "$BENCH_READER_PYTHON" scripts/test_encounter_secondary_optical_bridge.py
+run_step "Encounter secondary probe regression suite" "$BENCH_READER_PYTHON" scripts/test_encounter_secondary_probe.py
 run_step "Encounter input expectation regression suite" python3 scripts/test_encounter_expectation.py
 run_step "Recorded encounter check regression suite" python3 scripts/test_encounter_check.py
 run_step "Encounter sequence interpretation regression suite" python3 scripts/test_encounter_sequence.py
@@ -185,6 +189,7 @@ run_step "Encounter independent reading reuse regression suite" python3 scripts/
 run_step "Encounter independent frequency reference regression suite" python3 scripts/test_encounter_primary_frequency_reference.py
 run_step "Encounter evidence assessment regression suite" python3 scripts/test_encounter_assessment.py
 run_step "Encounter temporal classifier regression suite" python3 scripts/test_encounter_temporal.py
+run_step "Encounter arrow acquisition regression suite" python3 scripts/test_encounter_arrow_acquisition.py
 run_step "Encounter arrow transition regression suite" python3 scripts/test_encounter_arrow_transition.py
 run_step "Encounter bar transition regression suite" python3 scripts/test_encounter_bar_transition.py
 run_step "Encounter mute redraw transition regression suite" python3 scripts/test_encounter_mute_redraw_transition.py

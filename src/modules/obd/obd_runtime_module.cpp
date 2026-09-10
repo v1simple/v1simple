@@ -479,7 +479,6 @@ void ObdRuntimeModule::update(uint32_t nowMs, const ObdBleContext& bootReadyCont
     const bool bootReady = bootReadyContext.bootReady;
     const bool v1Connected = bootReadyContext.v1Connected;
     const bool bleScanIdle = bootReadyContext.bleScanIdle;
-    const bool v1ConnectBurstSettling = bootReadyContext.v1ConnectBurstSettling;
     const bool proxyAdvertising = bootReadyContext.proxyAdvertising;
     const bool proxyClientConnected = bootReadyContext.proxyClientConnected;
     const bool v1ConnectInProgress = bootReadyContext.v1ConnectInProgress;

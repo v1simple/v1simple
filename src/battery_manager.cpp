@@ -61,6 +61,7 @@ class ScopedWireTimeout {
     uint16_t previousTimeoutMs_;
 };
 
+#ifndef CAR_MODE_PWR_SHORT
 AudioI2cResult readTca9554RegisterWithTimeout(uint8_t reg, uint8_t& value, TickType_t mutexTimeoutTicks,
                                               uint16_t timeoutMs) {
     AudioI2cLockGuard lock(tca9554WireMutex, mutexTimeoutTicks);
@@ -90,6 +91,7 @@ uint8_t wakePinForPlan(const poweroff_policy::WakePlan& plan) {
 uint64_t wakeMaskForPlan(const poweroff_policy::WakePlan& plan) {
     return 1ULL << wakePinForPlan(plan);
 }
+#endif
 
 bool wakeMaskIsInactive(uint64_t wakeMask) {
     constexpr uint64_t kRtcGpioMask = (1ULL << 22) - 1;

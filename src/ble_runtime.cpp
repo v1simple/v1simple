@@ -161,7 +161,7 @@ void V1BLEClient::applyDeferredRuntimeEvents(SettingsManager& settings) {
 void V1BLEClient::drainCommandAndFollowupWork() {
     // Process phone->V1 commands (up to queue size per loop to drain any backlog)
     // Each call processes one command to minimize mutex hold time during BLE writes
-    for (int i = 0; i < MAX_PHONE_CMDS_PER_LOOP; i++) {
+    for (size_t i = 0; i < MAX_PHONE_CMDS_PER_LOOP; i++) {
         if (processPhoneCommandQueue() == 0) {
             break;
         }

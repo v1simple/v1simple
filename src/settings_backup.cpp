@@ -309,8 +309,8 @@ bool parseBackupFile(fs::FS* fs, const char* path, JsonDocument& doc, bool verbo
         if (stored != computed) {
             if (verboseErrors) {
                 Serial.printf(
-                    "[Settings] WARN: CRC32 mismatch in %s (stored=0x%08X computed=0x%08X) — backup may be corrupted\n",
-                    path, stored, computed);
+                    "[Settings] WARN: CRC32 mismatch in %s (stored=0x%08lX computed=0x%08lX) — backup may be corrupted\n",
+                    path, static_cast<unsigned long>(stored), static_cast<unsigned long>(computed));
             }
             // Return false so loadBestBackupDocument skips this candidate and
             // falls through to the next (e.g. .prev).  If no valid candidate

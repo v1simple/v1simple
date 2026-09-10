@@ -70,29 +70,6 @@ DisplayState sanitizeDisconnectedRestoreState(const DisplayState& base) {
     return state;
 }
 
-AlertData alpEventToSyntheticAlert(const AlpLaserEvent& event) {
-    AlertData alert;
-    alert.isValid = true;
-    alert.band = BAND_LASER;
-    alert.frequency = 0;
-    switch (event.direction) {
-    case AlpLaserDirection::FRONT:
-        alert.direction = DIR_FRONT;
-        break;
-
-    case AlpLaserDirection::REAR:
-        alert.direction = DIR_REAR;
-        break;
-
-    case AlpLaserDirection::UNKNOWN:
-    default:
-        alert.direction = DIR_NONE;
-        break;
-    }
-    alert.frontStrength = 6;
-    return alert;
-}
-
 FrameV1Alerts buildFrameV1Alerts(const RenderFrame& frame) {
     FrameV1Alerts result;
 

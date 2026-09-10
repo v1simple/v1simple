@@ -133,6 +133,7 @@ run_step "Public commit metadata privacy guard" python3 scripts/check_public_com
 run_step "Public publication-history privacy guard" python3 scripts/check_public_snapshot_privacy.py --all-history
 run_step "Snapshot scanner regression suite" python3 scripts/test_check_public_snapshot_privacy.py
 run_step "Privacy hook regression suite" python3 scripts/test_public_privacy_hooks.py
+run_step "Pre-push local gate marker regression suite" python3 scripts/test_pre_push_gate_marker.py
 run_step "Scanner parity with the internal repository" python3 scripts/test_scanner_parity.py
 run_step "v1replay source-only publication guard" python3 tools/v1replay/verify/check_publication_safety.py
 run_step "v1replay publication guard regression suite" python3 scripts/test_v1replay_publication_safety.py
@@ -236,6 +237,8 @@ run_step "Production artifact build" ./scripts/build_production_artifacts.sh
 
 END_TIME=$(date +%s)
 ELAPSED=$((END_TIME - START_TIME))
+mkdir -p "$ROOT_DIR/.artifacts"
+git rev-parse HEAD > "$ROOT_DIR/.artifacts/ci-gate-passed.sha"
 
 echo ""
 echo "============================================"

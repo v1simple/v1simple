@@ -14,6 +14,7 @@
 #   4. publishing branches outside the main-only allowlist
 #   5. publishing commit or tag history with a non-public email identity
 #   6. publishing tracked private, replay, or capture content
+#   7. pushing main without a successful full local gate at that exact commit
 #
 # It is the final content gate for ordinary `git push` and IDE Sync. Git can
 # deliberately bypass client hooks with `--no-verify`; that option and hook or
@@ -37,6 +38,7 @@ blocked=0
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 1
 PRIVACY_CHECK="$ROOT/scripts/check_public_commit_metadata.py"
 SNAPSHOT_CHECK="$ROOT/scripts/check_public_snapshot_privacy.py"
+GATE_MARKER="$ROOT/.artifacts/ci-gate-passed.sha"
 
 # Keep a normal push convenient while failing closed if Git is pointed anywhere
 # except the one intended public repository. Do not echo a rejected URL because
@@ -120,7 +122,30 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     continue
   fi
 
-  # --- 4. existing refs must advance; establish the exact new history range --
+  # --- 4. main requires an exact local full-gate proof ----------------------
+  if [ "$remote_ref" = "refs/heads/main" ]; then
+    if [ ! -f "$GATE_MARKER" ]; then
+      fail "the full local CI gate has not passed at the commit being pushed."
+      echo "    Run:  ./scripts/ci-test.sh" >&2
+      blocked=1
+      continue
+    fi
+    gate_sha="$(cat "$GATE_MARKER" 2>/dev/null || true)"
+    if [[ ! "$gate_sha" =~ ^[0-9a-f]{40}$ ]]; then
+      fail "the local CI gate marker is malformed."
+      echo "    Run:  ./scripts/ci-test.sh" >&2
+      blocked=1
+      continue
+    fi
+    if [ "$gate_sha" != "$local_sha" ]; then
+      fail "the full local CI gate passed at a different commit."
+      echo "    Run:  ./scripts/ci-test.sh" >&2
+      blocked=1
+      continue
+    fi
+  fi
+
+  # --- 5. existing refs must advance; establish the exact new history range --
   history_arguments=(--history-tip "$local_sha" --ref-name "$remote_ref")
   if ! is_zero_oid "$remote_sha"; then
     if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
@@ -136,7 +161,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     history_arguments+=(--history-base "$remote_sha")
   fi
 
-  # --- 5. reject private identity and every new reachable object -------------
+  # --- 6. reject private identity and every new reachable object -------------
   if ! python3 "$PRIVACY_CHECK" --revision "$local_sha"; then
     fail "the proposed history contains identity metadata that is not privacy-safe."
     blocked=1

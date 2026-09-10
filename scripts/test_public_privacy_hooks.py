@@ -104,9 +104,19 @@ def invoke_pre_push(
     configure_hooks: bool = True,
     remote_name: str = "origin",
     remote_url: str = PUBLIC_REMOTE_URL,
+    gate_marker: str | None = "MATCHING",
 ) -> subprocess.CompletedProcess[str]:
     if configure_hooks:
         git(repo, "config", "core.hooksPath", ".githooks")
+    marker_path = repo / ".artifacts" / "ci-gate-passed.sha"
+    if gate_marker is None:
+        marker_path.unlink(missing_ok=True)
+    else:
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        marker_path.write_text(
+            f"{local_sha if gate_marker == 'MATCHING' else gate_marker}\n",
+            encoding="utf-8",
+        )
     return run(
         [str(repo / ".githooks" / "pre-push"), remote_name, remote_url],
         cwd=repo,

@@ -1185,7 +1185,7 @@ def establish_serial_boundary(
         if require_explicit_reset:
             if re.search(r"Guru Meditation|panic(?:ked|'ed)|assert(?:ion)? failed|abort\(\)|stack canary|Brownout", line, re.IGNORECASE):
                 raise RuntimeIdentityFailure("panic or brownout before reset-to-ready completed")
-            if line.startswith("ESP-ROM:"):
+            if "ESP-ROM:" in line:
                 if rom_start_observed or not re.fullmatch(r"ESP-ROM:esp32s3-[0-9]{8}", line):
                     raise RuntimeIdentityFailure("unexpected or repeated ROM start after explicit reset")
                 rom_start_observed = True

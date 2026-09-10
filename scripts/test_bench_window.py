@@ -2261,7 +2261,7 @@ def test_serial_interrupted_loader_framing_requires_one_exact_rom_banner() -> No
     saved_pc_lines = ("Saved PC:0x40380000", "Saved PC:0xA")
     saved_pc_prefixes = sorted({line[:stop] for line in saved_pc_lines for stop in range(1, len(line) + 1)})
     cases += [(prefix + rom, suffix, [prefix, rom], None) for prefix in saved_pc_prefixes]
-    cases += [(prefix + rom + rom, suffix, None, "unexpected reset reason")
+    cases += [(prefix + rom + rom, suffix, None, "unexpected or repeated ROM start")
               for prefix in prefixes]
     cases += [(prefix + "Guru Meditation Error: panic" + rom, suffix,
                None, "panic or brownout") for prefix in prefixes]
@@ -2275,10 +2275,10 @@ def test_serial_interrupted_loader_framing_requires_one_exact_rom_banner() -> No
                     f"invalid USB reset prefix accepted: {prefix!r}")
         assert_true(not run_window_module._is_rom_saved_pc_prefix(prefix),
                     f"invalid saved-PC prefix accepted: {prefix!r}")
-    cases += [(prefix + rom, suffix, None, "unexpected reset reason")
+    cases += [(prefix + rom, suffix, None, "unexpected or repeated ROM start")
               for prefix in invalid_prefixes if prefix]
     cases += [
-        ("load:0x3fce2" + rom + rom, suffix, None, "unexpected reset reason"),
+        ("load:0x3fce2" + rom + rom, suffix, None, "unexpected or repeated ROM start"),
         ("load:0x3fce2" + rom + "Guru Meditation Error: panic", suffix,
          None, "panic or brownout"),
         ("Guru Meditation Error: panic" + rom, suffix, None, "panic or brownout"),

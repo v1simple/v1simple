@@ -24,16 +24,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Run direct v1replay Swift tests
+      - name: Run v1replay Swift tests
         env:
           DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
           CLANG_MODULE_CACHE_PATH: ${{ github.workspace }}/tools/v1replay/.build/module-cache
           SWIFTPM_MODULECACHE_OVERRIDE: ${{ github.workspace }}/tools/v1replay/.build/module-cache
-        run: |
-          swift build --build-tests --package-path tools/v1replay
-          test_bundle="$(find tools/v1replay/.build -type d -name v1replayPackageTests.xctest -path '*/debug/*' -print -quit)"
-          test -n "$test_bundle"
-          xcrun xctest "$test_bundle"
+        run: swift test --package-path tools/v1replay
 
       - name: Check native camera recorder
         env:

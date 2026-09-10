@@ -3,6 +3,32 @@ import XCTest
 @testable import v1replay
 
 final class V1ReplayEvidenceTests: XCTestCase {
+    func testCheckoutSearchStopsAtRootAcrossFoundationURLRepresentations() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        let file = directory.appendingPathComponent("encounter.json")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data().write(to: file)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let native = URL(fileURLWithPath: file.path)
+            .standardizedFileURL.resolvingSymlinksInPath()
+        let legacy = (NSURL(fileURLWithPath: file.path) as URL)
+            .standardizedFileURL.resolvingSymlinksInPath()
+        XCTAssertNil(ExternalInputPolicy.containingGitCheckout(native))
+        XCTAssertNil(ExternalInputPolicy.containingGitCheckout(legacy))
+
+        let marker = directory.appendingPathComponent(".git")
+        try FileManager.default.createDirectory(at: marker, withIntermediateDirectories: false)
+        XCTAssertEqual(ExternalInputPolicy.containingGitCheckout(native)?.path, directory.path)
+        XCTAssertEqual(ExternalInputPolicy.containingGitCheckout(legacy)?.path, directory.path)
+
+        try FileManager.default.removeItem(at: marker)
+        XCTAssertTrue(FileManager.default.createFile(atPath: marker.path, contents: Data()))
+        XCTAssertEqual(ExternalInputPolicy.containingGitCheckout(native)?.path, directory.path)
+        XCTAssertEqual(ExternalInputPolicy.containingGitCheckout(legacy)?.path, directory.path)
+    }
+
     private func legacySamples(_ times: [Double]) -> [[String: Any]] {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]

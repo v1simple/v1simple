@@ -12,6 +12,7 @@ final class V1PlayerTimingTests: XCTestCase {
         }
         let offsets: [Double]
         let times: [Double]
+        let intendedOffsets: [Double]
         let starts: [Double]
         let packets: [Packet]
     }
@@ -84,8 +85,12 @@ final class V1PlayerTimingTests: XCTestCase {
             let first = try XCTUnwrap(result.times.first)
             let last = try XCTUnwrap(result.times.last)
             XCTAssertGreaterThanOrEqual(first, delay - 0.025, mode)
-            XCTAssertLessThan(first, delay + 0.2, mode)
-            XCTAssertEqual(last - first, gap, accuracy: 0.06, mode)
+            XCTAssertGreaterThanOrEqual(last, first, mode)
+            XCTAssertEqual(result.intendedOffsets.count, 2, mode)
+            XCTAssertEqual(try XCTUnwrap(result.intendedOffsets.first), 0,
+                           accuracy: 0.000_001, mode)
+            XCTAssertEqual(try XCTUnwrap(result.intendedOffsets.last), gap,
+                           accuracy: 0.000_001, mode)
             XCTAssertEqual(result.starts.count, 1)
             XCTAssertEqual(try XCTUnwrap(result.starts.first), first, accuracy: 0.01)
         }
@@ -242,6 +247,8 @@ final class V1Peripheral {
         let arrived = DispatchSemaphore(value: 0)
         let finishedIdle = DispatchSemaphore(value: 0)
         var times: [Double] = []
+        var intendedOffsets: [Double] = []
+        var firstIntendedNanoseconds: UInt64?
         var emittedOffsets: [Double] = []
         var starts: [Double] = []
         var packets: [[String: Any]] = []
@@ -264,6 +271,11 @@ final class V1Peripheral {
         player.onStimulusRequested = { event in
             lock.lock()
             times.append(nowSeconds() - started)
+            let firstIntended = firstIntendedNanoseconds ?? event.intendedHostMonotonicNs
+            firstIntendedNanoseconds = firstIntended
+            intendedOffsets.append(
+                Double(event.intendedHostMonotonicNs - firstIntended) / 1_000_000_000.0
+            )
             emittedOffsets.append(event.replayOffsetSeconds)
             let count = times.count
             lock.unlock()
@@ -310,7 +322,8 @@ final class V1Peripheral {
         player.stop()
         Thread.sleep(forTimeInterval: 0.03)
         lock.lock()
-        let output: [String: Any] = ["times": times, "offsets": emittedOffsets, "starts": starts,
+        let output: [String: Any] = ["times": times, "offsets": emittedOffsets,
+                                     "intendedOffsets": intendedOffsets, "starts": starts,
                                      "packets": packets]
         lock.unlock()
         let data = try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys])

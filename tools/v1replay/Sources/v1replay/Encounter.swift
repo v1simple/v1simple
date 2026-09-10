@@ -477,7 +477,7 @@ struct Encounter {
     }
 }
 
-private enum ExternalInputPolicy {
+enum ExternalInputPolicy {
     static func validate(path: String) throws -> URL {
         let url = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
         var isDirectory: ObjCBool = false
@@ -493,13 +493,17 @@ private enum ExternalInputPolicy {
         return url
     }
 
-    private static func containingGitCheckout(_ fileURL: URL) -> URL? {
+    static func containingGitCheckout(_ fileURL: URL) -> URL? {
         var directory = fileURL.deletingLastPathComponent()
         while true {
             let marker = directory.appendingPathComponent(".git")
             if FileManager.default.fileExists(atPath: marker.path) {
                 return directory
             }
+            // Older Foundation URL implementations can represent the parent
+            // of "/" as "/.." instead of returning "/" again. Stop at the
+            // filesystem root before asking Foundation for another parent.
+            if directory.path == "/" { return nil }
             let parent = directory.deletingLastPathComponent()
             if parent.path == directory.path { return nil }
             directory = parent

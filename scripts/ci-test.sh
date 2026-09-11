@@ -129,6 +129,8 @@ else
 fi
 echo "============================================"
 
+run_step "Tracked source state" python3 scripts/check_tracked_source_state.py
+
 section "Toolchain"
 run_step "PlatformIO Core version" python3 scripts/check_platformio_core_version.py --pio "$PIO_CMD"
 run_step "Workflow action pin contract" python3 scripts/check_workflow_action_pins.py
@@ -138,6 +140,7 @@ run_step "Memory headroom regression suite" python3 scripts/test_check_memory_he
 run_step "Build reset regression suite" python3 scripts/test_build_reset.py
 run_step "ESP32-S3 framework contract regression suite" python3 scripts/test_verify_esp32s3_framework.py
 run_step "Car firmware CI contract regression suite" python3 scripts/test_ci_car_build_contract.py
+run_step "Tracked source state regression suite" python3 scripts/test_check_tracked_source_state.py
 
 section "Privacy"
 # The guards run first, then the tests that prove the guards still work. A
@@ -253,6 +256,7 @@ run_step "Production artifact build" ./scripts/build_production_artifacts.sh
 END_TIME=$(date +%s)
 ELAPSED=$((END_TIME - START_TIME))
 mkdir -p "$ROOT_DIR/.artifacts"
+run_step "Tracked source state" python3 scripts/check_tracked_source_state.py
 git rev-parse HEAD > "$ROOT_DIR/.artifacts/ci-gate-passed.sha"
 
 echo ""

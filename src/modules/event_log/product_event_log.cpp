@@ -82,7 +82,7 @@ bool ProductEventLog::begin(uint32_t bootId, StorageManager& storage) {
     unlockGap();
     storage_ = &storage;
     bootId_ = bootId;
-    eventFile_ = File();
+    eventFile_.close();
     dirty_ = false;
     fileCreated_ = false;
     retainedBytes_ = 0;

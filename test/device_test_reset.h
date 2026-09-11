@@ -11,7 +11,19 @@ static constexpr uint32_t DEVICE_TEST_DONE_MAGIC = 0xBEEFCAFE;
 
 // Survives software reset (esp_restart) but NOT power-cycle / flash-erase.
 static RTC_NOINIT_ATTR uint32_t _deviceTestDoneFlag;
+static RTC_NOINIT_ATTR uint32_t _deviceTestDoneSuiteHash;
 static const char* _deviceTestSuiteName = "";
+
+static inline uint32_t deviceTestSuiteHash(const char* suiteName) {
+    uint32_t hash = 2166136261U;
+    for (const unsigned char* cursor = reinterpret_cast<const unsigned char*>(suiteName);
+         *cursor != '\0';
+         ++cursor) {
+        hash ^= *cursor;
+        hash *= 16777619U;
+    }
+    return hash;
+}
 
 static inline const char* deviceTestGitSha() {
 #ifdef GIT_SHA
@@ -70,14 +82,22 @@ static inline void deviceTestMetricBool(const char* metric,
  */
 static inline bool deviceTestSetup(const char* suiteName) {
     _deviceTestSuiteName = suiteName;
-    // Post-test reboot path — skip tests, keep USB alive
-    if (_deviceTestDoneFlag == DEVICE_TEST_DONE_MAGIC) {
-        _deviceTestDoneFlag = 0;  // Clear for next firmware upload
+    const uint32_t suiteHash = deviceTestSuiteHash(suiteName);
+    // Post-test reboot path — skip only the suite that just completed. A new
+    // suite uploaded before this reboot must not inherit the prior suite's
+    // completion marker and silently produce zero test evidence.
+    if (_deviceTestDoneFlag == DEVICE_TEST_DONE_MAGIC &&
+        _deviceTestDoneSuiteHash == suiteHash) {
+        _deviceTestDoneFlag = 0;
+        _deviceTestDoneSuiteHash = 0;
         Serial.begin(115200);
         delay(500);
         Serial.println("[device_test] Post-test reboot — USB CDC alive for next upload.");
         return true;
     }
+
+    _deviceTestDoneFlag = 0;
+    _deviceTestDoneSuiteHash = 0;
 
     // Normal boot path — init serial and WAIT for PlatformIO to connect
     Serial.begin(115200);
@@ -102,6 +122,7 @@ static inline void deviceTestFinish() {
     Serial.println("[device_test] Tests done — restarting to restore USB CDC...");
     Serial.flush();
     delay(2000);  // Give PlatformIO time to read final output
+    _deviceTestDoneSuiteHash = deviceTestSuiteHash(_deviceTestSuiteName);
     _deviceTestDoneFlag = DEVICE_TEST_DONE_MAGIC;
     esp_restart();
     // Never reaches here

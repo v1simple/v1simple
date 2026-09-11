@@ -42,6 +42,15 @@ class DeviceRunOutputTests(unittest.TestCase):
                 sys.exit(1)
             args = sys.argv[1:]
             name = args[args.index('-f') + 1]
+            if os.environ.get('PIO_ZERO_TEST_SUITE') == name:
+                report = {'test_suites': [{
+                    'env_name': 'device', 'test_name': name, 'status': 'SKIPPED',
+                    'testcase_nums': 0, 'failure_nums': 0, 'error_nums': 0,
+                    'skipped_nums': 0, 'duration': 0.0, 'test_cases': [],
+                }]}
+                Path(args[args.index('--json-output-path') + 1]).write_text(json.dumps(report))
+                Path(args[args.index('--junit-output-path') + 1]).write_text('<testsuites/>')
+                sys.exit(0)
             report = {'test_suites': [{
                 'env_name': 'device', 'test_name': name, 'status': 'PASSED',
                 'testcase_nums': 1, 'failure_nums': 0, 'error_nums': 0,
@@ -53,11 +62,12 @@ class DeviceRunOutputTests(unittest.TestCase):
         """))
         self.pio.chmod(0o755)
 
-    def run_device(self, out, fail=False):
+    def run_device(self, out, fail=False, zero_test_suite=""):
         environment = os.environ.copy()
         environment.update(
             PIO_CMD=str(self.pio), PIO_CALLS=str(self.calls),
             PIO_FAIL_BEFORE_REPORT="1" if fail else "0",
+            PIO_ZERO_TEST_SUITE=zero_test_suite,
             DEVICE_PORT=str(self.port), DEVICE_GIT_SHA="test-revision",
             PLATFORMIO_SKIP_CA_BOOTSTRAP="1", DEVICE_FAIL_CLOSED_TRANSPORT="0",
         )
@@ -109,6 +119,19 @@ class DeviceRunOutputTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(json.loads((out / "manifest.json").read_text())["result"], "FAIL")
         self.assertFalse((out / "test_device_boot.json").exists())
+
+    def test_selected_suite_with_zero_executed_tests_fails_closed(self):
+        out = self.root / "output"
+        result = self.run_device(out, zero_test_suite="test_device_heap")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("did not execute any tests", result.stdout)
+        self.assertIn("produced no executed test evidence", result.stderr)
+        manifest = json.loads((out / "manifest.json").read_text())
+        self.assertEqual(manifest["result"], "FAIL")
+        self.assertEqual(
+            [(row["suite"], row["status"]) for row in manifest["suite_results"]],
+            [("test_device_boot", "PASS"), ("test_device_heap", "FAIL")],
+        )
 
 
 if __name__ == "__main__":

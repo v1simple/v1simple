@@ -246,20 +246,24 @@ echo "==> Inter-suite cooldown: ${SUITE_COOLDOWN_SECONDS}s"
 summarize_json() {
   local json_path="$1"
   local command_status="$2"
-  python3 - "device" "$json_path" "$command_status" <<'PY'
+  local expected_suite="$3"
+  python3 - "device" "$json_path" "$command_status" "$expected_suite" <<'PY'
 import json
 import sys
 
 env_name = sys.argv[1]
 json_path = sys.argv[2]
 command_status = int(sys.argv[3])
+expected_suite = sys.argv[4]
 
 with open(json_path, "r", encoding="utf-8") as f:
     data = json.load(f)
 
 suites = [
     s for s in data.get("test_suites", [])
-    if s.get("env_name") == env_name and s.get("status") != "SKIPPED"
+    if s.get("env_name") == env_name
+    and s.get("test_name") == expected_suite
+    and s.get("status") != "SKIPPED"
 ]
 
 suite_count = len(suites)
@@ -274,9 +278,10 @@ skipped_count = sum(int(s.get("skipped_nums", 0)) for s in suites)
 failure_count = sum(int(s.get("failure_nums", 0)) for s in suites)
 error_count = sum(int(s.get("error_nums", 0)) for s in suites)
 duration_s = sum(float(s.get("duration", 0.0)) for s in suites)
+empty_selection = suite_count != 1 or test_count <= 0 or pass_count <= 0
 
 # Infra errors (serial disconnect, timeout) with all assertions passing = PASS
-if failure_count > 0:
+if empty_selection or failure_count > 0:
     status = "FAIL"
 elif (
     error_count > 0
@@ -295,6 +300,10 @@ print(f"  Suites: {suite_count}  Tests: {test_count}"
       f"  Failures: {failure_count}  Errors: {error_count}")
 print(f"  Duration: {duration_s:.3f}s")
 print(f"{'='*60}\n")
+
+if empty_selection:
+    print(f"  FAILED: expected suite {expected_suite!r} did not execute any tests\n")
+    sys.exit(1)
 
 if failure_count > 0 or (error_count > 0 and command_status == 0):
     for s in suites:
@@ -334,6 +343,7 @@ write_manifest() {
   local base_result="$1"
   python3 - "$MANIFEST_JSON" "$SUITE_INDEX_TSV" "$RUN_ID" "$GIT_SHA" "$GIT_REF" "$BOARD_ID" "$STRESS_CLASS" "$base_result" <<'PY'
 import csv
+import datetime
 import json
 import sys
 from pathlib import Path
@@ -359,7 +369,7 @@ with index_path.open("r", encoding="utf-8") as handle:
 payload = {
     "schema_version": 1,
     "run_id": run_id,
-    "timestamp_utc": __import__("datetime").datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+    "timestamp_utc": datetime.datetime.now(datetime.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
     "git_sha": git_sha,
     "git_ref": git_ref,
     "run_kind": "device_suite",
@@ -490,10 +500,16 @@ except Exception:
     echo "Warning: Suite '$suite' exited $cmd_status but all assertions passed (infra error)." >&2
   fi
 
+  if ! summarize_json "$suite_json" "$cmd_status" "$suite"; then
+    suite_status="FAIL"
+    printf "%s\t%s\t%s\t%s\t%s\t%s\n" \
+      "$suite" "$suite_status" "$suite_json" "$suite_xml" "$suite_log" "$metric_count" >> "$SUITE_INDEX_TSV"
+    echo "Suite '$suite' produced no executed test evidence." >&2
+    return 1
+  fi
+
   printf "%s\t%s\t%s\t%s\t%s\t%s\n" \
     "$suite" "$suite_status" "$suite_json" "$suite_xml" "$suite_log" "$metric_count" >> "$SUITE_INDEX_TSV"
-
-  summarize_json "$suite_json" "$cmd_status"
 }
 
 failed_suite=""

@@ -47,6 +47,13 @@ void PacketParser::resetVolumeState() {
     displayState_.hasSavedVolume = false;
 }
 
+void PacketParser::resetModeAndDisplayState() {
+    displayState_.modeChar = 0;
+    displayState_.hasMode = false;
+    displayState_.displayOn = true;
+    displayState_.hasDisplayOn = false;
+}
+
 void PacketParser::resetAlertStateAt(uint32_t nowMs) {
     const bool hadPublishedAlerts = alertCount_ > 0;
     clearAlertCache();

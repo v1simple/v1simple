@@ -240,6 +240,15 @@ class V1BLEClient {
 
     // Called by main loop when RESP_USER_BYTES received to complete verification
     void onUserBytesReceived(const uint8_t* bytes);
+    void onAllVolumeReceived() { hasSessionAllVolume_ = true; }
+
+    // Session-qualified readback used to persist a pre-Auto-Push detector
+    // snapshot. This state is reset at each authoritative session boundary.
+    void resetSessionSettingsCapture();
+    bool hasSessionUserBytes() const { return hasSessionUserBytes_; }
+    bool hasSessionAllVolume() const { return hasSessionAllVolume_; }
+    bool copySessionUserBytes(uint8_t out[6]) const;
+    bool settingsCaptureTimedOut() const { return settingsCaptureTimedOut_; }
 
     // Disconnect and cleanup
     void disconnect();
@@ -537,8 +546,10 @@ class V1BLEClient {
         REQUEST_ALERT_DATA,
         WAIT_CONNECT_BURST_SETTLE,
         REQUEST_VERSION,
-        REQUEST_ALL_VOLUME,
         WAIT_VERSION,
+        REQUEST_ALL_VOLUME,
+        REQUEST_USER_BYTES,
+        WAIT_SETTINGS_SNAPSHOT,
         NOTIFY_STABLE_CALLBACK,
         BACKUP_BONDS,
     };
@@ -552,17 +563,20 @@ class V1BLEClient {
     static constexpr uint32_t CONNECTED_FOLLOWUP_RETRY_MS = 5;
     static constexpr uint32_t CONNECTED_FOLLOWUP_SEND_TIMEOUT_MS = 1500;
     static constexpr uint32_t VERSION_RESPONSE_TIMEOUT_MS = 1500;
+    static constexpr uint32_t SETTINGS_SNAPSHOT_RESPONSE_TIMEOUT_MS = 1500;
     std::atomic<uint32_t> lastV1ConnectionEventMs_{0};
     std::atomic<uint32_t> connectCompletedAtMs_{0};
     std::atomic<uint32_t> firstRxAfterConnectMs_{0};
     std::atomic<uint32_t> v1FirmwareVersion_{0};
     uint32_t versionRequestStartedMs_ = 0;
+    uint32_t settingsCaptureRequestStartedMs_ = 0;
     uint32_t connectedFollowupNextAttemptMs_ = 0;
     uint32_t connectedFollowupSendDeadlineMs_ = 0;
     uint8_t connectBurstStableLoopCount_ = 0;
     BleLogRateLimitState followupRequestAlertFailLog_;
     BleLogRateLimitState followupRequestVersionFailLog_;
     BleLogRateLimitState followupRequestAllVolumeFailLog_;
+    BleLogRateLimitState followupRequestUserBytesFailLog_;
 
     // Async connect step functions
     bool startAsyncConnect();     // Initiate async connect
@@ -633,6 +647,11 @@ class V1BLEClient {
     bool verifyComplete_ = false;
     bool verifyMatch_ = false;
     std::atomic<bool> verifyPushMatchEdgePending_{false};
+    bool hasSessionUserBytes_ = false;
+    uint8_t sessionUserBytes_[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    bool expectsSessionAllVolume_ = false;
+    bool hasSessionAllVolume_ = false;
+    bool settingsCaptureTimedOut_ = false;
 
     // Callback handlers are RAII-owned to prevent manual delete mistakes.
     std::unique_ptr<ScanCallbacks> pScanCallbacks_;

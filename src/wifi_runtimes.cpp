@@ -534,6 +534,16 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
             return WifiV1ProfileApiService::CatalogStatus::IoError;
         },
         this,
+        [](V1DeviceRecord& device, void* ctx) {
+            return static_cast<WiFiManager*>(ctx)->devices_.getLatestSnapshot(device);
+        },
+        this,
+        [](const uint8_t bytes[6], void* ctx) {
+            V1UserSettings settings;
+            memcpy(settings.bytes, bytes, sizeof(settings.bytes));
+            return static_cast<WiFiManager*>(ctx)->profiles_.settingsToJson(settings);
+        },
+        this,
     };
 }
 

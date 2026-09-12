@@ -76,7 +76,7 @@ struct DisplayState {
     char modeChar;
     bool hasMode;
     bool displayOn;             // True if main display is ON (not dark)
-    bool hasDisplayOn;          // True if we've seen explicit on/off ack
+    bool hasDisplayOn;          // True after infDisplayData or an explicit on/off ACK
     uint8_t flashBits;          // Blink state for arrows (from display packet)
     uint8_t bandFlashBits;      // Blink state for bands (L=0x01, Ka=0x02, K=0x04, X=0x08)
     uint8_t mainVolume;         // Main volume 0-9

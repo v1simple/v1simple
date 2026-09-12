@@ -39,17 +39,27 @@ unsigned long mockMicros = 0;
 
 namespace {
 
-std::vector<uint8_t> makePacket(uint8_t packetId, const std::vector<uint8_t>& payload) {
+std::vector<uint8_t> makePacket(uint8_t packetId, const std::vector<uint8_t>& payload,
+                                uint8_t encodedOriginator = 0xEA) {
     std::vector<uint8_t> packet;
     packet.reserve(6 + payload.size());
     packet.push_back(ESP_PACKET_START);
     packet.push_back(0xDA);
-    packet.push_back(0xE4);
+    packet.push_back(encodedOriginator);
     packet.push_back(packetId);
     packet.push_back(static_cast<uint8_t>(payload.size()));
     packet.insert(packet.end(), payload.begin(), payload.end());
     packet.push_back(ESP_PACKET_END);
     return packet;
+}
+
+void applyEspChecksum(std::vector<uint8_t>& packet) {
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT(8, packet.size());
+    uint8_t checksum = 0;
+    for (size_t index = 0; index + 2 < packet.size(); ++index) {
+        checksum = static_cast<uint8_t>(checksum + packet[index]);
+    }
+    packet[packet.size() - 2] = checksum;
 }
 
 std::vector<uint8_t> makeDisplayPayload(uint8_t bogeyByte,
@@ -71,7 +81,7 @@ std::vector<uint8_t> makeVersionPayload(char major,
                                         char rev2,
                                         char ctrl) {
     // Spec-compliant V1 ESP version response payload (per
-    // AndroidESPLibrary2 ResponseVersion.java): 7 ASCII bytes:
+    // AndroidESPLibrary2 ResponseVersion.java): 7 ASCII bytes plus checksum:
     //   [0] device letter, [1] major, [2] '.', [3] minor,
     //   [4] rev1, [5] rev2, [6] ctrl.
     return std::vector<uint8_t>{static_cast<uint8_t>('v'),
@@ -80,7 +90,8 @@ std::vector<uint8_t> makeVersionPayload(char major,
                                 static_cast<uint8_t>(minor),
                                 static_cast<uint8_t>(rev1),
                                 static_cast<uint8_t>(rev2),
-                                static_cast<uint8_t>(ctrl)};
+                                static_cast<uint8_t>(ctrl),
+                                0x00};
 }
 
 constexpr uint32_t kDefaultParseNowMs = 1000;
@@ -320,9 +331,9 @@ void test_parse_version_packet_ignores_non_digit_payload() {
     const auto packet = makePacket(
         PACKET_ID_RESP_VERSION,
         {static_cast<uint8_t>('v'), static_cast<uint8_t>('4'), static_cast<uint8_t>('.'),
-         static_cast<uint8_t>('1'), 0xFF, static_cast<uint8_t>('2'), static_cast<uint8_t>('8')});
+         static_cast<uint8_t>('1'), 0xFF, static_cast<uint8_t>('2'), static_cast<uint8_t>('8'), 0x00});
 
-    TEST_ASSERT_TRUE(parsePacket(parser, packet));
+    TEST_ASSERT_FALSE(parsePacket(parser, packet));
 
     const DisplayState& state = parser.getDisplayState();
     TEST_ASSERT_FALSE(state.hasV1Version);
@@ -332,27 +343,29 @@ void test_parse_version_packet_ignores_non_digit_payload() {
 
 void test_parse_version_packet_ignores_short_payload() {
     PacketParser parser;
-    // 6-byte payload (one byte short of the spec-required 7).
-    const uint8_t packet[] = {
-        ESP_PACKET_START,
-        0xDA,
-        0xE4,
+    // PL=7 carries the seven ASCII bytes but omits the required checksum.
+    const auto packet = makePacket(
         PACKET_ID_RESP_VERSION,
-        0x06,
-        static_cast<uint8_t>('v'),
-        static_cast<uint8_t>('4'),
-        static_cast<uint8_t>('.'),
-        static_cast<uint8_t>('1'),
-        static_cast<uint8_t>('0'),
-        static_cast<uint8_t>('2'),
-        ESP_PACKET_END
-    };
+        {static_cast<uint8_t>('v'), static_cast<uint8_t>('4'), static_cast<uint8_t>('.'),
+         static_cast<uint8_t>('1'), static_cast<uint8_t>('0'), static_cast<uint8_t>('2'),
+         static_cast<uint8_t>('8')});
 
-    TEST_ASSERT_TRUE(parsePacket(parser, packet));
+    TEST_ASSERT_FALSE(parsePacket(parser, packet));
 
     const DisplayState& state = parser.getDisplayState();
     TEST_ASSERT_FALSE(state.hasV1Version);
     TEST_ASSERT_EQUAL_UINT32(0, state.v1FirmwareVersion);
+}
+
+void test_parse_version_packet_accepts_no_checksum_originator_width() {
+    PacketParser parser;
+    std::vector<uint8_t> payload = makeVersionPayload('4', '1', '0', '2', '8');
+    payload.pop_back();
+    const auto packet = makePacket(PACKET_ID_RESP_VERSION, payload, 0xE9);
+
+    TEST_ASSERT_TRUE(parsePacket(parser, packet));
+    TEST_ASSERT_TRUE(parser.getDisplayState().hasV1Version);
+    TEST_ASSERT_EQUAL_UINT32(41028, parser.getDisplayState().v1FirmwareVersion);
 }
 
 void test_parse_version_packet_preserves_prior_valid_version_on_malformed_followup() {
@@ -361,10 +374,10 @@ void test_parse_version_packet_preserves_prior_valid_version_on_malformed_follow
     const auto malformedPacket = makePacket(
         PACKET_ID_RESP_VERSION,
         {static_cast<uint8_t>('v'), static_cast<uint8_t>('4'), static_cast<uint8_t>('.'),
-         static_cast<uint8_t>('1'), 0xFF, static_cast<uint8_t>('9'), static_cast<uint8_t>('9')});
+         static_cast<uint8_t>('1'), 0xFF, static_cast<uint8_t>('9'), static_cast<uint8_t>('9'), 0x00});
 
     TEST_ASSERT_TRUE(parsePacket(parser, validPacket));
-    TEST_ASSERT_TRUE(parsePacket(parser, malformedPacket));
+    TEST_ASSERT_FALSE(parsePacket(parser, malformedPacket));
 
     const DisplayState& state = parser.getDisplayState();
     TEST_ASSERT_TRUE(state.hasV1Version);
@@ -389,7 +402,7 @@ void test_parse_version_packet_ignores_non_v1_device_letter() {
         PACKET_ID_RESP_VERSION,
         {static_cast<uint8_t>('C'), static_cast<uint8_t>('4'), static_cast<uint8_t>('.'),
          static_cast<uint8_t>('1'), static_cast<uint8_t>('0'), static_cast<uint8_t>('2'),
-         static_cast<uint8_t>('8')});
+         static_cast<uint8_t>('8'), 0x00});
     TEST_ASSERT_TRUE(parsePacket(parser, packet));
     const DisplayState& state = parser.getDisplayState();
     TEST_ASSERT_FALSE(state.hasV1Version);
@@ -408,9 +421,8 @@ void test_parse_display_ack_packets_toggle_display_state() {
     TEST_ASSERT_TRUE(parser.getDisplayState().displayOn);
 }
 
-// Mode is decoded from the bogey-counter 7-segment glyph
-// (payload[0] & 0x7F), not from any aux byte. This test pins the implementation
-// table; original external provenance is UNKNOWN.
+// Without a version-qualified aux mode, preserve the bogey-counter glyph
+// fallback. This table predates the authoritative 4.1028+ aux source.
 void test_parse_display_packet_decodes_mode_from_bogey_glyph() {
     struct Case {
         uint8_t bogeyByte;  // raw 7-seg pattern (no DP)
@@ -425,8 +437,8 @@ void test_parse_display_packet_decodes_mode_from_bogey_glyph() {
         PacketParser parser;
         const auto payload = makeDisplayPayload(c.bogeyByte, 0x00, 0x00, 0x00,
                                                 0x00, 0xFF, 0x00);
-        // Aux1 is intentionally 0xFF to prove the old (aux1>>2)&0x03 source
-        // is no longer consulted.
+        // Aux1 is intentionally 0xFF; without a known version it is not safe
+        // to interpret version-gated mode bits.
         const auto packet = makePacket(PACKET_ID_DISPLAY_DATA, payload);
         TEST_ASSERT_TRUE(parsePacket(parser, packet));
         const DisplayState& state = parser.getDisplayState();
@@ -445,6 +457,70 @@ void test_parse_display_packet_mode_unknown_when_bogey_is_digit() {
     const DisplayState& state = parser.getDisplayState();
     TEST_ASSERT_FALSE(state.hasMode);
     TEST_ASSERT_EQUAL(0, state.modeChar);
+}
+
+void test_mode_observation_survives_alert_glyph_until_session_reset() {
+    PacketParser parser;
+    TEST_ASSERT_TRUE(parsePacket(parser, makePacket(PACKET_ID_DISPLAY_DATA,
+                                                    makeDisplayPayload(0x38, 0, 0, 0, 0x04))));
+    TEST_ASSERT_TRUE(parser.getDisplayState().hasMode);
+    TEST_ASSERT_EQUAL_CHAR('L', parser.getDisplayState().modeChar);
+
+    TEST_ASSERT_TRUE(parsePacket(parser, makePacket(PACKET_ID_DISPLAY_DATA,
+                                                    makeDisplayPayload(0x3F, 0, 0, 0, 0x04))));
+    TEST_ASSERT_TRUE(parser.getDisplayState().hasMode);
+    TEST_ASSERT_EQUAL_CHAR('L', parser.getDisplayState().modeChar);
+
+    parser.resetModeAndDisplayState();
+    TEST_ASSERT_FALSE(parser.getDisplayState().hasMode);
+    TEST_ASSERT_EQUAL_CHAR(0, parser.getDisplayState().modeChar);
+}
+
+void test_version_qualified_aux1_mode_is_authoritative_during_alerts() {
+    struct Case {
+        uint8_t aux0;
+        uint8_t aux1;
+        char expected;
+    };
+    const Case cases[] = {
+        {0x04, 0x04, 'A'}, {0x04, 0x08, 'l'}, {0x04, 0x0C, 'L'},
+        {0x14, 0x04, 'U'}, {0x14, 0x08, 'u'},
+        {0x34, 0x04, 'C'}, {0x34, 0x08, 'c'},
+    };
+    for (const auto& c : cases) {
+        PacketParser parser;
+        TEST_ASSERT_TRUE(parsePacket(parser,
+                                     makePacket(PACKET_ID_RESP_VERSION, makeVersionPayload('4', '1', '0', '2', '8'))));
+        // Bogey glyph is an alert count, so only auxData1 can report mode.
+        TEST_ASSERT_TRUE(parsePacket(parser, makePacket(PACKET_ID_DISPLAY_DATA,
+                                                        makeDisplayPayload(0x3F, 0x03, 0x22, 0x22, c.aux0, c.aux1))));
+        TEST_ASSERT_TRUE(parser.getDisplayState().hasMode);
+        TEST_ASSERT_EQUAL_CHAR(c.expected, parser.getDisplayState().modeChar);
+    }
+}
+
+void test_version_qualified_aux1_rejects_advanced_logic_in_euro_mode() {
+    PacketParser parser;
+    TEST_ASSERT_TRUE(parsePacket(parser,
+                                 makePacket(PACKET_ID_RESP_VERSION, makeVersionPayload('4', '1', '0', '2', '8'))));
+    TEST_ASSERT_TRUE(parsePacket(parser, makePacket(PACKET_ID_DISPLAY_DATA,
+                                                    makeDisplayPayload(0x77, 0x03, 0x22, 0x22, 0x04, 0x0C))));
+    TEST_ASSERT_TRUE(parser.getDisplayState().hasMode);
+    TEST_ASSERT_EQUAL_CHAR('L', parser.getDisplayState().modeChar);
+
+    TEST_ASSERT_TRUE(parsePacket(parser, makePacket(PACKET_ID_DISPLAY_DATA,
+                                                    makeDisplayPayload(0x3F, 0x03, 0x22, 0x22, 0x14, 0x0C))));
+    TEST_ASSERT_FALSE(parser.getDisplayState().hasMode);
+    TEST_ASSERT_EQUAL_CHAR(0, parser.getDisplayState().modeChar);
+}
+
+void test_aux1_mode_is_not_claimed_before_supported_firmware() {
+    PacketParser parser;
+    TEST_ASSERT_TRUE(parsePacket(parser,
+                                 makePacket(PACKET_ID_RESP_VERSION, makeVersionPayload('4', '1', '0', '2', '7'))));
+    TEST_ASSERT_TRUE(parsePacket(parser, makePacket(PACKET_ID_DISPLAY_DATA,
+                                                    makeDisplayPayload(0x3F, 0x03, 0x22, 0x22, 0x04, 0x0C))));
+    TEST_ASSERT_FALSE(parser.getDisplayState().hasMode);
 }
 
 // Spec-correct audio mute is auxData0 bit 0
@@ -560,18 +636,28 @@ void test_parse_display_packet_min_payload_clears_system_status_when_aux0_zero()
     TEST_ASSERT_FALSE(s.softMuted);
 }
 
-// aux0 bit 3 → displayOn is intentionally not consumed
-// because it can hide alerts during V1 dark mode. The
-// 0x32 / 0x33 ACK path still drives displayOn — see
-// test_parse_display_ack_packets_toggle_display_state above.
+void test_display_packet_records_display_state_without_suppressing_alert_data() {
+    PacketParser parser;
+    const auto dark = makePacket(PACKET_ID_DISPLAY_DATA,
+                                 makeDisplayPayload(0x77, 0x03, 0x42, 0x42, 0x04));
+    TEST_ASSERT_TRUE(parsePacket(parser, dark));
+    TEST_ASSERT_TRUE(parser.getDisplayState().hasDisplayOn);
+    TEST_ASSERT_FALSE(parser.getDisplayState().displayOn);
+    TEST_ASSERT_EQUAL_UINT8(BAND_KA, parser.getDisplayState().activeBands);
+
+    const auto light = makePacket(PACKET_ID_DISPLAY_DATA,
+                                  makeDisplayPayload(0x77, 0x03, 0x42, 0x42, 0x0C));
+    TEST_ASSERT_TRUE(parsePacket(parser, light));
+    TEST_ASSERT_TRUE(parser.getDisplayState().displayOn);
+}
 
 // Spec-compliant RESPALLVOLUME 0x3D parser.
-// The 4-byte payload [main, muted, savedMain, savedMuted] populates
+// The four values [main, muted, savedMain, savedMuted] plus checksum populate
 // mainVolume/muteVolume (overriding aux2 inference) plus the new
 // savedMainVolume/savedMuteVolume pair, and sets hasSavedVolume=true.
 void test_parse_resp_all_volume_populates_volume_fields() {
     PacketParser parser;
-    const std::vector<uint8_t> payload = {0x07, 0x02, 0x09, 0x03};  // main=7 muted=2 savedMain=9 savedMuted=3
+    const std::vector<uint8_t> payload = {0x07, 0x02, 0x09, 0x03, 0x00};
     const auto pkt = makePacket(PACKET_ID_RESP_ALL_VOLUME, payload);
     TEST_ASSERT_TRUE(parsePacket(parser, pkt));
     const DisplayState& s = parser.getDisplayState();
@@ -598,7 +684,7 @@ void test_resp_all_volume_overrides_display_aux2_inference() {
 
     // Now RESPALLVOLUME with different values — should win.
     const auto vol = makePacket(PACKET_ID_RESP_ALL_VOLUME,
-                                std::vector<uint8_t>{0x05, 0x01, 0x08, 0x04});
+                                std::vector<uint8_t>{0x05, 0x01, 0x08, 0x04, 0x00});
     TEST_ASSERT_TRUE(parsePacket(parser, vol));
     TEST_ASSERT_EQUAL_UINT8(5, parser.getDisplayState().mainVolume);
     TEST_ASSERT_EQUAL_UINT8(1, parser.getDisplayState().muteVolume);
@@ -609,14 +695,25 @@ void test_resp_all_volume_overrides_display_aux2_inference() {
 
 void test_parse_resp_all_volume_rejects_short_payload() {
     PacketParser parser;
-    // Only 3 bytes of payload — must not populate saved-volume fields.
+    // PL=4 omits the checksum; it must not populate saved-volume fields.
     const auto pkt = makePacket(PACKET_ID_RESP_ALL_VOLUME,
-                                std::vector<uint8_t>{0x07, 0x02, 0x09});
-    TEST_ASSERT_TRUE(parsePacket(parser, pkt));
+                                std::vector<uint8_t>{0x07, 0x02, 0x09, 0x03});
+    TEST_ASSERT_FALSE(parsePacket(parser, pkt));
     const DisplayState& s = parser.getDisplayState();
     TEST_ASSERT_FALSE(s.hasSavedVolume);
     TEST_ASSERT_EQUAL_UINT8(0, s.savedMainVolume);
     TEST_ASSERT_EQUAL_UINT8(0, s.savedMuteVolume);
+}
+
+void test_parse_resp_all_volume_accepts_no_checksum_originator_width() {
+    PacketParser parser;
+    const auto pkt = makePacket(PACKET_ID_RESP_ALL_VOLUME,
+                                std::vector<uint8_t>{0x07, 0x02, 0x09, 0x03}, 0xE9);
+    TEST_ASSERT_TRUE(parsePacket(parser, pkt));
+    const DisplayState& state = parser.getDisplayState();
+    TEST_ASSERT_TRUE(state.hasSavedVolume);
+    TEST_ASSERT_EQUAL_UINT8(9, state.savedMainVolume);
+    TEST_ASSERT_EQUAL_UINT8(3, state.savedMuteVolume);
 }
 
 void test_canonical_resp_all_volume_updates_state() {
@@ -635,9 +732,8 @@ void test_canonical_resp_all_volume_updates_state() {
 #endif
 }
 
-void test_noncanonical_resp_all_volume_shapes_update_state() {
+void test_noncanonical_resp_all_volume_shapes_do_not_update_state() {
 #ifndef ARDUINO
-    PacketParser parser;
     const uint8_t shortPacket[] = {
         0xAA, 0xD6, 0xEA, 0x3D, 0x04, 0x01, 0x02, 0x03, 0x04, 0xAB,
     };
@@ -651,35 +747,47 @@ void test_noncanonical_resp_all_volume_shapes_update_state() {
         0xAA, 0xD6, 0xEA, 0x3D, 0x06, 0x04, 0x05, 0x06, 0x07, 0xC3, 0xAB,
     };
 
-    TEST_ASSERT_TRUE(parser.parse(shortPacket, sizeof(shortPacket), kDefaultParseNowMs));
-    TEST_ASSERT_EQUAL_UINT8(1, parser.getDisplayState().mainVolume);
-
-    TEST_ASSERT_TRUE(parser.parse(overlongPacket, sizeof(overlongPacket), kDefaultParseNowMs));
-    TEST_ASSERT_EQUAL_UINT8(2, parser.getDisplayState().mainVolume);
-
-    TEST_ASSERT_TRUE(parser.parse(declaredShortPacket, sizeof(declaredShortPacket), kDefaultParseNowMs));
-    TEST_ASSERT_EQUAL_UINT8(3, parser.getDisplayState().mainVolume);
-
-    TEST_ASSERT_TRUE(parser.parse(declaredLongPacket, sizeof(declaredLongPacket), kDefaultParseNowMs));
-    TEST_ASSERT_EQUAL_UINT8(4, parser.getDisplayState().mainVolume);
+    const struct {
+        const uint8_t* packet;
+        size_t size;
+    } cases[] = {{shortPacket, sizeof(shortPacket)},
+                 {overlongPacket, sizeof(overlongPacket)},
+                 {declaredShortPacket, sizeof(declaredShortPacket)},
+                 {declaredLongPacket, sizeof(declaredLongPacket)}};
+    for (const auto& c : cases) {
+        PacketParser parser;
+        TEST_ASSERT_FALSE(parser.parse(c.packet, c.size, kDefaultParseNowMs));
+        TEST_ASSERT_FALSE(parser.getDisplayState().hasVolumeData);
+        TEST_ASSERT_FALSE(parser.getDisplayState().hasSavedVolume);
+    }
 #endif
 }
 
-void test_resp_all_volume_any_out_of_range_field_updates_state() {
-#ifndef ARDUINO
+void test_resp_all_volume_rejects_out_of_range_fields_atomically() {
     PacketParser parser;
-    const uint8_t packets[][11] = {
-        {0xAA, 0xD6, 0xEA, 0x3D, 0x05, 0x0A, 0x02, 0x04, 0x00, 0xBC, 0xAB},
-        {0xAA, 0xD6, 0xEA, 0x3D, 0x05, 0x07, 0x0A, 0x04, 0x00, 0xC1, 0xAB},
-        {0xAA, 0xD6, 0xEA, 0x3D, 0x05, 0x07, 0x02, 0x0A, 0x00, 0xBF, 0xAB},
-        {0xAA, 0xD6, 0xEA, 0x3D, 0x05, 0x07, 0x02, 0x04, 0x0A, 0xC3, 0xAB},
-    };
+    auto prior = makePacket(PACKET_ID_RESP_ALL_VOLUME,
+                            std::vector<uint8_t>{0x01, 0x02, 0x03, 0x04, 0x00});
+    applyEspChecksum(prior);
+    TEST_ASSERT_TRUE(parsePacket(parser, prior));
 
-    for (const auto& packet : packets) {
-        TEST_ASSERT_TRUE(parser.parse(packet, sizeof(packet), kDefaultParseNowMs));
-        TEST_ASSERT_TRUE(parser.getDisplayState().hasSavedVolume);
+    const uint8_t invalidValues[] = {0x10, 0x17};
+    for (uint8_t invalid : invalidValues) {
+        for (size_t position = 0; position < 4; ++position) {
+            std::vector<uint8_t> payload = {0x05, 0x06, 0x07, 0x08, 0x00};
+            payload[position] = invalid;
+            auto malformed = makePacket(PACKET_ID_RESP_ALL_VOLUME, payload);
+            applyEspChecksum(malformed); // Framing/checksum valid; only the full-byte value is invalid.
+
+            TEST_ASSERT_FALSE(parsePacket(parser, malformed));
+            const DisplayState& state = parser.getDisplayState();
+            TEST_ASSERT_TRUE(state.hasVolumeData);
+            TEST_ASSERT_TRUE(state.hasSavedVolume);
+            TEST_ASSERT_EQUAL_UINT8(0x01, state.mainVolume);
+            TEST_ASSERT_EQUAL_UINT8(0x02, state.muteVolume);
+            TEST_ASSERT_EQUAL_UINT8(0x03, state.savedMainVolume);
+            TEST_ASSERT_EQUAL_UINT8(0x04, state.savedMuteVolume);
+        }
     }
-#endif
 }
 
 void test_canonical_width_wrong_id_does_not_update_volume() {
@@ -768,24 +876,31 @@ int main(int argc, char** argv) {
     RUN_TEST(test_reset_v1_version_requires_a_fresh_session_response);
     RUN_TEST(test_parse_version_packet_ignores_non_digit_payload);
     RUN_TEST(test_parse_version_packet_ignores_short_payload);
+    RUN_TEST(test_parse_version_packet_accepts_no_checksum_originator_width);
     RUN_TEST(test_parse_version_packet_preserves_prior_valid_version_on_malformed_followup);
     RUN_TEST(test_parse_version_packet_rejects_request_id);
     RUN_TEST(test_parse_version_packet_ignores_non_v1_device_letter);
     RUN_TEST(test_parse_display_ack_packets_toggle_display_state);
     RUN_TEST(test_parse_display_packet_decodes_mode_from_bogey_glyph);
     RUN_TEST(test_parse_display_packet_mode_unknown_when_bogey_is_digit);
+    RUN_TEST(test_mode_observation_survives_alert_glyph_until_session_reset);
+    RUN_TEST(test_version_qualified_aux1_mode_is_authoritative_during_alerts);
+    RUN_TEST(test_version_qualified_aux1_rejects_advanced_logic_in_euro_mode);
+    RUN_TEST(test_aux1_mode_is_not_claimed_before_supported_firmware);
     RUN_TEST(test_parse_display_packet_softmuted_tracks_aux0_bit_0);
     RUN_TEST(test_parse_display_packet_softmuted_independent_of_led_mute);
     RUN_TEST(test_parse_display_packet_suppresses_bands_when_system_status_clear);
     RUN_TEST(test_parse_display_packet_rejects_short_payload);
     RUN_TEST(test_parse_display_packet_min_payload_clears_system_status_when_aux0_zero);
     RUN_TEST(test_parse_display_packet_reports_bands_when_system_status_set);
+    RUN_TEST(test_display_packet_records_display_state_without_suppressing_alert_data);
     RUN_TEST(test_parse_resp_all_volume_populates_volume_fields);
     RUN_TEST(test_resp_all_volume_overrides_display_aux2_inference);
     RUN_TEST(test_parse_resp_all_volume_rejects_short_payload);
+    RUN_TEST(test_parse_resp_all_volume_accepts_no_checksum_originator_width);
     RUN_TEST(test_canonical_resp_all_volume_updates_state);
-    RUN_TEST(test_noncanonical_resp_all_volume_shapes_update_state);
-    RUN_TEST(test_resp_all_volume_any_out_of_range_field_updates_state);
+    RUN_TEST(test_noncanonical_resp_all_volume_shapes_do_not_update_state);
+    RUN_TEST(test_resp_all_volume_rejects_out_of_range_fields_atomically);
     RUN_TEST(test_canonical_width_wrong_id_does_not_update_volume);
     RUN_TEST(test_decode_signal_bars_renders_valid_bitmaps_literally_and_fails_loud);
     RUN_TEST(test_all_v1_bitmaps_are_bounded_by_eight_protocol_leds);

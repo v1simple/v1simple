@@ -72,6 +72,10 @@ class PacketParser {
     // Volume values are authoritative only within the link that reported them.
     void resetVolumeState();
 
+    // Mode and display observations belong to one detector link and must not
+    // leak into a snapshot captured from a later connection.
+    void resetModeAndDisplayState();
+
     // Observe complete V1 alert tables. The callback runs on the parser path,
     // so it must remain non-blocking and allocation-free.
     void setAlertTableObserver(AlertTableObserver observer, void* context = nullptr) {

@@ -344,6 +344,40 @@ void test_json_to_settings_raw_bytes_win_over_conflicting_readable_fields() {
     TEST_ASSERT_EQUAL_UINT8(3, settings.autoMute());
 }
 
+void test_captured_base_bytes_preserve_reserved_bits_through_edit_save_and_reload() {
+    fs::FS fs(g_tempRoot);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&fs));
+
+    V1UserSettings captured;
+    TEST_ASSERT_TRUE(manager.jsonToSettings(
+        String("{\"baseBytes\":[255,255,255,255,165,90],\"gatsoRT4\":true}"), captured));
+    // gatsoRT4 clears only byte 4 bit 0. Reserved/high bits and the wholly
+    // opaque sixth byte must retain their detector-captured values.
+    TEST_ASSERT_EQUAL_HEX8(0xA4, captured.bytes[4]);
+    TEST_ASSERT_EQUAL_HEX8(0x5A, captured.bytes[5]);
+
+    V1Profile draft("Captured draft");
+    draft.settings = captured;
+    TEST_ASSERT_TRUE(manager.saveProfile(draft).success);
+
+    V1Profile reloaded;
+    TEST_ASSERT_TRUE(manager.loadProfile("Captured draft", reloaded));
+    TEST_ASSERT_EQUAL_HEX8(0xA4, reloaded.settings.bytes[4]);
+    TEST_ASSERT_EQUAL_HEX8(0x5A, reloaded.settings.bytes[5]);
+    TEST_ASSERT_TRUE(reloaded.settings.gatsoRT4());
+}
+
+void test_malformed_base_bytes_are_rejected_without_partial_mutation() {
+    V1ProfileManager manager;
+    V1UserSettings settings = makeProfile("Sentinel", 100).settings;
+    const V1UserSettings before = settings;
+
+    TEST_ASSERT_FALSE(manager.jsonToSettings(
+        String("{\"baseBytes\":[255,255,255,255,165,\"bad\"],\"gatsoRT4\":true}"), settings));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(before.bytes, settings.bytes, 6);
+}
+
 void test_v41039_photo_settings_round_trip_through_json() {
     V1ProfileManager manager;
     V1UserSettings settings;
@@ -774,6 +808,8 @@ int main() {
     RUN_TEST(test_json_to_settings_strictly_validates_human_readable_fields_without_mutation);
     RUN_TEST(test_existing_raw_mute_bit_is_preserved_and_reported_truthfully);
     RUN_TEST(test_json_to_settings_raw_bytes_win_over_conflicting_readable_fields);
+    RUN_TEST(test_captured_base_bytes_preserve_reserved_bits_through_edit_save_and_reload);
+    RUN_TEST(test_malformed_base_bytes_are_rejected_without_partial_mutation);
     RUN_TEST(test_v41039_photo_settings_round_trip_through_json);
     RUN_TEST(test_rename_same_name_is_successful_noop);
     RUN_TEST(test_path_like_name_is_rejected_without_creating_a_profile);

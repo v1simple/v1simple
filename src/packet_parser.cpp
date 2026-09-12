@@ -11,6 +11,8 @@
 
 #include "packet_parser.h"
 #include "config.h"
+#include "v1_firmware_compat.h"
+#include "v1_packet_framing.h"
 
 namespace {
 struct BandArrowData {
@@ -199,43 +201,45 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
         //   [5] = revision digit 2
         //   [6] = engineering control number digit
         // Example bytes: 'v','4','.','1','0','2','8' → "v4.1028" → 41028.
-        const size_t declaredPayloadLen = data[4];
-        if (payload && payloadLen >= 7 && declaredPayloadLen >= 7) {
-            const uint8_t letter = payload[0];
-            const bool letterAlphabetic = (letter >= 'A' && letter <= 'Z') || (letter >= 'a' && letter <= 'z');
-            if (letterAlphabetic && isAsciiDigit(payload[1]) && payload[2] == '.' && isAsciiDigit(payload[3]) &&
-                isAsciiDigit(payload[4]) && isAsciiDigit(payload[5]) && isAsciiDigit(payload[6])) {
-                char major = static_cast<char>(payload[1]);
-                char minor = static_cast<char>(payload[3]);
-                char rev1 = static_cast<char>(payload[4]);
-                char rev2 = static_cast<char>(payload[5]);
-                char ctrl = static_cast<char>(payload[6]);
+        // ESP originator EAh carries seven ASCII version bytes plus checksum
+        // (PL=8); no-checksum E9h canonically carries just those seven bytes
+        // (PL=7). Other origins cannot qualify persisted V1 capabilities.
+        if (!payload || !V1PacketFraming::hasCanonicalResponseWidth(data, length, 7)) return false;
+        const uint8_t letter = payload[0];
+        const bool letterAlphabetic = (letter >= 'A' && letter <= 'Z') || (letter >= 'a' && letter <= 'z');
+        if (!letterAlphabetic || !isAsciiDigit(payload[1]) || payload[2] != '.' || !isAsciiDigit(payload[3]) ||
+            !isAsciiDigit(payload[4]) || !isAsciiDigit(payload[5]) || !isAsciiDigit(payload[6])) {
+            return false;
+        }
+        char major = static_cast<char>(payload[1]);
+        char minor = static_cast<char>(payload[3]);
+        char rev1 = static_cast<char>(payload[4]);
+        char rev2 = static_cast<char>(payload[5]);
+        char ctrl = static_cast<char>(payload[6]);
 
-                uint32_t version = static_cast<uint32_t>(major - '0') * 10000u +
-                                   static_cast<uint32_t>(minor - '0') * 1000u +
-                                   static_cast<uint32_t>(rev1 - '0') * 100u + static_cast<uint32_t>(rev2 - '0') * 10u +
-                                   static_cast<uint32_t>(ctrl - '0');
+        uint32_t version = static_cast<uint32_t>(major - '0') * 10000u +
+                           static_cast<uint32_t>(minor - '0') * 1000u +
+                           static_cast<uint32_t>(rev1 - '0') * 100u + static_cast<uint32_t>(rev2 - '0') * 10u +
+                           static_cast<uint32_t>(ctrl - '0');
 
-                // Only record main V1 firmware versions; ignore replies
-                // from other ESP devices on the bus (Concealed Display,
-                // Remote Audio, Savvy).
-                if (letter == 'v' || letter == 'V') {
-                    // Log only when this is the first observation OR the
-                    // reported version actually changed. V1 firmware does
-                    // not hot-swap mid-session, so the steady-state cost
-                    // of repeated 0x02 replies must be zero — a blocking
-                    // Serial.printf on every reply adds tail-latency on
-                    // the BLE-notify hot path (sd_max_peak_us /
-                    // wifi_p95_us regressions).
-                    const bool versionChanged =
-                        !displayState_.hasV1Version || displayState_.v1FirmwareVersion != version;
-                    displayState_.v1FirmwareVersion = version;
-                    displayState_.hasV1Version = true;
-                    if (versionChanged) {
-                        Serial.printf("[PacketParser] V1 firmware version: %c.%c%c%c%c (v%lu)\n", major, minor, rev1,
-                                      rev2, ctrl, version);
-                    }
-                }
+        // Only record main V1 firmware versions; ignore replies
+        // from other ESP devices on the bus (Concealed Display,
+        // Remote Audio, Savvy).
+        if (letter == 'v' || letter == 'V') {
+            // Log only when this is the first observation OR the
+            // reported version actually changed. V1 firmware does
+            // not hot-swap mid-session, so the steady-state cost
+            // of repeated 0x02 replies must be zero — a blocking
+            // Serial.printf on every reply adds tail-latency on
+            // the BLE-notify hot path (sd_max_peak_us /
+            // wifi_p95_us regressions).
+            const bool versionChanged =
+                !displayState_.hasV1Version || displayState_.v1FirmwareVersion != version;
+            displayState_.v1FirmwareVersion = version;
+            displayState_.hasV1Version = true;
+            if (versionChanged) {
+                Serial.printf("[PacketParser] V1 firmware version: %c.%c%c%c%c (v%lu)\n", major, minor, rev1, rev2,
+                              ctrl, version);
             }
         }
         return true;
@@ -249,15 +253,20 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
         //   [3] = saved muted volume    (0..9)
         // This is the authoritative source — overwrite the aux2-derived
         // mainVolume/muteVolume values from display packets when present.
-        const size_t declaredPayloadLen = data[4];
-        if (payload && payloadLen >= 4 && declaredPayloadLen >= 4) {
-            displayState_.mainVolume = payload[0] & 0x0F;
-            displayState_.muteVolume = payload[1] & 0x0F;
-            displayState_.savedMainVolume = payload[2] & 0x0F;
-            displayState_.savedMuteVolume = payload[3] & 0x0F;
-            displayState_.hasVolumeData = true;
-            displayState_.hasSavedVolume = true;
-        }
+        // ESP originator EAh uses PL=5 (four values plus checksum), while
+        // no-checksum E9h uses PL=4. Origin-qualified width validation keeps a
+        // checksum byte from becoming persisted saved-muted volume.
+        if (!payload || !V1PacketFraming::hasCanonicalResponseWidth(data, length, 4)) return false;
+        // These are full-byte values, not packed nibbles. Reject the complete
+        // response before mutating state so malformed wire data cannot be
+        // normalized into a truthful-looking 0..9 snapshot.
+        if (payload[0] > 9 || payload[1] > 9 || payload[2] > 9 || payload[3] > 9) return false;
+        displayState_.mainVolume = payload[0];
+        displayState_.muteVolume = payload[1];
+        displayState_.savedMainVolume = payload[2];
+        displayState_.savedMuteVolume = payload[3];
+        displayState_.hasVolumeData = true;
+        displayState_.hasSavedVolume = true;
         return true;
     }
     case PACKET_ID_REQ_ALL_VOLUME: // 0x3C - outbound request, ignore echoes
@@ -336,19 +345,16 @@ bool PacketParser::parseDisplayData(const uint8_t* payload, size_t length) {
     // softMuted is exposed as its own field; systemStatus gates the band /
     // arrow indicators below.
     //
-    // bit 3 (0x08) — isDisplayOn — is intentionally NOT mirrored here. A
-    // renderer-side short-circuit on aux0 bit 3 would hide alerts during V1
-    // dark mode (V1 wakes its display on alert; ours would stay blank) and
-    // its off↔on transitions would cause full-frame clear()+repaint storms
-    // that regress soak peak latencies. displayOn is still maintained from
-    // the explicit 0x32 / 0x33 ACKs; aux0 bit 3 is not consumed until the
-    // renderer can paint alerts on a dark base without throwing away its
-    // frame.
+    // bit 3 (0x08) — isDisplayOn — is recorded for settings snapshots and
+    // command verification. No renderer uses displayOn as a blanking gate: a
+    // live alert must remain visible on V1Simple while the V1 is in dark mode.
     bool auxSystemStatus = false;
     if (length > 5) {
         const uint8_t aux0 = payload[5];
         displayState_.softMuted = (aux0 & 0x01) != 0;
         auxSystemStatus = (aux0 & 0x04) != 0;
+        displayState_.displayOn = (aux0 & 0x08) != 0;
+        displayState_.hasDisplayOn = true;
     } else {
         displayState_.softMuted = false;
     }
@@ -473,13 +479,45 @@ uint8_t PacketParser::decodeLEDBitmap(uint8_t bitmap) const {
 }
 
 void PacketParser::decodeMode(const uint8_t* payload, size_t length) {
-    // Mode is only recoverable from the bogey-counter glyph while the V1 is
-    // not using that glyph to show an alert count / verdict.
+    // V1 4.1028+ reports the mode continuously in auxData1 bits 2-3, including
+    // while the bogey glyph is occupied by an alert count. Older or
+    // version-unknown sessions retain the display-glyph fallback below.
+    if (payload && length > 6 && displayState_.hasV1Version &&
+        V1FirmwareCompat::capabilities(displayState_.v1FirmwareVersion).modeObservation) {
+        const bool euroMode = (payload[5] & 0x10) != 0;
+        const bool customSweeps = (payload[5] & 0x20) != 0;
+        char qualifiedMode = 0;
+        switch ((payload[6] >> 2) & 0x03) {
+        case 1:
+            qualifiedMode = euroMode ? (customSweeps ? 'C' : 'U') : 'A';
+            break;
+        case 2:
+            qualifiedMode = euroMode ? (customSweeps ? 'c' : 'u') : 'l';
+            break;
+        case 3:
+            if (!euroMode) qualifiedMode = 'L';
+            break;
+        default:
+            break;
+        }
+        if (qualifiedMode == 0) {
+            // Code 3 is invalid in Euro mode, and code 0 is unknown. Do not
+            // retain an earlier US glyph as if it described this packet.
+            displayState_.modeChar = 0;
+            displayState_.hasMode = false;
+            return;
+        }
+        displayState_.modeChar = qualifiedMode;
+        displayState_.hasMode = true;
+        return;
+    }
+
+    // The fallback is recoverable only while the V1 is not using the bogey
+    // counter to show an alert count / verdict.
     // The V1 mode is encoded as a 7-segment glyph in the bogey-counter image
     // byte (payload[0]), with the high bit being the decimal point. The accepted
     // glyph table is pinned by test_parse_display_packet_decodes_mode_from_bogey_glyph;
-    // original external provenance is UNKNOWN. No mode bits are read from
-    // auxData1.
+    // original external provenance is UNKNOWN.
     //
     //   0x77 = 'A' All Bogeys Mode (USA)
     //   0x39 = 'C' K + Custom Sweeps (USA)
@@ -489,8 +527,6 @@ void PacketParser::decodeMode(const uint8_t* payload, size_t length) {
     //   0x58 = 'c' Custom Sweeps (lower)
     //   0x38 = 'L' Advanced Logic Mode (USA)
     if (!payload || length < 1) {
-        displayState_.modeChar = 0;
-        displayState_.hasMode = false;
         return;
     }
 
@@ -519,9 +555,8 @@ void PacketParser::decodeMode(const uint8_t* payload, size_t length) {
         mode = 'L';
         break;
     default:
-        mode = 0;
-        break; // Bogey shows a digit/other -> alerting,
-               // mode not determinable.
+        return; // Bogey shows a digit/other -> alerting. Preserve the last
+                // mode actually observed in this detector session.
     }
     displayState_.modeChar = mode;
     displayState_.hasMode = (mode != 0);

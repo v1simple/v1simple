@@ -45,13 +45,14 @@ V1ProfileManager profiles;
 DisplayPreviewModule preview;
 PowerModule power;
 
-std::vector<uint8_t> makeFrame(uint8_t packetId, size_t payloadLength, uint8_t fill) {
+std::vector<uint8_t> makeFrame(uint8_t packetId, size_t payloadLength, uint8_t fill,
+                               uint8_t encodedOriginator = 0xEA) {
     TEST_ASSERT_LESS_OR_EQUAL_UINT8(255, payloadLength);
     std::vector<uint8_t> frame;
     frame.reserve(payloadLength + 6);
     frame.push_back(ESP_PACKET_START);
     frame.push_back(0xDA);
-    frame.push_back(0xE4);
+    frame.push_back(encodedOriginator);
     frame.push_back(packetId);
     frame.push_back(static_cast<uint8_t>(payloadLength));
     frame.insert(frame.end(), payloadLength, fill);
@@ -201,6 +202,53 @@ void test_stale_stamped_packets_cannot_trigger_downstream_effects() {
     TEST_ASSERT_FALSE(queue.consumeParsedFlag());
 }
 
+void test_truncated_user_bytes_response_cannot_complete_capture() {
+    beginQueue();
+    // PL=6 is five settings bytes plus checksum. The old >=12-byte check
+    // copied the checksum into settings byte six and completed the capture.
+    const std::vector<uint8_t> truncated = makeFrame(PACKET_ID_RESP_USER_BYTES, 6, 0x42);
+    TEST_ASSERT_EQUAL_UINT(12, truncated.size());
+    TEST_ASSERT_TRUE(queue.tryOnNotify(truncated.data(), truncated.size(), kCharacteristic, kSession, 425));
+    queue.process();
+
+    TEST_ASSERT_EQUAL_INT(0, client.onUserBytesReceivedCalls);
+    TEST_ASSERT_EQUAL_INT(0, profiles.setCurrentSettingsCalls);
+    TEST_ASSERT_FALSE(client.hasSessionUserBytes());
+
+    const std::vector<uint8_t> canonical = makeFrame(PACKET_ID_RESP_USER_BYTES, 7, 0x43);
+    TEST_ASSERT_EQUAL_UINT(13, canonical.size());
+    TEST_ASSERT_TRUE(queue.tryOnNotify(canonical.data(), canonical.size(), kCharacteristic, kSession, 426));
+    queue.process();
+    TEST_ASSERT_EQUAL_INT(1, client.onUserBytesReceivedCalls);
+    TEST_ASSERT_EQUAL_INT(1, profiles.setCurrentSettingsCalls);
+    TEST_ASSERT_TRUE(client.hasSessionUserBytes());
+
+    // The same PL=6 is complete only when the packet identifies a
+    // no-checksum V1 (E9h): all six payload bytes are settings bytes.
+    const std::vector<uint8_t> noChecksum = makeFrame(PACKET_ID_RESP_USER_BYTES, 6, 0x44, 0xE9);
+    TEST_ASSERT_TRUE(queue.tryOnNotify(noChecksum.data(), noChecksum.size(), kCharacteristic, kSession, 427));
+    queue.process();
+    TEST_ASSERT_EQUAL_INT(2, client.onUserBytesReceivedCalls);
+    TEST_ASSERT_EQUAL_INT(2, profiles.setCurrentSettingsCalls);
+}
+
+void test_rejected_all_volume_response_cannot_complete_capture() {
+    beginQueue();
+    // Model the production parser rejecting a canonical-width response whose
+    // first full-byte volume value is out of the 0..9 protocol range. Preserve
+    // a prior valid parser observation to prove parse failure gates completion.
+    parser.parseReturnValue = false;
+    parser.state.hasSavedVolume = true;
+    const std::vector<uint8_t> malformed = makeFrame(PACKET_ID_RESP_ALL_VOLUME, 5, 0x17);
+
+    TEST_ASSERT_TRUE(queue.tryOnNotify(malformed.data(), malformed.size(), kCharacteristic, kSession, 428));
+    queue.process();
+
+    TEST_ASSERT_EQUAL_INT(1, parser.parseCalls);
+    TEST_ASSERT_EQUAL_INT(0, client.onAllVolumeReceivedCalls);
+    TEST_ASSERT_FALSE(client.hasSessionAllVolume());
+}
+
 void test_only_successfully_parsed_alert_packets_trigger_runtime_effects() {
     beginQueue();
     preview.running = true;
@@ -277,6 +325,8 @@ int main(int, char**) {
     RUN_TEST(test_multiple_frames_in_one_notification_are_all_parsed_in_order);
     RUN_TEST(test_session_reset_discards_old_queue_and_partial_buffer);
     RUN_TEST(test_stale_stamped_packets_cannot_trigger_downstream_effects);
+    RUN_TEST(test_truncated_user_bytes_response_cannot_complete_capture);
+    RUN_TEST(test_rejected_all_volume_response_cannot_complete_capture);
     RUN_TEST(test_only_successfully_parsed_alert_packets_trigger_runtime_effects);
     RUN_TEST(test_queue_saturation_counts_only_rejected_admission_and_preserves_head);
     RUN_TEST(test_malformed_input_resynchronizes_to_following_valid_frame);

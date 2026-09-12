@@ -56,7 +56,7 @@ std::vector<uint8_t> makePacket(uint8_t packetId, const std::vector<uint8_t>& pa
     packet.reserve(6 + payload.size());
     packet.push_back(ESP_PACKET_START);
     packet.push_back(0xDA); // Dest (not validated by parser)
-    packet.push_back(0xE4); // Orig (not validated by parser)
+    packet.push_back(0xEA); // Checksum-capable V1 originator
     packet.push_back(packetId);
     packet.push_back(static_cast<uint8_t>(payload.size())); // Length hint (not enforced)
     packet.insert(packet.end(), payload.begin(), payload.end());
@@ -72,10 +72,10 @@ std::vector<uint8_t> makeDisplayPayload(uint8_t bogeyByte, uint8_t barBitmap, ui
 }
 
 std::vector<uint8_t> makeVersionPayload(char major, char minor, char rev1, char rev2, char ctrl) {
-    // Spec-compliant: [letter, major, '.', minor, rev1, rev2, ctrl].
+    // Spec-compliant: [letter, major, '.', minor, rev1, rev2, ctrl, checksum].
     return std::vector<uint8_t>{static_cast<uint8_t>('v'),   static_cast<uint8_t>(major), static_cast<uint8_t>('.'),
                                 static_cast<uint8_t>(minor), static_cast<uint8_t>(rev1),  static_cast<uint8_t>(rev2),
-                                static_cast<uint8_t>(ctrl)};
+                                static_cast<uint8_t>(ctrl),  0x00};
 }
 
 std::vector<uint8_t> makeAlertPayload(uint8_t index, uint8_t count, uint16_t freqMHz, uint8_t frontRaw, uint8_t rearRaw,
@@ -373,11 +373,11 @@ void test_alert_stream_malformed_version_does_not_overwrite_gating_state() {
     const auto malformedVersion =
         makePacket(PACKET_ID_RESP_VERSION,
                    {static_cast<uint8_t>('v'), static_cast<uint8_t>('4'), static_cast<uint8_t>('.'),
-                    static_cast<uint8_t>('1'), 0xFF, static_cast<uint8_t>('9'), static_cast<uint8_t>('9')});
+                    static_cast<uint8_t>('1'), 0xFF, static_cast<uint8_t>('9'), static_cast<uint8_t>('9'), 0x00});
     const auto row = makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(1, 1, 24150, 0x90, 0x80, 0x84, 0xC3));
 
     TEST_ASSERT_TRUE(parsePacket(parser, validVersion));
-    TEST_ASSERT_TRUE(parsePacket(parser, malformedVersion));
+    TEST_ASSERT_FALSE(parsePacket(parser, malformedVersion));
     TEST_ASSERT_TRUE(parsePacket(parser, row));
 
     const DisplayState& state = parser.getDisplayState();

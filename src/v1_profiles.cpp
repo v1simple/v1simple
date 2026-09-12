@@ -1466,8 +1466,19 @@ bool V1ProfileManager::jsonToSettings(const JsonObject& settingsObj, V1UserSetti
         return false;
     }
 
-    // Parse individual settings
-    V1UserSettings parsed;
+    // Parse individual settings over an optional exact-byte base. Captured
+    // drafts use this to preserve reserved/unknown bits while known controls
+    // are edited. An invalid base is never silently replaced.
+    V1UserSettings parsed; // Constructor initializes all six bytes to 0xFF.
+    const JsonVariantConst baseBytes = settingsObj["baseBytes"];
+    if (!baseBytes.isUnbound()) {
+        uint8_t parsedBase[V1SettingsJson::kSettingsByteCount];
+        if (!V1SettingsJson::parseRawBytes(baseBytes, parsedBase)) {
+            Serial.println("[V1Profiles] Invalid base settings bytes");
+            return false;
+        }
+        memcpy(parsed.bytes, parsedBase, sizeof(parsedBase));
+    }
     Serial.println("[V1Profiles] Parsing individual settings");
     bool anyField = false;
 

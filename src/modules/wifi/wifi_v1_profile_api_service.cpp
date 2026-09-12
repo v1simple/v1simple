@@ -5,8 +5,130 @@
 #include "wifi_api_response.h"
 #include "wifi_json_document.h"
 #include "profile_name.h"
+#include "v1_firmware_compat.h"
 
 namespace WifiV1ProfileApiService {
+
+namespace {
+
+void appendAvailability(JsonObject target, bool available) {
+    target["available"] = available;
+    if (!available) target["value"] = nullptr;
+}
+
+void appendCapabilities(JsonObject target, uint32_t firmwareVersion) {
+    const V1FirmwareCompat::Capabilities capabilities = V1FirmwareCompat::capabilities(firmwareVersion);
+    target["versionKnown"] = capabilities.versionKnown;
+    target["gen2"] = capabilities.gen2;
+    target["supportedUserByteCount"] = capabilities.supportedUserByteCount;
+    target["customSweeps"] = capabilities.customSweeps;
+    // Write support is separate from the all-volume/saved-volume observation
+    // fields below, which do not become available until 4.1037.
+    target["volumeChange"] = capabilities.volumeChange;
+    target["modeObservation"] = capabilities.modeObservation;
+    target["keepBluetoothLedOn"] = capabilities.keepBluetoothLedOn;
+    target["allVolume"] = capabilities.allVolume;
+    target["savedVolume"] = capabilities.savedVolume;
+    target["displayActive"] = capabilities.displayActive;
+
+    JsonObject settings = target["settings"].to<JsonObject>();
+    settings["kaAlwaysPriority"] = capabilities.kaAlwaysPriority;
+    settings["fastLaserDetect"] = capabilities.fastLaserDetect;
+    settings["kaSensitivity"] = capabilities.kaSensitivity;
+    settings["startupSequence"] = capabilities.startupSequence;
+    settings["restingDisplay"] = capabilities.restingDisplay;
+    settings["bsmPlus"] = capabilities.bsmPlus;
+    settings["autoMute"] = capabilities.autoMute;
+    settings["kSensitivity"] = capabilities.kSensitivity;
+    settings["xSensitivity"] = capabilities.xSensitivity;
+    settings["photoRadar"] = capabilities.photoRadar;
+    settings["gatsoRT4"] = capabilities.gatsoRT4;
+    settings["photoIntersectionFilter"] = capabilities.photoIntersectionFilter;
+}
+
+void sendCapturedSnapshot(WebServer& server, const Runtime& runtime) {
+    WifiJson::Document doc;
+    // Maintenance is a different boot from the normal-runtime detector link.
+    // Never imply that the persisted observation is still live.
+    doc["connected"] = false;
+    doc["live"] = false;
+    doc["stale"] = true;
+    doc["source"] = "normal-runtime-connect";
+
+    V1DeviceRecord device;
+    if (!runtime.loadCapturedSnapshot ||
+        !runtime.loadCapturedSnapshot(device, runtime.loadCapturedSnapshotCtx) || !device.snapshot.available) {
+        doc["available"] = false;
+        doc["staleness"] = "not-captured";
+        WifiApiResponse::sendJsonDocument(server, 200, doc);
+        return;
+    }
+
+    const V1DetectorSnapshot& snapshot = device.snapshot;
+    doc["available"] = true;
+    doc["staleness"] = "previous-boot";
+    doc["address"] = device.address;
+    doc["name"] = device.name;
+
+    JsonObject provenance = doc["provenance"].to<JsonObject>();
+    provenance["capturedBootId"] = snapshot.capturedBootId;
+    provenance["capturedUptimeMs"] = snapshot.capturedUptimeMs;
+    provenance["sessionGeneration"] = snapshot.sessionGeneration;
+    provenance["captureTimedOut"] = snapshot.captureTimedOut;
+
+    JsonObject firmware = doc["firmware"].to<JsonObject>();
+    appendAvailability(firmware, snapshot.hasFirmwareVersion);
+    if (snapshot.hasFirmwareVersion) firmware["value"] = snapshot.firmwareVersion;
+    appendCapabilities(doc["capabilities"].to<JsonObject>(),
+                       snapshot.hasFirmwareVersion ? snapshot.firmwareVersion : 0);
+
+    JsonObject observations = doc["observations"].to<JsonObject>();
+    JsonObject userBytes = observations["userBytes"].to<JsonObject>();
+    appendAvailability(userBytes, snapshot.hasUserBytes);
+    if (snapshot.hasUserBytes) {
+        JsonArray values = userBytes["value"].to<JsonArray>();
+        for (uint8_t value : snapshot.userBytes) values.add(value);
+
+        // Keep the legacy top-level settings shape available to clients while
+        // making its captured, non-live provenance explicit above.
+        if (runtime.settingsJsonForBytes) {
+            WifiJson::Document settingsDoc;
+            const String settingsJson =
+                runtime.settingsJsonForBytes(snapshot.userBytes.data(), runtime.settingsJsonForBytesCtx);
+            if (!deserializeJson(settingsDoc, settingsJson.c_str())) doc["settings"] = settingsDoc;
+        }
+    }
+
+    JsonObject mode = observations["mode"].to<JsonObject>();
+    appendAvailability(mode, snapshot.hasMode);
+    if (snapshot.hasMode) mode["value"] = String(snapshot.mode);
+    JsonObject displayOn = observations["displayOn"].to<JsonObject>();
+    appendAvailability(displayOn, snapshot.hasDisplayOn);
+    if (snapshot.hasDisplayOn) displayOn["value"] = snapshot.displayOn;
+
+    JsonObject currentVolume = observations["currentVolume"].to<JsonObject>();
+    currentVolume["available"] = snapshot.hasCurrentVolume;
+    if (snapshot.hasCurrentVolume) {
+        currentVolume["main"] = snapshot.currentMainVolume;
+        currentVolume["muted"] = snapshot.currentMutedVolume;
+    } else {
+        currentVolume["main"] = nullptr;
+        currentVolume["muted"] = nullptr;
+    }
+    JsonObject savedVolume = observations["savedVolume"].to<JsonObject>();
+    savedVolume["available"] = snapshot.hasSavedVolume;
+    if (snapshot.hasSavedVolume) {
+        savedVolume["main"] = snapshot.savedMainVolume;
+        savedVolume["muted"] = snapshot.savedMutedVolume;
+    } else {
+        savedVolume["main"] = nullptr;
+        savedVolume["muted"] = nullptr;
+    }
+
+    WifiApiResponse::sendJsonDocument(server, 200, doc);
+}
+
+} // namespace
 
 void handleApiProfilesList(WebServer& server, const Runtime& runtime) {
     std::vector<String> profileNames;
@@ -278,6 +400,11 @@ void handleApiProfileDelete(WebServer& server, const Runtime& runtime, bool (*ch
 }
 
 void handleApiCurrentSettings(WebServer& server, const Runtime& runtime) {
+    if (runtime.loadCapturedSnapshot) {
+        sendCapturedSnapshot(server, runtime);
+        return;
+    }
+
     WifiJson::Document doc;
     doc["connected"] = runtime.v1Connected ? runtime.v1Connected(runtime.v1ConnectedCtx) : false;
 

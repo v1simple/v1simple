@@ -415,9 +415,248 @@ void test_legacy_v1_device_store_is_loaded_and_upgraded_with_integrity_metadata(
     TEST_ASSERT_TRUE(file);
     TEST_ASSERT_FALSE(deserializeJson(upgraded, file));
     file.close();
-    TEST_ASSERT_EQUAL_UINT8(2u, upgraded["version"].as<uint8_t>());
+    TEST_ASSERT_EQUAL_UINT8(3u, upgraded["version"].as<uint8_t>());
     TEST_ASSERT_EQUAL_UINT32(1u, upgraded["generation"].as<uint32_t>());
     TEST_ASSERT_TRUE(upgraded["crc32"].is<uint32_t>());
+}
+
+void test_detector_snapshot_round_trips_with_partial_field_validity() {
+    fs::FS fs(g_tempRoot);
+    V1DeviceStore devices;
+    TEST_ASSERT_TRUE(devices.begin(&fs));
+
+    V1DetectorSnapshot snapshot;
+    snapshot.available = true;
+    snapshot.capturedBootId = 12;
+    snapshot.capturedUptimeMs = 3456;
+    snapshot.sessionGeneration = 9;
+    snapshot.captureTimedOut = true;
+    snapshot.hasFirmwareVersion = true;
+    snapshot.firmwareVersion = 41039;
+    snapshot.hasUserBytes = true;
+    snapshot.userBytes = {{0xFF, 0xFE, 0xFD, 0xFC, 0xFB, 0xA5}};
+    snapshot.hasMode = true;
+    snapshot.mode = 'L';
+    snapshot.hasDisplayOn = true;
+    snapshot.displayOn = false;
+    snapshot.hasCurrentVolume = true;
+    snapshot.currentMainVolume = 8;
+    snapshot.currentMutedVolume = 3;
+    // Saved volume deliberately unavailable.
+
+    TEST_ASSERT_TRUE(devices.recordSnapshotInMemory("aa-bb-cc-dd-ee-ff", snapshot));
+    TEST_ASSERT_TRUE(devices.hasPendingSave());
+    TEST_ASSERT_TRUE(devices.flushPendingSave());
+
+    V1DeviceStore reloaded;
+    TEST_ASSERT_TRUE(reloaded.begin(&fs));
+    V1DeviceRecord record;
+    TEST_ASSERT_TRUE(reloaded.getLatestSnapshot(record));
+    TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF", record.address.c_str());
+    TEST_ASSERT_TRUE(record.snapshot.available);
+    TEST_ASSERT_EQUAL_UINT32(12, record.snapshot.capturedBootId);
+    TEST_ASSERT_EQUAL_UINT32(3456, record.snapshot.capturedUptimeMs);
+    TEST_ASSERT_EQUAL_UINT32(9, record.snapshot.sessionGeneration);
+    TEST_ASSERT_TRUE(record.snapshot.captureTimedOut);
+    TEST_ASSERT_EQUAL_UINT32(41039, record.snapshot.firmwareVersion);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(snapshot.userBytes.data(), record.snapshot.userBytes.data(), 6);
+    TEST_ASSERT_EQUAL_CHAR('L', record.snapshot.mode);
+    TEST_ASSERT_FALSE(record.snapshot.displayOn);
+    TEST_ASSERT_EQUAL_UINT8(8, record.snapshot.currentMainVolume);
+    TEST_ASSERT_FALSE(record.snapshot.hasSavedVolume);
+}
+
+void test_unavailable_live_address_cannot_overwrite_prior_detector_snapshot() {
+    fs::FS fs(g_tempRoot);
+    V1DeviceStore devices;
+    TEST_ASSERT_TRUE(devices.begin(&fs));
+
+    V1DetectorSnapshot prior;
+    prior.available = true;
+    prior.capturedBootId = 10;
+    TEST_ASSERT_TRUE(devices.recordSnapshotInMemory("AA:BB:CC:DD:EE:FF", prior));
+    TEST_ASSERT_TRUE(devices.flushPendingSave());
+
+    V1DetectorSnapshot unrelatedSession;
+    unrelatedSession.available = true;
+    unrelatedSession.capturedBootId = 11;
+    TEST_ASSERT_FALSE(devices.recordSnapshotInMemory("", unrelatedSession));
+
+    V1DeviceRecord latest;
+    TEST_ASSERT_TRUE(devices.getLatestSnapshot(latest));
+    TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF", latest.address.c_str());
+    TEST_ASSERT_EQUAL_UINT32(10u, latest.snapshot.capturedBootId);
+
+    // DriveRuntime may use lastV1Address to choose an Auto-Push profile, but
+    // snapshot attribution is wired only to the normalized live-link value.
+    std::ifstream driveSource(std::string(PROJECT_DIR) + "/src/drive_runtime.cpp");
+    const std::string source((std::istreambuf_iterator<char>(driveSource)), std::istreambuf_iterator<char>());
+    const size_t snapshotBlock = source.find("if (linkAddress.length() > 0 && self.devices_.isReady())",
+                                             source.find("bounded connect-followup read"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, snapshotBlock);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          source.find("recordSnapshotInMemory(linkAddress, snapshot)", snapshotBlock));
+}
+
+void test_v2_device_catalog_upgrades_without_inventing_a_snapshot() {
+    fs::FS fs(g_tempRoot);
+    JsonDocument v2;
+    v2["version"] = 2;
+    v2["generation"] = 4;
+    JsonObject device = v2["devices"].to<JsonArray>().add<JsonObject>();
+    device["address"] = "AA:BB:CC:DD:EE:FF";
+    device["name"] = "Existing";
+    device["defaultProfile"] = 2;
+    device["lastSeenMs"] = 9000;
+    v2["crc32"] = deviceStoreContentCrc(v2);
+    String serialized;
+    serializeJson(v2, serialized);
+    writeFileFromString(fs, "/v1devices.json", serialized.c_str());
+
+    V1DeviceStore devices;
+    TEST_ASSERT_TRUE(devices.begin(&fs));
+    V1DeviceRecord snapshot;
+    TEST_ASSERT_FALSE(devices.getLatestSnapshot(snapshot));
+    TEST_ASSERT_EQUAL_STRING("Existing", devices.listDevices()[0].name.c_str());
+
+    JsonDocument upgraded;
+    TEST_ASSERT_FALSE(deserializeJson(upgraded, readFileToString(fs, "/v1devices.json")));
+    TEST_ASSERT_EQUAL_UINT8(3, upgraded["version"].as<uint8_t>());
+    TEST_ASSERT_FALSE(upgraded["devices"][0]["snapshot"].is<JsonObject>());
+}
+
+void test_corrupt_newer_v2_catalog_is_rejected_and_recovered_from_valid_mirror() {
+    const std::filesystem::path sdRoot = g_tempRoot / "sd";
+    const std::filesystem::path littleRoot = g_tempRoot / "little";
+    std::filesystem::create_directories(sdRoot);
+    std::filesystem::create_directories(littleRoot);
+    fs::FS sd(sdRoot);
+    fs::FS little(littleRoot);
+
+    JsonDocument primaryV2;
+    primaryV2["version"] = 2;
+    primaryV2["generation"] = 9;
+    JsonObject primaryDevice = primaryV2["devices"].to<JsonArray>().add<JsonObject>();
+    primaryDevice["address"] = "AA:BB:CC:DD:EE:FF";
+    primaryDevice["name"] = "Checksum source";
+    primaryDevice["defaultProfile"] = 3;
+    primaryDevice["lastSeenMs"] = 9000;
+    primaryV2["crc32"] = deviceStoreContentCrc(primaryV2);
+    // Corrupt checksum-covered content after computing the real v2 checksum.
+    primaryDevice["name"] = "Tampered newer copy";
+    String primarySerialized;
+    serializeJson(primaryV2, primarySerialized);
+    writeFileFromString(sd, "/v1devices.json", primarySerialized.c_str());
+
+    JsonDocument secondaryV2;
+    secondaryV2["version"] = 2;
+    secondaryV2["generation"] = 4;
+    JsonObject secondaryDevice = secondaryV2["devices"].to<JsonArray>().add<JsonObject>();
+    secondaryDevice["address"] = "AA:BB:CC:DD:EE:FF";
+    secondaryDevice["name"] = "Recovered valid copy";
+    secondaryDevice["defaultProfile"] = 1;
+    secondaryDevice["lastSeenMs"] = 4000;
+    secondaryV2["crc32"] = deviceStoreContentCrc(secondaryV2);
+    String secondarySerialized;
+    serializeJson(secondaryV2, secondarySerialized);
+    writeFileFromString(little, "/v1devices.json", secondarySerialized.c_str());
+
+    V1DeviceStore recovered;
+    TEST_ASSERT_TRUE(recovered.begin(&sd, &little));
+    const std::vector<V1DeviceRecord> records = recovered.listDevices();
+    TEST_ASSERT_EQUAL_UINT32(1u, static_cast<uint32_t>(records.size()));
+    TEST_ASSERT_EQUAL_STRING("Recovered valid copy", records[0].name.c_str());
+    TEST_ASSERT_EQUAL_UINT8(1u, records[0].defaultProfile);
+    TEST_ASSERT_EQUAL_STRING(readFileToString(sd, "/v1devices.json").c_str(),
+                             readFileToString(little, "/v1devices.json").c_str());
+
+    JsonDocument repaired;
+    TEST_ASSERT_FALSE(deserializeJson(repaired, readFileToString(sd, "/v1devices.json")));
+    TEST_ASSERT_EQUAL_UINT8(3u, repaired["version"].as<uint8_t>());
+    TEST_ASSERT_EQUAL_UINT32(10u, repaired["generation"].as<uint32_t>());
+    TEST_ASSERT_EQUAL_UINT32(deviceStoreContentCrc(repaired), repaired["crc32"].as<uint32_t>());
+}
+
+void test_semantic_crc_failure_recovers_same_filesystem_rollback() {
+    fs::FS fs(g_tempRoot);
+
+    JsonDocument committed;
+    committed["version"] = 3;
+    committed["generation"] = 7;
+    JsonObject committedDevice = committed["devices"].to<JsonArray>().add<JsonObject>();
+    committedDevice["address"] = "AA:BB:CC:DD:EE:FF";
+    committedDevice["name"] = "Committed rollback";
+    committedDevice["defaultProfile"] = 2;
+    committedDevice["lastSeenMs"] = 7000;
+    committed["crc32"] = deviceStoreContentCrc(committed);
+    String committedSerialized;
+    serializeJson(committed, committedSerialized);
+    writeFileFromString(fs, "/v1devices.json.prev", committedSerialized.c_str());
+
+    // Keep the live file syntactically valid while changing checksum-covered
+    // content without updating its committed checksum.
+    committedDevice["name"] = "Tampered live copy";
+    String tamperedSerialized;
+    serializeJson(committed, tamperedSerialized);
+    writeFileFromString(fs, "/v1devices.json", tamperedSerialized.c_str());
+
+    V1DeviceStore recovered;
+    TEST_ASSERT_TRUE(recovered.begin(&fs));
+    const std::vector<V1DeviceRecord> records = recovered.listDevices();
+    TEST_ASSERT_EQUAL_UINT32(1u, static_cast<uint32_t>(records.size()));
+    TEST_ASSERT_EQUAL_STRING("Committed rollback", records[0].name.c_str());
+    TEST_ASSERT_EQUAL_UINT8(2u, records[0].defaultProfile);
+
+    JsonDocument repaired;
+    TEST_ASSERT_FALSE(deserializeJson(repaired, readFileToString(fs, "/v1devices.json")));
+    TEST_ASSERT_EQUAL_UINT8(3u, repaired["version"].as<uint8_t>());
+    TEST_ASSERT_EQUAL_UINT32(7u, repaired["generation"].as<uint32_t>());
+    TEST_ASSERT_EQUAL_UINT32(deviceStoreContentCrc(repaired), repaired["crc32"].as<uint32_t>());
+    TEST_ASSERT_EQUAL_STRING("Committed rollback", repaired["devices"][0]["name"].as<const char*>());
+}
+
+void test_failed_recovery_promotion_preserves_only_valid_rollback() {
+    fs::FS fs(g_tempRoot);
+
+    JsonDocument committed;
+    committed["version"] = 3;
+    committed["generation"] = 8;
+    JsonObject committedDevice = committed["devices"].to<JsonArray>().add<JsonObject>();
+    committedDevice["address"] = "AA:BB:CC:DD:EE:FF";
+    committedDevice["name"] = "Only valid copy";
+    committedDevice["defaultProfile"] = 2;
+    committedDevice["lastSeenMs"] = 8000;
+    committed["crc32"] = deviceStoreContentCrc(committed);
+    String committedSerialized;
+    serializeJson(committed, committedSerialized);
+    writeFileFromString(fs, "/v1devices.json.prev", committedSerialized.c_str());
+    writeFileFromString(fs, "/v1devices.json", "{known-bad-live");
+
+    // In the recovery path the next rename is the verified temp candidate's
+    // promotion. A failed promotion must leave the proven rollback untouched.
+    fs::mock_fail_next_rename();
+    V1DeviceStore recovered;
+    TEST_ASSERT_TRUE(recovered.begin(&fs));
+    const std::vector<V1DeviceRecord> records = recovered.listDevices();
+    TEST_ASSERT_EQUAL_UINT32(1u, static_cast<uint32_t>(records.size()));
+    TEST_ASSERT_EQUAL_STRING("Only valid copy", records[0].name.c_str());
+    TEST_ASSERT_TRUE(recovered.hasPendingSave());
+    TEST_ASSERT_TRUE(fs.exists("/v1devices.json.prev"));
+    TEST_ASSERT_EQUAL_STRING(committedSerialized.c_str(),
+                             readFileToString(fs, "/v1devices.json.prev").c_str());
+    TEST_ASSERT_FALSE(fs.exists("/v1devices.json"));
+
+    fs::mock_reset_fs_rename_state();
+    V1DeviceStore afterReboot;
+    TEST_ASSERT_TRUE(afterReboot.begin(&fs));
+    TEST_ASSERT_EQUAL_UINT32(1u, static_cast<uint32_t>(afterReboot.listDevices().size()));
+    TEST_ASSERT_EQUAL_STRING("Only valid copy", afterReboot.listDevices()[0].name.c_str());
+    TEST_ASSERT_TRUE(fs.exists("/v1devices.json"));
+    TEST_ASSERT_FALSE(fs.exists("/v1devices.json.prev"));
+
+    JsonDocument repaired;
+    TEST_ASSERT_FALSE(deserializeJson(repaired, readFileToString(fs, "/v1devices.json")));
+    TEST_ASSERT_EQUAL_UINT32(deviceStoreContentCrc(repaired), repaired["crc32"].as<uint32_t>());
 }
 
 void test_failed_primary_repair_remains_pending_after_secondary_succeeds() {
@@ -497,7 +736,7 @@ void test_empty_legacy_v1_catalog_overrides_legacy_text_import() {
     TEST_ASSERT_TRUE(devices.listDevices().empty());
     JsonDocument upgraded;
     TEST_ASSERT_FALSE(deserializeJson(upgraded, readFileToString(fs, "/v1devices.json")));
-    TEST_ASSERT_EQUAL_INT(2, upgraded["version"].as<int>());
+    TEST_ASSERT_EQUAL_INT(3, upgraded["version"].as<int>());
     TEST_ASSERT_TRUE(upgraded["crc32"].is<uint32_t>());
 }
 
@@ -598,7 +837,7 @@ void test_both_boot_paths_use_catalog_bootstrap_and_connection_still_discovers()
         const std::string source((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
         TEST_ASSERT_TRUE(source.find("bootstrapDevice(restoredLastKnownV1, degradedFallback.length() > 0)") != std::string::npos);
         if (std::string(path).find("drive_runtime") != std::string::npos) {
-            TEST_ASSERT_TRUE(source.find("self.devices_.touchDeviceInMemory(address)",
+            TEST_ASSERT_TRUE(source.find("self.devices_.touchDeviceInMemory(profileAddress)",
                                         source.find("void DriveRuntime::onV1Connected()")) != std::string::npos);
         }
     }
@@ -626,6 +865,12 @@ int main() {
     RUN_TEST(test_valid_secondary_repairs_corrupt_primary_device_store);
     RUN_TEST(test_equal_generation_device_conflict_converges_to_fallback_copy);
     RUN_TEST(test_legacy_v1_device_store_is_loaded_and_upgraded_with_integrity_metadata);
+    RUN_TEST(test_detector_snapshot_round_trips_with_partial_field_validity);
+    RUN_TEST(test_unavailable_live_address_cannot_overwrite_prior_detector_snapshot);
+    RUN_TEST(test_v2_device_catalog_upgrades_without_inventing_a_snapshot);
+    RUN_TEST(test_corrupt_newer_v2_catalog_is_rejected_and_recovered_from_valid_mirror);
+    RUN_TEST(test_semantic_crc_failure_recovers_same_filesystem_rollback);
+    RUN_TEST(test_failed_recovery_promotion_preserves_only_valid_rollback);
     RUN_TEST(test_failed_primary_repair_remains_pending_after_secondary_succeeds);
     RUN_TEST(test_secondary_device_store_failure_is_reported_and_retried);
     return UNITY_END();

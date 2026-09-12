@@ -33,6 +33,9 @@ public:
     bool requestAlertDataResult = true;
     int processProxyQueueCalls = 0;
     int onUserBytesReceivedCalls = 0;
+    int onAllVolumeReceivedCalls = 0;
+    bool hasSessionUserBytesFlag = false;
+    bool hasSessionAllVolumeFlag = false;
     bool bootReadyFlag = true;  // Default true to preserve existing test behavior
     bool connectBurstSettling = false;
     uint32_t sessionGenerationValue = 1;
@@ -75,6 +78,9 @@ public:
         requestAlertDataResult = true;
         processProxyQueueCalls = 0;
         onUserBytesReceivedCalls = 0;
+        onAllVolumeReceivedCalls = 0;
+        hasSessionUserBytesFlag = false;
+        hasSessionAllVolumeFlag = false;
         bootReadyFlag = true;
         connectBurstSettling = false;
         sessionGenerationValue = 1;
@@ -209,7 +215,21 @@ public:
 
     void onUserBytesReceived(const uint8_t* /*bytes*/) {
         onUserBytesReceivedCalls++;
+        hasSessionUserBytesFlag = true;
     }
+    void onAllVolumeReceived() {
+        onAllVolumeReceivedCalls++;
+        hasSessionAllVolumeFlag = true;
+    }
+
+    void resetSessionSettingsCapture() {
+        hasSessionUserBytesFlag = false;
+        hasSessionAllVolumeFlag = false;
+    }
+    bool hasSessionUserBytes() const { return hasSessionUserBytesFlag; }
+    bool hasSessionAllVolume() const { return hasSessionAllVolumeFlag; }
+    bool copySessionUserBytes(uint8_t[6]) const { return false; }
+    bool settingsCaptureTimedOut() const { return false; }
     
 private:
     bool proxyConnected = false;

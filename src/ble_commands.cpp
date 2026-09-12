@@ -357,6 +357,10 @@ void V1BLEClient::cancelUserBytesVerification() {
 }
 
 void V1BLEClient::onUserBytesReceived(const uint8_t* bytes) {
+    if (bytes) {
+        memcpy(sessionUserBytes_, bytes, sizeof(sessionUserBytes_));
+        hasSessionUserBytes_ = true;
+    }
     if (verifyPending_ && bytes) {
         memcpy(verifyReceived_, bytes, 6);
         verifyComplete_ = true;
@@ -367,4 +371,18 @@ void V1BLEClient::onUserBytesReceived(const uint8_t* bytes) {
                       verifyReceived_[5], verifyMatch_ ? "YES" : "NO");
         verifyPending_ = false;
     }
+}
+
+void V1BLEClient::resetSessionSettingsCapture() {
+    hasSessionUserBytes_ = false;
+    memset(sessionUserBytes_, 0xFF, sizeof(sessionUserBytes_));
+    expectsSessionAllVolume_ = false;
+    hasSessionAllVolume_ = false;
+    settingsCaptureTimedOut_ = false;
+}
+
+bool V1BLEClient::copySessionUserBytes(uint8_t out[6]) const {
+    if (!out || !hasSessionUserBytes_) return false;
+    memcpy(out, sessionUserBytes_, sizeof(sessionUserBytes_));
+    return true;
 }

@@ -40,6 +40,7 @@ export function createDefaultProfileSettings() {
 
 export function fromApiSettings(api = {}) {
     return {
+        baseBytes: Array.isArray(api.bytes) && api.bytes.length === 6 ? [...api.bytes] : undefined,
         ka: api.kaBand ?? api.ka ?? false,
         k: api.kBand ?? api.k ?? false,
         x: api.xBand ?? api.x ?? false,
@@ -75,6 +76,9 @@ export function fromApiSettings(api = {}) {
 
 export function toApiSettings(ui = {}) {
     return {
+        ...(Array.isArray(ui.baseBytes) && ui.baseBytes.length === 6
+            ? { baseBytes: [...ui.baseBytes] }
+            : {}),
         xBand: ui.x ?? ui.xBand ?? false,
         kBand: ui.k ?? ui.kBand ?? false,
         kaBand: ui.ka ?? ui.kaBand ?? false,

@@ -1,4 +1,5 @@
 #include "ble_queue_module.h"
+#include "v1_packet_framing.h"
 
 #include <algorithm>
 #include <cstring>
@@ -353,7 +354,11 @@ void BleQueueModule::process() {
         const uint8_t* packetPtr = rxBuffer_.data() + rxReadPos_;
         const uint8_t packetId = packetPtr[3];
 
-        if (packetSize >= 12 && packetPtr[3] == PACKET_ID_RESP_USER_BYTES && profiles_) {
+        // RESP_USER_BYTES has six settings bytes. Checksum-originator EAh uses
+        // PL=7; no-checksum E9h uses PL=6. Origin-qualified width validation
+        // prevents a truncated EAh frame's checksum from becoming byte six.
+        if (packetPtr[3] == PACKET_ID_RESP_USER_BYTES && profiles_ &&
+            V1PacketFraming::hasCanonicalResponseWidth(packetPtr, packetSize, 6)) {
             uint8_t userBytes[6];
             memcpy(userBytes, &packetPtr[5], 6);
             ble_->onUserBytesReceived(userBytes);
@@ -370,6 +375,9 @@ void BleQueueModule::process() {
             if (state.hasV1Version) {
                 ble_->onV1FirmwareVersionReceived(state.v1FirmwareVersion);
             }
+        }
+        if (parseOk && packetId == PACKET_ID_RESP_ALL_VOLUME && ble_ && parser_->getDisplayState().hasSavedVolume) {
+            ble_->onAllVolumeReceived();
         }
 
         rxReadPos_ += packetSize;

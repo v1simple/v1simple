@@ -630,6 +630,76 @@
       ]
     },
     "v1_profile_routes": {
+      "GET /api/v1/snapshot": [
+        {
+          "body": {
+            "address": "AA:BB:CC:DD:EE:FF",
+            "available": true,
+            "capabilities": {
+              "gen2": true,
+              "savedVolume": true,
+              "settings": {
+                "gatsoRT4": true
+              },
+              "supportedUserByteCount": 6,
+              "versionKnown": true
+            },
+            "connected": false,
+            "firmware": {
+              "available": true,
+              "value": 41039
+            },
+            "live": false,
+            "observations": {
+              "currentVolume": {
+                "available": true,
+                "main": 7,
+                "muted": 2
+              },
+              "displayOn": {
+                "available": true,
+                "value": true
+              },
+              "mode": {
+                "available": true,
+                "value": "A"
+              },
+              "savedVolume": {
+                "available": true,
+                "main": 6,
+                "muted": 1
+              },
+              "userBytes": {
+                "available": true,
+                "value": [255, 255, 255, 255, 255, 255]
+              }
+            },
+            "provenance": {
+              "captureTimedOut": false,
+              "capturedBootId": 41,
+              "capturedUptimeMs": 12345,
+              "sessionGeneration": 3
+            },
+            "settings": {
+              "autoMute": 3,
+              "bytes": [255, 255, 255, 255, 255, 255],
+              "kBand": true,
+              "kaBand": true,
+              "kaSensitivity": 3,
+              "kSensitivity": 3,
+              "laser": true,
+              "muteToMuteVolume": true,
+              "xBand": true,
+              "xSensitivity": 3
+            },
+            "source": "normal-runtime-connect",
+            "stale": true,
+            "staleness": "previous-boot"
+          },
+          "contentType": "application/json",
+          "status": 200
+        }
+      ],
       "GET /api/v1/current": [
         {
           "body": {

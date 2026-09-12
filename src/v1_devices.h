@@ -9,14 +9,39 @@
 #include <Arduino.h>
 #include <FS.h>
 
+#include <array>
 #include <cstdint>
 #include <vector>
+
+struct V1DetectorSnapshot {
+    bool available = false;
+    uint32_t capturedBootId = 0;
+    uint32_t capturedUptimeMs = 0;
+    uint32_t sessionGeneration = 0;
+    bool captureTimedOut = false;
+
+    bool hasFirmwareVersion = false;
+    uint32_t firmwareVersion = 0;
+    bool hasUserBytes = false;
+    std::array<uint8_t, 6> userBytes{{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}};
+    bool hasMode = false;
+    char mode = 0;
+    bool hasDisplayOn = false;
+    bool displayOn = true;
+    bool hasCurrentVolume = false;
+    uint8_t currentMainVolume = 0;
+    uint8_t currentMutedVolume = 0;
+    bool hasSavedVolume = false;
+    uint8_t savedMainVolume = 0;
+    uint8_t savedMutedVolume = 0;
+};
 
 struct V1DeviceRecord {
     String address;
     String name;
     uint8_t defaultProfile = 0; // 0=none/global slot, 1..3=auto-push slot override
     uint32_t lastSeenMs = 0; // Informational uptime; durable list order owns recency.
+    V1DetectorSnapshot snapshot;
 };
 
 // Normalize BLE address to canonical upper-case AA:BB:CC:DD:EE:FF.
@@ -37,6 +62,9 @@ class V1DeviceStore {
     // during a storage outage may also augment an existing catalog.
     bool bootstrapDevice(const String& address, bool fromDegradedConnection);
     bool touchDeviceInMemory(const String& address);
+    // Record one pre-apply settings observation for this detector. Persistence
+    // is deliberately deferred through the existing device-store writer.
+    bool recordSnapshotInMemory(const String& address, const V1DetectorSnapshot& snapshot);
     bool setDeviceName(const String& address, const String& name);
     bool setDeviceDefaultProfile(const String& address, uint8_t defaultProfile);
     bool removeDevice(const String& address);
@@ -44,11 +72,12 @@ class V1DeviceStore {
     bool flushPendingSave();
 
     uint8_t getDeviceDefaultProfile(const String& address) const;
+    bool getLatestSnapshot(V1DeviceRecord& device) const;
 
   private:
     static constexpr size_t MAX_DEVICES = 16;
     static constexpr size_t MAX_NAME_LEN = 32;
-    static constexpr size_t MAX_STORE_BYTES = 4096;
+    static constexpr size_t MAX_STORE_BYTES = 12288;
 
     enum class StoreReadStatus : uint8_t { Missing = 0, Valid, Invalid };
 
@@ -58,6 +87,7 @@ class V1DeviceStore {
         uint32_t contentCrc = 0;
         bool legacy = false;
         bool needsRewrite = false;
+        bool loadedFromRollback = false;
         std::vector<V1DeviceRecord> devices;
     };
 
@@ -70,7 +100,7 @@ class V1DeviceStore {
     bool loadFromStore();
     bool saveToStore();
     StoreSnapshot readStore(fs::FS& filesystem) const;
-    bool writeStore(fs::FS& filesystem, uint32_t generation) const;
+    bool writeStore(fs::FS& filesystem, uint32_t generation, bool preserveValidRollback = false) const;
     bool reconcileStores();
 
     bool migrateLegacyFiles(fs::FS* sourceFs);

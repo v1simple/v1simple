@@ -45,6 +45,7 @@ public:
         resetAlertAssemblyCalls = 0;
         resetAlertStateCalls = 0;
         resetV1VersionCalls = 0;
+        resetModeAndDisplayStateCalls = 0;
     }
 
     // Test helpers — set state
@@ -148,6 +149,14 @@ public:
         resetV1VersionCalls++;
         state.v1FirmwareVersion = 0;
         state.hasV1Version = false;
+    }
+    int resetModeAndDisplayStateCalls = 0;
+    void resetModeAndDisplayState() {
+        resetModeAndDisplayStateCalls++;
+        state.modeChar = 0;
+        state.hasMode = false;
+        state.displayOn = true;
+        state.hasDisplayOn = false;
     }
 };
 

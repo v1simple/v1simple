@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "v1_devices.h"
+
 namespace WifiV1ProfileApiService {
 
 enum class CatalogStatus : uint8_t { Success = 0, NotFound, Busy, IoError, Corrupt, InvalidName };
@@ -45,6 +47,10 @@ struct Runtime {
     void* loadProfileJsonResultCtx = nullptr;
     CatalogStatus (*deleteProfileResult)(const String& canonicalName, void* ctx) = nullptr;
     void* deleteProfileResultCtx = nullptr;
+    bool (*loadCapturedSnapshot)(V1DeviceRecord& device, void* ctx) = nullptr;
+    void* loadCapturedSnapshotCtx = nullptr;
+    String (*settingsJsonForBytes)(const uint8_t bytes[6], void* ctx) = nullptr;
+    void* settingsJsonForBytesCtx = nullptr;
 };
 
 void handleApiProfilesList(WebServer& server, const Runtime& runtime);

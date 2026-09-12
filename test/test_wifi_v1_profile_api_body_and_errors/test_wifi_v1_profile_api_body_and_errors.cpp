@@ -50,6 +50,8 @@ struct FakeRuntime {
     String existingProfileJson;
     WifiV1ProfileApiService::CatalogStatus deleteStatus =
         WifiV1ProfileApiService::CatalogStatus::Success;
+    bool capturedSnapshotAvailable = false;
+    V1DeviceRecord capturedDevice;
 };
 
 WifiV1ProfileApiService::Runtime makeRuntime(FakeRuntime& rt) {
@@ -99,6 +101,20 @@ WifiV1ProfileApiService::Runtime makeRuntime(FakeRuntime& rt) {
         return static_cast<FakeRuntime*>(ctx)->deleteStatus;
     };
     runtime.deleteProfileResultCtx = &rt;
+    return runtime;
+}
+
+WifiV1ProfileApiService::Runtime makeCapturedRuntime(FakeRuntime& rt) {
+    WifiV1ProfileApiService::Runtime runtime = makeRuntime(rt);
+    runtime.loadCapturedSnapshot = [](V1DeviceRecord& device, void* ctx) {
+        auto* rtp = static_cast<FakeRuntime*>(ctx);
+        device = rtp->capturedDevice;
+        return rtp->capturedSnapshotAvailable;
+    };
+    runtime.loadCapturedSnapshotCtx = &rt;
+    runtime.settingsJsonForBytes = [](const uint8_t[6], void*) {
+        return String("{\"bytes\":[255,254,253,252,251,250],\"xBand\":true}");
+    };
     return runtime;
 }
 
@@ -300,6 +316,66 @@ void test_profile_save_rejects_invalid_volume_metadata() {
     TEST_ASSERT_EQUAL_INT(0, rt.saveCalls);
 }
 
+void test_current_endpoint_returns_persisted_snapshot_with_explicit_provenance_and_availability() {
+    WebServer server(80);
+    FakeRuntime rt;
+    rt.capturedSnapshotAvailable = true;
+    rt.capturedDevice.address = "AA:BB:CC:DD:EE:FF";
+    rt.capturedDevice.name = "Road V1";
+    V1DetectorSnapshot& snapshot = rt.capturedDevice.snapshot;
+    snapshot.available = true;
+    snapshot.capturedBootId = 41;
+    snapshot.capturedUptimeMs = 1234;
+    snapshot.sessionGeneration = 7;
+    snapshot.hasFirmwareVersion = true;
+    snapshot.firmwareVersion = 41039;
+    snapshot.hasUserBytes = true;
+    snapshot.userBytes = {{0xFF, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA}};
+    snapshot.hasMode = true;
+    snapshot.mode = 'A';
+    snapshot.hasDisplayOn = true;
+    snapshot.displayOn = false;
+    snapshot.hasCurrentVolume = true;
+    snapshot.currentMainVolume = 7;
+    snapshot.currentMutedVolume = 2;
+
+    WifiV1ProfileApiService::handleApiCurrentSettings(server, makeCapturedRuntime(rt));
+
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    JsonDocument parsed;
+    TEST_ASSERT_TRUE(responseParsesAsJson(server, parsed));
+    TEST_ASSERT_TRUE(parsed["available"].as<bool>());
+    TEST_ASSERT_FALSE(parsed["connected"].as<bool>());
+    TEST_ASSERT_FALSE(parsed["live"].as<bool>());
+    TEST_ASSERT_TRUE(parsed["stale"].as<bool>());
+    TEST_ASSERT_EQUAL_STRING("previous-boot", parsed["staleness"].as<const char*>());
+    TEST_ASSERT_EQUAL_UINT32(41, parsed["provenance"]["capturedBootId"].as<uint32_t>());
+    TEST_ASSERT_EQUAL_UINT32(41039, parsed["firmware"]["value"].as<uint32_t>());
+    TEST_ASSERT_EQUAL_UINT8(6, parsed["capabilities"]["supportedUserByteCount"].as<uint8_t>());
+    TEST_ASSERT_TRUE(parsed["capabilities"]["volumeChange"].as<bool>());
+    TEST_ASSERT_TRUE(parsed["capabilities"]["allVolume"].as<bool>());
+    TEST_ASSERT_TRUE(parsed["capabilities"]["settings"]["gatsoRT4"].as<bool>());
+    TEST_ASSERT_EQUAL_UINT8(0xFA, parsed["observations"]["userBytes"]["value"][5].as<uint8_t>());
+    TEST_ASSERT_FALSE(parsed["observations"]["displayOn"]["value"].as<bool>());
+    TEST_ASSERT_FALSE(parsed["observations"]["savedVolume"]["available"].as<bool>());
+    TEST_ASSERT_TRUE(parsed["observations"]["savedVolume"]["main"].isNull());
+    TEST_ASSERT_TRUE(parsed["settings"]["xBand"].as<bool>());
+}
+
+void test_current_endpoint_reports_not_captured_without_live_fallback() {
+    WebServer server(80);
+    FakeRuntime rt;
+    rt.connected = true; // A maintenance API must not use this as live proof.
+
+    WifiV1ProfileApiService::handleApiCurrentSettings(server, makeCapturedRuntime(rt));
+
+    JsonDocument parsed;
+    TEST_ASSERT_TRUE(responseParsesAsJson(server, parsed));
+    TEST_ASSERT_FALSE(parsed["available"].as<bool>());
+    TEST_ASSERT_FALSE(parsed["connected"].as<bool>());
+    TEST_ASSERT_EQUAL_STRING("not-captured", parsed["staleness"].as<const char*>());
+}
+
 // ---------------------------------------------------------------------------
 // Request-body allocation contract
 // ---------------------------------------------------------------------------
@@ -365,6 +441,8 @@ int main() {
     RUN_TEST(test_profile_save_preserves_omitted_existing_metadata);
     RUN_TEST(test_profile_save_accepts_explicit_metadata_without_resetting_it);
     RUN_TEST(test_profile_save_rejects_invalid_volume_metadata);
+    RUN_TEST(test_current_endpoint_returns_persisted_snapshot_with_explicit_provenance_and_availability);
+    RUN_TEST(test_current_endpoint_reports_not_captured_without_live_fallback);
     RUN_TEST(test_post_handlers_bind_the_request_body_exactly_once_per_handler);
     RUN_TEST(test_body_caps_are_backstopped_by_socket_preflight_before_framework_parser);
     return UNITY_END();

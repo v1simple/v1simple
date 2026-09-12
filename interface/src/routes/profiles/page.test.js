@@ -22,7 +22,7 @@ describe('profiles route page', () => {
         vi.restoreAllMocks();
     });
 
-    it('loads saved profiles without requesting unreachable live V1 state', async () => {
+    it('loads saved profiles and the persisted non-live V1 snapshot', async () => {
         const fetchMock = installDefaultFetch();
         const { unmount } = render(Page);
 
@@ -30,8 +30,12 @@ describe('profiles route page', () => {
         await screen.findByText('Daily Drive');
         await waitFor(() => {
             expect(fetchMock.mock.calls.some(([url]) => url === '/api/v1/profiles')).toBe(true);
+            expect(fetchMock.mock.calls.some(([url]) => url === '/api/v1/snapshot')).toBe(true);
             expect(fetchMock.mock.calls.some(([url]) => url === '/api/v1/current')).toBe(false);
         });
+
+        expect(await screen.findByText('Previous boot · not live')).toBeInTheDocument();
+        expect(screen.getByText('FF FF FF FF FF FF')).toBeInTheDocument();
 
         unmount();
     });
@@ -450,9 +454,64 @@ describe('profiles route page', () => {
         await screen.findByText('Creating new offline profile');
         expect(screen.queryByRole('button', { name: /push to v1/i })).not.toBeInTheDocument();
         expect(fetchMock.mock.calls.some(([url]) => url === '/api/v1/current')).toBe(false);
+        expect(fetchMock.mock.calls.some(([url]) => url === '/api/v1/snapshot')).toBe(true);
         expect(fetchMock.mock.calls.some(([url]) => url === '/api/v1/pull')).toBe(false);
         expect(fetchMock.mock.calls.some(([url]) => url === '/api/v1/push')).toBe(false);
 
+        unmount();
+    });
+
+    it('starts an offline draft from captured bytes without changing the detector', async () => {
+        let savedPayload;
+        installDefaultFetch([
+            {
+                method: 'POST', match: '/api/v1/profile', respond: ({ init }) => {
+                    savedPayload = JSON.parse(init.body);
+                    return jsonResponse({ success: true });
+                }
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await fireEvent.click(await screen.findByRole('button', { name: /start draft from captured settings/i }));
+        await screen.findByText('Draft started from the last observed V1 user bytes. No detector changes were made.');
+        expect(screen.getByText('Creating new offline profile')).toBeInTheDocument();
+        expect(screen.getByLabelText('X Band')).toBeChecked();
+
+        await fireEvent.click(screen.getByLabelText('X Band'));
+        await fireEvent.click(screen.getByRole('button', { name: /save as profile/i }));
+        const modal = (await screen.findByText('Save Profile')).closest('.modal-box');
+        await fireEvent.input(screen.getByLabelText('Profile Name'), {
+            target: { value: 'Captured draft' }
+        });
+        await fireEvent.click(within(modal).getByRole('button', { name: /^save$/i }));
+        await screen.findByText('Profile "Captured draft" saved');
+        expect(savedPayload.settings.baseBytes).toEqual([255, 255, 255, 255, 255, 255]);
+        expect(savedPayload.settings.xBand).toBe(false);
+        unmount();
+    });
+
+    it('keeps partial capture fields explicitly unavailable', async () => {
+        installDefaultFetch([{
+            method: 'GET', match: '/api/v1/snapshot', respond: jsonResponse({
+                available: true,
+                firmware: { available: false, value: null },
+                capabilities: { versionKnown: false },
+                observations: {
+                    userBytes: { available: false, value: null },
+                    mode: { available: false, value: null },
+                    displayOn: { available: false, value: null },
+                    currentVolume: { available: false, main: null, muted: null },
+                    savedVolume: { available: false, main: null, muted: null }
+                },
+                provenance: { captureTimedOut: true }
+            })
+        }]);
+        const { unmount } = render(Page);
+
+        await screen.findByText('The connection capture timed out. Available values are preserved; missing values remain unknown.');
+        expect(screen.getByText('Firmware capabilities are unknown; the captured bytes are shown without feature claims.')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /start draft from captured settings/i })).toBeDisabled();
         unmount();
     });
 

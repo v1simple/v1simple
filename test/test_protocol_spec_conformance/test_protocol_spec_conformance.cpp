@@ -503,6 +503,44 @@ void test_user_byte_version_gates_match_vendor_library() {
                             V1FirmwareCompat::supportedUserByteCount(vendor_esp::kDefaultV1Version));
 }
 
+void test_gen2_capabilities_change_only_at_vendor_version_thresholds() {
+    const V1FirmwareCompat::Capabilities unknown = V1FirmwareCompat::capabilities(0);
+    TEST_ASSERT_FALSE(unknown.versionKnown);
+    TEST_ASSERT_FALSE(unknown.gen2);
+    TEST_ASSERT_FALSE(unknown.gatsoRT4);
+
+    TEST_ASSERT_FALSE(V1FirmwareCompat::capabilities(41017).customSweeps);
+    TEST_ASSERT_TRUE(V1FirmwareCompat::capabilities(41018).customSweeps);
+    TEST_ASSERT_FALSE(V1FirmwareCompat::capabilities(41025).volumeChange);
+    TEST_ASSERT_TRUE(V1FirmwareCompat::capabilities(41026).volumeChange);
+
+    const V1FirmwareCompat::Capabilities v41030 = V1FirmwareCompat::capabilities(41030);
+    TEST_ASSERT_TRUE(v41030.gen2);
+    TEST_ASSERT_TRUE(v41030.modeObservation);
+    TEST_ASSERT_FALSE(v41030.kaAlwaysPriority);
+
+    const V1FirmwareCompat::Capabilities v41036 = V1FirmwareCompat::capabilities(41036);
+    TEST_ASSERT_TRUE(v41036.autoMute);
+    TEST_ASSERT_TRUE(v41036.volumeChange); // reqWriteVolume support, not saved-volume readback.
+    TEST_ASSERT_FALSE(v41036.allVolume);
+    TEST_ASSERT_FALSE(v41036.savedVolume);
+    TEST_ASSERT_FALSE(v41036.photoRadar);
+
+    const V1FirmwareCompat::Capabilities v41037 = V1FirmwareCompat::capabilities(41037);
+    TEST_ASSERT_TRUE(v41037.allVolume);
+    TEST_ASSERT_TRUE(v41037.savedVolume);
+    TEST_ASSERT_TRUE(v41037.displayActive);
+    TEST_ASSERT_TRUE(v41037.kSensitivity);
+    TEST_ASSERT_TRUE(v41037.xSensitivity);
+    TEST_ASSERT_TRUE(v41037.photoRadar);
+    TEST_ASSERT_FALSE(v41037.gatsoRT4);
+
+    const V1FirmwareCompat::Capabilities v41039 = V1FirmwareCompat::capabilities(41039);
+    TEST_ASSERT_EQUAL_UINT8(6, v41039.supportedUserByteCount);
+    TEST_ASSERT_TRUE(v41039.gatsoRT4);
+    TEST_ASSERT_TRUE(v41039.photoIntersectionFilter);
+}
+
 void test_laser_strength_is_full_scale_regardless_of_raw() {
     const uint8_t raws[] = {0x00, 0x01, 0x7F, 0xFF};
     for (uint8_t raw : raws) {
@@ -541,5 +579,6 @@ int main() {
     RUN_TEST(test_auto_mute_values_match_vendor_semantics);
     RUN_TEST(test_user_byte_write_shape_is_firmware_compatible);
     RUN_TEST(test_user_byte_version_gates_match_vendor_library);
+    RUN_TEST(test_gen2_capabilities_change_only_at_vendor_version_thresholds);
     return UNITY_END();
 }

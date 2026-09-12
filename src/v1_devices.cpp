@@ -14,7 +14,8 @@ constexpr const char* STORE_TMP_PATH = "/v1devices.tmp";
 constexpr const char* LEGACY_ADDR_PATH = "/known_v1.txt";
 constexpr const char* LEGACY_NAME_PATH = "/known_v1_names.txt";
 constexpr const char* LEGACY_PROFILE_PATH = "/known_v1_profiles.txt";
-constexpr uint8_t STORE_VERSION = 2;
+constexpr uint8_t STORE_VERSION = 3;
+constexpr uint8_t FIRST_CHECKSUM_STORE_VERSION = 2;
 
 bool isHex(char c) {
     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
@@ -48,6 +49,28 @@ uint32_t deviceStoreContentCrc(const JsonDocument& doc) {
     return deviceStoreCrc32(reinterpret_cast<const uint8_t*>(serialized.c_str()), serialized.length());
 }
 
+bool loadDeviceStoreRollbackDocument(fs::FS& filesystem, size_t maxBytes, JsonDocument& doc) {
+    const String rollbackPath = StorageManager::rollbackPathFor(STORE_PATH);
+    if (rollbackPath.length() == 0 || !filesystem.exists(rollbackPath.c_str())) return false;
+
+    File file = filesystem.open(rollbackPath.c_str(), FILE_READ);
+    if (!file) return false;
+    const size_t fileSize = file.size();
+    if (fileSize == 0 || fileSize > maxBytes) {
+        file.close();
+        return false;
+    }
+
+    doc.clear();
+    const DeserializationError error = deserializeJson(doc, file);
+    file.close();
+    if (error) {
+        doc.clear();
+        return false;
+    }
+    return true;
+}
+
 int parseDefaultProfile(const String& raw) {
     String value = raw;
     value.trim();
@@ -55,6 +78,93 @@ int parseDefaultProfile(const String& raw) {
         return 0;
     }
     return value.toInt();
+}
+
+void appendSnapshot(JsonObject target, const V1DetectorSnapshot& snapshot) {
+    target["capturedBootId"] = snapshot.capturedBootId;
+    target["capturedUptimeMs"] = snapshot.capturedUptimeMs;
+    target["sessionGeneration"] = snapshot.sessionGeneration;
+    target["captureTimedOut"] = snapshot.captureTimedOut;
+    if (snapshot.hasFirmwareVersion) target["firmwareVersion"] = snapshot.firmwareVersion;
+    if (snapshot.hasUserBytes) {
+        JsonArray bytes = target["userBytes"].to<JsonArray>();
+        for (uint8_t value : snapshot.userBytes) bytes.add(value);
+    }
+    if (snapshot.hasMode) {
+        // Store the byte value instead of a pointer to stack-backed text.
+        target["mode"] = static_cast<uint8_t>(snapshot.mode);
+    }
+    if (snapshot.hasDisplayOn) target["displayOn"] = snapshot.displayOn;
+    if (snapshot.hasCurrentVolume) {
+        JsonObject volume = target["currentVolume"].to<JsonObject>();
+        volume["main"] = snapshot.currentMainVolume;
+        volume["muted"] = snapshot.currentMutedVolume;
+    }
+    if (snapshot.hasSavedVolume) {
+        JsonObject volume = target["savedVolume"].to<JsonObject>();
+        volume["main"] = snapshot.savedMainVolume;
+        volume["muted"] = snapshot.savedMutedVolume;
+    }
+}
+
+bool parseVolumePair(JsonVariantConst source, uint8_t& main, uint8_t& muted) {
+    if (!source.is<JsonObjectConst>() || !source["main"].is<int>() || !source["muted"].is<int>()) return false;
+    const int parsedMain = source["main"].as<int>();
+    const int parsedMuted = source["muted"].as<int>();
+    if (parsedMain < 0 || parsedMain > 9 || parsedMuted < 0 || parsedMuted > 9) return false;
+    main = static_cast<uint8_t>(parsedMain);
+    muted = static_cast<uint8_t>(parsedMuted);
+    return true;
+}
+
+V1DetectorSnapshot parseSnapshot(JsonVariantConst source) {
+    V1DetectorSnapshot snapshot;
+    if (!source.is<JsonObjectConst>()) return snapshot;
+    snapshot.available = true;
+    snapshot.capturedBootId = source["capturedBootId"] | 0u;
+    snapshot.capturedUptimeMs = source["capturedUptimeMs"] | 0u;
+    snapshot.sessionGeneration = source["sessionGeneration"] | 0u;
+    snapshot.captureTimedOut = source["captureTimedOut"] | false;
+
+    if (source["firmwareVersion"].is<uint32_t>()) {
+        snapshot.firmwareVersion = source["firmwareVersion"].as<uint32_t>();
+        snapshot.hasFirmwareVersion = snapshot.firmwareVersion != 0;
+    }
+
+    JsonArrayConst bytes = source["userBytes"].as<JsonArrayConst>();
+    if (!bytes.isNull() && bytes.size() == snapshot.userBytes.size()) {
+        bool valid = true;
+        size_t index = 0;
+        for (JsonVariantConst value : bytes) {
+            if (!value.is<int>() || value.as<int>() < 0 || value.as<int>() > 255) {
+                valid = false;
+                break;
+            }
+            snapshot.userBytes[index++] = static_cast<uint8_t>(value.as<int>());
+        }
+        snapshot.hasUserBytes = valid;
+    }
+
+    if (source["mode"].is<uint8_t>()) {
+        snapshot.mode = static_cast<char>(source["mode"].as<uint8_t>());
+        snapshot.hasMode = true;
+    } else {
+        // Accept early development snapshots that encoded the mode as text.
+        const char* mode = source["mode"].as<const char*>();
+        if (mode && mode[0] != '\0' && mode[1] == '\0') {
+            snapshot.mode = mode[0];
+            snapshot.hasMode = true;
+        }
+    }
+    if (source["displayOn"].is<bool>()) {
+        snapshot.displayOn = source["displayOn"].as<bool>();
+        snapshot.hasDisplayOn = true;
+    }
+    snapshot.hasCurrentVolume = parseVolumePair(source["currentVolume"], snapshot.currentMainVolume,
+                                                snapshot.currentMutedVolume);
+    snapshot.hasSavedVolume =
+        parseVolumePair(source["savedVolume"], snapshot.savedMainVolume, snapshot.savedMutedVolume);
+    return snapshot;
 }
 
 } // namespace
@@ -118,7 +228,7 @@ void V1DeviceStore::trimToCapacity() {
     }
 }
 
-bool V1DeviceStore::writeStore(fs::FS& filesystem, uint32_t generation) const {
+bool V1DeviceStore::writeStore(fs::FS& filesystem, uint32_t generation, bool preserveValidRollback) const {
     JsonDocument doc;
     doc["version"] = STORE_VERSION;
     doc["generation"] = generation;
@@ -130,6 +240,9 @@ bool V1DeviceStore::writeStore(fs::FS& filesystem, uint32_t generation) const {
         obj["name"] = device.name;
         obj["defaultProfile"] = device.defaultProfile;
         obj["lastSeenMs"] = device.lastSeenMs;
+        if (device.snapshot.available) {
+            appendSnapshot(obj["snapshot"].to<JsonObject>(), device.snapshot);
+        }
     }
 
     doc["crc32"] = deviceStoreContentCrc(doc);
@@ -166,7 +279,23 @@ bool V1DeviceStore::writeStore(fs::FS& filesystem, uint32_t generation) const {
         return false;
     }
 
-    if (!StorageManager::promoteTempFileWithRollback(filesystem, STORE_TMP_PATH, STORE_PATH)) {
+    if (preserveValidRollback) {
+        // readStore already proved .prev is the only valid catalog on this
+        // filesystem. Do not let the generic rotation replace that good copy
+        // with the known-bad live file before the new candidate is promoted.
+        const String rollbackPath = StorageManager::rollbackPathFor(STORE_PATH);
+        if (filesystem.exists(STORE_PATH) && !filesystem.remove(STORE_PATH)) {
+            filesystem.remove(STORE_TMP_PATH);
+            return false;
+        }
+        if (!filesystem.rename(STORE_TMP_PATH, STORE_PATH)) {
+            filesystem.remove(STORE_TMP_PATH);
+            return false;
+        }
+        if (rollbackPath.length() > 0 && filesystem.exists(rollbackPath.c_str())) {
+            filesystem.remove(rollbackPath.c_str());
+        }
+    } else if (!StorageManager::promoteTempFileWithRollback(filesystem, STORE_TMP_PATH, STORE_PATH)) {
         return false;
     }
 
@@ -174,10 +303,10 @@ bool V1DeviceStore::writeStore(fs::FS& filesystem, uint32_t generation) const {
 }
 
 V1DeviceStore::StoreSnapshot V1DeviceStore::readStore(fs::FS& filesystem) const {
-    StoreSnapshot snapshot;
     JsonDocument doc;
-    const JsonRollbackLoadResult loadResult =
+    JsonRollbackLoadResult loadResult =
         loadJsonDocumentWithRollback(filesystem, STORE_PATH, MAX_STORE_BYTES, doc);
+    StoreSnapshot snapshot;
     if (loadResult == JsonRollbackLoadResult::Missing) {
         return snapshot;
     }
@@ -186,70 +315,85 @@ V1DeviceStore::StoreSnapshot V1DeviceStore::readStore(fs::FS& filesystem) const 
         return snapshot;
     }
 
-    const uint8_t version = doc["version"] | 1u;
-    snapshot.generation = doc["generation"] | (version == 1 ? 1u : 0u);
-    snapshot.legacy = version < STORE_VERSION;
-    snapshot.needsRewrite = loadResult == JsonRollbackLoadResult::LoadedRollback;
-    if (version > STORE_VERSION || snapshot.generation == 0 || !doc["devices"].is<JsonArray>()) {
-        snapshot.status = StoreReadStatus::Invalid;
-        return snapshot;
-    }
-    snapshot.contentCrc = deviceStoreContentCrc(doc);
-    if (version >= STORE_VERSION &&
-        (!doc["crc32"].is<uint32_t>() || doc["crc32"].as<uint32_t>() != snapshot.contentCrc)) {
-        snapshot.status = StoreReadStatus::Invalid;
-        return snapshot;
-    }
-
-    snapshot.status = StoreReadStatus::Valid;
-    if (!doc["devices"].is<JsonArray>()) {
-        return snapshot;
-    }
-
-    JsonArray arr = doc["devices"].as<JsonArray>();
-    for (JsonObject item : arr) {
-        String address = normalizeV1DeviceAddress(String(item["address"] | ""));
-        if (address.length() == 0) {
-            continue;
+    bool attemptedSemanticRollback = false;
+    while (true) {
+        snapshot = StoreSnapshot{};
+        const uint8_t version = doc["version"] | 1u;
+        snapshot.generation = doc["generation"] | (version == 1 ? 1u : 0u);
+        snapshot.legacy = version < STORE_VERSION;
+        snapshot.needsRewrite = loadResult == JsonRollbackLoadResult::LoadedRollback;
+        snapshot.loadedFromRollback = loadResult == JsonRollbackLoadResult::LoadedRollback;
+        if (version > STORE_VERSION || snapshot.generation == 0 || !doc["devices"].is<JsonArray>()) {
+            snapshot.status = StoreReadStatus::Invalid;
+            return snapshot;
+        }
+        snapshot.contentCrc = deviceStoreContentCrc(doc);
+        if (version >= FIRST_CHECKSUM_STORE_VERSION &&
+            (!doc["crc32"].is<uint32_t>() || doc["crc32"].as<uint32_t>() != snapshot.contentCrc)) {
+            // The generic loader can detect malformed live JSON, but a
+            // syntactically valid file can still fail this store's content
+            // checksum. In that exact case, give the same filesystem's
+            // committed rollback one semantic validation pass.
+            if (!attemptedSemanticRollback && loadResult == JsonRollbackLoadResult::LoadedLive &&
+                loadDeviceStoreRollbackDocument(filesystem, MAX_STORE_BYTES, doc)) {
+                attemptedSemanticRollback = true;
+                loadResult = JsonRollbackLoadResult::LoadedRollback;
+                continue;
+            }
+            snapshot.status = StoreReadStatus::Invalid;
+            return snapshot;
         }
 
-        const String name = sanitizeName(String(item["name"] | ""));
-        uint8_t defaultProfile = clampDefaultProfileValue(item["defaultProfile"] | 0);
-        uint32_t lastSeenMs = item["lastSeenMs"] | 0;
+        snapshot.status = StoreReadStatus::Valid;
+        JsonArray arr = doc["devices"].as<JsonArray>();
+        for (JsonObject item : arr) {
+            String address = normalizeV1DeviceAddress(String(item["address"] | ""));
+            if (address.length() == 0) {
+                continue;
+            }
 
-        int existing = -1;
-        for (size_t i = 0; i < snapshot.devices.size(); ++i) {
-            if (snapshot.devices[i].address.equalsIgnoreCase(address)) {
-                existing = static_cast<int>(i);
-                break;
+            const String name = sanitizeName(String(item["name"] | ""));
+            uint8_t defaultProfile = clampDefaultProfileValue(item["defaultProfile"] | 0);
+            uint32_t lastSeenMs = item["lastSeenMs"] | 0;
+            const V1DetectorSnapshot detectorSnapshot = version >= 3 ? parseSnapshot(item["snapshot"]) :
+                                                                      V1DetectorSnapshot{};
+
+            int existing = -1;
+            for (size_t i = 0; i < snapshot.devices.size(); ++i) {
+                if (snapshot.devices[i].address.equalsIgnoreCase(address)) {
+                    existing = static_cast<int>(i);
+                    break;
+                }
+            }
+
+            if (existing >= 0) {
+                snapshot.devices[existing].name = name;
+                snapshot.devices[existing].defaultProfile = defaultProfile;
+                snapshot.devices[existing].lastSeenMs = std::max(snapshot.devices[existing].lastSeenMs, lastSeenMs);
+                if (detectorSnapshot.available) snapshot.devices[existing].snapshot = detectorSnapshot;
+            } else {
+                V1DeviceRecord device;
+                device.address = address;
+                device.name = name;
+                device.defaultProfile = defaultProfile;
+                device.lastSeenMs = lastSeenMs;
+                device.snapshot = detectorSnapshot;
+                snapshot.devices.push_back(device);
             }
         }
 
-        if (existing >= 0) {
-            snapshot.devices[existing].name = name;
-            snapshot.devices[existing].defaultProfile = defaultProfile;
-            snapshot.devices[existing].lastSeenMs = std::max(snapshot.devices[existing].lastSeenMs, lastSeenMs);
-        } else {
-            V1DeviceRecord device;
-            device.address = address;
-            device.name = name;
-            device.defaultProfile = defaultProfile;
-            device.lastSeenMs = lastSeenMs;
-            snapshot.devices.push_back(device);
+        // Existing v2 catalogs already serialize newest first. Retain that durable
+        // order: persisted millis() values cannot be compared across boots or wrap.
+        if (version == 1) {
+            std::sort(snapshot.devices.begin(), snapshot.devices.end(), [](const V1DeviceRecord& lhs,
+                                                                          const V1DeviceRecord& rhs) {
+                if (lhs.lastSeenMs != rhs.lastSeenMs) return lhs.lastSeenMs > rhs.lastSeenMs;
+                return lhs.address < rhs.address;
+            });
         }
+        if (snapshot.devices.size() > MAX_DEVICES) snapshot.devices.resize(MAX_DEVICES);
+        return snapshot;
     }
-
-    // Existing v2 catalogs already serialize newest first. Retain that durable
-    // order: persisted millis() values cannot be compared across boots or wrap.
-    if (snapshot.legacy) {
-        std::sort(snapshot.devices.begin(), snapshot.devices.end(), [](const V1DeviceRecord& lhs,
-                                                                      const V1DeviceRecord& rhs) {
-            if (lhs.lastSeenMs != rhs.lastSeenMs) return lhs.lastSeenMs > rhs.lastSeenMs;
-            return lhs.address < rhs.address;
-        });
-    }
-    if (snapshot.devices.size() > MAX_DEVICES) snapshot.devices.resize(MAX_DEVICES);
-    return snapshot;
 }
 
 bool V1DeviceStore::loadFromStore() {
@@ -309,8 +453,9 @@ bool V1DeviceStore::reconcileStores() {
                                   primary.contentCrc != secondary.contentCrc));
     if (!contentDiffers) return true;
 
-    const bool primaryWritten = writeStore(*fs_, generation_);
-    const bool secondaryWritten = !secondaryFs_ || writeStore(*secondaryFs_, generation_);
+    const bool primaryWritten = writeStore(*fs_, generation_, primary.loadedFromRollback);
+    const bool secondaryWritten =
+        !secondaryFs_ || writeStore(*secondaryFs_, generation_, secondary.loadedFromRollback);
     if (!primaryWritten || !secondaryWritten) {
         Serial.println("[V1Devices] WARN: device-store mirror reconciliation deferred");
     }
@@ -327,9 +472,9 @@ bool V1DeviceStore::saveToStore() {
     const StoreSnapshot secondary = secondaryFs_ ? readStore(*secondaryFs_) : StoreSnapshot{};
     const uint32_t nextGeneration = std::max({generation_, primary.generation, secondary.generation}) + 1u;
 
-    if (!writeStore(*fs_, nextGeneration)) return false;
+    if (!writeStore(*fs_, nextGeneration, primary.loadedFromRollback)) return false;
     generation_ = nextGeneration;
-    if (secondaryFs_ && !writeStore(*secondaryFs_, nextGeneration)) {
+    if (secondaryFs_ && !writeStore(*secondaryFs_, nextGeneration, secondary.loadedFromRollback)) {
         Serial.println("[V1Devices] WARN: secondary device-store mirror deferred");
         mirrorDirty_ = true;
         return false;
@@ -540,6 +685,16 @@ bool V1DeviceStore::touchDeviceInMemory(const String& address) {
     return upsertDeviceInternal(address, false);
 }
 
+bool V1DeviceStore::recordSnapshotInMemory(const String& address, const V1DetectorSnapshot& snapshot) {
+    if (!snapshot.available || !upsertDeviceInternal(address, false)) return false;
+    const String normalizedAddress = normalizeV1DeviceAddress(address);
+    const int index = findDeviceIndex(normalizedAddress);
+    if (index < 0) return false;
+    devices_[index].snapshot = snapshot;
+    dirty_ = true;
+    return true;
+}
+
 bool V1DeviceStore::flushPendingSave() {
     return persistDirtyStore();
 }
@@ -634,4 +789,15 @@ uint8_t V1DeviceStore::getDeviceDefaultProfile(const String& address) const {
     }
 
     return clampDefaultProfileValue(devices_[index].defaultProfile);
+}
+
+bool V1DeviceStore::getLatestSnapshot(V1DeviceRecord& device) const {
+    if (!ready_) return false;
+    for (const V1DeviceRecord& candidate : devices_) {
+        if (candidate.snapshot.available) {
+            device = candidate;
+            return true;
+        }
+    }
+    return false;
 }

@@ -45,6 +45,10 @@ void ConnectionStateModule::handleSessionOpened(uint32_t sessionGeneration) {
     if (parser_) {
         parser_->resetV1Version();
         parser_->resetVolumeState();
+        parser_->resetModeAndDisplayState();
+    }
+    if (ble_) {
+        ble_->resetSessionSettingsCapture();
     }
     if (bleQueue_) {
         bleQueue_->openSession(sessionGeneration);
@@ -64,6 +68,10 @@ void ConnectionStateModule::handleSessionClosed(unsigned long nowMs, uint32_t se
     }
     parser_->resetAlertState();
     parser_->resetVolumeState();
+    parser_->resetModeAndDisplayState();
+    if (ble_) {
+        ble_->resetSessionSettingsCapture();
+    }
     if (alertPersistence_) {
         alertPersistence_->clearPersistence();
     }

@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "ble_internals.h"
+#include "v1_firmware_compat.h"
 
 namespace {
 
@@ -99,14 +100,35 @@ void V1BLEClient::processConnectedFollowup() {
                                               "[BLE] Version request retry timed out (non-critical)");
             }
             connectedFollowupNextAttemptMs_ = 0;
-            connectedFollowupSendDeadlineMs_ = 0;
-            connectedFollowupStep_ = ConnectedFollowupStep::NOTIFY_STABLE_CALLBACK;
+            connectedFollowupSendDeadlineMs_ = nowMs + CONNECTED_FOLLOWUP_SEND_TIMEOUT_MS;
+            settingsCaptureTimedOut_ = true;
+            connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_USER_BYTES;
             return;
         }
         versionRequestStartedMs_ = nowMs;
-        connectedFollowupNextAttemptMs_ = nowMs + CONNECTED_FOLLOWUP_RETRY_MS;
+        connectedFollowupNextAttemptMs_ = 0;
+        connectedFollowupSendDeadlineMs_ = 0;
+        connectedFollowupStep_ = ConnectedFollowupStep::WAIT_VERSION;
+        return;
+    }
+    case ConnectedFollowupStep::WAIT_VERSION: {
+        const uint32_t nowMs = static_cast<uint32_t>(millis());
+        if (!hasV1FirmwareVersion()) {
+            const bool timedOut = static_cast<int32_t>(
+                                      nowMs - (versionRequestStartedMs_ + VERSION_RESPONSE_TIMEOUT_MS)) >= 0;
+            if (!timedOut) return;
+            settingsCaptureTimedOut_ = true;
+            logNonCriticalFollowupFailure(followupRequestVersionFailLog_,
+                                          "[BLE] Version response timed out (snapshot partial)");
+            connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_USER_BYTES;
+        } else if (V1FirmwareCompat::capabilities(v1FirmwareVersion()).allVolume) {
+            expectsSessionAllVolume_ = true;
+            connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_ALL_VOLUME;
+        } else {
+            connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_USER_BYTES;
+        }
+        connectedFollowupNextAttemptMs_ = 0;
         connectedFollowupSendDeadlineMs_ = nowMs + CONNECTED_FOLLOWUP_SEND_TIMEOUT_MS;
-        connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_ALL_VOLUME;
         return;
     }
     case ConnectedFollowupStep::REQUEST_ALL_VOLUME: {
@@ -128,26 +150,58 @@ void V1BLEClient::processConnectedFollowup() {
                 logNonCriticalFollowupFailure(followupRequestAllVolumeFailLog_,
                                               "[BLE] All-volume request retry timed out (non-critical)");
             }
+            settingsCaptureTimedOut_ = true;
+            expectsSessionAllVolume_ = false;
             connectedFollowupNextAttemptMs_ = 0;
-            connectedFollowupSendDeadlineMs_ = 0;
-            connectedFollowupStep_ = ConnectedFollowupStep::WAIT_VERSION;
+            connectedFollowupSendDeadlineMs_ = nowMs + CONNECTED_FOLLOWUP_SEND_TIMEOUT_MS;
+            connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_USER_BYTES;
             return;
         }
         connectedFollowupNextAttemptMs_ = 0;
-        connectedFollowupSendDeadlineMs_ = 0;
-        connectedFollowupStep_ = ConnectedFollowupStep::WAIT_VERSION;
+        connectedFollowupSendDeadlineMs_ = nowMs + CONNECTED_FOLLOWUP_SEND_TIMEOUT_MS;
+        connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_USER_BYTES;
         return;
     }
-    case ConnectedFollowupStep::WAIT_VERSION: {
+    case ConnectedFollowupStep::REQUEST_USER_BYTES: {
         const uint32_t nowMs = static_cast<uint32_t>(millis());
-        const bool timedOut =
-            static_cast<int32_t>(nowMs - (versionRequestStartedMs_ + VERSION_RESPONSE_TIMEOUT_MS)) >= 0;
-        if (!hasV1FirmwareVersion() && !timedOut) {
+        if (connectedFollowupNextAttemptMs_ != 0 && static_cast<int32_t>(nowMs - connectedFollowupNextAttemptMs_) < 0) {
             return;
         }
-        if (timedOut && !hasV1FirmwareVersion()) {
-            logNonCriticalFollowupFailure(followupRequestVersionFailLog_,
-                                          "[BLE] V1 version response timed out; using legacy-safe user bytes");
+        const SendResult result = sendEmptyPayloadFollowupRequest(*this, PACKET_ID_REQ_USER_BYTES);
+        if (result != SendResult::SENT) {
+            const bool retryTimedOut = static_cast<int32_t>(nowMs - connectedFollowupSendDeadlineMs_) >= 0;
+            if (result == SendResult::NOT_YET && !retryTimedOut) {
+                connectedFollowupNextAttemptMs_ = nowMs + CONNECTED_FOLLOWUP_RETRY_MS;
+                return;
+            }
+            logNonCriticalFollowupFailure(followupRequestUserBytesFailLog_,
+                                          result == SendResult::FAILED
+                                              ? "[BLE] Failed to request pre-apply user bytes (snapshot partial)"
+                                              : "[BLE] User-byte request retry timed out (snapshot partial)");
+            settingsCaptureTimedOut_ = true;
+            connectedFollowupNextAttemptMs_ = 0;
+            connectedFollowupSendDeadlineMs_ = 0;
+            connectedFollowupStep_ = ConnectedFollowupStep::NOTIFY_STABLE_CALLBACK;
+            return;
+        }
+        settingsCaptureRequestStartedMs_ = nowMs;
+        connectedFollowupNextAttemptMs_ = 0;
+        connectedFollowupSendDeadlineMs_ = 0;
+        connectedFollowupStep_ = ConnectedFollowupStep::WAIT_SETTINGS_SNAPSHOT;
+        return;
+    }
+    case ConnectedFollowupStep::WAIT_SETTINGS_SNAPSHOT: {
+        const uint32_t nowMs = static_cast<uint32_t>(millis());
+        const bool timedOut = static_cast<int32_t>(
+                                  nowMs - (settingsCaptureRequestStartedMs_ + SETTINGS_SNAPSHOT_RESPONSE_TIMEOUT_MS)) >=
+                              0;
+        const bool missingRequiredResponse = !hasSessionUserBytes_ ||
+                                             (expectsSessionAllVolume_ && !hasSessionAllVolume_);
+        if (missingRequiredResponse && !timedOut) return;
+        if (timedOut && missingRequiredResponse) {
+            settingsCaptureTimedOut_ = true;
+            logNonCriticalFollowupFailure(followupRequestUserBytesFailLog_,
+                                          "[BLE] Pre-apply snapshot response timed out (snapshot partial)");
         }
         connectedFollowupStep_ = ConnectedFollowupStep::NOTIFY_STABLE_CALLBACK;
         return;

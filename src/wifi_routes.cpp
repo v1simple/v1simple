@@ -222,6 +222,8 @@ bool WiFiManager::setupWebServer() {
     });
     server_.on("/api/v1/current", HTTP_GET,
                [this]() { WifiV1ProfileApiService::handleApiCurrentSettings(server_, makeV1ProfileRuntime()); });
+    server_.on("/api/v1/snapshot", HTTP_GET,
+               [this]() { WifiV1ProfileApiService::handleApiCurrentSettings(server_, makeV1ProfileRuntime()); });
     server_.on("/api/v1/devices", HTTP_GET,
                [this]() { WifiV1DevicesApiService::handleApiDevicesList(server_, makeV1DevicesRuntime()); });
     registerMaintenanceWriteRoute("/api/v1/devices/name", [this]() {

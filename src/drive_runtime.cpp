@@ -798,29 +798,59 @@ void DriveRuntime::onV1Connected() {
     const int activeSlot = std::max(0, std::min(2, settings.activeSlot));
     int selectedSlot = activeSlot;
     uint8_t defaultProfile = 0;
-    bool addressFromLink = false;
-    String address;
+    String linkAddress;
     NimBLEAddress connected = self.ble_.getConnectedAddress();
     if (!connected.isNull()) {
-        address = normalizeV1DeviceAddress(String(connected.toString().c_str()));
-        addressFromLink = address.length() > 0;
+        linkAddress = normalizeV1DeviceAddress(String(connected.toString().c_str()));
     }
-    if (address.length() == 0) {
-        address = normalizeV1DeviceAddress(settings.lastV1Address);
+    String profileAddress = linkAddress;
+    if (profileAddress.length() == 0) {
+        profileAddress = normalizeV1DeviceAddress(settings.lastV1Address);
     }
-    if (address.length() > 0 && self.devices_.isReady()) {
-        self.devices_.touchDeviceInMemory(address);
-        defaultProfile = self.devices_.getDeviceDefaultProfile(address);
+    if (profileAddress.length() > 0 && self.devices_.isReady()) {
+        self.devices_.touchDeviceInMemory(profileAddress);
+        defaultProfile = self.devices_.getDeviceDefaultProfile(profileAddress);
         if (defaultProfile >= 1 && defaultProfile <= 3) {
             selectedSlot = static_cast<int>(defaultProfile) - 1;
         }
     }
-    if (addressFromLink) {
-        self.settings_.setLastV1Address(address);
+    if (linkAddress.length() > 0) {
+        self.settings_.setLastV1Address(linkAddress);
         if (!self.devices_.isReady()) {
-            self.settings_.requestLastV1AddressFallbackPersist(address);
+            self.settings_.requestLastV1AddressFallbackPersist(linkAddress);
         }
     }
+
+    // The stable callback runs only after the bounded connect-followup read.
+    // Copy the detector observation into the address-keyed store before
+    // Auto-Push can write any desired profile state back to the V1.
+    if (linkAddress.length() > 0 && self.devices_.isReady()) {
+        V1DetectorSnapshot snapshot;
+        snapshot.available = true;
+        snapshot.capturedBootId = self.bootId_;
+        snapshot.capturedUptimeMs = static_cast<uint32_t>(millis());
+        snapshot.sessionGeneration = self.ble_.sessionGeneration();
+        snapshot.captureTimedOut = self.ble_.settingsCaptureTimedOut();
+        snapshot.firmwareVersion = self.ble_.v1FirmwareVersion();
+        snapshot.hasFirmwareVersion = snapshot.firmwareVersion != 0;
+        snapshot.hasUserBytes = self.ble_.copySessionUserBytes(snapshot.userBytes.data());
+
+        const DisplayState& observed = self.parser_.getDisplayState();
+        snapshot.hasMode = observed.hasMode;
+        snapshot.mode = observed.modeChar;
+        snapshot.hasDisplayOn = observed.hasDisplayOn;
+        snapshot.displayOn = observed.displayOn;
+        snapshot.hasCurrentVolume = observed.hasVolumeData && observed.mainVolume <= 9 && observed.muteVolume <= 9;
+        snapshot.currentMainVolume = observed.mainVolume;
+        snapshot.currentMutedVolume = observed.muteVolume;
+        snapshot.hasSavedVolume = observed.hasSavedVolume && observed.savedMainVolume <= 9 && observed.savedMuteVolume <= 9;
+        snapshot.savedMainVolume = observed.savedMainVolume;
+        snapshot.savedMutedVolume = observed.savedMuteVolume;
+        if (!self.devices_.recordSnapshotInMemory(linkAddress, snapshot)) {
+            Serial.println("[V1Snapshot] WARN: failed to stage detector snapshot");
+        }
+    }
+
     const AutoPushSlot& slot = self.settings_.getSlot(selectedSlot);
     Serial.printf("[AutoPush] onV1Connected autoPush=%s activeSlot=%d selectedSlot=%d defaultProfile=%u mode=%d\n",
                   settings.autoPushEnabled ? "on" : "off", activeSlot, selectedSlot,

@@ -439,6 +439,26 @@ class QualificationWorkflowTests(unittest.TestCase):
         self.assertEqual(args.source_manifest, Path("old.json"))
         self.assertEqual(args.out, Path("new-static"))
 
+    def test_current_runtime_verification_is_an_explicit_bounded_command(self):
+        args = workflow.build_parser().parse_args([
+            "verify-current", "--source-manifest", "reader.json", "--cache", "reader-cache"])
+        self.assertEqual(args.command, "verify-current")
+        self.assertEqual(args.source_manifest, Path("reader.json"))
+        self.assertEqual(args.cache, Path("reader-cache"))
+
+    def test_current_runtime_verification_rejects_before_collection(self):
+        manifest = {"camera": {"name": "fixture", "profile": {"fps": 200}}}
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "reader.json"
+            source.write_text(json.dumps(manifest), encoding="utf-8")
+            with (patch.object(workflow, "reader_runtime", return_value={"method_version": 26}),
+                  patch.object(workflow, "method_hashes", return_value={"reader": "a" * 64}),
+                  patch("encounter_qualification.verify_qualification",
+                        return_value={"status": "REJECTED", "errors": ["runtime differs"]})):
+                with self.assertRaisesRegex(workflow.WorkflowError, "runtime differs"):
+                    workflow.verify_current(source, root / "cache")
+
     def test_cli_reports_qualification_rejection_without_traceback(self):
         class Parser:
             @staticmethod

@@ -154,7 +154,8 @@ def validate_reference(path, method, observe, *, camera=None, reader_reanalysis=
     _require(items and set(items) == set(packet) == set(labels), "complete selected secondary subset differs")
     counts, roles, split_roles, band_pixel_roles = Counter(), Counter(), Counter(), Counter()
     hashes, sources, calibrations = set(), set(), {}
-    partial_assertions = split_agreements = band_pixel_agreements = 0
+    partial_assertions = split_attempts = split_agreements = 0
+    band_pixel_attempts = band_pixel_agreements = 0
     for opaque_id, item in items.items():
         image = _artifact(path.parent, item.get("image"))
         digest = _sha(image)
@@ -209,6 +210,8 @@ def validate_reference(path, method, observe, *, camera=None, reader_reanalysis=
                     partial_assertions += 1
         for card in observed_cards:
             split = card.get("split_text_observation", {})
+            if split.get("method") == "literal_split_card_text/v1":
+                split_attempts += 1
             if split.get("accepted") is True and card.get("band") is not None and card.get("frequency") is not None:
                 literal = literal_slots.get(card.get("slot"), {})
                 _require(literal.get("presence") == "present"
@@ -217,6 +220,8 @@ def validate_reference(path, method, observe, *, camera=None, reader_reanalysis=
                 split_agreements += 1
                 split_roles[origin["role"]] += 1
             band_pixel = card.get("band_pixel_observation", {})
+            if band_pixel.get("method") == "complete_card_band/v1":
+                band_pixel_attempts += 1
             if (band_pixel.get("method") == "complete_card_band/v1"
                     and band_pixel.get("accepted") is True
                     and card.get("band") is not None and card.get("frequency") is not None):
@@ -229,7 +234,8 @@ def validate_reference(path, method, observe, *, camera=None, reader_reanalysis=
         counts[status] += 1
     return {"unique_original_frames": len(items), "counts": dict(counts), "roles": dict(roles),
             "source_recordings": len(sources), "partial_identity_assertions": partial_assertions,
+            "split_text_attempts": split_attempts,
             "split_text_agreements": split_agreements, "split_text_agreements_by_role": dict(split_roles),
-            "band_pixel_agreements": band_pixel_agreements,
+            "band_pixel_attempts": band_pixel_attempts, "band_pixel_agreements": band_pixel_agreements,
             "band_pixel_agreements_by_role": dict(band_pixel_roles),
             "reader_reanalysis": reader_reanalysis is not None}

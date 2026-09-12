@@ -154,7 +154,7 @@ class SecondaryReferenceTests(unittest.TestCase):
         self.assertEqual(before, {p.relative_to(helper.root): p.read_bytes()
                                   for p in helper.root.rglob("*") if p.is_file()})
 
-    def test_reader26_requires_actual_supported_complete_band_use_and_retains_split_gate(self):
+    def test_reader26_requires_both_fallbacks_to_run_on_independent_originals(self):
         import encounter_qualification as qualification
         import encounter_qualification_workflow as workflow
         for case in ("missing", "refused", "wrong_method", "accepted", "missing_split"):
@@ -169,7 +169,7 @@ class SecondaryReferenceTests(unittest.TestCase):
                             "method": "unqualified_method" if case == "wrong_method" else "complete_card_band/v1",
                             "accepted": case != "refused"}
                     if case == "missing_split":
-                        card["split_text_observation"]["accepted"] = False
+                        card.pop("split_text_observation")
                 helper.reader_observations.update(readings)
                 runtime = {**support.READER, "method_version": 26}
                 def observe(path, registration):
@@ -178,13 +178,16 @@ class SecondaryReferenceTests(unittest.TestCase):
                     destination = Path(temp) / "visible-secondary.json"
                     document = workflow._reanalyze_secondary_document(
                         source, destination, runtime, helper.method, support.CAMERA, packet)
-                    if case == "accepted":
+                    if case in ("accepted", "refused"):
                         result = qualification._validate_visible_secondary_evidence(
                             document, runtime, support.CAMERA, helper.method, destination.parent)
                         summary = result["secondary_reference"]
-                        self.assertEqual(summary["band_pixel_agreements"], 2)
-                        self.assertEqual(summary["band_pixel_agreements_by_role"], {
-                            "development_original": 1, "held_out_original": 1})
+                        self.assertEqual(summary["band_pixel_attempts"], 2)
+                        self.assertEqual(summary["band_pixel_agreements"], 2 if case == "accepted" else 0)
+                        self.assertEqual(summary["band_pixel_agreements_by_role"], ({
+                            "development_original": 1, "held_out_original": 1}
+                            if case == "accepted" else {}))
+                        self.assertEqual(summary["split_text_attempts"], 2)
                         self.assertEqual(summary["split_text_agreements"], 2)
                     else:
                         branch = "split-text" if case == "missing_split" else "complete-band"
@@ -268,7 +271,7 @@ class SecondaryReferenceTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "contradicts|unsupported partial|unsupported complete-band"):
                         validate_reference(path, method, observe)
 
-    def test_reader25_requires_actual_supported_split_branch_use(self):
+    def test_reader25_requires_split_fallback_to_run_on_independent_originals(self):
         import encounter_qualification as qualification
         import encounter_qualification_workflow as workflow
         for include, actual in ((False, False), (True, False), (True, True)):
@@ -287,10 +290,12 @@ class SecondaryReferenceTests(unittest.TestCase):
                     destination = Path(temp) / "visible-secondary.json"
                     document = workflow._reanalyze_secondary_document(
                         source, destination, runtime, helper.method, support.CAMERA, packet if include else None)
-                    if actual:
+                    if include:
                         result = qualification._validate_visible_secondary_evidence(
                             document, runtime, support.CAMERA, helper.method, destination.parent)
-                        self.assertEqual(result["secondary_reference"]["split_text_agreements"], 2)
+                        self.assertEqual(result["secondary_reference"]["split_text_attempts"], 2)
+                        self.assertEqual(result["secondary_reference"]["split_text_agreements"],
+                                         2 if actual else 0)
                     else:
                         with self.assertRaisesRegex(qualification.QualificationError, "does not exercise the split-text"):
                             qualification._validate_visible_secondary_evidence(

@@ -629,6 +629,37 @@ def reanalyze_static(source_manifest: Path, destination: Path,
         raise
 
 
+def verify_current(manifest_path: Path, cache: Path) -> dict[str, Any]:
+    """Fail before live collection unless the current reader is qualified."""
+    from encounter_qualification import verify_qualification
+
+    manifest_path = manifest_path.resolve()
+    manifest = read_json(manifest_path)
+    camera = manifest.get("camera") if isinstance(manifest, dict) else None
+    _require(isinstance(camera, dict), "reader qualification camera identity is malformed")
+    runtime = reader_runtime(cache.resolve())
+    method = method_hashes()
+    verification = verify_qualification(
+        manifest_path,
+        implementation_sha256=method,
+        reader_runtime=runtime,
+        camera_name=camera.get("name"),
+        camera_profile=camera.get("profile"),
+        policy={"contract_version": 3, "qualified_temporal_classifiers": {}},
+        bench_source_sha256=sha256(BENCH_PATH),
+    )
+    _require(
+        verification.get("status") == "QUALIFIED",
+        "reader qualification rejected: "
+        + "; ".join(verification.get("errors", ["not qualified"])),
+    )
+    return {
+        "status": "QUALIFIED",
+        "qualification_id": verification.get("qualification_id"),
+        "reader_runtime": runtime,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -643,6 +674,12 @@ def build_parser() -> argparse.ArgumentParser:
                                help="explicit independent frequency adjudication; original labels stay unchanged")
     static_parser.add_argument("--secondary-reference", type=Path,
                                help="additional independent card originals; historical packet stays unchanged")
+    verify_parser = commands.add_parser(
+        "verify-current", help="verify the active reader runtime before live collection")
+    verify_parser.add_argument("--source-manifest", type=Path, default=default_manifest,
+                               help="qualification manifest to verify")
+    verify_parser.add_argument("--cache", type=Path, required=True,
+                               help="ignored cache directory for the current OCR helper")
     return parser
 
 
@@ -651,8 +688,11 @@ def main() -> int:
 
     args = build_parser().parse_args()
     try:
-        result = reanalyze_static(args.source_manifest, args.out, args.primary_frequency_reference,
-                                 args.secondary_reference)
+        if args.command == "verify-current":
+            result = verify_current(args.source_manifest, args.cache)
+        else:
+            result = reanalyze_static(args.source_manifest, args.out, args.primary_frequency_reference,
+                                     args.secondary_reference)
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
     except (WorkflowError, QualificationError, KeyError, TypeError, OSError) as exc:

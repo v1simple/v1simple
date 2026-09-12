@@ -1642,10 +1642,10 @@ def _validate_visible_secondary_evidence(document: Any, reader: dict[str, Any],
                  and "secondary_reference_reanalysis" not in document,
                  "secondary reference summary lacks its independent originals")
     if reader.get("method_version", 0) >= 25:
-        _require(supplement_summary is not None and supplement_summary["split_text_agreements"] > 0,
+        _require(supplement_summary is not None and supplement_summary["split_text_attempts"] > 0,
                  "secondary reference does not exercise the split-text reader against independent originals")
     if reader.get("method_version", 0) >= 26:
-        _require(supplement_summary is not None and supplement_summary["band_pixel_agreements"] > 0,
+        _require(supplement_summary is not None and supplement_summary["band_pixel_attempts"] > 0,
                  "secondary reference does not exercise the complete-band reader against independent originals")
     result = {"unique_original_frames": len(items), "counts": dict(counts),
             "nonempty_secondary_agreements": nonempty_agreements,

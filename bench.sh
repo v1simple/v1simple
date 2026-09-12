@@ -678,6 +678,17 @@ if [[ "$FLASH" -eq 1 ]] && ! command -v "$PIO_CMD" >/dev/null 2>&1; then
   finish 'FAIL (collection): PlatformIO is required to build and flash the firmware' 2
 fi
 
+if [[ "$CAMERA_ENABLED" -eq 1 && "$QUALIFICATION_CAPTURE" -eq 0 ]]; then
+  printf '[bench] visual reader: verifying current runtime before collection...\n'
+  if ! "$BENCH_PYTHON" "$ROOT_DIR/scripts/bench/encounter_qualification_workflow.py" \
+      verify-current \
+      --source-manifest "$ENCOUNTER_QUALIFICATION" \
+      --cache "$RUN_DIR/reader-preflight-cache" >> "$RUN_LOG" 2>&1; then
+    finish 'FAIL (reader): current visual reader is not qualified; no collection started' 2
+  fi
+  printf '[bench] visual reader: QUALIFIED\n'
+fi
+
 printf '[bench] building v1replay emulator...\n'
 printf 'v1replay build: started\n' >> "$RUN_LOG"
 build_status=0

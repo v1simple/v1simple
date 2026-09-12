@@ -1320,6 +1320,17 @@ def test_bench_cli_collection_only_branch_has_no_pass_verdict() -> None:
     assert_true("PASS" not in branch, branch)
 
 
+def test_bench_cli_qualifies_visual_reader_before_collection() -> None:
+    source = (ROOT / "bench.sh").read_text(encoding="utf-8")
+    preflight = source.index("verify-current")
+    collection = source.index("printf '[bench] %s leg: %ss collection%s")
+    assert_true(preflight < collection, "visual reader is still checked after collection starts")
+    assert_true(
+        "FAIL (reader): current visual reader is not qualified; no collection started" in source,
+        "reader preflight does not fail with an actionable pre-collection verdict",
+    )
+
+
 def run_bench_cli_fixture(window_result: str, counter_result: str, *,
                           encounter_result: str = "NO_DIFFERENCES_OBSERVED", camera: bool = True,
                           camera_present: bool = True, visual_exit: int = 0,
@@ -1403,6 +1414,8 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
             fixture_root="$(cd "$(dirname "$0")/.." && pwd)"
             if [[ "${{1:-}}" == "-c" ]]; then printf 'fixture\\n'; exit 0; fi
             if [[ "${{1:-}}" == "-" ]]; then exec {sys.executable} "$@"; fi
+            if [[ "${{1:-}}" == */scripts/bench/encounter_qualification_workflow.py \
+                  && "${{2:-}}" == "verify-current" ]]; then exit 0; fi
             if [[ "${{1:-}}" == */scripts/bench/run_logged.py ]]; then
               if [[ "$FAKE_OFFLINE" == 1 ]]; then
                 printf 'hardware called\\n' >> "$FAKE_HARDWARE_MARKER"
@@ -2405,6 +2418,7 @@ def main() -> int:
     test_top_level_pass_is_vetoed_by_empty_delivery_stream()
     test_clean_source_preserves_qualified_pass_behavior()
     test_bench_cli_collection_only_branch_has_no_pass_verdict()
+    test_bench_cli_qualifies_visual_reader_before_collection()
     test_bench_cli_uses_selected_reader_environment_and_rejects_before_work()
     test_bench_cli_consumes_current_producer_results_online_and_offline()
     test_bench_cli_keeps_full_diagnostics_with_brief_console_and_one_verdict()

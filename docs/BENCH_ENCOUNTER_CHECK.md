@@ -304,6 +304,11 @@ mixed-stroke refusals. Existing definite readings remain unchanged.
 Secondary-card text uses local Apple Vision OCR. Accepted text must satisfy the
 fixed visible format; expected values never repair OCR output. No remote image
 model or network service participates in the reader.
+Qualification requires each fallback to run against independent original images
+and rejects every wrong assertion. A particular Vision runtime may recognize all
+supported text directly, so fallback acceptance is not required when those
+attempts safely refuse; their positive behavior remains covered by deterministic
+reader regressions.
 When OCR returns the band and complete frequency as two separate observations,
 their unique literal candidates may be joined only with consistent left-to-right
 and same-line geometry. Missing letters, digits or punctuation are not supplied.
@@ -314,6 +319,9 @@ The default qualification manifest is
 `BENCH_ENCOUNTER_QUALIFICATION` when using another retained qualification.
 Qualification binds the pixel-reading method to independently checked reference
 images and controls. It does not impose a firmware response deadline.
+Replay-camera runs verify the active reader runtime and this qualification before
+starting collection, so an unavailable or changed OCR runtime fails immediately
+instead of wasting a recording.
 Reanalysis of preserved historical labels is current-reader regression evidence;
 rebinding a newer reader does not make those labels a new held-out trial.
 

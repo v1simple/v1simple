@@ -45,6 +45,51 @@ ProfileOperationResult profileResult(ProfileStorageStatus status, const String& 
     return result;
 }
 
+constexpr const char* kBooleanSettingFields[] = {
+    "xBand",          "kBand",           "kaBand",          "laser",
+    "kuBand",         "euro",            "kVerifier",       "laserRear",
+    "customFreqs",    "kaAlwaysPriority", "fastLaserDetect", "muteToMuteVolume",
+    "bogeyLockLoud",  "muteXKRear",       "startupSequence", "restingDisplay",
+    "bsmPlus",         "mrct",             "driveSafe3D",      "driveSafe3DHD",
+    "redflexHalo",     "redflexNK7",       "ekin",             "photoVerifier",
+    "gatsoRT4",        "photoIntersectionFilter",
+};
+
+constexpr const char* kEnumSettingFields[] = {
+    "kaSensitivity",
+    "kSensitivity",
+    "xSensitivity",
+    "autoMute",
+};
+
+bool validateHumanReadableSettings(const JsonObjectConst& settingsObj) {
+    for (const char* name : kBooleanSettingFields) {
+        const JsonVariantConst value = settingsObj[name];
+        if (!value.isUnbound() && !value.is<bool>()) {
+            Serial.printf("[V1Profiles] Setting '%s' must be a boolean\n", name);
+            return false;
+        }
+    }
+
+    for (const char* name : kEnumSettingFields) {
+        const JsonVariantConst value = settingsObj[name];
+        if (value.isUnbound()) {
+            continue;
+        }
+        if (!value.is<uint8_t>()) {
+            Serial.printf("[V1Profiles] Setting '%s' must be an integer from 1 to 3\n", name);
+            return false;
+        }
+        const uint8_t parsed = value.as<uint8_t>();
+        if (parsed < 1 || parsed > 3) {
+            Serial.printf("[V1Profiles] Setting '%s' must be from 1 to 3\n", name);
+            return false;
+        }
+    }
+
+    return true;
+}
+
 struct ProfileSyncState {
     enum class Status : uint8_t {
         Absent,
@@ -1407,137 +1452,143 @@ bool V1ProfileManager::jsonToSettings(const JsonObject& settingsObj, V1UserSetti
     // only an absent field falls back to individual settings.
     const JsonVariantConst rawBytes = settingsObj["bytes"];
     if (!rawBytes.isUnbound()) {
-        if (!V1SettingsJson::parseRawBytes(rawBytes, settings.bytes)) {
+        uint8_t parsedBytes[V1SettingsJson::kSettingsByteCount];
+        if (!V1SettingsJson::parseRawBytes(rawBytes, parsedBytes)) {
             Serial.println("[V1Profiles] Invalid raw settings bytes");
             return false;
         }
+        memcpy(settings.bytes, parsedBytes, sizeof(parsedBytes));
         Serial.println("[V1Profiles] Loaded from raw bytes");
         return true;
     }
 
+    if (!validateHumanReadableSettings(settingsObj)) {
+        return false;
+    }
+
     // Parse individual settings
-    settings.setDefaults();
+    V1UserSettings parsed;
     Serial.println("[V1Profiles] Parsing individual settings");
     bool anyField = false;
 
     if (!settingsObj["xBand"].isNull()) {
-        settings.setXBandEnabled(settingsObj["xBand"]);
+        parsed.setXBandEnabled(settingsObj["xBand"].as<bool>());
         anyField = true;
     }
     if (!settingsObj["kBand"].isNull()) {
-        settings.setKBandEnabled(settingsObj["kBand"]);
+        parsed.setKBandEnabled(settingsObj["kBand"].as<bool>());
         anyField = true;
     }
     if (!settingsObj["kaBand"].isNull()) {
-        settings.setKaBandEnabled(settingsObj["kaBand"]);
+        parsed.setKaBandEnabled(settingsObj["kaBand"].as<bool>());
         anyField = true;
     }
     if (!settingsObj["laser"].isNull()) {
-        settings.setLaserEnabled(settingsObj["laser"]);
+        parsed.setLaserEnabled(settingsObj["laser"].as<bool>());
         anyField = true;
     }
     if (!settingsObj["kuBand"].isNull()) {
-        settings.setKuBandEnabled(settingsObj["kuBand"]);
+        parsed.setKuBandEnabled(settingsObj["kuBand"].as<bool>());
         anyField = true;
     }
     if (!settingsObj["euro"].isNull()) {
-        settings.setEuroMode(settingsObj["euro"]);
+        parsed.setEuroMode(settingsObj["euro"].as<bool>());
         anyField = true;
     }
     if (!settingsObj["kVerifier"].isNull()) {
-        settings.setKVerifier(settingsObj["kVerifier"]);
+        parsed.setKVerifier(settingsObj["kVerifier"].as<bool>());
         anyField = true;
     }
     if (!settingsObj["laserRear"].isNull()) {
-        settings.setLaserRear(settingsObj["laserRear"]);
+        parsed.setLaserRear(settingsObj["laserRear"].as<bool>());
         anyField = true;
     }
     if (!settingsObj["customFreqs"].isNull()) {
-        settings.setCustomFreqs(settingsObj["customFreqs"]);
+        parsed.setCustomFreqs(settingsObj["customFreqs"].as<bool>());
         anyField = true;
     }
     if (!settingsObj["kaAlwaysPriority"].isNull()) {
-        settings.setKaAlwaysPriority(settingsObj["kaAlwaysPriority"]);
+        parsed.setKaAlwaysPriority(settingsObj["kaAlwaysPriority"].as<bool>());
         anyField = true;
     }
     if (!settingsObj["fastLaserDetect"].isNull()) {
-        settings.setFastLaserDetect(settingsObj["fastLaserDetect"]);
+        parsed.setFastLaserDetect(settingsObj["fastLaserDetect"].as<bool>());
         anyField = true;
     }
     if (!settingsObj["kaSensitivity"].isNull()) {
-        settings.setKaSensitivity(settingsObj["kaSensitivity"]);
+        parsed.setKaSensitivity(settingsObj["kaSensitivity"].as<uint8_t>());
         anyField = true;
     }
     if (!settingsObj["kSensitivity"].isNull()) {
-        settings.setKSensitivity(settingsObj["kSensitivity"]);
+        parsed.setKSensitivity(settingsObj["kSensitivity"].as<uint8_t>());
         anyField = true;
     }
     if (!settingsObj["xSensitivity"].isNull()) {
-        settings.setXSensitivity(settingsObj["xSensitivity"]);
+        parsed.setXSensitivity(settingsObj["xSensitivity"].as<uint8_t>());
         anyField = true;
     }
     if (!settingsObj["autoMute"].isNull()) {
-        settings.setAutoMute(settingsObj["autoMute"]);
+        parsed.setAutoMute(settingsObj["autoMute"].as<uint8_t>());
         anyField = true;
     }
     if (!settingsObj["muteToMuteVolume"].isNull()) {
-        settings.setMuteToMuteVolume(settingsObj["muteToMuteVolume"]);
+        parsed.setMuteToMuteVolume(settingsObj["muteToMuteVolume"].as<bool>());
         anyField = true;
     }
     if (!settingsObj["bogeyLockLoud"].isNull()) {
-        settings.setBogeyLockLoud(settingsObj["bogeyLockLoud"]);
+        parsed.setBogeyLockLoud(settingsObj["bogeyLockLoud"].as<bool>());
         anyField = true;
     }
     if (!settingsObj["muteXKRear"].isNull()) {
-        settings.setMuteXKRear(settingsObj["muteXKRear"]);
+        parsed.setMuteXKRear(settingsObj["muteXKRear"].as<bool>());
         anyField = true;
     }
     if (!settingsObj["startupSequence"].isNull()) {
-        settings.setStartupSequence(settingsObj["startupSequence"]);
+        parsed.setStartupSequence(settingsObj["startupSequence"].as<bool>());
         anyField = true;
     }
     if (!settingsObj["restingDisplay"].isNull()) {
-        settings.setRestingDisplay(settingsObj["restingDisplay"]);
+        parsed.setRestingDisplay(settingsObj["restingDisplay"].as<bool>());
         anyField = true;
     }
     if (!settingsObj["bsmPlus"].isNull()) {
-        settings.setBsmPlus(settingsObj["bsmPlus"]);
+        parsed.setBsmPlus(settingsObj["bsmPlus"].as<bool>());
         anyField = true;
     }
     if (!settingsObj["mrct"].isNull()) {
-        settings.setMrct(settingsObj["mrct"]);
+        parsed.setMrct(settingsObj["mrct"].as<bool>());
         anyField = true;
     }
     if (!settingsObj["driveSafe3D"].isNull()) {
-        settings.setDriveSafe3D(settingsObj["driveSafe3D"]);
+        parsed.setDriveSafe3D(settingsObj["driveSafe3D"].as<bool>());
         anyField = true;
     }
     if (!settingsObj["driveSafe3DHD"].isNull()) {
-        settings.setDriveSafe3DHD(settingsObj["driveSafe3DHD"]);
+        parsed.setDriveSafe3DHD(settingsObj["driveSafe3DHD"].as<bool>());
         anyField = true;
     }
     if (!settingsObj["redflexHalo"].isNull()) {
-        settings.setRedflexHalo(settingsObj["redflexHalo"]);
+        parsed.setRedflexHalo(settingsObj["redflexHalo"].as<bool>());
         anyField = true;
     }
     if (!settingsObj["redflexNK7"].isNull()) {
-        settings.setRedflexNK7(settingsObj["redflexNK7"]);
+        parsed.setRedflexNK7(settingsObj["redflexNK7"].as<bool>());
         anyField = true;
     }
     if (!settingsObj["ekin"].isNull()) {
-        settings.setEkin(settingsObj["ekin"]);
+        parsed.setEkin(settingsObj["ekin"].as<bool>());
         anyField = true;
     }
     if (!settingsObj["photoVerifier"].isNull()) {
-        settings.setPhotoVerifier(settingsObj["photoVerifier"]);
+        parsed.setPhotoVerifier(settingsObj["photoVerifier"].as<bool>());
         anyField = true;
     }
     if (!settingsObj["gatsoRT4"].isNull()) {
-        settings.setGatsoRT4(settingsObj["gatsoRT4"]);
+        parsed.setGatsoRT4(settingsObj["gatsoRT4"].as<bool>());
         anyField = true;
     }
     if (!settingsObj["photoIntersectionFilter"].isNull()) {
-        settings.setPhotoIntersectionFilter(settingsObj["photoIntersectionFilter"]);
+        parsed.setPhotoIntersectionFilter(settingsObj["photoIntersectionFilter"].as<bool>());
         anyField = true;
     }
 
@@ -1545,6 +1596,8 @@ bool V1ProfileManager::jsonToSettings(const JsonObject& settingsObj, V1UserSetti
         Serial.println("[V1Profiles] No settings provided");
         return false;
     }
+
+    settings = parsed;
 
     Serial.printf("[V1Profiles] After parse - byte0=%02X byte2=%02X\n", settings.bytes[0], settings.bytes[2]);
     Serial.printf("[V1Profiles]   xBand=%d, restingDisplay=%d, bsmPlus=%d\n", settings.xBandEnabled(),

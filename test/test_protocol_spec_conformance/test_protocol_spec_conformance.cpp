@@ -442,6 +442,22 @@ void test_user_bytes_field_rows_match_spec_table() {
     TEST_ASSERT_EQUAL_UINT(sizeof(kUserFieldAccess) / sizeof(kUserFieldAccess[0]), fieldRows);
 }
 
+void test_auto_mute_values_match_vendor_semantics() {
+    V1UserSettings settings;
+
+    settings.setAutoMute(protocol_spec::kAutoMuteOffValue);
+    TEST_ASSERT_EQUAL_UINT8(0x18, static_cast<uint8_t>(settings.bytes[2] & 0x18));
+    TEST_ASSERT_EQUAL_UINT8(protocol_spec::kAutoMuteOffValue, settings.autoMute());
+
+    settings.setAutoMute(protocol_spec::kAutoMuteOnValue);
+    TEST_ASSERT_EQUAL_UINT8(0x10, static_cast<uint8_t>(settings.bytes[2] & 0x18));
+    TEST_ASSERT_EQUAL_UINT8(protocol_spec::kAutoMuteOnValue, settings.autoMute());
+
+    settings.setAutoMute(protocol_spec::kAutoMuteAdvancedValue);
+    TEST_ASSERT_EQUAL_UINT8(0x08, static_cast<uint8_t>(settings.bytes[2] & 0x18));
+    TEST_ASSERT_EQUAL_UINT8(protocol_spec::kAutoMuteAdvancedValue, settings.autoMute());
+}
+
 void test_user_byte_write_shape_is_firmware_compatible() {
     const uint8_t input[6] = {0x10, 0x20, 0x30, 0x40, 0xFC, 0x50};
     uint8_t output[6] = {};
@@ -522,6 +538,7 @@ int main() {
     RUN_TEST(test_alert_aux0_priority_bit_matches_spec_table);
     RUN_TEST(test_user_bytes_bool_rows_match_spec_table);
     RUN_TEST(test_user_bytes_field_rows_match_spec_table);
+    RUN_TEST(test_auto_mute_values_match_vendor_semantics);
     RUN_TEST(test_user_byte_write_shape_is_firmware_compatible);
     RUN_TEST(test_user_byte_version_gates_match_vendor_library);
     return UNITY_END();

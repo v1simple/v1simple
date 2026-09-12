@@ -368,10 +368,24 @@ describe('profiles route page', () => {
 
         const xBand = screen.getByLabelText('X Band');
         expect(xBand).toBeChecked();
+        expect(screen.getByLabelText('Mute-to-Muted Volume')).toBeChecked();
+        const autoMute = screen.getByLabelText('X, K, Ku Automute');
+        expect(within(autoMute).getByRole('option', { name: 'On' })).toHaveValue('2');
+        expect(within(autoMute).getByRole('option', { name: 'Advanced' })).toHaveValue('1');
+        await fireEvent.change(autoMute, { target: { value: '2' } });
         await fireEvent.click(xBand);
         await fireEvent.click(screen.getByText('Photo Radar'));
+        await fireEvent.click(screen.getByLabelText('DriveSafe™ 3D'));
+        await fireEvent.click(screen.getByLabelText('DriveSafe™ 3DHD'));
+        await fireEvent.click(screen.getByLabelText('Ekin'));
         await fireEvent.click(screen.getByLabelText('Gatso RT4'));
         await fireEvent.click(screen.getByLabelText('Intersection Management Filter'));
+        await screen.findByText(
+            'Intersection Management suppresses DriveSafe 3D, DriveSafe 3DHD, and Ekin alerts while enabled. Those saved settings are not changed.'
+        );
+        expect(screen.getByLabelText('DriveSafe™ 3D')).toBeChecked();
+        expect(screen.getByLabelText('DriveSafe™ 3DHD')).toBeChecked();
+        expect(screen.getByLabelText('Ekin')).toBeChecked();
         await fireEvent.click(screen.getByRole('button', { name: /save as profile/i }));
 
         const dialogTitle = await screen.findByText('Save Profile');
@@ -390,7 +404,12 @@ describe('profiles route page', () => {
         expect(savedPayload.name).toBe('Offline Profile');
         expect(savedPayload.settings.xBand).toBe(false);
         expect(savedPayload.settings.kBand).toBe(true);
+        expect(savedPayload.settings.muteToMuteVolume).toBe(true);
+        expect(savedPayload.settings.autoMute).toBe(2);
         expect(savedPayload.settings.kaSensitivity).toBe(3);
+        expect(savedPayload.settings.driveSafe3D).toBe(true);
+        expect(savedPayload.settings.driveSafe3DHD).toBe(true);
+        expect(savedPayload.settings.ekin).toBe(true);
         expect(savedPayload.settings.gatsoRT4).toBe(true);
         expect(savedPayload.settings.photoIntersectionFilter).toBe(true);
         unmount();

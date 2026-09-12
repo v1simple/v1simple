@@ -120,7 +120,7 @@ inline constexpr UserByteField kUserBytesBitMap[] = {
     {0, 0x02, 0, "K_BAND"},
     {0, 0x04, 0, "KA_BAND"},
     {0, 0x08, 0, "LASER"},
-    {0, 0x10, 1, "MUTE_TO_MUTE_VOLUME"},
+    {0, 0x10, 0, "MUTE_TO_MUTE_VOLUME"},
     {0, 0x20, 0, "BOGEY_LOCK_LOUD"},
     {0, 0x40, 1, "MUTE_X_K_REAR"},
     {0, 0x80, 1, "KU_BAND"},
@@ -147,5 +147,12 @@ inline constexpr UserByteField kUserBytesBitMap[] = {
     {4, 0x01, 1, "GATSO_RT4"},
     {4, 0x02, 1, "PHOTO_INTERSECTION_FILTER"},
 };
+
+// ESP Specification 3.016, Appendix 12.1, V4.1039 and higher (p.48),
+// corroborated by AndroidESPLibrary2 V19UserSettings and iOSESPLibrary
+// ESPV1UserBytes. Zero is reserved and forced to the detector default.
+inline constexpr uint8_t kAutoMuteAdvancedValue = 1;
+inline constexpr uint8_t kAutoMuteOnValue = 2;
+inline constexpr uint8_t kAutoMuteOffValue = 3;
 
 }  // namespace protocol_spec

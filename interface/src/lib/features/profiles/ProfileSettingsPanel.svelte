@@ -192,11 +192,12 @@
                             <span>X, K, Ku Automute</span>
                             {#if editingSettings}
                                 <select
+                                    aria-label="X, K, Ku Automute"
                                     class="select w-28 select-xs"
                                     bind:value={settings.autoMute}
                                 >
-                                    <option value={1}>On</option>
-                                    <option value={2}>Advanced</option>
+                                    <option value={2}>On</option>
+                                    <option value={1}>Advanced</option>
                                     <option value={3}>Off</option>
                                 </select>
                             {:else}
@@ -204,8 +205,8 @@
                                     >{settings.autoMute === 3
                                         ? 'Off'
                                         : settings.autoMute === 2
-                                          ? 'Advanced'
-                                          : 'On'}</span
+                                          ? 'On'
+                                          : 'Advanced'}</span
                                 >
                             {/if}
                         </div>
@@ -401,6 +402,13 @@
                         </div>
                     </div>
                 </details>
+
+                {#if settings.photoIntersectionFilter}
+                    <StatusAlert
+                        fallbackType="warning"
+                        message="Intersection Management suppresses DriveSafe 3D, DriveSafe 3DHD, and Ekin alerts while enabled. Those saved settings are not changed."
+                    />
+                {/if}
 
                 <details class="surface-collapse">
                     <summary class="collapse-title min-h-0 py-3 text-sm font-semibold">

@@ -25,7 +25,7 @@ struct V1UserSettings {
     bool kBandEnabled() const { return bytes[0] & 0x02; }
     bool kaBandEnabled() const { return bytes[0] & 0x04; }
     bool laserEnabled() const { return bytes[0] & 0x08; }
-    bool muteToMuteVolume() const { return !(bytes[0] & 0x10); } // Inverted: bit clear = MZ enabled
+    bool muteToMuteVolume() const { return bytes[0] & 0x10; }
     bool bogeyLockLoud() const { return bytes[0] & 0x20; }
     bool muteXKRear() const { return !(bytes[0] & 0x40); }    // Inverted
     bool kuBandEnabled() const { return !(bytes[0] & 0x80); } // Inverted
@@ -43,7 +43,7 @@ struct V1UserSettings {
     bool startupSequence() const { return bytes[2] & 0x01; }
     bool restingDisplay() const { return bytes[2] & 0x02; }
     bool bsmPlus() const { return !(bytes[2] & 0x04); }             // Inverted
-    uint8_t autoMute() const { return (bytes[2] >> 3) & 0x03; }     // 3=Off, 1=On, 2=Advanced
+    uint8_t autoMute() const { return (bytes[2] >> 3) & 0x03; }     // 3=Off, 2=On, 1=Advanced
     uint8_t kSensitivity() const { return (bytes[2] >> 5) & 0x03; } // 3=Original, 2=Full, 1=Relaxed
     bool mrct() const { return !(bytes[2] & 0x80); }                // Inverted
 
@@ -87,10 +87,10 @@ struct V1UserSettings {
     }
     void setMuteToMuteVolume(bool v) {
         if (v)
-            bytes[0] &= ~0x10;
-        else
             bytes[0] |= 0x10;
-    } // Inverted
+        else
+            bytes[0] &= ~0x10;
+    }
     void setBogeyLockLoud(bool v) {
         if (v)
             bytes[0] |= 0x20;

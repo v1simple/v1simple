@@ -257,6 +257,93 @@ void test_json_to_settings_rejects_invalid_raw_bytes_without_mutating_output() {
     }
 }
 
+void test_json_to_settings_strictly_validates_human_readable_fields_without_mutation() {
+    const char* booleanFields[] = {
+        "xBand",          "kBand",           "kaBand",          "laser",
+        "kuBand",         "euro",            "kVerifier",       "laserRear",
+        "customFreqs",    "kaAlwaysPriority", "fastLaserDetect", "muteToMuteVolume",
+        "bogeyLockLoud",  "muteXKRear",       "startupSequence", "restingDisplay",
+        "bsmPlus",         "mrct",             "driveSafe3D",      "driveSafe3DHD",
+        "redflexHalo",     "redflexNK7",       "ekin",             "photoVerifier",
+        "gatsoRT4",        "photoIntersectionFilter",
+    };
+    const char* enumFields[] = {"kaSensitivity", "kSensitivity", "xSensitivity", "autoMute"};
+
+    V1ProfileManager manager;
+    for (const char* field : booleanFields) {
+        const std::string invalid = std::string("{\"") + field + "\":1}";
+        V1UserSettings settings = makeProfile("Sentinel", 100).settings;
+        const V1UserSettings before = settings;
+        TEST_ASSERT_FALSE_MESSAGE(manager.jsonToSettings(String(invalid.c_str()), settings), field);
+        TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(before.bytes, settings.bytes, 6, field);
+    }
+
+    for (const char* field : enumFields) {
+        const char* invalidValues[] = {"0", "4", "true", "null", "1.5", "\"2\""};
+        for (const char* value : invalidValues) {
+            const std::string invalid = std::string("{\"") + field + "\":" + value + ",\"xBand\":true}";
+            V1UserSettings settings = makeProfile("Sentinel", 100).settings;
+            const V1UserSettings before = settings;
+            TEST_ASSERT_FALSE_MESSAGE(manager.jsonToSettings(String(invalid.c_str()), settings), field);
+            TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(before.bytes, settings.bytes, 6, field);
+        }
+    }
+
+    V1UserSettings valid;
+    TEST_ASSERT_TRUE(manager.jsonToSettings(
+        String("{\"muteToMuteVolume\":true,\"kaSensitivity\":1,\"kSensitivity\":2,"
+               "\"xSensitivity\":3,\"autoMute\":2}"), valid));
+    TEST_ASSERT_TRUE(valid.muteToMuteVolume());
+    TEST_ASSERT_EQUAL_UINT8(1, valid.kaSensitivity());
+    TEST_ASSERT_EQUAL_UINT8(2, valid.kSensitivity());
+    TEST_ASSERT_EQUAL_UINT8(3, valid.xSensitivity());
+    TEST_ASSERT_EQUAL_UINT8(2, valid.autoMute());
+}
+
+void test_existing_raw_mute_bit_is_preserved_and_reported_truthfully() {
+    fs::FS fs(g_tempRoot);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&fs));
+
+    // Reproduce a profile written before the accessor fix: the canonical raw
+    // byte says "mute to muted volume" while its redundant readable field says
+    // false. The CRC remains valid because it protects the raw bytes.
+    const uint8_t rawBytes[6] = {0x10, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    JsonDocument preFix;
+    preFix["description"] = "pre-fix readable metadata";
+    JsonArray bytes = preFix["bytes"].to<JsonArray>();
+    for (uint8_t value : rawBytes) bytes.add(value);
+    preFix["muteToMuteVolume"] = false;
+    preFix["crc32"] = computeCrc32(rawBytes, sizeof(rawBytes));
+    String preFixJson;
+    serializeJson(preFix, preFixJson);
+    writeFileFromString(fs, "/v1profiles/Existing.json", preFixJson.c_str());
+
+    V1Profile loaded;
+    TEST_ASSERT_TRUE(manager.loadProfile("Existing", loaded));
+    TEST_ASSERT_EQUAL_UINT8(0x10, loaded.settings.bytes[0]);
+    TEST_ASSERT_TRUE(loaded.settings.muteToMuteVolume());
+
+    // Do not migrate stored bytes: they already encode actual detector behavior.
+    TEST_ASSERT_TRUE(manager.saveProfile(loaded).success);
+    JsonDocument saved;
+    TEST_ASSERT_FALSE(deserializeJson(saved, readFileToString(fs, "/v1profiles/Existing.json")));
+    TEST_ASSERT_EQUAL_UINT8(0x10, saved["bytes"][0].as<uint8_t>());
+    TEST_ASSERT_TRUE(saved["muteToMuteVolume"].as<bool>());
+}
+
+void test_json_to_settings_raw_bytes_win_over_conflicting_readable_fields() {
+    V1ProfileManager manager;
+    V1UserSettings settings;
+
+    TEST_ASSERT_TRUE(manager.jsonToSettings(
+        String("{\"bytes\":[16,255,255,255,255,255],"
+               "\"muteToMuteVolume\":false,\"autoMute\":1}"), settings));
+    TEST_ASSERT_EQUAL_UINT8(0x10, settings.bytes[0]);
+    TEST_ASSERT_TRUE(settings.muteToMuteVolume());
+    TEST_ASSERT_EQUAL_UINT8(3, settings.autoMute());
+}
+
 void test_v41039_photo_settings_round_trip_through_json() {
     V1ProfileManager manager;
     V1UserSettings settings;
@@ -684,6 +771,9 @@ int main() {
     RUN_TEST(test_save_requires_final_file_reopen_and_crc_validation);
     RUN_TEST(test_load_profile_rejects_invalid_raw_bytes_without_mutating_output);
     RUN_TEST(test_json_to_settings_rejects_invalid_raw_bytes_without_mutating_output);
+    RUN_TEST(test_json_to_settings_strictly_validates_human_readable_fields_without_mutation);
+    RUN_TEST(test_existing_raw_mute_bit_is_preserved_and_reported_truthfully);
+    RUN_TEST(test_json_to_settings_raw_bytes_win_over_conflicting_readable_fields);
     RUN_TEST(test_v41039_photo_settings_round_trip_through_json);
     RUN_TEST(test_rename_same_name_is_successful_noop);
     RUN_TEST(test_path_like_name_is_rejected_without_creating_a_profile);

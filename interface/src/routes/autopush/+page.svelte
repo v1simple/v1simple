@@ -28,13 +28,7 @@
             !$runtimeStatusError &&
             typeof $runtimeStatus?.maintenanceBoot === 'boolean'
     );
-
-    const modeNames = {
-        0: 'Unknown',
-        1: 'All Bogeys',
-        2: 'Logic',
-        3: 'Adv Logic'
-    };
+    const profileSchemaReady = $derived(data.schemaVersion === 2);
 
     const defaultSlotNames = ['Default', 'Highway', 'Comfort'];
     const slotIcons = ['🏠', '🏎️', '👥'];
@@ -58,19 +52,9 @@
                 return;
             }
             const loaded = await res.json();
-            // Normalize defaults for new fields
             loaded.slots = (loaded.slots || []).map((s) => {
-                const volumeConfigured =
-                    s.volumeConfigured ??
-                    (Number(s.volume) >= 0 &&
-                        Number(s.volume) <= 9 &&
-                        Number(s.muteVolume) >= 0 &&
-                        Number(s.muteVolume) <= 9);
                 return {
                     ...s,
-                    volumeConfigured,
-                    volume: volumeConfigured ? Number(s.volume) : 5,
-                    muteVolume: volumeConfigured ? Number(s.muteVolume) : 0,
                     alertPersist: s.alertPersist ?? 0,
                     priorityArrowOnly: s.priorityArrowOnly ?? false
                 };
@@ -198,14 +182,6 @@
             formData.append('slot', slot);
             formData.append('name', s.name);
             formData.append('profile', s.profile);
-            formData.append('mode', s.mode);
-            formData.append('volumeConfigured', s.volumeConfigured ? 'true' : 'false');
-            if (s.volumeConfigured) {
-                formData.append('volume', s.volume);
-                formData.append('muteVol', s.muteVolume);
-            }
-            formData.append('darkMode', s.darkMode ? 'true' : 'false');
-            formData.append('muteToZero', s.muteToZero ? 'true' : 'false');
             formData.append('alertPersist', persist);
             formData.append('priorityArrowOnly', s.priorityArrowOnly ? 'true' : 'false');
 
@@ -256,6 +232,13 @@
     </PageHeader>
 
     <StatusAlert {message} />
+
+    {#if !loading && !profileSchemaReady}
+        <StatusAlert
+            message="The profile settings migration is still pending. Slot editing and activation are temporarily read-only; existing saved slots can still be pushed."
+            fallbackType="warning"
+        />
+    {/if}
 
     <div class="surface-note">
         <p>
@@ -328,6 +311,7 @@
                                 {:else}
                                     <button
                                         class="btn btn-ghost btn-sm"
+                                        disabled={!profileSchemaReady}
                                         onclick={() => beginEdit(i)}>Edit</button
                                     >
                                 {/if}
@@ -357,88 +341,6 @@
                                             <option value={p.name}>{p.name}</option>
                                         {/each}
                                     </select>
-                                </div>
-                                <div class="field-control">
-                                    <label class="label py-1" for={`slot-${i}-mode`}>
-                                        <span class="field-label copy-caption">V1 Mode</span>
-                                    </label>
-                                    <select
-                                        id={`slot-${i}-mode`}
-                                        class="select w-full select-sm"
-                                        bind:value={editingDraft.mode}
-                                    >
-                                        <option value={0}>Don't Change</option>
-                                        <option value={1}>All Bogeys</option>
-                                        <option value={2}>Logic</option>
-                                        <option value={3}>Adv Logic</option>
-                                    </select>
-                                </div>
-                                <div class="field-control col-span-2">
-                                    <label class="label cursor-pointer justify-start gap-3 py-1">
-                                        <input
-                                            type="checkbox"
-                                            class="toggle toggle-primary toggle-sm"
-                                            bind:checked={editingDraft.volumeConfigured}
-                                        />
-                                        <span class="field-label copy-caption"
-                                            >Set both V1 volume levels</span
-                                        >
-                                    </label>
-                                    <span class="field-hint copy-micro"
-                                        >The V1 applies main and mute volume as one pair.</span
-                                    >
-                                </div>
-                                <div class="field-control">
-                                    <label class="label py-1" for={`slot-${i}-volume`}>
-                                        <span class="field-label copy-caption">Volume (0-9)</span>
-                                    </label>
-                                    <input
-                                        id={`slot-${i}-volume`}
-                                        type="number"
-                                        class="input w-full input-sm"
-                                        min="0"
-                                        max="9"
-                                        bind:value={editingDraft.volume}
-                                        disabled={!editingDraft.volumeConfigured}
-                                    />
-                                </div>
-                                <div class="field-control">
-                                    <label class="label py-1" for={`slot-${i}-mute`}>
-                                        <span class="field-label copy-caption"
-                                            >Mute Volume (0-9)</span
-                                        >
-                                    </label>
-                                    <input
-                                        id={`slot-${i}-mute`}
-                                        type="number"
-                                        class="input w-full input-sm"
-                                        min="0"
-                                        max="9"
-                                        bind:value={editingDraft.muteVolume}
-                                        disabled={!editingDraft.volumeConfigured}
-                                    />
-                                </div>
-                                <div class="field-control">
-                                    <label class="label cursor-pointer justify-start gap-3 py-1">
-                                        <input
-                                            type="checkbox"
-                                            class="toggle toggle-primary toggle-sm"
-                                            bind:checked={editingDraft.darkMode}
-                                        />
-                                        <span class="field-label copy-caption"
-                                            >Dark Mode (V1 display off)</span
-                                        >
-                                    </label>
-                                </div>
-                                <div class="field-control">
-                                    <label class="label cursor-pointer justify-start gap-3 py-1">
-                                        <input
-                                            type="checkbox"
-                                            class="toggle toggle-primary toggle-sm"
-                                            bind:checked={editingDraft.muteToZero}
-                                        />
-                                        <span class="field-label copy-caption">Mute to Zero</span>
-                                    </label>
                                 </div>
                                 <div class="field-control">
                                     <label class="label cursor-pointer justify-start gap-3 py-1">
@@ -489,26 +391,10 @@
                                         ? ' (missing)'
                                         : ''}
                                 </div>
-                                <div class="copy-muted">Mode:</div>
-                                <div class="font-medium">{modeNames[slot.mode] || '—'}</div>
-                                <div class="copy-muted">Volume:</div>
-                                <div class="font-medium">
-                                    {slot.volumeConfigured
-                                        ? `${slot.volume} / Mute: ${slot.muteVolume}`
-                                        : "Don't change"}
-                                </div>
                                 <div class="copy-muted">Options:</div>
                                 <div class="font-medium">
-                                    {#if slot.darkMode}🌙 Dark{/if}
-                                    {#if slot.darkMode && slot.muteToZero}
-                                        ·
-                                    {/if}
-                                    {#if slot.muteToZero}🔇 MZ{/if}
-                                    {#if (slot.darkMode || slot.muteToZero) && slot.priorityArrowOnly}
-                                        ·
-                                    {/if}
                                     {#if slot.priorityArrowOnly}↑ Prio Arrow{/if}
-                                    {#if !slot.darkMode && !slot.muteToZero && !slot.priorityArrowOnly}—{/if}
+                                    {#if !slot.priorityArrowOnly}—{/if}
                                 </div>
                                 <div class="copy-muted">Alert persistence:</div>
                                 <div class="font-medium">{slot.alertPersist || 0}s</div>
@@ -521,7 +407,7 @@
                                     <button
                                         class="btn btn-outline btn-sm"
                                         onclick={() => activateSlot(i)}
-                                        disabled={busy}
+                                        disabled={busy || !profileSchemaReady}
                                     >
                                         Activate
                                     </button>

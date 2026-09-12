@@ -273,12 +273,15 @@ void UsbProfileProtocol::dispatch(uint32_t nowMs) {
         }
         document_[documentLength_] = 0;
         bool pending = false;
+        bool migrationPending = false;
         int profiles = 0;
-        const bool ok = backend_.apply(document_, documentLength_, pending, profiles, error, sizeof(error));
+        const bool ok = backend_.apply(document_, documentLength_, pending, migrationPending, profiles,
+                                       error, sizeof(error));
         clearTransfer(); // Never reapply a committed or failed document on a later commit.
         if (!ok) { fail(id, "apply_failed", error); return; }
-        std::snprintf(json, sizeof(json), "{\"ok\":true,\"stored\":true,\"backup_pending\":%s,\"profiles\":%d}",
-                      pending ? "true" : "false", profiles);
+        std::snprintf(json, sizeof(json),
+                      "{\"ok\":true,\"stored\":true,\"backup_pending\":%s,\"migration_pending\":%s,\"profiles\":%d}",
+                      pending ? "true" : "false", migrationPending ? "true" : "false", profiles);
         reply(id, json); return;
     }
     fail(id, "bad_request");

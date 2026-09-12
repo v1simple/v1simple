@@ -149,6 +149,7 @@ inline constexpr const char* kNvsStealthEnabled = "stealthEn";
 
 // ── Profiles / settings slots ─────────────────────────────────────────────
 inline constexpr const char* kNvsAutoPush = "autoPush";
+inline constexpr const char* kNvsAutoPushProfileSchema = "apProfSchema";
 inline constexpr const char* kNvsActiveSlot = "activeSlot";
 
 inline constexpr const char* kNvsSlot0Name = "slot0name";

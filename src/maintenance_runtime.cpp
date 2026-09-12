@@ -143,6 +143,7 @@ void MaintenanceRuntime::initializeStorageAndProfiles() {
             display_.updateColorTheme();
             display_.setBrightness(settings_.get().brightness);
         }
+        settings_.migrateAutoPushProfilesToV2();
 
         const String storedFallback = settings_.loadLastV1AddressFallback();
         const String degradedFallback = normalizeV1DeviceAddress(storedFallback);

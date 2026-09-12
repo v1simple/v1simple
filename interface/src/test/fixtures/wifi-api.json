@@ -43,46 +43,30 @@
         {
           "body": {
             "activeSlot": 1,
+            "schemaVersion": 2,
+            "detectorConfigurationOwner": "profile",
             "enabled": true,
             "slots": [
               {
                 "alertPersist": 1,
                 "color": 0,
-                "darkMode": false,
-                "mode": 2,
-                "muteToZero": false,
-                "muteVolume": 2,
-                "volumeConfigured": true,
                 "name": "Default",
                 "priorityArrowOnly": false,
-                "profile": "Road Trip",
-                "volume": 6
+                "profile": "Road Trip"
               },
               {
                 "alertPersist": 2,
                 "color": 0,
-                "darkMode": true,
-                "mode": 3,
-                "muteToZero": false,
-                "muteVolume": 2,
-                "volumeConfigured": true,
                 "name": "Highway",
                 "priorityArrowOnly": true,
-                "profile": "Quiet Commute",
-                "volume": 8
+                "profile": "Quiet Commute"
               },
               {
                 "alertPersist": 0,
                 "color": 0,
-                "darkMode": false,
-                "mode": 0,
-                "muteToZero": true,
-                "muteVolume": 1,
-                "volumeConfigured": true,
                 "name": "Comfort",
                 "priorityArrowOnly": false,
-                "profile": "",
-                "volume": 4
+                "profile": ""
               }
             ]
           },
@@ -730,20 +714,19 @@
       "GET /api/v1/profiles": [
         {
           "body": {
+            "schemaVersion": 2,
+            "detectorConfigurationOwner": "profile",
             "profiles": [
               {
                 "description": "Daily drive",
-                "displayOn": true,
                 "name": "Daily Drive"
               },
               {
                 "description": "Road profile",
-                "displayOn": true,
                 "name": "Road Trip"
               },
               {
                 "description": "Quiet profile",
-                "displayOn": true,
                 "name": "Quiet Commute"
               }
             ]

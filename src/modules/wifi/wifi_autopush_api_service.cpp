@@ -19,19 +19,23 @@ void handleApiSlots(WebServer& server, const Runtime& runtime) {
     WifiJson::Document doc;
     doc["enabled"] = snapshot.enabled;
     doc["activeSlot"] = snapshot.activeSlot;
+    doc["schemaVersion"] = snapshot.profileOwned ? 2 : 1;
+    doc["detectorConfigurationOwner"] = snapshot.profileOwned ? "profile" : "legacy-slot";
 
     JsonArray slots = doc["slots"].to<JsonArray>();
     for (const SlotConfig& slot : snapshot.slots) {
         JsonObject obj = slots.add<JsonObject>();
         obj["name"] = slot.name;
         obj["profile"] = slot.profile;
-        obj["mode"] = slot.mode;
         obj["color"] = slot.color;
-        obj["volumeConfigured"] = slot.volumeConfigured;
-        obj["volume"] = slot.volumeConfigured ? slot.volume : 0;
-        obj["muteVolume"] = slot.volumeConfigured ? slot.muteVolume : 0;
-        obj["darkMode"] = slot.darkMode;
-        obj["muteToZero"] = slot.muteToZero;
+        if (!snapshot.profileOwned) {
+            obj["mode"] = slot.mode;
+            obj["volumeConfigured"] = slot.volumeConfigured;
+            obj["volume"] = slot.volumeConfigured ? slot.volume : 0;
+            obj["muteVolume"] = slot.volumeConfigured ? slot.muteVolume : 0;
+            obj["darkMode"] = slot.darkMode;
+            obj["muteToZero"] = slot.muteToZero;
+        }
         obj["alertPersist"] = slot.alertPersist;
         obj["priorityArrowOnly"] = slot.priorityArrowOnly;
     }
@@ -53,14 +57,26 @@ void handleApiSlotSave(WebServer& server, const Runtime& runtime, bool (*checkRa
     if (checkRateLimit && !checkRateLimit(rateLimitCtx))
         return;
 
-    if (!server.hasArg("slot") || !server.hasArg("profile") || !server.hasArg("mode")) {
+    SlotsSnapshot current;
+    if (runtime.loadSlotsSnapshot) runtime.loadSlotsSnapshot(current, runtime.loadSlotsSnapshotCtx);
+    const bool profileOwned = current.profileOwned;
+    if (!server.hasArg("slot") || !server.hasArg("profile") || (!profileOwned && !server.hasArg("mode"))) {
         server.send(400, "application/json", "{\"error\":\"Missing parameters\"}");
+        return;
+    }
+
+    if (profileOwned &&
+        (server.hasArg("mode") || server.hasArg("volumeConfigured") || server.hasArg("volume") ||
+         server.hasArg("muteVol") || server.hasArg("muteVolume") || server.hasArg("mainVolume") ||
+         server.hasArg("mutedVolume") || server.hasArg("darkMode") || server.hasArg("muteToZero"))) {
+        server.send(400, "application/json",
+                    "{\"error\":\"Detector settings belong to the selected profile\"}");
         return;
     }
 
     int slot = server.arg("slot").toInt();
     String profile = server.arg("profile");
-    int mode = server.arg("mode").toInt();
+    int mode = profileOwned ? 0 : server.arg("mode").toInt();
     String name = server.hasArg("name") ? server.arg("name") : "";
     int color = server.hasArg("color") ? server.arg("color").toInt() : -1;
     int volume = server.hasArg("volume") ? server.arg("volume").toInt() : -1;
@@ -123,6 +139,7 @@ void handleApiSlotSave(WebServer& server, const Runtime& runtime, bool (*checkRa
     if (runtime.applySlotUpdate) {
         SlotUpdateRequest request;
         request.slot = slot;
+        request.profileOwned = profileOwned;
         request.hasName = name.length() > 0;
         request.name = name;
         request.hasColor = color >= 0;

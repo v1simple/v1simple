@@ -149,6 +149,10 @@ void handleApiProfilesList(WebServer& server, const Runtime& runtime) {
     Serial.printf("[V1Profiles] Listing %d profiles\n", profileNames.size());
 
     WifiJson::Document doc;
+    const bool schemaReady = !runtime.profileSchemaReady ||
+                             runtime.profileSchemaReady(runtime.profileSchemaReadyCtx);
+    doc["schemaVersion"] = schemaReady ? V1_PROFILE_SCHEMA_VERSION : 1;
+    doc["detectorConfigurationOwner"] = schemaReady ? "profile" : "legacy-slot";
     JsonArray array = doc["profiles"].to<JsonArray>();
 
     for (const String& name : profileNames) {
@@ -157,7 +161,6 @@ void handleApiProfilesList(WebServer& server, const Runtime& runtime) {
             JsonObject obj = array.add<JsonObject>();
             obj["name"] = profile.name;
             obj["description"] = profile.description;
-            obj["displayOn"] = profile.displayOn;
         }
     }
 
@@ -204,6 +207,11 @@ void handleApiProfileSave(WebServer& server, const Runtime& runtime, bool (*chec
                           void* rateLimitCtx) {
     if (checkRateLimit && !checkRateLimit(rateLimitCtx))
         return;
+    if (runtime.profileSchemaReady && !runtime.profileSchemaReady(runtime.profileSchemaReadyCtx)) {
+        server.send(409, "application/json",
+                    "{\"error\":\"Profile settings migration is pending; saving is temporarily read-only\"}");
+        return;
+    }
 
     if (!server.hasArg("plain")) {
         server.send(400, "application/json", "{\"error\":\"Missing request body\"}");
@@ -243,30 +251,22 @@ void handleApiProfileSave(WebServer& server, const Runtime& runtime, bool (*chec
     }
 
     const JsonVariantConst descriptionValue = doc["description"];
-    const JsonVariantConst displayOnValue = doc["displayOn"];
-    const JsonVariantConst mainVolumeValue = doc["mainVolume"];
-    const JsonVariantConst mutedVolumeValue = doc["mutedVolume"];
+    const JsonVariantConst detectorValue = doc["detector"];
     const bool hasDescription = !descriptionValue.isUnbound();
-    const bool hasDisplayOn = !displayOnValue.isUnbound();
-    const bool hasMainVolume = !mainVolumeValue.isUnbound();
-    const bool hasMutedVolume = !mutedVolumeValue.isUnbound();
+    const bool hasDetector = !detectorValue.isUnbound();
     if ((hasDescription && !descriptionValue.is<const char*>()) ||
-        (hasDisplayOn && !displayOnValue.is<bool>()) ||
-        (hasMainVolume && !mainVolumeValue.is<int>()) ||
-        (hasMutedVolume && !mutedVolumeValue.is<int>())) {
+        (hasDetector && !detectorValue.is<JsonObjectConst>()) ||
+        (!doc["schemaVersion"].isUnbound() &&
+         (!doc["schemaVersion"].is<int>() ||
+          doc["schemaVersion"].as<int>() != V1_PROFILE_SCHEMA_VERSION)) ||
+        !doc["displayOn"].isUnbound() || !doc["mainVolume"].isUnbound() ||
+        !doc["mutedVolume"].isUnbound()) {
         server.send(400, "application/json", "{\"error\":\"Invalid profile metadata\"}");
         return;
     }
 
-    auto validVolume = [](int value) { return (value >= 0 && value <= 9) || value == 0xFF; };
-    if ((hasMainVolume && !validVolume(mainVolumeValue.as<int>())) ||
-        (hasMutedVolume && !validVolume(mutedVolumeValue.as<int>()))) {
-        server.send(400, "application/json", "{\"error\":\"Invalid profile volume\"}");
-        return;
-    }
-
     JsonDocument existingDoc;
-    const bool needsExisting = !hasDescription || !hasDisplayOn || !hasMainVolume || !hasMutedVolume;
+    const bool needsExisting = !hasDescription || !hasDetector;
     if (needsExisting) {
         String existingJson;
         CatalogStatus status = CatalogStatus::NotFound;
@@ -292,11 +292,17 @@ void handleApiProfileSave(WebServer& server, const Runtime& runtime, bool (*chec
 
     const String description = hasDescription ? descriptionValue.as<const char*>() :
                                                  String(existingDoc["description"] | "");
-    const bool displayOn = hasDisplayOn ? displayOnValue.as<bool>() : (existingDoc["displayOn"] | true);
-    const uint8_t mainVolume = hasMainVolume ? static_cast<uint8_t>(mainVolumeValue.as<int>()) :
-                                              static_cast<uint8_t>(existingDoc["mainVolume"] | 0xFF);
-    const uint8_t mutedVolume = hasMutedVolume ? static_cast<uint8_t>(mutedVolumeValue.as<int>()) :
-                                                static_cast<uint8_t>(existingDoc["mutedVolume"] | 0xFF);
+    V1DetectorConfiguration detector;
+    if (hasDetector) {
+        if (!parseV1DetectorConfiguration(detectorValue.as<JsonObjectConst>(), detector)) {
+            server.send(400, "application/json", "{\"error\":\"Invalid detector configuration\"}");
+            return;
+        }
+    } else if (existingDoc["detector"].is<JsonObjectConst>() &&
+               !parseV1DetectorConfiguration(existingDoc["detector"].as<JsonObjectConst>(), detector)) {
+        server.send(500, "application/json", "{\"error\":\"Existing detector configuration is corrupt\"}");
+        return;
+    }
     uint8_t settingsBytes[6];
     memset(settingsBytes, 0xFF, sizeof(settingsBytes));
 
@@ -317,7 +323,7 @@ void handleApiProfileSave(WebServer& server, const Runtime& runtime, bool (*chec
     }
 
     String saveError;
-    if (runtime.saveProfile(name, description, displayOn, mainVolume, mutedVolume, settingsBytes, saveError,
+    if (runtime.saveProfile(name, description, detector, settingsBytes, saveError,
                             runtime.saveProfileCtx)) {
         if (runtime.backupToSd) {
             runtime.backupToSd(runtime.backupToSdCtx);
@@ -339,6 +345,11 @@ void handleApiProfileDelete(WebServer& server, const Runtime& runtime, bool (*ch
                             void* rateLimitCtx) {
     if (checkRateLimit && !checkRateLimit(rateLimitCtx))
         return;
+    if (runtime.profileSchemaReady && !runtime.profileSchemaReady(runtime.profileSchemaReadyCtx)) {
+        server.send(409, "application/json",
+                    "{\"error\":\"Profile settings migration is pending; deletion is temporarily read-only\"}");
+        return;
+    }
 
     if (!server.hasArg("plain")) {
         server.send(400, "application/json", "{\"error\":\"Missing request body\"}");

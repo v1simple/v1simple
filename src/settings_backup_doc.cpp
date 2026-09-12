@@ -531,6 +531,16 @@ void applyBackupAudioFields(const JsonDocument& doc, V1Settings& settings, Backu
 
 void applyBackupProfileSlotFields(const JsonDocument& doc, V1Settings& settings, BackupRestoreScope scope) {
     restoreBackupBool(doc, "autoPushEnabled", settings.autoPushEnabled);
+    if (doc["autoPushProfileSchemaVersion"].is<int>()) {
+        const int version = doc["autoPushProfileSchemaVersion"].as<int>();
+        settings.autoPushProfileSchemaVersion =
+            version == V1_PROFILE_SCHEMA_VERSION ? V1_PROFILE_SCHEMA_VERSION : 0;
+    } else if (doc["profiles"].is<JsonArrayConst>() || !doc["slot0Mode"].isUnbound() ||
+               !doc["slot0DarkMode"].isUnbound() || !doc["slot0Volume"].isUnbound()) {
+        // A pre-v2 document carries detector commands in slot fields. Never
+        // inherit a destination device's v2 marker across that restore.
+        settings.autoPushProfileSchemaVersion = 0;
+    }
     if (doc["activeSlot"].is<int>()) settings.activeSlot = std::max(0, std::min(doc["activeSlot"].as<int>(), 2));
     AutoPushSlot* slots[] = {&settings.slot0_default, &settings.slot1_highway, &settings.slot2_comfort};
     for (int i = 0; i < 3; ++i) {
@@ -617,6 +627,20 @@ bool parseBackupProfile(JsonObjectConst source, V1Profile& profile) {
         return false;
     }
     profile.name = canonical;
+    const bool hasSchemaVersion = !source["schemaVersion"].isUnbound();
+    const bool hasDetector = !source["detector"].isUnbound();
+    if (hasSchemaVersion != hasDetector) return false;
+    if (hasSchemaVersion) {
+        if (!source["schemaVersion"].is<int>() ||
+            source["schemaVersion"].as<int>() != V1_PROFILE_SCHEMA_VERSION ||
+            !source["detector"].is<JsonObjectConst>() ||
+            !parseV1DetectorConfiguration(source["detector"].as<JsonObjectConst>(), profile.detector)) {
+            return false;
+        }
+        profile.schemaVersion = V1_PROFILE_SCHEMA_VERSION;
+    } else {
+        profile.schemaVersion = 1;
+    }
     if (!source["description"].isNull()) {
         if (!source["description"].is<const char*>()) {
             return false;
@@ -625,7 +649,7 @@ bool parseBackupProfile(JsonObjectConst source, V1Profile& profile) {
         // including through the rollback journal that uses this parser.
         profile.description = source["description"].as<String>();
     }
-    if (!source["displayOn"].isNull()) {
+    if (!hasSchemaVersion && !source["displayOn"].isNull()) {
         bool displayOn = true;
         if (!parseBoolVariant(source["displayOn"], displayOn)) {
             return false;
@@ -646,6 +670,10 @@ bool parseBackupProfile(JsonObjectConst source, V1Profile& profile) {
         target = static_cast<uint8_t>(value);
         return true;
     };
+    if (hasSchemaVersion) {
+        return source["displayOn"].isUnbound() && source["mainVolume"].isUnbound() &&
+               source["mutedVolume"].isUnbound();
+    }
     return readVolume("mainVolume", profile.mainVolume) && readVolume("mutedVolume", profile.mutedVolume);
 }
 
@@ -734,6 +762,13 @@ bool validateBackupDocumentForApply(const JsonDocument& doc, const V1Settings& c
     if (!validateBackupNetworkCredentialFields(doc)) {
         return false;
     }
+    const JsonVariantConst profileSchemaMarker = doc["autoPushProfileSchemaVersion"];
+    if (!profileSchemaMarker.isUnbound() &&
+        (!profileSchemaMarker.is<int>() ||
+         (profileSchemaMarker.as<int>() != 0 &&
+          profileSchemaMarker.as<int>() != V1_PROFILE_SCHEMA_VERSION))) {
+        return false;
+    }
 
     std::vector<String> availableNames;
     if (profiles.isReady()) {
@@ -779,6 +814,35 @@ bool validateBackupDocumentForApply(const JsonDocument& doc, const V1Settings& c
         }
     }
 
+    const bool markerIsV2 = profileSchemaMarker.is<int>() &&
+                            profileSchemaMarker.as<int>() == V1_PROFILE_SCHEMA_VERSION;
+    if (markerIsV2) {
+        if (!doc["profiles"].is<JsonArrayConst>()) return false;
+        for (const V1Profile& profile : incomingProfiles) {
+            if (profile.schemaVersion != V1_PROFILE_SCHEMA_VERSION) return false;
+        }
+        for (int slot = 0; slot < 3; ++slot) {
+            char modeKey[16], volumeKey[24], muteKey[24], darkKey[24], muteZeroKey[24];
+            std::snprintf(modeKey, sizeof(modeKey), "slot%dMode", slot);
+            std::snprintf(volumeKey, sizeof(volumeKey), "slot%dVolume", slot);
+            std::snprintf(muteKey, sizeof(muteKey), "slot%dMuteVolume", slot);
+            std::snprintf(darkKey, sizeof(darkKey), "slot%dDarkMode", slot);
+            std::snprintf(muteZeroKey, sizeof(muteZeroKey), "slot%dMuteToZero", slot);
+            if ((!doc[modeKey].isUnbound() && (!doc[modeKey].is<int>() || doc[modeKey].as<int>() != 0)) ||
+                (!doc[volumeKey].isUnbound() && (!doc[volumeKey].is<int>() || doc[volumeKey].as<int>() != 255)) ||
+                (!doc[muteKey].isUnbound() && (!doc[muteKey].is<int>() || doc[muteKey].as<int>() != 255)) ||
+                (!doc[darkKey].isUnbound() && (!doc[darkKey].is<bool>() || doc[darkKey].as<bool>())) ||
+                (!doc[muteZeroKey].isUnbound() &&
+                 (!doc[muteZeroKey].is<bool>() || doc[muteZeroKey].as<bool>()))) {
+                return false;
+            }
+        }
+    } else {
+        for (const V1Profile& profile : incomingProfiles) {
+            if (profile.schemaVersion != 1) return false;
+        }
+    }
+
     const String currentAssignments[3] = {current.slot0_default.profileName, current.slot1_highway.profileName,
                                           current.slot2_comfort.profileName};
     for (int slot = 0; slot < 3; ++slot) {
@@ -806,6 +870,14 @@ bool validateBackupDocumentForApply(const JsonDocument& doc, const V1Settings& c
         }
         if (!found) {
             return false;
+        }
+        if (markerIsV2) {
+            bool foundInV2Document = false;
+            for (const V1Profile& candidate : incomingProfiles) {
+                foundInV2Document |= candidate.name == canonical &&
+                                     candidate.schemaVersion == V1_PROFILE_SCHEMA_VERSION;
+            }
+            if (!foundInV2Document) return false;
         }
     }
     return true;
@@ -892,7 +964,8 @@ bool jsonHasExactSize(JsonObjectConst object, size_t expected) {
 }
 
 bool profileSnapshotsEqual(const V1Profile& lhs, const V1Profile& rhs) {
-    return lhs.name == rhs.name && lhs.description == rhs.description && lhs.displayOn == rhs.displayOn &&
+    return lhs.name == rhs.name && lhs.description == rhs.description && lhs.schemaVersion == rhs.schemaVersion &&
+           lhs.detector == rhs.detector && lhs.displayOn == rhs.displayOn &&
            lhs.mainVolume == rhs.mainVolume && lhs.mutedVolume == rhs.mutedVolume &&
            memcmp(lhs.settings.bytes, rhs.settings.bytes, sizeof(lhs.settings.bytes)) == 0;
 }
@@ -932,11 +1005,10 @@ bool deleteJournalsEqual(const ProfileDeleteTransactionJournal& lhs,
 }
 
 void writeProfileToJournal(JsonObject target, const V1Profile& profile) {
+    target["schemaVersion"] = V1_PROFILE_SCHEMA_VERSION;
     target["name"] = profile.name;
     target["description"] = profile.description;
-    target["displayOn"] = profile.displayOn;
-    target["mainVolume"] = profile.mainVolume;
-    target["mutedVolume"] = profile.mutedVolume;
+    appendV1DetectorConfiguration(target["detector"].to<JsonObject>(), profile.detector);
     JsonArray bytes = target["bytes"].to<JsonArray>();
     for (uint8_t byte : profile.settings.bytes) {
         bytes.add(byte);
@@ -944,10 +1016,14 @@ void writeProfileToJournal(JsonObject target, const V1Profile& profile) {
 }
 
 bool readProfileFromJournal(JsonObjectConst source, V1Profile& profile) {
-    return jsonHasExactSize(source, 6) && source["name"].is<const char*>() &&
-           source["description"].is<const char*>() && source["displayOn"].is<bool>() &&
-           source["mainVolume"].is<uint8_t>() && source["mutedVolume"].is<uint8_t>() &&
-           source["bytes"].is<JsonArrayConst>() && parseBackupProfile(source, profile);
+    const bool legacy = source["schemaVersion"].isUnbound();
+    const size_t expectedSize = legacy ? 6 : 5;
+    return jsonHasExactSize(source, expectedSize) && source["name"].is<const char*>() &&
+           source["description"].is<const char*>() && source["bytes"].is<JsonArrayConst>() &&
+           (legacy ? (source["displayOn"].is<bool>() && source["mainVolume"].is<uint8_t>() &&
+                      source["mutedVolume"].is<uint8_t>())
+                   : source["detector"].is<JsonObjectConst>()) &&
+           parseBackupProfile(source, profile);
 }
 
 void writeCredentialSnapshotToJournal(JsonObject target, const RestoreCredentialSnapshot& snapshot) {
@@ -1865,6 +1941,210 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
     return result;
 }
 
+bool SettingsManager::migrateAutoPushProfilesToV2() {
+    if (!profiles_ || !profiles_->isReady() || !resolveStorageTransactionsForMutation()) return false;
+
+    std::vector<V1Profile> catalog;
+    if (!profiles_->snapshotProfiles(catalog, 250).success()) return false;
+    if (settings_.autoPushProfileSchemaVersion == V1_PROFILE_SCHEMA_VERSION) {
+        for (const V1Profile& profile : catalog) {
+            if (profile.schemaVersion != V1_PROFILE_SCHEMA_VERSION) return false;
+        }
+        const V1Settings& state = settings_;
+        for (int slotIndex = 0; slotIndex < 3; ++slotIndex) {
+            const auto slot = state.autoPushSlotView(slotIndex);
+            if (slot.config.mode != V1_MODE_UNKNOWN ||
+                slot.volume != 0xFF || slot.muteVolume != 0xFF || slot.darkMode || slot.muteToZero) {
+                return false;
+            }
+            if (slot.config.profileName.length() == 0) continue;
+            bool found = false;
+            for (const V1Profile& profile : catalog) found |= profile.name == slot.config.profileName;
+            if (!found) return false;
+        }
+        return true;
+    }
+    const std::vector<V1Profile> legacyCatalog = catalog;
+
+    // Upgrade unassigned catalog entries without activating the old, unused
+    // profile metadata fields. User bytes were the only profile-owned command
+    // in the legacy executor.
+    for (V1Profile& profile : catalog) {
+        profile.schemaVersion = V1_PROFILE_SCHEMA_VERSION;
+        profile.detector = V1DetectorConfiguration{};
+    }
+
+    struct Variant {
+        String sourceName;
+        String effectiveName;
+        V1Profile profile;
+    };
+    std::vector<Variant> variants;
+
+    const auto findLegacy = [&](const String& name) -> const V1Profile* {
+        for (const V1Profile& profile : legacyCatalog) {
+            if (profile.name == name) return &profile;
+        }
+        return nullptr;
+    };
+    const auto catalogIndex = [&](const String& name) -> int {
+        for (size_t i = 0; i < catalog.size(); ++i) {
+            if (catalog[i].name == name) return static_cast<int>(i);
+        }
+        return -1;
+    };
+    const auto nameAvailable = [&](const String& name) {
+        const String key = profileCanonicalCollisionKey(name);
+        for (const V1Profile& profile : catalog) {
+            if (profileCanonicalCollisionKey(profile.name) == key) return false;
+        }
+        return true;
+    };
+    const auto uniqueName = [&](String base) {
+        base.trim();
+        if (base.length() == 0) base = "Auto-Push profile";
+        if (base.length() > MAX_PROFILE_NAME_LEN) base = base.substring(0, MAX_PROFILE_NAME_LEN);
+        if (nameAvailable(base)) return base;
+        for (unsigned suffix = 2; suffix < 1000; ++suffix) {
+            const String tail = " #" + String(suffix);
+            String candidate = base;
+            if (candidate.length() + tail.length() > MAX_PROFILE_NAME_LEN) {
+                candidate = candidate.substring(0, MAX_PROFILE_NAME_LEN - tail.length());
+            }
+            candidate += tail;
+            if (nameAvailable(candidate)) return candidate;
+        }
+        return String();
+    };
+    const auto sameApplication = [](const V1Profile& lhs, const V1Profile& rhs) {
+        return lhs.detector == rhs.detector &&
+               memcmp(lhs.settings.bytes, rhs.settings.bytes, sizeof(lhs.settings.bytes)) == 0;
+    };
+
+    String assignedNames[3];
+    const V1Settings legacySettings = settings_;
+    for (int slotIndex = 0; slotIndex < 3; ++slotIndex) {
+        const V1Settings::ConstAutoPushSlotView slot = legacySettings.autoPushSlotView(slotIndex);
+        const V1Profile* source = findLegacy(slot.config.profileName);
+        V1Profile effective = source ? *source : V1Profile();
+        effective.schemaVersion = V1_PROFILE_SCHEMA_VERSION;
+        effective.detector = V1DetectorConfiguration{};
+        effective.detector.userSettingsPolicy = source ? V1UserSettingsPolicy::Value
+                                                       : V1UserSettingsPolicy::Unchanged;
+        if (source) {
+            // This is the exact legacy applySlotMuteToZero transform.
+            if (slot.muteToZero) {
+                effective.settings.bytes[0] &= static_cast<uint8_t>(~0x10u);
+            } else {
+                effective.settings.bytes[0] |= 0x10u;
+            }
+        }
+        if (slot.config.mode != V1_MODE_UNKNOWN) {
+            effective.detector.modePolicy = V1ModePolicy::Value;
+            effective.detector.mode = static_cast<uint8_t>(slot.config.mode);
+        }
+        // Legacy Auto-Push always sent one display command, including for an
+        // otherwise-empty slot. Off means the legacy completely-dark command.
+        effective.detector.displayPolicy = slot.darkMode ? V1DisplayPolicy::Off : V1DisplayPolicy::On;
+        if (isConfiguredSlotVolumePair(slot.volume, slot.muteVolume)) {
+            effective.detector.volumePolicy = V1VolumePolicy::Temporary;
+            effective.detector.mainVolume = slot.volume;
+            effective.detector.mutedVolume = slot.muteVolume;
+        }
+
+        const String sourceKey = source ? source->name : String();
+        bool reused = false;
+        for (const Variant& variant : variants) {
+            if (variant.sourceName == sourceKey && sameApplication(variant.profile, effective)) {
+                assignedNames[slotIndex] = variant.effectiveName;
+                reused = true;
+                break;
+            }
+        }
+        if (reused) continue;
+
+        String effectiveName;
+        const bool firstSourceVariant = [&]() {
+            for (const Variant& variant : variants) {
+                if (variant.sourceName == sourceKey) return false;
+            }
+            return true;
+        }();
+        if (source && firstSourceVariant) {
+            effectiveName = source->name;
+            const int index = catalogIndex(effectiveName);
+            if (index < 0) return false;
+            effective.name = effectiveName;
+            catalog[static_cast<size_t>(index)] = effective;
+        } else {
+            // Slot labels intentionally allow display characters that profile
+            // names reject. Use a stable safe suffix rather than laundering a
+            // legal label into an invalid filesystem name.
+            const String safeSlot = "Slot " + String(slotIndex + 1);
+            const String base = source ? source->name + " - " + safeSlot : "Auto-Push " + safeSlot;
+            effectiveName = uniqueName(base);
+            if (effectiveName.length() == 0) return false;
+            effective.name = effectiveName;
+            if (!source) effective.description = "Migrated Auto-Push detector configuration";
+            catalog.push_back(effective);
+        }
+        variants.push_back({sourceKey, effectiveName, effective});
+        assignedNames[slotIndex] = effectiveName;
+    }
+
+    JsonDocument migration;
+    migration["autoPushEnabled"] = settings_.autoPushEnabled;
+    migration["activeSlot"] = settings_.activeSlot;
+    migration["autoPushProfileSchemaVersion"] = V1_PROFILE_SCHEMA_VERSION;
+    for (int slotIndex = 0; slotIndex < 3; ++slotIndex) {
+        char key[32];
+        std::snprintf(key, sizeof(key), "slot%dProfileName", slotIndex);
+        migration[key] = assignedNames[slotIndex];
+        std::snprintf(key, sizeof(key), "slot%dMode", slotIndex);
+        migration[key] = 0;
+        std::snprintf(key, sizeof(key), "slot%dVolume", slotIndex);
+        migration[key] = 255;
+        std::snprintf(key, sizeof(key), "slot%dMuteVolume", slotIndex);
+        migration[key] = 255;
+        std::snprintf(key, sizeof(key), "slot%dDarkMode", slotIndex);
+        migration[key] = false;
+        std::snprintf(key, sizeof(key), "slot%dMuteToZero", slotIndex);
+        migration[key] = false;
+    }
+    JsonArray profiles = migration["profiles"].to<JsonArray>();
+    for (const V1Profile& profile : catalog) {
+        JsonObject entry = profiles.add<JsonObject>();
+        entry["schemaVersion"] = V1_PROFILE_SCHEMA_VERSION;
+        entry["name"] = profile.name;
+        entry["description"] = profile.description;
+        appendV1DetectorConfiguration(entry["detector"].to<JsonObject>(), profile.detector);
+        JsonArray bytes = entry["bytes"].to<JsonArray>();
+        for (uint8_t byte : profile.settings.bytes) bytes.add(byte);
+    }
+    if (migration.overflowed()) return false;
+
+#ifdef UNIT_TEST
+    if (autoPushMigrationInterruptAfterProfiles_) {
+        autoPushMigrationInterruptAfterProfiles_ = false;
+        restoreInterruptAfterProfiles_ = true;
+    }
+#endif
+
+    const SettingsBackupApplyResult result =
+        applyBackupDocument(migration, true, SettingsRestoreWatchdog{}, SettingsBackupScope::ProfilesOnly);
+    if (!result.success) {
+        // The profile transaction may have staged the v2 document in RAM
+        // before its durable authority commit. Keep the running executor on
+        // the legacy command source until recovery proves that commit.
+        settings_ = legacySettings;
+        Serial.println("[Settings] Auto-Push profile schema migration did not commit; retaining legacy commands");
+        return false;
+    }
+    Serial.printf("[Settings] Migrated Auto-Push detector ownership to %d profile(s)\n",
+                  result.profilesRestored);
+    return true;
+}
+
 bool backupFieldMatchesBool(const JsonDocument& doc, const char* key, bool expected) {
     bool parsed = false;
     return parseBoolVariant(doc[key], parsed) && parsed == expected;
@@ -1886,6 +2166,8 @@ bool backupAppearsInSyncWithNvs(const JsonDocument& doc, const V1Settings& curre
            backupFieldMatchesString(doc, "proxyName", current.proxyName) &&
            backupFieldMatchesInt(doc, "brightness", current.brightness) &&
            backupFieldMatchesBool(doc, "autoPushEnabled", current.autoPushEnabled) &&
+           backupFieldMatchesInt(doc, "autoPushProfileSchemaVersion",
+                                 current.autoPushProfileSchemaVersion) &&
            backupFieldMatchesInt(doc, "activeSlot", current.activeSlot) &&
            backupFieldMatchesString(doc, "slot0ProfileName", current.slot0_default.profileName) &&
            backupFieldMatchesInt(doc, "slot0Mode", current.slot0_default.mode) &&

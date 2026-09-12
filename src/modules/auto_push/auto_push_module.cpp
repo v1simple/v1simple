@@ -71,10 +71,26 @@ void AutoPushModule::armState(int slotIndex, const AutoPushSlot& slot, bool prof
     state_.step = Step::WaitReady;
     state_.nextStepAtMs = static_cast<uint32_t>(millis()) + 100u;
     state_.isPushNow = isPushNow;
+    state_.profileOwned = settings_->get().autoPushProfileSchemaVersion == V1_PROFILE_SCHEMA_VERSION;
     state_.displayOn = !settings_->getSlotDarkMode(slotIndex);
+    state_.displayRequested = true;
     state_.muteToZero = settings_->getSlotMuteToZero(slotIndex);
+    state_.desiredMode = slot.mode;
     state_.volume = settings_->getSlotVolume(slotIndex);
     state_.muteVolume = settings_->getSlotMuteVolume(slotIndex);
+    state_.volumePolicy = state_.volume <= 9 && state_.muteVolume <= 9 ? V1VolumePolicy::Temporary
+                                                                      : V1VolumePolicy::Unchanged;
+
+    if (state_.profileOwned) {
+        // The durable migration marker means slots no longer own detector
+        // commands. Fail closed until the selected profile has loaded.
+        state_.userSettingsRequested = false;
+        state_.displayRequested = false;
+        state_.desiredMode = V1_MODE_UNKNOWN;
+        state_.volumePolicy = V1VolumePolicy::Unchanged;
+        state_.volume = 0xFF;
+        state_.muteVolume = 0xFF;
+    }
 
     const uint32_t nextOperationId = status_.operationId + 1;
     status_ = OperationStatus{};
@@ -84,13 +100,37 @@ void AutoPushModule::armState(int slotIndex, const AutoPushSlot& slot, bool prof
     status_.profileName = slot.profileName;
     status_.profileRequested = slot.profileName.length() > 0;
     status_.profileLoaded = profileLoaded;
-    status_.displayRequested = true;
-    status_.modeRequested = slot.mode != V1_MODE_UNKNOWN;
-    status_.volumeRequested = state_.volume != 0xFF || state_.muteVolume != 0xFF;
+    status_.displayRequested = state_.displayRequested;
+    status_.modeRequested = state_.desiredMode != V1_MODE_UNKNOWN;
+    status_.volumeRequested = state_.volumePolicy != V1VolumePolicy::Unchanged;
+
+    if (state_.profileOwned && state_.profileLoaded &&
+        state_.profile.schemaVersion == V1_PROFILE_SCHEMA_VERSION) {
+        configureProfileOwnedApplication();
+    }
 
     if (display_ && updateProfileIndicator) {
         display_->drawProfileIndicator(slotIndex);
     }
+}
+
+void AutoPushModule::configureProfileOwnedApplication() {
+    const V1DetectorConfiguration& detector = state_.profile.detector;
+    state_.userSettingsRequested = detector.userSettingsPolicy == V1UserSettingsPolicy::Value;
+    state_.muteToZero = false;
+    state_.desiredMode = detector.modePolicy == V1ModePolicy::Value
+                             ? static_cast<V1Mode>(detector.mode)
+                             : V1_MODE_UNKNOWN;
+    state_.displayRequested = detector.displayPolicy != V1DisplayPolicy::Unchanged;
+    state_.displayOn = detector.displayPolicy == V1DisplayPolicy::On;
+    state_.volumePolicy = detector.volumePolicy;
+    state_.volume = detector.volumePolicy == V1VolumePolicy::Unchanged ? 0xFF : detector.mainVolume;
+    state_.muteVolume = detector.volumePolicy == V1VolumePolicy::Unchanged ? 0xFF : detector.mutedVolume;
+
+    status_.profileRequested = state_.userSettingsRequested;
+    status_.displayRequested = state_.displayRequested;
+    status_.modeRequested = state_.desiredMode != V1_MODE_UNKNOWN;
+    status_.volumeRequested = state_.volumePolicy != V1VolumePolicy::Unchanged;
 }
 
 AutoPushModule::QueueResult AutoPushModule::queuePreparedSlot(int slotIndex, const AutoPushSlot& slot,
@@ -107,10 +147,20 @@ AutoPushModule::QueueResult AutoPushModule::queuePreparedSlot(int slotIndex, con
         return QueueResult::ALREADY_IN_PROGRESS;
     }
 
+    const bool profileOwned = settings_->get().autoPushProfileSchemaVersion == V1_PROFILE_SCHEMA_VERSION;
+    if (profileOwned && slot.profileName.length() == 0) {
+        return QueueResult::NO_PROFILE_CONFIGURED;
+    }
+
     const uint8_t configuredVolume = settings_->getSlotVolume(slotIndex);
     const uint8_t configuredMuteVolume = settings_->getSlotMuteVolume(slotIndex);
-    if ((configuredVolume == 0xFF) != (configuredMuteVolume == 0xFF)) {
+    if (!profileOwned && (configuredVolume == 0xFF) != (configuredMuteVolume == 0xFF)) {
         return QueueResult::INVALID_VOLUME_PAIR;
+    }
+    if (profileOwned && profileLoaded &&
+        profile.schemaVersion == V1_PROFILE_SCHEMA_VERSION &&
+        profile.detector.volumePolicy == V1VolumePolicy::Saved) {
+        return QueueResult::UNSUPPORTED_CONFIGURATION;
     }
 
     const int clampedIndex = std::max(0, std::min(2, slotIndex));
@@ -261,6 +311,11 @@ void AutoPushModule::process() {
 
     case Step::Profile: {
         const AutoPushSlot& slot = state_.slot;
+        if (state_.profileOwned && slot.profileName.length() == 0) {
+            markFailure(FailureReason::PROFILE_LOAD_FAILED);
+            finishOperation();
+            return;
+        }
         if (!state_.profileLoaded) {
             if (slot.profileName.length() > 0) {
                 V1Profile profile;
@@ -272,6 +327,9 @@ void AutoPushModule::process() {
                     state_.profileLoaded = true;
                     status_.profileLoaded = true;
                     state_.commandRetries = 0;
+                    if (state_.profileOwned && profile.schemaVersion == V1_PROFILE_SCHEMA_VERSION) {
+                        configureProfileOwnedApplication();
+                    }
                 } else if (loaded.status == ProfileStorageStatus::Busy && state_.commandRetries < 5) {
                     state_.commandRetries++;
                     state_.nextStepAtMs = now + 30;
@@ -279,13 +337,34 @@ void AutoPushModule::process() {
                 } else {
                     markFailure(loaded.status == ProfileStorageStatus::Busy ? FailureReason::PROFILE_BUSY
                                                                            : FailureReason::PROFILE_LOAD_FAILED);
+                    if (state_.profileOwned) {
+                        finishOperation();
+                        return;
+                    }
                 }
             }
         }
 
-        if (state_.profileLoaded) {
+        if (state_.profileOwned && state_.profileLoaded &&
+            state_.profile.schemaVersion != V1_PROFILE_SCHEMA_VERSION) {
+            markFailure(FailureReason::PROFILE_LOAD_FAILED);
+            finishOperation();
+            return;
+        }
+
+        if (state_.profileOwned && state_.profileLoaded &&
+            state_.profile.schemaVersion == V1_PROFILE_SCHEMA_VERSION &&
+            state_.profile.detector.volumePolicy == V1VolumePolicy::Saved) {
+            markFailure(FailureReason::VOLUME_FAILED);
+            finishOperation();
+            return;
+        }
+
+        if (state_.profileLoaded && state_.userSettingsRequested) {
             V1UserSettings modifiedSettings = state_.profile.settings;
-            applySlotMuteToZero(modifiedSettings, state_.muteToZero);
+            if (!state_.profileOwned || state_.profile.schemaVersion != V1_PROFILE_SCHEMA_VERSION) {
+                applySlotMuteToZero(modifiedSettings, state_.muteToZero);
+            }
             V1ProfilePushPolicy::applyBeforePushToUserSettings(settings_->get(), modifiedSettings);
 
             if (bleClient_->writeUserBytes(modifiedSettings.bytes)) {
@@ -334,23 +413,23 @@ void AutoPushModule::process() {
     }
 
     case Step::Display: {
-        if (!bleClient_->setDisplayOn(state_.displayOn)) {
+        if (state_.displayRequested && !bleClient_->setDisplayOn(state_.displayOn)) {
             if (schedulePushNowRetry()) {
                 return;
             }
             markFailure(FailureReason::DISPLAY_FAILED);
-        } else {
+        } else if (state_.displayRequested) {
             status_.displayApplied = true;
         }
         state_.commandRetries = 0;
         state_.step = Step::Mode;
-        state_.nextStepAtMs = now + (state_.slot.mode != V1_MODE_UNKNOWN ? 30 : 0);
+        state_.nextStepAtMs = now + (state_.desiredMode != V1_MODE_UNKNOWN ? 30 : 0);
         return;
     }
 
     case Step::Mode: {
-        if (state_.slot.mode != V1_MODE_UNKNOWN) {
-            if (!bleClient_->setMode(static_cast<uint8_t>(state_.slot.mode))) {
+        if (state_.desiredMode != V1_MODE_UNKNOWN) {
+            if (!bleClient_->setMode(static_cast<uint8_t>(state_.desiredMode))) {
                 if (schedulePushNowRetry()) {
                     return;
                 }
@@ -370,7 +449,8 @@ void AutoPushModule::process() {
         if (status_.volumeRequested) {
             const bool volumePairValid = state_.volume <= 9 && state_.muteVolume <= 9;
             const bool volumeSent =
-                volumePairValid && quiet_ && quiet_->sendAutoPushVolume(state_.volume, state_.muteVolume);
+                state_.volumePolicy == V1VolumePolicy::Temporary && volumePairValid && quiet_ &&
+                quiet_->sendAutoPushVolume(state_.volume, state_.muteVolume);
             if (!volumeSent) {
                 if (schedulePushNowRetry()) {
                     return;

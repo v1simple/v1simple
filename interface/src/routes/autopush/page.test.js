@@ -86,15 +86,17 @@ describe('autopush route page', () => {
         unmount();
     });
 
-    it('shows the atomic volume-pair control and posts both values together', async () => {
+    it('edits only profile assignment and slot-local overlays', async () => {
         const fetchMock = installDefaultFetch();
         const { unmount } = render(Page);
 
         await screen.findByText('Highway');
         await fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
-        expect(
-            screen.getByText('The V1 applies main and mute volume as one pair.')
-        ).toBeInTheDocument();
+        expect(screen.getByLabelText('Profile')).toBeInTheDocument();
+        expect(screen.getByText('Alert persistence (seconds)')).toBeInTheDocument();
+        expect(screen.getByText('Priority Arrow Only')).toBeInTheDocument();
+        expect(screen.queryByLabelText('Volume (0-9)')).not.toBeInTheDocument();
+        expect(screen.queryByText('Logic Mode')).not.toBeInTheDocument();
         await fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
         await screen.findByText('Slot saved!');
 
@@ -103,28 +105,42 @@ describe('autopush route page', () => {
         );
         expect(saveCall).toBeTruthy();
         const body = saveCall[1].body;
-        expect(body.get('volumeConfigured')).toBe('true');
-        expect(body.get('volume')).toBe('6');
-        expect(body.get('muteVol')).toBe('2');
+        expect(body.get('profile')).toBe('Road Trip');
+        expect(body.get('alertPersist')).toBe('1');
+        expect(body.get('priorityArrowOnly')).toBe('false');
+        expect(body.has('mode')).toBe(false);
+        expect(body.has('volumeConfigured')).toBe(false);
+        expect(body.has('volume')).toBe(false);
+        expect(body.has('muteVol')).toBe(false);
+        expect(body.has('darkMode')).toBe(false);
+        expect(body.has('muteToZero')).toBe(false);
 
         unmount();
     });
 
-    it('renders legacy 255 values as a no-change pair instead of raw numbers', async () => {
-        installDefaultFetch([
+    it('makes pending-migration slots read-only while keeping legacy push available', async () => {
+        const fetchMock = installDefaultFetch([
             {
                 method: 'GET',
                 match: '/api/autopush/slots',
                 respond: jsonResponse({
+                    schemaVersion: 1,
+                    detectorConfigurationOwner: 'legacy-slot',
                     enabled: true,
-                    activeSlot: 0,
+                    activeSlot: 1,
                     slots: [
                         {
                             name: 'Default',
                             profile: 'Road Trip',
                             mode: 2,
+                            color: 1,
+                            volumeConfigured: false,
                             volume: 255,
-                            muteVolume: 255
+                            muteVolume: 255,
+                            darkMode: false,
+                            muteToZero: false,
+                            alertPersist: 2,
+                            priorityArrowOnly: true
                         }
                     ]
                 })
@@ -132,11 +148,19 @@ describe('autopush route page', () => {
         ]);
         const { unmount } = render(Page);
 
-        expect(await screen.findByText("Don't change")).toBeInTheDocument();
-        expect(screen.queryByText(/255/)).not.toBeInTheDocument();
-        await fireEvent.click(screen.getByRole('button', { name: /^edit$/i }));
-        expect(screen.getByLabelText('Volume (0-9)')).toBeDisabled();
-        expect(screen.getByLabelText('Mute Volume (0-9)')).toBeDisabled();
+        await screen.findByText(/profile settings migration is still pending/i);
+        const edit = screen.getByRole('button', { name: /^edit$/i });
+        expect(edit).toBeDisabled();
+        for (const activate of screen.getAllByRole('button', { name: /^activate$/i })) {
+            expect(activate).toBeDisabled();
+        }
+        const push = screen.getByRole('button', { name: /push now/i });
+        await waitFor(() => expect(push).toBeEnabled());
+        await fireEvent.click(push);
+        await screen.findByText('Push queued. The V1 has not confirmed the settings yet.');
+        expect(fetchMock.mock.calls.some(
+            ([url, init]) => url === '/api/autopush/push' && init?.method === 'POST'
+        )).toBe(true);
 
         unmount();
     });

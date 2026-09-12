@@ -231,20 +231,154 @@ struct V1UserSettings {
     V1UserSettings() { setDefaults(); }
 };
 
+inline constexpr uint8_t V1_PROFILE_SCHEMA_VERSION = 2;
+
+enum class V1UserSettingsPolicy : uint8_t {
+    Unchanged = 0,
+    Value = 1,
+};
+
+enum class V1ModePolicy : uint8_t {
+    Unchanged = 0,
+    Value = 1,
+};
+
+enum class V1DisplayPolicy : uint8_t {
+    Unchanged = 0,
+    On = 1,
+    Off = 2,
+};
+
+enum class V1VolumePolicy : uint8_t {
+    Unchanged = 0,
+    Temporary = 1,
+    Saved = 2,
+};
+
+enum class V1BluetoothLedPolicy : uint8_t {
+    Unchanged = 0,
+};
+
+enum class V1CustomFrequencyPolicy : uint8_t {
+    // Definitions are intentionally not modeled until the vendor transaction
+    // (sections, bounds, commit, calibrated readback) is implemented.
+    Unchanged = 0,
+};
+
+// Everything sent to the detector belongs to the selected profile.  Auto-Push
+// slots retain only selection and V1Simple presentation overlays after the
+// legacy-slot migration has committed.
+struct V1DetectorConfiguration {
+    V1UserSettingsPolicy userSettingsPolicy = V1UserSettingsPolicy::Value;
+    V1ModePolicy modePolicy = V1ModePolicy::Unchanged;
+    uint8_t mode = 0;
+    V1DisplayPolicy displayPolicy = V1DisplayPolicy::Unchanged;
+    V1VolumePolicy volumePolicy = V1VolumePolicy::Unchanged;
+    uint8_t mainVolume = 0;
+    uint8_t mutedVolume = 0;
+    V1BluetoothLedPolicy bluetoothLedPolicy = V1BluetoothLedPolicy::Unchanged;
+    V1CustomFrequencyPolicy customFrequencyPolicy = V1CustomFrequencyPolicy::Unchanged;
+};
+
+inline bool operator==(const V1DetectorConfiguration& lhs, const V1DetectorConfiguration& rhs) {
+    return lhs.userSettingsPolicy == rhs.userSettingsPolicy && lhs.modePolicy == rhs.modePolicy &&
+           lhs.mode == rhs.mode && lhs.displayPolicy == rhs.displayPolicy &&
+           lhs.volumePolicy == rhs.volumePolicy && lhs.mainVolume == rhs.mainVolume &&
+           lhs.mutedVolume == rhs.mutedVolume && lhs.bluetoothLedPolicy == rhs.bluetoothLedPolicy &&
+           lhs.customFrequencyPolicy == rhs.customFrequencyPolicy;
+}
+
+inline bool operator!=(const V1DetectorConfiguration& lhs, const V1DetectorConfiguration& rhs) {
+    return !(lhs == rhs);
+}
+
 // Profile with name and settings
 struct V1Profile {
     String name;
     String description;
     V1UserSettings settings;
-    bool displayOn;      // V1 main display on/off (dark mode)
-    uint8_t mainVolume;  // Main volume 0-9 (0xFF = don't change)
-    uint8_t mutedVolume; // Muted volume 0-9 (0xFF = don't change)
+    V1DetectorConfiguration detector;
+    uint8_t schemaVersion = V1_PROFILE_SCHEMA_VERSION;
 
-    V1Profile() : name("Default"), description(""), displayOn(true), mainVolume(0xFF), mutedVolume(0xFF) {}
-    V1Profile(const String& n) : name(n), description(""), displayOn(true), mainVolume(0xFF), mutedVolume(0xFF) {}
+    // Read-only migration carriers for pre-v2 files/backups. They were never
+    // consumed by Auto-Push; v2 writers deliberately omit them.
+    bool displayOn = true;
+    uint8_t mainVolume = 0xFF;
+    uint8_t mutedVolume = 0xFF;
+
+    V1Profile() : name("Default"), description("") {}
+    V1Profile(const String& n) : name(n), description("") {}
     V1Profile(const String& n, const V1UserSettings& s)
-        : name(n), description(""), settings(s), displayOn(true), mainVolume(0xFF), mutedVolume(0xFF) {}
+        : name(n), description(""), settings(s) {}
 };
+
+// Shared schema helpers keep profile files, backups, USB documents, and HTTP
+// JSON on one strict representation.
+inline void appendV1DetectorConfiguration(JsonObject target, const V1DetectorConfiguration& config) {
+    target["userSettings"] =
+        config.userSettingsPolicy == V1UserSettingsPolicy::Value ? "value" : "unchanged";
+    JsonObject mode = target["mode"].to<JsonObject>();
+    mode["policy"] = config.modePolicy == V1ModePolicy::Value ? "value" : "unchanged";
+    if (config.modePolicy == V1ModePolicy::Value) mode["value"] = config.mode;
+    target["display"] = config.displayPolicy == V1DisplayPolicy::On
+                            ? "on"
+                            : (config.displayPolicy == V1DisplayPolicy::Off ? "off" : "unchanged");
+    JsonObject volume = target["volume"].to<JsonObject>();
+    const char* volumePolicy = config.volumePolicy == V1VolumePolicy::Saved
+                                   ? "saved"
+                                   : (config.volumePolicy == V1VolumePolicy::Temporary ? "temporary" : "unchanged");
+    volume["policy"] = volumePolicy;
+    if (config.volumePolicy != V1VolumePolicy::Unchanged) {
+        volume["main"] = config.mainVolume;
+        volume["muted"] = config.mutedVolume;
+    }
+    target["bluetoothLed"] = "unchanged";
+    target["customFrequencies"] = "unchanged";
+}
+
+inline bool parseV1DetectorConfiguration(JsonObjectConst source, V1DetectorConfiguration& config) {
+    if (source.isNull() || source.size() != 6 || !source["userSettings"].is<const char*>() ||
+        !source["mode"].is<JsonObjectConst>() || !source["display"].is<const char*>() ||
+        !source["volume"].is<JsonObjectConst>() || !source["bluetoothLed"].is<const char*>() ||
+        !source["customFrequencies"].is<const char*>()) return false;
+    V1DetectorConfiguration parsed;
+    const String userSettings = source["userSettings"].as<const char*>();
+    if (userSettings == "value") parsed.userSettingsPolicy = V1UserSettingsPolicy::Value;
+    else if (userSettings == "unchanged") parsed.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
+    else return false;
+    const JsonObjectConst mode = source["mode"].as<JsonObjectConst>();
+    if (!mode["policy"].is<const char*>()) return false;
+    const String modePolicy = mode["policy"].as<const char*>();
+    if (modePolicy == "value") {
+        if (mode.size() != 2 || !mode["value"].is<int>() || mode["value"].as<int>() < 1 ||
+            mode["value"].as<int>() > 3) return false;
+        parsed.modePolicy = V1ModePolicy::Value;
+        parsed.mode = static_cast<uint8_t>(mode["value"].as<int>());
+    } else if (modePolicy == "unchanged") {
+        if (mode.size() != 1) return false;
+    } else return false;
+    const String display = source["display"].as<const char*>();
+    if (display == "on") parsed.displayPolicy = V1DisplayPolicy::On;
+    else if (display == "off") parsed.displayPolicy = V1DisplayPolicy::Off;
+    else if (display != "unchanged") return false;
+    const JsonObjectConst volume = source["volume"].as<JsonObjectConst>();
+    if (!volume["policy"].is<const char*>()) return false;
+    const String volumePolicy = volume["policy"].as<const char*>();
+    if (volumePolicy == "temporary" || volumePolicy == "saved") {
+        if (volume.size() != 3 || !volume["main"].is<int>() || !volume["muted"].is<int>() ||
+            volume["main"].as<int>() < 0 || volume["main"].as<int>() > 9 ||
+            volume["muted"].as<int>() < 0 || volume["muted"].as<int>() > 9) return false;
+        parsed.volumePolicy = volumePolicy == "saved" ? V1VolumePolicy::Saved : V1VolumePolicy::Temporary;
+        parsed.mainVolume = static_cast<uint8_t>(volume["main"].as<int>());
+        parsed.mutedVolume = static_cast<uint8_t>(volume["muted"].as<int>());
+    } else if (volumePolicy == "unchanged") {
+        if (volume.size() != 1) return false;
+    } else return false;
+    if (String(source["bluetoothLed"].as<const char*>()) != "unchanged" ||
+        String(source["customFrequencies"].as<const char*>()) != "unchanged") return false;
+    config = parsed;
+    return true;
+}
 
 enum class ProfileStorageStatus : uint8_t {
     Success = 0,

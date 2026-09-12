@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <string>
 
 #include <ArduinoJson.h>
@@ -192,6 +193,99 @@ void test_save_profile_normal_path_still_succeeds() {
     TEST_ASSERT_EQUAL_STRING("normal", loaded.description.c_str());
     TEST_ASSERT_EQUAL_UINT8(30, loaded.settings.bytes[0]);
     TEST_ASSERT_EQUAL_UINT8(35, loaded.settings.bytes[5]);
+}
+
+void test_schema_v2_detector_policy_round_trips_with_authoritative_raw_bytes() {
+    fs::FS fs(g_tempRoot);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&fs));
+    V1Profile profile = makeProfile("Policy", 0x91, "detector policy");
+    profile.detector.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
+    profile.detector.modePolicy = V1ModePolicy::Value;
+    profile.detector.mode = 3;
+    profile.detector.displayPolicy = V1DisplayPolicy::Off;
+    profile.detector.volumePolicy = V1VolumePolicy::Saved;
+    profile.detector.mainVolume = 9;
+    profile.detector.mutedVolume = 0;
+    TEST_ASSERT_TRUE(manager.saveProfile(profile).success);
+
+    V1Profile loaded;
+    TEST_ASSERT_TRUE(manager.loadProfile("Policy", loaded));
+    TEST_ASSERT_EQUAL_UINT8(V1_PROFILE_SCHEMA_VERSION, loaded.schemaVersion);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(profile.settings.bytes, loaded.settings.bytes, 6);
+    TEST_ASSERT_TRUE(profile.detector == loaded.detector);
+
+    JsonDocument api;
+    const String apiJson = manager.profileToJson(loaded);
+    TEST_ASSERT_FALSE(deserializeJson(api, apiJson));
+    TEST_ASSERT_EQUAL_INT(2, api["schemaVersion"].as<int>());
+    TEST_ASSERT_EQUAL_STRING("unchanged", api["detector"]["userSettings"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING("saved", api["detector"]["volume"]["policy"].as<const char*>());
+    TEST_ASSERT_EQUAL_UINT8(0x91, api["settings"]["bytes"][0].as<uint8_t>());
+}
+
+void test_schema_v2_mixed_markers_crc_omissions_and_malformed_policy_reject_atomically() {
+    fs::FS fs(g_tempRoot);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&fs));
+    V1Profile profile = makeProfile("Strict", 0xA0, "strict");
+    profile.detector.modePolicy = V1ModePolicy::Value;
+    profile.detector.mode = 2;
+    profile.detector.displayPolicy = V1DisplayPolicy::On;
+    profile.detector.volumePolicy = V1VolumePolicy::Temporary;
+    profile.detector.mainVolume = 0;
+    profile.detector.mutedVolume = 0;
+    TEST_ASSERT_TRUE(manager.saveProfile(profile).success);
+    const std::string original = readFileToString(fs, "/v1profiles/Strict.json");
+
+    const auto rejects = [&](const std::function<void(JsonDocument&)>& mutate) {
+        JsonDocument broken;
+        TEST_ASSERT_FALSE(deserializeJson(broken, original.c_str()));
+        mutate(broken);
+        String text;
+        serializeJson(broken, text);
+        writeFileFromString(fs, "/v1profiles/Strict.json", text.c_str());
+        V1Profile output = makeProfile("Sentinel", 0x30, "unchanged");
+        const V1Profile before = output;
+        const ProfileOperationResult result = manager.loadProfileResult("Strict", output);
+        TEST_ASSERT_EQUAL_INT(ProfileStorageStatus::Corrupt, result.status);
+        TEST_ASSERT_EQUAL_STRING(before.name.c_str(), output.name.c_str());
+        TEST_ASSERT_EQUAL_STRING(before.description.c_str(), output.description.c_str());
+        TEST_ASSERT_EQUAL_UINT8_ARRAY(before.settings.bytes, output.settings.bytes, 6);
+        writeFileFromString(fs, "/v1profiles/Strict.json", original.c_str());
+    };
+
+    rejects([](JsonDocument& d) { d.remove("schemaVersion"); });
+    rejects([](JsonDocument& d) { d.remove("detector"); });
+    rejects([](JsonDocument& d) { d.remove("detectorCrc32"); });
+    rejects([](JsonDocument& d) { d.remove("bytes"); });
+    rejects([](JsonDocument& d) { d.remove("crc32"); });
+    rejects([](JsonDocument& d) { d["schemaVersion"] = 1; });
+    rejects([](JsonDocument& d) { d["detector"]["display"] = "off"; });
+    rejects([](JsonDocument& d) { d["detector"]["bluetoothLed"] = "on"; });
+    rejects([](JsonDocument& d) { d["detector"]["volume"].remove("muted"); });
+
+    V1Profile intact;
+    TEST_ASSERT_TRUE(manager.loadProfile("Strict", intact));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(profile.settings.bytes, intact.settings.bytes, 6);
+    TEST_ASSERT_TRUE(profile.detector == intact.detector);
+}
+
+void test_exact_legacy_profile_without_schema_or_crc_remains_backward_readable() {
+    fs::FS fs(g_tempRoot);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&fs));
+    writeFileFromString(fs, "/v1profiles/Legacy.json",
+                        "{\"name\":\"Legacy\",\"description\":\"pre-v2\",\"displayOn\":false,"
+                        "\"mainVolume\":7,\"mutedVolume\":2,\"bytes\":[191,225,146,115,165,90]}");
+    V1Profile loaded;
+    TEST_ASSERT_TRUE(manager.loadProfile("Legacy", loaded));
+    TEST_ASSERT_EQUAL_UINT8(1, loaded.schemaVersion);
+    TEST_ASSERT_FALSE(loaded.displayOn);
+    TEST_ASSERT_EQUAL_UINT8(7, loaded.mainVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, loaded.mutedVolume);
+    const uint8_t expected[] = {191, 225, 146, 115, 165, 90};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, loaded.settings.bytes, 6);
 }
 
 void test_save_requires_final_file_reopen_and_crc_validation() {
@@ -802,6 +896,9 @@ int main() {
     RUN_TEST(test_save_profile_short_write_new_file_leaves_no_live_json);
     RUN_TEST(test_save_profile_short_write_existing_file_preserves_previous_profile);
     RUN_TEST(test_save_profile_normal_path_still_succeeds);
+    RUN_TEST(test_schema_v2_detector_policy_round_trips_with_authoritative_raw_bytes);
+    RUN_TEST(test_schema_v2_mixed_markers_crc_omissions_and_malformed_policy_reject_atomically);
+    RUN_TEST(test_exact_legacy_profile_without_schema_or_crc_remains_backward_readable);
     RUN_TEST(test_save_requires_final_file_reopen_and_crc_validation);
     RUN_TEST(test_load_profile_rejects_invalid_raw_bytes_without_mutating_output);
     RUN_TEST(test_json_to_settings_rejects_invalid_raw_bytes_without_mutating_output);

@@ -1451,6 +1451,7 @@ bool SettingsManager::writeSettingsToNamespace(const char* ns, uint32_t generati
     written += prefs.putBool(kNvsSpeedMuteVoice, settings_.speedMuteVoice);
     written += prefs.putBool(kNvsStealthEnabled, settings_.stealthEnabled);
     written += prefs.putBool(kNvsAutoPush, settings_.autoPushEnabled);
+    written += prefs.putUChar(kNvsAutoPushProfileSchema, settings_.autoPushProfileSchemaVersion);
     written += prefs.putInt(kNvsActiveSlot, settings_.activeSlot);
     written.putString(prefs, kNvsSlot0Name, settings_.slot0Name);
     written.putString(prefs, kNvsSlot1Name, settings_.slot1Name);

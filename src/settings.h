@@ -214,6 +214,7 @@ struct V1Settings {
 
     // Auto-push on connection settings
     bool autoPushEnabled; // Enable auto-push profile on V1 connection
+    uint8_t autoPushProfileSchemaVersion; // 0 until legacy slot detector fields are transactionally migrated
     int activeSlot;       // Which slot is active: 0=Default, 1=Highway, 2=Comfort
     String slot0Name;     // Custom display name for slot 0 (default: "DEFAULT")
     String slot1Name;     // Custom display name for slot 1 (default: "HIGHWAY")
@@ -369,7 +370,7 @@ struct V1Settings {
           speedMuteVolume(0),                   // Silent by default
           speedMuteVoice(true),                 // Suppress voice when speed-muted
           stealthEnabled(false),                // Stealth mode disabled by default
-          autoPushEnabled(kDefaultAutoPushEnabled), activeSlot(0), slot0Name("DEFAULT"), slot1Name("HIGHWAY"),
+          autoPushEnabled(kDefaultAutoPushEnabled), autoPushProfileSchemaVersion(0), activeSlot(0), slot0Name("DEFAULT"), slot1Name("HIGHWAY"),
           slot2Name("COMFORT"), slot0Color(0x400A), slot1Color(0x07E0), slot2Color(0x8410), slot0Volume(0xFF),
           slot1Volume(0xFF), slot2Volume(0xFF), slot0MuteVolume(0xFF), slot1MuteVolume(0xFF), slot2MuteVolume(0xFF),
           slot0DarkMode(false), slot1DarkMode(false), slot2DarkMode(false), slot0MuteToZero(false),
@@ -493,6 +494,7 @@ struct V1Settings {
 struct SettingsBackupApplyResult {
     bool success = false;
     int profilesRestored = 0;
+    bool migrationPending = false;
 };
 
 enum class SettingsBackupScope : uint8_t {
@@ -786,6 +788,9 @@ class SettingsManager {
     void utInterruptRestoreAfterProfiles(bool enabled) {
         restoreInterruptAfterProfiles_ = enabled;
     }
+    void utInterruptAutoPushMigrationAfterProfiles(bool enabled) {
+        autoPushMigrationInterruptAfterProfiles_ = enabled;
+    }
     void utInterruptProfileDeleteAfterJournal(bool enabled) {
         profileDeleteInterruptAfterJournal_ = enabled;
     }
@@ -902,6 +907,7 @@ class SettingsManager {
     SettingsBackupApplyResult applyBackupDocument(const JsonDocument& doc, bool deferBackupRewrite,
                                                   const SettingsRestoreWatchdog& watchdog = SettingsRestoreWatchdog{},
                                                   SettingsBackupScope scope = SettingsBackupScope::Full);
+    bool migrateAutoPushProfilesToV2();
     bool restoreFromSD();
     bool checkAndRestoreFromSD(); // Call after storage is mounted to retry restore
     // Before starting a new external mutation, converge every recoverable
@@ -945,6 +951,7 @@ class SettingsManager {
     bool wifiCredentialInterruptBeforeSettingsCommit_ = false;
     bool restoreInterruptAfterCredentials_ = false;
     bool restoreInterruptAfterProfiles_ = false;
+    bool autoPushMigrationInterruptAfterProfiles_ = false;
     bool profileDeleteInterruptAfterJournal_ = false;
     bool profileDeleteInterruptAfterProfile_ = false;
     bool profileDeleteInterruptAfterReferences_ = false;

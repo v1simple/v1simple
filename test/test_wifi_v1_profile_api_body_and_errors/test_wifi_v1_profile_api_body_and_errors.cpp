@@ -39,18 +39,21 @@ struct FakeRuntime {
 
     int parseSettingsCalls = 0;
     int saveCalls = 0;
+    int deleteCalls = 0;
     int backupCalls = 0;
     bool connected = true;
     String savedDescription;
     bool savedDisplayOn = true;
     uint8_t savedMainVolume = 0xFF;
     uint8_t savedMutedVolume = 0xFF;
+    V1DetectorConfiguration savedDetector;
     WifiV1ProfileApiService::CatalogStatus loadStatus =
         WifiV1ProfileApiService::CatalogStatus::NotFound;
     String existingProfileJson;
     WifiV1ProfileApiService::CatalogStatus deleteStatus =
         WifiV1ProfileApiService::CatalogStatus::Success;
     bool capturedSnapshotAvailable = false;
+    bool profileSchemaReady = true;
     V1DeviceRecord capturedDevice;
 };
 
@@ -68,18 +71,14 @@ WifiV1ProfileApiService::Runtime makeRuntime(FakeRuntime& rt) {
     runtime.parseSettingsJsonCtx = &rt;
     runtime.saveProfile = [](const String& /*name*/,
                              const String& description,
-                             bool displayOn,
-                             uint8_t mainVolume,
-                             uint8_t mutedVolume,
+                             const V1DetectorConfiguration& detector,
                              const uint8_t /*inBytes*/[6],
                              String& error,
                              void* ctx) {
         auto* rtp = static_cast<FakeRuntime*>(ctx);
         rtp->saveCalls++;
         rtp->savedDescription = description;
-        rtp->savedDisplayOn = displayOn;
-        rtp->savedMainVolume = mainVolume;
-        rtp->savedMutedVolume = mutedVolume;
+        rtp->savedDetector = detector;
         if (!rtp->saveOk) {
             error = rtp->saveError;
             return false;
@@ -98,9 +97,15 @@ WifiV1ProfileApiService::Runtime makeRuntime(FakeRuntime& rt) {
     runtime.v1Connected = [](void* ctx) { return static_cast<FakeRuntime*>(ctx)->connected; };
     runtime.v1ConnectedCtx = &rt;
     runtime.deleteProfileResult = [](const String&, void* ctx) {
-        return static_cast<FakeRuntime*>(ctx)->deleteStatus;
+        auto* rtp = static_cast<FakeRuntime*>(ctx);
+        rtp->deleteCalls++;
+        return rtp->deleteStatus;
     };
     runtime.deleteProfileResultCtx = &rt;
+    runtime.profileSchemaReady = [](void* ctx) {
+        return static_cast<FakeRuntime*>(ctx)->profileSchemaReady;
+    };
+    runtime.profileSchemaReadyCtx = &rt;
     return runtime;
 }
 
@@ -275,8 +280,10 @@ void test_profile_save_preserves_omitted_existing_metadata() {
     FakeRuntime rt;
     rt.loadStatus = WifiV1ProfileApiService::CatalogStatus::Success;
     rt.existingProfileJson =
-        "{\"name\":\"RoadTrip\",\"description\":\"Existing\",\"displayOn\":false,"
-        "\"mainVolume\":7,\"mutedVolume\":2,\"settings\":{}}";
+        "{\"schemaVersion\":2,\"name\":\"RoadTrip\",\"description\":\"Existing\","
+        "\"detector\":{\"userSettings\":\"value\",\"mode\":{\"policy\":\"value\",\"value\":2},"
+        "\"display\":\"off\",\"volume\":{\"policy\":\"temporary\",\"main\":7,\"muted\":2},"
+        "\"bluetoothLed\":\"unchanged\",\"customFrequencies\":\"unchanged\"},\"settings\":{}}";
     server.setArg("plain", "{\"name\":\"RoadTrip\",\"settings\":{\"byte0\":3}}");
 
     WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(rt), alwaysAllow, nullptr);
@@ -284,25 +291,33 @@ void test_profile_save_preserves_omitted_existing_metadata() {
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(1, rt.saveCalls);
     TEST_ASSERT_EQUAL_STRING("Existing", rt.savedDescription.c_str());
-    TEST_ASSERT_FALSE(rt.savedDisplayOn);
-    TEST_ASSERT_EQUAL_UINT8(7, rt.savedMainVolume);
-    TEST_ASSERT_EQUAL_UINT8(2, rt.savedMutedVolume);
+    TEST_ASSERT_EQUAL_INT(V1ModePolicy::Value, rt.savedDetector.modePolicy);
+    TEST_ASSERT_EQUAL_UINT8(2, rt.savedDetector.mode);
+    TEST_ASSERT_EQUAL_INT(V1DisplayPolicy::Off, rt.savedDetector.displayPolicy);
+    TEST_ASSERT_EQUAL_INT(V1VolumePolicy::Temporary, rt.savedDetector.volumePolicy);
+    TEST_ASSERT_EQUAL_UINT8(7, rt.savedDetector.mainVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, rt.savedDetector.mutedVolume);
 }
 
 void test_profile_save_accepts_explicit_metadata_without_resetting_it() {
     WebServer server(80);
     FakeRuntime rt;
     server.setArg("plain",
-                  "{\"name\":\"RoadTrip\",\"description\":\"Edited\",\"displayOn\":false,"
-                  "\"mainVolume\":8,\"mutedVolume\":3,\"settings\":{\"byte0\":3}}");
+                  "{\"schemaVersion\":2,\"name\":\"RoadTrip\",\"description\":\"Edited\","
+                  "\"detector\":{\"userSettings\":\"unchanged\",\"mode\":{\"policy\":\"unchanged\"},"
+                  "\"display\":\"off\",\"volume\":{\"policy\":\"saved\",\"main\":8,\"muted\":3},"
+                  "\"bluetoothLed\":\"unchanged\",\"customFrequencies\":\"unchanged\"},"
+                  "\"settings\":{\"byte0\":3}}");
 
     WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(rt), alwaysAllow, nullptr);
 
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_EQUAL_STRING("Edited", rt.savedDescription.c_str());
-    TEST_ASSERT_FALSE(rt.savedDisplayOn);
-    TEST_ASSERT_EQUAL_UINT8(8, rt.savedMainVolume);
-    TEST_ASSERT_EQUAL_UINT8(3, rt.savedMutedVolume);
+    TEST_ASSERT_EQUAL_INT(V1UserSettingsPolicy::Unchanged, rt.savedDetector.userSettingsPolicy);
+    TEST_ASSERT_EQUAL_INT(V1DisplayPolicy::Off, rt.savedDetector.displayPolicy);
+    TEST_ASSERT_EQUAL_INT(V1VolumePolicy::Saved, rt.savedDetector.volumePolicy);
+    TEST_ASSERT_EQUAL_UINT8(8, rt.savedDetector.mainVolume);
+    TEST_ASSERT_EQUAL_UINT8(3, rt.savedDetector.mutedVolume);
 }
 
 void test_profile_save_rejects_invalid_volume_metadata() {
@@ -314,6 +329,33 @@ void test_profile_save_rejects_invalid_volume_metadata() {
 
     TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(0, rt.saveCalls);
+}
+
+void test_profile_save_is_read_only_until_durable_profile_ownership_commits() {
+    WebServer server(80);
+    FakeRuntime rt;
+    rt.profileSchemaReady = false;
+    server.setArg("plain", "{\"name\":\"RoadTrip\",\"settings\":{\"byte0\":3}}");
+
+    WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(rt), alwaysAllow, nullptr);
+
+    TEST_ASSERT_EQUAL_INT(409, server.lastStatusCode);
+    TEST_ASSERT_TRUE(responseContains(server, "migration is pending"));
+    TEST_ASSERT_EQUAL_INT(0, rt.parseSettingsCalls);
+    TEST_ASSERT_EQUAL_INT(0, rt.saveCalls);
+}
+
+void test_profile_delete_is_read_only_until_durable_profile_ownership_commits() {
+    WebServer server(80);
+    FakeRuntime rt;
+    rt.profileSchemaReady = false;
+    server.setArg("plain", "{\"name\":\"RoadTrip\"}");
+
+    WifiV1ProfileApiService::handleApiProfileDelete(server, makeRuntime(rt), alwaysAllow, nullptr);
+
+    TEST_ASSERT_EQUAL_INT(409, server.lastStatusCode);
+    TEST_ASSERT_TRUE(responseContains(server, "migration is pending"));
+    TEST_ASSERT_EQUAL_INT(0, rt.deleteCalls);
 }
 
 void test_current_endpoint_returns_persisted_snapshot_with_explicit_provenance_and_availability() {
@@ -441,6 +483,8 @@ int main() {
     RUN_TEST(test_profile_save_preserves_omitted_existing_metadata);
     RUN_TEST(test_profile_save_accepts_explicit_metadata_without_resetting_it);
     RUN_TEST(test_profile_save_rejects_invalid_volume_metadata);
+    RUN_TEST(test_profile_save_is_read_only_until_durable_profile_ownership_commits);
+    RUN_TEST(test_profile_delete_is_read_only_until_durable_profile_ownership_commits);
     RUN_TEST(test_current_endpoint_returns_persisted_snapshot_with_explicit_provenance_and_availability);
     RUN_TEST(test_current_endpoint_reports_not_captured_without_live_fallback);
     RUN_TEST(test_post_handlers_bind_the_request_body_exactly_once_per_handler);

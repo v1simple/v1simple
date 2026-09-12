@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "v1_devices.h"
+#include "v1_profiles.h"
 
 namespace WifiV1ProfileApiService {
 
@@ -16,7 +17,6 @@ enum class CatalogStatus : uint8_t { Success = 0, NotFound, Busy, IoError, Corru
 struct ProfileSummary {
     String name;
     String description;
-    bool displayOn = true;
 };
 
 struct Runtime {
@@ -28,8 +28,9 @@ struct Runtime {
     void* loadProfileJsonCtx = nullptr;
     bool (*parseSettingsJson)(const JsonObject& settingsObj, uint8_t outBytes[6], void* ctx) = nullptr;
     void* parseSettingsJsonCtx = nullptr;
-    bool (*saveProfile)(const String& name, const String& description, bool displayOn, uint8_t mainVolume,
-                        uint8_t mutedVolume, const uint8_t inBytes[6], String& error, void* ctx) = nullptr;
+    bool (*saveProfile)(const String& name, const String& description,
+                        const V1DetectorConfiguration& detector, const uint8_t inBytes[6],
+                        String& error, void* ctx) = nullptr;
     void* saveProfileCtx = nullptr;
     bool (*deleteProfile)(const String& name, void* ctx) = nullptr;
     void* deleteProfileCtx = nullptr;
@@ -51,6 +52,8 @@ struct Runtime {
     void* loadCapturedSnapshotCtx = nullptr;
     String (*settingsJsonForBytes)(const uint8_t bytes[6], void* ctx) = nullptr;
     void* settingsJsonForBytesCtx = nullptr;
+    bool (*profileSchemaReady)(void* ctx) = nullptr;
+    void* profileSchemaReadyCtx = nullptr;
 };
 
 void handleApiProfilesList(WebServer& server, const Runtime& runtime);

@@ -45,10 +45,26 @@ bool restoreProfileEntryFromBackup(const JsonDocument& backup, const String& can
             return false;
         }
         profile.description = entry["description"] | "";
-        bool displayOn = true;
-        if (parseBoolVariant(entry["displayOn"], displayOn)) profile.displayOn = displayOn;
-        if (entry["mainVolume"].is<int>()) profile.mainVolume = clampSlotVolumeValue(entry["mainVolume"]);
-        if (entry["mutedVolume"].is<int>()) profile.mutedVolume = clampSlotVolumeValue(entry["mutedVolume"]);
+        const bool hasSchema = !entry["schemaVersion"].isUnbound();
+        const bool hasDetector = !entry["detector"].isUnbound();
+        if (hasSchema != hasDetector ||
+            (hasSchema && (!entry["schemaVersion"].is<int>() ||
+                           entry["schemaVersion"].as<int>() != V1_PROFILE_SCHEMA_VERSION ||
+                           !entry["detector"].is<JsonObjectConst>() ||
+                           !parseV1DetectorConfiguration(entry["detector"].as<JsonObjectConst>(),
+                                                         profile.detector)))) {
+            Serial.printf("[Settings] Backup profile schema invalid name='%s'\n", canonicalName.c_str());
+            return false;
+        }
+        if (hasSchema) {
+            profile.schemaVersion = V1_PROFILE_SCHEMA_VERSION;
+        } else {
+            profile.schemaVersion = 1;
+            bool displayOn = true;
+            if (parseBoolVariant(entry["displayOn"], displayOn)) profile.displayOn = displayOn;
+            if (entry["mainVolume"].is<int>()) profile.mainVolume = clampSlotVolumeValue(entry["mainVolume"]);
+            if (entry["mutedVolume"].is<int>()) profile.mutedVolume = clampSlotVolumeValue(entry["mutedVolume"]);
+        }
         const ProfileSaveResult saved = profiles.saveProfile(profile);
         if (saved.success) {
             Serial.printf("[Settings] Recovered configured profile name='%s' from validated SD backup\n",

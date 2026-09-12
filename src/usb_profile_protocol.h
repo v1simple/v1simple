@@ -32,7 +32,7 @@ class UsbProfileBackend {
     virtual uint8_t* allocate(size_t bytes) = 0;
     virtual void release(uint8_t* data) = 0;
     virtual bool backup(uint8_t*& data, size_t& length, char* error, size_t errorSize) = 0;
-    virtual bool apply(const uint8_t* data, size_t length, bool& backupPending, int& profiles,
+    virtual bool apply(const uint8_t* data, size_t length, bool& backupPending, bool& migrationPending, int& profiles,
                        char* error, size_t errorSize) = 0;
     virtual void enterMaintenance() = 0;
     virtual void restartNormal() = 0;

@@ -33,6 +33,7 @@ WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
         [](WifiAutoPushApiService::SlotsSnapshot& snapshot, void* ctx) {
             const V1Settings& s = static_cast<WiFiManager*>(ctx)->settings_.get();
             snapshot.enabled = s.autoPushEnabled;
+            snapshot.profileOwned = s.autoPushProfileSchemaVersion == V1_PROFILE_SCHEMA_VERSION;
             snapshot.activeSlot = s.activeSlot;
 
             for (int slotIndex = 0; slotIndex < 3; ++slotIndex) {
@@ -67,13 +68,13 @@ WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
             update.name = request.name;
             update.hasColor = request.hasColor;
             update.color = request.color;
-            update.hasVolume = request.hasVolume;
+            update.hasVolume = !request.profileOwned && request.hasVolume;
             update.volume = request.volume;
-            update.hasMuteVolume = request.hasMuteVolume;
+            update.hasMuteVolume = !request.profileOwned && request.hasMuteVolume;
             update.muteVolume = request.muteVolume;
-            update.hasDarkMode = request.hasDarkMode;
+            update.hasDarkMode = !request.profileOwned && request.hasDarkMode;
             update.darkMode = request.darkMode;
-            update.hasMuteToZero = request.hasMuteToZero;
+            update.hasMuteToZero = !request.profileOwned && request.hasMuteToZero;
             update.muteToZero = request.muteToZero;
             update.hasAlertPersist = request.hasAlertPersist;
             update.alertPersist = request.alertPersist;
@@ -81,7 +82,7 @@ WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
             update.priorityArrowOnly = request.priorityArrowOnly;
             update.hasProfileName = true;
             update.profileName = request.profile;
-            update.hasMode = true;
+            update.hasMode = !request.profileOwned;
             update.mode = normalizeV1ModeValue(request.mode);
             return static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushSlotUpdatePersisted(update).success;
         },
@@ -424,7 +425,6 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
             }
             summary.name = profile.name;
             summary.description = profile.description;
-            summary.displayOn = profile.displayOn;
             return true;
         },
         this,
@@ -447,14 +447,12 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
             return true;
         },
         this,
-        [](const String& name, const String& description, bool displayOn, uint8_t mainVolume, uint8_t mutedVolume,
+        [](const String& name, const String& description, const V1DetectorConfiguration& detector,
            const uint8_t inBytes[6], String& error, void* ctx) {
             V1Profile profile;
             profile.name = name;
             profile.description = description;
-            profile.displayOn = displayOn;
-            profile.mainVolume = mainVolume;
-            profile.mutedVolume = mutedVolume;
+            profile.detector = detector;
             memcpy(profile.settings.bytes, inBytes, 6);
             ProfileSaveResult result = static_cast<WiFiManager*>(ctx)->profiles_.saveProfile(profile);
             if (!result.success) {
@@ -542,6 +540,11 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
             V1UserSettings settings;
             memcpy(settings.bytes, bytes, sizeof(settings.bytes));
             return static_cast<WiFiManager*>(ctx)->profiles_.settingsToJson(settings);
+        },
+        this,
+        [](void* ctx) {
+            return static_cast<WiFiManager*>(ctx)->settings_.get().autoPushProfileSchemaVersion ==
+                   V1_PROFILE_SCHEMA_VERSION;
         },
         this,
     };

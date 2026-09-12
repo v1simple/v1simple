@@ -62,7 +62,8 @@ bool UsbProfileRuntime::backup(uint8_t*& data, size_t& length, char* error, size
     return true;
 }
 
-bool UsbProfileRuntime::apply(const uint8_t* data, size_t length, bool& backupPending, int& profiles,
+bool UsbProfileRuntime::apply(const uint8_t* data, size_t length, bool& backupPending, bool& migrationPending,
+                              int& profiles,
                               char* error, size_t errorSize) {
     if (!maintenance_.usbConfigurationAllowed()) return false;
     WifiJson::Document document;
@@ -80,6 +81,7 @@ bool UsbProfileRuntime::apply(const uint8_t* data, size_t length, bool& backupPe
     }
     profiles = result.profilesRestored;
     backupPending = settings_.deferredBackupPending();
+    migrationPending = result.migrationPending;
     return true;
 }
 

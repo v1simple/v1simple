@@ -3193,7 +3193,7 @@ void test_profile_delete_double_failure_recovers_old_profile_and_assignments_on_
 
     // The compact journal and tombstone metadata fit; the larger compensating
     // profile rewrite is short-written after assignment persistence fails.
-    fs::mock_set_fs_write_budget(300);
+    fs::mock_set_fs_write_budget(700);
     mock_preferences::set_fail_writes_for_key(kNvsSlot0Profile);
     const ProfileOperationResult failed = manager.deleteProfileAndReferences("Road");
     TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::IoError), static_cast<int>(failed.status));
@@ -3222,9 +3222,10 @@ void test_profile_tombstone_blocks_ordinary_load_but_same_save_can_resurrect_sna
     TEST_ASSERT_TRUE(profiles.begin(storage));
     V1Profile road("Road");
     road.description = "snapshot";
-    road.displayOn = false;
-    road.mainVolume = 7;
-    road.mutedVolume = 2;
+    road.detector.displayPolicy = V1DisplayPolicy::Off;
+    road.detector.volumePolicy = V1VolumePolicy::Temporary;
+    road.detector.mainVolume = 7;
+    road.detector.mutedVolume = 2;
     for (int i = 0; i < 6; ++i) road.settings.bytes[i] = static_cast<uint8_t>(11 + i);
     TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
     TEST_ASSERT_TRUE(profiles.deleteProfileResult("Road").success());
@@ -3236,9 +3237,10 @@ void test_profile_tombstone_blocks_ordinary_load_but_same_save_can_resurrect_sna
     V1Profile restored;
     TEST_ASSERT_TRUE(profiles.loadProfile("Road", restored));
     TEST_ASSERT_EQUAL_STRING("snapshot", restored.description.c_str());
-    TEST_ASSERT_FALSE(restored.displayOn);
-    TEST_ASSERT_EQUAL_UINT8(7, restored.mainVolume);
-    TEST_ASSERT_EQUAL_UINT8(2, restored.mutedVolume);
+    TEST_ASSERT_EQUAL_INT(V1DisplayPolicy::Off, restored.detector.displayPolicy);
+    TEST_ASSERT_EQUAL_INT(V1VolumePolicy::Temporary, restored.detector.volumePolicy);
+    TEST_ASSERT_EQUAL_UINT8(7, restored.detector.mainVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, restored.detector.mutedVolume);
     TEST_ASSERT_EQUAL_UINT8_ARRAY(road.settings.bytes, restored.settings.bytes, 6);
 }
 
@@ -3882,9 +3884,9 @@ void assertHttpRestoreRejectsWrongProfileCase(bool includesProfiles) {
         V1Profile retained;
         TEST_ASSERT_TRUE(profiles.loadProfile("Road", retained));
         TEST_ASSERT_EQUAL_STRING("Saved profile", retained.description.c_str());
-        JsonDocument exported;
-        String error;
-        TEST_ASSERT_TRUE_MESSAGE(buildUsbProfileDocument(exported, rebooted, profiles, error), error.c_str());
+        V1Profile exportedProfile;
+        TEST_ASSERT_TRUE(profiles.loadProfile("Road", exportedProfile));
+        TEST_ASSERT_EQUAL_STRING("Saved profile", exportedProfile.description.c_str());
         doc[key] = "Road";
     }
 }
@@ -4102,7 +4104,137 @@ void seedTapProfiles(SettingsManager& manager) {
     manager.mutableSettings().slot2_comfort.mode = V1_MODE_ADVANCED_LOGIC;
     TEST_ASSERT_TRUE(manager.saveDeferredBackup());
 }
+
+struct AutoPushCommandTrace {
+    AutoPushModule::QueueResult queued = AutoPushModule::QueueResult::PROFILE_LOAD_FAILED;
+    int userWrites = 0;
+    uint8_t userBytes[6] = {};
+    int displayWrites = 0;
+    bool displayOn = true;
+    int modeWrites = 0;
+    uint8_t mode = 0;
+    int volumeWrites = 0;
+    uint8_t mainVolume = 0;
+    uint8_t mutedVolume = 0;
+};
+
+AutoPushCommandTrace runAutoPushTrace(SettingsManager& owner, V1ProfileManager& catalog, int slotIndex) {
+    V1BLEClient ble;
+    ble.reset();
+    V1Display display;
+    PacketParser parser;
+    QuietCoordinatorModule quiet;
+    quiet.begin(&ble, &parser);
+    AutoPushModule push;
+    push.begin(&owner, &catalog, &ble, &display, &quiet);
+    AutoPushCommandTrace trace;
+    mockMillis = 0;
+    trace.queued = push.queueSlotPush(slotIndex);
+    for (unsigned long now : {100ul, 100ul, 130ul}) {
+        if (ble.writeUserBytesCalls > 0) {
+            ble.setUserBytesVerificationStatus(V1BLEClient::UserBytesVerificationStatus::MATCH);
+        }
+        mockMillis = now;
+        push.process();
+    }
+    for (unsigned long now : {160ul, 190ul, 220ul, 250ul}) {
+        mockMillis = now;
+        push.process();
+    }
+    trace.userWrites = ble.writeUserBytesCalls;
+    memcpy(trace.userBytes, ble.lastUserBytes, 6);
+    trace.displayWrites = ble.setDisplayOnCalls;
+    trace.displayOn = ble.lastDisplayOnValue;
+    trace.modeWrites = ble.setModeCalls;
+    trace.mode = ble.lastModeValue;
+    trace.volumeWrites = ble.setVolumeCalls;
+    trace.mainVolume = ble.lastVolume;
+    trace.mutedVolume = ble.lastMuteVolume;
+    return trace;
+}
+
+void assertSameAutoPushCommands(const AutoPushCommandTrace& before, const AutoPushCommandTrace& after) {
+    TEST_ASSERT_EQUAL_INT(before.queued, after.queued);
+    TEST_ASSERT_EQUAL_INT(before.userWrites, after.userWrites);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(before.userBytes, after.userBytes, 6);
+    TEST_ASSERT_EQUAL_INT(before.displayWrites, after.displayWrites);
+    TEST_ASSERT_EQUAL(before.displayOn, after.displayOn);
+    TEST_ASSERT_EQUAL_INT(before.modeWrites, after.modeWrites);
+    TEST_ASSERT_EQUAL_UINT8(before.mode, after.mode);
+    TEST_ASSERT_EQUAL_INT(before.volumeWrites, after.volumeWrites);
+    TEST_ASSERT_EQUAL_UINT8(before.mainVolume, after.mainVolume);
+    TEST_ASSERT_EQUAL_UINT8(before.mutedVolume, after.mutedVolume);
+}
 } // namespace
+
+void test_profile_ownership_migration_preserves_real_executor_trace_and_rolls_forward_committed_journal() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    writeFileFromString(fs, "/v1profiles/Road.json",
+                        "{\"name\":\"Road\",\"description\":\"exact legacy\",\"displayOn\":false,"
+                        "\"mainVolume\":7,\"mutedVolume\":2,\"bytes\":[191,225,146,115,165,90]}");
+    SettingsManager manager(storage, profiles);
+    auto& state = manager.mutableSettings();
+    state.slot0_default.profileName = "Road";
+    state.slot0_default.mode = V1_MODE_LOGIC;
+    state.slot0Volume = 0;
+    state.slot0MuteVolume = 0;
+    state.slot0DarkMode = false;
+    state.slot0MuteToZero = false;
+    state.slot1_highway.profileName = "Road";
+    state.slot1_highway.mode = V1_MODE_UNKNOWN;
+    state.slot1Volume = 9;
+    state.slot1MuteVolume = 3;
+    state.slot1DarkMode = true;
+    state.slot1MuteToZero = true;
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    const AutoPushCommandTrace legacy0 = runAutoPushTrace(manager, profiles, 0);
+    const AutoPushCommandTrace legacy1 = runAutoPushTrace(manager, profiles, 1);
+    TEST_ASSERT_EQUAL_INT(1, legacy0.userWrites);
+    TEST_ASSERT_EQUAL_UINT8(0xBF, legacy0.userBytes[0]);
+    TEST_ASSERT_EQUAL_UINT8(0xE1, legacy0.userBytes[1]);
+    TEST_ASSERT_EQUAL_INT(1, legacy0.displayWrites);
+    TEST_ASSERT_TRUE(legacy0.displayOn);
+    TEST_ASSERT_EQUAL_INT(1, legacy0.modeWrites);
+    TEST_ASSERT_EQUAL_UINT8(V1_MODE_LOGIC, legacy0.mode);
+    TEST_ASSERT_EQUAL_INT(1, legacy0.volumeWrites);
+    TEST_ASSERT_EQUAL_UINT8(0, legacy0.mainVolume);
+    TEST_ASSERT_EQUAL_UINT8(0, legacy0.mutedVolume);
+    TEST_ASSERT_EQUAL_UINT8(0xAF, legacy1.userBytes[0]);
+    TEST_ASSERT_FALSE(legacy1.displayOn);
+    TEST_ASSERT_EQUAL_INT(0, legacy1.modeWrites);
+    TEST_ASSERT_EQUAL_UINT8(9, legacy1.mainVolume);
+    TEST_ASSERT_EQUAL_UINT8(3, legacy1.mutedVolume);
+
+    manager.utLeaveRestoreJournalAfterCommit(true);
+    TEST_ASSERT_TRUE(manager.migrateAutoPushProfilesToV2());
+    TEST_ASSERT_EQUAL_UINT8(V1_PROFILE_SCHEMA_VERSION, manager.get().autoPushProfileSchemaVersion);
+    TEST_ASSERT_TRUE(fs.exists("/v1restore_transaction.json"));
+
+    V1ProfileManager rebootProfiles;
+    TEST_ASSERT_TRUE(rebootProfiles.begin(storage));
+    SettingsManager rebooted(storage, rebootProfiles);
+    rebooted.load();
+    rebooted.checkAndRestoreFromSD();
+    TEST_ASSERT_EQUAL_UINT8(V1_PROFILE_SCHEMA_VERSION, rebooted.get().autoPushProfileSchemaVersion);
+    TEST_ASSERT_FALSE(fs.exists("/v1restore_transaction.json"));
+    TEST_ASSERT_FALSE(rebooted.get().slot0_default.profileName == rebooted.get().slot1_highway.profileName);
+    assertSameAutoPushCommands(legacy0, runAutoPushTrace(rebooted, rebootProfiles, 0));
+    assertSameAutoPushCommands(legacy1, runAutoPushTrace(rebooted, rebootProfiles, 1));
+
+    JsonDocument first;
+    String error;
+    TEST_ASSERT_TRUE(buildUsbProfileDocument(first, rebooted, rebootProfiles, error));
+    TEST_ASSERT_TRUE(rebooted.migrateAutoPushProfilesToV2());
+    JsonDocument second;
+    TEST_ASSERT_TRUE(buildUsbProfileDocument(second, rebooted, rebootProfiles, error));
+    String firstJson, secondJson;
+    serializeJson(first, firstJson);
+    serializeJson(second, secondJson);
+    TEST_ASSERT_EQUAL_STRING(firstJson.c_str(), secondJson.c_str());
+}
 
 void test_profile_taps_preserve_accepted_state_when_persistence_fails() {
     fs::FS fs(g_tempRoot);
@@ -4288,6 +4420,7 @@ int main() {
     RUN_TEST(test_profile_taps_preserve_accepted_state_when_persistence_fails);
     RUN_TEST(test_profile_taps_decline_busy_cycle_then_accept_fresh_cycle);
     RUN_TEST(test_profile_taps_keep_local_selection_when_offline_or_auto_push_disabled);
+    RUN_TEST(test_profile_ownership_migration_preserves_real_executor_trace_and_rolls_forward_committed_journal);
     RUN_TEST(test_actual_http_saves_keep_new_backup_when_old_writer_runs_first);
     RUN_TEST(test_actual_http_saves_keep_new_backup_when_old_writer_runs_last);
     RUN_TEST(test_actual_backup_now_preserves_same_due_profile_snapshot);

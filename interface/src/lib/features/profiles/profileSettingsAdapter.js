@@ -38,6 +38,91 @@ export function createDefaultProfileSettings() {
     return { ...DEFAULT_PROFILE_SETTINGS };
 }
 
+export function createDefaultDetectorConfiguration() {
+    return {
+        userSettings: 'value',
+        modePolicy: 'unchanged',
+        mode: 1,
+        display: 'unchanged',
+        volumePolicy: 'unchanged',
+        mainVolume: 5,
+        mutedVolume: 0,
+        bluetoothLed: 'unchanged',
+        customFrequencies: 'unchanged'
+    };
+}
+
+export function fromApiDetectorConfiguration(api = {}) {
+    const defaults = createDefaultDetectorConfiguration();
+    return {
+        ...defaults,
+        userSettings: api.userSettings === 'unchanged' ? 'unchanged' : 'value',
+        modePolicy: api.mode?.policy === 'value' ? 'value' : 'unchanged',
+        mode: Number(api.mode?.value ?? defaults.mode),
+        display: ['on', 'off'].includes(api.display) ? api.display : 'unchanged',
+        volumePolicy: ['temporary', 'saved'].includes(api.volume?.policy)
+            ? api.volume.policy
+            : 'unchanged',
+        mainVolume: Number(api.volume?.main ?? defaults.mainVolume),
+        mutedVolume: Number(api.volume?.muted ?? defaults.mutedVolume)
+    };
+}
+
+export function toApiDetectorConfiguration(ui = {}) {
+    const modePolicy = ui.modePolicy === 'value' ? 'value' : 'unchanged';
+    const volumePolicy = ['temporary', 'saved'].includes(ui.volumePolicy)
+        ? ui.volumePolicy
+        : 'unchanged';
+    return {
+        userSettings: ui.userSettings === 'unchanged' ? 'unchanged' : 'value',
+        mode: modePolicy === 'value'
+            ? { policy: 'value', value: Number(ui.mode) }
+            : { policy: 'unchanged' },
+        display: ['on', 'off'].includes(ui.display) ? ui.display : 'unchanged',
+        volume: volumePolicy === 'unchanged'
+            ? { policy: 'unchanged' }
+            : {
+                  policy: volumePolicy,
+                  main: Number(ui.mainVolume),
+                  muted: Number(ui.mutedVolume)
+              },
+        bluetoothLed: 'unchanged',
+        customFrequencies: 'unchanged'
+    };
+}
+
+export function detectorConfigurationFromSnapshot(snapshot = {}) {
+    const detector = createDefaultDetectorConfiguration();
+    const mode = snapshot.observations?.mode;
+    if (mode?.available) {
+        const modeValue = String(mode.value ?? '');
+        if (['A', 'C', 'U'].includes(modeValue)) {
+            detector.modePolicy = 'value';
+            detector.mode = 1;
+        } else if (['l', 'c', 'u'].includes(modeValue)) {
+            detector.modePolicy = 'value';
+            detector.mode = 2;
+        } else if (modeValue === 'L') {
+            detector.modePolicy = 'value';
+            detector.mode = 3;
+        }
+    }
+    const display = snapshot.observations?.displayOn;
+    if (display?.available) detector.display = display.value ? 'on' : 'off';
+    const saved = snapshot.observations?.savedVolume;
+    const current = snapshot.observations?.currentVolume;
+    if (saved?.available) {
+        detector.volumePolicy = 'saved';
+        detector.mainVolume = Number(saved.main);
+        detector.mutedVolume = Number(saved.muted);
+    } else if (current?.available) {
+        detector.volumePolicy = 'temporary';
+        detector.mainVolume = Number(current.main);
+        detector.mutedVolume = Number(current.muted);
+    }
+    return detector;
+}
+
 export function fromApiSettings(api = {}) {
     return {
         baseBytes: Array.isArray(api.bytes) && api.bytes.length === 6 ? [...api.bytes] : undefined,

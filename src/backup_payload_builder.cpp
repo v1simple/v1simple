@@ -17,13 +17,21 @@ constexpr const char* SD_BACKUP_TYPE = "v1simple_sd_backup";
 constexpr const char* LEGACY_HTTP_BACKUP_TYPE = "v1simple_http_backup";
 // computeCrc32 is the canonical IEEE 802.3 CRC32 from settings_backup.cpp.
 
-void appendProfile(JsonArray profilesArr, const V1Profile& profile) {
+void appendProfile(JsonArray profilesArr, const V1Profile& profile, bool profileOwned) {
     JsonObject p = profilesArr.add<JsonObject>();
     p["name"] = profile.name;
     p["description"] = profile.description;
-    p["displayOn"] = profile.displayOn;
-    p["mainVolume"] = profile.mainVolume;
-    p["mutedVolume"] = profile.mutedVolume;
+    if (profileOwned) {
+        p["schemaVersion"] = V1_PROFILE_SCHEMA_VERSION;
+        appendV1DetectorConfiguration(p["detector"].to<JsonObject>(), profile.detector);
+    } else {
+        // Until the dedicated ownership marker commits, slots remain the
+        // authoritative detector-command source. Keep the pre-v2 profile
+        // representation so a backup cannot claim a half-migrated catalog.
+        p["displayOn"] = profile.displayOn;
+        p["mainVolume"] = profile.mainVolume;
+        p["mutedVolume"] = profile.mutedVolume;
+    }
 
     JsonArray bytes = p["bytes"].to<JsonArray>();
     for (int i = 0; i < 6; i++) {
@@ -191,6 +199,7 @@ BuildResult buildBackupDocument(JsonDocument& doc, const V1Settings& settings, c
     doc["stealthEnabled"] = settings.stealthEnabled;
 
     doc["autoPushEnabled"] = settings.autoPushEnabled;
+    doc["autoPushProfileSchemaVersion"] = settings.autoPushProfileSchemaVersion;
     doc["activeSlot"] = settings.activeSlot;
     doc["slot0Name"] = settings.slot0Name;
     doc["slot0Color"] = settings.slot0Color;
@@ -232,11 +241,15 @@ BuildResult buildBackupDocument(JsonDocument& doc, const V1Settings& settings, c
         const ProfileOperationResult snapshotResult = profileManager.snapshotProfiles(profileSnapshot);
         result.profileStatus = snapshotResult.status;
         result.profileCatalogGenuinelyEmpty = snapshotResult.success() && profileSnapshot.empty();
+        const bool profileOwned = settings.autoPushProfileSchemaVersion == V1_PROFILE_SCHEMA_VERSION;
         for (const V1Profile& profile : profileSnapshot) {
-            appendProfile(profilesArr, profile);
+            appendProfile(profilesArr, profile, profileOwned);
             result.profilesBackedUp++;
+            if (profileOwned && profile.schemaVersion != V1_PROFILE_SCHEMA_VERSION) {
+                result.safeToCommit = false;
+            }
         }
-        result.safeToCommit = snapshotResult.success();
+        result.safeToCommit = result.safeToCommit && snapshotResult.success();
         for (int slot = 0; slot < 3; ++slot) {
             const String& assigned = settings.autoPushSlotView(slot).config.profileName;
             if (assigned.length() == 0) continue;

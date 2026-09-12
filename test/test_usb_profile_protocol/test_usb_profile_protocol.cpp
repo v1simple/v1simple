@@ -50,6 +50,7 @@ struct Backend final : UsbProfileBackend {
     size_t exits = 0;
     bool allocationFails = false;
     bool applySucceeds = true;
+    bool migrationPending = false;
     std::string source = "retained profile bundle";
     std::string applied;
 
@@ -69,11 +70,12 @@ struct Backend final : UsbProfileBackend {
         std::memcpy(bytes, source.data(), length);
         return true;
     }
-    bool apply(const uint8_t* bytes, size_t length, bool& pending, int& profiles,
+    bool apply(const uint8_t* bytes, size_t length, bool& pending, bool& migrationPending, int& profiles,
                char* error, size_t errorSize) override {
         ++applies;
         applied.assign(reinterpret_cast<const char*>(bytes), length);
         pending = true;
+        migrationPending = this->migrationPending;
         profiles = 3;
         if (!applySucceeds) std::snprintf(error, errorSize, "storage failure");
         return applySucceeds;
@@ -295,6 +297,7 @@ void test_crc_failure_releases_document_and_never_applies() {
 void test_only_complete_valid_commit_dispatches_and_duplicate_never_reapplies() {
     Fixture f;
     f.backend.state.maintenance = true;
+    f.backend.migrationPending = true;
     std::string bytes;
     for (unsigned i = 0; i < 130; ++i) bytes += static_cast<char>(i);
     f.stage(bytes);
@@ -302,6 +305,7 @@ void test_only_complete_valid_commit_dispatches_and_duplicate_never_reapplies() 
     const std::string committed = f.request("commit", 100);
     contains(committed, "\"stored\":true");
     contains(committed, "\"backup_pending\":true");
+    contains(committed, "\"migration_pending\":true");
     TEST_ASSERT_EQUAL_MEMORY(bytes.data(), f.backend.applied.data(), bytes.size());
     TEST_ASSERT_EQUAL_UINT32(bytes.size(), f.backend.applied.size());
     const std::string repeated = f.request("commit", 100);

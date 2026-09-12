@@ -56,18 +56,24 @@ describe('profiles route page', () => {
         unmount();
     });
 
-    it('preserves display and volume metadata when editing a saved profile', async () => {
+    it('preserves detector policy when editing a saved profile', async () => {
         let savedPayload;
         installDefaultFetch([
             {
                 method: 'GET',
                 match: '/api/v1/profile?name=Daily%20Drive',
                 respond: jsonResponse({
+                    schemaVersion: 2,
                     name: 'Daily Drive',
                     description: 'Existing metadata',
-                    displayOn: false,
-                    mainVolume: 7,
-                    mutedVolume: 2,
+                    detector: {
+                        userSettings: 'value',
+                        mode: { policy: 'value', value: 2 },
+                        display: 'off',
+                        volume: { policy: 'temporary', main: 7, muted: 2 },
+                        bluetoothLed: 'unchanged',
+                        customFrequencies: 'unchanged'
+                    },
                     settings: { xBand: true }
                 })
             },
@@ -89,9 +95,36 @@ describe('profiles route page', () => {
 
         await screen.findByText('Profile "Daily Drive" saved');
         expect(savedPayload.description).toBe('Existing metadata');
-        expect(savedPayload.displayOn).toBe(false);
-        expect(savedPayload.mainVolume).toBe(7);
-        expect(savedPayload.mutedVolume).toBe(2);
+        expect(savedPayload.schemaVersion).toBe(2);
+        expect(savedPayload.detector).toEqual({
+            userSettings: 'value',
+            mode: { policy: 'value', value: 2 },
+            display: 'off',
+            volume: { policy: 'temporary', main: 7, muted: 2 },
+            bluetoothLed: 'unchanged',
+            customFrequencies: 'unchanged'
+        });
+        expect(savedPayload).not.toHaveProperty('displayOn');
+        expect(savedPayload).not.toHaveProperty('mainVolume');
+        unmount();
+    });
+
+    it('makes profile authoring read-only while ownership migration is pending', async () => {
+        installDefaultFetch([{
+            method: 'GET',
+            match: '/api/v1/profiles',
+            respond: jsonResponse({
+                schemaVersion: 1,
+                detectorConfigurationOwner: 'legacy-slot',
+                profiles: [{ name: 'Daily Drive', description: 'Legacy' }]
+            })
+        }]);
+        const { unmount } = render(Page);
+
+        await screen.findByText(/profile settings migration is still pending/i);
+        expect(screen.queryByRole('button', { name: /new profile/i })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: /^edit$/i })).not.toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /start draft from captured settings/i })).toBeDisabled();
         unmount();
     });
 

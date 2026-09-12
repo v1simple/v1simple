@@ -18,7 +18,7 @@ class UsbProfileRuntime final : public UsbProfileBackend, private UsbProfileTran
     uint8_t* allocate(size_t bytes) override;
     void release(uint8_t* data) override;
     bool backup(uint8_t*& data, size_t& length, char* error, size_t errorSize) override;
-    bool apply(const uint8_t* data, size_t length, bool& backupPending, int& profiles,
+    bool apply(const uint8_t* data, size_t length, bool& backupPending, bool& migrationPending, int& profiles,
                char* error, size_t errorSize) override;
     void enterMaintenance() override;
     void restartNormal() override;

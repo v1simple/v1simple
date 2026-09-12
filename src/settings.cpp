@@ -348,6 +348,10 @@ void SettingsManager::load() {
     settings_.stealthEnabled = preferences_.getBool(kNvsStealthEnabled, false);
 
     settings_.autoPushEnabled = preferences_.getBool(kNvsAutoPush, kDefaultAutoPushEnabled);
+    settings_.autoPushProfileSchemaVersion =
+        preferences_.getUChar(kNvsAutoPushProfileSchema, 0) == V1_PROFILE_SCHEMA_VERSION
+            ? V1_PROFILE_SCHEMA_VERSION
+            : 0;
     settings_.activeSlot = preferences_.getInt(kNvsActiveSlot, 0);
     if (settings_.activeSlot < 0 || settings_.activeSlot > 2) {
         settings_.activeSlot = 0;

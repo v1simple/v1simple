@@ -253,6 +253,126 @@ void test_slot_push_deadlines_are_wrap_safe() {
     TEST_ASSERT_EQUAL_INT(1, ble.setVolumeCalls);
 }
 
+void test_profile_owned_application_ignores_legacy_slot_fields_and_emits_profile_commands() {
+    configureProfileSlot();
+    settings.settings.autoPushProfileSchemaVersion = V1_PROFILE_SCHEMA_VERSION;
+    settings.slotVolumes[0] = 7;       // Deliberately stale, one-sided legacy data.
+    settings.slotMuteVolumes[0] = 0xFF;
+    settings.slotDarkModes[0] = false;
+    settings.slotConfigs[0].mode = V1_MODE_ALL_BOGEYS;
+    auto& detector = profiles.loadableProfile.detector;
+    detector.userSettingsPolicy = V1UserSettingsPolicy::Value;
+    detector.modePolicy = V1ModePolicy::Value;
+    detector.mode = 3;
+    detector.displayPolicy = V1DisplayPolicy::Off;
+    detector.volumePolicy = V1VolumePolicy::Temporary;
+    detector.mainVolume = 0;
+    detector.mutedVolume = 0;
+
+    queueAndReachFirstVerification();
+    ble.setUserBytesVerificationStatus(V1BLEClient::UserBytesVerificationStatus::MATCH);
+    at(130);
+    finishIndependentSettings(160);
+
+    const uint8_t expected[] = {0x01, 0x22, 0x33, 0x44, 0x55, 0x66};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, ble.lastUserBytes, 6);
+    TEST_ASSERT_EQUAL_INT(1, ble.setDisplayOnCalls);
+    TEST_ASSERT_FALSE(ble.lastDisplayOnValue);
+    TEST_ASSERT_EQUAL_INT(1, ble.setModeCalls);
+    TEST_ASSERT_EQUAL_UINT8(3, ble.lastModeValue);
+    TEST_ASSERT_EQUAL_INT(1, ble.setVolumeCalls);
+    TEST_ASSERT_EQUAL_UINT8(0, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(0, ble.lastMuteVolume);
+}
+
+void test_profile_owned_all_unchanged_emits_no_detector_writes() {
+    configureProfileSlot();
+    settings.settings.autoPushProfileSchemaVersion = V1_PROFILE_SCHEMA_VERSION;
+    auto& detector = profiles.loadableProfile.detector;
+    detector.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
+    detector.modePolicy = V1ModePolicy::Unchanged;
+    detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    detector.volumePolicy = V1VolumePolicy::Unchanged;
+
+    TEST_ASSERT_EQUAL_INT(AutoPushModule::QueueResult::QUEUED, module.queueSlotPush(0));
+    at(100);
+    at(100);
+    at(130);
+    at(130);
+    at(130);
+
+    TEST_ASSERT_FALSE(module.isActive());
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.setModeCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
+}
+
+void test_profile_owned_missing_or_legacy_profile_fails_closed_without_writes() {
+    configureProfileSlot();
+    settings.settings.autoPushProfileSchemaVersion = V1_PROFILE_SCHEMA_VERSION;
+    profiles.loadProfileSuccess = false;
+    TEST_ASSERT_EQUAL_INT(AutoPushModule::QueueResult::QUEUED, module.queueSlotPush(0));
+    at(100);
+    at(100);
+    TEST_ASSERT_FALSE(module.isActive());
+    TEST_ASSERT_TRUE(statusContains("profile_load_failed"));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.setModeCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
+
+    setUp();
+    configureProfileSlot();
+    settings.settings.autoPushProfileSchemaVersion = V1_PROFILE_SCHEMA_VERSION;
+    profiles.loadableProfile.schemaVersion = 1;
+    TEST_ASSERT_EQUAL_INT(AutoPushModule::QueueResult::QUEUED, module.queueSlotPush(0));
+    at(100);
+    at(100);
+    TEST_ASSERT_FALSE(module.isActive());
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.setModeCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
+}
+
+void test_profile_owned_saved_volume_rejects_before_any_sync_or_async_write() {
+    configureProfileSlot();
+    settings.settings.autoPushProfileSchemaVersion = V1_PROFILE_SCHEMA_VERSION;
+    profiles.loadableProfile.detector.volumePolicy = V1VolumePolicy::Saved;
+    profiles.loadableProfile.detector.mainVolume = 8;
+    profiles.loadableProfile.detector.mutedVolume = 2;
+
+    AutoPushModule::PushNowRequest request;
+    request.slotIndex = 0;
+    TEST_ASSERT_EQUAL_INT(AutoPushModule::QueueResult::UNSUPPORTED_CONFIGURATION,
+                          module.queuePushNow(request));
+    TEST_ASSERT_FALSE(module.isActive());
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.setModeCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
+
+    TEST_ASSERT_EQUAL_INT(AutoPushModule::QueueResult::QUEUED, module.queueSlotPush(0));
+    at(100);
+    at(100);
+    TEST_ASSERT_FALSE(module.isActive());
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.setModeCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
+}
+
+void test_profile_owned_empty_slot_rejects_before_arming() {
+    settings.settings.autoPushProfileSchemaVersion = V1_PROFILE_SCHEMA_VERSION;
+    settings.slotConfigs[0].profileName = "";
+    TEST_ASSERT_EQUAL_INT(AutoPushModule::QueueResult::NO_PROFILE_CONFIGURED,
+                          module.queueSlotPush(0));
+    TEST_ASSERT_FALSE(module.isActive());
+    TEST_ASSERT_EQUAL_INT(0, display.drawProfileIndicatorCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_matching_readback_is_required_before_success);
@@ -264,5 +384,10 @@ int main() {
     RUN_TEST(test_incomplete_volume_pair_is_rejected_before_queueing);
     RUN_TEST(test_runtime_profile_busy_retries_without_blocking_or_reporting_not_found);
     RUN_TEST(test_slot_push_deadlines_are_wrap_safe);
+    RUN_TEST(test_profile_owned_application_ignores_legacy_slot_fields_and_emits_profile_commands);
+    RUN_TEST(test_profile_owned_all_unchanged_emits_no_detector_writes);
+    RUN_TEST(test_profile_owned_missing_or_legacy_profile_fails_closed_without_writes);
+    RUN_TEST(test_profile_owned_saved_volume_rejects_before_any_sync_or_async_write);
+    RUN_TEST(test_profile_owned_empty_slot_rejects_before_arming);
     return UNITY_END();
 }

@@ -32,12 +32,14 @@ struct SlotConfig {
 
 struct SlotsSnapshot {
     bool enabled = false;
+    bool profileOwned = false;
     int activeSlot = 0;
     SlotConfig slots[3];
 };
 
 struct SlotUpdateRequest {
     int slot = 0;
+    bool profileOwned = false;
     bool hasName = false;
     String name;
     bool hasColor = false;

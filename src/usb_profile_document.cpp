@@ -55,24 +55,35 @@ bool toRestoreDocument(const JsonDocument& source, JsonDocument& target, String&
     if (!exactKeys(root, {"format", "version", "autoPushEnabled", "activeSlot", "slots", "profiles"}) ||
         !stringWithin(root["format"], 17) ||
         std::strcmp(root["format"].as<const char*>(), "v1simple-profiles") != 0 ||
-        !root["version"].is<int>() || root["version"].as<int>() != 1 ||
+        !root["version"].is<int>() ||
+        (root["version"].as<int>() != 1 && root["version"].as<int>() != 2) ||
         !root["autoPushEnabled"].is<bool>() || !integerWithin(root["activeSlot"], 2) ||
         !root["slots"].is<JsonArrayConst>() || root["slots"].size() != 3 ||
         !root["profiles"].is<JsonArrayConst>()) return false;
 
+    const bool schemaV2 = root["version"].as<int>() == 2;
     target["autoPushEnabled"] = root["autoPushEnabled"];
     target["activeSlot"] = root["activeSlot"];
+    target["autoPushProfileSchemaVersion"] = schemaV2 ? V1_PROFILE_SCHEMA_VERSION : 0;
     JsonArray restoredProfiles = target["profiles"].to<JsonArray>();
     std::vector<String> names;
     for (JsonVariantConst value : root["profiles"].as<JsonArrayConst>()) {
         const JsonObjectConst profile = value.as<JsonObjectConst>();
         String name;
         uint8_t bytes[V1SettingsJson::kSettingsByteCount];
-        if (!exactKeys(profile, {"name", "description", "rawBytes", "displayOn", "mainVolume", "mutedVolume"}) ||
-            !canonicalName(profile["name"], name) ||
+        const bool validShape = schemaV2
+                                    ? exactKeys(profile, {"schemaVersion", "name", "description", "rawBytes", "detector"})
+                                    : exactKeys(profile, {"name", "description", "rawBytes", "displayOn", "mainVolume", "mutedVolume"});
+        V1DetectorConfiguration detector;
+        if (!validShape || !canonicalName(profile["name"], name) ||
             !stringWithin(profile["description"], kUsbProfileDocumentMaxBytes) ||
-            !profile["displayOn"].is<bool>() || !profileVolume(profile["mainVolume"]) ||
-            !profileVolume(profile["mutedVolume"]) || !V1SettingsJson::parseRawBytes(profile["rawBytes"], bytes)) {
+            !V1SettingsJson::parseRawBytes(profile["rawBytes"], bytes) ||
+            (schemaV2 && (!profile["schemaVersion"].is<int>() ||
+                          profile["schemaVersion"].as<int>() != V1_PROFILE_SCHEMA_VERSION ||
+                          !profile["detector"].is<JsonObjectConst>() ||
+                          !parseV1DetectorConfiguration(profile["detector"].as<JsonObjectConst>(), detector))) ||
+            (!schemaV2 && (!profile["displayOn"].is<bool>() || !profileVolume(profile["mainVolume"]) ||
+                           !profileVolume(profile["mutedVolume"])))) {
             error = "Invalid profile fields";
             return false;
         }
@@ -86,9 +97,14 @@ bool toRestoreDocument(const JsonDocument& source, JsonDocument& target, String&
         JsonObject restored = restoredProfiles.add<JsonObject>();
         restored["name"] = name;
         restored["description"] = profile["description"];
-        restored["displayOn"] = profile["displayOn"];
-        restored["mainVolume"] = profile["mainVolume"];
-        restored["mutedVolume"] = profile["mutedVolume"];
+        if (schemaV2) {
+            restored["schemaVersion"] = V1_PROFILE_SCHEMA_VERSION;
+            appendV1DetectorConfiguration(restored["detector"].to<JsonObject>(), detector);
+        } else {
+            restored["displayOn"] = profile["displayOn"];
+            restored["mainVolume"] = profile["mainVolume"];
+            restored["mutedVolume"] = profile["mutedVolume"];
+        }
         restored["bytes"] = profile["rawBytes"];
     }
 
@@ -96,17 +112,21 @@ bool toRestoreDocument(const JsonDocument& source, JsonDocument& target, String&
     for (JsonVariantConst value : root["slots"].as<JsonArrayConst>()) {
         const JsonObjectConst slot = value.as<JsonObjectConst>();
         String profile;
-        if (!exactKeys(slot, {"name", "profile", "mode", "color", "volumeConfigured", "volume", "muteVolume",
-                             "darkMode", "muteToZero", "alertPersist", "priorityArrowOnly"}) ||
+        const bool validSlotShape = schemaV2
+                                        ? exactKeys(slot, {"name", "profile", "color", "alertPersist", "priorityArrowOnly"})
+                                        : exactKeys(slot, {"name", "profile", "mode", "color", "volumeConfigured", "volume", "muteVolume",
+                                                           "darkMode", "muteToZero", "alertPersist", "priorityArrowOnly"});
+        if (!validSlotShape ||
             !stringWithin(slot["name"], MAX_SLOT_NAME_LEN) ||
             sanitizeSlotNameValue(slot["name"].as<String>()) != slot["name"].as<String>() ||
-            !canonicalName(slot["profile"], profile, true) || !integerWithin(slot["mode"], 3) ||
-            !integerWithin(slot["color"], 65535) || !slot["volumeConfigured"].is<bool>() ||
-            !integerWithin(slot["volume"], 9) || !integerWithin(slot["muteVolume"], 9) ||
-            !slot["darkMode"].is<bool>() || !slot["muteToZero"].is<bool>() ||
+            !canonicalName(slot["profile"], profile, true) ||
+            !integerWithin(slot["color"], 65535) ||
             !integerWithin(slot["alertPersist"], 5) || !slot["priorityArrowOnly"].is<bool>() ||
-            (!slot["volumeConfigured"].as<bool>() &&
-             (slot["volume"].as<int>() != 0 || slot["muteVolume"].as<int>() != 0))) {
+            (!schemaV2 && (!integerWithin(slot["mode"], 3) || !slot["volumeConfigured"].is<bool>() ||
+                           !integerWithin(slot["volume"], 9) || !integerWithin(slot["muteVolume"], 9) ||
+                           !slot["darkMode"].is<bool>() || !slot["muteToZero"].is<bool>() ||
+                           (!slot["volumeConfigured"].as<bool>() &&
+                            (slot["volume"].as<int>() != 0 || slot["muteVolume"].as<int>() != 0))))) {
             error = "Invalid Auto-Push slot fields";
             return false;
         }
@@ -123,17 +143,33 @@ bool toRestoreDocument(const JsonDocument& source, JsonDocument& target, String&
         };
         copy("Name", slot["name"]);
         copy("ProfileName", slot["profile"]);
-        copy("Mode", slot["mode"]);
+        if (schemaV2) {
+            char key[32];
+            std::snprintf(key, sizeof(key), "slot%dMode", index);
+            target[key] = 0;
+        } else {
+            copy("Mode", slot["mode"]);
+        }
         copy("Color", slot["color"]);
-        copy("DarkMode", slot["darkMode"]);
-        copy("MuteToZero", slot["muteToZero"]);
+        if (schemaV2) {
+            char darkKey[32], muteZeroKey[32];
+            std::snprintf(darkKey, sizeof(darkKey), "slot%dDarkMode", index);
+            std::snprintf(muteZeroKey, sizeof(muteZeroKey), "slot%dMuteToZero", index);
+            target[darkKey] = false;
+            target[muteZeroKey] = false;
+        } else {
+            copy("DarkMode", slot["darkMode"]);
+            copy("MuteToZero", slot["muteToZero"]);
+        }
         copy("AlertPersist", slot["alertPersist"]);
         copy("PriorityArrow", slot["priorityArrowOnly"]);
         char volumeKey[24], muteKey[24];
         std::snprintf(volumeKey, sizeof(volumeKey), "slot%dVolume", index);
         std::snprintf(muteKey, sizeof(muteKey), "slot%dMuteVolume", index);
-        target[volumeKey] = slot["volumeConfigured"].as<bool>() ? slot["volume"].as<int>() : 255;
-        target[muteKey] = slot["volumeConfigured"].as<bool>() ? slot["muteVolume"].as<int>() : 255;
+        target[volumeKey] = schemaV2 ? 255 :
+                            (slot["volumeConfigured"].as<bool>() ? slot["volume"].as<int>() : 255);
+        target[muteKey] = schemaV2 ? 255 :
+                          (slot["volumeConfigured"].as<bool>() ? slot["muteVolume"].as<int>() : 255);
         ++index;
     }
     if (target.overflowed()) {
@@ -153,17 +189,27 @@ bool buildUsbProfileDocument(JsonDocument& doc, SettingsManager& settings, V1Pro
         error = "Profile export unavailable while storage recovery is pending";
         return false;
     }
+    if (settings.get().autoPushProfileSchemaVersion != V1_PROFILE_SCHEMA_VERSION) {
+        error = "Profile export unavailable until detector-profile migration completes";
+        return false;
+    }
     std::vector<V1Profile> snapshot;
     const ProfileOperationResult result = profiles.snapshotProfiles(snapshot, 250);
     if (!result.success()) {
         error = result.error.length() ? result.error : "Profile catalog unavailable";
         return false;
     }
+    for (const V1Profile& profile : snapshot) {
+        if (profile.schemaVersion != V1_PROFILE_SCHEMA_VERSION) {
+            error = "Profile export unavailable because a legacy profile remains after migration";
+            return false;
+        }
+    }
     std::sort(snapshot.begin(), snapshot.end(), [](const V1Profile& a, const V1Profile& b) {
         return std::strcmp(a.name.c_str(), b.name.c_str()) < 0;
     });
     doc["format"] = "v1simple-profiles";
-    doc["version"] = 1;
+    doc["version"] = 2;
     const V1Settings& state = settings.get();
     doc["autoPushEnabled"] = state.autoPushEnabled;
     doc["activeSlot"] = state.activeSlot;
@@ -173,30 +219,17 @@ bool buildUsbProfileDocument(JsonDocument& doc, SettingsManager& settings, V1Pro
         JsonObject output = slots.add<JsonObject>();
         output["name"] = slot.name;
         output["profile"] = slot.config.profileName;
-        output["mode"] = slot.config.mode;
         output["color"] = slot.color;
-        const bool configured = isConfiguredSlotVolumePair(slot.volume, slot.muteVolume);
-        if (!configured && (slot.volume != 255 || slot.muteVolume != 255)) {
-            error = "Stored slot volume pair cannot be represented without loss";
-            doc.clear();
-            return false;
-        }
-        output["volumeConfigured"] = configured;
-        output["volume"] = configured ? slot.volume : 0;
-        output["muteVolume"] = configured ? slot.muteVolume : 0;
-        output["darkMode"] = slot.darkMode;
-        output["muteToZero"] = slot.muteToZero;
         output["alertPersist"] = slot.alertPersist;
         output["priorityArrowOnly"] = slot.priorityArrow;
     }
     JsonArray outputProfiles = doc["profiles"].to<JsonArray>();
     for (const V1Profile& profile : snapshot) {
         JsonObject output = outputProfiles.add<JsonObject>();
+        output["schemaVersion"] = V1_PROFILE_SCHEMA_VERSION;
         output["name"] = profile.name;
         output["description"] = profile.description;
-        output["displayOn"] = profile.displayOn;
-        output["mainVolume"] = profile.mainVolume;
-        output["mutedVolume"] = profile.mutedVolume;
+        appendV1DetectorConfiguration(output["detector"].to<JsonObject>(), profile.detector);
         JsonArray bytes = output["rawBytes"].to<JsonArray>();
         for (uint8_t byte : profile.settings.bytes) bytes.add(byte);
     }
@@ -217,8 +250,16 @@ SettingsBackupApplyResult applyUsbProfileDocument(SettingsManager& settings, V1P
         error = "Profile storage unavailable";
         return {};
     }
-    const SettingsBackupApplyResult result =
+    SettingsBackupApplyResult result =
         settings.applyBackupDocument(restore, true, watchdog, SettingsBackupScope::ProfilesOnly);
-    if (!result.success) error = "Profile restore did not commit; storage recovery may be required";
+    if (!result.success) {
+        error = "Profile restore did not commit; storage recovery may be required";
+        return result;
+    }
+    if (doc["version"].is<int>() && doc["version"].as<int>() == 1 &&
+        !settings.migrateAutoPushProfilesToV2()) {
+        result.migrationPending = true;
+        error = "Legacy profile restore committed safely, but detector-profile migration is pending";
+    }
     return result;
 }

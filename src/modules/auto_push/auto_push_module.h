@@ -22,6 +22,7 @@ class AutoPushModule {
         PROFILE_BUSY,
         PROFILE_LOAD_FAILED,
         INVALID_VOLUME_PAIR,
+        UNSUPPORTED_CONFIGURATION,
     };
 
     struct PushNowRequest {
@@ -78,8 +79,13 @@ class AutoPushModule {
         uint8_t profileWriteRetries = 0;
         uint8_t commandRetries = 0;
         bool isPushNow = false;
+        bool profileOwned = false;
         bool displayOn = true;
+        bool displayRequested = true;
         bool muteToZero = false;
+        bool userSettingsRequested = true;
+        V1Mode desiredMode = V1_MODE_UNKNOWN;
+        V1VolumePolicy volumePolicy = V1VolumePolicy::Unchanged;
         uint8_t volume = 0xFF;
         uint8_t muteVolume = 0xFF;
         uint32_t verifyDeadlineMs = 0;
@@ -119,6 +125,7 @@ class AutoPushModule {
     };
 
     void applySlotMuteToZero(V1UserSettings& settings, bool slotMuteToZero);
+    void configureProfileOwnedApplication();
     QueueResult queuePreparedSlot(int slotIndex, const AutoPushSlot& slot, bool profileLoaded, const V1Profile& profile,
                                   bool isPushNow, bool activateSlot, bool updateProfileIndicator);
     void armState(int slotIndex, const AutoPushSlot& slot, bool profileLoaded, const V1Profile& profile, bool isPushNow,

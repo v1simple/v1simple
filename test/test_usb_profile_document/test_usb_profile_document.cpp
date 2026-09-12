@@ -136,18 +136,19 @@ void seed() {
     state.voiceVolume = 39;
     state.alpAlertPersistSec = 4;
     TEST_ASSERT_TRUE(manager->saveDeferredBackup());
+    TEST_ASSERT_TRUE(manager->migrateAutoPushProfilesToV2());
 }
 
 void replacement(JsonDocument& doc) {
     String error;
     TEST_ASSERT_TRUE(buildUsbProfileDocument(doc, *manager, *profileManager, error));
-    doc["profiles"][0]["name"] = "Replacement";
+    doc["profiles"][0]["name"] = "A Replacement";
     doc["profiles"][0]["rawBytes"][5] = 219;
     doc["profiles"][0]["description"] = "New metadata";
-    doc["profiles"][0]["displayOn"] = true;
+    doc["profiles"][0]["detector"]["display"] = "on";
     doc["autoPushEnabled"] = true;
     doc["activeSlot"] = 0;
-    for (JsonObject slot : doc["slots"].as<JsonArray>()) slot["profile"] = "Replacement";
+    for (JsonObject slot : doc["slots"].as<JsonArray>()) slot["profile"] = "A Replacement";
     doc["slots"][0]["alertPersist"] = 5;
 }
 
@@ -158,6 +159,41 @@ void reboot() {
     manager = std::make_unique<SettingsManager>(storage, *profileManager);
     manager->load();
     manager->checkAndRestoreFromSD();
+}
+
+void writeLegacyProfileFile(const char* name, const char* description, const uint8_t bytes[6]) {
+    JsonDocument legacy;
+    legacy["name"] = name;
+    legacy["description"] = description;
+    legacy["displayOn"] = false;
+    legacy["mainVolume"] = 7;
+    legacy["mutedVolume"] = 2;
+    JsonArray raw = legacy["bytes"].to<JsonArray>();
+    for (int i = 0; i < 6; ++i) raw.add(bytes[i]);
+    const String path = String("/v1profiles/") + name + ".json";
+    File file = primaryFs->open(path, FILE_WRITE);
+    TEST_ASSERT_TRUE(file);
+    TEST_ASSERT_EQUAL_UINT(measureJson(legacy), serializeJson(legacy, file));
+    file.close();
+}
+
+void assertMigratedApplication(const String& profileName, const uint8_t expectedBytes[6],
+                               V1ModePolicy modePolicy, uint8_t mode,
+                               V1DisplayPolicy displayPolicy, V1VolumePolicy volumePolicy,
+                               uint8_t mainVolume = 0, uint8_t mutedVolume = 0) {
+    V1Profile migrated;
+    TEST_ASSERT_TRUE(profileManager->loadProfile(profileName, migrated));
+    TEST_ASSERT_EQUAL_UINT8(V1_PROFILE_SCHEMA_VERSION, migrated.schemaVersion);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expectedBytes, migrated.settings.bytes, 6);
+    TEST_ASSERT_EQUAL_INT(V1UserSettingsPolicy::Value, migrated.detector.userSettingsPolicy);
+    TEST_ASSERT_EQUAL_INT(modePolicy, migrated.detector.modePolicy);
+    TEST_ASSERT_EQUAL_UINT8(mode, migrated.detector.mode);
+    TEST_ASSERT_EQUAL_INT(displayPolicy, migrated.detector.displayPolicy);
+    TEST_ASSERT_EQUAL_INT(volumePolicy, migrated.detector.volumePolicy);
+    if (volumePolicy != V1VolumePolicy::Unchanged) {
+        TEST_ASSERT_EQUAL_UINT8(mainVolume, migrated.detector.mainVolume);
+        TEST_ASSERT_EQUAL_UINT8(mutedVolume, migrated.detector.mutedVolume);
+    }
 }
 }
 
@@ -195,13 +231,11 @@ void test_bundle_round_trip_replaces_catalog_and_preserves_unrelated_state() {
     JsonDocument original;
     String error;
     TEST_ASSERT_TRUE(buildUsbProfileDocument(original, *manager, *profileManager, error));
-    TEST_ASSERT_EQUAL_UINT(2, original["profiles"].size());
+    TEST_ASSERT_EQUAL_UINT(4, original["profiles"].size());
     TEST_ASSERT_EQUAL_UINT(3, original["slots"].size());
-    TEST_ASSERT_FALSE(original["slots"][0]["volumeConfigured"].as<bool>());
-    TEST_ASSERT_EQUAL_UINT(0, original["slots"][0]["volume"].as<unsigned>());
     TEST_ASSERT_EQUAL_UINT(42, original["profiles"][0]["rawBytes"][5].as<unsigned>());
-    TEST_ASSERT_FALSE(original["profiles"][0]["displayOn"].as<bool>());
-    TEST_ASSERT_EQUAL_UINT(255, original["profiles"][0]["mutedVolume"].as<unsigned>());
+    TEST_ASSERT_EQUAL_STRING("on", original["profiles"][0]["detector"]["display"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING("unchanged", original["profiles"][0]["detector"]["volume"]["policy"].as<const char*>());
 
     // A preexisting legacy conflict is outside a profile-only restore's scope.
     manager->mutableSettings().proxyBLE = true;
@@ -227,8 +261,187 @@ void test_bundle_round_trip_replaces_catalog_and_preserves_unrelated_state() {
 
     TEST_ASSERT_TRUE(applyUsbProfileDocument(*manager, *profileManager, original, error).success);
     TEST_ASSERT_EQUAL_STRING(jsonText(original).c_str(), snapshot().c_str());
-    TEST_ASSERT_EQUAL(ProfileStorageStatus::NotFound, profileManager->loadProfileResult("Replacement", missing).status);
+    TEST_ASSERT_EQUAL(ProfileStorageStatus::NotFound, profileManager->loadProfileResult("A Replacement", missing).status);
     TEST_ASSERT_EQUAL_UINT(255, manager->getSlotVolume(0));
+}
+
+void test_exact_legacy_profile_and_shared_slots_migrate_without_command_drift() {
+    const uint8_t raw[] = {0xBF, 0xE1, 0x92, 0x73, 0xA5, 0x5A};
+    writeLegacyProfileFile("Road", "Exact pre-v2 file", raw);
+
+    V1Profile collision("Road - Slot 2");
+    memset(collision.settings.bytes, 0xCC, 6);
+    TEST_ASSERT_TRUE(profileManager->saveProfile(collision).success);
+
+    auto& state = manager->mutableSettings();
+    state.slot0Name = sanitizeSlotNameValue("?..|* HOSTILE SLOT LABEL THAT IS LEGAL AND VERY VERY VERY VERY LONG");
+    state.slot1Name = sanitizeSlotNameValue("SECOND?SLOT");
+    state.slot2Name = sanitizeSlotNameValue("THIRD:SLOT");
+    state.slot0_default.profileName = "Road";
+    state.slot0_default.mode = V1_MODE_ALL_BOGEYS;
+    state.slot1_highway.profileName = "Road";
+    state.slot1_highway.mode = V1_MODE_LOGIC;
+    state.slot2_comfort.profileName = "Road";
+    state.slot2_comfort.mode = V1_MODE_UNKNOWN;
+    state.slot0AlertPersist = 1;
+    state.slot1AlertPersist = 4;
+    state.slot2AlertPersist = 5;
+    state.slot0PriorityArrow = true;
+    state.slot1DarkMode = true;
+    state.slot2MuteToZero = true;
+    state.slot0Volume = state.slot0MuteVolume = 0xFF;
+    state.slot1Volume = state.slot1MuteVolume = 0;
+    state.slot2Volume = 9;
+    state.slot2MuteVolume = 3;
+    TEST_ASSERT_TRUE(manager->saveDeferredBackup());
+
+    TEST_ASSERT_TRUE(manager->migrateAutoPushProfilesToV2());
+    TEST_ASSERT_EQUAL_UINT8(V1_PROFILE_SCHEMA_VERSION, manager->get().autoPushProfileSchemaVersion);
+    TEST_ASSERT_EQUAL_INT(V1_MODE_UNKNOWN, manager->get().slot0_default.mode);
+    TEST_ASSERT_EQUAL_UINT8(0xFF, manager->getSlotVolume(1));
+    TEST_ASSERT_FALSE(manager->getSlotDarkMode(1));
+    TEST_ASSERT_FALSE(manager->getSlotMuteToZero(2));
+    TEST_ASSERT_EQUAL_UINT8(1, manager->get().slot0AlertPersist);
+    TEST_ASSERT_EQUAL_UINT8(4, manager->get().slot1AlertPersist);
+    TEST_ASSERT_EQUAL_UINT8(5, manager->get().slot2AlertPersist);
+    TEST_ASSERT_TRUE(manager->get().slot0PriorityArrow);
+
+    const String slot0 = manager->get().slot0_default.profileName;
+    const String slot1 = manager->get().slot1_highway.profileName;
+    const String slot2 = manager->get().slot2_comfort.profileName;
+    TEST_ASSERT_EQUAL_STRING("Road", slot0.c_str());
+    TEST_ASSERT_EQUAL_STRING("Road - Slot 2 #2", slot1.c_str());
+    TEST_ASSERT_EQUAL_STRING("Road - Slot 3", slot2.c_str());
+    TEST_ASSERT_FALSE(slot0 == slot1);
+    TEST_ASSERT_FALSE(slot1 == slot2);
+
+    const uint8_t muteVolumeBytes[] = {0xBF, 0xE1, 0x92, 0x73, 0xA5, 0x5A};
+    const uint8_t muteZeroBytes[] = {0xAF, 0xE1, 0x92, 0x73, 0xA5, 0x5A};
+    assertMigratedApplication(slot0, muteVolumeBytes, V1ModePolicy::Value, 1,
+                              V1DisplayPolicy::On, V1VolumePolicy::Unchanged);
+    assertMigratedApplication(slot1, muteVolumeBytes, V1ModePolicy::Value, 2,
+                              V1DisplayPolicy::Off, V1VolumePolicy::Temporary, 0, 0);
+    assertMigratedApplication(slot2, muteZeroBytes, V1ModePolicy::Unchanged, 0,
+                              V1DisplayPolicy::On, V1VolumePolicy::Temporary, 9, 3);
+
+    const String firstExport = snapshot();
+    TEST_ASSERT_TRUE(manager->migrateAutoPushProfilesToV2());
+    TEST_ASSERT_EQUAL_STRING(firstExport.c_str(), snapshot().c_str());
+    reboot();
+    TEST_ASSERT_TRUE(manager->migrateAutoPushProfilesToV2());
+    TEST_ASSERT_EQUAL_STRING(firstExport.c_str(), snapshot().c_str());
+}
+
+void test_exact_v1_usb_import_is_immediately_exportable_with_same_effective_commands() {
+    JsonDocument legacy;
+    legacy["format"] = "v1simple-profiles";
+    legacy["version"] = 1;
+    legacy["autoPushEnabled"] = true;
+    legacy["activeSlot"] = 2;
+    JsonArray profiles = legacy["profiles"].to<JsonArray>();
+    JsonObject profile = profiles.add<JsonObject>();
+    profile["name"] = "Road";
+    profile["description"] = "Exact USB v1";
+    profile["displayOn"] = false;
+    profile["mainVolume"] = 7;
+    profile["mutedVolume"] = 2;
+    JsonArray bytes = profile["rawBytes"].to<JsonArray>();
+    const uint8_t raw[] = {0xBF, 1, 2, 3, 4, 5};
+    for (uint8_t byte : raw) bytes.add(byte);
+    JsonArray slots = legacy["slots"].to<JsonArray>();
+    for (int index = 0; index < 3; ++index) {
+        JsonObject slot = slots.add<JsonObject>();
+        slot["name"] = index == 0 ? "HOME" : (index == 1 ? "HIGHWAY" : "COMFORT");
+        slot["profile"] = "Road";
+        slot["mode"] = index == 2 ? 0 : index + 1;
+        slot["color"] = 100 + index;
+        slot["volumeConfigured"] = index != 0;
+        slot["volume"] = index == 0 ? 0 : (index == 1 ? 0 : 9);
+        slot["muteVolume"] = index == 0 ? 0 : (index == 1 ? 0 : 3);
+        slot["darkMode"] = index == 1;
+        slot["muteToZero"] = index == 2;
+        slot["alertPersist"] = index;
+        slot["priorityArrowOnly"] = index == 0;
+    }
+
+    String error;
+    const SettingsBackupApplyResult applied =
+        applyUsbProfileDocument(*manager, *profileManager, legacy, error);
+    TEST_ASSERT_TRUE_MESSAGE(applied.success, error.c_str());
+    TEST_ASSERT_EQUAL_UINT8(V1_PROFILE_SCHEMA_VERSION, manager->get().autoPushProfileSchemaVersion);
+
+    JsonDocument immediate;
+    TEST_ASSERT_TRUE_MESSAGE(buildUsbProfileDocument(immediate, *manager, *profileManager, error), error.c_str());
+    TEST_ASSERT_EQUAL_INT(2, immediate["version"].as<int>());
+    const String slot0 = manager->get().slot0_default.profileName;
+    const String slot1 = manager->get().slot1_highway.profileName;
+    const String slot2 = manager->get().slot2_comfort.profileName;
+    const uint8_t muteBytes[] = {0xBF, 1, 2, 3, 4, 5};
+    const uint8_t zeroBytes[] = {0xAF, 1, 2, 3, 4, 5};
+    assertMigratedApplication(slot0, muteBytes, V1ModePolicy::Value, 1,
+                              V1DisplayPolicy::On, V1VolumePolicy::Unchanged);
+    assertMigratedApplication(slot1, muteBytes, V1ModePolicy::Value, 2,
+                              V1DisplayPolicy::Off, V1VolumePolicy::Temporary, 0, 0);
+    assertMigratedApplication(slot2, zeroBytes, V1ModePolicy::Unchanged, 0,
+                              V1DisplayPolicy::On, V1VolumePolicy::Temporary, 9, 3);
+}
+
+void test_v1_usb_reports_pending_migration_and_reboot_recovers_pre_authority_state() {
+    JsonDocument legacy;
+    legacy["format"] = "v1simple-profiles";
+    legacy["version"] = 1;
+    legacy["autoPushEnabled"] = true;
+    legacy["activeSlot"] = 0;
+    JsonObject profile = legacy["profiles"].to<JsonArray>().add<JsonObject>();
+    profile["name"] = "Road";
+    profile["description"] = "Interrupted migration";
+    profile["displayOn"] = true;
+    profile["mainVolume"] = 255;
+    profile["mutedVolume"] = 255;
+    JsonArray bytes = profile["rawBytes"].to<JsonArray>();
+    const uint8_t raw[] = {0xBF, 1, 2, 3, 4, 5};
+    for (uint8_t byte : raw) bytes.add(byte);
+    JsonArray slots = legacy["slots"].to<JsonArray>();
+    for (int index = 0; index < 3; ++index) {
+        JsonObject slot = slots.add<JsonObject>();
+        slot["name"] = index == 0 ? "DEFAULT" : (index == 1 ? "HIGHWAY" : "COMFORT");
+        slot["profile"] = "Road";
+        slot["mode"] = index + 1;
+        slot["color"] = 100 + index;
+        slot["volumeConfigured"] = false;
+        slot["volume"] = 0;
+        slot["muteVolume"] = 0;
+        slot["darkMode"] = false;
+        slot["muteToZero"] = false;
+        slot["alertPersist"] = 0;
+        slot["priorityArrowOnly"] = false;
+    }
+
+    manager->utInterruptAutoPushMigrationAfterProfiles(true);
+    String error;
+    const SettingsBackupApplyResult applied =
+        applyUsbProfileDocument(*manager, *profileManager, legacy, error);
+    TEST_ASSERT_TRUE(applied.success);
+    TEST_ASSERT_TRUE(applied.migrationPending);
+    TEST_ASSERT_TRUE(error.indexOf("migration is pending") >= 0);
+    TEST_ASSERT_EQUAL_UINT8(0, manager->get().autoPushProfileSchemaVersion);
+    TEST_ASSERT_TRUE(primaryFs->exists("/v1restore_transaction.json"));
+
+    JsonDocument unavailable;
+    TEST_ASSERT_FALSE(buildUsbProfileDocument(unavailable, *manager, *profileManager, error));
+    TEST_ASSERT_TRUE(unavailable.isNull());
+
+    reboot();
+    TEST_ASSERT_EQUAL_UINT8(0, manager->get().autoPushProfileSchemaVersion);
+    TEST_ASSERT_FALSE(primaryFs->exists("/v1restore_transaction.json"));
+    V1Profile restored;
+    TEST_ASSERT_TRUE(profileManager->loadProfile("Road", restored));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(raw, restored.settings.bytes, 6);
+
+    TEST_ASSERT_TRUE(manager->migrateAutoPushProfilesToV2());
+    JsonDocument exported;
+    TEST_ASSERT_TRUE_MESSAGE(buildUsbProfileDocument(exported, *manager, *profileManager, error), error.c_str());
+    TEST_ASSERT_EQUAL_INT(2, exported["version"].as<int>());
 }
 
 void test_invalid_complete_bundle_never_mutates_settings_profiles_or_credentials() {
@@ -240,7 +453,7 @@ void test_invalid_complete_bundle_never_mutates_settings_profiles_or_credentials
     const auto prefsBefore = mock_preferences::store();
     const String before = snapshot();
     const std::vector<std::function<void(JsonDocument&)>> faults = {
-        [](JsonDocument& d) { d["version"] = 2; },
+        [](JsonDocument& d) { d["version"] = 3; },
         [](JsonDocument& d) { d["format"] = std::string("v1simple-profiles\0x", 19); },
         [](JsonDocument& d) { d["wifiClientEnabled"] = true; },
         [](JsonDocument& d) { d["slots"][0]["alertPersist"] = 6; },
@@ -255,7 +468,9 @@ void test_invalid_complete_bundle_never_mutates_settings_profiles_or_credentials
         [](JsonDocument& d) { d["profiles"][0]["description"] = 161; },
         [](JsonDocument& d) { d["profiles"][0]["description"] = std::string("note\0tail", 9); },
         [](JsonDocument& d) { d["profiles"][0]["name"] = "../Original"; },
-        [](JsonDocument& d) { d["profiles"][0]["mutedVolume"] = 10; },
+        [](JsonDocument& d) { d["profiles"][0]["detector"]["volume"]["main"] = 10; },
+        [](JsonDocument& d) { d["profiles"][0].remove("schemaVersion"); },
+        [](JsonDocument& d) { d["profiles"][0].remove("detector"); },
         [](JsonDocument& d) { d["profiles"][0]["extra"] = true; },
         [](JsonDocument& d) {
             JsonDocument copy;
@@ -425,14 +640,12 @@ void test_http_profile_metadata_round_trips_storage_usb_and_backup_without_trunc
         memcpy(bytes, parsed.bytes, 6);
         return true;
     };
-    runtime.saveProfile = [](const String& name, const String& description, bool displayOn,
-                            uint8_t mainVolume, uint8_t mutedVolume, const uint8_t bytes[6],
+    runtime.saveProfile = [](const String& name, const String& description,
+                            const V1DetectorConfiguration& detector, const uint8_t bytes[6],
                             String& error, void*) {
         V1Profile profile(name);
         profile.description = description;
-        profile.displayOn = displayOn;
-        profile.mainVolume = mainVolume;
-        profile.mutedVolume = mutedVolume;
+        profile.detector = detector;
         memcpy(profile.settings.bytes, bytes, 6);
         const auto result = profileManager->saveProfile(profile);
         error = result.error;
@@ -443,9 +656,10 @@ void test_http_profile_metadata_round_trips_storage_usb_and_backup_without_trunc
         JsonDocument request;
         request["name"] = "Road";
         request["description"] = description;
-        request["displayOn"] = true;
-        request["mainVolume"] = 255;
-        request["mutedVolume"] = 255;
+        request["schemaVersion"] = V1_PROFILE_SCHEMA_VERSION;
+        V1DetectorConfiguration detector;
+        detector.displayPolicy = V1DisplayPolicy::On;
+        appendV1DetectorConfiguration(request["detector"].to<JsonObject>(), detector);
         request["settings"]["xBand"] = true;
         WebServer server(80);
         server.setArg("plain", jsonText(request));
@@ -455,6 +669,10 @@ void test_http_profile_metadata_round_trips_storage_usb_and_backup_without_trunc
         V1Profile stored;
         TEST_ASSERT_TRUE(profileManager->loadProfile("Road", stored));
         TEST_ASSERT_EQUAL_STRING(description.c_str(), stored.description.c_str());
+
+        if (manager->get().autoPushProfileSchemaVersion != V1_PROFILE_SCHEMA_VERSION) {
+            TEST_ASSERT_TRUE(manager->migrateAutoPushProfilesToV2());
+        }
 
         JsonDocument usb;
         String error;
@@ -521,6 +739,9 @@ int main() {
     RUN_TEST(test_interrupted_restore_recovers_long_description_from_journal);
     RUN_TEST(test_profile_file_size_limit_still_rejects_oversized_metadata_without_loss);
     RUN_TEST(test_bundle_round_trip_replaces_catalog_and_preserves_unrelated_state);
+    RUN_TEST(test_exact_legacy_profile_and_shared_slots_migrate_without_command_drift);
+    RUN_TEST(test_exact_v1_usb_import_is_immediately_exportable_with_same_effective_commands);
+    RUN_TEST(test_v1_usb_reports_pending_migration_and_reboot_recovers_pre_authority_state);
     RUN_TEST(test_invalid_complete_bundle_never_mutates_settings_profiles_or_credentials);
     RUN_TEST(test_nvs_failure_rolls_back_created_deleted_profiles_and_settings);
     RUN_TEST(test_profile_storage_failure_during_replacement_rolls_back_catalog);

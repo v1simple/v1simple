@@ -18,6 +18,8 @@ uint32_t V1ProfileManager::calculateCRC32(const uint8_t* data, size_t length) {
 
 namespace {
 
+uint32_t detectorConfigurationCrc(const V1DetectorConfiguration& config);
+
 class ProfileStorageGuard {
   public:
     ProfileStorageGuard(const V1ProfileManager&, StorageManager* storage, bool usingSd, uint32_t timeoutMs)
@@ -201,7 +203,23 @@ ProfileFileInspection inspectProfileFile(fs::FS& filesystem, const String& path)
     JsonDocument doc;
     if (deserializeJson(doc, content.data(), content.size())) return inspection;
 
+    const bool hasSchemaVersion = !doc["schemaVersion"].isUnbound();
+    const bool hasDetector = !doc["detector"].isUnbound();
+    const bool hasDetectorCrc = !doc["detectorCrc32"].isUnbound();
+    if (hasSchemaVersion != hasDetector || hasSchemaVersion != hasDetectorCrc) return inspection;
+    if (hasSchemaVersion) {
+        V1DetectorConfiguration detector;
+        if (!doc["schemaVersion"].is<int>() || doc["schemaVersion"].as<int>() != V1_PROFILE_SCHEMA_VERSION ||
+            !doc["detector"].is<JsonObjectConst>() ||
+            !parseV1DetectorConfiguration(doc["detector"].as<JsonObjectConst>(), detector) ||
+            !doc["detectorCrc32"].is<uint32_t>() ||
+            doc["detectorCrc32"].as<uint32_t>() != detectorConfigurationCrc(detector)) {
+            return inspection;
+        }
+    }
+
     const JsonVariantConst rawBytes = doc["bytes"];
+    if (hasSchemaVersion && (rawBytes.isUnbound() || !doc["crc32"].is<uint32_t>())) return inspection;
     if (!rawBytes.isUnbound()) {
         uint8_t parsed[V1SettingsJson::kSettingsByteCount];
         if (!V1SettingsJson::parseRawBytes(rawBytes, parsed)) return inspection;
@@ -311,6 +329,18 @@ void addUniqueName(std::vector<String>& names, const String& candidate) {
         if (existing == candidate) return;
     }
     names.push_back(candidate);
+}
+
+} // namespace
+
+namespace {
+
+uint32_t detectorConfigurationCrc(const V1DetectorConfiguration& config) {
+    JsonDocument doc;
+    appendV1DetectorConfiguration(doc.to<JsonObject>(), config);
+    String serialized;
+    serializeJson(doc, serialized);
+    return computeCrc32(reinterpret_cast<const uint8_t*>(serialized.c_str()), serialized.length());
 }
 
 } // namespace
@@ -748,8 +778,35 @@ ProfileOperationResult V1ProfileManager::loadProfileUnlocked(const String& name,
         return profileResult(ProfileStorageStatus::Corrupt, lastError_);
     }
 
+    const JsonVariantConst schemaVersion = doc["schemaVersion"];
+    const bool isSchemaV2 = !schemaVersion.isUnbound();
+    if (isSchemaV2 != !doc["detector"].isUnbound() ||
+        isSchemaV2 != !doc["detectorCrc32"].isUnbound()) {
+        lastError_ = "Mixed legacy and schema v2 profile markers";
+        return profileResult(ProfileStorageStatus::Corrupt, lastError_);
+    }
+    if (isSchemaV2 && (!schemaVersion.is<int>() || schemaVersion.as<int>() != V1_PROFILE_SCHEMA_VERSION)) {
+        lastError_ = "Unsupported profile schema version";
+        return profileResult(ProfileStorageStatus::Corrupt, lastError_);
+    }
+
+    V1DetectorConfiguration parsedDetector;
+    if (isSchemaV2) {
+        if (!doc["detector"].is<JsonObjectConst>() ||
+            !parseV1DetectorConfiguration(doc["detector"].as<JsonObjectConst>(), parsedDetector) ||
+            !doc["detectorCrc32"].is<uint32_t>() ||
+            doc["detectorCrc32"].as<uint32_t>() != detectorConfigurationCrc(parsedDetector)) {
+            lastError_ = "Invalid detector configuration or CRC";
+            return profileResult(ProfileStorageStatus::Corrupt, lastError_);
+        }
+    }
+
     const JsonVariantConst rawBytes = doc["bytes"];
     const bool hasRawBytes = !rawBytes.isUnbound();
+    if (isSchemaV2 && (!hasRawBytes || !doc["crc32"].is<uint32_t>())) {
+        lastError_ = "Schema v2 profile is missing settings bytes or CRC";
+        return profileResult(ProfileStorageStatus::Corrupt, lastError_);
+    }
     uint8_t rawSettingsBytes[V1SettingsJson::kSettingsByteCount];
     if (hasRawBytes) {
         if (!V1SettingsJson::parseRawBytes(rawBytes, rawSettingsBytes)) {
@@ -776,11 +833,20 @@ ProfileOperationResult V1ProfileManager::loadProfileUnlocked(const String& name,
         }
     }
 
-    profile.name = name;
+    if (isSchemaV2 && !hasRawBytes) {
+        lastError_ = "Schema v2 profile is missing authoritative settings bytes";
+        return profileResult(ProfileStorageStatus::Corrupt, lastError_);
+    }
+
+    profile = V1Profile(name);
+    profile.schemaVersion = isSchemaV2 ? V1_PROFILE_SCHEMA_VERSION : 1;
+    profile.detector = parsedDetector;
     profile.description = doc["description"] | "";
-    profile.displayOn = doc["displayOn"] | true;     // Default to on
-    profile.mainVolume = doc["mainVolume"] | 0xFF;   // 0xFF = don't change
-    profile.mutedVolume = doc["mutedVolume"] | 0xFF; // 0xFF = don't change
+    if (!isSchemaV2) {
+        profile.displayOn = doc["displayOn"] | true;
+        profile.mainVolume = doc["mainVolume"] | 0xFF;
+        profile.mutedVolume = doc["mutedVolume"] | 0xFF;
+    }
 
     // Parse settings bytes
     if (hasRawBytes) {
@@ -909,12 +975,20 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
     JsonDocument doc;
     const V1UserSettings& s = profile.settings;
 
-    // Store metadata
+    // Store metadata and the complete detector-owned application policy.
+    doc["schemaVersion"] = V1_PROFILE_SCHEMA_VERSION;
     doc["name"] = canonicalName;
     doc["description"] = profile.description;
-    doc["displayOn"] = profile.displayOn;
-    doc["mainVolume"] = profile.mainVolume;
-    doc["mutedVolume"] = profile.mutedVolume;
+    JsonObject detector = doc["detector"].to<JsonObject>();
+    appendV1DetectorConfiguration(detector, profile.detector);
+    V1DetectorConfiguration validatedDetector;
+    if (!parseV1DetectorConfiguration(detector, validatedDetector) || validatedDetector != profile.detector) {
+        file.close();
+        fs_->remove(tmpPath);
+        lastError_ = "Invalid detector configuration";
+        return ProfileSaveResult(ProfileStorageStatus::Corrupt, lastError_);
+    }
+    doc["detectorCrc32"] = detectorConfigurationCrc(profile.detector);
 
     // Store raw bytes for exact restoration
     JsonArray bytes = doc["bytes"].to<JsonArray>();
@@ -1042,7 +1116,8 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
     // boot reconciliation, and API reads continue to honor the old tombstone
     // until writeSyncState() commits the new generation below.
     const ProfileOperationResult verifyResult = loadProfileUnlocked(canonicalName, verified, false, true);
-    if (!verifyResult.success() || memcmp(verified.settings.bytes, profile.settings.bytes, 6) != 0) {
+    if (!verifyResult.success() || verified.schemaVersion != V1_PROFILE_SCHEMA_VERSION ||
+        memcmp(verified.settings.bytes, profile.settings.bytes, 6) != 0 || verified.detector != profile.detector) {
         lastError_ = verifyResult.success() ? "Final profile verification mismatch" : verifyResult.error;
         fs_->remove(path);
         if (fs_->exists(bakPath)) {
@@ -1375,11 +1450,14 @@ String V1ProfileManager::settingsToJson(const V1UserSettings& s) const {
 
 String V1ProfileManager::profileToJson(const V1Profile& profile) const {
     JsonDocument doc;
+    doc["schemaVersion"] = profile.schemaVersion;
     doc["name"] = profile.name;
     doc["description"] = profile.description;
-    doc["displayOn"] = profile.displayOn;
-    doc["mainVolume"] = profile.mainVolume;
-    doc["mutedVolume"] = profile.mutedVolume;
+    if (profile.schemaVersion == V1_PROFILE_SCHEMA_VERSION) {
+        appendV1DetectorConfiguration(doc["detector"].to<JsonObject>(), profile.detector);
+    } else {
+        doc["legacy"] = true;
+    }
 
     JsonObject settings = doc["settings"].to<JsonObject>();
     const V1UserSettings& s = profile.settings;

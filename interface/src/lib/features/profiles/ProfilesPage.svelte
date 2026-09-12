@@ -8,7 +8,11 @@
     import ProfileSettingsPanel from '$lib/features/profiles/ProfileSettingsPanel.svelte';
     import {
         createDefaultProfileSettings,
+        createDefaultDetectorConfiguration,
+        detectorConfigurationFromSnapshot,
+        fromApiDetectorConfiguration,
         fromApiSettings,
+        toApiDetectorConfiguration,
         toApiSettings
     } from '$lib/features/profiles/profileSettingsAdapter';
 
@@ -22,9 +26,11 @@
     let savingProfile = $state(null);
     let editingSettings = $state(false);
     let editedSettings = $state(null);
+    let editedDetector = $state(null);
     let editDescription = $state('');
     let capturedSnapshot = $state(null);
     let snapshotLoading = $state(true);
+    let profileSchemaReady = $state(true);
     const PROFILE_LOAD_ERROR_TEXT = 'Failed to load profiles';
 
     function validateProfileName(raw) {
@@ -103,9 +109,11 @@
             captured: true,
             name: '',
             description: '',
+            detector: detectorConfigurationFromSnapshot(capturedSnapshot),
             settings
         };
         editedSettings = { ...settings, baseBytes: settings.baseBytes ? [...settings.baseBytes] : undefined };
+        editedDetector = { ...currentProfile.detector };
         editDescription = '';
         saveName = '';
         saveDescription = '';
@@ -122,6 +130,7 @@
             if (res.ok) {
                 const data = await res.json();
                 profiles = data.profiles || [];
+                profileSchemaReady = data.schemaVersion !== 1;
                 clearMessageText(PROFILE_LOAD_ERROR_TEXT);
                 return true;
             } else {
@@ -157,9 +166,8 @@
             const payload = {
                 name: validatedName.canonical,
                 description: saveDescription.trim(),
-                displayOn: currentProfile?.displayOn,
-                mainVolume: currentProfile?.mainVolume,
-                mutedVolume: currentProfile?.mutedVolume,
+                schemaVersion: 2,
+                detector: toApiDetectorConfiguration(editedDetector || currentProfile?.detector),
                 settings: toApiSettings(settingsToSave)
             };
 
@@ -179,7 +187,7 @@
                 recordSavedProfile(
                     canonicalName,
                     payload.description,
-                    payload.displayOn
+                    true
                 );
                 saveName = canonicalName;
                 message = { type: 'success', text: `Profile "${canonicalName}" saved` };
@@ -197,6 +205,7 @@
     function startEditing() {
         if (currentProfile && currentProfile.settings) {
             editedSettings = { ...currentProfile.settings };
+            editedDetector = { ...currentProfile.detector };
             editDescription = currentProfile.description || '';
             editingSettings = true;
         }
@@ -204,6 +213,7 @@
 
     function cancelEditing() {
         editedSettings = null;
+        editedDetector = null;
         editDescription = '';
         editingSettings = false;
     }
@@ -227,9 +237,11 @@
                 const data = await res.json();
                 currentProfile = {
                     ...data,
+                    detector: fromApiDetectorConfiguration(data.detector || {}),
                     settings: fromApiSettings(data.settings || {})
                 };
                 editedSettings = { ...currentProfile.settings };
+                editedDetector = { ...currentProfile.detector };
                 editDescription = data.description || '';
                 editingSettings = true;
                 message = { type: 'info', text: `Editing ${name}` };
@@ -248,9 +260,11 @@
             draft: true,
             name: '',
             description: '',
+            detector: createDefaultDetectorConfiguration(),
             settings: createDefaultProfileSettings()
         };
         editedSettings = createDefaultProfileSettings();
+        editedDetector = createDefaultDetectorConfiguration();
         editDescription = '';
         saveName = '';
         saveDescription = '';
@@ -277,9 +291,8 @@
             const payload = {
                 name: profile.name,
                 description: editDescription.trim(),
-                displayOn: profile.displayOn,
-                mainVolume: profile.mainVolume,
-                mutedVolume: profile.mutedVolume,
+                schemaVersion: 2,
+                detector: toApiDetectorConfiguration(editedDetector || profile.detector),
                 settings: toApiSettings(savedSettings)
             };
 
@@ -295,7 +308,7 @@
             }));
 
             if (res.ok) {
-                recordSavedProfile(payload.name, payload.description, payload.displayOn);
+                recordSavedProfile(payload.name, payload.description, true);
                 message = { type: 'success', text: `Profile "${payload.name}" saved` };
                 if (editedSettings === editSession) {
                     const draftUnchanged = editDescription.trim() === payload.description &&
@@ -303,6 +316,7 @@
                     currentProfile = {
                         ...profile,
                         description: payload.description,
+                        detector: { ...editedDetector },
                         settings: savedSettings
                     };
                     if (draftUnchanged) cancelEditing();
@@ -354,6 +368,13 @@
     </PageHeader>
 
     <StatusAlert {message} />
+
+    {#if !loading && !profileSchemaReady}
+        <StatusAlert
+            message="The profile settings migration is still pending. Profiles are temporarily read-only so detector choices cannot be accepted and then ignored."
+            fallbackType="warning"
+        />
+    {/if}
 
     <ProfileSaveDialog
         open={showSaveDialog}
@@ -421,7 +442,7 @@
                 <div>
                     <button
                         class="btn btn-primary btn-sm"
-                        disabled={!capturedSnapshot.observations?.userBytes?.available || !capturedSnapshot.settings}
+                        disabled={!profileSchemaReady || !capturedSnapshot.observations?.userBytes?.available || !capturedSnapshot.settings}
                         onclick={startDraftFromCapturedSettings}
                     >
                         Start draft from captured settings
@@ -431,25 +452,105 @@
         </div>
     </div>
 
-    <ProfileSettingsPanel
-        {editingSettings}
-        {currentProfile}
-        {savingProfile}
-        bind:editedSettings
-        bind:editDescription
-        oncancelEditing={cancelEditing}
-        onsaveEditedProfile={saveEditedProfile}
-        oncreateNewProfile={createNewProfile}
-        onstartEditing={startEditing}
-        onshowSaveDialog={openSaveDialog}
-    />
+    {#if profileSchemaReady && currentProfile && editedDetector}
+        <div class="surface-card">
+            <div class="card-body space-y-4">
+                <div>
+                    <h2 class="card-title">Detector apply policy</h2>
+                    <p class="copy-muted">
+                        These choices belong to this profile. Unchanged means no value is invented or sent.
+                    </p>
+                </div>
+                <div class="grid gap-3 sm:grid-cols-2">
+                    <label class="field-control">
+                        <span class="field-label copy-caption">User settings bytes</span>
+                        <select class="select select-sm" bind:value={editedDetector.userSettings}>
+                            <option value="value">Apply profile settings</option>
+                            <option value="unchanged">Leave unchanged</option>
+                        </select>
+                    </label>
+                    <div class="grid grid-cols-2 gap-2">
+                        <label class="field-control">
+                            <span class="field-label copy-caption">Logic mode</span>
+                            <select class="select select-sm" bind:value={editedDetector.modePolicy}>
+                                <option value="unchanged">Leave unchanged</option>
+                                <option value="value">Set mode</option>
+                            </select>
+                        </label>
+                        <label class="field-control">
+                            <span class="field-label copy-caption">Mode value</span>
+                            <select class="select select-sm" bind:value={editedDetector.mode} disabled={editedDetector.modePolicy !== 'value'}>
+                                <option value={1}>All Bogeys</option>
+                                <option value={2}>Logic</option>
+                                <option value={3}>Advanced Logic</option>
+                            </select>
+                        </label>
+                    </div>
+                    <label class="field-control">
+                        <span class="field-label copy-caption">V1 display</span>
+                        <select class="select select-sm" bind:value={editedDetector.display}>
+                            <option value="unchanged">Leave unchanged</option>
+                            <option value="on">On</option>
+                            <option value="off">Off (completely dark)</option>
+                        </select>
+                    </label>
+                    <label class="field-control">
+                        <span class="field-label copy-caption">Volume policy</span>
+                        <select class="select select-sm" bind:value={editedDetector.volumePolicy}>
+                            <option value="unchanged">Leave unchanged</option>
+                            <option value="temporary">Temporary</option>
+                            <option value="saved">Save on V1</option>
+                        </select>
+                    </label>
+                    <label class="field-control">
+                        <span class="field-label copy-caption">Main volume (0–9)</span>
+                        <input class="input input-sm" type="number" min="0" max="9" bind:value={editedDetector.mainVolume} disabled={editedDetector.volumePolicy === 'unchanged'} />
+                    </label>
+                    <label class="field-control">
+                        <span class="field-label copy-caption">Muted volume (0–9)</span>
+                        <input class="input input-sm" type="number" min="0" max="9" bind:value={editedDetector.mutedVolume} disabled={editedDetector.volumePolicy === 'unchanged'} />
+                    </label>
+                </div>
+                {#if editedDetector.volumePolicy === 'saved'}
+                    <div class="surface-alert alert-warning" role="status">
+                        Saved-volume intent is preserved in this profile. Until saved-volume transport lands, Auto-Push rejects this profile before sending any detector changes.
+                    </div>
+                {/if}
+                {#if editedSettings?.customFreqs}
+                    <div class="surface-alert alert-warning" role="status">
+                        Custom Frequencies only enables definitions already stored in the V1. Sweep definitions are not captured or authored in this version.
+                    </div>
+                {/if}
+                <p class="copy-caption">
+                    Independent keep-Bluetooth-LED-on control is not supported yet. Display Off is completely dark,
+                    including the Bluetooth LED. Custom-frequency definitions remain detector-resident until their
+                    complete vendor transactions are implemented.
+                </p>
+            </div>
+        </div>
+    {/if}
 
-    <ProfileSavedListCard
-        {loading}
-        {profiles}
-        oneditProfile={editProfile}
-        ondeleteProfile={deleteProfile}
-    />
+    {#if profileSchemaReady}
+        <ProfileSettingsPanel
+            {editingSettings}
+            {currentProfile}
+            {savingProfile}
+            bind:editedSettings
+            bind:editDescription
+            oncancelEditing={cancelEditing}
+            onsaveEditedProfile={saveEditedProfile}
+            oncreateNewProfile={createNewProfile}
+            onstartEditing={startEditing}
+            onshowSaveDialog={openSaveDialog}
+        />
+
+        <ProfileSavedListCard
+            {loading}
+            {profiles}
+            oneditProfile={editProfile}
+            ondeleteProfile={deleteProfile}
+        />
+    {/if}
 
     <div class="surface-note copy-muted space-y-1">
         <p><strong>Create:</strong> Build a detector configuration without a V1 connection.</p>

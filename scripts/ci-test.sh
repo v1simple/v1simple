@@ -94,7 +94,8 @@ run_camera_recorder_checks() {
   fi
 
   mkdir -p "$module_cache"
-  "${xcrun_driver[@]}" swiftc -module-cache-path "$module_cache" -typecheck "$recorder"
+  "${xcrun_driver[@]}" swiftc -warnings-as-errors -module-cache-path "$module_cache" \
+    -typecheck "$recorder"
   "${xcrun_driver[@]}" swift -module-cache-path "$module_cache" "$recorder" --self-test-timing
   "${xcrun_driver[@]}" swift -module-cache-path "$module_cache" "$recorder" --self-test-writer
   "${xcrun_driver[@]}" swift -module-cache-path "$module_cache" "$recorder" --self-test-raw-frames

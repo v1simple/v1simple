@@ -794,6 +794,36 @@ struct WriterPipeline {
     let input: AVAssetWriterInput
 }
 
+final class VideoTrackLoad: @unchecked Sendable {
+    private let completed = DispatchSemaphore(value: 0)
+    private var result: Result<[AVAssetTrack], Error>?
+
+    func resolve(_ result: Result<[AVAssetTrack], Error>) {
+        self.result = result
+        completed.signal()
+    }
+
+    func wait() throws -> [AVAssetTrack] {
+        completed.wait()
+        guard let result else {
+            throw NSError(domain: "v1simple.camera.selftest", code: 31)
+        }
+        return try result.get()
+    }
+}
+
+func loadVideoTracks(from asset: AVAsset) throws -> [AVAssetTrack] {
+    let load = VideoTrackLoad()
+    Task.detached {
+        do {
+            load.resolve(.success(try await asset.loadTracks(withMediaType: .video)))
+        } catch {
+            load.resolve(.failure(error))
+        }
+    }
+    return try load.wait()
+}
+
 func makeWriterPipeline(
     outputURL: URL,
     width: Int32,
@@ -986,7 +1016,7 @@ func runWriterSelfTest() -> Never {
 
         let asset = AVURLAsset(url: outputURL)
         let reader = try AVAssetReader(asset: asset)
-        guard let track = asset.tracks(withMediaType: .video).first else {
+        guard let track = try loadVideoTracks(from: asset).first else {
             throw NSError(domain: "v1simple.camera.selftest", code: 24)
         }
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)

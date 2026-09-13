@@ -515,7 +515,6 @@ class Device:
             self.client.command(target)
         except TransportError:
             pass  # A controlled restart may remove the ACK; status is authoritative.
-        self.client.link.close()
         deadline = self.client.clock() + self.mode_timeout
         while self.client.clock() < deadline:
             try:

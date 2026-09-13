@@ -261,6 +261,7 @@ void assertMigratedApplication(const String& profileName, const uint8_t expected
 
 void setUp() {
     g_failUsbInputStringCopyEnabledForTest = false;
+    g_failPreparedUsbProfileAllocationForTest = false;
     mock_preferences::reset();
     mock_nvs::reset();
     storage.reset();
@@ -283,6 +284,7 @@ void setUp() {
 
 void tearDown() {
     g_failUsbInputStringCopyEnabledForTest = false;
+    g_failPreparedUsbProfileAllocationForTest = false;
     manager.reset();
     profileManager.reset();
     primaryFs.reset();
@@ -812,6 +814,22 @@ void test_unavailable_catalog_export_returns_no_partial_bundle() {
     TEST_ASSERT_GREATER_THAN(0, error.length());
 }
 
+void test_profile_validation_staging_allocation_failure_returns_no_partial_bundle() {
+    seed();
+    JsonDocument doc;
+    doc["stale"] = true;
+    String error;
+    g_failPreparedUsbProfileAllocationForTest = true;
+    TEST_ASSERT_FALSE(buildUsbProfileDocument(doc, *manager, *profileManager, error));
+    TEST_ASSERT_TRUE(doc.isNull());
+    TEST_ASSERT_TRUE(error.indexOf("profile import staging") >= 0);
+    TEST_ASSERT_FALSE(g_failPreparedUsbProfileAllocationForTest);
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        buildUsbProfileDocument(doc, *manager, *profileManager, error), error.c_str());
+    TEST_ASSERT_EQUAL_UINT(4, doc["profiles"].size());
+}
+
 void test_export_refuses_failed_recovery_then_exports_recovered_complete_state() {
     seed();
     const String before = snapshot();
@@ -1263,6 +1281,7 @@ int main() {
     RUN_TEST(test_case_only_catalog_replacement_recovers_exact_original_name);
     RUN_TEST(test_empty_catalog_restore_deletes_extras_and_clears_assignments);
     RUN_TEST(test_unavailable_catalog_export_returns_no_partial_bundle);
+    RUN_TEST(test_profile_validation_staging_allocation_failure_returns_no_partial_bundle);
     RUN_TEST(test_export_refuses_failed_recovery_then_exports_recovered_complete_state);
     return UNITY_END();
 }

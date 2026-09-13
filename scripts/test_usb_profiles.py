@@ -78,9 +78,11 @@ class WireDevice:
         self.wrong_normal_consumer = False
         self.read_count = 0
         self.upload = bytearray()
+        self.closes = 0
+        self.write_error_once = False
 
     def close(self):
-        pass
+        self.closes += 1
 
     def read(self, count):
         self.read_count += 1
@@ -91,6 +93,9 @@ class WireDevice:
         return result
 
     def write(self, data):
+        if self.write_error_once:
+            self.write_error_once = False
+            raise OSError("simulated USB link loss")
         # Exercise partial host writes independently of fragmented replies.
         consumed = min(23, len(data))
         self.input.extend(data[:consumed])
@@ -243,6 +248,22 @@ class USBProfilesTests(unittest.TestCase):
         self.peer.no_transition = True
         with self.assertRaisesRegex(usb.TransportError, "new boot"):
             self.device.mode("normal")
+
+    def test_successful_mode_transition_keeps_live_link_for_status_and_next_command(self):
+        status = self.device.mode("maintenance")
+        self.assertEqual((status["mode"], status["boot"]), ("maintenance", 11))
+        self.assertEqual(self.peer.closes, 0)
+        raw, exported = self.device.backup()
+        self.assertTrue(raw)
+        self.assertTrue(usb.same_bundle(exported, self.peer.current))
+        self.assertEqual(self.peer.closes, 0)
+
+    def test_actual_io_failure_closes_link_before_exact_retry(self):
+        self.peer.write_error_once = True
+        status = self.device.status()
+        self.assertEqual(status["mode"], "normal")
+        self.assertEqual(self.peer.closes, 1)
+        self.assertEqual(len(self.peer.history), 1)
 
     def test_timeout_has_no_false_success_and_bounded_retries(self):
         self.peer.drop_always.add("status")

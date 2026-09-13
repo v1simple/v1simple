@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
+#include <memory>
+#include <new>
 #include <utility>
 #include <vector>
 
@@ -46,6 +48,7 @@ enum class UsbInputStringField : uint8_t {
 #ifdef UNIT_TEST
 UsbInputStringField g_failUsbInputStringCopyForTest = UsbInputStringField::ProfileName;
 bool g_failUsbInputStringCopyEnabledForTest = false;
+bool g_failPreparedUsbProfileAllocationForTest = false;
 #endif
 
 ExactV1JsonStringStatus checkedUsbInputString(JsonVariantConst value, String& output,
@@ -235,7 +238,20 @@ bool toRestoreDocument(const JsonDocument& source, JsonDocument& target, String&
 
     const int documentVersion = root["version"].as<int>();
     const bool versioned = documentVersion >= V1_PROFILE_PREVIOUS_SCHEMA_VERSION;
-    std::array<PreparedUsbProfile, V1_PROFILE_CATALOG_MAX_COUNT> preparedProfiles;
+    std::unique_ptr<PreparedUsbProfile[]> preparedProfiles;
+#ifdef UNIT_TEST
+    if (g_failPreparedUsbProfileAllocationForTest) {
+        g_failPreparedUsbProfileAllocationForTest = false;
+    } else
+#endif
+    {
+        preparedProfiles.reset(
+            new (std::nothrow) PreparedUsbProfile[V1_PROFILE_CATALOG_MAX_COUNT]);
+    }
+    if (!preparedProfiles) {
+        error = "Could not allocate profile import staging";
+        return false;
+    }
     size_t preparedProfileCount = 0;
     for (JsonVariantConst value : root["profiles"].as<JsonArrayConst>()) {
         const JsonObjectConst profile = value.as<JsonObjectConst>();

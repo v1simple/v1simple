@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <new>
 #include <utility>
 
@@ -830,6 +831,22 @@ struct PreparedObdFields {
     String savedName;
     bool hasSavedAddress = false;
     String savedAddress;
+};
+
+// A full restore keeps the pre-restore settings and every validated external
+// field alive until the NVS selector commits or rollback completes. Keeping
+// that bounded transaction state on the loopTask stack made the fresh-NVS
+// restore path retain more than a kilobyte before entering profile storage.
+// Allocate it as one nothrow candidate instead; publication and rollback still
+// use the same validated objects and fail before any mutation when unavailable.
+struct RestoreApplyStaging {
+    V1Settings settingsBefore;
+    std::vector<V1Profile> incomingProfiles;
+    std::vector<V1Profile> profilesBefore;
+    PreparedProfileSlotFields preparedSlots;
+    PreparedNetworkFields preparedNetwork;
+    PreparedObdFields preparedObd;
+    RestoreCredentialSnapshot credentialsBefore;
 };
 
 bool prepareObdFields(const JsonDocument& doc, PreparedObdFields& prepared) {
@@ -2702,25 +2719,39 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
         return result;
     }
 
-    V1Settings settingsBefore;
+    std::unique_ptr<RestoreApplyStaging> staging;
+#ifdef UNIT_TEST
+    if (restoreApplyStagingAllocationFailure_) {
+        restoreApplyStagingAllocationFailure_ = false;
+        Serial.println("[Settings] ERROR: Restore transaction staging memory unavailable");
+        return result;
+    }
+#endif
+    staging.reset(new (std::nothrow) RestoreApplyStaging());
+    if (!staging) {
+        Serial.println("[Settings] ERROR: Restore transaction staging memory unavailable");
+        return result;
+    }
+
+    V1Settings& settingsBefore = staging->settingsBefore;
+    std::vector<V1Profile>& incomingProfiles = staging->incomingProfiles;
+    std::vector<V1Profile>& profilesBefore = staging->profilesBefore;
+    PreparedProfileSlotFields& preparedSlots = staging->preparedSlots;
+    PreparedNetworkFields& preparedNetwork = staging->preparedNetwork;
+    PreparedObdFields& preparedObd = staging->preparedObd;
+    RestoreCredentialSnapshot& credentialsBefore = staging->credentialsBefore;
     if (!copySettingsChecked(settings_, settingsBefore)) {
         Serial.println("[Settings] ERROR: Settings snapshot memory unavailable before restore");
         return result;
     }
     const bool restorePendingBefore = restorePending_;
     const uint64_t restoreWatermarkBefore = restoreCommitWatermark_;
-    std::vector<V1Profile> incomingProfiles;
-    std::vector<V1Profile> profilesBefore;
-    PreparedProfileSlotFields preparedSlots;
-    PreparedNetworkFields preparedNetwork;
-    PreparedObdFields preparedObd;
     const bool profilesOnly = scope == SettingsBackupScope::ProfilesOnly;
     if (!validateBackupDocumentForApply(doc, settingsBefore, *profiles_, incomingProfiles, profilesBefore,
                                         profilesOnly, &preparedSlots, &preparedNetwork, &preparedObd)) {
         Serial.println("[Settings] ERROR: Backup document failed transaction validation");
         return result;
     }
-    RestoreCredentialSnapshot credentialsBefore;
     if (!profilesOnly && !captureRestoreCredentialSnapshot(*storage_, credentialsBefore)) {
         Serial.println("[Settings] ERROR: Failed to snapshot credential stores before restore");
         return result;

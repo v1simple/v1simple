@@ -643,6 +643,7 @@ enum class V1ProfileAllocationFailurePoint : uint8_t {
     ListGrowth,
     PageGrowth,
     SnapshotGrowth,
+    SaveScratch,
 };
 #endif
 

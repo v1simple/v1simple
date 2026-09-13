@@ -747,6 +747,16 @@ struct ProfileCatalogSaveScan {
     bool targetExists = false;
 };
 
+// The save transaction needs both a parsed detector candidate and a complete
+// post-promotion profile for readback verification. They remain bounded by the
+// profile schema, but retaining both on loopTask stacks the full objects below
+// boot restore state. A single nothrow scratch allocation keeps the exact same
+// validation and comparison boundary without publishing partial data.
+struct ProfileSaveScratch {
+    V1DetectorConfiguration validatedDetector;
+    V1Profile verifiedProfile;
+};
+
 // Transaction rollback must be able to restore one journaled member into a
 // grandfathered over-limit catalog. Scan one directory entry at a time so the
 // rollback path does not need to retain an attacker-sized catalog vector.
@@ -1833,6 +1843,20 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
     committedState.version = maximumVersion + 1u;
     committedState.deleted = false;
 
+#ifdef UNIT_TEST
+    try {
+        maybeFailAllocationForTest(V1ProfileAllocationFailurePoint::SaveScratch);
+    } catch (const std::bad_alloc&) {
+        lastError_ = "Profile save scratch memory unavailable";
+        return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
+    }
+#endif
+    std::unique_ptr<ProfileSaveScratch> scratch(new (std::nothrow) ProfileSaveScratch());
+    if (!scratch) {
+        lastError_ = "Profile save scratch memory unavailable";
+        return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
+    }
+
     // Step 1: Write to temporary file (don't truncate original yet)
     File file = fs_->open(tmpPath, FILE_WRITE);
     if (!file) {
@@ -1850,8 +1874,8 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
     doc["description"] = profile.description;
     JsonObject detector = doc["detector"].to<JsonObject>();
     appendV1DetectorConfiguration(detector, profile.detector);
-    V1DetectorConfiguration validatedDetector;
-    if (!parseV1DetectorConfiguration(detector, validatedDetector) || validatedDetector != profile.detector) {
+    if (!parseV1DetectorConfiguration(detector, scratch->validatedDetector) ||
+        scratch->validatedDetector != profile.detector) {
         file.close();
         fs_->remove(tmpPath);
         lastError_ = "Invalid detector configuration";
@@ -1998,7 +2022,6 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
     }
 
     // Step 6: prove the promoted final file is readable and its CRC is valid.
-    V1Profile verified;
     // Do not let ordinary interrupted-transaction recovery consume the backup
     // while validating a just-promoted candidate. The save transaction owns
     // rollback until final-file verification completes.
@@ -2006,10 +2029,13 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
     // promoted this exact candidate and still owns rollback; ordinary loads,
     // boot reconciliation, and API reads continue to honor the old tombstone
     // until writeSyncState() commits the new generation below.
-    const ProfileOperationResult verifyResult = loadProfileUnlocked(canonicalName, verified, false, true);
-    if (!verifyResult.success() || verified.schemaVersion != V1_PROFILE_SCHEMA_VERSION ||
-        verified.name != canonicalName || verified.description != profile.description ||
-        memcmp(verified.settings.bytes, profile.settings.bytes, 6) != 0 || verified.detector != profile.detector) {
+    const ProfileOperationResult verifyResult =
+        loadProfileUnlocked(canonicalName, scratch->verifiedProfile, false, true);
+    if (!verifyResult.success() || scratch->verifiedProfile.schemaVersion != V1_PROFILE_SCHEMA_VERSION ||
+        scratch->verifiedProfile.name != canonicalName ||
+        scratch->verifiedProfile.description != profile.description ||
+        memcmp(scratch->verifiedProfile.settings.bytes, profile.settings.bytes, 6) != 0 ||
+        scratch->verifiedProfile.detector != profile.detector) {
         lastError_ = verifyResult.success() ? "Final profile verification mismatch" : verifyResult.error;
         fs_->remove(path);
         if (fs_->exists(bakPath)) {

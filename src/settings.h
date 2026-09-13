@@ -808,6 +808,9 @@ class SettingsManager {
     void utLeaveProfileDeleteJournalAfterCommit(bool enabled) {
         leaveProfileDeleteJournalAfterCommit_ = enabled;
     }
+    void utFailRestoreApplyStagingAllocation(bool enabled) {
+        restoreApplyStagingAllocationFailure_ = enabled;
+    }
 #endif
     uint32_t backupRevision() const { return backupRevisionCounter_; }
     uint32_t backupDueRevision() const { return backupDueRevision_; }
@@ -964,6 +967,7 @@ class SettingsManager {
     bool profileDeleteInterruptAfterReferences_ = false;
     bool leaveRestoreJournalAfterCommit_ = false;
     bool leaveProfileDeleteJournalAfterCommit_ = false;
+    bool restoreApplyStagingAllocationFailure_ = false;
 #endif
     void recoverCriticalSettingsAfterFullRestoreFailure(fs::FS* fs, bool hasSdBackup,
                                                         const JsonDocument& backupDoc);

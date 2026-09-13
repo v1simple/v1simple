@@ -3217,6 +3217,29 @@ void test_not_ready_profile_catalog_is_unsafe_for_http_and_first_sd_backup() {
     TEST_ASSERT_FALSE(fs.exists(SETTINGS_BACKUP_PATH));
 }
 
+void test_restore_staging_allocation_failure_precedes_new_transaction_mutation() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    manager.mutableSettings().brightness = 33;
+
+    JsonDocument doc;
+    doc["_type"] = "v1simple_backup";
+    doc["brightness"] = 88;
+    JsonObject incoming = doc["profiles"].to<JsonArray>().add<JsonObject>();
+    incoming["name"] = "Road";
+    JsonArray bytes = incoming["bytes"].to<JsonArray>();
+    for (int index = 0; index < 6; ++index) bytes.add(static_cast<uint8_t>(20 + index));
+
+    manager.utFailRestoreApplyStagingAllocation(true);
+    const SettingsBackupApplyResult result = manager.applyBackupDocument(doc, true);
+    TEST_ASSERT_FALSE(result.success);
+    TEST_ASSERT_EQUAL_UINT8(33, manager.get().brightness);
+    TEST_ASSERT_FALSE(fs.exists("/v1restore_transaction.json"));
+    TEST_ASSERT_FALSE(fs.exists("/v1profiles/Road.json"));
+}
+
 void assert_interrupted_restore_after_credentials_recovers(bool sd) {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, sd);
@@ -5435,6 +5458,7 @@ int main() {
     RUN_TEST(test_gps_http_rejects_actual_nvs_failure_and_skips_live_apply);
     RUN_TEST(test_obd_http_rejects_actual_nvs_failure_and_rolls_back_reboot_state);
     RUN_TEST(test_not_ready_profile_catalog_is_unsafe_for_http_and_first_sd_backup);
+    RUN_TEST(test_restore_staging_allocation_failure_precedes_new_transaction_mutation);
     RUN_TEST(test_interrupted_restore_after_credentials_reboots_to_old_settings_and_secret);
     RUN_TEST(test_restore_transaction_journal_is_mirrored_and_cleared_on_recovery);
     RUN_TEST(test_restore_recovery_uses_valid_mirror_when_primary_journal_exceeds_catalog_cap);

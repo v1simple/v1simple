@@ -1039,6 +1039,22 @@ void test_catalog_collection_allocation_failures_return_unavailable_without_thro
     TEST_ASSERT_EQUAL_STRING("durable", durable.description.c_str());
 }
 
+void test_save_scratch_allocation_failure_precedes_new_save_files() {
+    fs::FS fs(g_tempRoot);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&fs));
+
+    manager.utFailAllocation(V1ProfileAllocationFailurePoint::SaveScratch);
+    const ProfileSaveResult result = manager.saveProfile(makeProfile("Road", 10, "candidate"));
+    TEST_ASSERT_FALSE(result.success);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::IoError),
+                          static_cast<int>(result.status));
+    TEST_ASSERT_EQUAL_STRING("Profile save scratch memory unavailable", result.error.c_str());
+    TEST_ASSERT_FALSE(fs.exists("/v1profiles/Road.json"));
+    TEST_ASSERT_FALSE(fs.exists("/v1profiles/Road.json.tmp"));
+    TEST_ASSERT_FALSE(fs.exists("/v1profiles/Road.json.meta"));
+}
+
 void test_littlefs_fallback_edits_and_deletion_reconcile_without_resurrection() {
     const std::filesystem::path sdRoot = g_tempRoot / "sd";
     const std::filesystem::path littleRoot = g_tempRoot / "little";
@@ -1354,6 +1370,7 @@ int main() {
     RUN_TEST(test_profile_name_contract_rejects_hidden_long_blank_and_canonical_collisions);
     RUN_TEST(test_sd_contention_returns_busy_for_every_profile_transaction);
     RUN_TEST(test_catalog_collection_allocation_failures_return_unavailable_without_throw_or_mutation);
+    RUN_TEST(test_save_scratch_allocation_failure_precedes_new_save_files);
     RUN_TEST(test_littlefs_fallback_edits_and_deletion_reconcile_without_resurrection);
     RUN_TEST(test_equal_generation_divergence_converges_to_offline_fallback_edit);
     RUN_TEST(test_corrupt_newer_profile_cannot_replace_valid_older_mirror);

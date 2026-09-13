@@ -806,7 +806,7 @@
           <div class="install-options">
             <section class="install-option" aria-labelledby="preserve-title">
               <h3 id="preserve-title">Update firmware — preserve device data</h3>
-              <p>Writes only the app partition. NVS settings, saved Wi-Fi networks, internal fallback profiles, and the existing LittleFS web interface are not part of this update image. Because it deliberately leaves the web interface unchanged, use the fresh-install path if those files also need replacement.</p>
+              <p>Writes only the app partition. NVS settings, saved Wi-Fi networks, internal fallback profiles, and the existing LittleFS web interface are not part of this update image. Supported older profile and Auto-Push data is migrated automatically at boot; do not erase the device just to upgrade it. Because this path deliberately leaves the web interface unchanged, use the fresh-install path if those files also need replacement.</p>
               <p class="choice-warning">Leave “Erase device” off in ESP Web Tools. Checking “Erase device” changes this into a destructive erase.</p>
               <esp-web-install-button manifest="manifest-update.json" data-install-mode="preserve">
                 <button slot="activate" type="button"><span>Update and preserve data</span><span aria-hidden="true">→</span></button>

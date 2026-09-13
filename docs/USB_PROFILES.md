@@ -59,6 +59,49 @@ readback rules; its proof-safe post-send boundaries can report a timeout rather
 than accept a response that may be stale. An error or uncertain commit ACK is
 never reported as success, and the before-backup remains available for recovery.
 
+## Upgrading existing device data
+
+Normal users should preserve device data when updating and should not delete or
+reset valid profiles first. On each boot with profile storage available, the
+firmware checks the stored schema and automatically retries any required
+conversion. Migration is deterministic and atomic: the existing valid catalog,
+Auto-Push enabled state and active slot are retained, as are each slot's name,
+color, alert persistence and priority-arrow choice.
+
+Legacy version-1 data stored detector behavior partly on each Auto-Push slot.
+Migration moves the effective behavior into profiles. Slots that shared a source
+profile and effective commands continue to share it; when their effective
+commands differ, distinct deterministic variants are created. Slots without a
+catalog source are grouped by their effective commands. The first distinct
+configuration creates a safe `Auto-Push Slot N` profile named for that slot;
+later no-source slots with identical effective commands share it. Different
+configurations create separate deterministic profiles, with a deterministic
+collision suffix when a generated name is already used. Their six user bytes
+default to no user-byte change, and only detector choices explicitly present in
+the old slots are carried forward. Existing catalog profiles remain in the
+catalog.
+
+Version-2 profiles are converted to version 3 before commit. Their existing
+user bytes, mode, display and volume behavior are retained. The new volume
+feedback policy is `none`, disconnect policy is `restore_saved`, and the
+Bluetooth indicator follows the old display-off choice (`off` when display was
+off, otherwise `unchanged`). Custom-frequency policy is `unchanged`. In version
+3, `unchanged` is an explicit instruction not to invent or send a value; it is
+not missing or corrupt data.
+
+The update can recover from a valid SD or internal LittleFS profile mirror and
+uses mirrored transaction records to resolve interrupted restore or migration
+work. A backup with an invalid CRC, malformed profile or invalid reference is
+ignored rather than applied. Before clearing a current-schema slot reference
+that is absent from the available catalog, startup first attempts recovery from
+valid current and previous backups. It clears the reference only after the
+catalog is confirmed available and nonempty and the profile is still not found;
+storage I/O failure or an unavailable/empty catalog leaves the reference intact.
+
+This conversion changes stored ownership only. It does not itself send detector
+commands or prove detector, RF, display or audio behavior. A later Auto-Push
+operation has its own application and readback evidence.
+
 The current export is schema version 3. Its root contains exactly
 `format: "v1simple-profiles"`, `version: 3`, `autoPushEnabled`, `activeSlot`,
 `slots` and `profiles`; network credentials and unrelated device settings are
@@ -94,4 +137,10 @@ transactional delete path so they can be pruned without silent loss. New saves,
 complete export/import, migration and live Apply are blocked with a capacity or
 migration-pending error until the catalog is reduced to 10 and deterministic
 migration completes. A full-catalog rename remains count-preserving and does not
-temporarily create an unjournaled eleventh profile.
+temporarily create an unjournaled eleventh profile. Enter maintenance, open the
+Profiles page and delete unused profiles until the converted catalog—including
+any generated slot variants—can fit within 10. Restart into normal or
+maintenance mode after pruning so automatic migration retries; if it remains
+pending, delete another unused profile and restart. Existing saved Auto-Push
+slots remain available while migration is pending; erasing or factory-resetting
+the device is not required.

@@ -68,6 +68,30 @@ release **BOOT** after about four seconds to reboot into maintenance mode. Join
 the default `V1-Simple` network with `setupv1simple`, open
 `http://192.168.35.5`, and change that default password during first setup.
 
+### Upgrading to 2.2.0
+
+Use the app-only update path to keep device data. A normal upgrade does not
+require deleting profiles, resetting settings or erasing storage. On the first
+boot with profile storage available, firmware automatically and atomically
+converts supported older profile and Auto-Push data. It keeps the valid profile
+catalog, slot presentation and alert choices, enabled state and active slot.
+Legacy slot-owned detector behavior becomes profile-owned; where necessary,
+the migration creates deterministic profile variants. For slots without a
+catalog source, the first distinct effective command set creates a
+collision-safe `Auto-Push Slot N` profile; later identical slots share it, while
+different commands create separate profiles.
+
+Recovery uses only valid stored mirrors and transaction records. Corrupt data
+is not applied, and interrupted work is retried or safely resolved at boot. If
+an older catalog has more than 10 profiles, use the maintenance Profiles page
+to delete enough unused entries for the converted catalog and any generated
+variants to fit within 10, then restart so migration can finish; do not
+factory-reset the device. See
+[USB profile backup and restore](docs/USB_PROFILES.md#upgrading-existing-device-data)
+for the exact conversion, recovery and capacity behavior. This storage
+migration does not prove that a detector received commands or that RF/display
+behavior was verified.
+
 ## Verify a change
 
 Install and verify the fail-closed privacy boundary once per clone before making

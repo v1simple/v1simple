@@ -164,11 +164,11 @@ RAW_PATCHED = """    // v1simple-webserver-exact-body-v2: a registered project r
 
 def fail(message: str) -> None:
     print(f"[patch_arduino_webserver_body] ERROR: {message}")
-    env.Exit(1)
+    env.Exit(1)  # noqa: F821
 
 
 source = (
-    Path(env.PioPlatform().get_package_dir("framework-arduinoespressif32") or "")
+    Path(env.PioPlatform().get_package_dir("framework-arduinoespressif32") or "")  # noqa: F821
     / "libraries"
     / "WebServer"
     / "src"

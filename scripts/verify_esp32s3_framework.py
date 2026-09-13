@@ -362,7 +362,7 @@ def configure_scons() -> None:
 
     env.AddPostAction(  # noqa: F821
         "$BUILD_DIR/${PROGNAME}.elf",
-        env.VerboseAction(
+        env.VerboseAction(  # noqa: F821
             verify_after_link,
             "Verifying linked ESP IPC stack and exact WebServer body-ingress contracts",
         ),  # noqa: F821

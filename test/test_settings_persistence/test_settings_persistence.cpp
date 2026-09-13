@@ -366,27 +366,12 @@ void test_fresh_nvs_load_matches_authoritative_constructor_defaults() {
     TEST_ASSERT_EQUAL_UINT(0u, mock_preferences::missingStringReadCount(kNvsLastConnectedV1Address));
 }
 
-void test_empty_wifi_slot_backup_is_not_an_automatic_recovery_source() {
-    JsonDocument doc;
-    JsonArray slots = doc["wifiStaSlots"].to<JsonArray>();
-
-    TEST_ASSERT_FALSE(hasRestorableWifiStaSlots(doc));
-
-    JsonObject emptySlot = slots.add<JsonObject>();
-    emptySlot["index"] = 0;
-    emptySlot["ssid"] = "";
-    TEST_ASSERT_FALSE(hasRestorableWifiStaSlots(doc));
-
+void test_clearing_absent_wifi_slot_secrets_is_idempotent() {
     clearWifiStaSlotPasswordsForRestore(storage, false);
     for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
         TEST_ASSERT_EQUAL_UINT(0u, mock_preferences::missingRemoveCount(kNvsWifiStaSlotPassword[i]));
     }
     TEST_ASSERT_EQUAL_UINT(0u, mock_preferences::missingRemoveCount(kNvsWifiPassword));
-
-    JsonObject configuredSlot = slots.add<JsonObject>();
-    configuredSlot["index"] = 1;
-    configuredSlot["ssid"] = "FixtureNet";
-    TEST_ASSERT_TRUE(hasRestorableWifiStaSlots(doc));
 }
 
 void test_configured_wifi_slot_missing_priority_uses_slot_index() {
@@ -5359,7 +5344,7 @@ int main() {
     RUN_TEST(test_interrupted_littlefs_restore_after_credentials_recovers);
     RUN_TEST(test_restore_sd_secret_removal_failure_preserves_old_pair);
     RUN_TEST(test_fresh_nvs_load_matches_authoritative_constructor_defaults);
-    RUN_TEST(test_empty_wifi_slot_backup_is_not_an_automatic_recovery_source);
+    RUN_TEST(test_clearing_absent_wifi_slot_secrets_is_idempotent);
     RUN_TEST(test_configured_wifi_slot_missing_priority_uses_slot_index);
     RUN_TEST(test_absent_auto_push_key_uses_authoritative_default);
     RUN_TEST(test_wifi_client_enabled_setter_updates_enabled_state);

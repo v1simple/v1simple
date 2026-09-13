@@ -140,6 +140,7 @@ run_step "Memory headroom regression suite" python3 scripts/test_check_memory_he
 run_step "Build reset regression suite" python3 scripts/test_build_reset.py
 run_step "ESP32-S3 framework contract regression suite" python3 scripts/test_verify_esp32s3_framework.py
 run_step "Car firmware CI contract regression suite" python3 scripts/test_ci_car_build_contract.py
+run_step "Production warning contract regression suite" python3 scripts/test_production_warning_contract.py
 run_step "Tracked source state regression suite" python3 scripts/test_check_tracked_source_state.py
 
 section "Privacy"

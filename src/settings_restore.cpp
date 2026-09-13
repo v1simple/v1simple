@@ -10,19 +10,6 @@
 
 namespace {
 
-bool hasRestorableWifiStaSlots(const JsonDocument& doc) {
-    if (!doc["wifiStaSlots"].is<JsonArrayConst>()) return false;
-    for (JsonObjectConst slot : doc["wifiStaSlots"].as<JsonArrayConst>()) {
-        if (!slot["index"].is<int>() || slot["index"].as<int>() < 0 ||
-            slot["index"].as<int>() >= static_cast<int>(kWifiStaSlotCount)) continue;
-        String ssid;
-        if (exactV1JsonStringChecked(slot["ssid"], ssid, MAX_WIFI_SSID_LEN) !=
-            ExactV1JsonStringStatus::Valid) continue;
-        if (ssid.length() > 0) return true;
-    }
-    return false;
-}
-
 enum class ProfileRecoveryStatus : uint8_t { Restored, NotFound, Invalid, Unavailable };
 
 ProfileRecoveryStatus restoreProfileEntryFromBackup(const JsonDocument& backup, const String& canonicalName,

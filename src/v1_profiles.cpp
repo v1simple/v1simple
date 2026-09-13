@@ -679,12 +679,6 @@ bool checkedStringFromBytes(const char* bytes, size_t length, String& output) {
            (length == 0 || std::memcmp(output.c_str(), bytes, length) == 0);
 }
 
-bool checkedStringFromCString(const char* text, String& output, size_t maxLength = 256) {
-    if (!text) return false;
-    const size_t length = strnlen(text, maxLength + 1u);
-    return length <= maxLength && checkedStringFromBytes(text, length, output);
-}
-
 bool buildProfilePathChecked(const String& directory, const String& name, String& output) {
     const size_t expected = directory.length() + 1u + name.length() + sizeof(".json") - 1u;
     String candidate;
@@ -853,14 +847,6 @@ void V1ProfileManager::bumpCatalogRevision() {
         return;
     }
     catalogRevisionCounter_++;
-}
-
-static String basenameFromPath(const String& path) {
-    int lastSlash = path.lastIndexOf('/');
-    if (lastSlash >= 0) {
-        return path.substring(lastSlash + 1);
-    }
-    return path;
 }
 
 bool V1ProfileManager::recoverInterruptedSavesUnlocked() {

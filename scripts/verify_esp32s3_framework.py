@@ -22,7 +22,7 @@ EXPECTED = {
     "sdkconfig_sha256": "9918badd7ca474090cc8bc86d1437163b4a793f58d4c6eaffba3923f1c5b0966",
     "esp_system_archive_sha256": "3fa34619defd0e4718dac29a93673652a3ad495b2d5551f381d1c78af92c9d38",
     "versions_sha256": "bb0ce8cff5cdfc1abb17666e4e37ec85d8fff148f4e19cba8e3a5d76c1d662ed",
-    "webserver_parsing_sha256": "c43c6827b6ccdf198d6150bddf0b627683e4bdd6d51e957e03df5e1b7ad0db52",
+    "webserver_parsing_sha256": "74387b5923e880dbd09198e6d3521352b4f1b6cc196a10021862ed466a8cd708",
     "ipc_stack_bytes": 2048,
 }
 

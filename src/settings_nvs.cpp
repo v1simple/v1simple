@@ -7,6 +7,7 @@
 #include "json_exact_input.h"
 #include "psram_json_document.h"
 #include "settings_backup_doc.h"
+#include <nvs.h>
 
 // --- NVS recovery, crypto, WiFi SD secret helpers ---
 
@@ -1385,12 +1386,67 @@ struct SettingsNamespaceState {
     }
 };
 
+enum class SettingsNvsProbeState : uint8_t {
+    Present,
+    NotFound,
+    Error,
+};
+
+struct SettingsNvsProbeResult {
+    SettingsNvsProbeState state = SettingsNvsProbeState::Error;
+    esp_err_t error = ESP_ERR_INVALID_ARG;
+};
+
+#ifdef UNIT_TEST
+size_t g_settingsNvsProbeErrorCountForTest = 0;
+#endif
+
+SettingsNvsProbeResult classifySettingsNvsProbe(esp_err_t status, const char* operation,
+                                                const char* ns, const char* key = nullptr) {
+    if (status == ESP_OK) return {SettingsNvsProbeState::Present, status};
+    if (status == ESP_ERR_NVS_NOT_FOUND) return {SettingsNvsProbeState::NotFound, status};
+    Serial.printf("[Settings] ERROR: NVS %s probe failed namespace=%s key=%s: %s (0x%x)\n",
+                  operation, ns ? ns : "(null)", key ? key : "(none)", esp_err_to_name(status),
+                  static_cast<unsigned>(status));
+#ifdef UNIT_TEST
+    ++g_settingsNvsProbeErrorCountForTest;
+#endif
+    return {SettingsNvsProbeState::Error, status};
+}
+
+SettingsNvsProbeResult probeSettingsNamespace(const char* ns) {
+    if (!ns || ns[0] == '\0') {
+        return classifySettingsNvsProbe(ESP_ERR_INVALID_ARG, "namespace", ns);
+    }
+    nvs_handle_t handle = 0;
+    const esp_err_t status = nvs_open(ns, NVS_READONLY, &handle);
+    if (status == ESP_OK) {
+        nvs_close(handle);
+    }
+    return classifySettingsNvsProbe(status, "namespace", ns);
+}
+
+SettingsNvsProbeResult probeSettingsString(const char* ns, const char* key) {
+    if (!ns || ns[0] == '\0' || !key || key[0] == '\0') {
+        return classifySettingsNvsProbe(ESP_ERR_INVALID_ARG, "string", ns, key);
+    }
+    nvs_handle_t handle = 0;
+    esp_err_t status = nvs_open(ns, NVS_READONLY, &handle);
+    if (status == ESP_OK) {
+        size_t length = 0;
+        status = nvs_get_str(handle, key, nullptr, &length);
+        nvs_close(handle);
+    }
+    return classifySettingsNvsProbe(status, "string", ns, key);
+}
+
 SettingsNamespaceState readSettingsNamespaceState(const char* ns) {
     SettingsNamespaceState state;
+    if (!ns || ns[0] == '\0') return state;
+    const SettingsNvsProbeResult namespaceProbe = probeSettingsNamespace(ns);
+    if (namespaceProbe.state == SettingsNvsProbeState::NotFound) return state;
     Preferences prefs;
-    if (!ns || ns[0] == '\0' || !prefs.begin(ns, true)) {
-        return state;
-    }
+    if (!prefs.begin(ns, true)) return state;
 
     const int nvsMarker = prefs.getInt(kNvsValid, 0);
     const int settingsVersion = prefs.getInt(kNvsSettingsVer, 0);
@@ -1415,9 +1471,12 @@ SettingsNamespaceState readSettingsNamespaceState(const char* ns) {
     mix(prefs.getUChar(kNvsBrightness, 0));
     mix(prefs.getBool(kNvsProxyBle, false) ? 1u : 0u);
     mix(prefs.getBool(kNvsAutoPush, false) ? 1u : 0u);
-    const String proxyName = prefs.getString(kNvsProxyName, "");
-    for (size_t i = 0; i < proxyName.length(); ++i) {
-        mix(static_cast<uint8_t>(proxyName[i]));
+    const SettingsNvsProbeResult proxyNameProbe = probeSettingsString(ns, kNvsProxyName);
+    if (proxyNameProbe.state != SettingsNvsProbeState::NotFound) {
+        const String proxyName = prefs.getString(kNvsProxyName, "");
+        for (size_t i = 0; i < proxyName.length(); ++i) {
+            mix(static_cast<uint8_t>(proxyName[i]));
+        }
     }
     prefs.end();
     return state;
@@ -1489,10 +1548,17 @@ String SettingsManager::getActiveNamespace(uint32_t* activeGeneration) {
         *activeGeneration = 0;
     }
     String active = "";
-    Preferences meta;
-    if (meta.begin(SETTINGS_NS_META, true)) {
-        active = meta.getString(kNvsMetaActive, "");
-        meta.end();
+    const SettingsNvsProbeResult metaProbe = probeSettingsNamespace(SETTINGS_NS_META);
+    if (metaProbe.state != SettingsNvsProbeState::NotFound) {
+        Preferences meta;
+        if (meta.begin(SETTINGS_NS_META, true)) {
+            const SettingsNvsProbeResult activeProbe =
+                probeSettingsString(SETTINGS_NS_META, kNvsMetaActive);
+            if (activeProbe.state != SettingsNvsProbeState::NotFound) {
+                active = meta.getString(kNvsMetaActive, "");
+            }
+            meta.end();
+        }
     }
 
     const SettingsNamespaceState stateA = readSettingsNamespaceState(SETTINGS_NS_A);

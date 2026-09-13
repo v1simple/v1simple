@@ -84,7 +84,17 @@ inline std::unordered_map<std::string, size_t>& missingStringReadCounts() {
     return g_counts;
 }
 
+inline std::unordered_map<std::string, size_t>& stringReadCounts() {
+    static std::unordered_map<std::string, size_t> g_counts;
+    return g_counts;
+}
+
 inline std::unordered_map<std::string, size_t>& missingRemoveCounts() {
+    static std::unordered_map<std::string, size_t> g_counts;
+    return g_counts;
+}
+
+inline std::unordered_map<std::string, size_t>& readOnlyBeginCounts() {
     static std::unordered_map<std::string, size_t> g_counts;
     return g_counts;
 }
@@ -98,7 +108,9 @@ inline void reset() {
     failStringReadKey().clear();
     entryLimit() = 0;
     missingStringReadCounts().clear();
+    stringReadCounts().clear();
     missingRemoveCounts().clear();
+    readOnlyBeginCounts().clear();
 }
 
 inline void set_fail_writes(bool enabled) {
@@ -130,9 +142,19 @@ inline size_t missingStringReadCount(const char* key) {
     return it == missingStringReadCounts().end() ? 0 : it->second;
 }
 
+inline size_t stringReadCount(const char* key) {
+    const auto it = stringReadCounts().find(key ? key : "");
+    return it == stringReadCounts().end() ? 0 : it->second;
+}
+
 inline size_t missingRemoveCount(const char* key) {
     const auto it = missingRemoveCounts().find(key ? key : "");
     return it == missingRemoveCounts().end() ? 0 : it->second;
+}
+
+inline size_t readOnlyBeginCount(const char* name) {
+    const auto it = readOnlyBeginCounts().find(name ? name : "");
+    return it == readOnlyBeginCounts().end() ? 0 : it->second;
 }
 
 inline NamespaceStore& ensureNamespace(const std::string& name) {
@@ -251,6 +273,9 @@ public:
     Preferences() = default;
 
     bool begin(const char* name, bool readOnly = false, const char* /*partition_label*/ = nullptr) {
+        if (readOnly && name) {
+            ++mock_preferences::readOnlyBeginCounts()[name];
+        }
         if (!name || name[0] == '\0' ||
             (!mock_preferences::failBeginNamespace().empty() &&
              mock_preferences::failBeginNamespace() == name) ||
@@ -358,6 +383,9 @@ public:
     }
 
     String getString(const char* key, const String& defaultValue = String()) const {
+        if (started_ && key) {
+            ++mock_preferences::stringReadCounts()[key];
+        }
         if (started_ && key && !mock_preferences::namespaceHasKey(namespaceName_.c_str(), key)) {
             ++mock_preferences::missingStringReadCounts()[key];
         }

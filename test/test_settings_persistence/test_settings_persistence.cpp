@@ -366,6 +366,103 @@ void test_fresh_nvs_load_matches_authoritative_constructor_defaults() {
     TEST_ASSERT_EQUAL_UINT(0u, mock_preferences::missingStringReadCount(kNvsLastConnectedV1Address));
 }
 
+void test_settings_discovery_quietly_skips_not_found_candidates_without_changing_selection() {
+    writeHealthySettingsCopy(SETTINGS_NS_A, 73, SETTINGS_VERSION);
+    Preferences meta;
+    TEST_ASSERT_TRUE(meta.begin(SETTINGS_NS_META, false));
+    TEST_ASSERT_GREATER_THAN(0, meta.putString(kNvsMetaActive, SETTINGS_NS_A));
+    meta.end();
+    mock_nvs::set_namespace_open_result(SETTINGS_NS_B, ESP_ERR_NVS_NOT_FOUND);
+    mock_nvs::set_namespace_open_result(SETTINGS_NS_LEGACY, ESP_ERR_NVS_NOT_FOUND);
+    const size_t probeErrorsBefore = g_settingsNvsProbeErrorCountForTest;
+
+    SettingsManager manager(storage, profiles);
+    manager.load();
+
+    TEST_ASSERT_EQUAL_UINT8(73, manager.get().brightness);
+    TEST_ASSERT_EQUAL_STRING(SETTINGS_NS_A, activeNamespaceOrEmpty().c_str());
+    TEST_ASSERT_EQUAL_UINT(0u, mock_preferences::readOnlyBeginCount(SETTINGS_NS_B));
+    TEST_ASSERT_EQUAL_UINT(0u, mock_preferences::readOnlyBeginCount(SETTINGS_NS_LEGACY));
+    TEST_ASSERT_EQUAL_UINT(probeErrorsBefore, g_settingsNvsProbeErrorCountForTest);
+}
+
+void test_settings_discovery_quietly_skips_not_found_optional_proxy_name() {
+    writeHealthySettingsCopy(SETTINGS_NS_A, 73, SETTINGS_VERSION);
+    Preferences active;
+    TEST_ASSERT_TRUE(active.begin(SETTINGS_NS_A, false));
+    TEST_ASSERT_TRUE(active.remove(kNvsProxyName));
+    active.end();
+    mock_nvs::set_string_probe_result(
+        SETTINGS_NS_A, kNvsProxyName, ESP_ERR_NVS_NOT_FOUND);
+    const size_t probeErrorsBefore = g_settingsNvsProbeErrorCountForTest;
+
+    TEST_ASSERT_GREATER_THAN(1000, namespaceHealthScore(SETTINGS_NS_A));
+    TEST_ASSERT_EQUAL_UINT(0u, mock_preferences::stringReadCount(kNvsProxyName));
+    TEST_ASSERT_EQUAL_UINT(0u, mock_preferences::missingStringReadCount(kNvsProxyName));
+    TEST_ASSERT_EQUAL_UINT(probeErrorsBefore, g_settingsNvsProbeErrorCountForTest);
+}
+
+void test_settings_discovery_quietly_skips_not_found_meta_selector() {
+    writeHealthySettingsCopy(SETTINGS_NS_LEGACY, 81, SETTINGS_VERSION);
+    Preferences meta;
+    TEST_ASSERT_TRUE(meta.begin(SETTINGS_NS_META, false));
+    TEST_ASSERT_TRUE(meta.clear());
+    meta.end();
+    mock_nvs::set_namespace_open_result(SETTINGS_NS_A, ESP_ERR_NVS_NOT_FOUND);
+    mock_nvs::set_namespace_open_result(SETTINGS_NS_B, ESP_ERR_NVS_NOT_FOUND);
+    mock_nvs::set_string_probe_result(
+        SETTINGS_NS_META, kNvsMetaActive, ESP_ERR_NVS_NOT_FOUND);
+    const size_t probeErrorsBefore = g_settingsNvsProbeErrorCountForTest;
+
+    SettingsManager manager(storage, profiles);
+    const SettingsManager::NvsDiagnostic diagnostic = manager.getNvsDiagnostic();
+    TEST_ASSERT_EQUAL_STRING(SETTINGS_NS_LEGACY, diagnostic.activeNamespace.c_str());
+    TEST_ASSERT_TRUE(diagnostic.healthy);
+    TEST_ASSERT_EQUAL_UINT(0u, mock_preferences::stringReadCount(kNvsMetaActive));
+    TEST_ASSERT_EQUAL_UINT(0u, mock_preferences::missingStringReadCount(kNvsMetaActive));
+    TEST_ASSERT_EQUAL_UINT(probeErrorsBefore, g_settingsNvsProbeErrorCountForTest);
+}
+
+void test_settings_discovery_reports_transient_namespace_probe_error_and_preserves_value() {
+    writeHealthySettingsCopy(SETTINGS_NS_A, 67, SETTINGS_VERSION);
+    Preferences meta;
+    TEST_ASSERT_TRUE(meta.begin(SETTINGS_NS_META, false));
+    TEST_ASSERT_GREATER_THAN(0, meta.putString(kNvsMetaActive, SETTINGS_NS_A));
+    meta.end();
+    mock_nvs::set_namespace_open_result(SETTINGS_NS_B, ESP_ERR_NVS_NOT_FOUND);
+    mock_nvs::set_namespace_open_result(SETTINGS_NS_LEGACY, ESP_ERR_NVS_NOT_FOUND);
+    mock_nvs::set_next_namespace_open_result(SETTINGS_NS_A, -77);
+    const size_t probeErrorsBefore = g_settingsNvsProbeErrorCountForTest;
+
+    SettingsManager manager(storage, profiles);
+    manager.load();
+
+    TEST_ASSERT_EQUAL_UINT8(67, manager.get().brightness);
+    TEST_ASSERT_EQUAL_STRING(SETTINGS_NS_A, activeNamespaceOrEmpty().c_str());
+    TEST_ASSERT_GREATER_THAN(0u, mock_preferences::readOnlyBeginCount(SETTINGS_NS_A));
+    TEST_ASSERT_EQUAL_UINT(probeErrorsBefore + 1u, g_settingsNvsProbeErrorCountForTest);
+}
+
+void test_settings_discovery_reports_persistent_namespace_open_failure() {
+    mock_nvs::set_namespace_open_result(SETTINGS_NS_B, -78);
+    mock_preferences::set_fail_begin_for_namespace(SETTINGS_NS_B);
+    const size_t probeErrorsBefore = g_settingsNvsProbeErrorCountForTest;
+
+    TEST_ASSERT_EQUAL_INT(-1, namespaceHealthScore(SETTINGS_NS_B));
+    TEST_ASSERT_EQUAL_UINT(1u, mock_preferences::readOnlyBeginCount(SETTINGS_NS_B));
+    TEST_ASSERT_EQUAL_UINT(probeErrorsBefore + 1u, g_settingsNvsProbeErrorCountForTest);
+}
+
+void test_settings_discovery_reports_string_probe_error_and_preserves_value_read() {
+    writeHealthySettingsCopy(SETTINGS_NS_A, 59, SETTINGS_VERSION);
+    mock_nvs::set_next_string_probe_result(SETTINGS_NS_A, kNvsProxyName, -79);
+    const size_t probeErrorsBefore = g_settingsNvsProbeErrorCountForTest;
+
+    TEST_ASSERT_GREATER_THAN(1000, namespaceHealthScore(SETTINGS_NS_A));
+    TEST_ASSERT_EQUAL_UINT(1u, mock_preferences::stringReadCount(kNvsProxyName));
+    TEST_ASSERT_EQUAL_UINT(probeErrorsBefore + 1u, g_settingsNvsProbeErrorCountForTest);
+}
+
 void test_clearing_absent_wifi_slot_secrets_is_idempotent() {
     clearWifiStaSlotPasswordsForRestore(storage, false);
     for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
@@ -5399,6 +5496,12 @@ int main() {
     RUN_TEST(test_interrupted_littlefs_restore_after_credentials_recovers);
     RUN_TEST(test_restore_sd_secret_removal_failure_preserves_old_pair);
     RUN_TEST(test_fresh_nvs_load_matches_authoritative_constructor_defaults);
+    RUN_TEST(test_settings_discovery_quietly_skips_not_found_candidates_without_changing_selection);
+    RUN_TEST(test_settings_discovery_quietly_skips_not_found_optional_proxy_name);
+    RUN_TEST(test_settings_discovery_quietly_skips_not_found_meta_selector);
+    RUN_TEST(test_settings_discovery_reports_transient_namespace_probe_error_and_preserves_value);
+    RUN_TEST(test_settings_discovery_reports_persistent_namespace_open_failure);
+    RUN_TEST(test_settings_discovery_reports_string_probe_error_and_preserves_value_read);
     RUN_TEST(test_clearing_absent_wifi_slot_secrets_is_idempotent);
     RUN_TEST(test_configured_wifi_slot_missing_priority_uses_slot_index);
     RUN_TEST(test_absent_auto_push_key_uses_authoritative_default);

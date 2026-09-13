@@ -11,8 +11,9 @@ from bench.encounter_expectation import (FIELDS, EncounterEvidenceError,
     build_encounter_timeline, compare_sample, encounter_expectation_at)
 
 
-def packet(packet_id, payload):
-    raw = bytes([0xAA, 0xD8, 0xEA, packet_id, len(payload) + 1, *payload])
+def packet(packet_id, payload, *, targeted=False):
+    destination = 0xD6 if targeted else 0xD8
+    raw = bytes([0xAA, destination, 0xEA, packet_id, len(payload) + 1, *payload])
     return (raw + bytes([sum(raw) & 255, 0xAB])).hex()
 
 
@@ -24,8 +25,15 @@ def alert(band="k", frequency=24150, direction="FRONT", rssi=1, priority=True):
 def recording(states):
     """states contain rows and independently specified display payload bytes."""
     scenario = {"schemaVersion": 1, "samples": []}
-    stimuli, delivery = [], []
-    tx = 0
+    version = packet(0x02, b"v4.1038", targeted=True)
+    version_base = dict(schemaVersion=3, globalTxSequence=1, payloadHex=version,
+                        payloadSha256=hashlib.sha256(bytes.fromhex(version)).hexdigest(),
+                        characteristic="B2CE", stimulusSequence=None, emissionOrdinal=None)
+    delivery = [dict(version_base, state="notification_requested", hostMonotonicNs=100_000_000),
+                dict(version_base, state="notification_accepted", hostMonotonicNs=200_000_000,
+                     attemptedHostMonotonicNs=199_000_000)]
+    stimuli = []
+    tx = 1
     for index, (rows, display) in enumerate(states):
         sequence, start = index + 1, (index + 1) * 1_000_000_000
         scenario["samples"].append({"sourceIndex": index, "offsetSeconds": index,
@@ -63,12 +71,13 @@ def single():
     return recording([([alert()], [6, 6, 1, 0x24, 0x24, 12, 12, 0x40])])
 
 
-def add_handshakes(data, entries):
+def add_handshakes(data, entries, *, targeted=True):
     """Add startup packets with explicit request and completion times."""
     for event in data[2]:
-        event["globalTxSequence"] += len(entries)
-    for tx, (packet_id, payload, requested, accepted) in enumerate(entries, 1):
-        raw = packet(packet_id, payload)
+        if event["stimulusSequence"] is not None:
+            event["globalTxSequence"] += len(entries)
+    for tx, (packet_id, payload, requested, accepted) in enumerate(entries, 2):
+        raw = packet(packet_id, payload, targeted=targeted)
         base = dict(schemaVersion=3, globalTxSequence=tx, payloadHex=raw,
                     payloadSha256=hashlib.sha256(bytes.fromhex(raw)).hexdigest(),
                     characteristic="B2CE", stimulusSequence=None, emissionOrdinal=None)
@@ -121,15 +130,15 @@ class EncounterExpectationTests(unittest.TestCase):
 
     def test_startup_handshake_must_finish_before_first_authored_send_attempt(self):
         # The first row is attempted at 1.004999999 s and accepted at 1.005 s.
-        # An overlapping handshake is unsupported even before row acceptance.
+        # Version establishes parser capabilities and may not arrive after any
+        # authored packet has begun sending.
         for accepted in (1_004_999_999, 1_005_000_000, 1_010_000_000):
-            for packet_id, payload in ((0x02, b"v4.1038"), (0x3D, [4, 0, 4, 0])):
-                data = single()
-                add_handshakes(data, [(packet_id, payload, 998_000_000, accepted)])
-                with self.subTest(packet_id=packet_id, accepted=accepted):
-                    with self.assertRaisesRegex(EncounterEvidenceError,
-                                                "unsupported encounter version/volume handshake"):
-                        build_encounter_timeline(*data)
+            data = single()
+            add_handshakes(data, [(0x02, b"v4.1038", 998_000_000, accepted)])
+            with self.subTest(accepted=accepted):
+                with self.assertRaisesRegex(EncounterEvidenceError,
+                                            "unsupported encounter version response"):
+                    build_encounter_timeline(*data)
 
     def test_startup_handshake_format_and_unscoped_requirements_remain_strict(self):
         for packet_id, payload in ((0x02, b"v4.103"), (0x02, b"S4.1038"),
@@ -138,7 +147,7 @@ class EncounterExpectationTests(unittest.TestCase):
             add_handshakes(data, [(packet_id, payload, 998_000_000, 1_002_000_000)])
             with self.subTest(packet_id=packet_id, payload=payload):
                 with self.assertRaisesRegex(EncounterEvidenceError,
-                                            "unsupported encounter version/volume handshake"):
+                                            "unsupported encounter (version|all-volume) response"):
                     build_encounter_timeline(*data)
         data = single()
         add_handshakes(data, [(0x02, b"v4.1038", 998_000_000, 1_002_000_000)])
@@ -146,6 +155,68 @@ class EncounterExpectationTests(unittest.TestCase):
             if event["globalTxSequence"] == 1:
                 event.update(stimulusSequence=1, emissionOrdinal=0)
         with self.assertRaisesRegex(EncounterEvidenceError, "planned/delivered packet mismatch"):
+            build_encounter_timeline(*data)
+
+    def test_retained_startup_order_allows_late_matching_volume_and_user_bytes(self):
+        # The retained failed run delivered version, then the first authored
+        # row/display, then all-volume and user bytes. Those direct replies are
+        # display-safe only after their exact shapes and volume agreement are
+        # established.
+        data = single()
+        add_handshakes(data, [
+            (0x3D, [4, 0, 4, 0], 1_016_000_000, 1_017_000_000),
+            (0x12, [0, 0, 0, 0, 255, 255], 1_018_000_000, 1_019_000_000),
+        ])
+        expected = self.expected(data)
+        self.assertTrue(expected["input"]["ready"])
+        baseline = self.expected()
+        for key in ("fields", "joint_states", "secondary_policy"):
+            self.assertEqual(expected[key], baseline[key])
+
+    def test_late_volume_binds_to_request_time_authored_display(self):
+        states = [([alert()], [6, 6, 1, 0x24, 0x24, 12, 12, 0x40]),
+                  ([alert()], [6, 6, 1, 0x24, 0x24, 12, 12, 0x72])]
+        data = recording(states)
+        add_handshakes(data, [(0x3D, [7, 2, 4, 0], 2_002_000_000, 2_016_000_000)])
+        self.assertEqual(build_encounter_timeline(*data)["states"][1]["display"]["mute_volume"], 2)
+
+        data = recording(states)
+        add_handshakes(data, [(0x3D, [4, 0, 4, 0], 2_002_000_000, 2_016_000_000)])
+        with self.assertRaisesRegex(EncounterEvidenceError,
+                                    "all-volume response conflicts with applicable authored display"):
+            build_encounter_timeline(*data)
+
+        data = single()
+        add_handshakes(data, [(0x3D, [7, 2, 7, 2], 300_000_000, 400_000_000)])
+        with self.assertRaisesRegex(EncounterEvidenceError,
+                                    "all-volume response conflicts with applicable authored display"):
+            build_encounter_timeline(*data)
+
+    def test_configuration_responses_remain_exact_and_fail_closed(self):
+        cases = [
+            ([(0x12, [0] * 5, 300_000_000, 400_000_000)], True,
+             "unsupported encounter user-bytes response"),
+            ([(0x38, [4, 0], 300_000_000, 400_000_000)], True,
+             "unsupported accepted encounter packet"),
+            ([(0x12, [0] * 6, 300_000_000, 400_000_000)], False,
+             "unsupported encounter configuration response"),
+        ]
+        for entries, targeted, message in cases:
+            data = single()
+            add_handshakes(data, entries, targeted=targeted)
+            with self.subTest(entries=entries, targeted=targeted):
+                with self.assertRaisesRegex(EncounterEvidenceError, message):
+                    build_encounter_timeline(*data)
+
+        data = single()
+        data = (data[0], data[1], [event for event in data[2]
+                                   if event["payloadHex"][6:8] != "02"])
+        with self.assertRaisesRegex(EncounterEvidenceError, "missing encounter version response"):
+            build_encounter_timeline(*data)
+
+        data = single()
+        add_handshakes(data, [(0x02, b"v4.1039", 300_000_000, 400_000_000)])
+        with self.assertRaisesRegex(EncounterEvidenceError, "changed encounter version response"):
             build_encounter_timeline(*data)
 
     def test_wrong_live_field_survives_other_unreadable_fields(self):
@@ -368,7 +439,8 @@ class EncounterExpectationTests(unittest.TestCase):
             data = recording([([alert()], [6, 6, 1, 0x24, 0x24, 12, 12, 0x40])] * 2)
             extra = {key: value for key, value in data[2][-1].items()
                      if key not in ("state", "hostMonotonicNs", "attemptedHostMonotonicNs")}
-            extra.update(globalTxSequence=5, stimulusSequence=None, emissionOrdinal=None)
+            extra.update(globalTxSequence=max(event["globalTxSequence"] for event in data[2]) + 1,
+                         stimulusSequence=None, emissionOrdinal=None)
             data[2].extend([dict(extra, state="notification_requested", hostMonotonicNs=request),
                             dict(extra, state="notification_accepted", hostMonotonicNs=accepted,
                                  attemptedHostMonotonicNs=accepted - 1)])

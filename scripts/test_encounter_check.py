@@ -157,6 +157,16 @@ class EncounterCheckTests(unittest.TestCase):
         fixture = existing_counter_tests.CounterCheckTests()
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
+        raw = bytes.fromhex("AAD6EA020876342E3130333818AB")
+        tx = max(record["globalTxSequence"] for record in fixture.delivery) + 1
+        base = dict(schemaVersion=3, globalTxSequence=tx, payloadHex=raw.hex(),
+                    payloadSha256=hashlib.sha256(raw).hexdigest(), characteristic="B2CE",
+                    stimulusSequence=None, emissionOrdinal=None)
+        fixture.delivery.extend([
+            dict(base, state="notification_requested", hostMonotonicNs=100_000_000),
+            dict(base, state="notification_accepted", hostMonotonicNs=200_000_000,
+                 attemptedHostMonotonicNs=199_000_000),
+        ])
         timing = dict(status="verified", timestamp_error_count=0, missing_encoded_frame_count=0,
                       extra_encoded_frame_count=0, duration_mismatch_count=0,
                       written_frame_count=3, encoded_frame_count=3, source_frame_count=3)

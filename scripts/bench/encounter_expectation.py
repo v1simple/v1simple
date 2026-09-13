@@ -80,9 +80,13 @@ def _display(hex_text):
         phases.append({"counter_glyph": _GLYPHS[glyph & 127],
                        "active_bands": [label for bit, label in _BANDS.items() if searching and mask & bit],
                        "main_arrows": [label for bit, label in _DIRECTIONS.items() if searching and mask & bit]})
+    # V1Protocol.DisplayFrame and packet_parser.cpp agree that the
+    # v4.1028+ infDisplayData Aux2 byte carries current main in the high nibble
+    # and current muted volume in the low nibble.
     return {"phases": phases, "main_bars": min(6, _LED_BARS[data[2]]),
             "mute_bit": bool(data[3] & 16), "soft_muted": bool(data[5] & 1),
             "system_status": searching, "main_volume": data[7] >> 4,
+            "mute_volume": data[7] & 15,
             "image1": data[3], "image2": data[4]}
 
 
@@ -131,19 +135,41 @@ def build_encounter_timeline(scenario, stimulus, delivery):
                            "packet_signature": [n["bytesHex"].lower() for n in notifications]})
         first_authored_attempt_ns = min(event["display_attempted_ns"] for event in timeline["accepted"]
                                         if event["stimulus_sequence"] is not None)
+        version = None
         muted_run = 0
         for event in timeline["accepted"]:
-            if event["packet_id"] in (0x02, 0x3D):
-                # A queued stimulus request can precede completion of replay's
-                # startup handshake. Require the handshake to finish before
-                # any authored packet's successful send attempt: version sets
-                # parser capabilities and volume can affect the idle display.
-                _, packet_id, payload = _packet(event["payload_hex"])
-                valid = (bool(re.fullmatch(rb"[vV][0-9]\.[0-9]{4}", payload)) if packet_id == 0x02
-                         else len(payload) == 4 and all(value <= 9 for value in payload))
-                _require(valid and event["stimulus_sequence"] is None and
-                         event["display_accepted_ns"] < first_authored_attempt_ns,
-                         "unsupported encounter version/volume handshake")
+            if event["packet_id"] in (0x02, 0x12, 0x3D):
+                # These are direct V1 replies to this app, not unsolicited
+                # display information. Keep their accepted wire evidence
+                # narrow enough that an arbitrary unscoped packet cannot be
+                # waved through as harmless startup traffic.
+                raw, packet_id, payload = _packet(event["payload_hex"])
+                _require(event["stimulus_sequence"] is None and raw[1:3] == bytes((0xD6, 0xEA)),
+                         "unsupported encounter configuration response")
+                if packet_id == 0x02:
+                    _require(re.fullmatch(rb"v[0-9]\.[0-9]{4}", payload) is not None
+                             and event["display_accepted_ns"] < first_authored_attempt_ns,
+                             "unsupported encounter version response")
+                    _require(version in (None, payload), "changed encounter version response")
+                    version = payload
+                elif packet_id == 0x12:
+                    _require(len(payload) == 6, "unsupported encounter user-bytes response")
+                else:
+                    _require(len(payload) == 4 and all(value <= 9 for value in payload),
+                             "unsupported encounter all-volume response")
+                    # Session constructs this reply when it requests the
+                    # notification, so bind it to the replay control-state
+                    # snapshot current at that request. Before stimulus one,
+                    # the first authored display is the only state available;
+                    # acceptance can then be delayed without changing the
+                    # reply's meaning.
+                    applicable = [state for state in states
+                                  if state["stimulus_requested_ns"] <= event["display_requested_ns"]]
+                    state = applicable[-1] if applicable else states[0]
+                    display = state["display"]
+                    _require(tuple(payload[:2]) ==
+                             (display["main_volume"], display["mute_volume"]),
+                             "all-volume response conflicts with applicable authored display")
                 continue
             _require(event["packet_id"] in (0x31, 0x43), "unsupported accepted encounter packet")
             if event["packet_id"] == 0x31:
@@ -152,6 +178,7 @@ def build_encounter_timeline(scenario, stimulus, delivery):
                 event["consecutive_muted_displays"] = muted_run
             else:
                 _row(event["payload_hex"])
+        _require(version is not None, "missing encounter version response")
         timeline["states"] = states
         return timeline
     except CounterEvidenceError as error:

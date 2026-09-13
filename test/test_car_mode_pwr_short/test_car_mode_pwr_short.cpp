@@ -190,7 +190,7 @@ void test_car_mode_maintenance_entry_uses_boot_button_not_power_button() {
     const std::string powerSource = readProjectFile("src/modules/power/power_module.cpp");
 
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
-                          driveRuntimeSource.find("void DriveRuntime::requestMaintenanceBootRestart()"));
+                          driveRuntimeSource.find("bool DriveRuntime::requestMaintenanceBootRestart()"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,
                           driveRuntimeSource.find("requestMaintenanceBoot = [](void* context)"));
     TEST_ASSERT_NOT_EQUAL(std::string::npos,

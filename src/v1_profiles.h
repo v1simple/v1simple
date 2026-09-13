@@ -525,8 +525,7 @@ inline bool parseV1DetectorConfigurationV2(JsonObjectConst source, V1DetectorCon
     return true;
 }
 
-inline V1DetectorConfiguration migrateV1DetectorConfigurationV2(const V1DetectorConfiguration& v2) {
-    V1DetectorConfiguration migrated = v2;
+inline void migrateV1DetectorConfigurationV2InPlace(V1DetectorConfiguration& migrated) {
     migrated.volumeFeedback = V1VolumeFeedbackPolicy::None;
     migrated.volumeDisconnect = V1VolumeDisconnectPolicy::RestoreSaved;
     // A v2 display-off request always used the legacy no-Aux packet, which
@@ -536,6 +535,11 @@ inline V1DetectorConfiguration migrateV1DetectorConfigurationV2(const V1Detector
     }
     migrated.customFrequencyPolicy = V1CustomFrequencyPolicy::Unchanged;
     migrated.customFrequencyDefinitions.clear();
+}
+
+inline V1DetectorConfiguration migrateV1DetectorConfigurationV2(const V1DetectorConfiguration& v2) {
+    V1DetectorConfiguration migrated = v2;
+    migrateV1DetectorConfigurationV2InPlace(migrated);
     return migrated;
 }
 

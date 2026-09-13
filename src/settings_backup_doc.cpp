@@ -2970,13 +2970,20 @@ bool SettingsManager::migrateAutoPushProfilesToV2() {
         if (!migrated.success) settings_ = std::move(preMigrationSettings);
         return migrated.success;
     }
+    struct Variant {
+        String sourceName;
+        String effectiveName;
+        V1Profile profile;
+    };
     std::vector<V1Profile> legacyCatalog;
+    std::vector<Variant> variants;
     try {
         // Secure every STL growth needed by legacy migration before changing
         // the local candidate or entering applyBackupDocument(), whose journal
         // makes later failures transactional rather than safely retryable.
         catalog.reserve(V1_PROFILE_CATALOG_MAX_COUNT);
         legacyCatalog.reserve(catalog.size());
+        variants.reserve(3);
     } catch (const std::bad_alloc&) {
         return false;
     }
@@ -2998,14 +3005,6 @@ bool SettingsManager::migrateAutoPushProfilesToV2() {
         profile.schemaVersion = V1_PROFILE_SCHEMA_VERSION;
         profile.detector = V1DetectorConfiguration{};
     }
-
-    struct Variant {
-        String sourceName;
-        String effectiveName;
-        V1Profile profile;
-    };
-    std::array<Variant, 3> variants{};
-    size_t variantCount = 0;
 
     const auto findLegacy = [&](const String& name) -> const V1Profile* {
         for (const V1Profile& profile : legacyCatalog) {
@@ -3078,7 +3077,7 @@ bool SettingsManager::migrateAutoPushProfilesToV2() {
         String sourceKey;
         if (source && !exactStringCopy(source->name, sourceKey)) return false;
         bool reused = false;
-        for (size_t variantIndex = 0; variantIndex < variantCount; ++variantIndex) {
+        for (size_t variantIndex = 0; variantIndex < variants.size(); ++variantIndex) {
             const Variant& variant = variants[variantIndex];
             if (variant.sourceName == sourceKey && sameApplication(variant.profile, effective)) {
                 if (!exactStringCopy(variant.effectiveName, assignedNames[slotIndex])) return false;
@@ -3090,7 +3089,7 @@ bool SettingsManager::migrateAutoPushProfilesToV2() {
 
         String effectiveName;
         const bool firstSourceVariant = [&]() {
-            for (size_t variantIndex = 0; variantIndex < variantCount; ++variantIndex) {
+            for (size_t variantIndex = 0; variantIndex < variants.size(); ++variantIndex) {
                 const Variant& variant = variants[variantIndex];
                 if (variant.sourceName == sourceKey) return false;
             }
@@ -3133,13 +3132,13 @@ bool SettingsManager::migrateAutoPushProfilesToV2() {
             catalog.push_back(effective);
             if (!profileStringFieldsEqual(catalog.back(), effective)) return false;
         }
-        if (variantCount >= variants.size()) return false;
-        Variant& variant = variants[variantCount];
+        if (variants.size() >= 3) return false;
+        variants.emplace_back();
+        Variant& variant = variants.back();
         if (!exactStringCopy(sourceKey, variant.sourceName) ||
             !exactStringCopy(effectiveName, variant.effectiveName)) return false;
         variant.profile = effective;
         if (!profileStringFieldsEqual(variant.profile, effective)) return false;
-        ++variantCount;
         if (variant.sourceName != sourceKey || variant.effectiveName != effectiveName ||
             !profileStringFieldsEqual(variant.profile, effective)) return false;
         if (!exactStringCopy(effectiveName, assignedNames[slotIndex])) return false;

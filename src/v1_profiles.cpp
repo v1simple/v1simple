@@ -13,6 +13,7 @@
 #include <array>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <new>
 #include <utility>
 #include <vector>
@@ -1613,20 +1614,23 @@ ProfileOperationResult V1ProfileManager::loadProfileUnlocked(const String& name,
         }
     }
 
-    V1DetectorConfiguration parsedDetector;
+    std::unique_ptr<V1Profile> parsedProfile(new (std::nothrow) V1Profile(name));
+    if (!parsedProfile || parsedProfile->name.length() != name.length() ||
+        parsedProfile->name != name) {
+        return profileResult(ProfileStorageStatus::IoError, "Profile candidate memory unavailable");
+    }
     if (hasSchema) {
         const uint8_t parsedSchema = static_cast<uint8_t>(schemaVersion.as<int>());
-        V1DetectorConfiguration serializedDetector;
         uint32_t detectorCrc = 0;
         if (!doc["detector"].is<JsonObjectConst>() ||
             !(parsedSchema == V1_PROFILE_SCHEMA_VERSION
-                  ? parseV1DetectorConfiguration(doc["detector"].as<JsonObjectConst>(), serializedDetector)
-                  : parseV1DetectorConfigurationV2(doc["detector"].as<JsonObjectConst>(), serializedDetector)) ||
+                  ? parseV1DetectorConfiguration(doc["detector"].as<JsonObjectConst>(), parsedProfile->detector)
+                  : parseV1DetectorConfigurationV2(doc["detector"].as<JsonObjectConst>(), parsedProfile->detector)) ||
             !doc["detectorCrc32"].is<uint32_t>()) {
             lastError_ = "Invalid detector configuration or CRC";
             return profileResult(ProfileStorageStatus::Corrupt, lastError_);
         }
-        if (!detectorConfigurationCrc(serializedDetector, detectorCrc, parsedSchema)) {
+        if (!detectorConfigurationCrc(parsedProfile->detector, detectorCrc, parsedSchema)) {
             lastError_ = "Detector CRC memory unavailable";
             return profileResult(ProfileStorageStatus::IoError, lastError_);
         }
@@ -1634,9 +1638,9 @@ ProfileOperationResult V1ProfileManager::loadProfileUnlocked(const String& name,
             lastError_ = "Invalid detector configuration or CRC";
             return profileResult(ProfileStorageStatus::Corrupt, lastError_);
         }
-        parsedDetector = parsedSchema == V1_PROFILE_PREVIOUS_SCHEMA_VERSION
-                             ? migrateV1DetectorConfigurationV2(serializedDetector)
-                             : serializedDetector;
+        if (parsedSchema == V1_PROFILE_PREVIOUS_SCHEMA_VERSION) {
+            migrateV1DetectorConfigurationV2InPlace(parsedProfile->detector);
+        }
     }
 
     V1UserSettings parsedLegacySettings;
@@ -1694,14 +1698,9 @@ ProfileOperationResult V1ProfileManager::loadProfileUnlocked(const String& name,
         return profileResult(ProfileStorageStatus::Corrupt, lastError_);
     }
 
-    V1Profile parsedProfile(name);
-    if (parsedProfile.name.length() != name.length() || parsedProfile.name != name) {
-        return profileResult(ProfileStorageStatus::IoError, "Profile name memory unavailable");
-    }
-    parsedProfile.schemaVersion = hasSchema ? V1_PROFILE_SCHEMA_VERSION : 1;
-    parsedProfile.detector = std::move(parsedDetector);
+    parsedProfile->schemaVersion = hasSchema ? V1_PROFILE_SCHEMA_VERSION : 1;
     const ExactV1JsonStringStatus descriptionStatus = exactV1JsonStringChecked(
-        doc["description"], parsedProfile.description, V1_PROFILE_DESCRIPTION_MAX_BYTES);
+        doc["description"], parsedProfile->description, V1_PROFILE_DESCRIPTION_MAX_BYTES);
     if (descriptionStatus == ExactV1JsonStringStatus::Unavailable) {
         lastError_ = "Profile description memory unavailable";
         return profileResult(ProfileStorageStatus::IoError, lastError_);
@@ -1711,21 +1710,21 @@ ProfileOperationResult V1ProfileManager::loadProfileUnlocked(const String& name,
         return profileResult(ProfileStorageStatus::Corrupt, lastError_);
     }
     if (!hasSchema) {
-        parsedProfile.displayOn = parsedLegacyDisplayOn;
-        parsedProfile.mainVolume = parsedLegacyMainVolume;
-        parsedProfile.mutedVolume = parsedLegacyMutedVolume;
+        parsedProfile->displayOn = parsedLegacyDisplayOn;
+        parsedProfile->mainVolume = parsedLegacyMainVolume;
+        parsedProfile->mutedVolume = parsedLegacyMutedVolume;
     }
 
     // Parse settings bytes
     if (!hasSchema) {
-        parsedProfile.settings = parsedLegacySettings;
+        parsedProfile->settings = parsedLegacySettings;
     } else if (hasRawBytes) {
         for (size_t i = 0; i < V1SettingsJson::kSettingsByteCount; i++) {
-            parsedProfile.settings.bytes[i] = rawSettingsBytes[i];
+            parsedProfile->settings.bytes[i] = rawSettingsBytes[i];
         }
     }
 
-    profile = std::move(parsedProfile);
+    profile = std::move(*parsedProfile);
     Serial.printf("[V1Profiles] LOAD success name='%s' path='%s'\n", name.c_str(), path.c_str());
     return profileResult(ProfileStorageStatus::Success);
 }
@@ -2263,13 +2262,12 @@ ProfileOperationResult V1ProfileManager::snapshotProfiles(std::vector<V1Profile>
 #endif
         profiles.reserve(catalog.profiles.size());
         for (const String& name : catalog.profiles) {
-            V1Profile profile;
-            const ProfileOperationResult loaded = loadProfileUnlocked(name, profile);
+            profiles.emplace_back();
+            const ProfileOperationResult loaded = loadProfileUnlocked(name, profiles.back());
             if (!loaded.success()) {
                 profiles.clear();
                 return loaded;
             }
-            profiles.push_back(std::move(profile));
         }
     } catch (const std::bad_alloc&) {
         profiles.clear();

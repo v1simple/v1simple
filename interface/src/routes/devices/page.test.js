@@ -136,6 +136,51 @@ describe('devices route page', () => {
         unmount();
     });
 
+    it('discloses pending mirror sync after the primary name update commits', async () => {
+        installDefaultFetch([
+            {
+                method: 'POST',
+                match: '/api/v1/devices/name',
+                respond: jsonResponse({ success: true, mirrorSyncPending: true }, 202)
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText('Daily Driver');
+        await fireEvent.click(screen.getByRole('button', { name: /^rename$/i }));
+        await fireEvent.input(await screen.findByDisplayValue('Daily Driver'), {
+            target: { value: 'Track Car' }
+        });
+        await fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+
+        await screen.findByText('Device name saved on primary storage; mirror sync is pending.');
+        expect(await screen.findByRole('heading', { name: 'Track Car' })).toBeInTheDocument();
+        expect(screen.queryByText('Device name saved.')).not.toBeInTheDocument();
+
+        unmount();
+    });
+
+    it('discloses pending mirror sync after the primary profile update commits', async () => {
+        installDefaultFetch([
+            {
+                method: 'POST',
+                match: '/api/v1/devices/profile',
+                respond: jsonResponse({ success: true, mirrorSyncPending: true }, 202)
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText('Daily Driver');
+        const select = await screen.findByRole('combobox');
+        await fireEvent.change(select, { target: { value: '1' } });
+
+        await screen.findByText('Default profile saved on primary storage; mirror sync is pending.');
+        expect(select).toHaveValue('1');
+        expect(screen.queryByText('Default profile updated.')).not.toBeInTheDocument();
+
+        unmount();
+    });
+
     it('keeps the device listed when delete fails', async () => {
         installDefaultFetch([
             {
@@ -152,6 +197,27 @@ describe('devices route page', () => {
         await screen.findByText('Failed to remove device.');
         expect(screen.getByText('Daily Driver')).toBeInTheDocument();
         expect(screen.getByRole('button', { name: /^delete$/i })).toBeInTheDocument();
+
+        unmount();
+    });
+
+    it('keeps the device listed while a durable delete operation is pending', async () => {
+        installDefaultFetch([
+            {
+                method: 'POST',
+                match: '/api/v1/devices/delete',
+                respond: jsonResponse({ success: true, operationPending: true }, 202)
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText('Daily Driver');
+        await fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+
+        await screen.findByText('Device removal is pending; recovery will continue automatically.');
+        expect(screen.getByText('Daily Driver')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /^delete$/i })).toBeInTheDocument();
+        expect(screen.queryByText('Device removed.')).not.toBeInTheDocument();
 
         unmount();
     });

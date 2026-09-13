@@ -157,6 +157,7 @@ void V1BLEClient::processConnectedFollowup() {
             connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_USER_BYTES;
             return;
         }
+        beginSessionAllVolumeCapture(latestV1NotificationIngressSequence());
         connectedFollowupNextAttemptMs_ = 0;
         connectedFollowupSendDeadlineMs_ = nowMs + CONNECTED_FOLLOWUP_SEND_TIMEOUT_MS;
         connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_USER_BYTES;
@@ -184,6 +185,7 @@ void V1BLEClient::processConnectedFollowup() {
             connectedFollowupStep_ = ConnectedFollowupStep::NOTIFY_STABLE_CALLBACK;
             return;
         }
+        beginSessionUserBytesCapture(latestV1NotificationIngressSequence());
         settingsCaptureRequestStartedMs_ = nowMs;
         connectedFollowupNextAttemptMs_ = 0;
         connectedFollowupSendDeadlineMs_ = 0;
@@ -203,6 +205,82 @@ void V1BLEClient::processConnectedFollowup() {
             logNonCriticalFollowupFailure(followupRequestUserBytesFailLog_,
                                           "[BLE] Pre-apply snapshot response timed out (snapshot partial)");
         }
+        if (V1FirmwareCompat::capabilities(v1FirmwareVersion()).customSweeps) {
+            connectedFollowupNextAttemptMs_ = 0;
+            connectedFollowupSendDeadlineMs_ = nowMs + CONNECTED_FOLLOWUP_SEND_TIMEOUT_MS;
+            connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_SWEEP_SECTIONS;
+        } else {
+            connectedFollowupStep_ = ConnectedFollowupStep::NOTIFY_STABLE_CALLBACK;
+        }
+        return;
+    }
+    case ConnectedFollowupStep::REQUEST_SWEEP_SECTIONS: {
+        const uint32_t nowMs = static_cast<uint32_t>(millis());
+        if (connectedFollowupNextAttemptMs_ != 0 && static_cast<int32_t>(nowMs - connectedFollowupNextAttemptMs_) < 0) {
+            return;
+        }
+        const SendResult result = sendEmptyPayloadFollowupRequest(*this, PACKET_ID_REQ_SWEEP_SECTIONS);
+        if (result != SendResult::SENT) {
+            if (result == SendResult::NOT_YET && static_cast<int32_t>(nowMs - connectedFollowupSendDeadlineMs_) < 0) {
+                connectedFollowupNextAttemptMs_ = nowMs + CONNECTED_FOLLOWUP_RETRY_MS;
+                return;
+            }
+            settingsCaptureTimedOut_ = true;
+            connectedFollowupStep_ = ConnectedFollowupStep::NOTIFY_STABLE_CALLBACK;
+            return;
+        }
+        beginSessionSweepSectionsCapture(latestV1NotificationIngressSequence());
+        connectedFollowupNextAttemptMs_ = 0;
+        connectedFollowupSendDeadlineMs_ = nowMs + CONNECTED_FOLLOWUP_SEND_TIMEOUT_MS;
+        connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_MAX_SWEEP_INDEX;
+        return;
+    }
+    case ConnectedFollowupStep::REQUEST_MAX_SWEEP_INDEX: {
+        const uint32_t nowMs = static_cast<uint32_t>(millis());
+        if (connectedFollowupNextAttemptMs_ != 0 && static_cast<int32_t>(nowMs - connectedFollowupNextAttemptMs_) < 0) return;
+        const SendResult result = sendEmptyPayloadFollowupRequest(*this, PACKET_ID_REQ_MAX_SWEEP_INDEX);
+        if (result != SendResult::SENT) {
+            if (result == SendResult::NOT_YET && static_cast<int32_t>(nowMs - connectedFollowupSendDeadlineMs_) < 0) {
+                connectedFollowupNextAttemptMs_ = nowMs + CONNECTED_FOLLOWUP_RETRY_MS;
+                return;
+            }
+            settingsCaptureTimedOut_ = true;
+            connectedFollowupStep_ = ConnectedFollowupStep::NOTIFY_STABLE_CALLBACK;
+            return;
+        }
+        beginSessionSweepMaxCapture(latestV1NotificationIngressSequence());
+        connectedFollowupNextAttemptMs_ = 0;
+        connectedFollowupSendDeadlineMs_ = nowMs + CONNECTED_FOLLOWUP_SEND_TIMEOUT_MS;
+        connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_ALL_SWEEP_DEFINITIONS;
+        return;
+    }
+    case ConnectedFollowupStep::REQUEST_ALL_SWEEP_DEFINITIONS: {
+        const uint32_t nowMs = static_cast<uint32_t>(millis());
+        if (connectedFollowupNextAttemptMs_ != 0 && static_cast<int32_t>(nowMs - connectedFollowupNextAttemptMs_) < 0) return;
+        const SendResult result = sendEmptyPayloadFollowupRequest(*this, PACKET_ID_REQ_ALL_SWEEP_DEFINITIONS);
+        if (result != SendResult::SENT) {
+            if (result == SendResult::NOT_YET && static_cast<int32_t>(nowMs - connectedFollowupSendDeadlineMs_) < 0) {
+                connectedFollowupNextAttemptMs_ = nowMs + CONNECTED_FOLLOWUP_RETRY_MS;
+                return;
+            }
+            settingsCaptureTimedOut_ = true;
+            connectedFollowupStep_ = ConnectedFollowupStep::NOTIFY_STABLE_CALLBACK;
+            return;
+        }
+        beginSessionSweepDefinitionsCapture(latestV1NotificationIngressSequence());
+        settingsCaptureRequestStartedMs_ = nowMs;
+        connectedFollowupNextAttemptMs_ = 0;
+        connectedFollowupSendDeadlineMs_ = 0;
+        connectedFollowupStep_ = ConnectedFollowupStep::WAIT_SWEEP_SNAPSHOT;
+        return;
+    }
+    case ConnectedFollowupStep::WAIT_SWEEP_SNAPSHOT: {
+        const uint32_t nowMs = static_cast<uint32_t>(millis());
+        const bool complete = hasSessionSweepSections_ && hasSessionSweepMax_ && hasSessionSweepDefinitions_;
+        const bool timedOut = static_cast<int32_t>(nowMs -
+            (settingsCaptureRequestStartedMs_ + SETTINGS_SNAPSHOT_RESPONSE_TIMEOUT_MS)) >= 0;
+        if (!complete && !timedOut) return;
+        if (!complete) settingsCaptureTimedOut_ = true;
         connectedFollowupStep_ = ConnectedFollowupStep::NOTIFY_STABLE_CALLBACK;
         return;
     }

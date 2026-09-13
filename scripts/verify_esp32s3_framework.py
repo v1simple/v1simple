@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 
 
@@ -21,6 +22,7 @@ EXPECTED = {
     "sdkconfig_sha256": "9918badd7ca474090cc8bc86d1437163b4a793f58d4c6eaffba3923f1c5b0966",
     "esp_system_archive_sha256": "3fa34619defd0e4718dac29a93673652a3ad495b2d5551f381d1c78af92c9d38",
     "versions_sha256": "bb0ce8cff5cdfc1abb17666e4e37ec85d8fff148f4e19cba8e3a5d76c1d662ed",
+    "webserver_parsing_sha256": "c43c6827b6ccdf198d6150bddf0b627683e4bdd6d51e957e03df5e1b7ad0db52",
     "ipc_stack_bytes": 2048,
 }
 
@@ -62,6 +64,7 @@ def verify_framework(platform_dir: Path, arduino_dir: Path, libs_dir: Path, memo
     sdkconfig = selected / "include" / "sdkconfig.h"
     esp_system = selected / "libesp_system.a"
     versions = libs_dir / "esp32s3" / "versions.txt"
+    webserver_parsing = arduino_dir / "libraries" / "WebServer" / "src" / "Parsing.cpp"
 
     versions_found = {
         "platform_version": read_package_version(platform_json),
@@ -87,6 +90,9 @@ def verify_framework(platform_dir: Path, arduino_dir: Path, libs_dir: Path, memo
             esp_system, str(EXPECTED["esp_system_archive_sha256"]), "ESP32-S3 esp_system archive"
         ),
         "versions_sha256": require_hash(versions, str(EXPECTED["versions_sha256"]), "framework versions ledger"),
+        "webserver_parsing_sha256": require_hash(
+            webserver_parsing, str(EXPECTED["webserver_parsing_sha256"]), "hardened WebServer body parser"
+        ),
     }
 
     config_text = sdkconfig.read_text(encoding="utf-8", errors="strict")
@@ -113,31 +119,177 @@ def verify_framework(platform_dir: Path, arduino_dir: Path, libs_dir: Path, memo
     }
 
 
-def verify_linked_elf(elf: Path, objdump: Path) -> dict[str, object]:
-    if not elf.is_file() or not objdump.is_file():
-        raise ContractError("linked ELF or Xtensa objdump is missing")
+def run_tool(command: list[str], label: str) -> str:
     result = subprocess.run(
-        [str(objdump), "-d", "--disassemble=esp_ipc_init", str(elf)],
+        command,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         check=False,
     )
     if result.returncode != 0:
-        raise ContractError(f"objdump could not inspect linked esp_ipc_init (exit {result.returncode})")
-    disassembly = result.stdout
-    if "<esp_ipc_init>:" not in disassembly or "<xTaskCreatePinnedToCore>" not in disassembly:
-        raise ContractError("linked ELF does not expose the expected ESP IPC task creation path")
+        raise ContractError(f"{label} failed (exit {result.returncode})")
+    return result.stdout
+
+
+def symbol_record(symbols: str, name: str) -> tuple[int, str, int]:
+    match = re.search(
+        rf"^([0-9a-fA-F]+)\s+\S+\s+F\s+(\S+)\s+([0-9a-fA-F]+)\s+{re.escape(name)}$",
+        symbols,
+        re.MULTILINE,
+    )
+    if match is None:
+        raise ContractError(f"linked ELF does not expose {name}")
+    return int(match.group(1), 16), match.group(2), int(match.group(3), 16)
+
+
+def object_symbol_record(symbols: str, name: str) -> tuple[int, str, int]:
+    match = re.search(
+        rf"^([0-9a-fA-F]+)\s+\S+\s+O\s+(\S+)\s+([0-9a-fA-F]+)\s+{re.escape(name)}$",
+        symbols,
+        re.MULTILINE,
+    )
+    if match is None:
+        raise ContractError(f"linked ELF does not expose {name}")
+    return int(match.group(1), 16), match.group(2), int(match.group(3), 16)
+
+
+def section_vma(headers: str, name: str) -> int:
+    match = re.search(
+        rf"^\s*\d+\s+{re.escape(name)}\s+[0-9a-fA-F]+\s+([0-9a-fA-F]+)\s+",
+        headers,
+        re.MULTILINE,
+    )
+    if match is None:
+        raise ContractError(f"linked ELF does not expose section {name}")
+    return int(match.group(1), 16)
+
+
+def instruction_texts(disassembly: str) -> list[str]:
+    instructions: list[str] = []
+    for line in disassembly.splitlines():
+        match = re.match(r"^\s*[0-9a-fA-F]+:\s+[0-9a-fA-F]+\s+(.+?\S)\s*$", line)
+        if match is not None:
+            instructions.append(match.group(1))
+    return instructions
+
+
+def verify_ipc_call_sequence(disassembly: str, task_address: int) -> None:
+    instructions = instruction_texts(disassembly)
+    task_target = re.compile(
+        rf"^l32r\s+a8,\s*.*\((?:0x)?0*{task_address:x}(?:\s+<xTaskCreatePinnedToCore>)?\)$"
+    )
+    for index in range(len(instructions) - 3):
+        if re.fullmatch(r"slli\s+a12,\s*a12,\s*11", instructions[index]) is None:
+            continue
+        if re.fullmatch(r"mov(?:\.n)?\s+a11,\s*a3", instructions[index + 1]) is None:
+            continue
+        if task_target.fullmatch(instructions[index + 2]) is None:
+            continue
+        if re.fullmatch(r"callx8\s+a8", instructions[index + 3]) is not None:
+            return
+    raise ContractError(
+        "linked esp_ipc_init does not materialize a 2048-byte stack for the exact xTaskCreatePinnedToCore call"
+    )
+
+
+def verify_raw_linked_ipc(
+    elf: Path,
+    objdump: Path,
+    ipc_address: int,
+    ipc_section: str,
+    ipc_size: int,
+    task_address: int,
+) -> None:
+    """Verify linked bytes when Xtensa property metadata labels code as data.
+
+    GNU objdump consults the linked ``.xt.prop`` instruction-boundary table.
+    When that table labels a linked range as data, objdump prints a real
+    function as raw words even though its symbol and executable section are
+    intact. Dumping only that
+    executable section and disassembling its exact symbol range as raw Xtensa
+    bytes avoids accepting a package/archive-only proof while retaining the
+    linked call-target and stack-argument checks.
+    """
+
+    if ipc_size == 0:
+        raise ContractError("linked esp_ipc_init has an empty symbol range")
+
+    headers = run_tool([str(objdump), "-h", str(elf)], "objdump section inspection")
+    vma = section_vma(headers, ipc_section)
+    objcopy = objdump.with_name(objdump.name.replace("objdump", "objcopy"))
+    if not objcopy.is_file():
+        raise ContractError("Xtensa objcopy is missing for linked IPC byte verification")
+
+    with tempfile.TemporaryDirectory(prefix="v1simple-ipc-proof-") as raw:
+        section_bytes = Path(raw) / "section.bin"
+        run_tool(
+            [str(objcopy), "--dump-section", f"{ipc_section}={section_bytes}", str(elf)],
+            "objcopy linked section extraction",
+        )
+        disassembly = run_tool(
+            [
+                str(objdump),
+                "-D",
+                "-b",
+                "binary",
+                "-m",
+                "xtensa",
+                f"--adjust-vma=0x{vma:x}",
+                f"--start-address=0x{ipc_address:x}",
+                f"--stop-address=0x{ipc_address + ipc_size:x}",
+                str(section_bytes),
+            ],
+            "objdump raw linked IPC inspection",
+        )
+
+    verify_ipc_call_sequence(disassembly, task_address)
+
+
+def verify_linked_elf(elf: Path, objdump: Path) -> dict[str, object]:
+    if not elf.is_file() or not objdump.is_file():
+        raise ContractError("linked ELF or Xtensa objdump is missing")
+    symbols = run_tool([str(objdump), "-t", str(elf)], "objdump symbol inspection")
+    ipc_address, ipc_section, ipc_size = symbol_record(symbols, "esp_ipc_init")
+    task_address, _, _ = symbol_record(symbols, "xTaskCreatePinnedToCore")
+    body_address, body_section, body_size = object_symbol_record(
+        symbols, "v1simple_webserver_exact_body_contract"
+    )
+    if body_size != 4:
+        raise ContractError("linked WebServer body-ingress contract marker has an unexpected size")
+    headers = run_tool([str(objdump), "-h", str(elf)], "objdump section inspection")
+    body_section_vma = section_vma(headers, body_section)
+    objcopy = objdump.with_name(objdump.name.replace("objdump", "objcopy"))
+    if not objcopy.is_file():
+        raise ContractError("Xtensa objcopy is missing for linked WebServer marker verification")
+    with tempfile.TemporaryDirectory(prefix="v1simple-webserver-proof-") as raw:
+        section_bytes = Path(raw) / "section.bin"
+        run_tool(
+            [str(objcopy), "--dump-section", f"{body_section}={section_bytes}", str(elf)],
+            "objcopy linked WebServer marker extraction",
+        )
+        marker = section_bytes.read_bytes()[body_address - body_section_vma : body_address - body_section_vma + 4]
+    if marker != (0x56314232).to_bytes(4, "little"):
+        raise ContractError("linked WebServer body-ingress contract marker value is incorrect")
+    disassembly = run_tool(
+        [str(objdump), "-d", "--disassemble=esp_ipc_init", str(elf)],
+        "objdump linked esp_ipc_init inspection",
+    )
     # Xtensa passes the xTaskCreatePinnedToCore stack-depth argument in a12.
     # The qualified framework materializes 2048 as 1 << 11 immediately before
     # that call. A stock 1024-byte library uses a shift of 10 and fails here.
-    if not re.search(r"\bslli\s+a12,\s*a12,\s*11\b", disassembly):
-        raise ContractError("linked esp_ipc_init does not pass a 2048-byte stack to the IPC task")
+    decoded = [item for item in instruction_texts(disassembly) if not item.startswith((".byte", ".word"))]
+    if decoded:
+        verify_ipc_call_sequence(disassembly, task_address)
+    else:
+        verify_raw_linked_ipc(elf, objdump, ipc_address, ipc_section, ipc_size, task_address)
     return {
         "elf_sha256": sha256_file(elf),
         "elf_ipc_symbol": "esp_ipc_init",
         "elf_ipc_stack_argument": "a12=1<<11",
         "elf_ipc_stack_bytes": EXPECTED["ipc_stack_bytes"],
+        "elf_webserver_body_symbol": "v1simple_webserver_exact_body_contract",
+        "elf_webserver_body_contract": "0x56314232",
     }
 
 
@@ -199,7 +351,10 @@ def configure_scons() -> None:
             combined = dict(evidence)
             combined.update(linked)
             write_evidence(evidence_path, combined)
-            print("[FrameworkContract] linked ELF passes 2048-byte IPC stack proof")
+            print(
+                "[FrameworkContract] linked ELF passes 2048-byte IPC stack and "
+                "exact WebServer body-ingress marker proofs"
+            )
             return 0
         except ContractError as exc:
             print(f"Error: ESP32-S3 linked framework contract failed: {exc}")
@@ -207,7 +362,10 @@ def configure_scons() -> None:
 
     env.AddPostAction(  # noqa: F821
         "$BUILD_DIR/${PROGNAME}.elf",
-        env.VerboseAction(verify_after_link, "Verifying linked ESP IPC stack contract"),  # noqa: F821
+        env.VerboseAction(
+            verify_after_link,
+            "Verifying linked ESP IPC stack and exact WebServer body-ingress contracts",
+        ),  # noqa: F821
     )
     print(
         "[FrameworkContract] qualified "

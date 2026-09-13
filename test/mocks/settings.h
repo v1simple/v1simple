@@ -259,6 +259,8 @@ public:
     bool slotPriorityArrowOnly[3] = {false, false, false};
     bool backupToSDResult = true;
     bool obdPersistSuccess = true;
+    bool setActiveSlotSuccess = true;
+    int setActiveSlotCalls = 0;
     
     void load() {}
     void save() { ++saveCalls; }
@@ -282,6 +284,8 @@ public:
     bool resolveStorageTransactionsForMutation() { return true; }
     void setLastV1Address(const char*) {}
     SettingsPersistResult setActiveSlot(int slot, SettingsPersistMode persistMode = SettingsPersistMode::Immediate) {
+        ++setActiveSlotCalls;
+        if (!setActiveSlotSuccess) return SettingsPersistResult{false, false, false};
         const bool changed = settings.activeSlot != static_cast<uint8_t>(slot);
         settings.activeSlot = static_cast<uint8_t>(slot);
         if (persistMode == SettingsPersistMode::Deferred) {

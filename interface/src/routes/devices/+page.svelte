@@ -85,6 +85,22 @@
         editName = '';
     }
 
+    async function readMutationResult(res) {
+        let payload;
+        try {
+            payload = await res.json();
+        } catch (e) {
+            return 'failed';
+        }
+        if (!res.ok || payload?.success !== true) return 'failed';
+        if (res.status === 200 && !payload.operationPending && !payload.mirrorSyncPending) {
+            return 'complete';
+        }
+        if (res.status === 202 && payload.operationPending === true) return 'operation-pending';
+        if (res.status === 202 && payload.mirrorSyncPending === true) return 'mirror-pending';
+        return 'failed';
+    }
+
     async function saveName(address) {
         const submittedName = editName.trim();
         busyAddress = address;
@@ -95,9 +111,11 @@
 
             const res = await fetchWithTimeout('/api/v1/devices/name', {
                 method: 'POST',
-                body: formData
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+                body: new URLSearchParams(formData)
             });
-            if (!res.ok) {
+            const result = await readMutationResult(res);
+            if (result === 'failed' || result === 'operation-pending') {
                 message = { type: 'error', text: 'Failed to save device name.' };
                 return;
             }
@@ -105,7 +123,12 @@
             devices = devices.map((device) =>
                 device.address === address ? { ...device, name: submittedName } : device
             );
-            message = { type: 'success', text: 'Device name saved.' };
+            message = result === 'mirror-pending'
+                ? {
+                      type: 'warning',
+                      text: 'Device name saved on primary storage; mirror sync is pending.'
+                  }
+                : { type: 'success', text: 'Device name saved.' };
             cancelRename();
         } catch (e) {
             message = { type: 'error', text: 'Failed to save device name.' };
@@ -124,9 +147,11 @@
 
             const res = await fetchWithTimeout('/api/v1/devices/profile', {
                 method: 'POST',
-                body: formData
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+                body: new URLSearchParams(formData)
             });
-            if (!res.ok) {
+            const result = await readMutationResult(res);
+            if (result === 'failed' || result === 'operation-pending') {
                 message = { type: 'error', text: 'Failed to save default profile.' };
                 await fetchDevices();
                 return;
@@ -135,7 +160,12 @@
             devices = devices.map((device) =>
                 device.address === address ? { ...device, defaultProfile: selected } : device
             );
-            message = { type: 'success', text: 'Default profile updated.' };
+            message = result === 'mirror-pending'
+                ? {
+                      type: 'warning',
+                      text: 'Default profile saved on primary storage; mirror sync is pending.'
+                  }
+                : { type: 'success', text: 'Default profile updated.' };
         } catch (e) {
             message = { type: 'error', text: 'Failed to save default profile.' };
             await fetchDevices();
@@ -158,9 +188,18 @@
 
             const res = await fetchWithTimeout('/api/v1/devices/delete', {
                 method: 'POST',
-                body: formData
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+                body: new URLSearchParams(formData)
             });
-            if (!res.ok) {
+            const result = await readMutationResult(res);
+            if (result === 'operation-pending') {
+                message = {
+                    type: 'warning',
+                    text: 'Device removal is pending; recovery will continue automatically.'
+                };
+                return;
+            }
+            if (result !== 'complete') {
                 message = { type: 'error', text: 'Failed to remove device.' };
                 return;
             }

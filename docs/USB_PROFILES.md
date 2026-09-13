@@ -48,19 +48,50 @@ are host transport bounds, not firmware display-response requirements.
 
 `readback_verified` confirms all stored bundle fields and catalog entries; only
 catalog enumeration order is ignored. `normal_consumer_verified` is true only
-after the default return from maintenance verifies active settings in the normal
-firmware. It is false when the operation stays in maintenance.
+after the default return from maintenance verifies the active stored selection
+in normal firmware. It is false when the operation stays in maintenance.
 `backup_pending` reports the firmware's deferred SD-backup state separately from
 the confirmed storage commit. These results do **not** claim that the detector
-received/applied its profile, or that display/audio behavior passed a camera test.
-An error or uncertain commit ACK is never reported as success; the before-backup
-remains available for recovery.
+received or applied a profile, or that display/audio behavior passed a camera
+test. Importing or saving a profile never writes live detector state. A later
+normal-runtime Auto-Push operation has its own per-component status and fresh
+readback rules; its proof-safe post-send boundaries can report a timeout rather
+than accept a response that may be stale. An error or uncertain commit ACK is
+never reported as success, and the before-backup remains available for recovery.
 
-The version-1 JSON bundle contains exactly `format: "v1simple-profiles"`,
-`version: 1`, `autoPushEnabled`, `activeSlot`, `slots` and `profiles`. It excludes
-network credentials and unrelated device settings. Slots use the WebUI keys
-`name`, `profile`, `mode`, `color`, `volumeConfigured`, `volume`, `muteVolume`,
-`darkMode`, `muteToZero`, `alertPersist` and `priorityArrowOnly`. Profiles contain
-`name`, `description`, `rawBytes` (six bytes), `displayOn`, `mainVolume` and
-`mutedVolume`. Keep all fields when editing a backup; unknown fields, invalid
-references and malformed values are rejected. The maximum document is 128 KiB.
+The current export is schema version 3. Its root contains exactly
+`format: "v1simple-profiles"`, `version: 3`, `autoPushEnabled`, `activeSlot`,
+`slots` and `profiles`; network credentials and unrelated device settings are
+excluded. Each slot contains `name`, `profile`, `color`, `alertPersist` and
+`priorityArrowOnly`. Detector-owned settings are stored with each profile:
+`name`, `description`, six `rawBytes`, and a `detector` object covering user
+settings, mode, display, volume values plus feedback/disconnect policy,
+Bluetooth indicator policy, and custom-frequency definitions.
+
+The importer accepts exact version-1, version-2 and version-3 bundles. Version 1
+stored detector behavior partly in slot fields; version 2 lacked the full v3
+volume, Bluetooth-indicator and custom-frequency policy. Both older formats are
+deterministically converted to v3 before the first catalog commit. The host and
+firmware both reject an import if that conversion would exceed the supported
+catalog or cannot produce valid unique UTF-8 names. Unknown/duplicate fields,
+trailing data, invalid references and malformed values are rejected before any
+mutation.
+
+The supported catalog contains at most 10 profiles. Names are at most 64 UTF-8
+bytes, descriptions at most 4096 UTF-8 bytes, and slot display names at most 20
+UTF-8 bytes. Every complete USB, HTTP backup, SD backup and restore-journal
+document is capped at 128 KiB. The measured ten-profile lexical-max shapes are
+116,902 bytes for USB, 120,471 for HTTP backup, 120,640 for SD backup and 118,759
+for the credential-bearing rollback journal. The largest leaves 10,432 bytes—
+more than two 4 KiB allocation quanta—under the common cap. A maximal delete
+journal is 11,742 bytes, leaving 4,642 bytes under its 16 KiB cap. A maximal
+pretty schema-v3 profile file is 16,415 bytes; its 24 KiB cap retains 8,161 bytes
+of storage/schema headroom.
+
+Old installations could already contain more than 10 profiles. Those entries
+are retained and remain available through the paginated WebUI/API list and the
+transactional delete path so they can be pruned without silent loss. New saves,
+complete export/import, migration and live Apply are blocked with a capacity or
+migration-pending error until the catalog is reduced to 10 and deterministic
+migration completes. A full-catalog rename remains count-preserving and does not
+temporarily create an unjournaled eleventh profile.

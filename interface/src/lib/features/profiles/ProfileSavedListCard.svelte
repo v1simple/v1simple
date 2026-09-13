@@ -1,7 +1,7 @@
 <script>
     import CardSectionHead from '$lib/components/CardSectionHead.svelte';
 
-    let { loading, profiles = [], oneditProfile, ondeleteProfile } = $props();
+    let { loading, profiles = [], allowEdit = true, oneditProfile, ondeleteProfile } = $props();
 </script>
 
 <div class="surface-card">
@@ -30,12 +30,14 @@
                             </div>
                         </div>
                         <div class="flex gap-2">
-                            <button
-                                class="btn btn-secondary btn-xs"
-                                onclick={() => oneditProfile(profile.name)}
-                            >
-                                Edit
-                            </button>
+                            {#if allowEdit}
+                                <button
+                                    class="btn btn-secondary btn-xs"
+                                    onclick={() => oneditProfile(profile.name)}
+                                >
+                                    Edit
+                                </button>
+                            {/if}
                             <button
                                 class="btn btn-outline btn-error btn-xs"
                                 onclick={() => ondeleteProfile(profile.name)}

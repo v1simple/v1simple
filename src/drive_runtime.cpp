@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cstring>
+#include <new>
+#include <string>
 #include <NimBLEDevice.h>
 
 #include "audio_beep.h"
@@ -73,12 +75,18 @@ void DriveRuntime::initializeStorageAndProfiles() {
         }
         settings_.migrateAutoPushProfilesToV2();
 
-        const String storedFallback = settings_.loadLastV1AddressFallback();
+        const bool deleteResolved = settings_.resolvePendingV1DeviceDelete(devices_);
+        if (!deleteResolved) {
+            Serial.println("[Setup] WARN: pending V1 device deletion blocks fallback bootstrap");
+        }
+        const String storedFallback = deleteResolved ? settings_.loadLastV1AddressFallback() : String();
         const String degradedFallback = normalizeV1DeviceAddress(storedFallback);
         if (storedFallback.length() > 0 && degradedFallback.length() == 0) {
             settings_.clearLastV1AddressFallback();
         }
-        const String settingsFallback = normalizeV1DeviceAddress(settings_.get().lastV1Address);
+        const String settingsFallback = deleteResolved
+                                            ? normalizeV1DeviceAddress(settings_.get().lastV1Address)
+                                            : String();
         const String restoredLastKnownV1 = degradedFallback.length() > 0 ? degradedFallback : settingsFallback;
         if (restoredLastKnownV1.length() > 0) {
             settings_.setLastV1Address(restoredLastKnownV1);
@@ -143,6 +151,24 @@ void DriveRuntime::initializeBle(uint32_t setupStartMs, uint32_t& stageStartedMs
 }
 
 void DriveRuntime::requestMaintenanceBootRestart() {
+    // A just-connected detector snapshot is intentionally staged in memory so
+    // normal driving avoids SD writes during the first ten seconds. A user can
+    // request maintenance sooner than that, so this controlled restart is the
+    // final durability boundary. Never set the one-shot boot flag or clean
+    // marker unless the pending catalog is durably promoted first.
+    if (devices_.hasPendingSave()) {
+        bool snapshotSaved = false;
+        if (storage_.isSDCard()) {
+            StorageManager::SDTryLock sdLock(storage_.getSDMutex(), /*checkDmaHeap=*/false);
+            snapshotSaved = sdLock && devices_.flushPendingSave();
+        } else {
+            snapshotSaved = devices_.flushPendingSave();
+        }
+        if (!snapshotSaved) {
+            Serial.println("[MaintBoot] ERROR: pending detector snapshot save failed; restart cancelled");
+            return;
+        }
+    }
     if (!requestMaintenanceBoot()) {
         Serial.println("[MaintBoot] ERROR: failed to persist maintenance boot request");
         return;
@@ -804,18 +830,60 @@ void DriveRuntime::onV1Connected() {
     String linkAddress;
     NimBLEAddress connected = self.ble_.getConnectedAddress();
     if (!connected.isNull()) {
-        linkAddress = normalizeV1DeviceAddress(String(connected.toString().c_str()));
+        bool exactLiveIdentity = false;
+        try {
+            const std::string rawAddress = connected.toString();
+            if (rawAddress.size() == 17u) {
+                String staged(rawAddress.c_str());
+                if (staged.length() == rawAddress.size() &&
+                    std::memcmp(staged.c_str(), rawAddress.data(), rawAddress.size()) == 0) {
+                    String normalized = normalizeV1DeviceAddress(staged);
+                    if (normalized.length() == 17u) {
+                        linkAddress = std::move(normalized);
+                        exactLiveIdentity = linkAddress.length() == 17u;
+                    }
+                }
+            }
+        } catch (const std::bad_alloc&) {
+            exactLiveIdentity = false;
+        }
+        if (!exactLiveIdentity) {
+            Serial.println("[AutoPush] NOT_QUEUED reason=device_identity_unavailable");
+            return;
+        }
     }
-    String profileAddress = linkAddress;
-    if (profileAddress.length() == 0) {
-        profileAddress = normalizeV1DeviceAddress(settings.lastV1Address);
+
+    String fallbackAddress;
+    const String* profileAddress = &linkAddress;
+    if (connected.isNull()) {
+        profileAddress = &fallbackAddress;
+        if (settings.lastV1Address.length() != 0) {
+            if (settings.lastV1Address.length() != 17u) {
+                Serial.println("[AutoPush] NOT_QUEUED reason=device_identity_unavailable");
+                return;
+            }
+            fallbackAddress = normalizeV1DeviceAddress(settings.lastV1Address);
+            if (fallbackAddress.length() != 17u) {
+                Serial.println("[AutoPush] NOT_QUEUED reason=device_identity_unavailable");
+                return;
+            }
+        }
     }
-    if (profileAddress.length() > 0 && self.devices_.isReady()) {
-        self.devices_.touchDeviceInMemory(profileAddress);
-        defaultProfile = self.devices_.getDeviceDefaultProfile(profileAddress);
-        if (defaultProfile >= 1 && defaultProfile <= 3) {
+    if (profileAddress->length() > 0) {
+        const V1DeviceDefaultProfileResult lookup =
+            self.devices_.getDeviceDefaultProfileChecked(*profileAddress);
+        if (lookup.status == V1DeviceDefaultProfileStatus::Unavailable ||
+            !self.devices_.touchDeviceInMemory(*profileAddress)) {
+            Serial.println("[AutoPush] NOT_QUEUED reason=device_catalog_unavailable");
+            return;
+        }
+        if (lookup.status == V1DeviceDefaultProfileStatus::Found) {
+            defaultProfile = lookup.profile;
             selectedSlot = static_cast<int>(defaultProfile) - 1;
         }
+    } else if (settings.autoPushEnabled) {
+        Serial.println("[AutoPush] NOT_QUEUED reason=device_identity_unavailable");
+        return;
     }
     if (linkAddress.length() > 0) {
         self.settings_.setLastV1Address(linkAddress);
@@ -843,27 +911,59 @@ void DriveRuntime::onV1Connected() {
     snapshot.hasDisplayOn = displayObservation.available && displayObservation.revision > 0 &&
                             displayObservation.ingressSequence > 0;
     snapshot.displayOn = displayObservation.value;
+    const V1BluetoothIndicatorObservation& bluetoothObservation = self.parser_.bluetoothIndicatorObservation();
+    snapshot.hasBluetoothIndicator = bluetoothObservation.available && bluetoothObservation.revision > 0 &&
+                                     bluetoothObservation.ingressSequence > 0;
+    snapshot.bluetoothIndicator = bluetoothObservation.state;
 
     const V1ModeObservation& modeObservation = self.parser_.modeObservation();
     snapshot.hasMode = modeObservation.available && modeObservation.revision > 0 &&
                        modeObservation.ingressSequence > 0;
     snapshot.mode = modeObservation.value;
 
-    uint32_t currentVolumeIngressSequence = 0;
-    snapshot.hasCurrentVolume = self.parser_.copyLatestCanonicalCurrentVolume(
-                                    snapshot.currentMainVolume, snapshot.currentMutedVolume,
-                                    &currentVolumeIngressSequence) &&
-                                currentVolumeIngressSequence > 0;
     const V1AllVolumeObservation& allVolumeObservation = self.parser_.allVolumeObservation();
-    snapshot.hasSavedVolume = allVolumeObservation.available && allVolumeObservation.revision > 0 &&
-                              allVolumeObservation.ingressSequence > 0;
+    const bool capturedAllVolume = self.ble_.hasSessionAllVolume() && allVolumeObservation.available &&
+                                   allVolumeObservation.revision > 0 && allVolumeObservation.ingressSequence > 0;
+    snapshot.hasCurrentVolume = capturedAllVolume;
+    snapshot.currentMainVolume = allVolumeObservation.currentMain;
+    snapshot.currentMutedVolume = allVolumeObservation.currentMuted;
+    snapshot.hasSavedVolume = capturedAllVolume;
     snapshot.savedMainVolume = allVolumeObservation.savedMain;
     snapshot.savedMutedVolume = allVolumeObservation.savedMuted;
+    const V1SweepSectionsObservation& sweepSections = self.parser_.sweepSectionsObservation();
+    snapshot.hasSweepSections = self.ble_.hasSessionSweepSectionsCapture() &&
+                                sweepSections.available && sweepSections.complete &&
+                                sweepSections.ingressSequence > 0;
+    if (snapshot.hasSweepSections) {
+        snapshot.sweepSectionCount = sweepSections.count;
+        snapshot.sweepSections = sweepSections.sections;
+    }
+    const V1SweepMaxObservation& sweepMax = self.parser_.sweepMaxObservation();
+    snapshot.hasMaxSweepIndex = self.ble_.hasSessionSweepMaxCapture() &&
+                                sweepMax.available && !sweepMax.poisoned &&
+                                sweepMax.ingressSequence > 0;
+    snapshot.maxSweepIndex = sweepMax.maxIndex;
+    const V1SweepDefinitionsObservation& sweepDefinitions = self.parser_.sweepDefinitionsObservation();
+    if (snapshot.hasMaxSweepIndex && self.ble_.hasSessionSweepDefinitionsCapture() &&
+        sweepDefinitions.ingressSequence > 0) {
+        const uint64_t required = snapshot.maxSweepIndex == 63
+                                      ? UINT64_MAX
+                                      : ((uint64_t{1} << (snapshot.maxSweepIndex + 1u)) - 1u);
+        snapshot.hasSweepDefinitions = !sweepDefinitions.poisoned && sweepDefinitions.presentMask == required;
+        for (uint8_t index = 0; snapshot.hasSweepDefinitions && index <= snapshot.maxSweepIndex; ++index) {
+            const uint32_t ingress = sweepDefinitions.ingressSequences[index];
+            const uint32_t boundary = self.ble_.sessionSweepDefinitionsIngressBoundary();
+            snapshot.hasSweepDefinitions = ingress != 0 && boundary != 0 &&
+                                           static_cast<int32_t>(ingress - boundary) > 0;
+        }
+        if (snapshot.hasSweepDefinitions) snapshot.sweepDefinitions = sweepDefinitions.definitions;
+    }
     self.autoPush_.setPreApplySnapshot(snapshot);
 
     if (linkAddress.length() > 0 && self.devices_.isReady()) {
         if (!self.devices_.recordSnapshotInMemory(linkAddress, snapshot)) {
-            Serial.println("[V1Snapshot] WARN: failed to stage detector snapshot");
+            Serial.println("[AutoPush] NOT_QUEUED reason=device_snapshot_unavailable");
+            return;
         }
     }
 

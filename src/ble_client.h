@@ -237,6 +237,9 @@ class V1BLEClient {
 
     // Turn V1 display on/off (dark mode)
     bool setDisplayOn(bool on);
+    // On 4.1032+ an off request may independently keep the Bluetooth
+    // indicator active. `on=true` never carries Aux0.
+    bool setDisplayOn(bool on, bool keepBluetoothIndicatorOn);
 
     // Send mute on/off command
     bool setMute(bool muted);
@@ -248,6 +251,17 @@ class V1BLEClient {
     // Set V1 volume settings (0-9 for each, 0xFF to keep current)
     bool setVolume(uint8_t mainVolume, uint8_t mutedVolume);
     SendResult setVolumeResult(uint8_t mainVolume, uint8_t mutedVolume);
+    SendResult setVolumeResult(uint8_t mainVolume, uint8_t mutedVolume, uint8_t aux0);
+
+    bool requestMaxSweepIndex();
+    bool requestSweepSections();
+    bool requestAllSweepDefinitions();
+    SendResult writeSweepDefinition(uint8_t index, uint16_t lowerMHz, uint16_t upperMHz, bool commit);
+
+    // Exact vendor reqFactoryDefault surface. This is deliberately not wired
+    // to ordinary Apply/defaults: the protocol has no ACK and a truthful
+    // operation must own an exclusive destructive workflow plus recapture.
+    SendResult factoryResetDetector();
 
     // Request user settings bytes from V1 (6 bytes)
     bool requestUserBytes();
@@ -273,7 +287,71 @@ class V1BLEClient {
 
     // Called by main loop when RESP_USER_BYTES received to complete verification
     void onUserBytesReceived(const uint8_t* bytes, uint32_t ingressSequence = 0);
-    void onAllVolumeReceived() { hasSessionAllVolume_ = true; }
+    void onAllVolumeReceived(uint32_t ingressSequence) {
+        if (sessionAllVolumeCaptureArmed_ && ingressSequence != 0 &&
+            static_cast<int32_t>(ingressSequence - sessionAllVolumeIngressBoundary_) > 0) {
+            hasSessionAllVolume_ = true;
+            sessionAllVolumeIngressSequence_ = ingressSequence;
+        }
+    }
+    void beginSessionUserBytesCapture(uint32_t ingressBoundary) {
+        sessionUserBytesIngressBoundary_ = ingressBoundary;
+        sessionUserBytesCaptureArmed_ = true;
+        hasSessionUserBytes_ = false;
+        sessionUserBytesIngressSequence_ = 0;
+    }
+    void beginSessionAllVolumeCapture(uint32_t ingressBoundary) {
+        sessionAllVolumeIngressBoundary_ = ingressBoundary;
+        sessionAllVolumeCaptureArmed_ = true;
+        hasSessionAllVolume_ = false;
+        sessionAllVolumeIngressSequence_ = 0;
+    }
+    void beginSessionSweepSectionsCapture(uint32_t ingressBoundary) {
+        sessionSweepSectionsIngressBoundary_ = ingressBoundary;
+        sessionSweepSectionsResetPending_ = true;
+        expectsSessionSweeps_ = true;
+        hasSessionSweepSections_ = false;
+    }
+    void beginSessionSweepMaxCapture(uint32_t ingressBoundary) {
+        sessionSweepMaxIngressBoundary_ = ingressBoundary;
+        sessionSweepMaxResetPending_ = true;
+        hasSessionSweepMax_ = false;
+    }
+    void beginSessionSweepDefinitionsCapture(uint32_t ingressBoundary) {
+        sessionSweepDefinitionsIngressBoundary_ = ingressBoundary;
+        sessionSweepDefinitionsResetPending_ = true;
+        hasSessionSweepDefinitions_ = false;
+    }
+    bool sessionSweepResponseEligible(uint8_t packetId, uint32_t ingressSequence) const {
+        if (!expectsSessionSweeps_ || ingressSequence == 0) return false;
+        uint32_t boundary = 0;
+        if (packetId == 0x23) boundary = sessionSweepSectionsIngressBoundary_;
+        else if (packetId == 0x20) boundary = sessionSweepMaxIngressBoundary_;
+        else if (packetId == 0x17) boundary = sessionSweepDefinitionsIngressBoundary_;
+        else return false;
+        return boundary != 0 && static_cast<int32_t>(ingressSequence - boundary) > 0;
+    }
+    bool consumeSessionSweepParserReset(uint8_t packetId) {
+        bool pending = false;
+        if (packetId == 0x23) {
+            pending = sessionSweepSectionsResetPending_;
+            sessionSweepSectionsResetPending_ = false;
+        } else if (packetId == 0x20) {
+            pending = sessionSweepMaxResetPending_;
+            sessionSweepMaxResetPending_ = false;
+        } else if (packetId == 0x17) {
+            pending = sessionSweepDefinitionsResetPending_;
+            sessionSweepDefinitionsResetPending_ = false;
+        }
+        return pending;
+    }
+    void onSweepSectionsReceived(bool complete) { hasSessionSweepSections_ = complete; }
+    void onSweepMaxReceived(bool complete = true) { hasSessionSweepMax_ = complete; }
+    void onSweepDefinitionsReceived(bool complete) { hasSessionSweepDefinitions_ = complete; }
+    bool hasSessionSweepMaxCapture() const { return hasSessionSweepMax_; }
+    bool hasSessionSweepSectionsCapture() const { return hasSessionSweepSections_; }
+    bool hasSessionSweepDefinitionsCapture() const { return hasSessionSweepDefinitions_; }
+    uint32_t sessionSweepDefinitionsIngressBoundary() const { return sessionSweepDefinitionsIngressBoundary_; }
 
     // Session-qualified readback used to persist a pre-Auto-Push detector
     // snapshot. This state is reset at each authoritative session boundary.
@@ -585,6 +663,10 @@ class V1BLEClient {
         REQUEST_ALL_VOLUME,
         REQUEST_USER_BYTES,
         WAIT_SETTINGS_SNAPSHOT,
+        REQUEST_SWEEP_SECTIONS,
+        REQUEST_MAX_SWEEP_INDEX,
+        REQUEST_ALL_SWEEP_DEFINITIONS,
+        WAIT_SWEEP_SNAPSHOT,
         NOTIFY_STABLE_CALLBACK,
         BACKUP_BONDS,
     };
@@ -688,8 +770,23 @@ class V1BLEClient {
     uint8_t sessionUserBytes_[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
     uint32_t sessionUserBytesRevision_ = 0;
     uint32_t sessionUserBytesIngressSequence_ = 0;
+    uint32_t sessionUserBytesIngressBoundary_ = 0;
+    bool sessionUserBytesCaptureArmed_ = false;
     bool expectsSessionAllVolume_ = false;
     bool hasSessionAllVolume_ = false;
+    uint32_t sessionAllVolumeIngressSequence_ = 0;
+    uint32_t sessionAllVolumeIngressBoundary_ = 0;
+    bool sessionAllVolumeCaptureArmed_ = false;
+    bool expectsSessionSweeps_ = false;
+    bool hasSessionSweepSections_ = false;
+    bool hasSessionSweepMax_ = false;
+    bool hasSessionSweepDefinitions_ = false;
+    bool sessionSweepSectionsResetPending_ = false;
+    bool sessionSweepMaxResetPending_ = false;
+    bool sessionSweepDefinitionsResetPending_ = false;
+    uint32_t sessionSweepSectionsIngressBoundary_ = 0;
+    uint32_t sessionSweepMaxIngressBoundary_ = 0;
+    uint32_t sessionSweepDefinitionsIngressBoundary_ = 0;
     bool settingsCaptureTimedOut_ = false;
 
     // Callback handlers are RAII-owned to prevent manual delete mistakes.

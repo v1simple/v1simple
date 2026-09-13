@@ -8,9 +8,9 @@
 #include "build_metadata.h"
 #include "drive_runtime.h"
 #include "maintenance_runtime.h"
-#include "modules/wifi/wifi_json_document.h"
 #include "settings.h"
 #include "usb_profile_document.h"
+#include "usb_profile_json_document.h"
 
 static_assert(UsbProfileProtocol::MaxDocumentBytes == kUsbProfileDocumentMaxBytes,
               "USB staging and profile document limits must agree");
@@ -42,9 +42,13 @@ void UsbProfileRuntime::release(uint8_t* data) { heap_caps_free(data); }
 
 bool UsbProfileRuntime::backup(uint8_t*& data, size_t& length, char* error, size_t errorSize) {
     if (!maintenance_.usbConfigurationAllowed()) return false;
-    WifiJson::Document document;
+    UsbProfileJson::Document document;
     String detail;
     if (!buildUsbProfileDocument(document, settings_, profiles_, detail)) {
+        if (document.overflowed()) {
+            std::snprintf(error, errorSize, "Profile document memory unavailable");
+            return false;
+        }
         std::snprintf(error, errorSize, "%s", detail.c_str());
         return false;
     }
@@ -66,23 +70,30 @@ bool UsbProfileRuntime::apply(const uint8_t* data, size_t length, bool& backupPe
                               int& profiles,
                               char* error, size_t errorSize) {
     if (!maintenance_.usbConfigurationAllowed()) return false;
-    WifiJson::Document document;
-    const auto parsed = deserializeJson(document, data, length, DeserializationOption::NestingLimit(8));
-    if (parsed || document.overflowed()) {
-        std::snprintf(error, errorSize, "Invalid or oversized profile JSON");
+    UsbProfileJson::ParseStatus parseStatus = UsbProfileJson::ParseStatus::Invalid;
+    const bool applied = UsbProfileJson::parseAndConsume(
+        data, length, parseStatus, [&](const JsonDocument& document) {
+            String detail;
+            const SettingsRestoreWatchdog watchdog{[](void*) { (void)esp_task_wdt_reset(); }, nullptr};
+            const auto result = applyUsbProfileDocument(settings_, profiles_, document, detail, watchdog);
+            if (!result.success) {
+                std::snprintf(error, errorSize,
+                              "%s", detail.length() ? detail.c_str() : "Profile storage transaction failed");
+                return false;
+            }
+            profiles = result.profilesRestored;
+            backupPending = settings_.deferredBackupPending();
+            migrationPending = result.migrationPending;
+            return true;
+        });
+    if (parseStatus != UsbProfileJson::ParseStatus::Ok) {
+        std::snprintf(error, errorSize,
+                      parseStatus == UsbProfileJson::ParseStatus::MemoryUnavailable
+                          ? "Profile document memory unavailable"
+                          : "Invalid or oversized profile JSON");
         return false;
     }
-    String detail;
-    const SettingsRestoreWatchdog watchdog{[](void*) { (void)esp_task_wdt_reset(); }, nullptr};
-    const auto result = applyUsbProfileDocument(settings_, profiles_, document, detail, watchdog);
-    if (!result.success) {
-        std::snprintf(error, errorSize, "%s", detail.length() ? detail.c_str() : "Profile storage transaction failed");
-        return false;
-    }
-    profiles = result.profilesRestored;
-    backupPending = settings_.deferredBackupPending();
-    migrationPending = result.migrationPending;
-    return true;
+    return applied;
 }
 
 void UsbProfileRuntime::enterMaintenance() { drive_.requestUsbMaintenanceBoot(); }

@@ -75,5 +75,8 @@ void handleApiBackupNow(WebServer& server, const BackupRuntime& runtime, bool (*
 /// POST /api/settings/restore handler with route-level policy callbacks.
 void handleApiRestore(WebServer& server, const BackupRuntime& runtime, bool (*checkRateLimit)(void* ctx),
                       void* rateLimitCtx, void (*markUiActivity)(void* ctx), void* uiActivityCtx);
+void handleApiRestoreBody(WebServer& server, const BackupRuntime& runtime, const uint8_t* body, size_t bodySize,
+                          bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
+                          void (*markUiActivity)(void* ctx), void* uiActivityCtx);
 
 } // namespace BackupApiService

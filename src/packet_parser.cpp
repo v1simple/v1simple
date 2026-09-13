@@ -182,6 +182,28 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
             displayOnObservation_.available = true;
             displayOnObservation_.value = (payload[5] & 0x08) != 0;
 
+            // The Aux1 Bluetooth-image pair is a documented Gen2 4.1018+
+            // field. Before a supported version is known, those bits are not
+            // authoritative Bluetooth state and must remain unavailable.
+            if (displayState_.hasV1Version &&
+                V1FirmwareCompat::capabilities(displayState_.v1FirmwareVersion).customSweeps) {
+                ++bluetoothIndicatorObservation_.revision;
+                bluetoothIndicatorObservation_.sequence = sequence;
+                bluetoothIndicatorObservation_.ingressSequence = ingressSequence;
+                bluetoothIndicatorObservation_.image1 = (payload[6] & 0x40) != 0;
+                bluetoothIndicatorObservation_.image2 = (payload[6] & 0x80) != 0;
+                if (!bluetoothIndicatorObservation_.image1 && !bluetoothIndicatorObservation_.image2) {
+                    bluetoothIndicatorObservation_.state = V1BluetoothIndicatorState::Off;
+                    bluetoothIndicatorObservation_.available = true;
+                } else if (bluetoothIndicatorObservation_.image1 != bluetoothIndicatorObservation_.image2) {
+                    bluetoothIndicatorObservation_.state = V1BluetoothIndicatorState::Blinking;
+                    bluetoothIndicatorObservation_.available = true;
+                } else {
+                    bluetoothIndicatorObservation_.state = V1BluetoothIndicatorState::On;
+                    bluetoothIndicatorObservation_.available = true;
+                }
+            }
+
             if (displayState_.hasV1Version &&
                 V1FirmwareCompat::capabilities(displayState_.v1FirmwareVersion).modeObservation) {
                 ++modeObservation_.revision;
@@ -347,6 +369,157 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
     case PACKET_ID_REQ_ALL_VOLUME: // 0x3C - outbound request, ignore echoes
         return true;
 
+    case PACKET_ID_RESP_MAX_SWEEP_INDEX: {
+        if (!payload || !V1PacketFraming::hasCanonicalResponseEvidenceForDestination(data, length, 1, 0xD6)) {
+            return false;
+        }
+        const auto poisonSweepMax = [this, ingressSequence]() {
+            ++sweepMaxObservation_.revision;
+            sweepMaxObservation_.sequence = ++settingsObservationSequence_;
+            sweepMaxObservation_.ingressSequence = ingressSequence;
+            sweepMaxObservation_.available = false;
+            sweepMaxObservation_.poisoned = true;
+        };
+        if (sweepMaxObservation_.poisoned) return false;
+        if (payload[0] > 0x3F ||
+            (sweepMaxObservation_.available && sweepMaxObservation_.maxIndex != payload[0])) {
+            poisonSweepMax();
+            return false;
+        }
+        const uint64_t allowed = payload[0] == 63 ? UINT64_MAX : ((uint64_t{1} << (payload[0] + 1u)) - 1u);
+        if ((sweepDefinitionsObservation_.presentMask & ~allowed) != 0) {
+            sweepDefinitionsObservation_.poisoned = true;
+        }
+        ++sweepMaxObservation_.revision;
+        sweepMaxObservation_.sequence = ++settingsObservationSequence_;
+        sweepMaxObservation_.ingressSequence = ingressSequence;
+        sweepMaxObservation_.available = true;
+        sweepMaxObservation_.maxIndex = payload[0];
+        return true;
+    }
+    case PACKET_ID_RESP_SWEEP_SECTIONS: {
+        if (sweepSectionsObservation_.poisoned) return false;
+        const auto poisonSweepSections = [this]() {
+            sweepSectionsObservation_.poisoned = true;
+            sweepSectionsObservation_.available = false;
+            sweepSectionsObservation_.complete = false;
+        };
+        size_t dataBytes = 0;
+        if (V1PacketFraming::hasCanonicalResponseEvidenceForDestination(data, length, 5, 0xD6)) dataBytes = 5;
+        else if (V1PacketFraming::hasCanonicalResponseEvidenceForDestination(data, length, 10, 0xD6)) dataBytes = 10;
+        else if (V1PacketFraming::hasCanonicalResponseEvidenceForDestination(data, length, 15, 0xD6)) dataBytes = 15;
+        else return false;
+        const uint8_t declaredCount = payload[0] & 0x0F;
+        // ESP 3.016 encodes the section number in the upper nibble as a
+        // one-based wire value (1..count). A (0,0) vendor API sentinel is not
+        // a usable Gen2 topology and must not authorize capture or Apply.
+        if (declaredCount == 0 || declaredCount > 15) {
+            poisonSweepSections();
+            return false;
+        }
+        V1SweepSectionsObservation candidate = sweepSectionsObservation_;
+        if (candidate.count != 0 && candidate.count != declaredCount) {
+            poisonSweepSections();
+            return false;
+        }
+        candidate.count = declaredCount;
+        for (size_t offset = 0; offset < dataBytes; offset += 5) {
+            const uint8_t indexCount = payload[offset];
+            const uint8_t wireIndex = static_cast<uint8_t>((indexCount >> 4) & 0x0F);
+            if ((indexCount & 0x0F) != declaredCount || wireIndex == 0 || wireIndex > declaredCount) {
+                poisonSweepSections();
+                return false;
+            }
+            const uint8_t index = static_cast<uint8_t>(wireIndex - 1u);
+            const uint16_t upper = static_cast<uint16_t>((payload[offset + 1] << 8) | payload[offset + 2]);
+            const uint16_t lower = static_cast<uint16_t>((payload[offset + 3] << 8) | payload[offset + 4]);
+            const bool unused = lower == 0 && upper == 0;
+            if ((!unused && lower >= upper) || (lower == 0) != (upper == 0)) {
+                poisonSweepSections();
+                return false;
+            }
+            // One canonical response contributes each wire section exactly
+            // once. Accepting even an identical duplicate would make a
+            // missing peer indistinguishable from complete evidence.
+            if ((candidate.presentMask & (1u << index)) != 0) {
+                poisonSweepSections();
+                return false;
+            }
+            candidate.sections[index] = V1SweepSectionObservation{index, declaredCount, lower, upper};
+            candidate.presentMask = static_cast<uint16_t>(candidate.presentMask | (1u << index));
+        }
+        ++candidate.revision;
+        candidate.sequence = ++settingsObservationSequence_;
+        candidate.ingressSequence = ingressSequence;
+        candidate.complete = candidate.presentMask == static_cast<uint16_t>((1u << declaredCount) - 1u);
+        candidate.available = true;
+        sweepSectionsObservation_ = candidate;
+        return true;
+    }
+    case PACKET_ID_RESP_SWEEP_DEFINITION: {
+        if (sweepDefinitionsObservation_.poisoned) return false;
+        if (!payload || !V1PacketFraming::hasCanonicalResponseEvidenceForDestination(data, length, 5, 0xD6)) {
+            return false;
+        }
+        // ESP 3.016 defines bits 0..5 as the zero-based definition index and
+        // its canonical responses set reserved bit 7 (0x80..0xBF). The vendor
+        // libraries mask bit 7, so tolerate either value while requiring the
+        // unsupported bit 6 to remain clear.
+        if ((payload[0] & 0x40u) != 0) {
+            sweepDefinitionsObservation_.poisoned = true;
+            return false;
+        }
+        const uint8_t index = static_cast<uint8_t>(payload[0] & 0x3Fu);
+        if (sweepMaxObservation_.available && index > sweepMaxObservation_.maxIndex) {
+            sweepDefinitionsObservation_.poisoned = true;
+            return false;
+        }
+        const uint16_t upper = static_cast<uint16_t>((payload[1] << 8) | payload[2]);
+        const uint16_t lower = static_cast<uint16_t>((payload[3] << 8) | payload[4]);
+        const bool unused = lower == 0 && upper == 0;
+        if ((!unused && lower >= upper) || (lower == 0) != (upper == 0)) {
+            // Once framing, checksum, destination, and selector all identify a
+            // modeled definition response, an impossible range is corrupt
+            // transaction evidence rather than ignorable BLE noise.
+            sweepDefinitionsObservation_.poisoned = true;
+            return false;
+        }
+        if ((sweepDefinitionsObservation_.presentMask & (uint64_t{1} << index)) != 0 &&
+            (sweepDefinitionsObservation_.definitions[index].lowerMHz != lower ||
+             sweepDefinitionsObservation_.definitions[index].upperMHz != upper)) {
+            sweepDefinitionsObservation_.poisoned = true;
+            return false;
+        }
+        sweepDefinitionsObservation_.definitions[index] = V1SweepDefinitionObservation{index, lower, upper};
+        sweepDefinitionsObservation_.ingressSequences[index] = ingressSequence;
+        sweepDefinitionsObservation_.presentMask |= (uint64_t{1} << index);
+        ++sweepDefinitionsObservation_.revision;
+        sweepDefinitionsObservation_.sequence = ++settingsObservationSequence_;
+        sweepDefinitionsObservation_.ingressSequence = ingressSequence;
+        return true;
+    }
+    case PACKET_ID_RESP_SWEEP_WRITE_RESULT: {
+        if (!payload || !V1PacketFraming::hasCanonicalResponseEvidenceForDestination(data, length, 1, 0xD6)) {
+            return false;
+        }
+        // Zero is success. Nonzero is the first invalid zero-based definition
+        // index plus one, so 64 is the largest representable failure.
+        if (payload[0] > 64) return false;
+        ++sweepWriteResultObservation_.revision;
+        sweepWriteResultObservation_.sequence = ++settingsObservationSequence_;
+        sweepWriteResultObservation_.ingressSequence = ingressSequence;
+        sweepWriteResultObservation_.available = true;
+        sweepWriteResultObservation_.result = payload[0];
+        return true;
+    }
+
+    case PACKET_ID_FACTORY_DEFAULT:
+    case PACKET_ID_WRITE_SWEEP_DEFINITION:
+    case PACKET_ID_REQ_ALL_SWEEP_DEFINITIONS:
+    case PACKET_ID_REQ_MAX_SWEEP_INDEX:
+    case PACKET_ID_REQ_SWEEP_SECTIONS:
+        return true; // outbound requests/echoes are never proof
+
     case PACKET_ID_VERSION: // 0x01 - reqVersion
         // 0x01 is the OUTBOUND request id. The V1 should never send 0x01
         // back to us, but if a buggy peer or replay loop produces one we
@@ -357,6 +530,22 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
         // Unknown packet - silently ignore in hot path
         return false;
     }
+}
+
+void PacketParser::resetSweepSectionsObservation() {
+    sweepSectionsObservation_ = V1SweepSectionsObservation{};
+}
+
+void PacketParser::resetSweepMaxObservation() {
+    sweepMaxObservation_ = V1SweepMaxObservation{};
+}
+
+void PacketParser::resetSweepDefinitionsObservation() {
+    sweepDefinitionsObservation_ = V1SweepDefinitionsObservation{};
+}
+
+void PacketParser::resetSweepWriteResultObservation() {
+    sweepWriteResultObservation_ = V1SweepWriteResultObservation{};
 }
 
 bool PacketParser::copyLatestCanonicalCurrentVolume(uint8_t& main, uint8_t& muted,

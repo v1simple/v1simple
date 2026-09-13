@@ -17,6 +17,7 @@ inline constexpr uint32_t kKaSensitivityVersion = 41032;
 inline constexpr uint32_t kStartupRestingDisplayAndBsmVersion = 41035;
 inline constexpr uint32_t kAutoMuteVersion = 41036;
 inline constexpr uint32_t kSavedVolumeVersion = 41037;
+inline constexpr uint32_t kKeepCurrentVolumeOnDisconnectVersion = 41038;
 inline constexpr uint32_t kDisplayActiveVersion = 41037;
 inline constexpr uint32_t kKAndXSensitivityVersion = 41037;
 inline constexpr uint32_t kPhotoRadarVersion = 41037;
@@ -55,6 +56,12 @@ struct Capabilities {
 };
 
 inline uint8_t supportedUserByteCount(uint32_t firmwareVersion) {
+    if (firmwareVersion >= kFirstUnverifiedFutureMajorVersion) {
+        // The 4.x byte map must not be presented as qualified for an unknown
+        // future major protocol. Raw captured bytes remain available through
+        // the observation payload, but their writable shape is unknown.
+        return 0;
+    }
     if (firmwareVersion != 0 && firmwareVersion < kInitialGen2Version) {
         // Gen1 supports all six ESP user bytes (iOSESPLibrary @ d04f665,
         // ESPV1UserBytes.m getNumberOfSupportedBytesForV1Version).

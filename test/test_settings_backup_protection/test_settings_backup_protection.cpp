@@ -67,10 +67,28 @@ void buildValidBackupDoc(JsonDocument& doc) {
     V1Settings settings;
     settings.apSSID = "V1-Test";
     settings.brightness = 128;
+    settings.autoPushProfileSchemaVersion = V1_PROFILE_SCHEMA_VERSION;
     V1ProfileManager profileManager;
     BackupPayloadBuilder::buildBackupDocument(
         doc, settings, profileManager,
         BackupPayloadBuilder::BackupTransport::SdBackup, 1000);
+}
+
+JsonObject appendCurrentProfile(JsonDocument& doc, const char* name) {
+    doc["autoPushProfileSchemaVersion"] = V1_PROFILE_SCHEMA_VERSION;
+    JsonArray profiles = doc["profiles"].as<JsonArray>();
+    if (profiles.isNull()) profiles = doc["profiles"].to<JsonArray>();
+    JsonObject profile = profiles.add<JsonObject>();
+    profile["name"] = name;
+    profile["description"] = "";
+    profile["schemaVersion"] = V1_PROFILE_SCHEMA_VERSION;
+    appendV1DetectorConfiguration(profile["detector"].to<JsonObject>(),
+                                  V1DetectorConfiguration{});
+    JsonArray bytes = profile["bytes"].to<JsonArray>();
+    for (size_t index = 0; index < V1SettingsJson::kSettingsByteCount; ++index) {
+        bytes.add(0xFF);
+    }
+    return profile;
 }
 
 /// Serialize a JsonDocument to a std::string for writing to files.
@@ -105,6 +123,15 @@ void writeFileContent(fs::FS& fs, const char* path, const std::string& content) 
     file.write(reinterpret_cast<const uint8_t*>(content.data()), content.size());
     file.flush();
     file.close();
+}
+
+std::string readFileContent(fs::FS& fs, const char* path) {
+    File file = fs.open(path, FILE_READ);
+    if (!file) return {};
+    std::string content;
+    while (file.available()) content.push_back(static_cast<char>(file.read()));
+    file.close();
+    return content;
 }
 
 void resetRuntimeState() {
@@ -248,6 +275,20 @@ void test_version_prefers_underscore_key() {
     TEST_ASSERT_EQUAL_INT(9, backupDocumentVersion(doc));
 }
 
+void test_future_or_unrepresentable_version_cannot_overflow_candidate_score() {
+    JsonDocument future;
+    future["_version"] = SD_BACKUP_VERSION + 1;
+    future["brightness"] = 1;
+    TEST_ASSERT_EQUAL_INT(1, backupDocumentVersion(future));
+    TEST_ASSERT_EQUAL_INT(101, backupCandidateScore(future));
+
+    JsonDocument maximum;
+    maximum["_version"] = 2147483647;
+    maximum["brightness"] = 1;
+    TEST_ASSERT_EQUAL_INT(1, backupDocumentVersion(maximum));
+    TEST_ASSERT_EQUAL_INT(101, backupCandidateScore(maximum));
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // parseBackupFile
 // ════════════════════════════════════════════════════════════════════════════
@@ -322,6 +363,200 @@ void test_parse_rejects_missing_signature() {
 
     JsonDocument parsed;
     TEST_ASSERT_FALSE(parseBackupFile(&fs, SETTINGS_BACKUP_PATH, parsed, true));
+}
+
+void test_parse_rejects_present_wrong_type_integrity_markers() {
+    fs::FS fs(g_tempRoot);
+    const char* bodies[] = {
+        "{\"_type\":null,\"brightness\":1}",
+        "{\"_type\":7,\"brightness\":1}",
+        "{\"_type\":\"v1simple_sd_backup\",\"_crc32\":null,\"brightness\":1}",
+        "{\"_type\":\"v1simple_sd_backup\",\"_crc32\":\"0\",\"brightness\":1}",
+        "{\"_type\":\"v1simple_sd_backup\",\"_crc32\":-1,\"brightness\":1}",
+        "{\"_type\":\"v1simple_sd_backup\",\"_crc32\":1.5,\"brightness\":1}",
+        "{\"_type\":\"v1simple_sd_backup\",\"_version\":null,\"brightness\":1}",
+        "{\"_type\":\"v1simple_sd_backup\",\"_version\":\"20\",\"brightness\":1}",
+        "{\"_type\":\"v1simple_sd_backup\",\"_version\":22,\"brightness\":1}",
+        "{\"_type\":\"v1simple_sd_backup\",\"_version\":2147483647,\"brightness\":1}",
+        "{\"_type\":\"v1simple_sd_backup\",\"version\":21,\"brightness\":1}",
+        "{\"_type\":\"v1simple_sd_backup\",\"_version\":21,\"brightness\":1,\"brightnes\":2}",
+    };
+    for (const char* body : bodies) {
+        writeFileContent(fs, SETTINGS_BACKUP_PATH, body);
+        PsramJson::Document parsed;
+        TEST_ASSERT_FALSE_MESSAGE(parseBackupFile(&fs, SETTINGS_BACKUP_PATH, parsed, false), body);
+    }
+}
+
+void test_invalid_newer_marker_candidate_cannot_suppress_valid_previous_backup() {
+    fs::FS fs(g_tempRoot);
+    JsonDocument future;
+    future["_type"] = "v1simple_sd_backup";
+    future["_version"] = SD_BACKUP_VERSION + 1;
+    future["brightness"] = 211;
+    future["_crc32"] = BackupPayloadBuilder::computeBackupCrc32(future);
+    writeFileContent(fs, SETTINGS_BACKUP_PATH, serializeDoc(future));
+    JsonDocument previous;
+    buildValidBackupDoc(previous);
+    previous["brightness"] = 42;
+    previous.remove("_crc32");
+    previous["_crc32"] = BackupPayloadBuilder::computeBackupCrc32(previous);
+    writeFileContent(fs, SETTINGS_BACKUP_PREV_PATH, serializeDoc(previous));
+
+    PsramJson::Document selected;
+    const char* selectedPath = nullptr;
+    TEST_ASSERT_TRUE(loadBestBackupDocument(&fs, selected, &selectedPath, false));
+    TEST_ASSERT_EQUAL_STRING(SETTINGS_BACKUP_PREV_PATH, selectedPath);
+    TEST_ASSERT_EQUAL_INT(42, selected["brightness"].as<int>());
+}
+
+void test_invalid_current_schema_candidate_cannot_suppress_valid_previous_backup() {
+    fs::FS fs(g_tempRoot);
+    JsonDocument invalidCurrent;
+    buildValidBackupDoc(invalidCurrent);
+    invalidCurrent["slot0ProfielName"] = "Road";
+    invalidCurrent.remove("_crc32");
+    invalidCurrent["_crc32"] = BackupPayloadBuilder::computeBackupCrc32(invalidCurrent);
+    writeFileContent(fs, SETTINGS_BACKUP_PATH, serializeDoc(invalidCurrent));
+
+    JsonDocument previous;
+    buildValidBackupDoc(previous);
+    previous["brightness"] = 42;
+    previous.remove("_crc32");
+    previous["_crc32"] = BackupPayloadBuilder::computeBackupCrc32(previous);
+    writeFileContent(fs, SETTINGS_BACKUP_PREV_PATH, serializeDoc(previous));
+
+    PsramJson::Document selected;
+    const char* selectedPath = nullptr;
+    TEST_ASSERT_TRUE(loadBestBackupDocument(&fs, selected, &selectedPath, false));
+    TEST_ASSERT_EQUAL_STRING(SETTINGS_BACKUP_PREV_PATH, selectedPath);
+    TEST_ASSERT_EQUAL_INT(42, selected["brightness"].as<int>());
+}
+
+void test_intrinsically_invalid_current_candidate_selects_valid_previous_backup() {
+    fs::FS fs(g_tempRoot);
+
+    JsonDocument previous;
+    buildValidBackupDoc(previous);
+    previous["brightness"] = 42;
+    previous.remove("_crc32");
+    previous["_crc32"] = BackupPayloadBuilder::computeBackupCrc32(previous);
+    writeFileContent(fs, SETTINGS_BACKUP_PREV_PATH, serializeDoc(previous));
+
+    const auto assertPreviousSelected = [&](JsonDocument& invalidCurrent, const char* label) {
+        TEST_ASSERT_FALSE_MESSAGE(validateCurrentBackupDocumentShape(invalidCurrent), label);
+        invalidCurrent.remove("_crc32");
+        invalidCurrent["_crc32"] = BackupPayloadBuilder::computeBackupCrc32(invalidCurrent);
+        writeFileContent(fs, SETTINGS_BACKUP_PATH, serializeDoc(invalidCurrent));
+
+        PsramJson::Document selected;
+        const char* selectedPath = nullptr;
+        TEST_ASSERT_TRUE(loadBestBackupDocument(&fs, selected, &selectedPath, false));
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(SETTINGS_BACKUP_PREV_PATH, selectedPath, label);
+        TEST_ASSERT_EQUAL_INT(42, selected["brightness"].as<int>());
+    };
+
+    JsonDocument duplicateWifiIndex;
+    buildValidBackupDoc(duplicateWifiIndex);
+    JsonArray wifiSlots = duplicateWifiIndex["wifiStaSlots"].to<JsonArray>();
+    for (int copy = 0; copy < 2; ++copy) {
+        JsonObject slot = wifiSlots.add<JsonObject>();
+        slot["index"] = 0;
+        slot["ssid"] = "RoadNet";
+        slot["label"] = "Road";
+        slot["priority"] = copy;
+        slot["lastConnectedAtSec"] = static_cast<uint32_t>(copy);
+    }
+    duplicateWifiIndex["wifiClientSSID"] = "RoadNet";
+    assertPreviousSelected(duplicateWifiIndex, "duplicate WiFi slot index");
+
+    JsonDocument malformedDetector;
+    buildValidBackupDoc(malformedDetector);
+    JsonObject malformedProfile = appendCurrentProfile(malformedDetector, "Road");
+    malformedProfile["detector"]["volume"]["policy"] = "temporary";
+    assertPreviousSelected(malformedDetector, "malformed current detector");
+
+    JsonDocument duplicateProfileName;
+    buildValidBackupDoc(duplicateProfileName);
+    appendCurrentProfile(duplicateProfileName, "Road");
+    appendCurrentProfile(duplicateProfileName, "ROAD");
+    assertPreviousSelected(duplicateProfileName, "duplicate canonical profile name");
+
+    JsonDocument danglingAssignment;
+    buildValidBackupDoc(danglingAssignment);
+    danglingAssignment["autoPushProfileSchemaVersion"] = V1_PROFILE_SCHEMA_VERSION;
+    danglingAssignment["slot0ProfileName"] = "Absent";
+    assertPreviousSelected(danglingAssignment, "dangling profile assignment");
+
+    JsonDocument decodedNulPassword;
+    buildValidBackupDoc(decodedNulPassword);
+    // Under the canonical "V1..." XOR key, the first two encoded bytes decode
+    // to NUL. Shape-only validation used to let this primary suppress .prev.
+    decodedNulPassword["apPassword"] = "hex:5631000000000000";
+    assertPreviousSelected(decodedNulPassword, "AP password decodes to embedded NUL");
+
+    JsonDocument decodedControlPassword;
+    buildValidBackupDoc(decodedControlPassword);
+    // Decodes to 0x01 followed by seven ASCII 'A' bytes. The exact current
+    // writer cannot serialize that C0 byte, so it may not qualify a primary.
+    decodedControlPassword["apPassword"] = "hex:577006736C127222";
+    assertPreviousSelected(decodedControlPassword, "AP password decodes to unsafe control byte");
+
+    JsonDocument decodedInvalidUtf8Password;
+    buildValidBackupDoc(decodedInvalidUtf8Password);
+    // Decodes to the invalid UTF-8 prefix C3 28 followed by six ASCII bytes.
+    decodedInvalidUtf8Password["apPassword"] = "hex:951906736C127222";
+    assertPreviousSelected(decodedInvalidUtf8Password, "AP password decodes to invalid UTF-8");
+}
+
+void test_current_backup_requires_every_writer_field_with_only_transport_exceptions() {
+    V1Settings settings;
+    settings.apSSID = "V1-Test";
+    settings.apPassword = "recovery-secret";
+    settings.autoPushProfileSchemaVersion = V1_PROFILE_SCHEMA_VERSION;
+    V1ProfileManager profileManager;
+
+    JsonDocument sd;
+    BackupPayloadBuilder::buildBackupDocument(
+        sd, settings, profileManager, BackupPayloadBuilder::BackupTransport::SdBackup, 1000);
+    TEST_ASSERT_TRUE(validateCurrentBackupDocumentShape(sd));
+
+    std::vector<std::string> requiredKeys;
+    for (JsonPairConst pair : sd.as<JsonObjectConst>()) {
+        requiredKeys.emplace_back(pair.key().c_str(), pair.key().size());
+    }
+    for (const std::string& key : requiredKeys) {
+        JsonDocument missing;
+        missing.set(sd);
+        missing.remove(key.c_str());
+        TEST_ASSERT_FALSE_MESSAGE(validateCurrentBackupDocumentShape(missing), key.c_str());
+    }
+
+    JsonDocument http;
+    BackupPayloadBuilder::buildBackupDocument(
+        http, settings, profileManager, BackupPayloadBuilder::BackupTransport::HttpDownload, 1000);
+    TEST_ASSERT_TRUE(validateCurrentBackupDocumentShape(http));
+    TEST_ASSERT_TRUE(http["apPassword"].isUnbound());
+    TEST_ASSERT_TRUE(http["_crc32"].isUnbound());
+
+    http["apPassword"] = "hex:00";
+    TEST_ASSERT_FALSE(validateCurrentBackupDocumentShape(http));
+    http.remove("apPassword");
+    http["_crc32"] = 1u;
+    TEST_ASSERT_FALSE(validateCurrentBackupDocumentShape(http));
+}
+
+void test_current_backup_marker_only_or_partial_document_is_not_applicable() {
+    JsonDocument markerOnly;
+    markerOnly["_type"] = "v1simple_backup";
+    markerOnly["_version"] = SD_BACKUP_VERSION;
+    TEST_ASSERT_FALSE(validateCurrentBackupDocumentShape(markerOnly));
+
+    JsonDocument partial;
+    partial["_type"] = "v1simple_sd_backup";
+    partial["_version"] = SD_BACKUP_VERSION;
+    partial["brightness"] = 1;
+    TEST_ASSERT_FALSE(validateCurrentBackupDocumentShape(partial));
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -412,6 +647,7 @@ void test_atomic_write_serialized_payload_succeeds() {
     V1Settings settings;
     settings.apSSID = "V1-Test";
     settings.brightness = 128;
+    settings.autoPushProfileSchemaVersion = V1_PROFILE_SCHEMA_VERSION;
     V1ProfileManager profileManager;
     TEST_ASSERT_TRUE(profileManager.begin(&fs));
 
@@ -444,6 +680,121 @@ void test_payload_release_is_idempotent() {
     TEST_ASSERT_NULL(payload.data);
 }
 
+void test_backup_crc_streams_without_document_or_string_allocation() {
+    JsonDocument doc;
+    doc["before"] = "value";
+    doc["_crc32"] = 123u; // Deliberately not last.
+    doc["escaped\"\\\nkey"] = "payload";
+    JsonArray nested = doc["nested"].to<JsonArray>();
+    nested.add(1);
+    nested.add("two");
+
+    JsonDocument legacyCopy;
+    legacyCopy.set(doc);
+    legacyCopy.remove("_crc32");
+    String serialized;
+    serializeJson(legacyCopy, serialized);
+    const uint32_t expected = computeCrc32(
+        reinterpret_cast<const uint8_t*>(serialized.c_str()), serialized.length());
+
+    mock_reset_heap_caps_tracking();
+    g_mock_heap_caps_fail_all_allocations = true;
+    TEST_ASSERT_EQUAL_HEX32(expected, BackupPayloadBuilder::computeBackupCrc32(doc));
+    g_mock_heap_caps_fail_all_allocations = false;
+    TEST_ASSERT_EQUAL_UINT32(0u, g_mock_heap_caps_malloc_calls);
+    TEST_ASSERT_EQUAL_UINT32(0u, g_mock_heap_caps_realloc_calls);
+    TEST_ASSERT_EQUAL_UINT32(123u, doc["_crc32"].as<uint32_t>());
+}
+
+void test_best_backup_psram_exhaustion_fails_closed_without_copy_or_file_mutation() {
+    fs::FS fs(g_tempRoot);
+    JsonDocument source;
+    buildValidBackupDoc(source);
+    const std::string committed = serializeDoc(source);
+    writeFileContent(fs, SETTINGS_BACKUP_PATH, committed);
+
+    PsramJson::Document selected;
+    const char* selectedPath = "stale";
+    mock_reset_heap_caps_tracking();
+    g_mock_heap_caps_fail_all_allocations = true;
+    TEST_ASSERT_FALSE(loadBestBackupDocument(&fs, selected, &selectedPath, false));
+    g_mock_heap_caps_fail_all_allocations = false;
+
+    TEST_ASSERT_NULL(selectedPath);
+    TEST_ASSERT_EQUAL_UINT(0u, selected.size());
+    TEST_ASSERT_GREATER_THAN(0u, g_mock_heap_caps_malloc_calls + g_mock_heap_caps_realloc_calls);
+    for (uint32_t index = 0; index < g_mock_heap_caps_malloc_calls && index < MOCK_HEAP_CAPS_TRACKED_CALLS; ++index) {
+        TEST_ASSERT_EQUAL_UINT32(PsramJson::kCaps, g_mock_heap_caps_malloc_caps_history[index]);
+    }
+    TEST_ASSERT_EQUAL_STRING(committed.c_str(), readFileContent(fs, SETTINGS_BACKUP_PATH).c_str());
+}
+
+void test_fail_once_while_scanning_any_backup_candidate_never_selects_an_older_copy() {
+    fs::FS fs(g_tempRoot);
+    JsonDocument newest;
+    buildValidBackupDoc(newest);
+    newest["_version"] = SD_BACKUP_VERSION;
+    newest["brightness"] = 211;
+    newest.remove("_crc32");
+    newest["_crc32"] = BackupPayloadBuilder::computeBackupCrc32(newest);
+    JsonDocument older;
+    buildValidBackupDoc(older);
+    older["_version"] = SD_BACKUP_VERSION - 1;
+    older["brightness"] = 42;
+    older.remove("_crc32");
+    older["_crc32"] = BackupPayloadBuilder::computeBackupCrc32(older);
+    const std::string newestBytes = serializeDoc(newest);
+    const std::string olderBytes = serializeDoc(older);
+    writeFileContent(fs, SETTINGS_BACKUP_PATH, newestBytes);
+    writeFileContent(fs, SETTINGS_BACKUP_PREV_PATH, olderBytes);
+
+    bool exercisedFailure = false;
+    for (uint32_t failCall = 1; failCall <= 20; ++failCall) {
+        mock_reset_heap_caps_tracking();
+        g_mock_heap_caps_fail_malloc_on_call = failCall;
+        PsramJson::Document selected;
+        const char* selectedPath = "stale";
+        BackupDocumentLoadStatus status = BackupDocumentLoadStatus::Success;
+        const bool loaded = loadBestBackupDocument(&fs, selected, &selectedPath, false, &status);
+        const bool failedAllocation = g_mock_heap_caps_fail_malloc_on_call == 0u;
+        if (failedAllocation) {
+            exercisedFailure = true;
+            TEST_ASSERT_FALSE(loaded);
+            TEST_ASSERT_NULL(selectedPath);
+            TEST_ASSERT_EQUAL_INT(static_cast<int>(BackupDocumentLoadStatus::MemoryUnavailable),
+                                  static_cast<int>(status));
+        }
+        g_mock_heap_caps_fail_malloc_on_call = 0u;
+    }
+    TEST_ASSERT_TRUE(exercisedFailure);
+    TEST_ASSERT_EQUAL_STRING(newestBytes.c_str(), readFileContent(fs, SETTINGS_BACKUP_PATH).c_str());
+    TEST_ASSERT_EQUAL_STRING(olderBytes.c_str(), readFileContent(fs, SETTINGS_BACKUP_PREV_PATH).c_str());
+}
+
+void test_atomic_backup_verification_oom_preserves_committed_primary() {
+    fs::FS fs(g_tempRoot);
+    JsonDocument original;
+    buildValidBackupDoc(original);
+    TEST_ASSERT_TRUE(writeBackupAtomicallyFromDoc(&fs, original));
+    const std::string committed = readFileContent(fs, SETTINGS_BACKUP_PATH);
+
+    JsonDocument replacement;
+    buildValidBackupDoc(replacement);
+    replacement["brightness"] = 17;
+    std::string replacementJson = serializeDoc(replacement);
+    SerializedSettingsBackupPayload payload;
+    payload.data = replacementJson.data();
+    payload.length = replacementJson.size();
+
+    g_mock_heap_caps_fail_all_allocations = true;
+    TEST_ASSERT_FALSE(writeBackupAtomically(&fs, payload));
+    g_mock_heap_caps_fail_all_allocations = false;
+    payload.data = nullptr;
+
+    TEST_ASSERT_EQUAL_STRING(committed.c_str(), readFileContent(fs, SETTINGS_BACKUP_PATH).c_str());
+    TEST_ASSERT_FALSE(fs.exists(SETTINGS_BACKUP_TMP_PATH));
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 
 int main(int argc, char** argv) {
@@ -471,6 +822,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_score_prefers_newer_version);
     RUN_TEST(test_version_falls_back_to_legacy_key);
     RUN_TEST(test_version_prefers_underscore_key);
+    RUN_TEST(test_future_or_unrepresentable_version_cannot_overflow_candidate_score);
 
     // parseBackupFile
     RUN_TEST(test_parse_valid_backup);
@@ -482,6 +834,12 @@ int main(int argc, char** argv) {
     RUN_TEST(test_parse_rejects_invalid_json);
     RUN_TEST(test_parse_rejects_unsupported_type);
     RUN_TEST(test_parse_rejects_missing_signature);
+    RUN_TEST(test_parse_rejects_present_wrong_type_integrity_markers);
+    RUN_TEST(test_invalid_newer_marker_candidate_cannot_suppress_valid_previous_backup);
+    RUN_TEST(test_invalid_current_schema_candidate_cannot_suppress_valid_previous_backup);
+    RUN_TEST(test_intrinsically_invalid_current_candidate_selects_valid_previous_backup);
+    RUN_TEST(test_current_backup_requires_every_writer_field_with_only_transport_exceptions);
+    RUN_TEST(test_current_backup_marker_only_or_partial_document_is_not_applicable);
 
     // Atomic write — happy path
     RUN_TEST(test_atomic_write_creates_primary_file);
@@ -495,6 +853,10 @@ int main(int argc, char** argv) {
     // Serialized payload path
     RUN_TEST(test_atomic_write_serialized_payload_succeeds);
     RUN_TEST(test_payload_release_is_idempotent);
+    RUN_TEST(test_backup_crc_streams_without_document_or_string_allocation);
+    RUN_TEST(test_fail_once_while_scanning_any_backup_candidate_never_selects_an_older_copy);
+    RUN_TEST(test_best_backup_psram_exhaustion_fails_closed_without_copy_or_file_mutation);
+    RUN_TEST(test_atomic_backup_verification_oom_preserves_committed_primary);
 
     return UNITY_END();
 }

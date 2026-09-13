@@ -14,6 +14,8 @@ function snapshotWith(observations = {}) {
             displayOn: { available: false, value: null },
             currentVolume: { available: false, main: null, muted: null },
             savedVolume: { available: false, main: null, muted: null },
+            bluetoothIndicator: { available: false, value: null },
+            customFrequencies: { definitionsAvailable: false, effectiveDefinitions: [] },
             ...observations
         }
     };
@@ -28,7 +30,7 @@ describe('profile settings adapter', () => {
                 display: 'unchanged',
                 volume: { policy: 'unchanged' },
                 bluetoothLed: 'unchanged',
-                customFrequencies: 'unchanged'
+                customFrequencies: { policy: 'unchanged' }
             });
     });
 
@@ -52,22 +54,65 @@ describe('profile settings adapter', () => {
         expect(toApiDetectorConfiguration(detector).mode).toEqual({ policy: 'unchanged' });
     });
 
-    it('uses saved-volume availability ahead of a different current volume', () => {
+    it('prefills a differing observed current pair without inventing a volume policy', () => {
         const detector = detectorConfigurationFromSnapshot(snapshotWith({
             currentVolume: { available: true, main: 1, muted: 2 },
             savedVolume: { available: true, main: 8, muted: 3 }
         }));
-        expect(toApiDetectorConfiguration(detector).volume).toEqual({
-            policy: 'saved', main: 8, muted: 3
-        });
+        expect(detector).toMatchObject({ volumePolicy: 'unchanged', mainVolume: 1, mutedVolume: 2 });
+        expect(toApiDetectorConfiguration(detector).volume).toEqual({ policy: 'unchanged' });
     });
 
-    it('maps current-only zero volume to an explicit temporary 0/0 pair', () => {
+    it('does not infer saved policy when current and saved volume are equal', () => {
+        const detector = detectorConfigurationFromSnapshot(snapshotWith({
+            currentVolume: { available: true, main: 8, muted: 3 },
+            savedVolume: { available: true, main: 8, muted: 3 }
+        }));
+        expect(detector).toMatchObject({
+            volumePolicy: 'unchanged', mainVolume: 8, mutedVolume: 3,
+            volumeFeedback: 'none', volumeDisconnect: 'restore_saved'
+        });
+        expect(toApiDetectorConfiguration(detector).volume).toEqual({ policy: 'unchanged' });
+    });
+
+    it('prefills current-only zero volume without inventing command aux bits', () => {
         const detector = detectorConfigurationFromSnapshot(snapshotWith({
             currentVolume: { available: true, main: 0, muted: 0 }
         }));
-        expect(toApiDetectorConfiguration(detector).volume).toEqual({
-            policy: 'temporary', main: 0, muted: 0
+        expect(detector).toMatchObject({ volumePolicy: 'unchanged', mainVolume: 0, mutedVolume: 0 });
+        expect(toApiDetectorConfiguration(detector).volume).toEqual({ policy: 'unchanged' });
+    });
+
+    it('round-trips volume command policy, display-off Bluetooth intent, and complete custom definitions', () => {
+        const detector = detectorConfigurationFromSnapshot(snapshotWith({
+            displayOn: { available: true, value: false },
+            bluetoothIndicator: { available: true, value: 'blinking' },
+            currentVolume: { available: true, main: 5, muted: 2 },
+            customFrequencies: {
+                definitionsAvailable: true,
+                effectiveDefinitions: [
+                    { index: 0, lowerMHz: 24050, upperMHz: 24150 },
+                    { index: 1, lowerMHz: 0, upperMHz: 0 }
+                ]
+            }
+        }));
+        detector.volumePolicy = 'temporary';
+        detector.volumeFeedback = 'always';
+        detector.volumeDisconnect = 'keep_current';
+        expect(toApiDetectorConfiguration(detector)).toMatchObject({
+            display: 'off',
+            bluetoothLed: 'on',
+            volume: {
+                policy: 'temporary', main: 5, muted: 2,
+                feedback: 'always', disconnect: 'keep_current'
+            },
+            customFrequencies: {
+                policy: 'value',
+                definitions: [
+                    { index: 0, lowerMHz: 24050, upperMHz: 24150 },
+                    { index: 1, lowerMHz: 0, upperMHz: 0 }
+                ]
+            }
         });
     });
 

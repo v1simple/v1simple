@@ -20,5 +20,9 @@ struct Runtime {
 void handleApiDeviceSettingsGet(WebServer& server, const Runtime& runtime);
 
 void handleApiDeviceSettingsSave(WebServer& server, const Runtime& runtime);
+void handleApiDeviceSettingsSaveBody(WebServer& server, const Runtime& runtime,
+                                     const uint8_t* body, size_t bodySize,
+                                     const char* multipartBoundary = nullptr,
+                                     size_t multipartBoundarySize = 0);
 
 } // namespace WifiSettingsApiService

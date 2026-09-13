@@ -47,8 +47,20 @@ export function createDefaultDetectorConfiguration() {
         volumePolicy: 'unchanged',
         mainVolume: 5,
         mutedVolume: 0,
+        volumeFeedback: 'none',
+        volumeDisconnect: 'restore_saved',
         bluetoothLed: 'unchanged',
-        customFrequencies: 'unchanged'
+        customFrequencyPolicy: 'unchanged',
+        customFrequencyDefinitions: []
+    };
+}
+
+export function cloneDetectorConfiguration(detector = {}) {
+    return {
+        ...detector,
+        customFrequencyDefinitions: Array.isArray(detector.customFrequencyDefinitions)
+            ? detector.customFrequencyDefinitions.map((definition) => ({ ...definition }))
+            : []
     };
 }
 
@@ -64,7 +76,23 @@ export function fromApiDetectorConfiguration(api = {}) {
             ? api.volume.policy
             : 'unchanged',
         mainVolume: Number(api.volume?.main ?? defaults.mainVolume),
-        mutedVolume: Number(api.volume?.muted ?? defaults.mutedVolume)
+        mutedVolume: Number(api.volume?.muted ?? defaults.mutedVolume),
+        volumeFeedback: ['none', 'changed_only', 'always'].includes(api.volume?.feedback)
+            ? api.volume.feedback
+            : 'none',
+        volumeDisconnect: api.volume?.disconnect === 'keep_current'
+            ? 'keep_current'
+            : 'restore_saved',
+        bluetoothLed: ['off', 'on'].includes(api.bluetoothLed) ? api.bluetoothLed : 'unchanged',
+        customFrequencyPolicy: api.customFrequencies?.policy === 'value' ? 'value' : 'unchanged',
+        customFrequencyDefinitions: api.customFrequencies?.policy === 'value' &&
+            Array.isArray(api.customFrequencies.definitions)
+            ? api.customFrequencies.definitions.map((definition, index) => ({
+                  index: Number(definition.index ?? index),
+                  lowerMHz: Number(definition.lowerMHz ?? 0),
+                  upperMHz: Number(definition.upperMHz ?? 0)
+              }))
+            : []
     };
 }
 
@@ -84,10 +112,27 @@ export function toApiDetectorConfiguration(ui = {}) {
             : {
                   policy: volumePolicy,
                   main: Number(ui.mainVolume),
-                  muted: Number(ui.mutedVolume)
+                  muted: Number(ui.mutedVolume),
+                  feedback: ['changed_only', 'always'].includes(ui.volumeFeedback)
+                      ? ui.volumeFeedback
+                      : 'none',
+                  disconnect: volumePolicy === 'temporary' && ui.volumeDisconnect === 'keep_current'
+                      ? 'keep_current'
+                      : 'restore_saved'
               },
-        bluetoothLed: 'unchanged',
-        customFrequencies: 'unchanged'
+        bluetoothLed: ['off', 'on'].includes(ui.bluetoothLed) ? ui.bluetoothLed : 'unchanged',
+        customFrequencies: ui.customFrequencyPolicy === 'value'
+            ? {
+                  policy: 'value',
+                  definitions: Array.isArray(ui.customFrequencyDefinitions)
+                      ? ui.customFrequencyDefinitions.map((definition, index) => ({
+                            index: Number(definition.index ?? index),
+                            lowerMHz: Number(definition.lowerMHz ?? 0),
+                            upperMHz: Number(definition.upperMHz ?? 0)
+                        }))
+                      : []
+              }
+            : { policy: 'unchanged' }
     };
 }
 
@@ -109,16 +154,31 @@ export function detectorConfigurationFromSnapshot(snapshot = {}) {
     }
     const display = snapshot.observations?.displayOn;
     if (display?.available) detector.display = display.value ? 'on' : 'off';
+    const bluetooth = snapshot.observations?.bluetoothIndicator;
+    if (bluetooth?.available && detector.display === 'off') {
+        detector.bluetoothLed = bluetooth.value === 'off' ? 'off' : 'on';
+    }
     const saved = snapshot.observations?.savedVolume;
     const current = snapshot.observations?.currentVolume;
-    if (saved?.available) {
-        detector.volumePolicy = 'saved';
-        detector.mainVolume = Number(saved.main);
-        detector.mutedVolume = Number(saved.muted);
-    } else if (current?.available) {
-        detector.volumePolicy = 'temporary';
+    // All-volume readback contains only the numeric current/saved pairs. It
+    // cannot reveal whether the last command was temporary or persistent, nor
+    // its feedback/disconnect policy bits. Prefill observed numbers for a user
+    // choice, but never turn observation into a future write policy.
+    if (current?.available) {
         detector.mainVolume = Number(current.main);
         detector.mutedVolume = Number(current.muted);
+    } else if (saved?.available) {
+        detector.mainVolume = Number(saved.main);
+        detector.mutedVolume = Number(saved.muted);
+    }
+    const custom = snapshot.observations?.customFrequencies;
+    if (custom?.definitionsAvailable && Array.isArray(custom.effectiveDefinitions)) {
+        detector.customFrequencyPolicy = 'value';
+        detector.customFrequencyDefinitions = custom.effectiveDefinitions.map((definition, index) => ({
+            index: Number(definition.index ?? index),
+            lowerMHz: Number(definition.lowerMHz ?? 0),
+            upperMHz: Number(definition.upperMHz ?? 0)
+        }));
     }
     return detector;
 }

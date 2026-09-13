@@ -4,6 +4,9 @@
 
 #include "settings_internals.h"
 #include "display_visual_contract.h"
+#include "json_exact_input.h"
+#include "psram_json_document.h"
+#include "settings_backup_doc.h"
 
 // --- NVS recovery, crypto, WiFi SD secret helpers ---
 
@@ -19,6 +22,10 @@ constexpr const char* WIFI_CLIENT_SD_SECRET_SSID_KEY = "ssid";
 constexpr const char* WIFI_CLIENT_SD_SECRET_PASSWORD_KEY = "password_obf";
 constexpr const char* WIFI_CLIENT_SD_SECRET_TIMESTAMP_KEY = "timestamp";
 constexpr const char* WIFI_CLIENT_SD_SECRET_TEMP_PATH = "/v1wifi_secret.json.tmp";
+constexpr size_t WIFI_CLIENT_SD_SECRET_MAX_BYTES = 4096;
+constexpr size_t WIFI_FORGET_ALL_JOURNAL_MAX_BYTES = 2048;
+constexpr size_t MAX_ENCODED_WIFI_PASSWORD_BYTES =
+    sizeof("hex:") - 1u + MAX_WIFI_PASSWORD_LEN * 2u;
 
 struct WifiClientSdSecretEntry {
     bool used = false;
@@ -26,6 +33,85 @@ struct WifiClientSdSecretEntry {
     String encodedPassword;
     uint32_t timestamp = 0;
 };
+
+bool wifiClientSdSecretDocumentIsValid(const JsonDocument& doc);
+
+bool copyStringExact(const String& source, String& destination) {
+    destination = source;
+    return destination.length() == source.length() && destination == source;
+}
+
+bool canonicalizeV1AddressBytes(const String& value, char output[18]) {
+    size_t begin = 0;
+    size_t end = value.length();
+    while (begin < end && static_cast<uint8_t>(value[begin]) <= static_cast<uint8_t>(' ')) ++begin;
+    while (end > begin && static_cast<uint8_t>(value[end - 1u]) <= static_cast<uint8_t>(' ')) --end;
+    if (end - begin != 17u) return false;
+    for (size_t index = 0; index < 17u; ++index) {
+        char byte = value[begin + index];
+        if ((index + 1u) % 3u == 0u) {
+            if (byte != ':' && byte != '-') return false;
+            output[index] = ':';
+            continue;
+        }
+        if (byte >= 'a' && byte <= 'f') byte = static_cast<char>(byte - 'a' + 'A');
+        if (!((byte >= '0' && byte <= '9') || (byte >= 'A' && byte <= 'F'))) return false;
+        output[index] = byte;
+    }
+    output[17] = '\0';
+    return true;
+}
+
+bool v1AddressMatchesCanonicalBytes(const String& value, const char canonical[18]) {
+    char normalized[18] = {};
+    return canonicalizeV1AddressBytes(value, normalized) && std::memcmp(normalized, canonical, 17u) == 0;
+}
+
+bool nvsSettingsStringFieldsEqual(const V1Settings& lhs, const V1Settings& rhs) {
+    if (lhs.apSSID != rhs.apSSID || lhs.apPassword != rhs.apPassword ||
+        lhs.wifiClientSSID != rhs.wifiClientSSID || lhs.proxyName != rhs.proxyName ||
+        lhs.slot0Name != rhs.slot0Name || lhs.slot1Name != rhs.slot1Name ||
+        lhs.slot2Name != rhs.slot2Name || lhs.slot0_default.profileName != rhs.slot0_default.profileName ||
+        lhs.slot1_highway.profileName != rhs.slot1_highway.profileName ||
+        lhs.slot2_comfort.profileName != rhs.slot2_comfort.profileName ||
+        lhs.lastV1Address != rhs.lastV1Address || lhs.obdSavedAddress != rhs.obdSavedAddress ||
+        lhs.obdSavedName != rhs.obdSavedName) return false;
+    for (size_t index = 0; index < kWifiStaSlotCount; ++index) {
+        if (lhs.wifiStaSlots[index].ssid != rhs.wifiStaSlots[index].ssid ||
+            lhs.wifiStaSlots[index].label != rhs.wifiStaSlots[index].label) return false;
+    }
+    return true;
+}
+
+bool copySettingsExact(const V1Settings& source, V1Settings& destination) {
+    destination = source;
+    return nvsSettingsStringFieldsEqual(source, destination);
+}
+
+bool copyBoundedSemanticString(const String& source, size_t maxBytes, String& destination) {
+    if (source.length() > maxBytes ||
+        !ExactJsonInput::validSemanticString(source.c_str(), source.length())) return false;
+    return copyStringExact(source, destination);
+}
+
+bool refreshWifiClientAliasExact(V1Settings& settings) {
+    settings.refreshWifiClientAliasFromSlots();
+    const WifiStaSlot* primary = settings.primaryWifiStaSlot();
+    return primary ? (settings.wifiClientSSID.length() == primary->ssid.length() &&
+                      settings.wifiClientSSID == primary->ssid)
+                   : settings.wifiClientSSID.length() == 0;
+}
+
+bool readPreferenceStringExact(Preferences& prefs, const char* key, size_t maxBytes, String& output) {
+    if (!key || !prefs.isKey(key)) return false;
+    const size_t storedBytesWithTerminator = prefs.getStringLength(key);
+    if (storedBytesWithTerminator == 0 || storedBytesWithTerminator - 1u > maxBytes) return false;
+    String value = prefs.getString(key, "");
+    if (value.length() + 1u != storedBytesWithTerminator ||
+        std::strlen(value.c_str()) != value.length()) return false;
+    output = std::move(value);
+    return true;
+}
 
 bool validWifiStaSlotIndex(size_t index) {
     return index < kWifiStaSlotCount;
@@ -39,93 +125,102 @@ String wifiClientPasswordObfFromBackupDoc(const JsonDocument& doc, const String&
     if (doc["wifiStaSlots"].is<JsonArrayConst>()) {
         JsonArrayConst slots = doc["wifiStaSlots"].as<JsonArrayConst>();
         for (JsonObjectConst slotObj : slots) {
-            if (!slotObj["ssid"].is<const char*>()) {
-                continue;
-            }
-            const String slotSsid = sanitizeWifiClientSsidValue(slotObj["ssid"].as<String>());
+            String slotSsid;
+            if (exactV1JsonStringChecked(slotObj["ssid"], slotSsid, MAX_WIFI_SSID_LEN) !=
+                ExactV1JsonStringStatus::Valid) return "";
             if (expectedSsid.length() > 0 && slotSsid.length() > 0 && slotSsid != expectedSsid) {
                 continue;
             }
-            if (!slotObj[WIFI_STA_SLOT_BACKUP_PASSWORD_KEY].is<const char*>()) {
-                continue;
-            }
-            const String encoded = slotObj[WIFI_STA_SLOT_BACKUP_PASSWORD_KEY].as<String>();
-            if (encoded.length() > 0 && decodeObfuscatedFromStorage(encoded).length() > 0) {
+            if (slotObj[WIFI_STA_SLOT_BACKUP_PASSWORD_KEY].isUnbound()) continue;
+            String encoded;
+            if (exactV1JsonStringChecked(slotObj[WIFI_STA_SLOT_BACKUP_PASSWORD_KEY], encoded,
+                                         sizeof("hex:") - 1u + MAX_WIFI_PASSWORD_LEN * 2u) !=
+                ExactV1JsonStringStatus::Valid) return "";
+            String decoded = decodeObfuscatedFromStorage(encoded);
+            const size_t expectedLength = encoded.startsWith(OBFUSCATION_HEX_PREFIX)
+                                              ? (encoded.length() - std::strlen(OBFUSCATION_HEX_PREFIX)) / 2u
+                                              : encoded.length();
+            if (encoded.length() > 0 && decoded.length() == expectedLength && decoded.length() > 0) {
                 return encoded;
             }
+            return "";
         }
     }
 
-    if (!doc[WIFI_CLIENT_BACKUP_PASSWORD_KEY].is<const char*>()) {
+    if (doc[WIFI_CLIENT_BACKUP_PASSWORD_KEY].isUnbound()) {
         return "";
     }
 
-    const String backupSsid = doc["wifiClientSSID"] | "";
+    String backupSsid;
+    if (!doc["wifiClientSSID"].isUnbound() &&
+        exactV1JsonStringChecked(doc["wifiClientSSID"], backupSsid, MAX_WIFI_SSID_LEN) !=
+            ExactV1JsonStringStatus::Valid) return "";
     if (expectedSsid.length() > 0 && backupSsid.length() > 0 && backupSsid != expectedSsid) {
         return "";
     }
 
-    const String encoded = doc[WIFI_CLIENT_BACKUP_PASSWORD_KEY].as<String>();
-    if (encoded.length() == 0) {
-        return "";
-    }
+    String encoded;
+    if (exactV1JsonStringChecked(doc[WIFI_CLIENT_BACKUP_PASSWORD_KEY], encoded,
+                                 sizeof("hex:") - 1u + MAX_WIFI_PASSWORD_LEN * 2u) !=
+        ExactV1JsonStringStatus::Valid || encoded.length() == 0) return "";
 
     // Main-backup credentials are only written for non-empty passwords.  Empty
     // decode means corruption or an unsupported encoding, not an open network.
-    return decodeObfuscatedFromStorage(encoded).length() > 0 ? encoded : "";
+    String decoded = decodeObfuscatedFromStorage(encoded);
+    const size_t expectedLength = encoded.startsWith(OBFUSCATION_HEX_PREFIX)
+                                      ? (encoded.length() - std::strlen(OBFUSCATION_HEX_PREFIX)) / 2u
+                                      : encoded.length();
+    return decoded.length() == expectedLength && decoded.length() > 0 ? encoded : "";
 }
 
 bool wifiClientSdSecretTypeMatches(const JsonDocument& doc) {
-    const char* type = doc["_type"] | "";
-    return strcmp(type, WIFI_CLIENT_SD_SECRET_TYPE) == 0;
+    return exactV1JsonToken(doc["_type"], WIFI_CLIENT_SD_SECRET_TYPE);
 }
 
-String ssidFromWifiClientSdSecret(JsonObjectConst entry) {
-    if (!entry[WIFI_CLIENT_SD_SECRET_SSID_KEY].is<const char*>()) {
-        return "";
+bool wifiSecretObjectHasOnlyKeys(JsonObjectConst object, const char* const* keys, size_t keyCount) {
+    if (object.size() != keyCount) return false;
+    for (JsonPairConst pair : object) {
+        const JsonString actual = pair.key();
+        bool known = false;
+        for (size_t index = 0; index < keyCount; ++index) {
+            const size_t expectedLength = std::strlen(keys[index]);
+            if (actual.size() == expectedLength &&
+                std::memcmp(actual.c_str(), keys[index], expectedLength) == 0) {
+                known = true;
+                break;
+            }
+        }
+        if (!known) return false;
     }
-    return sanitizeWifiClientSsidValue(entry[WIFI_CLIENT_SD_SECRET_SSID_KEY].as<String>());
+    return true;
 }
 
-String passwordFromWifiClientSdSecret(JsonObjectConst entry) {
-    if (!entry[WIFI_CLIENT_SD_SECRET_PASSWORD_KEY].is<const char*>()) {
-        return "";
-    }
-    return entry[WIFI_CLIENT_SD_SECRET_PASSWORD_KEY].as<String>();
+bool exactSemanticJsonStringNoCopy(JsonVariantConst value, size_t maxBytes, bool allowEmpty = true) {
+    if (!value.is<const char*>()) return false;
+    const JsonString text = value.as<JsonString>();
+    return text.c_str() && text.size() <= maxBytes && (allowEmpty || text.size() != 0) &&
+           std::strlen(text.c_str()) == text.size() &&
+           ExactJsonInput::validSemanticString(text.c_str(), text.size());
 }
 
-bool wifiClientSdSecretMatches(JsonObjectConst entry, const String& expectedSsid, size_t expectedSlotIndex,
-                               bool requireSlotMatch) {
-    const String savedSsid = ssidFromWifiClientSdSecret(entry);
-    if (savedSsid.length() == 0) {
-        return false;
-    }
-    if (expectedSsid.length() > 0 && savedSsid != expectedSsid) {
-        return false;
-    }
-    if (!requireSlotMatch) {
+bool obfuscatedPasswordJsonIsValid(JsonVariantConst value, bool allowEmpty) {
+    if (!exactSemanticJsonStringNoCopy(value, MAX_ENCODED_WIFI_PASSWORD_BYTES, allowEmpty)) return false;
+    const JsonString text = value.as<JsonString>();
+    if (text.size() == 0) return allowEmpty;
+    const size_t prefixLength = std::strlen(OBFUSCATION_HEX_PREFIX);
+    if (text.size() >= prefixLength &&
+        std::memcmp(text.c_str(), OBFUSCATION_HEX_PREFIX, prefixLength) == 0) {
+        const size_t payloadLength = text.size() - prefixLength;
+        if (payloadLength == 0 || (payloadLength & 1u) != 0u ||
+            payloadLength / 2u > MAX_WIFI_PASSWORD_LEN) return false;
+        for (size_t index = prefixLength; index < text.size(); ++index) {
+            if (hexNibble(text.c_str()[index]) < 0) return false;
+        }
         return true;
     }
-    if (!validWifiStaSlotIndex(expectedSlotIndex) || !entry[WIFI_CLIENT_SD_SECRET_INDEX_KEY].is<int>()) {
-        return false;
-    }
-    return entry[WIFI_CLIENT_SD_SECRET_INDEX_KEY].as<int>() == static_cast<int>(expectedSlotIndex);
-}
-
-String findWifiClientSdSecretInArray(const JsonDocument& doc, const String& expectedSsid, size_t expectedSlotIndex,
-                                     bool requireSlotMatch) {
-    if (!doc[WIFI_CLIENT_SD_SECRETS_KEY].is<JsonArrayConst>()) {
-        return "";
-    }
-
-    JsonArrayConst secrets = doc[WIFI_CLIENT_SD_SECRETS_KEY].as<JsonArrayConst>();
-    for (JsonObjectConst entry : secrets) {
-        if (!wifiClientSdSecretMatches(entry, expectedSsid, expectedSlotIndex, requireSlotMatch)) {
-            continue;
-        }
-        return passwordFromWifiClientSdSecret(entry);
-    }
-    return "";
+    // Version 1 stored raw XOR bytes. ExactJsonInput has already guaranteed
+    // serializer-safe UTF-8/C0 semantics; XOR preserves the byte count.
+    return text.size() <= MAX_WIFI_PASSWORD_LEN;
 }
 
 bool readWifiClientSdSecretEntries(const JsonDocument& doc, WifiClientSdSecretEntry entries[kWifiStaSlotCount]) {
@@ -145,15 +240,19 @@ bool readWifiClientSdSecretEntries(const JsonDocument& doc, WifiClientSdSecretEn
                 continue;
             }
 
-            const String ssid = ssidFromWifiClientSdSecret(entry);
+            String ssid;
+            String encoded;
+            if (!exactV1JsonString(entry[WIFI_CLIENT_SD_SECRET_SSID_KEY], ssid, MAX_WIFI_SSID_LEN) ||
+                !exactV1JsonString(entry[WIFI_CLIENT_SD_SECRET_PASSWORD_KEY], encoded,
+                                   sizeof("hex:") - 1u + MAX_WIFI_PASSWORD_LEN * 2u)) return false;
             if (ssid.length() == 0) {
                 continue;
             }
 
             WifiClientSdSecretEntry& target = entries[static_cast<size_t>(rawIndex)];
             target.used = true;
-            target.ssid = ssid;
-            target.encodedPassword = passwordFromWifiClientSdSecret(entry);
+            target.ssid = std::move(ssid);
+            target.encodedPassword = std::move(encoded);
             if (entry[WIFI_CLIENT_SD_SECRET_TIMESTAMP_KEY].is<uint32_t>()) {
                 target.timestamp = entry[WIFI_CLIENT_SD_SECRET_TIMESTAMP_KEY].as<uint32_t>();
             } else if (entry[WIFI_CLIENT_SD_SECRET_TIMESTAMP_KEY].is<int>()) {
@@ -167,7 +266,9 @@ bool readWifiClientSdSecretEntries(const JsonDocument& doc, WifiClientSdSecretEn
     // Legacy v1 file shape had one top-level SSID/password pair.  Preserve it
     // under the first free slot so upgraded firmware can merge another saved
     // network without discarding the only old recovery copy.
-    const String legacySsid = sanitizeWifiClientSsidValue(doc[WIFI_CLIENT_SD_SECRET_SSID_KEY] | "");
+    String legacySsid;
+    if (!doc[WIFI_CLIENT_SD_SECRET_SSID_KEY].isUnbound() &&
+        !exactV1JsonString(doc[WIFI_CLIENT_SD_SECRET_SSID_KEY], legacySsid, MAX_WIFI_SSID_LEN)) return false;
     if (legacySsid.length() > 0) {
         bool alreadyPresent = false;
         for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
@@ -182,8 +283,10 @@ bool readWifiClientSdSecretEntries(const JsonDocument& doc, WifiClientSdSecretEn
                     continue;
                 }
                 entries[i].used = true;
-                entries[i].ssid = legacySsid;
-                entries[i].encodedPassword = doc[WIFI_CLIENT_SD_SECRET_PASSWORD_KEY] | "";
+                if (!copyStringExact(legacySsid, entries[i].ssid)) return false;
+                if (!doc[WIFI_CLIENT_SD_SECRET_PASSWORD_KEY].isUnbound() &&
+                    !exactV1JsonString(doc[WIFI_CLIENT_SD_SECRET_PASSWORD_KEY], entries[i].encodedPassword,
+                                       sizeof("hex:") - 1u + MAX_WIFI_PASSWORD_LEN * 2u)) return false;
                 if (doc[WIFI_CLIENT_SD_SECRET_TIMESTAMP_KEY].is<uint32_t>()) {
                     entries[i].timestamp = doc[WIFI_CLIENT_SD_SECRET_TIMESTAMP_KEY].as<uint32_t>();
                 } else if (doc[WIFI_CLIENT_SD_SECRET_TIMESTAMP_KEY].is<int>()) {
@@ -199,38 +302,115 @@ bool readWifiClientSdSecretEntries(const JsonDocument& doc, WifiClientSdSecretEn
     return foundAny;
 }
 
-bool loadWifiClientSdSecretDocument(fs::FS* fs, JsonDocument& doc) {
+enum class WifiClientSdSecretLoadStatus : uint8_t {
+    Success,
+    NotFound,
+    Invalid,
+    Unavailable,
+};
+
+WifiClientSdSecretLoadStatus loadWifiClientSdSecretDocumentStatus(fs::FS* fs, JsonDocument& doc) {
+    doc.clear();
     if (!fs || !fs->exists(WIFI_CLIENT_SD_SECRET_PATH)) {
-        return false;
+        return WifiClientSdSecretLoadStatus::NotFound;
     }
 
     File file = fs->open(WIFI_CLIENT_SD_SECRET_PATH, FILE_READ);
     if (!file) {
-        return false;
+        return WifiClientSdSecretLoadStatus::Unavailable;
     }
-
-    DeserializationError err = deserializeJson(doc, file);
+    const size_t size = file.size();
+    if (size == 0 || size > WIFI_CLIENT_SD_SECRET_MAX_BYTES) {
+        file.close();
+        return WifiClientSdSecretLoadStatus::Invalid;
+    }
+    PsramJson::Buffer bytes(size);
+    if (!bytes) {
+        file.close();
+        return WifiClientSdSecretLoadStatus::Unavailable;
+    }
+    if (file.read(bytes.data(), size) != size) {
+        file.close();
+        return WifiClientSdSecretLoadStatus::Unavailable;
+    }
     file.close();
+    const ExactJsonInput::Status exact = ExactJsonInput::validate(bytes.data(), size);
+    if (exact != ExactJsonInput::Status::Ok) {
+        return exact == ExactJsonInput::Status::MemoryUnavailable
+                   ? WifiClientSdSecretLoadStatus::Unavailable
+                   : WifiClientSdSecretLoadStatus::Invalid;
+    }
+    DeserializationError err = deserializeJson(doc, bytes.data(), size);
+    if (err == DeserializationError::NoMemory || doc.overflowed()) {
+        doc.clear();
+        return WifiClientSdSecretLoadStatus::Unavailable;
+    }
     if (err) {
         Serial.printf("[Settings] WARN: Failed to parse SD WiFi secret: %s\n", err.c_str());
-        return false;
+        doc.clear();
+        return WifiClientSdSecretLoadStatus::Invalid;
     }
 
-    return wifiClientSdSecretTypeMatches(doc);
+    if (!wifiClientSdSecretDocumentIsValid(doc)) {
+        doc.clear();
+        return WifiClientSdSecretLoadStatus::Invalid;
+    }
+    return WifiClientSdSecretLoadStatus::Success;
+}
+
+bool loadWifiClientSdSecretDocument(fs::FS* fs, JsonDocument& doc) {
+    return loadWifiClientSdSecretDocumentStatus(fs, doc) == WifiClientSdSecretLoadStatus::Success;
 }
 
 bool wifiClientSdSecretDocumentIsValid(const JsonDocument& doc) {
-    if (!wifiClientSdSecretTypeMatches(doc) || !doc["_version"].is<int>() ||
-        doc["_version"].as<int>() != WIFI_CLIENT_SD_SECRET_VERSION ||
-        !doc[WIFI_CLIENT_SD_SECRETS_KEY].is<JsonArrayConst>()) {
+    if (!doc.is<JsonObjectConst>() || !wifiClientSdSecretTypeMatches(doc) ||
+        !doc["_version"].is<int>()) {
         return false;
     }
+    const int version = doc["_version"].as<int>();
+    if (version != 1 && version != WIFI_CLIENT_SD_SECRET_VERSION) return false;
+
+    // Version 1 was a single top-level recovery pair.  It remains a valid
+    // source for the explicit v1->v2 merge performed by
+    // readWifiClientSdSecretEntries(); rejecting it here would strand the only
+    // recovery copy before that deterministic upgrade can run.
+    if (version == 1) {
+        static const char* const REQUIRED[] = {
+            "_type", "_version", WIFI_CLIENT_SD_SECRET_SSID_KEY,
+            WIFI_CLIENT_SD_SECRET_PASSWORD_KEY, WIFI_CLIENT_SD_SECRET_TIMESTAMP_KEY,
+        };
+        return wifiSecretObjectHasOnlyKeys(doc.as<JsonObjectConst>(), REQUIRED,
+                                           sizeof(REQUIRED) / sizeof(REQUIRED[0])) &&
+               exactSemanticJsonStringNoCopy(doc[WIFI_CLIENT_SD_SECRET_SSID_KEY], MAX_WIFI_SSID_LEN,
+                                             false) &&
+               obfuscatedPasswordJsonIsValid(doc[WIFI_CLIENT_SD_SECRET_PASSWORD_KEY], false) &&
+               doc[WIFI_CLIENT_SD_SECRET_TIMESTAMP_KEY].is<uint32_t>();
+    }
+
+    static const char* const ROOT_KEYS[] = {
+        "_type", "_version", WIFI_CLIENT_SD_SECRETS_KEY, WIFI_CLIENT_SD_SECRET_SSID_KEY,
+        WIFI_CLIENT_SD_SECRET_PASSWORD_KEY, WIFI_CLIENT_SD_SECRET_TIMESTAMP_KEY,
+    };
+    if (!wifiSecretObjectHasOnlyKeys(doc.as<JsonObjectConst>(), ROOT_KEYS,
+                                     sizeof(ROOT_KEYS) / sizeof(ROOT_KEYS[0])) ||
+        !doc[WIFI_CLIENT_SD_SECRETS_KEY].is<JsonArrayConst>() ||
+        doc[WIFI_CLIENT_SD_SECRETS_KEY].size() > kWifiStaSlotCount ||
+        !exactSemanticJsonStringNoCopy(doc[WIFI_CLIENT_SD_SECRET_SSID_KEY], MAX_WIFI_SSID_LEN) ||
+        !obfuscatedPasswordJsonIsValid(doc[WIFI_CLIENT_SD_SECRET_PASSWORD_KEY], true) ||
+        !doc[WIFI_CLIENT_SD_SECRET_TIMESTAMP_KEY].is<uint32_t>()) return false;
 
     bool seen[kWifiStaSlotCount] = {};
     for (JsonObjectConst entry : doc[WIFI_CLIENT_SD_SECRETS_KEY].as<JsonArrayConst>()) {
-        if (!entry[WIFI_CLIENT_SD_SECRET_INDEX_KEY].is<int>() ||
-            !entry[WIFI_CLIENT_SD_SECRET_SSID_KEY].is<const char*>() ||
-            !entry[WIFI_CLIENT_SD_SECRET_PASSWORD_KEY].is<const char*>()) {
+        static const char* const ENTRY_KEYS[] = {
+            WIFI_CLIENT_SD_SECRET_INDEX_KEY, WIFI_CLIENT_SD_SECRET_SSID_KEY,
+            WIFI_CLIENT_SD_SECRET_PASSWORD_KEY, WIFI_CLIENT_SD_SECRET_TIMESTAMP_KEY,
+        };
+        if (!wifiSecretObjectHasOnlyKeys(entry, ENTRY_KEYS, sizeof(ENTRY_KEYS) / sizeof(ENTRY_KEYS[0])) ||
+            !entry[WIFI_CLIENT_SD_SECRET_INDEX_KEY].is<int>() ||
+            !exactSemanticJsonStringNoCopy(entry[WIFI_CLIENT_SD_SECRET_SSID_KEY], MAX_WIFI_SSID_LEN,
+                                           false) ||
+            !obfuscatedPasswordJsonIsValid(entry[WIFI_CLIENT_SD_SECRET_PASSWORD_KEY], true) ||
+            !entry[WIFI_CLIENT_SD_SECRET_TIMESTAMP_KEY].is<uint32_t>()) {
             return false;
         }
         const int rawIndex = entry[WIFI_CLIENT_SD_SECRET_INDEX_KEY].as<int>();
@@ -238,14 +418,6 @@ bool wifiClientSdSecretDocumentIsValid(const JsonDocument& doc) {
             return false;
         }
         seen[rawIndex] = true;
-        const String rawSsid = entry[WIFI_CLIENT_SD_SECRET_SSID_KEY].as<String>();
-        if (rawSsid.length() == 0 || sanitizeWifiClientSsidValue(rawSsid) != rawSsid) {
-            return false;
-        }
-        const String encoded = entry[WIFI_CLIENT_SD_SECRET_PASSWORD_KEY].as<String>();
-        if (encoded.length() > 0 && decodeObfuscatedFromStorage(encoded).length() == 0) {
-            return false;
-        }
     }
     return true;
 }
@@ -283,7 +455,7 @@ bool writeWifiClientSdSecretEntries(fs::FS* fs, const WifiClientSdSecretEntry en
         return true;
     }
 
-    JsonDocument doc;
+    PsramJson::Document doc;
     doc["_type"] = WIFI_CLIENT_SD_SECRET_TYPE;
     doc["_version"] = WIFI_CLIENT_SD_SECRET_VERSION;
     JsonArray secrets = doc[WIFI_CLIENT_SD_SECRETS_KEY].to<JsonArray>();
@@ -319,6 +491,11 @@ bool writeWifiClientSdSecretEntries(fs::FS* fs, const WifiClientSdSecretEntry en
     }
 
     const size_t expectedBytes = measureJson(doc);
+    if (doc.overflowed() || expectedBytes == 0 || expectedBytes > WIFI_CLIENT_SD_SECRET_MAX_BYTES) {
+        file.close();
+        fs->remove(WIFI_CLIENT_SD_SECRET_TEMP_PATH);
+        return false;
+    }
     const size_t writtenBytes = serializeJson(doc, file);
     file.flush();
     file.close();
@@ -328,14 +505,23 @@ bool writeWifiClientSdSecretEntries(fs::FS* fs, const WifiClientSdSecretEntry en
         return false;
     }
 
-    JsonDocument candidate;
+    PsramJson::Document candidate;
     File verifyFile = fs->open(WIFI_CLIENT_SD_SECRET_TEMP_PATH, FILE_READ);
-    const DeserializationError verifyError = verifyFile ? deserializeJson(candidate, verifyFile)
-                                                        : DeserializationError::InvalidInput;
+    const size_t candidateSize = verifyFile ? verifyFile.size() : 0;
+    PsramJson::Buffer candidateBytes(candidateSize);
+    const bool candidateRead = verifyFile && candidateSize > 0 &&
+                               candidateSize <= WIFI_CLIENT_SD_SECRET_MAX_BYTES && candidateBytes &&
+                               verifyFile.read(candidateBytes.data(), candidateSize) == candidateSize;
     if (verifyFile) {
         verifyFile.close();
     }
-    if (verifyError || !wifiClientSdSecretDocumentIsValid(candidate)) {
+    const ExactJsonInput::Status exactStatus = candidateRead
+        ? ExactJsonInput::validate(candidateBytes.data(), candidateSize)
+        : ExactJsonInput::Status::Invalid;
+    const DeserializationError verifyError = exactStatus == ExactJsonInput::Status::Ok
+        ? deserializeJson(candidate, candidateBytes.data(), candidateSize)
+        : DeserializationError::InvalidInput;
+    if (verifyError || candidate.overflowed() || !wifiClientSdSecretDocumentIsValid(candidate)) {
         fs->remove(WIFI_CLIENT_SD_SECRET_TEMP_PATH);
         Serial.println("[Settings] WARN: SD WiFi secret candidate validation failed");
         return false;
@@ -350,7 +536,7 @@ String loadWifiClientPasswordObfFromSettingsBackup(fs::FS* fs, const String& exp
         return "";
     }
 
-    JsonDocument backupDoc;
+    PsramJson::Document backupDoc;
     const char* backupPath = nullptr;
     if (!loadBestBackupDocument(fs, backupDoc, &backupPath, false)) {
         return "";
@@ -373,13 +559,19 @@ bool readWifiPasswordNvsSnapshot(size_t slotIndex, WifiPasswordNvsSnapshot& snap
         return false;
     }
     snapshot.slotPresent = prefs.isKey(passwordKey);
-    if (snapshot.slotPresent) {
-        snapshot.slotValue = prefs.getString(passwordKey, "");
+    if (snapshot.slotPresent &&
+        !readPreferenceStringExact(prefs, passwordKey, MAX_ENCODED_WIFI_PASSWORD_BYTES,
+                                   snapshot.slotValue)) {
+        prefs.end();
+        return false;
     }
     if (slotIndex == 0) {
         snapshot.legacyPresent = prefs.isKey(kNvsWifiPassword);
-        if (snapshot.legacyPresent) {
-            snapshot.legacyValue = prefs.getString(kNvsWifiPassword, "");
+        if (snapshot.legacyPresent &&
+            !readPreferenceStringExact(prefs, kNvsWifiPassword, MAX_ENCODED_WIFI_PASSWORD_BYTES,
+                                       snapshot.legacyValue)) {
+            prefs.end();
+            return false;
         }
     }
     prefs.end();
@@ -397,7 +589,11 @@ bool writeWifiPasswordKeyState(Preferences& prefs, const char* key, bool present
         return !prefs.isKey(key);
     }
     const size_t written = prefs.putString(key, value);
-    return written == value.length() && prefs.isKey(key) && prefs.getString(key, "") == value;
+    if (written != value.length() || !prefs.isKey(key) ||
+        prefs.getStringLength(key) != value.length() + 1u) return false;
+    if (value.length() == 0) return true;
+    String readBack = prefs.getString(key, "");
+    return readBack.length() == value.length() && readBack == value;
 }
 
 bool restoreWifiPasswordNvsSnapshot(size_t slotIndex, const WifiPasswordNvsSnapshot& snapshot) {
@@ -516,13 +712,16 @@ bool readWifiCredentialJournal(WifiCredentialJournal& journal) {
     }
     const uint8_t slotIndex = prefs.getUChar(kNvsWifiTxnSlot, static_cast<uint8_t>(kWifiStaSlotCount));
     journal.slotIndex = slotIndex;
-    journal.oldSsid = prefs.getString(kNvsWifiTxnOldSsid, "");
-    journal.oldEncodedPassword = prefs.getString(kNvsWifiTxnOldPass, "");
-    journal.newSsid = prefs.getString(kNvsWifiTxnNewSsid, "");
-    journal.newEncodedPassword = prefs.getString(kNvsWifiTxnNewPass, "");
+    const bool stringsRead =
+        readPreferenceStringExact(prefs, kNvsWifiTxnOldSsid, MAX_WIFI_SSID_LEN, journal.oldSsid) &&
+        readPreferenceStringExact(prefs, kNvsWifiTxnOldPass, MAX_ENCODED_WIFI_PASSWORD_BYTES,
+                                  journal.oldEncodedPassword) &&
+        readPreferenceStringExact(prefs, kNvsWifiTxnNewSsid, MAX_WIFI_SSID_LEN, journal.newSsid) &&
+        readPreferenceStringExact(prefs, kNvsWifiTxnNewPass, MAX_ENCODED_WIFI_PASSWORD_BYTES,
+                                  journal.newEncodedPassword);
     prefs.end();
 
-    return validWifiStaSlotIndex(journal.slotIndex) &&
+    return stringsRead && validWifiStaSlotIndex(journal.slotIndex) &&
            sanitizeWifiClientSsidValue(journal.oldSsid) == journal.oldSsid &&
            sanitizeWifiClientSsidValue(journal.newSsid) == journal.newSsid &&
            (journal.oldEncodedPassword.length() == 0 ||
@@ -532,7 +731,7 @@ bool readWifiCredentialJournal(WifiCredentialJournal& journal) {
 }
 
 bool writeWifiForgetAllJournal(const WifiForgetAllJournal& journal) {
-    JsonDocument doc;
+    PsramJson::Document doc;
     JsonArray slots = doc["slots"].to<JsonArray>();
     for (size_t index = 0; index < kWifiStaSlotCount; ++index) {
         JsonObject slot = slots.add<JsonObject>();
@@ -540,8 +739,12 @@ bool writeWifiForgetAllJournal(const WifiForgetAllJournal& journal) {
         slot["ssid"] = journal.oldSsid[index];
         slot["password"] = journal.oldEncodedPassword[index];
     }
+    if (doc.overflowed()) return false;
+    const size_t measured = measureJson(doc);
+    if (measured == 0 || measured > WIFI_FORGET_ALL_JOURNAL_MAX_BYTES) return false;
     String payload;
-    serializeJson(doc, payload);
+    payload.reserve(measured);
+    if (serializeJson(doc, payload) != measured || payload.length() != measured) return false;
 
     Preferences prefs;
     if (!prefs.begin(WIFI_CLIENT_NS, false)) {
@@ -554,7 +757,11 @@ bool writeWifiForgetAllJournal(const WifiForgetAllJournal& journal) {
     bool written = prefs.putUChar(kNvsWifiTxnMode, static_cast<uint8_t>(WifiCredentialJournalMode::ForgetAll)) ==
                    sizeof(uint8_t);
     written = prefs.putString(kNvsWifiTxnData, payload) == payload.length() &&
-              prefs.getString(kNvsWifiTxnData, "") == payload && written;
+              prefs.getStringLength(kNvsWifiTxnData) == payload.length() + 1u && written;
+    if (written && payload.length() > 0) {
+        String readBack = prefs.getString(kNvsWifiTxnData, "");
+        written = readBack.length() == payload.length() && readBack == payload;
+    }
     if (written) {
         written = prefs.putBool(kNvsWifiTxnReady, true) == sizeof(bool) &&
                   prefs.getBool(kNvsWifiTxnReady, false);
@@ -574,17 +781,23 @@ bool readWifiForgetAllJournal(WifiForgetAllJournal& journal) {
         prefs.end();
         return false;
     }
-    const String payload = prefs.getString(kNvsWifiTxnData, "");
+    String payload;
+    const bool payloadRead = readPreferenceStringExact(
+        prefs, kNvsWifiTxnData, WIFI_FORGET_ALL_JOURNAL_MAX_BYTES, payload);
     prefs.end();
 
-    JsonDocument doc;
-    if (deserializeJson(doc, payload) || !doc["slots"].is<JsonArrayConst>() ||
+    if (!payloadRead || payload.length() == 0 ||
+        ExactJsonInput::validate(reinterpret_cast<const uint8_t*>(payload.c_str()), payload.length()) !=
+            ExactJsonInput::Status::Ok) return false;
+    PsramJson::Document doc;
+    if (deserializeJson(doc, payload.c_str(), payload.length()) || doc.overflowed() ||
+        !doc.is<JsonObjectConst>() || doc.size() != 1 || !doc["slots"].is<JsonArrayConst>() ||
         doc["slots"].size() != kWifiStaSlotCount) {
         return false;
     }
     bool seen[kWifiStaSlotCount] = {};
     for (JsonObjectConst slot : doc["slots"].as<JsonArrayConst>()) {
-        if (!slot["index"].is<int>() || !slot["ssid"].is<const char*>() ||
+        if (slot.size() != 3 || !slot["index"].is<int>() || !slot["ssid"].is<const char*>() ||
             !slot["password"].is<const char*>()) {
             return false;
         }
@@ -594,9 +807,12 @@ bool readWifiForgetAllJournal(WifiForgetAllJournal& journal) {
         }
         seen[rawIndex] = true;
         const size_t index = static_cast<size_t>(rawIndex);
-        journal.oldSsid[index] = slot["ssid"].as<String>();
-        journal.oldEncodedPassword[index] = slot["password"].as<String>();
-        if (sanitizeWifiClientSsidValue(journal.oldSsid[index]) != journal.oldSsid[index] ||
+        if (exactV1JsonStringChecked(slot["ssid"], journal.oldSsid[index], MAX_WIFI_SSID_LEN) !=
+                ExactV1JsonStringStatus::Valid ||
+            exactV1JsonStringChecked(slot["password"], journal.oldEncodedPassword[index],
+                                     MAX_ENCODED_WIFI_PASSWORD_BYTES) !=
+                ExactV1JsonStringStatus::Valid ||
+            sanitizeWifiClientSsidValue(journal.oldSsid[index]) != journal.oldSsid[index] ||
             (journal.oldEncodedPassword[index].length() > 0 &&
              decodeObfuscatedFromStorage(journal.oldEncodedPassword[index]).length() == 0)) {
             return false;
@@ -652,14 +868,69 @@ bool writeWifiSecretStateFromSettings(StorageManager& storage, const V1Settings&
             continue;
         }
         entries[index].used = true;
-        entries[index].ssid = settings.wifiStaSlots[index].ssid;
-        entries[index].encodedPassword = encodedPasswords[index];
+        if (!copyStringExact(settings.wifiStaSlots[index].ssid, entries[index].ssid) ||
+            !copyStringExact(encodedPasswords[index], entries[index].encodedPassword)) return false;
         entries[index].timestamp = millis();
     }
     return writeWifiClientSdSecretEntries(fs, entries, kWifiStaSlotCount);
 }
 
 } // namespace
+
+WifiClientSecretPresence readWifiClientSecretPresence(fs::FS* fs) {
+    WifiClientSecretPresence presence;
+    PsramJson::Document doc;
+    switch (loadWifiClientSdSecretDocumentStatus(fs, doc)) {
+    case WifiClientSdSecretLoadStatus::NotFound:
+        presence.status = WifiClientSecretReadStatus::NotFound;
+        return presence;
+    case WifiClientSdSecretLoadStatus::Invalid:
+        presence.status = WifiClientSecretReadStatus::Invalid;
+        return presence;
+    case WifiClientSdSecretLoadStatus::Unavailable:
+        presence.status = WifiClientSecretReadStatus::Unavailable;
+        return presence;
+    case WifiClientSdSecretLoadStatus::Success:
+        break;
+    }
+
+    // Presence checks need only one authoritative SSID. Read it directly from
+    // the already validated DOM so a password/String allocation failure cannot
+    // be downgraded to "no recovery source" and disable a configured client.
+    if (doc[WIFI_CLIENT_SD_SECRETS_KEY].is<JsonArrayConst>()) {
+        for (JsonObjectConst entry : doc[WIFI_CLIENT_SD_SECRETS_KEY].as<JsonArrayConst>()) {
+            String ssid;
+            const ExactV1JsonStringStatus status = exactV1JsonStringChecked(
+                entry[WIFI_CLIENT_SD_SECRET_SSID_KEY], ssid, MAX_WIFI_SSID_LEN);
+            if (status == ExactV1JsonStringStatus::Unavailable) {
+                presence.status = WifiClientSecretReadStatus::Unavailable;
+                return presence;
+            }
+            if (status != ExactV1JsonStringStatus::Valid) {
+                presence.status = WifiClientSecretReadStatus::Invalid;
+                return presence;
+            }
+            if (ssid.length() == 0) continue;
+            presence.ssid = std::move(ssid);
+            presence.status = WifiClientSecretReadStatus::Valid;
+            return presence;
+        }
+    }
+    if (doc[WIFI_CLIENT_SD_SECRET_SSID_KEY].is<const char*>()) {
+        const ExactV1JsonStringStatus status = exactV1JsonStringChecked(
+            doc[WIFI_CLIENT_SD_SECRET_SSID_KEY], presence.ssid, MAX_WIFI_SSID_LEN);
+        if (status == ExactV1JsonStringStatus::Unavailable) {
+            presence.status = WifiClientSecretReadStatus::Unavailable;
+            return presence;
+        }
+        if (status != ExactV1JsonStringStatus::Valid) {
+            presence.status = WifiClientSecretReadStatus::Invalid;
+            return presence;
+        }
+    }
+    presence.status = WifiClientSecretReadStatus::Valid;
+    return presence;
+}
 
 // NVS recovery: clear unused namespace when NVS is full
 // Returns true if space was freed
@@ -712,9 +983,11 @@ bool saveWifiClientSecretToSD(StorageManager& storage, size_t slotIndex, const S
         return false;
     }
     WifiClientSdSecretEntry entries[kWifiStaSlotCount];
-    JsonDocument existingDoc;
-    if (loadWifiClientSdSecretDocument(fs, existingDoc)) {
-        readWifiClientSdSecretEntries(existingDoc, entries);
+    PsramJson::Document existingDoc;
+    if (fs->exists(WIFI_CLIENT_SD_SECRET_PATH)) {
+        if (!loadWifiClientSdSecretDocument(fs, existingDoc) ||
+            !wifiClientSdSecretDocumentIsValid(existingDoc) ||
+            !readWifiClientSdSecretEntries(existingDoc, entries)) return false;
     }
 
     const String sanitizedSsid = sanitizeWifiClientSsidValue(ssid);
@@ -773,31 +1046,24 @@ String loadWifiClientSecretFromSD(StorageManager& storage, const String& expecte
         return backupFallback();
     }
 
-    JsonDocument doc;
-    if (!loadWifiClientSdSecretDocument(fs, doc)) {
-        return backupFallback();
-    }
+    PsramJson::Document doc;
+    const WifiClientSdSecretLoadStatus status = loadWifiClientSdSecretDocumentStatus(fs, doc);
+    if (status == WifiClientSdSecretLoadStatus::NotFound) return backupFallback();
+    if (status != WifiClientSdSecretLoadStatus::Success) return "";
 
-    if (validWifiStaSlotIndex(expectedSlotIndex)) {
-        const String slotEncoded = findWifiClientSdSecretInArray(doc, expectedSsid, expectedSlotIndex, true);
-        if (slotEncoded.length() > 0) {
-            return slotEncoded;
+    WifiClientSdSecretEntry entries[kWifiStaSlotCount];
+    if (!readWifiClientSdSecretEntries(doc, entries)) return "";
+    if (validWifiStaSlotIndex(expectedSlotIndex) && entries[expectedSlotIndex].used &&
+        entries[expectedSlotIndex].ssid == expectedSsid) {
+        return std::move(entries[expectedSlotIndex].encodedPassword);
+    }
+    for (size_t index = 0; index < kWifiStaSlotCount; ++index) {
+        if (entries[index].used && entries[index].ssid == expectedSsid) {
+            return std::move(entries[index].encodedPassword);
         }
     }
-
-    const String matchingEncoded = findWifiClientSdSecretInArray(doc, expectedSsid, expectedSlotIndex, false);
-    if (matchingEncoded.length() > 0) {
-        return matchingEncoded;
-    }
-
-    String savedSsid = doc[WIFI_CLIENT_SD_SECRET_SSID_KEY] | "";
-    if (expectedSsid.length() > 0 && savedSsid.length() > 0 && savedSsid != expectedSsid) {
-        Serial.println("[Settings] WARN: SD WiFi secret SSID mismatch");
-        return backupFallback();
-    }
-
-    const String encoded = doc[WIFI_CLIENT_SD_SECRET_PASSWORD_KEY] | "";
-    return encoded.length() > 0 ? encoded : backupFallback();
+    Serial.println("[Settings] WARN: SD WiFi secret SSID mismatch");
+    return "";
 }
 
 bool removeWifiClientSecretFromSD(StorageManager& storage, size_t slotIndex, const String& ssid) {
@@ -822,7 +1088,7 @@ bool removeWifiClientSecretFromSD(StorageManager& storage, size_t slotIndex, con
     }
 
     WifiClientSdSecretEntry entries[kWifiStaSlotCount];
-    JsonDocument existingDoc;
+    PsramJson::Document existingDoc;
     if (!loadWifiClientSdSecretDocument(fs, existingDoc) || !readWifiClientSdSecretEntries(existingDoc, entries)) {
         return false;
     }
@@ -1053,12 +1319,11 @@ void SettingsManager::serviceLastV1AddressFallbackPersist(uint32_t nowMs) {
 }
 
 bool SettingsManager::clearLastV1AddressFallback(const String& addressFilter) {
-    String filter = sanitizeLastV1AddressValue(addressFilter);
-    filter.replace("-", ":");
-    const auto matches = [&](String value) {
-        value = sanitizeLastV1AddressValue(value);
-        value.replace("-", ":");
-        return addressFilter.length() == 0 || (filter.length() > 0 && value == filter);
+    const bool clearAll = addressFilter.length() == 0;
+    char filter[18] = {};
+    if (!clearAll && !canonicalizeV1AddressBytes(addressFilter, filter)) return false;
+    const auto matches = [&](const String& value) {
+        return clearAll || v1AddressMatchesCanonicalBytes(value, filter);
     };
     Preferences prefs;
     if (!prefs.begin(kSettingsV1RuntimeNamespace, false)) {
@@ -1067,16 +1332,21 @@ bool SettingsManager::clearLastV1AddressFallback(const String& addressFilter) {
     }
     const bool present = prefs.isKey(kNvsLastConnectedV1Address);
     String stored;
-    if (present && addressFilter.length() > 0) {
-        stored = sanitizeLastV1AddressValue(prefs.getString(kNvsLastConnectedV1Address, ""));
+    bool storedMatches = clearAll;
+    if (present && !clearAll) {
+        const size_t storedBytes = prefs.getStringLength(kNvsLastConnectedV1Address);
+        stored = prefs.getString(kNvsLastConnectedV1Address, "");
         // Preferences also returns its empty default on a read/type error.
         // An unreadable key cannot establish that another address owns it.
-        if (stored.length() == 0) {
+        char storedCanonical[18] = {};
+        if (storedBytes == 0 || stored.length() + 1u != storedBytes ||
+            !canonicalizeV1AddressBytes(stored, storedCanonical)) {
             prefs.end();
             return false;
         }
+        storedMatches = std::memcmp(storedCanonical, filter, 17u) == 0;
     }
-    if (present && matches(stored)) {
+    if (present && storedMatches) {
         const bool removed = prefs.remove(kNvsLastConnectedV1Address);
         const bool absent = !prefs.isKey(kNvsLastConnectedV1Address);
         if (!removed || !absent) {
@@ -1310,6 +1580,11 @@ String SettingsManager::getStagingNamespace(const String& activeNamespace) {
 }
 
 bool SettingsManager::writeSettingsToNamespace(const char* ns, uint32_t generation) {
+    String encodedApPassword;
+    if (!encodeObfuscatedForStorage(settings_.apPassword, encodedApPassword)) {
+        Serial.println("[Settings] ERROR: AP password encoding memory unavailable");
+        return false;
+    }
     settings_.ensureWifiStaSlotForLegacyAlias();
 
     Preferences prefs;
@@ -1370,7 +1645,7 @@ bool SettingsManager::writeSettingsToNamespace(const char* ns, uint32_t generati
     written += prefs.putUInt(kNvsBackupDueRevision, backupDueRevision_);
     written.putString(prefs, kNvsApSsid, settings_.apSSID);
     // Obfuscate passwords before storing
-    written.putString(prefs, kNvsApPassword, encodeObfuscatedForStorage(settings_.apPassword));
+    written.putString(prefs, kNvsApPassword, encodedApPassword);
     // WiFi client (STA) settings - password stored in separate secure namespace
     written += prefs.putBool(kNvsWifiClientEnabled, settings_.wifiClientEnabled);
     for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
@@ -1641,7 +1916,7 @@ String SettingsManager::getWifiStaSlotPassword(size_t index) {
     }
 
     // Fallback: recover password from SD-backed secret store if available.
-    const String expectedSsid = settings_.wifiStaSlots[index].ssid;
+    const String& expectedSsid = settings_.wifiStaSlots[index].ssid;
     String sdEncoded = loadWifiClientSecretFromSD(*storage_, expectedSsid, index);
     if (sdEncoded.length() == 0) {
         return "";
@@ -1653,10 +1928,7 @@ String SettingsManager::getWifiStaSlotPassword(size_t index) {
     }
 
     // Heal NVS from SD fallback so future reconnects do not hit SD.
-    Preferences healPrefs;
-    if (healPrefs.begin(WIFI_CLIENT_NS, false)) {
-        healPrefs.putString(passwordKey, sdEncoded);
-        healPrefs.end();
+    if (storeWifiClientPasswordObfToNvs(sdEncoded, index)) {
         Serial.println("[Settings] Recovered WiFi client password from SD credential backup");
     }
 
@@ -1670,7 +1942,8 @@ String SettingsManager::getWifiClientPassword() {
 }
 
 SettingsPersistResult SettingsManager::setWifiClientEnabled(bool enabled) {
-    const V1Settings before = settings_;
+    V1Settings before;
+    if (!copySettingsExact(settings_, before)) return SettingsPersistResult{};
     if (settings_.wifiClientEnabled == enabled) {
         return SettingsPersistResult{true, false, false};
     }
@@ -1678,7 +1951,7 @@ SettingsPersistResult SettingsManager::setWifiClientEnabled(bool enabled) {
     if (save()) {
         return SettingsPersistResult{true, true, deferredBackupPending()};
     }
-    settings_ = before;
+    settings_ = std::move(before);
     clearDeferredPersistState();
     return SettingsPersistResult{false, true, false};
 }
@@ -1686,56 +1959,104 @@ SettingsPersistResult SettingsManager::setWifiClientEnabled(bool enabled) {
 bool SettingsManager::setWifiStaSlotCredentials(size_t index, const String& ssid, const String& password,
                                                 const String& label, uint8_t priority) {
     if (!validWifiStaSlotIndex(index)) {
+        Serial.println("[Settings] WARN: Invalid WiFi credential slot index");
         return false;
     }
     resolveWifiCredentialTransaction();
     if (wifiCredentialJournalPresent()) {
+        Serial.println("[Settings] WARN: Unresolved WiFi credential transaction");
         return false;
     }
 
-    const V1Settings before = settings_;
+    V1Settings before;
+    V1Settings candidate;
+    if (!copySettingsExact(settings_, before) || !copySettingsExact(settings_, candidate)) {
+        Serial.println("[Settings] WARN: WiFi credential settings snapshot unavailable");
+        return false;
+    }
     WifiPasswordNvsSnapshot passwordBefore;
     if (!readWifiPasswordNvsSnapshot(index, passwordBefore)) {
+        Serial.println("[Settings] WARN: WiFi credential NVS snapshot unavailable");
         return false;
     }
-    const String oldSsid = settings_.wifiStaSlots[index].ssid;
-    const String oldEncodedPassword = passwordBefore.slotPresent
-                                          ? passwordBefore.slotValue
-                                          : (index == 0 && passwordBefore.legacyPresent ? passwordBefore.legacyValue
-                                                                                       : String(""));
+    String preparedSsid;
+    String preparedLabel;
+    String preparedPassword;
+    if (!copyBoundedSemanticString(ssid, MAX_WIFI_SSID_LEN, preparedSsid)) {
+        Serial.println("[Settings] WARN: Invalid or unavailable WiFi SSID");
+        return false;
+    }
+    if (!copyBoundedSemanticString(label, MAX_WIFI_STA_LABEL_LEN, preparedLabel)) {
+        Serial.println("[Settings] WARN: Invalid or unavailable WiFi slot label");
+        return false;
+    }
+    if (password.length() > MAX_WIFI_PASSWORD_LEN || !copyStringExact(password, preparedPassword)) {
+        Serial.println("[Settings] WARN: Invalid or unavailable WiFi password");
+        return false;
+    }
+    preparedLabel.trim();
 
-    WifiStaSlot& slot = settings_.wifiStaSlots[index];
-    slot.ssid = sanitizeWifiClientSsidValue(ssid);
-    slot.label = sanitizeWifiStaSlotLabelValue(label);
+    WifiStaSlot& slot = candidate.wifiStaSlots[index];
+    slot.ssid = std::move(preparedSsid);
+    slot.label = std::move(preparedLabel);
     if (slot.label.length() == 0 && slot.ssid.length() > 0) {
-        slot.label = (index == 0) ? "Saved" : slot.ssid;
+        if (index == 0) {
+            slot.label = "Saved";
+            if (slot.label != "Saved") return false;
+        } else if (!copyStringExact(slot.ssid, slot.label)) {
+            return false;
+        }
     }
     slot.priority = priority;
     if (slot.ssid.length() == 0) {
         slot.label = "";
         slot.lastConnectedAtSec = 0;
     }
-    settings_.wifiClientEnabled = settings_.hasConfiguredWifiStaSlot();
-    settings_.refreshWifiClientAliasFromSlots();
-
-    const String sanitizedPassword = slot.ssid.length() > 0 ? sanitizeWifiClientPasswordValue(password) : String("");
-    const String encodedPassword = encodeObfuscatedForStorage(sanitizedPassword);
-    const bool sdRequired = storage_->isReady() && storage_->isSDCard();
-
-    const WifiCredentialJournal journal{index, oldSsid, oldEncodedPassword, slot.ssid, encodedPassword};
-    if (!writeWifiCredentialJournal(journal)) {
-        settings_ = before;
+    candidate.wifiClientEnabled = candidate.hasConfiguredWifiStaSlot();
+    if (!refreshWifiClientAliasExact(candidate)) {
+        Serial.println("[Settings] WARN: WiFi credential alias staging unavailable");
         return false;
     }
+
+    if (slot.ssid.length() == 0) preparedPassword = "";
+    String encodedPassword;
+    if (!encodeObfuscatedForStorage(preparedPassword, encodedPassword)) {
+        Serial.println("[Settings] WARN: WiFi credential encoding unavailable");
+        return false;
+    }
+    const bool sdRequired = storage_->isReady() && storage_->isSDCard();
+
+    const String empty;
+    const String& oldEncodedPassword = passwordBefore.slotPresent
+                                           ? passwordBefore.slotValue
+                                           : (index == 0 && passwordBefore.legacyPresent
+                                                  ? passwordBefore.legacyValue : empty);
+    WifiCredentialJournal journal;
+    journal.slotIndex = index;
+    if (!copyStringExact(before.wifiStaSlots[index].ssid, journal.oldSsid) ||
+        !copyStringExact(oldEncodedPassword, journal.oldEncodedPassword) ||
+        !copyStringExact(slot.ssid, journal.newSsid) ||
+        !copyStringExact(encodedPassword, journal.newEncodedPassword)) {
+        Serial.println("[Settings] WARN: WiFi credential journal staging unavailable");
+        return false;
+    }
+    if (!writeWifiCredentialJournal(journal)) {
+        Serial.println("[Settings] WARN: WiFi credential journal write failed");
+        return false;
+    }
+
+    settings_ = std::move(candidate);
+    WifiStaSlot& activeSlot = settings_.wifiStaSlots[index];
 
     const auto rollbackCredentialStores = [&]() -> bool {
         const bool nvsRestored = restoreWifiPasswordNvsSnapshot(index, passwordBefore);
         bool sdRestored = true;
         if (sdRequired) {
-            if (oldSsid.length() > 0) {
-                sdRestored = saveWifiClientSecretToSD(*storage_, index, oldSsid, oldEncodedPassword);
+            if (journal.oldSsid.length() > 0) {
+                sdRestored = saveWifiClientSecretToSD(*storage_, index, journal.oldSsid,
+                                                      journal.oldEncodedPassword);
             } else {
-                sdRestored = removeWifiClientSecretFromSD(*storage_, index, slot.ssid);
+                sdRestored = removeWifiClientSecretFromSD(*storage_, index, journal.newSsid);
             }
         }
         if (!nvsRestored || !sdRestored) {
@@ -1746,7 +2067,7 @@ bool SettingsManager::setWifiStaSlotCredentials(size_t index, const String& ssid
     };
 
     if (!storeWifiPasswordCandidate(index, encodedPassword)) {
-        settings_ = before;
+        settings_ = std::move(before);
         restoreWifiPasswordNvsSnapshot(index, passwordBefore);
         clearWifiCredentialJournal();
         return false;
@@ -1754,13 +2075,13 @@ bool SettingsManager::setWifiStaSlotCredentials(size_t index, const String& ssid
 
     bool sdSaved = true;
     if (sdRequired) {
-        sdSaved = slot.ssid.length() > 0
-                      ? saveWifiClientSecretToSD(*storage_, index, slot.ssid, encodedPassword)
-                      : removeWifiClientSecretFromSD(*storage_, index, oldSsid);
+        sdSaved = activeSlot.ssid.length() > 0
+                      ? saveWifiClientSecretToSD(*storage_, index, activeSlot.ssid, encodedPassword)
+                      : removeWifiClientSecretFromSD(*storage_, index, journal.oldSsid);
     }
     if (!sdSaved) {
         rollbackCredentialStores();
-        settings_ = before;
+        settings_ = std::move(before);
         return false;
     }
 
@@ -1773,7 +2094,7 @@ bool SettingsManager::setWifiStaSlotCredentials(size_t index, const String& ssid
 
     if (!save()) {
         rollbackCredentialStores();
-        settings_ = before;
+        settings_ = std::move(before);
         return false;
     }
 
@@ -1806,47 +2127,53 @@ bool SettingsManager::clearWifiStaSlot(size_t index) {
     if (wifiCredentialJournalPresent()) {
         return false;
     }
-    const V1Settings before = settings_;
-    const String removedSsid = settings_.wifiStaSlots[index].ssid;
+    V1Settings before;
+    V1Settings candidate;
+    if (!copySettingsExact(settings_, before) || !copySettingsExact(settings_, candidate)) return false;
     WifiPasswordNvsSnapshot passwordBefore;
     if (!readWifiPasswordNvsSnapshot(index, passwordBefore)) {
         return false;
     }
-    const String oldEncodedPassword = passwordBefore.slotPresent
-                                          ? passwordBefore.slotValue
-                                          : (index == 0 && passwordBefore.legacyPresent ? passwordBefore.legacyValue
-                                                                                       : String(""));
-    settings_.wifiStaSlots[index] = WifiStaSlot();
-    settings_.wifiClientEnabled = settings_.hasConfiguredWifiStaSlot();
-    settings_.refreshWifiClientAliasFromSlots();
+    const String empty;
+    const String& oldEncodedPassword = passwordBefore.slotPresent
+                                           ? passwordBefore.slotValue
+                                           : (index == 0 && passwordBefore.legacyPresent
+                                                  ? passwordBefore.legacyValue : empty);
+    candidate.wifiStaSlots[index] = WifiStaSlot();
+    candidate.wifiClientEnabled = candidate.hasConfiguredWifiStaSlot();
+    if (!refreshWifiClientAliasExact(candidate)) return false;
 
     const bool sdRequired = storage_->isReady() && storage_->isSDCard();
-    const WifiCredentialJournal journal{index, removedSsid, oldEncodedPassword, "", ""};
+    WifiCredentialJournal journal;
+    journal.slotIndex = index;
+    if (!copyStringExact(before.wifiStaSlots[index].ssid, journal.oldSsid) ||
+        !copyStringExact(oldEncodedPassword, journal.oldEncodedPassword)) return false;
     if (!writeWifiCredentialJournal(journal)) {
-        settings_ = before;
         return false;
     }
+    settings_ = std::move(candidate);
     if (!storeWifiPasswordCandidate(index, "")) {
         restoreWifiPasswordNvsSnapshot(index, passwordBefore);
         clearWifiCredentialJournal();
-        settings_ = before;
+        settings_ = std::move(before);
         return false;
     }
 
     const bool sdCleared = !sdRequired ||
                            (settings_.hasConfiguredWifiStaSlot()
-                                ? removeWifiClientSecretFromSD(*storage_, index, removedSsid)
+                                ? removeWifiClientSecretFromSD(*storage_, index, journal.oldSsid)
                                 : clearWifiClientSecretFromSD(*storage_));
     if (!sdCleared || !save()) {
         const bool nvsRestored = restoreWifiPasswordNvsSnapshot(index, passwordBefore);
         bool sdRestored = true;
-        if (sdRequired && removedSsid.length() > 0) {
-            sdRestored = saveWifiClientSecretToSD(*storage_, index, removedSsid, oldEncodedPassword);
+        if (sdRequired && journal.oldSsid.length() > 0) {
+            sdRestored = saveWifiClientSecretToSD(*storage_, index, journal.oldSsid,
+                                                  journal.oldEncodedPassword);
         }
         if (nvsRestored && sdRestored) {
             clearWifiCredentialJournal();
         }
-        settings_ = before;
+        settings_ = std::move(before);
         return false;
     }
     if (!clearWifiCredentialJournal()) {
@@ -1861,19 +2188,22 @@ bool SettingsManager::clearWifiClientCredentials() {
         return false;
     }
 
-    const V1Settings before = settings_;
+    V1Settings before;
+    V1Settings candidate;
+    if (!copySettingsExact(settings_, before) || !copySettingsExact(settings_, candidate)) return false;
     WifiPasswordNvsSnapshot passwordBefore[kWifiStaSlotCount];
     WifiForgetAllJournal journal;
+    const String empty;
     for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
         if (!readWifiPasswordNvsSnapshot(i, passwordBefore[i])) {
             return false;
         }
-        journal.oldSsid[i] = settings_.wifiStaSlots[i].ssid;
-        journal.oldEncodedPassword[i] = passwordBefore[i].slotPresent
-                                             ? passwordBefore[i].slotValue
-                                             : (i == 0 && passwordBefore[i].legacyPresent
-                                                    ? passwordBefore[i].legacyValue
-                                                    : String(""));
+        const String& encoded = passwordBefore[i].slotPresent
+                                    ? passwordBefore[i].slotValue
+                                    : (i == 0 && passwordBefore[i].legacyPresent
+                                           ? passwordBefore[i].legacyValue : empty);
+        if (!copyStringExact(settings_.wifiStaSlots[i].ssid, journal.oldSsid[i]) ||
+            !copyStringExact(encoded, journal.oldEncodedPassword[i])) return false;
     }
 
     bool changed = settings_.wifiClientEnabled || settings_.hasConfiguredWifiStaSlot();
@@ -1883,15 +2213,18 @@ bool SettingsManager::clearWifiClientCredentials() {
     if (!changed) {
         return true;
     }
-    if (!writeWifiForgetAllJournal(journal)) {
-        return false;
+    String oldPasswords[kWifiStaSlotCount];
+    for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
+        if (!copyStringExact(journal.oldEncodedPassword[i], oldPasswords[i])) return false;
     }
-
-    for (WifiStaSlot& slot : settings_.wifiStaSlots) {
+    for (WifiStaSlot& slot : candidate.wifiStaSlots) {
         slot = WifiStaSlot();
     }
-    settings_.wifiClientEnabled = false;
-    settings_.refreshWifiClientAliasFromSlots();
+    candidate.wifiClientEnabled = false;
+    if (!refreshWifiClientAliasExact(candidate)) return false;
+    if (!writeWifiForgetAllJournal(journal)) return false;
+
+    settings_ = std::move(candidate);
 
     bool passwordsCleared = true;
     String emptyPasswords[kWifiStaSlotCount];
@@ -1909,13 +2242,9 @@ bool SettingsManager::clearWifiClientCredentials() {
 #endif
 
     if (!passwordsCleared || !sdCleared || !save()) {
-        settings_ = before;
+        settings_ = std::move(before);
         const bool passwordsRestored = restoreAllWifiPasswordSnapshots(passwordBefore);
-        String oldPasswords[kWifiStaSlotCount];
-        for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
-            oldPasswords[i] = journal.oldEncodedPassword[i];
-        }
-        const bool sdRestored = writeWifiSecretStateFromSettings(*storage_, before, oldPasswords);
+        const bool sdRestored = writeWifiSecretStateFromSettings(*storage_, settings_, oldPasswords);
         if (passwordsRestored && sdRestored) {
             clearWifiCredentialJournal();
         }

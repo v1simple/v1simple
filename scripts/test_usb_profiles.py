@@ -26,6 +26,26 @@ def bundle():
             "mainVolume": 0, "mutedVolume": 255} for name in ("Road", "Spare")]}
 
 
+def bundle_v3(definition_count=64, description="Schema three fixture"):
+    definitions = [{"index": index,
+                    "lowerMHz": 24000 + index if index % 2 == 0 else 0,
+                    "upperMHz": 24100 + index if index % 2 == 0 else 0}
+                   for index in range(definition_count)]
+    detector = {"userSettings": "value", "mode": {"policy": "value", "value": 2},
+                "display": "off",
+                "volume": {"policy": "temporary", "main": 7, "muted": 2,
+                           "feedback": "changed_only", "disconnect": "keep_current"},
+                "bluetoothLed": "on",
+                "customFrequencies": {"policy": "value", "definitions": definitions}}
+    return {"format": "v1simple-profiles", "version": 3, "autoPushEnabled": True,
+            "activeSlot": 1,
+            "slots": [{"name": name, "profile": "Road", "color": 100 + index,
+                       "alertPersist": index, "priorityArrowOnly": index == 1}
+                      for index, name in enumerate(("DEFAULT", "HIGHWAY", "CITY"))],
+            "profiles": [{"schemaVersion": 3, "name": "Road", "description": description,
+                          "rawBytes": [1, 17, 33, 65, 129, 255], "detector": detector}]}
+
+
 class Clock:
     def __init__(self):
         self.now = 0.0
@@ -143,7 +163,8 @@ class WireDevice:
                 extra = deepcopy(self.current["profiles"][0])
                 extra["name"] = "Unexpected"
                 self.current["profiles"].append(extra)
-            return {"ok": True, "stored": True, "backup_pending": True, "profiles": count}
+            return {"ok": True, "stored": True, "backup_pending": True,
+                    "migration_pending": False, "profiles": count}
         if verb == "abort":
             self.upload.clear()
             return {"ok": True}
@@ -179,6 +200,41 @@ class USBProfilesTests(unittest.TestCase):
         self.assertFalse(destination.exists())
         self.assertEqual(self.peer.mode, "normal")
         self.assertEqual(self.peer.commits, 0)
+
+    def test_catalog_over_supported_limit_is_rejected_before_transport(self):
+        oversized = bundle_v3()
+        template = oversized["profiles"][0]
+        oversized["profiles"] = []
+        for index in range(usb.MAX_PROFILE_COUNT + 1):
+            profile = deepcopy(template)
+            profile["name"] = f"Profile {index + 1}"
+            oversized["profiles"].append(profile)
+        for slot in oversized["slots"]:
+            slot["profile"] = oversized["profiles"][0]["name"]
+
+        with self.assertRaisesRegex(usb.ProfileError, "at most 10 profiles"):
+            usb.validate_bundle(oversized)
+        self.assertEqual(self.peer.commits, 0)
+
+    def test_legacy_catalog_whose_slot_variants_expand_over_limit_is_rejected_before_transport(self):
+        document = bundle()
+        template = document["profiles"][0]
+        document["profiles"] = []
+        for index in range(usb.MAX_PROFILE_COUNT):
+            profile = deepcopy(template)
+            profile["name"] = f"Profile {index + 1}"
+            document["profiles"].append(profile)
+        document["slots"][0].update(profile="Profile 1", mode=1, darkMode=False)
+        document["slots"][1].update(profile="Profile 1", mode=2, darkMode=True)
+        document["slots"][2].update(profile="Profile 2", mode=0, darkMode=False)
+        destination = self.directory / "legacy-expands-over-cap.json"
+        destination.write_bytes(json.dumps(document).encode())
+
+        with self.assertRaisesRegex(usb.ProfileError, "at most 10 profiles"):
+            usb.perform(self.args("restore", file=destination), self.device, announce=lambda _: None)
+        self.assertEqual(self.peer.mode, "normal")
+        self.assertEqual(self.peer.commits, 0)
+        self.assertEqual(self.peer.history, [])
 
     def test_lost_mode_ack_still_requires_observed_mode_and_new_boot(self):
         self.peer.drop_once.add("maintenance")
@@ -227,6 +283,87 @@ class USBProfilesTests(unittest.TestCase):
         self.assertTrue(result["readback_verified"])
         self.assertTrue(usb.same_bundle(self.peer.current, original))
         self.assertNotIn("DeleteMe", [entry["name"] for entry in self.peer.current["profiles"]])
+
+    def test_schema_v3_64_definitions_and_maximum_description_round_trip_exactly(self):
+        document = bundle_v3(description="d" * usb.MAX_DESCRIPTION_BYTES)
+        raw = usb.encode_bundle(document)
+        self.assertGreater(len(raw), 4096)
+        self.assertLess(len(raw), usb.MAX_PAYLOAD)
+        self.assertEqual(usb.validate_bundle(usb.parse_json(raw)), document)
+        self.peer.mode = "maintenance"
+        self.assertTrue(self.device.replace(document)["readback_verified"])
+        self.assertTrue(usb.same_bundle(self.peer.current, document))
+
+    def test_schema_v2_migration_preserves_legacy_display_off_and_volume_semantics(self):
+        document = bundle_v3(definition_count=1)
+        document["version"] = 2
+        profile = document["profiles"][0]
+        profile["schemaVersion"] = 2
+        profile["detector"]["volume"] = {"policy": "temporary", "main": 7, "muted": 2}
+        profile["detector"]["bluetoothLed"] = "unchanged"
+        profile["detector"]["customFrequencies"] = "unchanged"
+        migrated = usb.migrate_bundle(document)
+        self.assertEqual(migrated["version"], 3)
+        self.assertEqual(migrated["profiles"][0]["detector"]["bluetoothLed"], "off")
+        self.assertEqual(migrated["profiles"][0]["detector"]["volume"]["feedback"], "none")
+        self.assertEqual(migrated["profiles"][0]["detector"]["volume"]["disconnect"], "restore_saved")
+        self.assertEqual(migrated["profiles"][0]["detector"]["customFrequencies"],
+                         {"policy": "unchanged"})
+
+    def test_legacy_v1_migration_splits_distinct_slot_commands_deterministically(self):
+        document = bundle()
+        document["slots"][0].update(mode=1, darkMode=False, muteToZero=False)
+        document["slots"][1].update(mode=2, darkMode=True, muteToZero=True,
+                                     volumeConfigured=True, volume=6, muteVolume=1)
+        migrated = usb.migrate_bundle(document)
+        self.assertEqual(migrated["version"], 3)
+        self.assertNotEqual(migrated["slots"][0]["profile"], migrated["slots"][1]["profile"])
+        by_name = {profile["name"]: profile for profile in migrated["profiles"]}
+        dark = by_name[migrated["slots"][1]["profile"]]["detector"]
+        self.assertEqual(dark["display"], "off")
+        self.assertEqual(dark["bluetoothLed"], "off")
+        self.assertEqual(dark["mode"], {"policy": "value", "value": 2})
+        self.assertEqual(dark["volume"]["policy"], "temporary")
+
+    def test_multibyte_legacy_migration_names_preserve_suffixes_and_match_byte_cap(self):
+        source_name = "é" * 32  # Exactly 64 UTF-8 bytes.
+        slot_suffix = " - Slot 2"
+        expected_first = "é" * 27 + slot_suffix
+        expected_second = "é" * 26 + slot_suffix + " #2"
+        expected_tenth = "é" * 25 + slot_suffix + " #10"
+        self.assertEqual(usb.migrated_name_candidate(source_name, slot_suffix, 1), expected_first)
+        self.assertEqual(usb.migrated_name_candidate(source_name, slot_suffix, 2), expected_second)
+        self.assertEqual(usb.migrated_name_candidate(source_name, slot_suffix, 10), expected_tenth)
+        self.assertLessEqual(len(expected_second.encode("utf-8")), 64)
+        self.assertLessEqual(len(expected_tenth.encode("utf-8")), 64)
+
+        document = bundle()
+        document["profiles"][0]["name"] = source_name
+        document["profiles"][1]["name"] = expected_first  # Force deterministic #2 collision.
+        for slot in document["slots"]:
+            slot["profile"] = source_name
+        document["slots"][0]["mode"] = 1
+        document["slots"][1]["mode"] = 2
+        for key in ("mode", "volumeConfigured", "volume", "muteVolume", "darkMode", "muteToZero"):
+            document["slots"][2][key] = document["slots"][0][key]
+        migrated = usb.migrate_bundle(document)
+        self.assertEqual(migrated["slots"][0]["profile"], source_name)
+        self.assertEqual(migrated["slots"][1]["profile"], expected_second)
+        self.assertEqual(migrated["slots"][2]["profile"], source_name)
+        usb.validate_bundle(migrated)
+
+    def test_schema_v3_rejects_description_over_limit_and_malformed_definition_topology(self):
+        for change in (
+                lambda d: d["profiles"][0].update(description="x" * (usb.MAX_DESCRIPTION_BYTES + 1)),
+                lambda d: d["profiles"][0]["detector"]["customFrequencies"]["definitions"][1].update(index=3),
+                lambda d: d["profiles"][0]["detector"]["customFrequencies"]["definitions"][0].update(
+                    lowerMHz=0, upperMHz=1),
+                lambda d: d["profiles"][0]["detector"]["volume"].update(disconnect="invalid"),
+                lambda d: d["profiles"][0]["detector"].update(extra=True)):
+            document = bundle_v3()
+            change(document)
+            with self.assertRaises(usb.ProfileError):
+                usb.encode_bundle(document)
 
     def test_extra_readback_profile_is_not_ignored(self):
         self.peer.extra_after_commit = True

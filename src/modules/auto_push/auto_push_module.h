@@ -26,6 +26,8 @@ class AutoPushModule {
         PROFILE_LOAD_FAILED,
         INVALID_VOLUME_PAIR,
         UNSUPPORTED_CONFIGURATION,
+        ACTIVE_SLOT_PERSIST_FAILED,
+        STAGING_UNAVAILABLE,
     };
 
     struct PushNowRequest {
@@ -47,6 +49,7 @@ class AutoPushModule {
     QueueResult queueSlotPush(int slotIndex, bool activateSlot = false, bool updateProfileIndicator = true);
     QueueResult queuePushNow(const PushNowRequest& request);
     void process();
+    bool appendStatusJson(JsonObject root) const;
     String getStatusJson() const;
     bool isActive() const { return state_.step != Step::Idle; }
 
@@ -69,6 +72,10 @@ class AutoPushModule {
         VolumeWrite,
         VolumeRead,
         VolumeVerify,
+        CustomWrite,
+        CustomCommitVerify,
+        CustomRead,
+        CustomVerify,
     };
 
     enum class Result : uint8_t { NONE = 0, QUEUED, IN_PROGRESS, SUCCEEDED, PARTIAL, FAILED };
@@ -123,6 +130,13 @@ class AutoPushModule {
         VOLUME_READ_FAILED,
         VOLUME_MISMATCH,
         VOLUME_TIMEOUT,
+        CUSTOM_CONFIGURATION_INVALID,
+        CUSTOM_WRITE_FAILED,
+        CUSTOM_COMMIT_REJECTED,
+        CUSTOM_COMMIT_TIMEOUT,
+        CUSTOM_READ_FAILED,
+        CUSTOM_READBACK_INVALID,
+        CUSTOM_READBACK_TIMEOUT,
         PROXY_OWNS_DETECTOR,
     };
 
@@ -136,6 +150,8 @@ class AutoPushModule {
         FailureReason reason = FailureReason::NONE;
     };
 
+    using FixedDefinitionList = V1CustomFrequencyDefinitionList;
+
     struct OperationStatus {
         uint32_t operationId = 0;
         Result result = Result::NONE;
@@ -147,6 +163,7 @@ class AutoPushModule {
         ComponentStatus display;
         ComponentStatus mode;
         ComponentStatus volume;
+        ComponentStatus customFrequencies;
         std::array<uint8_t, 6> beforeUserBytes{{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}};
         std::array<uint8_t, 6> desiredUserBytes{{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}};
         std::array<uint8_t, 6> effectiveUserBytes{{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}};
@@ -161,6 +178,19 @@ class AutoPushModule {
         uint8_t beforeMutedVolume = 0;
         uint8_t desiredMainVolume = 0;
         uint8_t desiredMutedVolume = 0;
+        uint8_t volumeCommandAux = 0;
+        V1VolumePolicy volumePolicy = V1VolumePolicy::Unchanged;
+        V1VolumeFeedbackPolicy volumeFeedback = V1VolumeFeedbackPolicy::None;
+        V1VolumeDisconnectPolicy volumeDisconnect = V1VolumeDisconnectPolicy::RestoreSaved;
+        uint8_t beforeSavedMainVolume = 0;
+        uint8_t beforeSavedMutedVolume = 0;
+        bool beforeBluetoothIndicatorActive = false;
+        bool desiredBluetoothIndicatorActive = false;
+        FixedDefinitionList requestedCustomDefinitions;
+        FixedDefinitionList effectiveCustomDefinitions;
+        bool customCommitResultAvailable = false;
+        uint8_t customCommitResultRaw = 0;
+        int16_t customCommitInvalidDefinitionIndex = -1;
     };
 
     struct State {
@@ -176,6 +206,7 @@ class AutoPushModule {
         AutoPushSlot slot;
         V1Profile profile;
         bool profileLoaded = false;
+        bool retainLoadStep = false;
         bool profileOwned = false;
         bool isPushNow = false;
         bool updateProfileIndicator = true;
@@ -187,18 +218,30 @@ class AutoPushModule {
         V1VolumePolicy volumePolicy = V1VolumePolicy::Unchanged;
         uint8_t volume = 0xFF;
         uint8_t muteVolume = 0xFF;
+        uint8_t volumeAux = 0;
+        V1BluetoothLedPolicy bluetoothLedPolicy = V1BluetoothLedPolicy::Unchanged;
+        bool bluetoothIndicatorActive = false;
+        V1CustomFrequencyPolicy customFrequencyPolicy = V1CustomFrequencyPolicy::Unchanged;
+        FixedDefinitionList customDefinitions;
+        size_t customWriteIndex = 0;
+        size_t customLastUsedIndex = 0;
+        uint64_t customRequiredMask = 0;
     };
 
     QueueResult queuePreparedSlot(int slotIndex, const AutoPushSlot& slot, bool profileLoaded,
                                   const V1Profile& profile, bool isPushNow, bool activateSlot,
-                                  bool updateProfileIndicator);
-    void armState(int slotIndex, const AutoPushSlot& slot, bool profileLoaded, const V1Profile& profile,
-                  bool isPushNow, bool updateProfileIndicator);
+                                  bool updateProfileIndicator, bool retainLoadStep = false);
+    bool prepareState(int slotIndex, const AutoPushSlot& slot, bool profileLoaded,
+                      const V1Profile& profile, bool isPushNow, bool updateProfileIndicator,
+                      bool retainLoadStep, State& preparedState,
+                      OperationStatus& preparedStatus) const;
+    void commitPreparedState(State&& preparedState, OperationStatus&& preparedStatus);
     bool configurePlan();
     bool preflight();
     void advanceAfterUser(uint32_t nowMs);
     void advanceAfterDisplay(uint32_t nowMs);
     void advanceAfterMode(uint32_t nowMs);
+    void advanceAfterVolume(uint32_t nowMs);
     void failComponent(ComponentStatus& component, Outcome outcome, FailureReason reason);
     void failWholePlan(ComponentStatus* component, Outcome outcome, FailureReason reason);
     void finishOperation();

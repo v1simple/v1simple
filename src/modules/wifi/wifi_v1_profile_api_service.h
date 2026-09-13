@@ -50,21 +50,33 @@ struct Runtime {
     void* deleteProfileResultCtx = nullptr;
     bool (*loadCapturedSnapshot)(V1DeviceRecord& device, void* ctx) = nullptr;
     void* loadCapturedSnapshotCtx = nullptr;
-    String (*settingsJsonForBytes)(const uint8_t bytes[6], void* ctx) = nullptr;
+    bool (*capturedSnapshotSourceAvailable)(void* ctx) = nullptr;
+    void* capturedSnapshotSourceAvailableCtx = nullptr;
+    bool (*settingsJsonForBytes)(const uint8_t bytes[6], String& output, void* ctx) = nullptr;
     void* settingsJsonForBytesCtx = nullptr;
     bool (*profileSchemaReady)(void* ctx) = nullptr;
     void* profileSchemaReadyCtx = nullptr;
+    ProfilePageResult (*listProfilePageResult)(const String& after, size_t limit, void* ctx) = nullptr;
+    void* listProfilePageResultCtx = nullptr;
 };
 
 void handleApiProfilesList(WebServer& server, const Runtime& runtime);
+void handleApiProfilesListQuery(WebServer& server, const Runtime& runtime,
+                                const uint8_t* query, size_t querySize);
 
 void handleApiProfileGet(WebServer& server, const Runtime& runtime);
+void handleApiProfileGetQuery(WebServer& server, const Runtime& runtime,
+                              const uint8_t* query, size_t querySize);
 
 void handleApiProfileSave(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
                           void* rateLimitCtx);
+void handleApiProfileSaveBody(WebServer& server, const Runtime& runtime, const uint8_t* body, size_t bodySize,
+                              bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
 
 void handleApiProfileDelete(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
                             void* rateLimitCtx);
+void handleApiProfileDeleteBody(WebServer& server, const Runtime& runtime, const uint8_t* body, size_t bodySize,
+                                bool (*checkRateLimit)(void* ctx), void* rateLimitCtx);
 
 void handleApiCurrentSettings(WebServer& server, const Runtime& runtime);
 

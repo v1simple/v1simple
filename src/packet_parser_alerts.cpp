@@ -57,6 +57,15 @@ void PacketParser::resetModeAndDisplayState() {
     displayState_.hasDisplayOn = false;
     displayOnObservation_ = V1DisplayOnObservation{};
     modeObservation_ = V1ModeObservation{};
+    bluetoothIndicatorObservation_ = V1BluetoothIndicatorObservation{};
+    resetSweepCaptureState();
+}
+
+void PacketParser::resetSweepCaptureState() {
+    resetSweepSectionsObservation();
+    resetSweepMaxObservation();
+    resetSweepDefinitionsObservation();
+    resetSweepWriteResultObservation();
 }
 
 void PacketParser::resetAlertStateAt(uint32_t nowMs) {

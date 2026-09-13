@@ -9,6 +9,7 @@
 #include "../../src/modules/wifi/wifi_saved_network_mutation_policy.h"
 #include "../../src/modules/wifi/wifi_setup_network_policy.h"
 #include "../../src/modules/wifi/wifi_maintenance_http_preflight.h"
+#include "../../src/modules/wifi/wifi_exact_body_length_policy.h"
 #include "../../src/modules/wifi/wifi_maintenance_recovery_module.cpp"
 
 // Regression coverage for the maintenance-boot WiFi recovery policy.
@@ -323,15 +324,10 @@ static void assertPreflightDecision(const std::string& request, const bool maint
 
 void test_http_preflight_allows_bounded_legacy_multipart_posts() {
     using WifiMaintenanceHttpPreflight::Decision;
-    const char* const paths[] = {
-        "/api/device/settings",
-        "/api/obd/devices/name",
-        "/api/autopush/activate",
-        "/api/autopush/slot",
-        "/api/v1/devices/name",
-        "/api/v1/devices/profile",
-        "/api/v1/devices/delete",
-    };
+    const char* const paths[] = {"/api/obd/devices/name", "/api/device/settings",
+                                 "/api/autopush/activate", "/api/autopush/slot",
+                                 "/api/v1/devices/name", "/api/v1/devices/profile",
+                                 "/api/v1/devices/delete"};
     for (const char* path : paths) {
         const std::string request =
             std::string("POST ") + path + " HTTP/1.1\r\n"
@@ -379,6 +375,42 @@ void test_http_preflight_rejects_multipart_before_framework_parser() {
         "Content-Type: multipart/form-data; boundary=abc\r\n"
         "Content-Length: 120\r\n\r\n";
     assertPreflightDecision(nonLegacyRoute, true, Decision::RejectMultipart);
+
+    const char exactFormRoute[] =
+        "POST /api/autopush/slot HTTP/1.1\r\n"
+        "X-V1Simple-Request: maintenance-ui\r\n"
+        "Content-Type: multipart/form-data; boundary=abc\r\n"
+        "Content-Length: 120\r\n\r\n";
+    assertPreflightDecision(exactFormRoute, true, Decision::AllowBodyParsing);
+}
+
+void test_http_preflight_preserves_exact_length_and_multipart_boundary() {
+    using namespace WifiMaintenanceHttpPreflight;
+    const char request[] =
+        "POST /api/autopush/slot HTTP/1.1\r\n"
+        "X-V1Simple-Request: maintenance-ui\r\n"
+        "Content-Type: multipart/form-data; boundary=----WebKitV1\r\n"
+        "Content-Length: 0120\r\n\r\n";
+    BodyInfo info;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(Decision::AllowBodyParsing),
+                          static_cast<int>(evaluate(request, sizeof(request) - 1u, true, &info)));
+    TEST_ASSERT_EQUAL_UINT(120u, info.contentLength);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(BodyEncoding::MultipartFormData),
+                          static_cast<int>(info.encoding));
+    TEST_ASSERT_EQUAL_UINT(strlen("----WebKitV1"), info.multipartBoundaryLength);
+    TEST_ASSERT_EQUAL_STRING("----WebKitV1", info.multipartBoundary);
+
+    const char encoded[] =
+        "POST /api/autopush/slot HTTP/1.1\r\n"
+        "X-V1Simple-Request: maintenance-ui\r\n"
+        "Content-Type: application/x-www-form-urlencoded\r\n"
+        "Content-Length: 7\r\n\r\n";
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(Decision::AllowBodyParsing),
+                          static_cast<int>(evaluate(encoded, sizeof(encoded) - 1u, true, &info)));
+    TEST_ASSERT_EQUAL_UINT(7u, info.contentLength);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(BodyEncoding::UrlEncoded),
+                          static_cast<int>(info.encoding));
+    TEST_ASSERT_EQUAL_UINT(0u, info.multipartBoundaryLength);
 }
 
 void test_http_preflight_rejects_wrong_shape_and_nonmaintenance_before_body() {
@@ -444,6 +476,33 @@ void test_http_preflight_rejects_invalid_or_unbounded_framing_before_body() {
             oversizedHeaders, sizeof(oversizedHeaders), true)));
 }
 
+void test_http_preflight_applies_profile_save_cap_before_framework_body_allocation() {
+    using WifiMaintenanceHttpPreflight::Decision;
+    const std::string atLimit =
+        "POST /api/v1/profile HTTP/1.1\r\n"
+        "X-V1Simple-Request: maintenance-ui\r\nContent-Type: application/json\r\nContent-Length: " +
+        std::to_string(V1_PROFILE_HTTP_SAVE_MAX_BYTES) + "\r\n\r\n";
+    assertPreflightDecision(atLimit, true, Decision::AllowBodyParsing);
+
+    const std::string overLimit =
+        "POST /api/v1/profile HTTP/1.1\r\n"
+        "X-V1Simple-Request: maintenance-ui\r\nContent-Type: application/json\r\nContent-Length: " +
+        std::to_string(V1_PROFILE_HTTP_SAVE_MAX_BYTES + 1u) + "\r\n\r\n";
+    assertPreflightDecision(overLimit, true, Decision::RejectTooLarge);
+
+    const std::string queryBypass =
+        "POST /api/v1/profile?name=ignored HTTP/1.1\r\n"
+        "X-V1Simple-Request: maintenance-ui\r\nContent-Type: application/json\r\nContent-Length: " +
+        std::to_string(V1_PROFILE_HTTP_SAVE_MAX_BYTES + 1u) + "\r\n\r\n";
+    assertPreflightDecision(queryBypass, true, Decision::RejectTooLarge);
+
+    const std::string backupRestoreStillUsesTransportLimit =
+        "POST /api/settings/restore HTTP/1.1\r\n"
+        "X-V1Simple-Request: maintenance-ui\r\nContent-Type: application/json\r\nContent-Length: " +
+        std::to_string(V1_PROFILE_HTTP_SAVE_MAX_BYTES + 1u) + "\r\n\r\n";
+    assertPreflightDecision(backupRestoreStillUsesTransportLimit, true, Decision::AllowBodyParsing);
+}
+
 void test_http_preflight_allows_supported_write_bodies_and_read_passthrough() {
     using WifiMaintenanceHttpPreflight::Decision;
     const char json[] =
@@ -481,6 +540,29 @@ void test_http_preflight_allows_supported_write_bodies_and_read_passthrough() {
     assertPreflightDecision(get, false, Decision::AllowFrameworkParsing);
 }
 
+void test_http_preflight_caps_every_framework_form_body_independent_of_content_type() {
+    using WifiMaintenanceHttpPreflight::Decision;
+    for (const char* path : {"/api/autopush/slot", "/api/device/settings"}) {
+        for (const char* contentType : {"application/x-www-form-urlencoded", "text/plain"}) {
+            const std::string atLimit =
+                std::string("POST ") + path + " HTTP/1.1\r\nX-V1Simple-Request: maintenance-ui\r\n" +
+                "Content-Type: " + contentType + "\r\nContent-Length: " +
+                std::to_string(WifiMaintenanceHttpPreflight::kMaxLegacyMultipartBodyBytes) + "\r\n\r\n";
+            assertPreflightDecision(atLimit, true, Decision::AllowBodyParsing);
+            const std::string overLimit =
+                std::string("POST ") + path + " HTTP/1.1\r\nX-V1Simple-Request: maintenance-ui\r\n" +
+                "Content-Type: " + contentType + "\r\nContent-Length: " +
+                std::to_string(WifiMaintenanceHttpPreflight::kMaxLegacyMultipartBodyBytes + 1u) + "\r\n\r\n";
+            assertPreflightDecision(overLimit, true, Decision::RejectTooLarge);
+        }
+    }
+    const std::string querySplit =
+        "POST /api/v1/devices/name?source=ui HTTP/1.1\r\n"
+        "X-V1Simple-Request: maintenance-ui\r\n"
+        "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: 3\r\n\r\na=b";
+    assertPreflightDecision(querySplit, true, Decision::RejectBadRequest);
+}
+
 void test_http_preflight_rate_admission_vetoes_only_valid_writes() {
     using WifiMaintenanceHttpPreflight::Decision;
     TEST_ASSERT_EQUAL_INT(
@@ -492,6 +574,36 @@ void test_http_preflight_rate_admission_vetoes_only_valid_writes() {
     TEST_ASSERT_EQUAL_INT(
         static_cast<int>(Decision::RejectForbidden),
                           static_cast<int>(WifiMaintenanceHttpPreflight::applyWriteAdmission(Decision::RejectForbidden, false)));
+}
+
+void test_exact_body_uses_only_matching_preflight_length() {
+    using namespace WifiExactBodyLengthPolicy;
+    StartDecision decision = begin(true, 120u, 120, 4096u);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(StartStatus::Ready), static_cast<int>(decision.status));
+    TEST_ASSERT_EQUAL_UINT(120u, decision.expected);
+    TEST_ASSERT_EQUAL_UINT(120u, decision.frameworkReadLimit);
+
+    for (const int reparsed : {12, 1200, -1}) {
+        decision = begin(true, 120u, reparsed, 4096u);
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(StartStatus::Invalid), static_cast<int>(decision.status));
+        TEST_ASSERT_EQUAL_UINT(0u, decision.frameworkReadLimit);
+    }
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(StartStatus::Invalid),
+                          static_cast<int>(begin(false, 120u, 120, 4096u).status));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(StartStatus::TooLarge),
+                          static_cast<int>(begin(true, 4097u, 4097, 4096u).status));
+}
+
+void test_exact_body_rejects_short_extra_and_discontinuous_chunks() {
+    using namespace WifiExactBodyLengthPolicy;
+    TEST_ASSERT_TRUE(acceptsChunk(10u, 0u, 4u, 4u));
+    TEST_ASSERT_TRUE(acceptsChunk(10u, 4u, 6u, 10u));
+    TEST_ASSERT_FALSE(acceptsChunk(10u, 4u, 7u, 11u));
+    TEST_ASSERT_FALSE(acceptsChunk(10u, 4u, 5u, 10u));
+    TEST_ASSERT_FALSE(acceptsChunk(10u, 11u, 0u, 11u));
+    TEST_ASSERT_TRUE(acceptsEnd(10u, 10u, 10u));
+    TEST_ASSERT_FALSE(acceptsEnd(10u, 9u, 9u));
+    TEST_ASSERT_FALSE(acceptsEnd(10u, 10u, 11u));
 }
 
 void test_failed_storage_resolution_clears_pre_admission_and_dispatches_one_503() {
@@ -545,10 +657,15 @@ int main() {
     RUN_TEST(test_scan_mutation_restarts_but_unrelated_connecting_mutation_is_preserved);
     RUN_TEST(test_http_preflight_allows_bounded_legacy_multipart_posts);
     RUN_TEST(test_http_preflight_rejects_multipart_before_framework_parser);
+    RUN_TEST(test_http_preflight_preserves_exact_length_and_multipart_boundary);
     RUN_TEST(test_http_preflight_rejects_wrong_shape_and_nonmaintenance_before_body);
     RUN_TEST(test_http_preflight_rejects_invalid_or_unbounded_framing_before_body);
+    RUN_TEST(test_http_preflight_applies_profile_save_cap_before_framework_body_allocation);
     RUN_TEST(test_http_preflight_allows_supported_write_bodies_and_read_passthrough);
+    RUN_TEST(test_http_preflight_caps_every_framework_form_body_independent_of_content_type);
     RUN_TEST(test_http_preflight_rate_admission_vetoes_only_valid_writes);
+    RUN_TEST(test_exact_body_uses_only_matching_preflight_length);
+    RUN_TEST(test_exact_body_rejects_short_extra_and_discontinuous_chunks);
     RUN_TEST(test_failed_storage_resolution_clears_pre_admission_and_dispatches_one_503);
     return UNITY_END();
 }

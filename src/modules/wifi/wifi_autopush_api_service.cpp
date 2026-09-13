@@ -1,25 +1,96 @@
 #include "wifi_autopush_api_service.h"
 
 #include <algorithm>
+#include <cerrno>
+#include <cstdlib>
 
 #include <ArduinoJson.h>
 
 #include "wifi_api_response.h"
+#include "exact_urlencoded_form.h"
+#include "json_exact_input.h"
+#include "psram_json_document.h"
 #include "wifi_json_document.h"
 #include "profile_name.h"
+#include "settings_sanitize.h"
+#include "v1_profiles.h"
 
 namespace WifiAutoPushApiService {
 
+namespace {
+
+struct WebServerForm {
+    WebServer& server;
+    bool has(const char* key) const { return server.hasArg(key); }
+    bool read(const char* key, String& value, bool allowEmpty = false) const {
+        if (!server.hasArg(key)) return false;
+        const String& parsed = server.arg(key);
+        value = parsed;
+        if (value.length() != parsed.length() ||
+            (value.length() != 0 && std::memcmp(value.c_str(), parsed.c_str(), value.length()) != 0)) return false;
+        if ((!allowEmpty && value.length() == 0) ||
+            !ExactJsonInput::validSemanticString(value.c_str(), value.length())) return false;
+        return true;
+    }
+};
+
+struct ExactBodyForm {
+    const ExactUrlEncodedForm& form;
+    bool has(const char* key) const { return form.has(key); }
+    bool read(const char* key, String& value, bool allowEmpty = false) const {
+        return form.read(key, value, allowEmpty);
+    }
+};
+
+template <typename Form>
+bool readPresentArg(const Form& form, const char* key, String& value, bool allowEmpty = false) {
+    if (!form.has(key) || !form.read(key, value, allowEmpty)) return false;
+    if ((!allowEmpty && value.length() == 0) ||
+        !ExactJsonInput::validSemanticString(value.c_str(), value.length())) return false;
+    return true;
+}
+
+template <typename Form>
+bool parseIntArg(const Form& form, const char* key, int& value, bool required = false) {
+    if (!form.has(key)) return !required;
+    String raw;
+    if (!readPresentArg(form, key, raw)) return false;
+    char* end = nullptr;
+    errno = 0;
+    const long parsed = std::strtol(raw.c_str(), &end, 10);
+    if (errno != 0 || !end || *end != '\0' || parsed < INT_MIN || parsed > INT_MAX) return false;
+    value = static_cast<int>(parsed);
+    return true;
+}
+
+template <typename Form>
+bool parseBoolArg(const Form& form, const char* key, bool& value, bool required = false) {
+    if (!form.has(key)) return !required;
+    String raw;
+    if (!readPresentArg(form, key, raw)) return false;
+    if (raw == "true") value = true;
+    else if (raw == "false") value = false;
+    else return false;
+    return true;
+}
+
+} // namespace
+
 void handleApiSlots(WebServer& server, const Runtime& runtime) {
     SlotsSnapshot snapshot;
-    if (runtime.loadSlotsSnapshot) {
+    if (runtime.loadSlotsSnapshotResult) {
+        if (!runtime.loadSlotsSnapshotResult(snapshot, runtime.loadSlotsSnapshotResultCtx)) {
+            server.send(503, "application/json", "{\"error\":\"Slot settings memory unavailable\",\"retryable\":true}");
+            return;
+        }
+    } else if (runtime.loadSlotsSnapshot) {
         runtime.loadSlotsSnapshot(snapshot, runtime.loadSlotsSnapshotCtx);
     }
 
-    WifiJson::Document doc;
+    PsramJson::Document doc;
     doc["enabled"] = snapshot.enabled;
     doc["activeSlot"] = snapshot.activeSlot;
-    doc["schemaVersion"] = snapshot.profileOwned ? 2 : 1;
+    doc["schemaVersion"] = snapshot.profileOwned ? V1_PROFILE_SCHEMA_VERSION : 1;
     doc["detectorConfigurationOwner"] = snapshot.profileOwned ? "profile" : "legacy-slot";
 
     JsonArray slots = doc["slots"].to<JsonArray>();
@@ -40,10 +111,30 @@ void handleApiSlots(WebServer& server, const Runtime& runtime) {
         obj["priorityArrowOnly"] = slot.priorityArrowOnly;
     }
 
+    const size_t responseBytes = measureJson(doc);
+    if (doc.overflowed() || responseBytes == 0 || responseBytes > 4096u) {
+        server.send(503, "application/json", "{\"error\":\"Slot settings memory unavailable\",\"retryable\":true}");
+        return;
+    }
     WifiApiResponse::sendJsonDocument(server, 200, doc);
 }
 
 void handleApiStatus(WebServer& server, const Runtime& runtime) {
+    if (runtime.appendPushStatusJson) {
+        PsramJson::Document doc;
+        if (!runtime.appendPushStatusJson(doc.to<JsonObject>(), runtime.appendPushStatusJsonCtx) ||
+            doc.overflowed()) {
+            server.send(503, "application/json", "{\"error\":\"Push status memory unavailable\",\"retryable\":true}");
+            return;
+        }
+        const size_t expected = measureJson(doc);
+        if (expected == 0 || expected > 16u * 1024u) {
+            server.send(503, "application/json", "{\"error\":\"Push status unavailable\",\"retryable\":true}");
+            return;
+        }
+        WifiApiResponse::sendJsonDocument(server, 200, doc);
+        return;
+    }
     String json;
     if (runtime.loadPushStatusJson && runtime.loadPushStatusJson(json, runtime.loadPushStatusJsonCtx)) {
         server.send(200, "application/json", json);
@@ -52,46 +143,104 @@ void handleApiStatus(WebServer& server, const Runtime& runtime) {
     server.send(500, "application/json", "{\"error\":\"Push status not available\"}");
 }
 
-void handleApiSlotSave(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
-                       void* rateLimitCtx) {
+template <typename Form>
+void handleApiSlotSaveImpl(WebServer& server, const Runtime& runtime, const Form& form,
+                           bool (*checkRateLimit)(void* ctx), void* rateLimitCtx) {
     if (checkRateLimit && !checkRateLimit(rateLimitCtx))
         return;
 
     SlotsSnapshot current;
     if (runtime.loadSlotsSnapshot) runtime.loadSlotsSnapshot(current, runtime.loadSlotsSnapshotCtx);
     const bool profileOwned = current.profileOwned;
-    if (!server.hasArg("slot") || !server.hasArg("profile") || (!profileOwned && !server.hasArg("mode"))) {
+    if (!form.has("slot") || !form.has("profile") || (!profileOwned && !form.has("mode"))) {
         server.send(400, "application/json", "{\"error\":\"Missing parameters\"}");
         return;
     }
 
     if (profileOwned &&
-        (server.hasArg("mode") || server.hasArg("volumeConfigured") || server.hasArg("volume") ||
-         server.hasArg("muteVol") || server.hasArg("muteVolume") || server.hasArg("mainVolume") ||
-         server.hasArg("mutedVolume") || server.hasArg("darkMode") || server.hasArg("muteToZero"))) {
+        (form.has("mode") || form.has("volumeConfigured") || form.has("volume") ||
+         form.has("muteVol") || form.has("muteVolume") || form.has("mainVolume") ||
+         form.has("mutedVolume") || form.has("darkMode") || form.has("muteToZero"))) {
         server.send(400, "application/json",
                     "{\"error\":\"Detector settings belong to the selected profile\"}");
         return;
     }
 
-    int slot = server.arg("slot").toInt();
-    String profile = server.arg("profile");
-    int mode = profileOwned ? 0 : server.arg("mode").toInt();
-    String name = server.hasArg("name") ? server.arg("name") : "";
-    int color = server.hasArg("color") ? server.arg("color").toInt() : -1;
-    int volume = server.hasArg("volume") ? server.arg("volume").toInt() : -1;
-    int muteVol = server.hasArg("muteVol") ? server.arg("muteVol").toInt() : -1;
-    const bool hasVolumeConfigured = server.hasArg("volumeConfigured");
-    const bool volumeConfigured = hasVolumeConfigured && server.arg("volumeConfigured") == "true";
-    bool hasDarkMode = server.hasArg("darkMode");
-    bool darkMode = hasDarkMode ? (server.arg("darkMode") == "true") : false;
-    bool hasMuteToZero = server.hasArg("muteToZero");
-    bool muteToZero = hasMuteToZero ? (server.arg("muteToZero") == "true") : false;
-    bool hasAlertPersist = server.hasArg("alertPersist");
-    int alertPersist = hasAlertPersist ? server.arg("alertPersist").toInt() : -1;
+    int slot = -1;
+    String profile;
+    bool clearProfile = false;
+    if (!parseIntArg(form, "slot", slot, true) ||
+        !readPresentArg(form, "profile", profile, true) ||
+        !parseBoolArg(form, "clearProfile", clearProfile)) {
+        server.send(400, "application/json", "{\"error\":\"Invalid parameters\"}");
+        return;
+    }
+    // Empty is a real operation (unassign), so require an explicit companion
+    // token. If WebServer::arg() cannot allocate a non-empty profile value, it
+    // becomes empty; without this token that failure must not be mistaken for
+    // a successful unassignment.
+    if (profile.length() == 0 && !clearProfile) {
+        server.send(503, "application/json", "{\"error\":\"Profile parameter unavailable\",\"retryable\":true}");
+        return;
+    }
+    if (profile.length() > 0 && clearProfile) {
+        server.send(400, "application/json", "{\"error\":\"Conflicting profile assignment\"}");
+        return;
+    }
+    int mode = 0;
+    String name;
+    const bool hasName = form.has("name");
+    if ((!profileOwned && !parseIntArg(form, "mode", mode, true)) ||
+        (hasName && !readPresentArg(form, "name", name))) {
+        server.send(400, "application/json", "{\"error\":\"Invalid slot name\"}");
+        return;
+    }
+    if ((hasName && !isCanonicalSlotNameValue(name)) ||
+        (!profileOwned && (mode < V1_MODE_UNKNOWN || mode > V1_MODE_ADVANCED_LOGIC))) {
+        server.send(400, "application/json", "{\"error\":\"Non-canonical slot settings\"}");
+        return;
+    }
+    int color = -1;
+    int volume = -1;
+    int muteVol = -1;
+    int alertPersist = -1;
+    if (!parseIntArg(form, "color", color) || !parseIntArg(form, "volume", volume) ||
+        !parseIntArg(form, "muteVol", muteVol) || !parseIntArg(form, "alertPersist", alertPersist)) {
+        server.send(400, "application/json", "{\"error\":\"Invalid numeric parameter\"}");
+        return;
+    }
+    const bool hasVolumeConfigured = form.has("volumeConfigured");
+    bool volumeConfigured = false;
+    if (!parseBoolArg(form, "volumeConfigured", volumeConfigured)) {
+        server.send(400, "application/json", "{\"error\":\"Invalid volume policy\"}");
+        return;
+    }
+    bool hasDarkMode = form.has("darkMode");
+    bool darkMode = false;
+    if (!parseBoolArg(form, "darkMode", darkMode)) {
+        server.send(400, "application/json", "{\"error\":\"Invalid dark-mode policy\"}");
+        return;
+    }
+    bool hasMuteToZero = form.has("muteToZero");
+    bool muteToZero = false;
+    if (!parseBoolArg(form, "muteToZero", muteToZero)) {
+        server.send(400, "application/json", "{\"error\":\"Invalid mute policy\"}");
+        return;
+    }
+    bool hasAlertPersist = form.has("alertPersist");
+    bool priorityArrowOnly = false;
+    if (!parseBoolArg(form, "priorityArrowOnly", priorityArrowOnly)) {
+        server.send(400, "application/json", "{\"error\":\"Invalid arrow policy\"}");
+        return;
+    }
 
     if (slot < 0 || slot > 2) {
         server.send(400, "application/json", "{\"error\":\"Invalid slot\"}");
+        return;
+    }
+    if ((form.has("color") && (color < 1 || color > 0xFFFF)) ||
+        (hasAlertPersist && (alertPersist < 0 || alertPersist > 5))) {
+        server.send(400, "application/json", "{\"error\":\"Slot value out of range\"}");
         return;
     }
 
@@ -103,7 +252,7 @@ void handleApiSlotSave(WebServer& server, const Runtime& runtime, bool (*checkRa
                                                      "\"}");
             return;
         }
-        profile = canonicalProfile;
+        profile = std::move(canonicalProfile);
         if (runtime.validateProfileAssignment) {
             const ProfileAssignmentStatus assignment =
                 runtime.validateProfileAssignment(profile, runtime.validateProfileAssignmentCtx);
@@ -122,13 +271,17 @@ void handleApiSlotSave(WebServer& server, const Runtime& runtime, bool (*checkRa
     }
 
     if (hasVolumeConfigured) {
-        if (volumeConfigured && (!server.hasArg("volume") || !server.hasArg("muteVol") || volume < 0 || volume > 9 ||
+        if (volumeConfigured && (!form.has("volume") || !form.has("muteVol") || volume < 0 || volume > 9 ||
                                  muteVol < 0 || muteVol > 9)) {
             server.send(400, "application/json", "{\"error\":\"Both main and mute volume must be between 0 and 9\"}");
             return;
         }
-    } else if (server.hasArg("volume") != server.hasArg("muteVol") ||
-               ((server.hasArg("volume") || server.hasArg("muteVol")) &&
+        if (!volumeConfigured && (form.has("volume") || form.has("muteVol"))) {
+            server.send(400, "application/json", "{\"error\":\"Disabled volume policy cannot carry values\"}");
+            return;
+        }
+    } else if (form.has("volume") != form.has("muteVol") ||
+               ((form.has("volume") || form.has("muteVol")) &&
                 (volume < 0 || volume > 9 || muteVol < 0 || muteVol > 9))) {
         server.send(400, "application/json", "{\"error\":\"Main and mute volume must be configured together\"}");
         return;
@@ -140,8 +293,8 @@ void handleApiSlotSave(WebServer& server, const Runtime& runtime, bool (*checkRa
         SlotUpdateRequest request;
         request.slot = slot;
         request.profileOwned = profileOwned;
-        request.hasName = name.length() > 0;
-        request.name = name;
+        request.hasName = hasName;
+        request.name = std::move(name);
         request.hasColor = color >= 0;
         request.color = static_cast<uint16_t>(std::max(0, color));
         request.hasVolumeConfigured = hasVolumeConfigured;
@@ -157,9 +310,9 @@ void handleApiSlotSave(WebServer& server, const Runtime& runtime, bool (*checkRa
         request.muteToZero = muteToZero;
         request.hasAlertPersist = hasAlertPersist && alertPersist >= 0;
         request.alertPersist = static_cast<uint8_t>(std::max(0, std::min(5, alertPersist)));
-        request.hasPriorityArrowOnly = server.hasArg("priorityArrowOnly");
-        request.priorityArrowOnly = server.arg("priorityArrowOnly") == "true";
-        request.profile = profile;
+        request.hasPriorityArrowOnly = form.has("priorityArrowOnly");
+        request.priorityArrowOnly = priorityArrowOnly;
+        request.profile = std::move(profile);
         request.mode = mode;
         persisted = runtime.applySlotUpdate(request, runtime.applySlotUpdateCtx);
     } else {
@@ -203,9 +356,8 @@ void handleApiSlotSave(WebServer& server, const Runtime& runtime, bool (*checkRa
             persisted = true;
         }
 
-        if (server.hasArg("priorityArrowOnly") && runtime.setSlotPriorityArrowOnly) {
-            bool prioArrow = server.arg("priorityArrowOnly") == "true";
-            runtime.setSlotPriorityArrowOnly(slot, prioArrow, runtime.setSlotPriorityArrowOnlyCtx);
+        if (form.has("priorityArrowOnly") && runtime.setSlotPriorityArrowOnly) {
+            runtime.setSlotPriorityArrowOnly(slot, priorityArrowOnly, runtime.setSlotPriorityArrowOnlyCtx);
             persisted = true;
         }
 
@@ -228,18 +380,23 @@ void handleApiSlotSave(WebServer& server, const Runtime& runtime, bool (*checkRa
     server.send(200, "application/json", "{\"success\":true}");
 }
 
-void handleApiActivate(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
-                       void* rateLimitCtx) {
+template <typename Form>
+void handleApiActivateImpl(WebServer& server, const Runtime& runtime, const Form& form,
+                           bool (*checkRateLimit)(void* ctx), void* rateLimitCtx) {
     if (checkRateLimit && !checkRateLimit(rateLimitCtx))
         return;
 
-    if (!server.hasArg("slot")) {
+    if (!form.has("slot")) {
         server.send(400, "application/json", "{\"error\":\"Missing slot parameter\"}");
         return;
     }
 
-    int slot = server.arg("slot").toInt();
-    bool enable = server.hasArg("enable") ? (server.arg("enable") == "true") : true;
+    int slot = -1;
+    bool enable = true;
+    if (!parseIntArg(form, "slot", slot, true) || !parseBoolArg(form, "enable", enable)) {
+        server.send(400, "application/json", "{\"error\":\"Invalid activation parameters\"}");
+        return;
+    }
 
     if (slot < 0 || slot > 2) {
         server.send(400, "application/json", "{\"error\":\"Invalid slot\"}");
@@ -264,6 +421,51 @@ void handleApiActivate(WebServer& server, const Runtime& runtime, bool (*checkRa
     }
 
     server.send(200, "application/json", "{\"success\":true}");
+}
+
+void handleApiSlotSave(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                       void* rateLimitCtx) {
+    const WebServerForm form{server};
+    handleApiSlotSaveImpl(server, runtime, form, checkRateLimit, rateLimitCtx);
+}
+
+void handleApiSlotSaveBody(WebServer& server, const Runtime& runtime, const uint8_t* body, size_t bodySize,
+                           bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
+                           const char* multipartBoundary, size_t multipartBoundarySize) {
+    const ExactUrlEncodedForm parsed = multipartBoundarySize == 0
+        ? ExactUrlEncodedForm(body, bodySize)
+        : ExactUrlEncodedForm(body, bodySize, multipartBoundary, multipartBoundarySize);
+    static constexpr const char* ALLOWED[] = {
+        "slot", "profile", "clearProfile", "mode", "name", "color", "volumeConfigured",
+        "volume", "muteVol", "darkMode", "muteToZero", "alertPersist", "priorityArrowOnly",
+    };
+    if (!parsed.valid() || !parsed.hasOnly(ALLOWED, sizeof(ALLOWED) / sizeof(ALLOWED[0]))) {
+        server.send(400, "application/json", "{\"error\":\"Invalid form body\"}");
+        return;
+    }
+    const ExactBodyForm form{parsed};
+    handleApiSlotSaveImpl(server, runtime, form, checkRateLimit, rateLimitCtx);
+}
+
+void handleApiActivate(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
+                       void* rateLimitCtx) {
+    const WebServerForm form{server};
+    handleApiActivateImpl(server, runtime, form, checkRateLimit, rateLimitCtx);
+}
+
+void handleApiActivateBody(WebServer& server, const Runtime& runtime, const uint8_t* body, size_t bodySize,
+                           bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
+                           const char* multipartBoundary, size_t multipartBoundarySize) {
+    const ExactUrlEncodedForm parsed = multipartBoundarySize == 0
+        ? ExactUrlEncodedForm(body, bodySize)
+        : ExactUrlEncodedForm(body, bodySize, multipartBoundary, multipartBoundarySize);
+    static constexpr const char* ALLOWED[] = {"slot", "enable"};
+    if (!parsed.valid() || !parsed.hasOnly(ALLOWED, sizeof(ALLOWED) / sizeof(ALLOWED[0]))) {
+        server.send(400, "application/json", "{\"error\":\"Invalid form body\"}");
+        return;
+    }
+    const ExactBodyForm form{parsed};
+    handleApiActivateImpl(server, runtime, form, checkRateLimit, rateLimitCtx);
 }
 
 } // namespace WifiAutoPushApiService

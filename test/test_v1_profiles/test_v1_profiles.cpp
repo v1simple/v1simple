@@ -3,6 +3,8 @@
 #include <cstring>
 #include <filesystem>
 #include <functional>
+#include <fstream>
+#include <map>
 #include <string>
 
 #include <ArduinoJson.h>
@@ -72,6 +74,17 @@ void writeFileFromString(fs::FS& fs, const char* path, const char* contents) {
     file.close();
 }
 
+std::map<std::string, std::string> filesSnapshot() {
+    std::map<std::string, std::string> result;
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(g_tempRoot)) {
+        if (!entry.is_regular_file()) continue;
+        std::ifstream file(entry.path(), std::ios::binary);
+        result[entry.path().lexically_relative(g_tempRoot).string()] =
+            std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    }
+    return result;
+}
+
 size_t countFilesInProfileDir(const char* suffix = nullptr) {
     const std::filesystem::path profileDir = g_tempRoot / "v1profiles";
     if (!std::filesystem::exists(profileDir)) {
@@ -121,12 +134,240 @@ void setUp() {
     fs::mock_reset_fs_write_budget();
     fs::mock_reset_fs_open_state();
     mock_reset_semaphore_state();
+    mock_reset_heap_caps();
     g_tempRoot = nextTempRoot();
     std::filesystem::remove_all(g_tempRoot);
     std::filesystem::create_directories(g_tempRoot);
 }
 
+void test_cursor_pages_keep_grandfathered_over_limit_catalog_discoverable_and_prunable() {
+    fs::FS catalogFs(g_tempRoot / "catalog");
+    std::filesystem::create_directories(g_tempRoot / "catalog");
+    TEST_ASSERT_TRUE(catalogFs.mkdir("/v1profiles"));
+    for (int index = 11; index >= 0; --index) {
+        const String name = String("P") + (index < 10 ? "0" : "") + String(index);
+        const std::filesystem::path seedRoot = g_tempRoot / ("seed_" + std::to_string(index));
+        std::filesystem::create_directories(seedRoot);
+        fs::FS seedFs(seedRoot);
+        V1ProfileManager seed;
+        TEST_ASSERT_TRUE(seed.begin(&seedFs));
+        TEST_ASSERT_TRUE(seed.saveProfile(makeProfile(name, static_cast<uint8_t>(index), "legacy")).success);
+        writeFileFromString(catalogFs, (String("/v1profiles/") + name + ".json").c_str(),
+                            readFileToString(seedFs, (String("/v1profiles/") + name + ".json").c_str()).c_str());
+        writeFileFromString(catalogFs, (String("/v1profiles/") + name + ".json.meta").c_str(),
+                            readFileToString(seedFs, (String("/v1profiles/") + name + ".json.meta").c_str()).c_str());
+    }
+
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&catalogFs));
+    const ProfileListResult complete = manager.listProfilesResult();
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::IoError),
+                          static_cast<int>(complete.status));
+    TEST_ASSERT_EQUAL_UINT(0u, complete.profiles.size());
+    String cursor;
+    size_t seen = 0;
+    do {
+        const ProfilePageResult page = manager.listProfilesPageResult(cursor, 3);
+        TEST_ASSERT_TRUE(page.success());
+        TEST_ASSERT_EQUAL_UINT(12u, page.total);
+        TEST_ASSERT_GREATER_THAN(0u, page.profiles.size());
+        for (const String& name : page.profiles) {
+            if (cursor.length() > 0) TEST_ASSERT_TRUE(std::strcmp(name.c_str(), cursor.c_str()) > 0);
+            cursor = name;
+            ++seen;
+        }
+        if (!page.hasMore) break;
+        TEST_ASSERT_EQUAL_STRING(cursor.c_str(), page.nextCursor.c_str());
+    } while (seen < 20u);
+    TEST_ASSERT_EQUAL_UINT(12u, seen);
+    TEST_ASSERT_TRUE(manager.deleteProfileResult("P11").success());
+    TEST_ASSERT_EQUAL_UINT(11u, manager.listProfilesPageResult("", 3).total);
+}
+
+void test_reconcile_union_over_catalog_bound_is_bounded_and_preserves_both_stores() {
+    const std::filesystem::path sdRoot = g_tempRoot / "sd_over_cap_union";
+    const std::filesystem::path littleRoot = g_tempRoot / "little_over_cap_union";
+    std::filesystem::create_directories(sdRoot);
+    std::filesystem::create_directories(littleRoot);
+    fs::FS sd(sdRoot);
+    fs::FS little(littleRoot);
+    V1ProfileManager sdOnly;
+    V1ProfileManager littleOnly;
+    TEST_ASSERT_TRUE(sdOnly.begin(&sd));
+    TEST_ASSERT_TRUE(littleOnly.begin(&little));
+    for (int index = 0; index < 6; ++index) {
+        const String sdName = String("SD") + String(index);
+        const String littleName = String("LF") + String(index);
+        TEST_ASSERT_TRUE(sdOnly.saveProfile(makeProfile(sdName, static_cast<uint8_t>(index), "sd")).success);
+        TEST_ASSERT_TRUE(littleOnly.saveProfile(
+            makeProfile(littleName, static_cast<uint8_t>(index + 10), "little")).success);
+    }
+    const std::string sdSentinel = readFileToString(sd, "/v1profiles/SD0.json");
+    const std::string littleSentinel = readFileToString(little, "/v1profiles/LF0.json");
+
+    StorageManager storage;
+    storage.setFilesystem(&sd, true);
+    storage.setLittleFS(&little);
+    V1ProfileManager combined;
+    TEST_ASSERT_TRUE(combined.begin(storage));
+
+    TEST_ASSERT_EQUAL_STRING(sdSentinel.c_str(), readFileToString(sd, "/v1profiles/SD0.json").c_str());
+    TEST_ASSERT_EQUAL_STRING(littleSentinel.c_str(),
+                             readFileToString(little, "/v1profiles/LF0.json").c_str());
+    TEST_ASSERT_FALSE(sd.exists("/v1profiles/LF0.json"));
+    TEST_ASSERT_FALSE(little.exists("/v1profiles/SD0.json"));
+    TEST_ASSERT_EQUAL_UINT(6u, combined.listProfilesPageResult("", 10).total);
+ }
+
+void test_profile_sync_generation_exhaustion_preserves_live_profile_and_tombstone_state() {
+    fs::FS fs(g_tempRoot);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&fs));
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 10, "original")).success);
+
+    ProfileSyncState exhausted;
+    exhausted.version = std::numeric_limits<uint32_t>::max();
+    exhausted.deleted = false;
+    TEST_ASSERT_TRUE(writeSyncState(fs, "/v1profiles/Road.json", exhausted));
+    const std::string originalJson = readFileToString(fs, "/v1profiles/Road.json");
+    const std::string originalMeta = readFileToString(fs, "/v1profiles/Road.json.meta");
+
+    const ProfileSaveResult saved = manager.saveProfile(makeProfile("Road", 20, "replacement"));
+    TEST_ASSERT_FALSE(saved.success);
+    TEST_ASSERT_TRUE(saved.error.indexOf("generation exhausted") >= 0);
+    const ProfileOperationResult deleted = manager.deleteProfileResult("Road");
+    TEST_ASSERT_FALSE(deleted.success());
+    TEST_ASSERT_TRUE(deleted.error.indexOf("generation exhausted") >= 0);
+    TEST_ASSERT_EQUAL_STRING(originalJson.c_str(), readFileToString(fs, "/v1profiles/Road.json").c_str());
+    TEST_ASSERT_EQUAL_STRING(originalMeta.c_str(), readFileToString(fs, "/v1profiles/Road.json.meta").c_str());
+
+    V1Profile loaded;
+    TEST_ASSERT_TRUE(manager.loadProfile("Road", loaded));
+    TEST_ASSERT_EQUAL_STRING("original", loaded.description.c_str());
+}
+
+void test_profile_reconcile_generation_exhaustion_does_not_choose_or_overwrite_either_copy() {
+    const std::filesystem::path sdRoot = g_tempRoot / "sd_max_generation";
+    const std::filesystem::path littleRoot = g_tempRoot / "little_max_generation";
+    std::filesystem::create_directories(sdRoot);
+    std::filesystem::create_directories(littleRoot);
+    fs::FS sd(sdRoot);
+    fs::FS little(littleRoot);
+    V1ProfileManager sdOnly;
+    V1ProfileManager littleOnly;
+    TEST_ASSERT_TRUE(sdOnly.begin(&sd));
+    TEST_ASSERT_TRUE(littleOnly.begin(&little));
+    TEST_ASSERT_TRUE(sdOnly.saveProfile(makeProfile("Road", 10, "sd-copy")).success);
+    TEST_ASSERT_TRUE(littleOnly.saveProfile(makeProfile("Road", 20, "little-copy")).success);
+    ProfileSyncState exhausted;
+    exhausted.version = std::numeric_limits<uint32_t>::max();
+    exhausted.deleted = false;
+    TEST_ASSERT_TRUE(writeSyncState(sd, "/v1profiles/Road.json", exhausted));
+    TEST_ASSERT_TRUE(writeSyncState(little, "/v1profiles/Road.json", exhausted));
+    const std::string sdJson = readFileToString(sd, "/v1profiles/Road.json");
+    const std::string sdMeta = readFileToString(sd, "/v1profiles/Road.json.meta");
+    const std::string littleJson = readFileToString(little, "/v1profiles/Road.json");
+    const std::string littleMeta = readFileToString(little, "/v1profiles/Road.json.meta");
+
+    StorageManager storage;
+    storage.setFilesystem(&sd, true);
+    storage.setLittleFS(&little);
+    V1ProfileManager combined;
+    TEST_ASSERT_TRUE(combined.begin(storage));
+    TEST_ASSERT_EQUAL_STRING(sdJson.c_str(), readFileToString(sd, "/v1profiles/Road.json").c_str());
+    TEST_ASSERT_EQUAL_STRING(sdMeta.c_str(), readFileToString(sd, "/v1profiles/Road.json.meta").c_str());
+    TEST_ASSERT_EQUAL_STRING(littleJson.c_str(), readFileToString(little, "/v1profiles/Road.json").c_str());
+    TEST_ASSERT_EQUAL_STRING(littleMeta.c_str(), readFileToString(little, "/v1profiles/Road.json.meta").c_str());
+}
+
+void test_interrupted_save_recovery_uses_bounded_scans_and_never_replaces_live_profile() {
+    fs::FS fs(g_tempRoot);
+    V1ProfileManager seed;
+    TEST_ASSERT_TRUE(seed.begin(&fs));
+    TEST_ASSERT_TRUE(seed.saveProfile(makeProfile("Road", 10, "live")).success);
+    const std::string liveJson = readFileToString(fs, "/v1profiles/Road.json");
+    writeFileFromString(fs, "/v1profiles/Road.json.bak", "stale-backup");
+    for (int index = 0; index < 64; ++index) {
+        const String path = String("/v1profiles/T") + String(index) + ".json.tmp";
+        writeFileFromString(fs, path.c_str(), "partial");
+    }
+
+    V1ProfileManager recovered;
+    TEST_ASSERT_TRUE(recovered.begin(&fs));
+    TEST_ASSERT_EQUAL_STRING(liveJson.c_str(), readFileToString(fs, "/v1profiles/Road.json").c_str());
+    TEST_ASSERT_TRUE(fs.exists("/v1profiles/Road.json.bak"));
+    TEST_ASSERT_EQUAL_UINT(0u, countFilesInProfileDir(".tmp"));
+    V1Profile loaded;
+    TEST_ASSERT_TRUE(recovered.loadProfile("Road", loaded));
+    TEST_ASSERT_EQUAL_STRING("live", loaded.description.c_str());
+}
+
+void test_reconcile_psram_unavailable_never_overwrites_newer_profile_or_tombstone() {
+    const std::filesystem::path sdRoot = g_tempRoot / "sd_oom";
+    const std::filesystem::path littleRoot = g_tempRoot / "little_oom";
+    std::filesystem::create_directories(sdRoot);
+    std::filesystem::create_directories(littleRoot);
+    fs::FS sd(sdRoot);
+    fs::FS little(littleRoot);
+    V1ProfileManager sdOnly;
+    V1ProfileManager littleOnly;
+    TEST_ASSERT_TRUE(sdOnly.begin(&sd));
+    TEST_ASSERT_TRUE(littleOnly.begin(&little));
+    TEST_ASSERT_TRUE(sdOnly.saveProfile(makeProfile("Road", 1, "older")).success);
+    TEST_ASSERT_TRUE(littleOnly.saveProfile(makeProfile("Road", 2, "newer")).success);
+    TEST_ASSERT_TRUE(littleOnly.saveProfile(makeProfile("Road", 3, "newest")).success);
+    const std::string sdJson = readFileToString(sd, "/v1profiles/Road.json");
+    const std::string sdMeta = readFileToString(sd, "/v1profiles/Road.json.meta");
+    const std::string littleJson = readFileToString(little, "/v1profiles/Road.json");
+    const std::string littleMeta = readFileToString(little, "/v1profiles/Road.json.meta");
+
+    StorageManager storage;
+    storage.setFilesystem(&sd, true);
+    storage.setLittleFS(&little);
+    mock_reset_heap_caps_tracking();
+    g_mock_heap_caps_fail_all_allocations = true;
+    V1ProfileManager combined;
+    TEST_ASSERT_TRUE(combined.begin(storage));
+    g_mock_heap_caps_fail_all_allocations = false;
+
+    TEST_ASSERT_EQUAL_STRING(sdJson.c_str(), readFileToString(sd, "/v1profiles/Road.json").c_str());
+    TEST_ASSERT_EQUAL_STRING(sdMeta.c_str(), readFileToString(sd, "/v1profiles/Road.json.meta").c_str());
+    TEST_ASSERT_EQUAL_STRING(littleJson.c_str(), readFileToString(little, "/v1profiles/Road.json").c_str());
+    TEST_ASSERT_EQUAL_STRING(littleMeta.c_str(), readFileToString(little, "/v1profiles/Road.json.meta").c_str());
+}
+
+void test_secondary_rollback_path_allocation_failure_precedes_every_store_mutation() {
+    const std::filesystem::path sdRoot = g_tempRoot / "sd_syncbak_oom";
+    const std::filesystem::path littleRoot = g_tempRoot / "little_syncbak_oom";
+    std::filesystem::create_directories(sdRoot);
+    std::filesystem::create_directories(littleRoot);
+    fs::FS sd(sdRoot);
+    fs::FS little(littleRoot);
+    StorageManager storage;
+    storage.setFilesystem(&sd, true);
+    storage.setLittleFS(&little);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(storage));
+
+    g_failProfilePathSuffixForTest = ".syncbak";
+    const auto beforeNew = filesSnapshot();
+    TEST_ASSERT_FALSE(manager.saveProfile(makeProfile("New", 1, "new")).success);
+    TEST_ASSERT_TRUE(beforeNew == filesSnapshot());
+    g_failProfilePathSuffixForTest = nullptr;
+
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 2, "before")).success);
+    const auto beforeExisting = filesSnapshot();
+    g_failProfilePathSuffixForTest = ".syncbak";
+    TEST_ASSERT_FALSE(manager.saveProfile(makeProfile("Road", 3, "after")).success);
+    g_failProfilePathSuffixForTest = nullptr;
+    TEST_ASSERT_TRUE(beforeExisting == filesSnapshot());
+    V1Profile loaded;
+    TEST_ASSERT_TRUE(manager.loadProfile("Road", loaded));
+    TEST_ASSERT_EQUAL_STRING("before", loaded.description.c_str());
+}
+
 void tearDown() {
+    g_failProfilePathSuffixForTest = nullptr;
     fs::mock_reset_fs_rename_state();
     fs::mock_reset_fs_write_budget();
     fs::mock_reset_fs_open_state();
@@ -195,7 +436,73 @@ void test_save_profile_normal_path_still_succeeds() {
     TEST_ASSERT_EQUAL_UINT8(35, loaded.settings.bytes[5]);
 }
 
-void test_schema_v2_detector_policy_round_trips_with_authoritative_raw_bytes() {
+void test_maximum_description_and_64_definitions_fit_but_one_extra_byte_preserves_live_profile() {
+    fs::FS fs(g_tempRoot);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&fs));
+
+    const String maximumName(std::string(MAX_PROFILE_NAME_LEN, 'M'));
+    V1Profile maximum = makeProfile(maximumName.c_str(), 0xFF,
+                                    String(std::string(V1_PROFILE_DESCRIPTION_MAX_BYTES, '\"')));
+    const uint8_t maximumRaw[] = {192, 217, 252, 255, 255, 255};
+    memcpy(maximum.settings.bytes, maximumRaw, sizeof(maximumRaw));
+    maximum.detector.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
+    maximum.detector.modePolicy = V1ModePolicy::Value;
+    maximum.detector.mode = 3;
+    maximum.detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    maximum.detector.volumePolicy = V1VolumePolicy::Temporary;
+    maximum.detector.mainVolume = 9;
+    maximum.detector.mutedVolume = 9;
+    maximum.detector.volumeFeedback = V1VolumeFeedbackPolicy::ChangedOnly;
+    maximum.detector.volumeDisconnect = V1VolumeDisconnectPolicy::RestoreSaved;
+    maximum.detector.bluetoothLedPolicy = V1BluetoothLedPolicy::Unchanged;
+    maximum.detector.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+    for (uint8_t index = 0; index < 64; ++index) {
+        maximum.detector.customFrequencyDefinitions.push_back({index, 65534, 65535});
+    }
+    const String compactRequest = manager.profileToJson(maximum);
+    TEST_ASSERT_EQUAL_UINT(12195, compactRequest.length());
+    TEST_ASSERT_EQUAL_UINT(4189, V1_PROFILE_HTTP_SAVE_MAX_BYTES - compactRequest.length());
+    TEST_ASSERT_LESS_THAN(V1_PROFILE_HTTP_SAVE_MAX_BYTES, compactRequest.length());
+    TEST_ASSERT_TRUE(manager.saveProfile(maximum).success);
+    const String path = String("/v1profiles/") + maximumName + ".json";
+    const std::string before = readFileToString(fs, path.c_str());
+    TEST_ASSERT_EQUAL_UINT(16415, before.size());
+    TEST_ASSERT_EQUAL_UINT(8161, V1_PROFILE_FILE_MAX_BYTES - before.size());
+    TEST_ASSERT_LESS_THAN(V1_PROFILE_FILE_MAX_BYTES, before.size());
+
+    maximum.description = String(std::string(V1_PROFILE_DESCRIPTION_MAX_BYTES + 1u, 'x'));
+    const ProfileSaveResult rejected = manager.saveProfile(maximum);
+    TEST_ASSERT_FALSE(rejected.success);
+    TEST_ASSERT_TRUE(rejected.error.indexOf("4096") >= 0);
+    TEST_ASSERT_EQUAL_STRING(before.c_str(), readFileToString(fs, path.c_str()).c_str());
+    TEST_ASSERT_FALSE(fs.exists(path + ".tmp"));
+
+    V1Profile loaded;
+    TEST_ASSERT_TRUE(manager.loadProfile(maximumName, loaded));
+    TEST_ASSERT_EQUAL_UINT32(V1_PROFILE_DESCRIPTION_MAX_BYTES, loaded.description.length());
+    TEST_ASSERT_EQUAL_UINT32(64, static_cast<uint32_t>(loaded.detector.customFrequencyDefinitions.size()));
+
+    // The file reader admits the exact published cap (JSON permits trailing
+    // whitespace) and rejects the next byte before replacing caller output.
+    std::string atFileCap = before;
+    atFileCap.append(V1_PROFILE_FILE_MAX_BYTES - atFileCap.size(), ' ');
+    writeFileFromString(fs, path.c_str(), atFileCap.c_str());
+    V1Profile capLoaded;
+    TEST_ASSERT_TRUE(manager.loadProfile(maximumName, capLoaded));
+    TEST_ASSERT_EQUAL_UINT32(V1_PROFILE_DESCRIPTION_MAX_BYTES, capLoaded.description.length());
+
+    std::string aboveFileCap = atFileCap;
+    aboveFileCap.push_back(' ');
+    writeFileFromString(fs, path.c_str(), aboveFileCap.c_str());
+    V1Profile untouched("Sentinel");
+    untouched.description = "untouched";
+    TEST_ASSERT_FALSE(manager.loadProfile(maximumName, untouched));
+    TEST_ASSERT_EQUAL_STRING("Sentinel", untouched.name.c_str());
+    TEST_ASSERT_EQUAL_STRING("untouched", untouched.description.c_str());
+}
+
+void test_schema_v3_detector_policy_round_trips_with_authoritative_raw_bytes() {
     fs::FS fs(g_tempRoot);
     V1ProfileManager manager;
     TEST_ASSERT_TRUE(manager.begin(&fs));
@@ -207,6 +514,13 @@ void test_schema_v2_detector_policy_round_trips_with_authoritative_raw_bytes() {
     profile.detector.volumePolicy = V1VolumePolicy::Saved;
     profile.detector.mainVolume = 9;
     profile.detector.mutedVolume = 0;
+    profile.detector.volumeFeedback = V1VolumeFeedbackPolicy::Always;
+    profile.detector.volumeDisconnect = V1VolumeDisconnectPolicy::RestoreSaved;
+    profile.detector.bluetoothLedPolicy = V1BluetoothLedPolicy::On;
+    profile.detector.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+    const std::array<V1CustomFrequencyDefinition, 2> profileDefinitions{{
+        {0, 24050, 24150}, {1, 0, 0}}};
+    TEST_ASSERT_TRUE(profile.detector.customFrequencyDefinitions.assign(profileDefinitions));
     TEST_ASSERT_TRUE(manager.saveProfile(profile).success);
 
     V1Profile loaded;
@@ -218,10 +532,115 @@ void test_schema_v2_detector_policy_round_trips_with_authoritative_raw_bytes() {
     JsonDocument api;
     const String apiJson = manager.profileToJson(loaded);
     TEST_ASSERT_FALSE(deserializeJson(api, apiJson));
-    TEST_ASSERT_EQUAL_INT(2, api["schemaVersion"].as<int>());
+    TEST_ASSERT_EQUAL_INT(3, api["schemaVersion"].as<int>());
     TEST_ASSERT_EQUAL_STRING("unchanged", api["detector"]["userSettings"].as<const char*>());
     TEST_ASSERT_EQUAL_STRING("saved", api["detector"]["volume"]["policy"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING("always", api["detector"]["volume"]["feedback"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING("on", api["detector"]["bluetoothLed"].as<const char*>());
+    TEST_ASSERT_EQUAL_UINT32(2, api["detector"]["customFrequencies"]["definitions"].size());
     TEST_ASSERT_EQUAL_UINT8(0x91, api["settings"]["bytes"][0].as<uint8_t>());
+}
+
+void test_detector_configuration_rejects_half_zero_sweep_without_mutating_output() {
+    V1DetectorConfiguration valid;
+    valid.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+    const std::array<V1CustomFrequencyDefinition, 1> validDefinitions{{{0, 24000, 24100}}};
+    TEST_ASSERT_TRUE(valid.customFrequencyDefinitions.assign(validDefinitions));
+    JsonDocument doc;
+    appendV1DetectorConfiguration(doc.to<JsonObject>(), valid);
+    doc["customFrequencies"]["definitions"][0]["lowerMHz"] = 0;
+    doc["customFrequencies"]["definitions"][0]["upperMHz"] = 1;
+    V1DetectorConfiguration output;
+    output.modePolicy = V1ModePolicy::Value;
+    output.mode = 2;
+    const V1DetectorConfiguration before = output;
+    TEST_ASSERT_FALSE(parseV1DetectorConfiguration(doc.as<JsonObjectConst>(), output));
+    TEST_ASSERT_TRUE(output == before);
+}
+
+void test_genuine_schema_v2_profile_migrates_without_reinterpretation() {
+    fs::FS fs(g_tempRoot);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&fs));
+    V1DetectorConfiguration detector;
+    detector.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
+    detector.modePolicy = V1ModePolicy::Value;
+    detector.mode = 2;
+    detector.displayPolicy = V1DisplayPolicy::Off;
+    detector.volumePolicy = V1VolumePolicy::Temporary;
+    detector.mainVolume = 7;
+    detector.mutedVolume = 2;
+    const uint8_t bytes[] = {0xBF, 0xE1, 0xF2, 0x73, 0xA5, 0x5A};
+    JsonDocument v2;
+    v2["schemaVersion"] = V1_PROFILE_PREVIOUS_SCHEMA_VERSION;
+    v2["name"] = "V2 Fixture";
+    v2["description"] = "genuine prior shape";
+    appendV1DetectorConfigurationV2(v2["detector"].to<JsonObject>(), detector);
+    uint32_t detectorCrc = 0;
+    TEST_ASSERT_TRUE(detectorConfigurationCrc(detector, detectorCrc, V1_PROFILE_PREVIOUS_SCHEMA_VERSION));
+    v2["detectorCrc32"] = detectorCrc;
+    JsonArray raw = v2["bytes"].to<JsonArray>();
+    for (uint8_t byte : bytes) raw.add(byte);
+    v2["crc32"] = computeCrc32(bytes, sizeof(bytes));
+    String serialized;
+    serializeJson(v2, serialized);
+    writeFileFromString(fs, "/v1profiles/V2 Fixture.json", serialized.c_str());
+
+    V1Profile loaded;
+    TEST_ASSERT_TRUE(manager.loadProfile("V2 Fixture", loaded));
+    TEST_ASSERT_EQUAL_UINT8(V1_PROFILE_SCHEMA_VERSION, loaded.schemaVersion);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(bytes, loaded.settings.bytes, 6);
+    TEST_ASSERT_EQUAL_INT(V1DisplayPolicy::Off, loaded.detector.displayPolicy);
+    TEST_ASSERT_EQUAL_INT(V1BluetoothLedPolicy::Off, loaded.detector.bluetoothLedPolicy);
+    TEST_ASSERT_EQUAL_INT(V1VolumePolicy::Temporary, loaded.detector.volumePolicy);
+    TEST_ASSERT_EQUAL_INT(V1VolumeFeedbackPolicy::None, loaded.detector.volumeFeedback);
+    TEST_ASSERT_EQUAL_INT(V1VolumeDisconnectPolicy::RestoreSaved, loaded.detector.volumeDisconnect);
+    TEST_ASSERT_EQUAL_INT(V1CustomFrequencyPolicy::Unchanged, loaded.detector.customFrequencyPolicy);
+
+    V1UserSettings authoritative;
+    std::memcpy(authoritative.bytes, bytes, sizeof(bytes));
+    v2["xBand"] = !authoritative.xBandEnabled();
+    serialized = "";
+    serializeJson(v2, serialized);
+    writeFileFromString(fs, "/v1profiles/V2 Fixture.json", serialized.c_str());
+    V1Profile unchanged = makeProfile("Sentinel", 90, "unchanged");
+    const V1Profile before = unchanged;
+    TEST_ASSERT_FALSE(manager.loadProfile("V2 Fixture", unchanged));
+    TEST_ASSERT_EQUAL_STRING(before.name.c_str(), unchanged.name.c_str());
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(before.settings.bytes, unchanged.settings.bytes, 6);
+}
+
+void test_schema_v3_rejects_crc_valid_unknown_missing_or_conflicting_readable_fields() {
+    fs::FS fs(g_tempRoot);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&fs));
+    const V1Profile profile = makeProfile("StrictReadable", 0xA0, "strict readable");
+    TEST_ASSERT_TRUE(manager.saveProfile(profile).success);
+    const std::string original = readFileToString(fs, "/v1profiles/StrictReadable.json");
+
+    const auto rejects = [&](const std::function<void(JsonDocument&)>& mutate) {
+        JsonDocument broken;
+        TEST_ASSERT_FALSE(deserializeJson(broken, original.c_str()));
+        mutate(broken);
+        broken.remove("profileCrc32");
+        uint32_t crc = 0;
+        TEST_ASSERT_TRUE(profileDocumentCrc(broken, crc));
+        broken["profileCrc32"] = crc;
+        String text;
+        serializeJson(broken, text);
+        writeFileFromString(fs, "/v1profiles/StrictReadable.json", text.c_str());
+        V1Profile output = makeProfile("Sentinel", 90, "unchanged");
+        const V1Profile before = output;
+        TEST_ASSERT_FALSE(manager.loadProfile("StrictReadable", output));
+        TEST_ASSERT_EQUAL_STRING(before.name.c_str(), output.name.c_str());
+        TEST_ASSERT_EQUAL_STRING(before.description.c_str(), output.description.c_str());
+        TEST_ASSERT_EQUAL_UINT8_ARRAY(before.settings.bytes, output.settings.bytes, 6);
+    };
+
+    rejects([](JsonDocument& doc) { doc["xBand"] = !doc["xBand"].as<bool>(); });
+    rejects([](JsonDocument& doc) { doc["xBand"] = "true"; });
+    rejects([](JsonDocument& doc) { doc.remove("xBand"); });
+    rejects([](JsonDocument& doc) { doc["xBnnd"] = true; });
 }
 
 void test_schema_v2_mixed_markers_crc_omissions_and_malformed_policy_reject_atomically() {
@@ -286,6 +705,38 @@ void test_exact_legacy_profile_without_schema_or_crc_remains_backward_readable()
     TEST_ASSERT_EQUAL_UINT8(2, loaded.mutedVolume);
     const uint8_t expected[] = {191, 225, 146, 115, 165, 90};
     TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, loaded.settings.bytes, 6);
+}
+
+void test_persisted_legacy_profile_shape_is_strict_and_never_mutates_output() {
+    const char* invalidProfiles[] = {
+        "{\"name\":\"Legacy\",\"description\":\"bad\",\"mainVolume\":7,\"mutedVolume\":2,\"bytes\":[0,0,0,0,0,0]}",
+        "{\"name\":\"Legacy\",\"description\":\"bad\",\"displayOn\":\"false\",\"mainVolume\":7,\"mutedVolume\":2,\"bytes\":[0,0,0,0,0,0]}",
+        "{\"name\":\"Legacy\",\"description\":\"bad\",\"displayOn\":false,\"mainVolume\":10,\"mutedVolume\":2,\"bytes\":[0,0,0,0,0,0]}",
+        "{\"name\":\"Legacy\",\"description\":\"bad\",\"displayOn\":false,\"mainVolume\":7,\"mutedVolume\":-1,\"bytes\":[0,0,0,0,0,0]}",
+        "{\"name\":\"Legacy\",\"description\":\"bad\",\"displayOn\":false,\"mainVolume\":7,\"mutedVolume\":2}",
+        "{\"name\":\"Legacy\",\"description\":\"bad\",\"displayOn\":false,\"mainVolume\":7,\"mutedVolume\":2,\"crc32\":0}",
+        "{\"name\":\"Legacy\",\"description\":\"bad\",\"displayOn\":false,\"mainVolume\":7,\"mutedVolume\":2,\"bytes\":[0,0,0,0,0,0],\"crc32\":\"0\"}",
+        "{\"name\":\"Legacy\",\"description\":\"bad\",\"displayOn\":false,\"mainVolume\":7,\"mutedVolume\":2,\"bytes\":[0,0,0,0,0,0],\"xBand\":\"true\"}",
+        "{\"name\":\"Legacy\",\"description\":\"bad\",\"displayOn\":false,\"mainVolume\":7,\"mutedVolume\":2,\"bytes\":[0,0,0,0,0,0],\"xBand\":true}",
+        "{\"name\":\"Legacy\",\"description\":\"bad\",\"displayOn\":false,\"mainVolume\":7,\"mutedVolume\":2,\"bytes\":[0,0,0,0,0,0],\"mystery\":true}",
+    };
+
+    for (const char* profileJson : invalidProfiles) {
+        fs::FS fs(g_tempRoot);
+        fs.mkdir("/v1profiles");
+        writeFileFromString(fs, "/v1profiles/Legacy.json", profileJson);
+        V1ProfileManager manager;
+        TEST_ASSERT_TRUE(manager.begin(&fs));
+        V1Profile output = makeProfile("Sentinel", 90, "unchanged");
+        const V1Profile before = output;
+        TEST_ASSERT_FALSE_MESSAGE(manager.loadProfile("Legacy", output), profileJson);
+        TEST_ASSERT_EQUAL_STRING(before.name.c_str(), output.name.c_str());
+        TEST_ASSERT_EQUAL_STRING(before.description.c_str(), output.description.c_str());
+        TEST_ASSERT_EQUAL_UINT8_ARRAY(before.settings.bytes, output.settings.bytes, 6);
+        std::filesystem::remove_all(g_tempRoot);
+        g_tempRoot = nextTempRoot();
+        std::filesystem::create_directories(g_tempRoot);
+    }
 }
 
 void test_save_requires_final_file_reopen_and_crc_validation() {
@@ -383,6 +834,11 @@ void test_json_to_settings_strictly_validates_human_readable_fields_without_muta
         }
     }
 
+    V1UserSettings typo = makeProfile("Sentinel", 100).settings;
+    const V1UserSettings typoBefore = typo;
+    TEST_ASSERT_FALSE(manager.jsonToSettings(String("{\"xBand\":false,\"xBnnd\":true}"), typo));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(typoBefore.bytes, typo.bytes, 6);
+
     V1UserSettings valid;
     TEST_ASSERT_TRUE(manager.jsonToSettings(
         String("{\"muteToMuteVolume\":true,\"kaSensitivity\":1,\"kSensitivity\":2,"
@@ -394,7 +850,7 @@ void test_json_to_settings_strictly_validates_human_readable_fields_without_muta
     TEST_ASSERT_EQUAL_UINT8(2, valid.autoMute());
 }
 
-void test_existing_raw_mute_bit_is_preserved_and_reported_truthfully() {
+void test_conflicting_legacy_human_metadata_is_rejected_without_rewriting_raw_bytes() {
     fs::FS fs(g_tempRoot);
     V1ProfileManager manager;
     TEST_ASSERT_TRUE(manager.begin(&fs));
@@ -404,7 +860,11 @@ void test_existing_raw_mute_bit_is_preserved_and_reported_truthfully() {
     // false. The CRC remains valid because it protects the raw bytes.
     const uint8_t rawBytes[6] = {0x10, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
     JsonDocument preFix;
+    preFix["name"] = "Existing";
     preFix["description"] = "pre-fix readable metadata";
+    preFix["displayOn"] = true;
+    preFix["mainVolume"] = 255;
+    preFix["mutedVolume"] = 255;
     JsonArray bytes = preFix["bytes"].to<JsonArray>();
     for (uint8_t value : rawBytes) bytes.add(value);
     preFix["muteToMuteVolume"] = false;
@@ -413,29 +873,35 @@ void test_existing_raw_mute_bit_is_preserved_and_reported_truthfully() {
     serializeJson(preFix, preFixJson);
     writeFileFromString(fs, "/v1profiles/Existing.json", preFixJson.c_str());
 
-    V1Profile loaded;
-    TEST_ASSERT_TRUE(manager.loadProfile("Existing", loaded));
-    TEST_ASSERT_EQUAL_UINT8(0x10, loaded.settings.bytes[0]);
-    TEST_ASSERT_TRUE(loaded.settings.muteToMuteVolume());
-
-    // Do not migrate stored bytes: they already encode actual detector behavior.
-    TEST_ASSERT_TRUE(manager.saveProfile(loaded).success);
-    JsonDocument saved;
-    TEST_ASSERT_FALSE(deserializeJson(saved, readFileToString(fs, "/v1profiles/Existing.json")));
-    TEST_ASSERT_EQUAL_UINT8(0x10, saved["bytes"][0].as<uint8_t>());
-    TEST_ASSERT_TRUE(saved["muteToMuteVolume"].as<bool>());
+    V1Profile loaded = makeProfile("Sentinel", 90, "unchanged");
+    const V1Profile before = loaded;
+    TEST_ASSERT_FALSE(manager.loadProfile("Existing", loaded));
+    TEST_ASSERT_EQUAL_STRING(before.name.c_str(), loaded.name.c_str());
+    TEST_ASSERT_EQUAL_STRING(before.description.c_str(), loaded.description.c_str());
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(before.settings.bytes, loaded.settings.bytes, 6);
+    TEST_ASSERT_EQUAL_STRING(preFixJson.c_str(), readFileToString(fs, "/v1profiles/Existing.json").c_str());
 }
 
-void test_json_to_settings_raw_bytes_win_over_conflicting_readable_fields() {
+void test_json_to_settings_requires_redundant_raw_and_readable_fields_to_match() {
     V1ProfileManager manager;
-    V1UserSettings settings;
+    V1UserSettings settings = makeProfile("Sentinel", 77).settings;
+    const V1UserSettings before = settings;
+
+    TEST_ASSERT_FALSE(manager.jsonToSettings(
+        String("{\"bytes\":[16,255,255,255,255,255],"
+               "\"muteToMuteVolume\":false,\"autoMute\":1}"), settings));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(before.bytes, settings.bytes, 6);
 
     TEST_ASSERT_TRUE(manager.jsonToSettings(
         String("{\"bytes\":[16,255,255,255,255,255],"
-               "\"muteToMuteVolume\":false,\"autoMute\":1}"), settings));
+               "\"muteToMuteVolume\":true,\"autoMute\":3}"), settings));
     TEST_ASSERT_EQUAL_UINT8(0x10, settings.bytes[0]);
     TEST_ASSERT_TRUE(settings.muteToMuteVolume());
     TEST_ASSERT_EQUAL_UINT8(3, settings.autoMute());
+
+    TEST_ASSERT_FALSE(manager.jsonToSettings(
+        String("{\"bytes\":[16,255,255,255,255,255],"
+               "\"baseBytes\":[16,255,255,255,255,255]}"), settings));
 }
 
 void test_captured_base_bytes_preserve_reserved_bits_through_edit_save_and_reload() {
@@ -487,20 +953,6 @@ void test_v41039_photo_settings_round_trip_through_json() {
     TEST_ASSERT_FALSE(deserializeJson(doc, json));
     TEST_ASSERT_TRUE(doc["gatsoRT4"].as<bool>());
     TEST_ASSERT_TRUE(doc["photoIntersectionFilter"].as<bool>());
-}
-
-void test_rename_same_name_is_successful_noop() {
-    fs::FS fs(g_tempRoot);
-    V1ProfileManager manager;
-    TEST_ASSERT_TRUE(manager.begin(&fs));
-
-    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("City", 40, "same-name")).success);
-    const uint32_t beforeRevision = manager.catalogRevision();
-    const std::string before = readFileToString(fs, "/v1profiles/City.json");
-
-    TEST_ASSERT_TRUE(manager.renameProfile("City", "City"));
-    TEST_ASSERT_EQUAL_UINT32(beforeRevision, manager.catalogRevision());
-    TEST_ASSERT_EQUAL_STRING(before.c_str(), readFileToString(fs, "/v1profiles/City.json").c_str());
 }
 
 void test_path_like_name_is_rejected_without_creating_a_profile() {
@@ -557,6 +1009,36 @@ void test_sd_contention_returns_busy_for_every_profile_transaction() {
                           static_cast<int>(manager.snapshotProfiles(snapshot).status));
 }
 
+void test_catalog_collection_allocation_failures_return_unavailable_without_throw_or_mutation() {
+    fs::FS fs(g_tempRoot);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&fs));
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 10, "durable")).success);
+
+    manager.utFailAllocation(V1ProfileAllocationFailurePoint::ListGrowth);
+    const ProfileListResult list = manager.listProfilesResult();
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::IoError),
+                          static_cast<int>(list.status));
+    TEST_ASSERT_EQUAL_UINT(0u, list.profiles.size());
+
+    manager.utFailAllocation(V1ProfileAllocationFailurePoint::PageGrowth);
+    const ProfilePageResult page = manager.listProfilesPageResult("", 10);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::IoError),
+                          static_cast<int>(page.status));
+    TEST_ASSERT_EQUAL_UINT(0u, page.profiles.size());
+
+    std::vector<V1Profile> snapshot;
+    manager.utFailAllocation(V1ProfileAllocationFailurePoint::SnapshotGrowth);
+    const ProfileOperationResult snapshotResult = manager.snapshotProfiles(snapshot);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::IoError),
+                          static_cast<int>(snapshotResult.status));
+    TEST_ASSERT_EQUAL_UINT(0u, snapshot.size());
+
+    V1Profile durable;
+    TEST_ASSERT_TRUE(manager.loadProfile("Road", durable));
+    TEST_ASSERT_EQUAL_STRING("durable", durable.description.c_str());
+}
+
 void test_littlefs_fallback_edits_and_deletion_reconcile_without_resurrection() {
     const std::filesystem::path sdRoot = g_tempRoot / "sd";
     const std::filesystem::path littleRoot = g_tempRoot / "little";
@@ -601,51 +1083,6 @@ void test_littlefs_fallback_edits_and_deletion_reconcile_without_resurrection() 
                           static_cast<int>(sdReturns.loadProfileResult("Road", loaded).status));
     TEST_ASSERT_FALSE(sd.exists("/v1profiles/Road.json"));
     TEST_ASSERT_FALSE(little.exists("/v1profiles/Road.json"));
-}
-
-void test_rename_existing_distinct_destination_fails_without_mutation() {
-    fs::FS fs(g_tempRoot);
-    V1ProfileManager manager;
-    TEST_ASSERT_TRUE(manager.begin(&fs));
-
-    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Alpha", 60, "alpha")).success);
-    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Beta", 70, "beta")).success);
-    const uint32_t beforeRevision = manager.catalogRevision();
-    const std::string alphaBefore = readFileToString(fs, "/v1profiles/Alpha.json");
-    const std::string betaBefore = readFileToString(fs, "/v1profiles/Beta.json");
-
-    TEST_ASSERT_FALSE(manager.renameProfile("Alpha", "Beta"));
-    TEST_ASSERT_EQUAL_UINT32(beforeRevision, manager.catalogRevision());
-    TEST_ASSERT_EQUAL_STRING(alphaBefore.c_str(), readFileToString(fs, "/v1profiles/Alpha.json").c_str());
-    TEST_ASSERT_EQUAL_STRING(betaBefore.c_str(), readFileToString(fs, "/v1profiles/Beta.json").c_str());
-
-    V1Profile loadedAlpha;
-    V1Profile loadedBeta;
-    TEST_ASSERT_TRUE(manager.loadProfile("Alpha", loadedAlpha));
-    TEST_ASSERT_TRUE(manager.loadProfile("Beta", loadedBeta));
-    TEST_ASSERT_EQUAL_STRING("alpha", loadedAlpha.description.c_str());
-    TEST_ASSERT_EQUAL_STRING("beta", loadedBeta.description.c_str());
-}
-
-void test_rename_normal_path_succeeds_and_advances_revision() {
-    fs::FS fs(g_tempRoot);
-    V1ProfileManager manager;
-    TEST_ASSERT_TRUE(manager.begin(&fs));
-
-    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Quiet", 80, "rename")).success);
-    const uint32_t beforeRevision = manager.catalogRevision();
-
-    TEST_ASSERT_TRUE(manager.renameProfile("Quiet", "Highway"));
-    TEST_ASSERT_TRUE(manager.catalogRevision() > beforeRevision);
-    TEST_ASSERT_FALSE(fs.exists("/v1profiles/Quiet.json"));
-    TEST_ASSERT_TRUE(fs.exists("/v1profiles/Highway.json"));
-
-    V1Profile loaded;
-    TEST_ASSERT_TRUE(manager.loadProfile("Highway", loaded));
-    TEST_ASSERT_EQUAL_STRING("Highway", loaded.name.c_str());
-    TEST_ASSERT_EQUAL_STRING("rename", loaded.description.c_str());
-    TEST_ASSERT_EQUAL_UINT8(80, loaded.settings.bytes[0]);
-    TEST_ASSERT_EQUAL_UINT8(85, loaded.settings.bytes[5]);
 }
 
 void test_equal_generation_divergence_converges_to_offline_fallback_edit() {
@@ -896,25 +1333,28 @@ int main() {
     RUN_TEST(test_save_profile_short_write_new_file_leaves_no_live_json);
     RUN_TEST(test_save_profile_short_write_existing_file_preserves_previous_profile);
     RUN_TEST(test_save_profile_normal_path_still_succeeds);
-    RUN_TEST(test_schema_v2_detector_policy_round_trips_with_authoritative_raw_bytes);
+    RUN_TEST(test_maximum_description_and_64_definitions_fit_but_one_extra_byte_preserves_live_profile);
+    RUN_TEST(test_schema_v3_detector_policy_round_trips_with_authoritative_raw_bytes);
+    RUN_TEST(test_detector_configuration_rejects_half_zero_sweep_without_mutating_output);
+    RUN_TEST(test_genuine_schema_v2_profile_migrates_without_reinterpretation);
+    RUN_TEST(test_schema_v3_rejects_crc_valid_unknown_missing_or_conflicting_readable_fields);
     RUN_TEST(test_schema_v2_mixed_markers_crc_omissions_and_malformed_policy_reject_atomically);
     RUN_TEST(test_exact_legacy_profile_without_schema_or_crc_remains_backward_readable);
+    RUN_TEST(test_persisted_legacy_profile_shape_is_strict_and_never_mutates_output);
     RUN_TEST(test_save_requires_final_file_reopen_and_crc_validation);
     RUN_TEST(test_load_profile_rejects_invalid_raw_bytes_without_mutating_output);
     RUN_TEST(test_json_to_settings_rejects_invalid_raw_bytes_without_mutating_output);
     RUN_TEST(test_json_to_settings_strictly_validates_human_readable_fields_without_mutation);
-    RUN_TEST(test_existing_raw_mute_bit_is_preserved_and_reported_truthfully);
-    RUN_TEST(test_json_to_settings_raw_bytes_win_over_conflicting_readable_fields);
+    RUN_TEST(test_conflicting_legacy_human_metadata_is_rejected_without_rewriting_raw_bytes);
+    RUN_TEST(test_json_to_settings_requires_redundant_raw_and_readable_fields_to_match);
     RUN_TEST(test_captured_base_bytes_preserve_reserved_bits_through_edit_save_and_reload);
     RUN_TEST(test_malformed_base_bytes_are_rejected_without_partial_mutation);
     RUN_TEST(test_v41039_photo_settings_round_trip_through_json);
-    RUN_TEST(test_rename_same_name_is_successful_noop);
     RUN_TEST(test_path_like_name_is_rejected_without_creating_a_profile);
     RUN_TEST(test_profile_name_contract_rejects_hidden_long_blank_and_canonical_collisions);
     RUN_TEST(test_sd_contention_returns_busy_for_every_profile_transaction);
+    RUN_TEST(test_catalog_collection_allocation_failures_return_unavailable_without_throw_or_mutation);
     RUN_TEST(test_littlefs_fallback_edits_and_deletion_reconcile_without_resurrection);
-    RUN_TEST(test_rename_existing_distinct_destination_fails_without_mutation);
-    RUN_TEST(test_rename_normal_path_succeeds_and_advances_revision);
     RUN_TEST(test_equal_generation_divergence_converges_to_offline_fallback_edit);
     RUN_TEST(test_corrupt_newer_profile_cannot_replace_valid_older_mirror);
     RUN_TEST(test_profile_sync_metadata_short_write_is_rejected);
@@ -924,5 +1364,12 @@ int main() {
     RUN_TEST(test_sync_metadata_crc_mutation_and_oversize_fail_closed);
     RUN_TEST(test_valid_tombstone_remains_authoritative_when_json_removal_was_incomplete);
     RUN_TEST(test_valid_profile_metadata_mirror_repairs_corrupt_primary_and_legacy_is_rewritten);
+    RUN_TEST(test_cursor_pages_keep_grandfathered_over_limit_catalog_discoverable_and_prunable);
+    RUN_TEST(test_reconcile_union_over_catalog_bound_is_bounded_and_preserves_both_stores);
+    RUN_TEST(test_reconcile_psram_unavailable_never_overwrites_newer_profile_or_tombstone);
+    RUN_TEST(test_secondary_rollback_path_allocation_failure_precedes_every_store_mutation);
+    RUN_TEST(test_profile_sync_generation_exhaustion_preserves_live_profile_and_tombstone_state);
+    RUN_TEST(test_profile_reconcile_generation_exhaustion_does_not_choose_or_overwrite_either_copy);
+    RUN_TEST(test_interrupted_save_recovery_uses_bounded_scans_and_never_replaces_live_profile);
     return UNITY_END();
 }

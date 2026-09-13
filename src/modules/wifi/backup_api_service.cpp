@@ -7,8 +7,10 @@
 #endif
 
 #include "../../backup_payload_builder.h"
+#include "../../json_exact_input.h"
+#include "../../psram_json_document.h"
+#include "settings_internals.h"
 #include "json_stream_response.h"
-#include "wifi_json_document.h"
 
 namespace BackupApiService {
 
@@ -57,28 +59,41 @@ void handleApiBackupNow(WebServer& server, const BackupRuntime& runtime, bool (*
     handleBackupNow(server, runtime);
 }
 
-static void handleRestore(WebServer& server, const BackupRuntime& runtime) {
+static void handleRestoreBody(WebServer& server, const BackupRuntime& runtime, const uint8_t* body,
+                              const size_t bodySize) {
     Serial.println("[HTTP] POST /api/settings/restore");
-    static constexpr size_t kMaxRestoreBodyBytes = 128 * 1024;
 
-    if (!server.hasArg("plain")) {
+    if (!body && bodySize != 0) {
         server.send(400, "application/json", "{\"success\":false,\"error\":\"No JSON body provided\"}");
         return;
     }
 
-    // The maintenance ingress enforces the same cap from Content-Length before
-    // WebServer's body-sized allocation for supported non-multipart requests.
-    // Retain the handler check as defense in depth and for direct service tests.
-    // WebServer::arg() returns String by value, so every call allocates a fresh
-    // full copy of the body. Binding it once is the minimum achievable here.
-    const String body = server.arg("plain");
-    if (body.length() > kMaxRestoreBodyBytes) {
+    // Production routes provide this exact byte span from the raw WebServer
+    // reader into one PSRAM-owned buffer. Retain the cap here for direct
+    // service tests and alternate callers.
+    if (bodySize > kHttpBackupDocumentMaxBytes) {
         server.send(413, "application/json", "{\"success\":false,\"error\":\"Body too large\"}");
         return;
     }
-    WifiJson::Document doc;
-    DeserializationError err = deserializeJson(doc, body.c_str());
+    const char* bodyData = reinterpret_cast<const char*>(body);
+    const ExactJsonInput::Status exact = ExactJsonInput::validate(bodyData, bodySize);
+    if (exact == ExactJsonInput::Status::MemoryUnavailable) {
+        server.send(503, "application/json",
+                    "{\"success\":false,\"error\":\"Backup restore memory unavailable\",\"retryable\":true}");
+        return;
+    }
+    if (exact != ExactJsonInput::Status::Ok) {
+        server.send(400, "application/json", "{\"success\":false,\"error\":\"Invalid JSON\"}");
+        return;
+    }
+    PsramJson::Document doc;
+    DeserializationError err = deserializeJson(doc, bodyData, bodySize);
 
+    if (doc.overflowed() || err == DeserializationError::NoMemory) {
+        server.send(503, "application/json",
+                    "{\"success\":false,\"error\":\"Backup restore memory unavailable\",\"retryable\":true}");
+        return;
+    }
     if (err) {
         Serial.printf("[Settings] Restore parse error: %s\n", err.c_str());
         server.send(400, "application/json", "{\"success\":false,\"error\":\"Invalid JSON\"}");
@@ -86,15 +101,29 @@ static void handleRestore(WebServer& server, const BackupRuntime& runtime) {
     }
 
     // Verify backup format
-    if (!doc["_type"].is<const char*>() ||
-        !BackupPayloadBuilder::isRecognizedBackupType(doc["_type"].as<const char*>())) {
+    const JsonVariantConst backupType = doc["_type"];
+    if (!backupType.is<const char*>() ||
+        !BackupPayloadBuilder::isRecognizedBackupType(backupType.as<const char*>())) {
         server.send(400, "application/json", "{\"success\":false,\"error\":\"Invalid backup format\"}");
         return;
     }
-    if (!doc["_crc32"].isNull() &&
+    if (!doc["_crc32"].isUnbound() &&
         (!doc["_crc32"].is<uint32_t>() ||
          doc["_crc32"].as<uint32_t>() != BackupPayloadBuilder::computeBackupCrc32(doc))) {
         server.send(400, "application/json", "{\"success\":false,\"error\":\"Backup checksum mismatch\"}");
+        return;
+    }
+    const JsonVariantConst currentVersion = doc["_version"];
+    const JsonVariantConst legacyVersion = doc["version"];
+    if ((!currentVersion.isUnbound() &&
+         (!currentVersion.is<int>() || currentVersion.as<int>() < 1 ||
+          currentVersion.as<int>() > SD_BACKUP_VERSION)) ||
+        (!legacyVersion.isUnbound() &&
+         (!legacyVersion.is<int>() || legacyVersion.as<int>() < 1 ||
+          legacyVersion.as<int>() > SD_BACKUP_VERSION)) ||
+        (!currentVersion.isUnbound() && !legacyVersion.isUnbound() &&
+         currentVersion.as<int>() != legacyVersion.as<int>())) {
+        server.send(400, "application/json", "{\"success\":false,\"error\":\"Invalid backup version\"}");
         return;
     }
 
@@ -109,23 +138,45 @@ static void handleRestore(WebServer& server, const BackupRuntime& runtime) {
 
     Serial.printf("[Settings] Restored from uploaded backup (%d profiles)\n", profilesRestored);
 
-    // Build response with profile count
-    String response = "{\"success\":true,\"message\":\"Settings restored successfully";
-    if (profilesRestored > 0) {
-        response += " (" + String(profilesRestored) + " profiles)";
+    // Mutation has already committed, so the terminal success response must
+    // not depend on heap-backed String concatenation that can fail afterward.
+    char response[128];
+    const int responseLength = profilesRestored > 0
+                                   ? snprintf(response, sizeof(response),
+                                              "{\"success\":true,\"message\":\"Settings restored successfully "
+                                              "(%d profiles)\"}",
+                                              profilesRestored)
+                                   : snprintf(response, sizeof(response),
+                                              "{\"success\":true,\"message\":\"Settings restored successfully\"}");
+    if (responseLength <= 0 || static_cast<size_t>(responseLength) >= sizeof(response)) {
+        // profilesRestored is bounded by the supported catalog count, so this
+        // is a compile-time-format invariant rather than a runtime OOM path.
+        server.send(200, "application/json", "{\"success\":true}");
+        return;
     }
-    response += "\"}";
     server.send(200, "application/json", response);
 }
 
 void handleApiRestore(WebServer& server, const BackupRuntime& runtime, bool (*checkRateLimit)(void* ctx),
                       void* rateLimitCtx, void (*markUiActivity)(void* ctx), void* uiActivityCtx) {
+    if (!server.hasArg("plain")) {
+        server.send(400, "application/json", "{\"success\":false,\"error\":\"No JSON body provided\"}");
+        return;
+    }
+    const String body = server.arg("plain");
+    handleApiRestoreBody(server, runtime, reinterpret_cast<const uint8_t*>(body.c_str()), body.length(),
+                         checkRateLimit, rateLimitCtx, markUiActivity, uiActivityCtx);
+}
+
+void handleApiRestoreBody(WebServer& server, const BackupRuntime& runtime, const uint8_t* body,
+                          const size_t bodySize, bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
+                          void (*markUiActivity)(void* ctx), void* uiActivityCtx) {
     if (checkRateLimit && !checkRateLimit(rateLimitCtx))
         return;
     if (markUiActivity) {
         markUiActivity(uiActivityCtx);
     }
-    handleRestore(server, runtime);
+    handleRestoreBody(server, runtime, body, bodySize);
 }
 
 } // namespace BackupApiService

@@ -4,6 +4,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <limits>
 #include <string>
 #include <vector>
 #include <ArduinoJson.h>
@@ -19,6 +20,7 @@ inline bool canConvertFromJson(JsonVariantConst src, const ::String&) { return s
 }
 
 #include "../../src/usb_profile_document.h"
+#include "../../src/usb_profile_json_document.h"
 #include "../../src/v1_profiles.cpp"
 #include "../../src/backup_payload_builder.cpp"
 #include "../../src/psram_freertos_alloc.cpp"
@@ -83,10 +85,19 @@ String snapshot() {
 }
 
 String unrelatedSettingsSnapshot() {
+    V1Settings snapshotSettings;
+    TEST_ASSERT_TRUE(copySettingsChecked(manager->get(), snapshotSettings));
+    const bool legacyProxyObdConflict = snapshotSettings.proxyBLE && snapshotSettings.obdEnabled;
+    // Profiles-only restore deliberately leaves unrelated legacy conflicts in
+    // place.  Current v21 backups cannot truthfully encode that state, so make
+    // only the test serialization copy canonical and record the conflict
+    // explicitly for the before/after comparison.
+    if (legacyProxyObdConflict) snapshotSettings.proxyBLE = false;
     JsonDocument doc;
     const auto result = BackupPayloadBuilder::buildBackupDocument(
-        doc, manager->get(), *profileManager, BackupPayloadBuilder::BackupTransport::SdBackup, 1000);
+        doc, snapshotSettings, *profileManager, BackupPayloadBuilder::BackupTransport::SdBackup, 1000);
     TEST_ASSERT_TRUE(result.safeToCommit);
+    doc["legacyProxyObdConflict"] = legacyProxyObdConflict;
     doc.remove("profiles");
     doc.remove("activeSlot");
     doc.remove("autoPushEnabled");
@@ -137,6 +148,8 @@ void seed() {
     state.alpAlertPersistSec = 4;
     TEST_ASSERT_TRUE(manager->saveDeferredBackup());
     TEST_ASSERT_TRUE(manager->migrateAutoPushProfilesToV2());
+    TEST_ASSERT_TRUE(BackupPayloadBuilder::settingsTextIsSerializable(manager->get()));
+    TEST_ASSERT_TRUE(BackupPayloadBuilder::settingsCurrentBackupStateIsCanonical(manager->get()));
 }
 
 void replacement(JsonDocument& doc) {
@@ -177,6 +190,55 @@ void writeLegacyProfileFile(const char* name, const char* description, const uin
     file.close();
 }
 
+void writeV2ProfileFile(const char* name = "V2 Road") {
+    V1DetectorConfiguration detector;
+    detector.userSettingsPolicy = V1UserSettingsPolicy::Value;
+    detector.modePolicy = V1ModePolicy::Value;
+    detector.mode = 2;
+    detector.displayPolicy = V1DisplayPolicy::Off;
+    detector.volumePolicy = V1VolumePolicy::Temporary;
+    detector.mainVolume = 7;
+    detector.mutedVolume = 2;
+    const uint8_t bytes[] = {0xBF, 0xE1, 0xF2, 0x73, 0xA5, 0x5A};
+    JsonDocument v2;
+    v2["schemaVersion"] = V1_PROFILE_PREVIOUS_SCHEMA_VERSION;
+    v2["name"] = name;
+    v2["description"] = "validated schema two";
+    appendV1DetectorConfigurationV2(v2["detector"].to<JsonObject>(), detector);
+    uint32_t detectorCrc = 0;
+    TEST_ASSERT_TRUE(detectorConfigurationCrc(detector, detectorCrc, V1_PROFILE_PREVIOUS_SCHEMA_VERSION));
+    v2["detectorCrc32"] = detectorCrc;
+    JsonArray raw = v2["bytes"].to<JsonArray>();
+    for (uint8_t byte : bytes) raw.add(byte);
+    v2["crc32"] = computeCrc32(bytes, sizeof(bytes));
+    const String path = String("/v1profiles/") + name + ".json";
+    File file = primaryFs->open(path, FILE_WRITE);
+    TEST_ASSERT_TRUE(file);
+    TEST_ASSERT_EQUAL_UINT(measureJson(v2), serializeJson(v2, file));
+    file.close();
+
+    auto& state = manager->mutableSettings();
+    state.autoPushEnabled = true;
+    state.autoPushProfileSchemaVersion = V1_PROFILE_PREVIOUS_SCHEMA_VERSION;
+    state.slot0_default.profileName = name;
+    state.slot0_default.mode = V1_MODE_UNKNOWN;
+    state.slot0Volume = 0xFF;
+    state.slot0MuteVolume = 0xFF;
+    state.slot0DarkMode = false;
+    state.slot0MuteToZero = false;
+    TEST_ASSERT_TRUE(manager->saveDeferredBackup());
+}
+
+uint8_t persistedProfileSchema(const char* name = "V2 Road") {
+    const String path = String("/v1profiles/") + name + ".json";
+    File file = primaryFs->open(path, FILE_READ);
+    TEST_ASSERT_TRUE(file);
+    JsonDocument doc;
+    TEST_ASSERT_FALSE(deserializeJson(doc, file));
+    file.close();
+    return doc["schemaVersion"].as<uint8_t>();
+}
+
 void assertMigratedApplication(const String& profileName, const uint8_t expectedBytes[6],
                                V1ModePolicy modePolicy, uint8_t mode,
                                V1DisplayPolicy displayPolicy, V1VolumePolicy volumePolicy,
@@ -198,6 +260,7 @@ void assertMigratedApplication(const String& profileName, const uint8_t expected
 }
 
 void setUp() {
+    g_failUsbInputStringCopyEnabledForTest = false;
     mock_preferences::reset();
     mock_nvs::reset();
     storage.reset();
@@ -219,11 +282,41 @@ void setUp() {
 }
 
 void tearDown() {
+    g_failUsbInputStringCopyEnabledForTest = false;
     manager.reset();
     profileManager.reset();
     primaryFs.reset();
     secondaryFs.reset();
     std::filesystem::remove_all(root);
+}
+
+void test_usb_import_string_copy_failure_never_reaches_restore_or_mutates_state() {
+    seed();
+    JsonDocument incoming;
+    replacement(incoming);
+    const String before = snapshot();
+    const auto filesBefore = filesSnapshot();
+    const auto prefsBefore = mock_preferences::store();
+
+    const UsbInputStringField failures[] = {
+        UsbInputStringField::ProfileName,
+        UsbInputStringField::SlotProfile,
+        UsbInputStringField::SlotName,
+    };
+    for (UsbInputStringField failure : failures) {
+        g_failUsbInputStringCopyForTest = failure;
+        g_failUsbInputStringCopyEnabledForTest = true;
+        String error;
+        const SettingsBackupApplyResult result =
+            applyUsbProfileDocument(*manager, *profileManager, incoming, error);
+        g_failUsbInputStringCopyEnabledForTest = false;
+
+        TEST_ASSERT_FALSE(result.success);
+        TEST_ASSERT_TRUE(error.indexOf("allocate exact profile import string") >= 0);
+        TEST_ASSERT_TRUE(filesBefore == filesSnapshot());
+        TEST_ASSERT_TRUE(preferencesEqual(prefsBefore));
+        TEST_ASSERT_EQUAL_STRING(before.c_str(), snapshot().c_str());
+    }
 }
 
 void test_bundle_round_trip_replaces_catalog_and_preserves_unrelated_state() {
@@ -332,6 +425,49 @@ void test_exact_legacy_profile_and_shared_slots_migrate_without_command_drift() 
     TEST_ASSERT_EQUAL_STRING(firstExport.c_str(), snapshot().c_str());
 }
 
+void test_multibyte_legacy_migration_names_preserve_suffixes_on_utf8_boundaries() {
+    String sourceName;
+    for (int index = 0; index < 32; ++index) sourceName += "\xC3\xA9";
+    TEST_ASSERT_EQUAL_UINT(64, sourceName.length());
+    String expectedFirst;
+    for (int index = 0; index < 27; ++index) expectedFirst += "\xC3\xA9";
+    expectedFirst += " - Slot 2";
+    String expectedSecond;
+    for (int index = 0; index < 26; ++index) expectedSecond += "\xC3\xA9";
+    expectedSecond += " - Slot 2 #2";
+    String expectedTenth;
+    for (int index = 0; index < 25; ++index) expectedTenth += "\xC3\xA9";
+    expectedTenth += " - Slot 2 #10";
+
+    String candidate;
+    TEST_ASSERT_TRUE(buildMigratedProfileNameCandidate(sourceName, " - Slot 2", 1, candidate));
+    TEST_ASSERT_EQUAL_STRING(expectedFirst.c_str(), candidate.c_str());
+    TEST_ASSERT_TRUE(buildMigratedProfileNameCandidate(sourceName, " - Slot 2", 2, candidate));
+    TEST_ASSERT_EQUAL_STRING(expectedSecond.c_str(), candidate.c_str());
+    TEST_ASSERT_TRUE(buildMigratedProfileNameCandidate(sourceName, " - Slot 2", 10, candidate));
+    TEST_ASSERT_EQUAL_STRING(expectedTenth.c_str(), candidate.c_str());
+
+    const uint8_t raw[] = {0xBF, 0xE1, 0x92, 0x73, 0xA5, 0x5A};
+    writeLegacyProfileFile(sourceName.c_str(), "Multibyte source", raw);
+    V1Profile collision(expectedFirst);
+    TEST_ASSERT_TRUE(profileManager->saveProfile(collision).success);
+    auto& state = manager->mutableSettings();
+    state.slot0_default.profileName = sourceName;
+    state.slot0_default.mode = V1_MODE_ALL_BOGEYS;
+    state.slot1_highway.profileName = sourceName;
+    state.slot1_highway.mode = V1_MODE_LOGIC;
+    state.slot2_comfort.profileName = sourceName;
+    state.slot2_comfort.mode = V1_MODE_ALL_BOGEYS;
+    TEST_ASSERT_TRUE(manager->saveDeferredBackup());
+    TEST_ASSERT_TRUE(manager->migrateAutoPushProfilesToV2());
+    TEST_ASSERT_EQUAL_STRING(sourceName.c_str(), manager->get().slot0_default.profileName.c_str());
+    TEST_ASSERT_EQUAL_STRING(expectedSecond.c_str(), manager->get().slot1_highway.profileName.c_str());
+    TEST_ASSERT_EQUAL_STRING(sourceName.c_str(), manager->get().slot2_comfort.profileName.c_str());
+    V1Profile migrated;
+    TEST_ASSERT_TRUE(profileManager->loadProfile(expectedSecond, migrated));
+    TEST_ASSERT_EQUAL_STRING(expectedSecond.c_str(), migrated.name.c_str());
+}
+
 void test_exact_v1_usb_import_is_immediately_exportable_with_same_effective_commands() {
     JsonDocument legacy;
     legacy["format"] = "v1simple-profiles";
@@ -372,7 +508,7 @@ void test_exact_v1_usb_import_is_immediately_exportable_with_same_effective_comm
 
     JsonDocument immediate;
     TEST_ASSERT_TRUE_MESSAGE(buildUsbProfileDocument(immediate, *manager, *profileManager, error), error.c_str());
-    TEST_ASSERT_EQUAL_INT(2, immediate["version"].as<int>());
+    TEST_ASSERT_EQUAL_INT(3, immediate["version"].as<int>());
     const String slot0 = manager->get().slot0_default.profileName;
     const String slot1 = manager->get().slot1_highway.profileName;
     const String slot2 = manager->get().slot2_comfort.profileName;
@@ -384,6 +520,55 @@ void test_exact_v1_usb_import_is_immediately_exportable_with_same_effective_comm
                               V1DisplayPolicy::Off, V1VolumePolicy::Temporary, 0, 0);
     assertMigratedApplication(slot2, zeroBytes, V1ModePolicy::Unchanged, 0,
                               V1DisplayPolicy::On, V1VolumePolicy::Temporary, 9, 3);
+}
+
+void test_v1_usb_expansion_over_catalog_cap_is_rejected_before_any_commit() {
+    seed();
+    const String beforeBundle = snapshot();
+    const auto beforeFiles = filesSnapshot();
+    const auto beforePreferences = mock_preferences::store();
+
+    JsonDocument legacy;
+    legacy["format"] = "v1simple-profiles";
+    legacy["version"] = 1;
+    legacy["autoPushEnabled"] = true;
+    legacy["activeSlot"] = 0;
+    JsonArray profiles = legacy["profiles"].to<JsonArray>();
+    for (size_t index = 0; index < V1_PROFILE_CATALOG_MAX_COUNT; ++index) {
+        JsonObject profile = profiles.add<JsonObject>();
+        String name = String("Profile ") + String(index + 1);
+        profile["name"] = name;
+        profile["description"] = "legacy expansion preflight";
+        profile["displayOn"] = true;
+        profile["mainVolume"] = 255;
+        profile["mutedVolume"] = 255;
+        JsonArray bytes = profile["rawBytes"].to<JsonArray>();
+        for (int byte = 0; byte < 6; ++byte) bytes.add(byte == 0 ? 0xBF : byte);
+    }
+    JsonArray slots = legacy["slots"].to<JsonArray>();
+    for (int index = 0; index < 3; ++index) {
+        JsonObject slot = slots.add<JsonObject>();
+        slot["name"] = index == 0 ? "DEFAULT" : (index == 1 ? "HIGHWAY" : "COMFORT");
+        slot["profile"] = index < 2 ? "Profile 1" : "Profile 2";
+        slot["mode"] = index < 2 ? index + 1 : 0;
+        slot["color"] = 100 + index;
+        slot["volumeConfigured"] = false;
+        slot["volume"] = 0;
+        slot["muteVolume"] = 0;
+        slot["darkMode"] = index == 1;
+        slot["muteToZero"] = false;
+        slot["alertPersist"] = 0;
+        slot["priorityArrowOnly"] = false;
+    }
+
+    String error;
+    const SettingsBackupApplyResult result =
+        applyUsbProfileDocument(*manager, *profileManager, legacy, error);
+    TEST_ASSERT_FALSE(result.success);
+    TEST_ASSERT_TRUE(error.indexOf("exceeds") >= 0);
+    TEST_ASSERT_EQUAL_STRING(beforeBundle.c_str(), snapshot().c_str());
+    TEST_ASSERT_TRUE(filesSnapshot() == beforeFiles);
+    TEST_ASSERT_TRUE(preferencesEqual(beforePreferences));
 }
 
 void test_v1_usb_reports_pending_migration_and_reboot_recovers_pre_authority_state() {
@@ -441,7 +626,7 @@ void test_v1_usb_reports_pending_migration_and_reboot_recovers_pre_authority_sta
     TEST_ASSERT_TRUE(manager->migrateAutoPushProfilesToV2());
     JsonDocument exported;
     TEST_ASSERT_TRUE_MESSAGE(buildUsbProfileDocument(exported, *manager, *profileManager, error), error.c_str());
-    TEST_ASSERT_EQUAL_INT(2, exported["version"].as<int>());
+    TEST_ASSERT_EQUAL_INT(3, exported["version"].as<int>());
 }
 
 void test_invalid_complete_bundle_never_mutates_settings_profiles_or_credentials() {
@@ -453,11 +638,12 @@ void test_invalid_complete_bundle_never_mutates_settings_profiles_or_credentials
     const auto prefsBefore = mock_preferences::store();
     const String before = snapshot();
     const std::vector<std::function<void(JsonDocument&)>> faults = {
-        [](JsonDocument& d) { d["version"] = 3; },
+        [](JsonDocument& d) { d["version"] = 4; },
         [](JsonDocument& d) { d["format"] = std::string("v1simple-profiles\0x", 19); },
         [](JsonDocument& d) { d["wifiClientEnabled"] = true; },
         [](JsonDocument& d) { d["slots"][0]["alertPersist"] = 6; },
         [](JsonDocument& d) { d["slots"][0]["alertPersist"] = "2"; },
+        [](JsonDocument& d) { d["slots"][0]["color"] = 0; },
         [](JsonDocument& d) { d["slots"][0]["volume"] = 1; },
         [](JsonDocument& d) { d["slots"][0]["mode"] = 4; },
         [](JsonDocument& d) { d["slots"][0]["profile"] = "Absent"; },
@@ -469,6 +655,14 @@ void test_invalid_complete_bundle_never_mutates_settings_profiles_or_credentials
         [](JsonDocument& d) { d["profiles"][0]["description"] = std::string("note\0tail", 9); },
         [](JsonDocument& d) { d["profiles"][0]["name"] = "../Original"; },
         [](JsonDocument& d) { d["profiles"][0]["detector"]["volume"]["main"] = 10; },
+        [](JsonDocument& d) {
+            JsonObject custom = d["profiles"][0]["detector"]["customFrequencies"].to<JsonObject>();
+            custom["policy"] = "value";
+            JsonObject definition = custom["definitions"].to<JsonArray>().add<JsonObject>();
+            definition["index"] = 0;
+            definition["lowerMHz"] = 0;
+            definition["upperMHz"] = 1;
+        },
         [](JsonDocument& d) { d["profiles"][0].remove("schemaVersion"); },
         [](JsonDocument& d) { d["profiles"][0].remove("detector"); },
         [](JsonDocument& d) { d["profiles"][0]["extra"] = true; },
@@ -478,7 +672,9 @@ void test_invalid_complete_bundle_never_mutates_settings_profiles_or_credentials
             d["profiles"].as<JsonArray>().add(copy.as<JsonObjectConst>());
             d["profiles"][d["profiles"].size() - 1]["name"] = "ORIGINAL";
         },
-        [](JsonDocument& d) { d["profiles"][0]["description"] = std::string(kUsbProfileDocumentMaxBytes, 'x'); },
+        [](JsonDocument& d) {
+            d["profiles"][0]["description"] = std::string(V1_PROFILE_DESCRIPTION_MAX_BYTES + 1u, 'x');
+        },
     };
     for (const auto& fault : faults) {
         JsonDocument broken;
@@ -490,6 +686,16 @@ void test_invalid_complete_bundle_never_mutates_settings_profiles_or_credentials
         TEST_ASSERT_TRUE(preferencesEqual(prefsBefore));
         TEST_ASSERT_EQUAL_STRING(before.c_str(), snapshot().c_str());
     }
+}
+
+void test_v3_export_refuses_noncanonical_zero_slot_color() {
+    seed();
+    manager->mutableSettings().slot1Color = 0;
+    JsonDocument output;
+    String error;
+    TEST_ASSERT_FALSE(buildUsbProfileDocument(output, *manager, *profileManager, error));
+    TEST_ASSERT_TRUE(output.isNull());
+    TEST_ASSERT_GREATER_THAN(0, error.length());
 }
 
 void test_nvs_failure_rolls_back_created_deleted_profiles_and_settings() {
@@ -652,7 +858,8 @@ void test_http_profile_metadata_round_trips_storage_usb_and_backup_without_trunc
         return result.success;
     };
     for (const std::string& description : {std::string(160, 'a'), std::string(161, 'b'),
-                                           std::string(1024, 'c') + " \xc3\xa9\n"}) {
+                                           std::string(1024, 'c') + " \xc3\xa9\n",
+                                           std::string(V1_PROFILE_DESCRIPTION_MAX_BYTES, 'd')}) {
         JsonDocument request;
         request["name"] = "Road";
         request["description"] = description;
@@ -717,14 +924,53 @@ void test_interrupted_restore_recovers_long_description_from_journal() {
     TEST_ASSERT_FALSE(primaryFs->exists("/v1restore_transaction.json"));
 }
 
-void test_profile_file_size_limit_still_rejects_oversized_metadata_without_loss() {
+void test_maximum_profile_delete_journal_recovers_after_interruption() {
+    V1Profile profile(String(std::string(MAX_PROFILE_NAME_LEN, 'D')));
+    profile.description = String(std::string(V1_PROFILE_DESCRIPTION_MAX_BYTES, '"'));
+    const uint8_t maximumRaw[] = {192, 217, 252, 255, 255, 255};
+    memcpy(profile.settings.bytes, maximumRaw, sizeof(maximumRaw));
+    profile.detector.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
+    profile.detector.modePolicy = V1ModePolicy::Value;
+    profile.detector.mode = 3;
+    profile.detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    profile.detector.volumePolicy = V1VolumePolicy::Temporary;
+    profile.detector.mainVolume = 9;
+    profile.detector.mutedVolume = 9;
+    profile.detector.volumeFeedback = V1VolumeFeedbackPolicy::ChangedOnly;
+    profile.detector.volumeDisconnect = V1VolumeDisconnectPolicy::RestoreSaved;
+    profile.detector.bluetoothLedPolicy = V1BluetoothLedPolicy::Unchanged;
+    profile.detector.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+    for (uint8_t index = 0; index < 64; ++index) {
+        profile.detector.customFrequencyDefinitions.push_back({index, 65534, 65535});
+    }
+    TEST_ASSERT_TRUE(profileManager->saveProfile(profile).success);
+    manager->mutableSettings().autoPushProfileSchemaVersion = V1_PROFILE_SCHEMA_VERSION;
+    manager->mutableSettings().slot0_default.profileName = profile.name;
+    TEST_ASSERT_TRUE(manager->saveDeferredBackup());
+
+    manager->utInterruptProfileDeleteAfterJournal(true);
+    TEST_ASSERT_FALSE(manager->deleteProfileAndReferences(profile.name).success());
+    TEST_ASSERT_TRUE(primaryFs->exists(PROFILE_DELETE_TRANSACTION_PATH));
+    File journal = primaryFs->open(PROFILE_DELETE_TRANSACTION_PATH, FILE_READ);
+    TEST_ASSERT_TRUE(journal);
+    TEST_ASSERT_EQUAL_UINT(11742u, journal.size());
+    journal.close();
+
+    reboot();
+    TEST_ASSERT_FALSE(primaryFs->exists(PROFILE_DELETE_TRANSACTION_PATH));
+    TEST_ASSERT_EQUAL_STRING(profile.name.c_str(), manager->get().slot0_default.profileName.c_str());
+    V1Profile recovered;
+    TEST_ASSERT_TRUE(profileManager->loadProfile(profile.name, recovered));
+    TEST_ASSERT_EQUAL_STRING(profile.description.c_str(), recovered.description.c_str());
+    TEST_ASSERT_EQUAL_UINT(64u, recovered.detector.customFrequencyDefinitions.size());
+}
+
+void test_shared_description_limit_rejects_oversized_metadata_without_loss() {
     seed();
     const String before = snapshot();
     JsonDocument incoming;
     replacement(incoming);
-    // The whole bundle fits USB's envelope, but the stored profile would
-    // exceed its existing 4096-byte file limit. Restore must roll back.
-    incoming["profiles"][0]["description"] = std::string(4096, 'x');
+    incoming["profiles"][0]["description"] = std::string(V1_PROFILE_DESCRIPTION_MAX_BYTES + 1u, 'x');
     TEST_ASSERT_LESS_THAN(kUsbProfileDocumentMaxBytes, measureJson(incoming));
     String error;
     TEST_ASSERT_FALSE(applyUsbProfileDocument(*manager, *profileManager, incoming, error).success);
@@ -733,16 +979,283 @@ void test_profile_file_size_limit_still_rejects_oversized_metadata_without_loss(
     TEST_ASSERT_EQUAL_STRING(before.c_str(), snapshot().c_str());
 }
 
+void test_schema_v2_catalog_builds_self_consistent_v3_backup_and_round_trips() {
+    writeV2ProfileFile();
+    JsonDocument unsafeBackup;
+    const auto unsafeBuilt = BackupPayloadBuilder::buildBackupDocument(
+        unsafeBackup, manager->get(), *profileManager,
+        BackupPayloadBuilder::BackupTransport::HttpDownload, 1234);
+    TEST_ASSERT_FALSE(unsafeBuilt.safeToCommit);
+    TEST_ASSERT_TRUE(manager->migrateAutoPushProfilesToV2());
+    JsonDocument backup;
+    const auto built = BackupPayloadBuilder::buildBackupDocument(
+        backup, manager->get(), *profileManager,
+        BackupPayloadBuilder::BackupTransport::HttpDownload, 1234);
+    TEST_ASSERT_TRUE(built.safeToCommit);
+    TEST_ASSERT_EQUAL_UINT8(V1_PROFILE_SCHEMA_VERSION,
+                            backup["autoPushProfileSchemaVersion"].as<uint8_t>());
+    TEST_ASSERT_EQUAL_UINT8(V1_PROFILE_SCHEMA_VERSION,
+                            backup["profiles"][0]["schemaVersion"].as<uint8_t>());
+    TEST_ASSERT_EQUAL_STRING("off", backup["profiles"][0]["detector"]["display"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING("off", backup["profiles"][0]["detector"]["bluetoothLed"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING("none",
+                             backup["profiles"][0]["detector"]["volume"]["feedback"].as<const char*>());
+
+    V1Profile edited;
+    TEST_ASSERT_TRUE(profileManager->loadProfile("V2 Road", edited));
+    edited.description = "intervening edit";
+    TEST_ASSERT_TRUE(profileManager->saveProfile(edited).success);
+    manager->mutableSettings().slot0_default.profileName = "";
+    TEST_ASSERT_TRUE(manager->saveDeferredBackup());
+    TEST_ASSERT_TRUE(manager->applyBackupDocument(backup, true).success);
+    reboot();
+    TEST_ASSERT_EQUAL_UINT8(V1_PROFILE_SCHEMA_VERSION,
+                            manager->get().autoPushProfileSchemaVersion);
+    V1Profile restored;
+    TEST_ASSERT_TRUE(profileManager->loadProfile("V2 Road", restored));
+    TEST_ASSERT_EQUAL_STRING("validated schema two", restored.description.c_str());
+    TEST_ASSERT_EQUAL_INT(V1BluetoothLedPolicy::Off, restored.detector.bluetoothLedPolicy);
+    TEST_ASSERT_EQUAL_INT(V1VolumeFeedbackPolicy::None, restored.detector.volumeFeedback);
+}
+
+void test_persisted_schema_v2_catalog_migration_is_atomic_and_reboot_durable() {
+    writeV2ProfileFile();
+    TEST_ASSERT_EQUAL_UINT8(V1_PROFILE_PREVIOUS_SCHEMA_VERSION, persistedProfileSchema());
+    manager->utInterruptAutoPushMigrationAfterProfiles(true);
+    TEST_ASSERT_FALSE(manager->migrateAutoPushProfilesToV2());
+    TEST_ASSERT_EQUAL_UINT8(V1_PROFILE_PREVIOUS_SCHEMA_VERSION,
+                            manager->get().autoPushProfileSchemaVersion);
+    TEST_ASSERT_TRUE(primaryFs->exists("/v1restore_transaction.json"));
+
+    reboot();
+    TEST_ASSERT_EQUAL_UINT8(V1_PROFILE_PREVIOUS_SCHEMA_VERSION,
+                            manager->get().autoPushProfileSchemaVersion);
+    // Profile files may already be durably staged as v3, but the marker stays
+    // v2 and remains the command authority until a later transaction commits.
+    TEST_ASSERT_EQUAL_UINT8(V1_PROFILE_SCHEMA_VERSION, persistedProfileSchema());
+    TEST_ASSERT_FALSE(primaryFs->exists("/v1restore_transaction.json"));
+    TEST_ASSERT_TRUE(manager->migrateAutoPushProfilesToV2());
+    TEST_ASSERT_EQUAL_UINT8(V1_PROFILE_SCHEMA_VERSION,
+                            manager->get().autoPushProfileSchemaVersion);
+    TEST_ASSERT_EQUAL_UINT8(V1_PROFILE_SCHEMA_VERSION, persistedProfileSchema());
+    reboot();
+    TEST_ASSERT_EQUAL_UINT8(V1_PROFILE_SCHEMA_VERSION,
+                            manager->get().autoPushProfileSchemaVersion);
+    TEST_ASSERT_EQUAL_UINT8(V1_PROFILE_SCHEMA_VERSION, persistedProfileSchema());
+    V1Profile migrated;
+    TEST_ASSERT_TRUE(profileManager->loadProfile("V2 Road", migrated));
+    TEST_ASSERT_EQUAL_INT(V1DisplayPolicy::Off, migrated.detector.displayPolicy);
+    TEST_ASSERT_EQUAL_INT(V1BluetoothLedPolicy::Off, migrated.detector.bluetoothLedPolicy);
+    TEST_ASSERT_EQUAL_INT(V1VolumeFeedbackPolicy::None, migrated.detector.volumeFeedback);
+    TEST_ASSERT_EQUAL_INT(V1VolumeDisconnectPolicy::RestoreSaved,
+                          migrated.detector.volumeDisconnect);
+}
+
+void test_usb_bulk_document_oom_never_dispatches_restore_consumer() {
+    static constexpr uint8_t VALID[] = "{\"version\":3,\"profiles\":[]}";
+    bool consumerCalled = false;
+    UsbProfileJson::ParseStatus status = UsbProfileJson::ParseStatus::Invalid;
+    g_mock_heap_caps_fail_all_allocations = true;
+    const bool parsed = UsbProfileJson::parseAndConsume(
+        VALID, sizeof(VALID) - 1u, status, [&](const JsonDocument&) {
+            consumerCalled = true;
+            return true;
+        });
+    g_mock_heap_caps_fail_all_allocations = false;
+
+    TEST_ASSERT_FALSE(parsed);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(UsbProfileJson::ParseStatus::MemoryUnavailable),
+                          static_cast<int>(status));
+    TEST_ASSERT_FALSE(consumerCalled);
+}
+
+void test_measure_maximum_profile_catalog_transport_shapes() {
+    auto& maximumSettings = manager->mutableSettings();
+    maximumSettings.autoPushProfileSchemaVersion = V1_PROFILE_SCHEMA_VERSION;
+    maximumSettings.apSSID = String(std::string(MAX_WIFI_SSID_LEN, '"'));
+    maximumSettings.apPassword = String(std::string(MAX_AP_PASSWORD_LEN, 'Q'));
+    maximumSettings.wifiClientEnabled = false;
+    maximumSettings.proxyBLE = false;
+    maximumSettings.proxyName = String(std::string(MAX_PROXY_NAME_LEN, '"'));
+    maximumSettings.lastV1Address = "AA:BB:CC:DD:EE:FF";
+    maximumSettings.autoPowerOffMinutes = 60;
+    maximumSettings.apTimeoutMinutes = 60;
+    maximumSettings.obdEnabled = false;
+    maximumSettings.obdSavedAddress = "AA:BB:CC:DD:EE:FF";
+    maximumSettings.obdSavedName = String(std::string(32, '"'));
+    maximumSettings.obdSavedAddrType = 1;
+    maximumSettings.obdMinRssi = -100;
+    maximumSettings.obdScanWindowMs = kConnectionCycleObdScanWindowMsMax;
+    maximumSettings.obdRetryIntervalMs = kConnectionCycleObdRetryIntervalMsMax;
+    maximumSettings.proxyOpenWindowMs = kConnectionCycleProxyOpenWindowMsMax;
+    maximumSettings.v1SettleQuietMs = kConnectionCycleV1SettleQuietMsMax;
+    maximumSettings.v1SettleFallbackMs = kConnectionCycleV1SettleFallbackMsMax;
+    maximumSettings.cycleTeardownAckTimeoutMs = kConnectionCycleTeardownAckTimeoutMsMax;
+    maximumSettings.alpEnabled = false;
+    maximumSettings.alpAlertPersistSec = 5;
+    maximumSettings.alpDisableV1LaserOnPush = false;
+    maximumSettings.gpsEnabled = false;
+    maximumSettings.gpsBaud = 115200;
+    maximumSettings.brightness = 255;
+    maximumSettings.colorBogey = maximumSettings.colorFrequency = 65535;
+    maximumSettings.colorArrowFront = maximumSettings.colorArrowSide = maximumSettings.colorArrowRear = 65535;
+    maximumSettings.colorBandL = maximumSettings.colorBandKa = maximumSettings.colorBandK = 65535;
+    maximumSettings.colorBandX = maximumSettings.colorBandPhoto = 65535;
+    maximumSettings.colorWiFiConnected = maximumSettings.colorBleConnected = 65535;
+    maximumSettings.colorBleDisconnected = 65535;
+    for (uint16_t& color : maximumSettings.colorBars) color = 65535;
+    maximumSettings.colorMuted = maximumSettings.colorPersisted = 65535;
+    maximumSettings.colorVolumeMain = maximumSettings.colorVolumeMute = 65535;
+    maximumSettings.colorRssiV1 = maximumSettings.colorRssiProxy = 65535;
+    maximumSettings.colorObd = maximumSettings.colorAlpConnected = 65535;
+    maximumSettings.colorAlpDli = maximumSettings.colorAlpLidActive = maximumSettings.colorAlpAlert = 65535;
+    maximumSettings.freqUseBandColor = false;
+    maximumSettings.hideWifiIcon = maximumSettings.hideProfileIndicator = false;
+    maximumSettings.hideBatteryIcon = maximumSettings.showBatteryPercent = false;
+    maximumSettings.hideBleIcon = maximumSettings.hideVolumeIndicator = false;
+    maximumSettings.hideRssiIndicator = false;
+    maximumSettings.voiceAlertMode = VOICE_MODE_BAND_FREQ;
+    maximumSettings.voiceDirectionEnabled = maximumSettings.announceBogeyCount = false;
+    maximumSettings.muteVoiceIfVolZero = false;
+    maximumSettings.voiceVolume = 100;
+    maximumSettings.announceSecondaryAlerts = maximumSettings.secondaryLaser = false;
+    maximumSettings.secondaryKa = maximumSettings.secondaryK = maximumSettings.secondaryX = false;
+    maximumSettings.alertVolumeFadeEnabled = false;
+    maximumSettings.alertVolumeFadeDelaySec = 10;
+    maximumSettings.alertVolumeFadeVolume = 9;
+    maximumSettings.speedMuteEnabled = false;
+    maximumSettings.speedMuteThresholdMph = 60;
+    maximumSettings.speedMuteHysteresisMph = 10;
+    maximumSettings.speedMuteVolume = 9;
+    maximumSettings.speedMuteVoice = maximumSettings.stealthEnabled = false;
+    maximumSettings.autoPushEnabled = false;
+    maximumSettings.activeSlot = 2;
+    const String maximumSlotName(std::string(MAX_SLOT_NAME_LEN, '"'));
+    const String maximumStaLabel(std::string(MAX_WIFI_STA_LABEL_LEN, '"'));
+    const String maximumPassword(std::string(MAX_WIFI_PASSWORD_LEN, 'P'));
+    for (size_t index = 0; index < kWifiStaSlotCount; ++index) {
+        const char prefix[] = {static_cast<char>('A' + index), '\0'};
+        String ssid(prefix);
+        ssid += String(std::string(MAX_WIFI_SSID_LEN - 1u, '"'));
+        TEST_ASSERT_TRUE(manager->setWifiStaSlotCredentials(index, ssid, maximumPassword,
+                                                           maximumStaLabel, 255));
+        maximumSettings.wifiStaSlots[index].lastConnectedAtSec =
+            std::numeric_limits<uint32_t>::max();
+    }
+    maximumSettings.wifiClientSSID = maximumSettings.wifiStaSlots[0].ssid;
+    for (int slotIndex = 0; slotIndex < 3; ++slotIndex) {
+        auto slot = maximumSettings.autoPushSlotView(slotIndex);
+        slot.name = maximumSlotName;
+        slot.color = 65535;
+        slot.volume = 255;
+        slot.muteVolume = 255;
+        slot.darkMode = false;
+        slot.muteToZero = false;
+        slot.alertPersist = 5;
+        slot.priorityArrow = false;
+        slot.config.mode = V1_MODE_UNKNOWN;
+    }
+    for (uint8_t count = 1; count <= V1_PROFILE_CATALOG_MAX_COUNT; ++count) {
+        String name = String("P") + String(count);
+        while (name.length() < MAX_PROFILE_NAME_LEN) name += 'N';
+        V1Profile profile(name);
+        profile.description = String(std::string(V1_PROFILE_DESCRIPTION_MAX_BYTES, '"'));
+        const uint8_t maximumRaw[] = {192, 217, 252, 255, 255, 255};
+        memcpy(profile.settings.bytes, maximumRaw, sizeof(maximumRaw));
+        profile.detector.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
+        profile.detector.modePolicy = V1ModePolicy::Value;
+        profile.detector.mode = 3;
+        profile.detector.displayPolicy = V1DisplayPolicy::Unchanged;
+        profile.detector.volumePolicy = V1VolumePolicy::Temporary;
+        profile.detector.mainVolume = 9;
+        profile.detector.mutedVolume = 9;
+        profile.detector.volumeFeedback = V1VolumeFeedbackPolicy::ChangedOnly;
+        profile.detector.volumeDisconnect = V1VolumeDisconnectPolicy::RestoreSaved;
+        profile.detector.bluetoothLedPolicy = V1BluetoothLedPolicy::Unchanged;
+        profile.detector.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+        for (uint8_t index = 0; index < 64; ++index) {
+            profile.detector.customFrequencyDefinitions.push_back({index, 65534, 65535});
+        }
+        TEST_ASSERT_TRUE(profileManager->saveProfile(profile).success);
+        if (count == 1) {
+            for (int slotIndex = 0; slotIndex < 3; ++slotIndex) {
+                maximumSettings.autoPushSlotView(slotIndex).config.profileName = name;
+            }
+        }
+
+        PsramJson::Document usb;
+        String error;
+        const bool usbBuilt = buildUsbProfileDocument(usb, *manager, *profileManager, error);
+        const String context = String("count=") + String(count) + " error=" + error;
+        TEST_ASSERT_TRUE_MESSAGE(usbBuilt, context.c_str());
+        PsramJson::Document backup;
+        const auto result = BackupPayloadBuilder::buildBackupDocument(
+            backup, manager->get(), *profileManager,
+            BackupPayloadBuilder::BackupTransport::HttpDownload,
+            std::numeric_limits<uint32_t>::max());
+        TEST_ASSERT_TRUE(result.safeToCommit);
+        if (count == V1_PROFILE_CATALOG_MAX_COUNT) {
+            TEST_ASSERT_EQUAL_UINT(116902, measureJson(usb));
+            TEST_ASSERT_EQUAL_UINT(120471, measureJson(backup));
+            PsramJson::Document sdBackup;
+            const auto sdResult = BackupPayloadBuilder::buildBackupDocument(
+                sdBackup, manager->get(), *profileManager,
+                BackupPayloadBuilder::BackupTransport::SdBackup,
+                std::numeric_limits<uint32_t>::max());
+            TEST_ASSERT_TRUE(sdResult.safeToCommit);
+            TEST_ASSERT_EQUAL_UINT(120640, measureJson(sdBackup));
+            TEST_ASSERT_GREATER_THAN(4096u, 128u * 1024u - measureJson(sdBackup));
+        }
+    }
+
+    // The restore journal is the binding complete-catalog consumer: it embeds
+    // the ten-profile snapshot plus every credential store needed for exact
+    // rollback. Exercise the actual writer with maximally long, JSON-escaped
+    // SSIDs and maximum passwords so the shared 128 KiB limit is not justified
+    // by export documents alone.
+    RestoreCredentialSnapshot credentials;
+    TEST_ASSERT_TRUE(captureRestoreCredentialSnapshot(storage, credentials));
+    std::vector<V1Profile> profilesBefore;
+    TEST_ASSERT_TRUE(profileManager->snapshotProfiles(profilesBefore).success());
+    TEST_ASSERT_EQUAL_UINT(V1_PROFILE_CATALOG_MAX_COUNT, profilesBefore.size());
+    TEST_ASSERT_TRUE(writeRestoreTransactionJournal(storage, 1, true, credentials, true, profilesBefore));
+    File restoreJournal = primaryFs->open(RESTORE_TRANSACTION_PATH, FILE_READ);
+    TEST_ASSERT_TRUE(restoreJournal);
+    const size_t restoreJournalBytes = restoreJournal.size();
+    restoreJournal.close();
+    TEST_ASSERT_EQUAL_UINT(118759u, restoreJournalBytes);
+    TEST_ASSERT_LESS_THAN_UINT(RESTORE_TRANSACTION_MAX_BYTES, restoreJournalBytes);
+    TEST_ASSERT_GREATER_THAN_UINT(4096u, RESTORE_TRANSACTION_MAX_BYTES - restoreJournalBytes);
+
+    TEST_ASSERT_TRUE(writeProfileDeleteTransactionJournal(storage, 2, profilesBefore.front(), true));
+    File deleteJournal = primaryFs->open(PROFILE_DELETE_TRANSACTION_PATH, FILE_READ);
+    TEST_ASSERT_TRUE(deleteJournal);
+    const size_t deleteJournalBytes = deleteJournal.size();
+    deleteJournal.close();
+    TEST_ASSERT_EQUAL_UINT(11742u, deleteJournalBytes);
+    TEST_ASSERT_LESS_THAN_UINT(PROFILE_DELETE_TRANSACTION_MAX_BYTES, deleteJournalBytes);
+    TEST_ASSERT_GREATER_THAN_UINT(4096u, PROFILE_DELETE_TRANSACTION_MAX_BYTES - deleteJournalBytes);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_http_profile_metadata_round_trips_storage_usb_and_backup_without_truncation);
     RUN_TEST(test_interrupted_restore_recovers_long_description_from_journal);
-    RUN_TEST(test_profile_file_size_limit_still_rejects_oversized_metadata_without_loss);
+    RUN_TEST(test_maximum_profile_delete_journal_recovers_after_interruption);
+    RUN_TEST(test_shared_description_limit_rejects_oversized_metadata_without_loss);
+    RUN_TEST(test_schema_v2_catalog_builds_self_consistent_v3_backup_and_round_trips);
+    RUN_TEST(test_persisted_schema_v2_catalog_migration_is_atomic_and_reboot_durable);
+    RUN_TEST(test_usb_bulk_document_oom_never_dispatches_restore_consumer);
+    RUN_TEST(test_usb_import_string_copy_failure_never_reaches_restore_or_mutates_state);
+    RUN_TEST(test_measure_maximum_profile_catalog_transport_shapes);
     RUN_TEST(test_bundle_round_trip_replaces_catalog_and_preserves_unrelated_state);
     RUN_TEST(test_exact_legacy_profile_and_shared_slots_migrate_without_command_drift);
+    RUN_TEST(test_multibyte_legacy_migration_names_preserve_suffixes_on_utf8_boundaries);
     RUN_TEST(test_exact_v1_usb_import_is_immediately_exportable_with_same_effective_commands);
+    RUN_TEST(test_v1_usb_expansion_over_catalog_cap_is_rejected_before_any_commit);
     RUN_TEST(test_v1_usb_reports_pending_migration_and_reboot_recovers_pre_authority_state);
     RUN_TEST(test_invalid_complete_bundle_never_mutates_settings_profiles_or_credentials);
+    RUN_TEST(test_v3_export_refuses_noncanonical_zero_slot_color);
     RUN_TEST(test_nvs_failure_rolls_back_created_deleted_profiles_and_settings);
     RUN_TEST(test_profile_storage_failure_during_replacement_rolls_back_catalog);
     RUN_TEST(test_interrupted_replacement_recovers_both_catalog_and_slots_from_mirrored_journal);

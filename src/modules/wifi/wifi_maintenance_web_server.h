@@ -4,11 +4,13 @@
 #include <array>
 #include <cstring>
 #include <functional>
+#include <esp_heap_caps.h>
 #include <sys/socket.h>
 #include <utility>
 
 #include "wifi_maintenance_http_preflight.h"
 #include "wifi_maintenance_interface_policy.h"
+#include "wifi_exact_body_length_policy.h"
 
 // Project-owned ingress seam in front of Arduino WebServer. Its fixed peek
 // buffer validates every body-bearing request before WebServer::_parseRequest
@@ -17,10 +19,129 @@ class WifiMaintenanceWebServer final : public WebServer {
   public:
     using WebServer::WebServer;
 
+    ~WifiMaintenanceWebServer() override { clearRequestIngress(); }
+
+    enum class ExactBodyStatus : uint8_t {
+        None = 0,
+        Capturing,
+        Ready,
+        Invalid,
+        TooLarge,
+        MemoryUnavailable,
+    };
+
     void setMaintenanceBootMode(const bool enabled) { maintenanceBootMode_ = enabled; }
     void setWriteAdmission(std::function<bool()> admission) { writeAdmission_ = std::move(admission); }
     void setMaintenanceApIp(const IPAddress& apIp) { maintenanceApIp_ = static_cast<uint32_t>(apIp); }
     void setLiveStaIp(std::function<uint32_t()> provider) { liveStaIp_ = std::move(provider); }
+
+    // WebServer's raw-handler path reads in a fixed framework buffer and does
+    // not construct the ordinary `plain` String.  These helpers give the few
+    // large JSON routes an explicitly PSRAM-owned, length-preserving body.
+    // Allocation failure is retained as state until the terminal handler can
+    // return 503 without invoking any service mutation.
+    void captureExactBody(HTTPRaw& raw, size_t maxBytes) {
+        if (raw.status == RAW_START) {
+            clearExactBodyStorage();
+            // The pinned WebServer TU recognizes this signal and uses the
+            // callback-provided currentSize as its only raw-read limit.
+            raw.data = reinterpret_cast<void*>(kRawLengthContractSignal);
+            raw.currentSize = 0;
+            if (!preflightBodyInfoValid_) {
+                exactBodyStatus_ = ExactBodyStatus::Invalid;
+                return;
+            }
+            const WifiExactBodyLengthPolicy::StartDecision length = WifiExactBodyLengthPolicy::begin(
+                preflightBodyInfoValid_, preflightBodyInfo_.contentLength,
+                clientContentLength(), maxBytes);
+            if (length.status == WifiExactBodyLengthPolicy::StartStatus::Invalid) {
+                exactBodyStatus_ = ExactBodyStatus::Invalid;
+                return;
+            }
+            if (length.status == WifiExactBodyLengthPolicy::StartStatus::TooLarge) {
+                exactBodyStatus_ = ExactBodyStatus::TooLarge;
+                return;
+            }
+            exactBodyExpected_ = length.expected;
+            if (exactBodyExpected_ != 0) {
+                exactBody_ = static_cast<uint8_t*>(
+                    heap_caps_malloc(exactBodyExpected_, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM));
+                if (!exactBody_) {
+                    exactBodyStatus_ = ExactBodyStatus::MemoryUnavailable;
+                    return;
+                }
+            }
+            raw.currentSize = length.frameworkReadLimit;
+            exactBodyStatus_ = ExactBodyStatus::Capturing;
+            return;
+        }
+
+        if (raw.status == RAW_ABORTED) {
+            heap_caps_free(exactBody_);
+            exactBody_ = nullptr;
+            exactBodyExpected_ = 0;
+            exactBodyReceived_ = 0;
+            exactBodyStatus_ = ExactBodyStatus::Invalid;
+            return;
+        }
+        if (raw.status == RAW_WRITE) {
+            if (exactBodyStatus_ != ExactBodyStatus::Capturing ||
+                !WifiExactBodyLengthPolicy::acceptsChunk(exactBodyExpected_, exactBodyReceived_,
+                                                         raw.currentSize, raw.totalSize)) {
+                if (exactBodyStatus_ == ExactBodyStatus::Capturing)
+                    exactBodyStatus_ = ExactBodyStatus::Invalid;
+                heap_caps_free(exactBody_);
+                exactBody_ = nullptr;
+                exactBodyExpected_ = 0;
+                exactBodyReceived_ = 0;
+                return;
+            }
+            if (raw.currentSize != 0) {
+                memcpy(exactBody_ + exactBodyReceived_, raw.buf, raw.currentSize);
+                exactBodyReceived_ += raw.currentSize;
+            }
+            return;
+        }
+        if (raw.status == RAW_END && exactBodyStatus_ == ExactBodyStatus::Capturing) {
+            exactBodyStatus_ = WifiExactBodyLengthPolicy::acceptsEnd(
+                                   exactBodyExpected_, exactBodyReceived_, raw.totalSize)
+                                   ? ExactBodyStatus::Ready
+                                   : ExactBodyStatus::Invalid;
+            if (exactBodyStatus_ == ExactBodyStatus::Invalid) {
+                heap_caps_free(exactBody_);
+                exactBody_ = nullptr;
+                exactBodyExpected_ = 0;
+                exactBodyReceived_ = 0;
+            }
+        }
+    }
+
+    ExactBodyStatus exactBodyStatus() const { return exactBodyStatus_; }
+    const uint8_t* exactBodyData() const { return exactBody_; }
+    size_t exactBodySize() const { return exactBodyReceived_; }
+    const char* exactMultipartBoundaryData() const {
+        return preflightBodyInfo_.encoding == WifiMaintenanceHttpPreflight::BodyEncoding::MultipartFormData
+                   ? preflightBodyInfo_.multipartBoundary
+                   : nullptr;
+    }
+    size_t exactMultipartBoundarySize() const {
+        return preflightBodyInfo_.encoding == WifiMaintenanceHttpPreflight::BodyEncoding::MultipartFormData
+                   ? preflightBodyInfo_.multipartBoundaryLength
+                   : 0u;
+    }
+    void releaseExactBody() { clearRequestIngress(); }
+    const uint8_t* exactQueryData() const {
+        for (size_t i = 0; i < requestTargetSize_; ++i) {
+            if (requestTarget_[i] == '?') return requestTarget_.data() + i + 1u;
+        }
+        return nullptr;
+    }
+    size_t exactQuerySize() const {
+        for (size_t i = 0; i < requestTargetSize_; ++i) {
+            if (requestTarget_[i] == '?') return requestTargetSize_ - i - 1u;
+        }
+        return 0;
+    }
 
     void handleClient() override {
         if (_currentStatus == HC_NONE) {
@@ -31,6 +152,7 @@ class WifiMaintenanceWebServer final : public WebServer {
                 }
                 return;
             }
+            clearRequestIngress();
             // NetworkClient::localIP() is backed by getsockname() in the
             // pinned framework, so admit only the maintenance AP or current
             // saved-network address before parsing the request.
@@ -106,6 +228,7 @@ class WifiMaintenanceWebServer final : public WebServer {
             _currentStatus = HC_NONE;
             _currentUpload.reset();
             _currentRaw.reset();
+            clearRequestIngress();
         }
 
         if (callYield) {
@@ -114,6 +237,23 @@ class WifiMaintenanceWebServer final : public WebServer {
     }
 
   private:
+    static constexpr uintptr_t kRawLengthContractSignal = 0x56314232u;
+
+    void clearExactBodyStorage() {
+        heap_caps_free(exactBody_);
+        exactBody_ = nullptr;
+        exactBodyExpected_ = 0;
+        exactBodyReceived_ = 0;
+        exactBodyStatus_ = ExactBodyStatus::None;
+    }
+
+    void clearRequestIngress() {
+        clearExactBodyStorage();
+        requestTargetSize_ = 0;
+        preflightBodyInfo_ = WifiMaintenanceHttpPreflight::BodyInfo{};
+        preflightBodyInfoValid_ = false;
+    }
+
     WifiMaintenanceHttpPreflight::Decision inspectCurrentRequest() {
         const int socketFd = _currentClient.fd();
         if (socketFd < 0) {
@@ -124,11 +264,32 @@ class WifiMaintenanceWebServer final : public WebServer {
         if (peeked <= 0) {
             return WifiMaintenanceHttpPreflight::Decision::NeedMoreHeaders;
         }
+        const char* const lineEnd = WifiMaintenanceHttpPreflight::findBytes(
+            headerPeek_.data(), static_cast<size_t>(peeked), "\r\n", 2);
+        if (!lineEnd) return WifiMaintenanceHttpPreflight::Decision::NeedMoreHeaders;
+        const char* const methodEnd = WifiMaintenanceHttpPreflight::findBytes(
+            headerPeek_.data(), static_cast<size_t>(lineEnd - headerPeek_.data()), " ", 1);
+        if (!methodEnd) return WifiMaintenanceHttpPreflight::Decision::RejectBadRequest;
+        const char* const targetBegin = methodEnd + 1;
+        const char* const targetEnd = WifiMaintenanceHttpPreflight::findBytes(
+            targetBegin, static_cast<size_t>(lineEnd - targetBegin), " ", 1);
+        if (!targetEnd || targetEnd == targetBegin ||
+            static_cast<size_t>(targetEnd - targetBegin) >= requestTarget_.size()) {
+            return WifiMaintenanceHttpPreflight::Decision::RejectBadRequest;
+        }
+        requestTargetSize_ = static_cast<size_t>(targetEnd - targetBegin);
+        memcpy(requestTarget_.data(), targetBegin, requestTargetSize_);
+        WifiMaintenanceHttpPreflight::BodyInfo bodyInfo;
         const WifiMaintenanceHttpPreflight::Decision decision = WifiMaintenanceHttpPreflight::evaluate(
-            headerPeek_.data(), static_cast<size_t>(peeked), maintenanceBootMode_);
+            headerPeek_.data(), static_cast<size_t>(peeked), maintenanceBootMode_, &bodyInfo);
         if (decision == WifiMaintenanceHttpPreflight::Decision::AllowBodyParsing) {
-            return WifiMaintenanceHttpPreflight::applyWriteAdmission(
+            const WifiMaintenanceHttpPreflight::Decision admitted = WifiMaintenanceHttpPreflight::applyWriteAdmission(
                 decision, writeAdmission_ && writeAdmission_());
+            if (admitted == WifiMaintenanceHttpPreflight::Decision::AllowBodyParsing) {
+                preflightBodyInfo_ = bodyInfo;
+                preflightBodyInfoValid_ = true;
+            }
+            return admitted;
         }
         return decision;
     }
@@ -189,4 +350,12 @@ class WifiMaintenanceWebServer final : public WebServer {
     std::function<uint32_t()> liveStaIp_;
     std::function<bool()> writeAdmission_;
     std::array<char, WifiMaintenanceHttpPreflight::kMaxHeaderBytes> headerPeek_{};
+    std::array<uint8_t, 512> requestTarget_{};
+    size_t requestTargetSize_ = 0;
+    WifiMaintenanceHttpPreflight::BodyInfo preflightBodyInfo_{};
+    bool preflightBodyInfoValid_ = false;
+    uint8_t* exactBody_ = nullptr;
+    size_t exactBodyExpected_ = 0;
+    size_t exactBodyReceived_ = 0;
+    ExactBodyStatus exactBodyStatus_ = ExactBodyStatus::None;
 };

@@ -4,49 +4,62 @@
 
 #include "settings_internals.h"
 #include <nvs.h>
+#include "psram_json_document.h"
 #include "settings_backup_doc.h"
 #include "v1_settings_json.h"
 
 namespace {
 
 bool hasRestorableWifiStaSlots(const JsonDocument& doc) {
-    if (!doc["wifiStaSlots"].is<JsonArrayConst>()) {
-        return false;
-    }
+    if (!doc["wifiStaSlots"].is<JsonArrayConst>()) return false;
     for (JsonObjectConst slot : doc["wifiStaSlots"].as<JsonArrayConst>()) {
-        const int index = slot["index"] | -1;
-        if (index < 0 || index >= static_cast<int>(kWifiStaSlotCount) || !slot["ssid"].is<const char*>()) {
-            continue;
-        }
-        if (sanitizeWifiClientSsidValue(slot["ssid"].as<String>()).length() > 0) {
-            return true;
-        }
+        if (!slot["index"].is<int>() || slot["index"].as<int>() < 0 ||
+            slot["index"].as<int>() >= static_cast<int>(kWifiStaSlotCount)) continue;
+        String ssid;
+        if (exactV1JsonStringChecked(slot["ssid"], ssid, MAX_WIFI_SSID_LEN) !=
+            ExactV1JsonStringStatus::Valid) continue;
+        if (ssid.length() > 0) return true;
     }
     return false;
 }
 
-bool restoreProfileEntryFromBackup(const JsonDocument& backup, const String& canonicalName,
-                                   V1ProfileManager& profiles) {
+enum class ProfileRecoveryStatus : uint8_t { Restored, NotFound, Invalid, Unavailable };
+
+ProfileRecoveryStatus restoreProfileEntryFromBackup(const JsonDocument& backup, const String& canonicalName,
+                                                     V1ProfileManager& profiles) {
     if (!backup["profiles"].is<JsonArrayConst>()) {
-        return false;
+        return ProfileRecoveryStatus::NotFound;
     }
     for (JsonObjectConst entry : backup["profiles"].as<JsonArrayConst>()) {
         if (!entry["name"].is<const char*>()) {
-            continue;
+            return ProfileRecoveryStatus::Invalid;
         }
         String entryName;
-        if (canonicalizeProfileName(entry["name"].as<String>(), entryName) != ProfileNameStatus::Valid ||
-            entryName != canonicalName) {
+        const ExactV1JsonStringStatus nameStatus =
+            exactV1JsonStringChecked(entry["name"], entryName, MAX_PROFILE_NAME_LEN);
+        if (nameStatus == ExactV1JsonStringStatus::Unavailable) return ProfileRecoveryStatus::Unavailable;
+        if (nameStatus != ExactV1JsonStringStatus::Valid) return ProfileRecoveryStatus::Invalid;
+        if (entryName != canonicalName) {
             continue;
         }
-        V1Profile profile(entryName);
+        V1Profile profile;
+        profile.name = std::move(entryName);
         if (!V1SettingsJson::parseRawBytes(entry["bytes"], profile.settings.bytes)) {
             Serial.printf("[Settings] Backup profile corrupt name='%s'\n", canonicalName.c_str());
-            return false;
+            return ProfileRecoveryStatus::Invalid;
         }
-        profile.description = entry["description"] | "";
         const bool hasSchema = !entry["schemaVersion"].isUnbound();
         const bool hasDetector = !entry["detector"].isUnbound();
+        if (!entry["description"].isUnbound()) {
+            const ExactV1JsonStringStatus descriptionStatus = exactV1JsonStringChecked(
+                entry["description"], profile.description, V1_PROFILE_DESCRIPTION_MAX_BYTES);
+            if (descriptionStatus == ExactV1JsonStringStatus::Unavailable) {
+                return ProfileRecoveryStatus::Unavailable;
+            }
+            if (descriptionStatus != ExactV1JsonStringStatus::Valid) return ProfileRecoveryStatus::Invalid;
+        } else if (hasSchema) {
+            return ProfileRecoveryStatus::Invalid;
+        }
         if (hasSchema != hasDetector ||
             (hasSchema && (!entry["schemaVersion"].is<int>() ||
                            entry["schemaVersion"].as<int>() != V1_PROFILE_SCHEMA_VERSION ||
@@ -54,28 +67,42 @@ bool restoreProfileEntryFromBackup(const JsonDocument& backup, const String& can
                            !parseV1DetectorConfiguration(entry["detector"].as<JsonObjectConst>(),
                                                          profile.detector)))) {
             Serial.printf("[Settings] Backup profile schema invalid name='%s'\n", canonicalName.c_str());
-            return false;
+            return ProfileRecoveryStatus::Invalid;
         }
         if (hasSchema) {
             profile.schemaVersion = V1_PROFILE_SCHEMA_VERSION;
         } else {
             profile.schemaVersion = 1;
             bool displayOn = true;
-            if (parseBoolVariant(entry["displayOn"], displayOn)) profile.displayOn = displayOn;
-            if (entry["mainVolume"].is<int>()) profile.mainVolume = clampSlotVolumeValue(entry["mainVolume"]);
-            if (entry["mutedVolume"].is<int>()) profile.mutedVolume = clampSlotVolumeValue(entry["mutedVolume"]);
+            if (!entry["displayOn"].isUnbound()) {
+                if (!parseBoolVariant(entry["displayOn"], displayOn)) return ProfileRecoveryStatus::Invalid;
+                profile.displayOn = displayOn;
+            }
+            const auto readVolume = [&](const char* key, uint8_t& target) {
+                if (entry[key].isUnbound()) return true;
+                if (!entry[key].is<int>()) return false;
+                const int value = entry[key].as<int>();
+                if (!((value >= 0 && value <= 9) || value == 0xFF)) return false;
+                target = static_cast<uint8_t>(value);
+                return true;
+            };
+            if (!readVolume("mainVolume", profile.mainVolume) ||
+                !readVolume("mutedVolume", profile.mutedVolume) ||
+                ((profile.mainVolume == 0xFF) != (profile.mutedVolume == 0xFF))) {
+                return ProfileRecoveryStatus::Invalid;
+            }
         }
         const ProfileSaveResult saved = profiles.saveProfile(profile);
         if (saved.success) {
             Serial.printf("[Settings] Recovered configured profile name='%s' from validated SD backup\n",
                           canonicalName.c_str());
-            return true;
+            return ProfileRecoveryStatus::Restored;
         }
         Serial.printf("[Settings] Failed to persist recovered profile name='%s' status=%d\n", canonicalName.c_str(),
                       static_cast<int>(saved.status));
-        return false;
+        return ProfileRecoveryStatus::Unavailable;
     }
-    return false;
+    return ProfileRecoveryStatus::NotFound;
 }
 
 } // namespace
@@ -95,39 +122,36 @@ void SettingsManager::recoverCriticalSettingsAfterFullRestoreFailure(fs::FS* fs,
         return;
     }
 
-    bool recovered = false;
     if (hasSdBackup) {
-        const V1Settings before = settings_;
         Serial.println("[Settings] Attempting partial recovery from SD backup");
-        if (!applyBackupNetworkFields(backupDoc, settings_, *storage_, BackupRestoreScope::CriticalRecovery, false)) {
-            settings_ = before;
-            Serial.println("[Settings] Partial recovery credential apply failed; leaving settings unchanged");
+        if (!applyBackupCriticalFieldsAtomically(
+                backupDoc, settings_, *storage_,
+                [](void* ctx) { return static_cast<SettingsManager*>(ctx)->save(); }, this)) {
+            Serial.println("[Settings] Partial recovery failed; leaving settings and credentials unchanged");
             return;
         }
-        applyBackupDisplayFields(backupDoc, settings_, BackupRestoreScope::CriticalRecovery);
-        applyBackupAudioFields(backupDoc, settings_, BackupRestoreScope::CriticalRecovery);
-        applyBackupProfileSlotFields(backupDoc, settings_, BackupRestoreScope::CriticalRecovery);
-        applyBackupObdFields(backupDoc, settings_, BackupRestoreScope::CriticalRecovery);
-        applyBackupAlpAndGpsFields(backupDoc, settings_);
-        healBackupRestoreConflicts(settings_, "recovered");
         Serial.println("[Settings] Partial recovery from SD backup applied");
-        recovered = true;
     }
 
     if (settings_.wifiClientSSID.length() == 0) {
         const WifiClientSecretPresence secret = readWifiClientSecretPresence(fs);
-        if (secret.valid && secret.ssid.length() > 0) {
-            settings_.wifiClientEnabled = true;
-            settings_.wifiClientSSID = secret.ssid;
-            settings_.ensureWifiStaSlotForLegacyAlias();
+        if (secret.valid() && secret.ssid.length() > 0) {
+            PsramJson::Document secretDoc;
+            secretDoc["wifiClientSSID"] = secret.ssid;
+            if (secretDoc.overflowed()) {
+                Serial.println("[Settings] WiFi secret staging unavailable; preserving current state");
+                return;
+            }
+            bool recoveredFromSecret = false;
+            if (!applyBackupWifiClientHealingAtomically(
+                    secretDoc, settings_, *storage_, recoveredFromSecret,
+                    [](void* ctx) { return static_cast<SettingsManager*>(ctx)->save(); }, this) ||
+                !recoveredFromSecret) {
+                Serial.println("[Settings] WiFi secret healing failed; preserving current state");
+                return;
+            }
             Serial.println("[Settings] HEAL: recovered WiFi SSID from wifi_secret");
-            recovered = true;
         }
-    }
-
-    if (recovered) {
-        save();
-        backupToSD();
     }
 }
 
@@ -142,56 +166,52 @@ void SettingsManager::healWifiClientSettings(fs::FS* fs, bool hasSdBackup, const
     if (!keysMissing && !settings_.wifiClientEnabled) return;
 
     if (keysMissing && !missingCurrentSsid) {
-        settings_.wifiClientEnabled = true;
         Serial.println("[Settings] HEAL: repairing missing WiFi client keys from in-memory SSID");
-        save();
+        setWifiClientEnabled(true);
         return;
     }
     if (!missingCurrentSsid) return;
 
-    bool backupClientEnabled = false;
-    const bool backupEnabledKnown = hasSdBackup && parseBoolVariant(backupDoc["wifiClientEnabled"], backupClientEnabled);
-    const String backupSsid = hasSdBackup ? legacyWifiClientSsidFromBackupDoc(backupDoc) : "";
-    const bool backupHasSsid = backupSsid.length() > 0;
-    const bool backupHasSlots = hasSdBackup && hasRestorableWifiStaSlots(backupDoc);
-    const WifiClientSecretPresence secret = readWifiClientSecretPresence(fs);
-    const bool secretHasSsid = secret.valid && secret.ssid.length() > 0;
-
-    String recoveredSsid;
-    const char* recoveredFrom = "none";
-    bool recoveredFromSlots = false;
-    if (backupHasSlots && restoreWifiStaSlotsFromBackupDoc(backupDoc, settings_, *storage_, false)) {
-        recoveredSsid = settings_.wifiClientSSID;
-        recoveredFrom = "settings_backup_slots";
-        recoveredFromSlots = true;
-    } else if (backupHasSsid) {
-        recoveredSsid = backupSsid;
-        recoveredFrom = "settings_backup";
-    } else if (secretHasSsid) {
-        recoveredSsid = secret.ssid;
-        recoveredFrom = "wifi_secret";
+    if (hasSdBackup) {
+        bool recoveredFromBackup = false;
+        if (!applyBackupWifiClientHealingAtomically(
+                backupDoc, settings_, *storage_, recoveredFromBackup,
+                [](void* ctx) { return static_cast<SettingsManager*>(ctx)->save(); }, this)) {
+            Serial.println("[Settings] WiFi backup healing failed; preserving current state");
+            return;
+        }
+        if (recoveredFromBackup) {
+            Serial.println("[Settings] HEAL: recovered WiFi client config from settings backup");
+            return;
+        }
     }
 
-    const bool shouldRecover = recoveredSsid.length() > 0 &&
-                               (settings_.wifiClientEnabled || keysMissing ||
-                                (backupEnabledKnown && backupClientEnabled) || secretHasSsid);
-    if (shouldRecover) {
-        settings_.wifiClientEnabled = true;
-        if (!recoveredFromSlots) {
-            settings_.wifiClientSSID = recoveredSsid;
-            settings_.ensureWifiStaSlotForLegacyAlias();
+    const WifiClientSecretPresence secret = readWifiClientSecretPresence(fs);
+    if (secret.status == WifiClientSecretReadStatus::Unavailable) {
+        Serial.println("[Settings] WiFi secret unavailable; preserving current WiFi state");
+        return;
+    }
+    const bool secretHasSsid = secret.valid() && secret.ssid.length() > 0;
+    if (secretHasSsid) {
+        PsramJson::Document secretDoc;
+        secretDoc["wifiClientSSID"] = secret.ssid;
+        if (secretDoc.overflowed()) {
+            Serial.println("[Settings] WiFi secret staging unavailable; preserving current state");
+            return;
         }
-        Serial.printf("[Settings] HEAL: recovered WiFi client config from %s (keysMissing=%s)\n", recoveredFrom,
+        bool recoveredFromSecret = false;
+        if (!applyBackupWifiClientHealingAtomically(
+                secretDoc, settings_, *storage_, recoveredFromSecret,
+                [](void* ctx) { return static_cast<SettingsManager*>(ctx)->save(); }, this) ||
+            !recoveredFromSecret) {
+            Serial.println("[Settings] WiFi secret healing failed; preserving current state");
+            return;
+        }
+        Serial.printf("[Settings] HEAL: recovered WiFi client config from wifi_secret (keysMissing=%s)\n",
                       keysMissing ? "yes" : "no");
-        if (backupHasSsid) {
-            restoreWifiClientPasswordObfFromBackupDoc(backupDoc, settings_.wifiClientSSID);
-            restoreLegacyStationPasswordFromBackupDoc(backupDoc, settings_.wifiClientSSID);
-        }
-        save();
     } else if (settings_.wifiClientEnabled) {
-        settings_.wifiClientEnabled = false;
         Serial.println("[Settings] HEAL: wifiClientEnabled=true but no SSID anywhere — disabling");
-        save();
+        setWifiClientEnabled(false);
     } else if (keysMissing) {
         Serial.println("[Settings] WARN: WiFi client keys missing and no SSID recovery source found");
     }
@@ -226,22 +246,37 @@ bool SettingsManager::checkAndRestoreFromSD() {
     bool needsRestore = checkNeedsRestore();
     fs::FS* fs = nullptr;
     bool hasSdBackup = false;
-    JsonDocument bestBackupDoc;
-    JsonDocument primaryBackupDoc;
-    JsonDocument previousBackupDoc;
+    PsramJson::Document bestBackupDoc;
+    PsramJson::Document primaryBackupDoc;
+    PsramJson::Document previousBackupDoc;
     bool hasPrimaryBackup = false;
     bool hasPreviousBackup = false;
+    BackupDocumentLoadStatus bestBackupStatus = BackupDocumentLoadStatus::NotFound;
+    BackupDocumentLoadStatus primaryBackupStatus = BackupDocumentLoadStatus::NotFound;
+    BackupDocumentLoadStatus previousBackupStatus = BackupDocumentLoadStatus::NotFound;
     const char* bestBackupPath = nullptr;
     if (storage_->isReady() && storage_->isSDCard()) {
         fs = storage_->getFilesystem();
         StorageManager::SDLockTimed lock(storage_->getSDMutex(), 500);
         if (lock) {
-            hasSdBackup = loadBestBackupDocument(fs, bestBackupDoc, &bestBackupPath, false);
-            hasPrimaryBackup = parseBackupFile(fs, SETTINGS_BACKUP_PATH, primaryBackupDoc, false);
-            hasPreviousBackup = parseBackupFile(fs, SETTINGS_BACKUP_PREV_PATH, previousBackupDoc, false);
+            hasSdBackup = loadBestBackupDocument(fs, bestBackupDoc, &bestBackupPath, false, &bestBackupStatus);
+            hasPrimaryBackup =
+                parseBackupFile(fs, SETTINGS_BACKUP_PATH, primaryBackupDoc, false, &primaryBackupStatus);
+            hasPreviousBackup =
+                parseBackupFile(fs, SETTINGS_BACKUP_PREV_PATH, previousBackupDoc, false, &previousBackupStatus);
         } else {
             Serial.println("[Settings] SD busy while reading recovery backups; preserving profile references");
         }
+    }
+
+    if (bestBackupStatus == BackupDocumentLoadStatus::MemoryUnavailable ||
+        bestBackupStatus == BackupDocumentLoadStatus::IoError ||
+        primaryBackupStatus == BackupDocumentLoadStatus::MemoryUnavailable ||
+        primaryBackupStatus == BackupDocumentLoadStatus::IoError ||
+        previousBackupStatus == BackupDocumentLoadStatus::MemoryUnavailable ||
+        previousBackupStatus == BackupDocumentLoadStatus::IoError) {
+        Serial.println("[Settings] Backup recovery source unavailable; preserving NVS and SD state");
+        return false;
     }
 
     if (needsRestore) {
@@ -272,16 +307,23 @@ bool SettingsManager::checkAndRestoreFromSD() {
                 configuredProfilesResolved = false;
                 continue;
             }
-            slot->profileName = canonical;
+            slot->profileName = std::move(canonical);
             V1Profile existing;
-            const ProfileOperationResult loaded = profiles_->loadProfileResult(canonical, existing, 0);
+            const ProfileOperationResult loaded = profiles_->loadProfileResult(slot->profileName, existing, 0);
             if (loaded.status == ProfileStorageStatus::Success) continue;
             if (loaded.status != ProfileStorageStatus::NotFound) {
                 configuredProfilesResolved = false;
                 continue;
             }
-            const bool restored = (hasPrimaryBackup && restoreProfileEntryFromBackup(primaryBackupDoc, canonical, *profiles_)) ||
-                                  (hasPreviousBackup && restoreProfileEntryFromBackup(previousBackupDoc, canonical, *profiles_));
+            ProfileRecoveryStatus recovery = ProfileRecoveryStatus::NotFound;
+            if (hasPrimaryBackup) {
+                recovery = restoreProfileEntryFromBackup(primaryBackupDoc, slot->profileName, *profiles_);
+            }
+            if ((recovery == ProfileRecoveryStatus::NotFound || recovery == ProfileRecoveryStatus::Invalid) &&
+                hasPreviousBackup) {
+                recovery = restoreProfileEntryFromBackup(previousBackupDoc, slot->profileName, *profiles_);
+            }
+            const bool restored = recovery == ProfileRecoveryStatus::Restored;
             if (!restored) configuredProfilesResolved = false;
         }
     }
@@ -432,7 +474,7 @@ bool SettingsManager::restoreFromSD() {
         return false;
 
     const char* backupPath = nullptr;
-    JsonDocument doc;
+    PsramJson::Document doc;
     if (!loadBestBackupDocument(fs, doc, &backupPath, true)) {
         backupPath = nullptr;
     }

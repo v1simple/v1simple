@@ -22,6 +22,7 @@ struct BuildResult {
 
 const char* backupTypeForTransport(BackupTransport transport);
 bool isRecognizedBackupType(const char* type);
+bool isRecognizedBackupType(JsonVariantConst type);
 
 BuildResult buildBackupDocument(JsonDocument& doc, const V1Settings& settings, const V1ProfileManager& profileManager,
                                 BackupTransport transport, uint32_t snapshotMs);

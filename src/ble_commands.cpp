@@ -146,6 +146,10 @@ bool V1BLEClient::requestCurrentVolume() {
 }
 
 bool V1BLEClient::setDisplayOn(bool on) {
+    return setDisplayOn(on, false);
+}
+
+bool V1BLEClient::setDisplayOn(bool on, bool keepBluetoothIndicatorOn) {
     if (localV1WriteSuppressedByProxy("display")) {
         return false;
     }
@@ -164,10 +168,21 @@ bool V1BLEClient::setDisplayOn(bool on) {
         packet[5] = calcV1Checksum(packet, 5);
 
         return sendCommand(packet, sizeof(packet));
+    } else if (keepBluetoothIndicatorOn) {
+        if (v1FirmwareVersion() < V1FirmwareCompat::kKeepBluetoothLedOnVersion) return false;
+        uint8_t packet[] = {
+            ESP_PACKET_START,
+            static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),
+            static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),
+            PACKET_ID_TURN_OFF_DISPLAY,
+            0x02,
+            0x01, // Aux0 bit 0: keep Bluetooth indicator on
+            0x00,
+            ESP_PACKET_END
+        };
+        packet[6] = calcV1Checksum(packet, 6);
+        return sendCommand(packet, sizeof(packet));
     } else {
-        // The ordinary display-off request has no data. ESP 3.016 added an
-        // optional Aux0 byte in 4.1032 solely for the keep-Bluetooth-LED
-        // policy; that policy remains unsupported until Phase 4.
         uint8_t packet[] = {
             ESP_PACKET_START,                                // [0] 0xAA
             static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1), // [1] 0xDA
@@ -237,21 +252,27 @@ bool V1BLEClient::setVolume(uint8_t mainVolume, uint8_t mutedVolume) {
 }
 
 SendResult V1BLEClient::setVolumeResult(uint8_t mainVolume, uint8_t mutedVolume) {
+    return setVolumeResult(mainVolume, mutedVolume, 0);
+}
+
+SendResult V1BLEClient::setVolumeResult(uint8_t mainVolume, uint8_t mutedVolume, uint8_t aux0) {
     if (localV1WriteSuppressedByProxy("volume")) {
         return SendResult::FAILED;
     }
 
     // V1 REQWRITEVOLUME sets BOTH values. Reject a non-pair rather than
     // reporting a skipped command as successful to an owning state machine.
-    if (mainVolume == 0xFF || mutedVolume == 0xFF) {
+    if (mainVolume == 0xFF || mutedVolume == 0xFF || mainVolume > 9 || mutedVolume > 9 || (aux0 & 0xF0) != 0) {
         Serial.printf("setVolume: rejected incomplete pair - main=%d mute=%d\n", mainVolume, mutedVolume);
         return SendResult::FAILED;
     }
 
-    if (mainVolume > 9)
-        mainVolume = 9;
-    if (mutedVolume > 9)
-        mutedVolume = 9;
+    const uint32_t version = v1FirmwareVersion();
+    if ((aux0 & 0x04) != 0 && version < V1FirmwareCompat::kSavedVolumeVersion) return SendResult::FAILED;
+    if ((aux0 & 0x08) != 0 && version < V1FirmwareCompat::kKeepCurrentVolumeOnDisconnectVersion) {
+        return SendResult::FAILED;
+    }
+    if ((aux0 & 0x0C) == 0x0C) return SendResult::FAILED;
 
     // REQWRITEVOLUME payload is [main, muted, aux0].
     uint8_t packet[] = {
@@ -262,13 +283,77 @@ SendResult V1BLEClient::setVolumeResult(uint8_t mainVolume, uint8_t mutedVolume)
         0x04,                                            // [4] payload length = 4 (3 data + checksum)
         mainVolume,                                      // [5] main volume 0-9
         mutedVolume,                                     // [6] muted volume 0-9
-        0x00,                                            // [7] aux0 (unused, set to 0)
+        aux0,                                            // [7] feedback/save/disconnect policy
         0x00,                                            // [8] checksum placeholder
         ESP_PACKET_END                                   // [9] 0xAB
     };
 
     packet[8] = calcV1Checksum(packet, 8);
 
+    return sendCommandWithResult(packet, sizeof(packet));
+}
+
+namespace {
+bool sendEmptyV1Request(V1BLEClient& client, uint8_t packetId) {
+    uint8_t packet[] = {ESP_PACKET_START,
+                        static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),
+                        static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),
+                        packetId,
+                        0x01,
+                        0x00,
+                        ESP_PACKET_END};
+    packet[5] = calcV1Checksum(packet, 5);
+    return client.sendCommand(packet, sizeof(packet));
+}
+}
+
+bool V1BLEClient::requestMaxSweepIndex() {
+    return sendEmptyV1Request(*this, PACKET_ID_REQ_MAX_SWEEP_INDEX);
+}
+
+bool V1BLEClient::requestSweepSections() {
+    return sendEmptyV1Request(*this, PACKET_ID_REQ_SWEEP_SECTIONS);
+}
+
+bool V1BLEClient::requestAllSweepDefinitions() {
+    return sendEmptyV1Request(*this, PACKET_ID_REQ_ALL_SWEEP_DEFINITIONS);
+}
+
+SendResult V1BLEClient::writeSweepDefinition(uint8_t index, uint16_t lowerMHz, uint16_t upperMHz, bool commit) {
+    if (localV1WriteSuppressedByProxy("custom-frequencies") || index > 0x3F ||
+        lowerMHz == 0 || upperMHz == 0 || lowerMHz >= upperMHz ||
+        !V1FirmwareCompat::capabilities(v1FirmwareVersion()).customSweeps) return SendResult::FAILED;
+    // Both current vendor libraries set bit 7 on writes. Bit 6 is the
+    // transaction commit marker and appears only on the final definition.
+    uint8_t packet[] = {
+        ESP_PACKET_START,
+        static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),
+        static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),
+        PACKET_ID_WRITE_SWEEP_DEFINITION,
+        0x06,
+        static_cast<uint8_t>(0x80 | (commit ? 0x40 : 0x00) | index),
+        static_cast<uint8_t>((upperMHz >> 8) & 0xFF),
+        static_cast<uint8_t>(upperMHz & 0xFF),
+        static_cast<uint8_t>((lowerMHz >> 8) & 0xFF),
+        static_cast<uint8_t>(lowerMHz & 0xFF),
+        0x00,
+        ESP_PACKET_END
+    };
+    packet[10] = calcV1Checksum(packet, 10);
+    return sendCommandWithResult(packet, sizeof(packet));
+}
+
+SendResult V1BLEClient::factoryResetDetector() {
+    if (localV1WriteSuppressedByProxy("factory-default") ||
+        !V1FirmwareCompat::capabilities(v1FirmwareVersion()).gen2) return SendResult::FAILED;
+    uint8_t packet[] = {ESP_PACKET_START,
+                        static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),
+                        static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),
+                        PACKET_ID_FACTORY_DEFAULT,
+                        0x01,
+                        0x00,
+                        ESP_PACKET_END};
+    packet[5] = calcV1Checksum(packet, 5);
     return sendCommandWithResult(packet, sizeof(packet));
 }
 
@@ -388,7 +473,9 @@ void V1BLEClient::publishVerifiedSettingsApplyEdge(uint32_t verifiedSessionGener
 }
 
 void V1BLEClient::onUserBytesReceived(const uint8_t* bytes, uint32_t ingressSequence) {
-    if (bytes) {
+    const bool sessionEligible = sessionUserBytesCaptureArmed_ && ingressSequence != 0 &&
+                                 static_cast<int32_t>(ingressSequence - sessionUserBytesIngressBoundary_) > 0;
+    if (bytes && sessionEligible) {
         memcpy(sessionUserBytes_, bytes, sizeof(sessionUserBytes_));
         hasSessionUserBytes_ = true;
         ++sessionUserBytesRevision_;
@@ -411,8 +498,23 @@ void V1BLEClient::resetSessionSettingsCapture() {
     memset(sessionUserBytes_, 0xFF, sizeof(sessionUserBytes_));
     sessionUserBytesRevision_ = 0;
     sessionUserBytesIngressSequence_ = 0;
+    sessionUserBytesIngressBoundary_ = 0;
+    sessionUserBytesCaptureArmed_ = false;
     expectsSessionAllVolume_ = false;
     hasSessionAllVolume_ = false;
+    sessionAllVolumeIngressSequence_ = 0;
+    sessionAllVolumeIngressBoundary_ = 0;
+    sessionAllVolumeCaptureArmed_ = false;
+    expectsSessionSweeps_ = false;
+    hasSessionSweepSections_ = false;
+    hasSessionSweepMax_ = false;
+    hasSessionSweepDefinitions_ = false;
+    sessionSweepSectionsResetPending_ = false;
+    sessionSweepMaxResetPending_ = false;
+    sessionSweepDefinitionsResetPending_ = false;
+    sessionSweepSectionsIngressBoundary_ = 0;
+    sessionSweepMaxIngressBoundary_ = 0;
+    sessionSweepDefinitionsIngressBoundary_ = 0;
     settingsCaptureTimedOut_ = false;
 }
 

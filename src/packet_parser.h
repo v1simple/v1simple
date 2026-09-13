@@ -42,11 +42,27 @@ class PacketParser {
     const V1CurrentVolumeObservation& currentVolumeObservation() const { return currentVolumeObservation_; }
     const V1AllVolumeObservation& allVolumeObservation() const { return allVolumeObservation_; }
     const V1DisplayVolumeObservation& displayVolumeObservation() const { return displayVolumeObservation_; }
+    const V1BluetoothIndicatorObservation& bluetoothIndicatorObservation() const {
+        return bluetoothIndicatorObservation_;
+    }
+    const V1SweepSectionsObservation& sweepSectionsObservation() const { return sweepSectionsObservation_; }
+    const V1SweepMaxObservation& sweepMaxObservation() const { return sweepMaxObservation_; }
+    const V1SweepDefinitionsObservation& sweepDefinitionsObservation() const {
+        return sweepDefinitionsObservation_;
+    }
+    const V1SweepWriteResultObservation& sweepWriteResultObservation() const {
+        return sweepWriteResultObservation_;
+    }
     bool copyLatestCanonicalCurrentVolume(uint8_t& main, uint8_t& muted,
                                           uint32_t* ingressSequence = nullptr) const;
     uint32_t displayOnObservationRevision() const { return displayOnObservation_.revision; }
     uint32_t modeObservationRevision() const { return modeObservation_.revision; }
     uint32_t currentVolumeObservationRevision() const { return currentVolumeObservation_.revision; }
+    void resetSweepSectionsObservation();
+    void resetSweepMaxObservation();
+    void resetSweepDefinitionsObservation();
+    void resetSweepWriteResultObservation();
+    void resetSweepCaptureState();
 
     // Get resolved priority alert (follows V1 priority signal)
     AlertData getPriorityAlert() const;
@@ -115,6 +131,11 @@ class PacketParser {
     V1CurrentVolumeObservation currentVolumeObservation_;
     V1AllVolumeObservation allVolumeObservation_;
     V1DisplayVolumeObservation displayVolumeObservation_;
+    V1BluetoothIndicatorObservation bluetoothIndicatorObservation_;
+    V1SweepSectionsObservation sweepSectionsObservation_;
+    V1SweepMaxObservation sweepMaxObservation_;
+    V1SweepDefinitionsObservation sweepDefinitionsObservation_;
+    V1SweepWriteResultObservation sweepWriteResultObservation_;
     uint32_t settingsObservationSequence_ = 0;
     uint8_t displayMuteConfirmCount_ = 0; // consecutive display packets with mute bit set
     std::array<std::array<uint8_t, 8>, RAW_ALERT_INDEX_SLOTS> alertChunks_; // raw alert rows by payload index

@@ -66,6 +66,7 @@ class QuietCoordinatorModule {
     SendResult sendVolumeResult(QuietOwner owner, uint8_t volume, uint8_t muteVolume);
     // Apply an AutoPush baseline pair without lifting an active speed-volume override.
     bool sendAutoPushVolume(uint8_t volume, uint8_t muteVolume);
+    bool sendAutoPushVolume(uint8_t volume, uint8_t muteVolume, uint8_t aux0);
     // A settings transaction may only promise exact volume readback when the
     // coordinator will send the requested pair immediately. During an active
     // speed-volume override AutoPush updates a later restore baseline instead.
@@ -73,8 +74,8 @@ class QuietCoordinatorModule {
         return !speedVolActive_ && pendingSpeedVolRestoreVol_ == 0xFF && !pendingFadeAction_ &&
                presentation_.activeVolumeOwner != QuietOwner::VolumeFade;
     }
-    // Hold competing volume writes between the profile write and its focused
-    // 0x38 readback. Other owners receive NOT_YET and retain their existing
+    // Hold competing volume writes between the profile write and its canonical
+    // 0x3D all-volume readback. Other owners receive NOT_YET and retain their existing
     // retry behavior rather than overwriting the value being verified.
     bool beginAutoPushVolumeTransaction();
     void endAutoPushVolumeTransaction() { autoPushVolumeTransactionActive_ = false; }

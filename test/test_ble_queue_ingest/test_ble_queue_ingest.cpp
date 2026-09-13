@@ -234,6 +234,7 @@ void test_stale_stamped_packets_cannot_trigger_downstream_effects() {
 
 void test_truncated_user_bytes_response_cannot_complete_capture() {
     beginQueue();
+    client.beginSessionUserBytesCapture(client.latestV1NotificationIngressSequence());
     // PL=6 is five settings bytes plus checksum. The old >=12-byte check
     // copied the checksum into settings byte six and completed the capture.
     const std::vector<uint8_t> truncated = makeFrame(PACKET_ID_RESP_USER_BYTES, 6, 0x42);
@@ -398,6 +399,7 @@ void test_user_response_queued_beyond_first_drain_retains_pre_request_ingress() 
     const std::vector<uint8_t> queuedUser = makeCanonicalUserBytesFrame(0x4A);
     const uint32_t queuedUserEntry = client.noteV1NotificationIngress();
     const uint32_t requestBoundary = client.latestV1NotificationIngressSequence();
+    client.beginSessionUserBytesCapture(requestBoundary);
     TEST_ASSERT_TRUE(deliverRawNotify(queuedUser.data(), queuedUser.size(), kCharacteristic,
                                      kSession, 820, queuedUserEntry));
 
@@ -407,7 +409,127 @@ void test_user_response_queued_beyond_first_drain_retains_pre_request_ingress() 
 
     queue.process();
     TEST_ASSERT_EQUAL_INT(1, client.onUserBytesReceivedCalls);
-    TEST_ASSERT_EQUAL_UINT32(requestBoundary, client.sessionUserBytesIngressSequence());
+    TEST_ASSERT_FALSE(client.hasSessionUserBytes());
+    TEST_ASSERT_EQUAL_UINT32(0u, client.sessionUserBytesIngressSequence());
+
+    const std::vector<uint8_t> freshUser = makeCanonicalUserBytesFrame(0x4B);
+    TEST_ASSERT_TRUE(deliverRawNotify(freshUser.data(), freshUser.size(), kCharacteristic,
+                                     kSession, 821));
+    queue.process();
+    TEST_ASSERT_TRUE(client.hasSessionUserBytes());
+    TEST_ASSERT_TRUE(client.sessionUserBytesIngressSequence() > requestBoundary);
+}
+
+void configureSyntheticSweepResponses() {
+    parser.synthesizeSweepResponses = true;
+    parser.synthesizedSweepSections.available = true;
+    parser.synthesizedSweepSections.complete = true;
+    parser.synthesizedSweepSections.count = 2;
+    parser.synthesizedSweepSections.presentMask = 0x03;
+    parser.synthesizedSweepMax.available = true;
+    parser.synthesizedSweepMax.maxIndex = 1;
+    parser.synthesizedSweepDefinitions.presentMask = 0x03;
+}
+
+void test_sweep_capture_completion_is_response_order_independent() {
+    beginQueue();
+    configureSyntheticSweepResponses();
+    client.beginSessionSweepSectionsCapture(10);
+    client.beginSessionSweepMaxCapture(20);
+    client.beginSessionSweepDefinitionsCapture(30);
+    const auto sections = makeFrame(PACKET_ID_RESP_SWEEP_SECTIONS, 1, 0);
+    const auto maxIndex = makeFrame(PACKET_ID_RESP_MAX_SWEEP_INDEX, 1, 0);
+    const auto definitions = makeFrame(PACKET_ID_RESP_SWEEP_DEFINITION, 1, 0);
+
+    TEST_ASSERT_TRUE(deliverRawNotify(definitions.data(), definitions.size(), kCharacteristic,
+                                      kSession, 900, 31));
+    queue.process();
+    TEST_ASSERT_FALSE(client.sessionSweepDefinitionsCaptured);
+    TEST_ASSERT_TRUE(deliverRawNotify(sections.data(), sections.size(), kCharacteristic,
+                                      kSession, 901, 32));
+    queue.process();
+    TEST_ASSERT_TRUE(client.sessionSweepSectionsCaptured);
+    TEST_ASSERT_TRUE(deliverRawNotify(maxIndex.data(), maxIndex.size(), kCharacteristic,
+                                      kSession, 902, 33));
+    queue.process();
+    TEST_ASSERT_TRUE(client.sessionSweepMaxCaptured);
+    TEST_ASSERT_TRUE(client.sessionSweepDefinitionsCaptured); // max-last recomputes completeness
+
+    setUp();
+    beginQueue();
+    configureSyntheticSweepResponses();
+    client.beginSessionSweepSectionsCapture(40);
+    client.beginSessionSweepMaxCapture(40);
+    client.beginSessionSweepDefinitionsCapture(40);
+    TEST_ASSERT_TRUE(deliverRawNotify(maxIndex.data(), maxIndex.size(), kCharacteristic,
+                                      kSession, 903, 41));
+    queue.process();
+    TEST_ASSERT_TRUE(deliverRawNotify(definitions.data(), definitions.size(), kCharacteristic,
+                                      kSession, 904, 42));
+    queue.process();
+    TEST_ASSERT_TRUE(client.sessionSweepMaxCaptured);
+    TEST_ASSERT_TRUE(client.sessionSweepDefinitionsCaptured);
+    TEST_ASSERT_FALSE(client.sessionSweepSectionsCaptured);
+    TEST_ASSERT_TRUE(deliverRawNotify(sections.data(), sections.size(), kCharacteristic,
+                                      kSession, 905, 43));
+    queue.process();
+    TEST_ASSERT_TRUE(client.sessionSweepSectionsCaptured); // section-last completes independently
+}
+
+void test_sweep_response_after_common_boundary_but_before_its_specific_request_is_ineligible() {
+    beginQueue();
+    configureSyntheticSweepResponses();
+    const auto sections = makeFrame(PACKET_ID_RESP_SWEEP_SECTIONS, 1, 0);
+    const auto maxIndex = makeFrame(PACKET_ID_RESP_MAX_SWEEP_INDEX, 1, 0);
+    const auto definitions = makeFrame(PACKET_ID_RESP_SWEEP_DEFINITION, 1, 0);
+
+    client.beginSessionSweepSectionsCapture(10);
+    // This max response entered after the sections boundary but before the
+    // max-specific request. Delay its processing until after all requests.
+    TEST_ASSERT_TRUE(deliverRawNotify(maxIndex.data(), maxIndex.size(), kCharacteristic,
+                                      kSession, 910, 11));
+    client.beginSessionSweepMaxCapture(12);
+    client.beginSessionSweepDefinitionsCapture(13);
+    queue.process();
+    TEST_ASSERT_FALSE(client.sessionSweepMaxCaptured);
+
+    TEST_ASSERT_TRUE(deliverRawNotify(sections.data(), sections.size(), kCharacteristic,
+                                      kSession, 911, 14));
+    TEST_ASSERT_TRUE(deliverRawNotify(definitions.data(), definitions.size(), kCharacteristic,
+                                      kSession, 912, 15));
+    queue.process();
+    TEST_ASSERT_TRUE(client.sessionSweepSectionsCaptured);
+    TEST_ASSERT_FALSE(client.sessionSweepMaxCaptured);
+    TEST_ASSERT_FALSE(client.sessionSweepDefinitionsCaptured);
+}
+
+void test_invalid_or_conflicting_max_response_revokes_capture_until_fresh_request_reset() {
+    beginQueue();
+    configureSyntheticSweepResponses();
+    client.beginSessionSweepMaxCapture(10);
+    const auto maxIndex = makeFrame(PACKET_ID_RESP_MAX_SWEEP_INDEX, 1, 0);
+    TEST_ASSERT_TRUE(deliverRawNotify(maxIndex.data(), maxIndex.size(), kCharacteristic,
+                                      kSession, 920, 11));
+    queue.process();
+    TEST_ASSERT_TRUE(client.sessionSweepMaxCaptured);
+
+    parser.parseReturnValue = false;
+    parser.sweepMaxObservationValue.available = false;
+    parser.sweepMaxObservationValue.poisoned = true;
+    TEST_ASSERT_TRUE(deliverRawNotify(maxIndex.data(), maxIndex.size(), kCharacteristic,
+                                      kSession, 921, 12));
+    queue.process();
+    TEST_ASSERT_FALSE(client.sessionSweepMaxCaptured);
+    TEST_ASSERT_FALSE(client.sessionSweepDefinitionsCaptured);
+
+    parser.parseReturnValue = true;
+    parser.synthesizedSweepMax.poisoned = false;
+    parser.synthesizedSweepMax.available = true;
+    client.beginSessionSweepMaxCapture(12);
+    TEST_ASSERT_TRUE(deliverRawNotify(maxIndex.data(), maxIndex.size(), kCharacteristic,
+                                      kSession, 922, 13));
+    queue.process();
+    TEST_ASSERT_TRUE(client.sessionSweepMaxCaptured);
 }
 
 int main(int, char**) {
@@ -424,5 +546,8 @@ int main(int, char**) {
     RUN_TEST(test_malformed_input_resynchronizes_to_following_valid_frame);
     RUN_TEST(test_parser_packet_queued_beyond_first_drain_retains_pre_command_ingress);
     RUN_TEST(test_user_response_queued_beyond_first_drain_retains_pre_request_ingress);
+    RUN_TEST(test_sweep_capture_completion_is_response_order_independent);
+    RUN_TEST(test_sweep_response_after_common_boundary_but_before_its_specific_request_is_ineligible);
+    RUN_TEST(test_invalid_or_conflicting_max_response_revokes_capture_until_fresh_request_reset);
     return UNITY_END();
 }

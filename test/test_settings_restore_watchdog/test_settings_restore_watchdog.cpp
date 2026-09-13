@@ -227,7 +227,7 @@ void test_feed_count_grows_with_profile_count_in_batches() {
         int profiles;
         uint32_t expectedFeeds;
     };
-    const Case cases[] = {{0, 4u}, {3, 4u}, {4, 5u}, {8, 6u}, {12, 7u}};
+    const Case cases[] = {{0, 4u}, {3, 4u}, {4, 5u}, {8, 6u}, {10, 6u}};
 
     for (const Case& testCase : cases) {
         resetRuntimeState();

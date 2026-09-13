@@ -17,22 +17,27 @@ struct WifiClientKeyPresence {
 
 WifiClientKeyPresence readWifiClientKeyPresence(const char* settingsNamespace);
 
-// Snapshot of the WiFi client secret recorded on the SD card.
+enum class WifiClientSecretReadStatus : uint8_t {
+    NotFound,
+    Valid,
+    Invalid,
+    Unavailable,
+};
+
+// Snapshot of the WiFi client secret recorded on the SD card. The status is
+// retained so transient PSRAM or I/O failure cannot be mistaken for absence
+// and trigger a destructive healing decision.
 struct WifiClientSecretPresence {
-    bool valid = false;
+    WifiClientSecretReadStatus status = WifiClientSecretReadStatus::NotFound;
     String ssid;
+
+    bool valid() const { return status == WifiClientSecretReadStatus::Valid; }
 };
 
 WifiClientSecretPresence readWifiClientSecretPresence(fs::FS* fs);
 
-bool restoreWifiClientPasswordObfFromBackupDoc(const JsonDocument& doc, const String& expectedSsid);
-String legacyWifiClientSsidFromBackupDoc(const JsonDocument& doc);
-bool restoreLegacyStationPasswordFromBackupDoc(const JsonDocument& doc, const String& expectedSsid);
-bool restoreWifiStaSlotPasswordObfFromBackupSlot(JsonObjectConst slotObj, size_t index);
 class StorageManager;
 bool clearWifiStaSlotPasswordsForRestore(StorageManager& storage, bool clearSdSecret);
-bool restoreWifiStaSlotsFromBackupDoc(const JsonDocument& doc, V1Settings& settings, StorageManager& storage,
-                                      bool clearSdSecret);
 
 enum class BackupRestoreScope : uint8_t {
     CriticalRecovery,
@@ -43,10 +48,18 @@ bool applyBackupNetworkFields(const JsonDocument& doc, V1Settings& settings, Sto
                               BackupRestoreScope scope, bool clearSdSecret);
 void applyBackupDisplayFields(const JsonDocument& doc, V1Settings& settings, BackupRestoreScope scope);
 void applyBackupAudioFields(const JsonDocument& doc, V1Settings& settings, BackupRestoreScope scope);
-void applyBackupProfileSlotFields(const JsonDocument& doc, V1Settings& settings, BackupRestoreScope scope);
+bool applyBackupProfileSlotFields(const JsonDocument& doc, V1Settings& settings, BackupRestoreScope scope);
 void applyBackupObdFields(const JsonDocument& doc, V1Settings& settings, BackupRestoreScope scope);
 void applyBackupAlpAndGpsFields(const JsonDocument& doc, V1Settings& settings);
 void healBackupRestoreConflicts(V1Settings& settings, const char* context);
+bool applyBackupCriticalFieldsAtomically(const JsonDocument& doc, V1Settings& settings,
+                                         StorageManager& storage,
+                                         bool (*persist)(void* ctx) = nullptr,
+                                         void* persistCtx = nullptr);
+bool applyBackupWifiClientHealingAtomically(const JsonDocument& doc, V1Settings& settings,
+                                            StorageManager& storage, bool& recovered,
+                                            bool (*persist)(void* ctx) = nullptr,
+                                            void* persistCtx = nullptr);
 
 // Full transaction preflight used by both direct restore and the boot-time
 // critical-recovery fallback. It performs no mutation.

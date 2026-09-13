@@ -28,6 +28,8 @@
 #include "modules/display/display_preview_module.h"
 #include "config.h"
 
+#include <new>
+
 WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
     WifiAutoPushApiService::Runtime runtime{
         [](WifiAutoPushApiService::SlotsSnapshot& snapshot, void* ctx) {
@@ -65,7 +67,10 @@ WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
             AutoPushSlotUpdate update;
             update.slot = request.slot;
             update.hasName = request.hasName;
-            update.name = request.name;
+            if (request.hasName) {
+                update.name = request.name;
+                if (update.name.length() != request.name.length() || update.name != request.name) return false;
+            }
             update.hasColor = request.hasColor;
             update.color = request.color;
             update.hasVolume = !request.profileOwned && request.hasVolume;
@@ -82,6 +87,8 @@ WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
             update.priorityArrowOnly = request.priorityArrowOnly;
             update.hasProfileName = true;
             update.profileName = request.profile;
+            if (update.profileName.length() != request.profile.length() ||
+                update.profileName != request.profile) return false;
             update.hasMode = !request.profileOwned;
             update.mode = normalizeV1ModeValue(request.mode);
             return static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushSlotUpdatePersisted(update).success;
@@ -216,6 +223,36 @@ WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
                 return WifiAutoPushApiService::ProfileAssignmentStatus::IoError;
             }
             return WifiAutoPushApiService::ProfileAssignmentStatus::IoError;
+        },
+        this,
+        [](JsonObject root, void* ctx) {
+            auto* mgr = static_cast<WiFiManager*>(ctx);
+            if (!mgr->appendPushStatusJson_) return false;
+            return mgr->appendPushStatusJson_(root, mgr->getPushStatusJsonCtx_);
+        },
+        this,
+        [](WifiAutoPushApiService::SlotsSnapshot& snapshot, void* ctx) {
+            const V1Settings& s = static_cast<WiFiManager*>(ctx)->settings_.get();
+            snapshot.enabled = s.autoPushEnabled;
+            snapshot.profileOwned = s.autoPushProfileSchemaVersion == V1_PROFILE_SCHEMA_VERSION;
+            snapshot.activeSlot = s.activeSlot;
+            for (int slotIndex = 0; slotIndex < 3; ++slotIndex) {
+                const V1Settings::ConstAutoPushSlotView slot = s.autoPushSlotView(slotIndex);
+                snapshot.slots[slotIndex].name = slot.name;
+                snapshot.slots[slotIndex].profile = slot.config.profileName;
+                if (snapshot.slots[slotIndex].name != slot.name ||
+                    snapshot.slots[slotIndex].profile != slot.config.profileName) return false;
+                snapshot.slots[slotIndex].mode = slot.config.mode;
+                snapshot.slots[slotIndex].color = slot.color;
+                snapshot.slots[slotIndex].volume = slot.volume;
+                snapshot.slots[slotIndex].muteVolume = slot.muteVolume;
+                snapshot.slots[slotIndex].volumeConfigured = slot.volume <= 9 && slot.muteVolume <= 9;
+                snapshot.slots[slotIndex].darkMode = slot.darkMode;
+                snapshot.slots[slotIndex].muteToZero = slot.muteToZero;
+                snapshot.slots[slotIndex].alertPersist = slot.alertPersist;
+                snapshot.slots[slotIndex].priorityArrowOnly = slot.priorityArrow;
+            }
+            return true;
         },
         this,
     };
@@ -425,6 +462,7 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
             }
             summary.name = profile.name;
             summary.description = profile.description;
+            if (summary.name != profile.name || summary.description != profile.description) return false;
             return true;
         },
         this,
@@ -434,8 +472,7 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
             if (!profiles.loadProfile(name, profile)) {
                 return false;
             }
-            json = profiles.profileToJson(profile);
-            return true;
+            return profiles.profileToJson(profile, json);
         },
         this,
         [](const JsonObject& settingsObj, uint8_t outBytes[6], void* ctx) {
@@ -452,6 +489,10 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
             V1Profile profile;
             profile.name = name;
             profile.description = description;
+            if (profile.name != name || profile.description != description) {
+                error = "Profile metadata memory unavailable";
+                return false;
+            }
             profile.detector = detector;
             memcpy(profile.settings.bytes, inBytes, 6);
             ProfileSaveResult result = static_cast<WiFiManager*>(ctx)->profiles_.saveProfile(profile);
@@ -494,7 +535,9 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
             auto& profileManager = static_cast<WiFiManager*>(ctx)->profiles_;
             V1Profile profile;
             const ProfileOperationResult result = profileManager.loadProfileResult(name, profile, 0);
-            if (result.success()) json = profileManager.profileToJson(profile);
+            if (result.success() && !profileManager.profileToJson(profile, json)) {
+                return WifiV1ProfileApiService::CatalogStatus::IoError;
+            }
             switch (result.status) {
             case ProfileStorageStatus::Success:
                 return WifiV1ProfileApiService::CatalogStatus::Success;
@@ -536,10 +579,14 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
             return static_cast<WiFiManager*>(ctx)->devices_.getLatestSnapshot(device);
         },
         this,
-        [](const uint8_t bytes[6], void* ctx) {
+        [](void* ctx) {
+            return static_cast<WiFiManager*>(ctx)->devices_.catalogReadable();
+        },
+        this,
+        [](const uint8_t bytes[6], String& output, void* ctx) {
             V1UserSettings settings;
             memcpy(settings.bytes, bytes, sizeof(settings.bytes));
-            return static_cast<WiFiManager*>(ctx)->profiles_.settingsToJson(settings);
+            return static_cast<WiFiManager*>(ctx)->profiles_.settingsToJson(settings, output);
         },
         this,
         [](void* ctx) {
@@ -547,36 +594,51 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
                    V1_PROFILE_SCHEMA_VERSION;
         },
         this,
+        [](const String& after, size_t limit, void* ctx) {
+            return static_cast<WiFiManager*>(ctx)->profiles_.listProfilesPageResult(after, limit, 0);
+        },
+        this,
     };
 }
 
 WifiV1DevicesApiService::Runtime WiFiManager::makeV1DevicesRuntime() {
     return WifiV1DevicesApiService::Runtime{
-        [](void* ctx) {
+        [](std::vector<WifiV1DevicesApiService::DeviceInfo>& payload, void* ctx) {
             auto* self = static_cast<WiFiManager*>(ctx);
-            std::vector<WifiV1DevicesApiService::DeviceInfo> payload;
             if (!self->devices_.isReady()) {
-                return payload;
+                return false;
             }
 
-            const auto devices = self->devices_.listDevices();
+            std::vector<V1DeviceRecord> devices;
+            if (!self->devices_.listDevicesChecked(devices)) return false;
 
-            String connectedAddress;
-            NimBLEAddress connected = self->bleRuntime_->getConnectedAddress();
-            if (!connected.isNull()) {
-                connectedAddress = normalizeV1DeviceAddress(String(connected.toString().c_str()));
+            try {
+                String connectedAddress;
+                NimBLEAddress connected = self->bleRuntime_->getConnectedAddress();
+                if (!connected.isNull()) {
+                    const std::string connectedText = connected.toString();
+                    String rawConnected(connectedText.c_str());
+                    if (rawConnected.length() != connectedText.size()) return false;
+                    connectedAddress = normalizeV1DeviceAddress(rawConnected);
+                    if (connectedAddress.length() != 17u) return false;
+                }
+                payload.reserve(devices.size());
+                for (const auto& device : devices) {
+                    WifiV1DevicesApiService::DeviceInfo info;
+                    info.address = device.address;
+                    info.name = device.name;
+                    if (info.address.length() != device.address.length() || info.address != device.address ||
+                        info.name.length() != device.name.length() || info.name != device.name) return false;
+                    info.defaultProfile = device.defaultProfile;
+                    info.connected = connectedAddress.length() > 0 && connectedAddress.equalsIgnoreCase(device.address);
+                    payload.push_back(std::move(info));
+                    if (payload.back().address != device.address || payload.back().name != device.name) return false;
+                }
+            } catch (const std::bad_alloc&) {
+                payload.clear();
+                return false;
             }
-
-            payload.reserve(devices.size());
-            for (const auto& device : devices) {
-                WifiV1DevicesApiService::DeviceInfo info;
-                info.address = device.address;
-                info.name = device.name;
-                info.defaultProfile = device.defaultProfile;
-                info.connected = connectedAddress.length() > 0 && connectedAddress.equalsIgnoreCase(device.address);
-                payload.push_back(info);
-            }
-            return payload;
+            return payload.size() == devices.size();
         },
         this,
         [](const String& address, const String& name, void* ctx) {
@@ -590,11 +652,10 @@ WifiV1DevicesApiService::Runtime WiFiManager::makeV1DevicesRuntime() {
         [](const String& address, void* ctx) {
             auto* self = static_cast<WiFiManager*>(ctx);
             const String normalized = normalizeV1DeviceAddress(address);
-            if (normalized.length() == 0 || !self->devices_.isReady() || !self->devices_.flushPendingSave()) {
-                return false;
+            if (normalized.length() == 0 || !self->devices_.isReady()) {
+                return V1DeviceMutationResult{V1DeviceMutationStatus::Unavailable};
             }
-            // Preserve a durable row before removing its degraded recovery hint.
-            return self->settings_.clearLastV1AddressFallback(normalized) && self->devices_.removeDevice(normalized);
+            return self->settings_.deleteV1DeviceTransactional(normalized, self->devices_);
         },
         this,
     };

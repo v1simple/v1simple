@@ -161,6 +161,22 @@ inline String sanitizeSlotNameValue(const String& raw) {
     return value;
 }
 
+// Current exact backups and exact mutation APIs carry the already-sanitized
+// persisted representation.  Validate that representation without allocating
+// so lowercase text cannot be accepted and then changed on restore/reboot.
+inline bool isCanonicalSlotNameBytes(const char* value, size_t length) {
+    if ((value == nullptr && length != 0) || length > MAX_SLOT_NAME_LEN) return false;
+    for (size_t index = 0; index < length; ++index) {
+        const uint8_t byte = static_cast<uint8_t>(value[index]);
+        if (byte >= static_cast<uint8_t>('a') && byte <= static_cast<uint8_t>('z')) return false;
+    }
+    return true;
+}
+
+inline bool isCanonicalSlotNameValue(const String& value) {
+    return isCanonicalSlotNameBytes(value.c_str(), value.length());
+}
+
 inline String sanitizeProfileNameValue(const String& raw) {
     String canonical;
     return canonicalizeProfileName(raw, canonical) == ProfileNameStatus::Valid ? canonical : String("");

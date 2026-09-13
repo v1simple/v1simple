@@ -4,6 +4,8 @@
 
 #include "settings_internals.h"
 #include "backup_payload_builder.h"
+#include "json_exact_input.h"
+#include "psram_json_document.h"
 #include "psram_freertos_alloc.h"
 #include "settings_backup_revision.h"
 
@@ -12,6 +14,14 @@
 
 namespace {
 void publishBackupRequest();
+
+bool anySettingsBackupCandidateExists(fs::FS* fs) {
+    if (!fs) return false;
+    for (size_t index = 0; index < SETTINGS_BACKUP_CANDIDATES_COUNT; ++index) {
+        if (fs->exists(SETTINGS_BACKUP_CANDIDATES[index])) return true;
+    }
+    return false;
+}
 }
 
 // Obfuscation constants — declared extern in settings_internals.h
@@ -78,12 +88,26 @@ bool hexToBytes(const String& input, String& out) {
 }
 
 String encodeObfuscatedForStorage(const String& plainText) {
-    if (plainText.length() == 0)
-        return "";
-    String obfuscated = xorObfuscate(plainText);
-    String encoded = OBFUSCATION_HEX_PREFIX;
-    encoded += bytesToHex(obfuscated);
+    String encoded;
+    if (!encodeObfuscatedForStorage(plainText, encoded)) return String();
     return encoded;
+}
+
+bool encodeObfuscatedForStorage(const String& plainText, String& encoded) {
+    encoded = "";
+    if (plainText.length() == 0) return true;
+    const size_t prefixLength = std::strlen(OBFUSCATION_HEX_PREFIX);
+    if (plainText.length() > (SIZE_MAX - prefixLength) / 2u) return false;
+    const size_t expected = prefixLength + plainText.length() * 2u;
+    encoded.reserve(expected);
+    encoded += OBFUSCATION_HEX_PREFIX;
+    const size_t keyLength = std::strlen(XOR_KEY);
+    for (size_t index = 0; index < plainText.length(); ++index) {
+        const uint8_t byte = static_cast<uint8_t>(plainText[index] ^ XOR_KEY[index % keyLength]);
+        encoded += hexDigit(byte >> 4u);
+        encoded += hexDigit(byte);
+    }
+    return encoded.length() == expected && encoded.startsWith(OBFUSCATION_HEX_PREFIX);
 }
 
 String decodeObfuscatedFromStorage(const String& stored) {
@@ -159,7 +183,7 @@ size_t roundUpSettingsBackupPayloadCapacity(size_t required) {
 }
 
 bool writeSerializedBackupAtomically(fs::FS* fs, const char* data, size_t length) {
-    if (!fs || !data || length == 0) {
+    if (!fs || !data || length == 0 || length > SETTINGS_BACKUP_MAX_BYTES) {
         return false;
     }
 
@@ -183,7 +207,7 @@ bool writeSerializedBackupAtomically(fs::FS* fs, const char* data, size_t length
         return false;
     }
 
-    JsonDocument verifyTmp;
+    PsramJson::Document verifyTmp;
     if (!parseBackupFile(fs, SETTINGS_BACKUP_TMP_PATH, verifyTmp, true)) {
         Serial.println("[Settings] Temp SD backup failed validation");
         fs->remove(SETTINGS_BACKUP_TMP_PATH);
@@ -241,10 +265,11 @@ bool writeSerializedBackupAtomically(fs::FS* fs, const char* data, size_t length
 } // namespace
 
 bool isSupportedBackupType(const JsonDocument& doc) {
-    if (!doc["_type"].is<const char*>()) {
+    if (doc["_type"].isUnbound()) {
         return true; // Legacy backups may not include a type marker.
     }
-    return BackupPayloadBuilder::isRecognizedBackupType(doc["_type"].as<const char*>());
+    if (!doc["_type"].is<const char*>()) return false;
+    return BackupPayloadBuilder::isRecognizedBackupType(doc["_type"]);
 }
 
 bool hasBackupSignature(const JsonDocument& doc) {
@@ -253,13 +278,19 @@ bool hasBackupSignature(const JsonDocument& doc) {
            doc["slot0Name"].is<const char*>();
 }
 
-bool parseBackupFile(fs::FS* fs, const char* path, JsonDocument& doc, bool verboseErrors) {
+bool parseBackupFile(fs::FS* fs, const char* path, JsonDocument& doc, bool verboseErrors,
+                     BackupDocumentLoadStatus* outStatus) {
+    if (outStatus) *outStatus = BackupDocumentLoadStatus::Invalid;
     if (!fs || !path || path[0] == '\0') {
         return false;
     }
 
     File file = fs->open(path, FILE_READ);
     if (!file) {
+        if (outStatus) {
+            *outStatus = fs->exists(path) ? BackupDocumentLoadStatus::IoError
+                                          : BackupDocumentLoadStatus::NotFound;
+        }
         if (verboseErrors) {
             Serial.printf("[Settings] Failed to open backup file: %s\n", path);
         }
@@ -276,9 +307,46 @@ bool parseBackupFile(fs::FS* fs, const char* path, JsonDocument& doc, bool verbo
         return false;
     }
 
-    DeserializationError err = deserializeJson(doc, file);
+    // Prove exact bytes before ArduinoJson sees the stream. Its object parser
+    // otherwise stops after one root and silently replaces duplicate members.
+    // Retain the exact PSRAM bytes through DOM construction. Re-seeking and
+    // re-reading the same candidate could turn an I/O failure into ordinary
+    // corruption and let an older backup win selection. Both allocations are
+    // PSRAM-only and bounded by the shared 128 KiB document envelope.
+    PsramJson::Buffer exactBytes(size);
+    if (!exactBytes) {
+        if (outStatus) *outStatus = BackupDocumentLoadStatus::MemoryUnavailable;
+        if (verboseErrors) Serial.printf("[Settings] Backup PSRAM unavailable: %s\n", path);
+        file.close();
+        return false;
+    }
+    if (file.read(exactBytes.data(), size) != size) {
+        if (outStatus) *outStatus = BackupDocumentLoadStatus::IoError;
+        if (verboseErrors) Serial.printf("[Settings] Backup read/memory unavailable: %s\n", path);
+        file.close();
+        return false;
+    }
+    const ExactJsonInput::Status exact = ExactJsonInput::validate(exactBytes.data(), size);
+    if (exact == ExactJsonInput::Status::MemoryUnavailable) {
+        if (outStatus) *outStatus = BackupDocumentLoadStatus::MemoryUnavailable;
+        file.close();
+        return false;
+    }
+    if (exact != ExactJsonInput::Status::Ok) {
+        if (verboseErrors) Serial.printf("[Settings] Backup exact-input validation failed: %s\n", path);
+        file.close();
+        return false;
+    }
+
+    const DeserializationError err = deserializeJson(
+        doc, static_cast<const uint8_t*>(exactBytes.data()), exactBytes.size());
     file.close();
 
+    if (err == DeserializationError::NoMemory || doc.overflowed()) {
+        if (outStatus) *outStatus = BackupDocumentLoadStatus::MemoryUnavailable;
+        if (verboseErrors) Serial.printf("[Settings] Backup document PSRAM unavailable: %s\n", path);
+        return false;
+    }
     if (err) {
         if (verboseErrors) {
             Serial.printf("[Settings] Failed to parse backup '%s': %s\n", path, err.c_str());
@@ -303,7 +371,8 @@ bool parseBackupFile(fs::FS* fs, const char* path, JsonDocument& doc, bool verbo
     // Older backups written before this feature was added will not have _crc32
     // and are accepted as-is. A mismatch rejects this candidate so the caller
     // can try the previous backup, then use partial recovery if none is valid.
-    if (doc["_crc32"].is<uint32_t>()) {
+    if (!doc["_crc32"].isUnbound()) {
+        if (!doc["_crc32"].is<uint32_t>()) return false;
         const uint32_t stored = doc["_crc32"].as<uint32_t>();
         const uint32_t computed = BackupPayloadBuilder::computeBackupCrc32(doc);
         if (stored != computed) {
@@ -318,12 +387,36 @@ bool parseBackupFile(fs::FS* fs, const char* path, JsonDocument& doc, bool verbo
             return false;
         }
     }
+    const JsonVariantConst currentVersion = doc["_version"];
+    const JsonVariantConst legacyVersion = doc["version"];
+    if ((!currentVersion.isUnbound() &&
+         (!currentVersion.is<int>() || currentVersion.as<int>() < 1 ||
+          currentVersion.as<int>() > SD_BACKUP_VERSION)) ||
+        (!legacyVersion.isUnbound() &&
+         (!legacyVersion.is<int>() || legacyVersion.as<int>() < 1 ||
+          legacyVersion.as<int>() > SD_BACKUP_VERSION)) ||
+        (!currentVersion.isUnbound() && !legacyVersion.isUnbound() &&
+         currentVersion.as<int>() != legacyVersion.as<int>())) return false;
+    const bool claimsCurrentVersion =
+        (currentVersion.is<int>() && currentVersion.as<int>() == SD_BACKUP_VERSION) ||
+        (legacyVersion.is<int>() && legacyVersion.as<int>() == SD_BACKUP_VERSION);
+    if (claimsCurrentVersion &&
+        (currentVersion.isUnbound() || !validateCurrentBackupDocumentShape(doc))) return false;
 
+    if (outStatus) *outStatus = BackupDocumentLoadStatus::Success;
     return true;
 }
 
 int backupDocumentVersion(const JsonDocument& doc) {
-    return doc["_version"] | doc["version"] | 1;
+    const JsonVariantConst current = doc["_version"];
+    const JsonVariantConst legacy = doc["version"];
+    const JsonVariantConst selected = current.isUnbound() ? legacy : current;
+    if (selected.isUnbound()) return 1;
+    if (!selected.is<int>()) return 1;
+    const int version = selected.as<int>();
+    // Scoring is never an authority check, but keep it bounded even if a
+    // caller accidentally scores an unvalidated/future document.
+    return version >= 1 && version <= SD_BACKUP_VERSION ? version : 1;
 }
 
 int backupCriticalFieldScore(const JsonDocument& doc) {
@@ -360,7 +453,7 @@ bool buildSerializedSdBackupPayload(SerializedSettingsBackupPayload& payload, co
                                     const V1ProfileManager& profileManager, uint32_t snapshotMs) {
     releaseSerializedSettingsBackupPayload(payload);
 
-    JsonDocument doc;
+    PsramJson::Document doc;
     const BackupPayloadBuilder::BuildResult buildResult = BackupPayloadBuilder::buildBackupDocument(
         doc, settings_, profileManager, BackupPayloadBuilder::BackupTransport::SdBackup, snapshotMs);
 
@@ -374,18 +467,21 @@ bool buildSerializedSdBackupPayload(SerializedSettingsBackupPayload& payload, co
         return false;
     }
 
-    const size_t required = measureJson(doc) + 1u;
+    if (doc.overflowed()) {
+        Serial.println("[Settings] Failed to allocate SD backup document in PSRAM");
+        return false;
+    }
+    const size_t jsonBytes = measureJson(doc);
+    if (jsonBytes == 0 || jsonBytes > SETTINGS_BACKUP_MAX_BYTES) {
+        Serial.println("[Settings] SD backup exceeds the bounded restore format");
+        return false;
+    }
+    const size_t required = jsonBytes + 1u;
     const size_t capacity = roundUpSettingsBackupPayloadCapacity(required);
     char* data = static_cast<char*>(heap_caps_malloc(capacity, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM));
-    bool inPsram = true;
 
     if (data == nullptr) {
-        data = static_cast<char*>(heap_caps_malloc(capacity, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL));
-        inPsram = false;
-    }
-
-    if (data == nullptr) {
-        Serial.printf("[Settings] Failed to allocate serialized backup buffer (%lu bytes)\n",
+        Serial.printf("[Settings] Failed to allocate serialized backup PSRAM buffer (%lu bytes)\n",
                       static_cast<unsigned long>(capacity));
         return false;
     }
@@ -401,7 +497,7 @@ bool buildSerializedSdBackupPayload(SerializedSettingsBackupPayload& payload, co
     payload.data = data;
     payload.capacity = capacity;
     payload.length = length;
-    payload.inPsram = inPsram;
+    payload.inPsram = true;
     payload.protectExistingBackupFromUnsafeProfileSnapshot = !buildResult.safeToCommit;
     payload.snapshotMs = snapshotMs;
     payload.profilesBackedUp = buildResult.profilesBackedUp;
@@ -460,11 +556,16 @@ bool SettingsManager::backupToSD() {
     }
 
     if (restorePending_) {
-        JsonDocument existingBackup;
+        PsramJson::Document existingBackup;
         const char* existingBackupPath = nullptr;
         if (loadBestBackupDocument(fs, existingBackup, &existingBackupPath, false)) {
             Serial.printf("[Settings] Restore pending; refusing to overwrite SD backup %s from provisional NVS\n",
                           existingBackupPath ? existingBackupPath : "(unknown)");
+            releaseSerializedSettingsBackupPayload(payload);
+            return false;
+        }
+        if (anySettingsBackupCandidateExists(fs)) {
+            Serial.println("[Settings] Restore pending; preserving unreadable SD backup candidate");
             releaseSerializedSettingsBackupPayload(payload);
             return false;
         }
@@ -606,13 +707,17 @@ bool writeDeferredBackupPayloadNow(const SerializedSettingsBackupPayload& payloa
     };
 
     if (payload.protectExistingBackupFromProvisionalNvs) {
-        JsonDocument existingBackup;
+        PsramJson::Document existingBackup;
         const char* existingBackupPath = nullptr;
         if (loadBestBackupDocument(fs, existingBackup, &existingBackupPath, false)) {
             Serial.printf(
                 "[Settings] Restore pending; skipping deferred overwrite of SD backup %s from provisional NVS\n",
                 existingBackupPath ? existingBackupPath : "(unknown)");
             return markCompleted();
+        }
+        if (anySettingsBackupCandidateExists(fs)) {
+            Serial.println("[Settings] Restore pending; preserving unreadable SD backup candidate");
+            return false;
         }
     }
 

@@ -28,7 +28,7 @@
             !$runtimeStatusError &&
             typeof $runtimeStatus?.maintenanceBoot === 'boolean'
     );
-    const profileSchemaReady = $derived(data.schemaVersion === 2);
+    const profileSchemaReady = $derived(data.schemaVersion === 3);
 
     const defaultSlotNames = ['Default', 'Highway', 'Comfort'];
     const slotIcons = ['🏠', '🏎️', '👥'];
@@ -67,13 +67,27 @@
 
     async function fetchProfiles() {
         try {
-            const res = await fetchWithTimeout('/api/v1/profiles');
-            if (res.ok) {
+            const loadedProfiles = [];
+            let cursor = '';
+            while (true) {
+                const url = cursor
+                    ? `/api/v1/profiles?after=${encodeURIComponent(cursor)}&limit=10`
+                    : '/api/v1/profiles';
+                const res = await fetchWithTimeout(url);
+                if (!res.ok) {
+                    message = { type: 'error', text: 'Failed to load profiles' };
+                    return;
+                }
                 const d = await res.json();
-                profiles = d.profiles || [];
-            } else {
-                message = { type: 'error', text: 'Failed to load profiles' };
+                if (!Array.isArray(d.profiles)) throw new Error('Invalid profile page');
+                loadedProfiles.push(...d.profiles);
+                if (!d.hasMore) break;
+                if (typeof d.nextCursor !== 'string' || !d.nextCursor || d.nextCursor === cursor) {
+                    throw new Error('Invalid profile cursor');
+                }
+                cursor = d.nextCursor;
             }
+            profiles = loadedProfiles;
         } catch (e) {
             message = { type: 'error', text: 'Failed to load profiles' };
         }
@@ -90,7 +104,8 @@
 
             const res = await fetchWithTimeout('/api/autopush/activate', {
                 method: 'POST',
-                body: formData
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+                body: new URLSearchParams(formData)
             });
 
             if (res.ok) {
@@ -182,12 +197,14 @@
             formData.append('slot', slot);
             formData.append('name', s.name);
             formData.append('profile', s.profile);
+            formData.append('clearProfile', s.profile ? 'false' : 'true');
             formData.append('alertPersist', persist);
             formData.append('priorityArrowOnly', s.priorityArrowOnly ? 'true' : 'false');
 
             const res = await fetchWithTimeout('/api/autopush/slot', {
                 method: 'POST',
-                body: formData
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+                body: new URLSearchParams(formData)
             });
 
             if (res.ok) {

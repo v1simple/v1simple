@@ -13,6 +13,14 @@ function installDefaultFetch(overrides = []) {
     return installFixtureFetchMock(['frontend_core_routes', 'v1_profile_routes'], overrides);
 }
 
+function profileCatalog(profiles) {
+    return {
+        schemaVersion: 3,
+        detectorConfigurationOwner: 'profile',
+        profiles
+    };
+}
+
 describe('profiles route page', () => {
     beforeEach(() => {
         global.confirm = vi.fn(() => true);
@@ -63,16 +71,22 @@ describe('profiles route page', () => {
                 method: 'GET',
                 match: '/api/v1/profile?name=Daily%20Drive',
                 respond: jsonResponse({
-                    schemaVersion: 2,
+                    schemaVersion: 3,
                     name: 'Daily Drive',
                     description: 'Existing metadata',
                     detector: {
                         userSettings: 'value',
                         mode: { policy: 'value', value: 2 },
                         display: 'off',
-                        volume: { policy: 'temporary', main: 7, muted: 2 },
+                        volume: {
+                            policy: 'temporary',
+                            main: 7,
+                            muted: 2,
+                            feedback: 'none',
+                            disconnect: 'restore_saved'
+                        },
                         bluetoothLed: 'unchanged',
-                        customFrequencies: 'unchanged'
+                        customFrequencies: { policy: 'unchanged' }
                     },
                     settings: { xBand: true }
                 })
@@ -95,14 +109,20 @@ describe('profiles route page', () => {
 
         await screen.findByText('Profile "Daily Drive" saved');
         expect(savedPayload.description).toBe('Existing metadata');
-        expect(savedPayload.schemaVersion).toBe(2);
+        expect(savedPayload.schemaVersion).toBe(3);
         expect(savedPayload.detector).toEqual({
             userSettings: 'value',
             mode: { policy: 'value', value: 2 },
             display: 'off',
-            volume: { policy: 'temporary', main: 7, muted: 2 },
+            volume: {
+                policy: 'temporary',
+                main: 7,
+                muted: 2,
+                feedback: 'none',
+                disconnect: 'restore_saved'
+            },
             bluetoothLed: 'unchanged',
-            customFrequencies: 'unchanged'
+            customFrequencies: { policy: 'unchanged' }
         });
         expect(savedPayload).not.toHaveProperty('displayOn');
         expect(savedPayload).not.toHaveProperty('mainVolume');
@@ -121,9 +141,10 @@ describe('profiles route page', () => {
         }]);
         const { unmount } = render(Page);
 
-        await screen.findByText(/profile settings migration is still pending/i);
+        await screen.findByText(/profile migration is pending/i);
         expect(screen.queryByRole('button', { name: /new profile/i })).not.toBeInTheDocument();
         expect(screen.queryByRole('button', { name: /^edit$/i })).not.toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /^delete$/i })).toBeInTheDocument();
         expect(screen.getByRole('button', { name: /start draft from captured settings/i })).toBeDisabled();
         unmount();
     });
@@ -138,7 +159,7 @@ describe('profiles route page', () => {
             let finishSave;
             let savedPayload;
             installDefaultFetch([
-                { method: 'GET', match: '/api/v1/profiles', respond: jsonResponse({ profiles }) },
+                { method: 'GET', match: '/api/v1/profiles', respond: jsonResponse(profileCatalog(profiles)) },
                 ...profiles.map((profile) => ({
                     method: 'GET', match: `/api/v1/profile?name=${profile.name}`,
                     respond: jsonResponse(profile)
@@ -258,6 +279,88 @@ describe('profiles route page', () => {
         }
     });
 
+    it('keeps detector edits made while an earlier profile save is pending', async () => {
+        const pending = [];
+        const submitted = [];
+        installDefaultFetch([
+            {
+                method: 'GET', match: '/api/v1/profile?name=Daily%20Drive',
+                respond: jsonResponse({
+                    name: 'Daily Drive',
+                    description: 'Detector draft',
+                    detector: {
+                        userSettings: 'value',
+                        mode: { policy: 'unchanged' },
+                        display: 'unchanged',
+                        volume: {
+                            policy: 'temporary', main: 3, muted: 1,
+                            feedback: 'none', disconnect: 'restore_saved'
+                        },
+                        bluetoothLed: 'unchanged',
+                        customFrequencies: {
+                            policy: 'value',
+                            definitions: [{ index: 0, lowerMHz: 24050, upperMHz: 24100 }]
+                        }
+                    },
+                    settings: { xBand: true }
+                })
+            },
+            {
+                method: 'POST', match: '/api/v1/profile',
+                respond: ({ init }) => {
+                    submitted.push(JSON.parse(init.body));
+                    return new Promise((resolve) => pending.push(resolve));
+                }
+            }
+        ]);
+        const { unmount } = render(Page);
+        try {
+            const row = (await screen.findByText('Daily Drive')).closest('.surface-panel');
+            await fireEvent.click(within(row).getByRole('button', { name: /^edit$/i }));
+            await screen.findByText('Editing profile: Daily Drive');
+            const save = screen.getByRole('button', { name: /^save profile$/i });
+            await fireEvent.click(save);
+            await waitFor(() => expect(pending).toHaveLength(1));
+
+            await fireEvent.change(screen.getByLabelText('Volume policy'), {
+                target: { value: 'saved' }
+            });
+            await fireEvent.input(screen.getByLabelText('Custom 0 lower MHz'), {
+                target: { value: '24060' }
+            });
+            expect(submitted[0].detector).toMatchObject({
+                volume: { policy: 'temporary', main: 3, muted: 1 },
+                customFrequencies: {
+                    policy: 'value',
+                    definitions: [{ index: 0, lowerMHz: 24050, upperMHz: 24100 }]
+                }
+            });
+
+            pending[0](jsonResponse({ success: true }));
+            await screen.findByText('Profile "Daily Drive" saved');
+            expect(screen.getByText('Editing profile: Daily Drive')).toBeInTheDocument();
+            expect(screen.getByLabelText('Volume policy')).toHaveValue('saved');
+            expect(screen.getByLabelText('Custom 0 lower MHz')).toHaveValue(24060);
+
+            await fireEvent.click(screen.getByRole('button', { name: /^save profile$/i }));
+            await waitFor(() => expect(pending).toHaveLength(2));
+            expect(submitted[1].detector).toMatchObject({
+                volume: { policy: 'saved', main: 3, muted: 1 },
+                customFrequencies: {
+                    policy: 'value',
+                    definitions: [{ index: 0, lowerMHz: 24060, upperMHz: 24100 }]
+                }
+            });
+            pending[1](jsonResponse({ success: true }));
+            await waitFor(() => {
+                expect(screen.queryByText('Editing profile: Daily Drive')).toBeNull();
+            });
+        } finally {
+            for (const resolve of pending) resolve(jsonResponse({ success: true }));
+            unmount();
+        }
+    });
+
     it.each(['editor', 'dialog'])('releases the %s save button when an error body stalls', async (entry) => {
         let signal;
         let body;
@@ -354,7 +457,7 @@ describe('profiles route page', () => {
             {
                 method: 'GET',
                 match: '/api/v1/profiles',
-                respond: jsonResponse({ profiles: [{ name: 'Bench Profile' }] })
+                respond: jsonResponse(profileCatalog([{ name: 'Bench Profile' }]))
             },
             { method: 'POST', match: '/api/v1/profile', respond: jsonResponse({ success: true }) }
         ]);
@@ -379,6 +482,56 @@ describe('profiles route page', () => {
         unmount();
     });
 
+    it('enforces the firmware 64-byte UTF-8 name limit', async () => {
+        const fetchMock = installDefaultFetch([
+            { method: 'POST', match: '/api/v1/profile', respond: jsonResponse({ success: true }) }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText('V1 Profiles');
+        await fireEvent.click(screen.getByRole('button', { name: /new profile/i }));
+        await fireEvent.click(screen.getByRole('button', { name: /save as profile/i }));
+        const modal = (await screen.findByText('Save Profile')).closest('.modal-box');
+        await fireEvent.input(screen.getByLabelText('Profile Name'), {
+            target: { value: 'é'.repeat(33) }
+        });
+        await fireEvent.click(within(modal).getByRole('button', { name: /^Save$/i }));
+        await screen.findByText('Profile name exceeds 64 UTF-8 bytes');
+        expect(fetchMock.mock.calls.some(([url, init]) => url === '/api/v1/profile' && init?.method === 'POST'))
+            .toBe(false);
+
+        await fireEvent.input(screen.getByLabelText('Profile Name'), {
+            target: { value: 'é'.repeat(32) }
+        });
+        await fireEvent.click(within(modal).getByRole('button', { name: /^Save$/i }));
+        await screen.findByText(`Profile "${'é'.repeat(32)}" saved`);
+        unmount();
+    });
+
+    it('uses firmware ASCII-only case folding for collision checks', async () => {
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/v1/profiles',
+                respond: jsonResponse(profileCatalog([{ name: 'É', description: '' }]))
+            },
+            { method: 'POST', match: '/api/v1/profile', respond: jsonResponse({ success: true }) }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText('É');
+        await fireEvent.click(screen.getByRole('button', { name: /new profile/i }));
+        await fireEvent.click(screen.getByRole('button', { name: /save as profile/i }));
+        const modal = (await screen.findByText('Save Profile')).closest('.modal-box');
+        await fireEvent.input(screen.getByLabelText('Profile Name'), { target: { value: 'é' } });
+        await fireEvent.click(within(modal).getByRole('button', { name: /^Save$/i }));
+
+        await screen.findByText('Profile "é" saved');
+        expect(fetchMock.mock.calls.some(([url, init]) => url === '/api/v1/profile' && init?.method === 'POST'))
+            .toBe(true);
+        unmount();
+    });
+
     it('creates and saves a V1 profile while disconnected', async () => {
         let savedPayload;
         const fetchMock = installDefaultFetch([
@@ -386,7 +539,7 @@ describe('profiles route page', () => {
                 method: 'GET',
                 match: '/api/v1/profiles',
                 respond: () =>
-                    jsonResponse({ profiles: savedPayload ? [{ name: savedPayload.name }] : [] })
+                    jsonResponse(profileCatalog(savedPayload ? [{ name: savedPayload.name }] : []))
             },
             {
                 method: 'POST',
@@ -454,7 +607,7 @@ describe('profiles route page', () => {
 
     it('uses the confirmed save to update a catalog that was initially stale', async () => {
         installDefaultFetch([
-            { method: 'GET', match: '/api/v1/profiles', respond: jsonResponse({ profiles: [] }) },
+            { method: 'GET', match: '/api/v1/profiles', respond: jsonResponse(profileCatalog([])) },
             { method: 'POST', match: '/api/v1/profile', respond: jsonResponse({ success: true }) }
         ]);
         const { unmount } = render(Page);
@@ -506,10 +659,13 @@ describe('profiles route page', () => {
         ]);
         const { unmount } = render(Page);
 
+        expect(await screen.findByText(/prefills the observed current numbers, but leaves volume unchanged/i))
+            .toBeInTheDocument();
         await fireEvent.click(await screen.findByRole('button', { name: /start draft from captured settings/i }));
         await screen.findByText('Draft started from the last observed V1 user bytes. No detector changes were made.');
         expect(screen.getByText('Creating new offline profile')).toBeInTheDocument();
         expect(screen.getByLabelText('X Band')).toBeChecked();
+        expect(screen.getByLabelText('Volume policy')).toHaveValue('unchanged');
 
         await fireEvent.click(screen.getByLabelText('X Band'));
         await fireEvent.click(screen.getByRole('button', { name: /save as profile/i }));
@@ -545,6 +701,29 @@ describe('profiles route page', () => {
         await screen.findByText('The connection capture timed out. Available values are preserved; missing values remain unknown.');
         expect(screen.getByText('Firmware capabilities are unknown; the captured bytes are shown without feature claims.')).toBeInTheDocument();
         expect(screen.getByRole('button', { name: /start draft from captured settings/i })).toBeDisabled();
+        unmount();
+    });
+
+    it('does not present future firmware as protocol-qualified', async () => {
+        installDefaultFetch([{
+            method: 'GET', match: '/api/v1/snapshot', respond: jsonResponse({
+                available: true,
+                firmware: { available: true, value: 50000 },
+                capabilities: {
+                    versionKnown: true,
+                    gen2: false,
+                    supportedUserByteCount: 0
+                },
+                observations: {
+                    userBytes: { available: true, value: [255, 255, 255, 255, 255, 255] }
+                },
+                provenance: { captureTimedOut: false }
+            })
+        }]);
+        const { unmount } = render(Page);
+
+        await screen.findByText('This firmware version is outside the qualified Gen2 range; captured bytes are shown without feature claims.');
+        expect(screen.queryByText(/Firmware-qualified:/)).toBeNull();
         unmount();
     });
 

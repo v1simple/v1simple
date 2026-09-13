@@ -65,6 +65,49 @@ void WiFiManager::registerMaintenanceWriteRoute(const char* uri, WebServer::THan
     });
 }
 
+void WiFiManager::registerMaintenanceExactBodyWriteRoute(
+    const char* uri, const size_t maxBytes,
+    std::function<void(const uint8_t*, size_t, const char*, size_t)> handler) {
+    // The fourth WebServer callback selects its fixed-size raw reader instead
+    // of the ordinary body-sized malloc + String("plain") path.  The body is
+    // accumulated once, explicitly in PSRAM, and exposed with its exact byte
+    // length to the service parser.
+    server_.on(
+        uri, HTTP_POST,
+        [this, handler = std::move(handler)]() mutable {
+            const WifiMaintenanceWebServer::ExactBodyStatus status = server_.exactBodyStatus();
+            if (status != WifiMaintenanceWebServer::ExactBodyStatus::Ready) {
+                maintenanceWritePreAdmitted_ = false;
+                if (status == WifiMaintenanceWebServer::ExactBodyStatus::MemoryUnavailable) {
+                    server_.send(503, "application/json",
+                                 "{\"success\":false,\"error\":\"request body memory unavailable\","
+                                 "\"retryable\":true}");
+                } else if (status == WifiMaintenanceWebServer::ExactBodyStatus::TooLarge) {
+                    server_.send(413, "application/json", "{\"success\":false,\"error\":\"body too large\"}");
+                } else {
+                    server_.send(400, "application/json", "{\"success\":false,\"error\":\"invalid request body\"}");
+                }
+                server_.releaseExactBody();
+                return;
+            }
+            const uint8_t* body = server_.exactBodyData();
+            const size_t bodySize = server_.exactBodySize();
+            const char* multipartBoundary = server_.exactMultipartBoundaryData();
+            const size_t multipartBoundarySize = server_.exactMultipartBoundarySize();
+            WifiMaintenanceWritePolicy::dispatchStorageResolved(
+                server_, maintenanceWritePreAdmitted_,
+                [this]() { return settings_.resolveStorageTransactionsForMutation(); },
+                [&handler, body, bodySize, multipartBoundary, multipartBoundarySize]() {
+                    handler(body, bodySize, multipartBoundary, multipartBoundarySize);
+                });
+            // dispatchStorageResolved and every service handler are
+            // synchronous. Release the one full request allocation before
+            // returning to WebServer, including service and storage errors.
+            server_.releaseExactBody();
+        },
+        [this, maxBytes]() { server_.captureExactBody(server_.raw(), maxBytes); });
+}
+
 bool WiFiManager::setupWebServer() {
     // Cache the active AP address before starting the listener. Accepted
     // sockets for any other local destination are closed before request
@@ -158,10 +201,13 @@ bool WiFiManager::setupWebServer() {
 
     server_.on("/api/device/settings", HTTP_GET,
                [this]() { WifiSettingsApiService::handleApiDeviceSettingsGet(server_, makeSettingsRuntime()); });
-    registerMaintenanceWriteRoute("/api/device/settings", [this]() {
-        if (!requireMaintenanceWriteRequestShape())
-            return;
-        WifiSettingsApiService::handleApiDeviceSettingsSave(server_, makeSettingsRuntime());
+    registerMaintenanceExactBodyWriteRoute("/api/device/settings",
+                                           WifiMaintenanceHttpPreflight::kMaxLegacyMultipartBodyBytes,
+                                           [this](const uint8_t* body, size_t bodySize,
+                                                  const char* boundary, size_t boundarySize) {
+        if (!requireMaintenanceWriteRequestShape()) return;
+        WifiSettingsApiService::handleApiDeviceSettingsSaveBody(
+            server_, makeSettingsRuntime(), body, bodySize, boundary, boundarySize);
     });
 
     // Lightweight health and captive-portal helpers
@@ -188,23 +234,31 @@ bool WiFiManager::setupWebServer() {
     server_.on("/ncsi.txt", HTTP_GET, [this]() { WifiPortalApiService::handleApiNcsiTxt(server_); });
 
     // V1 Settings/Profiles routes
-    server_.on("/api/v1/profiles", HTTP_GET,
-               [this]() { WifiV1ProfileApiService::handleApiProfilesList(server_, makeV1ProfileRuntime()); });
-    server_.on("/api/v1/profile", HTTP_GET,
-               [this]() { WifiV1ProfileApiService::handleApiProfileGet(server_, makeV1ProfileRuntime()); });
-    registerMaintenanceWriteRoute("/api/v1/profile", [this]() {
-        if (!requireMaintenanceWriteRequestShape())
-            return;
-        WifiV1ProfileApiService::handleApiProfileSave(
-            server_, makeV1ProfileRuntime(), [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); },
-            this);
+    server_.on("/api/v1/profiles", HTTP_GET, [this]() {
+        WifiV1ProfileApiService::handleApiProfilesListQuery(
+            server_, makeV1ProfileRuntime(), server_.exactQueryData(), server_.exactQuerySize());
     });
-    registerMaintenanceWriteRoute("/api/v1/profile/delete", [this]() {
+    server_.on("/api/v1/profile", HTTP_GET, [this]() {
+        WifiV1ProfileApiService::handleApiProfileGetQuery(
+            server_, makeV1ProfileRuntime(), server_.exactQueryData(), server_.exactQuerySize());
+    });
+    registerMaintenanceExactBodyWriteRoute("/api/v1/profile", V1_PROFILE_HTTP_SAVE_MAX_BYTES,
+                                           [this](const uint8_t* body, size_t bodySize,
+                                                  const char*, size_t) {
         if (!requireMaintenanceWriteRequestShape())
             return;
-        WifiV1ProfileApiService::handleApiProfileDelete(
-            server_, makeV1ProfileRuntime(), [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); },
-            this);
+        WifiV1ProfileApiService::handleApiProfileSaveBody(
+            server_, makeV1ProfileRuntime(), body, bodySize,
+            [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); }, this);
+    });
+    registerMaintenanceExactBodyWriteRoute("/api/v1/profile/delete", V1_PROFILE_HTTP_DELETE_MAX_BYTES,
+                                           [this](const uint8_t* body, size_t bodySize,
+                                                  const char*, size_t) {
+        if (!requireMaintenanceWriteRequestShape())
+            return;
+        WifiV1ProfileApiService::handleApiProfileDeleteBody(
+            server_, makeV1ProfileRuntime(), body, bodySize,
+            [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); }, this);
     });
     registerMaintenanceWriteRoute("/api/v1/pull", [this]() {
         if (!requireMaintenanceWriteRequestShape())
@@ -226,44 +280,59 @@ bool WiFiManager::setupWebServer() {
                [this]() { WifiV1ProfileApiService::handleApiCurrentSettings(server_, makeV1ProfileRuntime()); });
     server_.on("/api/v1/devices", HTTP_GET,
                [this]() { WifiV1DevicesApiService::handleApiDevicesList(server_, makeV1DevicesRuntime()); });
-    registerMaintenanceWriteRoute("/api/v1/devices/name", [this]() {
-        if (!requireMaintenanceWriteRequestShape())
-            return;
-        WifiV1DevicesApiService::handleApiDeviceNameSave(
-            server_, makeV1DevicesRuntime(), [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); },
-            this);
+    registerMaintenanceExactBodyWriteRoute("/api/v1/devices/name",
+                                           WifiMaintenanceHttpPreflight::kMaxLegacyMultipartBodyBytes,
+                                           [this](const uint8_t* body, size_t bodySize,
+                                                  const char* boundary, size_t boundarySize) {
+        if (!requireMaintenanceWriteRequestShape()) return;
+        WifiV1DevicesApiService::handleApiDeviceNameSaveBody(
+            server_, makeV1DevicesRuntime(), body, bodySize,
+            [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); }, this,
+            boundary, boundarySize);
     });
-    registerMaintenanceWriteRoute("/api/v1/devices/profile", [this]() {
-        if (!requireMaintenanceWriteRequestShape())
-            return;
-        WifiV1DevicesApiService::handleApiDeviceProfileSave(
-            server_, makeV1DevicesRuntime(), [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); },
-            this);
+    registerMaintenanceExactBodyWriteRoute("/api/v1/devices/profile",
+                                           WifiMaintenanceHttpPreflight::kMaxLegacyMultipartBodyBytes,
+                                           [this](const uint8_t* body, size_t bodySize,
+                                                  const char* boundary, size_t boundarySize) {
+        if (!requireMaintenanceWriteRequestShape()) return;
+        WifiV1DevicesApiService::handleApiDeviceProfileSaveBody(
+            server_, makeV1DevicesRuntime(), body, bodySize,
+            [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); }, this,
+            boundary, boundarySize);
     });
-    registerMaintenanceWriteRoute("/api/v1/devices/delete", [this]() {
-        if (!requireMaintenanceWriteRequestShape())
-            return;
-        WifiV1DevicesApiService::handleApiDeviceDelete(
-            server_, makeV1DevicesRuntime(), [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); },
-            this);
+    registerMaintenanceExactBodyWriteRoute("/api/v1/devices/delete",
+                                           WifiMaintenanceHttpPreflight::kMaxLegacyMultipartBodyBytes,
+                                           [this](const uint8_t* body, size_t bodySize,
+                                                  const char* boundary, size_t boundarySize) {
+        if (!requireMaintenanceWriteRequestShape()) return;
+        WifiV1DevicesApiService::handleApiDeviceDeleteBody(
+            server_, makeV1DevicesRuntime(), body, bodySize,
+            [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); }, this,
+            boundary, boundarySize);
     });
 
     // Auto-Push routes
     server_.on("/api/autopush/slots", HTTP_GET,
                [this]() { WifiAutoPushApiService::handleApiSlots(server_, makeAutoPushRuntime()); });
-    registerMaintenanceWriteRoute("/api/autopush/slot", [this]() {
-        if (!requireMaintenanceWriteRequestShape())
-            return;
-        WifiAutoPushApiService::handleApiSlotSave(
-            server_, makeAutoPushRuntime(), [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); },
-            this);
+    registerMaintenanceExactBodyWriteRoute("/api/autopush/slot",
+                                           WifiMaintenanceHttpPreflight::kMaxLegacyMultipartBodyBytes,
+                                           [this](const uint8_t* body, size_t bodySize,
+                                                  const char* boundary, size_t boundarySize) {
+        if (!requireMaintenanceWriteRequestShape()) return;
+        WifiAutoPushApiService::handleApiSlotSaveBody(
+            server_, makeAutoPushRuntime(), body, bodySize,
+            [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); }, this,
+            boundary, boundarySize);
     });
-    registerMaintenanceWriteRoute("/api/autopush/activate", [this]() {
-        if (!requireMaintenanceWriteRequestShape())
-            return;
-        WifiAutoPushApiService::handleApiActivate(
-            server_, makeAutoPushRuntime(), [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); },
-            this);
+    registerMaintenanceExactBodyWriteRoute("/api/autopush/activate",
+                                           WifiMaintenanceHttpPreflight::kMaxLegacyMultipartBodyBytes,
+                                           [this](const uint8_t* body, size_t bodySize,
+                                                  const char* boundary, size_t boundarySize) {
+        if (!requireMaintenanceWriteRequestShape()) return;
+        WifiAutoPushApiService::handleApiActivateBody(
+            server_, makeAutoPushRuntime(), body, bodySize,
+            [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); }, this,
+            boundary, boundarySize);
     });
     registerMaintenanceWriteRoute("/api/autopush/push", [this]() {
         if (!requireMaintenanceWriteRequestShape())
@@ -339,12 +408,15 @@ bool WiFiManager::setupWebServer() {
             server_, makeBackupRuntime(), [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); },
             this, [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); }, this);
     });
-    registerMaintenanceWriteRoute("/api/settings/restore", [this]() {
+    registerMaintenanceExactBodyWriteRoute("/api/settings/restore", BackupApiService::kHttpBackupDocumentMaxBytes,
+                                           [this](const uint8_t* body, size_t bodySize,
+                                                  const char*, size_t) {
         if (!requireMaintenanceWriteRequestShape())
             return;
-        BackupApiService::handleApiRestore(
-            server_, makeBackupRuntime(), [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); },
-            this, [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); }, this);
+        BackupApiService::handleApiRestoreBody(
+            server_, makeBackupRuntime(), body, bodySize,
+            [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); }, this,
+            [](void* ctx) { static_cast<WiFiManager*>(ctx)->markUiActivity(); }, this);
     });
 
     registerMaintenanceWriteRoute("/api/system/reboot-normal", [this]() {

@@ -3,36 +3,88 @@
 #include "../quiet/quiet_coordinator_module.h"
 #include "v1_firmware_compat.h"
 #include "v1_profile_push_policy.h"
+#include "psram_json_document.h"
 
 #include <cstdio>
 #include <cstring>
 
 namespace {
 
-String jsonEscapeString(const String& value) {
-    String escaped;
-    escaped.reserve(value.length() + 8);
-    for (size_t i = 0; i < value.length(); ++i) {
-        const char c = value.charAt(i);
-        switch (c) {
-        case '"': escaped += "\\\""; break;
-        case '\\': escaped += "\\\\"; break;
-        case '\b': escaped += "\\b"; break;
-        case '\f': escaped += "\\f"; break;
-        case '\n': escaped += "\\n"; break;
-        case '\r': escaped += "\\r"; break;
-        case '\t': escaped += "\\t"; break;
-        default:
-            if (static_cast<unsigned char>(c) < 0x20) {
-                char hex[7];
-                snprintf(hex, sizeof(hex), "\\u%04X", static_cast<unsigned char>(c));
-                escaped += hex;
-            } else {
-                escaped += c;
-            }
+#ifdef UNIT_TEST
+enum class AutoPushAdmissionFailurePoint : uint8_t {
+    None = 0,
+    SlotProfile,
+    ProfileName,
+    ProfileDescription,
+    StatusProfile,
+    DefinitionCapacity,
+};
+AutoPushAdmissionFailurePoint g_autoPushAdmissionFailurePointForTest =
+    AutoPushAdmissionFailurePoint::None;
+#endif
+
+bool copyAdmissionString(const String& source, String& destination
+#ifdef UNIT_TEST
+                         , AutoPushAdmissionFailurePoint point
+#endif
+) {
+#ifdef UNIT_TEST
+    if (g_autoPushAdmissionFailurePointForTest == point) {
+        destination = String();
+        return false;
+    }
+#endif
+    destination = source;
+    return destination.length() == source.length() && destination == source;
+}
+
+bool copyAdmissionProfile(const V1Profile& source, V1Profile& destination) {
+    if (!copyAdmissionString(source.name, destination.name
+#ifdef UNIT_TEST
+                             , AutoPushAdmissionFailurePoint::ProfileName
+#endif
+                             ) ||
+        !copyAdmissionString(source.description, destination.description
+#ifdef UNIT_TEST
+                             , AutoPushAdmissionFailurePoint::ProfileDescription
+#endif
+                             )) {
+        return false;
+    }
+    destination.settings = source.settings;
+    // Copy detector scalars individually. The operation state deliberately
+    // keeps the profile's std::vector empty; definitions are staged directly
+    // into its fixed-capacity list before durable slot activation.
+    destination.detector.userSettingsPolicy = source.detector.userSettingsPolicy;
+    destination.detector.modePolicy = source.detector.modePolicy;
+    destination.detector.mode = source.detector.mode;
+    destination.detector.displayPolicy = source.detector.displayPolicy;
+    destination.detector.volumePolicy = source.detector.volumePolicy;
+    destination.detector.mainVolume = source.detector.mainVolume;
+    destination.detector.mutedVolume = source.detector.mutedVolume;
+    destination.detector.volumeFeedback = source.detector.volumeFeedback;
+    destination.detector.volumeDisconnect = source.detector.volumeDisconnect;
+    destination.detector.bluetoothLedPolicy = source.detector.bluetoothLedPolicy;
+    destination.detector.customFrequencyPolicy = source.detector.customFrequencyPolicy;
+    destination.schemaVersion = source.schemaVersion;
+    destination.displayOn = source.displayOn;
+    destination.mainVolume = source.mainVolume;
+    destination.mutedVolume = source.mutedVolume;
+    return true;
+}
+
+int sweepDefinitionLiveSection(const V1CustomFrequencyDefinition& definition,
+                               const V1DetectorSnapshot& snapshot) {
+    int match = -1;
+    for (uint8_t index = 0; index < snapshot.sweepSectionCount; ++index) {
+        const auto& section = snapshot.sweepSections[index];
+        if (section.lowerMHz == 0 && section.upperMHz == 0) continue;
+        if (definition.lowerMHz >= section.lowerMHz && definition.upperMHz <= section.upperMHz) {
+            if (match != -1) return -1; // overlapping authority is ambiguous
+            match = index;
         }
     }
-    return escaped;
+    return match;
 }
 
 } // namespace
@@ -59,44 +111,84 @@ void AutoPushModule::setPreApplySnapshot(const V1DetectorSnapshot& snapshot) {
     preApplySnapshot_ = snapshot;
 }
 
-void AutoPushModule::armState(int slotIndex, const AutoPushSlot& slot, bool profileLoaded,
-                              const V1Profile& profile, bool isPushNow, bool updateProfileIndicator) {
-    // This executor owns its observation revisions directly. Clear any legacy
-    // component-level verifier/edge so a user-byte packet cannot release the
-    // connection cycle before the complete operation is verified.
-    if (bleClient_) bleClient_->cancelUserBytesVerification();
-    state_ = State{};
-    state_.slotIndex = slotIndex;
-    state_.slot = slot;
-    state_.profile = profileLoaded ? profile : V1Profile{};
-    state_.profileLoaded = profileLoaded;
-    state_.profileOwned = settings_->get().autoPushProfileSchemaVersion == V1_PROFILE_SCHEMA_VERSION;
-    state_.isPushNow = isPushNow;
-    state_.updateProfileIndicator = updateProfileIndicator;
-    state_.before = preApplySnapshot_;
+bool AutoPushModule::prepareState(int slotIndex, const AutoPushSlot& slot, bool profileLoaded,
+                                  const V1Profile& profile, bool isPushNow,
+                                  bool updateProfileIndicator, bool retainLoadStep,
+                                  State& preparedState,
+                                  OperationStatus& preparedStatus) const {
+    preparedState = State{};
+    preparedState.slotIndex = slotIndex;
+    preparedState.slot.mode = slot.mode;
+    if (!copyAdmissionString(slot.profileName, preparedState.slot.profileName
+#ifdef UNIT_TEST
+                             , AutoPushAdmissionFailurePoint::SlotProfile
+#endif
+                             )) {
+        return false;
+    }
+    if (profileLoaded && !copyAdmissionProfile(profile, preparedState.profile)) return false;
+    if (profileLoaded &&
+        (profile.detector.customFrequencyDefinitions.size() > FixedDefinitionList::kCapacity
+#ifdef UNIT_TEST
+         || g_autoPushAdmissionFailurePointForTest ==
+                AutoPushAdmissionFailurePoint::DefinitionCapacity
+#endif
+         )) {
+        return false;
+    }
+    if (profileLoaded &&
+        !preparedState.customDefinitions.assign(profile.detector.customFrequencyDefinitions)) {
+        return false;
+    }
+    preparedState.profileLoaded = profileLoaded;
+    preparedState.retainLoadStep = retainLoadStep;
+    preparedState.profileOwned =
+        settings_->get().autoPushProfileSchemaVersion == V1_PROFILE_SCHEMA_VERSION;
+    preparedState.isPushNow = isPushNow;
+    preparedState.updateProfileIndicator = updateProfileIndicator;
+    preparedState.before = preApplySnapshot_;
     // A connect-time observation can authorize only one operation. Later
     // gestures in the same long-lived session must acquire a fresh capture in
     // Phase 5 rather than silently reusing stale before-state.
-    preApplySnapshot_ = V1DetectorSnapshot{};
-    state_.sessionGeneration = bleClient_->sessionGeneration();
-    state_.step = Step::WaitReady;
-    state_.nextStepAtMs = static_cast<uint32_t>(millis()) + 100u;
+    preparedState.sessionGeneration = bleClient_->sessionGeneration();
+    preparedState.step = Step::WaitReady;
+    preparedState.nextStepAtMs = static_cast<uint32_t>(millis()) + 100u;
 
     const uint32_t nextOperationId = status_.operationId + 1;
-    status_ = OperationStatus{};
-    status_.operationId = nextOperationId;
-    status_.result = Result::QUEUED;
-    status_.slotIndex = slotIndex;
-    status_.profileName = slot.profileName;
-    status_.profileLoaded = profileLoaded;
+    preparedStatus = OperationStatus{};
+    preparedStatus.operationId = nextOperationId;
+    preparedStatus.result = Result::QUEUED;
+    preparedStatus.slotIndex = slotIndex;
+    if (!copyAdmissionString(slot.profileName, preparedStatus.profileName
+#ifdef UNIT_TEST
+                             , AutoPushAdmissionFailurePoint::StatusProfile
+#endif
+                             )) {
+        return false;
+    }
+    preparedStatus.profileLoaded = profileLoaded;
+    return true;
+}
 
-    if (display_ && updateProfileIndicator) display_->drawProfileIndicator(slotIndex);
+void AutoPushModule::commitPreparedState(State&& preparedState,
+                                         OperationStatus&& preparedStatus) {
+    // This executor owns its observation revisions directly. Clear any legacy
+    // component-level verifier/edge only once admission is fully staged and
+    // any requested slot activation is durable.
+    if (bleClient_) bleClient_->cancelUserBytesVerification();
+    state_ = std::move(preparedState);
+    status_ = std::move(preparedStatus);
+    preApplySnapshot_ = V1DetectorSnapshot{};
+    if (display_ && state_.updateProfileIndicator) {
+        display_->drawProfileIndicator(state_.slotIndex);
+    }
 }
 
 AutoPushModule::QueueResult AutoPushModule::queuePreparedSlot(int slotIndex, const AutoPushSlot& slot,
                                                               bool profileLoaded, const V1Profile& profile,
                                                               bool isPushNow, bool activateSlot,
-                                                              bool updateProfileIndicator) {
+                                                              bool updateProfileIndicator,
+                                                              bool retainLoadStep) {
     if (!settings_ || !profiles_ || !bleClient_ || !parser_ || !display_ || !quiet_) {
         return QueueResult::PROFILE_LOAD_FAILED;
     }
@@ -113,17 +205,39 @@ AutoPushModule::QueueResult AutoPushModule::queuePreparedSlot(int slotIndex, con
     }
 
     const int clampedIndex = std::max(0, std::min(2, slotIndex));
-    if (activateSlot) settings_->setActiveSlot(clampedIndex);
-    armState(clampedIndex, slot, profileLoaded, profile, isPushNow, updateProfileIndicator);
+    State preparedState;
+    OperationStatus preparedStatus;
+    if (!prepareState(clampedIndex, slot, profileLoaded, profile, isPushNow,
+                      updateProfileIndicator, retainLoadStep, preparedState,
+                      preparedStatus)) {
+        return QueueResult::STAGING_UNAVAILABLE;
+    }
+    if (activateSlot && !settings_->setActiveSlot(clampedIndex).success) {
+        return QueueResult::ACTIVE_SLOT_PERSIST_FAILED;
+    }
+    commitPreparedState(std::move(preparedState), std::move(preparedStatus));
     return QueueResult::QUEUED;
 }
 
 AutoPushModule::QueueResult AutoPushModule::queueSlotPush(int slotIndex, bool activateSlot,
                                                           bool updateProfileIndicator) {
-    if (!settings_) return QueueResult::PROFILE_LOAD_FAILED;
+    if (!settings_ || !profiles_ || !bleClient_ || !parser_ || !display_ || !quiet_) {
+        return QueueResult::PROFILE_LOAD_FAILED;
+    }
+    if (!bleClient_->isConnected()) return QueueResult::V1_NOT_CONNECTED;
+    if (isActive()) return QueueResult::ALREADY_IN_PROGRESS;
     const int clampedIndex = std::max(0, std::min(2, slotIndex));
-    return queuePreparedSlot(clampedIndex, settings_->getSlot(clampedIndex), false, V1Profile{}, false,
-                             activateSlot, updateProfileIndicator);
+    const AutoPushSlot& slot = settings_->getSlot(clampedIndex);
+    V1Profile profile;
+    bool profileLoaded = false;
+    if (slot.profileName.length() > 0) {
+        const ProfileOperationResult loaded = profiles_->loadProfileResult(slot.profileName, profile, 0);
+        if (loaded.status == ProfileStorageStatus::Busy) return QueueResult::PROFILE_BUSY;
+        if (!loaded.success()) return QueueResult::PROFILE_LOAD_FAILED;
+        profileLoaded = true;
+    }
+    return queuePreparedSlot(clampedIndex, slot, profileLoaded, profile, false,
+                             activateSlot, updateProfileIndicator, true);
 }
 
 AutoPushModule::QueueResult AutoPushModule::queuePushNow(const PushNowRequest& request) {
@@ -134,14 +248,21 @@ AutoPushModule::QueueResult AutoPushModule::queuePushNow(const PushNowRequest& r
     if (isActive()) return QueueResult::ALREADY_IN_PROGRESS;
 
     const int clampedIndex = std::max(0, std::min(2, request.slotIndex));
-    AutoPushSlot slot = settings_->getSlot(clampedIndex);
-    if (request.hasProfileOverride) {
-        slot.profileName = request.profileName;
-        // In legacy slot-owned configurations, selecting another profile
-        // without an explicit mode must not inherit the current slot's mode.
-        if (!request.hasModeOverride) slot.mode = V1_MODE_UNKNOWN;
+    const AutoPushSlot& configuredSlot = settings_->getSlot(clampedIndex);
+    AutoPushSlot slot;
+    slot.mode = request.hasModeOverride
+                    ? request.mode
+                    : (request.hasProfileOverride ? V1_MODE_UNKNOWN : configuredSlot.mode);
+    const String& requestedProfile = request.hasProfileOverride
+                                         ? request.profileName
+                                         : configuredSlot.profileName;
+    if (!copyAdmissionString(requestedProfile, slot.profileName
+#ifdef UNIT_TEST
+                             , AutoPushAdmissionFailurePoint::SlotProfile
+#endif
+                             )) {
+        return QueueResult::STAGING_UNAVAILABLE;
     }
-    if (request.hasModeOverride) slot.mode = request.mode;
     if (slot.profileName.length() == 0) return QueueResult::NO_PROFILE_CONFIGURED;
 
     V1Profile profile;
@@ -196,25 +317,52 @@ bool AutoPushModule::configurePlan() {
             failWholePlan(&status_.volume, Outcome::INVALID, FailureReason::INVALID_POLICY);
             return false;
         }
-        if (detector.bluetoothLedPolicy != V1BluetoothLedPolicy::Unchanged) {
-            failWholePlan(&status_.display, Outcome::UNSUPPORTED, FailureReason::UNSUPPORTED_BLUETOOTH_LED);
+        if (detector.volumeFeedback != V1VolumeFeedbackPolicy::None &&
+            detector.volumeFeedback != V1VolumeFeedbackPolicy::ChangedOnly &&
+            detector.volumeFeedback != V1VolumeFeedbackPolicy::Always) {
+            failWholePlan(&status_.volume, Outcome::INVALID, FailureReason::INVALID_POLICY);
             return false;
         }
-        if (detector.customFrequencyPolicy != V1CustomFrequencyPolicy::Unchanged) {
-            failWholePlan(&status_.userSettings, Outcome::UNSUPPORTED,
-                          FailureReason::UNSUPPORTED_CUSTOM_FREQUENCIES);
+        if (detector.volumeDisconnect != V1VolumeDisconnectPolicy::RestoreSaved &&
+            detector.volumeDisconnect != V1VolumeDisconnectPolicy::KeepCurrent) {
+            failWholePlan(&status_.volume, Outcome::INVALID, FailureReason::INVALID_POLICY);
+            return false;
+        }
+        if (detector.bluetoothLedPolicy != V1BluetoothLedPolicy::Unchanged &&
+            detector.bluetoothLedPolicy != V1BluetoothLedPolicy::Off &&
+            detector.bluetoothLedPolicy != V1BluetoothLedPolicy::On) {
+            failWholePlan(&status_.display, Outcome::INVALID, FailureReason::INVALID_POLICY);
+            return false;
+        }
+        if (detector.customFrequencyPolicy != V1CustomFrequencyPolicy::Unchanged &&
+            detector.customFrequencyPolicy != V1CustomFrequencyPolicy::Value) {
+            failWholePlan(&status_.customFrequencies, Outcome::INVALID, FailureReason::INVALID_POLICY);
             return false;
         }
 
         status_.userSettings.requested = detector.userSettingsPolicy == V1UserSettingsPolicy::Value;
-        status_.display.requested = detector.displayPolicy != V1DisplayPolicy::Unchanged;
+        status_.display.requested = detector.displayPolicy != V1DisplayPolicy::Unchanged ||
+                                    detector.bluetoothLedPolicy != V1BluetoothLedPolicy::Unchanged;
         status_.mode.requested = detector.modePolicy == V1ModePolicy::Value;
         status_.volume.requested = detector.volumePolicy != V1VolumePolicy::Unchanged;
-        state_.displayOn = detector.displayPolicy == V1DisplayPolicy::On;
+        status_.customFrequencies.requested =
+            detector.customFrequencyPolicy == V1CustomFrequencyPolicy::Value;
+        state_.displayOn = detector.displayPolicy == V1DisplayPolicy::Unchanged
+                               ? state_.before.displayOn
+                               : detector.displayPolicy == V1DisplayPolicy::On;
         state_.desiredMode = detector.mode;
         state_.volumePolicy = detector.volumePolicy;
+        state_.bluetoothLedPolicy = detector.bluetoothLedPolicy;
+        state_.customFrequencyPolicy = detector.customFrequencyPolicy;
         state_.volume = detector.mainVolume;
         state_.muteVolume = detector.mutedVolume;
+        status_.volumePolicy = detector.volumePolicy;
+        status_.volumeFeedback = detector.volumeFeedback;
+        status_.volumeDisconnect = detector.volumeDisconnect;
+        if (detector.volumeFeedback == V1VolumeFeedbackPolicy::Always) state_.volumeAux |= 0x01;
+        else if (detector.volumeFeedback == V1VolumeFeedbackPolicy::ChangedOnly) state_.volumeAux |= 0x03;
+        if (detector.volumePolicy == V1VolumePolicy::Saved) state_.volumeAux |= 0x04;
+        if (detector.volumeDisconnect == V1VolumeDisconnectPolicy::KeepCurrent) state_.volumeAux |= 0x08;
         std::memcpy(status_.desiredUserBytes.data(), state_.profile.settings.bytes,
                     status_.desiredUserBytes.size());
     } else {
@@ -227,6 +375,7 @@ bool AutoPushModule::configurePlan() {
         state_.displayOn = !settings_->getSlotDarkMode(state_.slotIndex);
         state_.desiredMode = static_cast<uint8_t>(state_.slot.mode);
         state_.volumePolicy = status_.volume.requested ? V1VolumePolicy::Temporary : V1VolumePolicy::Unchanged;
+        status_.volumePolicy = state_.volumePolicy;
         state_.volume = volume;
         state_.muteVolume = muted;
         if (state_.profileLoaded) {
@@ -237,7 +386,8 @@ bool AutoPushModule::configurePlan() {
         }
     }
 
-    ComponentStatus* components[] = {&status_.userSettings, &status_.display, &status_.mode, &status_.volume};
+    ComponentStatus* components[] = {&status_.userSettings, &status_.display, &status_.mode, &status_.volume,
+                                     &status_.customFrequencies};
     for (ComponentStatus* component : components) {
         component->outcome = component->requested ? Outcome::PENDING : Outcome::NOT_REQUESTED;
     }
@@ -279,11 +429,14 @@ bool AutoPushModule::preflight() {
                                         bleClient_->sessionUserBytesIngressSequence() > 0 &&
                                         bleClient_->copySessionUserBytes(liveUserBytes);
     const bool needsUserBaseline = status_.userSettings.requested ||
-                                   (status_.mode.requested && state_.desiredMode == 3);
+                                   (status_.mode.requested && state_.desiredMode == 3) ||
+                                   status_.customFrequencies.requested;
     if (needsUserBaseline &&
         (!state_.before.hasUserBytes || !liveUserBytesAvailable ||
          std::memcmp(liveUserBytes, state_.before.userBytes.data(), sizeof(liveUserBytes)) != 0)) {
-        failWholePlan(status_.userSettings.requested ? &status_.userSettings : &status_.mode,
+        failWholePlan(status_.userSettings.requested
+                          ? &status_.userSettings
+                          : (status_.customFrequencies.requested ? &status_.customFrequencies : &status_.mode),
                       Outcome::INVALID, FailureReason::USER_BYTES_BEFORE_REQUIRED);
         return false;
     }
@@ -316,12 +469,29 @@ bool AutoPushModule::preflight() {
         }
 
         // The Euro/USA user bit resets Gen2 custom-frequency definitions.
-        // Phase 3 has no definition snapshot/restore, so "unchanged" cannot be
-        // honored if that bit would move.
+        // "Unchanged" cannot own the resulting state; only an explicit full
+        // definition plan may proceed and it is committed after user bytes.
         if (((status_.beforeUserBytes[1] ^ state_.effectiveUserBytes[1]) & 0x01) != 0) {
-            failWholePlan(&status_.userSettings, Outcome::UNSUPPORTED,
-                          FailureReason::CUSTOM_FREQUENCY_PRESERVATION_REQUIRED);
-            return false;
+            if (state_.customFrequencyPolicy != V1CustomFrequencyPolicy::Value) {
+                failWholePlan(&status_.userSettings, Outcome::UNSUPPORTED,
+                              FailureReason::CUSTOM_FREQUENCY_PRESERVATION_REQUIRED);
+                return false;
+            }
+            const bool changingToEuro = (state_.effectiveUserBytes[1] & 0x01) == 0;
+            if (changingToEuro) {
+                const V1ModeObservation& observedMode = parser_->modeObservation();
+                if (!state_.before.hasMode || !observedMode.available || observedMode.revision == 0 ||
+                    observedMode.ingressSequence == 0 || observedMode.value != state_.before.mode) {
+                    failWholePlan(&status_.mode, Outcome::INVALID, FailureReason::MISSING_LIVE_SNAPSHOT);
+                    return false;
+                }
+                if (state_.before.mode == 'L' &&
+                    (!status_.mode.requested || state_.desiredMode < 1 || state_.desiredMode > 2)) {
+                    failWholePlan(&status_.mode, Outcome::INVALID,
+                                  FailureReason::EURO_ADVANCED_MODE_INVALID);
+                    return false;
+                }
+            }
         }
         status_.userSettings.needed = !V1FirmwareCompat::userBytesMatchSupported(
             status_.beforeUserBytes.data(), state_.effectiveUserBytes.data(), state_.firmwareVersion);
@@ -333,16 +503,38 @@ bool AutoPushModule::preflight() {
 
     if (status_.display.requested) {
         const V1DisplayOnObservation& observed = parser_->displayOnObservation();
+        const V1BluetoothIndicatorObservation& bluetooth = parser_->bluetoothIndicatorObservation();
         if (!state_.before.hasDisplayOn || !observed.available || observed.revision == 0 ||
             observed.ingressSequence == 0 ||
-            observed.value != state_.before.displayOn) {
+            observed.value != state_.before.displayOn || !state_.before.hasBluetoothIndicator ||
+            !bluetooth.available || bluetooth.revision == 0 || bluetooth.ingressSequence == 0 ||
+            bluetooth.state != state_.before.bluetoothIndicator) {
             failWholePlan(&status_.display, Outcome::INVALID, FailureReason::MISSING_LIVE_SNAPSHOT);
+            return false;
+        }
+        if (state_.displayOn && state_.bluetoothLedPolicy != V1BluetoothLedPolicy::Unchanged) {
+            failWholePlan(&status_.display, Outcome::INVALID, FailureReason::INVALID_POLICY);
             return false;
         }
         status_.display.beforeAvailable = true;
         status_.beforeDisplayOn = state_.before.displayOn;
         status_.desiredDisplayOn = state_.displayOn;
-        status_.display.needed = status_.beforeDisplayOn != state_.displayOn;
+        status_.beforeBluetoothIndicatorActive =
+            state_.before.bluetoothIndicator != V1BluetoothIndicatorState::Off;
+        state_.bluetoothIndicatorActive = state_.bluetoothLedPolicy == V1BluetoothLedPolicy::On
+                                              ? true
+                                              : (state_.bluetoothLedPolicy == V1BluetoothLedPolicy::Off
+                                                     ? false
+                                                     : status_.beforeBluetoothIndicatorActive);
+        status_.desiredBluetoothIndicatorActive = state_.bluetoothIndicatorActive;
+        if (!state_.displayOn && state_.bluetoothIndicatorActive &&
+            !V1FirmwareCompat::capabilities(state_.firmwareVersion).keepBluetoothLedOn) {
+            failWholePlan(&status_.display, Outcome::UNSUPPORTED, FailureReason::UNSUPPORTED_BLUETOOTH_LED);
+            return false;
+        }
+        status_.display.needed = status_.beforeDisplayOn != state_.displayOn ||
+                                 (!state_.displayOn && status_.beforeBluetoothIndicatorActive !=
+                                                          state_.bluetoothIndicatorActive);
         if (!status_.display.needed) {
             status_.display.verified = true;
             status_.display.outcome = Outcome::UNCHANGED;
@@ -389,11 +581,7 @@ bool AutoPushModule::preflight() {
     }
 
     if (status_.volume.requested) {
-        if (state_.volumePolicy == V1VolumePolicy::Saved) {
-            failWholePlan(&status_.volume, Outcome::UNSUPPORTED, FailureReason::UNSUPPORTED_SAVED_VOLUME);
-            return false;
-        }
-        if (state_.volumePolicy != V1VolumePolicy::Temporary) {
+        if (state_.volumePolicy != V1VolumePolicy::Temporary && state_.volumePolicy != V1VolumePolicy::Saved) {
             failWholePlan(&status_.volume, Outcome::INVALID, FailureReason::INVALID_POLICY);
             return false;
         }
@@ -407,37 +595,196 @@ bool AutoPushModule::preflight() {
             failWholePlan(&status_.volume, Outcome::UNSUPPORTED, FailureReason::UNSUPPORTED_FIRMWARE);
             return false;
         }
+        if ((state_.volumeAux & 0x08) != 0 &&
+            (state_.volumePolicy != V1VolumePolicy::Temporary ||
+             state_.firmwareVersion < V1FirmwareCompat::kKeepCurrentVolumeOnDisconnectVersion)) {
+            failWholePlan(&status_.volume, Outcome::UNSUPPORTED, FailureReason::UNSUPPORTED_FIRMWARE);
+            return false;
+        }
         if (!quiet_->canApplyAutoPushVolumeExactly()) {
             failWholePlan(&status_.volume, Outcome::BLOCKED, FailureReason::VOLUME_OWNER_BUSY);
             return false;
         }
-        uint8_t observedMain = 0;
-        uint8_t observedMuted = 0;
-        uint32_t observedIngressSequence = 0;
-        if (!state_.before.hasCurrentVolume ||
-            !parser_->copyLatestCanonicalCurrentVolume(observedMain, observedMuted, &observedIngressSequence) ||
-            observedIngressSequence == 0 ||
-            observedMain != state_.before.currentMainVolume || observedMuted != state_.before.currentMutedVolume) {
+        const V1AllVolumeObservation& allVolume = parser_->allVolumeObservation();
+        if (!state_.before.hasCurrentVolume || !state_.before.hasSavedVolume || !allVolume.available ||
+            allVolume.revision == 0 || allVolume.ingressSequence == 0 ||
+            allVolume.currentMain != state_.before.currentMainVolume ||
+            allVolume.currentMuted != state_.before.currentMutedVolume ||
+            allVolume.savedMain != state_.before.savedMainVolume ||
+            allVolume.savedMuted != state_.before.savedMutedVolume) {
             failWholePlan(&status_.volume, Outcome::INVALID, FailureReason::MISSING_LIVE_SNAPSHOT);
             return false;
         }
         status_.volume.beforeAvailable = true;
         status_.beforeMainVolume = state_.before.currentMainVolume;
         status_.beforeMutedVolume = state_.before.currentMutedVolume;
+        status_.beforeSavedMainVolume = state_.before.savedMainVolume;
+        status_.beforeSavedMutedVolume = state_.before.savedMutedVolume;
         status_.desiredMainVolume = state_.volume;
         status_.desiredMutedVolume = state_.muteVolume;
+        status_.volumeCommandAux = state_.volumeAux;
         status_.volume.needed = status_.beforeMainVolume != state_.volume ||
-                                status_.beforeMutedVolume != state_.muteVolume;
+                                status_.beforeMutedVolume != state_.muteVolume ||
+                                (state_.volumePolicy == V1VolumePolicy::Saved &&
+                                 (status_.beforeSavedMainVolume != state_.volume ||
+                                  status_.beforeSavedMutedVolume != state_.muteVolume)) ||
+                                // Temporary disconnect behavior is command-only
+                                // state. Even restore_saved (aux b3=0) must be
+                                // sent explicitly because numeric readback
+                                // cannot disprove a prior keep-current command.
+                                state_.volumePolicy == V1VolumePolicy::Temporary ||
+                                (state_.volumeAux & 0x03) == 0x01;
         if (!status_.volume.needed) {
             status_.volume.verified = true;
             status_.volume.outcome = Outcome::UNCHANGED;
         }
     }
 
+    const uint8_t* effectiveBytesForSweeps = status_.userSettings.requested
+                                                 ? state_.effectiveUserBytes.data()
+                                                 : state_.before.userBytes.data();
+    const bool effectiveCustomFilteringEnabled = (effectiveBytesForSweeps[1] & 0x08) == 0;
+    const bool customEnableTransition = status_.userSettings.requested &&
+                                        (state_.before.userBytes[1] & 0x08) != 0 &&
+                                        effectiveCustomFilteringEnabled;
+    const bool customBandEnableTransition = status_.userSettings.requested &&
+                                            effectiveCustomFilteringEnabled &&
+                                            ((static_cast<uint8_t>(~state_.before.userBytes[0]) &
+                                              effectiveBytesForSweeps[0] & 0x06u) != 0);
+    if (status_.customFrequencies.requested || customEnableTransition || customBandEnableTransition) {
+        const auto& liveSections = parser_->sweepSectionsObservation();
+        const auto& liveMax = parser_->sweepMaxObservation();
+        const auto& liveDefinitions = parser_->sweepDefinitionsObservation();
+        const uint64_t liveRequiredMask = state_.before.maxSweepIndex == 63
+                                              ? UINT64_MAX
+                                              : ((uint64_t{1} << (state_.before.maxSweepIndex + 1u)) - 1u);
+        if (!V1FirmwareCompat::capabilities(state_.firmwareVersion).customSweeps ||
+            !state_.before.hasSweepSections || !state_.before.hasMaxSweepIndex ||
+            !state_.before.hasSweepDefinitions || state_.before.sweepSectionCount == 0 ||
+            !liveSections.available || !liveSections.complete || liveSections.poisoned ||
+            liveSections.ingressSequence == 0 || liveSections.count != state_.before.sweepSectionCount ||
+            !liveMax.available || liveMax.poisoned || liveMax.ingressSequence == 0 ||
+            liveMax.maxIndex != state_.before.maxSweepIndex || liveDefinitions.poisoned ||
+            liveDefinitions.ingressSequence == 0 || liveDefinitions.presentMask != liveRequiredMask) {
+            failWholePlan(&status_.customFrequencies, Outcome::UNSUPPORTED,
+                          FailureReason::MISSING_LIVE_SNAPSHOT);
+            return false;
+        }
+        for (uint8_t index = 0; index < state_.before.sweepSectionCount; ++index) {
+            if (liveSections.sections[index].index != state_.before.sweepSections[index].index ||
+                liveSections.sections[index].count != state_.before.sweepSections[index].count ||
+                liveSections.sections[index].lowerMHz != state_.before.sweepSections[index].lowerMHz ||
+                liveSections.sections[index].upperMHz != state_.before.sweepSections[index].upperMHz) {
+                failWholePlan(&status_.customFrequencies, Outcome::INVALID,
+                              FailureReason::MISSING_LIVE_SNAPSHOT);
+                return false;
+            }
+        }
+        for (uint8_t index = 0; index <= state_.before.maxSweepIndex; ++index) {
+            if (liveDefinitions.definitions[index].index != state_.before.sweepDefinitions[index].index ||
+                liveDefinitions.definitions[index].lowerMHz != state_.before.sweepDefinitions[index].lowerMHz ||
+                liveDefinitions.definitions[index].upperMHz != state_.before.sweepDefinitions[index].upperMHz) {
+                failWholePlan(&status_.customFrequencies, Outcome::INVALID,
+                              FailureReason::MISSING_LIVE_SNAPSHOT);
+                return false;
+            }
+        }
+        if (status_.customFrequencies.requested &&
+            state_.customDefinitions.size() != static_cast<size_t>(state_.before.maxSweepIndex) + 1u) {
+            failWholePlan(&status_.customFrequencies, Outcome::INVALID,
+                          FailureReason::CUSTOM_CONFIGURATION_INVALID);
+            return false;
+        }
+        bool hasUsed = false;
+        bool definitionsDiffer = false;
+        std::array<bool, 15> usedInSection{};
+        const size_t definitionCount = static_cast<size_t>(state_.before.maxSweepIndex) + 1u;
+        for (size_t index = 0; index < definitionCount; ++index) {
+            const auto& source = status_.customFrequencies.requested
+                                     ? state_.customDefinitions[index]
+                                     : V1CustomFrequencyDefinition{
+                                           static_cast<uint8_t>(index),
+                                           state_.before.sweepDefinitions[index].lowerMHz,
+                                           state_.before.sweepDefinitions[index].upperMHz};
+            const V1CustomFrequencyDefinition definition = source;
+            if (definition.index != index || (definition.lowerMHz == 0) != (definition.upperMHz == 0) ||
+                (definition.lowerMHz != 0 && definition.lowerMHz >= definition.upperMHz)) {
+                failWholePlan(&status_.customFrequencies, Outcome::INVALID,
+                              FailureReason::CUSTOM_CONFIGURATION_INVALID);
+                return false;
+            }
+            if (definition.lowerMHz == 0) continue;
+            const int sectionIndex = sweepDefinitionLiveSection(definition, state_.before);
+            if (sectionIndex < 0) {
+                failWholePlan(&status_.customFrequencies, Outcome::INVALID,
+                              FailureReason::CUSTOM_CONFIGURATION_INVALID);
+                return false;
+            }
+            hasUsed = true;
+            state_.customLastUsedIndex = index;
+            usedInSection[static_cast<size_t>(sectionIndex)] = true;
+        }
+        if (status_.customFrequencies.requested) {
+            for (size_t index = 0; index < state_.customDefinitions.size(); ++index) {
+                const auto& desired = state_.customDefinitions[index];
+                const auto& before = state_.before.sweepDefinitions[index];
+                definitionsDiffer |= desired.index != before.index || desired.lowerMHz != before.lowerMHz ||
+                                     desired.upperMHz != before.upperMHz;
+            }
+        }
+        uint8_t lowestSection = UINT8_MAX;
+        for (uint8_t index = 0; index < state_.before.sweepSectionCount; ++index) {
+            const auto& section = state_.before.sweepSections[index];
+            if (section.lowerMHz == 0 && section.upperMHz == 0) continue;
+            if (lowestSection == UINT8_MAX ||
+                section.lowerMHz < state_.before.sweepSections[lowestSection].lowerMHz) {
+                lowestSection = index;
+            }
+        }
+        bool hasHigherSectionDefinition = false;
+        for (uint8_t index = 0; index < state_.before.sweepSectionCount; ++index) {
+            const auto& section = state_.before.sweepSections[index];
+            if (index != lowestSection && section.lowerMHz != 0) {
+                hasHigherSectionDefinition |= usedInSection[index];
+            }
+        }
+        // ESP 3.016 requires every explicit Gen2 committed table to contain at
+        // least one sweep for each supported custom band (K and Ka), even if
+        // filtering or one user band is currently disabled. For an unchanged
+        // table, validate it only when custom filtering or either band is
+        // newly activated; that validation still covers both supported bands.
+        const bool validatesCommittedTable = status_.customFrequencies.requested ||
+                                             customEnableTransition || customBandEnableTransition;
+        const bool requiresK = validatesCommittedTable;
+        const bool requiresKa = validatesCommittedTable;
+        if (!hasUsed || lowestSection == UINT8_MAX ||
+            (requiresK && !usedInSection[lowestSection]) ||
+            (requiresKa && !hasHigherSectionDefinition) ||
+            (requiresK && requiresKa && state_.before.sweepSectionCount < 2)) {
+            failWholePlan(&status_.customFrequencies, Outcome::INVALID,
+                          FailureReason::CUSTOM_CONFIGURATION_INVALID);
+            return false;
+        }
+        if (status_.customFrequencies.requested) {
+            status_.customFrequencies.beforeAvailable = true;
+            status_.requestedCustomDefinitions.assign(state_.customDefinitions);
+            const bool regionChanged = status_.userSettings.requested &&
+                                       ((status_.beforeUserBytes[1] ^ state_.effectiveUserBytes[1]) & 0x01) != 0;
+            status_.customFrequencies.needed = regionChanged || definitionsDiffer;
+            if (!status_.customFrequencies.needed) {
+                status_.customFrequencies.verified = true;
+                status_.customFrequencies.outcome = Outcome::UNCHANGED;
+                status_.effectiveCustomDefinitions.assign(state_.customDefinitions);
+            }
+        }
+        state_.customRequiredMask = liveRequiredMask;
+    }
+
     if (status_.userSettings.needed) state_.step = Step::UserWrite;
     else if (status_.display.needed) state_.step = Step::DisplayWrite;
     else if (status_.mode.needed) state_.step = Step::ModeWrite;
     else if (status_.volume.needed) state_.step = Step::VolumeWrite;
+    else if (status_.customFrequencies.needed) state_.step = Step::CustomWrite;
     else finishOperation();
     state_.nextStepAtMs = static_cast<uint32_t>(millis());
     return true;
@@ -457,7 +804,8 @@ void AutoPushModule::failComponent(ComponentStatus& component, Outcome outcome, 
 void AutoPushModule::failWholePlan(ComponentStatus* failed, Outcome outcome, FailureReason reason) {
     if (failed) failComponent(*failed, outcome, reason);
     else if (status_.reason == FailureReason::NONE) status_.reason = reason;
-    ComponentStatus* components[] = {&status_.userSettings, &status_.display, &status_.mode, &status_.volume};
+    ComponentStatus* components[] = {&status_.userSettings, &status_.display, &status_.mode, &status_.volume,
+                                     &status_.customFrequencies};
     for (ComponentStatus* component : components) {
         if (component != failed && component->requested && !component->verified &&
             (component->outcome == Outcome::PENDING || component->outcome == Outcome::SENT)) {
@@ -472,7 +820,8 @@ void AutoPushModule::finishOperation() {
     if (quiet_ && state_.volumeTransactionActive) {
         quiet_->endAutoPushVolumeTransaction();
     }
-    const ComponentStatus* components[] = {&status_.userSettings, &status_.display, &status_.mode, &status_.volume};
+    const ComponentStatus* components[] = {&status_.userSettings, &status_.display, &status_.mode, &status_.volume,
+                                           &status_.customFrequencies};
     bool allVerified = true;
     bool anyVerified = false;
     for (const ComponentStatus* component : components) {
@@ -486,6 +835,8 @@ void AutoPushModule::finishOperation() {
                                                                  : FailureReason::DISCONNECTED;
     }
     if (candidateSuccess && status_.reason == FailureReason::NONE) status_.result = Result::SUCCEEDED;
+    else if (status_.customFrequencies.requested && !status_.customFrequencies.verified)
+        status_.result = Result::FAILED;
     else status_.result = anyVerified ? Result::PARTIAL : Result::FAILED;
     if (bleClient_) {
         bleClient_->cancelUserBytesVerification();
@@ -501,6 +852,7 @@ void AutoPushModule::advanceAfterUser(uint32_t nowMs) {
     if (status_.display.needed) state_.step = Step::DisplayWrite;
     else if (status_.mode.needed) state_.step = Step::ModeWrite;
     else if (status_.volume.needed) state_.step = Step::VolumeWrite;
+    else if (status_.customFrequencies.needed) state_.step = Step::CustomWrite;
     else {
         finishOperation();
         return;
@@ -511,6 +863,7 @@ void AutoPushModule::advanceAfterUser(uint32_t nowMs) {
 void AutoPushModule::advanceAfterDisplay(uint32_t nowMs) {
     if (status_.mode.needed) state_.step = Step::ModeWrite;
     else if (status_.volume.needed) state_.step = Step::VolumeWrite;
+    else if (status_.customFrequencies.needed) state_.step = Step::CustomWrite;
     else {
         finishOperation();
         return;
@@ -521,6 +874,18 @@ void AutoPushModule::advanceAfterDisplay(uint32_t nowMs) {
 void AutoPushModule::advanceAfterMode(uint32_t nowMs) {
     if (status_.volume.needed) {
         state_.step = Step::VolumeWrite;
+        state_.nextStepAtMs = nowMs + 30;
+    } else if (status_.customFrequencies.needed) {
+        state_.step = Step::CustomWrite;
+        state_.nextStepAtMs = nowMs + 30;
+    } else {
+        finishOperation();
+    }
+}
+
+void AutoPushModule::advanceAfterVolume(uint32_t nowMs) {
+    if (status_.customFrequencies.needed) {
+        state_.step = Step::CustomWrite;
         state_.nextStepAtMs = nowMs + 30;
     } else {
         finishOperation();
@@ -545,26 +910,15 @@ void AutoPushModule::process() {
 
     switch (state_.step) {
     case Step::WaitReady:
-        state_.step = state_.profileLoaded ? Step::Preflight : Step::LoadProfile;
+        state_.step = state_.retainLoadStep ? Step::LoadProfile : Step::Preflight;
         state_.nextStepAtMs = now;
         return;
 
     case Step::LoadProfile:
-        if (state_.slot.profileName.length() > 0) {
-            V1Profile profile;
-            const ProfileOperationResult loaded = profiles_->loadProfileResult(state_.slot.profileName, profile, 0);
-            if (!loaded.success()) {
-                status_.userSettings.requested = true;
-                status_.userSettings.outcome = Outcome::PENDING;
-                failWholePlan(&status_.userSettings, Outcome::LOAD_FAILED,
-                              loaded.status == ProfileStorageStatus::Busy ? FailureReason::PROFILE_BUSY
-                                                                          : FailureReason::PROFILE_LOAD_FAILED);
-                return;
-            }
-            state_.profile = profile;
-            state_.profileLoaded = true;
-            status_.profileLoaded = true;
-        }
+        // queueSlotPush retains this step for timing compatibility, but every
+        // fallible profile load/copy completed before queue admission and any
+        // requested active-slot persistence.
+        state_.retainLoadStep = false;
         state_.step = Step::Preflight;
         state_.nextStepAtMs = now;
         return;
@@ -628,7 +982,7 @@ void AutoPushModule::process() {
     case Step::DisplayWrite:
         state_.observationRevision = parser_->displayOnObservationRevision();
         state_.sawFreshMismatch = false;
-        if (!bleClient_->setDisplayOn(state_.displayOn)) {
+        if (!bleClient_->setDisplayOn(state_.displayOn, state_.bluetoothIndicatorActive)) {
             failWholePlan(&status_.display, Outcome::WRITE_FAILED, FailureReason::DISPLAY_WRITE_FAILED);
             return;
         }
@@ -642,9 +996,15 @@ void AutoPushModule::process() {
 
     case Step::DisplayVerify: {
         const V1DisplayOnObservation& observed = parser_->displayOnObservation();
+        const V1BluetoothIndicatorObservation& bluetooth = parser_->bluetoothIndicatorObservation();
         if (observed.revision != state_.observationRevision &&
             ingressAfter(observed.ingressSequence, state_.observationIngressBoundary)) {
-            if (observed.available && observed.value == state_.displayOn) {
+            const bool bluetoothActive = bluetooth.available &&
+                                         bluetooth.state != V1BluetoothIndicatorState::Off;
+            if (observed.available && bluetooth.available &&
+                bluetooth.ingressSequence == observed.ingressSequence &&
+                observed.value == state_.displayOn &&
+                (state_.displayOn || bluetoothActive == state_.bluetoothIndicatorActive)) {
                 status_.display.verified = true;
                 status_.display.outcome = Outcome::VERIFIED;
                 advanceAfterDisplay(now);
@@ -706,7 +1066,7 @@ void AutoPushModule::process() {
             return;
         }
         state_.volumeTransactionActive = true;
-        if (!quiet_->sendAutoPushVolume(state_.volume, state_.muteVolume)) {
+        if (!quiet_->sendAutoPushVolume(state_.volume, state_.muteVolume, state_.volumeAux)) {
             failWholePlan(&status_.volume, Outcome::WRITE_FAILED, FailureReason::VOLUME_WRITE_FAILED);
             return;
         }
@@ -717,8 +1077,8 @@ void AutoPushModule::process() {
         return;
 
     case Step::VolumeRead:
-        state_.observationRevision = parser_->currentVolumeObservationRevision();
-        if (!bleClient_->requestCurrentVolume()) {
+        state_.observationRevision = parser_->allVolumeObservation().revision;
+        if (!bleClient_->requestAllVolume()) {
             failWholePlan(&status_.volume, Outcome::READ_FAILED, FailureReason::VOLUME_READ_FAILED);
             return;
         }
@@ -729,14 +1089,21 @@ void AutoPushModule::process() {
         return;
 
     case Step::VolumeVerify:
-        if (parser_->currentVolumeObservation().revision != state_.observationRevision &&
-            ingressAfter(parser_->currentVolumeObservation().ingressSequence,
+        if (parser_->allVolumeObservation().revision != state_.observationRevision &&
+            ingressAfter(parser_->allVolumeObservation().ingressSequence,
                          state_.observationIngressBoundary)) {
-            const V1CurrentVolumeObservation& observed = parser_->currentVolumeObservation();
-            if (observed.available && observed.main == state_.volume && observed.muted == state_.muteVolume) {
+            const V1AllVolumeObservation& observed = parser_->allVolumeObservation();
+            const bool currentMatches = observed.available && observed.currentMain == state_.volume &&
+                                        observed.currentMuted == state_.muteVolume;
+            const bool savedMatches = state_.volumePolicy == V1VolumePolicy::Saved
+                                          ? observed.savedMain == state_.volume &&
+                                                observed.savedMuted == state_.muteVolume
+                                          : observed.savedMain == status_.beforeSavedMainVolume &&
+                                                observed.savedMuted == status_.beforeSavedMutedVolume;
+            if (currentMatches && savedMatches) {
                 status_.volume.verified = true;
                 status_.volume.outcome = Outcome::VERIFIED;
-                finishOperation();
+                advanceAfterVolume(now);
             } else {
                 failWholePlan(&status_.volume, Outcome::MISMATCH, FailureReason::VOLUME_MISMATCH);
             }
@@ -749,13 +1116,149 @@ void AutoPushModule::process() {
         state_.nextStepAtMs = now + 10;
         return;
 
+    case Step::CustomWrite: {
+        while (state_.customWriteIndex < state_.customDefinitions.size() &&
+               state_.customDefinitions[state_.customWriteIndex].lowerMHz == 0) {
+            ++state_.customWriteIndex;
+        }
+        if (state_.customWriteIndex >= state_.customDefinitions.size()) {
+            failWholePlan(&status_.customFrequencies, Outcome::INVALID,
+                          FailureReason::CUSTOM_CONFIGURATION_INVALID);
+            return;
+        }
+        const auto& definition = state_.customDefinitions[state_.customWriteIndex];
+        // The vendor contract disables every index omitted from a committed
+        // write set. A (0,0) packet is not specified, so send used entries
+        // only, preserve their original indices, and commit the final used
+        // packet. Fresh full readback below proves every omitted index is off.
+        const bool commit = state_.customWriteIndex == state_.customLastUsedIndex;
+        if (commit) {
+            state_.observationRevision = parser_->sweepWriteResultObservation().revision;
+        }
+        const SendResult sent = bleClient_->writeSweepDefinition(
+            definition.index, definition.lowerMHz, definition.upperMHz, commit);
+        if (sent == SendResult::NOT_YET) {
+            state_.nextStepAtMs = now + 5;
+            return;
+        }
+        if (sent != SendResult::SENT) {
+            failWholePlan(&status_.customFrequencies, Outcome::WRITE_FAILED,
+                          FailureReason::CUSTOM_WRITE_FAILED);
+            return;
+        }
+        if (!commit) {
+            ++state_.customWriteIndex;
+            state_.nextStepAtMs = now + 5;
+            return;
+        }
+        status_.customFrequencies.sent = true;
+        status_.customFrequencies.outcome = Outcome::SENT;
+        state_.observationIngressBoundary = bleClient_->latestV1NotificationIngressSequence();
+        state_.step = Step::CustomCommitVerify;
+        state_.verifyDeadlineMs = now + kVerificationTimeoutMs;
+        state_.nextStepAtMs = now;
+        return;
+    }
+
+    case Step::CustomCommitVerify: {
+        const auto& result = parser_->sweepWriteResultObservation();
+        if (result.revision != state_.observationRevision &&
+            ingressAfter(result.ingressSequence, state_.observationIngressBoundary)) {
+            status_.customCommitResultAvailable = result.available;
+            status_.customCommitResultRaw = result.result;
+            status_.customCommitInvalidDefinitionIndex = result.available && result.result != 0
+                                                             ? static_cast<int16_t>(result.result - 1u)
+                                                             : -1;
+            if (!result.available || result.result != 0) {
+                failWholePlan(&status_.customFrequencies, Outcome::MISMATCH,
+                              FailureReason::CUSTOM_COMMIT_REJECTED);
+                return;
+            }
+            state_.step = Step::CustomRead;
+            state_.nextStepAtMs = now + 30;
+            return;
+        }
+        if (deadlineReached(now, state_.verifyDeadlineMs)) {
+            failWholePlan(&status_.customFrequencies, Outcome::TIMEOUT,
+                          FailureReason::CUSTOM_COMMIT_TIMEOUT);
+            return;
+        }
+        state_.nextStepAtMs = now + 10;
+        return;
+    }
+
+    case Step::CustomRead:
+        if (!bleClient_->requestAllSweepDefinitions()) {
+            failWholePlan(&status_.customFrequencies, Outcome::READ_FAILED,
+                          FailureReason::CUSTOM_READ_FAILED);
+            return;
+        }
+        state_.observationIngressBoundary = bleClient_->latestV1NotificationIngressSequence();
+        // Clearing after the send is proof-safe: a test or callback that
+        // raced during the send cannot become readback evidence.
+        parser_->resetSweepDefinitionsObservation();
+        state_.step = Step::CustomVerify;
+        state_.verifyDeadlineMs = now + kVerificationTimeoutMs;
+        state_.nextStepAtMs = now;
+        return;
+
+    case Step::CustomVerify: {
+        const auto& definitions = parser_->sweepDefinitionsObservation();
+        bool everyDefinitionAfterBoundary = true;
+        for (uint8_t index = 0; index <= state_.before.maxSweepIndex; ++index) {
+            everyDefinitionAfterBoundary &=
+                ingressAfter(definitions.ingressSequences[index], state_.observationIngressBoundary);
+        }
+        if (!definitions.poisoned &&
+            definitions.presentMask == state_.customRequiredMask &&
+            everyDefinitionAfterBoundary) {
+            status_.effectiveCustomDefinitions.clear();
+            bool valid = true;
+            for (uint8_t index = 0; index <= state_.before.maxSweepIndex; ++index) {
+                const auto& observed = definitions.definitions[index];
+                V1CustomFrequencyDefinition effective{index, observed.lowerMHz, observed.upperMHz};
+                const bool unused = effective.lowerMHz == 0 && effective.upperMHz == 0;
+                const auto& requested = state_.customDefinitions[index];
+                const bool requestedUnused = requested.lowerMHz == 0 && requested.upperMHz == 0;
+                if (unused != requestedUnused ||
+                    (!unused && (sweepDefinitionLiveSection(effective, state_.before) < 0 ||
+                                 sweepDefinitionLiveSection(effective, state_.before) !=
+                                     sweepDefinitionLiveSection(requested, state_.before))) ||
+                    (effective.lowerMHz == 0) != (effective.upperMHz == 0)) {
+                    valid = false;
+                    break;
+                }
+                if (!status_.effectiveCustomDefinitions.push_back(effective)) {
+                    valid = false;
+                    break;
+                }
+            }
+            if (!valid) {
+                failWholePlan(&status_.customFrequencies, Outcome::MISMATCH,
+                              FailureReason::CUSTOM_READBACK_INVALID);
+                return;
+            }
+            status_.customFrequencies.verified = true;
+            status_.customFrequencies.outcome = Outcome::VERIFIED;
+            finishOperation();
+            return;
+        }
+        if (deadlineReached(now, state_.verifyDeadlineMs)) {
+            failWholePlan(&status_.customFrequencies, Outcome::TIMEOUT,
+                          FailureReason::CUSTOM_READBACK_TIMEOUT);
+            return;
+        }
+        state_.nextStepAtMs = now + 10;
+        return;
+    }
+
     case Step::Idle:
     default:
         return;
     }
 }
 
-String AutoPushModule::getStatusJson() const {
+bool AutoPushModule::appendStatusJson(JsonObject root) const {
     const auto stepName = [this]() {
         switch (state_.step) {
         case Step::Idle: return "Idle";
@@ -772,6 +1275,10 @@ String AutoPushModule::getStatusJson() const {
         case Step::VolumeWrite: return "VolumeWrite";
         case Step::VolumeRead: return "VolumeRead";
         case Step::VolumeVerify: return "VolumeVerify";
+        case Step::CustomWrite: return "CustomWrite";
+        case Step::CustomCommitVerify: return "CustomCommitVerify";
+        case Step::CustomRead: return "CustomRead";
+        case Step::CustomVerify: return "CustomVerify";
         }
         return "Idle";
     };
@@ -842,102 +1349,127 @@ String AutoPushModule::getStatusJson() const {
         case FailureReason::VOLUME_READ_FAILED: return "volume_read_failed";
         case FailureReason::VOLUME_MISMATCH: return "volume_mismatch";
         case FailureReason::VOLUME_TIMEOUT: return "volume_timeout";
+        case FailureReason::CUSTOM_CONFIGURATION_INVALID: return "custom_configuration_invalid";
+        case FailureReason::CUSTOM_WRITE_FAILED: return "custom_write_failed";
+        case FailureReason::CUSTOM_COMMIT_REJECTED: return "custom_commit_rejected";
+        case FailureReason::CUSTOM_COMMIT_TIMEOUT: return "custom_commit_timeout";
+        case FailureReason::CUSTOM_READ_FAILED: return "custom_read_failed";
+        case FailureReason::CUSTOM_READBACK_INVALID: return "custom_readback_invalid";
+        case FailureReason::CUSTOM_READBACK_TIMEOUT: return "custom_readback_timeout";
         case FailureReason::PROXY_OWNS_DETECTOR: return "proxy_owns_detector";
         }
         return "invalid_policy";
     };
-    const auto appendBool = [](String& json, bool value) { json += value ? "true" : "false"; };
-    const auto appendBytes = [](String& json, const std::array<uint8_t, 6>& bytes) {
-        json += '[';
-        for (size_t index = 0; index < bytes.size(); ++index) {
-            if (index) json += ',';
-            json += String(bytes[index]);
-        }
-        json += ']';
+    const auto appendBytes = [](JsonArray values, const std::array<uint8_t, 6>& bytes) {
+        for (uint8_t value : bytes) values.add(value);
     };
-    const auto appendBase = [&](String& json, const ComponentStatus& component) {
-        json += "\"requested\":";
-        appendBool(json, component.requested);
-        json += ",\"beforeAvailable\":";
-        appendBool(json, component.beforeAvailable);
-        json += ",\"needed\":";
-        appendBool(json, component.needed);
-        json += ",\"sent\":";
-        appendBool(json, component.sent);
-        json += ",\"verified\":";
-        appendBool(json, component.verified);
-        json += ",\"applied\":"; // backward-compatible alias; never means merely sent
-        appendBool(json, component.verified);
-        json += ",\"outcome\":\"";
-        json += outcomeName(component.outcome);
-        json += "\",\"reason\":\"";
-        json += reasonName(component.reason);
-        json += '"';
+    const auto appendDefinitions = [](JsonArray values,
+                                      const FixedDefinitionList& definitions) {
+        for (const V1CustomFrequencyDefinition& definition : definitions) {
+            JsonObject item = values.add<JsonObject>();
+            item["index"] = definition.index;
+            item["lowerMHz"] = definition.lowerMHz;
+            item["upperMHz"] = definition.upperMHz;
+        }
+    };
+    const auto appendBase = [&](JsonObject object, const ComponentStatus& component) {
+        object["requested"] = component.requested;
+        object["beforeAvailable"] = component.beforeAvailable;
+        object["needed"] = component.needed;
+        object["sent"] = component.sent;
+        object["verified"] = component.verified;
+        object["applied"] = component.verified; // backward-compatible alias; never merely sent
+        object["outcome"] = outcomeName(component.outcome);
+        object["reason"] = reasonName(component.reason);
     };
 
-    String json;
-    json.reserve(1500 + status_.profileName.length());
-    json += "{\"active\":";
-    appendBool(json, state_.step != Step::Idle);
-    json += ",\"operationId\":";
-    json += String(status_.operationId);
-    json += ",\"slot\":";
-    json += String(status_.slotIndex);
-    json += ",\"step\":\"";
-    json += stepName();
-    json += "\",\"result\":\"";
-    json += operationResultName(status_.result);
-    json += "\",\"reason\":\"";
-    json += reasonName(status_.reason);
-    json += "\",\"profileLoaded\":";
-    appendBool(json, status_.profileLoaded);
-    json += ",\"profileConfigured\":";
-    appendBool(json, status_.profileName.length() > 0);
-    json += ",\"profileName\":\"";
-    json += jsonEscapeString(status_.profileName);
-    json += "\",\"components\":{\"profile\":{";
-    appendBase(json, status_.userSettings);
-    json += ",\"before\":";
-    if (status_.userSettings.beforeAvailable) appendBytes(json, status_.beforeUserBytes);
-    else json += "null";
-    json += ",\"desired\":";
-    appendBytes(json, status_.desiredUserBytes);
-    json += ",\"effective\":";
-    appendBytes(json, status_.effectiveUserBytes);
-    json += ",\"supportedMasks\":";
-    appendBytes(json, status_.supportedUserMasks);
-    json += ",\"alpLaserOverrideActive\":";
-    appendBool(json, status_.alpLaserOverrideActive);
-    json += ",\"alpLaserOverrideApplied\":";
-    appendBool(json, status_.alpLaserOverrideApplied);
-    json += "},\"display\":{";
-    appendBase(json, status_.display);
-    json += ",\"before\":";
-    if (status_.display.beforeAvailable) appendBool(json, status_.beforeDisplayOn);
-    else json += "null";
-    json += ",\"desired\":";
-    appendBool(json, status_.desiredDisplayOn);
-    json += "},\"mode\":{";
-    appendBase(json, status_.mode);
-    json += ",\"before\":";
-    if (status_.mode.beforeAvailable) json += String(status_.beforeMode);
-    else json += "null";
-    json += ",\"desired\":";
-    json += String(status_.desiredMode);
-    json += "},\"volume\":{";
-    appendBase(json, status_.volume);
-    json += ",\"before\":";
+    root["active"] = state_.step != Step::Idle;
+    root["operationId"] = status_.operationId;
+    root["slot"] = status_.slotIndex;
+    root["step"] = stepName();
+    root["result"] = operationResultName(status_.result);
+    root["reason"] = reasonName(status_.reason);
+    root["profileLoaded"] = status_.profileLoaded;
+    root["profileConfigured"] = status_.profileName.length() > 0;
+    root["profileName"] = status_.profileName;
+    JsonObject components = root["components"].to<JsonObject>();
+
+    JsonObject profile = components["profile"].to<JsonObject>();
+    appendBase(profile, status_.userSettings);
+    if (status_.userSettings.beforeAvailable) {
+        appendBytes(profile["before"].to<JsonArray>(), status_.beforeUserBytes);
+    } else profile["before"] = nullptr;
+    appendBytes(profile["desired"].to<JsonArray>(), status_.desiredUserBytes);
+    appendBytes(profile["effective"].to<JsonArray>(), status_.effectiveUserBytes);
+    appendBytes(profile["supportedMasks"].to<JsonArray>(), status_.supportedUserMasks);
+    profile["alpLaserOverrideActive"] = status_.alpLaserOverrideActive;
+    profile["alpLaserOverrideApplied"] = status_.alpLaserOverrideApplied;
+
+    JsonObject display = components["display"].to<JsonObject>();
+    appendBase(display, status_.display);
+    if (status_.display.beforeAvailable) display["before"] = status_.beforeDisplayOn;
+    else display["before"] = nullptr;
+    display["desired"] = status_.desiredDisplayOn;
+    display["bluetoothBeforeActive"] = status_.beforeBluetoothIndicatorActive;
+    display["bluetoothDesiredActive"] = status_.desiredBluetoothIndicatorActive;
+
+    JsonObject mode = components["mode"].to<JsonObject>();
+    appendBase(mode, status_.mode);
+    if (status_.mode.beforeAvailable) mode["before"] = status_.beforeMode;
+    else mode["before"] = nullptr;
+    mode["desired"] = status_.desiredMode;
+
+    JsonObject volume = components["volume"].to<JsonObject>();
+    appendBase(volume, status_.volume);
     if (status_.volume.beforeAvailable) {
-        json += "{\"main\":";
-        json += String(status_.beforeMainVolume);
-        json += ",\"muted\":";
-        json += String(status_.beforeMutedVolume);
-        json += '}';
-    } else json += "null";
-    json += ",\"desired\":{\"main\":";
-    json += String(status_.desiredMainVolume);
-    json += ",\"muted\":";
-    json += String(status_.desiredMutedVolume);
-    json += "}}}}";
+        JsonObject before = volume["before"].to<JsonObject>();
+        before["main"] = status_.beforeMainVolume;
+        before["muted"] = status_.beforeMutedVolume;
+        before["savedMain"] = status_.beforeSavedMainVolume;
+        before["savedMuted"] = status_.beforeSavedMutedVolume;
+    } else volume["before"] = nullptr;
+    JsonObject desired = volume["desired"].to<JsonObject>();
+    desired["main"] = status_.desiredMainVolume;
+    desired["muted"] = status_.desiredMutedVolume;
+    volume["feedback"] = status_.volumeFeedback == V1VolumeFeedbackPolicy::Always
+                             ? "always"
+                             : (status_.volumeFeedback == V1VolumeFeedbackPolicy::ChangedOnly
+                                    ? "changed_only" : "none");
+    volume["disconnect"] = status_.volumeDisconnect == V1VolumeDisconnectPolicy::KeepCurrent
+                                ? "keep_current" : "restore_saved";
+    volume["commandAux"] = status_.volumeCommandAux;
+    volume["valuesVerified"] = status_.volume.verified;
+    volume["verificationScope"] = status_.volumePolicy == V1VolumePolicy::Saved
+                                       ? "current_and_saved_values_only"
+                                       : "current_values_and_saved_preservation_only";
+    volume["policyReadbackAvailable"] = false;
+    volume["policyOutcome"] = status_.volume.sent ? "sent_unobservable" : "not_sent";
+
+    JsonObject custom = components["customFrequencies"].to<JsonObject>();
+    appendBase(custom, status_.customFrequencies);
+    custom["verificationScope"] = "topology_and_live_section_with_calibrated_readback";
+    if (status_.customCommitResultAvailable) {
+        custom["commitResultRaw"] = status_.customCommitResultRaw;
+    } else {
+        custom["commitResultRaw"] = nullptr;
+    }
+    if (status_.customCommitInvalidDefinitionIndex >= 0) {
+        custom["invalidDefinitionIndex"] = status_.customCommitInvalidDefinitionIndex;
+    } else {
+        custom["invalidDefinitionIndex"] = nullptr;
+    }
+    appendDefinitions(custom["requestedDefinitions"].to<JsonArray>(), status_.requestedCustomDefinitions);
+    appendDefinitions(custom["calibratedReadback"].to<JsonArray>(), status_.effectiveCustomDefinitions);
+    return true;
+}
+
+String AutoPushModule::getStatusJson() const {
+    PsramJson::Document doc;
+    if (!appendStatusJson(doc.to<JsonObject>()) || doc.overflowed()) return String();
+    const size_t expected = measureJson(doc);
+    if (expected == 0 || expected > 16u * 1024u) return String();
+    String json;
+    json.reserve(expected);
+    if (serializeJson(doc, json) != expected || json.length() != expected) return String();
     return json;
 }

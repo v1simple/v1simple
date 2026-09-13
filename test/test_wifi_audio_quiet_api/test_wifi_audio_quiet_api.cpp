@@ -221,6 +221,71 @@ void test_device_settings_post_reports_persist_failure() {
     TEST_ASSERT_TRUE(probe.deviceUpdate.hasProxyBLE);
 }
 
+void test_device_settings_exact_body_rejects_unknown_and_incomplete_fields_without_apply() {
+    Probe probe;
+    for (const char* body : {
+             "proxy_ble=true&proxy_nmae=Road",
+             "ap_password=12345678",
+             "ap_ssid=Road",
+         }) {
+        WebServer server(80);
+        WifiSettingsApiService::handleApiDeviceSettingsSaveBody(
+            server, makeDeviceRuntime(probe), reinterpret_cast<const uint8_t*>(body), std::strlen(body));
+        TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
+        TEST_ASSERT_EQUAL_INT(0, probe.deviceApplyCalls);
+    }
+}
+
+void test_device_settings_exact_body_uses_utf8_byte_limits_without_truncation() {
+    Probe probe;
+    const char accepted[] =
+        "proxy_name=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa%C3%A9&proxy_ble=true";
+    WebServer acceptedServer(80);
+    WifiSettingsApiService::handleApiDeviceSettingsSaveBody(
+        acceptedServer, makeDeviceRuntime(probe), reinterpret_cast<const uint8_t*>(accepted),
+        sizeof(accepted) - 1u);
+    TEST_ASSERT_EQUAL_INT(200, acceptedServer.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(1, probe.deviceApplyCalls);
+    TEST_ASSERT_TRUE(probe.deviceUpdate.hasProxyName);
+    TEST_ASSERT_EQUAL_UINT(32u, probe.deviceUpdate.proxyName.length());
+
+    const char rejected[] =
+        "proxy_name=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa%C3%A9&proxy_ble=false";
+    WebServer rejectedServer(80);
+    WifiSettingsApiService::handleApiDeviceSettingsSaveBody(
+        rejectedServer, makeDeviceRuntime(probe), reinterpret_cast<const uint8_t*>(rejected),
+        sizeof(rejected) - 1u);
+    TEST_ASSERT_EQUAL_INT(400, rejectedServer.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(1, probe.deviceApplyCalls);
+
+    const char unsafe[] = "proxy_name=%01&proxy_ble=true";
+    WebServer unsafeServer(80);
+    WifiSettingsApiService::handleApiDeviceSettingsSaveBody(
+        unsafeServer, makeDeviceRuntime(probe), reinterpret_cast<const uint8_t*>(unsafe),
+        sizeof(unsafe) - 1u);
+    TEST_ASSERT_EQUAL_INT(400, unsafeServer.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(1, probe.deviceApplyCalls);
+}
+
+void test_shipped_ui_multipart_device_settings_form_remains_compatible() {
+    constexpr char boundary[] = "legacy-v203";
+    const char body[] =
+        "--legacy-v203\r\nContent-Disposition: form-data; name=\"proxy_ble\"\r\n\r\ntrue\r\n"
+        "--legacy-v203\r\nContent-Disposition: form-data; name=\"proxy_name\"\r\n\r\nRoad Proxy\r\n"
+        "--legacy-v203--\r\n";
+    Probe probe;
+    WebServer server(80);
+    WifiSettingsApiService::handleApiDeviceSettingsSaveBody(
+        server, makeDeviceRuntime(probe), reinterpret_cast<const uint8_t*>(body), sizeof(body) - 1u,
+        boundary, sizeof(boundary) - 1u);
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(1, probe.deviceApplyCalls);
+    TEST_ASSERT_TRUE(probe.deviceUpdate.hasProxyBLE);
+    TEST_ASSERT_TRUE(probe.deviceUpdate.proxyBLE);
+    TEST_ASSERT_TRUE(probe.deviceUpdate.hasProxyName);
+    TEST_ASSERT_EQUAL_STRING("Road Proxy", probe.deviceUpdate.proxyName.c_str());
+}
+
 void test_display_save_reports_persist_failure_without_live_effects() {
     Probe probe;
     probe.persistSuccess = false;
@@ -307,6 +372,9 @@ int main() {
     RUN_TEST(test_audio_post_reports_persist_failure_without_live_volume_change);
     RUN_TEST(test_quiet_post_reports_persist_failure);
     RUN_TEST(test_device_settings_post_reports_persist_failure);
+    RUN_TEST(test_device_settings_exact_body_rejects_unknown_and_incomplete_fields_without_apply);
+    RUN_TEST(test_device_settings_exact_body_uses_utf8_byte_limits_without_truncation);
+    RUN_TEST(test_shipped_ui_multipart_device_settings_form_remains_compatible);
     RUN_TEST(test_display_save_reports_persist_failure_without_live_effects);
     RUN_TEST(test_display_reset_reports_persist_failure_without_live_effects);
     RUN_TEST(test_display_legacy_read_save_preserves_all_six_colors);

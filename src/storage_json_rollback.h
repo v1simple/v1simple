@@ -8,6 +8,7 @@ enum class JsonRollbackLoadResult {
     Missing = 0,
     LoadedLive,
     LoadedRollback,
+    OutOfMemory,
     Invalid,
 };
 

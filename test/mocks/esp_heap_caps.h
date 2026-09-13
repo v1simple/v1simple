@@ -39,9 +39,17 @@ inline void* heap_caps_malloc(size_t size, uint32_t caps) {
             return nullptr;
         }
     }
+    if (g_mock_heap_caps_fail_all_allocations) {
+        return nullptr;
+    }
     if (g_mock_heap_caps_fail_on_call != 0u &&
         g_mock_heap_caps_malloc_calls == g_mock_heap_caps_fail_on_call) {
         g_mock_heap_caps_fail_on_call = 0u;
+        return nullptr;
+    }
+    if (g_mock_heap_caps_fail_malloc_on_call != 0u &&
+        g_mock_heap_caps_malloc_calls == g_mock_heap_caps_fail_malloc_on_call) {
+        g_mock_heap_caps_fail_malloc_on_call = 0u;
         return nullptr;
     }
     if (g_mock_heap_caps_fail_malloc) {
@@ -64,6 +72,9 @@ inline void* heap_caps_realloc(void* ptr, size_t size, uint32_t caps) {
         if ((g_mock_heap_caps_fail_call_mask & bit) != 0u) {
             return nullptr;
         }
+    }
+    if (g_mock_heap_caps_fail_all_allocations) {
+        return nullptr;
     }
     if (g_mock_heap_caps_fail_on_call != 0u &&
         g_mock_heap_caps_realloc_calls == g_mock_heap_caps_fail_on_call) {

@@ -3,10 +3,18 @@
  */
 
 #include "v1_profiles.h"
+#include "backup_payload_builder.h"
+#include "json_exact_input.h"
+#include "psram_json_document.h"
 #include "storage_manager.h"
 #include "v1_settings_json.h"
 #include <ArduinoJson.h>
+#include <algorithm>
+#include <array>
 #include <cstring>
+#include <limits>
+#include <new>
+#include <utility>
 #include <vector>
 
 // Shared CRC32 from settings_backup.cpp (canonical IEEE 802.3 table, check value 0xCBF43926).
@@ -18,7 +26,19 @@ uint32_t V1ProfileManager::calculateCRC32(const uint8_t* data, size_t length) {
 
 namespace {
 
-uint32_t detectorConfigurationCrc(const V1DetectorConfiguration& config);
+bool detectorConfigurationCrc(const V1DetectorConfiguration& config, uint32_t& out,
+                              uint8_t schemaVersion = V1_PROFILE_SCHEMA_VERSION);
+
+bool profileDocumentCrc(JsonDocument& doc, uint32_t& out) {
+    const JsonVariantConst stored = doc["profileCrc32"];
+    const bool restore = !stored.isUnbound();
+    const uint32_t storedValue = stored.is<uint32_t>() ? stored.as<uint32_t>() : 0;
+    doc.remove("profileCrc32");
+    if (doc.overflowed()) return false;
+    out = BackupPayloadBuilder::computeBackupCrc32(doc);
+    if (restore) doc["profileCrc32"] = storedValue;
+    return !doc.overflowed();
+}
 
 class ProfileStorageGuard {
   public:
@@ -64,7 +84,30 @@ constexpr const char* kEnumSettingFields[] = {
     "autoMute",
 };
 
+bool settingKeyEquals(JsonString key, const char* expected) {
+    const size_t expectedLength = std::strlen(expected);
+    return key.c_str() && key.size() == expectedLength &&
+           std::memcmp(key.c_str(), expected, expectedLength) == 0;
+}
+
+bool knownUserSettingKey(JsonString key) {
+    if (settingKeyEquals(key, "bytes") || settingKeyEquals(key, "baseBytes")) return true;
+    for (const char* name : kBooleanSettingFields) {
+        if (settingKeyEquals(key, name)) return true;
+    }
+    for (const char* name : kEnumSettingFields) {
+        if (settingKeyEquals(key, name)) return true;
+    }
+    return false;
+}
+
 bool validateHumanReadableSettings(const JsonObjectConst& settingsObj) {
+    for (JsonPairConst pair : settingsObj) {
+        if (!knownUserSettingKey(pair.key())) {
+            Serial.println("[V1Profiles] Unknown user setting");
+            return false;
+        }
+    }
     for (const char* name : kBooleanSettingFields) {
         const JsonVariantConst value = settingsObj[name];
         if (!value.isUnbound() && !value.is<bool>()) {
@@ -92,6 +135,143 @@ bool validateHumanReadableSettings(const JsonObjectConst& settingsObj) {
     return true;
 }
 
+void applyHumanReadableSettings(const JsonObjectConst& settingsObj, V1UserSettings& parsed,
+                                bool& anyField);
+
+bool legacyProfileKeyIsKnown(JsonString key) {
+    return settingKeyEquals(key, "name") || settingKeyEquals(key, "description") ||
+           settingKeyEquals(key, "displayOn") || settingKeyEquals(key, "mainVolume") ||
+           settingKeyEquals(key, "mutedVolume") || settingKeyEquals(key, "bytes") ||
+           settingKeyEquals(key, "crc32") ||
+           (knownUserSettingKey(key) && !settingKeyEquals(key, "baseBytes"));
+}
+
+bool parseLegacyProfileSettings(const JsonObjectConst& source, V1UserSettings& settings,
+                                bool& displayOn, uint8_t& mainVolume, uint8_t& mutedVolume) {
+    for (JsonPairConst pair : source) {
+        if (!legacyProfileKeyIsKnown(pair.key())) return false;
+    }
+    if (!source["displayOn"].is<bool>() || !source["mainVolume"].is<int>() ||
+        !source["mutedVolume"].is<int>()) return false;
+    const int main = source["mainVolume"].as<int>();
+    const int muted = source["mutedVolume"].as<int>();
+    if (!((main >= 0 && main <= 9) || main == 0xFF) ||
+        !((muted >= 0 && muted <= 9) || muted == 0xFF)) return false;
+
+    uint8_t raw[V1SettingsJson::kSettingsByteCount];
+    if (!V1SettingsJson::parseRawBytes(source["bytes"], raw)) return false;
+    if (!source["crc32"].isUnbound() &&
+        (!source["crc32"].is<uint32_t>() ||
+         source["crc32"].as<uint32_t>() != computeCrc32(raw, sizeof(raw)))) return false;
+
+    // Persisted v1 writers emitted raw bytes plus optional human-readable
+    // redundancy. Raw bytes remain authoritative, but any redundancy present
+    // must be exact and agree instead of being silently coerced or ignored.
+    for (const char* name : kBooleanSettingFields) {
+        if (!source[name].isUnbound() && !source[name].is<bool>()) return false;
+    }
+    for (const char* name : kEnumSettingFields) {
+        if (!source[name].isUnbound() &&
+            (!source[name].is<uint8_t>() || source[name].as<uint8_t>() > 3)) return false;
+    }
+
+    V1UserSettings parsed;
+    std::memcpy(parsed.bytes, raw, sizeof(raw));
+    V1UserSettings redundant = parsed;
+    bool anyHumanField = false;
+    applyHumanReadableSettings(source, redundant, anyHumanField);
+    if (anyHumanField && std::memcmp(parsed.bytes, redundant.bytes, sizeof(raw)) != 0) return false;
+
+    settings = parsed;
+    displayOn = source["displayOn"].as<bool>();
+    mainVolume = static_cast<uint8_t>(main);
+    mutedVolume = static_cast<uint8_t>(muted);
+    return true;
+}
+
+bool versionedProfileKeyIsKnown(JsonString key) {
+    return settingKeyEquals(key, "schemaVersion") || settingKeyEquals(key, "name") ||
+           settingKeyEquals(key, "description") || settingKeyEquals(key, "detector") ||
+           settingKeyEquals(key, "detectorCrc32") || settingKeyEquals(key, "bytes") ||
+           settingKeyEquals(key, "crc32") || settingKeyEquals(key, "profileCrc32") ||
+           (knownUserSettingKey(key) && !settingKeyEquals(key, "baseBytes"));
+}
+
+bool validateVersionedReadableSettings(const JsonObjectConst& source, const uint8_t* raw,
+                                       bool requireCompleteReadableShape) {
+    for (JsonPairConst pair : source) {
+        if (!versionedProfileKeyIsKnown(pair.key())) return false;
+    }
+    for (const char* name : kBooleanSettingFields) {
+        const JsonVariantConst value = source[name];
+        if ((requireCompleteReadableShape && value.isUnbound()) ||
+            (!value.isUnbound() && !value.is<bool>())) return false;
+    }
+    for (const char* name : kEnumSettingFields) {
+        const JsonVariantConst value = source[name];
+        if ((requireCompleteReadableShape && value.isUnbound()) ||
+            (!value.isUnbound() &&
+             (!value.is<uint8_t>() || value.as<uint8_t>() > 3))) return false;
+    }
+    V1UserSettings authoritative;
+    std::memcpy(authoritative.bytes, raw, V1SettingsJson::kSettingsByteCount);
+    V1UserSettings redundant = authoritative;
+    bool anyReadable = false;
+    applyHumanReadableSettings(source, redundant, anyReadable);
+    return (!requireCompleteReadableShape || anyReadable) &&
+           std::memcmp(authoritative.bytes, redundant.bytes, V1SettingsJson::kSettingsByteCount) == 0;
+}
+
+void applyHumanReadableSettings(const JsonObjectConst& settingsObj, V1UserSettings& parsed,
+                                bool& anyField) {
+#define APPLY_BOOL_FIELD(jsonName, setter)                 \
+    do {                                                    \
+        if (!settingsObj[jsonName].isUnbound()) {           \
+            parsed.setter(settingsObj[jsonName].as<bool>()); \
+            anyField = true;                                \
+        }                                                   \
+    } while (false)
+#define APPLY_ENUM_FIELD(jsonName, setter)                    \
+    do {                                                       \
+        if (!settingsObj[jsonName].isUnbound()) {              \
+            parsed.setter(settingsObj[jsonName].as<uint8_t>()); \
+            anyField = true;                                   \
+        }                                                      \
+    } while (false)
+    APPLY_BOOL_FIELD("xBand", setXBandEnabled);
+    APPLY_BOOL_FIELD("kBand", setKBandEnabled);
+    APPLY_BOOL_FIELD("kaBand", setKaBandEnabled);
+    APPLY_BOOL_FIELD("laser", setLaserEnabled);
+    APPLY_BOOL_FIELD("kuBand", setKuBandEnabled);
+    APPLY_BOOL_FIELD("euro", setEuroMode);
+    APPLY_BOOL_FIELD("kVerifier", setKVerifier);
+    APPLY_BOOL_FIELD("laserRear", setLaserRear);
+    APPLY_BOOL_FIELD("customFreqs", setCustomFreqs);
+    APPLY_BOOL_FIELD("kaAlwaysPriority", setKaAlwaysPriority);
+    APPLY_BOOL_FIELD("fastLaserDetect", setFastLaserDetect);
+    APPLY_ENUM_FIELD("kaSensitivity", setKaSensitivity);
+    APPLY_ENUM_FIELD("kSensitivity", setKSensitivity);
+    APPLY_ENUM_FIELD("xSensitivity", setXSensitivity);
+    APPLY_ENUM_FIELD("autoMute", setAutoMute);
+    APPLY_BOOL_FIELD("muteToMuteVolume", setMuteToMuteVolume);
+    APPLY_BOOL_FIELD("bogeyLockLoud", setBogeyLockLoud);
+    APPLY_BOOL_FIELD("muteXKRear", setMuteXKRear);
+    APPLY_BOOL_FIELD("startupSequence", setStartupSequence);
+    APPLY_BOOL_FIELD("restingDisplay", setRestingDisplay);
+    APPLY_BOOL_FIELD("bsmPlus", setBsmPlus);
+    APPLY_BOOL_FIELD("mrct", setMrct);
+    APPLY_BOOL_FIELD("driveSafe3D", setDriveSafe3D);
+    APPLY_BOOL_FIELD("driveSafe3DHD", setDriveSafe3DHD);
+    APPLY_BOOL_FIELD("redflexHalo", setRedflexHalo);
+    APPLY_BOOL_FIELD("redflexNK7", setRedflexNK7);
+    APPLY_BOOL_FIELD("ekin", setEkin);
+    APPLY_BOOL_FIELD("photoVerifier", setPhotoVerifier);
+    APPLY_BOOL_FIELD("gatsoRT4", setGatsoRT4);
+    APPLY_BOOL_FIELD("photoIntersectionFilter", setPhotoIntersectionFilter);
+#undef APPLY_ENUM_FIELD
+#undef APPLY_BOOL_FIELD
+}
+
 struct ProfileSyncState {
     enum class Status : uint8_t {
         Absent,
@@ -99,6 +279,7 @@ struct ProfileSyncState {
         LegacyMetadata,
         Current,
         Corrupt,
+        Unavailable,
     };
 
     uint32_t version = 0;
@@ -110,23 +291,54 @@ constexpr const char* PROFILE_SYNC_META_TYPE = "v1simple_profile_sync";
 constexpr int PROFILE_SYNC_META_VERSION = 1;
 constexpr size_t PROFILE_SYNC_META_MAX_BYTES = 512;
 
+#ifdef UNIT_TEST
+const char* g_failProfilePathSuffixForTest = nullptr;
+#endif
+
 struct ProfileFileInspection {
     bool exists = false;
     bool valid = false;
+    bool unavailable = false;
     uint32_t contentCrc = 0;
 };
 
-String syncMetaPath(const String& profilePath) {
-    return profilePath + ".meta";
+bool appendPathSuffixChecked(const String& base, const char* suffix, String& output) {
+    if (!suffix) return false;
+#ifdef UNIT_TEST
+    if (g_failProfilePathSuffixForTest &&
+        std::strcmp(g_failProfilePathSuffixForTest, suffix) == 0) return false;
+#endif
+    const size_t suffixLength = std::strlen(suffix);
+    const size_t expected = base.length() + suffixLength;
+    String candidate;
+    candidate.reserve(expected);
+    candidate += base;
+    candidate += suffix;
+    if (candidate.length() != expected ||
+        (base.length() != 0 && std::memcmp(candidate.c_str(), base.c_str(), base.length()) != 0) ||
+        (suffixLength != 0 && std::memcmp(candidate.c_str() + base.length(), suffix, suffixLength) != 0)) {
+        return false;
+    }
+    output = std::move(candidate);
+    return output.length() == expected;
 }
 
-uint32_t syncStateCrc(const JsonDocument& source) {
-    JsonDocument copy;
-    copy.set(source);
-    copy.remove("_crc32");
-    String serialized;
-    serializeJson(copy, serialized);
-    return computeCrc32(reinterpret_cast<const uint8_t*>(serialized.c_str()), serialized.length());
+bool syncMetaPath(const String& profilePath, String& output) {
+    return appendPathSuffixChecked(profilePath, ".meta", output);
+}
+
+bool syncStateCrc(const uint32_t version, const bool deleted, uint32_t& out) {
+    // The metadata schema has four fixed canonical fields. Hash their exact
+    // minified representation without a DOM clone or heap-backed String so a
+    // low-memory tombstone/winner decision cannot accept a partial checksum.
+    char canonical[192];
+    const int length = snprintf(canonical, sizeof(canonical),
+                                "{\"_type\":\"%s\",\"_version\":%d,\"version\":%lu,\"deleted\":%s}",
+                                PROFILE_SYNC_META_TYPE, PROFILE_SYNC_META_VERSION,
+                                static_cast<unsigned long>(version), deleted ? "true" : "false");
+    if (length <= 0 || static_cast<size_t>(length) >= sizeof(canonical)) return false;
+    out = computeCrc32(reinterpret_cast<const uint8_t*>(canonical), static_cast<size_t>(length));
+    return true;
 }
 
 bool parseSyncStateDocument(const JsonDocument& doc, ProfileSyncState& state) {
@@ -138,12 +350,13 @@ bool parseSyncStateDocument(const JsonDocument& doc, ProfileSyncState& state) {
         state.status = ProfileSyncState::Status::LegacyMetadata;
         return true;
     }
-    if (object.size() != 5 || !doc["_type"].is<const char*>() ||
-        strcmp(doc["_type"].as<const char*>(), PROFILE_SYNC_META_TYPE) != 0 ||
+    uint32_t computedCrc = 0;
+    if (object.size() != 5 || !exactV1JsonToken(doc["_type"], PROFILE_SYNC_META_TYPE) ||
         !doc["_version"].is<int>() || doc["_version"].as<int>() != PROFILE_SYNC_META_VERSION ||
         !doc["version"].is<uint32_t>() || doc["version"].as<uint32_t>() == 0 ||
         !doc["deleted"].is<bool>() || !doc["_crc32"].is<uint32_t>() ||
-        doc["_crc32"].as<uint32_t>() != syncStateCrc(doc)) {
+        !syncStateCrc(doc["version"].as<uint32_t>(), doc["deleted"].as<bool>(), computedCrc) ||
+        doc["_crc32"].as<uint32_t>() != computedCrc) {
         return false;
     }
     state.version = doc["version"].as<uint32_t>();
@@ -154,7 +367,11 @@ bool parseSyncStateDocument(const JsonDocument& doc, ProfileSyncState& state) {
 
 ProfileSyncState readSyncState(fs::FS& filesystem, const String& profilePath) {
     ProfileSyncState state;
-    const String metaPath = syncMetaPath(profilePath);
+    String metaPath;
+    if (!syncMetaPath(profilePath, metaPath)) {
+        state.status = ProfileSyncState::Status::Unavailable;
+        return state;
+    }
     if (!filesystem.exists(metaPath)) {
         if (filesystem.exists(profilePath)) {
             state.version = 1; // backward-compatible baseline for pre-metadata files
@@ -165,43 +382,110 @@ ProfileSyncState readSyncState(fs::FS& filesystem, const String& profilePath) {
     }
 
     File file = filesystem.open(metaPath, FILE_READ);
-    if (!file || file.size() == 0 || file.size() > PROFILE_SYNC_META_MAX_BYTES) {
-        if (file) file.close();
+    if (!file) {
+        state.status = ProfileSyncState::Status::Unavailable;
+        return state;
+    }
+    if (file.size() == 0 || file.size() > PROFILE_SYNC_META_MAX_BYTES) {
+        file.close();
         state.status = ProfileSyncState::Status::Corrupt;
         return state;
     }
     const size_t fileSize = file.size();
-    std::vector<uint8_t> bytes(fileSize);
+    PsramJson::Buffer bytes(fileSize);
+    if (!bytes) {
+        file.close();
+        state.status = ProfileSyncState::Status::Unavailable;
+        return state;
+    }
     const size_t bytesRead = file.read(bytes.data(), fileSize);
     file.close();
-    JsonDocument doc;
-    if (bytesRead != fileSize || deserializeJson(doc, bytes.data(), bytes.size()) ||
-        !parseSyncStateDocument(doc, state)) {
+    PsramJson::Document doc;
+    if (bytesRead != fileSize) {
+        state.status = ProfileSyncState::Status::Unavailable;
+        return state;
+    }
+    const ExactJsonInput::Status exact = ExactJsonInput::validate(bytes.data(), bytes.size());
+    if (exact == ExactJsonInput::Status::MemoryUnavailable) {
+        state.status = ProfileSyncState::Status::Unavailable;
+        return state;
+    }
+    const DeserializationError parseError =
+        exact == ExactJsonInput::Status::Ok ? deserializeJson(doc, bytes.data(), bytes.size())
+                                           : DeserializationError::InvalidInput;
+    if (parseError == DeserializationError::NoMemory || doc.overflowed()) {
+        state.status = ProfileSyncState::Status::Unavailable;
+        return state;
+    }
+    if (exact != ExactJsonInput::Status::Ok || parseError || !parseSyncStateDocument(doc, state)) {
         state = ProfileSyncState{};
         state.status = ProfileSyncState::Status::Corrupt;
     }
     return state;
 }
 
-ProfileFileInspection inspectProfileFile(fs::FS& filesystem, const String& path) {
+ProfileFileInspection inspectProfileFile(fs::FS& filesystem, const String& path, const String& expectedName) {
     ProfileFileInspection inspection;
     inspection.exists = filesystem.exists(path);
     if (!inspection.exists) return inspection;
 
     File file = filesystem.open(path, FILE_READ);
-    if (!file || file.size() == 0 || file.size() > 4096) {
+    if (!file) {
+        inspection.unavailable = true;
+        return inspection;
+    }
+    if (file.size() == 0 || file.size() > V1_PROFILE_FILE_MAX_BYTES) {
         if (file) file.close();
         return inspection;
     }
 
     const size_t fileSize = file.size();
-    std::vector<uint8_t> content(fileSize);
+    PsramJson::Buffer content(fileSize);
+    if (!content) {
+        file.close();
+        inspection.unavailable = true;
+        return inspection;
+    }
     const size_t bytesRead = file.read(content.data(), fileSize);
     file.close();
-    if (bytesRead != fileSize) return inspection;
+    if (bytesRead != fileSize) {
+        inspection.unavailable = true;
+        return inspection;
+    }
 
-    JsonDocument doc;
-    if (deserializeJson(doc, content.data(), content.size())) return inspection;
+    PsramJson::Document doc;
+    const ExactJsonInput::Status exact = ExactJsonInput::validate(content.data(), content.size());
+    if (exact == ExactJsonInput::Status::MemoryUnavailable) {
+        inspection.unavailable = true;
+        return inspection;
+    }
+    if (exact != ExactJsonInput::Status::Ok) return inspection;
+    const DeserializationError parseError = deserializeJson(doc, content.data(), content.size());
+    if (parseError == DeserializationError::NoMemory || doc.overflowed()) {
+        inspection.unavailable = true;
+        return inspection;
+    }
+    if (parseError) return inspection;
+
+    String serializedName;
+    const ExactV1JsonStringStatus nameStatus =
+        exactV1JsonStringChecked(doc["name"], serializedName, MAX_PROFILE_NAME_LEN);
+    if (nameStatus == ExactV1JsonStringStatus::Unavailable) {
+        inspection.unavailable = true;
+        return inspection;
+    }
+    if (nameStatus != ExactV1JsonStringStatus::Valid || serializedName != expectedName) return inspection;
+
+    String description;
+    const ExactV1JsonStringStatus descriptionStatus =
+        exactV1JsonStringChecked(doc["description"], description, V1_PROFILE_DESCRIPTION_MAX_BYTES);
+    if (descriptionStatus == ExactV1JsonStringStatus::Unavailable) {
+        inspection.unavailable = true;
+        return inspection;
+    }
+    if (descriptionStatus != ExactV1JsonStringStatus::Valid) {
+        return inspection;
+    }
 
     const bool hasSchemaVersion = !doc["schemaVersion"].isUnbound();
     const bool hasDetector = !doc["detector"].isUnbound();
@@ -209,20 +493,45 @@ ProfileFileInspection inspectProfileFile(fs::FS& filesystem, const String& path)
     if (hasSchemaVersion != hasDetector || hasSchemaVersion != hasDetectorCrc) return inspection;
     if (hasSchemaVersion) {
         V1DetectorConfiguration detector;
-        if (!doc["schemaVersion"].is<int>() || doc["schemaVersion"].as<int>() != V1_PROFILE_SCHEMA_VERSION ||
+        uint32_t detectorCrc = 0;
+        if (!doc["schemaVersion"].is<int>()) return inspection;
+        const int schema = doc["schemaVersion"].as<int>();
+        if ((schema != V1_PROFILE_PREVIOUS_SCHEMA_VERSION && schema != V1_PROFILE_SCHEMA_VERSION) ||
             !doc["detector"].is<JsonObjectConst>() ||
-            !parseV1DetectorConfiguration(doc["detector"].as<JsonObjectConst>(), detector) ||
-            !doc["detectorCrc32"].is<uint32_t>() ||
-            doc["detectorCrc32"].as<uint32_t>() != detectorConfigurationCrc(detector)) {
+            !(schema == V1_PROFILE_SCHEMA_VERSION
+                  ? parseV1DetectorConfiguration(doc["detector"].as<JsonObjectConst>(), detector)
+                  : parseV1DetectorConfigurationV2(doc["detector"].as<JsonObjectConst>(), detector)) ||
+            !doc["detectorCrc32"].is<uint32_t>()) {
             return inspection;
         }
+        if (!detectorConfigurationCrc(detector, detectorCrc, static_cast<uint8_t>(schema))) {
+            inspection.unavailable = true;
+            return inspection;
+        }
+        if (doc["detectorCrc32"].as<uint32_t>() != detectorCrc) return inspection;
+        const bool currentSchema = schema == V1_PROFILE_SCHEMA_VERSION;
+        uint32_t profileCrc = 0;
+        if (currentSchema != !doc["profileCrc32"].isUnbound() ||
+            (currentSchema && (!doc["profileCrc32"].is<uint32_t>() ||
+                               !profileDocumentCrc(doc, profileCrc) ||
+                               doc["profileCrc32"].as<uint32_t>() != profileCrc))) return inspection;
     }
 
     const JsonVariantConst rawBytes = doc["bytes"];
     if (hasSchemaVersion && (rawBytes.isUnbound() || !doc["crc32"].is<uint32_t>())) return inspection;
-    if (!rawBytes.isUnbound()) {
+    if (!hasSchemaVersion) {
+        V1UserSettings legacySettings;
+        bool displayOn = true;
+        uint8_t mainVolume = 0xFF;
+        uint8_t mutedVolume = 0xFF;
+        if (!parseLegacyProfileSettings(doc.as<JsonObjectConst>(), legacySettings, displayOn,
+                                        mainVolume, mutedVolume)) return inspection;
+    } else if (!rawBytes.isUnbound()) {
         uint8_t parsed[V1SettingsJson::kSettingsByteCount];
         if (!V1SettingsJson::parseRawBytes(rawBytes, parsed)) return inspection;
+        const int schema = doc["schemaVersion"].as<int>();
+        if (!validateVersionedReadableSettings(doc.as<JsonObjectConst>(), parsed,
+                                               schema == V1_PROFILE_SCHEMA_VERSION)) return inspection;
         if (doc["crc32"].is<uint32_t>() &&
             doc["crc32"].as<uint32_t>() !=
                 computeCrc32(parsed, V1SettingsJson::kSettingsByteCount)) {
@@ -236,15 +545,18 @@ ProfileFileInspection inspectProfileFile(fs::FS& filesystem, const String& path)
 }
 
 bool writeSyncState(fs::FS& filesystem, const String& profilePath, const ProfileSyncState& state) {
-    JsonDocument doc;
+    PsramJson::Document doc;
     doc["_type"] = PROFILE_SYNC_META_TYPE;
     doc["_version"] = PROFILE_SYNC_META_VERSION;
     doc["version"] = state.version;
     doc["deleted"] = state.deleted;
-    const uint32_t crc = syncStateCrc(doc);
+    uint32_t crc = 0;
+    if (!syncStateCrc(state.version, state.deleted, crc)) return false;
     doc["_crc32"] = crc;
-    const String metaPath = syncMetaPath(profilePath);
-    const String tmpPath = metaPath + ".tmp";
+    String metaPath;
+    String tmpPath;
+    if (!syncMetaPath(profilePath, metaPath) ||
+        !appendPathSuffixChecked(metaPath, ".tmp", tmpPath)) return false;
     File file = filesystem.open(tmpPath, FILE_WRITE);
     if (!file) return false;
     const size_t expected = measureJson(doc);
@@ -257,9 +569,14 @@ bool writeSyncState(fs::FS& filesystem, const String& profilePath, const Profile
     }
 
     File verify = filesystem.open(tmpPath, FILE_READ);
-    JsonDocument verifiedDoc;
+    const size_t verifySize = verify ? verify.size() : 0;
+    PsramJson::Buffer verifyBytes(verifySize);
+    PsramJson::Document verifiedDoc;
     ProfileSyncState verifiedState;
-    const bool verified = verify && verify.size() == written && !deserializeJson(verifiedDoc, verify) &&
+    const bool verified = verify && verifySize == written && verifyBytes &&
+                          verify.read(verifyBytes.data(), verifySize) == verifySize &&
+                          ExactJsonInput::validate(verifyBytes.data(), verifySize) == ExactJsonInput::Status::Ok &&
+                          !deserializeJson(verifiedDoc, verifyBytes.data(), verifySize) && !verifiedDoc.overflowed() &&
                           parseSyncStateDocument(verifiedDoc, verifiedState) &&
                           verifiedState.version == state.version && verifiedState.deleted == state.deleted;
     if (verify) verify.close();
@@ -271,16 +588,21 @@ bool writeSyncState(fs::FS& filesystem, const String& profilePath, const Profile
     return true;
 }
 
-bool copyProfileFileAs(fs::FS& source, const String& sourcePath, fs::FS& target, const String& targetPath) {
-    const ProfileFileInspection sourceInspection = inspectProfileFile(source, sourcePath);
+bool copyProfileFileAs(fs::FS& source, const String& sourcePath, fs::FS& target, const String& targetPath,
+                       const String& expectedName) {
+    const ProfileFileInspection sourceInspection = inspectProfileFile(source, sourcePath, expectedName);
     if (!sourceInspection.valid) return false;
 
     File in = source.open(sourcePath, FILE_READ);
-    if (!in || in.size() == 0 || in.size() > 4096) {
+    if (!in || in.size() == 0 || in.size() > V1_PROFILE_FILE_MAX_BYTES) {
         if (in) in.close();
         return false;
     }
-    const String tmpPath = targetPath + ".tmpsync";
+    String tmpPath;
+    if (!appendPathSuffixChecked(targetPath, ".tmpsync", tmpPath)) {
+        in.close();
+        return false;
+    }
     File out = target.open(tmpPath, FILE_WRITE);
     if (!out) {
         in.close();
@@ -298,7 +620,7 @@ bool copyProfileFileAs(fs::FS& source, const String& sourcePath, fs::FS& target,
     out.flush();
     out.close();
     in.close();
-    const ProfileFileInspection copiedInspection = inspectProfileFile(target, tmpPath);
+    const ProfileFileInspection copiedInspection = inspectProfileFile(target, tmpPath, expectedName);
     if (!ok || !copiedInspection.valid || copiedInspection.contentCrc != sourceInspection.contentCrc ||
         !StorageManager::promoteTempFileWithRollback(target, tmpPath.c_str(), targetPath.c_str())) {
         target.remove(tmpPath);
@@ -307,14 +629,18 @@ bool copyProfileFileAs(fs::FS& source, const String& sourcePath, fs::FS& target,
     return true;
 }
 
-bool copyProfileFile(fs::FS& source, fs::FS& target, const String& profilePath) {
-    return copyProfileFileAs(source, profilePath, target, profilePath);
+bool copyProfileFile(fs::FS& source, fs::FS& target, const String& profilePath, const String& expectedName) {
+    return copyProfileFileAs(source, profilePath, target, profilePath, expectedName);
 }
 
 bool restoreSyncState(fs::FS& filesystem, const String& profilePath, const ProfileSyncState& state) {
-    const String metaPath = syncMetaPath(profilePath);
-    filesystem.remove(metaPath + ".tmp");
-    if (state.status == ProfileSyncState::Status::Corrupt) {
+    String metaPath;
+    String tmpPath;
+    if (!syncMetaPath(profilePath, metaPath) ||
+        !appendPathSuffixChecked(metaPath, ".tmp", tmpPath)) return false;
+    filesystem.remove(tmpPath);
+    if (state.status == ProfileSyncState::Status::Corrupt ||
+        state.status == ProfileSyncState::Status::Unavailable) {
         return false;
     }
     if (state.status == ProfileSyncState::Status::Absent ||
@@ -324,23 +650,168 @@ bool restoreSyncState(fs::FS& filesystem, const String& profilePath, const Profi
     return writeSyncState(filesystem, profilePath, state);
 }
 
-void addUniqueName(std::vector<String>& names, const String& candidate) {
-    for (const String& existing : names) {
-        if (existing == candidate) return;
+bool addUniqueName(std::array<String, V1_PROFILE_CATALOG_MAX_COUNT>& names,
+                   size_t& nameCount, const String& candidate, bool& overLimit) {
+    for (size_t index = 0; index < nameCount; ++index) {
+        if (names[index] == candidate) return true;
     }
-    names.push_back(candidate);
+    if (nameCount >= names.size()) {
+        overLimit = true;
+        return false;
+    }
+    names[nameCount] = candidate;
+    if (names[nameCount].length() != candidate.length() || names[nameCount] != candidate) return false;
+    ++nameCount;
+    return true;
+}
+
+bool checkedStringFromBytes(const char* bytes, size_t length, String& output) {
+    if (!bytes || length > 256u) return false;
+    char terminated[257];
+    if (length != 0) std::memcpy(terminated, bytes, length);
+    terminated[length] = '\0';
+    String parsed(terminated);
+    if (parsed.length() != length ||
+        (length != 0 && std::memcmp(parsed.c_str(), bytes, length) != 0)) return false;
+    output = std::move(parsed);
+    return output.length() == length &&
+           (length == 0 || std::memcmp(output.c_str(), bytes, length) == 0);
+}
+
+bool checkedStringFromCString(const char* text, String& output, size_t maxLength = 256) {
+    if (!text) return false;
+    const size_t length = strnlen(text, maxLength + 1u);
+    return length <= maxLength && checkedStringFromBytes(text, length, output);
+}
+
+bool buildProfilePathChecked(const String& directory, const String& name, String& output) {
+    const size_t expected = directory.length() + 1u + name.length() + sizeof(".json") - 1u;
+    String candidate;
+    candidate.reserve(expected);
+    candidate += directory;
+    candidate += '/';
+    candidate += name;
+    candidate += ".json";
+    if (candidate.length() != expected ||
+        std::memcmp(candidate.c_str(), directory.c_str(), directory.length()) != 0 ||
+        candidate[directory.length()] != '/' ||
+        std::memcmp(candidate.c_str() + directory.length() + 1u, name.c_str(), name.length()) != 0 ||
+        std::memcmp(candidate.c_str() + expected - (sizeof(".json") - 1u), ".json",
+                    sizeof(".json") - 1u) != 0) return false;
+    output = std::move(candidate);
+    return output.length() == expected;
+}
+
+enum class DirectoryProfileNameStatus : uint8_t { Profile = 0, Ignore, Unavailable };
+
+DirectoryProfileNameStatus directoryProfileName(const char* rawPath, const char* suffix,
+                                                String& canonical) {
+    if (!rawPath || !suffix) return DirectoryProfileNameStatus::Unavailable;
+    const size_t rawLength = strnlen(rawPath, 257u);
+    if (rawLength == 257u) return DirectoryProfileNameStatus::Unavailable;
+    const char* basename = std::strrchr(rawPath, '/');
+    basename = basename ? basename + 1 : rawPath;
+    const size_t basenameLength = rawLength - static_cast<size_t>(basename - rawPath);
+    const size_t suffixLength = std::strlen(suffix);
+    if (basenameLength <= suffixLength ||
+        std::memcmp(basename + basenameLength - suffixLength, suffix, suffixLength) != 0) {
+        return DirectoryProfileNameStatus::Ignore;
+    }
+    const size_t nameLength = basenameLength - suffixLength;
+    if (nameLength == 0 || nameLength > MAX_PROFILE_NAME_LEN ||
+        !validV1Utf8(basename, nameLength)) return DirectoryProfileNameStatus::Ignore;
+    String name;
+    if (!checkedStringFromBytes(basename, nameLength, name)) {
+        return DirectoryProfileNameStatus::Unavailable;
+    }
+    String parsed;
+    const ProfileNameStatus nameStatus = canonicalizeProfileName(name, parsed);
+    if (nameStatus == ProfileNameStatus::Valid && parsed == name) {
+        canonical = std::move(parsed);
+        return canonical.length() == nameLength ? DirectoryProfileNameStatus::Profile
+                                                : DirectoryProfileNameStatus::Unavailable;
+    }
+    // A canonical output shorter than an input without trimmable boundary
+    // whitespace is an allocation failure, not an invalid filename.
+    if (nameLength != 0 && name[0] != ' ' && name[nameLength - 1] != ' ' && parsed.length() == 0) {
+        return DirectoryProfileNameStatus::Unavailable;
+    }
+    return DirectoryProfileNameStatus::Ignore;
+}
+
+enum class ProfileCatalogScanStatus : uint8_t { Success = 0, IoError, Corrupt, Collision };
+
+struct ProfileCatalogSaveScan {
+    ProfileCatalogScanStatus status = ProfileCatalogScanStatus::Success;
+    bool targetExists = false;
+};
+
+// Transaction rollback must be able to restore one journaled member into a
+// grandfathered over-limit catalog. Scan one directory entry at a time so the
+// rollback path does not need to retain an attacker-sized catalog vector.
+ProfileCatalogSaveScan scanCatalogForGrandfatheredRestore(fs::FS& filesystem,
+                                                           const String& profileDirectory,
+                                                           const String& targetName) {
+    ProfileCatalogSaveScan result;
+    File dir = filesystem.open(profileDirectory);
+    if (!dir || !dir.isDirectory()) {
+        if (dir) dir.close();
+        result.status = ProfileCatalogScanStatus::IoError;
+        return result;
+    }
+
+    File entry;
+    while ((entry = dir.openNextFile())) {
+        String name;
+        const DirectoryProfileNameStatus nameStatus = directoryProfileName(entry.name(), ".json", name);
+        entry.close();
+        if (nameStatus == DirectoryProfileNameStatus::Unavailable) {
+            result.status = ProfileCatalogScanStatus::IoError;
+            break;
+        }
+        if (nameStatus != DirectoryProfileNameStatus::Profile) continue;
+
+        String path;
+        if (!buildProfilePathChecked(profileDirectory, name, path)) {
+            result.status = ProfileCatalogScanStatus::IoError;
+            break;
+        }
+        const ProfileSyncState state = readSyncState(filesystem, path);
+        if (state.status == ProfileSyncState::Status::Unavailable) {
+            result.status = ProfileCatalogScanStatus::IoError;
+            break;
+        }
+        if (state.status == ProfileSyncState::Status::Corrupt) {
+            result.status = ProfileCatalogScanStatus::Corrupt;
+            break;
+        }
+        if (state.deleted) continue;
+
+        if (name == targetName) {
+            result.targetExists = true;
+        } else if (profileCanonicalNamesCollide(name, targetName)) {
+            result.status = ProfileCatalogScanStatus::Collision;
+            break;
+        }
+    }
+    dir.close();
+    return result;
 }
 
 } // namespace
 
 namespace {
 
-uint32_t detectorConfigurationCrc(const V1DetectorConfiguration& config) {
-    JsonDocument doc;
-    appendV1DetectorConfiguration(doc.to<JsonObject>(), config);
-    String serialized;
-    serializeJson(doc, serialized);
-    return computeCrc32(reinterpret_cast<const uint8_t*>(serialized.c_str()), serialized.length());
+bool detectorConfigurationCrc(const V1DetectorConfiguration& config, uint32_t& out, uint8_t schemaVersion) {
+    PsramJson::Document doc;
+    if (schemaVersion == V1_PROFILE_PREVIOUS_SCHEMA_VERSION) {
+        appendV1DetectorConfigurationV2(doc.to<JsonObject>(), config);
+    } else {
+        appendV1DetectorConfiguration(doc.to<JsonObject>(), config);
+    }
+    if (doc.overflowed()) return false;
+    out = BackupPayloadBuilder::computeBackupCrc32(doc);
+    return !doc.overflowed();
 }
 
 } // namespace
@@ -348,6 +819,22 @@ uint32_t detectorConfigurationCrc(const V1DetectorConfiguration& config) {
 V1ProfileManager::V1ProfileManager()
     : fs_(nullptr), secondaryFs_(nullptr), storage_(nullptr), usingSd_(false), ready_(false),
       profileDir_("/v1profiles"), currentValid_(false) {}
+
+#ifdef UNIT_TEST
+void V1ProfileManager::utFailAllocation(V1ProfileAllocationFailurePoint point, size_t occurrence,
+                                        bool repeat) {
+    allocationFailurePoint_ = point;
+    allocationFailureCountdown_ = occurrence;
+    repeatAllocationFailure_ = repeat;
+}
+
+void V1ProfileManager::maybeFailAllocationForTest(V1ProfileAllocationFailurePoint point) const {
+    if (allocationFailurePoint_ != point || allocationFailureCountdown_ == 0) return;
+    if (--allocationFailureCountdown_ != 0) return;
+    if (!repeatAllocationFailure_) allocationFailurePoint_ = V1ProfileAllocationFailurePoint::None;
+    throw std::bad_alloc();
+}
+#endif
 
 void V1ProfileManager::bumpCatalogRevision() {
     if (catalogRevisionCounter_ == UINT32_MAX) {
@@ -365,68 +852,82 @@ static String basenameFromPath(const String& path) {
     return path;
 }
 
-void V1ProfileManager::recoverInterruptedSavesUnlocked() {
-    // Scan for .tmp and .bak files that indicate interrupted saves
-    // .tmp = incomplete new save (delete it)
-    // .bak without corresponding .json = interrupted rename (restore it)
-
-    File dir = fs_->open(profileDir_);
-    if (!dir || !dir.isDirectory()) {
-        return;
-    }
-
-    std::vector<String> tmpFiles;
-    std::vector<String> bakFiles;
-    std::vector<String> jsonFiles;
-
-    File entry;
-    while ((entry = dir.openNextFile())) {
-        String name = entry.name();
-        entry.close();
-
-        if (name.endsWith(".tmp")) {
-            tmpFiles.push_back(name);
-        } else if (name.endsWith(".bak")) {
-            bakFiles.push_back(name);
-        } else if (name.endsWith(".json")) {
-            jsonFiles.push_back(name);
+bool V1ProfileManager::recoverInterruptedSavesUnlocked() {
+    // Recovery directories can be externally populated. Process one owned
+    // transaction artifact per scan so RAM use never scales with directory
+    // cardinality, and re-open after each mutation so iterator invalidation
+    // cannot skip an entry.
+    const auto findOwnedArtifact = [&](const char* suffix, bool orphanOnly, String& livePath,
+                                       String& artifactPath) -> DirectoryProfileNameStatus {
+        File dir = fs_->open(profileDir_);
+        if (!dir || !dir.isDirectory()) {
+            if (dir) dir.close();
+            return DirectoryProfileNameStatus::Unavailable;
         }
-    }
-    dir.close();
-
-    // Remove incomplete .tmp files (interrupted during write)
-    for (const String& tmp : tmpFiles) {
-        String fullPath = profileDir_ + "/" + tmp;
-        Serial.println("[V1Profiles] Removing incomplete temp file");
-        fs_->remove(fullPath);
-    }
-
-    // Check for orphaned .bak files (main file missing after rename)
-    for (const String& bak : bakFiles) {
-        // Get the corresponding .json filename
-        String jsonName = bak.substring(0, bak.length() - 4); // Remove .bak
-
-        // Check if the main .json file exists
-        bool hasJson = false;
-        for (const String& json : jsonFiles) {
-            if (json == jsonName) {
-                hasJson = true;
-                break;
+        File entry;
+        while ((entry = dir.openNextFile())) {
+            String canonical;
+            const DirectoryProfileNameStatus status = directoryProfileName(entry.name(), suffix, canonical);
+            entry.close();
+            if (status == DirectoryProfileNameStatus::Unavailable) {
+                dir.close();
+                return status;
             }
+            if (status != DirectoryProfileNameStatus::Profile) continue;
+            if (!buildProfilePathChecked(profileDir_, canonical, livePath)) {
+                dir.close();
+                return DirectoryProfileNameStatus::Unavailable;
+            }
+            const bool metadata = std::strstr(suffix, ".meta.") != nullptr;
+            if (metadata) {
+                String metaPath;
+                if (!syncMetaPath(livePath, metaPath)) {
+                    dir.close();
+                    return DirectoryProfileNameStatus::Unavailable;
+                }
+                livePath = std::move(metaPath);
+            }
+            const char* transactionSuffix = std::strstr(suffix, ".tmp") ? ".tmp" : ".bak";
+            if (!appendPathSuffixChecked(livePath, transactionSuffix, artifactPath)) {
+                dir.close();
+                return DirectoryProfileNameStatus::Unavailable;
+            }
+            if (orphanOnly && fs_->exists(livePath)) continue;
+            dir.close();
+            return DirectoryProfileNameStatus::Profile;
         }
+        dir.close();
+        return DirectoryProfileNameStatus::Ignore;
+    };
 
-        if (!hasJson) {
-            // Main file missing! Restore from backup
-            String bakPath = profileDir_ + "/" + bak;
-            String jsonPath = profileDir_ + "/" + jsonName;
+    for (const char* suffix : {".json.tmp", ".json.meta.tmp"}) {
+        while (true) {
+            String livePath;
+            String tmpPath;
+            const DirectoryProfileNameStatus status = findOwnedArtifact(suffix, false, livePath, tmpPath);
+            if (status == DirectoryProfileNameStatus::Unavailable) return false;
+            if (status == DirectoryProfileNameStatus::Ignore) break;
+            Serial.println("[V1Profiles] Removing incomplete temp file");
+            if (!fs_->remove(tmpPath)) return false;
+        }
+    }
+
+    for (const char* suffix : {".json.bak", ".json.meta.bak"}) {
+        while (true) {
+            String livePath;
+            String bakPath;
+            const DirectoryProfileNameStatus status = findOwnedArtifact(suffix, true, livePath, bakPath);
+            if (status == DirectoryProfileNameStatus::Unavailable) return false;
+            if (status == DirectoryProfileNameStatus::Ignore) break;
+            // Never replace a live file. A retained backup beside a live file
+            // is not an interrupted promotion and stays available for manual
+            // diagnosis/cleanup.
+            if (fs_->exists(livePath)) return false;
             Serial.println("[V1Profiles] RECOVERY: Main file missing, restoring from backup");
-            if (fs_->rename(bakPath, jsonPath)) {
-                Serial.println("[V1Profiles] Recovery successful!");
-            } else {
-                Serial.println("[V1Profiles] Recovery FAILED - backup rename failed");
-            }
+            if (!fs_->rename(bakPath, livePath)) return false;
         }
     }
+    return true;
 }
 
 bool V1ProfileManager::begin(StorageManager& storage) {
@@ -470,7 +971,10 @@ bool V1ProfileManager::begin(fs::FS* filesystem, fs::FS* importFilesystem) {
     }
 
     // Run startup integrity check - recover any interrupted saves
-    recoverInterruptedSavesUnlocked();
+    if (!recoverInterruptedSavesUnlocked()) {
+        lastError_ = "Profile save recovery unavailable";
+        return false;
+    }
 
     ready_ = true;
     Serial.println("[V1Profiles] Initialized");
@@ -487,43 +991,100 @@ size_t V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs) {
 
     if (!fs_->exists(profileDir_)) fs_->mkdir(profileDir_);
 
-    std::vector<String> names;
+    // Reconciliation is a repair path, not the grandfathered-catalog prune
+    // interface. If the union of both stores exceeds the supported catalog
+    // bound, leave both stores untouched and let paged maintenance listing and
+    // deletion reduce the authoritative store first. This keeps retained RAM
+    // independent of externally populated directory cardinality.
+    std::array<String, V1_PROFILE_CATALOG_MAX_COUNT> names;
+    size_t nameCount = 0;
+    bool collectionAvailable = true;
+    bool collectionOverLimit = false;
     auto collect = [&](fs::FS& filesystem) {
         File dir = filesystem.open(profileDir_);
         if (!dir || !dir.isDirectory()) {
             if (dir) dir.close();
+            collectionAvailable = false;
             return;
         }
         File entry;
         while ((entry = dir.openNextFile())) {
-            String filename = basenameFromPath(entry.name());
-            entry.close();
-            String candidate;
-            if (filename.endsWith(".json.meta")) {
-                candidate = filename.substring(0, filename.length() - 10);
-            } else if (filename.endsWith(".json")) {
-                candidate = filename.substring(0, filename.length() - 5);
-            } else {
-                continue;
-            }
+            const char* rawPath = entry.name();
             String canonical;
-            if (canonicalizeProfileName(candidate, canonical) == ProfileNameStatus::Valid && canonical == candidate) {
-                addUniqueName(names, canonical);
+            DirectoryProfileNameStatus status = DirectoryProfileNameStatus::Ignore;
+            const size_t rawLength = rawPath ? strnlen(rawPath, 257u) : 257u;
+            if (rawLength <= 256u && rawLength >= sizeof(".json.meta") - 1u &&
+                std::memcmp(rawPath + rawLength - (sizeof(".json.meta") - 1u), ".json.meta",
+                            sizeof(".json.meta") - 1u) == 0) {
+                status = directoryProfileName(rawPath, ".json.meta", canonical);
+            } else {
+                status = directoryProfileName(rawPath, ".json", canonical);
+            }
+            entry.close();
+            if (status == DirectoryProfileNameStatus::Unavailable ||
+                (status == DirectoryProfileNameStatus::Profile &&
+                 !addUniqueName(names, nameCount, canonical, collectionOverLimit))) {
+                collectionAvailable = false;
+                dir.close();
+                return;
             }
         }
         dir.close();
     };
     collect(*sourceFs);
     collect(*fs_);
+    if (!collectionAvailable) {
+        Serial.println(collectionOverLimit
+                           ? "[V1Profiles] RECONCILE catalog exceeds supported bound; no changes made"
+                           : "[V1Profiles] RECONCILE catalog enumeration unavailable; no changes made");
+        return 0;
+    }
+
+    // Inspect the complete candidate set before mutating either store. A
+    // transient PSRAM or filesystem-read failure must never be reclassified as
+    // corruption and cause an older readable copy to overwrite a newer but
+    // temporarily unavailable profile or tombstone.
+    struct ReconcileCandidate {
+        String name;
+        String path;
+        ProfileSyncState sourceState;
+        ProfileSyncState targetState;
+        ProfileFileInspection sourceFile;
+        ProfileFileInspection targetFile;
+    };
+    std::array<ReconcileCandidate, V1_PROFILE_CATALOG_MAX_COUNT> candidates;
+    size_t candidateCount = 0;
+    for (size_t nameIndex = 0; nameIndex < nameCount; ++nameIndex) {
+        const String& name = names[nameIndex];
+        ReconcileCandidate& candidate = candidates[candidateCount];
+        if (!checkedStringFromBytes(name.c_str(), name.length(), candidate.name) ||
+            !buildProfilePathChecked(profileDir_, name, candidate.path)) {
+            Serial.println("[V1Profiles] RECONCILE candidate memory unavailable; no changes made");
+            return 0;
+        }
+        candidate.sourceState = readSyncState(*sourceFs, candidate.path);
+        candidate.targetState = readSyncState(*fs_, candidate.path);
+        candidate.sourceFile = inspectProfileFile(*sourceFs, candidate.path, name);
+        candidate.targetFile = inspectProfileFile(*fs_, candidate.path, name);
+        if (candidate.sourceState.status == ProfileSyncState::Status::Unavailable ||
+            candidate.targetState.status == ProfileSyncState::Status::Unavailable ||
+            candidate.sourceFile.unavailable || candidate.targetFile.unavailable) {
+            Serial.printf("[V1Profiles] RECONCILE unavailable name='%s' path='%s'; no changes made\n",
+                          name.c_str(), candidate.path.c_str());
+            return 0;
+        }
+        ++candidateCount;
+    }
 
     size_t reconciled = 0;
-    for (const String& name : names) {
-        const String path = profilePath(name);
-        ProfileSyncState sourceState = readSyncState(*sourceFs, path);
-        ProfileSyncState targetState = readSyncState(*fs_, path);
-
-        const ProfileFileInspection sourceFile = inspectProfileFile(*sourceFs, path);
-        const ProfileFileInspection targetFile = inspectProfileFile(*fs_, path);
+    for (size_t candidateIndex = 0; candidateIndex < candidateCount; ++candidateIndex) {
+        const ReconcileCandidate& candidate = candidates[candidateIndex];
+        const String& name = candidate.name;
+        const String& path = candidate.path;
+        const ProfileSyncState& sourceState = candidate.sourceState;
+        const ProfileSyncState& targetState = candidate.targetState;
+        const ProfileFileInspection& sourceFile = candidate.sourceFile;
+        const ProfileFileInspection& targetFile = candidate.targetFile;
         const bool sourceCorrupt = sourceState.status == ProfileSyncState::Status::Corrupt;
         const bool targetCorrupt = targetState.status == ProfileSyncState::Status::Corrupt;
         const bool sourceUsable = !sourceCorrupt && sourceState.version > 0 &&
@@ -570,7 +1131,13 @@ size_t V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs) {
             needsNewGeneration = true;
         }
         if (needsNewGeneration) {
-            winningState.version = std::max(sourceState.version, targetState.version) + 1u;
+            const uint32_t maximumVersion = std::max(sourceState.version, targetState.version);
+            if (maximumVersion == std::numeric_limits<uint32_t>::max()) {
+                Serial.printf("[V1Profiles] RECONCILE generation exhausted name='%s' path='%s'\n",
+                              name.c_str(), path.c_str());
+                continue;
+            }
+            winningState.version = maximumVersion + 1u;
         }
 
         const bool stateDiffers = winningState.version != losingState.version ||
@@ -594,7 +1161,7 @@ size_t V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs) {
             if (winningState.deleted) {
                 if (loser->exists(path)) applied = loser->remove(path);
             } else {
-                applied = winner->exists(path) && copyProfileFile(*winner, *loser, path);
+                applied = winner->exists(path) && copyProfileFile(*winner, *loser, path, name);
             }
             if (!applied || !writeSyncState(*loser, path, winningState)) {
                 Serial.printf("[V1Profiles] RECONCILE failed name='%s' path='%s'\n", name.c_str(), path.c_str());
@@ -613,7 +1180,9 @@ size_t V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs) {
 }
 
 String V1ProfileManager::profilePath(const String& name) const {
-    return profileDir_ + "/" + name + ".json";
+    String output;
+    buildProfilePathChecked(profileDir_, name, output);
+    return output;
 }
 
 ProfileListResult V1ProfileManager::listProfilesUnlocked() const {
@@ -632,25 +1201,33 @@ ProfileListResult V1ProfileManager::listProfilesUnlocked() const {
         return result;
     }
 
-    std::vector<String> collisionKeys;
     File entry;
     while ((entry = dir.openNextFile())) {
-        String name = entry.name();
+        const char* rawPath = entry.name();
+        String name;
+        const DirectoryProfileNameStatus nameStatus = directoryProfileName(rawPath, ".json", name);
         entry.close();
-        if (name.endsWith(".json")) {
-            // Remove .json extension and path
-            int lastSlash = name.lastIndexOf('/');
-            if (lastSlash >= 0) {
-                name = name.substring(lastSlash + 1);
+        if (nameStatus == DirectoryProfileNameStatus::Unavailable) {
+            dir.close();
+            result.status = ProfileStorageStatus::IoError;
+            result.error = "Profile catalog filename memory unavailable";
+            return result;
+        }
+        if (nameStatus == DirectoryProfileNameStatus::Profile) {
+            String path;
+            if (!buildProfilePathChecked(profileDir_, name, path)) {
+                dir.close();
+                result.status = ProfileStorageStatus::IoError;
+                result.error = "Profile path memory unavailable";
+                return result;
             }
-            name = name.substring(0, name.length() - 5); // Remove .json
-
-            // Filter out system files that aren't user profiles
-            String canonical;
-            if (canonicalizeProfileName(name, canonical) != ProfileNameStatus::Valid || canonical != name) {
-                continue;
+            const ProfileSyncState syncState = readSyncState(*fs_, path);
+            if (syncState.status == ProfileSyncState::Status::Unavailable) {
+                dir.close();
+                result.status = ProfileStorageStatus::IoError;
+                result.error = "Profile reconciliation metadata unavailable";
+                return result;
             }
-            const ProfileSyncState syncState = readSyncState(*fs_, profilePath(canonical));
             if (syncState.status == ProfileSyncState::Status::Corrupt) {
                 dir.close();
                 result.status = ProfileStorageStatus::Corrupt;
@@ -660,10 +1237,9 @@ ProfileListResult V1ProfileManager::listProfilesUnlocked() const {
             if (syncState.deleted) {
                 continue;
             }
-            const String collisionKey = profileCanonicalCollisionKey(canonical);
             bool collision = false;
-            for (const String& existingKey : collisionKeys) {
-                if (existingKey == collisionKey) {
+            for (const String& existingName : result.profiles) {
+                if (profileCanonicalNamesCollide(existingName, name)) {
                     collision = true;
                     break;
                 }
@@ -674,8 +1250,32 @@ ProfileListResult V1ProfileManager::listProfilesUnlocked() const {
                 result.error = "Canonical profile-name collision in catalog";
                 return result;
             }
-            collisionKeys.push_back(collisionKey);
-            result.profiles.push_back(canonical);
+            if (result.profiles.size() >= V1_PROFILE_CATALOG_MAX_COUNT) {
+                dir.close();
+                result.status = ProfileStorageStatus::IoError;
+                result.error = V1_PROFILE_CATALOG_LIMIT_ERROR;
+                result.profiles.clear();
+                return result;
+            }
+            const size_t nameLength = name.length();
+            try {
+#ifdef UNIT_TEST
+                maybeFailAllocationForTest(V1ProfileAllocationFailurePoint::ListGrowth);
+#endif
+                result.profiles.push_back(std::move(name));
+            } catch (const std::bad_alloc&) {
+                dir.close();
+                result.status = ProfileStorageStatus::IoError;
+                result.error = "Profile catalog memory unavailable";
+                result.profiles.clear();
+                return result;
+            }
+            if (result.profiles.back().length() != nameLength) {
+                dir.close();
+                result.status = ProfileStorageStatus::IoError;
+                result.error = "Profile catalog memory unavailable";
+                return result;
+            }
         }
     }
     dir.close();
@@ -695,8 +1295,179 @@ ProfileListResult V1ProfileManager::listProfilesResult(uint32_t timeoutMs) const
     return listProfilesUnlocked();
 }
 
+ProfilePageResult V1ProfileManager::listProfilesPageResult(const String& after, size_t limit,
+                                                           uint32_t timeoutMs) const {
+    ProfilePageResult result;
+    if (limit == 0 || limit > V1_PROFILE_CATALOG_MAX_COUNT) {
+        result.status = ProfileStorageStatus::InvalidName;
+        result.error = "Profile page limit must be from 1 to 10";
+        return result;
+    }
+    if (after.length() > 0) {
+        String canonicalAfter;
+        if (canonicalizeProfileName(after, canonicalAfter) != ProfileNameStatus::Valid ||
+            canonicalAfter != after) {
+            result.status = ProfileStorageStatus::InvalidName;
+            result.error = "Invalid profile page cursor";
+            return result;
+        }
+    }
+
+    ProfileStorageGuard guard(*this, storage_, usingSd_, timeoutMs);
+    if (!guard.acquired()) {
+        result.status = ProfileStorageStatus::Busy;
+        result.error = "Profile storage busy";
+        return result;
+    }
+    if (!ready_ || !fs_) {
+        result.status = ProfileStorageStatus::IoError;
+        result.error = "Profile filesystem not ready";
+        return result;
+    }
+
+    const auto canonicalEntryName = [](const char* rawPath, String& canonical) {
+        return directoryProfileName(rawPath, ".json", canonical);
+    };
+    const auto activeEntry = [&](const String& canonical, ProfileStorageStatus& status) {
+        String path;
+        if (!buildProfilePathChecked(profileDir_, canonical, path)) {
+            status = ProfileStorageStatus::IoError;
+            return false;
+        }
+        const ProfileSyncState syncState = readSyncState(*fs_, path);
+        if (syncState.status == ProfileSyncState::Status::Unavailable) {
+            status = ProfileStorageStatus::IoError;
+            return false;
+        }
+        if (syncState.status == ProfileSyncState::Status::Corrupt) {
+            status = ProfileStorageStatus::Corrupt;
+            return false;
+        }
+        status = ProfileStorageStatus::Success;
+        return !syncState.deleted;
+    };
+
+    File dir = fs_->open(profileDir_);
+    if (!dir || !dir.isDirectory()) {
+        if (dir) dir.close();
+        result.status = ProfileStorageStatus::IoError;
+        result.error = "Failed to enumerate profile directory";
+        return result;
+    }
+
+    size_t afterCount = 0;
+    File entry;
+    while ((entry = dir.openNextFile())) {
+        const char* rawPath = entry.name();
+        String canonical;
+        const DirectoryProfileNameStatus nameStatus = canonicalEntryName(rawPath, canonical);
+        entry.close();
+        if (nameStatus == DirectoryProfileNameStatus::Unavailable) {
+            dir.close();
+            result.status = ProfileStorageStatus::IoError;
+            result.error = "Profile catalog filename memory unavailable";
+            return result;
+        }
+        if (nameStatus != DirectoryProfileNameStatus::Profile) continue;
+        ProfileStorageStatus entryStatus = ProfileStorageStatus::Success;
+        if (!activeEntry(canonical, entryStatus)) {
+            if (entryStatus != ProfileStorageStatus::Success) {
+                dir.close();
+                result.status = entryStatus;
+                result.error = entryStatus == ProfileStorageStatus::Corrupt
+                                   ? "Corrupt profile reconciliation metadata"
+                                   : "Profile reconciliation metadata unavailable";
+                return result;
+            }
+            continue;
+        }
+        ++result.total;
+
+        // Keep legacy over-limit catalogs fully enumerable without retaining an
+        // unbounded name/key vector. This exact O(n^2) collision pass is used
+        // only by the maintenance listing path; supported catalogs are ten.
+        File peers = fs_->open(profileDir_);
+        if (!peers || !peers.isDirectory()) {
+            if (peers) peers.close();
+            dir.close();
+            result.status = ProfileStorageStatus::IoError;
+            result.error = "Failed to validate profile catalog";
+            return result;
+        }
+        File peer;
+        while ((peer = peers.openNextFile())) {
+            const char* peerPath = peer.name();
+            String peerName;
+            const DirectoryProfileNameStatus peerNameStatus = canonicalEntryName(peerPath, peerName);
+            peer.close();
+            if (peerNameStatus == DirectoryProfileNameStatus::Unavailable) {
+                peers.close();
+                dir.close();
+                result.status = ProfileStorageStatus::IoError;
+                result.error = "Profile catalog filename memory unavailable";
+                return result;
+            }
+            if (peerNameStatus != DirectoryProfileNameStatus::Profile ||
+                std::strcmp(peerName.c_str(), canonical.c_str()) <= 0)
+                continue;
+            ProfileStorageStatus peerStatus = ProfileStorageStatus::Success;
+            if (!activeEntry(peerName, peerStatus)) {
+                if (peerStatus != ProfileStorageStatus::Success) {
+                    peers.close();
+                    dir.close();
+                    result.status = peerStatus;
+                    result.error = "Profile catalog unavailable";
+                    return result;
+                }
+                continue;
+            }
+            if (profileCanonicalNamesCollide(peerName, canonical)) {
+                peers.close();
+                dir.close();
+                result.status = ProfileStorageStatus::Corrupt;
+                result.error = "Canonical profile-name collision in catalog";
+                return result;
+            }
+        }
+        peers.close();
+
+        if (after.length() > 0 && std::strcmp(canonical.c_str(), after.c_str()) <= 0) continue;
+        ++afterCount;
+        try {
+#ifdef UNIT_TEST
+            maybeFailAllocationForTest(V1ProfileAllocationFailurePoint::PageGrowth);
+#endif
+            result.profiles.push_back(std::move(canonical));
+        } catch (const std::bad_alloc&) {
+            dir.close();
+            result.status = ProfileStorageStatus::IoError;
+            result.error = "Profile page memory unavailable";
+            result.profiles.clear();
+            return result;
+        }
+        std::sort(result.profiles.begin(), result.profiles.end(), [](const String& lhs, const String& rhs) {
+            return std::strcmp(lhs.c_str(), rhs.c_str()) < 0;
+        });
+        if (result.profiles.size() > limit) result.profiles.pop_back();
+    }
+    dir.close();
+    result.hasMore = afterCount > result.profiles.size();
+    if (!result.profiles.empty()) {
+        result.nextCursor = result.profiles.back();
+        if (result.nextCursor.length() != result.profiles.back().length()) {
+            result.status = ProfileStorageStatus::IoError;
+            result.error = "Profile page cursor memory unavailable";
+            result.profiles.clear();
+            return result;
+        }
+    }
+    result.status = ProfileStorageStatus::Success;
+    return result;
+}
+
 std::vector<String> V1ProfileManager::listProfiles() const {
-    return listProfilesResult().profiles;
+    ProfileListResult result = listProfilesResult();
+    return result.success() ? std::move(result.profiles) : std::vector<String>{};
 }
 
 ProfileOperationResult V1ProfileManager::loadProfileUnlocked(const String& name, V1Profile& profile,
@@ -706,13 +1477,20 @@ ProfileOperationResult V1ProfileManager::loadProfileUnlocked(const String& name,
         return profileResult(ProfileStorageStatus::IoError, "Profile filesystem not ready");
     }
 
-    String path = profilePath(name);
-    String bakPath = path + ".bak";
+    String path;
+    String bakPath;
+    if (!buildProfilePathChecked(profileDir_, name, path) ||
+        !appendPathSuffixChecked(path, ".bak", bakPath)) {
+        return profileResult(ProfileStorageStatus::IoError, "Profile path memory unavailable");
+    }
 
     // A committed tombstone is authoritative even if stale bytes remain after
     // an interrupted delete. This prevents later enumeration or reconciliation
     // from resurrecting a profile whose deletion was already recorded.
     const ProfileSyncState syncState = readSyncState(*fs_, path);
+    if (syncState.status == ProfileSyncState::Status::Unavailable) {
+        return profileResult(ProfileStorageStatus::IoError, "Profile reconciliation metadata unavailable");
+    }
     if (syncState.status == ProfileSyncState::Status::Corrupt) {
         Serial.printf("[V1Profiles] CORRUPT name='%s' path='%s' metadata=true\n", name.c_str(), path.c_str());
         return profileResult(ProfileStorageStatus::Corrupt, "Corrupt profile reconciliation metadata");
@@ -747,7 +1525,7 @@ ProfileOperationResult V1ProfileManager::loadProfileUnlocked(const String& name,
     }
 
     // Hard cap JSON size to avoid excessive allocation on small devices
-    if (file.size() > 4096) {
+    if (file.size() > V1_PROFILE_FILE_MAX_BYTES) {
         Serial.printf("[V1Profiles] Profile too large (%u bytes), aborting\n", (unsigned)file.size());
         file.close();
         return profileResult(ProfileStorageStatus::Corrupt, "Profile file exceeds size limit");
@@ -756,7 +1534,11 @@ ProfileOperationResult V1ProfileManager::loadProfileUnlocked(const String& name,
     // Read file content for CRC validation with RAII-managed storage
     // so all early returns remain leak-safe.
     const size_t fileSize = file.size();
-    std::vector<uint8_t> fileContent(fileSize);
+    PsramJson::Buffer fileContent(fileSize);
+    if (!fileContent) {
+        file.close();
+        return profileResult(ProfileStorageStatus::IoError, "Profile parse memory unavailable");
+    }
     if (fileSize > 0) {
         const size_t bytesRead = file.read(fileContent.data(), fileSize);
         if (bytesRead != fileSize) {
@@ -769,9 +1551,22 @@ ProfileOperationResult V1ProfileManager::loadProfileUnlocked(const String& name,
     }
     file.close();
 
-    JsonDocument doc;
+    const ExactJsonInput::Status exactInput = ExactJsonInput::validate(fileContent.data(), fileSize);
+    if (exactInput == ExactJsonInput::Status::MemoryUnavailable) {
+        lastError_ = "Profile exact-input memory unavailable";
+        return profileResult(ProfileStorageStatus::IoError, lastError_);
+    }
+    if (exactInput != ExactJsonInput::Status::Ok) {
+        lastError_ = "Profile JSON is not one exact unique-key UTF-8 document";
+        return profileResult(ProfileStorageStatus::Corrupt, lastError_);
+    }
+    PsramJson::Document doc;
     DeserializationError err = deserializeJson(doc, fileContent.data(), fileSize);
 
+    if (doc.overflowed() || err == DeserializationError::NoMemory) {
+        lastError_ = "Profile parse memory unavailable";
+        return profileResult(ProfileStorageStatus::IoError, lastError_);
+    }
     if (err) {
         lastError_ = String("JSON parse error: ") + err.c_str();
         Serial.printf("[V1Profiles] %s\n", lastError_.c_str());
@@ -779,32 +1574,87 @@ ProfileOperationResult V1ProfileManager::loadProfileUnlocked(const String& name,
     }
 
     const JsonVariantConst schemaVersion = doc["schemaVersion"];
-    const bool isSchemaV2 = !schemaVersion.isUnbound();
-    if (isSchemaV2 != !doc["detector"].isUnbound() ||
-        isSchemaV2 != !doc["detectorCrc32"].isUnbound()) {
-        lastError_ = "Mixed legacy and schema v2 profile markers";
+    const bool hasSchema = !schemaVersion.isUnbound();
+    if (hasSchema != !doc["detector"].isUnbound() ||
+        hasSchema != !doc["detectorCrc32"].isUnbound()) {
+        lastError_ = "Mixed legacy and versioned profile markers";
         return profileResult(ProfileStorageStatus::Corrupt, lastError_);
     }
-    if (isSchemaV2 && (!schemaVersion.is<int>() || schemaVersion.as<int>() != V1_PROFILE_SCHEMA_VERSION)) {
+    if (hasSchema && (!schemaVersion.is<int>() ||
+                      (schemaVersion.as<int>() != V1_PROFILE_PREVIOUS_SCHEMA_VERSION &&
+                       schemaVersion.as<int>() != V1_PROFILE_SCHEMA_VERSION))) {
         lastError_ = "Unsupported profile schema version";
         return profileResult(ProfileStorageStatus::Corrupt, lastError_);
     }
+    String serializedName;
+    const ExactV1JsonStringStatus serializedNameStatus =
+        exactV1JsonStringChecked(doc["name"], serializedName, MAX_PROFILE_NAME_LEN);
+    if (serializedNameStatus == ExactV1JsonStringStatus::Unavailable) {
+        lastError_ = "Profile name memory unavailable";
+        return profileResult(ProfileStorageStatus::IoError, lastError_);
+    }
+    if (serializedNameStatus != ExactV1JsonStringStatus::Valid || serializedName != name) {
+        lastError_ = "Profile document name does not match canonical filename";
+        return profileResult(ProfileStorageStatus::Corrupt, lastError_);
+    }
+    if (hasSchema) {
+        const bool currentSchema = schemaVersion.as<int>() == V1_PROFILE_SCHEMA_VERSION;
+        uint32_t profileCrc = 0;
+        if (currentSchema != !doc["profileCrc32"].isUnbound()) {
+            lastError_ = "Profile integrity marker does not match schema";
+            return profileResult(ProfileStorageStatus::Corrupt, lastError_);
+        }
+        if (currentSchema &&
+            (!doc["profileCrc32"].is<uint32_t>() || !profileDocumentCrc(doc, profileCrc) ||
+             doc["profileCrc32"].as<uint32_t>() != profileCrc)) {
+            lastError_ = doc.overflowed() ? "Profile integrity memory unavailable" : "Profile integrity CRC mismatch";
+            return profileResult(doc.overflowed() ? ProfileStorageStatus::IoError : ProfileStorageStatus::Corrupt,
+                                 lastError_);
+        }
+    }
 
     V1DetectorConfiguration parsedDetector;
-    if (isSchemaV2) {
+    if (hasSchema) {
+        const uint8_t parsedSchema = static_cast<uint8_t>(schemaVersion.as<int>());
+        V1DetectorConfiguration serializedDetector;
+        uint32_t detectorCrc = 0;
         if (!doc["detector"].is<JsonObjectConst>() ||
-            !parseV1DetectorConfiguration(doc["detector"].as<JsonObjectConst>(), parsedDetector) ||
-            !doc["detectorCrc32"].is<uint32_t>() ||
-            doc["detectorCrc32"].as<uint32_t>() != detectorConfigurationCrc(parsedDetector)) {
+            !(parsedSchema == V1_PROFILE_SCHEMA_VERSION
+                  ? parseV1DetectorConfiguration(doc["detector"].as<JsonObjectConst>(), serializedDetector)
+                  : parseV1DetectorConfigurationV2(doc["detector"].as<JsonObjectConst>(), serializedDetector)) ||
+            !doc["detectorCrc32"].is<uint32_t>()) {
             lastError_ = "Invalid detector configuration or CRC";
             return profileResult(ProfileStorageStatus::Corrupt, lastError_);
         }
+        if (!detectorConfigurationCrc(serializedDetector, detectorCrc, parsedSchema)) {
+            lastError_ = "Detector CRC memory unavailable";
+            return profileResult(ProfileStorageStatus::IoError, lastError_);
+        }
+        if (doc["detectorCrc32"].as<uint32_t>() != detectorCrc) {
+            lastError_ = "Invalid detector configuration or CRC";
+            return profileResult(ProfileStorageStatus::Corrupt, lastError_);
+        }
+        parsedDetector = parsedSchema == V1_PROFILE_PREVIOUS_SCHEMA_VERSION
+                             ? migrateV1DetectorConfigurationV2(serializedDetector)
+                             : serializedDetector;
+    }
+
+    V1UserSettings parsedLegacySettings;
+    bool parsedLegacyDisplayOn = true;
+    uint8_t parsedLegacyMainVolume = 0xFF;
+    uint8_t parsedLegacyMutedVolume = 0xFF;
+    if (!hasSchema &&
+        !parseLegacyProfileSettings(doc.as<JsonObjectConst>(), parsedLegacySettings,
+                                    parsedLegacyDisplayOn, parsedLegacyMainVolume,
+                                    parsedLegacyMutedVolume)) {
+        lastError_ = "Invalid legacy profile fields";
+        return profileResult(ProfileStorageStatus::Corrupt, lastError_);
     }
 
     const JsonVariantConst rawBytes = doc["bytes"];
     const bool hasRawBytes = !rawBytes.isUnbound();
-    if (isSchemaV2 && (!hasRawBytes || !doc["crc32"].is<uint32_t>())) {
-        lastError_ = "Schema v2 profile is missing settings bytes or CRC";
+    if (hasSchema && (!hasRawBytes || !doc["crc32"].is<uint32_t>())) {
+        lastError_ = "Versioned profile is missing settings bytes or CRC";
         return profileResult(ProfileStorageStatus::Corrupt, lastError_);
     }
     uint8_t rawSettingsBytes[V1SettingsJson::kSettingsByteCount];
@@ -812,6 +1662,12 @@ ProfileOperationResult V1ProfileManager::loadProfileUnlocked(const String& name,
         if (!V1SettingsJson::parseRawBytes(rawBytes, rawSettingsBytes)) {
             lastError_ = "Invalid settings bytes";
             Serial.printf("[V1Profiles] %s\n", lastError_.c_str());
+            return profileResult(ProfileStorageStatus::Corrupt, lastError_);
+        }
+        if (hasSchema &&
+            !validateVersionedReadableSettings(doc.as<JsonObjectConst>(), rawSettingsBytes,
+                                               schemaVersion.as<int>() == V1_PROFILE_SCHEMA_VERSION)) {
+            lastError_ = "Versioned readable settings do not match authoritative bytes";
             return profileResult(ProfileStorageStatus::Corrupt, lastError_);
         }
     }
@@ -833,77 +1689,43 @@ ProfileOperationResult V1ProfileManager::loadProfileUnlocked(const String& name,
         }
     }
 
-    if (isSchemaV2 && !hasRawBytes) {
-        lastError_ = "Schema v2 profile is missing authoritative settings bytes";
+    if (hasSchema && !hasRawBytes) {
+        lastError_ = "Versioned profile is missing authoritative settings bytes";
         return profileResult(ProfileStorageStatus::Corrupt, lastError_);
     }
 
-    profile = V1Profile(name);
-    profile.schemaVersion = isSchemaV2 ? V1_PROFILE_SCHEMA_VERSION : 1;
-    profile.detector = parsedDetector;
-    profile.description = doc["description"] | "";
-    if (!isSchemaV2) {
-        profile.displayOn = doc["displayOn"] | true;
-        profile.mainVolume = doc["mainVolume"] | 0xFF;
-        profile.mutedVolume = doc["mutedVolume"] | 0xFF;
+    V1Profile parsedProfile(name);
+    if (parsedProfile.name.length() != name.length() || parsedProfile.name != name) {
+        return profileResult(ProfileStorageStatus::IoError, "Profile name memory unavailable");
+    }
+    parsedProfile.schemaVersion = hasSchema ? V1_PROFILE_SCHEMA_VERSION : 1;
+    parsedProfile.detector = std::move(parsedDetector);
+    const ExactV1JsonStringStatus descriptionStatus = exactV1JsonStringChecked(
+        doc["description"], parsedProfile.description, V1_PROFILE_DESCRIPTION_MAX_BYTES);
+    if (descriptionStatus == ExactV1JsonStringStatus::Unavailable) {
+        lastError_ = "Profile description memory unavailable";
+        return profileResult(ProfileStorageStatus::IoError, lastError_);
+    }
+    if (descriptionStatus != ExactV1JsonStringStatus::Valid) {
+        lastError_ = "Profile description is not valid exact UTF-8 or exceeds 4096 bytes";
+        return profileResult(ProfileStorageStatus::Corrupt, lastError_);
+    }
+    if (!hasSchema) {
+        parsedProfile.displayOn = parsedLegacyDisplayOn;
+        parsedProfile.mainVolume = parsedLegacyMainVolume;
+        parsedProfile.mutedVolume = parsedLegacyMutedVolume;
     }
 
     // Parse settings bytes
-    if (hasRawBytes) {
+    if (!hasSchema) {
+        parsedProfile.settings = parsedLegacySettings;
+    } else if (hasRawBytes) {
         for (size_t i = 0; i < V1SettingsJson::kSettingsByteCount; i++) {
-            profile.settings.bytes[i] = rawSettingsBytes[i];
+            parsedProfile.settings.bytes[i] = rawSettingsBytes[i];
         }
-    } else {
-        // Try individual settings (legacy or human-readable format)
-        V1UserSettings& s = profile.settings;
-        s.setDefaults();
-
-        if (!doc["xBand"].isNull())
-            s.setXBandEnabled(doc["xBand"]);
-        if (!doc["kBand"].isNull())
-            s.setKBandEnabled(doc["kBand"]);
-        if (!doc["kaBand"].isNull())
-            s.setKaBandEnabled(doc["kaBand"]);
-        if (!doc["laser"].isNull())
-            s.setLaserEnabled(doc["laser"]);
-        if (!doc["kuBand"].isNull())
-            s.setKuBandEnabled(doc["kuBand"]);
-        if (!doc["euro"].isNull())
-            s.setEuroMode(doc["euro"]);
-        if (!doc["kVerifier"].isNull())
-            s.setKVerifier(doc["kVerifier"]);
-        if (!doc["laserRear"].isNull())
-            s.setLaserRear(doc["laserRear"]);
-        if (!doc["customFreqs"].isNull())
-            s.setCustomFreqs(doc["customFreqs"]);
-        if (!doc["kaAlwaysPriority"].isNull())
-            s.setKaAlwaysPriority(doc["kaAlwaysPriority"]);
-        if (!doc["fastLaserDetect"].isNull())
-            s.setFastLaserDetect(doc["fastLaserDetect"]);
-        if (!doc["kaSensitivity"].isNull())
-            s.setKaSensitivity(doc["kaSensitivity"]);
-        if (!doc["kSensitivity"].isNull())
-            s.setKSensitivity(doc["kSensitivity"]);
-        if (!doc["xSensitivity"].isNull())
-            s.setXSensitivity(doc["xSensitivity"]);
-        if (!doc["autoMute"].isNull())
-            s.setAutoMute(doc["autoMute"]);
-        if (!doc["muteToMuteVolume"].isNull())
-            s.setMuteToMuteVolume(doc["muteToMuteVolume"]);
-        if (!doc["bogeyLockLoud"].isNull())
-            s.setBogeyLockLoud(doc["bogeyLockLoud"]);
-        if (!doc["muteXKRear"].isNull())
-            s.setMuteXKRear(doc["muteXKRear"]);
-        if (!doc["startupSequence"].isNull())
-            s.setStartupSequence(doc["startupSequence"]);
-        if (!doc["restingDisplay"].isNull())
-            s.setRestingDisplay(doc["restingDisplay"]);
-        if (!doc["bsmPlus"].isNull())
-            s.setBsmPlus(doc["bsmPlus"]);
-        if (!doc["mrct"].isNull())
-            s.setMrct(doc["mrct"]);
     }
 
+    profile = std::move(parsedProfile);
     Serial.printf("[V1Profiles] LOAD success name='%s' path='%s'\n", name.c_str(), path.c_str());
     return profileResult(ProfileStorageStatus::Success);
 }
@@ -928,40 +1750,88 @@ bool V1ProfileManager::loadProfile(const String& name, V1Profile& profile) const
     return loadProfileResult(name, profile).success();
 }
 
-ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile, const String& canonicalName) {
+ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile, const String& canonicalName,
+                                                        bool allowGrandfatheredRestore) {
     if (!ready_ || !fs_) {
         lastError_ = "Filesystem not ready";
         Serial.printf("[V1Profiles] Save failed: %s\n", lastError_.c_str());
         return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
     }
-
-    const ProfileListResult catalog = listProfilesUnlocked();
-    if (!catalog.success()) {
-        return ProfileSaveResult(catalog.status, catalog.error);
+    if (!validV1ProfileDescription(profile.description)) {
+        lastError_ = "Profile description exceeds 4096 bytes";
+        return ProfileSaveResult(ProfileStorageStatus::Corrupt, lastError_);
     }
-    const String newKey = profileCanonicalCollisionKey(canonicalName);
-    for (const String& existing : catalog.profiles) {
-        if (existing != canonicalName && profileCanonicalCollisionKey(existing) == newKey) {
+
+    bool updatingExisting = false;
+    size_t catalogSize = 0;
+    if (allowGrandfatheredRestore) {
+        const ProfileCatalogSaveScan scan =
+            scanCatalogForGrandfatheredRestore(*fs_, profileDir_, canonicalName);
+        if (scan.status == ProfileCatalogScanStatus::IoError) {
+            return ProfileSaveResult(ProfileStorageStatus::IoError, "Profile catalog unavailable");
+        }
+        if (scan.status == ProfileCatalogScanStatus::Corrupt) {
+            return ProfileSaveResult(ProfileStorageStatus::Corrupt,
+                                     "Corrupt profile reconciliation metadata");
+        }
+        if (scan.status == ProfileCatalogScanStatus::Collision) {
             lastError_ = "Profile name collides with existing canonical name";
-            Serial.printf("[V1Profiles] INVALID_NAME name='%s' path='%s' reason=collision\n", canonicalName.c_str(),
-                          profilePath(canonicalName).c_str());
             return ProfileSaveResult(ProfileStorageStatus::InvalidName, lastError_);
         }
+        updatingExisting = scan.targetExists;
+    } else {
+        const ProfileListResult catalog = listProfilesUnlocked();
+        if (!catalog.success()) {
+            return ProfileSaveResult(catalog.status, catalog.error);
+        }
+        catalogSize = catalog.profiles.size();
+        for (const String& existing : catalog.profiles) {
+            updatingExisting |= existing == canonicalName;
+            if (existing != canonicalName && profileCanonicalNamesCollide(existing, canonicalName)) {
+                lastError_ = "Profile name collides with existing canonical name";
+                Serial.printf("[V1Profiles] INVALID_NAME name='%s' path='%s' reason=collision\n",
+                              canonicalName.c_str(), profilePath(canonicalName).c_str());
+                return ProfileSaveResult(ProfileStorageStatus::InvalidName, lastError_);
+            }
+        }
+    }
+    if (!updatingExisting && catalogSize >= V1_PROFILE_CATALOG_MAX_COUNT &&
+        !allowGrandfatheredRestore) {
+        lastError_ = V1_PROFILE_CATALOG_LIMIT_ERROR;
+        return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
     }
 
-    String path = profilePath(canonicalName);
-    String tmpPath = path + ".tmp";
-    String bakPath = path + ".bak";
+    String path;
+    String tmpPath;
+    String bakPath;
+    String secondaryRollbackPath;
+    if (!buildProfilePathChecked(profileDir_, canonicalName, path) ||
+        !appendPathSuffixChecked(path, ".tmp", tmpPath) ||
+        !appendPathSuffixChecked(path, ".bak", bakPath) ||
+        (secondaryFs_ && !appendPathSuffixChecked(path, ".syncbak", secondaryRollbackPath))) {
+        lastError_ = "Profile path memory unavailable";
+        return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
+    }
     const bool activeFileExisted = fs_->exists(path);
     const ProfileSyncState activeState = readSyncState(*fs_, path);
     const ProfileSyncState secondaryState = secondaryFs_ ? readSyncState(*secondaryFs_, path) : ProfileSyncState{};
+    if (activeState.status == ProfileSyncState::Status::Unavailable ||
+        secondaryState.status == ProfileSyncState::Status::Unavailable) {
+        lastError_ = "Profile reconciliation metadata unavailable";
+        return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
+    }
     if (activeState.status == ProfileSyncState::Status::Corrupt ||
         secondaryState.status == ProfileSyncState::Status::Corrupt) {
         lastError_ = "Corrupt profile reconciliation metadata";
         return ProfileSaveResult(ProfileStorageStatus::Corrupt, lastError_);
     }
     ProfileSyncState committedState;
-    committedState.version = std::max(activeState.version, secondaryState.version) + 1u;
+    const uint32_t maximumVersion = std::max(activeState.version, secondaryState.version);
+    if (maximumVersion == std::numeric_limits<uint32_t>::max()) {
+        lastError_ = "Profile reconciliation generation exhausted";
+        return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
+    }
+    committedState.version = maximumVersion + 1u;
     committedState.deleted = false;
 
     // Step 1: Write to temporary file (don't truncate original yet)
@@ -972,7 +1842,7 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
         return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
     }
 
-    JsonDocument doc;
+    PsramJson::Document doc;
     const V1UserSettings& s = profile.settings;
 
     // Store metadata and the complete detector-owned application policy.
@@ -988,7 +1858,14 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
         lastError_ = "Invalid detector configuration";
         return ProfileSaveResult(ProfileStorageStatus::Corrupt, lastError_);
     }
-    doc["detectorCrc32"] = detectorConfigurationCrc(profile.detector);
+    uint32_t detectorCrc = 0;
+    if (!detectorConfigurationCrc(profile.detector, detectorCrc)) {
+        file.close();
+        fs_->remove(tmpPath);
+        lastError_ = "Detector CRC memory unavailable";
+        return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
+    }
+    doc["detectorCrc32"] = detectorCrc;
 
     // Store raw bytes for exact restoration
     JsonArray bytes = doc["bytes"].to<JsonArray>();
@@ -1032,7 +1909,22 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
     uint32_t crc = calculateCRC32(s.bytes, 6);
     doc["crc32"] = crc;
 
+    uint32_t profileCrc = 0;
+    if (!profileDocumentCrc(doc, profileCrc)) {
+        file.close();
+        fs_->remove(tmpPath);
+        lastError_ = "Profile integrity memory unavailable";
+        return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
+    }
+    doc["profileCrc32"] = profileCrc;
+
     const size_t expectedPrettyBytes = measureJsonPretty(doc);
+    if (doc.overflowed() || expectedPrettyBytes == 0 || expectedPrettyBytes > V1_PROFILE_FILE_MAX_BYTES) {
+        file.close();
+        fs_->remove(tmpPath);
+        lastError_ = V1_PROFILE_FILE_LIMIT_ERROR;
+        return ProfileSaveResult(ProfileStorageStatus::Corrupt, lastError_);
+    }
     size_t written = serializeJsonPretty(doc, file);
 
     // Step 2: Flush to ensure data is written to SD before closing
@@ -1117,6 +2009,7 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
     // until writeSyncState() commits the new generation below.
     const ProfileOperationResult verifyResult = loadProfileUnlocked(canonicalName, verified, false, true);
     if (!verifyResult.success() || verified.schemaVersion != V1_PROFILE_SCHEMA_VERSION ||
+        verified.name != canonicalName || verified.description != profile.description ||
         memcmp(verified.settings.bytes, profile.settings.bytes, 6) != 0 || verified.detector != profile.detector) {
         lastError_ = verifyResult.success() ? "Final profile verification mismatch" : verifyResult.error;
         fs_->remove(path);
@@ -1139,7 +2032,6 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
 
     if (secondaryFs_) {
         const bool secondaryFileExisted = secondaryFs_->exists(path);
-        const String secondaryRollbackPath = path + ".syncbak";
         bool secondaryPrepared = true;
         bool secondaryMutationStarted = false;
         if (!secondaryFs_->exists(profileDir_) && !secondaryFs_->mkdir(profileDir_)) {
@@ -1149,14 +2041,14 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
             secondaryPrepared = false;
         }
         if (secondaryPrepared && secondaryFileExisted &&
-            !copyProfileFileAs(*secondaryFs_, path, *secondaryFs_, secondaryRollbackPath)) {
+            !copyProfileFileAs(*secondaryFs_, path, *secondaryFs_, secondaryRollbackPath, canonicalName)) {
             secondaryPrepared = false;
         }
 
         bool secondaryCommitted = false;
         if (secondaryPrepared) {
             secondaryMutationStarted = true;
-            secondaryCommitted = copyProfileFile(*fs_, *secondaryFs_, path) &&
+            secondaryCommitted = copyProfileFile(*fs_, *secondaryFs_, path, canonicalName) &&
                                  writeSyncState(*secondaryFs_, path, committedState);
         }
         if (!secondaryCommitted) {
@@ -1205,6 +2097,11 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
 
 ProfileSaveResult V1ProfileManager::saveProfile(const V1Profile& profile) {
     String canonical;
+    if (std::strlen(profile.name.c_str()) != profile.name.length() ||
+        !validV1Utf8(profile.name.c_str(), profile.name.length())) {
+        lastError_ = "Profile name is not valid exact UTF-8";
+        return ProfileSaveResult(ProfileStorageStatus::InvalidName, lastError_);
+    }
     const ProfileNameStatus nameStatus = canonicalizeProfileName(profile.name, canonical);
     if (nameStatus != ProfileNameStatus::Valid) {
         lastError_ = profileNameStatusMessage(nameStatus);
@@ -1217,9 +2114,7 @@ ProfileSaveResult V1ProfileManager::saveProfile(const V1Profile& profile) {
         Serial.printf("[V1Profiles] BUSY name='%s' path='%s'\n", canonical.c_str(), profilePath(canonical).c_str());
         return ProfileSaveResult(ProfileStorageStatus::Busy, lastError_);
     }
-    V1Profile canonicalProfile = profile;
-    canonicalProfile.name = canonical;
-    return saveProfileUnlocked(canonicalProfile, canonical);
+    return saveProfileUnlocked(profile, canonical);
 }
 
 ProfileOperationResult V1ProfileManager::deleteProfileUnlocked(const String& name) {
@@ -1227,21 +2122,36 @@ ProfileOperationResult V1ProfileManager::deleteProfileUnlocked(const String& nam
         return profileResult(ProfileStorageStatus::IoError, "Profile filesystem not ready");
     }
 
-    String path = profilePath(name);
-    String bakPath = path + ".bak";
+    String path;
+    String bakPath;
+    if (!buildProfilePathChecked(profileDir_, name, path) ||
+        !appendPathSuffixChecked(path, ".bak", bakPath)) {
+        return profileResult(ProfileStorageStatus::IoError, "Profile path memory unavailable");
+    }
     const ProfileSyncState activeState = readSyncState(*fs_, path);
     const ProfileSyncState secondaryState = secondaryFs_ ? readSyncState(*secondaryFs_, path) : ProfileSyncState{};
+    if (activeState.status == ProfileSyncState::Status::Unavailable ||
+        secondaryState.status == ProfileSyncState::Status::Unavailable) {
+        return profileResult(ProfileStorageStatus::IoError, "Profile reconciliation metadata unavailable");
+    }
     if (activeState.status == ProfileSyncState::Status::Corrupt ||
         secondaryState.status == ProfileSyncState::Status::Corrupt) {
         return profileResult(ProfileStorageStatus::Corrupt, "Corrupt profile reconciliation metadata");
     }
     ProfileSyncState tombstone;
-    tombstone.version = std::max(activeState.version, secondaryState.version) + 1u;
+    const uint32_t maximumVersion = std::max(activeState.version, secondaryState.version);
+    if (maximumVersion == std::numeric_limits<uint32_t>::max()) {
+        return profileResult(ProfileStorageStatus::IoError, "Profile reconciliation generation exhausted");
+    }
+    tombstone.version = maximumVersion + 1u;
     tombstone.deleted = true;
     const bool activeExists = fs_->exists(path);
     const bool activeBakExists = fs_->exists(bakPath);
     const bool secondaryExists = secondaryFs_ && secondaryFs_->exists(path);
-    const String secondaryBak = path + ".bak";
+    String secondaryBak;
+    if (!appendPathSuffixChecked(path, ".bak", secondaryBak)) {
+        return profileResult(ProfileStorageStatus::IoError, "Profile path memory unavailable");
+    }
     const bool secondaryBakExists = secondaryFs_ && secondaryFs_->exists(secondaryBak);
     const bool removedAny = activeExists || activeBakExists || secondaryExists || secondaryBakExists;
 
@@ -1320,61 +2230,21 @@ bool V1ProfileManager::deleteProfile(const String& name) {
     return deleteProfileResult(name).success();
 }
 
-bool V1ProfileManager::renameProfile(const String& oldName, const String& newName) {
-    if (!ready_ || !fs_) {
-        lastError_ = "Filesystem not ready";
-        return false;
+ProfileSaveResult V1ProfileManager::restoreProfileForTransaction(const V1Profile& profile) {
+    String canonical;
+    const ProfileNameStatus nameStatus = canonicalizeProfileName(profile.name, canonical);
+    if (nameStatus != ProfileNameStatus::Valid || canonical != profile.name) {
+        return ProfileSaveResult(ProfileStorageStatus::InvalidName, profileNameStatusMessage(nameStatus));
     }
-
-    String canonicalOld;
-    String canonicalNew;
-    const ProfileNameStatus oldStatus = canonicalizeProfileName(oldName, canonicalOld);
-    const ProfileNameStatus newStatus = canonicalizeProfileName(newName, canonicalNew);
-    if (oldStatus != ProfileNameStatus::Valid || newStatus != ProfileNameStatus::Valid) {
-        lastError_ = profileNameStatusMessage(oldStatus != ProfileNameStatus::Valid ? oldStatus : newStatus);
-        return false;
-    }
-
     ProfileStorageGuard guard(*this, storage_, usingSd_, 250);
-    if (!guard.acquired()) {
-        lastError_ = "Profile storage busy";
-        return false;
-    }
-
-    const String oldPath = profilePath(canonicalOld);
-    const String newPath = profilePath(canonicalNew);
-
-    // Guard: exact no-op rename should not touch disk or revision state.
-    if (canonicalOld == canonicalNew) {
-        return true;
-    }
-
-    V1Profile profile;
-    if (!loadProfileUnlocked(canonicalOld, profile).success()) {
-        return false;
-    }
-
-    // Guard: refuse to overwrite a different existing profile.
-    if (fs_->exists(newPath)) {
-        lastError_ = "Rename target already exists";
-        Serial.printf("[V1Profiles] %s\n", lastError_.c_str());
-        return false;
-    }
-
-    profile.name = canonicalNew;
-    ProfileSaveResult result = saveProfileUnlocked(profile, canonicalNew);
-    if (!result.success) {
-        return false;
-    }
-
-    if (!deleteProfileUnlocked(canonicalOld).success()) {
-        Serial.println("[V1Profiles] Warning: rename saved new but failed to delete old");
-        return false;
-    }
-    return true;
+    if (!guard.acquired()) return ProfileSaveResult(ProfileStorageStatus::Busy, "Profile storage busy");
+    // The caller owns a durable delete journal containing this exact profile.
+    // No public create/rename path can request this narrowly scoped bypass.
+    return saveProfileUnlocked(profile, canonical, true);
 }
 
-ProfileOperationResult V1ProfileManager::snapshotProfiles(std::vector<V1Profile>& profiles, uint32_t timeoutMs) const {
+ProfileOperationResult V1ProfileManager::snapshotProfiles(std::vector<V1Profile>& profiles, uint32_t timeoutMs,
+                                                           bool allowGrandfatheredOverLimit) const {
     profiles.clear();
     ProfileStorageGuard guard(*this, storage_, usingSd_, timeoutMs);
     if (!guard.acquired()) {
@@ -1384,15 +2254,26 @@ ProfileOperationResult V1ProfileManager::snapshotProfiles(std::vector<V1Profile>
     if (!catalog.success()) {
         return profileResult(catalog.status, catalog.error);
     }
-    profiles.reserve(catalog.profiles.size());
-    for (const String& name : catalog.profiles) {
-        V1Profile profile;
-        const ProfileOperationResult loaded = loadProfileUnlocked(name, profile);
-        if (!loaded.success()) {
-            profiles.clear();
-            return loaded;
+    if (!allowGrandfatheredOverLimit && catalog.profiles.size() > V1_PROFILE_CATALOG_MAX_COUNT) {
+        return profileResult(ProfileStorageStatus::IoError, V1_PROFILE_CATALOG_LIMIT_ERROR);
+    }
+    try {
+#ifdef UNIT_TEST
+        maybeFailAllocationForTest(V1ProfileAllocationFailurePoint::SnapshotGrowth);
+#endif
+        profiles.reserve(catalog.profiles.size());
+        for (const String& name : catalog.profiles) {
+            V1Profile profile;
+            const ProfileOperationResult loaded = loadProfileUnlocked(name, profile);
+            if (!loaded.success()) {
+                profiles.clear();
+                return loaded;
+            }
+            profiles.push_back(std::move(profile));
         }
-        profiles.push_back(profile);
+    } catch (const std::bad_alloc&) {
+        profiles.clear();
+        return profileResult(ProfileStorageStatus::IoError, "Profile snapshot memory unavailable");
     }
     return profileResult(ProfileStorageStatus::Success);
 }
@@ -1403,7 +2284,14 @@ void V1ProfileManager::setCurrentSettings(const uint8_t* bytes) {
 }
 
 String V1ProfileManager::settingsToJson(const V1UserSettings& s) const {
-    JsonDocument doc;
+    String output;
+    settingsToJson(s, output);
+    return output;
+}
+
+bool V1ProfileManager::settingsToJson(const V1UserSettings& s, String& output) const {
+    output = "";
+    PsramJson::Document doc;
 
     // Raw bytes
     JsonArray bytes = doc["bytes"].to<JsonArray>();
@@ -1443,13 +2331,18 @@ String V1ProfileManager::settingsToJson(const V1UserSettings& s) const {
     doc["gatsoRT4"] = s.gatsoRT4();
     doc["photoIntersectionFilter"] = s.photoIntersectionFilter();
 
-    String output;
-    serializeJson(doc, output);
-    return output;
+    const size_t expected = measureJson(doc);
+    if (doc.overflowed() || expected == 0 || serializeJson(doc, output) != expected ||
+        output.length() != expected) {
+        output = "";
+        return false;
+    }
+    return true;
 }
 
-String V1ProfileManager::profileToJson(const V1Profile& profile) const {
-    JsonDocument doc;
+bool V1ProfileManager::profileToJson(const V1Profile& profile, String& output) const {
+    output = "";
+    PsramJson::Document doc;
     doc["schemaVersion"] = profile.schemaVersion;
     doc["name"] = profile.name;
     doc["description"] = profile.description;
@@ -1498,18 +2391,39 @@ String V1ProfileManager::profileToJson(const V1Profile& profile) const {
     settings["gatsoRT4"] = s.gatsoRT4();
     settings["photoIntersectionFilter"] = s.photoIntersectionFilter();
 
+    const size_t expected = measureJson(doc);
+    if (doc.overflowed() || expected == 0 || expected > V1_PROFILE_HTTP_SAVE_MAX_BYTES) return false;
+    output.reserve(expected);
+    const size_t written = serializeJson(doc, output);
+    if (written != expected || output.length() != expected) {
+        output = "";
+        return false;
+    }
+    return true;
+}
+
+String V1ProfileManager::profileToJson(const V1Profile& profile) const {
     String output;
-    serializeJson(doc, output);
+    (void)profileToJson(profile, output);
     return output;
 }
 
 bool V1ProfileManager::jsonToSettings(const String& json, V1UserSettings& settings) const {
-    if (json.length() > 4096) {
+    if (json.length() > V1_PROFILE_FILE_MAX_BYTES) {
         Serial.println("[V1Profiles] JSON too large, rejecting");
         return false;
     }
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, json);
+    const ExactJsonInput::Status exact = ExactJsonInput::validate(json.c_str(), json.length());
+    if (exact != ExactJsonInput::Status::Ok) {
+        Serial.println("[V1Profiles] JSON exact-input validation failed");
+        return false;
+    }
+    PsramJson::Document doc;
+    DeserializationError err = deserializeJson(doc, json.c_str(), json.length());
+    if (doc.overflowed() || err == DeserializationError::NoMemory) {
+        Serial.println("[V1Profiles] JSON parse memory unavailable");
+        return false;
+    }
     if (err) {
         Serial.printf("[V1Profiles] JSON parse error: %s\n", err.c_str());
         return false;
@@ -1526,22 +2440,33 @@ bool V1ProfileManager::jsonToSettings(const String& json, V1UserSettings& settin
 }
 
 bool V1ProfileManager::jsonToSettings(const JsonObject& settingsObj, V1UserSettings& settings) const {
+    if (!validateHumanReadableSettings(settingsObj)) return false;
+
     // Try raw bytes first. A present raw field must be a strict six-byte array;
-    // only an absent field falls back to individual settings.
+    // only an absent field falls back to individual settings. Redundant
+    // readable fields are accepted only when they describe those exact bytes;
+    // a baseBytes overlay and an authoritative bytes array are mutually
+    // exclusive.
     const JsonVariantConst rawBytes = settingsObj["bytes"];
     if (!rawBytes.isUnbound()) {
         uint8_t parsedBytes[V1SettingsJson::kSettingsByteCount];
-        if (!V1SettingsJson::parseRawBytes(rawBytes, parsedBytes)) {
+        if (!V1SettingsJson::parseRawBytes(rawBytes, parsedBytes) ||
+            !settingsObj["baseBytes"].isUnbound()) {
             Serial.println("[V1Profiles] Invalid raw settings bytes");
             return false;
         }
-        memcpy(settings.bytes, parsedBytes, sizeof(parsedBytes));
+        V1UserSettings parsed;
+        memcpy(parsed.bytes, parsedBytes, sizeof(parsedBytes));
+        V1UserSettings readable = parsed;
+        bool anyReadableField = false;
+        applyHumanReadableSettings(settingsObj, readable, anyReadableField);
+        if (std::memcmp(readable.bytes, parsed.bytes, sizeof(parsed.bytes)) != 0) {
+            Serial.println("[V1Profiles] Raw and readable settings conflict");
+            return false;
+        }
+        settings = parsed;
         Serial.println("[V1Profiles] Loaded from raw bytes");
         return true;
-    }
-
-    if (!validateHumanReadableSettings(settingsObj)) {
-        return false;
     }
 
     // Parse individual settings over an optional exact-byte base. Captured
@@ -1559,127 +2484,7 @@ bool V1ProfileManager::jsonToSettings(const JsonObject& settingsObj, V1UserSetti
     }
     Serial.println("[V1Profiles] Parsing individual settings");
     bool anyField = false;
-
-    if (!settingsObj["xBand"].isNull()) {
-        parsed.setXBandEnabled(settingsObj["xBand"].as<bool>());
-        anyField = true;
-    }
-    if (!settingsObj["kBand"].isNull()) {
-        parsed.setKBandEnabled(settingsObj["kBand"].as<bool>());
-        anyField = true;
-    }
-    if (!settingsObj["kaBand"].isNull()) {
-        parsed.setKaBandEnabled(settingsObj["kaBand"].as<bool>());
-        anyField = true;
-    }
-    if (!settingsObj["laser"].isNull()) {
-        parsed.setLaserEnabled(settingsObj["laser"].as<bool>());
-        anyField = true;
-    }
-    if (!settingsObj["kuBand"].isNull()) {
-        parsed.setKuBandEnabled(settingsObj["kuBand"].as<bool>());
-        anyField = true;
-    }
-    if (!settingsObj["euro"].isNull()) {
-        parsed.setEuroMode(settingsObj["euro"].as<bool>());
-        anyField = true;
-    }
-    if (!settingsObj["kVerifier"].isNull()) {
-        parsed.setKVerifier(settingsObj["kVerifier"].as<bool>());
-        anyField = true;
-    }
-    if (!settingsObj["laserRear"].isNull()) {
-        parsed.setLaserRear(settingsObj["laserRear"].as<bool>());
-        anyField = true;
-    }
-    if (!settingsObj["customFreqs"].isNull()) {
-        parsed.setCustomFreqs(settingsObj["customFreqs"].as<bool>());
-        anyField = true;
-    }
-    if (!settingsObj["kaAlwaysPriority"].isNull()) {
-        parsed.setKaAlwaysPriority(settingsObj["kaAlwaysPriority"].as<bool>());
-        anyField = true;
-    }
-    if (!settingsObj["fastLaserDetect"].isNull()) {
-        parsed.setFastLaserDetect(settingsObj["fastLaserDetect"].as<bool>());
-        anyField = true;
-    }
-    if (!settingsObj["kaSensitivity"].isNull()) {
-        parsed.setKaSensitivity(settingsObj["kaSensitivity"].as<uint8_t>());
-        anyField = true;
-    }
-    if (!settingsObj["kSensitivity"].isNull()) {
-        parsed.setKSensitivity(settingsObj["kSensitivity"].as<uint8_t>());
-        anyField = true;
-    }
-    if (!settingsObj["xSensitivity"].isNull()) {
-        parsed.setXSensitivity(settingsObj["xSensitivity"].as<uint8_t>());
-        anyField = true;
-    }
-    if (!settingsObj["autoMute"].isNull()) {
-        parsed.setAutoMute(settingsObj["autoMute"].as<uint8_t>());
-        anyField = true;
-    }
-    if (!settingsObj["muteToMuteVolume"].isNull()) {
-        parsed.setMuteToMuteVolume(settingsObj["muteToMuteVolume"].as<bool>());
-        anyField = true;
-    }
-    if (!settingsObj["bogeyLockLoud"].isNull()) {
-        parsed.setBogeyLockLoud(settingsObj["bogeyLockLoud"].as<bool>());
-        anyField = true;
-    }
-    if (!settingsObj["muteXKRear"].isNull()) {
-        parsed.setMuteXKRear(settingsObj["muteXKRear"].as<bool>());
-        anyField = true;
-    }
-    if (!settingsObj["startupSequence"].isNull()) {
-        parsed.setStartupSequence(settingsObj["startupSequence"].as<bool>());
-        anyField = true;
-    }
-    if (!settingsObj["restingDisplay"].isNull()) {
-        parsed.setRestingDisplay(settingsObj["restingDisplay"].as<bool>());
-        anyField = true;
-    }
-    if (!settingsObj["bsmPlus"].isNull()) {
-        parsed.setBsmPlus(settingsObj["bsmPlus"].as<bool>());
-        anyField = true;
-    }
-    if (!settingsObj["mrct"].isNull()) {
-        parsed.setMrct(settingsObj["mrct"].as<bool>());
-        anyField = true;
-    }
-    if (!settingsObj["driveSafe3D"].isNull()) {
-        parsed.setDriveSafe3D(settingsObj["driveSafe3D"].as<bool>());
-        anyField = true;
-    }
-    if (!settingsObj["driveSafe3DHD"].isNull()) {
-        parsed.setDriveSafe3DHD(settingsObj["driveSafe3DHD"].as<bool>());
-        anyField = true;
-    }
-    if (!settingsObj["redflexHalo"].isNull()) {
-        parsed.setRedflexHalo(settingsObj["redflexHalo"].as<bool>());
-        anyField = true;
-    }
-    if (!settingsObj["redflexNK7"].isNull()) {
-        parsed.setRedflexNK7(settingsObj["redflexNK7"].as<bool>());
-        anyField = true;
-    }
-    if (!settingsObj["ekin"].isNull()) {
-        parsed.setEkin(settingsObj["ekin"].as<bool>());
-        anyField = true;
-    }
-    if (!settingsObj["photoVerifier"].isNull()) {
-        parsed.setPhotoVerifier(settingsObj["photoVerifier"].as<bool>());
-        anyField = true;
-    }
-    if (!settingsObj["gatsoRT4"].isNull()) {
-        parsed.setGatsoRT4(settingsObj["gatsoRT4"].as<bool>());
-        anyField = true;
-    }
-    if (!settingsObj["photoIntersectionFilter"].isNull()) {
-        parsed.setPhotoIntersectionFilter(settingsObj["photoIntersectionFilter"].as<bool>());
-        anyField = true;
-    }
+    applyHumanReadableSettings(settingsObj, parsed, anyField);
 
     if (!anyField) {
         Serial.println("[V1Profiles] No settings provided");

@@ -112,6 +112,25 @@ void resetRuntimeState() {
     mockMicros = 1000000;
 }
 
+void makeCurrentV21Source(V1Settings& value) {
+    value.autoPushProfileSchemaVersion = V1_PROFILE_SCHEMA_VERSION;
+    value.slot0_default.mode = V1_MODE_UNKNOWN;
+    value.slot1_highway.mode = V1_MODE_UNKNOWN;
+    value.slot2_comfort.mode = V1_MODE_UNKNOWN;
+    value.slot0Volume = 0xFF;
+    value.slot0MuteVolume = 0xFF;
+    value.slot1Volume = 0xFF;
+    value.slot1MuteVolume = 0xFF;
+    value.slot2Volume = 0xFF;
+    value.slot2MuteVolume = 0xFF;
+    value.slot0DarkMode = false;
+    value.slot1DarkMode = false;
+    value.slot2DarkMode = false;
+    value.slot0MuteToZero = false;
+    value.slot1MuteToZero = false;
+    value.slot2MuteToZero = false;
+}
+
 String activeNamespaceOrEmpty() {
     return mock_preferences::getString(SETTINGS_NS_META, "active", "");
 }
@@ -540,6 +559,7 @@ void test_save_load_and_backup_round_trip_current_shape_fields() {
     settings.alpEnabled = true;
     settings.alpAlertPersistSec = 4;
     settings.alpDisableV1LaserOnPush = false;
+    makeCurrentV21Source(settings);
 
     original.save();
 
@@ -587,18 +607,18 @@ void test_save_load_and_backup_round_trip_current_shape_fields() {
     TEST_ASSERT_EQUAL_HEX16(0x1111, loaded.slot0Color);
     TEST_ASSERT_EQUAL_HEX16(0x2222, loaded.slot1Color);
     TEST_ASSERT_EQUAL_HEX16(0x3333, loaded.slot2Color);
-    TEST_ASSERT_EQUAL_UINT8(4, loaded.slot0Volume);
-    TEST_ASSERT_EQUAL_UINT8(1, loaded.slot0MuteVolume);
-    TEST_ASSERT_EQUAL_UINT8(6, loaded.slot1Volume);
-    TEST_ASSERT_EQUAL_UINT8(2, loaded.slot1MuteVolume);
-    TEST_ASSERT_TRUE(loaded.slot2DarkMode);
-    TEST_ASSERT_TRUE(loaded.slot0MuteToZero);
+    TEST_ASSERT_EQUAL_UINT8(0xFF, loaded.slot0Volume);
+    TEST_ASSERT_EQUAL_UINT8(0xFF, loaded.slot0MuteVolume);
+    TEST_ASSERT_EQUAL_UINT8(0xFF, loaded.slot1Volume);
+    TEST_ASSERT_EQUAL_UINT8(0xFF, loaded.slot1MuteVolume);
+    TEST_ASSERT_FALSE(loaded.slot2DarkMode);
+    TEST_ASSERT_FALSE(loaded.slot0MuteToZero);
     TEST_ASSERT_EQUAL_UINT8(5, loaded.slot1AlertPersist);
     TEST_ASSERT_TRUE(loaded.slot2PriorityArrow);
     TEST_ASSERT_EQUAL_STRING("City", loaded.slot0_default.profileName.c_str());
-    TEST_ASSERT_EQUAL_INT(V1_MODE_LOGIC, loaded.slot0_default.mode);
+    TEST_ASSERT_EQUAL_INT(V1_MODE_UNKNOWN, loaded.slot0_default.mode);
     TEST_ASSERT_EQUAL_STRING("Quiet", loaded.slot2_comfort.profileName.c_str());
-    TEST_ASSERT_EQUAL_INT(V1_MODE_ADVANCED_LOGIC, loaded.slot2_comfort.mode);
+    TEST_ASSERT_EQUAL_INT(V1_MODE_UNKNOWN, loaded.slot2_comfort.mode);
     TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF", loaded.lastV1Address.c_str());
     TEST_ASSERT_EQUAL_UINT8(7, loaded.autoPowerOffMinutes);
     TEST_ASSERT_EQUAL_UINT8(15, loaded.apTimeoutMinutes);
@@ -705,6 +725,7 @@ void test_ap_password_restored_from_backup_when_key_present() {
 
     // Build a backup document containing an obfuscated apPassword.
     SettingsManager source(storage, profiles);
+    makeCurrentV21Source(source.mutableSettings());
     source.mutableSettings().apPassword = "RoadRig2026";
     JsonDocument backupDoc;
     BackupPayloadBuilder::buildBackupDocument(
@@ -746,6 +767,7 @@ void test_http_backup_omits_all_wifi_credentials() {
     TEST_ASSERT_TRUE(profiles.begin(&fs));
 
     SettingsManager manager(storage, profiles);
+    makeCurrentV21Source(manager.mutableSettings());
     manager.setWifiClientCredentials("GarageNet", "garage-secret-2026");
 
     JsonDocument backupDoc;
@@ -778,6 +800,7 @@ void test_wifi_client_password_restores_from_sd_backup_to_nvs() {
     TEST_ASSERT_TRUE(profiles.begin(&fs));
 
     SettingsManager source(storage, profiles);
+    makeCurrentV21Source(source.mutableSettings());
     source.setWifiClientCredentials("GarageNet", "garage-secret-2026");
 
     // Simulate clean flash while retaining the SD backup file.
@@ -798,6 +821,7 @@ void test_restore_preserves_sta_password_when_sanitized_backup_ssid_matches() {
     TEST_ASSERT_TRUE(profiles.begin(&fs));
 
     SettingsManager manager(storage, profiles);
+    makeCurrentV21Source(manager.mutableSettings());
     manager.setWifiStaSlotCredentials(0, "GarageNet", "garage-secret-2026", "Garage", 0);
 
     // Default HTTP export is sanitized: slots carry no passwordObf.
@@ -990,6 +1014,7 @@ void test_wifi_sta_slot_sd_secret_retains_multiple_passwords() {
     TEST_ASSERT_TRUE(profiles.begin(&fs));
 
     SettingsManager source(storage, profiles);
+    makeCurrentV21Source(source.mutableSettings());
     source.setWifiStaSlotCredentials(0, "ghost", "ghost-secret", "Garage", 0);
     source.setWifiStaSlotCredentials(1, "ghost-e", "extender-secret", "Extender", 1);
 
@@ -1152,6 +1177,7 @@ void test_wifi_sta_slots_round_trip_and_primary_alias() {
 
     SettingsManager original(storage, profiles);
     V1Settings& settings = original.mutableSettings();
+    makeCurrentV21Source(settings);
     settings.wifiClientEnabled = true;
     settings.wifiStaSlots[0].ssid = "GarageNet";
     settings.wifiStaSlots[0].label = "Garage";
@@ -1501,6 +1527,7 @@ void test_serialized_backup_payload_matches_builder_and_writes_same_json() {
 
     SettingsManager manager(storage, profiles);
     V1Settings& settings = manager.mutableSettings();
+    makeCurrentV21Source(settings);
     settings.apSSID = "PayloadTest";
     settings.brightness = 77;
     settings.proxyBLE = false;
@@ -1535,6 +1562,87 @@ void test_serialized_backup_payload_matches_builder_and_writes_same_json() {
 
     releaseSerializedSettingsBackupPayload(payload);
     TEST_ASSERT_NULL(payload.data);
+}
+
+void test_oversized_sd_backup_build_and_write_fail_before_clobbering_live_backup() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    writeFileFromString(fs, SETTINGS_BACKUP_PATH, "preserve-live-backup");
+
+    SettingsManager source(storage, profiles);
+    source.mutableSettings().apSSID = String(std::string(SETTINGS_BACKUP_MAX_BYTES, 'x'));
+    SerializedSettingsBackupPayload built;
+    TEST_ASSERT_FALSE(buildSerializedSdBackupPayload(built, source.get(), profiles, 99));
+    TEST_ASSERT_NULL(built.data);
+    TEST_ASSERT_EQUAL_STRING("preserve-live-backup",
+                             readFileToString(fs, SETTINGS_BACKUP_PATH).c_str());
+    TEST_ASSERT_FALSE(fs.exists(SETTINGS_BACKUP_TMP_PATH));
+
+    const std::string oversized(SETTINGS_BACKUP_MAX_BYTES + 1u, 'x');
+    SerializedSettingsBackupPayload direct;
+    direct.data = const_cast<char*>(oversized.data());
+    direct.length = oversized.size();
+    TEST_ASSERT_FALSE(writeBackupAtomically(&fs, direct));
+    direct.data = nullptr;
+    TEST_ASSERT_EQUAL_STRING("preserve-live-backup",
+                             readFileToString(fs, SETTINGS_BACKUP_PATH).c_str());
+    TEST_ASSERT_FALSE(fs.exists(SETTINGS_BACKUP_TMP_PATH));
+}
+
+void test_sd_backup_psram_exhaustion_fails_before_clobbering_live_backup() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    writeFileFromString(fs, SETTINGS_BACKUP_PATH, "preserve-live-backup");
+
+    SettingsManager source(storage, profiles);
+    SerializedSettingsBackupPayload payload;
+    g_mock_heap_caps_fail_all_allocations = true;
+    TEST_ASSERT_FALSE(buildSerializedSdBackupPayload(payload, source.get(), profiles, 99));
+    g_mock_heap_caps_fail_all_allocations = false;
+
+    TEST_ASSERT_NULL(payload.data);
+    TEST_ASSERT_EQUAL_UINT(0u, payload.length);
+    TEST_ASSERT_EQUAL_STRING("preserve-live-backup",
+                             readFileToString(fs, SETTINGS_BACKUP_PATH).c_str());
+    TEST_ASSERT_FALSE(fs.exists(SETTINGS_BACKUP_TMP_PATH));
+}
+
+void test_backup_builders_reject_unsafe_persisted_text_without_clobbering_live_backup() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    writeFileFromString(fs, SETTINGS_BACKUP_PATH, "preserve-live-backup");
+
+    SettingsManager source(storage, profiles);
+    String unsafeControl("Saved");
+    unsafeControl += static_cast<char>(0x01);
+    source.mutableSettings().wifiStaSlots[0].ssid = "LegacyNetwork";
+    source.mutableSettings().wifiStaSlots[0].label = unsafeControl;
+
+    JsonDocument http;
+    const auto httpResult = BackupPayloadBuilder::buildBackupDocument(
+        http, source.get(), profiles, BackupPayloadBuilder::BackupTransport::HttpDownload, 99);
+    TEST_ASSERT_FALSE(httpResult.safeToCommit);
+    TEST_ASSERT_EQUAL_UINT32(0u, static_cast<uint32_t>(http.size()));
+    TEST_ASSERT_FALSE(source.backupToSD());
+    TEST_ASSERT_EQUAL_STRING("preserve-live-backup",
+                             readFileToString(fs, SETTINGS_BACKUP_PATH).c_str());
+    TEST_ASSERT_FALSE(fs.exists(SETTINGS_BACKUP_TMP_PATH));
+
+    String invalidUtf8("V1-");
+    invalidUtf8 += static_cast<char>(0xff);
+    source.mutableSettings().wifiStaSlots[0].label = "Saved";
+    source.mutableSettings().apSSID = invalidUtf8;
+    http.clear();
+    const auto utf8Result = BackupPayloadBuilder::buildBackupDocument(
+        http, source.get(), profiles, BackupPayloadBuilder::BackupTransport::HttpDownload, 100);
+    TEST_ASSERT_FALSE(utf8Result.safeToCommit);
+    TEST_ASSERT_EQUAL_UINT32(0u, static_cast<uint32_t>(http.size()));
+    TEST_ASSERT_FALSE(source.backupToSD());
+    TEST_ASSERT_EQUAL_STRING("preserve-live-backup",
+                             readFileToString(fs, SETTINGS_BACKUP_PATH).c_str());
 }
 
 void test_device_batch_update_skips_noop_persist_and_saves_once_on_change() {
@@ -1813,6 +1921,7 @@ void test_partial_recovery_restores_both_speed_mute_fields() {
     // Build and write a backup with non-default speed-mute values.
     SettingsManager source(storage, profiles);
     V1Settings& src = source.mutableSettings();
+    makeCurrentV21Source(src);
     src.speedMuteEnabled = true;
     src.speedMuteThresholdMph = 45;
     src.speedMuteHysteresisMph = 7;
@@ -1833,6 +1942,44 @@ void test_partial_recovery_restores_both_speed_mute_fields() {
 
     TEST_ASSERT_EQUAL_UINT8(45, target.get().speedMuteThresholdMph);
     TEST_ASSERT_EQUAL_UINT8(7, target.get().speedMuteHysteresisMph);
+}
+
+void test_critical_recovery_late_persist_failure_rolls_back_settings_and_credentials() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+
+    SettingsManager manager(storage, profiles);
+    manager.mutableSettings().brightness = 31;
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "old-net", "old-secret", "Old", 0));
+    V1Settings before = manager.get();
+    const std::string secretBefore = readFileToString(fs, WIFI_CLIENT_SD_SECRET_PATH);
+
+    JsonDocument backup;
+    backup["brightness"] = 88;
+    backup["wifiClientEnabled"] = false;
+    JsonObject slot = backup["wifiStaSlots"].to<JsonArray>().add<JsonObject>();
+    slot["index"] = 0;
+    slot["ssid"] = "new-net";
+    slot["label"] = "New";
+    slot["passwordObf"] = encodeObfuscatedForStorage("new-secret");
+    slot["priority"] = 0;
+    slot["lastSuccessfulAtMs"] = 7;
+
+    int persistCalls = 0;
+    const bool applied = applyBackupCriticalFieldsAtomically(
+        backup, manager.mutableSettings(), storage,
+        [](void* ctx) {
+            ++*static_cast<int*>(ctx);
+            return false;
+        }, &persistCalls);
+
+    TEST_ASSERT_FALSE(applied);
+    TEST_ASSERT_EQUAL_INT(1, persistCalls);
+    assertSettingsEqual(before, manager.get());
+    TEST_ASSERT_EQUAL_STRING("old-secret", manager.getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_EQUAL_STRING(secretBefore.c_str(),
+                             readFileToString(fs, WIFI_CLIENT_SD_SECRET_PATH).c_str());
 }
 
 void test_sd_backup_builder_rejects_dangling_profile_assignment() {
@@ -1857,12 +2004,15 @@ void test_restore_pending_survives_no_sd_save_and_sd_backup_wins_next_boot() {
 
     SettingsManager source(storage, profiles);
     V1Settings& sourceSettings = source.mutableSettings();
+    makeCurrentV21Source(sourceSettings);
     sourceSettings.apSSID = "SD-Rig";
     sourceSettings.proxyName = "SD-Proxy";
     sourceSettings.brightness = 88;
     sourceSettings.autoPushEnabled = true;
-    sourceSettings.slot0_default = AutoPushSlot("Road", V1_MODE_LOGIC);
+    sourceSettings.slot0_default.profileName = "Road";
     V1Profile road("Road");
+    road.detector.modePolicy = V1ModePolicy::Value;
+    road.detector.mode = V1_MODE_LOGIC;
     for (int i = 0; i < 6; ++i) {
         road.settings.bytes[i] = static_cast<uint8_t>(i + 1);
     }
@@ -1929,7 +2079,11 @@ void test_restore_pending_survives_no_sd_save_and_sd_backup_wins_next_boot() {
     TEST_ASSERT_EQUAL_UINT8(88, restored.brightness);
     TEST_ASSERT_TRUE(restored.autoPushEnabled);
     TEST_ASSERT_EQUAL_STRING("Road", restored.slot0_default.profileName.c_str());
-    TEST_ASSERT_EQUAL_INT(V1_MODE_LOGIC, restored.slot0_default.mode);
+    TEST_ASSERT_EQUAL_INT(V1_MODE_UNKNOWN, restored.slot0_default.mode);
+    V1Profile restoredRoad;
+    TEST_ASSERT_TRUE(profiles.loadProfile("Road", restoredRoad));
+    TEST_ASSERT_EQUAL_INT(V1ModePolicy::Value, restoredRoad.detector.modePolicy);
+    TEST_ASSERT_EQUAL_UINT8(V1_MODE_LOGIC, restoredRoad.detector.mode);
 
     const String restoredNs = activeNamespaceOrEmpty();
     TEST_ASSERT_TRUE(restoredNs.length() > 0);
@@ -1949,6 +2103,7 @@ void test_gps_fields_round_trip_through_backup_and_restore() {
 
     SettingsManager source(storage, profiles);
     V1Settings& src = source.mutableSettings();
+    makeCurrentV21Source(src);
     src.gpsEnabled = true;
     src.gpsBaud = 38400;
 
@@ -1979,6 +2134,7 @@ void test_voice_fields_round_trip_through_sd_backup_and_restore() {
 
     SettingsManager source(storage, profiles);
     V1Settings& src = source.mutableSettings();
+    makeCurrentV21Source(src);
     src.voiceAlertMode = VOICE_MODE_FREQ_ONLY;
     src.voiceDirectionEnabled = false;
     src.announceBogeyCount = false;
@@ -2035,6 +2191,7 @@ void test_gps_fields_partial_recovery() {
 
     SettingsManager source(storage, profiles);
     V1Settings& src = source.mutableSettings();
+    makeCurrentV21Source(src);
     src.gpsEnabled = true;
     src.gpsBaud = 115200;
 
@@ -2280,6 +2437,7 @@ void verify_healthy_nvs_recovers_referenced_profile(bool usePreviousBackup) {
     TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
 
     SettingsManager source(storage, profiles);
+    makeCurrentV21Source(source.mutableSettings());
     source.mutableSettings().slot0_default.profileName = "Road";
     TEST_ASSERT_TRUE(source.save());
     if (usePreviousBackup) {
@@ -2566,6 +2724,25 @@ void test_interrupted_wifi_credential_transaction_reboots_to_old_complete_pair()
     TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiTxnReady));
 }
 
+void test_wifi_credential_setter_rejects_unsafe_or_overlong_text_before_mutation() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "OldNet", "old-password", "Old", 0));
+
+    String overlongSsid;
+    for (size_t i = 0; i <= MAX_WIFI_SSID_LEN; ++i) overlongSsid += 'A';
+    TEST_ASSERT_FALSE(manager.setWifiStaSlotCredentials(0, overlongSsid, "new-password", "New", 0));
+    TEST_ASSERT_FALSE(manager.setWifiStaSlotCredentials(0, "NewNet", "new-password", "Bad\x01Label", 0));
+    TEST_ASSERT_FALSE(manager.setWifiStaSlotCredentials(0, "\xFF", "new-password", "New", 0));
+
+    TEST_ASSERT_EQUAL_STRING("OldNet", manager.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("Old", manager.get().wifiStaSlots[0].label.c_str());
+    TEST_ASSERT_EQUAL_STRING("old-password", manager.getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiTxnReady));
+}
+
 void test_short_wifi_secret_write_preserves_prior_secret_and_reboots_consistently() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
@@ -2586,6 +2763,45 @@ void test_short_wifi_secret_write_preserves_prior_secret_and_reboots_consistentl
     TEST_ASSERT_EQUAL_STRING("OldNet", rebooted.get().wifiStaSlots[0].ssid.c_str());
     TEST_ASSERT_EQUAL_STRING("old-password", rebooted.getWifiStaSlotPassword(0).c_str());
     TEST_ASSERT_EQUAL_STRING(secretBefore.c_str(), readFileToString(fs, WIFI_CLIENT_SD_SECRET_PATH).c_str());
+}
+
+void test_wifi_secret_presence_uses_bounded_exact_parser_and_distinguishes_unavailable() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "ExactNet", "exact-password", "Exact", 0));
+    const std::string validSecret = readFileToString(fs, WIFI_CLIENT_SD_SECRET_PATH);
+
+    WifiClientSecretPresence presence = readWifiClientSecretPresence(&fs);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(WifiClientSecretReadStatus::Valid),
+                          static_cast<int>(presence.status));
+    TEST_ASSERT_EQUAL_STRING("ExactNet", presence.ssid.c_str());
+
+    writeFileFromString(fs, WIFI_CLIENT_SD_SECRET_PATH, (validSecret + " trailing").c_str());
+    presence = readWifiClientSecretPresence(&fs);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(WifiClientSecretReadStatus::Invalid),
+                          static_cast<int>(presence.status));
+    TEST_ASSERT_EQUAL_UINT(0u, presence.ssid.length());
+
+    JsonDocument malformed;
+    TEST_ASSERT_FALSE(deserializeJson(malformed, validSecret.c_str(), validSecret.length()));
+    malformed["ssidTypo"] = "Wrong";
+    File malformedFile = fs.open(WIFI_CLIENT_SD_SECRET_PATH, FILE_WRITE);
+    TEST_ASSERT_TRUE(static_cast<bool>(malformedFile));
+    serializeJson(malformed, malformedFile);
+    malformedFile.close();
+    presence = readWifiClientSecretPresence(&fs);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(WifiClientSecretReadStatus::Invalid),
+                          static_cast<int>(presence.status));
+
+    writeFileFromString(fs, WIFI_CLIENT_SD_SECRET_PATH, validSecret.c_str());
+    g_mock_heap_caps_fail_all_allocations = true;
+    presence = readWifiClientSecretPresence(&fs);
+    g_mock_heap_caps_fail_all_allocations = false;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(WifiClientSecretReadStatus::Unavailable),
+                          static_cast<int>(presence.status));
+    TEST_ASSERT_EQUAL_UINT(0u, presence.ssid.length());
 }
 
 void test_interrupted_forget_all_reboots_with_every_slot_and_password_restored() {
@@ -2609,11 +2825,58 @@ void test_interrupted_forget_all_reboots_with_every_slot_and_password_restored()
     TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiTxnReady));
 }
 
+void test_wifi_password_snapshot_rejects_present_but_unreadable_string() {
+    Preferences prefs;
+    TEST_ASSERT_TRUE(prefs.begin(WIFI_CLIENT_NS, false));
+    const String encoded = encodeObfuscatedForStorage("snapshot-secret");
+    TEST_ASSERT_EQUAL_UINT(encoded.length(), prefs.putString(kNvsWifiStaSlotPassword[0], encoded));
+    prefs.end();
+
+    mock_preferences::set_fail_string_read_for_key(kNvsWifiStaSlotPassword[0]);
+    WifiPasswordNvsSnapshot snapshot;
+    TEST_ASSERT_FALSE(readWifiPasswordNvsSnapshot(0, snapshot));
+    mock_preferences::set_fail_string_read_for_key(nullptr);
+    TEST_ASSERT_EQUAL_STRING(encoded.c_str(),
+                             mock_preferences::getString(WIFI_CLIENT_NS, kNvsWifiStaSlotPassword[0], "").c_str());
+}
+
+void test_forget_all_journal_rejects_non_exact_or_unreadable_payload_without_clearing_marker() {
+    WifiForgetAllJournal source;
+    source.oldSsid[0] = "One";
+    source.oldSsid[1] = "Two";
+    source.oldEncodedPassword[0] = encodeObfuscatedForStorage("one-secret");
+    source.oldEncodedPassword[1] = encodeObfuscatedForStorage("two-secret");
+    TEST_ASSERT_TRUE(writeWifiForgetAllJournal(source));
+
+    WifiForgetAllJournal parsed;
+    TEST_ASSERT_TRUE(readWifiForgetAllJournal(parsed));
+    TEST_ASSERT_EQUAL_STRING("One", parsed.oldSsid[0].c_str());
+    const String validPayload = mock_preferences::getString(WIFI_CLIENT_NS, kNvsWifiTxnData, "");
+
+    Preferences prefs;
+    TEST_ASSERT_TRUE(prefs.begin(WIFI_CLIENT_NS, false));
+    String trailing = validPayload;
+    trailing += "{}";
+    TEST_ASSERT_EQUAL_UINT(trailing.length(), prefs.putString(kNvsWifiTxnData, trailing));
+    prefs.end();
+    TEST_ASSERT_FALSE(readWifiForgetAllJournal(parsed));
+    TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiTxnReady));
+
+    TEST_ASSERT_TRUE(prefs.begin(WIFI_CLIENT_NS, false));
+    TEST_ASSERT_EQUAL_UINT(validPayload.length(), prefs.putString(kNvsWifiTxnData, validPayload));
+    prefs.end();
+    mock_preferences::set_fail_string_read_for_key(kNvsWifiTxnData);
+    TEST_ASSERT_FALSE(readWifiForgetAllJournal(parsed));
+    mock_preferences::set_fail_string_read_for_key(nullptr);
+    TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiTxnReady));
+}
+
 void check_successful_wifi_forget_survives_boot(bool failBackupWrite) {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
     TEST_ASSERT_TRUE(profiles.begin(&fs));
     SettingsManager manager(storage, profiles);
+    makeCurrentV21Source(manager.mutableSettings());
     TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "SavedOpenNetwork", "", "Saved", 0));
     const std::string backupBefore = readFileToString(fs, SETTINGS_BACKUP_PATH);
 
@@ -2687,6 +2950,7 @@ void test_restore_crc_mismatch_rejects_before_any_mutation() {
     storage.setFilesystem(&fs, true);
     TEST_ASSERT_TRUE(profiles.begin(&fs));
     SettingsManager manager(storage, profiles);
+    makeCurrentV21Source(manager.mutableSettings());
     const uint8_t brightnessBefore = manager.get().brightness;
     JsonDocument doc;
     BackupPayloadBuilder::buildBackupDocument(
@@ -3031,6 +3295,55 @@ void test_restore_transaction_journal_is_mirrored_and_cleared_on_recovery() {
     TEST_ASSERT_FALSE(little.exists("/v1restore_transaction.json"));
 }
 
+void test_restore_recovery_uses_valid_mirror_when_primary_journal_exceeds_catalog_cap() {
+    const std::filesystem::path sdRoot = g_tempRoot / "sd_overcap_journal";
+    const std::filesystem::path littleRoot = g_tempRoot / "little_overcap_journal";
+    std::filesystem::create_directories(sdRoot);
+    std::filesystem::create_directories(littleRoot);
+    fs::FS sd(sdRoot);
+    fs::FS little(littleRoot);
+    storage.setFilesystem(&sd, true);
+    storage.setLittleFS(&little);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "OldNet", "old-password", "Old", 0));
+
+    JsonDocument incoming;
+    JsonObject slot = incoming["wifiStaSlots"].to<JsonArray>().add<JsonObject>();
+    slot["index"] = 0;
+    slot["ssid"] = "NewNet";
+    slot["label"] = "New";
+    slot["priority"] = 0;
+    slot["passwordObf"] = encodeObfuscatedForStorage("new-password");
+    manager.utInterruptRestoreAfterCredentials(true);
+    TEST_ASSERT_FALSE(manager.applyBackupDocument(incoming, true).success);
+    TEST_ASSERT_TRUE(sd.exists(RESTORE_TRANSACTION_PATH));
+    TEST_ASSERT_TRUE(little.exists(RESTORE_TRANSACTION_PATH));
+
+    PsramJson::Document overCap;
+    overCap["_type"] = RESTORE_TRANSACTION_TYPE;
+    overCap["_version"] = RESTORE_TRANSACTION_VERSION;
+    overCap["token"] = static_cast<int64_t>(1);
+    overCap["credentialsMutated"] = false;
+    overCap["profilesMutated"] = true;
+    JsonArray profilesBefore = overCap["profilesBefore"].to<JsonArray>();
+    for (size_t index = 0; index <= V1_PROFILE_CATALOG_MAX_COUNT; ++index) {
+        profilesBefore.add<JsonObject>()["untrusted"] = static_cast<unsigned>(index);
+    }
+    stampJournalCrc(overCap);
+    writeJsonFile(sd, RESTORE_TRANSACTION_PATH, overCap);
+
+    V1ProfileManager rebootProfiles;
+    TEST_ASSERT_TRUE(rebootProfiles.begin(storage));
+    SettingsManager rebooted(storage, rebootProfiles);
+    rebooted.load();
+    rebooted.checkAndRestoreFromSD();
+    TEST_ASSERT_EQUAL_STRING("OldNet", rebooted.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("old-password", rebooted.getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_FALSE(sd.exists(RESTORE_TRANSACTION_PATH));
+    TEST_ASSERT_FALSE(little.exists(RESTORE_TRANSACTION_PATH));
+}
+
 void test_interrupted_restore_after_profile_write_reboots_to_old_profile() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
@@ -3070,6 +3383,58 @@ void test_interrupted_restore_after_profile_write_reboots_to_old_profile() {
     TEST_ASSERT_TRUE(rebootProfiles.loadProfile("Road", recovered));
     TEST_ASSERT_EQUAL_UINT8_ARRAY(road.settings.bytes, recovered.settings.bytes, 6);
     TEST_ASSERT_FALSE(fs.exists("/v1restore_transaction.json"));
+}
+
+void test_restore_profile_rollback_allocation_failure_retains_journal_and_later_converges() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    V1Profile original("Road");
+    original.description = "before";
+    original.settings.bytes[0] = 17;
+    TEST_ASSERT_TRUE(profiles.saveProfile(original).success);
+
+    SettingsManager manager(storage, profiles);
+    manager.mutableSettings().slot0_default.profileName = "Road";
+    manager.mutableSettings().brightness = 33;
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    JsonDocument incoming;
+    incoming["_type"] = "v1simple_backup";
+    incoming["brightness"] = 88;
+    incoming["slot0ProfileName"] = "Road";
+    JsonObject changed = incoming["profiles"].to<JsonArray>().add<JsonObject>();
+    changed["name"] = "Road";
+    changed["description"] = "after";
+    JsonArray bytes = changed["bytes"].to<JsonArray>();
+    for (int index = 0; index < 6; ++index) bytes.add(static_cast<uint8_t>(70 + index));
+
+    // Validation takes the first bounded profile snapshot. The settings write
+    // then fails after the new profile is authoritative, and the second
+    // snapshot used by immediate rollback throws. The exception must be
+    // contained locally and the durable journal retained for boot recovery.
+    profiles.utFailAllocation(V1ProfileAllocationFailurePoint::SnapshotGrowth, 2, true);
+    mock_preferences::set_fail_writes_for_key(kNvsBrightness);
+    TEST_ASSERT_FALSE(manager.applyBackupDocument(incoming, true).success);
+    mock_preferences::set_fail_writes_for_key(nullptr);
+    TEST_ASSERT_TRUE(fs.exists(RESTORE_TRANSACTION_PATH));
+    V1Profile stillChanged;
+    TEST_ASSERT_TRUE(profiles.loadProfile("Road", stillChanged));
+    TEST_ASSERT_EQUAL_STRING("after", stillChanged.description.c_str());
+    TEST_ASSERT_EQUAL_UINT8(70, stillChanged.settings.bytes[0]);
+
+    V1ProfileManager rebootProfiles;
+    TEST_ASSERT_TRUE(rebootProfiles.begin(storage));
+    SettingsManager rebooted(storage, rebootProfiles);
+    rebooted.load();
+    rebooted.checkAndRestoreFromSD();
+    TEST_ASSERT_FALSE(fs.exists(RESTORE_TRANSACTION_PATH));
+    TEST_ASSERT_EQUAL_UINT8(33, rebooted.get().brightness);
+    TEST_ASSERT_EQUAL_STRING("Road", rebooted.get().slot0_default.profileName.c_str());
+    V1Profile recovered;
+    TEST_ASSERT_TRUE(rebootProfiles.loadProfile("Road", recovered));
+    TEST_ASSERT_EQUAL_STRING("before", recovered.description.c_str());
+    TEST_ASSERT_EQUAL_UINT8(17, recovered.settings.bytes[0]);
 }
 
 void test_restore_password_remove_failure_rolls_back_on_modeled_reboot() {
@@ -3215,6 +3580,53 @@ void test_profile_delete_double_failure_recovers_old_profile_and_assignments_on_
     V1Profile recovered;
     TEST_ASSERT_TRUE(rebootProfiles.loadProfile("Road", recovered));
     TEST_ASSERT_EQUAL_UINT8_ARRAY(road.settings.bytes, recovered.settings.bytes, 6);
+}
+
+void test_grandfathered_profile_delete_failure_restores_twelfth_member_on_reboot() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+
+    V1Profile road("Road");
+    road.description = "grandfathered-delete-target";
+    road.settings.bytes[0] = 63;
+    TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
+    for (unsigned index = 1; index <= 9; ++index) {
+        String name("Legacy ");
+        name += String(static_cast<unsigned long>(index));
+        TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile(name)).success);
+    }
+    for (unsigned index = 10; index <= 11; ++index) {
+        String name("Legacy ");
+        name += String(static_cast<unsigned long>(index));
+        TEST_ASSERT_TRUE(profiles.restoreProfileForTransaction(V1Profile(name)).success);
+    }
+
+    SettingsManager manager(storage, profiles);
+    manager.mutableSettings().slot0_default.profileName = "Road";
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    // Leave the delete journal pending by failing the settings authority commit
+    // and the immediate compensating profile rewrite. Boot recovery must still
+    // restore the exact journaled member into the 12-profile legacy catalog.
+    fs::mock_set_fs_write_budget(700);
+    mock_preferences::set_fail_writes_for_key(kNvsSlot0Profile);
+    TEST_ASSERT_FALSE(manager.deleteProfileAndReferences("Road").success());
+    TEST_ASSERT_TRUE(fs.exists("/v1profile_delete_transaction.json"));
+    mock_preferences::set_fail_writes_for_key(nullptr);
+    fs::mock_reset_fs_write_budget();
+
+    V1ProfileManager rebootProfiles;
+    TEST_ASSERT_TRUE(rebootProfiles.begin(storage));
+    SettingsManager rebooted(storage, rebootProfiles);
+    rebooted.load();
+    rebooted.checkAndRestoreFromSD();
+    TEST_ASSERT_EQUAL_STRING("Road", rebooted.get().slot0_default.profileName.c_str());
+    TEST_ASSERT_FALSE(fs.exists("/v1profile_delete_transaction.json"));
+    V1Profile recovered;
+    TEST_ASSERT_TRUE(rebootProfiles.loadProfile("Road", recovered));
+    TEST_ASSERT_EQUAL_STRING("grandfathered-delete-target", recovered.description.c_str());
+    TEST_ASSERT_EQUAL_UINT8(63, recovered.settings.bytes[0]);
 }
 
 void test_profile_tombstone_blocks_ordinary_load_but_same_save_can_resurrect_snapshot() {
@@ -3530,6 +3942,24 @@ void test_oversized_restore_journal_is_rejected_and_preserved() {
     TEST_ASSERT_TRUE(fs.exists("/v1restore_transaction.json"));
 }
 
+void test_restore_journal_rejects_over_limit_profile_snapshot_before_parsing_entries() {
+    PsramJson::Document doc;
+    doc["_type"] = RESTORE_TRANSACTION_TYPE;
+    doc["_version"] = RESTORE_TRANSACTION_VERSION;
+    doc["token"] = static_cast<int64_t>(1);
+    doc["credentialsMutated"] = false;
+    doc["profilesMutated"] = true;
+    JsonArray profilesBefore = doc["profilesBefore"].to<JsonArray>();
+    for (size_t index = 0; index <= V1_PROFILE_CATALOG_MAX_COUNT; ++index) {
+        profilesBefore.add<JsonObject>()["untrusted"] = static_cast<unsigned>(index);
+    }
+    stampJournalCrc(doc);
+    RestoreTransactionJournal parsed;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(JournalCopyStatus::Invalid),
+                          static_cast<int>(readRestoreTransactionJournal(doc, parsed)));
+    TEST_ASSERT_EQUAL_UINT(0u, parsed.profilesBefore.size());
+}
+
 void test_committed_unassigned_profile_delete_journal_does_not_overwrite_recreation() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
@@ -3815,6 +4245,7 @@ void assert_generated_http_backup_round_trip(bool sd) {
     storage.setLittleFS(&fs);
     TEST_ASSERT_TRUE(profiles.begin(storage));
     SettingsManager source(storage, profiles);
+    makeCurrentV21Source(source.mutableSettings());
     source.mutableSettings().brightness = 61;
     BackupApiService::BackupSnapshotCache cache;
     WebServer download(80);
@@ -3842,6 +4273,289 @@ void assert_generated_http_backup_round_trip(bool sd) {
 void test_generated_http_backup_round_trip_on_littlefs() { assert_generated_http_backup_round_trip(false); }
 void test_generated_http_backup_round_trip_on_sd() { assert_generated_http_backup_round_trip(true); }
 
+void test_current_backup_schema_rejects_unknown_or_invalid_fields_before_any_mutation() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    V1Profile profile("Road");
+    profile.description = "Original profile";
+    TEST_ASSERT_TRUE(profiles.saveProfile(profile).success);
+
+    V1Settings desired;
+    desired.brightness = 77;
+    desired.colorBogey = 0x1234;
+    desired.wifiStaSlots[0].ssid = "DesiredNet";
+    desired.wifiStaSlots[0].label = "Desired";
+    desired.wifiStaSlots[0].priority = 0;
+    desired.slot0_default.profileName = "Road";
+    desired.autoPushProfileSchemaVersion = V1_PROFILE_SCHEMA_VERSION;
+    JsonDocument base;
+    TEST_ASSERT_TRUE(BackupPayloadBuilder::buildBackupDocument(
+        base, desired, profiles, BackupPayloadBuilder::BackupTransport::HttpDownload, 1000).safeToCommit);
+    SettingsManager manager(storage, profiles);
+    manager.mutableSettings().brightness = 61;
+    manager.mutableSettings().colorBogey = 0x4567;
+    manager.mutableSettings().wifiStaSlots[0].ssid = "BeforeNet";
+    manager.mutableSettings().wifiStaSlots[0].label = "Before";
+    manager.mutableSettings().slot0_default.profileName = "Road";
+    TEST_ASSERT_TRUE(manager.save());
+    const V1Settings before = manager.get();
+
+    const auto rejectsWithoutMutation = [&](const auto& mutate) {
+        JsonDocument doc;
+        TEST_ASSERT_TRUE(doc.set(base.as<JsonObjectConst>()));
+        TEST_ASSERT_FALSE(doc.overflowed());
+        mutate(doc);
+        TEST_ASSERT_FALSE(manager.applyBackupDocument(doc, true).success);
+        TEST_ASSERT_EQUAL_UINT8(61, manager.get().brightness);
+        TEST_ASSERT_EQUAL_HEX16(0x4567, manager.get().colorBogey);
+        TEST_ASSERT_EQUAL_STRING("BeforeNet", manager.get().wifiStaSlots[0].ssid.c_str());
+        assertSettingsEqual(before, manager.get());
+        V1Profile retained;
+        TEST_ASSERT_TRUE(profiles.loadProfile("Road", retained));
+        TEST_ASSERT_EQUAL_STRING("Original profile", retained.description.c_str());
+    };
+
+    rejectsWithoutMutation([](JsonDocument& doc) { doc["slot0ProfielName"] = "Road"; });
+    rejectsWithoutMutation([](JsonDocument& doc) { doc["wifiStaSlots"][0]["lable"] = "Typo"; });
+    rejectsWithoutMutation([](JsonDocument& doc) { doc["profiles"][0]["descriptino"] = "Typo"; });
+    rejectsWithoutMutation([](JsonDocument& doc) { doc["brightness"] = "bad"; });
+    rejectsWithoutMutation([](JsonDocument& doc) { doc["brightness"] = 0; });
+    rejectsWithoutMutation([](JsonDocument& doc) { doc["hideWifiIcon"] = 1; });
+    rejectsWithoutMutation([](JsonDocument& doc) { doc["obdScanWindowMs"] = 999; });
+    rejectsWithoutMutation([](JsonDocument& doc) { doc["slot0Volume"] = 255; doc["slot0MuteVolume"] = 4; });
+    rejectsWithoutMutation([](JsonDocument& doc) { doc["wifiClientSSID"] = "DifferentNet"; });
+    rejectsWithoutMutation([](JsonDocument& doc) {
+        doc["colorBarS3"] = static_cast<uint16_t>(doc["colorBarS3"].as<uint16_t>() ^ 1u);
+    });
+    rejectsWithoutMutation([](JsonDocument& doc) { doc["apSSID"] = ""; });
+    rejectsWithoutMutation([](JsonDocument& doc) { doc["proxyName"] = ""; });
+    rejectsWithoutMutation([](JsonDocument& doc) {
+        doc["proxyBLE"] = true;
+        doc["obdEnabled"] = true;
+    });
+    rejectsWithoutMutation([](JsonDocument& doc) {
+        doc["autoPushProfileSchemaVersion"] = V1_PROFILE_PREVIOUS_SCHEMA_VERSION;
+    });
+    rejectsWithoutMutation([](JsonDocument& doc) { doc["profiles"][0]["schemaVersion"] = 2; });
+    rejectsWithoutMutation([](JsonDocument& doc) { doc["profiles"][0]["description"] = nullptr; });
+    rejectsWithoutMutation([](JsonDocument& doc) {
+        doc["profiles"][0]["detector"]["volume"]["policy"] = "temporary";
+    });
+    rejectsWithoutMutation([](JsonDocument& doc) { doc["slot0Mode"] = 1; });
+    rejectsWithoutMutation([](JsonDocument& doc) {
+        doc["slot0Volume"] = 3;
+        doc["slot0MuteVolume"] = 3;
+    });
+    rejectsWithoutMutation([](JsonDocument& doc) { doc["slot0DarkMode"] = true; });
+    rejectsWithoutMutation([](JsonDocument& doc) { doc["slot0MuteToZero"] = true; });
+    rejectsWithoutMutation([](JsonDocument& doc) { doc["slot0Name"] = "Commute"; });
+    rejectsWithoutMutation([](JsonDocument& doc) { doc["wifiStaSlots"][0]["label"] = ""; });
+    rejectsWithoutMutation([](JsonDocument& doc) {
+        JsonObject slot = doc["wifiStaSlots"].as<JsonArray>().add<JsonObject>();
+        slot["index"] = 1;
+        slot["ssid"] = "";
+        slot["label"] = "Ignored";
+        slot["priority"] = 1;
+        slot["lastConnectedAtSec"] = 1;
+    });
+    rejectsWithoutMutation([](JsonDocument& doc) {
+        JsonObject slot = doc["wifiStaSlots"].as<JsonArray>().add<JsonObject>();
+        slot["index"] = 1;
+        slot["ssid"] = "";
+        slot["label"] = "";
+        slot["priority"] = 0;
+        slot["lastConnectedAtSec"] = 0;
+    });
+    static constexpr const char* kColorKeys[] = {
+        "colorBogey", "colorFrequency", "colorArrowFront", "colorArrowSide", "colorArrowRear",
+        "colorBandL", "colorBandKa", "colorBandK", "colorBandX", "colorBandPhoto",
+        "colorWiFiIcon", "colorWiFiConnected", "colorBleConnected", "colorBleDisconnected",
+        "colorBar1", "colorBar2", "colorBar3", "colorBar4", "colorBar5", "colorBar6",
+        "colorBarS1", "colorBarS2", "colorBarS3", "colorBarS4", "colorBarS5", "colorBarS6",
+        "colorBarS7", "colorBarS8", "colorMuted", "colorPersisted", "colorVolumeMain",
+        "colorVolumeMute", "colorRssiV1", "colorRssiProxy", "colorObd", "colorAlpConnected",
+        "colorAlpDli", "colorAlpLidActive", "colorAlpAlert", "slot0Color", "slot1Color",
+        "slot2Color",
+    };
+    for (const char* key : kColorKeys) {
+        rejectsWithoutMutation([&](JsonDocument& doc) { doc[key] = 0; });
+    }
+    rejectsWithoutMutation([](JsonDocument& doc) { doc.remove("_type"); });
+    rejectsWithoutMutation([](JsonDocument& doc) { doc.remove("brightness"); });
+    rejectsWithoutMutation([](JsonDocument& doc) { doc.remove("slot0Name"); });
+    rejectsWithoutMutation([](JsonDocument& doc) { doc.remove("profiles"); });
+}
+
+void test_backup_builder_rejects_noncanonical_live_v21_state_for_http_and_sd() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    storage.setLittleFS(&fs);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+
+    const auto rejects = [&](const auto& mutate) {
+        V1Settings source;
+        mutate(source);
+        for (const auto transport : {BackupPayloadBuilder::BackupTransport::HttpDownload,
+                                     BackupPayloadBuilder::BackupTransport::SdBackup}) {
+            JsonDocument doc;
+            TEST_ASSERT_FALSE(BackupPayloadBuilder::buildBackupDocument(
+                doc, source, profiles, transport, 1200).safeToCommit);
+        }
+    };
+    rejects([](V1Settings& value) { value.brightness = 0; });
+    rejects([](V1Settings& value) { value.gpsBaud = 123; });
+    rejects([](V1Settings& value) { value.obdSavedName = " untrimmed"; });
+    rejects([](V1Settings& value) { value.obdSavedAddress = "BAD"; });
+    rejects([](V1Settings& value) { value.slot0Volume = 3; value.slot0MuteVolume = 0xFF; });
+    rejects([](V1Settings& value) { value.slot0_default.mode = static_cast<V1Mode>(9); });
+    rejects([](V1Settings& value) { value.slot0AlertPersist = 6; });
+    rejects([](V1Settings& value) { value.slot0Color = 0; });
+    rejects([](V1Settings& value) { value.colorBogey = 0; });
+    rejects([](V1Settings& value) { value.apSSID = ""; });
+    rejects([](V1Settings& value) { value.proxyName = ""; });
+    rejects([](V1Settings& value) { value.slot0Name = "Commute"; });
+    rejects([](V1Settings& value) {
+        value.wifiStaSlots[0].ssid = "Configured";
+        value.wifiStaSlots[0].label = "";
+        value.refreshWifiClientAliasFromSlots();
+    });
+    rejects([](V1Settings& value) { value.proxyBLE = true; value.obdEnabled = true; });
+    rejects([](V1Settings& value) {
+        value.autoPushProfileSchemaVersion = V1_PROFILE_PREVIOUS_SCHEMA_VERSION;
+    });
+    rejects([](V1Settings& value) {
+        value.wifiStaSlots[1].label = "Ignored";
+        value.wifiStaSlots[1].priority = 2;
+        value.wifiStaSlots[1].lastConnectedAtSec = 3;
+    });
+    rejects([](V1Settings& value) {
+        value.autoPushProfileSchemaVersion = V1_PROFILE_SCHEMA_VERSION;
+        value.slot0_default.mode = V1_MODE_ALL_BOGEYS;
+    });
+    rejects([](V1Settings& value) {
+        value.autoPushProfileSchemaVersion = V1_PROFILE_SCHEMA_VERSION;
+        value.slot0Volume = 3;
+        value.slot0MuteVolume = 3;
+    });
+    rejects([](V1Settings& value) {
+        value.autoPushProfileSchemaVersion = V1_PROFILE_SCHEMA_VERSION;
+        value.slot0DarkMode = true;
+    });
+    rejects([](V1Settings& value) {
+        value.autoPushProfileSchemaVersion = V1_PROFILE_SCHEMA_VERSION;
+        value.slot0MuteToZero = true;
+    });
+}
+
+void test_generated_v21_backup_is_applicable_and_rebuilds_identically() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    storage.setLittleFS(&fs);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    makeCurrentV21Source(manager.mutableSettings());
+    manager.mutableSettings().proxyBLE = false;
+    manager.mutableSettings().obdEnabled = true;
+    manager.mutableSettings().obdSavedAddress = "AA:BB:CC:DD:EE:FF";
+    manager.mutableSettings().obdSavedName = "OBD";
+    manager.mutableSettings().wifiStaSlots[0].ssid = "RoadNet";
+    manager.mutableSettings().wifiStaSlots[0].label = "Road";
+    manager.mutableSettings().wifiStaSlots[0].priority = 1;
+    manager.mutableSettings().wifiStaSlots[0].lastConnectedAtSec = 55;
+    manager.mutableSettings().refreshWifiClientAliasFromSlots();
+
+    for (const auto transport : {BackupPayloadBuilder::BackupTransport::HttpDownload,
+                                 BackupPayloadBuilder::BackupTransport::SdBackup}) {
+        JsonDocument first;
+        TEST_ASSERT_TRUE(BackupPayloadBuilder::buildBackupDocument(
+            first, manager.get(), profiles, transport, 4321).safeToCommit);
+        TEST_ASSERT_TRUE(validateCurrentBackupDocumentShape(first));
+        TEST_ASSERT_TRUE(backupDocumentCanApply(first, manager.get(), profiles));
+        TEST_ASSERT_TRUE(manager.applyBackupDocument(first, true).success);
+        TEST_ASSERT_TRUE_MESSAGE(BackupPayloadBuilder::settingsTextIsSerializable(manager.get()),
+                                 "applied v21 text must remain canonical");
+        const uint16_t appliedColors[] = {
+            manager.get().colorBogey, manager.get().colorFrequency, manager.get().colorArrowFront,
+            manager.get().colorArrowSide, manager.get().colorArrowRear, manager.get().colorBandL,
+            manager.get().colorBandKa, manager.get().colorBandK, manager.get().colorBandX,
+            manager.get().colorBandPhoto, manager.get().colorWiFiConnected,
+            manager.get().colorBleConnected, manager.get().colorBleDisconnected,
+            manager.get().colorMuted, manager.get().colorPersisted, manager.get().colorVolumeMain,
+            manager.get().colorVolumeMute, manager.get().colorRssiV1, manager.get().colorRssiProxy,
+            manager.get().colorObd, manager.get().colorAlpConnected, manager.get().colorAlpDli,
+            manager.get().colorAlpLidActive, manager.get().colorAlpAlert, manager.get().slot0Color,
+            manager.get().slot1Color, manager.get().slot2Color,
+        };
+        for (uint16_t color : appliedColors) {
+            TEST_ASSERT_NOT_EQUAL_MESSAGE(0, color, "applied v21 color must remain nonzero");
+        }
+        for (uint16_t color : manager.get().colorBars) {
+            TEST_ASSERT_NOT_EQUAL_MESSAGE(0, color, "applied v21 bar color must remain nonzero");
+        }
+        TEST_ASSERT_TRUE_MESSAGE(BackupPayloadBuilder::settingsCurrentBackupStateIsCanonical(manager.get()),
+                                 "applied v21 settings must remain canonical");
+        JsonDocument rebuilt;
+        TEST_ASSERT_TRUE(BackupPayloadBuilder::buildBackupDocument(
+            rebuilt, manager.get(), profiles, transport, 4321).safeToCommit);
+        String firstJson;
+        String rebuiltJson;
+        serializeJson(first, firstJson);
+        serializeJson(rebuilt, rebuiltJson);
+        TEST_ASSERT_EQUAL_STRING(firstJson.c_str(), rebuiltJson.c_str());
+    }
+}
+
+void test_current_backup_obd_rssi_round_trips_the_authoritative_range() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    makeCurrentV21Source(manager.mutableSettings());
+    TEST_ASSERT_TRUE_MESSAGE(BackupPayloadBuilder::settingsTextIsSerializable(manager.get()),
+                             "default settings text must be canonical");
+    TEST_ASSERT_TRUE_MESSAGE(BackupPayloadBuilder::settingsCurrentBackupStateIsCanonical(manager.get()),
+                             "default settings must be a canonical v21 source");
+
+    for (const int value : {-100, -91, -40}) {
+        manager.mutableSettings().obdMinRssi = static_cast<int8_t>(value);
+        TEST_ASSERT_TRUE_MESSAGE(BackupPayloadBuilder::settingsTextIsSerializable(manager.get()),
+                                 "round-tripped settings text must stay canonical");
+        TEST_ASSERT_TRUE_MESSAGE(BackupPayloadBuilder::settingsCurrentBackupStateIsCanonical(manager.get()),
+                                 "round-tripped settings must stay a canonical v21 source");
+        JsonDocument doc;
+        TEST_ASSERT_TRUE(BackupPayloadBuilder::buildBackupDocument(
+            doc, manager.get(), profiles, BackupPayloadBuilder::BackupTransport::HttpDownload,
+            1000).safeToCommit);
+        TEST_ASSERT_EQUAL_INT(value, doc["obdMinRssi"].as<int>());
+        manager.mutableSettings().obdMinRssi = -65;
+        TEST_ASSERT_TRUE(manager.applyBackupDocument(doc, true).success);
+        TEST_ASSERT_EQUAL_INT8(value, manager.get().obdMinRssi);
+        TEST_ASSERT_TRUE_MESSAGE(BackupPayloadBuilder::settingsTextIsSerializable(manager.get()),
+                                 "applied v21 text must remain canonical");
+        TEST_ASSERT_FALSE(manager.get().proxyBLE && manager.get().obdEnabled);
+        TEST_ASSERT_TRUE(manager.get().autoPushProfileSchemaVersion == 0 ||
+                         manager.get().autoPushProfileSchemaVersion == V1_PROFILE_SCHEMA_VERSION);
+        for (size_t index = 0; index < kWifiStaSlotCount; ++index) {
+            const WifiStaSlot& slot = manager.get().wifiStaSlots[index];
+            TEST_ASSERT_TRUE(slot.ssid.length() != 0 ||
+                             (slot.label.length() == 0 && slot.priority == 0 &&
+                              slot.lastConnectedAtSec == 0));
+        }
+    }
+
+    JsonDocument invalid;
+    manager.mutableSettings().obdMinRssi = -55;
+    TEST_ASSERT_TRUE(BackupPayloadBuilder::buildBackupDocument(
+        invalid, manager.get(), profiles, BackupPayloadBuilder::BackupTransport::HttpDownload,
+        1001).safeToCommit);
+    for (const int value : {-101, -39}) {
+        invalid["obdMinRssi"] = value;
+        TEST_ASSERT_FALSE(manager.applyBackupDocument(invalid, true).success);
+        TEST_ASSERT_EQUAL_INT8(-55, manager.get().obdMinRssi);
+    }
+}
+
 void assertHttpRestoreRejectsWrongProfileCase(bool includesProfiles) {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
@@ -3850,6 +4564,7 @@ void assertHttpRestoreRejectsWrongProfileCase(bool includesProfiles) {
     original.description = "Saved profile";
     TEST_ASSERT_TRUE(profiles.saveProfile(original).success);
     SettingsManager manager(storage, profiles);
+    makeCurrentV21Source(manager.mutableSettings());
     manager.mutableSettings().brightness = 61;
     manager.mutableSettings().slot0_default.profileName = "Road";
     manager.mutableSettings().slot1_highway.profileName = "Road";
@@ -3858,7 +4573,13 @@ void assertHttpRestoreRejectsWrongProfileCase(bool includesProfiles) {
     JsonDocument doc;
     TEST_ASSERT_TRUE(BackupPayloadBuilder::buildBackupDocument(
         doc, manager.get(), profiles, BackupPayloadBuilder::BackupTransport::HttpDownload, 1000).safeToCommit);
-    if (!includesProfiles) doc.remove("profiles");
+    if (!includesProfiles) {
+        // Settings-only restores are a deliberate legacy compatibility shape.
+        // Current v21 documents always carry the complete catalog and marker.
+        doc.remove("profiles");
+        doc.remove("autoPushProfileSchemaVersion");
+        doc.remove("_version");
+    }
 
     const auto upload = [&]() {
         String body;
@@ -3946,6 +4667,106 @@ void test_network_restore_with_unavailable_storage_preserves_credentials() {
     TEST_ASSERT_EQUAL_STRING("saved-password", settings.getWifiStaSlotPassword(0).c_str());
 }
 
+void test_restore_aborts_when_existing_password_snapshot_is_unreadable() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "OldNet", "old-password", "Old", 0));
+
+    JsonDocument doc;
+    JsonObject slot = doc["wifiStaSlots"].to<JsonArray>().add<JsonObject>();
+    slot["index"] = 0;
+    slot["ssid"] = "NewNet";
+    slot["label"] = "New";
+    slot["priority"] = 0;
+    slot["lastConnectedAtSec"] = 0;
+
+    mock_preferences::set_fail_string_read_for_key(kNvsWifiStaSlotPassword[0]);
+    TEST_ASSERT_FALSE(manager.applyBackupDocument(doc, true).success);
+    mock_preferences::set_fail_string_read_for_key(nullptr);
+
+    TEST_ASSERT_EQUAL_STRING("OldNet", manager.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("Old", manager.get().wifiStaSlots[0].label.c_str());
+    TEST_ASSERT_EQUAL_STRING("old-password", manager.getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiTxnReady));
+}
+
+void test_restore_stages_unassigned_slot_names_and_rejects_utf8_split_before_mutation() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    manager.mutableSettings().slot0_default.profileName = "";
+    manager.mutableSettings().slot0Name = "Before";
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    JsonDocument valid;
+    valid["slot0ProfileName"] = "";
+    valid["slot0Name"] = "Unassigned label";
+    TEST_ASSERT_TRUE(manager.applyBackupDocument(valid, true).success);
+    TEST_ASSERT_EQUAL_STRING("Unassigned label", manager.get().slot0Name.c_str());
+
+    String split("1234567890123456789");
+    split += "\xC2\xA2"; // 21 bytes: byte-clamping at 20 would split U+00A2.
+    JsonDocument invalid;
+    invalid["slot0Name"] = split;
+    invalid["brightness"] = 77;
+    TEST_ASSERT_FALSE(manager.applyBackupDocument(invalid, true).success);
+    TEST_ASSERT_EQUAL_STRING("Unassigned label", manager.get().slot0Name.c_str());
+    TEST_ASSERT_NOT_EQUAL(77, manager.get().brightness);
+}
+
+void test_network_restore_stages_boolean_multislot_credentials_and_labels_before_mutation() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    storage.setLittleFS(&fs);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "PreserveNet", "preserve-password", "Old A", 0));
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(1, "OldNet", "old-password", "Old B", 1));
+
+    JsonDocument valid;
+    valid["wifiClientEnabled"] = "false";
+    valid["apSSID"] = "Restored AP";
+    valid["apPassword"] = encodeObfuscatedForStorage("restored-ap-password");
+    JsonArray slots = valid["wifiStaSlots"].to<JsonArray>();
+    JsonObject first = slots.add<JsonObject>();
+    first["index"] = 0;
+    first["ssid"] = "NewNet";
+    first["label"] = "New A";
+    first["priority"] = 0;
+    first["passwordObf"] = encodeObfuscatedForStorage("new-password");
+    JsonObject second = slots.add<JsonObject>();
+    second["index"] = 1;
+    second["ssid"] = "PreserveNet";
+    second["label"] = "123456789012345678901234567890\xC2\xA2"; // Exactly 32 UTF-8 bytes.
+    second["priority"] = 1;
+
+    TEST_ASSERT_TRUE(manager.applyBackupDocument(valid, true).success);
+    TEST_ASSERT_FALSE(manager.get().wifiClientEnabled);
+    TEST_ASSERT_EQUAL_STRING("Restored AP", manager.get().apSSID.c_str());
+    TEST_ASSERT_EQUAL_STRING("restored-ap-password", manager.get().apPassword.c_str());
+    TEST_ASSERT_EQUAL_STRING("NewNet", manager.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("new-password", manager.getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_EQUAL_STRING("PreserveNet", manager.get().wifiStaSlots[1].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("preserve-password", manager.getWifiStaSlotPassword(1).c_str());
+
+    JsonDocument invalid;
+    invalid["brightness"] = 77;
+    JsonObject malformed = invalid["wifiStaSlots"].to<JsonArray>().add<JsonObject>();
+    malformed["index"] = 0;
+    malformed["ssid"] = "WouldReplace";
+    malformed["label"] = "1234567890123456789012345678901\xC2\xA2"; // 33 bytes; byte clamp would split.
+    malformed["passwordObf"] = encodeObfuscatedForStorage("would-replace-password");
+    TEST_ASSERT_FALSE(manager.applyBackupDocument(invalid, true).success);
+    TEST_ASSERT_NOT_EQUAL(77, manager.get().brightness);
+    TEST_ASSERT_EQUAL_STRING("NewNet", manager.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("new-password", manager.getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_EQUAL_STRING("PreserveNet", manager.get().wifiStaSlots[1].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("preserve-password", manager.getWifiStaSlotPassword(1).c_str());
+}
+
 void test_littlefs_restore_nvs_failure_rolls_back_credentials_and_settings() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, false);
@@ -3976,6 +4797,7 @@ void assert_actual_http_save_backup_order(bool oldWriterLate) {
     storage.setFilesystem(&fs, true);
     TEST_ASSERT_TRUE(profiles.begin(storage));
     SettingsManager manager(storage, profiles);
+    makeCurrentV21Source(manager.mutableSettings());
     WifiDisplayColorsApiService::Runtime displayRuntime{};
     displayRuntime.getSettings = [](void* ctx) -> const V1Settings& { return static_cast<SettingsManager*>(ctx)->get(); };
     displayRuntime.getSettingsCtx = &manager;
@@ -4030,6 +4852,7 @@ void test_actual_backup_now_preserves_same_due_profile_snapshot() {
     road.description = "Old profile";
     TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
     SettingsManager manager(storage, profiles);
+    makeCurrentV21Source(manager.mutableSettings());
     manager.requestDeferredBackupFromCurrentState();
     manager.serviceDeferredBackup(1000);
     road.description = "New profile";
@@ -4168,9 +4991,11 @@ AutoPushCommandTrace runAutoPushTrace(SettingsManager& owner, V1ProfileManager& 
     parseCanonicalSettingsPacket(parser, ble, PACKET_ID_RESP_VERSION,
                                  {'v', '4', '.', '1', '0', '3', '9'}, 0xD6);
     ble.onV1FirmwareVersionReceived(41039);
+    ble.beginSessionUserBytesCapture(ble.latestV1NotificationIngressSequence());
     ble.onUserBytesReceived(beforeUser.data(), ble.noteV1NotificationIngress());
     observeSettingsDisplay(parser, ble, beforeDisplayOn, observedMode);
-    parseCanonicalSettingsPacket(parser, ble, PACKET_ID_RESP_CURRENT_VOLUME, {5, 2}, 0xD6);
+    ble.beginSessionAllVolumeCapture(ble.latestV1NotificationIngressSequence());
+    parseCanonicalSettingsPacket(parser, ble, PACKET_ID_RESP_ALL_VOLUME, {5, 2, 5, 2}, 0xD6);
 
     V1DetectorSnapshot snapshot;
     snapshot.available = true;
@@ -4182,11 +5007,16 @@ AutoPushCommandTrace runAutoPushTrace(SettingsManager& owner, V1ProfileManager& 
     snapshot.userBytes = beforeUser;
     snapshot.hasDisplayOn = true;
     snapshot.displayOn = beforeDisplayOn;
+    snapshot.hasBluetoothIndicator = true;
+    snapshot.bluetoothIndicator = V1BluetoothIndicatorState::Off;
     snapshot.hasMode = true;
     snapshot.mode = 'A';
     snapshot.hasCurrentVolume = true;
     snapshot.currentMainVolume = 5;
     snapshot.currentMutedVolume = 2;
+    snapshot.hasSavedVolume = true;
+    snapshot.savedMainVolume = 5;
+    snapshot.savedMutedVolume = 2;
     push.setPreApplySnapshot(snapshot);
 
     trace.queued = push.queueSlotPush(slotIndex);
@@ -4212,10 +5042,10 @@ AutoPushCommandTrace runAutoPushTrace(SettingsManager& owner, V1ProfileManager& 
             observedMode = ble.lastModeValue;
             observeSettingsDisplay(parser, ble, observedDisplayOn, observedMode);
         }
-        if (ble.requestCurrentVolumeCalls > handledVolumeReads) {
-            handledVolumeReads = ble.requestCurrentVolumeCalls;
-            parseCanonicalSettingsPacket(parser, ble, PACKET_ID_RESP_CURRENT_VOLUME,
-                                         {ble.lastVolume, ble.lastMuteVolume}, 0xD6);
+        if (ble.requestAllVolumeCalls > handledVolumeReads) {
+            handledVolumeReads = ble.requestAllVolumeCalls;
+            parseCanonicalSettingsPacket(parser, ble, PACKET_ID_RESP_ALL_VOLUME,
+                                         {ble.lastVolume, ble.lastMuteVolume, 5, 2}, 0xD6);
         }
     }
     trace.userWrites = ble.writeUserBytesCalls;
@@ -4253,6 +5083,7 @@ void test_profile_ownership_migration_preserves_real_executor_trace_and_rolls_fo
                         "\"mainVolume\":7,\"mutedVolume\":2,\"bytes\":[191,225,242,115,165,90]}");
     SettingsManager manager(storage, profiles);
     auto& state = manager.mutableSettings();
+    state.autoPushProfileSchemaVersion = 0;
     state.slot0_default.profileName = "Road";
     state.slot0_default.mode = V1_MODE_LOGIC;
     state.slot0Volume = 0;
@@ -4488,8 +5319,15 @@ int main() {
     RUN_TEST(test_actual_backup_now_preserves_same_due_profile_snapshot);
     RUN_TEST(test_generated_http_backup_round_trip_on_littlefs);
     RUN_TEST(test_generated_http_backup_round_trip_on_sd);
+    RUN_TEST(test_current_backup_schema_rejects_unknown_or_invalid_fields_before_any_mutation);
+    RUN_TEST(test_backup_builder_rejects_noncanonical_live_v21_state_for_http_and_sd);
+    RUN_TEST(test_generated_v21_backup_is_applicable_and_rebuilds_identically);
+    RUN_TEST(test_current_backup_obd_rssi_round_trips_the_authoritative_range);
     RUN_TEST(test_littlefs_restore_preserves_matches_clears_changes_and_accepts_explicit_secrets);
     RUN_TEST(test_network_restore_with_unavailable_storage_preserves_credentials);
+    RUN_TEST(test_restore_aborts_when_existing_password_snapshot_is_unreadable);
+    RUN_TEST(test_restore_stages_unassigned_slot_names_and_rejects_utf8_split_before_mutation);
+    RUN_TEST(test_network_restore_stages_boolean_multislot_credentials_and_labels_before_mutation);
     RUN_TEST(test_littlefs_restore_nvs_failure_rolls_back_credentials_and_settings);
     RUN_TEST(test_interrupted_littlefs_restore_after_credentials_recovers);
     RUN_TEST(test_restore_sd_secret_removal_failure_preserves_old_pair);
@@ -4528,6 +5366,9 @@ int main() {
     RUN_TEST(test_apply_backup_document_unifies_restore_field_coverage_and_profile_restore);
     RUN_TEST(test_apply_backup_document_rejects_entire_document_when_any_profile_is_invalid);
     RUN_TEST(test_serialized_backup_payload_matches_builder_and_writes_same_json);
+    RUN_TEST(test_oversized_sd_backup_build_and_write_fail_before_clobbering_live_backup);
+    RUN_TEST(test_sd_backup_psram_exhaustion_fails_before_clobbering_live_backup);
+    RUN_TEST(test_backup_builders_reject_unsafe_persisted_text_without_clobbering_live_backup);
     RUN_TEST(test_device_batch_update_skips_noop_persist_and_saves_once_on_change);
     RUN_TEST(test_proxy_mode_disables_obd_setting);
     RUN_TEST(test_obd_mode_disables_proxy_setting);
@@ -4541,6 +5382,7 @@ int main() {
     RUN_TEST(test_autopush_slot_batch_update_skips_noop_persist_and_saves_once_on_change);
     RUN_TEST(test_autopush_state_batch_update_skips_noop_persist_and_saves_once_on_change);
     RUN_TEST(test_partial_recovery_restores_both_speed_mute_fields);
+    RUN_TEST(test_critical_recovery_late_persist_failure_rolls_back_settings_and_credentials);
     RUN_TEST(test_sd_backup_builder_rejects_dangling_profile_assignment);
     RUN_TEST(test_restore_pending_survives_no_sd_save_and_sd_backup_wins_next_boot);
     RUN_TEST(test_voice_fields_round_trip_through_sd_backup_and_restore);
@@ -4570,8 +5412,12 @@ int main() {
     RUN_TEST(test_equal_committed_generations_do_not_make_selector_authoritative);
     RUN_TEST(test_stale_known_selector_is_repaired_to_newest_committed_generation);
     RUN_TEST(test_interrupted_wifi_credential_transaction_reboots_to_old_complete_pair);
+    RUN_TEST(test_wifi_credential_setter_rejects_unsafe_or_overlong_text_before_mutation);
     RUN_TEST(test_short_wifi_secret_write_preserves_prior_secret_and_reboots_consistently);
+    RUN_TEST(test_wifi_secret_presence_uses_bounded_exact_parser_and_distinguishes_unavailable);
     RUN_TEST(test_interrupted_forget_all_reboots_with_every_slot_and_password_restored);
+    RUN_TEST(test_wifi_password_snapshot_rejects_present_but_unreadable_string);
+    RUN_TEST(test_forget_all_journal_rejects_non_exact_or_unreadable_payload_without_clearing_marker);
     RUN_TEST(test_successful_wifi_forget_survives_failed_sd_backup_and_reboot);
     RUN_TEST(test_successful_wifi_forget_survives_completed_sd_backup_and_reboot);
     RUN_TEST(test_missing_legacy_wifi_keys_still_recover_from_sd_backup);
@@ -4587,12 +5433,15 @@ int main() {
     RUN_TEST(test_not_ready_profile_catalog_is_unsafe_for_http_and_first_sd_backup);
     RUN_TEST(test_interrupted_restore_after_credentials_reboots_to_old_settings_and_secret);
     RUN_TEST(test_restore_transaction_journal_is_mirrored_and_cleared_on_recovery);
+    RUN_TEST(test_restore_recovery_uses_valid_mirror_when_primary_journal_exceeds_catalog_cap);
     RUN_TEST(test_interrupted_restore_after_profile_write_reboots_to_old_profile);
+    RUN_TEST(test_restore_profile_rollback_allocation_failure_retains_journal_and_later_converges);
     RUN_TEST(test_restore_password_remove_failure_rolls_back_on_modeled_reboot);
     RUN_TEST(test_restore_password_write_failure_does_not_create_partial_network);
     RUN_TEST(test_restore_sd_secret_promotion_failure_preserves_old_pair);
     RUN_TEST(test_busy_profile_delete_leaves_profile_and_assignments_durable);
     RUN_TEST(test_profile_delete_double_failure_recovers_old_profile_and_assignments_on_reboot);
+    RUN_TEST(test_grandfathered_profile_delete_failure_restores_twelfth_member_on_reboot);
     RUN_TEST(test_profile_tombstone_blocks_ordinary_load_but_same_save_can_resurrect_snapshot);
     RUN_TEST(test_profile_delete_reset_after_journal_converges_to_old_complete_state);
     RUN_TEST(test_profile_delete_reset_after_profile_removal_converges_to_old_complete_state);
@@ -4603,6 +5452,7 @@ int main() {
     RUN_TEST(test_divergent_pending_restore_mirrors_fail_closed_and_preserve_evidence);
     RUN_TEST(test_divergent_restore_mirrors_use_watermark_to_select_pending_record);
     RUN_TEST(test_oversized_restore_journal_is_rejected_and_preserved);
+    RUN_TEST(test_restore_journal_rejects_over_limit_profile_snapshot_before_parsing_entries);
     RUN_TEST(test_committed_unassigned_profile_delete_journal_does_not_overwrite_recreation);
     RUN_TEST(test_committed_profile_delete_journal_does_not_overwrite_reassigned_recreation);
     RUN_TEST(test_profile_delete_uses_valid_secondary_when_primary_crc_is_corrupt);

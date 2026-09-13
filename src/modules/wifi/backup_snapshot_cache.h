@@ -8,6 +8,8 @@
 
 namespace BackupApiService {
 
+inline constexpr size_t kHttpBackupDocumentMaxBytes = 128u * 1024u;
+
 struct BackupSnapshotCache {
     char* data = nullptr;
     size_t capacity = 0;

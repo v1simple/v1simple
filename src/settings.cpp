@@ -21,7 +21,11 @@
 const char* SETTINGS_BACKUP_PATH = "/v1simple_backup.json";
 const char* SETTINGS_BACKUP_TMP_PATH = "/v1simple_backup.tmp";
 const char* SETTINGS_BACKUP_PREV_PATH = "/v1simple_backup.prev";
-const size_t SETTINGS_BACKUP_MAX_BYTES = 512 * 1024;
+// Ten maximal schema-v3 profiles plus the complete settings envelope measure
+// 120,640 bytes.  The shared 128 KiB transport/journal/SD bound retains more
+// than one 4 KiB allocation quantum and rejects unsupported padding before a
+// larger PSRAM allocation.
+const size_t SETTINGS_BACKUP_MAX_BYTES = 128 * 1024;
 const char* WIFI_CLIENT_NS = kSettingsWifiClientNamespace;
 const char* WIFI_CLIENT_SD_SECRET_PATH = "/v1wifi_secret.json";
 const char* WIFI_CLIENT_SD_SECRET_TYPE = "v1wifi_secret";
@@ -348,10 +352,14 @@ void SettingsManager::load() {
     settings_.stealthEnabled = preferences_.getBool(kNvsStealthEnabled, false);
 
     settings_.autoPushEnabled = preferences_.getBool(kNvsAutoPush, kDefaultAutoPushEnabled);
-    settings_.autoPushProfileSchemaVersion =
-        preferences_.getUChar(kNvsAutoPushProfileSchema, 0) == V1_PROFILE_SCHEMA_VERSION
-            ? V1_PROFILE_SCHEMA_VERSION
-            : 0;
+    {
+        const uint8_t storedProfileSchema = preferences_.getUChar(kNvsAutoPushProfileSchema, 0);
+        settings_.autoPushProfileSchemaVersion =
+            (storedProfileSchema == V1_PROFILE_PREVIOUS_SCHEMA_VERSION ||
+             storedProfileSchema == V1_PROFILE_SCHEMA_VERSION)
+                ? storedProfileSchema
+                : 0;
+    }
     settings_.activeSlot = preferences_.getInt(kNvsActiveSlot, 0);
     if (settings_.activeSlot < 0 || settings_.activeSlot > 2) {
         settings_.activeSlot = 0;

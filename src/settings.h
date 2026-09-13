@@ -34,7 +34,9 @@
 // Forward declarations
 class StorageManager;
 class V1ProfileManager;
+class V1DeviceStore;
 struct ProfileOperationResult;
+struct V1DeviceMutationResult;
 
 // V1 operating modes (from ESP library)
 enum V1Mode {
@@ -824,6 +826,11 @@ class SettingsManager {
     String loadLastV1AddressFallback();
     void requestLastV1AddressFallbackPersist(const String& addr);
     bool clearLastV1AddressFallback(const String& addressFilter = "");
+    // Couple the runtime NVS fallback with the filesystem-backed device row.
+    // Once its intent marker is durable, interruption is reported as pending
+    // and boot resumes the same idempotent delete before fallback bootstrap.
+    V1DeviceMutationResult deleteV1DeviceTransactional(const String& address, V1DeviceStore& devices);
+    bool resolvePendingV1DeviceDelete(V1DeviceStore& devices);
 
     const AutoPushSlot& getSlot(int slotNum) const;
 

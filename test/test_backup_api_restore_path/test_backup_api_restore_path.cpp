@@ -5,7 +5,7 @@
 
 #include "../mocks/mock_heap_caps_state.h"
 #include "../mocks/esp_heap_caps.h"
-#include "../../src/modules/wifi/wifi_json_document.h"
+#include "../../src/psram_json_document.h"
 #include "../../src/modules/wifi/backup_api_service.h"
 
 #ifndef ARDUINO
@@ -281,6 +281,32 @@ void test_restore_crc_mismatch_returns_400_without_delegating_apply() {
     TEST_ASSERT_EQUAL_INT(0, runtime.syncAfterRestoreCalls);
 }
 
+void test_restore_present_markers_never_downgrade_to_legacy_absence() {
+    const char* invalidBodies[] = {
+        "{\"_type\":null,\"brightness\":77}",
+        "{\"_type\":12,\"brightness\":77}",
+        "{\"_type\":\"v1simple_backup\",\"_crc32\":null,\"brightness\":77}",
+        "{\"_type\":\"v1simple_backup\",\"_crc32\":\"0\",\"brightness\":77}",
+        "{\"_type\":\"v1simple_backup\",\"_crc32\":-1,\"brightness\":77}",
+        "{\"_type\":\"v1simple_backup\",\"_crc32\":1.5,\"brightness\":77}",
+        "{\"_type\":\"v1simple_backup\",\"_version\":null,\"brightness\":77}",
+        "{\"_type\":\"v1simple_backup\",\"_version\":\"20\",\"brightness\":77}",
+        "{\"_type\":\"v1simple_backup\",\"_version\":-1,\"brightness\":77}",
+        "{\"_type\":\"v1simple_backup\",\"_version\":1.5,\"brightness\":77}",
+        "{\"_type\":\"v1simple_backup\",\"_version\":22,\"brightness\":77}",
+        "{\"_type\":\"v1simple_backup\",\"_version\":2147483647,\"brightness\":77}",
+    };
+    for (const char* body : invalidBodies) {
+        WebServer server(80);
+        FakeRuntime runtime;
+        server.setArg("plain", body);
+        BackupApiService::handleApiRestore(server, makeRuntime(runtime), nullptr, nullptr, nullptr, nullptr);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(400, server.lastStatusCode, body);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(0, runtime.applyBackupCalls, body);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(0, runtime.syncAfterRestoreCalls, body);
+    }
+}
+
 void test_restore_apply_failure_returns_500_and_skips_sync() {
     WebServer server(80);
     FakeRuntime runtime;
@@ -324,7 +350,7 @@ void test_restore_success_syncs_runtime_and_reports_profiles_restored() {
     TEST_ASSERT_EQUAL_INT(1, runtime.syncAfterRestoreCalls);
 }
 
-void test_restore_success_uses_wifi_json_allocator() {
+void test_restore_success_uses_psram_only_json_allocator() {
     WebServer server(80);
     FakeRuntime runtime;
     server.setArg(
@@ -344,7 +370,28 @@ void test_restore_success_uses_wifi_json_allocator() {
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(1, runtime.applyBackupCalls);
     TEST_ASSERT_GREATER_THAN_UINT32(0u, g_mock_heap_caps_malloc_calls);
-    TEST_ASSERT_EQUAL_UINT32(WifiJson::kPsramCaps, g_mock_heap_caps_last_malloc_caps);
+    TEST_ASSERT_EQUAL_UINT32(PsramJson::kCaps, g_mock_heap_caps_last_malloc_caps);
+    TEST_ASSERT_EQUAL_UINT32(0u, g_mock_heap_caps_outstanding_allocations);
+}
+
+void test_restore_psram_exhaustion_returns_503_without_apply_or_sync() {
+    WebServer server(80);
+    FakeRuntime runtime;
+    server.setArg("plain", "{\"_type\":\"v1simple_backup\",\"brightness\":77}");
+
+    g_mock_heap_caps_fail_all_allocations = true;
+    BackupApiService::handleApiRestore(server,
+                                       makeRuntime(runtime),
+                                       nullptr,
+                                       nullptr,
+                                       nullptr,
+                                       nullptr);
+    g_mock_heap_caps_fail_all_allocations = false;
+
+    TEST_ASSERT_EQUAL_INT(503, server.lastStatusCode);
+    TEST_ASSERT_TRUE(responseContains(server, "memory unavailable"));
+    TEST_ASSERT_EQUAL_INT(0, runtime.applyBackupCalls);
+    TEST_ASSERT_EQUAL_INT(0, runtime.syncAfterRestoreCalls);
     TEST_ASSERT_EQUAL_UINT32(0u, g_mock_heap_caps_outstanding_allocations);
 }
 
@@ -358,8 +405,10 @@ int main() {
     RUN_TEST(test_restore_invalid_json_returns_400_without_apply_or_sync);
     RUN_TEST(test_restore_invalid_backup_type_returns_400_without_apply_or_sync);
     RUN_TEST(test_restore_crc_mismatch_returns_400_without_delegating_apply);
+    RUN_TEST(test_restore_present_markers_never_downgrade_to_legacy_absence);
     RUN_TEST(test_restore_apply_failure_returns_500_and_skips_sync);
     RUN_TEST(test_restore_success_syncs_runtime_and_reports_profiles_restored);
-    RUN_TEST(test_restore_success_uses_wifi_json_allocator);
+    RUN_TEST(test_restore_success_uses_psram_only_json_allocator);
+    RUN_TEST(test_restore_psram_exhaustion_returns_503_without_apply_or_sync);
     return UNITY_END();
 }

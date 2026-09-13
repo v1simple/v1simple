@@ -29,6 +29,15 @@ unsigned long mockMicros = 0;
 #define PACKET_ID_RESP_VERSION 0x02
 #define PACKET_ID_REQ_ALL_VOLUME 0x3C
 #define PACKET_ID_RESP_ALL_VOLUME 0x3D
+#define PACKET_ID_FACTORY_DEFAULT 0x14
+#define PACKET_ID_WRITE_SWEEP_DEFINITION 0x15
+#define PACKET_ID_REQ_ALL_SWEEP_DEFINITIONS 0x16
+#define PACKET_ID_RESP_SWEEP_DEFINITION 0x17
+#define PACKET_ID_REQ_MAX_SWEEP_INDEX 0x19
+#define PACKET_ID_RESP_MAX_SWEEP_INDEX 0x20
+#define PACKET_ID_RESP_SWEEP_WRITE_RESULT 0x21
+#define PACKET_ID_REQ_SWEEP_SECTIONS 0x22
+#define PACKET_ID_RESP_SWEEP_SECTIONS 0x23
 #endif
 
 #include "../mocks/ble_client.h"
@@ -88,11 +97,15 @@ void parseVersion(uint32_t version = 41039) {
 }
 
 void observeDisplay(bool on, uint8_t mode, uint8_t origin = 0xEA, bool corruptChecksum = false,
-                    uint8_t destination = 0xD8, uint32_t ingressSequence = UINT32_MAX) {
+                    uint8_t destination = 0xD8, uint32_t ingressSequence = UINT32_MAX,
+                    V1BluetoothIndicatorState bluetooth = V1BluetoothIndicatorState::Off) {
     const uint8_t aux0 = static_cast<uint8_t>(0x04 | (on ? 0x08 : 0x00));
+    uint8_t aux1 = static_cast<uint8_t>((mode & 0x03) << 2);
+    if (bluetooth == V1BluetoothIndicatorState::Blinking) aux1 |= 0x40;
+    else if (bluetooth == V1BluetoothIndicatorState::On) aux1 |= 0xC0;
     auto packet = makeV1Packet(PACKET_ID_DISPLAY_DATA,
                                {0x3F, 0x3F, 0x00, 0x00, 0x00, aux0,
-                                static_cast<uint8_t>((mode & 0x03) << 2), 0x52}, origin, destination);
+                                aux1, 0x52}, origin, destination);
     if (corruptChecksum && origin == 0xEA) packet[packet.size() - 2] ^= 0x01;
     if (ingressSequence == UINT32_MAX) ingressSequence = ble.noteV1NotificationIngress();
     TEST_ASSERT_TRUE(parser.parse(packet.data(), packet.size(), mockMillis, ingressSequence));
@@ -108,10 +121,66 @@ void observeCurrentVolume(uint8_t main, uint8_t muted, uint8_t origin = 0xEA,
     TEST_ASSERT_EQUAL(!corruptChecksum, parsed);
 }
 
-void observeAllVolume(uint8_t main, uint8_t muted, uint8_t savedMain, uint8_t savedMuted) {
-    const auto packet = makeV1Packet(PACKET_ID_RESP_ALL_VOLUME, {main, muted, savedMain, savedMuted});
-    TEST_ASSERT_TRUE(parser.parse(packet.data(), packet.size(), mockMillis,
-                                  ble.noteV1NotificationIngress()));
+void observeAllVolume(uint8_t main, uint8_t muted, uint8_t savedMain, uint8_t savedMuted,
+                      uint8_t origin = 0xEA, bool corruptChecksum = false,
+                      uint8_t destination = 0xD6, uint32_t ingressSequence = UINT32_MAX) {
+    auto packet = makeV1Packet(PACKET_ID_RESP_ALL_VOLUME, {main, muted, savedMain, savedMuted},
+                               origin, destination);
+    if (corruptChecksum && origin == 0xEA) packet[packet.size() - 2] ^= 0x01;
+    if (ingressSequence == UINT32_MAX) ingressSequence = ble.noteV1NotificationIngress();
+    const bool parsed = parser.parse(packet.data(), packet.size(), mockMillis, ingressSequence);
+    TEST_ASSERT_EQUAL(!corruptChecksum && destination == 0xD6, parsed);
+}
+
+void observeSweepMax(uint8_t maxIndex, uint32_t ingressSequence = UINT32_MAX,
+                     bool corruptChecksum = false, uint8_t destination = 0xD6) {
+    auto packet = makeV1Packet(PACKET_ID_RESP_MAX_SWEEP_INDEX, {maxIndex}, 0xEA, destination);
+    if (corruptChecksum) packet[packet.size() - 2] ^= 0x01;
+    if (ingressSequence == UINT32_MAX) ingressSequence = ble.noteV1NotificationIngress();
+    const bool parsed = parser.parse(packet.data(), packet.size(), mockMillis, ingressSequence);
+    TEST_ASSERT_EQUAL(!corruptChecksum && destination == 0xD6, parsed);
+}
+
+void observeSweepSections(const V1DetectorSnapshot& snapshot,
+                          uint32_t ingressSequence = UINT32_MAX) {
+    const auto hi = [](uint16_t value) { return static_cast<uint8_t>(value >> 8); };
+    const auto lo = [](uint16_t value) { return static_cast<uint8_t>(value & 0xFF); };
+    TEST_ASSERT_GREATER_THAN_UINT8(0, snapshot.sweepSectionCount);
+    TEST_ASSERT_LESS_OR_EQUAL_UINT8(3, snapshot.sweepSectionCount);
+    std::vector<uint8_t> data;
+    data.reserve(static_cast<size_t>(snapshot.sweepSectionCount) * 5u);
+    for (uint8_t index = 0; index < snapshot.sweepSectionCount; ++index) {
+        const auto& section = snapshot.sweepSections[index];
+        data.push_back(static_cast<uint8_t>(((index + 1u) << 4u) | snapshot.sweepSectionCount));
+        data.push_back(hi(section.upperMHz));
+        data.push_back(lo(section.upperMHz));
+        data.push_back(hi(section.lowerMHz));
+        data.push_back(lo(section.lowerMHz));
+    }
+    const auto packet = makeV1Packet(PACKET_ID_RESP_SWEEP_SECTIONS, data);
+    if (ingressSequence == UINT32_MAX) ingressSequence = ble.noteV1NotificationIngress();
+    TEST_ASSERT_TRUE(parser.parse(packet.data(), packet.size(), mockMillis, ingressSequence));
+}
+
+void observeSweepDefinition(uint8_t index, uint16_t lower, uint16_t upper,
+                            uint32_t ingressSequence = UINT32_MAX,
+                            bool corruptChecksum = false, uint8_t destination = 0xD6,
+                            bool expectCollectorConflict = false) {
+    auto packet = makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION,
+                               {static_cast<uint8_t>(0x80u | index),
+                                static_cast<uint8_t>(upper >> 8), static_cast<uint8_t>(upper & 0xFF),
+                                static_cast<uint8_t>(lower >> 8), static_cast<uint8_t>(lower & 0xFF)},
+                               0xEA, destination);
+    if (corruptChecksum) packet[packet.size() - 2] ^= 0x01;
+    if (ingressSequence == UINT32_MAX) ingressSequence = ble.noteV1NotificationIngress();
+    const bool parsed = parser.parse(packet.data(), packet.size(), mockMillis, ingressSequence);
+    TEST_ASSERT_EQUAL(!corruptChecksum && destination == 0xD6 && !expectCollectorConflict, parsed);
+}
+
+void observeSweepWriteResult(uint8_t result, uint32_t ingressSequence = UINT32_MAX) {
+    const auto packet = makeV1Packet(PACKET_ID_RESP_SWEEP_WRITE_RESULT, {result});
+    if (ingressSequence == UINT32_MAX) ingressSequence = ble.noteV1NotificationIngress();
+    TEST_ASSERT_TRUE(parser.parse(packet.data(), packet.size(), mockMillis, ingressSequence));
 }
 
 void observeUserBytes(const uint8_t* bytes, uint32_t ingressSequence = UINT32_MAX) {
@@ -123,6 +192,9 @@ void injectMatchingUserBytesDuringSend() { observeUserBytes(ble.lastUserBytes); 
 void injectMatchingDisplayDuringSend() { observeDisplay(ble.lastDisplayOnValue, 1); }
 void injectMatchingModeDuringSend() { observeDisplay(true, ble.lastModeValue); }
 void injectMatchingVolumeDuringSend() { observeCurrentVolume(ble.lastVolume, ble.lastMuteVolume); }
+void injectMatchingAllVolumeDuringSend() {
+    observeAllVolume(ble.lastVolume, ble.lastMuteVolume, 4, 1);
+}
 
 bool statusContains(const char* text) {
     return module.getStatusJson().indexOf(text) >= 0;
@@ -164,24 +236,75 @@ V1DetectorSnapshot makeSnapshot(uint32_t version = 41039,
     snapshot.userBytes = user;
     snapshot.hasDisplayOn = true;
     snapshot.displayOn = true;
+    snapshot.hasBluetoothIndicator = true;
+    snapshot.bluetoothIndicator = V1BluetoothIndicatorState::Off;
     snapshot.hasMode = true;
     snapshot.mode = 'A';
     snapshot.hasCurrentVolume = true;
     snapshot.currentMainVolume = 5;
     snapshot.currentMutedVolume = 2;
+    snapshot.hasSavedVolume = true;
+    snapshot.savedMainVolume = 4;
+    snapshot.savedMutedVolume = 1;
     return snapshot;
 }
 
 void stageSnapshot(const V1DetectorSnapshot& snapshot, bool primeObservations = true) {
     parseVersion(snapshot.firmwareVersion);
-    if (snapshot.hasUserBytes) observeUserBytes(snapshot.userBytes.data());
+    if (snapshot.hasUserBytes) {
+        ble.beginSessionUserBytesCapture(ble.latestV1NotificationIngressSequence());
+        observeUserBytes(snapshot.userBytes.data());
+    }
     if (primeObservations && snapshot.hasDisplayOn && snapshot.hasMode) {
-        observeDisplay(snapshot.displayOn, snapshot.mode == 'L' ? 3 : snapshot.mode == 'l' ? 2 : 1);
+        observeDisplay(snapshot.displayOn, snapshot.mode == 'L' ? 3 : snapshot.mode == 'l' ? 2 : 1,
+                       0xEA, false, 0xD8, UINT32_MAX, snapshot.bluetoothIndicator);
+    }
+    if (primeObservations && snapshot.hasCurrentVolume && snapshot.hasSavedVolume) {
+        ble.beginSessionAllVolumeCapture(ble.latestV1NotificationIngressSequence());
+        observeAllVolume(snapshot.currentMainVolume, snapshot.currentMutedVolume,
+                         snapshot.savedMainVolume, snapshot.savedMutedVolume);
     }
     if (primeObservations && snapshot.hasCurrentVolume) {
         observeCurrentVolume(snapshot.currentMainVolume, snapshot.currentMutedVolume);
     }
+    if (primeObservations && snapshot.hasSweepSections) {
+        parser.resetSweepSectionsObservation();
+        observeSweepSections(snapshot);
+    }
+    if (primeObservations && snapshot.hasMaxSweepIndex) {
+        parser.resetSweepMaxObservation();
+        observeSweepMax(snapshot.maxSweepIndex);
+    }
+    if (primeObservations && snapshot.hasSweepDefinitions) {
+        parser.resetSweepDefinitionsObservation();
+        for (size_t index = 0; index <= snapshot.maxSweepIndex; ++index) {
+            const auto& definition = snapshot.sweepDefinitions[index];
+            observeSweepDefinition(definition.index, definition.lowerMHz, definition.upperMHz);
+        }
+    }
     module.setPreApplySnapshot(snapshot);
+}
+
+void addSweepSnapshot(V1DetectorSnapshot& snapshot) {
+    snapshot.hasSweepSections = true;
+    snapshot.sweepSectionCount = 2;
+    snapshot.sweepSections = {{{0, 2, 23900, 25000}, {1, 2, 33000, 37000}}};
+    snapshot.hasMaxSweepIndex = true;
+    snapshot.maxSweepIndex = 3;
+    snapshot.hasSweepDefinitions = true;
+    snapshot.sweepDefinitions = {{{0, 24000, 24100}, {1, 0, 0},
+                                  {2, 34000, 34100}, {3, 0, 0}}};
+}
+
+void configureCustomOnly(const std::vector<V1CustomFrequencyDefinition>& definitions) {
+    configureProfile();
+    auto& detector = profiles.loadableProfile.detector;
+    detector.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
+    detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    detector.modePolicy = V1ModePolicy::Unchanged;
+    detector.volumePolicy = V1VolumePolicy::Unchanged;
+    detector.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+    TEST_ASSERT_TRUE(detector.customFrequencyDefinitions.assign(definitions));
 }
 
 void queueAndPreflight() {
@@ -207,7 +330,7 @@ void finishFullApply() {
     at(190); // ModeVerify
     at(220); // VolumeWrite
     at(250); // VolumeRead
-    observeCurrentVolume(7, 3);
+    observeAllVolume(7, 3, 4, 1);
     at(250); // VolumeVerify
 }
 
@@ -224,9 +347,109 @@ void setUp() {
     quiet.begin(&ble, &parser);
     module = AutoPushModule{};
     module.begin(&settings, &profiles, &ble, &parser, &display, &quiet);
+    g_autoPushAdmissionFailurePointForTest = AutoPushAdmissionFailurePoint::None;
 }
 
 void tearDown() {}
+
+void test_queue_rejects_failed_active_slot_persistence_before_operation_or_detector_write() {
+    configureProfile();
+    settings.settings.activeSlot = 0;
+    settings.slotConfigs[1].profileName = "ROAD";
+    stageSnapshot(makeSnapshot());
+    settings.setActiveSlotSuccess = false;
+
+    TEST_ASSERT_EQUAL_INT(AutoPushModule::QueueResult::ACTIVE_SLOT_PERSIST_FAILED,
+                          module.queueSlotPush(1, true));
+    TEST_ASSERT_FALSE(module.isActive());
+    TEST_ASSERT_EQUAL_UINT8(0, settings.settings.activeSlot);
+    TEST_ASSERT_EQUAL_INT(1, settings.setActiveSlotCalls);
+    TEST_ASSERT_EQUAL_INT(0, display.drawProfileIndicatorCalls);
+    at(1000);
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.setModeCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"none\""));
+}
+
+void test_queue_stages_every_owned_string_and_definition_capacity_before_activation() {
+    const AutoPushAdmissionFailurePoint failures[] = {
+        AutoPushAdmissionFailurePoint::SlotProfile,
+        AutoPushAdmissionFailurePoint::ProfileName,
+        AutoPushAdmissionFailurePoint::ProfileDescription,
+        AutoPushAdmissionFailurePoint::StatusProfile,
+        AutoPushAdmissionFailurePoint::DefinitionCapacity,
+    };
+    for (const AutoPushAdmissionFailurePoint failure : failures) {
+        setUp();
+        configureProfile();
+        settings.settings.activeSlot = 0;
+        settings.slotConfigs[1].profileName = "ROAD";
+        profiles.loadableProfile.description = "A description that requires owned storage";
+        stageSnapshot(makeSnapshot());
+        g_autoPushAdmissionFailurePointForTest = failure;
+
+        TEST_ASSERT_EQUAL_INT(AutoPushModule::QueueResult::STAGING_UNAVAILABLE,
+                              module.queueSlotPush(1, true));
+        TEST_ASSERT_FALSE(module.isActive());
+        TEST_ASSERT_EQUAL_UINT8(0, settings.settings.activeSlot);
+        TEST_ASSERT_EQUAL_INT(0, settings.setActiveSlotCalls);
+        TEST_ASSERT_EQUAL_INT(0, display.drawProfileIndicatorCalls);
+        at(1000);
+        TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+        TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
+        TEST_ASSERT_EQUAL_INT(0, ble.setModeCalls);
+        TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
+        TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+    }
+}
+
+void test_queue_secures_maximum_v3_profile_before_activation_and_preserves_legacy_load_step() {
+    configureProfile();
+    String maximumName;
+    for (size_t index = 0; index < 64; ++index) maximumName += 'N';
+    String maximumDescription;
+    for (size_t index = 0; index < 4096; ++index) {
+        maximumDescription += 'D';
+    }
+    settings.settings.activeSlot = 0;
+    settings.slotConfigs[1].profileName = maximumName;
+    profiles.loadableProfileName = maximumName;
+    profiles.loadableProfile.name = maximumName;
+    profiles.loadableProfile.description = maximumDescription;
+    profiles.loadableProfile.detector.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+    profiles.loadableProfile.detector.customFrequencyDefinitions.clear();
+    for (uint8_t index = 0; index < 64; ++index) {
+        profiles.loadableProfile.detector.customFrequencyDefinitions.push_back(
+            V1CustomFrequencyDefinition{index, 0, 0});
+    }
+    stageSnapshot(makeSnapshot());
+
+    TEST_ASSERT_EQUAL_INT(AutoPushModule::QueueResult::QUEUED,
+                          module.queueSlotPush(1, true));
+    TEST_ASSERT_TRUE(module.isActive());
+    TEST_ASSERT_EQUAL_UINT8(1, settings.settings.activeSlot);
+    TEST_ASSERT_EQUAL_INT(1, settings.setActiveSlotCalls);
+    TEST_ASSERT_EQUAL_INT(1, display.drawProfileIndicatorCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+
+    setUp();
+    configureProfile();
+    settings.settings.autoPushProfileSchemaVersion = 0;
+    settings.settings.activeSlot = 0;
+    settings.slotConfigs[1].profileName = "ROAD";
+    profiles.loadableProfile.description = "Legacy load still stages before activation";
+    stageSnapshot(makeSnapshot());
+    g_autoPushAdmissionFailurePointForTest =
+        AutoPushAdmissionFailurePoint::ProfileDescription;
+    TEST_ASSERT_EQUAL_INT(AutoPushModule::QueueResult::STAGING_UNAVAILABLE,
+                          module.queueSlotPush(1, true));
+    TEST_ASSERT_EQUAL_UINT8(0, settings.settings.activeSlot);
+    TEST_ASSERT_EQUAL_INT(0, settings.setActiveSlotCalls);
+    TEST_ASSERT_FALSE(module.isActive());
+}
 
 void test_full_apply_requires_fresh_canonical_readbacks_for_every_component() {
     configureProfile();
@@ -246,7 +469,7 @@ void test_full_apply_requires_fresh_canonical_readbacks_for_every_component() {
     TEST_ASSERT_EQUAL_INT(1, ble.setDisplayOnCalls);
     TEST_ASSERT_EQUAL_INT(1, ble.setModeCalls);
     TEST_ASSERT_EQUAL_INT(1, ble.setVolumeCalls);
-    TEST_ASSERT_EQUAL_INT(1, ble.requestCurrentVolumeCalls);
+    TEST_ASSERT_EQUAL_INT(1, ble.requestAllVolumeCalls);
     JsonDocument status;
     const String statusJson = module.getStatusJson();
     TEST_ASSERT_FALSE(deserializeJson(status, statusJson.c_str()));
@@ -261,9 +484,13 @@ void test_all_noop_components_are_proven_unchanged_without_writes() {
     auto& detector = profiles.loadableProfile.detector;
     detector.displayPolicy = V1DisplayPolicy::On;
     detector.mode = 1;
+    detector.volumePolicy = V1VolumePolicy::Saved;
     detector.mainVolume = 5;
     detector.mutedVolume = 2;
-    stageSnapshot(makeSnapshot(41039, bytes));
+    auto snapshot = makeSnapshot(41039, bytes);
+    snapshot.savedMainVolume = 5;
+    snapshot.savedMutedVolume = 2;
+    stageSnapshot(snapshot);
     queueAndPreflight();
 
     TEST_ASSERT_FALSE(module.isActive());
@@ -528,20 +755,75 @@ void test_mode_requires_fresh_canonical_display_evidence_and_reports_mismatch() 
     TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
 }
 
-void test_volume_uses_canonical_current_volume_response_for_verification() {
+void test_temporary_volume_uses_all_volume_readback_and_preserves_saved_pair() {
     configureProfile();
     auto& detector = profiles.loadableProfile.detector;
     detector.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
     detector.displayPolicy = V1DisplayPolicy::Unchanged;
     detector.modePolicy = V1ModePolicy::Unchanged;
+    detector.volumeFeedback = V1VolumeFeedbackPolicy::ChangedOnly;
+    detector.volumeDisconnect = V1VolumeDisconnectPolicy::KeepCurrent;
     stageSnapshot(makeSnapshot());
     queueAndPreflight();
     at(100); // write
-    at(130); // request 0x37
-    observeCurrentVolume(7, 3);
+    TEST_ASSERT_EQUAL_HEX8(0x0B, ble.lastVolumeAux);
+    at(130); // request 0x3c
+    observeAllVolume(7, 3, 4, 1);
     at(130);
     TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
-    TEST_ASSERT_EQUAL_INT(1, ble.requestCurrentVolumeCalls);
+    TEST_ASSERT_EQUAL_INT(1, ble.requestAllVolumeCalls);
+    JsonDocument status;
+    const String json = module.getStatusJson();
+    TEST_ASSERT_FALSE(deserializeJson(status, json.c_str()));
+    JsonObject volume = status["components"]["volume"];
+    TEST_ASSERT_TRUE(volume["verified"].as<bool>());
+    TEST_ASSERT_TRUE(volume["valuesVerified"].as<bool>());
+    TEST_ASSERT_FALSE(volume["policyReadbackAvailable"].as<bool>());
+    TEST_ASSERT_EQUAL_STRING("sent_unobservable", volume["policyOutcome"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING("current_values_and_saved_preservation_only",
+                             volume["verificationScope"].as<const char*>());
+}
+
+void test_saved_volume_sets_save_aux_and_verifies_both_current_and_saved_pairs() {
+    configureProfile();
+    auto& detector = profiles.loadableProfile.detector;
+    detector.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
+    detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    detector.modePolicy = V1ModePolicy::Unchanged;
+    detector.volumePolicy = V1VolumePolicy::Saved;
+    detector.volumeFeedback = V1VolumeFeedbackPolicy::Always;
+    stageSnapshot(makeSnapshot());
+    queueAndPreflight();
+    at(100);
+    TEST_ASSERT_EQUAL_HEX8(0x05, ble.lastVolumeAux);
+    at(130);
+    observeAllVolume(7, 3, 7, 3);
+    at(130);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(statusContains("\"verificationScope\":\"current_and_saved_values_only\""));
+}
+
+void test_volume_behavior_aux_is_sent_even_when_values_already_match() {
+    configureProfile();
+    auto& detector = profiles.loadableProfile.detector;
+    detector.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
+    detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    detector.modePolicy = V1ModePolicy::Unchanged;
+    detector.mainVolume = 5;
+    detector.mutedVolume = 2;
+    detector.volumeFeedback = V1VolumeFeedbackPolicy::None;
+    detector.volumeDisconnect = V1VolumeDisconnectPolicy::RestoreSaved;
+    stageSnapshot(makeSnapshot());
+    queueAndPreflight();
+    at(100);
+    TEST_ASSERT_EQUAL_INT(1, ble.setVolumeCalls);
+    // A previous keep-current command is not readable. Restore-saved b3=0
+    // therefore still requires an explicit command even when values match.
+    TEST_ASSERT_EQUAL_HEX8(0x00, ble.lastVolumeAux);
+    at(130);
+    observeAllVolume(5, 2, 4, 1);
+    at(130);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
 }
 
 void test_volume_readback_mismatch_is_not_success() {
@@ -554,30 +836,29 @@ void test_volume_readback_mismatch_is_not_success() {
     queueAndPreflight();
     at(100);
     at(130);
-    observeCurrentVolume(6, 3);
+    observeAllVolume(6, 3, 4, 1);
     at(130);
     TEST_ASSERT_TRUE(statusContains("volume_mismatch"));
     TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
 }
 
-void test_delayed_all_volume_response_cannot_verify_focused_current_volume_read() {
+void test_wrong_destination_and_corrupt_all_volume_responses_cannot_verify() {
     configureProfile();
     auto& detector = profiles.loadableProfile.detector;
     detector.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
     detector.displayPolicy = V1DisplayPolicy::Unchanged;
     detector.modePolicy = V1ModePolicy::Unchanged;
     stageSnapshot(makeSnapshot());
-    const uint32_t focusedRevision = parser.currentVolumeObservationRevision();
     queueAndPreflight();
     at(100);
     at(130);
-    observeAllVolume(7, 3, 5, 2);
-    TEST_ASSERT_EQUAL_UINT32(focusedRevision, parser.currentVolumeObservationRevision());
+    observeAllVolume(7, 3, 4, 1, 0xEA, false, 0xD8);
+    observeAllVolume(7, 3, 4, 1, 0xEA, true, 0xD6);
     at(1630);
     TEST_ASSERT_TRUE(statusContains("volume_timeout"));
 }
 
-void test_current_volume_response_arriving_before_new_read_request_is_not_fresh_evidence() {
+void test_all_volume_response_arriving_before_new_read_request_is_not_fresh_evidence() {
     configureProfile();
     auto& detector = profiles.loadableProfile.detector;
     detector.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
@@ -586,7 +867,7 @@ void test_current_volume_response_arriving_before_new_read_request_is_not_fresh_
     stageSnapshot(makeSnapshot());
     queueAndPreflight();
     at(100);
-    observeCurrentVolume(7, 3); // delayed 0x38 before this operation's 0x37
+    observeAllVolume(7, 3, 4, 1); // delayed 0x3d before this operation's 0x3c
     at(130);
     at(1630);
     TEST_ASSERT_TRUE(statusContains("volume_timeout"));
@@ -657,20 +938,23 @@ void test_missing_user_before_fails_closed_to_preserve_region_and_unknown_bits()
     TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
 }
 
-void test_unsupported_saved_and_pre_41037_temporary_volume_send_zero_writes() {
-    configureProfile();
-    profiles.loadableProfile.detector.volumePolicy = V1VolumePolicy::Saved;
-    stageSnapshot(makeSnapshot());
-    queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("unsupported_saved_volume"));
-    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
-
-    setUp();
+void test_pre_41037_volume_and_pre_41038_keep_current_send_zero_writes() {
     configureProfile();
     stageSnapshot(makeSnapshot(41036));
     queueAndPreflight();
     TEST_ASSERT_TRUE(statusContains("unsupported_firmware"));
     TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
+
+    setUp();
+    configureProfile();
+    profiles.loadableProfile.detector.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
+    profiles.loadableProfile.detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    profiles.loadableProfile.detector.modePolicy = V1ModePolicy::Unchanged;
+    profiles.loadableProfile.detector.volumeDisconnect = V1VolumeDisconnectPolicy::KeepCurrent;
+    stageSnapshot(makeSnapshot(41037));
+    queueAndPreflight();
+    TEST_ASSERT_TRUE(statusContains("unsupported_firmware"));
     TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
 }
 
@@ -694,32 +978,321 @@ void test_unverified_future_major_firmware_blocks_every_write() {
     TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
 }
 
-void test_unsupported_bluetooth_led_policy_blocks_whole_plan_without_writes() {
-    configureProfile();
-    profiles.loadableProfile.detector.bluetoothLedPolicy = static_cast<V1BluetoothLedPolicy>(1);
-    stageSnapshot(makeSnapshot());
-    queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("unsupported_bluetooth_led"));
-    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
-    TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
-    TEST_ASSERT_EQUAL_INT(0, ble.setModeCalls);
-    TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
-    TEST_ASSERT_EQUAL_INT(0, ble.requestUserBytesCalls);
-    TEST_ASSERT_EQUAL_INT(0, ble.requestCurrentVolumeCalls);
+void test_main_display_off_can_keep_on_or_blinking_bluetooth_indicator_from_41032() {
+    const V1BluetoothIndicatorState activeStates[] = {
+        V1BluetoothIndicatorState::On, V1BluetoothIndicatorState::Blinking};
+    for (const auto observedState : activeStates) {
+        setUp();
+        configureProfile();
+        auto& detector = profiles.loadableProfile.detector;
+        detector.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
+        detector.modePolicy = V1ModePolicy::Unchanged;
+        detector.volumePolicy = V1VolumePolicy::Unchanged;
+        detector.bluetoothLedPolicy = V1BluetoothLedPolicy::On;
+        stageSnapshot(makeSnapshot(41032));
+        queueAndPreflight();
+        at(100);
+        TEST_ASSERT_EQUAL_INT(1, ble.setDisplayOnCalls);
+        TEST_ASSERT_FALSE(ble.lastDisplayOnValue);
+        TEST_ASSERT_TRUE(ble.lastKeepBluetoothIndicatorOn);
+        observeDisplay(false, 1, 0xEA, false, 0xD8, UINT32_MAX, observedState);
+        at(100);
+        TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    }
 }
 
-void test_unsupported_custom_frequency_policy_blocks_whole_plan_without_writes() {
+void test_legacy_display_off_implicitly_turns_bluetooth_off_but_keep_on_is_gated() {
     configureProfile();
-    profiles.loadableProfile.detector.customFrequencyPolicy = static_cast<V1CustomFrequencyPolicy>(1);
+    auto& detector = profiles.loadableProfile.detector;
+    detector.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
+    detector.modePolicy = V1ModePolicy::Unchanged;
+    detector.volumePolicy = V1VolumePolicy::Unchanged;
+    detector.bluetoothLedPolicy = V1BluetoothLedPolicy::Off;
+    auto snapshot = makeSnapshot(41031);
+    snapshot.bluetoothIndicator = V1BluetoothIndicatorState::On;
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+    at(100);
+    TEST_ASSERT_FALSE(ble.lastKeepBluetoothIndicatorOn);
+    observeDisplay(false, 1, 0xEA, false, 0xD8, UINT32_MAX,
+                   V1BluetoothIndicatorState::Off);
+    at(100);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+
+    setUp();
+    configureProfile();
+    auto& gated = profiles.loadableProfile.detector;
+    gated.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
+    gated.modePolicy = V1ModePolicy::Unchanged;
+    gated.volumePolicy = V1VolumePolicy::Unchanged;
+    gated.bluetoothLedPolicy = V1BluetoothLedPolicy::On;
+    stageSnapshot(makeSnapshot(41031));
+    queueAndPreflight();
+    TEST_ASSERT_TRUE(statusContains("unsupported_bluetooth_led"));
+    TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
+}
+
+void test_bluetooth_policy_requires_final_main_display_off() {
+    configureProfile();
+    auto& detector = profiles.loadableProfile.detector;
+    detector.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
+    detector.displayPolicy = V1DisplayPolicy::On;
+    detector.modePolicy = V1ModePolicy::Unchanged;
+    detector.volumePolicy = V1VolumePolicy::Unchanged;
+    detector.bluetoothLedPolicy = V1BluetoothLedPolicy::Off;
     stageSnapshot(makeSnapshot());
     queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("unsupported_custom_frequencies"));
-    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+    TEST_ASSERT_TRUE(statusContains("invalid_policy"));
     TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
-    TEST_ASSERT_EQUAL_INT(0, ble.setModeCalls);
-    TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
-    TEST_ASSERT_EQUAL_INT(0, ble.requestUserBytesCalls);
-    TEST_ASSERT_EQUAL_INT(0, ble.requestCurrentVolumeCalls);
+}
+
+void test_sparse_custom_definitions_write_used_only_commit_last_and_report_calibrated_readback() {
+    const std::vector<V1CustomFrequencyDefinition> desired = {
+        {0, 24200, 24300}, {1, 0, 0}, {2, 34500, 34600}, {3, 0, 0}};
+    configureCustomOnly(desired);
+    auto snapshot = makeSnapshot();
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+
+    at(100);
+    TEST_ASSERT_EQUAL_INT(1, ble.writeSweepDefinitionCalls);
+    at(105);
+    TEST_ASSERT_EQUAL_INT(2, ble.writeSweepDefinitionCalls);
+    TEST_ASSERT_EQUAL_UINT32(2, static_cast<uint32_t>(ble.sweepWriteHistory.size()));
+    TEST_ASSERT_EQUAL_UINT8(0, ble.sweepWriteHistory[0].index);
+    TEST_ASSERT_FALSE(ble.sweepWriteHistory[0].commit);
+    TEST_ASSERT_EQUAL_UINT8(2, ble.sweepWriteHistory[1].index);
+    TEST_ASSERT_TRUE(ble.sweepWriteHistory[1].commit);
+    observeSweepWriteResult(0);
+    at(105);
+    at(135);
+    TEST_ASSERT_EQUAL_INT(1, ble.requestAllSweepDefinitionsCalls);
+    observeSweepDefinition(0, 23950, 24950); // V1-calibrated, intentionally far from request
+    observeSweepDefinition(1, 0, 0);
+    observeSweepDefinition(2, 33100, 36900);
+    observeSweepDefinition(3, 0, 0);
+    at(135);
+
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    JsonDocument status;
+    const String json = module.getStatusJson();
+    TEST_ASSERT_FALSE(deserializeJson(status, json.c_str()));
+    JsonObject custom = status["components"]["customFrequencies"];
+    TEST_ASSERT_TRUE(custom["verified"].as<bool>());
+    TEST_ASSERT_EQUAL_STRING("topology_and_live_section_with_calibrated_readback",
+                             custom["verificationScope"].as<const char*>());
+    TEST_ASSERT_EQUAL_UINT32(4, custom["requestedDefinitions"].size());
+    TEST_ASSERT_EQUAL_UINT16(24200, custom["requestedDefinitions"][0]["lowerMHz"].as<uint16_t>());
+    TEST_ASSERT_EQUAL_UINT16(23950, custom["calibratedReadback"][0]["lowerMHz"].as<uint16_t>());
+    TEST_ASSERT_EQUAL_UINT16(33100, custom["calibratedReadback"][2]["lowerMHz"].as<uint16_t>());
+}
+
+void test_exact_custom_definition_set_is_unchanged_and_sends_no_sweep_packets() {
+    const std::vector<V1CustomFrequencyDefinition> desired = {
+        {0, 24000, 24100}, {1, 0, 0}, {2, 34000, 34100}, {3, 0, 0}};
+    configureCustomOnly(desired);
+    auto snapshot = makeSnapshot();
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+    TEST_ASSERT_FALSE(module.isActive());
+    TEST_ASSERT_TRUE(statusContains("\"outcome\":\"unchanged\""));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.requestAllSweepDefinitionsCalls);
+}
+
+void test_null_sweep_slots_round_trip_but_cannot_substitute_for_required_band_topology() {
+    const std::vector<V1CustomFrequencyDefinition> desired = {
+        {0, 24000, 24100}, {1, 0, 0}, {2, 34000, 34100}, {3, 0, 0}};
+    configureCustomOnly(desired);
+    auto snapshot = makeSnapshot();
+    addSweepSnapshot(snapshot);
+    snapshot.sweepSectionCount = 3;
+    snapshot.sweepSections = {{{0, 3, 23900, 25000}, {1, 3, 0, 0}, {2, 3, 33000, 37000}}};
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+    TEST_ASSERT_FALSE(module.isActive());
+    TEST_ASSERT_TRUE(statusContains("\"outcome\":\"unchanged\""));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+
+    setUp();
+    configureCustomOnly(desired);
+    snapshot = makeSnapshot();
+    addSweepSnapshot(snapshot);
+    snapshot.sweepSections = {{{0, 2, 0, 0}, {1, 2, 0, 0}}};
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+    TEST_ASSERT_TRUE(statusContains("custom_configuration_invalid"));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+}
+
+void test_custom_commit_result_and_full_readback_are_both_required() {
+    const std::vector<V1CustomFrequencyDefinition> desired = {
+        {0, 24200, 24300}, {1, 0, 0}, {2, 34500, 34600}, {3, 0, 0}};
+    configureCustomOnly(desired);
+    auto snapshot = makeSnapshot();
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+    at(100);
+    at(105);
+    observeSweepWriteResult(1);
+    at(105);
+    TEST_ASSERT_TRUE(statusContains("custom_commit_rejected"));
+    TEST_ASSERT_TRUE(statusContains("\"commitResultRaw\":1"));
+    TEST_ASSERT_TRUE(statusContains("\"invalidDefinitionIndex\":0"));
+    TEST_ASSERT_EQUAL_INT(0, ble.requestAllSweepDefinitionsCalls);
+
+    setUp();
+    configureCustomOnly(desired);
+    snapshot = makeSnapshot();
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+    at(100);
+    at(105);
+    observeSweepWriteResult(64);
+    at(105);
+    TEST_ASSERT_TRUE(statusContains("\"commitResultRaw\":64"));
+    TEST_ASSERT_TRUE(statusContains("\"invalidDefinitionIndex\":63"));
+
+    setUp();
+    configureCustomOnly(desired);
+    snapshot = makeSnapshot();
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+    at(100);
+    observeSweepWriteResult(0); // stale before the actual commit packet
+    at(105);
+    at(1605);
+    TEST_ASSERT_TRUE(statusContains("custom_commit_timeout"));
+}
+
+void test_custom_readback_rejects_lost_used_range_and_cross_section_calibration() {
+    const std::vector<V1CustomFrequencyDefinition> desired = {
+        {0, 24200, 24300}, {1, 0, 0}, {2, 34500, 34600}, {3, 0, 0}};
+    configureCustomOnly(desired);
+    auto snapshot = makeSnapshot();
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+    at(100);
+    at(105);
+    observeSweepWriteResult(0);
+    at(105);
+    at(135);
+    observeSweepDefinition(0, 0, 0); // lost write cannot masquerade as calibrated
+    observeSweepDefinition(1, 0, 0);
+    observeSweepDefinition(2, 34500, 34600);
+    observeSweepDefinition(3, 0, 0);
+    at(135);
+    TEST_ASSERT_TRUE(statusContains("custom_readback_invalid"));
+
+    setUp();
+    configureCustomOnly(desired);
+    snapshot = makeSnapshot();
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+    at(100);
+    at(105);
+    observeSweepWriteResult(0);
+    at(105);
+    at(135);
+    observeSweepDefinition(0, 34000, 34100); // wrong live section
+    observeSweepDefinition(1, 0, 0);
+    observeSweepDefinition(2, 34500, 34600);
+    observeSweepDefinition(3, 0, 0);
+    at(135);
+    TEST_ASSERT_TRUE(statusContains("custom_readback_invalid"));
+}
+
+void test_custom_readback_requires_every_definition_after_request_boundary() {
+    const std::vector<V1CustomFrequencyDefinition> desired = {
+        {0, 24200, 24300}, {1, 0, 0}, {2, 34500, 34600}, {3, 0, 0}};
+    configureCustomOnly(desired);
+    auto snapshot = makeSnapshot();
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+    at(100);
+    at(105);
+    observeSweepWriteResult(0);
+    at(105);
+
+    // This notification entered before the read request but remained queued
+    // until after the request-side collector reset. Fresh peers must not make
+    // its aggregate look current.
+    const uint32_t queuedBeforeRequest = ble.latestV1NotificationIngressSequence();
+    at(135);
+    observeSweepDefinition(3, 0, 0, queuedBeforeRequest);
+    observeSweepDefinition(0, 23950, 24950);
+    observeSweepDefinition(1, 0, 0);
+    observeSweepDefinition(2, 33100, 36900);
+    at(135);
+    TEST_ASSERT_TRUE(module.isActive());
+    TEST_ASSERT_FALSE(statusContains("\"result\":\"succeeded\""));
+
+    observeSweepDefinition(3, 0, 0);
+    at(145);
+    TEST_ASSERT_FALSE(module.isActive());
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+}
+
+void test_custom_snapshot_mutation_before_preflight_blocks_every_write() {
+    const std::vector<V1CustomFrequencyDefinition> desired = {
+        {0, 24200, 24300}, {1, 0, 0}, {2, 34500, 34600}, {3, 0, 0}};
+    configureCustomOnly(desired);
+    auto snapshot = makeSnapshot();
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    observeSweepDefinition(0, 24200, 24300, UINT32_MAX, false, 0xD6,
+                           true); // contradictory newer canonical evidence poisons baseline
+    queueAndPreflight();
+    TEST_ASSERT_TRUE(statusContains("missing_live_snapshot"));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+}
+
+void test_malformed_canonical_sweep_definition_poison_blocks_every_write() {
+    const std::vector<V1CustomFrequencyDefinition> desired = {
+        {0, 24200, 24300}, {1, 0, 0}, {2, 34500, 34600}, {3, 0, 0}};
+    configureCustomOnly(desired);
+    auto snapshot = makeSnapshot();
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+
+    const auto malformed = makeV1Packet(
+        PACKET_ID_RESP_SWEEP_DEFINITION,
+        {0x80, 0x5E, 0x56, 0x00, 0x00});
+    TEST_ASSERT_FALSE(parser.parse(malformed.data(), malformed.size(), mockMillis,
+                                   ble.noteV1NotificationIngress()));
+    TEST_ASSERT_TRUE(parser.sweepDefinitionsObservation().poisoned);
+    queueAndPreflight();
+    TEST_ASSERT_TRUE(statusContains("missing_live_snapshot"));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+}
+
+void test_poisoned_sweep_max_before_preflight_blocks_every_write() {
+    const std::vector<V1CustomFrequencyDefinition> desired = {
+        {0, 24200, 24300}, {1, 0, 0}, {2, 34500, 34600}, {3, 0, 0}};
+    configureCustomOnly(desired);
+    auto snapshot = makeSnapshot();
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    const auto conflictingMax = makeV1Packet(PACKET_ID_RESP_MAX_SWEEP_INDEX,
+                                             {static_cast<uint8_t>(snapshot.maxSweepIndex - 1u)});
+    TEST_ASSERT_FALSE(parser.parse(conflictingMax.data(), conflictingMax.size(), mockMillis,
+                                   ble.noteV1NotificationIngress()));
+    TEST_ASSERT_TRUE(parser.sweepMaxObservation().poisoned);
+    queueAndPreflight();
+    TEST_ASSERT_TRUE(statusContains("missing_live_snapshot"));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
 }
 
 void test_vendor_invalid_zero_multibit_user_values_fail_preflight_at_version_boundaries() {
@@ -755,6 +1328,223 @@ void test_euro_bit_change_requires_phase_four_custom_frequency_preservation() {
     queueAndPreflight();
     TEST_ASSERT_TRUE(statusContains("custom_frequency_preservation_required"));
     TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+}
+
+void test_euro_bit_change_restores_explicit_custom_definitions_after_user_write() {
+    const std::array<uint8_t, 6> before{{0xFF, 0xFF, 0xFF, 0xFF, 0xA4, 0x5A}};
+    const std::array<uint8_t, 6> desiredBytes{{0xFF, 0xFE, 0xFF, 0xFF, 0xFF, 0xFF}};
+    configureProfile(desiredBytes);
+    auto& detector = profiles.loadableProfile.detector;
+    detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    detector.modePolicy = V1ModePolicy::Unchanged;
+    detector.volumePolicy = V1VolumePolicy::Unchanged;
+    detector.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+    const std::array<V1CustomFrequencyDefinition, 4> euroDefinitions{{
+        {0, 24200, 24300}, {1, 0, 0}, {2, 34500, 34600}, {3, 0, 0}}};
+    TEST_ASSERT_TRUE(detector.customFrequencyDefinitions.assign(euroDefinitions));
+    auto snapshot = makeSnapshot(41039, before);
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+    at(100); // user write
+    at(130); // user read
+    observeUserBytes(ble.lastUserBytes);
+    at(130); // user verify; custom scheduled after inter-command gap
+    at(160); // first used definition
+    at(165); // final used definition and commit
+    observeSweepWriteResult(0);
+    at(165);
+    at(195);
+    observeSweepDefinition(0, 24195, 24305);
+    observeSweepDefinition(1, 0, 0);
+    observeSweepDefinition(2, 34495, 34605);
+    observeSweepDefinition(3, 0, 0);
+    at(195);
+
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_EQUAL_UINT32(4, static_cast<uint32_t>(ble.commandHistory.size()));
+    TEST_ASSERT_EQUAL_STRING("user-write", ble.commandHistory[0]);
+    TEST_ASSERT_EQUAL_STRING("sweep-write", ble.commandHistory[1]);
+    TEST_ASSERT_EQUAL_STRING("sweep-commit", ble.commandHistory[2]);
+    TEST_ASSERT_EQUAL_STRING("sweep-read", ble.commandHistory[3]);
+}
+
+void test_usa_to_euro_from_advanced_requires_explicit_non_advanced_mode_before_writes() {
+    const std::array<uint8_t, 6> before{{0xFF, 0xFF, 0xFF, 0xFF, 0xA4, 0x5A}};
+    const std::array<uint8_t, 6> desiredBytes{{0xFF, 0xFE, 0xFF, 0xFF, 0xFF, 0xFF}};
+    configureProfile(desiredBytes);
+    auto& detector = profiles.loadableProfile.detector;
+    detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    detector.modePolicy = V1ModePolicy::Unchanged;
+    detector.volumePolicy = V1VolumePolicy::Unchanged;
+    detector.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+    const std::array<V1CustomFrequencyDefinition, 4> euroDefinitions{{
+        {0, 24200, 24300}, {1, 0, 0}, {2, 34500, 34600}, {3, 0, 0}}};
+    TEST_ASSERT_TRUE(detector.customFrequencyDefinitions.assign(euroDefinitions));
+    auto snapshot = makeSnapshot(41039, before);
+    snapshot.mode = 'L';
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+    TEST_ASSERT_TRUE(statusContains("euro_advanced_mode_invalid"));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+}
+
+void test_enabling_custom_filtering_with_unchanged_definitions_requires_and_validates_live_table() {
+    const std::array<uint8_t, 6> before{{0xFF, 0xFF, 0xFF, 0xFF, 0xA4, 0x5A}};
+    const std::array<uint8_t, 6> enableCustom{{0xFF, 0xF7, 0xFF, 0xFF, 0xFF, 0xFF}};
+    configureProfile(enableCustom);
+    auto& detector = profiles.loadableProfile.detector;
+    detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    detector.modePolicy = V1ModePolicy::Unchanged;
+    detector.volumePolicy = V1VolumePolicy::Unchanged;
+    auto snapshot = makeSnapshot(41039, before);
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+    at(100);
+    at(130);
+    observeUserBytes(ble.lastUserBytes);
+    at(130);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+
+    setUp();
+    configureProfile(enableCustom);
+    auto& missing = profiles.loadableProfile.detector;
+    missing.displayPolicy = V1DisplayPolicy::Unchanged;
+    missing.modePolicy = V1ModePolicy::Unchanged;
+    missing.volumePolicy = V1VolumePolicy::Unchanged;
+    stageSnapshot(makeSnapshot(41039, before));
+    queueAndPreflight();
+    TEST_ASSERT_TRUE(statusContains("missing_live_snapshot"));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+}
+
+void test_custom_enable_transition_and_explicit_value_require_effective_band_coverage() {
+    const std::array<uint8_t, 6> disabled{{0xFF, 0xFF, 0xFF, 0xFF, 0xA4, 0x5A}};
+    const std::array<uint8_t, 6> enabled{{0xFF, 0xF7, 0xFF, 0xFF, 0xFF, 0xFF}};
+    configureProfile(enabled);
+    auto& transition = profiles.loadableProfile.detector;
+    transition.displayPolicy = V1DisplayPolicy::Unchanged;
+    transition.modePolicy = V1ModePolicy::Unchanged;
+    transition.volumePolicy = V1VolumePolicy::Unchanged;
+    auto snapshot = makeSnapshot(41039, disabled);
+    addSweepSnapshot(snapshot);
+    snapshot.sweepDefinitions[2] = {2, 0, 0}; // complete table, no enabled Ka coverage
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+    TEST_ASSERT_TRUE(statusContains("custom_configuration_invalid"));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+
+    setUp();
+    const std::array<uint8_t, 6> enableCustomKOnly{{0xFB, 0xF7, 0xFF, 0xFF, 0xFF, 0xFF}};
+    configureProfile(enableCustomKOnly);
+    auto& kOnlyTransition = profiles.loadableProfile.detector;
+    kOnlyTransition.displayPolicy = V1DisplayPolicy::Unchanged;
+    kOnlyTransition.modePolicy = V1ModePolicy::Unchanged;
+    kOnlyTransition.volumePolicy = V1VolumePolicy::Unchanged;
+    snapshot = makeSnapshot(41039, disabled);
+    addSweepSnapshot(snapshot);
+    snapshot.sweepDefinitions[2] = {2, 0, 0};
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+    TEST_ASSERT_TRUE(statusContains("custom_configuration_invalid"));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+
+    setUp();
+    const std::array<uint8_t, 6> enableCustomKaOnly{{0xFD, 0xF7, 0xFF, 0xFF, 0xFF, 0xFF}};
+    configureProfile(enableCustomKaOnly);
+    auto& kaOnlyTransition = profiles.loadableProfile.detector;
+    kaOnlyTransition.displayPolicy = V1DisplayPolicy::Unchanged;
+    kaOnlyTransition.modePolicy = V1ModePolicy::Unchanged;
+    kaOnlyTransition.volumePolicy = V1VolumePolicy::Unchanged;
+    snapshot = makeSnapshot(41039, disabled);
+    addSweepSnapshot(snapshot);
+    snapshot.sweepDefinitions[0] = {0, 0, 0};
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+    TEST_ASSERT_TRUE(statusContains("custom_configuration_invalid"));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+
+    setUp();
+    configureCustomOnly({{0, 24200, 24300}, {1, 0, 0}, {2, 0, 0}, {3, 0, 0}});
+    snapshot = makeSnapshot(41039, enabled);
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+    TEST_ASSERT_TRUE(statusContains("custom_configuration_invalid"));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+}
+
+void test_enabling_band_while_custom_remains_enabled_validates_live_coverage() {
+    const std::array<uint8_t, 6> kOnlyBefore{{0xFB, 0xF7, 0xFF, 0xFF, 0xA4, 0x5A}};
+    const std::array<uint8_t, 6> kAndKaAfter{{0xFF, 0xF7, 0xFF, 0xFF, 0xFF, 0xFF}};
+    configureProfile(kAndKaAfter);
+    auto& detector = profiles.loadableProfile.detector;
+    detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    detector.modePolicy = V1ModePolicy::Unchanged;
+    detector.volumePolicy = V1VolumePolicy::Unchanged;
+    auto snapshot = makeSnapshot(41039, kOnlyBefore);
+    addSweepSnapshot(snapshot);
+    snapshot.sweepDefinitions[2] = {2, 0, 0}; // no Ka coverage for the newly enabled band
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+    TEST_ASSERT_TRUE(statusContains("custom_configuration_invalid"));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+
+    setUp();
+    configureProfile(kAndKaAfter);
+    auto& valid = profiles.loadableProfile.detector;
+    valid.displayPolicy = V1DisplayPolicy::Unchanged;
+    valid.modePolicy = V1ModePolicy::Unchanged;
+    valid.volumePolicy = V1VolumePolicy::Unchanged;
+    snapshot = makeSnapshot(41039, kOnlyBefore);
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+    at(100);
+    at(130);
+    observeUserBytes(ble.lastUserBytes);
+    at(130);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+}
+
+void test_disabling_custom_filtering_does_not_require_or_write_definitions() {
+    const std::array<uint8_t, 6> enabled{{0xFF, 0xF7, 0xFF, 0xFF, 0xA4, 0x5A}};
+    const std::array<uint8_t, 6> disabled{{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}};
+    configureProfile(disabled);
+    auto& detector = profiles.loadableProfile.detector;
+    detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    detector.modePolicy = V1ModePolicy::Unchanged;
+    detector.volumePolicy = V1VolumePolicy::Unchanged;
+    stageSnapshot(makeSnapshot(41039, enabled)); // no sweep capture
+    queueAndPreflight();
+    at(100);
+    at(130);
+    observeUserBytes(ble.lastUserBytes);
+    at(130);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+}
+
+void test_unrelated_display_apply_does_not_require_sweeps_when_custom_was_already_enabled() {
+    const std::array<uint8_t, 6> enabled{{0xFF, 0xF7, 0xFF, 0xFF, 0xA4, 0x5A}};
+    configureProfile(enabled);
+    auto& detector = profiles.loadableProfile.detector;
+    detector.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
+    detector.modePolicy = V1ModePolicy::Unchanged;
+    detector.volumePolicy = V1VolumePolicy::Unchanged;
+    stageSnapshot(makeSnapshot(41039, enabled));
+    queueAndPreflight();
+    at(100);
+    observeDisplay(false, 1);
+    at(100);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
 }
 
 void test_advanced_logic_in_existing_euro_mode_is_rejected_before_writes() {
@@ -872,7 +1662,7 @@ void test_volume_verification_lease_defers_competing_owner_until_transaction_fin
                           quiet.sendVolumeResult(QuietOwner::VolumeFade, 1, 1));
     TEST_ASSERT_EQUAL_INT(1, ble.setVolumeCalls);
     at(130);
-    observeCurrentVolume(7, 3);
+    observeAllVolume(7, 3, 4, 1);
     at(130);
     TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
     TEST_ASSERT_EQUAL_INT(SendResult::SENT,
@@ -1008,8 +1798,8 @@ void test_queued_before_request_volume_evidence_cannot_verify_after_late_process
     queueAndPreflight();
     at(100); // write
     const uint32_t queuedBeforeRequest = ble.noteV1NotificationIngress();
-    at(130); // 0x37 request
-    observeCurrentVolume(7, 3, 0xEA, false, 0xD6, queuedBeforeRequest);
+    at(130); // 0x3c request
+    observeAllVolume(7, 3, 4, 1, 0xEA, false, 0xD6, queuedBeforeRequest);
     at(1630);
 
     TEST_ASSERT_TRUE(statusContains("volume_timeout"));
@@ -1116,7 +1906,7 @@ void test_responses_ingressed_before_send_returns_cannot_verify_the_operation() 
     stageSnapshot(makeSnapshot());
     queueAndPreflight();
     at(100);
-    ble.requestCurrentVolumeSendHook = injectMatchingVolumeDuringSend;
+    ble.requestAllVolumeSendHook = injectMatchingAllVolumeDuringSend;
     at(130);
     at(1630);
     TEST_ASSERT_TRUE(statusContains("volume_timeout"));
@@ -1198,7 +1988,7 @@ void test_display_mode_and_volume_transport_failures_are_distinct_and_release_vo
     volumeReadDetector.displayPolicy = V1DisplayPolicy::Unchanged;
     volumeReadDetector.modePolicy = V1ModePolicy::Unchanged;
     stageSnapshot(makeSnapshot());
-    ble.requestCurrentVolumeResult = false;
+    ble.requestAllVolumeResult = false;
     queueAndPreflight();
     at(100);
     at(130);
@@ -1210,6 +2000,9 @@ void test_display_mode_and_volume_transport_failures_are_distinct_and_release_vo
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_queue_rejects_failed_active_slot_persistence_before_operation_or_detector_write);
+    RUN_TEST(test_queue_stages_every_owned_string_and_definition_capacity_before_activation);
+    RUN_TEST(test_queue_secures_maximum_v3_profile_before_activation_and_preserves_legacy_load_step);
     RUN_TEST(test_full_apply_requires_fresh_canonical_readbacks_for_every_component);
     RUN_TEST(test_all_noop_components_are_proven_unchanged_without_writes);
     RUN_TEST(test_supported_user_masks_match_every_vendor_boundary);
@@ -1225,21 +2018,40 @@ int main() {
     RUN_TEST(test_tolerant_display_interleaving_cannot_replace_canonical_evidence_value);
     RUN_TEST(test_fresh_display_mismatches_remain_pending_then_report_mismatch_at_deadline);
     RUN_TEST(test_mode_requires_fresh_canonical_display_evidence_and_reports_mismatch);
-    RUN_TEST(test_volume_uses_canonical_current_volume_response_for_verification);
+    RUN_TEST(test_temporary_volume_uses_all_volume_readback_and_preserves_saved_pair);
+    RUN_TEST(test_saved_volume_sets_save_aux_and_verifies_both_current_and_saved_pairs);
+    RUN_TEST(test_volume_behavior_aux_is_sent_even_when_values_already_match);
     RUN_TEST(test_volume_readback_mismatch_is_not_success);
-    RUN_TEST(test_delayed_all_volume_response_cannot_verify_focused_current_volume_read);
-    RUN_TEST(test_current_volume_response_arriving_before_new_read_request_is_not_fresh_evidence);
+    RUN_TEST(test_wrong_destination_and_corrupt_all_volume_responses_cannot_verify);
+    RUN_TEST(test_all_volume_response_arriving_before_new_read_request_is_not_fresh_evidence);
     RUN_TEST(test_missing_display_before_state_fails_whole_plan_without_writes);
     RUN_TEST(test_missing_mode_and_volume_before_observations_each_fail_without_writes);
     RUN_TEST(test_snapshot_value_must_still_match_latest_canonical_observation_at_preflight);
     RUN_TEST(test_missing_user_before_fails_closed_to_preserve_region_and_unknown_bits);
-    RUN_TEST(test_unsupported_saved_and_pre_41037_temporary_volume_send_zero_writes);
+    RUN_TEST(test_pre_41037_volume_and_pre_41038_keep_current_send_zero_writes);
     RUN_TEST(test_unsupported_old_firmware_preflight_sends_nothing);
     RUN_TEST(test_unverified_future_major_firmware_blocks_every_write);
-    RUN_TEST(test_unsupported_bluetooth_led_policy_blocks_whole_plan_without_writes);
-    RUN_TEST(test_unsupported_custom_frequency_policy_blocks_whole_plan_without_writes);
+    RUN_TEST(test_main_display_off_can_keep_on_or_blinking_bluetooth_indicator_from_41032);
+    RUN_TEST(test_legacy_display_off_implicitly_turns_bluetooth_off_but_keep_on_is_gated);
+    RUN_TEST(test_bluetooth_policy_requires_final_main_display_off);
+    RUN_TEST(test_sparse_custom_definitions_write_used_only_commit_last_and_report_calibrated_readback);
+    RUN_TEST(test_exact_custom_definition_set_is_unchanged_and_sends_no_sweep_packets);
+    RUN_TEST(test_null_sweep_slots_round_trip_but_cannot_substitute_for_required_band_topology);
+    RUN_TEST(test_custom_commit_result_and_full_readback_are_both_required);
+    RUN_TEST(test_custom_readback_rejects_lost_used_range_and_cross_section_calibration);
+    RUN_TEST(test_custom_readback_requires_every_definition_after_request_boundary);
+    RUN_TEST(test_custom_snapshot_mutation_before_preflight_blocks_every_write);
+    RUN_TEST(test_malformed_canonical_sweep_definition_poison_blocks_every_write);
+    RUN_TEST(test_poisoned_sweep_max_before_preflight_blocks_every_write);
     RUN_TEST(test_vendor_invalid_zero_multibit_user_values_fail_preflight_at_version_boundaries);
     RUN_TEST(test_euro_bit_change_requires_phase_four_custom_frequency_preservation);
+    RUN_TEST(test_euro_bit_change_restores_explicit_custom_definitions_after_user_write);
+    RUN_TEST(test_usa_to_euro_from_advanced_requires_explicit_non_advanced_mode_before_writes);
+    RUN_TEST(test_enabling_custom_filtering_with_unchanged_definitions_requires_and_validates_live_table);
+    RUN_TEST(test_custom_enable_transition_and_explicit_value_require_effective_band_coverage);
+    RUN_TEST(test_enabling_band_while_custom_remains_enabled_validates_live_coverage);
+    RUN_TEST(test_disabling_custom_filtering_does_not_require_or_write_definitions);
+    RUN_TEST(test_unrelated_display_apply_does_not_require_sweeps_when_custom_was_already_enabled);
     RUN_TEST(test_advanced_logic_in_existing_euro_mode_is_rejected_before_writes);
     RUN_TEST(test_speed_volume_owner_blocks_whole_plan_before_any_detector_write);
     RUN_TEST(test_active_volume_fade_owner_blocks_whole_plan_before_writes);

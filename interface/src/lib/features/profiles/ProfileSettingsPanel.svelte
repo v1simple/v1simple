@@ -40,6 +40,7 @@
                     type="text"
                     placeholder="Update description"
                     class="input w-full input-sm"
+                    maxlength="4096"
                     bind:value={editDescription}
                 />
             </div>

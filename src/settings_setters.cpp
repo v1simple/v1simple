@@ -3,7 +3,10 @@
  */
 
 #include "display_visual_contract.h"
+#include "json_exact_input.h"
 #include "settings_internals.h"
+
+#include <cstring>
 
 namespace {
 
@@ -12,6 +15,27 @@ template <typename T> bool assignIfChanged(T& target, const T& value) {
         return false;
     }
     target = value;
+    return true;
+}
+
+bool exactSettingsStringCopy(const String& source, String& destination) {
+    destination = source;
+    return destination.length() == source.length() && destination == source;
+}
+
+bool deviceSettingsSnapshotStringsMatch(const V1Settings& source, const V1Settings& snapshot) {
+    if (source.apSSID != snapshot.apSSID || source.apPassword != snapshot.apPassword ||
+        source.wifiClientSSID != snapshot.wifiClientSSID || source.proxyName != snapshot.proxyName ||
+        source.lastV1Address != snapshot.lastV1Address || source.obdSavedAddress != snapshot.obdSavedAddress ||
+        source.obdSavedName != snapshot.obdSavedName || source.slot0Name != snapshot.slot0Name ||
+        source.slot1Name != snapshot.slot1Name || source.slot2Name != snapshot.slot2Name ||
+        source.slot0_default.profileName != snapshot.slot0_default.profileName ||
+        source.slot1_highway.profileName != snapshot.slot1_highway.profileName ||
+        source.slot2_comfort.profileName != snapshot.slot2_comfort.profileName) return false;
+    for (size_t index = 0; index < kWifiStaSlotCount; ++index) {
+        if (source.wifiStaSlots[index].ssid != snapshot.wifiStaSlots[index].ssid ||
+            source.wifiStaSlots[index].label != snapshot.wifiStaSlots[index].label) return false;
+    }
     return true;
 }
 
@@ -112,8 +136,28 @@ bool SettingsManager::applyAutoPushSlotUpdate(const AutoPushSlotUpdate& update, 
     const bool previousPriorityArrow = slot.priorityArrow;
     const uint8_t previousAlertPersist = slot.alertPersist;
 
+    // Construct every allocation-bearing candidate before changing any live
+    // field. A late profile/name allocation failure must not leave earlier
+    // scalar edits applied in RAM.
+    String preparedName;
     if (update.hasName) {
-        changed |= assignIfChanged(slot.name, sanitizeSlotNameValue(update.name));
+        if (!ExactJsonInput::validSemanticString(update.name.c_str(), update.name.length())) return false;
+        preparedName = sanitizeSlotNameValue(update.name);
+        if (preparedName.length() != update.name.length()) return false;
+    }
+    String preparedProfile;
+    if (update.hasProfileName) {
+        preparedProfile = sanitizeProfileNameValue(update.profileName);
+        if (preparedProfile.length() != update.profileName.length() || preparedProfile != update.profileName) {
+            return false;
+        }
+    }
+
+    if (update.hasName) {
+        if (slot.name != preparedName) {
+            slot.name = std::move(preparedName);
+            changed = true;
+        }
     }
     if (update.hasColor) {
         changed |= assignIfChanged(slot.color, update.color);
@@ -144,7 +188,10 @@ bool SettingsManager::applyAutoPushSlotUpdate(const AutoPushSlotUpdate& update, 
         changed |= assignIfChanged(slot.priorityArrow, update.priorityArrowOnly);
     }
     if (update.hasProfileName) {
-        changed |= assignIfChanged(slot.config.profileName, sanitizeProfileNameValue(update.profileName));
+        if (slot.config.profileName != preparedProfile) {
+            slot.config.profileName = std::move(preparedProfile);
+            changed = true;
+        }
     }
     if (update.hasMode) {
         changed |= assignIfChanged(slot.config.mode, normalizeV1ModeValue(static_cast<int>(update.mode)));
@@ -163,18 +210,96 @@ bool SettingsManager::applyAutoPushSlotUpdate(const AutoPushSlotUpdate& update, 
 }
 
 AutoPushPersistResult SettingsManager::applyAutoPushSlotUpdatePersisted(const AutoPushSlotUpdate& update) {
-    const V1Settings before = settings_;
     AutoPushPersistResult result;
-    result.changed = applyAutoPushSlotUpdate(update, SettingsPersistMode::Deferred);
-    if (!result.changed) {
+    V1Settings::AutoPushSlotView slot = settings_.autoPushSlotView(update.slot);
+    const uint16_t colorBefore = slot.color;
+    const uint8_t volumeBefore = slot.volume;
+    const uint8_t muteVolumeBefore = slot.muteVolume;
+    const bool darkModeBefore = slot.darkMode;
+    const bool muteToZeroBefore = slot.muteToZero;
+    const uint8_t alertPersistBefore = slot.alertPersist;
+    const bool priorityArrowBefore = slot.priorityArrow;
+    const V1Mode modeBefore = slot.config.mode;
+    uint8_t desiredVolume = slot.volume;
+    uint8_t desiredMuteVolume = slot.muteVolume;
+    if (update.hasVolume) {
+        desiredVolume = clampSlotVolumeValue(update.volume);
+        desiredMuteVolume = update.hasMuteVolume ? clampSlotVolumeValue(update.muteVolume) : slot.muteVolume;
+        sanitizeSlotVolumePair(desiredVolume, desiredMuteVolume);
+    } else if (update.hasMuteVolume) {
+        desiredMuteVolume = clampSlotVolumeValue(update.muteVolume);
+        sanitizeSlotVolumePair(desiredVolume, desiredMuteVolume);
+    }
+    // Build the complete candidate exactly once.  The route-owned update
+    // remains immutable; no live field changes until both allocation-bearing
+    // strings and every scalar policy have been validated.
+    String desiredName = slot.name;
+    String desiredProfile = slot.config.profileName;
+    if (desiredName.length() != slot.name.length() || desiredName != slot.name ||
+        desiredProfile.length() != slot.config.profileName.length() || desiredProfile != slot.config.profileName) {
+        return result;
+    }
+    if (update.hasName) {
+        if (!ExactJsonInput::validSemanticString(update.name.c_str(), update.name.length())) return result;
+        desiredName = sanitizeSlotNameValue(update.name);
+        if (desiredName.length() != update.name.length() || desiredName != update.name) return result;
+    }
+    if (update.hasProfileName) {
+        desiredProfile = sanitizeProfileNameValue(update.profileName);
+        if (desiredProfile.length() != update.profileName.length() || desiredProfile != update.profileName) {
+            return result;
+        }
+    }
+    const bool expectedChange =
+        desiredName != slot.name || (update.hasColor && update.color != slot.color) ||
+        desiredVolume != slot.volume || desiredMuteVolume != slot.muteVolume ||
+        (update.hasDarkMode && update.darkMode != slot.darkMode) ||
+        (update.hasMuteToZero && update.muteToZero != slot.muteToZero) ||
+        (update.hasAlertPersist && std::min<uint8_t>(5, update.alertPersist) != slot.alertPersist) ||
+        (update.hasPriorityArrowOnly && update.priorityArrowOnly != slot.priorityArrow) ||
+        desiredProfile != slot.config.profileName ||
+        (update.hasMode && normalizeV1ModeValue(static_cast<int>(update.mode)) != slot.config.mode);
+    if (!expectedChange) {
         result.success = true;
         return result;
     }
+
+    // Moving the old strings out gives rollback ownership without another
+    // allocation. Moving the fully prepared candidates in cannot silently
+    // turn a requested non-empty field into an empty successful mutation.
+    String nameBefore = std::move(slot.name);
+    String profileBefore = std::move(slot.config.profileName);
+    slot.name = std::move(desiredName);
+    slot.config.profileName = std::move(desiredProfile);
+    if (update.hasColor) slot.color = update.color;
+    slot.volume = desiredVolume;
+    slot.muteVolume = desiredMuteVolume;
+    if (update.hasDarkMode) slot.darkMode = update.darkMode;
+    if (update.hasMuteToZero) slot.muteToZero = update.muteToZero;
+    if (update.hasAlertPersist) slot.alertPersist = std::min<uint8_t>(5, update.alertPersist);
+    if (update.hasPriorityArrowOnly) slot.priorityArrow = update.priorityArrowOnly;
+    if (update.hasMode) slot.config.mode = normalizeV1ModeValue(static_cast<int>(update.mode));
+
+    if (V1Settings::normalizeAutoPushSlotIndex(update.slot) ==
+            V1Settings::normalizeAutoPushSlotIndex(settings_.activeSlot) &&
+        (priorityArrowBefore != slot.priorityArrow || alertPersistBefore != slot.alertPersist)) {
+        noteDisplayConfigurationMutation();
+    }
+    result.changed = true;
     if (saveDeferredBackup()) {
         result.success = true;
         return result;
     }
-    settings_ = before;
+    slot.name = std::move(nameBefore);
+    slot.config.profileName = std::move(profileBefore);
+    slot.color = colorBefore;
+    slot.volume = volumeBefore;
+    slot.muteVolume = muteVolumeBefore;
+    slot.darkMode = darkModeBefore;
+    slot.muteToZero = muteToZeroBefore;
+    slot.alertPersist = alertPersistBefore;
+    slot.priorityArrow = priorityArrowBefore;
+    slot.config.mode = modeBefore;
     clearDeferredPersistState();
     return result;
 }
@@ -271,12 +396,42 @@ void SettingsManager::setLastV1Address(const String& addr) {
 
 SettingsPersistResult SettingsManager::applyDeviceSettingsUpdate(const DeviceSettingsUpdate& update,
                                                                  SettingsPersistMode persistMode) {
-    const V1Settings before = settings_;
+    String preparedApSsid;
+    String preparedApPassword;
+    String preparedProxyName;
+    if (update.hasApCredentials) {
+        if (update.apSSID.length() == 0 || update.apSSID.length() > MAX_WIFI_SSID_LEN ||
+            update.apPassword.length() < MIN_AP_PASSWORD_LEN ||
+            update.apPassword.length() > MAX_AP_PASSWORD_LEN ||
+            !ExactJsonInput::validSemanticString(update.apSSID.c_str(), update.apSSID.length()) ||
+            !ExactJsonInput::validSemanticString(update.apPassword.c_str(), update.apPassword.length()) ||
+            !exactSettingsStringCopy(update.apSSID, preparedApSsid) ||
+            !exactSettingsStringCopy(update.apPassword, preparedApPassword)) return {};
+    }
+    if (update.hasProxyName) {
+        if (update.proxyName.length() > MAX_PROXY_NAME_LEN ||
+            !ExactJsonInput::validSemanticString(update.proxyName.c_str(), update.proxyName.length())) return {};
+        if (update.proxyName.length() == 0) {
+            preparedProxyName = "V1-Proxy";
+            if (preparedProxyName.length() != std::strlen("V1-Proxy")) return {};
+        } else if (!exactSettingsStringCopy(update.proxyName, preparedProxyName)) {
+            return {};
+        }
+    }
+
+    V1Settings before = settings_;
+    if (!deviceSettingsSnapshotStringsMatch(settings_, before)) return {};
     bool changed = false;
 
     if (update.hasApCredentials) {
-        changed |= assignIfChanged(settings_.apSSID, sanitizeApSsidValue(update.apSSID));
-        changed |= assignIfChanged(settings_.apPassword, sanitizeApPasswordValue(update.apPassword));
+        if (settings_.apSSID != preparedApSsid) {
+            settings_.apSSID = std::move(preparedApSsid);
+            changed = true;
+        }
+        if (settings_.apPassword != preparedApPassword) {
+            settings_.apPassword = std::move(preparedApPassword);
+            changed = true;
+        }
     }
     if (update.hasProxyBLE) {
         changed |= assignIfChanged(settings_.proxyBLE, update.proxyBLE);
@@ -288,7 +443,10 @@ SettingsPersistResult SettingsManager::applyDeviceSettingsUpdate(const DeviceSet
         }
     }
     if (update.hasProxyName) {
-        changed |= assignIfChanged(settings_.proxyName, sanitizeProxyNameValue(update.proxyName));
+        if (settings_.proxyName != preparedProxyName) {
+            settings_.proxyName = std::move(preparedProxyName);
+            changed = true;
+        }
     }
     if (update.hasAutoPowerOffMinutes) {
         changed |= assignIfChanged(settings_.autoPowerOffMinutes, clampU8(update.autoPowerOffMinutes, 0, 60));
@@ -311,7 +469,16 @@ SettingsPersistResult SettingsManager::applyDeviceSettingsUpdate(const DeviceSet
     if (update.hasGpsBaud) {
         changed |= assignIfChanged(settings_.gpsBaud, sanitizeGpsBaudValue(update.gpsBaud));
     }
-    return finishSettingsMutation(before, changed, persistMode);
+    if (!changed) {
+        SettingsPersistResult result;
+        result.success = true;
+        return result;
+    }
+    SettingsPersistResult result = persistSettingsByMode(*this, persistMode);
+    if (!result.success && persistMode != SettingsPersistMode::Deferred) {
+        settings_ = std::move(before);
+    }
+    return result;
 }
 
 SettingsPersistResult SettingsManager::applyAudioSettingsUpdate(const AudioSettingsUpdate& update,

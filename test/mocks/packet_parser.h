@@ -34,6 +34,15 @@ public:
     V1CurrentVolumeObservation currentVolumeObservationValue;
     V1AllVolumeObservation allVolumeObservationValue;
     V1DisplayVolumeObservation displayVolumeObservationValue;
+    V1BluetoothIndicatorObservation bluetoothIndicatorObservationValue;
+    V1SweepSectionsObservation sweepSectionsObservationValue;
+    V1SweepMaxObservation sweepMaxObservationValue;
+    V1SweepDefinitionsObservation sweepDefinitionsObservationValue;
+    V1SweepWriteResultObservation sweepWriteResultObservationValue;
+    bool synthesizeSweepResponses = false;
+    V1SweepSectionsObservation synthesizedSweepSections;
+    V1SweepMaxObservation synthesizedSweepMax;
+    V1SweepDefinitionsObservation synthesizedSweepDefinitions;
     std::vector<std::vector<uint8_t>> parsedPackets;
     std::vector<uint32_t> parseTimestamps;
     std::vector<uint32_t> parseIngressSequences;
@@ -51,6 +60,15 @@ public:
         currentVolumeObservationValue = V1CurrentVolumeObservation{};
         allVolumeObservationValue = V1AllVolumeObservation{};
         displayVolumeObservationValue = V1DisplayVolumeObservation{};
+        bluetoothIndicatorObservationValue = V1BluetoothIndicatorObservation{};
+        sweepSectionsObservationValue = V1SweepSectionsObservation{};
+        sweepMaxObservationValue = V1SweepMaxObservation{};
+        sweepDefinitionsObservationValue = V1SweepDefinitionsObservation{};
+        sweepWriteResultObservationValue = V1SweepWriteResultObservation{};
+        synthesizeSweepResponses = false;
+        synthesizedSweepSections = V1SweepSectionsObservation{};
+        synthesizedSweepMax = V1SweepMaxObservation{};
+        synthesizedSweepDefinitions = V1SweepDefinitionsObservation{};
         parsedPackets.clear();
         parseTimestamps.clear();
         parseIngressSequences.clear();
@@ -133,6 +151,22 @@ public:
     const V1CurrentVolumeObservation& currentVolumeObservation() const { return currentVolumeObservationValue; }
     const V1AllVolumeObservation& allVolumeObservation() const { return allVolumeObservationValue; }
     const V1DisplayVolumeObservation& displayVolumeObservation() const { return displayVolumeObservationValue; }
+    const V1BluetoothIndicatorObservation& bluetoothIndicatorObservation() const {
+        return bluetoothIndicatorObservationValue;
+    }
+    const V1SweepSectionsObservation& sweepSectionsObservation() const { return sweepSectionsObservationValue; }
+    const V1SweepMaxObservation& sweepMaxObservation() const { return sweepMaxObservationValue; }
+    const V1SweepDefinitionsObservation& sweepDefinitionsObservation() const { return sweepDefinitionsObservationValue; }
+    const V1SweepWriteResultObservation& sweepWriteResultObservation() const { return sweepWriteResultObservationValue; }
+    void resetSweepDefinitionsObservation() { sweepDefinitionsObservationValue = V1SweepDefinitionsObservation{}; }
+    void resetSweepSectionsObservation() { sweepSectionsObservationValue = V1SweepSectionsObservation{}; }
+    void resetSweepMaxObservation() { sweepMaxObservationValue = V1SweepMaxObservation{}; }
+    void resetSweepCaptureState() {
+        sweepSectionsObservationValue = V1SweepSectionsObservation{};
+        sweepMaxObservationValue = V1SweepMaxObservation{};
+        sweepDefinitionsObservationValue = V1SweepDefinitionsObservation{};
+        sweepWriteResultObservationValue = V1SweepWriteResultObservation{};
+    }
     uint32_t displayOnObservationRevision() const { return displayOnObservationValue.revision; }
     uint32_t modeObservationRevision() const { return modeObservationValue.revision; }
     uint32_t currentVolumeObservationRevision() const { return currentVolumeObservationValue.revision; }
@@ -170,6 +204,11 @@ public:
         parsedPackets.emplace_back(data, data + length);
         parseTimestamps.push_back(nowMs);
         parseIngressSequences.push_back(ingressSequence);
+        if (parseReturnValue && synthesizeSweepResponses && data && length > 3) {
+            if (data[3] == 0x23) sweepSectionsObservationValue = synthesizedSweepSections;
+            else if (data[3] == 0x20) sweepMaxObservationValue = synthesizedSweepMax;
+            else if (data[3] == 0x17) sweepDefinitionsObservationValue = synthesizedSweepDefinitions;
+        }
         return parseReturnValue;
     }
 
@@ -215,6 +254,8 @@ public:
         state.hasDisplayOn = false;
         displayOnObservationValue = V1DisplayOnObservation{};
         modeObservationValue = V1ModeObservation{};
+        bluetoothIndicatorObservationValue = V1BluetoothIndicatorObservation{};
+        resetSweepCaptureState();
     }
 };
 

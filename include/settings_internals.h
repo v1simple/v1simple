@@ -47,14 +47,24 @@ String sanitizeLastV1AddressValue(const String& raw);
 String sanitizeObdSavedNameValue(const String& raw);
 
 // Backup file helpers
+enum class BackupDocumentLoadStatus : uint8_t {
+    Success,
+    NotFound,
+    Invalid,
+    MemoryUnavailable,
+    IoError,
+};
+
 bool isSupportedBackupType(const JsonDocument& doc);
 bool hasBackupSignature(const JsonDocument& doc);
-bool parseBackupFile(fs::FS* fs, const char* path, JsonDocument& doc, bool verboseErrors = true);
+bool parseBackupFile(fs::FS* fs, const char* path, JsonDocument& doc, bool verboseErrors = true,
+                     BackupDocumentLoadStatus* outStatus = nullptr);
+bool validateCurrentBackupDocumentShape(const JsonDocument& doc);
 int backupDocumentVersion(const JsonDocument& doc);
 int backupCriticalFieldScore(const JsonDocument& doc);
 int backupCandidateScore(const JsonDocument& doc);
 bool loadBestBackupDocument(fs::FS* fs, JsonDocument& outDoc, const char** outPath = nullptr,
-                            bool verboseErrors = false);
+                            bool verboseErrors = false, BackupDocumentLoadStatus* outStatus = nullptr);
 bool parseBoolVariant(const JsonVariantConst& value, bool& out);
 
 struct SerializedSettingsBackupPayload {
@@ -139,6 +149,7 @@ int hexNibble(char c);
 String bytesToHex(const String& input);
 bool hexToBytes(const String& input, String& out);
 String encodeObfuscatedForStorage(const String& plainText);
+bool encodeObfuscatedForStorage(const String& plainText, String& encoded);
 String decodeObfuscatedFromStorage(const String& stored);
 
 // CRC32 (IEEE 802.3 polynomial 0xEDB88320).

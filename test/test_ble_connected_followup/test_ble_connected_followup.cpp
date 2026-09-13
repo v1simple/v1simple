@@ -33,6 +33,9 @@ std::deque<bool> gAlertRequestResults;
 constexpr uint8_t kVersionRequest[] = {0xAA, 0xDA, 0xE6, 0x01, 0x01, 0x6C, 0xAB};
 constexpr uint8_t kAllVolumeRequest[] = {0xAA, 0xDA, 0xE6, 0x3C, 0x01, 0xA7, 0xAB};
 constexpr uint8_t kUserBytesRequest[] = {0xAA, 0xDA, 0xE6, 0x11, 0x01, 0x7C, 0xAB};
+constexpr uint8_t kSweepSectionsRequest[] = {0xAA, 0xDA, 0xE6, 0x22, 0x01, 0x8D, 0xAB};
+constexpr uint8_t kMaxSweepIndexRequest[] = {0xAA, 0xDA, 0xE6, 0x19, 0x01, 0x84, 0xAB};
+constexpr uint8_t kAllSweepDefinitionsRequest[] = {0xAA, 0xDA, 0xE6, 0x16, 0x01, 0x81, 0xAB};
 
 void stableCallback() {
     ++gStableCallbackCalls;
@@ -50,6 +53,27 @@ void primeVersionRequest(V1BLEClient& client, uint32_t nowMs) {
 void assertPacket(const uint8_t* expected, size_t expectedSize, const std::vector<uint8_t>& actual) {
     TEST_ASSERT_EQUAL_UINT(expectedSize, actual.size());
     TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, actual.data(), expectedSize);
+}
+
+void sendSweepRequestsAndComplete(V1BLEClient& client) {
+    TEST_ASSERT_EQUAL(V1BLEClient::ConnectedFollowupStep::REQUEST_SWEEP_SECTIONS,
+                      client.connectedFollowupStep_);
+    client.processConnectedFollowup();
+    TEST_ASSERT_EQUAL(V1BLEClient::ConnectedFollowupStep::REQUEST_MAX_SWEEP_INDEX,
+                      client.connectedFollowupStep_);
+    client.processConnectedFollowup();
+    TEST_ASSERT_EQUAL(V1BLEClient::ConnectedFollowupStep::REQUEST_ALL_SWEEP_DEFINITIONS,
+                      client.connectedFollowupStep_);
+    client.processConnectedFollowup();
+    TEST_ASSERT_EQUAL(V1BLEClient::ConnectedFollowupStep::WAIT_SWEEP_SNAPSHOT,
+                      client.connectedFollowupStep_);
+    client.hasSessionSweepSections_ = true;
+    client.hasSessionSweepMax_ = true;
+    client.hasSessionSweepDefinitions_ = true;
+    client.processConnectedFollowup();
+    TEST_ASSERT_EQUAL(V1BLEClient::ConnectedFollowupStep::NOTIFY_STABLE_CALLBACK,
+                      client.connectedFollowupStep_);
+    client.processConnectedFollowup();
 }
 
 } // namespace
@@ -228,7 +252,8 @@ void test_all_volume_terminal_failure_does_not_resend_version_or_block_stable_ca
     V1BLEClient client;
     primeVersionRequest(client, 300);
     client.connectStableCallback_ = stableCallback;
-    gResults = {SendResult::SENT, SendResult::FAILED, SendResult::SENT};
+    gResults = {SendResult::SENT, SendResult::FAILED, SendResult::SENT,
+                SendResult::FAILED};
 
     client.processConnectedFollowup(); // version request
     TEST_ASSERT_EQUAL(V1BLEClient::ConnectedFollowupStep::WAIT_VERSION, client.connectedFollowupStep_);
@@ -248,9 +273,12 @@ void test_all_volume_terminal_failure_does_not_resend_version_or_block_stable_ca
     client.processConnectedFollowup();
     client.hasSessionUserBytes_ = true;
     client.processConnectedFollowup();
+    TEST_ASSERT_EQUAL(V1BLEClient::ConnectedFollowupStep::REQUEST_SWEEP_SECTIONS,
+                      client.connectedFollowupStep_);
+    client.processConnectedFollowup(); // terminal sweep-sections failure
     client.processConnectedFollowup();
     TEST_ASSERT_EQUAL_INT(1, gStableCallbackCalls);
-    TEST_ASSERT_EQUAL_UINT(3, gAttempts.size());
+    TEST_ASSERT_EQUAL_UINT(4, gAttempts.size());
 }
 
 void test_not_yet_deadline_is_terminal_and_does_not_busy_loop() {
@@ -287,7 +315,7 @@ void test_all_volume_not_yet_deadline_marks_partial_and_continues_to_user_bytes(
     primeVersionRequest(client, 450);
     client.connectStableCallback_ = stableCallback;
     gResults = {SendResult::SENT, SendResult::NOT_YET, SendResult::NOT_YET, SendResult::NOT_YET,
-                SendResult::SENT};
+                SendResult::SENT, SendResult::FAILED};
 
     client.processConnectedFollowup(); // version request
     client.v1FirmwareVersion_.store(41038, std::memory_order_release);
@@ -314,9 +342,10 @@ void test_all_volume_not_yet_deadline_marks_partial_and_continues_to_user_bytes(
     client.processConnectedFollowup();
     client.hasSessionUserBytes_ = true;
     client.processConnectedFollowup();
+    client.processConnectedFollowup(); // terminal sweep-sections failure
     client.processConnectedFollowup();
     TEST_ASSERT_EQUAL_INT(1, gStableCallbackCalls);
-    TEST_ASSERT_EQUAL_UINT(5, gAttempts.size());
+    TEST_ASSERT_EQUAL_UINT(6, gAttempts.size());
 }
 
 void test_disconnect_none_cancels_retry_and_new_settle_restarts_at_version() {
@@ -377,10 +406,13 @@ void test_stable_callback_waits_for_pre_apply_user_bytes() {
     TEST_ASSERT_EQUAL(V1BLEClient::ConnectedFollowupStep::WAIT_SETTINGS_SNAPSHOT, client.connectedFollowupStep_);
     client.hasSessionAllVolume_ = true;
     client.processConnectedFollowup();
-    TEST_ASSERT_EQUAL(V1BLEClient::ConnectedFollowupStep::NOTIFY_STABLE_CALLBACK, client.connectedFollowupStep_);
-    client.processConnectedFollowup();
+    sendSweepRequestsAndComplete(client);
     TEST_ASSERT_EQUAL_INT(1, gStableCallbackCalls);
     TEST_ASSERT_FALSE(client.settingsCaptureTimedOut_);
+    TEST_ASSERT_EQUAL_UINT(4, gSentPackets.size());
+    assertPacket(kSweepSectionsRequest, sizeof(kSweepSectionsRequest), gSentPackets[1]);
+    assertPacket(kMaxSweepIndexRequest, sizeof(kMaxSweepIndexRequest), gSentPackets[2]);
+    assertPacket(kAllSweepDefinitionsRequest, sizeof(kAllSweepDefinitionsRequest), gSentPackets[3]);
 }
 
 void test_pre_41037_version_skips_unsupported_all_volume_request() {
@@ -397,13 +429,16 @@ void test_pre_41037_version_skips_unsupported_all_volume_request() {
     client.processConnectedFollowup();
     client.hasSessionUserBytes_ = true;
     client.processConnectedFollowup();
-    client.processConnectedFollowup();
+    sendSweepRequestsAndComplete(client);
 
     TEST_ASSERT_EQUAL_INT(1, gStableCallbackCalls);
     TEST_ASSERT_FALSE(client.settingsCaptureTimedOut_);
-    TEST_ASSERT_EQUAL_UINT(2, gSentPackets.size());
+    TEST_ASSERT_EQUAL_UINT(5, gSentPackets.size());
     assertPacket(kVersionRequest, sizeof(kVersionRequest), gSentPackets[0]);
     assertPacket(kUserBytesRequest, sizeof(kUserBytesRequest), gSentPackets[1]);
+    assertPacket(kSweepSectionsRequest, sizeof(kSweepSectionsRequest), gSentPackets[2]);
+    assertPacket(kMaxSweepIndexRequest, sizeof(kMaxSweepIndexRequest), gSentPackets[3]);
+    assertPacket(kAllSweepDefinitionsRequest, sizeof(kAllSweepDefinitionsRequest), gSentPackets[4]);
 }
 
 void test_unknown_version_timeout_skips_all_volume_and_marks_partial() {
@@ -435,7 +470,8 @@ void test_missing_expected_all_volume_response_times_out_as_partial() {
     V1BLEClient client;
     client.connectStableCallback_ = stableCallback;
     primeVersionRequest(client, 2000);
-    gResults = {SendResult::SENT, SendResult::SENT, SendResult::SENT};
+    gResults = {SendResult::SENT, SendResult::SENT, SendResult::SENT,
+                SendResult::FAILED};
 
     client.processConnectedFollowup();
     client.v1FirmwareVersion_.store(41037, std::memory_order_release);
@@ -448,6 +484,8 @@ void test_missing_expected_all_volume_response_times_out_as_partial() {
     mockMillis = client.settingsCaptureRequestStartedMs_ + V1BLEClient::SETTINGS_SNAPSHOT_RESPONSE_TIMEOUT_MS;
     client.processConnectedFollowup();
     TEST_ASSERT_TRUE(client.settingsCaptureTimedOut_);
+    TEST_ASSERT_EQUAL(V1BLEClient::ConnectedFollowupStep::REQUEST_SWEEP_SECTIONS, client.connectedFollowupStep_);
+    client.processConnectedFollowup();
     TEST_ASSERT_EQUAL(V1BLEClient::ConnectedFollowupStep::NOTIFY_STABLE_CALLBACK, client.connectedFollowupStep_);
     client.processConnectedFollowup();
     TEST_ASSERT_EQUAL_INT(1, gStableCallbackCalls);

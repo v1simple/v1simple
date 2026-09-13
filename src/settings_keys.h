@@ -244,6 +244,12 @@ inline constexpr const char* kNvsMetaActive = "active";
 // connection only while filesystem-backed V1DeviceStore is unavailable.
 inline constexpr const char* kSettingsV1RuntimeNamespace = "v1runtime";
 inline constexpr const char* kNvsLastConnectedV1Address = "lastV1Conn";
+// Cross-store V1 deletion intent. The ready marker is written last and removed
+// first so an interrupted delete can never be mistaken for an unstarted one.
+inline constexpr const char* kNvsV1DeleteReady = "delReady";
+inline constexpr const char* kNvsV1DeleteAddress = "delAddr";
+inline constexpr const char* kNvsV1DeleteToken = "delToken";
+inline constexpr const char* kNvsV1DeletePhase = "delPhase";
 // Namespace: v1boot
 inline constexpr const char* kNvsBootId = "bootId";
 inline constexpr const char* kNvsCleanShutdn =

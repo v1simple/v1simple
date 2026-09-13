@@ -55,6 +55,11 @@ inline std::string& failBeginNamespace() {
     return g_failBeginNamespace;
 }
 
+inline std::string& failStringReadKey() {
+    static std::string g_failStringReadKey;
+    return g_failStringReadKey;
+}
+
 inline bool writesFailForKey(const char* key) {
     return failWrites() || (key && !failWriteKey().empty() && failWriteKey() == key);
 }
@@ -84,6 +89,7 @@ inline void reset() {
     failWrites() = false;
     failWriteKey().clear();
     failBeginNamespace().clear();
+    failStringReadKey().clear();
     entryLimit() = 0;
     missingStringReadCounts().clear();
     missingRemoveCounts().clear();
@@ -99,6 +105,10 @@ inline void set_fail_writes_for_key(const char* key) {
 
 inline void set_fail_begin_for_namespace(const char* name) {
     failBeginNamespace() = name ? name : "";
+}
+
+inline void set_fail_string_read_for_key(const char* key) {
+    failStringReadKey() = key ? key : "";
 }
 
 inline void set_entry_limit(size_t limit) {
@@ -160,6 +170,9 @@ inline bool wouldExceedEntryLimit(const std::string& ns, const char* key) {
 }
 
 inline String getString(const char* ns, const char* key, const char* defaultValue = "") {
+    if (key && !failStringReadKey().empty() && failStringReadKey() == key) {
+        return String(defaultValue ? defaultValue : "");
+    }
     const Entry* entry = (ns && key) ? find(ns, key) : nullptr;
     if (!entry || entry->type != PT_STR) {
         return String(defaultValue ? defaultValue : "");
@@ -337,6 +350,13 @@ public:
             ++mock_preferences::missingStringReadCounts()[key];
         }
         return mock_preferences::getString(namespaceName_.c_str(), key, defaultValue.c_str());
+    }
+
+    size_t getStringLength(const char* key) const {
+        if (!started_ || !key) return 0;
+        const mock_preferences::Entry* entry = mock_preferences::find(namespaceName_, key);
+        if (!entry || entry->type != PT_STR) return 0;
+        return std::get<std::string>(entry->value).size() + 1u;
     }
 
     size_t getBytes(const char* key, void* buffer, size_t maxLen) const {

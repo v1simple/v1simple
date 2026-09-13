@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 #include <cstring>
+#include <vector>
 
 enum class SendResult { SENT, NOT_YET, FAILED };
 
@@ -12,6 +13,12 @@ enum class SendResult { SENT, NOT_YET, FAILED };
  */
 class V1BLEClient {
 public:
+    struct SweepWrite {
+        uint8_t index;
+        uint16_t lower;
+        uint16_t upper;
+        bool commit;
+    };
     enum class UserBytesVerificationStatus : uint8_t { INACTIVE = 0, PENDING, MATCH, MISMATCH };
     // Call tracking
     int setMuteCalls = 0;
@@ -19,14 +26,17 @@ public:
     int setVolumeCalls = 0;
     uint8_t lastVolume = 0;
     uint8_t lastMuteVolume = 0;
+    uint8_t lastVolumeAux = 0;
     int writeUserBytesCalls = 0;
     uint8_t lastUserBytes[6] = {0};
     int startUserBytesVerificationCalls = 0;
     uint8_t lastVerifiedUserBytes[6] = {0};
     int requestUserBytesCalls = 0;
     int requestCurrentVolumeCalls = 0;
+    int requestAllVolumeCalls = 0;
     int setDisplayOnCalls = 0;
     bool lastDisplayOnValue = true;
+    bool lastKeepBluetoothIndicatorOn = false;
     int setModeCalls = 0;
     uint8_t lastModeValue = 0;
     int requestAlertDataCalls = 0;
@@ -55,13 +65,39 @@ public:
     SendResult nextVolumeSendResult = SendResult::SENT;
     bool requestUserBytesResult = true;
     bool requestCurrentVolumeResult = true;
+    bool requestAllVolumeResult = true;
+    int requestAllSweepDefinitionsCalls = 0;
+    int writeSweepDefinitionCalls = 0;
+    bool requestAllSweepDefinitionsResult = true;
+    SendResult writeSweepDefinitionResult = SendResult::SENT;
+    uint8_t lastSweepIndex = 0;
+    uint16_t lastSweepLower = 0;
+    uint16_t lastSweepUpper = 0;
+    bool lastSweepCommit = false;
+    std::vector<SweepWrite> sweepWriteHistory;
+    std::vector<const char*> commandHistory;
+    uint32_t sweepSectionsBoundary = 0;
+    uint32_t sweepMaxBoundary = 0;
+    uint32_t sweepDefinitionsBoundary = 0;
+    bool sweepSectionsResetPending = false;
+    bool sweepMaxResetPending = false;
+    bool sweepDefinitionsResetPending = false;
+    bool sessionSweepMaxCaptured = false;
+    bool sessionSweepSectionsCaptured = false;
+    bool sessionSweepDefinitionsCaptured = false;
     void (*requestUserBytesSendHook)() = nullptr;
     void (*requestCurrentVolumeSendHook)() = nullptr;
+    void (*requestAllVolumeSendHook)() = nullptr;
+    void (*requestAllSweepDefinitionsSendHook)() = nullptr;
     void (*setDisplayOnSendHook)() = nullptr;
     void (*setModeSendHook)() = nullptr;
     uint8_t sessionUserBytes[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
     uint32_t sessionUserBytesRevisionValue = 0;
     uint32_t sessionUserBytesIngressSequenceValue = 0;
+    uint32_t userBytesBoundary = 0;
+    uint32_t allVolumeBoundary = 0;
+    bool userBytesCaptureArmed = false;
+    bool allVolumeCaptureArmed = false;
     uint32_t v1NotificationIngressSequenceValue = 0;
     uint32_t verifiedSettingsApplyGenerationValue = 0;
     UserBytesVerificationStatus verificationStatus = UserBytesVerificationStatus::INACTIVE;
@@ -79,14 +115,17 @@ public:
         setVolumeCalls = 0;
         lastVolume = 0;
         lastMuteVolume = 0;
+        lastVolumeAux = 0;
         writeUserBytesCalls = 0;
         std::memset(lastUserBytes, 0, sizeof(lastUserBytes));
         startUserBytesVerificationCalls = 0;
         std::memset(lastVerifiedUserBytes, 0, sizeof(lastVerifiedUserBytes));
         requestUserBytesCalls = 0;
         requestCurrentVolumeCalls = 0;
+        requestAllVolumeCalls = 0;
         setDisplayOnCalls = 0;
         lastDisplayOnValue = true;
+        lastKeepBluetoothIndicatorOn = false;
         setModeCalls = 0;
         lastModeValue = 0;
         requestAlertDataCalls = 0;
@@ -115,8 +154,20 @@ public:
         nextVolumeSendResult = SendResult::SENT;
         requestUserBytesResult = true;
         requestCurrentVolumeResult = true;
+        requestAllVolumeResult = true;
+        requestAllSweepDefinitionsCalls = 0;
+        writeSweepDefinitionCalls = 0;
+        requestAllSweepDefinitionsResult = true;
+        writeSweepDefinitionResult = SendResult::SENT;
+        sweepWriteHistory.clear();
+        commandHistory.clear();
+        sessionSweepMaxCaptured = false;
+        sessionSweepSectionsCaptured = false;
+        sessionSweepDefinitionsCaptured = false;
         requestUserBytesSendHook = nullptr;
         requestCurrentVolumeSendHook = nullptr;
+        requestAllVolumeSendHook = nullptr;
+        requestAllSweepDefinitionsSendHook = nullptr;
         setDisplayOnSendHook = nullptr;
         setModeSendHook = nullptr;
         std::memset(sessionUserBytes, 0xFF, sizeof(sessionUserBytes));
@@ -159,9 +210,14 @@ public:
     bool setMute(bool mute) { return setMuteResult(mute) == SendResult::SENT; }
     
     SendResult setVolumeResult(uint8_t vol, uint8_t muteVol) {
+        return setVolumeResult(vol, muteVol, 0);
+    }
+    SendResult setVolumeResult(uint8_t vol, uint8_t muteVol, uint8_t aux) {
         setVolumeCalls++;
+        commandHistory.push_back("volume-write");
         lastVolume = vol;
         lastMuteVolume = muteVol;
+        lastVolumeAux = aux;
         if (nextVolumeSendResult != SendResult::SENT) {
             const SendResult result = nextVolumeSendResult;
             nextVolumeSendResult = SendResult::SENT;
@@ -177,6 +233,7 @@ public:
 
     bool writeUserBytes(const uint8_t* bytes) {
         writeUserBytesCalls++;
+        commandHistory.push_back("user-write");
         if (bytes) {
             std::memcpy(lastUserBytes, bytes, sizeof(lastUserBytes));
         }
@@ -212,6 +269,28 @@ public:
         if (requestCurrentVolumeSendHook) requestCurrentVolumeSendHook();
         return requestCurrentVolumeResult;
     }
+    bool requestAllVolume() {
+        ++requestAllVolumeCalls;
+        commandHistory.push_back("volume-read");
+        if (requestAllVolumeSendHook) requestAllVolumeSendHook();
+        return requestAllVolumeResult;
+    }
+    bool requestAllSweepDefinitions() {
+        ++requestAllSweepDefinitionsCalls;
+        commandHistory.push_back("sweep-read");
+        if (requestAllSweepDefinitionsSendHook) requestAllSweepDefinitionsSendHook();
+        return requestAllSweepDefinitionsResult;
+    }
+    SendResult writeSweepDefinition(uint8_t index, uint16_t lower, uint16_t upper, bool commit) {
+        ++writeSweepDefinitionCalls;
+        lastSweepIndex = index;
+        lastSweepLower = lower;
+        lastSweepUpper = upper;
+        lastSweepCommit = commit;
+        sweepWriteHistory.push_back({index, lower, upper, commit});
+        commandHistory.push_back(commit ? "sweep-commit" : "sweep-write");
+        return writeSweepDefinitionResult;
+    }
 
     UserBytesVerificationStatus userBytesVerificationStatus() const { return verificationStatus; }
     void setUserBytesVerificationStatus(UserBytesVerificationStatus status) { verificationStatus = status; }
@@ -241,8 +320,13 @@ public:
     uint32_t latestV1NotificationIngressSequence() const { return v1NotificationIngressSequenceValue; }
 
     bool setDisplayOn(bool displayOn) {
+        return setDisplayOn(displayOn, false);
+    }
+    bool setDisplayOn(bool displayOn, bool keepBluetoothIndicatorOn) {
         setDisplayOnCalls++;
+        commandHistory.push_back("display-write");
         lastDisplayOnValue = displayOn;
+        lastKeepBluetoothIndicatorOn = keepBluetoothIndicatorOn;
         if (setDisplayOnSendHook) setDisplayOnSendHook();
         if (setDisplayOnFailuresRemaining > 0) {
             setDisplayOnFailuresRemaining--;
@@ -253,6 +337,7 @@ public:
 
     bool setMode(uint8_t mode) {
         setModeCalls++;
+        commandHistory.push_back("mode-write");
         lastModeValue = mode;
         if (setModeSendHook) setModeSendHook();
         if (setModeFailuresRemaining > 0) {
@@ -276,21 +361,80 @@ public:
 
     void onUserBytesReceived(const uint8_t* bytes, uint32_t ingressSequence = 0) {
         onUserBytesReceivedCalls++;
-        hasSessionUserBytesFlag = true;
-        if (bytes) std::memcpy(sessionUserBytes, bytes, sizeof(sessionUserBytes));
-        ++sessionUserBytesRevisionValue;
-        sessionUserBytesIngressSequenceValue = ingressSequence;
+        if (userBytesCaptureArmed && ingressSequence != 0 &&
+            static_cast<int32_t>(ingressSequence - userBytesBoundary) > 0) {
+            hasSessionUserBytesFlag = true;
+            if (bytes) std::memcpy(sessionUserBytes, bytes, sizeof(sessionUserBytes));
+            ++sessionUserBytesRevisionValue;
+            sessionUserBytesIngressSequenceValue = ingressSequence;
+        }
     }
-    void onAllVolumeReceived() {
+    void onAllVolumeReceived(uint32_t ingressSequence) {
         onAllVolumeReceivedCalls++;
-        hasSessionAllVolumeFlag = true;
+        if (allVolumeCaptureArmed && ingressSequence != 0 &&
+            static_cast<int32_t>(ingressSequence - allVolumeBoundary) > 0) {
+            hasSessionAllVolumeFlag = true;
+        }
     }
+    void beginSessionUserBytesCapture(uint32_t boundary) {
+        userBytesBoundary = boundary;
+        userBytesCaptureArmed = true;
+        hasSessionUserBytesFlag = false;
+        sessionUserBytesIngressSequenceValue = 0;
+    }
+    void beginSessionAllVolumeCapture(uint32_t boundary) {
+        allVolumeBoundary = boundary;
+        allVolumeCaptureArmed = true;
+        hasSessionAllVolumeFlag = false;
+    }
+    void beginSessionSweepSectionsCapture(uint32_t boundary) {
+        sweepSectionsBoundary = boundary;
+        sweepSectionsResetPending = true;
+        sessionSweepSectionsCaptured = false;
+    }
+    void beginSessionSweepMaxCapture(uint32_t boundary) {
+        sweepMaxBoundary = boundary;
+        sweepMaxResetPending = true;
+        sessionSweepMaxCaptured = false;
+    }
+    void beginSessionSweepDefinitionsCapture(uint32_t boundary) {
+        sweepDefinitionsBoundary = boundary;
+        sweepDefinitionsResetPending = true;
+        sessionSweepDefinitionsCaptured = false;
+    }
+    bool sessionSweepResponseEligible(uint8_t packetId, uint32_t ingress) const {
+        const uint32_t boundary = packetId == 0x23 ? sweepSectionsBoundary :
+                                  packetId == 0x20 ? sweepMaxBoundary :
+                                  packetId == 0x17 ? sweepDefinitionsBoundary : 0;
+        return boundary != 0 && static_cast<int32_t>(ingress - boundary) > 0;
+    }
+    bool consumeSessionSweepParserReset(uint8_t packetId) {
+        bool* pending = packetId == 0x23 ? &sweepSectionsResetPending :
+                        packetId == 0x20 ? &sweepMaxResetPending : &sweepDefinitionsResetPending;
+        const bool value = *pending;
+        *pending = false;
+        return value;
+    }
+    void onSweepSectionsReceived(bool complete) { sessionSweepSectionsCaptured = complete; }
+    void onSweepMaxReceived(bool complete = true) { sessionSweepMaxCaptured = complete; }
+    void onSweepDefinitionsReceived(bool complete) { sessionSweepDefinitionsCaptured = complete; }
+    bool hasSessionSweepMaxCapture() const { return sessionSweepMaxCaptured; }
+    bool hasSessionSweepSectionsCapture() const { return sessionSweepSectionsCaptured; }
+    bool hasSessionSweepDefinitionsCapture() const { return sessionSweepDefinitionsCaptured; }
+    uint32_t sessionSweepDefinitionsIngressBoundary() const { return sweepDefinitionsBoundary; }
 
     void resetSessionSettingsCapture() {
         hasSessionUserBytesFlag = false;
         hasSessionAllVolumeFlag = false;
         sessionUserBytesRevisionValue = 0;
         sessionUserBytesIngressSequenceValue = 0;
+        userBytesBoundary = 0;
+        allVolumeBoundary = 0;
+        userBytesCaptureArmed = false;
+        allVolumeCaptureArmed = false;
+        sessionSweepSectionsCaptured = false;
+        sessionSweepMaxCaptured = false;
+        sessionSweepDefinitionsCaptured = false;
     }
     bool hasSessionUserBytes() const { return hasSessionUserBytesFlag; }
     bool hasSessionAllVolume() const { return hasSessionAllVolumeFlag; }

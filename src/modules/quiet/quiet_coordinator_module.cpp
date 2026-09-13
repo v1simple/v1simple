@@ -152,6 +152,10 @@ bool QuietCoordinatorModule::beginAutoPushVolumeTransaction() {
 }
 
 bool QuietCoordinatorModule::sendAutoPushVolume(uint8_t volume, uint8_t muteVolume) {
+    return sendAutoPushVolume(volume, muteVolume, 0);
+}
+
+bool QuietCoordinatorModule::sendAutoPushVolume(uint8_t volume, uint8_t muteVolume, uint8_t aux0) {
     if (volume > 9 || muteVolume > 9) {
         return false;
     }
@@ -163,7 +167,14 @@ bool QuietCoordinatorModule::sendAutoPushVolume(uint8_t volume, uint8_t muteVolu
             pendingSpeedVolRestoreMuteVol_ = muteVolume;
             speedVolBaselineUpdated_ = true;
         }
-        return sendVolume(QuietOwner::AutoPush, volume, muteVolume);
+        desired_.volumeOwner = QuietOwner::AutoPush;
+        desired_.volume = volume;
+        desired_.muteVolume = muteVolume;
+        desired_.volumePending = true;
+        if (!ble_) return false;
+        const SendResult result = ble_->setVolumeResult(volume, muteVolume, aux0);
+        if (result == SendResult::SENT) presentation_.activeVolumeOwner = QuietOwner::AutoPush;
+        return result == SendResult::SENT;
     }
 
     if (!ble_) {
@@ -173,7 +184,7 @@ bool QuietCoordinatorModule::sendAutoPushVolume(uint8_t volume, uint8_t muteVolu
     // REQWRITEVOLUME is atomic. Keep the temporary speed-mute main volume on
     // the detector while replacing the baseline pair that will be restored.
     const uint8_t temporaryVolume = desired_.volume <= 9 ? desired_.volume : committed_.mainVolume;
-    if (!ble_->setVolume(temporaryVolume, muteVolume)) {
+    if (ble_->setVolumeResult(temporaryVolume, muteVolume, aux0) != SendResult::SENT) {
         return false;
     }
 

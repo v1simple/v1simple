@@ -4,20 +4,26 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <array>
 #include <cstdint>
 #include <cstring>
+
+#include "../../src/v1_custom_frequency_definitions.h"
 
 struct V1UserSettings {
     uint8_t bytes[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 };
 
-inline constexpr uint8_t V1_PROFILE_SCHEMA_VERSION = 2;
+inline constexpr uint8_t V1_PROFILE_SCHEMA_VERSION = 3;
+inline constexpr uint8_t V1_PROFILE_PREVIOUS_SCHEMA_VERSION = 2;
 enum class V1UserSettingsPolicy : uint8_t { Unchanged = 0, Value = 1 };
 enum class V1ModePolicy : uint8_t { Unchanged = 0, Value = 1 };
 enum class V1DisplayPolicy : uint8_t { Unchanged = 0, On = 1, Off = 2 };
 enum class V1VolumePolicy : uint8_t { Unchanged = 0, Temporary = 1, Saved = 2 };
-enum class V1BluetoothLedPolicy : uint8_t { Unchanged = 0 };
-enum class V1CustomFrequencyPolicy : uint8_t { Unchanged = 0 };
+enum class V1VolumeFeedbackPolicy : uint8_t { None = 0, ChangedOnly = 1, Always = 2 };
+enum class V1VolumeDisconnectPolicy : uint8_t { RestoreSaved = 0, KeepCurrent = 1 };
+enum class V1BluetoothLedPolicy : uint8_t { Unchanged = 0, Off = 1, On = 2 };
+enum class V1CustomFrequencyPolicy : uint8_t { Unchanged = 0, Value = 1 };
 struct V1DetectorConfiguration {
     V1UserSettingsPolicy userSettingsPolicy = V1UserSettingsPolicy::Value;
     V1ModePolicy modePolicy = V1ModePolicy::Unchanged;
@@ -26,8 +32,11 @@ struct V1DetectorConfiguration {
     V1VolumePolicy volumePolicy = V1VolumePolicy::Unchanged;
     uint8_t mainVolume = 0;
     uint8_t mutedVolume = 0;
+    V1VolumeFeedbackPolicy volumeFeedback = V1VolumeFeedbackPolicy::None;
+    V1VolumeDisconnectPolicy volumeDisconnect = V1VolumeDisconnectPolicy::RestoreSaved;
     V1BluetoothLedPolicy bluetoothLedPolicy = V1BluetoothLedPolicy::Unchanged;
     V1CustomFrequencyPolicy customFrequencyPolicy = V1CustomFrequencyPolicy::Unchanged;
+    V1CustomFrequencyDefinitionList customFrequencyDefinitions;
 };
 
 inline bool parseV1DetectorConfiguration(JsonObjectConst source, V1DetectorConfiguration& config) {

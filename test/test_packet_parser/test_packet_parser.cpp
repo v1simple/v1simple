@@ -30,6 +30,10 @@ unsigned long mockMicros = 0;
 #define PACKET_ID_RESP_VERSION 0x02
 #define PACKET_ID_REQ_ALL_VOLUME 0x3C
 #define PACKET_ID_RESP_ALL_VOLUME 0x3D
+#define PACKET_ID_RESP_SWEEP_DEFINITION 0x17
+#define PACKET_ID_RESP_MAX_SWEEP_INDEX 0x20
+#define PACKET_ID_RESP_SWEEP_SECTIONS 0x23
+#define PACKET_ID_RESP_SWEEP_WRITE_RESULT 0x21
 #endif
 
 #include "../../src/packet_parser.h"
@@ -48,7 +52,11 @@ std::vector<uint8_t> makePacket(uint8_t packetId, const std::vector<uint8_t>& pa
     packet.push_back(ESP_PACKET_START);
     if (destination == 0) {
         destination = (packetId == PACKET_ID_RESP_VERSION || packetId == PACKET_ID_RESP_USER_BYTES ||
-                       packetId == PACKET_ID_RESP_CURRENT_VOLUME || packetId == PACKET_ID_RESP_ALL_VOLUME)
+                       packetId == PACKET_ID_RESP_CURRENT_VOLUME || packetId == PACKET_ID_RESP_ALL_VOLUME ||
+                       packetId == PACKET_ID_RESP_SWEEP_DEFINITION ||
+                       packetId == PACKET_ID_RESP_MAX_SWEEP_INDEX ||
+                       packetId == PACKET_ID_RESP_SWEEP_SECTIONS ||
+                       packetId == PACKET_ID_RESP_SWEEP_WRITE_RESULT)
                           ? 0xD6
                           : 0xD8;
     }
@@ -972,6 +980,194 @@ void test_all_v1_bitmaps_are_bounded_by_eight_protocol_leds() {
     }
 }
 
+void test_bluetooth_indicator_requires_supported_version_and_accepts_both_blink_images() {
+    PacketParser parser;
+    auto display = makePacket(PACKET_ID_DISPLAY_DATA,
+                              makeDisplayPayload(63, 0, 0, 0, 0, 0x40, 0));
+    TEST_ASSERT_TRUE(parser.parse(display.data(), display.size(), 1000, 1));
+    TEST_ASSERT_FALSE(parser.bluetoothIndicatorObservation().available);
+
+    const auto oldVersion = makePacket(PACKET_ID_RESP_VERSION, makeVersionPayload('4', '1', '0', '1', '7'));
+    TEST_ASSERT_TRUE(parser.parse(oldVersion.data(), oldVersion.size(), 1001, 2));
+    TEST_ASSERT_TRUE(parser.parse(display.data(), display.size(), 1002, 3));
+    TEST_ASSERT_FALSE(parser.bluetoothIndicatorObservation().available);
+
+    const auto supported = makePacket(PACKET_ID_RESP_VERSION, makeVersionPayload('4', '1', '0', '1', '8'));
+    TEST_ASSERT_TRUE(parser.parse(supported.data(), supported.size(), 1003, 4));
+    TEST_ASSERT_TRUE(parser.parse(display.data(), display.size(), 1004, 5));
+    TEST_ASSERT_EQUAL_INT(V1BluetoothIndicatorState::Blinking,
+                          parser.bluetoothIndicatorObservation().state);
+
+    display = makePacket(PACKET_ID_DISPLAY_DATA,
+                         makeDisplayPayload(63, 0, 0, 0, 0, 0x80, 0));
+    TEST_ASSERT_TRUE(parser.parse(display.data(), display.size(), 1005, 6));
+    TEST_ASSERT_EQUAL_INT(V1BluetoothIndicatorState::Blinking,
+                          parser.bluetoothIndicatorObservation().state);
+
+    display = makePacket(PACKET_ID_DISPLAY_DATA,
+                         makeDisplayPayload(63, 0, 0, 0, 0, 0xC0, 0));
+    TEST_ASSERT_TRUE(parser.parse(display.data(), display.size(), 1006, 7));
+    TEST_ASSERT_EQUAL_INT(V1BluetoothIndicatorState::On,
+                          parser.bluetoothIndicatorObservation().state);
+}
+
+void test_sweep_collectors_poison_conflicts_and_require_exact_max_set() {
+    PacketParser parser;
+    const auto sections = makePacket(PACKET_ID_RESP_SWEEP_SECTIONS,
+                                     {0x12, 0x61, 0xA8, 0x5D, 0xC0,
+                                      0x22, 0x8C, 0xA0, 0x80, 0xE8, 0});
+    TEST_ASSERT_TRUE(parser.parse(sections.data(), sections.size(), 1000, 1));
+    TEST_ASSERT_TRUE(parser.sweepSectionsObservation().complete);
+    TEST_ASSERT_EQUAL_UINT8(0, parser.sweepSectionsObservation().sections[0].index);
+    TEST_ASSERT_EQUAL_UINT8(1, parser.sweepSectionsObservation().sections[1].index);
+
+    parser.resetSweepSectionsObservation();
+    const auto section1Only = makePacket(PACKET_ID_RESP_SWEEP_SECTIONS,
+                                         {0x12, 0x61, 0xA8, 0x5D, 0xC0, 0});
+    const auto section2Only = makePacket(PACKET_ID_RESP_SWEEP_SECTIONS,
+                                         {0x22, 0x8C, 0xA0, 0x80, 0xE8, 0});
+    TEST_ASSERT_TRUE(parser.parse(section1Only.data(), section1Only.size(), 1001, 2));
+    TEST_ASSERT_FALSE(parser.sweepSectionsObservation().complete);
+    TEST_ASSERT_EQUAL_HEX16(0x01, parser.sweepSectionsObservation().presentMask);
+    TEST_ASSERT_TRUE(parser.parse(section2Only.data(), section2Only.size(), 1002, 3));
+    TEST_ASSERT_TRUE(parser.sweepSectionsObservation().complete);
+    TEST_ASSERT_EQUAL_HEX16(0x03, parser.sweepSectionsObservation().presentMask);
+
+    parser.resetSweepSectionsObservation();
+    const auto mixedNullSections = makePacket(
+        PACKET_ID_RESP_SWEEP_SECTIONS,
+        {0x13, 0x61, 0xA8, 0x5D, 0xC0,
+         0x23, 0x00, 0x00, 0x00, 0x00,
+         0x33, 0x8C, 0xA0, 0x80, 0xE8, 0});
+    TEST_ASSERT_TRUE(parser.parse(mixedNullSections.data(), mixedNullSections.size(), 1003, 4));
+    TEST_ASSERT_TRUE(parser.sweepSectionsObservation().complete);
+    TEST_ASSERT_EQUAL_UINT16(0, parser.sweepSectionsObservation().sections[1].lowerMHz);
+    TEST_ASSERT_EQUAL_UINT16(0, parser.sweepSectionsObservation().sections[1].upperMHz);
+
+    const auto countConflict = makePacket(PACKET_ID_RESP_SWEEP_SECTIONS,
+                                          {0x13, 0x61, 0xA8, 0x5D, 0xC0, 0});
+    TEST_ASSERT_FALSE(parser.parse(countConflict.data(), countConflict.size(), 1004, 5));
+    TEST_ASSERT_TRUE(parser.sweepSectionsObservation().poisoned); // duplicate selector, even identical
+    TEST_ASSERT_FALSE(parser.sweepSectionsObservation().complete);
+    parser.resetSweepSectionsObservation();
+
+    const auto section1 = makePacket(PACKET_ID_RESP_SWEEP_SECTIONS,
+                                     {0x12, 0x61, 0xA8, 0x5D, 0xC0, 0});
+    const auto section1Duplicate = makePacket(PACKET_ID_RESP_SWEEP_SECTIONS,
+                                              {0x12, 0x61, 0xA8, 0x5D, 0xC0, 0});
+    TEST_ASSERT_TRUE(parser.parse(section1.data(), section1.size(), 1005, 6));
+    TEST_ASSERT_TRUE(parser.sweepSectionsObservation().available);
+    TEST_ASSERT_FALSE(parser.sweepSectionsObservation().complete);
+    TEST_ASSERT_FALSE(parser.parse(section1Duplicate.data(), section1Duplicate.size(), 1006, 7));
+    TEST_ASSERT_TRUE(parser.sweepSectionsObservation().poisoned);
+
+    parser.resetSweepSectionsObservation();
+    const auto zeroBasedSection = makePacket(PACKET_ID_RESP_SWEEP_SECTIONS,
+                                             {0x02, 0x61, 0xA8, 0x5D, 0xC0, 0});
+    TEST_ASSERT_FALSE(parser.parse(zeroBasedSection.data(), zeroBasedSection.size(), 1007, 8));
+    TEST_ASSERT_TRUE(parser.sweepSectionsObservation().poisoned);
+
+    parser.resetSweepDefinitionsObservation();
+    parser.resetSweepMaxObservation();
+    const auto definition0 = makePacket(PACKET_ID_RESP_SWEEP_DEFINITION,
+                                        {0x80, 0x5E, 0x56, 0x5D, 0xF2, 0});
+    const auto definition0Conflict = makePacket(PACKET_ID_RESP_SWEEP_DEFINITION,
+                                                {0x80, 0x5E, 0x57, 0x5D, 0xF2, 0});
+    TEST_ASSERT_TRUE(parser.parse(definition0.data(), definition0.size(), 1007, 8));
+    TEST_ASSERT_FALSE(parser.parse(definition0Conflict.data(), definition0Conflict.size(), 1008, 9));
+    TEST_ASSERT_TRUE(parser.sweepDefinitionsObservation().poisoned);
+
+    parser.resetSweepDefinitionsObservation();
+    parser.resetSweepMaxObservation();
+    const auto extra = makePacket(PACKET_ID_RESP_SWEEP_DEFINITION,
+                                  {0x82, 0, 0, 0, 0, 0});
+    const auto maxOne = makePacket(PACKET_ID_RESP_MAX_SWEEP_INDEX, {0x01, 0});
+    TEST_ASSERT_TRUE(parser.parse(extra.data(), extra.size(), 1009, 10));
+    TEST_ASSERT_TRUE(parser.parse(maxOne.data(), maxOne.size(), 1010, 11));
+    TEST_ASSERT_TRUE(parser.sweepDefinitionsObservation().poisoned);
+
+    parser.resetSweepDefinitionsObservation();
+    TEST_ASSERT_TRUE(parser.parse(maxOne.data(), maxOne.size(), 1011, 12));
+    TEST_ASSERT_FALSE(parser.parse(extra.data(), extra.size(), 1012, 13));
+    TEST_ASSERT_TRUE(parser.sweepDefinitionsObservation().poisoned);
+
+    parser.resetSweepMaxObservation();
+    const auto maxTwo = makePacket(PACKET_ID_RESP_MAX_SWEEP_INDEX, {0x02, 0});
+    TEST_ASSERT_TRUE(parser.parse(maxOne.data(), maxOne.size(), 1013, 14));
+    TEST_ASSERT_TRUE(parser.parse(maxOne.data(), maxOne.size(), 1014, 15));
+    TEST_ASSERT_FALSE(parser.sweepMaxObservation().poisoned);
+    TEST_ASSERT_TRUE(parser.sweepMaxObservation().available);
+    TEST_ASSERT_EQUAL_UINT32(15, parser.sweepMaxObservation().ingressSequence);
+    TEST_ASSERT_FALSE(parser.parse(maxTwo.data(), maxTwo.size(), 1015, 16));
+    TEST_ASSERT_TRUE(parser.sweepMaxObservation().poisoned);
+    TEST_ASSERT_FALSE(parser.sweepMaxObservation().available);
+    TEST_ASSERT_EQUAL_UINT8(1, parser.sweepMaxObservation().maxIndex);
+    TEST_ASSERT_FALSE(parser.parse(maxOne.data(), maxOne.size(), 1016, 17));
+}
+
+void test_sweep_responses_require_canonical_destination_checksum_and_index_bits() {
+    PacketParser parser;
+    const auto max63 = makePacket(PACKET_ID_RESP_MAX_SWEEP_INDEX, {0x3F, 0});
+    const auto max64 = makePacket(PACKET_ID_RESP_MAX_SWEEP_INDEX, {0x40, 0});
+    TEST_ASSERT_TRUE(parser.parse(max63.data(), max63.size(), 999, 1));
+    TEST_ASSERT_EQUAL_UINT8(63, parser.sweepMaxObservation().maxIndex);
+    TEST_ASSERT_FALSE(parser.parse(max64.data(), max64.size(), 1000, 2));
+    TEST_ASSERT_TRUE(parser.sweepMaxObservation().poisoned);
+    TEST_ASSERT_FALSE(parser.sweepMaxObservation().available);
+    TEST_ASSERT_EQUAL_UINT8(63, parser.sweepMaxObservation().maxIndex);
+
+    auto definition = makePacket(PACKET_ID_RESP_SWEEP_DEFINITION,
+                                 {0x80, 0x5E, 0x56, 0x5D, 0xF2, 0}, 0xEA, 0xD8);
+    TEST_ASSERT_FALSE(parser.parse(definition.data(), definition.size(), 1001, 3));
+    definition = makePacket(PACKET_ID_RESP_SWEEP_DEFINITION,
+                            {0x40, 0x5E, 0x56, 0x5D, 0xF2, 0});
+    TEST_ASSERT_FALSE(parser.parse(definition.data(), definition.size(), 1002, 4));
+    TEST_ASSERT_TRUE(parser.sweepDefinitionsObservation().poisoned);
+    parser.resetSweepDefinitionsObservation();
+    definition = makePacket(PACKET_ID_RESP_SWEEP_DEFINITION,
+                            {0x80, 0x5E, 0x56, 0x5D, 0xF2, 0});
+    TEST_ASSERT_TRUE(parser.parse(definition.data(), definition.size(), 1003, 5));
+    TEST_ASSERT_EQUAL_UINT8(0, parser.sweepDefinitionsObservation().definitions[0].index);
+    parser.resetSweepDefinitionsObservation();
+    // Bit 7 is reserved in the field description; vendor decoders mask it,
+    // so the equivalent clear-bit response remains compatible.
+    definition = makePacket(PACKET_ID_RESP_SWEEP_DEFINITION,
+                            {0x00, 0x5E, 0x56, 0x5D, 0xF2, 0});
+    TEST_ASSERT_TRUE(parser.parse(definition.data(), definition.size(), 1004, 6));
+    parser.resetSweepDefinitionsObservation();
+    definition = makePacket(PACKET_ID_RESP_SWEEP_DEFINITION,
+                            {0x80, 0x5E, 0x56, 0x5D, 0xF2, 0});
+    definition[definition.size() - 2] ^= 0x01;
+    TEST_ASSERT_FALSE(parser.parse(definition.data(), definition.size(), 1005, 7));
+    TEST_ASSERT_EQUAL_UINT64(0, parser.sweepDefinitionsObservation().presentMask);
+    TEST_ASSERT_FALSE(parser.sweepDefinitionsObservation().poisoned);
+
+    parser.resetSweepDefinitionsObservation();
+    const auto halfZero = makePacket(PACKET_ID_RESP_SWEEP_DEFINITION,
+                                     {0x80, 0x5E, 0x56, 0x00, 0x00, 0});
+    TEST_ASSERT_FALSE(parser.parse(halfZero.data(), halfZero.size(), 1006, 8));
+    TEST_ASSERT_TRUE(parser.sweepDefinitionsObservation().poisoned);
+    TEST_ASSERT_EQUAL_UINT64(0, parser.sweepDefinitionsObservation().presentMask);
+    TEST_ASSERT_FALSE(parser.parse(definition.data(), definition.size(), 1007, 9));
+
+    parser.resetSweepDefinitionsObservation();
+    const auto reversed = makePacket(PACKET_ID_RESP_SWEEP_DEFINITION,
+                                     {0x80, 0x5D, 0xF2, 0x5E, 0x56, 0});
+    TEST_ASSERT_FALSE(parser.parse(reversed.data(), reversed.size(), 1008, 10));
+    TEST_ASSERT_TRUE(parser.sweepDefinitionsObservation().poisoned);
+
+    parser.resetSweepDefinitionsObservation();
+    parser.resetSweepMaxObservation();
+    const auto maxZero = makePacket(PACKET_ID_RESP_MAX_SWEEP_INDEX, {0x00, 0});
+    TEST_ASSERT_TRUE(parser.parse(maxZero.data(), maxZero.size(), 1009, 11));
+    const auto valid = makePacket(PACKET_ID_RESP_SWEEP_DEFINITION,
+                                  {0x80, 0x5E, 0x56, 0x5D, 0xF2, 0});
+    TEST_ASSERT_TRUE(parser.parse(valid.data(), valid.size(), 1010, 12));
+    TEST_ASSERT_EQUAL_UINT64(1, parser.sweepDefinitionsObservation().presentMask);
+    TEST_ASSERT_FALSE(parser.parse(reversed.data(), reversed.size(), 1011, 13));
+    TEST_ASSERT_TRUE(parser.sweepDefinitionsObservation().poisoned);
+}
+
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
@@ -1019,5 +1215,8 @@ int main(int argc, char** argv) {
     RUN_TEST(test_canonical_width_wrong_id_does_not_update_volume);
     RUN_TEST(test_decode_signal_bars_renders_valid_bitmaps_literally_and_fails_loud);
     RUN_TEST(test_all_v1_bitmaps_are_bounded_by_eight_protocol_leds);
+    RUN_TEST(test_bluetooth_indicator_requires_supported_version_and_accepts_both_blink_images);
+    RUN_TEST(test_sweep_collectors_poison_conflicts_and_require_exact_max_set);
+    RUN_TEST(test_sweep_responses_require_canonical_destination_checksum_and_index_bits);
     return UNITY_END();
 }

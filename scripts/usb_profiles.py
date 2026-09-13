@@ -16,11 +16,15 @@ import time
 import zlib
 
 MAX_PAYLOAD = 128 * 1024
+MAX_DESCRIPTION_BYTES = 4096
+MAX_PROFILE_COUNT = 10
 CHUNK = 64
 PREFIX = b"@V1USB1 "
-SLOT_KEYS = {"name", "profile", "mode", "color", "volumeConfigured", "volume", "muteVolume",
-             "darkMode", "muteToZero", "alertPersist", "priorityArrowOnly"}
-PROFILE_KEYS = {"name", "description", "rawBytes", "displayOn", "mainVolume", "mutedVolume"}
+SLOT_KEYS_V1 = {"name", "profile", "mode", "color", "volumeConfigured", "volume", "muteVolume",
+                "darkMode", "muteToZero", "alertPersist", "priorityArrowOnly"}
+SLOT_KEYS_VERSIONED = {"name", "profile", "color", "alertPersist", "priorityArrowOnly"}
+PROFILE_KEYS_V1 = {"name", "description", "rawBytes", "displayOn", "mainVolume", "mutedVolume"}
+PROFILE_KEYS_VERSIONED = {"schemaVersion", "name", "description", "rawBytes", "detector"}
 ASCII_UPPER = str.maketrans("abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 
@@ -48,7 +52,10 @@ def integer(value, low, high):
 
 def text_within(value, limit):
     try:
-        return type(value) is str and "\0" not in value and len(value.encode("utf-8")) <= limit
+        json_safe_controls = {8, 9, 10, 12, 13}
+        return (type(value) is str and
+                not any(ord(char) < 32 and ord(char) not in json_safe_controls for char in value) and
+                len(value.encode("utf-8")) <= limit)
     except UnicodeError:
         return False
 
@@ -57,6 +64,30 @@ def canonical_name(value):
     return (text_within(value, 64) and bool(value) and value == value.strip(" \t\r\n\v\f")
             and value[0] not in "._" and ".." not in value
             and not any(ord(char) < 32 or ord(char) == 127 or char in '/\\:*?"<>|' for char in value))
+
+
+def utf8_prefix(value, max_bytes):
+    """Return the longest whole-code-point prefix within a byte budget."""
+    require(type(value) is str and type(max_bytes) is int and max_bytes >= 0,
+            "Invalid migrated profile name")
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def migrated_name_candidate(stem, fixed_suffix, collision_ordinal=1):
+    """Match firmware migration naming while preserving all deterministic suffixes."""
+    require(type(stem) is str and type(fixed_suffix) is str and
+            type(collision_ordinal) is int and 1 <= collision_ordinal < 1000,
+            "Invalid migrated profile name")
+    stem = stem.strip() or "Auto-Push profile"
+    collision_suffix = "" if collision_ordinal == 1 else f" #{collision_ordinal}"
+    suffix_bytes = len((fixed_suffix + collision_suffix).encode("utf-8"))
+    require(suffix_bytes < 64, "Invalid migrated profile name suffix")
+    candidate = utf8_prefix(stem, 64 - suffix_bytes) + fixed_suffix + collision_suffix
+    require(canonical_name(candidate), "Invalid profile name")
+    return candidate
 
 
 def unique_object(pairs):
@@ -75,45 +106,228 @@ def parse_json(raw):
         raise ProfileError("Invalid JSON document") from exc
 
 
+def validate_mode(value):
+    require(type(value) is dict and set(value) in ({"policy"}, {"policy", "value"}),
+            "Invalid detector mode")
+    require(value["policy"] in ("unchanged", "value"), "Invalid detector mode policy")
+    require((value["policy"] == "unchanged" and set(value) == {"policy"}) or
+            (value["policy"] == "value" and set(value) == {"policy", "value"}
+             and integer(value["value"], 1, 3)), "Invalid detector mode value")
+
+
+def validate_detector(detector, version):
+    require(type(detector) is dict and set(detector) == {
+        "userSettings", "mode", "display", "volume", "bluetoothLed", "customFrequencies"},
+        "Invalid detector configuration fields")
+    require(detector["userSettings"] in ("unchanged", "value") and
+            detector["display"] in ("unchanged", "on", "off"),
+            "Invalid detector policy")
+    validate_mode(detector["mode"])
+    volume = detector["volume"]
+    require(type(volume) is dict and type(volume.get("policy")) is str,
+            "Invalid detector volume")
+    if volume["policy"] == "unchanged":
+        require(set(volume) == {"policy"}, "Invalid unchanged volume")
+    elif volume["policy"] in ("temporary", "saved"):
+        keys = {"policy", "main", "muted"} if version == 2 else {
+            "policy", "main", "muted", "feedback", "disconnect"}
+        require(set(volume) == keys and integer(volume["main"], 0, 9) and
+                integer(volume["muted"], 0, 9), "Invalid detector volume values")
+        if version == 3:
+            require(volume["feedback"] in ("none", "changed_only", "always") and
+                    volume["disconnect"] in ("restore_saved", "keep_current") and
+                    not (volume["policy"] == "saved" and volume["disconnect"] != "restore_saved"),
+                    "Invalid detector volume command policy")
+    else:
+        raise ProfileError("Invalid detector volume policy")
+    if version == 2:
+        require(detector["bluetoothLed"] == "unchanged" and
+                detector["customFrequencies"] == "unchanged",
+                "Invalid schema-v2 detector policy")
+        return
+    require(detector["bluetoothLed"] in ("unchanged", "off", "on"),
+            "Invalid Bluetooth indicator policy")
+    custom = detector["customFrequencies"]
+    require(type(custom) is dict and type(custom.get("policy")) is str,
+            "Invalid custom-frequency policy")
+    if custom["policy"] == "unchanged":
+        require(set(custom) == {"policy"}, "Invalid unchanged custom-frequency policy")
+        return
+    require(custom["policy"] == "value" and set(custom) == {"policy", "definitions"}
+            and type(custom["definitions"]) is list and 1 <= len(custom["definitions"]) <= 64,
+            "Invalid custom-frequency definitions")
+    for index, definition in enumerate(custom["definitions"]):
+        require(type(definition) is dict and set(definition) == {"index", "lowerMHz", "upperMHz"}
+                and definition["index"] == index and integer(definition["lowerMHz"], 0, 65535)
+                and integer(definition["upperMHz"], 0, 65535),
+                "Invalid custom-frequency definition")
+        unused = definition["lowerMHz"] == definition["upperMHz"] == 0
+        require(unused or 0 < definition["lowerMHz"] < definition["upperMHz"],
+                "Invalid custom-frequency range")
+
+
 def validate_bundle(bundle):
     require(type(bundle) is dict and set(bundle) == {
         "format", "version", "autoPushEnabled", "activeSlot", "slots", "profiles"},
         "Profile bundle has missing or unknown fields")
     require(bundle["format"] == "v1simple-profiles" and type(bundle["version"]) is int
-            and bundle["version"] == 1, "Unsupported profile bundle format/version")
+            and bundle["version"] in (1, 2, 3), "Unsupported profile bundle format/version")
     require(type(bundle["autoPushEnabled"]) is bool and integer(bundle["activeSlot"], 0, 2),
             "Invalid profile bundle state")
     require(type(bundle["slots"]) is list and len(bundle["slots"]) == 3,
             "Profile bundle must contain exactly three slots")
     require(type(bundle["profiles"]) is list, "Profile catalog must be an array")
+    require(len(bundle["profiles"]) <= MAX_PROFILE_COUNT,
+            f"Profile catalog supports at most {MAX_PROFILE_COUNT} profiles")
+    version = bundle["version"]
     names, folded_names = set(), set()
     for profile in bundle["profiles"]:
-        require(type(profile) is dict and set(profile) == PROFILE_KEYS, "Invalid profile fields")
+        expected = PROFILE_KEYS_V1 if version == 1 else PROFILE_KEYS_VERSIONED
+        require(type(profile) is dict and set(profile) == expected, "Invalid profile fields")
         name = profile["name"]
         require(canonical_name(name), "Invalid profile name")
         require(name.translate(ASCII_LOWER) not in folded_names, "Duplicate profile names")
         names.add(name)
         folded_names.add(name.translate(ASCII_LOWER))
-        require(text_within(profile["description"], 160), "Invalid profile description")
+        require(text_within(profile["description"], MAX_DESCRIPTION_BYTES), "Invalid profile description")
         require(type(profile["rawBytes"]) is list and len(profile["rawBytes"]) == 6
                 and all(integer(value, 0, 255) for value in profile["rawBytes"]), "Invalid profile bytes")
-        require(type(profile["displayOn"]) is bool, "Invalid profile display setting")
-        require(all(integer(profile[key], 0, 9) or type(profile[key]) is int and profile[key] == 255
-                    for key in ("mainVolume", "mutedVolume")), "Invalid profile volume")
+        if version == 1:
+            require(type(profile["displayOn"]) is bool, "Invalid profile display setting")
+            require(all(integer(profile[key], 0, 9) or type(profile[key]) is int and profile[key] == 255
+                        for key in ("mainVolume", "mutedVolume")), "Invalid profile volume")
+        else:
+            require(profile["schemaVersion"] == version, "Profile schema does not match bundle version")
+            validate_detector(profile["detector"], version)
     for slot in bundle["slots"]:
-        require(type(slot) is dict and set(slot) == SLOT_KEYS, "Invalid slot fields")
+        expected = SLOT_KEYS_V1 if version == 1 else SLOT_KEYS_VERSIONED
+        require(type(slot) is dict and set(slot) == expected, "Invalid slot fields")
         require(text_within(slot["name"], 20) and slot["name"] == slot["name"].translate(ASCII_UPPER),
                 "Invalid slot name")
         require(type(slot["profile"]) is str and (slot["profile"] == "" or slot["profile"] in names),
                 "Slot references an absent profile")
-        require(integer(slot["mode"], 0, 3) and integer(slot["color"], 0, 65535)
-                and integer(slot["alertPersist"], 0, 5), "Invalid slot mode, color or persistence")
-        require(all(type(slot[key]) is bool for key in (
-            "volumeConfigured", "darkMode", "muteToZero", "priorityArrowOnly")), "Invalid slot boolean")
-        require(all(integer(slot[key], 0, 9) for key in ("volume", "muteVolume")), "Invalid slot volume")
-        require(slot["volumeConfigured"] or slot["volume"] == slot["muteVolume"] == 0,
-                "Unconfigured slot volumes must both be zero")
+        require(integer(slot["color"], 0, 65535) and integer(slot["alertPersist"], 0, 5)
+                and type(slot["priorityArrowOnly"]) is bool, "Invalid slot presentation")
+        if version == 1:
+            require(integer(slot["mode"], 0, 3), "Invalid slot mode")
+            require(all(type(slot[key]) is bool for key in (
+                "volumeConfigured", "darkMode", "muteToZero")), "Invalid slot boolean")
+            require(all(integer(slot[key], 0, 9) for key in ("volume", "muteVolume")),
+                    "Invalid slot volume")
+            require(slot["volumeConfigured"] or slot["volume"] == slot["muteVolume"] == 0,
+                    "Unconfigured slot volumes must both be zero")
     return bundle
+
+
+def default_detector(user_settings="value"):
+    return {"userSettings": user_settings, "mode": {"policy": "unchanged"},
+            "display": "unchanged", "volume": {"policy": "unchanged"},
+            "bluetoothLed": "unchanged", "customFrequencies": {"policy": "unchanged"}}
+
+
+def migrate_detector_v2(detector):
+    migrated = deepcopy(detector)
+    volume = migrated["volume"]
+    if volume["policy"] != "unchanged":
+        volume["feedback"] = "none"
+        volume["disconnect"] = "restore_saved"
+    migrated["bluetoothLed"] = "off" if migrated["display"] == "off" else "unchanged"
+    migrated["customFrequencies"] = {"policy": "unchanged"}
+    return migrated
+
+
+def migrate_bundle(bundle):
+    validate_bundle(bundle)
+    if bundle["version"] == 3:
+        return deepcopy(bundle)
+    if bundle["version"] == 2:
+        migrated = deepcopy(bundle)
+        migrated["version"] = 3
+        for profile in migrated["profiles"]:
+            profile["schemaVersion"] = 3
+            profile["detector"] = migrate_detector_v2(profile["detector"])
+        validate_bundle(migrated)
+        return migrated
+
+    original = deepcopy(bundle)
+    catalog = []
+    by_name = {}
+    for profile in original["profiles"]:
+        migrated = {"schemaVersion": 3, "name": profile["name"],
+                    "description": profile["description"], "rawBytes": list(profile["rawBytes"]),
+                    "detector": default_detector()}
+        catalog.append(migrated)
+        by_name[migrated["name"]] = migrated
+    variants = []
+    assigned = []
+
+    def application(profile):
+        return profile["rawBytes"], profile["detector"]
+
+    def available(name):
+        key = name.translate(ASCII_LOWER)
+        return all(entry["name"].translate(ASCII_LOWER) != key for entry in catalog)
+
+    def unique(stem, fixed_suffix):
+        for suffix in range(1, 1000):
+            candidate = migrated_name_candidate(stem, fixed_suffix, suffix)
+            if available(candidate):
+                return candidate
+        raise ProfileError("Could not assign a deterministic migrated profile name")
+
+    seen_sources = set()
+    for slot_index, slot in enumerate(original["slots"]):
+        source = by_name.get(slot["profile"])
+        if source:
+            effective = deepcopy(source)
+            if slot["muteToZero"]:
+                effective["rawBytes"][0] &= ~0x10
+            else:
+                effective["rawBytes"][0] |= 0x10
+            effective["detector"] = default_detector()
+        else:
+            effective = {"schemaVersion": 3, "name": "Default", "description": "",
+                         "rawBytes": [255] * 6, "detector": default_detector("unchanged")}
+        if slot["mode"]:
+            effective["detector"]["mode"] = {"policy": "value", "value": slot["mode"]}
+        effective["detector"]["display"] = "off" if slot["darkMode"] else "on"
+        if slot["darkMode"]:
+            effective["detector"]["bluetoothLed"] = "off"
+        if slot["volumeConfigured"]:
+            effective["detector"]["volume"] = {
+                "policy": "temporary", "main": slot["volume"], "muted": slot["muteVolume"],
+                "feedback": "none", "disconnect": "restore_saved"}
+        source_name = source["name"] if source else ""
+        reused = next((entry for entry in variants if entry[0] == source_name and
+                       application(entry[2]) == application(effective)), None)
+        if reused:
+            assigned.append(reused[1])
+            continue
+        if source and source_name not in seen_sources:
+            effective_name = source_name
+            effective["name"] = effective_name
+            catalog[catalog.index(by_name[source_name])] = effective
+            by_name[source_name] = effective
+        else:
+            effective_name = unique(source_name if source else "Auto-Push",
+                                    (" - " if source else " ") + f"Slot {slot_index + 1}")
+            effective["name"] = effective_name
+            if not source:
+                effective["description"] = "Migrated Auto-Push detector configuration"
+            catalog.append(effective)
+        seen_sources.add(source_name)
+        variants.append((source_name, effective_name, effective))
+        assigned.append(effective_name)
+
+    migrated = {"format": "v1simple-profiles", "version": 3,
+                "autoPushEnabled": original["autoPushEnabled"], "activeSlot": original["activeSlot"],
+                "slots": [{"name": slot["name"], "profile": assigned[index],
+                           "color": slot["color"], "alertPersist": slot["alertPersist"],
+                           "priorityArrowOnly": slot["priorityArrowOnly"]}
+                          for index, slot in enumerate(original["slots"])],
+                "profiles": catalog}
+    validate_bundle(migrated)
+    return migrated
 
 
 def encode_bundle(bundle):
@@ -125,7 +339,7 @@ def encode_bundle(bundle):
 
 def same_bundle(left, right):
     # The filesystem catalog has no stored array order. Slot positions do.
-    a, b = deepcopy(left), deepcopy(right)
+    a, b = migrate_bundle(left), migrate_bundle(right)
     a["profiles"] = sorted(a["profiles"], key=lambda entry: entry["name"])
     b["profiles"] = sorted(b["profiles"], key=lambda entry: entry["name"])
     return a == b
@@ -355,6 +569,10 @@ class Device:
         return bytes(raw), bundle
 
     def replace(self, bundle):
+        # Normalize legacy input before entering a device transaction. A v1
+        # catalog can grow by deterministic per-slot variants; reject an
+        # over-cap expansion before maintenance or any upload begins.
+        bundle = migrate_bundle(bundle)
         raw = encode_bundle(bundle)
         started = committing = False
         try:
@@ -369,8 +587,9 @@ class Device:
             committing = True
             reply = self.client.command("commit", timeout=30)
             require(reply.get("stored") is True and type(reply.get("backup_pending")) is bool
+                    and reply.get("migration_pending") is False
                     and type(reply.get("profiles")) is int and reply["profiles"] == len(bundle["profiles"]),
-                    "Profile storage commit was not confirmed")
+                    "Profile storage commit or detector-profile migration was not confirmed")
             _, observed = self.backup()
             require(same_bundle(observed, bundle), "Stored profile bundle does not match the requested replacement")
             return {"stored": True, "readback_verified": True, "backup_pending": reply["backup_pending"]}
@@ -398,8 +617,8 @@ def perform(args, device, announce=print):
         with args.file.open("rb") as handle:
             raw_input = handle.read(MAX_PAYLOAD + 1)
         require(len(raw_input) <= MAX_PAYLOAD, "Profile bundle exceeds 128 KiB")
-        requested = validate_bundle(parse_json(raw_input))
-        encode_bundle(requested)  # Validate before entering maintenance or touching storage.
+        requested = migrate_bundle(validate_bundle(parse_json(raw_input)))
+        encode_bundle(requested)  # Validate/migrate before entering maintenance or touching storage.
     with device.maintenance(args.stay_maintenance) as original:
         raw, current = device.backup()
         if args.command == "backup":

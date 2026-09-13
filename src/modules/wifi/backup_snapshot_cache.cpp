@@ -5,7 +5,7 @@
 #include <Arduino.h>
 
 #include "json_stream_response.h"
-#include "wifi_json_document.h"
+#include "psram_json_document.h"
 
 namespace BackupApiService {
 
@@ -28,14 +28,7 @@ bool allocateBackupSnapshotBuffer(size_t required, char*& newData, size_t& newCa
     inPsram = true;
 
     if (newData == nullptr) {
-        Serial.printf("[BackupApi] Cache PSRAM alloc failed; falling back to internal (%lu bytes)\n",
-                      static_cast<unsigned long>(newCapacity));
-        newData = static_cast<char*>(heap_caps_malloc(newCapacity, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL));
-        inPsram = false;
-    }
-
-    if (newData == nullptr) {
-        Serial.printf("[BackupApi] Cache alloc failed (%lu bytes); streaming uncached snapshot\n",
+        Serial.printf("[BackupApi] Cache PSRAM alloc failed (%lu bytes); snapshot not sent\n",
                       static_cast<unsigned long>(newCapacity));
         return false;
     }
@@ -54,7 +47,7 @@ bool sendCachedBackupSnapshot(WebServer& server, BackupSnapshotCache& cache, uin
         return true;
     }
 
-    WifiJson::Document doc;
+    PsramJson::Document doc;
     const uint32_t snapshotMs = millisFn ? millisFn(millisCtx) : static_cast<uint32_t>(millis());
     BackupSnapshotBuildResult buildResult;
     if (buildSnapshot) {
@@ -66,7 +59,18 @@ bool sendCachedBackupSnapshot(WebServer& server, BackupSnapshotCache& cache, uin
         return false;
     }
 
-    const size_t required = measureJson(doc) + 1u;
+    if (doc.overflowed()) {
+        server.send(503, "application/json",
+                    "{\"success\":false,\"error\":\"backup_snapshot_allocation_failed\",\"retryable\":true}");
+        return false;
+    }
+    const size_t jsonBytes = measureJson(doc);
+    if (jsonBytes == 0 || jsonBytes > kHttpBackupDocumentMaxBytes) {
+        server.send(503, "application/json",
+                    "{\"success\":false,\"error\":\"backup_snapshot_too_large\",\"retryable\":false}");
+        return false;
+    }
+    const size_t required = jsonBytes + 1u;
     char* targetData = cache.data;
     size_t targetCapacity = cache.capacity;
     bool targetInPsram = cache.inPsram;
@@ -77,8 +81,8 @@ bool sendCachedBackupSnapshot(WebServer& server, BackupSnapshotCache& cache, uin
         size_t newCapacity = 0;
         bool newInPsram = false;
         if (!allocateBackupSnapshotBuffer(required, newData, newCapacity, newInPsram)) {
-            server.sendHeader("Content-Disposition", "attachment; filename=\"v1simple_backup.json\"");
-            sendJsonStream(server, doc);
+            server.send(503, "application/json",
+                        "{\"success\":false,\"error\":\"backup_snapshot_allocation_failed\",\"retryable\":true}");
             return false;
         }
 
@@ -96,8 +100,8 @@ bool sendCachedBackupSnapshot(WebServer& server, BackupSnapshotCache& cache, uin
         if (usingNewAllocation) {
             heap_caps_free(targetData);
         }
-        server.sendHeader("Content-Disposition", "attachment; filename=\"v1simple_backup.json\"");
-        sendJsonStream(server, doc);
+        server.send(503, "application/json",
+                    "{\"success\":false,\"error\":\"backup_snapshot_serialization_failed\",\"retryable\":true}");
         return false;
     }
     targetData[length] = '\0';

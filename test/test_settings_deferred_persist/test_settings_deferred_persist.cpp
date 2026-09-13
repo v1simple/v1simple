@@ -47,6 +47,9 @@ SettingsManager settings(storage, profiles);
 #include "../../src/settings_backup.cpp"
 #include "../../src/settings_backup_doc.cpp"
 #include "../../src/settings_restore.cpp"
+#include "../../src/storage_json_rollback.cpp"
+#include "../../src/v1_devices.cpp"
+#include "../../src/settings_v1_device_delete.cpp"
 #include "../../src/touch_handler.cpp"
 #include "../mocks/display.h"
 #include "../../src/modules/touch/touch_ui_module.cpp"
@@ -64,6 +67,15 @@ int g_tempRootIndex = 0;
 std::filesystem::path nextTempRoot() {
     return std::filesystem::temp_directory_path() /
            ("settings_deferred_persist_" + std::to_string(++g_tempRootIndex));
+}
+
+std::string readFileToString(fs::FS& fs, const char* path) {
+    File file = fs.open(path, FILE_READ);
+    if (!file) return {};
+    std::string contents;
+    while (file.available()) contents.push_back(static_cast<char>(file.read()));
+    file.close();
+    return contents;
 }
 
 void resetRuntimeState() {
@@ -424,6 +436,138 @@ void test_full_settings_save_supersedes_pending_degraded_fallback() {
     TEST_ASSERT_EQUAL_STRING("", manager.loadLastV1AddressFallback().c_str());
 }
 
+void seedRuntimeFallback(const char* address) {
+    Preferences prefs;
+    TEST_ASSERT_TRUE(prefs.begin(kSettingsV1RuntimeNamespace, false));
+    TEST_ASSERT_EQUAL_UINT(std::strlen(address), prefs.putString(kNvsLastConnectedV1Address, address));
+    prefs.end();
+}
+
+void test_device_delete_intent_converges_fallback_and_both_catalog_copies() {
+    fs::FS primary(g_tempRoot / "delete_primary");
+    fs::FS secondary(g_tempRoot / "delete_secondary");
+    V1DeviceStore devices;
+    TEST_ASSERT_TRUE(devices.begin(&primary, &secondary));
+    TEST_ASSERT_TRUE(devices.upsertDevice("AA:BB:CC:DD:EE:FF"));
+    seedRuntimeFallback("AA:BB:CC:DD:EE:FF");
+
+    const V1DeviceMutationResult result =
+        settings.deleteV1DeviceTransactional("AA:BB:CC:DD:EE:FF", devices);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(V1DeviceMutationStatus::FullyMirrored),
+                          static_cast<int>(result.status));
+    TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(kSettingsV1RuntimeNamespace,
+                                                        kNvsLastConnectedV1Address));
+    TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(kSettingsV1RuntimeNamespace, kNvsV1DeleteReady));
+    bool present = true;
+    TEST_ASSERT_TRUE(devices.containsDeviceChecked("AA:BB:CC:DD:EE:FF", present));
+    TEST_ASSERT_FALSE(present);
+
+    V1DeviceStore rebooted;
+    TEST_ASSERT_TRUE(rebooted.begin(&primary, &secondary));
+    TEST_ASSERT_TRUE(rebooted.listDevices().empty());
+}
+
+void test_device_delete_primary_failure_is_durable_pending_and_boot_retries() {
+    fs::FS primary(g_tempRoot / "delete_retry");
+    V1DeviceStore devices;
+    TEST_ASSERT_TRUE(devices.begin(&primary));
+    TEST_ASSERT_TRUE(devices.upsertDevice("AA:BB:CC:DD:EE:FF"));
+    seedRuntimeFallback("AA:BB:CC:DD:EE:FF");
+    fs::mock_set_fs_write_budget(20);
+
+    const V1DeviceMutationResult pending =
+        settings.deleteV1DeviceTransactional("AA:BB:CC:DD:EE:FF", devices);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(V1DeviceMutationStatus::DurablePending),
+                          static_cast<int>(pending.status));
+    TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(kSettingsV1RuntimeNamespace, kNvsV1DeleteReady));
+    TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(kSettingsV1RuntimeNamespace,
+                                                         kNvsLastConnectedV1Address));
+    bool present = false;
+    TEST_ASSERT_TRUE(devices.containsDeviceChecked("AA:BB:CC:DD:EE:FF", present));
+    TEST_ASSERT_TRUE(present);
+
+    fs::mock_reset_fs_write_budget();
+    V1DeviceStore rebooted;
+    TEST_ASSERT_TRUE(rebooted.begin(&primary));
+    TEST_ASSERT_TRUE(settings.resolvePendingV1DeviceDelete(rebooted));
+    TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(kSettingsV1RuntimeNamespace, kNvsV1DeleteReady));
+    TEST_ASSERT_TRUE(rebooted.listDevices().empty());
+}
+
+void test_device_delete_staging_failures_never_publish_intent_or_mutate() {
+    static constexpr const char* kFailedKeys[] = {
+        kNvsV1DeleteAddress, kNvsV1DeleteToken, kNvsV1DeletePhase, kNvsV1DeleteReady,
+    };
+    for (const char* failedKey : kFailedKeys) {
+        resetRuntimeState();
+        fs::FS primary(g_tempRoot / failedKey);
+        V1DeviceStore devices;
+        TEST_ASSERT_TRUE(devices.begin(&primary));
+        TEST_ASSERT_TRUE(devices.upsertDevice("AA:BB:CC:DD:EE:FF"));
+        seedRuntimeFallback("AA:BB:CC:DD:EE:FF");
+        const std::string before = readFileToString(primary, "/v1devices.json");
+        mock_preferences::set_fail_writes_for_key(failedKey);
+
+        const V1DeviceMutationResult result =
+            settings.deleteV1DeviceTransactional("AA:BB:CC:DD:EE:FF", devices);
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(V1DeviceMutationStatus::NotCommitted),
+                              static_cast<int>(result.status));
+        TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(kSettingsV1RuntimeNamespace, kNvsV1DeleteReady));
+        TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(kSettingsV1RuntimeNamespace,
+                                                           kNvsLastConnectedV1Address));
+        TEST_ASSERT_EQUAL_STRING(before.c_str(), readFileToString(primary, "/v1devices.json").c_str());
+        mock_preferences::set_fail_writes_for_key(nullptr);
+        const V1DeviceMutationResult retried =
+            settings.deleteV1DeviceTransactional("AA:BB:CC:DD:EE:FF", devices);
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(V1DeviceMutationStatus::FullyMirrored),
+                              static_cast<int>(retried.status));
+        TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(kSettingsV1RuntimeNamespace, kNvsV1DeleteReady));
+        TEST_ASSERT_TRUE(devices.listDevices().empty());
+    }
+}
+
+void test_device_delete_clears_matching_pending_fallback_but_preserves_other_durable_address() {
+    fs::FS primary(g_tempRoot / "delete_inverse_fallback");
+    V1DeviceStore devices;
+    TEST_ASSERT_TRUE(devices.begin(&primary));
+    TEST_ASSERT_TRUE(devices.upsertDevice("AA:BB:CC:DD:EE:FF"));
+    seedRuntimeFallback("11:22:33:44:55:66");
+    settings.requestLastV1AddressFallbackPersist("AA:BB:CC:DD:EE:FF");
+
+    const V1DeviceMutationResult result =
+        settings.deleteV1DeviceTransactional("AA:BB:CC:DD:EE:FF", devices);
+    TEST_ASSERT_TRUE(result.fullyMirrored());
+    settings.serviceDeferredPersist(mockMillis + 5000u);
+    TEST_ASSERT_EQUAL_STRING("11:22:33:44:55:66",
+                             mock_preferences::getString(kSettingsV1RuntimeNamespace,
+                                                         kNvsLastConnectedV1Address, "").c_str());
+}
+
+void test_pending_delete_for_another_address_returns_busy_without_accepting_it() {
+    fs::FS primary(g_tempRoot / "delete_busy");
+    V1DeviceStore devices;
+    TEST_ASSERT_TRUE(devices.begin(&primary));
+    TEST_ASSERT_TRUE(devices.upsertDevice("AA:BB:CC:DD:EE:FF"));
+    TEST_ASSERT_TRUE(devices.upsertDevice("11:22:33:44:55:66"));
+    seedRuntimeFallback("AA:BB:CC:DD:EE:FF");
+    fs::mock_set_fs_write_budget(20);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(V1DeviceMutationStatus::DurablePending),
+                          static_cast<int>(settings.deleteV1DeviceTransactional(
+                              "AA:BB:CC:DD:EE:FF", devices).status));
+
+    const V1DeviceMutationResult busy =
+        settings.deleteV1DeviceTransactional("11:22:33:44:55:66", devices);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(V1DeviceMutationStatus::Busy),
+                          static_cast<int>(busy.status));
+    TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF",
+                             mock_preferences::getString(kSettingsV1RuntimeNamespace,
+                                                         kNvsV1DeleteAddress, "").c_str());
+    bool secondPresent = false;
+    TEST_ASSERT_TRUE(devices.containsDeviceChecked("11:22:33:44:55:66", secondPresent));
+    TEST_ASSERT_TRUE(secondPresent);
+    fs::mock_reset_fs_write_budget();
+}
+
 void test_filtered_fallback_cleanup_preserves_other_persisted_and_pending_addresses() {
     SettingsManager manager(storage, profiles);
     manager.requestLastV1AddressFallbackPersist("AA:BB:CC:DD:EE:FF");
@@ -584,5 +728,10 @@ int main() {
     RUN_TEST(test_last_v1_address_does_not_schedule_full_settings_persist);
     RUN_TEST(test_last_v1_address_degraded_fallback_uses_one_idempotent_nvs_key);
     RUN_TEST(test_full_settings_save_supersedes_pending_degraded_fallback);
+    RUN_TEST(test_device_delete_intent_converges_fallback_and_both_catalog_copies);
+    RUN_TEST(test_device_delete_primary_failure_is_durable_pending_and_boot_retries);
+    RUN_TEST(test_device_delete_staging_failures_never_publish_intent_or_mutate);
+    RUN_TEST(test_device_delete_clears_matching_pending_fallback_but_preserves_other_durable_address);
+    RUN_TEST(test_pending_delete_for_another_address_returns_busy_without_accepting_it);
     return UNITY_END();
 }

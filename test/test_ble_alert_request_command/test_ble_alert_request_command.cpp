@@ -191,6 +191,70 @@ void test_settings_apply_commands_match_vendor_frames_exactly() {
                                   sizeof(userBytesWrite));
 }
 
+void test_phase_four_commands_match_vendor_frames_and_firmware_gates() {
+    AlertRequestHarness harness(19);
+    mockMillis = 200000;
+    harness.client.onV1FirmwareVersionReceived(41031);
+    TEST_ASSERT_FALSE(harness.client.setDisplayOn(false, true));
+    TEST_ASSERT_TRUE(harness.client.setDisplayOn(false, false));
+    const uint8_t legacyDisplayOff[] = {0xAA, 0xDA, 0xE6, 0x32, 0x01, 0x9D, 0xAB};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(legacyDisplayOff, harness.command.lastWriteValue().data(),
+                                  sizeof(legacyDisplayOff));
+
+    mockMillis += 5;
+    harness.client.onV1FirmwareVersionReceived(41032);
+    TEST_ASSERT_TRUE(harness.client.setDisplayOn(false, true));
+    const uint8_t displayOffKeepBt[] = {0xAA, 0xDA, 0xE6, 0x32, 0x02, 0x01, 0x9F, 0xAB};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(displayOffKeepBt, harness.command.lastWriteValue().data(),
+                                  sizeof(displayOffKeepBt));
+
+    mockMillis += 5;
+    harness.client.onV1FirmwareVersionReceived(41037);
+    TEST_ASSERT_EQUAL_INT(SendResult::SENT, harness.client.setVolumeResult(9, 0, 0x07));
+    const uint8_t savedFeedbackVolume[] = {0xAA, 0xDA, 0xE6, 0x39, 0x04, 0x09, 0x00, 0x07, 0xB7, 0xAB};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(savedFeedbackVolume, harness.command.lastWriteValue().data(),
+                                  sizeof(savedFeedbackVolume));
+    TEST_ASSERT_EQUAL_INT(SendResult::FAILED, harness.client.setVolumeResult(10, 0, 0));
+    TEST_ASSERT_EQUAL_INT(SendResult::FAILED, harness.client.setVolumeResult(1, 0, 0x08));
+
+    mockMillis += 5;
+    harness.client.onV1FirmwareVersionReceived(41038);
+    TEST_ASSERT_EQUAL_INT(SendResult::SENT, harness.client.setVolumeResult(1, 0, 0x08));
+    TEST_ASSERT_EQUAL_INT(SendResult::FAILED, harness.client.setVolumeResult(1, 0, 0x0C));
+    mockMillis += 5;
+    TEST_ASSERT_TRUE(harness.client.requestAllVolume());
+    const uint8_t allVolume[] = {0xAA, 0xDA, 0xE6, 0x3C, 0x01, 0xA7, 0xAB};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(allVolume, harness.command.lastWriteValue().data(), sizeof(allVolume));
+
+    mockMillis += 5;
+    TEST_ASSERT_TRUE(harness.client.requestAllSweepDefinitions());
+    const uint8_t allDefinitions[] = {0xAA, 0xDA, 0xE6, 0x16, 0x01, 0x81, 0xAB};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(allDefinitions, harness.command.lastWriteValue().data(),
+                                  sizeof(allDefinitions));
+    mockMillis += 5;
+    TEST_ASSERT_EQUAL_INT(SendResult::SENT,
+                          harness.client.writeSweepDefinition(0, 24050, 24150, false));
+    const uint8_t firstDefinition[] = {0xAA, 0xDA, 0xE6, 0x15, 0x06, 0x80,
+                                       0x5E, 0x56, 0x5D, 0xF2, 0x08, 0xAB};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(firstDefinition, harness.command.lastWriteValue().data(),
+                                  sizeof(firstDefinition));
+    mockMillis += 5;
+    TEST_ASSERT_EQUAL_INT(SendResult::FAILED,
+                          harness.client.writeSweepDefinition(1, 0, 0, true));
+    mockMillis += 5;
+    TEST_ASSERT_EQUAL_INT(SendResult::SENT,
+                          harness.client.writeSweepDefinition(0, 24050, 24150, true));
+    const uint8_t finalUsedDefinition[] = {0xAA, 0xDA, 0xE6, 0x15, 0x06, 0xC0,
+                                          0x5E, 0x56, 0x5D, 0xF2, 0x48, 0xAB};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(finalUsedDefinition, harness.command.lastWriteValue().data(),
+                                  sizeof(finalUsedDefinition));
+
+    mockMillis += 5;
+    TEST_ASSERT_EQUAL_INT(SendResult::SENT, harness.client.factoryResetDetector());
+    const uint8_t factory[] = {0xAA, 0xDA, 0xE6, 0x14, 0x01, 0x7F, 0xAB};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(factory, harness.command.lastWriteValue().data(), sizeof(factory));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_command_guard_uses_successful_send_time_for_exact_boundary);
@@ -199,5 +263,6 @@ int main(int, char**) {
     RUN_TEST(test_alert_start_recovery_waits_for_subscription_and_optional_followups);
     RUN_TEST(test_command_guard_interval_survives_millis_wrap);
     RUN_TEST(test_settings_apply_commands_match_vendor_frames_exactly);
+    RUN_TEST(test_phase_four_commands_match_vendor_frames_and_firmware_gates);
     return UNITY_END();
 }

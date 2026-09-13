@@ -145,13 +145,19 @@ void MaintenanceRuntime::initializeStorageAndProfiles() {
         }
         settings_.migrateAutoPushProfilesToV2();
 
-        const String storedFallback = settings_.loadLastV1AddressFallback();
+        const bool deleteResolved = settings_.resolvePendingV1DeviceDelete(devices_);
+        if (!deleteResolved) {
+            Serial.println("[Setup] WARN: pending V1 device deletion blocks fallback bootstrap");
+        }
+        const String storedFallback = deleteResolved ? settings_.loadLastV1AddressFallback() : String();
         const String degradedFallback = normalizeV1DeviceAddress(storedFallback);
         if (storedFallback.length() > 0 && degradedFallback.length() == 0) {
             settings_.clearLastV1AddressFallback();
         }
 
-        const String settingsFallback = normalizeV1DeviceAddress(settings_.get().lastV1Address);
+        const String settingsFallback = deleteResolved
+                                            ? normalizeV1DeviceAddress(settings_.get().lastV1Address)
+                                            : String();
         const String restoredLastKnownV1 = degradedFallback.length() > 0 ? degradedFallback : settingsFallback;
         if (restoredLastKnownV1.length() > 0) {
             settings_.setLastV1Address(restoredLastKnownV1);

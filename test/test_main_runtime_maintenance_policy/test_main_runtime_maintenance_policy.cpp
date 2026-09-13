@@ -369,19 +369,27 @@ void test_boot_long_press_and_timeout_exits_cannot_be_vetoed_by_logging() {
     TEST_ASSERT_NOT_EQUAL(std::string::npos, restartBody.find("ESP.restart();"));
 }
 
-void test_maintenance_entry_request_is_never_left_for_a_cancelled_restart() {
+void test_maintenance_entry_flushes_pending_detector_state_before_boot_request() {
     const std::string wiring = readFile(projectRoot() + "/src/drive_runtime.cpp");
     const std::string entryBody = extractFunctionBody(wiring, "void DriveRuntime::requestMaintenanceBootRestart()");
+    const size_t pending = entryBody.find("devices_.hasPendingSave()");
+    const size_t flush = entryBody.find("devices_.flushPendingSave()");
     const size_t request = entryBody.find("requestMaintenanceBoot()");
     const size_t cleanup = entryBody.find("completeLoggingForControlledRestart(");
     const size_t restart = entryBody.find("ESP.restart();");
 
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, pending);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, flush);
     TEST_ASSERT_NOT_EQUAL(std::string::npos, request);
     TEST_ASSERT_NOT_EQUAL(std::string::npos, cleanup);
     TEST_ASSERT_NOT_EQUAL(std::string::npos, restart);
+    TEST_ASSERT_TRUE(pending < flush);
+    TEST_ASSERT_TRUE(flush < request);
     TEST_ASSERT_TRUE(request < cleanup);
     TEST_ASSERT_TRUE(cleanup < restart);
-    TEST_ASSERT_EQUAL(std::string::npos, entryBody.find("restart cancelled"));
+    const std::string flushFailure = extractFunctionBody(entryBody, "if (!snapshotSaved)");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, flushFailure.find("restart cancelled"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, flushFailure.find("return;"));
     TEST_ASSERT_EQUAL(std::string::npos, entryBody.find("return;", cleanup));
 }
 
@@ -424,7 +432,7 @@ int main() {
     RUN_TEST(test_status_payload_deadline_anchor_contract_holds);
     RUN_TEST(test_session_start_is_latched_once_and_never_moves);
     RUN_TEST(test_boot_long_press_and_timeout_exits_cannot_be_vetoed_by_logging);
-    RUN_TEST(test_maintenance_entry_request_is_never_left_for_a_cancelled_restart);
+    RUN_TEST(test_maintenance_entry_flushes_pending_detector_state_before_boot_request);
     RUN_TEST(test_controlled_restarts_mark_clean_only_after_settings_save_succeeds);
     return UNITY_END();
 }

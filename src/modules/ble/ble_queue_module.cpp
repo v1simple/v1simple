@@ -379,6 +379,23 @@ void BleQueueModule::process() {
             continue;
         }
 
+        const bool sweepResponse = packetId == PACKET_ID_RESP_SWEEP_SECTIONS ||
+                                   packetId == PACKET_ID_RESP_MAX_SWEEP_INDEX ||
+                                   packetId == PACKET_ID_RESP_SWEEP_DEFINITION;
+        const bool eligibleSweepResponse = sweepResponse && ble_ &&
+            ble_->sessionSweepResponseEligible(packetId, packetIngressSequence);
+        if (eligibleSweepResponse && ble_->consumeSessionSweepParserReset(packetId)) {
+            if (packetId == PACKET_ID_RESP_SWEEP_SECTIONS) parser_->resetSweepSectionsObservation();
+            else if (packetId == PACKET_ID_RESP_MAX_SWEEP_INDEX) parser_->resetSweepMaxObservation();
+            else {
+                parser_->resetSweepDefinitionsObservation();
+                // Definitions are allowed to arrive before the response to
+                // the already-sent max request. Do not let a prior session's
+                // max collector constrain those fresh entries; the fresh max
+                // response will later validate the exact present set.
+                if (!ble_->hasSessionSweepMaxCapture()) parser_->resetSweepMaxObservation();
+            }
+        }
         bool parseOk = parser_->parse(packetPtr, packetSize, parseTimestampMs, packetIngressSequence);
 
         if (parseOk && packetId == PACKET_ID_RESP_VERSION && ble_) {
@@ -388,7 +405,34 @@ void BleQueueModule::process() {
             }
         }
         if (parseOk && packetId == PACKET_ID_RESP_ALL_VOLUME && ble_ && parser_->getDisplayState().hasSavedVolume) {
-            ble_->onAllVolumeReceived();
+            ble_->onAllVolumeReceived(packetIngressSequence);
+        }
+        if (eligibleSweepResponse) {
+            if (packetId == PACKET_ID_RESP_SWEEP_SECTIONS) {
+                const auto& sections = parser_->sweepSectionsObservation();
+                ble_->onSweepSectionsReceived(parseOk && !sections.poisoned && sections.complete);
+            } else if (packetId == PACKET_ID_RESP_MAX_SWEEP_INDEX) {
+                const auto& maximum = parser_->sweepMaxObservation();
+                const bool captured = parseOk && maximum.available && !maximum.poisoned;
+                ble_->onSweepMaxReceived(captured);
+                if (captured) {
+                    const uint8_t maxIndex = maximum.maxIndex;
+                    const uint64_t required = maxIndex == 63 ? UINT64_MAX : ((uint64_t{1} << (maxIndex + 1u)) - 1u);
+                    const auto& definitions = parser_->sweepDefinitionsObservation();
+                    ble_->onSweepDefinitionsReceived(!definitions.poisoned && definitions.presentMask == required);
+                } else {
+                    ble_->onSweepDefinitionsReceived(false);
+                }
+            } else if (packetId == PACKET_ID_RESP_SWEEP_DEFINITION &&
+                       parser_->sweepMaxObservation().available) {
+                const uint8_t maxIndex = parser_->sweepMaxObservation().maxIndex;
+                const uint64_t required = maxIndex == 63 ? UINT64_MAX : ((uint64_t{1} << (maxIndex + 1u)) - 1u);
+                const auto& definitions = parser_->sweepDefinitionsObservation();
+                ble_->onSweepDefinitionsReceived(parseOk && !definitions.poisoned &&
+                                                 definitions.presentMask == required);
+            } else if (packetId == PACKET_ID_RESP_SWEEP_DEFINITION) {
+                ble_->onSweepDefinitionsReceived(false);
+            }
         }
 
         rxReadPos_ += packetSize;

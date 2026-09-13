@@ -194,6 +194,10 @@ class WiFiManager {
         getPushStatusJson_ = fn;
         getPushStatusJsonCtx_ = ctx;
     }
+    void setPushStatusDocumentCallback(bool (*fn)(JsonObject, void*), void* ctx) {
+        appendPushStatusJson_ = fn;
+        getPushStatusJsonCtx_ = ctx;
+    }
 
     // V1 connection state used to defer WiFi client operations.
     void setV1ConnectedCallback(bool (*fn)(void*), void* ctx) {
@@ -350,6 +354,9 @@ class WiFiManager {
     bool hasMaintenanceWriteRequestShape() const;
     bool requireMaintenanceWriteRequestShape();
     void registerMaintenanceWriteRoute(const char* uri, WebServer::THandlerFunction handler);
+    void registerMaintenanceExactBodyWriteRoute(const char* uri, size_t maxBytes,
+                                                std::function<void(const uint8_t*, size_t,
+                                                                   const char*, size_t)> handler);
     static const char* maintenanceApiWriteHeader() { return WifiMaintenanceWritePolicy::kRequestShapeHeader; }
     static const char* maintenanceApiWriteHeaderValue() { return WifiMaintenanceWritePolicy::kRequestShapeValue; }
 
@@ -368,6 +375,7 @@ class WiFiManager {
     fs::FS* (*getFilesystem_)(void* ctx) = nullptr;
     void* getFilesystemCtx_ = nullptr;
     String (*getPushStatusJson_)(void* ctx) = nullptr;
+    bool (*appendPushStatusJson_)(JsonObject root, void* ctx) = nullptr;
     void* getPushStatusJsonCtx_ = nullptr;
     bool (*isV1Connected_)(void* ctx) = nullptr; // Returns true when V1 is connected (defer WiFi ops until then)
     void* isV1ConnectedCtx_ = nullptr;

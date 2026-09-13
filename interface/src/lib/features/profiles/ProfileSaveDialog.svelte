@@ -36,6 +36,7 @@
                         type="text"
                         placeholder="e.g., Max sensitivity for open roads"
                         class="input w-full"
+                        maxlength="4096"
                         bind:value={saveDescription}
                     />
                 </div>

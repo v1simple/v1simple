@@ -18,7 +18,9 @@ inline uint32_t g_mock_heap_caps_realloc_calls = 0u;
 inline uint32_t g_mock_heap_caps_free_calls = 0u;
 inline bool g_mock_heap_caps_fail_malloc = false;
 inline bool g_mock_heap_caps_fail_realloc = false;
+inline bool g_mock_heap_caps_fail_all_allocations = false;
 inline uint32_t g_mock_heap_caps_fail_on_call = 0u;
+inline uint32_t g_mock_heap_caps_fail_malloc_on_call = 0u;
 inline uint32_t g_mock_heap_caps_fail_call_mask = 0u;
 inline uint32_t g_mock_heap_caps_outstanding_allocations = 0u;
 
@@ -40,7 +42,9 @@ inline void mock_reset_heap_caps_tracking() {
     g_mock_heap_caps_free_calls = 0u;
     g_mock_heap_caps_fail_malloc = false;
     g_mock_heap_caps_fail_realloc = false;
+    g_mock_heap_caps_fail_all_allocations = false;
     g_mock_heap_caps_fail_on_call = 0u;
+    g_mock_heap_caps_fail_malloc_on_call = 0u;
     g_mock_heap_caps_fail_call_mask = 0u;
     g_mock_heap_caps_outstanding_allocations = 0u;
 }

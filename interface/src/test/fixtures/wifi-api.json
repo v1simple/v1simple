@@ -43,7 +43,7 @@
         {
           "body": {
             "activeSlot": 1,
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "detectorConfigurationOwner": "profile",
             "enabled": true,
             "slots": [
@@ -701,8 +701,22 @@
         {
           "body": {
             "description": "Daily drive",
-            "displayOn": true,
+            "detector": {
+              "bluetoothLed": "unchanged",
+              "customFrequencies": {
+                "policy": "unchanged"
+              },
+              "display": "on",
+              "mode": {
+                "policy": "unchanged"
+              },
+              "userSettings": "value",
+              "volume": {
+                "policy": "unchanged"
+              }
+            },
             "name": "Commute",
+            "schemaVersion": 3,
             "settings": {
               "byte0": 1
             }
@@ -714,7 +728,7 @@
       "GET /api/v1/profiles": [
         {
           "body": {
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "detectorConfigurationOwner": "profile",
             "profiles": [
               {

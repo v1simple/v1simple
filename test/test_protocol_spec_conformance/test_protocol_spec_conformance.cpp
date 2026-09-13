@@ -503,6 +503,9 @@ void test_user_byte_version_gates_match_vendor_library() {
     TEST_ASSERT_EQUAL_UINT8(V1FirmwareCompat::kLegacyGen2UserByteCount, V1FirmwareCompat::supportedUserByteCount(0));
     TEST_ASSERT_EQUAL_UINT8(V1FirmwareCompat::kUserByteCount,
                             V1FirmwareCompat::supportedUserByteCount(vendor_esp::kDefaultV1Version));
+    TEST_ASSERT_EQUAL_UINT8(V1FirmwareCompat::kUserByteCount,
+                            V1FirmwareCompat::supportedUserByteCount(49999));
+    TEST_ASSERT_EQUAL_UINT8(0, V1FirmwareCompat::supportedUserByteCount(50000));
 }
 
 void test_gen2_capabilities_change_only_at_vendor_version_thresholds() {
@@ -541,6 +544,11 @@ void test_gen2_capabilities_change_only_at_vendor_version_thresholds() {
     TEST_ASSERT_EQUAL_UINT8(6, v41039.supportedUserByteCount);
     TEST_ASSERT_TRUE(v41039.gatsoRT4);
     TEST_ASSERT_TRUE(v41039.photoIntersectionFilter);
+
+    const V1FirmwareCompat::Capabilities future = V1FirmwareCompat::capabilities(50000);
+    TEST_ASSERT_TRUE(future.versionKnown);
+    TEST_ASSERT_FALSE(future.gen2);
+    TEST_ASSERT_EQUAL_UINT8(0, future.supportedUserByteCount);
 }
 
 void test_laser_strength_is_full_scale_regardless_of_raw() {

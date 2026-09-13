@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <WebServer.h>
 
 #include <cstdint>
@@ -106,6 +107,10 @@ struct Runtime {
     void* setAutoPushEnabledCtx = nullptr;
     ProfileAssignmentStatus (*validateProfileAssignment)(const String& canonicalProfile, void* ctx) = nullptr;
     void* validateProfileAssignmentCtx = nullptr;
+    bool (*appendPushStatusJson)(JsonObject root, void* ctx) = nullptr;
+    void* appendPushStatusJsonCtx = nullptr;
+    bool (*loadSlotsSnapshotResult)(SlotsSnapshot& snapshot, void* ctx) = nullptr;
+    void* loadSlotsSnapshotResultCtx = nullptr;
 };
 
 void handleApiSlots(WebServer& server, const Runtime& runtime);
@@ -114,8 +119,14 @@ void handleApiStatus(WebServer& server, const Runtime& runtime);
 
 void handleApiSlotSave(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
                        void* rateLimitCtx);
+void handleApiSlotSaveBody(WebServer& server, const Runtime& runtime, const uint8_t* body, size_t bodySize,
+                           bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
+                           const char* multipartBoundary = nullptr, size_t multipartBoundarySize = 0);
 
 void handleApiActivate(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
                        void* rateLimitCtx);
+void handleApiActivateBody(WebServer& server, const Runtime& runtime, const uint8_t* body, size_t bodySize,
+                           bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
+                           const char* multipartBoundary = nullptr, size_t multipartBoundarySize = 0);
 
 } // namespace WifiAutoPushApiService

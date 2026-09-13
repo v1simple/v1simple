@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <math.h> // NAN
+#include <array>
 
 /**
  * Shared data types for the V1 Gen2 packet parser.
@@ -193,4 +194,76 @@ struct V1DisplayVolumeObservation {
     bool available = false;
     uint8_t main = 0;
     uint8_t muted = 0;
+};
+
+enum class V1BluetoothIndicatorState : uint8_t {
+    Off = 0,
+    Blinking = 1,
+    On = 2,
+    Invalid = 3,
+};
+
+struct V1BluetoothIndicatorObservation {
+    uint32_t revision = 0;
+    uint32_t sequence = 0;
+    uint32_t ingressSequence = 0;
+    bool available = false;
+    bool image1 = false;
+    bool image2 = false;
+    V1BluetoothIndicatorState state = V1BluetoothIndicatorState::Invalid;
+};
+
+struct V1SweepSectionObservation {
+    uint8_t index = 0;
+    uint8_t count = 0;
+    uint16_t lowerMHz = 0;
+    uint16_t upperMHz = 0;
+};
+
+struct V1SweepSectionsObservation {
+    uint32_t revision = 0;
+    uint32_t sequence = 0;
+    uint32_t ingressSequence = 0;
+    bool available = false;
+    bool complete = false;
+    bool poisoned = false;
+    uint8_t count = 0;
+    uint16_t presentMask = 0;
+    std::array<V1SweepSectionObservation, 15> sections{};
+};
+
+struct V1SweepMaxObservation {
+    uint32_t revision = 0;
+    uint32_t sequence = 0;
+    uint32_t ingressSequence = 0;
+    bool available = false;
+    bool poisoned = false;
+    uint8_t maxIndex = 0;
+};
+
+struct V1SweepDefinitionObservation {
+    uint8_t index = 0;
+    uint16_t lowerMHz = 0;
+    uint16_t upperMHz = 0;
+};
+
+struct V1SweepDefinitionsObservation {
+    uint32_t revision = 0;
+    uint32_t sequence = 0;
+    uint32_t ingressSequence = 0;
+    uint64_t presentMask = 0;
+    bool poisoned = false;
+    std::array<V1SweepDefinitionObservation, 64> definitions{};
+    // Each response packet carries one definition. Preserve its individual
+    // transport ingress so a fresh aggregate cannot launder a queued packet
+    // that entered before a read-request boundary.
+    std::array<uint32_t, 64> ingressSequences{};
+};
+
+struct V1SweepWriteResultObservation {
+    uint32_t revision = 0;
+    uint32_t sequence = 0;
+    uint32_t ingressSequence = 0;
+    bool available = false;
+    uint8_t result = 0;
 };

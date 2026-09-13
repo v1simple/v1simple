@@ -9,6 +9,7 @@
     import {
         createDefaultProfileSettings,
         createDefaultDetectorConfiguration,
+        cloneDetectorConfiguration,
         detectorConfigurationFromSnapshot,
         fromApiDetectorConfiguration,
         fromApiSettings,
@@ -27,6 +28,14 @@
     let editingSettings = $state(false);
     let editedSettings = $state(null);
     let editedDetector = $state(null);
+    const PROFILE_DESCRIPTION_MAX_BYTES = 4096;
+
+    function descriptionForSave(value) {
+        const description = (value || '').trim();
+        return new TextEncoder().encode(description).length <= PROFILE_DESCRIPTION_MAX_BYTES
+            ? { description }
+            : { error: 'Description must be 4096 UTF-8 bytes or fewer' };
+    }
     let editDescription = $state('');
     let capturedSnapshot = $state(null);
     let snapshotLoading = $state(true);
@@ -36,7 +45,9 @@
     function validateProfileName(raw) {
         const canonical = raw.trim();
         if (!canonical) return { error: 'Profile name required' };
-        if (canonical.length > 64) return { error: 'Profile name exceeds 64 characters' };
+        if (new TextEncoder().encode(canonical).length > 64) {
+            return { error: 'Profile name exceeds 64 UTF-8 bytes' };
+        }
         if (canonical.startsWith('.') || canonical.startsWith('_')) {
             return { error: 'Profile name cannot begin with dot or underscore' };
         }
@@ -50,10 +61,9 @@
         if (hasControlCharacter || /[:*?"<>|]/.test(canonical)) {
             return { error: 'Profile name contains an invalid character' };
         }
+        const asciiFold = (value) => value.replace(/[A-Z]/g, (character) => character.toLowerCase());
         const collision = profiles.find(
-            (profile) =>
-                profile.name.toLocaleLowerCase() === canonical.toLocaleLowerCase() &&
-                profile.name !== canonical
+            (profile) => asciiFold(profile.name) === asciiFold(canonical) && profile.name !== canonical
         );
         if (collision) return { error: 'Profile name collides with an existing profile' };
         return { canonical };
@@ -71,6 +81,11 @@
         profiles = found
             ? profiles.map((profile) => (profile.name === name ? saved : profile))
             : [...profiles, saved];
+    }
+
+    function detectorConfigurationsEqual(left, right) {
+        return JSON.stringify(toApiDetectorConfiguration(left)) ===
+            JSON.stringify(toApiDetectorConfiguration(right));
     }
 
     onMount(() => {
@@ -113,7 +128,7 @@
             settings
         };
         editedSettings = { ...settings, baseBytes: settings.baseBytes ? [...settings.baseBytes] : undefined };
-        editedDetector = { ...currentProfile.detector };
+        editedDetector = cloneDetectorConfiguration(currentProfile.detector);
         editDescription = '';
         saveName = '';
         saveDescription = '';
@@ -126,17 +141,32 @@
 
     async function fetchProfiles() {
         try {
-            const res = await fetchWithTimeout('/api/v1/profiles');
-            if (res.ok) {
+            const loadedProfiles = [];
+            let cursor = '';
+            let schemaReady = true;
+            while (true) {
+                const url = cursor
+                    ? `/api/v1/profiles?after=${encodeURIComponent(cursor)}&limit=10`
+                    : '/api/v1/profiles';
+                const res = await fetchWithTimeout(url);
+                if (!res.ok) {
+                    message = { type: 'error', text: PROFILE_LOAD_ERROR_TEXT };
+                    return false;
+                }
                 const data = await res.json();
-                profiles = data.profiles || [];
-                profileSchemaReady = data.schemaVersion !== 1;
-                clearMessageText(PROFILE_LOAD_ERROR_TEXT);
-                return true;
-            } else {
-                message = { type: 'error', text: PROFILE_LOAD_ERROR_TEXT };
-                return false;
+                if (!Array.isArray(data.profiles)) throw new Error('Invalid profile page');
+                loadedProfiles.push(...data.profiles);
+                schemaReady = schemaReady && data.schemaVersion === 3;
+                if (!data.hasMore) break;
+                if (typeof data.nextCursor !== 'string' || !data.nextCursor || data.nextCursor === cursor) {
+                    throw new Error('Invalid profile cursor');
+                }
+                cursor = data.nextCursor;
             }
+            profiles = loadedProfiles;
+            profileSchemaReady = schemaReady;
+            clearMessageText(PROFILE_LOAD_ERROR_TEXT);
+            return true;
         } catch (e) {
             message = { type: 'error', text: PROFILE_LOAD_ERROR_TEXT };
             return false;
@@ -152,6 +182,11 @@
             message = { type: 'error', text: validatedName.error };
             return;
         }
+        const validatedDescription = descriptionForSave(saveDescription);
+        if (validatedDescription.error) {
+            message = { type: 'error', text: validatedDescription.error };
+            return;
+        }
 
         const settingsToSave =
             editingSettings && editedSettings ? editedSettings : currentProfile?.settings;
@@ -165,8 +200,8 @@
         try {
             const payload = {
                 name: validatedName.canonical,
-                description: saveDescription.trim(),
-                schemaVersion: 2,
+                description: validatedDescription.description,
+                schemaVersion: 3,
                 detector: toApiDetectorConfiguration(editedDetector || currentProfile?.detector),
                 settings: toApiSettings(settingsToSave)
             };
@@ -205,7 +240,7 @@
     function startEditing() {
         if (currentProfile && currentProfile.settings) {
             editedSettings = { ...currentProfile.settings };
-            editedDetector = { ...currentProfile.detector };
+            editedDetector = cloneDetectorConfiguration(currentProfile.detector);
             editDescription = currentProfile.description || '';
             editingSettings = true;
         }
@@ -241,7 +276,7 @@
                     settings: fromApiSettings(data.settings || {})
                 };
                 editedSettings = { ...currentProfile.settings };
-                editedDetector = { ...currentProfile.detector };
+                editedDetector = cloneDetectorConfiguration(currentProfile.detector);
                 editDescription = data.description || '';
                 editingSettings = true;
                 message = { type: 'info', text: `Editing ${name}` };
@@ -275,24 +310,41 @@
         };
     }
 
+    function resetDraftToLocalDefaults() {
+        if (!editingSettings) return;
+        editedSettings = createDefaultProfileSettings();
+        editedDetector = createDefaultDetectorConfiguration();
+        message = {
+            type: 'info',
+            text: 'Draft reset to V1Simple profile defaults. No command was sent to the detector.'
+        };
+    }
+
     async function saveEditedProfile() {
         if (savingProfile) return;
         if (!editedSettings || !currentProfile || !currentProfile.name) {
             message = { type: 'error', text: 'No profile loaded to save' };
             return;
         }
+        const validatedDescription = descriptionForSave(editDescription);
+        if (validatedDescription.error) {
+            message = { type: 'error', text: validatedDescription.error };
+            return;
+        }
 
         const profile = currentProfile;
         const editSession = editedSettings;
+        const detectorEditSession = editedDetector;
         const savedSettings = { ...editedSettings };
+        const savedDetector = cloneDetectorConfiguration(editedDetector || profile.detector);
         savingProfile = profile.name;
         message = { type: 'info', text: `Saving ${profile.name}...` };
         try {
             const payload = {
                 name: profile.name,
-                description: editDescription.trim(),
-                schemaVersion: 2,
-                detector: toApiDetectorConfiguration(editedDetector || profile.detector),
+                description: validatedDescription.description,
+                schemaVersion: 3,
+                detector: toApiDetectorConfiguration(savedDetector),
                 settings: toApiSettings(savedSettings)
             };
 
@@ -310,13 +362,14 @@
             if (res.ok) {
                 recordSavedProfile(payload.name, payload.description, true);
                 message = { type: 'success', text: `Profile "${payload.name}" saved` };
-                if (editedSettings === editSession) {
+                if (editedSettings === editSession && editedDetector === detectorEditSession) {
                     const draftUnchanged = editDescription.trim() === payload.description &&
-                        Object.entries(savedSettings).every(([key, value]) => editedSettings[key] === value);
+                        Object.entries(savedSettings).every(([key, value]) => editedSettings[key] === value) &&
+                        detectorConfigurationsEqual(editedDetector, savedDetector);
                     currentProfile = {
                         ...profile,
                         description: payload.description,
-                        detector: { ...editedDetector },
+                        detector: savedDetector,
                         settings: savedSettings
                     };
                     if (draftUnchanged) cancelEditing();
@@ -371,7 +424,7 @@
 
     {#if !loading && !profileSchemaReady}
         <StatusAlert
-            message="The profile settings migration is still pending. Profiles are temporarily read-only so detector choices cannot be accepted and then ignored."
+            message="Profile migration is pending. Creation and editing stay read-only, but existing profiles can be deleted if the older catalog is too large to migrate safely."
             fallbackType="warning"
         />
     {/if}
@@ -412,6 +465,7 @@
                     <div><span class="copy-caption">User bytes</span><div class="font-mono">{formatBytes(capturedSnapshot.observations?.userBytes?.value)}</div></div>
                     <div><span class="copy-caption">Mode</span><div>{capturedSnapshot.observations?.mode?.available ? capturedSnapshot.observations.mode.value : 'Unavailable'}</div></div>
                     <div><span class="copy-caption">Display</span><div>{capturedSnapshot.observations?.displayOn?.available ? (capturedSnapshot.observations.displayOn.value ? 'On' : 'Off') : 'Unavailable'}</div></div>
+                    <div><span class="copy-caption">Bluetooth indicator</span><div>{capturedSnapshot.observations?.bluetoothIndicator?.available ? capturedSnapshot.observations.bluetoothIndicator.value : 'Unavailable'}</div></div>
                     <div>
                         <span class="copy-caption">Volume</span>
                         <div>
@@ -423,6 +477,14 @@
                             {/if}
                         </div>
                     </div>
+                    <div>
+                        <span class="copy-caption">Custom sweep definitions</span>
+                        <div>
+                            {capturedSnapshot.observations?.customFrequencies?.definitionsAvailable
+                                ? `${capturedSnapshot.observations.customFrequencies.effectiveDefinitions?.length || 0} calibrated entries`
+                                : 'Unavailable'}
+                        </div>
+                    </div>
                 </div>
 
                 {#if capturedSnapshot.provenance?.captureTimedOut}
@@ -430,11 +492,24 @@
                         The connection capture timed out. Available values are preserved; missing values remain unknown.
                     </div>
                 {/if}
-                {#if capturedSnapshot.capabilities?.versionKnown}
+                {#if capturedSnapshot.observations?.currentVolume?.available && capturedSnapshot.observations?.savedVolume?.available &&
+                    (Number(capturedSnapshot.observations.currentVolume.main) !== Number(capturedSnapshot.observations.savedVolume.main) ||
+                     Number(capturedSnapshot.observations.currentVolume.muted) !== Number(capturedSnapshot.observations.savedVolume.muted))}
+                    <div class="surface-alert alert-info" role="status">
+                        Current and saved volume differ. A captured draft prefills the observed current numbers, but leaves volume unchanged until you explicitly choose Temporary or Save on V1.
+                    </div>
+                {/if}
+                {#if capturedSnapshot.capabilities?.versionKnown && capturedSnapshot.capabilities?.gen2}
                     <p class="copy-caption">
                         Firmware-qualified: {capturedSnapshot.capabilities.supportedUserByteCount} user bytes,
                         saved volume {capturedSnapshot.capabilities.savedVolume ? 'supported' : 'not supported'},
+                        keep-Bluetooth-indicator-on {capturedSnapshot.capabilities.keepBluetoothLedOn ? 'supported' : 'not supported'},
+                        custom sweeps {capturedSnapshot.capabilities.customSweeps ? 'supported' : 'not supported'},
                         Gatso RT4 {capturedSnapshot.capabilities.settings?.gatsoRT4 ? 'supported' : 'not supported'}.
+                    </p>
+                {:else if capturedSnapshot.capabilities?.versionKnown}
+                    <p class="copy-caption">
+                        This firmware version is outside the qualified Gen2 range; captured bytes are shown without feature claims.
                     </p>
                 {:else}
                     <p class="copy-caption">Firmware capabilities are unknown; the captured bytes are shown without feature claims.</p>
@@ -488,15 +563,35 @@
                     </div>
                     <label class="field-control">
                         <span class="field-label copy-caption">V1 display</span>
-                        <select class="select select-sm" bind:value={editedDetector.display}>
+                        <select
+                            class="select select-sm"
+                            bind:value={editedDetector.display}
+                            onchange={() => {
+                                if (editedDetector.display !== 'off') editedDetector.bluetoothLed = 'unchanged';
+                            }}
+                        >
                             <option value="unchanged">Leave unchanged</option>
                             <option value="on">On</option>
-                            <option value="off">Off (completely dark)</option>
+                            <option value="off">Main display off</option>
+                        </select>
+                    </label>
+                    <label class="field-control">
+                        <span class="field-label copy-caption">Bluetooth indicator while display is off</span>
+                        <select class="select select-sm" bind:value={editedDetector.bluetoothLed} disabled={editedDetector.display !== 'off'}>
+                            <option value="unchanged">Leave unchanged</option>
+                            <option value="off">Off</option>
+                            <option value="on">Keep indicator active (on or blinking)</option>
                         </select>
                     </label>
                     <label class="field-control">
                         <span class="field-label copy-caption">Volume policy</span>
-                        <select class="select select-sm" bind:value={editedDetector.volumePolicy}>
+                        <select
+                            class="select select-sm"
+                            bind:value={editedDetector.volumePolicy}
+                            onchange={() => {
+                                if (editedDetector.volumePolicy !== 'temporary') editedDetector.volumeDisconnect = 'restore_saved';
+                            }}
+                        >
                             <option value="unchanged">Leave unchanged</option>
                             <option value="temporary">Temporary</option>
                             <option value="saved">Save on V1</option>
@@ -510,21 +605,76 @@
                         <span class="field-label copy-caption">Muted volume (0–9)</span>
                         <input class="input input-sm" type="number" min="0" max="9" bind:value={editedDetector.mutedVolume} disabled={editedDetector.volumePolicy === 'unchanged'} />
                     </label>
+                    <label class="field-control">
+                        <span class="field-label copy-caption">Volume feedback</span>
+                        <select class="select select-sm" bind:value={editedDetector.volumeFeedback} disabled={editedDetector.volumePolicy === 'unchanged'}>
+                            <option value="none">None</option>
+                            <option value="changed_only">Only when changed</option>
+                            <option value="always">Always</option>
+                        </select>
+                    </label>
+                    <label class="field-control">
+                        <span class="field-label copy-caption">After Bluetooth disconnect</span>
+                        <select
+                            class="select select-sm"
+                            bind:value={editedDetector.volumeDisconnect}
+                            disabled={editedDetector.volumePolicy !== 'temporary'}
+                        >
+                            <option value="restore_saved">Restore saved volume</option>
+                            <option value="keep_current">Keep temporary volume</option>
+                        </select>
+                    </label>
                 </div>
-                {#if editedDetector.volumePolicy === 'saved'}
+                <div class="surface-panel space-y-3">
+                    <label class="field-control">
+                        <span class="field-label copy-caption">Custom sweep definitions</span>
+                        <select class="select select-sm" bind:value={editedDetector.customFrequencyPolicy}>
+                            <option value="unchanged">Leave detector definitions unchanged</option>
+                            <option value="value">Apply this complete definition set</option>
+                        </select>
+                    </label>
+                    {#if editedDetector.customFrequencyPolicy === 'value'}
+                        <p class="copy-caption">
+                            Requested edges are saved in the profile. The V1 calibrates them to its closest supported frequencies; Apply verifies and reports that calibrated readback.
+                        </p>
+                        <div class="max-h-72 overflow-auto">
+                            <table class="table table-xs">
+                                <thead><tr><th>Index</th><th>Lower MHz</th><th>Upper MHz</th></tr></thead>
+                                <tbody>
+                                    {#each editedDetector.customFrequencyDefinitions as definition (definition.index)}
+                                        <tr>
+                                            <td>{definition.index}</td>
+                                            <td><input aria-label={`Custom ${definition.index} lower MHz`} class="input input-xs w-28" type="number" min="0" max="65535" bind:value={definition.lowerMHz} /></td>
+                                            <td><input aria-label={`Custom ${definition.index} upper MHz`} class="input input-xs w-28" type="number" min="0" max="65535" bind:value={definition.upperMHz} /></td>
+                                        </tr>
+                                    {/each}
+                                </tbody>
+                            </table>
+                        </div>
+                        {#if editedDetector.customFrequencyDefinitions.length === 0}
+                            <div class="surface-alert alert-warning" role="status">
+                                A complete captured definition set is required. Start from the last observed V1 or load a profile that already owns one.
+                            </div>
+                        {/if}
+                    {/if}
+                </div>
+                {#if editedSettings?.customFreqs && editedDetector.customFrequencyPolicy === 'unchanged'}
                     <div class="surface-alert alert-warning" role="status">
-                        Saved-volume intent is preserved in this profile. Until saved-volume transport lands, Auto-Push rejects this profile before sending any detector changes.
-                    </div>
-                {/if}
-                {#if editedSettings?.customFreqs}
-                    <div class="surface-alert alert-warning" role="status">
-                        Custom Frequencies only enables definitions already stored in the V1. Sweep definitions are not captured or authored in this version.
+                        This profile enables custom sweeps without owning definitions. Apply requires a fresh,
+                        complete live definition table with compatible K and Ka coverage. A USA/Euro region change
+                        requires the profile to own a complete definition set.
                     </div>
                 {/if}
                 <p class="copy-caption">
-                    Independent keep-Bluetooth-LED-on control is not supported yet. Display Off is completely dark,
-                    including the Bluetooth LED. Custom-frequency definitions remain detector-resident until their
-                    complete vendor transactions are implemented.
+                    Bluetooth indicator control is independent only while the main display is off and requires supported firmware to keep it on. Volume feedback and disconnect behavior are sent as command policy, but the detector protocol provides no readback for those two policy bits.
+                </p>
+                <div class="flex flex-wrap gap-2">
+                    <button class="btn btn-outline btn-sm" type="button" onclick={resetDraftToLocalDefaults}>
+                        Reset this draft to local defaults
+                    </button>
+                </div>
+                <p class="copy-caption">
+                    Local defaults only edit this draft. Detector factory reset is a separate destructive workflow and is not available in this version.
                 </p>
             </div>
         </div>
@@ -544,13 +694,15 @@
             onshowSaveDialog={openSaveDialog}
         />
 
-        <ProfileSavedListCard
-            {loading}
-            {profiles}
-            oneditProfile={editProfile}
-            ondeleteProfile={deleteProfile}
-        />
     {/if}
+
+    <ProfileSavedListCard
+        {loading}
+        {profiles}
+        allowEdit={profileSchemaReady}
+        oneditProfile={editProfile}
+        ondeleteProfile={deleteProfile}
+    />
 
     <div class="surface-note copy-muted space-y-1">
         <p><strong>Create:</strong> Build a detector configuration without a V1 connection.</p>

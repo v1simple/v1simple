@@ -60,6 +60,29 @@ String activeNamespaceOrEmpty() {
     return mock_preferences::getString(SETTINGS_NS_META, "active", "");
 }
 
+void prepareCurrentBackupSource(SettingsManager& manager) {
+    // Deferred-backup tests model normal operation after the one-time
+    // profile-ownership migration. Current v21 backups deliberately reject
+    // legacy marker 0/2 state and legacy slot-owned command carriers.
+    V1Settings& value = manager.mutableSettings();
+    value.autoPushProfileSchemaVersion = V1_PROFILE_SCHEMA_VERSION;
+    value.slot0_default.mode = V1_MODE_UNKNOWN;
+    value.slot1_highway.mode = V1_MODE_UNKNOWN;
+    value.slot2_comfort.mode = V1_MODE_UNKNOWN;
+    value.slot0Volume = 0xFF;
+    value.slot0MuteVolume = 0xFF;
+    value.slot1Volume = 0xFF;
+    value.slot1MuteVolume = 0xFF;
+    value.slot2Volume = 0xFF;
+    value.slot2MuteVolume = 0xFF;
+    value.slot0DarkMode = false;
+    value.slot1DarkMode = false;
+    value.slot2DarkMode = false;
+    value.slot0MuteToZero = false;
+    value.slot1MuteToZero = false;
+    value.slot2MuteToZero = false;
+}
+
 bool loadJsonFile(fs::FS& fs, const char* path, JsonDocument& doc) {
     File file = fs.open(path, FILE_READ);
     if (!file) {
@@ -72,6 +95,7 @@ bool loadJsonFile(fs::FS& fs, const char* path, JsonDocument& doc) {
 
 void writeSeedBackup(fs::FS& fs, const char* apSsid, uint8_t brightness) {
     SettingsManager source(storage, profiles);
+    prepareCurrentBackupSource(source);
     source.mutableSettings().apSSID = apSsid;
     source.mutableSettings().brightness = brightness;
 
@@ -87,6 +111,7 @@ void createRestorePendingNvsWithoutSd() {
 
     SettingsManager noSdBoot(storage, profiles);
     noSdBoot.begin();
+    prepareCurrentBackupSource(noSdBoot);
     noSdBoot.save();
 
     const String provisionalNs = activeNamespaceOrEmpty();
@@ -132,6 +157,7 @@ void test_save_deferred_backup_persists_nvs_and_writes_snapshot_via_writer() {
     TEST_ASSERT_TRUE(profiles.begin(&fs));
 
     SettingsManager manager(storage, profiles);
+    prepareCurrentBackupSource(manager);
     manager.mutableSettings().apSSID = "DeferredSave";
     manager.mutableSettings().brightness = 88;
 
@@ -170,6 +196,7 @@ void test_service_deferred_backup_retries_after_sd_trylock_busy() {
     TEST_ASSERT_TRUE(profiles.begin(storage));
 
     SettingsManager manager(storage, profiles);
+    prepareCurrentBackupSource(manager);
     manager.mutableSettings().apSSID = "RetryPath";
     manager.requestDeferredBackupFromCurrentState();
 
@@ -202,6 +229,7 @@ void test_repeated_requests_coalesce_to_latest_snapshot() {
     TEST_ASSERT_TRUE(profiles.begin(&fs));
 
     SettingsManager manager(storage, profiles);
+    prepareCurrentBackupSource(manager);
     manager.mutableSettings().apSSID = "OldValue";
     manager.requestDeferredBackupFromCurrentState();
     manager.mutableSettings().apSSID = "NewValue";
@@ -222,6 +250,7 @@ void test_repeated_save_deferred_backup_calls_coalesce_to_latest_snapshot() {
     TEST_ASSERT_TRUE(profiles.begin(&fs));
 
     SettingsManager manager(storage, profiles);
+    prepareCurrentBackupSource(manager);
     manager.mutableSettings().apSSID = "FirstValue";
     manager.saveDeferredBackup();
     manager.mutableSettings().apSSID = "FinalValue";
@@ -245,6 +274,7 @@ void test_immediate_reset_recovers_one_latest_deferred_backup_from_persisted_int
     TEST_ASSERT_TRUE(profiles.begin(&fs));
 
     SettingsManager beforeReset(storage, profiles);
+    prepareCurrentBackupSource(beforeReset);
     beforeReset.mutableSettings().brightness = 91;
     TEST_ASSERT_TRUE(beforeReset.saveDeferredBackup());
     beforeReset.mutableSettings().stealthEnabled = true;
@@ -303,6 +333,7 @@ void test_older_writer_completion_does_not_suppress_newer_persisted_due_revision
     TEST_ASSERT_TRUE(profiles.begin(&fs));
 
     SettingsManager manager(storage, profiles);
+    prepareCurrentBackupSource(manager);
     manager.mutableSettings().brightness = 81;
     TEST_ASSERT_TRUE(manager.saveDeferredBackup());
     const uint32_t olderRevision = manager.backupDueRevision();
@@ -342,6 +373,7 @@ void test_completion_revision_write_failure_preserves_deferred_retry() {
     TEST_ASSERT_TRUE(profiles.begin(&fs));
 
     SettingsManager manager(storage, profiles);
+    prepareCurrentBackupSource(manager);
     manager.mutableSettings().brightness = 84;
     TEST_ASSERT_TRUE(manager.saveDeferredBackup());
     const uint32_t dueRevision = manager.backupDueRevision();
@@ -371,6 +403,7 @@ void test_stale_selector_cannot_roll_back_completed_revision() {
     TEST_ASSERT_TRUE(profiles.begin(&fs));
 
     SettingsManager manager(storage, profiles);
+    prepareCurrentBackupSource(manager);
     for (uint8_t brightness : {81u, 82u, 83u}) {
         manager.mutableSettings().brightness = brightness;
         TEST_ASSERT_TRUE(manager.saveDeferredBackup());
@@ -430,6 +463,7 @@ void test_revision_wrap_repeated_writes_never_collide_and_reset_requeues_latest(
     TEST_ASSERT_TRUE(profiles.begin(&fs));
 
     SettingsManager seed(storage, profiles);
+    prepareCurrentBackupSource(seed);
     seed.mutableSettings().brightness = 70;
     TEST_ASSERT_TRUE(seed.saveDeferredBackup());
     const String activeNamespace = activeNamespaceOrEmpty();
@@ -501,6 +535,7 @@ void test_aborted_shutdown_reopens_deferred_backup_writer_admission() {
     TEST_ASSERT_TRUE(profiles.begin(&fs));
 
     SettingsManager manager(storage, profiles);
+    prepareCurrentBackupSource(manager);
     manager.mutableSettings().apSSID = "AbortRecovery";
     shutdownDeferredSettingsBackupWriter(0);
     manager.requestDeferredBackupFromCurrentState();
@@ -531,6 +566,7 @@ void test_resume_handoffs_work_queued_while_old_deferred_writer_exits() {
     TEST_ASSERT_TRUE(profiles.begin(&fs));
 
     SettingsManager manager(storage, profiles);
+    prepareCurrentBackupSource(manager);
     manager.mutableSettings().apSSID = "BeforeAbort";
     manager.requestDeferredBackupFromCurrentState();
     manager.serviceDeferredBackup(1000);
@@ -565,6 +601,7 @@ void test_shutdown_exit_discards_late_deferred_payload_and_waits_for_admissions(
     TEST_ASSERT_TRUE(profiles.begin(&fs));
 
     SettingsManager manager(storage, profiles);
+    prepareCurrentBackupSource(manager);
     manager.requestDeferredBackupFromCurrentState();
     manager.serviceDeferredBackup(1000);
     TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
@@ -590,6 +627,7 @@ void test_writer_failure_requeues_backup_request_for_rebuild() {
     TEST_ASSERT_TRUE(profiles.begin(&fs));
 
     SettingsManager manager(storage, profiles);
+    prepareCurrentBackupSource(manager);
     manager.mutableSettings().apSSID = "Initial";
     manager.requestDeferredBackupFromCurrentState();
     manager.serviceDeferredBackup(1000);
@@ -681,6 +719,7 @@ void test_zero_profile_snapshot_with_configured_reference_preserves_good_backup(
     TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
 
     SettingsManager source(storage, profiles);
+    prepareCurrentBackupSource(source);
     source.mutableSettings().slot0_default.profileName = "Road";
     SerializedSettingsBackupPayload seed;
     TEST_ASSERT_TRUE(buildSerializedSdBackupPayload(seed, source.get(), profiles, 100));
@@ -711,6 +750,7 @@ void assert_newer_immediate_backup_survives_old_worker(bool oldFirst, bool marke
     storage.setFilesystem(&fs, true);
     TEST_ASSERT_TRUE(profiles.begin(storage));
     SettingsManager manager(storage, profiles);
+    prepareCurrentBackupSource(manager);
     manager.mutableSettings().brightness = 61;
     TEST_ASSERT_TRUE(manager.saveDeferredBackup());
     manager.serviceDeferredBackup(1000);
@@ -753,6 +793,7 @@ void test_failed_newer_promotion_skips_old_bytes_and_rebuilds_current_state() {
     storage.setFilesystem(&fs, true);
     TEST_ASSERT_TRUE(profiles.begin(storage));
     SettingsManager manager(storage, profiles);
+    prepareCurrentBackupSource(manager);
     manager.mutableSettings().brightness = 61;
     TEST_ASSERT_TRUE(manager.saveDeferredBackup());
     manager.serviceDeferredBackup(1000);
@@ -775,6 +816,7 @@ void assert_manual_backup_protects_same_due_profile_snapshot(bool persistedRevis
     road.description = "Old profile";
     TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
     SettingsManager manager(storage, profiles);
+    prepareCurrentBackupSource(manager);
     if (persistedRevision) TEST_ASSERT_TRUE(manager.save());
     const uint32_t due = manager.backupDueRevision();
     manager.requestDeferredBackupFromCurrentState();
@@ -803,6 +845,7 @@ void test_completion_holds_sd_lock_and_preserves_request_published_during_old_wr
     storage.setFilesystem(&fs, true);
     TEST_ASSERT_TRUE(profiles.begin(storage));
     SettingsManager manager(storage, profiles);
+    prepareCurrentBackupSource(manager);
     manager.mutableSettings().brightness = 61;
     TEST_ASSERT_TRUE(manager.saveDeferredBackup());
     manager.serviceDeferredBackup(1000);
@@ -841,6 +884,7 @@ void test_two_stale_payloads_converge_after_at_most_two_current_writes() {
     storage.setFilesystem(&fs, true);
     TEST_ASSERT_TRUE(profiles.begin(storage));
     SettingsManager manager(storage, profiles);
+    prepareCurrentBackupSource(manager);
     manager.mutableSettings().brightness = 61;
     TEST_ASSERT_TRUE(manager.saveDeferredBackup());
     manager.serviceDeferredBackup(1000);
@@ -870,6 +914,7 @@ void test_request_token_wrap_skips_old_payload_and_retry_keeps_current_token() {
     storage.setFilesystem(&fs, true);
     TEST_ASSERT_TRUE(profiles.begin(storage));
     SettingsManager manager(storage, profiles);
+    prepareCurrentBackupSource(manager);
     gDeferredSettingsBackupState.requestToken.store(UINT32_MAX - 1u);
     manager.mutableSettings().brightness = 61;
     TEST_ASSERT_TRUE(manager.saveDeferredBackup());
@@ -891,6 +936,7 @@ void test_failed_persist_and_absent_sd_attempt_do_not_invalidate_queued_snapshot
     storage.setFilesystem(&fs, true);
     TEST_ASSERT_TRUE(profiles.begin(storage));
     SettingsManager manager(storage, profiles);
+    prepareCurrentBackupSource(manager);
     manager.mutableSettings().brightness = 61;
     TEST_ASSERT_TRUE(manager.saveDeferredBackup());
     manager.serviceDeferredBackup(1000);
@@ -920,6 +966,7 @@ void test_partial_profile_loss_preserves_backups_until_assigned_profile_recovers
     TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
     TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("Spare")).success);
     SettingsManager source(storage, profiles);
+    prepareCurrentBackupSource(source);
     source.mutableSettings().slot2_comfort.profileName = "Road";
     TEST_ASSERT_TRUE(source.saveDeferredBackup());
     TEST_ASSERT_TRUE(source.backupToSD());
@@ -976,13 +1023,14 @@ void test_backup_accepts_empty_unassigned_and_complete_canonical_references() {
     storage.setFilesystem(&fs, true);
     TEST_ASSERT_TRUE(profiles.begin(storage));
     SettingsManager source(storage, profiles);
+    prepareCurrentBackupSource(source);
     JsonDocument doc;
     auto result = BackupPayloadBuilder::buildBackupDocument(
         doc, source.get(), profiles, BackupPayloadBuilder::BackupTransport::HttpDownload, 1000);
     TEST_ASSERT_TRUE(result.safeToCommit);
     TEST_ASSERT_TRUE(result.profileCatalogGenuinelyEmpty);
     TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("Road")).success);
-    for (int slot = 0; slot < 3; ++slot) source.mutableSettings().autoPushSlotView(slot).config.profileName = " Road ";
+    for (int slot = 0; slot < 3; ++slot) source.mutableSettings().autoPushSlotView(slot).config.profileName = "Road";
     result = BackupPayloadBuilder::buildBackupDocument(
         doc, source.get(), profiles, BackupPayloadBuilder::BackupTransport::HttpDownload, 1000);
     TEST_ASSERT_TRUE(result.safeToCommit);

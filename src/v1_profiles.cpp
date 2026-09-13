@@ -934,6 +934,7 @@ bool V1ProfileManager::begin(StorageManager& storage) {
 }
 
 bool V1ProfileManager::begin(fs::FS* filesystem, fs::FS* importFilesystem) {
+    ready_ = false;
     if (!filesystem) {
         Serial.println("[V1Profiles] No filesystem provided");
         ;
@@ -950,13 +951,28 @@ bool V1ProfileManager::begin(fs::FS* filesystem, fs::FS* importFilesystem) {
         return false;
     }
 
-    // Create profiles directory if it doesn't exist
-    if (!fs_->exists(profileDir_)) {
-        if (!fs_->mkdir(profileDir_)) {
-            Serial.println("[V1Profiles] Failed to create profiles directory");
+    const auto ensureProfileDirectory = [&](fs::FS* filesystem, const char* role) {
+        if (!filesystem) return true;
+        if (!filesystem->exists(profileDir_) && !filesystem->mkdir(profileDir_)) {
+            Serial.printf("[V1Profiles] Failed to create profiles directory on %s storage\n", role);
             return false;
         }
-        Serial.println("[V1Profiles] Created profiles directory");
+        File directory = filesystem->open(profileDir_);
+        const bool ready = directory && directory.isDirectory();
+        if (directory) directory.close();
+        if (!ready) {
+            Serial.printf("[V1Profiles] Profiles path is not a directory on %s storage\n", role);
+        }
+        return ready;
+    };
+
+    // Every configured mirror can become authoritative after an SD-card change.
+    // Establish both parent directories before reconciliation or any mirrored
+    // tombstone/write so an empty secondary store cannot strand recovery.
+    if (!ensureProfileDirectory(fs_, "primary") ||
+        !ensureProfileDirectory(secondaryFs_, "secondary")) {
+        lastError_ = "Profile storage directory unavailable";
+        return false;
     }
 
     if (importFilesystem && importFilesystem != fs_) {

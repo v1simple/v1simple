@@ -436,6 +436,35 @@ void test_save_profile_normal_path_still_succeeds() {
     TEST_ASSERT_EQUAL_UINT8(35, loaded.settings.bytes[5]);
 }
 
+void test_secondary_profile_directory_failure_stops_readiness_without_deleting_unrelated_data() {
+    const std::filesystem::path initialRoot = g_tempRoot / "initial";
+    const std::filesystem::path sdRoot = g_tempRoot / "sd_directory_failure";
+    const std::filesystem::path littleRoot = g_tempRoot / "little_directory_failure";
+    std::filesystem::create_directories(initialRoot);
+    std::filesystem::create_directories(sdRoot);
+    std::filesystem::create_directories(littleRoot);
+    fs::FS initial(initialRoot);
+    fs::FS sd(sdRoot);
+    fs::FS little(littleRoot);
+
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&initial));
+    TEST_ASSERT_TRUE(manager.isReady());
+    writeFileFromString(sd, "/keep.txt", "primary unrelated");
+    writeFileFromString(little, "/keep.txt", "secondary unrelated");
+    writeFileFromString(little, "/v1profiles", "not a directory");
+
+    StorageManager storage;
+    storage.setFilesystem(&sd, true);
+    storage.setLittleFS(&little);
+    TEST_ASSERT_FALSE(manager.begin(storage));
+    TEST_ASSERT_FALSE(manager.isReady());
+    TEST_ASSERT_EQUAL_STRING("Profile storage directory unavailable", manager.getLastError().c_str());
+    TEST_ASSERT_EQUAL_STRING("primary unrelated", readFileToString(sd, "/keep.txt").c_str());
+    TEST_ASSERT_EQUAL_STRING("secondary unrelated", readFileToString(little, "/keep.txt").c_str());
+    TEST_ASSERT_EQUAL_STRING("not a directory", readFileToString(little, "/v1profiles").c_str());
+}
+
 void test_maximum_description_and_64_definitions_fit_but_one_extra_byte_preserves_live_profile() {
     fs::FS fs(g_tempRoot);
     V1ProfileManager manager;
@@ -1349,6 +1378,7 @@ int main() {
     RUN_TEST(test_save_profile_short_write_new_file_leaves_no_live_json);
     RUN_TEST(test_save_profile_short_write_existing_file_preserves_previous_profile);
     RUN_TEST(test_save_profile_normal_path_still_succeeds);
+    RUN_TEST(test_secondary_profile_directory_failure_stops_readiness_without_deleting_unrelated_data);
     RUN_TEST(test_maximum_description_and_64_definitions_fit_but_one_extra_byte_preserves_live_profile);
     RUN_TEST(test_schema_v3_detector_policy_round_trips_with_authoritative_raw_bytes);
     RUN_TEST(test_detector_configuration_rejects_half_zero_sweep_without_mutating_output);

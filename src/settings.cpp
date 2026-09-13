@@ -179,6 +179,16 @@ void SettingsManager::begin() {
         Serial.println("[Settings] WARN: Failed to initialize WiFi client namespace");
     }
 
+    // A read-only Preferences open reports NOT_FOUND for an unused namespace.
+    // Materialize the runtime namespace once so "no deletion intent" remains
+    // distinguishable from a genuine NVS access failure at boot.
+    Preferences v1RuntimeNs;
+    if (v1RuntimeNs.begin(kSettingsV1RuntimeNamespace, false)) {
+        v1RuntimeNs.end();
+    } else {
+        Serial.println("[Settings] WARN: Failed to initialize V1 runtime namespace");
+    }
+
     load();
     resolveWifiCredentialTransaction();
 

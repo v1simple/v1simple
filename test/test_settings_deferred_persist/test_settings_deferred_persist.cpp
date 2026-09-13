@@ -467,6 +467,51 @@ void test_device_delete_intent_converges_fallback_and_both_catalog_copies() {
     TEST_ASSERT_TRUE(rebooted.listDevices().empty());
 }
 
+void test_absent_runtime_namespace_is_initialized_before_delete_recovery() {
+    mock_preferences::set_require_existing_namespace_for_read(true);
+    Preferences absent;
+    TEST_ASSERT_FALSE(absent.begin(kSettingsV1RuntimeNamespace, true));
+
+    SettingsManager manager(storage, profiles);
+    manager.begin();
+
+    TEST_ASSERT_NOT_NULL(mock_preferences::findNamespace(kSettingsV1RuntimeNamespace));
+    fs::FS primary(g_tempRoot / "empty_device_catalog");
+    V1DeviceStore devices;
+    TEST_ASSERT_TRUE(devices.begin(&primary));
+    TEST_ASSERT_TRUE(manager.resolvePendingV1DeviceDelete(devices));
+}
+
+void test_unavailable_runtime_namespace_still_fails_delete_recovery_closed() {
+    mock_preferences::set_require_existing_namespace_for_read(true);
+    mock_preferences::set_fail_begin_for_namespace(kSettingsV1RuntimeNamespace);
+    SettingsManager manager(storage, profiles);
+    manager.begin();
+
+    fs::FS primary(g_tempRoot / "unavailable_device_catalog");
+    V1DeviceStore devices;
+    TEST_ASSERT_TRUE(devices.begin(&primary));
+    TEST_ASSERT_FALSE(manager.resolvePendingV1DeviceDelete(devices));
+    mock_preferences::set_fail_begin_for_namespace(nullptr);
+}
+
+void test_invalid_runtime_delete_intent_remains_preserved_and_blocking() {
+    mock_preferences::set_require_existing_namespace_for_read(true);
+    SettingsManager manager(storage, profiles);
+    manager.begin();
+    Preferences runtime;
+    TEST_ASSERT_TRUE(runtime.begin(kSettingsV1RuntimeNamespace, false));
+    TEST_ASSERT_EQUAL_UINT(sizeof(uint8_t), runtime.putUChar(kNvsV1DeleteReady, 2));
+    runtime.end();
+
+    fs::FS primary(g_tempRoot / "invalid_device_catalog");
+    V1DeviceStore devices;
+    TEST_ASSERT_TRUE(devices.begin(&primary));
+    TEST_ASSERT_FALSE(manager.resolvePendingV1DeviceDelete(devices));
+    TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(kSettingsV1RuntimeNamespace,
+                                                        kNvsV1DeleteReady));
+}
+
 void test_device_delete_primary_failure_is_durable_pending_and_boot_retries() {
     fs::FS primary(g_tempRoot / "delete_retry");
     V1DeviceStore devices;
@@ -729,6 +774,9 @@ int main() {
     RUN_TEST(test_last_v1_address_degraded_fallback_uses_one_idempotent_nvs_key);
     RUN_TEST(test_full_settings_save_supersedes_pending_degraded_fallback);
     RUN_TEST(test_device_delete_intent_converges_fallback_and_both_catalog_copies);
+    RUN_TEST(test_absent_runtime_namespace_is_initialized_before_delete_recovery);
+    RUN_TEST(test_unavailable_runtime_namespace_still_fails_delete_recovery_closed);
+    RUN_TEST(test_invalid_runtime_delete_intent_remains_preserved_and_blocking);
     RUN_TEST(test_device_delete_primary_failure_is_durable_pending_and_boot_retries);
     RUN_TEST(test_device_delete_staging_failures_never_publish_intent_or_mutate);
     RUN_TEST(test_device_delete_clears_matching_pending_fallback_but_preserves_other_durable_address);

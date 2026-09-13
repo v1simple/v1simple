@@ -35,6 +35,7 @@ inline constexpr size_t kUnlimitedWriteBudget = std::numeric_limits<size_t>::max
 inline size_t g_new_file_write_budget = kUnlimitedWriteBudget;
 inline std::string g_fail_next_read_path;
 inline std::string g_fail_next_remove_path;
+inline bool g_require_existing_write_parent = false;
 
 }  // namespace mock_fs_detail
 
@@ -268,7 +269,13 @@ private:
             iosMode |= std::ios::app;
         }
 
-        std::filesystem::create_directories(path.parent_path(), ec);
+        if (state->writable && mock_fs_detail::g_require_existing_write_parent &&
+            !std::filesystem::is_directory(path.parent_path(), ec)) {
+            return File();
+        }
+        if (!mock_fs_detail::g_require_existing_write_parent) {
+            std::filesystem::create_directories(path.parent_path(), ec);
+        }
         state->stream.open(path, iosMode);
         if (!state->stream.is_open()) {
             return File();
@@ -316,6 +323,11 @@ inline void mock_fail_next_read_open(const char* path) {
 
 inline void mock_reset_fs_open_state() {
     mock_fs_detail::g_fail_next_read_path.clear();
+    mock_fs_detail::g_require_existing_write_parent = false;
+}
+
+inline void mock_require_existing_write_parent(bool enabled) {
+    mock_fs_detail::g_require_existing_write_parent = enabled;
 }
 
 inline void mock_fail_next_remove(const char* path) {

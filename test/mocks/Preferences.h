@@ -55,6 +55,11 @@ inline std::string& failBeginNamespace() {
     return g_failBeginNamespace;
 }
 
+inline bool& requireExistingNamespaceForRead() {
+    static bool g_requireExistingNamespaceForRead = false;
+    return g_requireExistingNamespaceForRead;
+}
+
 inline std::string& failStringReadKey() {
     static std::string g_failStringReadKey;
     return g_failStringReadKey;
@@ -89,6 +94,7 @@ inline void reset() {
     failWrites() = false;
     failWriteKey().clear();
     failBeginNamespace().clear();
+    requireExistingNamespaceForRead() = false;
     failStringReadKey().clear();
     entryLimit() = 0;
     missingStringReadCounts().clear();
@@ -105,6 +111,10 @@ inline void set_fail_writes_for_key(const char* key) {
 
 inline void set_fail_begin_for_namespace(const char* name) {
     failBeginNamespace() = name ? name : "";
+}
+
+inline void set_require_existing_namespace_for_read(bool enabled) {
+    requireExistingNamespaceForRead() = enabled;
 }
 
 inline void set_fail_string_read_for_key(const char* key) {
@@ -242,8 +252,10 @@ public:
 
     bool begin(const char* name, bool readOnly = false, const char* /*partition_label*/ = nullptr) {
         if (!name || name[0] == '\0' ||
-            (!readOnly && !mock_preferences::failBeginNamespace().empty() &&
-             mock_preferences::failBeginNamespace() == name)) {
+            (!mock_preferences::failBeginNamespace().empty() &&
+             mock_preferences::failBeginNamespace() == name) ||
+            (readOnly && mock_preferences::requireExistingNamespaceForRead() &&
+             mock_preferences::findNamespace(name) == nullptr)) {
             started_ = false;
             namespaceName_.clear();
             return false;

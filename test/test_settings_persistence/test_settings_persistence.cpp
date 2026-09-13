@@ -3393,6 +3393,61 @@ void test_interrupted_restore_after_profile_write_reboots_to_old_profile() {
     TEST_ASSERT_FALSE(fs.exists("/v1restore_transaction.json"));
 }
 
+void test_interrupted_restore_with_empty_secondary_converges_without_profile_resurrection() {
+    const std::filesystem::path sdRoot = g_tempRoot / "sd_empty_secondary";
+    const std::filesystem::path littleRoot = g_tempRoot / "little_empty_secondary";
+    std::filesystem::create_directories(sdRoot);
+    std::filesystem::create_directories(littleRoot);
+    fs::FS sd(sdRoot);
+    fs::FS little(littleRoot);
+    fs::mock_require_existing_write_parent(true);
+
+    // Model an interrupted restore retained on SD before an empty LittleFS
+    // secondary is attached on the next boot.
+    storage.setFilesystem(&sd, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager interrupted(storage, profiles);
+    JsonDocument incoming;
+    incoming["_type"] = "v1simple_backup";
+    JsonObject added = incoming["profiles"].to<JsonArray>().add<JsonObject>();
+    added["name"] = "Auto-Push Slot 1";
+    JsonArray bytes = added["bytes"].to<JsonArray>();
+    for (int index = 0; index < 6; ++index) bytes.add(static_cast<uint8_t>(40 + index));
+    interrupted.utInterruptRestoreAfterProfiles(true);
+    TEST_ASSERT_FALSE(interrupted.applyBackupDocument(incoming, true).success);
+    TEST_ASSERT_TRUE(sd.exists("/v1restore_transaction.json"));
+    TEST_ASSERT_FALSE(little.exists("/v1profiles"));
+
+    storage.setLittleFS(&little);
+    V1ProfileManager rebootProfiles;
+    TEST_ASSERT_TRUE(rebootProfiles.begin(storage));
+    TEST_ASSERT_TRUE(little.exists("/v1profiles"));
+    SettingsManager rebooted(storage, rebootProfiles);
+    TEST_ASSERT_FALSE(rebooted.checkAndRestoreFromSD());
+    TEST_ASSERT_FALSE(sd.exists("/v1restore_transaction.json"));
+    TEST_ASSERT_FALSE(little.exists("/v1restore_transaction.json"));
+    V1Profile removed;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::NotFound),
+                          static_cast<int>(rebootProfiles.loadProfileResult("Auto-Push Slot 1", removed).status));
+
+    // With the SD absent, the secondary tombstone remains authoritative and
+    // cannot resurrect the profile removed by rollback.
+    StorageManager offlineStorage;
+    offlineStorage.setFilesystem(&little, false);
+    V1ProfileManager offlineProfiles;
+    TEST_ASSERT_TRUE(offlineProfiles.begin(offlineStorage));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::NotFound),
+                          static_cast<int>(offlineProfiles.loadProfileResult("Auto-Push Slot 1", removed).status));
+
+    // Reattaching the SD is also idempotent: no journal or profile reappears.
+    V1ProfileManager reattachedProfiles;
+    TEST_ASSERT_TRUE(reattachedProfiles.begin(storage));
+    SettingsManager reattached(storage, reattachedProfiles);
+    TEST_ASSERT_FALSE(reattached.checkAndRestoreFromSD());
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::NotFound),
+                          static_cast<int>(reattachedProfiles.loadProfileResult("Auto-Push Slot 1", removed).status));
+}
+
 void test_restore_profile_rollback_allocation_failure_retains_journal_and_later_converges() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
@@ -5448,6 +5503,7 @@ int main() {
     RUN_TEST(test_restore_transaction_journal_is_mirrored_and_cleared_on_recovery);
     RUN_TEST(test_restore_recovery_uses_valid_mirror_when_primary_journal_exceeds_catalog_cap);
     RUN_TEST(test_interrupted_restore_after_profile_write_reboots_to_old_profile);
+    RUN_TEST(test_interrupted_restore_with_empty_secondary_converges_without_profile_resurrection);
     RUN_TEST(test_restore_profile_rollback_allocation_failure_retains_journal_and_later_converges);
     RUN_TEST(test_restore_password_remove_failure_rolls_back_on_modeled_reboot);
     RUN_TEST(test_restore_password_write_failure_does_not_create_partial_network);

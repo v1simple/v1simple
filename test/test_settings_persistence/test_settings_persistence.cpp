@@ -5253,7 +5253,7 @@ void test_failed_immediate_mutation_retains_earlier_deferred_retry() {
     }
 }
 
-void test_profile_taps_fail_closed_without_fresh_snapshot_then_accept_new_selection() {
+void test_callbackless_profile_tap_fallback_stays_local_without_detector_writes() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
     TEST_ASSERT_TRUE(profiles.begin(storage));
@@ -5262,15 +5262,19 @@ void test_profile_taps_fail_closed_without_fresh_snapshot_then_accept_new_select
     ProfileTapHarness input(manager);
     input.triple(1000);
     TEST_ASSERT_EQUAL_INT(1, manager.get().activeSlot);
+    TEST_ASSERT_EQUAL_INT(1, input.display.lastProfileIndicatorSlot);
     input.advancePush(1600);
     input.advancePush(1600);
-    input.advancePush(1630); // Preflight consumes no stale persisted detector state.
+    input.advancePush(1630);
     TEST_ASSERT_FALSE(input.push.isActive());
     TEST_ASSERT_EQUAL_INT(0, input.ble.writeUserBytesCalls);
     input.triple(1750);
     TEST_ASSERT_EQUAL_INT(2, manager.get().activeSlot);
     TEST_ASSERT_EQUAL_INT(2, input.display.lastProfileIndicatorSlot);
-    TEST_ASSERT_TRUE(input.push.isActive());
+    // Production installs the durable operation callback. A callback-less
+    // module is deliberately local-only and must never recreate the retired
+    // direct-to-AutoPush path with stale detector evidence.
+    TEST_ASSERT_FALSE(input.push.isActive());
     for (unsigned long now : {2400ul, 2400ul, 2430ul}) input.advancePush(now);
     TEST_ASSERT_FALSE(input.push.isActive());
     TEST_ASSERT_EQUAL_INT(0, input.ble.writeUserBytesCalls);
@@ -5311,7 +5315,7 @@ int main() {
     RUN_TEST(test_successful_profile_tap_commits_earlier_obd_sync_save);
     RUN_TEST(test_failed_immediate_mutation_retains_earlier_deferred_retry);
     RUN_TEST(test_profile_taps_preserve_accepted_state_when_persistence_fails);
-    RUN_TEST(test_profile_taps_fail_closed_without_fresh_snapshot_then_accept_new_selection);
+    RUN_TEST(test_callbackless_profile_tap_fallback_stays_local_without_detector_writes);
     RUN_TEST(test_profile_taps_keep_local_selection_when_offline_or_auto_push_disabled);
     RUN_TEST(test_profile_ownership_migration_preserves_real_executor_trace_and_rolls_forward_committed_journal);
     RUN_TEST(test_actual_http_saves_keep_new_backup_when_old_writer_runs_first);

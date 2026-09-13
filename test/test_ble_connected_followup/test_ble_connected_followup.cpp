@@ -81,6 +81,35 @@ void sendSweepRequestsAndComplete(V1BLEClient& client) {
 V1BLEClient::V1BLEClient() {}
 V1BLEClient::~V1BLEClient() {}
 
+bool V1BLEClient::isConnected() {
+    return connected_.load(std::memory_order_acquire) && pClient_ && pClient_->isConnected();
+}
+
+void V1BLEClient::resetSessionSettingsCapture() {
+    hasSessionUserBytes_ = false;
+    std::memset(sessionUserBytes_, 0xFF, sizeof(sessionUserBytes_));
+    sessionUserBytesRevision_ = 0;
+    sessionUserBytesIngressSequence_ = 0;
+    sessionUserBytesIngressBoundary_ = 0;
+    sessionUserBytesCaptureArmed_ = false;
+    expectsSessionAllVolume_ = false;
+    hasSessionAllVolume_ = false;
+    sessionAllVolumeIngressSequence_ = 0;
+    sessionAllVolumeIngressBoundary_ = 0;
+    sessionAllVolumeCaptureArmed_ = false;
+    expectsSessionSweeps_ = false;
+    hasSessionSweepSections_ = false;
+    hasSessionSweepMax_ = false;
+    hasSessionSweepDefinitions_ = false;
+    sessionSweepSectionsResetPending_ = false;
+    sessionSweepMaxResetPending_ = false;
+    sessionSweepDefinitionsResetPending_ = false;
+    sessionSweepSectionsIngressBoundary_ = 0;
+    sessionSweepMaxIngressBoundary_ = 0;
+    sessionSweepDefinitionsIngressBoundary_ = 0;
+    settingsCaptureTimedOut_ = false;
+}
+
 bool V1BLEClient::requestAlertData() {
     ++gAlertRequestCalls;
     const bool result = gAlertRequestResults.empty() ? true : gAlertRequestResults.front();
@@ -122,6 +151,51 @@ void setUp() {
 }
 
 void tearDown() {}
+
+void test_explicit_settings_recapture_requires_idle_known_connected_session_and_resets_evidence() {
+    V1BLEClient client;
+    NimBLEClient transport;
+    transport.setConnected(true);
+    client.pClient_ = &transport;
+    client.connected_.store(true, std::memory_order_release);
+    client.connectedFollowupStep_ = V1BLEClient::ConnectedFollowupStep::NONE;
+    client.v1FirmwareVersion_.store(41039, std::memory_order_release);
+    client.hasSessionUserBytes_ = true;
+    client.sessionUserBytesRevision_ = 7;
+    client.hasSessionAllVolume_ = true;
+    client.hasSessionSweepSections_ = true;
+    client.settingsCaptureTimedOut_ = true;
+    mockMillis = 123;
+
+    TEST_ASSERT_TRUE(client.beginSettingsRecapture());
+    TEST_ASSERT_EQUAL(V1BLEClient::ConnectedFollowupStep::REQUEST_ALL_VOLUME,
+                      client.connectedFollowupStep_);
+    TEST_ASSERT_TRUE(client.expectsSessionAllVolume_);
+    TEST_ASSERT_FALSE(client.hasSessionUserBytes_);
+    TEST_ASSERT_EQUAL_UINT32(0, client.sessionUserBytesRevision_);
+    TEST_ASSERT_FALSE(client.hasSessionAllVolume_);
+    TEST_ASSERT_FALSE(client.hasSessionSweepSections_);
+    TEST_ASSERT_FALSE(client.settingsCaptureTimedOut_);
+    TEST_ASSERT_EQUAL_UINT32(0, client.connectedFollowupNextAttemptMs_);
+    TEST_ASSERT_EQUAL_UINT32(123 + V1BLEClient::CONNECTED_FOLLOWUP_SEND_TIMEOUT_MS,
+                             client.connectedFollowupSendDeadlineMs_);
+
+    client.connectedFollowupStep_ = V1BLEClient::ConnectedFollowupStep::NONE;
+    client.v1FirmwareVersion_.store(41036, std::memory_order_release);
+    TEST_ASSERT_TRUE(client.beginSettingsRecapture());
+    TEST_ASSERT_EQUAL(V1BLEClient::ConnectedFollowupStep::REQUEST_USER_BYTES,
+                      client.connectedFollowupStep_);
+    TEST_ASSERT_FALSE(client.expectsSessionAllVolume_);
+
+    client.connectedFollowupStep_ = V1BLEClient::ConnectedFollowupStep::REQUEST_USER_BYTES;
+    TEST_ASSERT_FALSE(client.beginSettingsRecapture());
+    client.connectedFollowupStep_ = V1BLEClient::ConnectedFollowupStep::NONE;
+    client.v1FirmwareVersion_.store(0, std::memory_order_release);
+    TEST_ASSERT_FALSE(client.beginSettingsRecapture());
+    client.v1FirmwareVersion_.store(41039, std::memory_order_release);
+    transport.setConnected(false);
+    TEST_ASSERT_FALSE(client.beginSettingsRecapture());
+}
 
 void test_alert_request_transient_failure_retries_then_settles() {
     V1BLEClient client;
@@ -508,6 +582,7 @@ void test_missing_snapshot_response_times_out_as_partial_before_callback() {
 
 int main(int argc, char** argv) {
     UNITY_BEGIN();
+    RUN_TEST(test_explicit_settings_recapture_requires_idle_known_connected_session_and_resets_evidence);
     RUN_TEST(test_alert_request_transient_failure_retries_then_settles);
     RUN_TEST(test_alert_request_retry_deadline_is_bounded);
     RUN_TEST(test_not_yet_retries_in_order_without_spinning_or_duplicate_success);

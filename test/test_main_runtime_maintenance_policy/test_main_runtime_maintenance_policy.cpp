@@ -371,7 +371,7 @@ void test_boot_long_press_and_timeout_exits_cannot_be_vetoed_by_logging() {
 
 void test_maintenance_entry_flushes_pending_detector_state_before_boot_request() {
     const std::string wiring = readFile(projectRoot() + "/src/drive_runtime.cpp");
-    const std::string entryBody = extractFunctionBody(wiring, "void DriveRuntime::requestMaintenanceBootRestart()");
+    const std::string entryBody = extractFunctionBody(wiring, "bool DriveRuntime::requestMaintenanceBootRestart()");
     const size_t pending = entryBody.find("devices_.hasPendingSave()");
     const size_t flush = entryBody.find("devices_.flushPendingSave()");
     const size_t request = entryBody.find("requestMaintenanceBoot()");
@@ -389,13 +389,14 @@ void test_maintenance_entry_flushes_pending_detector_state_before_boot_request()
     TEST_ASSERT_TRUE(cleanup < restart);
     const std::string flushFailure = extractFunctionBody(entryBody, "if (!snapshotSaved)");
     TEST_ASSERT_NOT_EQUAL(std::string::npos, flushFailure.find("restart cancelled"));
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, flushFailure.find("return;"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, flushFailure.find("return false;"));
     TEST_ASSERT_EQUAL(std::string::npos, entryBody.find("return;", cleanup));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, entryBody.find("return true;", restart));
 }
 
 void test_controlled_restarts_mark_clean_only_after_settings_save_succeeds() {
     const std::string drive = extractFunctionBody(readFile(projectRoot() + "/src/drive_runtime.cpp"),
-                                                  "void DriveRuntime::requestMaintenanceBootRestart()");
+                                                  "bool DriveRuntime::requestMaintenanceBootRestart()");
     const std::string maintenance = extractFunctionBody(readFile(projectRoot() + "/src/maintenance_runtime.cpp"),
                                                         "void MaintenanceRuntime::restartNormal(");
 

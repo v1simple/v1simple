@@ -6,6 +6,8 @@
 
 #include <cstdint>
 
+#include "../../v1_settings_operation.h"
+
 namespace WifiAutoPushApiService {
 
 enum class ProfileAssignmentStatus : uint8_t {
@@ -15,6 +17,13 @@ enum class ProfileAssignmentStatus : uint8_t {
     IoError,
     Corrupt,
     InvalidName,
+};
+
+enum class OperationTargetStatus : uint8_t {
+    Allowed = 0,
+    NotFound,
+    UnsupportedFirmware,
+    Unavailable,
 };
 
 struct SlotConfig {
@@ -68,6 +77,13 @@ struct ActivationRequest {
     bool enable = true;
 };
 
+struct OperationStartRequest {
+    V1SettingsOperationStore::Kind kind = V1SettingsOperationStore::Kind::None;
+    int slot = -1;
+    String profileName;
+    String targetAddress;
+};
+
 struct Runtime {
     void (*loadSlotsSnapshot)(SlotsSnapshot& snapshot, void* ctx) = nullptr;
     void* loadSlotsSnapshotCtx = nullptr;
@@ -111,11 +127,30 @@ struct Runtime {
     void* appendPushStatusJsonCtx = nullptr;
     bool (*loadSlotsSnapshotResult)(SlotsSnapshot& snapshot, void* ctx) = nullptr;
     void* loadSlotsSnapshotResultCtx = nullptr;
+    V1SettingsOperationStore::StartResult (*startOperation)(const OperationStartRequest& request,
+                                                            void* ctx) = nullptr;
+    void* startOperationCtx = nullptr;
+    bool (*loadOperation)(V1SettingsOperationStore::Snapshot& snapshot, void* ctx) = nullptr;
+    void* loadOperationCtx = nullptr;
+    OperationTargetStatus (*validateOperationTarget)(const String& canonicalAddress,
+                                                     bool requireGen2, void* ctx) = nullptr;
+    void* validateOperationTargetCtx = nullptr;
+    void (*restartForOperation)(void* ctx) = nullptr;
+    void* restartForOperationCtx = nullptr;
 };
 
 void handleApiSlots(WebServer& server, const Runtime& runtime);
 
 void handleApiStatus(WebServer& server, const Runtime& runtime);
+void handleApiStatusQuery(WebServer& server, const Runtime& runtime,
+                          const uint8_t* query, size_t querySize);
+
+void handleApiApplySlotBody(WebServer& server, const Runtime& runtime,
+                            const uint8_t* body, size_t bodySize);
+void handleApiApplyProfileBody(WebServer& server, const Runtime& runtime,
+                               const uint8_t* body, size_t bodySize);
+void handleApiFactoryResetBody(WebServer& server, const Runtime& runtime,
+                               const uint8_t* body, size_t bodySize);
 
 void handleApiSlotSave(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
                        void* rateLimitCtx);

@@ -15,9 +15,20 @@ class QuietCoordinatorModule;
 
 class TapGestureModule {
   public:
+    struct Callbacks {
+        bool (*beginProfileCycle)(int newSlot, void* context);
+        void* beginProfileCycleContext;
+    };
+
     void begin(TouchHandler* touchHandler, SettingsManager* settings, V1Display* display, V1BLEClient* bleClient,
                PacketParser* parser, AutoPushModule* autoPushModule, AlertPersistenceModule* alertPersistenceModule,
-               DisplayMode* displayModePtr, QuietCoordinatorModule* quietCoordinator);
+               DisplayMode* displayModePtr, QuietCoordinatorModule* quietCoordinator) {
+        begin(touchHandler, settings, display, bleClient, parser, autoPushModule,
+              alertPersistenceModule, displayModePtr, quietCoordinator, Callbacks{});
+    }
+    void begin(TouchHandler* touchHandler, SettingsManager* settings, V1Display* display, V1BLEClient* bleClient,
+               PacketParser* parser, AutoPushModule* autoPushModule, AlertPersistenceModule* alertPersistenceModule,
+               DisplayMode* displayModePtr, QuietCoordinatorModule* quietCoordinator, Callbacks callbacks);
 
     void process(unsigned long nowMs, bool profileCycleAllowed = true);
 
@@ -35,6 +46,7 @@ class TapGestureModule {
     AlertPersistenceModule* alertPersistence_ = nullptr;
     DisplayMode* displayMode_ = nullptr;
     QuietCoordinatorModule* quiet_ = nullptr;
+    Callbacks callbacks_{};
 
     unsigned long lastTapTime_ = 0;
     int tapCount_ = 0;

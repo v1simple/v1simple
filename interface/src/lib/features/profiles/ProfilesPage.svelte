@@ -16,6 +16,15 @@
         toApiDetectorConfiguration,
         toApiSettings
     } from '$lib/features/profiles/profileSettingsAdapter';
+    import {
+        DETECTOR_OPERATION_POLL_WINDOW_MS,
+        DETECTOR_OPERATION_STATES,
+        forgetDetectorOperationId,
+        readDetectorOperationId,
+        rememberDetectorOperationId,
+        validDetectorOperationStart,
+        validDetectorOperationStatus
+    } from '$lib/features/profiles/detectorOperation';
 
     let profiles = $state([]);
     let currentProfile = $state(null);
@@ -40,7 +49,14 @@
     let capturedSnapshot = $state(null);
     let snapshotLoading = $state(true);
     let profileSchemaReady = $state(true);
+    let operationStatus = $state(null);
+    let operationBusy = $state(false);
+    let factoryConfirmation = $state('');
     const PROFILE_LOAD_ERROR_TEXT = 'Failed to load profiles';
+    let operationPollTimer = null;
+    let operationPollDeadline = 0;
+    let operationPollFailures = 0;
+    let operationPollEpoch = 0;
 
     function validateProfileName(raw) {
         const canonical = raw.trim();
@@ -91,12 +107,185 @@
     onMount(() => {
         void fetchProfiles();
         void fetchCapturedSnapshot();
+        operationPollDeadline = Date.now() + DETECTOR_OPERATION_POLL_WINDOW_MS;
+        void resumeDetectorOperation();
+        return () => {
+            operationPollEpoch += 1;
+            if (operationPollTimer) clearTimeout(operationPollTimer);
+        };
     });
+
+    function storedOperationId() {
+        return readDetectorOperationId(window.localStorage);
+    }
+
+    function forgetOperationId() {
+        forgetDetectorOperationId(window.localStorage);
+    }
+
+    function scheduleOperationPoll() {
+        if (Date.now() >= operationPollDeadline) {
+            message = {
+                type: 'warning',
+                text: 'Detector operation status polling paused after five minutes. Reload to resume the exact operation.'
+            };
+            return;
+        }
+        if (operationPollTimer) clearTimeout(operationPollTimer);
+        const delay = Math.min(5000, 750 * (2 ** Math.min(operationPollFailures, 3)));
+        operationPollTimer = setTimeout(() => void resumeDetectorOperation(), delay);
+    }
+
+    function validOperationStatus(status, operationId) {
+        return validDetectorOperationStatus(status, operationId);
+    }
+
+    function rememberOperationId(operationId) {
+        rememberDetectorOperationId(window.localStorage, operationId);
+    }
+
+    async function resumeDetectorOperation() {
+        const operationId = storedOperationId();
+        if (!Number.isSafeInteger(operationId) || operationId <= 0) return;
+        const pollEpoch = operationPollEpoch;
+        try {
+            const res = await fetchWithTimeout(
+                `/api/autopush/status?operationId=${encodeURIComponent(operationId)}`,
+                {}, undefined, async (response) => ({
+                    status: response.status,
+                    ok: response.ok,
+                    body: await response.json()
+                })
+            );
+            if (pollEpoch !== operationPollEpoch || storedOperationId() !== operationId) return;
+            if (res.status === 409) {
+                operationStatus = null;
+                forgetOperationId();
+                message = {
+                    type: 'error',
+                    text: `Saved operation ${operationId} does not match the detector's current operation. No status was reused.`
+                };
+                return;
+            }
+            if (!res.ok) {
+                operationPollFailures += 1;
+                scheduleOperationPoll();
+                return;
+            }
+            const status = res.body;
+            if (!validOperationStatus(status, operationId)) {
+                operationStatus = null;
+                message = { type: 'error', text: 'Detector operation returned malformed or mismatched status.' };
+                return;
+            }
+            const priorState = operationStatus?.operationId === operationId ? operationStatus.state : null;
+            const priorRank = DETECTOR_OPERATION_STATES.indexOf(priorState);
+            const nextRank = DETECTOR_OPERATION_STATES.indexOf(status.state);
+            if (priorRank >= 0 && !status.terminal && nextRank < priorRank) {
+                message = { type: 'error', text: 'Detector operation status regressed; stale status was rejected.' };
+                return;
+            }
+            operationStatus = status;
+            operationPollFailures = 0;
+            if (status.terminal) forgetOperationId();
+            else scheduleOperationPoll();
+        } catch {
+            if (pollEpoch !== operationPollEpoch || storedOperationId() !== operationId) return;
+            // Normal mode intentionally takes Wi-Fi down while the operation runs.
+            operationPollFailures += 1;
+            scheduleOperationPoll();
+        }
+    }
+
+    async function startDetectorOperation(path, body, label) {
+        if (operationBusy) return;
+        operationBusy = true;
+        message = { type: 'info', text: `${label} is being queued...` };
+        try {
+            const res = await fetchWithTimeout(path, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+                body
+            }, undefined, async (response) => ({
+                status: response.status,
+                ok: response.ok,
+                body: await response.json()
+            }));
+            const response = res.body;
+            if (!res.ok) {
+                message = {
+                    type: 'error',
+                    text: response.error || `${label} could not be queued (HTTP ${res.status})`
+                };
+                return;
+            }
+            if (!validDetectorOperationStart(response)) {
+                message = { type: 'error', text: `${label} returned an invalid operation identity.` };
+                return;
+            }
+            operationPollEpoch += 1;
+            if (operationPollTimer) clearTimeout(operationPollTimer);
+            rememberOperationId(response.operationId);
+            operationStatus = {
+                operationId: response.operationId,
+                state: response.state,
+                result: 'in_progress',
+                terminal: false,
+                components: {}
+            };
+            operationPollDeadline = Date.now() + DETECTOR_OPERATION_POLL_WINDOW_MS;
+            operationPollFailures = 0;
+            scheduleOperationPoll();
+            message = {
+                type: 'info',
+                text: `${label} queued as operation ${response.operationId}. V1Simple will restart, verify the exact captured detector in normal mode, and return here.`
+            };
+        } catch {
+            message = { type: 'error', text: `${label} connection was interrupted before acceptance was confirmed.` };
+        } finally {
+            operationBusy = false;
+        }
+    }
+
+    function applySavedProfile() {
+        const savedName = currentProfile?.name;
+        const stillSaved = savedName && profiles.some((profile) => profile.name === savedName);
+        const address = capturedSnapshot?.address;
+        if (!stillSaved || !address) {
+            message = { type: 'error', text: 'Load a saved profile and a captured detector first.' };
+            return;
+        }
+        const body = new URLSearchParams();
+        body.set('profile', savedName);
+        body.set('address', address);
+        void startDetectorOperation('/api/v1/apply', body, `Apply saved profile "${savedName}"`);
+    }
+
+    function factoryResetDetector() {
+        const address = capturedSnapshot?.address;
+        if (!address || factoryConfirmation !== 'RESET V1') {
+            message = { type: 'error', text: 'Type RESET V1 to confirm the detector factory reset.' };
+            return;
+        }
+        const body = new URLSearchParams();
+        body.set('address', address);
+        body.set('confirm', factoryConfirmation);
+        void startDetectorOperation('/api/v1/factory-reset', body, 'Detector factory reset');
+    }
 
     async function fetchCapturedSnapshot() {
         try {
-            const res = await fetchWithTimeout('/api/v1/snapshot');
-            capturedSnapshot = res.ok ? await res.json() : { available: false };
+            const loaded = await fetchWithTimeout(
+                '/api/v1/snapshot', {}, undefined, async (response) => ({
+                    ok: response.ok,
+                    body: response.ok ? await response.json() : null
+                })
+            );
+            const snapshot = loaded.ok ? loaded.body : null;
+            capturedSnapshot = snapshot?.available === true &&
+                /^[0-9A-F]{2}(?::[0-9A-F]{2}){5}$/.test(snapshot.address || '')
+                ? snapshot
+                : { available: false };
         } catch (e) {
             capturedSnapshot = { available: false };
         } finally {
@@ -422,6 +611,45 @@
 
     <StatusAlert {message} />
 
+    {#if operationStatus}
+        <div class="surface-card" aria-label="Detector operation status">
+            <div class="card-body space-y-3">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                    <h2 class="card-title">Detector operation {operationStatus.operationId}</h2>
+                    <span class:badge-success={operationStatus.state === 'succeeded'}
+                          class:badge-warning={operationStatus.state === 'partial'}
+                          class:badge-error={operationStatus.state === 'failed'}
+                          class="badge">
+                        {operationStatus.state || 'unknown'}
+                    </span>
+                </div>
+                <p class="copy-muted">
+                    Result: {operationStatus.result || 'in_progress'} · Reason: {operationStatus.reason || 'none'}
+                </p>
+                {#if operationStatus.kind && operationStatus.targetAddress}
+                    <p class="copy-caption">
+                        {operationStatus.kind} · target {operationStatus.targetAddress} · source {operationStatus.source}
+                    </p>
+                {/if}
+                {#if operationStatus.components}
+                    <div class="grid gap-2 sm:grid-cols-2">
+                        {#each Object.entries(operationStatus.components) as [name, component] (name)}
+                            {#if component.requested}
+                                <div class="surface-panel">
+                                    <div class="copy-caption">{name}</div>
+                                    <div>{component.outcome} · {component.reason}</div>
+                                    <div class="copy-caption">
+                                        sent {component.sent ? 'yes' : 'no'} · verified {component.verified ? 'yes' : 'no'}
+                                    </div>
+                                </div>
+                            {/if}
+                        {/each}
+                    </div>
+                {/if}
+            </div>
+        </div>
+    {/if}
+
     {#if !loading && !profileSchemaReady}
         <StatusAlert
             message="Profile migration is pending. Creation and editing stay read-only, but existing profiles can be deleted if the older catalog is too large to migrate safely."
@@ -523,6 +751,25 @@
                         Start draft from captured settings
                     </button>
                 </div>
+                {#if capturedSnapshot.capabilities?.detectorFactoryResetWorkflowAvailable}
+                    <div class="surface-panel space-y-2">
+                        <h3 class="font-semibold">Factory reset this detector</h3>
+                        <p class="copy-caption">
+                            This sends the vendor factory-default command to {capturedSnapshot.address} in normal mode.
+                            V1Simple will freshly recapture the detector afterward. User-byte defaults can be verified;
+                            numeric factory volume and other undocumented defaults remain explicitly unverified.
+                        </p>
+                        <label class="field-control">
+                            <span class="field-label copy-caption">Type RESET V1 to confirm</span>
+                            <input class="input input-sm" bind:value={factoryConfirmation} autocomplete="off" />
+                        </label>
+                        <button class="btn btn-error btn-sm" type="button"
+                            disabled={operationBusy || factoryConfirmation !== 'RESET V1'}
+                            onclick={factoryResetDetector}>
+                            Factory reset captured V1
+                        </button>
+                    </div>
+                {/if}
             {/if}
         </div>
     </div>
@@ -674,7 +921,7 @@
                     </button>
                 </div>
                 <p class="copy-caption">
-                    Local defaults only edit this draft. Detector factory reset is a separate destructive workflow and is not available in this version.
+                    Local defaults only edit this draft. Detector factory reset is the separately confirmed workflow attached to the captured V1 above.
                 </p>
             </div>
         </div>
@@ -694,6 +941,23 @@
             onshowSaveDialog={openSaveDialog}
         />
 
+        {#if currentProfile?.name && profiles.some((profile) => profile.name === currentProfile.name)}
+            <div class="surface-card">
+                <div class="card-body space-y-2">
+                    <h2 class="card-title">Apply saved profile</h2>
+                    <p class="copy-muted">
+                        Apply uses the saved version of “{currentProfile.name}”, bound to the exact captured detector.
+                        Unsaved edits on this page are never serialized into the operation.
+                    </p>
+                    <button class="btn btn-primary btn-sm" type="button"
+                        disabled={operationBusy || !capturedSnapshot?.address}
+                        onclick={applySavedProfile}>
+                        Apply saved profile to captured V1
+                    </button>
+                </div>
+            </div>
+        {/if}
+
     {/if}
 
     <ProfileSavedListCard
@@ -708,8 +972,8 @@
         <p><strong>Create:</strong> Build a detector configuration without a V1 connection.</p>
         <p><strong>Edit:</strong> Update or delete saved profiles during maintenance.</p>
         <p>
-            <strong>Apply:</strong> Assign a saved profile on the Auto-Push page. It is sent automatically
-            after the next matching V1 connection in normal operation.
+            <strong>Apply:</strong> Load a saved profile here, then start a target-bound operation. V1Simple
+            restarts into normal mode, verifies the exact captured V1, recaptures its settings, and returns.
         </p>
     </div>
 </div>

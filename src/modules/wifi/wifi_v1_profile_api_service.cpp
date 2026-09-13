@@ -69,10 +69,9 @@ void appendCapabilities(JsonObject target, uint32_t firmwareVersion) {
     target["keepCurrentVolumeOnDisconnect"] =
         firmwareVersion >= V1FirmwareCompat::kKeepCurrentVolumeOnDisconnectVersion && capabilities.gen2;
     target["displayActive"] = capabilities.displayActive;
-    // Phase 4 intentionally exposes no destructive detector-reset workflow.
-    // Local defaults belong to the profile draft only; a future confirmed
-    // normal-boot job must own reset, recapture, and verification end to end.
-    target["detectorFactoryResetWorkflowAvailable"] = false;
+    // The destructive workflow is admitted only for a persisted, captured
+    // Gen2 target and is executed by the durable normal-boot job engine.
+    target["detectorFactoryResetWorkflowAvailable"] = capabilities.gen2;
     target["localDefaultsScope"] = "profile_draft_only";
 
     JsonObject settings = target["settings"].to<JsonObject>();

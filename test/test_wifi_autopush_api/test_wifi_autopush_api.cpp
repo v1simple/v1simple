@@ -5,6 +5,7 @@
 #include "../mocks/Arduino.h"
 #include "../mocks/WebServer.h"
 #include "../../src/modules/wifi/wifi_autopush_api_service.h"
+#include "../../src/v1_settings_operation.cpp"
 #include "../../src/modules/wifi/wifi_autopush_api_service.cpp"
 
 #ifndef ARDUINO
@@ -24,6 +25,14 @@ struct FakeRuntime {
     bool profileOwned = false;
     int activationCalls = 0;
     WifiAutoPushApiService::ActivationRequest activation;
+    WifiAutoPushApiService::OperationTargetStatus targetStatus =
+        WifiAutoPushApiService::OperationTargetStatus::Allowed;
+    V1SettingsOperationStore::StartStatus startStatus =
+        V1SettingsOperationStore::StartStatus::Started;
+    WifiAutoPushApiService::OperationStartRequest operationRequest;
+    V1SettingsOperationStore::Snapshot operation;
+    int operationStartCalls = 0;
+    int restartCalls = 0;
 };
 
 WifiAutoPushApiService::Runtime makeRuntime(FakeRuntime& fake) {
@@ -65,6 +74,34 @@ WifiAutoPushApiService::Runtime makeRuntime(FakeRuntime& fake) {
         return static_cast<FakeRuntime*>(ctx)->profileStatus;
     };
     runtime.validateProfileAssignmentCtx = &fake;
+    return runtime;
+}
+
+WifiAutoPushApiService::Runtime makeOperationRuntime(FakeRuntime& fake) {
+    auto runtime = makeRuntime(fake);
+    runtime.loadSlotsSnapshotResult = [](WifiAutoPushApiService::SlotsSnapshot& snapshot, void*) {
+        snapshot.profileOwned = true;
+        snapshot.slots[1].profile = "Road";
+        return true;
+    };
+    runtime.validateOperationTarget = [](const String&, bool, void* ctx) {
+        return static_cast<FakeRuntime*>(ctx)->targetStatus;
+    };
+    runtime.validateOperationTargetCtx = &fake;
+    runtime.startOperation = [](const WifiAutoPushApiService::OperationStartRequest& request, void* ctx) {
+        auto* state = static_cast<FakeRuntime*>(ctx);
+        state->operationRequest = request;
+        state->operationStartCalls++;
+        return V1SettingsOperationStore::StartResult{state->startStatus, 42};
+    };
+    runtime.startOperationCtx = &fake;
+    runtime.restartForOperation = [](void* ctx) { static_cast<FakeRuntime*>(ctx)->restartCalls++; };
+    runtime.restartForOperationCtx = &fake;
+    runtime.loadOperation = [](V1SettingsOperationStore::Snapshot& output, void* ctx) {
+        output = static_cast<FakeRuntime*>(ctx)->operation;
+        return output.valid;
+    };
+    runtime.loadOperationCtx = &fake;
     return runtime;
 }
 
@@ -136,6 +173,105 @@ void test_status_api_preserves_terminal_result() {
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_TRUE(contains(server.lastBody, "\"result\":\"partial\""));
     TEST_ASSERT_TRUE(contains(server.lastBody, "profile_verify_mismatch"));
+}
+
+void test_operation_status_requires_exact_canonical_identity_and_rejects_stale_status() {
+    FakeRuntime fake;
+    fake.operation.available = true;
+    fake.operation.valid = true;
+    fake.operation.operationId = 42;
+    fake.operation.kind = V1SettingsOperationStore::Kind::ApplyProfile;
+    fake.operation.state = V1SettingsOperationStore::State::Partial;
+    fake.operation.reason = V1SettingsOperationStore::Reason::ApplyPartial;
+    std::memcpy(fake.operation.targetAddress, "AA:BB:CC:DD:EE:FF", 18);
+    std::memcpy(fake.operation.profileName, "Road", 5);
+
+    for (const char* invalid : {"operationId=-1", "operationId=01", "operationId=0",
+                                "operationId=4294967296", "operationId=%2B1",
+                                "operationId=+1", "operationId=%201", "operationId=1%20",
+                                "operationId=42&operationId=42"}) {
+        WebServer server(80);
+        WifiAutoPushApiService::handleApiStatusQuery(server, makeOperationRuntime(fake),
+            reinterpret_cast<const uint8_t*>(invalid), std::strlen(invalid));
+        TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
+    }
+    const char uint32Max[] = "operationId=4294967295";
+    WebServer uint32MaxServer(80);
+    WifiAutoPushApiService::handleApiStatusQuery(uint32MaxServer, makeOperationRuntime(fake),
+        reinterpret_cast<const uint8_t*>(uint32Max), sizeof(uint32Max) - 1u);
+    TEST_ASSERT_EQUAL_INT(409, uint32MaxServer.lastStatusCode);
+    TEST_ASSERT_TRUE(contains(uint32MaxServer.lastBody, "\"requestedOperationId\":4294967295"));
+    const char stale[] = "operationId=41";
+    WebServer staleServer(80);
+    WifiAutoPushApiService::handleApiStatusQuery(staleServer, makeOperationRuntime(fake),
+        reinterpret_cast<const uint8_t*>(stale), sizeof(stale) - 1u);
+    TEST_ASSERT_EQUAL_INT(409, staleServer.lastStatusCode);
+    TEST_ASSERT_TRUE(contains(staleServer.lastBody, "operation_mismatch"));
+
+    const char exact[] = "operationId=42";
+    WebServer exactServer(80);
+    WifiAutoPushApiService::handleApiStatusQuery(exactServer, makeOperationRuntime(fake),
+        reinterpret_cast<const uint8_t*>(exact), sizeof(exact) - 1u);
+    TEST_ASSERT_EQUAL_INT(200, exactServer.lastStatusCode);
+    TEST_ASSERT_TRUE(contains(exactServer.lastBody, "\"operationId\":42"));
+    TEST_ASSERT_TRUE(contains(exactServer.lastBody, "\"state\":\"partial\""));
+
+    fake.operation.valid = false;
+    WebServer corruptServer(80);
+    WifiAutoPushApiService::handleApiStatusQuery(corruptServer, makeOperationRuntime(fake),
+        reinterpret_cast<const uint8_t*>(exact), sizeof(exact) - 1u);
+    TEST_ASSERT_EQUAL_INT(503, corruptServer.lastStatusCode);
+    TEST_ASSERT_TRUE(contains(corruptServer.lastBody, "operation_status_unavailable"));
+}
+
+void test_apply_profile_starts_only_saved_profile_for_captured_exact_target() {
+    FakeRuntime fake;
+    const char body[] = "profile=Road&address=AA%3ABB%3ACC%3ADD%3AEE%3AFF";
+    WebServer server(80);
+    WifiAutoPushApiService::handleApiApplyProfileBody(server, makeOperationRuntime(fake),
+        reinterpret_cast<const uint8_t*>(body), sizeof(body) - 1u);
+    TEST_ASSERT_EQUAL_INT(202, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(1, fake.operationStartCalls);
+    TEST_ASSERT_EQUAL_INT(1, fake.restartCalls);
+    TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::Kind::ApplyProfile,
+                          fake.operationRequest.kind);
+    TEST_ASSERT_EQUAL_STRING("Road", fake.operationRequest.profileName.c_str());
+    TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF", fake.operationRequest.targetAddress.c_str());
+
+    fake.targetStatus = WifiAutoPushApiService::OperationTargetStatus::NotFound;
+    fake.operationStartCalls = 0;
+    WebServer missing(80);
+    WifiAutoPushApiService::handleApiApplyProfileBody(missing, makeOperationRuntime(fake),
+        reinterpret_cast<const uint8_t*>(body), sizeof(body) - 1u);
+    TEST_ASSERT_EQUAL_INT(404, missing.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(0, fake.operationStartCalls);
+}
+
+void test_factory_reset_requires_confirmation_and_captured_gen2_before_queue() {
+    FakeRuntime fake;
+    const char unconfirmed[] = "address=AA%3ABB%3ACC%3ADD%3AEE%3AFF&confirm=RESET";
+    WebServer rejected(80);
+    WifiAutoPushApiService::handleApiFactoryResetBody(rejected, makeOperationRuntime(fake),
+        reinterpret_cast<const uint8_t*>(unconfirmed), sizeof(unconfirmed) - 1u);
+    TEST_ASSERT_EQUAL_INT(400, rejected.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(0, fake.operationStartCalls);
+
+    const char confirmed[] = "address=AA%3ABB%3ACC%3ADD%3AEE%3AFF&confirm=RESET+V1";
+    fake.targetStatus = WifiAutoPushApiService::OperationTargetStatus::UnsupportedFirmware;
+    WebServer unsupported(80);
+    WifiAutoPushApiService::handleApiFactoryResetBody(unsupported, makeOperationRuntime(fake),
+        reinterpret_cast<const uint8_t*>(confirmed), sizeof(confirmed) - 1u);
+    TEST_ASSERT_EQUAL_INT(409, unsupported.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(0, fake.operationStartCalls);
+
+    fake.targetStatus = WifiAutoPushApiService::OperationTargetStatus::Allowed;
+    WebServer accepted(80);
+    WifiAutoPushApiService::handleApiFactoryResetBody(accepted, makeOperationRuntime(fake),
+        reinterpret_cast<const uint8_t*>(confirmed), sizeof(confirmed) - 1u);
+    TEST_ASSERT_EQUAL_INT(202, accepted.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(1, fake.operationStartCalls);
+    TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::Kind::FactoryReset,
+                          fake.operationRequest.kind);
 }
 
 void test_profile_owned_slots_api_omits_legacy_detector_fields() {
@@ -428,6 +564,9 @@ int main() {
     RUN_TEST(test_slot_save_rejects_one_sided_volume_pair);
     RUN_TEST(test_slot_save_can_explicitly_disable_volume_pair);
     RUN_TEST(test_status_api_preserves_terminal_result);
+    RUN_TEST(test_operation_status_requires_exact_canonical_identity_and_rejects_stale_status);
+    RUN_TEST(test_apply_profile_starts_only_saved_profile_for_captured_exact_target);
+    RUN_TEST(test_factory_reset_requires_confirmation_and_captured_gen2_before_queue);
     RUN_TEST(test_profile_owned_slots_api_omits_legacy_detector_fields);
     RUN_TEST(test_profile_owned_slot_save_accepts_only_assignment_and_slot_overlays);
     RUN_TEST(test_slot_save_rejects_non_roundtrippable_display_name_without_mutation);

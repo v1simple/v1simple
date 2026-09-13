@@ -280,6 +280,10 @@ void MaintenanceRuntime::servicePowerDisplayOwnership(uint32_t nowMs) {
 }
 
 void MaintenanceRuntime::restartNormal(const char* reason) {
+    if (!wifi_.acknowledgeDeliveredSettingsOperationReturn()) {
+        Serial.println("[MaintBoot] normal restart blocked: operation return acknowledgement unavailable");
+        return;
+    }
     Serial.printf("[MaintBoot] %s -> rebooting normal runtime\n", reason);
     const bool persistenceSafe = completeLoggingForControlledRestart(events_, health_);
     if (persistenceSafe) {

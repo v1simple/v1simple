@@ -12,6 +12,7 @@
 #include "settings.h"
 #include "v1_devices.h"
 #include "v1_profiles.h"
+#include "v1_settings_operation.h"
 
 class QuietCoordinatorModule;
 
@@ -39,6 +40,15 @@ class AutoPushModule {
         V1Mode mode = V1_MODE_UNKNOWN;
     };
 
+    enum class PublicResult : uint8_t { None = 0, Queued, InProgress, Succeeded, Partial, Failed };
+    struct ExecutionSummary {
+        uint32_t operationId = 0;
+        bool active = false;
+        PublicResult result = PublicResult::None;
+        std::array<V1SettingsOperationStore::ComponentSummary,
+                   V1SettingsOperationStore::kComponentCount> components{};
+    };
+
     void begin(SettingsManager* settings, V1ProfileManager* profileMgr, V1BLEClient* ble, PacketParser* parser,
                V1Display* disp, QuietCoordinatorModule* quietCoordinator);
 
@@ -48,10 +58,12 @@ class AutoPushModule {
 
     QueueResult queueSlotPush(int slotIndex, bool activateSlot = false, bool updateProfileIndicator = true);
     QueueResult queuePushNow(const PushNowRequest& request);
+    static V1SettingsOperationStore::Reason durableReasonForQueueResult(QueueResult result);
     void process();
     bool appendStatusJson(JsonObject root) const;
     String getStatusJson() const;
     bool isActive() const { return state_.step != Step::Idle; }
+    ExecutionSummary executionSummary() const;
 
   private:
     static constexpr uint32_t kVerificationTimeoutMs = 1500;

@@ -563,6 +563,43 @@ void test_http_preflight_caps_every_framework_form_body_independent_of_content_t
     assertPreflightDecision(querySplit, true, Decision::RejectBadRequest);
 }
 
+void test_detector_operation_routes_have_exact_256_byte_nonmultipart_preflight() {
+    using WifiMaintenanceHttpPreflight::Decision;
+    const char* const paths[] = {
+        "/api/v1/apply", "/api/v1/factory-reset", "/api/autopush/push"
+    };
+    for (const char* path : paths) {
+        for (const char* contentType : {
+                 "application/x-www-form-urlencoded", "text/plain", "application/json"
+             }) {
+            const std::string atLimit =
+                std::string("POST ") + path + " HTTP/1.1\r\n"
+                "X-V1Simple-Request: maintenance-ui\r\nContent-Type: " + contentType +
+                "\r\nContent-Length: 256\r\n\r\n";
+            assertPreflightDecision(atLimit, true, Decision::AllowBodyParsing);
+            const std::string overLimit =
+                std::string("POST ") + path + " HTTP/1.1\r\n"
+                "X-V1Simple-Request: maintenance-ui\r\nContent-Type: " + contentType +
+                "\r\nContent-Length: 257\r\n\r\n";
+            assertPreflightDecision(overLimit, true, Decision::RejectTooLarge);
+        }
+        const std::string noContentTypeAtLimit =
+            std::string("POST ") + path + " HTTP/1.1\r\n"
+            "X-V1Simple-Request: maintenance-ui\r\nContent-Length: 256\r\n\r\n";
+        assertPreflightDecision(noContentTypeAtLimit, true, Decision::AllowBodyParsing);
+        const std::string noContentTypeOverLimit =
+            std::string("POST ") + path + " HTTP/1.1\r\n"
+            "X-V1Simple-Request: maintenance-ui\r\nContent-Length: 257\r\n\r\n";
+        assertPreflightDecision(noContentTypeOverLimit, true, Decision::RejectTooLarge);
+        const std::string multipart =
+            std::string("POST ") + path + " HTTP/1.1\r\n"
+            "X-V1Simple-Request: maintenance-ui\r\n"
+            "Content-Type: multipart/form-data; boundary=not-accepted\r\n"
+            "Content-Length: 120\r\n\r\n";
+        assertPreflightDecision(multipart, true, Decision::RejectMultipart);
+    }
+}
+
 void test_http_preflight_rate_admission_vetoes_only_valid_writes() {
     using WifiMaintenanceHttpPreflight::Decision;
     TEST_ASSERT_EQUAL_INT(
@@ -663,6 +700,7 @@ int main() {
     RUN_TEST(test_http_preflight_applies_profile_save_cap_before_framework_body_allocation);
     RUN_TEST(test_http_preflight_allows_supported_write_bodies_and_read_passthrough);
     RUN_TEST(test_http_preflight_caps_every_framework_form_body_independent_of_content_type);
+    RUN_TEST(test_detector_operation_routes_have_exact_256_byte_nonmultipart_preflight);
     RUN_TEST(test_http_preflight_rate_admission_vetoes_only_valid_writes);
     RUN_TEST(test_exact_body_uses_only_matching_preflight_length);
     RUN_TEST(test_exact_body_rejects_short_extra_and_discontinuous_chunks);

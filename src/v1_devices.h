@@ -86,6 +86,12 @@ struct V1DeviceDefaultProfileResult {
     uint8_t profile = 0;
 };
 
+enum class V1DeviceSnapshotStatus : uint8_t {
+    Found = 0,
+    NotFound,
+    Unavailable,
+};
+
 // Normalize BLE address to canonical upper-case AA:BB:CC:DD:EE:FF.
 // Returns empty string when invalid.
 String normalizeV1DeviceAddress(const String& rawAddress);
@@ -119,6 +125,8 @@ class V1DeviceStore {
     V1DeviceDefaultProfileResult getDeviceDefaultProfileChecked(const String& address) const;
     uint8_t getDeviceDefaultProfile(const String& address) const;
     bool getLatestSnapshot(V1DeviceRecord& device) const;
+    V1DeviceSnapshotStatus getSnapshotForAddressChecked(const String& address,
+                                                        V1DeviceRecord& device) const;
 
   private:
     static constexpr size_t MAX_DEVICES = 16;

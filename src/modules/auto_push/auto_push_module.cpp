@@ -272,6 +272,23 @@ AutoPushModule::QueueResult AutoPushModule::queuePushNow(const PushNowRequest& r
     return queuePreparedSlot(clampedIndex, slot, true, profile, true, request.activateSlot, true);
 }
 
+V1SettingsOperationStore::Reason AutoPushModule::durableReasonForQueueResult(QueueResult result) {
+    using Reason = V1SettingsOperationStore::Reason;
+    switch (result) {
+    case QueueResult::QUEUED: return Reason::None;
+    case QueueResult::V1_NOT_CONNECTED: return Reason::DetectorDisconnected;
+    case QueueResult::ALREADY_IN_PROGRESS: return Reason::ExecutorBusy;
+    case QueueResult::NO_PROFILE_CONFIGURED: return Reason::NoProfileConfigured;
+    case QueueResult::PROFILE_BUSY: return Reason::ProfileBusy;
+    case QueueResult::PROFILE_LOAD_FAILED: return Reason::ProfileLoadFailed;
+    case QueueResult::INVALID_VOLUME_PAIR: return Reason::InvalidConfiguration;
+    case QueueResult::UNSUPPORTED_CONFIGURATION: return Reason::UnsupportedConfiguration;
+    case QueueResult::ACTIVE_SLOT_PERSIST_FAILED: return Reason::ActiveSlotPersistFailed;
+    case QueueResult::STAGING_UNAVAILABLE: return Reason::StagingUnavailable;
+    }
+    return Reason::QueueRejected;
+}
+
 uint8_t AutoPushModule::modeValueFromObservation(char mode) {
     switch (mode) {
     case 'A':
@@ -1472,4 +1489,103 @@ String AutoPushModule::getStatusJson() const {
     json.reserve(expected);
     if (serializeJson(doc, json) != expected || json.length() != expected) return String();
     return json;
+}
+
+AutoPushModule::ExecutionSummary AutoPushModule::executionSummary() const {
+    ExecutionSummary summary;
+    summary.operationId = status_.operationId;
+    summary.active = isActive();
+    switch (status_.result) {
+    case Result::NONE: summary.result = PublicResult::None; break;
+    case Result::QUEUED: summary.result = PublicResult::Queued; break;
+    case Result::IN_PROGRESS: summary.result = PublicResult::InProgress; break;
+    case Result::SUCCEEDED: summary.result = PublicResult::Succeeded; break;
+    case Result::PARTIAL: summary.result = PublicResult::Partial; break;
+    case Result::FAILED: summary.result = PublicResult::Failed; break;
+    }
+
+    const ComponentStatus* source[] = {
+        &status_.userSettings,
+        &status_.display,
+        &status_.mode,
+        &status_.volume,
+        &status_.customFrequencies,
+    };
+    const auto mapOutcome = [](Outcome outcome) {
+        using Durable = V1SettingsOperationStore::ComponentOutcome;
+        switch (outcome) {
+        case Outcome::NOT_REQUESTED: return Durable::NotRequested;
+        case Outcome::PENDING: return Durable::Pending;
+        case Outcome::UNCHANGED: return Durable::Unchanged;
+        case Outcome::SENT: return Durable::Sent;
+        case Outcome::VERIFIED: return Durable::Verified;
+        case Outcome::UNSUPPORTED: return Durable::Unsupported;
+        case Outcome::INVALID: return Durable::Invalid;
+        case Outcome::BLOCKED: return Durable::Blocked;
+        case Outcome::WRITE_FAILED: return Durable::WriteFailed;
+        case Outcome::READ_FAILED: return Durable::ReadFailed;
+        case Outcome::MISMATCH: return Durable::Mismatch;
+        case Outcome::TIMEOUT: return Durable::Timeout;
+        case Outcome::DISCONNECTED: return Durable::Disconnected;
+        case Outcome::SESSION_CHANGED: return Durable::SessionChanged;
+        case Outcome::LOAD_FAILED: return Durable::LoadFailed;
+        }
+        return Durable::Invalid;
+    };
+    const auto mapReason = [](FailureReason reason) {
+        using Durable = V1SettingsOperationStore::ComponentReason;
+        switch (reason) {
+        case FailureReason::NONE: return Durable::None;
+        case FailureReason::DISCONNECTED: return Durable::Disconnected;
+        case FailureReason::SESSION_CHANGED: return Durable::SessionChanged;
+        case FailureReason::MISSING_LIVE_SNAPSHOT: return Durable::MissingLiveSnapshot;
+        case FailureReason::VERSION_UNKNOWN: return Durable::VersionUnknown;
+        case FailureReason::UNSUPPORTED_FIRMWARE: return Durable::UnsupportedFirmware;
+        case FailureReason::PROFILE_BUSY: return Durable::ProfileBusy;
+        case FailureReason::PROFILE_LOAD_FAILED: return Durable::ProfileLoadFailed;
+        case FailureReason::INVALID_PROFILE_SCHEMA: return Durable::InvalidProfileSchema;
+        case FailureReason::INVALID_USER_SETTING_VALUE: return Durable::InvalidUserSettingValue;
+        case FailureReason::INVALID_POLICY: return Durable::InvalidPolicy;
+        case FailureReason::INVALID_VOLUME_PAIR: return Durable::InvalidVolumePair;
+        case FailureReason::UNSUPPORTED_SAVED_VOLUME: return Durable::UnsupportedSavedVolume;
+        case FailureReason::UNSUPPORTED_CUSTOM_FREQUENCIES: return Durable::UnsupportedCustomFrequencies;
+        case FailureReason::UNSUPPORTED_BLUETOOTH_LED: return Durable::UnsupportedBluetoothLed;
+        case FailureReason::CUSTOM_FREQUENCY_PRESERVATION_REQUIRED:
+            return Durable::CustomFrequencyPreservationRequired;
+        case FailureReason::EURO_ADVANCED_MODE_INVALID: return Durable::EuroAdvancedModeInvalid;
+        case FailureReason::VOLUME_OWNER_BUSY: return Durable::VolumeOwnerBusy;
+        case FailureReason::USER_BYTES_BEFORE_REQUIRED: return Durable::UserBytesBeforeRequired;
+        case FailureReason::USER_BYTES_WRITE_FAILED: return Durable::UserBytesWriteFailed;
+        case FailureReason::USER_BYTES_READ_FAILED: return Durable::UserBytesReadFailed;
+        case FailureReason::USER_BYTES_MISMATCH: return Durable::UserBytesMismatch;
+        case FailureReason::USER_BYTES_TIMEOUT: return Durable::UserBytesTimeout;
+        case FailureReason::DISPLAY_WRITE_FAILED: return Durable::DisplayWriteFailed;
+        case FailureReason::DISPLAY_MISMATCH: return Durable::DisplayMismatch;
+        case FailureReason::DISPLAY_TIMEOUT: return Durable::DisplayTimeout;
+        case FailureReason::MODE_WRITE_FAILED: return Durable::ModeWriteFailed;
+        case FailureReason::MODE_MISMATCH: return Durable::ModeMismatch;
+        case FailureReason::MODE_TIMEOUT: return Durable::ModeTimeout;
+        case FailureReason::VOLUME_WRITE_FAILED: return Durable::VolumeWriteFailed;
+        case FailureReason::VOLUME_READ_FAILED: return Durable::VolumeReadFailed;
+        case FailureReason::VOLUME_MISMATCH: return Durable::VolumeMismatch;
+        case FailureReason::VOLUME_TIMEOUT: return Durable::VolumeTimeout;
+        case FailureReason::CUSTOM_CONFIGURATION_INVALID: return Durable::CustomConfigurationInvalid;
+        case FailureReason::CUSTOM_WRITE_FAILED: return Durable::CustomWriteFailed;
+        case FailureReason::CUSTOM_COMMIT_REJECTED: return Durable::CustomCommitRejected;
+        case FailureReason::CUSTOM_COMMIT_TIMEOUT: return Durable::CustomCommitTimeout;
+        case FailureReason::CUSTOM_READ_FAILED: return Durable::CustomReadFailed;
+        case FailureReason::CUSTOM_READBACK_INVALID: return Durable::CustomReadbackInvalid;
+        case FailureReason::CUSTOM_READBACK_TIMEOUT: return Durable::CustomReadbackTimeout;
+        case FailureReason::PROXY_OWNS_DETECTOR: return Durable::ProxyOwnsDetector;
+        }
+        return Durable::InvalidPolicy;
+    };
+    for (size_t index = 0; index < sizeof(source) / sizeof(source[0]); ++index) {
+        summary.components[index].requested = source[index]->requested;
+        summary.components[index].sent = source[index]->sent;
+        summary.components[index].verified = source[index]->verified;
+        summary.components[index].outcome = mapOutcome(source[index]->outcome);
+        summary.components[index].reason = mapReason(source[index]->reason);
+    }
+    return summary;
 }

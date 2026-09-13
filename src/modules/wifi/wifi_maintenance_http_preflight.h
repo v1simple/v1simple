@@ -11,6 +11,7 @@ namespace WifiMaintenanceHttpPreflight {
 constexpr size_t kMaxHeaderBytes = 2048;
 constexpr size_t kMaxBodyBytes = 128u * 1024u;
 constexpr size_t kMaxLegacyMultipartBodyBytes = 4u * 1024u;
+constexpr size_t kMaxDetectorOperationBodyBytes = 256u;
 constexpr size_t kMaxMultipartBoundaryBytes = 70u;
 
 enum class BodyEncoding : uint8_t {
@@ -172,6 +173,9 @@ inline bool isExactFormPath(const char* begin, const char* end) {
     return equalsExact(begin, end, "/api/device/settings") ||
            equalsExact(begin, end, "/api/autopush/activate") ||
            equalsExact(begin, end, "/api/autopush/slot") ||
+           equalsExact(begin, end, "/api/autopush/push") ||
+           equalsExact(begin, end, "/api/v1/apply") ||
+           equalsExact(begin, end, "/api/v1/factory-reset") ||
            equalsExact(begin, end, "/api/v1/devices/name") ||
            equalsExact(begin, end, "/api/v1/devices/profile") ||
            equalsExact(begin, end, "/api/v1/devices/delete");
@@ -187,6 +191,11 @@ inline size_t bodyLimitForPath(const char* begin, const char* end) {
     }
     if (equalsExact(begin, pathEnd, "/api/v1/profile")) return V1_PROFILE_HTTP_SAVE_MAX_BYTES;
     if (equalsExact(begin, pathEnd, "/api/v1/profile/delete")) return V1_PROFILE_HTTP_DELETE_MAX_BYTES;
+    if (equalsExact(begin, pathEnd, "/api/autopush/push") ||
+        equalsExact(begin, pathEnd, "/api/v1/apply") ||
+        equalsExact(begin, pathEnd, "/api/v1/factory-reset")) {
+        return kMaxDetectorOperationBodyBytes;
+    }
     if (equalsExact(begin, pathEnd, "/api/settings/restore")) return kMaxBodyBytes;
     // Every other write route uses WebServer's form parser.  Bound that path
     // independently of Content-Type: urlencoded and plain bodies allocate the

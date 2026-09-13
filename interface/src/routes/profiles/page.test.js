@@ -21,9 +21,31 @@ function profileCatalog(profiles) {
     };
 }
 
+function emptyOperationComponents(overrides = {}) {
+    const empty = {
+        requested: false, sent: false, verified: false,
+        outcome: 'not_requested', reason: 'none'
+    };
+    return Object.fromEntries(
+        ['userSettings', 'display', 'mode', 'volume', 'customFrequencies', 'factoryReset']
+            .map((name) => [name, { ...empty, ...(overrides[name] || {}) }])
+    );
+}
+
 describe('profiles route page', () => {
     beforeEach(() => {
         global.confirm = vi.fn(() => true);
+        const storage = new Map();
+        Object.defineProperty(window, 'localStorage', {
+            configurable: true,
+            value: {
+                getItem: (key) => storage.has(key) ? storage.get(key) : null,
+                setItem: (key, value) => storage.set(key, String(value)),
+                removeItem: (key) => storage.delete(key),
+                clear: () => storage.clear()
+            }
+        });
+        window.localStorage.clear();
     });
 
     afterEach(() => {
@@ -632,9 +654,7 @@ describe('profiles route page', () => {
         await screen.findByText('Offline authoring');
         expect(screen.queryByRole('button', { name: /pull from v1/i })).not.toBeInTheDocument();
         expect(screen.queryByRole('button', { name: /^push$/i })).not.toBeInTheDocument();
-        expect(
-            screen.getByText(/Assign a saved profile on the Auto-Push page/)
-        ).toBeInTheDocument();
+        expect(screen.getByText(/start a target-bound operation/i)).toBeInTheDocument();
 
         await fireEvent.click(screen.getByRole('button', { name: /new profile/i }));
         await screen.findByText('Creating new offline profile');
@@ -644,6 +664,194 @@ describe('profiles route page', () => {
         expect(fetchMock.mock.calls.some(([url]) => url === '/api/v1/pull')).toBe(false);
         expect(fetchMock.mock.calls.some(([url]) => url === '/api/v1/push')).toBe(false);
 
+        unmount();
+    });
+
+    it('queues the saved profile for the exact captured detector and retains its operation id', async () => {
+        let submitted;
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET', match: '/api/v1/profile?name=Daily%20Drive',
+                respond: jsonResponse({ name: 'Daily Drive', settings: { xBand: true } })
+            },
+            {
+                method: 'POST', match: '/api/v1/apply', respond: ({ init }) => {
+                    submitted = init;
+                    return jsonResponse({
+                        success: true, queued: true, operationId: 42,
+                        state: 'pending_normal_boot', rebooting: true, target: 'normal'
+                    }, 202);
+                }
+            }
+        ]);
+        const { unmount } = render(Page);
+        const row = (await screen.findByText('Daily Drive')).closest('.surface-panel');
+        await fireEvent.click(within(row).getByRole('button', { name: /^edit$/i }));
+        await screen.findByText('Editing profile: Daily Drive');
+        await fireEvent.click(screen.getByRole('button', {
+            name: /apply saved profile to captured v1/i
+        }));
+
+        await screen.findByText(/queued as operation 42/i);
+        expect(submitted.body).toBeInstanceOf(URLSearchParams);
+        expect(submitted.body.get('profile')).toBe('Daily Drive');
+        expect(submitted.body.get('address')).toBe('AA:BB:CC:DD:EE:FF');
+        expect(submitted.headers['X-V1Simple-Request']).toBe('maintenance-ui');
+        expect(window.localStorage.getItem('v1simple.detectorSettingsOperationId')).toBe('42');
+        expect(fetchMock).toHaveBeenCalled();
+        unmount();
+    });
+
+    it('does not let an older poll response clobber a newly accepted profile operation', async () => {
+        window.localStorage.setItem('v1simple.detectorSettingsOperationId', '41');
+        let resolveOldPoll;
+        installDefaultFetch([
+            {
+                method: 'GET', match: '/api/autopush/status?operationId=41',
+                respond: () => new Promise((resolve) => { resolveOldPoll = resolve; })
+            },
+            {
+                method: 'GET', match: '/api/v1/profile?name=Daily%20Drive',
+                respond: jsonResponse({ name: 'Daily Drive', settings: { xBand: true } })
+            },
+            {
+                method: 'POST', match: '/api/v1/apply',
+                respond: jsonResponse({
+                    success: true, queued: true, operationId: 42,
+                    state: 'pending_normal_boot', rebooting: true, target: 'normal'
+                }, 202)
+            }
+        ]);
+        const { unmount } = render(Page);
+        const row = (await screen.findByText('Daily Drive')).closest('.surface-panel');
+        await fireEvent.click(within(row).getByRole('button', { name: /^edit$/i }));
+        await screen.findByText('Editing profile: Daily Drive');
+        await fireEvent.click(screen.getByRole('button', {
+            name: /apply saved profile to captured v1/i
+        }));
+        await screen.findByText(/queued as operation 42/i);
+
+        resolveOldPoll(jsonResponse({
+            error: 'operation_mismatch', requestedOperationId: 41, currentOperationId: 42
+        }, 409));
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(window.localStorage.getItem('v1simple.detectorSettingsOperationId')).toBe('42');
+        expect(screen.getByText('Detector operation 42')).toBeInTheDocument();
+        expect(screen.queryByText(/Saved operation 41 does not match/i)).not.toBeInTheDocument();
+        unmount();
+    });
+
+    it('resumes and renders only the exact durable terminal operation', async () => {
+        window.localStorage.setItem('v1simple.detectorSettingsOperationId', '42');
+        const fetchMock = installDefaultFetch([{
+            method: 'GET',
+            match: '/api/autopush/status?operationId=42',
+            respond: jsonResponse({
+                operationId: 42,
+                kind: 'apply_profile',
+                source: 'maintenance_ui',
+                profileName: 'Daily Drive',
+                targetAddress: 'AA:BB:CC:DD:EE:FF',
+                returnToMaintenance: false,
+                state: 'partial',
+                reason: 'recapture_timed_out',
+                terminal: true,
+                result: 'partial',
+                components: emptyOperationComponents({
+                    volume: {
+                        requested: true, sent: true, verified: false,
+                        outcome: 'timeout', reason: 'volume_timeout'
+                    }
+                })
+            })
+        }]);
+        const { unmount } = render(Page);
+
+        await screen.findByText('Detector operation 42');
+        expect(screen.getByText('apply_profile · target AA:BB:CC:DD:EE:FF · source maintenance_ui'))
+            .toBeInTheDocument();
+        expect(screen.getByText('partial')).toBeInTheDocument();
+        expect(screen.getByText('timeout · volume_timeout')).toBeInTheDocument();
+        expect(fetchMock.mock.calls.some(([url]) =>
+            url === '/api/autopush/status?operationId=42')).toBe(true);
+        expect(window.localStorage.getItem('v1simple.detectorSettingsOperationId')).toBeNull();
+        unmount();
+    });
+
+    it('rejects a stale operation identity instead of rendering another job', async () => {
+        window.localStorage.setItem('v1simple.detectorSettingsOperationId', '42');
+        installDefaultFetch([{
+            method: 'GET', match: '/api/autopush/status?operationId=42',
+            respond: jsonResponse({
+                error: 'operation_mismatch', requestedOperationId: 42, currentOperationId: 43
+            }, 409)
+        }]);
+        const { unmount } = render(Page);
+        await screen.findByText(/does not match the detector's current operation/i);
+        expect(screen.queryByLabelText('Detector operation status')).not.toBeInTheDocument();
+        expect(window.localStorage.getItem('v1simple.detectorSettingsOperationId')).toBeNull();
+        unmount();
+    });
+
+    it('rejects malformed component truth instead of rendering false success', async () => {
+        window.localStorage.setItem('v1simple.detectorSettingsOperationId', '42');
+        installDefaultFetch([{
+            method: 'GET', match: '/api/autopush/status?operationId=42',
+            respond: jsonResponse({
+                operationId: 42, kind: 'apply_profile', source: 'maintenance_ui',
+                profileName: 'Daily Drive', targetAddress: 'AA:BB:CC:DD:EE:FF',
+                returnToMaintenance: false, state: 'succeeded', reason: 'none',
+                terminal: true, result: 'succeeded',
+                components: emptyOperationComponents({ volume: {
+                    requested: true, sent: 'yes', verified: true,
+                    outcome: 'verified', reason: 'none'
+                } })
+            })
+        }]);
+        const { unmount } = render(Page);
+        await screen.findByText(/malformed or mismatched status/i);
+        expect(screen.queryByLabelText('Detector operation status')).not.toBeInTheDocument();
+        unmount();
+    });
+
+    it('requires explicit factory-reset text and submits the exact captured target', async () => {
+        let submitted;
+        installDefaultFetch([
+            {
+                method: 'GET', match: '/api/v1/snapshot', respond: jsonResponse({
+                    address: 'AA:BB:CC:DD:EE:FF', available: true,
+                    firmware: { available: true, value: 41039 },
+                    capabilities: {
+                        versionKnown: true, gen2: true,
+                        detectorFactoryResetWorkflowAvailable: true,
+                        supportedUserByteCount: 6, savedVolume: true, settings: {}
+                    },
+                    observations: { userBytes: { available: true, value: [255,255,255,255,255,255] } },
+                    settings: { bytes: [255,255,255,255,255,255] }
+                })
+            },
+            {
+                method: 'POST', match: '/api/v1/factory-reset', respond: ({ init }) => {
+                    submitted = init;
+                    return jsonResponse({
+                        success: true, queued: true, operationId: 77,
+                        state: 'pending_normal_boot', rebooting: true, target: 'normal'
+                    }, 202);
+                }
+            }
+        ]);
+        const { unmount } = render(Page);
+        const reset = await screen.findByRole('button', { name: /factory reset captured v1/i });
+        expect(reset).toBeDisabled();
+        await fireEvent.input(screen.getByLabelText(/type reset v1 to confirm/i), {
+            target: { value: 'RESET V1' }
+        });
+        expect(reset).toBeEnabled();
+        await fireEvent.click(reset);
+        await screen.findByText(/queued as operation 77/i);
+        expect(submitted.body.get('address')).toBe('AA:BB:CC:DD:EE:FF');
+        expect(submitted.body.get('confirm')).toBe('RESET V1');
         unmount();
     });
 
@@ -684,6 +892,7 @@ describe('profiles route page', () => {
         installDefaultFetch([{
             method: 'GET', match: '/api/v1/snapshot', respond: jsonResponse({
                 available: true,
+                address: 'AA:BB:CC:DD:EE:FF',
                 firmware: { available: false, value: null },
                 capabilities: { versionKnown: false },
                 observations: {
@@ -708,6 +917,7 @@ describe('profiles route page', () => {
         installDefaultFetch([{
             method: 'GET', match: '/api/v1/snapshot', respond: jsonResponse({
                 available: true,
+                address: 'AA:BB:CC:DD:EE:FF',
                 firmware: { available: true, value: 50000 },
                 capabilities: {
                     versionKnown: true,

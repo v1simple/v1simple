@@ -177,6 +177,17 @@ void initializeSharedHardware(esp_reset_reason_t resetReason, bool maintenanceBo
     logBootStage("display", setupStartMs, stageStartedMs);
 
     settings.begin();
+    const auto operationLoad = driveRuntime.settingsOperations().begin();
+    wifiManager.setV1SettingsOperationStore(&driveRuntime.settingsOperations());
+    if (operationLoad != V1SettingsOperationStore::LoadStatus::Ready) {
+        Serial.printf("[V1SettingsJob] durable store unavailable status=%u\n",
+                      static_cast<unsigned>(operationLoad));
+    }
+    if (maintenanceBoot && driveRuntime.settingsOperations().isTerminal() &&
+        driveRuntime.settingsOperations().snapshot().returnToMaintenance &&
+        !driveRuntime.settingsOperations().acknowledgeReturnToMaintenance()) {
+        Serial.println("[V1SettingsJob] return intent could not be consumed in maintenance boot");
+    }
     // Display initialization precedes NVS loading; apply the saved foregrounds now.
     driveRuntime.display().updateColorTheme();
     driveRuntime.power().begin(&batteryManager, &driveRuntime.display(), &settings);

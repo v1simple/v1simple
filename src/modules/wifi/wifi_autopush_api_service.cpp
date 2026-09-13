@@ -13,6 +13,7 @@
 #include "wifi_json_document.h"
 #include "profile_name.h"
 #include "settings_sanitize.h"
+#include "v1_devices.h"
 #include "v1_profiles.h"
 
 namespace WifiAutoPushApiService {
@@ -74,6 +75,142 @@ bool parseBoolArg(const Form& form, const char* key, bool& value, bool required 
     return true;
 }
 
+template <typename Form>
+bool parseUint32Arg(const Form& form, const char* key, uint32_t& value, bool required = false) {
+    if (!form.has(key)) return !required;
+    String raw;
+    if (!readPresentArg(form, key, raw)) return false;
+    if (raw.length() == 0 || (raw.length() > 1 && raw[0] == '0')) return false;
+    uint32_t parsed = 0;
+    for (size_t index = 0; index < raw.length(); ++index) {
+        const char byte = raw[index];
+        if (byte < '0' || byte > '9') return false;
+        const uint32_t digit = static_cast<uint32_t>(byte - '0');
+        if (parsed > (UINT32_MAX - digit) / 10u) return false;
+        parsed = parsed * 10u + digit;
+    }
+    if (parsed == 0) return false;
+    value = parsed;
+    return true;
+}
+
+bool validateTarget(WebServer& server, const Runtime& runtime, const String& address,
+                    bool requireGen2) {
+    if (!runtime.validateOperationTarget) {
+        server.send(503, "application/json",
+                    "{\"success\":false,\"error\":\"target_validation_unavailable\",\"retryable\":true}");
+        return false;
+    }
+    switch (runtime.validateOperationTarget(address, requireGen2,
+                                            runtime.validateOperationTargetCtx)) {
+    case OperationTargetStatus::Allowed:
+        return true;
+    case OperationTargetStatus::NotFound:
+        server.send(404, "application/json",
+                    "{\"success\":false,\"error\":\"captured_target_not_found\"}");
+        return false;
+    case OperationTargetStatus::UnsupportedFirmware:
+        server.send(409, "application/json",
+                    "{\"success\":false,\"error\":\"factory_reset_requires_captured_gen2\"}");
+        return false;
+    case OperationTargetStatus::Unavailable:
+        server.send(503, "application/json",
+                    "{\"success\":false,\"error\":\"target_validation_unavailable\",\"retryable\":true}");
+        return false;
+    }
+    return false;
+}
+
+bool canonicalAddress(const ExactUrlEncodedForm& form, String& address) {
+    if (!form.read("address", address) || address.length() != 17u) return false;
+    return V1SettingsOperationStore::isCanonicalAddress(address.c_str());
+}
+
+void sendOperationStartFailure(WebServer& server, V1SettingsOperationStore::StartStatus status,
+                               uint32_t activeOperationId) {
+    switch (status) {
+    case V1SettingsOperationStore::StartStatus::Active: {
+        char body[128];
+        std::snprintf(body, sizeof(body),
+                      "{\"success\":false,\"error\":\"operation_active\",\"operationId\":%lu}",
+                      static_cast<unsigned long>(activeOperationId));
+        server.send(409, "application/json", body);
+        return;
+    }
+    case V1SettingsOperationStore::StartStatus::Invalid:
+        server.send(400, "application/json", "{\"success\":false,\"error\":\"invalid_operation\"}");
+        return;
+    case V1SettingsOperationStore::StartStatus::IdentityExhausted:
+        server.send(507, "application/json", "{\"success\":false,\"error\":\"operation_identity_exhausted\"}");
+        return;
+    case V1SettingsOperationStore::StartStatus::StorageUnavailable:
+        server.send(503, "application/json",
+                    "{\"success\":false,\"error\":\"operation_storage_unavailable\",\"retryable\":true}");
+        return;
+    case V1SettingsOperationStore::StartStatus::Started:
+        break;
+    }
+    server.send(500, "application/json", "{\"success\":false,\"error\":\"operation_start_failed\"}");
+}
+
+void sendStartedOperation(WebServer& server, const Runtime& runtime,
+                          const OperationStartRequest& request) {
+    if (!runtime.startOperation || !runtime.restartForOperation) {
+        server.send(503, "application/json", "{\"success\":false,\"error\":\"operation_runtime_unavailable\"}");
+        return;
+    }
+    const V1SettingsOperationStore::StartResult started =
+        runtime.startOperation(request, runtime.startOperationCtx);
+    if (started.status != V1SettingsOperationStore::StartStatus::Started) {
+        sendOperationStartFailure(server, started.status, started.operationId);
+        return;
+    }
+    char body[192];
+    std::snprintf(body, sizeof(body),
+                  "{\"success\":true,\"queued\":true,\"operationId\":%lu,"
+                  "\"state\":\"pending_normal_boot\",\"rebooting\":true,\"target\":\"normal\"}",
+                  static_cast<unsigned long>(started.operationId));
+    server.send(202, "application/json", body);
+    runtime.restartForOperation(runtime.restartForOperationCtx);
+}
+
+void appendDurableOperation(JsonObject root, const V1SettingsOperationStore::Snapshot& snapshot) {
+    root["operationId"] = snapshot.operationId;
+    root["kind"] = V1SettingsOperationStore::kindName(snapshot.kind);
+    root["source"] = V1SettingsOperationStore::sourceName(snapshot.source);
+    root["state"] = V1SettingsOperationStore::stateName(snapshot.state);
+    root["reason"] = V1SettingsOperationStore::reasonName(snapshot.reason);
+    root["terminal"] = snapshot.state == V1SettingsOperationStore::State::Succeeded ||
+                       snapshot.state == V1SettingsOperationStore::State::Partial ||
+                       snapshot.state == V1SettingsOperationStore::State::Failed;
+    root["result"] = snapshot.state == V1SettingsOperationStore::State::Succeeded
+                         ? "succeeded"
+                         : (snapshot.state == V1SettingsOperationStore::State::Partial
+                                ? "partial"
+                                : (snapshot.state == V1SettingsOperationStore::State::Failed
+                                       ? "failed" : "in_progress"));
+    if (snapshot.slot >= 0) root["slot"] = snapshot.slot;
+    else root["slot"] = nullptr;
+    if (snapshot.profileName[0] != '\0') root["profileName"] = snapshot.profileName;
+    else root["profileName"] = nullptr;
+    root["targetAddress"] = snapshot.targetAddress;
+    root["returnToMaintenance"] = snapshot.returnToMaintenance;
+    if (snapshot.executorOperationId != 0) root["executorOperationId"] = snapshot.executorOperationId;
+    else root["executorOperationId"] = nullptr;
+    JsonObject components = root["components"].to<JsonObject>();
+    for (size_t index = 0; index < V1SettingsOperationStore::kComponentCount; ++index) {
+        const auto component = static_cast<V1SettingsOperationStore::Component>(index);
+        const auto& saved = snapshot.components[index];
+        JsonObject item = components[V1SettingsOperationStore::componentName(component)].to<JsonObject>();
+        item["requested"] = saved.requested;
+        item["sent"] = saved.sent;
+        item["verified"] = saved.verified;
+        item["applied"] = saved.verified;
+        item["outcome"] = V1SettingsOperationStore::componentOutcomeName(saved.outcome);
+        item["reason"] = V1SettingsOperationStore::componentReasonName(saved.reason);
+    }
+}
+
 } // namespace
 
 void handleApiSlots(WebServer& server, const Runtime& runtime) {
@@ -120,6 +257,51 @@ void handleApiSlots(WebServer& server, const Runtime& runtime) {
 }
 
 void handleApiStatus(WebServer& server, const Runtime& runtime) {
+    handleApiStatusQuery(server, runtime, nullptr, 0);
+}
+
+void handleApiStatusQuery(WebServer& server, const Runtime& runtime,
+                          const uint8_t* query, size_t querySize) {
+    uint32_t requestedOperationId = 0;
+    if (querySize > 0) {
+        const ExactUrlEncodedForm form(query, querySize);
+        static constexpr const char* ALLOWED[] = {"operationId"};
+        if (!form.valid() || !form.hasOnly(ALLOWED, 1) ||
+            !parseUint32Arg(form, "operationId", requestedOperationId, true)) {
+            server.send(400, "application/json", "{\"error\":\"invalid_operation_id\"}");
+            return;
+        }
+    }
+    if (runtime.loadOperation) {
+        V1SettingsOperationStore::Snapshot snapshot;
+        if (!runtime.loadOperation(snapshot, runtime.loadOperationCtx)) {
+            server.send(503, "application/json",
+                        "{\"error\":\"operation_status_unavailable\",\"retryable\":true}");
+            return;
+        }
+        if (!snapshot.available) {
+            server.send(404, "application/json", "{\"error\":\"operation_not_found\"}");
+            return;
+        }
+        if (requestedOperationId != 0 && requestedOperationId != snapshot.operationId) {
+            char body[160];
+            std::snprintf(body, sizeof(body),
+                          "{\"error\":\"operation_mismatch\",\"requestedOperationId\":%lu,"
+                          "\"currentOperationId\":%lu}",
+                          static_cast<unsigned long>(requestedOperationId),
+                          static_cast<unsigned long>(snapshot.operationId));
+            server.send(409, "application/json", body);
+            return;
+        }
+        PsramJson::Document doc;
+        appendDurableOperation(doc.to<JsonObject>(), snapshot);
+        if (doc.overflowed() || measureJson(doc) == 0) {
+            server.send(503, "application/json", "{\"error\":\"operation_status_memory_unavailable\"}");
+            return;
+        }
+        WifiApiResponse::sendJsonDocument(server, 200, doc);
+        return;
+    }
     if (runtime.appendPushStatusJson) {
         PsramJson::Document doc;
         if (!runtime.appendPushStatusJson(doc.to<JsonObject>(), runtime.appendPushStatusJsonCtx) ||
@@ -141,6 +323,97 @@ void handleApiStatus(WebServer& server, const Runtime& runtime) {
         return;
     }
     server.send(500, "application/json", "{\"error\":\"Push status not available\"}");
+}
+
+void handleApiApplySlotBody(WebServer& server, const Runtime& runtime,
+                            const uint8_t* body, size_t bodySize) {
+    const ExactUrlEncodedForm form(body, bodySize);
+    static constexpr const char* ALLOWED[] = {"slot", "address"};
+    int slot = -1;
+    String address;
+    if (!form.valid() || !form.hasOnly(ALLOWED, 2) || !parseIntArg(form, "slot", slot, true) ||
+        slot < 0 || slot > 2 || !canonicalAddress(form, address)) {
+        server.send(400, "application/json", "{\"success\":false,\"error\":\"invalid_apply_request\"}");
+        return;
+    }
+    SlotsSnapshot slots;
+    if (!runtime.loadSlotsSnapshotResult ||
+        !runtime.loadSlotsSnapshotResult(slots, runtime.loadSlotsSnapshotResultCtx)) {
+        server.send(503, "application/json", "{\"success\":false,\"error\":\"slot_unavailable\"}");
+        return;
+    }
+    if (!slots.profileOwned || slots.slots[slot].profile.length() == 0) {
+        server.send(409, "application/json", "{\"success\":false,\"error\":\"slot_profile_required\"}");
+        return;
+    }
+    if (!validateTarget(server, runtime, address, false)) return;
+    OperationStartRequest request;
+    request.kind = V1SettingsOperationStore::Kind::ApplySlot;
+    request.slot = slot;
+    request.targetAddress = std::move(address);
+    sendStartedOperation(server, runtime, request);
+}
+
+void handleApiApplyProfileBody(WebServer& server, const Runtime& runtime,
+                               const uint8_t* body, size_t bodySize) {
+    const ExactUrlEncodedForm form(body, bodySize);
+    static constexpr const char* ALLOWED[] = {"profile", "address"};
+    String profile;
+    String address;
+    if (!form.valid() || !form.hasOnly(ALLOWED, 2) || !form.read("profile", profile) ||
+        !canonicalAddress(form, address)) {
+        server.send(400, "application/json", "{\"success\":false,\"error\":\"invalid_apply_request\"}");
+        return;
+    }
+    String canonical;
+    if (canonicalizeProfileName(profile, canonical) != ProfileNameStatus::Valid || canonical != profile) {
+        server.send(400, "application/json", "{\"success\":false,\"error\":\"invalid_profile_name\"}");
+        return;
+    }
+    if (!runtime.validateProfileAssignment) {
+        server.send(503, "application/json", "{\"success\":false,\"error\":\"profile_validation_unavailable\"}");
+        return;
+    }
+    switch (runtime.validateProfileAssignment(canonical, runtime.validateProfileAssignmentCtx)) {
+    case ProfileAssignmentStatus::Success: break;
+    case ProfileAssignmentStatus::NotFound:
+        server.send(404, "application/json", "{\"success\":false,\"error\":\"profile_not_found\"}");
+        return;
+    case ProfileAssignmentStatus::InvalidName:
+        server.send(400, "application/json", "{\"success\":false,\"error\":\"invalid_profile_name\"}");
+        return;
+    case ProfileAssignmentStatus::Busy:
+        server.send(409, "application/json", "{\"success\":false,\"error\":\"profile_busy\",\"retryable\":true}");
+        return;
+    case ProfileAssignmentStatus::IoError:
+    case ProfileAssignmentStatus::Corrupt:
+        server.send(503, "application/json", "{\"success\":false,\"error\":\"profile_unavailable\",\"retryable\":true}");
+        return;
+    }
+    if (!validateTarget(server, runtime, address, false)) return;
+    OperationStartRequest request;
+    request.kind = V1SettingsOperationStore::Kind::ApplyProfile;
+    request.profileName = std::move(canonical);
+    request.targetAddress = std::move(address);
+    sendStartedOperation(server, runtime, request);
+}
+
+void handleApiFactoryResetBody(WebServer& server, const Runtime& runtime,
+                               const uint8_t* body, size_t bodySize) {
+    const ExactUrlEncodedForm form(body, bodySize);
+    static constexpr const char* ALLOWED[] = {"address", "confirm"};
+    String address;
+    String confirmation;
+    if (!form.valid() || !form.hasOnly(ALLOWED, 2) || !canonicalAddress(form, address) ||
+        !form.read("confirm", confirmation) || confirmation != "RESET V1") {
+        server.send(400, "application/json", "{\"success\":false,\"error\":\"factory_reset_confirmation_required\"}");
+        return;
+    }
+    if (!validateTarget(server, runtime, address, true)) return;
+    OperationStartRequest request;
+    request.kind = V1SettingsOperationStore::Kind::FactoryReset;
+    request.targetAddress = std::move(address);
+    sendStartedOperation(server, runtime, request);
 }
 
 template <typename Form>

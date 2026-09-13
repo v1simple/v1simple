@@ -37,6 +37,7 @@
 #include "packet_parser.h"
 #include "runtime_coordinator.h"
 #include "touch_handler.h"
+#include "v1_settings_operation.h"
 
 class BatteryManager;
 class HealthJournal;
@@ -79,6 +80,7 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     GpsRuntimeModule& gps() { return gps_; }
     AlpRuntimeModule& alp() { return alp_; }
     MainRuntimeState& state() { return state_; }
+    V1SettingsOperationStore& settingsOperations() { return settingsOperations_; }
 
   private:
     friend class DriveLoopCoordinator;
@@ -105,7 +107,7 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     void initializeTouchAndUi();
     void initializeRuntimeModules();
     void finalizeBoot(uint32_t setupStartMs, uint32_t& stageStartedMs);
-    void requestMaintenanceBootRestart();
+    bool requestMaintenanceBootRestart();
     DriveLoopTiming beginDriveLoop();
     ConnectionRuntimeSnapshot processConnectionRuntime(uint32_t nowMs);
     void acceptConnectionSnapshot(const ConnectionRuntimeSnapshot& connection);
@@ -134,6 +136,18 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     DriveLoopDispatch processConnectionDispatch(bool powerPresentationOwned);
     void processPeriodicMaintenance(uint32_t nowMs, bool bleConnected, bool bleBackpressure,
                                     bool loopOverloaded, bool forceTailBleDrainPending = false);
+    bool connectedV1Address(String& address) const;
+    V1DetectorSnapshot captureDetectorSnapshot(uint32_t ingressBoundary = 0) const;
+    bool persistDetectorSnapshot(const String& address, const V1DetectorSnapshot& snapshot,
+                                 bool flushImmediately);
+    bool handleSettingsOperationStableConnection();
+    void processSettingsOperation(uint32_t nowMs);
+    bool beginTripleTapProfileCycle(int newSlot);
+    void queueSettingsApply(const V1SettingsOperationStore::Snapshot& operation,
+                            const V1DetectorSnapshot& preApply);
+    void attemptFactoryReset(const V1SettingsOperationStore::Snapshot& operation);
+    void finishSettingsRecapture(const V1SettingsOperationStore::Snapshot& operation,
+                                 uint32_t nowMs);
     uint32_t finishLoop(bool bleBackpressure, uint32_t loopStartUs, bool forceBleDrain = false);
     void finishDriveLoop(bool bleBackpressure, uint32_t loopStartUs, bool forceBleDrain);
     bool preparePersistenceForShutdownPhase();
@@ -198,6 +212,23 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     GpsRuntimeModule gps_;
     AlpRuntimeModule alp_;
     MainRuntimeState state_;
+    V1SettingsOperationStore settingsOperations_;
+
+    uint32_t observedSettingsOperationId_ = 0;
+    uint32_t settingsOperationStartedMs_ = 0;
+    uint32_t settingsOperationStateStartedMs_ = 0;
+    uint32_t settingsRecaptureIngressBoundary_ = 0;
+    uint32_t settingsReturnRetryAtMs_ = 0;
+    uint32_t settingsOperationNextActionMs_ = 0;
+    V1SettingsOperationStore::State observedSettingsOperationState_ =
+        V1SettingsOperationStore::State::None;
+    bool settingsRecaptureStarted_ = false;
+    bool settingsRecaptureFollowupComplete_ = false;
+    V1DestructiveSendLatch factoryResetSendLatch_;
+    bool factoryResetSummaryPersistedThisBoot_ = false;
+    bool settingsWrongDetectorDisconnectPending_ = false;
+    std::array<V1SettingsOperationStore::ComponentSummary,
+               V1SettingsOperationStore::kComponentCount> factoryResetSentComponents_{};
 
     bool connectedPersistenceWindowAnchored_ = false;
     uint32_t connectedPersistenceWindowStartedMs_ = 0;

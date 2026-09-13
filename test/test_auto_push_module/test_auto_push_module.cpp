@@ -1998,6 +1998,30 @@ void test_display_mode_and_volume_transport_failures_are_distinct_and_release_vo
     TEST_ASSERT_FALSE(ble.consumeVerifyPushMatchEdge());
 }
 
+void test_queue_failures_preserve_durable_admission_taxonomy() {
+    using Queue = AutoPushModule::QueueResult;
+    using Reason = V1SettingsOperationStore::Reason;
+    TEST_ASSERT_EQUAL_INT(Reason::None, AutoPushModule::durableReasonForQueueResult(Queue::QUEUED));
+    TEST_ASSERT_EQUAL_INT(Reason::DetectorDisconnected,
+                          AutoPushModule::durableReasonForQueueResult(Queue::V1_NOT_CONNECTED));
+    TEST_ASSERT_EQUAL_INT(Reason::ExecutorBusy,
+                          AutoPushModule::durableReasonForQueueResult(Queue::ALREADY_IN_PROGRESS));
+    TEST_ASSERT_EQUAL_INT(Reason::NoProfileConfigured,
+                          AutoPushModule::durableReasonForQueueResult(Queue::NO_PROFILE_CONFIGURED));
+    TEST_ASSERT_EQUAL_INT(Reason::ProfileBusy,
+                          AutoPushModule::durableReasonForQueueResult(Queue::PROFILE_BUSY));
+    TEST_ASSERT_EQUAL_INT(Reason::ProfileLoadFailed,
+                          AutoPushModule::durableReasonForQueueResult(Queue::PROFILE_LOAD_FAILED));
+    TEST_ASSERT_EQUAL_INT(Reason::InvalidConfiguration,
+                          AutoPushModule::durableReasonForQueueResult(Queue::INVALID_VOLUME_PAIR));
+    TEST_ASSERT_EQUAL_INT(Reason::UnsupportedConfiguration,
+                          AutoPushModule::durableReasonForQueueResult(Queue::UNSUPPORTED_CONFIGURATION));
+    TEST_ASSERT_EQUAL_INT(Reason::ActiveSlotPersistFailed,
+                          AutoPushModule::durableReasonForQueueResult(Queue::ACTIVE_SLOT_PERSIST_FAILED));
+    TEST_ASSERT_EQUAL_INT(Reason::StagingUnavailable,
+                          AutoPushModule::durableReasonForQueueResult(Queue::STAGING_UNAVAILABLE));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_queue_rejects_failed_active_slot_persistence_before_operation_or_detector_write);
@@ -2070,5 +2094,6 @@ int main() {
     RUN_TEST(test_responses_ingressed_before_send_returns_cannot_verify_the_operation);
     RUN_TEST(test_write_and_read_failures_are_distinct_and_never_applied);
     RUN_TEST(test_display_mode_and_volume_transport_failures_are_distinct_and_release_volume_lease);
+    RUN_TEST(test_queue_failures_preserve_durable_admission_taxonomy);
     return UNITY_END();
 }

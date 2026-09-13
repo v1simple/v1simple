@@ -362,6 +362,9 @@ class V1BLEClient {
     uint32_t sessionUserBytesRevision() const { return sessionUserBytesRevision_; }
     uint32_t sessionUserBytesIngressSequence() const { return sessionUserBytesIngressSequence_; }
     bool settingsCaptureTimedOut() const { return settingsCaptureTimedOut_; }
+    // Start a fresh, bounded full settings recapture on the current session.
+    // The existing stable callback fires again when the attempt is complete.
+    bool beginSettingsRecapture();
 
     // Disconnect and cleanup
     void disconnect();

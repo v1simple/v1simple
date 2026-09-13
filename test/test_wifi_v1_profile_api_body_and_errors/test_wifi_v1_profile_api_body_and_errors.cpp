@@ -531,7 +531,7 @@ void test_current_endpoint_returns_persisted_snapshot_with_explicit_provenance_a
     TEST_ASSERT_EQUAL_UINT8(6, parsed["capabilities"]["supportedUserByteCount"].as<uint8_t>());
     TEST_ASSERT_TRUE(parsed["capabilities"]["volumeChange"].as<bool>());
     TEST_ASSERT_TRUE(parsed["capabilities"]["allVolume"].as<bool>());
-    TEST_ASSERT_FALSE(parsed["capabilities"]["detectorFactoryResetWorkflowAvailable"].as<bool>());
+    TEST_ASSERT_TRUE(parsed["capabilities"]["detectorFactoryResetWorkflowAvailable"].as<bool>());
     TEST_ASSERT_EQUAL_STRING("profile_draft_only",
                              parsed["capabilities"]["localDefaultsScope"].as<const char*>());
     TEST_ASSERT_TRUE(parsed["capabilities"]["settings"]["gatsoRT4"].as<bool>());

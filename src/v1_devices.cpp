@@ -1634,3 +1634,24 @@ bool V1DeviceStore::getLatestSnapshot(V1DeviceRecord& device) const {
     }
     return false;
 }
+
+V1DeviceSnapshotStatus V1DeviceStore::getSnapshotForAddressChecked(
+    const String& address, V1DeviceRecord& device) const {
+    if (!ready_ || !catalogReadable()) return V1DeviceSnapshotStatus::Unavailable;
+    const String normalized = normalizeV1DeviceAddress(address);
+    if (normalized.length() != 17u || normalized != address) {
+        return V1DeviceSnapshotStatus::NotFound;
+    }
+    const int index = findDeviceIndex(normalized);
+    if (index < 0 || !devices_[static_cast<size_t>(index)].snapshot.available) {
+        return V1DeviceSnapshotStatus::NotFound;
+    }
+    try {
+        device = devices_[static_cast<size_t>(index)];
+    } catch (const std::bad_alloc&) {
+        return V1DeviceSnapshotStatus::Unavailable;
+    }
+    return device.address == normalized && device.snapshot.available
+               ? V1DeviceSnapshotStatus::Found
+               : V1DeviceSnapshotStatus::Unavailable;
+}

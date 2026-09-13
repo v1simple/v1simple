@@ -100,6 +100,12 @@ class WiFiManager {
   public:
     WiFiManager(SettingsManager& settings, V1ProfileManager& profiles, V1DeviceStore& devices,
                 StorageManager& storage);
+    void setV1SettingsOperationStore(V1SettingsOperationStore* store) { v1SettingsOperations_ = store; }
+    bool acknowledgeDeliveredSettingsOperationReturn() {
+        if (!v1SettingsOperations_ || !v1SettingsOperations_->isTerminal() ||
+            !v1SettingsOperations_->snapshot().returnToMaintenance) return true;
+        return v1SettingsOperations_->acknowledgeReturnToMaintenance();
+    }
 
     // Internal SRAM guardrails for WiFi lifecycle.
     // AP+STA needs more headroom than AP-only.
@@ -388,6 +394,9 @@ class WiFiManager {
     BatteryManager* battery_ = nullptr;
     ProductEventLog* productEvents_ = nullptr;
     HealthJournal* health_ = nullptr;
+    V1SettingsOperationStore* v1SettingsOperations_ = nullptr;
+    bool operationRestartPending_ = false;
+    uint32_t operationRestartAtMs_ = 0;
     bool maintenanceBootMode_ = false;
 
     // Setup functions

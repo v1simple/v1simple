@@ -10,6 +10,7 @@
 #include "display.h"
 #include "v1_profiles.h"
 #include "v1_devices.h"
+#include "v1_firmware_compat.h"
 #include "battery_manager.h"
 #include "modules/wifi/wifi_autopush_api_service.h"
 #include "modules/wifi/wifi_display_colors_api_service.h"
@@ -256,6 +257,68 @@ WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
         },
         this,
     };
+    runtime.startOperation = [](const WifiAutoPushApiService::OperationStartRequest& request, void* ctx) {
+        auto* self = static_cast<WiFiManager*>(ctx);
+        if (!self || !self->v1SettingsOperations_) {
+            return V1SettingsOperationStore::StartResult{
+                V1SettingsOperationStore::StartStatus::StorageUnavailable, 0};
+        }
+        switch (request.kind) {
+        case V1SettingsOperationStore::Kind::ApplySlot:
+            return self->v1SettingsOperations_->startApply(
+                request.slot, request.targetAddress.c_str(),
+                V1SettingsOperationStore::Source::MaintenanceUi, true, true);
+        case V1SettingsOperationStore::Kind::ApplyProfile:
+            return self->v1SettingsOperations_->startProfileApply(
+                request.profileName.c_str(), request.targetAddress.c_str(), true, true);
+        case V1SettingsOperationStore::Kind::FactoryReset:
+            return self->v1SettingsOperations_->startFactoryReset(
+                request.targetAddress.c_str(), true, true);
+        case V1SettingsOperationStore::Kind::None:
+            break;
+        }
+        return V1SettingsOperationStore::StartResult{
+            V1SettingsOperationStore::StartStatus::Invalid, 0};
+    };
+    runtime.startOperationCtx = this;
+    runtime.loadOperation = [](V1SettingsOperationStore::Snapshot& snapshot, void* ctx) {
+        auto* self = static_cast<WiFiManager*>(ctx);
+        if (!self || !self->v1SettingsOperations_ ||
+            !self->v1SettingsOperations_->snapshot().valid) return false;
+        snapshot = self->v1SettingsOperations_->snapshot();
+        return true;
+    };
+    runtime.loadOperationCtx = this;
+    runtime.validateOperationTarget = [](const String& address, bool requireGen2, void* ctx) {
+        auto* self = static_cast<WiFiManager*>(ctx);
+        if (!self) return WifiAutoPushApiService::OperationTargetStatus::Unavailable;
+        V1DeviceRecord captured;
+        switch (self->devices_.getSnapshotForAddressChecked(address, captured)) {
+        case V1DeviceSnapshotStatus::NotFound:
+            return WifiAutoPushApiService::OperationTargetStatus::NotFound;
+        case V1DeviceSnapshotStatus::Unavailable:
+            return WifiAutoPushApiService::OperationTargetStatus::Unavailable;
+        case V1DeviceSnapshotStatus::Found:
+            break;
+        }
+        if (requireGen2 && (!captured.snapshot.hasFirmwareVersion ||
+                            !V1FirmwareCompat::capabilities(captured.snapshot.firmwareVersion).gen2)) {
+            return WifiAutoPushApiService::OperationTargetStatus::UnsupportedFirmware;
+        }
+        return WifiAutoPushApiService::OperationTargetStatus::Allowed;
+    };
+    runtime.validateOperationTargetCtx = this;
+    runtime.restartForOperation = [](void* ctx) {
+        auto* self = static_cast<WiFiManager*>(ctx);
+        if (!self) return;
+        // The handler has already produced 202. Defer the controlled reboot
+        // to a later service tick so the HTTP response can leave the socket.
+        if (!self->operationRestartPending_) {
+            self->operationRestartPending_ = true;
+            self->operationRestartAtMs_ = static_cast<uint32_t>(millis()) + 300u;
+        }
+    };
+    runtime.restartForOperationCtx = this;
     return runtime;
 }
 

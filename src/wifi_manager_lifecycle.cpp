@@ -9,6 +9,9 @@
 #include "modules/wifi/wifi_auto_timeout_module.h"
 #include "modules/wifi/wifi_heap_guard_module.h"
 #include "modules/wifi/wifi_stop_lifecycle_policy.h"
+#include "main_internals.h"
+#include "modules/event_log/product_event_log.h"
+#include "modules/health/health_journal.h"
 #include "esp_wifi.h"
 
 // Optional AP auto-timeout (milliseconds). Set to 0 to keep always-on behavior.
@@ -513,6 +516,19 @@ void WiFiManager::checkAutoTimeout() {
 }
 
 void WiFiManager::process() {
+    if (maintenanceBootMode_) {
+        (void)acknowledgeDeliveredSettingsOperationReturn();
+    }
+    if (operationRestartPending_ &&
+        static_cast<int32_t>(static_cast<uint32_t>(millis()) - operationRestartAtMs_) >= 0) {
+        operationRestartPending_ = false;
+        const bool persistenceSafe = productEvents_ && health_ &&
+            completeLoggingForControlledRestart(*productEvents_, *health_);
+        if (persistenceSafe && settings_.save()) markCleanShutdown();
+        delay(20);
+        ESP.restart();
+        return;
+    }
     if (setupModeState_ != SETUP_MODE_AP_ON && setupModeState_ != SETUP_MODE_STOPPING) {
         lowDmaSinceMs_ = 0;
         return; // No WiFi processing when Setup Mode is off

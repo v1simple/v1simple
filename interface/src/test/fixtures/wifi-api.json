@@ -86,8 +86,12 @@
       "POST /api/autopush/push": [
         {
           "body": {
+            "operationId": 42,
             "queued": true,
-            "success": true
+            "rebooting": true,
+            "state": "pending_normal_boot",
+            "success": true,
+            "target": "normal"
           },
           "contentType": "application/json",
           "status": 202

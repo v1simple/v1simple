@@ -9,7 +9,7 @@
 void TapGestureModule::begin(TouchHandler* touchHandler, SettingsManager* settings, V1Display* displayPtr,
                              V1BLEClient* bleClient, PacketParser* parserPtr, AutoPushModule* autoPushModule,
                              AlertPersistenceModule* alertPersistenceModule, DisplayMode* displayModePtr,
-                             QuietCoordinatorModule* quietCoordinator) {
+                             QuietCoordinatorModule* quietCoordinator, Callbacks callbacks) {
     touch_ = touchHandler;
     settings_ = settings;
     display_ = displayPtr;
@@ -19,6 +19,7 @@ void TapGestureModule::begin(TouchHandler* touchHandler, SettingsManager* settin
     alertPersistence_ = alertPersistenceModule;
     displayMode_ = displayModePtr;
     quiet_ = quietCoordinator;
+    callbacks_ = callbacks;
     observedAlertLifetime_ = parser_ ? parser_->alertLifetime() : 0;
 }
 
@@ -89,11 +90,16 @@ void TapGestureModule::process(unsigned long nowMs, bool profileCycleAllowed) {
 
     auto performProfileCycle = [&]() {
         const V1Settings& s = settings_->get();
-        if (ble_->isConnected() && s.autoPushEnabled && autoPush_->isActive()) {
+        int newSlot = (s.activeSlot + 1) % 3;
+        // Production installs this callback so durable queue admission owns
+        // detector application before any local presentation changes. The
+        // fallback preserves a local-only profile cycle for isolated use.
+        if (callbacks_.beginProfileCycle) {
+            (void)callbacks_.beginProfileCycle(newSlot, callbacks_.beginProfileCycleContext);
             return;
         }
-        int newSlot = (s.activeSlot + 1) % 3;
-        if (!settings_->setActiveSlot(newSlot, SettingsPersistMode::ImmediateNvsDeferredBackup).success) {
+        if (!settings_->setActiveSlot(newSlot,
+                                      SettingsPersistMode::ImmediateNvsDeferredBackup).success) {
             return;
         }
         *displayMode_ = DisplayMode::IDLE;
@@ -105,13 +111,6 @@ void TapGestureModule::process(unsigned long nowMs, bool profileCycleAllowed) {
 
         display_->drawProfileIndicator(newSlot);
 
-        if (ble_->isConnected() && s.autoPushEnabled) {
-            Serial.println("Pushing new profile to V1...");
-            const auto queueResult = autoPush_->queueSlotPush(newSlot);
-            if (queueResult != AutoPushModule::QueueResult::QUEUED) {
-                Serial.printf("Profile push skipped: %d\n", static_cast<int>(queueResult));
-            }
-        }
     };
 
     const bool newTapEdge = touch_->getTouchPoint(touchX, touchY);

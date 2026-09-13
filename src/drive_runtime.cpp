@@ -17,6 +17,7 @@
 #include "settings.h"
 #include "storage_manager.h"
 #include "v1_devices.h"
+#include "v1_firmware_compat.h"
 #include "v1_profiles.h"
 
 namespace {
@@ -150,7 +151,7 @@ void DriveRuntime::initializeBle(uint32_t setupStartMs, uint32_t& stageStartedMs
     Serial.printf("[BootTiming] ble_scan_start_ms=%lu\n", static_cast<unsigned long>(millis() - scanStartedMs));
 }
 
-void DriveRuntime::requestMaintenanceBootRestart() {
+bool DriveRuntime::requestMaintenanceBootRestart() {
     // A just-connected detector snapshot is intentionally staged in memory so
     // normal driving avoids SD writes during the first ten seconds. A user can
     // request maintenance sooner than that, so this controlled restart is the
@@ -166,12 +167,18 @@ void DriveRuntime::requestMaintenanceBootRestart() {
         }
         if (!snapshotSaved) {
             Serial.println("[MaintBoot] ERROR: pending detector snapshot save failed; restart cancelled");
-            return;
+            return false;
         }
     }
     if (!requestMaintenanceBoot()) {
         Serial.println("[MaintBoot] ERROR: failed to persist maintenance boot request");
-        return;
+        return false;
+    }
+    if (settingsOperations_.isTerminal() &&
+        settingsOperations_.snapshot().returnToMaintenance &&
+        !settingsOperations_.acknowledgeReturnToMaintenance()) {
+        Serial.println("[MaintBoot] ERROR: failed to consume operation return request; restart cancelled");
+        return false;
     }
     Serial.println("[MaintBoot] rebooting into maintenance mode");
     const bool persistenceSafe = completeLoggingForControlledRestart(events_, health_);
@@ -186,6 +193,7 @@ void DriveRuntime::requestMaintenanceBootRestart() {
     }
     delay(50);
     ESP.restart();
+    return true;
 }
 
 bool DriveRuntime::usbMaintenanceAllowed() const {
@@ -195,7 +203,7 @@ bool DriveRuntime::usbMaintenanceAllowed() const {
 }
 
 void DriveRuntime::requestUsbMaintenanceBoot() {
-    if (usbMaintenanceAllowed()) requestMaintenanceBootRestart();
+    if (usbMaintenanceAllowed()) (void)requestMaintenanceBootRestart();
 }
 
 void DriveRuntime::initializeTouchAndUi() {
@@ -233,8 +241,13 @@ void DriveRuntime::initializeTouchAndUi() {
     touchCallbacks.isObdPairGestureSafeCtx = this;
     touchUi_.begin(&display_, &touch_, &settings_, touchCallbacks);
 
+    TapGestureModule::Callbacks tapCallbacks{};
+    tapCallbacks.beginProfileCycle = [](int newSlot, void* context) {
+        return static_cast<DriveRuntime*>(context)->beginTripleTapProfileCycle(newSlot);
+    };
+    tapCallbacks.beginProfileCycleContext = this;
     tapGesture_.begin(&touch_, &settings_, &display_, &ble_, &parser_, &autoPush_, &alertPersistence_,
-                      &displayMode_, &quiet_);
+                      &displayMode_, &quiet_, tapCallbacks);
 }
 
 bool DriveRuntime::restoreConnectionDisplayOwner(void* context, uint32_t nowMs) {
@@ -319,6 +332,7 @@ void DriveRuntime::start(uint32_t setupStartMs, uint32_t stageStartedMs, esp_res
         return;
     }
     state_.maintenanceBootActive = false;
+    (void)settingsOperations_.beginNormalBoot();
     initializeStorageAndProfiles();
 
     const bool previousShutdownClean = readAndResetCleanShutdownMarker();
@@ -650,8 +664,217 @@ DriveLoopDispatch DriveRuntime::processConnectionDispatch(bool powerPresentation
     return dispatch;
 }
 
+void DriveRuntime::finishSettingsRecapture(
+    const V1SettingsOperationStore::Snapshot& operation, uint32_t nowMs) {
+    String address;
+    if (!connectedV1Address(address) || !settingsOperations_.targetMatches(address.c_str())) return;
+    V1DetectorSnapshot snapshot = captureDetectorSnapshot(settingsRecaptureIngressBoundary_);
+    const V1FirmwareCompat::Capabilities capabilities =
+        V1FirmwareCompat::capabilities(snapshot.firmwareVersion);
+    const bool complete = snapshot.hasUserBytes &&
+        (!capabilities.allVolume || snapshot.hasCurrentVolume) &&
+        (!capabilities.modeObservation || snapshot.hasMode) &&
+        (!capabilities.displayActive || snapshot.hasDisplayOn) &&
+        (!capabilities.customSweeps || (snapshot.hasSweepSections && snapshot.hasMaxSweepIndex &&
+                                        snapshot.hasSweepDefinitions));
+    constexpr uint32_t kFreshObservationWaitMs = 5000u;
+    const bool waitExpired = static_cast<uint32_t>(nowMs - settingsOperationStateStartedMs_) >=
+                             kFreshObservationWaitMs;
+    if (!complete && !waitExpired) return;
+    snapshot.captureTimedOut = snapshot.captureTimedOut || !complete;
+
+    if (!devices_.recordSnapshotInMemory(address, snapshot)) {
+        (void)settingsOperations_.finish(V1SettingsOperationStore::State::Failed,
+            V1SettingsOperationStore::Reason::SnapshotStoreUnavailable);
+        return;
+    }
+    bool flushed = false;
+    if (storage_.isSDCard()) {
+        StorageManager::SDTryLock lock(storage_.getSDMutex(), /*checkDmaHeap=*/false);
+        flushed = lock && devices_.flushPendingSave();
+    } else {
+        flushed = devices_.flushPendingSave();
+    }
+    if (!flushed) {
+        (void)settingsOperations_.finish(V1SettingsOperationStore::State::Failed,
+            V1SettingsOperationStore::Reason::SnapshotPersistFailed);
+        return;
+    }
+
+    V1SettingsOperationStore::State terminal = V1SettingsOperationStore::State::Succeeded;
+    V1SettingsOperationStore::Reason reason = V1SettingsOperationStore::Reason::None;
+    bool preserveInterruptedFactoryTruth = false;
+    if (operation.kind == V1SettingsOperationStore::Kind::FactoryReset) {
+        if (!V1SettingsOperationStore::hasDurableFactoryResetSend(operation)) {
+            // A reset may have reached the detector before power loss, but no
+            // durable record proves it. Fresh factory-looking values cannot be
+            // promoted into evidence of that destructive send.
+            terminal = V1SettingsOperationStore::State::Partial;
+            reason = V1SettingsOperationStore::Reason::Interrupted;
+            preserveInterruptedFactoryTruth = true;
+        } else {
+            auto components = operation.components;
+            auto& user = components[static_cast<size_t>(V1SettingsOperationStore::Component::UserSettings)];
+            const bool userDefaultsMatch = V1SettingsOperationStore::factoryUserDefaultsMatch(
+                snapshot.userBytes, snapshot.hasUserBytes);
+            if (userDefaultsMatch) {
+                user.verified = true;
+                user.outcome = V1SettingsOperationStore::ComponentOutcome::Verified;
+                user.reason = V1SettingsOperationStore::ComponentReason::None;
+            } else if (snapshot.hasUserBytes) {
+                user.verified = false;
+                user.outcome = V1SettingsOperationStore::ComponentOutcome::Mismatch;
+                user.reason = V1SettingsOperationStore::ComponentReason::FactoryUserDefaultsMismatch;
+            }
+            if (!settingsOperations_.updateComponents(components, 0)) return;
+            terminal = V1SettingsOperationStore::State::Partial;
+            reason = snapshot.hasUserBytes && !userDefaultsMatch
+                ? V1SettingsOperationStore::Reason::FactoryResetDefaultsMismatch
+                : V1SettingsOperationStore::Reason::FactoryResetScopeUnverified;
+        }
+    } else if (operation.reason == V1SettingsOperationStore::Reason::ApplyFailed) {
+        terminal = V1SettingsOperationStore::State::Failed;
+        reason = operation.reason;
+    } else if (operation.reason == V1SettingsOperationStore::Reason::ApplyPartial ||
+               operation.reason == V1SettingsOperationStore::Reason::Interrupted) {
+        terminal = V1SettingsOperationStore::State::Partial;
+        reason = operation.reason;
+    }
+    if (!complete && terminal != V1SettingsOperationStore::State::Failed &&
+        !preserveInterruptedFactoryTruth) {
+        terminal = V1SettingsOperationStore::State::Partial;
+        reason = V1SettingsOperationStore::Reason::RecaptureTimedOut;
+    }
+    (void)settingsOperations_.finish(terminal, reason);
+}
+
+void DriveRuntime::processSettingsOperation(uint32_t nowMs) {
+    if (settingsWrongDetectorDisconnectPending_) {
+        settingsWrongDetectorDisconnectPending_ = false;
+        ble_.disconnect();
+        return;
+    }
+    const V1SettingsOperationStore::Snapshot initial = settingsOperations_.snapshot();
+    if (!initial.available || !initial.valid) return;
+    if (initial.operationId != observedSettingsOperationId_) {
+        observedSettingsOperationId_ = initial.operationId;
+        observedSettingsOperationState_ = initial.state;
+        settingsOperationStartedMs_ = nowMs;
+        settingsOperationStateStartedMs_ = nowMs;
+        settingsOperationNextActionMs_ = 0;
+        settingsRecaptureIngressBoundary_ = 0;
+        settingsRecaptureStarted_ = false;
+        settingsRecaptureFollowupComplete_ = false;
+        factoryResetSendLatch_.reset();
+        factoryResetSummaryPersistedThisBoot_ = false;
+        factoryResetSentComponents_ = {};
+        settingsWrongDetectorDisconnectPending_ = false;
+        settingsReturnRetryAtMs_ = 0;
+    } else if (initial.state != observedSettingsOperationState_) {
+        observedSettingsOperationState_ = initial.state;
+        settingsOperationStateStartedMs_ = nowMs;
+        settingsOperationNextActionMs_ = 0;
+        if (initial.state == V1SettingsOperationStore::State::Recapturing) {
+            settingsRecaptureIngressBoundary_ = 0;
+            settingsRecaptureStarted_ = false;
+            settingsRecaptureFollowupComplete_ = false;
+        }
+    }
+
+    if (settingsOperations_.isTerminal()) {
+        if (initial.returnToMaintenance &&
+            (settingsReturnRetryAtMs_ == 0 ||
+             static_cast<int32_t>(nowMs - settingsReturnRetryAtMs_) >= 0)) {
+            settingsReturnRetryAtMs_ = nowMs + 2000u;
+            requestMaintenanceBootRestart();
+        }
+        return;
+    }
+
+    constexpr uint32_t kDetectorWaitTimeoutMs = 60000u;
+    constexpr uint32_t kOperationTimeoutMs = 90000u;
+    if ((initial.state == V1SettingsOperationStore::State::WaitingForDetector ||
+         initial.state == V1SettingsOperationStore::State::Preparing) &&
+        static_cast<uint32_t>(nowMs - settingsOperationStartedMs_) >= kDetectorWaitTimeoutMs) {
+        (void)settingsOperations_.finish(V1SettingsOperationStore::State::Failed,
+            V1SettingsOperationStore::Reason::DetectorTimeout);
+        return;
+    }
+    if (static_cast<uint32_t>(nowMs - settingsOperationStartedMs_) >= kOperationTimeoutMs) {
+        const auto terminal = initial.state == V1SettingsOperationStore::State::Recapturing
+            ? V1SettingsOperationStore::State::Partial
+            : V1SettingsOperationStore::State::Failed;
+        (void)settingsOperations_.finish(terminal,
+            initial.state == V1SettingsOperationStore::State::Recapturing
+                ? V1SettingsOperationStore::Reason::RecaptureTimedOut
+                : V1SettingsOperationStore::Reason::DetectorTimeout);
+        return;
+    }
+
+    String address;
+    const bool matchingDetector = connectedV1Address(address) &&
+        settingsOperations_.targetMatches(address.c_str());
+    if (initial.state == V1SettingsOperationStore::State::Preparing && matchingDetector &&
+        !settingsRecaptureStarted_) {
+        settingsRecaptureIngressBoundary_ = ble_.latestV1NotificationIngressSequence();
+        if (ble_.beginSettingsRecapture()) {
+            settingsRecaptureStarted_ = true;
+            settingsOperationStateStartedMs_ = nowMs;
+        }
+        return;
+    }
+
+    if (initial.state == V1SettingsOperationStore::State::Running) {
+        if (initial.kind == V1SettingsOperationStore::Kind::FactoryReset) {
+            if (matchingDetector &&
+                (settingsOperationNextActionMs_ == 0 ||
+                 static_cast<int32_t>(nowMs - settingsOperationNextActionMs_) >= 0)) {
+                settingsOperationNextActionMs_ = nowMs + 50u;
+                attemptFactoryReset(initial);
+            }
+            return;
+        }
+        const AutoPushModule::ExecutionSummary summary = autoPush_.executionSummary();
+        if (summary.operationId == 0 ||
+            (initial.executorOperationId != 0 && summary.operationId != initial.executorOperationId)) return;
+        bool changed = initial.executorOperationId != summary.operationId;
+        for (size_t index = 0; index < V1SettingsOperationStore::kComponentCount && !changed; ++index) {
+            const auto& left = initial.components[index];
+            const auto& right = summary.components[index];
+            changed = left.requested != right.requested || left.sent != right.sent ||
+                      left.verified != right.verified || left.outcome != right.outcome ||
+                      left.reason != right.reason;
+        }
+        if (changed && !settingsOperations_.updateComponents(summary.components, summary.operationId)) return;
+        if (summary.active || summary.result == AutoPushModule::PublicResult::Queued ||
+            summary.result == AutoPushModule::PublicResult::InProgress) return;
+        V1SettingsOperationStore::Reason reason = V1SettingsOperationStore::Reason::ApplyFailed;
+        if (summary.result == AutoPushModule::PublicResult::Succeeded) {
+            reason = V1SettingsOperationStore::Reason::None;
+        } else if (summary.result == AutoPushModule::PublicResult::Partial) {
+            reason = V1SettingsOperationStore::Reason::ApplyPartial;
+        }
+        (void)settingsOperations_.markRecapturing(reason);
+        return;
+    }
+
+    if (initial.state == V1SettingsOperationStore::State::Recapturing) {
+        if (!matchingDetector) return;
+        if (!settingsRecaptureStarted_ && !settingsRecaptureFollowupComplete_) {
+            settingsRecaptureIngressBoundary_ = ble_.latestV1NotificationIngressSequence();
+            if (ble_.beginSettingsRecapture()) {
+                settingsRecaptureStarted_ = true;
+                settingsOperationStateStartedMs_ = nowMs;
+            }
+            return;
+        }
+        if (settingsRecaptureFollowupComplete_) finishSettingsRecapture(initial, nowMs);
+    }
+}
+
 void DriveRuntime::processPeriodicMaintenance(uint32_t nowMs, bool bleConnected, bool bleBackpressure,
                                               bool loopOverloaded, bool forceTailBleDrainPending) {
+    processSettingsOperation(nowMs);
     const bool hardPressure = bleBackpressure || loopOverloaded || forceTailBleDrainPending;
     usbTailBusy_ = hardPressure;
     if (!bleConnected) {
@@ -818,11 +1041,246 @@ void DriveRuntime::onV1SessionClosed(uint32_t sessionGeneration) {
     callbackOwner_->connectionState_.handleSessionClosed(nowMs, sessionGeneration);
 }
 
+bool DriveRuntime::connectedV1Address(String& address) const {
+    address = String();
+    const NimBLEAddress connected = ble_.getConnectedAddress();
+    if (connected.isNull()) return false;
+    try {
+        const std::string raw = connected.toString();
+        if (raw.size() != 17u) return false;
+        String staged(raw.c_str());
+        if (staged.length() != raw.size() ||
+            std::memcmp(staged.c_str(), raw.data(), raw.size()) != 0) return false;
+        address = normalizeV1DeviceAddress(staged);
+    } catch (const std::bad_alloc&) {
+        return false;
+    }
+    return address.length() == 17u && V1SettingsOperationStore::isCanonicalAddress(address.c_str());
+}
+
+V1DetectorSnapshot DriveRuntime::captureDetectorSnapshot(uint32_t ingressBoundary) const {
+    const auto afterBoundary = [ingressBoundary](uint32_t ingress) {
+        return ingress != 0 && (ingressBoundary == 0 ||
+               static_cast<int32_t>(ingress - ingressBoundary) > 0);
+    };
+    V1DetectorSnapshot snapshot;
+    snapshot.available = true;
+    snapshot.capturedBootId = bootId_;
+    snapshot.capturedUptimeMs = static_cast<uint32_t>(millis());
+    snapshot.sessionGeneration = ble_.sessionGeneration();
+    snapshot.captureTimedOut = ble_.settingsCaptureTimedOut();
+    snapshot.firmwareVersion = ble_.v1FirmwareVersion();
+    snapshot.hasFirmwareVersion = snapshot.firmwareVersion != 0;
+    snapshot.hasUserBytes = ble_.sessionUserBytesRevision() > 0 &&
+                            afterBoundary(ble_.sessionUserBytesIngressSequence()) &&
+                            ble_.copySessionUserBytes(snapshot.userBytes.data());
+
+    const V1DisplayOnObservation& display = parser_.displayOnObservation();
+    snapshot.hasDisplayOn = display.available && display.revision > 0 && afterBoundary(display.ingressSequence);
+    snapshot.displayOn = display.value;
+    const V1BluetoothIndicatorObservation& bluetooth = parser_.bluetoothIndicatorObservation();
+    snapshot.hasBluetoothIndicator = bluetooth.available && bluetooth.revision > 0 &&
+                                     afterBoundary(bluetooth.ingressSequence);
+    snapshot.bluetoothIndicator = bluetooth.state;
+    const V1ModeObservation& mode = parser_.modeObservation();
+    snapshot.hasMode = mode.available && mode.revision > 0 && afterBoundary(mode.ingressSequence);
+    snapshot.mode = mode.value;
+
+    const V1AllVolumeObservation& volume = parser_.allVolumeObservation();
+    const bool capturedVolume = ble_.hasSessionAllVolume() && volume.available &&
+                                volume.revision > 0 && afterBoundary(volume.ingressSequence);
+    snapshot.hasCurrentVolume = capturedVolume;
+    snapshot.currentMainVolume = volume.currentMain;
+    snapshot.currentMutedVolume = volume.currentMuted;
+    snapshot.hasSavedVolume = capturedVolume;
+    snapshot.savedMainVolume = volume.savedMain;
+    snapshot.savedMutedVolume = volume.savedMuted;
+
+    const V1SweepSectionsObservation& sections = parser_.sweepSectionsObservation();
+    snapshot.hasSweepSections = ble_.hasSessionSweepSectionsCapture() && sections.available &&
+                                sections.complete && afterBoundary(sections.ingressSequence);
+    if (snapshot.hasSweepSections) {
+        snapshot.sweepSectionCount = sections.count;
+        snapshot.sweepSections = sections.sections;
+    }
+    const V1SweepMaxObservation& maxSweep = parser_.sweepMaxObservation();
+    snapshot.hasMaxSweepIndex = ble_.hasSessionSweepMaxCapture() && maxSweep.available &&
+                                !maxSweep.poisoned && afterBoundary(maxSweep.ingressSequence);
+    snapshot.maxSweepIndex = maxSweep.maxIndex;
+    const V1SweepDefinitionsObservation& definitions = parser_.sweepDefinitionsObservation();
+    if (snapshot.hasMaxSweepIndex && ble_.hasSessionSweepDefinitionsCapture() &&
+        afterBoundary(definitions.ingressSequence)) {
+        const uint64_t required = snapshot.maxSweepIndex == 63
+                                      ? UINT64_MAX
+                                      : ((uint64_t{1} << (snapshot.maxSweepIndex + 1u)) - 1u);
+        snapshot.hasSweepDefinitions = !definitions.poisoned && definitions.presentMask == required;
+        for (uint8_t index = 0; snapshot.hasSweepDefinitions && index <= snapshot.maxSweepIndex; ++index) {
+            snapshot.hasSweepDefinitions = afterBoundary(definitions.ingressSequences[index]);
+        }
+        if (snapshot.hasSweepDefinitions) snapshot.sweepDefinitions = definitions.definitions;
+    }
+    return snapshot;
+}
+
+bool DriveRuntime::persistDetectorSnapshot(const String& address,
+                                           const V1DetectorSnapshot& snapshot,
+                                           bool flushImmediately) {
+    if (!devices_.recordSnapshotInMemory(address, snapshot)) return false;
+    if (!flushImmediately) return true;
+    if (storage_.isSDCard()) {
+        StorageManager::SDTryLock lock(storage_.getSDMutex(), /*checkDmaHeap=*/false);
+        return lock && devices_.flushPendingSave();
+    }
+    return devices_.flushPendingSave();
+}
+
+bool DriveRuntime::beginTripleTapProfileCycle(int newSlot) {
+    if (newSlot < 0 || newSlot > 2) return false;
+    const V1Settings& current = settings_.get();
+    if (!ble_.isConnected() || !current.autoPushEnabled) {
+        if (!settings_.setActiveSlot(newSlot,
+                SettingsPersistMode::ImmediateNvsDeferredBackup).success) return false;
+        displayMode_ = DisplayMode::IDLE;
+        alertPersistence_.clearPersistence();
+        display_.drawProfileIndicator(newSlot);
+        Serial.printf("PROFILE CHANGE: local slot %d (no detector apply)\n", newSlot);
+        return true;
+    }
+    if (autoPush_.isActive() || settingsOperations_.isActive()) return false;
+    String address;
+    if (!connectedV1Address(address)) return false;
+    const auto started = settingsOperations_.startApply(
+        newSlot, address.c_str(), V1SettingsOperationStore::Source::TripleTap,
+        false, false);
+    if (started.status != V1SettingsOperationStore::StartStatus::Started) return false;
+    if (!settingsOperations_.markPreparing()) {
+        (void)settingsOperations_.finish(V1SettingsOperationStore::State::Failed,
+                                         V1SettingsOperationStore::Reason::StorageUnavailable);
+        return false;
+    }
+    observedSettingsOperationId_ = 0;
+    return true;
+}
+
+void DriveRuntime::queueSettingsApply(const V1SettingsOperationStore::Snapshot& operation,
+                                      const V1DetectorSnapshot& preApply) {
+    autoPush_.setPreApplySnapshot(preApply);
+    if (!settingsOperations_.markRunning(0)) return;
+    AutoPushModule::QueueResult queued = AutoPushModule::QueueResult::STAGING_UNAVAILABLE;
+    if (operation.kind == V1SettingsOperationStore::Kind::ApplySlot) {
+        const bool activate = operation.source == V1SettingsOperationStore::Source::TripleTap;
+        queued = autoPush_.queueSlotPush(operation.slot, activate, false);
+    } else {
+        AutoPushModule::PushNowRequest request;
+        request.slotIndex = settings_.get().activeSlot;
+        request.hasProfileOverride = true;
+        request.profileName = operation.profileName;
+        queued = autoPush_.queuePushNow(request);
+    }
+    if (queued != AutoPushModule::QueueResult::QUEUED) {
+        (void)settingsOperations_.finish(V1SettingsOperationStore::State::Failed,
+                                         AutoPushModule::durableReasonForQueueResult(queued));
+        return;
+    }
+    if (operation.source == V1SettingsOperationStore::Source::TripleTap) {
+        displayMode_ = DisplayMode::IDLE;
+        alertPersistence_.clearPersistence();
+        display_.drawProfileIndicator(operation.slot);
+    }
+    const AutoPushModule::ExecutionSummary summary = autoPush_.executionSummary();
+    (void)settingsOperations_.updateComponents(summary.components, summary.operationId);
+}
+
+void DriveRuntime::attemptFactoryReset(const V1SettingsOperationStore::Snapshot& operation) {
+    if (operation.kind != V1SettingsOperationStore::Kind::FactoryReset || !ble_.isConnected()) return;
+    if (factoryResetSendLatch_.sent()) {
+        if (!factoryResetSummaryPersistedThisBoot_) {
+            if (!settingsOperations_.updateComponents(factoryResetSentComponents_, 0)) return;
+            factoryResetSummaryPersistedThisBoot_ = true;
+        }
+        (void)settingsOperations_.markRecapturing(
+            V1SettingsOperationStore::Reason::FactoryResetScopeUnverified);
+        return;
+    }
+    auto components = operation.components;
+    const SendResult result = ble_.factoryResetDetector();
+    if (result == SendResult::NOT_YET) return;
+    if (result != SendResult::SENT) {
+        for (size_t index = 0; index < V1SettingsOperationStore::kComponentCount; ++index) {
+            components[index].outcome = index == static_cast<size_t>(V1SettingsOperationStore::Component::FactoryReset)
+                ? V1SettingsOperationStore::ComponentOutcome::WriteFailed
+                : V1SettingsOperationStore::ComponentOutcome::Blocked;
+            components[index].reason = V1SettingsOperationStore::ComponentReason::FactoryResetWriteFailed;
+        }
+        (void)settingsOperations_.updateComponents(components, 0);
+        (void)settingsOperations_.finish(V1SettingsOperationStore::State::Failed,
+            V1SettingsOperationStore::Reason::FactoryResetSendFailed);
+        return;
+    }
+    for (size_t index = 0; index < V1SettingsOperationStore::kComponentCount; ++index) {
+        components[index].sent = true;
+        components[index].verified = false;
+        components[index].outcome = V1SettingsOperationStore::ComponentOutcome::Sent;
+        components[index].reason = index == static_cast<size_t>(V1SettingsOperationStore::Component::FactoryReset)
+            ? V1SettingsOperationStore::ComponentReason::None
+            : V1SettingsOperationStore::ComponentReason::FactoryDefaultUnverified;
+    }
+    // Latch before either persistence write. A returned SENT must never lead
+    // to a second destructive frame merely because NVS later failed.
+    factoryResetSendLatch_.noteSent();
+    factoryResetSentComponents_ = components;
+    if (!settingsOperations_.updateComponents(components, 0)) return;
+    factoryResetSummaryPersistedThisBoot_ = true;
+    (void)settingsOperations_.markRecapturing(
+        V1SettingsOperationStore::Reason::FactoryResetScopeUnverified);
+}
+
+bool DriveRuntime::handleSettingsOperationStableConnection() {
+    if (!settingsOperations_.isActive()) return false;
+    String address;
+    if (!connectedV1Address(address) || !settingsOperations_.targetMatches(address.c_str())) {
+        // A target-bound job owns detector mutation admission until it reaches
+        // a terminal state. Ordinary Auto-Push must not mutate another V1.
+        settingsWrongDetectorDisconnectPending_ = ble_.isConnected();
+        return true;
+    }
+    const V1SettingsOperationStore::Snapshot operation = settingsOperations_.snapshot();
+    if (operation.state == V1SettingsOperationStore::State::Recapturing) {
+        settingsRecaptureFollowupComplete_ = true;
+        return true;
+    }
+    if (operation.state != V1SettingsOperationStore::State::WaitingForDetector &&
+        operation.state != V1SettingsOperationStore::State::Preparing) return true;
+    const uint32_t requiredBoundary = V1SettingsOperationStore::requiredPreApplyIngressBoundary(
+        operation.state, settingsRecaptureIngressBoundary_);
+    const V1DetectorSnapshot snapshot = captureDetectorSnapshot(requiredBoundary);
+    if (!persistDetectorSnapshot(address, snapshot, false)) {
+        (void)settingsOperations_.finish(V1SettingsOperationStore::State::Failed,
+            V1SettingsOperationStore::Reason::SnapshotStoreUnavailable);
+        return true;
+    }
+    if (operation.kind == V1SettingsOperationStore::Kind::FactoryReset) {
+        auto components = operation.components;
+        for (auto& component : components) {
+            component.requested = true;
+            component.outcome = V1SettingsOperationStore::ComponentOutcome::Pending;
+            component.reason = V1SettingsOperationStore::ComponentReason::None;
+        }
+        if (!settingsOperations_.updateComponents(components, 0)) return true;
+        if (!settingsOperations_.markRunning(0)) return true;
+        attemptFactoryReset(settingsOperations_.snapshot());
+    } else {
+        queueSettingsApply(operation, snapshot);
+    }
+    return true;
+}
+
 void DriveRuntime::onV1Connected() {
     if (!callbackOwner_) {
         return;
     }
     auto& self = *callbackOwner_;
+    if (self.handleSettingsOperationStableConnection()) return;
     const V1Settings& settings = self.settings_.get();
     const int activeSlot = std::max(0, std::min(2, settings.activeSlot));
     int selectedSlot = activeSlot;

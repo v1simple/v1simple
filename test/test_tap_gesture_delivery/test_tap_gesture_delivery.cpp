@@ -50,6 +50,15 @@ TapGestureModule tap;
 TouchUiModule touchUi;
 int maintenanceBootRequests = 0;
 bool profileCycleAllowed = true;
+int profileCycleCallbackCalls = 0;
+int profileCycleCallbackSlot = -1;
+bool profileCycleCallbackResult = false;
+
+bool beginProfileCycleCallback(int slot, void*) {
+    ++profileCycleCallbackCalls;
+    profileCycleCallbackSlot = slot;
+    return profileCycleCallbackResult;
+}
 
 void parseV1Packet(uint8_t packetId, const std::vector<uint8_t>& payload) {
     std::vector<uint8_t> bytes{0xAA, 0xDA, 0xE4, packetId, static_cast<uint8_t>(payload.size() + 1)};
@@ -114,11 +123,22 @@ void setUp() {
     touchUi = TouchUiModule{};
     maintenanceBootRequests = 0;
     profileCycleAllowed = true;
+    profileCycleCallbackCalls = 0;
+    profileCycleCallbackSlot = -1;
+    profileCycleCallbackResult = false;
     TouchUiModule::Callbacks callbacks{};
     callbacks.isWifiSetupActive = wifiInactive;
     callbacks.requestMaintenanceBoot = requestMaintenanceBoot;
     touchUi.begin(&display, &touch, &settings, callbacks);
     tap.begin(&touch, &settings, &display, &ble, &parser, &autoPush, &persistence, &displayMode, &quiet);
+}
+
+void installProfileCycleCallback(bool result) {
+    profileCycleCallbackResult = result;
+    TapGestureModule::Callbacks callbacks{};
+    callbacks.beginProfileCycle = beginProfileCycleCallback;
+    tap.begin(&touch, &settings, &display, &ble, &parser, &autoPush, &persistence,
+              &displayMode, &quiet, callbacks);
 }
 
 void test_alert_clear_drops_stale_mute_retry() {
@@ -222,6 +242,24 @@ void test_three_screen_taps_still_cycle_profile_once() {
     TEST_ASSERT_EQUAL_UINT8(1, settings.get().activeSlot);
     TEST_ASSERT_EQUAL_INT(1, display.drawProfileIndicatorCalls);
     TEST_ASSERT_EQUAL_INT(0, maintenanceBootRequests);
+}
+
+void test_profile_cycle_callback_owns_admission_and_defers_local_presentation() {
+    for (bool admitted : {false, true}) {
+        setUp();
+        setV1Alert(false);
+        installProfileCycleCallback(admitted);
+        pollTouch(1000, true);
+        pollTouch(1050, false);
+        pollTouch(1250, true);
+        pollTouch(1300, false);
+        pollTouch(1500, true);
+        TEST_ASSERT_EQUAL_INT(1, profileCycleCallbackCalls);
+        TEST_ASSERT_EQUAL_INT(1, profileCycleCallbackSlot);
+        TEST_ASSERT_EQUAL_UINT8(0, settings.get().activeSlot);
+        TEST_ASSERT_EQUAL_INT(0, display.drawProfileIndicatorCalls);
+        TEST_ASSERT_EQUAL_INT(0, settings.saveDeferredBackupCalls);
+    }
 }
 
 void test_invalid_touch_coordinates_cannot_mute_a_live_alert() {
@@ -394,5 +432,6 @@ int main() {
     RUN_TEST(test_failed_touch_reads_invalidate_level_without_turning_recovery_into_a_tap);
     RUN_TEST(test_screen_holds_cannot_request_maintenance_but_boot_hold_can);
     RUN_TEST(test_three_screen_taps_still_cycle_profile_once);
+    RUN_TEST(test_profile_cycle_callback_owns_admission_and_defers_local_presentation);
     return UNITY_END();
 }

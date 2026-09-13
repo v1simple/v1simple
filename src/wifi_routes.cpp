@@ -274,6 +274,24 @@ bool WiFiManager::setupWebServer() {
             return;
         WifiSplitBootApiResponse::sendUnavailable(server_, WifiSplitBootApiResponse::Operation::V1_PUSH_PULL);
     });
+    registerMaintenanceExactBodyWriteRoute("/api/v1/apply",
+                                           WifiMaintenanceHttpPreflight::kMaxDetectorOperationBodyBytes,
+                                           [this](const uint8_t* body, size_t bodySize,
+                                                  const char*, size_t) {
+        if (!requireMaintenanceWriteRequestShape()) return;
+        if (!checkRateLimit()) return;
+        WifiAutoPushApiService::handleApiApplyProfileBody(
+            server_, makeAutoPushRuntime(), body, bodySize);
+    });
+    registerMaintenanceExactBodyWriteRoute("/api/v1/factory-reset",
+                                           WifiMaintenanceHttpPreflight::kMaxDetectorOperationBodyBytes,
+                                           [this](const uint8_t* body, size_t bodySize,
+                                                  const char*, size_t) {
+        if (!requireMaintenanceWriteRequestShape()) return;
+        if (!checkRateLimit()) return;
+        WifiAutoPushApiService::handleApiFactoryResetBody(
+            server_, makeAutoPushRuntime(), body, bodySize);
+    });
     server_.on("/api/v1/current", HTTP_GET,
                [this]() { WifiV1ProfileApiService::handleApiCurrentSettings(server_, makeV1ProfileRuntime()); });
     server_.on("/api/v1/snapshot", HTTP_GET,
@@ -334,15 +352,18 @@ bool WiFiManager::setupWebServer() {
             [](void* ctx) { return static_cast<WiFiManager*>(ctx)->checkRateLimit(); }, this,
             boundary, boundarySize);
     });
-    registerMaintenanceWriteRoute("/api/autopush/push", [this]() {
-        if (!requireMaintenanceWriteRequestShape())
-            return;
-        if (!checkRateLimit())
-            return;
-        WifiSplitBootApiResponse::sendUnavailable(server_, WifiSplitBootApiResponse::Operation::AUTO_PUSH_NOW);
+    registerMaintenanceExactBodyWriteRoute("/api/autopush/push",
+                                           WifiMaintenanceHttpPreflight::kMaxDetectorOperationBodyBytes,
+                                           [this](const uint8_t* body, size_t bodySize,
+                                                  const char*, size_t) {
+        if (!requireMaintenanceWriteRequestShape()) return;
+        if (!checkRateLimit()) return;
+        WifiAutoPushApiService::handleApiApplySlotBody(
+            server_, makeAutoPushRuntime(), body, bodySize);
     });
     server_.on("/api/autopush/status", HTTP_GET,
-               [this]() { WifiAutoPushApiService::handleApiStatus(server_, makeAutoPushRuntime()); });
+               [this]() { WifiAutoPushApiService::handleApiStatusQuery(
+                   server_, makeAutoPushRuntime(), server_.exactQueryData(), server_.exactQuerySize()); });
 
     // Display settings routes
     server_.on("/api/display/settings", HTTP_GET,
@@ -422,6 +443,11 @@ bool WiFiManager::setupWebServer() {
     registerMaintenanceWriteRoute("/api/system/reboot-normal", [this]() {
         if (!requireMaintenanceWriteRequestShape())
             return;
+        if (!acknowledgeDeliveredSettingsOperationReturn()) {
+            server_.send(503, "application/json",
+                         "{\"success\":false,\"error\":\"operation_return_ack_unavailable\",\"retryable\":true}");
+            return;
+        }
         WifiSystemApiService::RebootRuntime runtime;
         runtime.maintenanceBootActive = maintenanceBootMode_;
         runtime.prepareCleanRestart = [](void* ctx) {

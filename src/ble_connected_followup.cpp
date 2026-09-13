@@ -303,6 +303,24 @@ void V1BLEClient::processConnectedFollowup() {
     }
 }
 
+bool V1BLEClient::beginSettingsRecapture() {
+    if (!isConnected() || connectedFollowupStep_ != ConnectedFollowupStep::NONE ||
+        !hasV1FirmwareVersion()) {
+        return false;
+    }
+    resetSessionSettingsCapture();
+    const uint32_t nowMs = static_cast<uint32_t>(millis());
+    connectedFollowupNextAttemptMs_ = 0;
+    connectedFollowupSendDeadlineMs_ = nowMs + CONNECTED_FOLLOWUP_SEND_TIMEOUT_MS;
+    if (V1FirmwareCompat::capabilities(v1FirmwareVersion()).allVolume) {
+        expectsSessionAllVolume_ = true;
+        connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_ALL_VOLUME;
+    } else {
+        connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_USER_BYTES;
+    }
+    return true;
+}
+
 void V1BLEClient::serviceDeferredBondBackup(uint32_t nowMs) {
     if (!pendingBondBackup_) {
         return;

@@ -4,6 +4,16 @@
     import PageHeader from '$lib/components/PageHeader.svelte';
     import StatusAlert from '$lib/components/StatusAlert.svelte';
     import {
+        DETECTOR_OPERATION_COMPONENTS,
+        DETECTOR_OPERATION_POLL_WINDOW_MS,
+        DETECTOR_OPERATION_STATES,
+        forgetDetectorOperationId,
+        readDetectorOperationId,
+        rememberDetectorOperationId,
+        validDetectorOperationStart,
+        validDetectorOperationStatus
+    } from '$lib/features/profiles/detectorOperation';
+    import {
         isMaintenance,
         retainRuntimeStatus,
         runtimeStatus,
@@ -23,6 +33,12 @@
     let editingSlot = $state(null);
     let editingDraft = $state(null);
     let busy = $state(false);
+    let capturedSnapshot = $state(null);
+    let operationStatus = $state(null);
+    let operationPollTimer = null;
+    let operationPollDeadline = 0;
+    let operationPollFailures = 0;
+    let operationPollEpoch = 0;
     const runtimeModeKnown = $derived(
         !$runtimeStatusLoading &&
             !$runtimeStatusError &&
@@ -33,16 +49,107 @@
     const defaultSlotNames = ['Default', 'Highway', 'Comfort'];
     const slotIcons = ['🏠', '🏎️', '👥'];
     const MAINTENANCE_PUSH_NOTE =
-        'Live V1 pushes are unavailable in maintenance mode. You can still edit, save, and select the global default slot for normal runtime.';
+        'Push Now starts a verified Apply for the exact captured V1, restarts briefly into normal runtime, then returns here with the durable result.';
 
     onMount(() => {
         const releaseRuntimeStatus = retainRuntimeStatus({ needsStatus: true });
         void (async () => {
-            await Promise.all([fetchSlots(), fetchProfiles()]);
+            await Promise.all([fetchSlots(), fetchProfiles(), fetchCapturedSnapshot()]);
             loading = false;
         })();
-        return releaseRuntimeStatus;
+        operationPollDeadline = Date.now() + DETECTOR_OPERATION_POLL_WINDOW_MS;
+        void resumeDetectorOperation();
+        return () => {
+            operationPollEpoch += 1;
+            releaseRuntimeStatus();
+            if (operationPollTimer) clearTimeout(operationPollTimer);
+        };
     });
+
+    async function fetchCapturedSnapshot() {
+        try {
+            const loaded = await fetchWithTimeout(
+                '/api/v1/snapshot', {}, undefined, async (response) => ({
+                    ok: response.ok,
+                    body: response.ok ? await response.json() : null
+                })
+            );
+            const snapshot = loaded.ok ? loaded.body : null;
+            capturedSnapshot = snapshot?.available === true &&
+                /^[0-9A-F]{2}(?::[0-9A-F]{2}){5}$/.test(snapshot.address || '')
+                ? snapshot
+                : null;
+        } catch {
+            capturedSnapshot = null;
+        }
+    }
+
+    function scheduleOperationPoll() {
+        if (Date.now() >= operationPollDeadline) {
+            message = {
+                type: 'warning',
+                text: 'Detector operation status polling paused after five minutes. Reload to resume the exact operation.'
+            };
+            return;
+        }
+        if (operationPollTimer) clearTimeout(operationPollTimer);
+        const delay = Math.min(5000, 750 * (2 ** Math.min(operationPollFailures, 3)));
+        operationPollTimer = setTimeout(() => void resumeDetectorOperation(), delay);
+    }
+
+    async function resumeDetectorOperation() {
+        const operationId = readDetectorOperationId(window.localStorage);
+        if (!operationId) return;
+        const pollEpoch = operationPollEpoch;
+        try {
+            const res = await fetchWithTimeout(
+                `/api/autopush/status?operationId=${encodeURIComponent(operationId)}`,
+                {}, undefined, async (response) => ({
+                    status: response.status,
+                    ok: response.ok,
+                    body: await response.json()
+                })
+            );
+            if (pollEpoch !== operationPollEpoch ||
+                readDetectorOperationId(window.localStorage) !== operationId) return;
+            if (res.status === 409) {
+                operationStatus = null;
+                forgetDetectorOperationId(window.localStorage);
+                message = {
+                    type: 'error',
+                    text: `Saved operation ${operationId} does not match the detector's current operation. No status was reused.`
+                };
+                return;
+            }
+            if (!res.ok) {
+                operationPollFailures += 1;
+                scheduleOperationPoll();
+                return;
+            }
+            const status = res.body;
+            if (!validDetectorOperationStatus(status, operationId)) {
+                operationStatus = null;
+                message = { type: 'error', text: 'Detector operation returned malformed or mismatched status.' };
+                return;
+            }
+            const priorState = operationStatus?.operationId === operationId ? operationStatus.state : null;
+            const priorRank = DETECTOR_OPERATION_STATES.indexOf(priorState);
+            const nextRank = DETECTOR_OPERATION_STATES.indexOf(status.state);
+            if (priorRank >= 0 && !status.terminal && nextRank < priorRank) {
+                message = { type: 'error', text: 'Detector operation status regressed; stale status was rejected.' };
+                return;
+            }
+            operationStatus = status;
+            operationPollFailures = 0;
+            if (status.terminal) forgetDetectorOperationId(window.localStorage);
+            else scheduleOperationPoll();
+        } catch {
+            if (pollEpoch !== operationPollEpoch ||
+                readDetectorOperationId(window.localStorage) !== operationId) return;
+            operationPollFailures += 1;
+            scheduleOperationPoll();
+        }
+    }
 
     async function fetchSlots() {
         try {
@@ -131,44 +238,63 @@
             };
             return;
         }
-        if ($isMaintenance) {
+        if (!$isMaintenance) {
             message = {
                 type: 'info',
-                text: 'Push Now is unavailable in maintenance mode; no settings were sent to the V1.'
+                text: 'Push Now is available from maintenance mode so the verified operation can restart and return safely.'
             };
             return;
         }
+        const address = capturedSnapshot?.address;
+        if (!address) {
+            message = { type: 'error', text: 'Capture a V1 in maintenance mode before applying this slot.' };
+            return;
+        }
         busy = true;
-        message = { type: 'info', text: 'Pushing settings to V1...' };
+        message = { type: 'info', text: `Queueing slot ${slot + 1} for ${address}...` };
         try {
-            const formData = new FormData();
-            formData.append('slot', slot);
+            const body = new URLSearchParams();
+            body.set('slot', String(slot));
+            body.set('address', address);
 
             const res = await fetchWithTimeout('/api/autopush/push', {
                 method: 'POST',
-                body: formData
-            });
-
-            if (res.ok) {
-                const queued = await res.json();
-                message = {
-                    type: 'info',
-                    text: queued.queued
-                        ? 'Push queued. The V1 has not confirmed the settings yet.'
-                        : 'Push request accepted; check Auto-Push status for the result.'
-                };
-            } else {
-                let err = {};
-                try {
-                    err = await res.json();
-                } catch {
-                    // Fall back to the HTTP status when the device has no JSON error body.
-                }
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+                body
+            }, undefined, async (response) => ({
+                status: response.status,
+                ok: response.ok,
+                body: await response.json()
+            }));
+            const response = res.body;
+            if (!res.ok) {
                 message = {
                     type: 'error',
-                    text: err.message || err.error || `Push failed (HTTP ${res.status})`
+                    text: response.message || response.error || `Apply could not be queued (HTTP ${res.status})`
                 };
+                return;
             }
+            if (!validDetectorOperationStart(response)) {
+                message = { type: 'error', text: 'Apply returned an invalid operation identity.' };
+                return;
+            }
+            operationPollEpoch += 1;
+            if (operationPollTimer) clearTimeout(operationPollTimer);
+            rememberDetectorOperationId(window.localStorage, response.operationId);
+            operationStatus = {
+                operationId: response.operationId,
+                state: response.state,
+                result: 'in_progress',
+                terminal: false,
+                components: {}
+            };
+            operationPollDeadline = Date.now() + DETECTOR_OPERATION_POLL_WINDOW_MS;
+            operationPollFailures = 0;
+            scheduleOperationPoll();
+            message = {
+                type: 'info',
+                text: `Slot ${slot + 1} queued as operation ${response.operationId} for ${address}. V1Simple will return here with verification results.`
+            };
         } catch (e) {
             message = { type: 'error', text: 'Connection error' };
         } finally {
@@ -250,6 +376,46 @@
 
     <StatusAlert {message} />
 
+    {#if operationStatus}
+        <div class="surface-card" aria-label="Detector operation status">
+            <div class="card-body space-y-3">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                    <h2 class="card-title">Detector operation {operationStatus.operationId}</h2>
+                    <span class:badge-success={operationStatus.state === 'succeeded'}
+                          class:badge-warning={operationStatus.state === 'partial'}
+                          class:badge-error={operationStatus.state === 'failed'}
+                          class="badge">
+                        {operationStatus.state || 'unknown'}
+                    </span>
+                </div>
+                <p class="copy-muted">
+                    Result: {operationStatus.result || 'in_progress'} · Reason: {operationStatus.reason || 'none'}
+                </p>
+                {#if operationStatus.kind && operationStatus.targetAddress}
+                    <p class="copy-caption">
+                        {operationStatus.kind} · target {operationStatus.targetAddress} · source {operationStatus.source}
+                    </p>
+                {/if}
+                {#if operationStatus.components}
+                    <div class="grid gap-2 sm:grid-cols-2">
+                        {#each DETECTOR_OPERATION_COMPONENTS as name (name)}
+                            {@const component = operationStatus.components[name]}
+                            {#if component?.requested}
+                                <div class="surface-panel">
+                                    <div class="copy-caption">{name}</div>
+                                    <div>{component.outcome} · {component.reason}</div>
+                                    <div class="copy-caption">
+                                        sent {component.sent ? 'yes' : 'no'} · verified {component.verified ? 'yes' : 'no'}
+                                    </div>
+                                </div>
+                            {/if}
+                        {/each}
+                    </div>
+                {/if}
+            </div>
+        </div>
+    {/if}
+
     {#if !loading && !profileSchemaReady}
         <StatusAlert
             message="The profile settings migration is still pending. Slot editing and activation are temporarily read-only; existing saved slots can still be pushed."
@@ -276,6 +442,17 @@
         />
     {:else if $isMaintenance}
         <StatusAlert message={MAINTENANCE_PUSH_NOTE} fallbackType="info" />
+        {#if !capturedSnapshot}
+            <StatusAlert
+                message="No captured V1 target is available. Capture the detector before using Push Now."
+                fallbackType="warning"
+            />
+        {/if}
+    {:else}
+        <StatusAlert
+            message="Push Now is available in maintenance mode; normal runtime remains dedicated to detector execution."
+            fallbackType="info"
+        />
     {/if}
 
     {#if loading}
@@ -435,7 +612,8 @@
                                     disabled={!slot.profile ||
                                         busy ||
                                         !runtimeModeKnown ||
-                                        $isMaintenance}
+                                        !$isMaintenance ||
+                                        !capturedSnapshot}
                                 >
                                     Push Now
                                 </button>

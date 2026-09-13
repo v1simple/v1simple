@@ -33,11 +33,30 @@ namespace {
 SendResult g_sendCommandResult = SendResult::SENT;
 std::vector<uint8_t> g_lastSentCommand;
 std::vector<uint8_t> g_sentCommandHistory;
+uint32_t g_receivedIngressSequence = 0;
+uint32_t g_receivedCallbackMillis = 0;
+uint32_t g_receivedSessionGeneration = 0;
+uint16_t g_receivedCharUuid = 0;
+int g_dataCallbackCalls = 0;
+
+void captureV1Data(const uint8_t*, size_t, uint16_t charUuid, uint32_t sessionGeneration,
+                   uint32_t callbackMillis, uint32_t ingressSequence) {
+    ++g_dataCallbackCalls;
+    g_receivedCharUuid = charUuid;
+    g_receivedSessionGeneration = sessionGeneration;
+    g_receivedCallbackMillis = callbackMillis;
+    g_receivedIngressSequence = ingressSequence;
+}
 
 void resetPhoneCommandSendState() {
     g_sendCommandResult = SendResult::SENT;
     g_lastSentCommand.clear();
     g_sentCommandHistory.clear();
+    g_receivedIngressSequence = 0;
+    g_receivedCallbackMillis = 0;
+    g_receivedSessionGeneration = 0;
+    g_receivedCharUuid = 0;
+    g_dataCallbackCalls = 0;
 }
 
 
@@ -856,6 +875,32 @@ void test_notify_callback_preserves_source_characteristic_for_proxy_forwarding()
 
 }
 
+void test_raw_notify_callback_stamps_and_propagates_ingress_before_downstream_delivery() {
+    V1BLEClient client;
+    client.acceptClientCallbacks_.store(true, std::memory_order_release);
+    client.sessionGeneration_.store(9, std::memory_order_release);
+    client.sessionPublicationGate_.open(9);
+    client.dataCallback_ = captureV1Data;
+
+    NimBLERemoteCharacteristic shortRemote(V1_DISPLAY_DATA_UUID);
+    client.notifyShortChar_.store(&shortRemote, std::memory_order_release);
+    client.notifyShortCharId_.store(0xB2CE, std::memory_order_release);
+    const uint32_t before = client.latestV1NotificationIngressSequence();
+    mockMillis = 912;
+    uint8_t data[] = {0xAA, 0xD8, 0xEA, 0x31, 0x00, 0xAB};
+
+    V1BLEClient::notifyCallback(&shortRemote, data, sizeof(data), true);
+
+    TEST_ASSERT_EQUAL_INT(1, g_dataCallbackCalls);
+    TEST_ASSERT_EQUAL_UINT16(0xB2CE, g_receivedCharUuid);
+    TEST_ASSERT_EQUAL_UINT32(9, g_receivedSessionGeneration);
+    TEST_ASSERT_EQUAL_UINT32(912, g_receivedCallbackMillis);
+    TEST_ASSERT_NOT_EQUAL(0, g_receivedIngressSequence);
+    TEST_ASSERT_TRUE(static_cast<int32_t>(g_receivedIngressSequence - before) > 0);
+    TEST_ASSERT_EQUAL_UINT32(client.latestV1NotificationIngressSequence(),
+                             g_receivedIngressSequence);
+}
+
 int main(int argc, char** argv) {
     UNITY_BEGIN();
 
@@ -890,6 +935,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_new_phone_command_is_sent_behind_retired_queue_entries);
     RUN_TEST(test_phone_callback_cannot_join_a_later_v1_session);
     RUN_TEST(test_notify_callback_preserves_source_characteristic_for_proxy_forwarding);
+    RUN_TEST(test_raw_notify_callback_stamps_and_propagates_ingress_before_downstream_delivery);
 
     return UNITY_END();
 }

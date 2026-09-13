@@ -6,7 +6,9 @@
 namespace V1FirmwareCompat {
 
 inline constexpr uint32_t kInitialGen2Version = 40000;
+inline constexpr uint32_t kFirstUnverifiedFutureMajorVersion = 50000;
 inline constexpr uint32_t kCustomFrequenciesVersion = 41018;
+inline constexpr uint32_t kUserSettingsVersion = 41018;
 inline constexpr uint32_t kVolumeChangeVersion = 41026;
 inline constexpr uint32_t kModeObservationVersion = 41028;
 inline constexpr uint32_t kKaPriorityAndFastLaserVersion = 41031;
@@ -68,7 +70,8 @@ inline uint8_t supportedUserByteCount(uint32_t firmwareVersion) {
 inline Capabilities capabilities(uint32_t firmwareVersion) {
     Capabilities result;
     result.versionKnown = firmwareVersion != 0;
-    result.gen2 = firmwareVersion >= kInitialGen2Version;
+    // Do not silently project the 4.x protocol onto a future major release.
+    result.gen2 = firmwareVersion >= kInitialGen2Version && firmwareVersion < kFirstUnverifiedFutureMajorVersion;
     result.supportedUserByteCount = supportedUserByteCount(firmwareVersion);
     if (!result.versionKnown || !result.gen2) {
         return result;
@@ -105,6 +108,66 @@ inline void prepareUserBytesForWrite(const uint8_t input[kUserByteCount], uint8_
     for (uint8_t i = supportedUserByteCount(firmwareVersion); i < kUserByteCount; ++i) {
         output[i] = 0xFF;
     }
+}
+
+// ESP Specification 3.016 Appendix 12.1. A profile may contain all six raw
+// bytes, but Apply owns only the bits implemented by the connected firmware.
+// Every zero bit here is copied from the live pre-apply response unchanged.
+inline void supportedUserByteMasks(uint32_t firmwareVersion, uint8_t masks[kUserByteCount]) {
+    if (!masks) return;
+    std::memset(masks, 0, kUserByteCount);
+    if (firmwareVersion < kUserSettingsVersion) return;
+
+    masks[0] = 0xFF;
+    masks[1] = 0x0F;
+    if (firmwareVersion >= kKaPriorityAndFastLaserVersion) masks[1] = 0x3F;
+    if (firmwareVersion >= kKaSensitivityVersion) masks[1] = 0xFF;
+    if (firmwareVersion >= kStartupRestingDisplayAndBsmVersion) masks[2] = 0x07;
+    if (firmwareVersion >= kAutoMuteVersion) masks[2] = 0x1F;
+    if (firmwareVersion >= kKAndXSensitivityVersion) {
+        masks[2] = 0xFF;
+        masks[3] = 0xFF;
+    }
+    if (firmwareVersion >= kFullUserBytesVersion) masks[4] = 0x03;
+}
+
+inline bool hasWritableUserSettings(uint32_t firmwareVersion) {
+    return firmwareVersion >= kUserSettingsVersion && firmwareVersion < kFirstUnverifiedFutureMajorVersion;
+}
+
+inline void overlaySupportedUserBytes(const uint8_t live[kUserByteCount], const uint8_t desired[kUserByteCount],
+                                      uint8_t effective[kUserByteCount], uint32_t firmwareVersion) {
+    if (!live || !desired || !effective) return;
+    uint8_t masks[kUserByteCount];
+    supportedUserByteMasks(firmwareVersion, masks);
+    for (uint8_t index = 0; index < kUserByteCount; ++index) {
+        effective[index] = static_cast<uint8_t>((live[index] & static_cast<uint8_t>(~masks[index])) |
+                                                (desired[index] & masks[index]));
+    }
+}
+
+inline bool userBytesMatchSupported(const uint8_t left[kUserByteCount], const uint8_t right[kUserByteCount],
+                                    uint32_t firmwareVersion) {
+    if (!left || !right) return false;
+    uint8_t masks[kUserByteCount];
+    supportedUserByteMasks(firmwareVersion, masks);
+    for (uint8_t index = 0; index < kUserByteCount; ++index) {
+        if ((left[index] & masks[index]) != (right[index] & masks[index])) return false;
+    }
+    return true;
+}
+
+// Multi-bit enum value zero is reserved/invalid for every sensitivity and
+// Auto Mute field. V1 substitutes a default, so accepting zero would make the
+// requested target inherently unverifiable.
+inline bool hasValidModeledUserSettingValues(const uint8_t bytes[kUserByteCount], uint32_t firmwareVersion) {
+    if (!bytes) return false;
+    const Capabilities supported = capabilities(firmwareVersion);
+    if (supported.kaSensitivity && ((bytes[1] >> 6) & 0x03) == 0) return false;
+    if (supported.autoMute && ((bytes[2] >> 3) & 0x03) == 0) return false;
+    if (supported.kSensitivity && ((bytes[2] >> 5) & 0x03) == 0) return false;
+    if (supported.xSensitivity && (bytes[3] & 0x03) == 0) return false;
+    return true;
 }
 
 } // namespace V1FirmwareCompat

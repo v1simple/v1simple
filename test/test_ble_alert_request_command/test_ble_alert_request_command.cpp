@@ -157,6 +157,40 @@ void test_command_guard_interval_survives_millis_wrap() {
     TEST_ASSERT_EQUAL_UINT32(2, harness.command.writeValueCalls());
 }
 
+void test_settings_apply_commands_match_vendor_frames_exactly() {
+    AlertRequestHarness harness(17);
+
+    mockMillis = 100000;
+    TEST_ASSERT_TRUE(harness.client.requestCurrentVolume());
+    const uint8_t currentVolumeRequest[] = {0xAA, 0xDA, 0xE6, 0x37, 0x01, 0xA2, 0xAB};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(currentVolumeRequest, harness.command.lastWriteValue().data(),
+                                  sizeof(currentVolumeRequest));
+
+    mockMillis += 5;
+    TEST_ASSERT_TRUE(harness.client.setDisplayOn(false));
+    const uint8_t displayOff[] = {0xAA, 0xDA, 0xE6, 0x32, 0x01, 0x9D, 0xAB};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(displayOff, harness.command.lastWriteValue().data(), sizeof(displayOff));
+
+    mockMillis += 5;
+    TEST_ASSERT_TRUE(harness.client.setMode(2));
+    const uint8_t modeLogic[] = {0xAA, 0xDA, 0xE6, 0x36, 0x02, 0x02, 0xA4, 0xAB};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(modeLogic, harness.command.lastWriteValue().data(), sizeof(modeLogic));
+
+    mockMillis += 5;
+    TEST_ASSERT_TRUE(harness.client.setVolume(7, 3));
+    const uint8_t temporaryVolume[] = {0xAA, 0xDA, 0xE6, 0x39, 0x04, 0x07, 0x03, 0x00, 0xB1, 0xAB};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(temporaryVolume, harness.command.lastWriteValue().data(),
+                                  sizeof(temporaryVolume));
+
+    mockMillis += 5;
+    const uint8_t effectiveUserBytes[] = {0xFE, 0xCF, 0x5F, 0xAA, 0xA4, 0x5A};
+    TEST_ASSERT_TRUE(harness.client.writeUserBytesExact(effectiveUserBytes));
+    const uint8_t userBytesWrite[] = {0xAA, 0xDA, 0xE6, 0x13, 0x07, 0xFE, 0xCF,
+                                      0x5F, 0xAA, 0xA4, 0x5A, 0x58, 0xAB};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(userBytesWrite, harness.command.lastWriteValue().data(),
+                                  sizeof(userBytesWrite));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_command_guard_uses_successful_send_time_for_exact_boundary);
@@ -164,5 +198,6 @@ int main(int, char**) {
     RUN_TEST(test_new_session_generation_gets_an_immediate_first_command);
     RUN_TEST(test_alert_start_recovery_waits_for_subscription_and_optional_followups);
     RUN_TEST(test_command_guard_interval_survives_millis_wrap);
+    RUN_TEST(test_settings_apply_commands_match_vendor_frames_exactly);
     return UNITY_END();
 }

@@ -80,6 +80,10 @@ class VolumeFadeModule {
     /// Cleared after first use or 1.5 s.
     void setBaselineHint(uint8_t mainVol, uint8_t muteVol, uint32_t nowMs);
 
+    // True while fade owns a temporary detector volume or a restore is still
+    // awaiting convergence. A sent restore alone does not release ownership.
+    bool hasActiveVolumeOverride() const { return fadeActive_ || pendingRestoreVolume_ != 0xFF; }
+
   private:
     void reset();
     SettingsManager* settings_ = nullptr;

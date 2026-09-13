@@ -38,6 +38,7 @@ public:
     uint8_t lastHintVolume = 0;
     uint8_t lastHintMuteVolume = 0;
     uint32_t lastHintNowMs = 0;
+    bool activeVolumeOverride = false;
     
     void reset() {
         tracking = false;
@@ -48,9 +49,11 @@ public:
         lastHintVolume = 0;
         lastHintMuteVolume = 0;
         lastHintNowMs = 0;
+        activeVolumeOverride = false;
     }
     
     bool isTracking() const { return tracking; }
+    bool hasActiveVolumeOverride() const { return activeVolumeOverride; }
 
     VolumeFadeAction releaseClearedAlert() {
         tracking = false;
@@ -60,6 +63,7 @@ public:
     VolumeFadeAction process(const VolumeFadeContext& ctx) {
         ++processCalls;
         lastContext = ctx;
+        if (nextAction.type == VolumeFadeAction::Type::FADE_DOWN) activeVolumeOverride = true;
         return nextAction;
     }
 

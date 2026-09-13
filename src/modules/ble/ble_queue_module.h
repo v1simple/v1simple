@@ -47,9 +47,9 @@ class BleQueueModule {
 
     // Callback entry from BLE notifications.
     void onNotify(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration,
-                  uint32_t callbackMillis);
+                  uint32_t callbackMillis, uint32_t ingressSequence);
     bool tryOnNotify(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration,
-                     uint32_t callbackMillis);
+                     uint32_t callbackMillis, uint32_t ingressSequence);
 
     // Open/close the V1 notification boundary. closeSession() rejects new
     // notifications and discards every queued, buffered, and parsed signal
@@ -76,6 +76,7 @@ class BleQueueModule {
         uint16_t charUUID;
         uint32_t tsMs;
         uint32_t sessionGeneration;
+        uint32_t ingressSequence;
     };
 
     V1BLEClient* ble_ = nullptr;
@@ -87,6 +88,10 @@ class BleQueueModule {
     std::atomic<bool> acceptNotifications_{false};
     std::atomic<uint32_t> sessionGeneration_{0};
     std::vector<uint8_t> rxBuffer_;
+    // Parallel first-arrival provenance for every staged byte. A frame uses
+    // the sequence attached to its start byte so a response that began before
+    // a command cannot become fresh merely by completing afterward.
+    std::vector<uint32_t> rxIngressSequences_;
     bool rxBufferReady_ = false;
     size_t rxReadPos_ = 0; // Logical read pointer into rxBuffer (avoids front erases)
     unsigned long lastRxMillis_ = 0;

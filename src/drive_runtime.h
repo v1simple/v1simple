@@ -91,7 +91,7 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
 
     static DriveRuntime* callbackOwner_;
     static void onV1Data(const uint8_t* data, size_t length, uint16_t charUuid, uint32_t sessionGeneration,
-                         uint32_t callbackMillis);
+                         uint32_t callbackMillis, uint32_t ingressSequence);
     static void onV1ConnectImmediate();
     static void onV1SessionOpened(uint32_t sessionGeneration);
     static void onV1SessionClosed(uint32_t sessionGeneration);

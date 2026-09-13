@@ -76,7 +76,7 @@ struct DisplayState {
     char modeChar;
     bool hasMode;
     bool displayOn;             // True if main display is ON (not dark)
-    bool hasDisplayOn;          // True after infDisplayData or an explicit on/off ACK
+    bool hasDisplayOn;          // True only after display state is decoded from infDisplayData
     uint8_t flashBits;          // Blink state for arrows (from display packet)
     uint8_t bandFlashBits;      // Blink state for bands (L=0x01, Ka=0x02, K=0x04, X=0x08)
     uint8_t mainVolume;         // Main volume 0-9
@@ -140,4 +140,57 @@ struct DisplayState {
     // True if we should show the volume display.
     // Requires either observed volume data OR confirmed firmware 4.1028+.
     bool supportsVolume() const { return hasVolumeData || (hasV1Version && v1FirmwareVersion >= 41028); }
+};
+
+// Settings transactions consume only these canonical wire observations. They
+// intentionally live beside, rather than inside, DisplayState: the general
+// display parser tolerates imperfect traffic for rendering, while Apply must
+// keep each value inseparable from the canonical packet revision that proved
+// it.
+struct V1DisplayOnObservation {
+    uint32_t revision = 0;
+    uint32_t sequence = 0;
+    // BLE notification admission order for the first byte of this frame.
+    // Apply uses this separately from parse-time revision so a response that
+    // was already queued before a command cannot prove that command.
+    uint32_t ingressSequence = 0;
+    bool available = false;
+    bool value = true;
+};
+
+struct V1ModeObservation {
+    uint32_t revision = 0;
+    uint32_t sequence = 0;
+    uint32_t ingressSequence = 0;
+    bool available = false;
+    char value = 0;
+};
+
+struct V1CurrentVolumeObservation {
+    uint32_t revision = 0;
+    uint32_t sequence = 0;
+    uint32_t ingressSequence = 0;
+    bool available = false;
+    uint8_t main = 0;
+    uint8_t muted = 0;
+};
+
+struct V1AllVolumeObservation {
+    uint32_t revision = 0;
+    uint32_t sequence = 0;
+    uint32_t ingressSequence = 0;
+    bool available = false;
+    uint8_t currentMain = 0;
+    uint8_t currentMuted = 0;
+    uint8_t savedMain = 0;
+    uint8_t savedMuted = 0;
+};
+
+struct V1DisplayVolumeObservation {
+    uint32_t revision = 0;
+    uint32_t sequence = 0;
+    uint32_t ingressSequence = 0;
+    bool available = false;
+    uint8_t main = 0;
+    uint8_t muted = 0;
 };

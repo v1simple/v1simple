@@ -23,6 +23,8 @@ unsigned long mockMicros = 0;
 #define PACKET_ID_MUTE_ON 0x34
 #define PACKET_ID_MUTE_OFF 0x35
 #define PACKET_ID_REQ_WRITE_VOLUME 0x39
+#define PACKET_ID_REQ_CURRENT_VOLUME 0x37
+#define PACKET_ID_RESP_CURRENT_VOLUME 0x38
 #define PACKET_ID_RESP_USER_BYTES 0x12
 #define PACKET_ID_VERSION 0x01
 #define PACKET_ID_RESP_VERSION 0x02
@@ -40,16 +42,29 @@ unsigned long mockMicros = 0;
 namespace {
 
 std::vector<uint8_t> makePacket(uint8_t packetId, const std::vector<uint8_t>& payload,
-                                uint8_t encodedOriginator = 0xEA) {
+                                uint8_t encodedOriginator = 0xEA, uint8_t destination = 0) {
     std::vector<uint8_t> packet;
     packet.reserve(6 + payload.size());
     packet.push_back(ESP_PACKET_START);
-    packet.push_back(0xDA);
+    if (destination == 0) {
+        destination = (packetId == PACKET_ID_RESP_VERSION || packetId == PACKET_ID_RESP_USER_BYTES ||
+                       packetId == PACKET_ID_RESP_CURRENT_VOLUME || packetId == PACKET_ID_RESP_ALL_VOLUME)
+                          ? 0xD6
+                          : 0xD8;
+    }
+    packet.push_back(destination);
     packet.push_back(encodedOriginator);
     packet.push_back(packetId);
     packet.push_back(static_cast<uint8_t>(payload.size()));
     packet.insert(packet.end(), payload.begin(), payload.end());
     packet.push_back(ESP_PACKET_END);
+    if (encodedOriginator == 0xEA && !payload.empty()) {
+        uint8_t checksum = 0;
+        for (size_t index = 0; index + 2 < packet.size(); ++index) {
+            checksum = static_cast<uint8_t>(checksum + packet[index]);
+        }
+        packet[packet.size() - 2] = checksum;
+    }
     return packet;
 }
 
@@ -408,17 +423,114 @@ void test_parse_version_packet_ignores_non_v1_device_letter() {
     TEST_ASSERT_FALSE(state.hasV1Version);
 }
 
-void test_parse_display_ack_packets_toggle_display_state() {
+void test_display_request_echoes_do_not_mutate_or_verify_display_state() {
     PacketParser parser;
     const auto darkPacket = makePacket(PACKET_ID_TURN_OFF_DISPLAY, {0x00, 0x00});
     const auto lightPacket = makePacket(PACKET_ID_TURN_ON_DISPLAY, {0x00});
 
     TEST_ASSERT_TRUE(parsePacket(parser, darkPacket));
-    TEST_ASSERT_FALSE(parser.getDisplayState().displayOn);
-    TEST_ASSERT_TRUE(parser.getDisplayState().hasDisplayOn);
+    TEST_ASSERT_TRUE(parser.getDisplayState().displayOn);
+    TEST_ASSERT_FALSE(parser.getDisplayState().hasDisplayOn);
+    TEST_ASSERT_EQUAL_UINT32(0, parser.displayOnObservationRevision());
 
     TEST_ASSERT_TRUE(parsePacket(parser, lightPacket));
     TEST_ASSERT_TRUE(parser.getDisplayState().displayOn);
+    TEST_ASSERT_FALSE(parser.getDisplayState().hasDisplayOn);
+    TEST_ASSERT_EQUAL_UINT32(0, parser.displayOnObservationRevision());
+}
+
+void test_canonical_settings_observation_values_cannot_be_overwritten_by_tolerated_display_frames() {
+    PacketParser parser;
+    TEST_ASSERT_TRUE(parsePacket(parser,
+                                 makePacket(PACKET_ID_RESP_VERSION,
+                                            makeVersionPayload('4', '1', '0', '3', '9'))));
+    const auto canonical = makePacket(
+        PACKET_ID_DISPLAY_DATA,
+        makeDisplayPayload(0x3F, 0x00, 0x00, 0x00, 0x0C, 0x04, 0x52));
+    TEST_ASSERT_TRUE(parsePacket(parser, canonical));
+    TEST_ASSERT_EQUAL_UINT32(1, parser.displayOnObservation().revision);
+    TEST_ASSERT_TRUE(parser.displayOnObservation().available);
+    TEST_ASSERT_TRUE(parser.displayOnObservation().value);
+    TEST_ASSERT_EQUAL_UINT32(1, parser.modeObservation().revision);
+    TEST_ASSERT_TRUE(parser.modeObservation().available);
+    TEST_ASSERT_EQUAL_CHAR('A', parser.modeObservation().value);
+    TEST_ASSERT_TRUE(parser.displayVolumeObservation().available);
+    TEST_ASSERT_EQUAL_UINT8(5, parser.displayVolumeObservation().main);
+    TEST_ASSERT_EQUAL_UINT8(2, parser.displayVolumeObservation().muted);
+
+    auto corrupt = makePacket(
+        PACKET_ID_DISPLAY_DATA,
+        makeDisplayPayload(0x3F, 0x00, 0x00, 0x00, 0x04, 0x08, 0x73));
+    corrupt[corrupt.size() - 2] ^= 0x01;
+    TEST_ASSERT_TRUE(parsePacket(parser, corrupt));
+    TEST_ASSERT_FALSE(parser.getDisplayState().displayOn);
+    TEST_ASSERT_EQUAL_CHAR('l', parser.getDisplayState().modeChar);
+    TEST_ASSERT_EQUAL_UINT8(7, parser.getDisplayState().mainVolume);
+    TEST_ASSERT_EQUAL_UINT32(1, parser.displayOnObservation().revision);
+    TEST_ASSERT_TRUE(parser.displayOnObservation().value);
+    TEST_ASSERT_EQUAL_CHAR('A', parser.modeObservation().value);
+    TEST_ASSERT_EQUAL_UINT8(5, parser.displayVolumeObservation().main);
+
+    const auto wrongDestination = makePacket(
+        PACKET_ID_DISPLAY_DATA,
+        makeDisplayPayload(0x3F, 0x00, 0x00, 0x00, 0x04, 0x08, 0x73), 0xEA, 0xD6);
+    TEST_ASSERT_TRUE(parsePacket(parser, wrongDestination));
+    TEST_ASSERT_EQUAL_UINT32(1, parser.displayOnObservation().revision);
+}
+
+void test_current_and_all_volume_observations_remain_source_specific_and_destination_bound() {
+    PacketParser parser;
+    TEST_ASSERT_TRUE(parsePacket(parser,
+                                 makePacket(PACKET_ID_RESP_CURRENT_VOLUME, {7, 3, 0x00})));
+    TEST_ASSERT_TRUE(parser.currentVolumeObservation().available);
+    TEST_ASSERT_EQUAL_UINT32(1, parser.currentVolumeObservation().revision);
+    TEST_ASSERT_EQUAL_UINT8(7, parser.currentVolumeObservation().main);
+    TEST_ASSERT_EQUAL_UINT8(3, parser.currentVolumeObservation().muted);
+
+    TEST_ASSERT_TRUE(parsePacket(parser,
+                                 makePacket(PACKET_ID_RESP_ALL_VOLUME, {8, 4, 5, 2, 0x00})));
+    TEST_ASSERT_EQUAL_UINT32(1, parser.currentVolumeObservation().revision);
+    TEST_ASSERT_EQUAL_UINT32(1, parser.allVolumeObservation().revision);
+    TEST_ASSERT_EQUAL_UINT8(8, parser.allVolumeObservation().currentMain);
+
+    TEST_ASSERT_TRUE(parsePacket(parser,
+                                 makePacket(PACKET_ID_RESP_CURRENT_VOLUME, {6, 1}, 0xE9)));
+    TEST_ASSERT_EQUAL_UINT32(2, parser.currentVolumeObservation().revision);
+    uint8_t latestMain = 0;
+    uint8_t latestMuted = 0;
+    TEST_ASSERT_TRUE(parser.copyLatestCanonicalCurrentVolume(latestMain, latestMuted));
+    TEST_ASSERT_EQUAL_UINT8(6, latestMain);
+    TEST_ASSERT_EQUAL_UINT8(1, latestMuted);
+
+    auto corrupt = makePacket(PACKET_ID_RESP_CURRENT_VOLUME, {9, 9, 0x00});
+    corrupt[corrupt.size() - 2] ^= 0x01;
+    TEST_ASSERT_FALSE(parsePacket(parser, corrupt));
+    TEST_ASSERT_FALSE(parsePacket(parser,
+                                  makePacket(PACKET_ID_RESP_CURRENT_VOLUME, {9, 9, 0x00}, 0xEA, 0xD8)));
+    TEST_ASSERT_EQUAL_UINT32(2, parser.currentVolumeObservation().revision);
+    TEST_ASSERT_EQUAL_UINT8(6, parser.currentVolumeObservation().main);
+}
+
+void test_session_settings_resets_clear_all_canonical_observations() {
+    PacketParser parser;
+    TEST_ASSERT_TRUE(parsePacket(parser,
+                                 makePacket(PACKET_ID_RESP_VERSION,
+                                            makeVersionPayload('4', '1', '0', '3', '9'))));
+    TEST_ASSERT_TRUE(parsePacket(parser,
+                                 makePacket(PACKET_ID_DISPLAY_DATA,
+                                            makeDisplayPayload(0x3F, 0x00, 0x00, 0x00, 0x0C, 0x04, 0x52))));
+    TEST_ASSERT_TRUE(parsePacket(parser,
+                                 makePacket(PACKET_ID_RESP_CURRENT_VOLUME, {7, 3, 0x00})));
+    TEST_ASSERT_TRUE(parsePacket(parser,
+                                 makePacket(PACKET_ID_RESP_ALL_VOLUME, {7, 3, 5, 2, 0x00})));
+
+    parser.resetModeAndDisplayState();
+    parser.resetVolumeState();
+    TEST_ASSERT_FALSE(parser.displayOnObservation().available);
+    TEST_ASSERT_FALSE(parser.modeObservation().available);
+    TEST_ASSERT_FALSE(parser.currentVolumeObservation().available);
+    TEST_ASSERT_FALSE(parser.allVolumeObservation().available);
+    TEST_ASSERT_FALSE(parser.displayVolumeObservation().available);
 }
 
 // Without a version-qualified aux mode, preserve the bogey-counter glyph
@@ -880,7 +992,10 @@ int main(int argc, char** argv) {
     RUN_TEST(test_parse_version_packet_preserves_prior_valid_version_on_malformed_followup);
     RUN_TEST(test_parse_version_packet_rejects_request_id);
     RUN_TEST(test_parse_version_packet_ignores_non_v1_device_letter);
-    RUN_TEST(test_parse_display_ack_packets_toggle_display_state);
+    RUN_TEST(test_display_request_echoes_do_not_mutate_or_verify_display_state);
+    RUN_TEST(test_canonical_settings_observation_values_cannot_be_overwritten_by_tolerated_display_frames);
+    RUN_TEST(test_current_and_all_volume_observations_remain_source_specific_and_destination_bound);
+    RUN_TEST(test_session_settings_resets_clear_all_canonical_observations);
     RUN_TEST(test_parse_display_packet_decodes_mode_from_bogey_glyph);
     RUN_TEST(test_parse_display_packet_mode_unknown_when_bogey_is_digit);
     RUN_TEST(test_mode_observation_survives_alert_glyph_until_session_reset);

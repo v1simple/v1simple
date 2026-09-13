@@ -27,6 +27,8 @@ unsigned long mockMicros = 0;
 #define PACKET_ID_MUTE_ON 0x34
 #define PACKET_ID_MUTE_OFF 0x35
 #define PACKET_ID_REQ_WRITE_VOLUME 0x39
+#define PACKET_ID_REQ_CURRENT_VOLUME 0x37
+#define PACKET_ID_RESP_CURRENT_VOLUME 0x38
 #define PACKET_ID_RESP_USER_BYTES 0x12
 #define PACKET_ID_VERSION 0x01
 #define PACKET_ID_RESP_VERSION 0x02
@@ -512,6 +514,64 @@ void test_confirmed_autopush_does_not_replace_a_later_observed_manual_pair() {
     TEST_ASSERT_EQUAL_UINT8(4, parser.getDisplayState().muteVolume);
 }
 
+void test_fade_restore_ownership_releases_only_after_detector_convergence() {
+    volume(6, 2, 9500);
+    alert(10000);
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(10000, &fade));
+    alert(12500);
+    TEST_ASSERT_TRUE(quiet.executeVolumeFade(12500, &fade));
+    feed(PACKET_ID_RESP_ALL_VOLUME, {1, 2, 6, 2}, 12600);
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(12600, &fade));
+    clearAlert(14000);
+    TEST_ASSERT_TRUE(quiet.executeVolumeFade(14000, &fade));
+    TEST_ASSERT_FALSE(quiet.canApplyAutoPushVolumeExactly());
+
+    feed(PACKET_ID_RESP_ALL_VOLUME, {6, 2, 6, 2}, 14100);
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(14100, &fade));
+    TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+}
+
+void test_failed_fade_down_retains_ownership_until_override_lifecycle_clears() {
+    volume(6, 2, 9500);
+    alert(10000);
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(10000, &fade));
+
+    ble.nextVolumeSendResult = SendResult::FAILED;
+    alert(12500);
+    TEST_ASSERT_TRUE(quiet.executeVolumeFade(12500, &fade));
+    TEST_ASSERT_FALSE(quiet.canApplyAutoPushVolumeExactly());
+
+    // The unsuccessful fade never changed the detector, but VolumeFade still
+    // retains its baseline and can issue a later restore. Apply stays excluded
+    // until that lifecycle observes the canonical original pair and clears.
+    clearAlert(14000);
+    TEST_ASSERT_TRUE(quiet.executeVolumeFade(14000, &fade));
+    TEST_ASSERT_FALSE(quiet.canApplyAutoPushVolumeExactly());
+    volume(6, 2, 14100);
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(14100, &fade));
+    TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+}
+
+void test_not_yet_fade_down_retains_ownership_until_override_lifecycle_clears() {
+    volume(6, 2, 9500);
+    alert(10000);
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(10000, &fade));
+
+    ble.nextVolumeSendResult = SendResult::NOT_YET;
+    alert(12500);
+    TEST_ASSERT_TRUE(quiet.executeVolumeFade(12500, &fade));
+    TEST_ASSERT_FALSE(quiet.canApplyAutoPushVolumeExactly());
+
+    // Clearing the alert cancels the deferred fade-down and starts the retained
+    // baseline restore. Merely sending that restore does not release ownership.
+    clearAlert(14000);
+    TEST_ASSERT_TRUE(quiet.executeVolumeFade(14000, &fade));
+    TEST_ASSERT_FALSE(quiet.canApplyAutoPushVolumeExactly());
+    volume(6, 2, 14100);
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(14100, &fade));
+    TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_alert_before_first_volume_preserves_real_baseline_pair);
@@ -536,5 +596,8 @@ int main() {
     RUN_TEST(test_speed_entry_carries_pending_autopush_pair_before_detector_echo);
     RUN_TEST(test_speed_entry_carries_pending_autopush_zero_before_detector_echo);
     RUN_TEST(test_confirmed_autopush_does_not_replace_a_later_observed_manual_pair);
+    RUN_TEST(test_fade_restore_ownership_releases_only_after_detector_convergence);
+    RUN_TEST(test_failed_fade_down_retains_ownership_until_override_lifecycle_clears);
+    RUN_TEST(test_not_yet_fade_down_retains_ownership_until_override_lifecycle_clears);
     return UNITY_END();
 }

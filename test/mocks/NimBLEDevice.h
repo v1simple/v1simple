@@ -253,8 +253,9 @@ public:
     explicit NimBLERemoteCharacteristic(const char* uuid = "")
         : uuid_(uuid ? uuid : "") {}
 
-    bool writeValue(const uint8_t*, size_t, bool) {
+    bool writeValue(const uint8_t* data, size_t length, bool) {
         writeValueCalls_++;
+        lastWriteValue_.assign(data, data + length);
         if (writeEntryHook_) {
             writeEntryHook_();
         }
@@ -283,6 +284,7 @@ public:
     void setWriteEntryHook(std::function<void()> hook) { writeEntryHook_ = std::move(hook); }
     void setSubscribeEntryHook(std::function<void()> hook) { subscribeEntryHook_ = std::move(hook); }
     uint32_t writeValueCalls() const { return writeValueCalls_; }
+    const std::vector<uint8_t>& lastWriteValue() const { return lastWriteValue_; }
     uint32_t subscribeCalls() const { return subscribeCalls_; }
     void emit(uint8_t* data, size_t length) {
         if (callback_) {
@@ -299,6 +301,7 @@ private:
     bool subscribeResult_ = true;
     bool writeValueResult_ = true;
     uint32_t writeValueCalls_ = 0;
+    std::vector<uint8_t> lastWriteValue_;
     uint32_t subscribeCalls_ = 0;
 };
 

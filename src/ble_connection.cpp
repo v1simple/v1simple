@@ -729,6 +729,11 @@ void V1BLEClient::notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pDa
     if (!pData || !instancePtr || !pChar) {
         return;
     }
+    // This is the first accepted raw-notification instruction. Stamp before
+    // generation checks, characteristic mapping, or proxy work: any callback
+    // that entered before a settings command must remain pre-command even if
+    // delivery to the main-loop queue is delayed until after that command.
+    const uint32_t ingressSequence = instancePtr->noteV1NotificationIngress();
     const uint32_t callbackMillis = static_cast<uint32_t>(millis());
     const uint32_t callbackGeneration = instancePtr->sessionGeneration_.load(std::memory_order_acquire);
     const uint32_t proxyQueueEpoch = instancePtr->proxyQueueEpoch_.load(std::memory_order_acquire);
@@ -769,6 +774,7 @@ void V1BLEClient::notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pDa
     if (instancePtr->dataCallback_ && instancePtr->acceptClientCallbacks_.load(std::memory_order_acquire) &&
         instancePtr->sessionGeneration_.load(std::memory_order_acquire) == callbackGeneration &&
         instancePtr->sessionPublicationGate_.accepts(callbackGeneration)) {
-        instancePtr->dataCallback_(pData, length, charId, callbackGeneration, callbackMillis);
+        instancePtr->dataCallback_(pData, length, charId, callbackGeneration, callbackMillis,
+                                   ingressSequence);
     }
 }

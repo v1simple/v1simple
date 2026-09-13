@@ -32,7 +32,7 @@ class StorageManager;
 // charUUID: last 16-bit of source characteristic UUID (0xB2CE, 0xB4E0, etc)
 // sessionGeneration: immutable V1 link generation captured by the notify callback
 typedef void (*DataCallback)(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration,
-                             uint32_t callbackMillis);
+                             uint32_t callbackMillis, uint32_t ingressSequence);
 
 // Callback for V1 connection events
 typedef void (*ConnectionCallback)();
@@ -179,7 +179,31 @@ class V1BLEClient {
     bool isConnectBurstSettling() const;
     uint32_t lastV1ConnectionEventMs() const { return lastV1ConnectionEventMs_.load(std::memory_order_relaxed); }
     uint32_t sessionGeneration() const { return sessionGeneration_.load(std::memory_order_acquire); }
-    bool consumeVerifyPushMatchEdge() { return verifyPushMatchEdgePending_.exchange(false, std::memory_order_acq_rel); }
+    bool consumeVerifyPushMatchEdge() {
+        if (!verifyPushMatchEdgePending_.exchange(false, std::memory_order_acq_rel)) return false;
+        return verifiedSettingsApplyGeneration_.load(std::memory_order_acquire) == sessionGeneration();
+    }
+    // Connection-cycle release is an operation-level signal: publish it only
+    // after the complete settings Apply transaction has been verified.
+    void publishVerifiedSettingsApplyEdge(uint32_t verifiedSessionGeneration);
+
+    // A callback stamps this at entry, before queue admission or parsing. A
+    // settings command samples the latest value only after its send succeeds.
+    // Therefore only a frame whose first byte entered later can verify it.
+    uint32_t noteV1NotificationIngress() {
+        uint32_t current = v1NotificationIngressSequence_.load(std::memory_order_acquire);
+        while (true) {
+            uint32_t next = current + 1u;
+            if (next == 0) next = 1; // zero is the unavailable-provenance sentinel
+            if (v1NotificationIngressSequence_.compare_exchange_weak(
+                    current, next, std::memory_order_acq_rel, std::memory_order_acquire)) {
+                return next;
+            }
+        }
+    }
+    uint32_t latestV1NotificationIngressSequence() const {
+        return v1NotificationIngressSequence_.load(std::memory_order_acquire);
+    }
 
     // Send command to V1 (e.g., request alert data)
     bool sendCommand(const uint8_t* data, size_t length);
@@ -207,6 +231,10 @@ class V1BLEClient {
     // (RESPALLVOLUME 0x3D will be received with [main, muted, savedMain, savedMuted]).
     bool requestAllVolume();
 
+    // Request the current [main, muted] pair (0x37 -> 0x38). This focused
+    // response is used to verify temporary-volume Apply transactions.
+    bool requestCurrentVolume();
+
     // Turn V1 display on/off (dark mode)
     bool setDisplayOn(bool on);
 
@@ -227,6 +255,11 @@ class V1BLEClient {
     // Write user settings bytes to V1 (6 bytes)
     bool writeUserBytes(const uint8_t* bytes);
 
+    // Write all six caller-prepared wire bytes without replacing unsupported
+    // positions with defaults. The settings executor prepares this array by
+    // overlaying supported masks onto a same-session live response.
+    bool writeUserBytesExact(const uint8_t* bytes);
+
     // Legacy blocking write helper. AutoPush uses the asynchronous verification state below.
     enum WriteVerifyResult { VERIFY_OK = 0, VERIFY_WRITE_FAILED = 1, VERIFY_TIMEOUT = 2, VERIFY_MISMATCH = 3 };
     enum class UserBytesVerificationStatus : uint8_t { INACTIVE = 0, PENDING, MATCH, MISMATCH };
@@ -239,7 +272,7 @@ class V1BLEClient {
     void cancelUserBytesVerification();
 
     // Called by main loop when RESP_USER_BYTES received to complete verification
-    void onUserBytesReceived(const uint8_t* bytes);
+    void onUserBytesReceived(const uint8_t* bytes, uint32_t ingressSequence = 0);
     void onAllVolumeReceived() { hasSessionAllVolume_ = true; }
 
     // Session-qualified readback used to persist a pre-Auto-Push detector
@@ -248,6 +281,8 @@ class V1BLEClient {
     bool hasSessionUserBytes() const { return hasSessionUserBytes_; }
     bool hasSessionAllVolume() const { return hasSessionAllVolume_; }
     bool copySessionUserBytes(uint8_t out[6]) const;
+    uint32_t sessionUserBytesRevision() const { return sessionUserBytesRevision_; }
+    uint32_t sessionUserBytesIngressSequence() const { return sessionUserBytesIngressSequence_; }
     bool settingsCaptureTimedOut() const { return settingsCaptureTimedOut_; }
 
     // Disconnect and cleanup
@@ -647,8 +682,12 @@ class V1BLEClient {
     bool verifyComplete_ = false;
     bool verifyMatch_ = false;
     std::atomic<bool> verifyPushMatchEdgePending_{false};
+    std::atomic<uint32_t> verifiedSettingsApplyGeneration_{0};
+    std::atomic<uint32_t> v1NotificationIngressSequence_{0};
     bool hasSessionUserBytes_ = false;
     uint8_t sessionUserBytes_[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    uint32_t sessionUserBytesRevision_ = 0;
+    uint32_t sessionUserBytesIngressSequence_ = 0;
     bool expectsSessionAllVolume_ = false;
     bool hasSessionAllVolume_ = false;
     bool settingsCaptureTimedOut_ = false;

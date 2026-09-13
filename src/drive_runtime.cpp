@@ -173,7 +173,7 @@ void DriveRuntime::requestUsbMaintenanceBoot() {
 }
 
 void DriveRuntime::initializeTouchAndUi() {
-    autoPush_.begin(&settings_, &profiles_, &ble_, &display_, &quiet_);
+    autoPush_.begin(&settings_, &profiles_, &ble_, &parser_, &display_, &quiet_);
 
     TouchUiModule::Callbacks touchCallbacks{};
     touchCallbacks.isWifiSetupActive = [](void*) { return false; };
@@ -759,9 +759,11 @@ void DriveRuntime::stop() {
 }
 
 void DriveRuntime::onV1Data(const uint8_t* data, size_t length, uint16_t charUuid,
-                            uint32_t sessionGeneration, uint32_t callbackMillis) {
+                            uint32_t sessionGeneration, uint32_t callbackMillis,
+                            uint32_t ingressSequence) {
     if (callbackOwner_) {
-        callbackOwner_->bleQueue_.onNotify(data, length, charUuid, sessionGeneration, callbackMillis);
+        callbackOwner_->bleQueue_.onNotify(data, length, charUuid, sessionGeneration, callbackMillis,
+                                           ingressSequence);
     }
 }
 
@@ -825,28 +827,41 @@ void DriveRuntime::onV1Connected() {
     // The stable callback runs only after the bounded connect-followup read.
     // Copy the detector observation into the address-keyed store before
     // Auto-Push can write any desired profile state back to the V1.
-    if (linkAddress.length() > 0 && self.devices_.isReady()) {
-        V1DetectorSnapshot snapshot;
-        snapshot.available = true;
-        snapshot.capturedBootId = self.bootId_;
-        snapshot.capturedUptimeMs = static_cast<uint32_t>(millis());
-        snapshot.sessionGeneration = self.ble_.sessionGeneration();
-        snapshot.captureTimedOut = self.ble_.settingsCaptureTimedOut();
-        snapshot.firmwareVersion = self.ble_.v1FirmwareVersion();
-        snapshot.hasFirmwareVersion = snapshot.firmwareVersion != 0;
-        snapshot.hasUserBytes = self.ble_.copySessionUserBytes(snapshot.userBytes.data());
+    V1DetectorSnapshot snapshot;
+    snapshot.available = true;
+    snapshot.capturedBootId = self.bootId_;
+    snapshot.capturedUptimeMs = static_cast<uint32_t>(millis());
+    snapshot.sessionGeneration = self.ble_.sessionGeneration();
+    snapshot.captureTimedOut = self.ble_.settingsCaptureTimedOut();
+    snapshot.firmwareVersion = self.ble_.v1FirmwareVersion();
+    snapshot.hasFirmwareVersion = snapshot.firmwareVersion != 0;
+    snapshot.hasUserBytes = self.ble_.sessionUserBytesRevision() > 0 &&
+                            self.ble_.sessionUserBytesIngressSequence() > 0 &&
+                            self.ble_.copySessionUserBytes(snapshot.userBytes.data());
 
-        const DisplayState& observed = self.parser_.getDisplayState();
-        snapshot.hasMode = observed.hasMode;
-        snapshot.mode = observed.modeChar;
-        snapshot.hasDisplayOn = observed.hasDisplayOn;
-        snapshot.displayOn = observed.displayOn;
-        snapshot.hasCurrentVolume = observed.hasVolumeData && observed.mainVolume <= 9 && observed.muteVolume <= 9;
-        snapshot.currentMainVolume = observed.mainVolume;
-        snapshot.currentMutedVolume = observed.muteVolume;
-        snapshot.hasSavedVolume = observed.hasSavedVolume && observed.savedMainVolume <= 9 && observed.savedMuteVolume <= 9;
-        snapshot.savedMainVolume = observed.savedMainVolume;
-        snapshot.savedMutedVolume = observed.savedMuteVolume;
+    const V1DisplayOnObservation& displayObservation = self.parser_.displayOnObservation();
+    snapshot.hasDisplayOn = displayObservation.available && displayObservation.revision > 0 &&
+                            displayObservation.ingressSequence > 0;
+    snapshot.displayOn = displayObservation.value;
+
+    const V1ModeObservation& modeObservation = self.parser_.modeObservation();
+    snapshot.hasMode = modeObservation.available && modeObservation.revision > 0 &&
+                       modeObservation.ingressSequence > 0;
+    snapshot.mode = modeObservation.value;
+
+    uint32_t currentVolumeIngressSequence = 0;
+    snapshot.hasCurrentVolume = self.parser_.copyLatestCanonicalCurrentVolume(
+                                    snapshot.currentMainVolume, snapshot.currentMutedVolume,
+                                    &currentVolumeIngressSequence) &&
+                                currentVolumeIngressSequence > 0;
+    const V1AllVolumeObservation& allVolumeObservation = self.parser_.allVolumeObservation();
+    snapshot.hasSavedVolume = allVolumeObservation.available && allVolumeObservation.revision > 0 &&
+                              allVolumeObservation.ingressSequence > 0;
+    snapshot.savedMainVolume = allVolumeObservation.savedMain;
+    snapshot.savedMutedVolume = allVolumeObservation.savedMuted;
+    self.autoPush_.setPreApplySnapshot(snapshot);
+
+    if (linkAddress.length() > 0 && self.devices_.isReady()) {
         if (!self.devices_.recordSnapshotInMemory(linkAddress, snapshot)) {
             Serial.println("[V1Snapshot] WARN: failed to stage detector snapshot");
         }

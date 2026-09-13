@@ -133,12 +133,22 @@ bool V1BLEClient::requestAllVolume() {
     return sendCommand(packet, sizeof(packet));
 }
 
+bool V1BLEClient::requestCurrentVolume() {
+    uint8_t packet[] = {ESP_PACKET_START,
+                        static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),
+                        static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),
+                        PACKET_ID_REQ_CURRENT_VOLUME,
+                        0x01,
+                        0x00,
+                        ESP_PACKET_END};
+    packet[5] = calcV1Checksum(packet, 5);
+    return sendCommand(packet, sizeof(packet));
+}
+
 bool V1BLEClient::setDisplayOn(bool on) {
     if (localV1WriteSuppressedByProxy("display")) {
         return false;
     }
-
-    // Protocol quirk: ON has no payload; OFF declares length 2 but carries one mode byte.
 
     if (on) {
         uint8_t packet[] = {
@@ -155,19 +165,20 @@ bool V1BLEClient::setDisplayOn(bool on) {
 
         return sendCommand(packet, sizeof(packet));
     } else {
-        uint8_t mode = 0x00; // Completely dark
+        // The ordinary display-off request has no data. ESP 3.016 added an
+        // optional Aux0 byte in 4.1032 solely for the keep-Bluetooth-LED
+        // policy; that policy remains unsupported until Phase 4.
         uint8_t packet[] = {
             ESP_PACKET_START,                                // [0] 0xAA
             static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1), // [1] 0xDA
             static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),  // [2] 0xE6 (0xE0 + ESP_PACKET_REMOTE=0x06)
             PACKET_ID_TURN_OFF_DISPLAY,                      // [3] 0x32
-            0x02,                                            // [4] payload length = 2
-            mode,                                            // [5] mode byte
-            0x00,                                            // [6] checksum placeholder
-            ESP_PACKET_END                                   // [7] 0xAB
+            0x01,                                            // [4] no data; checksum only
+            0x00,                                            // [5] checksum placeholder
+            ESP_PACKET_END                                   // [6] 0xAB
         };
 
-        packet[6] = calcV1Checksum(packet, 6);
+        packet[5] = calcV1Checksum(packet, 5);
 
         return sendCommand(packet, sizeof(packet));
     }
@@ -303,6 +314,21 @@ bool V1BLEClient::writeUserBytes(const uint8_t* bytes) {
     return sendCommand(packet, sizeof(packet));
 }
 
+bool V1BLEClient::writeUserBytesExact(const uint8_t* bytes) {
+    if (localV1WriteSuppressedByProxy("user-bytes") || !bytes) return false;
+
+    uint8_t packet[13];
+    packet[0] = ESP_PACKET_START;
+    packet[1] = static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1);
+    packet[2] = static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE);
+    packet[3] = PACKET_ID_WRITE_USER_BYTES;
+    packet[4] = 0x07;
+    memcpy(&packet[5], bytes, 6);
+    packet[11] = calcV1Checksum(packet, 11);
+    packet[12] = ESP_PACKET_END;
+    return sendCommand(packet, sizeof(packet));
+}
+
 V1BLEClient::WriteVerifyResult V1BLEClient::writeUserBytesVerified(const uint8_t* bytes, int maxRetries) {
     if (!bytes || !isConnected()) {
         return VERIFY_WRITE_FAILED;
@@ -332,7 +358,7 @@ void V1BLEClient::startUserBytesVerification(const uint8_t* expected) {
     if (!expected) {
         return;
     }
-    V1FirmwareCompat::prepareUserBytesForWrite(expected, verifyExpected_, v1FirmwareVersion());
+    memcpy(verifyExpected_, expected, sizeof(verifyExpected_));
     verifyPending_ = true;
     verifyComplete_ = false;
     verifyMatch_ = false;
@@ -356,10 +382,17 @@ void V1BLEClient::cancelUserBytesVerification() {
     verifyPushMatchEdgePending_.store(false, std::memory_order_release);
 }
 
-void V1BLEClient::onUserBytesReceived(const uint8_t* bytes) {
+void V1BLEClient::publishVerifiedSettingsApplyEdge(uint32_t verifiedSessionGeneration) {
+    verifiedSettingsApplyGeneration_.store(verifiedSessionGeneration, std::memory_order_release);
+    verifyPushMatchEdgePending_.store(true, std::memory_order_release);
+}
+
+void V1BLEClient::onUserBytesReceived(const uint8_t* bytes, uint32_t ingressSequence) {
     if (bytes) {
         memcpy(sessionUserBytes_, bytes, sizeof(sessionUserBytes_));
         hasSessionUserBytes_ = true;
+        ++sessionUserBytesRevision_;
+        sessionUserBytesIngressSequence_ = ingressSequence;
     }
     if (verifyPending_ && bytes) {
         memcpy(verifyReceived_, bytes, 6);
@@ -376,6 +409,8 @@ void V1BLEClient::onUserBytesReceived(const uint8_t* bytes) {
 void V1BLEClient::resetSessionSettingsCapture() {
     hasSessionUserBytes_ = false;
     memset(sessionUserBytes_, 0xFF, sizeof(sessionUserBytes_));
+    sessionUserBytesRevision_ = 0;
+    sessionUserBytesIngressSequence_ = 0;
     expectsSessionAllVolume_ = false;
     hasSessionAllVolume_ = false;
     settingsCaptureTimedOut_ = false;

@@ -3,6 +3,7 @@
 
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #include <ArduinoJson.h>
 
@@ -4048,6 +4049,34 @@ void test_actual_backup_now_preserves_same_due_profile_snapshot() {
 namespace {
 // Exercise the actual setter, profile loader and push executor through real
 // contact reports. BLE/display mocks capture the resulting command boundary.
+
+std::vector<uint8_t> makeCanonicalV1SettingsPacket(uint8_t id, const std::vector<uint8_t>& data,
+                                                   uint8_t destination) {
+    std::vector<uint8_t> packet{ESP_PACKET_START, destination, 0xEA, id,
+                                static_cast<uint8_t>(data.size() + 1)};
+    packet.insert(packet.end(), data.begin(), data.end());
+    uint8_t checksum = 0;
+    for (uint8_t value : packet) checksum = static_cast<uint8_t>(checksum + value);
+    packet.push_back(checksum);
+    packet.push_back(ESP_PACKET_END);
+    return packet;
+}
+
+void parseCanonicalSettingsPacket(PacketParser& parser, V1BLEClient& ble, uint8_t id,
+                                  const std::vector<uint8_t>& data, uint8_t destination) {
+    const std::vector<uint8_t> packet = makeCanonicalV1SettingsPacket(id, data, destination);
+    TEST_ASSERT_TRUE(parser.parse(packet.data(), packet.size(), mockMillis,
+                                  ble.noteV1NotificationIngress()));
+}
+
+void observeSettingsDisplay(PacketParser& parser, V1BLEClient& ble, bool on, uint8_t mode) {
+    const uint8_t aux0 = static_cast<uint8_t>(0x04 | (on ? 0x08 : 0x00));
+    parseCanonicalSettingsPacket(parser, ble, PACKET_ID_DISPLAY_DATA,
+                                 {0x3F, 0x3F, 0x00, 0x00, 0x00, aux0,
+                                  static_cast<uint8_t>((mode & 0x03) << 2), 0x52},
+                                 0xD8);
+}
+
 struct ProfileTapHarness {
     TouchHandler touch;
     V1BLEClient ble;
@@ -4064,7 +4093,7 @@ struct ProfileTapHarness {
         touch.begin();
         ble.reset();
         quiet.begin(&ble, &parser);
-        push.begin(&manager, &profiles, &ble, &display, &quiet);
+        push.begin(&manager, &profiles, &ble, &parser, &display, &quiet);
         persistence.begin(&ble, &parser, &display, &manager);
         tap.begin(&touch, &manager, &display, &ble, &parser, &push, &persistence, &mode, &quiet);
     }
@@ -4126,20 +4155,68 @@ AutoPushCommandTrace runAutoPushTrace(SettingsManager& owner, V1ProfileManager& 
     QuietCoordinatorModule quiet;
     quiet.begin(&ble, &parser);
     AutoPushModule push;
-    push.begin(&owner, &catalog, &ble, &display, &quiet);
+    push.begin(&owner, &catalog, &ble, &parser, &display, &quiet);
     AutoPushCommandTrace trace;
     mockMillis = 0;
+
+    const std::array<uint8_t, 6> beforeUser{{0xFF, 0xE1, 0xF2, 0x73, 0xA5, 0x5A}};
+    // This migration fixture's two target displays are slot0=on, slot1=off;
+    // choose the opposite live observation so both pre/post migration paths
+    // must emit and verify the same detector command.
+    const bool beforeDisplayOn = slotIndex == 1;
+    uint8_t observedMode = V1_MODE_ALL_BOGEYS;
+    parseCanonicalSettingsPacket(parser, ble, PACKET_ID_RESP_VERSION,
+                                 {'v', '4', '.', '1', '0', '3', '9'}, 0xD6);
+    ble.onV1FirmwareVersionReceived(41039);
+    ble.onUserBytesReceived(beforeUser.data(), ble.noteV1NotificationIngress());
+    observeSettingsDisplay(parser, ble, beforeDisplayOn, observedMode);
+    parseCanonicalSettingsPacket(parser, ble, PACKET_ID_RESP_CURRENT_VOLUME, {5, 2}, 0xD6);
+
+    V1DetectorSnapshot snapshot;
+    snapshot.available = true;
+    snapshot.capturedUptimeMs = mockMillis;
+    snapshot.sessionGeneration = ble.sessionGeneration();
+    snapshot.hasFirmwareVersion = true;
+    snapshot.firmwareVersion = 41039;
+    snapshot.hasUserBytes = true;
+    snapshot.userBytes = beforeUser;
+    snapshot.hasDisplayOn = true;
+    snapshot.displayOn = beforeDisplayOn;
+    snapshot.hasMode = true;
+    snapshot.mode = 'A';
+    snapshot.hasCurrentVolume = true;
+    snapshot.currentMainVolume = 5;
+    snapshot.currentMutedVolume = 2;
+    push.setPreApplySnapshot(snapshot);
+
     trace.queued = push.queueSlotPush(slotIndex);
-    for (unsigned long now : {100ul, 100ul, 130ul}) {
-        if (ble.writeUserBytesCalls > 0) {
-            ble.setUserBytesVerificationStatus(V1BLEClient::UserBytesVerificationStatus::MATCH);
+    int handledUserReads = 0;
+    int handledDisplayWrites = 0;
+    int handledModeWrites = 0;
+    int handledVolumeReads = 0;
+    bool observedDisplayOn = beforeDisplayOn;
+    for (unsigned long now = 100; now <= 1000 && push.isActive(); now += 30) {
+        mockMillis = now;
+        push.process();
+        if (ble.requestUserBytesCalls > handledUserReads) {
+            handledUserReads = ble.requestUserBytesCalls;
+            ble.onUserBytesReceived(ble.lastUserBytes, ble.noteV1NotificationIngress());
         }
-        mockMillis = now;
-        push.process();
-    }
-    for (unsigned long now : {160ul, 190ul, 220ul, 250ul}) {
-        mockMillis = now;
-        push.process();
+        if (ble.setDisplayOnCalls > handledDisplayWrites) {
+            handledDisplayWrites = ble.setDisplayOnCalls;
+            observedDisplayOn = ble.lastDisplayOnValue;
+            observeSettingsDisplay(parser, ble, observedDisplayOn, observedMode);
+        }
+        if (ble.setModeCalls > handledModeWrites) {
+            handledModeWrites = ble.setModeCalls;
+            observedMode = ble.lastModeValue;
+            observeSettingsDisplay(parser, ble, observedDisplayOn, observedMode);
+        }
+        if (ble.requestCurrentVolumeCalls > handledVolumeReads) {
+            handledVolumeReads = ble.requestCurrentVolumeCalls;
+            parseCanonicalSettingsPacket(parser, ble, PACKET_ID_RESP_CURRENT_VOLUME,
+                                         {ble.lastVolume, ble.lastMuteVolume}, 0xD6);
+        }
     }
     trace.userWrites = ble.writeUserBytesCalls;
     memcpy(trace.userBytes, ble.lastUserBytes, 6);
@@ -4173,7 +4250,7 @@ void test_profile_ownership_migration_preserves_real_executor_trace_and_rolls_fo
     TEST_ASSERT_TRUE(profiles.begin(storage));
     writeFileFromString(fs, "/v1profiles/Road.json",
                         "{\"name\":\"Road\",\"description\":\"exact legacy\",\"displayOn\":false,"
-                        "\"mainVolume\":7,\"mutedVolume\":2,\"bytes\":[191,225,146,115,165,90]}");
+                        "\"mainVolume\":7,\"mutedVolume\":2,\"bytes\":[191,225,242,115,165,90]}");
     SettingsManager manager(storage, profiles);
     auto& state = manager.mutableSettings();
     state.slot0_default.profileName = "Road";
@@ -4345,7 +4422,7 @@ void test_failed_immediate_mutation_retains_earlier_deferred_retry() {
     }
 }
 
-void test_profile_taps_decline_busy_cycle_then_accept_fresh_cycle() {
+void test_profile_taps_fail_closed_without_fresh_snapshot_then_accept_new_selection() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
     TEST_ASSERT_TRUE(profiles.begin(storage));
@@ -4356,34 +4433,19 @@ void test_profile_taps_decline_busy_cycle_then_accept_fresh_cycle() {
     TEST_ASSERT_EQUAL_INT(1, manager.get().activeSlot);
     input.advancePush(1600);
     input.advancePush(1600);
-    input.advancePush(1630); // First push waits for real executor readback admission.
-    input.triple(1750);
-    TEST_ASSERT_EQUAL_INT(1, manager.get().activeSlot);
-    TEST_ASSERT_EQUAL_INT(1, input.display.lastProfileIndicatorSlot);
-    SettingsManager reloaded(storage, profiles);
-    reloaded.load();
-    TEST_ASSERT_EQUAL_INT(1, reloaded.get().activeSlot);
-    input.ble.setUserBytesVerificationStatus(V1BLEClient::UserBytesVerificationStatus::MATCH);
-    for (unsigned long now : {2300ul, 2330ul, 2360ul, 2390ul}) {
-        input.advancePush(now);
-    }
+    input.advancePush(1630); // Preflight consumes no stale persisted detector state.
     TEST_ASSERT_FALSE(input.push.isActive());
-    TEST_ASSERT_EQUAL_UINT8(0x22, input.ble.lastUserBytes[1]);
-    TEST_ASSERT_EQUAL_UINT8(V1_MODE_LOGIC, input.ble.lastModeValue);
-
-    input.triple(2750);
+    TEST_ASSERT_EQUAL_INT(0, input.ble.writeUserBytesCalls);
+    input.triple(1750);
     TEST_ASSERT_EQUAL_INT(2, manager.get().activeSlot);
     TEST_ASSERT_EQUAL_INT(2, input.display.lastProfileIndicatorSlot);
-    input.advancePush(3350);
-    input.advancePush(3350);
-    input.advancePush(3380);
-    input.ble.setUserBytesVerificationStatus(V1BLEClient::UserBytesVerificationStatus::MATCH);
-    for (unsigned long now : {3380ul, 3410ul, 3440ul, 3470ul}) {
-        input.advancePush(now);
-    }
+    TEST_ASSERT_TRUE(input.push.isActive());
+    for (unsigned long now : {2400ul, 2400ul, 2430ul}) input.advancePush(now);
     TEST_ASSERT_FALSE(input.push.isActive());
-    TEST_ASSERT_EQUAL_UINT8(0x66, input.ble.lastUserBytes[1]);
-    TEST_ASSERT_EQUAL_UINT8(V1_MODE_ADVANCED_LOGIC, input.ble.lastModeValue);
+    TEST_ASSERT_EQUAL_INT(0, input.ble.writeUserBytesCalls);
+    SettingsManager reloaded(storage, profiles);
+    reloaded.load();
+    TEST_ASSERT_EQUAL_INT(2, reloaded.get().activeSlot);
 }
 
 void test_profile_taps_keep_local_selection_when_offline_or_auto_push_disabled() {
@@ -4418,7 +4480,7 @@ int main() {
     RUN_TEST(test_successful_profile_tap_commits_earlier_obd_sync_save);
     RUN_TEST(test_failed_immediate_mutation_retains_earlier_deferred_retry);
     RUN_TEST(test_profile_taps_preserve_accepted_state_when_persistence_fails);
-    RUN_TEST(test_profile_taps_decline_busy_cycle_then_accept_fresh_cycle);
+    RUN_TEST(test_profile_taps_fail_closed_without_fresh_snapshot_then_accept_new_selection);
     RUN_TEST(test_profile_taps_keep_local_selection_when_offline_or_auto_push_disabled);
     RUN_TEST(test_profile_ownership_migration_preserves_real_executor_trace_and_rolls_forward_committed_journal);
     RUN_TEST(test_actual_http_saves_keep_new_backup_when_old_writer_runs_first);

@@ -59,6 +59,8 @@
 #define PACKET_ID_MUTE_ON 0x34          // reqMuteOn
 #define PACKET_ID_MUTE_OFF 0x35         // reqMuteOff
 #define PACKET_ID_REQ_WRITE_VOLUME 0x39 // reqWriteVolume (mainVolume, mutedVolume, aux0)
+#define PACKET_ID_REQ_CURRENT_VOLUME 0x37  // reqCurrentVolume (no payload)
+#define PACKET_ID_RESP_CURRENT_VOLUME 0x38 // respCurrentVolume ([main, muted])
 // Dedicated all-volume request/response. test_packet_parser pins the four-byte
 // response payload used below.
 // RESPALLVOLUME payload is exactly 4 bytes: [main, muted, savedMain, savedMuted].

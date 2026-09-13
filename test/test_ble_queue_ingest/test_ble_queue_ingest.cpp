@@ -60,12 +60,37 @@ std::vector<uint8_t> makeFrame(uint8_t packetId, size_t payloadLength, uint8_t f
     return frame;
 }
 
+std::vector<uint8_t> makeCanonicalUserBytesFrame(uint8_t fill, uint8_t encodedOriginator = 0xEA,
+                                                 uint8_t destination = 0xD6,
+                                                 bool corruptChecksum = false) {
+    const size_t dataLength = 6;
+    const size_t payloadLength = dataLength + (encodedOriginator == 0xEA ? 1 : 0);
+    std::vector<uint8_t> frame{ESP_PACKET_START, destination, encodedOriginator,
+                               PACKET_ID_RESP_USER_BYTES, static_cast<uint8_t>(payloadLength)};
+    frame.insert(frame.end(), dataLength, fill);
+    if (encodedOriginator == 0xEA) {
+        uint8_t checksum = 0;
+        for (uint8_t value : frame) checksum = static_cast<uint8_t>(checksum + value);
+        frame.push_back(corruptChecksum ? static_cast<uint8_t>(checksum ^ 0x01) : checksum);
+    }
+    frame.push_back(ESP_PACKET_END);
+    return frame;
+}
+
 void beginQueue(size_t queueDepth = 24) {
     BleQueueModule::Config config;
     config.queueDepth = queueDepth;
     config.rxBufferCap = 1024;
     TEST_ASSERT_TRUE(queue.begin(&client, &parser, &profiles, &preview, &power, config));
     queue.openSession(kSession);
+}
+
+bool deliverRawNotify(const uint8_t* data, size_t length, uint16_t charUuid,
+                      uint32_t sessionGeneration, uint32_t callbackMillis,
+                      uint32_t ingressSequence = 0) {
+    if (ingressSequence == 0) ingressSequence = client.noteV1NotificationIngress();
+    return queue.tryOnNotify(data, length, charUuid, sessionGeneration, callbackMillis,
+                             ingressSequence);
 }
 
 void assertParsedPacket(size_t index, const std::vector<uint8_t>& expected) {
@@ -98,7 +123,7 @@ void test_five_accepted_full_notifications_survive_staging_capacity() {
     for (size_t i = 0; i < frames.size(); ++i) {
         frames[i] = makeFrame(static_cast<uint8_t>(0x50 + i), 250, static_cast<uint8_t>(i + 1));
         TEST_ASSERT_EQUAL_UINT(256, frames[i].size());
-        TEST_ASSERT_TRUE(queue.tryOnNotify(frames[i].data(), frames[i].size(), kCharacteristic, kSession,
+        TEST_ASSERT_TRUE(deliverRawNotify(frames[i].data(), frames[i].size(), kCharacteristic, kSession,
                                           static_cast<uint32_t>(100 + i)));
     }
 
@@ -122,20 +147,25 @@ void test_partial_frame_across_notifications_is_reassembled_once() {
     beginQueue();
     const std::vector<uint8_t> frame = makeFrame(0x55, 20, 0x31);
 
-    TEST_ASSERT_TRUE(queue.tryOnNotify(frame.data(), 4, kCharacteristic, kSession, 200));
+    TEST_ASSERT_TRUE(deliverRawNotify(frame.data(), 4, kCharacteristic, kSession, 200));
+    queue.process();
+    TEST_ASSERT_EQUAL_INT(0, parser.parseCalls);
+    const uint32_t commandBoundary = client.latestV1NotificationIngressSequence();
+
+    TEST_ASSERT_TRUE(deliverRawNotify(frame.data() + 4, 7, kCharacteristic, kSession, 201));
     queue.process();
     TEST_ASSERT_EQUAL_INT(0, parser.parseCalls);
 
-    TEST_ASSERT_TRUE(queue.tryOnNotify(frame.data() + 4, 7, kCharacteristic, kSession, 201));
-    queue.process();
-    TEST_ASSERT_EQUAL_INT(0, parser.parseCalls);
-
-    TEST_ASSERT_TRUE(queue.tryOnNotify(frame.data() + 11, frame.size() - 11, kCharacteristic, kSession, 202));
+    TEST_ASSERT_TRUE(deliverRawNotify(frame.data() + 11, frame.size() - 11, kCharacteristic, kSession, 202));
     queue.process();
 
     TEST_ASSERT_EQUAL_INT(1, parser.parseCalls);
     assertParsedPacket(0, frame);
     TEST_ASSERT_EQUAL_UINT32(202, parser.parseTimestamps[0]);
+    // The frame began before the modeled command boundary even though its
+    // final bytes arrived afterward. Its start-byte provenance must remain
+    // pre-command so it cannot verify that command.
+    TEST_ASSERT_EQUAL_UINT32(commandBoundary, parser.parseIngressSequences[0]);
 }
 
 void test_multiple_frames_in_one_notification_are_all_parsed_in_order() {
@@ -145,7 +175,7 @@ void test_multiple_frames_in_one_notification_are_all_parsed_in_order() {
     std::vector<uint8_t> notification = first;
     notification.insert(notification.end(), second.begin(), second.end());
 
-    TEST_ASSERT_TRUE(queue.tryOnNotify(notification.data(), notification.size(), kCharacteristic, kSession, 300));
+    TEST_ASSERT_TRUE(deliverRawNotify(notification.data(), notification.size(), kCharacteristic, kSession, 300));
     queue.process();
 
     TEST_ASSERT_EQUAL_INT(2, parser.parseCalls);
@@ -159,15 +189,15 @@ void test_session_reset_discards_old_queue_and_partial_buffer() {
     const std::vector<uint8_t> queuedOldFrame = makeFrame(0x59, 8, 0x52);
     const std::vector<uint8_t> newFrame = makeFrame(0x5A, 6, 0x53);
 
-    TEST_ASSERT_TRUE(queue.tryOnNotify(oldFrame.data(), 8, kCharacteristic, kSession, 400));
+    TEST_ASSERT_TRUE(deliverRawNotify(oldFrame.data(), 8, kCharacteristic, kSession, 400));
     queue.process();
     TEST_ASSERT_EQUAL_INT(0, parser.parseCalls);
-    TEST_ASSERT_TRUE(queue.tryOnNotify(queuedOldFrame.data(), queuedOldFrame.size(), kCharacteristic, kSession, 401));
+    TEST_ASSERT_TRUE(deliverRawNotify(queuedOldFrame.data(), queuedOldFrame.size(), kCharacteristic, kSession, 401));
 
     queue.openSession(kSession + 1);
 
-    TEST_ASSERT_FALSE(queue.tryOnNotify(oldFrame.data() + 8, oldFrame.size() - 8, kCharacteristic, kSession, 402));
-    TEST_ASSERT_TRUE(queue.tryOnNotify(newFrame.data(), newFrame.size(), kCharacteristic, kSession + 1, 403));
+    TEST_ASSERT_FALSE(deliverRawNotify(oldFrame.data() + 8, oldFrame.size() - 8, kCharacteristic, kSession, 402));
+    TEST_ASSERT_TRUE(deliverRawNotify(newFrame.data(), newFrame.size(), kCharacteristic, kSession + 1, 403));
     queue.process();
 
     TEST_ASSERT_EQUAL_INT(1, parser.parseCalls);
@@ -208,16 +238,16 @@ void test_truncated_user_bytes_response_cannot_complete_capture() {
     // copied the checksum into settings byte six and completed the capture.
     const std::vector<uint8_t> truncated = makeFrame(PACKET_ID_RESP_USER_BYTES, 6, 0x42);
     TEST_ASSERT_EQUAL_UINT(12, truncated.size());
-    TEST_ASSERT_TRUE(queue.tryOnNotify(truncated.data(), truncated.size(), kCharacteristic, kSession, 425));
+    TEST_ASSERT_TRUE(deliverRawNotify(truncated.data(), truncated.size(), kCharacteristic, kSession, 425));
     queue.process();
 
     TEST_ASSERT_EQUAL_INT(0, client.onUserBytesReceivedCalls);
     TEST_ASSERT_EQUAL_INT(0, profiles.setCurrentSettingsCalls);
     TEST_ASSERT_FALSE(client.hasSessionUserBytes());
 
-    const std::vector<uint8_t> canonical = makeFrame(PACKET_ID_RESP_USER_BYTES, 7, 0x43);
+    const std::vector<uint8_t> canonical = makeCanonicalUserBytesFrame(0x43);
     TEST_ASSERT_EQUAL_UINT(13, canonical.size());
-    TEST_ASSERT_TRUE(queue.tryOnNotify(canonical.data(), canonical.size(), kCharacteristic, kSession, 426));
+    TEST_ASSERT_TRUE(deliverRawNotify(canonical.data(), canonical.size(), kCharacteristic, kSession, 426));
     queue.process();
     TEST_ASSERT_EQUAL_INT(1, client.onUserBytesReceivedCalls);
     TEST_ASSERT_EQUAL_INT(1, profiles.setCurrentSettingsCalls);
@@ -225,8 +255,22 @@ void test_truncated_user_bytes_response_cannot_complete_capture() {
 
     // The same PL=6 is complete only when the packet identifies a
     // no-checksum V1 (E9h): all six payload bytes are settings bytes.
-    const std::vector<uint8_t> noChecksum = makeFrame(PACKET_ID_RESP_USER_BYTES, 6, 0x44, 0xE9);
-    TEST_ASSERT_TRUE(queue.tryOnNotify(noChecksum.data(), noChecksum.size(), kCharacteristic, kSession, 427));
+    const std::vector<uint8_t> noChecksum = makeCanonicalUserBytesFrame(0x44, 0xE9);
+    TEST_ASSERT_TRUE(deliverRawNotify(noChecksum.data(), noChecksum.size(), kCharacteristic, kSession, 427));
+    queue.process();
+    TEST_ASSERT_EQUAL_INT(2, client.onUserBytesReceivedCalls);
+    TEST_ASSERT_EQUAL_INT(2, profiles.setCurrentSettingsCalls);
+
+    const std::vector<uint8_t> wrongDestination = makeCanonicalUserBytesFrame(0x45, 0xEA, 0xDA);
+    TEST_ASSERT_TRUE(deliverRawNotify(wrongDestination.data(), wrongDestination.size(), kCharacteristic,
+                                      kSession, 428));
+    queue.process();
+    TEST_ASSERT_EQUAL_INT(2, client.onUserBytesReceivedCalls);
+    TEST_ASSERT_EQUAL_INT(2, profiles.setCurrentSettingsCalls);
+
+    const std::vector<uint8_t> corruptChecksum = makeCanonicalUserBytesFrame(0x46, 0xEA, 0xD6, true);
+    TEST_ASSERT_TRUE(deliverRawNotify(corruptChecksum.data(), corruptChecksum.size(), kCharacteristic,
+                                      kSession, 429));
     queue.process();
     TEST_ASSERT_EQUAL_INT(2, client.onUserBytesReceivedCalls);
     TEST_ASSERT_EQUAL_INT(2, profiles.setCurrentSettingsCalls);
@@ -241,7 +285,7 @@ void test_rejected_all_volume_response_cannot_complete_capture() {
     parser.state.hasSavedVolume = true;
     const std::vector<uint8_t> malformed = makeFrame(PACKET_ID_RESP_ALL_VOLUME, 5, 0x17);
 
-    TEST_ASSERT_TRUE(queue.tryOnNotify(malformed.data(), malformed.size(), kCharacteristic, kSession, 428));
+    TEST_ASSERT_TRUE(deliverRawNotify(malformed.data(), malformed.size(), kCharacteristic, kSession, 428));
     queue.process();
 
     TEST_ASSERT_EQUAL_INT(1, parser.parseCalls);
@@ -255,7 +299,7 @@ void test_only_successfully_parsed_alert_packets_trigger_runtime_effects() {
     parser.hasAlertsFlag = true;
     const std::vector<uint8_t> accepted = makeFrame(0x60, 4, 0x51);
 
-    TEST_ASSERT_TRUE(queue.tryOnNotify(accepted.data(), accepted.size(), kCharacteristic, kSession, 450));
+    TEST_ASSERT_TRUE(deliverRawNotify(accepted.data(), accepted.size(), kCharacteristic, kSession, 450));
     queue.process();
 
     TEST_ASSERT_EQUAL_INT(1, parser.parseCalls);
@@ -267,7 +311,7 @@ void test_only_successfully_parsed_alert_packets_trigger_runtime_effects() {
     parser.parseReturnValue = false;
     preview.running = true;
     const std::vector<uint8_t> rejected = makeFrame(0x61, 4, 0x52);
-    TEST_ASSERT_TRUE(queue.tryOnNotify(rejected.data(), rejected.size(), kCharacteristic, kSession, 451));
+    TEST_ASSERT_TRUE(deliverRawNotify(rejected.data(), rejected.size(), kCharacteristic, kSession, 451));
     queue.process();
 
     TEST_ASSERT_EQUAL_INT(2, parser.parseCalls);
@@ -283,9 +327,9 @@ void test_queue_saturation_counts_only_rejected_admission_and_preserves_head() {
     const std::vector<uint8_t> second = makeFrame(0x5C, 3, 0x62);
     const std::vector<uint8_t> rejected = makeFrame(0x5D, 3, 0x63);
 
-    TEST_ASSERT_TRUE(queue.tryOnNotify(first.data(), first.size(), kCharacteristic, kSession, 500));
-    TEST_ASSERT_TRUE(queue.tryOnNotify(second.data(), second.size(), kCharacteristic, kSession, 501));
-    TEST_ASSERT_FALSE(queue.tryOnNotify(rejected.data(), rejected.size(), kCharacteristic, kSession, 502));
+    TEST_ASSERT_TRUE(deliverRawNotify(first.data(), first.size(), kCharacteristic, kSession, 500));
+    TEST_ASSERT_TRUE(deliverRawNotify(second.data(), second.size(), kCharacteristic, kSession, 501));
+    TEST_ASSERT_FALSE(deliverRawNotify(rejected.data(), rejected.size(), kCharacteristic, kSession, 502));
     TEST_ASSERT_EQUAL_UINT32(1, HealthCounters::inputDrops());
 
     queue.process();
@@ -296,8 +340,8 @@ void test_queue_saturation_counts_only_rejected_admission_and_preserves_head() {
     TEST_ASSERT_EQUAL_UINT32(1, HealthCounters::inputDrops());
 
     std::array<uint8_t, 257> oversized{};
-    TEST_ASSERT_FALSE(queue.tryOnNotify(oversized.data(), oversized.size(), kCharacteristic, kSession, 503));
-    TEST_ASSERT_FALSE(queue.tryOnNotify(first.data(), first.size(), kCharacteristic, kSession + 1, 504));
+    TEST_ASSERT_FALSE(deliverRawNotify(oversized.data(), oversized.size(), kCharacteristic, kSession, 503));
+    TEST_ASSERT_FALSE(deliverRawNotify(first.data(), first.size(), kCharacteristic, kSession + 1, 504));
     TEST_ASSERT_EQUAL_UINT32(1, HealthCounters::inputDrops());
 }
 
@@ -310,12 +354,60 @@ void test_malformed_input_resynchronizes_to_following_valid_frame() {
     notification.insert(notification.end(), malformed.begin(), malformed.end());
     notification.insert(notification.end(), valid.begin(), valid.end());
 
-    TEST_ASSERT_TRUE(queue.tryOnNotify(notification.data(), notification.size(), kCharacteristic, kSession, 600));
+    TEST_ASSERT_TRUE(deliverRawNotify(notification.data(), notification.size(), kCharacteristic, kSession, 600));
     queue.process();
 
     TEST_ASSERT_EQUAL_INT(1, parser.parseCalls);
     assertParsedPacket(0, valid);
     TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::inputDrops());
+}
+
+void test_parser_packet_queued_beyond_first_drain_retains_pre_command_ingress() {
+    beginQueue();
+    preview.running = true; // cap this cycle at sixteen parsed packets
+    for (uint8_t i = 0; i < 16; ++i) {
+        const std::vector<uint8_t> frame = makeFrame(static_cast<uint8_t>(0x50 + i), 3, i);
+        TEST_ASSERT_TRUE(deliverRawNotify(frame.data(), frame.size(), kCharacteristic, kSession,
+                                          static_cast<uint32_t>(700 + i)));
+    }
+    const std::vector<uint8_t> queuedDisplay = makeFrame(PACKET_ID_DISPLAY_DATA, 8, 0x00);
+    // Model raw notifyCallback entry before a command, then delay delivery
+    // through DriveRuntime into BleQueue until after that command boundary.
+    const uint32_t queuedDisplayEntry = client.noteV1NotificationIngress();
+    const uint32_t commandBoundary = client.latestV1NotificationIngressSequence();
+    TEST_ASSERT_TRUE(deliverRawNotify(queuedDisplay.data(), queuedDisplay.size(), kCharacteristic,
+                                     kSession, 720, queuedDisplayEntry));
+
+    queue.process();
+    TEST_ASSERT_EQUAL_INT(16, parser.parseCalls);
+
+    queue.process();
+    TEST_ASSERT_EQUAL_INT(17, parser.parseCalls);
+    assertParsedPacket(16, queuedDisplay);
+    TEST_ASSERT_EQUAL_UINT32(commandBoundary, parser.parseIngressSequences[16]);
+}
+
+void test_user_response_queued_beyond_first_drain_retains_pre_request_ingress() {
+    beginQueue();
+    preview.running = true;
+    for (uint8_t i = 0; i < 16; ++i) {
+        const std::vector<uint8_t> frame = makeFrame(static_cast<uint8_t>(0x50 + i), 3, i);
+        TEST_ASSERT_TRUE(deliverRawNotify(frame.data(), frame.size(), kCharacteristic, kSession,
+                                          static_cast<uint32_t>(800 + i)));
+    }
+    const std::vector<uint8_t> queuedUser = makeCanonicalUserBytesFrame(0x4A);
+    const uint32_t queuedUserEntry = client.noteV1NotificationIngress();
+    const uint32_t requestBoundary = client.latestV1NotificationIngressSequence();
+    TEST_ASSERT_TRUE(deliverRawNotify(queuedUser.data(), queuedUser.size(), kCharacteristic,
+                                     kSession, 820, queuedUserEntry));
+
+    queue.process();
+    TEST_ASSERT_EQUAL_INT(16, parser.parseCalls);
+    TEST_ASSERT_EQUAL_INT(0, client.onUserBytesReceivedCalls);
+
+    queue.process();
+    TEST_ASSERT_EQUAL_INT(1, client.onUserBytesReceivedCalls);
+    TEST_ASSERT_EQUAL_UINT32(requestBoundary, client.sessionUserBytesIngressSequence());
 }
 
 int main(int, char**) {
@@ -330,5 +422,7 @@ int main(int, char**) {
     RUN_TEST(test_only_successfully_parsed_alert_packets_trigger_runtime_effects);
     RUN_TEST(test_queue_saturation_counts_only_rejected_admission_and_preserves_head);
     RUN_TEST(test_malformed_input_resynchronizes_to_following_valid_frame);
+    RUN_TEST(test_parser_packet_queued_beyond_first_drain_retains_pre_command_ingress);
+    RUN_TEST(test_user_response_queued_beyond_first_drain_retains_pre_request_ingress);
     return UNITY_END();
 }

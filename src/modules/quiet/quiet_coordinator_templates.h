@@ -114,6 +114,12 @@ bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs, VolumeFadeL
     if (!volumeFade || !parser_) {
         return false;
     }
+    // Do not even advance fade's state machine while Apply is waiting for the
+    // focused 0x38 readback. Processing here could capture the old pair as a
+    // restore baseline and undo the verified profile immediately afterward.
+    if (autoPushVolumeTransactionActive_) {
+        return false;
+    }
     // An alert may arrive before the first volume-bearing packet. Do not
     // capture the default 0/0 pair as a restore baseline; a received zero
     // remains a valid user volume, as it does for the speed-volume owner.
@@ -163,6 +169,15 @@ bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs, VolumeFadeL
     }
 
     const VolumeFadeAction fadeAction = volumeFade->process(fadeCtx);
+    // VolumeFade owns the detector pair for as long as it retains a captured
+    // baseline or a pending restore. Mirror that internal state even when the
+    // attempted fade-down did not reach the transport: a later restore could
+    // otherwise overwrite a profile Apply that was admitted in between.
+    if (volumeFade->hasActiveVolumeOverride()) {
+        presentation_.activeVolumeOwner = QuietOwner::VolumeFade;
+    } else if (presentation_.activeVolumeOwner == QuietOwner::VolumeFade) {
+        presentation_.activeVolumeOwner = QuietOwner::None;
+    }
     if (!fadeAction.hasAction()) {
         return false;
     }

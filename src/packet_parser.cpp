@@ -104,6 +104,18 @@ bool isAsciiDigit(uint8_t v) {
     return v >= '0' && v <= '9';
 }
 
+char decodeQualifiedModeObservation(const uint8_t* payload, uint32_t firmwareVersion) {
+    if (!payload || !V1FirmwareCompat::capabilities(firmwareVersion).modeObservation) return 0;
+    const bool euroMode = (payload[5] & 0x10) != 0;
+    const bool customSweeps = (payload[5] & 0x20) != 0;
+    switch ((payload[6] >> 2) & 0x03) {
+    case 1: return euroMode ? (customSweeps ? 'C' : 'U') : 'A';
+    case 2: return euroMode ? (customSweeps ? 'c' : 'u') : 'l';
+    case 3: return euroMode ? 0 : 'L';
+    default: return 0;
+    }
+}
+
 } // namespace
 
 PacketParser::PacketParser() : alertCount_(0) {
@@ -114,14 +126,19 @@ PacketParser::PacketParser() : alertCount_(0) {
 }
 
 bool PacketParser::parse(const uint8_t* data, size_t length) {
-    return parseInternal(data, length, false, 0);
+    return parseInternal(data, length, false, 0, 0);
 }
 
 bool PacketParser::parse(const uint8_t* data, size_t length, uint32_t nowMs) {
-    return parseInternal(data, length, true, nowMs);
+    return parseInternal(data, length, true, nowMs, 0);
 }
 
-bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNowMs, uint32_t nowMs) {
+bool PacketParser::parse(const uint8_t* data, size_t length, uint32_t nowMs, uint32_t ingressSequence) {
+    return parseInternal(data, length, true, nowMs, ingressSequence);
+}
+
+bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNowMs, uint32_t nowMs,
+                                 uint32_t ingressSequence) {
     if (!data || length < 7) {
         return false;
     }
@@ -138,6 +155,7 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
     case PACKET_ID_MUTE_OFF:
     case 0x36:
     case PACKET_ID_REQ_WRITE_VOLUME:
+    case PACKET_ID_RESP_CURRENT_VOLUME:
     case PACKET_ID_RESP_USER_BYTES:
     case PACKET_ID_VERSION:
         break;
@@ -155,6 +173,33 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
     case PACKET_ID_DISPLAY_DATA: {
         const bool hadAlerts = hasAlerts();
         const bool parsed = parseDisplayData(payload, payloadLen);
+        if (parsed &&
+            V1PacketFraming::hasCanonicalResponseEvidenceForDestination(data, length, 8, 0xD8)) {
+            const uint32_t sequence = ++settingsObservationSequence_;
+            ++displayOnObservation_.revision;
+            displayOnObservation_.sequence = sequence;
+            displayOnObservation_.ingressSequence = ingressSequence;
+            displayOnObservation_.available = true;
+            displayOnObservation_.value = (payload[5] & 0x08) != 0;
+
+            if (displayState_.hasV1Version &&
+                V1FirmwareCompat::capabilities(displayState_.v1FirmwareVersion).modeObservation) {
+                ++modeObservation_.revision;
+                modeObservation_.sequence = sequence;
+                modeObservation_.ingressSequence = ingressSequence;
+                modeObservation_.value =
+                    decodeQualifiedModeObservation(payload, displayState_.v1FirmwareVersion);
+                modeObservation_.available = modeObservation_.value != 0;
+            }
+
+            ++displayVolumeObservation_.revision;
+            displayVolumeObservation_.sequence = sequence;
+            displayVolumeObservation_.ingressSequence = ingressSequence;
+            displayVolumeObservation_.main = static_cast<uint8_t>((payload[7] >> 4) & 0x0F);
+            displayVolumeObservation_.muted = static_cast<uint8_t>(payload[7] & 0x0F);
+            displayVolumeObservation_.available =
+                displayVolumeObservation_.main <= 9 && displayVolumeObservation_.muted <= 9;
+        }
         if (hadAlerts != hasAlerts()) {
             ++alertLifetime_;
         }
@@ -170,23 +215,17 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
         return parsed;
     }
 
-    // ACK responses from V1 to our commands - silently ignore
-    case PACKET_ID_WRITE_USER_BYTES: // 0x13 - ACK for profile write
-        return true;                 // Acknowledged, no further processing needed
-    case PACKET_ID_TURN_OFF_DISPLAY: // 0x32 - ACK for display off
-        // Update display power state (dark mode enabled)
-        displayState_.displayOn = false;
-        displayState_.hasDisplayOn = true;
+    // Outbound command IDs may be echoed on the shared bus. They are requests,
+    // not V1 acknowledgements, and never prove that a mutation was applied.
+    case PACKET_ID_WRITE_USER_BYTES: // 0x13 - setUserBytes request/echo
         return true;
-    case PACKET_ID_TURN_ON_DISPLAY: // 0x33 - ACK for display on
-        // Update display power state (dark mode disabled)
-        displayState_.displayOn = true;
-        displayState_.hasDisplayOn = true;
+    case PACKET_ID_TURN_OFF_DISPLAY: // 0x32 - outbound request/echo, never evidence
+    case PACKET_ID_TURN_ON_DISPLAY:  // 0x33 - outbound request/echo, never evidence
         return true;
-    case PACKET_ID_MUTE_ON:          // 0x34 - ACK for mute on
-    case PACKET_ID_MUTE_OFF:         // 0x35 - ACK for mute off
-    case 0x36:                       // ACK for mode change (reqChangeMode)
-    case PACKET_ID_REQ_WRITE_VOLUME: // 0x39 - ACK for volume change
+    case PACKET_ID_MUTE_ON:          // 0x34 - mute-on request/echo
+    case PACKET_ID_MUTE_OFF:         // 0x35 - mute-off request/echo
+    case 0x36:                       // 0x36 - reqChangeMode request/echo
+    case PACKET_ID_REQ_WRITE_VOLUME: // 0x39 - reqWriteVolume request/echo
     case PACKET_ID_RESP_USER_BYTES:  // 0x12 - User bytes response
         return true;                 // Acknowledged, no further processing needed
 
@@ -204,7 +243,10 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
         // ESP originator EAh carries seven ASCII version bytes plus checksum
         // (PL=8); no-checksum E9h canonically carries just those seven bytes
         // (PL=7). Other origins cannot qualify persisted V1 capabilities.
-        if (!payload || !V1PacketFraming::hasCanonicalResponseWidth(data, length, 7)) return false;
+        if (!payload ||
+            !V1PacketFraming::hasCanonicalResponseEvidenceForDestination(data, length, 7, 0xD6)) {
+            return false;
+        }
         const uint8_t letter = payload[0];
         const bool letterAlphabetic = (letter >= 'A' && letter <= 'Z') || (letter >= 'a' && letter <= 'z');
         if (!letterAlphabetic || !isAsciiDigit(payload[1]) || payload[2] != '.' || !isAsciiDigit(payload[3]) ||
@@ -256,7 +298,10 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
         // ESP originator EAh uses PL=5 (four values plus checksum), while
         // no-checksum E9h uses PL=4. Origin-qualified width validation keeps a
         // checksum byte from becoming persisted saved-muted volume.
-        if (!payload || !V1PacketFraming::hasCanonicalResponseWidth(data, length, 4)) return false;
+        if (!payload ||
+            !V1PacketFraming::hasCanonicalResponseEvidenceForDestination(data, length, 4, 0xD6)) {
+            return false;
+        }
         // These are full-byte values, not packed nibbles. Reject the complete
         // response before mutating state so malformed wire data cannot be
         // normalized into a truthful-looking 0..9 snapshot.
@@ -267,8 +312,38 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
         displayState_.savedMuteVolume = payload[3];
         displayState_.hasVolumeData = true;
         displayState_.hasSavedVolume = true;
+        ++allVolumeObservation_.revision;
+        allVolumeObservation_.sequence = ++settingsObservationSequence_;
+        allVolumeObservation_.ingressSequence = ingressSequence;
+        allVolumeObservation_.available = true;
+        allVolumeObservation_.currentMain = payload[0];
+        allVolumeObservation_.currentMuted = payload[1];
+        allVolumeObservation_.savedMain = payload[2];
+        allVolumeObservation_.savedMuted = payload[3];
         return true;
     }
+    case PACKET_ID_RESP_CURRENT_VOLUME: { // 0x38 - respCurrentVolume
+        // ESP Specification 3.016 / VR ResponseCurrentVolume: [main, muted].
+        // The focused read exists before respAllVolume and is the strongest
+        // verification source for a temporary write.
+        if (!payload ||
+            !V1PacketFraming::hasCanonicalResponseEvidenceForDestination(data, length, 2, 0xD6)) {
+            return false;
+        }
+        if (payload[0] > 9 || payload[1] > 9) return false;
+        displayState_.mainVolume = payload[0];
+        displayState_.muteVolume = payload[1];
+        displayState_.hasVolumeData = true;
+        ++currentVolumeObservation_.revision;
+        currentVolumeObservation_.sequence = ++settingsObservationSequence_;
+        currentVolumeObservation_.ingressSequence = ingressSequence;
+        currentVolumeObservation_.available = true;
+        currentVolumeObservation_.main = payload[0];
+        currentVolumeObservation_.muted = payload[1];
+        return true;
+    }
+    case PACKET_ID_REQ_CURRENT_VOLUME: // 0x37 - outbound request/echo
+        return true;
     case PACKET_ID_REQ_ALL_VOLUME: // 0x3C - outbound request, ignore echoes
         return true;
 
@@ -282,6 +357,33 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
         // Unknown packet - silently ignore in hot path
         return false;
     }
+}
+
+bool PacketParser::copyLatestCanonicalCurrentVolume(uint8_t& main, uint8_t& muted,
+                                                    uint32_t* ingressSequence) const {
+    uint32_t latestSequence = 0;
+    bool found = false;
+    if (displayVolumeObservation_.available && displayVolumeObservation_.sequence >= latestSequence) {
+        latestSequence = displayVolumeObservation_.sequence;
+        main = displayVolumeObservation_.main;
+        muted = displayVolumeObservation_.muted;
+        if (ingressSequence) *ingressSequence = displayVolumeObservation_.ingressSequence;
+        found = true;
+    }
+    if (allVolumeObservation_.available && allVolumeObservation_.sequence >= latestSequence) {
+        latestSequence = allVolumeObservation_.sequence;
+        main = allVolumeObservation_.currentMain;
+        muted = allVolumeObservation_.currentMuted;
+        if (ingressSequence) *ingressSequence = allVolumeObservation_.ingressSequence;
+        found = true;
+    }
+    if (currentVolumeObservation_.available && currentVolumeObservation_.sequence >= latestSequence) {
+        main = currentVolumeObservation_.main;
+        muted = currentVolumeObservation_.muted;
+        if (ingressSequence) *ingressSequence = currentVolumeObservation_.ingressSequence;
+        found = true;
+    }
+    return found;
 }
 
 bool PacketParser::validatePacket(const uint8_t* data, size_t length) {

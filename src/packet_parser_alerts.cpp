@@ -45,6 +45,9 @@ void PacketParser::resetVolumeState() {
     displayState_.savedMuteVolume = 0;
     displayState_.hasVolumeData = false;
     displayState_.hasSavedVolume = false;
+    currentVolumeObservation_ = V1CurrentVolumeObservation{};
+    allVolumeObservation_ = V1AllVolumeObservation{};
+    displayVolumeObservation_ = V1DisplayVolumeObservation{};
 }
 
 void PacketParser::resetModeAndDisplayState() {
@@ -52,6 +55,8 @@ void PacketParser::resetModeAndDisplayState() {
     displayState_.hasMode = false;
     displayState_.displayOn = true;
     displayState_.hasDisplayOn = false;
+    displayOnObservation_ = V1DisplayOnObservation{};
+    modeObservation_ = V1ModeObservation{};
 }
 
 void PacketParser::resetAlertStateAt(uint32_t nowMs) {

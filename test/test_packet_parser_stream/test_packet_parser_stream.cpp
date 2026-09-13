@@ -22,6 +22,8 @@ unsigned long mockMicros = 0;
 #define PACKET_ID_MUTE_ON 0x34
 #define PACKET_ID_MUTE_OFF 0x35
 #define PACKET_ID_REQ_WRITE_VOLUME 0x39
+#define PACKET_ID_REQ_CURRENT_VOLUME 0x37
+#define PACKET_ID_RESP_CURRENT_VOLUME 0x38
 #define PACKET_ID_RESP_USER_BYTES 0x12
 #define PACKET_ID_VERSION 0x01
 #define PACKET_ID_RESP_VERSION 0x02
@@ -55,12 +57,19 @@ std::vector<uint8_t> makePacket(uint8_t packetId, const std::vector<uint8_t>& pa
     std::vector<uint8_t> packet;
     packet.reserve(6 + payload.size());
     packet.push_back(ESP_PACKET_START);
-    packet.push_back(0xDA); // Dest (not validated by parser)
+    packet.push_back(packetId == PACKET_ID_RESP_VERSION ? 0xD6 : 0xDA);
     packet.push_back(0xEA); // Checksum-capable V1 originator
     packet.push_back(packetId);
     packet.push_back(static_cast<uint8_t>(payload.size())); // Length hint (not enforced)
     packet.insert(packet.end(), payload.begin(), payload.end());
     packet.push_back(ESP_PACKET_END);
+    if (packetId == PACKET_ID_RESP_VERSION && !payload.empty()) {
+        uint8_t checksum = 0;
+        for (size_t index = 0; index + 2 < packet.size(); ++index) {
+            checksum = static_cast<uint8_t>(checksum + packet[index]);
+        }
+        packet[packet.size() - 2] = checksum;
+    }
     return packet;
 }
 

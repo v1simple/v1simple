@@ -29,4 +29,27 @@ inline bool hasCanonicalResponseWidth(const uint8_t* packet, size_t packetSize, 
     return packet[4] == expectedPayload && packetSize == expectedPayload + 6;
 }
 
+// Settings Apply accepts a packet as proof only when both its V1 origin/shape
+// and (for EAh) checksum are canonical. The general display parser remains
+// deliberately tolerant for rendering, but corrupt traffic must never prove a
+// detector mutation.
+inline bool hasCanonicalResponseEvidence(const uint8_t* packet, size_t packetSize, size_t dataBytes) {
+    if (!hasCanonicalResponseWidth(packet, packetSize, dataBytes)) return false;
+    if ((packet[2] & kDeviceIdMask) == kV1WithoutChecksum) return true;
+
+    uint8_t checksum = 0;
+    for (size_t index = 0; index + 2 < packetSize; ++index) {
+        checksum = static_cast<uint8_t>(checksum + packet[index]);
+    }
+    return packet[packetSize - 2] == checksum;
+}
+
+// A canonical source and checksum are not enough to bind a response to this
+// ESP role. InfDisplayData is broadcast to D8h; direct replies to the
+// V1connection requester are addressed to D6h.
+inline bool hasCanonicalResponseEvidenceForDestination(const uint8_t* packet, size_t packetSize, size_t dataBytes,
+                                                       uint8_t destination) {
+    return packet && packet[1] == destination && hasCanonicalResponseEvidence(packet, packetSize, dataBytes);
+}
+
 } // namespace V1PacketFraming

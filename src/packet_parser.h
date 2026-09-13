@@ -27,11 +27,26 @@ class PacketParser {
     // Parse incoming ESP packet
     bool parse(const uint8_t* data, size_t length);
     bool parse(const uint8_t* data, size_t length, uint32_t nowMs);
-
-    // BLE framing sets this immediately before parse(). Successful semantic
+    bool parse(const uint8_t* data, size_t length, uint32_t nowMs, uint32_t ingressSequence);
 
     // Get current display state
     const DisplayState& getDisplayState() const { return displayState_; }
+
+    // Session-scoped settings evidence. Values and revisions are updated
+    // atomically from canonical packets only; Apply never pairs a canonical
+    // revision with later tolerant DisplayState data.
+    const V1DisplayOnObservation& displayOnObservation() const { return displayOnObservation_; }
+    const V1ModeObservation& modeObservation() const { return modeObservation_; }
+    // Dedicated respCurrentVolume (0x38) evidence. A delayed respAllVolume
+    // must not satisfy a post-write 0x37 verification request.
+    const V1CurrentVolumeObservation& currentVolumeObservation() const { return currentVolumeObservation_; }
+    const V1AllVolumeObservation& allVolumeObservation() const { return allVolumeObservation_; }
+    const V1DisplayVolumeObservation& displayVolumeObservation() const { return displayVolumeObservation_; }
+    bool copyLatestCanonicalCurrentVolume(uint8_t& main, uint8_t& muted,
+                                          uint32_t* ingressSequence = nullptr) const;
+    uint32_t displayOnObservationRevision() const { return displayOnObservation_.revision; }
+    uint32_t modeObservationRevision() const { return modeObservation_.revision; }
+    uint32_t currentVolumeObservationRevision() const { return currentVolumeObservation_.revision; }
 
     // Get resolved priority alert (follows V1 priority signal)
     AlertData getPriorityAlert() const;
@@ -95,6 +110,12 @@ class PacketParser {
     std::array<AlertData, MAX_ALERTS> alerts_;
     size_t alertCount_;
     uint32_t alertLifetime_ = 0;
+    V1DisplayOnObservation displayOnObservation_;
+    V1ModeObservation modeObservation_;
+    V1CurrentVolumeObservation currentVolumeObservation_;
+    V1AllVolumeObservation allVolumeObservation_;
+    V1DisplayVolumeObservation displayVolumeObservation_;
+    uint32_t settingsObservationSequence_ = 0;
     uint8_t displayMuteConfirmCount_ = 0; // consecutive display packets with mute bit set
     std::array<std::array<uint8_t, 8>, RAW_ALERT_INDEX_SLOTS> alertChunks_; // raw alert rows by payload index
     std::array<bool, RAW_ALERT_INDEX_SLOTS> alertChunkPresent_;
@@ -107,7 +128,8 @@ class PacketParser {
     bool hasDisplayLaserAlert() const { return (displayState_.activeBands & BAND_LASER) != 0; }
 
     // Packet parsing helpers
-    bool parseInternal(const uint8_t* data, size_t length, bool hasNowMs, uint32_t nowMs);
+    bool parseInternal(const uint8_t* data, size_t length, bool hasNowMs, uint32_t nowMs,
+                       uint32_t ingressSequence);
     bool parseDisplayData(const uint8_t* payload, size_t length);
     bool parseAlertData(const uint8_t* payload, size_t length, uint32_t nowMs);
     bool validatePacket(const uint8_t* data, size_t length);

@@ -54,6 +54,7 @@ void QuietCoordinatorModule::reset() {
     pendingFadeFrequency_ = 0;
     pendingFadeLaser_ = false;
     pendingFadeLastAttemptMs_ = 0;
+    autoPushVolumeTransactionActive_ = false;
 
     syncCommittedState();
 }
@@ -123,6 +124,10 @@ bool QuietCoordinatorModule::sendVolume(QuietOwner owner, uint8_t volume, uint8_
 SendResult QuietCoordinatorModule::sendVolumeResult(QuietOwner owner, uint8_t volume, uint8_t muteVolume) {
     syncCommittedState();
 
+    if (autoPushVolumeTransactionActive_ && owner != QuietOwner::AutoPush) {
+        return SendResult::NOT_YET;
+    }
+
     desired_.volumeOwner = owner;
     desired_.volume = volume;
     desired_.muteVolume = muteVolume;
@@ -138,6 +143,12 @@ SendResult QuietCoordinatorModule::sendVolumeResult(QuietOwner owner, uint8_t vo
         presentation_.activeVolumeOwner = owner;
     }
     return result;
+}
+
+bool QuietCoordinatorModule::beginAutoPushVolumeTransaction() {
+    if (autoPushVolumeTransactionActive_ || !canApplyAutoPushVolumeExactly()) return false;
+    autoPushVolumeTransactionActive_ = true;
+    return true;
 }
 
 bool QuietCoordinatorModule::sendAutoPushVolume(uint8_t volume, uint8_t muteVolume) {

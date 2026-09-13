@@ -35,6 +35,7 @@ bool BleQueueModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr, V1Pr
     }
 
     rxBuffer_.clear();
+    rxIngressSequences_.clear();
     rxReadPos_ = 0;
     lastRxMillis_ = 0;
     lastNotifyTsMs_ = 0;
@@ -56,7 +57,8 @@ bool BleQueueModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr, V1Pr
 
     const size_t desiredRxCap = std::max(config_.rxBufferCap, RX_BUFFER_MAX);
     rxBuffer_.reserve(desiredRxCap);
-    if (rxBuffer_.capacity() < desiredRxCap) {
+    rxIngressSequences_.reserve(desiredRxCap);
+    if (rxBuffer_.capacity() < desiredRxCap || rxIngressSequences_.capacity() < desiredRxCap) {
         Serial.printf("[BLE_QUEUE] FATAL: RX buffer reserve failed (cap=%u have=%u)\n",
                       static_cast<unsigned>(desiredRxCap), static_cast<unsigned>(rxBuffer_.capacity()));
         vQueueDelete(queueHandle_);
@@ -103,12 +105,12 @@ void BleQueueModule::closeSession() {
 }
 
 void BleQueueModule::onNotify(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration,
-                              uint32_t callbackMillis) {
-    (void)tryOnNotify(data, length, charUUID, sessionGeneration, callbackMillis);
+                              uint32_t callbackMillis, uint32_t ingressSequence) {
+    (void)tryOnNotify(data, length, charUUID, sessionGeneration, callbackMillis, ingressSequence);
 }
 
 bool BleQueueModule::tryOnNotify(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration,
-                                 uint32_t callbackMillis) {
+                                 uint32_t callbackMillis, uint32_t ingressSequence) {
     if (!queueHandle_ || !acceptNotifications_.load(std::memory_order_acquire) ||
         sessionGeneration != sessionGeneration_.load(std::memory_order_acquire))
         return false;
@@ -120,6 +122,7 @@ bool BleQueueModule::tryOnNotify(const uint8_t* data, size_t length, uint16_t ch
         pkt.charUUID = charUUID;
         pkt.tsMs = callbackMillis;
         pkt.sessionGeneration = sessionGeneration;
+        pkt.ingressSequence = ingressSequence;
 
         // closeSession() can race this callback between its first admission
         // check and packet construction. Recheck before publishing; if it
@@ -150,12 +153,14 @@ bool BleQueueModule::enqueueStampedForTest(const uint8_t* data, size_t length, u
     pkt.charUUID = charUUID;
     pkt.tsMs = millis();
     pkt.sessionGeneration = sessionGeneration;
+    pkt.ingressSequence = ble_ ? ble_->noteV1NotificationIngress() : 0;
     return xQueueSend(queueHandle_, &pkt, 0) == pdTRUE;
 }
 #endif
 
 void BleQueueModule::clearRxState() {
     rxBuffer_.clear();
+    rxIngressSequences_.clear();
     rxReadPos_ = 0;
 }
 
@@ -171,6 +176,9 @@ void BleQueueModule::compactRxState() {
     const size_t unread = rxBuffer_.size() - shift;
     memmove(rxBuffer_.data(), rxBuffer_.data() + shift, unread);
     rxBuffer_.resize(unread);
+    memmove(rxIngressSequences_.data(), rxIngressSequences_.data() + shift,
+            unread * sizeof(rxIngressSequences_[0]));
+    rxIngressSequences_.resize(unread);
     rxReadPos_ = 0;
 }
 
@@ -191,6 +199,8 @@ bool BleQueueModule::appendRxPacket(const BLEDataPacket& packet) {
     const size_t begin = rxBuffer_.size();
     rxBuffer_.resize(begin + packet.length);
     memcpy(rxBuffer_.data() + begin, packet.data, packet.length);
+    rxIngressSequences_.resize(begin + packet.length);
+    std::fill(rxIngressSequences_.begin() + begin, rxIngressSequences_.end(), packet.ingressSequence);
     return true;
 }
 
@@ -353,22 +363,23 @@ void BleQueueModule::process() {
 
         const uint8_t* packetPtr = rxBuffer_.data() + rxReadPos_;
         const uint8_t packetId = packetPtr[3];
+        const uint32_t packetIngressSequence = rxIngressSequences_[rxReadPos_];
 
         // RESP_USER_BYTES has six settings bytes. Checksum-originator EAh uses
         // PL=7; no-checksum E9h uses PL=6. Origin-qualified width validation
         // prevents a truncated EAh frame's checksum from becoming byte six.
         if (packetPtr[3] == PACKET_ID_RESP_USER_BYTES && profiles_ &&
-            V1PacketFraming::hasCanonicalResponseWidth(packetPtr, packetSize, 6)) {
+            V1PacketFraming::hasCanonicalResponseEvidenceForDestination(packetPtr, packetSize, 6, 0xD6)) {
             uint8_t userBytes[6];
             memcpy(userBytes, &packetPtr[5], 6);
-            ble_->onUserBytesReceived(userBytes);
+            ble_->onUserBytesReceived(userBytes, packetIngressSequence);
             profiles_->setCurrentSettings(userBytes);
             rxReadPos_ += packetSize;
             packetsProcessedThisCycle++;
             continue;
         }
 
-        bool parseOk = parser_->parse(packetPtr, packetSize, parseTimestampMs);
+        bool parseOk = parser_->parse(packetPtr, packetSize, parseTimestampMs, packetIngressSequence);
 
         if (parseOk && packetId == PACKET_ID_RESP_VERSION && ble_) {
             const DisplayState& state = parser_->getDisplayState();

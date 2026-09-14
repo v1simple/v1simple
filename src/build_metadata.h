@@ -1,6 +1,7 @@
 #pragma once
 
 const char* getBuildGitSha();
+int getBuildBenchFaultInjection();
 
 // SHA-256 of the ELF embedded in and reported by the currently running image.
 // Unlike the Git build flag, this identifies the resident binary even for a

@@ -76,9 +76,10 @@ void resumePersistenceAfterAbortedShutdown(ProductEventLog& events, HealthJourna
 }
 
 void logBootIdentity(uint32_t bootId, esp_reset_reason_t resetReason) {
-    Serial.printf("BOOT bootId=%lu uptimeMs=%lu reset=%s git=%s image=%s\n",
+    Serial.printf("BOOT bootId=%lu uptimeMs=%lu reset=%s git=%s image=%s fault=%d\n",
                   static_cast<unsigned long>(bootId), static_cast<unsigned long>(millis()),
-                  resetReasonToString(resetReason), getBuildGitSha(), getRuntimeImageId());
+                  resetReasonToString(resetReason), getBuildGitSha(), getRuntimeImageId(),
+                  getBuildBenchFaultInjection());
 }
 
 void initializeEarlyBootDiagnostics() {

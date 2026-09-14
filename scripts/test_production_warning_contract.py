@@ -49,6 +49,29 @@ def check_production_flags() -> None:
     require("${env:waveshare-349.build_flags}" in car_flags,
             "car-install must inherit the strict production warning contract")
 
+    fault_flags = parser.get("env:waveshare-349-fault", "build_flags")
+    fault_scripts = parser.get("env:waveshare-349-fault", "extra_scripts")
+    require("${env:waveshare-349.build_flags}" in fault_flags,
+            "bench fault build must inherit the strict production warning contract")
+    require("BENCH_FAULT_INJECT" not in fault_flags,
+            "bench fault build must not accept an empty environment interpolation")
+    require("configure_bench_fault_inject.py" in fault_scripts,
+            "bench fault build must validate and apply its selected fault")
+
+    fault_configuration = (ROOT / "scripts" / "configure_bench_fault_inject.py").read_text(
+        encoding="utf-8"
+    )
+    require('{"1", "2", "3"}' in fault_configuration,
+            "bench fault selector must allow only the three defined negative controls")
+    require('("BENCH_FAULT_INJECT", int(raw_fault))' in fault_configuration,
+            "validated bench fault must reach the compiler definition")
+
+    warning_script = (ROOT / "scripts" / "enforce_reorder_warning.py").read_text(
+        encoding="utf-8"
+    )
+    require('"waveshare-349-fault"' in warning_script,
+            "bench fault build must receive production-only warning promotions")
+
 
 def check_open_font_render_patch() -> None:
     source, constants = literal_constants(ROOT / "scripts" / "patch_openfontrender.py")

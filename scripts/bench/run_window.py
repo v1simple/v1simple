@@ -45,7 +45,9 @@ except ImportError:  # pragma: no cover - host capability check
     serial = None  # type: ignore
 
 BUILD_SH = ROOT / "build.sh"
-BUILD_OUTPUT_DIR = ROOT / ".pio" / "build" / "waveshare-349"
+PRODUCTION_PIO_ENV = "waveshare-349"
+FAULT_PIO_ENV = "waveshare-349-fault"
+BUILD_OUTPUT_DIR = ROOT / ".pio" / "build" / PRODUCTION_PIO_ENV
 BUILD_UPLOAD_FILES = (
     "bootloader.bin",
     "partitions.bin",
@@ -268,6 +270,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--git-worktree-clean", choices=["0", "1"], default="0")
     parser.add_argument("--segment", default="last")
     parser.add_argument("--upload", action="store_true")
+    parser.add_argument(
+        "--bench-fault-inject",
+        type=int,
+        choices=(0, 1, 2, 3),
+        default=0,
+        help="non-shipping display fault: 1=bars, 2=arrows, 3=frequency",
+    )
     parser.add_argument("--resident-recording", default="",
                         help="prior qualified upload recording for the installed image")
     parser.add_argument("--resident-image", default="",
@@ -316,6 +325,11 @@ def file_artifact(path: Path) -> dict[str, Any]:
     }
 
 
+def firmware_build_dir(bench_fault_inject: int) -> Path:
+    environment = FAULT_PIO_ENV if bench_fault_inject else PRODUCTION_PIO_ENV
+    return ROOT / ".pio" / "build" / environment
+
+
 class BenchTimeline:
     def __init__(self, path: Path):
         self.path = path
@@ -352,6 +366,7 @@ def retain_build_upload_artifacts(
     build_dir: Path = BUILD_OUTPUT_DIR,
     *,
     upload_performed: bool = False,
+    bench_fault_inject: int = 0,
 ) -> dict[str, Any]:
     files: list[dict[str, Any]] = []
     missing: list[str] = []
@@ -384,6 +399,7 @@ def retain_build_upload_artifacts(
         "schema_version": 1,
         "kind": "bench_build_upload_artifacts",
         "upload_performed": upload_performed,
+        "bench_fault_inject": bench_fault_inject,
         "expected_runtime_image_id": elf_sha[:RUNTIME_IMAGE_ID_HEX_LENGTH],
         "expected_runtime_image_id_basis": RUNTIME_IMAGE_ID_BASIS,
         "files": files,
@@ -422,11 +438,17 @@ def parse_runtime_boot_identity(line: str) -> dict[str, Any] | None:
         raise RuntimeIdentityFailure("malformed runtime BOOT identity: invalid git")
     if RUNTIME_IMAGE_ID_RE.fullmatch(fields["image"]) is None:
         raise RuntimeIdentityFailure("malformed runtime BOOT identity: invalid image")
-    return {
+    raw_fault = fields.get("fault", "0")
+    if raw_fault not in {"0", "1", "2", "3"}:
+        raise RuntimeIdentityFailure("malformed runtime BOOT identity: invalid fault")
+    identity = {
         "boot_id": boot_id,
         "git_sha": fields["git"],
         "image_id": fields["image"],
     }
+    if "fault" in fields:
+        identity["bench_fault_inject"] = int(raw_fault)
+    return identity
 
 
 class RuntimeIdentityTracker:
@@ -500,6 +522,31 @@ def qualify_runtime_identity(
             qualification=qualification,
         )
     qualification["git_match"] = True
+
+    expected_fault = build_upload.get("bench_fault_inject", 0)
+    observed_fault = identity.get("bench_fault_inject", 0)
+    if type(expected_fault) is not int or expected_fault not in range(4):
+        raise RuntimeIdentityFailure(
+            "retained firmware fault identity is malformed",
+            identity=identity,
+            qualification=qualification,
+        )
+    qualification.update(
+        {
+            "bench_fault_inject": observed_fault,
+            "fault_match": observed_fault == expected_fault,
+        }
+    )
+    if (
+        type(observed_fault) is not int
+        or observed_fault not in range(4)
+        or observed_fault != expected_fault
+    ):
+        raise RuntimeIdentityFailure(
+            f"runtime fault {observed_fault!r} does not match retained firmware fault {expected_fault}",
+            identity=identity,
+            qualification=qualification,
+        )
 
     if bool(build_upload.get("upload_performed")) != upload:
         raise RuntimeIdentityFailure(
@@ -971,13 +1018,17 @@ def wait_for_port(preferred: str, timeout_s: int = 30) -> str:
     raise RuntimeError("No USB serial device detected")
 
 
-def run_upload(port: str, skip_web: bool) -> None:
+def run_upload(port: str, skip_web: bool, bench_fault_inject: int = 0) -> None:
     command = [str(BUILD_SH), "-f", "-u"]
+    environment = os.environ.copy()
+    if bench_fault_inject:
+        command.extend(["--env", FAULT_PIO_ENV])
+        environment["BENCH_FAULT_INJECT"] = str(bench_fault_inject)
     if skip_web:
         command.append("--skip-web")
     if port:
         command.extend(["--upload-port", port])
-    subprocess.run(command, cwd=ROOT, check=True)
+    subprocess.run(command, cwd=ROOT, check=True, env=environment)
 
 
 def native_usb_reset_strategy(port: Any) -> tuple[Any, dict[str, Any]]:
@@ -1578,17 +1629,26 @@ def collect_live(
     with V1RadioLease() as lease:
         assert lease.fd is not None
         port = wait_for_port(args.port)
+        bench_fault_inject = getattr(args, "bench_fault_inject", 0)
+        build_dir = firmware_build_dir(bench_fault_inject)
         if args.upload:
-            run_upload(port, args.skip_web)
+            run_upload(port, args.skip_web, bench_fault_inject)
             artifacts["build_upload"] = retain_build_upload_artifacts(
-                out_dir, upload_performed=True
+                out_dir,
+                build_dir,
+                upload_performed=True,
+                bench_fault_inject=bench_fault_inject,
             )
             port = wait_for_port(port, 30)
             deadline = time.monotonic() + args.post_upload_settle_seconds
             while time.monotonic() < deadline:
                 time.sleep(min(1.0, deadline - time.monotonic()))
         elif not resident_recording:
-            artifacts["build_upload"] = retain_build_upload_artifacts(out_dir)
+            artifacts["build_upload"] = retain_build_upload_artifacts(
+                out_dir,
+                build_dir,
+                bench_fault_inject=bench_fault_inject,
+            )
 
         timeline = BenchTimeline(out_dir / BENCH_TIMELINE_NAME)
         observer: BenchSerial | None = None

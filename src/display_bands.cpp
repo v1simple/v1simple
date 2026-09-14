@@ -13,6 +13,7 @@
 #include "display_palette.h"
 #include "display_text.h"
 #include "display_visual_contract.h"
+#include "bench_fault_inject.h"
 #include "FreeSansBold24pt7b.h"
 #include "settings.h"
 #include "packet_parser.h"
@@ -282,6 +283,11 @@ void V1Display::drawVerticalSignalBars(uint8_t frontStrength, uint8_t rearStreng
     uint8_t strength = std::max(frontStrength, rearStrength);
     if (strength > barCount)
         strength = barCount;
+#if BENCH_FAULT_INJECT == 1
+    // Negative control: drop one lit bar so main_bars must differ from target.
+    if (strength > 0)
+        strength = static_cast<uint8_t>(strength - 1);
+#endif
 
     if (elementCaches_.bars.valid && strength == elementCaches_.bars.lastStrength &&
         muted == elementCaches_.bars.lastMuted && elementCaches_.bars.lastPaletteRevision == paletteRevision_) {

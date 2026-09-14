@@ -11,7 +11,7 @@ def _as_list(value):
 
 cxxflags = _as_list(env.get("CXXFLAGS"))
 required_flags = ["-Werror=reorder"]
-if env.get("PIOENV") in ("waveshare-349", "esp32-s3-car-install"):
+if env.get("PIOENV") in ("waveshare-349", "waveshare-349-fault", "esp32-s3-car-install"):
     required_flags.extend(
         (
             "-Werror=missing-field-initializers",

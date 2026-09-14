@@ -13,6 +13,7 @@
 #include "display_segments.h"
 #include "display_font_manager.h"
 #include "settings.h"
+#include "bench_fault_inject.h"
 #include <algorithm>
 #include <cstring>
 
@@ -126,6 +127,21 @@ V1Display::FrequencyPresentation V1Display::resolveFrequencyPresentation(uint32_
     } else if (hasFreq) {
         float freqGhz = freqMHz / 1000.0f;
         snprintf(presentation.text, sizeof(presentation.text), "%05.3f", freqGhz);
+#if BENCH_FAULT_INJECT == 3
+        // Negative control: advance the last digit so primary_frequency must
+        // differ from target. Placed on the presentation text so the corrupted
+        // value travels the digit atlas and raster cache paths.
+        {
+            const size_t textLength = strlen(presentation.text);
+            if (textLength > 0) {
+                const char last = presentation.text[textLength - 1];
+                if (last >= '0' && last <= '9') {
+                    presentation.text[textLength - 1] =
+                        static_cast<char>('0' + ((last - '0' + 1) % 10));
+                }
+            }
+        }
+#endif
     } else {
         snprintf(presentation.text, sizeof(presentation.text), "--.---");
     }

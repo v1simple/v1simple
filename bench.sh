@@ -26,6 +26,7 @@ COLLECTION_ONLY=0
 COLLECTION_ONLY_REASON=""
 QUALIFICATION_CAPTURE=0
 PERSISTENCE_COVERAGE=0
+BENCH_FAULT=0
 READER_WORKERS="${BENCH_READER_WORKERS:-4}"
 COUNTER_RESULT="NOT_EVALUATED"
 COUNTER_PRINTED=0
@@ -37,6 +38,7 @@ usage() {
   printf 'Usage: ./bench.sh --all|--replay [--camera] [--no-flash] [--compare-to RESULT_JSON] [--qualification-capture|--persistence-coverage]\n'
   printf '       ./bench.sh --analyze-recording DIR [--range START:END ...] [--compare-to RESULT_JSON] [--reuse-readings RESULT_JSON]\n'
   printf '       --no-flash may use --resident-recording DIR --resident-image FILE to verify a prior uploaded image\n'
+  printf '       --bench-fault-inject 1|2|3 runs a replay-camera reader negative control\n'
   printf '       --reader-workers 1..8 selects bounded offline frame readers\n'
 }
 
@@ -95,6 +97,11 @@ while [[ $# -gt 0 ]]; do
     --persistence-coverage)
       PERSISTENCE_COVERAGE=1
       ;;
+    --bench-fault-inject)
+      [[ $# -ge 2 && "$BENCH_FAULT" -eq 0 && "$2" =~ ^[1-3]$ ]] || fail_usage
+      BENCH_FAULT="$2"
+      shift
+      ;;
     --reader-workers)
       [[ $# -ge 2 && -n "$2" ]] || fail_usage
       READER_WORKERS="$2"
@@ -118,6 +125,13 @@ if [[ "$PERSISTENCE_COVERAGE" -eq 1 ]]; then
      && "$QUALIFICATION_CAPTURE" -eq 0 && -z "$ANALYZE_RECORDING" ]] || fail_usage
   # Leave connection/handshake time around the complete 64-second input sequence.
   REPLAY_DURATION_SECONDS=90
+fi
+
+if [[ "$BENCH_FAULT" -ne 0 ]]; then
+  [[ "$RUN_REPLAY" -eq 1 && "$RUN_ALL" -eq 0 && "$CAMERA_REQUESTED" -eq 1 \
+     && "$FLASH" -eq 1 && "$QUALIFICATION_CAPTURE" -eq 0 \
+     && "$PERSISTENCE_COVERAGE" -eq 0 && -z "$ANALYZE_RECORDING" \
+     && -z "$RESIDENT_RECORDING" && -z "$RESIDENT_IMAGE" ]] || fail_usage
 fi
 
 if [[ -n "$RESIDENT_RECORDING" || -n "$RESIDENT_IMAGE" ]]; then
@@ -338,6 +352,52 @@ if isinstance(camera, dict) and camera.get("result") == "CAPTURED":
             f"[bench] {suite} camera integrity: CAPTURED | {int(frames):,} frames @ {float(fps):.1f}fps"
             f" | capture drops {int(capture_drops)} | writer drops {int(writer_drops)}"
         )
+PY
+}
+
+verify_fault_negative_control() {
+  "$BENCH_PYTHON" - "$1" "$2" "$BENCH_FAULT" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+encounter_path = Path(sys.argv[1])
+window_path = Path(sys.argv[2])
+selected = int(sys.argv[3])
+expected_field = {1: "main_bars", 2: "main_arrows", 3: "primary_frequency"}[selected]
+
+try:
+    encounter = json.loads(encounter_path.read_text(encoding="utf-8"))
+    window = json.loads(window_path.read_text(encoding="utf-8"))
+    identity = window["runtime_identity"]
+    qualification = window["runtime_qualification"]
+    if (
+        window.get("result") != "PASS"
+        or identity.get("bench_fault_inject") != selected
+        or qualification.get("status") != "qualified"
+        or qualification.get("fault_match") is not True
+        or encounter.get("evidence", {}).get("runtime_identity") != identity
+    ):
+        raise ValueError("fault image identity was not qualified and bound to the visual result")
+    if encounter.get("result") != "DIFFERENCES_FOUND" or encounter.get("errors") != []:
+        raise ValueError("reader did not produce a complete difference result")
+    findings = [
+        finding
+        for event in encounter.get("events", [])
+        for finding in event.get("findings", [])
+        if isinstance(finding, dict)
+    ]
+    fields = {finding.get("field") for finding in findings}
+    if not findings or fields != {expected_field}:
+        rendered = ", ".join(sorted(str(field) for field in fields)) or "none"
+        raise ValueError(
+            f"expected only {expected_field} differences; observed difference fields: {rendered}"
+        )
+except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+    print(str(exc) or "negative-control evidence is malformed")
+    raise SystemExit(1)
+
+print(f"{expected_field} difference detected; no other field differences observed")
 PY
 }
 
@@ -657,6 +717,9 @@ fi
 PORT="$(detect_usb_port || true)"
 if [[ -z "$PORT" ]]; then
   printf 'board: missing\n' >> "$RUN_LOG"
+  if [[ "$BENCH_FAULT" -ne 0 ]]; then
+    finish 'FAIL (negative control): board missing; reader sensitivity was not tested' 2
+  fi
   finish 'PASS-PARTIAL (skipped: board missing)' 1
 fi
 
@@ -670,6 +733,9 @@ if [[ "$CAMERA_REQUESTED" -eq 1 ]]; then
       CAMERA_ENABLED=0
     fi
   fi
+fi
+if [[ "$BENCH_FAULT" -ne 0 && "$CAMERA_ENABLED" -ne 1 ]]; then
+  finish 'FAIL (negative control): camera missing; reader sensitivity was not tested' 2
 fi
 if ! command -v xcrun >/dev/null 2>&1; then
   finish 'FAIL (emulator): Xcode command line tools are required to build v1replay' 2
@@ -738,6 +804,9 @@ for suite in "${SUITES[@]}"; do
   fi
   if [[ "$PERSISTENCE_COVERAGE" -eq 1 ]]; then
     args+=(--persistence-coverage)
+  fi
+  if [[ "$BENCH_FAULT" -ne 0 ]]; then
+    args+=(--bench-fault-inject "$BENCH_FAULT")
   fi
   if [[ "$FLASH" -eq 1 && "$first_suite" -eq 1 ]]; then
     args+=(--upload)
@@ -815,6 +884,16 @@ done
 
 if [[ "$COLLECTION_ONLY" -eq 1 ]]; then
   finish "COLLECTION-ONLY (unqualified: $COLLECTION_ONLY_REASON)" 1
+fi
+if [[ "$BENCH_FAULT" -ne 0 ]]; then
+  fault_result=""
+  if ! fault_result="$(verify_fault_negative_control \
+      "$RUN_DIR/replay/encounter-check/result.json" \
+      "$RUN_DIR/replay/window_result.json" 2>/dev/null)"; then
+    [[ -n "$fault_result" ]] || fault_result="negative-control evidence is missing or malformed"
+    finish "FAIL (negative control): $fault_result" 2
+  fi
+  finish "PASS (negative control): $fault_result" 0
 fi
 if [[ "$CAMERA_REQUESTED" -eq 1 && "$CAMERA_ENABLED" -eq 0 ]]; then
   if [[ "$QUALIFICATION_CAPTURE" -eq 1 ]]; then

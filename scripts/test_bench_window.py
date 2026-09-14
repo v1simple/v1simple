@@ -79,7 +79,9 @@ def test_build_artifacts_retain_exact_application_after_build_cache_changes() ->
         app[176:208] = bytes.fromhex(run_window_module.sha256_file(build / "firmware.elf"))
         original = build / "firmware.bin"
         original.write_bytes(app)
-        result = run_window_module.retain_build_upload_artifacts(recording, build, upload_performed=True)
+        result = run_window_module.retain_build_upload_artifacts(
+            recording, build, upload_performed=True, bench_fault_inject=2
+        )
         manifest = json.loads((recording / run_window_module.BUILD_UPLOAD_ARTIFACTS_NAME).read_text())
         record = next(item for item in manifest["files"] if item["name"] == "firmware.bin")
         retained = recording / record["path"]
@@ -87,7 +89,12 @@ def test_build_artifacts_retain_exact_application_after_build_cache_changes() ->
                     and record["sha256"] == hashlib.sha256(app).hexdigest(), str(record))
         assert_true(file_artifact(retained) == {key: record[key] for key in ("path", "size_bytes", "sha256")}, str(record))
         assert_true(not original.samefile(retained), "retained application aliases mutable build output")
-        assert_true(result["schema_version"] == 1 and result["missing"] == [], str(result))
+        assert_true(
+            result["schema_version"] == 1
+            and result["missing"] == []
+            and result["bench_fault_inject"] == 2,
+            str(result),
+        )
         assert_true(all("path" not in item for item in manifest["files"] if item["name"] != "firmware.bin"),
                     "retention expanded to unrelated build outputs")
         original.write_bytes(b"next build replaced this image")
@@ -97,9 +104,15 @@ def test_build_artifacts_retain_exact_application_after_build_cache_changes() ->
         assert_true(retained.read_bytes() == app, "cache cleanup removed retained application")
         # Exercise the actual no-flash reference consumer with the newly retained
         # binary. The miniature image is a host fixture, not target firmware proof.
-        identity = {**window["runtime_identity"], "image_id": result["expected_runtime_image_id"]}
+        identity = {
+            **window["runtime_identity"],
+            "image_id": result["expected_runtime_image_id"],
+            "bench_fault_inject": 2,
+        }
         serial_path = recording / "bench_serial.log"
-        serial_path.write_text(f"BOOT bootId=42 git={identity['git_sha']} image={identity['image_id']}\n")
+        serial_path.write_text(
+            f"BOOT bootId=42 git={identity['git_sha']} image={identity['image_id']} fault=2\n"
+        )
         window["runtime_identity"] = identity
         window["artifacts"]["bench_serial"] = file_artifact(serial_path)
         window["runtime_qualification"] = qualify_runtime_identity(
@@ -695,10 +708,13 @@ RUNTIME_IDENTITY = {
 }
 
 
-def build_upload_artifact(image_id: str, *, upload_performed: bool) -> dict[str, Any]:
+def build_upload_artifact(
+    image_id: str, *, upload_performed: bool, bench_fault_inject: int = 0
+) -> dict[str, Any]:
     elf_sha = image_id + ("0" * (64 - len(image_id)))
     return {
         "upload_performed": upload_performed,
+        "bench_fault_inject": bench_fault_inject,
         "expected_runtime_image_id": image_id,
         "expected_runtime_image_id_basis": run_window_module.RUNTIME_IMAGE_ID_BASIS,
         "files": [{"name": "firmware.elf", "sha256": elf_sha}],
@@ -726,6 +742,68 @@ def test_upload_exact_match_is_qualified() -> None:
     assert_true(result["git_match"] is True, str(result))
     assert_true(result["image_match"] is True, str(result))
     assert_true(result["artifact_linked"] is True, str(result))
+    assert_true(result["fault_match"] is True, str(result))
+
+
+def test_fault_identity_is_parsed_and_bound_separately_from_git() -> None:
+    identity = parse_runtime_boot_identity(
+        "BOOT bootId=42 uptimeMs=10 reset=USB git=2f32dda image=04904e028 fault=2"
+    )
+    assert_true(identity == {**RUNTIME_IDENTITY, "bench_fault_inject": 2}, str(identity))
+    result = qualify_runtime_identity(
+        identity,
+        intended_git_sha=GIT_SHA,
+        build_upload=build_upload_artifact(
+            "04904e028", upload_performed=True, bench_fault_inject=2
+        ),
+        upload=True,
+    )
+    assert_true(result["status"] == "qualified" and result["fault_match"] is True, str(result))
+
+    assert_identity_failure(
+        lambda: qualify_runtime_identity(
+            identity,
+            intended_git_sha=GIT_SHA,
+            build_upload=build_upload_artifact(
+                "04904e028", upload_performed=True, bench_fault_inject=1
+            ),
+            upload=True,
+        ),
+        "does not match retained firmware fault",
+    )
+    for invalid in ("", "-1", "4", "01", "bars"):
+        assert_identity_failure(
+            lambda invalid=invalid: parse_runtime_boot_identity(
+                "BOOT bootId=42 git=2f32dda image=04904e028 fault=" + invalid
+            ),
+            "malformed runtime BOOT identity",
+        )
+
+
+def test_fault_upload_selects_isolated_environment_and_build_directory() -> None:
+    with mock.patch.object(run_window_module.subprocess, "run") as invoke:
+        run_window_module.run_upload("/dev/example", True, 3)
+    command = invoke.call_args.args[0]
+    environment = invoke.call_args.kwargs["env"]
+    assert_true(
+        command == [
+            str(run_window_module.BUILD_SH),
+            "-f",
+            "-u",
+            "--env",
+            run_window_module.FAULT_PIO_ENV,
+            "--skip-web",
+            "--upload-port",
+            "/dev/example",
+        ],
+        str(command),
+    )
+    assert_true(environment["BENCH_FAULT_INJECT"] == "3", str(environment))
+    assert_true(
+        run_window_module.firmware_build_dir(3)
+        == ROOT / ".pio" / "build" / run_window_module.FAULT_PIO_ENV,
+        str(run_window_module.firmware_build_dir(3)),
+    )
 
 
 def test_upload_git_mismatch_fails() -> None:
@@ -1351,6 +1429,11 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
                           analysis_logs: list[str] | None = None,
                           ) -> tuple[subprocess.CompletedProcess[str], int, int, int]:
     with tempfile.TemporaryDirectory() as tmp:
+        selected_fault = 0
+        if "--bench-fault-inject" in extra_arguments:
+            fault_index = extra_arguments.index("--bench-fault-inject")
+            if fault_index + 1 < len(extra_arguments):
+                selected_fault = int(extra_arguments[fault_index + 1])
         root = Path(tmp)
         bench = root / "bench.sh"
         bench.write_bytes((ROOT / "bench.sh").read_bytes())
@@ -1382,8 +1465,16 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
             "qualification_reason": "fixture runtime artifact is unlinked" if window_result == "COLLECTION_ONLY" else None,
             "error": "fixture collection failed" if window_result == "FAIL" else None,
             "completion": {"duration_seconds": 1, "serial_lines_observed": 4},
-            "runtime_identity": {"git_sha": "0123456789abcdef0123456789abcdef01234567", "image_id": "123456789"},
-            "runtime_qualification": {"mode": "fixture", "status": "collection_only" if window_result == "COLLECTION_ONLY" else "qualified"},
+            "runtime_identity": {
+                "git_sha": "0123456789abcdef0123456789abcdef01234567",
+                "image_id": "123456789",
+                "bench_fault_inject": selected_fault,
+            },
+            "runtime_qualification": {
+                "mode": "fixture",
+                "status": "collection_only" if window_result == "COLLECTION_ONLY" else "qualified",
+                "fault_match": True,
+            },
             "emulator": {"notification_delivery": {"requested": 10, "delivered": 10, "dropped": 0, "skipped": 0}},
             "camera": ({"result": "CAPTURED", "recorder_stats": {"frames_appended": 200,
                         "capture_drops": 0, "writer_backpressure_drops": 0},
@@ -1400,6 +1491,10 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
         counter_path.write_text(json.dumps({"result": counter_result, "counts": counter_counts}), encoding="utf-8")
         encounter_path = root / "encounter.json"
         encounter = encounter_payload if encounter_payload is not None else generated_encounter_payload((encounter_result,))
+        if selected_fault:
+            encounter.setdefault("evidence", {})["runtime_identity"] = dict(
+                window["runtime_identity"]
+            )
         encounter_path.write_text(json.dumps(encounter), encoding="utf-8")
         counter_marker = root / "counter.calls"
         encounter_marker = root / "encounter.calls"
@@ -1429,7 +1524,7 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
                 exit 0
               fi
               if [[ " $* " == *"/scripts/bench/run_window.py"* ]]; then
-                printf 'called\\n' >> "$FAKE_WINDOW_MARKER"
+                printf '%s\\n' "$*" >> "$FAKE_WINDOW_MARKER"
                 args=("$@")
                 reader_qualification=0
                 for ((index=0; index<${{#args[@]}}; index++)); do
@@ -1569,8 +1664,13 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
             FAKE_VISUAL_MARKER=str(visual_marker),
             FAKE_VISUAL_EXIT=str(visual_exit),
         )
-        arguments = ([str(bench), "--analyze-recording", str(recorded)] if offline else
-                     [str(bench), "--all" if run_all else "--replay", "--no-flash"])
+        arguments = (
+            [str(bench), "--analyze-recording", str(recorded)]
+            if offline
+            else [str(bench), "--all" if run_all else "--replay"]
+        )
+        if not offline and selected_fault == 0:
+            arguments.append("--no-flash")
         if compare:
             arguments.extend(("--compare-to", str(baseline_path)))
         if reuse:
@@ -1602,6 +1702,7 @@ def run_bench_cli_fixture(window_result: str, counter_result: str, *,
                 "qualification_arguments": bootstrap_marker.read_text().splitlines() if bootstrap_marker.exists() else [],
                 "build_calls": len(build_marker.read_text().splitlines()) if build_marker.exists() else 0,
                 "window_calls": len(window_marker.read_text().splitlines()) if window_marker.exists() else 0,
+                "window_arguments": window_marker.read_text().splitlines() if window_marker.exists() else [],
                 "ambient_python_calls": len(ambient_python_marker.read_text().splitlines()) if ambient_python_marker.exists() else 0,
                 "hardware_calls": len(hardware_marker.read_text().splitlines()) if hardware_marker.exists() else 0,
             })
@@ -1642,6 +1743,42 @@ def test_bench_cli_uses_selected_reader_environment_and_rejects_before_work() ->
         assert_true(len(rejected["qualification_arguments"]) == 1, str(rejected))
         assert_true(all(rejected[key] == 0 for key in (
             "build_calls", "window_calls", "ambient_python_calls", "hardware_calls")), str(rejected))
+
+
+def test_bench_cli_fault_control_requires_and_proves_only_selected_difference() -> None:
+    records: list[dict] = []
+    process, counter_calls, encounter_calls, _ = run_bench_cli_fixture(
+        "PASS",
+        "PASS",
+        encounter_result="DIFFERENCES_FOUND",
+        extra_arguments=("--bench-fault-inject", "3"),
+        environment_records=records,
+    )
+    assert_true(process.returncode == 0, process.stdout + process.stderr)
+    assert_true((counter_calls, encounter_calls) == (1, 1), process.stdout)
+    assert_true(
+        "PASS (negative control): primary_frequency difference detected; "
+        "no other field differences observed" in process.stdout,
+        process.stdout,
+    )
+    assert_true(
+        "--bench-fault-inject 3" in records[0]["window_arguments"][0],
+        str(records),
+    )
+
+    process, counter_calls, encounter_calls, _ = run_bench_cli_fixture(
+        "PASS",
+        "PASS",
+        encounter_result="DIFFERENCES_FOUND",
+        extra_arguments=("--bench-fault-inject", "1"),
+    )
+    assert_true(process.returncode == 2, process.stdout + process.stderr)
+    assert_true((counter_calls, encounter_calls) == (1, 1), process.stdout)
+    assert_true(
+        "expected only main_bars differences; observed difference fields: primary_frequency"
+        in process.stdout,
+        process.stdout,
+    )
 
 
 def generated_encounter_payload(outcomes: tuple[str, ...]) -> dict:
@@ -2400,6 +2537,8 @@ def main() -> int:
     test_radio_lease_excludes_concurrent_owners_and_rejects_symlink_parent()
     test_runner_source_is_external_only_and_serial_is_read_only()
     test_upload_exact_match_is_qualified()
+    test_fault_identity_is_parsed_and_bound_separately_from_git()
+    test_fault_upload_selects_isolated_environment_and_build_directory()
     test_upload_git_mismatch_fails()
     test_upload_image_mismatch_fails()
     test_no_flash_git_match_with_linked_resident_artifact_is_qualified()
@@ -2420,6 +2559,7 @@ def main() -> int:
     test_bench_cli_collection_only_branch_has_no_pass_verdict()
     test_bench_cli_qualifies_visual_reader_before_collection()
     test_bench_cli_uses_selected_reader_environment_and_rejects_before_work()
+    test_bench_cli_fault_control_requires_and_proves_only_selected_difference()
     test_bench_cli_consumes_current_producer_results_online_and_offline()
     test_bench_cli_keeps_full_diagnostics_with_brief_console_and_one_verdict()
     test_bench_cli_rejects_old_or_incomplete_product_contract_explicitly()

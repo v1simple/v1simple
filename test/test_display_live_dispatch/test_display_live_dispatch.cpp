@@ -549,11 +549,16 @@ struct CounterBlinkRuntime {
         TEST_ASSERT_TRUE(parser.parse(packet.data(), packet.size(), nowMs));
     }
 
-    void counter(uint8_t on, uint8_t off, uint8_t bandArrows = 0) {
+    void displayFrame(uint8_t on, uint8_t off, uint8_t barBitmap,
+                      uint8_t image1, uint8_t image2, uint32_t nowMs = 10000) {
         // Complete InfDisplayData packet; aux0 keeps system-status/display-on
         // set, and aux2 supplies the known main/mute volume pair 6/2.
-        feed(PACKET_ID_DISPLAY_DATA, {on, off, 0, bandArrows, bandArrows, 0x0C, 0, 0x62});
+        feed(PACKET_ID_DISPLAY_DATA, {on, off, barBitmap, image1, image2, 0x0C, 0, 0x62}, nowMs);
         pipeline.handleParsed(static_cast<uint32_t>(mockMillis));
+    }
+
+    void counter(uint8_t on, uint8_t off, uint8_t bandArrows = 0) {
+        displayFrame(on, off, 0, bandArrows, bandArrows);
     }
 
     bool refresh(uint32_t nowMs, DisplayOrchestrationRefreshContext context = {}) {
@@ -610,6 +615,129 @@ void test_live_counter_keeps_existing_blink_cadence() {
     runtime.counter(0x06, 0, 0x22);
     TEST_ASSERT_TRUE(runtime.parser.hasAlerts());
     assertCounterBlinkCycle(runtime, "1");
+}
+
+void test_two_spec_alert_rows_reach_primary_and_secondary_direction_geometry() {
+    CounterBlinkRuntime runtime;
+    settings.slotPriorityArrowOnly[0] = true;
+
+    // ESP Spec alert rows, one-based index/count: priority Ka/front at
+    // 34.700 GHz, followed by K/rear at 24.150 GHz.
+    runtime.feed(PACKET_ID_ALERT_DATA, {0x12, 0x87, 0x8C, 0xAC, 0x00, 0x22, 0x80});
+    runtime.feed(PACKET_ID_ALERT_DATA, {0x22, 0x5E, 0x56, 0x00, 0xB8, 0x84, 0x00});
+    TEST_ASSERT_EQUAL_UINT(2, runtime.parser.getAlertCount());
+    const AlertData priority = runtime.parser.getPriorityAlert();
+    TEST_ASSERT_EQUAL_INT(BAND_KA, priority.band);
+    TEST_ASSERT_EQUAL_UINT32(34700, priority.frequency);
+    TEST_ASSERT_EQUAL_INT(DIR_FRONT, priority.direction);
+
+    // Stable Image1/Image2 reports both bands and both directions. Priority-
+    // only mode must use the row priority for the large arrow while retaining
+    // the secondary row's own direction in its card.
+    runtime.displayFrame(0x5B, 0x5B, 0x00, 0xA6, 0xA6);
+
+    TEST_ASSERT_EQUAL_UINT(1, canvas()->flushSnapshots.size());
+    TEST_ASSERT_EQUAL_STRING("2", display.ut_elementCaches().topCounter.lastText);
+    TEST_ASSERT_EQUAL_INT(static_cast<uint8_t>(BAND_KA | BAND_K),
+                          display.ut_elementCaches().bands.lastMask);
+    TEST_ASSERT_TRUE(display.ut_elementCaches().arrow.showFront);
+    TEST_ASSERT_FALSE(display.ut_elementCaches().arrow.showSide);
+    TEST_ASSERT_FALSE(display.ut_elementCaches().arrow.showRear);
+    TEST_ASSERT_EQUAL_INT(1, display.ut_elementCaches().cards.lastDrawnCount);
+    const auto& cardCache = display.ut_elementCaches().cards.lastDrawnPositions[0];
+    TEST_ASSERT_EQUAL_INT(BAND_K, cardCache.band);
+    TEST_ASSERT_EQUAL_UINT32(24150, cardCache.frequency);
+    TEST_ASSERT_EQUAL_INT(DIR_REAR, cardCache.direction);
+    TEST_ASSERT_TRUE(std::find(canvas()->printed.begin(), canvas()->printed.end(), "24.150") !=
+                     canvas()->printed.end());
+
+    const auto& triangles = canvas()->flushSnapshots.front().triangles;
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT(5, triangles.size());
+    const DisplayLayout::DisplayRect card = DisplayLayout::cardRect(0);
+    const int16_t arrowX = static_cast<int16_t>(card.x + 18);
+    const int16_t arrowCenterY = static_cast<int16_t>(card.y + 18);
+    const auto& cardArrow = triangles[4];
+    TEST_ASSERT_EQUAL_INT16(arrowX, cardArrow.x0);
+    TEST_ASSERT_EQUAL_INT16(arrowCenterY + 7, cardArrow.y0);
+    TEST_ASSERT_EQUAL_INT16(arrowX - 6, cardArrow.x1);
+    TEST_ASSERT_EQUAL_INT16(arrowCenterY - 5, cardArrow.y1);
+    TEST_ASSERT_EQUAL_INT16(arrowX + 6, cardArrow.x2);
+    TEST_ASSERT_EQUAL_INT16(arrowCenterY - 5, cardArrow.y2);
+}
+
+void test_changed_spec_priority_swaps_primary_and_card_without_stale_geometry() {
+    CounterBlinkRuntime runtime;
+    settings.slotPriorityArrowOnly[0] = true;
+    runtime.feed(PACKET_ID_ALERT_DATA, {0x12, 0x87, 0x8C, 0xAC, 0x00, 0x22, 0x80});
+    runtime.feed(PACKET_ID_ALERT_DATA, {0x22, 0x5E, 0x56, 0x00, 0xB8, 0x84, 0x00});
+    runtime.displayFrame(0x5B, 0x5B, 0x00, 0xA6, 0xA6);
+    clearObservations();
+
+    // The same two rows arrive again with the priority bit moved to K/rear.
+    runtime.feed(PACKET_ID_ALERT_DATA, {0x12, 0x87, 0x8C, 0xAC, 0x00, 0x22, 0x00}, 10100);
+    runtime.feed(PACKET_ID_ALERT_DATA, {0x22, 0x5E, 0x56, 0x00, 0xB8, 0x84, 0x80}, 10100);
+    const AlertData priority = runtime.parser.getPriorityAlert();
+    TEST_ASSERT_EQUAL_INT(BAND_K, priority.band);
+    TEST_ASSERT_EQUAL_UINT32(24150, priority.frequency);
+    TEST_ASSERT_EQUAL_INT(DIR_REAR, priority.direction);
+    runtime.displayFrame(0x5B, 0x5B, 0x00, 0xA6, 0xA6, 10100);
+
+    TEST_ASSERT_EQUAL_UINT(1, canvas()->flushSnapshots.size());
+    TEST_ASSERT_FALSE(display.ut_elementCaches().arrow.showFront);
+    TEST_ASSERT_FALSE(display.ut_elementCaches().arrow.showSide);
+    TEST_ASSERT_TRUE(display.ut_elementCaches().arrow.showRear);
+    TEST_ASSERT_EQUAL_INT(1, display.ut_elementCaches().cards.lastDrawnCount);
+    const auto& cardCache = display.ut_elementCaches().cards.lastDrawnPositions[0];
+    TEST_ASSERT_EQUAL_INT(BAND_KA, cardCache.band);
+    TEST_ASSERT_EQUAL_UINT32(34700, cardCache.frequency);
+    TEST_ASSERT_EQUAL_INT(DIR_FRONT, cardCache.direction);
+    TEST_ASSERT_TRUE(std::find(canvas()->printed.begin(), canvas()->printed.end(), "34.700") !=
+                     canvas()->printed.end());
+    TEST_ASSERT_TRUE(std::find(canvas()->printed.begin(), canvas()->printed.end(), "24.150") ==
+                     canvas()->printed.end());
+
+    const auto& triangles = canvas()->flushSnapshots.front().triangles;
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT(5, triangles.size());
+    const DisplayLayout::DisplayRect card = DisplayLayout::cardRect(0);
+    const int16_t arrowX = static_cast<int16_t>(card.x + 18);
+    const int16_t arrowCenterY = static_cast<int16_t>(card.y + 18);
+    const auto& cardArrow = triangles[4];
+    TEST_ASSERT_EQUAL_INT16(arrowX, cardArrow.x0);
+    TEST_ASSERT_EQUAL_INT16(arrowCenterY - 7, cardArrow.y0);
+    TEST_ASSERT_EQUAL_INT16(arrowX - 6, cardArrow.x1);
+    TEST_ASSERT_EQUAL_INT16(arrowCenterY + 5, cardArrow.y1);
+    TEST_ASSERT_EQUAL_INT16(arrowX + 6, cardArrow.x2);
+    TEST_ASSERT_EQUAL_INT16(arrowCenterY + 5, cardArrow.y2);
+}
+
+void test_spec_image_pair_blinks_k_band_and_front_arrow_through_full_pipeline() {
+    CounterBlinkRuntime runtime;
+    runtime.feed(PACKET_ID_ALERT_DATA, {0x11, 0x5E, 0x56, 0xA0, 0x00, 0x24, 0x80});
+
+    // Image1 lights K/front; Image2 clears those same bits. The parser owns
+    // the XOR-like Image1 & ~Image2 interpretation, and both renderers share
+    // the resulting 96 ms phase.
+    runtime.displayFrame(0x06, 0x06, 0x00, 0x24, 0x00);
+    const DisplayState initial = runtime.parser.getDisplayState();
+    TEST_ASSERT_EQUAL_HEX8(0x20, initial.flashBits);
+    TEST_ASSERT_EQUAL_HEX8(0x04, initial.bandFlashBits);
+    TEST_ASSERT_EQUAL_INT(BAND_K, display.ut_elementCaches().bands.lastMask);
+    TEST_ASSERT_TRUE(display.ut_elementCaches().arrow.showFront);
+    TEST_ASSERT_FALSE(display.ut_elementCaches().arrow.blinkOffFront);
+
+    clearObservations();
+    TEST_ASSERT_TRUE(runtime.refresh(10096));
+    TEST_ASSERT_EQUAL_UINT(1, canvas()->flushSnapshots.size());
+    TEST_ASSERT_EQUAL_INT(BAND_NONE, display.ut_elementCaches().bands.lastMask);
+    TEST_ASSERT_TRUE(display.ut_elementCaches().arrow.showFront);
+    TEST_ASSERT_TRUE(display.ut_elementCaches().arrow.blinkOffFront);
+    const auto& sent = canvas()->flushSnapshots.front();
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT(4, sent.triangles.size());
+    TEST_ASSERT_EQUAL_HEX16(TFT_BLACK, sent.triangles[0].color);
+    const auto kOffPaint = std::find_if(sent.text.begin(), sent.text.end(), [](const RecordingCanvas::TextCall& call) {
+        return call.text == "K" && call.color == TFT_DARKGREY;
+    });
+    TEST_ASSERT_TRUE(kOffPaint != sent.text.end());
 }
 
 void test_idle_counter_blink_respects_splash_preview_and_runtime_gates() {
@@ -694,6 +822,9 @@ int main() {
     RUN_TEST(test_idle_junk_counter_blinks_through_parser_pipeline_and_transfer);
     RUN_TEST(test_idle_steady_counter_does_not_request_extra_transfers);
     RUN_TEST(test_live_counter_keeps_existing_blink_cadence);
+    RUN_TEST(test_two_spec_alert_rows_reach_primary_and_secondary_direction_geometry);
+    RUN_TEST(test_changed_spec_priority_swaps_primary_and_card_without_stale_geometry);
+    RUN_TEST(test_spec_image_pair_blinks_k_band_and_front_arrow_through_full_pipeline);
     RUN_TEST(test_idle_counter_blink_respects_splash_preview_and_runtime_gates);
     RUN_TEST(test_idle_blink_refresh_does_not_replace_stealth_owner);
     RUN_TEST(test_live_v1_counter_blinks_after_taking_stealth_screen);

@@ -62,6 +62,44 @@ _CURRENT_LOCATION_RANGES = {
     "src/drive_runtime.cpp": {(574, 594): (584, 604), (598, 611): (608, 621)},
 }
 
+# The settings/profile release changed these owning files. Each variant below
+# was re-reviewed against the ordinary seven-field contract; profile/status-bar
+# presentation is deliberately not included because it occupies a separate
+# indicator rectangle and is not one of those fields.
+_PROFILE_SETTINGS_SOURCE_VARIANTS = {
+    "src/packet_parser.cpp": "b7f588faec0ab7b2d8c7382ba239ba1e6fcc4469530ae14cf89fd0417d0fe46e",
+    "src/packet_parser_alerts.cpp": "b277967051d51ac713041f647f1e87af51e2b2b708ce2a49b3635496d8384ee1",
+    "src/display.h": "935b89b4bb942d13af7965a3b75db42b5c896948170c5bf7506f0834a6666571",
+    "src/display_frequency.cpp": "c739550743a990e85c91d9208aa111de02cdec49ade8402a691badaa509577e0",
+    "include/color_themes.h": "1fb526060b9848874099bac1752792b94ed9169e88d8f8b070c5cb1125a8a1f8",
+    "src/display_bands.cpp": "a55b25092d523a130df4f283dbeb4075210d7f978dc97a1f922908a2d92d6cb6",
+    "src/display_arrow.cpp": "51d0a60d0645ff958f484f00c9212055c2c3f59d4d84a2cb6ee6acbc7ef7e48f",
+    "src/display_cards.cpp": "ea29f261b8a61be933a59c659063aa93c0e6a677b5993c4eb6fa0f230b1eb997",
+    "include/display_visual_contract.h": "2b2e99928cb0eab8a7befffd0305642a4629ba81c759da9a47b6043871c1e6c3",
+    "src/modules/display/display_pipeline_module.cpp": "f60777923335381339e8946a393a3d23281b7c86d68cd6e16cf82bbde6a6ffa9",
+    "src/modules/display/display_orchestration_module.cpp": "0d3a78a9789f33ffd0484a85f538c5927aa8a1b7a4f7e49d66b0ea70834269d3",
+    "src/drive_runtime.cpp": "b760c4d2a5310ae7edced10bd01a9523bc26e3941f075125ee0e79dca222b1b7",
+}
+
+# Direct mappings from the original reviewed rule locations to the current
+# reviewed source. Card locations are supplied by the semantic update below.
+_PROFILE_SETTINGS_LOCATION_RANGES = {
+    "src/packet_parser.cpp": {
+        (312, 324): (612, 624), (357, 375): (654, 672),
+        (385, 394): (682, 691), (377, 394): (674, 691),
+        (396, 412): (693, 709), (427, 434): (724, 731),
+    },
+    "src/packet_parser_alerts.cpp": {(117, 145): (118, 145), (397, 435): (427, 465)},
+    "src/display.h": {(381, 400): (366, 385), (407, 430): (393, 418)},
+    "src/display_bands.cpp": {(41, 51): (41, 55), (275, 280): (279, 284)},
+    "src/display_arrow.cpp": {(45, 60): (43, 60), (103, 113): (100, 111)},
+    "src/modules/display/display_pipeline_module.cpp": {
+        (256, 272): (233, 249), (411, 428): (388, 427),
+    },
+    "src/modules/display/display_orchestration_module.cpp": {(129, 145): (124, 151)},
+    "src/drive_runtime.cpp": {(574, 594): (616, 646), (598, 611): (650, 663)},
+}
+
 
 def _rule(fields, statement, locations, repair_direction):
     return {"fields": fields, "statement": statement, "locations": locations,
@@ -223,6 +261,38 @@ _FIXED_CARD_RULE_UPDATES = {
     },
 }
 
+_PROFILE_SETTINGS_RULE_UPDATES = {
+    "secondary": {
+        "statement": "Up to two non-priority live alerts render as associated band/frequency/direction/strength "
+                     "cards. Card strength projects directional RSSI bars onto six cells. Identity tolerance is "
+                     "2 MHz and continuity/redraw tolerance is 5 MHz. Live rows displace retained/graced slots "
+                     "when capacity is full; the ordinary distinct-alert test excludes overlaps.",
+        "locations": [("include/display_visual_contract.h", 11, 25),
+                      ("src/packet_parser_alerts.cpp", 118, 145),
+                      ("src/display_cards.cpp", 29, 47), ("src/display_cards.cpp", 66, 125),
+                      ("src/display_cards.cpp", 275, 304), ("src/display_cards.cpp", 452, 461)],
+    },
+    "retired_card": {
+        "statement": "With persistence zero, a missing card slot is released on the current card render. "
+                     "A vanished previous priority receives card grace only when persistence is positive, and "
+                     "only after live rows use available capacity. Live arrivals displace retained/graced slots "
+                     "when both slots are occupied. With positive persistence, missing slots expire when elapsed "
+                     "time since last seen exceeds the configured interval. These are renderer state rules; they "
+                     "do not by themselves establish physical delivery.",
+        "locations": [("src/display_cards.cpp", 66, 89), ("src/display_cards.cpp", 91, 125),
+                      ("src/display_cards.cpp", 127, 159), ("src/display_cards.cpp", 162, 176),
+                      ("src/display_cards.cpp", 321, 338)],
+        "repair_direction": "For an obsolete card, verify the recorded persistence setting and live-row "
+                            "identity, then inspect card clearing and full-canvas delivery. Preserve live-card "
+                            "precedence and positive persistence; zero-to-1-ms admission and grace hiding a live "
+                            "arrival are already corrected in this source.",
+    },
+    "physical_dispatch": {
+        "locations": [("src/display_cards.cpp", 321, 337), ("src/display_update.cpp", 893, 924),
+                      ("src/display_update.cpp", 927, 933)],
+    },
+}
+
 
 def _git(repo_root, *args):
     return subprocess.run(["git", "-C", str(repo_root), *args], capture_output=True,
@@ -263,23 +333,55 @@ def behavior_contract(repo_root, firmware_commit):
                 reviewed_hash = _BRIGHTER_IDLE_SOURCE
             if path in _CURRENT_SOURCE_VARIANTS and digest == _CURRENT_SOURCE_VARIANTS[path]:
                 reviewed_hash = _CURRENT_SOURCE_VARIANTS[path]
+            if (path in _PROFILE_SETTINGS_SOURCE_VARIANTS and
+                    digest == _PROFILE_SETTINGS_SOURCE_VARIANTS[path]):
+                reviewed_hash = _PROFILE_SETTINGS_SOURCE_VARIANTS[path]
             state = "VERIFIED" if digest == reviewed_hash else "UNREVIEWED"
         except (OSError, subprocess.SubprocessError, UnicodeError):
             digest, state = None, "UNAVAILABLE"
         base["sources"][path] = {"sha256": digest, "reviewed_sha256": reviewed_hash,
                                   "status": state, "git_object": f"{commit}:{path}"}
     definitions = deepcopy(_RULES)
-    if base["sources"]["src/display_cards.cpp"]["sha256"] == _FIXED_CARD_SOURCE:
+    cards_hash = base["sources"]["src/display_cards.cpp"]["sha256"]
+    if cards_hash in {_FIXED_CARD_SOURCE, _PROFILE_SETTINGS_SOURCE_VARIANTS["src/display_cards.cpp"]}:
         for rule_id, update in _FIXED_CARD_RULE_UPDATES.items():
             definitions[rule_id].update(update)
-    if base["sources"]["include/color_themes.h"]["sha256"] == _BRIGHTER_IDLE_SOURCE:
+    if cards_hash == _PROFILE_SETTINGS_SOURCE_VARIANTS["src/display_cards.cpp"]:
+        for rule_id, update in _PROFILE_SETTINGS_RULE_UPDATES.items():
+            definitions[rule_id].update(update)
+    color_hash = base["sources"]["include/color_themes.h"]["sha256"]
+    if color_hash == _BRIGHTER_IDLE_SOURCE:
         idle = definitions["idle_volume_warning"]
         idle["statement"] = idle["statement"].replace("RGB565 0x1082", "RGB565 0x2104")
+    elif color_hash == _PROFILE_SETTINGS_SOURCE_VARIANTS["include/color_themes.h"]:
+        idle = definitions["idle_volume_warning"]
+        idle["statement"] = idle["statement"].replace(
+            "dark gray, subject", "subdued gray, subject")
+        idle["statement"] = idle["statement"].replace("RGB565 0x1082", "RGB565 0x3186")
+        definitions["primary_frequency"]["statement"] = definitions["primary_frequency"]["statement"].replace(
+            "in dark gray", "in subdued gray")
+    if (base["sources"]["src/display_frequency.cpp"]["sha256"] ==
+            _PROFILE_SETTINGS_SOURCE_VARIANTS["src/display_frequency.cpp"]):
+        definitions["primary_frequency"]["locations"].append(("src/display_frequency.cpp", 338, 375))
+        definitions["primary_frequency"]["repair_direction"] = (
+            "If the wrong threat is primary, inspect priority selection and frame composition; if the "
+            "right threat has wrong digits, inspect frequency drawing, old/new extent clearing, cache "
+            "invalidation and full-canvas delivery.")
+    if (base["sources"]["src/modules/display/display_orchestration_module.cpp"]["sha256"] ==
+            _PROFILE_SETTINGS_SOURCE_VARIANTS["src/modules/display/display_orchestration_module.cpp"]):
+        definitions["shared_blink"]["statement"] = (
+            "The implementation advances one shared phase in exact 96 ms quanta of DUT millis(). "
+            "The phase epoch is established by the first renderer entry. A visible resting counter can "
+            "continue lightweight refresh after alert rows clear; stealth suppresses that hidden idle "
+            "refresh. This specifies code cadence, not a host-to-screen acquisition deadline or exposure phase.")
     for definition in definitions.values():
         locations = []
         for path, start, end in definition["locations"]:
             if path in _CURRENT_LOCATION_RANGES and base["sources"][path]["sha256"] == _CURRENT_SOURCE_VARIANTS[path]:
                 start, end = _CURRENT_LOCATION_RANGES[path].get((start, end), (start, end))
+            if (path in _PROFILE_SETTINGS_LOCATION_RANGES and
+                    base["sources"][path]["sha256"] == _PROFILE_SETTINGS_SOURCE_VARIANTS[path]):
+                start, end = _PROFILE_SETTINGS_LOCATION_RANGES[path].get((start, end), (start, end))
             locations.append((path, start, end))
         definition["locations"] = locations
     if base["sources"]["src/display_update.cpp"]["sha256"] == _CURRENT_SOURCE_VARIANTS["src/display_update.cpp"]:
@@ -305,8 +407,15 @@ def behavior_contract(repo_root, firmware_commit):
                        for path, _, _ in definition["locations"])
         rule["status"] = "VERIFIED" if verified else "UNREVIEWED"
         if not verified:
-            rule["statement"] = "Recorded owning source is changed or unavailable; this implementation rule needs review."
-            rule["repair_direction"] = "Inspect the recorded source before applying the earlier implementation explanation."
+            source_states = {base["sources"][path]["status"] for path, _, _ in definition["locations"]}
+            if "UNAVAILABLE" in source_states:
+                rule["statement"] = "Recorded owning source is unavailable; this implementation rule needs review."
+                rule["repair_direction"] = (
+                    "Recover and inspect the recorded source before applying an implementation explanation.")
+            else:
+                rule["statement"] = "Recorded owning source changed; this implementation rule needs review."
+                rule["repair_direction"] = (
+                    "Inspect the changed recorded source before applying the earlier implementation explanation.")
         rule["locations"] = [{"path": path, "line_start": start if verified else None,
                               "line_end": end if verified else None,
                               "url": f"https://github.com/v1simple/v1simple/blob/{commit}/{path}"

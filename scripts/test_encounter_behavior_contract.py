@@ -156,6 +156,65 @@ class BehaviorContractTests(unittest.TestCase):
                     self.assertEqual(rule["status"], "UNREVIEWED")
                     self.assertTrue(all(loc["excerpt"] is None for loc in rule["locations"]))
 
+    def test_profile_settings_revision_has_re_reviewed_current_owners(self):
+        result = contract.behavior_contract(ROOT, "ee93bd6")
+        self.assertEqual(result["status"], "VERIFIED")
+        current_changed_owners = {
+            path for path, source in result["sources"].items()
+            if source["sha256"] != contract._SOURCES[path]
+        }
+        self.assertEqual(current_changed_owners,
+                         set(contract._PROFILE_SETTINGS_SOURCE_VARIANTS) | {"src/display_update.cpp"})
+        for path, digest in contract._PROFILE_SETTINGS_SOURCE_VARIANTS.items():
+            self.assertEqual(result["sources"][path]["status"], "VERIFIED", path)
+            self.assertEqual(result["sources"][path]["reviewed_sha256"], digest, path)
+
+        idle = result["rules"]["idle_volume_warning"]
+        self.assertIn("RGB565 0x3186", idle["statement"])
+        self.assertTrue(any(".colorGray = 0x3186" in loc["excerpt"] for loc in idle["locations"]))
+        frequency = result["rules"]["primary_frequency"]
+        self.assertIn("subdued gray", frequency["statement"])
+        self.assertIn("old/new extent clearing", frequency["repair_direction"])
+        self.assertTrue(any("Erase both old and new text extents" in loc["excerpt"]
+                            for loc in frequency["locations"]))
+        secondary = result["rules"]["secondary"]
+        self.assertIn("Live rows displace retained/graced slots", secondary["statement"])
+        self.assertTrue(any("Live beats persisted" in loc["excerpt"] for loc in secondary["locations"]))
+        retired = result["rules"]["retired_card"]
+        self.assertIn("only after live rows use available capacity", retired["statement"])
+        self.assertIn("grace hiding a live arrival", retired["repair_direction"])
+        blink = result["rules"]["shared_blink"]
+        self.assertIn("visible resting counter", blink["statement"])
+        self.assertTrue(any("counterBlink" in loc["excerpt"] for loc in blink["locations"]))
+
+    def test_contract_inventory_contains_only_and_all_rule_owners(self):
+        referenced = {path for rule in contract._RULES.values() for path, _, _ in rule["locations"]}
+        self.assertEqual(referenced, set(contract._SOURCES))
+        self.assertTrue(set(contract._CURRENT_SOURCE_VARIANTS) <= set(contract._SOURCES))
+        self.assertTrue(set(contract._PROFILE_SETTINGS_SOURCE_VARIANTS) <= set(contract._SOURCES))
+        self.assertNotIn("src/display_status_bar.cpp", contract._SOURCES)
+        self.assertNotIn("src/settings.h", contract._SOURCES)
+        self.assertNotIn("src/settings.cpp", contract._SOURCES)
+
+    def test_each_profile_settings_owner_rejects_further_source_changes(self):
+        real_git = contract._git
+        for path in contract._PROFILE_SETTINGS_SOURCE_VARIANTS:
+            def changed(root, *args):
+                data = real_git(root, *args)
+                return data + b"\n// unreviewed change\n" if args[0] == "show" and args[1].endswith(":" + path) else data
+
+            with self.subTest(path=path), patch.object(contract, "_git", side_effect=changed):
+                result = contract.behavior_contract(ROOT, "ee93bd6")
+            self.assertEqual(result["sources"][path]["status"], "UNREVIEWED")
+            for rule in result["rules"].values():
+                if any(loc["path"] == path for loc in rule["locations"]):
+                    self.assertEqual(rule["status"], "UNREVIEWED")
+                    self.assertEqual(
+                        rule["statement"],
+                        "Recorded owning source changed; this implementation rule needs review.")
+                    self.assertNotIn("unavailable", rule["statement"])
+                    self.assertTrue(all(loc["excerpt"] is None for loc in rule["locations"]))
+
     def test_invalid_revision_never_reaches_git(self):
         with patch.object(contract, "_git") as call:
             for revision in (None, "HEAD", "--help", "abc", "ee6b401:path", "$(bad)"):
@@ -196,12 +255,16 @@ class BehaviorContractTests(unittest.TestCase):
             self.assertEqual(result["rules"]["main_bars"]["status"], "VERIFIED")
             self.assertIsNone(result["rules"]["primary_frequency"]["locations"][0]["excerpt"])
             self.assertNotIn("three decimal", result["rules"]["primary_frequency"]["statement"])
+            self.assertEqual(result["rules"]["primary_frequency"]["statement"],
+                             "Recorded owning source changed; this implementation rule needs review.")
             self.assertEqual(result["comparison_key"], contract.behavior_contract(root, original)["comparison_key"])
             git(root, "rm", "-q", "src/display_arrow.cpp")
             git(root, "commit", "-qm", "removed arrow owner fixture")
             missing = contract.behavior_contract(root, git(root, "rev-parse", "HEAD"))
             self.assertEqual(missing["sources"]["src/display_arrow.cpp"]["status"], "UNAVAILABLE")
             self.assertEqual(missing["rules"]["main_arrows"]["status"], "UNREVIEWED")
+            self.assertEqual(missing["rules"]["main_arrows"]["statement"],
+                             "Recorded owning source is unavailable; this implementation rule needs review.")
 
 
 if __name__ == "__main__":

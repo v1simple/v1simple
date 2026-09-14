@@ -139,6 +139,7 @@ bool DisplayFontManager::getTopCounterBounds(char, bool, int& xMin, int& xMax) {
 #include "../../src/modules/volume_fade/volume_fade_module.h"
 #include "../../src/modules/display/display_preview_module.h"
 #include "../../src/modules/display/display_restore_module.h"
+#include "../../src/modules/display/render_frame_composer.h"
 #include "../../src/modules/display/display_orchestration_module.cpp"
 
 // Preview/restore lifecycle is inert except for the ownership flag under test.
@@ -184,6 +185,25 @@ void showLive(const AlertData& primary, const AlertData* secondary, uint8_t main
         frame.cards[0].v1Alert = *secondary;
     }
     display.renderFrame(frame);
+}
+
+AlertData radarAlertFromSpecFields(uint8_t directionBits) {
+    // ESP Spec alert row: index/count, frequency MSB/LSB, front/rear RSSI,
+    // band+direction, aux0. This is a priority K alert at 24.150 GHz.
+    std::vector<uint8_t> packet = {
+        0xAA, 0xDA, 0xE4, 0x43, 9, 0x11, 0x5E, 0x56,
+        0xA0, 0x00, static_cast<uint8_t>(0x04 | directionBits), 0x80, 0x00};
+    uint8_t checksum = 0;
+    for (uint8_t byte : packet) {
+        checksum = static_cast<uint8_t>(checksum + byte);
+    }
+    packet.push_back(checksum);
+    packet.push_back(0xAB);
+
+    PacketParser parser;
+    TEST_ASSERT_TRUE(parser.parse(packet.data(), packet.size(), mockMillis));
+    TEST_ASSERT_EQUAL_UINT(1, parser.getAlertCount());
+    return parser.getPriorityAlert();
 }
 
 void assertXPaintAndSafeDispatch(const AlertData& primary, uint8_t mainBars) {
@@ -331,6 +351,56 @@ void test_live_pending_draw_full_flushes_even_when_frame_itself_is_unchanged() {
     TEST_ASSERT_EQUAL_INT(1, canvas()->getFlushCount());
     TEST_ASSERT_TRUE(regionalTransfers.empty());
     TEST_ASSERT_TRUE(display.ut_drawnRegionEmpty());
+}
+
+void test_live_alp_owns_primary_direction_while_v1_radar_keeps_card_direction_geometry() {
+    const AlertData radar = radarAlertFromSpecFields(0x80); // ESP Spec rear direction bit.
+    TEST_ASSERT_EQUAL_INT(BAND_K, radar.band);
+    TEST_ASSERT_EQUAL_INT(DIR_REAR, radar.direction);
+
+    V1Snapshot v1;
+    v1.state = stateFor(radar, '1', 4);
+    v1.alerts = &radar;
+    v1.alertCount = 1;
+    v1.priority = radar;
+    v1.hasRenderablePriority = true;
+
+    AlpSnapshot alp;
+    alp.ownsLaserDisplay = true;
+    alp.event.active = true;
+    alp.event.direction = AlpLaserDirection::FRONT;
+
+    const RenderFrame frame = RenderFrameComposer{}.compose(v1, alp, settings.get(), mockMillis);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, frame.primaryKind);
+    TEST_ASSERT_EQUAL_INT(DIR_FRONT, frame.primaryState.arrows);
+    TEST_ASSERT_EQUAL_INT(1, frame.cardCount);
+    TEST_ASSERT_EQUAL_INT(DIR_REAR, frame.cards[0].v1Alert.direction);
+
+    display.renderFrame(frame);
+
+    TEST_ASSERT_EQUAL_UINT(1, canvas()->flushSnapshots.size());
+    const auto& sent = canvas()->flushSnapshots.front();
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT(5, sent.triangles.size());
+
+    // The primary arrow cluster is drawn first. Its active direction is ALP front.
+    TEST_ASSERT_TRUE(display.ut_elementCaches().arrow.showFront);
+    TEST_ASSERT_FALSE(display.ut_elementCaches().arrow.showSide);
+    TEST_ASSERT_FALSE(display.ut_elementCaches().arrow.showRear);
+    TEST_ASSERT_TRUE(sent.triangles[0].y0 < sent.triangles[0].y1);
+
+    // The V1 radar alert remains visible in card 0 with its own rear geometry.
+    const DisplayLayout::DisplayRect card = DisplayLayout::cardRect(0);
+    const int16_t arrowX = static_cast<int16_t>(card.x + 18);
+    const int16_t arrowCenterY = static_cast<int16_t>(card.y + 18);
+    const auto& cardArrow = sent.triangles[4];
+    TEST_ASSERT_EQUAL_INT16(arrowX, cardArrow.x0);
+    TEST_ASSERT_EQUAL_INT16(arrowCenterY + 7, cardArrow.y0);
+    TEST_ASSERT_EQUAL_INT16(arrowX - 6, cardArrow.x1);
+    TEST_ASSERT_EQUAL_INT16(arrowCenterY - 5, cardArrow.y1);
+    TEST_ASSERT_EQUAL_INT16(arrowX + 6, cardArrow.x2);
+    TEST_ASSERT_EQUAL_INT16(arrowCenterY - 5, cardArrow.y2);
+    TEST_ASSERT_EQUAL_INT(1, display.ut_elementCaches().cards.lastDrawnCount);
+    TEST_ASSERT_EQUAL_INT(DIR_REAR, display.ut_elementCaches().cards.lastDrawnPositions[0].direction);
 }
 
 // Ordinary replay transitions that briefly showed FRONT+SIDE and Ka+X in
@@ -614,6 +684,7 @@ int main() {
     RUN_TEST(test_event0010_new_x_with_unchanged_k_primary_paints_and_full_flushes);
     RUN_TEST(test_live_counter_only_change_full_flushes_then_cache_hit_skips);
     RUN_TEST(test_live_pending_draw_full_flushes_even_when_frame_itself_is_unchanged);
+    RUN_TEST(test_live_alp_owns_primary_direction_while_v1_radar_keeps_card_direction_geometry);
     RUN_TEST(test_front_to_side_replaces_outgoing_active_paint_before_full_flush);
     RUN_TEST(test_ka_to_x_replaces_outgoing_active_band_before_full_flush);
     RUN_TEST(test_priority_arrow_disabled_keeps_all_transmitted_directions);

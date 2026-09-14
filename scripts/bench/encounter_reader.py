@@ -24,7 +24,7 @@ import counter_reader
 
 FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
-METHOD_VERSION = 26
+METHOD_VERSION = 27
 _ocr_binary = None
 _ocr_setup = None
 _ocr_session = None
@@ -1057,24 +1057,43 @@ def _secondary(pixels):
     return field("readable", values, cards=cards)
 
 
-def _visibility_witness(colors):
-    """Resolve a spatially extended green label without counting its glyph ink.
+def _visibility_witness(colors, *, configured_color=False):
+    """Resolve one spatially extended label under its owning color contract.
 
-    RSSI digits differ in occupied area. A visible narrow digit must not veto
-    every other field merely because it paints fewer pixels than a wide one.
-    Require coherent bright green support spread in both dimensions instead;
-    isolated pixels or one surviving fragment do not establish this witness.
+    The two fixed witness regions contain the RSSI label and the profile name.
+    Profile text is rendered in a user-configurable RGB565 color, including the
+    purple and neutral-gray factory slots, so its foreground is resolved from
+    local level contrast. The RSSI witness retains its source-owned bright-green
+    predicate so adjacent orange and white status text cannot impersonate it.
+    Both require coherent support spread in two dimensions, so isolated pixels,
+    a surviving fragment, or content outside the fixed regions cannot establish
+    a witness. Uniform illumination cannot establish the contrasted profile
+    witness.
     """
-    colors = colors.astype(int)
-    green = ((colors[:, :, 1] > 100) &
-             (colors[:, :, 1] - np.maximum(colors[:, :, 0], colors[:, :, 2]) > 30))
-    blocks = np.lib.stride_tricks.sliding_window_view(green, (2, 2)).all(axis=(-2, -1))
+    colors = colors.astype(float)
+    level = colors.max(axis=2)
+    low, high = np.percentile(level, [20, 99])
+    contrast = float(high - low)
+    if configured_color:
+        foreground = level >= low + max(24., contrast * .4)
+    else:
+        foreground = ((colors[:, :, 1] > 100)
+                      & (colors[:, :, 1] - np.maximum(colors[:, :, 0], colors[:, :, 2]) > 30))
+    blocks = np.lib.stride_tricks.sliding_window_view(foreground, (2, 2)).all(axis=(-2, -1))
     ys, xs = np.nonzero(blocks)
-    height, width = green.shape
+    height, width = foreground.shape
     extent = [int(xs.max() - xs.min() + 2), int(ys.max() - ys.min() + 2)] if len(xs) else [0, 0]
-    resolved = (len(xs) >= 12 and extent[0] >= width * .30 and extent[1] >= height * .15)
-    return {"resolved": bool(resolved), "lit_fraction": float(np.mean(green)),
-            "coherent_blocks": len(xs), "coherent_extent": extent}
+    coherent_area = max(1, (extent[0] - 1) * (extent[1] - 1))
+    density = float(len(xs) / coherent_area) if len(xs) else 0.
+    resolved = (high >= 100 and len(xs) >= 12
+                and extent[0] >= width * .30 and extent[1] >= height * .15)
+    if configured_color:
+        resolved = resolved and contrast >= 24 and extent[1] <= height * .90
+    return {"resolved": bool(resolved), "lit_fraction": float(np.mean(foreground)),
+            "foreground_contract": "configured-profile-contrast" if configured_color else "green-rssi",
+            "local_level_p20": float(low), "local_level_p99": float(high),
+            "local_contrast": contrast, "coherent_blocks": len(xs),
+            "coherent_extent": extent, "coherent_density": density}
 
 
 def _muted_badge_shape(pixels):
@@ -1178,8 +1197,9 @@ def observe(rgb: bytes, width: int, height: int, registration: dict) -> dict:
     result["counter_glyph"] = field(counter["state"], counter.get("glyph"), counter.get("reason"))
     try:
         pixels = Pixels(rgb, width, height, registration)
-        witnesses = [_visibility_witness(pixels.crop(box))
-                     for box in ((202, 297, 298, 363), (1000, 415, 1150, 445))]
+        witnesses = [_visibility_witness(pixels.crop((202, 297, 298, 363))),
+                     _visibility_witness(pixels.crop((1000, 415, 1150, 445)),
+                                         configured_color=True)]
         result["visibility"] = {"witness_lit_fractions": [w["lit_fraction"] for w in witnesses],
                                 "spatial_witnesses": witnesses}
         if not all(w["resolved"] for w in witnesses):

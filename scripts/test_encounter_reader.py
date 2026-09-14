@@ -22,6 +22,9 @@ from test_counter_reader import picture, registration
 WIDTH, HEIGHT = 1280, 720
 REGISTRATION = registration(x=376, y=192, w=220, h=79)
 ORANGE = (220, 100, 10)
+# Camera-space fixture for the slot-0 default RGB565 purple (0x400A), bounded
+# by the retained frame's observed channels rather than framebuffer RGB values.
+DEFAULT_PURPLE = (112, 53, 149)
 # Full synthetic digit strokes, independently drawn as shapes. In particular,
 # tests do not import or paint only the observer's sampling rectangles.
 DIGITS = {"0": "abcdef", "1": "bc", "2": "abdeg", "3": "abcdg",
@@ -32,12 +35,36 @@ STROKES = {"a": (5, 255, 64, 273), "b": (46, 271, 64, 301),
            "e": (0, 316, 18, 345), "f": (0, 271, 18, 300),
            "g": (5, 300, 60, 314)}
 
+# Arduino_GFX 1.6.7 classic 5x7 columns used by drawProfileIndicator().
+PROFILE_GLYPHS = {
+    "D": (0x7F, 0x41, 0x41, 0x22, 0x1C),
+    "E": (0x7F, 0x49, 0x49, 0x49, 0x41),
+    "F": (0x7F, 0x09, 0x09, 0x09, 0x01),
+    "A": (0x7C, 0x12, 0x11, 0x12, 0x7C),
+    "U": (0x3F, 0x40, 0x40, 0x40, 0x3F),
+    "L": (0x7F, 0x40, 0x40, 0x40, 0x40),
+    "T": (0x01, 0x01, 0x7F, 0x01, 0x01),
+}
+
+
+def profile_label(im, text="DEFAULT", color=DEFAULT_PURPLE, origin=(1012, 419), scale=3):
+    """Paint complete source-font glyphs in the fixed camera profile region."""
+    draw = ImageDraw.Draw(im)
+    x0, y0 = origin
+    for index, character in enumerate(text):
+        for column, bits in enumerate(PROFILE_GLYPHS[character]):
+            for row in range(7):
+                if bits & (1 << row):
+                    x = x0 + (index * 6 + column) * scale
+                    y = y0 + row * scale
+                    draw.rectangle((x, y, x + scale - 1, y + scale - 1), fill=color)
+
 
 def display(frequency="68.902"):
     im = Image.frombytes("RGB", (WIDTH, HEIGHT), bytes(picture("bc", REGISTRATION)))
     draw = ImageDraw.Draw(im)
     draw.rectangle((220, 338, 290, 355), fill=(0, 230, 20))
-    draw.rectangle((1010, 420, 1140, 436), fill=(0, 230, 20))
+    profile_label(im)
     # The radar layout always paints its inactive L reference, even with no
     # alerts. A blank reference is a damaged fixture, not a resting display.
     draw.rectangle((323, 193, 333, 236), fill=(17, 17, 17))
@@ -527,6 +554,39 @@ class EncounterReaderTests(unittest.TestCase):
                 draw.rectangle((210, 338, 289, 355), fill=(0, 90, 20))
             refused = self.read(changed)
             self.assertTrue(all(refused[name]["state"] == "unreadable" for name in reader.FIELDS), kind)
+
+    def test_visibility_accepts_slot_zero_purple_profile_but_not_false_witnesses(self):
+        for name, color in (("slot0_purple", DEFAULT_PURPLE), ("slot1_green", (70, 230, 20)),
+                            ("slot2_gray", (132, 132, 132)), ("warm", (180, 45, 20)),
+                            ("blue", (25, 55, 180))):
+            with self.subTest(name=name):
+                changed = display()
+                ImageDraw.Draw(changed).rectangle((1000, 415, 1150, 445), fill="black")
+                profile_label(changed, color=color)
+                observed = self.read(changed)
+                self.assertTrue(all(witness["resolved"]
+                                    for witness in observed["visibility"]["spatial_witnesses"]), observed)
+                self.assertEqual(observed["primary_frequency"]["value"], "68.902")
+
+        for kind in ("dark", "occluded", "fragment", "noise", "wrong_region"):
+            changed = display()
+            draw = ImageDraw.Draw(changed)
+            draw.rectangle((1000, 415, 1150, 445), fill="black")
+            if kind == "occluded":
+                draw.rectangle((1000, 415, 1150, 445), fill=(28, 28, 28))
+            elif kind == "fragment":
+                profile_label(changed, text="D")
+            elif kind == "noise":
+                for x in range(1006, 1148, 5):
+                    for y in range(417, 444, 5):
+                        draw.point((x, y), fill=DEFAULT_PURPLE)
+            elif kind == "wrong_region":
+                profile_label(changed, origin=(1012, 460))
+            refused = self.read(changed)
+            self.assertFalse(refused["visibility"]["spatial_witnesses"][1]["resolved"],
+                             (kind, refused["visibility"]))
+            self.assertTrue(all(refused[name]["state"] == "unreadable" for name in reader.FIELDS),
+                            (kind, refused))
 
     def test_black_occluded_and_white_frames_are_unknown_not_absent(self):
         occluded = display()

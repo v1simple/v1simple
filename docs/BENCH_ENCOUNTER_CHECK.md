@@ -237,7 +237,14 @@ recording and cannot establish behavior of unexercised firmware paths.
 ## Reader and retained evidence
 
 The reader uses the registered `SCAN` landmark and fixed pixel geometry. It
-requires visible screen witnesses before interpreting absence. Definite
+requires two spatially independent label witnesses before interpreting absence:
+the RSSI region uses its source-owned bright-green foreground, while the active
+profile-name region uses local level contrast. Both fixed regions must contain
+coherent foreground spread in two dimensions, so isolated noise, one surviving
+fragment and content outside those regions remain unreadable. Uniform
+illumination cannot establish the contrasted profile witness. The profile name
+uses the configured RGB565 slot color, so that witness is intentionally
+independent of hue rather than assuming the profile label is green. Definite
 canonical frequency strokes determine literal digits even with uneven
 brightness; brightness anomalies remain available separately. Partial strokes
 refuse a digit. Bars require supported cell geometry and contiguous fill.

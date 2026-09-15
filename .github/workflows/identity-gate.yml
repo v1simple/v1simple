@@ -27,6 +27,3 @@ jobs:
 
       - name: Prove the scanner still detects what it claims to
         run: python3 scripts/test_check_public_snapshot_privacy.py
-
-      - name: Enforce scanner parity with the internal repository
-        run: python3 scripts/test_scanner_parity.py

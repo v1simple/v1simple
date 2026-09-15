@@ -2,9 +2,7 @@
 # Privacy gate for commit messages.
 #
 # Install:  ./scripts/setup-hooks.sh
-# `git commit --no-verify` skips this hook, but prepare-commit-msg scans the
-# initial message and the independent reference-transaction hook scans the
-# completed message before Git can move any ref to it.
+# The pre-push hook independently scans every commit message before publication.
 
 set -euo pipefail
 

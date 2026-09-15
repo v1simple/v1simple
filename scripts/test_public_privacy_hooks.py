@@ -7,20 +7,15 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-import sys
 import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PRE_COMMIT = ROOT / ".githooks" / "pre-commit"
-PREPARE_COMMIT_MSG = ROOT / ".githooks" / "prepare-commit-msg"
 PRE_PUSH = ROOT / ".githooks" / "pre-push"
 COMMIT_MSG = ROOT / ".githooks" / "commit-msg"
-REFERENCE_TRANSACTION = ROOT / ".githooks" / "reference-transaction"
 METADATA_CHECK = ROOT / "scripts" / "check_public_commit_metadata.py"
 SNAPSHOT_CHECK = ROOT / "scripts" / "check_public_snapshot_privacy.py"
-SNAPSHOT_TEST = ROOT / "scripts" / "test_check_public_snapshot_privacy.py"
-PARITY_CHECK = ROOT / "scripts" / "test_scanner_parity.py"
 ZERO = "0" * 40
 PUBLIC_REMOTE_URL = "https://github.com/v1simple/v1simple.git"
 
@@ -59,14 +54,10 @@ def make_repo(base: Path) -> Path:
     (repo / ".githooks").mkdir(parents=True)
     (repo / "scripts").mkdir()
     shutil.copy2(PRE_COMMIT, repo / ".githooks" / "pre-commit")
-    shutil.copy2(PREPARE_COMMIT_MSG, repo / ".githooks" / "prepare-commit-msg")
     shutil.copy2(PRE_PUSH, repo / ".githooks" / "pre-push")
     shutil.copy2(COMMIT_MSG, repo / ".githooks" / "commit-msg")
-    shutil.copy2(REFERENCE_TRANSACTION, repo / ".githooks" / "reference-transaction")
     shutil.copy2(METADATA_CHECK, repo / "scripts" / METADATA_CHECK.name)
     shutil.copy2(SNAPSHOT_CHECK, repo / "scripts" / SNAPSHOT_CHECK.name)
-    shutil.copy2(SNAPSHOT_TEST, repo / "scripts" / SNAPSHOT_TEST.name)
-    shutil.copy2(PARITY_CHECK, repo / "scripts" / PARITY_CHECK.name)
     git(repo, "init", "-q")
     git(repo, "config", "user.name", "v1simple")
     git(repo, "config", "user.email", "noreply@example.invalid")
@@ -74,24 +65,6 @@ def make_repo(base: Path) -> Path:
     git(repo, "add", "tracked.txt")
     git(repo, "commit", "-q", "-m", "fixture")
     return repo
-
-
-def enable_tracked_hooks(repo: Path) -> None:
-    git(repo, "config", "core.hooksPath", ".githooks")
-
-
-def object_ids(repo: Path, object_kind: str) -> set[str]:
-    output = git(
-        repo,
-        "cat-file",
-        "--batch-all-objects",
-        "--batch-check=%(objectname) %(objecttype)",
-    )
-    return {
-        object_id
-        for object_id, observed_kind in (line.split() for line in output.splitlines())
-        if observed_kind == object_kind
-    }
 
 
 def invoke_pre_push(
@@ -192,339 +165,6 @@ def test_pre_commit_blocks_force_added_replay_data_without_echoing_it() -> None:
         assert completed.returncode != 0
         assert private_value not in completed.stdout
         assert private_value not in completed.stderr
-
-
-def test_reference_transaction_allows_safe_no_verify_commit() -> None:
-    with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
-        repo = make_repo(Path(raw))
-        enable_tracked_hooks(repo)
-        (repo / "safe.txt").write_text("safe update\n", encoding="utf-8")
-        git(repo, "add", "safe.txt")
-        completed = run(
-            ["git", "commit", "--no-verify", "-m", "test(privacy): safe fixture"],
-            cwd=repo,
-        )
-        assert completed.returncode == 0, completed.stderr
-
-
-def test_no_verify_staged_pii_is_blocked_before_commit_object() -> None:
-    with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
-        repo = make_repo(Path(raw))
-        enable_tracked_hooks(repo)
-        original_head = git(repo, "rev-parse", "HEAD")
-        original_commits = object_ids(repo, "commit")
-        private_email = "blocked-reference" + "@" + "corp.com"
-        (repo / "private.txt").write_text(private_email, encoding="utf-8")
-        git(repo, "add", "private.txt")
-        completed = run(
-            ["git", "commit", "--no-verify", "-m", "test(privacy): blocked content"],
-            cwd=repo,
-        )
-        assert completed.returncode != 0
-        assert git(repo, "rev-parse", "HEAD") == original_head
-        assert object_ids(repo, "commit") == original_commits
-        assert "privacy preparation gate blocked this commit" in completed.stderr
-        assert private_email not in completed.stdout
-        assert private_email not in completed.stderr
-
-
-def test_no_verify_identity_override_is_blocked_before_commit_object() -> None:
-    with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
-        repo = make_repo(Path(raw))
-        enable_tracked_hooks(repo)
-        original_head = git(repo, "rev-parse", "HEAD")
-        original_commits = object_ids(repo, "commit")
-        private_email = "blocked-identity@personal.test"
-        environment = os.environ.copy()
-        environment.update(
-            {
-                "GIT_AUTHOR_NAME": "private author",
-                "GIT_AUTHOR_EMAIL": private_email,
-                "GIT_COMMITTER_NAME": "private committer",
-                "GIT_COMMITTER_EMAIL": private_email,
-            }
-        )
-        completed = run(
-            [
-                "git",
-                "commit",
-                "--allow-empty",
-                "--no-verify",
-                "-m",
-                "test(privacy): blocked identity",
-            ],
-            cwd=repo,
-            env=environment,
-        )
-        assert completed.returncode != 0
-        assert git(repo, "rev-parse", "HEAD") == original_head
-        assert object_ids(repo, "commit") == original_commits
-        assert "privacy preparation gate blocked this commit" in completed.stderr
-        assert private_email not in completed.stdout
-        assert private_email not in completed.stderr
-
-
-def test_no_verify_message_pii_is_blocked_before_commit_object() -> None:
-    with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
-        repo = make_repo(Path(raw))
-        enable_tracked_hooks(repo)
-        original_head = git(repo, "rev-parse", "HEAD")
-        original_commits = object_ids(repo, "commit")
-        private_email = "blocked-message" + "@" + "corp.com"
-        completed = run(
-            [
-                "git",
-                "commit",
-                "--allow-empty",
-                "--no-verify",
-                "-m",
-                f"test(privacy): blocked message\n\nReviewer: {private_email}",
-            ],
-            cwd=repo,
-        )
-        assert completed.returncode != 0
-        assert git(repo, "rev-parse", "HEAD") == original_head
-        assert object_ids(repo, "commit") == original_commits
-        assert "privacy preparation gate blocked this commit" in completed.stderr
-        assert private_email not in completed.stdout
-        assert private_email not in completed.stderr
-
-
-def test_reference_transaction_blocks_private_annotated_tag_identity() -> None:
-    with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
-        repo = make_repo(Path(raw))
-        enable_tracked_hooks(repo)
-        private_email = "blocked-tagger@personal.test"
-        environment = os.environ.copy()
-        environment.update(
-            {
-                "GIT_COMMITTER_NAME": "private tagger",
-                "GIT_COMMITTER_EMAIL": private_email,
-            }
-        )
-        completed = run(
-            ["git", "tag", "-a", "v9.9.9", "-m", "safe release fixture"],
-            cwd=repo,
-            env=environment,
-        )
-        assert completed.returncode != 0
-        assert (
-            run(
-                ["git", "rev-parse", "--verify", "refs/tags/v9.9.9"],
-                cwd=repo,
-            ).returncode
-            != 0
-        )
-        assert private_email not in completed.stdout
-        assert private_email not in completed.stderr
-
-
-def test_reference_transaction_blocks_unsafe_nested_tag() -> None:
-    with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
-        repo = make_repo(Path(raw))
-        private_email = "nested-tag" + "@" + "corp.com"
-        git(
-            repo,
-            "tag",
-            "-a",
-            "inner-private",
-            "-m",
-            f"Reviewed-by: {private_email}",
-        )
-        inner = git(repo, "rev-parse", "refs/tags/inner-private")
-        git(repo, "tag", "-d", "inner-private")
-        enable_tracked_hooks(repo)
-
-        completed = run(
-            ["git", "tag", "-a", "v9.9.9", inner, "-m", "safe outer fixture"],
-            cwd=repo,
-        )
-        assert completed.returncode != 0
-        assert (
-            run(
-                ["git", "rev-parse", "--verify", "refs/tags/v9.9.9"],
-                cwd=repo,
-            ).returncode
-            != 0
-        )
-        assert private_email not in completed.stdout
-        assert private_email not in completed.stderr
-
-
-def test_reference_transaction_blocks_direct_ref_to_unsafe_commit() -> None:
-    with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
-        repo = make_repo(Path(raw))
-        enable_tracked_hooks(repo)
-        private_email = "blocked-update-ref" + "@" + "corp.com"
-        (repo / "private.txt").write_text(private_email, encoding="utf-8")
-        git(repo, "add", "private.txt")
-        tree = git(repo, "write-tree")
-        environment = os.environ.copy()
-        environment.update(
-            {
-                "GIT_AUTHOR_NAME": "v1simple",
-                "GIT_AUTHOR_EMAIL": "noreply@example.invalid",
-                "GIT_COMMITTER_NAME": "v1simple",
-                "GIT_COMMITTER_EMAIL": "noreply@example.invalid",
-            }
-        )
-        commit = run(
-            ["git", "commit-tree", tree, "-p", "HEAD", "-m", "test(privacy): direct ref"],
-            cwd=repo,
-            env=environment,
-        )
-        assert commit.returncode == 0, commit.stderr
-        object_id = commit.stdout.strip()
-        completed = run(["git", "update-ref", "refs/heads/unsafe", object_id], cwd=repo)
-        assert completed.returncode != 0
-        assert (
-            run(
-                ["git", "rev-parse", "--verify", "refs/heads/unsafe"],
-                cwd=repo,
-            ).returncode
-            != 0
-        )
-        assert private_email not in completed.stdout
-        assert private_email not in completed.stderr
-
-
-def test_reference_transaction_blocks_direct_ref_to_unsafe_message() -> None:
-    with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
-        repo = make_repo(Path(raw))
-        enable_tracked_hooks(repo)
-        private_email = "blocked-direct-message" + "@" + "corp.com"
-        tree = git(repo, "write-tree")
-        environment = os.environ.copy()
-        environment.update(
-            {
-                "GIT_AUTHOR_NAME": "v1simple",
-                "GIT_AUTHOR_EMAIL": "noreply@example.invalid",
-                "GIT_COMMITTER_NAME": "v1simple",
-                "GIT_COMMITTER_EMAIL": "noreply@example.invalid",
-            }
-        )
-        commit = run(
-            [
-                "git",
-                "commit-tree",
-                tree,
-                "-p",
-                "HEAD",
-                "-m",
-                f"test(privacy): direct message {private_email}",
-            ],
-            cwd=repo,
-            env=environment,
-        )
-        assert commit.returncode == 0, commit.stderr
-        completed = run(
-            ["git", "update-ref", "refs/heads/unsafe-message", commit.stdout.strip()],
-            cwd=repo,
-        )
-        assert completed.returncode != 0
-        assert (
-            run(
-                ["git", "rev-parse", "--verify", "refs/heads/unsafe-message"],
-                cwd=repo,
-            ).returncode
-            != 0
-        )
-        assert private_email not in completed.stdout
-        assert private_email not in completed.stderr
-
-
-def test_reference_transaction_blocks_tree_reference_target() -> None:
-    # `git revert` points the AUTO_MERGE pseudo-ref at a tree object. The gate
-    # only ever scans commits and tags, so a tree target must stay rejected
-    # rather than be waved through as an unscannable object kind.
-    with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
-        repo = make_repo(Path(raw))
-        enable_tracked_hooks(repo)
-        tree = git(repo, "rev-parse", "HEAD^{tree}")
-        assert tree in object_ids(repo, "tree")
-
-        completed = run(["git", "update-ref", "AUTO_MERGE", tree], cwd=repo)
-        assert completed.returncode != 0
-        assert (
-            run(["git", "rev-parse", "--verify", "AUTO_MERGE"], cwd=repo).returncode != 0
-        )
-
-        direct = run(
-            [str(repo / ".githooks" / "reference-transaction"), "preparing"],
-            cwd=repo,
-            input_text=f"{ZERO} {tree} AUTO_MERGE\n",
-        )
-        assert direct.returncode != 0
-        assert "privacy reference gate blocked a Git ref update" in direct.stderr
-
-
-def test_reference_transaction_uses_prepared_before_git_2_54() -> None:
-    with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
-        repo = make_repo(Path(raw))
-        head = git(repo, "rev-parse", "HEAD")
-        (repo / "scripts" / SNAPSHOT_CHECK.name).unlink()
-        real_git = shutil.which("git")
-        assert real_git is not None
-        fake_bin = repo / "fake-bin"
-        fake_bin.mkdir()
-        fake_git = fake_bin / "git"
-        fake_git.write_text(
-            "#!/bin/sh\n"
-            'if [ "${1:-}" = "version" ]; then\n'
-            '  echo "git version 2.53.0"\n'
-            "  exit 0\n"
-            "fi\n"
-            'exec "$V1SIMPLE_TEST_REAL_GIT" "$@"\n',
-            encoding="utf-8",
-        )
-        fake_git.chmod(0o755)
-        environment = os.environ.copy()
-        environment["PATH"] = f"{fake_bin}{os.pathsep}{environment['PATH']}"
-        environment["V1SIMPLE_TEST_REAL_GIT"] = real_git
-
-        completed = run(
-            [str(repo / ".githooks" / "reference-transaction"), "prepared"],
-            cwd=repo,
-            input_text=f"{ZERO} {head} refs/heads/prepared-fallback\n",
-            env=environment,
-        )
-        assert completed.returncode != 0
-        assert "privacy reference gate blocked a Git ref update" in completed.stderr
-
-
-def test_prepare_commit_msg_fails_closed_without_scanner() -> None:
-    with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
-        repo = make_repo(Path(raw))
-        enable_tracked_hooks(repo)
-        original_head = git(repo, "rev-parse", "HEAD")
-        (repo / "scripts" / SNAPSHOT_CHECK.name).unlink()
-        completed = run(
-            ["git", "commit", "--allow-empty", "--no-verify", "-m", "test(privacy): fail closed"],
-            cwd=repo,
-        )
-        assert completed.returncode != 0
-        assert git(repo, "rev-parse", "HEAD") == original_head
-
-
-def test_reference_transaction_fails_closed_without_scanner() -> None:
-    with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
-        repo = make_repo(Path(raw))
-        enable_tracked_hooks(repo)
-        tree = git(repo, "write-tree")
-        commit = git(repo, "commit-tree", tree, "-p", "HEAD", "-m", "safe fixture")
-        (repo / "scripts" / SNAPSHOT_CHECK.name).unlink()
-        completed = run(
-            ["git", "update-ref", "refs/heads/fail-closed", commit],
-            cwd=repo,
-        )
-        assert completed.returncode != 0
-        assert (
-            run(
-                ["git", "rev-parse", "--verify", "refs/heads/fail-closed"],
-                cwd=repo,
-            ).returncode
-            != 0
-        )
 
 
 def test_pre_push_accepts_safe_main_history() -> None:
@@ -682,37 +322,6 @@ def test_pre_push_requires_exact_local_hooks_path() -> None:
         assert "core.hooksPath is not the required repository-relative path" in completed.stderr
 
 
-def test_pre_push_blocks_failed_scanner_parity_without_echoing_details() -> None:
-    with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
-        repo = make_repo(Path(raw))
-        parity = repo / "scripts" / "test_scanner_parity.py"
-        parity.write_text(
-            'print("private-parity-detail")\nraise SystemExit(1)\n',
-            encoding="utf-8",
-        )
-        head = git(repo, "rev-parse", "HEAD")
-        completed = invoke_pre_push(
-            repo,
-            local_ref="refs/heads/main",
-            local_sha=head,
-            remote_ref="refs/heads/main",
-        )
-        assert completed.returncode != 0
-        assert "pinned canonical digest" in completed.stderr
-        assert "private-parity-detail" not in completed.stdout
-        assert "private-parity-detail" not in completed.stderr
-
-        parity.unlink()
-        completed = invoke_pre_push(
-            repo,
-            local_ref="refs/heads/main",
-            local_sha=head,
-            remote_ref="refs/heads/main",
-        )
-        assert completed.returncode != 0
-        assert "pinned canonical digest" in completed.stderr
-
-
 def test_pre_push_blocks_personal_history_without_echoing_it() -> None:
     with tempfile.TemporaryDirectory(prefix="privacy-hooks-") as raw:
         repo = make_repo(Path(raw))
@@ -787,18 +396,6 @@ def test_pre_push_blocks_committed_replay_data_without_echoing_it() -> None:
 
 
 def main() -> int:
-    if sys.argv[1:]:
-        if sys.argv[1:] != ["--reference-negative-control"]:
-            print(
-                "usage: test_public_privacy_hooks.py "
-                "[--reference-negative-control]",
-                file=sys.stderr,
-            )
-            return 2
-        test_reference_transaction_blocks_direct_ref_to_unsafe_commit()
-        print("PASS reference-transaction negative control")
-        return 0
-
     tests = (
         test_commit_msg_accepts_safe_message,
         test_commit_msg_blocks_private_text_before_validator_can_echo_it,
@@ -806,18 +403,6 @@ def main() -> int:
         test_pre_commit_blocks_personal_identity_without_echoing_it,
         test_pre_commit_blocks_unsafe_staged_content_without_echoing_it,
         test_pre_commit_blocks_force_added_replay_data_without_echoing_it,
-        test_reference_transaction_allows_safe_no_verify_commit,
-        test_no_verify_staged_pii_is_blocked_before_commit_object,
-        test_no_verify_identity_override_is_blocked_before_commit_object,
-        test_no_verify_message_pii_is_blocked_before_commit_object,
-        test_reference_transaction_blocks_private_annotated_tag_identity,
-        test_reference_transaction_blocks_unsafe_nested_tag,
-        test_reference_transaction_blocks_direct_ref_to_unsafe_commit,
-        test_reference_transaction_blocks_direct_ref_to_unsafe_message,
-        test_reference_transaction_blocks_tree_reference_target,
-        test_reference_transaction_uses_prepared_before_git_2_54,
-        test_prepare_commit_msg_fails_closed_without_scanner,
-        test_reference_transaction_fails_closed_without_scanner,
         test_pre_push_accepts_safe_main_history,
         test_pre_push_blocks_unapproved_remote_without_echoing_it,
         test_pre_push_accepts_a_safe_existing_remote_range,
@@ -825,7 +410,6 @@ def main() -> int:
         test_pre_push_blocks_deleted_intermediate_content_in_existing_range,
         test_pre_push_allows_only_semantic_release_tags,
         test_pre_push_requires_exact_local_hooks_path,
-        test_pre_push_blocks_failed_scanner_parity_without_echoing_details,
         test_pre_push_blocks_personal_history_without_echoing_it,
         test_pre_push_blocks_non_public_branch,
         test_pre_push_blocks_unsafe_committed_content_without_echoing_it,

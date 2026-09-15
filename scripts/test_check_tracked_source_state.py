@@ -89,16 +89,14 @@ def test_tracked_submodule_changes_fail_but_untracked_content_passes() -> None:
         assert not checker.tracked_source_is_clean(parent)
 
 
-def test_ci_gate_checks_early_and_immediately_before_marker() -> None:
+def test_ci_gate_tests_dirty_trees_but_qualifies_only_an_unchanged_clean_commit() -> None:
     gate = (ROOT / "scripts" / "ci-test.sh").read_text(encoding="utf-8")
-    guard = 'run_step "Tracked source state" python3 scripts/check_tracked_source_state.py'
-    first_guard = gate.index(guard)
-    fast_exit = gate.index('echo -e "${GREEN}Static preflight passed in ${ELAPSED}s${NC}"')
-    final_guard = gate.rindex(guard)
-    marker = gate.index('git rev-parse HEAD > "$ROOT_DIR/.artifacts/ci-gate-passed.sha"')
-    assert first_guard < fast_exit
-    assert final_guard < marker
-    assert gate[final_guard:marker].strip() == guard
+    assert 'QUALIFICATION_SHA="$(git rev-parse HEAD)"' in gate
+    assert "testing the current working tree" in gate
+    assert '[[ -n "$QUALIFICATION_SHA"' in gate
+    assert '"$(git rev-parse HEAD)" == "$QUALIFICATION_SHA"' in gate
+    marker = 'printf \'%s\\n\' "$QUALIFICATION_SHA" > "$ROOT_DIR/.artifacts/ci-gate-passed.sha"'
+    assert marker in gate
 
 
 def main() -> int:
@@ -107,7 +105,7 @@ def main() -> int:
         test_untracked_and_ignored_outputs_pass,
         test_staged_and_unstaged_tracked_changes_fail,
         test_tracked_submodule_changes_fail_but_untracked_content_passes,
-        test_ci_gate_checks_early_and_immediately_before_marker,
+        test_ci_gate_tests_dirty_trees_but_qualifies_only_an_unchanged_clean_commit,
     )
     for test in tests:
         test()

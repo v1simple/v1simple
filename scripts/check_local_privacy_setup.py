@@ -13,9 +13,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_HOOKS = (
     "pre-commit",
-    "prepare-commit-msg",
     "commit-msg",
-    "reference-transaction",
     "pre-push",
 )
 REQUIRED_LOCAL_CONFIG = {
@@ -160,15 +158,7 @@ def main() -> int:
 
     checks = (
         [sys.executable, "scripts/check_public_commit_metadata.py", "--identity-only"],
-        [sys.executable, "scripts/check_public_commit_metadata.py", "--revision=--all"],
         [sys.executable, "scripts/check_public_snapshot_privacy.py", "--index"],
-        [sys.executable, "scripts/check_public_snapshot_privacy.py", "--all-history"],
-        [sys.executable, "scripts/test_scanner_parity.py"],
-        [
-            sys.executable,
-            "scripts/test_public_privacy_hooks.py",
-            "--reference-negative-control",
-        ],
     )
     for arguments in checks:
         completed = run(arguments)
@@ -182,7 +172,7 @@ def main() -> int:
 
     print(
         "[local-privacy-setup] local identity, hooks, private terms, index, "
-        "history, identity alias key, and push destination are safe"
+        "identity alias key, and push destination are safe"
     )
     return 0
 

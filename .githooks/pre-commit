@@ -6,9 +6,7 @@
 # including force-added replay and capture data.
 #
 # Install:  ./scripts/setup-hooks.sh
-# `git commit --no-verify` skips this hook, but prepare-commit-msg repeats the
-# privacy checks before object creation and the independent reference-
-# transaction hook inspects the completed object before Git can move a ref.
+# The pre-push hook independently scans every commit before publication.
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 [ -f "$ROOT/scripts/check_public_commit_metadata.py" ] || {

@@ -53,15 +53,11 @@ git config --local --unset-all remote.origin.pushurl >/dev/null 2>&1 || true
 echo "hooks installed (core.hooksPath = .githooks)"
 echo "  commit-msg → blocks unsafe message content"
 echo "  pre-commit → blocks unsafe identity/content, including replay and capture data"
-echo "  prepare-commit-msg → repeats privacy checks even with --no-verify"
-echo "  reference-transaction → blocks unsafe refs even when --no-verify is used"
 echo "  pre-push   → scans new history; blocks unsafe metadata, refs, force-push, and deletion"
 echo "  identity   → fixed to v1simple <noreply@example.invalid> in this checkout"
 echo "  publishing → ordinary push and IDE Sync use the verified pre-push gate"
 echo ""
 python3 scripts/check_public_commit_metadata.py --identity-only
-python3 scripts/check_public_commit_metadata.py --revision=--all
-python3 scripts/check_public_snapshot_privacy.py --all-history
 python3 scripts/check_local_privacy_setup.py
 echo ""
 echo "Normal git push and IDE Sync are ready after a clean full gate."

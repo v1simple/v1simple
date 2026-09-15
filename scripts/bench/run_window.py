@@ -9,7 +9,6 @@ import fcntl
 import glob
 import hashlib
 import json
-import math
 import os
 import pwd
 import re
@@ -31,12 +30,6 @@ from artifact_privacy import (
 from camera_artifacts import build_capture_manifest, publish_capture_manifest
 from camera_capture import CameraCapture
 from camera_preflight import run_camera_preflight
-from encounter_configuration import (
-    CLOCK_ALLOWANCE_DENOMINATOR,
-    CLOCK_ALLOWANCE_NUMERATOR,
-    emitted_lower_bound_ns,
-    parse_snapshot,
-)
 
 try:
     import serial  # type: ignore
@@ -71,7 +64,6 @@ REPLAY_DELIVERY_EVENT_STATES = frozenset(
 RUNTIME_IMAGE_ID_HEX_LENGTH = 9
 RUNTIME_IMAGE_ID_BASIS = "firmware.elf_sha256_lowercase_hex_prefix"
 RUN_PROGRESS_INTERVAL_S = 15
-POST_WINDOW_CONFIGURATION_TAIL_MIN_S = 10.0
 BOOT_RECORD_PREFIX = "BOOT "
 GIT_IDENTITY_RE = re.compile(r"[0-9a-f]{7,40}")
 RUNTIME_IMAGE_ID_RE = re.compile(r"[0-9a-f]{9}")
@@ -311,20 +303,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--git-sha", default="")
     parser.add_argument("--git-ref", default="")
     parser.add_argument("--git-worktree-clean", choices=["0", "1"], default="0")
-    parser.add_argument("--segment", default="last")
-    parser.add_argument("--upload", action="store_true")
     parser.add_argument("--skip-web", action="store_true")
     parser.add_argument("--post-upload-settle-seconds", type=int, default=90)
     parser.add_argument("--replay-executable", default="")
     parser.add_argument("--scenario", default="")
-    blink_group = parser.add_mutually_exclusive_group()
-    blink_group.add_argument(
+    parser.add_argument(
         "--blink-profile", choices=["scenario", "steady", "stress"], default=None
     )
-    blink_group.add_argument("--blink-arrow", action="store_true")
     parser.add_argument("--camera", action="store_true")
     parser.add_argument("--ready-timeout-seconds", type=int, default=45)
-    parser.add_argument("--completion-grace-seconds", type=int, default=45)
     return parser.parse_args()
 
 
@@ -383,7 +370,7 @@ def retain_build_upload_artifacts(
     out_dir: Path,
     build_dir: Path = BUILD_OUTPUT_DIR,
     *,
-    upload_performed: bool = False,
+    upload_performed: bool,
 ) -> dict[str, Any]:
     files: list[dict[str, Any]] = []
     missing: list[str] = []
@@ -507,12 +494,10 @@ def qualify_runtime_identity(
     *,
     intended_git_sha: str,
     build_upload: dict[str, Any],
-    upload: bool,
 ) -> dict[str, Any]:
-    mode = "upload" if upload else "no_flash"
     qualification: dict[str, Any] = {
         "status": "unqualified",
-        "mode": mode,
+        "mode": "upload",
         "git_match": False,
         "artifact_linked": False,
     }
@@ -533,9 +518,9 @@ def qualify_runtime_identity(
         )
     qualification["git_match"] = True
 
-    if bool(build_upload.get("upload_performed")) != upload:
+    if build_upload.get("upload_performed") is not True:
         raise RuntimeIdentityFailure(
-            f"{mode} artifact manifest does not match the collection mode",
+            "artifact manifest does not record the required firmware upload",
             identity=identity,
             qualification=qualification,
         )
@@ -549,42 +534,25 @@ def qualify_runtime_identity(
         }
     )
 
-    if upload:
-        if artifact_problem:
-            raise RuntimeIdentityFailure(
-                artifact_problem,
-                identity=identity,
-                qualification=qualification,
-            )
-        if not image_match:
-            raise RuntimeIdentityFailure(
-                f"runtime image {observed_image_id or '<missing>'} does not match uploaded firmware image {artifact_image_id}",
-                identity=identity,
-                qualification=qualification,
-            )
-        qualification.update(
-            {
-                "status": "qualified",
-                "artifact_linked": True,
-                "artifact": BUILD_UPLOAD_ARTIFACTS_NAME,
-            }
+    if artifact_problem:
+        raise RuntimeIdentityFailure(
+            artifact_problem,
+            identity=identity,
+            qualification=qualification,
         )
-        return qualification
-
-    if image_match:
-        qualification.update(
-            {
-                "status": "qualified",
-                "artifact_linked": True,
-                "artifact": BUILD_UPLOAD_ARTIFACTS_NAME,
-            }
+    if not image_match:
+        raise RuntimeIdentityFailure(
+            f"runtime image {observed_image_id or '<missing>'} does not match uploaded firmware image {artifact_image_id}",
+            identity=identity,
+            qualification=qualification,
         )
-        return qualification
-
-    reason = artifact_problem or (
-        f"runtime image {observed_image_id or '<missing>'} is not linked to the retained firmware ELF"
+    qualification.update(
+        {
+            "status": "qualified",
+            "artifact_linked": True,
+            "artifact": BUILD_UPLOAD_ARTIFACTS_NAME,
+        }
     )
-    qualification.update({"status": "collection_only", "reason": reason})
     return qualification
 
 
@@ -1161,93 +1129,6 @@ def _finish_camera(
     return result
 
 
-def collect_post_window_configuration(
-    observer: BenchSerial,
-    *,
-    required_after_ns: int,
-    timeout_s: float,
-    timeline: BenchTimeline,
-    monotonic: Callable[[], float] = time.monotonic,
-) -> dict[str, Any]:
-    """Require a same-boot CFG emission conservatively later than the external window."""
-    if timeout_s <= 0:
-        raise ValueError("configuration tail timeout must be positive")
-    if type(required_after_ns) is not int or required_after_ns <= 0:
-        raise ValueError("external window completion timestamp is invalid")
-    reset_ns = observer.reset_requested_ns
-    runtime_identity = observer.runtime_identity
-    if (
-        type(reset_ns) is not int
-        or not isinstance(runtime_identity, dict)
-        or type(runtime_identity.get("boot_id")) is not int
-    ):
-        raise RuntimeError("post-window configuration lacks reset-bound runtime identity")
-    expected_boot_id = runtime_identity["boot_id"]
-    initial_boot_markers = observer.boot_marker_count
-    initial_line_count = observer.line_count
-    started = monotonic()
-    deadline = started + timeout_s
-    timeline.record(
-        "post_window_configuration_started",
-        required_after_ns=required_after_ns,
-        timeout_seconds=timeout_s,
-    )
-    while monotonic() < deadline:
-        remaining = deadline - monotonic()
-        line = observer.read_line(min(0.25, max(0.0, remaining)))
-        if observer.boot_marker_count != initial_boot_markers:
-            raise RuntimeError("board rebooted before post-window configuration was bounded")
-        if not line:
-            continue
-        try:
-            snapshot = parse_snapshot(line)
-        except ValueError as exc:
-            raise RuntimeError(f"post-window configuration is malformed: {exc}") from exc
-        if snapshot is None:
-            continue
-        if snapshot["bootId"] != expected_boot_id:
-            raise RuntimeError("post-window configuration identifies a different boot")
-        lower_ns = emitted_lower_bound_ns(reset_ns, snapshot["uptimeMs"])
-        received_ns = observer.last_receive_ns
-        if type(received_ns) is not int or lower_ns > received_ns:
-            raise RuntimeError(
-                "post-window configuration uptime contradicts its reset/receive bounds"
-            )
-        if lower_ns <= required_after_ns:
-            continue
-        result = {
-            "status": "verified",
-            "same_boot": True,
-            "lines_observed": observer.line_count - initial_line_count,
-            "snapshot_uptime_ms": snapshot["uptimeMs"],
-            "snapshot_revision": snapshot["revision"],
-            "emitted_lower_ns": lower_ns,
-            "received_ns": received_ns,
-            "required_after_ns": required_after_ns,
-            "duration_seconds": monotonic() - started,
-        }
-        timeline.record("post_window_configuration_completed", **result)
-        return result
-    raise RuntimeError(
-        "no same-boot CFG snapshot was conservatively emitted after the external evidence window"
-    )
-
-
-def post_window_configuration_timeout_s(elapsed_since_reset_s: float) -> float:
-    """Cover clock allowance and the next CFG cadence after the evidence window."""
-    if (
-        type(elapsed_since_reset_s) not in (int, float)
-        or not math.isfinite(elapsed_since_reset_s)
-        or elapsed_since_reset_s <= 0
-    ):
-        raise ValueError("elapsed reset-bound duration must be positive")
-    minimum_rate = CLOCK_ALLOWANCE_NUMERATOR / CLOCK_ALLOWANCE_DENOMINATOR
-    return max(
-        POST_WINDOW_CONFIGURATION_TAIL_MIN_S,
-        elapsed_since_reset_s * (1.0 / (minimum_rate * minimum_rate) - 1.0) + 3.0,
-    )
-
-
 def require_unused_live_evidence(out_dir: Path, *, camera: bool) -> None:
     reserved = [
         out_dir / "bench_serial.log",
@@ -1280,22 +1161,16 @@ def collect_live(
     with V1RadioLease() as lease:
         assert lease.fd is not None
         port = wait_for_port(args.port)
-        if args.upload:
-            run_upload(port, args.skip_web)
-            artifacts["build_upload"] = retain_build_upload_artifacts(
-                out_dir,
-                BUILD_OUTPUT_DIR,
-                upload_performed=True,
-            )
-            port = wait_for_port(port, 30)
-            deadline = time.monotonic() + args.post_upload_settle_seconds
-            while time.monotonic() < deadline:
-                time.sleep(min(1.0, deadline - time.monotonic()))
-        else:
-            artifacts["build_upload"] = retain_build_upload_artifacts(
-                out_dir,
-                BUILD_OUTPUT_DIR,
-            )
+        run_upload(port, args.skip_web)
+        artifacts["build_upload"] = retain_build_upload_artifacts(
+            out_dir,
+            BUILD_OUTPUT_DIR,
+            upload_performed=True,
+        )
+        port = wait_for_port(port, 30)
+        deadline = time.monotonic() + args.post_upload_settle_seconds
+        while time.monotonic() < deadline:
+            time.sleep(min(1.0, deadline - time.monotonic()))
 
         timeline = BenchTimeline(out_dir / BENCH_TIMELINE_NAME)
         observer: BenchSerial | None = None
@@ -1317,7 +1192,6 @@ def collect_live(
         camera_result: dict[str, Any] = {}
         collection_completed = False
         completion: dict[str, Any] = {}
-        external_window_completed_ns: int | None = None
         try:
             if camera is not None:
                 preflight = run_camera_preflight(camera)
@@ -1344,7 +1218,6 @@ def collect_live(
                 observer.runtime_identity,
                 intended_git_sha=intended_git_sha,
                 build_upload=artifacts["build_upload"],
-                upload=args.upload,
             )
             initial_boot_markers = observer.boot_marker_count
 
@@ -1385,8 +1258,7 @@ def collect_live(
                 "process_session_continuous": True,
                 "runtime_identity_continuous": True,
             }
-            completed_event = timeline.record("external_window_completed", **completion)
-            external_window_completed_ns = completed_event["host_monotonic_ns"]
+            timeline.record("external_window_completed", **completion)
         finally:
             primary_error = sys.exc_info()[1]
             cleanup_errors: list[Exception] = []
@@ -1394,28 +1266,6 @@ def collect_live(
                 emulator_result = emulator.finish(collection_completed)
             except Exception as exc:  # noqa: BLE001
                 cleanup_errors.append(exc)
-            if (
-                observer is not None
-                and camera is not None
-                and collection_completed
-                and type(external_window_completed_ns) is int
-            ):
-                try:
-                    completion["post_window_configuration"] = (
-                        collect_post_window_configuration(
-                            observer,
-                            required_after_ns=external_window_completed_ns,
-                            timeout_s=post_window_configuration_timeout_s(
-                                (external_window_completed_ns - observer.reset_requested_ns)
-                                / 1_000_000_000
-                                if type(observer.reset_requested_ns) is int
-                                else args.duration_seconds
-                            ),
-                            timeline=timeline,
-                        )
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    cleanup_errors.append(exc)
             if observer is not None:
                 try:
                     observer.close()
@@ -1476,9 +1326,7 @@ def main() -> int:
     install_signal_handlers()
     args = parse_args()
     args.board_id = privacy_safe_identifier(args.board_id, namespace="board")
-    if args.blink_arrow:
-        args.blink_profile = "stress"
-    elif args.blink_profile is None:
+    if args.blink_profile is None:
         args.blink_profile = "scenario" if args.suite == "replay" else "steady"
 
     out_dir = Path(args.out_dir).resolve()

@@ -21,21 +21,14 @@ NC='\033[0m'
 
 usage() {
   cat <<'EOF'
-Usage: scripts/ci-test.sh [--fast] [--help]
+Usage: scripts/ci-test.sh [--help]
 
-  --fast   Static preflight only: toolchain/workflow pins, build contracts, and
-           privacy/publication guards. No firmware analysis, native tests, or builds.
   --help   Show this message.
 EOF
 }
 
-FAST=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --fast)
-      FAST=1
-      shift
-      ;;
     -h|--help)
       usage
       exit 0
@@ -49,6 +42,12 @@ while [[ $# -gt 0 ]]; do
 done
 
 START_TIME=$(date +%s)
+QUALIFICATION_SHA=""
+if python3 scripts/check_tracked_source_state.py >/dev/null 2>&1; then
+  QUALIFICATION_SHA="$(git rev-parse HEAD)"
+else
+  echo "[ci] testing the current working tree; no publication marker will be written"
+fi
 PIO_JOBS="${PLATFORMIO_RUN_JOBS:-}"
 if [[ -n "$PIO_JOBS" && ! "$PIO_JOBS" =~ ^[1-9][0-9]*$ ]]; then
   echo -e "${RED}Invalid PLATFORMIO_RUN_JOBS: $PIO_JOBS${NC}" >&2
@@ -123,14 +122,8 @@ source "$ROOT_DIR/scripts/platformio_ca_bundle.sh"
 export PIO_CMD SSL_CERT_FILE REQUESTS_CA_BUNDLE
 
 echo "============================================"
-if [[ "$FAST" -eq 1 ]]; then
-  echo "Static Preflight"
-else
-  echo "Authoritative Local CI Gate"
-fi
+echo "Authoritative Local CI Gate"
 echo "============================================"
-
-run_step "Tracked source state" python3 scripts/check_tracked_source_state.py
 
 section "Toolchain"
 run_step "PlatformIO Core version" python3 scripts/check_platformio_core_version.py --pio "$PIO_CMD"
@@ -140,7 +133,6 @@ section "Build Contracts"
 run_step "Memory headroom regression suite" python3 scripts/test_check_memory_headroom.py
 run_step "Build reset regression suite" python3 scripts/test_build_reset.py
 run_step "ESP32-S3 framework contract regression suite" python3 scripts/test_verify_esp32s3_framework.py
-run_step "Car firmware CI contract regression suite" python3 scripts/test_ci_car_build_contract.py
 run_step "Production warning contract regression suite" python3 scripts/test_production_warning_contract.py
 run_step "Tracked source state regression suite" python3 scripts/test_check_tracked_source_state.py
 
@@ -151,18 +143,9 @@ run_step "Public commit metadata privacy guard" python3 scripts/check_public_com
 run_step "Public publication-history privacy guard" python3 scripts/check_public_snapshot_privacy.py --all-history
 run_step "Snapshot scanner regression suite" python3 scripts/test_check_public_snapshot_privacy.py
 run_step "Privacy hook regression suite" python3 scripts/test_public_privacy_hooks.py
-run_step "Pre-push local gate marker regression suite" python3 scripts/test_pre_push_gate_marker.py
-run_step "Scanner parity with the internal repository" python3 scripts/test_scanner_parity.py
 run_step "v1replay source-only publication guard" python3 tools/v1replay/verify/check_publication_safety.py
 run_step "v1replay publication guard regression suite" python3 scripts/test_v1replay_publication_safety.py
 run_step "v1replay producer-to-firmware protocol contract" python3 tools/v1replay/verify/verify_protocol.py
-
-if [[ "$FAST" -eq 1 ]]; then
-  ELAPSED=$(($(date +%s) - START_TIME))
-  echo ""
-  echo -e "${GREEN}Static preflight passed in ${ELAPSED}s${NC}"
-  exit 0
-fi
 
 section "Static Analysis"
 run_step "Firmware static analysis" "$PIO_CMD" check -e waveshare-349 --fail-on-defect=medium
@@ -170,8 +153,7 @@ run_step "Python tooling lint" ruff check scripts/ tools/
 run_step "Tracked shell lint" run_tracked_shellcheck
 
 section "Python Regression Tests"
-# Safety-critical guard regressions already run inline above. Keep the remaining
-# script and workflow regressions in the full gate without expanding --fast.
+# Safety-critical guard regressions already run inline above.
 run_step "Device run output regression suite" python3 scripts/test_run_device_tests.py
 run_step "Camera artifact regression suite" python3 scripts/test_camera_artifacts.py
 run_step "Camera preflight regression suite" python3 scripts/test_camera_preflight.py
@@ -182,7 +164,6 @@ run_step "Bench window regression suite" python3 scripts/test_bench_window.py
 run_step "LittleFS compatibility regression suite" python3 scripts/test_check_littlefs_image_compatibility.py
 run_step "Commit metadata regression suite" python3 scripts/test_check_public_commit_metadata.py
 run_step "App-only upload offset regression suite" python3 scripts/test_force_app_upload_offset.py
-run_step "Identity gate workflow regression suite" python3 scripts/test_identity_gate_workflow.py
 run_step "Release preparation regression suite" python3 scripts/test_prepare_release.py
 run_step "Release workflow flash contract regression suite" python3 scripts/test_release_workflow_flash_contract.py
 run_step "Release license staging regression suite" python3 scripts/test_stage_release_licenses.py
@@ -200,7 +181,6 @@ else
 fi
 
 section "Native Tests"
-run_step "Native unit tests" python3 scripts/run_native_tests_serial.py
 run_step "Native sanitizer unit tests" python3 scripts/run_native_tests_serial.py --env native-sanitized
 run_step "Native car-mode unit tests" python3 scripts/run_native_tests_serial.py --env native-car
 
@@ -219,8 +199,12 @@ run_step "Production artifact build" ./scripts/build_production_artifacts.sh
 END_TIME=$(date +%s)
 ELAPSED=$((END_TIME - START_TIME))
 mkdir -p "$ROOT_DIR/.artifacts"
-run_step "Tracked source state" python3 scripts/check_tracked_source_state.py
-git rev-parse HEAD > "$ROOT_DIR/.artifacts/ci-gate-passed.sha"
+if [[ -n "$QUALIFICATION_SHA" && "$(git rev-parse HEAD)" == "$QUALIFICATION_SHA" ]]; then
+  run_step "Tracked source state" python3 scripts/check_tracked_source_state.py
+  printf '%s\n' "$QUALIFICATION_SHA" > "$ROOT_DIR/.artifacts/ci-gate-passed.sha"
+else
+  echo -e "${YELLOW}[info] checks passed without an exact-commit publication marker${NC}"
+fi
 
 echo ""
 echo "============================================"

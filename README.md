@@ -99,7 +99,7 @@ any commit:
 
 ```sh
 ./scripts/setup-hooks.sh
-./scripts/check_local_privacy_setup.py
+./scripts/check_local_privacy_setup.py  # quick local identity, hook, index, and destination check
 ```
 
 The setup fixes this checkout's author and committer identity to the public
@@ -115,7 +115,7 @@ names, device identifiers, and other site-specific terms there, one per line.
 Never add that file or its values to this repository.
 
 ```sh
-./scripts/ci-test.sh                   # complete local code, test, and build gate
+./scripts/ci-test.sh                   # complete pre-push/release code, test, and build gate
 ./scripts/run_device_tests.sh --quick  # connected-board boot and heap checks
 ./bench.sh --replay --camera  # raw replay stimuli, timing, serial log, and camera capture
 ```

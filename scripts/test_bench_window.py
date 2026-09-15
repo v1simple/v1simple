@@ -37,10 +37,8 @@ from run_window import (  # noqa: E402
     V1Emulator,
     V1RadioLease,
     establish_serial_boundary,
-    collect_post_window_configuration,
     file_artifact,
     parse_runtime_boot_identity,
-    post_window_configuration_timeout_s,
     publish_replay_delivery_evidence,
     publish_replay_stimulus_evidence,
     qualify_runtime_identity,
@@ -149,7 +147,7 @@ def test_live_collection_refuses_a_retained_application_before_starting() -> Non
                 retained.write_bytes(b"partial or complete previous application")
             result = subprocess.run(
                 [sys.executable, str(ROOT / "scripts/bench/run_window.py"),
-                 "--suite", "replay", "--out-dir", str(out_dir), "--upload",
+                 "--suite", "replay", "--out-dir", str(out_dir),
                  "--git-worktree-clean", "1", "--replay-executable", "/unused/replay"],
                 capture_output=True, text=True,
             )
@@ -273,126 +271,6 @@ def test_timeline_keeps_ordered_external_events_and_scrubs_private_paths() -> No
             ),
             "external machine event was not retained",
         )
-
-
-class TailClock:
-    def __init__(self) -> None:
-        self.now = 0.0
-
-    def __call__(self) -> float:
-        return self.now
-
-
-class TailObserver:
-    def __init__(
-        self,
-        timeline: BenchTimeline,
-        lines: list[str],
-        *,
-        reboot_on_read: bool = False,
-    ) -> None:
-        self.timeline = timeline
-        self.lines = list(lines)
-        self.reboot_on_read = reboot_on_read
-        self.reset_requested_ns = 1_000_000_000
-        self.runtime_identity = {"boot_id": 7}
-        self.boot_marker_count = 1
-        self.line_count = 0
-        self.last_receive_ns: int | None = None
-        self.clock: TailClock | None = None
-        self.receive_ns: list[int] = []
-
-    def read_line(self, _timeout_s: float) -> str:
-        assert self.clock is not None
-        self.clock.now += 0.1
-        if not self.lines:
-            return ""
-        line = self.lines.pop(0)
-        self.line_count += 1
-        received = self.timeline.record("serial_receive", line=line)
-        self.last_receive_ns = (
-            self.receive_ns.pop(0)
-            if self.receive_ns
-            else received["host_monotonic_ns"]
-        )
-        if self.reboot_on_read:
-            self.boot_marker_count += 1
-        return line
-
-
-def cfg_line(*, boot_id: int = 7, uptime_ms: int = 1000, revision: int = 2) -> str:
-    return (
-        f"CFG bootId={boot_id} uptimeMs={uptime_ms} revision={revision} "
-        "activeSlot=1 stealthEnabled=0 priorityArrowOnly=1 "
-        "alertPersistenceSeconds=0"
-    )
-
-
-def test_post_window_configuration_requires_conservative_same_boot_emission() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        timeline = BenchTimeline(Path(tmp) / BENCH_TIMELINE_NAME)
-        clock = TailClock()
-        observer = TailObserver(
-            timeline,
-            [cfg_line(uptime_ms=1000), cfg_line(uptime_ms=3000)],
-        )
-        observer.clock = clock
-        result = collect_post_window_configuration(
-            observer,  # type: ignore[arg-type]
-            required_after_ns=3_000_000_000,
-            timeout_s=1.0,
-            timeline=timeline,
-            monotonic=clock,
-        )
-        timeline.close()
-        assert_true(result["status"] == "verified", str(result))
-        assert_true(result["snapshot_uptime_ms"] == 3000, str(result))
-        records = [json.loads(line) for line in timeline.path.read_text().splitlines()]
-        assert_true(
-            any(
-                record.get("event") == "serial_receive"
-                and "uptimeMs=3000" in record.get("line", "")
-                for record in records
-            ),
-            "qualifying raw CFG line was not retained in the owned timeline",
-        )
-
-
-def test_post_window_configuration_fails_closed() -> None:
-    cases = {
-        "old uptime": ([cfg_line(uptime_ms=1000)], False, []),
-        "wrong boot": ([cfg_line(boot_id=8, uptime_ms=3000)], False, []),
-        "malformed": (["CFG bootId=7"], False, []),
-        "reboot": ([cfg_line(uptime_ms=3000)], True, []),
-        "future uptime": ([cfg_line(uptime_ms=3000)], False, [2_000_000_000]),
-    }
-    for name, (lines, reboot, receive_ns) in cases.items():
-        with tempfile.TemporaryDirectory() as tmp:
-            timeline = BenchTimeline(Path(tmp) / BENCH_TIMELINE_NAME)
-            clock = TailClock()
-            observer = TailObserver(timeline, lines, reboot_on_read=reboot)
-            observer.clock = clock
-            observer.receive_ns = list(receive_ns)
-            try:
-                collect_post_window_configuration(
-                    observer,  # type: ignore[arg-type]
-                    required_after_ns=3_000_000_000,
-                    timeout_s=0.5,
-                    timeline=timeline,
-                    monotonic=clock,
-                )
-            except RuntimeError:
-                pass
-            else:
-                raise AssertionError(f"{name} post-window evidence was accepted")
-            finally:
-                timeline.close()
-
-
-def test_post_window_configuration_timeout_covers_clock_allowance() -> None:
-    assert_true(post_window_configuration_timeout_s(1) == 10.0, "short tail")
-    assert_true(post_window_configuration_timeout_s(300) == 10.0, "five-minute tail")
-    assert_true(post_window_configuration_timeout_s(3600) > 75.0, "long-run clock tail")
 
 
 def _write_executable(path: Path) -> None:
@@ -698,7 +576,6 @@ def test_upload_exact_match_is_qualified() -> None:
         dict(RUNTIME_IDENTITY),
         intended_git_sha=GIT_SHA,
         build_upload=build_upload_artifact("04904e028", upload_performed=True),
-        upload=True,
     )
     assert_true(result["status"] == "qualified", str(result))
     assert_true(result["git_match"] is True, str(result))
@@ -713,7 +590,6 @@ def test_upload_git_mismatch_fails() -> None:
             identity,
             intended_git_sha=GIT_SHA,
             build_upload=build_upload_artifact("04904e028", upload_performed=True),
-            upload=True,
         ),
         "does not match intended source commit",
     )
@@ -726,7 +602,6 @@ def test_upload_image_mismatch_fails() -> None:
             dict(RUNTIME_IDENTITY),
             intended_git_sha=GIT_SHA,
             build_upload=build_upload_artifact("111111111", upload_performed=True),
-            upload=True,
         ),
         "does not match uploaded firmware image",
     )
@@ -734,40 +609,14 @@ def test_upload_image_mismatch_fails() -> None:
     assert_true(exc.qualification["image_match"] is False, str(exc.qualification))
 
 
-def test_no_flash_git_match_with_linked_resident_artifact_is_qualified() -> None:
-    result = qualify_runtime_identity(
-        dict(RUNTIME_IDENTITY),
-        intended_git_sha=GIT_SHA,
-        build_upload=build_upload_artifact("04904e028", upload_performed=False),
-        upload=False,
-    )
-    assert_true(result["status"] == "qualified", str(result))
-    assert_true(result["mode"] == "no_flash", str(result))
-    assert_true(result["artifact_linked"] is True, str(result))
-
-
-def test_no_flash_git_match_with_unlinked_resident_artifact_is_collection_only() -> None:
-    result = qualify_runtime_identity(
-        dict(RUNTIME_IDENTITY),
-        intended_git_sha=GIT_SHA,
-        build_upload=build_upload_artifact("111111111", upload_performed=False),
-        upload=False,
-    )
-    assert_true(result["status"] == "collection_only", str(result))
-    assert_true(result["artifact_linked"] is False, str(result))
-    assert_true("runtime image" in result["reason"], str(result))
-
-
-def test_no_flash_git_mismatch_fails() -> None:
-    identity = {**RUNTIME_IDENTITY, "git_sha": "38e02a8"}
+def test_missing_upload_record_fails() -> None:
     assert_identity_failure(
         lambda: qualify_runtime_identity(
-            identity,
+            dict(RUNTIME_IDENTITY),
             intended_git_sha=GIT_SHA,
             build_upload=build_upload_artifact("04904e028", upload_performed=False),
-            upload=False,
         ),
-        "does not match intended source commit",
+        "does not record the required firmware upload",
     )
 
 
@@ -777,7 +626,6 @@ def test_dirty_source_vetoes_qualification_before_collection() -> None:
         args = SimpleNamespace(
             camera=False,
             board_id="fixture",
-            blink_arrow=False,
             blink_profile="steady",
             out_dir=str(out_dir),
             runner_stdout_log="",
@@ -827,7 +675,6 @@ def test_clean_source_returns_complete_without_grading_artifacts() -> None:
         args = SimpleNamespace(
             camera=False,
             board_id="fixture",
-            blink_arrow=False,
             blink_profile="steady",
             out_dir=str(out_dir),
             runner_stdout_log="",
@@ -888,7 +735,6 @@ def test_source_change_after_collection_vetoes_completion() -> None:
         args = SimpleNamespace(
             camera=False,
             board_id="fixture",
-            blink_arrow=False,
             blink_profile="steady",
             out_dir=str(out_dir),
             runner_stdout_log="",
@@ -1301,9 +1147,6 @@ def main() -> int:
     test_replay_delivery_is_persisted_with_explicit_loss_denominators()
     test_runner_logs_are_confined_to_the_run_directory()
     test_timeline_keeps_ordered_external_events_and_scrubs_private_paths()
-    test_post_window_configuration_requires_conservative_same_boot_emission()
-    test_post_window_configuration_fails_closed()
-    test_post_window_configuration_timeout_covers_clock_allowance()
     test_replay_process_requests_raw_machine_and_scenario_evidence()
     test_requested_dropped_complete_stopped_preserves_raw_delivery()
     test_emulator_cleanup_before_start_preserves_primary_failure()
@@ -1316,9 +1159,7 @@ def main() -> int:
     test_upload_exact_match_is_qualified()
     test_upload_git_mismatch_fails()
     test_upload_image_mismatch_fails()
-    test_no_flash_git_match_with_linked_resident_artifact_is_qualified()
-    test_no_flash_git_match_with_unlinked_resident_artifact_is_collection_only()
-    test_no_flash_git_mismatch_fails()
+    test_missing_upload_record_fails()
     test_dirty_source_vetoes_qualification_before_collection()
     test_clean_source_returns_complete_without_grading_artifacts()
     test_source_change_after_collection_vetoes_completion()

@@ -15,4 +15,6 @@ Keep V1Simple simple, in code and docs.
 - Work on local `main` unless asked otherwise. Do not push.
 - Never use `--no-verify` for a real commit or push, change the tracked hook
   path, or override the verified `origin` destination.
-- Run proportionate checks while working and the full gate before handoff. Release changes also require production-build and artifact checks.
+- Run proportionate checks while working. Run the full gate before a push or
+  release, not as routine handoff ceremony. Release changes also require
+  production-build and artifact checks.

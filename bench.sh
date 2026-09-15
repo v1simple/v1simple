@@ -148,7 +148,6 @@ runner_status=0
     --git-worktree-clean 1 \
     --post-upload-settle-seconds "$POST_UPLOAD_SETTLE_SECONDS" \
     --replay-executable "$ROOT_DIR/tools/v1replay/.build/v1replay" \
-    --upload \
     --camera || runner_status=$?
 
 [[ "$runner_status" -eq 0 ]] || fail "raw collection did not complete; see $RUN_LOG"

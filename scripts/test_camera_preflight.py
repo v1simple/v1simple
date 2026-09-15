@@ -458,7 +458,6 @@ def test_profile_mismatch_refuses_before_camera_start() -> None:
 def make_live_args() -> SimpleNamespace:
     return SimpleNamespace(
         port="fixture-port",
-        upload=False,
         skip_web=False,
         post_upload_settle_seconds=0,
         replay_executable="fixture-replay",
@@ -469,7 +468,6 @@ def make_live_args() -> SimpleNamespace:
         baud=115200,
         git_sha="2f32ddab989792917b5b3df9206d9751ebfd8289",
         ready_timeout_seconds=1,
-        completion_grace_seconds=1,
         scenario="",
         reader_qualification=False,
     )
@@ -478,9 +476,7 @@ def make_live_args() -> SimpleNamespace:
 def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> None:
     events = {"serial": 0, "emulator_start": 0}
     cameras: list[FakeCamera] = []
-    serials: list[Any] = []
     pending_profile_updates: list[dict[str, Any]] = []
-    emit_configuration = {"value": True}
 
     class FakeEmulator:
         def __init__(self, *_args: Any, **_kwargs: Any) -> None:
@@ -507,7 +503,6 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
     class FakeSerial:
         def __init__(self, *_args: Any) -> None:
             events["serial"] += 1
-            serials.append(self)
             self.boot_marker_count = 0
             self.line_count = 0
             self.timeline = _args[-1]
@@ -535,16 +530,8 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
             time.sleep(min(_timeout, 0.01))
             if self.boot_lines:
                 line = self.boot_lines.pop(0)
-            elif not emit_configuration["value"]:
-                return ""
             else:
-                assert self.reset_requested_ns is not None
-                uptime_ms = (time.monotonic_ns() - self.reset_requested_ns) // 1_000_000
-                line = (
-                    f"CFG bootId=42 uptimeMs={uptime_ms} revision=2 "
-                    "activeSlot=1 stealthEnabled=0 priorityArrowOnly=1 "
-                    "alertPersistenceSeconds=0"
-                )
+                return ""
             received = self.timeline.record("serial_receive", line=line)
             self.last_receive_ns = received["host_monotonic_ns"]
             self.line_count += 1
@@ -574,11 +561,9 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
         "V1Emulator": run_window_module.V1Emulator,
         "BenchSerial": run_window_module.BenchSerial,
         "retain_build_upload_artifacts": run_window_module.retain_build_upload_artifacts,
+        "run_upload": run_window_module.run_upload,
         "wait_for_port": run_window_module.wait_for_port,
         "V1RadioLease": run_window_module.V1RadioLease,
-        "post_window_configuration_timeout_s": (
-            run_window_module.post_window_configuration_timeout_s
-        ),
     }
     run_window_module.CameraCapture = lambda out, duration: (  # type: ignore[assignment]
         cameras.append(
@@ -594,13 +579,14 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
     run_window_module.BenchSerial = FakeSerial  # type: ignore[assignment]
     run_window_module.retain_build_upload_artifacts = (  # type: ignore[assignment]
         lambda *_args, **_kwargs: {
-            "upload_performed": False,
+            "upload_performed": True,
             "expected_runtime_image_id": "04904e028",
             "expected_runtime_image_id_basis": run_window_module.RUNTIME_IMAGE_ID_BASIS,
             "files": [{"name": "firmware.elf", "sha256": "04904e028" + ("0" * 55)}],
             "missing": [],
         }
     )
+    run_window_module.run_upload = lambda *_args: None  # type: ignore[assignment]
     run_window_module.wait_for_port = lambda *_args: "fixture-port"  # type: ignore[assignment]
     run_window_module.V1RadioLease = FakeLease  # type: ignore[assignment]
     try:
@@ -674,46 +660,6 @@ def test_collect_refusal_never_opens_product_path_and_pass_continues_once() -> N
                 f"wrong pass lifecycle: {events}",
             )
 
-            emit_configuration["value"] = False
-            run_window_module.post_window_configuration_timeout_s = (  # type: ignore[assignment]
-                lambda _elapsed: 0.05
-            )
-            tail_artifacts: dict[str, Any] = {}
-            try:
-                with_calibrator(
-                    calibrate,
-                    lambda: collect_live(
-                        make_live_args(), root / "missing-configuration-tail", tail_artifacts
-                    ),
-                )
-            except RuntimeError as exc:
-                assert_true(
-                    "no same-boot CFG snapshot" in str(exc),
-                    f"wrong missing-tail failure: {exc}",
-                )
-            else:
-                raise AssertionError("missing post-window configuration was accepted")
-            failed_camera = cameras[-1]
-            assert_true(
-                failed_camera.stop_calls == 1 and not failed_camera.running,
-                "tail failure did not close and retain the camera capture",
-            )
-            assert_true(serials[-1].closed, "tail failure did not close serial")
-            assert_true(
-                "bench_timeline" in tail_artifacts,
-                f"tail failure lost owned evidence: {tail_artifacts}",
-            )
-            timeline_path = root / "missing-configuration-tail" / "bench_timeline.ndjson"
-            tail_events = [
-                json.loads(line)["event"]
-                for line in timeline_path.read_text(encoding="utf-8").splitlines()
-            ]
-            assert_true(
-                "external_window_completed" in tail_events
-                and "post_window_configuration_started" in tail_events
-                and "post_window_configuration_completed" not in tail_events,
-                f"tail failure lifecycle was not retained: {tail_events}",
-            )
     finally:
         for name, value in originals.items():
             setattr(run_window_module, name, value)

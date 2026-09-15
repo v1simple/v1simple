@@ -57,7 +57,10 @@ SAFE_BOARD_ID="$(PYTHONPATH="$ROOT_DIR/scripts/bench" "$BENCH_PYTHON" -c \
 GIT_SHA="$(git rev-parse HEAD 2>/dev/null)" || fail 'could not identify the source revision'
 GIT_SHA_SHORT="$(git rev-parse --short HEAD 2>/dev/null)" || fail 'could not identify the short source revision'
 GIT_REF="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" || fail 'could not identify the source branch'
-[[ -z "$(git status --porcelain 2>/dev/null)" ]] || fail 'source worktree is dirty; raw capture requires an exact source identity'
+GIT_STATUS="$(git status --porcelain=v1 --untracked-files=all --ignore-submodules=none 2>/dev/null)" \
+  || fail 'could not inspect the source worktree'
+[[ -z "$GIT_STATUS" ]] || fail 'source worktree is dirty; raw capture requires an exact source identity'
+unset GIT_STATUS
 
 TIMESTAMP="$(date -u +%Y%m%d_%H%M%S)"
 RUN_DIR="$ARTIFACT_ROOT/$SAFE_BOARD_ID/runs/${TIMESTAMP}_${GIT_SHA_SHORT}"

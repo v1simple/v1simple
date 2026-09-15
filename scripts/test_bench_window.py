@@ -33,6 +33,7 @@ from run_window import (  # noqa: E402
     BenchTimeline,
     RuntimeIdentityFailure,
     RuntimeIdentityTracker,
+    SourceProvenanceFailure,
     V1Emulator,
     V1RadioLease,
     establish_serial_boundary,
@@ -43,6 +44,7 @@ from run_window import (  # noqa: E402
     publish_replay_delivery_evidence,
     publish_replay_stimulus_evidence,
     qualify_runtime_identity,
+    require_current_source_identity,
     resolve_runner_log_paths,
 )
 
@@ -600,6 +602,69 @@ def test_raw_bench_entrypoint_returns_complete_without_grading_artifacts() -> No
         assert_true(retired not in source, f"raw bench still grades {retired}")
 
 
+def test_raw_bench_refuses_a_failed_git_status_check() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        temp_root = Path(tmp)
+        fake_bin = temp_root / "bin"
+        fake_bin.mkdir()
+        fake_git = fake_bin / "git"
+        fake_git.write_text(
+            """#!/bin/sh
+if [ "$1" = "rev-parse" ]; then
+  case "$2" in
+    HEAD) printf '%s\\n' '2f32ddab989792917b5b3df9206d9751ebfd8289' ;;
+    --short) printf '%s\\n' '2f32dda' ;;
+    --abbrev-ref) printf '%s\\n' 'main' ;;
+    *) exit 19 ;;
+  esac
+  exit 0
+fi
+if [ "$1" = "status" ]; then
+  exit 17
+fi
+exit 23
+""",
+            encoding="utf-8",
+        )
+        fake_git.chmod(0o755)
+        environment = {
+            **os.environ,
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}",
+            "BENCH_ARTIFACT_ROOT": str(temp_root / "artifacts"),
+        }
+        completed = subprocess.run(
+            ["bash", str(ROOT / "bench.sh"), "--replay", "--camera"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=environment,
+        )
+        assert_true(completed.returncode == 2, str(completed))
+        assert_true(
+            "COLLECTION_FAILED: could not inspect the source worktree" in completed.stdout,
+            completed.stdout + completed.stderr,
+        )
+
+
+def test_source_identity_check_requires_successful_git_inspection() -> None:
+    responses = [
+        subprocess.CompletedProcess([], 0, GIT_SHA, ""),
+        subprocess.CompletedProcess([], 0, "main\n", ""),
+        subprocess.CompletedProcess([], 17, "", "inspection failed"),
+    ]
+    with mock.patch.object(run_window_module.subprocess, "run", side_effect=responses):
+        try:
+            require_current_source_identity(
+                expected_git_sha=GIT_SHA,
+                expected_git_ref="main",
+            )
+        except SourceProvenanceFailure as exc:
+            assert_true(exc.reason == "source_repository_uninspectable", str(exc))
+        else:
+            raise AssertionError("failed git status was accepted as a clean worktree")
+
+
 GIT_SHA = "2f32ddab989792917b5b3df9206d9751ebfd8289"
 RUNTIME_IDENTITY = {
     "boot_id": 42,
@@ -789,13 +854,21 @@ def test_clean_source_returns_complete_without_grading_artifacts() -> None:
             "parse_args": run_window_module.parse_args,
             "install_signal_handlers": run_window_module.install_signal_handlers,
             "collect_live": run_window_module.collect_live,
+            "require_current_source_identity": run_window_module.require_current_source_identity,
             "serial": run_window_module.serial,
         }
+        source_checks = 0
+
+        def verified_source(**_kwargs: Any) -> None:
+            nonlocal source_checks
+            source_checks += 1
+
         run_window_module.parse_args = lambda: args  # type: ignore[assignment]
         run_window_module.install_signal_handlers = lambda: None  # type: ignore[assignment]
         run_window_module.collect_live = (  # type: ignore[assignment]
             lambda _args, _out_dir, _artifacts: collected
         )
+        run_window_module.require_current_source_identity = verified_source  # type: ignore[assignment]
         run_window_module.serial = object()  # type: ignore[assignment]
         try:
             status = run_window_module.main()
@@ -806,6 +879,81 @@ def test_clean_source_returns_complete_without_grading_artifacts() -> None:
         payload = json.loads((out_dir / "window_result.json").read_text(encoding="utf-8"))
         assert_true(status == 0, f"clean qualified exit changed: {status}")
         assert_true(payload["result"] == "COMPLETE", str(payload))
+        assert_true(source_checks == 2, f"source was checked {source_checks} times")
+
+
+def test_source_change_after_collection_vetoes_completion() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        args = SimpleNamespace(
+            camera=False,
+            board_id="fixture",
+            blink_arrow=False,
+            blink_profile="steady",
+            out_dir=str(out_dir),
+            runner_stdout_log="",
+            runner_stderr_log="",
+            duration_seconds=1,
+            ready_timeout_seconds=1,
+            post_upload_settle_seconds=0,
+            suite="core",
+            scenario="",
+            replay_executable="fixture-replay",
+            git_sha=GIT_SHA,
+            git_ref="main",
+            git_worktree_clean="1",
+        )
+        collected = {
+            "port": "fixture-port",
+            "completion": {},
+            "emulator": {},
+            "camera": {},
+            "runtime_identity": dict(RUNTIME_IDENTITY),
+            "runtime_qualification": {"status": "qualified"},
+        }
+        source_checks = iter(
+            [
+                None,
+                SourceProvenanceFailure(
+                    "source worktree changed during raw collection",
+                    reason="source_worktree_dirty",
+                ),
+            ]
+        )
+        originals = {
+            "parse_args": run_window_module.parse_args,
+            "install_signal_handlers": run_window_module.install_signal_handlers,
+            "collect_live": run_window_module.collect_live,
+            "require_current_source_identity": run_window_module.require_current_source_identity,
+            "serial": run_window_module.serial,
+        }
+
+        def verify_source(**_kwargs: Any) -> None:
+            outcome = next(source_checks)
+            if outcome is not None:
+                raise outcome
+
+        run_window_module.parse_args = lambda: args  # type: ignore[assignment]
+        run_window_module.install_signal_handlers = lambda: None  # type: ignore[assignment]
+        run_window_module.collect_live = (  # type: ignore[assignment]
+            lambda _args, _out_dir, _artifacts: collected
+        )
+        run_window_module.require_current_source_identity = verify_source  # type: ignore[assignment]
+        run_window_module.serial = object()  # type: ignore[assignment]
+        try:
+            status = run_window_module.main()
+        finally:
+            for name, value in originals.items():
+                setattr(run_window_module, name, value)
+
+        payload = json.loads((out_dir / "window_result.json").read_text(encoding="utf-8"))
+        assert_true(status == 2, f"changed source exit changed: {status}")
+        assert_true(payload["result"] == "FAIL", str(payload))
+        assert_true(payload["failure_kind"] == "source_provenance", str(payload))
+        assert_true(
+            payload["runtime_qualification"]["reason"] == "source_worktree_dirty",
+            str(payload),
+        )
 
 
 class FakeClock:
@@ -1163,6 +1311,8 @@ def main() -> int:
     test_radio_lease_excludes_concurrent_owners_and_rejects_symlink_parent()
     test_runner_source_is_external_only_and_serial_is_read_only()
     test_raw_bench_entrypoint_returns_complete_without_grading_artifacts()
+    test_raw_bench_refuses_a_failed_git_status_check()
+    test_source_identity_check_requires_successful_git_inspection()
     test_upload_exact_match_is_qualified()
     test_upload_git_mismatch_fails()
     test_upload_image_mismatch_fails()
@@ -1171,6 +1321,7 @@ def main() -> int:
     test_no_flash_git_mismatch_fails()
     test_dirty_source_vetoes_qualification_before_collection()
     test_clean_source_returns_complete_without_grading_artifacts()
+    test_source_change_after_collection_vetoes_completion()
     test_serial_boundary_waits_for_attach_time_boot_past_initial_observation()
     test_missing_and_malformed_boot_identity_fail()
     test_conflicting_boot_identities_fail()

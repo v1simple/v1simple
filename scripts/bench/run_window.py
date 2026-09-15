@@ -128,6 +128,51 @@ class RuntimeIdentityFailure(RuntimeError):
         self.qualification = qualification or {}
 
 
+class SourceProvenanceFailure(RuntimeError):
+    def __init__(self, message: str, *, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+def _git_output(repo: Path, *arguments: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(repo), *arguments],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise SourceProvenanceFailure(
+            "could not inspect the source repository",
+            reason="source_repository_uninspectable",
+        )
+    return completed.stdout.strip()
+
+
+def require_current_source_identity(
+    *, expected_git_sha: str, expected_git_ref: str, repo: Path = ROOT
+) -> None:
+    current_git_sha = _git_output(repo, "rev-parse", "HEAD")
+    current_git_ref = _git_output(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    status = _git_output(
+        repo,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+        "--ignore-submodules=none",
+    )
+    if current_git_sha != expected_git_sha or current_git_ref != expected_git_ref:
+        raise SourceProvenanceFailure(
+            "source identity changed during raw collection",
+            reason="source_identity_changed",
+        )
+    if status:
+        raise SourceProvenanceFailure(
+            "source worktree changed during raw collection",
+            reason="source_worktree_dirty",
+        )
+
+
 def _lease_owner(path: Path) -> Path:
     try:
         path.relative_to(ACCOUNT_HOME)
@@ -1486,6 +1531,19 @@ def main() -> int:
                 "reason": "source_worktree_dirty",
             },
         )
+    try:
+        require_current_source_identity(
+            expected_git_sha=args.git_sha,
+            expected_git_ref=args.git_ref,
+        )
+    except SourceProvenanceFailure as exc:
+        return fail(
+            str(exc),
+            result="FAIL",
+            failure_kind="source_provenance",
+            git_worktree_clean=False,
+            runtime_qualification={"status": "unqualified", "reason": exc.reason},
+        )
     if not args.replay_executable:
         return fail("managed v1replay is required for live collection")
     if serial is None:
@@ -1493,6 +1551,10 @@ def main() -> int:
 
     try:
         result = collect_live(args, out_dir, artifacts)
+        require_current_source_identity(
+            expected_git_sha=args.git_sha,
+            expected_git_ref=args.git_ref,
+        )
         qualification = result["runtime_qualification"]
         write_window_result(
             out_dir,
@@ -1526,6 +1588,14 @@ def main() -> int:
             failure_kind="runtime_identity",
             runtime_identity=exc.identity,
             runtime_qualification=exc.qualification,
+        )
+    except SourceProvenanceFailure as exc:
+        return fail(
+            str(exc),
+            result="FAIL",
+            failure_kind="source_provenance",
+            git_worktree_clean=False,
+            runtime_qualification={"status": "unqualified", "reason": exc.reason},
         )
     except CameraPreflightFailure as exc:
         return fail(

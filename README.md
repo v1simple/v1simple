@@ -103,9 +103,9 @@ any commit:
 ```
 
 The setup fixes this checkout's author and committer identity to the public
-project identity, installs early and final privacy gates that remain active for
-`git commit --no-verify`, and pins ordinary Git pushes and IDE Sync to the
-verified public `origin`. Every normal push passes through the range-aware
+project identity, installs commit and push privacy checks for ordinary Git
+operations, and pins Git pushes and IDE Sync to the verified public `origin`.
+Every normal push passes through the range-aware
 history scanner, which checks all newly reachable blobs once by object hash as
 well as commit and tag metadata. Never use `--no-verify` or override the hooks
 or remote configuration. The local checker also requires an owner-only private

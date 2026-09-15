@@ -17,45 +17,6 @@ cd "$SCRIPT_DIR"
 
 RESET_SKIP_REASON=""
 
-file_size_bytes() {
-    wc -c < "$1" | tr -d '[:space:]'
-}
-
-file_sha256() {
-    local path="$1"
-
-    if command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 "$path" | awk '{print $1}'
-        return
-    fi
-
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$path" | awk '{print $1}'
-        return
-    fi
-
-    echo "sha256-unavailable"
-}
-
-stage_dist_artifact() {
-    local src="$1"
-    local dest="$2"
-    local label="$3"
-
-    if [ ! -f "$src" ]; then
-        echo -e "${RED}Missing ${label}: ${src}${NC}" >&2
-        exit 1
-    fi
-
-    cp "$src" "$dest"
-    local bytes
-    bytes="$(file_size_bytes "$dest")"
-    local sha256
-    sha256="$(file_sha256 "$dest")"
-    echo -e "${GREEN}Staged → ${dest}${NC}"
-    echo "   bytes=${bytes} sha256=${sha256}"
-}
-
 reset_device_via_rts() {
     local port="$1"
 
@@ -140,8 +101,6 @@ UPLOAD_FS=false
 UPLOAD_FW=false
 MONITOR=false
 SKIP_WEB=false
-RUN_TESTS=false
-DIST_BUILD=false
 PIO_ENV="$DEFAULT_ENV"
 UPLOAD_PORT=""
 PIO_JOBS=""
@@ -182,10 +141,6 @@ while [[ $# -gt 0 ]]; do
             SKIP_WEB=true
             shift
             ;;
-        --test|-t)
-            RUN_TESTS=true
-            shift
-            ;;
         --env|-e)
             if [[ $# -lt 2 ]]; then
                 echo "Missing value for --env" >&2
@@ -196,10 +151,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --car)
             PIO_ENV="esp32-s3-car-install"
-            shift
-            ;;
-        --dist)
-            DIST_BUILD=true
             shift
             ;;
         --upload-port)
@@ -229,15 +180,13 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  -c, --clean        Clean build (remove .pio/build/)"
             echo "  --reset            Factory reset: clean build, erase onboard flash, upload all, monitor"
-            echo "  -f, --upload-fs    Upload filesystem after build (tests run only with --test)"
-            echo "  -u, --upload       Upload firmware after build (tests run only with --test)"
+            echo "  -f, --upload-fs    Upload filesystem after build"
+            echo "  -u, --upload       Upload firmware after build"
             echo "  -m, --monitor      Open serial monitor after upload"
             echo "  -a, --all          Upload filesystem, firmware, and monitor"
             echo "  -s, --skip-web     Skip web interface build"
-            echo "  -t, --test         Run unit tests before upload (native environment)"
             echo "  -e, --env ENV      PlatformIO environment (default: waveshare-349)
-  --car              Build for car-install (CAR_MODE_PWR_SHORT, env: esp32-s3-car-install)
-  --dist             Copy firmware.bin + littlefs.bin to dist/standard/ or dist/car/"
+  --car              Build for car-install (CAR_MODE_PWR_SHORT, env: esp32-s3-car-install)"
             echo "  -j, --jobs N       PlatformIO job count override (default: PlatformIO default)"
             echo "  --upload-port PORT COM port for upload (e.g., COM6)"
             echo "  -h, --help         Show this help"
@@ -250,10 +199,8 @@ while [[ $# -gt 0 ]]; do
             echo "  $0 -u -m           # Build firmware, upload, and monitor"
             echo "  $0 -f              # Build and upload filesystem only"
             echo "  $0 -s -u           # Skip web build, just build and upload firmware"
-            echo "  $0 --all --test    # Build, test, upload everything"
             echo "  $0 --all --env waveshare-349    # Explicit env
-  $0 --car --clean --all         # Car-install build + upload
-  $0 --car --dist                # Car-install build, stage to dist/car/"
+  $0 --car --clean --all         # Car-install build + upload"
             exit 0
             ;;
         *)
@@ -335,7 +282,7 @@ if [ "$SKIP_WEB" = false ]; then
     echo ""
 else
     echo -e "${YELLOW}Skipping web interface build${NC}"
-    if { [ "$UPLOAD_FS" = true ] || [ "$DIST_BUILD" = true ]; } && [ ! -s "data/index.html" ]; then
+    if [ "$UPLOAD_FS" = true ] && [ ! -s "data/index.html" ]; then
         echo -e "${RED}Cannot reuse web files: data/index.html is missing or empty.${NC}" >&2
         echo "   Run without --skip-web to rebuild the web interface." >&2
         exit 1
@@ -352,35 +299,6 @@ echo -e "${GREEN}Firmware built successfully${NC}"
 echo -e "${BLUE}Build size:${NC}"
 "$PIO_CMD" run $PIO_RUN_ARGS -t size | grep -E "RAM:|Flash:" || true
 echo ""
-
-# Stage binaries to dist/ if requested
-if [ "$DIST_BUILD" = true ]; then
-    echo -e "${YELLOW}Building LittleFS image for dist package...${NC}"
-    "$PIO_CMD" run $PIO_RUN_ARGS -t buildfs
-    echo -e "${GREEN}LittleFS image built successfully${NC}"
-
-    if [[ "$PIO_ENV" == *"car"* ]]; then
-        DIST_VARIANT="car"
-    else
-        DIST_VARIANT="standard"
-    fi
-    DIST_DIR="dist/${DIST_VARIANT}"
-    mkdir -p "$DIST_DIR"
-    FW_SRC=".pio/build/${PIO_ENV}/firmware.bin"
-    FS_SRC=".pio/build/${PIO_ENV}/littlefs.bin"
-
-    stage_dist_artifact "$FW_SRC" "${DIST_DIR}/firmware.bin" "firmware artifact"
-    stage_dist_artifact "$FS_SRC" "${DIST_DIR}/littlefs.bin" "LittleFS artifact"
-    echo ""
-fi
-
-# Tests (requires gcc/g++ on host)
-if [ "$RUN_TESTS" = true ]; then
-    echo -e "${YELLOW}Running unit tests...${NC}"
-    python3 "$SCRIPT_DIR/scripts/run_native_tests_serial.py"
-    echo -e "${GREEN}All tests passed${NC}"
-    echo ""
-fi
 
 # Build first so a compile failure cannot leave the device blank. Only erase
 # after every requested local build/test step has succeeded.

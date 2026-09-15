@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "bench"))
 import encounter_check as check
 import encounter_configuration as configuration
 import test_counter_check as existing_counter_tests
+import test_encounter_expectation as expectation_tests
 
 
 def inputs():
@@ -104,6 +105,36 @@ class EncounterCheckTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "explicit image-upload consent"):
             check.analyze(Path("unused"), Path("unused"), [(0, .01)], 2,
                           openai_observer=True)
+
+    def test_online_observer_wrong_literal_fails_but_match_cannot_pass_unqualified(self):
+        stimulus, rows = inputs()
+        data = dict(stimulus=stimulus, rows=rows, identity={}, timing={}, timeline={},
+                    video=Path("unused.mov"), width=2, height=2, registration={})
+        expected = expectation_tests.encounter_expectation_at(
+            expectation_tests.build_encounter_timeline(*expectation_tests.single()),
+            1_500_000_000)
+
+        def stream(_video, indices, _width, _height):
+            yield indices[0], bytes(12)
+
+        for bars, verdict, differences in ((1, "INCONCLUSIVE", 0), (0, "FAIL", 1)):
+            with self.subTest(bars=bars), tempfile.TemporaryDirectory() as temporary:
+                reading = {"fields": expectation_tests.literals(main_bars=bars)}
+                module = types.SimpleNamespace(
+                    observe=lambda *_: reading,
+                    prepare_reader=lambda _cache, *, allow_upload: {"consent": allow_upload},
+                    analysis_session=lambda: check.nullcontext())
+                with patch.object(check, "load_run", return_value=data), \
+                     patch.object(check, "stream_frames", side_effect=stream), \
+                     patch.object(check, "encounter_expectation_at", return_value=expected), \
+                     patch.dict(sys.modules, {"encounter_openai": module}):
+                    result = check.analyze(Path("unused"), Path(temporary), [(0, .01)], 2,
+                                           openai_observer=True,
+                                           allow_image_upload_to_openai=True)
+            self.assertEqual(result["result"], verdict)
+            self.assertEqual(result["counts"]["fields"].get("DIFFERENCE", 0), differences)
+            self.assertEqual(result["samples"][0]["comparison"]["checks"]["main_bars"]["status"],
+                             "DIFFERENCE" if differences else "MATCH")
 
     def test_removed_deadline_command_rejects_before_creating_output(self):
         with tempfile.TemporaryDirectory() as directory:

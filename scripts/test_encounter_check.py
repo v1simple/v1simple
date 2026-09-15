@@ -34,6 +34,77 @@ def comparison(status="MATCH"):
 
 
 class EncounterCheckTests(unittest.TestCase):
+    def test_online_observer_requires_separate_consent_and_bounded_range(self):
+        cases = (
+            (["--openai-observer"], "requires --allow-image-upload-to-openai"),
+            (["--allow-image-upload-to-openai"], "requires --openai-observer"),
+            (["--openai-observer", "--allow-image-upload-to-openai"],
+             "requires an explicit bounded --range"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for number, (extra, message) in enumerate(cases):
+                with self.subTest(extra=extra):
+                    out = Path(directory) / f"result-{number}"
+                    process = subprocess.run(
+                        [sys.executable, str(Path(check.__file__)), "--run-dir",
+                         str(Path(directory) / "recording"), "--out", str(out), *extra],
+                        capture_output=True, text=True)
+                    self.assertEqual(process.returncode, 2)
+                    self.assertIn(message, process.stderr)
+                    self.assertFalse(out.exists())
+
+    def test_online_observer_frame_limit_is_enforced_before_reader_setup(self):
+        allowed = {index: [{}] for index in range(check.MAX_OPENAI_FRAMES)}
+        check.require_openai_frame_limit(allowed)
+        excessive = {**allowed, check.MAX_OPENAI_FRAMES: [{}]}
+        with self.assertRaisesRegex(ValueError, "limited to 12"):
+            check.require_openai_frame_limit(excessive)
+
+    def test_online_observer_uses_frozen_pixels_without_expected_input(self):
+        stimulus, rows = inputs()
+        data = dict(stimulus=stimulus, rows=rows, identity={}, timing={}, timeline={},
+                    video=Path("unused.mov"), width=2, height=2, registration={})
+        calls = []
+
+        def prepare(_cache, *, allow_upload):
+            self.assertIs(allow_upload, True)
+            return {"kind": "test expectation-blind observer"}
+
+        def observe(*args):
+            calls.append(args)
+            self.assertEqual(args, (bytes(12), 2, 2, {}))
+            self.assertEqual(expected.call_count, 0)
+            return check.unresolved("test observation")
+
+        def stream(_video, indices, _width, _height):
+            self.assertEqual(len(indices), 1)
+            yield indices[0], bytes(12)
+
+        module = types.SimpleNamespace(observe=observe, prepare_reader=prepare,
+                                       analysis_session=lambda: check.nullcontext())
+        with tempfile.TemporaryDirectory() as temporary:
+            out = Path(temporary)
+            with patch.object(check, "load_run", return_value=data), \
+                 patch.object(check, "stream_frames", side_effect=stream), \
+                 patch.object(check, "encounter_expectation_at", return_value={"private": "expected"}) as expected, \
+                 patch.object(check, "compare_sample", return_value=comparison("MATCH")) as compare, \
+                 patch.dict(sys.modules, {"encounter_openai": module}):
+                result = check.analyze(Path("unused"), out, [(0, .01)], 2,
+                                       openai_observer=True, allow_image_upload_to_openai=True)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(expected.call_count, 1)
+        self.assertEqual(compare.call_args.args[0], {"private": "expected"})
+        self.assertEqual(compare.call_args.args[1]["fields"]["main_arrows"]["state"],
+                         "unreadable")
+        self.assertEqual(result["counts"]["fields"]["MATCH"], len(check.FIELDS))
+        self.assertEqual(result["result"], "INCONCLUSIVE")
+        self.assertTrue(any("no retained qualification" in error for error in result["errors"]))
+
+    def test_online_observer_cannot_bypass_consent_through_library_call(self):
+        with self.assertRaisesRegex(ValueError, "explicit image-upload consent"):
+            check.analyze(Path("unused"), Path("unused"), [(0, .01)], 2,
+                          openai_observer=True)
+
     def test_removed_deadline_command_rejects_before_creating_output(self):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory) / "result"

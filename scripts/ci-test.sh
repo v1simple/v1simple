@@ -185,6 +185,7 @@ run_step "Counter input expectation regression suite" python3 scripts/test_count
 run_step "Recorded counter check regression suite" python3 scripts/test_counter_check.py
 run_step "Encounter OCR session regression suite" python3 scripts/test_encounter_ocr_session.py
 run_step "Encounter pixel reader regression suite" python3 scripts/test_encounter_reader.py
+run_step "Expectation-blind OpenAI frame observer regression suite" python3 scripts/test_encounter_openai.py
 run_step "Encounter frequency geometry regression suite" "$BENCH_READER_PYTHON" scripts/test_encounter_frequency_geometry.py
 run_step "Encounter frequency residual regression suite" "$BENCH_READER_PYTHON" scripts/test_encounter_frequency_residual.py
 run_step "Encounter frequency context regression suite" python3 scripts/test_encounter_frequency_context.py

@@ -34,11 +34,17 @@ FIELDS = ("counter_glyph", "primary_frequency", "active_bands", "main_arrows",
           "main_bars", "secondary", "muted_badge")
 PROBES = (-.05, .05, .15, .35)
 MAX_SAMPLES = 5000
+MAX_OPENAI_FRAMES = 12
 
 
 def require(condition: bool, reason: str) -> None:
     if not condition:
         raise ValueError(reason)
+
+
+def require_openai_frame_limit(by_index: dict) -> None:
+    require(len(by_index) <= MAX_OPENAI_FRAMES,
+            f"OpenAI observation is limited to {MAX_OPENAI_FRAMES} unique frames per invocation")
 
 
 def load_run(run: Path) -> dict:
@@ -392,7 +398,10 @@ def summarize(samples: list[dict], errors: list[str]) -> tuple[str, dict]:
 
 def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cadence: float,
             configuration: Path | None = None, transition_only: bool = False,
-            all_frames: bool = False) -> dict:
+            all_frames: bool = False, openai_observer: bool = False,
+            allow_image_upload_to_openai: bool = False) -> dict:
+    require(not openai_observer or allow_image_upload_to_openai,
+            "OpenAI observation requires explicit image-upload consent")
     samples, errors, evidence, data, config = [], [], {}, None, None
     method = {p.name: sha256_file(p) for p in Path(__file__).parent.glob("*.py")}
     for p in Path(__file__).parent.glob("encounter_*.swift"):
@@ -454,20 +463,28 @@ def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cade
         for sample in samples:
             if "video_frame_index" in sample:
                 by_index.setdefault(sample["video_frame_index"], []).append(sample)
+        if openai_observer:
+            require_openai_frame_limit(by_index)
         (out / "frames").mkdir()
-        import encounter_reader
-        observe = encounter_reader.observe
-        if hasattr(encounter_reader, "prepare_reader"):
+        if openai_observer:
+            import encounter_openai as selected_reader
+        else:
+            import encounter_reader as selected_reader
+        observe = selected_reader.observe
+        if hasattr(selected_reader, "prepare_reader"):
             reader_cache = out / "reader-cache"
-            evidence["reader"] = encounter_reader.prepare_reader(reader_cache)
-            from encounter_runtime_probe import probe_ocr_runtime
-            probe = probe_ocr_runtime(evidence["reader"])
-            evidence["reader"]["ocr_compiled"] = evidence["reader"].get("ocr_available") is True
-            evidence["reader"]["ocr_runtime_probe"] = probe
-            evidence["reader"]["ocr_available"] = (
-                evidence["reader"]["ocr_compiled"] and probe.get("status") == "operational")
+            if openai_observer:
+                evidence["reader"] = selected_reader.prepare_reader(reader_cache, allow_upload=True)
+            else:
+                evidence["reader"] = selected_reader.prepare_reader(reader_cache)
+                from encounter_runtime_probe import probe_ocr_runtime
+                probe = probe_ocr_runtime(evidence["reader"])
+                evidence["reader"]["ocr_compiled"] = evidence["reader"].get("ocr_available") is True
+                evidence["reader"]["ocr_runtime_probe"] = probe
+                evidence["reader"]["ocr_available"] = (
+                    evidence["reader"]["ocr_compiled"] and probe.get("status") == "operational")
         total = len(by_index)
-        with getattr(encounter_reader, "analysis_session", nullcontext)():
+        with getattr(selected_reader, "analysis_session", nullcontext)():
             for number, (index, pixels) in enumerate(stream_frames(data["video"], list(by_index), data["width"], data["height"]), 1):
                 image = out / "frames" / f"{index:06d}.png"
                 write_png(image, pixels, data["width"], data["height"])
@@ -504,6 +521,8 @@ def analyze(run: Path, out: Path, ranges: list[tuple[float, float]] | None, cade
         errors.append(f"{type(exc).__name__}: {exc}")
     except KeyboardInterrupt:
         errors.append("Analysis interrupted; unfinished required samples remain unresolved")
+    if openai_observer:
+        errors.append("OpenAI observer has no retained qualification bound to this exact model, prompt, schema and camera profile")
     for sample in samples:
         if "comparison" not in sample:
             reason = sample.get("selection_error") or "analysis did not reach this required sample"
@@ -844,6 +863,10 @@ def main() -> int:
     parser.add_argument("--configuration", type=Path, help="independently verified, exact-window display settings; missing settings stay unknown")
     parser.add_argument("--reader-qualification", type=Path,
                         help="exact retained qualification manifest for the behavior reader, camera profile and controls")
+    parser.add_argument("--openai-observer", action="store_true",
+                        help="experimentally send at most 12 selected frame images to the fixed OpenAI observer; matches remain INCONCLUSIVE until qualification exists")
+    parser.add_argument("--allow-image-upload-to-openai", action="store_true",
+                        help="explicit consent required with --openai-observer; never enabled by configuration or CI")
     parser.add_argument("--out", type=Path, required=True, help="new result directory; existing results are never replaced")
     args = parser.parse_args()
     if args.compare_to and not args.observe_behavior:
@@ -856,6 +879,14 @@ def main() -> int:
         parser.error("--all-frames requires explicit --range or --transition-window bounds")
     if args.all_frames and args.cadence != 2:
         parser.error("--cadence cannot be combined with --all-frames")
+    if args.allow_image_upload_to_openai and not args.openai_observer:
+        parser.error("--allow-image-upload-to-openai requires --openai-observer")
+    if args.openai_observer and not args.allow_image_upload_to_openai:
+        parser.error("--openai-observer requires --allow-image-upload-to-openai")
+    if args.openai_observer and not args.ranges:
+        parser.error("--openai-observer requires an explicit bounded --range")
+    if args.openai_observer and (args.observe_behavior or args.all_frames or args.transition_window):
+        parser.error("--openai-observer supports bounded sampled --range evaluation only")
     try:
         args.out.mkdir(parents=True, exist_ok=False)
         if args.observe_behavior:
@@ -865,7 +896,9 @@ def main() -> int:
                                       workers=args.reader_workers)
         else:
             result = analyze(args.run_dir, args.out, args.transition_window or args.ranges, args.cadence,
-                         args.configuration, transition_only=bool(args.transition_window), all_frames=args.all_frames)
+                         args.configuration, transition_only=bool(args.transition_window), all_frames=args.all_frames,
+                         openai_observer=args.openai_observer,
+                         allow_image_upload_to_openai=args.allow_image_upload_to_openai)
     except (OSError, ValueError) as exc:
         print(sanitize_artifact_value(str(exc), run_dir=args.out), file=sys.stderr)
         return 2

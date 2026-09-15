@@ -3,7 +3,6 @@
 // each new commit, keeping the rest of the incremental build cached.
 
 #include "build_metadata.h"
-#include "bench_fault_inject.h"
 
 #ifndef UNIT_TEST
 #include <esp_app_desc.h>
@@ -15,10 +14,6 @@
 
 const char* getBuildGitSha() {
     return GIT_SHA;
-}
-
-int getBuildBenchFaultInjection() {
-    return BENCH_FAULT_INJECT;
 }
 
 const char* getRuntimeImageId() {

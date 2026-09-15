@@ -15,7 +15,6 @@ import pwd
 import re
 import signal
 import stat
-import struct
 import subprocess
 import sys
 import time
@@ -46,7 +45,6 @@ except ImportError:  # pragma: no cover - host capability check
 
 BUILD_SH = ROOT / "build.sh"
 PRODUCTION_PIO_ENV = "waveshare-349"
-FAULT_PIO_ENV = "waveshare-349-fault"
 BUILD_OUTPUT_DIR = ROOT / ".pio" / "build" / PRODUCTION_PIO_ENV
 BUILD_UPLOAD_FILES = (
     "bootloader.bin",
@@ -270,25 +268,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--git-worktree-clean", choices=["0", "1"], default="0")
     parser.add_argument("--segment", default="last")
     parser.add_argument("--upload", action="store_true")
-    parser.add_argument(
-        "--bench-fault-inject",
-        type=int,
-        choices=(0, 1, 2, 3),
-        default=0,
-        help="non-shipping display fault: 1=bars, 2=arrows, 3=frequency",
-    )
-    parser.add_argument("--resident-recording", default="",
-                        help="prior qualified upload recording for the installed image")
-    parser.add_argument("--resident-image", default="",
-                        help="exact application binary retained from or read back against that upload")
     parser.add_argument("--skip-web", action="store_true")
     parser.add_argument("--post-upload-settle-seconds", type=int, default=90)
     parser.add_argument("--replay-executable", default="")
     parser.add_argument("--scenario", default="")
-    parser.add_argument("--reader-qualification", action="store_true",
-                        help="use the fixed generated reader-qualification replay")
-    parser.add_argument("--persistence-coverage", action="store_true",
-                        help="use the fixed radar persistence and live-preemption replay")
     blink_group = parser.add_mutually_exclusive_group()
     blink_group.add_argument(
         "--blink-profile", choices=["scenario", "steady", "stress"], default=None
@@ -297,12 +280,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--camera", action="store_true")
     parser.add_argument("--ready-timeout-seconds", type=int, default=45)
     parser.add_argument("--completion-grace-seconds", type=int, default=45)
-    args = parser.parse_args()
-    if bool(args.resident_recording) != bool(args.resident_image) or (
-        args.resident_recording and args.upload
-    ):
-        parser.error("--resident-recording and --resident-image require each other and no upload")
-    return args
+    return parser.parse_args()
 
 
 def utc_now() -> str:
@@ -323,11 +301,6 @@ def file_artifact(path: Path) -> dict[str, Any]:
         "sha256": sha256_file(path),
         "size_bytes": path.stat().st_size,
     }
-
-
-def firmware_build_dir(bench_fault_inject: int) -> Path:
-    environment = FAULT_PIO_ENV if bench_fault_inject else PRODUCTION_PIO_ENV
-    return ROOT / ".pio" / "build" / environment
 
 
 class BenchTimeline:
@@ -366,7 +339,6 @@ def retain_build_upload_artifacts(
     build_dir: Path = BUILD_OUTPUT_DIR,
     *,
     upload_performed: bool = False,
-    bench_fault_inject: int = 0,
 ) -> dict[str, Any]:
     files: list[dict[str, Any]] = []
     missing: list[str] = []
@@ -399,7 +371,6 @@ def retain_build_upload_artifacts(
         "schema_version": 1,
         "kind": "bench_build_upload_artifacts",
         "upload_performed": upload_performed,
-        "bench_fault_inject": bench_fault_inject,
         "expected_runtime_image_id": elf_sha[:RUNTIME_IMAGE_ID_HEX_LENGTH],
         "expected_runtime_image_id_basis": RUNTIME_IMAGE_ID_BASIS,
         "files": files,
@@ -438,17 +409,11 @@ def parse_runtime_boot_identity(line: str) -> dict[str, Any] | None:
         raise RuntimeIdentityFailure("malformed runtime BOOT identity: invalid git")
     if RUNTIME_IMAGE_ID_RE.fullmatch(fields["image"]) is None:
         raise RuntimeIdentityFailure("malformed runtime BOOT identity: invalid image")
-    raw_fault = fields.get("fault", "0")
-    if raw_fault not in {"0", "1", "2", "3"}:
-        raise RuntimeIdentityFailure("malformed runtime BOOT identity: invalid fault")
-    identity = {
+    return {
         "boot_id": boot_id,
         "git_sha": fields["git"],
         "image_id": fields["image"],
     }
-    if "fault" in fields:
-        identity["bench_fault_inject"] = int(raw_fault)
-    return identity
 
 
 class RuntimeIdentityTracker:
@@ -523,31 +488,6 @@ def qualify_runtime_identity(
         )
     qualification["git_match"] = True
 
-    expected_fault = build_upload.get("bench_fault_inject", 0)
-    observed_fault = identity.get("bench_fault_inject", 0)
-    if type(expected_fault) is not int or expected_fault not in range(4):
-        raise RuntimeIdentityFailure(
-            "retained firmware fault identity is malformed",
-            identity=identity,
-            qualification=qualification,
-        )
-    qualification.update(
-        {
-            "bench_fault_inject": observed_fault,
-            "fault_match": observed_fault == expected_fault,
-        }
-    )
-    if (
-        type(observed_fault) is not int
-        or observed_fault not in range(4)
-        or observed_fault != expected_fault
-    ):
-        raise RuntimeIdentityFailure(
-            f"runtime fault {observed_fault!r} does not match retained firmware fault {expected_fault}",
-            identity=identity,
-            qualification=qualification,
-        )
-
     if bool(build_upload.get("upload_performed")) != upload:
         raise RuntimeIdentityFailure(
             f"{mode} artifact manifest does not match the collection mode",
@@ -597,143 +537,10 @@ def qualify_runtime_identity(
         return qualification
 
     reason = artifact_problem or (
-        f"resident runtime image {observed_image_id or '<missing>'} is not linked to the retained firmware ELF"
+        f"runtime image {observed_image_id or '<missing>'} is not linked to the retained firmware ELF"
     )
     qualification.update({"status": "collection_only", "reason": reason})
     return qualification
-
-
-def retain_resident_artifacts(recording: Path, image: Path, out_dir: Path) -> dict[str, Any]:
-    """Bind an exact application binary to an original qualified recording.
-
-    No source or image identifier is supplied by the caller. The qualified
-    recording and its hashed serial record own those identifiers. The full binary
-    hash is checked before its ESP-IDF application descriptor is inspected.
-    A no-flash reference establishes identity linkage, not an upload operation.
-    """
-    def require(condition: bool, reason: str) -> None:
-        if not condition:
-            raise RuntimeIdentityFailure("resident provenance: " + reason)
-
-    def json_object(raw: bytes, label: str) -> dict[str, Any]:
-        try:
-            value = json.loads(raw)
-        except (ValueError, UnicodeError) as exc:
-            raise RuntimeIdentityFailure("resident provenance: invalid " + label) from exc
-        require(isinstance(value, dict), "invalid " + label)
-        return value
-
-    recording = recording.resolve(strict=True)
-    window_raw = (recording / "window_result.json").read_bytes()
-    window = json_object(window_raw, "reference window")
-    source_git = window.get("git_sha")
-    require(isinstance(source_git, str) and re.fullmatch(r"[0-9a-f]{40}", source_git) is not None,
-            "recorded source requires a full git commit")
-    require(window.get("git_worktree_clean") is True, "recorded source was not clean")
-    tooling = window.get("tooling_source")
-    require(tooling is None or (isinstance(tooling, dict) and tooling.get("git_sha") == source_git
-                               and tooling.get("git_worktree_clean") is True),
-            "reference tooling source differs from firmware source")
-    commit = subprocess.run(["git", "rev-parse", "--verify", source_git + "^{commit}"],
-                            cwd=ROOT, capture_output=True, text=True)
-    require(commit.returncode == 0 and commit.stdout.strip() == source_git,
-            "recorded source commit is unavailable")
-    require(window.get("result") == "PASS" and window.get("evidence_contract") == "external_only",
-            "reference was not a successful external recording")
-    previous = window.get("runtime_qualification")
-    require(isinstance(previous, dict) and previous.get("status") == "qualified"
-            and previous.get("mode") in ("upload", "no_flash") and previous.get("artifact_linked") is True
-            and previous.get("git_match") is True and previous.get("image_match") is True,
-            "reference was not a qualified upload or no-flash recording")
-    reference_mode = previous["mode"]
-    reference_upload = reference_mode == "upload"
-    artifacts = window.get("artifacts")
-    require(isinstance(artifacts, dict), "reference artifact records are missing")
-
-    def retained_bytes(key: str, name: str) -> bytes:
-        record = artifacts.get(key)
-        require(isinstance(record, dict) and record.get("path") == name,
-                "invalid reference path for " + key)
-        path = recording / name
-        require(not path.is_symlink() and path.resolve().parent == recording,
-                "reference artifact escapes recording")
-        raw = path.read_bytes()
-        require(type(record.get("size_bytes")) is int and record["size_bytes"] == len(raw)
-                and record.get("sha256") == hashlib.sha256(raw).hexdigest(),
-                "reference bytes do not match " + key)
-        return raw
-
-    manifest_raw = retained_bytes("build_upload", BUILD_UPLOAD_ARTIFACTS_NAME)
-    manifest = json_object(manifest_raw, "build manifest")
-    require(manifest.get("schema_version") == 1
-            and manifest.get("kind") == "bench_build_upload_artifacts"
-            and manifest.get("missing") == [], "invalid or incomplete build manifest")
-    require(manifest.get("upload_performed") is reference_upload,
-            "reference upload flag does not match collection mode")
-    require("resident_provenance" not in manifest, "chained resident references are not supported")
-    require(all(artifacts["build_upload"].get(key) == value for key, value in manifest.items()),
-            "embedded upload manifest differs from retained bytes")
-    serial_raw = retained_bytes("bench_serial", "bench_serial.log")
-    tracker = RuntimeIdentityTracker()
-    for line in serial_raw.decode("utf-8", errors="strict").splitlines():
-        tracker.observe(line)
-    require(tracker.boot_marker_count == 1 and tracker.identity == window.get("runtime_identity"),
-            "reference serial runtime identity differs from reference window")
-    qualified = qualify_runtime_identity(tracker.identity or {}, intended_git_sha=source_git,
-                                         build_upload=manifest, upload=reference_upload)
-    require(all(previous.get(key) == qualified.get(key) for key in
-                ("status", "mode", "git_match", "artifact_linked", "image_match", "artifact_image_id", "artifact")),
-            "reference runtime qualification differs from its evidence")
-    files = manifest["files"]
-    def file_record(name: str) -> dict[str, Any]:
-        matches = [item for item in files if isinstance(item, dict) and item.get("name") == name]
-        require(len(matches) == 1, "missing or duplicate " + name)
-        record = matches[0]
-        require(type(record.get("size_bytes")) is int and record["size_bytes"] > 0
-                and isinstance(record.get("sha256"), str)
-                and SHA256_RE.fullmatch(record["sha256"]) is not None, "invalid " + name)
-        return record
-    binary_record, elf_record = file_record("firmware.bin"), file_record("firmware.elf")
-    app_raw = image.read_bytes()
-    require(len(app_raw) == binary_record["size_bytes"]
-            and hashlib.sha256(app_raw).hexdigest() == binary_record["sha256"],
-            "application bytes do not match retained firmware.bin")
-    # ESP32-S3: 24-byte image header, 8-byte first segment header, followed
-    # by esp_app_desc_t. Its magic and 32-byte app_elf_sha256 layout are
-    # defined by ESP-IDF and esptool's _parse_app_info; no arbitrary search.
-    require(len(app_raw) >= 288 and app_raw[0] == 0xE9 and 1 <= app_raw[1] <= 16
-            and struct.unpack_from("<H", app_raw, 12)[0] == 9,
-            "application is not a supported ESP32-S3 image")
-    address, length = struct.unpack_from("<II", app_raw, 24)
-    require(0x3C000000 <= address < 0x3D000000 and 256 <= length <= len(app_raw) - 32
-            and struct.unpack_from("<I", app_raw, 32)[0] == 0xABCD5432,
-            "application descriptor is missing from the first DROM segment")
-    require(app_raw[176:208].hex() == elf_record["sha256"],
-            "application descriptor does not match retained firmware ELF hash")
-
-    reference_dir = out_dir / "resident_reference"
-    reference_dir.mkdir(exist_ok=False)
-    references = {}
-    for name, raw in (("window_result.json", window_raw), (BUILD_UPLOAD_ARTIFACTS_NAME, manifest_raw),
-                      ("bench_serial.log", serial_raw), ("firmware.bin", app_raw)):
-        path = reference_dir / name
-        with path.open("xb") as handle:
-            handle.write(raw)
-        references[name] = {**file_artifact(path), "path": path.relative_to(out_dir).as_posix()}
-    payload = {**manifest, "upload_performed": False,
-               "resident_provenance": {
-                   "schema_version": 1, "kind": "qualified_prior_" + reference_mode + "_application",
-                   "reference_collection_mode": reference_mode,
-                   "source_git_sha": source_git, "source_git_ref": window.get("git_ref", ""),
-                   "source_worktree_clean": True, "reference_runtime_identity": tracker.identity,
-                   "application_elf_sha256": elf_record["sha256"],
-                   "application_binding": ("exact_uploaded_binary_sha256_and_embedded_full_elf_sha256" if reference_upload
-                                           else "exact_recorded_binary_sha256_and_embedded_full_elf_sha256"),
-                   "reference_files": references}}
-    path = out_dir / BUILD_UPLOAD_ARTIFACTS_NAME
-    with path.open("x", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    return {**file_artifact(path), **payload}
 
 
 def write_window_result(out_dir: Path, payload: dict[str, Any]) -> None:
@@ -806,175 +613,6 @@ def publish_replay_delivery_evidence(
     return {**file_artifact(path), "event_count": len(events), "status": "captured"}
 
 
-def summarize_notification_delivery(events: list[dict[str, Any]]) -> dict[str, Any]:
-    counts = {
-        state: sum(1 for event in events if event.get("state") == state)
-        for state in REPLAY_DELIVERY_EVENT_STATES
-    }
-    requested = counts["notification_requested"]
-    accepted = counts["notification_accepted"]
-    delayed = counts["notification_delayed"]
-    dropped = counts["notification_dropped"]
-    skipped = counts["notification_skipped"]
-    terminal_outcomes = accepted + dropped + skipped
-    terminal_states = {
-        "notification_accepted",
-        "notification_dropped",
-        "notification_skipped",
-    }
-    sequences: dict[int, dict[str, int | str | bool]] = {}
-    invalid_identity_events = 0
-    malformed_event_count = 0
-    for event in events:
-        sequence = event.get("globalTxSequence")
-        if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence <= 0:
-            invalid_identity_events += 1
-            continue
-
-        track = sequences.setdefault(
-            sequence,
-            {
-                "requested": 0,
-                "terminal": 0,
-                "phase": "new",
-                "malformed": False,
-            },
-        )
-        state = event.get("state")
-        if state == "notification_requested":
-            track["requested"] = int(track["requested"]) + 1
-            if track["phase"] != "new":
-                track["malformed"] = True
-                malformed_event_count += 1
-            else:
-                track["phase"] = "requested"
-        elif state == "notification_delayed":
-            if track["phase"] != "requested":
-                track["malformed"] = True
-                malformed_event_count += 1
-        elif state in terminal_states:
-            track["terminal"] = int(track["terminal"]) + 1
-            if track["phase"] != "requested":
-                track["malformed"] = True
-                malformed_event_count += 1
-            else:
-                track["phase"] = "terminal"
-
-    unresolved = sum(
-        1
-        for track in sequences.values()
-        if int(track["requested"]) > 0 and int(track["terminal"]) == 0
-    )
-    for track in sequences.values():
-        if int(track["requested"]) != 1 or int(track["terminal"]) != 1:
-            track["malformed"] = True
-    malformed_sequences = sum(
-        1 for track in sequences.values() if bool(track["malformed"])
-    )
-    completed_sequences = sum(
-        1 for track in sequences.values() if not bool(track["malformed"])
-    )
-    loss_events = dropped + skipped
-    return {
-        "events": sum(counts.values()),
-        "requested": requested,
-        # An accepted or delayed CoreBluetooth updateValue call is one host-stack attempt.
-        "attempted": accepted + delayed,
-        "delivered": accepted,
-        "delivered_meaning": "accepted_by_CoreBluetooth_not_DUT_receipt",
-        "delayed_attempts": delayed,
-        "dropped": dropped,
-        "skipped": skipped,
-        "terminal_outcomes": terminal_outcomes,
-        "unresolved": unresolved,
-        "identified_sequences": len(sequences),
-        "completed_sequences": completed_sequences,
-        "malformed_sequences": malformed_sequences,
-        "malformed_events": malformed_event_count,
-        "invalid_identity_events": invalid_identity_events,
-        "loss_events": loss_events,
-        "complete": (
-            requested > 0
-            and completed_sequences > 0
-            and loss_events == 0
-            and unresolved == 0
-            and malformed_sequences == 0
-            and invalid_identity_events == 0
-        ),
-    }
-
-
-def notification_delivery_problem(
-    summary: object, *, required: bool = False
-) -> str:
-    if not isinstance(summary, dict):
-        return "notification delivery summary is missing" if required else ""
-    fields = (
-        "events",
-        "requested",
-        "attempted",
-        "delivered",
-        "delayed_attempts",
-        "dropped",
-        "skipped",
-        "terminal_outcomes",
-        "unresolved",
-        "identified_sequences",
-        "completed_sequences",
-        "malformed_sequences",
-        "malformed_events",
-        "invalid_identity_events",
-    )
-    if any(not isinstance(summary.get(field), int) or summary[field] < 0 for field in fields):
-        return "notification delivery summary has invalid counters"
-    dropped = summary["dropped"]
-    skipped = summary["skipped"]
-    unresolved = summary["unresolved"]
-    malformed_sequences = summary["malformed_sequences"]
-    malformed_events = summary["malformed_events"]
-    invalid_identity_events = summary["invalid_identity_events"]
-    loss_events = summary.get("loss_events")
-    if loss_events != dropped + skipped:
-        return "notification delivery loss counter is inconsistent"
-    if summary["terminal_outcomes"] != summary["delivered"] + dropped + skipped:
-        return "notification delivery terminal counter is inconsistent"
-    if summary["attempted"] != summary["delivered"] + summary["delayed_attempts"]:
-        return "notification delivery attempt counter is inconsistent"
-    if summary["events"] != (
-        summary["requested"]
-        + summary["delayed_attempts"]
-        + summary["terminal_outcomes"]
-    ):
-        return "notification delivery event counter is inconsistent"
-    if summary["completed_sequences"] + malformed_sequences != summary["identified_sequences"]:
-        return "notification delivery sequence counters are inconsistent"
-    if malformed_sequences or malformed_events or invalid_identity_events:
-        return (
-            "notification delivery sequence lifecycle was malformed: "
-            f"identified={summary['identified_sequences']} "
-            f"completed={summary['completed_sequences']} "
-            f"malformed_sequences={malformed_sequences} "
-            f"malformed_events={malformed_events} "
-            f"invalid_identity_events={invalid_identity_events}"
-        )
-    if summary["requested"] == 0:
-        return (
-            "notification delivery evidence is empty: requested=0"
-            if required
-            else ""
-        )
-    if dropped or skipped or unresolved:
-        return (
-            "notification delivery was incomplete: "
-            f"requested={summary['requested']} attempted={summary['attempted']} "
-            f"delivered={summary['delivered']} dropped={dropped} "
-            f"skipped={skipped} unresolved={unresolved}"
-        )
-    if summary.get("complete") is not True:
-        return "notification delivery summary is not complete"
-    return ""
-
-
 def install_signal_handlers() -> None:
     handled = False
 
@@ -1018,17 +656,13 @@ def wait_for_port(preferred: str, timeout_s: int = 30) -> str:
     raise RuntimeError("No USB serial device detected")
 
 
-def run_upload(port: str, skip_web: bool, bench_fault_inject: int = 0) -> None:
+def run_upload(port: str, skip_web: bool) -> None:
     command = [str(BUILD_SH), "-f", "-u"]
-    environment = os.environ.copy()
-    if bench_fault_inject:
-        command.extend(["--env", FAULT_PIO_ENV])
-        environment["BENCH_FAULT_INJECT"] = str(bench_fault_inject)
     if skip_web:
         command.append("--skip-web")
     if port:
         command.extend(["--upload-port", port])
-    subprocess.run(command, cwd=ROOT, check=True, env=environment)
+    subprocess.run(command, cwd=ROOT, check=True)
 
 
 def native_usb_reset_strategy(port: Any) -> tuple[Any, dict[str, Any]]:
@@ -1297,21 +931,13 @@ class V1Emulator:
         lease_fd: int,
         scenario: str,
         machine_event: Callable[[dict[str, Any]], None],
-        reader_qualification: bool = False,
-        persistence_coverage: bool = False,
     ) -> None:
-        if persistence_coverage and (suite != "replay" or scenario or reader_qualification):
-            raise ValueError("persistence coverage requires ordinary replay without an external scenario")
-        if reader_qualification and (suite != "replay" or scenario):
-            raise ValueError("reader qualification requires replay without an external scenario")
         self.executable = executable
         self.suite = suite
         self.mode = "bench" if suite == "replay" else "idle"
         self.blink_profile = blink_profile
         self.lease_fd = lease_fd
         self.scenario = scenario
-        self.reader_qualification = reader_qualification
-        self.persistence_coverage = persistence_coverage
         self.machine_event = machine_event
         self.log_path = out_dir / "v1replay.log"
         self.scenario_path = (
@@ -1362,10 +988,6 @@ class V1Emulator:
         if self.mode == "bench":
             if self.scenario:
                 command.extend(["--scenario", self.scenario])
-            if self.reader_qualification:
-                command.append("--reader-qualification")
-            if self.persistence_coverage:
-                command.append("--persistence-coverage")
             assert self.scenario_path is not None
             command.extend(["--scenario-evidence", str(self.scenario_path)])
         command.extend(
@@ -1441,10 +1063,6 @@ class V1Emulator:
         delivery_events = [
             event for event in events if event.get("state") in REPLAY_DELIVERY_EVENT_STATES
         ]
-        notification_delivery = summarize_notification_delivery(delivery_events)
-        completed = lifecycle_completed and (
-            self.mode != "bench" or notification_delivery["complete"]
-        )
         try:
             raw = self.log_path.read_text(encoding="utf-8", errors="replace")
         except FileNotFoundError:
@@ -1456,11 +1074,9 @@ class V1Emulator:
             self.log_path.write_text(safe, encoding="utf-8")
         return {
             "started": self.process is not None,
-            "completed": completed,
             "lifecycle_completed": lifecycle_completed,
             "mode": self.mode,
             "blink_profile": self.blink_profile,
-            "persistence_coverage": self.persistence_coverage,
             "managed_stop": process_was_running,
             "graceful_stop_confirmed": stopped and returncode == 0,
             "returncode": returncode,
@@ -1468,7 +1084,6 @@ class V1Emulator:
             "scenario_evidence": self.scenario_path.name if self.scenario_path else "",
             "stimulus_events": stimulus_events,
             "delivery_events": delivery_events,
-            "notification_delivery": notification_delivery,
         }
 
 
@@ -1599,7 +1214,6 @@ def require_unused_live_evidence(out_dir: Path, *, camera: bool) -> None:
         out_dir / REPLAY_STIMULUS_NAME,
         out_dir / REPLAY_DELIVERY_NAME,
         out_dir / REPLAY_SCENARIO_EVIDENCE_NAME,
-        out_dir / "resident_reference",
     ]
     if camera:
         reserved.append(out_dir / "camera")
@@ -1616,38 +1230,26 @@ def collect_live(
     out_dir.mkdir(parents=True, exist_ok=True)
     require_unused_live_evidence(out_dir, camera=args.camera)
 
-    resident_recording = getattr(args, "resident_recording", "")
-    resident_image = getattr(args, "resident_image", "")
-    if bool(resident_recording) != bool(resident_image) or (resident_recording and args.upload):
-        raise RuntimeIdentityFailure("resident reference requires both paths and no upload")
     intended_git_sha = args.git_sha
-    if resident_recording:
-        artifacts["build_upload"] = retain_resident_artifacts(
-            Path(resident_recording), Path(resident_image), out_dir)
-        intended_git_sha = artifacts["build_upload"]["resident_provenance"]["source_git_sha"]
 
     with V1RadioLease() as lease:
         assert lease.fd is not None
         port = wait_for_port(args.port)
-        bench_fault_inject = getattr(args, "bench_fault_inject", 0)
-        build_dir = firmware_build_dir(bench_fault_inject)
         if args.upload:
-            run_upload(port, args.skip_web, bench_fault_inject)
+            run_upload(port, args.skip_web)
             artifacts["build_upload"] = retain_build_upload_artifacts(
                 out_dir,
-                build_dir,
+                BUILD_OUTPUT_DIR,
                 upload_performed=True,
-                bench_fault_inject=bench_fault_inject,
             )
             port = wait_for_port(port, 30)
             deadline = time.monotonic() + args.post_upload_settle_seconds
             while time.monotonic() < deadline:
                 time.sleep(min(1.0, deadline - time.monotonic()))
-        elif not resident_recording:
+        else:
             artifacts["build_upload"] = retain_build_upload_artifacts(
                 out_dir,
-                build_dir,
-                bench_fault_inject=bench_fault_inject,
+                BUILD_OUTPUT_DIR,
             )
 
         timeline = BenchTimeline(out_dir / BENCH_TIMELINE_NAME)
@@ -1665,8 +1267,6 @@ def collect_live(
             lease_fd=lease.fd,
             scenario=args.scenario,
             machine_event=lambda payload: timeline.record_external(payload, "v1replay"),
-            reader_qualification=args.reader_qualification,
-            persistence_coverage=getattr(args, "persistence_coverage", False),
         )
         emulator_result: dict[str, Any] = {}
         camera_result: dict[str, Any] = {}
@@ -1701,10 +1301,6 @@ def collect_live(
                 build_upload=artifacts["build_upload"],
                 upload=args.upload,
             )
-            if resident_recording and runtime_qualification.get("status") != "qualified":
-                raise RuntimeIdentityFailure("fresh runtime does not match resident upload reference",
-                                             identity=observer.runtime_identity,
-                                             qualification=runtime_qualification)
             initial_boot_markers = observer.boot_marker_count
 
             emulator.start()
@@ -1879,11 +1475,6 @@ def main() -> int:
         return fail("post-upload settle duration cannot be negative")
     if args.suite != "replay" and args.scenario:
         return fail("--scenario is valid only for replay")
-    if args.reader_qualification and (args.suite != "replay" or args.scenario):
-        return fail("reader qualification requires replay without an external scenario")
-    if getattr(args, "persistence_coverage", False) and (
-            args.suite != "replay" or args.scenario or args.reader_qualification):
-        return fail("persistence coverage requires ordinary replay without an external scenario")
     if args.git_worktree_clean != "1":
         return fail(
             "source worktree is dirty; qualification requires an exact clean source state",
@@ -1902,31 +1493,17 @@ def main() -> int:
 
     try:
         result = collect_live(args, out_dir, artifacts)
-        resident = artifacts.get("build_upload", {}).get("resident_provenance", {})
         qualification = result["runtime_qualification"]
-        delivery_summary = result["emulator"].get("notification_delivery")
-        delivery_problem = notification_delivery_problem(
-            delivery_summary,
-            required=args.suite == "replay",
-        )
-        if delivery_problem:
-            verdict = "FAIL"
-        else:
-            verdict = (
-                "PASS"
-                if qualification.get("status") == "qualified"
-                else "COLLECTION_ONLY"
-            )
         write_window_result(
             out_dir,
             {
-                "result": verdict,
+                "result": "COMPLETE",
                 "evidence_contract": "external_only",
                 "suite": args.suite,
                 "duration_seconds": args.duration_seconds,
                 "board_id": args.board_id,
-                "git_sha": resident.get("source_git_sha", args.git_sha),
-                "git_ref": resident.get("source_git_ref", args.git_ref),
+                "git_sha": args.git_sha,
+                "git_ref": args.git_ref,
                 "git_worktree_clean": args.git_worktree_clean == "1",
                 "tooling_source": {"git_sha": args.git_sha, "git_ref": args.git_ref,
                                    "git_worktree_clean": args.git_worktree_clean == "1"},
@@ -1937,31 +1514,8 @@ def main() -> int:
                 "runtime_identity": result["runtime_identity"],
                 "runtime_qualification": qualification,
                 "artifacts": artifacts,
-                **(
-                    {
-                        "failure_kind": "replay_delivery",
-                        "qualification_reason": delivery_problem,
-                    }
-                    if verdict == "FAIL"
-                    else {}
-                ),
-                **(
-                    {"qualification_reason": qualification.get("reason", "unqualified")}
-                    if verdict == "COLLECTION_ONLY"
-                    else {}
-                ),
             },
         )
-        if verdict == "COLLECTION_ONLY":
-            print(
-                f"[bench] collection_only: {qualification.get('reason', 'unqualified')}",
-                file=sys.stderr,
-                flush=True,
-            )
-            return 1
-        if verdict == "FAIL":
-            print(f"[bench] fail: {delivery_problem}", file=sys.stderr, flush=True)
-            return 2
         return 0
     except FileExistsError as exc:
         print(f"[bench] {exc}", file=sys.stderr, flush=True)

@@ -835,7 +835,7 @@ func makeWriterPipeline(
 ) throws -> WriterPipeline {
     let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
     let compression: [String: Any] = [
-        // Preserve low-contrast display detail used by the pixel reader.
+        // Preserve low-contrast display detail for later evaluation.
         AVVideoAverageBitRateKey: 80_000_000,
         AVVideoExpectedSourceFrameRateKey: Int(frameRate),
         AVVideoMaxKeyFrameIntervalKey: Int(frameRate),

@@ -319,50 +319,6 @@ def test_dynamic_fixture_records_crop_exposure_and_hash() -> None:
         assert_true(camera.start_calls == 1 and camera.running, "passing preflight did not continue once")
 
 
-def test_frequency_capability_is_saved_and_shown_without_changing_admission() -> None:
-    """A refused optional reader must be visible before the window, not abort capture."""
-    def calibrate(_path, _ffmpeg):
-        return detect_display_crop_registration(registration_fixture(0, 0))
-
-    for qualified in (True, False):
-        with tempfile.TemporaryDirectory() as tmp:
-            camera = FakeCamera(Path(tmp), 300)
-            output = io.StringIO()
-            calls = []
-
-            def reader_registration(payload, still):
-                calls.append(still)
-                assert_true("reader_capabilities" not in payload, "diagnostic recursively binds itself")
-                assert_true(not camera.preflight_result_path.exists(), "capability checked after publication")
-                assert_true(payload["source_still"]["sha256"] == hashlib.sha256(still.read_bytes()).hexdigest(),
-                            "reader did not receive the original bound still")
-                return {"primary_frequency_calibration": {
-                    "qualified": qualified, "reason": None if qualified else "startup geometry validation refused: counter_edges",
-                    "preflight_document_sha256": "unfinished document hash", "checks": {"counter_edges": qualified}}}
-
-            fake_reader = SimpleNamespace(registration_for_camera=reader_registration)
-            with patch.dict(sys.modules, {"encounter_frequency_idle": fake_reader}), contextlib.redirect_stdout(output):
-                result = with_calibrator(calibrate, lambda: run_camera_preflight(camera))
-            saved = json.loads(camera.preflight_result_path.read_text())
-            assert_true(result == saved and result["result"] == "PASS", "capability changed camera admission")
-            assert_true(camera.running and not camera.abort_calls and calls == [camera.preflight_path], "camera restarted or stopped")
-            capability = saved["reader_capabilities"]["primary_frequency_calibration"]
-            assert_true(capability["qualified"] is qualified, "lost measured capability")
-            assert_true("preflight_document_sha256" not in capability, "unfinished document identity was published")
-            assert_true("primary_frequency_calibration" not in saved["registration"], "diagnostic became a trusted transform")
-            status = "AVAILABLE" if qualified else "UNAVAILABLE"
-            assert_true(status in output.getvalue().upper() and "before collection" in output.getvalue(), "capability was not shown early")
-
-    with tempfile.TemporaryDirectory() as tmp:
-        camera = FakeCamera(Path(tmp), 300)
-        fake_reader = SimpleNamespace(registration_for_camera=lambda *_: (_ for _ in ()).throw(ImportError("missing image library")))
-        with patch.dict(sys.modules, {"encounter_frequency_idle": fake_reader}), contextlib.redirect_stdout(io.StringIO()):
-            result = with_calibrator(calibrate, lambda: run_camera_preflight(camera))
-        assert_true(result["result"] == "PASS" and camera.running, "optional library failure stopped collection")
-        capability = result["reader_capabilities"]["primary_frequency_calibration"]
-        assert_true(capability["qualified"] is False and "missing image library" in capability["reason"], "library failure disappeared")
-
-
 def test_reseated_dut_position_and_scale_are_applied_before_capture() -> None:
     expected_x, expected_y = 67.0, 40.0
 
@@ -926,9 +882,7 @@ def test_smoke_cli_refuses_reused_directory_without_changing_owned_evidence() ->
         root = Path(tmp)
         smoke_dir = root / "smoke"
         with patch.object(preflight_module, "calibrate_display_crop",
-                          return_value=(0, 0, {"result": "PASS"})), patch.object(
-                preflight_module, "evaluate_frequency_calibration",
-                return_value={"qualified": False, "reason": "synthetic fixture"}):
+                          return_value=(0, 0, {"result": "PASS"})):
             original, code = run_camera_smoke(
                 smoke_dir,
                 camera_factory=lambda out, duration: FakeCamera(out, duration, smoke_capture_ok=True),
@@ -969,7 +923,6 @@ def test_smoke_cli_refuses_reused_directory_without_changing_owned_evidence() ->
 
 
 def main() -> int:
-    test_frequency_capability_is_saved_and_shown_without_changing_admission()
     test_video_gain_is_configured_reported_and_validated()
     test_dynamic_fixture_records_crop_exposure_and_hash()
     test_reseated_dut_position_and_scale_are_applied_before_capture()

@@ -117,7 +117,7 @@ Never add that file or its values to this repository.
 ```sh
 ./scripts/ci-test.sh                   # complete local code, test, and build gate
 ./scripts/run_device_tests.sh --quick  # connected-board boot and heap checks
-./bench.sh --all|--replay [--camera] [--no-flash]  # HIL suites (--replay: replay leg only) and recorded evidence
+./bench.sh --replay --camera  # raw replay stimuli, timing, serial log, and camera capture
 ```
 
 Automated tests establish code behavior. Device tests and bench runs establish
@@ -125,16 +125,10 @@ only what happened on the connected setup. Camera evidence establishes visible
 screen behavior for that recorded run. None proves every detector, power, RF,
 or vehicle environment.
 
-With `--camera`, the replay leg automatically runs the
-[encounter check](docs/BENCH_ENCOUNTER_CHECK.md): it reads threat information and
-associated alert cards across every recorded frame in the authored event
-intervals, compares them with replay input, and links to original images with
-explicit gaps and unknowns. It can also recheck an existing recording.
-The [sampled counter check](docs/BENCH_COUNTER_CHECK.md) retains its narrower
-count/mode scope and separate result. Qualified camera runs report
-`NO_DIFFERENCES_OBSERVED`, `DIFFERENCES_FOUND`, or `MEASUREMENT_INCOMPLETE`.
-Unreadable frames remain explicit; they do not by themselves prove incorrect
-firmware behavior.
+The raw bench collector does not interpret display pixels or issue a product
+verdict. It preserves the authored replay stimulus, notification delivery,
+host timing, serial output, exact firmware identity, camera video, and per-frame
+timing for a separate evaluator.
 
 Keep changes focused, read [AGENTS.md](AGENTS.md), run the complete gate, inspect
 the final diff, and say whether hardware or camera evidence was collected.

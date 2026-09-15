@@ -175,50 +175,10 @@ section "Python Regression Tests"
 run_step "Device run output regression suite" python3 scripts/test_run_device_tests.py
 run_step "Camera artifact regression suite" python3 scripts/test_camera_artifacts.py
 run_step "Camera preflight regression suite" python3 scripts/test_camera_preflight.py
-BENCH_READER_PYTHON="$(./scripts/bench_python.sh)" || exit 1
-run_step "Bench Python environment regression suite" "$BENCH_READER_PYTHON" scripts/test_bench_python.py
+BENCH_PYTHON="$(./scripts/bench_python.sh)" || exit 1
+run_step "Bench Python environment regression suite" "$BENCH_PYTHON" scripts/test_bench_python.py
 run_step "USB profile host regression suite" python3 scripts/test_usb_profiles.py
 run_step "Bench window regression suite" python3 scripts/test_bench_window.py
-run_step "Sampled visual comparison regression suite" python3 scripts/test_visual_compare.py
-run_step "Counter pixel reader regression suite" python3 scripts/test_counter_reader.py
-run_step "Counter input expectation regression suite" python3 scripts/test_counter_expectation.py
-run_step "Recorded counter check regression suite" python3 scripts/test_counter_check.py
-run_step "Encounter OCR session regression suite" python3 scripts/test_encounter_ocr_session.py
-run_step "Encounter pixel reader regression suite" python3 scripts/test_encounter_reader.py
-run_step "Expectation-blind OpenAI frame observer regression suite" python3 scripts/test_encounter_openai.py
-run_step "Encounter frequency geometry regression suite" "$BENCH_READER_PYTHON" scripts/test_encounter_frequency_geometry.py
-run_step "Encounter frequency residual regression suite" "$BENCH_READER_PYTHON" scripts/test_encounter_frequency_residual.py
-run_step "Encounter frequency context regression suite" python3 scripts/test_encounter_frequency_context.py
-run_step "Encounter calibrated idle integration suite" "$BENCH_READER_PYTHON" scripts/test_encounter_frequency_idle.py
-run_step "Encounter numeric decimal geometry suite" "$BENCH_READER_PYTHON" scripts/test_encounter_frequency_numeric.py
-run_step "Encounter split card text suite" "$BENCH_READER_PYTHON" scripts/test_encounter_card_text.py
-run_step "Encounter independent card reference suite" "$BENCH_READER_PYTHON" scripts/test_encounter_secondary_reference.py
-run_step "Encounter secondary context regression suite" python3 scripts/test_encounter_secondary_context.py
-run_step "Encounter secondary optical bridge regression suite" "$BENCH_READER_PYTHON" scripts/test_encounter_secondary_optical_bridge.py
-run_step "Encounter secondary probe regression suite" "$BENCH_READER_PYTHON" scripts/test_encounter_secondary_probe.py
-run_step "Encounter input expectation regression suite" python3 scripts/test_encounter_expectation.py
-run_step "Recorded encounter check regression suite" python3 scripts/test_encounter_check.py
-run_step "Encounter sequence interpretation regression suite" python3 scripts/test_encounter_sequence.py
-run_step "Encounter literal observation regression suite" python3 scripts/test_encounter_observation.py
-run_step "Encounter behavior regression suite" python3 scripts/test_encounter_behavior.py
-run_step "Encounter ordered frame reader regression suite" python3 scripts/test_encounter_frame_workers.py
-run_step "Encounter persistence sequence regression suite" python3 scripts/test_encounter_persistence.py
-run_step "Encounter recorded source contract regression suite" python3 scripts/test_encounter_behavior_contract.py
-run_step "Encounter build comparison regression suite" python3 scripts/test_encounter_build_comparison.py
-run_step "Encounter behavior report regression suite" python3 scripts/test_encounter_behavior_report.py
-run_step "Encounter blink phase observation regression suite" python3 scripts/test_encounter_phase_observation.py
-run_step "Encounter independent reading reuse regression suite" python3 scripts/test_encounter_reading_reuse.py
-run_step "Encounter independent frequency reference regression suite" python3 scripts/test_encounter_primary_frequency_reference.py
-run_step "Encounter evidence assessment regression suite" python3 scripts/test_encounter_assessment.py
-run_step "Encounter temporal classifier regression suite" python3 scripts/test_encounter_temporal.py
-run_step "Encounter arrow acquisition regression suite" python3 scripts/test_encounter_arrow_acquisition.py
-run_step "Encounter arrow transition regression suite" python3 scripts/test_encounter_arrow_transition.py
-run_step "Encounter bar transition regression suite" python3 scripts/test_encounter_bar_transition.py
-run_step "Encounter mute redraw transition regression suite" python3 scripts/test_encounter_mute_redraw_transition.py
-run_step "Encounter redraw probe regression suite" python3 scripts/test_encounter_redraw_probe.py
-run_step "Encounter runtime probe regression suite" python3 scripts/test_encounter_runtime_probe.py
-run_step "Encounter qualification regression suite" python3 scripts/test_encounter_qualification.py
-run_step "Encounter qualification workflow regression suite" python3 scripts/test_encounter_qualification_workflow.py
 run_step "LittleFS compatibility regression suite" python3 scripts/test_check_littlefs_image_compatibility.py
 run_step "Commit metadata regression suite" python3 scripts/test_check_public_commit_metadata.py
 run_step "App-only upload offset regression suite" python3 scripts/test_force_app_upload_offset.py

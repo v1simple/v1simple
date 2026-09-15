@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Keep the external reader independent of the invoking terminal's Python packages.
+# Keep raw bench acquisition independent of the invoking terminal's Python packages.
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REQUIREMENTS="$ROOT_DIR/scripts/requirements-bench.txt"
-BENCH_ENV="$ROOT_DIR/.artifacts/bench/python"
+BENCH_ENV="$ROOT_DIR/.artifacts/bench-runtime/python"
 BENCH_PYTHON="$BENCH_ENV/bin/python3"
 unset PYTHONHOME PYTHONPATH
 export PYTHONNOUSERSITE=1
@@ -30,38 +30,8 @@ if [[ ! -x "$BENCH_PYTHON" ]]; then
 fi
 if ! dependencies_match; then
   printf '[bench] installing the fixed bench dependencies...\n' >&2
-  # Stb-tester publishes a pure-Python source distribution; compiled pixel
-  # dependencies must still install from wheels.
   "$BENCH_PYTHON" -I -m pip --isolated install --disable-pip-version-check \
-    --no-input --only-binary=:all: --no-binary=stbt-core --retries 1 --timeout 30 -r "$REQUIREMENTS" >&2
+    --no-input --only-binary=:all: --retries 1 --timeout 30 -r "$REQUIREMENTS" >&2
   dependencies_match
-fi
-
-# Reject dependency drift before spending a recording on an unusable reader.
-# Full reader, OCR, camera and evidence verification still runs in the analyzer.
-if [[ $# -gt 0 ]]; then
-  "$BENCH_PYTHON" -I - "$1" <<'PY'
-import json
-import sys
-import numpy
-import PIL
-import cv2
-import importlib.metadata
-from _stbt.config import get_config
-try:
-    with open(sys.argv[1], encoding="utf-8") as stream:
-        qualified = json.load(stream)["reader"]["runtime"]
-    actual = {"numpy_version": numpy.__version__, "pillow_version": PIL.__version__,
-              "opencv_version": cv2.__version__,
-              "stbt_core_version": importlib.metadata.version("stbt-core"),
-              "stbt_pyramid_levels": get_config("match", "pyramid_levels", type_=int)}
-    differences = [f"{key}: qualified {qualified.get(key)!r}, running {value!r}"
-                   for key, value in actual.items() if qualified.get(key) != value]
-    if differences:
-        raise ValueError("; ".join(differences))
-except (OSError, ValueError, KeyError, TypeError) as error:
-    print(f"[bench] reader environment is not qualified: {error}", file=sys.stderr)
-    sys.exit(2)
-PY
 fi
 printf '%s\n' "$BENCH_PYTHON"

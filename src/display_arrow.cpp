@@ -14,7 +14,6 @@
 #include "settings.h"
 #include "packet_parser.h"                  // Direction enum, DIR_FRONT/SIDE/REAR
 #include "modules/alp/alp_runtime_module.h" // AlpLaserDirection enum (for laser-color override)
-#include "bench_fault_inject.h"
 
 // Arrows and band labels share V1Display's blink phase.
 
@@ -44,15 +43,8 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
     // Determine which arrows belong to this alert direction set.  showXxx is
     // independent of blink phase: an arrow that V1 reports as flashing is
     // still part of the current alert, so its cluster geometry never changes.
-#if BENCH_FAULT_INJECT == 2
-    // Negative control: swap front and rear so main_arrows must differ from
-    // target. Side is untouched; a side-only alert stays correct.
-    const bool showFront = (dir & DIR_REAR) != 0;
-    const bool showRear = (dir & DIR_FRONT) != 0;
-#else
     const bool showFront = (dir & DIR_FRONT) != 0;
     const bool showRear = (dir & DIR_REAR) != 0;
-#endif
     const bool showSide = (dir & DIR_SIDE) != 0;
 
     // Per-arrow blink-off-phase flag.  Keep the three visual states distinct:

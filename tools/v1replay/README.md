@@ -85,8 +85,8 @@ through the complete external evidence window, and then stops its process group.
 Core and display windows use the same managed emulator in idle mode, so the
 complete bench never depends on a physical V1.
 
-`BENCH_REPLAY_DURATION_SECONDS=80 ./bench.sh --replay --camera --qualification-capture`
-selects the separate 68-second generated reader exercise. It holds each X/K/Ka
+`v1replay bench --reader-qualification` selects the separate 68-second generated
+display exercise. It holds each X/K/Ka
 primary frequency while isolating strength, mute-color, and direction changes,
 then exercises every directed arrow change. A final 12-second card/blink matrix
 places every band in the primary and both secondary slots, with unique alert
@@ -95,13 +95,11 @@ and follow the exercise. The normal product replay remains unchanged.
 The existing resolved scenario evidence
 retains the exact selected values and their hash. These authored cases provide
 coverage opportunities; they do not guarantee particular camera or OCR errors.
-The capture mode continues to withhold all automatic pixel analysis.
+The emulator only emits stimuli; it does not analyze camera pixels.
 
 `--persistence-coverage` selects a separate 64-second ordinary radar sequence
 for observing the configured Alert persistence. It does not change that setting
-or establish that persisted content was displayed correctly. Use the
-[bench persistence command](../../docs/BENCH_ENCOUNTER_CHECK.md#observe-configured-persistence)
-to retain the setting, capture the screen and analyze its display stages.
+or establish that persisted content was displayed correctly.
 
 Normal bench playback defaults to the `scenario` priority-arrow blink profile. As a
 provisional generated assumption, it blinks only during the 19-second authored

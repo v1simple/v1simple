@@ -147,9 +147,6 @@ jobs:
           python3 scripts/check_platformio_core_version.py --pio pio
           python3 scripts/check_esptool_version.py --python python3
 
-      - name: Validate release artifact contract
-        run: python3 scripts/check_release_workflow_flash_contract.py
-
       - name: Build and validate production artifacts
         env:
           PLATFORMIO_RUN_JOBS: '1'
@@ -166,52 +163,11 @@ jobs:
             --expected "$EXPECTED_VERSION" \
             --source "$SOURCE_VERSION"
 
-      - name: Merge firmware for ESP Web Tools
+      - name: Package release artifacts
         env:
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: |
-          python3 scripts/check_esptool_version.py --python python3
-          mkdir -p release
-          cp .pio/build/waveshare-349/bootloader.bin release/
-          cp .pio/build/waveshare-349/partitions.bin release/
-          cp .pio/build/waveshare-349/firmware.bin release/
-          cp .pio/build/waveshare-349/firmware.bin release/firmware-update.bin
-          cp .pio/build/waveshare-349/littlefs.bin release/
-
-          python3 -m esptool --chip esp32s3 merge-bin \
-            -o release/merged-firmware.bin \
-            --flash-mode dio \
-            --flash-freq 80m \
-            --flash-size 16MB \
-            0x0000 release/bootloader.bin \
-            0x8000 release/partitions.bin \
-            0x20000 release/firmware.bin \
-            0xda0000 release/littlefs.bin
-
-          python3 scripts/check_release_image_info.py \
-            --image release/merged-firmware.bin \
-            --env waveshare-349
-
-          python3 scripts/write_release_manifests.py \
-            --release-dir release \
-            --version "$RELEASE_TAG"
-
-      - name: Stage GitHub Pages installer
-        run: |
-          mkdir -p release/pages
-          cp web-installer/index.html release/pages/index.html
-          cp interface/static/branding/v1simple-logo-transparent.png release/pages/v1simple-logo-transparent.png
-          sed -i 's#../interface/static/branding/v1simple-logo-transparent.png#v1simple-logo-transparent.png#' release/pages/index.html
-          cp release/manifest.json release/pages/manifest.json
-          cp release/manifest-update.json release/pages/manifest-update.json
-          cp release/merged-firmware.bin release/pages/merged-firmware.bin
-          cp release/firmware-update.bin release/pages/firmware-update.bin
-          python3 scripts/stage_release_licenses.py \
-            --release-dir release \
-            --pages-dir release/pages
-          python3 scripts/check_web_installer_page.py \
-            --site-dir release/pages \
-            --expected-version "${{ steps.version.outputs.tag }}"
+          python3 scripts/package_release_artifacts.py --version "$RELEASE_TAG"
 
       - name: Upload image-info report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

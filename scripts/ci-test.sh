@@ -165,7 +165,7 @@ run_step "LittleFS compatibility regression suite" python3 scripts/test_check_li
 run_step "Commit metadata regression suite" python3 scripts/test_check_public_commit_metadata.py
 run_step "App-only upload offset regression suite" python3 scripts/test_force_app_upload_offset.py
 run_step "Release preparation regression suite" python3 scripts/test_prepare_release.py
-run_step "Release workflow flash contract regression suite" python3 scripts/test_release_workflow_flash_contract.py
+run_step "Release artifact packaging regression suite" python3 scripts/test_release_artifacts.py
 run_step "Release license staging regression suite" python3 scripts/test_stage_release_licenses.py
 run_step "Exact build-tool version regression suite" python3 scripts/test_build_tool_versions.py
 run_step "Maintenance HTTP ingress contract" python3 scripts/test_maintenance_ingress_contract.py

@@ -1,41 +1,23 @@
 #include "display_restore_module.h"
 
+#include <Arduino.h>
+#include "display_preview_module.h"
 #include "display_pipeline_module.h"
 
-void DisplayRestoreModule::begin(V1Display* disp, PacketParser* pktParser, V1BLEClient* ble,
-                                 DisplayPreviewModule* preview, DisplayPipelineModule* displayPipeline) {
-    display_ = disp;
-    parser_ = pktParser;
-    bleClient_ = ble;
-    previewModule_ = preview;
-    displayPipelineModule_ = displayPipeline;
+void DisplayRestoreModule::begin(DisplayPreviewModule& preview, DisplayPipelineModule& displayPipeline) {
+    previewModule_ = &preview;
+    displayPipelineModule_ = &displayPipeline;
 }
 
 bool DisplayRestoreModule::process() {
-    if (!previewModule_)
+    if (!previewModule_ || !displayPipelineModule_)
         return false;
 
-    bool previewEnded = previewModule_->consumeEnded();
-
-    if (!previewEnded) {
+    if (!previewModule_->consumeEnded()) {
         return false;
     }
 
-    bool restored = false;
-
-    if (displayPipelineModule_) {
-        restored = displayPipelineModule_->restoreCurrentOwner(millis());
-    }
-    if (!restored && display_ && parser_ && bleClient_) {
-        // Defensive fallback for tests or partial wiring; production should use the pipeline.
-        display_->forceNextRedraw();
-        if (bleClient_->isConnected()) {
-            display_->update(parser_->getDisplayState());
-        } else {
-            display_->showScanning();
-        }
-        restored = true;
-    }
+    const bool restored = displayPipelineModule_->restoreCurrentOwner(millis());
 
     if (restored) {
         Serial.println("[Display] Color preview ended - restored display_");

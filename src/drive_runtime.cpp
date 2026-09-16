@@ -293,7 +293,7 @@ void DriveRuntime::initializeRuntimeModules() {
     connectionState_.setDisplayOwnerRestoreCallback(restoreConnectionDisplayOwner, this);
     connectionDispatch_.begin(connectionCadence_, connectionState_);
     obdSettingsSync_.begin(&settings_, &obd_);
-    displayRestore_.begin(&display_, &parser_, &ble_, &preview_, &displayPipeline_);
+    displayRestore_.begin(preview_, displayPipeline_);
     displayOrchestration_.begin(&display_, &ble_, &preview_, &displayRestore_, &parser_,
                                 &volumeFade_, &speedMute_, &quiet_);
     connectionCycle_.begin(*this);

@@ -1,6 +1,6 @@
-// Native tests include this translation unit directly against the mock display.
-// Compile it exactly once in that test translation unit.
-#if !defined(UNIT_TEST) || defined(V1_LINKED_TEST_DISPLAY_PREVIEW_BLINK)
+// Focused native tests include this translation unit directly against their
+// mock display. Compile it only when that test explicitly requests it.
+#if !defined(UNIT_TEST) || defined(V1_INCLUDE_DISPLAY_PREVIEW_MODULE_IMPL)
 
 #include "display_preview_module.h"
 
@@ -659,4 +659,4 @@ void DisplayPreviewModule::renderResolvedStep(const ResolvedStep& resolved, bool
     display_->update(primary, allAlerts, alertCount, state);
 }
 
-#endif // !UNIT_TEST || V1_LINKED_TEST_DISPLAY_PREVIEW_BLINK
+#endif // !UNIT_TEST || V1_INCLUDE_DISPLAY_PREVIEW_MODULE_IMPL

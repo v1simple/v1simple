@@ -26,14 +26,9 @@ unsigned long mockMicros = 0;
 #endif
 
 
-#ifndef V1_LINKED_TEST_DISPLAY_PREVIEW_BLINK
-#define V1_LINKED_TEST_DISPLAY_PREVIEW_BLINK
-#define V1_INLINE_TEST_DISPLAY_PREVIEW_BLINK
-#endif
+#define V1_INCLUDE_DISPLAY_PREVIEW_MODULE_IMPL
 #include "../../src/modules/display/display_preview_module.h"
-#ifdef V1_INLINE_TEST_DISPLAY_PREVIEW_BLINK
 #include "../../src/modules/display/display_preview_module.cpp"
-#endif
 
 // ---------------------------------------------------------------- helpers
 

@@ -100,6 +100,12 @@ void V1Display::showStealth(float, bool) {
 void V1Display::showScanning() {}
 void V1Display::setBleContext(const DisplayBleContext& context) { bleCtx_ = context; }
 void V1Display::setBLEProxyStatus(bool, bool, bool) {}
+void V1Display::setPreviewIndicatorOverridesActive(bool) {}
+void V1Display::setAlpPreviewState(bool, uint8_t, uint8_t) {}
+void V1Display::setObdPreviewState(bool, bool, bool) {}
+void V1Display::setProfileIndicatorSlot(int) {}
+void V1Display::setAlpFrequencyOverride(const char*, bool) {}
+void V1Display::clearAlpFrequencyOverride() {}
 void V1Display::setSpeedVolZeroActive(bool active) { speedVolZeroActive_ = active; }
 void V1Display::setAlpLaserEvent(const AlpLaserEvent&) {}
 void V1Display::forceNextRedraw() { dirty_.resetTracking = true; }
@@ -142,14 +148,10 @@ bool DisplayFontManager::getTopCounterBounds(char, bool, int& xMin, int& xMax) {
 #include "../../src/modules/display/display_preview_module.h"
 #include "../../src/modules/display/display_restore_module.h"
 #include "../../src/modules/display/render_frame_composer.h"
+#define V1_INCLUDE_DISPLAY_PREVIEW_MODULE_IMPL
+#include "../../src/modules/display/display_preview_module.cpp"
+#include "../../src/modules/display/display_restore_module.cpp"
 #include "../../src/modules/display/display_orchestration_module.cpp"
-
-// Preview/restore lifecycle is inert except for the ownership flag under test.
-DisplayPreviewModule::DisplayPreviewModule() = default;
-void DisplayPreviewModule::update() {}
-void DisplayPreviewModule::requestHold(uint32_t) { previewActive_ = true; }
-void DisplayPreviewModule::cancel() { previewActive_ = false; }
-bool DisplayRestoreModule::process() { return false; }
 
 V1Display display(settings);
 
@@ -521,6 +523,7 @@ struct CounterBlinkRuntime {
     DisplayMode mode = DisplayMode::IDLE;
     DisplayPipelineModule pipeline;
     DisplayPreviewModule preview;
+    DisplayRestoreModule restore;
     DisplayOrchestrationModule orchestration;
 
     CounterBlinkRuntime() {
@@ -536,7 +539,9 @@ struct CounterBlinkRuntime {
         dependencies.alp = &alp;
         dependencies.speedSelector = &speed;
         pipeline.begin(dependencies);
-        orchestration.begin(&display, &ble, &preview, nullptr, &parser, nullptr, nullptr, nullptr);
+        preview.begin(&display);
+        restore.begin(preview, pipeline);
+        orchestration.begin(&display, &ble, &preview, &restore, &parser, nullptr, nullptr, nullptr);
     }
 
     void feed(uint8_t id, std::initializer_list<uint8_t> payload, uint32_t nowMs = 10000) {
@@ -568,6 +573,15 @@ struct CounterBlinkRuntime {
         const bool requested = orchestration.processLightweightRefresh(context);
         if (requested) pipeline.refreshBlinkTick(nowMs);
         return requested;
+    }
+
+    void processEarly(uint32_t nowMs, bool bootSplashHoldActive = false, bool overloadThisLoop = false) {
+        mockMillis = nowMs;
+        DisplayOrchestrationEarlyContext context;
+        context.bootSplashHoldActive = bootSplashHoldActive;
+        context.overloadThisLoop = overloadThisLoop;
+        context.bleContext.v1Connected = ble.isConnected();
+        orchestration.processEarly(context);
     }
 };
 
@@ -767,6 +781,56 @@ void test_idle_counter_blink_respects_splash_preview_and_runtime_gates() {
     TEST_ASSERT_EQUAL_UINT(1, canvas()->flushSnapshots.size());
 }
 
+void test_timed_preview_expiry_restores_once_on_the_next_unsuppressed_loop() {
+    CounterBlinkRuntime runtime;
+    mockMillis = 2000;
+    runtime.preview.requestHold(10);
+    clearObservations();
+
+    runtime.processEarly(2010);
+    TEST_ASSERT_FALSE(runtime.preview.isRunning());
+    TEST_ASSERT_TRUE_MESSAGE(runtime.preview.ownsPresentation(),
+                             "expiry must retain presentation ownership until restore consumes the edge");
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(0u, canvas()->getFlushCount(),
+                                   "the expiry loop must not restore in the same loop");
+
+    runtime.processEarly(2011);
+    TEST_ASSERT_FALSE_MESSAGE(runtime.preview.ownsPresentation(),
+                              "the next unsuppressed loop must consume preview ownership");
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(1u, canvas()->getFlushCount(),
+                                   "the authoritative display owner must be restored exactly once");
+
+    clearObservations();
+    runtime.processEarly(2012);
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(0u, canvas()->getFlushCount(),
+                                   "a consumed preview edge must not restore again");
+}
+
+void test_cancelled_preview_waits_through_suppression_then_restores_once() {
+    CounterBlinkRuntime runtime;
+    mockMillis = 3000;
+    runtime.preview.requestHold(1000);
+    runtime.preview.cancel();
+    clearObservations();
+
+    runtime.processEarly(3001, true, false);
+    runtime.processEarly(3002, false, true);
+    TEST_ASSERT_TRUE_MESSAGE(runtime.preview.ownsPresentation(),
+                             "suppressed loops must preserve the pending restore edge");
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(0u, canvas()->getFlushCount(),
+                                   "suppressed loops must not restore the display");
+
+    runtime.processEarly(3003);
+    TEST_ASSERT_FALSE(runtime.preview.ownsPresentation());
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(1u, canvas()->getFlushCount(),
+                                   "the first unsuppressed loop must restore exactly once");
+
+    clearObservations();
+    runtime.processEarly(3004);
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(0u, canvas()->getFlushCount(),
+                                   "a cancelled preview edge must be consumed only once");
+}
+
 void test_idle_blink_refresh_does_not_replace_stealth_owner() {
     CounterBlinkRuntime runtime;
     settings.mutableSettings().stealthEnabled = true;
@@ -827,6 +891,8 @@ int main() {
     RUN_TEST(test_changed_spec_priority_swaps_primary_and_card_without_stale_geometry);
     RUN_TEST(test_spec_image_pair_blinks_k_band_and_front_arrow_through_full_pipeline);
     RUN_TEST(test_idle_counter_blink_respects_splash_preview_and_runtime_gates);
+    RUN_TEST(test_timed_preview_expiry_restores_once_on_the_next_unsuppressed_loop);
+    RUN_TEST(test_cancelled_preview_waits_through_suppression_then_restores_once);
     RUN_TEST(test_idle_blink_refresh_does_not_replace_stealth_owner);
     RUN_TEST(test_live_v1_counter_blinks_after_taking_stealth_screen);
     RUN_TEST(test_live_alp_counter_blinks_after_taking_stealth_screen);

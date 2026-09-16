@@ -156,9 +156,12 @@ void test_band_label_dirty_window_covers_FreeSans_Ka_and_Ku_glyphs() {
     const FontVisualBounds ka = freeSans24VisualBounds("Ka");
     const FontVisualBounds ku = freeSans24VisualBounds("Ku");
     const int rightCoverageFromAnchor = kBandLabelClearW - kBandLabelClearLeftPad;
+    const DisplayLayout::DisplayRect card0 = DisplayLayout::cardRect(0);
 
     TEST_ASSERT_GREATER_OR_EQUAL_INT(ka.width + 2, rightCoverageFromAnchor);
-    TEST_ASSERT_GREATER_OR_EQUAL_INT(ku.width + 2, rightCoverageFromAnchor);
+    TEST_ASSERT_GREATER_OR_EQUAL_INT(ku.width - kKuLabelLeftShift + 2, rightCoverageFromAnchor);
+    TEST_ASSERT_GREATER_OR_EQUAL_INT(kKuLabelLeftShift, kBandLabelClearLeftPad);
+    TEST_ASSERT_LESS_OR_EQUAL_INT(card0.x, kBandLabelX - kKuLabelLeftShift + ku.width);
     TEST_ASSERT_GREATER_OR_EQUAL_INT(ka.height + 4, kBandLabelClearH);
     TEST_ASSERT_GREATER_OR_EQUAL_INT(ku.height + 4, kBandLabelClearH);
 }
@@ -234,11 +237,13 @@ void test_drawBandIndicators_ku_obeys_the_shared_k_flash_bit() {
     class TextCanvas : public Arduino_Canvas {
       public:
         TextCanvas() : Arduino_Canvas(SCREEN_WIDTH, SCREEN_HEIGHT, nullptr) {}
-        struct TextCall { std::string text; uint16_t color; };
+        struct TextCall { std::string text; uint16_t color; int16_t x; };
         std::vector<TextCall> calls;
         uint16_t color = 0;
+        int16_t cursorX = 0;
         void setTextColor(uint16_t value) override { color = value; }
-        void print(const char* text) override { calls.push_back({text, color}); }
+        void setCursor(int16_t x, int16_t) override { cursorX = x; }
+        void print(const char* text) override { calls.push_back({text, color, cursorX}); }
     };
     for (uint8_t bandMask : {uint8_t(BAND_K), uint8_t(BAND_K | BAND_KU), uint8_t(BAND_KU)}) {
         auto* text = new TextCanvas;
@@ -256,6 +261,8 @@ void test_drawBandIndicators_ku_obeys_the_shared_k_flash_bit() {
                                    text->calls[2].color);
             TEST_ASSERT_EQUAL_STRING((bandMask & BAND_KU) ? "Ku" : "K",
                                      text->calls[2].text.c_str());
+            TEST_ASSERT_EQUAL_INT16((bandMask & BAND_KU) ? kBandLabelX - kKuLabelLeftShift : kBandLabelX,
+                                    text->calls[2].x);
         }
     }
 }
@@ -317,7 +324,7 @@ void test_drawBandIndicators_full_stack_clear_preserves_drawn_card0() {
         "clipped full-stack cleanup must not add a redundant full card redraw");
 }
 
-void test_drawBandIndicators_ku_foreground_repaints_drawn_card0() {
+void test_drawBandIndicators_ku_foreground_stays_clear_of_drawn_card0() {
     display.ut_elementCaches().bands.valid = false;
     display.ut_drawBandIndicators(BAND_K, false, 0);
     display.ut_elementCaches().cards.lastDrawnPositions[0].band = BAND_K;
@@ -326,8 +333,8 @@ void test_drawBandIndicators_ku_foreground_repaints_drawn_card0() {
 
     display.ut_drawBandIndicators(static_cast<uint8_t>(BAND_K | BAND_KU), false, 0);
 
-    TEST_ASSERT_TRUE_MESSAGE(display.ut_elementCaches().cards.forceRedraw,
-        "the wider Ku glyph must be composited below an already-drawn card 0");
+    TEST_ASSERT_FALSE_MESSAGE(display.ut_elementCaches().cards.forceRedraw,
+        "the shifted Ku glyph must not require a redundant card 0 repaint");
 }
 
 void test_drawBandIndicators_ka_flash_redraws_full_stack_to_preserve_k() {
@@ -588,7 +595,7 @@ int main() {
     RUN_TEST(test_drawBandIndicators_band_move_clears_only_changed_cells);
     RUN_TEST(test_drawBandIndicators_band_move_preserves_drawn_card0);
     RUN_TEST(test_drawBandIndicators_full_stack_clear_preserves_drawn_card0);
-    RUN_TEST(test_drawBandIndicators_ku_foreground_repaints_drawn_card0);
+    RUN_TEST(test_drawBandIndicators_ku_foreground_stays_clear_of_drawn_card0);
     RUN_TEST(test_drawBandIndicators_ka_flash_redraws_full_stack_to_preserve_k);
     RUN_TEST(test_drawBandIndicators_inactive_muted_toggle_skips_visual_redraw);
 

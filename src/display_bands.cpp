@@ -24,13 +24,17 @@
 namespace {
 
 constexpr int kBandLabelX = 82;
+// Ku shares the V1's physical K cell, but its second letter would otherwise
+// enter card slot 0. Keep the normal K anchor unchanged and move only Ku left.
+constexpr int kKuLabelLeftShift = 9;
 constexpr int kBandLabelTextSize = 1;
 constexpr int kBandLabelSpacing = 43;
 constexpr int kBandLabelStartY = 55;
-constexpr int kBandLabelClearLeftPad = 5;
+constexpr int kBandLabelClearLeftPad = 9;
 // FreeSansBold24 "Ka" extends about 56 px past the middle-left anchor after
-// datum adjustment. Include the full glyph in the partial-flush rectangle.
-constexpr int kBandLabelClearW = 66;
+// datum adjustment. Include the shifted Ku glyph and the full Ka glyph in the
+// partial-flush rectangle while retaining the historic right edge.
+constexpr int kBandLabelClearW = 70;
 constexpr int kBandLabelClearH = 42;
 
 } // namespace
@@ -230,12 +234,6 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
         }
     }
 
-    // "Ku" is wider than the K/X glyphs and its tail reaches card 0.  Keep
-    // that label intact, then let the later card pass restore its own pixels.
-    if (protectCard0 && kuIdentity && (forceFullStack || cellChanged[2])) {
-        elementCaches_.cards.forceRedraw = true;
-    }
-
     for (int i = 0; i < kBandCellCount; ++i) {
         if (!forceFullStack && !cellChanged[i]) {
             continue;
@@ -255,7 +253,8 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
         // provide the background for every repainted cell; the glyph itself
         // must not paint background pixels.
         TFT_CALL(setTextColor)(col);
-        GFX_drawString(tft_, cells[i].label, x, labelY);
+        const int labelX = (i == 2 && kuIdentity) ? (x - kKuLabelLeftShift) : x;
+        GFX_drawString(tft_, cells[i].label, labelX, labelY);
     }
 
     elementCaches_.bands.lastMask = effectiveBandMask;

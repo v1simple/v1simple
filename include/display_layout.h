@@ -186,7 +186,8 @@ inline DisplayRect bandCellAssertRect(int index) {
     // FreeSansBold24pt7b glyph probes. These intentionally exclude the broader
     // per-cell clear windows because L overlaps the GPS badge and X overlaps
     // card slot 0. Keep these font-derived boxes paired with the renderer's
-    // fixed x=82 and y=55+43*i anchors.
+    // fixed x=82 and y=55+43*i anchors. Ku is a display-only K-cell label
+    // shifted left of this K probe so its extra letter stays clear of card 0.
     const int clamped = (index < 0) ? 0 : ((index >= BAND_CELL_COUNT) ? (BAND_CELL_COUNT - 1) : index);
     switch (clamped) {
     case 0:

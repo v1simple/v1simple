@@ -210,10 +210,11 @@ void test_card_clear_repaints_and_resets_previous_drawn_card_state() {
     TEST_ASSERT_EQUAL_UINT32(0u, cards.lastDrawnPositions[0].frequency);
     TEST_ASSERT_EQUAL_UINT32(0u, cards.slots[0].lastSeen);
     TEST_ASSERT_FALSE(cards.lastPriority.isValid);
-    TEST_ASSERT_EQUAL_INT_MESSAGE(1, bandIndicatorDrawCount,
-        "whole-row card clear must restore an exposed Ku label in the same frame");
-    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(BAND_K | BAND_KU), lastBandIndicatorMask);
-    TEST_ASSERT_TRUE(lastBandIndicatorMuted);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, bandIndicatorDrawCount,
+        "whole-row card clear must not repaint the non-overlapping Ku label");
+    TEST_ASSERT_TRUE(bands.valid);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(BAND_K | BAND_KU), bands.lastMask);
+    TEST_ASSERT_TRUE(bands.lastMuted);
 }
 
 // Regression: the composer feeds a live alert list where the priority leads.
@@ -609,7 +610,7 @@ void test_secondary_card_expires_and_clears_after_grace_when_only_priority_remai
     settings.slotAlertPersistSec[0] = 0;
 }
 
-void test_removing_card0_restores_exposed_ku_label_in_same_frame() {
+void test_removing_card0_leaves_non_overlapping_ku_and_gps_caches_untouched() {
     AlertData priority = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700, true, true);
     AlertData secondary = AlertData::create(BAND_K, DIR_FRONT, 3, 0, 24150, true, true);
     AlertData both[2] = {priority, secondary};
@@ -634,15 +635,13 @@ void test_removing_card0_restores_exposed_ku_label_in_same_frame() {
 
     TEST_ASSERT_EQUAL_INT(0, display.ut_elementCaches().cards.lastDrawnCount);
     TEST_ASSERT_EQUAL_UINT8(BAND_NONE, display.ut_elementCaches().cards.lastDrawnPositions[0].band);
-    TEST_ASSERT_EQUAL_INT_MESSAGE(1, bandIndicatorDrawCount,
-        "card-0 removal must restore an exposed Ku label before the owning flush");
-    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(BAND_K | BAND_KU), lastBandIndicatorMask);
-    TEST_ASSERT_FALSE(lastBandIndicatorMuted);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, bandIndicatorDrawCount,
+        "card-0 removal must not repaint the shifted Ku label");
     TEST_ASSERT_TRUE(display.ut_elementCaches().bands.valid);
-    TEST_ASSERT_EQUAL_INT_MESSAGE(1, gpsIndicatorDrawCount,
-        "card-0 removal must repaint GPS after the nested full-stack band redraw");
-    TEST_ASSERT_GREATER_THAN_INT_MESSAGE(bandIndicatorDrawOrder, gpsIndicatorDrawOrder,
-        "GPS must be restored after bands in the same card-removal frame");
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(BAND_K | BAND_KU), bands.lastMask);
+    TEST_ASSERT_FALSE(bands.lastMuted);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, gpsIndicatorDrawCount,
+        "card-0 removal must not disturb the independent GPS indicator");
     TEST_ASSERT_TRUE(gps.valid);
     TEST_ASSERT_TRUE(gps.lastShown);
     TEST_ASSERT_EQUAL_UINT8(7, gps.lastSats);
@@ -866,7 +865,7 @@ int main(int, char**) {
     RUN_TEST(test_new_live_card_uses_promoted_slot_before_new_old_priority_grace);
     RUN_TEST(test_preview_promotion_does_not_grace_the_vanished_old_priority);
     RUN_TEST(test_secondary_card_expires_and_clears_after_grace_when_only_priority_remains);
-    RUN_TEST(test_removing_card0_restores_exposed_ku_label_in_same_frame);
+    RUN_TEST(test_removing_card0_leaves_non_overlapping_ku_and_gps_caches_untouched);
     RUN_TEST(test_visual_preview_bypasses_profile_card_grace);
     RUN_TEST(test_card_meter_projects_vr_strength_onto_six_segments);
     RUN_TEST(test_card_meter_paints_every_segment_exactly_once_per_frame);

@@ -64,6 +64,23 @@ final class V1ProtocolContractTests: XCTestCase {
         XCTAssertEqual(reply.packetID, 0x02)
         XCTAssertEqual(reply.payload, Array("v4.1038".utf8))
     }
+
+    func testManualCribRepliesUseCanonicalTargetedFraming() throws {
+        let replies = V1.cribReplyPackets(version: "4.1038", main: 4, muted: 0)
+        XCTAssertEqual(replies.version, [
+            0xAA, 0xD6, 0xEA, 0x02, 0x08,
+            0x76, 0x34, 0x2E, 0x31, 0x30, 0x33, 0x38,
+            0x18, 0xAB,
+        ])
+        XCTAssertEqual(replies.allVolume, [
+            0xAA, 0xD6, 0xEA, 0x3D, 0x05,
+            0x04, 0x00, 0x04, 0x00,
+            0xB4, 0xAB,
+        ])
+
+        XCTAssertEqual(try ContractFrame.decode(replies.version).destination, 0xD6)
+        XCTAssertEqual(try ContractFrame.decode(replies.allVolume).origin, 0xEA)
+    }
 }
 
 private struct ContractFrame {

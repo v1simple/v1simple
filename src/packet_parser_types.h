@@ -84,7 +84,7 @@ struct DisplayState {
     uint8_t muteVolume;         // Muted volume 0-9
     uint32_t v1FirmwareVersion; // V1 firmware version as integer (e.g. 41028 for 4.1028)
     bool hasV1Version;          // True if we've received version from V1
-    bool hasVolumeData;         // True if we've received volume data in display packet
+    bool hasVolumeData;         // True after canonical display/current/all-volume evidence
     uint8_t v1PriorityIndex;    // Resolved priority alert index for current table (0-based)
     // V1 bogey counter — single 7-segment LED. Per ESP Spec 3.003 page 25
     // (infDisplayData), the V1 sends two bytes for the bogey LED: image1 is
@@ -123,8 +123,8 @@ struct DisplayState {
     // V1's authoritative volume state.  When a 0x3D packet is observed,
     // mainVolume/muteVolume are overwritten from the spec-true source and
     // the saved-volume pair is exposed for consumers that care about restore
-    // points.  The aux2-nibble inference in display packets is preserved as
-    // a fallback so existing code keeps working before the first 0x3D.
+    // points. Canonical infDisplayData aux2 remains the current-volume fallback
+    // before the first 0x3D response.
     uint8_t savedMainVolume;
     uint8_t savedMuteVolume;
     bool hasSavedVolume;

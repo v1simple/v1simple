@@ -328,26 +328,27 @@ func runHelp() {
 }
 
 func runCrib() {
-    let header = V1.Header.draft
+    let displayHeader = V1.Header.draft
 
     let alertHex = V1.AlertRow
         .single(bars: 1, band: .ka, direction: .front, frequencyMHz: 34_700)
-        .packet(header: header, checksum: false)
+        .packet(header: displayHeader, checksum: false)
         .hexString
     let oneBarHex = V1.DisplayFrame
         .alerting(bars: 1, band: .ka, direction: .front, bogeyCount: 1,
                   muted: false, volume: 0x00, displayOn: false,
                   includeModeBits: false)
-        .packet(header: header, checksum: false)
+        .packet(header: displayHeader, checksum: false)
         .hexString
     let sixBarHex = V1.DisplayFrame
         .alerting(bars: 6, band: .ka, direction: .front, bogeyCount: 1,
                   muted: false, volume: 0x00, displayOn: false,
                   includeModeBits: false)
-        .packet(header: header, checksum: false)
+        .packet(header: displayHeader, checksum: false)
         .hexString
-    let versionHex = V1.versionPacket(header: header, version: "4.1038", checksum: false).hexString
-    let volumeHex = V1.allVolumePacket(header: header, main: 4, muted: 0, checksum: false).hexString
+    let replies = V1.cribReplyPackets(version: "4.1038", main: 4, muted: 0)
+    let versionHex = replies.version.hexString
+    let volumeHex = replies.allVolume.hexString
 
     console.print("""
     \(Ansi.bold)LightBlue manual test — V1G-REPLAY\(Ansi.reset)
@@ -376,10 +377,10 @@ func runCrib() {
       respAllVolume  \(volumeHex)
 
     \(Ansi.bold)Framing choices\(Ansi.reset)
-    These crib vectors use the repository's DA E4 compatibility convention.
-    Playback defaults to D8 EA for generated display/alert information and
-    D6 EA for targeted replies. Use --header draft only when exact fixture
-    parity is required.
+    The alert and display stimuli use the repository's DA E4 compatibility
+    convention. Version and volume are authoritative targeted replies, so they
+    use canonical D6 EA framing and a verified checksum. Playback uses D8 EA
+    for generated display/alert information and D6 EA for targeted replies.
 
     \(Ansi.bold)Bogey blink stimulus\(Ansi.reset)
     Normal replay uses matching bogey image planes (06 06). --blink-bogey
@@ -390,9 +391,10 @@ func runCrib() {
     display payload (so auxData2 carries current main/muted volume in its
     high/low nibbles, never saved values) — the same 9-byte payload region
     test_protocol_spec_conformance builds. Use --no-checksum for the 14-byte
-    draft form. Normal v4.1038 playback also carries the current mode in
-    auxData1; the explicit draft header retains its historical zero. Both parse;
-    the firmware never verifies the checksum.
+    draft display form. Normal v4.1038 playback also carries the current mode in
+    auxData1; the explicit draft header retains its historical zero. Display and
+    alert presentation tolerates that draft framing, while direct settings
+    replies require canonical destination, origin, width and checksum evidence.
 
     Use `v1replay export --synthetic --format lightblue` for generated packets.
     """)

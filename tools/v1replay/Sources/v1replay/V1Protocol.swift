@@ -495,6 +495,16 @@ enum V1 {
                      checksum: checksum)
     }
 
+    static func cribReplyPackets(version: String,
+                                 main: UInt8,
+                                 muted: UInt8) -> (version: [UInt8], allVolume: [UInt8]) {
+        let header = Header.v1ToApp
+        return (
+            version: versionPacket(header: header, version: version, checksum: true),
+            allVolume: allVolumePacket(header: header, main: main, muted: muted, checksum: true)
+        )
+    }
+
     /// respUserBytes — six user bytes.
     static func userBytesPacket(header: Header, bytes: [UInt8], checksum: Bool) -> [UInt8] {
         var payload = bytes

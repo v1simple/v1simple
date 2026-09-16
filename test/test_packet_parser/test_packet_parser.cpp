@@ -182,6 +182,39 @@ void test_parse_display_packet_updates_render_state() {
     TEST_ASSERT_EQUAL_UINT8(0x00, state.flashBits);
 }
 
+void test_canonical_no_checksum_display_updates_volume_state() {
+    PacketParser parser;
+    auto payload = makeDisplayPayload(0x3F, 0x00, 0x00, 0x00, 0x04, 0x00, 0x73);
+    payload.pop_back(); // E9 carries the eight display bytes without a checksum.
+
+    TEST_ASSERT_TRUE(parsePacket(parser, makePacket(PACKET_ID_DISPLAY_DATA, payload, 0xE9)));
+
+    const DisplayState& state = parser.getDisplayState();
+    TEST_ASSERT_TRUE(state.hasVolumeData);
+    TEST_ASSERT_EQUAL_UINT8(7, state.mainVolume);
+    TEST_ASSERT_EQUAL_UINT8(3, state.muteVolume);
+    TEST_ASSERT_TRUE(parser.displayVolumeObservation().available);
+    TEST_ASSERT_EQUAL_UINT8(7, parser.displayVolumeObservation().main);
+    TEST_ASSERT_EQUAL_UINT8(3, parser.displayVolumeObservation().muted);
+}
+
+void test_noncanonical_or_invalid_display_volume_never_becomes_control_state() {
+    PacketParser parser;
+
+    auto invalid = makeDisplayPayload(0x3F, 0x00, 0x00, 0x00, 0x04, 0x00, 0xA3);
+    invalid.pop_back();
+    TEST_ASSERT_TRUE(parsePacket(parser, makePacket(PACKET_ID_DISPLAY_DATA, invalid, 0xE9)));
+    TEST_ASSERT_FALSE(parser.getDisplayState().hasVolumeData);
+    TEST_ASSERT_FALSE(parser.displayVolumeObservation().available);
+
+    const auto wrongDestination = makePacket(
+        PACKET_ID_DISPLAY_DATA,
+        makeDisplayPayload(0x3F, 0x00, 0x00, 0x00, 0x04, 0x00, 0x73), 0xEA, 0xD6);
+    TEST_ASSERT_TRUE(parsePacket(parser, wrongDestination));
+    TEST_ASSERT_FALSE(parser.getDisplayState().hasVolumeData);
+    TEST_ASSERT_FALSE(parser.displayVolumeObservation().available);
+}
+
 void test_parse_display_packet_laser_keeps_led_bitmap_signal_bars() {
     PacketParser parser;
     const auto packet = makePacket(
@@ -473,7 +506,9 @@ void test_canonical_settings_observation_values_cannot_be_overwritten_by_tolerat
     TEST_ASSERT_TRUE(parsePacket(parser, corrupt));
     TEST_ASSERT_FALSE(parser.getDisplayState().displayOn);
     TEST_ASSERT_EQUAL_CHAR('l', parser.getDisplayState().modeChar);
-    TEST_ASSERT_EQUAL_UINT8(7, parser.getDisplayState().mainVolume);
+    TEST_ASSERT_TRUE(parser.getDisplayState().hasVolumeData);
+    TEST_ASSERT_EQUAL_UINT8(5, parser.getDisplayState().mainVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, parser.getDisplayState().muteVolume);
     TEST_ASSERT_EQUAL_UINT32(1, parser.displayOnObservation().revision);
     TEST_ASSERT_TRUE(parser.displayOnObservation().value);
     TEST_ASSERT_EQUAL_CHAR('A', parser.modeObservation().value);
@@ -481,9 +516,11 @@ void test_canonical_settings_observation_values_cannot_be_overwritten_by_tolerat
 
     const auto wrongDestination = makePacket(
         PACKET_ID_DISPLAY_DATA,
-        makeDisplayPayload(0x3F, 0x00, 0x00, 0x00, 0x04, 0x08, 0x73), 0xEA, 0xD6);
+        makeDisplayPayload(0x3F, 0x00, 0x00, 0x00, 0x04, 0x08, 0x84), 0xEA, 0xD6);
     TEST_ASSERT_TRUE(parsePacket(parser, wrongDestination));
     TEST_ASSERT_EQUAL_UINT32(1, parser.displayOnObservation().revision);
+    TEST_ASSERT_EQUAL_UINT8(5, parser.getDisplayState().mainVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, parser.getDisplayState().muteVolume);
 }
 
 void test_current_and_all_volume_observations_remain_source_specific_and_destination_bound() {
@@ -1173,6 +1210,8 @@ int main(int argc, char** argv) {
     (void)argv;
     UNITY_BEGIN();
     RUN_TEST(test_parse_display_packet_updates_render_state);
+    RUN_TEST(test_canonical_no_checksum_display_updates_volume_state);
+    RUN_TEST(test_noncanonical_or_invalid_display_volume_never_becomes_control_state);
     RUN_TEST(test_parse_display_packet_laser_keeps_led_bitmap_signal_bars);
     RUN_TEST(test_parse_display_packet_zero_volume_does_not_force_muted);
     RUN_TEST(test_parse_display_packet_captures_bogey_image2_for_blink_mask);

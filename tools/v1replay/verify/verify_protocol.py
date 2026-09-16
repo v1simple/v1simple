@@ -92,6 +92,10 @@ struct ProtocolContractProducer {
                 }
             }
         }
+
+        let cribReplies = V1.cribReplyPackets(version: "4.1038", main: 4, muted: 0)
+        emit(["crib-version", "41038", packetHex(cribReplies.version)])
+        emit(["crib-volume", "4", "0", "4", "0", packetHex(cribReplies.allVolume)])
     }
 }
 """.lstrip()
@@ -191,6 +195,47 @@ bool verifyAlert(const std::vector<std::string>& fields, std::string& failure) {
     return matches;
 }
 
+bool verifyCribVersion(const std::vector<std::string>& fields, std::string& failure) {
+    if (fields.size() != 3) {
+        failure = "crib-version row has " + std::to_string(fields.size()) + " fields";
+        return false;
+    }
+    const auto packet = decodeHex(fields[2]);
+    PacketParser parser;
+    if (!parser.parse(packet.data(), packet.size(), 1000)) {
+        failure = "firmware rejected crib version reply";
+        return false;
+    }
+    const DisplayState& state = parser.getDisplayState();
+    const bool matches = state.hasV1Version && state.v1FirmwareVersion == integer(fields[1]);
+    if (!matches) {
+        failure = "crib version semantics diverged";
+    }
+    return matches;
+}
+
+bool verifyCribVolume(const std::vector<std::string>& fields, std::string& failure) {
+    if (fields.size() != 6) {
+        failure = "crib-volume row has " + std::to_string(fields.size()) + " fields";
+        return false;
+    }
+    const auto packet = decodeHex(fields[5]);
+    PacketParser parser;
+    if (!parser.parse(packet.data(), packet.size(), 1000)) {
+        failure = "firmware rejected crib all-volume reply";
+        return false;
+    }
+    const DisplayState& state = parser.getDisplayState();
+    const bool matches =
+        state.hasVolumeData && state.hasSavedVolume && state.mainVolume == integer(fields[1]) &&
+        state.muteVolume == integer(fields[2]) && state.savedMainVolume == integer(fields[3]) &&
+        state.savedMuteVolume == integer(fields[4]);
+    if (!matches) {
+        failure = "crib all-volume semantics diverged";
+    }
+    return matches;
+}
+
 } // namespace
 
 int main() {
@@ -207,7 +252,9 @@ int main() {
             std::string failure;
             const bool valid = !fields.empty() &&
                                ((fields[0] == "display" && verifyDisplay(fields, failure)) ||
-                                (fields[0] == "alert" && verifyAlert(fields, failure)));
+                                (fields[0] == "alert" && verifyAlert(fields, failure)) ||
+                                (fields[0] == "crib-version" && verifyCribVersion(fields, failure)) ||
+                                (fields[0] == "crib-volume" && verifyCribVolume(fields, failure)));
             if (!valid) {
                 ++failures;
                 std::cerr << "[v1replay-protocol] case " << cases << ": "

@@ -178,6 +178,90 @@ void test_v1_drop_teardown_returns_to_scan_before_any_new_obd_attempt() {
     TEST_ASSERT_EQUAL(CycleState::SCAN_V1, module.state());
 }
 
+void test_verify_push_quiet_window_waits_for_both_ordinary_anchors() {
+    ProviderProbe probe;
+    ConnectionCycleCoordinatorModule module;
+    module.begin(probe);
+    CycleContext ctx = connectedContext(100);
+    ctx.autoPushEnabled = true;
+    ctx.obdEnabled = true;
+    ctx.v1SettleQuietMs = 100;
+
+    module.update(ctx);
+    TEST_ASSERT_EQUAL(CycleState::V1_SETTLING, module.state());
+
+    ctx.nowMs = 110;
+    ctx.v1VerifyPushMatchEdge = true;
+    module.update(ctx);
+    TEST_ASSERT_EQUAL(CycleState::V1_SETTLING, module.state());
+
+    ctx.v1VerifyPushMatchEdge = false;
+    ctx.nowMs = 209;
+    module.update(ctx);
+    TEST_ASSERT_EQUAL(CycleState::V1_SETTLING, module.state());
+
+    ctx.nowMs = 210;
+    module.update(ctx);
+    TEST_ASSERT_EQUAL(CycleState::OBD_SCAN, module.state());
+}
+
+void test_verify_push_quiet_window_is_wrap_safe_when_match_is_newer() {
+    ProviderProbe probe;
+    ConnectionCycleCoordinatorModule module;
+    module.begin(probe);
+    CycleContext ctx = connectedContext(0xFFFFFF00u);
+    ctx.v1LastEventMs = 0xFFFFFF00u;
+    ctx.autoPushEnabled = true;
+    ctx.obdEnabled = true;
+    ctx.v1SettleQuietMs = 100;
+
+    module.update(ctx);
+    TEST_ASSERT_EQUAL(CycleState::V1_SETTLING, module.state());
+
+    ctx.nowMs = 0x00000010u;
+    ctx.v1VerifyPushMatchEdge = true;
+    module.update(ctx);
+    TEST_ASSERT_EQUAL(CycleState::V1_SETTLING, module.state());
+
+    ctx.v1VerifyPushMatchEdge = false;
+    ctx.nowMs = 0x00000073u;
+    module.update(ctx);
+    TEST_ASSERT_EQUAL(CycleState::V1_SETTLING, module.state());
+
+    ctx.nowMs = 0x00000074u;
+    module.update(ctx);
+    TEST_ASSERT_EQUAL(CycleState::OBD_SCAN, module.state());
+}
+
+void test_verify_push_quiet_window_is_wrap_safe_when_v1_event_is_newer() {
+    ProviderProbe probe;
+    ConnectionCycleCoordinatorModule module;
+    module.begin(probe);
+    CycleContext ctx = connectedContext(0xFFFFFF00u);
+    ctx.v1LastEventMs = 0xFFFFFF00u;
+    ctx.autoPushEnabled = true;
+    ctx.obdEnabled = true;
+    ctx.v1SettleQuietMs = 100;
+
+    module.update(ctx);
+    TEST_ASSERT_EQUAL(CycleState::V1_SETTLING, module.state());
+
+    ctx.nowMs = 0xFFFFFF10u;
+    ctx.v1VerifyPushMatchEdge = true;
+    module.update(ctx);
+    TEST_ASSERT_EQUAL(CycleState::V1_SETTLING, module.state());
+
+    ctx.v1VerifyPushMatchEdge = false;
+    ctx.v1LastEventMs = 0x00000020u;
+    ctx.nowMs = 0x00000083u;
+    module.update(ctx);
+    TEST_ASSERT_EQUAL(CycleState::V1_SETTLING, module.state());
+
+    ctx.nowMs = 0x00000084u;
+    module.update(ctx);
+    TEST_ASSERT_EQUAL(CycleState::OBD_SCAN, module.state());
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_proxy_window_exits_directly_to_steady_without_wifi_dwell);
@@ -185,5 +269,8 @@ int main() {
     RUN_TEST(test_obd_scan_timeout_stops_scan_before_opening_proxy);
     RUN_TEST(test_successful_obd_settle_is_not_reordered_behind_proxy);
     RUN_TEST(test_v1_drop_teardown_returns_to_scan_before_any_new_obd_attempt);
+    RUN_TEST(test_verify_push_quiet_window_waits_for_both_ordinary_anchors);
+    RUN_TEST(test_verify_push_quiet_window_is_wrap_safe_when_match_is_newer);
+    RUN_TEST(test_verify_push_quiet_window_is_wrap_safe_when_v1_event_is_newer);
     return UNITY_END();
 }

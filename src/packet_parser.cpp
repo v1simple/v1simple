@@ -221,6 +221,11 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
             displayVolumeObservation_.muted = static_cast<uint8_t>(payload[7] & 0x0F);
             displayVolumeObservation_.available =
                 displayVolumeObservation_.main <= 9 && displayVolumeObservation_.muted <= 9;
+            if (displayVolumeObservation_.available) {
+                displayState_.mainVolume = displayVolumeObservation_.main;
+                displayState_.muteVolume = displayVolumeObservation_.muted;
+                displayState_.hasVolumeData = true;
+            }
         }
         if (hadAlerts != hasAlerts()) {
             ++alertLifetime_;
@@ -708,18 +713,10 @@ bool PacketParser::parseDisplayData(const uint8_t* payload, size_t length) {
     }
     displayState_.muted = (displayMuteConfirmCount_ >= 2);
 
-    // Extract volume from auxData2 — payload[7] when the payload region has at
-    // least 9 bytes (8 display data + checksum). The actual display data ends
-    // one byte before the reported payloadLen. Guard with
-    // length > 8 to avoid misreading the checksum as volume, which can produce a
-    // false mainVolume==0 and trigger spurious muted state.
-    // mainVol = upper nibble, muteVol = lower nibble
-    if (length > 8) {
-        uint8_t auxData2 = payload[7];
-        displayState_.mainVolume = (auxData2 & 0xF0) >> 4;
-        displayState_.muteVolume = auxData2 & 0x0F;
-        displayState_.hasVolumeData = true; // Mark that we've received volume data
-    }
+    // Volume-dependent behavior is committed by parseInternal only after the
+    // complete display frame has canonical D8/E9-or-EA framing, width and (for
+    // EA) checksum evidence. Keep tolerant display parsing limited to visual
+    // state so a damaged or fixture-only frame cannot become a control baseline.
 
     // V1 sends LED bar state directly in the display packet at payload[2].
     // This is the authoritative signal strength from V1's own display. It is

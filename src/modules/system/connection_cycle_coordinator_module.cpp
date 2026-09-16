@@ -127,14 +127,14 @@ void ConnectionCycleCoordinatorModule::update(const CycleContext& ctx) {
         return;
     }
 
-    const uint32_t v1QuietAnchorMs =
-        (v1VerifyPushMatchedAtMs_ > ctx.v1LastEventMs) ? v1VerifyPushMatchedAtMs_ : ctx.v1LastEventMs;
     // Explicit Proxy / App mode must open its phone-advertising window in
     // drive mode even if auto-push is globally enabled; there may be no profile
     // write/readback edge to wait for, and OBD is intentionally disabled.
     const bool autoPushBlocksV1Settle = ctx.autoPushEnabled && !isExplicitProxyAppMode(ctx);
     const bool v1SettledByVerifyPush =
-        ctx.v1GattConnected && v1VerifyPushMatched_ && hasElapsed(ctx.nowMs, v1QuietAnchorMs, v1SettleQuietMs_);
+        ctx.v1GattConnected && v1VerifyPushMatched_ &&
+        hasElapsed(ctx.nowMs, v1VerifyPushMatchedAtMs_, v1SettleQuietMs_) &&
+        hasElapsed(ctx.nowMs, ctx.v1LastEventMs, v1SettleQuietMs_);
     const bool v1SettledByFallback =
         ctx.v1GattConnected && !autoPushBlocksV1Settle && hasElapsed(ctx.nowMs, ctx.v1LastEventMs, v1SettleFallbackMs_);
     // Auto-push can complete the phase early through VerifyPush, but a missing

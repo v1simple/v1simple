@@ -1,9 +1,9 @@
 # LightBlue manual test — V1G-REPLAY
 
-Exercise the BLE and display path by hand. `v1replay crib` prints the five draft
-vectors below. `verify/verify_protocol.py` separately compiles the normal Swift
-packet producer against the firmware parser; it does not verify these literal
-crib bytes.
+Exercise the BLE and display path by hand. `v1replay crib` prints three tolerant
+draft presentation vectors and two canonical targeted replies.
+`verify/verify_protocol.py` compiles the Swift producers for the normal replay
+and canonical crib replies against the firmware parser.
 
 ## Virtual device
 
@@ -27,12 +27,12 @@ Full UUIDs are `92A0` + the ending + `-9E05-11E2-AA59-F23C91AEC05E`.
 Do not add a `0x2902` descriptor by hand. LightBlue and CoreBluetooth create the
 CCCD for notify characteristics automatically.
 
-## Packets — draft framing
+## Packets — tolerant draft presentation framing
 
 These match the hand-written draft: no checksum byte, `dest`/`src` = `DA E4`.
-The firmware parser checks framing but does not validate destination, source,
-or checksum, so these parse as written. Normal replay output uses checksums and
-the protocol headers described below.
+The firmware deliberately tolerates these alert/display packets for visual
+presentation. They are not authoritative settings or volume evidence. Normal
+replay output uses the canonical checksummed headers described below.
 
 **Alert on B2CE** — synthetic Ka 34.700 GHz, front, priority, 1 bar:
 
@@ -52,16 +52,22 @@ AA DA E4 31 08 06 06 01 22 22 04 00 00 AB
 AA DA E4 31 08 06 06 3F 22 22 04 00 00 AB
 ```
 
+## Packets — canonical targeted replies
+
+Direct replies are addressed to the v1simple requester with `dest`/`src` =
+`D6 EA`. Their declared width and checksum are verified before they can update
+version or volume state.
+
 **Version reply on B2CE** (after a `reqVersion` write):
 
 ```
-respVersion    AA DA E4 02 07 76 34 2E 31 30 33 38 AB
+respVersion    AA D6 EA 02 08 76 34 2E 31 30 33 38 18 AB
 ```
 
 **All-volume reply on B2CE** (after a `reqAllVolume` write):
 
 ```
-respAllVolume  AA DA E4 3D 04 04 00 04 00 AB
+respAllVolume  AA D6 EA 3D 05 04 00 04 00 B4 AB
 ```
 
 The repeated current/saved values are this emulator fixture's configured state,
@@ -69,10 +75,11 @@ not a universal device default.
 
 ## Packets — fixture-compatible checksummed form
 
-These examples retain the `DA E4` fixture-compatibility header while adding a
-checksum byte and the V4.1028+ full eight-byte display payload so auxData2
-carries current main/muted volume in its high/low nibbles; saved values are not
-carried.
+These presentation examples retain the `DA E4` fixture-compatibility header
+while adding a checksum byte and the V4.1028+ full eight-byte display payload.
+AuxData2 carries current main/muted volume in its high/low nibbles, but the
+noncanonical header means it does not qualify runtime volume control state;
+saved values are not carried.
 This is the same 9-byte payload region
 `test_protocol_spec_conformance.cpp` builds — a 15-byte display packet is
 already the house style, the 14-byte form above is the outlier.
@@ -87,18 +94,6 @@ idle           AA DA E4 31 09 38 38 00 00 00 0C 00 40 5E AB
 alert 1 bar    AA DA E4 43 08 11 87 8C 80 00 22 80 F9 AB
 alert 6 bars   AA DA E4 43 08 11 87 8C AF 00 22 80 28 AB
 alert cleared  AA DA E4 43 08 00 00 00 00 00 00 00 B3 AB
-```
-
-Short version reply on B2CE:
-
-```
-respVersion    AA DA E4 02 08 76 34 2E 31 30 33 38 16 AB
-```
-
-Short all-volume reply on B2CE:
-
-```
-respAllVolume  AA DA E4 3D 05 04 00 04 00 B2 AB
 ```
 
 `--header draft` selects the listed compatibility header. Playback defaults to

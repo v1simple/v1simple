@@ -10,6 +10,7 @@
 #include "../../src/modules/wifi/wifi_setup_network_policy.h"
 #include "../../src/modules/wifi/wifi_maintenance_http_preflight.h"
 #include "../../src/modules/wifi/wifi_exact_body_length_policy.h"
+#include "../../src/modules/wifi/wifi_heap_guard_module.cpp"
 #include "../../src/modules/wifi/wifi_maintenance_recovery_module.cpp"
 
 // Regression coverage for the maintenance-boot WiFi recovery policy.
@@ -133,21 +134,62 @@ void test_ap_bringup_abort_clears_stale_interface_state_for_all_consumers() {
 }
 
 void test_maintenance_with_saved_credentials_uses_ap_sta_auto_connect() {
-    TEST_ASSERT_EQUAL_INT(static_cast<int>(WifiSetupNetworkPolicy::Mode::ApSta),
-                          static_cast<int>(WifiSetupNetworkPolicy::select(true, true)));
-    TEST_ASSERT_TRUE(WifiSetupNetworkPolicy::usesSta(true, true));
+    TEST_ASSERT_TRUE(WifiSetupNetworkPolicy::usesSta(true));
     TEST_ASSERT_EQUAL_INT(
         static_cast<int>(WifiSetupNetworkPolicy::SavedNetworkStart::MaintenanceAutoConnect),
         static_cast<int>(WifiSetupNetworkPolicy::selectSavedNetworkStart(true, true)));
 }
 
 void test_normal_setup_preserves_saved_sta_connectivity() {
-    TEST_ASSERT_TRUE(WifiSetupNetworkPolicy::usesSta(false, true));
-    TEST_ASSERT_FALSE(WifiSetupNetworkPolicy::usesSta(false, false));
+    TEST_ASSERT_TRUE(WifiSetupNetworkPolicy::usesSta(true));
+    TEST_ASSERT_FALSE(WifiSetupNetworkPolicy::usesSta(false));
     TEST_ASSERT_EQUAL_INT(static_cast<int>(WifiSetupNetworkPolicy::SavedNetworkStart::DirectConnect),
                           static_cast<int>(WifiSetupNetworkPolicy::selectSavedNetworkStart(false, true)));
     TEST_ASSERT_EQUAL_INT(static_cast<int>(WifiSetupNetworkPolicy::SavedNetworkStart::None),
                           static_cast<int>(WifiSetupNetworkPolicy::selectSavedNetworkStart(true, false)));
+}
+
+void test_wifi_heap_guard_preserves_exact_thresholds_and_jitter_tolerances() {
+    WifiHeapGuardInput input;
+    input.freeInternal = 100;
+    input.largestInternal = 50;
+    input.criticalFree = 100;
+    input.criticalBlock = 50;
+
+    WifiHeapGuardResult result = evaluateWifiHeapGuard(input);
+    TEST_ASSERT_FALSE(result.freeLow);
+    TEST_ASSERT_FALSE(result.blockLow);
+    TEST_ASSERT_FALSE(result.lowHeap);
+    TEST_ASSERT_EQUAL_STRING("AP", result.modeLabel);
+
+    input.dualRadioMode = true;
+    input.staRadioOn = true;
+    input.apStaFreeJitterTolerance = 1;
+    input.freeInternal = 99;
+    result = evaluateWifiHeapGuard(input);
+    TEST_ASSERT_FALSE(result.freeLow);
+    TEST_ASSERT_FALSE(result.lowHeap);
+    TEST_ASSERT_EQUAL_STRING("AP+STA", result.modeLabel);
+
+    input.freeInternal = 98;
+    result = evaluateWifiHeapGuard(input);
+    TEST_ASSERT_TRUE(result.freeLow);
+    TEST_ASSERT_TRUE(result.lowHeap);
+
+    input.dualRadioMode = false;
+    input.staOnlyMode = true;
+    input.freeInternal = 100;
+    input.staOnlyBlockJitterTolerance = 1;
+    input.largestInternal = 49;
+    result = evaluateWifiHeapGuard(input);
+    TEST_ASSERT_FALSE(result.blockLow);
+    TEST_ASSERT_FALSE(result.lowHeap);
+    TEST_ASSERT_EQUAL_STRING("STA", result.modeLabel);
+
+    input.largestInternal = 48;
+    result = evaluateWifiHeapGuard(input);
+    TEST_ASSERT_TRUE(result.blockLow);
+    TEST_ASSERT_TRUE(result.lowHeap);
 }
 
 void test_maintenance_auto_connect_retries_failed_storage_resolution_then_starts() {
@@ -681,6 +723,7 @@ int main() {
     RUN_TEST(test_ap_bringup_abort_clears_stale_interface_state_for_all_consumers);
     RUN_TEST(test_maintenance_with_saved_credentials_uses_ap_sta_auto_connect);
     RUN_TEST(test_normal_setup_preserves_saved_sta_connectivity);
+    RUN_TEST(test_wifi_heap_guard_preserves_exact_thresholds_and_jitter_tolerances);
     RUN_TEST(test_maintenance_auto_connect_retries_failed_storage_resolution_then_starts);
     RUN_TEST(test_maintenance_http_interface_admission_allows_initialized_ap_and_sta_destinations);
     RUN_TEST(test_physical_auto_reconnect_is_reconciled_into_app_state);

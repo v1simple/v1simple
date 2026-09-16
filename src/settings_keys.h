@@ -19,12 +19,7 @@ inline constexpr const char* kNvsCommittedGeneration = "commitGen";
 inline constexpr const char* kNvsRestorePending = "restorePend";
 inline constexpr const char* kNvsBackupDueRevision = "backupDueRev";
 inline constexpr const char* kNvsBackupCompletedRevision = "backupDoneRev";
-// A filesystem restore journal uses this token to distinguish the old selected
-// settings copy from the copy that committed all restored settings. The token
-// is transaction metadata only; normal settings saves clear it.
-// Legacy transient restore token (v12 development builds). New code never
-// writes it; keep the spelling only so a namespace rewrite removes it safely.
-inline constexpr const char* kNvsRestoreTransactionId = "restoreTxn";
+// Monotonic sequence used to allocate filesystem restore transaction IDs.
 inline constexpr const char* kNvsRestoreTransactionSequence = "restoreSeq";
 // Durable transaction authority. These positive signed-64 values are copied
 // into every complete A/B settings payload and are never cleared by ordinary

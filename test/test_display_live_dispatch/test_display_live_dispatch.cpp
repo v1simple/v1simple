@@ -12,6 +12,8 @@
 #include "../mocks/Arduino.h"
 #include "../mocks/settings.h"
 #include "../../src/packet_parser.h"
+#include "../../src/modules/display/display_pipeline_module.h"
+#include "../../src/modules/voice/voice_module.h"
 #include "../mocks/battery_manager.h"
 
 unsigned long mockMillis = 0;
@@ -534,8 +536,7 @@ struct CounterBlinkRuntime {
         dependencies.alp = &alp;
         dependencies.speedSelector = &speed;
         pipeline.begin(dependencies);
-        orchestration.begin(&display, &ble, nullptr, &preview, nullptr, &parser, &settings,
-                            nullptr, nullptr, nullptr, &pipeline);
+        orchestration.begin(&display, &ble, &preview, nullptr, &parser, nullptr, nullptr, nullptr);
     }
 
     void feed(uint8_t id, std::initializer_list<uint8_t> payload, uint32_t nowMs = 10000) {
@@ -564,7 +565,7 @@ struct CounterBlinkRuntime {
     bool refresh(uint32_t nowMs, DisplayOrchestrationRefreshContext context = {}) {
         mockMillis = nowMs;
         context.nowMs = nowMs;
-        const bool requested = orchestration.processLightweightRefresh(context).runBlinkRefresh;
+        const bool requested = orchestration.processLightweightRefresh(context);
         if (requested) pipeline.refreshBlinkTick(nowMs);
         return requested;
     }

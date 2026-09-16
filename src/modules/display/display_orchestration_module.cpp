@@ -1,39 +1,31 @@
 #include "display_orchestration_module.h"
 
-#include "modules/display/display_pipeline_module.h"
 #include "modules/quiet/quiet_coordinator_module.h"
 
 #ifndef UNIT_TEST
 #include "ble_client.h"
 #include "display.h"
-#include "modules/ble/ble_queue_module.h"
 #include "modules/display/display_preview_module.h"
 #include "modules/display/display_restore_module.h"
 #include "modules/speed_mute/speed_mute_module.h"
 #include "modules/volume_fade/volume_fade_module.h"
 #include "packet_parser.h"
-#include "settings.h"
 #endif
 
 #include "modules/quiet/quiet_coordinator_templates.h"
 
-void DisplayOrchestrationModule::begin(V1Display* displayPtr, V1BLEClient* bleClient, BleQueueModule* bleQueueModule,
+void DisplayOrchestrationModule::begin(V1Display* displayPtr, V1BLEClient* bleClient,
                                        DisplayPreviewModule* previewModule, DisplayRestoreModule* restoreModule,
-                                       PacketParser* parserPtr, SettingsManager* settings,
-                                       VolumeFadeModule* volumeFadeModule, SpeedMuteModule* speedMuteModule,
-                                       QuietCoordinatorModule* quietCoordinator,
-                                       DisplayPipelineModule* displayPipelineModule) {
+                                       PacketParser* parserPtr, VolumeFadeModule* volumeFadeModule,
+                                       SpeedMuteModule* speedMuteModule, QuietCoordinatorModule* quietCoordinator) {
     display_ = displayPtr;
     ble_ = bleClient;
-    bleQueue_ = bleQueueModule;
     preview_ = previewModule;
     restore_ = restoreModule;
     parser_ = parserPtr;
-    settings_ = settings;
     volumeFade_ = volumeFadeModule;
     speedMute_ = speedMuteModule;
     quiet_ = quietCoordinator;
-    displayPipeline_ = displayPipelineModule;
 }
 
 void DisplayOrchestrationModule::syncQuietPresentation() {
@@ -81,21 +73,19 @@ void DisplayOrchestrationModule::processEarly(const DisplayOrchestrationEarlyCon
     }
 }
 
-DisplayOrchestrationParsedResult
-DisplayOrchestrationModule::processParsedFrame(const DisplayOrchestrationParsedContext& ctx) {
-    DisplayOrchestrationParsedResult result;
-    if (!display_ || !ble_ || !bleQueue_ || !preview_ || !parser_ || !settings_) {
-        return result;
+bool DisplayOrchestrationModule::processParsedFrame(const DisplayOrchestrationParsedContext& ctx) {
+    if (!display_ || !ble_ || !preview_ || !parser_) {
+        return false;
     }
 
     if (!ctx.parsedReady) {
         syncQuietPresentation();
-        return result;
+        return false;
     }
 
     if (ctx.bootSplashHoldActive) {
         syncQuietPresentation();
-        return result;
+        return false;
     }
 
     // Speed volume: lower/restore V1 volume based on speed mute state.
@@ -104,21 +94,18 @@ DisplayOrchestrationModule::processParsedFrame(const DisplayOrchestrationParsedC
     syncQuietPresentation();
 
     if (preview_->isRunning()) {
-        return result;
+        return false;
     }
 
-    result.runDisplayPipeline = true;
     if (!speedVolBusy) {
         executeVolumeFade(ctx.nowMs);
     }
-    return result;
+    return true;
 }
 
-DisplayOrchestrationRefreshResult
-DisplayOrchestrationModule::processLightweightRefresh(const DisplayOrchestrationRefreshContext& ctx) {
-    DisplayOrchestrationRefreshResult result;
+bool DisplayOrchestrationModule::processLightweightRefresh(const DisplayOrchestrationRefreshContext& ctx) {
     if (!display_ || !ble_ || !preview_ || !parser_) {
-        return result;
+        return false;
     }
 
     // The counter may blink without an alert row (for example J / blank after
@@ -146,10 +133,10 @@ DisplayOrchestrationModule::processLightweightRefresh(const DisplayOrchestration
             const uint32_t lastToggle = static_cast<uint32_t>(display_->getLastBlinkToggleMs());
             const uint32_t sinceToggle = ctx.nowMs - lastToggle;
             if (sinceToggle >= V1Display::getBlinkIntervalMs()) {
-                result.runBlinkRefresh = true;
+                return true;
             }
         }
     }
 
-    return result;
+    return false;
 }

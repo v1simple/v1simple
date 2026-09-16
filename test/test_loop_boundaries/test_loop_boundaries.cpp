@@ -94,7 +94,7 @@ struct FakeDriveRuntime {
     void showInitialScanningScreen() { calls.push_back(Call::SHOW_SCAN); }
     void markInitialScanningScreenHandled() { calls.push_back(Call::MARK_SCAN); }
     bool powerOwnsPresentation() const { return presentationOwned; }
-    void presentConnectionState(uint32_t, const FakeConnectionSnapshot&) {
+    void presentConnectionState(const FakeConnectionSnapshot&) {
         calls.push_back(Call::CONNECTION_PRESENTATION);
     }
 

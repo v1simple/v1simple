@@ -13,7 +13,6 @@
 #include "main_internals.h"
 #include "modules/event_log/product_event_log.h"
 #include "modules/health/health_journal.h"
-#include "modules/system/parsed_frame_event_module.h"
 #include "settings.h"
 #include "storage_manager.h"
 #include "v1_devices.h"
@@ -295,8 +294,8 @@ void DriveRuntime::initializeRuntimeModules() {
     connectionDispatch_.begin(connectionCadence_, connectionState_);
     obdSettingsSync_.begin(&settings_, &obd_);
     displayRestore_.begin(&display_, &parser_, &ble_, &preview_, &displayPipeline_);
-    displayOrchestration_.begin(&display_, &ble_, &bleQueue_, &preview_, &displayRestore_, &parser_, &settings_,
-                                &volumeFade_, &speedMute_, &quiet_, &displayPipeline_);
+    displayOrchestration_.begin(&display_, &ble_, &preview_, &displayRestore_, &parser_,
+                                &volumeFade_, &speedMute_, &quiet_);
     connectionCycle_.begin(*this);
 
     speed_.begin(&obd_, settings_.get().obdEnabled, &gps_, settings_.get().gpsEnabled);
@@ -411,9 +410,8 @@ bool DriveRuntime::powerOwnsPresentation() const {
     return power_.ownsDisplayPresentation();
 }
 
-void DriveRuntime::presentConnectionState(uint32_t nowMs, const ConnectionRuntimeSnapshot& connection) {
+void DriveRuntime::presentConnectionState(const ConnectionRuntimeSnapshot& connection) {
     DisplayOrchestrationEarlyContext earlyContext;
-    earlyContext.nowMs = nowMs;
     earlyContext.bootSplashHoldActive = state_.bootSplashHoldActive;
     earlyContext.overloadThisLoop = connection.overloaded;
     earlyContext.bleContext = {connection.connected, ble_.isProxyClientConnected(), ble_.getConnectionRssi(),
@@ -619,18 +617,17 @@ DriveRuntime::DisplayEdges DriveRuntime::consumeDisplayEdges() {
     if (displayPipeline_.consumeAlpPresentationRefreshDue(edges.nowMs)) {
         systemEvents_.publishAlpStateChanged();
     }
-    edges.parsed = ParsedFrameEventModule::collect(bleQueue_.consumeParsedFlag(), systemEvents_);
+    edges.parsedReady = consumeDisplayRefreshEdge(bleQueue_.consumeParsedFlag(), systemEvents_);
     return edges;
 }
 
 void DriveRuntime::presentDisplay(const DisplayEdges& edges, bool overloadThisLoop) {
     DisplayOrchestrationParsedContext parsedContext;
     parsedContext.nowMs = edges.nowMs;
-    parsedContext.parsedReady = edges.parsed.parsedReady;
+    parsedContext.parsedReady = edges.parsedReady;
     parsedContext.bootSplashHoldActive = state_.bootSplashHoldActive;
-    const DisplayOrchestrationParsedResult parsedResult = displayOrchestration_.processParsedFrame(parsedContext);
     bool pipelineRan = false;
-    if (parsedResult.runDisplayPipeline) {
+    if (displayOrchestration_.processParsedFrame(parsedContext)) {
         displayPipeline_.handleParsed(edges.nowMs);
         pipelineRan = true;
     }
@@ -640,8 +637,7 @@ void DriveRuntime::presentDisplay(const DisplayEdges& edges, bool overloadThisLo
     refreshContext.bootSplashHoldActive = state_.bootSplashHoldActive;
     refreshContext.overloadLateThisLoop = overloadThisLoop;
     refreshContext.pipelineRanThisLoop = pipelineRan;
-    const DisplayOrchestrationRefreshResult refresh = displayOrchestration_.processLightweightRefresh(refreshContext);
-    if (refresh.runBlinkRefresh) {
+    if (displayOrchestration_.processLightweightRefresh(refreshContext)) {
         displayPipeline_.refreshBlinkTick(edges.nowMs);
     }
     autoPush_.process();

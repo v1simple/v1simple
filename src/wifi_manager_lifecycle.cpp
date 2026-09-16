@@ -45,7 +45,6 @@ static void getWifiRuntimeThresholds(bool apStaMode, bool staOnlyMode, uint32_t&
     minBlock = WiFiManager::WIFI_RUNTIME_MIN_BLOCK_AP_ONLY;
 }
 
-static WifiHeapGuardModule sWifiHeapGuardModule;
 static WifiAutoTimeoutModule sWifiAutoTimeoutModule;
 
 unsigned long WiFiManager::lowDmaCooldownRemainingMs() const {
@@ -75,8 +74,7 @@ bool WiFiManager::canStartSetupMode(uint32_t* freeInternal, uint32_t* largestInt
     const V1Settings& settings = settings_.get();
     uint32_t minFree = 0;
     uint32_t minBlock = 0;
-    getWifiStartThresholds(
-        WifiSetupNetworkPolicy::usesSta(maintenanceBootMode_, shouldUseApSta(settings)), minFree, minBlock);
+    getWifiStartThresholds(WifiSetupNetworkPolicy::usesSta(shouldUseApSta(settings)), minFree, minBlock);
     return freeNow >= minFree && largestNow >= minBlock;
 }
 
@@ -85,7 +83,7 @@ bool WiFiManager::canStartSetupMode(uint32_t* freeInternal, uint32_t* largestInt
 
 bool WiFiManager::startSetupMode(const bool autoStarted) {
     const V1Settings& settings = settings_.get();
-    const bool apStaMode = WifiSetupNetworkPolicy::usesSta(maintenanceBootMode_, shouldUseApSta(settings));
+    const bool apStaMode = WifiSetupNetworkPolicy::usesSta(shouldUseApSta(settings));
     const bool restartingFromStopping = (setupModeState_ == SETUP_MODE_STOPPING);
     const auto cancelDeferredStopForRestart = [this]() {
         setupModeState_ = SETUP_MODE_OFF;
@@ -566,7 +564,7 @@ void WiFiManager::process() {
     heapGuardInput.criticalBlock = criticalBlock;
     heapGuardInput.apStaFreeJitterTolerance = WIFI_RUNTIME_AP_STA_FREE_JITTER_TOLERANCE;
     heapGuardInput.staOnlyBlockJitterTolerance = WIFI_RUNTIME_STA_BLOCK_JITTER_TOLERANCE;
-    const WifiHeapGuardResult heapGuard = sWifiHeapGuardModule.evaluate(heapGuardInput);
+    const WifiHeapGuardResult heapGuard = evaluateWifiHeapGuard(heapGuardInput);
     const bool lowHeap = heapGuard.lowHeap;
 
     if (lowHeap) {

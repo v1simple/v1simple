@@ -324,8 +324,7 @@ struct SpeedFadeRuntime {
 
     SpeedFadeRuntime() {
         speed.begin(true, 25, 3, 0);
-        orchestration.begin(&display, &ble, &queue, &preview, &restore, &parser, &settings,
-                            &fade, &speed, &quiet, nullptr);
+        orchestration.begin(&display, &ble, &preview, &restore, &parser, &fade, &speed, &quiet);
     }
 
     void step(uint32_t nowMs, float mph, bool active, bool echo = true) {
@@ -336,7 +335,7 @@ struct SpeedFadeRuntime {
         }
         speed.update(mph, true, nowMs);
         const int before = ble.setVolumeCalls;
-        TEST_ASSERT_TRUE(orchestration.processParsedFrame({nowMs, true, false}).runDisplayPipeline);
+        TEST_ASSERT_TRUE(orchestration.processParsedFrame({nowMs, true, false}));
         if (echo && ble.setVolumeCalls != before) {
             feed(PACKET_ID_RESP_ALL_VOLUME, {ble.lastVolume, ble.lastMuteVolume, 6, 2}, nowMs);
         }

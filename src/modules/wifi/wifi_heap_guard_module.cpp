@@ -9,7 +9,7 @@ const char* runtimeModeLabel(bool dualRadioMode, bool staRadioOn) {
 }
 } // namespace
 
-WifiHeapGuardResult WifiHeapGuardModule::evaluate(const WifiHeapGuardInput& input) const {
+WifiHeapGuardResult evaluateWifiHeapGuard(const WifiHeapGuardInput& input) {
     WifiHeapGuardResult result;
     result.modeLabel = runtimeModeLabel(input.dualRadioMode, input.staRadioOn);
 

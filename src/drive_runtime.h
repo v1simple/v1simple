@@ -28,7 +28,6 @@
 #include "modules/speed/speed_source_selector.h"
 #include "modules/speed_mute/speed_mute_module.h"
 #include "modules/system/connection_cycle_coordinator_module.h"
-#include "modules/system/parsed_frame_event_module.h"
 #include "modules/system/system_event_bus.h"
 #include "modules/touch/tap_gesture_module.h"
 #include "modules/touch/touch_ui_module.h"
@@ -88,7 +87,7 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
 
     struct DisplayEdges {
         uint32_t nowMs = 0;
-        ParsedFrameSignal parsed;
+        bool parsedReady = false;
     };
 
     static DriveRuntime* callbackOwner_;
@@ -113,7 +112,7 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     void acceptConnectionSnapshot(const ConnectionRuntimeSnapshot& connection);
     void markInitialScanningScreenHandled();
     bool powerOwnsPresentation() const;
-    void presentConnectionState(uint32_t nowMs, const ConnectionRuntimeSnapshot& connection);
+    void presentConnectionState(const ConnectionRuntimeSnapshot& connection);
     void processPower(uint32_t nowMs);
     bool processTouch(uint32_t nowMs);
     void servicePowerDisplayOwnership(uint32_t nowMs);

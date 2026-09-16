@@ -20,9 +20,4 @@ void handleApiConfigGet(WebServer& server, SettingsManager& settings, const Runt
 void handleApiConfigSave(WebServer& server, SettingsManager& settings, GpsRuntimeModule* gpsRuntime,
                          const Runtime& runtime);
 
-inline void handleApiConfigSave(WebServer& server, SettingsManager& settings, GpsRuntimeModule& gpsRuntime,
-                                const Runtime& runtime) {
-    handleApiConfigSave(server, settings, &gpsRuntime, runtime);
-}
-
 } // namespace GpsApiService

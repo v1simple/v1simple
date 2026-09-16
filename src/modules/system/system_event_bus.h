@@ -68,3 +68,10 @@ class SystemEventBus {
     mutable portMUX_TYPE lockMux_ = portMUX_INITIALIZER_UNLOCKED;
 #endif
 };
+
+// Consume the ALP edge even when the BLE queue already has parsed data. Using
+// short-circuit `||` here would leave a stale ALP edge for the next loop.
+inline bool consumeDisplayRefreshEdge(bool queueParsedReady, SystemEventBus& eventBus) {
+    const bool alpStateChanged = eventBus.consumeAlpStateChanged();
+    return queueParsedReady || alpStateChanged;
+}

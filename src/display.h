@@ -170,11 +170,7 @@ class V1Display {
     // gate (true when dirty_.multiAlert is set, i.e. in every Live-mode frame).
     //
     // Returns DisplayLayout::DisplayRect (generic rect type shared with the
-    // partial-flush region-union work — see include/display_layout.h). The
-    // former V1Display::ArrowClusterRect alias is retained so callers and
-    // tests don't have to retype ``V1Display::`` scope changes in a single
-    // cleanup pass; remove it once all consumers use DisplayLayout::DisplayRect.
-    using ArrowClusterRect = DisplayLayout::DisplayRect;
+    // partial-flush region-union work — see include/display_layout.h).
     static DisplayLayout::DisplayRect arrowBoundingRect(bool raisedLayout);
 
   private:

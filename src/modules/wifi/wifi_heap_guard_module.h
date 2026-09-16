@@ -22,7 +22,4 @@ struct WifiHeapGuardResult {
 };
 
 // Evaluates WiFi runtime heap pressure with mode-aware jitter tolerance.
-class WifiHeapGuardModule {
-  public:
-    WifiHeapGuardResult evaluate(const WifiHeapGuardInput& input) const;
-};
+WifiHeapGuardResult evaluateWifiHeapGuard(const WifiHeapGuardInput& input);

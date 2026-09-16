@@ -2,25 +2,16 @@
 
 namespace WifiSetupNetworkPolicy {
 
-enum class Mode {
-    ApOnly,
-    ApSta,
-};
-
 enum class SavedNetworkStart {
     None,
     DirectConnect,
     MaintenanceAutoConnect,
 };
 
-// Maintenance may use STA for saved-network testing and auto-join, while the
-// HTTP ingress independently admits only sockets accepted through the AP IP.
-inline Mode select(const bool /*maintenanceBootMode*/, const bool savedStaAvailable) {
-    return savedStaAvailable ? Mode::ApSta : Mode::ApOnly;
-}
-
-inline bool usesSta(const bool maintenanceBootMode, const bool savedStaAvailable) {
-    return select(maintenanceBootMode, savedStaAvailable) == Mode::ApSta;
+// Maintenance may use STA for saved-network testing and auto-join, while HTTP
+// ingress independently admits only sockets accepted through approved IPs.
+inline bool usesSta(const bool savedStaAvailable) {
+    return savedStaAvailable;
 }
 
 inline SavedNetworkStart selectSavedNetworkStart(const bool maintenanceBootMode, const bool savedStaAvailable) {

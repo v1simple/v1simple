@@ -34,7 +34,7 @@ class DriveLoopCoordinator {
             runtime.markInitialScanningScreenHandled();
         }
         if (!runtime.powerOwnsPresentation()) {
-            runtime.presentConnectionState(timing.nowMs, connection);
+            runtime.presentConnectionState(connection);
         }
 
         bool bleConnected = connection.connected;

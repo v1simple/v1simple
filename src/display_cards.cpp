@@ -200,9 +200,10 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
             return;
         }
         const uint8_t visibleBandMask = bands.lastMask;
+        const uint8_t visibleBandFlashBits = bands.lastFlashBits;
         const bool bandsMuted = bands.lastMuted;
         bands.invalidate();
-        drawBandIndicators(visibleBandMask, bandsMuted, 0);
+        drawBandIndicators(visibleBandMask, bandsMuted, visibleBandFlashBits);
         if (dirty_.gpsIndicator) {
             drawGpsIndicator();
         }

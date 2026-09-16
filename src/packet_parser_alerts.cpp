@@ -468,9 +468,9 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
     // Keep mute authoritative from display packets (InfDisplayData/Aux0 soft mute).
     displayState_.hasJunkAlert = anyJunk;
     displayState_.hasPhotoAlert = anyPhoto;
-    // Mirror Ku-alert presence onto a
-    // display-state flag so the renderer can re-label the K cell as "Ku"
-    // while a Ku alert is active.  Cleared above on count=0 alert tables.
+    // Preserve table-wide Ku presence as metadata. Presentation identity is
+    // still owned by the selected priority row; a secondary Ku must not
+    // relabel the shared physical K cell. Cleared above on count=0 tables.
     displayState_.hasKuAlert = anyKu;
 
 

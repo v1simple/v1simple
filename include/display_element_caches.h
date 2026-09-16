@@ -48,7 +48,9 @@ struct ArrowRenderCache {
 // without this, a color change that skipped forceNextRedraw() would cache-hit
 // and hold stale colors on the panel.
 struct BandRenderCache {
-    uint8_t lastMask = 0xFF; // 0xFF = undrawn sentinel
+    uint8_t lastMask = 0xFF;       // Effective mask; Ku identity remains set while its shared K cell blinks off.
+    uint8_t lastFlashBits = 0;     // Needed when a card clear restores the overlapping band label.
+    bool lastKuBlinkOff = false;   // Distinguishes active/dim Ku when callers provide Ku without the physical K bit.
     bool lastMuted = false;
     uint32_t lastPaletteRevision = 0;
     bool valid = false;

@@ -472,10 +472,10 @@ void V1Display::update(const DisplayState& state) {
     char topChar = state.bogeyCounterChar;
     drawStatusStrip(state, topChar, effectiveMuted, state.bogeyCounterDot);
 
-    // B1: Ku alerts have no dedicated LED on the V1 band row — they light K.
-    // OR BAND_KU into the mask so drawBandIndicators relabels K -> "Ku".
-    const uint8_t bandMaskWithKu1 = static_cast<uint8_t>(state.activeBands | (state.hasKuAlert ? BAND_KU : 0));
-    const bool bandsPainted = drawBandIndicators(bandMaskWithKu1, effectiveMuted);
+    // Resting has no alert owner. Keep the shared physical cell labelled K;
+    // Ku is a live-alert identity, not a persistent replacement for that cell.
+    const uint8_t restingBandMask = static_cast<uint8_t>(state.activeBands & ~BAND_KU);
+    const bool bandsPainted = drawBandIndicators(restingBandMask, effectiveMuted);
     if (bandsPainted || dirty_.gpsIndicator) {
         drawGpsIndicator(); // Repaint: band FILL_RECT overlaps GPS x-range when bands change
     }
@@ -633,9 +633,14 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
     const bool isPhotoRadar = (priority.photoType != 0) || state.hasPhotoAlert || (liveTopCounterChar == 'P');
     drawFrequency(priority.frequency, priority.band, state.muted, isPhotoRadar);
 
-    // Ku shares the K cell.
-    const uint8_t bandMaskWithKu2 = static_cast<uint8_t>(state.activeBands | (state.hasKuAlert ? BAND_KU : 0));
-    const bool bandsPainted = drawBandIndicators(bandMaskWithKu2, state.muted, state.bandFlashBits);
+    // Ku shares the V1's physical K cell, but alert identity follows the
+    // V1-selected priority row. A secondary Ku remains in its card and must
+    // not rename a K or Ka primary. The physical K flash bit still drives Ku
+    // when Ku owns the primary alert.
+    const uint8_t physicalBandMask = static_cast<uint8_t>(state.activeBands & ~BAND_KU);
+    const uint8_t primaryBandMask = static_cast<uint8_t>(
+        physicalBandMask | ((priority.band == BAND_KU) ? BAND_KU : BAND_NONE));
+    const bool bandsPainted = drawBandIndicators(primaryBandMask, state.muted, state.bandFlashBits);
     if (bandsPainted || dirty_.gpsIndicator) {
         drawGpsIndicator(); // Repaint: band FILL_RECT overlaps GPS x-range when bands change
     }

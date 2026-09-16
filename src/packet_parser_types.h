@@ -101,11 +101,9 @@ struct DisplayState {
     bool bogeyCounterDot2;     // Decimal point from image2 (bit 7)
     bool hasJunkAlert;         // True if any alert row has aux0 junk bit set
     bool hasPhotoAlert;        // True if any alert row has photo type > 0
-    // The V1's band-display row only has
-    // X/K/Ka LEDs — Ku alerts light the K LED on the V1 itself.  We mirror
-    // that by setting hasKuAlert=true while any active alert resolves to
-    // BAND_KU, and the display layer renders the K-cell label as "Ku" while
-    // this flag is set.  Cleared in parseAlertData when no Ku alerts present.
+    // Table-wide Ku presence. The V1's band-display row has no dedicated Ku
+    // LED, but presentation identity remains priority-owned: this fact must
+    // not by itself relabel the shared physical K cell.
     bool hasKuAlert;
     // Per Valentine InfDisplayData.isSoft(),
     // the spec-correct audio-mute flag is auxData0 bit 0 (0x01). The existing

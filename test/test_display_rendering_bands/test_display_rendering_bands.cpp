@@ -254,7 +254,7 @@ void test_drawBandIndicators_ku_obeys_the_shared_k_flash_bit() {
             TEST_ASSERT_EQUAL_UINT(4u, text->calls.size());
             TEST_ASSERT_EQUAL_HEX16(phase ? settings.get().colorBandK : TFT_DARKGREY,
                                    text->calls[2].color);
-            TEST_ASSERT_EQUAL_STRING(phase && (bandMask & BAND_KU) ? "Ku" : "K",
+            TEST_ASSERT_EQUAL_STRING((bandMask & BAND_KU) ? "Ku" : "K",
                                      text->calls[2].text.c_str());
         }
     }

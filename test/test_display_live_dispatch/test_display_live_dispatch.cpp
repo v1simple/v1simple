@@ -113,6 +113,7 @@ const char* V1Display::bandToString(Band band) {
     switch (band) {
     case BAND_KA: return "Ka";
     case BAND_K: return "K";
+    case BAND_KU: return "Ku";
     case BAND_X: return "X";
     default: return "";
     }
@@ -122,6 +123,7 @@ uint16_t V1Display::getBandColor(Band band) {
     switch (band) {
     case BAND_KA: return s.colorBandKa;
     case BAND_K: return s.colorBandK;
+    case BAND_KU: return s.colorBandK;
     case BAND_X: return s.colorBandX;
     default: return currentPalette_.text;
     }
@@ -492,6 +494,73 @@ void test_ka_to_x_replaces_outgoing_active_band_before_full_flush() {
     TEST_ASSERT_TRUE(regionalTransfers.empty());
 }
 
+void test_k_primary_keeps_k_label_with_ka_and_ku_cards() {
+    RenderFrame frame;
+    frame.primaryKind = RenderFramePrimaryKind::V1_LIVE;
+    frame.v1Priority = AlertData::create(BAND_K, DIR_FRONT, 4, 0, 24150, true, true);
+    frame.primaryState = stateFor(frame.v1Priority, '3', 4);
+    frame.primaryState.activeBands = static_cast<uint8_t>(BAND_K | BAND_KA);
+    frame.primaryState.hasKuAlert = true;
+    frame.cardCount = 2;
+    frame.cards[0].kind = RenderFrameCard::Kind::V1;
+    frame.cards[0].v1Alert = AlertData::create(BAND_KA, DIR_SIDE, 5, 0, 34700, true, false);
+    frame.cards[1].kind = RenderFrameCard::Kind::V1;
+    frame.cards[1].v1Alert = AlertData::create(BAND_KU, DIR_REAR, 6, 0, 13450, true, false);
+
+    display.renderFrame(frame);
+
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(static_cast<uint8_t>(BAND_K | BAND_KA),
+                                    display.ut_elementCaches().bands.lastMask,
+                                    "a secondary Ku must not relabel the K primary cell");
+    TEST_ASSERT_EQUAL_INT(BAND_KA, display.ut_elementCaches().cards.lastDrawnPositions[0].band);
+    TEST_ASSERT_EQUAL_INT(BAND_KU, display.ut_elementCaches().cards.lastDrawnPositions[1].band);
+}
+
+void test_ka_primary_keeps_ka_and_k_labels_with_secondary_ku_card() {
+    RenderFrame frame;
+    frame.primaryKind = RenderFramePrimaryKind::V1_LIVE;
+    frame.v1Priority = AlertData::create(BAND_KA, DIR_FRONT, 5, 0, 34700, true, true);
+    frame.primaryState = stateFor(frame.v1Priority, '3', 5);
+    frame.primaryState.activeBands = static_cast<uint8_t>(BAND_KA | BAND_K);
+    frame.primaryState.hasKuAlert = true;
+    frame.cardCount = 2;
+    frame.cards[0].kind = RenderFrameCard::Kind::V1;
+    frame.cards[0].v1Alert = AlertData::create(BAND_K, DIR_SIDE, 4, 0, 24150, true, false);
+    frame.cards[1].kind = RenderFrameCard::Kind::V1;
+    frame.cards[1].v1Alert = AlertData::create(BAND_KU, DIR_REAR, 6, 0, 13450, true, false);
+
+    display.renderFrame(frame);
+
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(static_cast<uint8_t>(BAND_KA | BAND_K),
+                                    display.ut_elementCaches().bands.lastMask,
+                                    "a secondary Ku must stay in its card when Ka is primary");
+    TEST_ASSERT_EQUAL_INT(BAND_K, display.ut_elementCaches().cards.lastDrawnPositions[0].band);
+    TEST_ASSERT_EQUAL_INT(BAND_KU, display.ut_elementCaches().cards.lastDrawnPositions[1].band);
+}
+
+void test_ku_primary_relabels_shared_k_cell_with_k_and_ka_cards() {
+    RenderFrame frame;
+    frame.primaryKind = RenderFramePrimaryKind::V1_LIVE;
+    frame.v1Priority = AlertData::create(BAND_KU, DIR_FRONT, 6, 0, 13450, true, true);
+    frame.primaryState = stateFor(frame.v1Priority, '3', 6);
+    // InfDisplayData has only the V1's physical K bit; the alert row identifies Ku.
+    frame.primaryState.activeBands = static_cast<uint8_t>(BAND_K | BAND_KA);
+    frame.primaryState.hasKuAlert = true;
+    frame.cardCount = 2;
+    frame.cards[0].kind = RenderFrameCard::Kind::V1;
+    frame.cards[0].v1Alert = AlertData::create(BAND_K, DIR_SIDE, 4, 0, 24150, true, false);
+    frame.cards[1].kind = RenderFrameCard::Kind::V1;
+    frame.cards[1].v1Alert = AlertData::create(BAND_KA, DIR_REAR, 5, 0, 34700, true, false);
+
+    display.renderFrame(frame);
+
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(static_cast<uint8_t>(BAND_KA | BAND_K | BAND_KU),
+                                    display.ut_elementCaches().bands.lastMask,
+                                    "the shared K cell must read Ku when Ku owns the primary alert");
+    TEST_ASSERT_EQUAL_INT(BAND_K, display.ut_elementCaches().cards.lastDrawnPositions[0].band);
+    TEST_ASSERT_EQUAL_INT(BAND_KA, display.ut_elementCaches().cards.lastDrawnPositions[1].band);
+}
+
 void test_priority_arrow_disabled_keeps_all_transmitted_directions() {
     const auto allDirections = static_cast<Direction>(DIR_FRONT | DIR_SIDE | DIR_REAR);
     assertPriorityArrowPresentation(false, allDirections, DIR_FRONT, allDirections);
@@ -755,6 +824,42 @@ void test_spec_image_pair_blinks_k_band_and_front_arrow_through_full_pipeline() 
     TEST_ASSERT_TRUE(kOffPaint != sent.text.end());
 }
 
+void test_ku_primary_uses_physical_k_flash_cadence_through_full_pipeline() {
+    CounterBlinkRuntime runtime;
+    // Priority Ku/front at 13.450 GHz plus secondary Ka/rear at 34.700 GHz.
+    // InfDisplayData uses the V1's physical K bit for Ku: K/front flash while
+    // the separate Ka/rear secondary remains steadily displayed.
+    runtime.feed(PACKET_ID_ALERT_DATA, {0x12, 0x34, 0x8A, 0xB3, 0x00, 0x30, 0x80});
+    runtime.feed(PACKET_ID_ALERT_DATA, {0x22, 0x87, 0x8C, 0x00, 0xA8, 0x82, 0x00});
+    runtime.displayFrame(0x5B, 0x5B, 0x00, 0xA6, 0x82);
+
+    TEST_ASSERT_EQUAL_INT(BAND_KU, runtime.parser.getPriorityAlert().band);
+    TEST_ASSERT_EQUAL_HEX8(BAND_K, runtime.parser.getDisplayState().bandFlashBits);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(BAND_KA | BAND_K | BAND_KU),
+                            display.ut_elementCaches().bands.lastMask);
+    TEST_ASSERT_EQUAL_INT(BAND_KA, display.ut_elementCaches().cards.lastDrawnPositions[0].band);
+
+    clearObservations();
+    TEST_ASSERT_TRUE(runtime.refresh(10096));
+    TEST_ASSERT_EQUAL_UINT(1, canvas()->flushSnapshots.size());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(BAND_KA | BAND_KU),
+                            display.ut_elementCaches().bands.lastMask);
+    const auto kuOffPaint = std::find_if(canvas()->flushSnapshots.front().text.begin(),
+                                         canvas()->flushSnapshots.front().text.end(),
+                                         [](const RecordingCanvas::TextCall& call) {
+                                             return call.text == "Ku" && call.color == TFT_DARKGREY;
+                                         });
+    TEST_ASSERT_TRUE(kuOffPaint != canvas()->flushSnapshots.front().text.end());
+    const auto kaSteadyPaint = std::find_if(canvas()->flushSnapshots.front().text.begin(),
+                                            canvas()->flushSnapshots.front().text.end(),
+                                            [](const RecordingCanvas::TextCall& call) {
+                                                return call.text == "Ka" &&
+                                                       call.color == settings.get().colorBandKa;
+                                            });
+    TEST_ASSERT_TRUE(kaSteadyPaint != canvas()->flushSnapshots.front().text.end());
+    TEST_ASSERT_EQUAL_INT(BAND_KA, display.ut_elementCaches().cards.lastDrawnPositions[0].band);
+}
+
 void test_idle_counter_blink_respects_splash_preview_and_runtime_gates() {
     CounterBlinkRuntime runtime;
     runtime.counter(0x1E, 0);
@@ -880,6 +985,9 @@ int main() {
     RUN_TEST(test_live_alp_owns_primary_direction_while_v1_radar_keeps_card_direction_geometry);
     RUN_TEST(test_front_to_side_replaces_outgoing_active_paint_before_full_flush);
     RUN_TEST(test_ka_to_x_replaces_outgoing_active_band_before_full_flush);
+    RUN_TEST(test_k_primary_keeps_k_label_with_ka_and_ku_cards);
+    RUN_TEST(test_ka_primary_keeps_ka_and_k_labels_with_secondary_ku_card);
+    RUN_TEST(test_ku_primary_relabels_shared_k_cell_with_k_and_ka_cards);
     RUN_TEST(test_priority_arrow_disabled_keeps_all_transmitted_directions);
     RUN_TEST(test_priority_arrow_enabled_filters_main_directions_but_keeps_secondary);
     RUN_TEST(test_priority_arrow_enabled_does_not_invent_untransmitted_priority_direction);
@@ -890,6 +998,7 @@ int main() {
     RUN_TEST(test_two_spec_alert_rows_reach_primary_and_secondary_direction_geometry);
     RUN_TEST(test_changed_spec_priority_swaps_primary_and_card_without_stale_geometry);
     RUN_TEST(test_spec_image_pair_blinks_k_band_and_front_arrow_through_full_pipeline);
+    RUN_TEST(test_ku_primary_uses_physical_k_flash_cadence_through_full_pipeline);
     RUN_TEST(test_idle_counter_blink_respects_splash_preview_and_runtime_gates);
     RUN_TEST(test_timed_preview_expiry_restores_once_on_the_next_unsuppressed_loop);
     RUN_TEST(test_cancelled_preview_waits_through_suppression_then_restores_once);

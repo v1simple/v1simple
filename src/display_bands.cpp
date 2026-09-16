@@ -44,18 +44,19 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
     // the same underlying V1 signal via flashBits / bandFlashBits.
     updateBlinkPhase_();
 
-    // Apply blink: if flash bit is set and we're in OFF phase, treat band as inactive
+    // Apply blink: if a flash bit is set and we're in the OFF phase, treat
+    // that physical cell as inactive. Keep the synthetic Ku identity bit so
+    // a flashing Ku label dims as "Ku" instead of changing back to "K".
     uint8_t effectiveBandMask = bandMask;
     if (!blinkPhase_) {
         effectiveBandMask &= ~bandFlashBits;
-        // Ku uses the V1's K LED, so its synthetic bit shares K's off phase.
-        if (bandFlashBits & BAND_K) {
-            effectiveBandMask &= ~BAND_KU;
-        }
     }
+    const bool kuBlinkOff = (bandMask & BAND_KU) != 0 && (bandFlashBits & BAND_K) != 0 && !blinkPhase_;
 
     if (elementCaches_.bands.valid && effectiveBandMask == elementCaches_.bands.lastMask &&
-        muted == elementCaches_.bands.lastMuted && elementCaches_.bands.lastPaletteRevision == paletteRevision_) {
+        bandFlashBits == elementCaches_.bands.lastFlashBits && muted == elementCaches_.bands.lastMuted &&
+        kuBlinkOff == elementCaches_.bands.lastKuBlinkOff &&
+        elementCaches_.bands.lastPaletteRevision == paletteRevision_) {
         return false;
     }
 
@@ -74,14 +75,12 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
                                                {"K", BAND_K, s.colorBandK},
                                                {"X", BAND_X, s.colorBandX}};
 
-    // The V1's band-display row has no dedicated Ku LED — Ku alerts light
-    // the K LED on the V1 itself.  When
-    // the caller passes BAND_KU in the mask (either as a per-alert band or
-    // via DisplayState::hasKuAlert OR'd into activeBands upstream), we light
-    // the K cell and re-label it "Ku" so the user sees Ku is the active band.
-    // Resting screens pass mask=0 so cell stays inactive and label stays "K".
-    const bool kuActive = (effectiveBandMask & BAND_KU) != 0;
-    if (kuActive) {
+    // The V1's band-display row has no dedicated Ku LED — Ku alerts light the
+    // K LED on the V1 itself. The live renderer adds BAND_KU only when the
+    // V1-selected priority row is Ku; secondary Ku alerts stay in their cards.
+    // Persisted and preview callers may also pass an explicit Ku identity.
+    const bool kuIdentity = (effectiveBandMask & BAND_KU) != 0;
+    if (kuIdentity) {
         cells[2].label = DisplayVisualContract::bandCellLabel(effectiveBandMask, 2);
         cells[2].mask = DisplayVisualContract::bandCellMask(effectiveBandMask, 2);
     }
@@ -106,8 +105,16 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
     int16_t clearY[kBandCellCount]{};
     bool cellChanged[kBandCellCount]{};
 
+    auto cellIsActive = [&](uint8_t mask, int index) -> bool {
+        // Ku has no dedicated V1 flash bit. Its label follows the physical K
+        // bit's phase while retaining Ku identity during the dark half-cycle.
+        if (index == 2 && (mask & BAND_KU) != 0 && (bandFlashBits & BAND_K) != 0 && !blinkPhase_) {
+            return false;
+        }
+        return (mask & DisplayVisualContract::bandCellMask(mask, index)) != 0;
+    };
     auto colorForCell = [&](uint8_t mask, bool cellMuted, int index) -> uint16_t {
-        const bool active = (mask & DisplayVisualContract::bandCellMask(mask, index)) != 0;
+        const bool active = cellIsActive(mask, index);
         return active ? (cellMuted ? PALETTE_MUTED_OR_PERSISTED : cells[index].color) : TFT_DARKGREY;
     };
 
@@ -158,6 +165,8 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
 
     if (!anyCellChanged) {
         elementCaches_.bands.lastMask = effectiveBandMask;
+        elementCaches_.bands.lastFlashBits = bandFlashBits;
+        elementCaches_.bands.lastKuBlinkOff = kuBlinkOff;
         elementCaches_.bands.lastMuted = muted;
         elementCaches_.bands.lastPaletteRevision = paletteRevision_;
         elementCaches_.bands.valid = true;
@@ -223,7 +232,7 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
 
     // "Ku" is wider than the K/X glyphs and its tail reaches card 0.  Keep
     // that label intact, then let the later card pass restore its own pixels.
-    if (protectCard0 && kuActive && (forceFullStack || cellChanged[2])) {
+    if (protectCard0 && kuIdentity && (forceFullStack || cellChanged[2])) {
         elementCaches_.cards.forceRedraw = true;
     }
 
@@ -231,7 +240,7 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
         if (!forceFullStack && !cellChanged[i]) {
             continue;
         }
-        const bool isActive = (effectiveBandMask & DisplayVisualContract::bandCellMask(effectiveBandMask, i)) != 0;
+        const bool isActive = cellIsActive(effectiveBandMask, i);
         int labelY = startY + i * spacing;
         labelY += s_bandBaselineAdjust;
         uint16_t col = isActive ? (muted ? PALETTE_MUTED_OR_PERSISTED : cells[i].color) : TFT_DARKGREY;
@@ -250,6 +259,8 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
     }
 
     elementCaches_.bands.lastMask = effectiveBandMask;
+    elementCaches_.bands.lastFlashBits = bandFlashBits;
+    elementCaches_.bands.lastKuBlinkOff = kuBlinkOff;
     elementCaches_.bands.lastMuted = muted;
     elementCaches_.bands.lastPaletteRevision = paletteRevision_;
     elementCaches_.bands.valid = true;

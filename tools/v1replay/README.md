@@ -58,6 +58,7 @@ Generated stimuli require no data file:
 .build/v1replay bench --blink-profile stress
 .build/v1replay bench --exit-on-complete
 .build/v1replay bench --reader-qualification
+.build/v1replay bench --ku-qualification
 .build/v1replay bench --persistence-coverage
 .build/v1replay bench --scenario /external/input.json \
   --scenario-evidence /external/run/replay_scenario.json --machine-events
@@ -67,7 +68,8 @@ Generated stimuli require no data file:
 .build/v1replay crib
 ```
 
-Without `--scenario`, `--reader-qualification`, or `--persistence-coverage`,
+Without `--scenario`, `--reader-qualification`, `--ku-qualification`, or
+`--persistence-coverage`,
 `bench` uses the generated Phase 0 stimulus. It runs at approximately 3 Hz for 276 seconds
 and covers a resting lead, K and Ka ramps, a priority handoff, complete two- and
 three-row alert tables, card removal and restoration, a long Ka approach,
@@ -97,19 +99,26 @@ retains the exact selected values and their hash. These authored cases provide
 coverage opportunities; they do not guarantee particular camera or OCR errors.
 The emulator only emits stimuli; it does not analyze camera pixels.
 
+`v1replay bench --ku-qualification` selects a separate 12-second generated
+exercise: idle, one steady Ku primary, then K/Ka/Ku together with K, Ka, and Ku
+each taking the flashing priority role, followed by a clear. Ku remains bit 4
+in alert rows and uses the physical K bit in the display image pair.
+
 `--persistence-coverage` selects a separate 64-second ordinary radar sequence
 for observing the configured Alert persistence. It does not change that setting
 or establish that persisted content was displayed correctly.
 
-Normal bench playback defaults to the `scenario` priority-arrow blink profile. As a
+Normal bench playback defaults to the `scenario` priority blink profile. As a
 provisional generated assumption, it blinks only during the 19-second authored
 multi-alert interval (57 samples) and leaves all single-alert periods steady.
 This is deliberately isolated in `BenchScenario.swift` so later external input
 evidence can replace the assumption without changing firmware or packet
 semantics. Physical display behavior is checked by the camera leg.
-`--blink-profile steady` is the negative control; `--blink-profile stress`
-blinks every active priority arrow (708 samples) as the worst-case repaint
-control. `--blink-arrow` remains a legacy alias for the stress profile.
+The selected priority band and arrow use their independent image1/image2 bits
+in lockstep; Ku uses the physical K bit. `--blink-profile steady` is the
+negative control; `--blink-profile stress` blinks every active priority band
+and arrow (708 samples) as the worst-case repaint control. `--blink-arrow`
+remains a legacy alias for the stress profile.
 
 The long approach derives only the aggregate cadence, approximate durations,
 and strength envelope recorded during diagnosis: roughly 95 seconds mostly at

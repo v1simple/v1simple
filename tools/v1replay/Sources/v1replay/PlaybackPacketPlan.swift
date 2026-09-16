@@ -27,6 +27,7 @@ extension V1 {
              muted: Bool,
              blinkBogey: Bool,
              blinkArrow: Bool,
+             blinkBand: Bool = false,
              header: Header = .broadcastInformation,
              checksum: Bool = true,
              includeAlertTable: Bool = true) {
@@ -68,6 +69,7 @@ extension V1 {
                     displayOn: displayOn,
                     blinkPlane: blinkBogey,
                     blinkArrow: blinkArrow,
+                    blinkBand: blinkBand,
                     includeModeBits: includeModeBits
                 )
             } else {

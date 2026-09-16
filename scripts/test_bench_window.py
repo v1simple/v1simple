@@ -278,7 +278,7 @@ def _write_executable(path: Path) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
-def capture_replay_command(scenario: str) -> list[str]:
+def capture_replay_command(scenario: str, *, ku_qualification: bool = False) -> list[str]:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         executable = root / "build" / "v1replay"
@@ -308,6 +308,7 @@ def capture_replay_command(scenario: str) -> list[str]:
             "scenario",
             lease_fd=9,
             scenario=scenario,
+            ku_qualification=ku_qualification,
             machine_event=lambda _payload: None,
         )
         try:
@@ -327,6 +328,8 @@ def test_replay_process_requests_raw_machine_and_scenario_evidence() -> None:
     for scenario in ("fixture.json", ""):
         command = capture_replay_command(scenario)
         assert_true(("--scenario" in command) is bool(scenario), str(command))
+    ku_command = capture_replay_command("", ku_qualification=True)
+    assert_true("--ku-qualification" in ku_command, str(ku_command))
 
 
 def finish_replay_fixture(states: list[str]) -> dict[str, Any]:
@@ -359,6 +362,7 @@ def finish_replay_fixture(states: list[str]) -> dict[str, Any]:
             "scenario",
             lease_fd=9,
             scenario="fixture.json",
+            ku_qualification=False,
             machine_event=lambda _payload: None,
         )
         emulator.process = FakeProcess()  # type: ignore[assignment]
@@ -387,7 +391,7 @@ def test_requested_dropped_complete_stopped_preserves_raw_delivery() -> None:
 def test_emulator_cleanup_before_start_preserves_primary_failure() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         emulator = V1Emulator(Path("unused"), Path(tmp), "replay", "scenario", lease_fd=9, scenario="",
-                              machine_event=lambda _payload: None)
+                              ku_qualification=False, machine_event=lambda _payload: None)
         result = emulator.finish(window_completed=False)
         assert_true(result["started"] is False, str(result))
         assert_true(result["lifecycle_completed"] is False, str(result))

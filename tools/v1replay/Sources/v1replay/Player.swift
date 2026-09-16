@@ -529,6 +529,10 @@ final class Player {
         let includeAlertTable = options.sendAlerts
             && (!options.requireStartAlertData || peripheral.alertDataRequested)
         let arrowBlink = options.arrowBlinkProfile.shouldBlink(sample)
+        // The V1's image1/image2 pair carries independent arrow and band
+        // flash bits. A selected multi-alert priority flashes both planes;
+        // Ku uses the physical K band bit in that shared display cell.
+        let bandBlink = arrowBlink
         let plan = V1.PlaybackPacketPlan(
             sample: sample,
             controlState: control,
@@ -536,6 +540,7 @@ final class Player {
             muted: muted,
             blinkBogey: options.blinkBogey,
             blinkArrow: arrowBlink,
+            blinkBand: bandBlink,
             header: options.header,
             checksum: options.checksum,
             includeAlertTable: includeAlertTable
@@ -556,6 +561,7 @@ final class Player {
             muted: muted,
             displayOn: displayOn,
             arrowBlink: arrowBlink,
+            bandBlink: bandBlink,
             plan: plan,
             intendedHostMonotonicNs: intendedHostMonotonicNs,
             requestedHostMonotonicNs: requestedAtNs

@@ -31,6 +31,7 @@ struct ReplayStimulusEvent: Encodable, Equatable {
         let modeChar: String
         let displayOn: Bool
         let arrowBlink: Bool
+        let bandBlink: Bool
     }
 
     struct NotificationRequest: Encodable, Equatable {
@@ -62,7 +63,7 @@ struct ReplayStimulusEvent: Encodable, Equatable {
     }
 
     let state = "stimulus_requested"
-    let schemaVersion = 2
+    let schemaVersion = 3
     let stimulusSequence: Int
     let sourceIndex: Int
     let replayOffsetSeconds: Double
@@ -78,6 +79,7 @@ struct ReplayStimulusEvent: Encodable, Equatable {
          muted: Bool,
          displayOn: Bool,
          arrowBlink: Bool,
+         bandBlink: Bool,
          plan: V1.PlaybackPacketPlan,
          intendedHostMonotonicNs: UInt64,
          requestedHostMonotonicNs: UInt64) {
@@ -97,7 +99,8 @@ struct ReplayStimulusEvent: Encodable, Equatable {
             muteVolume: controlState.mutedVolume,
             modeChar: controlState.mode.displayCharacter,
             displayOn: displayOn,
-            arrowBlink: arrowBlink
+            arrowBlink: arrowBlink,
+            bandBlink: bandBlink
         )
         notifications = plan.emissions.enumerated().map {
             NotificationRequest(ordinal: $0.offset, emission: $0.element)

@@ -350,6 +350,7 @@ enum V1 {
                              displayOn: Bool,
                              blinkPlane: Bool = false,
                              blinkArrow: Bool = false,
+                             blinkBand: Bool = false,
                              includeModeBits: Bool = true) -> DisplayFrame {
             var f = DisplayFrame()
             f.bogeyImage1 = V1.bogeyGlyph(forCount: bogeyCount)
@@ -361,7 +362,9 @@ enum V1 {
             var image = displayBand | direction.rawValue
             if muted { image |= V1.muteBit }
             f.image1 = image
-            f.image2 = blinkArrow ? (image & ~direction.rawValue) : image
+            f.image2 = image
+            if blinkArrow { f.image2 &= ~direction.rawValue }
+            if blinkBand { f.image2 &= ~displayBand }
             f.aux0 = V1.aux0SystemStatus
                 | (displayOn ? V1.aux0DisplayOn : 0)
                 | (muted ? V1.aux0SoftMute : 0)

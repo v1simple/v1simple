@@ -12,6 +12,78 @@ enum BenchScenario {
     static let cadenceHz = 3
     static let durationSeconds = 276
     static let readerQualificationDurationSeconds = 68
+    static let kuQualificationDurationSeconds = 12
+
+    /// Short, generated Ku display exercise for camera and packet qualification.
+    /// It keeps the ordinary 276-second bench stimulus unchanged while exercising
+    /// the three-band priority rotation that exposed the shared K/Ku-cell bug.
+    static func makeKuQualification() -> Encounter {
+        var samples: [TimedSample] = []
+        let sampleCount = kuQualificationDurationSeconds * cadenceHz
+        samples.reserveCapacity(sampleCount)
+
+        for tick in 0..<sampleCount {
+            let second = tick / cadenceHz
+            let phase: String
+            let alerts: [ReplayAlert]
+            let blink: Bool
+            switch second {
+            case 0..<2:
+                phase = "ku_qualification_idle_lead"
+                alerts = []
+                blink = false
+            case 2..<4:
+                phase = "ku_qualification_single"
+                alerts = [alert(.ku, 13_450, 6, .front, priority: true)]
+                blink = false
+            case 4..<6:
+                phase = "ku_qualification_k_priority"
+                alerts = [
+                    alert(.k, 24_150, 4, .front, priority: true),
+                    alert(.ka, 34_700, 5, .side, priority: false),
+                    alert(.ku, 13_450, 6, .rear, priority: false),
+                ]
+                blink = true
+            case 6..<8:
+                phase = "ku_qualification_ka_priority"
+                alerts = [
+                    alert(.ka, 34_700, 5, .front, priority: true),
+                    alert(.k, 24_150, 4, .side, priority: false),
+                    alert(.ku, 13_450, 6, .rear, priority: false),
+                ]
+                blink = true
+            case 8..<10:
+                phase = "ku_qualification_ku_priority"
+                alerts = [
+                    alert(.ku, 13_450, 6, .front, priority: true),
+                    alert(.k, 24_150, 4, .side, priority: false),
+                    alert(.ka, 34_700, 5, .rear, priority: false),
+                ]
+                blink = true
+            default:
+                phase = "ku_qualification_idle_tail"
+                alerts = []
+                blink = false
+            }
+            samples.append(TimedSample(
+                offset: Double(tick) / Double(cadenceHz),
+                phase: phase,
+                muted: false,
+                alerts: alerts,
+                scenarioArrowBlink: blink,
+                sourceIndex: tick
+            ))
+        }
+
+        precondition(samples.count == sampleCount)
+        precondition(samples.filter { $0.alerts.count == 3 }.count == 18)
+        precondition(samples.filter(\.scenarioArrowBlink).count == 18)
+        precondition(samples[6].priorityAlert?.band.mask == V1.Band.ku.mask)
+        precondition(samples[12].priorityAlert?.band.mask == V1.Band.k.mask)
+        precondition(samples[18].priorityAlert?.band.mask == V1.Band.ka.mask)
+        precondition(samples[24].priorityAlert?.band.mask == V1.Band.ku.mask)
+        return Encounter(origin: .syntheticBench, samples: samples)
+    }
 
     /// A fixed optical-reader exercise, separate from the normal product replay.
     /// Strength, mute color and direction changes exercise full display flushes

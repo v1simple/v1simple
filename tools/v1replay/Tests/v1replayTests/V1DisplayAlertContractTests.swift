@@ -19,7 +19,7 @@ final class V1DisplayAlertContractTests: XCTestCase {
                         sourceIndex: 0)
                     let plan = V1.PlaybackPacketPlan(
                         sample: sample, controlState: control, displayOn: true, muted: muted,
-                        blinkBogey: false, blinkArrow: blinking)
+                        blinkBogey: false, blinkArrow: blinking, blinkBand: blinking)
                     XCTAssertEqual(plan.alertTablePackets.count, 1)
                     let row = try IndependentFrame.decode(plan.alertTablePackets[0])
                     XCTAssertEqual(row.packetID, 0x43)
@@ -32,7 +32,8 @@ final class V1DisplayAlertContractTests: XCTestCase {
                     // ID43 bit 4 is Ku; ID31 bit 4 is mute and Ku uses the K lamp.
                     let bandAndMute: UInt8 = muted ? 0x14 : 0x04
                     XCTAssertEqual(display.payload[3], bandAndMute | directionBit)
-                    XCTAssertEqual(display.payload[4], blinking ? bandAndMute : bandAndMute | directionBit)
+                    XCTAssertEqual(display.payload[4], blinking ? (muted ? 0x10 : 0x00)
+                                                                 : bandAndMute | directionBit)
                     XCTAssertEqual(display.payload[5] & 0x01, muted ? 0x01 : 0x00)
                 }
             }
@@ -44,6 +45,44 @@ final class V1DisplayAlertContractTests: XCTestCase {
         // normal alert, mute, volume, mode, timing and blink value.
         XCTAssertEqual(sha256Hex(try BenchScenario.make().resolvedScenarioEvidenceData()),
                        "144b04f4cced4461578168c9b162e97a02bf34973e9918c73b4a972888935f6f")
+    }
+
+    func testKuQualificationRotatesPriorityAndBlinksThePhysicalBandBit() throws {
+        let encounter = BenchScenario.makeKuQualification()
+        XCTAssertEqual(encounter.samples.count, 36)
+        XCTAssertEqual(encounter.duration, 11.0 + 2.0 / 3.0, accuracy: 0.000_001)
+        XCTAssertTrue(encounter.samples.prefix(6).allSatisfy { $0.alerts.isEmpty })
+        XCTAssertTrue(encounter.samples.suffix(6).allSatisfy { $0.alerts.isEmpty })
+
+        let singleKu = encounter.samples[6]
+        XCTAssertEqual(singleKu.alerts.map(\.band.mask), [V1.Band.ku.mask])
+        XCTAssertFalse(singleKu.scenarioArrowBlink)
+
+        let control = V1.Session.ControlState(
+            mode: .advancedLogic, mainVolume: 4, mutedVolume: 0,
+            savedMainVolume: 4, savedMutedVolume: 0)
+        let checkpoints: [(Int, UInt8, [UInt8])] = [
+            (12, V1.Band.k.mask, [V1.Band.k.mask, V1.Band.ka.mask, V1.Band.ku.mask]),
+            (18, V1.Band.ka.mask, [V1.Band.ka.mask, V1.Band.k.mask, V1.Band.ku.mask]),
+            (24, V1.Band.k.mask, [V1.Band.ku.mask, V1.Band.k.mask, V1.Band.ka.mask]),
+        ]
+        for (index, displayBand, alertBands) in checkpoints {
+            let sample = encounter.samples[index]
+            XCTAssertTrue(sample.scenarioArrowBlink)
+            XCTAssertEqual(sample.alerts.map(\.band.mask), alertBands)
+            let plan = V1.PlaybackPacketPlan(
+                sample: sample, controlState: control, displayOn: true, muted: false,
+                blinkBogey: false, blinkArrow: true, blinkBand: true)
+            let display = try IndependentFrame.decode(plan.displayPacket)
+            XCTAssertEqual(display.payload[3] & 0x0F, displayBand)
+            XCTAssertEqual(display.payload[4] & 0x0F, 0)
+            XCTAssertEqual(display.payload[3] & 0xE0, V1.Direction.front.rawValue)
+            XCTAssertEqual(display.payload[4] & 0xE0, 0)
+
+            let rows = try plan.alertTablePackets.map(IndependentFrame.decode)
+            XCTAssertEqual(rows.map { $0.payload[5] & 0x1F }, alertBands)
+            XCTAssertEqual(rows.map { $0.payload[6] & 0x80 }, [0x80, 0x00, 0x00])
+        }
     }
 
     func testReaderQualificationHasFixedHoldsAndTwelveSecondsOfCardBlink() throws {

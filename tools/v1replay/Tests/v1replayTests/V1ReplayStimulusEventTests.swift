@@ -30,7 +30,8 @@ final class V1ReplayStimulusEventTests: XCTestCase {
             displayOn: true,
             muted: true,
             blinkBogey: false,
-            blinkArrow: true
+            blinkArrow: true,
+            blinkBand: true
         )
         let event = ReplayStimulusEvent(
             sequence: 9,
@@ -39,13 +40,14 @@ final class V1ReplayStimulusEventTests: XCTestCase {
             muted: true,
             displayOn: true,
             arrowBlink: true,
+            bandBlink: true,
             plan: plan,
             intendedHostMonotonicNs: 123_499_000_000,
             requestedHostMonotonicNs: 123_500_000_000
         )
 
         XCTAssertEqual(event.state, "stimulus_requested")
-        XCTAssertEqual(event.schemaVersion, 2)
+        XCTAssertEqual(event.schemaVersion, 3)
         XCTAssertEqual(event.stimulusSequence, 9)
         XCTAssertEqual(event.sourceIndex, 41)
         XCTAssertEqual(event.intendedHostMonotonicNs, 123_499_000_000)
@@ -57,6 +59,7 @@ final class V1ReplayStimulusEventTests: XCTestCase {
         XCTAssertEqual(event.expected.muteVolume, 2)
         XCTAssertTrue(event.expected.muted)
         XCTAssertTrue(event.expected.arrowBlink)
+        XCTAssertTrue(event.expected.bandBlink)
         XCTAssertEqual(event.expected.alerts, [ReplayStimulusEvent.Alert(sample.alerts[0])])
         XCTAssertEqual(event.notifications.map(\.ordinal), Array(plan.emissions.indices))
         XCTAssertEqual(
@@ -70,7 +73,7 @@ final class V1ReplayStimulusEventTests: XCTestCase {
             JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any]
         )
         XCTAssertEqual(decoded["state"] as? String, "stimulus_requested")
-        XCTAssertEqual(decoded["schemaVersion"] as? Int, 2)
+        XCTAssertEqual(decoded["schemaVersion"] as? Int, 3)
         XCTAssertEqual(decoded["intendedHostMonotonicNs"] as? Int, 123_499_000_000)
         XCTAssertEqual(decoded["stimulusSequence"] as? Int, 9)
         XCTAssertEqual((decoded["notifications"] as? [[String: Any]])?.count, plan.emissions.count)

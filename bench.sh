@@ -12,9 +12,10 @@ PIO_CMD="${PIO_CMD:-pio}"
 PORT="${DEVICE_PORT:-}"
 RUN_REPLAY=0
 CAMERA_REQUESTED=0
+KU_QUALIFICATION=0
 
 usage() {
-  printf 'Usage: ./bench.sh --replay --camera\n'
+  printf 'Usage: ./bench.sh --replay --camera [--ku-qualification]\n'
   printf 'Builds and flashes the current firmware, sends the generated replay stimuli, and retains raw synchronized capture.\n'
 }
 
@@ -27,6 +28,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --replay) RUN_REPLAY=1 ;;
     --camera) CAMERA_REQUESTED=1 ;;
+    --ku-qualification) KU_QUALIFICATION=1 ;;
     -h|--help)
       usage
       exit 0
@@ -45,6 +47,9 @@ done
 }
 [[ "$DURATION_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail 'duration must be a positive integer'
 [[ "$POST_UPLOAD_SETTLE_SECONDS" =~ ^[0-9]+$ ]] || fail 'post-upload settle time must be an integer'
+if [[ "$KU_QUALIFICATION" -eq 1 && -z "${BENCH_REPLAY_DURATION_SECONDS+x}" ]]; then
+  DURATION_SECONDS=25
+fi
 
 BENCH_PYTHON="$("$ROOT_DIR/scripts/bench_python.sh")" || fail 'could not prepare the bench Python environment'
 unset PYTHONHOME PYTHONPATH
@@ -130,6 +135,10 @@ REPLAY_DIR="$RUN_DIR/replay"
 mkdir -p "$REPLAY_DIR" || fail 'could not create the replay capture directory'
 
 runner_status=0
+RUNNER_SCENARIO_ARGS=()
+if [[ "$KU_QUALIFICATION" -eq 1 ]]; then
+  RUNNER_SCENARIO_ARGS+=(--ku-qualification)
+fi
 "$BENCH_PYTHON" "$ROOT_DIR/scripts/bench/run_logged.py" \
   --stdout "$REPLAY_DIR/run.log" \
   --stderr "$REPLAY_DIR/run.err" \
@@ -148,6 +157,7 @@ runner_status=0
     --git-worktree-clean 1 \
     --post-upload-settle-seconds "$POST_UPLOAD_SETTLE_SECONDS" \
     --replay-executable "$ROOT_DIR/tools/v1replay/.build/v1replay" \
+    "${RUNNER_SCENARIO_ARGS[@]}" \
     --camera || runner_status=$?
 
 [[ "$runner_status" -eq 0 ]] || fail "raw collection did not complete; see $RUN_LOG"

@@ -307,6 +307,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--post-upload-settle-seconds", type=int, default=90)
     parser.add_argument("--replay-executable", default="")
     parser.add_argument("--scenario", default="")
+    parser.add_argument("--ku-qualification", action="store_true")
     parser.add_argument(
         "--blink-profile", choices=["scenario", "steady", "stress"], default=None
     )
@@ -943,6 +944,7 @@ class V1Emulator:
         *,
         lease_fd: int,
         scenario: str,
+        ku_qualification: bool,
         machine_event: Callable[[dict[str, Any]], None],
     ) -> None:
         self.executable = executable
@@ -951,6 +953,7 @@ class V1Emulator:
         self.blink_profile = blink_profile
         self.lease_fd = lease_fd
         self.scenario = scenario
+        self.ku_qualification = ku_qualification
         self.machine_event = machine_event
         self.log_path = out_dir / "v1replay.log"
         self.scenario_path = (
@@ -1001,6 +1004,8 @@ class V1Emulator:
         if self.mode == "bench":
             if self.scenario:
                 command.extend(["--scenario", self.scenario])
+            if self.ku_qualification:
+                command.append("--ku-qualification")
             assert self.scenario_path is not None
             command.extend(["--scenario-evidence", str(self.scenario_path)])
         command.extend(
@@ -1186,6 +1191,7 @@ def collect_live(
             args.blink_profile,
             lease_fd=lease.fd,
             scenario=args.scenario,
+            ku_qualification=getattr(args, "ku_qualification", False),
             machine_event=lambda payload: timeline.record_external(payload, "v1replay"),
         )
         emulator_result: dict[str, Any] = {}
@@ -1368,6 +1374,10 @@ def main() -> int:
         return fail("post-upload settle duration cannot be negative")
     if args.suite != "replay" and args.scenario:
         return fail("--scenario is valid only for replay")
+    if args.suite != "replay" and getattr(args, "ku_qualification", False):
+        return fail("--ku-qualification is valid only for replay")
+    if args.scenario and getattr(args, "ku_qualification", False):
+        return fail("--scenario cannot be combined with --ku-qualification")
     if args.git_worktree_clean != "1":
         return fail(
             "source worktree is dirty; qualification requires an exact clean source state",

@@ -52,8 +52,8 @@ struct Fixture {
         context.obdRetryAllowed = true;
     }
 
-    void begin(bool enabled = true, const char* savedAddress = kSavedAddress) {
-        runtime.begin(nullptr, enabled, savedAddress, 0, -80);
+    void begin(bool enabled = true, const char* savedAddress = kSavedAddress, int8_t minRssi = -80) {
+        runtime.begin(nullptr, enabled, savedAddress, 0, minRssi);
     }
 
     void update(uint32_t atMs) {
@@ -226,6 +226,20 @@ void test_manual_scan_times_out_to_idle_and_discards_candidate_session() {
     TEST_ASSERT_EQUAL(ObdConnectionState::IDLE, status.state);
     TEST_ASSERT_FALSE(status.manualScanPending);
     TEST_ASSERT_FALSE(status.savedAddressValid);
+}
+
+void test_manual_scan_honors_persisted_minus_100_dbm_threshold() {
+    Fixture fixture;
+    fixture.begin(true, "", -100);
+    TEST_ASSERT_TRUE(fixture.runtime.requestManualPairScan(fixture.nowMs));
+
+    fixture.advance();
+    TEST_ASSERT_EQUAL(ObdConnectionState::SCANNING, fixture.runtime.getState());
+
+    fixture.runtime.onDeviceFound(obd::DEVICE_NAME_CX, kSavedAddress, -95);
+    fixture.advance();
+
+    TEST_ASSERT_EQUAL(ObdConnectionState::CONNECTING, fixture.runtime.getState());
 }
 
 void test_connection_timeout_disconnects_and_enters_retry_state() {
@@ -542,6 +556,7 @@ int main() {
     RUN_TEST(test_initial_connection_runs_discovery_init_and_acquires_speed);
     RUN_TEST(test_due_speed_poll_waits_for_rssi_without_write_errors);
     RUN_TEST(test_manual_scan_times_out_to_idle_and_discards_candidate_session);
+    RUN_TEST(test_manual_scan_honors_persisted_minus_100_dbm_threshold);
     RUN_TEST(test_connection_timeout_disconnects_and_enters_retry_state);
     RUN_TEST(test_discovery_transport_timeout_is_classified_as_discovery_failure);
     RUN_TEST(test_speed_command_transport_timeout_is_not_misreported_as_parse_failure);

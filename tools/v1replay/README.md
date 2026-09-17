@@ -70,13 +70,13 @@ Generated stimuli require no data file:
 
 Without `--scenario`, `--reader-qualification`, `--ku-qualification`, or
 `--persistence-coverage`,
-`bench` uses the generated Phase 0 stimulus. It runs at approximately 3 Hz for 298 seconds
-and covers a resting lead, K and Ka ramps, a priority handoff, complete two- and
-three-row alert tables, card removal and restoration, a long Ka approach,
+`bench` uses the generated default stimulus at approximately 3 Hz. Its 276-second
+Phase 0 base covers a resting lead, K and Ka ramps, a priority handoff, complete
+two- and three-row alert tables, card removal and restoration, a long Ka approach,
 42 seconds of X/K/Ka mute and content-change exercises, and a 32-second tail
 without alerts. That tail also changes detector volume and mode settings. The
-default sequence then runs the 12-second Ku qualification and the 10-second
-Photo qualification described below.
+default sequence then appends the 12-second Ku qualification and the 10-second
+Photo qualification described below, for a total duration of 298 seconds.
 The scenario owns those idle periods, so generic
 `--idle-lead` and `--idle-tail` values are not added to it. It waits for the
 display subscription and the firmware's alert-data request before starting;

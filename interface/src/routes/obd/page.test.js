@@ -61,6 +61,7 @@ describe('obd route page', () => {
 
         const input = await screen.findByLabelText(/Min RSSI \(dBm\)/i);
         expect(input).toHaveValue(-80);
+        expect(input).toHaveAttribute('min', '-100');
 
         await fireEvent.input(input, { target: { value: '-10' } });
         await fireEvent.change(input);

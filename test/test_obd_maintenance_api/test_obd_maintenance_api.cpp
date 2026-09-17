@@ -84,6 +84,19 @@ void test_maintenance_config_update_persists_immediately_without_live_runtime_sy
     TEST_ASSERT_EQUAL_INT(1, probe.rateLimitCalls);
 }
 
+void test_maintenance_config_accepts_authoritative_min_rssi_floor() {
+    WebServer server(80);
+    SettingsManager settings;
+    Probe probe;
+    server.setArg("plain", "{\"minRssi\":-100}");
+
+    ObdApiService::handleApiConfig(server, nullptr, settings, maintenanceRuntime(probe));
+
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT8(-100, settings.get().obdMinRssi);
+    TEST_ASSERT_EQUAL_INT(1, settings.saveCalls);
+}
+
 void test_legacy_wifi_dwell_key_is_accepted_but_ignored_at_api_parse_boundary() {
     WebServer server(80);
     SettingsManager settings;
@@ -169,6 +182,7 @@ int main() {
     UNITY_BEGIN();
     RUN_TEST(test_maintenance_config_get_exposes_live_settings_without_retired_wifi_dwell);
     RUN_TEST(test_maintenance_config_update_persists_immediately_without_live_runtime_sync);
+    RUN_TEST(test_maintenance_config_accepts_authoritative_min_rssi_floor);
     RUN_TEST(test_legacy_wifi_dwell_key_is_accepted_but_ignored_at_api_parse_boundary);
     RUN_TEST(test_maintenance_forget_updates_storage_without_obd_runtime_instance);
     RUN_TEST(test_config_persist_failure_returns_500_and_rolls_back);

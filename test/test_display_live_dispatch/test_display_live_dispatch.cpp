@@ -45,13 +45,23 @@ class RecordingCanvas : public Arduino_Canvas {
   public:
     RecordingCanvas() : Arduino_Canvas(SCREEN_WIDTH, SCREEN_HEIGHT, nullptr) {}
     struct TextCall { std::string text; uint16_t color; };
+    struct BitmapCall {
+        int16_t x;
+        int16_t y;
+        int16_t w;
+        int16_t h;
+        uint16_t color;
+        const uint8_t* bitmap;
+    };
     struct FlushSnapshot {
         std::vector<FillRectCall> rectangles;
         std::vector<FillTriangleCall> triangles;
         std::vector<TextCall> text;
+        std::vector<BitmapCall> bitmaps;
     };
     std::vector<std::string> printed;
     std::vector<TextCall> textCalls;
+    std::vector<BitmapCall> bitmapCalls;
     std::vector<FlushSnapshot> flushSnapshots;
     uint16_t textColor = TFT_WHITE;
     void setTextColor(uint16_t color) override { textColor = color; }
@@ -60,10 +70,14 @@ class RecordingCanvas : public Arduino_Canvas {
         printed.emplace_back(text);
         textCalls.push_back({text, textColor});
     }
+    void drawBitmap(int16_t x, int16_t y, const uint8_t* bitmap, int16_t w, int16_t h,
+                    uint16_t color) override {
+        bitmapCalls.push_back({x, y, w, h, color, bitmap});
+    }
     void flush() override {
         // These are actual source paint requests at dispatch time. The mock
         // does not rasterize glyphs/triangles or model panel scan and response.
-        flushSnapshots.push_back({fillRectCalls, fillTriangleCalls, textCalls});
+        flushSnapshots.push_back({fillRectCalls, fillTriangleCalls, textCalls, bitmapCalls});
         Arduino_Canvas::flush();
     }
 };
@@ -171,6 +185,7 @@ void clearObservations() {
     canvas()->resetCounters();
     canvas()->printed.clear();
     canvas()->textCalls.clear();
+    canvas()->bitmapCalls.clear();
     canvas()->flushSnapshots.clear();
     regionalTransfers.clear();
     display.ut_fontMgr().segment7.resetRecordedCalls();
@@ -930,19 +945,27 @@ void test_ku_primary_uses_physical_k_flash_cadence_through_full_pipeline() {
     TEST_ASSERT_EQUAL_UINT(1, canvas()->flushSnapshots.size());
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(BAND_KA | BAND_KU),
                             display.ut_elementCaches().bands.lastMask);
-    const auto kuOffPaint = std::find_if(canvas()->flushSnapshots.front().text.begin(),
-                                         canvas()->flushSnapshots.front().text.end(),
-                                         [](const RecordingCanvas::TextCall& call) {
-                                             return call.text == "Ku" && call.color == TFT_DARKGREY;
-                                         });
-    TEST_ASSERT_TRUE(kuOffPaint != canvas()->flushSnapshots.front().text.end());
-    const auto kaSteadyPaint = std::find_if(canvas()->flushSnapshots.front().text.begin(),
-                                            canvas()->flushSnapshots.front().text.end(),
+    const auto& sent = canvas()->flushSnapshots.front();
+    const auto kuKOffPaint = std::find_if(sent.text.begin(), sent.text.end(),
+                                          [](const RecordingCanvas::TextCall& call) {
+                                              return call.text == "K" && call.color == TFT_DARKGREY;
+                                          });
+    TEST_ASSERT_TRUE(kuKOffPaint != sent.text.end());
+    const auto kuSuffixOffPaint = std::find_if(sent.bitmaps.begin(), sent.bitmaps.end(),
+                                               [](const RecordingCanvas::BitmapCall& call) {
+                                                   return call.x == kKuSuffixX &&
+                                                          call.w == kKuSuffixVisualW &&
+                                                          call.h == kKuSuffixVisualH &&
+                                                          call.color == TFT_DARKGREY &&
+                                                          call.bitmap == kKuSuffixBitmap;
+                                               });
+    TEST_ASSERT_TRUE(kuSuffixOffPaint != sent.bitmaps.end());
+    const auto kaSteadyPaint = std::find_if(sent.text.begin(), sent.text.end(),
                                             [](const RecordingCanvas::TextCall& call) {
                                                 return call.text == "Ka" &&
                                                        call.color == settings.get().colorBandKa;
                                             });
-    TEST_ASSERT_TRUE(kaSteadyPaint != canvas()->flushSnapshots.front().text.end());
+    TEST_ASSERT_TRUE(kaSteadyPaint != sent.text.end());
     TEST_ASSERT_EQUAL_INT(BAND_KA, display.ut_elementCaches().cards.lastDrawnPositions[0].band);
 }
 

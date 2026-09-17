@@ -242,8 +242,8 @@ void ObdRuntimeModule::setEnabled(bool enabled) {
 }
 
 void ObdRuntimeModule::setMinRssi(int8_t minRssi) {
-    if (minRssi < -90)
-        minRssi = -90;
+    if (minRssi < -100)
+        minRssi = -100;
     if (minRssi > -40)
         minRssi = -40;
     minRssi_ = minRssi;

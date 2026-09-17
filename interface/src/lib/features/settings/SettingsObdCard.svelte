@@ -225,7 +225,7 @@
                         type="number"
                         class="input w-24"
                         bind:value={minRssi}
-                        min="-90"
+                        min="-100"
                         max="-40"
                         placeholder="-80"
                         onchange={handleMinRssiChange}

@@ -252,7 +252,7 @@ void handleApiConfig(WebServer& server, ObdRuntimeModule* obdRuntime, SettingsMa
     }
     if (hasRssi) {
         update.hasMinRssi = true;
-        update.minRssi = static_cast<int8_t>(std::max(-90, std::min(rssi, -40)));
+        update.minRssi = static_cast<int8_t>(std::max(-100, std::min(rssi, -40)));
     }
 
     struct DurationField {

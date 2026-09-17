@@ -10,13 +10,63 @@ import Foundation
 
 enum BenchScenario {
     static let cadenceHz = 3
-    static let durationSeconds = 276
+    static let baseDurationSeconds = 276
     static let readerQualificationDurationSeconds = 68
     static let kuQualificationDurationSeconds = 12
+    static let durationSeconds = baseDurationSeconds + kuQualificationDurationSeconds
+
+    private struct KuQualificationState {
+        let phase: String
+        let alerts: [ReplayAlert]
+        let blink: Bool
+    }
+
+    private static func kuQualificationState(at second: Int) -> KuQualificationState {
+        precondition((0..<kuQualificationDurationSeconds).contains(second))
+        switch second {
+        case 0..<2:
+            return KuQualificationState(
+                phase: "ku_qualification_idle_lead", alerts: [], blink: false)
+        case 2..<4:
+            return KuQualificationState(
+                phase: "ku_qualification_single",
+                alerts: [alert(.ku, 13_450, 6, .front, priority: true)],
+                blink: false)
+        case 4..<6:
+            return KuQualificationState(
+                phase: "ku_qualification_k_priority",
+                alerts: [
+                    alert(.k, 24_150, 4, .front, priority: true),
+                    alert(.ka, 34_700, 5, .side, priority: false),
+                    alert(.ku, 13_450, 6, .rear, priority: false),
+                ],
+                blink: true)
+        case 6..<8:
+            return KuQualificationState(
+                phase: "ku_qualification_ka_priority",
+                alerts: [
+                    alert(.ka, 34_700, 5, .front, priority: true),
+                    alert(.k, 24_150, 4, .side, priority: false),
+                    alert(.ku, 13_450, 6, .rear, priority: false),
+                ],
+                blink: true)
+        case 8..<10:
+            return KuQualificationState(
+                phase: "ku_qualification_ku_priority",
+                alerts: [
+                    alert(.ku, 13_450, 6, .front, priority: true),
+                    alert(.k, 24_150, 4, .side, priority: false),
+                    alert(.ka, 34_700, 5, .rear, priority: false),
+                ],
+                blink: true)
+        default:
+            return KuQualificationState(
+                phase: "ku_qualification_idle_tail", alerts: [], blink: false)
+        }
+    }
 
     /// Short, generated Ku display exercise for camera and packet qualification.
-    /// It keeps the ordinary 276-second bench stimulus unchanged while exercising
-    /// the three-band priority rotation that exposed the shared K/Ku-cell bug.
+    /// The default bench appends this exercise; the focused option runs it alone.
     static func makeKuQualification() -> Encounter {
         var samples: [TimedSample] = []
         let sampleCount = kuQualificationDurationSeconds * cadenceHz
@@ -24,53 +74,13 @@ enum BenchScenario {
 
         for tick in 0..<sampleCount {
             let second = tick / cadenceHz
-            let phase: String
-            let alerts: [ReplayAlert]
-            let blink: Bool
-            switch second {
-            case 0..<2:
-                phase = "ku_qualification_idle_lead"
-                alerts = []
-                blink = false
-            case 2..<4:
-                phase = "ku_qualification_single"
-                alerts = [alert(.ku, 13_450, 6, .front, priority: true)]
-                blink = false
-            case 4..<6:
-                phase = "ku_qualification_k_priority"
-                alerts = [
-                    alert(.k, 24_150, 4, .front, priority: true),
-                    alert(.ka, 34_700, 5, .side, priority: false),
-                    alert(.ku, 13_450, 6, .rear, priority: false),
-                ]
-                blink = true
-            case 6..<8:
-                phase = "ku_qualification_ka_priority"
-                alerts = [
-                    alert(.ka, 34_700, 5, .front, priority: true),
-                    alert(.k, 24_150, 4, .side, priority: false),
-                    alert(.ku, 13_450, 6, .rear, priority: false),
-                ]
-                blink = true
-            case 8..<10:
-                phase = "ku_qualification_ku_priority"
-                alerts = [
-                    alert(.ku, 13_450, 6, .front, priority: true),
-                    alert(.k, 24_150, 4, .side, priority: false),
-                    alert(.ka, 34_700, 5, .rear, priority: false),
-                ]
-                blink = true
-            default:
-                phase = "ku_qualification_idle_tail"
-                alerts = []
-                blink = false
-            }
+            let state = kuQualificationState(at: second)
             samples.append(TimedSample(
                 offset: Double(tick) / Double(cadenceHz),
-                phase: phase,
+                phase: state.phase,
                 muted: false,
-                alerts: alerts,
-                scenarioArrowBlink: blink,
+                alerts: state.alerts,
+                scenarioArrowBlink: state.blink,
                 sourceIndex: tick
             ))
         }
@@ -408,6 +418,11 @@ enum BenchScenario {
                 alerts = [alert(.ka, 34_700, dukeBars(tick: local),
                                 dukeDirection(tick: local), priority: true)]
 
+            case baseDurationSeconds..<durationSeconds:
+                let state = kuQualificationState(at: second - baseDurationSeconds)
+                phase = state.phase
+                alerts = state.alerts
+
             default:
                 phase = "idle_tail"
                 alerts = []
@@ -416,7 +431,9 @@ enum BenchScenario {
             // Provisional until real-V1 display-frame evidence establishes the
             // detector's exact policy: blink the selected arrow while multiple
             // alerts are active, and keep single-alert periods steady.
-            let scenarioArrowBlink = alerts.count > 1
+            let scenarioArrowBlink = second >= baseDurationSeconds
+                ? kuQualificationState(at: second - baseDurationSeconds).blink
+                : alerts.count > 1
             samples.append(TimedSample(offset: Double(tick) / Double(cadenceHz),
                                        phase: phase,
                                        muted: muted(at: second),
@@ -450,15 +467,28 @@ enum BenchScenario {
             "duke_shaped_approach": 429,
             "mute_qualification": 126,
             "idle_tail": 96,
+            "ku_qualification_idle_lead": 6,
+            "ku_qualification_single": 6,
+            "ku_qualification_k_priority": 6,
+            "ku_qualification_ka_priority": 6,
+            "ku_qualification_ku_priority": 6,
+            "ku_qualification_idle_tail": 6,
         ])
-        precondition(samples.filter { !$0.alerts.isEmpty }.count == 708)
-        precondition(samples.filter { $0.alerts.count == 3 }.count == 30)
-        precondition(samples.filter(\.scenarioArrowBlink).count == 57)
+        precondition(samples.filter { !$0.alerts.isEmpty }.count == 732)
+        precondition(samples.filter { $0.alerts.count == 3 }.count == 48)
+        precondition(samples.filter(\.scenarioArrowBlink).count == 75)
         precondition(samples.filter(\.scenarioArrowBlink).allSatisfy { $0.alerts.count > 1 })
         precondition(samples[(33 * cadenceHz)..<(52 * cadenceHz)]
             .allSatisfy(\.scenarioArrowBlink))
         precondition(samples[..<(33 * cadenceHz)].allSatisfy { !$0.scenarioArrowBlink })
-        precondition(samples[(52 * cadenceHz)...].allSatisfy { !$0.scenarioArrowBlink })
+        let kuBlinkStart = (baseDurationSeconds + 4) * cadenceHz
+        let kuBlinkEnd = (baseDurationSeconds + 10) * cadenceHz
+        precondition(samples[(52 * cadenceHz)..<kuBlinkStart]
+            .allSatisfy { !$0.scenarioArrowBlink })
+        precondition(samples[kuBlinkStart..<kuBlinkEnd]
+            .allSatisfy(\.scenarioArrowBlink))
+        precondition(samples[kuBlinkEnd...]
+            .allSatisfy { !$0.scenarioArrowBlink })
 
         let handoff = samples[33 * cadenceHz]
         precondition(handoff.alerts.count == 2)
@@ -477,7 +507,13 @@ enum BenchScenario {
         let plateauStart = dukeStart + 120 * cadenceHz
         let plateauEnd = dukeStart + 140 * cadenceHz
         precondition(samples[plateauStart..<plateauEnd].allSatisfy { $0.priorityAlert?.strength == 6 })
-        precondition(samples[(244 * cadenceHz)...].allSatisfy { $0.alerts.isEmpty })
+        precondition(samples[(244 * cadenceHz)..<(baseDurationSeconds * cadenceHz)]
+            .allSatisfy { $0.alerts.isEmpty })
+
+        let appendedKu = samples[(baseDurationSeconds * cadenceHz)...]
+        precondition(appendedKu.count == kuQualificationDurationSeconds * cadenceHz)
+        precondition(appendedKu.filter { $0.priorityAlert?.band.mask == V1.Band.ku.mask }.count == 12)
+        precondition(appendedKu.filter { $0.alerts.count == 3 }.count == 18)
 
         precondition(samples[..<(244 * cadenceHz)].allSatisfy { $0.detectorVolume == nil })
         let observedVolumeCheckpoints = Encounter(
@@ -586,8 +622,10 @@ enum BenchScenario {
                 ? detectorModeCheckpoints[index + 1].replaySecond
                 : durationSeconds
             let end = endSecond * cadenceHz
-            precondition(samples[start..<end].allSatisfy {
-                $0.phase == "idle_tail" && $0.alerts.isEmpty && $0.detectorMode == checkpoint.mode
+            precondition(samples[start..<end].allSatisfy { $0.detectorMode == checkpoint.mode })
+            let idleEnd = min(end, baseDurationSeconds * cadenceHz)
+            precondition(samples[start..<idleEnd].allSatisfy {
+                $0.phase == "idle_tail" && $0.alerts.isEmpty
             })
         }
         precondition(samples.last?.detectorMode == .advancedLogic)

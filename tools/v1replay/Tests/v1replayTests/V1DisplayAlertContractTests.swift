@@ -40,11 +40,38 @@ final class V1DisplayAlertContractTests: XCTestCase {
         }
     }
 
-    func testReaderQualificationLeavesTheNormalResolvedStimulusUnchanged() throws {
-        // Retained before adding the separate reader exercise; covers every
-        // normal alert, mute, volume, mode, timing and blink value.
-        XCTAssertEqual(sha256Hex(try BenchScenario.make().resolvedScenarioEvidenceData()),
+    func testDefaultBenchPreservesBaseStimulusAndAppendsKuQualification() throws {
+        let encounter = BenchScenario.make()
+        let baseSampleCount = BenchScenario.baseDurationSeconds * BenchScenario.cadenceHz
+        let preservedBase = Encounter(
+            origin: encounter.origin,
+            samples: Array(encounter.samples.prefix(baseSampleCount)))
+
+        // Retained before adding the Ku suffix; covers every established alert,
+        // mute, volume, mode, timing and blink value in the original sequence.
+        XCTAssertEqual(sha256Hex(try preservedBase.resolvedScenarioEvidenceData()),
                        "144b04f4cced4461578168c9b162e97a02bf34973e9918c73b4a972888935f6f")
+
+        let focused = BenchScenario.makeKuQualification()
+        let appended = Array(encounter.samples.dropFirst(baseSampleCount))
+        XCTAssertEqual(appended.count, focused.samples.count)
+        for (actual, expected) in zip(appended, focused.samples) {
+            XCTAssertEqual(actual.offset,
+                           Double(BenchScenario.baseDurationSeconds) + expected.offset,
+                           accuracy: 0.000_001)
+            XCTAssertEqual(actual.sourceIndex, baseSampleCount + expected.sourceIndex)
+            XCTAssertEqual(actual.phase, expected.phase)
+            XCTAssertEqual(actual.muted, expected.muted)
+            XCTAssertEqual(actual.scenarioArrowBlink, expected.scenarioArrowBlink)
+            XCTAssertEqual(actual.alerts.count, expected.alerts.count)
+            for (actualAlert, expectedAlert) in zip(actual.alerts, expected.alerts) {
+                XCTAssertEqual(actualAlert.band.mask, expectedAlert.band.mask)
+                XCTAssertEqual(actualAlert.frequencyMHz, expectedAlert.frequencyMHz)
+                XCTAssertEqual(actualAlert.strength, expectedAlert.strength)
+                XCTAssertEqual(actualAlert.direction, expectedAlert.direction)
+                XCTAssertEqual(actualAlert.isPriority, expectedAlert.isPriority)
+            }
+        }
     }
 
     func testKuQualificationRotatesPriorityAndBlinksThePhysicalBandBit() throws {
@@ -537,7 +564,8 @@ final class V1DisplayAlertContractTests: XCTestCase {
             "V1REPLAY_EVENT {\"state\":\"detector_volume\",\"replaySecond\":256,\"mainVolume\":4,\"muteVolume\":0}",
         ]
 
-        XCTAssertEqual(encounter.samples.count, 828)
+        XCTAssertEqual(encounter.samples.count,
+                       BenchScenario.durationSeconds * BenchScenario.cadenceHz)
         XCTAssertEqual(BenchScenario.detectorVolumeCheckpoints, expected)
         XCTAssertEqual(encounter.detectorVolumeCheckpoints, expected)
         XCTAssertEqual(encounter.detectorVolumeCheckpoints.map(\.machineEventLine), expectedLines)

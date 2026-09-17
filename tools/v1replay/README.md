@@ -70,11 +70,12 @@ Generated stimuli require no data file:
 
 Without `--scenario`, `--reader-qualification`, `--ku-qualification`, or
 `--persistence-coverage`,
-`bench` uses the generated Phase 0 stimulus. It runs at approximately 3 Hz for 276 seconds
+`bench` uses the generated Phase 0 stimulus. It runs at approximately 3 Hz for 288 seconds
 and covers a resting lead, K and Ka ramps, a priority handoff, complete two- and
 three-row alert tables, card removal and restoration, a long Ka approach,
 42 seconds of X/K/Ka mute and content-change exercises, and a 32-second tail
-without alerts. That tail also changes detector volume and mode settings.
+without alerts. That tail also changes detector volume and mode settings. The
+default sequence then runs the 12-second Ku qualification described below.
 The scenario owns those idle periods, so generic
 `--idle-lead` and `--idle-tail` values are not added to it. It waits for the
 display subscription and the firmware's alert-data request before starting;
@@ -99,25 +100,26 @@ retains the exact selected values and their hash. These authored cases provide
 coverage opportunities; they do not guarantee particular camera or OCR errors.
 The emulator only emits stimuli; it does not analyze camera pixels.
 
-`v1replay bench --ku-qualification` selects a separate 12-second generated
+`v1replay bench --ku-qualification` selects only the 12-second generated
 exercise: idle, one steady Ku primary, then K/Ka/Ku together with K, Ka, and Ku
 each taking the flashing priority role, followed by a clear. Ku remains bit 4
-in alert rows and uses the physical K bit in the display image pair.
+in alert rows and uses the physical K bit in the display image pair. The same
+exercise is appended to every default bench run.
 
 `--persistence-coverage` selects a separate 64-second ordinary radar sequence
 for observing the configured Alert persistence. It does not change that setting
 or establish that persisted content was displayed correctly.
 
 Normal bench playback defaults to the `scenario` priority blink profile. As a
-provisional generated assumption, it blinks only during the 19-second authored
-multi-alert interval (57 samples) and leaves all single-alert periods steady.
+provisional generated assumption, it blinks only during the authored
+multi-alert intervals (75 samples total) and leaves all single-alert periods steady.
 This is deliberately isolated in `BenchScenario.swift` so later external input
 evidence can replace the assumption without changing firmware or packet
 semantics. Physical display behavior is checked by the camera leg.
 The selected priority band and arrow use their independent image1/image2 bits
 in lockstep; Ku uses the physical K bit. `--blink-profile steady` is the
 negative control; `--blink-profile stress` blinks every active priority band
-and arrow (708 samples) as the worst-case repaint control. `--blink-arrow`
+and arrow (732 samples) as the worst-case repaint control. `--blink-arrow`
 remains a legacy alias for the stress profile.
 
 The long approach derives only the aggregate cadence, approximate durations,

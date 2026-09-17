@@ -2,6 +2,7 @@
   "files": [
     "band_k.mul",
     "band_ka.mul",
+    "band_ku.mul",
     "band_laser.mul",
     "band_x.mul",
     "bogeys.mul",

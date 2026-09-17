@@ -79,7 +79,7 @@ void test_ku_priority_preserves_band_and_composes_true_frequency() {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(AudioPlaybackResult::Accepted),
                          static_cast<int>(try_play_frequency_voice(action.band, action.freq, action.dir,
                                                                    VOICE_MODE_BAND_FREQ, true, 1)));
-    expectClips({"tens_13.mul", "digit_4.mul", "tens_50.mul", "dir_ahead.mul"});
+    expectClips({"band_ku.mul", "tens_13.mul", "digit_4.mul", "tens_50.mul", "dir_ahead.mul"});
 }
 
 void test_ku_frequency_only_keeps_edge_frequency_and_count() {
@@ -110,40 +110,32 @@ void test_ku_secondary_action_keeps_its_own_band_and_frequency() {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(AudioPlaybackResult::Accepted),
                          static_cast<int>(try_play_frequency_voice(secondary.band, secondary.freq, secondary.dir,
                                                                    VOICE_MODE_BAND_FREQ, true, 1)));
-    expectClips({"tens_13.mul", "digit_4.mul", "tens_50.mul", "dir_behind.mul"});
+    expectClips({"band_ku.mul", "tens_13.mul", "digit_4.mul", "tens_50.mul", "dir_behind.mul"});
 }
 
 void test_ku_band_only_preserves_requested_direction_and_count() {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(AudioPlaybackResult::Accepted),
                          static_cast<int>(try_play_frequency_voice(AlertBand::KU, 13450, AlertDirection::SIDE,
                                                                    VOICE_MODE_BAND_ONLY, true, 2)));
-    expectClips({"dir_side.mul", "digit_2.mul", "bogeys.mul"});
+    expectClips({"band_ku.mul", "dir_side.mul", "digit_2.mul", "bogeys.mul"});
 }
 
-void test_missing_ku_band_clip_does_not_admit_empty_worker_or_block_next_alert() {
-    TEST_ASSERT_EQUAL_INT(static_cast<int>(AudioPlaybackResult::Unavailable),
-                         static_cast<int>(try_play_frequency_voice(AlertBand::KU, 13450, AlertDirection::AHEAD,
-                                                                   VOICE_MODE_BAND_ONLY, false, 1)));
+void test_ku_band_only_uses_named_clip() {
     play_band_only(AlertBand::KU);
-    TEST_ASSERT_FALSE(audio_playing.load());
-    TEST_ASSERT_EQUAL_UINT(0, g_mock_task_notify_state.giveCalls);
-    TEST_ASSERT_EQUAL_INT(static_cast<int>(AudioPlaybackResult::Accepted),
-                         static_cast<int>(try_play_frequency_voice(AlertBand::KA, 34749, AlertDirection::AHEAD,
-                                                                   VOICE_MODE_BAND_FREQ, true, 1)));
-    expectClips({"band_ka.mul", "tens_34.mul", "digit_7.mul", "tens_49.mul", "dir_ahead.mul"});
+    expectClips({"band_ku.mul"});
 }
 
-void test_simple_ku_alert_uses_only_available_direction() {
+void test_simple_ku_alert_uses_band_and_direction() {
     play_alert_voice(AlertBand::KU, AlertDirection::BEHIND);
-    expectClips({"dir_behind.mul"});
+    expectClips({"band_ku.mul", "dir_behind.mul"});
 }
 
 void test_ku_escalation_preserves_frequency_and_breakdown() {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(AudioPlaybackResult::Accepted),
                          static_cast<int>(try_play_threat_escalation(AlertBand::KU, 13400, AlertDirection::SIDE,
                                                                      2, 1, 1, 0)));
-    expectClips({"tens_13.mul", "digit_4.mul", "tens_00.mul", "dir_side.mul", "digit_2.mul", "bogeys.mul",
-                 "digit_1.mul", "dir_ahead.mul", "digit_1.mul", "dir_behind.mul"});
+    expectClips({"band_ku.mul", "tens_13.mul", "digit_4.mul", "tens_00.mul", "dir_side.mul", "digit_2.mul",
+                 "bogeys.mul", "digit_1.mul", "dir_ahead.mul", "digit_1.mul", "dir_behind.mul"});
 }
 
 void test_existing_band_frequency_mappings_are_unchanged() {
@@ -169,8 +161,8 @@ int main() {
     RUN_TEST(test_ku_frequency_only_keeps_edge_frequency_and_count);
     RUN_TEST(test_ku_secondary_action_keeps_its_own_band_and_frequency);
     RUN_TEST(test_ku_band_only_preserves_requested_direction_and_count);
-    RUN_TEST(test_missing_ku_band_clip_does_not_admit_empty_worker_or_block_next_alert);
-    RUN_TEST(test_simple_ku_alert_uses_only_available_direction);
+    RUN_TEST(test_ku_band_only_uses_named_clip);
+    RUN_TEST(test_simple_ku_alert_uses_band_and_direction);
     RUN_TEST(test_ku_escalation_preserves_frequency_and_breakdown);
     RUN_TEST(test_existing_band_frequency_mappings_are_unchanged);
     const int result = UNITY_END();

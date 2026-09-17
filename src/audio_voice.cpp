@@ -280,7 +280,7 @@ static const char* getBandClipFile(AlertBand band) {
     case AlertBand::X:
         return "band_x.mul";
     case AlertBand::KU:
-        return nullptr; // No Ku recording; never substitute another band's name.
+        return "band_ku.mul";
     }
     return nullptr;
 }
@@ -323,7 +323,7 @@ void play_alert_voice(AlertBand band, AlertDirection direction) {
     params.numClips = 0;
     const char* bandFile = getBandClipFile(band);
     const char* dirFile = getDirectionClipFile(direction);
-    if (!dirFile || (!bandFile && band != AlertBand::KU)) {
+    if (!bandFile || !dirFile) {
         return;
     }
     appendAudioClip(params, bandFile);

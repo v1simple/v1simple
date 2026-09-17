@@ -36,8 +36,6 @@ void play_alert_voice(AlertBand band, AlertDirection direction);
 //   BAND_FREQ: "Ka 34 7 49"
 // direction appended if includeDirection is true: "ahead", "behind", "side"
 // bogeyCount appended if > 1: "2 bogeys", "3 bogeys", etc.
-// Ku has no band-name recording: omit that token, retaining frequency,
-// direction and count when requested. A pure Ku band-only request is unavailable.
 // freqMHz: frequency in MHz (e.g., 34749 for 34.749 GHz)
 // Returns immediately if already playing, audio disabled, or SD not available
 void play_frequency_voice(AlertBand band, uint16_t freqMHz, AlertDirection direction, VoiceAlertMode mode,
@@ -58,7 +56,7 @@ void play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection dir
 AudioPlaybackResult try_play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection direction,
                                                uint8_t total, uint8_t ahead, uint8_t behind, uint8_t side);
 
-// Play band-only announcement (e.g., "Ka", "K", "X", "Laser")
+// Play band-only announcement (e.g., "Ka", "K", "Ku", "X", "Laser")
 void play_band_only(AlertBand band);
 
 // Initialize SD audio (call after storage manager is ready)

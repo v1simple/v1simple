@@ -145,11 +145,12 @@ enum V1 {
         case side = 0x40
         case rear = 0x80
 
-        static func named(_ raw: String) -> Direction {
+        static func named(_ raw: String) -> Direction? {
             switch raw.uppercased() {
+            case "F", "FRONT": return .front
             case "S", "SIDE": return .side
             case "R", "REAR": return .rear
-            default: return .front
+            default: return nil
             }
         }
 

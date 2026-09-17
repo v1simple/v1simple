@@ -50,6 +50,85 @@ final class V1ReplayEvidenceTests: XCTestCase {
         return try Encounter.loadExternal(path: input.path, mutedWhen: "2")
     }
 
+    func testExternalInputRejectsStrengthOutsideProtocolBarRange() throws {
+        for strength in [-1, 9] {
+            let samples: [[String: Any]] = [[
+                "offsetSeconds": 0.0,
+                "strength": strength,
+                "direction": "FRONT",
+            ]]
+            XCTAssertThrowsError(try loadExternal(samples)) { error in
+                XCTAssertEqual((error as? ReplayError)?.description,
+                               "external replay input contains an invalid strength")
+            }
+        }
+    }
+
+    func testExternalInputRejectsUnknownDirection() throws {
+        let samples: [[String: Any]] = [[
+            "offsetSeconds": 0.0,
+            "strength": 4,
+            "direction": "NOT_A_DIRECTION",
+        ]]
+        XCTAssertThrowsError(try loadExternal(samples)) { error in
+            XCTAssertEqual((error as? ReplayError)?.description,
+                           "external replay input contains an unknown direction")
+        }
+    }
+
+    func testExternalInputAcceptsStrengthBoundsAndDirectionAliasesWithoutTranslation() throws {
+        let cases: [(strength: Int, name: String, direction: V1.Direction)] = [
+            (0, "f", .front),
+            (8, "FRONT", .front),
+            (0, "s", .side),
+            (8, "SIDE", .side),
+            (0, "r", .rear),
+            (8, "REAR", .rear),
+        ]
+        let control = V1.Session.ControlState(
+            mode: .advancedLogic, mainVolume: 4, mutedVolume: 0,
+            savedMainVolume: 4, savedMutedVolume: 0
+        )
+
+        for testCase in cases {
+            let encounter = try loadExternal([[
+                "offsetSeconds": 0.0,
+                "strength": testCase.strength,
+                "direction": testCase.name,
+            ]])
+            let sample = try XCTUnwrap(encounter.samples.first)
+            let alert = try XCTUnwrap(sample.priorityAlert)
+            XCTAssertEqual(alert.strength, testCase.strength)
+            XCTAssertEqual(alert.direction, testCase.direction)
+
+            let evidence = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: encounter.resolvedScenarioEvidenceData())
+                    as? [String: Any]
+            )
+            let evidenceSamples = try XCTUnwrap(evidence["samples"] as? [[String: Any]])
+            let evidenceAlerts = try XCTUnwrap(evidenceSamples.first?["alerts"]
+                as? [[String: Any]])
+            XCTAssertEqual(evidenceAlerts.first?["strength"] as? Int, testCase.strength)
+            XCTAssertEqual(evidenceAlerts.first?["direction"] as? String,
+                           testCase.direction.label)
+
+            let plan = V1.PlaybackPacketPlan(
+                sample: sample,
+                controlState: control,
+                displayOn: true,
+                muted: false,
+                blinkBogey: false,
+                blinkArrow: false
+            )
+            let row = try XCTUnwrap(plan.alertTablePackets.first)
+            let rawStrength: UInt8 = testCase.strength == 0 ? 0x00 : 0xBD
+            XCTAssertEqual(row[8], testCase.direction == .rear ? 0x00 : rawStrength)
+            XCTAssertEqual(row[9], testCase.direction == .rear ? rawStrength : 0x00)
+            XCTAssertEqual(row[10] & 0xE0, testCase.direction.rawValue)
+            XCTAssertEqual(plan.displayPacket[7], testCase.strength == 0 ? 0x00 : 0xFF)
+        }
+    }
+
     func testLegacyInputRejectsBackwardsTimesBeforeSpreadingOrCheckpoints() throws {
         for times in [[1.0, 0.0], [0.0, 2.0, 1.0], [0.0, 2.0, 2.0, 1.0]] {
             XCTAssertThrowsError(try loadExternal(legacySamples(times))) { error in

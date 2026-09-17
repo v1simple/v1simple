@@ -290,6 +290,12 @@ struct Encounter {
         timed.reserveCapacity(file.samples.count)
 
         for (index, sample) in file.samples.enumerated() {
+            guard (0...8).contains(sample.strength) else {
+                throw ReplayError.message("external replay input contains an invalid strength")
+            }
+            guard let direction = V1.Direction.named(sample.direction) else {
+                throw ReplayError.message("external replay input contains an unknown direction")
+            }
             let mhz: UInt16
             if let ghz = sample.frequencyGHz, ghz > 0 {
                 mhz = UInt16(clamping: Int((ghz * 1000.0).rounded()))
@@ -304,7 +310,7 @@ struct Encounter {
                     band: band,
                     frequencyMHz: mhz,
                     strength: sample.strength,
-                    direction: V1.Direction.named(sample.direction),
+                    direction: direction,
                     isPriority: true
                 )],
                 sourceIndex: index

@@ -25,16 +25,18 @@ namespace {
 
 constexpr int kBandLabelX = 82;
 // Ku shares the V1's physical K cell, but its second letter would otherwise
-// enter card slot 0. Keep the normal K anchor unchanged and move only Ku left.
-constexpr int kKuLabelLeftShift = 9;
+// enter card slot 0. Keep the normal K anchor unchanged and move only Ku left,
+// leaving a real framebuffer gap instead of merely touching the card border.
+constexpr int kKuLabelCardGap = 2;
+constexpr int kKuLabelLeftShift = 11;
 constexpr int kBandLabelTextSize = 1;
 constexpr int kBandLabelSpacing = 43;
 constexpr int kBandLabelStartY = 55;
-constexpr int kBandLabelClearLeftPad = 9;
+constexpr int kBandLabelClearLeftPad = 11;
 // FreeSansBold24 "Ka" extends about 56 px past the middle-left anchor after
 // datum adjustment. Include the shifted Ku glyph and the full Ka glyph in the
 // partial-flush rectangle while retaining the historic right edge.
-constexpr int kBandLabelClearW = 70;
+constexpr int kBandLabelClearW = 72;
 constexpr int kBandLabelClearH = 42;
 
 } // namespace

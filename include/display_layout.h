@@ -116,8 +116,8 @@ inline int frequencyFallbackY(int glyphHeight) {
 constexpr int TOP_COUNTER_FONT_SIZE = 60; // Matches DisplayFontManager constant
 constexpr int TOP_COUNTER_FIELD_X = 16;
 constexpr int TOP_COUNTER_FIELD_Y = 6;
-// Single-digit field. Sized so the clear rect (X=16..71) leaves a 6px gap
-// before the band-label clear rect at X=77. Rendering
+// Single-digit field. Its clear rect ends where the band-label clear rect now
+// begins (X=71); the half-open rectangles remain disjoint. Rendering
 // uses a single LED with image2 as the blink-off mask, so the field is
 // sized for a single-digit width.
 constexpr int TOP_COUNTER_FIELD_W = 55;

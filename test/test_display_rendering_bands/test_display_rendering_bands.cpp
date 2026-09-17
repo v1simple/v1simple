@@ -155,13 +155,18 @@ void test_drawBandIndicators_produces_background_clear_on_first_draw() {
 void test_band_label_dirty_window_covers_FreeSans_Ka_and_Ku_glyphs() {
     const FontVisualBounds ka = freeSans24VisualBounds("Ka");
     const FontVisualBounds ku = freeSans24VisualBounds("Ku");
+    const int clearLeft = kBandLabelX - kBandLabelClearLeftPad;
     const int rightCoverageFromAnchor = kBandLabelClearW - kBandLabelClearLeftPad;
     const DisplayLayout::DisplayRect card0 = DisplayLayout::cardRect(0);
+    const int kuLeft = kBandLabelX - kKuLabelLeftShift;
+    const int kuRight = kuLeft + ku.width;
 
     TEST_ASSERT_GREATER_OR_EQUAL_INT(ka.width + 2, rightCoverageFromAnchor);
     TEST_ASSERT_GREATER_OR_EQUAL_INT(ku.width - kKuLabelLeftShift + 2, rightCoverageFromAnchor);
-    TEST_ASSERT_GREATER_OR_EQUAL_INT(kKuLabelLeftShift, kBandLabelClearLeftPad);
-    TEST_ASSERT_LESS_OR_EQUAL_INT(card0.x, kBandLabelX - kKuLabelLeftShift + ku.width);
+    TEST_ASSERT_TRUE_MESSAGE(clearLeft <= kuLeft,
+        "the Ku clear window must cover the shifted glyph's left edge");
+    TEST_ASSERT_TRUE_MESSAGE(kuRight + kKuLabelCardGap <= card0.x,
+        "the Ku glyph must retain a visible gap before card 0");
     TEST_ASSERT_GREATER_OR_EQUAL_INT(ka.height + 4, kBandLabelClearH);
     TEST_ASSERT_GREATER_OR_EQUAL_INT(ku.height + 4, kBandLabelClearH);
 }

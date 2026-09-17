@@ -814,15 +814,21 @@ void test_strict_contract_parser_aux0_fw_gates_exist() {
                              "strict: parser must gate photo aux0 bits to >= 4.1037");
 }
 
-void test_strict_contract_display_photo_fallback_exists() {
+void test_strict_contract_display_photo_identity_is_row_owned() {
     const std::string displaySrc = readTextFile("src/display_update.cpp");
     TEST_ASSERT_FALSE_MESSAGE(displaySrc.empty(), "strict: failed to read src/display_update.cpp");
-    TEST_ASSERT_TRUE_MESSAGE(displaySrc.find("state.hasPhotoAlert") != std::string::npos,
-                             "strict: display update must use table-level photo fallback");
+    TEST_ASSERT_TRUE_MESSAGE(displaySrc.find("priority.band == BAND_K") != std::string::npos,
+                             "strict: live Photo presentation must require a K-band priority row");
     TEST_ASSERT_TRUE_MESSAGE(displaySrc.find("priority.photoType") != std::string::npos,
                              "strict: display update must use priority photoType");
+    TEST_ASSERT_TRUE_MESSAGE(displaySrc.find("alertCount <= 1 && liveTopCounterChar == 'P'") != std::string::npos,
+                             "strict: raw P fallback must be limited to a lone K-band priority");
+    TEST_ASSERT_TRUE_MESSAGE(displaySrc.find("alert.band == BAND_K") != std::string::npos,
+                             "strict: persisted Photo presentation must require K band");
     TEST_ASSERT_TRUE_MESSAGE(displaySrc.find("alert.photoType") != std::string::npos,
                              "strict: persisted display update must use alert photoType");
+    TEST_ASSERT_TRUE_MESSAGE(displaySrc.find("(alert.band == BAND_K) && (alert.photoType != 0)") != std::string::npos,
+                             "strict: persisted Photo identity must remain owned by its saved K row");
 }
 
 void test_strict_contract_live_top_counter_follows_raw_v1_symbol() {
@@ -869,7 +875,7 @@ int main() {
     RUN_TEST(test_strict_alert_stream_duplicate_index_replaces_prior_row);
     RUN_TEST(test_strict_contract_parser_aux0_fields_exist);
     RUN_TEST(test_strict_contract_parser_aux0_fw_gates_exist);
-    RUN_TEST(test_strict_contract_display_photo_fallback_exists);
+    RUN_TEST(test_strict_contract_display_photo_identity_is_row_owned);
     RUN_TEST(test_strict_contract_live_top_counter_follows_raw_v1_symbol);
     return UNITY_END();
 }

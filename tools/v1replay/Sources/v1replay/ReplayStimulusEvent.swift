@@ -11,6 +11,7 @@ struct ReplayStimulusEvent: Encodable, Equatable {
         let bars: Int
         let direction: String
         let priority: Bool
+        let photoType: UInt8?
 
         init(_ alert: ReplayAlert) {
             band = alert.band.name
@@ -19,6 +20,7 @@ struct ReplayStimulusEvent: Encodable, Equatable {
             bars = alert.strength
             direction = alert.direction.label
             priority = alert.isPriority
+            photoType = alert.photoType == 0 ? nil : alert.photoType
         }
     }
 

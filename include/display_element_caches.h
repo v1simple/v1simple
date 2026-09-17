@@ -189,6 +189,7 @@ struct CardDrawnPosition {
     Band band = BAND_NONE;
     uint32_t frequency = 0;
     uint8_t direction = 0;
+    uint8_t photoType = 0;
     bool isGraced = false;
     bool wasMuted = false;
     uint8_t bars = 0;

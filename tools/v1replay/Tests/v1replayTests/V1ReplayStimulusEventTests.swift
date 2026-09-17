@@ -87,4 +87,49 @@ final class V1ReplayStimulusEventTests: XCTestCase {
         XCTAssertEqual(V1.ModeGlyph.euroKaOnly.displayCharacter, "u")
         XCTAssertEqual(V1.ModeGlyph.euroKaPhoto.displayCharacter, "U")
     }
+
+    func testStimulusEvidenceRetainsPhotoType() throws {
+        let sample = TimedSample(
+            offset: 1,
+            phase: "photo",
+            muted: false,
+            alerts: [ReplayAlert(
+                band: .k,
+                frequencyMHz: 24_125,
+                strength: 5,
+                direction: .front,
+                isPriority: true,
+                photoType: 3
+            )],
+            sourceIndex: 3
+        )
+        let control = V1.Session.ControlState(
+            mode: .advancedLogic, mainVolume: 4, mutedVolume: 0,
+            savedMainVolume: 4, savedMutedVolume: 0)
+        let plan = V1.PlaybackPacketPlan(
+            sample: sample, controlState: control, displayOn: true, muted: false,
+            blinkBogey: false, blinkArrow: false)
+        let event = ReplayStimulusEvent(
+            sequence: 1, sample: sample, controlState: control, muted: false,
+            displayOn: true, arrowBlink: false, bandBlink: false, plan: plan,
+            intendedHostMonotonicNs: 1, requestedHostMonotonicNs: 2)
+
+        XCTAssertEqual(event.expected.alerts[0].photoType, 3)
+        let row = try XCTUnwrap(plan.alertTablePackets.first)
+        XCTAssertEqual(try IndependentFrameForStimulus.decode(row).payload[6] & 0x0F, 3)
+    }
+}
+
+private struct IndependentFrameForStimulus {
+    let payload: [UInt8]
+
+    static func decode(_ bytes: [UInt8]) throws -> IndependentFrameForStimulus {
+        guard bytes.count >= 7, bytes.first == 0xAA, bytes.last == 0xAB else {
+            throw DecodeError.invalid
+        }
+        let payloadLength = Int(bytes[4]) - 1
+        return IndependentFrameForStimulus(payload: Array(bytes[5..<(5 + payloadLength)]))
+    }
+
+    private enum DecodeError: Error { case invalid }
 }

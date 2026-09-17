@@ -111,8 +111,8 @@ const DisplayPreviewModule::PreviewStep DisplayPreviewModule::STEPS[] = {
     {BAND_KA,  DIR_FRONT, 33800,  4,      0,      FLAG_MUTED, BAND_K, DIR_REAR, 24150,  0,      3,
      NO_THIRD, '2',       NO_CHG, NO_CHG, NO_CHG, NO_CHG,     NO_CHG, NO_CHG,   NO_CHG, NO_CHG, nullptr},
 
-    // Photo radar: Ka 34.700 front (priority, PHOTO) + K 24.150 side (card)
-    {BAND_KA,  DIR_FRONT, 34700,  5,      0,      FLAG_PHOTO, BAND_K, DIR_SIDE, 24150,  3,      0,
+    // Photo radar is a K-band row with a nonzero Photo type, per the VR ESP libraries.
+    {BAND_K,   DIR_FRONT, 24125,  5,      0,      FLAG_PHOTO, BAND_K, DIR_SIDE, 24150,  3,      0,
      NO_THIRD, 'P',       NO_CHG, NO_CHG, NO_CHG, NO_CHG,     NO_CHG, NO_CHG,   NO_CHG, NO_CHG, nullptr},
 
     // Junk K: K 24.199 front (priority) — bogey=J
@@ -567,7 +567,7 @@ void DisplayPreviewModule::renderResolvedStep(const ResolvedStep& resolved, bool
     int alertCount = 1;
     AlertData primary = buildAlertData(resolved.primary, true);
 
-    if (resolved.photo) {
+    if (resolved.photo && primary.band == BAND_K) {
         primary.photoType = 1; // Generic photo type
     }
 
@@ -608,7 +608,7 @@ void DisplayPreviewModule::renderResolvedStep(const ResolvedStep& resolved, bool
     state.bogeyCounterChar = resolved.status.bogeyChar;
 
     // Photo flag
-    if (resolved.photo) {
+    if (primary.photoType != 0) {
         state.hasPhotoAlert = true;
     }
 

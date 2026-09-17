@@ -30,6 +30,24 @@ struct ReplayAlert {
     let strength: Int
     let direction: V1.Direction
     let isPriority: Bool
+    let photoType: UInt8
+
+    init(band: V1.Band,
+         frequencyMHz: UInt16,
+         strength: Int,
+         direction: V1.Direction,
+         isPriority: Bool,
+         photoType: UInt8 = 0) {
+        precondition(photoType <= 0x0F, "photo type must fit the alert-row aux0 nibble")
+        precondition(photoType == 0 || band.mask == V1.Band.k.mask,
+                     "Valentine Photo alerts are K-band rows with a nonzero photo type")
+        self.band = band
+        self.frequencyMHz = frequencyMHz
+        self.strength = strength
+        self.direction = direction
+        self.isPriority = isPriority
+        self.photoType = photoType
+    }
 
     fileprivate func hasSameState(as other: ReplayAlert) -> Bool {
         return band.mask == other.band.mask
@@ -37,6 +55,7 @@ struct ReplayAlert {
             && strength == other.strength
             && direction == other.direction
             && isPriority == other.isPriority
+            && photoType == other.photoType
     }
 }
 

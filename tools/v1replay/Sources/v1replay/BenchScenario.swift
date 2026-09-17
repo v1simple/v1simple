@@ -13,7 +13,9 @@ enum BenchScenario {
     static let baseDurationSeconds = 276
     static let readerQualificationDurationSeconds = 68
     static let kuQualificationDurationSeconds = 12
-    static let durationSeconds = baseDurationSeconds + kuQualificationDurationSeconds
+    static let photoQualificationDurationSeconds = 10
+    static let photoQualificationStartSecond = baseDurationSeconds + kuQualificationDurationSeconds
+    static let durationSeconds = photoQualificationStartSecond + photoQualificationDurationSeconds
 
     private struct KuQualificationState {
         let phase: String
@@ -92,6 +94,81 @@ enum BenchScenario {
         precondition(samples[12].priorityAlert?.band.mask == V1.Band.k.mask)
         precondition(samples[18].priorityAlert?.band.mask == V1.Band.ka.mask)
         precondition(samples[24].priorityAlert?.band.mask == V1.Band.ku.mask)
+        return Encounter(origin: .syntheticBench, samples: samples)
+    }
+
+    private struct PhotoQualificationState {
+        let phase: String
+        let alerts: [ReplayAlert]
+        let blink: Bool
+    }
+
+    private static func photoQualificationState(at second: Int) -> PhotoQualificationState {
+        precondition((0..<photoQualificationDurationSeconds).contains(second))
+        switch second {
+        case 0:
+            return PhotoQualificationState(
+                phase: "photo_qualification_idle_lead", alerts: [], blink: false)
+        case 1..<3:
+            return PhotoQualificationState(
+                phase: "photo_qualification_single",
+                alerts: [alert(.k, 24_125, 6, .front, priority: true, photoType: 1)],
+                blink: false)
+        case 3..<5:
+            return PhotoQualificationState(
+                phase: "photo_qualification_k_priority",
+                alerts: [
+                    alert(.k, 24_150, 4, .front, priority: true),
+                    alert(.k, 24_125, 6, .rear, priority: false, photoType: 1),
+                ],
+                blink: true)
+        case 5..<7:
+            return PhotoQualificationState(
+                phase: "photo_qualification_ka_priority",
+                alerts: [
+                    alert(.ka, 34_700, 5, .front, priority: true),
+                    alert(.k, 24_125, 6, .side, priority: false, photoType: 1),
+                ],
+                blink: true)
+        case 7..<9:
+            return PhotoQualificationState(
+                phase: "photo_qualification_photo_priority",
+                alerts: [
+                    alert(.k, 24_125, 6, .front, priority: true, photoType: 1),
+                    alert(.k, 24_150, 4, .side, priority: false),
+                    alert(.ka, 34_700, 5, .rear, priority: false),
+                ],
+                blink: true)
+        default:
+            return PhotoQualificationState(
+                phase: "photo_qualification_idle_tail", alerts: [], blink: false)
+        }
+    }
+
+    /// Generated, vendor-shaped Photo exercise appended to every default bench.
+    /// Photo remains a K-band alert row with a nonzero aux0 type; priority
+    /// rotation proves that Photo identity stays with that row and its card.
+    static func makePhotoQualification() -> Encounter {
+        var samples: [TimedSample] = []
+        let sampleCount = photoQualificationDurationSeconds * cadenceHz
+        samples.reserveCapacity(sampleCount)
+
+        for tick in 0..<sampleCount {
+            let state = photoQualificationState(at: tick / cadenceHz)
+            samples.append(TimedSample(
+                offset: Double(tick) / Double(cadenceHz),
+                phase: state.phase,
+                muted: false,
+                alerts: state.alerts,
+                scenarioArrowBlink: state.blink,
+                sourceIndex: tick
+            ))
+        }
+
+        precondition(samples.count == sampleCount)
+        precondition(samples.filter { $0.alerts.contains { $0.photoType != 0 } }.count == 24)
+        precondition(samples.filter { ($0.priorityAlert?.photoType ?? 0) != 0 }.count == 12)
+        precondition(samples.filter(\.scenarioArrowBlink).count == 18)
         return Encounter(origin: .syntheticBench, samples: samples)
     }
 
@@ -275,12 +352,14 @@ enum BenchScenario {
                               _ frequencyMHz: UInt16,
                               _ strength: Int,
                               _ direction: V1.Direction,
-                              priority: Bool) -> ReplayAlert {
+                              priority: Bool,
+                              photoType: UInt8 = 0) -> ReplayAlert {
         return ReplayAlert(band: band,
                            frequencyMHz: frequencyMHz,
                            strength: strength,
                            direction: direction,
-                           isPriority: priority)
+                           isPriority: priority,
+                           photoType: photoType)
     }
 
     private static func triangleBars(tick: Int, count: Int) -> Int {
@@ -419,9 +498,15 @@ enum BenchScenario {
                                 dukeDirection(tick: local), priority: true)]
 
             case baseDurationSeconds..<durationSeconds:
-                let state = kuQualificationState(at: second - baseDurationSeconds)
-                phase = state.phase
-                alerts = state.alerts
+                if second < photoQualificationStartSecond {
+                    let state = kuQualificationState(at: second - baseDurationSeconds)
+                    phase = state.phase
+                    alerts = state.alerts
+                } else {
+                    let state = photoQualificationState(at: second - photoQualificationStartSecond)
+                    phase = state.phase
+                    alerts = state.alerts
+                }
 
             default:
                 phase = "idle_tail"
@@ -431,9 +516,15 @@ enum BenchScenario {
             // Provisional until real-V1 display-frame evidence establishes the
             // detector's exact policy: blink the selected arrow while multiple
             // alerts are active, and keep single-alert periods steady.
-            let scenarioArrowBlink = second >= baseDurationSeconds
-                ? kuQualificationState(at: second - baseDurationSeconds).blink
-                : alerts.count > 1
+            let scenarioArrowBlink: Bool
+            if second >= photoQualificationStartSecond {
+                scenarioArrowBlink = photoQualificationState(
+                    at: second - photoQualificationStartSecond).blink
+            } else if second >= baseDurationSeconds {
+                scenarioArrowBlink = kuQualificationState(at: second - baseDurationSeconds).blink
+            } else {
+                scenarioArrowBlink = alerts.count > 1
+            }
             samples.append(TimedSample(offset: Double(tick) / Double(cadenceHz),
                                        phase: phase,
                                        muted: muted(at: second),
@@ -473,10 +564,16 @@ enum BenchScenario {
             "ku_qualification_ka_priority": 6,
             "ku_qualification_ku_priority": 6,
             "ku_qualification_idle_tail": 6,
+            "photo_qualification_idle_lead": 3,
+            "photo_qualification_single": 6,
+            "photo_qualification_k_priority": 6,
+            "photo_qualification_ka_priority": 6,
+            "photo_qualification_photo_priority": 6,
+            "photo_qualification_idle_tail": 3,
         ])
-        precondition(samples.filter { !$0.alerts.isEmpty }.count == 732)
-        precondition(samples.filter { $0.alerts.count == 3 }.count == 48)
-        precondition(samples.filter(\.scenarioArrowBlink).count == 75)
+        precondition(samples.filter { !$0.alerts.isEmpty }.count == 756)
+        precondition(samples.filter { $0.alerts.count == 3 }.count == 54)
+        precondition(samples.filter(\.scenarioArrowBlink).count == 93)
         precondition(samples.filter(\.scenarioArrowBlink).allSatisfy { $0.alerts.count > 1 })
         precondition(samples[(33 * cadenceHz)..<(52 * cadenceHz)]
             .allSatisfy(\.scenarioArrowBlink))
@@ -487,7 +584,15 @@ enum BenchScenario {
             .allSatisfy { !$0.scenarioArrowBlink })
         precondition(samples[kuBlinkStart..<kuBlinkEnd]
             .allSatisfy(\.scenarioArrowBlink))
-        precondition(samples[kuBlinkEnd...]
+        precondition(samples[kuBlinkEnd..<(photoQualificationStartSecond * cadenceHz)]
+            .allSatisfy { !$0.scenarioArrowBlink })
+        let photoBlinkStart = (photoQualificationStartSecond + 3) * cadenceHz
+        let photoBlinkEnd = (photoQualificationStartSecond + 9) * cadenceHz
+        precondition(samples[(photoQualificationStartSecond * cadenceHz)..<photoBlinkStart]
+            .allSatisfy { !$0.scenarioArrowBlink })
+        precondition(samples[photoBlinkStart..<photoBlinkEnd]
+            .allSatisfy(\.scenarioArrowBlink))
+        precondition(samples[photoBlinkEnd...]
             .allSatisfy { !$0.scenarioArrowBlink })
 
         let handoff = samples[33 * cadenceHz]
@@ -510,10 +615,15 @@ enum BenchScenario {
         precondition(samples[(244 * cadenceHz)..<(baseDurationSeconds * cadenceHz)]
             .allSatisfy { $0.alerts.isEmpty })
 
-        let appendedKu = samples[(baseDurationSeconds * cadenceHz)...]
+        let appendedKu = samples[(baseDurationSeconds * cadenceHz)..<(photoQualificationStartSecond * cadenceHz)]
         precondition(appendedKu.count == kuQualificationDurationSeconds * cadenceHz)
         precondition(appendedKu.filter { $0.priorityAlert?.band.mask == V1.Band.ku.mask }.count == 12)
         precondition(appendedKu.filter { $0.alerts.count == 3 }.count == 18)
+
+        let appendedPhoto = samples[(photoQualificationStartSecond * cadenceHz)...]
+        precondition(appendedPhoto.count == photoQualificationDurationSeconds * cadenceHz)
+        precondition(appendedPhoto.filter { ($0.priorityAlert?.photoType ?? 0) != 0 }.count == 12)
+        precondition(appendedPhoto.filter { $0.alerts.contains { $0.photoType != 0 } }.count == 24)
 
         precondition(samples[..<(244 * cadenceHz)].allSatisfy { $0.detectorVolume == nil })
         let observedVolumeCheckpoints = Encounter(

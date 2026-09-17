@@ -278,6 +278,8 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
             return true;
         if (elementCaches_.cards.slots[slot].alert.direction != last.direction)
             return true;
+        if (elementCaches_.cards.slots[slot].alert.photoType != last.photoType)
+            return true;
         if (curr.isGraced != last.isGraced)
             return true;
         if (muted != last.wasMuted)
@@ -331,7 +333,8 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
         uint8_t bars = cardsToDraw[i].bars;
 
         // Card background and border colors
-        uint16_t bandCol = getBandColor(alert.band);
+        const bool isPhoto = alert.band == BAND_K && alert.photoType != 0;
+        uint16_t bandCol = isPhoto ? settings.colorBandPhoto : getBandColor(alert.band);
         uint16_t bgCol, borderCol;
 
         if (isGraced) {
@@ -381,7 +384,10 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
                 tft_->setCursor(labelX, topRowY);
                 tft_->print("LASER");
             } else {
-                const char* bandStr = bandToString(alert.band);
+                // Valentine reports Photo as a K-band row with a nonzero
+                // photo type. Keep that row's identity visible in its card
+                // without inventing a separate RF band or crowding the card.
+                const char* bandStr = isPhoto ? "P" : bandToString(alert.band);
                 tft_->setCursor(labelX, topRowY);
                 tft_->print(bandStr);
 
@@ -434,6 +440,7 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
             elementCaches_.cards.lastDrawnPositions[i].frequency = alert.frequency;
         }
         elementCaches_.cards.lastDrawnPositions[i].direction = alert.direction;
+        elementCaches_.cards.lastDrawnPositions[i].photoType = alert.photoType;
         elementCaches_.cards.lastDrawnPositions[i].isGraced = isGraced;
         elementCaches_.cards.lastDrawnPositions[i].wasMuted = muted;
         elementCaches_.cards.lastDrawnPositions[i].bars = bars;

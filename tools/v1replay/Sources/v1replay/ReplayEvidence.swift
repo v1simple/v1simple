@@ -176,6 +176,7 @@ private struct ResolvedScenarioDocument: Encodable {
         let direction: String
         let directionMask: UInt8
         let priority: Bool
+        let photoType: UInt8?
     }
 
     struct Volume: Encodable {
@@ -214,7 +215,8 @@ private struct ResolvedScenarioDocument: Encodable {
                         strength: alert.strength,
                         direction: alert.direction.label,
                         directionMask: alert.direction.rawValue,
-                        priority: alert.isPriority
+                        priority: alert.isPriority,
+                        photoType: alert.photoType == 0 ? nil : alert.photoType
                     )
                 },
                 detectorVolume: sample.detectorVolume.map {

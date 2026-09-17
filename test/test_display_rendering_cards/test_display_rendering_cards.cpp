@@ -217,6 +217,24 @@ void test_card_clear_repaints_and_resets_previous_drawn_card_state() {
     TEST_ASSERT_TRUE(bands.lastMuted);
 }
 
+void test_same_k_card_repaints_when_v1_reclassifies_it_as_photo() {
+    AlertData priority = AlertData::create(BAND_X, DIR_REAR, 2, 0, 10525, true, true);
+    AlertData ordinary = AlertData::create(BAND_K, DIR_FRONT, 4, 0, 24125, true, false);
+    AlertData first[2] = {priority, ordinary};
+    display.ut_drawSecondaryAlertCards(first, 2, priority, false);
+
+    canvas()->resetCounters();
+    AlertData photo = ordinary;
+    photo.photoType = 1;
+    AlertData second[2] = {priority, photo};
+    display.ut_drawSecondaryAlertCards(second, 2, priority, false);
+
+    TEST_ASSERT_GREATER_THAN_UINT_MESSAGE(
+        0u, canvas()->fillRoundRectCalls.size(),
+        "ordinary K to Photo reclassification must repaint the complete card");
+    TEST_ASSERT_EQUAL_UINT8(1, display.ut_elementCaches().cards.lastDrawnPositions[0].photoType);
+}
+
 // Regression: the composer feeds a live alert list where the priority leads.
 // A frame-to-frame priority frequency jitter beyond alertsMatch's ±2 MHz must
 // NOT be treated as a priority handoff — before the jitter guard, it admitted
@@ -851,6 +869,7 @@ int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_empty_card_clear_is_noop_when_no_cards_were_drawn);
     RUN_TEST(test_card_clear_repaints_and_resets_previous_drawn_card_state);
+    RUN_TEST(test_same_k_card_repaints_when_v1_reclassifies_it_as_photo);
     RUN_TEST(test_priority_frequency_jitter_does_not_admit_ghost_card);
     RUN_TEST(test_secondary_frequency_jitter_refreshes_slot_without_duplicate);
     RUN_TEST(test_secondary_frequency_drift_repaints_text_despite_bar_updates);

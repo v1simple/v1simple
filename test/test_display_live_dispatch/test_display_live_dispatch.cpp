@@ -37,6 +37,9 @@ GpsRuntimeStatus GpsRuntimeModule::snapshot(uint32_t) const { return {}; }
 V1Display* g_displayInstance = nullptr;
 SettingsManager settings;
 std::vector<DisplayLayout::DisplayRect> regionalTransfers;
+uint32_t lastFrequencyMHz = 0;
+Band lastFrequencyBand = BAND_NONE;
+bool lastFrequencyPhoto = false;
 
 class RecordingCanvas : public Arduino_Canvas {
   public:
@@ -79,7 +82,11 @@ void V1Display::drawBaseFrame() {
     tft_->fillScreen(TFT_BLACK);
     elementCaches_.invalidateAll();
 }
-void V1Display::drawFrequency(uint32_t, Band, bool, bool) {}
+void V1Display::drawFrequency(uint32_t frequency, Band band, bool, bool isPhotoRadar) {
+    lastFrequencyMHz = frequency;
+    lastFrequencyBand = band;
+    lastFrequencyPhoto = isPhotoRadar;
+}
 void V1Display::drawVolumeZeroWarning() {}
 void V1Display::drawVolumeIndicator(uint8_t, uint8_t) {}
 void V1Display::drawRssiIndicator(int) {}
@@ -167,6 +174,9 @@ void clearObservations() {
     canvas()->flushSnapshots.clear();
     regionalTransfers.clear();
     display.ut_fontMgr().segment7.resetRecordedCalls();
+    lastFrequencyMHz = 0;
+    lastFrequencyBand = BAND_NONE;
+    lastFrequencyPhoto = false;
 }
 
 DisplayState stateFor(const AlertData& primary, char counter, uint8_t mainBars) {
@@ -559,6 +569,82 @@ void test_ku_primary_relabels_shared_k_cell_with_k_and_ka_cards() {
                                     "the shared K cell must read Ku when Ku owns the primary alert");
     TEST_ASSERT_EQUAL_INT(BAND_K, display.ut_elementCaches().cards.lastDrawnPositions[0].band);
     TEST_ASSERT_EQUAL_INT(BAND_KA, display.ut_elementCaches().cards.lastDrawnPositions[1].band);
+}
+
+void test_secondary_photo_stays_in_its_card_without_recoloring_ka_primary() {
+    RenderFrame frame;
+    frame.primaryKind = RenderFramePrimaryKind::V1_LIVE;
+    frame.v1Priority = AlertData::create(BAND_KA, DIR_FRONT, 5, 0, 34700, true, true);
+    frame.primaryState = stateFor(frame.v1Priority, 'P', 5);
+    frame.primaryState.activeBands = static_cast<uint8_t>(BAND_KA | BAND_K);
+    frame.primaryState.hasPhotoAlert = true;
+    frame.cardCount = 1;
+    frame.cards[0].kind = RenderFrameCard::Kind::V1;
+    frame.cards[0].v1Alert = AlertData::create(BAND_K, DIR_SIDE, 6, 0, 24125, true, false);
+    frame.cards[0].v1Alert.photoType = 1;
+
+    display.renderFrame(frame);
+
+    TEST_ASSERT_EQUAL_UINT32(34700, lastFrequencyMHz);
+    TEST_ASSERT_EQUAL_INT(BAND_KA, lastFrequencyBand);
+    TEST_ASSERT_FALSE_MESSAGE(lastFrequencyPhoto,
+                              "a secondary Photo row must not recolor the Ka primary frequency");
+    const auto& card = display.ut_elementCaches().cards.lastDrawnPositions[0];
+    TEST_ASSERT_EQUAL_INT(BAND_K, card.band);
+    TEST_ASSERT_EQUAL_UINT8(1, card.photoType);
+    bool sawPhotoLabel = false;
+    for (const auto& call : canvas()->textCalls) {
+        if (call.text == "P" && call.color == settings.get().colorBandPhoto) {
+            sawPhotoLabel = true;
+        }
+    }
+    TEST_ASSERT_TRUE_MESSAGE(sawPhotoLabel, "the secondary Photo row must own a purple P card");
+}
+
+void test_photo_priority_owns_primary_color_while_ordinary_alerts_stay_in_cards() {
+    RenderFrame frame;
+    frame.primaryKind = RenderFramePrimaryKind::V1_LIVE;
+    frame.v1Priority = AlertData::create(BAND_K, DIR_FRONT, 6, 0, 24125, true, true);
+    frame.v1Priority.photoType = 1;
+    frame.primaryState = stateFor(frame.v1Priority, 'P', 6);
+    frame.primaryState.activeBands = static_cast<uint8_t>(BAND_K | BAND_KA);
+    frame.primaryState.hasPhotoAlert = true;
+    frame.cardCount = 2;
+    frame.cards[0].kind = RenderFrameCard::Kind::V1;
+    frame.cards[0].v1Alert = AlertData::create(BAND_K, DIR_SIDE, 4, 0, 24150, true, false);
+    frame.cards[1].kind = RenderFrameCard::Kind::V1;
+    frame.cards[1].v1Alert = AlertData::create(BAND_KA, DIR_REAR, 5, 0, 34700, true, false);
+
+    display.renderFrame(frame);
+
+    TEST_ASSERT_EQUAL_UINT32(24125, lastFrequencyMHz);
+    TEST_ASSERT_EQUAL_INT(BAND_K, lastFrequencyBand);
+    TEST_ASSERT_TRUE_MESSAGE(lastFrequencyPhoto,
+                             "the priority Photo row must select the Photo frequency color");
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(BAND_K | BAND_KA),
+                            display.ut_elementCaches().bands.lastMask);
+    TEST_ASSERT_EQUAL_UINT8(0, display.ut_elementCaches().cards.lastDrawnPositions[0].photoType);
+    TEST_ASSERT_EQUAL_INT(BAND_KA, display.ut_elementCaches().cards.lastDrawnPositions[1].band);
+}
+
+void test_persisted_photo_color_follows_the_saved_row_not_the_shared_p_counter() {
+    AlertData ordinaryK = AlertData::create(BAND_K, DIR_FRONT, 4, 0, 24150, true, true);
+    DisplayState state = stateFor(ordinaryK, 'P', 4);
+    state.hasPhotoAlert = true;
+
+    clearObservations();
+    display.updatePersisted(ordinaryK, state);
+    TEST_ASSERT_EQUAL_UINT32(24150, lastFrequencyMHz);
+    TEST_ASSERT_FALSE_MESSAGE(lastFrequencyPhoto,
+                              "a P counter from another row must not recolor saved ordinary K");
+
+    AlertData photo = AlertData::create(BAND_K, DIR_FRONT, 6, 0, 24125, true, true);
+    photo.photoType = 1;
+    clearObservations();
+    display.updatePersisted(photo, state);
+    TEST_ASSERT_EQUAL_UINT32(24125, lastFrequencyMHz);
+    TEST_ASSERT_TRUE_MESSAGE(lastFrequencyPhoto,
+                             "a saved Photo row must retain its Photo presentation");
 }
 
 void test_priority_arrow_disabled_keeps_all_transmitted_directions() {
@@ -988,6 +1074,9 @@ int main() {
     RUN_TEST(test_k_primary_keeps_k_label_with_ka_and_ku_cards);
     RUN_TEST(test_ka_primary_keeps_ka_and_k_labels_with_secondary_ku_card);
     RUN_TEST(test_ku_primary_relabels_shared_k_cell_with_k_and_ka_cards);
+    RUN_TEST(test_secondary_photo_stays_in_its_card_without_recoloring_ka_primary);
+    RUN_TEST(test_photo_priority_owns_primary_color_while_ordinary_alerts_stay_in_cards);
+    RUN_TEST(test_persisted_photo_color_follows_the_saved_row_not_the_shared_p_counter);
     RUN_TEST(test_priority_arrow_disabled_keeps_all_transmitted_directions);
     RUN_TEST(test_priority_arrow_enabled_filters_main_directions_but_keeps_secondary);
     RUN_TEST(test_priority_arrow_enabled_does_not_invent_untransmitted_priority_direction);

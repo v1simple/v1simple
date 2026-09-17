@@ -551,7 +551,9 @@ void V1Display::updatePersisted(const AlertData& alert, const DisplayState& stat
     }
 
     // Frequency in persisted color
-    const bool isPhotoRadar = (alert.photoType != 0) || state.hasPhotoAlert || (state.bogeyCounterChar == 'P');
+    // Persistence owns a specific alert row, so preserve that row's Photo
+    // type. The shared P counter may have belonged to a different row.
+    const bool isPhotoRadar = (alert.band == BAND_K) && (alert.photoType != 0);
     drawFrequency(alert.frequency, alert.band, true, isPhotoRadar);
 
     // No signal bars — draw empty
@@ -630,7 +632,14 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
     drawStatusStrip(state, liveTopCounterChar, state.muted, liveTopCounterDot);
 
     // Under blink-pair semantics, image2=='P' also implies image1=='P'.
-    const bool isPhotoRadar = (priority.photoType != 0) || state.hasPhotoAlert || (liveTopCounterChar == 'P');
+    // Photo identity belongs to the K-band alert row, just as Ku identity
+    // belongs to the selected Ku row. A table-wide Photo flag or the shared P
+    // counter must not recolor an unrelated K/Ka priority frequency when the
+    // Photo source is secondary. The P-only fallback is limited to a lone K
+    // row for display-only compatibility.
+    const bool isPhotoRadar = (priority.band == BAND_K) &&
+                              ((priority.photoType != 0) ||
+                               (alertCount <= 1 && liveTopCounterChar == 'P'));
     drawFrequency(priority.frequency, priority.band, state.muted, isPhotoRadar);
 
     // Ku shares the V1's physical K cell, but alert identity follows the

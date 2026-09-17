@@ -47,7 +47,8 @@ extension V1 {
                         band: alert.band,
                         direction: alert.direction,
                         frequencyMHz: alert.frequencyMHz,
-                        priority: alert.isPriority
+                        priority: alert.isPriority,
+                        photoType: alert.photoType
                     )
                     return (
                         .alertRow(index: index + 1, count: sample.alerts.count),
@@ -70,6 +71,7 @@ extension V1 {
                     blinkPlane: blinkBogey,
                     blinkArrow: blinkArrow,
                     blinkBand: blinkBand,
+                    photoPresent: sample.alerts.contains { $0.photoType != 0 },
                     includeModeBits: includeModeBits
                 )
             } else {

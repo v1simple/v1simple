@@ -40,7 +40,7 @@ final class V1DisplayAlertContractTests: XCTestCase {
         }
     }
 
-    func testDefaultBenchPreservesBaseStimulusAndAppendsKuQualification() throws {
+    func testDefaultBenchPreservesBaseAndAppendsKuThenPhotoQualification() throws {
         let encounter = BenchScenario.make()
         let baseSampleCount = BenchScenario.baseDurationSeconds * BenchScenario.cadenceHz
         let preservedBase = Encounter(
@@ -52,10 +52,11 @@ final class V1DisplayAlertContractTests: XCTestCase {
         XCTAssertEqual(sha256Hex(try preservedBase.resolvedScenarioEvidenceData()),
                        "144b04f4cced4461578168c9b162e97a02bf34973e9918c73b4a972888935f6f")
 
-        let focused = BenchScenario.makeKuQualification()
-        let appended = Array(encounter.samples.dropFirst(baseSampleCount))
-        XCTAssertEqual(appended.count, focused.samples.count)
-        for (actual, expected) in zip(appended, focused.samples) {
+        let focusedKu = BenchScenario.makeKuQualification()
+        let appendedKu = Array(encounter.samples[
+            baseSampleCount..<(BenchScenario.photoQualificationStartSecond * BenchScenario.cadenceHz)])
+        XCTAssertEqual(appendedKu.count, focusedKu.samples.count)
+        for (actual, expected) in zip(appendedKu, focusedKu.samples) {
             XCTAssertEqual(actual.offset,
                            Double(BenchScenario.baseDurationSeconds) + expected.offset,
                            accuracy: 0.000_001)
@@ -70,7 +71,24 @@ final class V1DisplayAlertContractTests: XCTestCase {
                 XCTAssertEqual(actualAlert.strength, expectedAlert.strength)
                 XCTAssertEqual(actualAlert.direction, expectedAlert.direction)
                 XCTAssertEqual(actualAlert.isPriority, expectedAlert.isPriority)
+                XCTAssertEqual(actualAlert.photoType, expectedAlert.photoType)
             }
+        }
+
+        let focusedPhoto = BenchScenario.makePhotoQualification()
+        let photoStartIndex = BenchScenario.photoQualificationStartSecond * BenchScenario.cadenceHz
+        let appendedPhoto = Array(encounter.samples.dropFirst(photoStartIndex))
+        XCTAssertEqual(appendedPhoto.count, focusedPhoto.samples.count)
+        for (actual, expected) in zip(appendedPhoto, focusedPhoto.samples) {
+            XCTAssertEqual(actual.offset,
+                           Double(BenchScenario.photoQualificationStartSecond) + expected.offset,
+                           accuracy: 0.000_001)
+            XCTAssertEqual(actual.sourceIndex, photoStartIndex + expected.sourceIndex)
+            XCTAssertEqual(actual.phase, expected.phase)
+            XCTAssertEqual(actual.scenarioArrowBlink, expected.scenarioArrowBlink)
+            XCTAssertEqual(actual.alerts.map(\.photoType), expected.alerts.map(\.photoType))
+            XCTAssertEqual(actual.alerts.map { $0.band.mask }, expected.alerts.map { $0.band.mask })
+            XCTAssertEqual(actual.alerts.map(\.isPriority), expected.alerts.map(\.isPriority))
         }
     }
 
@@ -110,6 +128,48 @@ final class V1DisplayAlertContractTests: XCTestCase {
             XCTAssertEqual(rows.map { $0.payload[5] & 0x1F }, alertBands)
             XCTAssertEqual(rows.map { $0.payload[6] & 0x80 }, [0x80, 0x00, 0x00])
         }
+    }
+
+    func testPhotoQualificationUsesKRowsAndKeepsPhotoIdentityWithItsRow() throws {
+        let encounter = BenchScenario.makePhotoQualification()
+        XCTAssertEqual(encounter.samples.count, 30)
+        XCTAssertTrue(encounter.samples.prefix(3).allSatisfy { $0.alerts.isEmpty })
+        XCTAssertTrue(encounter.samples.suffix(3).allSatisfy { $0.alerts.isEmpty })
+
+        let control = V1.Session.ControlState(
+            mode: .advancedLogic, mainVolume: 4, mutedVolume: 0,
+            savedMainVolume: 4, savedMutedVolume: 0)
+        let checkpoints = [3, 9, 15, 21]
+        let expectedPriorityBands = [V1.Band.k.mask, V1.Band.k.mask,
+                                     V1.Band.ka.mask, V1.Band.k.mask]
+        let expectedPriorityPhotoTypes: [UInt8] = [1, 0, 0, 1]
+
+        for (position, index) in checkpoints.enumerated() {
+            let sample = encounter.samples[index]
+            let plan = V1.PlaybackPacketPlan(
+                sample: sample, controlState: control, displayOn: true, muted: false,
+                blinkBogey: false, blinkArrow: sample.scenarioArrowBlink,
+                blinkBand: sample.scenarioArrowBlink)
+            let rows = try plan.alertTablePackets.map(IndependentFrame.decode)
+            let display = try IndependentFrame.decode(plan.displayPacket)
+
+            XCTAssertEqual(rows.map { $0.payload[5] & 0x1F },
+                           sample.alerts.map { $0.band.mask })
+            XCTAssertTrue(rows.allSatisfy { ($0.payload[6] & 0x0F) == 0 ||
+                                            ($0.payload[5] & 0x1F) == V1.Band.k.mask })
+            XCTAssertEqual(rows.map { $0.payload[6] & 0x0F }, sample.alerts.map(\.photoType))
+            XCTAssertEqual(sample.priorityAlert?.band.mask, expectedPriorityBands[position])
+            XCTAssertEqual(sample.priorityAlert?.photoType, expectedPriorityPhotoTypes[position])
+            XCTAssertEqual(display.payload[0], 0x73, "Photo presence must put P in image1")
+            XCTAssertEqual(display.payload[1], 0x73, "normal Photo bench keeps P steady")
+            XCTAssertEqual(display.payload[3] & 0x0F, expectedPriorityBands[position])
+        }
+
+        let retained = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: encounter.resolvedScenarioEvidenceData()) as? [String: Any])
+        let retainedSamples = try XCTUnwrap(retained["samples"] as? [[String: Any]])
+        let photoAlerts = try XCTUnwrap(retainedSamples[3]["alerts"] as? [[String: Any]])
+        XCTAssertEqual(photoAlerts[0]["photoType"] as? Int, 1)
     }
 
     func testReaderQualificationHasFixedHoldsAndTwelveSecondsOfCardBlink() throws {

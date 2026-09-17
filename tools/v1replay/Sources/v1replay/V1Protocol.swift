@@ -351,9 +351,12 @@ enum V1 {
                              blinkPlane: Bool = false,
                              blinkArrow: Bool = false,
                              blinkBand: Bool = false,
+                             photoPresent: Bool = false,
                              includeModeBits: Bool = true) -> DisplayFrame {
             var f = DisplayFrame()
-            f.bogeyImage1 = V1.bogeyGlyph(forCount: bogeyCount)
+            // V1 Gen2 identifies K-band Photo radar with P in the physical
+            // bogey-counter cell. The alert table retains the numeric count.
+            f.bogeyImage1 = photoPresent ? 0x73 : V1.bogeyGlyph(forCount: bogeyCount)
             f.bogeyImage2 = blinkPlane ? 0x00 : f.bogeyImage1
             f.ledBitmap = V1.ledBitmap(bars: bars)
             // Ku is bit 4 in alert rows, but shares the K lamp in display data;

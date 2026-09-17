@@ -326,9 +326,30 @@ final class Player {
             _phase = .waiting
         }
         lock.unlock()
+        let idleIntervalNs = replayIntervalNanoseconds(1.0 / max(0.5, options.idleHz))
+        var nextIdleFrameNs: UInt64 = 0
         while !isStopped {
             if transportReady() { return }
-            Thread.sleep(forTimeInterval: 0.05)
+
+            // A physical V1 emits infDisplayData before alert-table streaming
+            // is requested. That packet starts the accessory time slices and
+            // is what permits v1simple to send reqStartAlertData. Keep the
+            // authored encounter stopped, but model that baseline display
+            // traffic so managed playback cannot deadlock at connection time.
+            let awaitingAlertRequest = options.waitForAlertData
+                && options.sendAlerts
+                && peripheral.displaySubscribed
+                && !peripheral.alertDataRequested
+            if awaitingAlertRequest {
+                let nowNs = hostMonotonicNanoseconds()
+                if nextIdleFrameNs == 0 || nowNs >= nextIdleFrameNs {
+                    sendIdleFrame()
+                    nextIdleFrameNs = advanceReplayDeadline(nowNs, by: idleIntervalNs)
+                }
+                Thread.sleep(forTimeInterval: 0.01)
+            } else {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
         }
     }
 

@@ -24,19 +24,36 @@
 namespace {
 
 constexpr int kBandLabelX = 82;
-// Ku shares the V1's physical K cell, but its second letter would otherwise
-// enter card slot 0. Keep the normal K anchor unchanged and move only Ku left,
-// leaving a real framebuffer gap instead of merely touching the card border.
-constexpr int kKuLabelCardGap = 2;
-constexpr int kKuLabelLeftShift = 11;
+// Ku shares the V1's physical K cell. The full-size FreeSans "Ku" is too wide
+// for the lane between the RSSI field and card 0, so keep the K nearly on its
+// normal anchor and render a compact FreeSans suffix. This preserves a
+// real framebuffer gap on both sides instead of trading card overlap for RSSI
+// overlap.
+constexpr int kKuLabelX = 80;
+constexpr int kKuSuffixX = 110;
+constexpr int kKuSuffixVisualW = 18;
+constexpr int kKuSuffixVisualH = 26;
+constexpr int kKuNeighborGap = 2;
+// FreeSansBold24's lowercase-u glyph, condensed horizontally from 23 to 18 px.
+// drawBitmap rows are byte-aligned, hence three bytes per 18-pixel row.
+constexpr uint8_t kKuSuffixBitmap[] PROGMEM = {
+    0xFC, 0x07, 0xC0, 0xFC, 0x07, 0xC0, 0xFC, 0x07, 0xC0, 0xFC, 0x07, 0xC0,
+    0xFC, 0x07, 0xC0, 0xFC, 0x07, 0xC0, 0xFC, 0x07, 0xC0, 0xFC, 0x07, 0xC0,
+    0xFC, 0x07, 0xC0, 0xFC, 0x07, 0xC0, 0xFC, 0x07, 0xC0, 0xFC, 0x07, 0xC0,
+    0xFC, 0x07, 0xC0, 0xFC, 0x07, 0xC0, 0xFC, 0x07, 0xC0, 0xFC, 0x07, 0xC0,
+    0xFC, 0x07, 0xC0, 0xFC, 0x0F, 0xC0, 0xFE, 0x0F, 0xC0, 0xFF, 0x1F, 0xC0,
+    0xFF, 0xFF, 0xC0, 0x7F, 0xFF, 0xC0, 0x7F, 0xF7, 0xC0, 0x3F, 0xF7, 0xC0,
+    0x1F, 0xE7, 0xC0, 0x0F, 0xC0, 0x00,
+};
+static_assert(sizeof(kKuSuffixBitmap) == 3 * kKuSuffixVisualH, "compact Ku suffix bitmap size");
 constexpr int kBandLabelTextSize = 1;
 constexpr int kBandLabelSpacing = 43;
 constexpr int kBandLabelStartY = 55;
-constexpr int kBandLabelClearLeftPad = 11;
+constexpr int kBandLabelClearLeftPad = 4;
 // FreeSansBold24 "Ka" extends about 56 px past the middle-left anchor after
-// datum adjustment. Include the shifted Ku glyph and the full Ka glyph in the
-// partial-flush rectangle while retaining the historic right edge.
-constexpr int kBandLabelClearW = 72;
+// datum adjustment. Cover it and the compact Ku label while keeping the clear
+// rectangle disjoint from the RSSI field at x=8..77.
+constexpr int kBandLabelClearW = 65;
 constexpr int kBandLabelClearH = 42;
 
 } // namespace
@@ -255,8 +272,13 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
         // provide the background for every repainted cell; the glyph itself
         // must not paint background pixels.
         TFT_CALL(setTextColor)(col);
-        const int labelX = (i == 2 && kuIdentity) ? (x - kKuLabelLeftShift) : x;
-        GFX_drawString(tft_, cells[i].label, labelX, labelY);
+        if (i == 2 && kuIdentity) {
+            GFX_drawString(tft_, "K", kKuLabelX, labelY);
+            TFT_CALL(drawBitmap)(kKuSuffixX, labelY - kKuSuffixVisualH / 2, kKuSuffixBitmap,
+                                 kKuSuffixVisualW, kKuSuffixVisualH, col);
+        } else {
+            GFX_drawString(tft_, cells[i].label, x, labelY);
+        }
     }
 
     elementCaches_.bands.lastMask = effectiveBandMask;

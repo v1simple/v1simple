@@ -165,6 +165,29 @@ final class V1PlayerTimingTests: XCTestCase {
             XCTAssertTrue(result.packets.allSatisfy { $0.bytes[3] == 0x31 }, mode)
         }
     }
+
+    func testAlertRequestWaitSeedsTimeSliceWithoutStartingScenario() throws {
+        let result = try record("startup-gate")
+        XCTAssertEqual(result.offsets, [0.4, 0.6])
+        XCTAssertEqual(result.starts.count, 1)
+
+        let seed = try XCTUnwrap(result.packets.first)
+        XCTAssertEqual(seed.phase, "waiting for central")
+        XCTAssertEqual(seed.bytes[3], 0x31)
+        XCTAssertEqual(seed.sequence, -1)
+        XCTAssertEqual(seed.ordinal, -1)
+        XCTAssertEqual(seed.bytes[10] & 0x02, 0,
+                       "The baseline display must grant the accessory time slice")
+
+        let firstScenarioPacket = try XCTUnwrap(result.packets.firstIndex { $0.sequence > 0 })
+        XCTAssertGreaterThan(firstScenarioPacket, 0)
+        let preScenarioPackets = result.packets[..<firstScenarioPacket]
+        XCTAssertTrue(preScenarioPackets.allSatisfy { packet in
+            packet.phase == "waiting for central"
+                && packet.bytes[3] == 0x31
+                && packet.sequence == -1
+        })
+    }
 }
 
 private let probeSource = #"""
@@ -237,7 +260,7 @@ final class V1Peripheral {
         options.loop = mode == "loop"
         options.startPaused = ["pause", "step"].contains(mode)
         let peripheral = V1Peripheral()
-        if mode == "tail-no-start" { peripheral.setReady(false) }
+        if mode == "tail-no-start" || mode == "startup-gate" { peripheral.setReady(false) }
         peripheral.failThirdCheck = mode == "retry"
         let player = Player(encounter: encounter, peripheral: peripheral, options: options)
         if mode == "seek-zero" { player.seek(to: 0) }
@@ -253,13 +276,16 @@ final class V1Peripheral {
         var starts: [Double] = []
         var packets: [[String: Any]] = []
         let started = nowSeconds()
-        if tailMode {
+        if tailMode || mode == "startup-gate" {
             peripheral.capture = { bytes, sequence, ordinal in
                 let phase = player.snapshot.phase.rawValue
                 lock.lock()
                 packets.append(["bytes": bytes, "phase": phase,
                                 "sequence": sequence ?? -1, "ordinal": ordinal ?? -1])
                 lock.unlock()
+                if mode == "startup-gate" && phase == Player.Phase.waiting.rawValue {
+                    peripheral.setReady(true)
+                }
                 if phase == Player.Phase.finished.rawValue && bytes[3] == 0x31 {
                     finishedIdle.signal()
                 }

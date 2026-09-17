@@ -215,7 +215,10 @@ The emulator retains incomplete command frames and drains complete frames in
 wire order. Incoming v1simple commands require a valid checksum and the
 `DA E6` request header. The connect handshake answers version and all-volume
 queries, and alert rows are withheld until `reqStartAlertData` unless
-`--always-alerts` is selected.
+`--always-alerts` is selected. While managed playback is waiting for that
+request, it emits idle `infDisplayData` packets with TS Holdoff cleared, as a
+physical V1 does to grant accessories a transmission time slice. Those baseline
+packets do not start or advance the authored encounter.
 
 Each active bench step sends a complete alert table with one priority row,
 followed by display data derived from that row. Empty steps send an explicit

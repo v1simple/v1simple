@@ -158,6 +158,7 @@ enum V1 {
     // MARK: - auxData0 bits (packet_parser.cpp parseDisplayData)
 
     static let aux0SoftMute: UInt8 = 0x01
+    static let aux0TimeSliceHoldoff: UInt8 = 0x02
     static let aux0SystemStatus: UInt8 = 0x04   // V1 actively searching — REQUIRED,
                                                 // the parser blanks bands+arrows without it
     static let aux0DisplayOn: UInt8 = 0x08

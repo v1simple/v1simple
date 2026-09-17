@@ -152,23 +152,30 @@ void test_drawBandIndicators_produces_background_clear_on_first_draw() {
     TEST_ASSERT_EQUAL_UINT16(ColorThemes::STANDARD().bg, canvas()->fillRectCalls[0].color);
 }
 
-void test_band_label_dirty_window_covers_FreeSans_Ka_and_Ku_glyphs() {
+void test_band_label_dirty_window_covers_ka_and_compact_ku_without_touching_neighbors() {
     const FontVisualBounds ka = freeSans24VisualBounds("Ka");
-    const FontVisualBounds ku = freeSans24VisualBounds("Ku");
+    const FontVisualBounds k = freeSans24VisualBounds("K");
     const int clearLeft = kBandLabelX - kBandLabelClearLeftPad;
     const int rightCoverageFromAnchor = kBandLabelClearW - kBandLabelClearLeftPad;
     const DisplayLayout::DisplayRect card0 = DisplayLayout::cardRect(0);
-    const int kuLeft = kBandLabelX - kKuLabelLeftShift;
-    const int kuRight = kuLeft + ku.width;
+    const DisplayLayout::DisplayRect rssi = DisplayLayout::rssiRect();
+    const int clearRight = clearLeft + kBandLabelClearW;
+    const int kuRight = kKuSuffixX + kKuSuffixVisualW;
 
     TEST_ASSERT_GREATER_OR_EQUAL_INT(ka.width + 2, rightCoverageFromAnchor);
-    TEST_ASSERT_GREATER_OR_EQUAL_INT(ku.width - kKuLabelLeftShift + 2, rightCoverageFromAnchor);
-    TEST_ASSERT_TRUE_MESSAGE(clearLeft <= kuLeft,
-        "the Ku clear window must cover the shifted glyph's left edge");
-    TEST_ASSERT_TRUE_MESSAGE(kuRight + kKuLabelCardGap <= card0.x,
-        "the Ku glyph must retain a visible gap before card 0");
+    TEST_ASSERT_TRUE_MESSAGE(clearLeft <= kKuLabelX,
+        "the Ku clear window must cover the compact label's left edge");
+    TEST_ASSERT_TRUE_MESSAGE(clearRight >= kuRight,
+        "the Ku clear window must cover the compact label's right edge");
+    TEST_ASSERT_TRUE_MESSAGE(rssi.x + rssi.w <= clearLeft,
+        "the band clear window must not erase the RSSI field");
+    TEST_ASSERT_TRUE_MESSAGE(rssi.x + rssi.w + kKuNeighborGap <= kKuLabelX,
+        "the compact Ku label must retain a visible gap after RSSI");
+    TEST_ASSERT_TRUE_MESSAGE(kuRight + kKuNeighborGap <= card0.x,
+        "the compact Ku label must retain a visible gap before card 0");
+    TEST_ASSERT_GREATER_OR_EQUAL_INT(k.width, kKuSuffixX - kKuLabelX);
     TEST_ASSERT_GREATER_OR_EQUAL_INT(ka.height + 4, kBandLabelClearH);
-    TEST_ASSERT_GREATER_OR_EQUAL_INT(ku.height + 4, kBandLabelClearH);
+    TEST_ASSERT_GREATER_OR_EQUAL_INT(k.height + 4, kBandLabelClearH);
 }
 
 void test_drawBandIndicators_cache_hit_skips_redraw() {
@@ -242,13 +249,36 @@ void test_drawBandIndicators_ku_obeys_the_shared_k_flash_bit() {
     class TextCanvas : public Arduino_Canvas {
       public:
         TextCanvas() : Arduino_Canvas(SCREEN_WIDTH, SCREEN_HEIGHT, nullptr) {}
-        struct TextCall { std::string text; uint16_t color; int16_t x; };
+        struct TextCall {
+            std::string text;
+            uint16_t color;
+            int16_t x;
+            uint8_t size;
+            const GFXfont* font;
+        };
+        struct BitmapCall {
+            int16_t x;
+            int16_t y;
+            int16_t w;
+            int16_t h;
+            uint16_t color;
+            const uint8_t* bitmap;
+        };
         std::vector<TextCall> calls;
+        std::vector<BitmapCall> bitmapCalls;
         uint16_t color = 0;
         int16_t cursorX = 0;
+        uint8_t size = 1;
+        const GFXfont* font = nullptr;
         void setTextColor(uint16_t value) override { color = value; }
+        void setTextSize(uint8_t value) override { size = value; }
+        void setFont(const GFXfont* value) override { font = value; }
         void setCursor(int16_t x, int16_t) override { cursorX = x; }
-        void print(const char* text) override { calls.push_back({text, color, cursorX}); }
+        void print(const char* text) override { calls.push_back({text, color, cursorX, size, font}); }
+        void drawBitmap(int16_t x, int16_t y, const uint8_t* bitmap, int16_t w, int16_t h,
+                        uint16_t bitmapColor) override {
+            bitmapCalls.push_back({x, y, w, h, bitmapColor, bitmap});
+        }
     };
     for (uint8_t bandMask : {uint8_t(BAND_K), uint8_t(BAND_K | BAND_KU), uint8_t(BAND_KU)}) {
         auto* text = new TextCanvas;
@@ -256,18 +286,31 @@ void test_drawBandIndicators_ku_obeys_the_shared_k_flash_bit() {
         display.ut_elementCaches().bands.valid = false;
         for (bool phase : {true, false, true}) {
             text->calls.clear();
+            text->bitmapCalls.clear();
             display.ut_setBlinkState(phase, mockMillis);
             display.ut_drawBandIndicators(bandMask, false, BAND_K);
 
             // ID31 has a K LED and flash bit, but no separate Ku LED. The
             // synthetic Ku bit must not keep that shared cell illuminated.
+            const bool isKu = (bandMask & BAND_KU) != 0;
             TEST_ASSERT_EQUAL_UINT(4u, text->calls.size());
             TEST_ASSERT_EQUAL_HEX16(phase ? settings.get().colorBandK : TFT_DARKGREY,
                                    text->calls[2].color);
-            TEST_ASSERT_EQUAL_STRING((bandMask & BAND_KU) ? "Ku" : "K",
-                                     text->calls[2].text.c_str());
-            TEST_ASSERT_EQUAL_INT16((bandMask & BAND_KU) ? kBandLabelX - kKuLabelLeftShift : kBandLabelX,
-                                    text->calls[2].x);
+            TEST_ASSERT_EQUAL_STRING("K", text->calls[2].text.c_str());
+            TEST_ASSERT_EQUAL_INT16(isKu ? kKuLabelX : kBandLabelX, text->calls[2].x);
+            TEST_ASSERT_EQUAL_UINT8(kBandLabelTextSize, text->calls[2].size);
+            TEST_ASSERT_EQUAL_PTR(&FreeSansBold24pt7b, text->calls[2].font);
+            if (isKu) {
+                TEST_ASSERT_EQUAL_UINT(1u, text->bitmapCalls.size());
+                TEST_ASSERT_EQUAL_INT16(kKuSuffixX, text->bitmapCalls[0].x);
+                TEST_ASSERT_EQUAL_INT16(kKuSuffixVisualW, text->bitmapCalls[0].w);
+                TEST_ASSERT_EQUAL_INT16(kKuSuffixVisualH, text->bitmapCalls[0].h);
+                TEST_ASSERT_EQUAL_HEX16(phase ? settings.get().colorBandK : TFT_DARKGREY,
+                                        text->bitmapCalls[0].color);
+                TEST_ASSERT_EQUAL_PTR(kKuSuffixBitmap, text->bitmapCalls[0].bitmap);
+            } else {
+                TEST_ASSERT_EQUAL_UINT(0u, text->bitmapCalls.size());
+            }
         }
     }
 }
@@ -589,7 +632,7 @@ int main() {
 
     // drawBandIndicators
     RUN_TEST(test_drawBandIndicators_produces_background_clear_on_first_draw);
-    RUN_TEST(test_band_label_dirty_window_covers_FreeSans_Ka_and_Ku_glyphs);
+    RUN_TEST(test_band_label_dirty_window_covers_ka_and_compact_ku_without_touching_neighbors);
     RUN_TEST(test_drawBandIndicators_cache_hit_skips_redraw);
     RUN_TEST(test_drawBandIndicators_dirty_flag_forces_redraw);
     RUN_TEST(test_drawBandIndicators_different_mask_invalidates_cache);

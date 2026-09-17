@@ -1034,8 +1034,6 @@ class V1Emulator:
         return "" if code is None else f"V1 emulator exited early with code {code}"
 
     def wait_for_transport(self, timeout_s: float) -> None:
-        if self.mode != "idle":
-            return
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             problem = self.health_problem()
@@ -1047,7 +1045,7 @@ class V1Emulator:
             ):
                 return
             time.sleep(0.05)
-        raise RuntimeError("managed V1 emulator did not establish its input transport")
+        raise RuntimeError("managed V1 input did not establish its transport before the external window")
 
     def finish(self, window_completed: bool) -> dict[str, Any]:
         process_was_running = self.process is not None and self.process.poll() is None

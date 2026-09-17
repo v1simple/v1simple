@@ -332,6 +332,41 @@ def test_replay_process_requests_raw_machine_and_scenario_evidence() -> None:
     assert_true("--ku-qualification" in ku_command, str(ku_command))
 
 
+def test_replay_transport_must_be_active_before_the_external_window() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        executable = out_dir / "v1replay"
+        _write_executable(executable)
+        emulator = V1Emulator(
+            executable,
+            out_dir,
+            "replay",
+            "scenario",
+            lease_fd=9,
+            scenario="",
+            ku_qualification=False,
+            machine_event=lambda _payload: None,
+        )
+        emulator.process = SimpleNamespace(poll=lambda: None)
+        emulator.log_path.write_text(
+            'V1REPLAY_EVENT {"state":"session_transport","active":false}\n',
+            encoding="utf-8",
+        )
+        try:
+            emulator.wait_for_transport(0.001)
+        except RuntimeError as exc:
+            assert_true("before the external window" in str(exc), str(exc))
+        else:
+            raise AssertionError("replay external window started without active V1 transport")
+
+        emulator.log_path.write_text(
+            'V1REPLAY_EVENT {"state":"session_transport","active":true}\n',
+            encoding="utf-8",
+        )
+        emulator.observed_events = 0
+        emulator.wait_for_transport(0.1)
+
+
 def finish_replay_fixture(states: list[str]) -> dict[str, Any]:
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
@@ -1152,6 +1187,7 @@ def main() -> int:
     test_runner_logs_are_confined_to_the_run_directory()
     test_timeline_keeps_ordered_external_events_and_scrubs_private_paths()
     test_replay_process_requests_raw_machine_and_scenario_evidence()
+    test_replay_transport_must_be_active_before_the_external_window()
     test_requested_dropped_complete_stopped_preserves_raw_delivery()
     test_emulator_cleanup_before_start_preserves_primary_failure()
     test_requested_accepted_complete_stopped_preserves_raw_delivery()

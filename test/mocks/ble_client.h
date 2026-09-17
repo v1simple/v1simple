@@ -45,6 +45,8 @@ public:
     int processProxyQueueCalls = 0;
     int onUserBytesReceivedCalls = 0;
     int onAllVolumeReceivedCalls = 0;
+    int onV1DisplayFlowControlCalls = 0;
+    bool lastTimeSliceHoldoff = true;
     bool hasSessionUserBytesFlag = false;
     bool hasSessionAllVolumeFlag = false;
     bool bootReadyFlag = true;  // Default true to preserve existing test behavior
@@ -134,6 +136,8 @@ public:
         processProxyQueueCalls = 0;
         onUserBytesReceivedCalls = 0;
         onAllVolumeReceivedCalls = 0;
+        onV1DisplayFlowControlCalls = 0;
+        lastTimeSliceHoldoff = true;
         hasSessionUserBytesFlag = false;
         hasSessionAllVolumeFlag = false;
         bootReadyFlag = true;
@@ -187,6 +191,10 @@ public:
     bool isProxyClientConnected() const { return proxyConnected; }
     void setProxyConnected(bool v) { proxyConnected = v; }
     bool isConnected() const { return connected; }
+    void onV1DisplayFlowControl(bool holdoff) {
+        onV1DisplayFlowControlCalls++;
+        lastTimeSliceHoldoff = holdoff;
+    }
     void setConnected(bool v) { connected = v; }
     uint32_t sessionGeneration() const { return sessionGenerationValue; }
     void setSessionGeneration(uint32_t generation) { sessionGenerationValue = generation; }

@@ -40,6 +40,9 @@ SendResult V1BLEClient::sendCommandWithResult(const uint8_t* data, size_t length
     if (!data || length == 0 || length > 64) {
         return SendResult::FAILED;
     }
+    if (isV1WriteHeldOff(data, length)) {
+        return SendResult::NOT_YET;
+    }
 
     // Five-millisecond non-blocking gate; the caller retains NOT_YET packets.
     static std::atomic<uint32_t> lastCommandMs{0};

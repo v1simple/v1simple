@@ -455,6 +455,26 @@ void test_only_successfully_parsed_alert_packets_trigger_runtime_effects() {
     TEST_ASSERT_FALSE(queue.consumeParsedFlag());
 }
 
+void test_only_canonical_display_parses_update_time_slice_flow_control() {
+    beginQueue();
+    parser.state.timeSliceHoldoff = true;
+    const std::vector<uint8_t> display = makeFrame(PACKET_ID_DISPLAY_DATA, 8, 0x00);
+
+    TEST_ASSERT_TRUE(deliverRawNotify(display.data(), display.size(), kCharacteristic,
+                                      kSession, 500));
+    queue.process();
+    TEST_ASSERT_EQUAL_INT(1, client.onV1DisplayFlowControlCalls);
+    TEST_ASSERT_TRUE(client.lastTimeSliceHoldoff);
+
+    parser.parseReturnValue = false;
+    parser.state.timeSliceHoldoff = false;
+    TEST_ASSERT_TRUE(deliverRawNotify(display.data(), display.size(), kCharacteristic,
+                                      kSession, 501));
+    queue.process();
+    TEST_ASSERT_EQUAL_INT(1, client.onV1DisplayFlowControlCalls);
+    TEST_ASSERT_TRUE(client.lastTimeSliceHoldoff);
+}
+
 void test_queue_saturation_counts_only_rejected_admission_and_preserves_head() {
     beginQueue(2);
     const std::vector<uint8_t> first = makeFrame(0x5B, 3, 0x61);
@@ -680,6 +700,7 @@ int main(int, char**) {
     RUN_TEST(test_truncated_user_bytes_response_cannot_complete_capture);
     RUN_TEST(test_rejected_all_volume_response_cannot_complete_capture);
     RUN_TEST(test_only_successfully_parsed_alert_packets_trigger_runtime_effects);
+    RUN_TEST(test_only_canonical_display_parses_update_time_slice_flow_control);
     RUN_TEST(test_queue_saturation_counts_only_rejected_admission_and_preserves_head);
     RUN_TEST(test_malformed_input_resynchronizes_to_following_valid_frame);
     RUN_TEST(test_parser_packet_queued_beyond_first_drain_retains_pre_command_ingress);

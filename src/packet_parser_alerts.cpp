@@ -36,6 +36,14 @@ void PacketParser::resetAlertState() {
 void PacketParser::resetV1Version() {
     displayState_.v1FirmwareVersion = 0;
     displayState_.hasV1Version = false;
+    displayState_.displayActive = false;
+    displayState_.hasDisplayActive = false;
+    displayState_.logicMuted = false;
+    displayState_.hasLogicMuted = false;
+    displayState_.autoMuted = false;
+    displayState_.hasAutoMuted = false;
+    displayState_.doubleTapActive = false;
+    displayState_.hasDoubleTapActive = false;
 }
 
 void PacketParser::resetVolumeState() {
@@ -55,6 +63,15 @@ void PacketParser::resetModeAndDisplayState() {
     displayState_.hasMode = false;
     displayState_.displayOn = true;
     displayState_.hasDisplayOn = false;
+    displayState_.timeSliceHoldoff = true;
+    displayState_.displayActive = false;
+    displayState_.hasDisplayActive = false;
+    displayState_.logicMuted = false;
+    displayState_.hasLogicMuted = false;
+    displayState_.autoMuted = false;
+    displayState_.hasAutoMuted = false;
+    displayState_.doubleTapActive = false;
+    displayState_.hasDoubleTapActive = false;
     displayOnObservation_ = V1DisplayOnObservation{};
     modeObservation_ = V1ModeObservation{};
     bluetoothIndicatorObservation_ = V1BluetoothIndicatorObservation{};
@@ -118,30 +135,25 @@ void PacketParser::clearAlertCacheForCount(uint8_t count) {
 Band PacketParser::decodeBand(uint8_t bandArrow) const {
     // The band value lives in the low 5 bits of the bandArrow byte and is a
     // raw integer (not a bitmask of multiple bands). Recognised values:
-    // 0x01=Laser, 0x02=Ka, 0x04=K, 0x08=X, 0x10=Ku.  We preserve the
-    // historical bit-test order for known-good Laser/Ka/K/X handling, then
-    // explicitly check 0x10 for Ku so it no longer falls through to BAND_NONE.
-    if (bandArrow & 0b00000001)
-        return BAND_LASER;
-    if (bandArrow & 0b00000010)
-        return BAND_KA;
-    if (bandArrow & 0b00000100)
-        return BAND_K;
-    if (bandArrow & 0b00001000)
-        return BAND_X;
-    if ((bandArrow & 0x1F) == 0x10)
-        return BAND_KU;
-    return BAND_NONE;
+    // 0x01=Laser, 0x02=Ka, 0x04=K, 0x08=X, 0x10=Ku. Combined or unknown
+    // values are invalid; do not coerce them through bit-test precedence.
+    switch (bandArrow & 0x1F) {
+    case 0x01: return BAND_LASER;
+    case 0x02: return BAND_KA;
+    case 0x04: return BAND_K;
+    case 0x08: return BAND_X;
+    case 0x10: return BAND_KU;
+    default: return BAND_NONE;
+    }
 }
 
 Direction PacketParser::decodeDirection(uint8_t bandArrow) const {
-    if (bandArrow & 0b00100000)
-        return DIR_FRONT;
-    if (bandArrow & 0b01000000)
-        return DIR_SIDE;
-    if (bandArrow & 0b10000000)
-        return DIR_REAR;
-    return DIR_NONE;
+    switch (bandArrow & 0xE0) {
+    case 0x20: return DIR_FRONT;
+    case 0x40: return DIR_SIDE;
+    case 0x80: return DIR_REAR;
+    default: return DIR_NONE;
+    }
 }
 
 uint8_t PacketParser::mapStrengthToBars(Band band, uint8_t raw) const {

@@ -199,6 +199,18 @@ void test_alert_direction_bits_match_spec_table() {
     }
 }
 
+void test_combined_alert_enum_values_remain_invalid() {
+    Band band = BAND_LASER;
+    Direction direction = DIR_FRONT;
+
+    // Band and direction are enumerated values in ESP 3.016, not bit sets.
+    // 0x03 (Laser|Ka) and 0x60 (Front|Side) must not acquire an identity by
+    // decoder precedence.
+    (void)parseAlertFrontStrength(0x63, 0x90, &band, &direction);
+    TEST_ASSERT_EQUAL(BAND_NONE, band);
+    TEST_ASSERT_EQUAL(DIR_NONE, direction);
+}
+
 namespace {
 
 void assertStrengthTable(uint8_t bandByte,
@@ -581,6 +593,7 @@ int main() {
     RUN_TEST(test_led_bitmap_outside_the_valid_domain_takes_the_sentinel);
     RUN_TEST(test_alert_band_values_match_spec_table);
     RUN_TEST(test_alert_direction_bits_match_spec_table);
+    RUN_TEST(test_combined_alert_enum_values_remain_invalid);
     RUN_TEST(test_ka_strength_thresholds_match_spec_table);
     RUN_TEST(test_x_strength_thresholds_match_spec_table);
     RUN_TEST(test_k_strength_thresholds_match_spec_table);

@@ -37,6 +37,7 @@ struct AlertRequestHarness {
         client.sessionGeneration_.store(generation, std::memory_order_release);
         client.pClient_ = &link;
         client.pCommandChar_ = &command;
+        client.onV1DisplayFlowControl(false);
     }
 };
 
@@ -73,6 +74,19 @@ void test_command_guard_uses_successful_send_time_for_exact_boundary() {
     mockMillis = 7050;
     TEST_ASSERT_TRUE(harness.client.requestAlertData());
     TEST_ASSERT_EQUAL_UINT32(3, harness.command.writeValueCalls());
+}
+
+void test_time_slice_holdoff_defers_v1_bound_commands_until_display_release() {
+    AlertRequestHarness harness(6);
+    harness.client.onV1DisplayFlowControl(true);
+
+    mockMillis = 1000;
+    TEST_ASSERT_FALSE(harness.client.requestCurrentVolume());
+    TEST_ASSERT_EQUAL_UINT32(0, harness.command.writeValueCalls());
+
+    harness.client.onV1DisplayFlowControl(false);
+    TEST_ASSERT_TRUE(harness.client.requestCurrentVolume());
+    TEST_ASSERT_EQUAL_UINT32(1, harness.command.writeValueCalls());
 }
 
 void test_failed_transport_write_does_not_consume_command_guard_slot() {
@@ -258,6 +272,7 @@ void test_phase_four_commands_match_vendor_frames_and_firmware_gates() {
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_command_guard_uses_successful_send_time_for_exact_boundary);
+    RUN_TEST(test_time_slice_holdoff_defers_v1_bound_commands_until_display_release);
     RUN_TEST(test_failed_transport_write_does_not_consume_command_guard_slot);
     RUN_TEST(test_new_session_generation_gets_an_immediate_first_command);
     RUN_TEST(test_alert_start_recovery_waits_for_subscription_and_optional_followups);

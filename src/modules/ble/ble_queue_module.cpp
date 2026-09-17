@@ -532,6 +532,10 @@ void BleQueueModule::process() {
         }
         bool parseOk = parser_->parse(packetPtr, packetSize, parseTimestampMs, packetIngressSequence);
 
+        if (parseOk && packetId == PACKET_ID_DISPLAY_DATA && ble_) {
+            ble_->onV1DisplayFlowControl(parser_->getDisplayState().timeSliceHoldoff);
+        }
+
         if (parseOk && packetId == PACKET_ID_RESP_VERSION && ble_) {
             const DisplayState& state = parser_->getDisplayState();
             if (state.hasV1Version) {

@@ -652,6 +652,7 @@ bool PacketParser::parseDisplayData(const uint8_t* payload, size_t length) {
 
     // Snapshot auxData0 status bits:
     //   bit 0 (0x01) — isSoft         : audio mute (spec-true)
+    //   bit 1 (0x02) — isTSHoldOff    : V1-bound writes are forbidden
     //   bit 2 (0x04) — isSystemStatus : V1 actively searching for alerts
     // softMuted is exposed as its own field; systemStatus gates the band /
     // arrow indicators below.
@@ -663,11 +664,26 @@ bool PacketParser::parseDisplayData(const uint8_t* payload, size_t length) {
     if (length > 5) {
         const uint8_t aux0 = payload[5];
         displayState_.softMuted = (aux0 & 0x01) != 0;
+        displayState_.timeSliceHoldoff = (aux0 & 0x02) != 0;
         auxSystemStatus = (aux0 & 0x04) != 0;
         displayState_.displayOn = (aux0 & 0x08) != 0;
         displayState_.hasDisplayOn = true;
+
+        const V1FirmwareCompat::Capabilities capabilities =
+            V1FirmwareCompat::capabilities(displayState_.v1FirmwareVersion);
+        displayState_.hasDisplayActive = capabilities.displayActive;
+        displayState_.displayActive = capabilities.displayActive && (aux0 & 0x80) != 0;
+
+        const uint8_t aux1 = payload[6];
+        displayState_.hasLogicMuted = capabilities.logicMuted;
+        displayState_.logicMuted = capabilities.logicMuted && (aux1 & 0x02) != 0;
+        displayState_.hasAutoMuted = capabilities.autoMute;
+        displayState_.autoMuted = capabilities.autoMute && (aux1 & 0x10) != 0;
+        displayState_.hasDoubleTapActive = capabilities.doubleTap;
+        displayState_.doubleTapActive = capabilities.doubleTap && (aux1 & 0x20) != 0;
     } else {
         displayState_.softMuted = false;
+        displayState_.timeSliceHoldoff = true;
     }
     displayState_.systemStatus = auxSystemStatus;
 

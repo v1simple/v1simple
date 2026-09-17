@@ -111,6 +111,18 @@ struct DisplayState {
     // is debounced for icon stability; `softMuted` is the undebounced
     // spec-true mute state and should be preferred by V1 quiet-control paths.
     bool softMuted;
+    // Transport and display metadata from InfDisplayData. The `has*` flags
+    // keep firmware-qualified bits from being presented as known on older or
+    // not-yet-versioned detectors.
+    bool timeSliceHoldoff;
+    bool displayActive;
+    bool hasDisplayActive;
+    bool logicMuted;
+    bool hasLogicMuted;
+    bool autoMuted;
+    bool hasAutoMuted;
+    bool doubleTapActive;
+    bool hasDoubleTapActive;
     // Per Valentine
     // InfDisplayData.isSystemStatus() (auxData0 bit 2). True when the V1 is
     // actively searching for alerts. When false, band/arrow data in the
@@ -133,7 +145,9 @@ struct DisplayState {
           bandFlashBits(0), mainVolume(0), muteVolume(0), v1FirmwareVersion(0), hasV1Version(false),
           hasVolumeData(false), v1PriorityIndex(0), bogeyCounterByte(0), bogeyCounterChar('0'), bogeyCounterDot(false),
           bogeyCounterByte2(0), bogeyCounterChar2(' '), bogeyCounterDot2(false), hasJunkAlert(false),
-          hasPhotoAlert(false), hasKuAlert(false), softMuted(false), systemStatus(true), savedMainVolume(0),
+          hasPhotoAlert(false), hasKuAlert(false), softMuted(false), timeSliceHoldoff(true), displayActive(false),
+          hasDisplayActive(false), logicMuted(false), hasLogicMuted(false), autoMuted(false), hasAutoMuted(false),
+          doubleTapActive(false), hasDoubleTapActive(false), systemStatus(true), savedMainVolume(0),
           savedMuteVolume(0), hasSavedVolume(false) {}
 
     // True if we should show the volume display.

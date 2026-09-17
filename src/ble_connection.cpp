@@ -219,6 +219,7 @@ bool V1BLEClient::connectToServer() {
         nextGeneration = 1;
     }
     sessionGeneration_.store(nextGeneration, std::memory_order_release);
+    v1TimeSliceHoldoff_.store(true, std::memory_order_release);
     pendingConnectStateUpdate_.store(false, std::memory_order_relaxed);
     pendingConnectStateGeneration_.store(0, std::memory_order_relaxed);
     sessionPublicationGate_.open(nextGeneration);
@@ -442,6 +443,7 @@ void V1BLEClient::beginClientQuiesce(bool requestHardReset) {
             nextGeneration = 1;
         }
         sessionGeneration_.store(nextGeneration, std::memory_order_release);
+        v1TimeSliceHoldoff_.store(true, std::memory_order_release);
         if (sessionClosedCallback_) {
             sessionClosedCallback_(nextGeneration);
         }
@@ -495,6 +497,7 @@ void V1BLEClient::cleanupConnection() {
     notifyLongCharId_.store(0, std::memory_order_release);
     notifyLongChar_.store(nullptr, std::memory_order_release);
     connected_.store(false, std::memory_order_release);
+    v1TimeSliceHoldoff_.store(true, std::memory_order_release);
     {
         SemaphoreGuard lock(bleMutex_, pdMS_TO_TICKS(20)); // COLD: disconnect cleanup
         if (lock.locked()) {

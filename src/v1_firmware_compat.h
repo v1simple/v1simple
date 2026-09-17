@@ -11,6 +11,7 @@ inline constexpr uint32_t kCustomFrequenciesVersion = 41018;
 inline constexpr uint32_t kUserSettingsVersion = 41018;
 inline constexpr uint32_t kVolumeChangeVersion = 41026;
 inline constexpr uint32_t kModeObservationVersion = 41028;
+inline constexpr uint32_t kDoubleTapVersion = 41028;
 inline constexpr uint32_t kKaPriorityAndFastLaserVersion = 41031;
 inline constexpr uint32_t kKeepBluetoothLedOnVersion = 41032;
 inline constexpr uint32_t kKaSensitivityVersion = 41032;
@@ -22,6 +23,7 @@ inline constexpr uint32_t kDisplayActiveVersion = 41037;
 inline constexpr uint32_t kKAndXSensitivityVersion = 41037;
 inline constexpr uint32_t kPhotoRadarVersion = 41037;
 inline constexpr uint32_t kFullUserBytesVersion = 41039;
+inline constexpr uint32_t kLogicMutedVersion = 41039;
 inline constexpr uint8_t kUserByteCount = 6;
 inline constexpr uint8_t kLegacyGen2UserByteCount = 4;
 
@@ -37,6 +39,7 @@ struct Capabilities {
     // claim that current/saved volume was observed by the capture session.
     bool volumeChange = false;
     bool modeObservation = false;
+    bool doubleTap = false;
     bool kaAlwaysPriority = false;
     bool fastLaserDetect = false;
     bool keepBluetoothLedOn = false;
@@ -48,6 +51,7 @@ struct Capabilities {
     bool allVolume = false;
     bool savedVolume = false;
     bool displayActive = false;
+    bool logicMuted = false;
     bool kSensitivity = false;
     bool xSensitivity = false;
     bool photoRadar = false;
@@ -87,6 +91,7 @@ inline Capabilities capabilities(uint32_t firmwareVersion) {
     result.customSweeps = firmwareVersion >= kCustomFrequenciesVersion;
     result.volumeChange = firmwareVersion >= kVolumeChangeVersion;
     result.modeObservation = firmwareVersion >= kModeObservationVersion;
+    result.doubleTap = firmwareVersion >= kDoubleTapVersion;
     result.kaAlwaysPriority = firmwareVersion >= kKaPriorityAndFastLaserVersion;
     result.fastLaserDetect = firmwareVersion >= kKaPriorityAndFastLaserVersion;
     result.keepBluetoothLedOn = firmwareVersion >= kKeepBluetoothLedOnVersion;
@@ -98,6 +103,7 @@ inline Capabilities capabilities(uint32_t firmwareVersion) {
     result.allVolume = firmwareVersion >= kSavedVolumeVersion;
     result.savedVolume = firmwareVersion >= kSavedVolumeVersion;
     result.displayActive = firmwareVersion >= kDisplayActiveVersion;
+    result.logicMuted = firmwareVersion >= kLogicMutedVersion;
     result.kSensitivity = firmwareVersion >= kKAndXSensitivityVersion;
     result.xSensitivity = firmwareVersion >= kKAndXSensitivityVersion;
     result.photoRadar = firmwareVersion >= kPhotoRadarVersion;

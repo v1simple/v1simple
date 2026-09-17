@@ -373,10 +373,19 @@ void test_reset_v1_version_requires_a_fresh_session_response() {
 
     TEST_ASSERT_TRUE(parsePacket(parser, packet));
     TEST_ASSERT_TRUE(parser.getDisplayState().hasV1Version);
+    TEST_ASSERT_TRUE(parsePacket(parser,
+                                 makePacket(PACKET_ID_DISPLAY_DATA,
+                                            makeDisplayPayload(0x77, 0x00, 0x00, 0x00, 0x84, 0x32))));
+    TEST_ASSERT_TRUE(parser.getDisplayState().hasDisplayActive);
+    TEST_ASSERT_TRUE(parser.getDisplayState().hasLogicMuted);
 
     parser.resetV1Version();
     TEST_ASSERT_FALSE(parser.getDisplayState().hasV1Version);
     TEST_ASSERT_EQUAL_UINT32(0, parser.getDisplayState().v1FirmwareVersion);
+    TEST_ASSERT_FALSE(parser.getDisplayState().hasDisplayActive);
+    TEST_ASSERT_FALSE(parser.getDisplayState().hasLogicMuted);
+    TEST_ASSERT_FALSE(parser.getDisplayState().hasAutoMuted);
+    TEST_ASSERT_FALSE(parser.getDisplayState().hasDoubleTapActive);
 
     TEST_ASSERT_TRUE(parsePacket(parser, packet));
     TEST_ASSERT_TRUE(parser.getDisplayState().hasV1Version);
@@ -708,6 +717,49 @@ void test_parse_display_packet_softmuted_independent_of_led_mute() {
     TEST_ASSERT_TRUE(parsePacket(parser, pkt));  // debounce
     TEST_ASSERT_TRUE(parser.getDisplayState().muted);        // LED-debounced
     TEST_ASSERT_FALSE(parser.getDisplayState().softMuted);   // spec audio mute
+}
+
+void test_display_metadata_tracks_transport_and_version_qualified_bits() {
+    PacketParser parser;
+
+    // Before version qualification, only the always-defined TS holdoff bit is
+    // actionable. Newer display metadata remains explicitly unavailable.
+    const auto unknownVersion = makePacket(
+        PACKET_ID_DISPLAY_DATA,
+        makeDisplayPayload(0x77, 0x00, 0x00, 0x00, 0x86, 0x32));
+    TEST_ASSERT_TRUE(parsePacket(parser, unknownVersion));
+    const DisplayState& unknown = parser.getDisplayState();
+    TEST_ASSERT_TRUE(unknown.timeSliceHoldoff);
+    TEST_ASSERT_FALSE(unknown.hasDisplayActive);
+    TEST_ASSERT_FALSE(unknown.hasLogicMuted);
+    TEST_ASSERT_FALSE(unknown.hasAutoMuted);
+    TEST_ASSERT_FALSE(unknown.hasDoubleTapActive);
+
+    TEST_ASSERT_TRUE(parsePacket(parser,
+                                 makePacket(PACKET_ID_RESP_VERSION,
+                                            makeVersionPayload('4', '1', '0', '3', '9'))));
+    const auto qualified = makePacket(
+        PACKET_ID_DISPLAY_DATA,
+        makeDisplayPayload(0x77, 0x00, 0x00, 0x00, 0x84, 0x32));
+    TEST_ASSERT_TRUE(parsePacket(parser, qualified));
+    const DisplayState& state = parser.getDisplayState();
+    TEST_ASSERT_FALSE(state.timeSliceHoldoff);
+    TEST_ASSERT_TRUE(state.hasDisplayActive);
+    TEST_ASSERT_TRUE(state.displayActive);
+    TEST_ASSERT_TRUE(state.hasLogicMuted);
+    TEST_ASSERT_TRUE(state.logicMuted);
+    TEST_ASSERT_TRUE(state.hasAutoMuted);
+    TEST_ASSERT_TRUE(state.autoMuted);
+    TEST_ASSERT_TRUE(state.hasDoubleTapActive);
+    TEST_ASSERT_TRUE(state.doubleTapActive);
+
+    parser.resetModeAndDisplayState();
+    const DisplayState& reset = parser.getDisplayState();
+    TEST_ASSERT_TRUE(reset.timeSliceHoldoff);
+    TEST_ASSERT_FALSE(reset.hasDisplayActive);
+    TEST_ASSERT_FALSE(reset.hasLogicMuted);
+    TEST_ASSERT_FALSE(reset.hasAutoMuted);
+    TEST_ASSERT_FALSE(reset.hasDoubleTapActive);
 }
 
 // Bands and arrows must be suppressed when the V1
@@ -1241,6 +1293,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_aux1_mode_is_not_claimed_before_supported_firmware);
     RUN_TEST(test_parse_display_packet_softmuted_tracks_aux0_bit_0);
     RUN_TEST(test_parse_display_packet_softmuted_independent_of_led_mute);
+    RUN_TEST(test_display_metadata_tracks_transport_and_version_qualified_bits);
     RUN_TEST(test_parse_display_packet_suppresses_bands_when_system_status_clear);
     RUN_TEST(test_parse_display_packet_rejects_short_payload);
     RUN_TEST(test_parse_display_packet_min_payload_clears_system_status_when_aux0_zero);

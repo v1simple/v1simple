@@ -186,6 +186,7 @@ void admitPhoneCommands(V1BLEClient& client) {
     client.connected_.store(true, std::memory_order_release);
     client.sessionGeneration_.store(1, std::memory_order_release);
     client.sessionPublicationGate_.open(1);
+    client.onV1DisplayFlowControl(false);
 }
 
 void openPhoneCommandSession(V1BLEClient& client, NimBLEClient& link) {
@@ -196,6 +197,7 @@ void openPhoneCommandSession(V1BLEClient& client, NimBLEClient& link) {
     client.activeConnectionHandle_.store(link.getConnHandle(), std::memory_order_release);
     client.bleState_ = BLEState::CONNECTED;
     client.proxyClientConnected_.store(true, std::memory_order_release);
+    client.onV1DisplayFlowControl(false);
 }
 
 void closePhoneCommandSession(V1BLEClient& client, NimBLEClient& link) {

@@ -211,6 +211,12 @@ class V1BLEClient {
     // Send command with detailed result for retry logic
     SendResult sendCommandWithResult(const uint8_t* data, size_t length);
 
+    // Canonical InfDisplayData owns the ESP time-slice permission. Valentine
+    // requires every V1-bound writer to pause while this bit is asserted.
+    void onV1DisplayFlowControl(bool timeSliceHoldoff) {
+        v1TimeSliceHoldoff_.store(timeSliceHoldoff, std::memory_order_release);
+    }
+
     // Request V1 to start sending alert data
     bool requestAlertData();
     bool needsAlertDataStartRecovery() const {
@@ -415,6 +421,16 @@ class V1BLEClient {
     bool isBootReady() const { return bootReadyFlag_; }
 
   private:
+    bool isV1WriteHeldOff(const uint8_t* data, size_t length) const {
+        if (!data || length < 2) {
+            return false;
+        }
+        // ESP destination DAh is Valentine One. Time-slice holdoff does not
+        // suppress traffic addressed to the V1connection itself.
+        constexpr uint8_t kV1DeviceId = 0x0A;
+        const bool v1Bound = (data[1] & 0x0F) == kV1DeviceId;
+        return v1Bound && v1TimeSliceHoldoff_.load(std::memory_order_acquire);
+    }
     // Nested callback classes - defined before member declarations that use them
     class ClientCallbacks : public NimBLEClientCallbacks {
       public:
@@ -535,6 +551,9 @@ class V1BLEClient {
     SessionBoundaryCallback sessionClosedCallback_;
     ConnectionCallback connectStableCallback_;
     std::atomic<bool> connected_{false}; // Standalone connection flag; use atomic load/store for all direct accesses
+    // Start fail-closed, matching Valentine's library: no V1-bound traffic is
+    // emitted until a canonical display packet grants a time slice.
+    std::atomic<bool> v1TimeSliceHoldoff_{true};
     std::atomic<bool> shouldConnect_{false};             // Atomic for thread safety (set from BLE callbacks)
     std::atomic<bool> pendingConnectStateUpdate_{false}; // Deferred update from BLE callbacks
     std::atomic<uint32_t> pendingConnectStateGeneration_{0};

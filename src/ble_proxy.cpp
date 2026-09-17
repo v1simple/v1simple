@@ -840,7 +840,9 @@ int V1BLEClient::processPhoneCommandQueue() {
 
         if (charUUID == V1_SHORT_UUID_COMMAND_LONG && pCommandCharLongSnapshot) {
             // Long characteristic write - same transient failure semantics as sendCommand
-            if (pCommandCharLongSnapshot->writeValue(pktCopy.data, pktCopy.length, false)) {
+            if (isV1WriteHeldOff(pktCopy.data, pktCopy.length)) {
+                result = SendResult::NOT_YET;
+            } else if (pCommandCharLongSnapshot->writeValue(pktCopy.data, pktCopy.length, false)) {
                 result = SendResult::SENT;
             } else {
                 result = SendResult::NOT_YET; // Transient - retry
@@ -859,7 +861,9 @@ int V1BLEClient::processPhoneCommandQueue() {
         }
 
         if (charUUID == V1_SHORT_UUID_COMMAND_LONG && pCommandCharLongSnapshot) {
-            if (pCommandCharLongSnapshot->writeValue(pktCopy.data, pktCopy.length, false)) {
+            if (isV1WriteHeldOff(pktCopy.data, pktCopy.length)) {
+                result = SendResult::NOT_YET;
+            } else if (pCommandCharLongSnapshot->writeValue(pktCopy.data, pktCopy.length, false)) {
                 result = SendResult::SENT;
             } else {
                 result = SendResult::NOT_YET; // Transient - retry

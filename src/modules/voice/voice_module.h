@@ -84,6 +84,7 @@ struct VoiceAction {
     // Source protocol values used to commit dedup/cooldown state only after
     // the playback boundary accepts this exact action.
     Band sourceBand = BAND_NONE;
+    bool sourcePhoto = false;
     Direction sourceDirection = DIR_NONE;
     uint8_t sourceAlertCount = 0;
 
@@ -124,8 +125,10 @@ class VoiceModule {
     // Get signal bars for alert based on direction
     static uint8_t getAlertBars(const AlertData& alert);
 
-    // Create unique alert ID from band and frequency
-    static uint32_t makeAlertId(Band band, uint16_t freq);
+    // Create a presentation identity. Photo remains physical K band, but its
+    // spoken label is distinct so a recognized K-to-Photo transition can be
+    // announced once after the normal voice cooldown.
+    static uint32_t makeAlertId(Band band, uint16_t freq, bool isPhoto = false);
 
     // Check if band is enabled for secondary alert announcements
     static bool isBandEnabledForSecondary(Band band, const V1Settings& settings);
@@ -178,8 +181,8 @@ class VoiceModule {
     AlertHistory* getOrCreateAlertHistory(uint32_t alertId, unsigned long now);
 
     // Announced alert tracking helpers
-    bool isAlertAnnounced(Band band, uint16_t freq);
-    void markAlertAnnounced(Band band, uint16_t freq);
+    bool isAlertAnnounced(Band band, uint16_t freq, bool isPhoto = false);
+    void markAlertAnnounced(Band band, uint16_t freq, bool isPhoto = false);
     void clearAnnouncedAlerts();
 
     // Direction change throttling
@@ -208,6 +211,7 @@ class VoiceModule {
     static constexpr unsigned long BOGEY_COUNT_COOLDOWN_MS = 500;
     static constexpr unsigned long STABLE_COUNT_MS = 1500;
     Band lastVoiceAlertBand_ = BAND_NONE;
+    bool lastVoiceAlertWasPhoto_ = false;
     Direction lastVoiceAlertDirection_ = DIR_NONE;
     uint16_t lastVoiceAlertFrequency_ = 0xFFFF;
     uint8_t lastVoiceAlertBogeyCount_ = 0;
@@ -220,11 +224,12 @@ class VoiceModule {
     unsigned long lastCountStableSinceMs_ = 0;
     bool countStableTracked_ = false;
 
-    bool hasAlertChanged(Band band, uint16_t freq) const;
+    bool hasAlertChanged(Band band, uint16_t freq, bool isPhoto) const;
     bool hasDirectionChanged(Direction dir) const;
     bool hasCooldownPassed(unsigned long now) const;
     bool hasBogeyCountCooldownPassed(unsigned long now) const;
-    void updateLastAnnounced(Band band, Direction dir, uint16_t freq, uint8_t bogeyCount, unsigned long now);
+    void updateLastAnnounced(Band band, bool isPhoto, Direction dir, uint16_t freq, uint8_t bogeyCount,
+                             unsigned long now);
     void updateLastAnnouncedDirection(Direction dir, uint8_t bogeyCount);
     void updateLastAnnouncedTime(unsigned long now);
     void resetLastAnnounced();

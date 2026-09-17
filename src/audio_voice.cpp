@@ -265,7 +265,7 @@ int getGHz(AlertBand band, uint16_t freqMHz) {
     case AlertBand::X:
         return 10; // X band is 10.x GHz
     default:
-        return 0; // Laser has no frequency
+        return 0; // Laser and semantic Photo announcements have no spoken frequency
     }
 }
 
@@ -281,6 +281,8 @@ static const char* getBandClipFile(AlertBand band) {
         return "band_x.mul";
     case AlertBand::KU:
         return "band_ku.mul";
+    case AlertBand::PHOTO:
+        return "band_photo.mul";
     }
     return nullptr;
 }
@@ -348,6 +350,8 @@ void play_test_voice() {
 //   BAND_ONLY: "Ka"
 //   FREQ_ONLY: "34 7 49"
 //   BAND_FREQ: "Ka 34 7 49"
+// Photo is semantic rather than a physical band selection: every enabled mode
+// says "Photo" and intentionally omits the underlying 24 GHz frequency.
 // direction appended if includeDirection is true
 // bogeyCount appended if > 1: "2 bogeys", "3 bogeys", etc.
 static AudioPlaybackResult play_frequency_voice_impl(AlertBand band, uint16_t freqMHz, AlertDirection direction,
@@ -389,12 +393,12 @@ static AudioPlaybackResult play_frequency_voice_impl(AlertBand band, uint16_t fr
     params.numClips = 0;
 
     // 1. Band clip (if mode includes band)
-    if (mode == VOICE_MODE_BAND_ONLY || mode == VOICE_MODE_BAND_FREQ) {
+    if (band == AlertBand::PHOTO || mode == VOICE_MODE_BAND_ONLY || mode == VOICE_MODE_BAND_FREQ) {
         appendAudioClip(params, getBandClipFile(band));
     }
 
     // 2-4. Frequency clips (if mode includes frequency)
-    if (mode == VOICE_MODE_FREQ_ONLY || mode == VOICE_MODE_BAND_FREQ) {
+    if (band != AlertBand::PHOTO && (mode == VOICE_MODE_FREQ_ONLY || mode == VOICE_MODE_BAND_FREQ)) {
         // GHz token reuses two-digit number clips (e.g., "thirty four")
         int ghz = getGHz(band, freqMHz);
         if (ghz > 0) {
@@ -607,16 +611,19 @@ static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t 
     // 1. Band clip
     appendAudioClip(params, getBandClipFile(band));
 
-    // 2-4. Frequency clips (GHz token reuses two-digit number clips)
-    int ghz = getGHz(band, freqMHz);
-    if (ghz > 0) {
-        snprintf(params.filePaths[params.numClips++], 48, "%s/tens_%02d.mul", AUDIO_PATH, ghz);
+    // 2-4. Frequency clips (GHz token reuses two-digit number clips). Photo
+    // keeps the K-band frequency internally but does not speak it.
+    if (band != AlertBand::PHOTO) {
+        int ghz = getGHz(band, freqMHz);
+        if (ghz > 0) {
+            snprintf(params.filePaths[params.numClips++], 48, "%s/tens_%02d.mul", AUDIO_PATH, ghz);
+        }
+        int mhz = freqMHz % 1000;
+        int hundredsDigit = mhz / 100;
+        snprintf(params.filePaths[params.numClips++], 48, "%s/digit_%d.mul", AUDIO_PATH, hundredsDigit);
+        int lastTwo = mhz % 100;
+        snprintf(params.filePaths[params.numClips++], 48, "%s/tens_%02d.mul", AUDIO_PATH, lastTwo);
     }
-    int mhz = freqMHz % 1000;
-    int hundredsDigit = mhz / 100;
-    snprintf(params.filePaths[params.numClips++], 48, "%s/digit_%d.mul", AUDIO_PATH, hundredsDigit);
-    int lastTwo = mhz % 100;
-    snprintf(params.filePaths[params.numClips++], 48, "%s/tens_%02d.mul", AUDIO_PATH, lastTwo);
 
     // 5. Direction clip
     const char* dirFile = nullptr;

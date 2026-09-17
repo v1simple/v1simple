@@ -138,9 +138,47 @@ void test_ku_escalation_preserves_frequency_and_breakdown() {
                  "bogeys.mul", "digit_1.mul", "dir_ahead.mul", "digit_1.mul", "dir_behind.mul"});
 }
 
+void test_photo_priority_says_photo_and_direction_without_frequency() {
+    VoiceModule voice;
+    voice.begin(&settings, nullptr);
+    AlertData alert = AlertData::create(BAND_K, DIR_FRONT, 4, 0, 24125);
+    alert.photoType = 1;
+    VoiceContext context;
+    context.priority = &alert;
+    context.alerts = &alert;
+    context.alertCount = 1;
+    context.mainVolume = 5;
+    context.now = mockMillis;
+
+    const VoiceAction action = voice.prepareAction(context);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(VoiceAction::Type::ANNOUNCE_PRIORITY), static_cast<int>(action.type));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(AlertBand::PHOTO), static_cast<int>(action.band));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(AudioPlaybackResult::Accepted),
+                         static_cast<int>(try_play_frequency_voice(action.band, action.freq, action.dir,
+                                                                   VOICE_MODE_BAND_FREQ, true, 1)));
+    expectClips({"band_photo.mul", "dir_ahead.mul"});
+}
+
+void test_photo_frequency_only_still_says_photo_without_frequency_tokens() {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(AudioPlaybackResult::Accepted),
+                         static_cast<int>(try_play_frequency_voice(AlertBand::PHOTO, 24125,
+                                                                   AlertDirection::BEHIND, VOICE_MODE_FREQ_ONLY,
+                                                                   true, 2)));
+    expectClips({"band_photo.mul", "dir_behind.mul", "digit_2.mul", "bogeys.mul"});
+}
+
+void test_photo_escalation_omits_frequency_and_keeps_breakdown() {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(AudioPlaybackResult::Accepted),
+                         static_cast<int>(try_play_threat_escalation(AlertBand::PHOTO, 24125,
+                                                                     AlertDirection::SIDE, 2, 1, 1, 0)));
+    expectClips({"band_photo.mul", "dir_side.mul", "digit_2.mul", "bogeys.mul", "digit_1.mul",
+                 "dir_ahead.mul", "digit_1.mul", "dir_behind.mul"});
+}
+
 void test_existing_band_frequency_mappings_are_unchanged() {
     TEST_ASSERT_EQUAL_INT(10, getGHz(AlertBand::X, 10525));
     TEST_ASSERT_EQUAL_INT(24, getGHz(AlertBand::K, 24150));
+    TEST_ASSERT_EQUAL_INT(0, getGHz(AlertBand::PHOTO, 24125));
     TEST_ASSERT_EQUAL_INT(33, getGHz(AlertBand::KA, 33800));
     TEST_ASSERT_EQUAL_INT(34, getGHz(AlertBand::KA, 34700));
     TEST_ASSERT_EQUAL_INT(35, getGHz(AlertBand::KA, 35500));
@@ -164,6 +202,9 @@ int main() {
     RUN_TEST(test_ku_band_only_uses_named_clip);
     RUN_TEST(test_simple_ku_alert_uses_band_and_direction);
     RUN_TEST(test_ku_escalation_preserves_frequency_and_breakdown);
+    RUN_TEST(test_photo_priority_says_photo_and_direction_without_frequency);
+    RUN_TEST(test_photo_frequency_only_still_says_photo_without_frequency_tokens);
+    RUN_TEST(test_photo_escalation_omits_frequency_and_keeps_breakdown);
     RUN_TEST(test_existing_band_frequency_mappings_are_unchanged);
     const int result = UNITY_END();
     std::filesystem::remove_all(audioRoot);

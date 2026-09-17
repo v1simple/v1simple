@@ -4,6 +4,7 @@
     "band_ka.mul",
     "band_ku.mul",
     "band_laser.mul",
+    "band_photo.mul",
     "band_x.mul",
     "bogeys.mul",
     "dir_ahead.mul",

@@ -116,7 +116,8 @@ FrameV1Alerts buildFrameV1Alerts(const RenderFrame& frame) {
 
 bool pendingVoiceActionStillCurrent(const VoiceAction& action, const FrameV1Alerts& alerts) {
     const auto matches = [&](const AlertData& alert) {
-        return alert.photoType == 0 && alert.band == action.sourceBand &&
+        const bool isPhoto = alert.band == BAND_K && alert.photoType != 0;
+        return isPhoto == action.sourcePhoto && alert.band == action.sourceBand &&
                static_cast<uint16_t>(alert.frequency) == action.freq && alert.direction == action.sourceDirection;
     };
 

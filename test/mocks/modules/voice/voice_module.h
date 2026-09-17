@@ -34,6 +34,7 @@ struct VoiceAction {
     uint8_t behindCount = 0;
     uint8_t sideCount = 0;
     Band sourceBand = BAND_NONE;
+    bool sourcePhoto = false;
     Direction sourceDirection = DIR_NONE;
     uint8_t sourceAlertCount = 0;
 

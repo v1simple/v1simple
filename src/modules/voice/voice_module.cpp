@@ -31,8 +31,8 @@ uint8_t VoiceModule::getAlertBars(const AlertData& a) {
     return (a.frontStrength > a.rearStrength) ? a.frontStrength : a.rearStrength;
 }
 
-uint32_t VoiceModule::makeAlertId(Band band, uint16_t freq) {
-    return ((uint32_t)band << 16) | freq;
+uint32_t VoiceModule::makeAlertId(Band band, uint16_t freq, bool isPhoto) {
+    return (static_cast<uint32_t>(isPhoto) << 24) | (static_cast<uint32_t>(band) << 16) | freq;
 }
 
 bool VoiceModule::isBandEnabledForSecondary(Band band, const V1Settings& settings) {
@@ -66,7 +66,15 @@ AlertDirection VoiceModule::toAudioDirection(Direction dir) {
 // Local Helpers
 // ============================================================================
 
-static AlertBand toAudioBand(Band band) {
+static bool isPhotoPresentation(const AlertData& alert) {
+    return alert.band == BAND_K && alert.photoType != 0;
+}
+
+static AlertBand toAudioBand(const AlertData& alert) {
+    if (isPhotoPresentation(alert))
+        return AlertBand::PHOTO;
+
+    const Band band = alert.band;
     switch (band) {
     case BAND_LASER:
         return AlertBand::LASER;
@@ -124,11 +132,6 @@ bool VoiceModule::canAnnounceContext(const VoiceContext& ctx) const {
     if (!ctx.priority || ctx.priority->band == BAND_NONE)
         return false;
 
-    // V1 represents photo radar as K band plus photoType. Suppress voice rather
-    // than announcing it as an ordinary K-band alert.
-    if (ctx.priority->photoType != 0)
-        return false;
-
     return true;
 }
 
@@ -142,9 +145,10 @@ VoiceAction VoiceModule::prepareAction(const VoiceContext& ctx) {
 
     const AlertData& priority = *ctx.priority;
     uint16_t currentFreq = (uint16_t)priority.frequency;
+    const bool priorityIsPhoto = isPhotoPresentation(priority);
 
     // Query current state
-    bool alertChanged = hasAlertChanged(priority.band, currentFreq);
+    bool alertChanged = hasAlertChanged(priority.band, currentFreq, priorityIsPhoto);
     bool directionChanged = hasDirectionChanged(priority.direction);
     bool directionKnown = (priority.direction != DIR_NONE);
     bool cooldownPassed = hasCooldownPassed(ctx.now);
@@ -163,7 +167,7 @@ VoiceAction VoiceModule::prepareAction(const VoiceContext& ctx) {
     bool countStable = (ctx.now - lastCountStableSinceMs_) >= STABLE_COUNT_MS;
 
     // Track priority stability for secondary alerts
-    uint32_t currentAlertId = makeAlertId(priority.band, currentFreq);
+    uint32_t currentAlertId = makeAlertId(priority.band, currentFreq, priorityIsPhoto);
     updatePriorityStability(currentAlertId, ctx.now);
 
     // Convert direction for audio
@@ -175,11 +179,12 @@ VoiceAction VoiceModule::prepareAction(const VoiceContext& ctx) {
             return action;
 
         action.type = VoiceAction::Type::ANNOUNCE_PRIORITY;
-        action.band = toAudioBand(priority.band);
+        action.band = toAudioBand(priority);
         action.freq = currentFreq;
         action.dir = audioDir;
         action.bogeyCount = s.announceBogeyCount ? (uint8_t)ctx.alertCount : 1;
         action.sourceBand = priority.band;
+        action.sourcePhoto = priorityIsPhoto;
         action.sourceDirection = priority.direction;
         action.sourceAlertCount = static_cast<uint8_t>(ctx.alertCount);
 
@@ -204,6 +209,7 @@ VoiceAction VoiceModule::prepareAction(const VoiceContext& ctx) {
         // the count; voice is just the directional cue.
         action.bogeyCount = 0;
         action.sourceBand = priority.band;
+        action.sourcePhoto = priorityIsPhoto;
         action.sourceDirection = priority.direction;
         action.sourceAlertCount = static_cast<uint8_t>(ctx.alertCount);
 
@@ -222,17 +228,15 @@ VoiceAction VoiceModule::prepareAction(const VoiceContext& ctx) {
             const AlertData& alert = ctx.alerts[i];
             if (!alert.isValid || alert.band == BAND_NONE)
                 continue;
-            if (alert.photoType != 0)
-                continue;
-
             uint16_t alertFreq = (uint16_t)alert.frequency;
+            const bool alertIsPhoto = isPhotoPresentation(alert);
 
             // Skip priority alert
-            if (alert.band == priority.band && alertFreq == currentFreq)
+            if (alert.band == priority.band && alertFreq == currentFreq && alertIsPhoto == priorityIsPhoto)
                 continue;
 
             // Skip if already announced
-            if (isAlertAnnounced(alert.band, alertFreq))
+            if (isAlertAnnounced(alert.band, alertFreq, alertIsPhoto))
                 continue;
 
             // Check band filter
@@ -243,11 +247,12 @@ VoiceAction VoiceModule::prepareAction(const VoiceContext& ctx) {
                 continue;
 
             action.type = VoiceAction::Type::ANNOUNCE_SECONDARY;
-            action.band = toAudioBand(alert.band);
+            action.band = toAudioBand(alert);
             action.freq = alertFreq;
             action.dir = toAudioDirection(alert.direction);
             action.bogeyCount = 1;
             action.sourceBand = alert.band;
+            action.sourcePhoto = alertIsPhoto;
             action.sourceDirection = alert.direction;
             action.sourceAlertCount = static_cast<uint8_t>(ctx.alertCount);
 
@@ -283,13 +288,12 @@ VoiceAction VoiceModule::prepareAction(const VoiceContext& ctx) {
                     continue;
 
                 uint16_t alertFreq = (uint16_t)alert.frequency;
+                const bool alertIsPhoto = isPhotoPresentation(alert);
 
                 // Skip priority alert
-                if (alert.band == priority.band && alertFreq == currentFreq)
+                if (alert.band == priority.band && alertFreq == currentFreq && alertIsPhoto == priorityIsPhoto)
                     continue;
                 if (ctx.isSoftMuted)
-                    continue;
-                if (alert.photoType != 0)
                     continue;
                 if (!isBandEnabledForSecondary(alert.band, s))
                     continue;
@@ -316,7 +320,7 @@ VoiceAction VoiceModule::prepareAction(const VoiceContext& ctx) {
                     uint8_t total = aheadCount + behindCount + sideCount;
 
                     action.type = VoiceAction::Type::ANNOUNCE_ESCALATION;
-                    action.band = toAudioBand(alert.band);
+                    action.band = toAudioBand(alert);
                     action.freq = alertFreq;
                     action.dir = toAudioDirection(alert.direction);
                     action.bogeyCount = total;
@@ -324,6 +328,7 @@ VoiceAction VoiceModule::prepareAction(const VoiceContext& ctx) {
                     action.behindCount = behindCount;
                     action.sideCount = sideCount;
                     action.sourceBand = alert.band;
+                    action.sourcePhoto = alertIsPhoto;
                     action.sourceDirection = alert.direction;
                     action.sourceAlertCount = static_cast<uint8_t>(ctx.alertCount);
 
@@ -340,10 +345,10 @@ void VoiceModule::commitAction(const VoiceAction& action, const unsigned long ac
     switch (action.type) {
     case VoiceAction::Type::ANNOUNCE_PRIORITY:
         resetDirectionThrottle(acceptedAtMs);
-        updateLastAnnounced(action.sourceBand, action.sourceDirection, action.freq, action.sourceAlertCount,
-                            acceptedAtMs);
+        updateLastAnnounced(action.sourceBand, action.sourcePhoto, action.sourceDirection, action.freq,
+                            action.sourceAlertCount, acceptedAtMs);
         markPriorityAnnounced(acceptedAtMs);
-        markAlertAnnounced(action.sourceBand, action.freq);
+        markAlertAnnounced(action.sourceBand, action.freq, action.sourcePhoto);
         break;
     case VoiceAction::Type::ANNOUNCE_DIRECTION:
         recordDirectionChange(acceptedAtMs);
@@ -352,7 +357,7 @@ void VoiceModule::commitAction(const VoiceAction& action, const unsigned long ac
         markPriorityAnnounced(acceptedAtMs);
         break;
     case VoiceAction::Type::ANNOUNCE_SECONDARY:
-        markAlertAnnounced(action.sourceBand, action.freq);
+        markAlertAnnounced(action.sourceBand, action.freq, action.sourcePhoto);
         updateLastAnnouncedTime(acceptedAtMs);
         break;
     case VoiceAction::Type::ANNOUNCE_ESCALATION:
@@ -379,8 +384,8 @@ void VoiceModule::clearAllState() {
 // Announced Alert Tracking
 // ============================================================================
 
-bool VoiceModule::isAlertAnnounced(Band band, uint16_t freq) {
-    uint32_t id = makeAlertId(band, freq);
+bool VoiceModule::isAlertAnnounced(Band band, uint16_t freq, bool isPhoto) {
+    uint32_t id = makeAlertId(band, freq, isPhoto);
     for (int i = 0; i < announcedAlertCount_; i++) {
         if (announcedAlertIds_[i] == id)
             return true;
@@ -388,9 +393,9 @@ bool VoiceModule::isAlertAnnounced(Band band, uint16_t freq) {
     return false;
 }
 
-void VoiceModule::markAlertAnnounced(Band band, uint16_t freq) {
-    uint32_t id = makeAlertId(band, freq);
-    if (isAlertAnnounced(band, freq)) {
+void VoiceModule::markAlertAnnounced(Band band, uint16_t freq, bool isPhoto) {
+    uint32_t id = makeAlertId(band, freq, isPhoto);
+    if (isAlertAnnounced(band, freq, isPhoto)) {
         return;
     }
 
@@ -588,8 +593,9 @@ bool VoiceModule::canAnnounceSecondary(unsigned long now) const {
 // Last Announced Tracking
 // ============================================================================
 
-bool VoiceModule::hasAlertChanged(Band band, uint16_t freq) const {
-    return (band != lastVoiceAlertBand_) || (freq != lastVoiceAlertFrequency_);
+bool VoiceModule::hasAlertChanged(Band band, uint16_t freq, bool isPhoto) const {
+    return (band != lastVoiceAlertBand_) || (freq != lastVoiceAlertFrequency_) ||
+           (isPhoto != lastVoiceAlertWasPhoto_);
 }
 
 bool VoiceModule::hasDirectionChanged(Direction dir) const {
@@ -610,8 +616,10 @@ bool VoiceModule::hasBogeyCountCooldownPassed(unsigned long now) const {
     return (now - lastVoiceAlertTime_ >= BOGEY_COUNT_COOLDOWN_MS);
 }
 
-void VoiceModule::updateLastAnnounced(Band band, Direction dir, uint16_t freq, uint8_t bogeyCount, unsigned long now) {
+void VoiceModule::updateLastAnnounced(Band band, bool isPhoto, Direction dir, uint16_t freq, uint8_t bogeyCount,
+                                      unsigned long now) {
     lastVoiceAlertBand_ = band;
+    lastVoiceAlertWasPhoto_ = isPhoto;
     lastVoiceAlertDirection_ = dir;
     lastVoiceAlertFrequency_ = freq;
     lastVoiceAlertBogeyCount_ = bogeyCount;
@@ -631,6 +639,7 @@ void VoiceModule::updateLastAnnouncedTime(unsigned long now) {
 
 void VoiceModule::resetLastAnnounced() {
     lastVoiceAlertBand_ = BAND_NONE;
+    lastVoiceAlertWasPhoto_ = false;
     lastVoiceAlertDirection_ = DIR_NONE;
     lastVoiceAlertFrequency_ = 0xFFFF;
     lastVoiceAlertBogeyCount_ = 0;

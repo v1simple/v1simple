@@ -5,7 +5,9 @@
 #include "settings.h" // For VoiceAlertMode enum
 
 // Band types for voice alerts
-enum class AlertBand : uint8_t { LASER = 0, KA = 1, K = 2, X = 3, KU = 4 };
+// Audio presentation labels. PHOTO remains a physical K-band alert in the
+// protocol model; this value only selects the spoken label.
+enum class AlertBand : uint8_t { LASER = 0, KA = 1, K = 2, X = 3, KU = 4, PHOTO = 5 };
 
 // Direction types for voice alerts
 enum class AlertDirection : uint8_t { AHEAD = 0, BEHIND = 1, SIDE = 2 };

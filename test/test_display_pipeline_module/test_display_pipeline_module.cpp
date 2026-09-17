@@ -25,6 +25,7 @@ static AudioPlaybackResult g_voicePlaybackResult = AudioPlaybackResult::Accepted
 static int g_voicePlaybackAttempts = 0;
 static int g_escalationPlaybackAttempts = 0;
 static uint16_t g_lastVoiceFrequency = 0;
+static AlertBand g_lastVoiceBand = AlertBand::KA;
 
 AlertPersistenceModule::AlertPersistenceModule() = default;
 
@@ -99,8 +100,10 @@ void play_frequency_voice(AlertBand,
                           uint8_t) {}
 void play_direction_only(AlertDirection, uint8_t) {}
 void play_threat_escalation(AlertBand, uint16_t, AlertDirection, uint8_t, uint8_t, uint8_t, uint8_t) {}
-AudioPlaybackResult try_play_frequency_voice(AlertBand, uint16_t freq, AlertDirection, VoiceAlertMode, bool, uint8_t) {
+AudioPlaybackResult try_play_frequency_voice(AlertBand band, uint16_t freq, AlertDirection, VoiceAlertMode, bool,
+                                             uint8_t) {
     ++g_voicePlaybackAttempts;
+    g_lastVoiceBand = band;
     g_lastVoiceFrequency = freq;
     return g_voicePlaybackResult;
 }
@@ -108,10 +111,11 @@ AudioPlaybackResult try_play_direction_only(AlertDirection, uint8_t) {
     ++g_voicePlaybackAttempts;
     return g_voicePlaybackResult;
 }
-AudioPlaybackResult try_play_threat_escalation(AlertBand, uint16_t freq, AlertDirection, uint8_t, uint8_t, uint8_t,
+AudioPlaybackResult try_play_threat_escalation(AlertBand band, uint16_t freq, AlertDirection, uint8_t, uint8_t, uint8_t,
                                                uint8_t) {
     ++g_voicePlaybackAttempts;
     ++g_escalationPlaybackAttempts;
+    g_lastVoiceBand = band;
     g_lastVoiceFrequency = freq;
     return g_voicePlaybackResult;
 }
@@ -192,6 +196,7 @@ void setUp() {
     g_voicePlaybackAttempts = 0;
     g_escalationPlaybackAttempts = 0;
     g_lastVoiceFrequency = 0;
+    g_lastVoiceBand = AlertBand::KA;
     quiet.begin(&ble, &parser);
     voice.begin(&settings, &ble);
     beginModule();
@@ -279,7 +284,7 @@ void test_busy_voice_drops_stale_pending_action_when_alert_changes() {
     TEST_ASSERT_EQUAL_UINT16(24250, g_lastVoiceFrequency);
 }
 
-enum class RetryGate { SoftMute, VolumeZero, SpeedMute, Proxy, Disabled, PhotoPriority };
+enum class RetryGate { SoftMute, VolumeZero, SpeedMute, Proxy, Disabled };
 
 static void setRetryGate(RetryGate gate, bool active) {
     switch (gate) {
@@ -297,12 +302,6 @@ static void setRetryGate(RetryGate gate, bool active) {
     case RetryGate::Disabled:
         settings.settings.voiceAlertMode = active ? VOICE_MODE_DISABLED : VOICE_MODE_BAND_FREQ;
         break;
-    case RetryGate::PhotoPriority: {
-        AlertData alert = makeKAlert();
-        alert.photoType = active ? 1 : 0;
-        parser.setAlerts({alert});
-        break;
-    }
     }
 }
 
@@ -343,8 +342,23 @@ void test_busy_voice_honors_new_proxy_then_recovers() {
 void test_busy_voice_honors_disabled_mode_then_recovers() {
     assertBusyRetryHonorsCurrentGate(RetryGate::Disabled);
 }
-void test_busy_voice_honors_photo_priority_then_recovers() {
-    assertBusyRetryHonorsCurrentGate(RetryGate::PhotoPriority);
+void test_busy_k_voice_is_replaced_by_current_photo_presentation() {
+    parser.setMainVolume(5);
+    AlertData alert = makeKAlert();
+    parser.setAlerts({alert});
+    g_voicePlaybackResult = AudioPlaybackResult::Busy;
+    module.handleParsed(1000);
+    TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
+    TEST_ASSERT_EQUAL(AlertBand::K, g_lastVoiceBand);
+
+    alert.photoType = 1;
+    parser.setAlerts({alert});
+    g_voicePlaybackResult = AudioPlaybackResult::Accepted;
+    module.handleParsed(1100);
+    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
+    TEST_ASSERT_EQUAL(AlertBand::PHOTO, g_lastVoiceBand);
+    module.handleParsed(1150);
+    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
 }
 
 void test_busy_voice_visible_mute_and_optional_volume_zero_remain_allowed() {
@@ -434,24 +448,21 @@ static void prepareBusySecondary(AlertData& priority, AlertData& secondary) {
     TEST_ASSERT_EQUAL_UINT16(24125, g_lastVoiceFrequency);
 }
 
-void test_busy_secondary_reclassified_as_photo_is_unheard_until_ordinary_again() {
+void test_busy_secondary_reclassified_as_photo_replaces_stale_k_action() {
     AlertData priority, secondary;
     prepareBusySecondary(priority, secondary);
     secondary.photoType = 1;
     parser.setAlerts({priority, secondary});
     g_voicePlaybackResult = AudioPlaybackResult::Accepted;
     module.handleParsed(3100);
-    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
-    secondary.photoType = 0;
-    parser.setAlerts({priority, secondary});
-    module.handleParsed(3101);
     TEST_ASSERT_EQUAL_INT(3, g_voicePlaybackAttempts);
+    TEST_ASSERT_EQUAL(AlertBand::PHOTO, g_lastVoiceBand);
     TEST_ASSERT_EQUAL_UINT16(24125, g_lastVoiceFrequency);
     module.handleParsed(3150);
     TEST_ASSERT_EQUAL_INT(3, g_voicePlaybackAttempts);
 }
 
-void test_busy_secondary_reclassified_as_photo_does_not_block_later_ordinary_k() {
+void test_reclassified_photo_secondary_does_not_block_later_ordinary_k() {
     AlertData priority, secondary;
     prepareBusySecondary(priority, secondary);
     secondary.photoType = 1;
@@ -461,9 +472,12 @@ void test_busy_secondary_reclassified_as_photo_does_not_block_later_ordinary_k()
     g_voicePlaybackResult = AudioPlaybackResult::Accepted;
     module.handleParsed(3100);
     TEST_ASSERT_EQUAL_INT(3, g_voicePlaybackAttempts);
-    TEST_ASSERT_EQUAL_UINT16(24200, g_lastVoiceFrequency);
+    TEST_ASSERT_EQUAL(AlertBand::PHOTO, g_lastVoiceBand);
+    TEST_ASSERT_EQUAL_UINT16(24125, g_lastVoiceFrequency);
     module.handleParsed(3150);
-    TEST_ASSERT_EQUAL_INT(3, g_voicePlaybackAttempts);
+    TEST_ASSERT_EQUAL_INT(4, g_voicePlaybackAttempts);
+    TEST_ASSERT_EQUAL(AlertBand::K, g_lastVoiceBand);
+    TEST_ASSERT_EQUAL_UINT16(24200, g_lastVoiceFrequency);
 }
 
 void test_ordinary_busy_secondary_retains_its_retry_timing_and_frequency() {
@@ -503,23 +517,28 @@ static void prepareBusyEscalation(AlertData& priority, AlertData& secondary) {
     TEST_ASSERT_EQUAL_UINT16(24125, g_lastVoiceFrequency);
 }
 
-void test_busy_escalation_reclassified_as_photo_does_not_commit_unheard_escalation() {
+void test_busy_escalation_reclassified_as_photo_replaces_stale_action() {
     AlertData priority, secondary;
     prepareBusyEscalation(priority, secondary);
     secondary.photoType = 1;
     parser.setAlerts({priority, secondary});
     g_voicePlaybackResult = AudioPlaybackResult::Accepted;
     module.handleParsed(4900);
-    TEST_ASSERT_EQUAL_INT(3, g_voicePlaybackAttempts);
+    TEST_ASSERT_EQUAL_INT(4, g_voicePlaybackAttempts);
     TEST_ASSERT_EQUAL_INT(1, g_escalationPlaybackAttempts);
+    TEST_ASSERT_EQUAL(AlertBand::PHOTO, g_lastVoiceBand);
     secondary.photoType = 0;
     parser.setAlerts({priority, secondary});
     module.handleParsed(4901);
     TEST_ASSERT_EQUAL_INT(4, g_voicePlaybackAttempts);
+    TEST_ASSERT_EQUAL_INT(1, g_escalationPlaybackAttempts);
+    module.handleParsed(5400); // The replacement announcement owns the normal 500 ms escalation cooldown.
+    TEST_ASSERT_EQUAL_INT(5, g_voicePlaybackAttempts);
     TEST_ASSERT_EQUAL_INT(2, g_escalationPlaybackAttempts);
+    TEST_ASSERT_EQUAL(AlertBand::K, g_lastVoiceBand);
     TEST_ASSERT_EQUAL_UINT16(24125, g_lastVoiceFrequency);
-    module.handleParsed(5000);
-    TEST_ASSERT_EQUAL_INT(4, g_voicePlaybackAttempts);
+    module.handleParsed(5450);
+    TEST_ASSERT_EQUAL_INT(5, g_voicePlaybackAttempts);
 }
 
 void test_ordinary_busy_escalation_remains_retryable_until_accepted_once() {
@@ -1488,14 +1507,14 @@ int main() {
     RUN_TEST(test_busy_voice_honors_new_speed_suppression_then_recovers);
     RUN_TEST(test_busy_voice_honors_new_proxy_then_recovers);
     RUN_TEST(test_busy_voice_honors_disabled_mode_then_recovers);
-    RUN_TEST(test_busy_voice_honors_photo_priority_then_recovers);
+    RUN_TEST(test_busy_k_voice_is_replaced_by_current_photo_presentation);
     RUN_TEST(test_busy_voice_visible_mute_and_optional_volume_zero_remain_allowed);
     RUN_TEST(test_busy_secondary_survives_mute_without_consuming_unheard_dedup);
     RUN_TEST(test_blocked_pending_voice_does_not_survive_source_replacement_or_clear);
-    RUN_TEST(test_busy_secondary_reclassified_as_photo_is_unheard_until_ordinary_again);
-    RUN_TEST(test_busy_secondary_reclassified_as_photo_does_not_block_later_ordinary_k);
+    RUN_TEST(test_busy_secondary_reclassified_as_photo_replaces_stale_k_action);
+    RUN_TEST(test_reclassified_photo_secondary_does_not_block_later_ordinary_k);
     RUN_TEST(test_ordinary_busy_secondary_retains_its_retry_timing_and_frequency);
-    RUN_TEST(test_busy_escalation_reclassified_as_photo_does_not_commit_unheard_escalation);
+    RUN_TEST(test_busy_escalation_reclassified_as_photo_replaces_stale_action);
     RUN_TEST(test_ordinary_busy_escalation_remains_retryable_until_accepted_once);
     RUN_TEST(test_unavailable_voice_is_not_retried_every_frame_or_committed);
     RUN_TEST(test_handle_parsed_updates_resting_display_when_idle);

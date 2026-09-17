@@ -59,6 +59,12 @@ void test_make_alert_id_different_freqs_differ() {
     TEST_ASSERT_NOT_EQUAL(a, b);
 }
 
+void test_make_alert_id_distinguishes_photo_presentation() {
+    uint32_t k = VoiceModule::makeAlertId(BAND_K, 24125, false);
+    uint32_t photo = VoiceModule::makeAlertId(BAND_K, 24125, true);
+    TEST_ASSERT_NOT_EQUAL(k, photo);
+}
+
 // ---------------------------------------------------------------------------
 // Static utility: toAudioDirection
 // ---------------------------------------------------------------------------
@@ -438,12 +444,10 @@ void test_process_does_not_announce_direction_when_dir_disabled() {
     settings.settings.voiceDirectionEnabled = true;  // restore
 }
 
-// Photo radar (K band with photoType != 0) does not trigger a voice
-// announcement. VR data/AlertData.java synthesizes AlertBand.Photo=0xFE
-// only when band==K and photoType!=0; we have no `band_photo.mul` audio
-// asset, and announcing it as plain "K" is misleading. The display already
-// shows 'P' on the bogey counter and a Photo card.
-void test_process_suppresses_voice_for_priority_photo_radar() {
+// VR data/AlertData.java synthesizes AlertBand.Photo=0xFE only when the raw
+// band is K and photoType is non-zero. Preserve that physical K identity but
+// select the Photo presentation for voice.
+void test_process_announces_photo_for_priority_photo_radar() {
     AlertData alert = AlertData::create(BAND_K, DIR_FRONT, 4, 0, 24125);
     alert.photoType = 1;  // VR prtMRCT — any non-zero value means photo
     VoiceContext ctx;
@@ -454,8 +458,12 @@ void test_process_suppresses_voice_for_priority_photo_radar() {
     ctx.now = mockMillis;
 
     VoiceAction action = voiceModule.process(ctx);
-    TEST_ASSERT_EQUAL_INT(static_cast<int>(VoiceAction::Type::NONE),
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(VoiceAction::Type::ANNOUNCE_PRIORITY),
                           static_cast<int>(action.type));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(AlertBand::PHOTO), static_cast<int>(action.band));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(BAND_K), static_cast<int>(action.sourceBand));
+    TEST_ASSERT_TRUE(action.sourcePhoto);
+    TEST_ASSERT_EQUAL_UINT16(24125, action.freq);
 }
 
 void test_process_announces_normal_k_when_phototype_zero() {
@@ -474,7 +482,7 @@ void test_process_announces_normal_k_when_phototype_zero() {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(AlertBand::K), static_cast<int>(action.band));
 }
 
-void test_secondary_photo_is_skipped_without_hiding_later_ordinary_k() {
+void test_secondary_photo_uses_photo_presentation_before_later_ordinary_k() {
     AlertData alerts[] = {
         AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700),
         AlertData::create(BAND_K, DIR_FRONT, 2, 0, 24125),
@@ -491,13 +499,14 @@ void test_secondary_photo_is_skipped_without_hiding_later_ordinary_k() {
     ctx.now = 3000;
     const VoiceAction action = voiceModule.prepareAction(ctx);
     TEST_ASSERT_EQUAL(VoiceAction::Type::ANNOUNCE_SECONDARY, action.type);
-    TEST_ASSERT_EQUAL_UINT16(24200, action.freq);
-    TEST_ASSERT_EQUAL(AlertBand::K, action.band);
+    TEST_ASSERT_EQUAL_UINT16(24125, action.freq);
+    TEST_ASSERT_EQUAL(AlertBand::PHOTO, action.band);
+    TEST_ASSERT_TRUE(action.sourcePhoto);
     TEST_ASSERT_EQUAL_UINT8(3, action.sourceAlertCount);
     TEST_ASSERT_EQUAL_UINT8(1, alerts[1].photoType);
 }
 
-void test_only_photo_secondary_stays_unheard_and_can_recover_as_ordinary_k() {
+void test_secondary_photo_and_same_frequency_k_have_distinct_dedup_identity() {
     AlertData alerts[] = {
         AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700),
         AlertData::create(BAND_K, DIR_FRONT, 2, 0, 24125),
@@ -511,13 +520,41 @@ void test_only_photo_secondary_stays_unheard_and_can_recover_as_ordinary_k() {
     ctx.now = 1000;
     TEST_ASSERT_EQUAL(VoiceAction::Type::ANNOUNCE_PRIORITY, voiceModule.process(ctx).type);
     ctx.now = 3000;
-    TEST_ASSERT_EQUAL(VoiceAction::Type::NONE, voiceModule.process(ctx).type);
+    const VoiceAction photo = voiceModule.process(ctx);
+    TEST_ASSERT_EQUAL(VoiceAction::Type::ANNOUNCE_SECONDARY, photo.type);
+    TEST_ASSERT_EQUAL(AlertBand::PHOTO, photo.band);
     alerts[1].photoType = 0;
-    ctx.now = 3100;
+    ctx.now = 5000;
     const VoiceAction recovered = voiceModule.process(ctx);
     TEST_ASSERT_EQUAL(VoiceAction::Type::ANNOUNCE_SECONDARY, recovered.type);
+    TEST_ASSERT_EQUAL(AlertBand::K, recovered.band);
     TEST_ASSERT_EQUAL_UINT16(24125, recovered.freq);
-    ctx.now = 3101;
+    ctx.now = 5001;
+    TEST_ASSERT_EQUAL(VoiceAction::Type::NONE, voiceModule.process(ctx).type);
+}
+
+void test_priority_k_to_photo_waits_for_cooldown_then_announces_photo_once() {
+    AlertData alert = AlertData::create(BAND_K, DIR_FRONT, 4, 0, 24125);
+    VoiceContext ctx;
+    ctx.priority = &alert;
+    ctx.alerts = &alert;
+    ctx.alertCount = 1;
+    ctx.mainVolume = 5;
+    ctx.now = 10000;
+
+    const VoiceAction k = voiceModule.process(ctx);
+    TEST_ASSERT_EQUAL(VoiceAction::Type::ANNOUNCE_PRIORITY, k.type);
+    TEST_ASSERT_EQUAL(AlertBand::K, k.band);
+
+    alert.photoType = 1;
+    ctx.now = 11999;
+    TEST_ASSERT_EQUAL(VoiceAction::Type::NONE, voiceModule.process(ctx).type);
+    ctx.now = 12000;
+    const VoiceAction photo = voiceModule.process(ctx);
+    TEST_ASSERT_EQUAL(VoiceAction::Type::ANNOUNCE_PRIORITY, photo.type);
+    TEST_ASSERT_EQUAL(AlertBand::PHOTO, photo.band);
+    TEST_ASSERT_TRUE(photo.sourcePhoto);
+    ctx.now = 14000;
     TEST_ASSERT_EQUAL(VoiceAction::Type::NONE, voiceModule.process(ctx).type);
 }
 
@@ -693,6 +730,7 @@ int main() {
     RUN_TEST(test_make_alert_id_encodes_band_and_freq);
     RUN_TEST(test_make_alert_id_different_bands_differ);
     RUN_TEST(test_make_alert_id_different_freqs_differ);
+    RUN_TEST(test_make_alert_id_distinguishes_photo_presentation);
     RUN_TEST(test_to_audio_direction_front);
     RUN_TEST(test_to_audio_direction_rear);
     RUN_TEST(test_to_audio_direction_side_is_default);
@@ -726,11 +764,12 @@ int main() {
     RUN_TEST(test_process_announces_direction_change_on_same_alert);
     RUN_TEST(test_process_does_not_announce_direction_when_dir_disabled);
 
-    // Photo-radar voice suppression
-    RUN_TEST(test_process_suppresses_voice_for_priority_photo_radar);
+    // Photo-radar voice presentation
+    RUN_TEST(test_process_announces_photo_for_priority_photo_radar);
     RUN_TEST(test_process_announces_normal_k_when_phototype_zero);
-    RUN_TEST(test_secondary_photo_is_skipped_without_hiding_later_ordinary_k);
-    RUN_TEST(test_only_photo_secondary_stays_unheard_and_can_recover_as_ordinary_k);
+    RUN_TEST(test_secondary_photo_uses_photo_presentation_before_later_ordinary_k);
+    RUN_TEST(test_secondary_photo_and_same_frequency_k_have_distinct_dedup_identity);
+    RUN_TEST(test_priority_k_to_photo_waits_for_cooldown_then_announces_photo_once);
     RUN_TEST(test_prepare_priority_does_not_commit_until_playback_accepts);
     RUN_TEST(test_prepare_direction_and_secondary_remain_retryable_until_commit);
     RUN_TEST(test_prepare_escalation_is_not_marked_announced_before_commit);

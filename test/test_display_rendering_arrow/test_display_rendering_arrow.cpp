@@ -65,8 +65,8 @@ AlertData radarAlertFromSpecFields(uint8_t directionBits) {
     // ESP Spec alert row: index/count, frequency MSB/LSB, front/rear RSSI,
     // band+direction, aux0. This represents a priority K alert at 24.150 GHz.
     std::vector<uint8_t> packet = {
-        0xAA, 0xDA, 0xE4, 0x43, 9, 0x11, 0x5E, 0x56,
-        0xA0, 0x00, static_cast<uint8_t>(kSpecBandK | directionBits), 0x80, 0x00};
+        0xAA, 0xD8, 0xEA, 0x43, 8, 0x11, 0x5E, 0x56,
+        0xA0, 0x00, static_cast<uint8_t>(kSpecBandK | directionBits), 0x80};
     uint8_t checksum = 0;
     for (uint8_t byte : packet) {
         checksum = static_cast<uint8_t>(checksum + byte);

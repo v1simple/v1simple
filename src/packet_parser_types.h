@@ -141,11 +141,9 @@ struct DisplayState {
     bool supportsVolume() const { return hasVolumeData || (hasV1Version && v1FirmwareVersion >= 41028); }
 };
 
-// Settings transactions consume only these canonical wire observations. They
-// intentionally live beside, rather than inside, DisplayState: the general
-// display parser tolerates imperfect traffic for rendering, while Apply must
-// keep each value inseparable from the canonical packet revision that proved
-// it.
+// Settings transactions consume these canonical wire observations. They live
+// beside, rather than inside, DisplayState so Apply keeps each value inseparable
+// from the canonical packet revision that proved it.
 struct V1DisplayOnObservation {
     uint32_t revision = 0;
     uint32_t sequence = 0;

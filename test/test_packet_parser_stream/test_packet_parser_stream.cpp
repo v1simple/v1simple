@@ -55,21 +55,17 @@ std::string readTextFile(const char* path) {
 
 std::vector<uint8_t> makePacket(uint8_t packetId, const std::vector<uint8_t>& payload) {
     std::vector<uint8_t> packet;
-    packet.reserve(6 + payload.size());
+    packet.reserve(7 + payload.size());
     packet.push_back(ESP_PACKET_START);
-    packet.push_back(packetId == PACKET_ID_RESP_VERSION ? 0xD6 : 0xDA);
+    packet.push_back(packetId == PACKET_ID_RESP_VERSION ? 0xD6 : 0xD8);
     packet.push_back(0xEA); // Checksum-capable V1 originator
     packet.push_back(packetId);
-    packet.push_back(static_cast<uint8_t>(payload.size())); // Length hint (not enforced)
+    packet.push_back(static_cast<uint8_t>(payload.size() + 1u));
     packet.insert(packet.end(), payload.begin(), payload.end());
+    uint8_t checksum = 0;
+    for (uint8_t value : packet) checksum = static_cast<uint8_t>(checksum + value);
+    packet.push_back(checksum);
     packet.push_back(ESP_PACKET_END);
-    if (packetId == PACKET_ID_RESP_VERSION && !payload.empty()) {
-        uint8_t checksum = 0;
-        for (size_t index = 0; index + 2 < packet.size(); ++index) {
-            checksum = static_cast<uint8_t>(checksum + packet[index]);
-        }
-        packet[packet.size() - 2] = checksum;
-    }
     return packet;
 }
 
@@ -81,10 +77,10 @@ std::vector<uint8_t> makeDisplayPayload(uint8_t bogeyByte, uint8_t barBitmap, ui
 }
 
 std::vector<uint8_t> makeVersionPayload(char major, char minor, char rev1, char rev2, char ctrl) {
-    // Spec-compliant: [letter, major, '.', minor, rev1, rev2, ctrl, checksum].
+    // Spec-compliant data bytes; makePacket appends the checksum.
     return std::vector<uint8_t>{static_cast<uint8_t>('v'),   static_cast<uint8_t>(major), static_cast<uint8_t>('.'),
                                 static_cast<uint8_t>(minor), static_cast<uint8_t>(rev1),  static_cast<uint8_t>(rev2),
-                                static_cast<uint8_t>(ctrl),  0x00};
+                                static_cast<uint8_t>(ctrl)};
 }
 
 std::vector<uint8_t> makeAlertPayload(uint8_t index, uint8_t count, uint16_t freqMHz, uint8_t frontRaw, uint8_t rearRaw,
@@ -532,7 +528,7 @@ void test_alert_stream_count_zero_clears_alerts() {
     TEST_ASSERT_TRUE(parser.hasAlerts());
 
     // Count=0 clear row.
-    const auto clear = makePacket(PACKET_ID_ALERT_DATA, std::vector<uint8_t>{0x00, 0x00});
+    const auto clear = makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(0, 0, 0, 0, 0, 0, 0));
     TEST_ASSERT_TRUE(parsePacket(parser, clear));
     TEST_ASSERT_FALSE(parser.hasAlerts());
     TEST_ASSERT_EQUAL_UINT32(0, static_cast<uint32_t>(parser.getAlertCount()));

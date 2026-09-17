@@ -62,20 +62,25 @@ using protocol_spec::SpecDirection;
 
 std::vector<uint8_t> makePacket(uint8_t packetId, const std::vector<uint8_t>& payload) {
     std::vector<uint8_t> packet;
-    packet.reserve(6 + payload.size());
+    packet.reserve(7 + payload.size());
     packet.push_back(ESP_PACKET_START);
-    packet.push_back(0xDA);
-    packet.push_back(0xE4);
+    packet.push_back(0xD8);
+    packet.push_back(0xEA);
     packet.push_back(packetId);
-    packet.push_back(static_cast<uint8_t>(payload.size()));
+    packet.push_back(static_cast<uint8_t>(payload.size() + 1));
     packet.insert(packet.end(), payload.begin(), payload.end());
+    uint8_t checksum = 0;
+    for (uint8_t value : packet) {
+        checksum = static_cast<uint8_t>(checksum + value);
+    }
+    packet.push_back(checksum);
     packet.push_back(ESP_PACKET_END);
     return packet;
 }
 
 std::vector<uint8_t> makeDisplayPayload(uint8_t barBitmap) {
     // bogey='1', no blink plane, systemStatus set so bands/bars are reported.
-    return std::vector<uint8_t>{0x06, 0x00, barBitmap, 0x24, 0x24, 0x04, 0x00, 0x00, 0x00};
+    return std::vector<uint8_t>{0x06, 0x00, barBitmap, 0x24, 0x24, 0x04, 0x00, 0x00};
 }
 
 std::vector<uint8_t> makeAlertRowPayload(uint8_t bandArrow,

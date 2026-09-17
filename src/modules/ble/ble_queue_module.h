@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <array>
 #include <atomic>
 #include <vector>
 #include <freertos/FreeRTOS.h>
@@ -70,6 +71,10 @@ class BleQueueModule {
 #endif
 
   private:
+    static constexpr uint16_t LONG_NOTIFY_CHARACTERISTIC = 0xB4E0;
+    static constexpr size_t MAX_LONG_CHUNKS = 15;
+    static constexpr size_t MAX_LONG_CHUNK_PAYLOAD = 19;
+
     struct BLEDataPacket {
         uint8_t data[256];
         size_t length;
@@ -77,6 +82,19 @@ class BleQueueModule {
         uint32_t tsMs;
         uint32_t sessionGeneration;
         uint32_t ingressSequence;
+    };
+
+    // ESP Bluetooth Addendum rev. 4: B4E0 notifications prepend a one-byte
+    // index/count field to at most 19 packet bytes. Chunks can be delivered
+    // out of order, so they cannot be appended to the B2CE byte stream until
+    // every indexed piece is present.
+    struct LongRxAssembly {
+        uint8_t count = 0;
+        uint16_t presentMask = 0;
+        std::array<std::array<uint8_t, MAX_LONG_CHUNK_PAYLOAD>, MAX_LONG_CHUNKS> payloads{};
+        std::array<uint8_t, MAX_LONG_CHUNKS> lengths{};
+        uint32_t firstIngressSequence = 0;
+        uint32_t latestTimestampMs = 0;
     };
 
     V1BLEClient* ble_ = nullptr;
@@ -92,6 +110,7 @@ class BleQueueModule {
     // the sequence attached to its start byte so a response that began before
     // a command cannot become fresh merely by completing afterward.
     std::vector<uint32_t> rxIngressSequences_;
+    LongRxAssembly longRx_;
     bool rxBufferReady_ = false;
     size_t rxReadPos_ = 0; // Logical read pointer into rxBuffer (avoids front erases)
     unsigned long lastRxMillis_ = 0;
@@ -103,7 +122,12 @@ class BleQueueModule {
 
     Config config_;
     void refreshBackpressureState();
+    bool appendRxBytes(const uint8_t* data, size_t length, uint32_t ingressSequence);
     bool appendRxPacket(const BLEDataPacket& packet);
+    bool appendLongRxChunk(const BLEDataPacket& packet);
+    bool flushCompleteLongRx();
+    bool longRxComplete() const;
     void compactRxState();
     void clearRxState();
+    void clearLongRxState();
 };

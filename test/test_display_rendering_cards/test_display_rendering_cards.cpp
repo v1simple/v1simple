@@ -752,9 +752,9 @@ void test_parsed_ku_secondary_uses_production_band_name_and_frequency() {
     PacketParser parser;
     auto addRow = [&parser](uint8_t index, uint16_t frequency, uint8_t bandAndDirection, bool priority) {
         std::vector<uint8_t> packet = {
-            0xAA, 0xDA, 0xE4, 0x43, 9, static_cast<uint8_t>((index << 4) | 2),
+            0xAA, 0xD8, 0xEA, 0x43, 8, static_cast<uint8_t>((index << 4) | 2),
             static_cast<uint8_t>(frequency >> 8), static_cast<uint8_t>(frequency),
-            0xA0, 0, bandAndDirection, static_cast<uint8_t>(priority ? 0x80 : 0), 0};
+            0xA0, 0, bandAndDirection, static_cast<uint8_t>(priority ? 0x80 : 0)};
         uint8_t checksum = 0;
         for (uint8_t byte : packet) {
             checksum += byte;

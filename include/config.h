@@ -23,7 +23,7 @@
 #define V1_SERVICE_UUID "92A0AFF4-9E05-11E2-AA59-F23C91AEC05E"
 #define V1_DISPLAY_DATA_UUID "92A0B2CE-9E05-11E2-AA59-F23C91AEC05E" // V1 out SHORT (notify) - display data
 #define V1_DISPLAY_DATA_LONG_UUID                                                                                      \
-    "92A0B4E0-9E05-11E2-AA59-F23C91AEC05E" // V1 out LONG (notify) - alert data, voltage responses
+    "92A0B4E0-9E05-11E2-AA59-F23C91AEC05E" // V1 out LONG (notify) - partial transport for ESP packets over 20 bytes
 #define V1_NOTIFY_ALT_UUID                                                                                             \
     "92A0BCE0-9E05-11E2-AA59-F23C91AEC05E" // Additional notify characteristic - compatibility stub; proxy never
                                            // notifies on it but companion apps (V1Driver, JBV1, etc.) expect the UUID

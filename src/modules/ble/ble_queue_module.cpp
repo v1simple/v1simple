@@ -36,6 +36,7 @@ bool BleQueueModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr, V1Pr
 
     rxBuffer_.clear();
     rxIngressSequences_.clear();
+    clearLongRxState();
     rxReadPos_ = 0;
     lastRxMillis_ = 0;
     lastNotifyTsMs_ = 0;
@@ -78,6 +79,8 @@ void BleQueueModule::end() {
         queueHandle_ = nullptr;
     }
     rxBufferReady_ = false;
+    clearRxState();
+    clearLongRxState();
     backpressureActive_ = false;
 }
 
@@ -98,6 +101,7 @@ void BleQueueModule::closeSession() {
     }
 
     clearRxState();
+    clearLongRxState();
     lastRxMillis_ = 0;
     lastNotifyTsMs_ = 0;
     hadSuccessfulParse_ = false;
@@ -183,24 +187,120 @@ void BleQueueModule::compactRxState() {
 }
 
 bool BleQueueModule::appendRxPacket(const BLEDataPacket& packet) {
-    if (packet.length == 0) {
+    return appendRxBytes(packet.data, packet.length, packet.ingressSequence);
+}
+
+bool BleQueueModule::appendRxBytes(const uint8_t* data, size_t length, uint32_t ingressSequence) {
+    if (!data || length == 0) {
         return false;
     }
     if (rxReadPos_ > 0) {
         const size_t unread = rxReadPos_ < rxBuffer_.size() ? rxBuffer_.size() - rxReadPos_ : 0;
-        if (rxBuffer_.size() >= RX_BUFFER_MAX || (unread + packet.length) > RX_BUFFER_MAX) {
+        if (rxBuffer_.size() >= RX_BUFFER_MAX || (unread + length) > RX_BUFFER_MAX) {
             compactRxState();
         }
     }
     const size_t unread = rxReadPos_ < rxBuffer_.size() ? rxBuffer_.size() - rxReadPos_ : 0;
-    if (unread >= RX_BUFFER_MAX || (unread + packet.length) > RX_BUFFER_MAX) {
+    if (unread >= RX_BUFFER_MAX || (unread + length) > RX_BUFFER_MAX) {
         return false;
     }
     const size_t begin = rxBuffer_.size();
-    rxBuffer_.resize(begin + packet.length);
-    memcpy(rxBuffer_.data() + begin, packet.data, packet.length);
-    rxIngressSequences_.resize(begin + packet.length);
-    std::fill(rxIngressSequences_.begin() + begin, rxIngressSequences_.end(), packet.ingressSequence);
+    rxBuffer_.resize(begin + length);
+    memcpy(rxBuffer_.data() + begin, data, length);
+    rxIngressSequences_.resize(begin + length);
+    std::fill(rxIngressSequences_.begin() + begin, rxIngressSequences_.end(), ingressSequence);
+    return true;
+}
+
+void BleQueueModule::clearLongRxState() {
+    longRx_ = LongRxAssembly{};
+}
+
+bool BleQueueModule::longRxComplete() const {
+    if (longRx_.count == 0 || longRx_.count > MAX_LONG_CHUNKS) {
+        return false;
+    }
+    const uint16_t required = static_cast<uint16_t>((uint16_t{1} << longRx_.count) - 1u);
+    return longRx_.presentMask == required;
+}
+
+bool BleQueueModule::appendLongRxChunk(const BLEDataPacket& packet) {
+    // The prefix is included in the 20-byte ATT value, leaving 19 bytes of
+    // framed ESP data per chunk.
+    if (packet.length < 2 || packet.length > (MAX_LONG_CHUNK_PAYLOAD + 1u)) {
+        clearLongRxState();
+        return false;
+    }
+
+    const uint8_t prefix = packet.data[0];
+    const uint8_t index = static_cast<uint8_t>((prefix >> 4) & 0x0F);
+    const uint8_t count = static_cast<uint8_t>(prefix & 0x0F);
+    if (index == 0 || count == 0 || count > MAX_LONG_CHUNKS || index > count) {
+        clearLongRxState();
+        return false;
+    }
+
+    if (longRx_.count != 0 && longRx_.count != count) {
+        clearLongRxState();
+    }
+    if (longRx_.count == 0) {
+        longRx_.count = count;
+        longRx_.firstIngressSequence = packet.ingressSequence;
+    }
+
+    const uint16_t bit = static_cast<uint16_t>(uint16_t{1} << (index - 1u));
+    if ((longRx_.presentMask & bit) != 0) {
+        // Match the vendor builders' ambiguity handling: a repeated index may
+        // be the first observed piece of a new packet with the same count.
+        // Never combine it with retained chunks from the prior candidate.
+        clearLongRxState();
+        longRx_.count = count;
+        longRx_.firstIngressSequence = packet.ingressSequence;
+    }
+
+    const size_t slot = static_cast<size_t>(index - 1u);
+    const size_t payloadLength = packet.length - 1u;
+    memcpy(longRx_.payloads[slot].data(), packet.data + 1, payloadLength);
+    longRx_.lengths[slot] = static_cast<uint8_t>(payloadLength);
+    longRx_.presentMask = static_cast<uint16_t>(longRx_.presentMask | bit);
+    longRx_.latestTimestampMs = packet.tsMs;
+    return true;
+}
+
+bool BleQueueModule::flushCompleteLongRx() {
+    if (!longRxComplete()) {
+        return false;
+    }
+
+    size_t totalLength = 0;
+    for (size_t slot = 0; slot < longRx_.count; ++slot) {
+        totalLength += longRx_.lengths[slot];
+    }
+    if (totalLength == 0 || totalLength > 512) {
+        clearLongRxState();
+        return false;
+    }
+
+    // Reserve the whole assembled packet before mutating the stream. This is
+    // the long-packet equivalent of queue-head ownership for short packets.
+    const size_t unread = rxReadPos_ < rxBuffer_.size() ? rxBuffer_.size() - rxReadPos_ : 0;
+    if (rxReadPos_ > 0 && (rxBuffer_.size() >= RX_BUFFER_MAX || unread + totalLength > RX_BUFFER_MAX)) {
+        compactRxState();
+    }
+    const size_t compactUnread = rxReadPos_ < rxBuffer_.size() ? rxBuffer_.size() - rxReadPos_ : 0;
+    if (compactUnread + totalLength > RX_BUFFER_MAX) {
+        return false;
+    }
+
+    const uint32_t ingressSequence = longRx_.firstIngressSequence;
+    for (size_t slot = 0; slot < longRx_.count; ++slot) {
+        if (!appendRxBytes(longRx_.payloads[slot].data(), longRx_.lengths[slot], ingressSequence)) {
+            // Capacity was proven above; preserve the completed candidate if a
+            // future implementation changes that invariant.
+            return false;
+        }
+    }
+    clearLongRxState();
     return true;
 }
 
@@ -223,14 +323,48 @@ void BleQueueModule::process() {
     const bool sessionOpen = acceptNotifications_.load(std::memory_order_acquire);
     queueDepthBeforeDrain = queueHandle_ ? uxQueueMessagesWaiting(queueHandle_) : 0;
 
-    // Peek before staging so an accepted notification remains owned by the
-    // queue until the complete chunk fits. Parsing below frees buffer space;
-    // a later process() call then consumes the same queue head without loss.
+    // A completed long packet may have been held while an older partial B2CE
+    // stream was parsed. Once that stream is empty, publish the assembled ESP
+    // packet before consuming later notifications.
+    if (longRxComplete() && rxReadPos_ >= rxBuffer_.size()) {
+        clearRxState();
+        const uint32_t assembledTimestamp = longRx_.latestTimestampMs;
+        if (flushCompleteLongRx()) {
+            latestPktTs = assembledTimestamp;
+        }
+    }
+
+    // Peek before staging so an accepted short notification remains owned by
+    // the queue until all of its bytes fit. Long chunks transfer ownership to
+    // the fixed indexed assembly; a completed assembly is retained across
+    // process() calls when an older partial B2CE stream must finish first.
     while (queueHandle_ && xQueuePeek(queueHandle_, &pkt, 0) == pdTRUE) {
         if (!sessionOpen || pkt.sessionGeneration != activeSessionGeneration) {
             (void)xQueueReceive(queueHandle_, &pkt, 0);
             continue;
         }
+
+        if (pkt.charUUID == LONG_NOTIFY_CHARACTERISTIC) {
+            // Do not overwrite a complete candidate with a later B4E0 packet.
+            // Parse the older short stream first; the next process() call will
+            // publish this candidate and then resume queue draining.
+            if (longRxComplete()) {
+                break;
+            }
+            const bool acceptedChunk = appendLongRxChunk(pkt);
+            (void)xQueueReceive(queueHandle_, &pkt, 0);
+            latestPktTs = pkt.tsMs;
+
+            if (acceptedChunk && longRxComplete() && rxReadPos_ >= rxBuffer_.size()) {
+                clearRxState();
+                const uint32_t assembledTimestamp = longRx_.latestTimestampMs;
+                if (flushCompleteLongRx()) {
+                    latestPktTs = assembledTimestamp;
+                }
+            }
+            continue;
+        }
+
         if (!appendRxPacket(pkt)) {
             break;
         }

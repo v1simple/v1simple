@@ -108,7 +108,10 @@ void observeDisplay(bool on, uint8_t mode, uint8_t origin = 0xEA, bool corruptCh
                                 aux1, 0x52}, origin, destination);
     if (corruptChecksum && origin == 0xEA) packet[packet.size() - 2] ^= 0x01;
     if (ingressSequence == UINT32_MAX) ingressSequence = ble.noteV1NotificationIngress();
-    TEST_ASSERT_TRUE(parser.parse(packet.data(), packet.size(), mockMillis, ingressSequence));
+    const bool parsed = parser.parse(packet.data(), packet.size(), mockMillis, ingressSequence);
+    const bool expected = !corruptChecksum && destination == 0xD8 &&
+                          (origin == 0xEA || origin == 0xE9);
+    TEST_ASSERT_EQUAL(expected, parsed);
 }
 
 void observeCurrentVolume(uint8_t main, uint8_t muted, uint8_t origin = 0xEA,
@@ -687,7 +690,7 @@ void test_wrong_destination_display_cannot_verify() {
     TEST_ASSERT_EQUAL_UINT32(1, parser.displayOnObservationRevision());
 }
 
-void test_tolerant_display_interleaving_cannot_replace_canonical_evidence_value() {
+void test_rejected_display_interleaving_cannot_replace_canonical_evidence_value() {
     configureProfile();
     profiles.loadableProfile.detector.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
     profiles.loadableProfile.detector.modePolicy = V1ModePolicy::Unchanged;
@@ -697,8 +700,8 @@ void test_tolerant_display_interleaving_cannot_replace_canonical_evidence_value(
     at(100);
 
     observeDisplay(true, 1);                 // fresh canonical mismatch
-    observeDisplay(false, 1, 0xEA, true);    // tolerated render value only
-    TEST_ASSERT_FALSE(parser.getDisplayState().displayOn);
+    observeDisplay(false, 1, 0xEA, true);    // rejected before render/evidence mutation
+    TEST_ASSERT_TRUE(parser.getDisplayState().displayOn);
     TEST_ASSERT_TRUE(parser.displayOnObservation().value);
     at(1600);
 
@@ -2039,7 +2042,7 @@ int main() {
     RUN_TEST(test_user_response_arriving_between_write_and_read_request_is_not_fresh_evidence);
     RUN_TEST(test_display_request_echo_and_corrupt_display_cannot_verify);
     RUN_TEST(test_wrong_destination_display_cannot_verify);
-    RUN_TEST(test_tolerant_display_interleaving_cannot_replace_canonical_evidence_value);
+    RUN_TEST(test_rejected_display_interleaving_cannot_replace_canonical_evidence_value);
     RUN_TEST(test_fresh_display_mismatches_remain_pending_then_report_mismatch_at_deadline);
     RUN_TEST(test_mode_requires_fresh_canonical_display_evidence_and_reports_mismatch);
     RUN_TEST(test_temporary_volume_uses_all_volume_readback_and_preserves_saved_pair);

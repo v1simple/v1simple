@@ -29,10 +29,9 @@ inline bool hasCanonicalResponseWidth(const uint8_t* packet, size_t packetSize, 
     return packet[4] == expectedPayload && packetSize == expectedPayload + 6;
 }
 
-// Settings Apply accepts a packet as proof only when both its V1 origin/shape
-// and (for EAh) checksum are canonical. The general display parser remains
-// deliberately tolerant for rendering, but corrupt traffic must never prove a
-// detector mutation.
+// A response is usable only when both its V1 origin/shape and (for EAh)
+// checksum are canonical. Packet owners additionally bind the destination and
+// exact data width before the response can affect rendering or control state.
 inline bool hasCanonicalResponseEvidence(const uint8_t* packet, size_t packetSize, size_t dataBytes) {
     if (!hasCanonicalResponseWidth(packet, packetSize, dataBytes)) return false;
     if ((packet[2] & kDeviceIdMask) == kV1WithoutChecksum) return true;

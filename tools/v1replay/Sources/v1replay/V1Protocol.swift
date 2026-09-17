@@ -58,8 +58,8 @@ enum V1 {
         /// frames and the modeled v4.1038 alert rows use this header.
         static let broadcastInformation = Header(dest: 0xD8, src: 0xEA)
 
-        /// Compatibility convention used by repository packet fixtures. Select
-        /// it explicitly with `--header draft` when fixture parity is required.
+        /// Historical convention retained for repository fixture reproduction.
+        /// Current firmware rejects it; never use it as live device evidence.
         static let repoConvention = Header(dest: 0xDA, src: 0xE4)
 
         /// Historical alias.

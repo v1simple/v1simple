@@ -171,10 +171,15 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
 
     switch (packetId) {
     case PACKET_ID_DISPLAY_DATA: {
+        // InfDisplayData is an eight-byte broadcast payload. Accept both
+        // documented V1 originators (EAh with checksum and E9h without), but
+        // never let corrupt or foreign traffic alter the live render state.
+        if (!V1PacketFraming::hasCanonicalResponseEvidenceForDestination(data, length, 8, 0xD8)) {
+            return false;
+        }
         const bool hadAlerts = hasAlerts();
         const bool parsed = parseDisplayData(payload, payloadLen);
-        if (parsed &&
-            V1PacketFraming::hasCanonicalResponseEvidenceForDestination(data, length, 8, 0xD8)) {
+        if (parsed) {
             const uint32_t sequence = ++settingsObservationSequence_;
             ++displayOnObservation_.revision;
             displayOnObservation_.sequence = sequence;
@@ -233,6 +238,13 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
         return parsed;
     }
     case PACKET_ID_ALERT_DATA: {
+        // Every RespAlertData row, including count-zero clear rows, carries the
+        // seven-byte table shape defined by ESP 3.016. Priority, frequency and
+        // direction must never be sourced from a bad checksum or wrong bus
+        // destination.
+        if (!V1PacketFraming::hasCanonicalResponseEvidenceForDestination(data, length, 7, 0xD8)) {
+            return false;
+        }
         const bool hadAlerts = hasAlerts();
         const uint32_t alertNowMs = hasNowMs ? nowMs : static_cast<uint32_t>(millis());
         const bool parsed = parseAlertData(payload, payloadLen, alertNowMs);
@@ -587,7 +599,10 @@ bool PacketParser::validatePacket(const uint8_t* data, size_t length) {
     if (data[0] != ESP_PACKET_START || data[length - 1] != ESP_PACKET_END) {
         return false;
     }
-    return true; // checksum intentionally not enforced; V1G2 can chunk packets
+    // Packet-specific canonical width, origin, destination and checksum checks
+    // are performed by the owning response cases. BLE long-packet chunks are
+    // reassembled before this parser is called.
+    return true;
 }
 
 bool PacketParser::parseDisplayData(const uint8_t* payload, size_t length) {

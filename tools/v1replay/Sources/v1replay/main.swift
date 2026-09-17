@@ -95,8 +95,8 @@ let console = Console()
 // MARK: - Shared option construction
 
 func makeHeader() throws -> V1.Header {
-    // Targeted replies use the V1→app direction. Repository fixture parity
-    // remains available as an explicit compatibility option.
+    // Targeted replies use the V1→app direction. Historical repository fixture
+    // parity remains available only as an explicit host-test option.
     let raw = args.string("header", "v1")
     guard let header = V1.Header.named(raw) else {
         throw ReplayError.message("unknown --header '\(raw)' (use v1 or draft)")
@@ -302,7 +302,8 @@ func runHelp() {
     \(Ansi.bold)PROTOCOL\(Ansi.reset)
       --name <string>      advertised local name (default V1G-REPLAY)
       --header <v1|draft>  generated information D8 EA and targeted replies D6 EA;
-                           DA E4 selects fixture compatibility for both
+                           DA E4 reproduces historical fixtures for host tests,
+                           but current firmware intentionally rejects it
       --blink-bogey        bogey image2 = 00, matching test_protocol_spec_conformance.
                            Off by default: image1 != image2 switches on the firmware's
                            blink-refresh repaint, the one paint path not driven by parse
@@ -394,10 +395,10 @@ func runCrib() {
       respAllVolume  \(volumeHex)
 
     \(Ansi.bold)Framing choices\(Ansi.reset)
-    The alert and display stimuli use the repository's DA E4 compatibility
-    convention. Version and volume are authoritative targeted replies, so they
-    use canonical D6 EA framing and a verified checksum. Playback uses D8 EA
-    for generated display/alert information and D6 EA for targeted replies.
+    Normal playback uses canonical D8 EA framing for generated display/alert
+    information and D6 EA for targeted version and volume replies, all with a
+    verified checksum. DA E4 remains available only to reproduce historical
+    host fixtures; current firmware rejects that noncanonical framing.
 
     \(Ansi.bold)Bogey blink stimulus\(Ansi.reset)
     Normal replay uses matching bogey image planes (06 06). --blink-bogey
@@ -409,9 +410,10 @@ func runCrib() {
     high/low nibbles, never saved values) — the same 9-byte payload region
     test_protocol_spec_conformance builds. Use --no-checksum for the 14-byte
     draft display form. Normal v4.1038 playback also carries the current mode in
-    auxData1; the explicit draft header retains its historical zero. Display and
-    alert presentation tolerates that draft framing, while direct settings
-    replies require canonical destination, origin, width and checksum evidence.
+    auxData1; the explicit draft header retains its historical zero. Current
+    firmware rejects draft display and alert frames; all live stimuli and direct
+    settings replies require their canonical destination, origin, width and
+    checksum evidence.
 
     Use `v1replay export --synthetic --format lightblue` for generated packets.
     """)

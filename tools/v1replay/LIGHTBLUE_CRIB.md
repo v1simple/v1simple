@@ -27,12 +27,13 @@ Full UUIDs are `92A0` + the ending + `-9E05-11E2-AA59-F23C91AEC05E`.
 Do not add a `0x2902` descriptor by hand. LightBlue and CoreBluetooth create the
 CCCD for notify characteristics automatically.
 
-## Packets — tolerant draft presentation framing
+## Packets — retired draft presentation framing
 
 These match the hand-written draft: no checksum byte, `dest`/`src` = `DA E4`.
-The firmware deliberately tolerates these alert/display packets for visual
-presentation. They are not authoritative settings or volume evidence. Normal
-replay output uses the canonical checksummed headers described below.
+They remain documented only to reproduce historical host fixtures. Current
+firmware intentionally rejects them before they can alter alert or display
+state. Normal replay output and every device qualification use the canonical
+checksummed headers described below.
 
 **Alert on B2CE** — synthetic Ka 34.700 GHz, front, priority, 1 bar:
 
@@ -73,13 +74,13 @@ respAllVolume  AA D6 EA 3D 05 04 00 04 00 B4 AB
 The repeated current/saved values are this emulator fixture's configured state,
 not a universal device default.
 
-## Packets — fixture-compatible checksummed form
+## Packets — historical fixture checksummed form
 
-These presentation examples retain the `DA E4` fixture-compatibility header
+These presentation examples retain the historical `DA E4` fixture header
 while adding a checksum byte and the V4.1028+ full eight-byte display payload.
 AuxData2 carries current main/muted volume in its high/low nibbles, but the
-noncanonical header means it does not qualify runtime volume control state;
-saved values are not carried.
+noncanonical header means current firmware rejects the whole frame; saved
+values are not carried.
 This is the same 9-byte payload region
 `test_protocol_spec_conformance.cpp` builds — a 15-byte display packet is
 already the house style, the 14-byte form above is the outlier.
@@ -96,7 +97,8 @@ alert 6 bars   AA DA E4 43 08 11 87 8C AF 00 22 80 28 AB
 alert cleared  AA DA E4 43 08 00 00 00 00 00 00 00 B3 AB
 ```
 
-`--header draft` selects the listed compatibility header. Playback defaults to
+`--header draft` selects the listed historical header for host fixture work. It
+is not a device stimulus mode. Playback defaults to
 `D8 EA` for generated display/alert information and `D6 EA` for targeted
 replies; `--blink-bogey --no-checksum --header draft` reproduces the draft
 packets byte-for-byte. `--no-checksum` is outbound-only; manual commands into

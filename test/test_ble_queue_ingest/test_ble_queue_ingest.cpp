@@ -37,6 +37,7 @@ namespace {
 
 constexpr uint32_t kSession = 7;
 constexpr uint16_t kCharacteristic = 0xB2CE;
+constexpr uint16_t kLongCharacteristic = 0xB4E0;
 
 BleQueueModule queue;
 PacketParser parser;
@@ -58,6 +59,26 @@ std::vector<uint8_t> makeFrame(uint8_t packetId, size_t payloadLength, uint8_t f
     frame.insert(frame.end(), payloadLength, fill);
     frame.push_back(ESP_PACKET_END);
     return frame;
+}
+
+std::vector<std::vector<uint8_t>> makeLongChunks(const std::vector<uint8_t>& frame) {
+    constexpr size_t kChunkPayload = 19;
+    const size_t count = (frame.size() + kChunkPayload - 1u) / kChunkPayload;
+    TEST_ASSERT_GREATER_THAN_UINT(0, count);
+    TEST_ASSERT_LESS_OR_EQUAL_UINT(15, count);
+
+    std::vector<std::vector<uint8_t>> chunks;
+    chunks.reserve(count);
+    for (size_t index = 0; index < count; ++index) {
+        const size_t begin = index * kChunkPayload;
+        const size_t length = std::min(kChunkPayload, frame.size() - begin);
+        std::vector<uint8_t> chunk;
+        chunk.reserve(length + 1u);
+        chunk.push_back(static_cast<uint8_t>(((index + 1u) << 4) | count));
+        chunk.insert(chunk.end(), frame.begin() + begin, frame.begin() + begin + length);
+        chunks.push_back(std::move(chunk));
+    }
+    return chunks;
 }
 
 std::vector<uint8_t> makeCanonicalUserBytesFrame(uint8_t fill, uint8_t encodedOriginator = 0xEA,
@@ -181,6 +202,118 @@ void test_multiple_frames_in_one_notification_are_all_parsed_in_order() {
     TEST_ASSERT_EQUAL_INT(2, parser.parseCalls);
     assertParsedPacket(0, first);
     assertParsedPacket(1, second);
+}
+
+void test_long_characteristic_reassembles_out_of_order_chunks_once() {
+    beginQueue();
+    const std::vector<uint8_t> frame = makeFrame(PACKET_ID_RESP_SWEEP_SECTIONS, 16, 0x61);
+    TEST_ASSERT_EQUAL_UINT(22, frame.size());
+    const auto chunks = makeLongChunks(frame);
+    TEST_ASSERT_EQUAL_UINT(2, chunks.size());
+
+    const uint32_t firstIngress = client.noteV1NotificationIngress();
+    TEST_ASSERT_TRUE(deliverRawNotify(chunks[1].data(), chunks[1].size(), kLongCharacteristic,
+                                      kSession, 310, firstIngress));
+    queue.process();
+    TEST_ASSERT_EQUAL_INT(0, parser.parseCalls);
+
+    const uint32_t secondIngress = client.noteV1NotificationIngress();
+    TEST_ASSERT_TRUE(deliverRawNotify(chunks[0].data(), chunks[0].size(), kLongCharacteristic,
+                                      kSession, 311, secondIngress));
+    queue.process();
+
+    TEST_ASSERT_EQUAL_INT(1, parser.parseCalls);
+    assertParsedPacket(0, frame);
+    TEST_ASSERT_EQUAL_UINT32(311, parser.parseTimestamps[0]);
+    TEST_ASSERT_EQUAL_UINT32(firstIngress, parser.parseIngressSequences[0]);
+}
+
+void test_long_characteristic_never_splices_into_partial_short_frame() {
+    beginQueue();
+    const std::vector<uint8_t> shortFrame = makeFrame(0x58, 12, 0x41);
+    const std::vector<uint8_t> longFrame = makeFrame(PACKET_ID_RESP_SWEEP_SECTIONS, 16, 0x62);
+    const auto chunks = makeLongChunks(longFrame);
+
+    TEST_ASSERT_TRUE(deliverRawNotify(shortFrame.data(), 4, kCharacteristic, kSession, 320));
+    queue.process();
+    TEST_ASSERT_EQUAL_INT(0, parser.parseCalls);
+
+    TEST_ASSERT_TRUE(deliverRawNotify(chunks[0].data(), chunks[0].size(), kLongCharacteristic, kSession, 321));
+    TEST_ASSERT_TRUE(deliverRawNotify(chunks[1].data(), chunks[1].size(), kLongCharacteristic, kSession, 322));
+    TEST_ASSERT_TRUE(deliverRawNotify(shortFrame.data() + 4, shortFrame.size() - 4,
+                                      kCharacteristic, kSession, 323));
+    queue.process();
+
+    TEST_ASSERT_EQUAL_INT(1, parser.parseCalls);
+    assertParsedPacket(0, shortFrame);
+
+    // The complete B4E0 candidate remains independently owned until the older
+    // B2CE stream is consumed, then publishes on the following main-loop tick.
+    queue.process();
+    TEST_ASSERT_EQUAL_INT(2, parser.parseCalls);
+    assertParsedPacket(1, longFrame);
+}
+
+void test_session_reset_discards_partial_long_packet() {
+    beginQueue();
+    const std::vector<uint8_t> oldFrame = makeFrame(PACKET_ID_RESP_SWEEP_SECTIONS, 16, 0x63);
+    const auto oldChunks = makeLongChunks(oldFrame);
+
+    TEST_ASSERT_TRUE(deliverRawNotify(oldChunks[0].data(), oldChunks[0].size(), kLongCharacteristic,
+                                      kSession, 330));
+    queue.process();
+    TEST_ASSERT_EQUAL_INT(0, parser.parseCalls);
+
+    queue.openSession(kSession + 1);
+    TEST_ASSERT_FALSE(deliverRawNotify(oldChunks[1].data(), oldChunks[1].size(), kLongCharacteristic,
+                                       kSession, 331));
+    queue.process();
+    TEST_ASSERT_EQUAL_INT(0, parser.parseCalls);
+
+    const std::vector<uint8_t> newFrame = makeFrame(PACKET_ID_RESP_SWEEP_SECTIONS, 16, 0x64);
+    const auto newChunks = makeLongChunks(newFrame);
+    TEST_ASSERT_TRUE(deliverRawNotify(newChunks[0].data(), newChunks[0].size(), kLongCharacteristic,
+                                      kSession + 1, 332));
+    TEST_ASSERT_TRUE(deliverRawNotify(newChunks[1].data(), newChunks[1].size(), kLongCharacteristic,
+                                      kSession + 1, 333));
+    queue.process();
+
+    TEST_ASSERT_EQUAL_INT(1, parser.parseCalls);
+    assertParsedPacket(0, newFrame);
+}
+
+void test_invalid_long_chunk_is_dropped_without_poisoning_next_packet() {
+    beginQueue();
+    const uint8_t invalid[] = {0x02, 0xAA}; // index zero is outside the documented 1..count range
+    TEST_ASSERT_TRUE(deliverRawNotify(invalid, sizeof(invalid), kLongCharacteristic, kSession, 340));
+
+    const std::vector<uint8_t> frame = makeFrame(PACKET_ID_RESP_SWEEP_SECTIONS, 16, 0x65);
+    const auto chunks = makeLongChunks(frame);
+    TEST_ASSERT_TRUE(deliverRawNotify(chunks[0].data(), chunks[0].size(), kLongCharacteristic, kSession, 341));
+    TEST_ASSERT_TRUE(deliverRawNotify(chunks[1].data(), chunks[1].size(), kLongCharacteristic, kSession, 342));
+    queue.process();
+
+    TEST_ASSERT_EQUAL_INT(1, parser.parseCalls);
+    assertParsedPacket(0, frame);
+}
+
+void test_duplicate_long_index_restarts_candidate_without_cross_packet_splice() {
+    beginQueue();
+    const std::vector<uint8_t> oldFrame = makeFrame(PACKET_ID_RESP_SWEEP_SECTIONS, 16, 0x66);
+    const std::vector<uint8_t> newFrame = makeFrame(PACKET_ID_RESP_SWEEP_SECTIONS, 16, 0x67);
+    const auto oldChunks = makeLongChunks(oldFrame);
+    const auto newChunks = makeLongChunks(newFrame);
+
+    TEST_ASSERT_TRUE(deliverRawNotify(oldChunks[0].data(), oldChunks[0].size(),
+                                      kLongCharacteristic, kSession, 350));
+    TEST_ASSERT_TRUE(deliverRawNotify(newChunks[0].data(), newChunks[0].size(),
+                                      kLongCharacteristic, kSession, 351));
+    TEST_ASSERT_TRUE(deliverRawNotify(newChunks[1].data(), newChunks[1].size(),
+                                      kLongCharacteristic, kSession, 352));
+    queue.process();
+
+    TEST_ASSERT_EQUAL_INT(1, parser.parseCalls);
+    assertParsedPacket(0, newFrame);
 }
 
 void test_session_reset_discards_old_queue_and_partial_buffer() {
@@ -537,6 +670,11 @@ int main(int, char**) {
     RUN_TEST(test_five_accepted_full_notifications_survive_staging_capacity);
     RUN_TEST(test_partial_frame_across_notifications_is_reassembled_once);
     RUN_TEST(test_multiple_frames_in_one_notification_are_all_parsed_in_order);
+    RUN_TEST(test_long_characteristic_reassembles_out_of_order_chunks_once);
+    RUN_TEST(test_long_characteristic_never_splices_into_partial_short_frame);
+    RUN_TEST(test_session_reset_discards_partial_long_packet);
+    RUN_TEST(test_invalid_long_chunk_is_dropped_without_poisoning_next_packet);
+    RUN_TEST(test_duplicate_long_index_restarts_candidate_without_cross_packet_splice);
     RUN_TEST(test_session_reset_discards_old_queue_and_partial_buffer);
     RUN_TEST(test_stale_stamped_packets_cannot_trigger_downstream_effects);
     RUN_TEST(test_truncated_user_bytes_response_cannot_complete_capture);

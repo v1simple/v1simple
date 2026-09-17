@@ -210,7 +210,7 @@ void test_noncanonical_or_invalid_display_volume_never_becomes_control_state() {
     const auto wrongDestination = makePacket(
         PACKET_ID_DISPLAY_DATA,
         makeDisplayPayload(0x3F, 0x00, 0x00, 0x00, 0x04, 0x00, 0x73), 0xEA, 0xD6);
-    TEST_ASSERT_TRUE(parsePacket(parser, wrongDestination));
+    TEST_ASSERT_FALSE(parsePacket(parser, wrongDestination));
     TEST_ASSERT_FALSE(parser.getDisplayState().hasVolumeData);
     TEST_ASSERT_FALSE(parser.displayVolumeObservation().available);
 }
@@ -243,7 +243,9 @@ void test_parse_display_packet_laser_keeps_led_bitmap_signal_bars() {
     TEST_ASSERT_EQUAL(BAND_LASER, priority.band);
     TEST_ASSERT_EQUAL(DIR_FRONT, priority.direction);
 
-    const auto emptyRadarTable = makePacket(PACKET_ID_ALERT_DATA, {0x00, 0x00});
+    // Seven zero data bytes plus the checksum placeholder expected by
+    // makePacket() form the canonical count-zero alert row.
+    const auto emptyRadarTable = makePacket(PACKET_ID_ALERT_DATA, {0, 0, 0, 0, 0, 0, 0, 0});
     TEST_ASSERT_TRUE(parsePacket(parser, emptyRadarTable));
     TEST_ASSERT_TRUE(parser.hasAlerts());
     TEST_ASSERT_EQUAL(DIR_FRONT, parser.getPriorityAlert().direction);
@@ -480,7 +482,7 @@ void test_display_request_echoes_do_not_mutate_or_verify_display_state() {
     TEST_ASSERT_EQUAL_UINT32(0, parser.displayOnObservationRevision());
 }
 
-void test_canonical_settings_observation_values_cannot_be_overwritten_by_tolerated_display_frames() {
+void test_invalid_display_frames_cannot_mutate_render_or_control_state() {
     PacketParser parser;
     TEST_ASSERT_TRUE(parsePacket(parser,
                                  makePacket(PACKET_ID_RESP_VERSION,
@@ -503,9 +505,9 @@ void test_canonical_settings_observation_values_cannot_be_overwritten_by_tolerat
         PACKET_ID_DISPLAY_DATA,
         makeDisplayPayload(0x3F, 0x00, 0x00, 0x00, 0x04, 0x08, 0x73));
     corrupt[corrupt.size() - 2] ^= 0x01;
-    TEST_ASSERT_TRUE(parsePacket(parser, corrupt));
-    TEST_ASSERT_FALSE(parser.getDisplayState().displayOn);
-    TEST_ASSERT_EQUAL_CHAR('l', parser.getDisplayState().modeChar);
+    TEST_ASSERT_FALSE(parsePacket(parser, corrupt));
+    TEST_ASSERT_TRUE(parser.getDisplayState().displayOn);
+    TEST_ASSERT_EQUAL_CHAR('A', parser.getDisplayState().modeChar);
     TEST_ASSERT_TRUE(parser.getDisplayState().hasVolumeData);
     TEST_ASSERT_EQUAL_UINT8(5, parser.getDisplayState().mainVolume);
     TEST_ASSERT_EQUAL_UINT8(2, parser.getDisplayState().muteVolume);
@@ -517,7 +519,7 @@ void test_canonical_settings_observation_values_cannot_be_overwritten_by_tolerat
     const auto wrongDestination = makePacket(
         PACKET_ID_DISPLAY_DATA,
         makeDisplayPayload(0x3F, 0x00, 0x00, 0x00, 0x04, 0x08, 0x84), 0xEA, 0xD6);
-    TEST_ASSERT_TRUE(parsePacket(parser, wrongDestination));
+    TEST_ASSERT_FALSE(parsePacket(parser, wrongDestination));
     TEST_ASSERT_EQUAL_UINT32(1, parser.displayOnObservation().revision);
     TEST_ASSERT_EQUAL_UINT8(5, parser.getDisplayState().mainVolume);
     TEST_ASSERT_EQUAL_UINT8(2, parser.getDisplayState().muteVolume);
@@ -1228,7 +1230,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_parse_version_packet_rejects_request_id);
     RUN_TEST(test_parse_version_packet_ignores_non_v1_device_letter);
     RUN_TEST(test_display_request_echoes_do_not_mutate_or_verify_display_state);
-    RUN_TEST(test_canonical_settings_observation_values_cannot_be_overwritten_by_tolerated_display_frames);
+    RUN_TEST(test_invalid_display_frames_cannot_mutate_render_or_control_state);
     RUN_TEST(test_current_and_all_volume_observations_remain_source_specific_and_destination_bound);
     RUN_TEST(test_session_settings_resets_clear_all_canonical_observations);
     RUN_TEST(test_parse_display_packet_decodes_mode_from_bogey_glyph);

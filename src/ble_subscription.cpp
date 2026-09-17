@@ -181,7 +181,9 @@ V1BLEClient::SubscribeStepResult V1BLEClient::executeSubscribeStep() {
     }
 
     case SubscribeStep::GET_DISPLAY_LONG: {
-        // B4E0 is optional and used for voltage passthrough.
+        // B4E0 carries every ESP packet that exceeds one 20-byte BLE value.
+        // Keep it optional for compatibility with transports that expose only
+        // the short path, but custom-sweep replies require this subscription.
         NimBLERemoteCharacteristic* pDisplayLong = pRemoteService_->getCharacteristic(V1_DISPLAY_DATA_LONG_UUID);
         notifyLongChar_.store(pDisplayLong, std::memory_order_release);
         notifyLongCharId_.store(pDisplayLong ? shortUuid(pDisplayLong->getUUID()) : 0, std::memory_order_release);

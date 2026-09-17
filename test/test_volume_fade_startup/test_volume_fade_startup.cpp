@@ -97,7 +97,10 @@ void closeSession(uint32_t generation, uint32_t nowMs) {
 
 void feed(uint8_t id, std::initializer_list<uint8_t> data, uint32_t nowMs) {
     // V1 -> remote. ESP length includes the checksum; the end marker does not.
-    std::vector<uint8_t> packet{0xAA, 0xD6, 0xEA, id, static_cast<uint8_t>(data.size() + 1)};
+    const uint8_t destination =
+        (id == PACKET_ID_DISPLAY_DATA || id == PACKET_ID_ALERT_DATA) ? 0xD8 : 0xD6;
+    std::vector<uint8_t> packet{0xAA, destination, 0xEA, id,
+                                static_cast<uint8_t>(data.size() + 1)};
     packet.insert(packet.end(), data.begin(), data.end());
     uint8_t checksum = 0;
     for (uint8_t value : packet) {

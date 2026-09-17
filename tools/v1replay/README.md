@@ -210,8 +210,10 @@ queries, and alert rows are withheld until `reqStartAlertData` unless
 Each active bench step sends a complete alert table with one priority row,
 followed by display data derived from that row. Empty steps send an explicit
 count-zero table. Generated broadcast information uses `D8 EA`; targeted
-replies use `D6 EA`. `--header draft`, `--blink-bogey`, and the
-priority-arrow blink profiles select deterministic stimulus variants.
+replies use `D6 EA`. `--blink-bogey` and the priority-arrow blink profiles
+select deterministic live stimulus variants. `--header draft` exists only to
+reproduce historical host fixtures; current firmware rejects its noncanonical
+`DA E4` frames and it must not be used for device qualification.
 
 With `--machine-events`, notification events include sequence, characteristic,
 payload identity, and host monotonic time. CoreBluetooth accepting an update

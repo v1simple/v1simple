@@ -61,7 +61,7 @@ bool beginProfileCycleCallback(int slot, void*) {
 }
 
 void parseV1Packet(uint8_t packetId, const std::vector<uint8_t>& payload) {
-    std::vector<uint8_t> bytes{0xAA, 0xDA, 0xE4, packetId, static_cast<uint8_t>(payload.size() + 1)};
+    std::vector<uint8_t> bytes{0xAA, 0xD8, 0xEA, packetId, static_cast<uint8_t>(payload.size() + 1)};
     bytes.insert(bytes.end(), payload.begin(), payload.end());
     uint8_t checksum = 0;
     for (uint8_t byte : bytes) {
@@ -74,11 +74,11 @@ void parseV1Packet(uint8_t packetId, const std::vector<uint8_t>& payload) {
 
 void setV1Alert(bool active, uint16_t frequency = 34700) {
     if (!active) {
-        parseV1Packet(0x43, {0});
+        parseV1Packet(0x43, {0, 0, 0, 0, 0, 0, 0});
         return;
     }
     parseV1Packet(0x43, {0x11, static_cast<uint8_t>(frequency >> 8), static_cast<uint8_t>(frequency),
-                         0xB0, 0, 0x22, 0x80, 0});
+                         0xB0, 0, 0x22, 0x80});
 }
 
 void setV1Display(bool laser, bool muted = false) {

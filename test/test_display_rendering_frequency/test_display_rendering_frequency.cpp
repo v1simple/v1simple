@@ -83,9 +83,9 @@ AlertData radarAlertFromSpecFields(uint16_t frequencyMHz, uint8_t bandBits, uint
     // ESP Spec alert row: index/count, frequency MSB/LSB, front/rear RSSI,
     // band+direction, aux0. 0xA0 is a valid K-band strength stimulus.
     std::vector<uint8_t> packet = {
-        0xAA, 0xDA, 0xE4, 0x43, 9, 0x11,
+        0xAA, 0xD8, 0xEA, 0x43, 8, 0x11,
         static_cast<uint8_t>(frequencyMHz >> 8), static_cast<uint8_t>(frequencyMHz),
-        0xA0, 0x00, static_cast<uint8_t>(bandBits | directionBits), 0x80, 0x00};
+        0xA0, 0x00, static_cast<uint8_t>(bandBits | directionBits), 0x80};
     uint8_t checksum = 0;
     for (uint8_t byte : packet) {
         checksum = static_cast<uint8_t>(checksum + byte);

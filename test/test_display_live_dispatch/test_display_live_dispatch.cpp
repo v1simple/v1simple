@@ -197,8 +197,8 @@ AlertData radarAlertFromSpecFields(uint8_t directionBits) {
     // ESP Spec alert row: index/count, frequency MSB/LSB, front/rear RSSI,
     // band+direction, aux0. This is a priority K alert at 24.150 GHz.
     std::vector<uint8_t> packet = {
-        0xAA, 0xDA, 0xE4, 0x43, 9, 0x11, 0x5E, 0x56,
-        0xA0, 0x00, static_cast<uint8_t>(0x04 | directionBits), 0x80, 0x00};
+        0xAA, 0xD8, 0xEA, 0x43, 8, 0x11, 0x5E, 0x56,
+        0xA0, 0x00, static_cast<uint8_t>(0x04 | directionBits), 0x80};
     uint8_t checksum = 0;
     for (uint8_t byte : packet) {
         checksum = static_cast<uint8_t>(checksum + byte);
@@ -614,7 +614,7 @@ struct CounterBlinkRuntime {
     }
 
     void feed(uint8_t id, std::initializer_list<uint8_t> payload, uint32_t nowMs = 10000) {
-        std::vector<uint8_t> packet{0xAA, 0xD6, 0xEA, id, static_cast<uint8_t>(payload.size() + 1)};
+        std::vector<uint8_t> packet{0xAA, 0xD8, 0xEA, id, static_cast<uint8_t>(payload.size() + 1)};
         packet.insert(packet.end(), payload);
         uint8_t checksum = 0;
         for (uint8_t value : packet) checksum = static_cast<uint8_t>(checksum + value);

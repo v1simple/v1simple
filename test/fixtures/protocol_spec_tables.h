@@ -98,7 +98,7 @@ inline constexpr uint8_t kVrToCardBars[9] = {
     0, 1, 2, 2, 3, 4, 5, 5, 6
 };
 
-// Alert-row byte offsets. UNSOURCED.
+// ESP Specification 3.016, infV1Data.alertData layout (pp.37-38).
 inline constexpr uint8_t kAlertRowOffsetIndexCount = 0;
 inline constexpr uint8_t kAlertRowOffsetFreqMsb = 1;
 inline constexpr uint8_t kAlertRowOffsetFreqLsb = 2;
@@ -107,7 +107,7 @@ inline constexpr uint8_t kAlertRowOffsetRearRssi = 4;
 inline constexpr uint8_t kAlertRowOffsetBandArrow = 5;
 inline constexpr uint8_t kAlertRowOffsetAux0 = 6;
 
-// Alert-row aux0 bit masks. UNSOURCED.
+// ESP Specification 3.016, infV1Data.alertData layout (pp.37-38).
 inline constexpr uint8_t kAlertAux0PriorityMask = 0x80;
 inline constexpr uint8_t kAlertAux0JunkMask = 0x40;
 inline constexpr uint8_t kAlertAux0PhotoTypeMask = 0x0F;

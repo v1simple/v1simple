@@ -16,6 +16,7 @@
 #include <memory>
 
 #include "ble_alert_request_gate.h"
+#include "v1_request_flow_control.h"
 #include "ble_log_rate_limit.h"
 #include "ble_quiesce_policy.h"
 #include "modules/ble/ble_proxy_epoch_observer.h"
@@ -215,6 +216,16 @@ class V1BLEClient {
     // requires every V1-bound writer to pause while this bit is asserted.
     void onV1DisplayFlowControl(bool timeSliceHoldoff) {
         v1TimeSliceHoldoff_.store(timeSliceHoldoff, std::memory_order_release);
+        v1RequestFlowControl_.onDisplay();
+    }
+    void onV1Busy(const uint8_t* packetIds, size_t count) {
+        v1RequestFlowControl_.onBusy(packetIds, count);
+    }
+    void onV1RequestNotProcessed(uint8_t packetId) {
+        v1RequestFlowControl_.onRequestNotProcessed(packetId);
+        if (packetId == 0x41) { // reqStartAlertData
+            alertDataRequestGate_.invalidate(sessionGeneration());
+        }
     }
 
     // Request V1 to start sending alert data
@@ -429,7 +440,9 @@ class V1BLEClient {
         // suppress traffic addressed to the V1connection itself.
         constexpr uint8_t kV1DeviceId = 0x0A;
         const bool v1Bound = (data[1] & 0x0F) == kV1DeviceId;
-        return v1Bound && v1TimeSliceHoldoff_.load(std::memory_order_acquire);
+        if (!v1Bound) return false;
+        if (v1TimeSliceHoldoff_.load(std::memory_order_acquire)) return true;
+        return length > 3 && v1RequestFlowControl_.holds(data[3]);
     }
     // Nested callback classes - defined before member declarations that use them
     class ClientCallbacks : public NimBLEClientCallbacks {
@@ -554,6 +567,7 @@ class V1BLEClient {
     // Start fail-closed, matching Valentine's library: no V1-bound traffic is
     // emitted until a canonical display packet grants a time slice.
     std::atomic<bool> v1TimeSliceHoldoff_{true};
+    V1RequestFlowControl v1RequestFlowControl_;
     std::atomic<bool> shouldConnect_{false};             // Atomic for thread safety (set from BLE callbacks)
     std::atomic<bool> pendingConnectStateUpdate_{false}; // Deferred update from BLE callbacks
     std::atomic<uint32_t> pendingConnectStateGeneration_{0};
@@ -591,6 +605,7 @@ class V1BLEClient {
     DiscoveryTaskContext discoveryTaskContext_{};
     std::atomic<uint32_t> sessionGeneration_{0};
     BleAlertDataRequestGate alertDataRequestGate_;
+    std::bitset<256> connectedFollowupRetryUsed_;
     uint32_t activeDiscoveryGeneration_ = 0;
     static void discoveryTaskFunc(void* param);
 

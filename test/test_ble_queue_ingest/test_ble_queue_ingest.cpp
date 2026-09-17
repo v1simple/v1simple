@@ -475,6 +475,37 @@ void test_only_canonical_display_parses_update_time_slice_flow_control() {
     TEST_ASSERT_TRUE(client.lastTimeSliceHoldoff);
 }
 
+void test_canonical_v1_flow_control_packets_reach_the_session_owner() {
+    beginQueue();
+    const std::vector<uint8_t> rejected = makeFrame(
+        PACKET_ID_RESP_REQUEST_NOT_PROCESSED, 2, PACKET_ID_REQ_MAX_SWEEP_INDEX);
+    TEST_ASSERT_TRUE(deliverRawNotify(rejected.data(), rejected.size(), kCharacteristic,
+                                      kSession, 510));
+    queue.process();
+    TEST_ASSERT_EQUAL_INT(1, client.onV1RequestNotProcessedCalls);
+    TEST_ASSERT_EQUAL_HEX8(PACKET_ID_REQ_MAX_SWEEP_INDEX,
+                           client.lastNotProcessedPacketId);
+
+    std::vector<uint8_t> busy = makeFrame(PACKET_ID_INF_V1_BUSY, 3, 0);
+    busy[5] = PACKET_ID_REQ_MAX_SWEEP_INDEX;
+    busy[6] = PACKET_ID_REQ_ALL_SWEEP_DEFINITIONS;
+    TEST_ASSERT_TRUE(deliverRawNotify(busy.data(), busy.size(), kCharacteristic,
+                                      kSession, 511));
+    queue.process();
+    TEST_ASSERT_EQUAL_INT(1, client.onV1BusyCalls);
+    TEST_ASSERT_EQUAL_UINT(2, client.lastBusyPacketIds.size());
+    TEST_ASSERT_EQUAL_HEX8(PACKET_ID_REQ_MAX_SWEEP_INDEX,
+                           client.lastBusyPacketIds[0]);
+    TEST_ASSERT_EQUAL_HEX8(PACKET_ID_REQ_ALL_SWEEP_DEFINITIONS,
+                           client.lastBusyPacketIds[1]);
+
+    parser.parseReturnValue = false;
+    TEST_ASSERT_TRUE(deliverRawNotify(rejected.data(), rejected.size(), kCharacteristic,
+                                      kSession, 512));
+    queue.process();
+    TEST_ASSERT_EQUAL_INT(1, client.onV1RequestNotProcessedCalls);
+}
+
 void test_queue_saturation_counts_only_rejected_admission_and_preserves_head() {
     beginQueue(2);
     const std::vector<uint8_t> first = makeFrame(0x5B, 3, 0x61);
@@ -701,6 +732,7 @@ int main(int, char**) {
     RUN_TEST(test_rejected_all_volume_response_cannot_complete_capture);
     RUN_TEST(test_only_successfully_parsed_alert_packets_trigger_runtime_effects);
     RUN_TEST(test_only_canonical_display_parses_update_time_slice_flow_control);
+    RUN_TEST(test_canonical_v1_flow_control_packets_reach_the_session_owner);
     RUN_TEST(test_queue_saturation_counts_only_rejected_admission_and_preserves_head);
     RUN_TEST(test_malformed_input_resynchronizes_to_following_valid_frame);
     RUN_TEST(test_parser_packet_queued_beyond_first_drain_retains_pre_command_ingress);

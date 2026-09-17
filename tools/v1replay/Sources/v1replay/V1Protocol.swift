@@ -92,6 +92,14 @@ enum V1 {
         case reqUserBytes = 0x11
         case respUserBytes = 0x12
         case reqWriteUserBytes = 0x13
+        case reqWriteSweepDefinition = 0x15
+        case reqAllSweepDefinitions = 0x16
+        case respSweepDefinition = 0x17
+        case reqMaxSweepIndex = 0x19
+        case respMaxSweepIndex = 0x20
+        case respSweepWriteResult = 0x21
+        case reqSweepSections = 0x22
+        case respSweepSections = 0x23
         case displayData = 0x31       // infDisplayData
         case turnOffDisplay = 0x32
         case turnOnDisplay = 0x33
@@ -104,6 +112,8 @@ enum V1 {
         case reqStartAlertData = 0x41
         case reqStopAlertData = 0x42
         case alertData = 0x43         // respAlertData
+        case respRequestNotProcessed = 0x65
+        case infV1Busy = 0x66
     }
 
     // MARK: - Band / direction bits
@@ -522,6 +532,54 @@ enum V1 {
                      checksum: checksum)
     }
 
+    static func requestNotProcessedPacket(header: Header,
+                                          requestID: UInt8,
+                                          checksum: Bool) -> [UInt8] {
+        return frame(header: header,
+                     id: PacketID.respRequestNotProcessed.rawValue,
+                     payload: [requestID],
+                     checksum: checksum)
+    }
+
+    static func busyPacket(header: Header,
+                           requestIDs: [UInt8],
+                           checksum: Bool) -> [UInt8] {
+        precondition((1...5).contains(requestIDs.count), "InfV1Busy carries one to five IDs")
+        return frame(header: header,
+                     id: PacketID.infV1Busy.rawValue,
+                     payload: requestIDs,
+                     checksum: checksum)
+    }
+
+    static func sweepSectionsPacket(header: Header, checksum: Bool) -> [UInt8] {
+        // Two canonical Gen2 topology records: K and Ka operating regions.
+        return frame(header: header,
+                     id: PacketID.respSweepSections.rawValue,
+                     payload: [0x12, 0x61, 0xA8, 0x5D, 0xC0,
+                               0x22, 0x8C, 0xA0, 0x80, 0xE8],
+                     checksum: checksum)
+    }
+
+    static func maxSweepIndexPacket(header: Header, checksum: Bool) -> [UInt8] {
+        return frame(header: header,
+                     id: PacketID.respMaxSweepIndex.rawValue,
+                     payload: [0x01],
+                     checksum: checksum)
+    }
+
+    static func sweepDefinitionPackets(header: Header, checksum: Bool) -> [[UInt8]] {
+        let definitions: [[UInt8]] = [
+            [0x80, 0x5E, 0x56, 0x5D, 0xF2], // index 0, 24050...24150 MHz
+            [0x81, 0x85, 0x98, 0x85, 0x34], // index 1, 34100...34200 MHz
+        ]
+        return definitions.map {
+            frame(header: header,
+                  id: PacketID.respSweepDefinition.rawValue,
+                  payload: $0,
+                  checksum: checksum)
+        }
+    }
+
     // MARK: - Inbound frame decoding (commands from v1simple)
 
     struct InboundPacket: Equatable {
@@ -603,6 +661,14 @@ enum V1 {
         case 0x11: return "reqUserBytes"
         case 0x12: return "respUserBytes"
         case 0x13: return "reqWriteUserBytes"
+        case 0x15: return "reqWriteSweepDefinition"
+        case 0x16: return "reqAllSweepDefinitions"
+        case 0x17: return "respSweepDefinition"
+        case 0x19: return "reqMaxSweepIndex"
+        case 0x20: return "respMaxSweepIndex"
+        case 0x21: return "respSweepWriteResult"
+        case 0x22: return "reqSweepSections"
+        case 0x23: return "respSweepSections"
         case 0x31: return "infDisplayData"
         case 0x32: return "reqTurnOffMainDisplay"
         case 0x33: return "reqTurnOnMainDisplay"
@@ -615,6 +681,8 @@ enum V1 {
         case 0x41: return "reqStartAlertData"
         case 0x42: return "reqStopAlertData"
         case 0x43: return "respAlertData"
+        case 0x65: return "respRequestNotProcessed"
+        case 0x66: return "infV1Busy"
         default: return String(format: "0x%02X", id)
         }
     }

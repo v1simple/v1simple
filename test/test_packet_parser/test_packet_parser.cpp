@@ -1259,6 +1259,38 @@ void test_sweep_responses_require_canonical_destination_checksum_and_index_bits(
     TEST_ASSERT_TRUE(parser.sweepDefinitionsObservation().poisoned);
 }
 
+void test_v1_flow_control_packets_require_canonical_targeted_shapes() {
+    PacketParser parser;
+
+    auto rejected = makePacket(PACKET_ID_RESP_REQUEST_NOT_PROCESSED, {PACKET_ID_REQ_MAX_SWEEP_INDEX, 0},
+                               0xEA, 0xD6);
+    TEST_ASSERT_TRUE(parser.parse(rejected.data(), rejected.size(), 1000, 1));
+
+    auto busy = makePacket(PACKET_ID_INF_V1_BUSY,
+                           {PACKET_ID_REQ_MAX_SWEEP_INDEX, PACKET_ID_REQ_ALL_SWEEP_DEFINITIONS, 0},
+                           0xEA, 0xD6);
+    TEST_ASSERT_TRUE(parser.parse(busy.data(), busy.size(), 1001, 2));
+
+    auto noChecksumBusy = makePacket(PACKET_ID_INF_V1_BUSY,
+                                     {PACKET_ID_REQ_SWEEP_SECTIONS}, 0xE9, 0xD6);
+    TEST_ASSERT_TRUE(parser.parse(noChecksumBusy.data(), noChecksumBusy.size(), 1002, 3));
+
+    rejected[1] = 0xD8;
+    applyEspChecksum(rejected);
+    TEST_ASSERT_FALSE(parser.parse(rejected.data(), rejected.size(), 1003, 4));
+
+    busy = makePacket(PACKET_ID_INF_V1_BUSY,
+                      {PACKET_ID_REQ_MAX_SWEEP_INDEX, 0}, 0xEA, 0xD6);
+    busy[busy.size() - 2] ^= 0x01;
+    TEST_ASSERT_FALSE(parser.parse(busy.data(), busy.size(), 1004, 5));
+
+    const auto emptyBusy = makePacket(PACKET_ID_INF_V1_BUSY, {0}, 0xEA, 0xD6);
+    TEST_ASSERT_FALSE(parser.parse(emptyBusy.data(), emptyBusy.size(), 1005, 6));
+    const auto tooManyBusy = makePacket(PACKET_ID_INF_V1_BUSY,
+                                        {1, 2, 3, 4, 5, 6, 0}, 0xEA, 0xD6);
+    TEST_ASSERT_FALSE(parser.parse(tooManyBusy.data(), tooManyBusy.size(), 1006, 7));
+}
+
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
@@ -1312,5 +1344,6 @@ int main(int argc, char** argv) {
     RUN_TEST(test_bluetooth_indicator_requires_supported_version_and_accepts_both_blink_images);
     RUN_TEST(test_sweep_collectors_poison_conflicts_and_require_exact_max_set);
     RUN_TEST(test_sweep_responses_require_canonical_destination_checksum_and_index_bits);
+    RUN_TEST(test_v1_flow_control_packets_require_canonical_targeted_shapes);
     return UNITY_END();
 }

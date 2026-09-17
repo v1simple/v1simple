@@ -645,4 +645,50 @@ final class V1SessionContractTests: XCTestCase {
             savedMutedVolume: 0
         ))
     }
+
+    func testStandardSweepHandshakeExercisesBusyAndOneBoundedRejection() {
+        var session = V1.Session()
+        let sweepSections: [UInt8] = [0xAA, 0xDA, 0xE6, 0x22, 0x01, 0x8D, 0xAB]
+        let maxSweep: [UInt8] = [0xAA, 0xDA, 0xE6, 0x19, 0x01, 0x84, 0xAB]
+        let allDefinitions: [UInt8] = [0xAA, 0xDA, 0xE6, 0x16, 0x01, 0x81, 0xAB]
+
+        let sectionEffects = session.receive(sweepSections)[0].effects
+        XCTAssertEqual(sectionEffects.count, 1)
+        guard case .reply(let sectionReply) = sectionEffects[0] else {
+            return XCTFail("sweep sections must reply")
+        }
+        XCTAssertEqual(sectionReply.bytes[3], V1.PacketID.respSweepSections.rawValue)
+
+        let rejectedEffects = session.receive(maxSweep)[0].effects
+        guard case .reply(let rejectedReply) = rejectedEffects[0] else {
+            return XCTFail("first max request must be rejected")
+        }
+        XCTAssertEqual(rejectedReply.bytes[3], V1.PacketID.respRequestNotProcessed.rawValue)
+        XCTAssertEqual(rejectedReply.bytes[5], V1.PacketID.reqMaxSweepIndex.rawValue)
+
+        let definitionEffects = session.receive(allDefinitions)[0].effects
+        let definitionIDs = definitionEffects.compactMap { effect -> UInt8? in
+            guard case .reply(let reply) = effect else { return nil }
+            return reply.bytes[3]
+        }
+        XCTAssertEqual(definitionIDs, [
+            V1.PacketID.infV1Busy.rawValue,
+            V1.PacketID.respSweepDefinition.rawValue,
+            V1.PacketID.respSweepDefinition.rawValue,
+        ])
+
+        let retryEffects = session.receive(maxSweep)[0].effects
+        guard case .reply(let maxReply) = retryEffects[0] else {
+            return XCTFail("max retry must reply")
+        }
+        XCTAssertEqual(maxReply.bytes[3], V1.PacketID.respMaxSweepIndex.rawValue)
+        XCTAssertEqual(maxReply.bytes[5], 0x01)
+
+        session.resetTransport()
+        let nextSessionEffects = session.receive(maxSweep)[0].effects
+        guard case .reply(let nextRejectedReply) = nextSessionEffects[0] else {
+            return XCTFail("new transport must re-arm the exercise")
+        }
+        XCTAssertEqual(nextRejectedReply.bytes[3], V1.PacketID.respRequestNotProcessed.rawValue)
+    }
 }

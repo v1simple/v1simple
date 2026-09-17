@@ -580,6 +580,42 @@ void test_missing_snapshot_response_times_out_as_partial_before_callback() {
     TEST_ASSERT_EQUAL_INT(1, gStableCallbackCalls);
 }
 
+void test_rejected_sweep_request_retries_once_after_the_clean_display_barrier() {
+    V1BLEClient client;
+    client.connectedFollowupStep_ = V1BLEClient::ConnectedFollowupStep::REQUEST_SWEEP_SECTIONS;
+    client.connectedFollowupSendDeadlineMs_ = 2000;
+
+    client.processConnectedFollowup();
+    client.processConnectedFollowup();
+    client.processConnectedFollowup();
+    TEST_ASSERT_EQUAL(V1BLEClient::ConnectedFollowupStep::WAIT_SWEEP_SNAPSHOT,
+                      client.connectedFollowupStep_);
+    TEST_ASSERT_EQUAL_UINT(3, gSentPackets.size());
+
+    client.onV1RequestNotProcessed(PACKET_ID_REQ_MAX_SWEEP_INDEX);
+    client.processConnectedFollowup();
+    TEST_ASSERT_EQUAL(V1BLEClient::ConnectedFollowupStep::WAIT_SWEEP_SNAPSHOT,
+                      client.connectedFollowupStep_);
+    client.onV1DisplayFlowControl(false);
+    client.processConnectedFollowup();
+    TEST_ASSERT_EQUAL(V1BLEClient::ConnectedFollowupStep::REQUEST_MAX_SWEEP_INDEX,
+                      client.connectedFollowupStep_);
+    client.processConnectedFollowup();
+    client.processConnectedFollowup();
+    TEST_ASSERT_EQUAL(V1BLEClient::ConnectedFollowupStep::WAIT_SWEEP_SNAPSHOT,
+                      client.connectedFollowupStep_);
+    TEST_ASSERT_EQUAL_UINT(5, gSentPackets.size());
+    assertPacket(kMaxSweepIndexRequest, sizeof(kMaxSweepIndexRequest), gSentPackets[3]);
+    assertPacket(kAllSweepDefinitionsRequest, sizeof(kAllSweepDefinitionsRequest), gSentPackets[4]);
+
+    client.onV1RequestNotProcessed(PACKET_ID_REQ_MAX_SWEEP_INDEX);
+    client.onV1DisplayFlowControl(false);
+    client.processConnectedFollowup();
+    TEST_ASSERT_EQUAL(V1BLEClient::ConnectedFollowupStep::WAIT_SWEEP_SNAPSHOT,
+                      client.connectedFollowupStep_);
+    TEST_ASSERT_EQUAL_UINT(5, gSentPackets.size());
+}
+
 int main(int argc, char** argv) {
     UNITY_BEGIN();
     RUN_TEST(test_explicit_settings_recapture_requires_idle_known_connected_session_and_resets_evidence);
@@ -596,5 +632,6 @@ int main(int argc, char** argv) {
     RUN_TEST(test_unknown_version_timeout_skips_all_volume_and_marks_partial);
     RUN_TEST(test_missing_expected_all_volume_response_times_out_as_partial);
     RUN_TEST(test_missing_snapshot_response_times_out_as_partial_before_callback);
+    RUN_TEST(test_rejected_sweep_request_retries_once_after_the_clean_display_barrier);
     return UNITY_END();
 }

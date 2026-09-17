@@ -26,6 +26,10 @@ class BleAlertDataRequestGate {
         hasSuccessfulSend_ = true;
     }
 
+    void invalidate(uint32_t sessionGeneration) {
+        if (hasSuccessfulSend(sessionGeneration)) hasSuccessfulSend_ = false;
+    }
+
   private:
     uint32_t sessionGeneration_ = 0;
     uint32_t lastSuccessfulSendMs_ = 0;

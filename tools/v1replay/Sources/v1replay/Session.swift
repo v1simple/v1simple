@@ -106,6 +106,8 @@ extension V1 {
         private(set) var alertDataRequested = false
         private(set) var controlState: ControlState
         private var userBytes: UserBytesStore
+        private var rejectedMaxSweepIndexOnce = false
+        private var reportedSweepDefinitionsBusyOnce = false
 
         init(config: Config = Config()) {
             self.config = config
@@ -178,6 +180,8 @@ extension V1 {
             receiveBuffer.removeAll(keepingCapacity: true)
             pendingPackets.removeAll(keepingCapacity: true)
             alertDataRequested = false
+            rejectedMaxSweepIndexOnce = false
+            reportedSweepDefinitionsBusyOnce = false
         }
 
         mutating func subscribe(central: UUID, channel: SubscriptionChannel) {
@@ -290,6 +294,64 @@ extension V1 {
                         checksum: config.outboundChecksum
                     )
                 ))]
+
+            case PacketID.reqSweepSections.rawValue:
+                guard packet.payload.isEmpty else {
+                    return rejectUnexpectedPayload(packet)
+                }
+                effects = [.reply(ReplyDecision(
+                    channel: .displayShort,
+                    bytes: V1.sweepSectionsPacket(
+                        header: config.header,
+                        checksum: config.outboundChecksum
+                    )
+                ))]
+
+            case PacketID.reqMaxSweepIndex.rawValue:
+                guard packet.payload.isEmpty else {
+                    return rejectUnexpectedPayload(packet)
+                }
+                if !rejectedMaxSweepIndexOnce {
+                    rejectedMaxSweepIndexOnce = true
+                    effects = [.reply(ReplyDecision(
+                        channel: .displayShort,
+                        bytes: V1.requestNotProcessedPacket(
+                            header: config.header,
+                            requestID: PacketID.reqMaxSweepIndex.rawValue,
+                            checksum: config.outboundChecksum
+                        )
+                    ))]
+                } else {
+                    effects = [.reply(ReplyDecision(
+                        channel: .displayShort,
+                        bytes: V1.maxSweepIndexPacket(
+                            header: config.header,
+                            checksum: config.outboundChecksum
+                        )
+                    ))]
+                }
+
+            case PacketID.reqAllSweepDefinitions.rawValue:
+                guard packet.payload.isEmpty else {
+                    return rejectUnexpectedPayload(packet)
+                }
+                var replies: [Effect] = []
+                if !reportedSweepDefinitionsBusyOnce {
+                    reportedSweepDefinitionsBusyOnce = true
+                    replies.append(.reply(ReplyDecision(
+                        channel: .displayShort,
+                        bytes: V1.busyPacket(
+                            header: config.header,
+                            requestIDs: [PacketID.reqAllSweepDefinitions.rawValue],
+                            checksum: config.outboundChecksum
+                        )
+                    )))
+                }
+                replies.append(contentsOf: V1.sweepDefinitionPackets(
+                    header: config.header,
+                    checksum: config.outboundChecksum
+                ).map { .reply(ReplyDecision(channel: .displayShort, bytes: $0)) })
+                effects = replies
 
             case PacketID.reqStartAlertData.rawValue:
                 guard packet.payload.isEmpty else {

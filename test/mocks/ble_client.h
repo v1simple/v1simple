@@ -46,7 +46,11 @@ public:
     int onUserBytesReceivedCalls = 0;
     int onAllVolumeReceivedCalls = 0;
     int onV1DisplayFlowControlCalls = 0;
+    int onV1BusyCalls = 0;
+    int onV1RequestNotProcessedCalls = 0;
     bool lastTimeSliceHoldoff = true;
+    std::vector<uint8_t> lastBusyPacketIds;
+    uint8_t lastNotProcessedPacketId = 0;
     bool hasSessionUserBytesFlag = false;
     bool hasSessionAllVolumeFlag = false;
     bool bootReadyFlag = true;  // Default true to preserve existing test behavior
@@ -137,7 +141,11 @@ public:
         onUserBytesReceivedCalls = 0;
         onAllVolumeReceivedCalls = 0;
         onV1DisplayFlowControlCalls = 0;
+        onV1BusyCalls = 0;
+        onV1RequestNotProcessedCalls = 0;
         lastTimeSliceHoldoff = true;
+        lastBusyPacketIds.clear();
+        lastNotProcessedPacketId = 0;
         hasSessionUserBytesFlag = false;
         hasSessionAllVolumeFlag = false;
         bootReadyFlag = true;
@@ -194,6 +202,14 @@ public:
     void onV1DisplayFlowControl(bool holdoff) {
         onV1DisplayFlowControlCalls++;
         lastTimeSliceHoldoff = holdoff;
+    }
+    void onV1Busy(const uint8_t* packetIds, size_t count) {
+        onV1BusyCalls++;
+        lastBusyPacketIds.assign(packetIds, packetIds + count);
+    }
+    void onV1RequestNotProcessed(uint8_t packetId) {
+        onV1RequestNotProcessedCalls++;
+        lastNotProcessedPacketId = packetId;
     }
     void setConnected(bool v) { connected = v; }
     uint32_t sessionGeneration() const { return sessionGenerationValue; }

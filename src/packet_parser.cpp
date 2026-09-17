@@ -158,6 +158,8 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
     case PACKET_ID_RESP_CURRENT_VOLUME:
     case PACKET_ID_RESP_USER_BYTES:
     case PACKET_ID_VERSION:
+    case PACKET_ID_RESP_REQUEST_NOT_PROCESSED:
+    case PACKET_ID_INF_V1_BUSY:
         break;
     default:
         if (!validatePacket(data, length)) {
@@ -385,6 +387,23 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
         return true;
     case PACKET_ID_REQ_ALL_VOLUME: // 0x3C - outbound request, ignore echoes
         return true;
+
+    case PACKET_ID_RESP_REQUEST_NOT_PROCESSED:
+        // The payload is the exact request ID the V1 did not process.
+        return payload &&
+               V1PacketFraming::hasCanonicalResponseEvidenceForDestination(data, length, 1, 0xD6);
+
+    case PACKET_ID_INF_V1_BUSY: {
+        // ESP 3.015 carries one to five request IDs currently being processed.
+        // Each width must be origin/checksum/destination qualified before it
+        // can suppress any writer.
+        for (size_t count = 1; count <= 5; ++count) {
+            if (V1PacketFraming::hasCanonicalResponseEvidenceForDestination(data, length, count, 0xD6)) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     case PACKET_ID_RESP_MAX_SWEEP_INDEX: {
         if (!payload || !V1PacketFraming::hasCanonicalResponseEvidenceForDestination(data, length, 1, 0xD6)) {

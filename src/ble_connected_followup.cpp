@@ -32,6 +32,12 @@ void logNonCriticalFollowupFailure(BleLogRateLimitState& state, const char* mess
 } // namespace
 
 void V1BLEClient::processConnectedFollowup() {
+    const auto consumeBoundedRetry = [this](uint8_t packetId) {
+        if (!v1RequestFlowControl_.consumeReleasedRetry(packetId)) return false;
+        if (connectedFollowupRetryUsed_.test(packetId)) return false;
+        connectedFollowupRetryUsed_.set(packetId);
+        return true;
+    };
     switch (connectedFollowupStep_) {
     case ConnectedFollowupStep::NONE:
         return;
@@ -113,6 +119,12 @@ void V1BLEClient::processConnectedFollowup() {
     }
     case ConnectedFollowupStep::WAIT_VERSION: {
         const uint32_t nowMs = static_cast<uint32_t>(millis());
+        if (consumeBoundedRetry(PACKET_ID_VERSION)) {
+            connectedFollowupNextAttemptMs_ = 0;
+            connectedFollowupSendDeadlineMs_ = nowMs + CONNECTED_FOLLOWUP_SEND_TIMEOUT_MS;
+            connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_VERSION;
+            return;
+        }
         if (!hasV1FirmwareVersion()) {
             const bool timedOut = static_cast<int32_t>(
                                       nowMs - (versionRequestStartedMs_ + VERSION_RESPONSE_TIMEOUT_MS)) >= 0;
@@ -194,6 +206,18 @@ void V1BLEClient::processConnectedFollowup() {
     }
     case ConnectedFollowupStep::WAIT_SETTINGS_SNAPSHOT: {
         const uint32_t nowMs = static_cast<uint32_t>(millis());
+        if (consumeBoundedRetry(PACKET_ID_REQ_ALL_VOLUME)) {
+            connectedFollowupNextAttemptMs_ = 0;
+            connectedFollowupSendDeadlineMs_ = nowMs + CONNECTED_FOLLOWUP_SEND_TIMEOUT_MS;
+            connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_ALL_VOLUME;
+            return;
+        }
+        if (consumeBoundedRetry(PACKET_ID_REQ_USER_BYTES)) {
+            connectedFollowupNextAttemptMs_ = 0;
+            connectedFollowupSendDeadlineMs_ = nowMs + CONNECTED_FOLLOWUP_SEND_TIMEOUT_MS;
+            connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_USER_BYTES;
+            return;
+        }
         const bool timedOut = static_cast<int32_t>(
                                   nowMs - (settingsCaptureRequestStartedMs_ + SETTINGS_SNAPSHOT_RESPONSE_TIMEOUT_MS)) >=
                               0;
@@ -276,6 +300,24 @@ void V1BLEClient::processConnectedFollowup() {
     }
     case ConnectedFollowupStep::WAIT_SWEEP_SNAPSHOT: {
         const uint32_t nowMs = static_cast<uint32_t>(millis());
+        if (consumeBoundedRetry(PACKET_ID_REQ_SWEEP_SECTIONS)) {
+            connectedFollowupNextAttemptMs_ = 0;
+            connectedFollowupSendDeadlineMs_ = nowMs + CONNECTED_FOLLOWUP_SEND_TIMEOUT_MS;
+            connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_SWEEP_SECTIONS;
+            return;
+        }
+        if (consumeBoundedRetry(PACKET_ID_REQ_MAX_SWEEP_INDEX)) {
+            connectedFollowupNextAttemptMs_ = 0;
+            connectedFollowupSendDeadlineMs_ = nowMs + CONNECTED_FOLLOWUP_SEND_TIMEOUT_MS;
+            connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_MAX_SWEEP_INDEX;
+            return;
+        }
+        if (consumeBoundedRetry(PACKET_ID_REQ_ALL_SWEEP_DEFINITIONS)) {
+            connectedFollowupNextAttemptMs_ = 0;
+            connectedFollowupSendDeadlineMs_ = nowMs + CONNECTED_FOLLOWUP_SEND_TIMEOUT_MS;
+            connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_ALL_SWEEP_DEFINITIONS;
+            return;
+        }
         const bool complete = hasSessionSweepSections_ && hasSessionSweepMax_ && hasSessionSweepDefinitions_;
         const bool timedOut = static_cast<int32_t>(nowMs -
             (settingsCaptureRequestStartedMs_ + SETTINGS_SNAPSHOT_RESPONSE_TIMEOUT_MS)) >= 0;
@@ -309,6 +351,8 @@ bool V1BLEClient::beginSettingsRecapture() {
         return false;
     }
     resetSessionSettingsCapture();
+    v1RequestFlowControl_.clearReleasedRetries();
+    connectedFollowupRetryUsed_.reset();
     const uint32_t nowMs = static_cast<uint32_t>(millis());
     connectedFollowupNextAttemptMs_ = 0;
     connectedFollowupSendDeadlineMs_ = nowMs + CONNECTED_FOLLOWUP_SEND_TIMEOUT_MS;

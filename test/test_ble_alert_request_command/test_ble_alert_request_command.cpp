@@ -89,6 +89,40 @@ void test_time_slice_holdoff_defers_v1_bound_commands_until_display_release() {
     TEST_ASSERT_EQUAL_UINT32(1, harness.command.writeValueCalls());
 }
 
+void test_v1_busy_holds_only_listed_request_ids_until_a_clean_display() {
+    AlertRequestHarness harness(6);
+    const uint8_t busy[] = {PACKET_ID_REQ_CURRENT_VOLUME};
+    harness.client.onV1Busy(busy, 1);
+
+    mockMillis = 10000;
+    TEST_ASSERT_FALSE(harness.client.requestCurrentVolume());
+    TEST_ASSERT_TRUE(harness.client.requestUserBytes());
+    TEST_ASSERT_EQUAL_UINT32(1, harness.command.writeValueCalls());
+
+    mockMillis = 10005;
+    harness.client.onV1DisplayFlowControl(false);
+    TEST_ASSERT_FALSE(harness.client.requestCurrentVolume());
+    harness.client.onV1DisplayFlowControl(false);
+    TEST_ASSERT_TRUE(harness.client.requestCurrentVolume());
+    TEST_ASSERT_EQUAL_UINT32(2, harness.command.writeValueCalls());
+}
+
+void test_rejected_alert_start_can_retry_after_the_clean_display_barrier() {
+    AlertRequestHarness harness(8);
+    mockMillis = 2000;
+    TEST_ASSERT_TRUE(harness.client.requestAlertData());
+    TEST_ASSERT_EQUAL_UINT32(1, harness.command.writeValueCalls());
+
+    harness.client.onV1RequestNotProcessed(PACKET_ID_REQ_START_ALERT);
+    mockMillis = 2005;
+    TEST_ASSERT_FALSE(harness.client.requestAlertData());
+    TEST_ASSERT_EQUAL_UINT32(1, harness.command.writeValueCalls());
+
+    harness.client.onV1DisplayFlowControl(false);
+    TEST_ASSERT_TRUE(harness.client.requestAlertData());
+    TEST_ASSERT_EQUAL_UINT32(2, harness.command.writeValueCalls());
+}
+
 void test_failed_transport_write_does_not_consume_command_guard_slot() {
     AlertRequestHarness harness(7);
     harness.command.setWriteValueResult(false);
@@ -273,6 +307,8 @@ int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_command_guard_uses_successful_send_time_for_exact_boundary);
     RUN_TEST(test_time_slice_holdoff_defers_v1_bound_commands_until_display_release);
+    RUN_TEST(test_v1_busy_holds_only_listed_request_ids_until_a_clean_display);
+    RUN_TEST(test_rejected_alert_start_can_retry_after_the_clean_display_barrier);
     RUN_TEST(test_failed_transport_write_does_not_consume_command_guard_slot);
     RUN_TEST(test_new_session_generation_gets_an_immediate_first_command);
     RUN_TEST(test_alert_start_recovery_waits_for_subscription_and_optional_followups);

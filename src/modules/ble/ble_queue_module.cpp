@@ -536,6 +536,17 @@ void BleQueueModule::process() {
             ble_->onV1DisplayFlowControl(parser_->getDisplayState().timeSliceHoldoff);
         }
 
+        if (parseOk && packetId == PACKET_ID_RESP_REQUEST_NOT_PROCESSED && ble_) {
+            ble_->onV1RequestNotProcessed(packetPtr[5]);
+        }
+        if (parseOk && packetId == PACKET_ID_INF_V1_BUSY && ble_) {
+            const size_t checksumBytes = packetPtr[2] == 0xEA ? 1u : 0u;
+            if (static_cast<size_t>(packetPtr[4]) >= checksumBytes) {
+                const size_t busyCount = static_cast<size_t>(packetPtr[4]) - checksumBytes;
+                ble_->onV1Busy(&packetPtr[5], busyCount);
+            }
+        }
+
         if (parseOk && packetId == PACKET_ID_RESP_VERSION && ble_) {
             const DisplayState& state = parser_->getDisplayState();
             if (state.hasV1Version) {

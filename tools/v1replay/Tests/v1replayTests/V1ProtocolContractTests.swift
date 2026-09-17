@@ -81,6 +81,33 @@ final class V1ProtocolContractTests: XCTestCase {
         XCTAssertEqual(try ContractFrame.decode(replies.version).destination, 0xD6)
         XCTAssertEqual(try ContractFrame.decode(replies.allVolume).origin, 0xEA)
     }
+
+    func testSweepAndFlowControlRepliesUseCanonicalTargetedFraming() throws {
+        let rejected = V1.requestNotProcessedPacket(
+            header: .v1ToApp,
+            requestID: V1.PacketID.reqMaxSweepIndex.rawValue,
+            checksum: true
+        )
+        let busy = V1.busyPacket(
+            header: .v1ToApp,
+            requestIDs: [V1.PacketID.reqAllSweepDefinitions.rawValue],
+            checksum: true
+        )
+        let sections = V1.sweepSectionsPacket(header: .v1ToApp, checksum: true)
+        let maximum = V1.maxSweepIndexPacket(header: .v1ToApp, checksum: true)
+        let definitions = V1.sweepDefinitionPackets(header: .v1ToApp, checksum: true)
+
+        XCTAssertEqual(try ContractFrame.decode(rejected).payload, [0x19])
+        XCTAssertEqual(try ContractFrame.decode(busy).payload, [0x16])
+        XCTAssertEqual(try ContractFrame.decode(sections).packetID, 0x23)
+        XCTAssertEqual(try ContractFrame.decode(sections).payload.count, 10)
+        XCTAssertEqual(try ContractFrame.decode(maximum).payload, [0x01])
+        XCTAssertEqual(definitions.count, 2)
+        XCTAssertEqual(try definitions.map(ContractFrame.decode).map(\.packetID), [0x17, 0x17])
+        XCTAssertTrue(([rejected, busy, sections, maximum] + definitions).allSatisfy {
+            $0[1] == 0xD6 && $0[2] == 0xEA
+        })
+    }
 }
 
 private struct ContractFrame {

@@ -96,6 +96,13 @@ struct ProtocolContractProducer {
         let cribReplies = V1.cribReplyPackets(version: "4.1038", main: 4, muted: 0)
         emit(["crib-version", "41038", packetHex(cribReplies.version)])
         emit(["crib-volume", "4", "0", "4", "0", packetHex(cribReplies.allVolume)])
+
+        let cribPresentation = V1.cribPresentationPackets()
+        emit(["alert", "crib-ka", "2", "1", "1", "34700", packetHex(cribPresentation.alert)])
+        emit(["display", "crib-ka-one", "2", "1", "1", "0", "0", "0",
+              packetHex(cribPresentation.oneBar)])
+        emit(["display", "crib-ka-six", "2", "1", "6", "0", "0", "0",
+              packetHex(cribPresentation.sixBars)])
     }
 }
 """.lstrip()

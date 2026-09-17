@@ -247,6 +247,28 @@ void test_priority_batch_success_returns_200_after_one_callback() {
     TEST_ASSERT_EQUAL_UINT(2u, probe.updates.size());
 }
 
+void test_saved_network_response_names_logical_order_and_preserves_legacy_key() {
+    WebServer server(80);
+    Probe probe;
+    auto runtime = makeRuntime(probe);
+    runtime.getSavedNetworks = [](void*) {
+        WifiClientApiService::SavedNetworkSlotPayload slot;
+        slot.index = 0;
+        slot.ssid = "Garage";
+        slot.label = "Garage";
+        slot.priority = 0;
+        slot.lastConnectedAtSec = 17;
+        slot.configured = true;
+        return std::vector<WifiClientApiService::SavedNetworkSlotPayload>{slot};
+    };
+
+    WifiClientApiService::handleApiNetworks(server, runtime, nullptr, nullptr);
+
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    TEST_ASSERT_TRUE(contains(server.lastBody, "\"lastConnectedOrder\":17"));
+    TEST_ASSERT_TRUE(contains(server.lastBody, "\"lastConnectedAtSec\":17"));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_forget_persistence_failure_is_not_reported_as_success);
@@ -260,5 +282,6 @@ int main() {
     RUN_TEST(test_priority_batch_validates_all_entries_before_callback);
     RUN_TEST(test_priority_batch_maps_persist_failure_to_500);
     RUN_TEST(test_priority_batch_success_returns_200_after_one_callback);
+    RUN_TEST(test_saved_network_response_names_logical_order_and_preserves_legacy_key);
     return UNITY_END();
 }

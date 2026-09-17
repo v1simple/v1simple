@@ -229,8 +229,10 @@
     function normalizeWifiSlot(slot, fallbackIndex = 0) {
         const index = Number.isFinite(Number(slot?.index)) ? Number(slot.index) : fallbackIndex;
         const priority = Number.isFinite(Number(slot?.priority)) ? Number(slot.priority) : index;
-        const lastConnectedAtSec = Number.isFinite(Number(slot?.lastConnectedAtSec))
-            ? Number(slot.lastConnectedAtSec)
+        const lastConnectedOrder = Number.isFinite(
+            Number(slot?.lastConnectedOrder ?? slot?.lastConnectedAtSec)
+        )
+            ? Number(slot?.lastConnectedOrder ?? slot?.lastConnectedAtSec)
             : 0;
 
         return {
@@ -238,7 +240,7 @@
             ssid: slot?.ssid || '',
             label: slot?.label || '',
             priority,
-            lastConnectedAtSec,
+            lastConnectedOrder,
             configured: Boolean(slot?.configured || slot?.ssid),
             hasPassword: Boolean(slot?.hasPassword)
         };
@@ -1125,8 +1127,8 @@
                                                     {:else}
                                                         • open/no saved password
                                                     {/if}
-                                                    {#if slot.lastConnectedAtSec}
-                                                        • last connected {slot.lastConnectedAtSec}s
+                                                    {#if slot.lastConnectedOrder}
+                                                        • connected previously
                                                     {/if}
                                                 </p>
                                             </div>

@@ -82,6 +82,16 @@ final class V1ProtocolContractTests: XCTestCase {
         XCTAssertEqual(try ContractFrame.decode(replies.allVolume).origin, 0xEA)
     }
 
+    func testManualCribPresentationUsesCanonicalBroadcastFraming() throws {
+        let packets = V1.cribPresentationPackets()
+        let decoded = try [packets.alert, packets.oneBar, packets.sixBars].map(ContractFrame.decode)
+
+        XCTAssertEqual(decoded.map(\.destination), [0xD8, 0xD8, 0xD8])
+        XCTAssertEqual(decoded.map(\.origin), [0xEA, 0xEA, 0xEA])
+        XCTAssertEqual(decoded.map(\.packetID), [0x43, 0x31, 0x31])
+        XCTAssertEqual(decoded.map(\.payload.count), [7, 8, 8])
+    }
+
     func testSweepAndFlowControlRepliesUseCanonicalTargetedFraming() throws {
         let rejected = V1.requestNotProcessedPacket(
             header: .v1ToApp,

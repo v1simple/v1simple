@@ -41,6 +41,9 @@ inline constexpr const char* kNvsWifiStaSlotLabel[kNvsWifiStaSlotCount] = {"sta0
                                                                            "sta3Label"};
 inline constexpr const char* kNvsWifiStaSlotPriority[kNvsWifiStaSlotCount] = {"sta0Prio", "sta1Prio", "sta2Prio",
                                                                               "sta3Prio"};
+// These key names are retained for installed-data compatibility. Their uint32
+// payload is a logical connection-order token, not seconds, so equal-priority
+// recency remains meaningful after reboot and millis() wrap.
 inline constexpr const char* kNvsWifiStaSlotLastConnected[kNvsWifiStaSlotCount] = {"sta0Last", "sta1Last", "sta2Last",
                                                                                    "sta3Last"};
 

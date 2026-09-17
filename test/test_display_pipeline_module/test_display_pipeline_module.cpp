@@ -820,6 +820,77 @@ void test_handle_parsed_keeps_v1_cards_when_alp_is_primary() {
     TEST_ASSERT_EQUAL(DIR_FRONT, display.lastRenderFrame.cards[0].v1Alert.direction);
 }
 
+void test_alp_live_voice_uses_nonfirst_flagged_v1_priority_without_reordering_cards() {
+    configureAlpActiveWithGun(AlpGunType::MARKSMAN_ULTRALYTE,
+                              AlpLaserDirection::FRONT);
+    parser.setMainVolume(5);
+    AlertData ordinary = makeKAlert(24150);
+    ordinary.isPriority = false;
+    AlertData priority = makeKaAlert(34700);
+    priority.isPriority = true;
+    parser.setAlerts({ordinary, priority});
+
+    mockMillis = 2200;
+    mockMicros = 2200 * 1000UL;
+    module.handleParsed(2200);
+
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(2, display.lastRenderFrame.cardCount);
+    TEST_ASSERT_EQUAL_UINT32(24150, display.lastRenderFrame.cards[0].v1Alert.frequency);
+    TEST_ASSERT_EQUAL_UINT32(34700, display.lastRenderFrame.cards[1].v1Alert.frequency);
+    TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
+    TEST_ASSERT_EQUAL_UINT16(34700, g_lastVoiceFrequency);
+}
+
+void test_alp_live_voice_falls_back_when_flagged_v1_row_is_not_renderable() {
+    configureAlpActiveWithGun(AlpGunType::MARKSMAN_ULTRALYTE,
+                              AlpLaserDirection::FRONT);
+    parser.setMainVolume(5);
+    AlertData first = makeKAlert(24150);
+    first.isPriority = false;
+    AlertData second = makeKaAlert(0);
+    second.isPriority = true;
+    parser.setAlerts({first, second});
+
+    mockMillis = 2250;
+    mockMicros = 2250 * 1000UL;
+    module.handleParsed(2250);
+
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(2, display.lastRenderFrame.cardCount);
+    TEST_ASSERT_EQUAL_UINT32(24150, display.lastRenderFrame.cards[0].v1Alert.frequency);
+    TEST_ASSERT_EQUAL_UINT32(0, display.lastRenderFrame.cards[1].v1Alert.frequency);
+    TEST_ASSERT_TRUE(display.lastRenderFrame.cards[1].v1Alert.isPriority);
+    TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
+    TEST_ASSERT_EQUAL_UINT16(24150, g_lastVoiceFrequency);
+}
+
+void test_alp_live_voice_fallback_skips_all_unrenderable_v1_cards() {
+    configureAlpActiveWithGun(AlpGunType::MARKSMAN_ULTRALYTE,
+                              AlpLaserDirection::FRONT);
+    parser.setMainVolume(5);
+    AlertData first = makeKAlert(0);
+    first.isPriority = false;
+    AlertData flagged = makeKaAlert(0);
+    flagged.isPriority = true;
+    AlertData renderable = makeKAlert(24250);
+    renderable.isPriority = false;
+    parser.setAlerts({first, flagged, renderable});
+
+    mockMillis = 2300;
+    mockMicros = 2300 * 1000UL;
+    module.handleParsed(2300);
+
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(3, display.lastRenderFrame.cardCount);
+    TEST_ASSERT_EQUAL_UINT32(0, display.lastRenderFrame.cards[0].v1Alert.frequency);
+    TEST_ASSERT_EQUAL_UINT32(0, display.lastRenderFrame.cards[1].v1Alert.frequency);
+    TEST_ASSERT_TRUE(display.lastRenderFrame.cards[1].v1Alert.isPriority);
+    TEST_ASSERT_EQUAL_UINT32(24250, display.lastRenderFrame.cards[2].v1Alert.frequency);
+    TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
+    TEST_ASSERT_EQUAL_UINT16(24250, g_lastVoiceFrequency);
+}
+
 void test_handle_parsed_does_not_synthesize_when_alp_inactive() {
     // ALP wired but no session open — hasLaserEvent() == false
     alpModule.testSetEnabled(true);
@@ -1439,6 +1510,9 @@ int main() {
     RUN_TEST(test_handle_parsed_keeps_unknown_alp_direction_off_screen);
     RUN_TEST(test_handle_parsed_prioritizes_alp_laser_over_v1_radar);
     RUN_TEST(test_handle_parsed_keeps_v1_cards_when_alp_is_primary);
+    RUN_TEST(test_alp_live_voice_uses_nonfirst_flagged_v1_priority_without_reordering_cards);
+    RUN_TEST(test_alp_live_voice_falls_back_when_flagged_v1_row_is_not_renderable);
+    RUN_TEST(test_alp_live_voice_fallback_skips_all_unrenderable_v1_cards);
     RUN_TEST(test_handle_parsed_does_not_synthesize_when_alp_inactive);
     RUN_TEST(test_handle_parsed_suppresses_synthetic_alert_during_alp_warm_up);
     RUN_TEST(test_parsed_owner_preserves_live_v1_across_alp_warmup_and_persistence);

@@ -968,12 +968,14 @@ void WiFiManager::checkWifiClientStatus() {
                 } else {
                     Serial.println("[WiFiClient] Connected via auto-reconnect; skipping credential re-save");
                 }
-                if (hasPendingSlot) {
-                    currentConnectedSlotIndex_ = pendingConnectSlotIndex_;
-                    settings_.markWifiStaSlotConnected(static_cast<size_t>(pendingConnectSlotIndex_),
-                                                             static_cast<uint32_t>(millis() / 1000UL));
-                } else {
-                    currentConnectedSlotIndex_ = findConfiguredSlotBySsid(pendingConnectSSID_);
+                currentConnectedSlotIndex_ = hasPendingSlot
+                                                 ? pendingConnectSlotIndex_
+                                                 : findConfiguredSlotBySsid(pendingConnectSSID_);
+                if (currentConnectedSlotIndex_ >= 0 &&
+                    static_cast<size_t>(currentConnectedSlotIndex_) < kWifiStaSlotCount) {
+                    if (!settings_.markWifiStaSlotConnected(static_cast<size_t>(currentConnectedSlotIndex_))) {
+                        Serial.println("[WiFiClient] WARN: Connected-network recency persist failed");
+                    }
                 }
                 if (maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::CONNECTING) {
                     finishMaintenanceAutoConnect("connected", false);
@@ -1062,6 +1064,9 @@ void WiFiManager::checkWifiClientStatus() {
                     // retire STA based on the stale DISCONNECTED app state.
                     wifiClientState_ = WIFI_CLIENT_CONNECTED;
                     currentConnectedSlotIndex_ = slotIndex;
+                    if (!settings_.markWifiStaSlotConnected(static_cast<size_t>(currentConnectedSlotIndex_))) {
+                        Serial.println("[WiFiClient] WARN: Connected-network recency persist failed");
+                    }
                     cancelMaintenanceAutoConnect("physical_reconnect");
                     maintenanceAutoConnectStaDropGate_.clear();
                     wifiReconnectFailures_ = 0;

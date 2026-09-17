@@ -247,6 +247,11 @@ void SettingsManager::load() {
         slot.label = sanitizeWifiStaSlotLabelValue(preferences_.getString(kNvsWifiStaSlotLabel[i], ""));
         const uint8_t missingPriority = slot.isConfigured() ? static_cast<uint8_t>(i) : slot.priority;
         slot.priority = preferences_.getUChar(kNvsWifiStaSlotPriority[i], missingPriority);
+        // Installed releases stored boot-relative seconds under this key. No
+        // clock exists to reconstruct their cross-boot chronology, so retain
+        // their numeric order as an opaque migration hint. Every subsequently
+        // recorded saved-slot connection advances above the persisted maximum,
+        // making new ordering durable across reboot without rewriting compatible data.
         slot.lastConnectedAtSec = preferences_.getUInt(kNvsWifiStaSlotLastConnected[i], 0);
     }
 

@@ -2176,13 +2176,23 @@ bool SettingsManager::setWifiClientCredentials(const String& ssid, const String&
     return setWifiStaSlotCredentials(0, ssid, password, settings_.wifiStaSlots[0].label, 0);
 }
 
-void SettingsManager::markWifiStaSlotConnected(size_t index, uint32_t connectedAtSec) {
+bool SettingsManager::markWifiStaSlotConnected(size_t index) {
     if (!validWifiStaSlotIndex(index) || !settings_.wifiStaSlots[index].isConfigured()) {
-        return;
+        return false;
     }
-    settings_.wifiStaSlots[index].lastConnectedAtSec = connectedAtSec;
-    settings_.refreshWifiClientAliasFromSlots();
-    save();
+
+    V1Settings before;
+    V1Settings candidate;
+    if (!copySettingsExact(settings_, before) || !copySettingsExact(settings_, candidate) ||
+        !candidate.advanceWifiStaSlotRecency(index) || !refreshWifiClientAliasExact(candidate)) {
+        return false;
+    }
+
+    settings_ = std::move(candidate);
+    if (save()) return true;
+
+    settings_ = std::move(before);
+    return false;
 }
 
 bool SettingsManager::clearWifiStaSlot(size_t index) {

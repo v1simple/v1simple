@@ -20,11 +20,24 @@ struct V1Settings {
 class SettingsManager {
   public:
     V1Settings value;
+    int credentialWrites = 0;
+    int markCalls = 0;
+    size_t markedIndex = kWifiStaSlotCount;
     const V1Settings& get() const { return value; }
     bool resolveStorageTransactionsForMutation() { return true; }
     String getWifiStaSlotPassword(size_t) const { return "password"; }
     String getWifiClientPassword() const { return "password"; }
-    bool setWifiStaSlotCredentials(size_t, const String&, const String&, const String&, uint8_t) { return true; }
-    bool setWifiClientCredentials(const String&, const String&) { return true; }
-    bool markWifiStaSlotConnected(size_t, uint32_t) { return true; }
+    bool setWifiStaSlotCredentials(size_t, const String&, const String&, const String&, uint8_t) {
+        ++credentialWrites;
+        return true;
+    }
+    bool setWifiClientCredentials(const String&, const String&) {
+        ++credentialWrites;
+        return true;
+    }
+    bool markWifiStaSlotConnected(size_t index) {
+        ++markCalls;
+        markedIndex = index;
+        return true;
+    }
 };

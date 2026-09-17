@@ -346,24 +346,10 @@ func runHelp() {
 }
 
 func runCrib() {
-    let displayHeader = V1.Header.draft
-
-    let alertHex = V1.AlertRow
-        .single(bars: 1, band: .ka, direction: .front, frequencyMHz: 34_700)
-        .packet(header: displayHeader, checksum: false)
-        .hexString
-    let oneBarHex = V1.DisplayFrame
-        .alerting(bars: 1, band: .ka, direction: .front, bogeyCount: 1,
-                  muted: false, volume: 0x00, displayOn: false,
-                  includeModeBits: false)
-        .packet(header: displayHeader, checksum: false)
-        .hexString
-    let sixBarHex = V1.DisplayFrame
-        .alerting(bars: 6, band: .ka, direction: .front, bogeyCount: 1,
-                  muted: false, volume: 0x00, displayOn: false,
-                  includeModeBits: false)
-        .packet(header: displayHeader, checksum: false)
-        .hexString
+    let presentation = V1.cribPresentationPackets()
+    let alertHex = presentation.alert.hexString
+    let oneBarHex = presentation.oneBar.hexString
+    let sixBarHex = presentation.sixBars.hexString
     let replies = V1.cribReplyPackets(version: "4.1038", main: 4, muted: 0)
     let versionHex = replies.version.hexString
     let volumeHex = replies.allVolume.hexString

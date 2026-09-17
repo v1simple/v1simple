@@ -182,6 +182,8 @@ describe('settings route page', () => {
         await screen.findByText('Garage');
         await screen.findByText('Phone');
         await screen.findByText('Slot 3: Empty slot');
+        expect(screen.getAllByText(/connected previously/i)).toHaveLength(2);
+        expect(screen.queryByText(/last connected \d+s/i)).not.toBeInTheDocument();
         expect(fetchMock.mock.calls.some(([url]) => url === '/api/device/settings')).toBe(true);
         expect(fetchMock.mock.calls.some(([url]) => url === '/api/wifi/status')).toBe(true);
         expect(fetchMock.mock.calls.some(([url]) => url === '/api/wifi/networks')).toBe(true);

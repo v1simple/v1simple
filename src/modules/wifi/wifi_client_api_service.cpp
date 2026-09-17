@@ -118,6 +118,9 @@ static void sendSavedNetworks(WebServer& server, const std::vector<SavedNetworkS
         obj["label"] = slot.label;
         obj["priority"] = slot.priority;
         obj["hasPassword"] = slot.hasPassword;
+        // lastConnectedOrder is the truthful name for new clients. Preserve
+        // the historical key for clients that already consume this payload.
+        obj["lastConnectedOrder"] = slot.lastConnectedAtSec;
         obj["lastConnectedAtSec"] = slot.lastConnectedAtSec;
         obj["configured"] = slot.configured;
     }

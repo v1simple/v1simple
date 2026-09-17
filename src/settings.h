@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <vector>
 #include "color_themes.h"
 
@@ -108,6 +109,11 @@ struct WifiStaSlot {
     String ssid;
     String label;
     uint8_t priority;
+    // Compatibility note: this member and its persisted/API/backup key retain
+    // the historical `lastConnectedAtSec` name, but the value is a logical
+    // connection-order token, not uptime or wall-clock seconds.  Persisting a
+    // logical token keeps equal-priority recency comparable across reboot and
+    // millis() wrap without inventing a clock the device does not have.
     uint32_t lastConnectedAtSec;
 
     WifiStaSlot() : ssid(""), label(""), priority(0), lastConnectedAtSec(0) {}
@@ -430,6 +436,51 @@ struct V1Settings {
     }
 
     bool hasConfiguredWifiStaSlot() const { return primaryWifiStaSlotIndex() >= 0; }
+
+    bool advanceWifiStaSlotRecency(size_t connectedIndex) {
+        if (connectedIndex >= kWifiStaSlotCount || !wifiStaSlots[connectedIndex].isConfigured()) {
+            return false;
+        }
+
+        uint32_t highestOrder = 0;
+        for (const WifiStaSlot& slot : wifiStaSlots) {
+            if (slot.isConfigured()) highestOrder = std::max(highestOrder, slot.lastConnectedAtSec);
+        }
+
+        if (highestOrder == std::numeric_limits<uint32_t>::max()) {
+            // A logical sequence can eventually exhaust uint32_t. Rebase the
+            // at-most-four configured slots to compact ranks while preserving
+            // the exact comparison contract: larger token first, then lower
+            // slot index. This is deterministic across reboot and never uses
+            // uptime as persisted time.
+            size_t oldestFirst[kWifiStaSlotCount] = {};
+            size_t count = 0;
+            for (size_t index = 0; index < kWifiStaSlotCount; ++index) {
+                if (!wifiStaSlots[index].isConfigured()) continue;
+                size_t insertAt = count;
+                while (insertAt > 0) {
+                    const size_t previous = oldestFirst[insertAt - 1u];
+                    const WifiStaSlot& candidate = wifiStaSlots[index];
+                    const WifiStaSlot& prior = wifiStaSlots[previous];
+                    const bool candidateIsOlder =
+                        candidate.lastConnectedAtSec < prior.lastConnectedAtSec ||
+                        (candidate.lastConnectedAtSec == prior.lastConnectedAtSec && index > previous);
+                    if (!candidateIsOlder) break;
+                    oldestFirst[insertAt] = previous;
+                    --insertAt;
+                }
+                oldestFirst[insertAt] = index;
+                ++count;
+            }
+            for (size_t order = 0; order < count; ++order) {
+                wifiStaSlots[oldestFirst[order]].lastConnectedAtSec = static_cast<uint32_t>(order + 1u);
+            }
+            highestOrder = static_cast<uint32_t>(count);
+        }
+
+        wifiStaSlots[connectedIndex].lastConnectedAtSec = highestOrder + 1u;
+        return true;
+    }
 
     void refreshWifiClientAliasFromSlots() {
         if (const WifiStaSlot* slot = primaryWifiStaSlot()) {
@@ -902,7 +953,7 @@ class SettingsManager {
     bool setWifiClientCredentials(const String& ssid, const String& password);
     bool setWifiStaSlotCredentials(size_t index, const String& ssid, const String& password, const String& label,
                                    uint8_t priority);
-    void markWifiStaSlotConnected(size_t index, uint32_t connectedAtSec);
+    bool markWifiStaSlotConnected(size_t index);
     bool clearWifiStaSlot(size_t index);
     bool clearWifiClientCredentials(); // Forget saved network
     SettingsPersistResult applyWifiStaPriorityUpdates(const std::vector<WifiStaPriorityUpdate>& updates);

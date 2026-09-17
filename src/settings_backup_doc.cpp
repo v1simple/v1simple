@@ -320,6 +320,10 @@ bool prepareNetworkFields(const JsonDocument& doc, BackupRestoreScope scope, Pre
             if (!source["priority"].isUnbound() && !source["priority"].isNull() &&
                 !source["priority"].is<int>()) return false;
             if (source["lastConnectedAtSec"].is<uint32_t>()) {
+                // v21 retains this historical field name. Treat its value as
+                // an opaque logical order token; older uptime-derived values
+                // preserve their numeric order until new connections advance
+                // above them.
                 target.slot.lastConnectedAtSec = source["lastConnectedAtSec"].as<uint32_t>();
             } else if (source["lastConnectedAtSec"].is<int>()) {
                 target.slot.lastConnectedAtSec =

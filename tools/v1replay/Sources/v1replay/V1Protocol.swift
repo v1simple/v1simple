@@ -523,6 +523,25 @@ enum V1 {
         )
     }
 
+    /// Live LightBlue stimuli accepted by the production parser. Historical
+    /// DA/E4 fixture packets remain documented separately and are never emitted
+    /// by the interactive crib command.
+    static func cribPresentationPackets() -> (alert: [UInt8], oneBar: [UInt8], sixBars: [UInt8]) {
+        let header = Header.broadcastInformation
+        let alert = AlertRow
+            .single(bars: 1, band: .ka, direction: .front, frequencyMHz: 34_700)
+            .packet(header: header, checksum: true)
+
+        func display(bars: Int) -> [UInt8] {
+            return DisplayFrame
+                .alerting(bars: bars, band: .ka, direction: .front, bogeyCount: 1,
+                          muted: false, volume: 0x40, displayOn: true)
+                .packet(header: header, checksum: true)
+        }
+
+        return (alert: alert, oneBar: display(bars: 1), sixBars: display(bars: 6))
+    }
+
     /// respUserBytes — six user bytes.
     static func userBytesPacket(header: Header, bytes: [UInt8], checksum: Bool) -> [UInt8] {
         var payload = bytes

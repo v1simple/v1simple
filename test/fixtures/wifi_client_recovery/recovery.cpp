@@ -28,6 +28,8 @@ void requireRecovered(const WiFiManager& manager) {
     require(WiFi.physicalConnected && WiFi.radioMode == WIFI_AP_STA, "reconciliation removed the recovered STA");
     require(WiFi.apOnlyTransitions == 0 && WiFi.disconnects == 0, "reconciliation must not tear down STA");
     require(manager.maintenanceAutoConnectRetryAtMs_ == 0, "recovered link must not retain a retry");
+    require(manager.settings_.markCalls == 1, "physical reconciliation must advance recency exactly once");
+    require(manager.settings_.markedIndex == 0, "physical reconciliation advanced the wrong saved slot");
 }
 
 void reconnectAtScanBoundary(bool sharedUi, bool delayedStatus) {
@@ -133,6 +135,32 @@ void explicitDisconnectStillSuppressesReconnect() {
     require(manager.maintenanceAutoConnectRetryAtMs_ == 0, "explicit disconnect must not schedule automatic retry");
 }
 
+void successWithoutPendingSlotAdvancesResolvedSlotOnce(bool persistUnchangedCredentials) {
+    WiFiManager manager{};
+    WiFi = WiFiClass{};
+    manager.settings_.value.wifiStaSlots[0].ssid = "Saved";
+    manager.settings_.value.wifiStaSlots[0].label = "Saved";
+    manager.settings_.value.wifiStaSlots[0].priority = 0;
+    manager.wifiClientState_ = WIFI_CLIENT_CONNECTING;
+    manager.wifiConnectPhase_ = WiFiManager::WifiConnectPhase::IDLE;
+    manager.wifiConnectStartMs_ = 1;
+    manager.pendingConnectSSID_ = "Saved";
+    manager.pendingConnectPassword_ = "password";
+    manager.pendingConnectPersistCredentials_ = persistUnchangedCredentials;
+    manager.pendingConnectSlotIndex_ = -1;
+    WiFi.physicalConnected = true;
+    WiFi.cachedStatus = WL_CONNECTED;
+
+    manager.checkWifiClientStatus();
+
+    require(manager.currentConnectedSlotIndex_ == 0, "direct success must resolve the configured slot by SSID");
+    require(manager.settings_.markCalls == 1, "direct success must advance recency exactly once");
+    require(manager.settings_.markedIndex == 0, "direct success advanced the wrong slot");
+    require(manager.settings_.credentialWrites == 0, "recency resolution must not rewrite unchanged credentials");
+    require(manager.pendingConnectSSID_.length() == 0 && manager.pendingConnectSlotIndex_ == -1,
+            "direct success must clear pending connection state");
+}
+
 int main() {
     int failures = 0;
     const auto run = [&failures](const char* name, void (*test)()) {
@@ -152,5 +180,7 @@ int main() {
     run("completed_scan_before_harvest", scanCompletedBeforeHarvest);
     run("explicit_connecting_candidate_cancel", cancelConnectingCandidate);
     run("explicit_disconnect", explicitDisconnectStillSuppressesReconnect);
+    run("direct_success_without_pending_slot", []() { successWithoutPendingSlotAdvancesResolvedSlotOnce(true); });
+    run("reconnect_success_without_pending_slot", []() { successWithoutPendingSlotAdvancesResolvedSlotOnce(false); });
     return failures == 0 ? 0 : 1;
 }

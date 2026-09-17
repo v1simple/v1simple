@@ -1,9 +1,9 @@
 # LightBlue manual test — V1G-REPLAY
 
-Exercise the BLE and display path by hand. `v1replay crib` prints three tolerant
-draft presentation vectors and two canonical targeted replies.
+Exercise the BLE and display path by hand. `v1replay crib` prints three canonical
+checksummed broadcast presentation vectors and two canonical targeted replies.
 `verify/verify_protocol.py` compiles the Swift producers for the normal replay
-and canonical crib replies against the firmware parser.
+and every live crib packet, then checks them with the firmware parser.
 
 ## Virtual device
 
@@ -27,13 +27,37 @@ Full UUIDs are `92A0` + the ending + `-9E05-11E2-AA59-F23C91AEC05E`.
 Do not add a `0x2902` descriptor by hand. LightBlue and CoreBluetooth create the
 CCCD for notify characteristics automatically.
 
+## Packets — live canonical presentation framing
+
+These are the packets printed by `v1replay crib`. Display and alert information
+use the canonical checksummed broadcast header, `dest`/`src` = `D8 EA`.
+
+**Alert on B2CE** — synthetic Ka 34.700 GHz, front, priority, 1 bar:
+
+```
+AA D8 EA 43 08 11 87 8C 80 00 22 80 FD AB
+```
+
+**Display on B2CE** — one bar:
+
+```
+AA D8 EA 31 09 06 06 01 22 22 0C 0C 40 4F AB
+```
+
+**Display on B2CE** — six bars:
+
+```
+AA D8 EA 31 09 06 06 3F 22 22 0C 0C 40 8D AB
+```
+
 ## Packets — retired draft presentation framing
 
 These match the hand-written draft: no checksum byte, `dest`/`src` = `DA E4`.
-They remain documented only to reproduce historical host fixtures. Current
-firmware intentionally rejects them before they can alter alert or display
-state. Normal replay output and every device qualification use the canonical
-checksummed headers described below.
+They remain documented only to reproduce historical host fixtures and are not
+printed by `v1replay crib`. Do not notify them as live stimuli. Current firmware
+intentionally rejects them before they can alter alert or display state. Normal
+replay output, the live crib vectors above, and every device qualification use
+canonical checksummed headers.
 
 **Alert on B2CE** — synthetic Ka 34.700 GHz, front, priority, 1 bar:
 
@@ -145,11 +169,11 @@ symptom.
    subscribes to B2CE.
 2. Watch for writes on B6D4: `reqStartAlertData` (`0x41`), then `reqVersion`
    (`0x01`) and `reqAllVolume` (`0x3C`). Reply to the last two.
-3. Notify the one-bar display packet. One bar should appear.
-4. Notify the six-bar packet. The meter should jump to six.
+3. Notify the live canonical one-bar display packet. One bar should appear.
+4. Notify the live canonical six-bar packet. The meter should jump to six.
 5. Alternate 1 and 6 by hand a few times, then quickly, and watch for lag or a
    stuck meter.
-6. Notify the alert packet on B2CE and confirm the alert card shows the
-   synthetic Ka frequency and front direction.
+6. Notify the live canonical alert packet on B2CE and confirm the alert card
+   shows the synthetic Ka frequency and front direction.
 
 Then use `.build/v1replay demo` for a generated multi-strength sequence.

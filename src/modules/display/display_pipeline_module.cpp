@@ -70,10 +70,16 @@ DisplayState sanitizeDisconnectedRestoreState(const DisplayState& base) {
     return state;
 }
 
+bool isRenderableVoiceAlert(const AlertData& alert) {
+    return alert.isValid && alert.band != BAND_NONE && (alert.band == BAND_LASER || alert.frequency != 0);
+}
+
 FrameV1Alerts buildFrameV1Alerts(const RenderFrame& frame) {
     FrameV1Alerts result;
+    const bool frameCarriesV1Primary = frame.primaryKind == RenderFramePrimaryKind::V1_LIVE;
+    bool foundFlaggedRenderablePriority = false;
 
-    if (frame.primaryKind == RenderFramePrimaryKind::V1_LIVE) {
+    if (frameCarriesV1Primary) {
         result.alerts[result.alertCount++] = frame.v1Priority;
         result.hasPriority = true;
         result.priority = frame.v1Priority;
@@ -88,9 +94,20 @@ FrameV1Alerts buildFrameV1Alerts(const RenderFrame& frame) {
             break;
         }
         result.alerts[result.alertCount++] = card.v1Alert;
-        if (!result.hasPriority) {
+        if (!result.hasPriority && isRenderableVoiceAlert(card.v1Alert)) {
             result.hasPriority = true;
             result.priority = card.v1Alert;
+        }
+        // ALP owns the primary screen while its laser is live, so the V1's
+        // detector-selected priority remains in the card list. Preserve card
+        // order for presentation, but recover that row for speaker decisions.
+        // Keep the first-renderable fallback above only when no flagged
+        // renderable V1 row exists, matching PacketParser's resolution rule.
+        if (!frameCarriesV1Primary && !foundFlaggedRenderablePriority && card.v1Alert.isPriority &&
+            isRenderableVoiceAlert(card.v1Alert)) {
+            result.hasPriority = true;
+            result.priority = card.v1Alert;
+            foundFlaggedRenderablePriority = true;
         }
     }
 

@@ -1300,6 +1300,112 @@ void test_wifi_sta_slots_round_trip_and_primary_alias() {
     TEST_ASSERT_EQUAL_STRING("Phone", backupStaSlots[2]["ssid"].as<const char*>());
 }
 
+void test_wifi_sta_equal_priority_recency_advances_across_successive_boots() {
+    SettingsManager firstBoot(storage, profiles);
+    V1Settings& firstSettings = firstBoot.mutableSettings();
+    firstSettings.wifiClientEnabled = true;
+    firstSettings.wifiStaSlots[0].ssid = "GarageNet";
+    firstSettings.wifiStaSlots[0].label = "Garage";
+    firstSettings.wifiStaSlots[0].priority = 0;
+    firstSettings.wifiStaSlots[1].ssid = "PhoneHotspot";
+    firstSettings.wifiStaSlots[1].label = "Phone";
+    firstSettings.wifiStaSlots[1].priority = 0;
+    firstSettings.refreshWifiClientAliasFromSlots();
+    TEST_ASSERT_TRUE(firstBoot.save());
+    TEST_ASSERT_TRUE(firstBoot.markWifiStaSlotConnected(0));
+
+    SettingsManager secondBoot(storage, profiles);
+    secondBoot.load();
+    TEST_ASSERT_EQUAL_INT(0, secondBoot.get().primaryWifiStaSlotIndex());
+    const uint32_t garageOrder = secondBoot.get().wifiStaSlots[0].lastConnectedAtSec;
+    TEST_ASSERT_GREATER_THAN_UINT32(0u, garageOrder);
+    TEST_ASSERT_TRUE(secondBoot.markWifiStaSlotConnected(1));
+
+    SettingsManager thirdBoot(storage, profiles);
+    thirdBoot.load();
+    TEST_ASSERT_EQUAL_UINT32(garageOrder, thirdBoot.get().wifiStaSlots[0].lastConnectedAtSec);
+    TEST_ASSERT_GREATER_THAN_UINT32(garageOrder, thirdBoot.get().wifiStaSlots[1].lastConnectedAtSec);
+    TEST_ASSERT_EQUAL_INT(1, thirdBoot.get().primaryWifiStaSlotIndex());
+    TEST_ASSERT_EQUAL_STRING("PhoneHotspot", thirdBoot.get().wifiClientSSID.c_str());
+}
+
+void test_wifi_sta_recency_rebases_at_uint32_exhaustion_and_survives_reboot() {
+    SettingsManager beforeWrap(storage, profiles);
+    V1Settings& beforeSettings = beforeWrap.mutableSettings();
+    beforeSettings.wifiClientEnabled = true;
+    beforeSettings.wifiStaSlots[0].ssid = "Older";
+    beforeSettings.wifiStaSlots[0].label = "Older";
+    beforeSettings.wifiStaSlots[0].priority = 0;
+    beforeSettings.wifiStaSlots[0].lastConnectedAtSec = std::numeric_limits<uint32_t>::max() - 1u;
+    beforeSettings.wifiStaSlots[1].ssid = "PriorNewest";
+    beforeSettings.wifiStaSlots[1].label = "Prior newest";
+    beforeSettings.wifiStaSlots[1].priority = 0;
+    beforeSettings.wifiStaSlots[1].lastConnectedAtSec = std::numeric_limits<uint32_t>::max();
+    beforeSettings.refreshWifiClientAliasFromSlots();
+    TEST_ASSERT_TRUE(beforeWrap.save());
+
+    SettingsManager wrappingBoot(storage, profiles);
+    wrappingBoot.load();
+    TEST_ASSERT_TRUE(wrappingBoot.markWifiStaSlotConnected(0));
+    TEST_ASSERT_EQUAL_UINT32(3u, wrappingBoot.get().wifiStaSlots[0].lastConnectedAtSec);
+    TEST_ASSERT_EQUAL_UINT32(2u, wrappingBoot.get().wifiStaSlots[1].lastConnectedAtSec);
+    TEST_ASSERT_EQUAL_INT(0, wrappingBoot.get().primaryWifiStaSlotIndex());
+
+    SettingsManager afterWrapBoot(storage, profiles);
+    afterWrapBoot.load();
+    TEST_ASSERT_EQUAL_UINT32(3u, afterWrapBoot.get().wifiStaSlots[0].lastConnectedAtSec);
+    TEST_ASSERT_EQUAL_UINT32(2u, afterWrapBoot.get().wifiStaSlots[1].lastConnectedAtSec);
+    TEST_ASSERT_EQUAL_INT(0, afterWrapBoot.get().primaryWifiStaSlotIndex());
+}
+
+void test_wifi_sta_recency_persist_failure_rolls_back_ram_and_reboot_state() {
+    SettingsManager manager(storage, profiles);
+    V1Settings& current = manager.mutableSettings();
+    current.wifiClientEnabled = true;
+    current.wifiStaSlots[0].ssid = "GarageNet";
+    current.wifiStaSlots[0].label = "Garage";
+    current.wifiStaSlots[0].priority = 0;
+    current.wifiStaSlots[1].ssid = "PhoneHotspot";
+    current.wifiStaSlots[1].label = "Phone";
+    current.wifiStaSlots[1].priority = 0;
+    current.refreshWifiClientAliasFromSlots();
+    TEST_ASSERT_TRUE(manager.save());
+    TEST_ASSERT_TRUE(manager.markWifiStaSlotConnected(0));
+    const uint32_t committedGarageOrder = manager.get().wifiStaSlots[0].lastConnectedAtSec;
+
+    ObdSettingsUpdate learned;
+    learned.hasSavedAddress = true;
+    learned.savedAddress = "AA:BB:CC:DD:EE:FF";
+    TEST_ASSERT_TRUE(manager.applyObdSettingsUpdate(learned, SettingsPersistMode::Deferred).success);
+    TEST_ASSERT_TRUE(manager.deferredPersistPending());
+
+    mock_preferences::set_fail_writes_for_key(kNvsWifiStaSlotLastConnected[1]);
+    manager.serviceDeferredPersist(manager.deferredPersistNextAttemptAtMs());
+    const uint32_t retryMs = manager.deferredPersistNextAttemptAtMs();
+    TEST_ASSERT_TRUE(manager.deferredPersistRetryScheduled());
+    TEST_ASSERT_FALSE(manager.markWifiStaSlotConnected(1));
+
+    TEST_ASSERT_EQUAL_UINT32(committedGarageOrder, manager.get().wifiStaSlots[0].lastConnectedAtSec);
+    TEST_ASSERT_EQUAL_UINT32(0u, manager.get().wifiStaSlots[1].lastConnectedAtSec);
+    TEST_ASSERT_EQUAL_INT(0, manager.get().primaryWifiStaSlotIndex());
+    TEST_ASSERT_TRUE(manager.deferredPersistPending());
+    TEST_ASSERT_TRUE(manager.deferredPersistRetryScheduled());
+    TEST_ASSERT_EQUAL_UINT32(retryMs, manager.deferredPersistNextAttemptAtMs());
+
+    mock_preferences::set_fail_writes_for_key(nullptr);
+    manager.serviceDeferredPersist(retryMs - 1u);
+    TEST_ASSERT_TRUE(manager.deferredPersistPending());
+    manager.serviceDeferredPersist(retryMs);
+    TEST_ASSERT_FALSE(manager.deferredPersistPending());
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_EQUAL_UINT32(committedGarageOrder, rebooted.get().wifiStaSlots[0].lastConnectedAtSec);
+    TEST_ASSERT_EQUAL_UINT32(0u, rebooted.get().wifiStaSlots[1].lastConnectedAtSec);
+    TEST_ASSERT_EQUAL_INT(0, rebooted.get().primaryWifiStaSlotIndex());
+    TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF", rebooted.get().obdSavedAddress.c_str());
+}
+
 void test_wifi_client_disabled_flag_survives_reboot_with_saved_slots() {
     SettingsManager original(storage, profiles);
     V1Settings& settings = original.mutableSettings();
@@ -5528,6 +5634,9 @@ int main() {
     RUN_TEST(test_wifi_sta_slots_restore_without_passwords_clears_stale_secrets);
     RUN_TEST(test_legacy_station_backup_restores_to_slot0);
     RUN_TEST(test_wifi_sta_slots_round_trip_and_primary_alias);
+    RUN_TEST(test_wifi_sta_equal_priority_recency_advances_across_successive_boots);
+    RUN_TEST(test_wifi_sta_recency_rebases_at_uint32_exhaustion_and_survives_reboot);
+    RUN_TEST(test_wifi_sta_recency_persist_failure_rolls_back_ram_and_reboot_state);
     RUN_TEST(test_wifi_client_disabled_flag_survives_reboot_with_saved_slots);
     RUN_TEST(test_legacy_wifi_client_enabled_missing_still_heals_saved_slots);
     RUN_TEST(test_backup_restore_preserves_explicit_wifi_client_disabled_with_saved_slots);

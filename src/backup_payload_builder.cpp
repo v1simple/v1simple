@@ -269,6 +269,8 @@ BuildResult buildBackupDocument(JsonDocument& doc, const V1Settings& settings, c
         slotObj["ssid"] = slot.ssid;
         slotObj["label"] = slot.label;
         slotObj["priority"] = slot.priority;
+        // Keep the legacy JSON key for existing v21 backup readers. The value
+        // is a logical recency token, not elapsed or wall-clock seconds.
         slotObj["lastConnectedAtSec"] = slot.lastConnectedAtSec;
         wroteStaSlot = true;
     }

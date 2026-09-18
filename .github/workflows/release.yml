@@ -37,7 +37,7 @@ jobs:
         github.event.workflow_run.head_branch == 'main' &&
         github.event.workflow_run.head_repository.full_name == github.repository
       }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     outputs:
       published: ${{ steps.publish.outputs.published }}
@@ -125,7 +125,7 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.11'
+          python-version: '3.12'
 
       - name: Cache PlatformIO
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -134,12 +134,11 @@ jobs:
             ~/.platformio/packages
             ~/.platformio/platforms
             ~/.platformio/.cache
-          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini') }}
-          restore-keys: ${{ runner.os }}-pio-
+          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini', 'scripts/patch_*.py', 'scripts/verify_esp32s3_framework.py', 'scripts/check_platformio_core_version.py') }}
 
       - name: Install release toolchain
         run: |
-          pip install "platformio==6.1.19" "esptool==5.3.0" "Pillow>=10.4,<13" "littlefs-python==0.18.0"
+          pip install "pioarduino==6.1.19" "esptool==5.3.0" "Pillow>=10.4,<13" "littlefs-python==0.18.0"
           cd interface && npm ci
 
       - name: Verify exact release tool versions
@@ -305,7 +304,7 @@ jobs:
   deploy-pages:
     needs: release
     if: needs.release.outputs.deploy_pages == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       pages: write
       id-token: write

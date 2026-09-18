@@ -53,19 +53,40 @@ def check_production_flags() -> None:
 def check_arduino_overload_compatibility() -> None:
     parser = configparser.ConfigParser(interpolation=None)
     parser.read(ROOT / "platformio.ini", encoding="utf-8")
-    extra_scripts = shlex.split(parser.get("env:waveshare-349", "extra_scripts"))
-    overload_script = "pre:scripts/patch_arduino_overloads.py"
+    production_scripts = shlex.split(parser.get("env:waveshare-349", "extra_scripts"))
+    device_scripts = shlex.split(parser.get("env:device", "extra_scripts"))
+    fs_script = "pre:scripts/patch_arduino_fs_overload.py"
+    gfx_script = "pre:scripts/patch_arduino_gfx_overloads.py"
+    nimble_stream_script = "pre:scripts/patch_nimble_stream_overload.py"
     framework_check = "pre:scripts/verify_esp32s3_framework.py"
-    require(extra_scripts.count(overload_script) == 1,
-            "production builds must apply the Arduino overload repair exactly once")
-    require(overload_script in extra_scripts and framework_check in extra_scripts and
-            extra_scripts.index(overload_script) < extra_scripts.index(framework_check),
-            "Arduino overload repair must run before framework qualification")
+    for environment, scripts in (
+        ("production", production_scripts),
+        ("device", device_scripts),
+    ):
+        require(scripts.count(fs_script) == 1,
+                f"{environment} builds must apply the FS overload repair exactly once")
+        require(framework_check in scripts and scripts.index(fs_script) < scripts.index(framework_check),
+                f"{environment} FS overload repair must precede framework qualification")
+    require(production_scripts.count(gfx_script) == 1,
+            "production builds must apply the Arduino_GFX overload repair exactly once")
+    require(gfx_script not in device_scripts,
+            "device tests must not require the undeclared Arduino_GFX dependency")
+    require(production_scripts.count(nimble_stream_script) == 1,
+            "production builds must repair the NimBLE Stream overload exactly once")
 
-    source, constants = literal_constants(ROOT / "scripts" / "patch_arduino_overloads.py")
-    require("-Wno-" not in source and "#pragma GCC diagnostic" not in source,
-            "Arduino overload compatibility must repair declarations, not suppress warnings")
-    for prefix in ("GFX", "FS"):
+    fs_source, fs_constants = literal_constants(
+        ROOT / "scripts" / "patch_arduino_fs_overload.py"
+    )
+    gfx_source, gfx_constants = literal_constants(
+        ROOT / "scripts" / "patch_arduino_gfx_overloads.py"
+    )
+    nimble_source, nimble_constants = literal_constants(
+        ROOT / "scripts" / "patch_nimble_stream_overload.py"
+    )
+    for source in (fs_source, gfx_source, nimble_source):
+        require("-Wno-" not in source and "#pragma GCC diagnostic" not in source,
+                "Arduino overload compatibility must repair declarations, not suppress warnings")
+    for prefix, constants in (("FS", fs_constants), ("GFX", gfx_constants)):
         upstream_hash = constants.get(f"{prefix}_UPSTREAM_SHA256")
         patched_hash = constants.get(f"{prefix}_PATCHED_SHA256")
         require(isinstance(upstream_hash, str) and SHA256.fullmatch(upstream_hash) is not None,
@@ -73,17 +94,31 @@ def check_arduino_overload_compatibility() -> None:
         require(isinstance(patched_hash, str) and SHA256.fullmatch(patched_hash) is not None,
                 f"{prefix} patched overload source is not fingerprinted")
         require(upstream_hash != patched_hash, f"{prefix} overload fingerprints must differ")
-    gfx_flush = constants.get("GFX_FLUSH_PATCHED")
+    gfx_flush = gfx_constants.get("GFX_FLUSH_PATCHED")
     require(isinstance(gfx_flush, str) and
             "void flush() override { flush(false); }" in gfx_flush and
             "virtual void flush(bool force_flush);" in gfx_flush,
             "Arduino_GFX must implement Print::flush without changing force-flush dispatch")
-    gfx_write = constants.get("GFX_WRITE_PATCHED")
+    gfx_write = gfx_constants.get("GFX_WRITE_PATCHED")
     require(isinstance(gfx_write, str) and "using Print::write;" in gfx_write,
             "Arduino_GFX must retain buffered Print writes")
-    fs_read = constants.get("FS_READ_PATCHED")
+    fs_read = fs_constants.get("FS_READ_PATCHED")
     require(isinstance(fs_read, str) and "using Stream::readBytes;" in fs_read,
             "FS File must retain Stream byte-buffer reads")
+    nimble_upstream_hash = nimble_constants.get("UPSTREAM_SHA256")
+    nimble_patched_hash = nimble_constants.get("PATCHED_SHA256")
+    require(isinstance(nimble_upstream_hash, str) and
+            SHA256.fullmatch(nimble_upstream_hash) is not None,
+            "NimBLE Stream upstream source is not fingerprinted")
+    require(isinstance(nimble_patched_hash, str) and
+            SHA256.fullmatch(nimble_patched_hash) is not None and
+            nimble_patched_hash != nimble_upstream_hash,
+            "NimBLE Stream patched source is not uniquely fingerprinted")
+    nimble_declaration = nimble_constants.get("PATCHED_DECLARATION")
+    require(isinstance(nimble_declaration, str) and
+            "int availableForWrite() override" in nimble_declaration and
+            "size_t availableForWrite() const;" in nimble_declaration,
+            "NimBLE Stream must implement Print while preserving its const query")
 
     display_source = (ROOT / "include" / "display_driver.h").read_text(encoding="utf-8")
     display_exception = '''#if defined(__GNUC__)
@@ -115,7 +150,7 @@ def check_arduino_overload_compatibility() -> None:
     _, framework_constants = literal_constants(ROOT / "scripts" / "verify_esp32s3_framework.py")
     framework_expected = framework_constants.get("EXPECTED")
     require(isinstance(framework_expected, dict) and
-            framework_expected.get("fs_header_sha256") == constants.get("FS_PATCHED_SHA256"),
+            framework_expected.get("fs_header_sha256") == fs_constants.get("FS_PATCHED_SHA256"),
             "framework qualification must require the overload-compatible FS header")
 
 

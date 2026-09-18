@@ -57,6 +57,18 @@ def test_framework_version_mismatch_fails_before_build() -> None:
                 raise AssertionError("unexpected platform identity passed")
 
 
+def test_link_marker_policy_is_explicit_and_fail_closed() -> None:
+    assert verifier.require_webserver_link_marker("waveshare-349") is True
+    assert verifier.require_webserver_link_marker("esp32-s3-car-install") is True
+    assert verifier.require_webserver_link_marker("device") is False
+    try:
+        verifier.require_webserver_link_marker("future-esp32-environment")
+    except verifier.ContractError as exc:
+        assert "unsupported PlatformIO environment" in str(exc)
+    else:
+        raise AssertionError("unknown environment silently disabled the WebServer link proof")
+
+
 def test_linked_elf_must_materialize_2048_stack_argument() -> None:
     with tempfile.TemporaryDirectory(prefix="framework-contract-") as raw:
         root = Path(raw)
@@ -329,6 +341,41 @@ def test_linked_elf_rejects_missing_webserver_body_contract() -> None:
                 raise AssertionError("stock linked WebServer body reader unexpectedly passed")
 
 
+def test_device_link_allows_unlinked_webserver_after_source_proof() -> None:
+    with tempfile.TemporaryDirectory(prefix="framework-contract-") as raw:
+        root = Path(raw)
+        elf = root / "firmware.elf"
+        objdump = root / "xtensa-esp32s3-elf-objdump"
+        objcopy = root / "xtensa-esp32s3-elf-objcopy"
+        elf.write_bytes(b"elf")
+        objdump.write_bytes(b"tool")
+        objcopy.write_bytes(b"tool")
+
+        def no_webserver(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            result = raw_linked_fixture_result(command, **kwargs)
+            if "-t" in command:
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout="\n".join(
+                        line
+                        for line in result.stdout.splitlines()
+                        if "v1simple_webserver_exact_body_contract" not in line
+                    )
+                    + "\n",
+                )
+            return result
+
+        with mock.patch.object(verifier.subprocess, "run", side_effect=no_webserver):
+            evidence = verifier.verify_linked_elf(
+                elf,
+                objdump,
+                require_webserver_marker=False,
+            )
+        assert evidence["elf_ipc_stack_bytes"] == 2048
+        assert "elf_webserver_body_symbol" not in evidence
+
+
 def test_linked_elf_rejects_wrong_webserver_body_contract_value() -> None:
     with tempfile.TemporaryDirectory(prefix="framework-contract-") as raw:
         root = Path(raw)
@@ -360,6 +407,7 @@ def main() -> None:
     tests = (
         test_effective_sdkconfig_must_be_2048,
         test_framework_version_mismatch_fails_before_build,
+        test_link_marker_policy_is_explicit_and_fail_closed,
         test_linked_elf_must_materialize_2048_stack_argument,
         test_linked_elf_raw_byte_fallback_proves_exact_symbol_call,
         test_linked_elf_raw_byte_fallback_rejects_wrong_call_target,
@@ -368,6 +416,7 @@ def main() -> None:
         test_linked_elf_raw_byte_fallback_rejects_missing_call,
         test_linked_elf_rejects_missing_exact_task_symbol_before_fallback,
         test_linked_elf_rejects_missing_webserver_body_contract,
+        test_device_link_allows_unlinked_webserver_after_source_proof,
         test_linked_elf_rejects_wrong_webserver_body_contract_value,
     )
     for test in tests:

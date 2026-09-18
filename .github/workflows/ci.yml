@@ -43,7 +43,7 @@ jobs:
 
   test:
     name: ci-test.sh
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 36
 
     steps:
@@ -69,8 +69,7 @@ jobs:
             ~/.platformio/packages
             ~/.platformio/platforms
             ~/.platformio/.cache
-          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini') }}
-          restore-keys: ${{ runner.os }}-pio-
+          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini', 'scripts/patch_*.py', 'scripts/verify_esp32s3_framework.py', 'scripts/check_platformio_core_version.py') }}
 
       - name: Install camera validation dependency
         run: |
@@ -89,7 +88,7 @@ jobs:
       - name: Install Python toolchain
         run: |
           python3 -m venv --copies "$HOME/.platformio/penv"
-          "$HOME/.platformio/penv/bin/python" -m pip install "platformio==6.1.19" "esptool==5.3.0" "ruff==0.16.0" "cryptography>=41" "Pillow>=10.4,<13" "numpy>=2,<3" "littlefs-python==0.18.0"
+          "$HOME/.platformio/penv/bin/python" -m pip install "pioarduino==6.1.19" "esptool==5.3.0" "ruff==0.16.0" "cryptography>=41" "Pillow>=10.4,<13" "numpy>=2,<3" "littlefs-python==0.18.0"
           echo "$HOME/.platformio/penv/bin" >> "$GITHUB_PATH"
 
       - name: Run ci-test.sh

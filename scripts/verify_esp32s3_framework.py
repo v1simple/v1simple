@@ -251,31 +251,41 @@ def verify_raw_linked_ipc(
     verify_ipc_call_sequence(disassembly, task_address)
 
 
-def verify_linked_elf(elf: Path, objdump: Path) -> dict[str, object]:
+def verify_linked_elf(
+    elf: Path,
+    objdump: Path,
+    *,
+    require_webserver_marker: bool = True,
+) -> dict[str, object]:
     if not elf.is_file() or not objdump.is_file():
         raise ContractError("linked ELF or Xtensa objdump is missing")
     symbols = run_tool([str(objdump), "-t", str(elf)], "objdump symbol inspection")
     ipc_address, ipc_section, ipc_size = symbol_record(symbols, "esp_ipc_init")
     task_address, _, _ = symbol_record(symbols, "xTaskCreatePinnedToCore")
-    body_address, body_section, body_size = object_symbol_record(
-        symbols, "v1simple_webserver_exact_body_contract"
-    )
-    if body_size != 4:
-        raise ContractError("linked WebServer body-ingress contract marker has an unexpected size")
-    headers = run_tool([str(objdump), "-h", str(elf)], "objdump section inspection")
-    body_section_vma = section_vma(headers, body_section)
-    objcopy = objdump.with_name(objdump.name.replace("objdump", "objcopy"))
-    if not objcopy.is_file():
-        raise ContractError("Xtensa objcopy is missing for linked WebServer marker verification")
-    with tempfile.TemporaryDirectory(prefix="v1simple-webserver-proof-") as raw:
-        section_bytes = Path(raw) / "section.bin"
-        run_tool(
-            [str(objcopy), "--dump-section", f"{body_section}={section_bytes}", str(elf)],
-            "objcopy linked WebServer marker extraction",
+    if require_webserver_marker:
+        body_address, body_section, body_size = object_symbol_record(
+            symbols, "v1simple_webserver_exact_body_contract"
         )
-        marker = section_bytes.read_bytes()[body_address - body_section_vma : body_address - body_section_vma + 4]
-    if marker != (0x56314232).to_bytes(4, "little"):
-        raise ContractError("linked WebServer body-ingress contract marker value is incorrect")
+        if body_size != 4:
+            raise ContractError(
+                "linked WebServer body-ingress contract marker has an unexpected size"
+            )
+        headers = run_tool([str(objdump), "-h", str(elf)], "objdump section inspection")
+        body_section_vma = section_vma(headers, body_section)
+        objcopy = objdump.with_name(objdump.name.replace("objdump", "objcopy"))
+        if not objcopy.is_file():
+            raise ContractError("Xtensa objcopy is missing for linked WebServer marker verification")
+        with tempfile.TemporaryDirectory(prefix="v1simple-webserver-proof-") as raw:
+            section_bytes = Path(raw) / "section.bin"
+            run_tool(
+                [str(objcopy), "--dump-section", f"{body_section}={section_bytes}", str(elf)],
+                "objcopy linked WebServer marker extraction",
+            )
+            marker = section_bytes.read_bytes()[
+                body_address - body_section_vma : body_address - body_section_vma + 4
+            ]
+        if marker != (0x56314232).to_bytes(4, "little"):
+            raise ContractError("linked WebServer body-ingress contract marker value is incorrect")
     disassembly = run_tool(
         [str(objdump), "-d", "--disassemble=esp_ipc_init", str(elf)],
         "objdump linked esp_ipc_init inspection",
@@ -288,19 +298,35 @@ def verify_linked_elf(elf: Path, objdump: Path) -> dict[str, object]:
         verify_ipc_call_sequence(disassembly, task_address)
     else:
         verify_raw_linked_ipc(elf, objdump, ipc_address, ipc_section, ipc_size, task_address)
-    return {
+    evidence: dict[str, object] = {
         "elf_sha256": sha256_file(elf),
         "elf_ipc_symbol": "esp_ipc_init",
         "elf_ipc_stack_argument": "a12=1<<11",
         "elf_ipc_stack_bytes": EXPECTED["ipc_stack_bytes"],
-        "elf_webserver_body_symbol": "v1simple_webserver_exact_body_contract",
-        "elf_webserver_body_contract": "0x56314232",
     }
+    if require_webserver_marker:
+        evidence.update(
+            {
+                "elf_webserver_body_symbol": "v1simple_webserver_exact_body_contract",
+                "elf_webserver_body_contract": "0x56314232",
+            }
+        )
+    return evidence
 
 
 def write_evidence(path: Path, evidence: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def require_webserver_link_marker(pioenv: str) -> bool:
+    if pioenv in {"waveshare-349", "esp32-s3-car-install"}:
+        return True
+    if pioenv == "device":
+        return False
+    raise ContractError(
+        f"unsupported PlatformIO environment for linked framework proof: {pioenv}"
+    )
 
 
 def cli() -> int:
@@ -338,8 +364,8 @@ def configure_scons() -> None:
     toolchain_dir = Path(platform.get_package_dir("toolchain-xtensa-esp-elf") or "")
     memory_type = str(env.BoardConfig().get("build.arduino.memory_type", "qio_qspi"))  # noqa: F821
     evidence_path = Path(env.subst("$BUILD_DIR")) / "framework_contract.json"  # noqa: F821
-
     try:
+        require_webserver_marker = require_webserver_link_marker(env["PIOENV"])  # noqa: F821
         evidence = verify_framework(platform_dir, arduino_dir, libs_dir, memory_type)
         write_evidence(evidence_path, evidence)
     except ContractError as exc:
@@ -351,15 +377,17 @@ def configure_scons() -> None:
         del env
         try:
             linked = verify_linked_elf(
-                Path(str(target[0])), toolchain_dir / "bin" / "xtensa-esp32s3-elf-objdump"
+                Path(str(target[0])),
+                toolchain_dir / "bin" / "xtensa-esp32s3-elf-objdump",
+                require_webserver_marker=require_webserver_marker,
             )
             combined = dict(evidence)
             combined.update(linked)
             write_evidence(evidence_path, combined)
-            print(
-                "[FrameworkContract] linked ELF passes 2048-byte IPC stack and "
-                "exact WebServer body-ingress marker proofs"
-            )
+            proof = "2048-byte IPC stack"
+            if require_webserver_marker:
+                proof += " and exact WebServer body-ingress marker"
+            print(f"[FrameworkContract] linked ELF passes {proof} proofs")
             return 0
         except ContractError as exc:
             print(f"Error: ESP32-S3 linked framework contract failed: {exc}")
@@ -369,7 +397,7 @@ def configure_scons() -> None:
         "$BUILD_DIR/${PROGNAME}.elf",
         env.VerboseAction(  # noqa: F821
             verify_after_link,
-            "Verifying linked ESP IPC stack and exact WebServer body-ingress contracts",
+            "Verifying linked ESP IPC stack and applicable WebServer body-ingress contracts",
         ),  # noqa: F821
     )
     print(

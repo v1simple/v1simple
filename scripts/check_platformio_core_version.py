@@ -4,11 +4,15 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 
 REQUIRED_VERSION = (6, 1, 19)
+REQUIRED_DISTRIBUTION = "pioarduino"
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,6 +38,47 @@ def parse_version(raw: str) -> tuple[int, ...] | None:
 
 def format_version(version: tuple[int, ...]) -> str:
     return ".".join(str(part) for part in version)
+
+
+def pio_interpreter(pio: str) -> str | None:
+    executable = shutil.which(pio) if "/" not in pio else pio
+    if not executable:
+        return None
+    try:
+        first_line = Path(executable).read_text(encoding="utf-8").splitlines()[0]
+        command = shlex.split(first_line.removeprefix("#!"))
+    except (OSError, IndexError, ValueError):
+        return None
+    if not first_line.startswith("#!") or not command:
+        return None
+    if Path(command[0]).name == "env":
+        if len(command) != 2:
+            return None
+        return shutil.which(command[1])
+    return command[0]
+
+
+def installed_pioarduino_version(pio: str) -> tuple[int, ...] | None:
+    interpreter = pio_interpreter(pio)
+    if interpreter is None:
+        return None
+    probe = subprocess.run(
+        [
+            interpreter,
+            "-c",
+            (
+                "from importlib.metadata import version; "
+                f"print(version({REQUIRED_DISTRIBUTION!r}))"
+            ),
+        ],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    if probe.returncode != 0:
+        return None
+    return parse_version(probe.stdout.strip())
 
 
 def main() -> int:
@@ -62,8 +107,24 @@ def main() -> int:
         return 1
 
     if version == required_version:
-        print(f"[toolchain] PlatformIO Core {format_version(version)} matches the release pin")
-        return 0
+        distribution_version = installed_pioarduino_version(args.pio)
+        if distribution_version == required_version:
+            print(
+                f"[toolchain] pioarduino Core {format_version(version)} "
+                "matches the release pin"
+            )
+            return 0
+        found = (
+            format_version(distribution_version)
+            if distribution_version is not None
+            else "missing or unreadable"
+        )
+        print(
+            f"[toolchain] {REQUIRED_DISTRIBUTION} distribution is {found}; "
+            f"required {format_version(required_version)}.",
+            file=sys.stderr,
+        )
+        return 1
 
     print(
         f"[toolchain] PlatformIO Core {format_version(version)} does not match "
@@ -72,12 +133,12 @@ def main() -> int:
     )
     print(
         "[toolchain] Install the exact release toolchain, for example:\n"
-        "  python3 -m pip install 'platformio==6.1.19'\n"
+        "  python3 -m pip install 'pioarduino==6.1.19'\n"
         "\n"
         "[toolchain] Or use an isolated repo-local toolchain:\n"
         "  python3 -m venv .artifacts/pio-core-6.1.19\n"
         "  .artifacts/pio-core-6.1.19/bin/python -m pip install --upgrade pip setuptools wheel\n"
-        "  .artifacts/pio-core-6.1.19/bin/python -m pip install 'platformio==6.1.19'\n"
+        "  .artifacts/pio-core-6.1.19/bin/python -m pip install 'pioarduino==6.1.19'\n"
         "  export PIO_CMD=\"$PWD/.artifacts/pio-core-6.1.19/bin/pio\"\n"
         "\n"
         "[toolchain] Repo scripts automatically export certifi's CA bundle for PlatformIO TLS downloads.",

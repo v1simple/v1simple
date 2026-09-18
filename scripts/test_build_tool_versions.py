@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 import subprocess
 import sys
 import unittest
@@ -17,15 +18,32 @@ class BuildToolVersionTests(unittest.TestCase):
     def completed(output: str) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args=[], returncode=0, stdout=output)
 
-    def run_checker(self, module: object, output: str) -> int:
-        with (
+    def run_checker(
+        self,
+        module: object,
+        output: str,
+        *,
+        pioarduino_version: tuple[int, ...] | None = (6, 1, 19),
+    ) -> int:
+        patches = [
             mock.patch.object(sys, "argv", ["checker"]),
             mock.patch.object(
                 module.subprocess,
                 "run",
                 return_value=self.completed(output),
             ),
-        ):
+        ]
+        if module is check_platformio_core_version:
+            patches.append(
+                mock.patch.object(
+                    check_platformio_core_version,
+                    "installed_pioarduino_version",
+                    return_value=pioarduino_version,
+                )
+            )
+        with ExitStack() as stack:
+            for patch in patches:
+                stack.enter_context(patch)
             return module.main()
 
     def test_platformio_exact_pin_passes(self) -> None:
@@ -45,6 +63,16 @@ class BuildToolVersionTests(unittest.TestCase):
             self.run_checker(
                 check_platformio_core_version,
                 "PlatformIO Core, version 6.1.19-dev",
+            ),
+            1,
+        )
+
+    def test_upstream_platformio_without_pioarduino_does_not_pass(self) -> None:
+        self.assertEqual(
+            self.run_checker(
+                check_platformio_core_version,
+                "PlatformIO Core, version 6.1.19",
+                pioarduino_version=None,
             ),
             1,
         )

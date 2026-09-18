@@ -121,6 +121,11 @@ fi
 source "$ROOT_DIR/scripts/platformio_ca_bundle.sh"
 export PIO_CMD SSL_CERT_FILE REQUESTS_CA_BUNDLE
 
+CAR_BUILD_ARGS=(-e esp32-s3-car-install)
+if [[ -n "$PIO_JOBS" ]]; then
+  CAR_BUILD_ARGS+=(-j "$PIO_JOBS")
+fi
+
 echo "============================================"
 echo "Authoritative Local CI Gate"
 echo "============================================"
@@ -128,10 +133,12 @@ echo "============================================"
 section "Toolchain"
 run_step "PlatformIO Core version" python3 scripts/check_platformio_core_version.py --pio "$PIO_CMD"
 run_step "Workflow action pin contract" python3 scripts/check_workflow_action_pins.py
+run_step "Workflow runner/cache regression suite" python3 scripts/test_check_workflow_action_pins.py
 
 section "Build Contracts"
 run_step "Memory headroom regression suite" python3 scripts/test_check_memory_headroom.py
 run_step "Build reset regression suite" python3 scripts/test_build_reset.py
+run_step "CI gate sequencing regression suite" python3 scripts/test_ci_gate_contract.py
 run_step "ESP32-S3 framework contract regression suite" python3 scripts/test_verify_esp32s3_framework.py
 run_step "Production warning contract regression suite" python3 scripts/test_production_warning_contract.py
 run_step "Tracked source state regression suite" python3 scripts/test_check_tracked_source_state.py
@@ -191,7 +198,8 @@ run_step "Frontend lint and type checks" bash -c 'cd interface && npm run lint'
 run_step "Frontend unit tests" bash -c 'cd interface && npm test'
 
 section "Hardware Variant Builds"
-run_step "Car install firmware build" "$PIO_CMD" run -e esp32-s3-car-install
+run_step "Car install firmware clean" "$PIO_CMD" run "${CAR_BUILD_ARGS[@]}" -t clean
+run_step "Car install firmware build" "$PIO_CMD" run "${CAR_BUILD_ARGS[@]}"
 
 section "Production Build"
 run_step "Production artifact build" ./scripts/build_production_artifacts.sh

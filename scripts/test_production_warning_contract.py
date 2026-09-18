@@ -50,9 +50,43 @@ def check_production_flags() -> None:
             "car-install must inherit the strict production warning contract")
 
 
-def check_display_driver_vendor_exception() -> None:
-    source = (ROOT / "include" / "display_driver.h").read_text(encoding="utf-8")
-    exception = '''#if defined(__GNUC__)
+def check_arduino_overload_compatibility() -> None:
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.read(ROOT / "platformio.ini", encoding="utf-8")
+    extra_scripts = shlex.split(parser.get("env:waveshare-349", "extra_scripts"))
+    overload_script = "pre:scripts/patch_arduino_overloads.py"
+    framework_check = "pre:scripts/verify_esp32s3_framework.py"
+    require(extra_scripts.count(overload_script) == 1,
+            "production builds must apply the Arduino overload repair exactly once")
+    require(overload_script in extra_scripts and framework_check in extra_scripts and
+            extra_scripts.index(overload_script) < extra_scripts.index(framework_check),
+            "Arduino overload repair must run before framework qualification")
+
+    source, constants = literal_constants(ROOT / "scripts" / "patch_arduino_overloads.py")
+    require("-Wno-" not in source and "#pragma GCC diagnostic" not in source,
+            "Arduino overload compatibility must repair declarations, not suppress warnings")
+    for prefix in ("GFX", "FS"):
+        upstream_hash = constants.get(f"{prefix}_UPSTREAM_SHA256")
+        patched_hash = constants.get(f"{prefix}_PATCHED_SHA256")
+        require(isinstance(upstream_hash, str) and SHA256.fullmatch(upstream_hash) is not None,
+                f"{prefix} upstream overload source is not fingerprinted")
+        require(isinstance(patched_hash, str) and SHA256.fullmatch(patched_hash) is not None,
+                f"{prefix} patched overload source is not fingerprinted")
+        require(upstream_hash != patched_hash, f"{prefix} overload fingerprints must differ")
+    gfx_flush = constants.get("GFX_FLUSH_PATCHED")
+    require(isinstance(gfx_flush, str) and
+            "void flush() override { flush(false); }" in gfx_flush and
+            "virtual void flush(bool force_flush);" in gfx_flush,
+            "Arduino_GFX must implement Print::flush without changing force-flush dispatch")
+    gfx_write = constants.get("GFX_WRITE_PATCHED")
+    require(isinstance(gfx_write, str) and "using Print::write;" in gfx_write,
+            "Arduino_GFX must retain buffered Print writes")
+    fs_read = constants.get("FS_READ_PATCHED")
+    require(isinstance(fs_read, str) and "using Stream::readBytes;" in fs_read,
+            "FS File must retain Stream byte-buffer reads")
+
+    display_source = (ROOT / "include" / "display_driver.h").read_text(encoding="utf-8")
+    display_exception = '''#if defined(__GNUC__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Woverloaded-virtual"
 #endif
@@ -60,10 +94,29 @@ def check_display_driver_vendor_exception() -> None:
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
 #endif'''
-    require(source.count(exception) == 1,
-            "Arduino_GFX overloaded-virtual exception must wrap only its vendor include")
-    require(source.count('#pragma GCC diagnostic ignored "-Woverloaded-virtual"') == 1,
-            "overloaded-virtual may be suppressed only at the Arduino_GFX include")
+    require(display_source.count(display_exception) == 1,
+            "Arduino_GFX overload exception must wrap only its vendor include")
+    require(display_source.count('#pragma GCC diagnostic ignored "-Woverloaded-virtual"') == 1,
+            "display overload exception may be used only at the Arduino_GFX include")
+
+    project_inheritance = re.compile(r"\bpublic\s+(?:Print|Stream)\b")
+    reviewed_inheritance = {"include/json_stream_response.h"}
+    found_inheritance: set[str] = set()
+    for directory in (ROOT / "include", ROOT / "src"):
+        for path in directory.rglob("*"):
+            if path.suffix not in {".h", ".hpp", ".cpp"}:
+                continue
+            if project_inheritance.search(path.read_text(encoding="utf-8")):
+                found_inheritance.add(path.relative_to(ROOT).as_posix())
+    require(found_inheritance == reviewed_inheritance,
+            "project-owned Print/Stream inheritance changed; review its complete overload sets: "
+            f"{sorted(found_inheritance)}")
+
+    _, framework_constants = literal_constants(ROOT / "scripts" / "verify_esp32s3_framework.py")
+    framework_expected = framework_constants.get("EXPECTED")
+    require(isinstance(framework_expected, dict) and
+            framework_expected.get("fs_header_sha256") == constants.get("FS_PATCHED_SHA256"),
+            "framework qualification must require the overload-compatible FS header")
 
 
 def check_open_font_render_patch() -> None:
@@ -125,7 +178,7 @@ def check_webserver_patch() -> None:
 
 def main() -> int:
     check_production_flags()
-    check_display_driver_vendor_exception()
+    check_arduino_overload_compatibility()
     check_open_font_render_patch()
     check_webserver_patch()
     print("[production-warnings] strict builds and fingerprinted vendor repairs validated")

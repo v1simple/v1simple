@@ -23,6 +23,7 @@ EXPECTED = {
     "esp_system_archive_sha256": "3fa34619defd0e4718dac29a93673652a3ad495b2d5551f381d1c78af92c9d38",
     "versions_sha256": "bb0ce8cff5cdfc1abb17666e4e37ec85d8fff148f4e19cba8e3a5d76c1d662ed",
     "webserver_parsing_sha256": "74387b5923e880dbd09198e6d3521352b4f1b6cc196a10021862ed466a8cd708",
+    "fs_header_sha256": "53c9bb70cf573010434c05a546131f7831b448f51797a0c2badaec1c92b7784c",
     "ipc_stack_bytes": 2048,
 }
 
@@ -65,6 +66,7 @@ def verify_framework(platform_dir: Path, arduino_dir: Path, libs_dir: Path, memo
     esp_system = selected / "libesp_system.a"
     versions = libs_dir / "esp32s3" / "versions.txt"
     webserver_parsing = arduino_dir / "libraries" / "WebServer" / "src" / "Parsing.cpp"
+    fs_header = arduino_dir / "libraries" / "FS" / "src" / "FS.h"
 
     versions_found = {
         "platform_version": read_package_version(platform_json),
@@ -92,6 +94,9 @@ def verify_framework(platform_dir: Path, arduino_dir: Path, libs_dir: Path, memo
         "versions_sha256": require_hash(versions, str(EXPECTED["versions_sha256"]), "framework versions ledger"),
         "webserver_parsing_sha256": require_hash(
             webserver_parsing, str(EXPECTED["webserver_parsing_sha256"]), "hardened WebServer body parser"
+        ),
+        "fs_header_sha256": require_hash(
+            fs_header, str(EXPECTED["fs_header_sha256"]), "overload-compatible FS header"
         ),
     }
 

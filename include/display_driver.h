@@ -25,11 +25,9 @@
 #define CANVAS_WIDTH 172
 #define CANVAS_HEIGHT 640
 
-// Arduino-ESP32 3.3.11 provides Print::flush(), while the pinned Arduino_GFX 1.6.7
-// declares flush(bool = false). Some GCC 14 host packages diagnose that
-// upstream API overlap under -Wall and others do not. Scope the compatibility
-// exception to the vendor header; every warning outside it remains covered by
-// -Werror.
+// Arduino_GFX 1.6.7 contains intentional overloads within its own class
+// hierarchy. Keep the compatibility exception on the vendor declarations;
+// project code resumes the production warning contract immediately afterward.
 #if defined(__GNUC__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Woverloaded-virtual"

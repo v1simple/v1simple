@@ -12,6 +12,7 @@
 #include "display_text.h"
 #include "display_segments.h"
 #include "display_font_manager.h"
+#include "display_visual_contract.h"
 #include "settings.h"
 #include <algorithm>
 #include <cstring>
@@ -105,9 +106,10 @@ void getFrequencyTextBounds(DisplayFontManager& fontMgr, int fontSize, const cha
 // --- Segment7 frequency display. Uses Segment7 TTF font if available, falls back to software renderer. ---
 
 V1Display::FrequencyPresentation V1Display::resolveFrequencyPresentation(uint32_t freqMHz, Band band, bool muted,
-                                                                        bool isPhotoRadar) {
+                                                                        uint8_t photoType) {
     const V1Settings& s = settings_.get();
     FrequencyPresentation presentation;
+    const bool isPhotoRadar = band == BAND_K && photoType != 0;
     presentation.band = band;
     presentation.muted = muted;
     presentation.photoRadar = isPhotoRadar;
@@ -123,6 +125,10 @@ V1Display::FrequencyPresentation V1Display::resolveFrequencyPresentation(uint32_
         isAlpOverride = true;
     } else if (band == BAND_LASER) {
         snprintf(presentation.text, sizeof(presentation.text), "LASER");
+    } else if (isPhotoRadar) {
+        char labelBuffer[8] = "";
+        const char* label = DisplayVisualContract::photoTypeShortLabel(photoType, labelBuffer, sizeof(labelBuffer));
+        snprintf(presentation.text, sizeof(presentation.text), "%s", label);
     } else if (hasFreq) {
         float freqGhz = freqMHz / 1000.0f;
         snprintf(presentation.text, sizeof(presentation.text), "%05.3f", freqGhz);
@@ -151,13 +157,14 @@ V1Display::FrequencyPresentation V1Display::resolveFrequencyPresentation(uint32_
             freqColor = s.colorFrequency;
         }
     } else {
-        // Keep fallback color behavior unchanged.
         if (band == BAND_LASER) {
             freqColor = muted ? PALETTE_MUTED_OR_PERSISTED : s.colorBandL;
         } else if (muted) {
             freqColor = PALETTE_MUTED_OR_PERSISTED;
         } else if (!hasFreq) {
             freqColor = PALETTE_GRAY;
+        } else if (isPhotoRadar && s.freqUseBandColor) {
+            freqColor = s.colorBandPhoto;
         } else if (s.freqUseBandColor && band != BAND_NONE) {
             freqColor = getBandColor(band);
         } else {
@@ -168,8 +175,8 @@ V1Display::FrequencyPresentation V1Display::resolveFrequencyPresentation(uint32_
     return presentation;
 }
 
-void V1Display::drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, bool isPhotoRadar) {
-    renderFrequencyPresentation(resolveFrequencyPresentation(freqMHz, band, muted, isPhotoRadar));
+void V1Display::drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, uint8_t photoType) {
+    renderFrequencyPresentation(resolveFrequencyPresentation(freqMHz, band, muted, photoType));
 }
 
 void V1Display::renderFrequencyPresentation(const FrequencyPresentation& presentation) {
@@ -207,8 +214,8 @@ void V1Display::renderFrequencyPresentation(const FrequencyPresentation& present
         int textWidth = s_frequencyCachedNumericWidth;
         int glyphXMin = 0;
         int glyphXMax = textWidth;
-        if (isAlpOverride) {
-            // ALP gun abbreviations vary and may have left/right bearings.
+        if (isAlpOverride || isPhotoRadar) {
+            // ALP and Photo labels vary and may have left/right bearings.
             getFrequencyTextBounds(fontMgr_, fontSize, textBuf, glyphXMin, glyphXMax);
             textWidth = glyphXMax - glyphXMin;
         } else if (band == BAND_LASER) {
@@ -365,7 +372,7 @@ void V1Display::renderFrequencyFallback(const FrequencyPresentation& presentatio
                      DisplayDirtyRegionSource::Frequency);
     FILL_RECT(clearLeft, clearY, clearRight - clearLeft, clearBottom - clearY, PALETTE_BG);
 
-    if (presentation.alpOverride || presentation.band == BAND_LASER) {
+    if (presentation.alpOverride || presentation.band == BAND_LASER || presentation.photoRadar) {
         draw14SegmentText(presentation.text, x, y, scale, presentation.color, PALETTE_BG);
     } else {
         drawSevenSegmentText(presentation.text, x, y, scale, presentation.color, PALETTE_BG);
@@ -473,7 +480,7 @@ void V1Display::prewarmFrequencyRasterCache() {
         uint32_t freqMHz;
         Band band;
         bool muted;
-        bool photo;
+        uint8_t photoType;
     };
 
     static constexpr FrequencyWarmSample kWarmSamples[] = {
@@ -506,7 +513,7 @@ void V1Display::prewarmFrequencyRasterCache() {
     alpFreqText_[0] = '\0';
     for (const FrequencyWarmSample& sample : kWarmSamples) {
         elementCaches_.frequency.invalidate();
-        drawFrequencySegment7(sample.freqMHz, sample.band, sample.muted, sample.photo);
+        drawFrequencySegment7(sample.freqMHz, sample.band, sample.muted, sample.photoType);
     }
 
     for (const AlpWarmSample& sample : kAlpWarmSamples) {
@@ -584,6 +591,6 @@ void V1Display::drawVolumeZeroWarning() {
 
 // --- Frequency router ---
 
-void V1Display::drawFrequency(uint32_t freqMHz, Band band, bool muted, bool isPhotoRadar) {
-    drawFrequencySegment7(freqMHz, band, muted, isPhotoRadar);
+void V1Display::drawFrequency(uint32_t freqMHz, Band band, bool muted, uint8_t photoType) {
+    drawFrequencySegment7(freqMHz, band, muted, photoType);
 }

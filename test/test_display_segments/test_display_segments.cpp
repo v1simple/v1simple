@@ -146,14 +146,22 @@ void test_14seg_lowercase_e_matches_uppercase_E() {
     TEST_ASSERT_EQUAL_UINT16(get14SegPattern('E'), get14SegPattern('e'));
 }
 
+void test_14seg_photo_labels_have_no_blank_glyphs() {
+    // Complete character set used by MRCT, 3D, 3DHD, HALO, NK7, EKIN,
+    // RT4, P8-P15, and the generic PHOTO fallback.
+    for (const char* p = "MRCT3DHALONK7EIPHO815"; *p != '\0'; ++p) {
+        TEST_ASSERT_NOT_EQUAL_MESSAGE(0, get14SegPattern(*p), "Photo fallback label contains an unmapped glyph");
+    }
+}
+
 void test_14seg_space_and_unknown_return_zero() {
     TEST_ASSERT_EQUAL(0, get14SegPattern(' '));
     TEST_ASSERT_EQUAL(0, get14SegPattern('!'));
     TEST_ASSERT_EQUAL(0, get14SegPattern('Z'));
 }
 
-void test_char14_map_size_is_25() {
-    TEST_ASSERT_EQUAL_INT(25, CHAR14_MAP_SIZE);
+void test_char14_map_size_is_29() {
+    TEST_ASSERT_EQUAL_INT(29, CHAR14_MAP_SIZE);
 }
 
 // ============================================================================
@@ -180,8 +188,9 @@ int main(int argc, char** argv) {
     RUN_TEST(test_14seg_dash_has_only_middle_segs);
     RUN_TEST(test_14seg_zero_has_outer_ring_only);
     RUN_TEST(test_14seg_lowercase_e_matches_uppercase_E);
+    RUN_TEST(test_14seg_photo_labels_have_no_blank_glyphs);
     RUN_TEST(test_14seg_space_and_unknown_return_zero);
-    RUN_TEST(test_char14_map_size_is_25);
+    RUN_TEST(test_char14_map_size_is_29);
 
     return UNITY_END();
 }

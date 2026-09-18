@@ -587,17 +587,44 @@ enum V1 {
                      checksum: checksum)
     }
 
+    static func sweepDefinitionPacket(header: Header,
+                                      index: UInt8,
+                                      lowerMHz: UInt16,
+                                      upperMHz: UInt16,
+                                      checksum: Bool) -> [UInt8] {
+        precondition(index <= 0x3F, "sweep definition index must fit six bits")
+        return frame(
+            header: header,
+            id: PacketID.respSweepDefinition.rawValue,
+            payload: [
+                0x80 | index,
+                UInt8((upperMHz >> 8) & 0xFF), UInt8(upperMHz & 0xFF),
+                UInt8((lowerMHz >> 8) & 0xFF), UInt8(lowerMHz & 0xFF),
+            ],
+            checksum: checksum
+        )
+    }
+
+    static func sweepWriteResultPacket(header: Header,
+                                       result: UInt8,
+                                       checksum: Bool) -> [UInt8] {
+        return frame(
+            header: header,
+            id: PacketID.respSweepWriteResult.rawValue,
+            payload: [result],
+            checksum: checksum
+        )
+    }
+
     static func sweepDefinitionPackets(header: Header, checksum: Bool) -> [[UInt8]] {
-        let definitions: [[UInt8]] = [
-            [0x80, 0x5E, 0x56, 0x5D, 0xF2], // index 0, 24050...24150 MHz
-            [0x81, 0x85, 0x98, 0x85, 0x34], // index 1, 34100...34200 MHz
+        return [
+            sweepDefinitionPacket(header: header, index: 0,
+                                  lowerMHz: 24_050, upperMHz: 24_150,
+                                  checksum: checksum),
+            sweepDefinitionPacket(header: header, index: 1,
+                                  lowerMHz: 34_100, upperMHz: 34_200,
+                                  checksum: checksum),
         ]
-        return definitions.map {
-            frame(header: header,
-                  id: PacketID.respSweepDefinition.rawValue,
-                  payload: $0,
-                  checksum: checksum)
-        }
     }
 
     // MARK: - Inbound frame decoding (commands from v1simple)

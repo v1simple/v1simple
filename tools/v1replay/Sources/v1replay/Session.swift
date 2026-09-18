@@ -19,7 +19,17 @@ extension V1 {
             /// resolves it once so later non-saving writes cannot move saved.
             var savedMainVolume: UInt8?
             var savedMutedVolume: UInt8?
-            var userBytes: [UInt8] = Array(repeating: 0, count: 6)
+            // Valentine Gen2 factory defaults. Individual replay modes may
+            // provide an explicit starting state for their authored stimulus.
+            var userBytes: [UInt8] = Array(repeating: 0xFF, count: 6)
+        }
+
+        struct SweepDefinition: Equatable {
+            let index: UInt8
+            let lowerMHz: UInt16
+            let upperMHz: UInt16
+
+            var isUnused: Bool { return lowerMHz == 0 && upperMHz == 0 }
         }
 
         struct ControlState: Equatable {
@@ -106,6 +116,8 @@ extension V1 {
         private(set) var alertDataRequested = false
         private(set) var controlState: ControlState
         private var userBytes: UserBytesStore
+        private var sweepDefinitions: [SweepDefinition]
+        private var pendingSweepDefinitions: [UInt8: SweepDefinition] = [:]
         private var rejectedMaxSweepIndexOnce = false
         private var reportedSweepDefinitionsBusyOnce = false
 
@@ -123,6 +135,7 @@ extension V1 {
             self.userBytes = UserBytesStore(
                 Session.normalizedUserBytes(config.userBytes, version: config.version)
             )
+            self.sweepDefinitions = Session.defaultSweepDefinitions
         }
 
         /// Apply a modeled physical-V1 current-volume change. Bench playback
@@ -172,6 +185,40 @@ extension V1 {
 
         var bufferedByteCount: Int { return receiveBuffer.count }
         var storedUserBytes: [UInt8] { return userBytes.bytes }
+        var storedSweepDefinitions: [SweepDefinition] { return sweepDefinitions }
+
+        /// Apply the modeled Gen2 report filter to detector-authored stimulus.
+        /// Band enables remain independent from Custom Frequencies; when a
+        /// priority row is removed, the first retained row becomes priority so
+        /// the emitted alert table remains structurally valid.
+        func projectedSample(_ sample: TimedSample) -> TimedSample {
+            var retained = sample.alerts.filter { alert in
+                if alert.band.mask == V1.Band.x.mask {
+                    return userBytes.bytes[0] & 0x01 != 0
+                }
+                if alert.band.mask == V1.Band.k.mask {
+                    guard userBytes.bytes[0] & 0x02 != 0 else { return false }
+                    return !customFrequenciesEnabled || customDefinitionsContain(alert.frequencyMHz)
+                }
+                if alert.band.mask == V1.Band.ka.mask {
+                    guard userBytes.bytes[0] & 0x04 != 0 else { return false }
+                    return !customFrequenciesEnabled || customDefinitionsContain(alert.frequencyMHz)
+                }
+                if alert.band.mask == V1.Band.laser.mask {
+                    return userBytes.bytes[0] & 0x08 != 0
+                }
+                if alert.band.mask == V1.Band.ku.mask {
+                    return userBytes.bytes[0] & 0x80 == 0
+                }
+                return true
+            }
+            if !retained.isEmpty && !retained.contains(where: { $0.isPriority }) {
+                retained = retained.enumerated().map { index, alert in
+                    alert.withPriority(index == 0)
+                }
+            }
+            return sample.replacingAlerts(retained)
+        }
 
         /// End one CoreBluetooth transport lifetime without resetting the
         /// emulated detector's persistent control/user settings.
@@ -179,6 +226,7 @@ extension V1 {
             subscriptions.removeAll(keepingCapacity: true)
             receiveBuffer.removeAll(keepingCapacity: true)
             pendingPackets.removeAll(keepingCapacity: true)
+            pendingSweepDefinitions.removeAll(keepingCapacity: true)
             alertDataRequested = false
             rejectedMaxSweepIndexOnce = false
             reportedSweepDefinitionsBusyOnce = false
@@ -196,6 +244,7 @@ extension V1 {
                 alertDataRequested = false
                 receiveBuffer.removeAll()
                 pendingPackets.removeAll()
+                pendingSweepDefinitions.removeAll(keepingCapacity: true)
             }
             return remaining
         }
@@ -347,11 +396,44 @@ extension V1 {
                         )
                     )))
                 }
-                replies.append(contentsOf: V1.sweepDefinitionPackets(
-                    header: config.header,
-                    checksum: config.outboundChecksum
-                ).map { .reply(ReplyDecision(channel: .displayShort, bytes: $0)) })
+                replies.append(contentsOf: sweepDefinitions.map { definition in
+                    .reply(ReplyDecision(
+                        channel: .displayShort,
+                        bytes: V1.sweepDefinitionPacket(
+                            header: config.header,
+                            index: definition.index,
+                            lowerMHz: definition.lowerMHz,
+                            upperMHz: definition.upperMHz,
+                            checksum: config.outboundChecksum
+                        )
+                    ))
+                })
                 effects = replies
+
+            case PacketID.reqWriteSweepDefinition.rawValue:
+                guard packet.payload.count == 5 else {
+                    return rejectUnexpectedPayload(packet)
+                }
+                let indexByte = packet.payload[0]
+                let index = indexByte & 0x3F
+                let commit = indexByte & 0x40 != 0
+                let upper = UInt16(packet.payload[1]) << 8 | UInt16(packet.payload[2])
+                let lower = UInt16(packet.payload[3]) << 8 | UInt16(packet.payload[4])
+                let definition = SweepDefinition(index: index, lowerMHz: lower, upperMHz: upper)
+                pendingSweepDefinitions[index] = definition
+                if commit {
+                    let result = commitPendingSweepDefinitions()
+                    effects = [.reply(ReplyDecision(
+                        channel: .displayShort,
+                        bytes: V1.sweepWriteResultPacket(
+                            header: config.header,
+                            result: result,
+                            checksum: config.outboundChecksum
+                        )
+                    ))]
+                } else {
+                    effects = []
+                }
 
             case PacketID.reqStartAlertData.rawValue:
                 guard packet.payload.isEmpty else {
@@ -403,7 +485,12 @@ extension V1 {
                     packet.payload,
                     version: config.version
                 )
+                let regionChanged = (userBytes.bytes[1] ^ stored[1]) & 0x01 != 0
                 _ = userBytes.write(stored)
+                if regionChanged {
+                    sweepDefinitions = Session.defaultSweepDefinitions
+                    pendingSweepDefinitions.removeAll(keepingCapacity: true)
+                }
                 effects = [.userBytesStored(stored)]
 
             case PacketID.changeMode.rawValue:
@@ -460,6 +547,61 @@ extension V1 {
                     count: packet.payload.count
                 ))
             ])
+        }
+
+        private var customFrequenciesEnabled: Bool {
+            return userBytes.bytes[1] & 0x08 == 0
+        }
+
+        private func customDefinitionsContain(_ frequencyMHz: UInt16) -> Bool {
+            return sweepDefinitions.contains { definition in
+                !definition.isUnused
+                    && frequencyMHz >= definition.lowerMHz
+                    && frequencyMHz <= definition.upperMHz
+            }
+        }
+
+        private mutating func commitPendingSweepDefinitions() -> UInt8 {
+            defer { pendingSweepDefinitions.removeAll(keepingCapacity: true) }
+            var candidate = Session.unusedSweepDefinitions
+            for index in pendingSweepDefinitions.keys.sorted() {
+                guard let definition = pendingSweepDefinitions[index] else { continue }
+                guard Int(index) < candidate.count else { return index &+ 1 }
+                candidate[Int(index)] = definition
+            }
+
+            for definition in candidate where !definition.isUnused {
+                guard definition.lowerMHz < definition.upperMHz,
+                      Session.sectionIndex(for: definition) != nil else {
+                    return definition.index &+ 1
+                }
+            }
+            let usedSections = Set(candidate.compactMap { Session.sectionIndex(for: $0) })
+            // ESP 3.016 requires one definition for each Gen2-supported band.
+            guard usedSections.contains(0), usedSections.contains(1) else { return 1 }
+            sweepDefinitions = candidate
+            return 0
+        }
+
+        private static let sweepSections: [(lower: UInt16, upper: UInt16)] = [
+            (24_000, 25_000),
+            (33_000, 36_000),
+        ]
+
+        private static let defaultSweepDefinitions: [SweepDefinition] = [
+            SweepDefinition(index: 0, lowerMHz: 24_050, upperMHz: 24_150),
+            SweepDefinition(index: 1, lowerMHz: 34_100, upperMHz: 34_200),
+        ]
+
+        private static let unusedSweepDefinitions: [SweepDefinition] = [
+            SweepDefinition(index: 0, lowerMHz: 0, upperMHz: 0),
+            SweepDefinition(index: 1, lowerMHz: 0, upperMHz: 0),
+        ]
+
+        private static func sectionIndex(for definition: SweepDefinition) -> Int? {
+            return sweepSections.firstIndex {
+                definition.lowerMHz >= $0.lower && definition.upperMHz <= $0.upper
+            }
         }
 
         private static func normalizedUserBytes(

@@ -79,13 +79,14 @@ void resetRecordedOutput() {
     frequencyFont().resetRecordedCalls();
 }
 
-AlertData radarAlertFromSpecFields(uint16_t frequencyMHz, uint8_t bandBits, uint8_t directionBits) {
+AlertData radarAlertFromSpecFields(uint16_t frequencyMHz, uint8_t bandBits, uint8_t directionBits,
+                                   uint8_t photoType = 0) {
     // ESP Spec alert row: index/count, frequency MSB/LSB, front/rear RSSI,
     // band+direction, aux0. 0xA0 is a valid K-band strength stimulus.
     std::vector<uint8_t> packet = {
         0xAA, 0xD8, 0xEA, 0x43, 8, 0x11,
         static_cast<uint8_t>(frequencyMHz >> 8), static_cast<uint8_t>(frequencyMHz),
-        0xA0, 0x00, static_cast<uint8_t>(bandBits | directionBits), 0x80};
+        0xA0, 0x00, static_cast<uint8_t>(bandBits | directionBits), static_cast<uint8_t>(0x80 | photoType)};
     uint8_t checksum = 0;
     for (uint8_t byte : packet) {
         checksum = static_cast<uint8_t>(checksum + byte);
@@ -147,6 +148,58 @@ void test_laser_zero_and_alp_presentations_are_distinct() {
     assertFrequencyText("LTI");
 }
 
+void test_priority_photo_type_replaces_numeric_frequency_with_its_compact_identity() {
+    static constexpr const char* kExpectedLabels[] = {
+        "MRCT", "3D", "3DHD", "HALO", "NK7", "EKIN", "RT4",
+    };
+
+    for (uint8_t photoType = 1; photoType <= 7; ++photoType) {
+        const AlertData alert = radarAlertFromSpecFields(24125, 0x04, 0x20, photoType);
+        TEST_ASSERT_EQUAL_UINT8(photoType, alert.photoType);
+        display.ut_elementCaches().frequency.invalidate();
+        resetRecordedOutput();
+
+        display.ut_drawFrequency(alert.frequency, alert.band, nullptr, alert.photoType);
+
+        assertFrequencyText(kExpectedLabels[photoType - 1]);
+    }
+}
+
+void test_unknown_photo_type_stays_visible_without_inventing_a_named_identity() {
+    const AlertData alert = radarAlertFromSpecFields(24125, 0x04, 0x20, 15);
+
+    display.ut_drawFrequency(alert.frequency, alert.band, nullptr, alert.photoType);
+
+    assertFrequencyText("P15");
+
+    display.ut_elementCaches().frequency.invalidate();
+    resetRecordedOutput();
+    display.ut_drawFrequency(24125, BAND_K, nullptr, DisplayVisualContract::PHOTO_TYPE_UNSPECIFIED);
+    assertFrequencyText("PHOTO");
+}
+
+void test_photo_metadata_cannot_replace_a_ka_priority_frequency() {
+    const AlertData alert = radarAlertFromSpecFields(34700, 0x02, 0x20, 1);
+    TEST_ASSERT_EQUAL_INT(BAND_KA, alert.band);
+
+    display.ut_drawFrequency(alert.frequency, alert.band, nullptr, alert.photoType);
+
+    assertFrequencyText("34.700");
+}
+
+void test_same_frequency_repaints_when_photo_identity_changes_or_clears() {
+    display.ut_drawFrequency(24125, BAND_K, nullptr, 1);
+    assertFrequencyText("MRCT");
+
+    resetRecordedOutput();
+    display.ut_drawFrequency(24125, BAND_K, nullptr, 2);
+    assertFrequencyText("3D");
+
+    resetRecordedOutput();
+    display.ut_drawFrequency(24125, BAND_K);
+    assertFrequencyText("24.125");
+}
+
 void test_changed_frequency_clears_and_draws_the_new_digits() {
     const AlertData first = radarAlertFromSpecFields(24150, 0x04, 0x20);
     const AlertData changed = radarAlertFromSpecFields(24151, 0x04, 0x20);
@@ -173,6 +226,10 @@ int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_parsed_k_frequency_is_handed_to_renderer_in_ghz_text);
     RUN_TEST(test_laser_zero_and_alp_presentations_are_distinct);
+    RUN_TEST(test_priority_photo_type_replaces_numeric_frequency_with_its_compact_identity);
+    RUN_TEST(test_unknown_photo_type_stays_visible_without_inventing_a_named_identity);
+    RUN_TEST(test_photo_metadata_cannot_replace_a_ka_priority_frequency);
+    RUN_TEST(test_same_frequency_repaints_when_photo_identity_changes_or_clears);
     RUN_TEST(test_changed_frequency_clears_and_draws_the_new_digits);
     RUN_TEST(test_unchanged_frequency_produces_no_paint_commands);
     return UNITY_END();

@@ -89,6 +89,13 @@ through the complete external evidence window, and then stops its process group.
 Core and display windows use the same managed emulator in idle mode, so the
 complete bench never depends on a physical V1.
 
+The bench starts with X, K, Ka, Laser, and Ku enabled and Custom Frequencies
+disabled so the generated scenario remains complete before a profile is
+applied. After V1Simple writes settings, the emulator honors the individual
+band switches and Custom Frequency definitions when deciding which authored
+alerts to report. A filtered priority row is removed; if another row remains,
+that first retained row becomes the reported priority.
+
 `v1replay bench --reader-qualification` selects the separate 68-second generated
 display exercise. It holds each X/K/Ka
 primary frequency while isolating strength, mute-color, and direction changes,

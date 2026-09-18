@@ -510,7 +510,7 @@ final class Player {
     @discardableResult
     private func emit(sampleAt index: Int, intendedHostMonotonicNs: UInt64) -> Bool {
         if options.waitForAlertData && !transportReady() { return false }
-        let sample = encounter.samples[index]
+        let authoredSample = encounter.samples[index]
 
         let muteCheckpoint = encounter.detectorMuteCheckpoint(at: index)
         lock.lock()
@@ -520,7 +520,7 @@ final class Player {
         if let muteCheckpoint = muteCheckpoint {
             _muteOverride = muteCheckpoint.muted
         }
-        let muted = _muteOverride ?? sample.muted
+        let muted = _muteOverride ?? authoredSample.muted
         let displayOn = _displayOn
         lock.unlock()
         if let muteCheckpoint = muteCheckpoint {
@@ -546,6 +546,12 @@ final class Player {
         if let checkpoint = checkpoint {
             onDetectorVolumeCheckpoint?(checkpoint)
         }
+
+        // The encounter describes what RF is present. The emulated detector's
+        // current user settings decide which rows it reports, just as they do
+        // on a physical V1. Keep checkpoints above tied to the authored sample,
+        // then use this one projected table for every emitted representation.
+        let sample = peripheral.projectedSample(authoredSample)
 
         let includeAlertTable = options.sendAlerts
             && (!options.requireStartAlertData || peripheral.alertDataRequested)

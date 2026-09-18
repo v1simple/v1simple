@@ -19,6 +19,7 @@
 #include "display_text.h"
 #include "display_flush.h"
 #include "display_flush_policy.h"
+#include "display_visual_contract.h"
 #include "display_vol_warn.h"
 #include "modules/alp/alp_runtime_module.h"
 #include "settings.h"
@@ -554,7 +555,7 @@ void V1Display::updatePersisted(const AlertData& alert, const DisplayState& stat
     // Persistence owns a specific alert row, so preserve that row's Photo
     // type. The shared P counter may have belonged to a different row.
     const bool isPhotoRadar = (alert.band == BAND_K) && (alert.photoType != 0);
-    drawFrequency(alert.frequency, alert.band, true, isPhotoRadar);
+    drawFrequency(alert.frequency, alert.band, true, isPhotoRadar ? alert.photoType : 0);
 
     // No signal bars — draw empty
     drawVerticalSignalBars(0, 0, alert.band, true);
@@ -640,7 +641,10 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
     const bool isPhotoRadar = (priority.band == BAND_K) &&
                               ((priority.photoType != 0) ||
                                (alertCount <= 1 && liveTopCounterChar == 'P'));
-    drawFrequency(priority.frequency, priority.band, state.muted, isPhotoRadar);
+    const uint8_t priorityPhotoType = priority.photoType != 0
+                                          ? priority.photoType
+                                          : DisplayVisualContract::PHOTO_TYPE_UNSPECIFIED;
+    drawFrequency(priority.frequency, priority.band, state.muted, isPhotoRadar ? priorityPhotoType : 0);
 
     // Ku shares the V1's physical K cell, but alert identity follows the
     // V1-selected priority row. A secondary Ku remains in its card and must

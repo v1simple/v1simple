@@ -57,6 +57,17 @@ struct ReplayAlert {
             && isPriority == other.isPriority
             && photoType == other.photoType
     }
+
+    func withPriority(_ priority: Bool) -> ReplayAlert {
+        return ReplayAlert(
+            band: band,
+            frequencyMHz: frequencyMHz,
+            strength: strength,
+            direction: direction,
+            isPriority: priority,
+            photoType: photoType
+        )
+    }
 }
 
 /// One detector-authored current-volume pair carried by infDisplayData aux2.
@@ -188,6 +199,19 @@ struct TimedSample {
 
     var secondaryAlerts: [ReplayAlert] {
         return alerts.filter { !$0.isPriority }
+    }
+
+    func replacingAlerts(_ replacement: [ReplayAlert]) -> TimedSample {
+        return TimedSample(
+            offset: offset,
+            phase: phase,
+            muted: muted,
+            alerts: replacement,
+            detectorVolume: detectorVolume,
+            detectorMode: detectorMode,
+            scenarioArrowBlink: replacement.isEmpty ? false : scenarioArrowBlink,
+            sourceIndex: sourceIndex
+        )
     }
 
     fileprivate func hasSameState(as other: TimedSample) -> Bool {

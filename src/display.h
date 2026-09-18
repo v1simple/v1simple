@@ -191,8 +191,8 @@ class V1Display {
     // Drawing helpers
     bool drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFlashBits = 0);
 
-    void drawFrequency(uint32_t freqMHz, Band band = BAND_NONE, bool muted = false, bool isPhotoRadar = false);
-    void drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, bool isPhotoRadar = false); // 7-segment style
+    void drawFrequency(uint32_t freqMHz, Band band = BAND_NONE, bool muted = false, uint8_t photoType = 0);
+    void drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, uint8_t photoType = 0); // 7-segment style
     struct FrequencyPresentation {
         char text[16] = "";
         uint16_t color = 0;
@@ -204,7 +204,7 @@ class V1Display {
         bool useOfr = false;
     };
     FrequencyPresentation resolveFrequencyPresentation(uint32_t freqMHz, Band band, bool muted,
-                                                       bool isPhotoRadar);
+                                                       uint8_t photoType);
     void renderFrequencyPresentation(const FrequencyPresentation& presentation);
     void renderFrequencyFallback(const FrequencyPresentation& presentation);
     void prewarmFrequencyDigitAtlas();
@@ -461,10 +461,10 @@ class V1Display {
     // updateColorTheme(), which increments the same counter.
     void ut_bumpPaletteRevision() { ++paletteRevision_; }
     // Public wrappers for private rendering methods (native integration tests only)
-    void ut_drawFrequency(uint32_t frequency, Band band, const char* alpText = nullptr) {
+    void ut_drawFrequency(uint32_t frequency, Band band, const char* alpText = nullptr, uint8_t photoType = 0) {
         alpFreqOverride_ = alpText != nullptr;
         snprintf(alpFreqText_, sizeof(alpFreqText_), "%s", alpText ? alpText : "");
-        drawFrequency(frequency, band);
+        drawFrequency(frequency, band, false, photoType);
     }
     bool ut_drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFlashBits = 0) {
         return drawBandIndicators(bandMask, muted, bandFlashBits);

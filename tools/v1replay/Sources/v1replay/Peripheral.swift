@@ -147,7 +147,7 @@ final class V1Peripheral: NSObject {
         /// Nil means saved initially mirrors current.
         var savedMainVolume: UInt8?
         var savedMutedVolume: UInt8?
-        var userBytes: [UInt8] = Array(repeating: 0, count: 6)
+        var userBytes: [UInt8] = Array(repeating: 0xFF, count: 6)
         var logPackets: Bool = false
         /// Stress-only maximum hold after the first epoch-owned START. A second
         /// owned START releases sooner; zero preserves immediate notifications.
@@ -217,6 +217,9 @@ final class V1Peripheral: NSObject {
     var alertDataRequested: Bool { return withState { $0.session.alertDataRequested } }
     var controlState: V1.Session.ControlState {
         return withState { $0.session.controlState }
+    }
+    func projectedSample(_ sample: TimedSample) -> TimedSample {
+        return withState { $0.session.projectedSample(sample) }
     }
     func applyDetectorCurrentVolume(_ volume: DetectorVolume) -> V1.Session.ControlState {
         return withState {

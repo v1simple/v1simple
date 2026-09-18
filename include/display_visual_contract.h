@@ -8,6 +8,30 @@
 
 namespace DisplayVisualContract {
 
+// Used only when the V1's shared display image identifies Photo (P) but no
+// alert row supplied a subtype. Values 8-15 remain available for the raw
+// four-bit subtype field and are formatted explicitly below.
+inline constexpr uint8_t PHOTO_TYPE_UNSPECIFIED = 0xFF;
+
+inline const char* photoTypeShortLabel(uint8_t photoType, char* buffer, size_t bufferSize) {
+    switch (photoType) {
+        case 1: return "MRCT";
+        case 2: return "3D";
+        case 3: return "3DHD";
+        case 4: return "HALO";
+        case 5: return "NK7";
+        case 6: return "EKIN";
+        case 7: return "RT4";
+        case PHOTO_TYPE_UNSPECIFIED: return "PHOTO";
+        default:
+            if (photoType >= 8 && photoType <= 15 && buffer && bufferSize > 0) {
+                std::snprintf(buffer, bufferSize, "P%u", static_cast<unsigned>(photoType));
+                return buffer;
+            }
+            return "";
+    }
+}
+
 // Shared six-cell projection for live and preview renderers.
 inline uint8_t projectVrBarsToSix(uint8_t vrBars) {
     const uint8_t clamped = (vrBars > 8) ? 8 : vrBars;

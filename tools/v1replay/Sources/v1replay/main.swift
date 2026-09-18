@@ -611,6 +611,12 @@ func runPlay(idleOnly: Bool,
     peripheralConfig.mode = mode
     peripheralConfig.mainVolume = mainVolume
     peripheralConfig.mutedVolume = mutedVolume
+    if bench {
+        // Bench authors X/K/Ka/Laser/Ku alerts. Start with every band enabled
+        // (Ku is inverted) and Custom Frequencies off so the historical fixed
+        // scenario remains intact until V1Simple writes a profile.
+        peripheralConfig.userBytes = [0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]
+    }
     peripheralConfig.logPackets = args.bool("log-packets")
     peripheralConfig.handshakeNotificationHoldMs = handshakeNotificationHoldMs
 

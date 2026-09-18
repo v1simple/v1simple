@@ -11,6 +11,7 @@ final class V1PlayerTimingTests: XCTestCase {
             let ordinal: Int
         }
         let offsets: [Double]
+        let alertCounts: [Int]
         let times: [Double]
         let intendedOffsets: [Double]
         let starts: [Double]
@@ -188,6 +189,17 @@ final class V1PlayerTimingTests: XCTestCase {
                 && packet.sequence == -1
         })
     }
+
+    func testPlayerEvidenceUsesTheSessionFilteredAlertTable() throws {
+        let result = try record("filter")
+        XCTAssertEqual(result.offsets, [0.4, 0.6])
+        XCTAssertEqual(result.alertCounts, [0, 0])
+        let timeline = result.packets.filter { $0.sequence > 0 }
+        XCTAssertEqual(timeline.map { $0.bytes[3] }, [0x43, 0x31, 0x43, 0x31])
+        XCTAssertTrue(timeline.filter { $0.bytes[3] == 0x43 }.allSatisfy {
+            $0.bytes[5] == 0
+        })
+    }
 }
 
 private let probeSource = #"""
@@ -196,11 +208,16 @@ import Foundation
 // No CoreBluetooth imports or manager: only the actual Player's adapter surface.
 final class V1Peripheral {
     private let lock = NSLock()
-    private var session = V1.Session()
+    private var session: V1.Session
     private var ready = true
     private var checks = 0
     var failThirdCheck = false
     let raced = DispatchSemaphore(value: 0)
+    init(userBytes: [UInt8] = Array(repeating: 0xFF, count: 6)) {
+        var config = V1.Session.Config()
+        config.userBytes = userBytes
+        session = V1.Session(config: config)
+    }
     var displaySubscribed: Bool { true }
     var alertDataRequested: Bool {
         lock.lock(); defer { lock.unlock() }
@@ -213,6 +230,9 @@ final class V1Peripheral {
     func setReady(_ value: Bool) { lock.lock(); ready = value; lock.unlock() }
     var controlState: V1.Session.ControlState {
         lock.lock(); defer { lock.unlock() }; return session.controlState
+    }
+    func projectedSample(_ sample: TimedSample) -> TimedSample {
+        lock.lock(); defer { lock.unlock() }; return session.projectedSample(sample)
     }
     func applyDetectorMode(_ mode: V1.ModeGlyph) -> V1.Session.ControlState {
         lock.lock(); defer { lock.unlock() }; return session.applyDetectorMode(mode)
@@ -259,7 +279,10 @@ final class V1Peripheral {
         options.speed = mode == "double" ? 2 : 1
         options.loop = mode == "loop"
         options.startPaused = ["pause", "step"].contains(mode)
-        let peripheral = V1Peripheral()
+        let userBytes: [UInt8] = mode == "filter"
+            ? [0x7F, 0xF7, 0xFF, 0xFF, 0xFF, 0xFF]
+            : Array(repeating: 0xFF, count: 6)
+        let peripheral = V1Peripheral(userBytes: userBytes)
         if mode == "tail-no-start" || mode == "startup-gate" { peripheral.setReady(false) }
         peripheral.failThirdCheck = mode == "retry"
         let player = Player(encounter: encounter, peripheral: peripheral, options: options)
@@ -273,10 +296,11 @@ final class V1Peripheral {
         var intendedOffsets: [Double] = []
         var firstIntendedNanoseconds: UInt64?
         var emittedOffsets: [Double] = []
+        var emittedAlertCounts: [Int] = []
         var starts: [Double] = []
         var packets: [[String: Any]] = []
         let started = nowSeconds()
-        if tailMode || mode == "startup-gate" {
+        if tailMode || mode == "startup-gate" || mode == "filter" {
             peripheral.capture = { bytes, sequence, ordinal in
                 let phase = player.snapshot.phase.rawValue
                 lock.lock()
@@ -303,6 +327,7 @@ final class V1Peripheral {
                 Double(event.intendedHostMonotonicNs - firstIntended) / 1_000_000_000.0
             )
             emittedOffsets.append(event.replayOffsetSeconds)
+            emittedAlertCounts.append(event.expected.alerts.count)
             let count = times.count
             lock.unlock()
             if mode == "restart" && count == 1 { player.restart() }
@@ -349,6 +374,7 @@ final class V1Peripheral {
         Thread.sleep(forTimeInterval: 0.03)
         lock.lock()
         let output: [String: Any] = ["times": times, "offsets": emittedOffsets,
+                                     "alertCounts": emittedAlertCounts,
                                      "intendedOffsets": intendedOffsets, "starts": starts,
                                      "packets": packets]
         lock.unlock()

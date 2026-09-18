@@ -319,6 +319,9 @@ def capture_replay_command(scenario: str, *, ku_qualification: bool = False) -> 
             run_window_module.subprocess.Popen = original
 
         assert_true("--machine-events" in captured, str(captured))
+        assert_true("--state-file" in captured, str(captured))
+        state_index = captured.index("--state-file") + 1
+        assert_true(captured[state_index].endswith("v1_emulator_state.json"), str(captured))
         assert_true("--scenario-evidence" in captured, str(captured))
         assert_true("--owner-pid" in captured, str(captured))
         return captured

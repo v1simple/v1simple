@@ -956,6 +956,7 @@ class V1Emulator:
         self.ku_qualification = ku_qualification
         self.machine_event = machine_event
         self.log_path = out_dir / "v1replay.log"
+        self.state_path = out_dir / "v1_emulator_state.json"
         self.scenario_path = (
             out_dir / REPLAY_SCENARIO_EVIDENCE_NAME if self.mode == "bench" else None
         )
@@ -997,7 +998,11 @@ class V1Emulator:
     def start(self) -> None:
         if not self.executable.is_file() or not os.access(self.executable, os.X_OK):
             raise RuntimeError("v1replay executable is missing or not executable")
-        if self.log_path.exists() or (self.scenario_path and self.scenario_path.exists()):
+        if (
+            self.log_path.exists()
+            or self.state_path.exists()
+            or (self.scenario_path and self.scenario_path.exists())
+        ):
             raise RuntimeError("refusing to overwrite existing replay evidence")
         self.log_handle = self.log_path.open("xb")
         command = [str(self.executable), self.mode]
@@ -1011,6 +1016,8 @@ class V1Emulator:
         command.extend(
             [
                 "--machine-events",
+                "--state-file",
+                str(self.state_path),
                 "--owner-pid",
                 str(os.getpid()),
                 "--blink-profile",
@@ -1098,6 +1105,7 @@ class V1Emulator:
             "returncode": returncode,
             "log": self.log_path.name,
             "scenario_evidence": self.scenario_path.name if self.scenario_path else "",
+            "detector_state": self.state_path.name if self.state_path.is_file() else "",
             "stimulus_events": stimulus_events,
             "delivery_events": delivery_events,
         }
@@ -1140,6 +1148,7 @@ def require_unused_live_evidence(out_dir: Path, *, camera: bool) -> None:
         out_dir / "firmware.bin",
         out_dir / "window_result.json",
         out_dir / "v1replay.log",
+        out_dir / "v1_emulator_state.json",
         out_dir / REPLAY_STIMULUS_NAME,
         out_dir / REPLAY_DELIVERY_NAME,
         out_dir / REPLAY_SCENARIO_EVIDENCE_NAME,
@@ -1289,6 +1298,9 @@ def collect_live(
             replay_path = out_dir / "v1replay.log"
             if replay_path.is_file():
                 artifacts["v1replay"] = file_artifact(replay_path)
+            emulator_state_path = out_dir / "v1_emulator_state.json"
+            if emulator_state_path.is_file():
+                artifacts["v1_emulator_state"] = file_artifact(emulator_state_path)
             if emulator_result:
                 try:
                     stimulus = publish_replay_stimulus_evidence(

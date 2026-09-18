@@ -22,14 +22,29 @@ extension V1 {
             // Valentine Gen2 factory defaults. Individual replay modes may
             // provide an explicit starting state for their authored stimulus.
             var userBytes: [UInt8] = Array(repeating: 0xFF, count: 6)
+            var sweepDefinitions: [SweepDefinition]?
         }
 
-        struct SweepDefinition: Equatable {
+        struct SweepDefinition: Codable, Equatable {
             let index: UInt8
             let lowerMHz: UInt16
             let upperMHz: UInt16
 
             var isUnused: Bool { return lowerMHz == 0 && upperMHz == 0 }
+        }
+
+        struct PersistentState: Codable, Equatable {
+            static let currentSchemaVersion = 1
+
+            let schemaVersion: Int
+            let v1Version: String
+            let mode: UInt8
+            let mainVolume: UInt8
+            let mutedVolume: UInt8
+            let savedMainVolume: UInt8
+            let savedMutedVolume: UInt8
+            let userBytes: [UInt8]
+            let sweepDefinitions: [SweepDefinition]
         }
 
         struct ControlState: Equatable {
@@ -135,7 +150,7 @@ extension V1 {
             self.userBytes = UserBytesStore(
                 Session.normalizedUserBytes(config.userBytes, version: config.version)
             )
-            self.sweepDefinitions = Session.defaultSweepDefinitions
+            self.sweepDefinitions = config.sweepDefinitions ?? Session.defaultSweepDefinitions
         }
 
         /// Apply a modeled physical-V1 current-volume change. Bench playback
@@ -186,6 +201,54 @@ extension V1 {
         var bufferedByteCount: Int { return receiveBuffer.count }
         var storedUserBytes: [UInt8] { return userBytes.bytes }
         var storedSweepDefinitions: [SweepDefinition] { return sweepDefinitions }
+        var persistentState: PersistentState {
+            return PersistentState(
+                schemaVersion: PersistentState.currentSchemaVersion,
+                v1Version: config.version,
+                mode: controlState.mode.rawValue,
+                mainVolume: controlState.mainVolume,
+                mutedVolume: controlState.mutedVolume,
+                savedMainVolume: controlState.savedMainVolume,
+                savedMutedVolume: controlState.savedMutedVolume,
+                userBytes: userBytes.bytes,
+                sweepDefinitions: sweepDefinitions
+            )
+        }
+
+        static func applyPersistentState(
+            _ state: PersistentState,
+            to config: inout Config
+        ) throws {
+            guard state.schemaVersion == PersistentState.currentSchemaVersion else {
+                throw ReplayError.message("unsupported emulator state schema")
+            }
+            guard state.v1Version == config.version else {
+                throw ReplayError.message("emulator state belongs to a different V1 version")
+            }
+            guard let mode = ModeGlyph(rawValue: state.mode) else {
+                throw ReplayError.message("emulator state contains an invalid mode")
+            }
+            guard state.mainVolume <= 9,
+                  state.mutedVolume <= 9,
+                  state.savedMainVolume <= 9,
+                  state.savedMutedVolume <= 9 else {
+                throw ReplayError.message("emulator state contains an invalid volume")
+            }
+            guard state.userBytes.count == 6 else {
+                throw ReplayError.message("emulator state must contain six user bytes")
+            }
+            guard validPersistentSweepDefinitions(state.sweepDefinitions) else {
+                throw ReplayError.message("emulator state contains invalid sweep definitions")
+            }
+
+            config.mode = mode
+            config.mainVolume = state.mainVolume
+            config.mutedVolume = state.mutedVolume
+            config.savedMainVolume = state.savedMainVolume
+            config.savedMutedVolume = state.savedMutedVolume
+            config.userBytes = normalizedUserBytes(state.userBytes, version: config.version)
+            config.sweepDefinitions = state.sweepDefinitions
+        }
 
         /// Apply the modeled Gen2 report filter to detector-authored stimulus.
         /// Band enables remain independent from Custom Frequencies; when a
@@ -602,6 +665,20 @@ extension V1 {
             return sweepSections.firstIndex {
                 definition.lowerMHz >= $0.lower && definition.upperMHz <= $0.upper
             }
+        }
+
+        private static func validPersistentSweepDefinitions(
+            _ definitions: [SweepDefinition]
+        ) -> Bool {
+            guard definitions.count == unusedSweepDefinitions.count else { return false }
+            for (offset, definition) in definitions.enumerated() {
+                guard definition.index == UInt8(offset) else { return false }
+                if definition.isUnused { continue }
+                guard definition.lowerMHz < definition.upperMHz,
+                      sectionIndex(for: definition) != nil else { return false }
+            }
+            let usedSections = Set(definitions.compactMap { sectionIndex(for: $0) })
+            return usedSections.contains(0) && usedSections.contains(1)
         }
 
         private static func normalizedUserBytes(

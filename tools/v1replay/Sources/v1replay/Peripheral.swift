@@ -148,6 +148,7 @@ final class V1Peripheral: NSObject {
         var savedMainVolume: UInt8?
         var savedMutedVolume: UInt8?
         var userBytes: [UInt8] = Array(repeating: 0xFF, count: 6)
+        var sweepDefinitions: [V1.Session.SweepDefinition]?
         var logPackets: Bool = false
         /// Stress-only maximum hold after the first epoch-owned START. A second
         /// owned START releases sooner; zero preserves immediate notifications.
@@ -165,6 +166,7 @@ final class V1Peripheral: NSObject {
     var onMuteCommand: ((Bool) -> Void)?
     var onDisplayPowerCommand: ((Bool) -> Void)?
     var onNotificationEvent: ((ReplayNotificationEvent) -> Void)?
+    var onPersistentStateChange: ((V1.Session.PersistentState) -> Void)?
 
     /// Proxy hook. Receives every inbound write before it is parsed, with the
     /// characteristic it arrived on preserved. Returning true suppresses the
@@ -217,6 +219,9 @@ final class V1Peripheral: NSObject {
     var alertDataRequested: Bool { return withState { $0.session.alertDataRequested } }
     var controlState: V1.Session.ControlState {
         return withState { $0.session.controlState }
+    }
+    var persistentState: V1.Session.PersistentState {
+        return withState { $0.session.persistentState }
     }
     func projectedSample(_ sample: TimedSample) -> TimedSample {
         return withState { $0.session.projectedSample(sample) }
@@ -289,6 +294,7 @@ final class V1Peripheral: NSObject {
         sessionConfig.savedMainVolume = config.savedMainVolume
         sessionConfig.savedMutedVolume = config.savedMutedVolume
         sessionConfig.userBytes = config.userBytes
+        sessionConfig.sweepDefinitions = config.sweepDefinitions
         self.state = State(session: V1.Session(config: sessionConfig))
         super.init()
         self.onNotificationEvent = onNotificationEvent
@@ -699,6 +705,16 @@ final class V1Peripheral: NSObject {
             case .unhandled:
                 onLog?("← unhandled \(commandName)")
             }
+        }
+
+        let committedSweepWrite = packet.id == V1.PacketID.reqWriteSweepDefinition.rawValue
+            && packet.payload.first.map { $0 & 0x40 != 0 } == true
+        let persistentMutation = packet.id == V1.PacketID.reqWriteUserBytes.rawValue
+            || packet.id == V1.PacketID.changeMode.rawValue
+            || packet.id == V1.PacketID.reqWriteVolume.rawValue
+            || committedSweepWrite
+        if accepted && persistentMutation {
+            onPersistentStateChange?(withState { $0.session.persistentState })
         }
     }
 

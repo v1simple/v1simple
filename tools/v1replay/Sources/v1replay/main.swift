@@ -12,7 +12,7 @@ import Foundation
 //   v1replay idle
 // =============================================================================
 
-let toolVersion = "1.4.0"
+let toolVersion = "1.5.0"
 
 // MARK: - Minimal argument parsing (no external packages: this must build offline)
 
@@ -131,6 +131,16 @@ func makeMode() throws -> V1.ModeGlyph {
         throw ReplayError.message("unknown --mode '\(raw)' (all, logic, advanced, custom, euro)")
     }
     return mode
+}
+
+func defaultDetectorStatePath(version: String) -> String {
+    let safeVersion = version.map { $0.isNumber ? $0 : "_" }
+    let executableDirectory = URL(fileURLWithPath: CommandLine.arguments[0])
+        .standardizedFileURL
+        .deletingLastPathComponent()
+    return executableDirectory
+        .appendingPathComponent("detector-state-\(String(safeVersion)).json")
+        .path
 }
 
 func makeArrowBlinkProfile(benchDefault: Bool) throws -> ArrowBlinkProfile {
@@ -318,6 +328,8 @@ func runHelp() {
       --mode <glyph>       initial display mode: all, logic, advanced, custom, euro
       --volume <main,mute> initial current/muted volume (default 4,0)
       --v1-version <ver>   version reported to reqVersion (default 4.1038)
+      --state-file <path>  persist detector settings, mode, volume, and sweeps;
+                           interactive modes default beside the executable
       --muted-when <val>   input muteState value that means muted (default 2)
       --band <ka|k|x|ku|laser>   override the input's band
       --log-packets        log every packet in and out
@@ -620,6 +632,25 @@ func runPlay(idleOnly: Bool,
     peripheralConfig.logPackets = args.bool("log-packets")
     peripheralConfig.handshakeNotificationHoldMs = handshakeNotificationHoldMs
 
+    let statePath = args.optionalString("state-file")
+        ?? (bench ? nil : defaultDetectorStatePath(version: peripheralConfig.version))
+    let detectorStateStore = statePath.map(V1DetectorStateStore.init(path:))
+    var restoredDetectorState = false
+    if let detectorStateStore,
+       let saved = try detectorStateStore.load(expectedVersion: peripheralConfig.version) {
+        var sessionConfig = V1.Session.Config()
+        sessionConfig.version = peripheralConfig.version
+        try V1.Session.applyPersistentState(saved, to: &sessionConfig)
+        peripheralConfig.mode = sessionConfig.mode
+        peripheralConfig.mainVolume = sessionConfig.mainVolume
+        peripheralConfig.mutedVolume = sessionConfig.mutedVolume
+        peripheralConfig.savedMainVolume = sessionConfig.savedMainVolume
+        peripheralConfig.savedMutedVolume = sessionConfig.savedMutedVolume
+        peripheralConfig.userBytes = sessionConfig.userBytes
+        peripheralConfig.sweepDefinitions = sessionConfig.sweepDefinitions
+        restoredDetectorState = true
+    }
+
     var playerOptions = Player.Options()
     playerOptions.speed = args.double("speed", 1.0)
     playerOptions.loop = args.bool("loop")
@@ -642,6 +673,9 @@ func runPlay(idleOnly: Bool,
     console.print("\(Ansi.bold)v1replay \(toolVersion)\(Ansi.reset)  —  pretending to be a Valentine One Gen2")
     console.print("\(Ansi.dim)service  \(V1.serviceUUID)\(Ansi.reset)")
     console.print("\(Ansi.dim)name     \(peripheralConfig.localName)   info \(String(format: "%02X %02X", informationHeader.dest, informationHeader.src))   replies \(String(format: "%02X %02X", replyHeader.dest, replyHeader.src))   checksum \(checksum ? "on" : "off")\(Ansi.reset)")
+    if detectorStateStore != nil {
+        console.print("\(Ansi.dim)state    \(restoredDetectorState ? "restored" : "factory seed") — durable detector storage enabled\(Ansi.reset)")
+    }
     // State the blink plane out loud: it decides whether the firmware's
     // blink-refresh repaint runs, so a bench log has to say which stimulus
     // produced it before it can be compared with a native replay.
@@ -675,6 +709,10 @@ func runPlay(idleOnly: Bool,
         config: peripheralConfig,
         onNotificationEvent: notificationEventHandler
     )
+    peripheral.onPersistentStateChange = { state in
+        detectorStateStore?.save(state)
+    }
+    detectorStateStore?.save(peripheral.persistentState)
     let player = Player(encounter: encounter, peripheral: peripheral, options: playerOptions)
 
     peripheral.onLog = { message in console.log("\(Ansi.cyan)ble\(Ansi.reset)  \(message)") }
@@ -851,6 +889,7 @@ func runPlay(idleOnly: Bool,
             StoppingMachineEvent(sessionTransportActive: sessionTransportActive).line
         )
     }
+    try detectorStateStore?.flush()
     console.clearStatus()
     sessionTransportEvents?.emit(false)
     if machineEvents {

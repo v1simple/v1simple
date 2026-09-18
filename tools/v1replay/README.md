@@ -267,3 +267,15 @@ suite covers the scenario timeline and CSV.
   private repositories.
 - A synthetic pass does not replace raw capture or real-V1 camera evidence for
   a claimed firmware fix.
+
+## Detector settings state
+
+Interactive `demo`, `play`, and `idle` sessions persist accepted user bytes,
+mode, volume, and committed custom-sweep definitions beside the emulator
+binary. A later emulator process restores that detector state and serves it on
+the normal ESP readback requests, matching the durable settings behavior users
+expect from a V1. Use `--state-file PATH` to select an isolated state file.
+
+Managed bench runs always use a new run-local state file. The final file is
+retained with the raw run so a profile Apply has direct evidence of what the
+emulated detector stored without contaminating the next bench run.

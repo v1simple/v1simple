@@ -21,6 +21,15 @@ void PacketParser::resetAlertAssembly() {
     clearAlertCache();
 }
 
+void PacketParser::markAlertStreamDiscontinuous() {
+    // With no table-generation field on respAlertData, retained rows cannot be
+    // distinguished from rows after a known transport loss. Preserve the last
+    // complete table, discard only the partial candidate, and wait for the
+    // protocol's table-start row before assembling again.
+    clearAlertCache();
+    alertResyncRequired_ = true;
+}
+
 void PacketParser::resetAlertState() {
     ++alertLifetime_;
     // InfDisplayData is session-scoped too. Do not let a laser snapshot from
@@ -30,6 +39,8 @@ void PacketParser::resetAlertState() {
     displayState_.signalBars = 0;
     displayState_.flashBits = 0;
     displayState_.bandFlashBits = 0;
+    alertIndexMode_ = AlertIndexMode::Unknown;
+    alertResyncRequired_ = false;
     resetAlertStateAt(static_cast<uint32_t>(millis()));
 }
 
@@ -255,6 +266,7 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
             displayState_.arrows = DIR_NONE;
         }
         resetAlertStateAt(nowMs);
+        alertResyncRequired_ = false;
         // Preserve signalBars; parseDisplayData() owns the V1 LED bitmap.
         // Preserve muted; its authoritative state comes from
         // parseDisplayData() (InfDisplayData image1 mute bit, debounced).
@@ -314,6 +326,17 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
     if (!indexValidOneBased && !indexValidZeroBased) {
         return true;
     }
+
+    if (alertResyncRequired_) {
+        // ESP 3.016 and the vendor libraries use one-based tables. Retain the
+        // zero-based compatibility path only after a complete zero-based table
+        // has established that mode for this detector session.
+        const uint8_t expectedStart = (alertIndexMode_ == AlertIndexMode::ZeroBased) ? 0 : 1;
+        if (alertIndex != expectedStart) {
+            return true;
+        }
+        alertResyncRequired_ = false;
+    }
     const size_t rawSlot = static_cast<size_t>(alertIndex);
 
     bool hadRowsForCount = false;
@@ -368,10 +391,6 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
         return true;
     }
 
-    enum class AlertIndexMode : uint8_t {
-        ZeroBased = 0,
-        OneBased = 1,
-    };
     AlertIndexMode decodeMode = completeZeroBased ? AlertIndexMode::ZeroBased : AlertIndexMode::OneBased;
 
     std::array<AlertData, MAX_ALERTS> nextAlerts{};
@@ -435,6 +454,7 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
 
     alerts_ = nextAlerts;
     alertCount_ = nextAlertCount;
+    alertIndexMode_ = decodeMode;
 
     if (alertCount_ > 0) {
         // Priority resolution order:

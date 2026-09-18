@@ -63,8 +63,6 @@ struct StatusRuntime {
     void* mergeAlertCtx = nullptr;
 };
 
-void invalidateStatusJsonCache(StatusJsonCache& cachedStatusJson, unsigned long& lastStatusJsonTime);
-
 void releaseStatusJsonCache(StatusJsonCache& cachedStatusJson, unsigned long& lastStatusJsonTime);
 
 void handleApiStatus(WebServer& server, const StatusRuntime& runtime, StatusJsonCache& cachedStatusJson,

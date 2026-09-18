@@ -520,6 +520,75 @@ void test_alert_stream_missing_row_keeps_previous_complete_table() {
     assertContainsFrequencies(parser, 24150, 34700);
 }
 
+void test_alert_stream_known_loss_discards_prestart_row_and_prevents_hybrid() {
+    PacketParser parser;
+
+    const auto prior1 = makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(1, 2, 10525, 0x90, 0x00, 0x28, 0x80));
+    const auto prior2 = makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(2, 2, 24125, 0x90, 0x00, 0x24, 0x00));
+    TEST_ASSERT_TRUE(parsePacket(parser, prior1, 100));
+    TEST_ASSERT_TRUE(parsePacket(parser, prior2, 101));
+    assertContainsFrequencies(parser, 10525, 24125);
+
+    // A partial table is followed by a known transport gap. Row 2 from the
+    // later table must not combine with the retained row 1.
+    const auto oldRow1 = makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(1, 2, 24150, 0x90, 0x00, 0x24, 0x80));
+    const auto freshRow2 = makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(2, 2, 34700, 0xA0, 0x00, 0x22, 0x00));
+    const auto freshRow1 = makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(1, 2, 24200, 0xA0, 0x00, 0x24, 0x80));
+    TEST_ASSERT_TRUE(parsePacket(parser, oldRow1, 200));
+    parser.markAlertStreamDiscontinuous();
+    TEST_ASSERT_TRUE(parsePacket(parser, freshRow2, 201));
+    TEST_ASSERT_TRUE(parsePacket(parser, freshRow1, 202));
+
+    // The last complete publication remains visible until a complete fresh
+    // table arrives; the cross-cycle 24150/34700 hybrid is never published.
+    assertContainsFrequencies(parser, 10525, 24125);
+    TEST_ASSERT_TRUE(parsePacket(parser, freshRow2, 203));
+    assertContainsFrequencies(parser, 24200, 34700);
+}
+
+void test_alert_stream_known_loss_uses_learned_zero_based_start() {
+    PacketParser parser;
+
+    const auto initial0 = makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(0, 2, 24125, 0x90, 0x00, 0x24, 0x80));
+    const auto initial1 = makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(1, 2, 34700, 0xA0, 0x00, 0x22, 0x00));
+    TEST_ASSERT_TRUE(parsePacket(parser, initial0, 100));
+    TEST_ASSERT_TRUE(parsePacket(parser, initial1, 101));
+
+    parser.markAlertStreamDiscontinuous();
+    const auto prestart1 = makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(1, 2, 33800, 0xA0, 0x00, 0x22, 0x00));
+    const auto fresh0 = makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(0, 2, 24200, 0x90, 0x00, 0x24, 0x80));
+    const auto fresh1 = makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(1, 2, 33810, 0xA0, 0x00, 0x22, 0x00));
+    TEST_ASSERT_TRUE(parsePacket(parser, prestart1, 200));
+    TEST_ASSERT_TRUE(parsePacket(parser, fresh0, 201));
+    assertContainsFrequencies(parser, 24125, 34700);
+    TEST_ASSERT_TRUE(parsePacket(parser, fresh1, 202));
+    assertContainsFrequencies(parser, 24200, 33810);
+}
+
+void test_alert_stream_count_zero_rearms_after_known_loss() {
+    PacketParser parser;
+    const auto row2 = makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(2, 2, 34700, 0xA0, 0x00, 0x22, 0x00));
+    const auto row1 = makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(1, 2, 24150, 0x90, 0x00, 0x24, 0x80));
+    const auto clear = makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(0, 0, 0, 0, 0, 0, 0));
+
+    parser.markAlertStreamDiscontinuous();
+    TEST_ASSERT_TRUE(parsePacket(parser, row2, 100));
+    TEST_ASSERT_TRUE(parsePacket(parser, clear, 101));
+    TEST_ASSERT_TRUE(parsePacket(parser, row2, 102));
+    TEST_ASSERT_TRUE(parsePacket(parser, row1, 103));
+    assertContainsFrequencies(parser, 24150, 34700);
+}
+
+void test_alert_stream_freshness_handles_millis_rollover() {
+    PacketParser parser;
+    const auto row1 = makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(1, 2, 24150, 0x90, 0x00, 0x24, 0x80));
+    const auto row2 = makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(2, 2, 34700, 0xA0, 0x00, 0x22, 0x00));
+
+    TEST_ASSERT_TRUE(parsePacket(parser, row1, UINT32_MAX - 500u));
+    TEST_ASSERT_TRUE(parsePacket(parser, row2, 499u));
+    assertContainsFrequencies(parser, 24150, 34700);
+}
+
 void test_alert_stream_count_zero_clears_alerts() {
     PacketParser parser;
 
@@ -860,6 +929,10 @@ int main() {
     RUN_TEST(test_alert_stream_row_priority_ignores_display_aux0_bits);
     RUN_TEST(test_alert_stream_unusable_row_priority_falls_back_to_first_usable);
     RUN_TEST(test_alert_stream_missing_row_keeps_previous_complete_table);
+    RUN_TEST(test_alert_stream_known_loss_discards_prestart_row_and_prevents_hybrid);
+    RUN_TEST(test_alert_stream_known_loss_uses_learned_zero_based_start);
+    RUN_TEST(test_alert_stream_count_zero_rearms_after_known_loss);
+    RUN_TEST(test_alert_stream_freshness_handles_millis_rollover);
     RUN_TEST(test_alert_stream_count_zero_clears_alerts);
     RUN_TEST(test_reset_alert_state_clears_published_and_partial_tables);
     RUN_TEST(test_alert_stream_stale_row_not_reused_for_completion);

@@ -181,6 +181,7 @@ void test_partial_frame_across_notifications_is_reassembled_once() {
     queue.process();
 
     TEST_ASSERT_EQUAL_INT(1, parser.parseCalls);
+    TEST_ASSERT_EQUAL_INT(0, parser.markAlertStreamDiscontinuousCalls);
     assertParsedPacket(0, frame);
     TEST_ASSERT_EQUAL_UINT32(202, parser.parseTimestamps[0]);
     // The frame began before the modeled command boundary even though its
@@ -200,6 +201,7 @@ void test_multiple_frames_in_one_notification_are_all_parsed_in_order() {
     queue.process();
 
     TEST_ASSERT_EQUAL_INT(2, parser.parseCalls);
+    TEST_ASSERT_EQUAL_INT(0, parser.markAlertStreamDiscontinuousCalls);
     assertParsedPacket(0, first);
     assertParsedPacket(1, second);
 }
@@ -524,6 +526,14 @@ void test_queue_saturation_counts_only_rejected_admission_and_preserves_head() {
     assertParsedPacket(1, second);
     TEST_ASSERT_EQUAL_UINT32(1, HealthCounters::inputDrops());
 
+    // The next admitted notification exposes the rejected sequence at the
+    // exact stream boundary before its frame is parsed.
+    const std::vector<uint8_t> afterDrop = makeFrame(0x5E, 3, 0x64);
+    TEST_ASSERT_TRUE(deliverRawNotify(afterDrop.data(), afterDrop.size(), kCharacteristic, kSession, 502));
+    queue.process();
+    TEST_ASSERT_EQUAL_INT(3, parser.parseCalls);
+    TEST_ASSERT_EQUAL_INT(1, parser.markAlertStreamDiscontinuousCalls);
+
     std::array<uint8_t, 257> oversized{};
     TEST_ASSERT_FALSE(deliverRawNotify(oversized.data(), oversized.size(), kCharacteristic, kSession, 503));
     TEST_ASSERT_FALSE(deliverRawNotify(first.data(), first.size(), kCharacteristic, kSession + 1, 504));
@@ -544,7 +554,65 @@ void test_malformed_input_resynchronizes_to_following_valid_frame() {
 
     TEST_ASSERT_EQUAL_INT(1, parser.parseCalls);
     assertParsedPacket(0, valid);
+    TEST_ASSERT_TRUE(parser.markAlertStreamDiscontinuousCalls >= 1);
     TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::inputDrops());
+}
+
+void test_notification_sequence_gap_marks_before_later_frame() {
+    beginQueue();
+    const std::vector<uint8_t> first = makeFrame(0x50, 3, 0x11);
+    const std::vector<uint8_t> later = makeFrame(0x51, 3, 0x22);
+
+    TEST_ASSERT_TRUE(deliverRawNotify(first.data(), first.size(), kCharacteristic, kSession, 610, 10));
+    TEST_ASSERT_TRUE(deliverRawNotify(later.data(), later.size(), kCharacteristic, kSession, 611, 12));
+    queue.process();
+
+    TEST_ASSERT_EQUAL_INT(2, parser.parseCalls);
+    TEST_ASSERT_EQUAL_INT(1, parser.markAlertStreamDiscontinuousCalls);
+}
+
+void test_notification_sequence_rollover_is_contiguous() {
+    beginQueue();
+    const std::vector<uint8_t> beforeWrap = makeFrame(0x50, 3, 0x11);
+    const std::vector<uint8_t> afterWrap = makeFrame(0x51, 3, 0x22);
+
+    TEST_ASSERT_TRUE(deliverRawNotify(beforeWrap.data(), beforeWrap.size(), kCharacteristic,
+                                     kSession, 620, UINT32_MAX));
+    TEST_ASSERT_TRUE(deliverRawNotify(afterWrap.data(), afterWrap.size(), kCharacteristic,
+                                     kSession, 621, 1));
+    queue.process();
+
+    TEST_ASSERT_EQUAL_INT(2, parser.parseCalls);
+    TEST_ASSERT_EQUAL_INT(0, parser.markAlertStreamDiscontinuousCalls);
+}
+
+void test_session_reset_clears_notification_continuity_baseline() {
+    beginQueue();
+    const std::vector<uint8_t> oldSession = makeFrame(0x50, 3, 0x11);
+    const std::vector<uint8_t> newSession = makeFrame(0x51, 3, 0x22);
+    TEST_ASSERT_TRUE(deliverRawNotify(oldSession.data(), oldSession.size(), kCharacteristic,
+                                     kSession, 630, 10));
+    queue.process();
+
+    queue.openSession(kSession + 1);
+    TEST_ASSERT_TRUE(deliverRawNotify(newSession.data(), newSession.size(), kCharacteristic,
+                                     kSession + 1, 631, 50));
+    queue.process();
+
+    TEST_ASSERT_EQUAL_INT(2, parser.parseCalls);
+    TEST_ASSERT_EQUAL_INT(0, parser.markAlertStreamDiscontinuousCalls);
+}
+
+void test_rejected_alert_frame_marks_stream_discontinuous() {
+    beginQueue();
+    parser.parseReturnValue = false;
+    const std::vector<uint8_t> rejectedAlert = makeFrame(PACKET_ID_ALERT_DATA, 7, 0x11);
+    TEST_ASSERT_TRUE(deliverRawNotify(rejectedAlert.data(), rejectedAlert.size(), kCharacteristic,
+                                     kSession, 640));
+    queue.process();
+
+    TEST_ASSERT_EQUAL_INT(1, parser.parseCalls);
+    TEST_ASSERT_EQUAL_INT(1, parser.markAlertStreamDiscontinuousCalls);
 }
 
 void test_parser_packet_queued_beyond_first_drain_retains_pre_command_ingress() {
@@ -735,6 +803,10 @@ int main(int, char**) {
     RUN_TEST(test_canonical_v1_flow_control_packets_reach_the_session_owner);
     RUN_TEST(test_queue_saturation_counts_only_rejected_admission_and_preserves_head);
     RUN_TEST(test_malformed_input_resynchronizes_to_following_valid_frame);
+    RUN_TEST(test_notification_sequence_gap_marks_before_later_frame);
+    RUN_TEST(test_notification_sequence_rollover_is_contiguous);
+    RUN_TEST(test_session_reset_clears_notification_continuity_baseline);
+    RUN_TEST(test_rejected_alert_frame_marks_stream_discontinuous);
     RUN_TEST(test_parser_packet_queued_beyond_first_drain_retains_pre_command_ingress);
     RUN_TEST(test_user_response_queued_beyond_first_drain_retains_pre_request_ingress);
     RUN_TEST(test_sweep_capture_completion_is_response_order_independent);

@@ -55,20 +55,6 @@ void WifiOrchestrator::configureCallbacks() {
         },
         this);
 
-    // Auto-push executor status
-    wifiManager.setPushStatusCallback(
-        [](void* ctx) {
-            auto* self = static_cast<WifiOrchestrator*>(ctx);
-            return self->autoPushModule.getStatusJson();
-        },
-        this);
-    wifiManager.setPushStatusDocumentCallback(
-        [](JsonObject root, void* ctx) {
-            auto* self = static_cast<WifiOrchestrator*>(ctx);
-            return self->autoPushModule.appendStatusJson(root);
-        },
-        this);
-
     // Defer WiFi client operations until the V1 connection is ready.
     wifiManager.setV1ConnectedCallback(
         [](void* ctx) {

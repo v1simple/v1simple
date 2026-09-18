@@ -36,12 +36,15 @@ bool BleQueueModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr, V1Pr
 
     rxBuffer_.clear();
     rxIngressSequences_.clear();
+    rxDiscontinuities_.clear();
     clearLongRxState();
     rxReadPos_ = 0;
     lastRxMillis_ = 0;
     lastNotifyTsMs_ = 0;
     hadSuccessfulParse_ = false;
     backpressureActive_ = false;
+    lastDequeuedIngressSequence_ = 0;
+    pendingStreamDiscontinuity_ = false;
     tooLargeWarningLog_ = BleLogRateLimitState{};
     missingEndWarningLog_ = BleLogRateLimitState{};
     sessionGeneration_.store(0, std::memory_order_relaxed);
@@ -59,7 +62,9 @@ bool BleQueueModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr, V1Pr
     const size_t desiredRxCap = std::max(config_.rxBufferCap, RX_BUFFER_MAX);
     rxBuffer_.reserve(desiredRxCap);
     rxIngressSequences_.reserve(desiredRxCap);
-    if (rxBuffer_.capacity() < desiredRxCap || rxIngressSequences_.capacity() < desiredRxCap) {
+    rxDiscontinuities_.reserve(desiredRxCap);
+    if (rxBuffer_.capacity() < desiredRxCap || rxIngressSequences_.capacity() < desiredRxCap ||
+        rxDiscontinuities_.capacity() < desiredRxCap) {
         Serial.printf("[BLE_QUEUE] FATAL: RX buffer reserve failed (cap=%u have=%u)\n",
                       static_cast<unsigned>(desiredRxCap), static_cast<unsigned>(rxBuffer_.capacity()));
         vQueueDelete(queueHandle_);
@@ -106,6 +111,8 @@ void BleQueueModule::closeSession() {
     lastNotifyTsMs_ = 0;
     hadSuccessfulParse_ = false;
     backpressureActive_ = false;
+    lastDequeuedIngressSequence_ = 0;
+    pendingStreamDiscontinuity_ = false;
 }
 
 void BleQueueModule::onNotify(const uint8_t* data, size_t length, uint16_t charUUID, uint32_t sessionGeneration,
@@ -165,6 +172,7 @@ bool BleQueueModule::enqueueStampedForTest(const uint8_t* data, size_t length, u
 void BleQueueModule::clearRxState() {
     rxBuffer_.clear();
     rxIngressSequences_.clear();
+    rxDiscontinuities_.clear();
     rxReadPos_ = 0;
 }
 
@@ -183,14 +191,18 @@ void BleQueueModule::compactRxState() {
     memmove(rxIngressSequences_.data(), rxIngressSequences_.data() + shift,
             unread * sizeof(rxIngressSequences_[0]));
     rxIngressSequences_.resize(unread);
+    memmove(rxDiscontinuities_.data(), rxDiscontinuities_.data() + shift,
+            unread * sizeof(rxDiscontinuities_[0]));
+    rxDiscontinuities_.resize(unread);
     rxReadPos_ = 0;
 }
 
-bool BleQueueModule::appendRxPacket(const BLEDataPacket& packet) {
-    return appendRxBytes(packet.data, packet.length, packet.ingressSequence);
+bool BleQueueModule::appendRxPacket(const BLEDataPacket& packet, bool beginsAfterDiscontinuity) {
+    return appendRxBytes(packet.data, packet.length, packet.ingressSequence, beginsAfterDiscontinuity);
 }
 
-bool BleQueueModule::appendRxBytes(const uint8_t* data, size_t length, uint32_t ingressSequence) {
+bool BleQueueModule::appendRxBytes(const uint8_t* data, size_t length, uint32_t ingressSequence,
+                                   bool beginsAfterDiscontinuity) {
     if (!data || length == 0) {
         return false;
     }
@@ -209,7 +221,43 @@ bool BleQueueModule::appendRxBytes(const uint8_t* data, size_t length, uint32_t 
     memcpy(rxBuffer_.data() + begin, data, length);
     rxIngressSequences_.resize(begin + length);
     std::fill(rxIngressSequences_.begin() + begin, rxIngressSequences_.end(), ingressSequence);
+    rxDiscontinuities_.resize(begin + length, 0);
+    if (beginsAfterDiscontinuity) {
+        rxDiscontinuities_[begin] = 1;
+    }
     return true;
+}
+
+bool BleQueueModule::ingressWouldBeDiscontinuous(uint32_t ingressSequence) const {
+    if (lastDequeuedIngressSequence_ == 0) {
+        return false;
+    }
+    if (ingressSequence == 0) {
+        return true;
+    }
+    if (ingressSequence == lastDequeuedIngressSequence_) {
+        return false;
+    }
+    const uint32_t expected =
+        (lastDequeuedIngressSequence_ == UINT32_MAX) ? 1u : (lastDequeuedIngressSequence_ + 1u);
+    return ingressSequence != expected;
+}
+
+void BleQueueModule::acceptIngressSequence(uint32_t ingressSequence) {
+    lastDequeuedIngressSequence_ = ingressSequence;
+}
+
+void BleQueueModule::markAlertStreamDiscontinuous() {
+    if (parser_) {
+        parser_->markAlertStreamDiscontinuous();
+    }
+}
+
+void BleQueueModule::applyPendingDiscontinuityIfStreamDrained() {
+    if (pendingStreamDiscontinuity_ && rxReadPos_ >= rxBuffer_.size() && !longRxComplete()) {
+        markAlertStreamDiscontinuous();
+        pendingStreamDiscontinuity_ = false;
+    }
 }
 
 void BleQueueModule::clearLongRxState() {
@@ -224,7 +272,7 @@ bool BleQueueModule::longRxComplete() const {
     return longRx_.presentMask == required;
 }
 
-bool BleQueueModule::appendLongRxChunk(const BLEDataPacket& packet) {
+bool BleQueueModule::appendLongRxChunk(const BLEDataPacket& packet, bool beginsAfterDiscontinuity) {
     // The prefix is included in the 20-byte ATT value, leaving 19 bytes of
     // framed ESP data per chunk.
     if (packet.length < 2 || packet.length > (MAX_LONG_CHUNK_PAYLOAD + 1u)) {
@@ -241,11 +289,15 @@ bool BleQueueModule::appendLongRxChunk(const BLEDataPacket& packet) {
     }
 
     if (longRx_.count != 0 && longRx_.count != count) {
+        beginsAfterDiscontinuity = true;
         clearLongRxState();
     }
     if (longRx_.count == 0) {
         longRx_.count = count;
         longRx_.firstIngressSequence = packet.ingressSequence;
+        longRx_.streamDiscontinuity = beginsAfterDiscontinuity;
+    } else {
+        longRx_.streamDiscontinuity |= beginsAfterDiscontinuity;
     }
 
     const uint16_t bit = static_cast<uint16_t>(uint16_t{1} << (index - 1u));
@@ -256,6 +308,7 @@ bool BleQueueModule::appendLongRxChunk(const BLEDataPacket& packet) {
         clearLongRxState();
         longRx_.count = count;
         longRx_.firstIngressSequence = packet.ingressSequence;
+        longRx_.streamDiscontinuity = true;
     }
 
     const size_t slot = static_cast<size_t>(index - 1u);
@@ -293,13 +346,16 @@ bool BleQueueModule::flushCompleteLongRx() {
     }
 
     const uint32_t ingressSequence = longRx_.firstIngressSequence;
+    const bool streamDiscontinuity = longRx_.streamDiscontinuity || pendingStreamDiscontinuity_;
     for (size_t slot = 0; slot < longRx_.count; ++slot) {
-        if (!appendRxBytes(longRx_.payloads[slot].data(), longRx_.lengths[slot], ingressSequence)) {
+        if (!appendRxBytes(longRx_.payloads[slot].data(), longRx_.lengths[slot], ingressSequence,
+                           streamDiscontinuity && slot == 0)) {
             // Capacity was proven above; preserve the completed candidate if a
             // future implementation changes that invariant.
             return false;
         }
     }
+    pendingStreamDiscontinuity_ = false;
     clearLongRxState();
     return true;
 }
@@ -351,7 +407,11 @@ void BleQueueModule::process() {
             if (longRxComplete()) {
                 break;
             }
-            const bool acceptedChunk = appendLongRxChunk(pkt);
+            bool beginsAfterDiscontinuity = ingressWouldBeDiscontinuous(pkt.ingressSequence) ||
+                                            pendingStreamDiscontinuity_;
+            acceptIngressSequence(pkt.ingressSequence);
+            const bool acceptedChunk = appendLongRxChunk(pkt, beginsAfterDiscontinuity);
+            pendingStreamDiscontinuity_ = !acceptedChunk;
             (void)xQueueReceive(queueHandle_, &pkt, 0);
             latestPktTs = pkt.tsMs;
 
@@ -365,9 +425,13 @@ void BleQueueModule::process() {
             continue;
         }
 
-        if (!appendRxPacket(pkt)) {
+        const bool beginsAfterDiscontinuity = ingressWouldBeDiscontinuous(pkt.ingressSequence) ||
+                                              pendingStreamDiscontinuity_;
+        if (!appendRxPacket(pkt, beginsAfterDiscontinuity)) {
             break;
         }
+        acceptIngressSequence(pkt.ingressSequence);
+        pendingStreamDiscontinuity_ = false;
         (void)xQueueReceive(queueHandle_, &pkt, 0);
         latestPktTs = pkt.tsMs;
     }
@@ -384,6 +448,7 @@ void BleQueueModule::process() {
 
     if (rxReadPos_ >= rxBuffer_.size()) {
         clearRxState();
+        applyPendingDiscontinuityIfStreamDrained();
         refreshBackpressureState();
         return;
     }
@@ -453,10 +518,12 @@ void BleQueueModule::process() {
                 ? dataBegin
                 : static_cast<const uint8_t*>(memchr(dataBegin, ESP_PACKET_START, availableBytes));
         if (startPtr == nullptr) {
+            markAlertStreamDiscontinuous();
             clearRxState();
             break;
         }
         if (startPtr != dataBegin) {
+            markAlertStreamDiscontinuous();
             rxReadPos_ = static_cast<size_t>(startPtr - rxBuffer_.data());
             continue;
         }
@@ -466,6 +533,7 @@ void BleQueueModule::process() {
 
         uint8_t lenField = rxBuffer_[rxReadPos_ + 4];
         if (lenField == 0) {
+            markAlertStreamDiscontinuous();
             rxReadPos_++;
             continue;
         }
@@ -478,6 +546,7 @@ void BleQueueModule::process() {
                 }
                 loggedTooLargeWarning = true;
             }
+            markAlertStreamDiscontinuous();
             rxReadPos_++;
             continue;
         }
@@ -491,6 +560,7 @@ void BleQueueModule::process() {
                 }
                 loggedMissingEndWarning = true;
             }
+            markAlertStreamDiscontinuous();
             rxReadPos_++;
             continue;
         }
@@ -498,6 +568,11 @@ void BleQueueModule::process() {
         const uint8_t* packetPtr = rxBuffer_.data() + rxReadPos_;
         const uint8_t packetId = packetPtr[3];
         const uint32_t packetIngressSequence = rxIngressSequences_[rxReadPos_];
+        const auto discontinuityBegin = rxDiscontinuities_.begin() + rxReadPos_;
+        const auto discontinuityEnd = discontinuityBegin + packetSize;
+        if (std::find(discontinuityBegin, discontinuityEnd, uint8_t{1}) != discontinuityEnd) {
+            markAlertStreamDiscontinuous();
+        }
 
         // RESP_USER_BYTES has six settings bytes. Checksum-originator EAh uses
         // PL=7; no-checksum E9h uses PL=6. Origin-qualified width validation
@@ -531,6 +606,9 @@ void BleQueueModule::process() {
             }
         }
         bool parseOk = parser_->parse(packetPtr, packetSize, parseTimestampMs, packetIngressSequence);
+        if (!parseOk && packetId == PACKET_ID_ALERT_DATA) {
+            markAlertStreamDiscontinuous();
+        }
 
         if (parseOk && packetId == PACKET_ID_DISPLAY_DATA && ble_) {
             ble_->onV1DisplayFlowControl(parser_->getDisplayState().timeSliceHoldoff);
@@ -605,6 +683,7 @@ void BleQueueModule::process() {
 
     if (rxReadPos_ >= rxBuffer_.size()) {
         clearRxState();
+        applyPendingDiscontinuityIfStreamDrained();
     } else if (rxReadPos_ >= RX_COMPACT_THRESHOLD) {
         compactRxState();
     }

@@ -94,6 +94,11 @@ class PacketParser {
     // Clear any partially assembled alert chunks (used when we re-request alert data)
     void resetAlertAssembly();
 
+    // A known transport gap makes every partial Alert Table ambiguous. Keep the
+    // last complete publication, but require a table-start row before collecting
+    // another candidate.
+    void markAlertStreamDiscontinuous();
+
     // Clear partial and published alert state at a V1 session boundary.
     void resetAlertState();
 
@@ -121,6 +126,12 @@ class PacketParser {
   private:
     static constexpr size_t RAW_ALERT_INDEX_SLOTS = MAX_ALERTS + 1; // raw indexes 0..15
 
+    enum class AlertIndexMode : uint8_t {
+        Unknown = 0,
+        ZeroBased,
+        OneBased,
+    };
+
     DisplayState displayState_;
 
     std::array<AlertData, MAX_ALERTS> alerts_;
@@ -143,6 +154,8 @@ class PacketParser {
     std::array<uint8_t, RAW_ALERT_INDEX_SLOTS> alertChunkCountTag_;
     std::array<uint32_t, RAW_ALERT_INDEX_SLOTS> alertChunkRxMs_;
     std::array<uint32_t, MAX_ALERTS + 1> alertTableFirstSeenMs_;
+    AlertIndexMode alertIndexMode_ = AlertIndexMode::Unknown;
+    bool alertResyncRequired_ = false;
     AlertTableObserver alertTableObserver_ = nullptr;
     void* alertTableObserverContext_ = nullptr;
 

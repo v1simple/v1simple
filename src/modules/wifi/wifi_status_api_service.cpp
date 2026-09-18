@@ -127,11 +127,6 @@ void sendStatus(WebServer& server, const StatusRuntime& runtime, StatusJsonCache
 
 } // namespace
 
-void invalidateStatusJsonCache(StatusJsonCache& cachedStatusJson, unsigned long& lastStatusJsonTime) {
-    cachedStatusJson.length = 0;
-    lastStatusJsonTime = 0;
-}
-
 void releaseStatusJsonCache(StatusJsonCache& cachedStatusJson, unsigned long& lastStatusJsonTime) {
     if (cachedStatusJson.data != nullptr) {
         heap_caps_free(cachedStatusJson.data);

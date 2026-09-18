@@ -95,6 +95,7 @@ class BleQueueModule {
         std::array<uint8_t, MAX_LONG_CHUNKS> lengths{};
         uint32_t firstIngressSequence = 0;
         uint32_t latestTimestampMs = 0;
+        bool streamDiscontinuity = false;
     };
 
     V1BLEClient* ble_ = nullptr;
@@ -110,6 +111,9 @@ class BleQueueModule {
     // the sequence attached to its start byte so a response that began before
     // a command cannot become fresh merely by completing afterward.
     std::vector<uint32_t> rxIngressSequences_;
+    // Marks the first staged byte after a known notification-stream gap. The
+    // parser is invalidated only when consumption reaches that exact boundary.
+    std::vector<uint8_t> rxDiscontinuities_;
     LongRxAssembly longRx_;
     bool rxBufferReady_ = false;
     size_t rxReadPos_ = 0; // Logical read pointer into rxBuffer (avoids front erases)
@@ -117,16 +121,23 @@ class BleQueueModule {
     uint32_t lastNotifyTsMs_ = 0;
     bool hadSuccessfulParse_ = false; // Flag: at least one packet parsed since last check
     bool backpressureActive_ = false;
+    uint32_t lastDequeuedIngressSequence_ = 0;
+    bool pendingStreamDiscontinuity_ = false;
     BleLogRateLimitState tooLargeWarningLog_;
     BleLogRateLimitState missingEndWarningLog_;
 
     Config config_;
     void refreshBackpressureState();
-    bool appendRxBytes(const uint8_t* data, size_t length, uint32_t ingressSequence);
-    bool appendRxPacket(const BLEDataPacket& packet);
-    bool appendLongRxChunk(const BLEDataPacket& packet);
+    bool appendRxBytes(const uint8_t* data, size_t length, uint32_t ingressSequence,
+                       bool beginsAfterDiscontinuity = false);
+    bool appendRxPacket(const BLEDataPacket& packet, bool beginsAfterDiscontinuity);
+    bool appendLongRxChunk(const BLEDataPacket& packet, bool beginsAfterDiscontinuity);
     bool flushCompleteLongRx();
     bool longRxComplete() const;
+    bool ingressWouldBeDiscontinuous(uint32_t ingressSequence) const;
+    void acceptIngressSequence(uint32_t ingressSequence);
+    void markAlertStreamDiscontinuous();
+    void applyPendingDiscontinuityIfStreamDrained();
     void compactRxState();
     void clearRxState();
     void clearLongRxState();

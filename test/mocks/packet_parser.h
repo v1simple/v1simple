@@ -73,6 +73,7 @@ public:
         parseTimestamps.clear();
         parseIngressSequences.clear();
         resetAlertAssemblyCalls = 0;
+        markAlertStreamDiscontinuousCalls = 0;
         resetAlertStateCalls = 0;
         resetV1VersionCalls = 0;
         resetModeAndDisplayStateCalls = 0;
@@ -221,6 +222,8 @@ public:
     // Reset methods
     int resetAlertAssemblyCalls = 0;
     void resetAlertAssembly() { resetAlertAssemblyCalls++; }
+    int markAlertStreamDiscontinuousCalls = 0;
+    void markAlertStreamDiscontinuous() { markAlertStreamDiscontinuousCalls++; }
     int resetAlertStateCalls = 0;
     void resetAlertState() {
         ++alertLifetimeValue;

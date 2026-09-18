@@ -31,22 +31,16 @@ struct Runtime {
 
 void handleApiDevicesList(WebServer& server, const Runtime& runtime);
 
-void handleApiDeviceNameSave(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
-                             void* rateLimitCtx);
 void handleApiDeviceNameSaveBody(WebServer& server, const Runtime& runtime,
                                  const uint8_t* body, size_t bodySize,
                                  bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
                                  const char* multipartBoundary = nullptr, size_t multipartBoundarySize = 0);
 
-void handleApiDeviceProfileSave(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
-                                void* rateLimitCtx);
 void handleApiDeviceProfileSaveBody(WebServer& server, const Runtime& runtime,
                                     const uint8_t* body, size_t bodySize,
                                     bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,
                                     const char* multipartBoundary = nullptr, size_t multipartBoundarySize = 0);
 
-void handleApiDeviceDelete(WebServer& server, const Runtime& runtime, bool (*checkRateLimit)(void* ctx),
-                           void* rateLimitCtx);
 void handleApiDeviceDeleteBody(WebServer& server, const Runtime& runtime,
                                const uint8_t* body, size_t bodySize,
                                bool (*checkRateLimit)(void* ctx), void* rateLimitCtx,

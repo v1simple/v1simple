@@ -60,11 +60,9 @@ struct Runtime {
     void* listProfilePageResultCtx = nullptr;
 };
 
-void handleApiProfilesList(WebServer& server, const Runtime& runtime);
 void handleApiProfilesListQuery(WebServer& server, const Runtime& runtime,
                                 const uint8_t* query, size_t querySize);
 
-void handleApiProfileGet(WebServer& server, const Runtime& runtime);
 void handleApiProfileGetQuery(WebServer& server, const Runtime& runtime,
                               const uint8_t* query, size_t querySize);
 

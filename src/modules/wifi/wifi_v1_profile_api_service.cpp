@@ -356,34 +356,6 @@ static void handleApiProfilesListResolved(WebServer& server, const Runtime& runt
     WifiApiResponse::sendJsonDocument(server, 200, doc);
 }
 
-void handleApiProfilesList(WebServer& server, const Runtime& runtime) {
-    String after;
-    if (server.hasArg("after")) {
-        const String& parsed = server.arg("after");
-        after = parsed;
-        if (after.length() != parsed.length() ||
-            (after.length() != 0 && std::memcmp(after.c_str(), parsed.c_str(), after.length()) != 0)) {
-            server.send(503, "application/json", "{\"error\":\"Profile page cursor unavailable\"}");
-            return;
-        }
-    }
-    String rawLimit;
-    const String* rawLimitPtr = nullptr;
-    if (server.hasArg("limit")) {
-        const String& parsed = server.arg("limit");
-        rawLimit = parsed;
-        if (rawLimit.length() != parsed.length() ||
-            (rawLimit.length() != 0 && std::memcmp(rawLimit.c_str(), parsed.c_str(), rawLimit.length()) != 0)) {
-            server.send(503, "application/json", "{\"error\":\"Profile page limit unavailable\"}");
-            return;
-        }
-        rawLimitPtr = &rawLimit;
-    }
-    size_t limit = V1_PROFILE_CATALOG_MAX_COUNT;
-    if (!parseProfilePageValues(server, after, rawLimitPtr, limit)) return;
-    handleApiProfilesListResolved(server, runtime, after, limit);
-}
-
 void handleApiProfilesListQuery(WebServer& server, const Runtime& runtime,
                                 const uint8_t* query, size_t querySize) {
     String after;
@@ -440,15 +412,6 @@ static void handleApiProfileGetResolved(WebServer& server, const Runtime& runtim
     }
 
     server.send(200, "application/json", profileJson);
-}
-
-void handleApiProfileGet(WebServer& server, const Runtime& runtime) {
-    if (!server.hasArg("name")) {
-        server.send(400, "application/json", "{\"error\":\"Missing profile name\"}");
-        return;
-    }
-    const String rawName = server.arg("name");
-    handleApiProfileGetResolved(server, runtime, rawName);
 }
 
 void handleApiProfileGetQuery(WebServer& server, const Runtime& runtime,

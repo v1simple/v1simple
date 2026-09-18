@@ -435,6 +435,8 @@ class V1BLEClient {
     bool isBootReady() const { return bootReadyFlag_; }
 
   private:
+    void schedulePostDeleteBondBackup(uint32_t nowMs);
+
     bool isV1WriteHeldOff(const uint8_t* data, size_t length) const {
         if (!data || length < 2) {
             return false;

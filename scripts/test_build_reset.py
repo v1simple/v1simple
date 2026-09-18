@@ -139,12 +139,30 @@ def test_build_reuses_frontend_and_firmware_outputs() -> None:
     assert_true("npm run deploy\n" not in source, "build.sh still rebuilds the frontend during deploy")
 
 
+def test_help_does_not_require_platformio() -> None:
+    env = os.environ.copy()
+    env["PATH"] = "/usr/bin:/bin"
+    env.pop("PIO_CMD", None)
+    result = subprocess.run(
+        ["/bin/bash", str(ROOT / "build.sh"), "--help"],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert_true(result.returncode == 0, result.stdout + result.stderr)
+    assert_true("Usage:" in result.stdout, result.stdout)
+    assert_true("PlatformIO not found" not in result.stdout + result.stderr, result.stdout + result.stderr)
+
+
 def main() -> int:
     test_reset_contract()
     test_reset_rejects_missing_confirmation()
     test_build_failure_happens_before_erase()
     test_skip_web_rejects_missing_filesystem_data()
     test_build_reuses_frontend_and_firmware_outputs()
+    test_help_does_not_require_platformio()
     print("build reset tests: PASS")
     return 0
 

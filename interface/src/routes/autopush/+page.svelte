@@ -1,6 +1,6 @@
 <script>
     import { onMount } from 'svelte';
-    import { fetchWithTimeout } from '$lib/utils/poll';
+    import { fetchJsonWithTimeout, fetchWithTimeout } from '$lib/utils/poll';
     import PageHeader from '$lib/components/PageHeader.svelte';
     import StatusAlert from '$lib/components/StatusAlert.svelte';
     import {
@@ -153,12 +153,12 @@
 
     async function fetchSlots() {
         try {
-            const res = await fetchWithTimeout('/api/autopush/slots');
+            const res = await fetchJsonWithTimeout('/api/autopush/slots');
             if (!res.ok) {
                 message = { type: 'error', text: 'Failed to load slots' };
                 return;
             }
-            const loaded = await res.json();
+            const loaded = res.data;
             loaded.slots = (loaded.slots || []).map((s) => {
                 return {
                     ...s,
@@ -180,12 +180,12 @@
                 const url = cursor
                     ? `/api/v1/profiles?after=${encodeURIComponent(cursor)}&limit=10`
                     : '/api/v1/profiles';
-                const res = await fetchWithTimeout(url);
+                const res = await fetchJsonWithTimeout(url);
                 if (!res.ok) {
                     message = { type: 'error', text: 'Failed to load profiles' };
                     return;
                 }
-                const d = await res.json();
+                const d = res.data;
                 if (!Array.isArray(d.profiles)) throw new Error('Invalid profile page');
                 loadedProfiles.push(...d.profiles);
                 if (!d.hasMore) break;

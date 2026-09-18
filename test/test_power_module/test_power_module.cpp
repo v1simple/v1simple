@@ -200,6 +200,21 @@ void test_auto_power_abort_retries_only_after_a_full_interval() {
     TEST_ASSERT_EQUAL_UINT32(121000, power.autoPowerOffTimerStartForTest());
 }
 
+void test_auto_power_timer_armed_at_rollover_waits_full_interval() {
+    power.onV1DataReceived();
+    setTime(0);
+    power.onV1ConnectionChange(false);
+    TEST_ASSERT_TRUE(power.autoPowerOffTimerRunningForTest());
+    TEST_ASSERT_EQUAL_UINT32(0, power.autoPowerOffTimerStartForTest());
+
+    power.process(0);
+    TEST_ASSERT_EQUAL(0, battery.powerOffCalls);
+    power.process(59999);
+    TEST_ASSERT_EQUAL(0, battery.powerOffCalls);
+    power.process(60000);
+    TEST_ASSERT_EQUAL(1, battery.powerOffCalls);
+}
+
 void test_shutdown_preparation_cannot_veto_physical_poweroff() {
     int preparationCalls = 0;
     int abortCalls = 0;
@@ -228,6 +243,7 @@ int main() {
     RUN_TEST(test_critical_shutdown_does_not_accept_pre_warning_read);
     RUN_TEST(test_critical_shutdown_does_not_treat_trigger_sample_as_confirmation);
     RUN_TEST(test_auto_power_abort_retries_only_after_a_full_interval);
+    RUN_TEST(test_auto_power_timer_armed_at_rollover_waits_full_interval);
     RUN_TEST(test_shutdown_preparation_cannot_veto_physical_poweroff);
     return UNITY_END();
 }

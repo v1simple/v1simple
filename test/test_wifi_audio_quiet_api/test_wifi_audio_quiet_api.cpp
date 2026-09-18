@@ -194,6 +194,19 @@ void test_audio_post_reports_persist_failure_without_live_volume_change() {
     TEST_ASSERT_EQUAL_INT(0, probe.volumeCalls);
 }
 
+void test_audio_post_rejects_malformed_voice_volume_without_side_effects() {
+    Probe probe;
+    WebServer server(80);
+    server.setArg("voiceVolume", "0oops");
+
+    WifiAudioApiService::handleApiSave(server, makeRuntime(probe));
+
+    TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
+    TEST_ASSERT_TRUE(contains(server.lastBody, "invalid_voice_volume"));
+    TEST_ASSERT_EQUAL_INT(0, probe.applyCalls);
+    TEST_ASSERT_EQUAL_INT(0, probe.volumeCalls);
+}
+
 void test_quiet_post_reports_persist_failure() {
     Probe probe;
     probe.persistSuccess = false;
@@ -370,6 +383,7 @@ int main() {
     RUN_TEST(test_quiet_post_uses_shared_update_but_ignores_audio_only_fields);
     RUN_TEST(test_audio_post_applies_shared_and_audio_only_fields_once);
     RUN_TEST(test_audio_post_reports_persist_failure_without_live_volume_change);
+    RUN_TEST(test_audio_post_rejects_malformed_voice_volume_without_side_effects);
     RUN_TEST(test_quiet_post_reports_persist_failure);
     RUN_TEST(test_device_settings_post_reports_persist_failure);
     RUN_TEST(test_device_settings_exact_body_rejects_unknown_and_incomplete_fields_without_apply);

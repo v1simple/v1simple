@@ -1,6 +1,6 @@
 <script>
     import { onMount } from 'svelte';
-    import { fetchWithTimeout } from '$lib/utils/poll';
+    import { fetchJsonWithTimeout, fetchWithTimeout } from '$lib/utils/poll';
     import PageHeader from '$lib/components/PageHeader.svelte';
     import StatusAlert from '$lib/components/StatusAlert.svelte';
     import ProfileSaveDialog from '$lib/features/profiles/ProfileSaveDialog.svelte';
@@ -399,12 +399,12 @@
                 const url = cursor
                     ? `/api/v1/profiles?after=${encodeURIComponent(cursor)}&limit=10`
                     : '/api/v1/profiles';
-                const res = await fetchWithTimeout(url);
+                const res = await fetchJsonWithTimeout(url);
                 if (!res.ok) {
                     message = { type: 'error', text: PROFILE_LOAD_ERROR_TEXT };
                     return false;
                 }
-                const data = await res.json();
+                const data = res.data;
                 if (!Array.isArray(data.profiles)) throw new Error('Invalid profile page');
                 loadedProfiles.push(...data.profiles);
                 schemaReady = schemaReady && data.schemaVersion === 3;
@@ -526,9 +526,17 @@
     async function editProfile(name) {
         message = { type: 'info', text: `Loading ${name}...` };
         try {
-            const res = await fetchWithTimeout(`/api/v1/profile?name=${encodeURIComponent(name)}`);
+            const res = await fetchWithTimeout(
+                `/api/v1/profile?name=${encodeURIComponent(name)}`,
+                {},
+                undefined,
+                async (response) => ({
+                    ok: response.ok,
+                    body: response.ok ? await response.json() : await response.text()
+                })
+            );
             if (res.ok) {
-                const data = await res.json();
+                const data = res.body;
                 currentProfile = {
                     ...data,
                     detector: fromApiDetectorConfiguration(data.detector || {}),
@@ -540,8 +548,7 @@
                 editingSettings = true;
                 message = { type: 'info', text: `Editing ${name}` };
             } else {
-                const error = await res.text();
-                message = { type: 'error', text: `Failed to load: ${error}` };
+                message = { type: 'error', text: `Failed to load: ${res.body}` };
             }
         } catch (e) {
             message = { type: 'error', text: 'Connection error' };
@@ -652,19 +659,26 @@
         if (!confirm(`Delete profile "${name}"?`)) return;
 
         try {
-            const res = await fetchWithTimeout('/api/v1/profile/delete', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
+            const res = await fetchWithTimeout(
+                '/api/v1/profile/delete',
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ name })
                 },
-                body: JSON.stringify({ name })
-            });
+                undefined,
+                async (response) => ({
+                    ok: response.ok,
+                    errorData: response.ok ? null : await response.json().catch(() => ({}))
+                })
+            );
             if (res.ok) {
                 profiles = profiles.filter((profile) => profile.name !== name);
                 message = { type: 'success', text: 'Profile deleted' };
             } else {
-                const errorData = await res.json().catch(() => ({}));
-                const error = errorData?.error || errorData?.message;
+                const error = res.errorData?.error || res.errorData?.message;
                 message = {
                     type: 'error',
                     text: error ? `Failed to delete: ${error}` : 'Failed to delete'

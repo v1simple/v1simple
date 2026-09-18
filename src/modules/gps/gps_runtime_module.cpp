@@ -308,8 +308,8 @@ bool GpsRuntimeModule::parseGga(char* fields[], size_t fieldCount, uint32_t nowM
     if (fields[7] && fields[7][0] != '\0' && !parseUIntStrict(fields[7], satelliteCount)) {
         return false;
     }
-    satellites_ = static_cast<uint8_t>(std::min<uint32_t>(satelliteCount, 99));
-    const bool ggaFix = (fixQuality > 0) && (satellites_ > 0);
+    const uint8_t parsedSatellites = static_cast<uint8_t>(std::min<uint32_t>(satelliteCount, 99));
+    const bool ggaFix = (fixQuality > 0) && (parsedSatellites > 0);
 
     if (ggaFix) {
         if (!fields[2] || fields[2][0] == '\0' || !fields[3] || fields[3][0] == '\0' || !fields[4] ||
@@ -328,6 +328,7 @@ bool GpsRuntimeModule::parseGga(char* fields[], size_t fieldCount, uint32_t nowM
             return false;
         }
     }
+    satellites_ = parsedSatellites;
     hdop_ = std::isfinite(parsedHdop) ? parsedHdop : NAN;
 
     ggaFix_ = ggaFix;

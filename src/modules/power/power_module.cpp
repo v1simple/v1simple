@@ -59,6 +59,7 @@ void PowerModule::performShutdown() {
             // this handoff. If the device remains awake, retry only after a
             // complete configured interval rather than on the next loop.
             if (settings_) {
+                autoPowerOffTimerRunning_ = false;
                 autoPowerOffTimerStart_ = 0;
                 reevaluateAutoPowerOffTimer(settings_->get(), millis());
             }
@@ -161,18 +162,17 @@ void PowerModule::reevaluateAutoPowerOffTimer(const V1Settings& s, unsigned long
     (void)nowMs;
 #else
     if (v1SignalPresent_ || alpSignalPresent_) {
-        if (autoPowerOffTimerStart_ != 0) {
+        if (autoPowerOffTimerRunning_) {
             Serial.println("[AutoPowerOff] Timer cancelled - activity resumed");
+            autoPowerOffTimerRunning_ = false;
             autoPowerOffTimerStart_ = 0;
         }
         return;
     }
 
-    if (autoPowerOffArmed_ && s.autoPowerOffMinutes > 0 && autoPowerOffTimerStart_ == 0) {
-        // Zero is the disabled sentinel. Preserve a full retry interval even
-        // when this transition happens on the first millisecond of a host test
-        // or immediately around boot.
-        autoPowerOffTimerStart_ = nowMs == 0 ? 1 : nowMs;
+    if (autoPowerOffArmed_ && s.autoPowerOffMinutes > 0 && !autoPowerOffTimerRunning_) {
+        autoPowerOffTimerStart_ = nowMs;
+        autoPowerOffTimerRunning_ = true;
         Serial.printf("[AutoPowerOff] Timer started: %d minutes\n", s.autoPowerOffMinutes);
     }
 #endif
@@ -228,11 +228,12 @@ void PowerModule::process(unsigned long nowMs) {
     // Auto power-off is disabled in car installs. Ignition power controls the
     // device lifetime, so no signal transition may tear down a still-running unit.
     const V1Settings& s = settings_->get();
-    if (autoPowerOffTimerStart_ != 0) {
+    if (autoPowerOffTimerRunning_) {
         unsigned long elapsedMs = nowMs - autoPowerOffTimerStart_;
         unsigned long timeoutMs = (unsigned long)s.autoPowerOffMinutes * 60UL * 1000UL;
         if (elapsedMs >= timeoutMs) {
             Serial.printf("[AutoPowerOff] Timer expired after %d minutes - powering off\n", s.autoPowerOffMinutes);
+            autoPowerOffTimerRunning_ = false;
             autoPowerOffTimerStart_ = 0;
             performShutdownRequest();
             return;

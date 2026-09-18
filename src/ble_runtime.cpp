@@ -92,7 +92,14 @@ void V1BLEClient::applyDeferredRuntimeEvents(SettingsManager& settings) {
         const NimBLEAddress addrToDelete = pendingDeleteBondAddr_;
         portEXIT_CRITICAL(&pendingAddrMux);
         if (NimBLEDevice::isBonded(addrToDelete)) {
-            NimBLEDevice::deleteBond(addrToDelete);
+            if (NimBLEDevice::deleteBond(addrToDelete)) {
+                // The SD backup is authoritative after NVS loss. Force a
+                // post-delete snapshot even when its bond count happens to
+                // match the last backup, or reboot could restore this stale
+                // bond. Snapshot/queue work stays on the main loop; SD I/O
+                // remains on the Core-0 writer.
+                schedulePostDeleteBondBackup(static_cast<uint32_t>(millis()));
+            }
         }
     }
     if (pendingScanEndUpdate_) {

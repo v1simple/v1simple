@@ -365,6 +365,14 @@ bool V1BLEClient::beginSettingsRecapture() {
     return true;
 }
 
+void V1BLEClient::schedulePostDeleteBondBackup(uint32_t nowMs) {
+    lastBondBackupCount_ = 0xFF;
+    pendingBondBackup_ = true;
+    pendingBondBackupCount_ = static_cast<uint8_t>(NimBLEDevice::getNumBonds());
+    pendingBondBackupRetryAtMs_ = 0;
+    serviceDeferredBondBackup(nowMs);
+}
+
 void V1BLEClient::serviceDeferredBondBackup(uint32_t nowMs) {
     if (!pendingBondBackup_) {
         return;

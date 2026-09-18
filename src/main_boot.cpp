@@ -224,7 +224,7 @@ void fatalBootError(V1Display& display, const char* message, bool displayAvailab
     Serial.printf("FATAL: %s\n", message);
 
     if (displayAvailable) {
-        display.showDisconnected(); // Clear screen with base frame
+        presentFatalBootFrame(display);
         Serial.println("Showing error on display, will restart in 10 seconds...");
 
         for (int i = 10; i > 0; i--) {

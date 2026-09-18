@@ -53,6 +53,7 @@ class PowerModule {
 
     bool lowBatteryWarningShownForTest() const { return criticalBatteryPresentationActive_; }
     unsigned long autoPowerOffTimerStartForTest() const { return autoPowerOffTimerStart_; }
+    bool autoPowerOffTimerRunningForTest() const { return autoPowerOffTimerRunning_; }
     bool autoPowerOffArmedForTest() const { return autoPowerOffArmed_; }
     void performShutdownRequestForTest() { performShutdownRequest(); }
     void setShutdownHandoffObserverForTest(ShutdownHandoffObserver observer, void* context) {
@@ -81,7 +82,9 @@ class PowerModule {
     bool displayBrightnessRestorePending_ = false;
     unsigned long criticalBatteryTime_ = 0;
 
-    unsigned long autoPowerOffTimerStart_ = 0; // 0 = timer not running
+    // Running is explicit because millis() == 0 is a valid start at rollover.
+    unsigned long autoPowerOffTimerStart_ = 0;
+    bool autoPowerOffTimerRunning_ = false;
     bool autoPowerOffArmed_ = false;
     bool v1SignalPresent_ = false;
     bool alpSignalPresent_ = false;

@@ -1,6 +1,6 @@
 <script>
     import { onMount } from 'svelte';
-    import { fetchWithTimeout } from '$lib/utils/poll';
+    import { fetchJsonWithTimeout, fetchWithTimeout } from '$lib/utils/poll';
     import CardSectionHead from '$lib/components/CardSectionHead.svelte';
     import PageHeader from '$lib/components/PageHeader.svelte';
     import StatusAlert from '$lib/components/StatusAlert.svelte';
@@ -52,12 +52,12 @@
         loading = true;
         settingsLoaded = false;
         try {
-            const res = await fetchWithTimeout('/api/audio/settings');
+            const res = await fetchJsonWithTimeout('/api/audio/settings');
             if (!res.ok) {
                 message = { type: 'error', text: 'Failed to load settings' };
                 return;
             }
-            const data = await res.json();
+            const data = res.data;
             settings.voiceAlertMode = data.voiceAlertMode ?? 3;
             settings.voiceDirectionEnabled = data.voiceDirectionEnabled ?? true;
             settings.announceBogeyCount = data.announceBogeyCount ?? true;

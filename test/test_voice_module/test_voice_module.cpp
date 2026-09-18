@@ -326,6 +326,28 @@ void test_process_announces_within_first_seconds_of_uptime() {
                           static_cast<int>(action2.type));
 }
 
+void test_clear_all_state_restores_first_announcement_eligibility() {
+    AlertData first = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700);
+    VoiceContext ctx;
+    ctx.priority = &first;
+    ctx.alerts = &first;
+    ctx.alertCount = 1;
+    ctx.mainVolume = 5;
+    ctx.now = 100;
+
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(VoiceAction::Type::ANNOUNCE_PRIORITY),
+                          static_cast<int>(voiceModule.process(ctx).type));
+
+    voiceModule.clearAllState();
+
+    AlertData next = AlertData::create(BAND_K, DIR_FRONT, 4, 0, 24125);
+    ctx.priority = &next;
+    ctx.alerts = &next;
+    ctx.now = 200;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(VoiceAction::Type::ANNOUNCE_PRIORITY),
+                          static_cast<int>(voiceModule.process(ctx).type));
+}
+
 void test_process_does_not_reannounce_same_alert_within_cooldown() {
     AlertData alert = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700);
     VoiceContext ctx;
@@ -756,6 +778,7 @@ int main() {
     // Happy path
     RUN_TEST(test_process_announces_priority_for_new_ka_alert);
     RUN_TEST(test_process_announces_within_first_seconds_of_uptime);
+    RUN_TEST(test_clear_all_state_restores_first_announcement_eligibility);
     RUN_TEST(test_process_does_not_reannounce_same_alert_within_cooldown);
     RUN_TEST(test_process_reannounces_after_cooldown);
     RUN_TEST(test_process_announces_on_band_change);

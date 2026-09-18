@@ -3,6 +3,7 @@ import {
     MAINTENANCE_API_WRITE_HEADER,
     MAINTENANCE_API_WRITE_HEADER_VALUE,
     URLENCODED_FORM_CONTENT_TYPE,
+    fetchJsonWithTimeout,
     fetchWithTimeout
 } from './poll.js';
 
@@ -134,6 +135,36 @@ describe('fetchWithTimeout', () => {
             }
         }))));
         const result = fetchWithTimeout('/api/status', {}, 25, (response) => response.json())
+            .then((value) => ({ value }), (error) => ({ error }));
+        await vi.advanceTimersByTimeAsync(25);
+        expect(await result).toMatchObject({ error: { name: 'AbortError' } });
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('keeps the deadline active through a stalled binary body consumer', async () => {
+        vi.useFakeTimers();
+        vi.stubGlobal('fetch', vi.fn(async (_url, { signal }) => new Response(new ReadableStream({
+            start(controller) {
+                controller.enqueue(new Uint8Array([0, 255]));
+                signal.addEventListener('abort', () => controller.error(new DOMException('Aborted', 'AbortError')), { once: true });
+            }
+        }))));
+        const result = fetchWithTimeout('/api/settings/backup', {}, 25, (response) => response.blob())
+            .then((value) => ({ value }), (error) => ({ error }));
+        await vi.advanceTimersByTimeAsync(25);
+        expect(await result).toMatchObject({ error: { name: 'AbortError' } });
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('keeps the JSON helper deadline active until the body settles', async () => {
+        vi.useFakeTimers();
+        vi.stubGlobal('fetch', vi.fn(async (_url, { signal }) => new Response(new ReadableStream({
+            start(controller) {
+                controller.enqueue(new TextEncoder().encode('{'));
+                signal.addEventListener('abort', () => controller.error(new DOMException('Aborted', 'AbortError')), { once: true });
+            }
+        }))));
+        const result = fetchJsonWithTimeout('/api/status', {}, 25)
             .then((value) => ({ value }), (error) => ({ error }));
         await vi.advanceTimersByTimeAsync(25);
         expect(await result).toMatchObject({ error: { name: 'AbortError' } });

@@ -1,6 +1,6 @@
 <script>
     import { onMount } from 'svelte';
-    import { createPoll, fetchWithTimeout } from '$lib/utils/poll';
+    import { createPoll, fetchJsonWithTimeout, fetchWithTimeout } from '$lib/utils/poll';
     import {
         invalidateDeviceSettings,
         refreshDeviceSettings,
@@ -249,9 +249,9 @@
     async function fetchSavedWifiNetworks() {
         wifiNetworksLoading = true;
         try {
-            const res = await fetchWithTimeout('/api/wifi/networks');
+            const res = await fetchJsonWithTimeout('/api/wifi/networks');
             if (res.ok) {
-                const data = await res.json();
+                const data = res.data;
                 savedWifiSlots = Array.isArray(data.slots)
                     ? data.slots.map((slot, index) => normalizeWifiSlot(slot, index))
                     : [];
@@ -360,7 +360,7 @@
         void ensureWifiModalLoaded();
 
         try {
-            const res = await fetchWithTimeout('/api/wifi/scan', { method: 'POST' });
+            const res = await fetchJsonWithTimeout('/api/wifi/scan', { method: 'POST' });
             if (!isCurrentWifiScan(runId)) return;
             if (!res.ok) {
                 message = { type: 'error', text: WIFI_SCAN_START_ERROR_TEXT };
@@ -370,7 +370,7 @@
                 return;
             }
 
-            const data = await res.json();
+            const data = res.data;
             if (!isCurrentWifiScan(runId)) return;
             clearMessageText(WIFI_SCAN_START_ERROR_TEXT);
             clearMessageText(WIFI_SCAN_ERROR_TEXT);
@@ -415,10 +415,10 @@
         if (!isCurrentWifiScan(runId)) return;
 
         try {
-            const res = await fetchWithTimeout('/api/wifi/scan');
+            const res = await fetchJsonWithTimeout('/api/wifi/scan');
             if (!isCurrentWifiScan(runId)) return;
             if (res.ok) {
-                const data = await res.json();
+                const data = res.data;
                 if (!isCurrentWifiScan(runId)) return;
                 clearMessageText(WIFI_SCAN_ERROR_TEXT);
                 applyWifiScanResponse(data, runId);
@@ -836,9 +836,17 @@
 
     async function downloadBackup() {
         try {
-            const res = await fetchWithTimeout('/api/settings/backup');
+            const res = await fetchWithTimeout(
+                '/api/settings/backup',
+                {},
+                undefined,
+                async (response) => ({
+                    ok: response.ok,
+                    blob: response.ok ? await response.blob() : null
+                })
+            );
             if (res.ok) {
-                const blob = await res.blob();
+                const blob = res.blob;
                 const url = window.URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
@@ -859,8 +867,16 @@
     async function backupNowToSd() {
         backingUpNow = true;
         try {
-            const res = await fetchWithTimeout('/api/settings/backup-now', { method: 'POST' });
-            const data = await res.json().catch(() => ({}));
+            const res = await fetchWithTimeout(
+                '/api/settings/backup-now',
+                { method: 'POST' },
+                undefined,
+                async (response) => ({
+                    ok: response.ok,
+                    data: await response.json().catch(() => ({}))
+                })
+            );
+            const data = res.data;
             if (res.ok && data.success) {
                 message = { type: 'success', text: data.message || 'Backup saved to SD card.' };
             } else {
@@ -906,13 +922,21 @@
                 return;
             }
 
-            const res = await fetchWithTimeout('/api/settings/restore', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: text
-            });
+            const res = await fetchWithTimeout(
+                '/api/settings/restore',
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: text
+                },
+                undefined,
+                async (response) => ({
+                    ok: response.ok,
+                    data: await response.json()
+                })
+            );
 
-            const data = await res.json();
+            const data = res.data;
             if (res.ok && data.success) {
                 message = { type: 'success', text: 'Settings restored and reloaded.' };
                 restoreFile = null;

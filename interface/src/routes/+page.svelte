@@ -15,7 +15,7 @@
         refreshDeviceSettings,
         retainDeviceSettings
     } from '$lib/stores/deviceSettings.svelte.js';
-    import { fetchWithTimeout } from '$lib/utils/poll';
+    import { fetchJsonWithTimeout, fetchWithTimeout } from '$lib/utils/poll';
 
     let modeLoaded = $state(false);
     let modeLoading = $state(false);
@@ -59,12 +59,12 @@
         try {
             const [deviceSettings, obdRes] = await Promise.all([
                 refreshDeviceSettings(),
-                fetchWithTimeout('/api/obd/config')
+                fetchJsonWithTimeout('/api/obd/config')
             ]);
             if (!deviceSettings || !obdRes.ok) {
                 throw new Error('mode fetch failed');
             }
-            const obdSettings = await obdRes.json();
+            const obdSettings = obdRes.data;
             proxyEnabled = !!deviceSettings.proxy_ble;
             proxyName = deviceSettings.proxy_name || proxyName;
             obdEnabled = !!obdSettings.enabled;

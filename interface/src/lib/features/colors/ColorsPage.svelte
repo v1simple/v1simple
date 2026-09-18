@@ -1,6 +1,6 @@
 <script>
     import { onMount } from 'svelte';
-    import { fetchWithTimeout } from '$lib/utils/poll';
+    import { fetchJsonWithTimeout, fetchWithTimeout } from '$lib/utils/poll';
     import CardSectionHead from '$lib/components/CardSectionHead.svelte';
     import ColorControl from '$lib/components/ColorControl.svelte';
     import ColorFieldsCard from '$lib/features/colors/ColorFieldsCard.svelte';
@@ -139,9 +139,9 @@
         colorsLoaded = false;
         message = null;
         try {
-            const res = await fetchWithTimeout(DISPLAY_SETTINGS_ENDPOINT);
+            const res = await fetchJsonWithTimeout(DISPLAY_SETTINGS_ENDPOINT);
             if (res.ok) {
-                const data = await res.json();
+                const data = res.data;
                 colors = normalizeColorPayload(data, colors);
                 // Auto-detect simple vs advanced only on initial load; refetches
                 // after save/reset must not override an explicit mode choice.
@@ -155,9 +155,9 @@
         }
         if (colorsLoaded) {
             try {
-                const quietRes = await fetchWithTimeout(QUIET_SETTINGS_ENDPOINT);
+                const quietRes = await fetchJsonWithTimeout(QUIET_SETTINGS_ENDPOINT);
                 if (quietRes.ok) {
-                    const quietData = await quietRes.json();
+                    const quietData = quietRes.data;
                     stealthEnabled = quietData.stealthEnabled ?? false;
                 }
             } catch (_) {

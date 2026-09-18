@@ -1,6 +1,9 @@
 #include "wifi_audio_api_service.h"
 
 #include <algorithm>
+#include <cerrno>
+#include <climits>
+#include <cstdlib>
 
 #include <ArduinoJson.h>
 
@@ -9,6 +12,21 @@
 #include "wifi_quiet_settings_fields.h"
 
 namespace WifiAudioApiService {
+
+namespace {
+
+bool parseIntStrict(const String& raw, int& value) {
+    errno = 0;
+    char* end = nullptr;
+    const long parsed = std::strtol(raw.c_str(), &end, 10);
+    if (errno != 0 || !end || end == raw.c_str() || *end != '\0' || parsed < INT_MIN || parsed > INT_MAX) {
+        return false;
+    }
+    value = static_cast<int>(parsed);
+    return true;
+}
+
+} // namespace
 
 void handleApiGet(WebServer& server, const Runtime& runtime) {
     if (!runtime.getSettings) {
@@ -69,7 +87,11 @@ void handleApiSave(WebServer& server, const Runtime& runtime) {
         update.muteVoiceIfVolZero = WifiQuietSettingsFields::argBool(server, "muteVoiceIfVolZero");
     }
     if (server.hasArg("voiceVolume")) {
-        int volume = server.arg("voiceVolume").toInt();
+        int volume = 0;
+        if (!parseIntStrict(server.arg("voiceVolume"), volume)) {
+            server.send(400, "application/json", "{\"success\":false,\"error\":\"invalid_voice_volume\"}");
+            return;
+        }
         volume = std::max(0, std::min(volume, 100));
         update.hasVoiceVolume = true;
         update.voiceVolume = static_cast<uint8_t>(volume);

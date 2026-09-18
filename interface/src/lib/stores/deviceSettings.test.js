@@ -98,4 +98,36 @@ describe('device settings store', () => {
         expect(signal.aborted).toBe(false);
         expect(vi.getTimerCount()).toBe(0);
     });
+
+    it('does not let a stale generation clear the current in-flight request', async () => {
+        const bodies = [];
+        vi.stubGlobal('fetch', vi.fn(async (_url, { signal }) => {
+            const body = pendingJson(signal);
+            bodies.push(body);
+            return body.response;
+        }));
+
+        const releaseFirst = retainDeviceSettings();
+        const first = refreshDeviceSettings();
+        releaseFirst();
+
+        const releaseSecond = retainDeviceSettings();
+        const second = refreshDeviceSettings();
+        try {
+            expect(first).not.toBe(second);
+            expect(fetch).toHaveBeenCalledTimes(2);
+
+            bodies[0].finish({ ap_ssid: 'Stale' });
+            expect(await first).toBeUndefined();
+            expect(refreshDeviceSettings()).toBe(second);
+            expect(fetch).toHaveBeenCalledTimes(2);
+
+            bodies[1].finish({ ap_ssid: 'Current' });
+            expect(await second).toEqual({ ap_ssid: 'Current' });
+        } finally {
+            releaseSecond();
+            for (const body of bodies) body.fail();
+            await Promise.all([first, second]);
+        }
+    });
 });

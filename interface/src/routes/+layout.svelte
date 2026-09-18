@@ -155,16 +155,25 @@
         maintenanceExitPending = true;
         maintenanceExitMessage = '';
         try {
-            const response = await fetchWithTimeout('/api/system/reboot-normal', { method: 'POST' });
-            if (!response.ok) {
-                let detail = '';
-                try {
-                    const body = await response.json();
-                    detail = body?.error || body?.message || '';
-                } catch {
-                    // The status code is still useful when the body is not JSON.
+            const response = await fetchWithTimeout(
+                '/api/system/reboot-normal',
+                { method: 'POST' },
+                undefined,
+                async (rawResponse) => {
+                    let detail = '';
+                    if (!rawResponse.ok) {
+                        try {
+                            const body = await rawResponse.json();
+                            detail = body?.error || body?.message || '';
+                        } catch {
+                            // The status code is still useful when the body is not JSON.
+                        }
+                    }
+                    return { ok: rawResponse.ok, status: rawResponse.status, detail };
                 }
-                throw new Error(detail || `Request failed (${response.status})`);
+            );
+            if (!response.ok) {
+                throw new Error(response.detail || `Request failed (${response.status})`);
             }
             maintenanceExitMessage = 'Reboot requested. Reconnect after normal startup.';
         } catch (error) {

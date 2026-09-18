@@ -71,7 +71,7 @@ export function refreshDeviceSettings() {
     }
 
     const fetchVersion = stateVersion;
-    settingsFetchPromise = (async () => {
+    const fetchPromise = (async () => {
         let latest;
         try {
             do {
@@ -92,11 +92,14 @@ export function refreshDeviceSettings() {
             if (fetchVersion === stateVersion && settingsConsumerCount > 0) {
                 deviceSettingsLoading.set(false);
             }
-            settingsFetchPromise = null;
+            if (settingsFetchPromise === fetchPromise) {
+                settingsFetchPromise = null;
+            }
         }
     })();
+    settingsFetchPromise = fetchPromise;
 
-    return settingsFetchPromise;
+    return fetchPromise;
 }
 
 export function invalidateDeviceSettings() {

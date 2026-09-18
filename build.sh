@@ -60,38 +60,6 @@ PY
     return 0
 }
 
-# Detect Windows and set PIO command accordingly. PIO_CMD may be set by callers
-# that need a specific PlatformIO executable, for example /opt/homebrew/bin/pio.
-if [[ -n "${PIO_CMD:-}" ]]; then
-    :
-elif [[ "${OSTYPE:-}" == "msys" || "${OSTYPE:-}" == "cygwin" || "${OSTYPE:-}" == "win32" ]] || \
-   [[ -n "${WINDIR:-}" ]] || [[ "${OS:-}" == "Windows_NT" ]] || [[ -d "/c/Windows" ]]; then
-    # Check if pio is in PATH first (e.g., pip install), then fall back to .platformio path
-    if command -v pio &> /dev/null; then
-        PIO_CMD="pio"
-    elif [[ -f "$HOME/.platformio/penv/Scripts/pio.exe" ]]; then
-        PIO_CMD="$HOME/.platformio/penv/Scripts/pio.exe"
-    else
-        echo -e "${RED}PlatformIO not found. Install it first.${NC}"
-        echo "   Run: pip install platformio"
-        exit 1
-    fi
-    echo -e "${BLUE}Detected Windows${NC}"
-else
-    if command -v pio &> /dev/null; then
-        PIO_CMD="pio"
-    else
-        echo -e "${RED}PlatformIO not found in PATH.${NC}"
-        echo "   Install PlatformIO CLI or use VS Code PlatformIO extension terminal."
-        exit 1
-    fi
-fi
-
-# Give PlatformIO/requests an explicit CA bundle before package downloads.
-# This avoids macOS Python installs that fail TLS verification without certifi.
-source "$SCRIPT_DIR/scripts/platformio_ca_bundle.sh"
-export PIO_CMD SSL_CERT_FILE REQUESTS_CA_BUNDLE
-
 DEFAULT_ENV="waveshare-349"
 
 # Parse arguments
@@ -210,6 +178,38 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Detect Windows and set PIO command accordingly. PIO_CMD may be set by callers
+# that need a specific PlatformIO executable, for example /opt/homebrew/bin/pio.
+if [[ -n "${PIO_CMD:-}" ]]; then
+    :
+elif [[ "${OSTYPE:-}" == "msys" || "${OSTYPE:-}" == "cygwin" || "${OSTYPE:-}" == "win32" ]] || \
+   [[ -n "${WINDIR:-}" ]] || [[ "${OS:-}" == "Windows_NT" ]] || [[ -d "/c/Windows" ]]; then
+    # Check if pio is in PATH first (e.g., pip install), then fall back to .platformio path
+    if command -v pio &> /dev/null; then
+        PIO_CMD="pio"
+    elif [[ -f "$HOME/.platformio/penv/Scripts/pio.exe" ]]; then
+        PIO_CMD="$HOME/.platformio/penv/Scripts/pio.exe"
+    else
+        echo -e "${RED}PlatformIO not found. Install it first.${NC}"
+        echo "   Run: pip install platformio"
+        exit 1
+    fi
+    echo -e "${BLUE}Detected Windows${NC}"
+else
+    if command -v pio &> /dev/null; then
+        PIO_CMD="pio"
+    else
+        echo -e "${RED}PlatformIO not found in PATH.${NC}"
+        echo "   Install PlatformIO CLI or use VS Code PlatformIO extension terminal."
+        exit 1
+    fi
+fi
+
+# Give PlatformIO/requests an explicit CA bundle before package downloads.
+# This avoids macOS Python installs that fail TLS verification without certifi.
+source "$SCRIPT_DIR/scripts/platformio_ca_bundle.sh"
+export PIO_CMD SSL_CERT_FILE REQUESTS_CA_BUNDLE
 
 if [ "$FACTORY_RESET" = true ]; then
     echo -e "${RED}Factory reset erases all onboard settings, BLE bonds, LittleFS data, and firmware.${NC}"

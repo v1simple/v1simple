@@ -644,6 +644,7 @@ void VoiceModule::resetLastAnnounced() {
     lastVoiceAlertFrequency_ = 0xFFFF;
     lastVoiceAlertBogeyCount_ = 0;
     lastVoiceAlertTime_ = 0;
+    hasAnnouncedOnce_ = false;
     prevAlertCount_ = 0;
     lastCountStableSinceMs_ = 0;
     countStableTracked_ = false;

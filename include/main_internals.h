@@ -12,6 +12,15 @@ class ProductEventLog;
 class SettingsManager;
 class V1Display;
 
+// Keep the fatal-frame transfer as one executable ordering boundary. The
+// display implementation is double buffered, so painting without the flush
+// leaves the panel unchanged.
+template <typename DisplayT>
+void presentFatalBootFrame(DisplayT& display) {
+    display.showDisconnected();
+    display.flush();
+}
+
 // --- Boot helper declarations (main_boot.cpp) ---
 
 /// Map ESP reset reason enum to human-readable string.

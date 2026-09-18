@@ -1,6 +1,6 @@
 <script>
     import { onMount } from 'svelte';
-    import { fetchWithTimeout } from '$lib/utils/poll';
+    import { fetchJsonWithTimeout, fetchWithTimeout } from '$lib/utils/poll';
     import CardSectionHead from '$lib/components/CardSectionHead.svelte';
     import ToggleSetting from '$lib/components/ToggleSetting.svelte';
 
@@ -20,9 +20,9 @@
 
     async function fetchGpsConfig() {
         try {
-            const res = await fetchWithTimeout('/api/gps/config');
+            const res = await fetchJsonWithTimeout('/api/gps/config');
             if (!res.ok) throw new Error(`GPS config request failed with status ${res.status}`);
-            const data = await res.json();
+            const data = res.data;
             if (typeof data.gpsEnabled === 'boolean') gpsEnabled = data.gpsEnabled;
             if (typeof data.gpsBaud === 'number') gpsBaud = data.gpsBaud;
         } catch (err) {

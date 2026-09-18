@@ -114,6 +114,28 @@ void test_invalid_coordinate_is_rejected() {
     TEST_ASSERT_EQUAL_UINT32(1, status.parseFailures);
 }
 
+void test_rejected_gga_does_not_commit_quality_or_promote_gps() {
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPGGA,123520,4807.038,N,01131.000,E,0,03,1.2,545.4,M,46.9,M,,*4D", 900));
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPRMC,123519,A,4807.038,N,01131.000,E,010.0,084.4,230394,003.1,W*6F", 1000));
+
+    ObdRuntimeModule obd;
+    SpeedSourceSelector selector;
+    selector.begin(&obd, false, &gpsRuntimeModule, true);
+    selector.update(1000);
+    TEST_ASSERT_EQUAL(SpeedSource::NONE, selector.selectedSpeed().source);
+
+    TEST_ASSERT_FALSE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPGGA,123520,4807.038,N,01161.000,E,1,08,0.9,545.4,M,46.9,M,,*48", 1100));
+
+    const GpsRuntimeStatus status = gpsRuntimeModule.snapshot(1100);
+    TEST_ASSERT_EQUAL_UINT8(3, status.satellites);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 1.2f, status.hdop);
+    selector.update(1100);
+    TEST_ASSERT_EQUAL(SpeedSource::NONE, selector.selectedSpeed().source);
+}
+
 void test_detection_timeout_disables_runtime_polling() {
     gpsRuntimeModule.update(61010);
 
@@ -222,6 +244,7 @@ int main() {
     RUN_TEST(test_bad_checksum_is_rejected_and_counted);
     RUN_TEST(test_fix_loss_invalidates_speed_sample);
     RUN_TEST(test_invalid_coordinate_is_rejected);
+    RUN_TEST(test_rejected_gga_does_not_commit_quality_or_promote_gps);
     RUN_TEST(test_detection_timeout_disables_runtime_polling);
     RUN_TEST(test_stale_fix_is_cleared);
     RUN_TEST(test_stable_fix_holds_briefly_after_fix_drop);

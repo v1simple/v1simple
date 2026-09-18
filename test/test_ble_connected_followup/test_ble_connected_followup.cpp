@@ -29,6 +29,8 @@ std::vector<std::vector<uint8_t>> gSentPackets;
 int gStableCallbackCalls = 0;
 int gAlertRequestCalls = 0;
 std::deque<bool> gAlertRequestResults;
+int gBondBackupEnqueueCalls = 0;
+int gBondBackupEnqueueResult = 0;
 
 constexpr uint8_t kVersionRequest[] = {0xAA, 0xDA, 0xE6, 0x01, 0x01, 0x6C, 0xAB};
 constexpr uint8_t kAllVolumeRequest[] = {0xAA, 0xDA, 0xE6, 0x3C, 0x01, 0xA7, 0xAB};
@@ -133,7 +135,8 @@ SendResult V1BLEClient::sendCommandWithResult(const uint8_t* data, size_t length
 }
 
 int V1BLEClient::enqueueCurrentBondBackupSnapshot() {
-    return 0;
+    ++gBondBackupEnqueueCalls;
+    return gBondBackupEnqueueResult;
 }
 
 #include "../../src/ble_connected_followup.cpp"
@@ -147,6 +150,8 @@ void setUp() {
     gStableCallbackCalls = 0;
     gAlertRequestCalls = 0;
     gAlertRequestResults.clear();
+    gBondBackupEnqueueCalls = 0;
+    gBondBackupEnqueueResult = 0;
     mock_reset_nimble_state();
 }
 
@@ -616,6 +621,41 @@ void test_rejected_sweep_request_retries_once_after_the_clean_display_barrier() 
     TEST_ASSERT_EQUAL_UINT(5, gSentPackets.size());
 }
 
+void test_post_delete_bond_backup_forces_snapshot_even_when_count_matches() {
+    V1BLEClient client;
+    g_mock_nimble_state.bondCount = 0;
+    client.lastBondBackupCount_ = 0;
+
+    client.schedulePostDeleteBondBackup(500);
+
+    TEST_ASSERT_EQUAL_INT(1, gBondBackupEnqueueCalls);
+    TEST_ASSERT_FALSE(client.pendingBondBackup_);
+    TEST_ASSERT_EQUAL_UINT8(0, client.lastBondBackupCount_);
+    TEST_ASSERT_EQUAL_UINT32(0, client.pendingBondBackupRetryAtMs_);
+}
+
+void test_post_delete_bond_backup_retries_failed_enqueue() {
+    V1BLEClient client;
+    g_mock_nimble_state.bondCount = 0;
+    gBondBackupEnqueueResult = -1;
+
+    client.schedulePostDeleteBondBackup(700);
+
+    TEST_ASSERT_EQUAL_INT(1, gBondBackupEnqueueCalls);
+    TEST_ASSERT_TRUE(client.pendingBondBackup_);
+    TEST_ASSERT_EQUAL_UINT8(0xFF, client.lastBondBackupCount_);
+    TEST_ASSERT_EQUAL_UINT32(700 + V1BLEClient::DEFERRED_BOND_BACKUP_RETRY_MS,
+                             client.pendingBondBackupRetryAtMs_);
+
+    gBondBackupEnqueueResult = 0;
+    client.serviceDeferredBondBackup(1699);
+    TEST_ASSERT_EQUAL_INT(1, gBondBackupEnqueueCalls);
+    client.serviceDeferredBondBackup(1700);
+    TEST_ASSERT_EQUAL_INT(2, gBondBackupEnqueueCalls);
+    TEST_ASSERT_FALSE(client.pendingBondBackup_);
+    TEST_ASSERT_EQUAL_UINT8(0, client.lastBondBackupCount_);
+}
+
 int main(int argc, char** argv) {
     UNITY_BEGIN();
     RUN_TEST(test_explicit_settings_recapture_requires_idle_known_connected_session_and_resets_evidence);
@@ -633,5 +673,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_missing_expected_all_volume_response_times_out_as_partial);
     RUN_TEST(test_missing_snapshot_response_times_out_as_partial_before_callback);
     RUN_TEST(test_rejected_sweep_request_retries_once_after_the_clean_display_barrier);
+    RUN_TEST(test_post_delete_bond_backup_forces_snapshot_even_when_count_matches);
+    RUN_TEST(test_post_delete_bond_backup_retries_failed_enqueue);
     return UNITY_END();
 }

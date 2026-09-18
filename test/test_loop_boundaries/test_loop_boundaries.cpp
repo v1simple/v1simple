@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "../../include/main_internals.h"
 #include "../../src/runtime_coordinator.h"
 
 namespace {
@@ -63,6 +64,24 @@ struct FinishCall {
     bool bleBackpressured = false;
     uint32_t loopStartUs = 0;
     bool forceBleDrain = false;
+};
+
+struct FatalDisplayProbe {
+    int sequence = 0;
+    int showDisconnectedCalls = 0;
+    int flushCalls = 0;
+    int showDisconnectedSequence = 0;
+    int flushSequence = 0;
+
+    void showDisconnected() {
+        ++showDisconnectedCalls;
+        showDisconnectedSequence = ++sequence;
+    }
+
+    void flush() {
+        ++flushCalls;
+        flushSequence = ++sequence;
+    }
 };
 
 struct FakeDriveRuntime {
@@ -179,6 +198,27 @@ std::string readFile(const std::string& path) {
     std::ostringstream text;
     text << input.rdbuf();
     return text.str();
+}
+
+std::string functionBody(const std::string& source, const std::string& signature) {
+    const size_t signaturePos = source.find(signature);
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(std::string::npos, signaturePos, signature.c_str());
+    const size_t open = source.find('{', signaturePos);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, open);
+
+    int depth = 0;
+    for (size_t pos = open; pos < source.size(); ++pos) {
+        if (source[pos] == '{') {
+            ++depth;
+        } else if (source[pos] == '}') {
+            --depth;
+            if (depth == 0) {
+                return source.substr(open, pos - open + 1);
+            }
+        }
+    }
+    TEST_FAIL_MESSAGE("unterminated function body");
+    return {};
 }
 
 } // namespace
@@ -367,6 +407,27 @@ void test_drive_runtime_composition_has_no_maintenance_wifi_dependency() {
     TEST_ASSERT_EQUAL(std::string::npos, header.find("WiFiManager"));
 }
 
+void test_fatal_boot_error_transfers_frame_before_wait_and_restart() {
+    FatalDisplayProbe display;
+    presentFatalBootFrame(display);
+
+    TEST_ASSERT_EQUAL_INT(1, display.showDisconnectedCalls);
+    TEST_ASSERT_EQUAL_INT(1, display.flushCalls);
+    TEST_ASSERT_TRUE(display.showDisconnectedSequence < display.flushSequence);
+
+    const std::string body = functionBody(readFile(projectRoot() + "/src/main_boot.cpp"),
+                                          "void fatalBootError(");
+    const size_t present = body.find("presentFatalBootFrame(display)");
+    const size_t wait = body.find("for (int i = 10", present);
+    const size_t restart = body.find("ESP.restart()", wait);
+
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, present);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, wait);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, restart);
+    TEST_ASSERT_TRUE(present < wait);
+    TEST_ASSERT_TRUE(wait < restart);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_drive_coordinator_executes_production_phase_order);
@@ -377,5 +438,6 @@ int main() {
     RUN_TEST(test_inactive_drive_runtime_executes_no_phase);
     RUN_TEST(test_drive_runtime_replaces_global_provider_and_loop_wrapper_graph);
     RUN_TEST(test_drive_runtime_composition_has_no_maintenance_wifi_dependency);
+    RUN_TEST(test_fatal_boot_error_transfers_frame_before_wait_and_restart);
     return UNITY_END();
 }

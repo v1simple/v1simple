@@ -1,6 +1,6 @@
 <script>
     import { onMount } from 'svelte';
-    import { fetchWithTimeout } from '$lib/utils/poll';
+    import { fetchJsonWithTimeout, fetchWithTimeout } from '$lib/utils/poll';
     import CardSectionHead from '$lib/components/CardSectionHead.svelte';
     import StatusAlert from '$lib/components/StatusAlert.svelte';
 
@@ -31,11 +31,11 @@
 
     async function fetchObdConfig({ showLoadError = false } = {}) {
         try {
-            const res = await fetchWithTimeout('/api/obd/config');
+            const res = await fetchJsonWithTimeout('/api/obd/config');
             if (!res.ok) {
                 throw new Error(`OBD config request failed with status ${res.status}`);
             }
-            const data = await res.json();
+            const data = res.data;
             if (typeof data.minRssi === 'number') minRssi = data.minRssi;
             if (typeof data.enabled === 'boolean') enabled = data.enabled;
             if (typeof data.obdScanWindowMs === 'number') obdScanWindowMs = data.obdScanWindowMs;
@@ -61,11 +61,11 @@
 
     async function fetchObdDevices({ showLoadError = false } = {}) {
         try {
-            const res = await fetchWithTimeout('/api/obd/devices');
+            const res = await fetchJsonWithTimeout('/api/obd/devices');
             if (!res.ok) {
                 throw new Error(`OBD devices request failed with status ${res.status}`);
             }
-            const data = await res.json();
+            const data = res.data;
             savedDevices = (data.devices || []).map((device) => ({
                 address: device.address || '',
                 name: device.name || '',

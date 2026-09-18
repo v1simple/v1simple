@@ -2,6 +2,7 @@
  * Shared fetch / polling helpers for the V1 web interface.
  *
  * - fetchWithTimeout: wraps fetch() with an AbortController deadline.
+ * - fetchJsonWithTimeout: keeps that deadline active while reading successful JSON.
  * - createPoll: setInterval wrapper with in-flight dedup and stop().
  */
 
@@ -97,6 +98,23 @@ export function fetchWithTimeout(url, opts = {}, timeoutMs = 5000, consumeRespon
     const response = fetch(url, { ...requestOpts, signal: controller.signal });
     return (consumeResponse ? response.then(consumeResponse) : response)
         .finally(() => clearTimeout(id));
+}
+
+/**
+ * Fetch an endpoint whose successful response is JSON without ending the
+ * request deadline when only the response headers arrive.
+ *
+ * @param {string} url
+ * @param {RequestInit} [opts]
+ * @param {number} [timeoutMs=5000]
+ * @returns {Promise<{ok: boolean, status: number, data: unknown}>}
+ */
+export function fetchJsonWithTimeout(url, opts = {}, timeoutMs = 5000) {
+    return fetchWithTimeout(url, opts, timeoutMs, async (response) => ({
+        ok: response.ok,
+        status: response.status,
+        data: response.ok ? await response.json() : null
+    }));
 }
 
 /**

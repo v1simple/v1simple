@@ -1,6 +1,6 @@
 <script>
     import { onMount } from 'svelte';
-    import { fetchWithTimeout } from '$lib/utils/poll';
+    import { fetchJsonWithTimeout, fetchWithTimeout } from '$lib/utils/poll';
     import PageHeader from '$lib/components/PageHeader.svelte';
     import StatusAlert from '$lib/components/StatusAlert.svelte';
     import { isMaintenance, retainRuntimeStatus } from '$lib/stores/runtimeStatus.svelte.js';
@@ -33,12 +33,12 @@
 
     async function fetchDevices() {
         try {
-            const res = await fetchWithTimeout('/api/v1/devices');
+            const res = await fetchJsonWithTimeout('/api/v1/devices');
             if (!res.ok) {
                 message = { type: 'error', text: 'Failed to load saved devices.' };
                 return;
             }
-            const data = await res.json();
+            const data = res.data;
             devices = (data.devices || []).map((device) => ({
                 address: device.address || '',
                 name: device.name || '',
@@ -52,9 +52,9 @@
 
     async function fetchSlots() {
         try {
-            const res = await fetchWithTimeout('/api/autopush/slots');
+            const res = await fetchJsonWithTimeout('/api/autopush/slots');
             if (!res.ok) return;
-            const data = await res.json();
+            const data = res.data;
             slots = data.slots || [];
         } catch (e) {
             // Best-effort only; fallback labels are used when slots cannot be loaded.
@@ -109,12 +109,11 @@
             formData.append('address', address);
             formData.append('name', submittedName);
 
-            const res = await fetchWithTimeout('/api/v1/devices/name', {
+            const result = await fetchWithTimeout('/api/v1/devices/name', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
                 body: new URLSearchParams(formData)
-            });
-            const result = await readMutationResult(res);
+            }, undefined, readMutationResult);
             if (result === 'failed' || result === 'operation-pending') {
                 message = { type: 'error', text: 'Failed to save device name.' };
                 return;
@@ -145,12 +144,11 @@
             formData.append('address', address);
             formData.append('profile', String(selected));
 
-            const res = await fetchWithTimeout('/api/v1/devices/profile', {
+            const result = await fetchWithTimeout('/api/v1/devices/profile', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
                 body: new URLSearchParams(formData)
-            });
-            const result = await readMutationResult(res);
+            }, undefined, readMutationResult);
             if (result === 'failed' || result === 'operation-pending') {
                 message = { type: 'error', text: 'Failed to save default profile.' };
                 await fetchDevices();
@@ -186,12 +184,11 @@
             const formData = new FormData();
             formData.append('address', address);
 
-            const res = await fetchWithTimeout('/api/v1/devices/delete', {
+            const result = await fetchWithTimeout('/api/v1/devices/delete', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
                 body: new URLSearchParams(formData)
-            });
-            const result = await readMutationResult(res);
+            }, undefined, readMutationResult);
             if (result === 'operation-pending') {
                 message = {
                     type: 'warning',

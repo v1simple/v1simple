@@ -10,6 +10,9 @@
 
 namespace {
 
+constexpr uint8_t kCustomBandK = 0x01;
+constexpr uint8_t kCustomBandKa = 0x02;
+
 #ifdef UNIT_TEST
 enum class AutoPushAdmissionFailurePoint : uint8_t {
     None = 0,
@@ -85,6 +88,14 @@ int sweepDefinitionLiveSection(const V1CustomFrequencyDefinition& definition,
         }
     }
     return match;
+}
+
+uint8_t customBandForDefinition(const V1CustomFrequencyDefinition& definition,
+                                const V1DetectorSnapshot& snapshot,
+                                uint8_t lowestSection) {
+    const int section = sweepDefinitionLiveSection(definition, snapshot);
+    if (section < 0) return 0;
+    return static_cast<uint8_t>(section) == lowestSection ? kCustomBandK : kCustomBandKa;
 }
 
 } // namespace
@@ -411,6 +422,142 @@ bool AutoPushModule::configurePlan() {
     return true;
 }
 
+AutoPushModule::Step AutoPushModule::customEntryStep() const {
+    return state_.customCompilationDeferred ? Step::CustomRefreshSections : Step::CustomWrite;
+}
+
+bool AutoPushModule::compileCustomDefinitions(const V1DetectorSnapshot& live) {
+    const auto invalid = [this]() {
+        failWholePlan(&status_.customFrequencies, Outcome::INVALID,
+                      FailureReason::CUSTOM_CONFIGURATION_INVALID);
+        return false;
+    };
+    if (!live.hasSweepSections || !live.hasMaxSweepIndex || !live.hasSweepDefinitions ||
+        live.sweepSectionCount < 2 || live.sweepSectionCount > live.sweepSections.size() ||
+        live.maxSweepIndex >= live.sweepDefinitions.size() ||
+        state_.customDefinitions.size() > static_cast<size_t>(live.maxSweepIndex) + 1u) {
+        return invalid();
+    }
+
+    uint8_t lowestSection = UINT8_MAX;
+    uint8_t usableSectionCount = 0;
+    for (uint8_t index = 0; index < live.sweepSectionCount; ++index) {
+        const auto& section = live.sweepSections[index];
+        const bool unused = section.lowerMHz == 0 && section.upperMHz == 0;
+        if (section.index != index || section.count != live.sweepSectionCount ||
+            (section.lowerMHz == 0) != (section.upperMHz == 0) ||
+            (!unused && section.lowerMHz >= section.upperMHz)) {
+            return invalid();
+        }
+        if (unused) continue;
+        ++usableSectionCount;
+        for (uint8_t prior = 0; prior < index; ++prior) {
+            const auto& other = live.sweepSections[prior];
+            if (other.lowerMHz == 0) continue;
+            if (section.lowerMHz < other.upperMHz && section.upperMHz > other.lowerMHz) {
+                return invalid();
+            }
+        }
+        if (lowestSection == UINT8_MAX ||
+            section.lowerMHz < live.sweepSections[lowestSection].lowerMHz) {
+            lowestSection = index;
+        }
+    }
+    if (lowestSection == UINT8_MAX || usableSectionCount < 2) return invalid();
+
+    const FixedDefinitionList authored = state_.customDefinitions;
+    if (!status_.requestedCustomDefinitions.assign(authored)) return invalid();
+    state_.customPreservedMask = 0;
+    uint8_t ownedBands = 0;
+    for (size_t index = 0; index < authored.size(); ++index) {
+        const auto& definition = authored[index];
+        const bool unused = definition.lowerMHz == 0 && definition.upperMHz == 0;
+        if (definition.index != index || (definition.lowerMHz == 0) != (definition.upperMHz == 0) ||
+            (!unused && definition.lowerMHz >= definition.upperMHz)) {
+            return invalid();
+        }
+        if (unused) continue;
+        const uint8_t band = customBandForDefinition(definition, live, lowestSection);
+        if (band == 0) return invalid();
+        ownedBands = static_cast<uint8_t>(ownedBands | band);
+    }
+
+    std::array<V1CustomFrequencyDefinition, FixedDefinitionList::kCapacity> compiled{};
+    std::array<bool, FixedDefinitionList::kCapacity> occupied{};
+    for (uint8_t index = 0; index <= live.maxSweepIndex; ++index) {
+        compiled[index].index = index;
+        const auto& observed = live.sweepDefinitions[index];
+        const bool unused = observed.lowerMHz == 0 && observed.upperMHz == 0;
+        if (observed.index != index || (observed.lowerMHz == 0) != (observed.upperMHz == 0) ||
+            (!unused && observed.lowerMHz >= observed.upperMHz)) {
+            return invalid();
+        }
+        if (unused) continue;
+        const V1CustomFrequencyDefinition liveDefinition{
+            index, observed.lowerMHz, observed.upperMHz};
+        const uint8_t band = customBandForDefinition(liveDefinition, live, lowestSection);
+        if (band == 0) return invalid();
+        if ((ownedBands & band) == 0) {
+            compiled[index] = liveDefinition;
+            occupied[index] = true;
+            state_.customPreservedMask |= uint64_t{1} << index;
+        }
+    }
+
+    for (const auto& definition : authored) {
+        if (definition.lowerMHz == 0) continue;
+        size_t target = definition.index;
+        if (target > live.maxSweepIndex || occupied[target]) {
+            target = 0;
+            while (target <= live.maxSweepIndex && occupied[target]) ++target;
+        }
+        if (target > live.maxSweepIndex) return invalid();
+        compiled[target] = V1CustomFrequencyDefinition{
+            static_cast<uint8_t>(target), definition.lowerMHz, definition.upperMHz};
+        occupied[target] = true;
+    }
+
+    FixedDefinitionList prepared;
+    bool hasK = false;
+    bool hasKa = false;
+    bool definitionsDiffer = false;
+    size_t lastUsed = 0;
+    for (uint8_t index = 0; index <= live.maxSweepIndex; ++index) {
+        const auto& definition = compiled[index];
+        if (!prepared.push_back(definition)) return invalid();
+        if (definition.lowerMHz != 0) {
+            const uint8_t band = customBandForDefinition(definition, live, lowestSection);
+            if (band == 0) return invalid();
+            hasK |= band == kCustomBandK;
+            hasKa |= band == kCustomBandKa;
+            lastUsed = index;
+        }
+        const auto& before = live.sweepDefinitions[index];
+        definitionsDiffer |= definition.index != before.index ||
+                             definition.lowerMHz != before.lowerMHz ||
+                             definition.upperMHz != before.upperMHz;
+    }
+    if (!hasK || !hasKa) return invalid();
+
+    state_.customDefinitions = prepared;
+    state_.customLastUsedIndex = lastUsed;
+    state_.customRequiredMask = live.maxSweepIndex == 63
+                                    ? UINT64_MAX
+                                    : ((uint64_t{1} << (live.maxSweepIndex + 1u)) - 1u);
+    status_.customFrequencies.beforeAvailable = true;
+    status_.customFrequencies.needed = definitionsDiffer;
+    if (!definitionsDiffer) {
+        status_.customFrequencies.verified = true;
+        status_.customFrequencies.outcome = Outcome::UNCHANGED;
+        status_.effectiveCustomDefinitions.assign(prepared);
+    } else {
+        status_.customFrequencies.verified = false;
+        status_.customFrequencies.outcome = Outcome::PENDING;
+        status_.effectiveCustomDefinitions.clear();
+    }
+    return true;
+}
+
 bool AutoPushModule::preflight() {
     if (!configurePlan()) return false;
     if (!state_.before.available || state_.before.sessionGeneration == 0) {
@@ -477,6 +624,9 @@ bool AutoPushModule::preflight() {
         V1FirmwareCompat::overlaySupportedUserBytes(status_.beforeUserBytes.data(), effectiveDesired.data(),
                                                     state_.effectiveUserBytes.data(), state_.firmwareVersion);
         status_.effectiveUserBytes = state_.effectiveUserBytes;
+        state_.userWriteBytes = state_.effectiveUserBytes;
+        state_.regionChanged =
+            ((status_.beforeUserBytes[1] ^ state_.effectiveUserBytes[1]) & 0x01) != 0;
 
         if (!V1FirmwareCompat::hasValidModeledUserSettingValues(state_.effectiveUserBytes.data(),
                                                                 state_.firmwareVersion)) {
@@ -495,17 +645,17 @@ bool AutoPushModule::preflight() {
         const bool changesCustomBandCoverage =
             ((status_.beforeUserBytes[0] ^ state_.effectiveUserBytes[0]) & 0x06) != 0;
         if (enablesCustomFrequencies && !status_.customFrequencies.requested &&
-            (changesCustomEnable || changesCustomBandCoverage)) {
+            (changesCustomEnable || changesCustomBandCoverage || state_.regionChanged)) {
             failWholePlan(&status_.customFrequencies, Outcome::INVALID,
                           FailureReason::CUSTOM_CONFIGURATION_INVALID);
             return false;
         }
 
         // The Euro/USA user bit intentionally resets Gen2 definitions to the
-        // target region's factory table. An unchanged definition policy owns
-        // no table and accepts that detector-defined result. An explicit table
-        // is still written later, after the user-byte transition.
-        if (((status_.beforeUserBytes[1] ^ state_.effectiveUserBytes[1]) & 0x01) != 0) {
+        // target region's factory table. An unchanged definition policy can
+        // accept that detector-defined result only when filtering will be off.
+        // An explicit table is written later, after the region transition.
+        if (state_.regionChanged) {
             const bool changingToEuro = (state_.effectiveUserBytes[1] & 0x01) == 0;
             if (changingToEuro) {
                 const V1ModeObservation& observedMode = parser_->modeObservation();
@@ -707,88 +857,53 @@ bool AutoPushModule::preflight() {
                 return false;
             }
         }
-        if (state_.customDefinitions.empty() ||
-            state_.customDefinitions.size() > static_cast<size_t>(state_.before.maxSweepIndex) + 1u) {
-            failWholePlan(&status_.customFrequencies, Outcome::INVALID,
-                          FailureReason::CUSTOM_CONFIGURATION_INVALID);
-            return false;
-        }
-        bool hasUsed = false;
-        bool definitionsDiffer = false;
-        std::array<bool, 15> usedInSection{};
-        const size_t definitionCount = state_.customDefinitions.size();
-        for (size_t index = 0; index < definitionCount; ++index) {
-            const V1CustomFrequencyDefinition definition = state_.customDefinitions[index];
-            if (definition.index != index || (definition.lowerMHz == 0) != (definition.upperMHz == 0) ||
-                (definition.lowerMHz != 0 && definition.lowerMHz >= definition.upperMHz)) {
+        if (state_.regionChanged) {
+            // USA and Euro have different factory tables, and the region write
+            // resets the live table. Compile only from a fresh target-region
+            // capture so an unowned band is never restored from the old mode.
+            state_.customCompilationDeferred = true;
+            status_.customFrequencies.beforeAvailable = true;
+            status_.customFrequencies.needed = true;
+            if (!status_.requestedCustomDefinitions.assign(state_.customDefinitions)) {
                 failWholePlan(&status_.customFrequencies, Outcome::INVALID,
                               FailureReason::CUSTOM_CONFIGURATION_INVALID);
                 return false;
             }
-            if (definition.lowerMHz == 0) continue;
-            const int sectionIndex = sweepDefinitionLiveSection(definition, state_.before);
-            if (sectionIndex < 0) {
-                failWholePlan(&status_.customFrequencies, Outcome::INVALID,
-                              FailureReason::CUSTOM_CONFIGURATION_INVALID);
-                return false;
-            }
-            hasUsed = true;
-            state_.customLastUsedIndex = index;
-            usedInSection[static_cast<size_t>(sectionIndex)] = true;
-        }
-        for (size_t index = 0; index <= state_.before.maxSweepIndex; ++index) {
-            const auto& before = state_.before.sweepDefinitions[index];
-            const bool hasDesired = index < state_.customDefinitions.size();
-            const uint16_t desiredLower = hasDesired ? state_.customDefinitions[index].lowerMHz : 0;
-            const uint16_t desiredUpper = hasDesired ? state_.customDefinitions[index].upperMHz : 0;
-            definitionsDiffer |= before.index != index || desiredLower != before.lowerMHz ||
-                                 desiredUpper != before.upperMHz;
-        }
-        uint8_t lowestSection = UINT8_MAX;
-        for (uint8_t index = 0; index < state_.before.sweepSectionCount; ++index) {
-            const auto& section = state_.before.sweepSections[index];
-            if (section.lowerMHz == 0 && section.upperMHz == 0) continue;
-            if (lowestSection == UINT8_MAX ||
-                section.lowerMHz < state_.before.sweepSections[lowestSection].lowerMHz) {
-                lowestSection = index;
-            }
-        }
-        bool hasHigherSectionDefinition = false;
-        for (uint8_t index = 0; index < state_.before.sweepSectionCount; ++index) {
-            const auto& section = state_.before.sweepSections[index];
-            if (index != lowestSection && section.lowerMHz != 0) {
-                hasHigherSectionDefinition |= usedInSection[index];
-            }
-        }
-        // ESP 3.016 requires every explicitly committed Gen2 replacement table
-        // to contain at least one sweep for each supported band (K and Ka).
-        // Enabling the independent filter never writes or revalidates the
-        // detector's existing table.
-        if (!hasUsed || lowestSection == UINT8_MAX ||
-            !usedInSection[lowestSection] || !hasHigherSectionDefinition ||
-            state_.before.sweepSectionCount < 2) {
-            failWholePlan(&status_.customFrequencies, Outcome::INVALID,
-                          FailureReason::CUSTOM_CONFIGURATION_INVALID);
+        } else if (!compileCustomDefinitions(state_.before)) {
             return false;
         }
-        status_.customFrequencies.beforeAvailable = true;
-        status_.requestedCustomDefinitions.assign(state_.customDefinitions);
-        const bool regionChanged = status_.userSettings.requested &&
-                                   ((status_.beforeUserBytes[1] ^ state_.effectiveUserBytes[1]) & 0x01) != 0;
-        status_.customFrequencies.needed = regionChanged || definitionsDiffer;
-        if (!status_.customFrequencies.needed) {
-            status_.customFrequencies.verified = true;
-            status_.customFrequencies.outcome = Outcome::UNCHANGED;
-            status_.effectiveCustomDefinitions.assign(state_.customDefinitions);
-        }
-        state_.customRequiredMask = liveRequiredMask;
     }
 
-    if (status_.userSettings.needed) state_.step = Step::UserWrite;
+    if (status_.userSettings.requested) {
+        const bool beforeCustomEnabled = (status_.beforeUserBytes[1] & 0x08) == 0;
+        const bool finalCustomEnabled = (state_.effectiveUserBytes[1] & 0x08) == 0;
+        const bool enablingCustom = !beforeCustomEnabled && finalCustomEnabled;
+        if (finalCustomEnabled && status_.customFrequencies.requested &&
+            (enablingCustom || state_.regionChanged)) {
+            // A complete table must be committed and read back before the final
+            // enable bit is exposed. Region changes must happen first because
+            // the V1 resets the table, so make that transition with filtering
+            // disabled and apply the final enabled bytes only after readback.
+            status_.customFrequencies.needed = true;
+            status_.customFrequencies.verified = false;
+            status_.customFrequencies.outcome = Outcome::PENDING;
+            status_.effectiveCustomDefinitions.clear();
+            state_.finalUserWriteAfterCustom = true;
+            if (state_.regionChanged) {
+                state_.intermediateCustomDisabledWrite = true;
+                state_.userWriteBytes[1] |= 0x08;
+            }
+        }
+    }
+
+    if (state_.intermediateCustomDisabledWrite) state_.step = Step::UserWrite;
+    else if (state_.finalUserWriteAfterCustom) state_.step = customEntryStep();
+    else if (status_.userSettings.needed) state_.step = Step::UserWrite;
     else if (status_.display.needed) state_.step = Step::DisplayWrite;
     else if (status_.mode.needed) state_.step = Step::ModeWrite;
     else if (status_.volume.needed) state_.step = Step::VolumeWrite;
-    else if (status_.customFrequencies.needed) state_.step = Step::CustomWrite;
+    else if (status_.customFrequencies.needed && !status_.customFrequencies.verified)
+        state_.step = customEntryStep();
     else finishOperation();
     state_.nextStepAtMs = static_cast<uint32_t>(millis());
     return true;
@@ -856,7 +971,8 @@ void AutoPushModule::advanceAfterUser(uint32_t nowMs) {
     if (status_.display.needed) state_.step = Step::DisplayWrite;
     else if (status_.mode.needed) state_.step = Step::ModeWrite;
     else if (status_.volume.needed) state_.step = Step::VolumeWrite;
-    else if (status_.customFrequencies.needed) state_.step = Step::CustomWrite;
+    else if (status_.customFrequencies.needed && !status_.customFrequencies.verified)
+        state_.step = customEntryStep();
     else {
         finishOperation();
         return;
@@ -867,7 +983,8 @@ void AutoPushModule::advanceAfterUser(uint32_t nowMs) {
 void AutoPushModule::advanceAfterDisplay(uint32_t nowMs) {
     if (status_.mode.needed) state_.step = Step::ModeWrite;
     else if (status_.volume.needed) state_.step = Step::VolumeWrite;
-    else if (status_.customFrequencies.needed) state_.step = Step::CustomWrite;
+    else if (status_.customFrequencies.needed && !status_.customFrequencies.verified)
+        state_.step = customEntryStep();
     else {
         finishOperation();
         return;
@@ -879,8 +996,8 @@ void AutoPushModule::advanceAfterMode(uint32_t nowMs) {
     if (status_.volume.needed) {
         state_.step = Step::VolumeWrite;
         state_.nextStepAtMs = nowMs + 30;
-    } else if (status_.customFrequencies.needed) {
-        state_.step = Step::CustomWrite;
+    } else if (status_.customFrequencies.needed && !status_.customFrequencies.verified) {
+        state_.step = customEntryStep();
         state_.nextStepAtMs = nowMs + 30;
     } else {
         finishOperation();
@@ -888,8 +1005,8 @@ void AutoPushModule::advanceAfterMode(uint32_t nowMs) {
 }
 
 void AutoPushModule::advanceAfterVolume(uint32_t nowMs) {
-    if (status_.customFrequencies.needed) {
-        state_.step = Step::CustomWrite;
+    if (status_.customFrequencies.needed && !status_.customFrequencies.verified) {
+        state_.step = customEntryStep();
         state_.nextStepAtMs = nowMs + 30;
     } else {
         finishOperation();
@@ -932,7 +1049,7 @@ void AutoPushModule::process() {
         return;
 
     case Step::UserWrite:
-        if (!bleClient_->writeUserBytesExact(state_.effectiveUserBytes.data())) {
+        if (!bleClient_->writeUserBytesExact(state_.userWriteBytes.data())) {
             failWholePlan(&status_.userSettings, Outcome::WRITE_FAILED, FailureReason::USER_BYTES_WRITE_FAILED);
             return;
         }
@@ -966,7 +1083,13 @@ void AutoPushModule::process() {
             ingressAfter(bleClient_->sessionUserBytesIngressSequence(), state_.observationIngressBoundary)) {
             uint8_t observed[6];
             if (bleClient_->copySessionUserBytes(observed) &&
-                std::memcmp(observed, state_.effectiveUserBytes.data(), sizeof(observed)) == 0) {
+                std::memcmp(observed, state_.userWriteBytes.data(), sizeof(observed)) == 0) {
+                if (state_.intermediateCustomDisabledWrite) {
+                    state_.intermediateCustomDisabledWrite = false;
+                    state_.step = customEntryStep();
+                    state_.nextStepAtMs = now + 30;
+                    return;
+                }
                 status_.userSettings.verified = true;
                 status_.userSettings.outcome = Outcome::VERIFIED;
                 advanceAfterUser(now);
@@ -1120,6 +1243,150 @@ void AutoPushModule::process() {
         state_.nextStepAtMs = now + 10;
         return;
 
+    case Step::CustomRefreshSections: {
+        if (state_.sendDeadlineMs == 0) {
+            state_.sendDeadlineMs = now + kVerificationTimeoutMs;
+        }
+        const SendResult sent = bleClient_->requestSweepSectionsResult();
+        if (sent == SendResult::NOT_YET) {
+            if (deadlineReached(now, state_.sendDeadlineMs)) {
+                failWholePlan(&status_.customFrequencies, Outcome::TIMEOUT,
+                              FailureReason::CUSTOM_READBACK_TIMEOUT);
+                return;
+            }
+            state_.nextStepAtMs = now + 5;
+            return;
+        }
+        if (sent != SendResult::SENT) {
+            failWholePlan(&status_.customFrequencies, Outcome::READ_FAILED,
+                          FailureReason::CUSTOM_READ_FAILED);
+            return;
+        }
+        state_.sendDeadlineMs = 0;
+        bleClient_->beginSessionSweepSectionsCapture(
+            bleClient_->latestV1NotificationIngressSequence());
+        state_.step = Step::CustomRefreshMax;
+        state_.nextStepAtMs = now + 30;
+        return;
+    }
+
+    case Step::CustomRefreshMax: {
+        if (state_.sendDeadlineMs == 0) {
+            state_.sendDeadlineMs = now + kVerificationTimeoutMs;
+        }
+        const SendResult sent = bleClient_->requestMaxSweepIndexResult();
+        if (sent == SendResult::NOT_YET) {
+            if (deadlineReached(now, state_.sendDeadlineMs)) {
+                failWholePlan(&status_.customFrequencies, Outcome::TIMEOUT,
+                              FailureReason::CUSTOM_READBACK_TIMEOUT);
+                return;
+            }
+            state_.nextStepAtMs = now + 5;
+            return;
+        }
+        if (sent != SendResult::SENT) {
+            failWholePlan(&status_.customFrequencies, Outcome::READ_FAILED,
+                          FailureReason::CUSTOM_READ_FAILED);
+            return;
+        }
+        state_.sendDeadlineMs = 0;
+        bleClient_->beginSessionSweepMaxCapture(
+            bleClient_->latestV1NotificationIngressSequence());
+        state_.step = Step::CustomRefreshDefinitions;
+        state_.nextStepAtMs = now + 30;
+        return;
+    }
+
+    case Step::CustomRefreshDefinitions: {
+        if (state_.sendDeadlineMs == 0) {
+            state_.sendDeadlineMs = now + kVerificationTimeoutMs;
+        }
+        const SendResult sent = bleClient_->requestAllSweepDefinitionsResult();
+        if (sent == SendResult::NOT_YET) {
+            if (deadlineReached(now, state_.sendDeadlineMs)) {
+                failWholePlan(&status_.customFrequencies, Outcome::TIMEOUT,
+                              FailureReason::CUSTOM_READBACK_TIMEOUT);
+                return;
+            }
+            state_.nextStepAtMs = now + 5;
+            return;
+        }
+        if (sent != SendResult::SENT) {
+            failWholePlan(&status_.customFrequencies, Outcome::READ_FAILED,
+                          FailureReason::CUSTOM_READ_FAILED);
+            return;
+        }
+        state_.sendDeadlineMs = 0;
+        bleClient_->beginSessionSweepDefinitionsCapture(
+            bleClient_->latestV1NotificationIngressSequence());
+        state_.step = Step::CustomRefreshVerify;
+        state_.verifyDeadlineMs = now + kVerificationTimeoutMs;
+        state_.nextStepAtMs = now;
+        return;
+    }
+
+    case Step::CustomRefreshVerify: {
+        const auto& sections = parser_->sweepSectionsObservation();
+        const auto& maximum = parser_->sweepMaxObservation();
+        const auto& definitions = parser_->sweepDefinitionsObservation();
+        const bool maxUsable = bleClient_->hasSessionSweepMaxCapture() &&
+                               maximum.available && !maximum.poisoned && maximum.maxIndex < 64;
+        const uint64_t required = maxUsable
+                                      ? (maximum.maxIndex == 63
+                                             ? UINT64_MAX
+                                             : ((uint64_t{1} << (maximum.maxIndex + 1u)) - 1u))
+                                      : 0;
+        bool definitionsFresh = maxUsable &&
+                                bleClient_->hasSessionSweepDefinitionsCapture() &&
+                                !definitions.poisoned && definitions.presentMask == required;
+        const uint32_t definitionsBoundary =
+            bleClient_->sessionSweepDefinitionsIngressBoundary();
+        for (uint8_t index = 0;
+             definitionsFresh && index <= maximum.maxIndex; ++index) {
+            definitionsFresh = ingressAfter(
+                definitions.ingressSequences[index], definitionsBoundary);
+        }
+        if (bleClient_->hasSessionSweepSectionsCapture() && sections.available &&
+            sections.complete && !sections.poisoned && sections.count >= 2 &&
+            maxUsable && definitionsFresh) {
+            state_.before.hasSweepSections = true;
+            state_.before.sweepSectionCount = sections.count;
+            state_.before.sweepSections = sections.sections;
+            state_.before.hasMaxSweepIndex = true;
+            state_.before.maxSweepIndex = maximum.maxIndex;
+            state_.before.hasSweepDefinitions = true;
+            state_.before.sweepDefinitions = definitions.definitions;
+            state_.customCompilationDeferred = false;
+            if (!compileCustomDefinitions(state_.before)) return;
+            if (state_.finalUserWriteAfterCustom) {
+                status_.customFrequencies.needed = true;
+                status_.customFrequencies.verified = false;
+                status_.customFrequencies.outcome = Outcome::PENDING;
+                status_.effectiveCustomDefinitions.clear();
+            }
+            if (status_.customFrequencies.needed &&
+                !status_.customFrequencies.verified) {
+                state_.step = Step::CustomWrite;
+                state_.nextStepAtMs = now + 30;
+            } else {
+                finishOperation();
+            }
+            return;
+        }
+        if (sections.poisoned || maximum.poisoned || definitions.poisoned) {
+            failWholePlan(&status_.customFrequencies, Outcome::MISMATCH,
+                          FailureReason::CUSTOM_READBACK_INVALID);
+            return;
+        }
+        if (deadlineReached(now, state_.verifyDeadlineMs)) {
+            failWholePlan(&status_.customFrequencies, Outcome::TIMEOUT,
+                          FailureReason::CUSTOM_READBACK_TIMEOUT);
+            return;
+        }
+        state_.nextStepAtMs = now + 10;
+        return;
+    }
+
     case Step::CustomWrite: {
         while (state_.customWriteIndex < state_.customDefinitions.size() &&
                state_.customDefinitions[state_.customWriteIndex].lowerMHz == 0) {
@@ -1191,12 +1458,26 @@ void AutoPushModule::process() {
         return;
     }
 
-    case Step::CustomRead:
-        if (!bleClient_->requestAllSweepDefinitions()) {
+    case Step::CustomRead: {
+        if (state_.sendDeadlineMs == 0) {
+            state_.sendDeadlineMs = now + kVerificationTimeoutMs;
+        }
+        const SendResult sent = bleClient_->requestAllSweepDefinitionsResult();
+        if (sent == SendResult::NOT_YET) {
+            if (deadlineReached(now, state_.sendDeadlineMs)) {
+                failWholePlan(&status_.customFrequencies, Outcome::TIMEOUT,
+                              FailureReason::CUSTOM_READBACK_TIMEOUT);
+                return;
+            }
+            state_.nextStepAtMs = now + 5;
+            return;
+        }
+        if (sent != SendResult::SENT) {
             failWholePlan(&status_.customFrequencies, Outcome::READ_FAILED,
                           FailureReason::CUSTOM_READ_FAILED);
             return;
         }
+        state_.sendDeadlineMs = 0;
         state_.observationIngressBoundary = bleClient_->latestV1NotificationIngressSequence();
         // Clearing after the send is proof-safe: a test or callback that
         // raced during the send cannot become readback evidence.
@@ -1205,6 +1486,7 @@ void AutoPushModule::process() {
         state_.verifyDeadlineMs = now + kVerificationTimeoutMs;
         state_.nextStepAtMs = now;
         return;
+    }
 
     case Step::CustomVerify: {
         const auto& definitions = parser_->sweepDefinitionsObservation();
@@ -1227,7 +1509,12 @@ void AutoPushModule::process() {
                     ? state_.customDefinitions[index]
                     : V1CustomFrequencyDefinition{static_cast<uint8_t>(index), 0, 0};
                 const bool requestedUnused = requested.lowerMHz == 0 && requested.upperMHz == 0;
+                const bool preserved =
+                    (state_.customPreservedMask & (uint64_t{1} << index)) != 0;
                 if (unused != requestedUnused ||
+                    (preserved &&
+                     (effective.lowerMHz != requested.lowerMHz ||
+                      effective.upperMHz != requested.upperMHz)) ||
                     (!unused && (sweepDefinitionLiveSection(effective, state_.before) < 0 ||
                                  sweepDefinitionLiveSection(effective, state_.before) !=
                                      sweepDefinitionLiveSection(requested, state_.before))) ||
@@ -1247,6 +1534,13 @@ void AutoPushModule::process() {
             }
             status_.customFrequencies.verified = true;
             status_.customFrequencies.outcome = Outcome::VERIFIED;
+            if (state_.finalUserWriteAfterCustom) {
+                state_.finalUserWriteAfterCustom = false;
+                state_.userWriteBytes = state_.effectiveUserBytes;
+                state_.step = Step::UserWrite;
+                state_.nextStepAtMs = now + 30;
+                return;
+            }
             finishOperation();
             return;
         }
@@ -1282,6 +1576,10 @@ bool AutoPushModule::appendStatusJson(JsonObject root) const {
         case Step::VolumeWrite: return "VolumeWrite";
         case Step::VolumeRead: return "VolumeRead";
         case Step::VolumeVerify: return "VolumeVerify";
+        case Step::CustomRefreshSections: return "CustomRefreshSections";
+        case Step::CustomRefreshMax: return "CustomRefreshMax";
+        case Step::CustomRefreshDefinitions: return "CustomRefreshDefinitions";
+        case Step::CustomRefreshVerify: return "CustomRefreshVerify";
         case Step::CustomWrite: return "CustomWrite";
         case Step::CustomCommitVerify: return "CustomCommitVerify";
         case Step::CustomRead: return "CustomRead";

@@ -151,7 +151,7 @@ describe('profiles route page', () => {
         unmount();
     });
 
-    it('requires explicit authored ranges for an enabled legacy custom-frequency setting', async () => {
+    it('requires at least one authored band for an enabled legacy custom-frequency setting', async () => {
         installDefaultFetch([{
             method: 'GET',
             match: '/api/v1/profile?name=Daily%20Drive',
@@ -167,11 +167,11 @@ describe('profiles route page', () => {
         const dailyDriveRow = (await screen.findByText('Daily Drive')).closest('.surface-panel');
         await fireEvent.click(within(dailyDriveRow).getByRole('button', { name: /^edit$/i }));
 
-        expect(await screen.findByText(/needs an authored custom-frequency set/i)).toBeInTheDocument();
+        expect(await screen.findByText(/cannot be enabled until this profile owns at least one K or Ka range/i))
+            .toBeInTheDocument();
         await fireEvent.click(screen.getByRole('button', { name: /add k range/i }));
-        await fireEvent.click(screen.getByRole('button', { name: /add ka range/i }));
         expect(screen.getByLabelText('Custom 0 lower MHz')).toHaveValue(23910);
-        expect(screen.getByLabelText('Custom 1 lower MHz')).toHaveValue(33400);
+        expect(screen.queryByText(/cannot be enabled until this profile owns/i)).not.toBeInTheDocument();
         unmount();
     });
 
@@ -667,23 +667,196 @@ describe('profiles route page', () => {
         unmount();
     });
 
-    it('does not save a profile-owned frequency set without both K and Ka coverage', async () => {
+    it('presents the seven profile sections in the screenshot order without dropping extra controls', async () => {
+        installDefaultFetch();
+        const { unmount } = render(Page);
+
+        await fireEvent.click(await screen.findByRole('button', { name: /new profile/i }));
+        const editor = (await screen.findByText('Creating new offline profile')).closest('.surface-card');
+        const sectionNames = [...editor.querySelectorAll('summary')]
+            .map((summary) => summary.textContent.trim());
+
+        expect(sectionNames).toEqual([
+            'Bands',
+            'Mute Control',
+            'Photo Radar',
+            'Special',
+            'SAVVY Settings',
+            'Custom Frequencies',
+            'In-the-Box Options'
+        ]);
+        expect(within(screen.getByText('Bands').closest('details')).getByLabelText('Ku Band'))
+            .toBeInTheDocument();
+        const photo = screen.getByText('Photo Radar').closest('details');
+        expect(within(photo).getByLabelText('DriveSafe™ 3D')).toBeInTheDocument();
+        expect(within(photo).getByLabelText('Ekin')).toBeInTheDocument();
+
+        unmount();
+    });
+
+    it('keeps the custom-frequency enable and authored ranges together while disabled', async () => {
+        installDefaultFetch();
+        const { unmount } = render(Page);
+
+        await fireEvent.click(await screen.findByRole('button', { name: /new profile/i }));
+        const custom = screen.getByText('Custom Frequencies').closest('details');
+        await fireEvent.click(custom.querySelector('summary'));
+
+        const enabled = within(custom).getByLabelText('Enable Custom Frequencies');
+        const kLower = within(custom).getByLabelText('Custom 0 lower MHz');
+        const kaLower = within(custom).getByLabelText('Custom 1 lower MHz');
+        expect(enabled).not.toBeChecked();
+        expect(kLower).toHaveValue(23910);
+        expect(kaLower).toHaveValue(33400);
+        expect(kLower).toBeEnabled();
+        expect(kaLower).toBeEnabled();
+
+        await fireEvent.click(enabled);
+        await fireEvent.click(enabled);
+        expect(enabled).not.toBeChecked();
+        expect(kLower).toHaveValue(23910);
+        expect(kaLower).toHaveValue(33400);
+
+        unmount();
+    });
+
+    it('labels SAVVY and In-the-Box as unavailable without presenting fake controls', async () => {
+        installDefaultFetch();
+        const { unmount } = render(Page);
+
+        await fireEvent.click(await screen.findByRole('button', { name: /new profile/i }));
+        const savvy = screen.getByText('SAVVY Settings').closest('details');
+        const inTheBox = screen.getByText('In-the-Box Options').closest('details');
+        await fireEvent.click(savvy.querySelector('summary'));
+        await fireEvent.click(inTheBox.querySelector('summary'));
+
+        expect(within(savvy).getByText(/SAVVY accessory controls are unavailable/i))
+            .toBeInTheDocument();
+        expect(within(inTheBox).getByText(/In-the-Box profile controls are unavailable/i))
+            .toBeInTheDocument();
+        expect(savvy.querySelector('.collapse-content input, .collapse-content select, .collapse-content button'))
+            .toBeNull();
+        expect(inTheBox.querySelector('.collapse-content input, .collapse-content select, .collapse-content button'))
+            .toBeNull();
+
+        unmount();
+    });
+
+    it('does not present the per-slot persistence overlay as Valentine profile Alert Persistence', async () => {
+        installDefaultFetch();
+        const { unmount } = render(Page);
+
+        await fireEvent.click(await screen.findByRole('button', { name: /new profile/i }));
+        const special = screen.getByText('Special').closest('details');
+        await fireEvent.click(special.querySelector('summary'));
+
+        expect(within(special).getByText(/Valentine profile Alert Persistence is not mapped yet/i))
+            .toBeInTheDocument();
+        expect(within(special).queryByRole('checkbox', { name: /Alert Persistence/i }))
+            .not.toBeInTheDocument();
+
+        unmount();
+    });
+
+    it.each([
+        {
+            label: 'K-only',
+            removeIndex: 1,
+            relinquishedBand: 'Ka',
+            expectedDefinition: { index: 0, lowerMHz: 23910, upperMHz: 24250 }
+        },
+        {
+            label: 'Ka-only',
+            removeIndex: 0,
+            relinquishedBand: 'K',
+            expectedDefinition: { index: 0, lowerMHz: 33400, upperMHz: 36002 }
+        }
+    ])('saves a $label authored set and takes the other band from the fresh DUT table', async ({
+        label, removeIndex, relinquishedBand, expectedDefinition
+    }) => {
+        let savedPayload;
+        installDefaultFetch([{
+            method: 'POST', match: '/api/v1/profile', respond: ({ init }) => {
+                savedPayload = JSON.parse(init.body);
+                return jsonResponse({ success: true });
+            }
+        }]);
+        const { unmount } = render(Page);
+
+        await fireEvent.click(await screen.findByRole('button', { name: /new profile/i }));
+        const custom = screen.getByText('Custom Frequencies').closest('details');
+        const remove = within(custom).getByRole('button', {
+            name: new RegExp(`remove custom frequency ${removeIndex} and relinquish ${relinquishedBand} ownership`, 'i')
+        });
+        await fireEvent.click(remove);
+        expect(within(custom).getByText('Fresh DUT ranges on Apply')).toBeInTheDocument();
+        expect(within(custom).getByText('Profile-owned')).toBeInTheDocument();
+
+        await fireEvent.click(screen.getByRole('button', { name: /save as profile/i }));
+        const modal = (await screen.findByText('Save Profile')).closest('.modal-box');
+        await fireEvent.input(screen.getByLabelText('Profile Name'), {
+            target: { value: `${label} frequencies` }
+        });
+        await fireEvent.click(within(modal).getByRole('button', { name: /^save$/i }));
+
+        await screen.findByText(`Profile "${label} frequencies" saved`);
+        expect(savedPayload.detector.customFrequencies).toEqual({
+            policy: 'value',
+            definitions: [expectedDefinition]
+        });
+        unmount();
+    });
+
+    it('blocks enabling Custom Frequencies when the profile owns no ranges', async () => {
         const fetchMock = installDefaultFetch();
         const { unmount } = render(Page);
 
         await fireEvent.click(await screen.findByRole('button', { name: /new profile/i }));
-        await fireEvent.click(screen.getByRole('button', { name: /remove custom frequency 1/i }));
-        expect(await screen.findByText('Add at least one K range and one Ka range.'))
-            .toBeInTheDocument();
+        const custom = screen.getByText('Custom Frequencies').closest('details');
+        await fireEvent.click(within(custom).getByRole('button', { name: /remove custom frequency 1/i }));
+        await fireEvent.click(within(custom).getByRole('button', { name: /remove custom frequency 0/i }));
+        expect(within(custom).getAllByText('Fresh DUT ranges on Apply')).toHaveLength(2);
+
+        await fireEvent.click(within(custom).getByLabelText('Enable Custom Frequencies'));
+        expect(await within(custom).findByText(
+            'Custom Frequencies cannot be enabled until this profile owns at least one K or Ka range.'
+        )).toBeInTheDocument();
+
         await fireEvent.click(screen.getByRole('button', { name: /save as profile/i }));
         const modal = (await screen.findByText('Save Profile')).closest('.modal-box');
-        await fireEvent.input(screen.getByLabelText('Profile Name'), {
-            target: { value: 'Incomplete frequencies' }
-        });
+        await fireEvent.input(screen.getByLabelText('Profile Name'), { target: { value: 'No ranges' } });
         await fireEvent.click(within(modal).getByRole('button', { name: /^save$/i }));
+        expect(fetchMock.mock.calls.some(([url, init]) =>
+            url === '/api/v1/profile' && init?.method === 'POST')).toBe(false);
+        unmount();
+    });
 
-        expect(await screen.findAllByText('Add at least one K range and one Ka range.'))
-            .toHaveLength(2);
+    it.each([
+        ['crosses the K/Ka gap', 29900, 30100],
+        ['sits above the published K section', 25000, 26000],
+        ['sits below the published Ka section', 30000, 30100]
+    ])('rejects a range that %s before ownership inference', async (_, lowerMHz, upperMHz) => {
+        const fetchMock = installDefaultFetch();
+        const { unmount } = render(Page);
+
+        await fireEvent.click(await screen.findByRole('button', { name: /new profile/i }));
+        const custom = screen.getByText('Custom Frequencies').closest('details');
+        await fireEvent.input(within(custom).getByLabelText('Custom 0 lower MHz'), {
+            target: { value: String(lowerMHz) }
+        });
+        await fireEvent.input(within(custom).getByLabelText('Custom 0 upper MHz'), {
+            target: { value: String(upperMHz) }
+        });
+
+        expect(await within(custom).findByText(
+            'Every range must fit inside the published Gen2 K or Ka sweep section.'
+        )).toBeInTheDocument();
+        expect(within(custom).getByText('Invalid')).toBeInTheDocument();
+
+        await fireEvent.click(screen.getByRole('button', { name: /save as profile/i }));
+        const modal = (await screen.findByText('Save Profile')).closest('.modal-box');
+        await fireEvent.input(screen.getByLabelText('Profile Name'), { target: { value: 'Crossed range' } });
+        await fireEvent.click(within(modal).getByRole('button', { name: /^save$/i }));
         expect(fetchMock.mock.calls.some(([url, init]) =>
             url === '/api/v1/profile' && init?.method === 'POST')).toBe(false);
         unmount();

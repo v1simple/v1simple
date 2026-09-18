@@ -273,6 +273,9 @@ class V1BLEClient {
     bool requestMaxSweepIndex();
     bool requestSweepSections();
     bool requestAllSweepDefinitions();
+    SendResult requestMaxSweepIndexResult();
+    SendResult requestSweepSectionsResult();
+    SendResult requestAllSweepDefinitionsResult();
     SendResult writeSweepDefinition(uint8_t index, uint16_t lowerMHz, uint16_t upperMHz, bool commit);
 
     // Exact vendor reqFactoryDefault surface. This is deliberately not wired

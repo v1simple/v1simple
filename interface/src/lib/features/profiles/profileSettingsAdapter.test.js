@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
     createProfileDetectorConfiguration,
+    customFrequencyBand,
     detectorConfigurationFromSnapshot,
     fromApiSettings,
     toApiDetectorConfiguration,
@@ -32,6 +33,25 @@ describe('profile settings adapter', () => {
                     { index: 1, lowerMHz: 33400, upperMHz: 36002 }
                 ]
             });
+    });
+
+    it.each([
+        ['K-only', { index: 0, lowerMHz: 23910, upperMHz: 24250 }],
+        ['Ka-only', { index: 0, lowerMHz: 33400, upperMHz: 36002 }]
+    ])('serializes a nonempty %s authored set without inventing the other band', (_, definition) => {
+        const detector = createProfileDetectorConfiguration();
+        detector.customFrequencyDefinitions = [definition];
+        expect(toApiDetectorConfiguration(detector).customFrequencies).toEqual({
+            policy: 'value',
+            definitions: [definition]
+        });
+    });
+
+    it('classifies only ranges inside the published Gen2 sweep sections', () => {
+        expect(customFrequencyBand({ lowerMHz: 23908, upperMHz: 24252 })).toBe('K');
+        expect(customFrequencyBand({ lowerMHz: 33398, upperMHz: 36002 })).toBe('Ka');
+        expect(customFrequencyBand({ lowerMHz: 25000, upperMHz: 26000 })).toBeNull();
+        expect(customFrequencyBand({ lowerMHz: 30000, upperMHz: 30100 })).toBeNull();
     });
 
     it('leaves every unavailable detector observation explicitly unchanged', () => {

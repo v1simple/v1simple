@@ -10,6 +10,7 @@
         createDefaultProfileSettings,
         createProfileDetectorConfiguration,
         cloneDetectorConfiguration,
+        customFrequencyBand,
         detectorConfigurationFromSnapshot,
         fromApiDetectorConfiguration,
         fromApiSettings,
@@ -111,7 +112,9 @@
     }
 
     function customFrequenciesChanged(enabled) {
-        if (enabled) ensureCustomFrequencyOwnership();
+        if (enabled && editedDetector?.customFrequencyDefinitions?.length > 0) {
+            ensureCustomFrequencyOwnership();
+        }
     }
 
     function addCustomFrequencyRange(band) {
@@ -129,23 +132,25 @@
 
     function removeCustomFrequencyRange(index) {
         if (!editedDetector) return;
-        editedDetector.customFrequencyDefinitions = editedDetector.customFrequencyDefinitions
+        const remaining = editedDetector.customFrequencyDefinitions
             .filter((_, definitionIndex) => definitionIndex !== index)
             .map((definition, definitionIndex) => ({ ...definition, index: definitionIndex }));
+        editedDetector.customFrequencyDefinitions = remaining;
+        if (remaining.length === 0) editedDetector.customFrequencyPolicy = 'unchanged';
     }
 
-    function customFrequencyBand(definition) {
-        return Number(definition?.lowerMHz) >= 30000 ? 'Ka' : 'K';
-    }
-
-    function customFrequencyError(settings, detector, allowLegacyDisabled = false) {
+    function customFrequencyError(settings, detector) {
         if (detector?.customFrequencyPolicy !== 'value') {
-            if (allowLegacyDisabled && !settings?.customFreqs) return null;
-            return 'This older profile needs an authored custom-frequency set before it can be saved again.';
+            return settings?.customFreqs
+                ? 'Custom Frequencies cannot be enabled until this profile owns at least one K or Ka range.'
+                : null;
         }
         const definitions = detector.customFrequencyDefinitions;
-        if (!Array.isArray(definitions) || definitions.length === 0 || definitions.length > 64) {
-            return 'Add at least one K range and one Ka range.';
+        if (!Array.isArray(definitions) || definitions.length === 0) {
+            return 'Add at least one K or Ka range, or leave the DUT table unowned.';
+        }
+        if (definitions.length > 64) {
+            return 'A profile can author at most 64 custom-frequency ranges.';
         }
         const validEdges = definitions.every((definition) =>
             Number.isInteger(Number(definition.lowerMHz)) &&
@@ -155,9 +160,10 @@
             Number(definition.upperMHz) <= 65535
         );
         if (!validEdges) return 'Every custom-frequency range needs valid lower and upper MHz edges.';
-        const hasK = definitions.some((definition) => customFrequencyBand(definition) === 'K');
-        const hasKa = definitions.some((definition) => customFrequencyBand(definition) === 'Ka');
-        return hasK && hasKa ? null : 'Add at least one K range and one Ka range.';
+        if (definitions.some((definition) => customFrequencyBand(definition) === null)) {
+            return 'Every range must fit inside the published Gen2 K or Ka sweep section.';
+        }
+        return null;
     }
 
     onMount(() => {
@@ -442,8 +448,7 @@
         }
         const frequencyError = customFrequencyError(
             settingsToSave,
-            editedDetector || currentProfile?.detector,
-            true
+            editedDetector || currentProfile?.detector
         );
         if (frequencyError) {
             message = { type: 'error', text: frequencyError };
@@ -585,7 +590,7 @@
             message = { type: 'error', text: validatedDescription.error };
             return;
         }
-        const frequencyError = customFrequencyError(editedSettings, editedDetector, true);
+        const frequencyError = customFrequencyError(editedSettings, editedDetector);
         if (frequencyError) {
             message = { type: 'error', text: frequencyError };
             return;
@@ -844,179 +849,25 @@
         </div>
     </div>
 
-    {#if profileSchemaReady && currentProfile && editedDetector}
-        <div class="surface-card">
-            <div class="card-body space-y-4">
-                <div>
-                    <h2 class="card-title">Detector apply policy</h2>
-                    <p class="copy-muted">
-                        These choices belong to this profile. Unchanged means no value is invented or sent.
-                    </p>
-                </div>
-                <div class="grid gap-3 sm:grid-cols-2">
-                    <label class="field-control">
-                        <span class="field-label copy-caption">User settings bytes</span>
-                        <select class="select select-sm" bind:value={editedDetector.userSettings}>
-                            <option value="value">Apply profile settings</option>
-                            <option value="unchanged">Leave unchanged</option>
-                        </select>
-                    </label>
-                    <div class="grid grid-cols-2 gap-2">
-                        <label class="field-control">
-                            <span class="field-label copy-caption">Logic mode</span>
-                            <select class="select select-sm" bind:value={editedDetector.modePolicy}>
-                                <option value="unchanged">Leave unchanged</option>
-                                <option value="value">Set mode</option>
-                            </select>
-                        </label>
-                        <label class="field-control">
-                            <span class="field-label copy-caption">Mode value</span>
-                            <select class="select select-sm" bind:value={editedDetector.mode} disabled={editedDetector.modePolicy !== 'value'}>
-                                <option value={1}>All Bogeys</option>
-                                <option value={2}>Logic</option>
-                                <option value={3}>Advanced Logic</option>
-                            </select>
-                        </label>
-                    </div>
-                    <label class="field-control">
-                        <span class="field-label copy-caption">V1 display</span>
-                        <select
-                            class="select select-sm"
-                            bind:value={editedDetector.display}
-                            onchange={() => {
-                                if (editedDetector.display !== 'off') editedDetector.bluetoothLed = 'unchanged';
-                            }}
-                        >
-                            <option value="unchanged">Leave unchanged</option>
-                            <option value="on">On</option>
-                            <option value="off">Main display off</option>
-                        </select>
-                    </label>
-                    <label class="field-control">
-                        <span class="field-label copy-caption">Bluetooth indicator while display is off</span>
-                        <select class="select select-sm" bind:value={editedDetector.bluetoothLed} disabled={editedDetector.display !== 'off'}>
-                            <option value="unchanged">Leave unchanged</option>
-                            <option value="off">Off</option>
-                            <option value="on">Keep indicator active (on or blinking)</option>
-                        </select>
-                    </label>
-                    <label class="field-control">
-                        <span class="field-label copy-caption">Volume policy</span>
-                        <select
-                            class="select select-sm"
-                            bind:value={editedDetector.volumePolicy}
-                            onchange={() => {
-                                if (editedDetector.volumePolicy !== 'temporary') editedDetector.volumeDisconnect = 'restore_saved';
-                            }}
-                        >
-                            <option value="unchanged">Leave unchanged</option>
-                            <option value="temporary">Temporary</option>
-                            <option value="saved">Save on V1</option>
-                        </select>
-                    </label>
-                    <label class="field-control">
-                        <span class="field-label copy-caption">Main volume (0–9)</span>
-                        <input class="input input-sm" type="number" min="0" max="9" bind:value={editedDetector.mainVolume} disabled={editedDetector.volumePolicy === 'unchanged'} />
-                    </label>
-                    <label class="field-control">
-                        <span class="field-label copy-caption">Muted volume (0–9)</span>
-                        <input class="input input-sm" type="number" min="0" max="9" bind:value={editedDetector.mutedVolume} disabled={editedDetector.volumePolicy === 'unchanged'} />
-                    </label>
-                    <label class="field-control">
-                        <span class="field-label copy-caption">Volume feedback</span>
-                        <select class="select select-sm" bind:value={editedDetector.volumeFeedback} disabled={editedDetector.volumePolicy === 'unchanged'}>
-                            <option value="none">None</option>
-                            <option value="changed_only">Only when changed</option>
-                            <option value="always">Always</option>
-                        </select>
-                    </label>
-                    <label class="field-control">
-                        <span class="field-label copy-caption">After Bluetooth disconnect</span>
-                        <select
-                            class="select select-sm"
-                            bind:value={editedDetector.volumeDisconnect}
-                            disabled={editedDetector.volumePolicy !== 'temporary'}
-                        >
-                            <option value="restore_saved">Restore saved volume</option>
-                            <option value="keep_current">Keep temporary volume</option>
-                        </select>
-                    </label>
-                </div>
-                <div class="surface-panel space-y-3">
-                    <div>
-                        <h3 class="font-semibold">Custom Frequencies</h3>
-                        <p class="copy-caption">
-                            These ranges are saved in the profile. On Apply, V1Simple writes them to the V1 Gen2 and
-                            verifies the detector's calibrated readback. The Custom Frequencies switch above controls
-                            whether the V1 uses the saved ranges; turning it off does not erase them.
-                        </p>
-                    </div>
-                    {#if editedDetector.customFrequencyPolicy === 'value'}
-                        <div class="max-h-72 overflow-auto">
-                            <table class="table table-xs">
-                                <thead><tr><th>Band</th><th>Lower MHz</th><th>Upper MHz</th><th></th></tr></thead>
-                                <tbody>
-                                    {#each editedDetector.customFrequencyDefinitions as definition (definition.index)}
-                                        <tr>
-                                            <td>{customFrequencyBand(definition)}</td>
-                                            <td><input aria-label={`Custom ${definition.index} lower MHz`} class="input input-xs w-28" type="number" min="0" max="65535" bind:value={definition.lowerMHz} /></td>
-                                            <td><input aria-label={`Custom ${definition.index} upper MHz`} class="input input-xs w-28" type="number" min="0" max="65535" bind:value={definition.upperMHz} /></td>
-                                            <td>
-                                                <button
-                                                    class="btn btn-ghost btn-xs"
-                                                    type="button"
-                                                    aria-label={`Remove custom frequency ${definition.index}`}
-                                                    onclick={() => removeCustomFrequencyRange(definition.index)}
-                                                >Remove</button>
-                                            </td>
-                                        </tr>
-                                    {/each}
-                                </tbody>
-                            </table>
-                        </div>
-                    {:else}
-                        <p class="copy-caption">
-                            This older profile has no authored frequency set yet. Add a K or Ka range to make the
-                            profile own what the DUT will synchronize.
-                        </p>
-                    {/if}
-                    {#if customFrequencyError(editedSettings, editedDetector)}
-                        <div class="surface-alert alert-warning" role="status">
-                            {customFrequencyError(editedSettings, editedDetector)}
-                        </div>
-                    {/if}
-                    <div class="flex flex-wrap gap-2">
-                        <button class="btn btn-outline btn-xs" type="button" onclick={() => addCustomFrequencyRange('k')}>Add K range</button>
-                        <button class="btn btn-outline btn-xs" type="button" onclick={() => addCustomFrequencyRange('ka')}>Add Ka range</button>
-                    </div>
-                </div>
-                <p class="copy-caption">
-                    Bluetooth indicator control is independent only while the main display is off and requires supported firmware to keep it on. Volume feedback and disconnect behavior are sent as command policy, but the detector protocol provides no readback for those two policy bits.
-                </p>
-                <div class="flex flex-wrap gap-2">
-                    <button class="btn btn-outline btn-sm" type="button" onclick={resetDraftToLocalDefaults}>
-                        Reset this draft to local defaults
-                    </button>
-                </div>
-                <p class="copy-caption">
-                    Local defaults only edit this draft. Detector factory reset is the separately confirmed workflow attached to the captured V1 above.
-                </p>
-            </div>
-        </div>
-    {/if}
-
     {#if profileSchemaReady}
         <ProfileSettingsPanel
             {editingSettings}
             {currentProfile}
             {savingProfile}
             bind:editedSettings
+            bind:editedDetector
             bind:editDescription
+            frequencyError={editingSettings && editedSettings && editedDetector
+                ? customFrequencyError(editedSettings, editedDetector)
+                : null}
             oncancelEditing={cancelEditing}
             onsaveEditedProfile={saveEditedProfile}
             oncreateNewProfile={createNewProfile}
             onstartEditing={startEditing}
             oncustomFrequenciesChange={customFrequenciesChanged}
+            onaddCustomFrequencyRange={addCustomFrequencyRange}
+            onremoveCustomFrequencyRange={removeCustomFrequencyRange}
+            onresetDraft={resetDraftToLocalDefaults}
             onshowSaveDialog={openSaveDialog}
         />
 

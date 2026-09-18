@@ -84,6 +84,10 @@ class AutoPushModule {
         VolumeWrite,
         VolumeRead,
         VolumeVerify,
+        CustomRefreshSections,
+        CustomRefreshMax,
+        CustomRefreshDefinitions,
+        CustomRefreshVerify,
         CustomWrite,
         CustomCommitVerify,
         CustomRead,
@@ -209,6 +213,7 @@ class AutoPushModule {
         Step step = Step::Idle;
         uint32_t nextStepAtMs = 0;
         uint32_t verifyDeadlineMs = 0;
+        uint32_t sendDeadlineMs = 0;
         uint32_t sessionGeneration = 0;
         uint32_t observationRevision = 0;
         uint32_t observationIngressBoundary = 0;
@@ -225,6 +230,11 @@ class AutoPushModule {
         V1DetectorSnapshot before;
         uint32_t firmwareVersion = 0;
         std::array<uint8_t, 6> effectiveUserBytes{{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}};
+        std::array<uint8_t, 6> userWriteBytes{{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}};
+        bool regionChanged = false;
+        bool intermediateCustomDisabledWrite = false;
+        bool finalUserWriteAfterCustom = false;
+        bool customCompilationDeferred = false;
         bool displayOn = true;
         uint8_t desiredMode = 0;
         V1VolumePolicy volumePolicy = V1VolumePolicy::Unchanged;
@@ -238,6 +248,7 @@ class AutoPushModule {
         size_t customWriteIndex = 0;
         size_t customLastUsedIndex = 0;
         uint64_t customRequiredMask = 0;
+        uint64_t customPreservedMask = 0;
     };
 
     QueueResult queuePreparedSlot(int slotIndex, const AutoPushSlot& slot, bool profileLoaded,
@@ -250,6 +261,8 @@ class AutoPushModule {
     void commitPreparedState(State&& preparedState, OperationStatus&& preparedStatus);
     bool configurePlan();
     bool preflight();
+    bool compileCustomDefinitions(const V1DetectorSnapshot& live);
+    Step customEntryStep() const;
     void advanceAfterUser(uint32_t nowMs);
     void advanceAfterDisplay(uint32_t nowMs);
     void advanceAfterMode(uint32_t nowMs);

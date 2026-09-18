@@ -297,7 +297,7 @@ SendResult V1BLEClient::setVolumeResult(uint8_t mainVolume, uint8_t mutedVolume,
 }
 
 namespace {
-bool sendEmptyV1Request(V1BLEClient& client, uint8_t packetId) {
+SendResult sendEmptyV1Request(V1BLEClient& client, uint8_t packetId) {
     uint8_t packet[] = {ESP_PACKET_START,
                         static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),
                         static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),
@@ -306,19 +306,31 @@ bool sendEmptyV1Request(V1BLEClient& client, uint8_t packetId) {
                         0x00,
                         ESP_PACKET_END};
     packet[5] = calcV1Checksum(packet, 5);
-    return client.sendCommand(packet, sizeof(packet));
+    return client.sendCommandWithResult(packet, sizeof(packet));
 }
 }
 
 bool V1BLEClient::requestMaxSweepIndex() {
-    return sendEmptyV1Request(*this, PACKET_ID_REQ_MAX_SWEEP_INDEX);
+    return requestMaxSweepIndexResult() == SendResult::SENT;
 }
 
 bool V1BLEClient::requestSweepSections() {
-    return sendEmptyV1Request(*this, PACKET_ID_REQ_SWEEP_SECTIONS);
+    return requestSweepSectionsResult() == SendResult::SENT;
 }
 
 bool V1BLEClient::requestAllSweepDefinitions() {
+    return requestAllSweepDefinitionsResult() == SendResult::SENT;
+}
+
+SendResult V1BLEClient::requestMaxSweepIndexResult() {
+    return sendEmptyV1Request(*this, PACKET_ID_REQ_MAX_SWEEP_INDEX);
+}
+
+SendResult V1BLEClient::requestSweepSectionsResult() {
+    return sendEmptyV1Request(*this, PACKET_ID_REQ_SWEEP_SECTIONS);
+}
+
+SendResult V1BLEClient::requestAllSweepDefinitionsResult() {
     return sendEmptyV1Request(*this, PACKET_ID_REQ_ALL_SWEEP_DEFINITIONS);
 }
 

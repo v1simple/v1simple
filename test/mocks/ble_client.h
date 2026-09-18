@@ -72,9 +72,13 @@ public:
     bool requestUserBytesResult = true;
     bool requestCurrentVolumeResult = true;
     bool requestAllVolumeResult = true;
+    int requestSweepSectionsCalls = 0;
+    int requestMaxSweepIndexCalls = 0;
     int requestAllSweepDefinitionsCalls = 0;
     int writeSweepDefinitionCalls = 0;
-    bool requestAllSweepDefinitionsResult = true;
+    SendResult nextRequestAllSweepDefinitionsResult = SendResult::SENT;
+    SendResult nextRequestSweepSectionsResult = SendResult::SENT;
+    SendResult nextRequestMaxSweepIndexResult = SendResult::SENT;
     SendResult writeSweepDefinitionResult = SendResult::SENT;
     uint8_t lastSweepIndex = 0;
     uint16_t lastSweepLower = 0;
@@ -95,6 +99,8 @@ public:
     void (*requestCurrentVolumeSendHook)() = nullptr;
     void (*requestAllVolumeSendHook)() = nullptr;
     void (*requestAllSweepDefinitionsSendHook)() = nullptr;
+    void (*requestSweepSectionsSendHook)() = nullptr;
+    void (*requestMaxSweepIndexSendHook)() = nullptr;
     void (*setDisplayOnSendHook)() = nullptr;
     void (*setModeSendHook)() = nullptr;
     uint8_t sessionUserBytes[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
@@ -167,12 +173,22 @@ public:
         requestUserBytesResult = true;
         requestCurrentVolumeResult = true;
         requestAllVolumeResult = true;
+        requestSweepSectionsCalls = 0;
+        requestMaxSweepIndexCalls = 0;
         requestAllSweepDefinitionsCalls = 0;
         writeSweepDefinitionCalls = 0;
-        requestAllSweepDefinitionsResult = true;
+        nextRequestAllSweepDefinitionsResult = SendResult::SENT;
+        nextRequestSweepSectionsResult = SendResult::SENT;
+        nextRequestMaxSweepIndexResult = SendResult::SENT;
         writeSweepDefinitionResult = SendResult::SENT;
         sweepWriteHistory.clear();
         commandHistory.clear();
+        sweepSectionsBoundary = 0;
+        sweepMaxBoundary = 0;
+        sweepDefinitionsBoundary = 0;
+        sweepSectionsResetPending = false;
+        sweepMaxResetPending = false;
+        sweepDefinitionsResetPending = false;
         sessionSweepMaxCaptured = false;
         sessionSweepSectionsCaptured = false;
         sessionSweepDefinitionsCaptured = false;
@@ -180,6 +196,8 @@ public:
         requestCurrentVolumeSendHook = nullptr;
         requestAllVolumeSendHook = nullptr;
         requestAllSweepDefinitionsSendHook = nullptr;
+        requestSweepSectionsSendHook = nullptr;
+        requestMaxSweepIndexSendHook = nullptr;
         setDisplayOnSendHook = nullptr;
         setModeSendHook = nullptr;
         std::memset(sessionUserBytes, 0xFF, sizeof(sessionUserBytes));
@@ -300,10 +318,31 @@ public:
         return requestAllVolumeResult;
     }
     bool requestAllSweepDefinitions() {
+        return requestAllSweepDefinitionsResult() == SendResult::SENT;
+    }
+    SendResult requestAllSweepDefinitionsResult() {
         ++requestAllSweepDefinitionsCalls;
         commandHistory.push_back("sweep-read");
         if (requestAllSweepDefinitionsSendHook) requestAllSweepDefinitionsSendHook();
-        return requestAllSweepDefinitionsResult;
+        return nextRequestAllSweepDefinitionsResult;
+    }
+    bool requestSweepSections() {
+        return requestSweepSectionsResult() == SendResult::SENT;
+    }
+    SendResult requestSweepSectionsResult() {
+        ++requestSweepSectionsCalls;
+        commandHistory.push_back("sweep-sections-read");
+        if (requestSweepSectionsSendHook) requestSweepSectionsSendHook();
+        return nextRequestSweepSectionsResult;
+    }
+    bool requestMaxSweepIndex() {
+        return requestMaxSweepIndexResult() == SendResult::SENT;
+    }
+    SendResult requestMaxSweepIndexResult() {
+        ++requestMaxSweepIndexCalls;
+        commandHistory.push_back("sweep-max-read");
+        if (requestMaxSweepIndexSendHook) requestMaxSweepIndexSendHook();
+        return nextRequestMaxSweepIndexResult;
     }
     SendResult writeSweepDefinition(uint8_t index, uint16_t lower, uint16_t upper, bool commit) {
         ++writeSweepDefinitionCalls;

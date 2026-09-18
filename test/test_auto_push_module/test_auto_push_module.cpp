@@ -186,6 +186,62 @@ void observeSweepWriteResult(uint8_t result, uint32_t ingressSequence = UINT32_M
     TEST_ASSERT_TRUE(parser.parse(packet.data(), packet.size(), mockMillis, ingressSequence));
 }
 
+void observeCapturedSweepSections(const V1DetectorSnapshot& snapshot) {
+    const uint32_t ingress = ble.noteV1NotificationIngress();
+    TEST_ASSERT_TRUE(ble.sessionSweepResponseEligible(
+        PACKET_ID_RESP_SWEEP_SECTIONS, ingress));
+    if (ble.consumeSessionSweepParserReset(PACKET_ID_RESP_SWEEP_SECTIONS)) {
+        parser.resetSweepSectionsObservation();
+    }
+    observeSweepSections(snapshot, ingress);
+    const auto& observed = parser.sweepSectionsObservation();
+    ble.onSweepSectionsReceived(observed.available && observed.complete &&
+                                !observed.poisoned);
+}
+
+void observeCapturedSweepMax(uint8_t maxIndex) {
+    const uint32_t ingress = ble.noteV1NotificationIngress();
+    TEST_ASSERT_TRUE(ble.sessionSweepResponseEligible(
+        PACKET_ID_RESP_MAX_SWEEP_INDEX, ingress));
+    if (ble.consumeSessionSweepParserReset(PACKET_ID_RESP_MAX_SWEEP_INDEX)) {
+        parser.resetSweepMaxObservation();
+    }
+    observeSweepMax(maxIndex, ingress);
+    const auto& observed = parser.sweepMaxObservation();
+    ble.onSweepMaxReceived(observed.available && !observed.poisoned);
+}
+
+void observeCapturedSweepDefinition(uint8_t index, uint16_t lower, uint16_t upper) {
+    const uint32_t ingress = ble.noteV1NotificationIngress();
+    TEST_ASSERT_TRUE(ble.sessionSweepResponseEligible(
+        PACKET_ID_RESP_SWEEP_DEFINITION, ingress));
+    if (ble.consumeSessionSweepParserReset(PACKET_ID_RESP_SWEEP_DEFINITION)) {
+        parser.resetSweepDefinitionsObservation();
+    }
+    observeSweepDefinition(index, lower, upper, ingress);
+    const auto& maximum = parser.sweepMaxObservation();
+    const auto& definitions = parser.sweepDefinitionsObservation();
+    const uint64_t required = maximum.maxIndex == 63
+                                  ? UINT64_MAX
+                                  : ((uint64_t{1} << (maximum.maxIndex + 1u)) - 1u);
+    ble.onSweepDefinitionsReceived(maximum.available && !maximum.poisoned &&
+                                   !definitions.poisoned &&
+                                   definitions.presentMask == required);
+}
+
+void completeTargetRegionSweepRefresh(const V1DetectorSnapshot& target,
+                                      unsigned long verifyAt) {
+    observeCapturedSweepSections(target);
+    observeCapturedSweepMax(target.maxSweepIndex);
+    for (uint8_t index = 0; index <= target.maxSweepIndex; ++index) {
+        const auto& definition = target.sweepDefinitions[index];
+        observeCapturedSweepDefinition(index, definition.lowerMHz,
+                                       definition.upperMHz);
+    }
+    mockMillis = verifyAt;
+    module.process();
+}
+
 void observeUserBytes(const uint8_t* bytes, uint32_t ingressSequence = UINT32_MAX) {
     if (ingressSequence == UINT32_MAX) ingressSequence = ble.noteV1NotificationIngress();
     ble.onUserBytesReceived(bytes, ingressSequence);
@@ -1397,24 +1453,35 @@ void test_euro_bit_change_restores_explicit_custom_definitions_after_user_write(
     at(100); // user write
     at(130); // user read
     observeUserBytes(ble.lastUserBytes);
-    at(130); // user verify; custom scheduled after inter-command gap
-    at(160); // first used definition
-    at(165); // final used definition and commit
+    at(130); // user verify; target-region recapture scheduled
+    at(160); // sweep sections request
+    at(190); // max index request
+    at(220); // complete definitions request
+    auto target = makeSnapshot(41039, desiredBytes);
+    addSweepSnapshot(target);
+    target.sweepDefinitions = {{{0, 24050, 24150}, {1, 0, 0},
+                                {2, 34100, 34200}, {3, 0, 0}}};
+    completeTargetRegionSweepRefresh(target, 220);
+    at(250); // first used definition
+    at(255); // final used definition and commit
     observeSweepWriteResult(0);
-    at(165);
-    at(195);
+    at(255);
+    at(285);
     observeSweepDefinition(0, 24195, 24305);
     observeSweepDefinition(1, 0, 0);
     observeSweepDefinition(2, 34495, 34605);
     observeSweepDefinition(3, 0, 0);
-    at(195);
+    at(285);
 
     TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
-    TEST_ASSERT_EQUAL_UINT32(4, static_cast<uint32_t>(ble.commandHistory.size()));
+    TEST_ASSERT_EQUAL_UINT32(7, static_cast<uint32_t>(ble.commandHistory.size()));
     TEST_ASSERT_EQUAL_STRING("user-write", ble.commandHistory[0]);
-    TEST_ASSERT_EQUAL_STRING("sweep-write", ble.commandHistory[1]);
-    TEST_ASSERT_EQUAL_STRING("sweep-commit", ble.commandHistory[2]);
+    TEST_ASSERT_EQUAL_STRING("sweep-sections-read", ble.commandHistory[1]);
+    TEST_ASSERT_EQUAL_STRING("sweep-max-read", ble.commandHistory[2]);
     TEST_ASSERT_EQUAL_STRING("sweep-read", ble.commandHistory[3]);
+    TEST_ASSERT_EQUAL_STRING("sweep-write", ble.commandHistory[4]);
+    TEST_ASSERT_EQUAL_STRING("sweep-commit", ble.commandHistory[5]);
+    TEST_ASSERT_EQUAL_STRING("sweep-read", ble.commandHistory[6]);
 }
 
 void test_usa_to_euro_from_advanced_requires_explicit_non_advanced_mode_before_writes() {
@@ -1472,35 +1539,679 @@ void test_enabling_custom_filtering_syncs_profile_owned_compact_ranges() {
     stageSnapshot(snapshot);
     queueAndPreflight();
 
-    at(100);
-    at(130);
-    observeUserBytes(ble.lastUserBytes);
-    at(130);
-    at(160);
-    at(165);
+    at(100); // first sweep; the final enable byte has not been sent
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+    at(105); // final sweep and commit
     observeSweepWriteResult(0);
-    at(165);
-    at(195);
+    at(105);
+    at(135); // focused full-table readback request
     observeSweepDefinition(0, 24195, 24305);
     observeSweepDefinition(1, 34495, 34605);
     observeSweepDefinition(2, 0, 0);
     observeSweepDefinition(3, 0, 0);
+    at(135); // custom verify; final user write is now scheduled
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+    at(165); // final user write enables Custom Frequencies
+    TEST_ASSERT_EQUAL_HEX8(0xF7, ble.lastUserBytes[1]);
+    at(195); // focused user-byte read
+    observeUserBytes(ble.lastUserBytes);
     at(195);
 
     TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
     TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
     TEST_ASSERT_EQUAL_INT(2, ble.writeSweepDefinitionCalls);
     TEST_ASSERT_EQUAL_INT(1, ble.requestAllSweepDefinitionsCalls);
+    TEST_ASSERT_EQUAL_UINT32(4, static_cast<uint32_t>(ble.commandHistory.size()));
+    TEST_ASSERT_EQUAL_STRING("sweep-write", ble.commandHistory[0]);
+    TEST_ASSERT_EQUAL_STRING("sweep-commit", ble.commandHistory[1]);
+    TEST_ASSERT_EQUAL_STRING("sweep-read", ble.commandHistory[2]);
+    TEST_ASSERT_EQUAL_STRING("user-write", ble.commandHistory[3]);
 }
 
-void test_explicit_custom_definition_set_requires_k_and_ka_coverage() {
+void test_enabling_custom_recommits_an_exact_complete_table_before_enable() {
+    const std::array<uint8_t, 6> before{{0xFF, 0xFF, 0xFF, 0xFF, 0xA4, 0x5A}};
+    const std::array<uint8_t, 6> enableCustom{{0xFF, 0xF7, 0xFF, 0xFF, 0xFF, 0xFF}};
+    configureProfile(enableCustom);
+    auto& detector = profiles.loadableProfile.detector;
+    detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    detector.modePolicy = V1ModePolicy::Unchanged;
+    detector.volumePolicy = V1VolumePolicy::Unchanged;
+    detector.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+    const std::array<V1CustomFrequencyDefinition, 4> exact{{
+        {0, 24000, 24100}, {1, 0, 0}, {2, 34000, 34100}, {3, 0, 0}}};
+    TEST_ASSERT_TRUE(detector.customFrequencyDefinitions.assign(exact));
+    auto snapshot = makeSnapshot(41039, before);
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+
+    at(100);
+    at(105);
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+    observeSweepWriteResult(0);
+    at(105);
+    at(135);
+    observeSweepDefinition(0, 24000, 24100);
+    observeSweepDefinition(1, 0, 0);
+    observeSweepDefinition(2, 34000, 34100);
+    observeSweepDefinition(3, 0, 0);
+    at(135);
+    at(165);
+    at(195);
+    observeUserBytes(ble.lastUserBytes);
+    at(195);
+
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_EQUAL_INT(2, ble.writeSweepDefinitionCalls);
+    TEST_ASSERT_EQUAL_INT(1, ble.requestAllSweepDefinitionsCalls);
+    TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
+}
+
+void test_region_change_with_custom_on_uses_verified_disabled_intermediate_then_table_then_final_enable() {
+    const std::array<uint8_t, 6> before{{0xFF, 0xF7, 0xFF, 0xFF, 0xA4, 0x5A}};
+    const std::array<uint8_t, 6> euroCustomOn{{0xFF, 0xF6, 0xFF, 0xFF, 0xFF, 0xFF}};
+    configureProfile(euroCustomOn);
+    auto& detector = profiles.loadableProfile.detector;
+    detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    detector.modePolicy = V1ModePolicy::Unchanged;
+    detector.volumePolicy = V1VolumePolicy::Unchanged;
+    detector.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+    const std::array<V1CustomFrequencyDefinition, 2> ranges{{
+        {0, 24200, 24300}, {1, 34500, 34600}}};
+    TEST_ASSERT_TRUE(detector.customFrequencyDefinitions.assign(ranges));
+    auto snapshot = makeSnapshot(41039, before);
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+
+    at(100); // target region, Custom Frequencies forced off
+    TEST_ASSERT_EQUAL_HEX8(0xFE, ble.lastUserBytes[1]);
+    at(130);
+    observeUserBytes(ble.lastUserBytes);
+    at(130);
+    TEST_ASSERT_TRUE(statusContains("\"step\":\"CustomRefreshSections\""));
+    TEST_ASSERT_TRUE(statusContains("\"profile\":{\"requested\":true,\"beforeAvailable\":true,\"needed\":true,\"sent\":true,\"verified\":false"));
+    at(160);
+    at(190);
+    at(220);
+    auto target = makeSnapshot(41039, euroCustomOn);
+    addSweepSnapshot(target);
+    target.sweepDefinitions = {{{0, 24050, 24150}, {1, 0, 0},
+                                {2, 34100, 34200}, {3, 0, 0}}};
+    completeTargetRegionSweepRefresh(target, 220);
+    at(250);
+    at(255);
+    observeSweepWriteResult(0);
+    at(255);
+    at(285);
+    observeSweepDefinition(0, 24195, 24305);
+    observeSweepDefinition(1, 34495, 34605);
+    observeSweepDefinition(2, 0, 0);
+    observeSweepDefinition(3, 0, 0);
+    at(285);
+    TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
+    at(315); // final target-region bytes enable Custom Frequencies
+    TEST_ASSERT_EQUAL_HEX8(0xF6, ble.lastUserBytes[1]);
+    at(345);
+    observeUserBytes(ble.lastUserBytes);
+    at(345);
+
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_EQUAL_INT(2, ble.writeUserBytesCalls);
+    TEST_ASSERT_EQUAL_UINT32(8, static_cast<uint32_t>(ble.commandHistory.size()));
+    TEST_ASSERT_EQUAL_STRING("user-write", ble.commandHistory[0]);
+    TEST_ASSERT_EQUAL_STRING("sweep-sections-read", ble.commandHistory[1]);
+    TEST_ASSERT_EQUAL_STRING("sweep-max-read", ble.commandHistory[2]);
+    TEST_ASSERT_EQUAL_STRING("sweep-read", ble.commandHistory[3]);
+    TEST_ASSERT_EQUAL_STRING("sweep-write", ble.commandHistory[4]);
+    TEST_ASSERT_EQUAL_STRING("sweep-commit", ble.commandHistory[5]);
+    TEST_ASSERT_EQUAL_STRING("sweep-read", ble.commandHistory[6]);
+    TEST_ASSERT_EQUAL_STRING("user-write", ble.commandHistory[7]);
+}
+
+void test_region_change_k_only_uses_fresh_target_ka_not_source_region_ka() {
+    const std::array<uint8_t, 6> before{{0xFF, 0xF7, 0xFF, 0xFF, 0xA4, 0x5A}};
+    const std::array<uint8_t, 6> euroCustomOn{{0xFF, 0xF6, 0xFF, 0xFF, 0xFF, 0xFF}};
+    configureProfile(euroCustomOn);
+    auto& detector = profiles.loadableProfile.detector;
+    detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    detector.modePolicy = V1ModePolicy::Unchanged;
+    detector.volumePolicy = V1VolumePolicy::Unchanged;
+    detector.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+    TEST_ASSERT_TRUE(detector.customFrequencyDefinitions.assign(
+        std::array<V1CustomFrequencyDefinition, 1>{{{0, 24200, 24300}}}));
+    auto source = makeSnapshot(41039, before);
+    addSweepSnapshot(source); // source Ka is 34000-34100
+    stageSnapshot(source);
+    queueAndPreflight();
+
+    at(100);
+    at(130);
+    observeUserBytes(ble.lastUserBytes);
+    at(130);
+    at(160);
+    at(190);
+    at(220);
+    auto target = makeSnapshot(41039, euroCustomOn);
+    addSweepSnapshot(target);
+    target.sweepDefinitions = {{{0, 24050, 24150}, {1, 0, 0},
+                                {2, 35000, 35100}, {3, 0, 0}}};
+    completeTargetRegionSweepRefresh(target, 220);
+
+    at(250);
+    TEST_ASSERT_EQUAL_UINT8(0, ble.sweepWriteHistory[0].index);
+    TEST_ASSERT_EQUAL_UINT16(24200, ble.sweepWriteHistory[0].lower);
+    at(255);
+    TEST_ASSERT_EQUAL_UINT8(2, ble.sweepWriteHistory[1].index);
+    TEST_ASSERT_EQUAL_UINT16(35000, ble.sweepWriteHistory[1].lower);
+    TEST_ASSERT_EQUAL_UINT16(35100, ble.sweepWriteHistory[1].upper);
+    TEST_ASSERT_TRUE(ble.sweepWriteHistory[1].commit);
+    observeSweepWriteResult(0);
+    at(255);
+    at(285);
+    observeSweepDefinition(0, 24195, 24305);
+    observeSweepDefinition(1, 0, 0);
+    observeSweepDefinition(2, 35000, 35100);
+    observeSweepDefinition(3, 0, 0);
+    at(285);
+    at(315);
+    at(345);
+    observeUserBytes(ble.lastUserBytes);
+    at(345);
+
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_EQUAL_HEX8(0xF6, ble.lastUserBytes[1]);
+}
+
+void test_region_partial_ownership_fails_closed_on_incomplete_target_refresh() {
+    const std::array<uint8_t, 6> before{{0xFF, 0xF7, 0xFF, 0xFF, 0xA4, 0x5A}};
+    const std::array<uint8_t, 6> euroCustomOn{{0xFF, 0xF6, 0xFF, 0xFF, 0xFF, 0xFF}};
+    configureProfile(euroCustomOn);
+    auto& detector = profiles.loadableProfile.detector;
+    detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    detector.modePolicy = V1ModePolicy::Unchanged;
+    detector.volumePolicy = V1VolumePolicy::Unchanged;
+    detector.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+    TEST_ASSERT_TRUE(detector.customFrequencyDefinitions.assign(
+        std::array<V1CustomFrequencyDefinition, 1>{{{0, 24200, 24300}}}));
+    auto source = makeSnapshot(41039, before);
+    addSweepSnapshot(source);
+    stageSnapshot(source);
+    queueAndPreflight();
+
+    at(100);
+    at(130);
+    observeUserBytes(ble.lastUserBytes);
+    at(130);
+    at(160);
+    at(190);
+    at(220);
+    auto target = makeSnapshot(41039, euroCustomOn);
+    addSweepSnapshot(target);
+    observeCapturedSweepSections(target);
+    observeCapturedSweepMax(target.maxSweepIndex);
+    at(1720);
+
+    TEST_ASSERT_TRUE(statusContains("custom_readback_timeout"));
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+    TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
+}
+
+void test_region_refresh_request_failures_never_reach_table_or_final_enable() {
+    const auto prepare = []() {
+        const std::array<uint8_t, 6> before{{0xFF, 0xF7, 0xFF, 0xFF, 0xA4, 0x5A}};
+        const std::array<uint8_t, 6> euroCustomOn{{0xFF, 0xF6, 0xFF, 0xFF, 0xFF, 0xFF}};
+        configureProfile(euroCustomOn);
+        auto& detector = profiles.loadableProfile.detector;
+        detector.displayPolicy = V1DisplayPolicy::Unchanged;
+        detector.modePolicy = V1ModePolicy::Unchanged;
+        detector.volumePolicy = V1VolumePolicy::Unchanged;
+        detector.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+        TEST_ASSERT_TRUE(detector.customFrequencyDefinitions.assign(
+            std::array<V1CustomFrequencyDefinition, 1>{{{0, 24200, 24300}}}));
+        auto source = makeSnapshot(41039, before);
+        addSweepSnapshot(source);
+        stageSnapshot(source);
+        queueAndPreflight();
+        at(100);
+        at(130);
+        observeUserBytes(ble.lastUserBytes);
+        at(130);
+    };
+    const auto assertStopped = []() {
+        TEST_ASSERT_TRUE(statusContains("custom_read_failed"));
+        TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+        TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+        TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
+    };
+
+    prepare();
+    ble.nextRequestSweepSectionsResult = SendResult::FAILED;
+    at(160);
+    assertStopped();
+
+    setUp();
+    prepare();
+    at(160);
+    ble.nextRequestMaxSweepIndexResult = SendResult::FAILED;
+    at(190);
+    assertStopped();
+
+    setUp();
+    prepare();
+    at(160);
+    at(190);
+    ble.nextRequestAllSweepDefinitionsResult = SendResult::FAILED;
+    at(220);
+    assertStopped();
+}
+
+void test_region_refresh_not_yet_retries_each_request_without_failing_apply() {
+    const std::array<uint8_t, 6> before{{0xFF, 0xF7, 0xFF, 0xFF, 0xA4, 0x5A}};
+    const std::array<uint8_t, 6> euroCustomOn{{0xFF, 0xF6, 0xFF, 0xFF, 0xFF, 0xFF}};
+    configureProfile(euroCustomOn);
+    auto& detector = profiles.loadableProfile.detector;
+    detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    detector.modePolicy = V1ModePolicy::Unchanged;
+    detector.volumePolicy = V1VolumePolicy::Unchanged;
+    detector.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+    TEST_ASSERT_TRUE(detector.customFrequencyDefinitions.assign(
+        std::array<V1CustomFrequencyDefinition, 1>{{{0, 24200, 24300}}}));
+    auto source = makeSnapshot(41039, before);
+    addSweepSnapshot(source);
+    stageSnapshot(source);
+    queueAndPreflight();
+    at(100);
+    at(130);
+    observeUserBytes(ble.lastUserBytes);
+    at(130);
+
+    ble.nextRequestSweepSectionsResult = SendResult::NOT_YET;
+    at(160);
+    TEST_ASSERT_TRUE(module.isActive());
+    TEST_ASSERT_FALSE(statusContains("custom_read_failed"));
+    ble.nextRequestSweepSectionsResult = SendResult::SENT;
+    at(165);
+
+    ble.nextRequestMaxSweepIndexResult = SendResult::NOT_YET;
+    at(195);
+    TEST_ASSERT_TRUE(module.isActive());
+    TEST_ASSERT_FALSE(statusContains("custom_read_failed"));
+    ble.nextRequestMaxSweepIndexResult = SendResult::SENT;
+    at(200);
+
+    ble.nextRequestAllSweepDefinitionsResult = SendResult::NOT_YET;
+    at(230);
+    TEST_ASSERT_TRUE(module.isActive());
+    TEST_ASSERT_FALSE(statusContains("custom_read_failed"));
+    ble.nextRequestAllSweepDefinitionsResult = SendResult::SENT;
+    at(235);
+
+    auto target = makeSnapshot(41039, euroCustomOn);
+    addSweepSnapshot(target);
+    target.sweepDefinitions = {{{0, 24050, 24150}, {1, 0, 0},
+                                {2, 34100, 34200}, {3, 0, 0}}};
+    completeTargetRegionSweepRefresh(target, 235);
+
+    TEST_ASSERT_TRUE(module.isActive());
+    TEST_ASSERT_FALSE(statusContains("custom_read_failed"));
+    TEST_ASSERT_EQUAL_INT(2, ble.requestSweepSectionsCalls);
+    TEST_ASSERT_EQUAL_INT(2, ble.requestMaxSweepIndexCalls);
+    TEST_ASSERT_EQUAL_INT(2, ble.requestAllSweepDefinitionsCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+    at(265);
+    TEST_ASSERT_EQUAL_INT(1, ble.writeSweepDefinitionCalls);
+}
+
+void test_region_refresh_not_yet_has_bounded_send_deadline() {
+    const std::array<uint8_t, 6> before{{0xFF, 0xF7, 0xFF, 0xFF, 0xA4, 0x5A}};
+    const std::array<uint8_t, 6> euroCustomOn{{0xFF, 0xF6, 0xFF, 0xFF, 0xFF, 0xFF}};
+    configureProfile(euroCustomOn);
+    auto& detector = profiles.loadableProfile.detector;
+    detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    detector.modePolicy = V1ModePolicy::Unchanged;
+    detector.volumePolicy = V1VolumePolicy::Unchanged;
+    detector.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+    TEST_ASSERT_TRUE(detector.customFrequencyDefinitions.assign(
+        std::array<V1CustomFrequencyDefinition, 1>{{{0, 24200, 24300}}}));
+    auto source = makeSnapshot(41039, before);
+    addSweepSnapshot(source);
+    stageSnapshot(source);
+    queueAndPreflight();
+    at(100);
+    at(130);
+    observeUserBytes(ble.lastUserBytes);
+    at(130);
+
+    ble.nextRequestSweepSectionsResult = SendResult::NOT_YET;
+    at(160);
+    TEST_ASSERT_TRUE(module.isActive());
+    at(1660);
+
+    TEST_ASSERT_FALSE(module.isActive());
+    TEST_ASSERT_TRUE(statusContains("custom_readback_timeout"));
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    TEST_ASSERT_EQUAL_INT(2, ble.requestSweepSectionsCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.requestMaxSweepIndexCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+}
+
+void test_custom_readback_request_not_yet_retries_while_failed_is_terminal() {
+    const std::vector<V1CustomFrequencyDefinition> desired = {
+        {0, 24200, 24300}, {1, 0, 0}, {2, 34500, 34600}, {3, 0, 0}};
+    configureCustomOnly(desired);
+    auto snapshot = makeSnapshot();
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+    at(100);
+    at(105);
+    observeSweepWriteResult(0);
+    at(105);
+
+    ble.nextRequestAllSweepDefinitionsResult = SendResult::NOT_YET;
+    at(135);
+    TEST_ASSERT_TRUE(module.isActive());
+    TEST_ASSERT_FALSE(statusContains("custom_read_failed"));
+    ble.nextRequestAllSweepDefinitionsResult = SendResult::SENT;
+    at(140);
+    observeSweepDefinition(0, 23950, 24950);
+    observeSweepDefinition(1, 0, 0);
+    observeSweepDefinition(2, 33100, 36900);
+    observeSweepDefinition(3, 0, 0);
+    at(140);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_EQUAL_INT(2, ble.requestAllSweepDefinitionsCalls);
+
+    setUp();
+    configureCustomOnly(desired);
+    snapshot = makeSnapshot();
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+    at(100);
+    at(105);
+    observeSweepWriteResult(0);
+    at(105);
+    ble.nextRequestAllSweepDefinitionsResult = SendResult::FAILED;
+    at(135);
+
+    TEST_ASSERT_FALSE(module.isActive());
+    TEST_ASSERT_TRUE(statusContains("custom_read_failed"));
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    TEST_ASSERT_EQUAL_INT(1, ble.requestAllSweepDefinitionsCalls);
+}
+
+void test_region_refresh_poisoned_definition_fails_before_table_or_final_enable() {
+    const std::array<uint8_t, 6> before{{0xFF, 0xF7, 0xFF, 0xFF, 0xA4, 0x5A}};
+    const std::array<uint8_t, 6> euroCustomOn{{0xFF, 0xF6, 0xFF, 0xFF, 0xFF, 0xFF}};
+    configureProfile(euroCustomOn);
+    auto& detector = profiles.loadableProfile.detector;
+    detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    detector.modePolicy = V1ModePolicy::Unchanged;
+    detector.volumePolicy = V1VolumePolicy::Unchanged;
+    detector.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+    TEST_ASSERT_TRUE(detector.customFrequencyDefinitions.assign(
+        std::array<V1CustomFrequencyDefinition, 1>{{{0, 24200, 24300}}}));
+    auto source = makeSnapshot(41039, before);
+    addSweepSnapshot(source);
+    stageSnapshot(source);
+    queueAndPreflight();
+    at(100);
+    at(130);
+    observeUserBytes(ble.lastUserBytes);
+    at(130);
+    at(160);
+    at(190);
+    at(220);
+
+    auto target = makeSnapshot(41039, euroCustomOn);
+    addSweepSnapshot(target);
+    observeCapturedSweepSections(target);
+    observeCapturedSweepMax(target.maxSweepIndex);
+    observeCapturedSweepDefinition(0, 24050, 24150);
+    observeSweepDefinition(0, 24060, 24160, UINT32_MAX, false, 0xD6,
+                           true); // same fresh index, conflicting target evidence
+    at(220);
+
+    TEST_ASSERT_TRUE(statusContains("custom_readback_invalid"));
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+    TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
+}
+
+void test_region_custom_on_disconnects_never_report_success_at_any_transaction_phase() {
+    const auto prepare = []() {
+        const std::array<uint8_t, 6> before{{0xFF, 0xF7, 0xFF, 0xFF, 0xA4, 0x5A}};
+        const std::array<uint8_t, 6> euroCustomOn{{0xFF, 0xF6, 0xFF, 0xFF, 0xFF, 0xFF}};
+        configureProfile(euroCustomOn);
+        auto& detector = profiles.loadableProfile.detector;
+        detector.displayPolicy = V1DisplayPolicy::Unchanged;
+        detector.modePolicy = V1ModePolicy::Unchanged;
+        detector.volumePolicy = V1VolumePolicy::Unchanged;
+        detector.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+        const std::array<V1CustomFrequencyDefinition, 2> ranges{{
+            {0, 24200, 24300}, {1, 34500, 34600}}};
+        TEST_ASSERT_TRUE(detector.customFrequencyDefinitions.assign(ranges));
+        auto snapshot = makeSnapshot(41039, before);
+        addSweepSnapshot(snapshot);
+        stageSnapshot(snapshot);
+        queueAndPreflight();
+    };
+    const auto verifyIntermediate = []() {
+        at(100);
+        at(130);
+        observeUserBytes(ble.lastUserBytes);
+        at(130);
+    };
+    const auto verifyCustomTable = []() {
+        at(160);
+        at(190);
+        at(220);
+        auto target = makeSnapshot(41039,
+                                   {{0xFF, 0xFE, 0xFF, 0xFF, 0xA4, 0x5A}});
+        addSweepSnapshot(target);
+        target.sweepDefinitions = {{{0, 24050, 24150}, {1, 0, 0},
+                                    {2, 34100, 34200}, {3, 0, 0}}};
+        completeTargetRegionSweepRefresh(target, 220);
+        at(250);
+        at(255);
+        observeSweepWriteResult(0);
+        at(255);
+        at(285);
+        observeSweepDefinition(0, 24195, 24305);
+        observeSweepDefinition(1, 34495, 34605);
+        observeSweepDefinition(2, 0, 0);
+        observeSweepDefinition(3, 0, 0);
+        at(285);
+    };
+
+    prepare();
+    at(100); // intermediate write sent, not verified
+    ble.setConnected(false);
+    at(130);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    TEST_ASSERT_FALSE(statusContains("\"result\":\"succeeded\""));
+
+    setUp();
+    prepare();
+    verifyIntermediate();
+    ble.setConnected(false); // intermediate verified, table not started
+    at(160);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+
+    setUp();
+    prepare();
+    verifyIntermediate();
+    at(160);
+    ble.setConnected(false); // sections requested, target refresh incomplete
+    at(190);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+
+    setUp();
+    prepare();
+    verifyIntermediate();
+    at(160);
+    at(190);
+    ble.setConnected(false); // max requested, target refresh incomplete
+    at(220);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+
+    setUp();
+    prepare();
+    verifyIntermediate();
+    at(160);
+    at(190);
+    at(220);
+    ble.setConnected(false); // definitions requested, no complete target evidence
+    at(220);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+
+    setUp();
+    prepare();
+    verifyIntermediate();
+    at(160);
+    at(190);
+    at(220);
+    auto target = makeSnapshot(41039,
+                               {{0xFF, 0xFE, 0xFF, 0xFF, 0xA4, 0x5A}});
+    addSweepSnapshot(target);
+    completeTargetRegionSweepRefresh(target, 220);
+    at(250);
+    at(255); // final sweep and commit sent, result not verified
+    ble.setConnected(false);
+    at(255);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    TEST_ASSERT_FALSE(statusContains("\"result\":\"succeeded\""));
+
+    setUp();
+    prepare();
+    verifyIntermediate();
+    verifyCustomTable();
+    ble.setConnected(false); // full table verified, final enable not sent
+    at(315);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"partial\""));
+    TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
+    TEST_ASSERT_FALSE(statusContains("\"result\":\"succeeded\""));
+
+    setUp();
+    prepare();
+    verifyIntermediate();
+    verifyCustomTable();
+    at(315); // final enable sent, readback not verified
+    ble.setConnected(false);
+    at(345);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"partial\""));
+    TEST_ASSERT_EQUAL_INT(2, ble.writeUserBytesCalls);
+    TEST_ASSERT_FALSE(statusContains("\"result\":\"succeeded\""));
+}
+
+void test_k_only_authorship_preserves_live_ka_when_compiled_table_is_unchanged() {
     const std::array<uint8_t, 6> enabled{{0xFF, 0xF7, 0xFF, 0xFF, 0xFF, 0xFF}};
-    configureCustomOnly({{0, 24200, 24300}, {1, 0, 0}, {2, 0, 0}, {3, 0, 0}});
+    configureCustomOnly({{0, 24000, 24100}, {1, 0, 0},
+                         {2, 0, 0}, {3, 0, 0}});
     auto snapshot = makeSnapshot(41039, enabled);
     addSweepSnapshot(snapshot);
     stageSnapshot(snapshot);
     queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("custom_configuration_invalid"));
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(statusContains("\"outcome\":\"unchanged\""));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+}
+
+void test_k_only_authorship_replaces_k_and_copies_live_ka_without_invention() {
+    const std::array<uint8_t, 6> enabled{{0xFF, 0xF7, 0xFF, 0xFF, 0xFF, 0xFF}};
+    configureCustomOnly({{0, 24200, 24300}});
+    auto snapshot = makeSnapshot(41039, enabled);
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+
+    at(100);
+    TEST_ASSERT_EQUAL_UINT8(0, ble.sweepWriteHistory[0].index);
+    TEST_ASSERT_EQUAL_UINT16(24200, ble.sweepWriteHistory[0].lower);
+    at(105);
+    TEST_ASSERT_EQUAL_UINT8(2, ble.sweepWriteHistory[1].index);
+    TEST_ASSERT_EQUAL_UINT16(34000, ble.sweepWriteHistory[1].lower);
+    TEST_ASSERT_EQUAL_UINT16(34100, ble.sweepWriteHistory[1].upper);
+    TEST_ASSERT_TRUE(ble.sweepWriteHistory[1].commit);
+    observeSweepWriteResult(0);
+    at(105);
+    at(135);
+    observeSweepDefinition(0, 24195, 24305);
+    observeSweepDefinition(1, 0, 0);
+    observeSweepDefinition(2, 34000, 34100);
+    observeSweepDefinition(3, 0, 0);
+    at(135);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+}
+
+void test_ka_only_authorship_relocates_around_and_preserves_live_k() {
+    const std::array<uint8_t, 6> enabled{{0xFF, 0xF7, 0xFF, 0xFF, 0xFF, 0xFF}};
+    configureCustomOnly({{0, 34500, 34600}});
+    auto snapshot = makeSnapshot(41039, enabled);
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+
+    at(100);
+    TEST_ASSERT_EQUAL_UINT8(0, ble.sweepWriteHistory[0].index);
+    TEST_ASSERT_EQUAL_UINT16(24000, ble.sweepWriteHistory[0].lower);
+    TEST_ASSERT_EQUAL_UINT16(24100, ble.sweepWriteHistory[0].upper);
+    at(105);
+    TEST_ASSERT_EQUAL_UINT8(1, ble.sweepWriteHistory[1].index);
+    TEST_ASSERT_EQUAL_UINT16(34500, ble.sweepWriteHistory[1].lower);
+    TEST_ASSERT_TRUE(ble.sweepWriteHistory[1].commit);
+    observeSweepWriteResult(0);
+    at(105);
+    at(135);
+    observeSweepDefinition(0, 24000, 24100);
+    observeSweepDefinition(1, 34495, 34605);
+    observeSweepDefinition(2, 0, 0);
+    observeSweepDefinition(3, 0, 0);
+    at(135);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+}
+
+void test_unowned_band_readback_must_equal_the_fresh_live_definition() {
+    const std::array<uint8_t, 6> enabled{{0xFF, 0xF7, 0xFF, 0xFF, 0xFF, 0xFF}};
+    configureCustomOnly({{0, 34500, 34600}});
+    auto snapshot = makeSnapshot(41039, enabled);
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+
+    at(100);
+    at(105);
+    observeSweepWriteResult(0);
+    at(105);
+    at(135);
+    observeSweepDefinition(0, 24010, 24110); // still K, but not the preserved live range
+    observeSweepDefinition(1, 34495, 34605);
+    observeSweepDefinition(2, 0, 0);
+    observeSweepDefinition(3, 0, 0);
+    at(135);
+
+    TEST_ASSERT_TRUE(statusContains("custom_readback_invalid"));
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+}
+
+void test_no_authored_ranges_infers_no_owned_bands_and_preserves_live_table() {
+    const std::array<uint8_t, 6> enabled{{0xFF, 0xF7, 0xFF, 0xFF, 0xFF, 0xFF}};
+    configureCustomOnly({});
+    auto snapshot = makeSnapshot(41039, enabled);
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+
+    TEST_ASSERT_FALSE(module.isActive());
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(statusContains("\"outcome\":\"unchanged\""));
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
 }
 
@@ -2080,7 +2791,21 @@ int main() {
     RUN_TEST(test_usa_to_euro_from_advanced_requires_explicit_non_advanced_mode_before_writes);
     RUN_TEST(test_enabling_custom_filtering_without_profile_owned_ranges_is_rejected);
     RUN_TEST(test_enabling_custom_filtering_syncs_profile_owned_compact_ranges);
-    RUN_TEST(test_explicit_custom_definition_set_requires_k_and_ka_coverage);
+    RUN_TEST(test_enabling_custom_recommits_an_exact_complete_table_before_enable);
+    RUN_TEST(test_region_change_with_custom_on_uses_verified_disabled_intermediate_then_table_then_final_enable);
+    RUN_TEST(test_region_change_k_only_uses_fresh_target_ka_not_source_region_ka);
+    RUN_TEST(test_region_partial_ownership_fails_closed_on_incomplete_target_refresh);
+    RUN_TEST(test_region_refresh_request_failures_never_reach_table_or_final_enable);
+    RUN_TEST(test_region_refresh_not_yet_retries_each_request_without_failing_apply);
+    RUN_TEST(test_region_refresh_not_yet_has_bounded_send_deadline);
+    RUN_TEST(test_custom_readback_request_not_yet_retries_while_failed_is_terminal);
+    RUN_TEST(test_region_refresh_poisoned_definition_fails_before_table_or_final_enable);
+    RUN_TEST(test_region_custom_on_disconnects_never_report_success_at_any_transaction_phase);
+    RUN_TEST(test_k_only_authorship_preserves_live_ka_when_compiled_table_is_unchanged);
+    RUN_TEST(test_k_only_authorship_replaces_k_and_copies_live_ka_without_invention);
+    RUN_TEST(test_ka_only_authorship_relocates_around_and_preserves_live_k);
+    RUN_TEST(test_unowned_band_readback_must_equal_the_fresh_live_definition);
+    RUN_TEST(test_no_authored_ranges_infers_no_owned_bands_and_preserves_live_table);
     RUN_TEST(test_enabling_band_while_custom_is_on_requires_profile_owned_ranges);
     RUN_TEST(test_disabling_custom_filtering_does_not_require_or_write_definitions);
     RUN_TEST(test_unrelated_display_apply_does_not_require_sweeps_when_custom_was_already_enabled);

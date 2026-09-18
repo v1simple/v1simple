@@ -62,6 +62,24 @@ export function createDefaultCustomFrequencyDefinitions() {
     ];
 }
 
+// Published Gen2 sweep-section bounds provide a truthful offline check. Apply
+// still revalidates every range against the fresh section table read from the
+// connected detector, which remains authoritative.
+const GEN2_K_SWEEP_SECTION = Object.freeze({ lowerMHz: 23908, upperMHz: 24252 });
+const GEN2_KA_SWEEP_SECTION = Object.freeze({ lowerMHz: 33398, upperMHz: 36002 });
+
+export function customFrequencyBand(definition) {
+    const lowerMHz = Number(definition?.lowerMHz);
+    const upperMHz = Number(definition?.upperMHz);
+    if (!Number.isInteger(lowerMHz) || !Number.isInteger(upperMHz) ||
+        lowerMHz <= 0 || upperMHz <= lowerMHz || upperMHz > 65535) return null;
+    if (lowerMHz >= GEN2_K_SWEEP_SECTION.lowerMHz &&
+        upperMHz <= GEN2_K_SWEEP_SECTION.upperMHz) return 'K';
+    if (lowerMHz >= GEN2_KA_SWEEP_SECTION.lowerMHz &&
+        upperMHz <= GEN2_KA_SWEEP_SECTION.upperMHz) return 'Ka';
+    return null;
+}
+
 export function createProfileDetectorConfiguration() {
     return {
         ...createDefaultDetectorConfiguration(),

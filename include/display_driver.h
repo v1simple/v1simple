@@ -25,8 +25,19 @@
 #define CANVAS_WIDTH 172
 #define CANVAS_HEIGHT 640
 
-// Include appropriate graphics library
+// Arduino-ESP32 3.3.11 provides Print::flush(), while the pinned Arduino_GFX 1.6.7
+// declares flush(bool = false). Some GCC 14 host packages diagnose that
+// upstream API overlap under -Wall and others do not. Scope the compatibility
+// exception to the vendor header; every warning outside it remains covered by
+// -Werror.
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Woverloaded-virtual"
+#endif
 #include <Arduino_GFX_Library.h>
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 
 // Pin definitions with defaults for Waveshare 3.49"
 #ifndef LCD_CS

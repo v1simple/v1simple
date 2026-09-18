@@ -50,6 +50,22 @@ def check_production_flags() -> None:
             "car-install must inherit the strict production warning contract")
 
 
+def check_display_driver_vendor_exception() -> None:
+    source = (ROOT / "include" / "display_driver.h").read_text(encoding="utf-8")
+    exception = '''#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Woverloaded-virtual"
+#endif
+#include <Arduino_GFX_Library.h>
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif'''
+    require(source.count(exception) == 1,
+            "Arduino_GFX overloaded-virtual exception must wrap only its vendor include")
+    require(source.count('#pragma GCC diagnostic ignored "-Woverloaded-virtual"') == 1,
+            "overloaded-virtual may be suppressed only at the Arduino_GFX include")
+
+
 def check_open_font_render_patch() -> None:
     source, constants = literal_constants(ROOT / "scripts" / "patch_openfontrender.py")
     require("-Wno-" not in source, "OpenFontRender patch must not add a broad compiler suppression")
@@ -109,6 +125,7 @@ def check_webserver_patch() -> None:
 
 def main() -> int:
     check_production_flags()
+    check_display_driver_vendor_exception()
     check_open_font_render_patch()
     check_webserver_patch()
     print("[production-warnings] strict builds and fingerprinted vendor repairs validated")

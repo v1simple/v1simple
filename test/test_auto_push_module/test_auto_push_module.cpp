@@ -1091,6 +1091,42 @@ void test_sparse_custom_definitions_write_used_only_commit_last_and_report_calib
     TEST_ASSERT_EQUAL_UINT16(33100, custom["calibratedReadback"][2]["lowerMHz"].as<uint16_t>());
 }
 
+void test_compact_authored_ranges_fill_live_table_and_disable_omitted_slots() {
+    const std::vector<V1CustomFrequencyDefinition> desired = {
+        {0, 24200, 24300}, {1, 34500, 34600}};
+    configureCustomOnly(desired);
+    auto snapshot = makeSnapshot();
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+
+    at(100);
+    TEST_ASSERT_EQUAL_INT(1, ble.writeSweepDefinitionCalls);
+    TEST_ASSERT_EQUAL_UINT8(0, ble.sweepWriteHistory[0].index);
+    TEST_ASSERT_FALSE(ble.sweepWriteHistory[0].commit);
+    at(105);
+    TEST_ASSERT_EQUAL_INT(2, ble.writeSweepDefinitionCalls);
+    TEST_ASSERT_EQUAL_UINT8(1, ble.sweepWriteHistory[1].index);
+    TEST_ASSERT_TRUE(ble.sweepWriteHistory[1].commit);
+    observeSweepWriteResult(0);
+    at(105);
+    at(135);
+    observeSweepDefinition(0, 24195, 24305);
+    observeSweepDefinition(1, 34495, 34605);
+    observeSweepDefinition(2, 0, 0);
+    observeSweepDefinition(3, 0, 0);
+    at(135);
+
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    JsonDocument status;
+    const String json = module.getStatusJson();
+    TEST_ASSERT_FALSE(deserializeJson(status, json.c_str()));
+    JsonObject custom = status["components"]["customFrequencies"];
+    TEST_ASSERT_EQUAL_UINT32(2, custom["requestedDefinitions"].size());
+    TEST_ASSERT_EQUAL_UINT32(4, custom["calibratedReadback"].size());
+    TEST_ASSERT_EQUAL_UINT16(0, custom["calibratedReadback"][2]["lowerMHz"].as<uint16_t>());
+}
+
 void test_exact_custom_definition_set_is_unchanged_and_sends_no_sweep_packets() {
     const std::vector<V1CustomFrequencyDefinition> desired = {
         {0, 24000, 24100}, {1, 0, 0}, {2, 34000, 34100}, {3, 0, 0}};
@@ -1403,7 +1439,7 @@ void test_usa_to_euro_from_advanced_requires_explicit_non_advanced_mode_before_w
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
 }
 
-void test_enabling_custom_filtering_with_unchanged_definitions_only_writes_user_bytes() {
+void test_enabling_custom_filtering_without_profile_owned_ranges_is_rejected() {
     const std::array<uint8_t, 6> before{{0xFF, 0xFF, 0xFF, 0xFF, 0xA4, 0x5A}};
     const std::array<uint8_t, 6> enableCustom{{0xFF, 0xF7, 0xFF, 0xFF, 0xFF, 0xFF}};
     configureProfile(enableCustom);
@@ -1411,16 +1447,50 @@ void test_enabling_custom_filtering_with_unchanged_definitions_only_writes_user_
     detector.displayPolicy = V1DisplayPolicy::Unchanged;
     detector.modePolicy = V1ModePolicy::Unchanged;
     detector.volumePolicy = V1VolumePolicy::Unchanged;
-    stageSnapshot(makeSnapshot(41039, before)); // no sweep capture is needed
+    stageSnapshot(makeSnapshot(41039, before));
     queueAndPreflight();
+    TEST_ASSERT_TRUE(statusContains("custom_configuration_invalid"));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.requestAllSweepDefinitionsCalls);
+}
+
+void test_enabling_custom_filtering_syncs_profile_owned_compact_ranges() {
+    const std::array<uint8_t, 6> before{{0xFF, 0xFF, 0xFF, 0xFF, 0xA4, 0x5A}};
+    const std::array<uint8_t, 6> enableCustom{{0xFF, 0xF7, 0xFF, 0xFF, 0xFF, 0xFF}};
+    configureProfile(enableCustom);
+    auto& detector = profiles.loadableProfile.detector;
+    detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    detector.modePolicy = V1ModePolicy::Unchanged;
+    detector.volumePolicy = V1VolumePolicy::Unchanged;
+    detector.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+    const std::array<V1CustomFrequencyDefinition, 2> ranges{{
+        {0, 24200, 24300}, {1, 34500, 34600}}};
+    TEST_ASSERT_TRUE(detector.customFrequencyDefinitions.assign(ranges));
+    auto snapshot = makeSnapshot(41039, before);
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+
     at(100);
     at(130);
     observeUserBytes(ble.lastUserBytes);
     at(130);
+    at(160);
+    at(165);
+    observeSweepWriteResult(0);
+    at(165);
+    at(195);
+    observeSweepDefinition(0, 24195, 24305);
+    observeSweepDefinition(1, 34495, 34605);
+    observeSweepDefinition(2, 0, 0);
+    observeSweepDefinition(3, 0, 0);
+    at(195);
+
     TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
     TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
-    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
-    TEST_ASSERT_EQUAL_INT(0, ble.requestAllSweepDefinitionsCalls);
+    TEST_ASSERT_EQUAL_INT(2, ble.writeSweepDefinitionCalls);
+    TEST_ASSERT_EQUAL_INT(1, ble.requestAllSweepDefinitionsCalls);
 }
 
 void test_explicit_custom_definition_set_requires_k_and_ka_coverage() {
@@ -1434,7 +1504,7 @@ void test_explicit_custom_definition_set_requires_k_and_ka_coverage() {
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
 }
 
-void test_enabling_band_while_custom_remains_enabled_does_not_write_definitions() {
+void test_enabling_band_while_custom_is_on_requires_profile_owned_ranges() {
     const std::array<uint8_t, 6> kOnlyBefore{{0xFB, 0xF7, 0xFF, 0xFF, 0xA4, 0x5A}};
     const std::array<uint8_t, 6> kAndKaAfter{{0xFF, 0xF7, 0xFF, 0xFF, 0xFF, 0xFF}};
     configureProfile(kAndKaAfter);
@@ -1442,14 +1512,10 @@ void test_enabling_band_while_custom_remains_enabled_does_not_write_definitions(
     detector.displayPolicy = V1DisplayPolicy::Unchanged;
     detector.modePolicy = V1ModePolicy::Unchanged;
     detector.volumePolicy = V1VolumePolicy::Unchanged;
-    stageSnapshot(makeSnapshot(41039, kOnlyBefore)); // no sweep capture is needed
+    stageSnapshot(makeSnapshot(41039, kOnlyBefore));
     queueAndPreflight();
-    at(100);
-    at(130);
-    observeUserBytes(ble.lastUserBytes);
-    at(130);
-    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
-    TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
+    TEST_ASSERT_TRUE(statusContains("custom_configuration_invalid"));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.requestAllSweepDefinitionsCalls);
 }
@@ -1999,6 +2065,7 @@ int main() {
     RUN_TEST(test_legacy_display_off_implicitly_turns_bluetooth_off_but_keep_on_is_gated);
     RUN_TEST(test_bluetooth_policy_requires_final_main_display_off);
     RUN_TEST(test_sparse_custom_definitions_write_used_only_commit_last_and_report_calibrated_readback);
+    RUN_TEST(test_compact_authored_ranges_fill_live_table_and_disable_omitted_slots);
     RUN_TEST(test_exact_custom_definition_set_is_unchanged_and_sends_no_sweep_packets);
     RUN_TEST(test_null_sweep_slots_round_trip_but_cannot_substitute_for_required_band_topology);
     RUN_TEST(test_custom_commit_result_and_full_readback_are_both_required);
@@ -2011,9 +2078,10 @@ int main() {
     RUN_TEST(test_euro_bit_change_without_owned_definitions_accepts_detector_factory_reset);
     RUN_TEST(test_euro_bit_change_restores_explicit_custom_definitions_after_user_write);
     RUN_TEST(test_usa_to_euro_from_advanced_requires_explicit_non_advanced_mode_before_writes);
-    RUN_TEST(test_enabling_custom_filtering_with_unchanged_definitions_only_writes_user_bytes);
+    RUN_TEST(test_enabling_custom_filtering_without_profile_owned_ranges_is_rejected);
+    RUN_TEST(test_enabling_custom_filtering_syncs_profile_owned_compact_ranges);
     RUN_TEST(test_explicit_custom_definition_set_requires_k_and_ka_coverage);
-    RUN_TEST(test_enabling_band_while_custom_remains_enabled_does_not_write_definitions);
+    RUN_TEST(test_enabling_band_while_custom_is_on_requires_profile_owned_ranges);
     RUN_TEST(test_disabling_custom_filtering_does_not_require_or_write_definitions);
     RUN_TEST(test_unrelated_display_apply_does_not_require_sweeps_when_custom_was_already_enabled);
     RUN_TEST(test_advanced_logic_in_existing_euro_mode_is_rejected_before_writes);

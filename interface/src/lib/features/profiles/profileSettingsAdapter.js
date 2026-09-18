@@ -55,6 +55,32 @@ export function createDefaultDetectorConfiguration() {
     };
 }
 
+export function createDefaultCustomFrequencyDefinitions() {
+    return [
+        { index: 0, lowerMHz: 23910, upperMHz: 24250 },
+        { index: 1, lowerMHz: 33400, upperMHz: 36002 }
+    ];
+}
+
+export function createProfileDetectorConfiguration() {
+    return {
+        ...createDefaultDetectorConfiguration(),
+        customFrequencyPolicy: 'value',
+        customFrequencyDefinitions: createDefaultCustomFrequencyDefinitions()
+    };
+}
+
+function activeCustomFrequencyDefinitions(definitions) {
+    if (!Array.isArray(definitions)) return [];
+    return definitions
+        .filter((definition) => Number(definition?.lowerMHz) !== 0 || Number(definition?.upperMHz) !== 0)
+        .map((definition, index) => ({
+            index,
+            lowerMHz: Number(definition.lowerMHz ?? 0),
+            upperMHz: Number(definition.upperMHz ?? 0)
+        }));
+}
+
 export function cloneDetectorConfiguration(detector = {}) {
     return {
         ...detector,
@@ -85,13 +111,8 @@ export function fromApiDetectorConfiguration(api = {}) {
             : 'restore_saved',
         bluetoothLed: ['off', 'on'].includes(api.bluetoothLed) ? api.bluetoothLed : 'unchanged',
         customFrequencyPolicy: api.customFrequencies?.policy === 'value' ? 'value' : 'unchanged',
-        customFrequencyDefinitions: api.customFrequencies?.policy === 'value' &&
-            Array.isArray(api.customFrequencies.definitions)
-            ? api.customFrequencies.definitions.map((definition, index) => ({
-                  index: Number(definition.index ?? index),
-                  lowerMHz: Number(definition.lowerMHz ?? 0),
-                  upperMHz: Number(definition.upperMHz ?? 0)
-              }))
+        customFrequencyDefinitions: api.customFrequencies?.policy === 'value'
+            ? activeCustomFrequencyDefinitions(api.customFrequencies.definitions)
             : []
     };
 }
@@ -124,13 +145,7 @@ export function toApiDetectorConfiguration(ui = {}) {
         customFrequencies: ui.customFrequencyPolicy === 'value'
             ? {
                   policy: 'value',
-                  definitions: Array.isArray(ui.customFrequencyDefinitions)
-                      ? ui.customFrequencyDefinitions.map((definition, index) => ({
-                            index: Number(definition.index ?? index),
-                            lowerMHz: Number(definition.lowerMHz ?? 0),
-                            upperMHz: Number(definition.upperMHz ?? 0)
-                        }))
-                      : []
+                  definitions: activeCustomFrequencyDefinitions(ui.customFrequencyDefinitions)
               }
             : { policy: 'unchanged' }
     };
@@ -174,11 +189,7 @@ export function detectorConfigurationFromSnapshot(snapshot = {}) {
     const custom = snapshot.observations?.customFrequencies;
     if (custom?.definitionsAvailable && Array.isArray(custom.effectiveDefinitions)) {
         detector.customFrequencyPolicy = 'value';
-        detector.customFrequencyDefinitions = custom.effectiveDefinitions.map((definition, index) => ({
-            index: Number(definition.index ?? index),
-            lowerMHz: Number(definition.lowerMHz ?? 0),
-            upperMHz: Number(definition.upperMHz ?? 0)
-        }));
+        detector.customFrequencyDefinitions = activeCustomFrequencyDefinitions(custom.effectiveDefinitions);
     }
     return detector;
 }

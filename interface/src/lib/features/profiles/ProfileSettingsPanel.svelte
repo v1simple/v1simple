@@ -12,6 +12,7 @@
         onsaveEditedProfile,
         oncreateNewProfile,
         onstartEditing,
+        oncustomFrequenciesChange,
         onshowSaveDialog
     } = $props();
 </script>
@@ -422,7 +423,11 @@
                                 <input
                                     type="checkbox"
                                     class="toggle toggle-primary toggle-sm"
-                                    bind:checked={settings.customFreqs}
+                                    checked={settings.customFreqs}
+                                    onchange={(event) => {
+                                        settings.customFreqs = event.currentTarget.checked;
+                                        oncustomFrequenciesChange?.(settings.customFreqs);
+                                    }}
                                     disabled={!editingSettings}
                                 />
                             </label>

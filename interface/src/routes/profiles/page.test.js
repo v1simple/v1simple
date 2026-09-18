@@ -151,7 +151,7 @@ describe('profiles route page', () => {
         unmount();
     });
 
-    it('explains that an enabled custom-frequency filter uses detector-owned definitions', async () => {
+    it('requires explicit authored ranges for an enabled legacy custom-frequency setting', async () => {
         installDefaultFetch([{
             method: 'GET',
             match: '/api/v1/profile?name=Daily%20Drive',
@@ -167,10 +167,11 @@ describe('profiles route page', () => {
         const dailyDriveRow = (await screen.findByText('Daily Drive')).closest('.surface-panel');
         await fireEvent.click(within(dailyDriveRow).getByRole('button', { name: /^edit$/i }));
 
-        expect(await screen.findByText(/will use the definitions already stored on the detector/i))
-            .toBeInTheDocument();
-        expect(screen.queryByText(/requires a fresh, complete live definition table/i))
-            .not.toBeInTheDocument();
+        expect(await screen.findByText(/needs an authored custom-frequency set/i)).toBeInTheDocument();
+        await fireEvent.click(screen.getByRole('button', { name: /add k range/i }));
+        await fireEvent.click(screen.getByRole('button', { name: /add ka range/i }));
+        expect(screen.getByLabelText('Custom 0 lower MHz')).toHaveValue(23910);
+        expect(screen.getByLabelText('Custom 1 lower MHz')).toHaveValue(33400);
         unmount();
     });
 
@@ -344,7 +345,10 @@ describe('profiles route page', () => {
                         bluetoothLed: 'unchanged',
                         customFrequencies: {
                             policy: 'value',
-                            definitions: [{ index: 0, lowerMHz: 24050, upperMHz: 24100 }]
+                            definitions: [
+                                { index: 0, lowerMHz: 24050, upperMHz: 24100 },
+                                { index: 1, lowerMHz: 34000, upperMHz: 34100 }
+                            ]
                         }
                     },
                     settings: { xBand: true }
@@ -377,7 +381,10 @@ describe('profiles route page', () => {
                 volume: { policy: 'temporary', main: 3, muted: 1 },
                 customFrequencies: {
                     policy: 'value',
-                    definitions: [{ index: 0, lowerMHz: 24050, upperMHz: 24100 }]
+                    definitions: [
+                        { index: 0, lowerMHz: 24050, upperMHz: 24100 },
+                        { index: 1, lowerMHz: 34000, upperMHz: 34100 }
+                    ]
                 }
             });
 
@@ -393,7 +400,10 @@ describe('profiles route page', () => {
                 volume: { policy: 'saved', main: 3, muted: 1 },
                 customFrequencies: {
                     policy: 'value',
-                    definitions: [{ index: 0, lowerMHz: 24060, upperMHz: 24100 }]
+                    definitions: [
+                        { index: 0, lowerMHz: 24060, upperMHz: 24100 },
+                        { index: 1, lowerMHz: 34000, upperMHz: 34100 }
+                    ]
                 }
             });
             pending[1](jsonResponse({ success: true }));
@@ -647,6 +657,35 @@ describe('profiles route page', () => {
         expect(savedPayload.settings.ekin).toBe(true);
         expect(savedPayload.settings.gatsoRT4).toBe(true);
         expect(savedPayload.settings.photoIntersectionFilter).toBe(true);
+        expect(savedPayload.detector.customFrequencies).toEqual({
+            policy: 'value',
+            definitions: [
+                { index: 0, lowerMHz: 23910, upperMHz: 24250 },
+                { index: 1, lowerMHz: 33400, upperMHz: 36002 }
+            ]
+        });
+        unmount();
+    });
+
+    it('does not save a profile-owned frequency set without both K and Ka coverage', async () => {
+        const fetchMock = installDefaultFetch();
+        const { unmount } = render(Page);
+
+        await fireEvent.click(await screen.findByRole('button', { name: /new profile/i }));
+        await fireEvent.click(screen.getByRole('button', { name: /remove custom frequency 1/i }));
+        expect(await screen.findByText('Add at least one K range and one Ka range.'))
+            .toBeInTheDocument();
+        await fireEvent.click(screen.getByRole('button', { name: /save as profile/i }));
+        const modal = (await screen.findByText('Save Profile')).closest('.modal-box');
+        await fireEvent.input(screen.getByLabelText('Profile Name'), {
+            target: { value: 'Incomplete frequencies' }
+        });
+        await fireEvent.click(within(modal).getByRole('button', { name: /^save$/i }));
+
+        expect(await screen.findAllByText('Add at least one K range and one Ka range.'))
+            .toHaveLength(2);
+        expect(fetchMock.mock.calls.some(([url, init]) =>
+            url === '/api/v1/profile' && init?.method === 'POST')).toBe(false);
         unmount();
     });
 

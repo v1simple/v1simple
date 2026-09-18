@@ -8,7 +8,7 @@
     import ProfileSettingsPanel from '$lib/features/profiles/ProfileSettingsPanel.svelte';
     import {
         createDefaultProfileSettings,
-        createDefaultDetectorConfiguration,
+        createProfileDetectorConfiguration,
         cloneDetectorConfiguration,
         detectorConfigurationFromSnapshot,
         fromApiDetectorConfiguration,
@@ -102,6 +102,62 @@
     function detectorConfigurationsEqual(left, right) {
         return JSON.stringify(toApiDetectorConfiguration(left)) ===
             JSON.stringify(toApiDetectorConfiguration(right));
+    }
+
+    function ensureCustomFrequencyOwnership(detector = editedDetector) {
+        if (!detector) return;
+        detector.customFrequencyPolicy = 'value';
+        if (!Array.isArray(detector.customFrequencyDefinitions)) detector.customFrequencyDefinitions = [];
+    }
+
+    function customFrequenciesChanged(enabled) {
+        if (enabled) ensureCustomFrequencyOwnership();
+    }
+
+    function addCustomFrequencyRange(band) {
+        if (!editedDetector) return;
+        ensureCustomFrequencyOwnership();
+        if (editedDetector.customFrequencyDefinitions.length >= 64) return;
+        const range = band === 'ka'
+            ? { lowerMHz: 33400, upperMHz: 36002 }
+            : { lowerMHz: 23910, upperMHz: 24250 };
+        editedDetector.customFrequencyDefinitions = [
+            ...editedDetector.customFrequencyDefinitions,
+            { index: editedDetector.customFrequencyDefinitions.length, ...range }
+        ];
+    }
+
+    function removeCustomFrequencyRange(index) {
+        if (!editedDetector) return;
+        editedDetector.customFrequencyDefinitions = editedDetector.customFrequencyDefinitions
+            .filter((_, definitionIndex) => definitionIndex !== index)
+            .map((definition, definitionIndex) => ({ ...definition, index: definitionIndex }));
+    }
+
+    function customFrequencyBand(definition) {
+        return Number(definition?.lowerMHz) >= 30000 ? 'Ka' : 'K';
+    }
+
+    function customFrequencyError(settings, detector, allowLegacyDisabled = false) {
+        if (detector?.customFrequencyPolicy !== 'value') {
+            if (allowLegacyDisabled && !settings?.customFreqs) return null;
+            return 'This older profile needs an authored custom-frequency set before it can be saved again.';
+        }
+        const definitions = detector.customFrequencyDefinitions;
+        if (!Array.isArray(definitions) || definitions.length === 0 || definitions.length > 64) {
+            return 'Add at least one K range and one Ka range.';
+        }
+        const validEdges = definitions.every((definition) =>
+            Number.isInteger(Number(definition.lowerMHz)) &&
+            Number.isInteger(Number(definition.upperMHz)) &&
+            Number(definition.lowerMHz) > 0 &&
+            Number(definition.upperMHz) > Number(definition.lowerMHz) &&
+            Number(definition.upperMHz) <= 65535
+        );
+        if (!validEdges) return 'Every custom-frequency range needs valid lower and upper MHz edges.';
+        const hasK = definitions.some((definition) => customFrequencyBand(definition) === 'K');
+        const hasKa = definitions.some((definition) => customFrequencyBand(definition) === 'Ka');
+        return hasK && hasKa ? null : 'Add at least one K range and one Ka range.';
     }
 
     onMount(() => {
@@ -384,6 +440,15 @@
             message = { type: 'error', text: 'No settings to save' };
             return;
         }
+        const frequencyError = customFrequencyError(
+            settingsToSave,
+            editedDetector || currentProfile?.detector,
+            true
+        );
+        if (frequencyError) {
+            message = { type: 'error', text: frequencyError };
+            return;
+        }
 
         savingProfile = validatedName.canonical;
         try {
@@ -484,11 +549,11 @@
             draft: true,
             name: '',
             description: '',
-            detector: createDefaultDetectorConfiguration(),
+            detector: createProfileDetectorConfiguration(),
             settings: createDefaultProfileSettings()
         };
         editedSettings = createDefaultProfileSettings();
-        editedDetector = createDefaultDetectorConfiguration();
+        editedDetector = createProfileDetectorConfiguration();
         editDescription = '';
         saveName = '';
         saveDescription = '';
@@ -502,7 +567,7 @@
     function resetDraftToLocalDefaults() {
         if (!editingSettings) return;
         editedSettings = createDefaultProfileSettings();
-        editedDetector = createDefaultDetectorConfiguration();
+        editedDetector = createProfileDetectorConfiguration();
         message = {
             type: 'info',
             text: 'Draft reset to V1Simple profile defaults. No command was sent to the detector.'
@@ -518,6 +583,11 @@
         const validatedDescription = descriptionForSave(editDescription);
         if (validatedDescription.error) {
             message = { type: 'error', text: validatedDescription.error };
+            return;
+        }
+        const frequencyError = customFrequencyError(editedSettings, editedDetector, true);
+        if (frequencyError) {
+            message = { type: 'error', text: frequencyError };
             return;
         }
 
@@ -873,44 +943,53 @@
                     </label>
                 </div>
                 <div class="surface-panel space-y-3">
-                    <label class="field-control">
-                        <span class="field-label copy-caption">Custom sweep definitions</span>
-                        <select class="select select-sm" bind:value={editedDetector.customFrequencyPolicy}>
-                            <option value="unchanged">Leave detector definitions unchanged</option>
-                            <option value="value">Apply this complete definition set</option>
-                        </select>
-                    </label>
-                    {#if editedDetector.customFrequencyPolicy === 'value'}
+                    <div>
+                        <h3 class="font-semibold">Custom Frequencies</h3>
                         <p class="copy-caption">
-                            Requested edges are saved in the profile. The V1 calibrates them to its closest supported frequencies; Apply verifies and reports that calibrated readback.
+                            These ranges are saved in the profile. On Apply, V1Simple writes them to the V1 Gen2 and
+                            verifies the detector's calibrated readback. The Custom Frequencies switch above controls
+                            whether the V1 uses the saved ranges; turning it off does not erase them.
                         </p>
+                    </div>
+                    {#if editedDetector.customFrequencyPolicy === 'value'}
                         <div class="max-h-72 overflow-auto">
                             <table class="table table-xs">
-                                <thead><tr><th>Index</th><th>Lower MHz</th><th>Upper MHz</th></tr></thead>
+                                <thead><tr><th>Band</th><th>Lower MHz</th><th>Upper MHz</th><th></th></tr></thead>
                                 <tbody>
                                     {#each editedDetector.customFrequencyDefinitions as definition (definition.index)}
                                         <tr>
-                                            <td>{definition.index}</td>
+                                            <td>{customFrequencyBand(definition)}</td>
                                             <td><input aria-label={`Custom ${definition.index} lower MHz`} class="input input-xs w-28" type="number" min="0" max="65535" bind:value={definition.lowerMHz} /></td>
                                             <td><input aria-label={`Custom ${definition.index} upper MHz`} class="input input-xs w-28" type="number" min="0" max="65535" bind:value={definition.upperMHz} /></td>
+                                            <td>
+                                                <button
+                                                    class="btn btn-ghost btn-xs"
+                                                    type="button"
+                                                    aria-label={`Remove custom frequency ${definition.index}`}
+                                                    onclick={() => removeCustomFrequencyRange(definition.index)}
+                                                >Remove</button>
+                                            </td>
                                         </tr>
                                     {/each}
                                 </tbody>
                             </table>
                         </div>
-                        {#if editedDetector.customFrequencyDefinitions.length === 0}
-                            <div class="surface-alert alert-warning" role="status">
-                                A complete captured definition set is required. Start from the last observed V1 or load a profile that already owns one.
-                            </div>
-                        {/if}
+                    {:else}
+                        <p class="copy-caption">
+                            This older profile has no authored frequency set yet. Add a K or Ka range to make the
+                            profile own what the DUT will synchronize.
+                        </p>
                     {/if}
+                    {#if customFrequencyError(editedSettings, editedDetector)}
+                        <div class="surface-alert alert-warning" role="status">
+                            {customFrequencyError(editedSettings, editedDetector)}
+                        </div>
+                    {/if}
+                    <div class="flex flex-wrap gap-2">
+                        <button class="btn btn-outline btn-xs" type="button" onclick={() => addCustomFrequencyRange('k')}>Add K range</button>
+                        <button class="btn btn-outline btn-xs" type="button" onclick={() => addCustomFrequencyRange('ka')}>Add Ka range</button>
+                    </div>
                 </div>
-                {#if editedSettings?.customFreqs && editedDetector.customFrequencyPolicy === 'unchanged'}
-                    <p class="copy-caption">
-                        Custom Frequencies will use the definitions already stored on the detector. Changing between
-                        USA and Euro mode resets them to the detector's factory definitions for the selected region.
-                    </p>
-                {/if}
                 <p class="copy-caption">
                     Bluetooth indicator control is independent only while the main display is off and requires supported firmware to keep it on. Volume feedback and disconnect behavior are sent as command policy, but the detector protocol provides no readback for those two policy bits.
                 </p>
@@ -937,6 +1016,7 @@
             onsaveEditedProfile={saveEditedProfile}
             oncreateNewProfile={createNewProfile}
             onstartEditing={startEditing}
+            oncustomFrequenciesChange={customFrequenciesChanged}
             onshowSaveDialog={openSaveDialog}
         />
 

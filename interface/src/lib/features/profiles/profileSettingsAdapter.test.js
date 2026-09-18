@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    createProfileDetectorConfiguration,
     detectorConfigurationFromSnapshot,
     fromApiSettings,
     toApiDetectorConfiguration,
@@ -22,6 +23,17 @@ function snapshotWith(observations = {}) {
 }
 
 describe('profile settings adapter', () => {
+    it('starts new profiles with an authored K and Ka frequency set', () => {
+        expect(toApiDetectorConfiguration(createProfileDetectorConfiguration()).customFrequencies)
+            .toEqual({
+                policy: 'value',
+                definitions: [
+                    { index: 0, lowerMHz: 23910, upperMHz: 24250 },
+                    { index: 1, lowerMHz: 33400, upperMHz: 36002 }
+                ]
+            });
+    });
+
     it('leaves every unavailable detector observation explicitly unchanged', () => {
         expect(toApiDetectorConfiguration(detectorConfigurationFromSnapshot(snapshotWith())))
             .toEqual({
@@ -83,7 +95,7 @@ describe('profile settings adapter', () => {
         expect(toApiDetectorConfiguration(detector).volume).toEqual({ policy: 'unchanged' });
     });
 
-    it('round-trips volume command policy, display-off Bluetooth intent, and complete custom definitions', () => {
+    it('compacts captured slots into authored active ranges', () => {
         const detector = detectorConfigurationFromSnapshot(snapshotWith({
             displayOn: { available: true, value: false },
             bluetoothIndicator: { available: true, value: 'blinking' },
@@ -109,8 +121,7 @@ describe('profile settings adapter', () => {
             customFrequencies: {
                 policy: 'value',
                 definitions: [
-                    { index: 0, lowerMHz: 24050, upperMHz: 24150 },
-                    { index: 1, lowerMHz: 0, upperMHz: 0 }
+                    { index: 0, lowerMHz: 24050, upperMHz: 24150 }
                 ]
             }
         });

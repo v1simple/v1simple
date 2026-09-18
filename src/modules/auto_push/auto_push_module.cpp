@@ -485,6 +485,22 @@ bool AutoPushModule::preflight() {
             return false;
         }
 
+        // A profile that turns Custom Frequencies on, or changes K/Ka coverage
+        // while it is on, must own the ranges the DUT will synchronize. A
+        // migrated profile may still apply unrelated legacy user-byte changes
+        // when the live detector already has the same custom/band state.
+        const bool enablesCustomFrequencies = (state_.effectiveUserBytes[1] & 0x08) == 0;
+        const bool changesCustomEnable =
+            ((status_.beforeUserBytes[1] ^ state_.effectiveUserBytes[1]) & 0x08) != 0;
+        const bool changesCustomBandCoverage =
+            ((status_.beforeUserBytes[0] ^ state_.effectiveUserBytes[0]) & 0x06) != 0;
+        if (enablesCustomFrequencies && !status_.customFrequencies.requested &&
+            (changesCustomEnable || changesCustomBandCoverage)) {
+            failWholePlan(&status_.customFrequencies, Outcome::INVALID,
+                          FailureReason::CUSTOM_CONFIGURATION_INVALID);
+            return false;
+        }
+
         // The Euro/USA user bit intentionally resets Gen2 definitions to the
         // target region's factory table. An unchanged definition policy owns
         // no table and accepts that detector-defined result. An explicit table
@@ -691,7 +707,8 @@ bool AutoPushModule::preflight() {
                 return false;
             }
         }
-        if (state_.customDefinitions.size() != static_cast<size_t>(state_.before.maxSweepIndex) + 1u) {
+        if (state_.customDefinitions.empty() ||
+            state_.customDefinitions.size() > static_cast<size_t>(state_.before.maxSweepIndex) + 1u) {
             failWholePlan(&status_.customFrequencies, Outcome::INVALID,
                           FailureReason::CUSTOM_CONFIGURATION_INVALID);
             return false;
@@ -699,7 +716,7 @@ bool AutoPushModule::preflight() {
         bool hasUsed = false;
         bool definitionsDiffer = false;
         std::array<bool, 15> usedInSection{};
-        const size_t definitionCount = static_cast<size_t>(state_.before.maxSweepIndex) + 1u;
+        const size_t definitionCount = state_.customDefinitions.size();
         for (size_t index = 0; index < definitionCount; ++index) {
             const V1CustomFrequencyDefinition definition = state_.customDefinitions[index];
             if (definition.index != index || (definition.lowerMHz == 0) != (definition.upperMHz == 0) ||
@@ -719,11 +736,13 @@ bool AutoPushModule::preflight() {
             state_.customLastUsedIndex = index;
             usedInSection[static_cast<size_t>(sectionIndex)] = true;
         }
-        for (size_t index = 0; index < state_.customDefinitions.size(); ++index) {
-            const auto& desired = state_.customDefinitions[index];
+        for (size_t index = 0; index <= state_.before.maxSweepIndex; ++index) {
             const auto& before = state_.before.sweepDefinitions[index];
-            definitionsDiffer |= desired.index != before.index || desired.lowerMHz != before.lowerMHz ||
-                                 desired.upperMHz != before.upperMHz;
+            const bool hasDesired = index < state_.customDefinitions.size();
+            const uint16_t desiredLower = hasDesired ? state_.customDefinitions[index].lowerMHz : 0;
+            const uint16_t desiredUpper = hasDesired ? state_.customDefinitions[index].upperMHz : 0;
+            definitionsDiffer |= before.index != index || desiredLower != before.lowerMHz ||
+                                 desiredUpper != before.upperMHz;
         }
         uint8_t lowestSection = UINT8_MAX;
         for (uint8_t index = 0; index < state_.before.sweepSectionCount; ++index) {
@@ -1203,7 +1222,10 @@ void AutoPushModule::process() {
                 const auto& observed = definitions.definitions[index];
                 V1CustomFrequencyDefinition effective{index, observed.lowerMHz, observed.upperMHz};
                 const bool unused = effective.lowerMHz == 0 && effective.upperMHz == 0;
-                const auto& requested = state_.customDefinitions[index];
+                const bool hasRequested = index < state_.customDefinitions.size();
+                const V1CustomFrequencyDefinition requested = hasRequested
+                    ? state_.customDefinitions[index]
+                    : V1CustomFrequencyDefinition{static_cast<uint8_t>(index), 0, 0};
                 const bool requestedUnused = requested.lowerMHz == 0 && requested.upperMHz == 0;
                 if (unused != requestedUnused ||
                     (!unused && (sweepDefinitionLiveSection(effective, state_.before) < 0 ||

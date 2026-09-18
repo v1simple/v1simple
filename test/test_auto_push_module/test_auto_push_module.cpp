@@ -1323,14 +1323,23 @@ void test_vendor_invalid_zero_multibit_user_values_fail_preflight_at_version_bou
     }
 }
 
-void test_euro_bit_change_requires_phase_four_custom_frequency_preservation() {
+void test_euro_bit_change_without_owned_definitions_accepts_detector_factory_reset() {
     const std::array<uint8_t, 6> before{{0xFF, 0xFF, 0xFF, 0xFF, 0xA4, 0x5A}};
-    const std::array<uint8_t, 6> desired{{0xFE, 0xFE, 0xFF, 0xFF, 0xFF, 0xFF}};
+    const std::array<uint8_t, 6> desired{{0xFF, 0xFE, 0xFF, 0xFF, 0xFF, 0xFF}};
     configureProfile(desired);
+    auto& detector = profiles.loadableProfile.detector;
+    detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    detector.modePolicy = V1ModePolicy::Unchanged;
+    detector.volumePolicy = V1VolumePolicy::Unchanged;
     stageSnapshot(makeSnapshot(41039, before));
     queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("custom_frequency_preservation_required"));
-    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+    at(100);
+    at(130);
+    observeUserBytes(ble.lastUserBytes);
+    at(130);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
 }
 
 void test_euro_bit_change_restores_explicit_custom_definitions_after_user_write() {
@@ -1394,7 +1403,7 @@ void test_usa_to_euro_from_advanced_requires_explicit_non_advanced_mode_before_w
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
 }
 
-void test_enabling_custom_filtering_with_unchanged_definitions_requires_and_validates_live_table() {
+void test_enabling_custom_filtering_with_unchanged_definitions_only_writes_user_bytes() {
     const std::array<uint8_t, 6> before{{0xFF, 0xFF, 0xFF, 0xFF, 0xA4, 0x5A}};
     const std::array<uint8_t, 6> enableCustom{{0xFF, 0xF7, 0xFF, 0xFF, 0xFF, 0xFF}};
     configureProfile(enableCustom);
@@ -1402,79 +1411,22 @@ void test_enabling_custom_filtering_with_unchanged_definitions_requires_and_vali
     detector.displayPolicy = V1DisplayPolicy::Unchanged;
     detector.modePolicy = V1ModePolicy::Unchanged;
     detector.volumePolicy = V1VolumePolicy::Unchanged;
-    auto snapshot = makeSnapshot(41039, before);
-    addSweepSnapshot(snapshot);
-    stageSnapshot(snapshot);
+    stageSnapshot(makeSnapshot(41039, before)); // no sweep capture is needed
     queueAndPreflight();
     at(100);
     at(130);
     observeUserBytes(ble.lastUserBytes);
     at(130);
     TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
-
-    setUp();
-    configureProfile(enableCustom);
-    auto& missing = profiles.loadableProfile.detector;
-    missing.displayPolicy = V1DisplayPolicy::Unchanged;
-    missing.modePolicy = V1ModePolicy::Unchanged;
-    missing.volumePolicy = V1VolumePolicy::Unchanged;
-    stageSnapshot(makeSnapshot(41039, before));
-    queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("missing_live_snapshot"));
-    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.requestAllSweepDefinitionsCalls);
 }
 
-void test_custom_enable_transition_and_explicit_value_require_effective_band_coverage() {
-    const std::array<uint8_t, 6> disabled{{0xFF, 0xFF, 0xFF, 0xFF, 0xA4, 0x5A}};
+void test_explicit_custom_definition_set_requires_k_and_ka_coverage() {
     const std::array<uint8_t, 6> enabled{{0xFF, 0xF7, 0xFF, 0xFF, 0xFF, 0xFF}};
-    configureProfile(enabled);
-    auto& transition = profiles.loadableProfile.detector;
-    transition.displayPolicy = V1DisplayPolicy::Unchanged;
-    transition.modePolicy = V1ModePolicy::Unchanged;
-    transition.volumePolicy = V1VolumePolicy::Unchanged;
-    auto snapshot = makeSnapshot(41039, disabled);
-    addSweepSnapshot(snapshot);
-    snapshot.sweepDefinitions[2] = {2, 0, 0}; // complete table, no enabled Ka coverage
-    stageSnapshot(snapshot);
-    queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("custom_configuration_invalid"));
-    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
-    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
-
-    setUp();
-    const std::array<uint8_t, 6> enableCustomKOnly{{0xFB, 0xF7, 0xFF, 0xFF, 0xFF, 0xFF}};
-    configureProfile(enableCustomKOnly);
-    auto& kOnlyTransition = profiles.loadableProfile.detector;
-    kOnlyTransition.displayPolicy = V1DisplayPolicy::Unchanged;
-    kOnlyTransition.modePolicy = V1ModePolicy::Unchanged;
-    kOnlyTransition.volumePolicy = V1VolumePolicy::Unchanged;
-    snapshot = makeSnapshot(41039, disabled);
-    addSweepSnapshot(snapshot);
-    snapshot.sweepDefinitions[2] = {2, 0, 0};
-    stageSnapshot(snapshot);
-    queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("custom_configuration_invalid"));
-    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
-
-    setUp();
-    const std::array<uint8_t, 6> enableCustomKaOnly{{0xFD, 0xF7, 0xFF, 0xFF, 0xFF, 0xFF}};
-    configureProfile(enableCustomKaOnly);
-    auto& kaOnlyTransition = profiles.loadableProfile.detector;
-    kaOnlyTransition.displayPolicy = V1DisplayPolicy::Unchanged;
-    kaOnlyTransition.modePolicy = V1ModePolicy::Unchanged;
-    kaOnlyTransition.volumePolicy = V1VolumePolicy::Unchanged;
-    snapshot = makeSnapshot(41039, disabled);
-    addSweepSnapshot(snapshot);
-    snapshot.sweepDefinitions[0] = {0, 0, 0};
-    stageSnapshot(snapshot);
-    queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("custom_configuration_invalid"));
-    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
-
-    setUp();
     configureCustomOnly({{0, 24200, 24300}, {1, 0, 0}, {2, 0, 0}, {3, 0, 0}});
-    snapshot = makeSnapshot(41039, enabled);
+    auto snapshot = makeSnapshot(41039, enabled);
     addSweepSnapshot(snapshot);
     stageSnapshot(snapshot);
     queueAndPreflight();
@@ -1482,7 +1434,7 @@ void test_custom_enable_transition_and_explicit_value_require_effective_band_cov
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
 }
 
-void test_enabling_band_while_custom_remains_enabled_validates_live_coverage() {
+void test_enabling_band_while_custom_remains_enabled_does_not_write_definitions() {
     const std::array<uint8_t, 6> kOnlyBefore{{0xFB, 0xF7, 0xFF, 0xFF, 0xA4, 0x5A}};
     const std::array<uint8_t, 6> kAndKaAfter{{0xFF, 0xF7, 0xFF, 0xFF, 0xFF, 0xFF}};
     configureProfile(kAndKaAfter);
@@ -1490,31 +1442,16 @@ void test_enabling_band_while_custom_remains_enabled_validates_live_coverage() {
     detector.displayPolicy = V1DisplayPolicy::Unchanged;
     detector.modePolicy = V1ModePolicy::Unchanged;
     detector.volumePolicy = V1VolumePolicy::Unchanged;
-    auto snapshot = makeSnapshot(41039, kOnlyBefore);
-    addSweepSnapshot(snapshot);
-    snapshot.sweepDefinitions[2] = {2, 0, 0}; // no Ka coverage for the newly enabled band
-    stageSnapshot(snapshot);
-    queueAndPreflight();
-    TEST_ASSERT_TRUE(statusContains("custom_configuration_invalid"));
-    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
-    TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
-
-    setUp();
-    configureProfile(kAndKaAfter);
-    auto& valid = profiles.loadableProfile.detector;
-    valid.displayPolicy = V1DisplayPolicy::Unchanged;
-    valid.modePolicy = V1ModePolicy::Unchanged;
-    valid.volumePolicy = V1VolumePolicy::Unchanged;
-    snapshot = makeSnapshot(41039, kOnlyBefore);
-    addSweepSnapshot(snapshot);
-    stageSnapshot(snapshot);
+    stageSnapshot(makeSnapshot(41039, kOnlyBefore)); // no sweep capture is needed
     queueAndPreflight();
     at(100);
     at(130);
     observeUserBytes(ble.lastUserBytes);
     at(130);
     TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
     TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.requestAllSweepDefinitionsCalls);
 }
 
 void test_disabling_custom_filtering_does_not_require_or_write_definitions() {
@@ -2071,12 +2008,12 @@ int main() {
     RUN_TEST(test_malformed_canonical_sweep_definition_poison_blocks_every_write);
     RUN_TEST(test_poisoned_sweep_max_before_preflight_blocks_every_write);
     RUN_TEST(test_vendor_invalid_zero_multibit_user_values_fail_preflight_at_version_boundaries);
-    RUN_TEST(test_euro_bit_change_requires_phase_four_custom_frequency_preservation);
+    RUN_TEST(test_euro_bit_change_without_owned_definitions_accepts_detector_factory_reset);
     RUN_TEST(test_euro_bit_change_restores_explicit_custom_definitions_after_user_write);
     RUN_TEST(test_usa_to_euro_from_advanced_requires_explicit_non_advanced_mode_before_writes);
-    RUN_TEST(test_enabling_custom_filtering_with_unchanged_definitions_requires_and_validates_live_table);
-    RUN_TEST(test_custom_enable_transition_and_explicit_value_require_effective_band_coverage);
-    RUN_TEST(test_enabling_band_while_custom_remains_enabled_validates_live_coverage);
+    RUN_TEST(test_enabling_custom_filtering_with_unchanged_definitions_only_writes_user_bytes);
+    RUN_TEST(test_explicit_custom_definition_set_requires_k_and_ka_coverage);
+    RUN_TEST(test_enabling_band_while_custom_remains_enabled_does_not_write_definitions);
     RUN_TEST(test_disabling_custom_filtering_does_not_require_or_write_definitions);
     RUN_TEST(test_unrelated_display_apply_does_not_require_sweeps_when_custom_was_already_enabled);
     RUN_TEST(test_advanced_logic_in_existing_euro_mode_is_rejected_before_writes);

@@ -151,6 +151,29 @@ describe('profiles route page', () => {
         unmount();
     });
 
+    it('explains that an enabled custom-frequency filter uses detector-owned definitions', async () => {
+        installDefaultFetch([{
+            method: 'GET',
+            match: '/api/v1/profile?name=Daily%20Drive',
+            respond: jsonResponse({
+                schemaVersion: 3,
+                name: 'Daily Drive',
+                detector: { customFrequencies: { policy: 'unchanged' } },
+                settings: { customFreqs: true }
+            })
+        }]);
+        const { unmount } = render(Page);
+
+        const dailyDriveRow = (await screen.findByText('Daily Drive')).closest('.surface-panel');
+        await fireEvent.click(within(dailyDriveRow).getByRole('button', { name: /^edit$/i }));
+
+        expect(await screen.findByText(/will use the definitions already stored on the detector/i))
+            .toBeInTheDocument();
+        expect(screen.queryByText(/requires a fresh, complete live definition table/i))
+            .not.toBeInTheDocument();
+        unmount();
+    });
+
     it('makes profile authoring read-only while ownership migration is pending', async () => {
         installDefaultFetch([{
             method: 'GET',

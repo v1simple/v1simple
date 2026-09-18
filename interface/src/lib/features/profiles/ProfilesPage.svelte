@@ -906,11 +906,10 @@
                     {/if}
                 </div>
                 {#if editedSettings?.customFreqs && editedDetector.customFrequencyPolicy === 'unchanged'}
-                    <div class="surface-alert alert-warning" role="status">
-                        This profile enables custom sweeps without owning definitions. Apply requires a fresh,
-                        complete live definition table with compatible K and Ka coverage. A USA/Euro region change
-                        requires the profile to own a complete definition set.
-                    </div>
+                    <p class="copy-caption">
+                        Custom Frequencies will use the definitions already stored on the detector. Changing between
+                        USA and Euro mode resets them to the detector's factory definitions for the selected region.
+                    </p>
                 {/if}
                 <p class="copy-caption">
                     Bluetooth indicator control is independent only while the main display is off and requires supported firmware to keep it on. Volume feedback and disconnect behavior are sent as command policy, but the detector protocol provides no readback for those two policy bits.

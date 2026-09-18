@@ -485,15 +485,11 @@ bool AutoPushModule::preflight() {
             return false;
         }
 
-        // The Euro/USA user bit resets Gen2 custom-frequency definitions.
-        // "Unchanged" cannot own the resulting state; only an explicit full
-        // definition plan may proceed and it is committed after user bytes.
+        // The Euro/USA user bit intentionally resets Gen2 definitions to the
+        // target region's factory table. An unchanged definition policy owns
+        // no table and accepts that detector-defined result. An explicit table
+        // is still written later, after the user-byte transition.
         if (((status_.beforeUserBytes[1] ^ state_.effectiveUserBytes[1]) & 0x01) != 0) {
-            if (state_.customFrequencyPolicy != V1CustomFrequencyPolicy::Value) {
-                failWholePlan(&status_.userSettings, Outcome::UNSUPPORTED,
-                              FailureReason::CUSTOM_FREQUENCY_PRESERVATION_REQUIRED);
-                return false;
-            }
             const bool changingToEuro = (state_.effectiveUserBytes[1] & 0x01) == 0;
             if (changingToEuro) {
                 const V1ModeObservation& observedMode = parser_->modeObservation();
@@ -657,18 +653,7 @@ bool AutoPushModule::preflight() {
         }
     }
 
-    const uint8_t* effectiveBytesForSweeps = status_.userSettings.requested
-                                                 ? state_.effectiveUserBytes.data()
-                                                 : state_.before.userBytes.data();
-    const bool effectiveCustomFilteringEnabled = (effectiveBytesForSweeps[1] & 0x08) == 0;
-    const bool customEnableTransition = status_.userSettings.requested &&
-                                        (state_.before.userBytes[1] & 0x08) != 0 &&
-                                        effectiveCustomFilteringEnabled;
-    const bool customBandEnableTransition = status_.userSettings.requested &&
-                                            effectiveCustomFilteringEnabled &&
-                                            ((static_cast<uint8_t>(~state_.before.userBytes[0]) &
-                                              effectiveBytesForSweeps[0] & 0x06u) != 0);
-    if (status_.customFrequencies.requested || customEnableTransition || customBandEnableTransition) {
+    if (status_.customFrequencies.requested) {
         const auto& liveSections = parser_->sweepSectionsObservation();
         const auto& liveMax = parser_->sweepMaxObservation();
         const auto& liveDefinitions = parser_->sweepDefinitionsObservation();
@@ -706,8 +691,7 @@ bool AutoPushModule::preflight() {
                 return false;
             }
         }
-        if (status_.customFrequencies.requested &&
-            state_.customDefinitions.size() != static_cast<size_t>(state_.before.maxSweepIndex) + 1u) {
+        if (state_.customDefinitions.size() != static_cast<size_t>(state_.before.maxSweepIndex) + 1u) {
             failWholePlan(&status_.customFrequencies, Outcome::INVALID,
                           FailureReason::CUSTOM_CONFIGURATION_INVALID);
             return false;
@@ -717,13 +701,7 @@ bool AutoPushModule::preflight() {
         std::array<bool, 15> usedInSection{};
         const size_t definitionCount = static_cast<size_t>(state_.before.maxSweepIndex) + 1u;
         for (size_t index = 0; index < definitionCount; ++index) {
-            const auto& source = status_.customFrequencies.requested
-                                     ? state_.customDefinitions[index]
-                                     : V1CustomFrequencyDefinition{
-                                           static_cast<uint8_t>(index),
-                                           state_.before.sweepDefinitions[index].lowerMHz,
-                                           state_.before.sweepDefinitions[index].upperMHz};
-            const V1CustomFrequencyDefinition definition = source;
+            const V1CustomFrequencyDefinition definition = state_.customDefinitions[index];
             if (definition.index != index || (definition.lowerMHz == 0) != (definition.upperMHz == 0) ||
                 (definition.lowerMHz != 0 && definition.lowerMHz >= definition.upperMHz)) {
                 failWholePlan(&status_.customFrequencies, Outcome::INVALID,
@@ -741,13 +719,11 @@ bool AutoPushModule::preflight() {
             state_.customLastUsedIndex = index;
             usedInSection[static_cast<size_t>(sectionIndex)] = true;
         }
-        if (status_.customFrequencies.requested) {
-            for (size_t index = 0; index < state_.customDefinitions.size(); ++index) {
-                const auto& desired = state_.customDefinitions[index];
-                const auto& before = state_.before.sweepDefinitions[index];
-                definitionsDiffer |= desired.index != before.index || desired.lowerMHz != before.lowerMHz ||
-                                     desired.upperMHz != before.upperMHz;
-            }
+        for (size_t index = 0; index < state_.customDefinitions.size(); ++index) {
+            const auto& desired = state_.customDefinitions[index];
+            const auto& before = state_.before.sweepDefinitions[index];
+            definitionsDiffer |= desired.index != before.index || desired.lowerMHz != before.lowerMHz ||
+                                 desired.upperMHz != before.upperMHz;
         }
         uint8_t lowestSection = UINT8_MAX;
         for (uint8_t index = 0; index < state_.before.sweepSectionCount; ++index) {
@@ -765,34 +741,26 @@ bool AutoPushModule::preflight() {
                 hasHigherSectionDefinition |= usedInSection[index];
             }
         }
-        // ESP 3.016 requires every explicit Gen2 committed table to contain at
-        // least one sweep for each supported custom band (K and Ka), even if
-        // filtering or one user band is currently disabled. For an unchanged
-        // table, validate it only when custom filtering or either band is
-        // newly activated; that validation still covers both supported bands.
-        const bool validatesCommittedTable = status_.customFrequencies.requested ||
-                                             customEnableTransition || customBandEnableTransition;
-        const bool requiresK = validatesCommittedTable;
-        const bool requiresKa = validatesCommittedTable;
+        // ESP 3.016 requires every explicitly committed Gen2 replacement table
+        // to contain at least one sweep for each supported band (K and Ka).
+        // Enabling the independent filter never writes or revalidates the
+        // detector's existing table.
         if (!hasUsed || lowestSection == UINT8_MAX ||
-            (requiresK && !usedInSection[lowestSection]) ||
-            (requiresKa && !hasHigherSectionDefinition) ||
-            (requiresK && requiresKa && state_.before.sweepSectionCount < 2)) {
+            !usedInSection[lowestSection] || !hasHigherSectionDefinition ||
+            state_.before.sweepSectionCount < 2) {
             failWholePlan(&status_.customFrequencies, Outcome::INVALID,
                           FailureReason::CUSTOM_CONFIGURATION_INVALID);
             return false;
         }
-        if (status_.customFrequencies.requested) {
-            status_.customFrequencies.beforeAvailable = true;
-            status_.requestedCustomDefinitions.assign(state_.customDefinitions);
-            const bool regionChanged = status_.userSettings.requested &&
-                                       ((status_.beforeUserBytes[1] ^ state_.effectiveUserBytes[1]) & 0x01) != 0;
-            status_.customFrequencies.needed = regionChanged || definitionsDiffer;
-            if (!status_.customFrequencies.needed) {
-                status_.customFrequencies.verified = true;
-                status_.customFrequencies.outcome = Outcome::UNCHANGED;
-                status_.effectiveCustomDefinitions.assign(state_.customDefinitions);
-            }
+        status_.customFrequencies.beforeAvailable = true;
+        status_.requestedCustomDefinitions.assign(state_.customDefinitions);
+        const bool regionChanged = status_.userSettings.requested &&
+                                   ((status_.beforeUserBytes[1] ^ state_.effectiveUserBytes[1]) & 0x01) != 0;
+        status_.customFrequencies.needed = regionChanged || definitionsDiffer;
+        if (!status_.customFrequencies.needed) {
+            status_.customFrequencies.verified = true;
+            status_.customFrequencies.outcome = Outcome::UNCHANGED;
+            status_.effectiveCustomDefinitions.assign(state_.customDefinitions);
         }
         state_.customRequiredMask = liveRequiredMask;
     }

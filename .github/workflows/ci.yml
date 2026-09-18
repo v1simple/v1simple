@@ -71,10 +71,12 @@ jobs:
             ~/.platformio/.cache
           key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini', 'scripts/patch_*.py', 'scripts/verify_esp32s3_framework.py', 'scripts/check_platformio_core_version.py') }}
 
-      - name: Install camera validation dependency
+      - name: Install Linux validation dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes ffmpeg
+          # pioarduino's pinned cppcheck 2.20.1 binary links against the
+          # legacy PCRE runtime, which is not preinstalled on ubuntu-24.04.
+          sudo apt-get install --no-install-recommends --yes ffmpeg libpcre3
 
       - name: Install ShellCheck 0.11.0
         run: |

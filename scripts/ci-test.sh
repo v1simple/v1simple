@@ -198,6 +198,7 @@ run_step "Frontend lint and type checks" bash -c 'cd interface && npm run lint'
 run_step "Frontend unit tests" bash -c 'cd interface && npm test'
 
 section "Hardware Variant Builds"
+run_step "Car install dependencies" "$PIO_CMD" pkg install -e esp32-s3-car-install
 run_step "Car install firmware clean" "$PIO_CMD" run "${CAR_BUILD_ARGS[@]}" -t clean
 run_step "Car install firmware build" "$PIO_CMD" run "${CAR_BUILD_ARGS[@]}"
 

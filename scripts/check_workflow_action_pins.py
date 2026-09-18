@@ -22,6 +22,7 @@ PIO_CACHE_HASH = (
     "'scripts/check_platformio_core_version.py')"
 )
 PIOARDUINO_CORE_PIN = '"pioarduino==6.1.19"'
+CPP_CHECK_RUNTIME = "libpcre3"
 
 
 def workflow_files() -> list[Path]:
@@ -89,6 +90,11 @@ def check_reproducible_linux_contract(path: Path) -> list[str]:
 
     if text.count(PINNED_PYTHON) != 1:
         errors.append(f"{relative}: expected one shared Python 3.12 toolchain pin")
+
+    if relative.endswith("/ci.yml") and text.count(CPP_CHECK_RUNTIME) != 1:
+        errors.append(
+            f"{relative}: install {CPP_CHECK_RUNTIME} once for the pinned cppcheck runtime"
+        )
 
     expected_runner_count = 1 if relative.endswith("/ci.yml") else 2
     actual_runner_count = text.count(f"runs-on: {PINNED_LINUX_RUNNER}")

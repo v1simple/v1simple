@@ -40,6 +40,7 @@ def test_accepts_pinned_runner_and_exact_cache_key() -> None:
       - name: Cache PlatformIO
         with:
           key: ${{{{ runner.os }}}}-pio-${{{{ {checker.PIO_CACHE_HASH} }}}}
+      - run: apt-get install {checker.CPP_CHECK_RUNTIME}
       - run: pip install {checker.PIOARDUINO_CORE_PIN}
 """,
     )
@@ -71,9 +72,31 @@ def test_rejects_mutable_runner_and_broad_cache_restore() -> None:
     require("Python 3.12" in joined, f"Python version drift was accepted: {errors}")
 
 
+def test_rejects_missing_cppcheck_runtime() -> None:
+    errors = check_fixture(
+        ".github/workflows/ci.yml",
+        f"""jobs:
+  test:
+    runs-on: {checker.PINNED_LINUX_RUNNER}
+    steps:
+      - with:
+          {checker.PINNED_PYTHON}
+      - name: Cache PlatformIO
+        with:
+          key: ${{{{ runner.os }}}}-pio-${{{{ {checker.PIO_CACHE_HASH} }}}}
+      - run: pip install {checker.PIOARDUINO_CORE_PIN}
+""",
+    )
+    require(
+        any("cppcheck runtime" in error for error in errors),
+        f"missing cppcheck runtime was accepted: {errors}",
+    )
+
+
 def main() -> int:
     test_accepts_pinned_runner_and_exact_cache_key()
     test_rejects_mutable_runner_and_broad_cache_restore()
+    test_rejects_missing_cppcheck_runtime()
     print("workflow action and runner contract tests: PASS")
     return 0
 

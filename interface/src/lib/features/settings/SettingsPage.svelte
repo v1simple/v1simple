@@ -12,6 +12,20 @@
     import PageHeader from '$lib/components/PageHeader.svelte';
     import SettingsBackupCard from '$lib/features/settings/SettingsBackupCard.svelte';
     import * as settingsLazyComponents from '$lib/features/settings/settingsLazyComponents.js';
+    import {
+        applyWifiScanResponse,
+        beginWifiScan,
+        buildWifiEditorRequest,
+        closeWifiEditorState,
+        closeWifiScan,
+        createWifiEditorState,
+        createWifiScanState,
+        disposeWifiScan,
+        isCurrentWifiScan,
+        openWifiEditorState,
+        selectWifiScanNetwork,
+        setWifiScanSaving
+    } from '$lib/features/settings/wifiNetworkUiModel.js';
     import StatusAlert from '$lib/components/StatusAlert.svelte';
     let settings = $state({
         ap_ssid: '',
@@ -44,30 +58,13 @@
     let wifiNetworkActionInFlight = $state(false);
     let wifiTestingIndex = $state(null);
     let wifiOrdering = $state(false);
-    let wifiNetworks = $state([]);
-    let wifiScanning = $state(false);
-    let showWifiModal = $state(false);
-    let selectedNetwork = $state(null);
-    let wifiPassword = $state('');
-    let wifiScanSaving = $state(false);
-    let wifiScanTargetIndex = $state(null);
-    let wifiEditor = $state({
-        open: false,
-        mode: 'add',
-        index: null,
-        label: '',
-        ssid: '',
-        password: '',
-        priority: 0,
-        showPassword: false,
-        hasExistingPassword: false
-    });
+    let wifiScan = $state(createWifiScanState());
+    let wifiEditor = $state(createWifiEditorState());
     let wifiPoll = null;
     let wifiStatusFetchPromise = null;
     let wifiToggleInFlight = $state(false);
     let wifiToggleRunId = 0;
     let componentMounted = false;
-    let wifiScanRunId = 0;
     let wifiTestRunId = 0;
     let SettingsWifiModalComponent = $state(null);
     let wifiModalLoading = $state(false);
@@ -112,7 +109,8 @@
 
         return () => {
             componentMounted = false;
-            wifiScanRunId += 1;
+            wifiScan = disposeWifiScan(wifiScan);
+            wifiEditor = closeWifiEditorState(wifiEditor, { force: true }).state;
             wifiTestRunId += 1;
             wifiToggleRunId += 1;
             releaseDeviceSettings();
@@ -348,121 +346,112 @@
         return direction < 0 ? position === 0 : position === configured.length - 1;
     }
 
-    async function startWifiScan(targetIndex = wifiScanTargetIndex) {
-        const runId = ++wifiScanRunId;
+    async function startWifiScan(targetIndex = wifiScan.targetIndex) {
+        wifiScan = beginWifiScan(wifiScan, targetIndex);
+        const runId = wifiScan.runId;
         stopWifiPoll();
-        if (targetIndex === null || typeof targetIndex === 'number') {
-            wifiScanTargetIndex = targetIndex;
-        }
-        wifiScanning = true;
-        wifiNetworks = [];
-        showWifiModal = true;
         void ensureWifiModalLoaded();
 
         try {
             const res = await fetchJsonWithTimeout('/api/wifi/scan', { method: 'POST' });
-            if (!isCurrentWifiScan(runId)) return;
+            if (!isCurrentWifiScan(wifiScan, runId)) return;
             if (!res.ok) {
                 message = { type: 'error', text: WIFI_SCAN_START_ERROR_TEXT };
-                wifiScanning = false;
                 stopWifiPoll();
                 closeWifiModal({ force: true });
                 return;
             }
 
             const data = res.data;
-            if (!isCurrentWifiScan(runId)) return;
+            if (!isCurrentWifiScan(wifiScan, runId)) return;
             clearMessageText(WIFI_SCAN_START_ERROR_TEXT);
             clearMessageText(WIFI_SCAN_ERROR_TEXT);
-            applyWifiScanResponse(data, runId);
+            applyWifiScanApiResponse(data, runId);
         } catch (e) {
-            if (!isCurrentWifiScan(runId)) return;
+            if (!isCurrentWifiScan(wifiScan, runId)) return;
             message = { type: 'error', text: WIFI_SCAN_START_ERROR_TEXT };
-            wifiScanning = false;
             stopWifiPoll();
             closeWifiModal({ force: true });
         }
     }
 
-    function isCurrentWifiScan(runId) {
-        return runId === wifiScanRunId && showWifiModal;
-    }
-
     function ensureWifiScanPoll(runId) {
-        if (!isCurrentWifiScan(runId) || wifiPoll) return;
+        if (!isCurrentWifiScan(wifiScan, runId) || wifiPoll) return;
         wifiPoll = createPoll(async () => {
             await pollWifiScan(runId);
         }, 1000);
         wifiPoll.start();
     }
 
-    function applyWifiScanResponse(data, runId) {
-        if (!isCurrentWifiScan(runId)) return;
-
-        const networks = Array.isArray(data?.networks) ? data.networks : [];
-        if (data?.scanning) {
-            wifiScanning = true;
+    function applyWifiScanApiResponse(data, runId) {
+        const transition = applyWifiScanResponse(wifiScan, runId, data);
+        if (!transition.accepted) return;
+        wifiScan = transition.state;
+        if (transition.shouldPoll) {
             ensureWifiScanPoll(runId);
             return;
         }
 
-        wifiNetworks = networks;
-        wifiScanning = false;
         stopWifiPoll();
     }
 
     async function pollWifiScan(runId) {
-        if (!isCurrentWifiScan(runId)) return;
+        if (!isCurrentWifiScan(wifiScan, runId)) return;
 
         try {
             const res = await fetchJsonWithTimeout('/api/wifi/scan');
-            if (!isCurrentWifiScan(runId)) return;
+            if (!isCurrentWifiScan(wifiScan, runId)) return;
             if (res.ok) {
                 const data = res.data;
-                if (!isCurrentWifiScan(runId)) return;
+                if (!isCurrentWifiScan(wifiScan, runId)) return;
                 clearMessageText(WIFI_SCAN_ERROR_TEXT);
-                applyWifiScanResponse(data, runId);
+                applyWifiScanApiResponse(data, runId);
             } else {
                 message = { type: 'error', text: WIFI_SCAN_ERROR_TEXT };
-                wifiScanning = false;
                 stopWifiPoll();
                 closeWifiModal({ force: true });
             }
         } catch (e) {
-            if (!isCurrentWifiScan(runId)) return;
+            if (!isCurrentWifiScan(wifiScan, runId)) return;
             message = { type: 'error', text: WIFI_SCAN_ERROR_TEXT };
-            wifiScanning = false;
             stopWifiPoll();
             closeWifiModal({ force: true });
         }
 
         // Also update status
-        if (isCurrentWifiScan(runId)) {
+        if (isCurrentWifiScan(wifiScan, runId)) {
             await fetchWifiStatus();
         }
     }
 
     function selectNetwork(network) {
-        selectedNetwork = network;
-        wifiPassword = '';
+        wifiScan = selectWifiScanNetwork(wifiScan, network);
     }
 
     async function saveSelectedScanNetwork() {
-        if (!selectedNetwork || wifiScanSaving || (selectedNetwork.secure && !wifiPassword)) return;
+        if (
+            !wifiScan.selectedNetwork ||
+            wifiScan.saving ||
+            (wifiScan.selectedNetwork.secure && !wifiScan.password)
+        ) {
+            return;
+        }
 
-        const ssid = selectedNetwork.ssid;
-        const password = wifiPassword;
-        wifiScanSaving = true;
+        const ssid = wifiScan.selectedNetwork.ssid;
+        const secure = wifiScan.selectedNetwork.secure;
+        const password = wifiScan.password;
+        const targetIndex = wifiScan.targetIndex;
+        wifiScan = setWifiScanSaving(wifiScan, true);
 
         try {
             const body = {
                 ssid,
                 priority: nextWifiPriority()
             };
-            if (wifiScanTargetIndex !== null) {
-                body.index = wifiScanTargetIndex;
+            if (targetIndex !== null) {
+                body.index = targetIndex;
             }
-            if (selectedNetwork.secure || password) {
+            if (secure || password) {
                 body.password = password;
             }
 
@@ -483,7 +472,7 @@
         } catch (e) {
             message = { type: 'error', text: 'Failed to save WiFi network' };
         } finally {
-            wifiScanSaving = false;
+            wifiScan = setWifiScanSaving(wifiScan, false);
         }
     }
 
@@ -558,31 +547,14 @@
     }
 
     function closeWifiModal({ force = false } = {}) {
-        if (wifiScanSaving && !force) return;
-
-        wifiScanRunId += 1;
-        showWifiModal = false;
-        wifiScanning = false;
-        selectedNetwork = null;
-        wifiPassword = '';
-        wifiScanTargetIndex = null;
+        const transition = closeWifiScan(wifiScan, { force });
+        if (!transition.closed) return;
+        wifiScan = transition.state;
         stopWifiPoll();
     }
 
     function openWifiEditor(slotIndex = null, seed = {}) {
-        wifiEditor = {
-            open: true,
-            mode: seed.mode || 'add',
-            index: slotIndex,
-            label: seed.label || '',
-            ssid: seed.ssid || '',
-            password: '',
-            priority: Number.isFinite(Number(seed.priority))
-                ? Number(seed.priority)
-                : nextWifiPriority(),
-            showPassword: false,
-            hasExistingPassword: Boolean(seed.hasExistingPassword)
-        };
+        wifiEditor = openWifiEditorState(slotIndex, seed, nextWifiPriority());
     }
 
     function openWifiEditorForSlot(slot) {
@@ -596,42 +568,21 @@
     }
 
     function closeWifiEditor({ force = false } = {}) {
-        if (wifiNetworkActionInFlight && !force) return;
-        wifiEditor = {
-            open: false,
-            mode: 'add',
-            index: null,
-            label: '',
-            ssid: '',
-            password: '',
-            priority: 0,
-            showPassword: false,
-            hasExistingPassword: false
-        };
+        const transition = closeWifiEditorState(wifiEditor, {
+            force,
+            actionInFlight: wifiNetworkActionInFlight
+        });
+        if (transition.closed) {
+            wifiEditor = transition.state;
+        }
     }
 
     async function saveWifiEditor() {
-        const ssid = wifiEditor.ssid.trim();
-        if (!ssid || wifiNetworkActionInFlight) return;
+        const body = buildWifiEditorRequest(wifiEditor);
+        if (!body || wifiNetworkActionInFlight) return;
 
         wifiNetworkActionInFlight = true;
         try {
-            const body = {
-                ssid,
-                label: wifiEditor.label.trim(),
-                priority: Math.max(0, Math.min(255, Number(wifiEditor.priority) || 0))
-            };
-            if (wifiEditor.index !== null) {
-                body.index = wifiEditor.index;
-            }
-            if (
-                wifiEditor.password ||
-                wifiEditor.mode !== 'edit' ||
-                !wifiEditor.hasExistingPassword
-            ) {
-                body.password = wifiEditor.password;
-            }
-
             const res = await fetchWithTimeout('/api/wifi/networks', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -641,7 +592,7 @@
                 message = { type: 'error', text: 'Failed to save WiFi network' };
                 return;
             }
-            message = { type: 'success', text: `Saved ${ssid}` };
+            message = { type: 'success', text: `Saved ${body.ssid}` };
             closeWifiEditor({ force: true });
             await fetchSavedWifiNetworks();
         } catch (e) {
@@ -1241,18 +1192,18 @@
             </div>
         </div>
 
-        {#if showWifiModal}
+        {#if wifiScan.open}
             {#if SettingsWifiModalComponent}
                 <SettingsWifiModalComponent
-                    open={showWifiModal}
+                    open={wifiScan.open}
                     title="Pick WiFi Network to Save"
                     selectedPrompt="Save"
                     actionLabel="Save Network"
-                    {wifiScanning}
-                    {wifiNetworks}
-                    bind:selectedNetwork
-                    bind:wifiPassword
-                    wifiConnecting={wifiScanSaving}
+                    wifiScanning={wifiScan.scanning}
+                    wifiNetworks={wifiScan.networks}
+                    bind:selectedNetwork={wifiScan.selectedNetwork}
+                    bind:wifiPassword={wifiScan.password}
+                    wifiConnecting={wifiScan.saving}
                     onstartWifiScan={startWifiScan}
                     onselectNetwork={selectNetwork}
                     onconnectToNetwork={saveSelectedScanNetwork}

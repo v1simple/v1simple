@@ -1,7 +1,6 @@
 
 #include "main_internals.h"
 #include "display.h"
-#include "settings.h"
 #include "settings_keys.h"
 #include "littlefs_mount.h"
 #include "esp_heap_caps.h"

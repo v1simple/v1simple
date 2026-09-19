@@ -4,7 +4,7 @@
 
 #include <cstddef>
 
-#include "../../settings.h"
+#include "../../settings_types.h"
 
 namespace WifiStaSlotPolicy {
 

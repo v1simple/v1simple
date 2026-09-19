@@ -1,7 +1,7 @@
 #pragma once
 
 #include "render_frame.h"
-#include "settings.h"
+#include "settings_types.h"
 
 struct V1Snapshot {
     DisplayState state{};

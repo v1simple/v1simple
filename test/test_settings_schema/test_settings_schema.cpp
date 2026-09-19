@@ -1,6 +1,6 @@
 #include <unity.h>
 
-#include "../../src/settings.h"
+#include "../../src/settings_types.h"
 
 void setUp(void) {}
 void tearDown(void) {}

@@ -10,7 +10,7 @@
 
 #include <Arduino.h>
 #include <algorithm>
-#include "settings.h" // V1Mode enum
+#include "settings_types.h" // V1Mode enum
 #include "profile_name.h"
 
 // ── Length limits ────────────────────────────────────────────────────────────

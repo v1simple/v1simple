@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-#include "../../settings.h"
+#include "../../settings_types.h"
 
 struct WifiAudioSettingsRuntime {
     const V1Settings& (*getSettings)(void* ctx) = nullptr;

@@ -7,7 +7,6 @@
 #include "ble_bond_backup_store.h"
 #include "ble_bond_backup_writer.h"
 #include "ble_fresh_flash_policy.h"
-#include "settings.h"
 #include "storage_manager.h"
 #include "config.h"
 #include <Arduino.h>

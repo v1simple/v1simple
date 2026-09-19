@@ -2,6 +2,12 @@
 #ifndef SETTINGS_H
 #define SETTINGS_H
 
+// Production modules may depend on either the manager facade or its extracted
+// value types. This mock intentionally owns both seams for host-only tests.
+#ifndef SETTINGS_TYPES_H
+#define SETTINGS_TYPES_H
+#endif
+
 #ifdef ARDUINO
 #include <Arduino.h>
 #else

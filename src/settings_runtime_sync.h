@@ -1,6 +1,6 @@
 #pragma once
 
-#include "settings.h"
+#include "settings_types.h"
 
 #ifndef UNIT_TEST
 #include "modules/obd/obd_runtime_module.h"

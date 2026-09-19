@@ -3,7 +3,7 @@
 #include <ArduinoJson.h>
 #include <cstdint>
 
-#include "settings.h"
+#include "settings_types.h"
 #include "v1_profiles.h"
 
 namespace BackupPayloadBuilder {

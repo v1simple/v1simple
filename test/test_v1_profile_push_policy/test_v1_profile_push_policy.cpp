@@ -2,7 +2,7 @@
 
 #include <cstring>
 
-#include "../../src/settings.h"
+#include "../../src/settings_types.h"
 #include "../../src/v1_profile_push_policy.h"
 #include "../../src/v1_profiles.h"
 

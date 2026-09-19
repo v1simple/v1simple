@@ -5,7 +5,7 @@
 #include <ArduinoJson.h>
 #include <WebServer.h>
 
-#include "../../settings.h"
+#include "../../settings_types.h"
 
 namespace WifiQuietSettingsFields {
 

@@ -4,7 +4,7 @@
 
 #include <cstdint>
 
-#include "../../settings.h"
+#include "../../settings_types.h"
 
 namespace WifiDisplayColorsApiService {
 

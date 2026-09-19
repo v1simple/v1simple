@@ -2,7 +2,7 @@
 #pragma once
 
 #include <stdint.h>
-#include "settings.h" // For VoiceAlertMode enum
+#include "settings_types.h" // For VoiceAlertMode enum
 
 // Band types for voice alerts
 // Audio presentation labels. PHOTO remains a physical K-band alert in the

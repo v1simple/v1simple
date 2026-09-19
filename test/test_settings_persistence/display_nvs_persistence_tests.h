@@ -1,0 +1,8 @@
+#pragma once
+
+void test_display_update_rejects_zero_color_keeps_current();
+void test_display_update_accepts_nonzero_color();
+void test_v10_six_color_theme_loads_directly();
+void test_v11_eight_segment_theme_collapses_to_six();
+void test_v12_direct_colors_win_over_compatibility_shadow();
+void test_fresh_install_seeds_six_physical_defaults();

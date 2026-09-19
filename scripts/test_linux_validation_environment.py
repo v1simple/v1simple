@@ -24,6 +24,7 @@ def valid_snapshot(profile: str = "ci", **changes: object) -> checker.Environmen
         "esptool_version": checker.EXPECTED_ESPTOOL,
         "ruff_version": checker.EXPECTED_RUFF,
         "shellcheck_version": checker.EXPECTED_SHELLCHECK,
+        "swift_version": checker.EXPECTED_SWIFT,
         "ffmpeg_version": "7.1.1",
         "libpcre3_available": True,
     }
@@ -60,11 +61,16 @@ class LinuxValidationEnvironmentTests(unittest.TestCase):
             "libpcre3 runtime is missing for the pinned cppcheck binary", errors
         )
 
+    def test_missing_swift_fails_before_protocol_contract(self) -> None:
+        errors = checker.validate_snapshot(valid_snapshot(swift_version=""))
+        self.assertIn("swift_version is missing; required 6.3.3", errors)
+
     def test_release_profile_preserves_smaller_dependency_surface(self) -> None:
         snapshot = valid_snapshot(
             "release",
             ruff_version="",
             shellcheck_version="",
+            swift_version="",
             ffmpeg_version="",
             libpcre3_available=False,
         )

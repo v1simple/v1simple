@@ -25,6 +25,7 @@ EXPECTED_PIO = "6.1.19"
 EXPECTED_ESPTOOL = "5.3.0"
 EXPECTED_RUFF = "0.16.0"
 EXPECTED_SHELLCHECK = "0.11.0"
+EXPECTED_SWIFT = "6.3.3"
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,7 @@ class EnvironmentSnapshot:
     esptool_version: str
     ruff_version: str
     shellcheck_version: str
+    swift_version: str
     ffmpeg_version: str
     libpcre3_available: bool
 
@@ -138,6 +140,7 @@ def collect_snapshot(profile_name: str, root: Path) -> EnvironmentSnapshot:
         ),
         ruff_version=first_version(command_output(["ruff", "--version"])),
         shellcheck_version=first_version(command_output(["shellcheck", "--version"])),
+        swift_version=first_version(command_output(["swiftc", "--version"])),
         ffmpeg_version=first_version(command_output(["ffmpeg", "-version"])),
         libpcre3_available="libpcre.so.3" in ldconfig,
     )
@@ -171,6 +174,7 @@ def validate_snapshot(snapshot: EnvironmentSnapshot) -> list[str]:
         ci_expected = {
             "ruff_version": EXPECTED_RUFF,
             "shellcheck_version": EXPECTED_SHELLCHECK,
+            "swift_version": EXPECTED_SWIFT,
         }
         for field, value in ci_expected.items():
             actual = getattr(snapshot, field)

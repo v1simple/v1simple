@@ -11,6 +11,7 @@ import check_workflow_action_pins as checker
 
 VALID_BOOTSTRAP = f'''#!/bin/bash
 NODE_VERSION="22.23.2"
+SWIFT_VERSION="6.3.3"
 COMMON=(
   {checker.PIOARDUINO_CORE_PIN}
 )
@@ -86,6 +87,7 @@ def test_rejects_mutable_runner_and_broad_cache_restore() -> None:
 """,
         bootstrap_source=f'''#!/bin/bash
 NODE_VERSION="22.23.2"
+SWIFT_VERSION="6.3.3"
 apt-get install {checker.CPP_CHECK_RUNTIME}
 python3 -m pip install "platformio==6.1.19"
 ''',
@@ -125,6 +127,7 @@ def test_rejects_missing_cppcheck_runtime() -> None:
 """,
         bootstrap_source=f'''#!/bin/bash
 NODE_VERSION="22.23.2"
+SWIFT_VERSION="6.3.3"
 COMMON=(
   {checker.PIOARDUINO_CORE_PIN}
 )

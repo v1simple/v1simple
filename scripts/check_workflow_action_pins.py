@@ -129,6 +129,10 @@ def check_bootstrap_contract() -> list[str]:
         errors.append(
             "scripts/bootstrap_linux_validation.sh: Node.js bootstrap pin must match workflows"
         )
+    if 'SWIFT_VERSION="6.3.3"' not in text:
+        errors.append(
+            "scripts/bootstrap_linux_validation.sh: Swift bootstrap pin must match the CI runner"
+        )
     return errors
 
 

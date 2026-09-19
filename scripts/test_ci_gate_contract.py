@@ -79,16 +79,20 @@ def test_clean_linux_runner_binds_exact_source_and_cold_amd64_image() -> None:
         "clean Linux runner must consume the shared CI bootstrap",
     )
     bootstrap = "./scripts/bootstrap_linux_validation.sh ci"
-    pio_path = 'export PATH="$V1_PIO_VENV/bin:$PATH"'
+    tool_path = 'export PATH="$V1_SWIFT_ROOT/usr/bin:$V1_PIO_VENV/bin:$PATH"'
     gate = "PLATFORMIO_RUN_JOBS=1 ./scripts/ci-test.sh"
     require(
         runner.count('export V1_PIO_VENV=/opt/v1-pio-venv') == 1,
         "clean Linux runner must give its CI tool environment one explicit owner",
     )
     require(
-        runner.count(pio_path) == 1
-        and runner.index(bootstrap) < runner.index(pio_path) < runner.index(gate),
-        "clean Linux runner must expose bootstrapped PlatformIO to the full gate",
+        runner.count('export V1_SWIFT_ROOT=/opt/swift-6.3.3') == 1,
+        "clean Linux runner must give its Swift toolchain one explicit owner",
+    )
+    require(
+        runner.count(tool_path) == 1
+        and runner.index(bootstrap) < runner.index(tool_path) < runner.index(gate),
+        "clean Linux runner must expose bootstrapped PlatformIO and Swift to the full gate",
     )
     require(
         "trap retain_reports EXIT" in runner

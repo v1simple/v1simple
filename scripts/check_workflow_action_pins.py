@@ -16,6 +16,7 @@ USES_PREFIX_RE = re.compile(r"^(?:-\s*)?uses\s*:")
 PINNED_ACTION_RE = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 PINNED_LINUX_RUNNER = "ubuntu-24.04"
 PINNED_PYTHON = "python-version: '3.12'"
+PINNED_NODE = "node-version: '22.23.2'"
 PIO_CACHE_HASH = (
     "hashFiles('platformio.ini', 'scripts/patch_*.py', "
     "'scripts/verify_esp32s3_framework.py', "
@@ -23,6 +24,7 @@ PIO_CACHE_HASH = (
 )
 PIOARDUINO_CORE_PIN = '"pioarduino==6.1.19"'
 CPP_CHECK_RUNTIME = "libpcre3"
+BOOTSTRAP = ROOT / "scripts" / "bootstrap_linux_validation.sh"
 
 
 def workflow_files() -> list[Path]:
@@ -74,27 +76,17 @@ def check_reproducible_linux_contract(path: Path) -> list[str]:
     if "ubuntu-latest" in text:
         errors.append(f"{relative}: Linux jobs must pin {PINNED_LINUX_RUNNER}")
 
-    install_lines = [
-        line.strip()
-        for line in text.splitlines()
-        if not line.lstrip().startswith("#") and "pip install" in line
-    ]
-    if sum(PIOARDUINO_CORE_PIN in line for line in install_lines) != 1:
-        errors.append(
-            f"{relative}: toolchain install must pin pioarduino 6.1.19 exactly once"
-        )
-    if any("platformio==" in line for line in install_lines):
-        errors.append(
-            f"{relative}: install the pinned pioarduino core without the overlapping platformio package"
-        )
-
     if text.count(PINNED_PYTHON) != 1:
         errors.append(f"{relative}: expected one shared Python 3.12 toolchain pin")
+    if text.count(PINNED_NODE) != 1:
+        errors.append(f"{relative}: expected one shared Node.js 22.23.2 toolchain pin")
 
-    if relative.endswith("/ci.yml") and text.count(CPP_CHECK_RUNTIME) != 1:
-        errors.append(
-            f"{relative}: install {CPP_CHECK_RUNTIME} once for the pinned cppcheck runtime"
-        )
+    profile = "ci" if relative.endswith("/ci.yml") else "release"
+    bootstrap_call = f"./scripts/bootstrap_linux_validation.sh {profile}"
+    if text.count(bootstrap_call) != 1:
+        errors.append(f"{relative}: expected one {profile} bootstrap invocation")
+    if "pip install" in text or "apt-get install" in text:
+        errors.append(f"{relative}: dependency installation must stay in the bootstrap owner")
 
     expected_runner_count = 1 if relative.endswith("/ci.yml") else 2
     actual_runner_count = text.count(f"runs-on: {PINNED_LINUX_RUNNER}")
@@ -116,6 +108,30 @@ def check_reproducible_linux_contract(path: Path) -> list[str]:
     return errors
 
 
+def check_bootstrap_contract() -> list[str]:
+    if not BOOTSTRAP.is_file():
+        return ["scripts/bootstrap_linux_validation.sh: shared bootstrap is missing"]
+    text = BOOTSTRAP.read_text(encoding="utf-8")
+    errors: list[str] = []
+    if text.count(PIOARDUINO_CORE_PIN) != 1:
+        errors.append(
+            "scripts/bootstrap_linux_validation.sh: expected one pioarduino 6.1.19 pin"
+        )
+    if "platformio==" in text:
+        errors.append(
+            "scripts/bootstrap_linux_validation.sh: overlapping platformio package is forbidden"
+        )
+    if text.count(CPP_CHECK_RUNTIME) != 1:
+        errors.append(
+            f"scripts/bootstrap_linux_validation.sh: install {CPP_CHECK_RUNTIME} exactly once"
+        )
+    if 'NODE_VERSION="22.23.2"' not in text:
+        errors.append(
+            "scripts/bootstrap_linux_validation.sh: Node.js bootstrap pin must match workflows"
+        )
+    return errors
+
+
 def main() -> int:
     paths = workflow_files()
     if not paths:
@@ -129,6 +145,7 @@ def main() -> int:
         total_uses += uses_count
         errors.extend(path_errors)
         errors.extend(check_reproducible_linux_contract(path))
+    errors.extend(check_bootstrap_contract())
 
     if errors:
         print("[workflow-pins] immutable workflow contract failed:")

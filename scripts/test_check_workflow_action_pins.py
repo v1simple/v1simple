@@ -9,23 +9,45 @@ from pathlib import Path
 import check_workflow_action_pins as checker
 
 
+VALID_BOOTSTRAP = f'''#!/bin/bash
+NODE_VERSION="22.23.2"
+COMMON=(
+  {checker.PIOARDUINO_CORE_PIN}
+)
+apt-get install {checker.CPP_CHECK_RUNTIME}
+'''
+
+
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
 
 
-def check_fixture(relative: str, source: str) -> list[str]:
+def check_fixture(
+    relative: str,
+    source: str,
+    bootstrap_source: str = VALID_BOOTSTRAP,
+) -> list[str]:
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
         path = root / relative
         path.parent.mkdir(parents=True)
         path.write_text(source, encoding="utf-8")
+        bootstrap = root / "scripts" / "bootstrap_linux_validation.sh"
+        bootstrap.parent.mkdir(parents=True)
+        bootstrap.write_text(bootstrap_source, encoding="utf-8")
         original_root = checker.ROOT
+        original_bootstrap = checker.BOOTSTRAP
         try:
             checker.ROOT = root
-            return checker.check_reproducible_linux_contract(path)
+            checker.BOOTSTRAP = bootstrap
+            return [
+                *checker.check_reproducible_linux_contract(path),
+                *checker.check_bootstrap_contract(),
+            ]
         finally:
             checker.ROOT = original_root
+            checker.BOOTSTRAP = original_bootstrap
 
 
 def test_accepts_pinned_runner_and_exact_cache_key() -> None:
@@ -37,11 +59,11 @@ def test_accepts_pinned_runner_and_exact_cache_key() -> None:
     steps:
       - with:
           {checker.PINNED_PYTHON}
+          {checker.PINNED_NODE}
       - name: Cache PlatformIO
         with:
           key: ${{{{ runner.os }}}}-pio-${{{{ {checker.PIO_CACHE_HASH} }}}}
-      - run: apt-get install {checker.CPP_CHECK_RUNTIME}
-      - run: pip install {checker.PIOARDUINO_CORE_PIN}
+      - run: ./scripts/bootstrap_linux_validation.sh ci
 """,
     )
     require(not errors, f"valid workflow rejected: {errors}")
@@ -62,14 +84,28 @@ def test_rejects_mutable_runner_and_broad_cache_restore() -> None:
   deploy-pages:
     runs-on: ubuntu-latest
 """,
+        bootstrap_source=f'''#!/bin/bash
+NODE_VERSION="22.23.2"
+apt-get install {checker.CPP_CHECK_RUNTIME}
+python3 -m pip install "platformio==6.1.19"
+''',
     )
     joined = "\n".join(errors)
     require("must pin" in joined, f"mutable runner was accepted: {errors}")
     require("patch and verifier inputs" in joined, f"weak cache key was accepted: {errors}")
     require("must not restore" in joined, f"broad cache restore was accepted: {errors}")
-    require("must pin pioarduino" in joined, f"missing pioarduino pin was accepted: {errors}")
-    require("overlapping platformio" in joined, f"overlapping core packages were accepted: {errors}")
+    require(
+        "expected one pioarduino" in joined,
+        f"missing pioarduino pin was accepted: {errors}",
+    )
+    require(
+        "overlapping platformio" in joined,
+        f"overlapping core packages were accepted: {errors}",
+    )
     require("Python 3.12" in joined, f"Python version drift was accepted: {errors}")
+    require("Node.js 22.23.2" in joined, f"Node version drift was accepted: {errors}")
+    require("bootstrap invocation" in joined, f"missing bootstrap was accepted: {errors}")
+    require("bootstrap owner" in joined, f"inline install was accepted: {errors}")
 
 
 def test_rejects_missing_cppcheck_runtime() -> None:
@@ -81,14 +117,21 @@ def test_rejects_missing_cppcheck_runtime() -> None:
     steps:
       - with:
           {checker.PINNED_PYTHON}
+          {checker.PINNED_NODE}
       - name: Cache PlatformIO
         with:
           key: ${{{{ runner.os }}}}-pio-${{{{ {checker.PIO_CACHE_HASH} }}}}
-      - run: pip install {checker.PIOARDUINO_CORE_PIN}
+      - run: ./scripts/bootstrap_linux_validation.sh ci
 """,
+        bootstrap_source=f'''#!/bin/bash
+NODE_VERSION="22.23.2"
+COMMON=(
+  {checker.PIOARDUINO_CORE_PIN}
+)
+''',
     )
     require(
-        any("cppcheck runtime" in error for error in errors),
+        any(checker.CPP_CHECK_RUNTIME in error for error in errors),
         f"missing cppcheck runtime was accepted: {errors}",
     )
 

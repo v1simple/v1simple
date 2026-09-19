@@ -54,7 +54,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
         with:
-          node-version: '22'
+          node-version: '22.23.2'
           cache: 'npm'
           cache-dependency-path: interface/package-lock.json
 
@@ -71,27 +71,10 @@ jobs:
             ~/.platformio/.cache
           key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini', 'scripts/patch_*.py', 'scripts/verify_esp32s3_framework.py', 'scripts/check_platformio_core_version.py') }}
 
-      - name: Install Linux validation dependencies
+      - name: Bootstrap Linux validation environment
         run: |
-          sudo apt-get update
-          # pioarduino's pinned cppcheck 2.20.1 binary links against the
-          # legacy PCRE runtime, which is not preinstalled on ubuntu-24.04.
-          sudo apt-get install --no-install-recommends --yes ffmpeg libpcre3
-
-      - name: Install ShellCheck 0.11.0
-        run: |
-          curl --fail --location --silent --show-error \
-            https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz \
-            --output /tmp/shellcheck-v0.11.0.tar.xz
-          tar -xJf /tmp/shellcheck-v0.11.0.tar.xz -C /tmp
-          sudo install /tmp/shellcheck-v0.11.0/shellcheck /usr/local/bin/shellcheck
-          shellcheck --version
-
-      - name: Install Python toolchain
-        run: |
-          python3 -m venv --copies "$HOME/.platformio/penv"
-          "$HOME/.platformio/penv/bin/python" -m pip install "pioarduino==6.1.19" "esptool==5.3.0" "ruff==0.16.0" "cryptography>=41" "Pillow>=10.4,<13" "numpy>=2,<3" "littlefs-python==0.18.0"
-          echo "$HOME/.platformio/penv/bin" >> "$GITHUB_PATH"
+          set -o pipefail
+          ./scripts/bootstrap_linux_validation.sh ci 2>&1 | tee linux-bootstrap.log
 
       - name: Run ci-test.sh
         env:
@@ -107,5 +90,10 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ci-test-log-${{ github.sha }}
-          path: ci-test.log
+          path: |
+            linux-bootstrap.log
+            ci-test.log
+            .artifacts/linux-validation-environment.txt
+            .artifacts/test_reports
+          include-hidden-files: true
           retention-days: 14

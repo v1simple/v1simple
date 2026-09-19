@@ -438,6 +438,26 @@ void test_return_ack_is_durable_and_not_replayed_on_later_normal_boot() {
                           laterNormalBoot.snapshot().state);
 }
 
+void test_failed_return_ack_preserves_retryable_return_intent() {
+    V1SettingsOperationStore store;
+    TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::LoadStatus::Ready, store.begin());
+    TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::StartStatus::Started,
+        store.startApply(0, "AA:BB:CC:DD:EE:FF",
+                         V1SettingsOperationStore::Source::MaintenanceUi, true, true).status);
+    TEST_ASSERT_TRUE(store.finish(V1SettingsOperationStore::State::Failed,
+                                  V1SettingsOperationStore::Reason::DetectorTimeout));
+
+    mock_preferences::set_fail_writes(true);
+    TEST_ASSERT_FALSE(store.acknowledgeReturnToMaintenance());
+    TEST_ASSERT_TRUE(store.snapshot().returnToMaintenance);
+
+    mock_preferences::set_fail_writes(false);
+    V1SettingsOperationStore retry;
+    TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::LoadStatus::Ready, retry.begin());
+    TEST_ASSERT_TRUE(retry.snapshot().returnToMaintenance);
+    TEST_ASSERT_TRUE(retry.acknowledgeReturnToMaintenance());
+}
+
 void test_new_operation_is_rejected_while_one_is_active_and_storage_failures_are_retryable() {
     V1SettingsOperationStore store;
     TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::LoadStatus::Ready, store.begin());
@@ -475,6 +495,7 @@ int main() {
     RUN_TEST(test_checksum_valid_unterminated_target_address_fails_closed);
     RUN_TEST(test_failed_nvs_update_does_not_publish_false_state);
     RUN_TEST(test_return_ack_is_durable_and_not_replayed_on_later_normal_boot);
+    RUN_TEST(test_failed_return_ack_preserves_retryable_return_intent);
     RUN_TEST(test_new_operation_is_rejected_while_one_is_active_and_storage_failures_are_retryable);
     return UNITY_END();
 }

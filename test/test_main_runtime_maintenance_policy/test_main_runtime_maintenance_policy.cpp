@@ -394,6 +394,30 @@ void test_maintenance_entry_flushes_pending_detector_state_before_boot_request()
     TEST_ASSERT_NOT_EQUAL(std::string::npos, entryBody.find("return true;", restart));
 }
 
+void test_maintenance_entry_rolls_back_boot_request_when_return_ack_fails() {
+    const std::string wiring = readFile(projectRoot() + "/src/drive_runtime.cpp");
+    const std::string entryBody = extractFunctionBody(wiring, "bool DriveRuntime::requestMaintenanceBootRestart()");
+    const size_t request = entryBody.find("requestMaintenanceBoot()");
+    const size_t acknowledge = entryBody.find("settingsOperations_.acknowledgeReturnToMaintenance()");
+    const size_t rollback = entryBody.find("readAndClearMaintenanceBootRequest()", acknowledge);
+    const size_t cleanup = entryBody.find("completeLoggingForControlledRestart(");
+
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, request);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, acknowledge);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, rollback);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, cleanup);
+    TEST_ASSERT_TRUE(request < acknowledge);
+    TEST_ASSERT_TRUE(acknowledge < rollback);
+    TEST_ASSERT_TRUE(rollback < cleanup);
+
+    const std::string ackFailure = extractFunctionBody(
+        entryBody, "if (settingsOperations_.isTerminal()");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          ackFailure.find("readAndClearMaintenanceBootRequest()"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, ackFailure.find("restart cancelled"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, ackFailure.find("return false;"));
+}
+
 void test_controlled_restarts_mark_clean_only_after_settings_save_succeeds() {
     const std::string drive = extractFunctionBody(readFile(projectRoot() + "/src/drive_runtime.cpp"),
                                                   "bool DriveRuntime::requestMaintenanceBootRestart()");
@@ -434,6 +458,7 @@ int main() {
     RUN_TEST(test_session_start_is_latched_once_and_never_moves);
     RUN_TEST(test_boot_long_press_and_timeout_exits_cannot_be_vetoed_by_logging);
     RUN_TEST(test_maintenance_entry_flushes_pending_detector_state_before_boot_request);
+    RUN_TEST(test_maintenance_entry_rolls_back_boot_request_when_return_ack_fails);
     RUN_TEST(test_controlled_restarts_mark_clean_only_after_settings_save_succeeds);
     return UNITY_END();
 }

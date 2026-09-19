@@ -188,7 +188,17 @@ bool DriveRuntime::requestMaintenanceBootRestart() {
     if (settingsOperations_.isTerminal() &&
         settingsOperations_.snapshot().returnToMaintenance &&
         !settingsOperations_.acknowledgeReturnToMaintenance()) {
-        Serial.println("[MaintBoot] ERROR: failed to consume operation return request; restart cancelled");
+        // The one-shot boot request was committed first so a failed request
+        // cannot consume the durable return intent. Roll it back when that
+        // intent cannot be acknowledged, or an unrelated later reboot could
+        // enter maintenance even though this restart was cancelled.
+        if (readAndClearMaintenanceBootRequest()) {
+            Serial.println("[MaintBoot] ERROR: failed to consume operation return request; boot request rolled back; "
+                           "restart cancelled");
+        } else {
+            Serial.println("[MaintBoot] ERROR: failed to consume operation return request and boot-request rollback "
+                           "failed; restart cancelled with maintenance boot possibly armed");
+        }
         return false;
     }
     Serial.println("[MaintBoot] rebooting into maintenance mode");

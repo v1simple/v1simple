@@ -3655,6 +3655,26 @@ void test_restore_sd_secret_removal_failure_preserves_old_pair() {
     assert_restore_sd_secret_rename_failure_preserves_old_pair(2);
 }
 
+void test_credential_rollback_reports_failed_secret_sidecar_cleanup() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    writeFileFromString(fs, WIFI_CLIENT_SD_SECRET_PATH, "new-secret-created-by-failed-restore");
+
+    RestoreCredentialSnapshot snapshot;
+    snapshot.sdRelevant = true;
+    snapshot.sdFilePresent = false;
+    const String rollbackPath = StorageManager::rollbackPathFor(WIFI_CLIENT_SD_SECRET_PATH);
+    fs::mock_fail_next_remove(rollbackPath.c_str());
+
+    TEST_ASSERT_FALSE(restoreCredentialSnapshot(storage, snapshot));
+    TEST_ASSERT_FALSE(fs.exists(WIFI_CLIENT_SD_SECRET_PATH));
+    TEST_ASSERT_TRUE(fs.exists(rollbackPath.c_str()));
+
+    TEST_ASSERT_TRUE(restoreCredentialSnapshot(storage, snapshot));
+    TEST_ASSERT_FALSE(fs.exists(WIFI_CLIENT_SD_SECRET_PATH));
+    TEST_ASSERT_FALSE(fs.exists(rollbackPath.c_str()));
+}
+
 void test_busy_profile_delete_leaves_profile_and_assignments_durable() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
@@ -5468,6 +5488,7 @@ int main() {
     RUN_TEST(test_littlefs_restore_nvs_failure_rolls_back_credentials_and_settings);
     RUN_TEST(test_interrupted_littlefs_restore_after_credentials_recovers);
     RUN_TEST(test_restore_sd_secret_removal_failure_preserves_old_pair);
+    RUN_TEST(test_credential_rollback_reports_failed_secret_sidecar_cleanup);
     RUN_TEST(test_fresh_nvs_load_matches_authoritative_constructor_defaults);
     RUN_TEST(test_settings_discovery_quietly_skips_not_found_candidates_without_changing_selection);
     RUN_TEST(test_settings_discovery_quietly_skips_not_found_optional_proxy_name);

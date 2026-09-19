@@ -2490,15 +2490,20 @@ bool restoreCredentialSnapshot(StorageManager& storage, const RestoreCredentialS
     }
     constexpr const char* tempPath = "/v1wifi_secret.restore.tmp";
     if (!snapshot.sdFilePresent) {
+        const String rollbackPath = StorageManager::rollbackPathFor(WIFI_CLIENT_SD_SECRET_PATH);
         if (fs->exists(WIFI_CLIENT_SD_SECRET_PATH)) {
-            const String rollbackPath = StorageManager::rollbackPathFor(WIFI_CLIENT_SD_SECRET_PATH);
-            if (fs->exists(rollbackPath.c_str())) {
-                fs->remove(rollbackPath.c_str());
+            if (fs->exists(rollbackPath.c_str()) && !fs->remove(rollbackPath.c_str())) {
+                restored = false;
             }
-            restored = fs->rename(WIFI_CLIENT_SD_SECRET_PATH, rollbackPath.c_str()) && restored;
-            fs->remove(rollbackPath.c_str());
+            if (!fs->exists(rollbackPath.c_str())) {
+                restored = fs->rename(WIFI_CLIENT_SD_SECRET_PATH, rollbackPath.c_str()) && restored;
+            }
         }
-        return restored;
+        if (fs->exists(rollbackPath.c_str())) {
+            restored = fs->remove(rollbackPath.c_str()) && restored;
+        }
+        return !fs->exists(WIFI_CLIENT_SD_SECRET_PATH) &&
+               !fs->exists(rollbackPath.c_str()) && restored;
     }
     if (fs->exists(tempPath)) {
         fs->remove(tempPath);

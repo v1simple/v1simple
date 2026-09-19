@@ -12,7 +12,6 @@
 #include "display_ble_freshness.h"
 #include "settings.h"
 #include "battery_manager.h"
-#include "wifi_manager.h"
 #include "storage_manager.h"
 #include "waveshare_349_hardware.h"
 #include <esp_heap_caps.h>

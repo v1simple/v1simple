@@ -3,8 +3,8 @@
  */
 
 #include "main_internals.h"
+#include "modules/wifi/wifi_heap_guard_module.h"
 #include "storage_manager.h"
-#include "wifi_manager.h"
 #include "v1_devices.h"
 #include <ArduinoJson.h>
 #include <esp_heap_caps.h>
@@ -44,8 +44,8 @@ struct SaveDiagStats {
 
 SaveDmaThresholds getSaveDmaThresholds() {
     SaveDmaThresholds thresholds{};
-    thresholds.minFree = WiFiManager::WIFI_RUNTIME_MIN_FREE_AP_ONLY;
-    thresholds.minBlock = WiFiManager::WIFI_RUNTIME_MIN_BLOCK_AP_ONLY;
+    thresholds.minFree = WifiHeapThresholds::kRuntimeMinFreeApOnly;
+    thresholds.minBlock = WifiHeapThresholds::kRuntimeMinBlockApOnly;
     return thresholds;
 }
 

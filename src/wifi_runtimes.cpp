@@ -13,6 +13,7 @@
 #include "v1_firmware_compat.h"
 #include "battery_manager.h"
 #include "modules/wifi/wifi_autopush_api_service.h"
+#include "modules/wifi/wifi_audio_settings_runtime.h"
 #include "modules/wifi/wifi_display_colors_api_service.h"
 #include "modules/wifi/wifi_settings_api_service.h"
 #include "modules/wifi/wifi_status_api_service.h"

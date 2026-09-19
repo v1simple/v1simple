@@ -15,17 +15,17 @@
 #include <FS.h>
 #include <WebServer.h>
 #include "wifi_rate_limiter.h"
-#include "settings.h"
+#include "settings_types.h"
 #include "modules/wifi/backup_snapshot_cache.h"
-#include "modules/wifi/wifi_ap_lifecycle_policy.h"
-#include "modules/wifi/wifi_audio_settings_runtime.h"
-#include "modules/wifi/wifi_autopush_api_service.h"
-#include "modules/wifi/wifi_client_api_service.h"
 #include "modules/wifi/wifi_scan_result_owner.h"
 #include "modules/wifi/wifi_status_api_service.h"
 #include "modules/wifi/wifi_maintenance_web_server.h"
-#include "modules/wifi/wifi_maintenance_link_policy.h"
-#include "modules/wifi/wifi_maintenance_write_policy.h"
+
+struct WifiAudioSettingsRuntime;
+
+namespace WifiAutoPushApiService {
+struct Runtime;
+}
 
 namespace WifiDisplayColorsApiService {
 struct Runtime;
@@ -39,6 +39,8 @@ namespace WifiClientApiService {
 struct Runtime;
 struct SavedNetworkSlotPayload;
 struct SavedNetworkUpsertPayload;
+struct SavedNetworkPriorityUpdate;
+enum class PriorityUpdateStatus : uint8_t;
 } // namespace WifiClientApiService
 
 namespace WifiV1ProfileApiService {
@@ -64,11 +66,13 @@ class BatteryManager;
 class DisplayPreviewModule;
 class HealthJournal;
 class ProductEventLog;
+class SettingsManager;
 class StorageManager;
 class V1BLEClient;
 class V1DeviceStore;
 class V1Display;
 class V1ProfileManager;
+class V1SettingsOperationStore;
 
 // WiFi service state (AP may be enabled or disabled while service is active)
 enum SetupModeState {
@@ -101,31 +105,8 @@ class WiFiManager {
     WiFiManager(SettingsManager& settings, V1ProfileManager& profiles, V1DeviceStore& devices,
                 StorageManager& storage);
     void setV1SettingsOperationStore(V1SettingsOperationStore* store) { v1SettingsOperations_ = store; }
-    bool acknowledgeDeliveredSettingsOperationReturn() {
-        if (!v1SettingsOperations_ || !v1SettingsOperations_->isTerminal() ||
-            !v1SettingsOperations_->snapshot().returnToMaintenance) return true;
-        return v1SettingsOperations_->acknowledgeReturnToMaintenance();
-    }
+    bool acknowledgeDeliveredSettingsOperationReturn();
 
-    // Internal SRAM guardrails for WiFi lifecycle.
-    // AP+STA needs more headroom than AP-only.
-    static constexpr uint32_t WIFI_START_MIN_FREE_AP_ONLY = 28672;    // 28KB
-    static constexpr uint32_t WIFI_START_MIN_BLOCK_AP_ONLY = 12288;   // 12KB
-    static constexpr uint32_t WIFI_START_MIN_FREE_AP_STA = 40960;     // 40KB
-    static constexpr uint32_t WIFI_START_MIN_BLOCK_AP_STA = 20480;    // 20KB
-    static constexpr uint32_t WIFI_RUNTIME_MIN_FREE_AP_ONLY = 16384;  // 16KB
-    static constexpr uint32_t WIFI_RUNTIME_MIN_BLOCK_AP_ONLY = 12288; // 12KB
-    static constexpr uint32_t WIFI_RUNTIME_MIN_FREE_STA_ONLY = 16384; // 16KB
-    static constexpr uint32_t WIFI_RUNTIME_MIN_BLOCK_STA_ONLY = 7168; // 7KB
-    static constexpr uint32_t WIFI_RUNTIME_MIN_FREE_AP_STA = 20480;   // 20KB
-    static constexpr uint32_t WIFI_RUNTIME_MIN_BLOCK_AP_STA =
-        8192; // 8KB (was 10KB; FreeRTOS task stacks fragment heap)
-    // AP+STA can hover a few bytes below free-heap floor from allocator churn.
-    // Ignore tiny deficits to avoid WARN/RECOVER oscillation near the boundary.
-    static constexpr uint32_t WIFI_RUNTIME_AP_STA_FREE_JITTER_TOLERANCE = 256;
-    // STA-only mode can oscillate within a few dozen bytes of the largest-block
-    // threshold due to allocator churn; ignore tiny deficits to avoid WARN spam.
-    static constexpr uint32_t WIFI_RUNTIME_STA_BLOCK_JITTER_TOLERANCE = 128;
     static constexpr unsigned long WIFI_LOW_DMA_PERSIST_MS = 1500;         // Require sustained low heap before shutdown
     static constexpr unsigned long WIFI_LOW_DMA_RETRY_COOLDOWN_MS = 30000; // Avoid rapid start/stop thrash
 
@@ -134,9 +115,7 @@ class WiFiManager {
     bool stopSetupMode(bool manual = false, const char* reason = nullptr); // Stop AP (manual/timeout/low_dma)
 
     bool isWifiServiceActive() const { return setupModeState_ == SETUP_MODE_AP_ON; }
-    bool isSetupModeActive() const {
-        return WifiApLifecyclePolicy::isSetupModeActive(setupModeState_ == SETUP_MODE_AP_ON, apInterfaceEnabled_);
-    }
+    bool isSetupModeActive() const;
     bool isStopping() const;
 
     // Process web server requests (call in loop)
@@ -363,8 +342,8 @@ class WiFiManager {
     void registerMaintenanceExactBodyWriteRoute(const char* uri, size_t maxBytes,
                                                 std::function<void(const uint8_t*, size_t,
                                                                    const char*, size_t)> handler);
-    static const char* maintenanceApiWriteHeader() { return WifiMaintenanceWritePolicy::kRequestShapeHeader; }
-    static const char* maintenanceApiWriteHeaderValue() { return WifiMaintenanceWritePolicy::kRequestShapeValue; }
+    static const char* maintenanceApiWriteHeader();
+    static const char* maintenanceApiWriteHeaderValue();
 
     // Status JSON caching (Option 2 optimization)
     static constexpr unsigned long STATUS_CACHE_TTL_MS = 500; // 500ms cache

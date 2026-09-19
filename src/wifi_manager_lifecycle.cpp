@@ -3,11 +3,13 @@
  */
 
 #include "wifi_manager_internals.h"
+#include "modules/wifi/wifi_ap_lifecycle_policy.h"
+#include "modules/wifi/wifi_heap_guard_module.h"
 #include "modules/wifi/wifi_setup_network_policy.h"
 #include "settings.h"
+#include "v1_settings_operation.h"
 #include "modules/wifi/wifi_static_path_guard.h"
 #include "modules/wifi/wifi_auto_timeout_module.h"
-#include "modules/wifi/wifi_heap_guard_module.h"
 #include "modules/wifi/wifi_stop_lifecycle_policy.h"
 #include "main_internals.h"
 #include "modules/event_log/product_event_log.h"
@@ -26,23 +28,25 @@ static bool shouldUseApSta(const V1Settings& settings) {
 }
 
 static void getWifiStartThresholds(bool apStaMode, uint32_t& minFree, uint32_t& minBlock) {
-    minFree = apStaMode ? WiFiManager::WIFI_START_MIN_FREE_AP_STA : WiFiManager::WIFI_START_MIN_FREE_AP_ONLY;
-    minBlock = apStaMode ? WiFiManager::WIFI_START_MIN_BLOCK_AP_STA : WiFiManager::WIFI_START_MIN_BLOCK_AP_ONLY;
+    minFree = apStaMode ? WifiHeapThresholds::kStartMinFreeApSta
+                        : WifiHeapThresholds::kStartMinFreeApOnly;
+    minBlock = apStaMode ? WifiHeapThresholds::kStartMinBlockApSta
+                         : WifiHeapThresholds::kStartMinBlockApOnly;
 }
 
 static void getWifiRuntimeThresholds(bool apStaMode, bool staOnlyMode, uint32_t& minFree, uint32_t& minBlock) {
     if (apStaMode) {
-        minFree = WiFiManager::WIFI_RUNTIME_MIN_FREE_AP_STA;
-        minBlock = WiFiManager::WIFI_RUNTIME_MIN_BLOCK_AP_STA;
+        minFree = WifiHeapThresholds::kRuntimeMinFreeApSta;
+        minBlock = WifiHeapThresholds::kRuntimeMinBlockApSta;
         return;
     }
     if (staOnlyMode) {
-        minFree = WiFiManager::WIFI_RUNTIME_MIN_FREE_STA_ONLY;
-        minBlock = WiFiManager::WIFI_RUNTIME_MIN_BLOCK_STA_ONLY;
+        minFree = WifiHeapThresholds::kRuntimeMinFreeStaOnly;
+        minBlock = WifiHeapThresholds::kRuntimeMinBlockStaOnly;
         return;
     }
-    minFree = WiFiManager::WIFI_RUNTIME_MIN_FREE_AP_ONLY;
-    minBlock = WiFiManager::WIFI_RUNTIME_MIN_BLOCK_AP_ONLY;
+    minFree = WifiHeapThresholds::kRuntimeMinFreeApOnly;
+    minBlock = WifiHeapThresholds::kRuntimeMinBlockApOnly;
 }
 
 static WifiAutoTimeoutModule sWifiAutoTimeoutModule;
@@ -562,8 +566,8 @@ void WiFiManager::process() {
     heapGuardInput.largestInternal = largestInternal;
     heapGuardInput.criticalFree = criticalFree;
     heapGuardInput.criticalBlock = criticalBlock;
-    heapGuardInput.apStaFreeJitterTolerance = WIFI_RUNTIME_AP_STA_FREE_JITTER_TOLERANCE;
-    heapGuardInput.staOnlyBlockJitterTolerance = WIFI_RUNTIME_STA_BLOCK_JITTER_TOLERANCE;
+    heapGuardInput.apStaFreeJitterTolerance = WifiHeapThresholds::kRuntimeApStaFreeJitterTolerance;
+    heapGuardInput.staOnlyBlockJitterTolerance = WifiHeapThresholds::kRuntimeStaBlockJitterTolerance;
     const WifiHeapGuardResult heapGuard = evaluateWifiHeapGuard(heapGuardInput);
     const bool lowHeap = heapGuard.lowHeap;
 
@@ -786,6 +790,17 @@ WiFiManager::WiFiManager(SettingsManager& settings, V1ProfileManager& profiles, 
                          StorageManager& storage)
     : settings_(settings), profiles_(profiles), devices_(devices), storage_(storage), server_(80),
       setupModeState_(SETUP_MODE_OFF), apInterfaceEnabled_(false), setupModeStartTime_(0) {}
+
+bool WiFiManager::acknowledgeDeliveredSettingsOperationReturn() {
+    if (!v1SettingsOperations_ || !v1SettingsOperations_->isTerminal() ||
+        !v1SettingsOperations_->snapshot().returnToMaintenance) return true;
+    return v1SettingsOperations_->acknowledgeReturnToMaintenance();
+}
+
+bool WiFiManager::isSetupModeActive() const {
+    return WifiApLifecyclePolicy::isSetupModeActive(
+        setupModeState_ == SETUP_MODE_AP_ON, apInterfaceEnabled_);
+}
 
 bool WiFiManager::isStopping() const {
     return setupModeState_ == SETUP_MODE_STOPPING;

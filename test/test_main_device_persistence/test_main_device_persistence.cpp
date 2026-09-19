@@ -22,13 +22,6 @@ inline bool canConvertFromJson(JsonVariantConst src, const ::String&) {
 
 }  // namespace ArduinoJson
 
-#define WIFI_MANAGER_H
-class WiFiManager {
-  public:
-    static constexpr uint32_t WIFI_RUNTIME_MIN_FREE_AP_ONLY = 16384;
-    static constexpr uint32_t WIFI_RUNTIME_MIN_BLOCK_AP_ONLY = 12288;
-};
-
 #include "../../src/storage_json_rollback.cpp"
 #include "../../src/v1_devices.cpp"
 #include "../../src/main_persist.cpp"

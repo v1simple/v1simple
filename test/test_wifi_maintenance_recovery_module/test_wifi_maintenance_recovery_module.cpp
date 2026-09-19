@@ -150,6 +150,19 @@ void test_normal_setup_preserves_saved_sta_connectivity() {
 }
 
 void test_wifi_heap_guard_preserves_exact_thresholds_and_jitter_tolerances() {
+    TEST_ASSERT_EQUAL_UINT32(28672, WifiHeapThresholds::kStartMinFreeApOnly);
+    TEST_ASSERT_EQUAL_UINT32(12288, WifiHeapThresholds::kStartMinBlockApOnly);
+    TEST_ASSERT_EQUAL_UINT32(40960, WifiHeapThresholds::kStartMinFreeApSta);
+    TEST_ASSERT_EQUAL_UINT32(20480, WifiHeapThresholds::kStartMinBlockApSta);
+    TEST_ASSERT_EQUAL_UINT32(16384, WifiHeapThresholds::kRuntimeMinFreeApOnly);
+    TEST_ASSERT_EQUAL_UINT32(12288, WifiHeapThresholds::kRuntimeMinBlockApOnly);
+    TEST_ASSERT_EQUAL_UINT32(16384, WifiHeapThresholds::kRuntimeMinFreeStaOnly);
+    TEST_ASSERT_EQUAL_UINT32(7168, WifiHeapThresholds::kRuntimeMinBlockStaOnly);
+    TEST_ASSERT_EQUAL_UINT32(20480, WifiHeapThresholds::kRuntimeMinFreeApSta);
+    TEST_ASSERT_EQUAL_UINT32(8192, WifiHeapThresholds::kRuntimeMinBlockApSta);
+    TEST_ASSERT_EQUAL_UINT32(256, WifiHeapThresholds::kRuntimeApStaFreeJitterTolerance);
+    TEST_ASSERT_EQUAL_UINT32(128, WifiHeapThresholds::kRuntimeStaBlockJitterTolerance);
+
     WifiHeapGuardInput input;
     input.freeInternal = 100;
     input.largestInternal = 50;

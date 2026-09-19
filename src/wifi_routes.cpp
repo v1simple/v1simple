@@ -30,6 +30,14 @@
 #include "main_internals.h"
 #include <LittleFS.h>
 
+const char* WiFiManager::maintenanceApiWriteHeader() {
+    return WifiMaintenanceWritePolicy::kRequestShapeHeader;
+}
+
+const char* WiFiManager::maintenanceApiWriteHeaderValue() {
+    return WifiMaintenanceWritePolicy::kRequestShapeValue;
+}
+
 bool WiFiManager::hasMaintenanceWriteRequestShape() const {
     return maintenanceBootMode_ && server_.hasHeader(maintenanceApiWriteHeader()) &&
            server_.header(maintenanceApiWriteHeader()) == maintenanceApiWriteHeaderValue();

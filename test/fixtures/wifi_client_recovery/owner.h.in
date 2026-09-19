@@ -1,7 +1,7 @@
 #pragma once
 #include "Arduino.h"
 #include "WiFi.h"
-#include "settings.h"
+#include "settings_types.h"
 #include "modules/wifi/wifi_scan_result_owner.h"
 #include "modules/wifi/wifi_maintenance_link_policy.h"
 #include "modules/wifi/wifi_maintenance_interface_policy.h"

@@ -41,9 +41,9 @@ def build_and_run(build: Path) -> None:
     client = (ROOT / "src/wifi_client.cpp").read_text(encoding="utf-8")
     manager = (ROOT / "src/wifi_manager.h").read_text(encoding="utf-8")
     lifecycle = (ROOT / "src/wifi_manager_lifecycle.cpp").read_text(encoding="utf-8")
-    settings = (ROOT / "src/settings.h").read_text(encoding="utf-8")
+    settings = (ROOT / "src/settings_types.h").read_text(encoding="utf-8")
 
-    (build / "settings.h").write_text(render("settings.h.in", {
+    (build / "settings_types.h").write_text(render("settings_types.h.in", {
         "@SLOT_METADATA@": between(settings, "inline constexpr size_t kWifiStaSlotCount", "struct WifiStaPriorityUpdate"),
     }), encoding="utf-8")
     (build / "owner.h").write_text(render("owner.h.in", {
@@ -73,7 +73,7 @@ def build_and_run(build: Path) -> None:
                      "// ============================================================================\n// API Endpoints")
     (build / "owner.cpp").write_text(owner, encoding="utf-8")
 
-    # Preserve the slot policy's relative ../../settings.h include. The scan
+    # Preserve the slot policy's relative ../../settings_types.h include. The scan
     # owner and other production policy headers compile directly from src/.
     policy_dir = build / "modules/wifi"
     policy_dir.mkdir(parents=True)

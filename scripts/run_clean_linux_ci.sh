@@ -115,9 +115,11 @@ echo "[clean-linux] output: $OUTPUT_DIR"
     }
     trap retain_reports EXIT
     export V1_VALIDATION_MANIFEST=/host-artifacts/linux-validation-environment.txt
+    export V1_PIO_VENV=/opt/v1-pio-venv
     set -o pipefail
     ./scripts/bootstrap_linux_validation.sh ci 2>&1 | tee /host-artifacts/bootstrap.log
     if [[ "$RUN_FULL_GATE" == "true" ]]; then
+      export PATH="$V1_PIO_VENV/bin:$PATH"
       PLATFORMIO_RUN_JOBS=1 ./scripts/ci-test.sh 2>&1 | tee /host-artifacts/ci-test.log
     fi
   '

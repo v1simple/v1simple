@@ -4,7 +4,7 @@
 
 #include "../../src/settings_types.h"
 #include "../../src/v1_profile_push_policy.h"
-#include "../../src/v1_profiles.h"
+#include "../../src/v1_detector_configuration.h"
 
 namespace {
 

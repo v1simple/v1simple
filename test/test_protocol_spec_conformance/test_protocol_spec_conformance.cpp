@@ -49,7 +49,7 @@ unsigned long mockMicros = 0;
 
 #include <vector>
 
-#include "../../src/v1_profiles.h"
+#include "../../src/v1_detector_configuration.h"
 #include "../../src/v1_firmware_compat.h"
 
 #include "../fixtures/protocol_spec_tables.h"

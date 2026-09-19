@@ -251,6 +251,11 @@ class AutoPushModule {
         uint64_t customPreservedMask = 0;
     };
 
+    struct PreparedOperation {
+        State state;
+        OperationStatus status;
+    };
+
     QueueResult queuePreparedSlot(int slotIndex, const AutoPushSlot& slot, bool profileLoaded,
                                   const V1Profile& profile, bool isPushNow, bool activateSlot,
                                   bool updateProfileIndicator, bool retainLoadStep = false);

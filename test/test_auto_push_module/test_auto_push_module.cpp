@@ -435,6 +435,7 @@ void test_queue_rejects_failed_active_slot_persistence_before_operation_or_detec
 
 void test_queue_stages_every_owned_string_and_definition_capacity_before_activation() {
     const AutoPushAdmissionFailurePoint failures[] = {
+        AutoPushAdmissionFailurePoint::OperationStorage,
         AutoPushAdmissionFailurePoint::SlotProfile,
         AutoPushAdmissionFailurePoint::ProfileName,
         AutoPushAdmissionFailurePoint::ProfileDescription,

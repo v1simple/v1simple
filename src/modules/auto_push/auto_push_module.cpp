@@ -7,6 +7,8 @@
 
 #include <cstdio>
 #include <cstring>
+#include <memory>
+#include <new>
 
 namespace {
 
@@ -16,6 +18,7 @@ constexpr uint8_t kCustomBandKa = 0x02;
 #ifdef UNIT_TEST
 enum class AutoPushAdmissionFailurePoint : uint8_t {
     None = 0,
+    OperationStorage,
     SlotProfile,
     ProfileName,
     ProfileDescription,
@@ -216,17 +219,28 @@ AutoPushModule::QueueResult AutoPushModule::queuePreparedSlot(int slotIndex, con
     }
 
     const int clampedIndex = std::max(0, std::min(2, slotIndex));
-    State preparedState;
-    OperationStatus preparedStatus;
+#ifdef UNIT_TEST
+    if (g_autoPushAdmissionFailurePointForTest ==
+        AutoPushAdmissionFailurePoint::OperationStorage) {
+        return QueueResult::STAGING_UNAVAILABLE;
+    }
+#endif
+    // Slot admission stays alive while atomic settings persistence commits.
+    // Keeping both bounded objects on loopTask retained several kilobytes
+    // before entering NVS and could trip the task's stack canary. Stage the
+    // complete candidate off-stack and publish it only after persistence.
+    std::unique_ptr<PreparedOperation> prepared(
+        new (std::nothrow) PreparedOperation());
+    if (!prepared) return QueueResult::STAGING_UNAVAILABLE;
     if (!prepareState(clampedIndex, slot, profileLoaded, profile, isPushNow,
-                      updateProfileIndicator, retainLoadStep, preparedState,
-                      preparedStatus)) {
+                      updateProfileIndicator, retainLoadStep, prepared->state,
+                      prepared->status)) {
         return QueueResult::STAGING_UNAVAILABLE;
     }
     if (activateSlot && !settings_->setActiveSlot(clampedIndex).success) {
         return QueueResult::ACTIVE_SLOT_PERSIST_FAILED;
     }
-    commitPreparedState(std::move(preparedState), std::move(preparedStatus));
+    commitPreparedState(std::move(prepared->state), std::move(prepared->status));
     return QueueResult::QUEUED;
 }
 

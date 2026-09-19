@@ -31,6 +31,7 @@ int gAlertRequestCalls = 0;
 std::deque<bool> gAlertRequestResults;
 int gBondBackupEnqueueCalls = 0;
 int gBondBackupEnqueueResult = 0;
+bool gAdvanceIngressDuringSuccessfulSend = false;
 
 constexpr uint8_t kVersionRequest[] = {0xAA, 0xDA, 0xE6, 0x01, 0x01, 0x6C, 0xAB};
 constexpr uint8_t kAllVolumeRequest[] = {0xAA, 0xDA, 0xE6, 0x3C, 0x01, 0xA7, 0xAB};
@@ -130,6 +131,7 @@ SendResult V1BLEClient::sendCommandWithResult(const uint8_t* data, size_t length
     gAttempts.push_back({bytes, result});
     if (result == SendResult::SENT) {
         gSentPackets.push_back(bytes);
+        if (gAdvanceIngressDuringSuccessfulSend) noteV1NotificationIngress();
     }
     return result;
 }
@@ -152,6 +154,7 @@ void setUp() {
     gAlertRequestResults.clear();
     gBondBackupEnqueueCalls = 0;
     gBondBackupEnqueueResult = 0;
+    gAdvanceIngressDuringSuccessfulSend = false;
     mock_reset_nimble_state();
 }
 
@@ -200,6 +203,41 @@ void test_explicit_settings_recapture_requires_idle_known_connected_session_and_
     client.v1FirmwareVersion_.store(41039, std::memory_order_release);
     transport.setConnected(false);
     TEST_ASSERT_FALSE(client.beginSettingsRecapture());
+}
+
+void test_fast_replies_entering_during_send_remain_after_each_request_boundary() {
+    V1BLEClient client;
+    client.v1FirmwareVersion_.store(41038, std::memory_order_release);
+    client.v1NotificationIngressSequence_.store(40, std::memory_order_release);
+    client.connectedFollowupStep_ = V1BLEClient::ConnectedFollowupStep::REQUEST_ALL_VOLUME;
+    client.connectedFollowupSendDeadlineMs_ = 1000;
+    gAdvanceIngressDuringSuccessfulSend = true;
+
+    client.processConnectedFollowup();
+    TEST_ASSERT_EQUAL_UINT32(40, client.sessionAllVolumeIngressBoundary_);
+    TEST_ASSERT_EQUAL_UINT32(41, client.latestV1NotificationIngressSequence());
+
+    client.processConnectedFollowup();
+    TEST_ASSERT_EQUAL_UINT32(41, client.sessionUserBytesIngressBoundary_);
+    TEST_ASSERT_EQUAL_UINT32(42, client.latestV1NotificationIngressSequence());
+
+    client.hasSessionUserBytes_ = true;
+    client.hasSessionAllVolume_ = true;
+    client.processConnectedFollowup();
+    TEST_ASSERT_EQUAL(V1BLEClient::ConnectedFollowupStep::REQUEST_SWEEP_SECTIONS,
+                      client.connectedFollowupStep_);
+
+    client.processConnectedFollowup();
+    TEST_ASSERT_EQUAL_UINT32(42, client.sessionSweepSectionsIngressBoundary_);
+    TEST_ASSERT_EQUAL_UINT32(43, client.latestV1NotificationIngressSequence());
+
+    client.processConnectedFollowup();
+    TEST_ASSERT_EQUAL_UINT32(43, client.sessionSweepMaxIngressBoundary_);
+    TEST_ASSERT_EQUAL_UINT32(44, client.latestV1NotificationIngressSequence());
+
+    client.processConnectedFollowup();
+    TEST_ASSERT_EQUAL_UINT32(44, client.sessionSweepDefinitionsIngressBoundary_);
+    TEST_ASSERT_EQUAL_UINT32(45, client.latestV1NotificationIngressSequence());
 }
 
 void test_alert_request_transient_failure_retries_then_settles() {
@@ -659,6 +697,7 @@ void test_post_delete_bond_backup_retries_failed_enqueue() {
 int main(int argc, char** argv) {
     UNITY_BEGIN();
     RUN_TEST(test_explicit_settings_recapture_requires_idle_known_connected_session_and_resets_evidence);
+    RUN_TEST(test_fast_replies_entering_during_send_remain_after_each_request_boundary);
     RUN_TEST(test_alert_request_transient_failure_retries_then_settles);
     RUN_TEST(test_alert_request_retry_deadline_is_bounded);
     RUN_TEST(test_not_yet_retries_in_order_without_spinning_or_duplicate_success);

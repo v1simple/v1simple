@@ -22,6 +22,18 @@
 namespace {
 constexpr uint32_t kConnectionStateProcessMaxGapMs = 1000;
 constexpr uint32_t kConnectedPersistenceDeferralMs = 10000;
+constexpr uint32_t kFreshObservationWaitMs = 5000;
+
+bool settingsSnapshotComplete(const V1DetectorSnapshot& snapshot) {
+    const V1FirmwareCompat::Capabilities capabilities =
+        V1FirmwareCompat::capabilities(snapshot.firmwareVersion);
+    return snapshot.hasUserBytes &&
+        (!capabilities.allVolume || snapshot.hasCurrentVolume) &&
+        (!capabilities.modeObservation || snapshot.hasMode) &&
+        (!capabilities.displayActive || snapshot.hasDisplayOn) &&
+        (!capabilities.customSweeps || (snapshot.hasSweepSections && snapshot.hasMaxSweepIndex &&
+                                         snapshot.hasSweepDefinitions));
+}
 
 ProductAlpState productAlpState(uint8_t heartbeatByte1) {
     switch (heartbeatByte1) {
@@ -665,18 +677,10 @@ void DriveRuntime::finishSettingsRecapture(
     String address;
     if (!connectedV1Address(address) || !settingsOperations_.targetMatches(address.c_str())) return;
     V1DetectorSnapshot snapshot = captureDetectorSnapshot(settingsRecaptureIngressBoundary_);
-    const V1FirmwareCompat::Capabilities capabilities =
-        V1FirmwareCompat::capabilities(snapshot.firmwareVersion);
-    const bool complete = snapshot.hasUserBytes &&
-        (!capabilities.allVolume || snapshot.hasCurrentVolume) &&
-        (!capabilities.modeObservation || snapshot.hasMode) &&
-        (!capabilities.displayActive || snapshot.hasDisplayOn) &&
-        (!capabilities.customSweeps || (snapshot.hasSweepSections && snapshot.hasMaxSweepIndex &&
-                                        snapshot.hasSweepDefinitions));
-    constexpr uint32_t kFreshObservationWaitMs = 5000u;
-    const bool waitExpired = static_cast<uint32_t>(nowMs - settingsOperationStateStartedMs_) >=
-                             kFreshObservationWaitMs;
-    if (!complete && !waitExpired) return;
+    const bool complete = settingsSnapshotComplete(snapshot);
+    const uint32_t settingsSessionGeneration = ble_.sessionGeneration();
+    if (settingsFreshObservationGate_.shouldWait(
+            complete, nowMs, kFreshObservationWaitMs, settingsSessionGeneration)) return;
     snapshot.captureTimedOut = snapshot.captureTimedOut || !complete;
 
     if (!devices_.recordSnapshotInMemory(address, snapshot)) {
@@ -760,7 +764,7 @@ void DriveRuntime::processSettingsOperation(uint32_t nowMs) {
         settingsOperationNextActionMs_ = 0;
         settingsRecaptureIngressBoundary_ = 0;
         settingsRecaptureStarted_ = false;
-        settingsRecaptureFollowupComplete_ = false;
+        settingsFreshObservationGate_.reset();
         factoryResetSendLatch_.reset();
         factoryResetSummaryPersistedThisBoot_ = false;
         factoryResetSentComponents_ = {};
@@ -773,7 +777,7 @@ void DriveRuntime::processSettingsOperation(uint32_t nowMs) {
         if (initial.state == V1SettingsOperationStore::State::Recapturing) {
             settingsRecaptureIngressBoundary_ = 0;
             settingsRecaptureStarted_ = false;
-            settingsRecaptureFollowupComplete_ = false;
+            settingsFreshObservationGate_.reset();
         }
     }
 
@@ -810,10 +814,52 @@ void DriveRuntime::processSettingsOperation(uint32_t nowMs) {
     String address;
     const bool matchingDetector = connectedV1Address(address) &&
         settingsOperations_.targetMatches(address.c_str());
+    const uint32_t settingsSessionGeneration = ble_.sessionGeneration();
+    if (matchingDetector &&
+        settingsFreshObservationGate_.observeSession(settingsSessionGeneration) &&
+        (initial.state == V1SettingsOperationStore::State::Preparing ||
+         initial.state == V1SettingsOperationStore::State::Recapturing)) {
+        // A recapture started for an earlier BLE session cannot establish
+        // freshness for this one. Either the new connection follow-up will
+        // complete first, or this state starts a fresh explicit recapture.
+        settingsRecaptureIngressBoundary_ = 0;
+        settingsRecaptureStarted_ = false;
+    }
+    if ((initial.state == V1SettingsOperationStore::State::WaitingForDetector ||
+         initial.state == V1SettingsOperationStore::State::Preparing) &&
+        matchingDetector && settingsFreshObservationGate_.completeFor(settingsSessionGeneration)) {
+        const uint32_t requiredBoundary = V1SettingsOperationStore::requiredPreApplyIngressBoundary(
+            initial.state, settingsRecaptureIngressBoundary_);
+        const V1DetectorSnapshot snapshot = captureDetectorSnapshot(requiredBoundary);
+        const bool complete = settingsSnapshotComplete(snapshot);
+        if (settingsFreshObservationGate_.shouldWait(
+                complete, nowMs, kFreshObservationWaitMs, settingsSessionGeneration)) return;
+        if (!persistDetectorSnapshot(address, snapshot, false)) {
+            (void)settingsOperations_.finish(V1SettingsOperationStore::State::Failed,
+                V1SettingsOperationStore::Reason::SnapshotStoreUnavailable);
+            return;
+        }
+        if (initial.kind == V1SettingsOperationStore::Kind::FactoryReset) {
+            auto components = initial.components;
+            for (auto& component : components) {
+                component.requested = true;
+                component.outcome = V1SettingsOperationStore::ComponentOutcome::Pending;
+                component.reason = V1SettingsOperationStore::ComponentReason::None;
+            }
+            if (!settingsOperations_.updateComponents(components, 0)) return;
+            if (!settingsOperations_.markRunning(0)) return;
+            attemptFactoryReset(settingsOperations_.snapshot());
+        } else {
+            queueSettingsApply(initial, snapshot);
+        }
+        return;
+    }
+
     if (initial.state == V1SettingsOperationStore::State::Preparing && matchingDetector &&
         !settingsRecaptureStarted_) {
         settingsRecaptureIngressBoundary_ = ble_.latestV1NotificationIngressSequence();
         if (ble_.beginSettingsRecapture()) {
+            settingsFreshObservationGate_.beginCapture(settingsSessionGeneration);
             settingsRecaptureStarted_ = true;
             settingsOperationStateStartedMs_ = nowMs;
         }
@@ -856,15 +902,19 @@ void DriveRuntime::processSettingsOperation(uint32_t nowMs) {
 
     if (initial.state == V1SettingsOperationStore::State::Recapturing) {
         if (!matchingDetector) return;
-        if (!settingsRecaptureStarted_ && !settingsRecaptureFollowupComplete_) {
+        if (!settingsRecaptureStarted_ &&
+            !settingsFreshObservationGate_.completeFor(settingsSessionGeneration)) {
             settingsRecaptureIngressBoundary_ = ble_.latestV1NotificationIngressSequence();
             if (ble_.beginSettingsRecapture()) {
+                settingsFreshObservationGate_.beginCapture(settingsSessionGeneration);
                 settingsRecaptureStarted_ = true;
                 settingsOperationStateStartedMs_ = nowMs;
             }
             return;
         }
-        if (settingsRecaptureFollowupComplete_) finishSettingsRecapture(initial, nowMs);
+        if (settingsFreshObservationGate_.completeFor(settingsSessionGeneration)) {
+            finishSettingsRecapture(initial, nowMs);
+        }
     }
 }
 
@@ -1242,32 +1292,14 @@ bool DriveRuntime::handleSettingsOperationStableConnection() {
     }
     const V1SettingsOperationStore::Snapshot operation = settingsOperations_.snapshot();
     if (operation.state == V1SettingsOperationStore::State::Recapturing) {
-        settingsRecaptureFollowupComplete_ = true;
+        settingsFreshObservationGate_.noteFollowupComplete(
+            static_cast<uint32_t>(millis()), ble_.sessionGeneration());
         return true;
     }
     if (operation.state != V1SettingsOperationStore::State::WaitingForDetector &&
         operation.state != V1SettingsOperationStore::State::Preparing) return true;
-    const uint32_t requiredBoundary = V1SettingsOperationStore::requiredPreApplyIngressBoundary(
-        operation.state, settingsRecaptureIngressBoundary_);
-    const V1DetectorSnapshot snapshot = captureDetectorSnapshot(requiredBoundary);
-    if (!persistDetectorSnapshot(address, snapshot, false)) {
-        (void)settingsOperations_.finish(V1SettingsOperationStore::State::Failed,
-            V1SettingsOperationStore::Reason::SnapshotStoreUnavailable);
-        return true;
-    }
-    if (operation.kind == V1SettingsOperationStore::Kind::FactoryReset) {
-        auto components = operation.components;
-        for (auto& component : components) {
-            component.requested = true;
-            component.outcome = V1SettingsOperationStore::ComponentOutcome::Pending;
-            component.reason = V1SettingsOperationStore::ComponentReason::None;
-        }
-        if (!settingsOperations_.updateComponents(components, 0)) return true;
-        if (!settingsOperations_.markRunning(0)) return true;
-        attemptFactoryReset(settingsOperations_.snapshot());
-    } else {
-        queueSettingsApply(operation, snapshot);
-    }
+    settingsFreshObservationGate_.noteFollowupComplete(
+        static_cast<uint32_t>(millis()), ble_.sessionGeneration());
     return true;
 }
 

@@ -189,8 +189,9 @@ class V1BLEClient {
     void publishVerifiedSettingsApplyEdge(uint32_t verifiedSessionGeneration);
 
     // A callback stamps this at entry, before queue admission or parsing. A
-    // settings command samples the latest value only after its send succeeds.
-    // Therefore only a frame whose first byte entered later can verify it.
+    // settings request samples the latest value immediately before its send.
+    // Therefore a prompt reply that enters while the transport call is still
+    // returning remains eligible, while every earlier frame stays excluded.
     uint32_t noteV1NotificationIngress() {
         uint32_t current = v1NotificationIngressSequence_.load(std::memory_order_acquire);
         while (true) {

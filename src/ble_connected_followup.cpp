@@ -148,6 +148,7 @@ void V1BLEClient::processConnectedFollowup() {
         if (connectedFollowupNextAttemptMs_ != 0 && static_cast<int32_t>(nowMs - connectedFollowupNextAttemptMs_) < 0) {
             return;
         }
+        const uint32_t requestIngressBoundary = latestV1NotificationIngressSequence();
         const SendResult result = sendEmptyPayloadFollowupRequest(*this, PACKET_ID_REQ_ALL_VOLUME);
         if (result != SendResult::SENT) {
             const bool retryTimedOut = static_cast<int32_t>(nowMs - connectedFollowupSendDeadlineMs_) >= 0;
@@ -169,7 +170,7 @@ void V1BLEClient::processConnectedFollowup() {
             connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_USER_BYTES;
             return;
         }
-        beginSessionAllVolumeCapture(latestV1NotificationIngressSequence());
+        beginSessionAllVolumeCapture(requestIngressBoundary);
         connectedFollowupNextAttemptMs_ = 0;
         connectedFollowupSendDeadlineMs_ = nowMs + CONNECTED_FOLLOWUP_SEND_TIMEOUT_MS;
         connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_USER_BYTES;
@@ -180,6 +181,7 @@ void V1BLEClient::processConnectedFollowup() {
         if (connectedFollowupNextAttemptMs_ != 0 && static_cast<int32_t>(nowMs - connectedFollowupNextAttemptMs_) < 0) {
             return;
         }
+        const uint32_t requestIngressBoundary = latestV1NotificationIngressSequence();
         const SendResult result = sendEmptyPayloadFollowupRequest(*this, PACKET_ID_REQ_USER_BYTES);
         if (result != SendResult::SENT) {
             const bool retryTimedOut = static_cast<int32_t>(nowMs - connectedFollowupSendDeadlineMs_) >= 0;
@@ -197,7 +199,7 @@ void V1BLEClient::processConnectedFollowup() {
             connectedFollowupStep_ = ConnectedFollowupStep::NOTIFY_STABLE_CALLBACK;
             return;
         }
-        beginSessionUserBytesCapture(latestV1NotificationIngressSequence());
+        beginSessionUserBytesCapture(requestIngressBoundary);
         settingsCaptureRequestStartedMs_ = nowMs;
         connectedFollowupNextAttemptMs_ = 0;
         connectedFollowupSendDeadlineMs_ = 0;
@@ -243,6 +245,7 @@ void V1BLEClient::processConnectedFollowup() {
         if (connectedFollowupNextAttemptMs_ != 0 && static_cast<int32_t>(nowMs - connectedFollowupNextAttemptMs_) < 0) {
             return;
         }
+        const uint32_t requestIngressBoundary = latestV1NotificationIngressSequence();
         const SendResult result = sendEmptyPayloadFollowupRequest(*this, PACKET_ID_REQ_SWEEP_SECTIONS);
         if (result != SendResult::SENT) {
             if (result == SendResult::NOT_YET && static_cast<int32_t>(nowMs - connectedFollowupSendDeadlineMs_) < 0) {
@@ -253,7 +256,7 @@ void V1BLEClient::processConnectedFollowup() {
             connectedFollowupStep_ = ConnectedFollowupStep::NOTIFY_STABLE_CALLBACK;
             return;
         }
-        beginSessionSweepSectionsCapture(latestV1NotificationIngressSequence());
+        beginSessionSweepSectionsCapture(requestIngressBoundary);
         connectedFollowupNextAttemptMs_ = 0;
         connectedFollowupSendDeadlineMs_ = nowMs + CONNECTED_FOLLOWUP_SEND_TIMEOUT_MS;
         connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_MAX_SWEEP_INDEX;
@@ -262,6 +265,7 @@ void V1BLEClient::processConnectedFollowup() {
     case ConnectedFollowupStep::REQUEST_MAX_SWEEP_INDEX: {
         const uint32_t nowMs = static_cast<uint32_t>(millis());
         if (connectedFollowupNextAttemptMs_ != 0 && static_cast<int32_t>(nowMs - connectedFollowupNextAttemptMs_) < 0) return;
+        const uint32_t requestIngressBoundary = latestV1NotificationIngressSequence();
         const SendResult result = sendEmptyPayloadFollowupRequest(*this, PACKET_ID_REQ_MAX_SWEEP_INDEX);
         if (result != SendResult::SENT) {
             if (result == SendResult::NOT_YET && static_cast<int32_t>(nowMs - connectedFollowupSendDeadlineMs_) < 0) {
@@ -272,7 +276,7 @@ void V1BLEClient::processConnectedFollowup() {
             connectedFollowupStep_ = ConnectedFollowupStep::NOTIFY_STABLE_CALLBACK;
             return;
         }
-        beginSessionSweepMaxCapture(latestV1NotificationIngressSequence());
+        beginSessionSweepMaxCapture(requestIngressBoundary);
         connectedFollowupNextAttemptMs_ = 0;
         connectedFollowupSendDeadlineMs_ = nowMs + CONNECTED_FOLLOWUP_SEND_TIMEOUT_MS;
         connectedFollowupStep_ = ConnectedFollowupStep::REQUEST_ALL_SWEEP_DEFINITIONS;
@@ -281,6 +285,7 @@ void V1BLEClient::processConnectedFollowup() {
     case ConnectedFollowupStep::REQUEST_ALL_SWEEP_DEFINITIONS: {
         const uint32_t nowMs = static_cast<uint32_t>(millis());
         if (connectedFollowupNextAttemptMs_ != 0 && static_cast<int32_t>(nowMs - connectedFollowupNextAttemptMs_) < 0) return;
+        const uint32_t requestIngressBoundary = latestV1NotificationIngressSequence();
         const SendResult result = sendEmptyPayloadFollowupRequest(*this, PACKET_ID_REQ_ALL_SWEEP_DEFINITIONS);
         if (result != SendResult::SENT) {
             if (result == SendResult::NOT_YET && static_cast<int32_t>(nowMs - connectedFollowupSendDeadlineMs_) < 0) {
@@ -291,7 +296,7 @@ void V1BLEClient::processConnectedFollowup() {
             connectedFollowupStep_ = ConnectedFollowupStep::NOTIFY_STABLE_CALLBACK;
             return;
         }
-        beginSessionSweepDefinitionsCapture(latestV1NotificationIngressSequence());
+        beginSessionSweepDefinitionsCapture(requestIngressBoundary);
         settingsCaptureRequestStartedMs_ = nowMs;
         connectedFollowupNextAttemptMs_ = 0;
         connectedFollowupSendDeadlineMs_ = 0;

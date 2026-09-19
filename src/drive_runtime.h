@@ -222,7 +222,7 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     V1SettingsOperationStore::State observedSettingsOperationState_ =
         V1SettingsOperationStore::State::None;
     bool settingsRecaptureStarted_ = false;
-    bool settingsRecaptureFollowupComplete_ = false;
+    V1FreshObservationGate settingsFreshObservationGate_;
     V1DestructiveSendLatch factoryResetSendLatch_;
     bool factoryResetSummaryPersistedThisBoot_ = false;
     bool settingsWrongDetectorDisconnectPending_ = false;

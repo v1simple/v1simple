@@ -292,6 +292,42 @@ void test_destructive_send_latch_blocks_resend_after_persistence_failure() {
     TEST_ASSERT_TRUE(latch.sent());
 }
 
+void test_fresh_observation_gate_waits_once_for_late_parser_evidence() {
+    V1FreshObservationGate gate;
+    TEST_ASSERT_FALSE(gate.completeFor(7));
+    TEST_ASSERT_FALSE(gate.shouldWait(false, 999, 5000, 7));
+
+    gate.noteFollowupComplete(1000, 7);
+    TEST_ASSERT_TRUE(gate.completeFor(7));
+    TEST_ASSERT_FALSE(gate.completeFor(8));
+    TEST_ASSERT_TRUE(gate.shouldWait(false, 5999, 5000, 7));
+    TEST_ASSERT_FALSE(gate.shouldWait(true, 1001, 5000, 7));
+
+    // A duplicate callback cannot extend the bounded wait window.
+    gate.noteFollowupComplete(5900, 7);
+    TEST_ASSERT_FALSE(gate.shouldWait(false, 6000, 5000, 7));
+
+    // Starting an explicit capture in the same session invalidates any earlier
+    // stable callback; only that capture's callback may reopen admission.
+    gate.beginCapture(7);
+    TEST_ASSERT_FALSE(gate.completeFor(7));
+    gate.noteFollowupComplete(6100, 7);
+    TEST_ASSERT_TRUE(gate.shouldWait(false, 11099, 5000, 7));
+
+    // A replacement BLE session invalidates the old completion and receives
+    // its own bounded window once that session's follow-up completes.
+    TEST_ASSERT_TRUE(gate.observeSession(8));
+    TEST_ASSERT_FALSE(gate.completeFor(7));
+    TEST_ASSERT_FALSE(gate.completeFor(8));
+    TEST_ASSERT_FALSE(gate.observeSession(8));
+    gate.noteFollowupComplete(7000, 8);
+    TEST_ASSERT_TRUE(gate.completeFor(8));
+    TEST_ASSERT_TRUE(gate.shouldWait(false, 11999, 5000, 8));
+
+    gate.reset();
+    TEST_ASSERT_FALSE(gate.completeFor(8));
+}
+
 void test_short_and_crc_corrupt_records_fail_closed_and_block_new_admission() {
     const auto corruptAndVerify = [](bool truncate) {
         V1SettingsOperationStore writer;
@@ -434,6 +470,7 @@ int main() {
     RUN_TEST(test_start_rejects_source_and_boot_flag_combinations_that_cannot_reload);
     RUN_TEST(test_operation_identity_exhaustion_never_wraps_to_a_reused_id);
     RUN_TEST(test_destructive_send_latch_blocks_resend_after_persistence_failure);
+    RUN_TEST(test_fresh_observation_gate_waits_once_for_late_parser_evidence);
     RUN_TEST(test_short_and_crc_corrupt_records_fail_closed_and_block_new_admission);
     RUN_TEST(test_checksum_valid_unterminated_target_address_fails_closed);
     RUN_TEST(test_failed_nvs_update_does_not_publish_false_state);

@@ -19,6 +19,50 @@ class V1DestructiveSendLatch {
     bool sent_ = false;
 };
 
+// A completed request/reply follow-up does not imply that every independent
+// live observation needed by an Apply has already reached the parser. Keep the
+// admission window bounded without allowing repeated callbacks to extend it.
+class V1FreshObservationGate {
+  public:
+    void reset() {
+        sessionObserved_ = false;
+        sessionGeneration_ = 0;
+        complete_ = false;
+        completedAtMs_ = 0;
+    }
+    bool observeSession(uint32_t sessionGeneration) {
+        if (sessionObserved_ && sessionGeneration_ == sessionGeneration) return false;
+        beginCapture(sessionGeneration);
+        return true;
+    }
+    void beginCapture(uint32_t sessionGeneration) {
+        sessionObserved_ = true;
+        sessionGeneration_ = sessionGeneration;
+        complete_ = false;
+        completedAtMs_ = 0;
+    }
+    void noteFollowupComplete(uint32_t nowMs, uint32_t sessionGeneration) {
+        (void)observeSession(sessionGeneration);
+        if (complete_) return;
+        complete_ = true;
+        completedAtMs_ = nowMs;
+    }
+    bool completeFor(uint32_t sessionGeneration) const {
+        return sessionObserved_ && sessionGeneration_ == sessionGeneration && complete_;
+    }
+    bool shouldWait(bool snapshotComplete, uint32_t nowMs, uint32_t waitMs,
+                    uint32_t sessionGeneration) const {
+        return completeFor(sessionGeneration) && !snapshotComplete &&
+               static_cast<uint32_t>(nowMs - completedAtMs_) < waitMs;
+    }
+
+  private:
+    bool sessionObserved_ = false;
+    uint32_t sessionGeneration_ = 0;
+    bool complete_ = false;
+    uint32_t completedAtMs_ = 0;
+};
+
 // Durable hand-off for the one detector mutation that must cross the
 // maintenance/normal-runtime boot boundary. This is intentionally not a
 // generic job framework: it only represents a profile Apply or a V1 factory

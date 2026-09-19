@@ -1402,6 +1402,9 @@ void AutoPushModule::process() {
     }
 
     case Step::CustomWrite: {
+        if (state_.sendDeadlineMs == 0) {
+            state_.sendDeadlineMs = now + kVerificationTimeoutMs;
+        }
         while (state_.customWriteIndex < state_.customDefinitions.size() &&
                state_.customDefinitions[state_.customWriteIndex].lowerMHz == 0) {
             ++state_.customWriteIndex;
@@ -1423,6 +1426,11 @@ void AutoPushModule::process() {
         const SendResult sent = bleClient_->writeSweepDefinition(
             definition.index, definition.lowerMHz, definition.upperMHz, commit);
         if (sent == SendResult::NOT_YET) {
+            if (deadlineReached(now, state_.sendDeadlineMs)) {
+                failWholePlan(&status_.customFrequencies, Outcome::TIMEOUT,
+                              FailureReason::CUSTOM_WRITE_FAILED);
+                return;
+            }
             state_.nextStepAtMs = now + 5;
             return;
         }
@@ -1431,6 +1439,7 @@ void AutoPushModule::process() {
                           FailureReason::CUSTOM_WRITE_FAILED);
             return;
         }
+        state_.sendDeadlineMs = 0;
         if (!commit) {
             ++state_.customWriteIndex;
             state_.nextStepAtMs = now + 5;

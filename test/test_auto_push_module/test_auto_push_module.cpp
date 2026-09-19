@@ -1148,6 +1148,29 @@ void test_sparse_custom_definitions_write_used_only_commit_last_and_report_calib
     TEST_ASSERT_EQUAL_UINT16(33100, custom["calibratedReadback"][2]["lowerMHz"].as<uint16_t>());
 }
 
+void test_custom_write_not_yet_has_bounded_send_deadline() {
+    const std::vector<V1CustomFrequencyDefinition> desired = {
+        {0, 24200, 24300}, {1, 0, 0}, {2, 34500, 34600}, {3, 0, 0}};
+    configureCustomOnly(desired);
+    auto snapshot = makeSnapshot();
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+
+    ble.writeSweepDefinitionResult = SendResult::NOT_YET;
+    at(100);
+    TEST_ASSERT_TRUE(module.isActive());
+    TEST_ASSERT_EQUAL_INT(1, ble.writeSweepDefinitionCalls);
+    at(1600);
+
+    TEST_ASSERT_FALSE(module.isActive());
+    TEST_ASSERT_TRUE(statusContains("custom_write_failed"));
+    TEST_ASSERT_TRUE(statusContains("\"outcome\":\"timeout\""));
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    TEST_ASSERT_EQUAL_INT(2, ble.writeSweepDefinitionCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.requestAllSweepDefinitionsCalls);
+}
+
 void test_compact_authored_ranges_fill_live_table_and_disable_omitted_slots() {
     const std::vector<V1CustomFrequencyDefinition> desired = {
         {0, 24200, 24300}, {1, 34500, 34600}};
@@ -2777,6 +2800,7 @@ int main() {
     RUN_TEST(test_legacy_display_off_implicitly_turns_bluetooth_off_but_keep_on_is_gated);
     RUN_TEST(test_bluetooth_policy_requires_final_main_display_off);
     RUN_TEST(test_sparse_custom_definitions_write_used_only_commit_last_and_report_calibrated_readback);
+    RUN_TEST(test_custom_write_not_yet_has_bounded_send_deadline);
     RUN_TEST(test_compact_authored_ranges_fill_live_table_and_disable_omitted_slots);
     RUN_TEST(test_exact_custom_definition_set_is_unchanged_and_sends_no_sweep_packets);
     RUN_TEST(test_null_sweep_slots_round_trip_but_cannot_substitute_for_required_band_topology);

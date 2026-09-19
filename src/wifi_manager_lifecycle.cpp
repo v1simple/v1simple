@@ -519,7 +519,17 @@ void WiFiManager::checkAutoTimeout() {
 
 void WiFiManager::process() {
     if (maintenanceBootMode_) {
-        (void)acknowledgeDeliveredSettingsOperationReturn();
+        // A durable-store failure must remain retryable without turning the
+        // main loop into an unbounded NVS write loop.
+        const uint32_t nowMs = static_cast<uint32_t>(millis());
+        if (V1SettingsOperationPolicy::returnToMaintenanceRetryDue(nowMs, settingsReturnRetryAtMs_)) {
+            if (acknowledgeDeliveredSettingsOperationReturn()) {
+                settingsReturnRetryAtMs_ = 0;
+            } else {
+                settingsReturnRetryAtMs_ =
+                    V1SettingsOperationPolicy::nextReturnToMaintenanceRetryAt(nowMs);
+            }
+        }
     }
     if (operationRestartPending_ &&
         static_cast<int32_t>(static_cast<uint32_t>(millis()) - operationRestartAtMs_) >= 0) {

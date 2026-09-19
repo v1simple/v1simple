@@ -793,9 +793,9 @@ void DriveRuntime::processSettingsOperation(uint32_t nowMs) {
 
     if (settingsOperations_.isTerminal()) {
         if (initial.returnToMaintenance &&
-            (settingsReturnRetryAtMs_ == 0 ||
-             static_cast<int32_t>(nowMs - settingsReturnRetryAtMs_) >= 0)) {
-            settingsReturnRetryAtMs_ = nowMs + 2000u;
+            V1SettingsOperationPolicy::returnToMaintenanceRetryDue(nowMs, settingsReturnRetryAtMs_)) {
+            settingsReturnRetryAtMs_ =
+                V1SettingsOperationPolicy::nextReturnToMaintenanceRetryAt(nowMs);
             requestMaintenanceBootRestart();
         }
         return;

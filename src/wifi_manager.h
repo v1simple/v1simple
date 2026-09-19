@@ -211,7 +211,10 @@ class WiFiManager {
 
     // Maintenance boot intentionally skips BLE/V1 scan. Routes that would
     // mutate BLE runtime state must become no-ops while this is true.
-    void setMaintenanceBootMode(bool enabled) { maintenanceBootMode_ = enabled; }
+    void setMaintenanceBootMode(bool enabled) {
+        maintenanceBootMode_ = enabled;
+        settingsReturnRetryAtMs_ = 0;
+    }
     bool isMaintenanceBootMode() const { return maintenanceBootMode_; }
 
     // Web activity tracking for the maintenance-session idle deadline
@@ -377,6 +380,7 @@ class WiFiManager {
     bool operationRestartPending_ = false;
     uint32_t operationRestartAtMs_ = 0;
     bool maintenanceBootMode_ = false;
+    uint32_t settingsReturnRetryAtMs_ = 0;
 
     // Setup functions
     bool setupAP();

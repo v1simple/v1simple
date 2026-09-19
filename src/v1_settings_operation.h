@@ -5,6 +5,20 @@
 #include <array>
 #include <cstdint>
 
+namespace V1SettingsOperationPolicy {
+
+inline constexpr uint32_t kReturnToMaintenanceRetryMs = 2000u;
+
+inline bool returnToMaintenanceRetryDue(uint32_t nowMs, uint32_t retryAtMs) {
+    return retryAtMs == 0 || static_cast<int32_t>(nowMs - retryAtMs) >= 0;
+}
+
+inline uint32_t nextReturnToMaintenanceRetryAt(uint32_t nowMs) {
+    return nowMs + kReturnToMaintenanceRetryMs;
+}
+
+} // namespace V1SettingsOperationPolicy
+
 // RAM-only one-shot guard for a destructive detector command. Once the BLE
 // transport reports SENT, persistence retries may continue but the command
 // itself cannot be emitted again during that boot.

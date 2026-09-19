@@ -265,6 +265,23 @@ void test_maintenance_runtime_start_reaches_saved_network_auto_join() {
     TEST_ASSERT_NOT_EQUAL(std::string::npos, setupStart.find("beginMaintenanceAutoConnectScan(false)"));
 }
 
+void test_failed_maintenance_return_ack_uses_bounded_retry_cadence() {
+    const std::string lifecycle = readFile(projectRoot() + "/src/wifi_manager_lifecycle.cpp");
+    const std::string process = extractFunctionBody(lifecycle, "void WiFiManager::process()");
+    const std::string header = readFile(projectRoot() + "/src/wifi_manager.h");
+
+    const size_t due = process.find("returnToMaintenanceRetryDue(nowMs, settingsReturnRetryAtMs_)");
+    const size_t acknowledge = process.find("acknowledgeDeliveredSettingsOperationReturn()", due);
+    const size_t schedule = process.find("nextReturnToMaintenanceRetryAt(nowMs)", acknowledge);
+
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, due);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, acknowledge);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, schedule);
+    TEST_ASSERT_TRUE(due < acknowledge);
+    TEST_ASSERT_TRUE(acknowledge < schedule);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, header.find("uint32_t settingsReturnRetryAtMs_ = 0;"));
+}
+
 void test_saved_network_test_persists_enable_before_replacing_runtime_activity() {
     const std::string client = readFile(projectRoot() + "/src/wifi_client.cpp");
     const std::string body = extractFunctionBody(client, "bool WiFiManager::testSavedNetwork(");
@@ -322,6 +339,7 @@ int main() {
     RUN_TEST(test_drive_boot_refreshes_palette_after_successful_sd_restore);
     RUN_TEST(test_maintenance_boot_refreshes_palette_after_successful_sd_restore);
     RUN_TEST(test_maintenance_runtime_start_reaches_saved_network_auto_join);
+    RUN_TEST(test_failed_maintenance_return_ack_uses_bounded_retry_cadence);
     RUN_TEST(test_saved_network_test_persists_enable_before_replacing_runtime_activity);
     RUN_TEST(test_explicit_disconnect_arms_session_suppression_and_enable_test_clear_it);
     RUN_TEST(test_maintenance_wifi_stop_phases_advance_without_driving_loop_admission);

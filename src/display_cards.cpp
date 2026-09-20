@@ -15,6 +15,7 @@
 #include "display_font_manager.h"
 #include "settings.h"
 #include <algorithm>
+#include <array>
 #include <cstring>
 
 // ============================================================================
@@ -29,9 +30,19 @@ namespace {
 constexpr uint32_t kAlertIdentityToleranceMhz = 2;
 constexpr uint32_t kSlotContinuityJitterMhz = 5;
 
+bool alertsHaveSameRowIdentity(const AlertData& a, const AlertData& b, bool& identityAvailable) {
+    const bool aHasIdentity = a.v1Index != AlertData::UNKNOWN_V1_INDEX;
+    const bool bHasIdentity = b.v1Index != AlertData::UNKNOWN_V1_INDEX;
+    identityAvailable = aHasIdentity || bHasIdentity;
+    return aHasIdentity && bHasIdentity && a.v1Index == b.v1Index;
+}
+
 bool alertsIdentityMatch(const AlertData& a, const AlertData& b) {
     if (a.band != b.band) return false;
     if (a.band == BAND_LASER) return true;
+    bool rowIdentityAvailable = false;
+    const bool sameRow = alertsHaveSameRowIdentity(a, b, rowIdentityAvailable);
+    if (rowIdentityAvailable) return sameRow;
     const uint32_t diff = (a.frequency > b.frequency) ? (a.frequency - b.frequency) : (b.frequency - a.frequency);
     return diff <= kAlertIdentityToleranceMhz;
 }
@@ -66,18 +77,33 @@ void resetCardTemporalState(CardsRenderCache& cache) {
 SecondaryCardFrame evolveSecondaryCardState(CardsRenderCache& cache, const AlertData* alerts, int alertCount,
                                             const AlertData& priority, unsigned long now, unsigned long gracePeriodMs,
                                             bool expireForVisualPreview) {
+    // V1 row assignments distinguish concurrent rows, but may be compacted as
+    // a table shrinks. Claim each current row at most once: prefer the exact
+    // assignment, then fall back to the existing frequency-jitter continuity
+    // rule without allowing one row to refresh multiple card slots.
+    std::array<bool, 15> alertClaimed{};
+    const int trackedAlertCount = std::min(alertCount, static_cast<int>(alertClaimed.size()));
     bool slotIsLive[2]{};
     for (int c = 0; c < 2; ++c) {
         CardSlot& slot = cache.slots[c];
         if (slot.lastSeen == 0) continue;
-        bool stillExists = false;
-        for (int i = 0; alerts && i < alertCount; ++i) {
-            if (alertsContinuityMatch(slot.alert, alerts[i])) {
-                stillExists = true;
-                slot.alert = alerts[i];
-                slot.lastSeen = now;
-                break;
+        int matchedAlert = -1;
+        for (int pass = 0; alerts && pass < 2 && matchedAlert < 0; ++pass) {
+            for (int i = 0; i < trackedAlertCount; ++i) {
+                if (alertClaimed[static_cast<size_t>(i)]) continue;
+                const bool matches = pass == 0 ? alertsIdentityMatch(slot.alert, alerts[i])
+                                               : alertsContinuityMatch(slot.alert, alerts[i]);
+                if (matches) {
+                    matchedAlert = i;
+                    break;
+                }
             }
+        }
+        const bool stillExists = matchedAlert >= 0;
+        if (stillExists) {
+            alertClaimed[static_cast<size_t>(matchedAlert)] = true;
+            slot.alert = alerts[matchedAlert];
+            slot.lastSeen = now;
         }
         // Refresh first: continuity jitter can move this slot onto the new priority.
         if (alertMatchesPriority(slot.alert, priority) ||
@@ -90,14 +116,8 @@ SecondaryCardFrame evolveSecondaryCardState(CardsRenderCache& cache, const Alert
 
     for (int i = 0; alerts && i < alertCount; ++i) {
         if (!alerts[i].isValid || alerts[i].band == BAND_NONE || alertMatchesPriority(alerts[i], priority)) continue;
-        bool found = false;
-        for (const CardSlot& slot : cache.slots) {
-            if (slot.lastSeen > 0 && alertsContinuityMatch(slot.alert, alerts[i])) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
+        const bool alreadyClaimed = i < trackedAlertCount && alertClaimed[static_cast<size_t>(i)];
+        if (!alreadyClaimed) {
             int target = -1;
             for (int c = 0; c < 2; ++c) {
                 if (cache.slots[c].lastSeen == 0) {
@@ -120,6 +140,7 @@ SecondaryCardFrame evolveSecondaryCardState(CardsRenderCache& cache, const Alert
                 cache.slots[target].alert = alerts[i];
                 cache.slots[target].lastSeen = now;
                 slotIsLive[target] = true;
+                if (i < trackedAlertCount) alertClaimed[static_cast<size_t>(i)] = true;
             }
         }
     }
@@ -165,14 +186,7 @@ SecondaryCardFrame evolveSecondaryCardState(CardsRenderCache& cache, const Alert
         SecondaryCardFrameEntry& entry = frame.cards[frame.count++];
         entry.slot = c;
         entry.bars = DisplayVisualContract::alertMeterBars(cache.slots[c].alert);
-        bool isLive = false;
-        for (int i = 0; alerts && i < alertCount; ++i) {
-            if (alertsIdentityMatch(cache.slots[c].alert, alerts[i])) {
-                isLive = true;
-                break;
-            }
-        }
-        entry.isGraced = !isLive;
+        entry.isGraced = !slotIsLive[c];
     }
     return frame;
 }
@@ -264,9 +278,9 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
         auto& curr = cardsToDraw[pos];
 
         // V1 card - check if band/freq/direction changed (needs full card redraw)
-        // Use a ±5 MHz hysteresis window here (looser than alertsMatch's ±2 MHz
-        // identity tolerance) so same-slot same-bogey frames with typical V1 jitter
-        // don't trigger full-card redraws and visible flicker.
+        // Use a ±5 MHz hysteresis window here (looser than the synthetic-alert
+        // identity fallback) so same-slot same-bogey frames with typical V1
+        // jitter don't trigger full-card redraws and visible flicker.
         const uint32_t CARD_REDRAW_HYSTERESIS_MHZ = 5;
         int slot = curr.slot;
         if (elementCaches_.cards.slots[slot].alert.band != last.band)

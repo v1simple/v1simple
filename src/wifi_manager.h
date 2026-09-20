@@ -16,6 +16,7 @@
 #include <WebServer.h>
 #include "wifi_rate_limiter.h"
 #include "settings_types.h"
+#include "v1_settings_operation.h"
 #include "modules/wifi/backup_snapshot_cache.h"
 #include "modules/wifi/wifi_scan_result_owner.h"
 #include "modules/wifi/wifi_status_api_service.h"
@@ -213,7 +214,7 @@ class WiFiManager {
     // mutate BLE runtime state must become no-ops while this is true.
     void setMaintenanceBootMode(bool enabled) {
         maintenanceBootMode_ = enabled;
-        settingsReturnRetryAtMs_ = 0;
+        settingsReturnRetry_.clear();
     }
     bool isMaintenanceBootMode() const { return maintenanceBootMode_; }
 
@@ -380,7 +381,7 @@ class WiFiManager {
     bool operationRestartPending_ = false;
     uint32_t operationRestartAtMs_ = 0;
     bool maintenanceBootMode_ = false;
-    uint32_t settingsReturnRetryAtMs_ = 0;
+    V1SettingsOperationPolicy::ReturnToMaintenanceRetry settingsReturnRetry_;
 
     // Setup functions
     bool setupAP();

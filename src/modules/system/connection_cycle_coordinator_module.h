@@ -90,6 +90,7 @@ class ConnectionCycleCoordinatorModule {
     bool stateEnteredMsValid_ = false;
     uint32_t totalTransitionCount_ = 0;
     uint32_t lastObdAttemptMs_ = 0;
+    bool obdAttemptRecorded_ = false;
     uint32_t teardownStepStartedMs_ = 0;
     TeardownStep teardownStep_ = TeardownStep::Idle;
     bool wasV1Connected_ = false;

@@ -29,9 +29,11 @@ enum Direction { DIR_NONE = 0, DIR_FRONT = 1, DIR_SIDE = 2, DIR_REAR = 4 };
 // --- AlertData ---
 
 struct AlertData {
+    static constexpr uint8_t UNKNOWN_V1_INDEX = UINT8_MAX;
+
     Band band;
     Direction direction;
-    uint8_t v1Index;          // V1-provided alert-table assignment (raw index)
+    uint8_t v1Index; // V1-provided alert-table assignment, or UNKNOWN_V1_INDEX for synthetic alerts
     uint8_t frontRawStrength; // V1 front-antenna RSSI byte
     uint8_t rearRawStrength;  // V1 rear-antenna RSSI byte
     uint8_t frontStrength;    // 0-8 VR bargraph bars, unmodified
@@ -45,9 +47,9 @@ struct AlertData {
     bool isKu;           // True when rawBandBits resolves to Ku (0x10)
 
     AlertData()
-        : band(BAND_NONE), direction(DIR_NONE), v1Index(0), frontRawStrength(0), rearRawStrength(0), frontStrength(0),
-          rearStrength(0), frequency(0), isValid(false), isPriority(false), isJunk(false), photoType(0), rawBandBits(0),
-          isKu(false) {}
+        : band(BAND_NONE), direction(DIR_NONE), v1Index(UNKNOWN_V1_INDEX), frontRawStrength(0), rearRawStrength(0),
+          frontStrength(0), rearStrength(0), frequency(0), isValid(false), isPriority(false), isJunk(false),
+          photoType(0), rawBandBits(0), isKu(false) {}
 
     // Convenience factory — preferred for constructing test fixtures and
     // one-shot alert values without named temporaries.

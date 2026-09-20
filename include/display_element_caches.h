@@ -173,7 +173,8 @@ struct AlpRenderCache {
 // Owns the full per-slot card state:
 //   - slots[2]: active slot data (alert + lastSeen timer). invalidateAll()
 //     resets it on screen clear. The slots carry
-//     alert-identity state (band + freq) that must be wiped when the
+//     alert-identity state (V1 table row, with band/frequency fallback for
+//     synthetic alerts) that must be wiped when the
 //     framebuffer is wiped, otherwise stale slot entries could match
 //     against the next priority/gracing pass and resurrect ghost cards.
 //   - lastDrawnPositions[2]: position-keyed last-drawn fingerprint used

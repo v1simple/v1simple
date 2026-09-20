@@ -78,8 +78,33 @@ void test_critical_warning_does_not_depend_on_icon_presence_floor() {
     power.process(100);
 
     TEST_ASSERT_TRUE(power.ownsDisplayPresentation());
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, display.showLowBatteryCalls,
+                                  "warning pixels wait for live-alert arbitration");
+    power.restoreCriticalBatteryWarning();
     TEST_ASSERT_EQUAL(1, display.showLowBatteryCalls);
     TEST_ASSERT_FALSE(power.consumeDisplayRestoreRequest());
+}
+
+void test_live_alert_preemption_preserves_warning_lifecycle_and_restores_warning() {
+    battery.setCritical(true);
+    power.process(100);
+    TEST_ASSERT_TRUE(power.ownsDisplayPresentation());
+    TEST_ASSERT_FALSE(power.criticalBatteryWarningNeedsRestore());
+    TEST_ASSERT_EQUAL(0, display.showLowBatteryCalls);
+
+    power.noteCriticalBatteryWarningPreempted();
+    TEST_ASSERT_TRUE_MESSAGE(power.ownsDisplayPresentation(),
+                             "live-alert pixels must not cancel critical shutdown confirmation");
+    TEST_ASSERT_TRUE(power.criticalBatteryWarningNeedsRestore());
+
+    power.restoreCriticalBatteryWarning();
+    TEST_ASSERT_TRUE(power.ownsDisplayPresentation());
+    TEST_ASSERT_FALSE(power.criticalBatteryWarningNeedsRestore());
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, display.showLowBatteryCalls,
+                                  "the safety warning must return after the live alert clears");
+    power.restoreCriticalBatteryWarning();
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, display.showLowBatteryCalls,
+                                  "an already-visible warning must not be repainted every loop");
 }
 
 void test_usb_transition_releases_warning_and_requests_one_authoritative_restore() {
@@ -235,6 +260,7 @@ int main() {
     UNITY_BEGIN();
     RUN_TEST(test_critical_protection_keeps_zero_invalid_but_accepts_deep_discharge);
     RUN_TEST(test_critical_warning_does_not_depend_on_icon_presence_floor);
+    RUN_TEST(test_live_alert_preemption_preserves_warning_lifecycle_and_restores_warning);
     RUN_TEST(test_usb_transition_releases_warning_and_requests_one_authoritative_restore);
     RUN_TEST(test_critical_shutdown_abort_releases_warning_for_authoritative_recovery);
     RUN_TEST(test_critical_shutdown_is_cancelled_when_fresh_read_is_unavailable);

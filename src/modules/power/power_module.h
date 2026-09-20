@@ -37,10 +37,16 @@ class PowerModule {
     // Run periodic tasks. Car builds retain battery polling but disable shutdown paths.
     void process(unsigned long nowMs);
 
-    // A critical-battery warning is a higher-priority presentation owner. The
-    // main loop uses this to keep normal renders, previews, and touch settings
-    // from painting over the warning while core runtime work continues.
+    // A critical-battery warning owns normal interactive presentation while
+    // its shutdown-confirmation lifecycle remains active. A live alert may
+    // temporarily preempt its pixels without cancelling that lifecycle.
     bool ownsDisplayPresentation() const { return criticalBatteryPresentationActive_; }
+
+    bool criticalBatteryWarningNeedsRestore() const {
+        return criticalBatteryPresentationActive_ && criticalBatteryWarningPreempted_;
+    }
+    void noteCriticalBatteryWarningPreempted();
+    void restoreCriticalBatteryWarning();
 
     // Returns true once after warning ownership ends or a shutdown hardware
     // tail aborts, so the caller can invalidate caches and restore the current
@@ -78,6 +84,8 @@ class PowerModule {
 #endif
 
     bool criticalBatteryPresentationActive_ = false;
+    bool criticalBatteryWarningVisible_ = false;
+    bool criticalBatteryWarningPreempted_ = false;
     bool displayRestorePending_ = false;
     bool displayBrightnessRestorePending_ = false;
     unsigned long criticalBatteryTime_ = 0;

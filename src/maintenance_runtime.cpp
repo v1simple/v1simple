@@ -249,6 +249,7 @@ void MaintenanceRuntime::start(uint32_t setupStartMs, esp_reset_reason_t resetRe
 
 void MaintenanceRuntime::servicePowerDisplayOwnership(uint32_t nowMs) {
     if (power_.ownsDisplayPresentation()) {
+        power_.restoreCriticalBatteryWarning();
         if (preview_.isRunning()) {
             preview_.cancel();
         }

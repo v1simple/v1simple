@@ -87,6 +87,7 @@ void ConnectionCycleCoordinatorModule::reset() {
     stateEnteredMsValid_ = false;
     totalTransitionCount_ = 0;
     lastObdAttemptMs_ = 0;
+    obdAttemptRecorded_ = false;
     teardownStepStartedMs_ = 0;
     teardownStep_ = TeardownStep::Idle;
     wasV1Connected_ = false;
@@ -222,7 +223,7 @@ bool ConnectionCycleCoordinatorModule::obdRetryAllowed(const uint32_t nowMs) con
     // A mid-session OBD re-enable restores WAIT_BOOT/IDLE in the OBD runtime,
     // but does not seed retry cadence until the next coordinator-owned attempt.
     return (state_ == CycleState::PROXY_OPEN || state_ == CycleState::STEADY) && lastV1Connected_ &&
-           !lastProxyClientConnected_ && lastObdAttemptMs_ != 0 &&
+           !lastProxyClientConnected_ && obdAttemptRecorded_ &&
            hasElapsed(nowMs, lastObdAttemptMs_, obdRetryIntervalMs_);
 }
 
@@ -257,6 +258,7 @@ uint32_t ConnectionCycleCoordinatorModule::timeInStateMs(const uint32_t nowMs) c
 
 void ConnectionCycleCoordinatorModule::recordObdRetryAttempt(const uint32_t nowMs) {
     lastObdAttemptMs_ = nowMs;
+    obdAttemptRecorded_ = true;
     totalObdRetryAttempts_++;
 }
 
@@ -302,6 +304,7 @@ void ConnectionCycleCoordinatorModule::transitionTo(const CycleState newState, c
     case CycleState::OBD_SCAN:
     case CycleState::OBD_CONNECT:
         lastObdAttemptMs_ = nowMs;
+        obdAttemptRecorded_ = true;
         break;
 
     case CycleState::TEARDOWN:

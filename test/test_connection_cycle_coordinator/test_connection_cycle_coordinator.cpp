@@ -107,6 +107,29 @@ void test_obd_failure_reaches_steady_and_retry_keeps_original_attempt_anchor() {
     TEST_ASSERT_TRUE(module.obdRetryAllowed(30601));
 }
 
+void test_obd_attempt_at_millis_zero_still_enables_bounded_retry() {
+    ProviderProbe probe;
+    ConnectionCycleCoordinatorModule module;
+    module.begin(probe);
+    CycleContext ctx = connectedContext(UINT32_MAX - 500u);
+    ctx.v1LastEventMs = UINT32_MAX - 500u;
+    ctx.obdEnabled = true;
+    ctx.obdSavedAddressValid = true;
+
+    module.update(ctx);
+    TEST_ASSERT_EQUAL(CycleState::V1_SETTLING, module.state());
+
+    ctx.nowMs = 0u;
+    module.update(ctx);
+    TEST_ASSERT_EQUAL(CycleState::OBD_SCAN, module.state());
+
+    ctx.nowMs = 1000u;
+    module.update(ctx);
+    TEST_ASSERT_EQUAL(CycleState::STEADY, module.state());
+    TEST_ASSERT_FALSE(module.obdRetryAllowed(29999u));
+    TEST_ASSERT_TRUE(module.obdRetryAllowed(30000u));
+}
+
 void test_obd_scan_timeout_stops_scan_before_opening_proxy() {
     ProviderProbe probe;
     ConnectionCycleCoordinatorModule module;
@@ -266,6 +289,7 @@ int main() {
     UNITY_BEGIN();
     RUN_TEST(test_proxy_window_exits_directly_to_steady_without_wifi_dwell);
     RUN_TEST(test_obd_failure_reaches_steady_and_retry_keeps_original_attempt_anchor);
+    RUN_TEST(test_obd_attempt_at_millis_zero_still_enables_bounded_retry);
     RUN_TEST(test_obd_scan_timeout_stops_scan_before_opening_proxy);
     RUN_TEST(test_successful_obd_settle_is_not_reordered_behind_proxy);
     RUN_TEST(test_v1_drop_teardown_returns_to_scan_before_any_new_obd_attempt);

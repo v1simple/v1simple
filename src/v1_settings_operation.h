@@ -9,13 +9,26 @@ namespace V1SettingsOperationPolicy {
 
 inline constexpr uint32_t kReturnToMaintenanceRetryMs = 2000u;
 
-inline bool returnToMaintenanceRetryDue(uint32_t nowMs, uint32_t retryAtMs) {
-    return retryAtMs == 0 || static_cast<int32_t>(nowMs - retryAtMs) >= 0;
-}
+class ReturnToMaintenanceRetry {
+  public:
+    bool due(uint32_t nowMs) const {
+        return !armed_ || static_cast<int32_t>(nowMs - retryAtMs_) >= 0;
+    }
 
-inline uint32_t nextReturnToMaintenanceRetryAt(uint32_t nowMs) {
-    return nowMs + kReturnToMaintenanceRetryMs;
-}
+    void defer(uint32_t nowMs) {
+        retryAtMs_ = nowMs + kReturnToMaintenanceRetryMs;
+        armed_ = true;
+    }
+
+    void clear() {
+        armed_ = false;
+        retryAtMs_ = 0;
+    }
+
+  private:
+    bool armed_ = false;
+    uint32_t retryAtMs_ = 0;
+};
 
 } // namespace V1SettingsOperationPolicy
 

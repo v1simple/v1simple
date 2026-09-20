@@ -235,11 +235,94 @@ void test_same_k_card_repaints_when_v1_reclassifies_it_as_photo() {
     TEST_ASSERT_EQUAL_UINT8(1, display.ut_elementCaches().cards.lastDrawnPositions[0].photoType);
 }
 
+void test_distinct_v1_rows_at_same_frequency_keep_secondary_card() {
+    AlertData priority = AlertData::create(BAND_K, DIR_FRONT, 5, 0, 24125, true, true);
+    priority.v1Index = 1;
+    AlertData secondary = AlertData::create(BAND_K, DIR_SIDE, 3, 0, 24125, true, false);
+    secondary.v1Index = 2;
+    AlertData alerts[] = {priority, secondary};
+
+    display.ut_drawSecondaryAlertCards(alerts, 2, priority, false);
+
+    const auto& cards = display.ut_elementCaches().cards;
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, cards.lastDrawnCount,
+                                  "a distinct V1 table row must not collapse into the priority row");
+    TEST_ASSERT_EQUAL_UINT8(2, cards.slots[0].alert.v1Index);
+    TEST_ASSERT_FALSE(cards.lastDrawnPositions[0].isGraced);
+}
+
+void test_three_same_frequency_v1_rows_keep_both_secondary_cards() {
+    AlertData priority = AlertData::create(BAND_K, DIR_FRONT, 5, 0, 24125, true, true);
+    priority.v1Index = 1;
+    AlertData secondaryA = AlertData::create(BAND_K, DIR_SIDE, 3, 0, 24125, true, false);
+    secondaryA.v1Index = 2;
+    AlertData secondaryB = AlertData::create(BAND_K, DIR_REAR, 4, 0, 24125, true, false);
+    secondaryB.v1Index = 3;
+    AlertData alerts[] = {priority, secondaryA, secondaryB};
+
+    display.ut_drawSecondaryAlertCards(alerts, 3, priority, false);
+
+    const auto& cards = display.ut_elementCaches().cards;
+    TEST_ASSERT_EQUAL_INT_MESSAGE(2, cards.lastDrawnCount,
+                                  "each distinct live V1 table row must retain one available card");
+    TEST_ASSERT_EQUAL_UINT8(2, cards.slots[0].alert.v1Index);
+    TEST_ASSERT_EQUAL_UINT8(3, cards.slots[1].alert.v1Index);
+    TEST_ASSERT_FALSE(cards.lastDrawnPositions[0].isGraced);
+    TEST_ASSERT_FALSE(cards.lastDrawnPositions[1].isGraced);
+}
+
+void test_compacted_same_frequency_rows_keep_one_to_one_card_continuity() {
+    settings.slotAlertPersistSec[0] = 2;
+    AlertData oldPriority = AlertData::create(BAND_K, DIR_FRONT, 5, 0, 24125, true, true);
+    oldPriority.v1Index = 1;
+    AlertData oldSecondaryA = AlertData::create(BAND_K, DIR_SIDE, 3, 0, 24125, true, false);
+    oldSecondaryA.v1Index = 2;
+    AlertData oldSecondaryB = AlertData::create(BAND_K, DIR_REAR, 4, 0, 24125, true, false);
+    oldSecondaryB.v1Index = 3;
+    AlertData before[] = {oldPriority, oldSecondaryA, oldSecondaryB};
+    display.ut_drawSecondaryAlertCards(before, 3, oldPriority, false);
+    TEST_ASSERT_EQUAL_INT(2, display.ut_elementCaches().cards.lastDrawnCount);
+
+    AlertData newPriority = oldSecondaryA;
+    newPriority.v1Index = 1;
+    newPriority.isPriority = true;
+    AlertData remainingSecondary = oldSecondaryB;
+    remainingSecondary.v1Index = 2;
+    AlertData after[] = {newPriority, remainingSecondary};
+    ++mockMillis;
+    display.ut_drawSecondaryAlertCards(after, 2, newPriority, false);
+
+    const auto& cards = display.ut_elementCaches().cards;
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, cards.lastDrawnCount,
+                                  "compacted assignments must not duplicate one live same-frequency row");
+    TEST_ASSERT_EQUAL_UINT8(2, cards.slots[0].alert.v1Index);
+    TEST_ASSERT_EQUAL_UINT8(DIR_REAR, cards.slots[0].alert.direction);
+    TEST_ASSERT_FALSE(cards.lastDrawnPositions[0].isGraced);
+    settings.slotAlertPersistSec[0] = 0;
+}
+
+void test_nearby_photo_row_remains_distinct_from_ordinary_k_priority() {
+    AlertData priority = AlertData::create(BAND_K, DIR_FRONT, 5, 0, 24125, true, true);
+    priority.v1Index = 1;
+    AlertData photo = AlertData::create(BAND_K, DIR_SIDE, 6, 0, 24127, true, false);
+    photo.v1Index = 2;
+    photo.photoType = 1;
+    AlertData alerts[] = {priority, photo};
+
+    display.ut_drawSecondaryAlertCards(alerts, 2, priority, false);
+
+    const auto& cards = display.ut_elementCaches().cards;
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, cards.lastDrawnCount,
+                                  "row identity must outrank the renderer frequency-tolerance window");
+    TEST_ASSERT_EQUAL_UINT8(1, cards.lastDrawnPositions[0].photoType);
+    TEST_ASSERT_EQUAL_UINT8(2, cards.slots[0].alert.v1Index);
+}
+
 // Regression: the composer feeds a live alert list where the priority leads.
-// A frame-to-frame priority frequency jitter beyond alertsMatch's ±2 MHz must
-// NOT be treated as a priority handoff — before the jitter guard, it admitted
-// a ghost copy of the live priority into slot 0 that re-admitted after every
-// grace expiry ("first card never clears").
+// A synthetic priority without a V1 row assignment can jitter beyond the
+// ±2 MHz identity fallback. It must NOT be treated as a priority handoff —
+// before the jitter guard, it admitted a ghost copy of the live priority into
+// slot 0 that re-admitted after every grace expiry ("first card never clears").
 void test_priority_frequency_jitter_does_not_admit_ghost_card() {
     AlertData p1 = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700, true, true);
     AlertData alerts1[1] = {p1};
@@ -870,6 +953,10 @@ int main(int, char**) {
     RUN_TEST(test_empty_card_clear_is_noop_when_no_cards_were_drawn);
     RUN_TEST(test_card_clear_repaints_and_resets_previous_drawn_card_state);
     RUN_TEST(test_same_k_card_repaints_when_v1_reclassifies_it_as_photo);
+    RUN_TEST(test_distinct_v1_rows_at_same_frequency_keep_secondary_card);
+    RUN_TEST(test_three_same_frequency_v1_rows_keep_both_secondary_cards);
+    RUN_TEST(test_compacted_same_frequency_rows_keep_one_to_one_card_continuity);
+    RUN_TEST(test_nearby_photo_row_remains_distinct_from_ordinary_k_priority);
     RUN_TEST(test_priority_frequency_jitter_does_not_admit_ghost_card);
     RUN_TEST(test_secondary_frequency_jitter_refreshes_slot_without_duplicate);
     RUN_TEST(test_secondary_frequency_drift_repaints_text_despite_bar_updates);

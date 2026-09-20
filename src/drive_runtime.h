@@ -130,6 +130,9 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     void processGps(uint32_t nowMs);
     void processSpeed(uint32_t nowMs);
     void processSpeedAlert(uint32_t nowMs);
+    bool hasLiveAlertPresentation() const;
+    bool powerAlertPresentationNeedsRestore() const;
+    void servicePowerAlertPresentation(uint32_t nowMs, bool liveAlertPresentation);
     DisplayEdges consumeDisplayEdges();
     void presentDisplay(const DisplayEdges& edges, bool overloadThisLoop);
     DriveLoopDispatch processConnectionDispatch(bool powerPresentationOwned);
@@ -217,7 +220,7 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     uint32_t settingsOperationStartedMs_ = 0;
     uint32_t settingsOperationStateStartedMs_ = 0;
     uint32_t settingsRecaptureIngressBoundary_ = 0;
-    uint32_t settingsReturnRetryAtMs_ = 0;
+    V1SettingsOperationPolicy::ReturnToMaintenanceRetry settingsReturnRetry_;
     uint32_t settingsOperationNextActionMs_ = 0;
     V1SettingsOperationStore::State observedSettingsOperationState_ =
         V1SettingsOperationStore::State::None;

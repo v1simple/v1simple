@@ -5,6 +5,7 @@
 
 #include <ArduinoJson.h>
 
+#include "json_exact_input.h"
 #include "modules/obd/obd_runtime_module.h"
 #include "modules/wifi/wifi_api_response.h"
 #include "modules/wifi/wifi_json_document.h"
@@ -77,7 +78,7 @@ void sendFieldTypeError(WebServer& server, const char* key, const char* expected
 // a rejected request never lands a partial update.
 bool readOptionalBool(WebServer& server, const JsonDocument& body, const char* key, bool& hasValue, bool& out) {
     JsonVariantConst value = body[key];
-    if (value.isNull()) {
+    if (value.isUnbound()) {
         return true;
     }
     if (!value.is<bool>()) {
@@ -91,7 +92,7 @@ bool readOptionalBool(WebServer& server, const JsonDocument& body, const char* k
 
 bool readOptionalInt(WebServer& server, const JsonDocument& body, const char* key, bool& hasValue, int& out) {
     JsonVariantConst value = body[key];
-    if (value.isNull()) {
+    if (value.isUnbound()) {
         return true;
     }
     if (!value.is<int>()) {
@@ -230,11 +231,31 @@ void handleApiConfig(WebServer& server, ObdRuntimeModule* obdRuntime, SettingsMa
     }
 
     const String requestBody = server.arg("plain");
+    const ExactJsonInput::Status exact = ExactJsonInput::validate(requestBody.c_str(), requestBody.length());
+    if (exact == ExactJsonInput::Status::MemoryUnavailable) {
+        WifiJson::Document errDoc;
+        WifiApiResponse::setErrorAndMessage(errDoc, "JSON validation memory unavailable");
+        WifiApiResponse::sendJsonDocument(server, 503, errDoc);
+        return;
+    }
+    if (exact != ExactJsonInput::Status::Ok) {
+        WifiJson::Document errDoc;
+        WifiApiResponse::setErrorAndMessage(errDoc, "Invalid JSON");
+        WifiApiResponse::sendJsonDocument(server, 400, errDoc);
+        return;
+    }
+
     WifiJson::Document body;
-    DeserializationError err = deserializeJson(body, requestBody);
+    const DeserializationError err = deserializeJson(body, requestBody);
     if (err) {
         WifiJson::Document errDoc;
         WifiApiResponse::setErrorAndMessage(errDoc, "Invalid JSON");
+        WifiApiResponse::sendJsonDocument(server, 400, errDoc);
+        return;
+    }
+    if (!body.is<JsonObjectConst>()) {
+        WifiJson::Document errDoc;
+        WifiApiResponse::setErrorAndMessage(errDoc, "JSON body must be an object");
         WifiApiResponse::sendJsonDocument(server, 400, errDoc);
         return;
     }

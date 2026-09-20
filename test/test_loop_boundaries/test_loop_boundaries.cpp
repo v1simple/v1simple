@@ -34,6 +34,7 @@ enum class Call {
     GPS,
     SPEED,
     ALERT,
+    POWER_ALERT_PRESENTATION,
     DISPLAY_EDGE,
     DISPLAY_PRESENTATION,
     CONNECTION_DISPATCH,
@@ -92,6 +93,9 @@ struct FakeDriveRuntime {
     bool liveAlertPreemptsSettings = false;
     bool settingsPreempted = false;
     bool queueBackpressured = false;
+    bool liveAlertPresentation = false;
+    bool warningNeedsRestore = false;
+    std::vector<bool> powerAlertPresentationStates;
     FakeConnectionSnapshot connection;
     std::vector<Call> calls;
     std::vector<MaintenanceCall> maintenanceCalls;
@@ -148,6 +152,13 @@ struct FakeDriveRuntime {
     void processGps(uint32_t) { calls.push_back(Call::GPS); }
     void processSpeed(uint32_t) { calls.push_back(Call::SPEED); }
     void processSpeedAlert(uint32_t) { calls.push_back(Call::ALERT); }
+    bool hasLiveAlertPresentation() const { return liveAlertPresentation; }
+    bool powerAlertPresentationNeedsRestore() const { return warningNeedsRestore; }
+    void servicePowerAlertPresentation(uint32_t, bool liveAlert) {
+        calls.push_back(Call::POWER_ALERT_PRESENTATION);
+        powerAlertPresentationStates.push_back(liveAlert);
+        warningNeedsRestore = liveAlert;
+    }
 
     FakeDisplayEdges consumeDisplayEdges() {
         calls.push_back(Call::DISPLAY_EDGE);
@@ -295,6 +306,30 @@ void test_warning_acquired_during_power_phase_suppresses_same_tick_touch_and_dis
     TEST_ASSERT_TRUE(called(runtime, Call::CONNECTION_DISPATCH));
 }
 
+void test_live_alert_preempts_power_warning_then_warning_returns_after_clear() {
+    FakeDriveRuntime runtime;
+    runtime.presentationOwned = true;
+    runtime.liveAlertPresentation = true;
+
+    DriveLoopCoordinator::tick(runtime);
+
+    TEST_ASSERT_TRUE(called(runtime, Call::DISPLAY_PRESENTATION));
+    TEST_ASSERT_EQUAL_UINT(1, runtime.powerAlertPresentationStates.size());
+    TEST_ASSERT_TRUE(runtime.powerAlertPresentationStates[0]);
+    TEST_ASSERT_TRUE(runtime.warningNeedsRestore);
+
+    runtime.calls.clear();
+    runtime.powerAlertPresentationStates.clear();
+    runtime.liveAlertPresentation = false;
+    DriveLoopCoordinator::tick(runtime);
+
+    TEST_ASSERT_TRUE_MESSAGE(called(runtime, Call::DISPLAY_PRESENTATION),
+                             "the alert-clear edge must reach the pipeline before warning restoration");
+    TEST_ASSERT_EQUAL_UINT(1, runtime.powerAlertPresentationStates.size());
+    TEST_ASSERT_FALSE(runtime.powerAlertPresentationStates[0]);
+    TEST_ASSERT_FALSE(runtime.warningNeedsRestore);
+}
+
 void test_settings_remains_open_after_alp_processing_without_live_alert() {
     FakeDriveRuntime runtime;
     runtime.inSettings = true;
@@ -433,6 +468,7 @@ int main() {
     RUN_TEST(test_drive_coordinator_executes_production_phase_order);
     RUN_TEST(test_power_owner_suppresses_touch_and_presentations_but_keeps_runtime_live);
     RUN_TEST(test_warning_acquired_during_power_phase_suppresses_same_tick_touch_and_display);
+    RUN_TEST(test_live_alert_preempts_power_warning_then_warning_returns_after_clear);
     RUN_TEST(test_settings_remains_open_after_alp_processing_without_live_alert);
     RUN_TEST(test_live_alert_preempts_settings_after_single_alp_processing_pass);
     RUN_TEST(test_inactive_drive_runtime_executes_no_phase);

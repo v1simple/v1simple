@@ -190,8 +190,8 @@ not create `expected.csv` or any other artifact.
 offset_s,phase,active_alert_count,priority_frequency_mhz,priority_band,priority_direction,priority_bars,scenario_arrow_blink,card_1_frequency_mhz,card_1_direction,card_1_bars,card_2_frequency_mhz,card_2_direction,card_2_bars
 ```
 
-Frequencies are integer MHz, bands are stable `X`/`K`/`Ka` tokens, directions are
-`FRONT`, `SIDE`, or `REAR`, and absent priority/card fields are empty. The
+Frequencies are integer MHz, bands are stable `X`/`K`/`Ka`/`KU`/`LASER` tokens,
+directions are `FRONT`, `SIDE`, or `REAR`, and absent priority/card fields are empty. The
 `scenario_arrow_blink` column records authored scenario intent independently of
 an explicit steady or stress control. Priority fields drive the main display
 packet. Card fields list active secondary alerts in alert-table order with their

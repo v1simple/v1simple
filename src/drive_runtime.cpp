@@ -486,10 +486,7 @@ void DriveRuntime::servicePowerDisplayOwnership(uint32_t nowMs) {
 }
 
 bool DriveRuntime::preemptSettingsForLiveAlert() {
-    AlertData v1Priority;
-    const bool v1LiveAlert = parser_.hasAlerts() && parser_.getRenderablePriorityAlert(v1Priority);
-    const bool alpLiveAlert = alp_.ownsLaserDisplay() && alp_.currentEvent().active;
-    return (v1LiveAlert || alpLiveAlert) && touchUi_.preemptForLiveAlert();
+    return hasLiveAlertPresentation() && touchUi_.preemptForLiveAlert();
 }
 
 void DriveRuntime::processTapGesture(uint32_t nowMs) {
@@ -631,6 +628,30 @@ void DriveRuntime::processSpeedAlert(uint32_t nowMs) {
                             settings.speedMuteVoice);
     const SpeedSelection speed = speed_.selectedSpeed();
     speedMute_.update(speed.speedMph, speed.valid, nowMs);
+}
+
+bool DriveRuntime::hasLiveAlertPresentation() const {
+    AlertData v1Priority;
+    const bool v1LiveAlert = parser_.hasAlerts() && parser_.getRenderablePriorityAlert(v1Priority);
+    const bool alpLiveAlert = alp_.ownsLaserDisplay() && alp_.currentEvent().active;
+    return v1LiveAlert || alpLiveAlert;
+}
+
+bool DriveRuntime::powerAlertPresentationNeedsRestore() const {
+    return power_.criticalBatteryWarningNeedsRestore();
+}
+
+void DriveRuntime::servicePowerAlertPresentation(uint32_t nowMs, bool liveAlertPresentation) {
+    if (!power_.ownsDisplayPresentation()) {
+        return;
+    }
+    if (liveAlertPresentation) {
+        if (!power_.criticalBatteryWarningNeedsRestore() && displayPipeline_.restoreCurrentOwner(nowMs)) {
+            power_.noteCriticalBatteryWarningPreempted();
+        }
+        return;
+    }
+    power_.restoreCriticalBatteryWarning();
 }
 
 DriveRuntime::DisplayEdges DriveRuntime::consumeDisplayEdges() {
@@ -779,7 +800,7 @@ void DriveRuntime::processSettingsOperation(uint32_t nowMs) {
         factoryResetSummaryPersistedThisBoot_ = false;
         factoryResetSentComponents_ = {};
         settingsWrongDetectorDisconnectPending_ = false;
-        settingsReturnRetryAtMs_ = 0;
+        settingsReturnRetry_.clear();
     } else if (initial.state != observedSettingsOperationState_) {
         observedSettingsOperationState_ = initial.state;
         settingsOperationStateStartedMs_ = nowMs;
@@ -792,10 +813,8 @@ void DriveRuntime::processSettingsOperation(uint32_t nowMs) {
     }
 
     if (settingsOperations_.isTerminal()) {
-        if (initial.returnToMaintenance &&
-            V1SettingsOperationPolicy::returnToMaintenanceRetryDue(nowMs, settingsReturnRetryAtMs_)) {
-            settingsReturnRetryAtMs_ =
-                V1SettingsOperationPolicy::nextReturnToMaintenanceRetryAt(nowMs);
+        if (initial.returnToMaintenance && settingsReturnRetry_.due(nowMs)) {
+            settingsReturnRetry_.defer(nowMs);
             requestMaintenanceBootRestart();
         }
         return;

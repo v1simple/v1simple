@@ -45,6 +45,27 @@ bool bodyContains(const WebServer& server, const char* text) {
     return std::string(server.lastBody.c_str()).find(text) != std::string::npos;
 }
 
+void assertConfigRejectedWithoutMutation(const char* requestBody, const char* expectedMessage) {
+    WebServer server(80);
+    SettingsManager settings;
+    Probe probe;
+    settings.getMutable().obdEnabled = false;
+    settings.getMutable().obdMinRssi = -85;
+    settings.getMutable().obdScanWindowMs = 19000;
+    server.setArg("plain", requestBody);
+
+    ObdApiService::handleApiConfig(server, nullptr, settings, maintenanceRuntime(probe));
+
+    TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
+    TEST_ASSERT_TRUE(bodyContains(server, expectedMessage));
+    TEST_ASSERT_FALSE(settings.get().obdEnabled);
+    TEST_ASSERT_EQUAL_INT8(-85, settings.get().obdMinRssi);
+    TEST_ASSERT_EQUAL_UINT32(19000, settings.get().obdScanWindowMs);
+    TEST_ASSERT_EQUAL_INT(0, settings.saveCalls);
+    TEST_ASSERT_EQUAL_INT(0, settings.saveDeferredBackupCalls);
+    TEST_ASSERT_EQUAL_INT(0, probe.syncCalls);
+}
+
 } // namespace
 
 void setUp() {}
@@ -70,6 +91,7 @@ void test_maintenance_config_update_persists_immediately_without_live_runtime_sy
     WebServer server(80);
     SettingsManager settings;
     Probe probe;
+    settings.getMutable().proxyOpenWindowMs = 44000;
     server.setArg("plain", "{\"obdScanWindowMs\":24000,\"v1SettleQuietMs\":900}");
 
     ObdApiService::handleApiConfig(server, nullptr, settings, maintenanceRuntime(probe));
@@ -77,11 +99,42 @@ void test_maintenance_config_update_persists_immediately_without_live_runtime_sy
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_EQUAL_UINT32(24000, settings.get().obdScanWindowMs);
     TEST_ASSERT_EQUAL_UINT32(900, settings.get().v1SettleQuietMs);
+    TEST_ASSERT_EQUAL_UINT32(44000, settings.get().proxyOpenWindowMs);
     TEST_ASSERT_EQUAL_INT(1, settings.saveCalls);
     TEST_ASSERT_EQUAL_INT(0, settings.saveDeferredBackupCalls);
     TEST_ASSERT_EQUAL_INT(0, probe.syncCalls);
     TEST_ASSERT_EQUAL_INT(1, probe.activityCalls);
     TEST_ASSERT_EQUAL_INT(1, probe.rateLimitCalls);
+}
+
+void test_config_rejects_trailing_non_json_bytes_without_mutation() {
+    assertConfigRejectedWithoutMutation("{\"enabled\":true}x", "Invalid JSON");
+}
+
+void test_config_rejects_concatenated_json_roots_without_mutation() {
+    assertConfigRejectedWithoutMutation("{\"enabled\":true}{\"minRssi\":-90}", "Invalid JSON");
+}
+
+void test_config_rejects_array_root_without_mutation() {
+    assertConfigRejectedWithoutMutation("[{\"enabled\":true}]", "JSON body must be an object");
+}
+
+void test_config_rejects_explicit_null_values_as_wrong_types_without_mutation() {
+    assertConfigRejectedWithoutMutation("{\"enabled\":null}", "Field 'enabled' must be a boolean");
+    assertConfigRejectedWithoutMutation("{\"minRssi\":null}", "Field 'minRssi' must be an integer");
+}
+
+void test_config_accepts_trailing_json_whitespace() {
+    WebServer server(80);
+    SettingsManager settings;
+    Probe probe;
+    server.setArg("plain", "{\"enabled\":true} \t\r\n");
+
+    ObdApiService::handleApiConfig(server, nullptr, settings, maintenanceRuntime(probe));
+
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    TEST_ASSERT_TRUE(settings.get().obdEnabled);
+    TEST_ASSERT_EQUAL_INT(1, settings.saveCalls);
 }
 
 void test_maintenance_config_accepts_authoritative_min_rssi_floor() {
@@ -182,6 +235,11 @@ int main() {
     UNITY_BEGIN();
     RUN_TEST(test_maintenance_config_get_exposes_live_settings_without_retired_wifi_dwell);
     RUN_TEST(test_maintenance_config_update_persists_immediately_without_live_runtime_sync);
+    RUN_TEST(test_config_rejects_trailing_non_json_bytes_without_mutation);
+    RUN_TEST(test_config_rejects_concatenated_json_roots_without_mutation);
+    RUN_TEST(test_config_rejects_array_root_without_mutation);
+    RUN_TEST(test_config_rejects_explicit_null_values_as_wrong_types_without_mutation);
+    RUN_TEST(test_config_accepts_trailing_json_whitespace);
     RUN_TEST(test_maintenance_config_accepts_authoritative_min_rssi_floor);
     RUN_TEST(test_legacy_wifi_dwell_key_is_accepted_but_ignored_at_api_parse_boundary);
     RUN_TEST(test_maintenance_forget_updates_storage_without_obd_runtime_instance);

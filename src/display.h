@@ -51,7 +51,7 @@ class V1Display {
 
     // Update display with current state
     void update(const DisplayState& state);
-    // Multi-alert display: shows the priority alert; secondary alerts remain non-visual context
+    // Multi-alert display: shows the priority alert and eligible secondary-alert cards.
     void update(const AlertData& priority, const AlertData* allAlerts, int alertCount, const DisplayState& state);
 
     // Persisted alert display (shows last alert in dark grey after V1 clears it)

@@ -461,18 +461,31 @@ void test_failed_return_ack_preserves_retryable_return_intent() {
 void test_return_retry_policy_is_bounded_and_rollover_safe() {
     using namespace V1SettingsOperationPolicy;
 
-    TEST_ASSERT_TRUE(returnToMaintenanceRetryDue(100u, 0u));
-    const uint32_t retryAt = nextReturnToMaintenanceRetryAt(100u);
-    TEST_ASSERT_EQUAL_UINT32(2100u, retryAt);
-    TEST_ASSERT_FALSE(returnToMaintenanceRetryDue(2099u, retryAt));
-    TEST_ASSERT_TRUE(returnToMaintenanceRetryDue(2100u, retryAt));
+    ReturnToMaintenanceRetry retry;
+    TEST_ASSERT_TRUE(retry.due(100u));
+    retry.defer(100u);
+    TEST_ASSERT_FALSE(retry.due(2099u));
+    TEST_ASSERT_TRUE(retry.due(2100u));
 
-    const uint32_t beforeWrap = UINT32_MAX - 500u;
-    const uint32_t wrappedRetryAt = nextReturnToMaintenanceRetryAt(beforeWrap);
-    TEST_ASSERT_EQUAL_UINT32(1499u, wrappedRetryAt);
-    TEST_ASSERT_FALSE(returnToMaintenanceRetryDue(UINT32_MAX, wrappedRetryAt));
-    TEST_ASSERT_FALSE(returnToMaintenanceRetryDue(1498u, wrappedRetryAt));
-    TEST_ASSERT_TRUE(returnToMaintenanceRetryDue(1499u, wrappedRetryAt));
+    retry.defer(UINT32_MAX - 500u);
+    TEST_ASSERT_FALSE(retry.due(UINT32_MAX));
+    TEST_ASSERT_FALSE(retry.due(1498u));
+    TEST_ASSERT_TRUE(retry.due(1499u));
+
+    retry.clear();
+    TEST_ASSERT_TRUE(retry.due(1499u));
+}
+
+void test_return_retry_deadline_zero_remains_armed_at_exact_rollover() {
+    using namespace V1SettingsOperationPolicy;
+
+    ReturnToMaintenanceRetry retry;
+    const uint32_t exactZeroDeadlineStart = UINT32_MAX - kReturnToMaintenanceRetryMs + 1u;
+    retry.defer(exactZeroDeadlineStart);
+
+    TEST_ASSERT_FALSE(retry.due(exactZeroDeadlineStart));
+    TEST_ASSERT_FALSE(retry.due(UINT32_MAX));
+    TEST_ASSERT_TRUE(retry.due(0u));
 }
 
 void test_new_operation_is_rejected_while_one_is_active_and_storage_failures_are_retryable() {
@@ -514,6 +527,7 @@ int main() {
     RUN_TEST(test_return_ack_is_durable_and_not_replayed_on_later_normal_boot);
     RUN_TEST(test_failed_return_ack_preserves_retryable_return_intent);
     RUN_TEST(test_return_retry_policy_is_bounded_and_rollover_safe);
+    RUN_TEST(test_return_retry_deadline_zero_remains_armed_at_exact_rollover);
     RUN_TEST(test_new_operation_is_rejected_while_one_is_active_and_storage_failures_are_retryable);
     return UNITY_END();
 }

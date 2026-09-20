@@ -73,6 +73,8 @@ void PowerModule::begin(BatteryManager* batteryMgr, V1Display* disp, SettingsMan
     display_ = disp;
     settings_ = settings;
     criticalBatteryPresentationActive_ = false;
+    criticalBatteryWarningVisible_ = false;
+    criticalBatteryWarningPreempted_ = false;
     displayRestorePending_ = false;
     displayBrightnessRestorePending_ = false;
     criticalBatteryTime_ = 0;
@@ -99,8 +101,26 @@ void PowerModule::releaseCriticalBatteryPresentation() {
         return;
     }
     criticalBatteryPresentationActive_ = false;
+    criticalBatteryWarningVisible_ = false;
+    criticalBatteryWarningPreempted_ = false;
     criticalBatteryTime_ = 0;
     requestDisplayRestore();
+}
+
+void PowerModule::noteCriticalBatteryWarningPreempted() {
+    if (criticalBatteryPresentationActive_) {
+        criticalBatteryWarningVisible_ = false;
+        criticalBatteryWarningPreempted_ = true;
+    }
+}
+
+void PowerModule::restoreCriticalBatteryWarning() {
+    if (!criticalBatteryPresentationActive_ || criticalBatteryWarningVisible_ || !display_) {
+        return;
+    }
+    display_->showLowBattery();
+    criticalBatteryWarningVisible_ = true;
+    criticalBatteryWarningPreempted_ = false;
 }
 
 void PowerModule::logStartupStatus() {
@@ -198,9 +218,10 @@ void PowerModule::process(unsigned long nowMs) {
 #ifndef CAR_MODE_PWR_SHORT
     if (battery_->criticalProtectionRequired()) {
         if (!criticalBatteryPresentationActive_) {
-            Serial.println("[Battery] CRITICAL - showing low battery warning");
-            display_->showLowBattery();
+            Serial.println("[Battery] CRITICAL - arming low battery warning");
             criticalBatteryPresentationActive_ = true;
+            criticalBatteryWarningVisible_ = false;
+            criticalBatteryWarningPreempted_ = false;
             criticalBatteryTime_ = nowMs;
         } else if (nowMs - criticalBatteryTime_ > 5000) {
             // Any successful sample from the warning window is fresh enough to

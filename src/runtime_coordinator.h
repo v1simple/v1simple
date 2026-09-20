@@ -78,9 +78,19 @@ class DriveLoopCoordinator {
         runtime.processSpeed(timing.nowMs);
         runtime.processSpeedAlert(timing.nowMs);
 
+        const bool liveAlertPresentation =
+            powerPresentationOwned && runtime.hasLiveAlertPresentation();
+        if (liveAlertPresentation) {
+            runtime.servicePowerAlertPresentation(timing.nowMs, true);
+        }
+        const bool restoreWarningAfterAlert =
+            powerPresentationOwned && !liveAlertPresentation && runtime.powerAlertPresentationNeedsRestore();
         const auto displayEdges = runtime.consumeDisplayEdges();
-        if (!powerPresentationOwned) {
+        if (!powerPresentationOwned || liveAlertPresentation || restoreWarningAfterAlert) {
             runtime.presentDisplay(displayEdges, overloadLate);
+        }
+        if (powerPresentationOwned && !liveAlertPresentation) {
+            runtime.servicePowerAlertPresentation(timing.nowMs, false);
         }
 
         const DriveLoopDispatch dispatch = runtime.processConnectionDispatch(powerPresentationOwned);

@@ -270,16 +270,17 @@ void test_failed_maintenance_return_ack_uses_bounded_retry_cadence() {
     const std::string process = extractFunctionBody(lifecycle, "void WiFiManager::process()");
     const std::string header = readFile(projectRoot() + "/src/wifi_manager.h");
 
-    const size_t due = process.find("returnToMaintenanceRetryDue(nowMs, settingsReturnRetryAtMs_)");
+    const size_t due = process.find("settingsReturnRetry_.due(nowMs)");
     const size_t acknowledge = process.find("acknowledgeDeliveredSettingsOperationReturn()", due);
-    const size_t schedule = process.find("nextReturnToMaintenanceRetryAt(nowMs)", acknowledge);
+    const size_t schedule = process.find("settingsReturnRetry_.defer(nowMs)", acknowledge);
 
     TEST_ASSERT_NOT_EQUAL(std::string::npos, due);
     TEST_ASSERT_NOT_EQUAL(std::string::npos, acknowledge);
     TEST_ASSERT_NOT_EQUAL(std::string::npos, schedule);
     TEST_ASSERT_TRUE(due < acknowledge);
     TEST_ASSERT_TRUE(acknowledge < schedule);
-    TEST_ASSERT_NOT_EQUAL(std::string::npos, header.find("uint32_t settingsReturnRetryAtMs_ = 0;"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                          header.find("ReturnToMaintenanceRetry settingsReturnRetry_;"));
 }
 
 void test_saved_network_test_persists_enable_before_replacing_runtime_activity() {

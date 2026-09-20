@@ -307,8 +307,9 @@ class AlpRuntimeModule {
 
     /**
      * Is there a live laser alert that should be shown on the display?
-     * True only while the ALP is actively alerting (ALERT_ACTIVE or
-     * NOISE_WINDOW). False during Warm-Up, TEARDOWN/LISTENING gaps,
+     * True while the ALP is actively alerting (ALERT_ACTIVE or NOISE_WINDOW),
+     * and during a gun-identified TEARDOWN gap that belongs to the same live
+     * engagement. False during Warm-Up, unconfirmed TEARDOWN/LISTENING gaps,
      * and when no engagement is active.
      */
     bool hasLaserEvent() const {

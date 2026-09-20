@@ -522,12 +522,11 @@ void WiFiManager::process() {
         // A durable-store failure must remain retryable without turning the
         // main loop into an unbounded NVS write loop.
         const uint32_t nowMs = static_cast<uint32_t>(millis());
-        if (V1SettingsOperationPolicy::returnToMaintenanceRetryDue(nowMs, settingsReturnRetryAtMs_)) {
+        if (settingsReturnRetry_.due(nowMs)) {
             if (acknowledgeDeliveredSettingsOperationReturn()) {
-                settingsReturnRetryAtMs_ = 0;
+                settingsReturnRetry_.clear();
             } else {
-                settingsReturnRetryAtMs_ =
-                    V1SettingsOperationPolicy::nextReturnToMaintenanceRetryAt(nowMs);
+                settingsReturnRetry_.defer(nowMs);
             }
         }
     }

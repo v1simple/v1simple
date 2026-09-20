@@ -739,7 +739,7 @@ final class V1SessionContractTests: XCTestCase {
             .reply(V1.ReplyDecision(
                 channel: .displayShort,
                 bytes: [
-                    0xAA, 0xD6, 0xEA, 0x66, 0x02, 0x16, 0xE8, 0xAB,
+                    0xAA, 0xD8, 0xEA, 0x66, 0x02, 0x16, 0xEA, 0xAB,
                 ])),
         ] + expectedDefinitions)
         XCTAssertEqual(

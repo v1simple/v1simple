@@ -120,6 +120,25 @@ describe('autopush route page', () => {
         unmount();
     });
 
+    it('submits mixed-case slot names in the firmware ASCII-uppercase form', async () => {
+        const fetchMock = installDefaultFetch();
+        const { unmount } = render(Page);
+
+        await screen.findByText('Highway');
+        await fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
+        await fireEvent.input(screen.getByDisplayValue('Default'), {
+            target: { value: 'Commute é' }
+        });
+        await fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+
+        await screen.findByText('Slot saved!');
+        const saveCall = fetchMock.mock.calls.find(
+            ([url, init]) => url === '/api/autopush/slot' && init?.method === 'POST'
+        );
+        expect(saveCall[1].body.get('name')).toBe('COMMUTE é');
+        unmount();
+    });
+
     it('discards draft edits when Cancel is pressed', async () => {
         installDefaultFetch();
         const { unmount } = render(Page);

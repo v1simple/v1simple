@@ -489,6 +489,7 @@ void test_canonical_v1_flow_control_packets_reach_the_session_owner() {
                            client.lastNotProcessedPacketId);
 
     std::vector<uint8_t> busy = makeFrame(PACKET_ID_INF_V1_BUSY, 3, 0);
+    busy[1] = 0xD8; // infV1Busy is General Broadcast, ESP 3.016 p40.
     busy[5] = PACKET_ID_REQ_MAX_SWEEP_INDEX;
     busy[6] = PACKET_ID_REQ_ALL_SWEEP_DEFINITIONS;
     TEST_ASSERT_TRUE(deliverRawNotify(busy.data(), busy.size(), kCharacteristic,

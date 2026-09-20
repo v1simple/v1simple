@@ -322,7 +322,10 @@ struct Encounter {
             }
             let mhz: UInt16
             if let ghz = sample.frequencyGHz, ghz > 0 {
-                mhz = UInt16(clamping: Int((ghz * 1000.0).rounded()))
+                guard let roundedMHz = Int(exactly: (ghz * 1000.0).rounded()) else {
+                    throw ReplayError.message("external replay input contains an invalid frequency")
+                }
+                mhz = UInt16(clamping: roundedMHz)
             } else {
                 mhz = UInt16(clamping: file.frequencyMHz)
             }

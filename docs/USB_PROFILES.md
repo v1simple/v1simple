@@ -55,8 +55,10 @@ the confirmed storage commit. These results do **not** claim that the detector
 received or applied a profile, or that display/audio behavior passed a camera
 test. Importing or saving a profile never writes live detector state. A later
 normal-runtime Auto-Push operation has its own per-component status and fresh
-readback rules; its proof-safe post-send boundaries can report a timeout rather
-than accept a response that may be stale. An error or uncertain commit ACK is
+readback rules. Focused user-byte and volume reads capture the notification
+boundary immediately before sending, so replies received during the send remain
+eligible when parsed later; notifications received before that boundary cannot
+verify the operation. An error or uncertain commit ACK is
 never reported as success, and the before-backup remains available for recovery.
 
 ## Upgrading existing device data

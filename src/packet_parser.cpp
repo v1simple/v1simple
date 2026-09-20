@@ -394,11 +394,12 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
                V1PacketFraming::hasCanonicalResponseEvidenceForDestination(data, length, 1, 0xD6);
 
     case PACKET_ID_INF_V1_BUSY: {
-        // ESP 3.015 carries one to five request IDs currently being processed.
+        // ESP 3.016 p40: one to five pending request IDs, always addressed
+        // to General Broadcast (D8), unlike targeted request rejection.
         // Each width must be origin/checksum/destination qualified before it
         // can suppress any writer.
         for (size_t count = 1; count <= 5; ++count) {
-            if (V1PacketFraming::hasCanonicalResponseEvidenceForDestination(data, length, count, 0xD6)) {
+            if (V1PacketFraming::hasCanonicalResponseEvidenceForDestination(data, length, count, 0xD8)) {
                 return true;
             }
         }

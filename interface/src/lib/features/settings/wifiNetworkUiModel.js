@@ -107,7 +107,8 @@ export function closeWifiEditorState(state, { force = false, actionInFlight = fa
 }
 
 export function buildWifiEditorRequest(state) {
-    const ssid = state.ssid.trim();
+    // Spaces are part of a network's identity, including during label-only edits.
+    const ssid = state.ssid;
     if (!ssid) return null;
 
     const body = {

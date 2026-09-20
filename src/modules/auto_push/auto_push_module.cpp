@@ -1078,15 +1078,13 @@ void AutoPushModule::process() {
         // from any earlier request that arrived after the write is now part of
         // the baseline and cannot prove this operation.
         state_.observationRevision = bleClient_->sessionUserBytesRevision();
+        // The callback may run while the synchronous send waits. Preserve its
+        // ingress as fresh even when queue parsing follows the send return.
+        state_.observationIngressBoundary = bleClient_->latestV1NotificationIngressSequence();
         if (!bleClient_->requestUserBytes()) {
             failWholePlan(&status_.userSettings, Outcome::READ_FAILED, FailureReason::USER_BYTES_READ_FAILED);
             return;
         }
-        // Sample only after the request send succeeds. Any callback that
-        // entered earlier (including one still queued) is part of the
-        // baseline; a very fast response that races this sample is safely
-        // excluded rather than falsely accepted.
-        state_.observationIngressBoundary = bleClient_->latestV1NotificationIngressSequence();
         state_.step = Step::UserVerify;
         state_.verifyDeadlineMs = now + kVerificationTimeoutMs;
         state_.nextStepAtMs = now;
@@ -1219,11 +1217,11 @@ void AutoPushModule::process() {
 
     case Step::VolumeRead:
         state_.observationRevision = parser_->allVolumeObservation().revision;
+        state_.observationIngressBoundary = bleClient_->latestV1NotificationIngressSequence();
         if (!bleClient_->requestAllVolume()) {
             failWholePlan(&status_.volume, Outcome::READ_FAILED, FailureReason::VOLUME_READ_FAILED);
             return;
         }
-        state_.observationIngressBoundary = bleClient_->latestV1NotificationIngressSequence();
         state_.step = Step::VolumeVerify;
         state_.verifyDeadlineMs = now + kVerificationTimeoutMs;
         state_.nextStepAtMs = now;

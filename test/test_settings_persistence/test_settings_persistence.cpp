@@ -4426,6 +4426,37 @@ void assert_generated_http_backup_round_trip(bool sd) {
 void test_generated_http_backup_round_trip_on_littlefs() { assert_generated_http_backup_round_trip(false); }
 void test_generated_http_backup_round_trip_on_sd() { assert_generated_http_backup_round_trip(true); }
 
+void test_wifi_default_labels_preserve_exact_ssids_and_remain_backupable_after_reboot() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    makeCurrentV21Source(manager.mutableSettings());
+    const char* ssids[] = {" Primary ", " Garage ", "   ", " Road "};
+    const char* labels[] = {"Saved", "Garage", "Saved", "Custom"};
+    for (size_t index = 0; index < kWifiStaSlotCount; ++index) {
+        TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(
+            index, ssids[index], "password123", index == 3 ? " Custom " : "", index));
+        TEST_ASSERT_EQUAL_STRING(ssids[index], manager.get().wifiStaSlots[index].ssid.c_str());
+        TEST_ASSERT_EQUAL_STRING(labels[index], manager.get().wifiStaSlots[index].label.c_str());
+    }
+
+    BackupApiService::BackupSnapshotCache cache;
+    WebServer download(80);
+    BackupApiService::handleApiBackup(download, cache, actualBackupRuntime(manager), nullptr, nullptr);
+    BackupApiService::releaseBackupSnapshotCache(cache);
+    TEST_ASSERT_EQUAL_INT(200, download.lastStatusCode);
+    TEST_ASSERT_TRUE(manager.backupToSD());
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_TRUE(rebooted.getNvsDiagnostic().healthy);
+    for (size_t index = 0; index < kWifiStaSlotCount; ++index) {
+        TEST_ASSERT_EQUAL_STRING(ssids[index], rebooted.get().wifiStaSlots[index].ssid.c_str());
+        TEST_ASSERT_EQUAL_STRING(labels[index], rebooted.get().wifiStaSlots[index].label.c_str());
+    }
+}
+
 void test_current_backup_schema_rejects_unknown_or_invalid_fields_before_any_mutation() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
@@ -5476,6 +5507,7 @@ int main() {
     RUN_TEST(test_actual_backup_now_preserves_same_due_profile_snapshot);
     RUN_TEST(test_generated_http_backup_round_trip_on_littlefs);
     RUN_TEST(test_generated_http_backup_round_trip_on_sd);
+    RUN_TEST(test_wifi_default_labels_preserve_exact_ssids_and_remain_backupable_after_reboot);
     RUN_TEST(test_current_backup_schema_rejects_unknown_or_invalid_fields_before_any_mutation);
     RUN_TEST(test_backup_builder_rejects_noncanonical_live_v21_state_for_http_and_sd);
     RUN_TEST(test_generated_v21_backup_is_applicable_and_rebuilds_identically);

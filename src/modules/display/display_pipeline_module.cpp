@@ -155,6 +155,7 @@ void DisplayPipelineModule::begin(const DisplayPipelineDependencies& dependencie
     alpPersistRefreshDeadlineMs_ = 0;
     pendingVoiceAction_ = VoiceAction{};
     hasPendingVoiceAction_ = false;
+    voiceRetryScheduled_ = false;
     nextVoiceAttemptMs_ = 0;
 }
 
@@ -319,6 +320,7 @@ void DisplayPipelineModule::runVoice(const RenderFrame& frame, const V1Settings&
     const FrameV1Alerts v1Alerts = buildFrameV1Alerts(frame);
     if (v1Alerts.alertCount == 0) {
         hasPendingVoiceAction_ = false;
+        voiceRetryScheduled_ = false;
         nextVoiceAttemptMs_ = 0;
         voice_->clearAllState();
         return;
@@ -342,11 +344,14 @@ void DisplayPipelineModule::runVoice(const RenderFrame& frame, const V1Settings&
 
     if (hasPendingVoiceAction_ && !pendingVoiceActionStillCurrent(pendingVoiceAction_, v1Alerts)) {
         hasPendingVoiceAction_ = false;
+        voiceRetryScheduled_ = false;
         nextVoiceAttemptMs_ = 0;
     }
-    if (static_cast<int32_t>(nowMs - nextVoiceAttemptMs_) < 0) {
+    // Zero is a valid retry deadline at millis() wrap, not an unarmed timer.
+    if (voiceRetryScheduled_ && static_cast<int32_t>(nowMs - nextVoiceAttemptMs_) < 0) {
         return;
     }
+    voiceRetryScheduled_ = false;
 
     if (hasPendingVoiceAction_ && !voice_->canAnnounceContext(voiceCtx)) {
         return; // Keep the unheard action eligible when current suppression lifts.
@@ -389,16 +394,19 @@ void DisplayPipelineModule::runVoice(const RenderFrame& frame, const V1Settings&
     if (playbackResult == AudioPlaybackResult::Accepted) {
         voice_->commitAction(voiceAction, nowMs);
         hasPendingVoiceAction_ = false;
+        voiceRetryScheduled_ = false;
         nextVoiceAttemptMs_ = 0;
     } else if (playbackResult == AudioPlaybackResult::Busy) {
         pendingVoiceAction_ = voiceAction;
         hasPendingVoiceAction_ = true;
+        voiceRetryScheduled_ = true;
         nextVoiceAttemptMs_ = nowMs + VOICE_RETRY_INTERVAL_MS;
     } else {
         // Missing/disabled audio is terminal for this attempt. Do not commit
         // dedup state, but also do not let one unavailable clip starve newer
         // current-frame decisions forever.
         hasPendingVoiceAction_ = false;
+        voiceRetryScheduled_ = true;
         nextVoiceAttemptMs_ = nowMs + 1000;
     }
 }

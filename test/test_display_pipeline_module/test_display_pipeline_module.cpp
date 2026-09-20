@@ -269,6 +269,62 @@ void test_busy_voice_keeps_exact_action_until_playback_accepts() {
     TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
 }
 
+void test_voice_without_retry_announces_across_signed_uptime_boundary() {
+    for (uint32_t nowMs : {0x7FFFFFFFu, 0x80000000u, 0xFFFFFFF0u}) {
+        setUp();
+        parser.setMainVolume(5);
+        parser.setAlerts({makeKAlert()});
+        module.handleParsed(nowMs);
+        TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_LIVE, display.lastRenderFrame.primaryKind);
+        TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
+
+        // Clearing an encounter must leave the next one eligible at any uptime.
+        parser.setAlerts({});
+        module.handleParsed(nowMs + 1u);
+        parser.setAlerts({makeKAlert(24250)});
+        module.handleParsed(nowMs + 2u);
+        TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
+        TEST_ASSERT_EQUAL_UINT16(24250, g_lastVoiceFrequency);
+    }
+}
+
+void test_busy_voice_retry_waits_across_wrap_including_zero_deadline() {
+    for (uint32_t startedAt : {UINT32_MAX - 49u, UINT32_MAX - 99u}) {
+        setUp();
+        parser.setMainVolume(5);
+        parser.setAlerts({makeKAlert()});
+        g_voicePlaybackResult = AudioPlaybackResult::Busy;
+        module.handleParsed(startedAt);
+        TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
+
+        g_voicePlaybackResult = AudioPlaybackResult::Accepted;
+        module.handleParsed(startedAt + 99u);
+        TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
+        module.handleParsed(startedAt + 100u);
+        TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
+        TEST_ASSERT_EQUAL_UINT16(24148, g_lastVoiceFrequency);
+        module.handleParsed(startedAt + 101u);
+        TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
+    }
+}
+
+void test_unavailable_voice_retry_waits_across_wrap_with_zero_deadline() {
+    parser.setMainVolume(5);
+    parser.setAlerts({makeKAlert()});
+    const uint32_t startedAt = UINT32_MAX - 999u;
+    g_voicePlaybackResult = AudioPlaybackResult::Unavailable;
+    module.handleParsed(startedAt);
+    TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
+
+    g_voicePlaybackResult = AudioPlaybackResult::Accepted;
+    module.handleParsed(startedAt + 999u);
+    TEST_ASSERT_EQUAL_INT(1, g_voicePlaybackAttempts);
+    module.handleParsed(0u);
+    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
+    module.handleParsed(1u);
+    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
+}
+
 void test_busy_voice_drops_stale_pending_action_when_alert_changes() {
     parser.setMainVolume(5);
     parser.setAlerts({makeKAlert(24148)});
@@ -1501,6 +1557,9 @@ int main() {
     RUN_TEST(test_handle_parsed_updates_live_display_when_alert_present);
     RUN_TEST(test_handle_parsed_promotes_display_v1_laser_and_keeps_radar_cards);
     RUN_TEST(test_busy_voice_keeps_exact_action_until_playback_accepts);
+    RUN_TEST(test_voice_without_retry_announces_across_signed_uptime_boundary);
+    RUN_TEST(test_busy_voice_retry_waits_across_wrap_including_zero_deadline);
+    RUN_TEST(test_unavailable_voice_retry_waits_across_wrap_with_zero_deadline);
     RUN_TEST(test_busy_voice_drops_stale_pending_action_when_alert_changes);
     RUN_TEST(test_busy_voice_honors_new_soft_mute_then_recovers);
     RUN_TEST(test_busy_voice_honors_new_volume_zero_then_recovers);

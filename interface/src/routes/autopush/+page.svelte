@@ -321,7 +321,8 @@
         try {
             const formData = new FormData();
             formData.append('slot', slot);
-            formData.append('name', s.name);
+            // Match firmware's ASCII-only uppercase display-name representation.
+            formData.append('name', s.name.replace(/[a-z]/g, (letter) => letter.toUpperCase()));
             formData.append('profile', s.profile);
             formData.append('clearProfile', s.profile ? 'false' : 'true');
             formData.append('alertPersist', persist);

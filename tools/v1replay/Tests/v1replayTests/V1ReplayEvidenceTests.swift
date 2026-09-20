@@ -76,6 +76,34 @@ final class V1ReplayEvidenceTests: XCTestCase {
         }
     }
 
+    func testExternalInputRejectsFrequencyConversionOverflow() throws {
+        // Both an out-of-range integer conversion and overflow during GHz-to-MHz
+        // scaling must be ordinary input errors, not process traps.
+        for frequency in [1e16, Double.greatestFiniteMagnitude] {
+            XCTAssertThrowsError(try loadExternal([[
+                "offsetSeconds": 0.0, "strength": 4, "direction": "FRONT",
+                "frequencyGHz": frequency,
+            ]])) { error in
+                XCTAssertEqual((error as? ReplayError)?.description,
+                               "external replay input contains an invalid frequency")
+            }
+        }
+    }
+
+    func testExternalInputPreservesFrequencyRoundingClampingAndFallback() throws {
+        let cases: [(Double, UInt16)] = [
+            (34.7, 34_700), (34.7006, 34_701), (65.536, 65_535),
+            (0, 34_700), (-1, 34_700),
+        ]
+        for (frequency, expectedMHz) in cases {
+            let encounter = try loadExternal([[
+                "offsetSeconds": 0.0, "strength": 4, "direction": "FRONT",
+                "frequencyGHz": frequency,
+            ]])
+            XCTAssertEqual(encounter.samples.first?.priorityAlert?.frequencyMHz, expectedMHz)
+        }
+    }
+
     func testExternalInputAcceptsStrengthBoundsAndDirectionAliasesWithoutTranslation() throws {
         let cases: [(strength: Int, name: String, direction: V1.Direction)] = [
             (0, "f", .front),

@@ -68,7 +68,7 @@ describe('WiFi network UI model', () => {
         });
     });
 
-    it('opens, normalizes, and cancels editor state without retaining credentials', () => {
+    it('normalizes labels and priority while preserving the exact SSID on a label-only edit', () => {
         const editor = openWifiEditorState(
             3,
             {
@@ -84,7 +84,7 @@ describe('WiFi network UI model', () => {
         expect(buildWifiEditorRequest(editor)).toEqual({
             index: 3,
             label: 'Phone',
-            ssid: 'Hotspot',
+            ssid: ' Hotspot ',
             priority: 255
         });
         expect(
@@ -94,5 +94,11 @@ describe('WiFi network UI model', () => {
             state: createWifiEditorState(),
             closed: true
         });
+    });
+
+    it('preserves whitespace-only SSIDs and rejects only an empty SSID', () => {
+        const editor = openWifiEditorState(null, { ssid: '   ' });
+        expect(buildWifiEditorRequest(editor).ssid).toBe('   ');
+        expect(buildWifiEditorRequest({ ...editor, ssid: '' })).toBeNull();
     });
 });

@@ -1259,7 +1259,7 @@ void test_sweep_responses_require_canonical_destination_checksum_and_index_bits(
     TEST_ASSERT_TRUE(parser.sweepDefinitionsObservation().poisoned);
 }
 
-void test_v1_flow_control_packets_require_canonical_targeted_shapes() {
+void test_v1_flow_control_packets_require_their_specified_destinations() {
     PacketParser parser;
 
     auto rejected = makePacket(PACKET_ID_RESP_REQUEST_NOT_PROCESSED, {PACKET_ID_REQ_MAX_SWEEP_INDEX, 0},
@@ -1268,26 +1268,35 @@ void test_v1_flow_control_packets_require_canonical_targeted_shapes() {
 
     auto busy = makePacket(PACKET_ID_INF_V1_BUSY,
                            {PACKET_ID_REQ_MAX_SWEEP_INDEX, PACKET_ID_REQ_ALL_SWEEP_DEFINITIONS, 0},
-                           0xEA, 0xD6);
+                           0xEA, 0xD8);
     TEST_ASSERT_TRUE(parser.parse(busy.data(), busy.size(), 1001, 2));
 
     auto noChecksumBusy = makePacket(PACKET_ID_INF_V1_BUSY,
-                                     {PACKET_ID_REQ_SWEEP_SECTIONS}, 0xE9, 0xD6);
+                                     {PACKET_ID_REQ_SWEEP_SECTIONS}, 0xE9, 0xD8);
     TEST_ASSERT_TRUE(parser.parse(noChecksumBusy.data(), noChecksumBusy.size(), 1002, 3));
+
+    // ESP 3.016 p40: infV1Busy is always General Broadcast (D8), even
+    // though respRequestNotProcessed is a targeted reply (D6).
+    const auto targetedBusy = makePacket(PACKET_ID_INF_V1_BUSY,
+                                         {PACKET_ID_REQ_MAX_SWEEP_INDEX, 0}, 0xEA, 0xD6);
+    TEST_ASSERT_FALSE(parser.parse(targetedBusy.data(), targetedBusy.size(), 1002, 4));
+    const auto fiveBusy = makePacket(PACKET_ID_INF_V1_BUSY,
+                                     {1, 2, 3, 4, 5, 0}, 0xEA, 0xD8);
+    TEST_ASSERT_TRUE(parser.parse(fiveBusy.data(), fiveBusy.size(), 1002, 5));
 
     rejected[1] = 0xD8;
     applyEspChecksum(rejected);
     TEST_ASSERT_FALSE(parser.parse(rejected.data(), rejected.size(), 1003, 4));
 
     busy = makePacket(PACKET_ID_INF_V1_BUSY,
-                      {PACKET_ID_REQ_MAX_SWEEP_INDEX, 0}, 0xEA, 0xD6);
+                      {PACKET_ID_REQ_MAX_SWEEP_INDEX, 0}, 0xEA, 0xD8);
     busy[busy.size() - 2] ^= 0x01;
     TEST_ASSERT_FALSE(parser.parse(busy.data(), busy.size(), 1004, 5));
 
-    const auto emptyBusy = makePacket(PACKET_ID_INF_V1_BUSY, {0}, 0xEA, 0xD6);
+    const auto emptyBusy = makePacket(PACKET_ID_INF_V1_BUSY, {0}, 0xEA, 0xD8);
     TEST_ASSERT_FALSE(parser.parse(emptyBusy.data(), emptyBusy.size(), 1005, 6));
     const auto tooManyBusy = makePacket(PACKET_ID_INF_V1_BUSY,
-                                        {1, 2, 3, 4, 5, 6, 0}, 0xEA, 0xD6);
+                                        {1, 2, 3, 4, 5, 6, 0}, 0xEA, 0xD8);
     TEST_ASSERT_FALSE(parser.parse(tooManyBusy.data(), tooManyBusy.size(), 1006, 7));
 }
 
@@ -1344,6 +1353,6 @@ int main(int argc, char** argv) {
     RUN_TEST(test_bluetooth_indicator_requires_supported_version_and_accepts_both_blink_images);
     RUN_TEST(test_sweep_collectors_poison_conflicts_and_require_exact_max_set);
     RUN_TEST(test_sweep_responses_require_canonical_destination_checksum_and_index_bits);
-    RUN_TEST(test_v1_flow_control_packets_require_canonical_targeted_shapes);
+    RUN_TEST(test_v1_flow_control_packets_require_their_specified_destinations);
     return UNITY_END();
 }

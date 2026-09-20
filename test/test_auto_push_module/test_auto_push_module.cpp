@@ -247,13 +247,11 @@ void observeUserBytes(const uint8_t* bytes, uint32_t ingressSequence = UINT32_MA
     ble.onUserBytesReceived(bytes, ingressSequence);
 }
 
-void injectMatchingUserBytesDuringSend() { observeUserBytes(ble.lastUserBytes); }
+uint32_t responseIngressDuringSend = 0;
+void queueResponseDuringSend() { responseIngressDuringSend = ble.noteV1NotificationIngress(); }
 void injectMatchingDisplayDuringSend() { observeDisplay(ble.lastDisplayOnValue, 1); }
 void injectMatchingModeDuringSend() { observeDisplay(true, ble.lastModeValue); }
 void injectMatchingVolumeDuringSend() { observeCurrentVolume(ble.lastVolume, ble.lastMuteVolume); }
-void injectMatchingAllVolumeDuringSend() {
-    observeAllVolume(ble.lastVolume, ble.lastMuteVolume, 4, 1);
-}
 
 bool statusContains(const char* text) {
     return module.getStatusJson().indexOf(text) >= 0;
@@ -2598,7 +2596,9 @@ void test_terminal_session_recheck_prevents_success_and_generation_qualifies_edg
     TEST_ASSERT_FALSE(ble.consumeVerifyPushMatchEdge());
 }
 
-void test_responses_ingressed_before_send_returns_cannot_verify_the_operation() {
+// The focused-read contract captures ingress before send: a notification can
+// arrive while the synchronous GATT write waits, then be parsed by the main loop.
+void test_user_reply_ingressed_during_send_verifies_after_queued_parsing() {
     configureProfile();
     auto& userOnly = profiles.loadableProfile.detector;
     userOnly.displayPolicy = V1DisplayPolicy::Unchanged;
@@ -2607,12 +2607,38 @@ void test_responses_ingressed_before_send_returns_cannot_verify_the_operation() 
     stageSnapshot(makeSnapshot());
     queueAndPreflight();
     at(100);
-    ble.requestUserBytesSendHook = injectMatchingUserBytesDuringSend;
+    ble.requestUserBytesSendHook = queueResponseDuringSend;
     at(130);
-    at(1630);
-    TEST_ASSERT_TRUE(statusContains("user_bytes_timeout"));
+    observeUserBytes(ble.lastUserBytes, responseIngressDuringSend);
+    at(130);
 
-    setUp();
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
+    TEST_ASSERT_EQUAL_INT(1, ble.requestUserBytesCalls);
+    TEST_ASSERT_TRUE(ble.consumeVerifyPushMatchEdge());
+}
+
+void test_volume_reply_ingressed_during_send_verifies_after_queued_parsing() {
+    configureProfile();
+    auto& volumeOnly = profiles.loadableProfile.detector;
+    volumeOnly.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
+    volumeOnly.displayPolicy = V1DisplayPolicy::Unchanged;
+    volumeOnly.modePolicy = V1ModePolicy::Unchanged;
+    stageSnapshot(makeSnapshot());
+    queueAndPreflight();
+    at(100);
+    ble.requestAllVolumeSendHook = queueResponseDuringSend;
+    at(130);
+    observeAllVolume(7, 3, 4, 1, 0xEA, false, 0xD6, responseIngressDuringSend);
+    at(130);
+
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_EQUAL_INT(1, ble.setVolumeCalls);
+    TEST_ASSERT_EQUAL_INT(1, ble.requestAllVolumeCalls);
+    TEST_ASSERT_TRUE(ble.consumeVerifyPushMatchEdge());
+}
+
+void test_unsolicited_display_and_mode_ingressed_during_write_cannot_verify_the_operation() {
     configureProfile();
     auto& displayOnly = profiles.loadableProfile.detector;
     displayOnly.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
@@ -2637,20 +2663,6 @@ void test_responses_ingressed_before_send_returns_cannot_verify_the_operation() 
     at(100);
     at(1600);
     TEST_ASSERT_TRUE(statusContains("mode_timeout"));
-
-    setUp();
-    configureProfile();
-    auto& volumeOnly = profiles.loadableProfile.detector;
-    volumeOnly.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
-    volumeOnly.displayPolicy = V1DisplayPolicy::Unchanged;
-    volumeOnly.modePolicy = V1ModePolicy::Unchanged;
-    stageSnapshot(makeSnapshot());
-    queueAndPreflight();
-    at(100);
-    ble.requestAllVolumeSendHook = injectMatchingAllVolumeDuringSend;
-    at(130);
-    at(1630);
-    TEST_ASSERT_TRUE(statusContains("volume_timeout"));
 }
 
 void test_write_and_read_failures_are_distinct_and_never_applied() {
@@ -2849,7 +2861,9 @@ int main() {
     RUN_TEST(test_queued_before_request_volume_evidence_cannot_verify_after_late_processing);
     RUN_TEST(test_ingress_sequence_wrap_skips_zero_and_accepts_only_the_later_response);
     RUN_TEST(test_terminal_session_recheck_prevents_success_and_generation_qualifies_edge);
-    RUN_TEST(test_responses_ingressed_before_send_returns_cannot_verify_the_operation);
+    RUN_TEST(test_user_reply_ingressed_during_send_verifies_after_queued_parsing);
+    RUN_TEST(test_volume_reply_ingressed_during_send_verifies_after_queued_parsing);
+    RUN_TEST(test_unsolicited_display_and_mode_ingressed_during_write_cannot_verify_the_operation);
     RUN_TEST(test_write_and_read_failures_are_distinct_and_never_applied);
     RUN_TEST(test_display_mode_and_volume_transport_failures_are_distinct_and_release_volume_lease);
     RUN_TEST(test_queue_failures_preserve_durable_admission_taxonomy);

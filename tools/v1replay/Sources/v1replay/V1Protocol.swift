@@ -561,11 +561,11 @@ enum V1 {
                      checksum: checksum)
     }
 
-    static func busyPacket(header: Header,
-                           requestIDs: [UInt8],
+    /// ESP 3.016 p40: infV1Busy is always addressed to General Broadcast.
+    static func busyPacket(requestIDs: [UInt8],
                            checksum: Bool) -> [UInt8] {
         precondition((1...5).contains(requestIDs.count), "InfV1Busy carries one to five IDs")
-        return frame(header: header,
+        return frame(header: .broadcastInformation,
                      id: PacketID.infV1Busy.rawValue,
                      payload: requestIDs,
                      checksum: checksum)

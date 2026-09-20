@@ -106,8 +106,25 @@ void test_queue_gap_prevents_cross_cycle_alert_table_publication() {
     TEST_ASSERT_EQUAL_UINT16(34700, parser.getAllAlerts()[1].frequency);
 }
 
+void test_spec_busy_broadcast_reaches_request_owner_but_targeted_busy_does_not() {
+    // ESP 3.016 p40 and p11: one pending ID, General Broadcast D8.
+    // Fixed wire vectors include independently summed checksums.
+    const std::vector<uint8_t> broadcast{0xAA, 0xD8, 0xEA, 0x66, 0x02, 0x19, 0xED, 0xAB};
+    const std::vector<uint8_t> targeted{0xAA, 0xD6, 0xEA, 0x66, 0x02, 0x19, 0xEB, 0xAB};
+    deliver(targeted, 1, 100);
+    TEST_ASSERT_EQUAL_INT(0, client.onV1BusyCalls);
+    TEST_ASSERT_FALSE(queue.consumeParsedFlag());
+
+    deliver(broadcast, 2, 101);
+    TEST_ASSERT_EQUAL_INT(1, client.onV1BusyCalls);
+    TEST_ASSERT_TRUE(queue.consumeParsedFlag());
+    TEST_ASSERT_EQUAL_UINT(1, client.lastBusyPacketIds.size());
+    TEST_ASSERT_EQUAL_HEX8(PACKET_ID_REQ_MAX_SWEEP_INDEX, client.lastBusyPacketIds[0]);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_queue_gap_prevents_cross_cycle_alert_table_publication);
+    RUN_TEST(test_spec_busy_broadcast_reaches_request_owner_but_targeted_busy_does_not);
     return UNITY_END();
 }

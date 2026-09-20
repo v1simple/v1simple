@@ -2066,11 +2066,14 @@ bool SettingsManager::setWifiStaSlotCredentials(size_t index, const String& ssid
     slot.ssid = std::move(preparedSsid);
     slot.label = std::move(preparedLabel);
     if (slot.label.length() == 0 && slot.ssid.length() > 0) {
-        if (index == 0) {
+        if (index != 0) {
+            if (!copyStringExact(slot.ssid, slot.label)) return false;
+            // A display label is trimmed; the SSID must retain its exact bytes.
+            slot.label.trim();
+        }
+        if (slot.label.length() == 0) {
             slot.label = "Saved";
             if (slot.label != "Saved") return false;
-        } else if (!copyStringExact(slot.ssid, slot.label)) {
-            return false;
         }
     }
     slot.priority = priority;

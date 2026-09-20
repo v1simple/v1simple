@@ -453,7 +453,6 @@ extension V1 {
                     replies.append(.reply(ReplyDecision(
                         channel: .displayShort,
                         bytes: V1.busyPacket(
-                            header: config.header,
                             requestIDs: [PacketID.reqAllSweepDefinitions.rawValue],
                             checksum: config.outboundChecksum
                         )

@@ -1272,6 +1272,10 @@ def collect_live(
                 "runtime_identity_continuous": True,
             }
             timeline.record("external_window_completed", **completion)
+            print(
+                "[bench] external window complete; finalizing raw evidence",
+                flush=True,
+            )
         finally:
             primary_error = sys.exc_info()[1]
             cleanup_errors: list[Exception] = []
@@ -1328,6 +1332,7 @@ def collect_live(
             raise CameraEvidenceFailure(
                 "camera leg did not retain complete raw evidence", camera
             )
+        print("[bench] raw evidence finalized", flush=True)
         return {
             "port": port,
             "completion": completion,

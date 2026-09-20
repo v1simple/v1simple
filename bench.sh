@@ -144,6 +144,7 @@ fi
   --stderr "$REPLAY_DIR/run.err" \
   --combined "$RUN_LOG" \
   --quiet \
+  --terminal-prefix '[bench]' \
   -- "$BENCH_PYTHON" "$ROOT_DIR/scripts/bench/run_window.py" \
     --suite replay \
     --duration-seconds "$DURATION_SECONDS" \

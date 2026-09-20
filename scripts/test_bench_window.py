@@ -510,6 +510,21 @@ def test_raw_bench_entrypoint_returns_complete_without_grading_artifacts() -> No
     source = (ROOT / "bench.sh").read_text(encoding="utf-8")
     assert_true("printf 'COMPLETE: %s\\n'" in source,
                 "raw bench does not report collection completion")
+    assert_true(
+        "--terminal-prefix '[bench]'" in source,
+        "raw bench hides its managed collection progress",
+    )
+    runner_source = (ROOT / "scripts" / "bench" / "run_window.py").read_text(
+        encoding="utf-8"
+    )
+    assert_true(
+        "[bench] external window complete; finalizing raw evidence" in runner_source,
+        "raw bench does not explain the post-window finalization delay",
+    )
+    assert_true(
+        "[bench] raw evidence finalized" in runner_source,
+        "raw bench does not report finalization completion",
+    )
     for retired in (
         "encounter_check",
         "counter_check",

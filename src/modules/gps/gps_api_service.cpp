@@ -5,6 +5,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 
+#include "json_exact_input.h"
 #include "modules/gps/gps_runtime_module.h"
 #include "modules/wifi/wifi_api_response.h"
 #include "modules/wifi/wifi_json_document.h"
@@ -98,7 +99,22 @@ void handleApiConfigSave(WebServer& server, SettingsManager& settings, GpsRuntim
 
     WifiJson::Document body;
     const String requestBody = server.arg("plain");
+    const ExactJsonInput::Status exact = ExactJsonInput::validate(requestBody.c_str(), requestBody.length());
+    if (exact == ExactJsonInput::Status::MemoryUnavailable) {
+        server.send(503, "application/json",
+                    "{\"success\":false,\"error\":\"JSON validation memory unavailable\"}");
+        return;
+    }
+    if (exact != ExactJsonInput::Status::Ok) {
+        sendRequestError(server, "Invalid JSON");
+        return;
+    }
     const DeserializationError err = deserializeJson(body, requestBody.c_str());
+    if (err == DeserializationError::NoMemory || body.overflowed()) {
+        server.send(503, "application/json",
+                    "{\"success\":false,\"error\":\"JSON validation memory unavailable\"}");
+        return;
+    }
     if (err) {
         sendRequestError(server, "Invalid JSON");
         return;

@@ -2,6 +2,7 @@
 
 #include "../mocks/Arduino.h"
 #include "../mocks/WebServer.h"
+#include "../mocks/mock_heap_caps_state.h"
 #include "../../src/modules/wifi/wifi_client_api_service.h"
 #include "../../src/modules/wifi/wifi_client_api_service.cpp"
 
@@ -97,8 +98,14 @@ bool contains(const String& body, const char* value) {
 
 } // namespace
 
-void setUp() {}
-void tearDown() {}
+void setUp() {
+    mock_reset_heap_caps();
+    g_mock_heap_caps_free_observer = nullptr;
+}
+void tearDown() {
+    g_mock_heap_caps_free_observer = nullptr;
+    mock_reset_heap_caps();
+}
 
 void test_forget_persistence_failure_is_not_reported_as_success() {
     WebServer server(80);
@@ -247,6 +254,89 @@ void test_priority_batch_success_returns_200_after_one_callback() {
     TEST_ASSERT_EQUAL_UINT(2u, probe.updates.size());
 }
 
+void test_mutating_json_routes_require_exact_roots_and_accept_valid_requests() {
+    Probe probe;
+    const auto runtime = makeRuntime(probe);
+
+    WebServer enable(80);
+    enable.setArg("plain", "{\"enabled\":true}x");
+    WifiClientApiService::handleApiEnable(enable, runtime, allow, nullptr, nullptr, nullptr);
+    TEST_ASSERT_EQUAL_INT(400, enable.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(0, probe.enableCalls);
+    TEST_ASSERT_EQUAL_INT(0, probe.disableCalls);
+
+    WebServer save(80);
+    save.setArg("plain", "{\"ssid\":\"Garage\"}trailing");
+    WifiClientApiService::handleApiNetworksSave(save, runtime, allow, nullptr, nullptr, nullptr);
+    TEST_ASSERT_EQUAL_INT(400, save.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(0, probe.upsertCalls);
+
+    WebServer remove(80);
+    remove.setArg("plain", "{\"index\":2}{\"index\":0}");
+    WifiClientApiService::handleApiNetworksDelete(remove, runtime, allow, nullptr, nullptr, nullptr);
+    TEST_ASSERT_EQUAL_INT(400, remove.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(0, probe.deleteCalls);
+
+    WebServer priorities(80);
+    priorities.setArg("plain", "{\"updates\":[{\"index\":0,\"priority\":1}]}x");
+    WifiClientApiService::handleApiNetworksPriorities(priorities, runtime, allow, nullptr, nullptr, nullptr);
+    TEST_ASSERT_EQUAL_INT(400, priorities.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(0, probe.priorityCalls);
+
+    WebServer test(80);
+    test.setArg("plain", "{\"index\":1}{\"index\":0}");
+    WifiClientApiService::handleApiNetworksTest(test, runtime, allow, nullptr, nullptr, nullptr);
+    TEST_ASSERT_EQUAL_INT(400, test.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(0, probe.testCalls);
+
+    WebServer validEnable(80);
+    validEnable.setArg("plain", "{\"enabled\":true}");
+    WifiClientApiService::handleApiEnable(validEnable, runtime, allow, nullptr, nullptr, nullptr);
+    TEST_ASSERT_EQUAL_INT(200, validEnable.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(1, probe.enableCalls);
+
+    WebServer validSave(80);
+    validSave.setArg("plain", "{\"ssid\":\"Garage\"}");
+    WifiClientApiService::handleApiNetworksSave(validSave, runtime, allow, nullptr, nullptr, nullptr);
+    TEST_ASSERT_EQUAL_INT(200, validSave.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(1, probe.upsertCalls);
+
+    WebServer validRemove(80);
+    validRemove.setArg("plain", "{\"index\":2}");
+    WifiClientApiService::handleApiNetworksDelete(validRemove, runtime, allow, nullptr, nullptr, nullptr);
+    TEST_ASSERT_EQUAL_INT(200, validRemove.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(1, probe.deleteCalls);
+
+    WebServer validPriorities(80);
+    validPriorities.setArg("plain", "{\"updates\":[{\"index\":0,\"priority\":1}]}");
+    WifiClientApiService::handleApiNetworksPriorities(validPriorities, runtime, allow, nullptr, nullptr, nullptr);
+    TEST_ASSERT_EQUAL_INT(200, validPriorities.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(1, probe.priorityCalls);
+
+    WebServer validTest(80);
+    validTest.setArg("plain", "{\"index\":1}");
+    WifiClientApiService::handleApiNetworksTest(validTest, runtime, allow, nullptr, nullptr, nullptr);
+    TEST_ASSERT_EQUAL_INT(200, validTest.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(1, probe.testCalls);
+}
+
+void test_mutating_json_route_reports_dom_allocation_failure_without_callback() {
+    Probe probe;
+    WebServer server(80);
+    server.setArg("plain", "{\"enabled\":true}");
+
+    // ExactJsonInput frees its key table immediately before ArduinoJson builds
+    // the DOM. Fail both PSRAM and internal-RAM DOM allocation attempts while
+    // leaving the later error response allocation available.
+    g_mock_heap_caps_free_observer = [](void*) { g_mock_heap_caps_fail_call_mask = 0x3u; };
+    WifiClientApiService::handleApiEnable(server, makeRuntime(probe), allow, nullptr, nullptr, nullptr);
+    g_mock_heap_caps_free_observer = nullptr;
+
+    TEST_ASSERT_EQUAL_INT(503, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(0, probe.enableCalls);
+    TEST_ASSERT_EQUAL_INT(0, probe.disableCalls);
+}
+
 void test_saved_network_response_names_logical_order_and_preserves_legacy_key() {
     WebServer server(80);
     Probe probe;
@@ -282,6 +372,8 @@ int main() {
     RUN_TEST(test_priority_batch_validates_all_entries_before_callback);
     RUN_TEST(test_priority_batch_maps_persist_failure_to_500);
     RUN_TEST(test_priority_batch_success_returns_200_after_one_callback);
+    RUN_TEST(test_mutating_json_routes_require_exact_roots_and_accept_valid_requests);
+    RUN_TEST(test_mutating_json_route_reports_dom_allocation_failure_without_callback);
     RUN_TEST(test_saved_network_response_names_logical_order_and_preserves_legacy_key);
     return UNITY_END();
 }

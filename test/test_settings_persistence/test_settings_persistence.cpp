@@ -10,6 +10,7 @@
 
 #include "../mocks/Arduino.h"
 #include "../mocks/Preferences.h"
+#include "../mocks/mock_heap_caps_state.h"
 #include "../mocks/nvs.h"
 #include "../mocks/storage_manager.h"
 #include "../../src/settings.h"
@@ -347,9 +348,13 @@ void setUp() {
     fs::mock_reset_fs_rename_state();
     fs::mock_reset_fs_open_state();
     fs::mock_reset_fs_remove_state();
+    mock_reset_heap_caps();
+    g_mock_heap_caps_free_observer = nullptr;
 }
 
 void tearDown() {
+    g_mock_heap_caps_free_observer = nullptr;
+    mock_reset_heap_caps();
     std::filesystem::remove_all(g_tempRoot);
 }
 
@@ -3236,6 +3241,61 @@ void test_gps_http_rejects_actual_nvs_failure_and_skips_live_apply() {
     TEST_ASSERT_FALSE(rebooted.get().gpsEnabled);
 }
 
+void test_gps_http_rejects_non_exact_json_before_persistence_and_accepts_valid_body() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    GpsApiService::Runtime runtime{};
+    runtime.maintenanceBootActive = true;
+
+    WebServer suffix(80);
+    suffix.setArg("plain", "{\"gpsEnabled\":true}x");
+    GpsApiService::handleApiConfigSave(suffix, manager, nullptr, runtime);
+    TEST_ASSERT_EQUAL_INT(400, suffix.lastStatusCode);
+    TEST_ASSERT_FALSE(manager.get().gpsEnabled);
+
+    WebServer concatenated(80);
+    concatenated.setArg("plain", "{\"gpsBaud\":115200}{\"gpsBaud\":9600}");
+    GpsApiService::handleApiConfigSave(concatenated, manager, nullptr, runtime);
+    TEST_ASSERT_EQUAL_INT(400, concatenated.lastStatusCode);
+    TEST_ASSERT_EQUAL_UINT32(9600, manager.get().gpsBaud);
+
+    WebServer valid(80);
+    valid.setArg("plain", "{\"gpsEnabled\":true,\"gpsBaud\":115200}");
+    GpsApiService::handleApiConfigSave(valid, manager, nullptr, runtime);
+    TEST_ASSERT_EQUAL_INT(200, valid.lastStatusCode);
+    TEST_ASSERT_TRUE(manager.get().gpsEnabled);
+    TEST_ASSERT_EQUAL_UINT32(115200, manager.get().gpsBaud);
+}
+
+void test_gps_http_reports_dom_allocation_failure_before_persistence() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    GpsApiService::Runtime runtime{};
+    runtime.maintenanceBootActive = true;
+    WebServer server(80);
+    server.setArg("plain", "{\"gpsEnabled\":true}");
+
+    // Fail the two WifiJson allocator attempts after exact lexical validation
+    // releases its key table. The persisted settings must remain untouched.
+    g_mock_heap_caps_free_observer = [](void*) { g_mock_heap_caps_fail_call_mask = 0x3u; };
+    GpsApiService::handleApiConfigSave(server, manager, nullptr, runtime);
+    g_mock_heap_caps_free_observer = nullptr;
+
+    TEST_ASSERT_EQUAL_INT(503, server.lastStatusCode);
+    TEST_ASSERT_FALSE(manager.get().gpsEnabled);
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_FALSE(rebooted.get().gpsEnabled);
+}
+
 void test_obd_http_rejects_actual_nvs_failure_and_rolls_back_reboot_state() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
@@ -5628,6 +5688,8 @@ int main() {
     RUN_TEST(test_audio_and_quiet_http_reject_actual_nvs_failures_and_roll_back_ram);
     RUN_TEST(test_display_http_rejects_actual_nvs_failure_and_rolls_back_reboot_state);
     RUN_TEST(test_gps_http_rejects_actual_nvs_failure_and_skips_live_apply);
+    RUN_TEST(test_gps_http_rejects_non_exact_json_before_persistence_and_accepts_valid_body);
+    RUN_TEST(test_gps_http_reports_dom_allocation_failure_before_persistence);
     RUN_TEST(test_obd_http_rejects_actual_nvs_failure_and_rolls_back_reboot_state);
     RUN_TEST(test_not_ready_profile_catalog_is_unsafe_for_http_and_first_sd_backup);
     RUN_TEST(test_restore_staging_allocation_failure_precedes_new_transaction_mutation);

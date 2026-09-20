@@ -180,12 +180,9 @@ void MaintenanceRuntime::initializeStorageAndProfiles() {
         }
     }
 
-    const V1Settings& gpsSettings = settings_.get();
-    gps_.begin(gpsSettings.gpsEnabled, gpsSettings.gpsBaud);
-    if (gpsSettings.gpsEnabled) {
-        Serial.printf("[GPS] module enabled baud=%lu rx=%d tx=%d en=not-driven\n",
-                      static_cast<unsigned long>(gpsSettings.gpsBaud), 1, 5);
-    }
+    // GPS settings remain editable and durable in maintenance, but the live
+    // UART/parser belongs exclusively to the normal-drive runtime.
+    Serial.println("[Setup] Maintenance boot: skipping GPS UART/parser init");
 }
 
 void MaintenanceRuntime::start(uint32_t setupStartMs, esp_reset_reason_t resetReason) {

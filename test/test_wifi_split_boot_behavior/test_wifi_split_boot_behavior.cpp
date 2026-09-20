@@ -254,6 +254,16 @@ void test_maintenance_boot_refreshes_palette_after_successful_sd_restore() {
     TEST_ASSERT_NOT_EQUAL(std::string::npos, restored.find("display_.setBrightness(settings_.get().brightness)"));
 }
 
+void test_gps_runtime_starts_only_in_drive_boot() {
+    const std::string drive = extractFunctionBody(readFile(projectRoot() + "/src/drive_runtime.cpp"),
+                                                  "void DriveRuntime::initializeStorageAndProfiles()");
+    const std::string maintenance = extractFunctionBody(readFile(projectRoot() + "/src/maintenance_runtime.cpp"),
+                                                        "void MaintenanceRuntime::initializeStorageAndProfiles()");
+
+    TEST_ASSERT_EQUAL_UINT32(1, countOccurrences(drive, "gps_.begin("));
+    TEST_ASSERT_EQUAL_UINT32(0, countOccurrences(maintenance, "gps_.begin("));
+}
+
 void test_maintenance_runtime_start_reaches_saved_network_auto_join() {
     const std::string runtime = readFile(projectRoot() + "/src/maintenance_runtime.cpp");
     const std::string lifecycle = readFile(projectRoot() + "/src/wifi_manager_lifecycle.cpp");
@@ -339,6 +349,7 @@ int main() {
     RUN_TEST(test_shared_boot_refreshes_saved_palette_before_boot_presentation);
     RUN_TEST(test_drive_boot_refreshes_palette_after_successful_sd_restore);
     RUN_TEST(test_maintenance_boot_refreshes_palette_after_successful_sd_restore);
+    RUN_TEST(test_gps_runtime_starts_only_in_drive_boot);
     RUN_TEST(test_maintenance_runtime_start_reaches_saved_network_auto_join);
     RUN_TEST(test_failed_maintenance_return_ack_uses_bounded_retry_cadence);
     RUN_TEST(test_saved_network_test_persists_enable_before_replacing_runtime_activity);

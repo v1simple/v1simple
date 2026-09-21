@@ -265,6 +265,9 @@ class V1SettingsOperationStore {
 
     bool isActive() const;
     bool isTerminal() const;
+    // A terminal maintenance-owned operation keeps admission until its durable
+    // return intent is acknowledged, so ordinary Auto-Push cannot race/replay it.
+    bool requiresExclusiveDetectorAdmission() const;
     bool targetMatches(const char* canonicalAddress) const;
 
     static bool isCanonicalAddress(const char* address);

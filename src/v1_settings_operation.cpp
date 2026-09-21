@@ -426,6 +426,11 @@ bool V1SettingsOperationStore::isTerminal() const {
            snapshot_.state == State::Failed;
 }
 
+bool V1SettingsOperationStore::requiresExclusiveDetectorAdmission() const {
+    if (!snapshot_.available || !snapshot_.valid) return false;
+    return isActive() || (isTerminal() && snapshot_.returnToMaintenance);
+}
+
 bool V1SettingsOperationStore::targetMatches(const char* canonicalAddress) const {
     return snapshot_.available && snapshot_.valid && isCanonicalAddress(canonicalAddress) &&
            std::memcmp(snapshot_.targetAddress, canonicalAddress, 18u) == 0;

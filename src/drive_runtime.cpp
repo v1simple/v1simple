@@ -1311,11 +1311,12 @@ void DriveRuntime::attemptFactoryReset(const V1SettingsOperationStore::Snapshot&
 }
 
 bool DriveRuntime::handleSettingsOperationStableConnection() {
-    if (!settingsOperations_.isActive()) return false;
+    if (!settingsOperations_.requiresExclusiveDetectorAdmission()) return false;
     String address;
     if (!connectedV1Address(address) || !settingsOperations_.targetMatches(address.c_str())) {
-        // A target-bound job owns detector mutation admission until it reaches
-        // a terminal state. Ordinary Auto-Push must not mutate another V1.
+        // A target-bound job owns detector mutation admission until it finishes
+        // and any durable return-to-maintenance intent has been acknowledged.
+        // Ordinary Auto-Push must not mutate another V1 in that interval.
         settingsWrongDetectorDisconnectPending_ = ble_.isConnected();
         return true;
     }

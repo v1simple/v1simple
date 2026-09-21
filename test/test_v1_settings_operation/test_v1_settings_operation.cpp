@@ -458,6 +458,35 @@ void test_failed_return_ack_preserves_retryable_return_intent() {
     TEST_ASSERT_TRUE(retry.acknowledgeReturnToMaintenance());
 }
 
+void test_interrupted_terminal_return_owns_detector_admission_until_acknowledged() {
+    V1SettingsOperationStore store;
+    TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::LoadStatus::Ready, store.begin());
+    TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::StartStatus::Started,
+        store.startProfileApply("Road", "AA:BB:CC:DD:EE:FF", false, true).status);
+    TEST_ASSERT_TRUE(store.markRunning(9));
+
+    V1SettingsOperationStore firstReboot;
+    TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::LoadStatus::Ready, firstReboot.begin());
+    TEST_ASSERT_TRUE(firstReboot.beginNormalBoot());
+    TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::State::Recapturing,
+                          firstReboot.snapshot().state);
+
+    V1SettingsOperationStore interruptedBoot;
+    TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::LoadStatus::Ready, interruptedBoot.begin());
+    TEST_ASSERT_TRUE(interruptedBoot.beginNormalBoot());
+    TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::State::Partial,
+                          interruptedBoot.snapshot().state);
+    TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::Reason::Interrupted,
+                          interruptedBoot.snapshot().reason);
+    TEST_ASSERT_FALSE(interruptedBoot.isActive());
+    TEST_ASSERT_TRUE(interruptedBoot.snapshot().returnToMaintenance);
+    TEST_ASSERT_TRUE(interruptedBoot.requiresExclusiveDetectorAdmission());
+
+    TEST_ASSERT_TRUE(interruptedBoot.acknowledgeReturnToMaintenance());
+    TEST_ASSERT_FALSE(interruptedBoot.snapshot().returnToMaintenance);
+    TEST_ASSERT_FALSE(interruptedBoot.requiresExclusiveDetectorAdmission());
+}
+
 void test_return_retry_policy_is_bounded_and_rollover_safe() {
     using namespace V1SettingsOperationPolicy;
 
@@ -526,6 +555,7 @@ int main() {
     RUN_TEST(test_failed_nvs_update_does_not_publish_false_state);
     RUN_TEST(test_return_ack_is_durable_and_not_replayed_on_later_normal_boot);
     RUN_TEST(test_failed_return_ack_preserves_retryable_return_intent);
+    RUN_TEST(test_interrupted_terminal_return_owns_detector_admission_until_acknowledged);
     RUN_TEST(test_return_retry_policy_is_bounded_and_rollover_safe);
     RUN_TEST(test_return_retry_deadline_zero_remains_armed_at_exact_rollover);
     RUN_TEST(test_new_operation_is_rejected_while_one_is_active_and_storage_failures_are_retryable);

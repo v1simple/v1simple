@@ -792,6 +792,9 @@ func runTimingSelfTest() -> Never {
 struct WriterPipeline {
     let writer: AVAssetWriter
     let input: AVAssetWriterInput
+#if compiler(>=6.4)
+    let receiver: AVAssetWriterInput.SampleBufferReceiver
+#endif
 }
 
 final class VideoTrackLoad: @unchecked Sendable {
@@ -811,6 +814,26 @@ final class VideoTrackLoad: @unchecked Sendable {
         return try result.get()
     }
 }
+
+#if compiler(>=6.4)
+final class EncodedTimingLoad: @unchecked Sendable {
+    private let completed = DispatchSemaphore(value: 0)
+    private var result: Result<[(CMTime, CMTime)], Error>?
+
+    func resolve(_ result: Result<[(CMTime, CMTime)], Error>) {
+        self.result = result
+        completed.signal()
+    }
+
+    func wait() throws -> [(CMTime, CMTime)] {
+        completed.wait()
+        guard let result else {
+            throw NSError(domain: "v1simple.camera.selftest", code: 32)
+        }
+        return try result.get()
+    }
+}
+#endif
 
 func loadVideoTracks(from asset: AVAsset) throws -> [AVAssetTrack] {
     let load = VideoTrackLoad()
@@ -854,6 +877,16 @@ func makeWriterPipeline(
         outputSettings: settings,
         sourceFormatHint: sourceFormatHint
     )
+#if compiler(>=6.4)
+    input.mediaTimeScale = mediaTimeScale
+    guard writer.canAdd(input) else {
+        throw NSError(domain: "v1simple.camera", code: 2)
+    }
+    let receiver = writer.inputReceiver(for: input)
+    try writer.start()
+    writer.startSession(atSourceTime: .zero)
+    return WriterPipeline(writer: writer, input: input, receiver: receiver)
+#else
     input.expectsMediaDataInRealTime = true
     input.mediaTimeScale = mediaTimeScale
     guard writer.canAdd(input) else {
@@ -865,6 +898,7 @@ func makeWriterPipeline(
     }
     writer.startSession(atSourceTime: .zero)
     return WriterPipeline(writer: writer, input: input)
+#endif
 }
 
 func copySampleBuffer(
@@ -967,6 +1001,38 @@ func runWriterSelfTest() -> Never {
         )
         for (frameIndex, resolved) in resolvedTimings.enumerated() {
             let deadline = Date().addingTimeInterval(5)
+#if compiler(>=6.4)
+            let sourcePresentationTime = CMTime(
+                value: sourceValues[frameIndex],
+                timescale: 1_000_000_000
+            )
+            let sourceDuration = sourceDurations[frameIndex]
+            var sourceTiming = CMSampleTimingInfo(
+                duration: sourceDuration,
+                presentationTimeStamp: sourcePresentationTime,
+                decodeTimeStamp: .invalid
+            )
+            var sourceSampleBuffer: CMSampleBuffer?
+            let sampleStatus = CMSampleBufferCreateReadyWithImageBuffer(
+                allocator: kCFAllocatorDefault,
+                imageBuffer: pixelBuffer,
+                formatDescription: formatDescription,
+                sampleTiming: &sourceTiming,
+                sampleBufferOut: &sourceSampleBuffer
+            )
+            guard sampleStatus == noErr, let sourceSampleBuffer else {
+                throw NSError(domain: "v1simple.camera.selftest", code: Int(sampleStatus))
+            }
+            let retimed = try copySampleBuffer(sourceSampleBuffer, with: resolved)
+            let ready = CMReadySampleBuffer<CMSampleBuffer.DynamicContent>(unsafeBuffer: retimed)
+            while try !pipeline.receiver.appendImmediately(ready) {
+                guard pipeline.writer.status == .writing, Date() < deadline else {
+                    throw pipeline.writer.error
+                        ?? NSError(domain: "v1simple.camera.selftest", code: 20)
+                }
+                Thread.sleep(forTimeInterval: 0.005)
+            }
+#else
             while !pipeline.input.isReadyForMoreMediaData {
                 guard pipeline.writer.status == .writing, Date() < deadline else {
                     throw pipeline.writer.error
@@ -1000,8 +1066,13 @@ func runWriterSelfTest() -> Never {
                 throw pipeline.writer.error
                     ?? NSError(domain: "v1simple.camera.selftest", code: 21)
             }
+#endif
         }
+#if compiler(>=6.4)
+        pipeline.receiver.finish()
+#else
         pipeline.input.markAsFinished()
+#endif
         let completed = DispatchSemaphore(value: 0)
         pipeline.writer.finishWriting { completed.signal() }
         guard completed.wait(timeout: .now() + 10) == .success,
@@ -1023,6 +1094,35 @@ func runWriterSelfTest() -> Never {
         guard reader.canAdd(output) else {
             throw NSError(domain: "v1simple.camera.selftest", code: 25)
         }
+#if compiler(>=6.4)
+        let provider = reader.outputProvider(for: output)
+        try reader.start()
+        let timingLoad = EncodedTimingLoad()
+        Task.detached {
+            do {
+                var timings: [(CMTime, CMTime)] = []
+                while let sample = try await provider.next() {
+                    let presentationTime = sample.presentationTimeStamp
+                    let duration = sample.duration
+                    if sample.sampleCount > 0,
+                       presentationTime.isValid,
+                       presentationTime.isNumeric,
+                       duration.isValid,
+                       duration.isNumeric,
+                       CMTimeCompare(duration, .zero) > 0 {
+                        timings.append((presentationTime, duration))
+                    }
+                }
+                guard reader.status == .completed else {
+                    throw reader.error ?? NSError(domain: "v1simple.camera.selftest", code: 27)
+                }
+                timingLoad.resolve(.success(timings))
+            } catch {
+                timingLoad.resolve(.failure(error))
+            }
+        }
+        let encodedTimings = try timingLoad.wait()
+#else
         reader.add(output)
         guard reader.startReading() else {
             throw reader.error ?? NSError(domain: "v1simple.camera.selftest", code: 26)
@@ -1043,6 +1143,7 @@ func runWriterSelfTest() -> Never {
         guard reader.status == .completed else {
             throw reader.error ?? NSError(domain: "v1simple.camera.selftest", code: 27)
         }
+#endif
         guard encodedTimings.count == resolvedTimings.count else {
             throw NSError(domain: "v1simple.camera.selftest", code: 28)
         }
@@ -1101,6 +1202,9 @@ final class FrameRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private var phase = ""
     private var writer: AVAssetWriter?
     private var writerInput: AVAssetWriterInput?
+#if compiler(>=6.4)
+    private var writerReceiver: AVAssetWriterInput.SampleBufferReceiver?
+#endif
     private var errorMessage: String?
     private var frameCount = 0
     private var writerDropCount = 0
@@ -1145,6 +1249,9 @@ final class FrameRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             self.phase = phase
             self.writer = nil
             self.writerInput = nil
+#if compiler(>=6.4)
+            self.writerReceiver = nil
+#endif
             self.timingSidecarHandle = nil
             self.errorMessage = nil
             self.frameCount = 0
@@ -1208,6 +1315,17 @@ final class FrameRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 return
             }
         }
+#if compiler(>=6.4)
+        guard let writer, let writerReceiver else {
+            recordWriterDrop(
+                &prepared,
+                reason: "writer_unavailable",
+                fatalCode: "writer_start_failed",
+                fatalMessage: "movie writer was unavailable after startup"
+            )
+            return
+        }
+#else
         guard let writer, let writerInput else {
             recordWriterDrop(
                 &prepared,
@@ -1217,6 +1335,7 @@ final class FrameRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             )
             return
         }
+#endif
         switch writer.status {
         case .writing:
             break
@@ -1257,6 +1376,7 @@ final class FrameRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             )
             return
         }
+#if compiler(<6.4)
         guard writerInput.isReadyForMoreMediaData else {
             recordWriterDrop(
                 &prepared,
@@ -1266,6 +1386,7 @@ final class FrameRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             )
             return
         }
+#endif
 
         let retimed: CMSampleBuffer
         do {
@@ -1283,6 +1404,29 @@ final class FrameRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             return
         }
 
+#if compiler(>=6.4)
+        let ready = CMReadySampleBuffer<CMSampleBuffer.DynamicContent>(unsafeBuffer: retimed)
+        do {
+            guard try writerReceiver.appendImmediately(ready) else {
+                recordWriterDrop(
+                    &prepared,
+                    reason: "writer_backpressure",
+                    fatalCode: nil,
+                    fatalMessage: nil
+                )
+                return
+            }
+        } catch {
+            recordWriterDrop(
+                &prepared,
+                reason: "frame_append_failed",
+                fatalCode: "frame_append_failed",
+                fatalMessage: "movie frame append failed",
+                error: error
+            )
+            return
+        }
+#else
         guard writerInput.append(retimed) else {
             recordWriterDrop(
                 &prepared,
@@ -1293,6 +1437,7 @@ final class FrameRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             )
             return
         }
+#endif
 
         frameCount += 1
         prepared.record["status"] = "written"
@@ -1571,6 +1716,9 @@ final class FrameRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         )
         self.writer = pipeline.writer
         self.writerInput = pipeline.input
+#if compiler(>=6.4)
+        self.writerReceiver = pipeline.receiver
+#endif
     }
 
     private func recordFailure(code: String, message: String, error: Error? = nil) {
@@ -1668,12 +1816,28 @@ final class FrameRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         writeStatsMarker()
         writer = nil
         writerInput = nil
+#if compiler(>=6.4)
+        writerReceiver = nil
+#endif
         completed.signal()
     }
 
     func stopRecording(timeout: TimeInterval) -> (frames: Int, dropped: Int, error: String?) {
         let completed = DispatchSemaphore(value: 0)
         queue.async {
+#if compiler(>=6.4)
+            guard let writer = self.writer, let writerReceiver = self.writerReceiver else {
+                if self.errorMessage == nil {
+                    self.recordFailure(
+                        code: "no_frames",
+                        message: "movie recording received no frames"
+                    )
+                }
+                self.outputURL = nil
+                self.completeStop(completed)
+                return
+            }
+#else
             guard let writer = self.writer, let writerInput = self.writerInput else {
                 if self.errorMessage == nil {
                     self.recordFailure(
@@ -1685,6 +1849,7 @@ final class FrameRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 self.completeStop(completed)
                 return
             }
+#endif
             self.outputURL = nil
             guard writer.status == .writing else {
                 if self.errorMessage == nil {
@@ -1697,7 +1862,11 @@ final class FrameRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 self.completeStop(completed)
                 return
             }
+#if compiler(>=6.4)
+            writerReceiver.finish()
+#else
             writerInput.markAsFinished()
+#endif
             writer.finishWriting {
                 self.queue.async {
                     if writer.status != .completed, self.errorMessage == nil {

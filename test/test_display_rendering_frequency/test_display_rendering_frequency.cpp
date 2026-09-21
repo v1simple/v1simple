@@ -165,6 +165,32 @@ void test_priority_photo_type_replaces_numeric_frequency_with_its_compact_identi
     }
 }
 
+void test_photo_identity_uses_photo_color_independent_of_numeric_frequency_policy() {
+    V1Settings& mutableSettings = settings.mutableSettings();
+    const bool originalUseBandColor = mutableSettings.freqUseBandColor;
+    const uint16_t originalFrequencyColor = mutableSettings.colorFrequency;
+    const uint16_t originalPhotoColor = mutableSettings.colorBandPhoto;
+    mutableSettings.freqUseBandColor = false;
+    mutableSettings.colorFrequency = 0x1234;
+    mutableSettings.colorBandPhoto = 0x780F;
+
+    const AlertData photo = radarAlertFromSpecFields(24125, 0x04, 0x20, 1);
+    display.ut_drawFrequency(photo.frequency, photo.band, nullptr, photo.photoType);
+    assertFrequencyText("MRCT");
+    TEST_ASSERT_EQUAL_HEX16(mutableSettings.colorBandPhoto, display.ut_elementCaches().frequency.lastColor);
+
+    display.ut_elementCaches().frequency.invalidate();
+    resetRecordedOutput();
+    const AlertData ordinaryK = radarAlertFromSpecFields(24150, 0x04, 0x20);
+    display.ut_drawFrequency(ordinaryK.frequency, ordinaryK.band);
+    assertFrequencyText("24.150");
+    TEST_ASSERT_EQUAL_HEX16(mutableSettings.colorFrequency, display.ut_elementCaches().frequency.lastColor);
+
+    mutableSettings.freqUseBandColor = originalUseBandColor;
+    mutableSettings.colorFrequency = originalFrequencyColor;
+    mutableSettings.colorBandPhoto = originalPhotoColor;
+}
+
 void test_unknown_photo_type_stays_visible_without_inventing_a_named_identity() {
     const AlertData alert = radarAlertFromSpecFields(24125, 0x04, 0x20, 15);
 
@@ -227,6 +253,7 @@ int main(int, char**) {
     RUN_TEST(test_parsed_k_frequency_is_handed_to_renderer_in_ghz_text);
     RUN_TEST(test_laser_zero_and_alp_presentations_are_distinct);
     RUN_TEST(test_priority_photo_type_replaces_numeric_frequency_with_its_compact_identity);
+    RUN_TEST(test_photo_identity_uses_photo_color_independent_of_numeric_frequency_policy);
     RUN_TEST(test_unknown_photo_type_stays_visible_without_inventing_a_named_identity);
     RUN_TEST(test_photo_metadata_cannot_replace_a_ka_priority_frequency);
     RUN_TEST(test_same_frequency_repaints_when_photo_identity_changes_or_clears);

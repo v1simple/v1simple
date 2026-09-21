@@ -299,9 +299,11 @@ void V1Display::drawTopCounterPair(char primary, bool muted, bool primaryDot, ch
     const bool drawFixedPrimaryDot = !hasSecondary && primaryIsDigit && primaryDot;
     char buf[8] = {0};
     buildTopCounterText(primary, primaryDot, secondary, secondaryDot, drawFixedPrimaryDot, buf);
+    const bool hasPhotoIdentity = strchr(buf, 'P') != nullptr;
+    const uint16_t configuredColor = hasPhotoIdentity ? s.colorBandPhoto : s.colorBogey;
 
     // Check if color setting changed
-    bool colorChanged = (s.colorBogey != elementCaches_.topCounter.lastBogeyColor);
+    bool colorChanged = (configuredColor != elementCaches_.topCounter.lastBogeyColor);
 
     // Skip redraw if nothing changed
     if (elementCaches_.topCounter.counterValid && !colorChanged && muted == elementCaches_.topCounter.lastMuted &&
@@ -323,17 +325,19 @@ void V1Display::drawTopCounterPair(char primary, bool muted, bool primaryDot, ch
     elementCaches_.topCounter.counterValid = true;
     elementCaches_.topCounter.lastMuted = muted;
     elementCaches_.topCounter.lastFixedPrimaryDot = drawFixedPrimaryDot;
-    elementCaches_.topCounter.lastBogeyColor = s.colorBogey;
+    elementCaches_.topCounter.lastBogeyColor = configuredColor;
     strncpy(elementCaches_.topCounter.lastText, buf, sizeof(elementCaches_.topCounter.lastText));
     elementCaches_.topCounter.lastText[sizeof(elementCaches_.topCounter.lastText) - 1] = '\0';
 
-    // Use bogey color for digits, muted color if muted, otherwise bogey color
+    // Numeric counts retain the bogey color. The V1's P glyph is Photo
+    // identity and therefore owns the dedicated Photo color; other symbols
+    // retain the bogey color. Muting still takes precedence for symbols.
     const bool allDigits = primaryIsDigit && secondaryIsDigit;
     uint16_t color;
     if (allDigits) {
         color = s.colorBogey;
     } else {
-        color = muted ? PALETTE_MUTED_OR_PERSISTED : s.colorBogey;
+        color = muted ? PALETTE_MUTED_OR_PERSISTED : configuredColor;
     }
 
     // Fixed field clear every update prevents stale pixels from variable-width glyphs.

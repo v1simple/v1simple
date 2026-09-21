@@ -149,8 +149,11 @@ V1Display::FrequencyPresentation V1Display::resolveFrequencyPresentation(uint32_
             freqColor = PALETTE_MUTED_OR_PERSISTED;
         } else if (!hasFreq) {
             freqColor = PALETTE_GRAY;
-        } else if (isPhotoRadar && s.freqUseBandColor) {
-            freqColor = s.colorBandPhoto; // Photo radar gets its own color
+        } else if (isPhotoRadar) {
+            // A Photo subtype label is detector identity, not an ordinary
+            // numeric frequency. Keep it tied to the dedicated Photo color
+            // regardless of the numeric-frequency color policy.
+            freqColor = s.colorBandPhoto;
         } else if (s.freqUseBandColor && band != BAND_NONE) {
             freqColor = getBandColor(band);
         } else {
@@ -163,7 +166,7 @@ V1Display::FrequencyPresentation V1Display::resolveFrequencyPresentation(uint32_
             freqColor = PALETTE_MUTED_OR_PERSISTED;
         } else if (!hasFreq) {
             freqColor = PALETTE_GRAY;
-        } else if (isPhotoRadar && s.freqUseBandColor) {
+        } else if (isPhotoRadar) {
             freqColor = s.colorBandPhoto;
         } else if (s.freqUseBandColor && band != BAND_NONE) {
             freqColor = getBandColor(band);

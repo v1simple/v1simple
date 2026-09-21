@@ -260,6 +260,27 @@ void test_fixed_dot_preserves_mute_and_color_cache_keys() {
     settings.mutableSettings().colorBogey = originalColor;
 }
 
+void test_photo_counter_uses_photo_color_and_repaints_when_it_changes() {
+    V1Settings& mutableSettings = settings.mutableSettings();
+    const uint16_t originalPhotoColor = mutableSettings.colorBandPhoto;
+
+    display.ut_drawTopCounterPair('P', false, false);
+    TEST_ASSERT_EQUAL_STRING("P", display.ut_fontMgr().segment7.lastPrinted);
+    TEST_ASSERT_EQUAL_HEX16(mutableSettings.colorBandPhoto,
+                            display.ut_elementCaches().topCounter.lastBogeyColor);
+
+    mutableSettings.colorBandPhoto ^= 1;
+    resetCounterObservations();
+    display.ut_drawTopCounterPair('P', false, false);
+    TEST_ASSERT_EQUAL_UINT(1u, canvas()->fillRectCalls.size());
+    TEST_ASSERT_EQUAL_INT(1, display.ut_fontMgr().segment7.printfCount);
+    TEST_ASSERT_EQUAL_STRING("P", display.ut_fontMgr().segment7.lastPrinted);
+    TEST_ASSERT_EQUAL_HEX16(mutableSettings.colorBandPhoto,
+                            display.ut_elementCaches().topCounter.lastBogeyColor);
+
+    mutableSettings.colorBandPhoto = originalPhotoColor;
+}
+
 void test_text_and_paired_dots_keep_their_existing_layout_and_cache_semantics() {
     display.ut_drawTopCounterPair('P', false, true);
     TEST_ASSERT_EQUAL_STRING("P.", display.ut_fontMgr().segment7.lastPrinted);
@@ -298,6 +319,7 @@ int main(int, char**) {
     RUN_TEST(test_same_digit_dot_on_repaints_with_fallback);
     RUN_TEST(test_same_digit_dot_off_clears_previously_painted_dot_with_fallback);
     RUN_TEST(test_fixed_dot_preserves_mute_and_color_cache_keys);
+    RUN_TEST(test_photo_counter_uses_photo_color_and_repaints_when_it_changes);
     RUN_TEST(test_text_and_paired_dots_keep_their_existing_layout_and_cache_semantics);
     return UNITY_END();
 }

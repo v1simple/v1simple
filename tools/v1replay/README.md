@@ -59,6 +59,7 @@ Generated stimuli require no data file:
 .build/v1replay bench --exit-on-complete
 .build/v1replay bench --reader-qualification
 .build/v1replay bench --ku-qualification
+.build/v1replay bench --photo-label-qualification
 .build/v1replay bench --persistence-coverage
 .build/v1replay bench --scenario /external/input.json \
   --scenario-evidence /external/run/replay_scenario.json --machine-events
@@ -68,8 +69,8 @@ Generated stimuli require no data file:
 .build/v1replay crib
 ```
 
-Without `--scenario`, `--reader-qualification`, `--ku-qualification`, or
-`--persistence-coverage`,
+Without `--scenario`, `--reader-qualification`, `--ku-qualification`,
+`--photo-label-qualification`, or `--persistence-coverage`,
 `bench` uses the generated default stimulus at approximately 3 Hz. Its 276-second
 Phase 0 base covers a resting lead, K and Ka ramps, a priority handoff, complete
 two- and three-row alert tables, card removal and restoration, a long Ka approach,
@@ -120,6 +121,12 @@ rotates an ordinary K alert, a Ka alert, and the Photo alert through priority.
 This makes the camera capture the single-Photo presentation as well as ordinary
 K/Ka primaries with Photo confined to a secondary card. The resolved scenario
 and per-stimulus evidence retain each row's Photo type.
+
+`v1replay bench --photo-label-qualification` selects a focused 32-second
+exercise for camera review. It holds each of the seven named Photo subtypes
+steady for four seconds using the same K-band frequency, strength, and front
+direction, bracketed by two seconds of clear input. This isolates rendered
+label legibility without changing detector settings.
 
 `--persistence-coverage` selects a separate 64-second ordinary radar sequence
 for observing the configured Alert persistence. It does not change that setting

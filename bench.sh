@@ -13,9 +13,10 @@ PORT="${DEVICE_PORT:-}"
 RUN_REPLAY=0
 CAMERA_REQUESTED=0
 KU_QUALIFICATION=0
+PHOTO_LABEL_QUALIFICATION=0
 
 usage() {
-  printf 'Usage: ./bench.sh --replay --camera [--ku-qualification]\n'
+  printf 'Usage: ./bench.sh --replay --camera [--ku-qualification|--photo-label-qualification]\n'
   printf 'Builds and flashes the current firmware, sends the generated replay stimuli, and retains raw synchronized capture.\n'
 }
 
@@ -29,6 +30,7 @@ while [[ $# -gt 0 ]]; do
     --replay) RUN_REPLAY=1 ;;
     --camera) CAMERA_REQUESTED=1 ;;
     --ku-qualification) KU_QUALIFICATION=1 ;;
+    --photo-label-qualification) PHOTO_LABEL_QUALIFICATION=1 ;;
     -h|--help)
       usage
       exit 0
@@ -50,6 +52,11 @@ done
 if [[ "$KU_QUALIFICATION" -eq 1 && -z "${BENCH_REPLAY_DURATION_SECONDS+x}" ]]; then
   DURATION_SECONDS=25
 fi
+if [[ "$PHOTO_LABEL_QUALIFICATION" -eq 1 && -z "${BENCH_REPLAY_DURATION_SECONDS+x}" ]]; then
+  DURATION_SECONDS=45
+fi
+[[ "$((KU_QUALIFICATION + PHOTO_LABEL_QUALIFICATION))" -le 1 ]] \
+  || fail 'choose only one focused replay qualification'
 
 BENCH_PYTHON="$("$ROOT_DIR/scripts/bench_python.sh")" || fail 'could not prepare the bench Python environment'
 unset PYTHONHOME PYTHONPATH
@@ -138,6 +145,9 @@ runner_status=0
 RUNNER_SCENARIO_ARGS=()
 if [[ "$KU_QUALIFICATION" -eq 1 ]]; then
   RUNNER_SCENARIO_ARGS+=(--ku-qualification)
+fi
+if [[ "$PHOTO_LABEL_QUALIFICATION" -eq 1 ]]; then
+  RUNNER_SCENARIO_ARGS+=(--photo-label-qualification)
 fi
 "$BENCH_PYTHON" "$ROOT_DIR/scripts/bench/run_logged.py" \
   --stdout "$REPLAY_DIR/run.log" \

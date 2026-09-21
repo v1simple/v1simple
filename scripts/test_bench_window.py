@@ -278,7 +278,12 @@ def _write_executable(path: Path) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
-def capture_replay_command(scenario: str, *, ku_qualification: bool = False) -> list[str]:
+def capture_replay_command(
+    scenario: str,
+    *,
+    ku_qualification: bool = False,
+    photo_label_qualification: bool = False,
+) -> list[str]:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         executable = root / "build" / "v1replay"
@@ -310,6 +315,7 @@ def capture_replay_command(scenario: str, *, ku_qualification: bool = False) -> 
             scenario=scenario,
             ku_qualification=ku_qualification,
             machine_event=lambda _payload: None,
+            photo_label_qualification=photo_label_qualification,
         )
         try:
             emulator.start()
@@ -333,6 +339,8 @@ def test_replay_process_requests_raw_machine_and_scenario_evidence() -> None:
         assert_true(("--scenario" in command) is bool(scenario), str(command))
     ku_command = capture_replay_command("", ku_qualification=True)
     assert_true("--ku-qualification" in ku_command, str(ku_command))
+    photo_command = capture_replay_command("", photo_label_qualification=True)
+    assert_true("--photo-label-qualification" in photo_command, str(photo_command))
 
 
 def test_replay_transport_must_be_active_before_the_external_window() -> None:

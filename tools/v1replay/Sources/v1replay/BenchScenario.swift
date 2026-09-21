@@ -14,6 +14,7 @@ enum BenchScenario {
     static let readerQualificationDurationSeconds = 68
     static let kuQualificationDurationSeconds = 12
     static let photoQualificationDurationSeconds = 10
+    static let photoLabelQualificationDurationSeconds = 32
     static let photoQualificationStartSecond = baseDurationSeconds + kuQualificationDurationSeconds
     static let durationSeconds = photoQualificationStartSecond + photoQualificationDurationSeconds
 
@@ -169,6 +170,47 @@ enum BenchScenario {
         precondition(samples.filter { $0.alerts.contains { $0.photoType != 0 } }.count == 24)
         precondition(samples.filter { ($0.priorityAlert?.photoType ?? 0) != 0 }.count == 12)
         precondition(samples.filter(\.scenarioArrowBlink).count == 18)
+        return Encounter(origin: .syntheticBench, samples: samples)
+    }
+
+    /// Focused camera exercise for every named Photo subtype. Each subtype is
+    /// held steady for four seconds with frequency, strength, and direction
+    /// fixed so the captured variable is the rendered label alone.
+    static func makePhotoLabelQualification() -> Encounter {
+        var samples: [TimedSample] = []
+        let sampleCount = photoLabelQualificationDurationSeconds * cadenceHz
+        samples.reserveCapacity(sampleCount)
+
+        for tick in 0..<sampleCount {
+            let second = tick / cadenceHz
+            let photoType: UInt8
+            let phase: String
+            if second < 2 || second >= 30 {
+                photoType = 0
+                phase = "photo_label_qualification_idle"
+            } else {
+                photoType = UInt8((second - 2) / 4 + 1)
+                phase = "photo_label_qualification_type_\(photoType)"
+            }
+            let alerts = photoType == 0
+                ? []
+                : [alert(.k, 24_125, 6, .front, priority: true, photoType: photoType)]
+            samples.append(TimedSample(
+                offset: Double(tick) / Double(cadenceHz),
+                phase: phase,
+                muted: false,
+                alerts: alerts,
+                scenarioArrowBlink: false,
+                sourceIndex: tick
+            ))
+        }
+
+        precondition(samples.count == sampleCount)
+        precondition(samples.prefix(6).allSatisfy { $0.alerts.isEmpty })
+        precondition(samples.suffix(6).allSatisfy { $0.alerts.isEmpty })
+        for photoType in UInt8(1)...UInt8(7) {
+            precondition(samples.filter { $0.priorityAlert?.photoType == photoType }.count == 12)
+        }
         return Encounter(origin: .syntheticBench, samples: samples)
     }
 

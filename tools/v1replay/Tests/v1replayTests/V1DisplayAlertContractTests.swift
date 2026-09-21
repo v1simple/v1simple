@@ -172,6 +172,26 @@ final class V1DisplayAlertContractTests: XCTestCase {
         XCTAssertEqual(photoAlerts[0]["photoType"] as? Int, 1)
     }
 
+    func testPhotoLabelQualificationHoldsEveryNamedSubtypeSteady() throws {
+        let encounter = BenchScenario.makePhotoLabelQualification()
+        XCTAssertEqual(encounter.samples.count, 96)
+        XCTAssertTrue(encounter.samples.prefix(6).allSatisfy { $0.alerts.isEmpty })
+        XCTAssertTrue(encounter.samples.suffix(6).allSatisfy { $0.alerts.isEmpty })
+
+        for photoType in UInt8(1)...UInt8(7) {
+            let samples = encounter.samples.filter { $0.priorityAlert?.photoType == photoType }
+            XCTAssertEqual(samples.count, 12)
+            XCTAssertTrue(samples.allSatisfy { sample in
+                sample.alerts.count == 1 &&
+                    sample.priorityAlert?.band.mask == V1.Band.k.mask &&
+                    sample.priorityAlert?.frequencyMHz == 24_125 &&
+                    sample.priorityAlert?.strength == 6 &&
+                    sample.priorityAlert?.direction == .front &&
+                    !sample.scenarioArrowBlink
+            })
+        }
+    }
+
     func testReaderQualificationHasFixedHoldsAndTwelveSecondsOfCardBlink() throws {
         let encounter = BenchScenario.makeReaderQualification()
         XCTAssertEqual(encounter.samples.count, 204)

@@ -1318,7 +1318,7 @@
                         <button
                             class="btn btn-primary"
                             onclick={saveWifiEditor}
-                            disabled={wifiNetworkActionInFlight || !wifiEditor.ssid.trim()}
+                            disabled={wifiNetworkActionInFlight || !wifiEditor.ssid}
                         >
                             {#if wifiNetworkActionInFlight}
                                 <span class="loading loading-sm loading-spinner"></span>

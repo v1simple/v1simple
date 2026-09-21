@@ -197,6 +197,11 @@ void AlpRuntimeModule::begin(bool enabled) {
     session_ = AlertSession{};
     firstFrameMs_ = 0;
     warmUpPreambleMs_ = 0;
+    lastHeartbeatMs_ = 0;
+    heartbeatTimeoutArmed_ = false;
+    lastFrameMs_ = 0;
+    lastUartByteMs_ = 0;
+    uartSilenceTimeoutArmed_ = false;
     detectGeneration_ = 0;
     std::memset(detectRaw_, 0, sizeof(detectRaw_));
 
@@ -256,10 +261,12 @@ void AlpRuntimeModule::process(uint32_t nowMs) {
     // the next tick.
     suppressHeartbeatResumeThisProcess_ = false;
 
-    if (lastUartByteMs_ != 0 && nowMs - lastUartByteMs_ > HEARTBEAT_TIMEOUT_MS) {
+    if (uartSilenceTimeoutArmed_ && nowMs - lastUartByteMs_ > HEARTBEAT_TIMEOUT_MS) {
         transitionTo(AlpState::IDLE, nowMs);
         lastHeartbeatMs_ = 0;
+        heartbeatTimeoutArmed_ = false;
         lastUartByteMs_ = 0;
+        uartSilenceTimeoutArmed_ = false;
         lastHbByte1_ = 0xFF;
         firstFrameMs_ = 0;
         warmUpPreambleMs_ = 0;
@@ -509,6 +516,7 @@ void AlpRuntimeModule::drainUart(uint32_t nowMs) {
         // Raw bytes (not valid frames) because ignition loss drops the line
         // to zero reception; noise-from-live produces bytes, not silence.
         lastUartByteMs_ = nowMs;
+        uartSilenceTimeoutArmed_ = true;
     }
 #endif
 }
@@ -581,6 +589,7 @@ bool AlpRuntimeModule::tryParseFrame(uint32_t nowMs) {
 
     // Valid frame — reset bad checksum counter
     consecutiveBadChecksums_ = 0;
+    heartbeatTimeoutArmed_ = true;
 
     // Capture first-valid-frame timestamp for the Warm-Up window
     // calculation. Session gating anchors on this.
@@ -872,11 +881,12 @@ void AlpRuntimeModule::consumeBytes(size_t count) {
 // ── Timeout handlers ─────────────────────────────────────────────────
 
 void AlpRuntimeModule::handleHeartbeatTimeout(uint32_t nowMs) {
-    if (lastHeartbeatMs_ == 0)
+    if (!heartbeatTimeoutArmed_)
         return;
     if (nowMs - lastHeartbeatMs_ > HEARTBEAT_TIMEOUT_MS) {
         transitionTo(AlpState::IDLE, nowMs);
         lastHeartbeatMs_ = 0;
+        heartbeatTimeoutArmed_ = false;
     }
 }
 
@@ -973,5 +983,6 @@ void AlpRuntimeModule::testInjectBytes(const uint8_t* data, size_t len) {
 
 void AlpRuntimeModule::testSetLastUartByteMs(uint32_t ms) {
     lastUartByteMs_ = ms;
+    uartSilenceTimeoutArmed_ = true;
 }
 #endif

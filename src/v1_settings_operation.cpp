@@ -287,7 +287,7 @@ V1SettingsOperationStore::StartResult V1SettingsOperationStore::start(
     Kind kind, int slot, const char* profileName, const char* canonicalAddress, Source source,
     bool pendingNormalBoot, bool returnToMaintenance) {
     if (loadStatus_ != LoadStatus::Ready) return {StartStatus::StorageUnavailable, 0};
-    if (isActive()) return {StartStatus::Active, snapshot_.operationId};
+    if (requiresExclusiveDetectorAdmission()) return {StartStatus::Active, snapshot_.operationId};
     const bool validSource = source == Source::MaintenanceUi || source == Source::TripleTap;
     if (!validSource || !isCanonicalAddress(canonicalAddress) ||
         (kind == Kind::ApplySlot && (slot < 0 || slot > 2)) ||

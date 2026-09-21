@@ -200,6 +200,7 @@ class VoiceModule {
     static constexpr unsigned long POST_PRIORITY_GAP_MS = 1500;
     unsigned long lastPriorityAnnouncementTime_ = 0;
     unsigned long priorityStableSince_ = 0;
+    bool priorityStabilityTracked_ = false;
     uint32_t lastPriorityAlertId_ = 0xFFFFFFFF;
     void updatePriorityStability(uint32_t currentAlertId, unsigned long now);
     void markPriorityAnnounced(unsigned long now);

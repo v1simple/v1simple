@@ -606,6 +606,35 @@ void test_heartbeat_keeps_listening_if_within_timeout() {
     TEST_ASSERT_EQUAL(AlpState::LISTENING, alpRuntimeModule.getState());
 }
 
+void test_heartbeat_timeout_treats_zero_as_a_real_timestamp() {
+    for (uint32_t firstFrameMs : {0u, 1u}) {
+        resetModule();
+        beginEnabled();
+        inject(HEARTBEAT_SINGLE, sizeof(HEARTBEAT_SINGLE));
+        processAt(firstFrameMs);
+        TEST_ASSERT_EQUAL(AlpState::LISTENING, alpRuntimeModule.getState());
+
+        processAt(firstFrameMs + AlpRuntimeModule::HEARTBEAT_TIMEOUT_MS + 1u);
+        TEST_ASSERT_EQUAL_MESSAGE(AlpState::IDLE, alpRuntimeModule.getState(),
+                                  firstFrameMs == 0 ? "millis zero must not disable heartbeat timeout"
+                                                    : "nonzero heartbeat control must still time out");
+    }
+}
+
+void test_raw_uart_timeout_treats_zero_as_a_real_timestamp() {
+    for (uint32_t lastByteMs : {0u, 1u}) {
+        resetModule();
+        beginEnabled();
+        alpRuntimeModule.testSetState(AlpState::LISTENING);
+        alpRuntimeModule.testSetLastUartByteMs(lastByteMs);
+
+        processAt(lastByteMs + AlpRuntimeModule::HEARTBEAT_TIMEOUT_MS + 1u);
+        TEST_ASSERT_EQUAL_MESSAGE(AlpState::IDLE, alpRuntimeModule.getState(),
+                                  lastByteMs == 0 ? "millis zero must not disable raw-UART timeout"
+                                                  : "nonzero raw-UART control must still time out");
+    }
+}
+
 void test_link_epoch_reset_suppresses_return_boot_probe() {
     beginEnabled();
     const uint8_t hbDli[] = { 0xB0, 0x03, 0x00, 0x33 };
@@ -3288,6 +3317,8 @@ int main(int argc, char** argv) {
     // Timeouts
     RUN_TEST(test_heartbeat_timeout_returns_to_idle);
     RUN_TEST(test_heartbeat_keeps_listening_if_within_timeout);
+    RUN_TEST(test_heartbeat_timeout_treats_zero_as_a_real_timestamp);
+    RUN_TEST(test_raw_uart_timeout_treats_zero_as_a_real_timestamp);
     RUN_TEST(test_link_epoch_reset_suppresses_return_boot_probe);
     RUN_TEST(test_teardown_timeout_returns_to_listening);
     RUN_TEST(test_alert_active_timeout_transitions_to_teardown);

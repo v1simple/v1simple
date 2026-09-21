@@ -572,6 +572,7 @@ void VoiceModule::updatePriorityStability(uint32_t currentAlertId, unsigned long
     if (currentAlertId != lastPriorityAlertId_) {
         lastPriorityAlertId_ = currentAlertId;
         priorityStableSince_ = now;
+        priorityStabilityTracked_ = true;
     }
 }
 
@@ -581,11 +582,12 @@ void VoiceModule::markPriorityAnnounced(unsigned long now) {
 
 void VoiceModule::resetPriorityStability() {
     priorityStableSince_ = 0;
+    priorityStabilityTracked_ = false;
     lastPriorityAlertId_ = 0xFFFFFFFF;
 }
 
 bool VoiceModule::canAnnounceSecondary(unsigned long now) const {
-    return (priorityStableSince_ > 0) && (now - priorityStableSince_ >= PRIORITY_STABILITY_MS) &&
+    return priorityStabilityTracked_ && (now - priorityStableSince_ >= PRIORITY_STABILITY_MS) &&
            (now - lastPriorityAnnouncementTime_ >= POST_PRIORITY_GAP_MS);
 }
 

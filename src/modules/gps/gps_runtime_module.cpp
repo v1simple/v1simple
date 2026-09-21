@@ -6,9 +6,6 @@
 
 namespace {
 bool elapsedExceeded(uint32_t nowMs, uint32_t startMs, uint32_t thresholdMs) {
-    if (startMs == 0) {
-        return false;
-    }
     return static_cast<uint32_t>(nowMs - startMs) > thresholdMs;
 }
 
@@ -68,8 +65,11 @@ void GpsRuntimeModule::resetRuntimeState() {
     ggaFix_ = false;
     detectionStartMs_ = 0;
     lastFixTsMs_ = 0;
+    lastFixTimestampValid_ = false;
     lastStableFixTsMs_ = 0;
+    lastStableFixTimestampValid_ = false;
     lastSentenceTsMs_ = 0;
+    lastSentenceTimestampValid_ = false;
     hardwareSamples_ = 0;
     bytesRead_ = 0;
     sentencesSeen_ = 0;
@@ -79,6 +79,8 @@ void GpsRuntimeModule::resetRuntimeState() {
     sentencesUnknown_ = 0;
     bufferOverruns_ = 0;
     stableSatellites_ = 0;
+    // firstFixMs_ and firstFixRecorded_ intentionally survive enable/disable:
+    // this telemetry records the first stable fix over the module object's lifetime.
     sentenceActive_ = false;
     sentenceLen_ = 0;
     sentenceBuf_[0] = '\0';
@@ -106,6 +108,7 @@ void GpsRuntimeModule::updateDetectionTimeout(uint32_t nowMs) {
     satellites_ = 0;
     hdop_ = NAN;
     lastFixTsMs_ = 0;
+    lastFixTimestampValid_ = false;
     invalidateSpeedSample();
     updateStableFixState(nowMs);
 
@@ -116,7 +119,7 @@ void GpsRuntimeModule::updateDetectionTimeout(uint32_t nowMs) {
 }
 
 void GpsRuntimeModule::updateFixStaleness(uint32_t nowMs) {
-    if (!hasFix_ || lastFixTsMs_ == 0) {
+    if (!hasFix_ || !lastFixTimestampValid_) {
         return;
     }
     if (!elapsedExceeded(nowMs, lastFixTsMs_, FIX_STALE_MS)) {
@@ -129,16 +132,19 @@ void GpsRuntimeModule::updateFixStaleness(uint32_t nowMs) {
     satellites_ = 0;
     hdop_ = NAN;
     lastFixTsMs_ = 0;
+    lastFixTimestampValid_ = false;
     invalidateSpeedSample();
     updateStableFixState(nowMs);
 }
 
 void GpsRuntimeModule::updateStableFixState(uint32_t nowMs) {
-    const uint32_t tsMs = (nowMs == 0) ? millis() : nowMs;
+    const uint32_t tsMs = nowMs;
     if (hasFix_) {
         lastStableFixTsMs_ = tsMs;
-        if (firstFixMs_ == 0) {
+        lastStableFixTimestampValid_ = true;
+        if (!firstFixRecorded_) {
             firstFixMs_ = tsMs; // Latch first ever stable fix time
+            firstFixRecorded_ = true;
         }
         const uint8_t targetSatellites = satellites_;
         if (stableSatellites_ == 0) {
@@ -153,7 +159,8 @@ void GpsRuntimeModule::updateStableFixState(uint32_t nowMs) {
         return;
     }
 
-    if (lastStableFixTsMs_ != 0 && static_cast<uint32_t>(tsMs - lastStableFixTsMs_) <= STABLE_FIX_HOLD_MS) {
+    if (lastStableFixTimestampValid_ &&
+        static_cast<uint32_t>(tsMs - lastStableFixTsMs_) <= STABLE_FIX_HOLD_MS) {
         return;
     }
     stableSatellites_ = 0;
@@ -163,11 +170,10 @@ bool GpsRuntimeModule::stableHasFixAt(uint32_t nowMs) const {
     if (hasFix_) {
         return true;
     }
-    if (lastStableFixTsMs_ == 0) {
+    if (!lastStableFixTimestampValid_) {
         return false;
     }
-    const uint32_t tsMs = (nowMs == 0) ? millis() : nowMs;
-    return static_cast<uint32_t>(tsMs - lastStableFixTsMs_) <= STABLE_FIX_HOLD_MS;
+    return static_cast<uint32_t>(nowMs - lastStableFixTsMs_) <= STABLE_FIX_HOLD_MS;
 }
 
 void GpsRuntimeModule::update(uint32_t nowMs) {
@@ -237,7 +243,8 @@ bool GpsRuntimeModule::processSentence(char* sentence, uint32_t nowMs) {
     }
 
     sentencesSeen_++;
-    lastSentenceTsMs_ = (nowMs == 0) ? millis() : nowMs;
+    lastSentenceTsMs_ = nowMs;
+    lastSentenceTimestampValid_ = true;
 
     char* star = std::strchr(sentence, '*');
     if (!star || star <= (sentence + 1) || star[1] == '\0' || star[2] == '\0') {
@@ -334,13 +341,14 @@ bool GpsRuntimeModule::parseGga(char* fields[], size_t fieldCount, uint32_t nowM
     ggaFix_ = ggaFix;
     hasFix_ = ggaFix_ || rmcFix_;
     if (hasFix_) {
-        lastFixTsMs_ = (nowMs == 0) ? millis() : nowMs;
+        lastFixTsMs_ = nowMs;
+        lastFixTimestampValid_ = true;
     } else {
+        lastFixTimestampValid_ = false;
         invalidateSpeedSample();
     }
 
-    const uint32_t tsMs = (nowMs == 0) ? millis() : nowMs;
-    updateStableFixState(tsMs);
+    updateStableFixState(nowMs);
 
     return true;
 }
@@ -355,10 +363,10 @@ bool GpsRuntimeModule::parseRmc(char* fields[], size_t fieldCount, uint32_t nowM
         rmcFix_ = false;
         hasFix_ = ggaFix_;
         if (!hasFix_) {
+            lastFixTimestampValid_ = false;
             invalidateSpeedSample();
         }
-        const uint32_t tsMs = (nowMs == 0) ? millis() : nowMs;
-        updateStableFixState(tsMs);
+        updateStableFixState(nowMs);
         return true;
     }
 
@@ -388,8 +396,9 @@ bool GpsRuntimeModule::parseRmc(char* fields[], size_t fieldCount, uint32_t nowM
     hasFix_ = true;
     sampleValid_ = true;
     speedMph_ = std::clamp(speedMph, 0.0f, MAX_VALID_SPEED_MPH);
-    sampleTsMs_ = (nowMs == 0) ? millis() : nowMs;
+    sampleTsMs_ = nowMs;
     lastFixTsMs_ = sampleTsMs_;
+    lastFixTimestampValid_ = true;
     hardwareSamples_++;
     updateStableFixState(sampleTsMs_);
 
@@ -547,9 +556,12 @@ void GpsRuntimeModule::setScaffoldSample(float speedMph, bool hasFix, uint8_t sa
     speedMph_ = std::clamp(speedMph, 0.0f, MAX_VALID_SPEED_MPH);
     satellites_ = satellites;
     hdop_ = std::isfinite(hdop) ? std::max(0.0f, hdop) : NAN;
-    sampleTsMs_ = (timestampMs == 0) ? millis() : timestampMs;
+    sampleTsMs_ = timestampMs;
     if (hasFix_) {
         lastFixTsMs_ = sampleTsMs_;
+        lastFixTimestampValid_ = true;
+    } else {
+        lastFixTimestampValid_ = false;
     }
     injectedSamples_++;
     updateStableFixState(sampleTsMs_);
@@ -565,12 +577,13 @@ void GpsRuntimeModule::clearSample() {
     satellites_ = 0;
     hdop_ = NAN;
     lastFixTsMs_ = 0;
+    lastFixTimestampValid_ = false;
     updateStableFixState(nowMs);
 }
 #endif // UNIT_TEST
 
 bool GpsRuntimeModule::getFreshSpeed(uint32_t nowMs, float& speedMphOut, uint32_t& tsMsOut) const {
-    if (!enabled_ || !sampleValid_ || !hasFix_ || sampleTsMs_ == 0) {
+    if (!enabled_ || !sampleValid_ || !hasFix_) {
         return false;
     }
     if (static_cast<uint32_t>(nowMs - sampleTsMs_) > SAMPLE_MAX_AGE_MS) {
@@ -605,21 +618,24 @@ GpsRuntimeStatus GpsRuntimeModule::snapshot(uint32_t nowMs) const {
     status.sentencesUnknown = sentencesUnknown_;
     status.bufferOverruns = bufferOverruns_;
     status.lastSentenceTsMs = lastSentenceTsMs_;
-    status.lastSentenceAgeMs = (lastSentenceTsMs_ != 0) ? static_cast<uint32_t>(nowMs - lastSentenceTsMs_) : UINT32_MAX;
+    status.lastSentenceAgeMs = lastSentenceTimestampValid_
+                                   ? static_cast<uint32_t>(nowMs - lastSentenceTsMs_)
+                                   : UINT32_MAX;
     status.firstFixMs = firstFixMs_;
+    status.firstFixRecorded = firstFixRecorded_;
     status.enableTransitions = enableTransitions_;
 
-    if (sampleValid_ && sampleTsMs_ != 0) {
+    if (sampleValid_) {
         status.sampleAgeMs = static_cast<uint32_t>(nowMs - sampleTsMs_);
     } else {
         status.sampleAgeMs = UINT32_MAX;
     }
-    if (hasFix_ && lastFixTsMs_ != 0) {
+    if (hasFix_ && lastFixTimestampValid_) {
         status.fixAgeMs = static_cast<uint32_t>(nowMs - lastFixTsMs_);
     } else {
         status.fixAgeMs = UINT32_MAX;
     }
-    if (status.stableHasFix && lastStableFixTsMs_ != 0) {
+    if (status.stableHasFix && lastStableFixTimestampValid_) {
         status.stableFixAgeMs = static_cast<uint32_t>(nowMs - lastStableFixTsMs_);
     } else {
         status.stableFixAgeMs = UINT32_MAX;

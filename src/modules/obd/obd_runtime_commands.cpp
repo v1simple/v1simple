@@ -101,7 +101,7 @@ bool ObdRuntimeModule::startCommand(ObdCommandKind kind, ParserKind parser, cons
     activeCommand_.alternateWriteModeTried = false;
     copyString(activeCommand_.tx, sizeof(activeCommand_.tx), tx);
 
-    activeCommand_.sentMs = 0;
+    activeCommand_.writeResultPending = true;
     if (!beginTransportRequest(ObdTransportOp::WRITE, nowMs, 0, activeCommand_.tx, activeCommand_.writeWithResponse)) {
         resetCommandState();
         return false;
@@ -117,7 +117,7 @@ bool ObdRuntimeModule::retryActiveCommand(uint32_t nowMs) {
     activeCommand_.retriesRemaining--;
     initRetries_++;
     clearBleResponseState();
-    activeCommand_.sentMs = 0;
+    activeCommand_.writeResultPending = true;
     if (!beginTransportRequest(ObdTransportOp::WRITE, nowMs, 0, activeCommand_.tx, activeCommand_.writeWithResponse)) {
         return false;
     }
@@ -134,7 +134,7 @@ bool ObdRuntimeModule::retryActiveCommandWithAlternateWriteMode(uint32_t nowMs) 
     activeCommand_.writeWithResponse = !activeCommand_.writeWithResponse;
     initRetries_++;
     clearBleResponseState();
-    activeCommand_.sentMs = 0;
+    activeCommand_.writeResultPending = true;
     if (!beginTransportRequest(ObdTransportOp::WRITE, nowMs, 0, activeCommand_.tx, activeCommand_.writeWithResponse)) {
         return false;
     }

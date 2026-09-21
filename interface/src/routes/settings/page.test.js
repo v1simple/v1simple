@@ -361,6 +361,28 @@ describe('settings route page', () => {
         unmount();
     });
 
+    it('manual add keeps exact whitespace-only SSID bytes valid', async () => {
+        const fetchMock = installDefaultFetch();
+        const { unmount } = render(Page);
+
+        await openManualEditor();
+        const ssid = screen.getByLabelText('SSID');
+        const save = screen.getByRole('button', { name: /^Save$/i });
+        expect(save).toBeDisabled();
+
+        await fireEvent.input(ssid, { target: { value: 'OrdinaryNetwork' } });
+        expect(save).toBeEnabled();
+        await fireEvent.input(ssid, { target: { value: '   ' } });
+        expect(save).toBeEnabled();
+        await fireEvent.click(save);
+
+        await waitFor(() => {
+            expect(jsonBodies(fetchMock, '/api/wifi/networks').at(-1)?.ssid).toBe('   ');
+        });
+
+        unmount();
+    });
+
     it('toggles saved-network password visibility in the manual editor', async () => {
         installDefaultFetch();
         const { unmount } = render(Page);
@@ -399,6 +421,44 @@ describe('settings route page', () => {
             priority: 0
         });
         expect(body).not.toHaveProperty('password');
+
+        unmount();
+    });
+
+    it('allows a label-only edit of an existing whitespace-only SSID', async () => {
+        const slots = [
+            {
+                index: 0,
+                ssid: '   ',
+                label: 'Whitespace',
+                priority: 0,
+                hasPassword: true,
+                lastConnectedAtSec: 0,
+                configured: true
+            }
+        ];
+        const fetchMock = installDefaultFetch([], { slots });
+        const { unmount } = render(Page);
+
+        await screen.findByText('Whitespace');
+        await fireEvent.click(screen.getByRole('button', { name: /^Edit$/i }));
+        await screen.findByText('Edit Saved Network');
+        expect(screen.getByLabelText('SSID')).toHaveValue('   ');
+        await fireEvent.input(screen.getByLabelText('Label'), {
+            target: { value: 'Whitespace Updated' }
+        });
+        const save = screen.getByRole('button', { name: /^Save$/i });
+        expect(save).toBeEnabled();
+        await fireEvent.click(save);
+
+        await waitFor(() => {
+            expect(jsonBodies(fetchMock, '/api/wifi/networks').at(-1)).toMatchObject({
+                index: 0,
+                ssid: '   ',
+                label: 'Whitespace Updated',
+                priority: 0
+            });
+        });
 
         unmount();
     });

@@ -1221,7 +1221,7 @@ bool DriveRuntime::beginTripleTapProfileCycle(int newSlot) {
         Serial.printf("PROFILE CHANGE: local slot %d (no detector apply)\n", newSlot);
         return true;
     }
-    if (autoPush_.isActive() || settingsOperations_.isActive()) return false;
+    if (autoPush_.isActive() || settingsOperations_.requiresExclusiveDetectorAdmission()) return false;
     String address;
     if (!connectedV1Address(address)) return false;
     const auto started = settingsOperations_.startApply(

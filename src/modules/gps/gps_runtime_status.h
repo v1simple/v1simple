@@ -44,6 +44,7 @@ struct GpsRuntimeStatus {
     uint32_t bufferOverruns = 0;
     uint32_t lastSentenceTsMs = 0;
     uint32_t lastSentenceAgeMs = UINT32_MAX; // UINT32_MAX = no sentence yet
-    uint32_t firstFixMs = 0;                 // millis() at first stable fix; 0 = not yet received
-    uint32_t enableTransitions = 0;          // Number of enable/disable transitions
+    uint32_t firstFixMs = 0;        // millis() at first stable fix; may be 0 at rollover
+    bool firstFixRecorded = false;  // Authoritative presence flag for firstFixMs
+    uint32_t enableTransitions = 0; // Number of enable/disable transitions
 };

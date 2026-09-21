@@ -78,8 +78,11 @@ class GpsRuntimeModule {
     bool ggaFix_ = false;
     uint32_t detectionStartMs_ = 0;
     uint32_t lastFixTsMs_ = 0;
+    bool lastFixTimestampValid_ = false;
     uint32_t lastStableFixTsMs_ = 0;
+    bool lastStableFixTimestampValid_ = false;
     uint32_t lastSentenceTsMs_ = 0;
+    bool lastSentenceTimestampValid_ = false;
     uint32_t hardwareSamples_ = 0;
     uint32_t bytesRead_ = 0;
     uint32_t sentencesSeen_ = 0;
@@ -88,7 +91,8 @@ class GpsRuntimeModule {
     uint32_t checksumFailures_ = 0;
     uint32_t bufferOverruns_ = 0;
     uint8_t stableSatellites_ = 0;
-    uint32_t firstFixMs_ = 0;        // millis() at first stable fix; 0 = not yet
+    uint32_t firstFixMs_ = 0;
+    bool firstFixRecorded_ = false;  // Distinguishes no fix from an exact-rollover first fix.
     uint32_t enableTransitions_ = 0; // Incremented on each setEnabled() call that changes state
     uint32_t sentencesUnknown_ = 0;  // NMEA sentences with valid checksum but unrecognized type
     bool sentenceActive_ = false;

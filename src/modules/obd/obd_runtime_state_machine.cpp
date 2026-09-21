@@ -184,7 +184,7 @@ void ObdRuntimeModule::updateAtInit(uint32_t nowMs) {
     }
 
     if (activeCommand_.active) {
-        if (activeCommand_.sentMs == 0) {
+        if (activeCommand_.writeResultPending) {
             if (!takeTransportResult(ObdTransportOp::WRITE, transportResult)) {
                 return;
             }
@@ -204,6 +204,7 @@ void ObdRuntimeModule::updateAtInit(uint32_t nowMs) {
                                                                      : ObdFailureReason::WRITE);
                 return;
             }
+            activeCommand_.writeResultPending = false;
             activeCommand_.sentMs = transportResult.issuedMs;
             return;
         }
@@ -307,7 +308,7 @@ void ObdRuntimeModule::updatePolling(uint32_t nowMs) {
     }
 
     if (activeCommand_.active) {
-        if (activeCommand_.sentMs == 0) {
+        if (activeCommand_.writeResultPending) {
             if (!takeTransportResult(ObdTransportOp::WRITE, transportResult)) {
                 return;
             }
@@ -319,6 +320,7 @@ void ObdRuntimeModule::updatePolling(uint32_t nowMs) {
                                                             : ObdFailureReason::WRITE);
                 return;
             }
+            activeCommand_.writeResultPending = false;
             activeCommand_.sentMs = transportResult.issuedMs;
             return;
         }
@@ -364,7 +366,7 @@ void ObdRuntimeModule::updatePolling(uint32_t nowMs) {
         rssi_ = transportResult.rssi;
         lastRssiMs_ = nowMs;
     } else if (!transportRequestActive_ && !readyTransportResult_.ready &&
-               !(activeCommand_.active && activeCommand_.sentMs == 0) &&
+               !(activeCommand_.active && activeCommand_.writeResultPending) &&
                static_cast<int32_t>(nowMs - lastRssiMs_) >= static_cast<int32_t>(OBD_RSSI_REFRESH_MS)) {
         if (beginTransportRequest(ObdTransportOp::RSSI_READ, nowMs, 0)) {
             lastRssiMs_ = nowMs;

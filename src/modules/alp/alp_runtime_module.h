@@ -376,7 +376,10 @@ class AlpRuntimeModule {
         testSyncCurrentEvent(nowMs);
     }
     void testSetLastHbByte1(uint8_t byte1) { lastHbByte1_ = byte1; }
-    void testSetLastHeartbeat(uint32_t ms) { lastHeartbeatMs_ = ms; }
+    void testSetLastHeartbeat(uint32_t ms) {
+        lastHeartbeatMs_ = ms;
+        heartbeatTimeoutArmed_ = true;
+    }
     AlpState testGetState() const { return state_; }
     uint8_t testGetLastHbByte1() const { return lastHbByte1_; }
     bool testGetAlertDetectedViaHb() const { return alertDetectedViaHb_; }
@@ -434,6 +437,10 @@ class AlpRuntimeModule {
     // sequence has ended.
     bool bootGunConfirmed_ = false;
     uint32_t lastHeartbeatMs_ = 0;
+    // Timestamp 0 is a valid millis() value at boot and rollover. Keep timeout
+    // admission separate from the timestamp so a frame received at exactly 0
+    // still expires normally after silence.
+    bool heartbeatTimeoutArmed_ = false;
     uint32_t lastFrameMs_ = 0;
     uint32_t noiseWindowEntryMs_ = 0;
     uint32_t teardownEntryMs_ = 0;
@@ -452,9 +459,10 @@ class AlpRuntimeModule {
     // detect trigger frame.
     bool suppressHeartbeatResumeThisProcess_ = false;
     bool uartHasReceivedData_ = false;
-    // Raw UART byte arrival timestamp — updated on every drainUart byte read
-    // (and testInjectBytes). 0 until the first byte is observed.
+    // Raw UART byte arrival timestamp — updated on every drainUart byte read.
+    // The separate armed bit makes timestamp 0 usable at boot/rollover.
     uint32_t lastUartByteMs_ = 0;
+    bool uartSilenceTimeoutArmed_ = false;
 
     // Session + Warm-Up tracking
     AlertSession session_;

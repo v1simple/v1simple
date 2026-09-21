@@ -555,6 +555,31 @@ void test_secondary_photo_and_same_frequency_k_have_distinct_dedup_identity() {
     TEST_ASSERT_EQUAL(VoiceAction::Type::NONE, voiceModule.process(ctx).type);
 }
 
+void test_secondary_stability_treats_zero_as_a_real_timestamp() {
+    for (unsigned long firstSeenMs : {0UL, 1UL}) {
+        voiceModule = VoiceModule();
+        voiceModule.begin(&settings, &bleClient);
+
+        AlertData alerts[] = {
+            AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700),
+            AlertData::create(BAND_K, DIR_REAR, 2, 0, 24125),
+        };
+        VoiceContext ctx;
+        ctx.priority = &alerts[0];
+        ctx.alerts = alerts;
+        ctx.alertCount = 2;
+        ctx.mainVolume = 5;
+        ctx.now = firstSeenMs;
+        TEST_ASSERT_EQUAL(VoiceAction::Type::ANNOUNCE_PRIORITY, voiceModule.process(ctx).type);
+
+        ctx.now = firstSeenMs + 3000UL;
+        TEST_ASSERT_EQUAL_MESSAGE(
+            VoiceAction::Type::ANNOUNCE_SECONDARY, voiceModule.process(ctx).type,
+            firstSeenMs == 0 ? "millis zero must start the priority-stability window"
+                             : "nonzero priority-stability control must still announce");
+    }
+}
+
 void test_priority_k_to_photo_waits_for_cooldown_then_announces_photo_once() {
     AlertData alert = AlertData::create(BAND_K, DIR_FRONT, 4, 0, 24125);
     VoiceContext ctx;
@@ -792,6 +817,7 @@ int main() {
     RUN_TEST(test_process_announces_normal_k_when_phototype_zero);
     RUN_TEST(test_secondary_photo_uses_photo_presentation_before_later_ordinary_k);
     RUN_TEST(test_secondary_photo_and_same_frequency_k_have_distinct_dedup_identity);
+    RUN_TEST(test_secondary_stability_treats_zero_as_a_real_timestamp);
     RUN_TEST(test_priority_k_to_photo_waits_for_cooldown_then_announces_photo_once);
     RUN_TEST(test_prepare_priority_does_not_commit_until_playback_accepts);
     RUN_TEST(test_prepare_direction_and_secondary_remain_retryable_until_commit);

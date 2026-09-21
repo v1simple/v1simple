@@ -481,10 +481,24 @@ void test_interrupted_terminal_return_owns_detector_admission_until_acknowledged
     TEST_ASSERT_FALSE(interruptedBoot.isActive());
     TEST_ASSERT_TRUE(interruptedBoot.snapshot().returnToMaintenance);
     TEST_ASSERT_TRUE(interruptedBoot.requiresExclusiveDetectorAdmission());
+    const uint32_t terminalOperationId = interruptedBoot.snapshot().operationId;
+    TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::StartStatus::Active,
+        interruptedBoot.startApply(1, "AA:BB:CC:DD:EE:FF",
+                                   V1SettingsOperationStore::Source::TripleTap,
+                                   false, false).status);
+    TEST_ASSERT_EQUAL_UINT32(terminalOperationId, interruptedBoot.snapshot().operationId);
+    TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::State::Partial,
+                          interruptedBoot.snapshot().state);
+    TEST_ASSERT_TRUE(interruptedBoot.snapshot().returnToMaintenance);
 
     TEST_ASSERT_TRUE(interruptedBoot.acknowledgeReturnToMaintenance());
     TEST_ASSERT_FALSE(interruptedBoot.snapshot().returnToMaintenance);
     TEST_ASSERT_FALSE(interruptedBoot.requiresExclusiveDetectorAdmission());
+    TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::StartStatus::Started,
+        interruptedBoot.startApply(1, "AA:BB:CC:DD:EE:FF",
+                                   V1SettingsOperationStore::Source::TripleTap,
+                                   false, false).status);
+    TEST_ASSERT_TRUE(interruptedBoot.snapshot().operationId != terminalOperationId);
 }
 
 void test_return_retry_policy_is_bounded_and_rollover_safe() {

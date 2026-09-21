@@ -156,6 +156,67 @@ void test_stale_fix_is_cleared() {
     TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, status.fixAgeMs);
 }
 
+void test_exact_rollover_fix_is_fresh_and_ages_normally() {
+    mockMillis = 0;
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPRMC,123519,A,4807.038,N,01131.000,E,010.0,084.4,230394,003.1,W*6F", 0));
+
+    const GpsRuntimeStatus atRollover = gpsRuntimeModule.snapshot(0);
+    TEST_ASSERT_TRUE(atRollover.sampleValid);
+    TEST_ASSERT_TRUE(atRollover.hasFix);
+    TEST_ASSERT_TRUE(atRollover.stableHasFix);
+    TEST_ASSERT_EQUAL_UINT32(0, atRollover.sampleAgeMs);
+    TEST_ASSERT_EQUAL_UINT32(0, atRollover.fixAgeMs);
+    TEST_ASSERT_EQUAL_UINT32(0, atRollover.stableFixAgeMs);
+    TEST_ASSERT_EQUAL_UINT32(0, atRollover.lastSentenceAgeMs);
+    TEST_ASSERT_TRUE(atRollover.firstFixRecorded);
+    TEST_ASSERT_EQUAL_UINT32(0, atRollover.firstFixMs);
+
+    float speedMph = 0.0f;
+    uint32_t sampleTsMs = UINT32_MAX;
+    TEST_ASSERT_TRUE(gpsRuntimeModule.getFreshSpeed(3000, speedMph, sampleTsMs));
+    TEST_ASSERT_EQUAL_UINT32(0, sampleTsMs);
+    TEST_ASSERT_FALSE(gpsRuntimeModule.getFreshSpeed(3001, speedMph, sampleTsMs));
+
+    gpsRuntimeModule.update(15000);
+    TEST_ASSERT_TRUE(gpsRuntimeModule.snapshot(15000).hasFix);
+    gpsRuntimeModule.update(15001);
+    const GpsRuntimeStatus stale = gpsRuntimeModule.snapshot(15001);
+    TEST_ASSERT_FALSE(stale.hasFix);
+    TEST_ASSERT_FALSE(stale.sampleValid);
+    TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, stale.fixAgeMs);
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPRMC,123519,A,4807.038,N,01131.000,E,010.0,084.4,230394,003.1,W*6F", 16000));
+    GpsRuntimeStatus laterFix = gpsRuntimeModule.snapshot(16000);
+    TEST_ASSERT_TRUE(laterFix.firstFixRecorded);
+    TEST_ASSERT_EQUAL_UINT32(0, laterFix.firstFixMs);
+
+    gpsRuntimeModule.setEnabled(false);
+    gpsRuntimeModule.setEnabled(true);
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPRMC,123519,A,4807.038,N,01131.000,E,010.0,084.4,230394,003.1,W*6F", 17000));
+    const GpsRuntimeStatus afterEnableCycle = gpsRuntimeModule.snapshot(17000);
+    TEST_ASSERT_TRUE(afterEnableCycle.firstFixRecorded);
+    TEST_ASSERT_EQUAL_UINT32(0, afterEnableCycle.firstFixMs);
+
+    resetRuntime();
+    mockMillis = 0;
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPRMC,123519,A,4807.038,N,01131.000,E,010.0,084.4,230394,003.1,W*6F", 0));
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPRMC,123521,V,4807.038,N,01131.000,E,000.0,000.0,230394,003.1,W*7A", 1));
+    TEST_ASSERT_TRUE(gpsRuntimeModule.snapshot(3000).stableHasFix);
+    TEST_ASSERT_FALSE(gpsRuntimeModule.snapshot(3001).stableHasFix);
+
+    resetRuntime();
+    mockMillis = 1;
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPRMC,123519,A,4807.038,N,01131.000,E,010.0,084.4,230394,003.1,W*6F", 1));
+    TEST_ASSERT_TRUE(gpsRuntimeModule.getFreshSpeed(2, speedMph, sampleTsMs));
+    gpsRuntimeModule.update(15002);
+    TEST_ASSERT_FALSE(gpsRuntimeModule.snapshot(15002).hasFix);
+}
+
 void test_stable_fix_holds_briefly_after_fix_drop() {
     gpsRuntimeModule.setScaffoldSample(32.0f, true, 8, 0.9f, 1000);
     mockMillis = 2000;
@@ -247,6 +308,7 @@ int main() {
     RUN_TEST(test_rejected_gga_does_not_commit_quality_or_promote_gps);
     RUN_TEST(test_detection_timeout_disables_runtime_polling);
     RUN_TEST(test_stale_fix_is_cleared);
+    RUN_TEST(test_exact_rollover_fix_is_fresh_and_ages_normally);
     RUN_TEST(test_stable_fix_holds_briefly_after_fix_drop);
     RUN_TEST(test_stable_satellites_slew_toward_raw_count);
     RUN_TEST(test_overlong_sentence_is_rejected);

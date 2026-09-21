@@ -218,6 +218,7 @@ class ObdRuntimeModule {
         uint32_t timeoutMs = 0;
         uint8_t retriesRemaining = 0;
         uint32_t sentMs = 0;
+        bool writeResultPending = false;
         bool writeWithResponse = true;
         bool alternateWriteModeTried = false;
     };

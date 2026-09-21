@@ -11,6 +11,9 @@
 
 #include "../mocks/Arduino.h"
 #include "../../src/modules/gps/gps_runtime_status.h"
+#define private public
+#include "../../src/modules/obd/obd_runtime_module.h"
+#undef private
 #include "../../src/modules/obd/obd_elm327_parser.cpp"
 #include "../../src/modules/obd/obd_runtime_module.cpp"
 #include "../../src/modules/obd/obd_runtime_state_machine.cpp"
@@ -311,6 +314,40 @@ void test_empty_response_retries_alternate_write_mode_then_times_out() {
     TEST_ASSERT_EQUAL(ObdCommandKind::NONE, status.commandInFlight);
 }
 
+void test_write_completion_at_exact_rollover_enters_bounded_response_timeout() {
+    // A successful write timestamp may legitimately be zero at millis rollover;
+    // command phase, not the timestamp value, owns response-timeout admission.
+    const auto verifyBoundedTimeout = [](uint32_t issuedMs) {
+        ObdRuntimeModule runtime;
+        runtime.begin(nullptr, true, kSavedAddress, 0, -80);
+        runtime.state_ = ObdConnectionState::POLLING;
+
+        TEST_ASSERT_TRUE(runtime.startCommand(
+            ObdCommandKind::SPEED, ObdRuntimeModule::ParserKind::SIMPLE,
+            "010D\r", 0x41, 0x0D, 0, obd::POLL_TIMEOUT_MS, 0, issuedMs));
+        TEST_ASSERT_TRUE(runtime.activeCommand_.writeResultPending);
+
+        runtime.updatePolling(issuedMs);
+        TEST_ASSERT_FALSE(runtime.activeCommand_.writeResultPending);
+        TEST_ASSERT_EQUAL_UINT32(issuedMs, runtime.activeCommand_.sentMs);
+        TEST_ASSERT_EQUAL(ObdCommandKind::SPEED,
+                          runtime.snapshot(issuedMs).commandInFlight);
+
+        runtime.updatePolling(issuedMs + obd::POLL_TIMEOUT_MS - 1u);
+        TEST_ASSERT_EQUAL_UINT32(0, runtime.snapshot(issuedMs).pollErrors);
+        runtime.updatePolling(issuedMs + obd::POLL_TIMEOUT_MS);
+
+        const ObdRuntimeStatus status = runtime.snapshot(
+            issuedMs + obd::POLL_TIMEOUT_MS);
+        TEST_ASSERT_EQUAL(ObdFailureReason::COMMAND_TIMEOUT, status.lastFailure);
+        TEST_ASSERT_EQUAL_UINT32(1, status.pollErrors);
+        TEST_ASSERT_EQUAL(ObdCommandKind::NONE, status.commandInFlight);
+    };
+
+    verifyBoundedTimeout(0u);
+    verifyBoundedTimeout(1u);
+}
+
 void test_partial_response_has_no_separate_parse_deadline_and_uses_response_timeout() {
     Fixture fixture;
     fixture.bootToPolling();
@@ -561,6 +598,7 @@ int main() {
     RUN_TEST(test_discovery_transport_timeout_is_classified_as_discovery_failure);
     RUN_TEST(test_speed_command_transport_timeout_is_not_misreported_as_parse_failure);
     RUN_TEST(test_empty_response_retries_alternate_write_mode_then_times_out);
+    RUN_TEST(test_write_completion_at_exact_rollover_enters_bounded_response_timeout);
     RUN_TEST(test_partial_response_has_no_separate_parse_deadline_and_uses_response_timeout);
     RUN_TEST(test_disconnect_clears_speed_and_next_admitted_update_reconnects);
     RUN_TEST(test_old_session_response_queued_with_disconnect_cannot_seed_reconnect);

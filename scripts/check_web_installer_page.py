@@ -42,6 +42,17 @@ EXPECTED_INSTALL_SCRIPT = (
     "sha384-2Ea4WL8tjFb0qQKUqBoX45KlPVoUgL+Z3zUqsD0MHmtJ3faDbfNyZulLg/LfYDUZ",
     "anonymous",
 )
+EXPECTED_ANALYTICS_SCRIPT = (
+    "https://v1simple.goatcounter.com/count",
+    '{"path":"/"}',
+    "https://gc.zgo.at/count.v5.js",
+    "sha384-atnOLvQb9t+jTSipvd75X2yginT4PjVbqDdlJAmxMm+wYElFmeR6EmLP5bYeoRVQ",
+    "anonymous",
+)
+EXPECTED_INSTALL_EVENTS = (
+    "install-intent-preserve",
+    "install-intent-fresh",
+)
 
 
 class InstallerParser(HTMLParser):
@@ -49,7 +60,9 @@ class InstallerParser(HTMLParser):
         super().__init__()
         self.install_manifests: list[str] = []
         self.install_modes: list[str] = []
+        self.install_events: list[str] = []
         self.module_scripts: list[tuple[str, str, str]] = []
+        self.analytics_scripts: list[tuple[str, str, str, str, str]] = []
         self.links: list[str] = []
         self.images: list[str] = []
 
@@ -62,6 +75,18 @@ class InstallerParser(HTMLParser):
             self.module_scripts.append(
                 (attr["src"], attr.get("integrity", ""), attr.get("crossorigin", ""))
             )
+        if tag == "script" and "data-goatcounter" in attr:
+            self.analytics_scripts.append(
+                (
+                    attr["data-goatcounter"],
+                    attr.get("data-goatcounter-settings", ""),
+                    attr.get("src", ""),
+                    attr.get("integrity", ""),
+                    attr.get("crossorigin", ""),
+                )
+            )
+        if tag == "button" and attr.get("slot") == "activate":
+            self.install_events.append(attr.get("data-goatcounter-click", ""))
         if tag == "a" and "href" in attr:
             self.links.append(attr["href"])
         if tag == "img" and "src" in attr:
@@ -247,6 +272,10 @@ def main() -> int:
         errors.append(
             "installer buttons must explicitly identify preserve and destructive modes"
         )
+    if parser_obj.install_events != list(EXPECTED_INSTALL_EVENTS):
+        errors.append(
+            "installer buttons must count distinct preserve and fresh install intents"
+        )
 
     index_text = index.read_text(encoding="utf-8")
     for required_text in (
@@ -263,6 +292,16 @@ def main() -> int:
 
     if parser_obj.module_scripts != [EXPECTED_INSTALL_SCRIPT]:
         errors.append("index.html must load the exact pinned ESP Web Tools module with SRI")
+    if parser_obj.analytics_scripts != [EXPECTED_ANALYTICS_SCRIPT]:
+        errors.append(
+            "index.html must load the exact pinned, query-free GoatCounter integration with SRI"
+        )
+    for required_text in (
+        "counts visits and installer choices with GoatCounter",
+        "without cookies or persistent identifiers",
+    ):
+        if required_text not in index_text:
+            errors.append(f"index.html must disclose analytics behavior: {required_text!r}")
 
     for required_link in (PROJECT_LICENSE_PATH, NOTICE_PATH, *LICENSE_PATHS):
         if parser_obj.links.count(required_link) != 1:

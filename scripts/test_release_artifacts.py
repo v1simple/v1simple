@@ -161,7 +161,37 @@ class ReleaseArtifactTests(unittest.TestCase):
                 "https://unpkg.com/esp-web-tools@latest/dist/web/install-button.js?module",
             )
             template = template.replace(f'\n    integrity="{expected_integrity}"', "")
-            template = template.replace(f'\n    crossorigin="{expected_crossorigin}"', "")
+            template = template.replace(
+                f'\n    crossorigin="{expected_crossorigin}"', "", 1
+            )
+            (site / "index.html").write_text(template, encoding="utf-8")
+            branding = site / "../interface/static/branding/v1simple-logo-transparent.png"
+            branding.parent.mkdir(parents=True, exist_ok=True)
+            branding.write_bytes(b"branding")
+
+            with mock.patch.object(
+                installer.sys,
+                "argv",
+                ["checker", "--site-dir", str(site), "--template-only"],
+            ):
+                self.assertEqual(installer.main(), 1)
+
+    def test_installer_rejects_unpinned_analytics_without_integrity(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="installer_analytics_") as temporary:
+            site = Path(temporary)
+            template = (installer.ROOT / "web-installer" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            endpoint, settings, expected_url, expected_integrity, _ = (
+                installer.EXPECTED_ANALYTICS_SCRIPT
+            )
+            self.assertIn(endpoint, template)
+            self.assertIn(settings, template)
+            template = template.replace(
+                expected_url,
+                "https://gc.zgo.at/count.js",
+            )
+            template = template.replace(f'\n    integrity="{expected_integrity}"', "")
             (site / "index.html").write_text(template, encoding="utf-8")
             branding = site / "../interface/static/branding/v1simple-logo-transparent.png"
             branding.parent.mkdir(parents=True, exist_ok=True)

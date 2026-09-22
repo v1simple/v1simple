@@ -809,7 +809,7 @@
               <p>Writes only the app partition. NVS settings, saved Wi-Fi networks, internal fallback profiles, and the existing LittleFS web interface are not part of this update image. Supported older profile and Auto-Push data is migrated automatically at boot; do not erase the device just to upgrade it. Because this path deliberately leaves the web interface unchanged, use the fresh-install path if those files also need replacement.</p>
               <p class="choice-warning">Leave “Erase device” off in ESP Web Tools. Checking “Erase device” changes this into a destructive erase.</p>
               <esp-web-install-button manifest="manifest-update.json" data-install-mode="preserve">
-                <button slot="activate" type="button"><span>Update and preserve data</span><span aria-hidden="true">→</span></button>
+                <button slot="activate" type="button" data-goatcounter-click="install-intent-preserve"><span>Update and preserve data</span><span aria-hidden="true">→</span></button>
                 <span slot="unsupported" class="installer-message">This browser does not support Web Serial.<small>Use Firefox 151 or newer, Chrome 89 or newer, or a current version of Edge on desktop.</small></span>
                 <span slot="not-allowed" class="installer-message">Serial access is not available here.<small>Open the installer over HTTPS or localhost and allow the browser’s device-access prompt.</small></span>
               </esp-web-install-button>
@@ -819,7 +819,7 @@
               <h3 id="fresh-title">Fresh install — erase and rebuild</h3>
               <p>This is destructive even if ESP Web Tools’ optional erase box is off: the merged image replaces the bootloader, partition table, firmware, NVS data, and internal LittleFS web interface and fallback profiles. Saved settings and Wi-Fi networks are erased. Physical SD-card contents are not part of this flash operation.</p>
               <esp-web-install-button manifest="manifest.json" data-install-mode="destructive">
-                <button slot="activate" type="button"><span>Erase and fresh install</span><span aria-hidden="true">→</span></button>
+                <button slot="activate" type="button" data-goatcounter-click="install-intent-fresh"><span>Erase and fresh install</span><span aria-hidden="true">→</span></button>
                 <span slot="unsupported" class="installer-message">This browser does not support Web Serial.<small>Use Firefox 151 or newer, Chrome 89 or newer, or a current version of Edge on desktop.</small></span>
                 <span slot="not-allowed" class="installer-message">Serial access is not available here.<small>Open the installer over HTTPS or localhost and allow the browser’s device-access prompt.</small></span>
               </esp-web-install-button>
@@ -861,6 +861,7 @@
         <strong>V1Simple</strong>
         <span>Independent software for Valentine One Gen2.</span>
         <span>Release assets are generated and published together.</span>
+        <span>This site counts visits and installer choices with GoatCounter, without cookies or persistent identifiers. <a href="https://www.goatcounter.com/help/privacy">Privacy details</a>.</span>
       </div>
       <details class="license-details">
         <summary>Licenses &amp; notices</summary>
@@ -891,6 +892,14 @@
     type="module"
     src="https://unpkg.com/esp-web-tools@10.2.1/dist/web/install-button.js?module"
     integrity="sha384-2Ea4WL8tjFb0qQKUqBoX45KlPVoUgL+Z3zUqsD0MHmtJ3faDbfNyZulLg/LfYDUZ"
+    crossorigin="anonymous"
+  ></script>
+  <script
+    data-goatcounter="https://v1simple.goatcounter.com/count"
+    data-goatcounter-settings='{"path":"/"}'
+    async
+    src="https://gc.zgo.at/count.v5.js"
+    integrity="sha384-atnOLvQb9t+jTSipvd75X2yginT4PjVbqDdlJAmxMm+wYElFmeR6EmLP5bYeoRVQ"
     crossorigin="anonymous"
   ></script>
   <script>

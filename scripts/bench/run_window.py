@@ -309,6 +309,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scenario", default="")
     parser.add_argument("--ku-qualification", action="store_true")
     parser.add_argument("--photo-label-qualification", action="store_true")
+    parser.add_argument("--junk-qualification", action="store_true")
     parser.add_argument(
         "--blink-profile", choices=["scenario", "steady", "stress"], default=None
     )
@@ -948,6 +949,7 @@ class V1Emulator:
         ku_qualification: bool,
         machine_event: Callable[[dict[str, Any]], None],
         photo_label_qualification: bool = False,
+        junk_qualification: bool = False,
     ) -> None:
         self.executable = executable
         self.suite = suite
@@ -957,6 +959,7 @@ class V1Emulator:
         self.scenario = scenario
         self.ku_qualification = ku_qualification
         self.photo_label_qualification = photo_label_qualification
+        self.junk_qualification = junk_qualification
         self.machine_event = machine_event
         self.log_path = out_dir / "v1replay.log"
         self.state_path = out_dir / "v1_emulator_state.json"
@@ -1016,6 +1019,8 @@ class V1Emulator:
                 command.append("--ku-qualification")
             if self.photo_label_qualification:
                 command.append("--photo-label-qualification")
+            if self.junk_qualification:
+                command.append("--junk-qualification")
             assert self.scenario_path is not None
             command.extend(["--scenario-evidence", str(self.scenario_path)])
         command.extend(
@@ -1206,6 +1211,7 @@ def collect_live(
             ku_qualification=getattr(args, "ku_qualification", False),
             machine_event=lambda payload: timeline.record_external(payload, "v1replay"),
             photo_label_qualification=getattr(args, "photo_label_qualification", False),
+            junk_qualification=getattr(args, "junk_qualification", False),
         )
         emulator_result: dict[str, Any] = {}
         camera_result: dict[str, Any] = {}
@@ -1399,11 +1405,14 @@ def main() -> int:
         return fail("--ku-qualification is valid only for replay")
     if args.suite != "replay" and getattr(args, "photo_label_qualification", False):
         return fail("--photo-label-qualification is valid only for replay")
+    if args.suite != "replay" and getattr(args, "junk_qualification", False):
+        return fail("--junk-qualification is valid only for replay")
     focused_qualifications = sum(
         bool(value)
         for value in (
             getattr(args, "ku_qualification", False),
             getattr(args, "photo_label_qualification", False),
+            getattr(args, "junk_qualification", False),
         )
     )
     if focused_qualifications > 1:

@@ -283,6 +283,7 @@ def capture_replay_command(
     *,
     ku_qualification: bool = False,
     photo_label_qualification: bool = False,
+    junk_qualification: bool = False,
 ) -> list[str]:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -316,6 +317,7 @@ def capture_replay_command(
             ku_qualification=ku_qualification,
             machine_event=lambda _payload: None,
             photo_label_qualification=photo_label_qualification,
+            junk_qualification=junk_qualification,
         )
         try:
             emulator.start()
@@ -341,6 +343,8 @@ def test_replay_process_requests_raw_machine_and_scenario_evidence() -> None:
     assert_true("--ku-qualification" in ku_command, str(ku_command))
     photo_command = capture_replay_command("", photo_label_qualification=True)
     assert_true("--photo-label-qualification" in photo_command, str(photo_command))
+    junk_command = capture_replay_command("", junk_qualification=True)
+    assert_true("--junk-qualification" in junk_command, str(junk_command))
 
 
 def test_replay_transport_must_be_active_before_the_external_window() -> None:

@@ -48,6 +48,7 @@ extension V1 {
                         direction: alert.direction,
                         frequencyMHz: alert.frequencyMHz,
                         priority: alert.isPriority,
+                        junk: alert.isJunk,
                         photoType: alert.photoType
                     )
                     return (
@@ -57,7 +58,7 @@ extension V1 {
                 }
             }
 
-            let frame: DisplayFrame
+            var frame: DisplayFrame
             if let priority = sample.priorityAlert {
                 frame = .alerting(
                     bars: priority.strength,
@@ -82,6 +83,10 @@ extension V1 {
                     softMuted: muted,
                     includeModeBits: includeModeBits
                 )
+            }
+            if let counter = sample.bogeyCounterOverride {
+                frame.bogeyImage1 = counter.image1
+                frame.bogeyImage2 = counter.image2
             }
 
             alertTablePackets = rows.map { $0.1 }

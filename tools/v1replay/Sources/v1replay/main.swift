@@ -25,7 +25,7 @@ struct Arguments {
         "loop", "paused", "no-alerts", "always-alerts", "no-wait",
         "no-checksum", "log-packets", "blink-bogey", "blink-arrow", "synthetic", "bench",
         "exit-on-complete", "machine-events", "handshake-only", "reader-qualification", "persistence-coverage",
-        "ku-qualification", "photo-label-qualification",
+        "ku-qualification", "photo-label-qualification", "junk-qualification",
         "help", "h", "version"
     ]
 
@@ -202,11 +202,12 @@ func validateBenchOptions() throws {
         args.bool("reader-qualification"),
         args.bool("ku-qualification"),
         args.bool("photo-label-qualification"),
+        args.bool("junk-qualification"),
         args.optionalString("scenario") != nil,
     ].filter { $0 }.count
     if selectedScenarios > 1 {
         throw ReplayError.message(
-            "choose only one of --persistence-coverage, --reader-qualification, --ku-qualification, --photo-label-qualification, or --scenario"
+            "choose only one of --persistence-coverage, --reader-qualification, --ku-qualification, --photo-label-qualification, --junk-qualification, or --scenario"
         )
     }
     if args.bool("synthetic") {
@@ -237,6 +238,7 @@ func makeBenchEncounter() throws -> Encounter {
     if args.bool("reader-qualification") { return BenchScenario.makeReaderQualification() }
     if args.bool("ku-qualification") { return BenchScenario.makeKuQualification() }
     if args.bool("photo-label-qualification") { return BenchScenario.makePhotoLabelQualification() }
+    if args.bool("junk-qualification") { return BenchScenario.makeJunkQualification() }
     return BenchScenario.make()
 }
 
@@ -299,6 +301,7 @@ func runHelp() {
       --ku-qualification   fixed 12-second K/Ka/Ku priority exercise for bench
       --photo-label-qualification
                            fixed 32-second exercise covering all Photo subtype labels
+      --junk-qualification fixed 4-second junk-bit and blinking-J transition
       --scenario-evidence P
                            write path-free resolved scenario JSON as raw evidence
       --handshake-only     runner preflight: one clear alert row, then stay quiet
@@ -471,6 +474,9 @@ func runExport() throws {
     if args.bool("photo-label-qualification") && !bench {
         throw ReplayError.message("--photo-label-qualification export requires --bench")
     }
+    if args.bool("junk-qualification") && !bench {
+        throw ReplayError.message("--junk-qualification export requires --bench")
+    }
     if bench {
         try validateBenchOptions()
     }
@@ -598,6 +604,9 @@ func runPlay(idleOnly: Bool,
     }
     if !bench && args.bool("photo-label-qualification") {
         throw ReplayError.message("--photo-label-qualification is available only in bench mode")
+    }
+    if !bench && args.bool("junk-qualification") {
+        throw ReplayError.message("--junk-qualification is available only in bench mode")
     }
     if idleOnly && args.optionalString("scenario-evidence") != nil {
         throw ReplayError.message("--scenario-evidence requires replay playback")

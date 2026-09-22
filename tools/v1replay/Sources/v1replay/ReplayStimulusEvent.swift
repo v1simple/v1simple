@@ -11,6 +11,7 @@ struct ReplayStimulusEvent: Encodable, Equatable {
         let bars: Int
         let direction: String
         let priority: Bool
+        let junk: Bool
         let photoType: UInt8?
 
         init(_ alert: ReplayAlert) {
@@ -20,6 +21,7 @@ struct ReplayStimulusEvent: Encodable, Equatable {
             bars = alert.strength
             direction = alert.direction.label
             priority = alert.isPriority
+            junk = alert.isJunk
             photoType = alert.photoType == 0 ? nil : alert.photoType
         }
     }
@@ -34,6 +36,11 @@ struct ReplayStimulusEvent: Encodable, Equatable {
         let displayOn: Bool
         let arrowBlink: Bool
         let bandBlink: Bool
+        let bogeyCounterChar: String
+        let bogeyCounterOffChar: String
+        let bogeyCounterBlink: Bool
+        let bogeyCounterImage1: UInt8
+        let bogeyCounterImage2: UInt8
     }
 
     struct NotificationRequest: Encodable, Equatable {
@@ -65,7 +72,7 @@ struct ReplayStimulusEvent: Encodable, Equatable {
     }
 
     let state = "stimulus_requested"
-    let schemaVersion = 3
+    let schemaVersion = 4
     let stimulusSequence: Int
     let sourceIndex: Int
     let replayOffsetSeconds: Double
@@ -80,6 +87,7 @@ struct ReplayStimulusEvent: Encodable, Equatable {
          controlState: V1.Session.ControlState,
          muted: Bool,
          displayOn: Bool,
+         bogeyBlink: Bool = false,
          arrowBlink: Bool,
          bandBlink: Bool,
          plan: V1.PlaybackPacketPlan,
@@ -93,6 +101,28 @@ struct ReplayStimulusEvent: Encodable, Equatable {
         self.requestedHostMonotonicNs = requestedHostMonotonicNs
         requestedHostMonotonicSeconds =
             Double(requestedHostMonotonicNs) / 1_000_000_000.0
+        let bogeyCounterChar: String
+        let bogeyCounterImage1: UInt8
+        let bogeyCounterImage2: UInt8
+        if let counter = sample.bogeyCounterOverride {
+            bogeyCounterChar = counter.displayCharacter
+            bogeyCounterImage1 = counter.image1
+            bogeyCounterImage2 = counter.image2
+        } else if sample.alerts.contains(where: { $0.photoType != 0 }) {
+            bogeyCounterChar = "P"
+            bogeyCounterImage1 = 0x73
+            bogeyCounterImage2 = bogeyBlink ? 0x00 : 0x73
+        } else if !sample.alerts.isEmpty {
+            bogeyCounterChar = String(sample.alerts.count)
+            bogeyCounterImage1 = V1.bogeyGlyph(forCount: sample.alerts.count)
+            bogeyCounterImage2 = bogeyBlink ? 0x00 : bogeyCounterImage1
+        } else {
+            bogeyCounterChar = controlState.mode.displayCharacter
+            bogeyCounterImage1 = controlState.mode.rawValue
+            bogeyCounterImage2 = bogeyCounterImage1
+        }
+        let bogeyCounterBlink = bogeyCounterImage1 != bogeyCounterImage2
+        let bogeyCounterOffChar = bogeyCounterBlink ? " " : bogeyCounterChar
         expected = ExpectedDisplay(
             phase: sample.phase,
             alerts: sample.alerts.map(Alert.init),
@@ -102,7 +132,12 @@ struct ReplayStimulusEvent: Encodable, Equatable {
             modeChar: controlState.mode.displayCharacter,
             displayOn: displayOn,
             arrowBlink: arrowBlink,
-            bandBlink: bandBlink
+            bandBlink: bandBlink,
+            bogeyCounterChar: bogeyCounterChar,
+            bogeyCounterOffChar: bogeyCounterOffChar,
+            bogeyCounterBlink: bogeyCounterBlink,
+            bogeyCounterImage1: bogeyCounterImage1,
+            bogeyCounterImage2: bogeyCounterImage2
         )
         notifications = plan.emissions.enumerated().map {
             NotificationRequest(ordinal: $0.offset, emission: $0.element)

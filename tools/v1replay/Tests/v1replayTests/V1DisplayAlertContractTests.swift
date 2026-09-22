@@ -40,17 +40,17 @@ final class V1DisplayAlertContractTests: XCTestCase {
         }
     }
 
-    func testDefaultBenchPreservesBaseAndAppendsKuThenPhotoQualification() throws {
+    func testDefaultBenchOwnsJunkInBaseAndAppendsKuThenPhotoQualification() throws {
         let encounter = BenchScenario.make()
         let baseSampleCount = BenchScenario.baseDurationSeconds * BenchScenario.cadenceHz
         let preservedBase = Encounter(
             origin: encounter.origin,
             samples: Array(encounter.samples.prefix(baseSampleCount)))
 
-        // Retained before adding the Ku suffix; covers every established alert,
-        // mute, volume, mode, timing and blink value in the original sequence.
+        // Retained before the Ku suffix. This identity intentionally includes
+        // the authored 256...260 junk-out transition and evidence schema v2.
         XCTAssertEqual(sha256Hex(try preservedBase.resolvedScenarioEvidenceData()),
-                       "144b04f4cced4461578168c9b162e97a02bf34973e9918c73b4a972888935f6f")
+                       "80103d9149ae60e2a8b73f704f68567ee344ba7f885c0114f1c3466b0e92ac83")
 
         let focusedKu = BenchScenario.makeKuQualification()
         let appendedKu = Array(encounter.samples[
@@ -71,6 +71,7 @@ final class V1DisplayAlertContractTests: XCTestCase {
                 XCTAssertEqual(actualAlert.strength, expectedAlert.strength)
                 XCTAssertEqual(actualAlert.direction, expectedAlert.direction)
                 XCTAssertEqual(actualAlert.isPriority, expectedAlert.isPriority)
+                XCTAssertEqual(actualAlert.isJunk, expectedAlert.isJunk)
                 XCTAssertEqual(actualAlert.photoType, expectedAlert.photoType)
             }
         }
@@ -170,6 +171,51 @@ final class V1DisplayAlertContractTests: XCTestCase {
         let retainedSamples = try XCTUnwrap(retained["samples"] as? [[String: Any]])
         let photoAlerts = try XCTUnwrap(retainedSamples[3]["alerts"] as? [[String: Any]])
         XCTAssertEqual(photoAlerts[0]["photoType"] as? Int, 1)
+    }
+
+    func testJunkQualificationCarriesMarkedRowThenRowlessBlinkingJ() throws {
+        let encounter = BenchScenario.makeJunkQualification()
+        XCTAssertEqual(encounter.samples.count, 12)
+        XCTAssertEqual(encounter.duration, 3.0 + 2.0 / 3.0, accuracy: 0.000_001)
+        let control = V1.Session.ControlState(
+            mode: .advancedLogic, mainVolume: 4, mutedVolume: 0,
+            savedMainVolume: 4, savedMutedVolume: 0)
+
+        let baseline = V1.PlaybackPacketPlan(
+            sample: encounter.samples[0], controlState: control, displayOn: true,
+            muted: false, blinkBogey: false, blinkArrow: false)
+        let baselineRow = try IndependentFrame.decode(XCTUnwrap(baseline.alertTablePackets.first))
+        XCTAssertEqual(baselineRow.payload[6], 0x80)
+        let baselineDisplay = try IndependentFrame.decode(baseline.displayPacket)
+        XCTAssertEqual(Array(baselineDisplay.payload.prefix(2)), [0x06, 0x06])
+
+        let marked = V1.PlaybackPacketPlan(
+            sample: encounter.samples[3], controlState: control, displayOn: true,
+            muted: false, blinkBogey: false, blinkArrow: false)
+        let markedRow = try IndependentFrame.decode(XCTUnwrap(marked.alertTablePackets.first))
+        XCTAssertEqual(markedRow.payload[6], 0xC0)
+        let markedDisplay = try IndependentFrame.decode(marked.displayPacket)
+        XCTAssertEqual(Array(markedDisplay.payload.prefix(2)), [0x1E, 0x00])
+
+        let cleared = V1.PlaybackPacketPlan(
+            sample: encounter.samples[9], controlState: control, displayOn: true,
+            muted: false, blinkBogey: false, blinkArrow: false)
+        let clearRow = try IndependentFrame.decode(XCTUnwrap(cleared.alertTablePackets.first))
+        XCTAssertEqual(clearRow.payload[0], 0x00)
+        let clearedDisplay = try IndependentFrame.decode(cleared.displayPacket)
+        XCTAssertEqual(Array(clearedDisplay.payload.prefix(2)), [0x1E, 0x00])
+
+        let retained = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: encounter.resolvedScenarioEvidenceData()) as? [String: Any])
+        XCTAssertEqual(retained["schemaVersion"] as? Int, 2)
+        let retainedSamples = try XCTUnwrap(retained["samples"] as? [[String: Any]])
+        let markedAlerts = try XCTUnwrap(retainedSamples[3]["alerts"] as? [[String: Any]])
+        XCTAssertEqual(markedAlerts[0]["junk"] as? Bool, true)
+        XCTAssertEqual(retainedSamples[3]["bogeyCounterOverride"] as? String,
+                       "junk_blink")
+        XCTAssertTrue((retainedSamples[9]["alerts"] as? [[String: Any]])?.isEmpty == true)
+        XCTAssertEqual(retainedSamples[9]["bogeyCounterOverride"] as? String,
+                       "junk_blink")
     }
 
     func testPhotoLabelQualificationHoldsEveryNamedSubtypeSteady() throws {

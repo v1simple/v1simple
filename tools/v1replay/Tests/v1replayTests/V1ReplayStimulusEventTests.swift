@@ -47,7 +47,7 @@ final class V1ReplayStimulusEventTests: XCTestCase {
         )
 
         XCTAssertEqual(event.state, "stimulus_requested")
-        XCTAssertEqual(event.schemaVersion, 3)
+        XCTAssertEqual(event.schemaVersion, 4)
         XCTAssertEqual(event.stimulusSequence, 9)
         XCTAssertEqual(event.sourceIndex, 41)
         XCTAssertEqual(event.intendedHostMonotonicNs, 123_499_000_000)
@@ -60,6 +60,11 @@ final class V1ReplayStimulusEventTests: XCTestCase {
         XCTAssertTrue(event.expected.muted)
         XCTAssertTrue(event.expected.arrowBlink)
         XCTAssertTrue(event.expected.bandBlink)
+        XCTAssertEqual(event.expected.bogeyCounterChar, "1")
+        XCTAssertEqual(event.expected.bogeyCounterOffChar, "1")
+        XCTAssertFalse(event.expected.bogeyCounterBlink)
+        XCTAssertEqual(event.expected.bogeyCounterImage1, 0x06)
+        XCTAssertEqual(event.expected.bogeyCounterImage2, 0x06)
         XCTAssertEqual(event.expected.alerts, [ReplayStimulusEvent.Alert(sample.alerts[0])])
         XCTAssertEqual(event.notifications.map(\.ordinal), Array(plan.emissions.indices))
         XCTAssertEqual(
@@ -73,7 +78,7 @@ final class V1ReplayStimulusEventTests: XCTestCase {
             JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any]
         )
         XCTAssertEqual(decoded["state"] as? String, "stimulus_requested")
-        XCTAssertEqual(decoded["schemaVersion"] as? Int, 3)
+        XCTAssertEqual(decoded["schemaVersion"] as? Int, 4)
         XCTAssertEqual(decoded["intendedHostMonotonicNs"] as? Int, 123_499_000_000)
         XCTAssertEqual(decoded["stimulusSequence"] as? Int, 9)
         XCTAssertEqual((decoded["notifications"] as? [[String: Any]])?.count, plan.emissions.count)
@@ -117,6 +122,46 @@ final class V1ReplayStimulusEventTests: XCTestCase {
         XCTAssertEqual(event.expected.alerts[0].photoType, 3)
         let row = try XCTUnwrap(plan.alertTablePackets.first)
         XCTAssertEqual(try IndependentFrameForStimulus.decode(row).payload[6] & 0x0F, 3)
+    }
+
+    func testStimulusEvidenceRetainsJunkBitAndExactBlinkPlanes() throws {
+        let sample = TimedSample(
+            offset: 2,
+            phase: "junk_qualification_marked",
+            muted: false,
+            alerts: [ReplayAlert(
+                band: .k,
+                frequencyMHz: 24_199,
+                strength: 2,
+                direction: .front,
+                isPriority: true,
+                isJunk: true
+            )],
+            bogeyCounterOverride: .junkBlink,
+            sourceIndex: 6
+        )
+        let control = V1.Session.ControlState(
+            mode: .advancedLogic, mainVolume: 4, mutedVolume: 0,
+            savedMainVolume: 4, savedMutedVolume: 0)
+        let plan = V1.PlaybackPacketPlan(
+            sample: sample, controlState: control, displayOn: true, muted: false,
+            blinkBogey: false, blinkArrow: false)
+        let event = ReplayStimulusEvent(
+            sequence: 1, sample: sample, controlState: control, muted: false,
+            displayOn: true, arrowBlink: false, bandBlink: false, plan: plan,
+            intendedHostMonotonicNs: 1, requestedHostMonotonicNs: 2)
+
+        XCTAssertTrue(event.expected.alerts[0].junk)
+        XCTAssertEqual(event.expected.bogeyCounterChar, "J")
+        XCTAssertEqual(event.expected.bogeyCounterOffChar, " ")
+        XCTAssertTrue(event.expected.bogeyCounterBlink)
+        XCTAssertEqual(event.expected.bogeyCounterImage1, 0x1E)
+        XCTAssertEqual(event.expected.bogeyCounterImage2, 0x00)
+        let row = try IndependentFrameForStimulus.decode(
+            XCTUnwrap(plan.alertTablePackets.first))
+        XCTAssertEqual(row.payload[6], 0xC0)
+        let display = try IndependentFrameForStimulus.decode(plan.displayPacket)
+        XCTAssertEqual(Array(display.payload.prefix(2)), [0x1E, 0x00])
     }
 }
 

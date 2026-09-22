@@ -60,6 +60,7 @@ Generated stimuli require no data file:
 .build/v1replay bench --reader-qualification
 .build/v1replay bench --ku-qualification
 .build/v1replay bench --photo-label-qualification
+.build/v1replay bench --junk-qualification
 .build/v1replay bench --persistence-coverage
 .build/v1replay bench --scenario /external/input.json \
   --scenario-evidence /external/run/replay_scenario.json --machine-events
@@ -70,7 +71,7 @@ Generated stimuli require no data file:
 ```
 
 Without `--scenario`, `--reader-qualification`, `--ku-qualification`,
-`--photo-label-qualification`, or `--persistence-coverage`,
+`--photo-label-qualification`, `--junk-qualification`, or `--persistence-coverage`,
 `bench` uses the generated default stimulus at approximately 3 Hz. Its 276-second
 Phase 0 base covers a resting lead, K and Ka ramps, a priority handoff, complete
 two- and three-row alert tables, card removal and restoration, a long Ka approach,
@@ -128,6 +129,14 @@ steady for four seconds using the same K-band frequency, strength, and front
 direction, bracketed by two seconds of clear input. This isolates rendered
 label legibility without changing detector settings.
 
+The default bench includes a four-second junk-out transition at replay second
+256: an ordinary K alert, the same priority row with its protocol junk bit set
+while the counter blinks J/blank, and finally an empty alert table while that
+counter blink remains. `v1replay bench --junk-qualification` selects only this
+transition for a short camera capture. Both resolved-scenario and per-stimulus
+evidence retain the junk bit, the two exact counter planes, and their visible
+characters; the emulator does not infer a verdict from camera output.
+
 `--persistence-coverage` selects a separate 64-second ordinary radar sequence
 for observing the configured Alert persistence. It does not change that setting
 or establish that persisted content was displayed correctly.
@@ -141,7 +150,7 @@ semantics. Physical display behavior is checked by the camera leg.
 The selected priority band and arrow use their independent image1/image2 bits
 in lockstep; Ku uses the physical K bit. `--blink-profile steady` is the
 negative control; `--blink-profile stress` blinks every active priority band
-and arrow (756 samples) as the worst-case repaint control. `--blink-arrow`
+and arrow (765 samples) as the worst-case repaint control. `--blink-arrow`
 remains a legacy alias for the stress profile.
 
 The long approach derives only the aggregate cadence, approximate durations,

@@ -176,6 +176,7 @@ private struct ResolvedScenarioDocument: Encodable {
         let direction: String
         let directionMask: UInt8
         let priority: Bool
+        let junk: Bool
         let photoType: UInt8?
     }
 
@@ -193,9 +194,10 @@ private struct ResolvedScenarioDocument: Encodable {
         let detectorVolume: Volume?
         let detectorMode: String?
         let scenarioArrowBlink: Bool
+        let bogeyCounterOverride: String?
     }
 
-    let schemaVersion = 1
+    let schemaVersion = 2
     let origin: String
     let samples: [Sample]
 
@@ -216,6 +218,7 @@ private struct ResolvedScenarioDocument: Encodable {
                         direction: alert.direction.label,
                         directionMask: alert.direction.rawValue,
                         priority: alert.isPriority,
+                        junk: alert.isJunk,
                         photoType: alert.photoType == 0 ? nil : alert.photoType
                     )
                 },
@@ -223,7 +226,8 @@ private struct ResolvedScenarioDocument: Encodable {
                     Volume(main: $0.mainVolume, muted: $0.muteVolume)
                 },
                 detectorMode: sample.detectorMode?.displayCharacter,
-                scenarioArrowBlink: sample.scenarioArrowBlink
+                scenarioArrowBlink: sample.scenarioArrowBlink,
+                bogeyCounterOverride: sample.bogeyCounterOverride?.evidenceName
             )
         }
     }

@@ -15,6 +15,8 @@ enum BenchScenario {
     static let kuQualificationDurationSeconds = 12
     static let photoQualificationDurationSeconds = 10
     static let photoLabelQualificationDurationSeconds = 32
+    static let junkQualificationDurationSeconds = 4
+    static let junkQualificationStartSecond = 256
     static let photoQualificationStartSecond = baseDurationSeconds + kuQualificationDurationSeconds
     static let durationSeconds = photoQualificationStartSecond + photoQualificationDurationSeconds
 
@@ -170,6 +172,60 @@ enum BenchScenario {
         precondition(samples.filter { $0.alerts.contains { $0.photoType != 0 } }.count == 24)
         precondition(samples.filter { ($0.priorityAlert?.photoType ?? 0) != 0 }.count == 12)
         precondition(samples.filter(\.scenarioArrowBlink).count == 18)
+        return Encounter(origin: .syntheticBench, samples: samples)
+    }
+
+    private struct JunkQualificationState {
+        let phase: String
+        let alerts: [ReplayAlert]
+        let counter: ReplayBogeyCounter?
+    }
+
+    private static func junkQualificationState(at second: Int) -> JunkQualificationState {
+        precondition((0..<junkQualificationDurationSeconds).contains(second))
+        switch second {
+        case 0:
+            return JunkQualificationState(
+                phase: "junk_qualification_alert",
+                alerts: [alert(.k, 24_199, 2, .front, priority: true)],
+                counter: nil)
+        case 1..<3:
+            return JunkQualificationState(
+                phase: "junk_qualification_marked",
+                alerts: [alert(.k, 24_199, 2, .front, priority: true, junk: true)],
+                counter: .junkBlink)
+        default:
+            return JunkQualificationState(
+                phase: "junk_qualification_counter",
+                alerts: [],
+                counter: .junkBlink)
+        }
+    }
+
+    /// A bounded junk-out transition: ordinary K alert, the same row marked
+    /// junk while J blinks, then the no-row J/blank verdict the renderer must
+    /// continue animating without a live priority alert.
+    static func makeJunkQualification() -> Encounter {
+        var samples: [TimedSample] = []
+        let sampleCount = junkQualificationDurationSeconds * cadenceHz
+        samples.reserveCapacity(sampleCount)
+
+        for tick in 0..<sampleCount {
+            let state = junkQualificationState(at: tick / cadenceHz)
+            samples.append(TimedSample(
+                offset: Double(tick) / Double(cadenceHz),
+                phase: state.phase,
+                muted: false,
+                alerts: state.alerts,
+                bogeyCounterOverride: state.counter,
+                sourceIndex: tick
+            ))
+        }
+
+        precondition(samples.count == sampleCount)
+        precondition(samples.filter { $0.alerts.contains(where: \.isJunk) }.count == 6)
+        precondition(samples.filter { $0.bogeyCounterOverride == .junkBlink }.count == 9)
+        precondition(samples.suffix(3).allSatisfy { $0.alerts.isEmpty })
         return Encounter(origin: .syntheticBench, samples: samples)
     }
 
@@ -395,12 +451,14 @@ enum BenchScenario {
                               _ strength: Int,
                               _ direction: V1.Direction,
                               priority: Bool,
+                              junk: Bool = false,
                               photoType: UInt8 = 0) -> ReplayAlert {
         return ReplayAlert(band: band,
                            frequencyMHz: frequencyMHz,
                            strength: strength,
                            direction: direction,
                            isPriority: priority,
+                           isJunk: junk,
                            photoType: photoType)
     }
 
@@ -533,6 +591,11 @@ enum BenchScenario {
                 alerts = [alert(state.band, state.frequencyMHz, state.strength,
                                 state.direction, priority: true)]
 
+            case junkQualificationStartSecond..<(junkQualificationStartSecond + junkQualificationDurationSeconds):
+                let state = junkQualificationState(at: second - junkQualificationStartSecond)
+                phase = state.phase
+                alerts = state.alerts
+
             case 59..<244:
                 phase = "duke_shaped_approach"
                 let local = tick - 59 * cadenceHz
@@ -567,6 +630,14 @@ enum BenchScenario {
             } else {
                 scenarioArrowBlink = alerts.count > 1
             }
+            let bogeyCounterOverride: ReplayBogeyCounter?
+            if (junkQualificationStartSecond..<(junkQualificationStartSecond + junkQualificationDurationSeconds))
+                .contains(second) {
+                bogeyCounterOverride = junkQualificationState(
+                    at: second - junkQualificationStartSecond).counter
+            } else {
+                bogeyCounterOverride = nil
+            }
             samples.append(TimedSample(offset: Double(tick) / Double(cadenceHz),
                                        phase: phase,
                                        muted: muted(at: second),
@@ -574,6 +645,7 @@ enum BenchScenario {
                                        detectorVolume: detectorVolume(at: second),
                                        detectorMode: detectorMode(at: second),
                                        scenarioArrowBlink: scenarioArrowBlink,
+                                       bogeyCounterOverride: bogeyCounterOverride,
                                        sourceIndex: tick))
         }
 
@@ -599,7 +671,10 @@ enum BenchScenario {
             "handoff_clear": 30,
             "duke_shaped_approach": 429,
             "mute_qualification": 126,
-            "idle_tail": 96,
+            "idle_tail": 84,
+            "junk_qualification_alert": 3,
+            "junk_qualification_marked": 6,
+            "junk_qualification_counter": 3,
             "ku_qualification_idle_lead": 6,
             "ku_qualification_single": 6,
             "ku_qualification_k_priority": 6,
@@ -613,7 +688,7 @@ enum BenchScenario {
             "photo_qualification_photo_priority": 6,
             "photo_qualification_idle_tail": 3,
         ])
-        precondition(samples.filter { !$0.alerts.isEmpty }.count == 756)
+        precondition(samples.filter { !$0.alerts.isEmpty }.count == 765)
         precondition(samples.filter { $0.alerts.count == 3 }.count == 54)
         precondition(samples.filter(\.scenarioArrowBlink).count == 93)
         precondition(samples.filter(\.scenarioArrowBlink).allSatisfy { $0.alerts.count > 1 })
@@ -655,7 +730,22 @@ enum BenchScenario {
         let plateauEnd = dukeStart + 140 * cadenceHz
         precondition(samples[plateauStart..<plateauEnd].allSatisfy { $0.priorityAlert?.strength == 6 })
         precondition(samples[(244 * cadenceHz)..<(baseDurationSeconds * cadenceHz)]
+            .filter { $0.phase == "idle_tail" }
             .allSatisfy { $0.alerts.isEmpty })
+
+        let junkStart = junkQualificationStartSecond * cadenceHz
+        let junk = samples[junkStart..<(junkStart + junkQualificationDurationSeconds * cadenceHz)]
+        precondition(junk.count == 12)
+        precondition(junk.prefix(3).allSatisfy {
+            $0.alerts.count == 1 && !$0.alerts[0].isJunk && $0.bogeyCounterOverride == nil
+        })
+        precondition(junk.dropFirst(3).prefix(6).allSatisfy {
+            $0.alerts.count == 1 && $0.alerts[0].isJunk &&
+                $0.bogeyCounterOverride == .junkBlink
+        })
+        precondition(junk.suffix(3).allSatisfy {
+            $0.alerts.isEmpty && $0.bogeyCounterOverride == .junkBlink
+        })
 
         let appendedKu = samples[(baseDurationSeconds * cadenceHz)..<(photoQualificationStartSecond * cadenceHz)]
         precondition(appendedKu.count == kuQualificationDurationSeconds * cadenceHz)

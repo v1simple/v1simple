@@ -30,6 +30,7 @@ struct ReplayAlert {
     let strength: Int
     let direction: V1.Direction
     let isPriority: Bool
+    let isJunk: Bool
     let photoType: UInt8
 
     init(band: V1.Band,
@@ -37,6 +38,7 @@ struct ReplayAlert {
          strength: Int,
          direction: V1.Direction,
          isPriority: Bool,
+         isJunk: Bool = false,
          photoType: UInt8 = 0) {
         precondition(photoType <= 0x0F, "photo type must fit the alert-row aux0 nibble")
         precondition(photoType == 0 || band.mask == V1.Band.k.mask,
@@ -46,6 +48,7 @@ struct ReplayAlert {
         self.strength = strength
         self.direction = direction
         self.isPriority = isPriority
+        self.isJunk = isJunk
         self.photoType = photoType
     }
 
@@ -55,6 +58,7 @@ struct ReplayAlert {
             && strength == other.strength
             && direction == other.direction
             && isPriority == other.isPriority
+            && isJunk == other.isJunk
             && photoType == other.photoType
     }
 
@@ -65,9 +69,43 @@ struct ReplayAlert {
             strength: strength,
             direction: direction,
             isPriority: priority,
+            isJunk: isJunk,
             photoType: photoType
         )
     }
+}
+
+/// A detector-authored override for the single seven-segment bogey counter.
+/// Alert rows and the counter are separate V1 packet fields: after junk-out,
+/// the counter can keep blinking J even after the alert table is empty.
+enum ReplayBogeyCounter: Equatable {
+    case junkBlink
+
+    var image1: UInt8 {
+        switch self {
+        case .junkBlink: return 0x1E
+        }
+    }
+
+    var image2: UInt8 {
+        switch self {
+        case .junkBlink: return 0x00
+        }
+    }
+
+    var displayCharacter: String {
+        switch self {
+        case .junkBlink: return "J"
+        }
+    }
+
+    var evidenceName: String {
+        switch self {
+        case .junkBlink: return "junk_blink"
+        }
+    }
+
+    var isBlinking: Bool { return image1 != image2 }
 }
 
 /// One detector-authored current-volume pair carried by infDisplayData aux2.
@@ -166,6 +204,7 @@ struct TimedSample {
     let detectorVolume: DetectorVolume?
     let detectorMode: V1.ModeGlyph?
     let scenarioArrowBlink: Bool
+    let bogeyCounterOverride: ReplayBogeyCounter?
     let sourceIndex: Int
 
     init(offset: TimeInterval,
@@ -175,6 +214,7 @@ struct TimedSample {
          detectorVolume: DetectorVolume? = nil,
          detectorMode: V1.ModeGlyph? = nil,
          scenarioArrowBlink: Bool = false,
+         bogeyCounterOverride: ReplayBogeyCounter? = nil,
          sourceIndex: Int) {
         precondition((0...3).contains(alerts.count), "replay steps support zero through three alerts")
         let priorityCount = alerts.reduce(0) { $0 + ($1.isPriority ? 1 : 0) }
@@ -190,6 +230,7 @@ struct TimedSample {
         self.detectorVolume = detectorVolume
         self.detectorMode = detectorMode
         self.scenarioArrowBlink = scenarioArrowBlink
+        self.bogeyCounterOverride = bogeyCounterOverride
         self.sourceIndex = sourceIndex
     }
 
@@ -210,6 +251,7 @@ struct TimedSample {
             detectorVolume: detectorVolume,
             detectorMode: detectorMode,
             scenarioArrowBlink: replacement.isEmpty ? false : scenarioArrowBlink,
+            bogeyCounterOverride: bogeyCounterOverride,
             sourceIndex: sourceIndex
         )
     }
@@ -220,6 +262,7 @@ struct TimedSample {
               detectorVolume == other.detectorVolume,
               detectorMode == other.detectorMode,
               scenarioArrowBlink == other.scenarioArrowBlink,
+              bogeyCounterOverride == other.bogeyCounterOverride,
               alerts.count == other.alerts.count else {
             return false
         }

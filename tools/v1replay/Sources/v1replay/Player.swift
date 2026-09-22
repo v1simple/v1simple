@@ -587,6 +587,7 @@ final class Player {
             controlState: control,
             muted: muted,
             displayOn: displayOn,
+            bogeyBlink: options.blinkBogey,
             arrowBlink: arrowBlink,
             bandBlink: bandBlink,
             plan: plan,

@@ -797,6 +797,27 @@ final class V1SessionContractTests: XCTestCase {
         XCTAssertFalse(projected.scenarioArrowBlink)
     }
 
+    func testProjectionPreservesJunkIdentityAndRowlessCounterOverride() {
+        var config = V1.Session.Config()
+        config.userBytes = [0x7F, 0xF7, 0xFF, 0xFF, 0xFF, 0xFF]
+        let session = V1.Session(config: config)
+        let outside = ReplayAlert(
+            band: .ka, frequencyMHz: 34_700, strength: 6,
+            direction: .front, isPriority: true)
+        let junk = ReplayAlert(
+            band: .k, frequencyMHz: 24_125, strength: 2,
+            direction: .front, isPriority: false, isJunk: true)
+        let projected = session.projectedSample(TimedSample(
+            offset: 1, phase: "junk", muted: false,
+            alerts: [outside, junk], bogeyCounterOverride: .junkBlink,
+            sourceIndex: 1))
+
+        XCTAssertEqual(projected.alerts.count, 1)
+        XCTAssertTrue(projected.priorityAlert?.isPriority == true)
+        XCTAssertTrue(projected.priorityAlert?.isJunk == true)
+        XCTAssertEqual(projected.bogeyCounterOverride, .junkBlink)
+    }
+
     func testBandSwitchesFilterDirectBitsAndInvertedKuBit() {
         var config = V1.Session.Config()
         // Only K and Ka are enabled. Custom Frequencies remains off.

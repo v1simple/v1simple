@@ -1644,9 +1644,10 @@ def collect_live(
         assert lease.fd is not None
         presentation_configuration: dict[str, Any] | None = None
         presentation_capture_ns: int | None = None
-        if args.presentation_api_base_url:
+        presentation_api_base_url = getattr(args, "presentation_api_base_url", "")
+        if presentation_api_base_url:
             presentation_configuration = wait_for_presentation_configuration(
-                args.presentation_api_base_url,
+                presentation_api_base_url,
                 reconnect=lambda remaining: try_join_maintenance_wifi(
                     timeout_s=remaining
                 ),

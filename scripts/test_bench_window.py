@@ -28,6 +28,8 @@ sys.path.insert(0, str(ROOT / "scripts" / "bench"))
 import run_window as run_window_module  # noqa: E402
 from run_window import (  # noqa: E402
     BENCH_TIMELINE_NAME,
+    PRESENTATION_SNAPSHOT_NAME,
+    REPLAY_DISPLAY_CONTRACT_NAME,
     REPLAY_DELIVERY_NAME,
     REPLAY_STIMULUS_NAME,
     BenchTimeline,
@@ -36,12 +38,17 @@ from run_window import (  # noqa: E402
     SourceProvenanceFailure,
     V1Emulator,
     V1RadioLease,
+    capture_presentation_configuration,
     establish_serial_boundary,
     file_artifact,
     parse_runtime_boot_identity,
+    parse_auto_push_selection,
+    publish_presentation_snapshot,
+    publish_replay_display_contract,
     publish_replay_delivery_evidence,
     publish_replay_stimulus_evidence,
     qualify_runtime_identity,
+    require_stable_presentation_configuration,
     require_current_source_identity,
     resolve_runner_log_paths,
 )
@@ -1206,6 +1213,144 @@ def test_serial_interrupted_loader_framing_requires_one_exact_rom_banner() -> No
                         "interrupted loader or fresh ROM evidence was discarded")
 
 
+def sample_presentation_api():
+    display = {field: index for index, field in enumerate(run_window_module.DISPLAY_DIRECT_FIELDS)}
+    display.update({
+        "bandPhoto": 0x780F,
+        "freqUseBandColor": False,
+        "hideProfileIndicator": False,
+        "brightness": 170,
+    })
+    quiet = {
+        "alertVolumeFadeEnabled": False,
+        "alertVolumeFadeDelaySec": 3,
+        "alertVolumeFadeVolume": 3,
+        "speedMuteEnabled": False,
+        "speedMuteThresholdMph": 15,
+        "speedMuteHysteresisMph": 3,
+        "speedMuteVolume": 0,
+        "speedMuteVoice": False,
+        "stealthEnabled": False,
+    }
+    slots = {
+        "enabled": True,
+        "activeSlot": 0,
+        "schemaVersion": 3,
+        "detectorConfigurationOwner": "profile",
+        "slots": [
+            {"name": "MrCt", "profile": "Advanced Logic", "color": 0x780F,
+             "alertPersist": 2, "priorityArrowOnly": False},
+            {"name": "P", "profile": "Advanced Logic", "color": 0x780F,
+             "alertPersist": 0, "priorityArrowOnly": True},
+            {"name": "Road", "profile": "Road", "color": 0x07E0,
+             "alertPersist": 1, "priorityArrowOnly": False},
+        ],
+    }
+    calls = []
+
+    def get_json(_base, endpoint, *, query=None):
+        calls.append((endpoint, query))
+        if endpoint == "/api/display/settings":
+            return display
+        if endpoint == "/api/quiet/settings":
+            return quiet
+        if endpoint == "/api/autopush/slots":
+            return slots
+        raise AssertionError(endpoint)
+
+    return get_json, calls
+
+
+def test_presentation_capture_retains_visual_inputs_without_private_profile_names() -> None:
+    get_json, calls = sample_presentation_api()
+    captured = capture_presentation_configuration("http://device", get_json=get_json)
+    slots = captured["auto_push"]["slots"]
+    encoded = json.dumps(captured, sort_keys=True)
+    assert_true(captured["display"]["bandPhoto"] == 0x780F, encoded)
+    assert_true(slots[0]["display_label"] == "MrCt" and not slots[0]["display_label_is_opaque"], encoded)
+    assert_true("Advanced Logic" not in encoded, encoded)
+    assert_true(not any(endpoint == "/api/v1/profile" for endpoint, _ in calls), str(calls))
+
+
+def test_presentation_selection_and_drift_are_explicit_evaluator_failures() -> None:
+    selection = parse_auto_push_selection(
+        "[AutoPush] onV1Connected autoPush=on activeSlot=0 selectedSlot=2 defaultProfile=3 mode=1"
+    )
+    assert_true(selection is not None and selection["intended_detector_profile_slot"] == 2, str(selection))
+    assert_true(selection["presentation_policy_slot"] == 0, str(selection))
+    disabled = parse_auto_push_selection(
+        "[AutoPush] onV1Connected autoPush=off activeSlot=0 selectedSlot=2 defaultProfile=3 mode=1"
+    )
+    assert_true(disabled is not None and disabled["intended_detector_profile_slot"] is None,
+                str(disabled))
+    try:
+        parse_auto_push_selection(
+            "[AutoPush] onV1Connected autoPush=on activeSlot=0 selectedSlot=1 defaultProfile=3 mode=1"
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("inconsistent selected-slot evidence was accepted")
+    try:
+        require_stable_presentation_configuration({"bandPhoto": 1}, {"bandPhoto": 2})
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("presentation drift was accepted")
+
+
+def test_display_contract_binds_snapshot_stimulus_scenario_runtime_and_camera() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        get_json, _ = sample_presentation_api()
+        configuration = capture_presentation_configuration("http://device", get_json=get_json)
+        selection = parse_auto_push_selection(
+            "[AutoPush] onV1Connected autoPush=on activeSlot=0 selectedSlot=2 defaultProfile=3 mode=1"
+        )
+        assert selection is not None
+        snapshot = publish_presentation_snapshot(
+            out_dir, configuration=configuration, selection=selection,
+            pre_capture_ns=10, post_capture_ns=20,
+        )
+        files = {
+            "replay_stimulus": (
+                REPLAY_STIMULUS_NAME,
+                b'{"state":"stimulus_requested","schemaVersion":4,"stimulusSequence":1,'
+                b'"expected":{"phase":"test","alerts":[]},"notifications":[]}\n',
+            ),
+            "replay_delivery": (REPLAY_DELIVERY_NAME, b'{"schema_version":1,"stimulus_sequence":1,"state":"accepted"}\n'),
+            "replay_scenario": (run_window_module.REPLAY_SCENARIO_EVIDENCE_NAME,
+                                b'{"schemaVersion":2,"origin":"synthetic_bench","samples":[]}\n'),
+            "v1_emulator_state": ("v1_emulator_state.json",
+                                  b'{"schemaVersion":1,"userBytes":[127,255,255,255,255,255]}\n'),
+            "bench_timeline": (BENCH_TIMELINE_NAME, b'{"event":"done"}\n'),
+            "build_upload": (run_window_module.BUILD_UPLOAD_ARTIFACTS_NAME, b'{}\n'),
+        }
+        artifacts = {"presentation_snapshot": snapshot}
+        for key, (name, data) in files.items():
+            path = out_dir / name
+            path.write_bytes(data)
+            artifacts[key] = file_artifact(path)
+        artifacts["replay_stimulus"]["event_count"] = 1
+        camera_dir = out_dir / "camera"
+        camera_dir.mkdir()
+        (camera_dir / "capture_manifest.json").write_text('{"kind":"bench_camera_capture"}\n')
+        contract = publish_replay_display_contract(
+            out_dir,
+            artifacts=artifacts,
+            runtime_identity={"boot_id": 7, "git_sha": "a" * 40, "image_id": "b" * 9},
+            camera_result={"capture_manifest": "capture_manifest.json", "capture_id": "c" * 64},
+        )
+        payload = json.loads((out_dir / REPLAY_DISPLAY_CONTRACT_NAME).read_text())
+        assert_true(contract["sha256"] == file_artifact(out_dir / REPLAY_DISPLAY_CONTRACT_NAME)["sha256"], str(contract))
+        assert_true(payload["presentation_snapshot"]["sha256"] == snapshot["sha256"], str(payload))
+        assert_true(payload["expected_display_rubric"]["event_count"] == 1, str(payload))
+        assert_true(payload["notification_delivery"]["path"] == REPLAY_DELIVERY_NAME, str(payload))
+        assert_true(payload["terminal_persisted_emulator_state"]["path"] == "v1_emulator_state.json", str(payload))
+        assert_true(payload["runtime"]["boot_id"] == 7 and payload["camera"]["capture_id"] == "c" * 64,
+                    str(payload))
+
+
 def main() -> int:
     test_file_artifact_owns_raw_bytes()
     test_build_artifacts_retain_exact_application_after_build_cache_changes()
@@ -1242,6 +1387,9 @@ def main() -> int:
     test_explicit_boundary_requires_fresh_usb_reset_and_refuses_intervening_failure()
     test_serial_carriage_return_framing_preserves_reset_evidence_and_failures()
     test_serial_interrupted_loader_framing_requires_one_exact_rom_banner()
+    test_presentation_capture_retains_visual_inputs_without_private_profile_names()
+    test_presentation_selection_and_drift_are_explicit_evaluator_failures()
+    test_display_contract_binds_snapshot_stimulus_scenario_runtime_and_camera()
     print("bench window tests passed")
     return 0
 

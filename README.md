@@ -130,6 +130,16 @@ verdict. It preserves the authored replay stimulus, notification delivery,
 host timing, serial output, exact firmware identity, camera video, and per-frame
 timing for a separate evaluator.
 
+When the DUT web API is reachable, set `BENCH_PRESENTATION_API_BASE_URL` to its
+HTTP origin before starting the replay. The run then retains the display
+colors, visibility policy, slot label/color/persistence, and runtime-selected
+slot selection alongside each event's projected detector state, accepted packet
+delivery, the terminal persisted emulator state, and camera identity. Matching
+pre/post snapshots establish matching endpoints, not continuous immutability.
+An unavailable or changing snapshot makes collection incomplete; it does not
+turn into a product failure. Free-form labels pass through the repository's
+local private-term filter but remain visible when needed to grade displayed text.
+
 Keep changes focused, read [AGENTS.md](AGENTS.md), run the complete gate, inspect
 the final diff, and say whether hardware or camera evidence was collected.
 

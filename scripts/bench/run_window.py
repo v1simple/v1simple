@@ -17,6 +17,8 @@ import stat
 import subprocess
 import sys
 import time
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -51,6 +53,8 @@ BENCH_TIMELINE_NAME = "bench_timeline.ndjson"
 REPLAY_STIMULUS_NAME = "replay_stimulus.ndjson"
 REPLAY_DELIVERY_NAME = "replay_delivery.ndjson"
 REPLAY_SCENARIO_EVIDENCE_NAME = "replay_scenario.json"
+PRESENTATION_SNAPSHOT_NAME = "presentation_snapshot.json"
+REPLAY_DISPLAY_CONTRACT_NAME = "replay_display_contract.json"
 REPLAY_STIMULUS_EVENT_STATE = "stimulus_requested"
 REPLAY_DELIVERY_EVENT_STATES = frozenset(
     {
@@ -68,6 +72,22 @@ BOOT_RECORD_PREFIX = "BOOT "
 GIT_IDENTITY_RE = re.compile(r"[0-9a-f]{7,40}")
 RUNTIME_IMAGE_ID_RE = re.compile(r"[0-9a-f]{9}")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
+AUTO_PUSH_SELECTION_RE = re.compile(
+    r"\[AutoPush\] onV1Connected autoPush=(on|off) activeSlot=([0-2]) "
+    r"selectedSlot=([0-2]) defaultProfile=([0-3]) mode=([0-3])"
+)
+PRESENTATION_HTTP_TIMEOUT_S = 5.0
+PRESENTATION_HTTP_MAX_BYTES = 16 * 1024
+
+DISPLAY_DIRECT_FIELDS = (
+    "bogey", "freq", "arrowFront", "arrowSide", "arrowRear", "bandL", "bandKa",
+    "bandK", "bandX", "bandPhoto", "wifiConnected", "bleConnected", "bleDisconnected",
+    "bar1", "bar2", "bar3", "bar4", "bar5", "bar6", "muted", "persisted",
+    "volumeMain", "volumeMute", "rssiV1", "rssiProxy", "obd", "alpConnected", "alpDli",
+    "alpLidActive", "alpAlert", "brightness",
+    "freqUseBandColor", "hideWifiIcon", "hideProfileIndicator", "hideBatteryIcon",
+    "showBatteryPercent", "hideBleIcon", "hideVolumeIndicator", "hideRssiIndicator",
+)
 BOOT_START_PREFIXES = (
     "ESP-ROM:",
     "Build:Mar ",
@@ -307,6 +327,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--post-upload-settle-seconds", type=int, default=90)
     parser.add_argument("--replay-executable", default="")
     parser.add_argument("--scenario", default="")
+    parser.add_argument(
+        "--presentation-api-base-url",
+        default=os.environ.get("BENCH_PRESENTATION_API_BASE_URL", ""),
+        help="optional replay-only HTTP base URL used for bound presentation evidence",
+    )
     parser.add_argument("--ku-qualification", action="store_true")
     parser.add_argument("--photo-label-qualification", action="store_true")
     parser.add_argument("--junk-qualification", action="store_true")
@@ -336,6 +361,285 @@ def file_artifact(path: Path) -> dict[str, Any]:
         "sha256": sha256_file(path),
         "size_bytes": path.stat().st_size,
     }
+
+
+def _canonical_json_bytes(value: Any) -> bytes:
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+
+
+def _sha256_value(value: Any) -> str:
+    return hashlib.sha256(_canonical_json_bytes(value)).hexdigest()
+
+
+def normalize_presentation_api_base_url(raw: str) -> str:
+    value = raw.strip()
+    if not value:
+        return ""
+    parsed = urllib.parse.urlsplit(value)
+    if (
+        parsed.scheme != "http"
+        or not parsed.hostname
+        or parsed.username is not None or parsed.password is not None
+        or parsed.query or parsed.fragment
+        or parsed.path not in ("", "/")
+    ):
+        raise ValueError("presentation API base URL must be an HTTP origin without credentials or a path")
+    return value.rstrip("/")
+
+
+def _http_get_json(base_url: str, endpoint: str, *, query: dict[str, str] | None = None,
+                   max_bytes: int = PRESENTATION_HTTP_MAX_BYTES,
+                   timeout_s: float = PRESENTATION_HTTP_TIMEOUT_S) -> dict[str, Any]:
+    url = base_url + endpoint
+    if query: url += "?" + urllib.parse.urlencode(query)
+    try:
+        request = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:
+            body = response.read(max_bytes + 1)
+    except OSError as exc:
+        raise RuntimeError(f"presentation API request failed for {endpoint}") from exc
+    if len(body) > max_bytes:
+        raise RuntimeError(f"presentation API {endpoint} response exceeds its bound")
+    try:
+        value = json.loads(body.decode("utf-8"))
+    except (UnicodeError, ValueError) as exc:
+        raise RuntimeError(f"presentation API {endpoint} did not return JSON") from exc
+    if not isinstance(value, dict):
+        raise RuntimeError(f"presentation API {endpoint} response is not an object")
+    return value
+
+
+def capture_presentation_configuration(
+    base_url: str,
+    *,
+    get_json: Callable[..., dict[str, Any]] = _http_get_json,
+) -> dict[str, Any]:
+    display_payload = get_json(base_url, "/api/display/settings")
+    if not set(DISPLAY_DIRECT_FIELDS).issubset(display_payload):
+        raise RuntimeError("display settings response is incomplete")
+    display = {field: display_payload[field] for field in DISPLAY_DIRECT_FIELDS}
+    quiet = get_json(base_url, "/api/quiet/settings")
+    if not quiet or any(not isinstance(value, (bool, int)) for value in quiet.values()):
+        raise RuntimeError("quiet settings response is invalid")
+    slots_payload = get_json(base_url, "/api/autopush/slots")
+    enabled = slots_payload.get("enabled")
+    active_slot = slots_payload.get("activeSlot")
+    raw_slots = slots_payload.get("slots")
+    if (type(enabled) is not bool or type(active_slot) is not int or
+            active_slot not in range(3) or not isinstance(raw_slots, list) or
+            len(raw_slots) != 3):
+        raise RuntimeError("Auto-Push slots response is incomplete")
+    if slots_payload.get("schemaVersion") != 3 or \
+            slots_payload.get("detectorConfigurationOwner") != "profile":
+        raise RuntimeError("Auto-Push slots do not use the current profile-owned schema")
+
+    canonical_slots: list[dict[str, Any]] = []
+    for index, slot in enumerate(raw_slots):
+        if not isinstance(slot, dict):
+            raise RuntimeError("Auto-Push slot is not an object")
+        slot_name = slot.get("name")
+        profile_name = slot.get("profile")
+        color = slot.get("color")
+        persistence = slot.get("alertPersist")
+        priority_only = slot.get("priorityArrowOnly")
+        if (not isinstance(slot_name, str) or not slot_name or
+                not isinstance(profile_name, str) or not profile_name or
+                type(color) is not int or not 0 <= color <= 0xFFFF or
+                type(persistence) is not int or not 0 <= persistence <= 5 or
+                type(priority_only) is not bool):
+            raise RuntimeError("Auto-Push slot response is invalid")
+        display_label = privacy_safe_identifier(slot_name, namespace="slot-label")
+        canonical_slots.append(
+            {
+                "slot": index,
+                "display_label": display_label,
+                "display_label_is_opaque": display_label.startswith("private-slot-label-"),
+                "color": color,
+                "alert_persistence_seconds": persistence,
+                "priority_arrow_only": priority_only,
+            }
+        )
+    return {
+        "display": display,
+        "quiet": quiet,
+        "auto_push": {
+            "enabled": enabled,
+            "configured_active_slot": active_slot,
+            "profile_schema_version": 3,
+            "detector_configuration_owner": "profile",
+            "slots": canonical_slots,
+        },
+    }
+
+
+def parse_auto_push_selection(line: str) -> dict[str, Any] | None:
+    match = AUTO_PUSH_SELECTION_RE.fullmatch(line)
+    if match is None:
+        return None
+    enabled = match.group(1) == "on"
+    active_slot = int(match.group(2), 10)
+    selected_slot = int(match.group(3), 10)
+    default_profile = int(match.group(4), 10)
+    mode = int(match.group(5), 10)
+    if (default_profile == 0 and selected_slot != active_slot) or (
+        default_profile != 0 and selected_slot != default_profile - 1
+    ):
+        raise RuntimeError("Auto-Push selected-slot evidence is internally inconsistent")
+    return {
+        "auto_push_enabled": enabled,
+        "configured_active_slot": active_slot,
+        "intended_detector_profile_slot": selected_slot if enabled else None,
+        "intended_profile_indicator_slot": selected_slot if enabled else None,
+        "presentation_policy_slot": active_slot,
+        "device_default_profile": default_profile,
+        "mode": mode,
+    }
+
+
+def require_stable_presentation_configuration(
+    before: dict[str, Any], after: dict[str, Any]
+) -> None:
+    if _canonical_json_bytes(before) != _canonical_json_bytes(after):
+        raise RuntimeError("presentation configuration changed during replay")
+
+
+def publish_presentation_snapshot(
+    out_dir: Path,
+    *,
+    configuration: dict[str, Any],
+    selection: dict[str, Any],
+    pre_capture_ns: int,
+    post_capture_ns: int,
+) -> dict[str, Any]:
+    configured = configuration["auto_push"]
+    if selection["auto_push_enabled"] != configured["enabled"]:
+        raise RuntimeError("Auto-Push enablement drifted between HTTP and serial evidence")
+    if selection["configured_active_slot"] != configured["configured_active_slot"]:
+        raise RuntimeError("configured Auto-Push slot drifted between HTTP and serial evidence")
+    payload = sanitize_artifact_value(
+        {
+            "schema_version": 1,
+            "kind": "bench_presentation_snapshot",
+            "capture_endpoints_match": True,
+            "pre_capture_host_monotonic_ns": pre_capture_ns,
+            "post_capture_host_monotonic_ns": post_capture_ns,
+            "configuration_sha256": _sha256_value(configuration),
+            "configuration": configuration,
+            "runtime_selection": selection,
+        },
+        run_dir=out_dir,
+    )
+    path = out_dir / PRESENTATION_SNAPSHOT_NAME
+    with path.open("xb") as handle:
+        handle.write(_canonical_json_bytes(payload) + b"\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    return {**file_artifact(path), "status": "captured"}
+
+
+def publish_replay_display_contract(
+    out_dir: Path,
+    *,
+    artifacts: dict[str, Any],
+    runtime_identity: dict[str, Any],
+    camera_result: dict[str, Any],
+) -> dict[str, Any]:
+    required = (
+        "presentation_snapshot", "replay_stimulus", "replay_delivery", "replay_scenario",
+        "v1_emulator_state", "bench_timeline", "build_upload",
+    )
+    if any(name not in artifacts for name in required):
+        raise RuntimeError("replay display contract inputs are incomplete")
+
+    def verified_artifact(name: str) -> dict[str, Any]:
+        metadata = artifacts[name]
+        if not isinstance(metadata, dict) or not isinstance(metadata.get("path"), str):
+            raise RuntimeError(f"{name} artifact metadata is invalid")
+        relative = Path(metadata["path"])
+        if relative.name != metadata["path"]:
+            raise RuntimeError(f"{name} artifact path is invalid")
+        actual = file_artifact(out_dir / relative)
+        if any(metadata.get(key) != actual[key] for key in ("sha256", "size_bytes")):
+            raise RuntimeError(f"{name} artifact changed before display-contract publication")
+        result = dict(actual)
+        for key in ("event_count", "status"):
+            if key in metadata:
+                result[key] = metadata[key]
+        return result
+
+    linked = {name: verified_artifact(name) for name in required}
+    stimulus_artifact = linked["replay_stimulus"]
+    try:
+        stimulus_events = [
+            json.loads(line) for line in
+            (out_dir / stimulus_artifact["path"]).read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+        scenario = json.loads(
+            (out_dir / linked["replay_scenario"]["path"]).read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("replay display contract input is not valid JSON") from exc
+    if (
+        not stimulus_events
+        or stimulus_artifact.get("event_count") != len(stimulus_events)
+        or any(
+            not isinstance(event, dict)
+            or event.get("state") != REPLAY_STIMULUS_EVENT_STATE
+            or event.get("schemaVersion") != 4
+            or not isinstance(event.get("expected"), dict)
+            or not isinstance(event.get("notifications"), list)
+            for event in stimulus_events
+        )
+    ):
+        raise RuntimeError("replay stimulus is not a schema-4 display rubric")
+    if not isinstance(scenario, dict) or scenario.get("schemaVersion") != 2 \
+            or not isinstance(scenario.get("samples"), list):
+        raise RuntimeError("replay scenario is not a schema-2 resolved scenario")
+    camera_link: dict[str, Any] | None = None
+    manifest_name = camera_result.get("capture_manifest")
+    capture_id = camera_result.get("capture_id")
+    if manifest_name or capture_id:
+        if not isinstance(manifest_name, str) or not manifest_name or not isinstance(capture_id, str) \
+                or SHA256_RE.fullmatch(capture_id) is None:
+            raise RuntimeError("camera identity is incomplete")
+        manifest_path = out_dir / "camera" / Path(manifest_name).name
+        if not manifest_path.is_file():
+            raise RuntimeError("camera capture manifest is unavailable")
+        camera_link = {
+            "capture_id": capture_id,
+            "manifest": {
+                "path": f"camera/{manifest_path.name}",
+                "sha256": sha256_file(manifest_path),
+                "size_bytes": manifest_path.stat().st_size,
+            },
+        }
+    payload = {
+        "schema_version": 1,
+        "kind": "bench_replay_display_contract",
+        "presentation_snapshot": linked["presentation_snapshot"],
+        "expected_display_rubric": stimulus_artifact,
+        "notification_delivery": linked["replay_delivery"],
+        "scenario": linked["replay_scenario"],
+        "terminal_persisted_emulator_state": linked["v1_emulator_state"],
+        "timeline": linked["bench_timeline"],
+        "runtime": {
+            "boot_id": runtime_identity.get("boot_id"),
+            "git_sha": runtime_identity.get("git_sha"),
+            "image_id": runtime_identity.get("image_id"),
+            "build_upload_manifest_sha256": linked["build_upload"]["sha256"],
+        },
+        "camera": camera_link,
+    }
+    safe = sanitize_artifact_value(payload, run_dir=out_dir)
+    path = out_dir / REPLAY_DISPLAY_CONTRACT_NAME
+    with path.open("xb") as handle:
+        handle.write(_canonical_json_bytes(safe) + b"\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    return {**file_artifact(path), "status": "captured"}
 
 
 class BenchTimeline:
@@ -773,6 +1077,7 @@ class BenchSerial:
         self.reset_performed = False
         self.reset_requested_ns: int | None = None
         self.last_receive_ns: int | None = None
+        self.auto_push_selection: dict[str, Any] | None = None
         self._pending_lines: list[str] = []
 
     def reset_for_boot(self, *, reset_factory: Callable[..., Any] | None = None) -> None:
@@ -781,6 +1086,7 @@ class BenchSerial:
         self.ser.reset_input_buffer()
         self._pending_lines = []
         self.identity_tracker = RuntimeIdentityTracker()
+        self.auto_push_selection = None
         request = self.timeline.record("serial_reset_requested", **metadata)
         if (
             not isinstance(request, dict)
@@ -833,6 +1139,19 @@ class BenchSerial:
         received = self.timeline.record("serial_receive", line=safe)
         self.last_receive_ns = received["host_monotonic_ns"]
         self.identity_tracker.observe(text)
+        selection = parse_auto_push_selection(text)
+        if selection is not None:
+            selection["observed_host_monotonic_ns"] = received["host_monotonic_ns"]
+            if self.auto_push_selection is not None:
+                previous = dict(self.auto_push_selection)
+                previous.pop("observed_host_monotonic_ns", None)
+                current = dict(selection)
+                current.pop("observed_host_monotonic_ns", None)
+                if current != previous:
+                    raise RuntimeError("Auto-Push selected-slot evidence changed during collection")
+            else:
+                self.auto_push_selection = selection
+                self.timeline.record("auto_push_selection_observed", **selection)
         return text
 
     def close(self) -> None:
@@ -1162,6 +1481,8 @@ def require_unused_live_evidence(out_dir: Path, *, camera: bool) -> None:
         out_dir / REPLAY_STIMULUS_NAME,
         out_dir / REPLAY_DELIVERY_NAME,
         out_dir / REPLAY_SCENARIO_EVIDENCE_NAME,
+        out_dir / PRESENTATION_SNAPSHOT_NAME,
+        out_dir / REPLAY_DISPLAY_CONTRACT_NAME,
     ]
     if camera:
         reserved.append(out_dir / "camera")
@@ -1215,6 +1536,8 @@ def collect_live(
         )
         emulator_result: dict[str, Any] = {}
         camera_result: dict[str, Any] = {}
+        presentation_configuration: dict[str, Any] | None = None
+        presentation_pre_capture_ns: int | None = None
         collection_completed = False
         completion: dict[str, Any] = {}
         try:
@@ -1246,6 +1569,16 @@ def collect_live(
             )
             initial_boot_markers = observer.boot_marker_count
 
+            if args.presentation_api_base_url:
+                presentation_configuration = capture_presentation_configuration(
+                    args.presentation_api_base_url
+                )
+                pre_event = timeline.record(
+                    "presentation_configuration_pre_captured",
+                    configuration_sha256=_sha256_value(presentation_configuration),
+                )
+                presentation_pre_capture_ns = pre_event["host_monotonic_ns"]
+
             emulator.start()
             emulator.wait_for_transport(args.ready_timeout_seconds)
             started = time.monotonic()
@@ -1271,6 +1604,28 @@ def collect_live(
                         flush=True,
                     )
                     next_progress += RUN_PROGRESS_INTERVAL_S
+            if presentation_configuration is not None:
+                post_configuration = capture_presentation_configuration(
+                    args.presentation_api_base_url
+                )
+                post_event = timeline.record(
+                    "presentation_configuration_post_captured",
+                    configuration_sha256=_sha256_value(post_configuration),
+                )
+                require_stable_presentation_configuration(
+                    presentation_configuration, post_configuration
+                )
+                if observer.auto_push_selection is None:
+                    raise RuntimeError("Auto-Push selected-slot evidence was not observed")
+                if presentation_pre_capture_ns is None:
+                    raise RuntimeError("presentation pre-capture timing evidence is unavailable")
+                artifacts["presentation_snapshot"] = publish_presentation_snapshot(
+                    out_dir,
+                    configuration=presentation_configuration,
+                    selection=observer.auto_push_selection,
+                    pre_capture_ns=presentation_pre_capture_ns,
+                    post_capture_ns=post_event["host_monotonic_ns"],
+                )
             collection_completed = True
             completion = {
                 "source": "external_only",
@@ -1317,6 +1672,9 @@ def collect_live(
             emulator_state_path = out_dir / "v1_emulator_state.json"
             if emulator_state_path.is_file():
                 artifacts["v1_emulator_state"] = file_artifact(emulator_state_path)
+            scenario_path = out_dir / REPLAY_SCENARIO_EVIDENCE_NAME
+            if scenario_path.is_file():
+                artifacts["replay_scenario"] = file_artifact(scenario_path)
             if emulator_result:
                 try:
                     stimulus = publish_replay_stimulus_evidence(
@@ -1329,6 +1687,15 @@ def collect_live(
                     )
                     if delivery is not None:
                         artifacts["replay_delivery"] = delivery
+                    if presentation_configuration is not None:
+                        if observer is None or observer.runtime_identity is None:
+                            raise RuntimeError("runtime identity is unavailable for display contract")
+                        artifacts["replay_display_contract"] = publish_replay_display_contract(
+                            out_dir,
+                            artifacts=artifacts,
+                            runtime_identity=observer.runtime_identity,
+                            camera_result=camera_result,
+                        )
                 except Exception as exc:  # noqa: BLE001
                     cleanup_errors.append(exc)
             if cleanup_errors:
@@ -1393,6 +1760,12 @@ def main() -> int:
         resolve_runner_log_paths(args, out_dir)
     except ValueError as exc:
         return fail(str(exc))
+    try:
+        args.presentation_api_base_url = normalize_presentation_api_base_url(
+            getattr(args, "presentation_api_base_url", "")
+        )
+    except ValueError as exc:
+        return fail(str(exc))
     if args.duration_seconds < 1:
         return fail("duration must be positive")
     if args.ready_timeout_seconds < 1:
@@ -1401,6 +1774,8 @@ def main() -> int:
         return fail("post-upload settle duration cannot be negative")
     if args.suite != "replay" and args.scenario:
         return fail("--scenario is valid only for replay")
+    if args.suite != "replay" and args.presentation_api_base_url:
+        return fail("--presentation-api-base-url is valid only for replay")
     if args.suite != "replay" and getattr(args, "ku_qualification", False):
         return fail("--ku-qualification is valid only for replay")
     if args.suite != "replay" and getattr(args, "photo_label_qualification", False):

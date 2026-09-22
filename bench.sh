@@ -8,6 +8,7 @@ ARTIFACT_ROOT="${BENCH_ARTIFACT_ROOT:-$ROOT_DIR/.artifacts/bench}"
 BOARD_ID="${BENCH_BOARD_ID:-release}"
 DURATION_SECONDS="${BENCH_REPLAY_DURATION_SECONDS:-300}"
 POST_UPLOAD_SETTLE_SECONDS="${BENCH_POST_UPLOAD_SETTLE_SECONDS:-90}"
+PRESENTATION_API_BASE_URL="${BENCH_PRESENTATION_API_BASE_URL:-}"
 PIO_CMD="${PIO_CMD:-pio}"
 PORT="${DEVICE_PORT:-}"
 RUN_REPLAY=0
@@ -19,6 +20,7 @@ JUNK_QUALIFICATION=0
 usage() {
   printf 'Usage: ./bench.sh --replay --camera [--ku-qualification|--photo-label-qualification|--junk-qualification]\n'
   printf 'Builds and flashes the current firmware, sends the generated replay stimuli, and retains raw synchronized capture.\n'
+  printf 'Set BENCH_PRESENTATION_API_BASE_URL to retain a bound, privacy-filtered presentation snapshot.\n'
 }
 
 fail() {
@@ -148,6 +150,10 @@ mkdir -p "$REPLAY_DIR" || fail 'could not create the replay capture directory'
 
 runner_status=0
 RUNNER_SCENARIO_ARGS=()
+RUNNER_PRESENTATION_ARGS=()
+if [[ -n "$PRESENTATION_API_BASE_URL" ]]; then
+  RUNNER_PRESENTATION_ARGS+=(--presentation-api-base-url "$PRESENTATION_API_BASE_URL")
+fi
 if [[ "$KU_QUALIFICATION" -eq 1 ]]; then
   RUNNER_SCENARIO_ARGS+=(--ku-qualification)
 fi
@@ -177,6 +183,7 @@ fi
     --post-upload-settle-seconds "$POST_UPLOAD_SETTLE_SECONDS" \
     --replay-executable "$ROOT_DIR/tools/v1replay/.build/v1replay" \
     "${RUNNER_SCENARIO_ARGS[@]}" \
+    "${RUNNER_PRESENTATION_ARGS[@]}" \
     --camera || runner_status=$?
 
 [[ "$runner_status" -eq 0 ]] || fail "raw collection did not complete; see $RUN_LOG"

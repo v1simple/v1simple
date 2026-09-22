@@ -20,7 +20,7 @@ JUNK_QUALIFICATION=0
 usage() {
   printf 'Usage: ./bench.sh --replay --camera [--ku-qualification|--photo-label-qualification|--junk-qualification]\n'
   printf 'Builds and flashes the current firmware, sends the generated replay stimuli, and retains raw synchronized capture.\n'
-  printf 'Set BENCH_PRESENTATION_API_BASE_URL to retain a bound, privacy-filtered presentation snapshot.\n'
+  printf 'In maintenance mode, set BENCH_PRESENTATION_API_BASE_URL to capture settings before the normal-mode upload.\n'
 }
 
 fail() {

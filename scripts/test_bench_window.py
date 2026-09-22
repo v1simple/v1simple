@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import hashlib
+import inspect
 import io
 import itertools
 import json
@@ -48,7 +49,6 @@ from run_window import (  # noqa: E402
     publish_replay_delivery_evidence,
     publish_replay_stimulus_evidence,
     qualify_runtime_identity,
-    require_stable_presentation_configuration,
     require_current_source_identity,
     resolve_runner_log_paths,
 )
@@ -101,6 +101,8 @@ def test_build_artifacts_retain_exact_application_after_build_cache_changes() ->
         )
         assert_true(not original.samefile(retained), "retained application aliases build output")
         assert_true(result["schema_version"] == 1 and result["missing"] == [], str(result))
+        assert_true(result["upload_scope"] == "platformio_upload_target" and
+                    result["filesystem_upload_requested"] is False, str(result))
         original.write_bytes(b"next build replaced this image")
         assert_true(retained.read_bytes() == original_bytes, "later build changed retained application")
 
@@ -1272,7 +1274,7 @@ def test_presentation_capture_retains_visual_inputs_without_private_profile_name
     assert_true(not any(endpoint == "/api/v1/profile" for endpoint, _ in calls), str(calls))
 
 
-def test_presentation_selection_and_drift_are_explicit_evaluator_failures() -> None:
+def test_presentation_selection_intent_is_explicit() -> None:
     selection = parse_auto_push_selection(
         "[AutoPush] onV1Connected autoPush=on activeSlot=0 selectedSlot=2 defaultProfile=3 mode=1"
     )
@@ -1291,12 +1293,50 @@ def test_presentation_selection_and_drift_are_explicit_evaluator_failures() -> N
         pass
     else:
         raise AssertionError("inconsistent selected-slot evidence was accepted")
+
+
+def test_bench_upload_preserves_littlefs_settings() -> None:
+    with mock.patch.object(run_window_module.subprocess, "run") as run:
+        run_window_module.run_upload("/dev/test", skip_web=False)
+    command = run.call_args.args[0]
+    assert_true("-u" in command and "-f" not in command, str(command))
+
+
+def test_maintenance_usb_status_is_required_and_bounded() -> None:
+    completed = SimpleNamespace(
+        stdout='{"mode":"maintenance","boot":7,"git":"abcdef0",'
+               '"image":"123456789","slot":0,"persist":2,"enabled":true}\n'
+    )
+    with mock.patch.object(run_window_module.subprocess, "run", return_value=completed):
+        status = run_window_module.read_maintenance_usb_status("/dev/test")
+    assert_true(status["mode"] == "maintenance" and status["boot"] == 7, str(status))
+    completed.stdout = completed.stdout.replace('"maintenance"', '"normal"')
+    with mock.patch.object(run_window_module.subprocess, "run", return_value=completed):
+        try:
+            run_window_module.read_maintenance_usb_status("/dev/test")
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("normal-mode USB status was accepted as maintenance evidence")
+    get_json, _ = sample_presentation_api()
+    configuration = capture_presentation_configuration("http://device", get_json=get_json)
+    run_window_module.require_matching_maintenance_sources(configuration, status)
+    mismatch = dict(status, persist=1)
     try:
-        require_stable_presentation_configuration({"bandPhoto": 1}, {"bandPhoto": 2})
+        run_window_module.require_matching_maintenance_sources(configuration, mismatch)
     except RuntimeError:
         pass
     else:
-        raise AssertionError("presentation drift was accepted")
+        raise AssertionError("disagreeing USB and HTTP settings were accepted")
+
+
+def test_presentation_http_is_maintenance_only_and_precedes_upload() -> None:
+    source = inspect.getsource(run_window_module.collect_live)
+    capture = source.index("capture_presentation_configuration(")
+    upload = source.index("run_upload(")
+    assert_true(capture < upload, "presentation capture no longer precedes the normal-mode upload")
+    assert_true(source.count("capture_presentation_configuration(") == 1,
+                "normal-mode collection must not contact the maintenance HTTP API")
 
 
 def test_display_contract_binds_snapshot_stimulus_scenario_runtime_and_camera() -> None:
@@ -1309,9 +1349,18 @@ def test_display_contract_binds_snapshot_stimulus_scenario_runtime_and_camera() 
         )
         assert selection is not None
         snapshot = publish_presentation_snapshot(
-            out_dir, configuration=configuration, selection=selection,
-            pre_capture_ns=10, post_capture_ns=20,
+            out_dir, configuration=configuration,
+            maintenance_identity={"mode": "maintenance", "boot": 6, "git": "d" * 7,
+                                  "image": "e" * 9, "slot": 0, "persist": 2,
+                                  "enabled": True},
+            selection=selection,
+            maintenance_capture_ns=10,
         )
+        snapshot_payload = json.loads((out_dir / PRESENTATION_SNAPSHOT_NAME).read_text())
+        assert_true(snapshot_payload["serial_dut_mode"] == "maintenance", str(snapshot_payload))
+        assert_true(snapshot_payload["serial_dut_mode_verified_by"] == "usb_status", str(snapshot_payload))
+        assert_true(snapshot_payload["http_same_dut_as_usb_proven"] is False, str(snapshot_payload))
+        assert_true(snapshot_payload["full_normal_ram_match_proven"] is False, str(snapshot_payload))
         files = {
             "replay_stimulus": (
                 REPLAY_STIMULUS_NAME,
@@ -1388,7 +1437,10 @@ def main() -> int:
     test_serial_carriage_return_framing_preserves_reset_evidence_and_failures()
     test_serial_interrupted_loader_framing_requires_one_exact_rom_banner()
     test_presentation_capture_retains_visual_inputs_without_private_profile_names()
-    test_presentation_selection_and_drift_are_explicit_evaluator_failures()
+    test_presentation_selection_intent_is_explicit()
+    test_bench_upload_preserves_littlefs_settings()
+    test_maintenance_usb_status_is_required_and_bounded()
+    test_presentation_http_is_maintenance_only_and_precedes_upload()
     test_display_contract_binds_snapshot_stimulus_scenario_runtime_and_camera()
     print("bench window tests passed")
     return 0

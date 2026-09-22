@@ -39,6 +39,7 @@ except ImportError:  # pragma: no cover - host capability check
     serial = None  # type: ignore
 
 BUILD_SH = ROOT / "build.sh"
+USB_PROFILES_SCRIPT = ROOT / "scripts" / "usb_profiles.py"
 PRODUCTION_PIO_ENV = "waveshare-349"
 BUILD_OUTPUT_DIR = ROOT / ".pio" / "build" / PRODUCTION_PIO_ENV
 BUILD_UPLOAD_FILES = (
@@ -474,6 +475,50 @@ def capture_presentation_configuration(
     }
 
 
+def read_maintenance_usb_status(port: str) -> dict[str, Any]:
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(USB_PROFILES_SCRIPT), "--port", port, "status"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        lines = [line for line in completed.stdout.splitlines() if line.strip()]
+        status = json.loads(lines[-1]) if lines else None
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+        raise RuntimeError("maintenance USB identity could not be verified") from exc
+    if (
+        not isinstance(status, dict)
+        or status.get("mode") != "maintenance"
+        or type(status.get("boot")) is not int
+        or GIT_IDENTITY_RE.fullmatch(str(status.get("git", ""))) is None
+        or RUNTIME_IMAGE_ID_RE.fullmatch(str(status.get("image", ""))) is None
+        or type(status.get("slot")) is not int
+        or type(status.get("persist")) is not int
+        or type(status.get("enabled")) is not bool
+    ):
+        raise RuntimeError("connected DUT is not verified in maintenance mode")
+    return {
+        key: status[key]
+        for key in ("mode", "boot", "git", "image", "slot", "persist", "enabled")
+    }
+
+
+def require_matching_maintenance_sources(
+    configuration: dict[str, Any], identity: dict[str, Any]
+) -> None:
+    active_slot = configuration["auto_push"]["configured_active_slot"]
+    active_policy = configuration["auto_push"]["slots"][active_slot]
+    if (
+        identity["slot"] != active_slot
+        or identity["persist"] != active_policy["alert_persistence_seconds"]
+        or identity["enabled"] != configuration["auto_push"]["enabled"]
+    ):
+        raise RuntimeError("maintenance USB and HTTP presentation settings disagree")
+
+
 def parse_auto_push_selection(line: str) -> dict[str, Any] | None:
     match = AUTO_PUSH_SELECTION_RE.fullmatch(line)
     if match is None:
@@ -498,20 +543,13 @@ def parse_auto_push_selection(line: str) -> dict[str, Any] | None:
     }
 
 
-def require_stable_presentation_configuration(
-    before: dict[str, Any], after: dict[str, Any]
-) -> None:
-    if _canonical_json_bytes(before) != _canonical_json_bytes(after):
-        raise RuntimeError("presentation configuration changed during replay")
-
-
 def publish_presentation_snapshot(
     out_dir: Path,
     *,
     configuration: dict[str, Any],
+    maintenance_identity: dict[str, Any],
     selection: dict[str, Any],
-    pre_capture_ns: int,
-    post_capture_ns: int,
+    maintenance_capture_ns: int,
 ) -> dict[str, Any]:
     configured = configuration["auto_push"]
     if selection["auto_push_enabled"] != configured["enabled"]:
@@ -522,9 +560,18 @@ def publish_presentation_snapshot(
         {
             "schema_version": 1,
             "kind": "bench_presentation_snapshot",
-            "capture_endpoints_match": True,
-            "pre_capture_host_monotonic_ns": pre_capture_ns,
-            "post_capture_host_monotonic_ns": post_capture_ns,
+            "http_source_mode_declared": "maintenance",
+            "http_same_dut_as_usb_proven": False,
+            "serial_dut_mode": maintenance_identity["mode"],
+            "serial_dut_mode_verified_by": "usb_status",
+            "serial_dut_usb_identity": maintenance_identity,
+            "http_usb_settings_correlation": [
+                "auto_push_enabled", "configured_active_slot", "active_slot_persistence"
+            ],
+            "captured_before_application_upload": True,
+            "normal_runtime_binding": "autopush_enablement_and_slot_selection_intent",
+            "full_normal_ram_match_proven": False,
+            "capture_host_monotonic_ns": maintenance_capture_ns,
             "configuration_sha256": _sha256_value(configuration),
             "configuration": configuration,
             "runtime_selection": selection,
@@ -710,6 +757,8 @@ def retain_build_upload_artifacts(
         "schema_version": 1,
         "kind": "bench_build_upload_artifacts",
         "upload_performed": upload_performed,
+        "upload_scope": "platformio_upload_target" if upload_performed else "none",
+        "filesystem_upload_requested": False,
         "expected_runtime_image_id": elf_sha[:RUNTIME_IMAGE_ID_HEX_LENGTH],
         "expected_runtime_image_id_basis": RUNTIME_IMAGE_ID_BASIS,
         "files": files,
@@ -977,7 +1026,7 @@ def wait_for_port(preferred: str, timeout_s: int = 30) -> str:
 
 
 def run_upload(port: str, skip_web: bool) -> None:
-    command = [str(BUILD_SH), "-f", "-u"]
+    command = [str(BUILD_SH), "-u"]
     if skip_web:
         command.append("--skip-web")
     if port:
@@ -1504,6 +1553,18 @@ def collect_live(
     with V1RadioLease() as lease:
         assert lease.fd is not None
         port = wait_for_port(args.port)
+        presentation_configuration: dict[str, Any] | None = None
+        presentation_maintenance_identity: dict[str, Any] | None = None
+        presentation_capture_ns: int | None = None
+        if args.presentation_api_base_url:
+            presentation_maintenance_identity = read_maintenance_usb_status(port)
+            presentation_configuration = capture_presentation_configuration(
+                args.presentation_api_base_url
+            )
+            require_matching_maintenance_sources(
+                presentation_configuration, presentation_maintenance_identity
+            )
+            presentation_capture_ns = time.monotonic_ns()
         run_upload(port, args.skip_web)
         artifacts["build_upload"] = retain_build_upload_artifacts(
             out_dir,
@@ -1536,8 +1597,6 @@ def collect_live(
         )
         emulator_result: dict[str, Any] = {}
         camera_result: dict[str, Any] = {}
-        presentation_configuration: dict[str, Any] | None = None
-        presentation_pre_capture_ns: int | None = None
         collection_completed = False
         completion: dict[str, Any] = {}
         try:
@@ -1569,15 +1628,12 @@ def collect_live(
             )
             initial_boot_markers = observer.boot_marker_count
 
-            if args.presentation_api_base_url:
-                presentation_configuration = capture_presentation_configuration(
-                    args.presentation_api_base_url
-                )
-                pre_event = timeline.record(
-                    "presentation_configuration_pre_captured",
+            if presentation_configuration is not None:
+                timeline.record(
+                    "maintenance_presentation_configuration_captured_before_upload",
                     configuration_sha256=_sha256_value(presentation_configuration),
+                    capture_host_monotonic_ns=presentation_capture_ns,
                 )
-                presentation_pre_capture_ns = pre_event["host_monotonic_ns"]
 
             emulator.start()
             emulator.wait_for_transport(args.ready_timeout_seconds)
@@ -1605,26 +1661,16 @@ def collect_live(
                     )
                     next_progress += RUN_PROGRESS_INTERVAL_S
             if presentation_configuration is not None:
-                post_configuration = capture_presentation_configuration(
-                    args.presentation_api_base_url
-                )
-                post_event = timeline.record(
-                    "presentation_configuration_post_captured",
-                    configuration_sha256=_sha256_value(post_configuration),
-                )
-                require_stable_presentation_configuration(
-                    presentation_configuration, post_configuration
-                )
                 if observer.auto_push_selection is None:
                     raise RuntimeError("Auto-Push selected-slot evidence was not observed")
-                if presentation_pre_capture_ns is None:
-                    raise RuntimeError("presentation pre-capture timing evidence is unavailable")
+                if presentation_capture_ns is None or presentation_maintenance_identity is None:
+                    raise RuntimeError("maintenance presentation capture timing is unavailable")
                 artifacts["presentation_snapshot"] = publish_presentation_snapshot(
                     out_dir,
                     configuration=presentation_configuration,
+                    maintenance_identity=presentation_maintenance_identity,
                     selection=observer.auto_push_selection,
-                    pre_capture_ns=presentation_pre_capture_ns,
-                    post_capture_ns=post_event["host_monotonic_ns"],
+                    maintenance_capture_ns=presentation_capture_ns,
                 )
             collection_completed = True
             completion = {

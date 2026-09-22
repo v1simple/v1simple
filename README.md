@@ -130,15 +130,25 @@ verdict. It preserves the authored replay stimulus, notification delivery,
 host timing, serial output, exact firmware identity, camera video, and per-frame
 timing for a separate evaluator.
 
-When the DUT web API is reachable, set `BENCH_PRESENTATION_API_BASE_URL` to its
-HTTP origin before starting the replay. The run then retains the display
-colors, visibility policy, slot label/color/persistence, and runtime-selected
-slot selection alongside each event's projected detector state, accepted packet
-delivery, the terminal persisted emulator state, and camera identity. Matching
-pre/post snapshots establish matching endpoints, not continuous immutability.
-An unavailable or changing snapshot makes collection incomplete; it does not
-turn into a product failure. Free-form labels pass through the repository's
-local private-term filter but remain visible when needed to grade displayed text.
+While the DUT is deliberately in maintenance mode, set
+`BENCH_PRESENTATION_API_BASE_URL` to its HTTP origin before starting the replay.
+The bench captures colors, visibility policy, and slot presentation settings
+before uploading the application. It never contacts HTTP after the candidate
+boots into normal mode, where WiFi remains off. The upload changes only the
+firmware upload target and does not request a LittleFS upload. Before capture,
+USB status must identify the serial DUT in maintenance mode and agree with the
+HTTP snapshot's active slot, persistence, and Auto-Push state. Those matching
+settings correlate the operator-supplied HTTP origin with the serial DUT; they
+do not independently prove both interfaces belong to the same physical unit.
+
+The retained snapshot is checked against normal Auto-Push enablement and slot
+selection intent and is bound to each event's projected detector state,
+accepted packet delivery, terminal persisted emulator state, and camera
+identity. It does not yet prove that every captured presentation value was
+loaded into normal-mode RAM; the artifact says so explicitly. An unavailable
+maintenance snapshot makes collection incomplete, not a product failure.
+Free-form labels pass through the local private-term filter but remain visible
+when needed to grade displayed text.
 
 Keep changes focused, read [AGENTS.md](AGENTS.md), run the complete gate, inspect
 the final diff, and say whether hardware or camera evidence was collected.

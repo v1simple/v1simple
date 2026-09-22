@@ -39,7 +39,6 @@ except ImportError:  # pragma: no cover - host capability check
     serial = None  # type: ignore
 
 BUILD_SH = ROOT / "build.sh"
-USB_PROFILES_SCRIPT = ROOT / "scripts" / "usb_profiles.py"
 PRODUCTION_PIO_ENV = "waveshare-349"
 BUILD_OUTPUT_DIR = ROOT / ".pio" / "build" / PRODUCTION_PIO_ENV
 BUILD_UPLOAD_FILES = (
@@ -79,6 +78,7 @@ AUTO_PUSH_SELECTION_RE = re.compile(
 )
 PRESENTATION_HTTP_TIMEOUT_S = 5.0
 PRESENTATION_HTTP_MAX_BYTES = 16 * 1024
+PRESENTATION_CONNECT_TIMEOUT_S = 120.0
 
 DISPLAY_DIRECT_FIELDS = (
     "bogey", "freq", "arrowFront", "arrowSide", "arrowRear", "bandL", "bandKa",
@@ -145,6 +145,10 @@ class SourceProvenanceFailure(RuntimeError):
     def __init__(self, message: str, *, reason: str) -> None:
         super().__init__(message)
         self.reason = reason
+
+
+class PresentationConnectionFailure(RuntimeError):
+    pass
 
 
 def _git_output(repo: Path, *arguments: str) -> str:
@@ -397,10 +401,13 @@ def _http_get_json(base_url: str, endpoint: str, *, query: dict[str, str] | None
     if query: url += "?" + urllib.parse.urlencode(query)
     try:
         request = urllib.request.Request(url, headers={"Accept": "application/json"})
-        with urllib.request.urlopen(request, timeout=timeout_s) as response:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=timeout_s) as response:
             body = response.read(max_bytes + 1)
     except OSError as exc:
-        raise RuntimeError(f"presentation API request failed for {endpoint}") from exc
+        raise PresentationConnectionFailure(
+            f"presentation API request failed for {endpoint}"
+        ) from exc
     if len(body) > max_bytes:
         raise RuntimeError(f"presentation API {endpoint} response exceeds its bound")
     try:
@@ -416,15 +423,31 @@ def capture_presentation_configuration(
     base_url: str,
     *,
     get_json: Callable[..., dict[str, Any]] = _http_get_json,
+    timeout_s: float | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
-    display_payload = get_json(base_url, "/api/display/settings")
+    deadline = monotonic() + timeout_s if timeout_s is not None else None
+
+    def fetch(endpoint: str) -> dict[str, Any]:
+        if deadline is None:
+            return get_json(base_url, endpoint)
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise PresentationConnectionFailure("presentation API deadline expired")
+        return get_json(
+            base_url,
+            endpoint,
+            timeout_s=min(PRESENTATION_HTTP_TIMEOUT_S, remaining),
+        )
+
+    display_payload = fetch("/api/display/settings")
     if not set(DISPLAY_DIRECT_FIELDS).issubset(display_payload):
         raise RuntimeError("display settings response is incomplete")
     display = {field: display_payload[field] for field in DISPLAY_DIRECT_FIELDS}
-    quiet = get_json(base_url, "/api/quiet/settings")
+    quiet = fetch("/api/quiet/settings")
     if not quiet or any(not isinstance(value, (bool, int)) for value in quiet.values()):
         raise RuntimeError("quiet settings response is invalid")
-    slots_payload = get_json(base_url, "/api/autopush/slots")
+    slots_payload = fetch("/api/autopush/slots")
     enabled = slots_payload.get("enabled")
     active_slot = slots_payload.get("activeSlot")
     raw_slots = slots_payload.get("slots")
@@ -475,48 +498,121 @@ def capture_presentation_configuration(
     }
 
 
-def read_maintenance_usb_status(port: str) -> dict[str, Any]:
-    try:
-        completed = subprocess.run(
-            [sys.executable, str(USB_PROFILES_SCRIPT), "--port", port, "status"],
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=15,
+def wait_for_presentation_configuration(
+    base_url: str,
+    *,
+    timeout_s: float = PRESENTATION_CONNECT_TIMEOUT_S,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    capture: Callable[..., dict[str, Any]] = capture_presentation_configuration,
+    reconnect: Callable[[float], bool] | None = None,
+) -> dict[str, Any]:
+    deadline = monotonic() + timeout_s
+    next_progress = monotonic()
+    next_reconnect = monotonic()
+    last_error = PresentationConnectionFailure("maintenance HTTP was not reached")
+    while True:
+        now = monotonic()
+        if now >= deadline:
+            raise RuntimeError(
+                "maintenance HTTP was not reachable; join the V1-Simple WiFi network"
+            ) from last_error
+        if reconnect is not None and now >= next_reconnect:
+            reconnect(deadline - now)
+            now = monotonic()
+            next_reconnect = now + 15.0
+            if now >= deadline:
+                raise RuntimeError(
+                    "maintenance HTTP was not reachable; join the V1-Simple WiFi network"
+                ) from last_error
+        try:
+            configuration = capture(base_url, timeout_s=deadline - now)
+            if monotonic() > deadline:
+                raise PresentationConnectionFailure("presentation API deadline expired")
+            return configuration
+        except PresentationConnectionFailure as exc:
+            last_error = exc
+            now = monotonic()
+            if now >= deadline:
+                raise RuntimeError(
+                    "maintenance HTTP was not reachable; join the V1-Simple WiFi network"
+                ) from exc
+            if now >= next_progress:
+                remaining = max(0, int(deadline - now))
+                print(
+                    f"[bench] join V1-Simple WiFi; waiting for maintenance HTTP ({remaining}s remaining)",
+                    flush=True,
+                )
+                next_progress = now + 15.0
+            sleep(min(1.0, max(0.0, deadline - now)))
+
+
+def try_join_maintenance_wifi(
+    *,
+    ssid: str = "V1-Simple",
+    run: Callable[..., Any] | None = None,
+    timeout_s: float = 30.0,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> bool:
+    execute = run or subprocess.run
+    deadline = monotonic() + max(0.0, timeout_s)
+
+    def bounded_execute(command: list[str], command_timeout_s: float) -> Any | None:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            return None
+        try:
+            return execute(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=min(command_timeout_s, remaining),
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    inventory = bounded_execute(
+        ["/usr/sbin/networksetup", "-listallhardwareports"], 10.0
+    )
+    if inventory is None:
+        return False
+    if inventory.returncode != 0:
+        return False
+    wifi_device = ""
+    for block in inventory.stdout.split("\n\n"):
+        fields = dict(
+            line.split(":", 1) for line in block.splitlines() if ":" in line
         )
-        lines = [line for line in completed.stdout.splitlines() if line.strip()]
-        status = json.loads(lines[-1]) if lines else None
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
-        raise RuntimeError("maintenance USB identity could not be verified") from exc
-    if (
-        not isinstance(status, dict)
-        or status.get("mode") != "maintenance"
-        or type(status.get("boot")) is not int
-        or GIT_IDENTITY_RE.fullmatch(str(status.get("git", ""))) is None
-        or RUNTIME_IMAGE_ID_RE.fullmatch(str(status.get("image", ""))) is None
-        or type(status.get("slot")) is not int
-        or type(status.get("persist")) is not int
-        or type(status.get("enabled")) is not bool
-    ):
-        raise RuntimeError("connected DUT is not verified in maintenance mode")
-    return {
-        key: status[key]
-        for key in ("mode", "boot", "git", "image", "slot", "persist", "enabled")
-    }
+        if fields.get("Hardware Port", "").strip() in ("Wi-Fi", "AirPort"):
+            wifi_device = fields.get("Device", "").strip()
+            break
+    if not wifi_device:
+        return False
 
+    def joined_expected_network() -> bool:
+        current = bounded_execute(
+            ["/usr/sbin/networksetup", "-getairportnetwork", wifi_device], 10.0
+        )
+        if current is None:
+            return False
+        return current.returncode == 0 and current.stdout.strip().endswith(f": {ssid}")
 
-def require_matching_maintenance_sources(
-    configuration: dict[str, Any], identity: dict[str, Any]
-) -> None:
-    active_slot = configuration["auto_push"]["configured_active_slot"]
-    active_policy = configuration["auto_push"]["slots"][active_slot]
-    if (
-        identity["slot"] != active_slot
-        or identity["persist"] != active_policy["alert_persistence_seconds"]
-        or identity["enabled"] != configuration["auto_push"]["enabled"]
-    ):
-        raise RuntimeError("maintenance USB and HTTP presentation settings disagree")
+    if joined_expected_network():
+        return True
+    passwords = [None]
+    configured = os.environ.get("BENCH_MAINTENANCE_WIFI_PASSWORD", "")
+    passwords.append(configured or "setupv1simple")
+    for password in passwords:
+        command = ["/usr/sbin/networksetup", "-setairportnetwork", wifi_device, ssid]
+        if password is not None:
+            command.append(password)
+        joined = bounded_execute(command, 20.0)
+        if joined is None:
+            continue
+        if joined.returncode == 0 and joined_expected_network():
+            return True
+    return False
 
 
 def parse_auto_push_selection(line: str) -> dict[str, Any] | None:
@@ -547,7 +643,6 @@ def publish_presentation_snapshot(
     out_dir: Path,
     *,
     configuration: dict[str, Any],
-    maintenance_identity: dict[str, Any],
     selection: dict[str, Any],
     maintenance_capture_ns: int,
 ) -> dict[str, Any]:
@@ -561,13 +656,8 @@ def publish_presentation_snapshot(
             "schema_version": 1,
             "kind": "bench_presentation_snapshot",
             "http_source_mode_declared": "maintenance",
-            "http_same_dut_as_usb_proven": False,
-            "serial_dut_mode": maintenance_identity["mode"],
-            "serial_dut_mode_verified_by": "usb_status",
-            "serial_dut_usb_identity": maintenance_identity,
-            "http_usb_settings_correlation": [
-                "auto_push_enabled", "configured_active_slot", "active_slot_persistence"
-            ],
+            "http_same_dut_as_normal_runtime_proven": False,
+            "serial_port_opened_before_capture": False,
             "captured_before_application_upload": True,
             "normal_runtime_binding": "autopush_enablement_and_slot_selection_intent",
             "full_normal_ram_match_proven": False,
@@ -1552,19 +1642,17 @@ def collect_live(
 
     with V1RadioLease() as lease:
         assert lease.fd is not None
-        port = wait_for_port(args.port)
         presentation_configuration: dict[str, Any] | None = None
-        presentation_maintenance_identity: dict[str, Any] | None = None
         presentation_capture_ns: int | None = None
         if args.presentation_api_base_url:
-            presentation_maintenance_identity = read_maintenance_usb_status(port)
-            presentation_configuration = capture_presentation_configuration(
-                args.presentation_api_base_url
-            )
-            require_matching_maintenance_sources(
-                presentation_configuration, presentation_maintenance_identity
+            presentation_configuration = wait_for_presentation_configuration(
+                args.presentation_api_base_url,
+                reconnect=lambda remaining: try_join_maintenance_wifi(
+                    timeout_s=remaining
+                ),
             )
             presentation_capture_ns = time.monotonic_ns()
+        port = wait_for_port(args.port)
         run_upload(port, args.skip_web)
         artifacts["build_upload"] = retain_build_upload_artifacts(
             out_dir,
@@ -1663,12 +1751,11 @@ def collect_live(
             if presentation_configuration is not None:
                 if observer.auto_push_selection is None:
                     raise RuntimeError("Auto-Push selected-slot evidence was not observed")
-                if presentation_capture_ns is None or presentation_maintenance_identity is None:
+                if presentation_capture_ns is None:
                     raise RuntimeError("maintenance presentation capture timing is unavailable")
                 artifacts["presentation_snapshot"] = publish_presentation_snapshot(
                     out_dir,
                     configuration=presentation_configuration,
-                    maintenance_identity=presentation_maintenance_identity,
                     selection=observer.auto_push_selection,
                     maintenance_capture_ns=presentation_capture_ns,
                 )

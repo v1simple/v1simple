@@ -130,16 +130,17 @@ verdict. It preserves the authored replay stimulus, notification delivery,
 host timing, serial output, exact firmware identity, camera video, and per-frame
 timing for a separate evaluator.
 
-While the DUT is deliberately in maintenance mode, set
-`BENCH_PRESENTATION_API_BASE_URL` to its HTTP origin before starting the replay.
-The bench captures colors, visibility policy, and slot presentation settings
-before uploading the application. It never contacts HTTP after the candidate
-boots into normal mode, where WiFi remains off. The upload changes only the
-firmware upload target and does not request a LittleFS upload. Before capture,
-USB status must identify the serial DUT in maintenance mode and agree with the
-HTTP snapshot's active slot, persistence, and Auto-Push state. Those matching
-settings correlate the operator-supplied HTTP origin with the serial DUT; they
-do not independently prove both interfaces belong to the same physical unit.
+With the DUT already in maintenance mode, the bench discovers the Mac's WiFi
+interface and joins the default `V1-Simple` network using a saved credential or
+the documented default. Set `BENCH_MAINTENANCE_WIFI_PASSWORD` only when the
+saved credential is unavailable and the maintenance password was changed. The
+bench waits up to two minutes for `http://192.168.35.5`, captures colors,
+visibility policy, and slot presentation settings, and only then discovers or
+opens the serial port and uploads. This ordering avoids turning the one-shot
+maintenance boot into a normal boot through an early native-USB attachment. It
+never contacts HTTP after the candidate boots into normal mode, where WiFi
+remains off. The upload uses the firmware upload target and does not request a
+LittleFS upload.
 
 The retained snapshot is checked against normal Auto-Push enablement and slot
 selection intent and is bound to each event's projected detector state,

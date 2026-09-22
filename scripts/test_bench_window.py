@@ -546,6 +546,10 @@ def test_raw_bench_entrypoint_returns_complete_without_grading_artifacts() -> No
         "[bench] raw evidence finalized" in runner_source,
         "raw bench does not report finalization completion",
     )
+    assert_true(
+        "detect_usb_port" not in source and "device list" not in source,
+        "raw bench performs serial discovery before maintenance HTTP capture",
+    )
     for retired in (
         "encounter_check",
         "counter_check",
@@ -1302,41 +1306,103 @@ def test_bench_upload_preserves_littlefs_settings() -> None:
     assert_true("-u" in command and "-f" not in command, str(command))
 
 
-def test_maintenance_usb_status_is_required_and_bounded() -> None:
-    completed = SimpleNamespace(
-        stdout='{"mode":"maintenance","boot":7,"git":"abcdef0",'
-               '"image":"123456789","slot":0,"persist":2,"enabled":true}\n'
+def test_bench_joins_maintenance_wifi_without_usb_status_query() -> None:
+    responses = iter(
+        [
+            SimpleNamespace(
+                returncode=0,
+                stdout="Hardware Port: Wi-Fi\nDevice: en0\nEthernet Address: aa:bb\n\n",
+            ),
+            SimpleNamespace(
+                returncode=0,
+                stdout="You are not associated with a Wi-Fi network.\n",
+            ),
+            SimpleNamespace(returncode=1, stdout=""),
+            SimpleNamespace(returncode=0, stdout=""),
+            SimpleNamespace(returncode=0, stdout="Current Wi-Fi Network: V1-Simple\n"),
+        ]
     )
-    with mock.patch.object(run_window_module.subprocess, "run", return_value=completed):
-        status = run_window_module.read_maintenance_usb_status("/dev/test")
-    assert_true(status["mode"] == "maintenance" and status["boot"] == 7, str(status))
-    completed.stdout = completed.stdout.replace('"maintenance"', '"normal"')
-    with mock.patch.object(run_window_module.subprocess, "run", return_value=completed):
-        try:
-            run_window_module.read_maintenance_usb_status("/dev/test")
-        except RuntimeError:
-            pass
-        else:
-            raise AssertionError("normal-mode USB status was accepted as maintenance evidence")
-    get_json, _ = sample_presentation_api()
-    configuration = capture_presentation_configuration("http://device", get_json=get_json)
-    run_window_module.require_matching_maintenance_sources(configuration, status)
-    mismatch = dict(status, persist=1)
-    try:
-        run_window_module.require_matching_maintenance_sources(configuration, mismatch)
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError("disagreeing USB and HTTP settings were accepted")
+    calls = []
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        return next(responses)
+
+    with mock.patch.dict(os.environ, {}, clear=True):
+        assert_true(run_window_module.try_join_maintenance_wifi(run=run), str(calls))
+    assert_true(
+        calls[2]
+        == ["/usr/sbin/networksetup", "-setairportnetwork", "en0", "V1-Simple"],
+        str(calls),
+    )
+    assert_true(calls[3][-1] == "setupv1simple", str(calls))
+    assert_true(not any("usb_profiles" in part for command in calls for part in command), str(calls))
+
+
+def test_bench_retries_wifi_join_during_http_wait() -> None:
+    clock = [0.0]
+    reconnect_calls = []
+
+    def reconnect(_remaining: float) -> bool:
+        reconnect_calls.append(clock[0])
+        return len(reconnect_calls) >= 2
+
+    def capture(_base_url: str, **_kwargs: Any) -> dict[str, Any]:
+        if len(reconnect_calls) >= 2:
+            return {"captured": True}
+        raise run_window_module.PresentationConnectionFailure("not ready")
+
+    result = run_window_module.wait_for_presentation_configuration(
+        "http://device",
+        timeout_s=20,
+        monotonic=lambda: clock[0],
+        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        capture=capture,
+        reconnect=reconnect,
+    )
+    assert_true(result == {"captured": True}, str(result))
+    assert_true(reconnect_calls == [0.0, 15.0], str(reconnect_calls))
+
+
+def test_wifi_join_uses_shared_deadline() -> None:
+    clock = [0.0]
+    command_timeouts = []
+
+    def run(command, **kwargs):
+        timeout = kwargs["timeout"]
+        command_timeouts.append(timeout)
+        clock[0] += timeout
+        if command[-1] == "-listallhardwareports":
+            return SimpleNamespace(
+                returncode=0,
+                stdout="Hardware Port: Wi-Fi\nDevice: en0\n",
+            )
+        return SimpleNamespace(
+            returncode=1,
+            stdout="You are not associated with a Wi-Fi network.\n",
+        )
+
+    joined = run_window_module.try_join_maintenance_wifi(
+        run=run,
+        timeout_s=25.0,
+        monotonic=lambda: clock[0],
+    )
+    assert_true(not joined, str(command_timeouts))
+    assert_true(clock[0] == 25.0, str((clock[0], command_timeouts)))
+    assert_true(sum(command_timeouts) == 25.0, str(command_timeouts))
 
 
 def test_presentation_http_is_maintenance_only_and_precedes_upload() -> None:
     source = inspect.getsource(run_window_module.collect_live)
-    capture = source.index("capture_presentation_configuration(")
+    capture = source.index("wait_for_presentation_configuration(")
+    serial_discovery = source.index("wait_for_port(")
     upload = source.index("run_upload(")
-    assert_true(capture < upload, "presentation capture no longer precedes the normal-mode upload")
-    assert_true(source.count("capture_presentation_configuration(") == 1,
+    assert_true(capture < serial_discovery < upload,
+                "presentation capture must precede serial discovery and normal-mode upload")
+    assert_true(source.count("wait_for_presentation_configuration(") == 1,
                 "normal-mode collection must not contact the maintenance HTTP API")
+    assert_true("ensure_maintenance_usb_status" not in source and "usb_profiles" not in source,
+                "serial USB queries must follow the maintenance HTTP snapshot")
 
 
 def test_display_contract_binds_snapshot_stimulus_scenario_runtime_and_camera() -> None:
@@ -1350,16 +1416,15 @@ def test_display_contract_binds_snapshot_stimulus_scenario_runtime_and_camera() 
         assert selection is not None
         snapshot = publish_presentation_snapshot(
             out_dir, configuration=configuration,
-            maintenance_identity={"mode": "maintenance", "boot": 6, "git": "d" * 7,
-                                  "image": "e" * 9, "slot": 0, "persist": 2,
-                                  "enabled": True},
             selection=selection,
             maintenance_capture_ns=10,
         )
         snapshot_payload = json.loads((out_dir / PRESENTATION_SNAPSHOT_NAME).read_text())
-        assert_true(snapshot_payload["serial_dut_mode"] == "maintenance", str(snapshot_payload))
-        assert_true(snapshot_payload["serial_dut_mode_verified_by"] == "usb_status", str(snapshot_payload))
-        assert_true(snapshot_payload["http_same_dut_as_usb_proven"] is False, str(snapshot_payload))
+        assert_true(snapshot_payload["http_source_mode_declared"] == "maintenance", str(snapshot_payload))
+        assert_true(snapshot_payload["serial_port_opened_before_capture"] is False,
+                    str(snapshot_payload))
+        assert_true(snapshot_payload["http_same_dut_as_normal_runtime_proven"] is False,
+                    str(snapshot_payload))
         assert_true(snapshot_payload["full_normal_ram_match_proven"] is False, str(snapshot_payload))
         files = {
             "replay_stimulus": (
@@ -1439,7 +1504,9 @@ def main() -> int:
     test_presentation_capture_retains_visual_inputs_without_private_profile_names()
     test_presentation_selection_intent_is_explicit()
     test_bench_upload_preserves_littlefs_settings()
-    test_maintenance_usb_status_is_required_and_bounded()
+    test_bench_joins_maintenance_wifi_without_usb_status_query()
+    test_bench_retries_wifi_join_during_http_wait()
+    test_wifi_join_uses_shared_deadline()
     test_presentation_http_is_maintenance_only_and_precedes_upload()
     test_display_contract_binds_snapshot_stimulus_scenario_runtime_and_camera()
     print("bench window tests passed")

@@ -8,7 +8,7 @@ ARTIFACT_ROOT="${BENCH_ARTIFACT_ROOT:-$ROOT_DIR/.artifacts/bench}"
 BOARD_ID="${BENCH_BOARD_ID:-release}"
 DURATION_SECONDS="${BENCH_REPLAY_DURATION_SECONDS:-300}"
 POST_UPLOAD_SETTLE_SECONDS="${BENCH_POST_UPLOAD_SETTLE_SECONDS:-90}"
-PRESENTATION_API_BASE_URL="${BENCH_PRESENTATION_API_BASE_URL:-}"
+PRESENTATION_API_BASE_URL="http://192.168.35.5"
 PIO_CMD="${PIO_CMD:-pio}"
 PORT="${DEVICE_PORT:-}"
 RUN_REPLAY=0
@@ -20,7 +20,7 @@ JUNK_QUALIFICATION=0
 usage() {
   printf 'Usage: ./bench.sh --replay --camera [--ku-qualification|--photo-label-qualification|--junk-qualification]\n'
   printf 'Builds and flashes the current firmware, sends the generated replay stimuli, and retains raw synchronized capture.\n'
-  printf 'In maintenance mode, set BENCH_PRESENTATION_API_BASE_URL to capture settings before the normal-mode upload.\n'
+  printf 'With the DUT in maintenance, the bench joins V1-Simple and captures settings before serial discovery or upload.\n'
 }
 
 fail() {
@@ -94,36 +94,6 @@ mkdir -p "$RUN_DIR" || fail 'could not create the raw-capture directory'
 RUN_LOG="$RUN_DIR/bench.log"
 : > "$RUN_LOG" || fail 'could not initialize the raw-capture log'
 
-detect_usb_port() {
-  if [[ -n "$PORT" ]]; then
-    [[ -e "$PORT" ]] || return 1
-    printf '%s\n' "$PORT"
-    return 0
-  fi
-
-  shopt -s nullglob
-  local candidates=(
-    /dev/cu.usbmodem*
-    /dev/tty.usbmodem*
-    /dev/ttyACM*
-    /dev/ttyUSB*
-    /dev/cu.usbserial*
-    /dev/cu.SLAB_USBtoUART*
-    /dev/tty.SLAB_USBtoUART*
-  )
-  shopt -u nullglob
-  if [[ ${#candidates[@]} -gt 0 ]]; then
-    printf '%s\n' "${candidates[0]}"
-    return 0
-  fi
-
-  command -v "$PIO_CMD" >/dev/null 2>&1 || return 1
-  "$PIO_CMD" device list 2>/dev/null \
-    | awk '/^\/dev\// && /usbmodem|ttyACM|ttyUSB|usbserial|SLAB_USBtoUART/ {print $1; exit}'
-}
-
-PORT="$(detect_usb_port || true)"
-[[ -n "$PORT" ]] || fail 'board missing'
 command -v xcrun >/dev/null 2>&1 || fail 'Xcode command line tools are required to build v1replay'
 command -v "$PIO_CMD" >/dev/null 2>&1 || fail 'PlatformIO is required to build and flash the firmware'
 
@@ -150,10 +120,7 @@ mkdir -p "$REPLAY_DIR" || fail 'could not create the replay capture directory'
 
 runner_status=0
 RUNNER_SCENARIO_ARGS=()
-RUNNER_PRESENTATION_ARGS=()
-if [[ -n "$PRESENTATION_API_BASE_URL" ]]; then
-  RUNNER_PRESENTATION_ARGS+=(--presentation-api-base-url "$PRESENTATION_API_BASE_URL")
-fi
+RUNNER_PRESENTATION_ARGS=(--presentation-api-base-url "$PRESENTATION_API_BASE_URL")
 if [[ "$KU_QUALIFICATION" -eq 1 ]]; then
   RUNNER_SCENARIO_ARGS+=(--ku-qualification)
 fi

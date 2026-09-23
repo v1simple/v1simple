@@ -609,11 +609,11 @@ void test_secondary_photo_stays_in_its_card_without_recoloring_ka_primary() {
     TEST_ASSERT_EQUAL_UINT8(1, card.photoType);
     bool sawPhotoLabel = false;
     for (const auto& call : canvas()->textCalls) {
-        if (call.text == "P" && call.color == settings.get().colorBandPhoto) {
+        if (call.text == "MRCT" && call.color == settings.get().colorBandPhoto) {
             sawPhotoLabel = true;
         }
     }
-    TEST_ASSERT_TRUE_MESSAGE(sawPhotoLabel, "the secondary Photo row must own a purple P card");
+    TEST_ASSERT_TRUE_MESSAGE(sawPhotoLabel, "the secondary Photo row must own a purple MRCT card");
 }
 
 void test_secondary_photo_does_not_reclassify_ordinary_k_priority_from_shared_p_counter() {
@@ -639,7 +639,7 @@ void test_secondary_photo_does_not_reclassify_ordinary_k_priority_from_shared_p_
     TEST_ASSERT_EQUAL_UINT8(1, card.photoType);
     bool sawPhotoLabel = false;
     for (const auto& call : canvas()->textCalls) {
-        if (call.text == "P" && call.color == settings.get().colorBandPhoto) {
+        if (call.text == "MRCT" && call.color == settings.get().colorBandPhoto) {
             sawPhotoLabel = true;
         }
     }

@@ -4452,6 +4452,220 @@ BackupApiService::BackupRuntime actualBackupRuntime(SettingsManager& manager) {
     return runtime;
 }
 
+void downloadCurrentHttpBackup(SettingsManager& manager, JsonDocument& backup) {
+    BackupApiService::BackupSnapshotCache cache;
+    WebServer download(80);
+    BackupApiService::handleApiBackup(download, cache, actualBackupRuntime(manager), nullptr, nullptr);
+    BackupApiService::releaseBackupSnapshotCache(cache);
+    TEST_ASSERT_EQUAL_INT(200, download.lastStatusCode);
+    TEST_ASSERT_FALSE(deserializeJson(backup, download.lastBody));
+    TEST_ASSERT_TRUE(validateCurrentBackupDocumentShape(backup));
+}
+
+int restoreHttpBackup(SettingsManager& manager, const JsonDocument& backup) {
+    String body;
+    serializeJson(backup, body);
+    WebServer upload(80);
+    upload.setArg("plain", body);
+    BackupApiService::handleApiRestore(upload, actualBackupRuntime(manager), nullptr, nullptr, nullptr, nullptr);
+    return upload.lastStatusCode;
+}
+
+void test_current_http_restore_removes_profile_absent_from_backup() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    V1Profile road("Road");
+    road.description = "Saved in backup";
+    TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
+    SettingsManager manager(storage, profiles);
+    makeCurrentV21Source(manager.mutableSettings());
+    manager.mutableSettings().slot0_default.profileName = "Road";
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    JsonDocument backup;
+    downloadCurrentHttpBackup(manager, backup);
+    TEST_ASSERT_EQUAL_UINT(1, backup["profiles"].size());
+    V1Profile local("LocalOnly");
+    local.description = "Added after backup";
+    TEST_ASSERT_TRUE(profiles.saveProfile(local).success);
+    manager.mutableSettings().slot1_highway.profileName = "LocalOnly";
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+
+    TEST_ASSERT_TRUE(backupDocumentCanApply(backup, manager.get(), profiles));
+    TEST_ASSERT_EQUAL_INT(200, restoreHttpBackup(manager, backup));
+    TEST_ASSERT_EQUAL_UINT(1, profiles.listProfilesResult().profiles.size());
+    V1Profile retained;
+    TEST_ASSERT_TRUE(profiles.loadProfile("Road", retained));
+    TEST_ASSERT_EQUAL_STRING("Saved in backup", retained.description.c_str());
+    TEST_ASSERT_FALSE(profiles.loadProfile("LocalOnly", retained));
+    TEST_ASSERT_EQUAL_STRING("Road", manager.get().slot0_default.profileName.c_str());
+    TEST_ASSERT_EQUAL_STRING("", manager.get().slot1_highway.profileName.c_str());
+
+    V1ProfileManager rebootProfiles;
+    TEST_ASSERT_TRUE(rebootProfiles.begin(storage));
+    SettingsManager rebooted(storage, rebootProfiles);
+    rebooted.load();
+    TEST_ASSERT_EQUAL_UINT(1, rebootProfiles.listProfilesResult().profiles.size());
+    TEST_ASSERT_FALSE(rebootProfiles.loadProfile("LocalOnly", retained));
+    TEST_ASSERT_EQUAL_STRING("", rebooted.get().slot1_highway.profileName.c_str());
+}
+
+void test_current_http_restore_replaces_disjoint_full_catalog() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("Road")).success);
+    SettingsManager manager(storage, profiles);
+    makeCurrentV21Source(manager.mutableSettings());
+    JsonDocument backup;
+    downloadCurrentHttpBackup(manager, backup);
+    TEST_ASSERT_EQUAL_UINT(1, backup["profiles"].size());
+
+    TEST_ASSERT_TRUE(profiles.deleteProfile("Road"));
+    for (int index = 0; index < 10; ++index) {
+        const String name = String("Local") + String(index);
+        TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile(name)).success);
+    }
+    TEST_ASSERT_EQUAL_UINT(10, profiles.listProfilesResult().profiles.size());
+
+    TEST_ASSERT_TRUE(backupDocumentCanApply(backup, manager.get(), profiles));
+    mock_preferences::set_fail_writes_for_key(kNvsBrightness);
+    TEST_ASSERT_EQUAL_INT(500, restoreHttpBackup(manager, backup));
+    mock_preferences::set_fail_writes_for_key(nullptr);
+    TEST_ASSERT_EQUAL_UINT(10, profiles.listProfilesResult().profiles.size());
+    V1Profile restored;
+    TEST_ASSERT_FALSE(profiles.loadProfile("Road", restored));
+    for (int index = 0; index < 10; ++index) {
+        const String name = String("Local") + String(index);
+        TEST_ASSERT_TRUE(profiles.loadProfile(name, restored));
+    }
+    TEST_ASSERT_FALSE(fs.exists(RESTORE_TRANSACTION_PATH));
+
+    TEST_ASSERT_EQUAL_INT(200, restoreHttpBackup(manager, backup));
+    TEST_ASSERT_EQUAL_UINT(1, profiles.listProfilesResult().profiles.size());
+    TEST_ASSERT_TRUE(profiles.loadProfile("Road", restored));
+    for (int index = 0; index < 10; ++index) {
+        const String name = String("Local") + String(index);
+        TEST_ASSERT_FALSE(profiles.loadProfile(name, restored));
+    }
+}
+
+void test_current_sd_restore_replaces_profile_absent_from_backup() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("Road")).success);
+    SettingsManager manager(storage, profiles);
+    makeCurrentV21Source(manager.mutableSettings());
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    TEST_ASSERT_TRUE(manager.backupToSD());
+
+    JsonDocument backup;
+    TEST_ASSERT_TRUE(loadJsonFile(fs, SETTINGS_BACKUP_PATH, backup));
+    TEST_ASSERT_TRUE(validateCurrentBackupDocumentShape(backup));
+    TEST_ASSERT_EQUAL_UINT(1, backup["profiles"].size());
+    TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("LocalOnly")).success);
+    TEST_ASSERT_TRUE(backupDocumentCanApply(backup, manager.get(), profiles));
+
+    TEST_ASSERT_TRUE(manager.restoreFromSD());
+    TEST_ASSERT_EQUAL_UINT(1, profiles.listProfilesResult().profiles.size());
+    V1Profile retained;
+    TEST_ASSERT_TRUE(profiles.loadProfile("Road", retained));
+    TEST_ASSERT_FALSE(profiles.loadProfile("LocalOnly", retained));
+}
+
+void test_current_http_empty_catalog_restore_rolls_back_after_settings_write_failure() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    makeCurrentV21Source(manager.mutableSettings());
+    JsonDocument backup;
+    downloadCurrentHttpBackup(manager, backup);
+    TEST_ASSERT_EQUAL_UINT(0, backup["profiles"].size());
+
+    TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("LocalOnly")).success);
+    manager.mutableSettings().slot0_default.profileName = "LocalOnly";
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    TEST_ASSERT_TRUE(backupDocumentCanApply(backup, manager.get(), profiles));
+
+    mock_preferences::set_fail_writes_for_key(kNvsBrightness);
+    TEST_ASSERT_EQUAL_INT(500, restoreHttpBackup(manager, backup));
+    mock_preferences::set_fail_writes_for_key(nullptr);
+    V1Profile restored;
+    TEST_ASSERT_TRUE(profiles.loadProfile("LocalOnly", restored));
+    TEST_ASSERT_EQUAL_STRING("LocalOnly", manager.get().slot0_default.profileName.c_str());
+    TEST_ASSERT_FALSE(fs.exists(RESTORE_TRANSACTION_PATH));
+
+    V1ProfileManager rebootProfiles;
+    TEST_ASSERT_TRUE(rebootProfiles.begin(storage));
+    SettingsManager rebooted(storage, rebootProfiles);
+    rebooted.load();
+    TEST_ASSERT_TRUE(rebootProfiles.loadProfile("LocalOnly", restored));
+    TEST_ASSERT_EQUAL_STRING("LocalOnly", rebooted.get().slot0_default.profileName.c_str());
+
+    TEST_ASSERT_TRUE(backupDocumentCanApply(backup, rebooted.get(), rebootProfiles));
+    TEST_ASSERT_EQUAL_INT(200, restoreHttpBackup(rebooted, backup));
+    TEST_ASSERT_EQUAL_UINT(0, rebootProfiles.listProfilesResult().profiles.size());
+    TEST_ASSERT_EQUAL_STRING("", rebooted.get().slot0_default.profileName.c_str());
+    SettingsManager afterReplacement(storage, rebootProfiles);
+    afterReplacement.load();
+    TEST_ASSERT_EQUAL_STRING("", afterReplacement.get().slot0_default.profileName.c_str());
+}
+
+void test_current_http_empty_catalog_interruption_restores_profile_on_reboot() {
+    fs::FS fs(g_tempRoot);
+    // Keep the recovery source to the restore journal: no SD backup may
+    // recreate the profile independently and mask a missed journal rollback.
+    storage.setFilesystem(&fs, false);
+    storage.setLittleFS(&fs);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    makeCurrentV21Source(manager.mutableSettings());
+    JsonDocument backup;
+    downloadCurrentHttpBackup(manager, backup);
+    TEST_ASSERT_EQUAL_UINT(0, backup["profiles"].size());
+
+    TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("LocalOnly")).success);
+    manager.mutableSettings().slot0_default.profileName = "LocalOnly";
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    manager.utInterruptRestoreAfterProfiles(true);
+    TEST_ASSERT_EQUAL_INT(500, restoreHttpBackup(manager, backup));
+    TEST_ASSERT_TRUE(fs.exists(RESTORE_TRANSACTION_PATH));
+    V1Profile restored;
+    TEST_ASSERT_FALSE(profiles.loadProfile("LocalOnly", restored));
+
+    V1ProfileManager rebootProfiles;
+    TEST_ASSERT_TRUE(rebootProfiles.begin(storage));
+    SettingsManager rebooted(storage, rebootProfiles);
+    rebooted.load();
+    rebooted.checkAndRestoreFromSD();
+    TEST_ASSERT_TRUE(rebootProfiles.loadProfile("LocalOnly", restored));
+    TEST_ASSERT_EQUAL_STRING("LocalOnly", rebooted.get().slot0_default.profileName.c_str());
+    TEST_ASSERT_FALSE(fs.exists(RESTORE_TRANSACTION_PATH));
+}
+
+void test_legacy_partial_restore_keeps_unmentioned_profiles() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("LocalOnly")).success);
+    SettingsManager manager(storage, profiles);
+    JsonDocument legacy;
+    JsonObject incoming = legacy["profiles"].to<JsonArray>().add<JsonObject>();
+    incoming["name"] = "Road";
+    JsonArray bytes = incoming["bytes"].to<JsonArray>();
+    for (int index = 0; index < 6; ++index) bytes.add(static_cast<uint8_t>(index + 1));
+
+    TEST_ASSERT_TRUE(backupDocumentCanApply(legacy, manager.get(), profiles));
+    TEST_ASSERT_TRUE(manager.applyBackupDocument(legacy, true).success);
+    TEST_ASSERT_EQUAL_UINT(2, profiles.listProfilesResult().profiles.size());
+    V1Profile retained;
+    TEST_ASSERT_TRUE(profiles.loadProfile("LocalOnly", retained));
+    TEST_ASSERT_TRUE(profiles.loadProfile("Road", retained));
+}
+
 void assert_generated_http_backup_round_trip(bool sd) {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, sd);
@@ -5567,6 +5781,12 @@ int main() {
     RUN_TEST(test_actual_backup_now_preserves_same_due_profile_snapshot);
     RUN_TEST(test_generated_http_backup_round_trip_on_littlefs);
     RUN_TEST(test_generated_http_backup_round_trip_on_sd);
+    RUN_TEST(test_current_http_restore_removes_profile_absent_from_backup);
+    RUN_TEST(test_current_http_restore_replaces_disjoint_full_catalog);
+    RUN_TEST(test_current_sd_restore_replaces_profile_absent_from_backup);
+    RUN_TEST(test_current_http_empty_catalog_restore_rolls_back_after_settings_write_failure);
+    RUN_TEST(test_current_http_empty_catalog_interruption_restores_profile_on_reboot);
+    RUN_TEST(test_legacy_partial_restore_keeps_unmentioned_profiles);
     RUN_TEST(test_wifi_default_labels_preserve_exact_ssids_and_remain_backupable_after_reboot);
     RUN_TEST(test_current_backup_schema_rejects_unknown_or_invalid_fields_before_any_mutation);
     RUN_TEST(test_backup_builder_rejects_noncanonical_live_v21_state_for_http_and_sd);

@@ -817,7 +817,7 @@
 
             <section class="install-option install-option-destructive" aria-labelledby="fresh-title">
               <h3 id="fresh-title">Fresh install — erase and rebuild</h3>
-              <p>This is destructive even if ESP Web Tools’ optional erase box is off: the merged image replaces the bootloader, partition table, firmware, NVS data, and internal LittleFS web interface and fallback profiles. Saved settings and Wi-Fi networks are erased. Physical SD-card contents are not part of this flash operation.</p>
+              <p>This is destructive even if ESP Web Tools’ optional erase box is off: the merged image replaces the bootloader, partition table, firmware, NVS data, and internal LittleFS web interface and fallback profiles. Saved settings and Wi-Fi networks in NVS are erased by the flash. Physical SD-card contents are not part of this flash operation. A valid SD backup can restore saved settings, including access-point credentials, on boot.</p>
               <esp-web-install-button manifest="manifest.json" data-install-mode="destructive">
                 <button slot="activate" type="button" data-goatcounter-click="install-intent-fresh"><span>Erase and fresh install</span><span aria-hidden="true">→</span></button>
                 <span slot="unsupported" class="installer-message">This browser does not support Web Serial.<small>Use Firefox 151 or newer, Chrome 89 or newer, or a current version of Edge on desktop.</small></span>
@@ -844,8 +844,8 @@
           <li><span class="finish-index">01</span><strong>Reset</strong><p>Press the RESET button to start V1-Simple.</p></li>
           <li><span class="finish-index">02</span><strong>Pair</strong><p>When the SCAN animation appears, connect your V1 Gen2.</p></li>
           <li><span class="finish-index">03</span><strong>Maintain</strong><p>Hold BOOT for about four seconds, then release to reboot into maintenance mode.</p></li>
-          <li><span class="finish-index">04</span><strong>Connect</strong><p>Join V1-Simple using password <b>setupv1simple</b>.</p></li>
-          <li><span class="finish-index">05</span><strong>Configure</strong><p>Open <b>http://192.168.35.5</b> to finish setup and change the access-point password.</p></li>
+          <li><span class="finish-index">04</span><strong>Connect</strong><p>Use the access-point name and password already configured or restored from SD. If no name was saved, join <b>V1-Simple</b>; if no password was saved, use <b>setupv1simple</b>.</p></li>
+          <li><span class="finish-index">05</span><strong>Configure</strong><p>Open <b>http://192.168.35.5</b> to finish setup. If the default access-point password is in use, change it.</p></li>
         </ol>
       </section>
 

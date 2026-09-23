@@ -853,7 +853,10 @@
 
         if (
             !confirm(
-                'Warning: This will overwrite all your current settings and profiles.\n\nSaved WiFi passwords are kept for networks whose name matches; other networks will need their password re-entered.\n\nAre you sure you want to restore from this backup?'
+                'Warning: Restoring this backup changes your current settings and profiles.\n\n' +
+                    'Current-format backups replace the saved profile catalog. Accepted older partial backups may merge profiles with your existing catalog, leaving omitted profiles in place.\n\n' +
+                    'If a WiFi password is absent from the backup, you may need to re-enter it after restoring.\n\n' +
+                    'Are you sure you want to restore from this backup?'
             )
         ) {
             return;

@@ -1470,6 +1470,12 @@ bool validateCurrentBackupSchema(const JsonDocument& doc) {
     return true;
 }
 
+bool currentBackupReplacesProfileCatalog(const JsonDocument& doc) {
+    // The exact current writer includes the complete catalog. Older partial
+    // documents may omit profiles, so they retain their merge behavior.
+    return doc["_version"].is<int>() && doc["_version"].as<int>() == SD_BACKUP_VERSION;
+}
+
 bool parseBackupProfile(JsonObjectConst source, V1Profile& profile) {
     if (!source["name"].is<const char*>() ||
         !V1SettingsJson::parseRawBytes(source["bytes"], profile.settings.bytes)) {
@@ -1545,7 +1551,7 @@ bool validateBackupNetworkCredentialFields(const JsonDocument& doc, PreparedNetw
 
 bool validateBackupDocumentForApply(const JsonDocument& doc, const V1Settings& current, V1ProfileManager& profiles,
                                     std::vector<V1Profile>& incomingProfiles,
-                                    std::vector<V1Profile>& existingProfiles, bool replaceProfiles = false,
+                                    std::vector<V1Profile>& existingProfiles, bool replaceProfiles,
                                     PreparedProfileSlotFields* preparedSlots = nullptr,
                                     PreparedNetworkFields* preparedNetwork = nullptr,
                                     PreparedObdFields* preparedObd = nullptr) {
@@ -2507,7 +2513,8 @@ bool validateCurrentBackupDocumentShape(const JsonDocument& doc) {
 bool backupDocumentCanApply(const JsonDocument& doc, const V1Settings& current, V1ProfileManager& profiles) {
     std::vector<V1Profile> incomingProfiles;
     std::vector<V1Profile> existingProfiles;
-    return validateBackupDocumentForApply(doc, current, profiles, incomingProfiles, existingProfiles);
+    return validateBackupDocumentForApply(doc, current, profiles, incomingProfiles, existingProfiles,
+                                          currentBackupReplacesProfileCatalog(doc));
 }
 
 bool SettingsManager::resolveRestoreTransaction() {
@@ -2731,8 +2738,9 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
     const bool restorePendingBefore = restorePending_;
     const uint64_t restoreWatermarkBefore = restoreCommitWatermark_;
     const bool profilesOnly = scope == SettingsBackupScope::ProfilesOnly;
+    const bool replaceProfiles = profilesOnly || currentBackupReplacesProfileCatalog(doc);
     if (!validateBackupDocumentForApply(doc, settingsBefore, *profiles_, incomingProfiles, profilesBefore,
-                                        profilesOnly, &preparedSlots, &preparedNetwork, &preparedObd)) {
+                                        replaceProfiles, &preparedSlots, &preparedNetwork, &preparedObd)) {
         Serial.println("[Settings] ERROR: Backup document failed transaction validation");
         return result;
     }
@@ -2742,7 +2750,7 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
     }
 
     const bool credentialsMutated = !profilesOnly && preparedNetwork.mutatesCredentials;
-    const bool profilesMutated = !incomingProfiles.empty() || (profilesOnly && !profilesBefore.empty());
+    const bool profilesMutated = !incomingProfiles.empty() || (replaceProfiles && !profilesBefore.empty());
     const bool externalStoresMutated = credentialsMutated || profilesMutated;
     bool journalWritten = false;
     uint64_t restoreToken = 0;
@@ -2813,7 +2821,7 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
     }
     feedWatchdog();
 
-    if (profilesOnly) {
+    if (replaceProfiles) {
         // Exact catalog replacement shares the same rollback snapshot and NVS
         // commit watermark as the profile writes below. Retire absent names
         // first so a case-only name replacement can be saved and recovered.

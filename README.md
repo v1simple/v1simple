@@ -99,7 +99,7 @@ in this repository.
 ```sh
 ./scripts/ci-test.sh                   # complete pre-push/release code, test, and build gate
 ./scripts/run_device_tests.sh --quick  # connected-board boot and heap checks
-./bench.sh --replay --camera          # replay, timing, serial, and camera evidence
+./bench.sh --replay --camera          # raw replay/camera evidence, then sampled visual fields
 ```
 
 Automated tests establish code behavior. Device tests and bench runs establish
@@ -108,9 +108,14 @@ screen behavior for that recorded run. None proves every detector, power, RF,
 or vehicle environment.
 
 The bench collector preserves replay input, delivery, timing, serial, firmware
-identity, settings snapshot, and camera artifacts for later evaluation; it does
-not interpret pixels or issue a product verdict. An unavailable maintenance
-snapshot makes a collection incomplete, not a product failure.
+identity, settings snapshot, and camera artifacts. After `COMPLETE` confirms raw
+capture, a separate report checks sampled stable display fields against the
+recording and prints `VISUAL_FIELDS_PASS`, `FAIL`, or `INCONCLUSIVE`. The report
+lives beside `replay/` as `visual_fields_result.json`; a mismatch or inconclusive
+reading returns a nonzero status without rewriting the completed raw capture.
+This is not a verdict on every video frame or profile-based hold timing. An
+unavailable maintenance snapshot makes a collection incomplete, not a product
+failure.
 
 Keep changes focused, read [AGENTS.md](AGENTS.md), run checks proportionate to
 the change, inspect the final diff, and state whether hardware or camera

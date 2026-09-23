@@ -1,9 +1,15 @@
 """Focused reader checks; the retained recordings supply the real negative control."""
 
+import json
+from pathlib import Path
+import sys
+import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 
+from bench import read_replay_fields as reader
 from bench.read_replay_fields import CARD_TEMPLATES, read_pixels, secondary_identities
 
 
@@ -42,6 +48,25 @@ class ReadReplayFieldsTest(unittest.TestCase):
         image[393:401, 424:444] = (240, 240, 240)
 
         self.assertEqual((True, "24.150", "SIDE"), read_pixels(image)["cards"][0])
+
+    def test_post_capture_report_has_distinct_exit_statuses(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "visual_fields_result.json"
+            for result, status in (("PASS", 0), ("FAIL", 1), ("INCONCLUSIVE", 2)):
+                with (mock.patch.object(sys, "argv", ["reader", "unused", "--output", str(output)]),
+                      mock.patch.object(reader.shutil, "which", return_value="ffmpeg"),
+                      mock.patch.object(reader, "compare_run", return_value={"result": result})):
+                    with self.assertRaises(SystemExit) as exit_result:
+                        reader.main()
+                self.assertEqual(status, exit_result.exception.code)
+                self.assertEqual(result, json.loads(output.read_text())["result"])
+
+    def test_incomplete_raw_capture_cannot_receive_visual_pass(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Path(temporary)
+            (run / "window_result.json").write_text('{"result":"COLLECTION_FAILED"}')
+            with self.assertRaisesRegex(ValueError, "not complete and qualified"):
+                reader.compare_run(run)
 
 
 if __name__ == "__main__":

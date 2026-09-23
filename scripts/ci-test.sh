@@ -168,6 +168,9 @@ BENCH_PYTHON="$(./scripts/bench_python.sh)" || exit 1
 run_step "Bench Python environment regression suite" "$BENCH_PYTHON" scripts/test_bench_python.py
 run_step "USB profile host regression suite" python3 scripts/test_usb_profiles.py
 run_step "Bench window regression suite" python3 scripts/test_bench_window.py
+VISUAL_PYTHON="$(./scripts/bench_python.sh --visual)" || exit 1
+run_step "Replay visual field reader regression suite" env PYTHONPATH=scripts \
+  "$VISUAL_PYTHON" -m unittest scripts.test_read_replay_fields
 run_step "LittleFS compatibility regression suite" python3 scripts/test_check_littlefs_image_compatibility.py
 run_step "Commit metadata regression suite" python3 scripts/test_check_public_commit_metadata.py
 run_step "App-only upload offset regression suite" python3 scripts/test_force_app_upload_offset.py

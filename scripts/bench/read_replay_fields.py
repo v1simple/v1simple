@@ -18,6 +18,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -295,7 +296,13 @@ def secondary_identities(stimulus):
                   if not alert["priority"] and alert["band"] in ("k", "ka", "x"))
 
 
-def compare_run(run, limit=None):
+def compare_run(run, limit=None, progress=None):
+    window = json.loads((run / "window_result.json").read_text())
+    if (window.get("result") != "COMPLETE" or
+            window.get("runtime_qualification", {}).get("status") != "qualified" or
+            window.get("camera", {}).get("result") != "CAPTURED" or
+            window["camera"].get("video_timing_verification_result", {}).get("status") != "verified"):
+        raise ValueError("replay capture is not complete and qualified")
     stimuli = list(ndjson(run / "replay_stimulus.ndjson"))
     if len(stimuli) < 3:
         raise ValueError("too few replay stimuli")
@@ -327,7 +334,7 @@ def compare_run(run, limit=None):
               ("frequency", "band", "direction", "counter")}
     cards = {"matched": 0, "mismatched": 0, "unreadable": 0, "notApplicable": 0}
     exceptions = []
-    for stimulus in eligible:
+    for checked, stimulus in enumerate(eligible, 1):
         requested = stimulus["requestedHostMonotonicNs"] + 180_000_000
         index = bisect.bisect_left(host, requested)
         index = min(max(index, 1), len(frames) - 1)
@@ -375,11 +382,17 @@ def compare_run(run, limit=None):
                 exceptions.append({"sequence": sequence, "videoSeconds": round(video_time, 3),
                                    "field": "secondaryCardTextDirection", "expected": expected_cards,
                                    "observed": visible, "category": category})
+        if progress is not None and (checked % 100 == 0 or checked == len(eligible)):
+            progress(checked, len(eligible))
     return {"result": ("FAIL" if any(v["mismatched"] for v in totals.values()) else
                        "FAIL" if cards["mismatched"] else
                        "INCONCLUSIVE" if cards["unreadable"] or any(v["unreadable"] for v in totals.values()) or
                        any(not v["matched"] for v in totals.values()) else "PASS"),
             "scope": "registered 1280x720 view; unmuted, stable K/Ka/X radar states; one camera frame per replay step; blink-off arrows and bands are permitted",
+            "source": {"gitSha": window["git_sha"],
+                       "imageId": window["runtime_identity"]["image_id"],
+                       "cameraCaptureId": window["camera"]["capture_id"],
+                       "displayContractSha256": window["artifacts"]["replay_display_contract"]["sha256"]},
             "framesChecked": len(eligible), "fields": totals, "secondaryCardTextDirection": cards,
             "exceptions": exceptions}
 
@@ -388,15 +401,26 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run", type=Path, help="replay artifact directory")
     parser.add_argument("--limit", type=int, help="analyze the first N eligible stimuli while developing")
+    parser.add_argument("--output", type=Path, help="write a separate post-capture JSON report")
+    parser.add_argument("--progress", action="store_true", help="report post-capture decoding progress")
     args = parser.parse_args()
-    if not shutil.which("ffmpeg"):
-        parser.error("ffmpeg is required")
     try:
-        report = compare_run(args.run, args.limit)
+        if not shutil.which("ffmpeg"):
+            raise ValueError("ffmpeg is required")
+        progress = (lambda checked, total: print(
+            f"[bench] visual fields {checked}/{total} sampled frames", file=sys.stderr, flush=True
+        )) if args.progress else None
+        report = compare_run(args.run, args.limit, progress)
     except (ValueError, KeyError, FileNotFoundError, subprocess.CalledProcessError) as error:
         report = {"result": "INCONCLUSIVE", "reason": str(error)}
-    print(json.dumps(report, indent=2))
-    raise SystemExit(0 if report["result"] == "PASS" else 1)
+    rendered = json.dumps(report, indent=2) + "\n"
+    if args.output is None:
+        print(rendered, end="")
+    else:
+        temporary = args.output.with_name(args.output.name + ".tmp")
+        temporary.write_text(rendered)
+        temporary.replace(args.output)
+    raise SystemExit({"PASS": 0, "FAIL": 1, "INCONCLUSIVE": 2}[report["result"]])
 
 
 if __name__ == "__main__":

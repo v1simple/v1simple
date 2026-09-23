@@ -527,10 +527,18 @@ def test_runner_source_is_external_only_and_serial_is_read_only() -> None:
     assert_true('"evidence_contract": "external_only"' in source, "contract is not explicit")
 
 
-def test_raw_bench_entrypoint_returns_complete_without_grading_artifacts() -> None:
+def test_bench_entrypoint_keeps_raw_completion_separate_from_visual_grading() -> None:
     source = (ROOT / "bench.sh").read_text(encoding="utf-8")
     assert_true("printf 'COMPLETE: %s\\n'" in source,
                 "raw bench does not report collection completion")
+    assert_true(source.index("printf 'COMPLETE: %s\\n'") <
+                source.index("VISUAL_FIELDS_PASS:"),
+                "visual grading must follow completed raw capture")
+    assert_true('VISUAL_REPORT="$RUN_DIR/visual_fields_result.json"' in source,
+                "visual report must live outside the replay capture")
+    for result in ("VISUAL_FIELDS_PASS:", "VISUAL_FIELDS_FAIL:",
+                   "VISUAL_FIELDS_INCONCLUSIVE:"):
+        assert_true(result in source, f"missing separate visual result: {result}")
     assert_true(
         "--terminal-prefix '[bench]'" in source,
         "raw bench hides its managed collection progress",
@@ -1509,7 +1517,7 @@ def main() -> int:
     test_requested_accepted_complete_stopped_preserves_raw_delivery()
     test_radio_lease_excludes_concurrent_owners_and_rejects_symlink_parent()
     test_runner_source_is_external_only_and_serial_is_read_only()
-    test_raw_bench_entrypoint_returns_complete_without_grading_artifacts()
+    test_bench_entrypoint_keeps_raw_completion_separate_from_visual_grading()
     test_raw_bench_refuses_a_failed_git_status_check()
     test_source_identity_check_requires_successful_git_inspection()
     test_upload_exact_match_is_qualified()

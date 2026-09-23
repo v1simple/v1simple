@@ -2,7 +2,17 @@
 # Keep raw bench acquisition independent of the invoking terminal's Python packages.
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-REQUIREMENTS="$ROOT_DIR/scripts/requirements-bench.txt"
+case "${1:-}" in
+  '')
+    [[ $# -eq 0 ]] || exit 2
+    REQUIREMENTS="$ROOT_DIR/scripts/requirements-bench.txt"
+    ;;
+  --visual)
+    [[ $# -eq 1 ]] || exit 2
+    REQUIREMENTS="$ROOT_DIR/scripts/requirements-bench-visual.txt"
+    ;;
+  *) exit 2 ;;
+esac
 BENCH_ENV="$ROOT_DIR/.artifacts/bench-runtime/python"
 BENCH_PYTHON="$BENCH_ENV/bin/python3"
 unset PYTHONHOME PYTHONPATH

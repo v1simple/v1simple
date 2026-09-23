@@ -155,3 +155,33 @@ fi
 
 [[ "$runner_status" -eq 0 ]] || fail "raw collection did not complete; see $RUN_LOG"
 printf 'COMPLETE: %s\n' "$REPLAY_DIR"
+
+# Interpret pixels only after the raw recording and its provenance are final.
+# Keep this verdict outside replay/ so the captured evidence stays immutable.
+VISUAL_REPORT="$RUN_DIR/visual_fields_result.json"
+printf '[bench] reading stable display fields from the recorded video\n'
+visual_status=0
+VISUAL_PYTHON="$("$ROOT_DIR/scripts/bench_python.sh" --visual)" || visual_status=$?
+if [[ "$visual_status" -eq 0 ]]; then
+  "$VISUAL_PYTHON" "$ROOT_DIR/scripts/bench/read_replay_fields.py" "$REPLAY_DIR" \
+    --output "$VISUAL_REPORT" --progress || visual_status=$?
+fi
+if [[ ! -s "$VISUAL_REPORT" ]]; then
+  printf '{"result":"INCONCLUSIVE","reason":"visual reader unavailable"}\n' > "$VISUAL_REPORT"
+fi
+visual_result="$("$BENCH_PYTHON" -c \
+  'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["result"])' \
+  "$VISUAL_REPORT" 2>/dev/null)" || visual_result=INCONCLUSIVE
+case "$visual_result" in
+  PASS)
+    printf 'VISUAL_FIELDS_PASS: %s\n' "$VISUAL_REPORT"
+    ;;
+  FAIL)
+    printf 'VISUAL_FIELDS_FAIL: %s\n' "$VISUAL_REPORT"
+    exit 1
+    ;;
+  *)
+    printf 'VISUAL_FIELDS_INCONCLUSIVE: %s\n' "$VISUAL_REPORT"
+    exit 2
+    ;;
+esac

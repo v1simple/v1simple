@@ -360,14 +360,18 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
             int labelX = textRect.x;
             tft_->setTextColor(bandLabelCol);
             tft_->setTextSize(2);
-            if (alert.band == BAND_LASER) {
+            if (isPhoto) {
+                // The subtype is the useful identity of a Photo row. A bare
+                // P plus RF frequency hides MRCT/3D/etc. from the driver.
+                char labelBuffer[8] = "";
+                tft_->setCursor(labelX, topRowY);
+                tft_->print(DisplayVisualContract::photoTypeShortLabel(
+                    alert.photoType, labelBuffer, sizeof(labelBuffer)));
+            } else if (alert.band == BAND_LASER) {
                 tft_->setCursor(labelX, topRowY);
                 tft_->print("LASER");
             } else {
-                // Valentine reports Photo as a K-band row with a nonzero
-                // photo type. Keep that row's identity visible in its card
-                // without inventing a separate RF band or crowding the card.
-                const char* bandStr = isPhoto ? "P" : bandToString(alert.band);
+                const char* bandStr = bandToString(alert.band);
                 tft_->setCursor(labelX, topRowY);
                 tft_->print(bandStr);
 

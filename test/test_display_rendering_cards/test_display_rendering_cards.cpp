@@ -8,6 +8,9 @@
 #include <unity.h>
 
 #include <cstdio>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "../mocks/display_driver.h"
 #include "../mocks/Arduino.h"
@@ -233,6 +236,32 @@ void test_same_k_card_repaints_when_v1_reclassifies_it_as_photo() {
         0u, canvas()->fillRoundRectCalls.size(),
         "ordinary K to Photo reclassification must repaint the complete card");
     TEST_ASSERT_EQUAL_UINT8(1, display.ut_elementCaches().cards.lastDrawnPositions[0].photoType);
+}
+
+void test_photo_card_shows_subtype_instead_of_rf_frequency() {
+    class TextCanvas : public Arduino_Canvas {
+      public:
+        TextCanvas() : Arduino_Canvas(SCREEN_WIDTH, SCREEN_HEIGHT, nullptr) {}
+        std::vector<std::string> prints;
+        void print(const char* text) override { prints.emplace_back(text); }
+    };
+    for (const auto& sample : {std::pair<uint8_t, const char*>{1, "MRCT"},
+                               std::pair<uint8_t, const char*>{2, "3D"},
+                               std::pair<uint8_t, const char*>{8, "P8"}}) {
+        resetDisplayForTest();
+        auto* text = new TextCanvas;
+        display.setTestCanvas(text);
+        AlertData priority = AlertData::create(BAND_K, DIR_FRONT, 4, 0, 24150, true, true);
+        AlertData photo = AlertData::create(BAND_K, DIR_REAR, 6, 0, 24125, true, false);
+        photo.photoType = sample.first;
+        AlertData alerts[] = {priority, photo};
+
+        display.ut_drawSecondaryAlertCards(alerts, 2, priority, false);
+
+        TEST_ASSERT_EQUAL_UINT_MESSAGE(1u, text->prints.size(),
+            "a Photo card should print one subtype label, not P plus a numeric frequency");
+        TEST_ASSERT_EQUAL_STRING(sample.second, text->prints[0].c_str());
+    }
 }
 
 void test_distinct_v1_rows_at_same_frequency_keep_secondary_card() {
@@ -953,6 +982,7 @@ int main(int, char**) {
     RUN_TEST(test_empty_card_clear_is_noop_when_no_cards_were_drawn);
     RUN_TEST(test_card_clear_repaints_and_resets_previous_drawn_card_state);
     RUN_TEST(test_same_k_card_repaints_when_v1_reclassifies_it_as_photo);
+    RUN_TEST(test_photo_card_shows_subtype_instead_of_rf_frequency);
     RUN_TEST(test_distinct_v1_rows_at_same_frequency_keep_secondary_card);
     RUN_TEST(test_three_same_frequency_v1_rows_keep_both_secondary_cards);
     RUN_TEST(test_compacted_same_frequency_rows_keep_one_to_one_card_continuity);

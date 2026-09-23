@@ -187,7 +187,7 @@ def read_card_frequency(rgb, slot):
     # them from observed glyphs, then decode each position from font geometry.
     bright = np.all(rgb > 110, axis=2)
     best = (-1., None, 0.)
-    for y in (383, 384, 385, 386):
+    for y in range(383, 390):
         for x0 in range(start, stop):
             for pitch in (19., 19.25, 19.5):
                 score = 0.

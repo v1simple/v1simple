@@ -34,6 +34,15 @@ class ReadReplayFieldsTest(unittest.TestCase):
         self.assertEqual((True, "24.125", "SIDE"), observed)
         self.assertNotEqual(("MRCT", "SIDE"), observed[1:])
 
+    def test_numeric_card_recovers_vertical_camera_shift(self):
+        image = np.zeros((720, 1280, 3), dtype=np.uint8)
+        for index, character in enumerate("24.150"):
+            x = 488 + 19 * index
+            image[388:412, x:x + 16][CARD_TEMPLATES[character]] = (240, 240, 240)
+        image[393:401, 424:444] = (240, 240, 240)
+
+        self.assertEqual((True, "24.150", "SIDE"), read_pixels(image)["cards"][0])
+
 
 if __name__ == "__main__":
     unittest.main()

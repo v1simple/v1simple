@@ -131,7 +131,6 @@ class V1Display {
     void setObdAttention(bool attention);
 
     // ALP indicator (shows current ALP status left of MUTED badge)
-    void refreshAlpIndicator(uint32_t nowMs);
     void setAlpRuntimeModule(AlpRuntimeModule* m);
     void setSystemStatusSources(BatteryManager& battery, WiFiManager& wifi, GpsRuntimeModule& gps) {
         battery_ = &battery;
@@ -183,7 +182,6 @@ class V1Display {
     std::unique_ptr<Arduino_Canvas> tft_; // Canvas for rotation/buffering
 
     DisplayState lastState_;
-    AlertData lastAlert_;
 
     // Color palette
     ColorPalette currentPalette_; // Store current theme palette
@@ -253,9 +251,7 @@ class V1Display {
     bool lastStealthSpeedValid_ = false;             // Last stealth speed text validity
 
     // Visibility timeout tracking
-    uint32_t wifiConnectedTime_ = 0;       // When WiFi became connected
     uint32_t profileChangedTime_ = 0;      // When profile was last changed
-    bool wifiWasConnected_ = false;        // Track WiFi connection state changes
     int lastProfileSlot_ = -1;             // Track profile changes
     bool bleProxyEnabled_ = false;         // BLE proxy enabled flag
     bool bleProxyClientConnected_ = false; // BLE proxy client connection flag

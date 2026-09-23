@@ -42,34 +42,4 @@ size_t orderConfiguredSlots(const V1Settings& settings, size_t* indicesOut, size
     return count;
 }
 
-bool scanContainsSsid(const String* scannedSsids, size_t scannedCount, const String& ssid) {
-    if (!scannedSsids || ssid.length() == 0) {
-        return false;
-    }
-    for (size_t i = 0; i < scannedCount; ++i) {
-        if (scannedSsids[i] == ssid) {
-            return true;
-        }
-    }
-    return false;
-}
-
-size_t selectInRangeSlots(const V1Settings& settings, const String* scannedSsids, size_t scannedCount,
-                          size_t* indicesOut, size_t maxIndices) {
-    if (!indicesOut || maxIndices == 0) {
-        return 0;
-    }
-
-    size_t ordered[kWifiStaSlotCount] = {};
-    const size_t orderedCount = orderConfiguredSlots(settings, ordered, kWifiStaSlotCount);
-    size_t count = 0;
-    for (size_t i = 0; i < orderedCount && count < maxIndices; ++i) {
-        const size_t slotIndex = ordered[i];
-        if (scanContainsSsid(scannedSsids, scannedCount, settings.wifiStaSlots[slotIndex].ssid)) {
-            indicesOut[count++] = slotIndex;
-        }
-    }
-    return count;
-}
-
 } // namespace WifiStaSlotPolicy

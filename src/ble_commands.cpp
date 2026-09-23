@@ -101,20 +101,6 @@ bool V1BLEClient::requestAlertData() {
     return sent;
 }
 
-bool V1BLEClient::requestVersion() {
-    uint8_t packet[] = {ESP_PACKET_START,
-                        static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),
-                        static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),
-                        PACKET_ID_VERSION,
-                        0x01,
-                        0x00,
-                        ESP_PACKET_END};
-
-    packet[5] = calcV1Checksum(packet, 5);
-
-    return sendCommand(packet, sizeof(packet));
-}
-
 void V1BLEClient::onV1FirmwareVersionReceived(uint32_t version) {
     if (version != 0) {
         v1FirmwareVersion_.store(version, std::memory_order_release);
@@ -428,31 +414,6 @@ bool V1BLEClient::writeUserBytesExact(const uint8_t* bytes) {
     packet[12] = ESP_PACKET_END;
     return sendCommand(packet, sizeof(packet));
 }
-
-V1BLEClient::WriteVerifyResult V1BLEClient::writeUserBytesVerified(const uint8_t* bytes, int maxRetries) {
-    if (!bytes || !isConnected()) {
-        return VERIFY_WRITE_FAILED;
-    }
-
-    // Read-back responses arrive asynchronously through the main-loop queue,
-    // so this blocking helper retries transmission but cannot verify completion.
-
-    Serial.println("[VerifyPush] Writing to V1 (async verification not possible in blocking context)");
-
-    for (int attempt = 1; attempt <= maxRetries; attempt++) {
-        if (writeUserBytes(bytes)) {
-            Serial.printf("[VerifyPush] Write command sent successfully (attempt %d/%d)\n", attempt, maxRetries);
-            requestUserBytes();
-            return VERIFY_OK;
-        }
-        Serial.printf("[VerifyPush] Write attempt %d/%d failed, retrying...\n", attempt, maxRetries);
-        // BLE write failures are immediate, so retries need no delay.
-    }
-
-    Serial.println("[VerifyPush] All write attempts failed");
-    return VERIFY_WRITE_FAILED;
-}
-
 
 void V1BLEClient::startUserBytesVerification(const uint8_t* expected) {
     if (!expected) {

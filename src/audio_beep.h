@@ -24,9 +24,6 @@ void audio_set_volume(uint8_t volumePercent);
 // Play "Test" for volume confirmation
 void play_test_voice();
 
-// Call to play a beep for VOL 0 warning
-void play_vol0_beep();
-
 // Play voice alert for a specific band and direction
 // Returns immediately if already playing or audio disabled
 void play_alert_voice(AlertBand band, AlertDirection direction);

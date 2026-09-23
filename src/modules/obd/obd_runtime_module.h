@@ -292,7 +292,6 @@ class ObdRuntimeModule {
     bool validateSimpleResponse(uint8_t expectedService, uint8_t expectedPid, const char* response, size_t len) const;
 
     static const char* bleReasonName(int reason);
-    static bool isSecurityBleError(int error);
 
     bool canAutoHealBond() const;
     bool autoHealBondIfAllowed(uint32_t nowMs, const char* context);

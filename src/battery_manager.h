@@ -115,7 +115,6 @@ class BatteryManager {
     // three-valued classification lives in sourceState_.
     bool onBattery_;
     uint16_t lastVoltage_;
-    uint32_t lastButtonPress_;
     uint32_t buttonPressStart_;
     bool buttonWasPressed_;
     // True once the button has been seen HIGH (released) since boot.

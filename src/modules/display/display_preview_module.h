@@ -139,7 +139,6 @@ class DisplayPreviewModule {
         bool photo = false;
     };
 
-    static int stepCount();
     static void resetCarryState(PreviewCarryState& state);
     static void applyCarryState(PreviewCarryState& state, const PreviewStep& step);
 

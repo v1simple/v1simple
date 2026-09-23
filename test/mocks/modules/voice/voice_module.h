@@ -45,22 +45,16 @@ class VoiceModule {
 public:
     int clearAllStateCalls = 0;
     int processCalls = 0;
-    float mockSpeedMph = 0.0f;
-    bool mockHasValidSpeed = false;
     VoiceContext lastContext{};
     VoiceAction nextAction{};
     
     void resetMock() {
         clearAllStateCalls = 0;
         processCalls = 0;
-        mockSpeedMph = 0.0f;
-        mockHasValidSpeed = false;
         lastContext = VoiceContext{};
         nextAction = VoiceAction{};
     }
     
-    float getCurrentSpeedMph(unsigned long /*now*/) { return mockSpeedMph; }
-    bool hasValidSpeedSource(unsigned long /*now*/) const { return mockHasValidSpeed; }
     void reset() { clearAllState(); }  // Alias for consistency with other modules
     void clearAllState() { clearAllStateCalls++; }
     VoiceAction process(const VoiceContext& ctx) {

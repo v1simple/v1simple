@@ -125,7 +125,7 @@ TwoWire tca9554Wire(1); // Use I2C port 1
 SemaphoreHandle_t tca9554WireMutex = nullptr;
 
 BatteryManager::BatteryManager()
-    : initialized_(false), onBattery_(false), lastVoltage_(0), lastButtonPress_(0), buttonPressStart_(0),
+    : initialized_(false), onBattery_(false), lastVoltage_(0), buttonPressStart_(0),
       buttonWasPressed_(false), buttonSeenReleasedSinceBoot_(false), cachedVoltage_(0), cachedPercent_(0),
       lastUpdateMs_(0), hasVoltageReading_(false), simulatedVoltage_(0) {}
 

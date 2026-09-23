@@ -1,5 +1,4 @@
-// audio_beep.cpp — Hardware layer + embedded warning PCM playback
-// ES8311 DAC codec, I2S driver, TCA9554 amp, pre-recorded warning playback.
+// audio_beep.cpp — Hardware layer for ES8311 DAC, I2S driver, and TCA9554 amp.
 // SD-based voice composition lives in audio_voice.cpp.
 //
 // I2C bus: SDA=47, SCL=48 (shared with battery manager TCA9554)
@@ -8,7 +7,6 @@
 // ES8311 address: 0x18
 
 #include "audio_internals.h"
-#include "audio_task_utils.h"
 #include "battery_manager.h" // For tca9554Wire (shared I2C bus)
 #include <Arduino.h>
 #include <Wire.h>
@@ -401,9 +399,6 @@ void i2s_init() {
                I2S_BCLK_PIN, I2S_WS_PIN, I2S_DOUT_PIN);
 }
 
-// Include pre-recorded volume-zero warning audio
-#include "../include/warning_audio.h"
-
 // Track if audio is currently playing to prevent overlapping
 std::atomic<bool> audio_playing{false};
 
@@ -435,13 +430,6 @@ void audio_init_buffers() {
     }
 }
 
-// Pre-allocated task params (avoids malloc for param passing)
-static struct {
-    const int16_t* pcm_data;
-    int num_samples;
-    int duration_ms;
-} g_pcmTaskParams;
-
 SDAudioTaskParams g_sdAudioTaskParams;
 
 std::atomic<TaskHandle_t> audioTaskHandle{nullptr};
@@ -455,145 +443,3 @@ std::atomic<TaskHandle_t> audioTaskHandle{nullptr};
 // ============================================================================
 StackType_t g_sdAudioTaskStack[SD_AUDIO_TASK_STACK_SIZE];
 StaticTask_t g_sdAudioTaskTCB;
-
-static void finish_pcm_audio_task() {
-    audioResetTaskState(audio_playing, audioTaskHandle);
-    // This task uses xTaskCreatePinnedToCoreWithCaps, so its matching delete
-    // path must release the capability-allocated stack.
-    vTaskDeleteWithCaps(nullptr);
-}
-
-// Background task for audio playback - runs on separate core to avoid blocking main loop
-// Uses pre-allocated g_stereoChunkBuffer - streams in chunks instead of full buffer
-static void audio_playback_task(void* pvParameters) {
-    // Use pre-allocated params (no malloc needed)
-    const int16_t* pcm_data = g_pcmTaskParams.pcm_data;
-    int num_samples = g_pcmTaskParams.num_samples;
-    int duration_ms = g_pcmTaskParams.duration_ms;
-    (void)pvParameters; // Unused - params are in global struct
-
-    if (!g_stereoChunkBuffer) {
-        Serial.println("[AUDIO] ERROR: PSRAM buffers not allocated!");
-        finish_pcm_audio_task();
-        return;
-    }
-
-    if (i2s_tx_chan == nullptr) {
-        // CRITICAL: Start I2S FIRST so MCLK is running before ES8311 init
-        i2s_init();
-        vTaskDelay(pdMS_TO_TICKS(50)); // Let clocks stabilize
-    }
-
-    if (!i2s_initialized) {
-        Serial.println("[AUDIO] ERROR: I2S init failed!");
-        finish_pcm_audio_task();
-        return;
-    }
-
-    if (!es8311_init()) {
-        finish_pcm_audio_task();
-        return;
-    }
-    vTaskDelay(pdMS_TO_TICKS(50)); // Let ES8311 lock to MCLK
-
-    // Enable speaker amp - let it fully stabilize
-    const AudioI2cResult ampEnableResult = set_speaker_amp(true);
-    if (ampEnableResult != AudioI2cResult::Ok) {
-        audio_log_i2c_failure("audio_playback_task amp enable", ampEnableResult);
-        finish_pcm_audio_task();
-        return;
-    }
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    // Stream mono PCM to stereo in chunks using pre-allocated buffer
-    // This avoids large dynamic allocation (was up to 147KB for warning audio)
-    int samples_remaining = num_samples;
-    int sample_offset = 0;
-
-    while (samples_remaining > 0) {
-        int chunk_samples = (samples_remaining > AUDIO_CHUNK_SAMPLES) ? AUDIO_CHUNK_SAMPLES : samples_remaining;
-
-        // Convert chunk from mono to stereo using pre-allocated buffer
-        for (int i = 0; i < chunk_samples; ++i) {
-            int16_t sample = pgm_read_word(&pcm_data[sample_offset + i]);
-            g_stereoChunkBuffer[i * 2] = sample;     // Left channel
-            g_stereoChunkBuffer[i * 2 + 1] = sample; // Right channel
-        }
-
-        size_t bytes_written = 0;
-        const AudioWriteResult writeResult = audioWriteWithTimeout([&](TickType_t timeoutTicks) {
-            return i2s_channel_write(i2s_tx_chan, g_stereoChunkBuffer, chunk_samples * 2 * sizeof(int16_t),
-                                     &bytes_written, timeoutTicks);
-        });
-
-        if (writeResult.status != AudioWriteStatus::Ok) {
-            AUDIO_LOGF("[AUDIO] i2s_channel_write %s: %d\\n",
-                       writeResult.status == AudioWriteStatus::Timeout ? "timed out" : "failed", writeResult.error);
-            break;
-        }
-
-        sample_offset += chunk_samples;
-        samples_remaining -= chunk_samples;
-    }
-
-    // Wait for DMA to finish
-    vTaskDelay(pdMS_TO_TICKS(duration_ms > 0 ? 100 : 50));
-
-    const AudioI2cResult ampDisableResult = set_speaker_amp(false);
-    if (ampDisableResult != AudioI2cResult::Ok) {
-        audio_log_i2c_failure("audio_playback_task amp disable", ampDisableResult);
-        amp_is_warm = true;
-        amp_last_used_ms = millis();
-    } else {
-        amp_is_warm = false;
-    }
-    finish_pcm_audio_task();
-}
-
-// Non-blocking PCM playback on a FreeRTOS task. Mono input, converted to stereo for I2S.
-// Pre-allocated buffers — no malloc inside the task.
-static void play_pcm_audio(const int16_t* pcm_data, int num_samples, int duration_ms) {
-    // Atomic exchange: if already true, return; otherwise set to true
-    if (audio_playing.exchange(true)) {
-        AUDIO_LOGLN("[AUDIO] Already playing, skipping");
-        return;
-    }
-
-    // Copy params to pre-allocated struct (protected by audio_playing flag)
-    g_pcmTaskParams.pcm_data = pcm_data;
-    g_pcmTaskParams.num_samples = num_samples;
-    g_pcmTaskParams.duration_ms = duration_ms;
-
-    // Create task on core 1 (core 0 is for WiFi/BLE) with adequate stack
-    // Stack allocated in PSRAM via WithCaps API to reduce internal SRAM fragmentation.
-    // Task params are passed via g_pcmTaskParams global (no malloc needed)
-    TaskHandle_t tempHandle;
-    BaseType_t result = xTaskCreatePinnedToCoreWithCaps(audio_playback_task, "audio_play",
-                                                        4096,    // Stack size
-                                                        nullptr, // Params passed via global struct
-                                                        1,       // Priority (low)
-                                                        &tempHandle,
-                                                        1, // Core 1
-                                                        MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
-    if (result == pdPASS) {
-        audioTaskHandle.store(tempHandle);
-    }
-
-    if (result != pdPASS) {
-        Serial.println("[AUDIO] ERROR: Failed to create audio task!");
-        audio_playing = false;
-    }
-}
-
-// Play "Warning Volume Zero" speech (non-blocking)
-void play_vol0_beep() {
-    AUDIO_LOGLN("[AUDIO] play_vol0_beep() called");
-
-    if (audio_playing) {
-        AUDIO_LOGLN("[AUDIO] Already playing, skipping");
-        return;
-    }
-
-    AUDIO_LOGF("[AUDIO] Playing 'Warning Volume Zero' (%dms)\\n", WARNING_VOLUME_ZERO_PCM_DURATION_MS);
-    play_pcm_audio(warning_volume_zero_pcm, WARNING_VOLUME_ZERO_PCM_SAMPLES, WARNING_VOLUME_ZERO_PCM_DURATION_MS);
-}

@@ -168,20 +168,6 @@ void V1Display::setAlpRuntimeModule(AlpRuntimeModule* m) {
     alpRtMod_ = m;
 }
 
-void V1Display::refreshAlpIndicator(uint32_t nowMs) {
-    if (previewIndicatorOverridesActive_) {
-        return;
-    }
-    if (!alpRtMod_)
-        return;
-    const AlpStatus status = alpRtMod_->snapshot();
-    // Refresh badge context without replacing the pipeline-owned laser event.
-    alpEnabled_ = (status.state != AlpState::OFF);
-    alpStateRaw_ = static_cast<uint8_t>(status.state);
-    alpHbByte1_ = status.lastHbByte1;
-    drawAlpIndicator();
-}
-
 void V1Display::drawAlpIndicator() {
 #if defined(DISPLAY_WAVESHARE_349)
     const bool wantShow = alpEnabled_;

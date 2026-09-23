@@ -49,7 +49,6 @@ bool applyBackupNetworkFields(const JsonDocument& doc, V1Settings& settings, Sto
 void applyBackupDisplayFields(const JsonDocument& doc, V1Settings& settings, BackupRestoreScope scope);
 void applyBackupAudioFields(const JsonDocument& doc, V1Settings& settings, BackupRestoreScope scope);
 bool applyBackupProfileSlotFields(const JsonDocument& doc, V1Settings& settings, BackupRestoreScope scope);
-void applyBackupObdFields(const JsonDocument& doc, V1Settings& settings, BackupRestoreScope scope);
 void applyBackupAlpAndGpsFields(const JsonDocument& doc, V1Settings& settings);
 void healBackupRestoreConflicts(V1Settings& settings, const char* context);
 bool applyBackupCriticalFieldsAtomically(const JsonDocument& doc, V1Settings& settings,

@@ -569,26 +569,6 @@ bool V1BLEClient::isProxyAdvertising() const {
     return proxyEnabled_ && proxyServerInitialized_ && NimBLEDevice::getAdvertising()->isAdvertising();
 }
 
-bool V1BLEClient::forceProxyAdvertising(bool enable) {
-    if (!proxyEnabled_ || !proxyServerInitialized_ || !pServer_) {
-        return false;
-    }
-
-    if (enable) {
-        if (!connected_.load(std::memory_order_relaxed)) {
-            return false;
-        }
-        // Explicit debug/test control refreshes fast discovery so transition
-        // drive flaps do not inherit a stale boot-time cadence.
-        armProxyFastAdvertisingWindow(static_cast<uint32_t>(millis()), PROXY_FAST_START_WINDOW_MS);
-        startProxyAdvertising();
-        return isProxyAdvertising();
-    }
-
-    stopProxyAdvertisingFromMainLoop();
-    return true;
-}
-
 void V1BLEClient::startProxyAdvertising() {
     if (!proxyServerInitialized_ || !pServer_) {
         Serial.println("Cannot start advertising - proxy server not initialized");

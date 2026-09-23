@@ -249,13 +249,6 @@ ObdBleArbitrationRequest ConnectionCycleCoordinatorModule::arbitrationRequest() 
     }
 }
 
-uint32_t ConnectionCycleCoordinatorModule::timeInStateMs(const uint32_t nowMs) const {
-    if (!stateEnteredMsValid_) {
-        return 0;
-    }
-    return nowMs - stateEnteredMs_;
-}
-
 void ConnectionCycleCoordinatorModule::recordObdRetryAttempt(const uint32_t nowMs) {
     lastObdAttemptMs_ = nowMs;
     obdAttemptRecorded_ = true;

@@ -881,23 +881,3 @@ const char* ObdRuntimeModule::bleReasonName(int reason) {
         return "unknown";
     }
 }
-
-bool ObdRuntimeModule::isSecurityBleError(int error) {
-#ifndef UNIT_TEST
-    switch (error) {
-    case BLE_HS_ATT_ERR(BLE_ATT_ERR_INSUFFICIENT_AUTHEN):
-    case BLE_HS_ATT_ERR(BLE_ATT_ERR_INSUFFICIENT_AUTHOR):
-    case BLE_HS_ATT_ERR(BLE_ATT_ERR_INSUFFICIENT_ENC):
-    case BLE_HS_ATT_ERR(BLE_ATT_ERR_INSUFFICIENT_KEY_SZ):
-    case BLE_HS_HCI_ERR(BLE_ERR_PINKEY_MISSING):
-    case BLE_HS_HCI_ERR(BLE_ERR_AUTH_FAIL):
-    case BLE_HS_HCI_ERR(BLE_ERR_NO_PAIRING):
-    case BLE_HS_HCI_ERR(BLE_ERR_INSUFFICIENT_SEC):
-        return true;
-    default:
-        return false;
-    }
-#else
-    return error != 0;
-#endif
-}

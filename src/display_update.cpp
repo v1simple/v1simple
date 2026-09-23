@@ -690,7 +690,6 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
 
     dirty_.resetTracking = false;
     currentScreen_ = ScreenMode::Live;
-    lastAlert_ = priority;
     lastState_ = state;
 }
 

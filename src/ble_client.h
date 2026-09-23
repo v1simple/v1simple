@@ -131,9 +131,6 @@ class V1BLEClient {
     void setConnectionCycleProxyPolicy(bool advertisingAllowed, bool keepConnectionAllowed);
     void setObdBleArbitrationRequest(ObdBleArbitrationRequest request);
 
-    // Debug/test control: force proxy advertising on/off at runtime.
-    bool forceProxyAdvertising(bool enable);
-
     void setProxyClientConnected(bool connected_);
 
     void onDataReceived(DataCallback callback);
@@ -204,10 +201,6 @@ class V1BLEClient {
                !alertDataRequestGate_.hasSuccessfulSend(sessionGeneration());
     }
 
-    // Request V1 version information through the selected short command
-    // characteristic; the short reply is expected on B2CE.
-    bool requestVersion();
-
     // Session-scoped V1 firmware version, populated from RESP_VERSION.
     void onV1FirmwareVersionReceived(uint32_t version);
     uint32_t v1FirmwareVersion() const { return v1FirmwareVersion_.load(std::memory_order_acquire); }
@@ -259,10 +252,7 @@ class V1BLEClient {
     // overlaying supported masks onto a same-session live response.
     bool writeUserBytesExact(const uint8_t* bytes);
 
-    // Legacy blocking write helper. AutoPush uses the asynchronous verification state below.
-    enum WriteVerifyResult { VERIFY_OK = 0, VERIFY_WRITE_FAILED = 1, VERIFY_TIMEOUT = 2, VERIFY_MISMATCH = 3 };
     enum class UserBytesVerificationStatus : uint8_t { INACTIVE = 0, PENDING, MATCH, MISMATCH };
-    WriteVerifyResult writeUserBytesVerified(const uint8_t* bytes, int maxRetries = 2);
 
     void startUserBytesVerification(const uint8_t* expected);
 
@@ -373,8 +363,6 @@ class V1BLEClient {
         return quiesceTimeoutRecoveryCount_.load(std::memory_order_relaxed);
     }
     uint8_t getSubscribeStepCode() const { return static_cast<uint8_t>(subscribeStep_); }
-    const char* getSubscribeStepName() const;
-
     NimBLEAddress getConnectedAddress() const;
 
     // Forward data to proxy clients (queues data for async send)

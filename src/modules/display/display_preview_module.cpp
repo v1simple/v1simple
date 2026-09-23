@@ -392,10 +392,6 @@ void DisplayPreviewModule::resetCarryState() {
     currentMuteVol_ = carry.muteVolume;
 }
 
-int DisplayPreviewModule::stepCount() {
-    return STEP_COUNT;
-}
-
 void DisplayPreviewModule::resetCarryState(PreviewCarryState& state) {
     state.modeChar = 0;
     state.profileSlot = 0;

@@ -47,14 +47,6 @@ void WifiOrchestrator::configureCallbacks() {
         },
         this);
 
-    // Filesystem for web APIs
-    wifiManager.setFilesystemCallback(
-        [](void* ctx) -> fs::FS* {
-            auto* self = static_cast<WifiOrchestrator*>(ctx);
-            return self->storage.isReady() ? self->storage.getFilesystem() : nullptr;
-        },
-        this);
-
     // Defer WiFi client operations until the V1 connection is ready.
     wifiManager.setV1ConnectedCallback(
         [](void* ctx) {

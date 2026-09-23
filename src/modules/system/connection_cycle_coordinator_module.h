@@ -67,7 +67,6 @@ class ConnectionCycleCoordinatorModule {
     ObdBleArbitrationRequest arbitrationRequest() const;
 
     CycleState state() const { return state_; }
-    uint32_t timeInStateMs(uint32_t nowMs) const;
     uint32_t totalTransitionCount() const { return totalTransitionCount_; }
     uint32_t lastTeardownDurationMs() const { return lastTeardownDurationMs_; }
     uint32_t totalObdRetryAttempts() const { return totalObdRetryAttempts_; }

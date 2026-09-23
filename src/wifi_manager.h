@@ -169,12 +169,6 @@ class WiFiManager {
         mergeStatus2Ctx_ = ctx;
     }
 
-    // Callback for filesystem access (SD card)
-    void setFilesystemCallback(fs::FS* (*fn)(void*), void* ctx) {
-        getFilesystem_ = fn;
-        getFilesystemCtx_ = ctx;
-    }
-
     // Callback for push executor status (auto-push)
     void setPushStatusCallback(String (*fn)(void*), void* ctx) {
         getPushStatusJson_ = fn;
@@ -361,8 +355,6 @@ class WiFiManager {
     void* mergeStatusCtx_ = nullptr;
     void (*mergeStatus2_)(JsonObject, void* ctx) = nullptr; // appended by appendStatusCallback
     void* mergeStatus2Ctx_ = nullptr;
-    fs::FS* (*getFilesystem_)(void* ctx) = nullptr;
-    void* getFilesystemCtx_ = nullptr;
     String (*getPushStatusJson_)(void* ctx) = nullptr;
     bool (*appendPushStatusJson_)(JsonObject root, void* ctx) = nullptr;
     void* getPushStatusJsonCtx_ = nullptr;

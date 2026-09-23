@@ -442,25 +442,6 @@ bool snapshotWifiStaSlotPasswords(const V1Settings& settings,
     return true;
 }
 
-bool preserveStoredPasswordForMatchingSsid(const String& ssid, size_t targetIndex,
-                                           const StoredSlotPasswordSnapshot (&snapshot)[kWifiStaSlotCount],
-                                           bool& found) {
-    found = false;
-    for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
-        if (snapshot[i].passwordObf.length() == 0 || snapshot[i].ssid != ssid) {
-            continue;
-        }
-        found = true;
-        if (storeWifiClientPasswordObfToNvs(snapshot[i].passwordObf, targetIndex)) {
-            Serial.printf("[Settings] Preserved stored WiFi password for slot %u (SSID match)\n",
-                          static_cast<unsigned>(targetIndex));
-            return true;
-        }
-        return false;
-    }
-    return true;
-}
-
 bool clearWifiStaSlotPasswordsForRestore(StorageManager& storage, bool clearSdSecret) {
     Preferences prefs;
     if (!prefs.begin(WIFI_CLIENT_NS, false)) {
@@ -884,12 +865,6 @@ void applyPreparedObdFields(const JsonDocument& doc, V1Settings& settings, Backu
 }
 
 } // namespace
-
-void applyBackupObdFields(const JsonDocument& doc, V1Settings& settings, BackupRestoreScope scope) {
-    PreparedObdFields prepared;
-    if (!prepareObdFields(doc, prepared)) return;
-    applyPreparedObdFields(doc, settings, scope, prepared);
-}
 
 void applyBackupAlpAndGpsFields(const JsonDocument& doc, V1Settings& settings) {
     restoreBackupBool(doc, "alpEnabled", settings.alpEnabled);

@@ -228,9 +228,6 @@
                                 <p class="copy-caption-soft">
                                     Silence alert announcements when V1 volume is 0
                                 </p>
-                                <p class="copy-warning mt-1">
-                                    Note: "Warning Volume Zero" will still play
-                                </p>
                             </div>
                             <input
                                 type="checkbox"

@@ -136,13 +136,6 @@ class VoiceModule {
     // Convert V1 Direction bitmask to AlertDirection for audio
     static AlertDirection toAudioDirection(Direction dir);
 
-    // Speed utility
-    float getCurrentSpeedMph(unsigned long now);
-    bool getCurrentSpeedSample(unsigned long now, float& speedMphOut) const;
-    void updateSpeedSample(float speedMph, unsigned long timestampMs);
-    void clearSpeedSample();
-    bool hasValidSpeedSource(unsigned long now) const;
-
   private:
     // Dependencies
     SettingsManager* settings_ = nullptr;
@@ -234,11 +227,6 @@ class VoiceModule {
     void updateLastAnnouncedDirection(Direction dir, uint8_t bogeyCount);
     void updateLastAnnouncedTime(unsigned long now);
     void resetLastAnnounced();
-
-    // Speed helpers (getCurrentSpeedMph is public)
-    float cachedSpeedMph_ = 0.0f;
-    unsigned long cachedSpeedTimestamp_ = 0;
-    static constexpr unsigned long SPEED_CACHE_MAX_AGE_MS = 5000;
 
     // Alert history helpers
     void updateAlertHistory(Band band, uint16_t freq, uint8_t bars, unsigned long now);

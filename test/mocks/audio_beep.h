@@ -20,7 +20,6 @@ enum class AudioPlaybackResult : uint8_t { Accepted, Busy, Unavailable };
 
 void audio_set_volume(uint8_t volumePercent);
 void play_test_voice();
-void play_vol0_beep();
 void play_alert_voice(AlertBand band, AlertDirection direction);
 void play_frequency_voice(AlertBand band, uint16_t freqMHz, AlertDirection direction,
                           VoiceAlertMode mode, bool includeDirection, uint8_t bogeyCount = 1);

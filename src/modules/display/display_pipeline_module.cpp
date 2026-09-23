@@ -186,14 +186,17 @@ AlpLaserEvent DisplayPipelineModule::buildPresentedAlpEvent(const AlpLaserEvent&
     if (rawAlpEvent.active) {
         alpHoldRefreshDeadlineMs_ = 0;
         AlpLaserEvent next = rawAlpEvent;
-        if (next.gun == AlpGunType::UNKNOWN && alpAlertPresentation_.gun != AlpGunType::UNKNOWN) {
+        const bool sameSession = next.sessionGeneration == alpAlertPresentation_.sessionGeneration &&
+                                 next.sessionGeneration != 0;
+        if (sameSession && next.gun == AlpGunType::UNKNOWN &&
+            alpAlertPresentation_.gun != AlpGunType::UNKNOWN) {
             next.gun = alpAlertPresentation_.gun;
         }
-        if (next.direction == AlpLaserDirection::UNKNOWN &&
+        if (sameSession && next.direction == AlpLaserDirection::UNKNOWN &&
             alpAlertPresentation_.direction != AlpLaserDirection::UNKNOWN) {
             next.direction = alpAlertPresentation_.direction;
         }
-        if (next.openedAtMs == 0) {
+        if (sameSession && next.openedAtMs == 0) {
             next.openedAtMs = alpAlertPresentation_.openedAtMs;
         }
         next.closedAtMs = 0;

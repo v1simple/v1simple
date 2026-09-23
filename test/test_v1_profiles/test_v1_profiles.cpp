@@ -210,6 +210,8 @@ void test_reconcile_union_over_catalog_bound_is_bounded_and_preserves_both_store
     storage.setLittleFS(&little);
     V1ProfileManager combined;
     TEST_ASSERT_TRUE(combined.begin(storage));
+    TEST_ASSERT_EQUAL_STRING("Profile mirror live catalog exceeds supported bound",
+                             combined.getLastError().c_str());
 
     TEST_ASSERT_EQUAL_STRING(sdSentinel.c_str(), readFileToString(sd, "/v1profiles/SD0.json").c_str());
     TEST_ASSERT_EQUAL_STRING(littleSentinel.c_str(),
@@ -218,6 +220,55 @@ void test_reconcile_union_over_catalog_bound_is_bounded_and_preserves_both_store
     TEST_ASSERT_FALSE(little.exists("/v1profiles/SD0.json"));
     TEST_ASSERT_EQUAL_UINT(6u, combined.listProfilesPageResult("", 10).total);
  }
+
+void test_retired_profile_history_does_not_block_supported_live_catalog_reconciliation() {
+    // Nine retired names are the old passing boundary; ten exposed the stale
+    // SD selection. Twenty-five also crosses multiple bounded scan pages.
+    for (const int retiredCount : {9, 10, 25}) {
+        const std::string suffix = std::to_string(retiredCount);
+        fs::FS sd(g_tempRoot / ("sd_history_" + suffix));
+        fs::FS little(g_tempRoot / ("little_history_" + suffix));
+
+        V1ProfileManager mirrored;
+        TEST_ASSERT_TRUE(mirrored.begin(&sd, &little));
+        for (int index = 0; index < retiredCount; ++index) {
+            const String name = String("Retired") + String(index);
+            TEST_ASSERT_TRUE(mirrored.saveProfile(makeProfile(name, 40, "retired")).success);
+            TEST_ASSERT_TRUE(mirrored.deleteProfileResult(name).success());
+        }
+        if (retiredCount == 25) {
+            TEST_ASSERT_TRUE(mirrored.saveProfile(makeProfile("ZDeleted", 40, "old-sd")).success);
+        }
+        TEST_ASSERT_TRUE(mirrored.saveProfile(makeProfile("Road", 0xff, "old-sd")).success);
+        TEST_ASSERT_EQUAL_UINT(retiredCount == 25 ? 2u : 1u, mirrored.listProfiles().size());
+
+        V1ProfileManager offline;
+        TEST_ASSERT_TRUE(offline.begin(&little));
+        if (retiredCount == 25) {
+            // This deletion exists only on LittleFS while SD is away. Its
+            // tombstone must still beat the older live SD copy in a later page.
+            TEST_ASSERT_TRUE(offline.deleteProfileResult("ZDeleted").success());
+        }
+        TEST_ASSERT_TRUE(offline.saveProfile(makeProfile("Road", 0xfe, "offline-new")).success);
+        V1Profile loaded;
+        TEST_ASSERT_TRUE(offline.loadProfile("Road", loaded));
+        TEST_ASSERT_EQUAL_HEX8(0xfe, loaded.settings.bytes[0]);
+
+        V1ProfileManager rejoined;
+        TEST_ASSERT_TRUE(rejoined.begin(&sd, &little));
+        TEST_ASSERT_EQUAL_STRING("", rejoined.getLastError().c_str());
+        TEST_ASSERT_EQUAL_UINT(1u, rejoined.listProfiles().size());
+        TEST_ASSERT_TRUE(rejoined.loadProfile("Road", loaded));
+        TEST_ASSERT_EQUAL_HEX8(0xfe, loaded.settings.bytes[0]);
+        TEST_ASSERT_EQUAL_STRING("offline-new", loaded.description.c_str());
+        TEST_ASSERT_FALSE(sd.exists("/v1profiles/Retired0.json"));
+        TEST_ASSERT_TRUE(sd.exists("/v1profiles/Retired0.json.meta"));
+        if (retiredCount == 25) {
+            TEST_ASSERT_FALSE(sd.exists("/v1profiles/ZDeleted.json"));
+            TEST_ASSERT_TRUE(sd.exists("/v1profiles/ZDeleted.json.meta"));
+        }
+    }
+}
 
 void test_profile_sync_generation_exhaustion_preserves_live_profile_and_tombstone_state() {
     fs::FS fs(g_tempRoot);
@@ -329,6 +380,7 @@ void test_reconcile_psram_unavailable_never_overwrites_newer_profile_or_tombston
     V1ProfileManager combined;
     TEST_ASSERT_TRUE(combined.begin(storage));
     g_mock_heap_caps_fail_all_allocations = false;
+    TEST_ASSERT_EQUAL_STRING("Profile mirror inspection unavailable", combined.getLastError().c_str());
 
     TEST_ASSERT_EQUAL_STRING(sdJson.c_str(), readFileToString(sd, "/v1profiles/Road.json").c_str());
     TEST_ASSERT_EQUAL_STRING(sdMeta.c_str(), readFileToString(sd, "/v1profiles/Road.json.meta").c_str());
@@ -1413,6 +1465,7 @@ int main() {
     RUN_TEST(test_valid_profile_metadata_mirror_repairs_corrupt_primary_and_legacy_is_rewritten);
     RUN_TEST(test_cursor_pages_keep_grandfathered_over_limit_catalog_discoverable_and_prunable);
     RUN_TEST(test_reconcile_union_over_catalog_bound_is_bounded_and_preserves_both_stores);
+    RUN_TEST(test_retired_profile_history_does_not_block_supported_live_catalog_reconciliation);
     RUN_TEST(test_reconcile_psram_unavailable_never_overwrites_newer_profile_or_tombstone);
     RUN_TEST(test_secondary_rollback_path_allocation_failure_precedes_every_store_mutation);
     RUN_TEST(test_profile_sync_generation_exhaustion_preserves_live_profile_and_tombstone_state);

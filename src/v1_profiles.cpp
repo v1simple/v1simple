@@ -935,6 +935,7 @@ bool V1ProfileManager::begin(StorageManager& storage) {
 
 bool V1ProfileManager::begin(fs::FS* filesystem, fs::FS* importFilesystem) {
     ready_ = false;
+    lastError_ = "";
     if (!filesystem) {
         Serial.println("[V1Profiles] No filesystem provided");
         ;
@@ -976,6 +977,9 @@ bool V1ProfileManager::begin(fs::FS* filesystem, fs::FS* importFilesystem) {
     }
 
     if (importFilesystem && importFilesystem != fs_) {
+        // Keep the readable primary catalog available for maintenance if its
+        // mirror cannot be reconciled; the reconciler records that degraded
+        // state in lastError_ as well as the serial log.
         size_t migrated = reconcileProfilesFrom(importFilesystem);
         if (migrated > 0) {
             Serial.printf("[V1Profiles] Migrated %u profile(s) from secondary filesystem\n",
@@ -1004,21 +1008,14 @@ size_t V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs) {
 
     if (!fs_->exists(profileDir_)) fs_->mkdir(profileDir_);
 
-    // Reconciliation is a repair path, not the grandfathered-catalog prune
-    // interface. If the union of both stores exceeds the supported catalog
-    // bound, leave both stores untouched and let paged maintenance listing and
-    // deletion reduce the authoritative store first. This keeps retained RAM
-    // independent of externally populated directory cardinality.
-    std::array<String, V1_PROFILE_CATALOG_MAX_COUNT> names;
-    size_t nameCount = 0;
-    bool collectionAvailable = true;
-    bool collectionOverLimit = false;
-    auto collect = [&](fs::FS& filesystem) {
+    // Deleted names remain as durable tombstones and are not part of the live
+    // catalog limit. Scan all history before changing either store, then visit
+    // it in bounded pages so retained RAM does not grow with past deletions.
+    auto scanNames = [&](fs::FS& filesystem, const auto& visit) {
         File dir = filesystem.open(profileDir_);
         if (!dir || !dir.isDirectory()) {
             if (dir) dir.close();
-            collectionAvailable = false;
-            return;
+            return false;
         }
         File entry;
         while ((entry = dir.openNextFile())) {
@@ -1035,23 +1032,14 @@ size_t V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs) {
             }
             entry.close();
             if (status == DirectoryProfileNameStatus::Unavailable ||
-                (status == DirectoryProfileNameStatus::Profile &&
-                 !addUniqueName(names, nameCount, canonical, collectionOverLimit))) {
-                collectionAvailable = false;
+                (status == DirectoryProfileNameStatus::Profile && !visit(canonical))) {
                 dir.close();
-                return;
+                return false;
             }
         }
         dir.close();
+        return true;
     };
-    collect(*sourceFs);
-    collect(*fs_);
-    if (!collectionAvailable) {
-        Serial.println(collectionOverLimit
-                           ? "[V1Profiles] RECONCILE catalog exceeds supported bound; no changes made"
-                           : "[V1Profiles] RECONCILE catalog enumeration unavailable; no changes made");
-        return 0;
-    }
 
     // Inspect the complete candidate set before mutating either store. A
     // transient PSRAM or filesystem-read failure must never be reclassified as
@@ -1065,33 +1053,56 @@ size_t V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs) {
         ProfileFileInspection sourceFile;
         ProfileFileInspection targetFile;
     };
-    std::array<ReconcileCandidate, V1_PROFILE_CATALOG_MAX_COUNT> candidates;
-    size_t candidateCount = 0;
-    for (size_t nameIndex = 0; nameIndex < nameCount; ++nameIndex) {
-        const String& name = names[nameIndex];
-        ReconcileCandidate& candidate = candidates[candidateCount];
+    auto inspect = [&](const String& name, ReconcileCandidate& candidate) {
         if (!checkedStringFromBytes(name.c_str(), name.length(), candidate.name) ||
-            !buildProfilePathChecked(profileDir_, name, candidate.path)) {
-            Serial.println("[V1Profiles] RECONCILE candidate memory unavailable; no changes made");
-            return 0;
-        }
+            !buildProfilePathChecked(profileDir_, name, candidate.path)) return false;
         candidate.sourceState = readSyncState(*sourceFs, candidate.path);
         candidate.targetState = readSyncState(*fs_, candidate.path);
         candidate.sourceFile = inspectProfileFile(*sourceFs, candidate.path, name);
         candidate.targetFile = inspectProfileFile(*fs_, candidate.path, name);
-        if (candidate.sourceState.status == ProfileSyncState::Status::Unavailable ||
-            candidate.targetState.status == ProfileSyncState::Status::Unavailable ||
-            candidate.sourceFile.unavailable || candidate.targetFile.unavailable) {
-            Serial.printf("[V1Profiles] RECONCILE unavailable name='%s' path='%s'; no changes made\n",
-                          name.c_str(), candidate.path.c_str());
+        return candidate.sourceState.status != ProfileSyncState::Status::Unavailable &&
+               candidate.targetState.status != ProfileSyncState::Status::Unavailable &&
+               !candidate.sourceFile.unavailable && !candidate.targetFile.unavailable;
+    };
+
+    {
+        std::array<String, V1_PROFILE_CATALOG_MAX_COUNT> liveNames;
+        size_t liveCount = 0;
+        bool liveOverLimit = false;
+        ReconcileCandidate inspected;
+        auto preflight = [&](const String& name) {
+            if (!inspect(name, inspected)) return false;
+            const bool sourceUsable = inspected.sourceState.status != ProfileSyncState::Status::Corrupt &&
+                                      inspected.sourceState.version > 0 &&
+                                      (inspected.sourceState.deleted || inspected.sourceFile.valid);
+            const bool targetUsable = inspected.targetState.status != ProfileSyncState::Status::Corrupt &&
+                                      inspected.targetState.version > 0 &&
+                                      (inspected.targetState.deleted || inspected.targetFile.valid);
+            if (!sourceUsable && !targetUsable) return true;
+            bool sourceWins = sourceUsable && !targetUsable;
+            if (sourceUsable && targetUsable) {
+                sourceWins = inspected.sourceState.version > inspected.targetState.version ||
+                             (inspected.sourceState.version == inspected.targetState.version &&
+                              (inspected.sourceState.deleted != inspected.targetState.deleted
+                                   ? inspected.sourceState.deleted
+                                   : !inspected.sourceState.deleted &&
+                                         inspected.sourceFile.contentCrc != inspected.targetFile.contentCrc));
+            }
+            if (sourceWins ? inspected.sourceState.deleted : inspected.targetState.deleted) return true;
+            return addUniqueName(liveNames, liveCount, name, liveOverLimit);
+        };
+        if (!scanNames(*sourceFs, preflight) || !scanNames(*fs_, preflight)) {
+            lastError_ = liveOverLimit ? "Profile mirror live catalog exceeds supported bound"
+                                       : "Profile mirror inspection unavailable";
+            Serial.println(liveOverLimit
+                               ? "[V1Profiles] RECONCILE live catalog exceeds supported bound; no changes made"
+                               : "[V1Profiles] RECONCILE catalog inspection unavailable; no changes made");
             return 0;
         }
-        ++candidateCount;
     }
 
     size_t reconciled = 0;
-    for (size_t candidateIndex = 0; candidateIndex < candidateCount; ++candidateIndex) {
-        const ReconcileCandidate& candidate = candidates[candidateIndex];
+    auto reconcileCandidate = [&](const ReconcileCandidate& candidate) {
         const String& name = candidate.name;
         const String& path = candidate.path;
         const ProfileSyncState& sourceState = candidate.sourceState;
@@ -1110,7 +1121,7 @@ size_t V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs) {
                 Serial.printf("[V1Profiles] RECONCILE no valid copy name='%s' path='%s'\n", name.c_str(),
                               path.c_str());
             }
-            continue;
+            return;
         }
 
         bool sourceWins = sourceUsable && !targetUsable;
@@ -1148,7 +1159,7 @@ size_t V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs) {
             if (maximumVersion == std::numeric_limits<uint32_t>::max()) {
                 Serial.printf("[V1Profiles] RECONCILE generation exhausted name='%s' path='%s'\n",
                               name.c_str(), path.c_str());
-                continue;
+                return;
             }
             winningState.version = maximumVersion + 1u;
         }
@@ -1166,7 +1177,7 @@ size_t V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs) {
         if (!writeSyncState(*winner, path, winningState)) {
             Serial.printf("[V1Profiles] RECONCILE winner metadata failed name='%s' path='%s'\n", name.c_str(),
                           path.c_str());
-            continue;
+            return;
         }
 
         if (stateDiffers) {
@@ -1178,7 +1189,7 @@ size_t V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs) {
             }
             if (!applied || !writeSyncState(*loser, path, winningState)) {
                 Serial.printf("[V1Profiles] RECONCILE failed name='%s' path='%s'\n", name.c_str(), path.c_str());
-                continue;
+                return;
             }
             reconciled++;
         }
@@ -1188,6 +1199,51 @@ size_t V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs) {
         // Materialize metadata for legacy winners so later edits/deletions have
         // an explicit ordering basis on both filesystems.
         writeSyncState(*loser, path, winningState);
+    };
+
+    std::array<String, V1_PROFILE_CATALOG_MAX_COUNT> names;
+    std::array<ReconcileCandidate, V1_PROFILE_CATALOG_MAX_COUNT> candidates;
+    String after;
+    while (true) {
+        size_t candidateCount = 0;
+        auto collectPage = [&](const String& name) {
+            if (std::strcmp(name.c_str(), after.c_str()) <= 0) return true;
+            size_t position = 0;
+            while (position < candidateCount &&
+                   std::strcmp(names[position].c_str(), name.c_str()) < 0) ++position;
+            if (position < candidateCount && names[position] == name) return true;
+            if (position == names.size()) return true;
+            const size_t last = std::min(candidateCount, names.size() - 1u);
+            for (size_t index = last; index > position; --index) {
+                names[index] = std::move(names[index - 1u]);
+            }
+            if (!checkedStringFromBytes(name.c_str(), name.length(), names[position])) return false;
+            if (candidateCount < names.size()) ++candidateCount;
+            return true;
+        };
+        if (!scanNames(*sourceFs, collectPage) || !scanNames(*fs_, collectPage)) {
+            lastError_ = "Profile mirror page enumeration unavailable";
+            Serial.println("[V1Profiles] RECONCILE page enumeration unavailable");
+            return reconciled;
+        }
+        if (candidateCount == 0) break;
+        for (size_t index = 0; index < candidateCount; ++index) {
+            if (!inspect(names[index], candidates[index])) {
+                lastError_ = "Profile mirror page inspection unavailable";
+                Serial.printf("[V1Profiles] RECONCILE unavailable name='%s'; no further changes made\n",
+                              names[index].c_str());
+                return reconciled;
+            }
+        }
+        if (!checkedStringFromBytes(names[candidateCount - 1u].c_str(),
+                                    names[candidateCount - 1u].length(), after)) {
+            lastError_ = "Profile mirror page cursor unavailable";
+            Serial.println("[V1Profiles] RECONCILE page cursor unavailable");
+            return reconciled;
+        }
+        for (size_t candidateIndex = 0; candidateIndex < candidateCount; ++candidateIndex) {
+            reconcileCandidate(candidates[candidateIndex]);
+        }
     }
     return reconciled;
 }

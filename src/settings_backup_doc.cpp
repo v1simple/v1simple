@@ -225,6 +225,17 @@ bool decodeObfuscatedChecked(const String& encoded, String& decoded) {
            std::memchr(decoded.c_str(), '\0', decoded.length()) == nullptr;
 }
 
+// Migration can retain a present empty NVS password for an open network.
+// Only stored credentials have that representation; an explicit password in
+// an incoming backup still has to pass decodeObfuscatedChecked.
+bool decodeStoredObfuscatedChecked(const String& encoded, String& decoded) {
+    if (encoded.length() == 0) {
+        decoded = "";
+        return true;
+    }
+    return decodeObfuscatedChecked(encoded, decoded);
+}
+
 bool exactBackupString(JsonVariantConst value, String& output, size_t maxBytes) {
     return exactV1JsonStringChecked(value, output, maxBytes) == ExactV1JsonStringStatus::Valid;
 }
@@ -431,7 +442,7 @@ bool snapshotWifiStaSlotPasswords(const V1Settings& settings,
             String decoded;
             if (!readBackupPreferenceStringExact(prefs, kNvsWifiStaSlotPassword[i],
                                                  kMaxEncodedWifiPasswordBytes, encoded) ||
-                !decodeObfuscatedChecked(encoded, decoded)) {
+                !decodeStoredObfuscatedChecked(encoded, decoded)) {
                 prefs.end();
                 return false;
             }
@@ -2370,7 +2381,7 @@ bool captureRestoreCredentialSnapshot(StorageManager& storage, RestoreCredential
             String decoded;
             if (!readBackupPreferenceStringExact(prefs, kNvsWifiStaSlotPassword[i],
                                                  kMaxEncodedWifiPasswordBytes, encoded) ||
-                !decodeObfuscatedChecked(encoded, decoded)) {
+                !decodeStoredObfuscatedChecked(encoded, decoded)) {
                 prefs.end();
                 return false;
             }
@@ -2383,7 +2394,7 @@ bool captureRestoreCredentialSnapshot(StorageManager& storage, RestoreCredential
         String decoded;
         if (!readBackupPreferenceStringExact(prefs, kNvsWifiPassword,
                                              kMaxEncodedWifiPasswordBytes, encoded) ||
-            !decodeObfuscatedChecked(encoded, decoded)) {
+            !decodeStoredObfuscatedChecked(encoded, decoded)) {
             prefs.end();
             return false;
         }

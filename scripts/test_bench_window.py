@@ -1278,6 +1278,33 @@ def test_presentation_capture_retains_visual_inputs_without_private_profile_name
     assert_true(not any(endpoint == "/api/v1/profile" for endpoint, _ in calls), str(calls))
 
 
+def test_presentation_capture_accepts_unassigned_slot_but_rejects_malformed_slot() -> None:
+    get_json, _ = sample_presentation_api()
+    slots = get_json("http://device", "/api/autopush/slots")
+    slots["slots"][1]["profile"] = ""
+    for enabled in (True, False):
+        slots["enabled"] = enabled
+        captured = capture_presentation_configuration("http://device", get_json=get_json)
+        assert_true(captured["auto_push"]["enabled"] is enabled, str(captured))
+        assert_true(len(captured["auto_push"]["slots"]) == 3, str(captured))
+
+    for malformed in (None, 42):
+        slots["slots"][1]["profile"] = malformed
+        try:
+            capture_presentation_configuration("http://device", get_json=get_json)
+        except RuntimeError as error:
+            assert_true("Auto-Push slot response is invalid" in str(error), str(error))
+        else:
+            raise AssertionError(f"malformed slot profile {malformed!r} was accepted")
+    del slots["slots"][1]["profile"]
+    try:
+        capture_presentation_configuration("http://device", get_json=get_json)
+    except RuntimeError as error:
+        assert_true("Auto-Push slot response is invalid" in str(error), str(error))
+    else:
+        raise AssertionError("missing slot profile was accepted")
+
+
 def test_presentation_selection_intent_is_explicit() -> None:
     selection = parse_auto_push_selection(
         "[AutoPush] onV1Connected autoPush=on activeSlot=0 selectedSlot=2 defaultProfile=3 mode=1"
@@ -1502,6 +1529,7 @@ def main() -> int:
     test_serial_carriage_return_framing_preserves_reset_evidence_and_failures()
     test_serial_interrupted_loader_framing_requires_one_exact_rom_banner()
     test_presentation_capture_retains_visual_inputs_without_private_profile_names()
+    test_presentation_capture_accepts_unassigned_slot_but_rejects_malformed_slot()
     test_presentation_selection_intent_is_explicit()
     test_bench_upload_preserves_littlefs_settings()
     test_bench_joins_maintenance_wifi_without_usb_status_query()

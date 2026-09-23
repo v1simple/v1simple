@@ -187,6 +187,7 @@ void AlpRuntimeModule::begin(bool enabled) {
     // when begin() is re-invoked after a settings change: we must not
     // carry a stale session across re-init.
     session_ = AlertSession{};
+    currentEvent_ = AlpLaserEvent{};
     firstFrameMs_ = 0;
     warmUpPreambleMs_ = 0;
     lastHeartbeatMs_ = 0;
@@ -349,6 +350,7 @@ void AlpRuntimeModule::updateCurrentEvent(uint32_t nowMs) {
     next.lidActive = (lastHbByte1_ == 0x04);
     next.openedAtMs = currentEvent_.openedAtMs;
     next.closedAtMs = currentEvent_.closedAtMs;
+    next.sessionGeneration = sessionGeneration_;
 
     if (next.active && !currentEvent_.active) {
         next.openedAtMs = nowMs;
@@ -409,6 +411,7 @@ void AlpRuntimeModule::transitionTo(AlpState newState, uint32_t nowMs) {
     const bool silentReset = (newState == AlpState::IDLE);
 
     if (freshEngagement) {
+        ++sessionGeneration_;
         // Envelope clause — only meaningful pre-first-gun-ID. Once any
         // gun has identified in this boot (bootGunConfirmed_), the ALP
         // has demonstrably left its post-boot Warm-Up sequence. Treating

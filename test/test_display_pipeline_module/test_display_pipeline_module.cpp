@@ -1234,9 +1234,11 @@ void test_handle_parsed_preserves_best_known_alp_context_during_live_unknown_upd
     module.handleParsed(1000);
     TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastAlpLaserEvent.gun);
     TEST_ASSERT_EQUAL(AlpLaserDirection::FRONT, display.lastAlpLaserEvent.direction);
+    const uint32_t sessionGeneration = display.lastAlpLaserEvent.sessionGeneration;
 
     alpModule.testOpenSession(AlpGunType::UNKNOWN, /*isWarmUp=*/false,
                               AlpLaserDirection::UNKNOWN);
+    TEST_ASSERT_EQUAL_UINT32(sessionGeneration, alpModule.currentEvent().sessionGeneration);
 
     display.reset();
     mockMillis = 1100;
@@ -1248,6 +1250,33 @@ void test_handle_parsed_preserves_best_known_alp_context_during_live_unknown_upd
     TEST_ASSERT_TRUE(display.lastAlpLaserEvent.active);
     TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, display.lastAlpLaserEvent.gun);
     TEST_ASSERT_EQUAL(AlpLaserDirection::FRONT, display.lastAlpLaserEvent.direction);
+}
+
+void test_new_alp_session_does_not_inherit_identity_even_at_same_millis_tick() {
+    settings.alpAlertPersistSec = 0;
+    alpModule.testSetEnabled(true);
+    alpModule.testSetState(AlpState::ALERT_ACTIVE, 1200);
+    alpModule.testOpenSession(AlpGunType::PL3_PROLITE, false,
+                              AlpLaserDirection::REAR, 1200);
+    module.handleParsed(1200);
+    const AlpLaserEvent previous = display.lastAlpLaserEvent;
+    TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, previous.gun);
+    TEST_ASSERT_EQUAL(AlpLaserDirection::REAR, previous.direction);
+
+    // The runtime can close teardown and parse the next trigger in one
+    // process pass, leaving no inactive presentation between engagements.
+    alpModule.testCloseSession(1200);
+    alpModule.testOpenSession(AlpGunType::UNKNOWN, false,
+                              AlpLaserDirection::UNKNOWN, 1200);
+    const AlpLaserEvent fresh = alpModule.currentEvent();
+    TEST_ASSERT_EQUAL_UINT32(previous.openedAtMs, fresh.openedAtMs);
+    TEST_ASSERT_NOT_EQUAL(previous.sessionGeneration, fresh.sessionGeneration);
+
+    display.reset();
+    module.handleParsed(1200);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(AlpGunType::UNKNOWN, display.lastAlpLaserEvent.gun);
+    TEST_ASSERT_EQUAL(AlpLaserDirection::UNKNOWN, display.lastAlpLaserEvent.direction);
 }
 
 void test_handle_parsed_clears_prior_alp_context_during_unknown_teardown() {
@@ -1600,6 +1629,7 @@ int main() {
     RUN_TEST(test_handle_parsed_clears_stale_alp_presentation_after_listening_hold_dwell);
     RUN_TEST(test_alp_hold_and_persistence_deadlines_each_request_one_refresh);
     RUN_TEST(test_handle_parsed_preserves_best_known_alp_context_during_live_unknown_updates);
+    RUN_TEST(test_new_alp_session_does_not_inherit_identity_even_at_same_millis_tick);
     RUN_TEST(test_handle_parsed_clears_prior_alp_context_during_unknown_teardown);
     RUN_TEST(test_restore_current_owner_synthesizes_laser_alert_when_alp_active);
     RUN_TEST(test_restore_current_owner_restores_alp_persisted_owner);

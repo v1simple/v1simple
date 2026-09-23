@@ -469,7 +469,7 @@ def capture_presentation_configuration(
         persistence = slot.get("alertPersist")
         priority_only = slot.get("priorityArrowOnly")
         if (not isinstance(slot_name, str) or not slot_name or
-                not isinstance(profile_name, str) or not profile_name or
+                not isinstance(profile_name, str) or
                 type(color) is not int or not 0 <= color <= 0xFFFF or
                 type(persistence) is not int or not 0 <= persistence <= 5 or
                 type(priority_only) is not bool):

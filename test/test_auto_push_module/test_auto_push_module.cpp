@@ -1359,6 +1359,36 @@ void test_custom_readback_requires_every_definition_after_request_boundary() {
     TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
 }
 
+void test_custom_readback_accepts_first_definition_ingressed_during_send() {
+    const std::vector<V1CustomFrequencyDefinition> desired = {
+        {0, 24200, 24300}, {1, 0, 0}, {2, 34500, 34600}, {3, 0, 0}};
+    configureCustomOnly(desired);
+    auto snapshot = makeSnapshot();
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    queueAndPreflight();
+    at(100);
+    at(105);
+    observeSweepWriteResult(0);
+    at(105);
+
+    // The BLE callback stamps ingress before the acknowledged request returns;
+    // main-loop parsing of that valid first reply follows the send.
+    ble.requestAllSweepDefinitionsSendHook = queueResponseDuringSend;
+    at(135);
+    TEST_ASSERT_EQUAL_INT(1, ble.requestAllSweepDefinitionsCalls);
+    TEST_ASSERT_GREATER_THAN_UINT32(0, responseIngressDuringSend);
+    observeSweepDefinition(0, 23950, 24950, responseIngressDuringSend);
+    observeSweepDefinition(1, 0, 0);
+    observeSweepDefinition(2, 33100, 36900);
+    observeSweepDefinition(3, 0, 0);
+    at(135);
+
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_EQUAL_INT(2, ble.writeSweepDefinitionCalls);
+    TEST_ASSERT_TRUE(ble.consumeVerifyPushMatchEdge());
+}
+
 void test_custom_snapshot_mutation_before_preflight_blocks_every_write() {
     const std::vector<V1CustomFrequencyDefinition> desired = {
         {0, 24200, 24300}, {1, 0, 0}, {2, 34500, 34600}, {3, 0, 0}};
@@ -2819,6 +2849,7 @@ int main() {
     RUN_TEST(test_custom_commit_result_and_full_readback_are_both_required);
     RUN_TEST(test_custom_readback_rejects_lost_used_range_and_cross_section_calibration);
     RUN_TEST(test_custom_readback_requires_every_definition_after_request_boundary);
+    RUN_TEST(test_custom_readback_accepts_first_definition_ingressed_during_send);
     RUN_TEST(test_custom_snapshot_mutation_before_preflight_blocks_every_write);
     RUN_TEST(test_malformed_canonical_sweep_definition_poison_blocks_every_write);
     RUN_TEST(test_poisoned_sweep_max_before_preflight_blocks_every_write);

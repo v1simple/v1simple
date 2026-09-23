@@ -1540,6 +1540,53 @@ void test_legacy_wifi_client_credentials_migrate_to_slot0() {
     TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiStaSlotPassword[0]));
 }
 
+void test_migrated_open_wifi_password_allows_full_restore_and_exact_rollback() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, false);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+
+    SettingsManager manager(storage, profiles);
+    makeCurrentV21Source(manager.mutableSettings());
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "OpenNetwork", "", "Open", 0));
+    Preferences wifi;
+    TEST_ASSERT_TRUE(wifi.begin(WIFI_CLIENT_NS, false));
+    TEST_ASSERT_EQUAL_UINT(0, wifi.putString(kNvsWifiPassword, ""));
+    TEST_ASSERT_TRUE(wifi.isKey(kNvsWifiPassword));
+    wifi.end();
+
+    manager.load();
+    TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiStaSlotPassword[0]));
+    TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiPassword));
+    TEST_ASSERT_EQUAL_STRING("", manager.getWifiStaSlotPassword(0).c_str());
+
+    JsonDocument backup;
+    TEST_ASSERT_TRUE(BackupPayloadBuilder::buildBackupDocument(
+                         backup, manager.get(), profiles,
+                         BackupPayloadBuilder::BackupTransport::HttpDownload, 1234).safeToCommit);
+
+    // The failed write happens after credential replacement. Rollback must
+    // restore the key's presence, not just the equivalent open-network value.
+    mock_preferences::set_fail_writes_for_key(kNvsBrightness);
+    TEST_ASSERT_FALSE(manager.applyBackupDocument(backup, true).success);
+    mock_preferences::set_fail_writes_for_key(nullptr);
+    TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiStaSlotPassword[0]));
+    TEST_ASSERT_EQUAL_STRING("", manager.getWifiStaSlotPassword(0).c_str());
+
+    TEST_ASSERT_TRUE(manager.applyBackupDocument(backup, true).success);
+    TEST_ASSERT_EQUAL_STRING("OpenNetwork", manager.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("", manager.getWifiStaSlotPassword(0).c_str());
+
+    // Empty text in an incoming credential is still rejected; the exception
+    // applies only to a present empty value already stored in NVS.
+    JsonDocument invalid;
+    invalid["_type"] = "v1simple_http_backup";
+    JsonObject slot = invalid["wifiStaSlots"].to<JsonArray>().add<JsonObject>();
+    slot["index"] = 0;
+    slot["ssid"] = "OpenNetwork";
+    slot["passwordObf"] = "";
+    TEST_ASSERT_FALSE(manager.applyBackupDocument(invalid, true).success);
+}
+
 void assertLegacyWifiMigrationRetries(const char* failedKey, bool fullNvs = false,
                                       const char* password = "placeholder") {
     resetRuntimeState();
@@ -5767,6 +5814,7 @@ int main() {
     RUN_TEST(test_legacy_wifi_migration_retries_failed_settings_writes);
     RUN_TEST(test_legacy_wifi_migration_retries_failed_password_write);
     RUN_TEST(test_legacy_wifi_migration_preserves_credentials_when_nvs_is_full);
+    RUN_TEST(test_migrated_open_wifi_password_allows_full_restore_and_exact_rollback);
     RUN_TEST(test_http_restore_rejects_case_mismatched_included_profile_reference);
     RUN_TEST(test_http_restore_rejects_case_mismatched_existing_profile_reference);
     RUN_TEST(test_failed_profile_tap_retains_earlier_obd_sync_save_and_deadline);

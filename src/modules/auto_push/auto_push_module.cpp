@@ -1483,6 +1483,12 @@ void AutoPushModule::process() {
         if (state_.sendDeadlineMs == 0) {
             state_.sendDeadlineMs = now + kVerificationTimeoutMs;
         }
+        // Capture ingress before the synchronous request: the first reply can
+        // enter BLE while the acknowledged send is still waiting to return.
+        // Reset before that reply is parsed, while the ingress boundary still
+        // excludes packets queued before this request (including on retries).
+        state_.observationIngressBoundary = bleClient_->latestV1NotificationIngressSequence();
+        parser_->resetSweepDefinitionsObservation();
         const SendResult sent = bleClient_->requestAllSweepDefinitionsResult();
         if (sent == SendResult::NOT_YET) {
             if (deadlineReached(now, state_.sendDeadlineMs)) {
@@ -1499,10 +1505,6 @@ void AutoPushModule::process() {
             return;
         }
         state_.sendDeadlineMs = 0;
-        state_.observationIngressBoundary = bleClient_->latestV1NotificationIngressSequence();
-        // Clearing after the send is proof-safe: a test or callback that
-        // raced during the send cannot become readback evidence.
-        parser_->resetSweepDefinitionsObservation();
         state_.step = Step::CustomVerify;
         state_.verifyDeadlineMs = now + kVerificationTimeoutMs;
         state_.nextStepAtMs = now;

@@ -337,6 +337,7 @@ class AlpRuntimeModule {
         next.lidActive = (lastHbByte1_ == 0x04);
         next.openedAtMs = currentEvent_.openedAtMs;
         next.closedAtMs = currentEvent_.closedAtMs;
+        next.sessionGeneration = sessionGeneration_;
         if (next.active && !currentEvent_.active) {
             next.openedAtMs = nowMs;
             next.closedAtMs = 0;
@@ -377,6 +378,9 @@ class AlpRuntimeModule {
     }
     void testOpenSession(AlpGunType gun, bool isWarmUp = false,
                          AlpLaserDirection direction = AlpLaserDirection::UNKNOWN, uint32_t nowMs = 0) {
+        if (!session_.active) {
+            ++sessionGeneration_;
+        }
         session_.active = true;
         session_.isWarmUp = isWarmUp;
         session_.direction = direction;
@@ -440,6 +444,7 @@ class AlpRuntimeModule {
     bool uartSilenceTimeoutArmed_ = false;
 
     AlertSession session_;
+    uint32_t sessionGeneration_ = 0;
     uint32_t firstFrameMs_ = 0;     // first valid frame after begin()
     uint32_t warmUpPreambleMs_ = 0; // F0/A8 within 5s of firstFrameMs_; 0 = not seen
 

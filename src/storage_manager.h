@@ -1,8 +1,4 @@
-/**
- * Storage Manager - SD card and LittleFS mounting
- *
- * Provides shared filesystem access for profiles, web files, and product persistence.
- */
+// Shared SD/LittleFS storage for profiles, web assets, and persistence.
 
 #pragma once
 #ifndef STORAGE_MANAGER_H
@@ -40,7 +36,6 @@ class StorageManager {
     bool isLittleFSReady() const { return littlefsReady_; }
     String statusText() const;
 
-    // Get underlying filesystem
     fs::FS* getFilesystem() const { return fs_; }
     // Secondary LittleFS handle (available even when SD is primary)
     fs::FS* getLittleFS() const { return littlefsReady_ ? &LittleFS : nullptr; }
@@ -153,7 +148,6 @@ class StorageManager {
       public:
         explicit SDTryLock(SemaphoreHandle_t mutex, bool checkDmaHeap = false)
             : mutex_(mutex), acquired_(false) {
-            // Check DMA heap first - fail fast if WiFi has starved internal SRAM
             if (checkDmaHeap && !hasDmaHeapForSD()) {
                 return;
             }

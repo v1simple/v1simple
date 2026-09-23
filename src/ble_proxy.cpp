@@ -1,7 +1,3 @@
-/**
- * BLE proxy callbacks, forwarding, advertising, and phone command queueing.
- */
-
 #include "ble_client.h"
 #include "ble_internals.h"
 #include "config.h"
@@ -9,10 +5,6 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
-
-// ============================================================================
-// BLE Proxy Server Functions
-// ============================================================================
 
 void V1BLEClient::ProxyServerCallbacks::onConnect(NimBLEServer* pServer_, NimBLEConnInfo& connInfo) {
     // NimBLE callback: enqueue state and return.

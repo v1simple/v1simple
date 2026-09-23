@@ -461,7 +461,6 @@
             <span class="loading loading-lg loading-spinner"></span>
         </div>
     {:else}
-        <!-- Slot Cards -->
         <div class="grid gap-4">
             {#each data.slots as slot, i}
                 <div class="surface-card {data.activeSlot === i ? 'ring-2 ring-primary' : ''}">
@@ -514,10 +513,8 @@
                         </div>
 
                         {#if editingSlot === i}
-                            <!-- Edit Mode -->
                             <div class="mt-3 grid grid-cols-2 gap-3">
                                 <div class="field-control">
-                                    <!-- provide stable ids for accessibility -->
                                     <label class="label py-1" for={`slot-${i}-profile`}>
                                         <span class="field-label copy-caption">Profile</span>
                                     </label>
@@ -578,7 +575,6 @@
                                 </div>
                             </div>
                         {:else}
-                            <!-- View Mode -->
                             <div class="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
                                 <div class="copy-muted">Profile:</div>
                                 <div class="font-medium">
@@ -625,7 +621,6 @@
             {/each}
         </div>
 
-        <!-- Info -->
         {#if profiles.length === 0}
             <StatusAlert
                 message="No saved profiles. Go to V1 Profiles to pull settings from your V1 first."

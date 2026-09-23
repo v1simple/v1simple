@@ -208,20 +208,15 @@ BOARD_ID="${DEVICE_BOARD_ID:-unknown}"
 LANE="device-tests"
 STRESS_CLASS="core"
 
-# ─── Define suite groups ─────────────────────────────────────────────
-
-# Core device suites (boot must be first — validates board is alive)
+# Boot must run first to prove the board is alive before later suites.
 CORE_SUITES=(
   test_device_boot
   test_device_heap
 )
 
-# Real portMUX concurrency suite
 CONCURRENCY_SUITES=(
   test_device_event_bus
 )
-
-# ─── Build suite list ────────────────────────────────────────────────
 
 SUITES=()
 case "$MODE" in
@@ -240,8 +235,6 @@ for suite in "${SUITES[@]}"; do
   echo "    - $suite"
 done
 echo "==> Inter-suite cooldown: ${SUITE_COOLDOWN_SECONDS}s"
-
-# ─── Summarize JSON results ──────────────────────────────────────────
 
 summarize_json() {
   local json_path="$1"
@@ -389,8 +382,6 @@ manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 PY
 }
 
-# ─── Run tests ────────────────────────────────────────────────────────
-
 run_suite() {
   local suite="$1"
   local index="$2"
@@ -403,10 +394,9 @@ run_suite() {
     sleep "$SUITE_COOLDOWN_SECONDS"
   fi
 
-  # Re-detect port each time (USB CDC may change name after reset)
+  # USB CDC may return under a different path after reset.
   run_port="$(resolve_test_port || true)"
   if [[ -z "$run_port" ]]; then
-    # Port not found immediately — wait up to 15s for it to reappear
     echo "    Port not found, waiting up to 15s for USB CDC re-enumeration..."
     local waited=0
     while (( waited < 15 )); do

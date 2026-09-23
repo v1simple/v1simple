@@ -1,8 +1,5 @@
-/**
- * Durable cross-store deletion for V1 device rows and the degraded NVS
- * last-address fallback. The NVS intent is authoritative until both stores
- * converge, so interruption can delay a delete but cannot resurrect it.
- */
+// The NVS intent remains authoritative until the device row and fallback
+// converge, so interruption can delay deletion but cannot resurrect the row.
 
 #include "settings_internals.h"
 #include "settings_sanitize.h"

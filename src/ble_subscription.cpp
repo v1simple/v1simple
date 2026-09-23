@@ -1,14 +1,9 @@
-/**
- * Valentine One Gen2 characteristic discovery and subscription state machine.
- */
-
 #include "ble_client.h"
 
 #include "ble_internals.h"
 #include "ble_log_rate_limit.h"
 #include "config.h"
 
-// Process SUBSCRIBING state - non-blocking step machine.
 // Each call executes one step then yields to allow loop() to run.
 void V1BLEClient::processSubscribing() {
     const uint32_t now = static_cast<uint32_t>(millis());

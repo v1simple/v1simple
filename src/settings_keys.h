@@ -2,11 +2,6 @@
 
 #include <cstddef>
 
-// NVS key constants for settings namespaces (SETTINGS_NS_A / SETTINGS_NS_B).
-// Eliminates raw string literals in settings read/write paths.
-// See settings_namespace_ids.h for namespace name constants.
-
-// ── Validation / versioning ────────────────────────────────────────────────
 inline constexpr const char* kNvsValid = "nvsValid";
 inline constexpr const char* kNvsSettingsVer = "settingsVer";
 // Monotonic A/B copy generation. settingsGen is part of the staged payload;
@@ -28,7 +23,6 @@ inline constexpr const char* kNvsRestoreCommitWatermark = "restoreMark";
 inline constexpr const char* kNvsProfileDeleteTransactionSequence = "deleteSeq";
 inline constexpr const char* kNvsProfileDeleteCommitWatermark = "deleteMark";
 
-// ── WiFi ──────────────────────────────────────────────────────────────────
 inline constexpr const char* kNvsApSsid = "apSSID";
 inline constexpr const char* kNvsApPassword = "apPassword";
 inline constexpr const char* kNvsWifiClientEnabled = "wifiClientEn";
@@ -47,33 +41,27 @@ inline constexpr const char* kNvsWifiStaSlotPriority[kNvsWifiStaSlotCount] = {"s
 inline constexpr const char* kNvsWifiStaSlotLastConnected[kNvsWifiStaSlotCount] = {"sta0Last", "sta1Last", "sta2Last",
                                                                                    "sta3Last"};
 
-// ── Proxy BLE ─────────────────────────────────────────────────────────────
 inline constexpr const char* kNvsProxyBle = "proxyBLE";
 inline constexpr const char* kNvsProxyName = "proxyName";
 
-// ── Display ───────────────────────────────────────────────────────────────
 inline constexpr const char* kNvsBrightness = "brightness";
 
-// ── Alert colors ──────────────────────────────────────────────────────────
 inline constexpr const char* kNvsColorBogey = "colorBogey";
 inline constexpr const char* kNvsColorFreq = "colorFreq";
 inline constexpr const char* kNvsColorArrowFront = "colorArrF";
 inline constexpr const char* kNvsColorArrowSide = "colorArrS";
 inline constexpr const char* kNvsColorArrowRear = "colorArrR";
 
-// ── Band colors ───────────────────────────────────────────────────────────
 inline constexpr const char* kNvsColorBandLaser = "colorBandL";
 inline constexpr const char* kNvsColorBandKa = "colorBandKa";
 inline constexpr const char* kNvsColorBandK = "colorBandK";
 inline constexpr const char* kNvsColorBandX = "colorBandX";
 inline constexpr const char* kNvsColorBandPhoto = "colorBandP";
 
-// ── Status icon colors ────────────────────────────────────────────────────
 inline constexpr const char* kNvsColorWifiConnected = "colorWiFiC";
 inline constexpr const char* kNvsColorBleConnected = "colorBleC";
 inline constexpr const char* kNvsColorBleDisconnected = "colorBleD";
 
-// ── Signal bar colors ─────────────────────────────────────────────────────
 // Authoritative six physical-segment colours (index 0 = weakest).
 inline constexpr const char* kNvsLegacyColorBar1 = "colorBar1";
 inline constexpr const char* kNvsLegacyColorBar2 = "colorBar2";
@@ -92,7 +80,6 @@ inline constexpr const char* kNvsColorBarSeg6 = "colorBarS6";
 inline constexpr const char* kNvsColorBarSeg7 = "colorBarS7";
 inline constexpr const char* kNvsColorBarSeg8 = "colorBarS8";
 
-// ── Misc UI colors ────────────────────────────────────────────────────────
 inline constexpr const char* kNvsColorMuted = "colorMuted";
 inline constexpr const char* kNvsColorPersisted = "colorPersist";
 inline constexpr const char* kNvsColorVolumeMain = "colorVolMain";
@@ -105,7 +92,6 @@ inline constexpr const char* kNvsColorAlpDli = "colorAlpDli";
 inline constexpr const char* kNvsColorAlpLid = "colorAlpLid";
 inline constexpr const char* kNvsColorAlpAlert = "colorAlpAlt";
 
-// ── UI toggles ────────────────────────────────────────────────────────────
 inline constexpr const char* kNvsFreqBandColor = "freqBandCol";
 inline constexpr const char* kNvsHideWifi = "hideWifi";
 inline constexpr const char* kNvsHideProfile = "hideProfile";
@@ -115,7 +101,6 @@ inline constexpr const char* kNvsHideBle = "hideBle";
 inline constexpr const char* kNvsHideVolume = "hideVol";
 inline constexpr const char* kNvsHideRssi = "hideRssi";
 
-// Voice alerts
 inline constexpr const char* kNvsVoiceAlertsLegacy = "voiceAlerts"; // migration key only
 inline constexpr const char* kNvsVoiceMode = "voiceMode";
 inline constexpr const char* kNvsVoiceDirection = "voiceDir";
@@ -123,29 +108,24 @@ inline constexpr const char* kNvsVoiceBogeys = "voiceBogeys";
 inline constexpr const char* kNvsMuteVoiceAtVol0 = "muteVoiceVol0";
 inline constexpr const char* kNvsVoiceVolume = "voiceVol";
 
-// Secondary alerts
 inline constexpr const char* kNvsSecondaryAlerts = "secAlerts";
 inline constexpr const char* kNvsSecondaryLaser = "secLaser";
 inline constexpr const char* kNvsSecondaryKa = "secKa";
 inline constexpr const char* kNvsSecondaryK = "secK";
 inline constexpr const char* kNvsSecondaryX = "secX";
 
-// ── Volume fade ───────────────────────────────────────────────────────────
 inline constexpr const char* kNvsVolFadeEnabled = "volFadeEn";
 inline constexpr const char* kNvsVolFadeSeconds = "volFadeSec";
 inline constexpr const char* kNvsVolFadeVolume = "volFadeVol";
 
-// ── Speed mute ────────────────────────────────────────────────────────────
 inline constexpr const char* kNvsSpeedMuteEnabled = "spdMuteEn";
 inline constexpr const char* kNvsSpeedMuteThreshold = "spdMuteThr";
 inline constexpr const char* kNvsSpeedMuteHysteresis = "spdMuteHys";
 inline constexpr const char* kNvsSpeedMuteVolume = "spdMuteVol";
 inline constexpr const char* kNvsSpeedMuteVoice = "spdMuteVce";
 
-// ── Stealth mode ──────────────────────────────────────────────────────────
 inline constexpr const char* kNvsStealthEnabled = "stealthEn";
 
-// ── Profiles / settings slots ─────────────────────────────────────────────
 inline constexpr const char* kNvsAutoPush = "autoPush";
 inline constexpr const char* kNvsAutoPushProfileSchema = "apProfSchema";
 inline constexpr const char* kNvsActiveSlot = "activeSlot";
@@ -189,12 +169,10 @@ inline constexpr const char* kNvsSlot1Mode = "slot1mode";
 inline constexpr const char* kNvsSlot2Profile = "slot2prof";
 inline constexpr const char* kNvsSlot2Mode = "slot2mode";
 
-// ── Miscellaneous ─────────────────────────────────────────────────────────
 inline constexpr const char* kNvsLastV1Address = "lastV1Addr";
 inline constexpr const char* kNvsAutoPowerOff = "autoPwrOff";
 inline constexpr const char* kNvsApTimeout = "apTimeout";
 
-// ── OBD ───────────────────────────────────────────────────────────────────
 inline constexpr const char* kNvsObdEnabled = "obdEn";
 inline constexpr const char* kNvsObdAddress = "obdAddr";
 inline constexpr const char* kNvsObdName = "obdName";
@@ -207,7 +185,6 @@ inline constexpr const char* kNvsCycleV1SettleQuiet = "cycV1Quiet";
 inline constexpr const char* kNvsCycleV1SettleFallback = "cycV1Fall";
 inline constexpr const char* kNvsCycleTeardownAckTimeout = "cycTdAck";
 
-// ── ALP ──────────────────────────────────────────────────────────────────
 inline constexpr const char* kNvsAlpEnabled = "alpEn";
 // ALP display persistence is independent of the V1 alert window. The default
 // of zero removes the visual tail as soon as the ALP session closes.
@@ -215,11 +192,8 @@ inline constexpr const char* kNvsAlpPersistSec = "alpPersist";
 inline constexpr const char* kNvsAlpNoV1Laser = "alpNoV1Laser";
 
 inline constexpr const char* kNvsMaintenanceBootReq = "maintBoot";
-// ── GPS ───────────────────────────────────────────────────────────────────────
 inline constexpr const char* kNvsGpsEnabled = "gpsEnabled";
 inline constexpr const char* kNvsGpsBaud = "gpsBaud";
-// ── Separate namespaces ───────────────────────────────────────────────────
-// Namespace: v1wificlient (WIFI_CLIENT_NS)
 inline constexpr const char* kSettingsWifiClientNamespace = "v1wificlient";
 // Legacy single-password key; readable for migration into wifiStaSlot0.
 inline constexpr const char* kNvsWifiPassword = "password";
@@ -236,7 +210,6 @@ inline constexpr const char* kNvsWifiTxnNewSsid = "txnNewSsid";
 inline constexpr const char* kNvsWifiTxnNewPass = "txnNewPass";
 inline constexpr const char* kNvsWifiTxnMode = "txnMode";
 inline constexpr const char* kNvsWifiTxnData = "txnData";
-// Namespace: v1settingsMeta (SETTINGS_NS_META)
 inline constexpr const char* kNvsMetaActive = "active";
 // Namespace: v1runtime. This single-key store preserves the last confirmed V1
 // connection only while filesystem-backed V1DeviceStore is unavailable.
@@ -248,7 +221,6 @@ inline constexpr const char* kNvsV1DeleteReady = "delReady";
 inline constexpr const char* kNvsV1DeleteAddress = "delAddr";
 inline constexpr const char* kNvsV1DeleteToken = "delToken";
 inline constexpr const char* kNvsV1DeletePhase = "delPhase";
-// Namespace: v1boot
 inline constexpr const char* kNvsBootId = "bootId";
 inline constexpr const char* kNvsCleanShutdn =
     "cleanShutdn"; // set true at end of prepareForShutdown(); read+reset at boot

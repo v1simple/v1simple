@@ -42,7 +42,6 @@
     let restoring = $state(false);
     let backingUpNow = $state(false);
 
-    // WiFi client (STA) state
     let wifiStatus = $state({
         enabled: false,
         savedSSID: '',
@@ -418,7 +417,6 @@
             closeWifiModal({ force: true });
         }
 
-        // Also update status
         if (isCurrentWifiScan(wifiScan, runId)) {
             await fetchWifiStatus();
         }
@@ -853,7 +851,6 @@
             return;
         }
 
-        // Confirm before overwriting
         if (
             !confirm(
                 'Warning: This will overwrite all your current settings and profiles.\n\nSaved WiFi passwords are kept for networks whose name matches; other networks will need their password re-entered.\n\nAre you sure you want to restore from this backup?'
@@ -923,7 +920,6 @@
             </button>
         {/if}
 
-        <!-- AP Settings -->
         <fieldset class="surface-card" disabled={!settingsLoaded}>
             <div class="card-body">
                 <CardSectionHead
@@ -997,7 +993,6 @@
             </div>
         </fieldset>
 
-        <!-- WiFi Client (Saved Networks) -->
         <div class="surface-card">
             <div class="card-body space-y-4">
                 <CardSectionHead
@@ -1339,7 +1334,6 @@
             <SettingsAutoPowerOffCard {settings} />
         </fieldset>
 
-        <!-- Save Button -->
         <button
             class="btn btn-block btn-primary"
             onclick={saveSettings}

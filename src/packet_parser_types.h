@@ -4,15 +4,7 @@
 #include <math.h> // NAN
 #include <array>
 
-/**
- * Shared data types for the V1 Gen2 packet parser.
- *
- * Pure data — no Arduino dependency, safe to include in native unit tests.
- * Both the real PacketParser header and all test mocks must include this file
- * rather than redefining these types locally.
- */
-
-// --- Enumerations ---
+// Shared pure-data protocol types used by firmware and native tests.
 
 enum Band {
     BAND_NONE = 0,
@@ -25,8 +17,6 @@ enum Band {
 };
 
 enum Direction { DIR_NONE = 0, DIR_FRONT = 1, DIR_SIDE = 2, DIR_REAR = 4 };
-
-// --- AlertData ---
 
 struct AlertData {
     static constexpr uint8_t UNKNOWN_V1_INDEX = UINT8_MAX;
@@ -51,8 +41,6 @@ struct AlertData {
           frontStrength(0), rearStrength(0), frequency(0), isValid(false), isPriority(false), isJunk(false),
           photoType(0), rawBandBits(0), isKu(false) {}
 
-    // Convenience factory — preferred for constructing test fixtures and
-    // one-shot alert values without named temporaries.
     static AlertData create(Band b, Direction d, uint8_t front, uint8_t rear, uint32_t freq, bool valid = true,
                             bool priority = false) {
         AlertData a;
@@ -66,8 +54,6 @@ struct AlertData {
         return a;
     }
 };
-
-// --- DisplayState ---
 
 struct DisplayState {
     uint8_t activeBands;     // Bitmap of active bands
@@ -88,13 +74,8 @@ struct DisplayState {
     bool hasV1Version;          // True if we've received version from V1
     bool hasVolumeData;         // True after canonical display/current/all-volume evidence
     uint8_t v1PriorityIndex;    // Resolved priority alert index for current table (0-based)
-    // V1 bogey counter — single 7-segment LED. Per ESP Spec 3.003 page 25
-    // (infDisplayData), the V1 sends two bytes for the bogey LED: image1 is
-    // the steady displayed value; image2 is the blink-off pair (segments lit
-    // in image1 but unlit in image2 are blinking on the V1's hardware). image2
-    // is NOT a second physical digit. FSD-002 Verdict Reversal: image2 is the
-    // off-phase of the same LED, so decoding it as another digit reverses V1's
-    // single-character junk/photo verdicts during blink phases.
+    // The V1 has one bogey LED: image1 is its displayed value and image2 is
+    // the blink-off mask, not a second digit (ESP Spec 3.003 p.25).
     uint8_t bogeyCounterByte;  // image1 — steady-displayed 7-segment byte
     char bogeyCounterChar;     // Decoded character from image1
     bool bogeyCounterDot;      // Decimal point from image1 (bit 7)
@@ -152,8 +133,6 @@ struct DisplayState {
           doubleTapActive(false), hasDoubleTapActive(false), systemStatus(true), savedMainVolume(0),
           savedMuteVolume(0), hasSavedVolume(false) {}
 
-    // True if we should show the volume display.
-    // Requires either observed volume data OR confirmed firmware 4.1028+.
     bool supportsVolume() const { return hasVolumeData || (hasV1Version && v1FirmwareVersion >= 41028); }
 };
 

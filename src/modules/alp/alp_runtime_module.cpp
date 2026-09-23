@@ -23,10 +23,6 @@
 #include "../system/system_event_bus.h"
 #include "modules/health/health_journal.h"
 
-// ── Global instance ──────────────────────────────────────────────────
-// Global runtime instance.
-// ── String helpers ───────────────────────────────────────────────────
-
 const char* alpStateName(AlpState s) {
     switch (s) {
     case AlpState::OFF:
@@ -129,7 +125,6 @@ AlpLaserDirection classifyLaserDirectionFromHeartbeatByte1(uint8_t byte1) {
 
 } // namespace
 
-// ── Gun code lookup table ────────────────────────────────────────────
 // Fingerprints are pinned by the BURST_* vectors in test_alp_runtime; original
 // external provenance is UNKNOWN.
 //
@@ -159,7 +154,6 @@ AlpGunType alpLookupGun(uint8_t byte0, uint8_t gunCode) {
     return AlpGunType::UNKNOWN;
 }
 
-// ── Detect-frame gun lookup table ───────────────────────────────────
 // Pattern: CX YY 00 where byte2=0x00, byte1!=0x00.
 // Fingerprint is (byte0, byte1). Live-captured April 2026.
 // byte0 matches the LID-deploy gun family for the same physical gun.
@@ -184,8 +178,6 @@ AlpGunType alpLookupGunDetect(uint8_t byte0, uint8_t byte1) {
     }
     return AlpGunType::UNKNOWN;
 }
-
-// ── begin() ──────────────────────────────────────────────────────────
 
 void AlpRuntimeModule::begin(bool enabled) {
     enabled_ = enabled;
@@ -245,8 +237,6 @@ void AlpRuntimeModule::begin(bool enabled) {
     state_ = AlpState::IDLE;
 }
 
-// ── process() — main loop entry ──────────────────────────────────────
-
 void AlpRuntimeModule::process(uint32_t nowMs) {
     if (!begun_ || !enabled_)
         return;
@@ -276,10 +266,8 @@ void AlpRuntimeModule::process(uint32_t nowMs) {
         ringLen_ = 0;
     }
 
-    // Drain UART into ring buffer
     drainUart(nowMs);
 
-    // Timeout checks (state-dependent)
     switch (state_) {
     case AlpState::LISTENING:
         handleHeartbeatTimeout(nowMs);
@@ -297,7 +285,6 @@ void AlpRuntimeModule::process(uint32_t nowMs) {
         break;
     }
 
-    // Parse whatever is in the ring buffer
     parseRingBuffer(nowMs);
 
     // Keep the atomic snapshot current even when no state transition fires.
@@ -317,8 +304,6 @@ void AlpRuntimeModule::process(uint32_t nowMs) {
     }
 }
 
-// ── snapshot() ───────────────────────────────────────────────────────
-
 AlpStatus AlpRuntimeModule::snapshot() const {
     AlpStatus s;
     s.state = state_;
@@ -334,8 +319,6 @@ AlpStatus AlpRuntimeModule::snapshot() const {
     std::memcpy(s.detectRaw, detectRaw_, sizeof(s.detectRaw));
     return s;
 }
-
-// Current event snapshot update.
 
 void AlpRuntimeModule::updateCurrentEvent(uint32_t nowMs) {
     AlpLaserEvent next;
@@ -367,7 +350,6 @@ void AlpRuntimeModule::updateCurrentEvent(uint32_t nowMs) {
     next.openedAtMs = currentEvent_.openedAtMs;
     next.closedAtMs = currentEvent_.closedAtMs;
 
-    // Latch opened/closed timestamps on state edges
     if (next.active && !currentEvent_.active) {
         next.openedAtMs = nowMs;
         next.closedAtMs = 0;
@@ -379,15 +361,11 @@ void AlpRuntimeModule::updateCurrentEvent(uint32_t nowMs) {
     currentEvent_ = next;
 }
 
-// ── Event bus publishing ──────────────────────────────────────────────
-
 void AlpRuntimeModule::publishDisplayEdge() {
     if (!bus_)
         return;
     bus_->publishAlpStateChanged();
 }
-
-// ── State transitions ────────────────────────────────────────────────
 
 void AlpRuntimeModule::transitionTo(AlpState newState, uint32_t nowMs) {
     AlpState oldState = state_;
@@ -398,13 +376,6 @@ void AlpRuntimeModule::transitionTo(AlpState newState, uint32_t nowMs) {
     if (newState == AlpState::ALERT_ACTIVE && oldState != AlpState::ALERT_ACTIVE) {
         alertActiveWatchdogMs_ = nowMs;
     }
-
-    // Clear the display-decision dedup cache so state-driven edges always
-    // re-emit after a state change (a "DISP_ALP_STATE A->B" transition
-    // and any subsequent DISP_V1_EVENT / DISP_ALP_EVENT entries in that
-    // state must not be suppressed just because they textually match the
-    // previous state's last log).
-
 
     // Clear stale gun ID only on a genuinely fresh engagement — one that
     // arrives from LISTENING or IDLE. TEARDOWN → ALERT_ACTIVE is the ALP
@@ -419,7 +390,6 @@ void AlpRuntimeModule::transitionTo(AlpState newState, uint32_t nowMs) {
         lastGunTimestampMs_ = 0;
     }
 
-    // ── Session lifecycle ──────────────────────────────────────────────
     // Four edges matter:
     //
     //   (a) LISTENING|IDLE → ALERT_ACTIVE: open a new session. Flag as
@@ -480,12 +450,9 @@ void AlpRuntimeModule::transitionTo(AlpState newState, uint32_t nowMs) {
 
     state_ = newState;
 
-    // ── Publish state-change event to display pipeline ──────────────────
     updateCurrentEvent(nowMs);
     publishDisplayEdge();
 }
-
-// ── UART drain ───────────────────────────────────────────────────────
 
 void AlpRuntimeModule::drainUart(uint32_t nowMs) {
 #ifndef UNIT_TEST
@@ -493,15 +460,12 @@ void AlpRuntimeModule::drainUart(uint32_t nowMs) {
     if (available <= 0)
         return;
 
-    // First data ever — log it
     if (!uartHasReceivedData_) {
         uartHasReceivedData_ = true;
     }
 
-    // Read into ring buffer, up to remaining capacity
     const size_t space = RING_CAPACITY - ringLen_;
     if (space == 0) {
-        // Ring full — discard oldest bytes to make room
         const size_t keep = RING_CAPACITY / 2;
         memmove(ringBuf_, ringBuf_ + (RING_CAPACITY - keep), keep);
         ringLen_ = keep;
@@ -521,7 +485,6 @@ void AlpRuntimeModule::drainUart(uint32_t nowMs) {
 #endif
 }
 
-// ── Ring buffer parsing ──────────────────────────────────────────────
 // All frames are 4 bytes with a supported header and 7-bit checksum.
 // On invalid framing or checksum, advance 1 byte to resync. Consecutive
 // rejected candidates from ALERT_ACTIVE trigger NOISE_WINDOW transition.
@@ -532,11 +495,9 @@ void AlpRuntimeModule::parseRingBuffer(uint32_t nowMs) {
     size_t maxIterations = RING_CAPACITY;
 
     while (ringLen_ >= FRAME_LEN && maxIterations-- > 0) {
-        // Try to parse a valid 4-byte frame at current position
         if (tryParseFrame(nowMs))
             continue;
 
-        // Framing or checksum failed — noise or misalignment
         consecutiveBadChecksums_++;
 
         // UART flood happens in BOTH DLI (detection-circuit crosstalk) and
@@ -565,8 +526,6 @@ void AlpRuntimeModule::parseRingBuffer(uint32_t nowMs) {
     }
 }
 
-// ── Frame parser (header- and checksum-validated dispatch) ───────────
-
 bool AlpRuntimeModule::tryParseFrame(uint32_t nowMs) {
     if (ringLen_ < FRAME_LEN)
         return false;
@@ -587,7 +546,6 @@ bool AlpRuntimeModule::tryParseFrame(uint32_t nowMs) {
     if (!supportedHeader || !alpValidateChecksum(b0, b1, b2, cs))
         return false;
 
-    // Valid frame — reset bad checksum counter
     consecutiveBadChecksums_ = 0;
     heartbeatTimeoutArmed_ = true;
 
@@ -597,13 +555,11 @@ bool AlpRuntimeModule::tryParseFrame(uint32_t nowMs) {
         firstFrameMs_ = nowMs;
     }
 
-    // If we were in NOISE_WINDOW, first valid frame = teardown
     if (state_ == AlpState::NOISE_WINDOW) {
         transitionTo(AlpState::TEARDOWN, nowMs);
         teardownEntryMs_ = nowMs;
     }
 
-    // Dispatch by byte0 range
     if (b0 == ALERT_BYTE0) {
         handleAlertFrame(b1, b2, nowMs);
     } else if (isHeartbeat) {
@@ -619,8 +575,6 @@ bool AlpRuntimeModule::tryParseFrame(uint32_t nowMs) {
     consumeBytes(FRAME_LEN);
     return true;
 }
-
-// ── Frame handlers ──────────────────────────────────────────────────
 
 // TEARDOWN timer invariant: only transitions into TEARDOWN stamp
 // teardownEntryMs_. Ordinary heartbeat/C-frame/register/discovery traffic
@@ -676,8 +630,6 @@ void AlpRuntimeModule::handleAlertFrame(uint8_t b1, uint8_t b2, uint32_t nowMs) 
         // Repeated detect frames are not a Warm-Up release signal. Release is
         // based on confirmed heartbeat transitions instead.
     } else {
-        // Other 98 XX YY frames (status/config)
-
         if (state_ == AlpState::IDLE) {
             transitionTo(AlpState::LISTENING, nowMs);
         }
@@ -698,7 +650,6 @@ void AlpRuntimeModule::handleHeartbeatFrame(uint8_t b0, uint8_t b1, uint32_t now
     }
 
 
-    // ── Heartbeat byte1 alert detection (B0 frames only) ────────────
     // B0 heartbeats carry alert status in byte1 (per manual):
     //   byte1=01 → Targeted (laser detected)
     //   byte1=02 → Warm-Up (After LID Timeout or boot warm-up)
@@ -763,15 +714,12 @@ void AlpRuntimeModule::handleHeartbeatFrame(uint8_t b0, uint8_t b1, uint32_t now
                  !suppressHeartbeatResumeThisProcess_);
 
             if (heartbeatAlertEdge || heartbeatAlertResume) {
-                // Transition to alert — heartbeat either flipped to 01 or
-                // remained at 01 across a TEARDOWN timeout back to LISTENING.
                 alertDetectedViaHb_ = true;
 
                 if (state_ == AlpState::LISTENING || state_ == AlpState::IDLE) {
                     transitionTo(AlpState::ALERT_ACTIVE, nowMs);
                 }
             } else if (b1 != HB_BYTE1_ALERT && prevByte1 == HB_BYTE1_ALERT) {
-                // Transition back to idle — alert resolved
                 alertDetectedViaHb_ = false;
 
                 if (state_ == AlpState::ALERT_ACTIVE) {
@@ -782,7 +730,6 @@ void AlpRuntimeModule::handleHeartbeatFrame(uint8_t b0, uint8_t b1, uint32_t now
         }
     }
 
-    // State transitions (generic — applies to all heartbeat types)
     if (state_ == AlpState::IDLE) {
         transitionTo(AlpState::LISTENING, nowMs);
     }
@@ -791,8 +738,6 @@ void AlpRuntimeModule::handleHeartbeatFrame(uint8_t b0, uint8_t b1, uint32_t now
         sampleSessionDirection(b1, nowMs);
     }
 
-    // SD trace: log every heartbeat frame to capture the raw byte1
-    // cycling pattern alongside the runtime's current direction view.
 }
 
 void AlpRuntimeModule::handleGunCandidate(uint8_t b0, uint8_t b1, uint8_t b2, uint32_t nowMs) {
@@ -812,9 +757,6 @@ void AlpRuntimeModule::handleGunCandidate(uint8_t b0, uint8_t b1, uint8_t b2, ui
     if (gun != AlpGunType::UNKNOWN) {
         lastGun_ = gun;
         lastGunTimestampMs_ = nowMs;
-        // Boot-level "we've seen a real gun" latch — survives
-        // freshEngagement's lastGun_ wipe. See header comment on
-        // bootGunConfirmed_ for the session 3/4/5 display regression.
         bootGunConfirmed_ = true;
         // Session-level update. Also: a real gun ID during the Warm-Up
         // window un-declares Warm-Up — the ALP's Warm-Up sequence fires
@@ -831,8 +773,6 @@ void AlpRuntimeModule::handleGunCandidate(uint8_t b0, uint8_t b1, uint8_t b2, ui
         }
     }
 
-
-    // State transitions
     if (state_ == AlpState::IDLE) {
         transitionTo(AlpState::LISTENING, nowMs);
     }
@@ -842,8 +782,6 @@ void AlpRuntimeModule::handleRegisterFrame(uint8_t b2, uint32_t nowMs) {
     lastHeartbeatMs_ = nowMs;
     lastFrameMs_ = nowMs;
 
-
-    // FD terminator at byte2 signals return-to-idle
     if (b2 == 0xFD) {
         if (state_ == AlpState::ALERT_ACTIVE) {
             transitionTo(AlpState::TEARDOWN, nowMs);
@@ -851,7 +789,6 @@ void AlpRuntimeModule::handleRegisterFrame(uint8_t b2, uint32_t nowMs) {
         }
     }
 
-    // State transitions
     if (state_ == AlpState::IDLE) {
         transitionTo(AlpState::LISTENING, nowMs);
     }
@@ -867,8 +804,6 @@ void AlpRuntimeModule::handleDiscoveryFrame(uint32_t nowMs) {
     }
 }
 
-// ── Ring buffer management ───────────────────────────────────────────
-
 void AlpRuntimeModule::consumeBytes(size_t count) {
     if (count >= ringLen_) {
         ringLen_ = 0;
@@ -877,8 +812,6 @@ void AlpRuntimeModule::consumeBytes(size_t count) {
     memmove(ringBuf_, ringBuf_ + count, ringLen_ - count);
     ringLen_ -= count;
 }
-
-// ── Timeout handlers ─────────────────────────────────────────────────
 
 void AlpRuntimeModule::handleHeartbeatTimeout(uint32_t nowMs) {
     if (!heartbeatTimeoutArmed_)
@@ -914,8 +847,6 @@ void AlpRuntimeModule::handleAlertActiveTimeout(uint32_t nowMs) {
         teardownEntryMs_ = nowMs;
     }
 }
-
-// ── Display decision passthrough ─────────────────────────────────────
 
 void AlpRuntimeModule::sampleSessionDirection(uint8_t heartbeatByte1, uint32_t nowMs) {
     if (!session_.active || state_ != AlpState::ALERT_ACTIVE) {
@@ -965,10 +896,6 @@ void AlpRuntimeModule::sampleSessionDirection(uint8_t heartbeatByte1, uint32_t n
     session_.direction = sampled;
     session_.directionSampleByte1 = heartbeatByte1;
 }
-
-// Display-window edge publication.
-
-// ── Test instrumentation ─────────────────────────────────────────────
 
 #ifdef UNIT_TEST
 void AlpRuntimeModule::testInjectBytes(const uint8_t* data, size_t len) {

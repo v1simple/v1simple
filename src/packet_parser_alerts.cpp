@@ -1,7 +1,3 @@
-/**
- * Alert table parsing and priority-selection path for PacketParser.
- */
-
 #include "packet_parser.h"
 #include <algorithm>
 
@@ -17,7 +13,6 @@ static constexpr uint32_t kAlertAssemblyTimeoutMs = 1800;
 } // namespace
 
 void PacketParser::resetAlertAssembly() {
-    // Drop any partially collected alert rows without altering display state.
     clearAlertCache();
 }
 

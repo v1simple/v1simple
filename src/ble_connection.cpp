@@ -1,15 +1,9 @@
-/**
- * Valentine One Gen2 scanning, connection, discovery, and notification callbacks.
- */
-
 #include "ble_client.h"
 #include "ble_log_rate_limit.h"
 #include "ble_internals.h"
 #include "config.h"
 #include <cstring>
 #include <esp_heap_caps.h>
-
-// --- scan callbacks ---
 
 void V1BLEClient::ScanCallbacks::onResult(const NimBLEAdvertisedDevice* advertisedDevice) {
     if (!bleClient) {
@@ -19,7 +13,6 @@ void V1BLEClient::ScanCallbacks::onResult(const NimBLEAdvertisedDevice* advertis
     const std::string& name = advertisedDevice->getName();
     const std::string& addrStr = advertisedDevice->getAddress().toString();
 
-    // Ignore our own proxy advertisement to avoid self-connect loops
     if (bleClient->proxyEnabled_) {
         NimBLEAddress selfAddr = NimBLEDevice::getAddress();
         if (advertisedDevice->getAddress() == selfAddr) {
@@ -42,11 +35,9 @@ void V1BLEClient::ScanCallbacks::onResult(const NimBLEAdvertisedDevice* advertis
     const bool isV1 = nameLooksV1 || serviceLooksV1;
 
     if (!isV1) {
-        // Not a V1 device, keep scanning
         return;
     }
 
-    // Stop scanning and queue the discovered V1 connection.
     int advAddrType = advertisedDevice->getAddressType();
 
     // Record the discovered address as runtime/backup compatibility state and
@@ -81,8 +72,6 @@ void V1BLEClient::ScanCallbacks::onScanEnd(const NimBLEScanResults& scanResults,
         instancePtr->pendingScanEndUpdate_.store(true, std::memory_order_release);
     }
 }
-
-// --- client callbacks ---
 
 void V1BLEClient::ClientCallbacks::onPhyUpdate(NimBLEClient* pClient_, uint8_t txPhy, uint8_t rxPhy) {
     // BLE callback: keep this notify-free.
@@ -183,15 +172,7 @@ void V1BLEClient::ClientCallbacks::onDisconnect(NimBLEClient* pClient_, int reas
     }
 }
 
-// --- connection state machine ---
-
 bool V1BLEClient::connectToServer() {
-    // ============================================================================
-    // CONNECTION GUARDS
-    // ============================================================================
-    // Prevent overlapping connection attempts which cause EBUSY errors
-
-    // Guard 1: Check if already connecting
     if (connectInProgress_) {
         return false;
     }
@@ -203,7 +184,6 @@ bool V1BLEClient::connectToServer() {
         return false;
     }
 
-    // Guard 2: Check if scanning is still active - must be fully stopped
     NimBLEScan* pScan = NimBLEDevice::getScan();
     if (pScan && pScan->isScanning()) {
         pScan->stop();
@@ -227,7 +207,6 @@ bool V1BLEClient::connectToServer() {
     sessionPublicationGate_.open(nextGeneration);
     acceptClientCallbacks_.store(true, std::memory_order_release);
 
-    // Set connection guard; CONNECTING state will initiate one async attempt
     // per loop() pass to avoid monopolizing a single iteration.
     connectInProgress_ = true;
     connectStartMs_ = static_cast<uint32_t>(millis());
@@ -296,7 +275,6 @@ bool V1BLEClient::startAsyncConnect() {
         return false;
     }
 
-    // Clear async state before initiating connect
     asyncConnectPending_ = true;
     asyncConnectSuccess_ = false;
 
@@ -312,7 +290,6 @@ bool V1BLEClient::startAsyncConnect() {
         }
         asyncConnectPending_ = false;
 
-        // Check if we should retry
         if (connectAttemptNumber_ < MAX_CONNECT_ATTEMPTS) {
             // Retry next loop pass; don't spin multiple attempts in one process() call.
             return true; // Keep state machine going
@@ -364,20 +341,16 @@ bool V1BLEClient::finishConnection() {
     return true;
 }
 
-// Process CONNECTING_WAIT state - polls for async connect completion
 void V1BLEClient::processConnectingWait() {
     const uint32_t now = static_cast<uint32_t>(millis());
     const uint32_t elapsed = now - connectStartMs_;
 
-    // Check for async connect success (set by onConnect callback)
     if (asyncConnectSuccess_) {
         finishConnection();
         return;
     }
 
-    // Check if still pending
     if (asyncConnectPending_) {
-        // Check for overall timeout
         if (elapsed > CONNECT_TIMEOUT_MS) {
             consecutiveConnectFailures_++;
 
@@ -401,7 +374,6 @@ void V1BLEClient::processConnectingWait() {
         Serial.printf("[BLE] Async connect attempt %d failed (error: %d)\n", connectAttemptNumber_, err);
     }
 
-    // Check if we should retry
     if (connectAttemptNumber_ < MAX_CONNECT_ATTEMPTS) {
         if (err == 13) { // EBUSY - defer via backoff instead of blocking main loop
             nextConnectAllowedMs_ = 0;
@@ -634,13 +606,11 @@ void V1BLEClient::discoveryTaskFunc(void* param) {
     vTaskDeleteWithCaps(nullptr);
 }
 
-// Process DISCOVERING state - spawns discovery in a short-lived task
 // so the main loop stays responsive during the ~2s GATT discovery
 void V1BLEClient::processDiscovering() {
     const uint32_t now = static_cast<uint32_t>(millis());
     const uint32_t elapsed = now - connectStartMs_;
 
-    // Check for timeout
     // Safe even if discovery task is blocked: disconnect() sends HCI terminate,
     // NimBLE host task wakes the blocked task with BLE_HS_ENOTCONN, task exits cleanly
     if (elapsed > CONNECT_TIMEOUT_MS + DISCOVERY_TIMEOUT_MS) {

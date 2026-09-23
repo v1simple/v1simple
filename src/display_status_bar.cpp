@@ -1,10 +1,3 @@
-/**
- * Status-bar and peripheral indicators.
- *
- * Contains drawVolumeIndicator, drawRssiIndicator, drawProfileIndicator,
- * drawBatteryIndicator, drawBLEProxyIndicator, and drawWiFiIndicator.
- */
-
 #include "display.h"
 #include "display_layout.h"
 #include "display_draw.h"
@@ -21,15 +14,9 @@
 
 using namespace DisplaySegments;
 
-// File-scoped hysteresis state for battery indicator
 static bool s_batteryShowOnUSB = true;
 
-// ============================================================================
-// Volume indicator
-// ============================================================================
-
 void V1Display::drawVolumeIndicator(uint8_t mainVol, uint8_t muteVol) {
-    // Draw volume indicator below bogey counter: "5V  0M" format
     const V1Settings& s = settings_.get();
     const DisplayLayout::DisplayRect mainRect = DisplayLayout::volumeMainRect();
     const DisplayLayout::DisplayRect muteRect = DisplayLayout::volumeMuteRect();
@@ -50,40 +37,29 @@ void V1Display::drawVolumeIndicator(uint8_t mainVol, uint8_t muteVol) {
     elementCaches_.volume.lastMainColor = s.colorVolumeMain;
     elementCaches_.volume.lastMuteColor = s.colorVolumeMute;
 
-    // Clear the area first - only clear what we need, BLE icon is at y=98
     drawnRegion_.add(clearRect.x, clearRect.y, clearRect.w, clearRect.h, DisplayDirtyRegionSource::Status);
     FILL_RECT(clearRect.x, clearRect.y, clearRect.w, clearRect.h, PALETTE_BG);
 
-    // Draw main volume in blue, mute volume in yellow (user-configurable colors)
-    GFX_setTextDatum(TL_DATUM); // Top-left alignment
-    TFT_CALL(setTextSize)(2);   // Size 2 = ~16px height
+    GFX_setTextDatum(TL_DATUM);
+    TFT_CALL(setTextSize)(2);
 
-    // Draw main volume "5V" in main volume color
-    char mainBuf[5]; // allow up to three digits plus suffix and null
+    char mainBuf[5];
     snprintf(mainBuf, sizeof(mainBuf), "%dV", mainVol);
     TFT_CALL(setTextColor)(s.colorVolumeMain, PALETTE_BG);
     GFX_drawString(tft_, mainBuf, mainRect.x, mainRect.y);
 
-    // Draw mute volume "0M" in mute volume color, offset to the right
-    char muteBuf[5]; // allow up to three digits plus suffix and null
+    char muteBuf[5];
     snprintf(muteBuf, sizeof(muteBuf), "%dM", muteVol);
     TFT_CALL(setTextColor)(s.colorVolumeMute, PALETTE_BG);
-    GFX_drawString(tft_, muteBuf, muteRect.x, muteRect.y); // Aligned with RSSI number
+    GFX_drawString(tft_, muteBuf, muteRect.x, muteRect.y);
 }
 
-// ============================================================================
-// RSSI indicator
-// ============================================================================
-
 void V1Display::drawRssiIndicator(int rssi) {
-    // Draw BLE RSSI below volume indicator
-    // Shows V1 RSSI and app RSSI (if connected) stacked vertically
     const DisplayLayout::DisplayRect rssiRect = DisplayLayout::rssiRect();
     const int x = rssiRect.x;
     const int y = rssiRect.y;
     const int lineHeight = rssiRect.h / 2;
 
-    // Check if RSSI indicator is hidden
     const V1Settings& s = settings_.get();
     const bool hidden = (s.hideRssiIndicator || s.hideVolumeIndicator);
     if (hidden) {
@@ -99,19 +75,16 @@ void V1Display::drawRssiIndicator(int rssi) {
         elementCaches_.rssi.lastHidden = true;
         elementCaches_.rssi.v1LineValid = false;
         elementCaches_.rssi.appLineValid = false;
-        return; // Don't draw anything
+        return;
     }
 
     if (!hasFreshBleContext(millis())) {
-        return; // Keep last-drawn RSSI visible; don't clear on stale context
+        return; // Stale transport context must not erase the last known value.
     }
 
-    // Get both RSSIs
-    const int v1Rssi = rssi;               // V1 RSSI passed in
-    const int appRssi = bleCtx_.proxyRssi; // App RSSI
+    const int v1Rssi = rssi;
+    const int appRssi = bleCtx_.proxyRssi;
 
-    // Helper: RSSI dBm → color-code bucket (identical to the logic below,
-    // used here for cache-key comparison so color transitions force a redraw).
     auto rssiColorFor = [](int r) -> uint16_t {
         if (r >= -75)
             return COLOR_GREEN;
@@ -160,36 +133,28 @@ void V1Display::drawRssiIndicator(int rssi) {
     }
 
     GFX_setTextDatum(TL_DATUM);
-    TFT_CALL(setTextSize)(2); // Match volume text size
+    TFT_CALL(setTextSize)(2);
 
-    // Draw V1 RSSI if connected
     if ((redrawBothLines || v1Changed) && v1Rssi != 0) {
-        // Draw "V " label with configurable color
         TFT_CALL(setTextColor)(s.colorRssiV1, PALETTE_BG);
         GFX_drawString(tft_, "V ", x, y);
 
         TFT_CALL(setTextColor)(v1Color, PALETTE_BG);
         char buf[8];
         snprintf(buf, sizeof(buf), "%d", v1Rssi);
-        GFX_drawString(tft_, buf, x + 24, y); // Offset for "V " width
+        GFX_drawString(tft_, buf, x + 24, y);
     }
 
-    // Draw app RSSI below V1 RSSI if connected
     if ((redrawBothLines || appChanged) && appRssi != 0) {
-        // Draw "P " label with configurable color
         TFT_CALL(setTextColor)(s.colorRssiProxy, PALETTE_BG);
         GFX_drawString(tft_, "P ", x, y + lineHeight);
 
         TFT_CALL(setTextColor)(appColor, PALETTE_BG);
         char buf[8];
         snprintf(buf, sizeof(buf), "%d", appRssi);
-        GFX_drawString(tft_, buf, x + 24, y + lineHeight); // Offset for "P " width
+        GFX_drawString(tft_, buf, x + 24, y + lineHeight);
     }
 }
-
-// ============================================================================
-// Profile indicator
-// ============================================================================
 
 void V1Display::setProfileIndicatorSlot(int slot) {
     if (slot != lastProfileSlot_) {
@@ -200,17 +165,14 @@ void V1Display::setProfileIndicatorSlot(int slot) {
 }
 
 void V1Display::drawProfileIndicator(int slot) {
-    // Get custom slot names and colors from settings
     const V1Settings& s = settings_.get();
 
     setProfileIndicatorSlot(slot);
 
-    // Check if we're in the "flash" period after a profile change
     const uint32_t nowMs = static_cast<uint32_t>(millis());
     bool inFlashPeriod = (nowMs - profileChangedTime_) < HIDE_TIMEOUT_MS;
 
 #if defined(DISPLAY_WAVESHARE_349)
-    // On Waveshare: draw profile indicator under arrows (for autopush profiles)
     const DisplayLayout::DisplayRect profileRect = DisplayLayout::profileRect();
     const int cx = profileRect.x + profileRect.w / 2;
 
@@ -221,8 +183,7 @@ void V1Display::drawProfileIndicator(int slot) {
     // clipped corner. The cache short-circuit below ensures both of those
     // only happen on frames where the profile state actually changed.
 
-    // If user explicitly hides the indicator via web UI, only show during flash period.
-    // Hidden-state render is just a FILL_RECT clear; use the cache to skip repaints.
+    // A profile change briefly reveals an indicator hidden by user preference.
     if (s.hideProfileIndicator && !inFlashPeriod) {
         if (elementCaches_.profile.valid && elementCaches_.profile.hiddenRender) {
             return;
@@ -233,17 +194,12 @@ void V1Display::drawProfileIndicator(int slot) {
         elementCaches_.profile.hiddenRender = true;
         elementCaches_.profile.lastName[0] = '\0';
         elementCaches_.profile.lastSlot = -1;
-        // Repaint the battery icon whose bottom-left corner we just wiped.
-        // (WiFi icon is at x=[6,30], y=[143,167] — does not overlap the
-        //  profile FILL_RECT at x=[499,629), y=[152,172), so no WiFi repaint
-        //  needed. drawProfileIndicator is scoped to the one indicator it
-        //  actually clips.)
+        // The profile clear overlaps the battery body but not the WiFi icon.
         elementCaches_.battery.iconValid = false;
         drawBatteryIndicator();
         return;
     }
 
-    // Use custom names with 20-character default fallbacks.
     const char* name;
     uint16_t color;
     switch (slot % 3) {
@@ -276,7 +232,6 @@ void V1Display::drawProfileIndicator(int slot) {
     strncpy(elementCaches_.profile.lastName, name, sizeof(elementCaches_.profile.lastName) - 1);
     elementCaches_.profile.lastName[sizeof(elementCaches_.profile.lastName) - 1] = '\0';
 
-    // Clear area under arrows
     drawnRegion_.add(profileRect.x, profileRect.y, profileRect.w, profileRect.h, DisplayDirtyRegionSource::Status);
     FILL_RECT(profileRect.x, profileRect.y, profileRect.w, profileRect.h, PALETTE_BG);
 
@@ -292,59 +247,45 @@ void V1Display::drawProfileIndicator(int slot) {
     GFX_setTextDatum(TL_DATUM);
     GFX_drawString(tft_, name, textX, profileRect.y);
 
-    // Profile FILL_RECT clipped the battery body's bottom-left corner.
-    // Invalidate its icon cache + repaint so the clipped corner is restored.
-    // Cache short-circuit in drawBatteryIndicator keeps this cheap on frames
-    // where profile didn't redraw (this path is reached only on profile change).
+    // Restore the battery corner clipped by the profile clear.
     elementCaches_.battery.iconValid = false;
     drawBatteryIndicator();
 #endif
 }
 
-// ============================================================================
-// Battery indicator
-// ============================================================================
-
 void V1Display::drawBatteryIndicator() {
 #if defined(DISPLAY_WAVESHARE_349)
     const V1Settings& s = settings_.get();
 
-    // Battery icon position - VERTICAL at bottom-right
-    // Position to the right of profile indicator area, avoiding direction arrows
-    const int battW = 14;                        // Battery body width (was height when horizontal)
-    const int battH = 28;                        // Battery body height (was width when horizontal)
-    const int battX = SCREEN_WIDTH - battW - 8;  // Right edge with margin
-    const int battY = SCREEN_HEIGHT - battH - 8; // Bottom with margin (cap above)
-    const int capW = 8;                          // Positive terminal cap width (horizontal bar at top)
-    const int capH = 3;                          // Positive terminal cap height
+    const int battW = 14;
+    const int battH = 28;
+    const int battX = SCREEN_WIDTH - battW - 8;
+    const int battY = SCREEN_HEIGHT - battH - 8;
+    const int capW = 8;
+    const int capH = 3;
     const DisplayLayout::DisplayRect percentRect = DisplayLayout::batteryPercentRect();
     const DisplayLayout::DisplayRect iconRect = DisplayLayout::batteryIconRect();
 
-    // Hide battery when on USB power (voltage near max)
-    // Use hysteresis to prevent flickering: hide above 4125, show below 4095
+    // Hysteresis keeps the indicator from flickering at the USB/full-charge boundary.
     const uint16_t voltage = battery_ ? battery_->getVoltageMillivolts() : 0;
     if (voltage > 4125) {
-        s_batteryShowOnUSB = false; // On USB or fully charged
+        s_batteryShowOnUSB = false;
     } else if (voltage < 4095) {
-        s_batteryShowOnUSB = true; // On battery, not full
+        s_batteryShowOnUSB = true;
     }
-    // Between 4095-4125: keep previous state (hysteresis)
 
-    // Get battery percentage for display
     const uint8_t pct = battery_ ? battery_->getPercentage() : 0;
 
-    // If percent is enabled, ONLY show percent (never icon)
     if (s.showBatteryPercent && !s.hideBatteryIcon && battery_ && battery_->hasBattery()) {
-        const unsigned long PCT_FORCE_REDRAW_MS = 60000; // 60s safety refresh
+        const unsigned long PCT_FORCE_REDRAW_MS = 60000;
 
-        // Choose color based on level
         uint16_t textColor;
         if (pct <= 20) {
-            textColor = 0xF800; // Red - critical
+            textColor = 0xF800;
         } else if (pct <= 40) {
-            textColor = 0xFD20; // Orange - low
+            textColor = 0xFD20;
         } else {
-            textColor = 0x07E0; // Green - good
+            textColor = 0x07E0;
         }
         textColor = dimColor(textColor);
 
@@ -355,7 +296,7 @@ void V1Display::drawBatteryIndicator() {
                                  (pct != elementCaches_.battery.lastPctDrawn) ||
                                  (textColor != elementCaches_.battery.lastPctColor) ||
                                  ((nowMs - elementCaches_.battery.lastPctDrawMs) >= PCT_FORCE_REDRAW_MS) ||
-                                 !elementCaches_.battery.iconValid; // mode transition
+                                 !elementCaches_.battery.iconValid;
 
         // Mode just transitioned from icon → percent, or first render.
         // Clear the icon area once; then cache state tracks percent-mode going forward.
@@ -367,9 +308,7 @@ void V1Display::drawBatteryIndicator() {
             elementCaches_.battery.lastFilledSections = -1;
         }
 
-        // Only draw percent if not on USB
         if (!s_batteryShowOnUSB) {
-            // Clear percent area when not visible
             if (elementCaches_.battery.lastPctVisible) {
                 drawnRegion_.add(percentRect.x, percentRect.y, percentRect.w, percentRect.h,
                                  DisplayDirtyRegionSource::Status);
@@ -377,15 +316,14 @@ void V1Display::drawBatteryIndicator() {
                 elementCaches_.battery.lastPctVisible = false;
                 elementCaches_.battery.lastPctDrawn = -1;
             }
-            return; // No percent on USB/fully charged
+            return;
         }
 
         if (!needsRedraw) {
-            return; // Skip expensive render when nothing changed
+            return;
         }
         drawnRegion_.add(percentRect.x, percentRect.y, percentRect.w, percentRect.h, DisplayDirtyRegionSource::Status);
 
-        // Format percentage string (no % to save space)
         char pctStr[4];
         snprintf(pctStr, sizeof(pctStr), "%d", pct);
 
@@ -393,42 +331,38 @@ void V1Display::drawBatteryIndicator() {
         // Positioned to avoid top arrow which extends to roughly SCREEN_WIDTH - 14
         FILL_RECT(percentRect.x, percentRect.y, percentRect.w, percentRect.h, PALETTE_BG);
 
-        // Right-aligned built-in font near the top-right corner.
         GFX_setTextDatum(TR_DATUM);
-        TFT_CALL(setTextSize)(2); // Larger for better visibility
+        TFT_CALL(setTextSize)(2);
         TFT_CALL(setTextColor)(textColor, PALETTE_BG);
         GFX_drawString(tft_, pctStr, percentRect.x + percentRect.w - 2, percentRect.y + 12);
 
-        // Update cache
         elementCaches_.battery.lastPctDrawn = pct;
         elementCaches_.battery.lastPctColor = textColor;
         elementCaches_.battery.lastPctVisible = true;
         elementCaches_.battery.lastPctDrawMs = nowMs;
-        return; // Never draw icon when percent is enabled
+        return;
     }
 
-    // Percent is disabled, show icon instead.
-    // Compute icon state up front so we can cache-compare before touching pixels.
     const bool hasBat = battery_ && battery_->hasBattery();
     const bool hideIcon = s.hideBatteryIcon;
     const bool shownNow = hasBat && !hideIcon && s_batteryShowOnUSB;
 
     int filledSections = 0;
-    uint16_t fillColor = 0x07E0; // default green
+    uint16_t fillColor = 0x07E0;
     if (shownNow) {
         const int sections = 5;
-        filledSections = (pct + 10) / 20; // 0-20%=1, 21-40%=2, etc. (min 1 if >0)
+        filledSections = (pct + 10) / 20;
         if (pct == 0)
             filledSections = 0;
         if (filledSections > sections)
             filledSections = sections;
 
         if (pct <= 20)
-            fillColor = 0xF800; // Red - critical
+            fillColor = 0xF800;
         else if (pct <= 40)
-            fillColor = 0xFD20; // Orange - low
+            fillColor = 0xFD20;
         else
-            fillColor = 0x07E0; // Green - good
+            fillColor = 0x07E0;
     }
     const uint16_t outlineColor = dimColor(PALETTE_TEXT);
 
@@ -467,24 +401,19 @@ void V1Display::drawBatteryIndicator() {
         return;
     }
 
-    const int padding = 2;  // Padding inside battery
-    const int sections = 5; // Number of charge sections
+    const int padding = 2;
+    const int sections = 5;
 
-    // Clear area (including cap above)
     drawnRegion_.add(iconRect.x, iconRect.y, iconRect.w, iconRect.h, DisplayDirtyRegionSource::Status);
     FILL_RECT(iconRect.x, iconRect.y, iconRect.w, iconRect.h, PALETTE_BG);
 
-    // Draw battery outline (dimmed) - vertical orientation
-    DRAW_RECT(battX, battY, battW, battH, outlineColor); // Main body
-    // Positive cap at top, centered
+    DRAW_RECT(battX, battY, battW, battH, outlineColor);
     FILL_RECT(battX + (battW - capW) / 2, battY - capH, capW, capH, outlineColor);
 
-    // Draw charge sections (vertical - bottom to top, filled from bottom)
-    int sectionH = (battH - 2 * padding - (sections - 1)) / sections; // Height of each section with 1px gap
+    int sectionH = (battH - 2 * padding - (sections - 1)) / sections;
     for (int i = 0; i < sections; i++) {
-        // Draw from bottom up: section 0 at bottom, section 4 at top
         int sx = battX + padding;
-        int sy = battY + battH - padding - (i + 1) * sectionH - i; // Bottom-up
+        int sy = battY + battH - padding - (i + 1) * sectionH - i;
         int sw = battW - 2 * padding;
 
         if (i < filledSections) {
@@ -492,7 +421,6 @@ void V1Display::drawBatteryIndicator() {
         }
     }
 
-    // Commit icon cache
     elementCaches_.battery.iconValid = true;
     elementCaches_.battery.lastIconShown = true;
     elementCaches_.battery.lastFilledSections = filledSections;
@@ -504,10 +432,6 @@ void V1Display::drawBatteryIndicator() {
     elementCaches_.battery.lastShowPercent = s.showBatteryPercent;
 #endif
 }
-
-// ============================================================================
-// BLE proxy indicator
-// ============================================================================
 
 void V1Display::drawBLEProxyIndicator() {
 #if defined(DISPLAY_WAVESHARE_349)
@@ -523,7 +447,6 @@ void V1Display::drawBLEProxyIndicator() {
             FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
             bleProxyDrawn_ = false;
         }
-        // Cache-short-circuit: if we already rendered the cleared state, return.
         if (elementCaches_.bleProxy.valid && !elementCaches_.bleProxy.lastDrawn) {
             return;
         }
@@ -532,7 +455,6 @@ void V1Display::drawBLEProxyIndicator() {
         return;
     }
 
-    // Check if BLE icon should be hidden
     const V1Settings& s = settings_.get();
     if (s.hideBleIcon) {
         if (bleProxyDrawn_) {
@@ -576,37 +498,30 @@ void V1Display::drawBLEProxyIndicator() {
     elementCaches_.bleProxy.lastDrawn = true;
     elementCaches_.bleProxy.lastColor = btColor;
 
-    // Clear the area before redrawing
     drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Status);
     FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
 
-    // Draw Bluetooth rune - the bind rune of ᛒ (Berkanan) and ᚼ (Hagall)
-    // Center point of the icon
+    // Bluetooth bind rune geometry.
     int cx = bleX + iconSize / 2;
     int cy = bleY + iconSize / 2;
 
-    int h = iconSize - 2; // Total height
+    int h = iconSize - 2;
     int top = cy - h / 2;
     int bot = cy + h / 2;
     int mid = cy;
 
-    // Right chevron points - where the arrows reach on the right
     int rightX = cx + 5;
-    int topChevronY = mid - 4; // Upper right point
-    int botChevronY = mid + 4; // Lower right point
+    int topChevronY = mid - 4;
+    int botChevronY = mid + 4;
 
-    // Left arrow endpoints
     int leftX = cx - 5;
-    int topArrowY = mid - 4; // Upper left point
-    int botArrowY = mid + 4; // Lower left point
+    int topArrowY = mid - 4;
+    int botArrowY = mid + 4;
 
     // Vertical center line (thicker for visibility)
     FILL_RECT(cx - 1, top, 2, h, btColor);
 
-    // ============================================================================
-    // RIGHT SIDE: Two chevrons forming the "B"
-    // ============================================================================
-    // Top chevron: top of line → right point → center (draw 3 lines for thickness)
+    // Three parallel strokes keep each diagonal visible at this size.
     DRAW_LINE(cx - 1, top, rightX - 1, topChevronY, btColor);
     DRAW_LINE(cx, top, rightX, topChevronY, btColor);
     DRAW_LINE(cx + 1, top, rightX + 1, topChevronY, btColor);
@@ -614,7 +529,6 @@ void V1Display::drawBLEProxyIndicator() {
     DRAW_LINE(rightX, topChevronY, cx, mid, btColor);
     DRAW_LINE(rightX + 1, topChevronY, cx + 1, mid, btColor);
 
-    // Bottom chevron: center → right point → bottom of line (draw 3 lines for thickness)
     DRAW_LINE(cx - 1, mid, rightX - 1, botChevronY, btColor);
     DRAW_LINE(cx, mid, rightX, botChevronY, btColor);
     DRAW_LINE(cx + 1, mid, rightX + 1, botChevronY, btColor);
@@ -622,15 +536,10 @@ void V1Display::drawBLEProxyIndicator() {
     DRAW_LINE(rightX, botChevronY, cx, bot, btColor);
     DRAW_LINE(rightX + 1, botChevronY, cx + 1, bot, btColor);
 
-    // ============================================================================
-    // LEFT SIDE: Two arrows forming the "X" through center
-    // ============================================================================
-    // Upper-left arrow (draw 3 lines for thickness)
     DRAW_LINE(leftX - 1, topArrowY, cx - 1, mid, btColor);
     DRAW_LINE(leftX, topArrowY, cx, mid, btColor);
     DRAW_LINE(leftX + 1, topArrowY, cx + 1, mid, btColor);
 
-    // Lower-left arrow (draw 3 lines for thickness)
     DRAW_LINE(leftX - 1, botArrowY, cx - 1, mid, btColor);
     DRAW_LINE(leftX, botArrowY, cx, mid, btColor);
     DRAW_LINE(leftX + 1, botArrowY, cx + 1, mid, btColor);
@@ -638,10 +547,6 @@ void V1Display::drawBLEProxyIndicator() {
     bleProxyDrawn_ = true;
 #endif
 }
-
-// ============================================================================
-// WiFi indicator
-// ============================================================================
 
 void V1Display::drawWiFiIndicator() {
 #if defined(DISPLAY_WAVESHARE_349)
@@ -653,9 +558,7 @@ void V1Display::drawWiFiIndicator() {
     const int wifiY = iconRect.y;
     const int wifiSize = iconRect.w;
 
-    // Check if user explicitly hides the WiFi icon
     if (s.hideWifiIcon) {
-        // Cache short-circuit: skip clear FILL_RECT when already rendered as hidden
         if (elementCaches_.wifi.valid && !elementCaches_.wifi.lastVisible) {
             return;
         }
@@ -671,12 +574,10 @@ void V1Display::drawWiFiIndicator() {
     const bool showWifiIcon = wifiServiceActive || staConnected;
 
     if (!showWifiIcon) {
-        // Cache short-circuit: skip clear FILL_RECT when already rendered as hidden
         if (elementCaches_.wifi.valid && !elementCaches_.wifi.lastVisible) {
             return;
         }
         drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Status);
-        // Clear the WiFi icon area when WiFi is fully inactive.
         FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
         elementCaches_.wifi.valid = true;
         elementCaches_.wifi.lastVisible = false;
@@ -703,18 +604,13 @@ void V1Display::drawWiFiIndicator() {
     elementCaches_.wifi.lastVisible = true;
     elementCaches_.wifi.lastColor = wifiColor;
 
-    // Clear area first
     FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
 
-    // Center point for arcs (bottom center of icon area)
     int cx = wifiX + wifiSize / 2;
     int cy = wifiY + wifiSize - 3;
 
-    // Draw center dot (the WiFi source point)
     FILL_RECT(cx - 2, cy - 2, 5, 5, wifiColor);
 
-    // Draw 3 concentric arcs above the dot.
-    //
     // Geometry is device-constant (fixed radii 5/9/13 and fixed angle step
     // tables), so we precompute (dx, dy) offsets once on first call and reuse
     // them forever.  This removes ~28 double-precision sin/cos evaluations

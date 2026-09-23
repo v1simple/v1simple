@@ -173,7 +173,6 @@ html.dark {
     --radius-selector: var(--radius-base); --radius-field: var(--radius-base); --radius-box: var(--radius-container); --border: 1px;
 }
 
-/* Smooth scrolling */
 html {
     scroll-behavior: smooth;
     overflow-x: hidden;
@@ -271,7 +270,6 @@ body > div {
     box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--color-primary);
 }
 
-/* Custom scrollbar for dark theme */
 ::-webkit-scrollbar {
     width: 8px;
     height: 8px;

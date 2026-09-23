@@ -38,10 +38,6 @@ void setUp() {
 
 void tearDown() {}
 
-// ---------------------------------------------------------------------------
-// Static utility: makeAlertId
-// ---------------------------------------------------------------------------
-
 void test_make_alert_id_encodes_band_and_freq() {
     uint32_t id = VoiceModule::makeAlertId(BAND_KA, 34700);
     TEST_ASSERT_EQUAL_UINT32(((uint32_t)BAND_KA << 16) | 34700u, id);
@@ -65,10 +61,6 @@ void test_make_alert_id_distinguishes_photo_presentation() {
     TEST_ASSERT_NOT_EQUAL(k, photo);
 }
 
-// ---------------------------------------------------------------------------
-// Static utility: toAudioDirection
-// ---------------------------------------------------------------------------
-
 void test_to_audio_direction_front() {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(AlertDirection::AHEAD),
                           static_cast<int>(VoiceModule::toAudioDirection(DIR_FRONT)));
@@ -88,10 +80,6 @@ void test_to_audio_direction_none_is_side() {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(AlertDirection::SIDE),
                           static_cast<int>(VoiceModule::toAudioDirection(DIR_NONE)));
 }
-
-// ---------------------------------------------------------------------------
-// Static utility: isBandEnabledForSecondary
-// ---------------------------------------------------------------------------
 
 void test_is_band_enabled_for_secondary_ka_follows_setting() {
     const V1Settings& s = settings.get();
@@ -116,10 +104,6 @@ void test_is_band_enabled_for_secondary_unknown_band_false() {
     TEST_ASSERT_FALSE(VoiceModule::isBandEnabledForSecondary(BAND_NONE, s));
 }
 
-// ---------------------------------------------------------------------------
-// Static utility: getAlertBars
-// ---------------------------------------------------------------------------
-
 void test_get_alert_bars_front_direction_uses_front_strength() {
     AlertData a = AlertData::create(BAND_KA, DIR_FRONT, 6, 2, 34700);
     TEST_ASSERT_EQUAL_UINT8(6, VoiceModule::getAlertBars(a));
@@ -135,15 +119,10 @@ void test_get_alert_bars_no_direction_uses_max() {
     TEST_ASSERT_EQUAL_UINT8(5, VoiceModule::getAlertBars(a));
 }
 
-// ---------------------------------------------------------------------------
-// process() early-exit guards
-// ---------------------------------------------------------------------------
-
 void test_process_returns_none_when_no_priority() {
     VoiceContext ctx;
     ctx.now = mockMillis;
     ctx.mainVolume = 5;   // pass vol-zero guard so we reach the no-priority check
-    // priority is nullptr by default
     VoiceAction action = voiceModule.process(ctx);
     TEST_ASSERT_EQUAL_INT(static_cast<int>(VoiceAction::Type::NONE),
                           static_cast<int>(action.type));
@@ -183,9 +162,8 @@ void test_process_returns_none_when_muted() {
                           static_cast<int>(action.type));
 }
 
-// The LED-mute bit alone must not silence voice; only V1's audio-mute bit does.
-// The two can disagree
-// while LED debounce is in flight or while the user is mid-acknowledge.
+// LED mute and audio mute can disagree during debounce or acknowledgement;
+// only the V1 audio-mute bit silences voice.
 void test_process_announces_when_only_led_mute_set_not_softmute() {
     AlertData alert = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700);
     VoiceContext ctx;
@@ -280,10 +258,6 @@ void test_process_returns_none_when_priority_band_is_none() {
                           static_cast<int>(action.type));
 }
 
-// ---------------------------------------------------------------------------
-// process() ANNOUNCE_PRIORITY happy path
-// ---------------------------------------------------------------------------
-
 void test_process_announces_priority_for_new_ka_alert() {
     AlertData alert = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700);
     VoiceContext ctx;
@@ -319,7 +293,6 @@ void test_process_announces_within_first_seconds_of_uptime() {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(VoiceAction::Type::ANNOUNCE_PRIORITY),
                           static_cast<int>(action.type));
 
-    // And the normal cooldown still applies right after that announcement.
     ctx.now = mockMillis + 100;
     VoiceAction action2 = voiceModule.process(ctx);
     TEST_ASSERT_EQUAL_INT(static_cast<int>(VoiceAction::Type::NONE),
@@ -357,10 +330,8 @@ void test_process_does_not_reannounce_same_alert_within_cooldown() {
     ctx.mainVolume = 5;
     ctx.now = mockMillis;
 
-    // First call — announces
     voiceModule.process(ctx);
 
-    // Second call immediately after — cooldown not passed
     ctx.now = mockMillis + 100;
     VoiceAction action2 = voiceModule.process(ctx);
     TEST_ASSERT_EQUAL_INT(static_cast<int>(VoiceAction::Type::NONE),
@@ -376,23 +347,15 @@ void test_process_reannounces_after_cooldown() {
     ctx.mainVolume = 5;
     ctx.now = mockMillis;
 
-    // First announcement
     voiceModule.process(ctx);
 
-    // After cooldown (2000 ms; VOICE_ALERT_COOLDOWN_MS)
     ctx.now = mockMillis + 2001u;
     VoiceAction action2 = voiceModule.process(ctx);
-    // Same band+freq → not a "new alert" via hasAlertChanged — expect NONE
     TEST_ASSERT_EQUAL_INT(static_cast<int>(VoiceAction::Type::NONE),
                           static_cast<int>(action2.type));
 }
 
-// ---------------------------------------------------------------------------
-// process() ANNOUNCE_PRIORITY — band change triggers new announcement
-// ---------------------------------------------------------------------------
-
 void test_process_announces_on_band_change() {
-    // First: KA alert
     AlertData kaAlert = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700);
     VoiceContext ctx;
     ctx.priority = &kaAlert;
@@ -402,7 +365,6 @@ void test_process_announces_on_band_change() {
     ctx.now = mockMillis;
     voiceModule.process(ctx);
 
-    // Now: K alert after cooldown
     AlertData kAlert = AlertData::create(BAND_K, DIR_FRONT, 3, 0, 24150);
     ctx.priority = &kAlert;
     ctx.alerts = &kAlert;
@@ -414,12 +376,7 @@ void test_process_announces_on_band_change() {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(AlertBand::K), static_cast<int>(action.band));
 }
 
-// ---------------------------------------------------------------------------
-// process() ANNOUNCE_DIRECTION — direction change on same alert
-// ---------------------------------------------------------------------------
-
 void test_process_announces_direction_change_on_same_alert() {
-    // Announce initial KA front
     AlertData kaFront = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700);
     VoiceContext ctx;
     ctx.priority = &kaFront;
@@ -429,7 +386,6 @@ void test_process_announces_direction_change_on_same_alert() {
     ctx.now = mockMillis;
     voiceModule.process(ctx);
 
-    // Same alert, direction changes to rear — past cooldown
     AlertData kaRear = AlertData::create(BAND_KA, DIR_REAR, 4, 4, 34700);
     ctx.priority = &kaRear;
     ctx.alerts = &kaRear;
@@ -689,10 +645,6 @@ void test_prepare_escalation_is_not_marked_announced_before_commit() {
     TEST_ASSERT_FALSE(voiceModule.prepareAction(ctx).type == VoiceAction::Type::ANNOUNCE_ESCALATION);
 }
 
-// ---------------------------------------------------------------------------
-// Announced-alert set — FIFO window, not a saturating set
-// ---------------------------------------------------------------------------
-
 // Run one process() cycle with `priority` first and `secondary` second. Keeping
 // the same priority alert across calls holds canAnnounceSecondary() satisfied.
 static VoiceAction runWithSecondary(const AlertData& priority, const AlertData& secondary, unsigned long now) {
@@ -773,7 +725,6 @@ int main() {
     UNITY_BEGIN();
     RUN_TEST(test_announced_set_evicts_oldest_instead_of_saturating);
 
-    // Static utilities
     RUN_TEST(test_make_alert_id_encodes_band_and_freq);
     RUN_TEST(test_make_alert_id_different_bands_differ);
     RUN_TEST(test_make_alert_id_different_freqs_differ);
@@ -789,7 +740,6 @@ int main() {
     RUN_TEST(test_get_alert_bars_rear_direction_uses_rear_strength);
     RUN_TEST(test_get_alert_bars_no_direction_uses_max);
 
-    // Early-exit guards
     RUN_TEST(test_process_returns_none_when_no_priority);
     RUN_TEST(test_process_returns_none_when_voice_disabled);
     RUN_TEST(test_process_returns_none_when_muted);
@@ -800,7 +750,6 @@ int main() {
     RUN_TEST(test_process_announces_when_vol_zero_but_mute_voice_disabled);
     RUN_TEST(test_process_returns_none_when_priority_band_is_none);
 
-    // Happy path
     RUN_TEST(test_process_announces_priority_for_new_ka_alert);
     RUN_TEST(test_process_announces_within_first_seconds_of_uptime);
     RUN_TEST(test_clear_all_state_restores_first_announcement_eligibility);
@@ -808,11 +757,9 @@ int main() {
     RUN_TEST(test_process_reannounces_after_cooldown);
     RUN_TEST(test_process_announces_on_band_change);
 
-    // Direction change
     RUN_TEST(test_process_announces_direction_change_on_same_alert);
     RUN_TEST(test_process_does_not_announce_direction_when_dir_disabled);
 
-    // Photo-radar voice presentation
     RUN_TEST(test_process_announces_photo_for_priority_photo_radar);
     RUN_TEST(test_process_announces_normal_k_when_phototype_zero);
     RUN_TEST(test_secondary_photo_uses_photo_presentation_before_later_ordinary_k);

@@ -1,8 +1,4 @@
-/**
- * Settings storage manager for V1 Gen2 Display.
- *
- * Load/save operations should be called from the main thread.
- */
+// Load and save operations run on the main thread.
 
 #pragma once
 #ifndef SETTINGS_H
@@ -27,10 +23,8 @@ class SettingsManager {
   public:
     SettingsManager(StorageManager& storage, V1ProfileManager& profiles);
 
-    // Initialize and load settings
     void begin();
 
-    // Get current settings (read-only)
     const V1Settings& get() const { return settings_; }
 #ifdef UNIT_TEST
     // Test-only mutable access for fixture seeding.
@@ -92,11 +86,10 @@ class SettingsManager {
 
     const AutoPushSlot& getSlot(int slotNum) const;
 
-    // Get slot volume settings (returns 0xFF for "no change")
+    // 0xFF means "no change".
     uint8_t getSlotVolume(int slotNum) const;
     uint8_t getSlotMuteVolume(int slotNum) const;
 
-    // Get slot dark mode and MZ settings
     bool getSlotDarkMode(int slotNum) const;
     bool getSlotMuteToZero(int slotNum) const;
     uint8_t getSlotAlertPersistSec(int slotNum) const;
@@ -121,7 +114,7 @@ class SettingsManager {
     SettingsPersistResult applyAutoPushStateUpdate(
         const AutoPushStateUpdate& update, SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
 
-    // Batch update methods (don't auto-save, call save() after)
+    // These mutations require an explicit save().
     void updateBrightness(uint8_t brightness) { settings_.brightness = brightness; }
     void updateVoiceVolume(uint8_t volume) { settings_.voiceVolume = volume; }
     // Persist settings atomically to NVS, then synchronously back them up to SD.
@@ -145,13 +138,11 @@ class SettingsManager {
     bool deferredPersistRetryScheduled() const;
     uint32_t deferredPersistNextAttemptAtMs() const;
 
-    // Load settings from flash (public for testing)
     void load();
     // Load six physical-segment colours, migrating the v11 eight-value shape.
     void loadSignalBarColors();
 
-    // WiFi client (STA) settings - connect to external network
-    String getWifiClientPassword(); // Retrieves from secure NVS namespace
+    String getWifiClientPassword();
     String getWifiStaSlotPassword(size_t index);
     SettingsPersistResult setWifiClientEnabled(bool enabled);
     bool setWifiClientCredentials(const String& ssid, const String& password);
@@ -159,10 +150,9 @@ class SettingsManager {
                                    uint8_t priority);
     bool markWifiStaSlotConnected(size_t index);
     bool clearWifiStaSlot(size_t index);
-    bool clearWifiClientCredentials(); // Forget saved network
+    bool clearWifiClientCredentials();
     SettingsPersistResult applyWifiStaPriorityUpdates(const std::vector<WifiStaPriorityUpdate>& updates);
 
-    // SD card backup/restore for display settings
     bool backupToSD();
     void requestDeferredBackupFromCurrentState();
     void serviceDeferredBackup(uint32_t nowMs);
@@ -174,12 +164,11 @@ class SettingsManager {
                                                   SettingsBackupScope scope = SettingsBackupScope::Full);
     bool migrateAutoPushProfilesToV2();
     bool restoreFromSD();
-    bool checkAndRestoreFromSD(); // Call after storage is mounted to retry restore
+    bool checkAndRestoreFromSD();
     // Before starting a new external mutation, converge every recoverable
     // storage transaction or fail closed while its rollback evidence remains.
     bool resolveStorageTransactionsForMutation();
 
-    // NVS diagnostic info for troubleshooting persistence
     struct NvsDiagnostic {
         String activeNamespace;
         int nvsValidMarker = 0;
@@ -191,7 +180,6 @@ class SettingsManager {
     };
     NvsDiagnostic getNvsDiagnostic() const;
 
-    // Validate profile references exist - clear invalid ones
     void validateProfileReferences(V1ProfileManager& profileMgr);
 
   private:

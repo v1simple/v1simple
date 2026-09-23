@@ -21,7 +21,6 @@ namespace {
 AlpRuntimeModule alpRuntimeModule;
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────
 
 static void resetModule() {
     alpRuntimeModule = AlpRuntimeModule();
@@ -43,7 +42,6 @@ static void processAt(uint32_t ms) {
     alpRuntimeModule.process(ms);
 }
 
-// ── Alert burst test data (6 x 4-byte frames = 24 bytes) ───────────
 // Each frame: byte0 byte1 byte2 checksum
 // Alert trigger: 98 00 E3 7B
 // Gun fingerprint: CX 00 YY checksum (Frame 4 of the burst)
@@ -241,7 +239,6 @@ static const uint8_t REG_WRITE_FD[] = { 0xD0, 0x00, 0xFD, 0x4D };
 // Register write with FD at byte2 (D3 variant): D3 00 FD checksum
 static const uint8_t REG_WRITE_FD_D3[] = { 0xD3, 0x00, 0xFD, 0x50 };
 
-// ── Test setup/teardown ──────────────────────────────────────────────
 
 void setUp() {
     resetModule();
@@ -249,16 +246,11 @@ void setUp() {
 
 void tearDown() {}
 
-// ── Checksum validation tests ────────────────────────────────────────
 
 void test_checksum_calculation() {
-    // Known good: B0 02 00 → checksum 0x32
     TEST_ASSERT_EQUAL(0x32, alpChecksum(0xB0, 0x02, 0x00));
-    // Known good: 98 00 E3 → checksum 0x7B
     TEST_ASSERT_EQUAL(0x7B, alpChecksum(0x98, 0x00, 0xE3));
-    // Known good: B0 01 00 → checksum 0x31
     TEST_ASSERT_EQUAL(0x31, alpChecksum(0xB0, 0x01, 0x00));
-    // Known good: C9 1A 04 → checksum 0x67
     TEST_ASSERT_EQUAL(0x67, alpChecksum(0xC9, 0x1A, 0x04));
 }
 
@@ -304,7 +296,6 @@ void test_checksum_validation_fail() {
     TEST_ASSERT_FALSE(alpValidateChecksum(0xFF, 0xFF, 0xFF, 0xFF));  // All 0xFF
 }
 
-// ── begin() tests ────────────────────────────────────────────────────
 
 void test_begin_disabled_stays_disabled() {
     beginDisabled();
@@ -325,7 +316,6 @@ void test_process_noop_when_disabled() {
     TEST_ASSERT_EQUAL(AlpState::OFF, alpRuntimeModule.getState());
 }
 
-// ── Gun lookup table tests ───────────────────────────────────────────
 
 void test_gun_lookup_pl3() {
     TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, alpLookupGun(0xC8, 0xD5));
@@ -414,7 +404,6 @@ void test_gun_guncode_collision_eb_resolved_by_byte0() {
     TEST_ASSERT_EQUAL(AlpGunType::ATLANTA_STEALTH, alpLookupGun(0xCE, 0xEB));
 }
 
-// ── Alert burst parsing (all 8 guns) ────────────────────────────────
 
 void test_burst_identifies_pl3() {
     beginEnabled();
@@ -555,7 +544,6 @@ void test_burst_unknown_gun_still_alerts() {
     TEST_ASSERT_EQUAL(AlpGunType::UNKNOWN, alpRuntimeModule.lastIdentifiedGun());
 }
 
-// ── Heartbeat parsing ────────────────────────────────────────────────
 
 void test_heartbeat_transitions_idle_to_listening() {
     beginEnabled();
@@ -584,7 +572,6 @@ void test_discovery_poll_transitions_to_listening() {
     TEST_ASSERT_EQUAL(AlpState::LISTENING, alpRuntimeModule.getState());
 }
 
-// ── Heartbeat timeout ────────────────────────────────────────────────
 
 void test_heartbeat_timeout_returns_to_idle() {
     beginEnabled();
@@ -669,7 +656,6 @@ void test_link_epoch_reset_suppresses_return_boot_probe() {
     TEST_ASSERT_FALSE(alpRuntimeModule.currentEvent().active);
 }
 
-// ── Register write with FD terminator (teardown trigger) ─────────────
 
 void test_fd_terminator_triggers_teardown_from_alert() {
     beginEnabled();
@@ -698,7 +684,6 @@ void test_fd_terminator_d3_triggers_teardown() {
     TEST_ASSERT_EQUAL(AlpState::TEARDOWN, alpRuntimeModule.getState());
 }
 
-// ── Teardown timeout ─────────────────────────────────────────────────
 
 void test_teardown_timeout_returns_to_listening() {
     beginEnabled();
@@ -710,7 +695,6 @@ void test_teardown_timeout_returns_to_listening() {
     TEST_ASSERT_EQUAL(AlpState::LISTENING, alpRuntimeModule.getState());
 }
 
-// ── ALERT_ACTIVE timeout (no 98 trigger re-arm) ──────────────────────
 //
 // While in ALERT_ACTIVE, the state machine expects periodic 98 XX XX
 // trigger frames to confirm the laser event is ongoing. If none arrive
@@ -868,7 +852,6 @@ void test_heartbeat_only_alert_ignores_stale_prior_trigger_timestamp() {
     TEST_ASSERT_EQUAL(AlpState::TEARDOWN, alpRuntimeModule.getState());
 }
 
-// ── Checksum-based resync ───────────────────────────────────────────
 
 void test_resync_discards_garbage_before_heartbeat() {
     beginEnabled();
@@ -896,7 +879,6 @@ void test_resync_discards_garbage_before_alert_burst() {
     TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, alpRuntimeModule.lastIdentifiedGun());
 }
 
-// ── Bad checksum rejection ──────────────────────────────────────────
 
 void test_bad_checksum_frame_rejected() {
     beginEnabled();
@@ -910,7 +892,6 @@ void test_bad_checksum_frame_rejected() {
     TEST_ASSERT_EQUAL(AlpState::IDLE, alpRuntimeModule.getState());
 }
 
-// ── Noise window via consecutive bad checksums ──────────────────────
 
 void test_consecutive_bad_checksums_trigger_noise_window() {
     beginEnabled();
@@ -1171,7 +1152,6 @@ void test_noise_recovery_does_not_invent_frames_from_repeated_noise() {
     }
 }
 
-// ── Snapshot ─────────────────────────────────────────────────────────
 
 void test_snapshot_reflects_state() {
     beginEnabled();
@@ -1193,7 +1173,6 @@ void test_snapshot_default_values() {
     TEST_ASSERT_FALSE(status.uartActive);
 }
 
-// ── isAlertActive() ──────────────────────────────────────────────────
 
 void test_is_alert_active_during_alert() {
     beginEnabled();
@@ -1209,7 +1188,6 @@ void test_is_not_alert_active_during_listening() {
     TEST_ASSERT_FALSE(alpRuntimeModule.isAlertActive());
 }
 
-// ── Gun name strings ─────────────────────────────────────────────────
 
 void test_gun_names_not_null() {
     TEST_ASSERT_NOT_NULL(alpGunName(AlpGunType::UNKNOWN));
@@ -1232,7 +1210,6 @@ void test_state_names_not_null() {
     TEST_ASSERT_NOT_NULL(alpStateName(AlpState::TEARDOWN));
 }
 
-// ── Multiple alert bursts ───────────────────────────────────────────
 
 void test_sequential_bursts_update_gun() {
     beginEnabled();
@@ -1246,7 +1223,6 @@ void test_sequential_bursts_update_gun() {
     TEST_ASSERT_EQUAL(AlpGunType::MARKSMAN_ULTRALYTE, alpRuntimeModule.lastIdentifiedGun());
 }
 
-// ── Full lifecycle: heartbeat → burst → teardown → listening ─────────
 
 void test_full_alert_lifecycle() {
     beginEnabled();
@@ -1272,7 +1248,6 @@ void test_full_alert_lifecycle() {
     TEST_ASSERT_EQUAL(AlpState::LISTENING, alpRuntimeModule.getState());
 }
 
-// ── Alert trigger as standalone frame ────────────────────────────────
 
 void test_alert_trigger_standalone() {
     beginEnabled();
@@ -1287,7 +1262,6 @@ void test_alert_trigger_standalone() {
     TEST_ASSERT_EQUAL(AlpGunType::UNKNOWN, alpRuntimeModule.lastIdentifiedGun());
 }
 
-// ── Detect-frame alert trigger (98 02 00) ───────────────────────────
 
 void test_detect_trigger_alert_98_02_00() {
     beginEnabled();
@@ -1317,7 +1291,6 @@ void test_detect_trigger_rearm_keeps_alert_active() {
     TEST_ASSERT_EQUAL(AlpState::ALERT_ACTIVE, alpRuntimeModule.getState());
 }
 
-// ── Other 98 XX YY status frames (not alert triggers) ───────────────
 
 void test_status_frame_98_other() {
     beginEnabled();
@@ -1332,7 +1305,6 @@ void test_status_frame_98_other() {
     TEST_ASSERT_EQUAL(AlpState::LISTENING, alpRuntimeModule.getState());
 }
 
-// ── Heartbeat byte1 alert detection ─────────────────────────────────
 
 void test_heartbeat_byte1_alert_transitions_to_alert_active() {
     beginEnabled();
@@ -1649,7 +1621,6 @@ void test_teardown_clears_alert_flag() {
     TEST_ASSERT_FALSE(alpRuntimeModule.testGetAlertDetectedViaHb());
 }
 
-// ── Gun cache reset on a new alert ─────────────────────────────
 
 void test_new_alert_clears_stale_gun_via_98_trigger() {
     beginEnabled();
@@ -1785,7 +1756,6 @@ void test_gun_persists_through_teardown_rearm_cycle() {
     TEST_ASSERT_EQUAL(37000u, alpRuntimeModule.lastGunTimestampMs());
 }
 
-// ── AlertSession / V1-shape display projection ──────────────────────
 //
 // These tests validate the session layer that projects the parser's
 // internal state machine into the V1-shape accessors the display
@@ -1801,7 +1771,6 @@ void test_session_closed_by_default() {
     TEST_ASSERT_EQUAL(AlpGunType::UNKNOWN, alpRuntimeModule.currentEvent().gun);
 }
 
-// ── ownsLaserDisplay() — V1 laser suppression gate ──────────────────
 //
 // The display pipeline asks this one question: "should V1's BAND_LASER
 // alerts be suppressed because ALP is handling laser?" Contract:
@@ -2203,7 +2172,6 @@ void test_event_gun_unknown_between_engagements_even_with_stale_lastgun() {
     TEST_ASSERT_FALSE(alpRuntimeModule.hasLaserEvent());
 }
 
-// ── Warm-Up suppression ─────────────────────────────────────────────
 
 void test_warm_up_flagged_when_preamble_in_window() {
     // Canonical cold-boot shape: first heartbeat, F0 preamble at +2s,
@@ -2878,7 +2846,6 @@ void test_teardown_without_gun_id_does_not_display() {
     TEST_ASSERT_FALSE(alpRuntimeModule.hasLaserEvent());
 }
 
-// ── alp_5-3fe19956.csv replay regressions ───────────────────────────
 //
 // These two tests lock in the "laser rear with no rear sensors" and
 // "PL3 cleared during alert" regressions on-disk. Each replays the real
@@ -3000,7 +2967,6 @@ void test_alp5_post_gun_id_reopen_not_flagged_warmup_in_envelope() {
                             static_cast<uint8_t>(alpRuntimeModule.currentSession().direction));
 }
 
-// ── Event bus publishing tests ──────────────────────────────────────
 
 void test_transitionTo_publishes_display_edge() {
     resetModule();
@@ -3146,7 +3112,6 @@ void test_process_loop_does_not_spam_events() {
     TEST_ASSERT_FALSE(bus.consumeAlpStateChanged());
 }
 
-// ── Atomic event snapshot tests ────────────────────────────────────────
 
 void test_current_event_inactive_when_session_inactive() {
     resetModule();
@@ -3249,12 +3214,10 @@ void test_update_current_event_called_before_publish() {
     TEST_ASSERT_EQUAL(AlpLaserDirection::REAR, ev.direction);
 }
 
-// ── Runner ───────────────────────────────────────────────────────────
 
 int main(int argc, char** argv) {
     UNITY_BEGIN();
 
-    // Checksum tests
     RUN_TEST(test_checksum_calculation);
     RUN_TEST(test_checksum_validation_pass);
     RUN_TEST(test_checksum_validation_fail);
@@ -3263,12 +3226,10 @@ int main(int argc, char** argv) {
     RUN_TEST(test_last_valid_frame_ms_ignores_checksum_noise);
     RUN_TEST(test_last_valid_frame_ms_updates_on_valid_frame);
 
-    // begin() tests
     RUN_TEST(test_begin_disabled_stays_disabled);
     RUN_TEST(test_begin_enabled_goes_idle);
     RUN_TEST(test_process_noop_when_disabled);
 
-    // Gun lookup table
     RUN_TEST(test_gun_lookup_pl3);
     RUN_TEST(test_gun_lookup_dragoneye);
     RUN_TEST(test_gun_lookup_truspeed);
@@ -3290,7 +3251,6 @@ int main(int argc, char** argv) {
     RUN_TEST(test_gun_guncode_collision_d6_resolved_by_byte0);
     RUN_TEST(test_gun_guncode_collision_eb_resolved_by_byte0);
 
-    // Alert burst parsing (all 8 guns + Detect frame variants)
     RUN_TEST(test_burst_identifies_pl3);
     RUN_TEST(test_burst_identifies_dragoneye);
     RUN_TEST(test_burst_identifies_truspeed);
@@ -3309,12 +3269,10 @@ int main(int argc, char** argv) {
     RUN_TEST(test_burst_identifies_pl2);
     RUN_TEST(test_burst_unknown_gun_still_alerts);
 
-    // Heartbeat parsing
     RUN_TEST(test_heartbeat_transitions_idle_to_listening);
     RUN_TEST(test_paired_heartbeats_keep_listener_active);
     RUN_TEST(test_discovery_poll_transitions_to_listening);
 
-    // Timeouts
     RUN_TEST(test_heartbeat_timeout_returns_to_idle);
     RUN_TEST(test_heartbeat_keeps_listening_if_within_timeout);
     RUN_TEST(test_heartbeat_timeout_treats_zero_as_a_real_timestamp);
@@ -3329,16 +3287,13 @@ int main(int argc, char** argv) {
     RUN_TEST(test_repeated_targeted_heartbeat_does_not_rearm_alert_timeout);
     RUN_TEST(test_heartbeat_only_alert_ignores_stale_prior_trigger_timestamp);
 
-    // Register write teardown trigger
     RUN_TEST(test_fd_terminator_triggers_teardown_from_alert);
     RUN_TEST(test_fd_terminator_d3_triggers_teardown);
 
-    // Checksum-based resync
     RUN_TEST(test_resync_discards_garbage_before_heartbeat);
     RUN_TEST(test_resync_discards_garbage_before_alert_burst);
     RUN_TEST(test_bad_checksum_frame_rejected);
 
-    // Noise window
     RUN_TEST(test_consecutive_bad_checksums_trigger_noise_window);
     RUN_TEST(test_noise_window_ends_on_valid_frame);
     RUN_TEST(test_noise_window_exit_preserves_live_session_into_teardown);
@@ -3348,33 +3303,25 @@ int main(int argc, char** argv) {
     RUN_TEST(test_noise_recovery_retains_each_partial_gun_frame);
     RUN_TEST(test_noise_recovery_does_not_invent_frames_from_repeated_noise);
 
-    // Snapshot
     RUN_TEST(test_snapshot_reflects_state);
     RUN_TEST(test_snapshot_default_values);
 
-    // Alert status
     RUN_TEST(test_is_alert_active_during_alert);
     RUN_TEST(test_is_not_alert_active_during_listening);
 
-    // String helpers
     RUN_TEST(test_gun_names_not_null);
     RUN_TEST(test_state_names_not_null);
 
-    // Multi-burst
     RUN_TEST(test_sequential_bursts_update_gun);
 
-    // Full lifecycle
     RUN_TEST(test_full_alert_lifecycle);
 
-    // Standalone frames
     RUN_TEST(test_alert_trigger_standalone);
 
-    // Observe-mode alert (98 02 00)
     RUN_TEST(test_detect_trigger_alert_98_02_00);
     RUN_TEST(test_detect_trigger_rearm_keeps_alert_active);
     RUN_TEST(test_status_frame_98_other);
 
-    // Heartbeat byte1 alert detection
     RUN_TEST(test_heartbeat_byte1_alert_transitions_to_alert_active);
     RUN_TEST(test_heartbeat_byte1_idle_resolves_alert);
     RUN_TEST(test_heartbeat_byte1_b8_does_not_trigger_alert);
@@ -3388,16 +3335,12 @@ int main(int argc, char** argv) {
     RUN_TEST(test_snapshot_includes_event_direction);
     RUN_TEST(test_teardown_clears_alert_flag);
 
-    // Gun cache reset on a new alert
     RUN_TEST(test_new_alert_clears_stale_gun_via_98_trigger);
     RUN_TEST(test_new_alert_clears_stale_gun_via_heartbeat);
     RUN_TEST(test_new_alert_identifies_fresh_gun_after_clear);
-    // Gun cache persistence during in-engagement teardown and re-arm
     RUN_TEST(test_gun_persists_through_teardown_rearm_cycle);
 
-    // AlertSession / V1-shape display projection
     RUN_TEST(test_session_closed_by_default);
-    // ownsLaserDisplay() — V1 laser suppression gate
     RUN_TEST(test_owns_laser_display_false_when_disabled);
     RUN_TEST(test_owns_laser_display_true_when_listening);
     RUN_TEST(test_owns_laser_display_true_during_alert);
@@ -3414,7 +3357,6 @@ int main(int argc, char** argv) {
     RUN_TEST(test_session_closes_on_teardown_to_listening);
     RUN_TEST(test_event_gun_unknown_between_engagements_even_with_stale_lastgun);
 
-    // Warm-Up suppression
     RUN_TEST(test_warm_up_flagged_when_preamble_in_window);
     RUN_TEST(test_warm_up_unflagged_when_real_gun_identified);
     RUN_TEST(test_warm_up_not_flagged_without_preamble);
@@ -3438,7 +3380,6 @@ int main(int argc, char** argv) {
     RUN_TEST(test_alp5_session7_dli_without_gun_id_stays_unknown_direction);
     RUN_TEST(test_alp5_post_gun_id_reopen_not_flagged_warmup_in_envelope);
 
-    // Display-edge publishing
     RUN_TEST(test_transitionTo_publishes_display_edge);
     RUN_TEST(test_transitionTo_leaving_alert_active_publishes_display_edge);
     RUN_TEST(test_session_open_publishes_display_edge);
@@ -3447,7 +3388,6 @@ int main(int argc, char** argv) {
     RUN_TEST(test_no_bus_wired_is_safe);
     RUN_TEST(test_process_loop_does_not_spam_events);
 
-    // Atomic event snapshot
     RUN_TEST(test_current_event_inactive_when_session_inactive);
     RUN_TEST(test_current_event_populated_in_alert_active);
     RUN_TEST(test_current_event_opened_at_on_edge);

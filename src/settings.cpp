@@ -1,6 +1,4 @@
 /**
- * Settings storage implementation
- *
  * SECURITY NOTE: WiFi passwords are stored with XOR obfuscation, NOT encryption.
  * This is intentional - it prevents casual viewing in hex dumps but is NOT secure
  * against someone with physical access to the device who is determined to recover them.
@@ -17,7 +15,6 @@
 #include "settings_internals.h"
 #include "settings_backup_revision.h"
 
-// SD backup file path
 const char* SETTINGS_BACKUP_PATH = "/v1simple_backup.json";
 const char* SETTINGS_BACKUP_TMP_PATH = "/v1simple_backup.tmp";
 const char* SETTINGS_BACKUP_PREV_PATH = "/v1simple_backup.prev";
@@ -121,8 +118,6 @@ static void migrateLegacyWifiStaSlotNvs(const String& activeNs, const WifiStaSlo
     wifiPrefs.end();
 }
 
-// XOR_KEY and OBFUSCATION_HEX_PREFIX are defined in settings_backup.cpp.
-
 SettingsManager::SettingsManager(StorageManager& storage, V1ProfileManager& profiles)
     : storage_(&storage), profiles_(&profiles) {}
 
@@ -209,7 +204,6 @@ void SettingsManager::load() {
         }
     }
 
-    // Check settings version for migration
     int storedVersion = preferences_.getInt(kNvsSettingsVer, 1);
     restorePending_ = preferences_.getBool(kNvsRestorePending, false);
     const int64_t storedRestoreWatermark = preferences_.getLong64(kNvsRestoreCommitWatermark, 0);
@@ -220,22 +214,18 @@ void SettingsManager::load() {
         Serial.println("[Settings] NVS marked restore-pending; SD backup remains authoritative");
     }
 
-    // Handle AP password storage - version 1 was plain text, version 2+ is obfuscated
     String storedApPwd = preferences_.getString(kNvsApPassword, "");
 
     if (storedVersion >= 2) {
-        // Passwords are obfuscated - decode and sanitize them.
         settings_.apPassword = sanitizeApPasswordValue(
             storedApPwd.length() > 0 ? decodeObfuscatedFromStorage(storedApPwd) : "setupv1simple");
     } else {
-        // Version 1 - passwords stored in plain text, use as-is then sanitize.
         settings_.apPassword = sanitizeApPasswordValue(storedApPwd.length() > 0 ? storedApPwd : "setupv1simple");
         Serial.println("[Settings] Migrating from v1 to v2 (password obfuscation)");
     }
 
     settings_.apSSID = sanitizeApSsidValue(preferences_.getString(kNvsApSsid, "V1-Simple"));
 
-    // WiFi client (STA) settings
     const bool wifiClientEnabledKeyPresent = preferences_.isKey(kNvsWifiClientEnabled);
     const bool wifiClientSsidKeyPresent = preferences_.isKey(kNvsWifiClientSsid);
     settings_.wifiClientEnabled = preferences_.getBool(kNvsWifiClientEnabled, false);
@@ -272,7 +262,6 @@ void SettingsManager::load() {
     }
     settings_.refreshWifiClientAliasFromSlots();
 
-    // Record the resolved WiFi client configuration for diagnostics.
     Serial.printf("[Settings] WiFi client keys: enabledKey=%s ssidKey=%s\n", wifiClientEnabledKeyPresent ? "yes" : "no",
                   wifiClientSsidKeyPresent ? "yes" : "no");
     Serial.printf("[Settings] WiFi client: enabled=%s, configured=%s\n", settings_.wifiClientEnabled ? "true" : "false",
@@ -329,28 +318,24 @@ void SettingsManager::load() {
     settings_.hideVolumeIndicator = preferences_.getBool(kNvsHideVolume, false);
     settings_.hideRssiIndicator = preferences_.getBool(kNvsHideRssi, false);
 
-    // Voice alert settings
     settings_.voiceAlertMode = clampVoiceAlertModeValue(preferences_.getUChar(kNvsVoiceMode, VOICE_MODE_BAND_FREQ));
     settings_.voiceDirectionEnabled = preferences_.getBool(kNvsVoiceDirection, true);
     settings_.announceBogeyCount = preferences_.getBool(kNvsVoiceBogeys, true);
     settings_.muteVoiceIfVolZero = preferences_.getBool(kNvsMuteVoiceAtVol0, false);
     settings_.voiceVolume = std::min<uint8_t>(100, preferences_.getUChar(kNvsVoiceVolume, 75));
 
-    // Secondary alert settings
     settings_.announceSecondaryAlerts = preferences_.getBool(kNvsSecondaryAlerts, false);
     settings_.secondaryLaser = preferences_.getBool(kNvsSecondaryLaser, true);
     settings_.secondaryKa = preferences_.getBool(kNvsSecondaryKa, true);
     settings_.secondaryK = preferences_.getBool(kNvsSecondaryK, false);
     settings_.secondaryX = preferences_.getBool(kNvsSecondaryX, false);
 
-    // Volume fade settings
     settings_.alertVolumeFadeEnabled = preferences_.getBool(kNvsVolFadeEnabled, false);
     settings_.alertVolumeFadeDelaySec =
         std::clamp<uint8_t>(preferences_.getUChar(kNvsVolFadeSeconds, 2), 1, 10); // 1-10 seconds
     settings_.alertVolumeFadeVolume = std::clamp<uint8_t>(preferences_.getUChar(kNvsVolFadeVolume, 1), 1,
                                                           9); // 1-9 (min 1 prevents V1 mute indicator feedback loop)
 
-    // Speed-aware muting settings
     settings_.speedMuteEnabled = preferences_.getBool(kNvsSpeedMuteEnabled, false);
     settings_.speedMuteThresholdMph = std::clamp<uint8_t>(preferences_.getUChar(kNvsSpeedMuteThreshold, 25), 5, 60);
     settings_.speedMuteHysteresisMph = std::clamp<uint8_t>(preferences_.getUChar(kNvsSpeedMuteHysteresis, 3), 1, 10);
@@ -418,7 +403,6 @@ void SettingsManager::load() {
     settings_.autoPowerOffMinutes = clampU8(preferences_.getUChar(kNvsAutoPowerOff, 0), 0, 60);
     settings_.apTimeoutMinutes = clampApTimeoutValue(preferences_.getUChar(kNvsApTimeout, 0));
 
-    // OBD settings
     settings_.obdEnabled = preferences_.getBool(kNvsObdEnabled, false);
     settings_.obdSavedAddress = preferences_.getString(kNvsObdAddress, "");
     if (!isValidBleAddress(settings_.obdSavedAddress)) {
@@ -452,7 +436,6 @@ void SettingsManager::load() {
         settings_.proxyBLE = false;
     }
 
-    // ALP settings
     settings_.alpEnabled = preferences_.getBool(kNvsAlpEnabled, false);
     {
         uint8_t alpPersist = preferences_.getUChar(kNvsAlpPersistSec, 0);
@@ -462,7 +445,6 @@ void SettingsManager::load() {
     }
     settings_.alpDisableV1LaserOnPush = preferences_.getBool(kNvsAlpNoV1Laser, true);
 
-    // GPS settings
     settings_.gpsEnabled = preferences_.getBool(kNvsGpsEnabled, false);
     {
         const uint32_t baud = preferences_.getUInt(kNvsGpsBaud, 9600);
@@ -491,7 +473,6 @@ bool SettingsManager::save() {
     clearLastV1AddressFallback();
     Serial.println("Settings saved atomically");
 
-    // Backup display settings to SD card (survives reflash)
     if (!backupToSD()) {
         requestDeferredBackupFromCurrentState();
     }
@@ -557,8 +538,6 @@ SettingsManager::NvsDiagnostic SettingsManager::getNvsDiagnostic() const {
 
     return diag;
 }
-
-// Check if NVS appears to be in default state (likely erased during reflash)
 
 // Load six physical-segment colours while preserving v11 eight-segment themes.
 // Detection remains per-key so an interrupted migration cannot reset a theme.

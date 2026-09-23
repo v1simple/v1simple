@@ -1,21 +1,4 @@
-/**
- * Device Boot / System Integration Tests
- *
- * Validates ESP32-S3 system state after minimal setup — catches issues that
- * only appear on real hardware:
- *   - Post-boot heap baseline (catches framework regressions)
- *   - Core ID and dual-core availability
- *   - millis/micros clock advancing
- *   - Stack high-water marks
- *   - PSRAM + internal SRAM both available
- *   - CPU frequency
- *   - Flash size and partition table
- *   - Reset reason readable
- *   - Serial/USB CDC functional
- *
- * This suite should be the FIRST device test run — if it fails, the board
- * has a fundamental hardware or firmware issue.
- */
+// Hardware-only boot baselines that native mocks cannot establish.
 
 #include <unity.h>
 #include <Arduino.h>
@@ -45,10 +28,6 @@ static void initSerialForTests(const char* suiteName) {
                   (unsigned long)ESP.getFreeHeap());
 }
 
-// ===========================================================================
-// CLOCK / TIMING
-// ===========================================================================
-
 void test_boot_millis_advancing() {
     unsigned long t1 = millis();
     delay(50);
@@ -65,19 +44,13 @@ void test_boot_micros_advancing() {
     unsigned long t2 = micros();
     unsigned long elapsed = t2 - t1;
 
-    // Should be approximately 1000 µs (±500 µs tolerance)
     TEST_ASSERT_GREATER_THAN(500UL, elapsed);
     TEST_ASSERT_LESS_THAN(2000UL, elapsed);
 }
 
 void test_boot_millis_not_zero() {
-    // After Serial init + host wait in setup(), millis should be > 100
     TEST_ASSERT_GREATER_THAN(100UL, millis());
 }
-
-// ===========================================================================
-// CPU / CHIP INFO
-// ===========================================================================
 
 void test_boot_cpu_frequency_240mhz() {
     uint32_t freq = getCpuFrequencyMhz();
@@ -93,20 +66,15 @@ void test_boot_chip_is_esp32s3() {
                   info.model, info.cores, info.revision);
 
     TEST_ASSERT_EQUAL(CHIP_ESP32S3, info.model);
-    TEST_ASSERT_EQUAL(2, info.cores);  // Dual core
+    TEST_ASSERT_EQUAL(2, info.cores);
 }
 
 void test_boot_dual_core_available() {
-    // Arduino loop runs on Core 1; verify we can query both
     BaseType_t coreId = xPortGetCoreID();
     Serial.printf("  [boot] Test running on core: %d\n", (int)coreId);
 
     TEST_ASSERT_TRUE(coreId == 0 || coreId == 1);
 }
-
-// ===========================================================================
-// MEMORY BASELINE
-// ===========================================================================
 
 void test_boot_internal_sram_baseline() {
     uint32_t free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -117,9 +85,8 @@ void test_boot_internal_sram_baseline() {
     deviceTestMetricU32("internal_free_bytes", "baseline", free, "bytes");
     deviceTestMetricU32("internal_largest_block_bytes", "baseline", largest, "bytes");
 
-    // After framework init + test overhead, expect > 100 KB free
     TEST_ASSERT_GREATER_THAN_UINT32(100 * 1024, free);
-    // Largest block should be at least 32 KB (enough for WiFi DMA)
+    // Preserve enough contiguous internal memory for WiFi DMA.
     TEST_ASSERT_GREATER_THAN_UINT32(32 * 1024, largest);
 }
 
@@ -131,7 +98,7 @@ void test_boot_psram_detected() {
     deviceTestMetricU32("psram_size_bytes", "baseline", size, "bytes");
 
     TEST_ASSERT_TRUE_MESSAGE(found, "PSRAM not detected — board misconfigured?");
-    TEST_ASSERT_GREATER_THAN_UINT32(4 * 1024 * 1024, size);  // At least 4 MB
+    TEST_ASSERT_GREATER_THAN_UINT32(4 * 1024 * 1024, size);
 }
 
 void test_boot_total_heap_reasonable() {
@@ -146,15 +113,10 @@ void test_boot_total_heap_reasonable() {
     TEST_ASSERT_GREATER_THAN_UINT32(200 * 1024, total);
 }
 
-// ===========================================================================
-// FLASH / PARTITION
-// ===========================================================================
-
 void test_boot_flash_size_16mb() {
     uint32_t flashSize = ESP.getFlashChipSize();
     Serial.printf("  [boot] Flash size: %lu bytes\n", (unsigned long)flashSize);
 
-    // Expected: 16 MB
     TEST_ASSERT_EQUAL_UINT32(16 * 1024 * 1024, flashSize);
 }
 
@@ -166,35 +128,20 @@ void test_boot_sketch_has_space() {
                   (unsigned long)sketchSize, (unsigned long)freeSketch);
     deviceTestMetricU32("free_sketch_bytes", "baseline", freeSketch, "bytes");
 
-    // Should have more than 1 MB free (16 MB flash, ~2 MB firmware)
     TEST_ASSERT_GREATER_THAN_UINT32(1 * 1024 * 1024, freeSketch);
 }
-
-// ===========================================================================
-// RESET REASON
-// ===========================================================================
 
 void test_boot_reset_reason_readable() {
     esp_reset_reason_t reason = esp_reset_reason();
     Serial.printf("  [boot] Reset reason: %d\n", (int)reason);
 
-    // Should be a valid reset reason enum value
     TEST_ASSERT_TRUE(reason >= ESP_RST_UNKNOWN && reason <= ESP_RST_USB);
 }
 
-// ===========================================================================
-// SERIAL / USB CDC
-// ===========================================================================
-
 void test_boot_serial_functional() {
-    // Serial write should report that bytes were queued/sent.
     size_t written = Serial.println("  [boot] Serial output functional");
     TEST_ASSERT_GREATER_THAN_UINT32(0, (uint32_t)written);
 }
-
-// ===========================================================================
-// STACK HIGH WATER MARKS
-// ===========================================================================
 
 void test_boot_main_task_stack_not_exhausted() {
     UBaseType_t highWater = uxTaskGetStackHighWaterMark(NULL);
@@ -203,13 +150,8 @@ void test_boot_main_task_stack_not_exhausted() {
                   (unsigned long)highWaterBytes);
     deviceTestMetricU32("main_stack_high_water_bytes", "baseline", highWaterBytes, "bytes");
 
-    // Should have at least 1 KB of stack remaining
     TEST_ASSERT_GREATER_THAN((UBaseType_t)256, highWater);
 }
-
-// ===========================================================================
-// SDK / FRAMEWORK VERSION
-// ===========================================================================
 
 void test_boot_sdk_version_readable() {
     const char* sdk = ESP.getSdkVersion();
@@ -219,24 +161,15 @@ void test_boot_sdk_version_readable() {
     TEST_ASSERT_GREATER_THAN(0, strlen(sdk));
 }
 
-// ===========================================================================
-// FIRMWARE VERSION MACRO
-// ===========================================================================
-
 void test_boot_firmware_version_defined() {
-    // FIRMWARE_VERSION should be defined by config.h
-    // We don't include config.h here since test_build_src=false,
-    // but we can verify the build flag works
+    // This environment uses test_build_src=false, so the build flag is the
+    // available compile-time contract rather than config.h.
 #ifdef UNIT_TEST
     TEST_PASS_MESSAGE("UNIT_TEST build flag is active");
 #else
     TEST_FAIL_MESSAGE("UNIT_TEST build flag should be defined in device test env");
 #endif
 }
-
-// ===========================================================================
-// TEST RUNNER
-// ===========================================================================
 
 void setup() {
     if (deviceTestSetup("test_device_boot")) return;

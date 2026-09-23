@@ -1,14 +1,3 @@
-/**
- * ESP Packet Parser for V1 Gen2
- *
- * The V1G2 packets are framed with 0xAA ... 0xAB. Packet ID lives at byte 3,
- * payload begins at byte 5 (after dest/src/id/len).
- *
- * Protocol reference: v1g2-t4s3 (Kenny's original ESP32/T4 implementation)
- * This code maintains compatibility with the original Valentine Research protocol.
- * Packet IDs: 0x31 = display/update, 0x43 = alert table entries.
- */
-
 #include "packet_parser.h"
 #include "config.h"
 #include "v1_firmware_compat.h"
@@ -39,10 +28,7 @@ BandArrowData processBandArrow(uint8_t v) {
     return d;
 }
 
-// Decode V1's 7-segment bogey counter byte to a character
-// Based on V1 protocol - shows J=Junk, P=Photo, volume digits, L=Logic, etc.
-// Bit 7 = decimal point (returned separately)
-// Returns: character to display, hasDot = true if decimal point should show
+// Bit 7 is the decimal point; the remaining bits are the V1's segment image.
 char decodeBogeyCounterByte(uint8_t bogeyImage, bool& hasDot) {
     hasDot = (bogeyImage & 0x80) != 0; // Bit 7 = decimal point
 
@@ -564,7 +550,6 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
         return true;
 
     default:
-        // Unknown packet - silently ignore in hot path
         return false;
     }
 }
@@ -626,19 +611,15 @@ bool PacketParser::validatePacket(const uint8_t* data, size_t length) {
 }
 
 bool PacketParser::parseDisplayData(const uint8_t* payload, size_t length) {
-    // Expected payload >= 8 bytes (matches v1g2-t4s3 parsing window)
     if (!payload || length < 8) {
         return false;
     }
 
-    // Display packet structure. Parser behavior is pinned by test_packet_parser
-    // and the independent vectors in test/fixtures/protocol_spec_tables.h.
+    // InfDisplayData bytes, independently pinned by protocol_spec_tables.h:
     // payload[0] = bogey counter image1 — steady-displayed 7-segment byte (0-9, J=Junk, P=Photo, etc.)
     // payload[1] = bogey counter image2 — blink-off pair of payload[0] for the
     //             SAME single 7-segment LED. NOT a second physical digit. Segments
     //             lit in image1 but unlit in image2 are blinking on V1's hardware.
-    //             FSD-002: older code treated image2 as a second digit, reversing
-    //             V1's single-character junk/photo verdicts during blink phases.
     // payload[2] = LED bar bitmap
     // payload[3] = image1 (currently ON bits - bands/arrows)
     // payload[4] = image2 (steady/NOT-flashing bits)
@@ -649,7 +630,6 @@ bool PacketParser::parseDisplayData(const uint8_t* payload, size_t length) {
     // same: bits in image1 but NOT in image2 = FLASHING. V1 hardware handles the
     // actual blink animation internally — we must do the same.
 
-    // Decode bogey counter byte - shows what V1's display shows (J, P, volume, etc.)
     uint8_t bogeyByte = payload[0];
     bool hasDot = false;
     char bogeyChar = decodeBogeyCounterByte(bogeyByte, hasDot);
@@ -666,7 +646,6 @@ bool PacketParser::parseDisplayData(const uint8_t* payload, size_t length) {
     uint8_t image1 = payload[3];
     uint8_t image2 = payload[4];
 
-    // band/arrow information from image1
     BandArrowData arrow = processBandArrow(image1);
     decodeMode(payload, length);
 
@@ -707,8 +686,7 @@ bool PacketParser::parseDisplayData(const uint8_t* payload, size_t length) {
     }
     displayState_.systemStatus = auxSystemStatus;
 
-    // Calculate flash bits: things that are ON (image1) but NOT steady (image2)
-    // These bits should blink on our display
+    // Bits lit in image1 but not image2 blink on the V1.
     uint8_t flashingBits = image1 & ~image2;
 
     // Band flash bits (lower nibble): L=0x01, Ka=0x02, K=0x04, X=0x08

@@ -1,8 +1,3 @@
-/**
- * ESP Packet Parser for V1 Gen2
- * Decodes display data and alert data packets
- */
-
 #pragma once
 #ifndef PACKET_PARSER_H
 #define PACKET_PARSER_H
@@ -11,9 +6,6 @@
 #include <array>
 #include <vector>
 
-// Shared data types — Band, Direction, AlertData, DisplayState.
-// Defined in a standalone header so mocks can include the same definitions
-// without pulling in Arduino.h.
 #include "packet_parser_types.h"
 
 class PacketParser {
@@ -24,12 +16,10 @@ class PacketParser {
 
     PacketParser();
 
-    // Parse incoming ESP packet
     bool parse(const uint8_t* data, size_t length);
     bool parse(const uint8_t* data, size_t length, uint32_t nowMs);
     bool parse(const uint8_t* data, size_t length, uint32_t nowMs, uint32_t ingressSequence);
 
-    // Get current display state
     const DisplayState& getDisplayState() const { return displayState_; }
 
     // Session-scoped settings evidence. Values and revisions are updated
@@ -64,17 +54,14 @@ class PacketParser {
     void resetSweepWriteResultObservation();
     void resetSweepCaptureState();
 
-    // Get resolved priority alert (follows V1 priority signal)
     AlertData getPriorityAlert() const;
 
     // Get a renderable priority alert (valid band + usable frequency semantics).
     // Returns true and writes to out when a renderable alert exists.
     bool getRenderablePriorityAlert(AlertData& out) const;
 
-    // Get all alerts
     const std::array<AlertData, MAX_ALERTS>& getAllAlerts() const { return alerts_; }
 
-    // Get number of active alerts
     size_t getAlertCount() const { return alertCount_; }
 
     // The Alert Table contains radar only. A V1 laser is live from
@@ -85,13 +72,10 @@ class PacketParser {
     // multiple publications occur before a consumer next observes the parser.
     uint32_t alertLifetime() const { return alertLifetime_; }
 
-    // Check if V1 firmware supports volume display
-    // Show volume if we've received volume data OR confirmed firmware version 4.1028+
     bool supportsVolume() const {
         return displayState_.hasVolumeData || (displayState_.hasV1Version && displayState_.v1FirmwareVersion >= 41028);
     }
 
-    // Clear any partially assembled alert chunks (used when we re-request alert data)
     void resetAlertAssembly();
 
     // A known transport gap makes every partial Alert Table ambiguous. Keep the
@@ -161,7 +145,6 @@ class PacketParser {
 
     bool hasDisplayLaserAlert() const { return (displayState_.activeBands & BAND_LASER) != 0; }
 
-    // Packet parsing helpers
     bool parseInternal(const uint8_t* data, size_t length, bool hasNowMs, uint32_t nowMs,
                        uint32_t ingressSequence);
     bool parseDisplayData(const uint8_t* payload, size_t length);
@@ -173,7 +156,6 @@ class PacketParser {
     void resetAlertStateAt(uint32_t nowMs);
     void notifyAlertTableObserver(uint32_t nowMs);
 
-    // Data extraction
     Band decodeBand(uint8_t bandArrow) const;
     Direction decodeDirection(uint8_t bandArrow) const;
     uint8_t decodeLEDBitmap(uint8_t bitmap) const; // Bar graph byte -> 0-8 LEDs, ESP Spec 3.015 Table 9.1

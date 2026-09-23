@@ -1,7 +1,3 @@
-/**
- * BLE runtime state machine and scan-priority control.
- */
-
 #include "ble_client.h"
 
 #include <cstring>
@@ -28,7 +24,6 @@ void V1BLEClient::applyDeferredRuntimeEvents(SettingsManager& settings) {
         tryFinalizeProxyQueueRelease();
     }
 
-    // Handle deferred BLE callback updates without blocking in callbacks
     if (pendingConnectStateUpdate_) {
         SemaphoreGuard lock(bleMutex_, 0);
         if (lock.locked()) {
@@ -46,7 +41,6 @@ void V1BLEClient::applyDeferredRuntimeEvents(SettingsManager& settings) {
             if (edgeStillAccepted && sessionOpenedCallback_) {
                 sessionOpenedCallback_(edgeGeneration);
             }
-            // The asynchronous state machine publishes the CONNECTED state.
         }
     }
     if (pendingDisconnectCleanup_) {
@@ -166,8 +160,6 @@ void V1BLEClient::applyDeferredRuntimeEvents(SettingsManager& settings) {
 }
 
 void V1BLEClient::drainCommandAndFollowupWork() {
-    // Process phone->V1 commands (up to queue size per loop to drain any backlog)
-    // Each call processes one command to minimize mutex hold time during BLE writes
     for (size_t i = 0; i < MAX_PHONE_CMDS_PER_LOOP; i++) {
         if (processPhoneCommandQueue() == 0) {
             break;
@@ -220,7 +212,6 @@ void V1BLEClient::arbitrateProxyRuntime(uint32_t now) {
         refreshProxyAdvertisingCadence(now);
     }
 
-    // Handle deferred proxy advertising start (non-blocking replacement for delay(1500))
     if (proxyAdvertisingStartMs_ != 0) {
         if (static_cast<int32_t>(now - proxyAdvertisingStartMs_) >= 0) {
             if (!proxyAdvertisingAllowed) {
@@ -244,9 +235,6 @@ void V1BLEClient::dispatchConnectionState(uint32_t now) {
         return;
     }
 
-    // ============================================================================
-    // BLE STATE MACHINE
-    // ============================================================================
     switch (bleState_) {
     case BLEState::DISCONNECTED: {
         if (discoveryTaskRunning_.load(std::memory_order_acquire)) {
@@ -273,7 +261,6 @@ void V1BLEClient::dispatchConnectionState(uint32_t now) {
     }
 
     case BLEState::SCANNING: {
-        // Check if scan found a device (shouldConnect_ flag set by callback)
         bool wantConnect = false;
         {
             // HOT PATH: try-lock only, skip if busy
@@ -317,13 +304,11 @@ void V1BLEClient::dispatchConnectionState(uint32_t now) {
             return; // Wait more
         }
 
-        // Clear scan results once scan has stopped
         if (!scanStopResultsCleared_ && elapsed > 100) { // Clear after brief delay
             pScan->clearResults();
             scanStopResultsCleared_ = true;
         }
 
-        // Check if settle time has elapsed
         // Use longer settle on first scan after boot (radio is "cold")
         const uint32_t settleTime = firstScanAfterBoot_ ? SCAN_STOP_SETTLE_FRESH_MS : SCAN_STOP_SETTLE_MS;
         if (elapsed >= settleTime) {

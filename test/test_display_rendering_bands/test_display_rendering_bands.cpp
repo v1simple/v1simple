@@ -1,18 +1,9 @@
-/**
- * test_display_rendering_bands.cpp
- *
- * Integration tests for drawBandIndicators() and drawVerticalSignalBars().
- *
- * Includes the real rendering source so that GFX call-recording
- * assertions on the injected Arduino_Canvas verify actual draw behaviour.
- */
+// Production rendering with a call-recording canvas; this proves draw
+// commands, not panel or font-raster fidelity.
 
 #include <unity.h>
 
-// ---------------------------------------------------------------------------
-// Mocks (explicit relative path so the include guard fires before any real
-// include/display_driver.h is pulled in by src/ headers)
-// ---------------------------------------------------------------------------
+// Bind production display headers to the recording driver.
 #include "../mocks/display_driver.h"
 #include "../mocks/Arduino.h"
 #include "../mocks/settings.h"
@@ -24,21 +15,14 @@ unsigned long mockMicros = 0;
 SerialClass Serial;
 #endif
 
-// Real display classes (display_driver.h guard already set to mock above)
 #include "../../src/display.h"
 #include "../../include/display_dirty_flags.h"
 #include "../../include/display_element_caches.h"
 
-// ---------------------------------------------------------------------------
-// Required extern definitions
-// ---------------------------------------------------------------------------
 V1Display* g_displayInstance = nullptr;  // Set by V1Display constructor
 SettingsManager settings;
 
-// ---------------------------------------------------------------------------
-// Minimal V1Display constructor / destructor stubs
-// (avoids pulling in all of display.cpp with its hardware dependencies)
-// ---------------------------------------------------------------------------
+// Avoid pulling hardware-dependent display.cpp into this native suite.
 V1Display::V1Display(SettingsManager& injectedSettings) : settings_(injectedSettings) {
     currentPalette_ = ColorThemes::STANDARD();
     currentPalette_.colorMuted = settings_.get().colorMuted;
@@ -47,23 +31,13 @@ V1Display::V1Display(SettingsManager& injectedSettings) : settings_(injectedSett
 }
 V1Display::~V1Display() = default;
 
-// Global test display instance (owns the injected canvas via unique_ptr)
 V1Display display(settings);
-
-// ---------------------------------------------------------------------------
-// Real rendering code under test
-// ---------------------------------------------------------------------------
 
 #include "../../src/display_bands.cpp"
 
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
 static Arduino_Canvas* canvas() { return display.testCanvas(); }
 
 static void resetCanvas() {
-    // Replace the canvas with a fresh one before each test.
-    // V1Display takes ownership; old canvas is deleted by unique_ptr.
     display.setTestCanvas(new Arduino_Canvas(SCREEN_WIDTH, SCREEN_HEIGHT, nullptr));
     canvas()->resetCounters();
 }
@@ -127,10 +101,6 @@ static void assertBandClearsDoNotTouchDrawnCard0() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// setUp / tearDown
-// ---------------------------------------------------------------------------
-
 void setUp() {
     mockMillis = 1000;
     resetCanvas();
@@ -139,15 +109,10 @@ void setUp() {
 
 void tearDown() {}
 
-// ============================================================================
-// drawBandIndicators tests
-// ============================================================================
-
 void test_drawBandIndicators_produces_background_clear_on_first_draw() {
     display.ut_elementCaches().bands.valid = false;
     display.ut_drawBandIndicators(BAND_KA, false, 0);
 
-    // Exactly one FILL_RECT clearing the entire band-label stack with PALETTE_BG
     TEST_ASSERT_EQUAL_UINT(1u, canvas()->fillRectCalls.size());
     TEST_ASSERT_EQUAL_UINT16(ColorThemes::STANDARD().bg, canvas()->fillRectCalls[0].color);
 }
@@ -183,7 +148,6 @@ void test_drawBandIndicators_cache_hit_skips_redraw() {
     display.ut_drawBandIndicators(BAND_KA, false, 0);
     resetCanvas();
 
-    // Second call with same args → no new draw calls
     display.ut_drawBandIndicators(BAND_KA, false, 0);
     TEST_ASSERT_EQUAL_UINT(0u, canvas()->fillRectCalls.size());
 }
@@ -196,7 +160,6 @@ void test_drawBandIndicators_dirty_flag_forces_redraw() {
     display.ut_elementCaches().bands.valid = false;   // invalidate cache
     display.ut_drawBandIndicators(BAND_KA, false, 0);
 
-    // Cache was invalidated — expect at least one FILL_RECT
     TEST_ASSERT_GREATER_OR_EQUAL(1u, canvas()->fillRectCalls.size());
 }
 
@@ -205,7 +168,6 @@ void test_drawBandIndicators_different_mask_invalidates_cache() {
     display.ut_drawBandIndicators(BAND_KA, false, 0);
     resetCanvas();
 
-    // Different band mask — cache miss → redraws
     display.ut_drawBandIndicators(BAND_KA | BAND_K, false, 0);
     TEST_ASSERT_EQUAL_UINT(1u, canvas()->fillRectCalls.size());
 }
@@ -215,7 +177,6 @@ void test_drawBandIndicators_muted_change_invalidates_cache() {
     display.ut_drawBandIndicators(BAND_KA, false, 0);
     resetCanvas();
 
-    // Toggle muted → cache miss
     display.ut_drawBandIndicators(BAND_KA, true, 0);
     TEST_ASSERT_EQUAL_UINT(1u, canvas()->fillRectCalls.size());
 }
@@ -235,7 +196,6 @@ void test_drawBandIndicators_ku_bit_invalidates_cache_vs_plain_k() {
     TEST_ASSERT_EQUAL_INT16(kBandLabelClearH, canvas()->fillRectCalls[0].h);
 }
 
-// And toggling Ku off must also re-invalidate.
 void test_drawBandIndicators_clearing_ku_bit_invalidates_cache() {
     display.ut_elementCaches().bands.valid = false;
     display.ut_drawBandIndicators(static_cast<uint8_t>(BAND_K | BAND_KU), false, 0);
@@ -414,11 +374,6 @@ void test_drawBandIndicators_inactive_muted_toggle_skips_visual_redraw() {
     TEST_ASSERT_EQUAL_UINT(0u, canvas()->fillRectCalls.size());
 }
 
-// ============================================================================
-// drawVerticalSignalBars tests
-// ============================================================================
-
-// Helper: force signal bars redraw and return fillRoundRectCalls count
 static size_t signalBarsRedrawCount(uint8_t front, uint8_t rear, bool muted) {
     display.ut_elementCaches().bars.valid = false;
     resetCanvas();
@@ -448,7 +403,6 @@ void test_drawSignalBars_lit_bars_use_per_segment_colors() {
     const auto& calls = canvas()->fillRoundRectCalls;
     TEST_ASSERT_EQUAL_UINT(6u, calls.size());
 
-    // Bars 0-3 (i < strength=4) paint their own stored segment colour.
     const V1Settings& s = settings.get();
     TEST_ASSERT_EQUAL_UINT16(s.colorBars[0], expectedBarColor(0));
     TEST_ASSERT_EQUAL_UINT16(s.colorBars[5], expectedBarColor(5));
@@ -463,7 +417,6 @@ void test_drawSignalBars_unlit_bars_use_dark_gray() {
     display.ut_drawVerticalSignalBars(4, 0, BAND_KA, false);
 
     const auto& calls = canvas()->fillRoundRectCalls;
-    // Bars 4-5 (past strength) must use 0x1082 (off-color)
     for (int i = 4; i < 6; ++i) {
         TEST_ASSERT_EQUAL_UINT16(0x1082, calls[i].color);
     }
@@ -477,12 +430,10 @@ void test_drawSignalBars_muted_uses_muted_color() {
     const auto& calls = canvas()->fillRoundRectCalls;
     TEST_ASSERT_EQUAL_UINT(6u, calls.size());
 
-    // All lit bars (i < 4) must use PALETTE_MUTED = colorMuted
     const uint16_t expectedMuted = settings.get().colorMuted;
     for (int i = 0; i < 4; ++i) {
         TEST_ASSERT_EQUAL_UINT16(expectedMuted, calls[i].color);
     }
-    // Unlit bars still use 0x1082
     for (int i = 4; i < 6; ++i) {
         TEST_ASSERT_EQUAL_UINT16(0x1082, calls[i].color);
     }
@@ -493,7 +444,6 @@ void test_drawSignalBars_cache_hit_no_redraw() {
     display.ut_drawVerticalSignalBars(4, 0, BAND_KA, false);   // primes cache
     resetCanvas();
 
-    // Same args → cache hit, no new calls
     display.ut_drawVerticalSignalBars(4, 0, BAND_KA, false);
     TEST_ASSERT_EQUAL_UINT(0u, canvas()->fillRoundRectCalls.size());
 }
@@ -510,12 +460,10 @@ void test_drawSignalBars_dirty_flag_forces_redraw() {
 }
 
 void test_drawSignalBars_max_of_front_rear_used() {
-    // rearStrength > frontStrength → max is used
     display.ut_elementCaches().bars.valid = false;
     resetCanvas();
     display.ut_drawVerticalSignalBars(2, 5, BAND_KA, false);
 
-    // 5 lit + 1 unlit = 6 bars.
     const auto& calls = canvas()->fillRoundRectCalls;
     TEST_ASSERT_EQUAL_UINT(6u, calls.size());
     TEST_ASSERT_EQUAL_UINT16(expectedBarColor(4), calls[4].color);  // i=4 → 5th bar from bottom
@@ -596,9 +544,8 @@ void test_drawSignalBars_strength_jump_marks_one_compact_run_region() {
     TEST_ASSERT_EQUAL_UINT8(1u, display.ut_drawnRegionRectCount());
 }
 
-// The bars/bands caches key the palette revision, so a color-theme change
-// repaints even when
-// strength/mask/muted are unchanged — matching every sibling cache.
+// Palette revision is part of both cache keys, so a theme change repaints
+// even when signal state is unchanged.
 void test_drawSignalBars_palette_revision_change_forces_repaint() {
     display.ut_elementCaches().bars.valid = false;
     display.ut_drawVerticalSignalBars(4, 0, BAND_KA, false);   // prime cache
@@ -623,14 +570,9 @@ void test_drawBandIndicators_palette_revision_change_forces_repaint() {
     TEST_ASSERT_TRUE(display.ut_drawBandIndicators(BAND_KA, false, 0));   // must repaint
 }
 
-// ============================================================================
-// main
-// ============================================================================
-
 int main() {
     UNITY_BEGIN();
 
-    // drawBandIndicators
     RUN_TEST(test_drawBandIndicators_produces_background_clear_on_first_draw);
     RUN_TEST(test_band_label_dirty_window_covers_ka_and_compact_ku_without_touching_neighbors);
     RUN_TEST(test_drawBandIndicators_cache_hit_skips_redraw);
@@ -647,7 +589,6 @@ int main() {
     RUN_TEST(test_drawBandIndicators_ka_flash_redraws_full_stack_to_preserve_k);
     RUN_TEST(test_drawBandIndicators_inactive_muted_toggle_skips_visual_redraw);
 
-    // drawVerticalSignalBars
     RUN_TEST(test_drawSignalBars_strength_4_draws_6_bars);
     RUN_TEST(test_drawSignalBars_strength_0_draws_6_unlit_bars);
     RUN_TEST(test_drawSignalBars_lit_bars_use_per_segment_colors);

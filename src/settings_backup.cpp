@@ -1,7 +1,3 @@
-/**
- * Settings SD backup writer and backup-file utilities.
- */
-
 #include "settings_internals.h"
 #include "backup_payload_builder.h"
 #include "json_exact_input.h"
@@ -24,11 +20,9 @@ bool anySettingsBackupCandidateExists(fs::FS* fs) {
 }
 }
 
-// Obfuscation constants — declared extern in settings_internals.h
 const char XOR_KEY[] = "V1G2-S3cr3t-K3y!";
 const char* OBFUSCATION_HEX_PREFIX = "hex:";
 
-// Obfuscate a string using XOR (same function for encode/decode)
 String xorObfuscate(const String& input) {
     if (input.length() == 0)
         return input;
@@ -170,8 +164,6 @@ uint32_t computeCrc32(const uint8_t* data, size_t length) {
     }
     return crc ^ 0xFFFFFFFF;
 }
-
-// --- Backup file static helpers ---
 
 namespace {
 
@@ -526,10 +518,6 @@ bool writeBackupAtomically(fs::FS* fs, const SerializedSettingsBackupPayload& pa
     return writeSerializedBackupAtomically(fs, payload.data, payload.length);
 }
 
-// --- Member methods: SD backup write path ---
-
-// Backup display/color settings to SD card
-
 bool SettingsManager::backupToSD() {
     if (!storage_->isReady() || !storage_->isSDCard()) {
         return false; // SD not available, skip silently
@@ -629,10 +617,6 @@ bool SettingsManager::markDeferredBackupRevisionCompleted(const uint32_t revisio
     (void)context;
     return markBackupRevisionCompleted(revision);
 }
-
-// ============================================================================
-// Deferred SD backup writer
-// ============================================================================
 
 namespace {
 

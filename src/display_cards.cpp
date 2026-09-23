@@ -1,9 +1,3 @@
-/**
- * Secondary alert cards — mini V1 alert cards at screen bottom.
- *
- * Owns card rendering, persistence grace, and incremental redraws.
- */
-
 #include "display.h"
 #include "display_visual_contract.h"
 #include "display_layout.h"
@@ -18,12 +12,8 @@
 #include <array>
 #include <cstring>
 
-// ============================================================================
 // Card state belongs to elementCaches_.cards so a full cache invalidation also
 // clears alert identities that no longer exist in the framebuffer.
-// ============================================================================
-
-// --- Secondary alert cards ---
 
 namespace {
 
@@ -204,7 +194,6 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
 
     unsigned long now = millis();
 
-    // Track profile changes - clear cards when profile rotates
     if (settings.activeSlot != elementCaches_.cards.lastProfileSlot) {
         elementCaches_.cards.lastProfileSlot = settings.activeSlot;
         resetCardTemporalState(elementCaches_.cards);
@@ -216,7 +205,6 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
         elementCaches_.cards.lastDrawnCount = 0;
     }
 
-    // If called with nullptr alerts and count 0, clear V1 card state
     if (alerts == nullptr && alertCount == 0) {
         bool hadDrawnCards = elementCaches_.cards.lastDrawnCount > 0;
         for (int c = 0; c < 2; c++) {
@@ -244,7 +232,6 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
             drawnRegion_.add(DisplayLayout::kSecondaryCardsRect.x, DisplayLayout::kSecondaryCardsRect.y,
                              DisplayLayout::kSecondaryCardsRect.w, DisplayLayout::kSecondaryCardsRect.h);
         }
-        // Reset last drawn count so next time cards appear, change is detected.
         elementCaches_.cards.lastDrawnCount = 0;
         return;
     }
@@ -254,30 +241,22 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
     const SecondaryCardFrameEntry* cardsToDraw = frame.cards;
     const int cardsToDrawCount = frame.count;
 
-    // ============================================================================
-    // INCREMENTAL UPDATE LOGIC
-    // ============================================================================
-    // Instead of clearing all cards and redrawing, check each position independently
-
     // Capture force-redraw state before resetting. Two force inputs feed the
     // card row: the element-cache invalidation (screen clears route through
     // invalidateAll()) and dirty_.cards, which display_update.cpp raises when
     // a full-screen clear invalidated the card area mid-live-session.
     bool doForceRedraw = elementCaches_.cards.forceRedraw || dirty_.cards;
-    dirty_.cards = false;                     // Consumed here
-    elementCaches_.cards.forceRedraw = false; // Consumed here
+    dirty_.cards = false;
+    elementCaches_.cards.forceRedraw = false;
 
-    // Helper to check if position needs full redraw vs just update
     auto positionNeedsFullRedraw = [&](int pos) -> bool {
         if (pos >= cardsToDrawCount) {
-            // Position now empty but had content - needs clear
             return elementCaches_.cards.lastDrawnPositions[pos].band != BAND_NONE;
         }
 
         auto& last = elementCaches_.cards.lastDrawnPositions[pos];
         auto& curr = cardsToDraw[pos];
 
-        // V1 card - check if band/freq/direction changed (needs full card redraw)
         // Use a ±5 MHz hysteresis window here (looser than the synthetic-alert
         // identity fallback) so same-slot same-bogey frames with typical V1
         // jitter don't trigger full-card redraws and visible flicker.
@@ -301,7 +280,6 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
         return false;
     };
 
-    // Helper to check if position needs dynamic update (bars only)
     auto positionNeedsDynamicUpdate = [&](int pos) -> bool {
         if (pos >= cardsToDrawCount)
             return false;
@@ -309,20 +287,17 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
         auto& last = elementCaches_.cards.lastDrawnPositions[pos];
         auto& curr = cardsToDraw[pos];
 
-        // V1 card - check signal bars
         if (curr.bars != last.bars)
             return true;
         return false;
     };
 
-    // Process each card position
     for (int i = 0; i < DisplayLayout::CARD_SLOT_COUNT; i++) {
         const DisplayLayout::DisplayRect cardRect = DisplayLayout::cardRect(i);
 
         bool needsFullRedraw = positionNeedsFullRedraw(i) || doForceRedraw;
         bool needsDynamicUpdate = !needsFullRedraw && positionNeedsDynamicUpdate(i);
 
-        // Clear position if it's now empty
         if (i >= cardsToDrawCount) {
             if (elementCaches_.cards.lastDrawnPositions[i].band != BAND_NONE) {
                 FILL_RECT(cardRect.x, cardRect.y, cardRect.w, cardRect.h, PALETTE_BG);
@@ -333,20 +308,16 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
         }
 
         if (!needsFullRedraw && !needsDynamicUpdate) {
-            continue; // Skip this position - nothing changed
+            continue;
         }
         drawnRegion_.add(cardRect.x, cardRect.y, cardRect.w, cardRect.h);
 
-        // ============================================================================
-        // V1 ALERT CARD
-        // ============================================================================
         int c = cardsToDraw[i].slot;
         const AlertData& alert = elementCaches_.cards.slots[c].alert;
         bool isGraced = cardsToDraw[i].isGraced;
         bool drawMuted = muted || isGraced;
         uint8_t bars = cardsToDraw[i].bars;
 
-        // Card background and border colors
         const bool isPhoto = alert.band == BAND_K && alert.photoType != 0;
         uint16_t bandCol = isPhoto ? settings.colorBandPhoto : getBandColor(alert.band);
         uint16_t bgCol, borderCol;
@@ -369,9 +340,6 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
         uint16_t bandLabelCol = (isGraced || drawMuted) ? PALETTE_MUTED : bandCol;
 
         if (needsFullRedraw) {
-            // ============================================================================
-            // FULL V1 CARD REDRAW
-            // ============================================================================
             FILL_ROUND_RECT(cardRect.x, cardRect.y, cardRect.w, cardRect.h, 5, bgCol);
             DRAW_ROUND_RECT(cardRect.x, cardRect.y, cardRect.w, cardRect.h, 5, borderCol);
 
@@ -379,7 +347,6 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
             const int contentCenterY = cardRect.y + 18;
             const int topRowY = DisplayLayout::cardTextCursorY(i);
 
-            // Direction arrow
             int arrowX = cardRect.x + 18;
             int arrowCY = contentCenterY;
             if (alert.direction & DIR_FRONT) {
@@ -390,7 +357,6 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
                 FILL_RECT(arrowX - 6, arrowCY - 2, 12, 4, contentCol);
             }
 
-            // Band + frequency
             int labelX = textRect.x;
             tft_->setTextColor(bandLabelCol);
             tft_->setTextSize(2);
@@ -417,16 +383,13 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
                 }
             }
 
-            // Draw meter background
             const DisplayLayout::DisplayRect meterRect = DisplayLayout::cardMeterRect(i);
             FILL_RECT(meterRect.x, meterRect.y, meterRect.w, meterRect.h, 0x1082);
         }
 
-        // Draw/update signal bars (always after full redraw, or on bars change)
         if (needsFullRedraw || needsDynamicUpdate) {
             const DisplayLayout::DisplayRect meterRect = DisplayLayout::cardMeterRect(i);
 
-            // Clear meter area for bar update (not full redraw which already did it)
             if (!needsFullRedraw) {
                 FILL_RECT(meterRect.x, meterRect.y, meterRect.w, meterRect.h, 0x1082);
             }
@@ -447,7 +410,6 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
             }
         }
 
-        // Update position tracking for V1 card
         elementCaches_.cards.lastDrawnPositions[i].band = alert.band;
         // Meter-only updates must not move the frequency text's redraw baseline.
         if (needsFullRedraw) {
@@ -460,7 +422,6 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
         elementCaches_.cards.lastDrawnPositions[i].bars = bars;
     }
 
-    // Update global tracking
     elementCaches_.cards.lastDrawnCount = cardsToDrawCount;
 #endif
 }

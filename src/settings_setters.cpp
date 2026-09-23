@@ -1,7 +1,3 @@
-/**
- * Settings property accessors, slot accessors, and reset behavior.
- */
-
 #include "display_visual_contract.h"
 #include "json_exact_input.h"
 #include "settings_internals.h"

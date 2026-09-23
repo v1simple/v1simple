@@ -68,56 +68,38 @@ release **BOOT** after about four seconds to reboot into maintenance mode. Join
 the default `V1-Simple` network with `setupv1simple`, open
 `http://192.168.35.5`, and change that default password during first setup.
 
-### Upgrading to 2.2.0
+### Upgrading existing device data
 
-Use the app-only update path to keep device data. A normal upgrade does not
-require deleting profiles, resetting settings or erasing storage. On the first
-boot with profile storage available, firmware automatically and atomically
-converts supported older profile and Auto-Push data. It keeps the valid profile
-catalog, slot presentation and alert choices, enabled state and active slot.
-Legacy slot-owned detector behavior becomes profile-owned; where necessary,
-the migration creates deterministic profile variants. For slots without a
-catalog source, the first distinct effective command set creates a
-collision-safe `Auto-Push Slot N` profile; later identical slots share it, while
-different commands create separate profiles.
+Use an app-only update to preserve device data; a normal upgrade does not
+require deleting profiles, resetting settings, or erasing storage. Supported
+older profile and Auto-Push data is converted atomically on boot. If an older
+catalog has more than 10 profiles, delete unused profiles from the maintenance
+Profiles page and restart so migration can finish—do not factory-reset the
+device.
 
-Recovery uses only valid stored mirrors and transaction records. Corrupt data
-is not applied, and interrupted work is retried or safely resolved at boot. If
-an older catalog has more than 10 profiles, use the maintenance Profiles page
-to delete enough unused entries for the converted catalog and any generated
-variants to fit within 10, then restart so migration can finish; do not
-factory-reset the device. See
-[USB profile backup and restore](docs/USB_PROFILES.md#upgrading-existing-device-data)
-for the exact conversion, recovery and capacity behavior. This storage
-migration does not prove that a detector received commands or that RF/display
-behavior was verified.
+See [USB profile backup and restore](docs/USB_PROFILES.md#upgrading-existing-device-data)
+for migration and recovery details. Storage migration does not prove that the
+detector received or applied a profile.
 
 ## Verify a change
 
-Install and verify the fail-closed privacy boundary once per clone before making
-any commit:
+Set up the repository privacy boundary once per clone, and verify it before
+working or committing:
 
 ```sh
 ./scripts/setup-hooks.sh
 ./scripts/check_local_privacy_setup.py  # quick local identity, hook, index, and destination check
 ```
 
-The setup fixes this checkout's author and committer identity to the public
-project identity, installs commit and push privacy checks for ordinary Git
-operations, and pins Git pushes and IDE Sync to the verified public `origin`.
-Every normal push passes through the range-aware
-history scanner, which checks all newly reachable blobs once by object hash as
-well as commit and tag metadata. Never use `--no-verify` or override the hooks
-or remote configuration. The local checker also requires an owner-only private
-term list at
-`~/.config/v1simple/privacy_terms.txt`; keep personal names, addresses, network
-names, device identifiers, and other site-specific terms there, one per line.
-Never add that file or its values to this repository.
+Never bypass the hooks or remote checks. The local checker requires an
+owner-only private-term list at `~/.config/v1simple/privacy_terms.txt`; keep
+site-specific names, addresses, networks, and device identifiers there, never
+in this repository.
 
 ```sh
 ./scripts/ci-test.sh                   # complete pre-push/release code, test, and build gate
 ./scripts/run_device_tests.sh --quick  # connected-board boot and heap checks
-./bench.sh --replay --camera  # raw replay stimuli, timing, serial log, and camera capture
+./bench.sh --replay --camera          # replay, timing, serial, and camera evidence
 ```
 
 Automated tests establish code behavior. Device tests and bench runs establish
@@ -125,34 +107,14 @@ only what happened on the connected setup. Camera evidence establishes visible
 screen behavior for that recorded run. None proves every detector, power, RF,
 or vehicle environment.
 
-The raw bench collector does not interpret display pixels or issue a product
-verdict. It preserves the authored replay stimulus, notification delivery,
-host timing, serial output, exact firmware identity, camera video, and per-frame
-timing for a separate evaluator.
+The bench collector preserves replay input, delivery, timing, serial, firmware
+identity, settings snapshot, and camera artifacts for later evaluation; it does
+not interpret pixels or issue a product verdict. An unavailable maintenance
+snapshot makes a collection incomplete, not a product failure.
 
-With the DUT already in maintenance mode, the bench discovers the Mac's WiFi
-interface and joins the default `V1-Simple` network using a saved credential or
-the documented default. Set `BENCH_MAINTENANCE_WIFI_PASSWORD` only when the
-saved credential is unavailable and the maintenance password was changed. The
-bench waits up to two minutes for `http://192.168.35.5`, captures colors,
-visibility policy, and slot presentation settings, and only then discovers or
-opens the serial port and uploads. This ordering avoids turning the one-shot
-maintenance boot into a normal boot through an early native-USB attachment. It
-never contacts HTTP after the candidate boots into normal mode, where WiFi
-remains off. The upload uses the firmware upload target and does not request a
-LittleFS upload.
-
-The retained snapshot is checked against normal Auto-Push enablement and slot
-selection intent and is bound to each event's projected detector state,
-accepted packet delivery, terminal persisted emulator state, and camera
-identity. It does not yet prove that every captured presentation value was
-loaded into normal-mode RAM; the artifact says so explicitly. An unavailable
-maintenance snapshot makes collection incomplete, not a product failure.
-Free-form labels pass through the local private-term filter but remain visible
-when needed to grade displayed text.
-
-Keep changes focused, read [AGENTS.md](AGENTS.md), run the complete gate, inspect
-the final diff, and say whether hardware or camera evidence was collected.
+Keep changes focused, read [AGENTS.md](AGENTS.md), run checks proportionate to
+the change, inspect the final diff, and state whether hardware or camera
+evidence was collected. Run the complete gate before a push or release.
 
 ## Releases
 
@@ -164,7 +126,8 @@ change to exactly that next version. Arbitrary version jumps are rejected.
 
 Release builds inject the selected version, verify it in the firmware binary,
 and tag the exact commit that passed CI. Automation does not create a release
-commit or modify source files. Release notes and history live in GitHub Releases.
+commit or modify source files. [CHANGELOG.md](CHANGELOG.md) is the curated
+summary; complete generated notes and history live in GitHub Releases.
 
 ## Project notices
 

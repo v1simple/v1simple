@@ -8,8 +8,6 @@ unsigned long mockMillis = 0;
 unsigned long mockMicros = 0;
 #endif
 
-// packet_parser.cpp includes ../include/config.h for packet IDs.
-// In native tests we only need protocol constants, not display driver wiring.
 #ifndef CONFIG_H
 #define CONFIG_H
 #define ESP_PACKET_START 0xAA
@@ -72,12 +70,10 @@ std::vector<uint8_t> makePacket(uint8_t packetId, const std::vector<uint8_t>& pa
 std::vector<uint8_t> makeDisplayPayload(uint8_t bogeyByte, uint8_t barBitmap, uint8_t image1, uint8_t image2,
                                         uint8_t aux0 = 0, uint8_t aux1 = 0, uint8_t aux2 = 0,
                                         uint8_t bogeyByte2 = 0x00) {
-    // payload[0]=bogey1, [1]=bogey2, [2]=bars, [3]=image1, [4]=image2, [5..7]=aux
     return std::vector<uint8_t>{bogeyByte, bogeyByte2, barBitmap, image1, image2, aux0, aux1, aux2};
 }
 
 std::vector<uint8_t> makeVersionPayload(char major, char minor, char rev1, char rev2, char ctrl) {
-    // Spec-compliant data bytes; makePacket appends the checksum.
     return std::vector<uint8_t>{static_cast<uint8_t>('v'),   static_cast<uint8_t>(major), static_cast<uint8_t>('.'),
                                 static_cast<uint8_t>(minor), static_cast<uint8_t>(rev1),  static_cast<uint8_t>(rev2),
                                 static_cast<uint8_t>(ctrl)};

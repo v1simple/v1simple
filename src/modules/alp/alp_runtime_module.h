@@ -46,8 +46,6 @@
 
 class SystemEventBus;
 
-// ── ALP connection / protocol states ─────────────────────────────────
-
 enum class AlpState : uint8_t {
     OFF = 0,      // Module off (alpEnabled == false)
     IDLE,         // UART open, waiting for first valid frame
@@ -59,7 +57,6 @@ enum class AlpState : uint8_t {
 
 const char* alpStateName(AlpState s);
 
-// ── Known gun fingerprints ───────────────────────────────────────────
 // Gun ID from CX 00 YY frames: byte0 = gun family, byte2 = gun code.
 
 enum class AlpGunType : uint8_t {
@@ -85,8 +82,6 @@ enum class AlpLaserDirection : uint8_t {
 
 const char* alpLaserDirectionName(AlpLaserDirection direction);
 
-// ── Gun lookup ───────────────────────────────────────────────────────
-
 struct AlpGunCode {
     uint8_t byte0;   // Gun family (CX frame byte0)
     uint8_t gunCode; // Gun identifier (CX frame byte2)
@@ -96,7 +91,6 @@ struct AlpGunCode {
 AlpGunType alpLookupGun(uint8_t byte0, uint8_t gunCode);
 AlpGunType alpLookupGunDetect(uint8_t byte0, uint8_t byte1);
 
-// ── Checksum validation ─────────────────────────────────────────────
 // All ALP frames: 4 bytes, checksum = (byte0 + byte1 + byte2) & 0x7F.
 
 static inline uint8_t alpChecksum(uint8_t b0, uint8_t b1, uint8_t b2) {
@@ -106,8 +100,6 @@ static inline uint8_t alpChecksum(uint8_t b0, uint8_t b1, uint8_t b2) {
 static inline bool alpValidateChecksum(uint8_t b0, uint8_t b1, uint8_t b2, uint8_t cs) {
     return cs == alpChecksum(b0, b1, b2);
 }
-
-// ── Snapshot for external consumers ──────────────────────────────────
 
 struct AlpStatus {
     AlpState state;
@@ -123,8 +115,6 @@ struct AlpStatus {
     uint8_t detectRaw[3];             // most recent accepted sparse detection payload
 };
 
-// ── Alert Session ────────────────────────────────────────────────────
-//
 // A session is a single laser engagement from onset to final clear.
 // It is an internal engagement envelope: gun and direction stay latched
 // across short TEARDOWN↔ALERT_ACTIVE re-arms so the next live detect can
@@ -170,33 +160,25 @@ struct AlertSession {
                                           //   0xFF = unknown (default)
 };
 
-// ── Module ───────────────────────────────────────────────────────────
-
 class AlpRuntimeModule {
   public:
-    // RX only: ALP CPU TX on RJ-45 pin 2 connects to GPIO 2.
     static constexpr int ALP_RX_PIN = 2;
 
-    // Protocol constants — all frames are 4 bytes with 7-bit checksum
     static constexpr uint32_t ALP_BAUD = 19200;
     static constexpr size_t FRAME_LEN = 4; // byte0 byte1 byte2 checksum
 
-    // Alert trigger frame: 98 00 E3 7B
     static constexpr uint8_t ALERT_BYTE0 = 0x98;
     static constexpr uint8_t ALERT_BYTE1 = 0x00;
     static constexpr uint8_t ALERT_BYTE2 = 0xE3;
 
-    // Heartbeat byte0 values
     static constexpr uint8_t HEARTBEAT_SINGLE_0 = 0xB0;
     static constexpr uint8_t HEARTBEAT_PAIRED_0 = 0xB8;
     static constexpr uint8_t HEARTBEAT_TRIPLE_0 = 0xE0;
 
-    // Other known byte0 values
     static constexpr uint8_t DISCOVERY_BYTE0 = 0x91;
     static constexpr uint8_t SETUP_BYTE0_A8 = 0xA8;
     static constexpr uint8_t SETUP_BYTE0_F0 = 0xF0;
 
-    // Timing thresholds
     static constexpr uint32_t HEARTBEAT_TIMEOUT_MS = 3000;
     static constexpr uint32_t NOISE_WINDOW_MAX_MS = 35000; // 31s max + margin
     static constexpr uint32_t TEARDOWN_TIMEOUT_MS = 5000;
@@ -293,8 +275,6 @@ class AlpRuntimeModule {
     /** Most recent B0 heartbeat byte1 (01=Targeted, 02/03/04=listening modes). */
     uint8_t lastHeartbeatByte1() const { return lastHbByte1_; }
 
-    // ── V1-shape display projection ──────────────────────────────────
-    //
     // These are the two questions the display should ask. Everything
     // else (state machine, TEARDOWN, Warm-Up windowing, re-arm
     // cycles) is parser-internal and should not leak into consumers.
@@ -347,7 +327,6 @@ class AlpRuntimeModule {
     bool ownsLaserDisplay() const { return enabled_ && state_ != AlpState::OFF && state_ != AlpState::IDLE; }
 
 #ifdef UNIT_TEST
-    // ── Test instrumentation ─────────────────────────────────────────
     void testSyncCurrentEvent(uint32_t nowMs = 0) {
         AlpLaserEvent next;
         const bool teardownDisplayable = (state_ == AlpState::TEARDOWN) && (session_.gun != AlpGunType::UNKNOWN);
@@ -385,7 +364,6 @@ class AlpRuntimeModule {
     bool testGetAlertDetectedViaHb() const { return alertDetectedViaHb_; }
     const uint8_t* testGetRingBuf() const { return ringBuf_; }
     size_t testGetRingLen() const { return ringLen_; }
-    // Session / Warm-Up instrumentation
     uint32_t testGetFirstFrameMs() const { return firstFrameMs_; }
     uint32_t testGetWarmUpPreambleMs() const { return warmUpPreambleMs_; }
     void testSetFirstFrameMs(uint32_t ms) { firstFrameMs_ = ms; }
@@ -413,18 +391,15 @@ class AlpRuntimeModule {
 #endif
 
   private:
-    // ── State ────────────────────────────────────────────────────────
     SystemEventBus* bus_ = nullptr;
     bool enabled_ = false;
     bool begun_ = false;
     AlpState state_ = AlpState::OFF;
 
-    // Ring buffer for incoming UART bytes
     static constexpr size_t RING_CAPACITY = 64;
     uint8_t ringBuf_[RING_CAPACITY] = {};
     size_t ringLen_ = 0;
 
-    // Protocol tracking
     AlpGunType lastGun_ = AlpGunType::UNKNOWN;
     uint32_t lastGunTimestampMs_ = 0;
     // Boot-level latch: set the first time any gun identifies in this
@@ -464,7 +439,6 @@ class AlpRuntimeModule {
     uint32_t lastUartByteMs_ = 0;
     bool uartSilenceTimeoutArmed_ = false;
 
-    // Session + Warm-Up tracking
     AlertSession session_;
     uint32_t firstFrameMs_ = 0;     // first valid frame after begin()
     uint32_t warmUpPreambleMs_ = 0; // F0/A8 within 5s of firstFrameMs_; 0 = not seen
@@ -476,14 +450,11 @@ class AlpRuntimeModule {
     uint32_t detectGeneration_ = 0;
     uint8_t detectRaw_[3] = {};
 
-    // Current display-event snapshot.
     AlpLaserEvent currentEvent_{};
     void updateCurrentEvent(uint32_t nowMs);
 
-    // ── Event bus publishing ──────────────────────────────────────────
     void publishDisplayEdge();
 
-    // ── Internal methods ─────────────────────────────────────────────
     void transitionTo(AlpState newState, uint32_t nowMs);
     void drainUart(uint32_t nowMs);
     void parseRingBuffer(uint32_t nowMs);

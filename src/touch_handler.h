@@ -1,23 +1,4 @@
-/**
- * Touch Handler for Waveshare ESP32-S3-Touch-LCD-3.49
- *
- * Hardware: AXS15231B display controller with integrated touch
- * Protocol: I2C @ 0x3B on SDA=17 / SCL=18
- *
- * Features:
- * - Single-touch support (hardware limitation)
- * - 200ms debounce to prevent rapid repeat taps
- * - Optional hardware reset support via RST pin
- * - Returns raw controller coordinates (X: 0-640, Y: 0-172, mirrored to the display)
- *
- * Usage:
- *   TouchHandler touch;
- *   touch.begin(17, 18, 0x3B, -1);  // SDA, SCL, addr, RST (unused)
- *   int16_t x, y;
- *   if (touch.getTouchPoint(x, y)) {
- *     // Handle touch at (x, y)
- *   }
- */
+// Edge-triggered touch input for the Waveshare AXS15231B controller.
 
 #pragma once
 #ifndef TOUCH_HANDLER_H
@@ -26,8 +7,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 
-// AXS15231B Touch Controller I2C address and registers
-// (integrated into the display controller on Waveshare ESP32-S3-Touch-LCD-3.49)
+// AXS15231B controller integrated into the Waveshare 3.49-inch display.
 #define AXS_TOUCH_ADDR 0x3B
 #define AXS_REG_STATUS 0x01
 #define AXS_REG_XPOS_HIGH 0x03
@@ -40,13 +20,10 @@ class TouchHandler {
   public:
     TouchHandler();
 
-    // Initialize touch controller with I2C
     bool begin(int sda = 17, int scl = 18, uint8_t addr = AXS_TOUCH_ADDR, int rst = -1);
 
-    // Check if screen is touched
     bool isTouched();
 
-    // Get touch coordinates (returns true if valid touch detected)
     // Edge-triggered: returns true once per new tap; while the finger
     // stays down it returns false. Use isTouchActive() for the level state.
     bool getTouchPoint(int16_t& x, int16_t& y);
@@ -60,7 +37,6 @@ class TouchHandler {
         touchReadValid_ = false;
     }
 
-    // Reset the touch controller
     void reset();
 
     bool isAvailable() const { return touchAvailable_; }
@@ -73,9 +49,9 @@ class TouchHandler {
     bool touchReadValid_ = false;
     bool releaseRequired_ = false;
     uint32_t lastTouchTime_;
-    uint32_t lastReleaseTime_; // When finger was last released
+    uint32_t lastReleaseTime_;
     uint32_t touchDebounceMs_;
-    uint32_t releaseDebounceMs_; // Time finger must be lifted before new tap
+    uint32_t releaseDebounceMs_;
 
     static constexpr uint8_t I2C_RECOVERY_THRESHOLD = 3;
     static constexpr uint32_t I2C_RECOVERY_COOLDOWN_MS = 250;
@@ -87,7 +63,6 @@ class TouchHandler {
 
     int sdaPin_ = 17;
     int sclPin_ = 18;
-    // I2C communication
     void configureWireBus();
     void noteNoTouch(uint32_t now);
     void recordI2cFailure(uint32_t now);

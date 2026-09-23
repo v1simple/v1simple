@@ -1,8 +1,3 @@
-/**
- * Valentine One Gen2 client and companion-app BLE proxy.
- * BLE callbacks synchronize with main-loop-owned runtime state.
- */
-
 #include "ble_client.h"
 #include "ble_bond_backup_store.h"
 #include "ble_bond_backup_writer.h"
@@ -10,23 +5,19 @@
 #include "storage_manager.h"
 #include "config.h"
 #include <Arduino.h>
-#include <WiFi.h>        // For WiFi coexistence during BLE connect
-#include <Preferences.h> // For fresh-flash detection
+#include <WiFi.h>
+#include <Preferences.h>
 #include <set>
 #include <string>
 #include <cstdlib>
 #include <cstring>
 #include "ble_internals.h"
 
-// NimBLE low-level store API for bond backup/restore
 extern "C" {
 #include "nimble/nimble/host/include/host/ble_store.h"
 #include "nimble/nimble/host/include/host/ble_sm.h"
 }
 
-// ============================================================================
-// BLE Bond Backup/Restore (SD card)
-// ============================================================================
 // NimBLE stores bonds in NVS ("nimble_bond" namespace). NVS is volatile —
 // brownouts, partition changes, and flash erases lose all bonds. This backs
 // up bond key material to SD so it can be restored automatically.
@@ -37,8 +28,6 @@ extern "C" {
 //   [4 bytes]  uint32_t  peerSecCount
 //   [N * sizeof(ble_store_value_sec)]  our_sec entries
 //   [M * sizeof(ble_store_value_sec)]  peer_sec entries
-// ============================================================================
-
 static constexpr const char* BLE_BOND_BACKUP_PATH = "/v1simple_ble_bonds.bin";
 // Max TX power (21 dBm) to maximize BLE range.
 // ESP32-S3 valid steps: -12, -9, -6, -3, 0, 3, 6, 9, 12, 15, 18, 21.
@@ -52,8 +41,7 @@ int V1BLEClient::enqueueCurrentBondBackupSnapshot() {
     return enqueueCurrentBleBondBackupSnapshot();
 }
 
-// Restore bond keys from SD card. Must be called after NimBLEDevice::init()
-// but before scanning/connecting. Returns number of bonds restored, or -1 on error.
+// Must run after NimBLEDevice::init() but before scanning or connecting.
 static int restoreBondsFromSD(StorageManager& storage) {
     if (!storage.isReady() || !storage.isSDCard()) {
         return -1;
@@ -78,24 +66,18 @@ static int restoreBondsFromSD(StorageManager& storage) {
     }
     return restored;
 }
-// Spinlock for deferring settings writes from BLE scan callbacks
 portMUX_TYPE pendingAddrMux = portMUX_INITIALIZER_UNLOCKED;
 
-// Instance pointer for callbacks (extern in ble_internals.h)
 V1BLEClient* instancePtr = nullptr;
 
 V1BLEClient::V1BLEClient()
     : pClient_(nullptr), pRemoteService_(nullptr), pDisplayDataChar_(nullptr), pCommandChar_(nullptr),
       pCommandCharLong_(nullptr), pServer_(nullptr), pProxyService_(nullptr), pProxyNotifyChar_(nullptr),
       pProxyNotifyLongChar_(nullptr), pProxyWriteChar_(nullptr), proxyEnabled_(false), proxyServerInitialized_(false),
-      proxyServerInitAttempted_(false)
-      // proxyClientConnected_ - uses default member initializer (atomic)
-      ,
+      proxyServerInitAttempted_(false),
       proxyName_("V1-Proxy"), proxyQueue_(nullptr), phone2v1Queue_(nullptr), proxyQueuesInPsram_(false),
       dataCallback_(nullptr), connectImmediateCallback_(nullptr), sessionOpenedCallback_(nullptr),
-      sessionClosedCallback_(nullptr), connectStableCallback_(nullptr)
-      // connected_, shouldConnect_ - use default member initializers (atomic)
-      ,
+      sessionClosedCallback_(nullptr), connectStableCallback_(nullptr),
       targetAddress_(), lastScanStart_(0), pScanCallbacks_(nullptr),
       pClientCallbacks_(nullptr), pProxyServerCallbacks_(nullptr), pProxyWriteCallbacks_(nullptr) {
     instancePtr = this;
@@ -135,14 +117,10 @@ const char* V1BLEClient::getSubscribeStepName() const {
     }
 }
 
-// ============================================================================
-// BLE State Machine
-// ============================================================================
-
 void V1BLEClient::setBLEState(BLEState newState) {
     BLEState oldState = bleState_;
     if (oldState == newState)
-        return; // No change
+        return;
 
     bleState_ = newState;
     stateEnteredMs_ = static_cast<uint32_t>(millis());
@@ -164,7 +142,6 @@ void V1BLEClient::hardResetBLEClient() {
 // avoided.
 void V1BLEClient::completeHardResetBLEClient() {
 
-    // Stop any active scanning
     NimBLEScan* pScan = NimBLEDevice::getScan();
     if (pScan && pScan->isScanning()) {
         pScan->stop();
@@ -189,17 +166,15 @@ void V1BLEClient::completeHardResetBLEClient() {
         Serial.println("[BLE] ERROR: Failed to create client!");
     }
 
-    // Reset failure counter after hard reset
     consecutiveConnectFailures_ = 0;
     nextConnectAllowedMs_ = 0;
 }
 
-// Initialize BLE stack without starting scan
 bool V1BLEClient::initBLE(StorageManager& storage, bool enableProxy, const char* proxyName) {
     registerBleBondBackupStorage(storage);
     static bool initialized = false;
     if (initialized) {
-        return true; // Already initialized
+        return true;
     }
 
     Serial.print("[BLE] Init...");
@@ -208,7 +183,6 @@ bool V1BLEClient::initBLE(StorageManager& storage, bool enableProxy, const char*
     proxyName_ = proxyName ? proxyName : "V1C-LE-S3";
     bool needsBondSchemaMigration = false;
 
-    // Create mutexes for thread-safe BLE operations (only once)
     if (!bleMutex_) {
         bleMutex_ = xSemaphoreCreateMutex();
     }

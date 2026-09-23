@@ -1,11 +1,3 @@
-/**
- * Shared fetch / polling helpers for the V1 web interface.
- *
- * - fetchWithTimeout: wraps fetch() with an AbortController deadline.
- * - fetchJsonWithTimeout: keeps that deadline active while reading successful JSON.
- * - createPoll: setInterval wrapper with in-flight dedup and stop().
- */
-
 export const MAINTENANCE_API_WRITE_HEADER = 'X-V1Simple-Request';
 export const MAINTENANCE_API_WRITE_HEADER_VALUE = 'maintenance-ui';
 export const URLENCODED_FORM_CONTENT_TYPE = 'application/x-www-form-urlencoded;charset=UTF-8';

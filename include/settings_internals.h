@@ -1,11 +1,3 @@
-/**
- * Shared internals for settings translation units.
- *
- * Include this instead of settings.h in the settings_*.cpp files
- * so that cross-TU constants, crypto helpers, and backup utilities
- * are available without duplicating declarations.
- */
-
 #pragma once
 
 #include "settings.h"
@@ -16,8 +8,6 @@
 #include "v1_profiles.h"
 #include <ArduinoJson.h>
 #include <algorithm>
-
-// ── Shared NVS / SD constants ──────────────────────────────────────────────
 
 extern const char* SETTINGS_BACKUP_PATH;
 extern const char* SETTINGS_BACKUP_TMP_PATH;
@@ -39,14 +29,11 @@ extern const char XOR_KEY[];
 inline constexpr int SETTINGS_VERSION = 12;
 extern const char* OBFUSCATION_HEX_PREFIX;
 
-// ── Static helpers promoted to internal-linkage-free functions ──────────────
-
 VoiceAlertMode clampVoiceAlertModeValue(int raw);
 String sanitizeApPasswordValue(const String& raw);
 String sanitizeLastV1AddressValue(const String& raw);
 String sanitizeObdSavedNameValue(const String& raw);
 
-// Backup file helpers
 enum class BackupDocumentLoadStatus : uint8_t {
     Success,
     NotFound,
@@ -107,7 +94,6 @@ size_t deferredSettingsBackupQueueDepthForTest();
 bool deferredSettingsBackupPendingForTest();
 #endif
 
-// NVS helpers
 bool attemptNvsRecovery(const char* activeNs);
 int namespaceHealthScore(const char* ns);
 bool isKnownSettingsNamespace(const String& ns);
@@ -142,7 +128,6 @@ inline SettingsNamespaceCleanupPlan buildSettingsNamespaceCleanupPlan(uint32_t u
     return plan;
 }
 
-// Crypto / obfuscation
 String xorObfuscate(const String& input);
 char hexDigit(uint8_t nibble);
 int hexNibble(char c);
@@ -156,7 +141,6 @@ String decodeObfuscatedFromStorage(const String& stored);
 // Standard check value: computeCrc32("123456789", 9) == 0xCBF43926.
 uint32_t computeCrc32(const uint8_t* data, size_t length);
 
-// WiFi client SD secret helpers
 bool saveWifiClientSecretToSD(StorageManager& storage, size_t slotIndex, const String& ssid,
                               const String& encodedPassword);
 String loadWifiClientSecretFromSD(StorageManager& storage, const String& expectedSsid,

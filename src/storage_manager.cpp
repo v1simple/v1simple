@@ -1,9 +1,3 @@
-/**
- * Storage Manager implementation
- *
- * Mounts SD card (SDMMC) or falls back to LittleFS.
- */
-
 #include "storage_manager.h"
 #include "littlefs_mount.h"
 #include <SD_MMC.h>
@@ -11,7 +5,6 @@
 
 StorageManager::StorageManager()
     : fs_(nullptr), ready_(false), usingSDMMC_(false), littlefsReady_(false), sdMutex_(nullptr) {
-    // Create SD access mutex - critical for thread safety across cores
     sdMutex_ = xSemaphoreCreateMutex();
     if (!sdMutex_) {
         Serial.println("[Storage] CRITICAL: Failed to create SD mutex!");
@@ -24,7 +17,6 @@ bool StorageManager::begin() {
     littlefsReady_ = false;
 
 #if defined(DISPLAY_WAVESHARE_349)
-    // Try SD_MMC first on Waveshare 3.49
     Serial.println("[Storage] Attempting SD_MMC mount...");
 
     bool pinsSet = SD_MMC.setPins(SD_MMC_CLK_PIN, SD_MMC_CMD_PIN, SD_MMC_D0_PIN);
@@ -37,8 +29,7 @@ bool StorageManager::begin() {
         uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
         Serial.printf("[Storage] SD card mounted (%lluMB)\n", cardSize);
 
-        // Also mount LittleFS as secondary for backups
-        // Use begin(false) to avoid auto-formatting existing data on transient errors
+        // Never auto-format the backup mirror after a transient mount failure.
         littlefsReady_ = fsmount::mountStorage();
         if (!littlefsReady_) {
             Serial.println("[Storage] WARN: LittleFS secondary mount failed - mirror backups disabled");
@@ -50,7 +41,6 @@ bool StorageManager::begin() {
     }
 #endif
 
-    // Fallback to LittleFS
     Serial.println("[Storage] Trying LittleFS fallback...");
     if (fsmount::mountStorage()) {
         fs_ = &LittleFS;
@@ -77,7 +67,6 @@ String StorageManager::statusText() const {
 }
 
 bool StorageManager::writeJsonFileAtomic(fs::FS& fs_, const char* path, JsonDocument& doc) {
-    // Ensure parent directory exists (prevents VFS fopen failures)
     if (path && path[0] == '/') {
         String parent(path);
         int slash = parent.lastIndexOf('/');

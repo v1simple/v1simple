@@ -1,7 +1,3 @@
-/**
- * Settings SD restore and validation paths.
- */
-
 #include "settings_internals.h"
 #include <nvs.h>
 #include "psram_json_document.h"
@@ -97,8 +93,6 @@ ProfileRecoveryStatus restoreProfileEntryFromBackup(const JsonDocument& backup, 
 bool shouldSkipProfileReferenceValidation(size_t availableProfileCount, bool hasConfiguredSlotReferences) {
     return availableProfileCount == 0 && hasConfiguredSlotReferences;
 }
-
-// --- Member methods: SD restore and validation ---
 
 void SettingsManager::recoverCriticalSettingsAfterFullRestoreFailure(fs::FS* fs, bool hasSdBackup,
                                                                      const JsonDocument& backupDoc) {
@@ -223,8 +217,6 @@ void SettingsManager::synchronizeSdBackup(bool hasSdBackup, const char* backupPa
 }
 
 bool SettingsManager::checkAndRestoreFromSD() {
-    // Check if NVS was erased (appears default) and backup exists on SD
-    // This can be called after storage is mounted to retry the restore
     resolveWifiCredentialTransaction();
     if (!resolveRestoreTransaction() || !resolveProfileDeleteTransaction()) {
         Serial.println("[Settings] Storage transaction recovery remains pending");
@@ -366,27 +358,17 @@ void SettingsManager::cleanupNamespacesIfNeeded(bool hasSdBackup) {
 }
 
 bool SettingsManager::checkNeedsRestore() {
-    // Check if NVS was likely wiped by looking for the settings version marker
-    // If settingsVer is missing (defaults to 1, triggers migration message),
-    // that's a strong indicator NVS was erased during a partition table change
-    //
-    // We use a dedicated "nvsValid" marker that's only set after a successful save
-    // If this marker is missing but an SD backup exists, we should restore
-
     String activeNs = getActiveNamespace();
     Preferences checkPrefs;
     if (!checkPrefs.begin(activeNs.c_str(), true)) {
-        // Can't even open the namespace - definitely needs restore
         markRestorePending("active NVS namespace could not be opened");
         return true;
     }
 
-    // Check for our validity marker - set to current version after successful save
     int nvsMarker = checkPrefs.getInt(kNvsValid, 0);
     int settingsVer = checkPrefs.getInt(kNvsSettingsVer, 0);
     const bool persistedRestorePending = checkPrefs.getBool(kNvsRestorePending, false);
     bool missingCriticalKey = false;
-    // These keys exist in all modern schemas and should never disappear in a healthy namespace.
     static constexpr const char* kCriticalKeys[] = {kNvsProxyBle, kNvsProxyName, kNvsBrightness, kNvsAutoPush};
     for (const char* key : kCriticalKeys) {
         if (!checkPrefs.isKey(key)) {
@@ -401,18 +383,14 @@ bool SettingsManager::checkNeedsRestore() {
         return true;
     }
 
-    // If neither marker exists, NVS was likely wiped
     if (nvsMarker == 0 && settingsVer == 0) {
         Serial.println("[Settings] NVS appears empty (no version markers)");
         markRestorePending("NVS empty before SD restore");
         return true;
     }
 
-    // Also check if this looks like a v1-format namespace that was never upgraded.
-    // The brightness==200 clause was removed because it caused false negatives:
-    // any device legitimately running non-default brightness at settings version <=1
-    // would have had a valid restore silently skipped.  nvsMarker==0 + settingsVer<=1
-    // is the correct and sufficient signal.
+    // A missing validity marker plus a legacy version is sufficient evidence;
+    // display values may legitimately equal or differ from their defaults.
     if (nvsMarker == 0 && settingsVer <= 1) {
         Serial.println("[Settings] NVS appears default (v1 migration + default brightness)");
         markRestorePending("legacy/default NVS before SD restore");
@@ -442,14 +420,11 @@ bool SettingsManager::checkNeedsRestore() {
     return false;
 }
 
-// Restore ALL settings from SD card
-
 bool SettingsManager::restoreFromSD() {
     if (!storage_->isReady() || !storage_->isSDCard()) {
         return false;
     }
 
-    // Acquire SD mutex to protect file I/O
     StorageManager::SDLockBlocking sdLock(storage_->getSDMutex());
     if (!sdLock) {
         Serial.println("[Settings] Failed to acquire SD mutex for restore");
@@ -520,8 +495,6 @@ void SettingsManager::validateProfileReferences(V1ProfileManager& profileMgr) {
         return;
     }
 
-    // Validate that profile names in auto-push slots actually exist
-    // If not, clear them to prevent repeated "file not found" errors
     bool needsSave = false;
 
     auto validateSlot = [&](AutoPushSlot& slot, const char* slotName) {
@@ -555,5 +528,4 @@ void SettingsManager::validateProfileReferences(V1ProfileManager& profileMgr) {
         }
     }
 
-    // No additional side effects needed beyond clearing invalid references.
 }

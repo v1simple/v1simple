@@ -69,7 +69,7 @@ export function forgetDetectorOperationId(storage) {
     try {
         storage.removeItem(DETECTOR_OPERATION_STORAGE_KEY);
     } catch {
-        // Nothing else to clear.
+        // Storage is only a resume hint; failure does not affect device truth.
     }
 }
 

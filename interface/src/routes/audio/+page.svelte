@@ -6,28 +6,24 @@
     import StatusAlert from '$lib/components/StatusAlert.svelte';
 
     let settings = $state({
-        voiceAlertMode: 3, // 0=disabled, 1=band, 2=freq, 3=band+freq
+        voiceAlertMode: 3,
         voiceDirectionEnabled: true,
         announceBogeyCount: true,
         muteVoiceIfVolZero: false,
-        voiceVolume: 75, // Speaker volume (0-100)
-        // Secondary alert settings
+        voiceVolume: 75,
         announceSecondaryAlerts: false,
         secondaryLaser: true,
         secondaryKa: true,
         secondaryK: false,
         secondaryX: false,
-        // Volume fade settings
         alertVolumeFadeEnabled: false,
         alertVolumeFadeDelaySec: 2,
         alertVolumeFadeVolume: 1,
-        // Speed mute settings
         speedMuteEnabled: false,
         speedMuteThresholdMph: 25,
         speedMuteHysteresisMph: 3,
         speedMuteVolume: 0,
         speedMuteVoice: true,
-        // Stealth (merged from the former Quiet page)
         stealthEnabled: false
     });
 
@@ -36,7 +32,6 @@
     let settingsLoaded = $state(false);
     let message = $state(null);
 
-    // Voice mode options for dropdown
     const voiceModes = [
         { value: 0, label: 'Disabled', desc: 'No voice announcements' },
         { value: 1, label: 'Band Only', desc: '"Ka", "K", "Laser"' },
@@ -63,17 +58,14 @@
             settings.announceBogeyCount = data.announceBogeyCount ?? true;
             settings.muteVoiceIfVolZero = data.muteVoiceIfVolZero ?? false;
             settings.voiceVolume = data.voiceVolume ?? 75;
-            // Secondary alert settings
             settings.announceSecondaryAlerts = data.announceSecondaryAlerts ?? false;
             settings.secondaryLaser = data.secondaryLaser ?? true;
             settings.secondaryKa = data.secondaryKa ?? true;
             settings.secondaryK = data.secondaryK ?? false;
             settings.secondaryX = data.secondaryX ?? false;
-            // Volume fade settings
             settings.alertVolumeFadeEnabled = data.alertVolumeFadeEnabled ?? false;
             settings.alertVolumeFadeDelaySec = data.alertVolumeFadeDelaySec ?? 2;
             settings.alertVolumeFadeVolume = data.alertVolumeFadeVolume ?? 1;
-            // Speed mute settings
             settings.speedMuteEnabled = data.speedMuteEnabled ?? false;
             settings.speedMuteThresholdMph = data.speedMuteThresholdMph ?? 25;
             settings.speedMuteHysteresisMph = data.speedMuteHysteresisMph ?? 3;
@@ -103,17 +95,14 @@
             params.append('announceBogeyCount', settings.announceBogeyCount);
             params.append('muteVoiceIfVolZero', settings.muteVoiceIfVolZero);
             params.append('voiceVolume', settings.voiceVolume);
-            // Secondary alert settings
             params.append('announceSecondaryAlerts', settings.announceSecondaryAlerts);
             params.append('secondaryLaser', settings.secondaryLaser);
             params.append('secondaryKa', settings.secondaryKa);
             params.append('secondaryK', settings.secondaryK);
             params.append('secondaryX', settings.secondaryX);
-            // Volume fade settings
             params.append('alertVolumeFadeEnabled', settings.alertVolumeFadeEnabled);
             params.append('alertVolumeFadeDelaySec', settings.alertVolumeFadeDelaySec);
             params.append('alertVolumeFadeVolume', settings.alertVolumeFadeVolume);
-            // Speed mute settings
             params.append('speedMuteEnabled', settings.speedMuteEnabled);
             params.append('speedMuteThresholdMph', settings.speedMuteThresholdMph);
             params.append('speedMuteHysteresisMph', settings.speedMuteHysteresisMph);
@@ -140,7 +129,6 @@
         }
     }
 
-    // Build preview text based on current settings
     function getPreviewText() {
         if (settings.voiceAlertMode === 0) return '(silent)';
         let parts = [];
@@ -169,7 +157,6 @@
             <span class="loading loading-lg loading-spinner"></span>
         </div>
     {:else}
-        <!-- Voice Alerts -->
         <div class="surface-card">
             <div class="card-body">
                 <CardSectionHead
@@ -178,7 +165,6 @@
                 />
 
                 <div class="space-y-4">
-                    <!-- Voice Content Mode Dropdown -->
                     <div class="form-control">
                         <label class="label" for="voice-mode">
                             <span class="label-text font-medium">Voice Content</span>
@@ -194,7 +180,6 @@
                         </select>
                     </div>
 
-                    <!-- Direction Toggle -->
                     <div class="form-control">
                         <label class="label cursor-pointer">
                             <div>
@@ -212,7 +197,6 @@
                         </label>
                     </div>
 
-                    <!-- Bogey Count Toggle -->
                     <div class="form-control">
                         <label class="label cursor-pointer">
                             <div>
@@ -230,7 +214,6 @@
                         </label>
                     </div>
 
-                    <!-- Preview -->
                     <div class="surface-panel">
                         <p class="copy-caption-soft mb-1">Preview:</p>
                         <p class="font-mono text-lg">{getPreviewText()}</p>
@@ -238,7 +221,6 @@
 
                     <div class="divider my-2"></div>
 
-                    <!-- Mute at Vol 0 -->
                     <div class="form-control">
                         <label class="label cursor-pointer">
                             <div>
@@ -262,7 +244,6 @@
             </div>
         </div>
 
-        <!-- Secondary Alerts -->
         <div class="surface-card">
             <div class="card-body">
                 <CardSectionHead
@@ -271,7 +252,6 @@
                 />
 
                 <div class="space-y-4">
-                    <!-- Master Toggle -->
                     <div class="form-control">
                         <label class="label cursor-pointer">
                             <div>
@@ -291,7 +271,6 @@
                         </label>
                     </div>
 
-                    <!-- Band Filters (nested, only shown when master enabled) -->
                     {#if settings.announceSecondaryAlerts && settings.voiceAlertMode !== 0}
                         <div class="surface-subsection tight">
                             <p class="copy-caption-soft mb-2">Which bands to announce:</p>
@@ -345,7 +324,6 @@
             </div>
         </div>
 
-        <!-- Volume Fade -->
         <div class="surface-card">
             <div class="card-body">
                 <CardSectionHead
@@ -354,7 +332,6 @@
                 />
 
                 <div class="space-y-4">
-                    <!-- Master Toggle -->
                     <div class="form-control">
                         <label class="label cursor-pointer">
                             <div>
@@ -373,7 +350,6 @@
 
                     {#if settings.alertVolumeFadeEnabled}
                         <div class="surface-subsection">
-                            <!-- Delay -->
                             <div class="form-control">
                                 <label class="label" for="fade-delay">
                                     <span class="label-text">Delay (seconds)</span>
@@ -394,7 +370,6 @@
                                 </p>
                             </div>
 
-                            <!-- Reduced Volume -->
                             <div class="form-control">
                                 <label class="label" for="fade-volume">
                                     <span class="label-text">Reduced Volume</span>
@@ -413,7 +388,6 @@
                                 <p class="copy-caption-soft mt-1">V1 volume to fade to (1-9)</p>
                             </div>
 
-                            <!-- Preview -->
                             <div class="surface-panel text-sm">
                                 <p class="copy-subtle">
                                     Alert starts → <strong>full volume</strong> for {settings.alertVolumeFadeDelaySec}s
@@ -428,7 +402,6 @@
             </div>
         </div>
 
-        <!-- Speed-Aware Muting -->
         <div class="surface-card">
             <div class="card-body">
                 <CardSectionHead
@@ -437,7 +410,6 @@
                 />
 
                 <div class="space-y-4">
-                    <!-- Master Toggle -->
                     <div class="form-control">
                         <label class="label cursor-pointer">
                             <div>
@@ -457,7 +429,6 @@
 
                     {#if settings.speedMuteEnabled}
                         <div class="surface-subsection">
-                            <!-- Threshold -->
                             <div class="form-control">
                                 <label class="label" for="speed-mute-threshold">
                                     <span class="label-text">Mute Below (mph)</span>
@@ -478,7 +449,6 @@
                                 </p>
                             </div>
 
-                            <!-- Hysteresis -->
                             <div class="form-control">
                                 <label class="label" for="speed-mute-hysteresis">
                                     <span class="label-text">Hysteresis (mph)</span>
@@ -499,7 +469,6 @@
                                 </p>
                             </div>
 
-                            <!-- V1 Alert Volume -->
                             <div class="form-control mt-4">
                                 <label class="label" for="speed-mute-volume">
                                     <span class="label-text">V1 Alert Volume</span>
@@ -522,7 +491,6 @@
                                 </p>
                             </div>
 
-                            <!-- Voice Suppression Toggle -->
                             <div class="form-control mt-4">
                                 <label class="label cursor-pointer">
                                     <div>
@@ -540,7 +508,6 @@
                                 </label>
                             </div>
 
-                            <!-- Preview -->
                             <div class="surface-panel mt-4 text-sm">
                                 <p class="copy-subtle">
                                     Below <strong>{settings.speedMuteThresholdMph} mph</strong> → V1
@@ -559,7 +526,6 @@
             </div>
         </div>
 
-        <!-- Stealth Display -->
         <div class="surface-card">
             <div class="card-body">
                 <CardSectionHead
@@ -585,7 +551,6 @@
             </div>
         </div>
 
-        <!-- Speaker Volume -->
         <div class="surface-card">
             <div class="card-body">
                 <CardSectionHead
@@ -617,7 +582,6 @@
             </div>
         </div>
 
-        <!-- Info Card -->
         <div class="surface-card">
             <div class="card-body">
                 <CardSectionHead title="How It Works" />
@@ -640,7 +604,6 @@
             </div>
         </div>
 
-        <!-- Save Button -->
         <button
             class="btn btn-block btn-primary"
             onclick={saveSettings}

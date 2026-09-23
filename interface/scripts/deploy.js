@@ -1,6 +1,3 @@
-/**
- * Deploy script - copies built SvelteKit files to ../data/ for LittleFS
- */
 import { cpSync, rmSync, existsSync, mkdirSync, readdirSync, statSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { join, dirname } from 'path';
@@ -13,20 +10,17 @@ const dataDir = join(__dirname, '..', '..', 'data');
 
 console.log('🚀 Deploying SvelteKit build to LittleFS data folder...');
 
-// Check if build exists
 if (!existsSync(buildDir)) {
     console.error('❌ Build folder not found! Run "npm run build" first.');
     process.exit(1);
 }
 
-// Clear data folder (except any non-web files we want to keep)
 if (existsSync(dataDir)) {
     console.log('🧹 Clearing existing data folder...');
     rmSync(dataDir, { recursive: true });
 }
 mkdirSync(dataDir, { recursive: true });
 
-// Copy build to data
 console.log('📁 Copying build files...');
 cpSync(buildDir, dataDir, { recursive: true });
 
@@ -97,7 +91,6 @@ console.log(
     `🔊 Staged ${stagedAudio.copied}/${stagedAudio.expected} audio clips to ${stagedAudio.targetDir}`
 );
 
-// List deployed files with sizes
 function listFiles(dir, prefix = '') {
     const files = readdirSync(dir);
     let totalSize = 0;

@@ -155,12 +155,10 @@ void test_parse_display_packet_updates_render_state() {
         0x73);                             // main=7 mute=3
     const auto packet = makePacket(PACKET_ID_DISPLAY_DATA, payload);
 
-    // Mute requires 2 consecutive display packets with bit set.
-    // First packet: confirm count reaches 1 — not yet muted.
+    // Mute requires two consecutive display packets with the bit set.
     TEST_ASSERT_TRUE(parsePacket(parser, packet));
     TEST_ASSERT_FALSE(parser.getDisplayState().muted);
 
-    // Second packet: confirm count reaches 2 — now muted.
     TEST_ASSERT_TRUE(parsePacket(parser, packet));
 
     const DisplayState& state = parser.getDisplayState();
@@ -243,8 +241,6 @@ void test_parse_display_packet_laser_keeps_led_bitmap_signal_bars() {
     TEST_ASSERT_EQUAL(BAND_LASER, priority.band);
     TEST_ASSERT_EQUAL(DIR_FRONT, priority.direction);
 
-    // Seven zero data bytes plus the checksum placeholder expected by
-    // makePacket() form the canonical count-zero alert row.
     const auto emptyRadarTable = makePacket(PACKET_ID_ALERT_DATA, {0, 0, 0, 0, 0, 0, 0, 0});
     TEST_ASSERT_TRUE(parsePacket(parser, emptyRadarTable));
     TEST_ASSERT_TRUE(parser.hasAlerts());
@@ -258,36 +254,19 @@ void test_parse_display_packet_laser_keeps_led_bitmap_signal_bars() {
 
 void test_parse_display_packet_zero_volume_does_not_force_muted() {
     PacketParser parser;
-    // image1=0x20 (front arrow, no mute bit), aux2=0x00 (mainVol=0, muteVol=0)
     const auto packet = makePacket(
         PACKET_ID_DISPLAY_DATA,
         makeDisplayPayload(63, 0x01, 0x20, 0x20, 0x00, 0x00, 0x00));
 
     TEST_ASSERT_TRUE(parsePacket(parser, packet));
-    // Mute state comes exclusively from image1 bit 4 — zero volume does not
-    // imply muted.  This prevents false muted flashes when the checksum byte
-    // is misread as volume data on short-payload display packets.
+    // Zero volume does not imply the image1 bit-4 mute state.
     TEST_ASSERT_FALSE(parser.getDisplayState().muted);
     TEST_ASSERT_EQUAL_UINT8(0, parser.getDisplayState().mainVolume);
 }
 
-// FSD-002 verdict reversal: the V1 bogey counter is a SINGLE 7-segment LED. payload[0]
-// (image1) is the steady displayed character;
-// payload[1] (image2) is the blink-off mask companion to payload[0]. The
-// parser captures both bytes so that future renderer enhancements can drive a
-// blink animation off image1 & ~image2 (the same convention already used for
-// band/arrow flash bits at packet_parser.cpp `flashingBits = image1 & ~image2`).
-//
-// These tests pin the protocol-correct semantics: image2 is captured for
-// blink-mask use, NOT for second-digit rendering. The renderer in
-// display_update.cpp / display_screens.cpp passes only image1 to
-// drawTopCounterPair — see the FSD-002 Verdict Reversal "Corrective action".
+// image1 is the single bogey LED's value; image2 is its blink-off mask.
 void test_parse_display_packet_captures_bogey_image2_for_blink_mask() {
     PacketParser parser;
-    // Steady "1" on the LED: image1 = '1' encoded as 0x06 (segments b+c),
-    // image2 = '1' encoded the same way, no decimal point on either byte.
-    // Expected: bogeyCounterByte == bogeyCounterByte2, both decode to '1',
-    // image1 & ~image2 == 0 (no blinking segments).
     const auto packet = makePacket(
         PACKET_ID_DISPLAY_DATA,
         makeDisplayPayload(6, 0x01, 0x20, 0x20, 0x00, 0x00, 0x00, 6));
@@ -301,17 +280,11 @@ void test_parse_display_packet_captures_bogey_image2_for_blink_mask() {
     TEST_ASSERT_EQUAL_UINT8(6, state.bogeyCounterByte2);
     TEST_ASSERT_EQUAL('1', state.bogeyCounterChar2);
     TEST_ASSERT_FALSE(state.bogeyCounterDot2);
-    // Blink-mask invariant: identical image1/image2 → no segments blinking.
     TEST_ASSERT_EQUAL_UINT8(0, static_cast<uint8_t>(state.bogeyCounterByte & ~state.bogeyCounterByte2));
 }
 
 void test_parse_display_packet_captures_blinking_bogey_indicator() {
     PacketParser parser;
-    // Blinking "J" on the LED: V1's natural junk-out indicator behavior.
-    // image1 = 'J' encoded byte (lit), image2 = 0 (dark). The parser must
-    // capture both bytes so a future renderer can drive blink animation. The
-    // currently-shipping renderer reads only image1 and shows steady J — that
-    // is acceptable (matches V1's on-phase) but does not yet drive blink.
     const uint8_t junkByte = 0x1E;  // segments b+c+d+e — J on a 7-seg LED
     const auto packet = makePacket(
         PACKET_ID_DISPLAY_DATA,
@@ -322,8 +295,6 @@ void test_parse_display_packet_captures_blinking_bogey_indicator() {
     const DisplayState& state = parser.getDisplayState();
     TEST_ASSERT_EQUAL_UINT8(junkByte, state.bogeyCounterByte);
     TEST_ASSERT_EQUAL_UINT8(0x00, state.bogeyCounterByte2);
-    // Blink-mask invariant: image1 lit, image2 dark → all of image1's segments
-    // are blinking. This is the "J flashing for junk-out" case.
     TEST_ASSERT_EQUAL_UINT8(junkByte,
         static_cast<uint8_t>(state.bogeyCounterByte & ~state.bogeyCounterByte2));
 }
@@ -790,27 +761,15 @@ void test_parse_display_packet_reports_bands_when_system_status_set() {
     TEST_ASSERT_EQUAL_UINT8(DIR_SIDE, s.arrows);
 }
 
-// A display packet whose payload is shorter than 8 bytes (the minimum that
-// includes aux0/aux1/aux2) MUST be rejected before we can read aux0. This
-// pins the invariant that allows parseDisplayData's `length < 8` guard to
-// own the aux-byte safety: no caller in production reaches the
-// length<=5 branch with `auxSystemStatus` undecided. Regressing this guard
-// would admit unread aux0 state into the display pipeline.
+// Payloads shorter than eight bytes cannot supply aux0/aux1/aux2.
 void test_parse_display_packet_rejects_short_payload() {
     PacketParser parser;
-    // First land a known-good display state so we can detect any leakage
-    // from a subsequent short-payload parse. After this, systemStatus=true
-    // and activeBands=BAND_KA (image1=0x42 reports Ka + side w/ aux0=0x04).
     const auto goodPkt = makePacket(PACKET_ID_DISPLAY_DATA,
                                     makeDisplayPayload(0x77, 0x03, 0x42, 0x42, 0x04));
     TEST_ASSERT_TRUE(parsePacket(parser, goodPkt));
     TEST_ASSERT_TRUE(parser.getDisplayState().systemStatus);
     TEST_ASSERT_EQUAL_UINT8(BAND_KA, parser.getDisplayState().activeBands);
 
-    // Now try a 7-byte payload (one short of aux0). makePacket frames it:
-    // start + dst + src + id + len(=7) + 7 bytes + end = 13-byte packet,
-    // so validatePacket (>=8) accepts it; parseDisplayData should reject
-    // because the post-strip length (7) is less than 8.
     const std::vector<uint8_t> shortPayload = {
         0x77,  // bogey
         0x00,  // bogey2
@@ -823,22 +782,13 @@ void test_parse_display_packet_rejects_short_payload() {
     const auto shortPkt = makePacket(PACKET_ID_DISPLAY_DATA, shortPayload);
     TEST_ASSERT_FALSE(parsePacket(parser, shortPkt));
 
-    // Display state must be unchanged by the rejected parse.
     const DisplayState& s = parser.getDisplayState();
     TEST_ASSERT_TRUE(s.systemStatus);
     TEST_ASSERT_EQUAL_UINT8(BAND_KA, s.activeBands);
 }
 
-// Boundary case at the minimum accepted payload length (8 bytes): with
-// aux0=0, systemStatus must be cleared. The prior
-// `auxSystemStatus = true` default would silently flip this assertion if
-// reintroduced.
 void test_parse_display_packet_min_payload_clears_system_status_when_aux0_zero() {
     PacketParser parser;
-    // makeDisplayPayload yields 9 bytes; parseDisplayData sees 9 here, but the
-    // post-strip length is 9 which is >5, exercising the same code path as
-    // the rest of the production stream while explicitly asserting the
-    // bit-clear default.
     const auto pkt = makePacket(PACKET_ID_DISPLAY_DATA,
                                 makeDisplayPayload(0x77, 0x00, 0x00, 0x00, 0x00));
     TEST_ASSERT_TRUE(parsePacket(parser, pkt));
@@ -862,10 +812,6 @@ void test_display_packet_records_display_state_without_suppressing_alert_data() 
     TEST_ASSERT_TRUE(parser.getDisplayState().displayOn);
 }
 
-// Spec-compliant RESPALLVOLUME 0x3D parser.
-// The four values [main, muted, savedMain, savedMuted] plus checksum populate
-// mainVolume/muteVolume (overriding aux2 inference) plus the new
-// savedMainVolume/savedMuteVolume pair, and sets hasSavedVolume=true.
 void test_parse_resp_all_volume_populates_volume_fields() {
     PacketParser parser;
     const std::vector<uint8_t> payload = {0x07, 0x02, 0x09, 0x03, 0x00};
@@ -880,12 +826,9 @@ void test_parse_resp_all_volume_populates_volume_fields() {
     TEST_ASSERT_TRUE(s.hasSavedVolume);
 }
 
-// RESPALLVOLUME overwrites the aux2-nibble inference set by an earlier display
-// packet. This test pins that implementation policy; original precedence
-// provenance is UNKNOWN.
+// RESPALLVOLUME is authoritative over the display packet's aux2 fallback.
 void test_resp_all_volume_overrides_display_aux2_inference() {
     PacketParser parser;
-    // First, send a display packet with aux2=0x73 (main=7 mute=3) — fallback path.
     const auto disp = makePacket(PACKET_ID_DISPLAY_DATA,
                                  makeDisplayPayload(0x77, 0x00, 0x20, 0x20, 0x04, 0x00, 0x73));
     TEST_ASSERT_TRUE(parsePacket(parser, disp));
@@ -893,7 +836,6 @@ void test_resp_all_volume_overrides_display_aux2_inference() {
     TEST_ASSERT_EQUAL_UINT8(3, parser.getDisplayState().muteVolume);
     TEST_ASSERT_FALSE(parser.getDisplayState().hasSavedVolume);
 
-    // Now RESPALLVOLUME with different values — should win.
     const auto vol = makePacket(PACKET_ID_RESP_ALL_VOLUME,
                                 std::vector<uint8_t>{0x05, 0x01, 0x08, 0x04, 0x00});
     TEST_ASSERT_TRUE(parsePacket(parser, vol));

@@ -75,11 +75,6 @@ void TouchHandler::reset() {
     }
 }
 
-bool TouchHandler::isTouched() {
-    int16_t x, y;
-    return getTouchPoint(x, y);
-}
-
 void TouchHandler::configureWireBus() {
     Wire.begin(sdaPin_, sclPin_);
     Wire.setClock(I2C_CLOCK_HZ);

@@ -153,7 +153,6 @@ class WiFiManager {
                           int persistSlotIndex = -1, bool maintenanceAutoConnect = false);
     void disconnectFromNetwork();
     void checkWifiClientStatus();    // Called internally by process() to manage STA connection
-    String getConnectedSSID() const; // Returns empty if not connected
 
     // Callbacks for alert data (to display on web page)
     void setAlertCallback(void (*fn)(JsonObject, void*), void* ctx) {

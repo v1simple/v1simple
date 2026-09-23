@@ -165,7 +165,6 @@ class V1DeviceStore {
 
     bool migrateLegacyFiles(fs::FS* sourceFs);
 
-    static String sanitizeName(const String& raw);
     static uint8_t clampDefaultProfileValue(int raw);
     bool persistDirtyStore();
     bool buildUpsertCandidate(const String& address, const V1DetectorSnapshot* snapshot,
@@ -173,7 +172,6 @@ class V1DeviceStore {
     bool upsertDeviceInternal(const String& address, bool persistNow);
 
     int findDeviceIndex(const String& normalizedAddress) const;
-    void trimToCapacity();
 
     bool dirty_ = false;
     bool mirrorDirty_ = false;

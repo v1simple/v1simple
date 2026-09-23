@@ -353,10 +353,6 @@ void ObdRuntimeModule::handlePollingError(uint32_t nowMs, bool disconnectBleNow,
     }
 }
 
-void ObdRuntimeModule::handleCommandFailure(uint32_t nowMs, ObdFailureReason reason, bool disconnectBleNow) {
-    handlePollingError(nowMs, disconnectBleNow, reason);
-}
-
 bool ObdRuntimeModule::shouldDisconnectAfterPollingError(ObdFailureReason reason) {
     switch (reason) {
     case ObdFailureReason::WRITE:

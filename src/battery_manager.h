@@ -35,7 +35,6 @@
 // Battery voltage thresholds (mV)
 #define BATTERY_FULL_MV battery_math::kFullMv
 #define BATTERY_EMPTY_MV battery_math::kEmptyMv
-#define BATTERY_WARNING_MV battery_math::kWarningMv
 #define BATTERY_CRITICAL_MV battery_math::kCriticalMv
 
 class BatteryManager {
@@ -68,9 +67,6 @@ class BatteryManager {
 
     // Get cached battery percentage (0-100, updated every 10s)
     uint8_t getPercentage() const;
-
-    // Check if battery is low (uses cached values)
-    bool isLow() const;
 
     // Check if battery is critically low (should shutdown soon)
     bool isCritical() const;

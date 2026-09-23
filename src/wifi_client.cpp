@@ -79,13 +79,6 @@ String WiFiManager::getIPAddress() const {
     return "";
 }
 
-String WiFiManager::getConnectedSSID() const {
-    if (wifiClientState_ == WIFI_CLIENT_CONNECTED) {
-        return WiFi.SSID();
-    }
-    return "";
-}
-
 bool WiFiManager::startWifiScan() {
     const WifiScanResultOwner::RequestResult result =
         wifiScanOwner_.request(WifiScanConsumer::UI, makeWifiScanDriver());

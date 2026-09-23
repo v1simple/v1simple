@@ -182,13 +182,6 @@ bool isHex(char c) {
     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 }
 
-String clampLen(const String& input, size_t maxLen) {
-    if (input.length() <= maxLen) {
-        return input;
-    }
-    return input.substring(0, maxLen);
-}
-
 class DeviceStoreCrcWriter {
   public:
     size_t write(uint8_t byte) {
@@ -630,12 +623,6 @@ String normalizeV1DeviceAddress(const String& rawAddress) {
 
 V1DeviceStore::V1DeviceStore() = default;
 
-String V1DeviceStore::sanitizeName(const String& raw) {
-    String name = clampLen(raw, MAX_NAME_LEN);
-    name.trim();
-    return name;
-}
-
 uint8_t V1DeviceStore::clampDefaultProfileValue(int raw) {
     if (raw < 0) {
         return 0;
@@ -653,12 +640,6 @@ int V1DeviceStore::findDeviceIndex(const String& normalizedAddress) const {
         }
     }
     return -1;
-}
-
-void V1DeviceStore::trimToCapacity() {
-    if (devices_.size() > MAX_DEVICES) {
-        devices_.resize(MAX_DEVICES);
-    }
 }
 
 bool V1DeviceStore::writeStore(fs::FS& filesystem, uint32_t generation, bool preserveValidRollback) const {

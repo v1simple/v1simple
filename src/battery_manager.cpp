@@ -556,10 +556,6 @@ uint8_t BatteryManager::getPercentage() const {
     return cachedPercent_;
 }
 
-bool BatteryManager::isLow() const {
-    return battery_math::isLow(cachedVoltage_);
-}
-
 bool BatteryManager::isCritical() const {
     return battery_math::isCritical(cachedVoltage_);
 }

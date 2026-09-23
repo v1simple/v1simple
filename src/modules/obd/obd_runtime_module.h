@@ -238,7 +238,6 @@ class ObdRuntimeModule {
     void markFailure(ObdFailureReason reason, uint32_t nowMs);
     void handleConnectFailure(uint32_t nowMs, ObdFailureReason reason, int bleReason = 0);
     void handlePollingError(uint32_t nowMs, bool disconnectBleNow, ObdFailureReason reason);
-    void handleCommandFailure(uint32_t nowMs, ObdFailureReason reason, bool disconnectBleNow);
     static bool shouldDisconnectAfterPollingError(ObdFailureReason reason);
     void setSavedAddressFromBuffer(const char* address);
     void setConnectTarget(const char* address, uint8_t addrType, bool fromManualCandidate);

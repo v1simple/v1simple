@@ -22,8 +22,6 @@ class TouchHandler {
 
     bool begin(int sda = 17, int scl = 18, uint8_t addr = AXS_TOUCH_ADDR, int rst = -1);
 
-    bool isTouched();
-
     // Edge-triggered: returns true once per new tap; while the finger
     // stays down it returns false. Use isTouchActive() for the level state.
     bool getTouchPoint(int16_t& x, int16_t& y);

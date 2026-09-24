@@ -30,6 +30,7 @@ struct DisplayOrchestrationRefreshContext {
     bool bootSplashHoldActive = false;
     bool overloadLateThisLoop = false;
     bool pipelineRanThisLoop = false;
+    bool v1PersistenceRefreshDue = false;
 };
 
 class DisplayOrchestrationModule {
@@ -41,7 +42,7 @@ class DisplayOrchestrationModule {
 
     void processEarly(const DisplayOrchestrationEarlyContext& ctx);
     bool processParsedFrame(const DisplayOrchestrationParsedContext& ctx);
-    // True when the renderer should advance a visible blink source this loop.
+    // True when a blink or V1 persistence expiry needs a render this loop.
     bool processLightweightRefresh(const DisplayOrchestrationRefreshContext& ctx);
 
   private:

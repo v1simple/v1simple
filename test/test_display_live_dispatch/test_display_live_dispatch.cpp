@@ -770,6 +770,7 @@ struct CounterBlinkRuntime {
     bool refresh(uint32_t nowMs, DisplayOrchestrationRefreshContext context = {}) {
         mockMillis = nowMs;
         context.nowMs = nowMs;
+        context.v1PersistenceRefreshDue = pipeline.v1PersistenceRefreshDue(nowMs);
         const bool requested = orchestration.processLightweightRefresh(context);
         if (requested) pipeline.refreshBlinkTick(nowMs);
         return requested;
@@ -804,6 +805,51 @@ void assertCounterBlinkCycle(CounterBlinkRuntime& runtime, const char* on) {
     TEST_ASSERT_TRUE(runtime.refresh(10192));
     TEST_ASSERT_EQUAL_STRING(on, display.ut_fontMgr().segment7.lastPrinted);
     TEST_ASSERT_EQUAL_UINT(1, canvas()->flushSnapshots.size());
+}
+
+void test_v1_persisted_alert_expires_without_another_detector_packet() {
+    CounterBlinkRuntime runtime;
+    settings.slotAlertPersistSec[0] = 3;
+    runtime.displayFrame(0x38, 0x38, 0, 0, 0, 9000);
+    runtime.feed(PACKET_ID_ALERT_DATA, {0x11, 0x5E, 0x56, 0xA0, 0x00, 0x24, 0x80}, 10000);
+    runtime.displayFrame(0x06, 0x06, 0, 0x24, 0x24, 10000);
+    TEST_ASSERT_EQUAL_INT(BAND_K, display.ut_elementCaches().bands.lastMask);
+
+    runtime.feed(PACKET_ID_ALERT_DATA, {0, 0, 0, 0, 0, 0, 0}, 11000);
+    runtime.displayFrame(0x38, 0x38, 0, 0, 0, 11000);
+    TEST_ASSERT_TRUE(runtime.persistence.getPersistedAlert().isValid);
+    TEST_ASSERT_EQUAL_INT(BAND_K, display.ut_elementCaches().bands.lastMask);
+    clearObservations();
+
+    TEST_ASSERT_FALSE(runtime.refresh(13999));
+    TEST_ASSERT_EQUAL_UINT(0, canvas()->flushSnapshots.size());
+    DisplayOrchestrationRefreshContext suppressed;
+    suppressed.bootSplashHoldActive = true;
+    TEST_ASSERT_FALSE(runtime.refresh(14000, suppressed));
+    TEST_ASSERT_TRUE(runtime.refresh(14001));
+    TEST_ASSERT_FALSE(runtime.persistence.getPersistedAlert().isValid);
+    TEST_ASSERT_EQUAL_INT(BAND_NONE, display.ut_elementCaches().bands.lastMask);
+    TEST_ASSERT_EQUAL_UINT(1, canvas()->flushSnapshots.size());
+    TEST_ASSERT_FALSE(runtime.refresh(14001));
+}
+
+void test_v1_persisted_alert_expiry_restores_stealth_owner() {
+    CounterBlinkRuntime runtime;
+    settings.slotAlertPersistSec[0] = 3;
+    settings.mutableSettings().stealthEnabled = true;
+    runtime.displayFrame(0x38, 0x38, 0, 0, 0, 9000);
+    TEST_ASSERT_TRUE(display.isStealthScreen());
+    runtime.feed(PACKET_ID_ALERT_DATA, {0x11, 0x5E, 0x56, 0xA0, 0x00, 0x24, 0x80}, 10000);
+    runtime.displayFrame(0x06, 0x06, 0, 0x24, 0x24, 10000);
+    runtime.feed(PACKET_ID_ALERT_DATA, {0, 0, 0, 0, 0, 0, 0}, 11000);
+    runtime.displayFrame(0x38, 0x38, 0, 0, 0, 11000);
+    TEST_ASSERT_FALSE(display.isStealthScreen());
+    TEST_ASSERT_TRUE(runtime.persistence.getPersistedAlert().isValid);
+
+    TEST_ASSERT_FALSE(runtime.refresh(13999));
+    TEST_ASSERT_TRUE(runtime.refresh(14000));
+    TEST_ASSERT_FALSE(runtime.persistence.getPersistedAlert().isValid);
+    TEST_ASSERT_TRUE(display.isStealthScreen());
 }
 } // namespace
 
@@ -1137,6 +1183,8 @@ int main() {
     RUN_TEST(test_priority_arrow_enabled_with_no_priority_direction_keeps_main_arrows_inactive);
     RUN_TEST(test_idle_junk_counter_blinks_through_parser_pipeline_and_transfer);
     RUN_TEST(test_idle_steady_counter_does_not_request_extra_transfers);
+    RUN_TEST(test_v1_persisted_alert_expires_without_another_detector_packet);
+    RUN_TEST(test_v1_persisted_alert_expiry_restores_stealth_owner);
     RUN_TEST(test_live_counter_keeps_existing_blink_cadence);
     RUN_TEST(test_two_spec_alert_rows_reach_primary_and_secondary_direction_geometry);
     RUN_TEST(test_changed_spec_priority_swaps_primary_and_card_without_stale_geometry);

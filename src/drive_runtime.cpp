@@ -680,6 +680,7 @@ void DriveRuntime::presentDisplay(const DisplayEdges& edges, bool overloadThisLo
     refreshContext.bootSplashHoldActive = state_.bootSplashHoldActive;
     refreshContext.overloadLateThisLoop = overloadThisLoop;
     refreshContext.pipelineRanThisLoop = pipelineRan;
+    refreshContext.v1PersistenceRefreshDue = displayPipeline_.v1PersistenceRefreshDue(edges.nowMs);
     if (displayOrchestration_.processLightweightRefresh(refreshContext)) {
         displayPipeline_.refreshBlinkTick(edges.nowMs);
     }

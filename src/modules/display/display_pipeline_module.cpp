@@ -153,6 +153,7 @@ void DisplayPipelineModule::begin(const DisplayPipelineDependencies& dependencie
     lastPresentedAlpEventActive_ = false;
     alpHoldRefreshDeadlineMs_ = 0;
     alpPersistRefreshDeadlineMs_ = 0;
+    v1PersistRefreshDeadlineMs_ = 0;
     pendingVoiceAction_ = VoiceAction{};
     hasPendingVoiceAction_ = false;
     voiceRetryScheduled_ = false;
@@ -240,6 +241,11 @@ bool DisplayPipelineModule::consumeAlpPresentationRefreshDue(uint32_t nowMs) {
     return holdDue || persistDue;
 }
 
+bool DisplayPipelineModule::v1PersistenceRefreshDue(uint32_t nowMs) const {
+    return v1PersistRefreshDeadlineMs_ != 0 &&
+           static_cast<int32_t>(nowMs - v1PersistRefreshDeadlineMs_) >= 0;
+}
+
 RenderFrame DisplayPipelineModule::buildRenderFrame(uint32_t nowMs, const V1Settings& settingsRef) {
     DisplayState state = parser_->getDisplayState();
     const bool hasAlerts = parser_->hasAlerts();
@@ -250,6 +256,7 @@ RenderFrame DisplayPipelineModule::buildRenderFrame(uint32_t nowMs, const V1Sett
     if (settingsRef.activeSlot != lastPersistenceSlot_) {
         lastPersistenceSlot_ = settingsRef.activeSlot;
         alertPersistence_->clearPersistence();
+        v1PersistRefreshDeadlineMs_ = 0;
     }
 
     const uint8_t persistSec = settings_->getSlotAlertPersistSec(settingsRef.activeSlot);
@@ -261,14 +268,21 @@ RenderFrame DisplayPipelineModule::buildRenderFrame(uint32_t nowMs, const V1Sett
             const unsigned long persistWindowMs = static_cast<unsigned long>(persistSec) * 1000UL;
             if (alertPersistence_->shouldShowPersisted(nowMs, persistWindowMs)) {
                 showPersistedAlert = true;
+                if (v1PersistRefreshDeadlineMs_ == 0) {
+                    v1PersistRefreshDeadlineMs_ = std::max<uint32_t>(1, nowMs + persistWindowMs);
+                }
             } else {
                 alertPersistence_->clearPersistence();
                 persistedAlert = AlertData{};
+                v1PersistRefreshDeadlineMs_ = 0;
             }
         } else {
             alertPersistence_->clearPersistence();
             persistedAlert = AlertData{};
+            v1PersistRefreshDeadlineMs_ = 0;
         }
+    } else {
+        v1PersistRefreshDeadlineMs_ = 0;
     }
 
     const AlpLaserEvent& rawAlpEvent = alp_ ? alp_->currentEvent() : sAlpEventEmpty;
@@ -483,6 +497,7 @@ void DisplayPipelineModule::refreshBlinkTick(uint32_t nowMs) {
         return;
     }
     const V1Settings& settingsRef = settings_->get();
+    const bool v1PersistenceExpired = v1PersistenceRefreshDue(nowMs);
     RenderFrame frame = buildRenderFrame(nowMs, settingsRef);
     if (frame.primaryKind == RenderFramePrimaryKind::NONE) {
         return;
@@ -490,7 +505,11 @@ void DisplayPipelineModule::refreshBlinkTick(uint32_t nowMs) {
     // Resting counters can blink after the alert table clears. Stealth owns
     // the idle screen when enabled, so its hidden counter must not wake it.
     if (frame.primaryKind == RenderFramePrimaryKind::IDLE && settingsRef.stealthEnabled && speedSelector_) {
-        return;
+        if (!v1PersistenceExpired) return;
+        const SpeedSelection spd = speedSelector_->selectedSpeed();
+        frame.stealthMode = true;
+        frame.stealthSpeedMph = spd.speedMph;
+        frame.stealthSpeedValid = spd.valid;
     }
     renderComposedFrame(nowMs, frame);
 }

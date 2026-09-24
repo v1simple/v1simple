@@ -42,13 +42,13 @@ class DisplayPipelineModule {
 
     // Process after a successful parser.parse(); expects parser state already updated.
     void handleParsed(uint32_t nowMs);
-    // Re-renders the current frame WITHOUT alert-persistence side effects.
-    // Triggered by the orchestrator when no parsed frame ran this loop but live
-    // blink sources are active.
+    // Re-renders the current owner without voice side effects when a blink or
+    // V1 persistence deadline needs a display update.
     void refreshBlinkTick(uint32_t nowMs);
     bool restoreCurrentOwner(uint32_t nowMs);
     bool allowsObdPairGesture(uint32_t nowMs) const;
     bool consumeAlpPresentationRefreshDue(uint32_t nowMs);
+    bool v1PersistenceRefreshDue(uint32_t nowMs) const;
 
   private:
     DisplayMode* displayMode_ = nullptr;
@@ -74,6 +74,7 @@ class DisplayPipelineModule {
     bool lastPresentedAlpEventActive_ = false;
     uint32_t alpHoldRefreshDeadlineMs_ = 0;
     uint32_t alpPersistRefreshDeadlineMs_ = 0;
+    uint32_t v1PersistRefreshDeadlineMs_ = 0;
     VoiceAction pendingVoiceAction_{};
     bool hasPendingVoiceAction_ = false;
     bool voiceRetryScheduled_ = false;

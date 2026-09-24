@@ -114,13 +114,11 @@ bool DisplayOrchestrationModule::processLightweightRefresh(const DisplayOrchestr
     AlertData loopPriority;
     const bool loopHasRenderablePriority = loopHasAlerts && parser_->getRenderablePriorityAlert(loopPriority);
 
-    // Blink-refresh tick.
-    // A lightweight owner refresh lets the renderer advance its 96 ms blink
-    // phase even when V1 packets arrive more slowly. Request it only when a
-    // visible blink source exists, the full pipeline did not run, and presentation
-    // is not suppressed by a higher-priority state.
+    // A lightweight owner refresh advances blinks and clears an expired V1
+    // alert hold even when no new detector packet arrives.
     if (!ctx.pipelineRanThisLoop && !ctx.bootSplashHoldActive && !ctx.overloadLateThisLoop && !preview_->isRunning() &&
         ble_->isConnected()) {
+        if (ctx.v1PersistenceRefreshDue) return true;
         const DisplayState liveState = parser_->getDisplayState();
         const bool counterBlink = !display_->isStealthScreen() &&
                                   (liveState.bogeyCounterByte != liveState.bogeyCounterByte2 ||

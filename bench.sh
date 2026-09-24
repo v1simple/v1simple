@@ -16,11 +16,13 @@ CAMERA_REQUESTED=0
 KU_QUALIFICATION=0
 PHOTO_LABEL_QUALIFICATION=0
 JUNK_QUALIFICATION=0
+AGENT_REVIEW_HANDOFF=0
 
 usage() {
-  printf 'Usage: ./bench.sh --replay --camera [--ku-qualification|--photo-label-qualification|--junk-qualification]\n'
+  printf 'Usage: ./bench.sh --replay --camera [--ku-qualification|--photo-label-qualification|--junk-qualification] [--agent-review-handoff]\n'
   printf 'Builds and flashes the current firmware, sends the generated replay stimuli, and retains raw synchronized capture.\n'
   printf 'With the DUT in maintenance, the bench joins V1-Simple and captures settings before serial discovery or upload.\n'
+  printf 'Optional agent handoff uses a local private prompt; it does not run or grade with a model.\n'
 }
 
 fail() {
@@ -35,6 +37,7 @@ while [[ $# -gt 0 ]]; do
     --ku-qualification) KU_QUALIFICATION=1 ;;
     --photo-label-qualification) PHOTO_LABEL_QUALIFICATION=1 ;;
     --junk-qualification) JUNK_QUALIFICATION=1 ;;
+    --agent-review-handoff) AGENT_REVIEW_HANDOFF=1 ;;
     -h|--help)
       usage
       exit 0
@@ -64,6 +67,12 @@ if [[ "$JUNK_QUALIFICATION" -eq 1 && -z "${BENCH_REPLAY_DURATION_SECONDS+x}" ]];
 fi
 [[ "$((KU_QUALIFICATION + PHOTO_LABEL_QUALIFICATION + JUNK_QUALIFICATION))" -le 1 ]] \
   || fail 'choose only one focused replay qualification'
+if [[ "$AGENT_REVIEW_HANDOFF" -eq 1 ]]; then
+  AGENT_REVIEW_PROMPT="${BENCH_AGENT_REVIEW_PROMPT:-$ROOT_DIR/../.private/bench-agent-review/prompt.md}"
+  [[ -f "$AGENT_REVIEW_PROMPT" && -r "$AGENT_REVIEW_PROMPT" && -s "$AGENT_REVIEW_PROMPT" ]] \
+    || fail 'local agent-review prompt is missing or unreadable'
+  umask 077
+fi
 
 BENCH_PYTHON="$("$ROOT_DIR/scripts/bench_python.sh")" || fail 'could not prepare the bench Python environment'
 unset PYTHONHOME PYTHONPATH
@@ -155,6 +164,20 @@ fi
 
 [[ "$runner_status" -eq 0 ]] || fail "raw collection did not complete; see $RUN_LOG"
 printf 'COMPLETE: %s\n' "$REPLAY_DIR"
+
+if [[ "$AGENT_REVIEW_HANDOFF" -eq 1 ]]; then
+  AGENT_REVIEW_FILE="$RUN_DIR/agent_review_handoff.md"
+  AGENT_REVIEW_TEMP="$(mktemp "$RUN_DIR/.agent_review_handoff.XXXXXX")" \
+    || { printf 'AGENT_REVIEW_HANDOFF_FAILED: could not create a private handoff\n'; exit 2; }
+  if { printf 'Assigned replay directory: %s\n\n' "$REPLAY_DIR"; cat "$AGENT_REVIEW_PROMPT"; } \
+    > "$AGENT_REVIEW_TEMP" && mv "$AGENT_REVIEW_TEMP" "$AGENT_REVIEW_FILE"; then
+    printf 'AGENT_REVIEW_HANDOFF_READY: %s\n' "$AGENT_REVIEW_FILE"
+  else
+    rm -f "$AGENT_REVIEW_TEMP"
+    printf 'AGENT_REVIEW_HANDOFF_FAILED: raw replay is complete, but the handoff could not be written\n'
+    exit 2
+  fi
+fi
 
 # Interpret pixels only after the raw recording and its provenance are final.
 # Keep this verdict outside replay/ so the captured evidence stays immutable.

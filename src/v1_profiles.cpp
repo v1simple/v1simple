@@ -1818,7 +1818,7 @@ bool V1ProfileManager::loadProfile(const String& name, V1Profile& profile) const
 }
 
 ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile, const String& canonicalName,
-                                                        bool allowGrandfatheredRestore) {
+                                                        bool allowGrandfatheredRestore, bool createOnly) {
     if (!ready_ || !fs_) {
         lastError_ = "Filesystem not ready";
         Serial.printf("[V1Profiles] Save failed: %s\n", lastError_.c_str());
@@ -1861,6 +1861,10 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
                 return ProfileSaveResult(ProfileStorageStatus::InvalidName, lastError_);
             }
         }
+    }
+    if (createOnly && updatingExisting) {
+        lastError_ = "Profile already exists";
+        return ProfileSaveResult(ProfileStorageStatus::InvalidName, lastError_);
     }
     if (!updatingExisting && catalogSize >= V1_PROFILE_CATALOG_MAX_COUNT &&
         !allowGrandfatheredRestore) {
@@ -2178,7 +2182,7 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
     return ProfileSaveResult(ProfileStorageStatus::Success);
 }
 
-ProfileSaveResult V1ProfileManager::saveProfile(const V1Profile& profile) {
+ProfileSaveResult V1ProfileManager::saveProfile(const V1Profile& profile, bool createOnly) {
     String canonical;
     if (std::strlen(profile.name.c_str()) != profile.name.length() ||
         !validV1Utf8(profile.name.c_str(), profile.name.length())) {
@@ -2197,7 +2201,7 @@ ProfileSaveResult V1ProfileManager::saveProfile(const V1Profile& profile) {
         Serial.printf("[V1Profiles] BUSY name='%s' path='%s'\n", canonical.c_str(), profilePath(canonical).c_str());
         return ProfileSaveResult(ProfileStorageStatus::Busy, lastError_);
     }
-    return saveProfileUnlocked(profile, canonical);
+    return saveProfileUnlocked(profile, canonical, false, createOnly);
 }
 
 ProfileOperationResult V1ProfileManager::deleteProfileUnlocked(const String& name) {

@@ -348,6 +348,7 @@ bool AutoPushModule::configurePlan() {
 
         const V1DetectorConfiguration& detector = state_.profile.detector;
         const bool slotVolumeOverride = state_.applySlotModifiers &&
+            detector.volumePolicy != V1VolumePolicy::Unchanged &&
             settings_->getSlotVolumeOverride(state_.slotIndex);
         const bool slotDarkModeOverride = state_.applySlotModifiers &&
             settings_->getSlotDarkModeOverride(state_.slotIndex);
@@ -392,11 +393,6 @@ bool AutoPushModule::configurePlan() {
             failWholePlan(&status_.customFrequencies, Outcome::INVALID, FailureReason::INVALID_POLICY);
             return false;
         }
-        if (slotVolumeOverride && detector.volumePolicy == V1VolumePolicy::Unchanged) {
-            failWholePlan(&status_.volume, Outcome::INVALID, FailureReason::INVALID_POLICY);
-            return false;
-        }
-
         status_.userSettings.requested = detector.userSettingsPolicy == V1UserSettingsPolicy::Value;
         status_.display.requested = slotDarkModeOverride ||
                                     detector.displayPolicy != V1DisplayPolicy::Unchanged ||

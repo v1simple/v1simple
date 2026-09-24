@@ -379,7 +379,8 @@
                 editingDraft = null;
                 await fetchSlots();
             } else {
-                message = { type: 'error', text: 'Failed to save' };
+                const error = await res.json().catch(() => null);
+                message = { type: 'error', text: res.status === 409 && error?.error ? error.error : 'Failed to save' };
             }
         } catch (e) {
             message = { type: 'error', text: 'Connection error' };

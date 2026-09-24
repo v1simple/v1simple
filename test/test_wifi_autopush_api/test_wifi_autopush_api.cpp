@@ -23,6 +23,7 @@ struct FakeRuntime {
         WifiAutoPushApiService::ProfileAssignmentStatus::Success;
     bool persistResult = true;
     bool profileOwned = false;
+    bool profileHasVolumePolicy = true;
     int activationCalls = 0;
     WifiAutoPushApiService::ActivationRequest activation;
     WifiAutoPushApiService::OperationTargetStatus targetStatus =
@@ -76,6 +77,10 @@ WifiAutoPushApiService::Runtime makeRuntime(FakeRuntime& fake) {
         return static_cast<FakeRuntime*>(ctx)->profileStatus;
     };
     runtime.validateProfileAssignmentCtx = &fake;
+    runtime.profileHasVolumePolicy = [](const String&, void* ctx) {
+        return static_cast<FakeRuntime*>(ctx)->profileHasVolumePolicy;
+    };
+    runtime.profileHasVolumePolicyCtx = &fake;
     return runtime;
 }
 
@@ -346,6 +351,28 @@ void test_profile_owned_slot_save_accepts_explicit_volume_and_dark_modifiers() {
     TEST_ASSERT_TRUE(fake.update.hasDarkModeConfigured);
     TEST_ASSERT_TRUE(fake.update.darkModeConfigured);
     TEST_ASSERT_TRUE(fake.update.darkMode);
+}
+
+void test_profile_owned_slot_save_rejects_volume_override_without_profile_policy() {
+    for (const bool overrideAlreadyEnabled : {false, true}) {
+        WebServer server(80);
+        FakeRuntime fake;
+        fake.profileOwned = true;
+        fake.profileHasVolumePolicy = false;
+        server.setArg("slot", overrideAlreadyEnabled ? "1" : "0");
+        server.setArg("profile", "ROAD");
+        if (!overrideAlreadyEnabled) {
+            server.setArg("volumeConfigured", "true");
+            server.setArg("volume", "8");
+            server.setArg("muteVol", "2");
+        }
+
+        WifiAutoPushApiService::handleApiSlotSave(server, makeRuntime(fake), alwaysAllow, nullptr);
+
+        TEST_ASSERT_EQUAL_INT(409, server.lastStatusCode);
+        TEST_ASSERT_TRUE(contains(server.lastBody, "Volume override requires"));
+        TEST_ASSERT_EQUAL_INT(0, fake.updateCalls);
+    }
 }
 
 void test_profile_owned_slot_save_rejects_incomplete_modifiers_without_mutation() {
@@ -632,6 +659,7 @@ int main() {
     RUN_TEST(test_profile_owned_slots_api_reports_explicit_modifiers);
     RUN_TEST(test_profile_owned_slot_save_accepts_only_assignment_and_slot_overlays);
     RUN_TEST(test_profile_owned_slot_save_accepts_explicit_volume_and_dark_modifiers);
+    RUN_TEST(test_profile_owned_slot_save_rejects_volume_override_without_profile_policy);
     RUN_TEST(test_profile_owned_slot_save_rejects_incomplete_modifiers_without_mutation);
     RUN_TEST(test_profile_owned_slot_save_clears_disabled_modifiers);
     RUN_TEST(test_slot_save_rejects_non_roundtrippable_display_name_without_mutation);

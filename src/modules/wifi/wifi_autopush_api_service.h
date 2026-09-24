@@ -140,6 +140,8 @@ struct Runtime {
     void* validateOperationTargetCtx = nullptr;
     void (*restartForOperation)(void* ctx) = nullptr;
     void* restartForOperationCtx = nullptr;
+    bool (*profileHasVolumePolicy)(const String& canonicalProfile, void* ctx) = nullptr;
+    void* profileHasVolumePolicyCtx = nullptr;
 };
 
 void handleApiSlots(WebServer& server, const Runtime& runtime);

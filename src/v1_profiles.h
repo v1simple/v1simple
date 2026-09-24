@@ -407,7 +407,7 @@ class V1ProfileManager {
                                              uint32_t timeoutMs = 0) const;
     bool loadProfile(const String& name, V1Profile& profile) const;
     ProfileOperationResult loadProfileResult(const String& name, V1Profile& profile, uint32_t timeoutMs = 0) const;
-    ProfileSaveResult saveProfile(const V1Profile& profile);
+    ProfileSaveResult saveProfile(const V1Profile& profile, bool createOnly = false);
     bool deleteProfile(const String& name);
     ProfileOperationResult deleteProfileResult(const String& name, uint32_t timeoutMs = 250);
     // Transaction rollback only: restore the just-deleted member of a legacy
@@ -467,7 +467,7 @@ class V1ProfileManager {
                                                bool verifyCandidateOwnedBySave = false) const;
     ProfileListResult listProfilesUnlocked() const;
     ProfileSaveResult saveProfileUnlocked(const V1Profile& profile, const String& canonicalName,
-                                          bool allowGrandfatheredRestore = false);
+                                          bool allowGrandfatheredRestore = false, bool createOnly = false);
     ProfileOperationResult deleteProfileUnlocked(const String& canonicalName);
     bool recoverInterruptedSavesUnlocked();
     size_t reconcileProfilesFrom(fs::FS* sourceFs);

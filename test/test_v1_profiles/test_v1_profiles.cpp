@@ -297,6 +297,25 @@ void test_profile_sync_generation_exhaustion_preserves_live_profile_and_tombston
     TEST_ASSERT_EQUAL_STRING("original", loaded.description.c_str());
 }
 
+void test_create_only_save_preserves_existing_profile() {
+    fs::FS fs(g_tempRoot);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&fs));
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 10, "original")).success);
+
+    const ProfileSaveResult duplicate = manager.saveProfile(makeProfile("Road", 20, "replacement"), true);
+    TEST_ASSERT_FALSE(duplicate.success);
+    TEST_ASSERT_EQUAL_STRING("Profile already exists", duplicate.error.c_str());
+    V1Profile loaded;
+    TEST_ASSERT_TRUE(manager.loadProfile("Road", loaded));
+    TEST_ASSERT_EQUAL_STRING("original", loaded.description.c_str());
+    TEST_ASSERT_EQUAL_HEX8(10, loaded.settings.bytes[0]);
+
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("New", 30, "created"), true).success);
+    TEST_ASSERT_TRUE(manager.loadProfile("New", loaded));
+    TEST_ASSERT_EQUAL_STRING("created", loaded.description.c_str());
+}
+
 void test_profile_reconcile_generation_exhaustion_does_not_choose_or_overwrite_either_copy() {
     const std::filesystem::path sdRoot = g_tempRoot / "sd_max_generation";
     const std::filesystem::path littleRoot = g_tempRoot / "little_max_generation";
@@ -1469,6 +1488,7 @@ int main() {
     RUN_TEST(test_reconcile_psram_unavailable_never_overwrites_newer_profile_or_tombstone);
     RUN_TEST(test_secondary_rollback_path_allocation_failure_precedes_every_store_mutation);
     RUN_TEST(test_profile_sync_generation_exhaustion_preserves_live_profile_and_tombstone_state);
+    RUN_TEST(test_create_only_save_preserves_existing_profile);
     RUN_TEST(test_profile_reconcile_generation_exhaustion_does_not_choose_or_overwrite_either_copy);
     RUN_TEST(test_interrupted_save_recovery_uses_bounded_scans_and_never_replaces_live_profile);
     return UNITY_END();

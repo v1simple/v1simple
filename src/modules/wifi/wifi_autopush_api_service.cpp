@@ -577,6 +577,15 @@ void handleApiSlotSaveImpl(WebServer& server, const Runtime& runtime, const Form
         server.send(400, "application/json", "{\"error\":\"Volume override choice required\"}");
         return;
     }
+    const bool resultingVolumeOverride = hasVolumeConfigured
+        ? volumeConfigured : current.slots[slot].volumeConfigured;
+    if (profileOwned && resultingVolumeOverride &&
+        (profile.length() == 0 || !runtime.profileHasVolumePolicy ||
+         !runtime.profileHasVolumePolicy(profile, runtime.profileHasVolumePolicyCtx))) {
+        server.send(409, "application/json",
+                    "{\"error\":\"Volume override requires an assigned profile with Temporary or Save on V1 volume policy\"}");
+        return;
+    }
 
     bool persisted = false;
 

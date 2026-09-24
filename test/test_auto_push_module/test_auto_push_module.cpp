@@ -602,7 +602,7 @@ void test_slot_modifiers_win_over_profile_without_changing_direct_profile_apply(
     TEST_ASSERT_EQUAL_UINT8(3, profileStatus["components"]["volume"]["desired"]["muted"].as<int>());
 }
 
-void test_volume_modifier_requires_profile_volume_policy() {
+void test_volume_modifier_is_dormant_when_profile_leaves_volume_unchanged() {
     configureProfile();
     profiles.loadableProfile.detector.volumePolicy = V1VolumePolicy::Unchanged;
     settings.slotVolumeOverrides[0] = true;
@@ -611,9 +611,12 @@ void test_volume_modifier_requires_profile_volume_policy() {
     stageSnapshot(makeSnapshot());
     queueAndPreflight();
 
-    TEST_ASSERT_FALSE(module.isActive());
-    TEST_ASSERT_TRUE(statusContains("\"reason\":\"invalid_policy\""));
-    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+    TEST_ASSERT_TRUE(module.isActive());
+    JsonDocument status;
+    const String json = module.getStatusJson();
+    TEST_ASSERT_FALSE(deserializeJson(status, json.c_str()));
+    TEST_ASSERT_FALSE(status["components"]["volume"]["requested"].as<bool>());
+    TEST_ASSERT_TRUE(status["components"]["mode"]["requested"].as<bool>());
     TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
 }
 
@@ -2886,7 +2889,7 @@ int main() {
     RUN_TEST(test_full_apply_requires_fresh_canonical_readbacks_for_every_component);
     RUN_TEST(test_all_noop_components_are_proven_unchanged_without_writes);
     RUN_TEST(test_slot_modifiers_win_over_profile_without_changing_direct_profile_apply);
-    RUN_TEST(test_volume_modifier_requires_profile_volume_policy);
+    RUN_TEST(test_volume_modifier_is_dormant_when_profile_leaves_volume_unchanged);
     RUN_TEST(test_slot_volume_modifier_uses_profile_saved_policy);
     RUN_TEST(test_supported_user_masks_match_every_vendor_boundary);
     RUN_TEST(test_supported_masks_preserve_unknown_bits_and_four_byte_firmware_shape);

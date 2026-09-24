@@ -465,6 +465,7 @@
         try {
             const payload = {
                 name: validatedName.canonical,
+                ...(copySourceName ? { createOnly: true } : {}),
                 description: validatedDescription.description,
                 schemaVersion: 3,
                 detector: toApiDetectorConfiguration(editedDetector || currentProfile?.detector),
@@ -479,7 +480,13 @@
                 body: JSON.stringify(payload)
             }, undefined, async (response) => ({
                 ok: response.ok,
-                error: response.ok ? null : await response.text()
+                error: response.ok ? null : await response.text().then((body) => {
+                    try {
+                        return JSON.parse(body).error || body;
+                    } catch {
+                        return body;
+                    }
+                })
             }));
 
             if (res.ok) {

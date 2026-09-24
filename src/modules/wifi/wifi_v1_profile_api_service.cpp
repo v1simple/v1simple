@@ -478,7 +478,7 @@ void handleApiProfileSaveBody(WebServer& server, const Runtime& runtime, const u
     }
 
     static constexpr const char* ROOT_KEYS[] = {
-        "schemaVersion", "name", "description", "detector", "settings",
+        "schemaVersion", "name", "description", "detector", "settings", "createOnly",
     };
     if (!doc.is<JsonObjectConst>() ||
         !objectHasOnlyKeys(doc.as<JsonObjectConst>(), ROOT_KEYS,
@@ -509,6 +509,12 @@ void handleApiProfileSaveBody(WebServer& server, const Runtime& runtime, const u
 
     const JsonVariantConst descriptionValue = doc["description"];
     const JsonVariantConst detectorValue = doc["detector"];
+    const JsonVariantConst createOnlyValue = doc["createOnly"];
+    if (!createOnlyValue.isUnbound() && !createOnlyValue.is<bool>()) {
+        server.send(400, "application/json", "{\"error\":\"Invalid create-only policy\"}");
+        return;
+    }
+    const bool createOnly = createOnlyValue.as<bool>();
     const bool hasDescription = !descriptionValue.isUnbound();
     const bool hasDetector = !detectorValue.isUnbound();
     String parsedDescription;
@@ -572,6 +578,12 @@ void handleApiProfileSaveBody(WebServer& server, const Runtime& runtime, const u
         server.send(500, "application/json", "{\"error\":\"Existing detector configuration is corrupt\"}");
         return;
     }
+    if (runtime.slotVolumeOverrideConflicts &&
+        runtime.slotVolumeOverrideConflicts(name, detector, runtime.slotVolumeOverrideConflictsCtx)) {
+        server.send(409, "application/json",
+                    "{\"error\":\"Disable this profile's Auto-Push slot volume override before changing its volume policy to Unchanged\"}");
+        return;
+    }
     uint8_t settingsBytes[6];
     memset(settingsBytes, 0xFF, sizeof(settingsBytes));
 
@@ -585,7 +597,7 @@ void handleApiProfileSaveBody(WebServer& server, const Runtime& runtime, const u
     }
 
     String saveError;
-    if (runtime.saveProfile(name, description, detector, settingsBytes, saveError,
+    if (runtime.saveProfile(name, description, detector, settingsBytes, createOnly, saveError,
                             runtime.saveProfileCtx)) {
         if (runtime.backupToSd) {
             runtime.backupToSd(runtime.backupToSdCtx);
@@ -599,7 +611,9 @@ void handleApiProfileSaveBody(WebServer& server, const Runtime& runtime, const u
         // and the UI's res.json() cannot throw on a malformed body.
         WifiJson::Document errorDoc;
         WifiApiResponse::setErrorAndMessage(errorDoc, saveError.c_str());
-        const bool conflict = saveError.indexOf("busy") >= 0 || saveError == V1_PROFILE_CATALOG_LIMIT_ERROR;
+        const bool conflict = saveError.indexOf("busy") >= 0 || saveError == V1_PROFILE_CATALOG_LIMIT_ERROR ||
+                              saveError == "Profile already exists" ||
+                              saveError == "Profile name collides with existing canonical name";
         WifiApiResponse::sendJsonDocument(server, conflict ? 409 : 500, errorDoc);
     }
 }

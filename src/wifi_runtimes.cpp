@@ -328,6 +328,13 @@ WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
         }
     };
     runtime.restartForOperationCtx = this;
+    runtime.profileHasVolumePolicy = [](const String& name, void* ctx) {
+        V1Profile profile;
+        const ProfileOperationResult loaded =
+            static_cast<WiFiManager*>(ctx)->profiles_.loadProfileResult(name, profile, 0);
+        return loaded.success() && profile.detector.volumePolicy != V1VolumePolicy::Unchanged;
+    };
+    runtime.profileHasVolumePolicyCtx = this;
     return runtime;
 }
 
@@ -557,7 +564,7 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
         },
         this,
         [](const String& name, const String& description, const V1DetectorConfiguration& detector,
-           const uint8_t inBytes[6], String& error, void* ctx) {
+           const uint8_t inBytes[6], bool createOnly, String& error, void* ctx) {
             V1Profile profile;
             profile.name = name;
             profile.description = description;
@@ -567,7 +574,7 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
             }
             profile.detector = detector;
             memcpy(profile.settings.bytes, inBytes, 6);
-            ProfileSaveResult result = static_cast<WiFiManager*>(ctx)->profiles_.saveProfile(profile);
+            ProfileSaveResult result = static_cast<WiFiManager*>(ctx)->profiles_.saveProfile(profile, createOnly);
             if (!result.success) {
                 error = result.error;
                 return false;
@@ -668,6 +675,16 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
         this,
         [](const String& after, size_t limit, void* ctx) {
             return static_cast<WiFiManager*>(ctx)->profiles_.listProfilesPageResult(after, limit, 0);
+        },
+        this,
+        [](const String& name, const V1DetectorConfiguration& detector, void* ctx) {
+            if (detector.volumePolicy != V1VolumePolicy::Unchanged) return false;
+            const V1Settings& settings = static_cast<WiFiManager*>(ctx)->settings_.get();
+            for (int slot = 0; slot < 3; ++slot) {
+                const auto assigned = settings.autoPushSlotView(slot);
+                if (assigned.config.profileName == name && assigned.volumeOverride) return true;
+            }
+            return false;
         },
         this,
     };

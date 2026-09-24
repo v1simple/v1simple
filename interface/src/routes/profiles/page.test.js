@@ -120,9 +120,27 @@ describe('profiles route page', () => {
 
         await screen.findByText('Profile "Daily Drive copy" saved');
         expect(savedPayload.name).toBe('Daily Drive copy');
+        expect(savedPayload.createOnly).toBe(true);
         expect(savedPayload.description).toBe('Existing metadata');
         expect(savedPayload.detector.display).toBe('off');
         expect(savedPayload.detector.volume).toMatchObject({ policy: 'saved', main: 7, muted: 2 });
+        unmount();
+    });
+
+    it('keeps the copy editor open when another save takes the chosen name', async () => {
+        installDefaultFetch([{
+            method: 'POST', match: '/api/v1/profile',
+            respond: jsonResponse({ error: 'Profile already exists' }, 409)
+        }]);
+        const { unmount } = render(Page);
+
+        const row = (await screen.findByText('Daily Drive')).closest('.surface-panel');
+        await fireEvent.click(within(row).getByRole('button', { name: 'Copy' }));
+        const modal = (await screen.findByText('Save Profile')).closest('.modal-box');
+        await fireEvent.click(within(modal).getByRole('button', { name: 'Save' }));
+
+        await screen.findByText('Failed to save: Profile already exists');
+        expect(screen.getByLabelText('Profile Name')).toHaveValue('Daily Drive copy');
         unmount();
     });
 
@@ -170,6 +188,7 @@ describe('profiles route page', () => {
         await fireEvent.click(screen.getByRole('button', { name: /^save profile$/i }));
 
         await screen.findByText('Profile "Daily Drive" saved');
+        expect(savedPayload.createOnly).toBeUndefined();
         expect(savedPayload.description).toBe('Existing metadata');
         expect(savedPayload.schemaVersion).toBe(3);
         expect(savedPayload.detector).toEqual({

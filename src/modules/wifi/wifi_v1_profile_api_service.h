@@ -30,7 +30,7 @@ struct Runtime {
     void* parseSettingsJsonCtx = nullptr;
     bool (*saveProfile)(const String& name, const String& description,
                         const V1DetectorConfiguration& detector, const uint8_t inBytes[6],
-                        String& error, void* ctx) = nullptr;
+                        bool createOnly, String& error, void* ctx) = nullptr;
     void* saveProfileCtx = nullptr;
     bool (*deleteProfile)(const String& name, void* ctx) = nullptr;
     void* deleteProfileCtx = nullptr;
@@ -58,6 +58,9 @@ struct Runtime {
     void* profileSchemaReadyCtx = nullptr;
     ProfilePageResult (*listProfilePageResult)(const String& after, size_t limit, void* ctx) = nullptr;
     void* listProfilePageResultCtx = nullptr;
+    bool (*slotVolumeOverrideConflicts)(const String& profileName,
+                                        const V1DetectorConfiguration& detector, void* ctx) = nullptr;
+    void* slotVolumeOverrideConflictsCtx = nullptr;
 };
 
 void handleApiProfilesListQuery(WebServer& server, const Runtime& runtime,

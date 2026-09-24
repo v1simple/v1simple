@@ -36,6 +36,8 @@ struct FakeRuntime {
     bool parseSettingsOk = true;
     bool saveOk = true;
     String saveError = "";
+    bool savedCreateOnly = false;
+    bool slotVolumeOverrideConflict = false;
 
     int parseSettingsCalls = 0;
     int saveCalls = 0;
@@ -76,12 +78,14 @@ WifiV1ProfileApiService::Runtime makeRuntime(FakeRuntime& rt) {
                              const String& description,
                              const V1DetectorConfiguration& detector,
                              const uint8_t /*inBytes*/[6],
+                             bool createOnly,
                              String& error,
                              void* ctx) {
         auto* rtp = static_cast<FakeRuntime*>(ctx);
         rtp->saveCalls++;
         rtp->savedDescription = description;
         rtp->savedDetector = detector;
+        rtp->savedCreateOnly = createOnly;
         if (!rtp->saveOk) {
             error = rtp->saveError;
             return false;
@@ -111,6 +115,10 @@ WifiV1ProfileApiService::Runtime makeRuntime(FakeRuntime& rt) {
         return static_cast<FakeRuntime*>(ctx)->profileSchemaReady;
     };
     runtime.profileSchemaReadyCtx = &rt;
+    runtime.slotVolumeOverrideConflicts = [](const String&, const V1DetectorConfiguration&, void* ctx) {
+        return static_cast<FakeRuntime*>(ctx)->slotVolumeOverrideConflict;
+    };
+    runtime.slotVolumeOverrideConflictsCtx = &rt;
     return runtime;
 }
 
@@ -296,6 +304,48 @@ void test_profile_save_accepts_maximum_description() {
 
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
     TEST_ASSERT_EQUAL_INT(1, rt.saveCalls);
+}
+
+void test_profile_save_forwards_create_only_and_reports_existing_name_conflict() {
+    for (const bool alreadyExists : {false, true}) {
+        WebServer server(80);
+        FakeRuntime rt;
+        rt.saveOk = !alreadyExists;
+        rt.saveError = "Profile already exists";
+        server.setArg("plain", "{\"name\":\"RoadTrip\",\"createOnly\":true,\"settings\":{\"xBand\":true}}");
+
+        WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(rt), alwaysAllow, nullptr);
+
+        TEST_ASSERT_EQUAL_INT(alreadyExists ? 409 : 200, server.lastStatusCode);
+        TEST_ASSERT_TRUE(rt.savedCreateOnly);
+        TEST_ASSERT_EQUAL_INT(1, rt.saveCalls);
+        TEST_ASSERT_EQUAL_INT(alreadyExists ? 0 : 1, rt.backupCalls);
+    }
+}
+
+void test_profile_save_rejects_non_boolean_create_only() {
+    WebServer server(80);
+    FakeRuntime rt;
+    server.setArg("plain", "{\"name\":\"RoadTrip\",\"createOnly\":\"true\",\"settings\":{\"xBand\":true}}");
+
+    WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(rt), alwaysAllow, nullptr);
+
+    TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(0, rt.saveCalls);
+}
+
+void test_profile_save_rejects_volume_policy_change_conflicting_with_assigned_slot() {
+    WebServer server(80);
+    FakeRuntime rt;
+    rt.slotVolumeOverrideConflict = true;
+    server.setArg("plain", "{\"name\":\"RoadTrip\",\"settings\":{\"xBand\":true}}");
+
+    WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(rt), alwaysAllow, nullptr);
+
+    TEST_ASSERT_EQUAL_INT(409, server.lastStatusCode);
+    TEST_ASSERT_TRUE(responseContains(server, "volume override"));
+    TEST_ASSERT_EQUAL_INT(0, rt.saveCalls);
+    TEST_ASSERT_EQUAL_INT(0, rt.backupCalls);
 }
 
 void test_profile_save_rejects_description_above_shared_limit_before_saving() {
@@ -704,6 +754,9 @@ int main() {
     RUN_TEST(test_delete_rejects_unknown_fields_before_storage_mutation);
     RUN_TEST(test_profile_save_rejects_oversize_payload_without_saving);
     RUN_TEST(test_profile_save_accepts_maximum_description);
+    RUN_TEST(test_profile_save_forwards_create_only_and_reports_existing_name_conflict);
+    RUN_TEST(test_profile_save_rejects_non_boolean_create_only);
+    RUN_TEST(test_profile_save_rejects_volume_policy_change_conflicting_with_assigned_slot);
     RUN_TEST(test_profile_save_rejects_description_above_shared_limit_before_saving);
     RUN_TEST(test_profile_save_preserves_omitted_existing_metadata);
     RUN_TEST(test_profile_save_accepts_explicit_metadata_without_resetting_it);

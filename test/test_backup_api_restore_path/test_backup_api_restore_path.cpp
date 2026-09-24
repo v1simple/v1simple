@@ -293,7 +293,7 @@ void test_restore_present_markers_never_downgrade_to_legacy_absence() {
         "{\"_type\":\"v1simple_backup\",\"_version\":\"20\",\"brightness\":77}",
         "{\"_type\":\"v1simple_backup\",\"_version\":-1,\"brightness\":77}",
         "{\"_type\":\"v1simple_backup\",\"_version\":1.5,\"brightness\":77}",
-        "{\"_type\":\"v1simple_backup\",\"_version\":22,\"brightness\":77}",
+        "{\"_type\":\"v1simple_backup\",\"_version\":23,\"brightness\":77}",
         "{\"_type\":\"v1simple_backup\",\"_version\":2147483647,\"brightness\":77}",
     };
     for (const char* body : invalidBodies) {

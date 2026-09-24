@@ -866,12 +866,12 @@ void test_http_profile_metadata_round_trips_storage_usb_and_backup_without_trunc
     };
     runtime.saveProfile = [](const String& name, const String& description,
                             const V1DetectorConfiguration& detector, const uint8_t bytes[6],
-                            String& error, void*) {
+                            bool createOnly, String& error, void*) {
         V1Profile profile(name);
         profile.description = description;
         profile.detector = detector;
         memcpy(profile.settings.bytes, bytes, 6);
-        const auto result = profileManager->saveProfile(profile);
+        const auto result = profileManager->saveProfile(profile, createOnly);
         error = result.error;
         return result.success;
     };
@@ -1214,14 +1214,14 @@ void test_measure_maximum_profile_catalog_transport_shapes() {
         TEST_ASSERT_TRUE(result.safeToCommit);
         if (count == V1_PROFILE_CATALOG_MAX_COUNT) {
             TEST_ASSERT_EQUAL_UINT(116902, measureJson(usb));
-            TEST_ASSERT_EQUAL_UINT(120471, measureJson(backup));
+            TEST_ASSERT_EQUAL_UINT(120645, measureJson(backup));
             PsramJson::Document sdBackup;
             const auto sdResult = BackupPayloadBuilder::buildBackupDocument(
                 sdBackup, manager->get(), *profileManager,
                 BackupPayloadBuilder::BackupTransport::SdBackup,
                 std::numeric_limits<uint32_t>::max());
             TEST_ASSERT_TRUE(sdResult.safeToCommit);
-            TEST_ASSERT_EQUAL_UINT(120640, measureJson(sdBackup));
+            TEST_ASSERT_EQUAL_UINT(120814, measureJson(sdBackup));
             TEST_ASSERT_GREATER_THAN(4096u, 128u * 1024u - measureJson(sdBackup));
         }
     }

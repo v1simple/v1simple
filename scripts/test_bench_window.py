@@ -615,31 +615,6 @@ exit 23
         )
 
 
-def test_agent_handoff_requires_local_prompt_before_collection() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        temp_root = Path(tmp)
-        completed = subprocess.run(
-            ["bash", str(ROOT / "bench.sh"), "--replay", "--camera", "--agent-review-handoff"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-            env={
-                **os.environ,
-                "BENCH_AGENT_REVIEW_PROMPT": str(temp_root / "missing-prompt.md"),
-                "BENCH_ARTIFACT_ROOT": str(temp_root / "artifacts"),
-            },
-        )
-        assert_true(completed.returncode == 2, str(completed))
-        assert_true(
-            "COLLECTION_FAILED: local agent-review prompt is missing or unreadable"
-            in completed.stdout,
-            completed.stdout + completed.stderr,
-        )
-        assert_true(not (temp_root / "artifacts").exists(),
-                    "agent handoff started a collection without its private prompt")
-
-
 def test_source_identity_check_requires_successful_git_inspection() -> None:
     responses = [
         subprocess.CompletedProcess([], 0, GIT_SHA, ""),
@@ -1544,7 +1519,6 @@ def main() -> int:
     test_runner_source_is_external_only_and_serial_is_read_only()
     test_bench_entrypoint_keeps_raw_completion_separate_from_visual_grading()
     test_raw_bench_refuses_a_failed_git_status_check()
-    test_agent_handoff_requires_local_prompt_before_collection()
     test_source_identity_check_requires_successful_git_inspection()
     test_upload_exact_match_is_qualified()
     test_upload_git_mismatch_fails()

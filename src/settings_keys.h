@@ -149,6 +149,12 @@ inline constexpr const char* kNvsSlot2MuteVolume = "slot2mute";
 inline constexpr const char* kNvsSlot0DarkMode = "slot0dark";
 inline constexpr const char* kNvsSlot1DarkMode = "slot1dark";
 inline constexpr const char* kNvsSlot2DarkMode = "slot2dark";
+inline constexpr const char* kNvsSlot0VolumeOverride = "s0volovr";
+inline constexpr const char* kNvsSlot1VolumeOverride = "s1volovr";
+inline constexpr const char* kNvsSlot2VolumeOverride = "s2volovr";
+inline constexpr const char* kNvsSlot0DarkModeOverride = "s0darkovr";
+inline constexpr const char* kNvsSlot1DarkModeOverride = "s1darkovr";
+inline constexpr const char* kNvsSlot2DarkModeOverride = "s2darkovr";
 
 inline constexpr const char* kNvsSlot0MuteToZero = "slot0mz";
 inline constexpr const char* kNvsSlot1MuteToZero = "slot1mz";

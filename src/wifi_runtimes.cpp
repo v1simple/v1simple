@@ -48,8 +48,10 @@ WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
                 snapshot.slots[slotIndex].color = slot.color;
                 snapshot.slots[slotIndex].volume = slot.volume;
                 snapshot.slots[slotIndex].muteVolume = slot.muteVolume;
-                snapshot.slots[slotIndex].volumeConfigured = slot.volume <= 9 && slot.muteVolume <= 9;
+                snapshot.slots[slotIndex].volumeConfigured = snapshot.profileOwned
+                    ? slot.volumeOverride : slot.volume <= 9 && slot.muteVolume <= 9;
                 snapshot.slots[slotIndex].darkMode = slot.darkMode;
+                snapshot.slots[slotIndex].darkModeConfigured = slot.darkModeOverride;
                 snapshot.slots[slotIndex].muteToZero = slot.muteToZero;
                 snapshot.slots[slotIndex].alertPersist = slot.alertPersist;
                 snapshot.slots[slotIndex].priorityArrowOnly = slot.priorityArrow;
@@ -75,12 +77,16 @@ WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
             }
             update.hasColor = request.hasColor;
             update.color = request.color;
-            update.hasVolume = !request.profileOwned && request.hasVolume;
+            update.hasVolume = request.hasVolume;
             update.volume = request.volume;
-            update.hasMuteVolume = !request.profileOwned && request.hasMuteVolume;
+            update.hasMuteVolume = request.hasMuteVolume;
             update.muteVolume = request.muteVolume;
-            update.hasDarkMode = !request.profileOwned && request.hasDarkMode;
+            update.hasDarkMode = request.hasDarkMode;
             update.darkMode = request.darkMode;
+            update.hasVolumeOverride = request.profileOwned && request.hasVolumeConfigured;
+            update.volumeOverride = request.volumeConfigured;
+            update.hasDarkModeOverride = request.profileOwned && request.hasDarkModeConfigured;
+            update.darkModeOverride = request.darkModeConfigured;
             update.hasMuteToZero = !request.profileOwned && request.hasMuteToZero;
             update.muteToZero = request.muteToZero;
             update.hasAlertPersist = request.hasAlertPersist;
@@ -248,8 +254,10 @@ WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
                 snapshot.slots[slotIndex].color = slot.color;
                 snapshot.slots[slotIndex].volume = slot.volume;
                 snapshot.slots[slotIndex].muteVolume = slot.muteVolume;
-                snapshot.slots[slotIndex].volumeConfigured = slot.volume <= 9 && slot.muteVolume <= 9;
+                snapshot.slots[slotIndex].volumeConfigured = snapshot.profileOwned
+                    ? slot.volumeOverride : slot.volume <= 9 && slot.muteVolume <= 9;
                 snapshot.slots[slotIndex].darkMode = slot.darkMode;
+                snapshot.slots[slotIndex].darkModeConfigured = slot.darkModeOverride;
                 snapshot.slots[slotIndex].muteToZero = slot.muteToZero;
                 snapshot.slots[slotIndex].alertPersist = slot.alertPersist;
                 snapshot.slots[slotIndex].priorityArrowOnly = slot.priorityArrow;

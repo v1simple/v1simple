@@ -219,6 +219,13 @@ struct V1Settings {
     bool slot0DarkMode;   // V1 display off (dark mode) for slot 0
     bool slot1DarkMode;   // V1 display off (dark mode) for slot 1
     bool slot2DarkMode;   // V1 display off (dark mode) for slot 2
+    // Explicit opt-ins keep migrated profile-owned slots from applying stale legacy values.
+    bool slot0VolumeOverride;
+    bool slot1VolumeOverride;
+    bool slot2VolumeOverride;
+    bool slot0DarkModeOverride;
+    bool slot1DarkModeOverride;
+    bool slot2DarkModeOverride;
     bool slot0MuteToZero; // Mute to zero for slot 0
     bool slot1MuteToZero; // Mute to zero for slot 1
     bool slot2MuteToZero; // Mute to zero for slot 2
@@ -241,6 +248,8 @@ struct V1Settings {
         uint8_t& volume;
         uint8_t& muteVolume;
         bool& darkMode;
+        bool& volumeOverride;
+        bool& darkModeOverride;
         bool& muteToZero;
         uint8_t& alertPersist;
         bool& priorityArrow;
@@ -253,6 +262,8 @@ struct V1Settings {
         const uint8_t& volume;
         const uint8_t& muteVolume;
         const bool& darkMode;
+        const bool& volumeOverride;
+        const bool& darkModeOverride;
         const bool& muteToZero;
         const uint8_t& alertPersist;
         const bool& priorityArrow;
@@ -360,8 +371,11 @@ struct V1Settings {
           autoPushEnabled(kDefaultAutoPushEnabled), autoPushProfileSchemaVersion(0), activeSlot(0), slot0Name("DEFAULT"), slot1Name("HIGHWAY"),
           slot2Name("COMFORT"), slot0Color(0x400A), slot1Color(0x07E0), slot2Color(0x8410), slot0Volume(0xFF),
           slot1Volume(0xFF), slot2Volume(0xFF), slot0MuteVolume(0xFF), slot1MuteVolume(0xFF), slot2MuteVolume(0xFF),
-          slot0DarkMode(false), slot1DarkMode(false), slot2DarkMode(false), slot0MuteToZero(false),
-          slot1MuteToZero(false), slot2MuteToZero(false), slot0AlertPersist(0), slot1AlertPersist(0),
+          slot0DarkMode(false), slot1DarkMode(false), slot2DarkMode(false),
+          slot0VolumeOverride(false), slot1VolumeOverride(false), slot2VolumeOverride(false),
+          slot0DarkModeOverride(false), slot1DarkModeOverride(false), slot2DarkModeOverride(false),
+          slot0MuteToZero(false), slot1MuteToZero(false), slot2MuteToZero(false),
+          slot0AlertPersist(0), slot1AlertPersist(0),
           slot2AlertPersist(0), slot0PriorityArrow(false), slot1PriorityArrow(false), slot2PriorityArrow(false),
           slot0_default(), slot1_highway(), slot2_comfort(), lastV1Address(""),
           autoPowerOffMinutes(0), // Default: disabled
@@ -487,16 +501,19 @@ struct V1Settings {
         case 1:
             return AutoPushSlotView{
                 slot1Name,       slot1Color,        slot1Volume,        slot1MuteVolume, slot1DarkMode,
+                slot1VolumeOverride, slot1DarkModeOverride,
                 slot1MuteToZero, slot1AlertPersist, slot1PriorityArrow, slot1_highway,
             };
         case 2:
             return AutoPushSlotView{
                 slot2Name,       slot2Color,        slot2Volume,        slot2MuteVolume, slot2DarkMode,
+                slot2VolumeOverride, slot2DarkModeOverride,
                 slot2MuteToZero, slot2AlertPersist, slot2PriorityArrow, slot2_comfort,
             };
         default:
             return AutoPushSlotView{
                 slot0Name,       slot0Color,        slot0Volume,        slot0MuteVolume, slot0DarkMode,
+                slot0VolumeOverride, slot0DarkModeOverride,
                 slot0MuteToZero, slot0AlertPersist, slot0PriorityArrow, slot0_default,
             };
         }
@@ -507,16 +524,19 @@ struct V1Settings {
         case 1:
             return ConstAutoPushSlotView{
                 slot1Name,       slot1Color,        slot1Volume,        slot1MuteVolume, slot1DarkMode,
+                slot1VolumeOverride, slot1DarkModeOverride,
                 slot1MuteToZero, slot1AlertPersist, slot1PriorityArrow, slot1_highway,
             };
         case 2:
             return ConstAutoPushSlotView{
                 slot2Name,       slot2Color,        slot2Volume,        slot2MuteVolume, slot2DarkMode,
+                slot2VolumeOverride, slot2DarkModeOverride,
                 slot2MuteToZero, slot2AlertPersist, slot2PriorityArrow, slot2_comfort,
             };
         default:
             return ConstAutoPushSlotView{
                 slot0Name,       slot0Color,        slot0Volume,        slot0MuteVolume, slot0DarkMode,
+                slot0VolumeOverride, slot0DarkModeOverride,
                 slot0MuteToZero, slot0AlertPersist, slot0PriorityArrow, slot0_default,
             };
         }
@@ -773,6 +793,12 @@ struct AutoPushSlotUpdate {
 
     bool hasDarkMode = false;
     bool darkMode = false;
+
+    bool hasVolumeOverride = false;
+    bool volumeOverride = false;
+
+    bool hasDarkModeOverride = false;
+    bool darkModeOverride = false;
 
     bool hasMuteToZero = false;
     bool muteToZero = false;

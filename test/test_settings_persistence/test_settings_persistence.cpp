@@ -4892,7 +4892,7 @@ void test_current_backup_schema_rejects_unknown_or_invalid_fields_before_any_mut
     rejectsWithoutMutation([](JsonDocument& doc) { doc.remove("profiles"); });
 }
 
-void test_backup_builder_rejects_noncanonical_live_v21_state_for_http_and_sd() {
+void test_backup_builder_rejects_noncanonical_live_current_state_for_http_and_sd() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
     storage.setLittleFS(&fs);
@@ -4953,7 +4953,7 @@ void test_backup_builder_rejects_noncanonical_live_v21_state_for_http_and_sd() {
     });
 }
 
-void test_generated_v21_backup_is_applicable_and_rebuilds_identically() {
+void test_generated_current_backup_is_applicable_and_rebuilds_identically() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
     storage.setLittleFS(&fs);
@@ -4979,7 +4979,7 @@ void test_generated_v21_backup_is_applicable_and_rebuilds_identically() {
         TEST_ASSERT_TRUE(backupDocumentCanApply(first, manager.get(), profiles));
         TEST_ASSERT_TRUE(manager.applyBackupDocument(first, true).success);
         TEST_ASSERT_TRUE_MESSAGE(BackupPayloadBuilder::settingsTextIsSerializable(manager.get()),
-                                 "applied v21 text must remain canonical");
+                                 "applied backup text must remain canonical");
         const uint16_t appliedColors[] = {
             manager.get().colorBogey, manager.get().colorFrequency, manager.get().colorArrowFront,
             manager.get().colorArrowSide, manager.get().colorArrowRear, manager.get().colorBandL,
@@ -4993,13 +4993,13 @@ void test_generated_v21_backup_is_applicable_and_rebuilds_identically() {
             manager.get().slot1Color, manager.get().slot2Color,
         };
         for (uint16_t color : appliedColors) {
-            TEST_ASSERT_NOT_EQUAL_MESSAGE(0, color, "applied v21 color must remain nonzero");
+            TEST_ASSERT_NOT_EQUAL_MESSAGE(0, color, "applied backup color must remain nonzero");
         }
         for (uint16_t color : manager.get().colorBars) {
-            TEST_ASSERT_NOT_EQUAL_MESSAGE(0, color, "applied v21 bar color must remain nonzero");
+            TEST_ASSERT_NOT_EQUAL_MESSAGE(0, color, "applied backup bar color must remain nonzero");
         }
         TEST_ASSERT_TRUE_MESSAGE(BackupPayloadBuilder::settingsCurrentBackupStateIsCanonical(manager.get()),
-                                 "applied v21 settings must remain canonical");
+                                 "applied backup settings must remain canonical");
         JsonDocument rebuilt;
         TEST_ASSERT_TRUE(BackupPayloadBuilder::buildBackupDocument(
             rebuilt, manager.get(), profiles, transport, 4321).safeToCommit);
@@ -5009,6 +5009,49 @@ void test_generated_v21_backup_is_applicable_and_rebuilds_identically() {
         serializeJson(rebuilt, rebuiltJson);
         TEST_ASSERT_EQUAL_STRING(firstJson.c_str(), rebuiltJson.c_str());
     }
+}
+
+void test_slot_modifiers_survive_nvs_reload_and_backup_restore() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    storage.setLittleFS(&fs);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    makeCurrentV21Source(manager.mutableSettings());
+    auto& settings = manager.mutableSettings();
+    settings.slot1VolumeOverride = true;
+    settings.slot1Volume = 8;
+    settings.slot1MuteVolume = 2;
+    settings.slot1DarkModeOverride = true;
+    settings.slot1DarkMode = true;
+    TEST_ASSERT_TRUE(manager.save());
+
+    SettingsManager reloaded(storage, profiles);
+    reloaded.load();
+    TEST_ASSERT_TRUE(reloaded.get().slot1VolumeOverride);
+    TEST_ASSERT_EQUAL_UINT8(8, reloaded.get().slot1Volume);
+    TEST_ASSERT_EQUAL_UINT8(2, reloaded.get().slot1MuteVolume);
+    TEST_ASSERT_TRUE(reloaded.get().slot1DarkModeOverride);
+    TEST_ASSERT_TRUE(reloaded.get().slot1DarkMode);
+
+    JsonDocument backup;
+    TEST_ASSERT_TRUE(BackupPayloadBuilder::buildBackupDocument(
+        backup, reloaded.get(), profiles, BackupPayloadBuilder::BackupTransport::HttpDownload,
+        1000).safeToCommit);
+    TEST_ASSERT_TRUE(validateCurrentBackupDocumentShape(backup));
+    TEST_ASSERT_TRUE(backupDocumentCanApply(backup, reloaded.get(), profiles));
+    auto& changed = reloaded.mutableSettings();
+    changed.slot1VolumeOverride = false;
+    changed.slot1Volume = 0xFF;
+    changed.slot1MuteVolume = 0xFF;
+    changed.slot1DarkModeOverride = false;
+    changed.slot1DarkMode = false;
+    TEST_ASSERT_TRUE(reloaded.applyBackupDocument(backup, true).success);
+    TEST_ASSERT_TRUE(reloaded.get().slot1VolumeOverride);
+    TEST_ASSERT_EQUAL_UINT8(8, reloaded.get().slot1Volume);
+    TEST_ASSERT_EQUAL_UINT8(2, reloaded.get().slot1MuteVolume);
+    TEST_ASSERT_TRUE(reloaded.get().slot1DarkModeOverride);
+    TEST_ASSERT_TRUE(reloaded.get().slot1DarkMode);
 }
 
 void test_current_backup_obd_rssi_round_trips_the_authoritative_range() {
@@ -5837,8 +5880,9 @@ int main() {
     RUN_TEST(test_legacy_partial_restore_keeps_unmentioned_profiles);
     RUN_TEST(test_wifi_default_labels_preserve_exact_ssids_and_remain_backupable_after_reboot);
     RUN_TEST(test_current_backup_schema_rejects_unknown_or_invalid_fields_before_any_mutation);
-    RUN_TEST(test_backup_builder_rejects_noncanonical_live_v21_state_for_http_and_sd);
-    RUN_TEST(test_generated_v21_backup_is_applicable_and_rebuilds_identically);
+    RUN_TEST(test_backup_builder_rejects_noncanonical_live_current_state_for_http_and_sd);
+    RUN_TEST(test_generated_current_backup_is_applicable_and_rebuilds_identically);
+    RUN_TEST(test_slot_modifiers_survive_nvs_reload_and_backup_restore);
     RUN_TEST(test_current_backup_obd_rssi_round_trips_the_authoritative_range);
     RUN_TEST(test_littlefs_restore_preserves_matches_clears_changes_and_accepts_explicit_secrets);
     RUN_TEST(test_network_restore_with_unavailable_storage_preserves_credentials);

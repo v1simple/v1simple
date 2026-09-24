@@ -35,6 +35,7 @@
     let saveName = $state('');
     let saveDescription = $state('');
     let savingProfile = $state(null);
+    let copySourceName = $state(null);
     let editingSettings = $state(false);
     let editedSettings = $state(null);
     let editedDetector = $state(null);
@@ -433,6 +434,11 @@
             message = { type: 'error', text: validatedName.error };
             return;
         }
+        if (copySourceName && profiles.some((profile) =>
+            profile.name.toLowerCase() === validatedName.canonical.toLowerCase())) {
+            message = { type: 'error', text: 'Choose a new name for the copied profile' };
+            return;
+        }
         const validatedDescription = descriptionForSave(saveDescription);
         if (validatedDescription.error) {
             message = { type: 'error', text: validatedDescription.error };
@@ -478,14 +484,27 @@
 
             if (res.ok) {
                 const canonicalName = validatedName.canonical;
+                const copiedProfile = !!copySourceName;
                 recordSavedProfile(
                     canonicalName,
                     payload.description,
                     true
                 );
                 saveName = canonicalName;
+                if (copiedProfile) {
+                    currentProfile = {
+                        ...currentProfile,
+                        draft: false,
+                        name: canonicalName,
+                        description: payload.description,
+                        detector: cloneDetectorConfiguration(editedDetector || currentProfile?.detector),
+                        settings: { ...settingsToSave }
+                    };
+                    cancelEditing();
+                }
                 message = { type: 'success', text: `Profile "${canonicalName}" saved` };
                 showSaveDialog = false;
+                copySourceName = null;
             } else {
                 message = { type: 'error', text: `Failed to save: ${res.error}` };
             }
@@ -523,7 +542,60 @@
         showSaveDialog = false;
     }
 
+    function copyNameSuggestion(name) {
+        const suffix = ' copy';
+        let base = name;
+        while (new TextEncoder().encode(base + suffix).length > 64) {
+            base = Array.from(base).slice(0, -1).join('');
+        }
+        let candidate = base + suffix;
+        let number = 2;
+        while (profiles.some((profile) => profile.name.toLowerCase() === candidate.toLowerCase())) {
+            const numberedSuffix = ` copy ${number++}`;
+            let trimmed = name;
+            while (new TextEncoder().encode(trimmed + numberedSuffix).length > 64) {
+                trimmed = Array.from(trimmed).slice(0, -1).join('');
+            }
+            candidate = trimmed + numberedSuffix;
+        }
+        return candidate;
+    }
+
+    async function copyProfile(name) {
+        try {
+            const res = await fetchWithTimeout(
+                `/api/v1/profile?name=${encodeURIComponent(name)}`,
+                {}, undefined, async (response) => ({
+                    ok: response.ok,
+                    body: response.ok ? await response.json() : await response.text()
+                })
+            );
+            if (!res.ok) {
+                message = { type: 'error', text: `Failed to load: ${res.body}` };
+                return;
+            }
+            const data = res.body;
+            const detector = fromApiDetectorConfiguration(data.detector || {});
+            const settings = fromApiSettings(data.settings || {});
+            currentProfile = {
+                ...data, draft: true, name: '', detector, settings
+            };
+            editedSettings = { ...settings };
+            editedDetector = cloneDetectorConfiguration(detector);
+            editDescription = data.description || '';
+            saveDescription = editDescription;
+            saveName = copyNameSuggestion(name);
+            copySourceName = name;
+            editingSettings = true;
+            showSaveDialog = true;
+            message = { type: 'info', text: `Copying ${name}. Save under a new name.` };
+        } catch {
+            message = { type: 'error', text: 'Connection error' };
+        }
+    }
+
     async function editProfile(name) {
+        copySourceName = null;
         message = { type: 'info', text: `Loading ${name}...` };
         try {
             const res = await fetchWithTimeout(
@@ -556,6 +628,7 @@
     }
 
     function createNewProfile() {
+        copySourceName = null;
         currentProfile = {
             available: true,
             draft: true,
@@ -755,6 +828,56 @@
         onsave={saveCurrentProfile}
     />
 
+    <ProfileSavedListCard
+        {loading}
+        {profiles}
+        allowEdit={profileSchemaReady}
+        oneditProfile={editProfile}
+        oncopyProfile={copyProfile}
+        ondeleteProfile={deleteProfile}
+    />
+
+    {#if profileSchemaReady}
+        <ProfileSettingsPanel
+            {editingSettings}
+            {currentProfile}
+            {savingProfile}
+            bind:editedSettings
+            bind:editedDetector
+            bind:editDescription
+            frequencyError={editingSettings && editedSettings && editedDetector
+                ? customFrequencyError(editedSettings, editedDetector)
+                : null}
+            oncancelEditing={cancelEditing}
+            onsaveEditedProfile={saveEditedProfile}
+            oncreateNewProfile={createNewProfile}
+            onstartEditing={startEditing}
+            oncustomFrequenciesChange={customFrequenciesChanged}
+            onaddCustomFrequencyRange={addCustomFrequencyRange}
+            onremoveCustomFrequencyRange={removeCustomFrequencyRange}
+            onresetDraft={resetDraftToLocalDefaults}
+            onshowSaveDialog={openSaveDialog}
+        />
+
+        {#if currentProfile?.name && profiles.some((profile) => profile.name === currentProfile.name)}
+            <div class="surface-card">
+                <div class="card-body space-y-2">
+                    <h2 class="card-title">Apply saved profile</h2>
+                    <p class="copy-muted">
+                        Apply uses the saved version of “{currentProfile.name}”, bound to the exact captured detector.
+                        Unsaved edits on this page are never serialized into the operation.
+                    </p>
+                    <button class="btn btn-primary btn-sm" type="button"
+                        disabled={operationBusy || !capturedSnapshot?.address}
+                        onclick={applySavedProfile}>
+                        Apply saved profile to captured V1
+                    </button>
+                </div>
+            </div>
+        {/if}
+
+    {/if}
+
     <div class="surface-card">
         <div class="card-body space-y-3">
             <div class="flex flex-wrap items-start justify-between gap-3">
@@ -862,55 +985,6 @@
             {/if}
         </div>
     </div>
-
-    {#if profileSchemaReady}
-        <ProfileSettingsPanel
-            {editingSettings}
-            {currentProfile}
-            {savingProfile}
-            bind:editedSettings
-            bind:editedDetector
-            bind:editDescription
-            frequencyError={editingSettings && editedSettings && editedDetector
-                ? customFrequencyError(editedSettings, editedDetector)
-                : null}
-            oncancelEditing={cancelEditing}
-            onsaveEditedProfile={saveEditedProfile}
-            oncreateNewProfile={createNewProfile}
-            onstartEditing={startEditing}
-            oncustomFrequenciesChange={customFrequenciesChanged}
-            onaddCustomFrequencyRange={addCustomFrequencyRange}
-            onremoveCustomFrequencyRange={removeCustomFrequencyRange}
-            onresetDraft={resetDraftToLocalDefaults}
-            onshowSaveDialog={openSaveDialog}
-        />
-
-        {#if currentProfile?.name && profiles.some((profile) => profile.name === currentProfile.name)}
-            <div class="surface-card">
-                <div class="card-body space-y-2">
-                    <h2 class="card-title">Apply saved profile</h2>
-                    <p class="copy-muted">
-                        Apply uses the saved version of “{currentProfile.name}”, bound to the exact captured detector.
-                        Unsaved edits on this page are never serialized into the operation.
-                    </p>
-                    <button class="btn btn-primary btn-sm" type="button"
-                        disabled={operationBusy || !capturedSnapshot?.address}
-                        onclick={applySavedProfile}>
-                        Apply saved profile to captured V1
-                    </button>
-                </div>
-            </div>
-        {/if}
-
-    {/if}
-
-    <ProfileSavedListCard
-        {loading}
-        {profiles}
-        allowEdit={profileSchemaReady}
-        oneditProfile={editProfile}
-        ondeleteProfile={deleteProfile}
-    />
 
     <div class="surface-note copy-muted space-y-1">
         <p><strong>Create:</strong> Build a detector configuration without a V1 connection.</p>

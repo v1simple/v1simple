@@ -3,6 +3,9 @@
     import { fetchJsonWithTimeout, fetchWithTimeout } from '$lib/utils/poll';
     import PageHeader from '$lib/components/PageHeader.svelte';
     import StatusAlert from '$lib/components/StatusAlert.svelte';
+    import ColorControl from '$lib/components/ColorControl.svelte';
+    import ColorPickerModal from '$lib/components/ColorPickerModal.svelte';
+    import { parseColorInput, rgb565ToHex, rgb565ToRgb888, rgb888ToRgb565 } from '$lib/utils/colors';
     import {
         DETECTOR_OPERATION_COMPONENTS,
         DETECTOR_OPERATION_POLL_WINDOW_MS,
@@ -32,7 +35,12 @@
     let message = $state(null);
     let editingSlot = $state(null);
     let editingDraft = $state(null);
+    let selectedProfileVolumePolicy = $state(null);
     let busy = $state(false);
+    let pickerOpen = $state(false);
+    let pickerR = $state(0);
+    let pickerG = $state(0);
+    let pickerB = $state(0);
     let capturedSnapshot = $state(null);
     let operationStatus = $state(null);
     let operationPollTimer = null;
@@ -47,6 +55,7 @@
     const profileSchemaReady = $derived(data.schemaVersion === 3);
 
     const defaultSlotNames = ['Default', 'Highway', 'Comfort'];
+    const defaultSlotColors = [0x400a, 0x07e0, 0x8410];
     const slotIcons = ['🏠', '🏎️', '👥'];
     const MAINTENANCE_PUSH_NOTE =
         'Push Now starts a verified Apply for the exact captured V1, restarts briefly into normal runtime, then returns here with the durable result.';
@@ -162,6 +171,11 @@
             loaded.slots = (loaded.slots || []).map((s) => {
                 return {
                     ...s,
+                    volumeConfigured: s.volumeConfigured ?? false,
+                    volume: s.volumeConfigured ? s.volume : 5,
+                    muteVolume: s.volumeConfigured ? s.muteVolume : 0,
+                    darkModeConfigured: s.darkModeConfigured ?? false,
+                    darkMode: s.darkMode ?? false,
                     alertPersist: s.alertPersist ?? 0,
                     priorityArrowOnly: s.priorityArrowOnly ?? false
                 };
@@ -314,6 +328,23 @@
         }
         busy = true;
         const s = editingDraft;
+        if (s.volumeConfigured && (!Number.isInteger(Number(s.volume)) ||
+            !Number.isInteger(Number(s.muteVolume)) || Number(s.volume) < 0 ||
+            Number(s.volume) > 9 || Number(s.muteVolume) < 0 || Number(s.muteVolume) > 9)) {
+            message = { type: 'error', text: 'Main and muted volume must each be between 0 and 9' };
+            busy = false;
+            return;
+        }
+        if (s.volumeConfigured && !['temporary', 'saved'].includes(selectedProfileVolumePolicy)) {
+            message = { type: 'error', text: 'Choose a profile with Temporary or Save on V1 volume policy before overriding volume' };
+            busy = false;
+            return;
+        }
+        if (!Number.isInteger(s.color) || s.color < 1 || s.color > 0xffff) {
+            message = { type: 'error', text: 'Choose a visible slot color before saving' };
+            busy = false;
+            return;
+        }
         message = { type: 'info', text: 'Saving slot...' };
         const persist = Math.max(0, Math.min(5, Number(s.alertPersist ?? 0)));
         s.alertPersist = persist;
@@ -323,6 +354,14 @@
             formData.append('slot', slot);
             // Match firmware's ASCII-only uppercase display-name representation.
             formData.append('name', s.name.replace(/[a-z]/g, (letter) => letter.toUpperCase()));
+            formData.append('color', String(s.color));
+            formData.append('volumeConfigured', s.volumeConfigured ? 'true' : 'false');
+            if (s.volumeConfigured) {
+                formData.append('volume', String(s.volume));
+                formData.append('muteVol', String(s.muteVolume));
+            }
+            formData.append('darkModeConfigured', s.darkModeConfigured ? 'true' : 'false');
+            if (s.darkModeConfigured) formData.append('darkMode', s.darkMode ? 'true' : 'false');
             formData.append('profile', s.profile);
             formData.append('clearProfile', s.profile ? 'false' : 'true');
             formData.append('alertPersist', persist);
@@ -356,10 +395,62 @@
 
     function beginEdit(slot) {
         editingSlot = slot;
-        editingDraft = { ...data.slots[slot] };
+        editingDraft = {
+            ...data.slots[slot],
+            color: data.slots[slot].color || defaultSlotColors[slot]
+        };
+        void loadSelectedProfilePolicy(editingDraft.profile);
+    }
+
+    async function loadSelectedProfilePolicy(name) {
+        selectedProfileVolumePolicy = null;
+        if (!name) return;
+        try {
+            const result = await fetchWithTimeout(
+                `/api/v1/profile?name=${encodeURIComponent(name)}`,
+                {}, undefined, async (response) => ({
+                    ok: response.ok,
+                    body: response.ok ? await response.json() : null
+                })
+            );
+            if (editingDraft?.profile === name && result.ok) {
+                selectedProfileVolumePolicy = result.body?.detector?.volume?.policy || 'unchanged';
+            }
+        } catch {
+            // Saving a volume modifier remains disabled until the assigned profile can be checked.
+        }
+    }
+
+    function setSlotColor(value) {
+        const color = parseColorInput(value);
+        if (color === null || color === 0) {
+            message = { type: 'error', text: 'Enter a visible RGB565 or six-digit RGB color' };
+            return;
+        }
+        editingDraft.color = color;
+    }
+
+    function openSlotColorPicker() {
+        const rgb = rgb565ToRgb888(editingDraft.color);
+        pickerR = rgb.red;
+        pickerG = rgb.green;
+        pickerB = rgb.blue;
+        pickerOpen = true;
+    }
+
+    function applySlotColorPicker() {
+        const color = rgb888ToRgb565(pickerR, pickerG, pickerB);
+        if (color === 0) {
+            message = { type: 'error', text: 'Choose a visible slot color' };
+            return;
+        }
+        editingDraft.color = color;
+        pickerOpen = false;
     }
 
     function cancelEdit() {
+        pickerOpen = false;
+        selectedProfileVolumePolicy = null;
         editingSlot = null;
         editingDraft = null;
     }
@@ -427,7 +518,8 @@
     <div class="surface-note">
         <p>
             Auto-Push sends V1 settings when you connect during normal runtime. The global default
-            slot is used unless a saved V1 device override selects another slot.
+            slot is used unless a saved V1 device override selects another slot. Slot volume and
+            dark mode override the assigned profile only when explicitly set.
         </p>
     </div>
 
@@ -468,6 +560,12 @@
                         <div class="flex items-start justify-between">
                             <div class="flex items-center gap-3">
                                 <div class="text-3xl">{slotIcons[i]}</div>
+                                <span
+                                    class="color-swatch-btn sm"
+                                    style={`background-color: ${rgb565ToHex(slot.color)}`}
+                                    role="img"
+                                    aria-label={`${slot.name || defaultSlotNames[i]} color`}
+                                ></span>
                                 <div>
                                     {#if editingSlot === i}
                                         <input
@@ -514,6 +612,14 @@
 
                         {#if editingSlot === i}
                             <div class="mt-3 grid grid-cols-2 gap-3">
+                                <ColorControl
+                                    id={`slot-${i}-color`}
+                                    label="Slot color"
+                                    value={editingDraft.color}
+                                    ariaLabel={`Choose ${editingDraft.name || defaultSlotNames[i]} color`}
+                                    onPick={openSlotColorPicker}
+                                    onHexChange={setSlotColor}
+                                />
                                 <div class="field-control">
                                     <label class="label py-1" for={`slot-${i}-profile`}>
                                         <span class="field-label copy-caption">Profile</span>
@@ -522,6 +628,7 @@
                                         id={`slot-${i}-profile`}
                                         class="select w-full select-sm"
                                         bind:value={editingDraft.profile}
+                                        onchange={() => void loadSelectedProfilePolicy(editingDraft.profile)}
                                     >
                                         <option value="">-- None --</option>
                                         {#if editingDraft.profile && !hasProfileOption(editingDraft.profile)}
@@ -534,6 +641,38 @@
                                         {/each}
                                     </select>
                                 </div>
+                                <div class="field-control col-span-2">
+                                    <label class="label cursor-pointer justify-start gap-3 py-1">
+                                        <input type="checkbox" class="toggle toggle-primary toggle-sm"
+                                            bind:checked={editingDraft.volumeConfigured} />
+                                        <span class="field-label copy-caption">Override profile volume</span>
+                                    </label>
+                                    {#if editingDraft.volumeConfigured}
+                                        <div class="grid grid-cols-2 gap-3">
+                                            <label class="field-control">
+                                                <span class="field-label copy-caption">Main volume (0–9)</span>
+                                                <input class="input input-sm" type="number" min="0" max="9" bind:value={editingDraft.volume} />
+                                            </label>
+                                            <label class="field-control">
+                                                <span class="field-label copy-caption">Muted volume (0–9)</span>
+                                                <input class="input input-sm" type="number" min="0" max="9" bind:value={editingDraft.muteVolume} />
+                                            </label>
+                                        </div>
+                                        <p class="copy-caption">Uses the assigned profile’s {selectedProfileVolumePolicy === 'saved' ? 'Save on V1' : selectedProfileVolumePolicy === 'temporary' ? 'Temporary' : 'volume'} policy. The profile must use Temporary or Save on V1.</p>
+                                    {/if}
+                                </div>
+                                <label class="field-control">
+                                    <span class="field-label copy-caption">Dark mode</span>
+                                    <select class="select select-sm" value={editingDraft.darkModeConfigured ? (editingDraft.darkMode ? 'on' : 'off') : 'profile'}
+                                        onchange={(event) => {
+                                            editingDraft.darkModeConfigured = event.currentTarget.value !== 'profile';
+                                            editingDraft.darkMode = event.currentTarget.value === 'on';
+                                        }}>
+                                        <option value="profile">Use profile</option>
+                                        <option value="on">On</option>
+                                        <option value="off">Off</option>
+                                    </select>
+                                </label>
                                 <div class="field-control">
                                     <label class="label cursor-pointer justify-start gap-3 py-1">
                                         <input
@@ -589,6 +728,10 @@
                                 </div>
                                 <div class="copy-muted">Alert persistence:</div>
                                 <div class="font-medium">{slot.alertPersist || 0}s</div>
+                                <div class="copy-muted">Volume:</div>
+                                <div class="font-medium">{slot.volumeConfigured ? `${slot.volume} / ${slot.muteVolume}` : 'Use profile'}</div>
+                                <div class="copy-muted">Dark mode:</div>
+                                <div class="font-medium">{slot.darkModeConfigured ? (slot.darkMode ? 'On' : 'Off') : 'Use profile'}</div>
                             </div>
                         {/if}
 
@@ -628,4 +771,14 @@
             />
         {/if}
     {/if}
+
+    <ColorPickerModal
+        open={pickerOpen}
+        label="Slot color"
+        bind:red={pickerR}
+        bind:green={pickerG}
+        bind:blue={pickerB}
+        oncancel={() => { pickerOpen = false; }}
+        onapply={applySlotColorPicker}
+    />
 </div>

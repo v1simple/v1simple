@@ -99,6 +99,26 @@ describe('autopush route page', () => {
         unmount();
     });
 
+    it('assigns and saves a visible color for a named slot', async () => {
+        const fetchMock = installDefaultFetch();
+        const { unmount } = render(Page);
+
+        await screen.findByText('Highway');
+        await fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
+        await fireEvent.click(screen.getByRole('button', { name: 'Choose Default color' }));
+        await fireEvent.click(screen.getByRole('button', { name: 'Blue' }));
+        await fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+        await fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+
+        await screen.findByText('Slot saved!');
+        const saveCall = fetchMock.mock.calls.find(
+            ([url, init]) => url === '/api/autopush/slot' && init?.method === 'POST'
+        );
+        expect(saveCall[1].body.get('color')).toBe('31');
+        expect(saveCall[1].body.get('name')).toBe('DEFAULT');
+        unmount();
+    });
+
     it('keeps the slot editor open when saving a slot fails', async () => {
         installDefaultFetch([
             {
@@ -155,7 +175,7 @@ describe('autopush route page', () => {
         unmount();
     });
 
-    it('edits only profile assignment and slot-local overlays', async () => {
+    it('saves slot modifiers without editing the shared profile', async () => {
         const fetchMock = installDefaultFetch();
         const { unmount } = render(Page);
 
@@ -164,7 +184,8 @@ describe('autopush route page', () => {
         expect(screen.getByLabelText('Profile')).toBeInTheDocument();
         expect(screen.getByText('Alert persistence (seconds)')).toBeInTheDocument();
         expect(screen.getByText('Priority Arrow Only')).toBeInTheDocument();
-        expect(screen.queryByLabelText('Volume (0-9)')).not.toBeInTheDocument();
+        expect(screen.getByText('Override profile volume')).toBeInTheDocument();
+        expect(screen.getByText('Dark mode')).toBeInTheDocument();
         expect(screen.queryByText('Logic Mode')).not.toBeInTheDocument();
         await fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
         await screen.findByText('Slot saved!');
@@ -179,12 +200,40 @@ describe('autopush route page', () => {
         expect(body.get('alertPersist')).toBe('1');
         expect(body.get('priorityArrowOnly')).toBe('false');
         expect(body.has('mode')).toBe(false);
-        expect(body.has('volumeConfigured')).toBe(false);
+        expect(body.get('volumeConfigured')).toBe('false');
         expect(body.has('volume')).toBe(false);
         expect(body.has('muteVol')).toBe(false);
+        expect(body.get('darkModeConfigured')).toBe('false');
         expect(body.has('darkMode')).toBe(false);
         expect(body.has('muteToZero')).toBe(false);
 
+        unmount();
+    });
+
+    it('submits explicit volume and dark-mode modifiers for one slot', async () => {
+        const fetchMock = installDefaultFetch([{
+            method: 'GET', match: '/api/v1/profile?name=Road%20Trip',
+            respond: jsonResponse({ detector: { volume: { policy: 'temporary' } } })
+        }]);
+        const { unmount } = render(Page);
+
+        await screen.findByText('Highway');
+        await fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
+        await fireEvent.click(screen.getByLabelText('Override profile volume'));
+        await fireEvent.input(screen.getByLabelText('Main volume (0–9)'), { target: { value: '8' } });
+        await fireEvent.input(screen.getByLabelText('Muted volume (0–9)'), { target: { value: '2' } });
+        await fireEvent.change(screen.getByLabelText('Dark mode'), { target: { value: 'on' } });
+        await fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+
+        await screen.findByText('Slot saved!');
+        const body = fetchMock.mock.calls.find(
+            ([url, init]) => url === '/api/autopush/slot' && init?.method === 'POST'
+        )[1].body;
+        expect(body.get('volumeConfigured')).toBe('true');
+        expect(body.get('volume')).toBe('8');
+        expect(body.get('muteVol')).toBe('2');
+        expect(body.get('darkModeConfigured')).toBe('true');
+        expect(body.get('darkMode')).toBe('true');
         unmount();
     });
 
@@ -321,7 +370,7 @@ describe('autopush route page', () => {
         await screen.findByText('Global default');
         expect(
             screen.getByText(
-                'Auto-Push sends V1 settings when you connect during normal runtime. The global default slot is used unless a saved V1 device override selects another slot.'
+                /Auto-Push sends V1 settings when you connect during normal runtime.*Slot volume and dark mode override the assigned profile only when explicitly set\./s
             )
         ).toBeInTheDocument();
 

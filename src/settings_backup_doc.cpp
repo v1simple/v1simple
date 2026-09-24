@@ -770,6 +770,10 @@ void applyBackupProfileSlotFields(const JsonDocument& doc, V1Settings& settings,
     uint8_t* volumes[] = {&settings.slot0Volume, &settings.slot1Volume, &settings.slot2Volume};
     uint8_t* muteVolumes[] = {&settings.slot0MuteVolume, &settings.slot1MuteVolume, &settings.slot2MuteVolume};
     bool* darkModes[] = {&settings.slot0DarkMode, &settings.slot1DarkMode, &settings.slot2DarkMode};
+    bool* volumeOverrides[] = {&settings.slot0VolumeOverride, &settings.slot1VolumeOverride,
+                               &settings.slot2VolumeOverride};
+    bool* darkModeOverrides[] = {&settings.slot0DarkModeOverride, &settings.slot1DarkModeOverride,
+                                 &settings.slot2DarkModeOverride};
     bool* muteToZero[] = {&settings.slot0MuteToZero, &settings.slot1MuteToZero, &settings.slot2MuteToZero};
     uint8_t* persists[] = {&settings.slot0AlertPersist, &settings.slot1AlertPersist, &settings.slot2AlertPersist};
     bool* priorityArrows[] = {&settings.slot0PriorityArrow, &settings.slot1PriorityArrow, &settings.slot2PriorityArrow};
@@ -782,6 +786,8 @@ void applyBackupProfileSlotFields(const JsonDocument& doc, V1Settings& settings,
         std::snprintf(key, sizeof(key), "slot%dVolume", i); if (doc[key].is<int>()) *volumes[i] = clampSlotVolumeValue(doc[key]);
         std::snprintf(key, sizeof(key), "slot%dMuteVolume", i); if (doc[key].is<int>()) *muteVolumes[i] = clampSlotVolumeValue(doc[key]);
         std::snprintf(key, sizeof(key), "slot%dDarkMode", i); restoreBackupBool(doc, key, *darkModes[i]);
+        std::snprintf(key, sizeof(key), "slot%dVolumeOverride", i); restoreBackupBool(doc, key, *volumeOverrides[i]);
+        std::snprintf(key, sizeof(key), "slot%dDarkModeOverride", i); restoreBackupBool(doc, key, *darkModeOverrides[i]);
         std::snprintf(key, sizeof(key), "slot%dMuteToZero", i); restoreBackupBool(doc, key, *muteToZero[i]);
         std::snprintf(key, sizeof(key), "slot%dAlertPersist", i); if (doc[key].is<int>()) *persists[i] = clampU8(doc[key], 0, 5);
         std::snprintf(key, sizeof(key), "slot%dPriorityArrow", i); restoreBackupBool(doc, key, *priorityArrows[i]);
@@ -1206,11 +1212,11 @@ bool validateCurrentBackupSchema(const JsonDocument& doc) {
         "speedMuteEnabled", "speedMuteThresholdMph", "speedMuteHysteresisMph", "speedMuteVolume",
         "speedMuteVoice", "stealthEnabled", "autoPushEnabled", "autoPushProfileSchemaVersion",
         "activeSlot", "slot0Name", "slot0Color", "slot0Volume", "slot0MuteVolume",
-        "slot0DarkMode", "slot0MuteToZero", "slot0AlertPersist", "slot0PriorityArrow",
+        "slot0DarkMode", "slot0VolumeOverride", "slot0DarkModeOverride", "slot0MuteToZero", "slot0AlertPersist", "slot0PriorityArrow",
         "slot0ProfileName", "slot0Mode", "slot1Name", "slot1Color", "slot1Volume",
-        "slot1MuteVolume", "slot1DarkMode", "slot1MuteToZero", "slot1AlertPersist",
+        "slot1MuteVolume", "slot1DarkMode", "slot1VolumeOverride", "slot1DarkModeOverride", "slot1MuteToZero", "slot1AlertPersist",
         "slot1PriorityArrow", "slot1ProfileName", "slot1Mode", "slot2Name", "slot2Color",
-        "slot2Volume", "slot2MuteVolume", "slot2DarkMode", "slot2MuteToZero",
+        "slot2Volume", "slot2MuteVolume", "slot2DarkMode", "slot2VolumeOverride", "slot2DarkModeOverride", "slot2MuteToZero",
         "slot2AlertPersist", "slot2PriorityArrow", "slot2ProfileName", "slot2Mode", "profiles",
     };
     const JsonObjectConst root = doc.as<JsonObjectConst>();
@@ -1218,19 +1224,23 @@ bool validateCurrentBackupSchema(const JsonDocument& doc) {
         return false;
     }
 
-    // Version 21 is the first exact backup schema.  Every field emitted by the
-    // current writer is required so a truncated/current-looking document can
+    // Version 21 is the first exact backup schema. Every field emitted by its
+    // respective writer is required so a truncated/current-looking document can
     // never turn an omitted setting into a successful partial restore.  The
     // only shape difference is deliberate: downloadable backups omit secrets
     // and CRC, while local SD backups require both.
     const bool httpBackup = exactV1JsonToken(doc["_type"], "v1simple_backup");
     const bool sdBackup = exactV1JsonToken(doc["_type"], "v1simple_sd_backup");
     if ((!httpBackup && !sdBackup) || !doc["_version"].is<int>() ||
-        doc["_version"].as<int>() != SD_BACKUP_VERSION) return false;
+        doc["_version"].as<int>() < SD_EXACT_BACKUP_MIN_VERSION ||
+        doc["_version"].as<int>() > SD_BACKUP_VERSION) return false;
+    const bool requiresSlotModifiers = doc["_version"].as<int>() >= 22;
     for (const char* key : kTopLevelKeys) {
         const bool transportSpecific = std::strcmp(key, "apPassword") == 0 ||
                                        std::strcmp(key, "_crc32") == 0;
-        if (!transportSpecific && doc[key].isUnbound()) return false;
+        const bool slotModifier = std::strstr(key, "VolumeOverride") != nullptr ||
+                                  std::strstr(key, "DarkModeOverride") != nullptr;
+        if (!transportSpecific && (requiresSlotModifiers || !slotModifier) && doc[key].isUnbound()) return false;
     }
     if (sdBackup) {
         if (doc["apPassword"].isUnbound() || doc["_crc32"].isUnbound()) return false;
@@ -1269,9 +1279,9 @@ bool validateCurrentBackupSchema(const JsonDocument& doc) {
         "voiceDirectionEnabled", "announceBogeyCount", "muteVoiceIfVolZero",
         "announceSecondaryAlerts", "secondaryLaser", "secondaryKa", "secondaryK", "secondaryX",
         "alertVolumeFadeEnabled", "speedMuteEnabled", "speedMuteVoice", "stealthEnabled",
-        "autoPushEnabled", "slot0DarkMode", "slot0MuteToZero", "slot0PriorityArrow",
-        "slot1DarkMode", "slot1MuteToZero", "slot1PriorityArrow", "slot2DarkMode",
-        "slot2MuteToZero", "slot2PriorityArrow",
+        "autoPushEnabled", "slot0DarkMode", "slot0VolumeOverride", "slot0DarkModeOverride", "slot0MuteToZero", "slot0PriorityArrow",
+        "slot1DarkMode", "slot1VolumeOverride", "slot1DarkModeOverride", "slot1MuteToZero", "slot1PriorityArrow", "slot2DarkMode",
+        "slot2VolumeOverride", "slot2DarkModeOverride", "slot2MuteToZero", "slot2PriorityArrow",
     };
     for (const char* key : kBoolKeys) {
         if (!optionalExactBool(doc, key)) return false;
@@ -1366,9 +1376,12 @@ bool validateCurrentBackupSchema(const JsonDocument& doc) {
         std::snprintf(key, sizeof(key), "slot%dAlertPersist", slot);
         if (!optionalExactIntRange(doc, key, 0, 5)) return false;
         char volumeKey[24], muteKey[24], darkKey[24], muteZeroKey[24];
+        char volumeOverrideKey[32], darkOverrideKey[32];
         std::snprintf(volumeKey, sizeof(volumeKey), "slot%dVolume", slot);
         std::snprintf(muteKey, sizeof(muteKey), "slot%dMuteVolume", slot);
         std::snprintf(darkKey, sizeof(darkKey), "slot%dDarkMode", slot);
+        std::snprintf(volumeOverrideKey, sizeof(volumeOverrideKey), "slot%dVolumeOverride", slot);
+        std::snprintf(darkOverrideKey, sizeof(darkOverrideKey), "slot%dDarkModeOverride", slot);
         std::snprintf(muteZeroKey, sizeof(muteZeroKey), "slot%dMuteToZero", slot);
         const auto validVolume = [&](const char* volumeName) {
             if (doc[volumeName].isUnbound()) return true;
@@ -1382,9 +1395,15 @@ bool validateCurrentBackupSchema(const JsonDocument& doc) {
             const int mute = doc[muteKey].as<int>();
             if ((volume == 0xFF) != (mute == 0xFF)) return false;
         }
-        if (profileOwnedMarker &&
-            (doc[volumeKey].as<int>() != 0xFF || doc[muteKey].as<int>() != 0xFF ||
-             doc[darkKey].as<bool>() || doc[muteZeroKey].as<bool>())) return false;
+        if (profileOwnedMarker) {
+            const bool volumeOverride = doc[volumeOverrideKey].as<bool>();
+            const bool darkOverride = doc[darkOverrideKey].as<bool>();
+            const int volume = doc[volumeKey].as<int>();
+            const int mute = doc[muteKey].as<int>();
+            if ((volumeOverride ? (volume > 9 || mute > 9)
+                                : (volume != 0xFF || mute != 0xFF)) ||
+                (!darkOverride && doc[darkKey].as<bool>()) || doc[muteZeroKey].as<bool>()) return false;
+        }
     }
 
     if (!doc["wifiStaSlots"].isUnbound()) {
@@ -1484,7 +1503,8 @@ bool validateCurrentBackupSchema(const JsonDocument& doc) {
 bool currentBackupReplacesProfileCatalog(const JsonDocument& doc) {
     // The exact current writer includes the complete catalog. Older partial
     // documents may omit profiles, so they retain their merge behavior.
-    return doc["_version"].is<int>() && doc["_version"].as<int>() == SD_BACKUP_VERSION;
+    return doc["_version"].is<int>() && doc["_version"].as<int>() >= SD_EXACT_BACKUP_MIN_VERSION &&
+           doc["_version"].as<int>() <= SD_BACKUP_VERSION;
 }
 
 bool parseBackupProfile(JsonObjectConst source, V1Profile& profile) {
@@ -1591,8 +1611,8 @@ bool validateBackupDocumentForApply(const JsonDocument& doc, const V1Settings& c
         (!currentVersion.isUnbound() && !legacyVersion.isUnbound() &&
          currentVersion.as<int>() != legacyVersion.as<int>())) return false;
     const bool claimsCurrentVersion =
-        (currentVersion.is<int>() && currentVersion.as<int>() == SD_BACKUP_VERSION) ||
-        (legacyVersion.is<int>() && legacyVersion.as<int>() == SD_BACKUP_VERSION);
+        (currentVersion.is<int>() && currentVersion.as<int>() >= SD_EXACT_BACKUP_MIN_VERSION) ||
+        (legacyVersion.is<int>() && legacyVersion.as<int>() >= SD_EXACT_BACKUP_MIN_VERSION);
     // Version 21 is the first exact-schema backup. Its writer marker is
     // `_version`; accepting the historical alias here would let a v21 claim
     // retain legacy open-ended semantics.
@@ -1676,15 +1696,28 @@ bool validateBackupDocumentForApply(const JsonDocument& doc, const V1Settings& c
         }
         for (int slot = 0; slot < 3; ++slot) {
             char modeKey[16], volumeKey[24], muteKey[24], darkKey[24], muteZeroKey[24];
+            char volumeOverrideKey[32], darkOverrideKey[32];
             std::snprintf(modeKey, sizeof(modeKey), "slot%dMode", slot);
             std::snprintf(volumeKey, sizeof(volumeKey), "slot%dVolume", slot);
             std::snprintf(muteKey, sizeof(muteKey), "slot%dMuteVolume", slot);
             std::snprintf(darkKey, sizeof(darkKey), "slot%dDarkMode", slot);
             std::snprintf(muteZeroKey, sizeof(muteZeroKey), "slot%dMuteToZero", slot);
+            std::snprintf(volumeOverrideKey, sizeof(volumeOverrideKey), "slot%dVolumeOverride", slot);
+            std::snprintf(darkOverrideKey, sizeof(darkOverrideKey), "slot%dDarkModeOverride", slot);
+            const bool volumeOverride = doc[volumeOverrideKey].as<bool>();
+            const bool darkOverride = doc[darkOverrideKey].as<bool>();
+            const bool modifiersAllowed = currentVersion.is<int>() && currentVersion.as<int>() >= 22 &&
+                                          profileSchemaMarker.as<int>() == V1_PROFILE_SCHEMA_VERSION;
             if ((!doc[modeKey].isUnbound() && (!doc[modeKey].is<int>() || doc[modeKey].as<int>() != 0)) ||
-                (!doc[volumeKey].isUnbound() && (!doc[volumeKey].is<int>() || doc[volumeKey].as<int>() != 255)) ||
-                (!doc[muteKey].isUnbound() && (!doc[muteKey].is<int>() || doc[muteKey].as<int>() != 255)) ||
-                (!doc[darkKey].isUnbound() && (!doc[darkKey].is<bool>() || doc[darkKey].as<bool>())) ||
+                ((volumeOverride || darkOverride) && !modifiersAllowed) ||
+                (!doc[volumeKey].isUnbound() &&
+                 (!doc[volumeKey].is<int>() ||
+                  (volumeOverride ? doc[volumeKey].as<int>() > 9 : doc[volumeKey].as<int>() != 255))) ||
+                (!doc[muteKey].isUnbound() &&
+                 (!doc[muteKey].is<int>() ||
+                  (volumeOverride ? doc[muteKey].as<int>() > 9 : doc[muteKey].as<int>() != 255))) ||
+                (!doc[darkKey].isUnbound() &&
+                 (!doc[darkKey].is<bool>() || (!darkOverride && doc[darkKey].as<bool>()))) ||
                 (!doc[muteZeroKey].isUnbound() &&
                  (!doc[muteZeroKey].is<bool>() || doc[muteZeroKey].as<bool>()))) {
                 return false;
@@ -2816,6 +2849,10 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
         applyBackupAudioFields(doc, settings_, BackupRestoreScope::Full);
     }
     applyBackupProfileSlotFields(doc, settings_, BackupRestoreScope::Full, preparedSlots);
+    if (!profilesOnly && (!doc["_version"].is<int>() || doc["_version"].as<int>() < 22)) {
+        settings_.slot0VolumeOverride = settings_.slot1VolumeOverride = settings_.slot2VolumeOverride = false;
+        settings_.slot0DarkModeOverride = settings_.slot1DarkModeOverride = settings_.slot2DarkModeOverride = false;
+    }
     if (!profilesOnly) {
         applyPreparedObdFields(doc, settings_, BackupRestoreScope::Full, preparedObd);
         applyBackupAlpAndGpsFields(doc, settings_);
@@ -2942,7 +2979,9 @@ bool SettingsManager::migrateAutoPushProfilesToV2() {
         for (int slotIndex = 0; slotIndex < 3; ++slotIndex) {
             const auto slot = state.autoPushSlotView(slotIndex);
             if (slot.config.mode != V1_MODE_UNKNOWN ||
-                slot.volume != 0xFF || slot.muteVolume != 0xFF || slot.darkMode || slot.muteToZero) {
+                (slot.volumeOverride ? !isConfiguredSlotVolumePair(slot.volume, slot.muteVolume)
+                                     : slot.volume != 0xFF || slot.muteVolume != 0xFF) ||
+                (slot.darkMode && !slot.darkModeOverride) || slot.muteToZero) {
                 return false;
             }
             if (slot.config.profileName.length() == 0) continue;

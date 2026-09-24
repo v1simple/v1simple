@@ -559,6 +559,55 @@ void test_current_backup_marker_only_or_partial_document_is_not_applicable() {
     TEST_ASSERT_FALSE(validateCurrentBackupDocumentShape(partial));
 }
 
+void test_version_21_exact_backup_remains_readable_without_slot_modifier_fields() {
+    V1Settings settings;
+    settings.apSSID = "V1-Test";
+    settings.autoPushProfileSchemaVersion = V1_PROFILE_SCHEMA_VERSION;
+    V1ProfileManager profileManager;
+    JsonDocument old;
+    BackupPayloadBuilder::buildBackupDocument(
+        old, settings, profileManager, BackupPayloadBuilder::BackupTransport::HttpDownload, 1000);
+    old["_version"] = SD_EXACT_BACKUP_MIN_VERSION;
+    for (int slot = 0; slot < 3; ++slot) {
+        char key[32];
+        std::snprintf(key, sizeof(key), "slot%dVolumeOverride", slot);
+        old.remove(key);
+        std::snprintf(key, sizeof(key), "slot%dDarkModeOverride", slot);
+        old.remove(key);
+    }
+    TEST_ASSERT_TRUE(validateCurrentBackupDocumentShape(old));
+    TEST_ASSERT_TRUE(currentBackupReplacesProfileCatalog(old));
+
+    JsonDocument incomplete;
+    incomplete.set(old);
+    incomplete.remove("brightness");
+    TEST_ASSERT_FALSE(validateCurrentBackupDocumentShape(incomplete));
+    old["_version"] = SD_BACKUP_VERSION;
+    TEST_ASSERT_FALSE(validateCurrentBackupDocumentShape(old));
+}
+
+void test_version_22_backup_requires_valid_slot_modifiers() {
+    V1Settings settings;
+    settings.apSSID = "V1-Test";
+    settings.autoPushProfileSchemaVersion = V1_PROFILE_SCHEMA_VERSION;
+    settings.slot0VolumeOverride = true;
+    settings.slot0Volume = 8;
+    settings.slot0MuteVolume = 2;
+    settings.slot0DarkModeOverride = true;
+    settings.slot0DarkMode = true;
+    V1ProfileManager profileManager;
+    JsonDocument doc;
+    BackupPayloadBuilder::buildBackupDocument(
+        doc, settings, profileManager, BackupPayloadBuilder::BackupTransport::HttpDownload, 1000);
+    TEST_ASSERT_TRUE(validateCurrentBackupDocumentShape(doc));
+
+    doc["slot0MuteVolume"] = 255;
+    TEST_ASSERT_FALSE(validateCurrentBackupDocumentShape(doc));
+    doc["slot0MuteVolume"] = 2;
+    doc.remove("slot0DarkModeOverride");
+    TEST_ASSERT_FALSE(validateCurrentBackupDocumentShape(doc));
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // writeBackupAtomically — happy path
 // ════════════════════════════════════════════════════════════════════════════
@@ -840,6 +889,8 @@ int main(int argc, char** argv) {
     RUN_TEST(test_intrinsically_invalid_current_candidate_selects_valid_previous_backup);
     RUN_TEST(test_current_backup_requires_every_writer_field_with_only_transport_exceptions);
     RUN_TEST(test_current_backup_marker_only_or_partial_document_is_not_applicable);
+    RUN_TEST(test_version_21_exact_backup_remains_readable_without_slot_modifier_fields);
+    RUN_TEST(test_version_22_backup_requires_valid_slot_modifiers);
 
     // Atomic write — happy path
     RUN_TEST(test_atomic_write_creates_primary_file);

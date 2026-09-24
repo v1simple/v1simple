@@ -12,7 +12,8 @@
 extern const char* SETTINGS_BACKUP_PATH;
 extern const char* SETTINGS_BACKUP_TMP_PATH;
 extern const char* SETTINGS_BACKUP_PREV_PATH;
-inline constexpr int SD_BACKUP_VERSION = 21;
+inline constexpr int SD_BACKUP_VERSION = 22;
+inline constexpr int SD_EXACT_BACKUP_MIN_VERSION = 21;
 extern const size_t SETTINGS_BACKUP_MAX_BYTES;
 extern const char* WIFI_CLIENT_NS;
 extern const char* WIFI_CLIENT_SD_SECRET_PATH;

@@ -1809,6 +1809,12 @@ bool SettingsManager::writeSettingsToNamespace(const char* ns, uint32_t generati
     written += prefs.putBool(kNvsSlot0DarkMode, settings_.slot0DarkMode);
     written += prefs.putBool(kNvsSlot1DarkMode, settings_.slot1DarkMode);
     written += prefs.putBool(kNvsSlot2DarkMode, settings_.slot2DarkMode);
+    written += prefs.putBool(kNvsSlot0VolumeOverride, settings_.slot0VolumeOverride);
+    written += prefs.putBool(kNvsSlot1VolumeOverride, settings_.slot1VolumeOverride);
+    written += prefs.putBool(kNvsSlot2VolumeOverride, settings_.slot2VolumeOverride);
+    written += prefs.putBool(kNvsSlot0DarkModeOverride, settings_.slot0DarkModeOverride);
+    written += prefs.putBool(kNvsSlot1DarkModeOverride, settings_.slot1DarkModeOverride);
+    written += prefs.putBool(kNvsSlot2DarkModeOverride, settings_.slot2DarkModeOverride);
     written += prefs.putBool(kNvsSlot0MuteToZero, settings_.slot0MuteToZero);
     written += prefs.putBool(kNvsSlot1MuteToZero, settings_.slot1MuteToZero);
     written += prefs.putBool(kNvsSlot2MuteToZero, settings_.slot2MuteToZero);

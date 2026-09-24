@@ -114,6 +114,14 @@ bool SettingsManager::getSlotDarkMode(int slotNum) const {
     return settings_.autoPushSlotView(slotNum).darkMode;
 }
 
+bool SettingsManager::getSlotVolumeOverride(int slotNum) const {
+    return settings_.autoPushSlotView(slotNum).volumeOverride;
+}
+
+bool SettingsManager::getSlotDarkModeOverride(int slotNum) const {
+    return settings_.autoPushSlotView(slotNum).darkModeOverride;
+}
+
 bool SettingsManager::getSlotMuteToZero(int slotNum) const {
     return settings_.autoPushSlotView(slotNum).muteToZero;
 }
@@ -174,6 +182,12 @@ bool SettingsManager::applyAutoPushSlotUpdate(const AutoPushSlotUpdate& update, 
     if (update.hasDarkMode) {
         changed |= assignIfChanged(slot.darkMode, update.darkMode);
     }
+    if (update.hasVolumeOverride) {
+        changed |= assignIfChanged(slot.volumeOverride, update.volumeOverride);
+    }
+    if (update.hasDarkModeOverride) {
+        changed |= assignIfChanged(slot.darkModeOverride, update.darkModeOverride);
+    }
     if (update.hasMuteToZero) {
         changed |= assignIfChanged(slot.muteToZero, update.muteToZero);
     }
@@ -212,6 +226,8 @@ AutoPushPersistResult SettingsManager::applyAutoPushSlotUpdatePersisted(const Au
     const uint8_t volumeBefore = slot.volume;
     const uint8_t muteVolumeBefore = slot.muteVolume;
     const bool darkModeBefore = slot.darkMode;
+    const bool volumeOverrideBefore = slot.volumeOverride;
+    const bool darkModeOverrideBefore = slot.darkModeOverride;
     const bool muteToZeroBefore = slot.muteToZero;
     const uint8_t alertPersistBefore = slot.alertPersist;
     const bool priorityArrowBefore = slot.priorityArrow;
@@ -226,6 +242,8 @@ AutoPushPersistResult SettingsManager::applyAutoPushSlotUpdatePersisted(const Au
         desiredMuteVolume = clampSlotVolumeValue(update.muteVolume);
         sanitizeSlotVolumePair(desiredVolume, desiredMuteVolume);
     }
+    if ((update.hasVolumeOverride ? update.volumeOverride : slot.volumeOverride) &&
+        (desiredVolume > 9 || desiredMuteVolume > 9)) return result;
     // Build the complete candidate exactly once.  The route-owned update
     // remains immutable; no live field changes until both allocation-bearing
     // strings and every scalar policy have been validated.
@@ -250,6 +268,8 @@ AutoPushPersistResult SettingsManager::applyAutoPushSlotUpdatePersisted(const Au
         desiredName != slot.name || (update.hasColor && update.color != slot.color) ||
         desiredVolume != slot.volume || desiredMuteVolume != slot.muteVolume ||
         (update.hasDarkMode && update.darkMode != slot.darkMode) ||
+        (update.hasVolumeOverride && update.volumeOverride != slot.volumeOverride) ||
+        (update.hasDarkModeOverride && update.darkModeOverride != slot.darkModeOverride) ||
         (update.hasMuteToZero && update.muteToZero != slot.muteToZero) ||
         (update.hasAlertPersist && std::min<uint8_t>(5, update.alertPersist) != slot.alertPersist) ||
         (update.hasPriorityArrowOnly && update.priorityArrowOnly != slot.priorityArrow) ||
@@ -271,6 +291,8 @@ AutoPushPersistResult SettingsManager::applyAutoPushSlotUpdatePersisted(const Au
     slot.volume = desiredVolume;
     slot.muteVolume = desiredMuteVolume;
     if (update.hasDarkMode) slot.darkMode = update.darkMode;
+    if (update.hasVolumeOverride) slot.volumeOverride = update.volumeOverride;
+    if (update.hasDarkModeOverride) slot.darkModeOverride = update.darkModeOverride;
     if (update.hasMuteToZero) slot.muteToZero = update.muteToZero;
     if (update.hasAlertPersist) slot.alertPersist = std::min<uint8_t>(5, update.alertPersist);
     if (update.hasPriorityArrowOnly) slot.priorityArrow = update.priorityArrowOnly;
@@ -292,6 +314,8 @@ AutoPushPersistResult SettingsManager::applyAutoPushSlotUpdatePersisted(const Au
     slot.volume = volumeBefore;
     slot.muteVolume = muteVolumeBefore;
     slot.darkMode = darkModeBefore;
+    slot.volumeOverride = volumeOverrideBefore;
+    slot.darkModeOverride = darkModeOverrideBefore;
     slot.muteToZero = muteToZeroBefore;
     slot.alertPersist = alertPersistBefore;
     slot.priorityArrow = priorityArrowBefore;

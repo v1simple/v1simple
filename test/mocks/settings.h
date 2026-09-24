@@ -261,6 +261,8 @@ public:
     uint8_t slotVolumes[3] = {0xFF, 0xFF, 0xFF};
     uint8_t slotMuteVolumes[3] = {0xFF, 0xFF, 0xFF};
     bool slotDarkModes[3] = {false, false, false};
+    bool slotVolumeOverrides[3] = {false, false, false};
+    bool slotDarkModeOverrides[3] = {false, false, false};
     bool slotMuteToZero[3] = {false, false, false};
     bool slotPriorityArrowOnly[3] = {false, false, false};
     bool backupToSDResult = true;
@@ -322,6 +324,12 @@ public:
     }
     bool getSlotDarkMode(int slotNum) const {
         return (slotNum >= 0 && slotNum < 3) ? slotDarkModes[slotNum] : false;
+    }
+    bool getSlotVolumeOverride(int slotNum) const {
+        return (slotNum >= 0 && slotNum < 3) ? slotVolumeOverrides[slotNum] : false;
+    }
+    bool getSlotDarkModeOverride(int slotNum) const {
+        return (slotNum >= 0 && slotNum < 3) ? slotDarkModeOverrides[slotNum] : false;
     }
     bool getSlotMuteToZero(int slotNum) const {
         return (slotNum >= 0 && slotNum < 3) ? slotMuteToZero[slotNum] : false;

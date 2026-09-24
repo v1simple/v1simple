@@ -35,6 +35,7 @@ struct SlotConfig {
     uint8_t muteVolume = 0;
     bool volumeConfigured = false;
     bool darkMode = false;
+    bool darkModeConfigured = false;
     bool muteToZero = false;
     uint8_t alertPersist = 0;
     bool priorityArrowOnly = false;
@@ -62,6 +63,8 @@ struct SlotUpdateRequest {
     bool volumeConfigured = false;
     bool hasDarkMode = false;
     bool darkMode = false;
+    bool hasDarkModeConfigured = false;
+    bool darkModeConfigured = false;
     bool hasMuteToZero = false;
     bool muteToZero = false;
     bool hasAlertPersist = false;

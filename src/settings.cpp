@@ -382,6 +382,15 @@ void SettingsManager::load() {
     settings_.slot0DarkMode = preferences_.getBool(kNvsSlot0DarkMode, false);
     settings_.slot1DarkMode = preferences_.getBool(kNvsSlot1DarkMode, false);
     settings_.slot2DarkMode = preferences_.getBool(kNvsSlot2DarkMode, false);
+    settings_.slot0VolumeOverride = preferences_.getBool(kNvsSlot0VolumeOverride, false);
+    settings_.slot1VolumeOverride = preferences_.getBool(kNvsSlot1VolumeOverride, false);
+    settings_.slot2VolumeOverride = preferences_.getBool(kNvsSlot2VolumeOverride, false);
+    settings_.slot0VolumeOverride &= settings_.slot0Volume <= 9 && settings_.slot0MuteVolume <= 9;
+    settings_.slot1VolumeOverride &= settings_.slot1Volume <= 9 && settings_.slot1MuteVolume <= 9;
+    settings_.slot2VolumeOverride &= settings_.slot2Volume <= 9 && settings_.slot2MuteVolume <= 9;
+    settings_.slot0DarkModeOverride = preferences_.getBool(kNvsSlot0DarkModeOverride, false);
+    settings_.slot1DarkModeOverride = preferences_.getBool(kNvsSlot1DarkModeOverride, false);
+    settings_.slot2DarkModeOverride = preferences_.getBool(kNvsSlot2DarkModeOverride, false);
     settings_.slot0MuteToZero = preferences_.getBool(kNvsSlot0MuteToZero, false);
     settings_.slot1MuteToZero = preferences_.getBool(kNvsSlot1MuteToZero, false);
     settings_.slot2MuteToZero = preferences_.getBool(kNvsSlot2MuteToZero, false);

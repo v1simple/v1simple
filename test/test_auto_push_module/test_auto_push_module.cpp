@@ -561,6 +561,79 @@ void test_all_noop_components_are_proven_unchanged_without_writes() {
     TEST_ASSERT_TRUE(ble.consumeVerifyPushMatchEdge());
 }
 
+void test_slot_modifiers_win_over_profile_without_changing_direct_profile_apply() {
+    configureProfile();
+    settings.slotDarkModeOverrides[0] = true;
+    settings.slotDarkModes[0] = false;
+    settings.slotVolumeOverrides[0] = true;
+    settings.slotVolumes[0] = 8;
+    settings.slotMuteVolumes[0] = 2;
+    stageSnapshot(makeSnapshot());
+    queueAndPreflight();
+
+    JsonDocument slotStatus;
+    const String slotJson = module.getStatusJson();
+    TEST_ASSERT_FALSE(deserializeJson(slotStatus, slotJson.c_str()));
+    TEST_ASSERT_TRUE(slotStatus["components"]["display"]["desired"].as<bool>());
+    TEST_ASSERT_EQUAL_UINT8(8, slotStatus["components"]["volume"]["desired"]["main"].as<int>());
+    TEST_ASSERT_EQUAL_UINT8(2, slotStatus["components"]["volume"]["desired"]["muted"].as<int>());
+
+    setUp();
+    configureProfile();
+    settings.slotDarkModeOverrides[0] = true;
+    settings.slotDarkModes[0] = false;
+    settings.slotVolumeOverrides[0] = true;
+    settings.slotVolumes[0] = 8;
+    settings.slotMuteVolumes[0] = 2;
+    stageSnapshot(makeSnapshot());
+    AutoPushModule::PushNowRequest direct;
+    direct.slotIndex = 0;
+    direct.hasProfileOverride = true;
+    direct.profileName = "ROAD";
+    TEST_ASSERT_EQUAL_INT(AutoPushModule::QueueResult::QUEUED, module.queuePushNow(direct));
+    at(100);
+    at(100);
+
+    JsonDocument profileStatus;
+    const String profileJson = module.getStatusJson();
+    TEST_ASSERT_FALSE(deserializeJson(profileStatus, profileJson.c_str()));
+    TEST_ASSERT_FALSE(profileStatus["components"]["display"]["desired"].as<bool>());
+    TEST_ASSERT_EQUAL_UINT8(7, profileStatus["components"]["volume"]["desired"]["main"].as<int>());
+    TEST_ASSERT_EQUAL_UINT8(3, profileStatus["components"]["volume"]["desired"]["muted"].as<int>());
+}
+
+void test_volume_modifier_requires_profile_volume_policy() {
+    configureProfile();
+    profiles.loadableProfile.detector.volumePolicy = V1VolumePolicy::Unchanged;
+    settings.slotVolumeOverrides[0] = true;
+    settings.slotVolumes[0] = 8;
+    settings.slotMuteVolumes[0] = 2;
+    stageSnapshot(makeSnapshot());
+    queueAndPreflight();
+
+    TEST_ASSERT_FALSE(module.isActive());
+    TEST_ASSERT_TRUE(statusContains("\"reason\":\"invalid_policy\""));
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
+}
+
+void test_slot_volume_modifier_uses_profile_saved_policy() {
+    configureProfile();
+    profiles.loadableProfile.detector.volumePolicy = V1VolumePolicy::Saved;
+    settings.slotVolumeOverrides[0] = true;
+    settings.slotVolumes[0] = 8;
+    settings.slotMuteVolumes[0] = 2;
+    stageSnapshot(makeSnapshot());
+    queueAndPreflight();
+
+    JsonDocument status;
+    const String json = module.getStatusJson();
+    TEST_ASSERT_FALSE(deserializeJson(status, json.c_str()));
+    TEST_ASSERT_EQUAL_UINT8(8, status["components"]["volume"]["desired"]["main"].as<int>());
+    TEST_ASSERT_EQUAL_UINT8(2, status["components"]["volume"]["desired"]["muted"].as<int>());
+    TEST_ASSERT_EQUAL_UINT8(4, status["components"]["volume"]["commandAux"].as<int>() & 4);
+}
+
 void test_supported_user_masks_match_every_vendor_boundary() {
     struct Case {
         uint32_t version;
@@ -2812,6 +2885,9 @@ int main() {
     RUN_TEST(test_queue_secures_maximum_v3_profile_before_activation_and_preserves_legacy_load_step);
     RUN_TEST(test_full_apply_requires_fresh_canonical_readbacks_for_every_component);
     RUN_TEST(test_all_noop_components_are_proven_unchanged_without_writes);
+    RUN_TEST(test_slot_modifiers_win_over_profile_without_changing_direct_profile_apply);
+    RUN_TEST(test_volume_modifier_requires_profile_volume_policy);
+    RUN_TEST(test_slot_volume_modifier_uses_profile_saved_policy);
     RUN_TEST(test_supported_user_masks_match_every_vendor_boundary);
     RUN_TEST(test_supported_masks_preserve_unknown_bits_and_four_byte_firmware_shape);
     RUN_TEST(test_41039_masks_only_modeled_byte_four_bits_and_preserves_byte_five);

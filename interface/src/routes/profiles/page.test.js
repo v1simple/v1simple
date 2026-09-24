@@ -86,6 +86,46 @@ describe('profiles route page', () => {
         unmount();
     });
 
+    it('copies a profile under a new name with detector settings intact', async () => {
+        let savedPayload;
+        installDefaultFetch([
+            {
+                method: 'GET', match: '/api/v1/profile?name=Daily%20Drive',
+                respond: jsonResponse({
+                    schemaVersion: 3, name: 'Daily Drive', description: 'Existing metadata',
+                    detector: {
+                        userSettings: 'value', mode: { policy: 'value', value: 2 },
+                        display: 'off', volume: { policy: 'saved', main: 7, muted: 2 },
+                        customFrequencies: { policy: 'unchanged' }
+                    },
+                    settings: { xBand: true }
+                })
+            },
+            {
+                method: 'POST', match: '/api/v1/profile',
+                respond: ({ init }) => {
+                    savedPayload = JSON.parse(init.body);
+                    return jsonResponse({ success: true });
+                }
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        const row = (await screen.findByText('Daily Drive')).closest('.surface-panel');
+        await fireEvent.click(within(row).getByRole('button', { name: 'Copy' }));
+        expect(await screen.findByLabelText('Profile Name')).toHaveValue('Daily Drive copy');
+        expect(screen.getByLabelText('Main volume (0–9)')).toHaveValue(7);
+        const modal = screen.getByText('Save Profile').closest('.modal-box');
+        await fireEvent.click(within(modal).getByRole('button', { name: 'Save' }));
+
+        await screen.findByText('Profile "Daily Drive copy" saved');
+        expect(savedPayload.name).toBe('Daily Drive copy');
+        expect(savedPayload.description).toBe('Existing metadata');
+        expect(savedPayload.detector.display).toBe('off');
+        expect(savedPayload.detector.volume).toMatchObject({ policy: 'saved', main: 7, muted: 2 });
+        unmount();
+    });
+
     it('preserves detector policy when editing a saved profile', async () => {
         let savedPayload;
         installDefaultFetch([

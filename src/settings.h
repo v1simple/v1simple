@@ -91,6 +91,8 @@ class SettingsManager {
     uint8_t getSlotMuteVolume(int slotNum) const;
 
     bool getSlotDarkMode(int slotNum) const;
+    bool getSlotVolumeOverride(int slotNum) const;
+    bool getSlotDarkModeOverride(int slotNum) const;
     bool getSlotMuteToZero(int slotNum) const;
     uint8_t getSlotAlertPersistSec(int slotNum) const;
     bool getSlotPriorityArrowOnly(int slotNum) const;

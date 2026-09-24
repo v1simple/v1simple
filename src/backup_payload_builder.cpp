@@ -110,7 +110,7 @@ bool settingsTextIsSerializable(const V1Settings& settings) {
 
 bool settingsCurrentBackupStateIsCanonical(const V1Settings& settings) {
     if (settings.proxyBLE && settings.obdEnabled) return false;
-    // Version 21 is an exact, rebuild-stable representation. Legacy slot-owned
+    // Exact backups are rebuild-stable. Legacy slot-owned
     // detector state must complete its explicit migration before it can be
     // represented without canonicalization or command drift.
     if (settings.autoPushProfileSchemaVersion != V1_PROFILE_SCHEMA_VERSION) return false;
@@ -143,8 +143,10 @@ bool settingsCurrentBackupStateIsCanonical(const V1Settings& settings) {
     }
     for (uint8_t slotIndex = 0; slotIndex < 3; ++slotIndex) {
         const auto slot = settings.autoPushSlotView(slotIndex);
-        if (slot.config.mode != V1_MODE_UNKNOWN || slot.volume != 0xFF ||
-            slot.muteVolume != 0xFF || slot.darkMode || slot.muteToZero) return false;
+        if (slot.config.mode != V1_MODE_UNKNOWN ||
+            (slot.volumeOverride ? slot.volume > 9 || slot.muteVolume > 9
+                                 : slot.volume != 0xFF || slot.muteVolume != 0xFF) ||
+            (slot.darkMode && !slot.darkModeOverride) || slot.muteToZero) return false;
     }
     return true;
 }
@@ -388,7 +390,7 @@ BuildResult buildBackupDocument(JsonDocument& doc, const V1Settings& settings, c
     doc["autoPushEnabled"] = settings.autoPushEnabled;
     // Current backups encode only durable ownership states. A schema-v2
     // catalog must complete its transactional migration before it can be
-    // exported as a canonical v21 document.
+    // exported as a canonical current document.
     const uint8_t exportedProfileSchemaVersion = settings.autoPushProfileSchemaVersion;
     doc["autoPushProfileSchemaVersion"] = exportedProfileSchemaVersion;
     doc["activeSlot"] = settings.activeSlot;
@@ -397,6 +399,8 @@ BuildResult buildBackupDocument(JsonDocument& doc, const V1Settings& settings, c
     doc["slot0Volume"] = settings.slot0Volume;
     doc["slot0MuteVolume"] = settings.slot0MuteVolume;
     doc["slot0DarkMode"] = settings.slot0DarkMode;
+    doc["slot0VolumeOverride"] = settings.slot0VolumeOverride;
+    doc["slot0DarkModeOverride"] = settings.slot0DarkModeOverride;
     doc["slot0MuteToZero"] = settings.slot0MuteToZero;
     doc["slot0AlertPersist"] = settings.slot0AlertPersist;
     doc["slot0PriorityArrow"] = settings.slot0PriorityArrow;
@@ -408,6 +412,8 @@ BuildResult buildBackupDocument(JsonDocument& doc, const V1Settings& settings, c
     doc["slot1Volume"] = settings.slot1Volume;
     doc["slot1MuteVolume"] = settings.slot1MuteVolume;
     doc["slot1DarkMode"] = settings.slot1DarkMode;
+    doc["slot1VolumeOverride"] = settings.slot1VolumeOverride;
+    doc["slot1DarkModeOverride"] = settings.slot1DarkModeOverride;
     doc["slot1MuteToZero"] = settings.slot1MuteToZero;
     doc["slot1AlertPersist"] = settings.slot1AlertPersist;
     doc["slot1PriorityArrow"] = settings.slot1PriorityArrow;
@@ -419,6 +425,8 @@ BuildResult buildBackupDocument(JsonDocument& doc, const V1Settings& settings, c
     doc["slot2Volume"] = settings.slot2Volume;
     doc["slot2MuteVolume"] = settings.slot2MuteVolume;
     doc["slot2DarkMode"] = settings.slot2DarkMode;
+    doc["slot2VolumeOverride"] = settings.slot2VolumeOverride;
+    doc["slot2DarkModeOverride"] = settings.slot2DarkModeOverride;
     doc["slot2MuteToZero"] = settings.slot2MuteToZero;
     doc["slot2AlertPersist"] = settings.slot2AlertPersist;
     doc["slot2PriorityArrow"] = settings.slot2PriorityArrow;

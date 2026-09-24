@@ -128,6 +128,7 @@ void AutoPushModule::setPreApplySnapshot(const V1DetectorSnapshot& snapshot) {
 bool AutoPushModule::prepareState(int slotIndex, const AutoPushSlot& slot, bool profileLoaded,
                                   const V1Profile& profile, bool isPushNow,
                                   bool updateProfileIndicator, bool retainLoadStep,
+                                  bool applySlotModifiers,
                                   State& preparedState,
                                   OperationStatus& preparedStatus) const {
     preparedState = State{};
@@ -155,6 +156,7 @@ bool AutoPushModule::prepareState(int slotIndex, const AutoPushSlot& slot, bool 
         return false;
     }
     preparedState.profileLoaded = profileLoaded;
+    preparedState.applySlotModifiers = applySlotModifiers;
     preparedState.retainLoadStep = retainLoadStep;
     preparedState.profileOwned =
         settings_->get().autoPushProfileSchemaVersion == V1_PROFILE_SCHEMA_VERSION;
@@ -202,7 +204,8 @@ AutoPushModule::QueueResult AutoPushModule::queuePreparedSlot(int slotIndex, con
                                                               bool profileLoaded, const V1Profile& profile,
                                                               bool isPushNow, bool activateSlot,
                                                               bool updateProfileIndicator,
-                                                              bool retainLoadStep) {
+                                                              bool retainLoadStep,
+                                                              bool applySlotModifiers) {
     if (!settings_ || !profiles_ || !bleClient_ || !parser_ || !display_ || !quiet_) {
         return QueueResult::PROFILE_LOAD_FAILED;
     }
@@ -214,9 +217,12 @@ AutoPushModule::QueueResult AutoPushModule::queuePreparedSlot(int slotIndex, con
 
     const uint8_t configuredVolume = settings_->getSlotVolume(slotIndex);
     const uint8_t configuredMuteVolume = settings_->getSlotMuteVolume(slotIndex);
-    if (!profileOwned && (configuredVolume == 0xFF) != (configuredMuteVolume == 0xFF)) {
+    if ((!profileOwned || (applySlotModifiers && settings_->getSlotVolumeOverride(slotIndex))) &&
+        (configuredVolume == 0xFF) != (configuredMuteVolume == 0xFF)) {
         return QueueResult::INVALID_VOLUME_PAIR;
     }
+    if (profileOwned && applySlotModifiers && settings_->getSlotVolumeOverride(slotIndex) &&
+        (configuredVolume > 9 || configuredMuteVolume > 9)) return QueueResult::INVALID_VOLUME_PAIR;
 
     const int clampedIndex = std::max(0, std::min(2, slotIndex));
 #ifdef UNIT_TEST
@@ -233,7 +239,7 @@ AutoPushModule::QueueResult AutoPushModule::queuePreparedSlot(int slotIndex, con
         new (std::nothrow) PreparedOperation());
     if (!prepared) return QueueResult::STAGING_UNAVAILABLE;
     if (!prepareState(clampedIndex, slot, profileLoaded, profile, isPushNow,
-                      updateProfileIndicator, retainLoadStep, prepared->state,
+                      updateProfileIndicator, retainLoadStep, applySlotModifiers, prepared->state,
                       prepared->status)) {
         return QueueResult::STAGING_UNAVAILABLE;
     }
@@ -294,7 +300,8 @@ AutoPushModule::QueueResult AutoPushModule::queuePushNow(const PushNowRequest& r
     const ProfileOperationResult loaded = profiles_->loadProfileResult(slot.profileName, profile, 0);
     if (loaded.status == ProfileStorageStatus::Busy) return QueueResult::PROFILE_BUSY;
     if (!loaded.success()) return QueueResult::PROFILE_LOAD_FAILED;
-    return queuePreparedSlot(clampedIndex, slot, true, profile, true, request.activateSlot, true);
+    return queuePreparedSlot(clampedIndex, slot, true, profile, true, request.activateSlot, true,
+                             false, !request.hasProfileOverride);
 }
 
 V1SettingsOperationStore::Reason AutoPushModule::durableReasonForQueueResult(QueueResult result) {
@@ -340,6 +347,10 @@ bool AutoPushModule::configurePlan() {
         }
 
         const V1DetectorConfiguration& detector = state_.profile.detector;
+        const bool slotVolumeOverride = state_.applySlotModifiers &&
+            settings_->getSlotVolumeOverride(state_.slotIndex);
+        const bool slotDarkModeOverride = state_.applySlotModifiers &&
+            settings_->getSlotDarkModeOverride(state_.slotIndex);
         if (detector.userSettingsPolicy != V1UserSettingsPolicy::Unchanged &&
             detector.userSettingsPolicy != V1UserSettingsPolicy::Value) {
             failWholePlan(&status_.userSettings, Outcome::INVALID, FailureReason::INVALID_POLICY);
@@ -381,23 +392,31 @@ bool AutoPushModule::configurePlan() {
             failWholePlan(&status_.customFrequencies, Outcome::INVALID, FailureReason::INVALID_POLICY);
             return false;
         }
+        if (slotVolumeOverride && detector.volumePolicy == V1VolumePolicy::Unchanged) {
+            failWholePlan(&status_.volume, Outcome::INVALID, FailureReason::INVALID_POLICY);
+            return false;
+        }
 
         status_.userSettings.requested = detector.userSettingsPolicy == V1UserSettingsPolicy::Value;
-        status_.display.requested = detector.displayPolicy != V1DisplayPolicy::Unchanged ||
+        status_.display.requested = slotDarkModeOverride ||
+                                    detector.displayPolicy != V1DisplayPolicy::Unchanged ||
                                     detector.bluetoothLedPolicy != V1BluetoothLedPolicy::Unchanged;
         status_.mode.requested = detector.modePolicy == V1ModePolicy::Value;
         status_.volume.requested = detector.volumePolicy != V1VolumePolicy::Unchanged;
         status_.customFrequencies.requested =
             detector.customFrequencyPolicy == V1CustomFrequencyPolicy::Value;
-        state_.displayOn = detector.displayPolicy == V1DisplayPolicy::Unchanged
+        state_.displayOn = slotDarkModeOverride ? !settings_->getSlotDarkMode(state_.slotIndex) :
+                           detector.displayPolicy == V1DisplayPolicy::Unchanged
                                ? state_.before.displayOn
                                : detector.displayPolicy == V1DisplayPolicy::On;
         state_.desiredMode = detector.mode;
         state_.volumePolicy = detector.volumePolicy;
-        state_.bluetoothLedPolicy = detector.bluetoothLedPolicy;
+        state_.bluetoothLedPolicy = slotDarkModeOverride && state_.displayOn
+                                        ? V1BluetoothLedPolicy::Unchanged : detector.bluetoothLedPolicy;
         state_.customFrequencyPolicy = detector.customFrequencyPolicy;
-        state_.volume = detector.mainVolume;
-        state_.muteVolume = detector.mutedVolume;
+        state_.volume = slotVolumeOverride ? settings_->getSlotVolume(state_.slotIndex) : detector.mainVolume;
+        state_.muteVolume = slotVolumeOverride ? settings_->getSlotMuteVolume(state_.slotIndex) :
+                                                 detector.mutedVolume;
         status_.volumePolicy = detector.volumePolicy;
         status_.volumeFeedback = detector.volumeFeedback;
         status_.volumeDisconnect = detector.volumeDisconnect;

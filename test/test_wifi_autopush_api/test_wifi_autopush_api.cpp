@@ -46,6 +46,8 @@ WifiAutoPushApiService::Runtime makeRuntime(FakeRuntime& fake) {
         snapshot.slots[1].volume = 7;
         snapshot.slots[1].muteVolume = 2;
         snapshot.slots[1].volumeConfigured = true;
+        snapshot.slots[1].darkModeConfigured = true;
+        snapshot.slots[1].darkMode = true;
         snapshot.slots[0].name = "One";
         snapshot.slots[0].profile = "ROAD";
         snapshot.slots[0].alertPersist = 3;
@@ -274,7 +276,7 @@ void test_factory_reset_requires_confirmation_and_captured_gen2_before_queue() {
                           fake.operationRequest.kind);
 }
 
-void test_profile_owned_slots_api_omits_legacy_detector_fields() {
+void test_profile_owned_slots_api_reports_explicit_modifiers() {
     WebServer server(80);
     FakeRuntime fake;
     fake.profileOwned = true;
@@ -287,8 +289,9 @@ void test_profile_owned_slots_api_omits_legacy_detector_fields() {
     TEST_ASSERT_TRUE(contains(server.lastBody, "\"alertPersist\":3"));
     TEST_ASSERT_TRUE(contains(server.lastBody, "\"priorityArrowOnly\":true"));
     TEST_ASSERT_FALSE(contains(server.lastBody, "\"mode\":"));
-    TEST_ASSERT_FALSE(contains(server.lastBody, "\"volumeConfigured\":"));
-    TEST_ASSERT_FALSE(contains(server.lastBody, "\"darkMode\":"));
+    TEST_ASSERT_TRUE(contains(server.lastBody, "\"volumeConfigured\":false"));
+    TEST_ASSERT_TRUE(contains(server.lastBody, "\"darkModeConfigured\":false"));
+    TEST_ASSERT_TRUE(contains(server.lastBody, "\"darkMode\":false"));
     TEST_ASSERT_FALSE(contains(server.lastBody, "\"muteToZero\":"));
 }
 
@@ -318,6 +321,66 @@ void test_profile_owned_slot_save_accepts_only_assignment_and_slot_overlays() {
     TEST_ASSERT_FALSE(fake.update.hasMuteVolume);
     TEST_ASSERT_FALSE(fake.update.hasDarkMode);
     TEST_ASSERT_FALSE(fake.update.hasMuteToZero);
+}
+
+void test_profile_owned_slot_save_accepts_explicit_volume_and_dark_modifiers() {
+    WebServer server(80);
+    FakeRuntime fake;
+    fake.profileOwned = true;
+    server.setArg("slot", "0");
+    server.setArg("profile", "ROAD");
+    server.setArg("volumeConfigured", "true");
+    server.setArg("volume", "8");
+    server.setArg("muteVol", "2");
+    server.setArg("darkModeConfigured", "true");
+    server.setArg("darkMode", "true");
+
+    WifiAutoPushApiService::handleApiSlotSave(server, makeRuntime(fake), alwaysAllow, nullptr);
+
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(1, fake.updateCalls);
+    TEST_ASSERT_TRUE(fake.update.hasVolumeConfigured);
+    TEST_ASSERT_TRUE(fake.update.volumeConfigured);
+    TEST_ASSERT_EQUAL_UINT8(8, fake.update.volume);
+    TEST_ASSERT_EQUAL_UINT8(2, fake.update.muteVolume);
+    TEST_ASSERT_TRUE(fake.update.hasDarkModeConfigured);
+    TEST_ASSERT_TRUE(fake.update.darkModeConfigured);
+    TEST_ASSERT_TRUE(fake.update.darkMode);
+}
+
+void test_profile_owned_slot_save_rejects_incomplete_modifiers_without_mutation() {
+    for (const char* field : {"volumeConfigured", "darkModeConfigured"}) {
+        WebServer server(80);
+        FakeRuntime fake;
+        fake.profileOwned = true;
+        server.setArg("slot", "0");
+        server.setArg("profile", "ROAD");
+        server.setArg(field, "true");
+        WifiAutoPushApiService::handleApiSlotSave(server, makeRuntime(fake), alwaysAllow, nullptr);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(400, server.lastStatusCode, field);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(0, fake.updateCalls, field);
+    }
+}
+
+void test_profile_owned_slot_save_clears_disabled_modifiers() {
+    WebServer server(80);
+    FakeRuntime fake;
+    fake.profileOwned = true;
+    server.setArg("slot", "0");
+    server.setArg("profile", "ROAD");
+    server.setArg("volumeConfigured", "false");
+    server.setArg("darkModeConfigured", "false");
+    WifiAutoPushApiService::handleApiSlotSave(server, makeRuntime(fake), alwaysAllow, nullptr);
+
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    TEST_ASSERT_TRUE(fake.update.hasVolume);
+    TEST_ASSERT_EQUAL_UINT8(0xFF, fake.update.volume);
+    TEST_ASSERT_TRUE(fake.update.hasMuteVolume);
+    TEST_ASSERT_EQUAL_UINT8(0xFF, fake.update.muteVolume);
+    TEST_ASSERT_TRUE(fake.update.hasDarkMode);
+    TEST_ASSERT_FALSE(fake.update.darkMode);
+    TEST_ASSERT_TRUE(fake.update.hasDarkModeConfigured);
+    TEST_ASSERT_FALSE(fake.update.darkModeConfigured);
 }
 
 void test_slot_save_rejects_non_roundtrippable_display_name_without_mutation() {
@@ -352,8 +415,7 @@ void test_slot_save_rejects_non_roundtrippable_display_name_without_mutation() {
 
 void test_profile_owned_slot_save_rejects_detector_overrides_atomically() {
     const char* detectorFields[] = {
-        "mode", "volumeConfigured", "volume", "muteVol", "muteVolume",
-        "mainVolume", "mutedVolume", "darkMode", "muteToZero",
+        "mode", "muteVolume", "mainVolume", "mutedVolume", "muteToZero",
     };
     for (const char* field : detectorFields) {
         WebServer server(80);
@@ -567,8 +629,11 @@ int main() {
     RUN_TEST(test_operation_status_requires_exact_canonical_identity_and_rejects_stale_status);
     RUN_TEST(test_apply_profile_starts_only_saved_profile_for_captured_exact_target);
     RUN_TEST(test_factory_reset_requires_confirmation_and_captured_gen2_before_queue);
-    RUN_TEST(test_profile_owned_slots_api_omits_legacy_detector_fields);
+    RUN_TEST(test_profile_owned_slots_api_reports_explicit_modifiers);
     RUN_TEST(test_profile_owned_slot_save_accepts_only_assignment_and_slot_overlays);
+    RUN_TEST(test_profile_owned_slot_save_accepts_explicit_volume_and_dark_modifiers);
+    RUN_TEST(test_profile_owned_slot_save_rejects_incomplete_modifiers_without_mutation);
+    RUN_TEST(test_profile_owned_slot_save_clears_disabled_modifiers);
     RUN_TEST(test_slot_save_rejects_non_roundtrippable_display_name_without_mutation);
     RUN_TEST(test_profile_owned_slot_save_rejects_detector_overrides_atomically);
     RUN_TEST(test_slot_save_rejects_nonexistent_profile_without_mutating_settings);

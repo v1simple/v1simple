@@ -236,6 +236,13 @@ void handleApiSlots(WebServer& server, const Runtime& runtime) {
         obj["name"] = slot.name;
         obj["profile"] = slot.profile;
         obj["color"] = slot.color;
+        if (snapshot.profileOwned) {
+            obj["volumeConfigured"] = slot.volumeConfigured;
+            obj["volume"] = slot.volumeConfigured ? slot.volume : 0;
+            obj["muteVolume"] = slot.volumeConfigured ? slot.muteVolume : 0;
+            obj["darkModeConfigured"] = slot.darkModeConfigured;
+            obj["darkMode"] = slot.darkMode;
+        }
         if (!snapshot.profileOwned) {
             obj["mode"] = slot.mode;
             obj["volumeConfigured"] = slot.volumeConfigured;
@@ -431,9 +438,8 @@ void handleApiSlotSaveImpl(WebServer& server, const Runtime& runtime, const Form
     }
 
     if (profileOwned &&
-        (form.has("mode") || form.has("volumeConfigured") || form.has("volume") ||
-         form.has("muteVol") || form.has("muteVolume") || form.has("mainVolume") ||
-         form.has("mutedVolume") || form.has("darkMode") || form.has("muteToZero"))) {
+        (form.has("mode") || form.has("muteVolume") || form.has("mainVolume") ||
+         form.has("mutedVolume") || form.has("muteToZero"))) {
         server.send(400, "application/json",
                     "{\"error\":\"Detector settings belong to the selected profile\"}");
         return;
@@ -492,6 +498,14 @@ void handleApiSlotSaveImpl(WebServer& server, const Runtime& runtime, const Form
     bool darkMode = false;
     if (!parseBoolArg(form, "darkMode", darkMode)) {
         server.send(400, "application/json", "{\"error\":\"Invalid dark-mode policy\"}");
+        return;
+    }
+    const bool hasDarkModeConfigured = form.has("darkModeConfigured");
+    bool darkModeConfigured = false;
+    if (!parseBoolArg(form, "darkModeConfigured", darkModeConfigured) ||
+        (profileOwned && ((hasDarkModeConfigured && darkModeConfigured && !hasDarkMode) ||
+                          (hasDarkMode && (!hasDarkModeConfigured || !darkModeConfigured))))) {
+        server.send(400, "application/json", "{\"error\":\"Invalid dark-mode override\"}");
         return;
     }
     bool hasMuteToZero = form.has("muteToZero");
@@ -559,6 +573,10 @@ void handleApiSlotSaveImpl(WebServer& server, const Runtime& runtime, const Form
         server.send(400, "application/json", "{\"error\":\"Main and mute volume must be configured together\"}");
         return;
     }
+    if (profileOwned && !hasVolumeConfigured && (form.has("volume") || form.has("muteVol"))) {
+        server.send(400, "application/json", "{\"error\":\"Volume override choice required\"}");
+        return;
+    }
 
     bool persisted = false;
 
@@ -577,8 +595,10 @@ void handleApiSlotSaveImpl(WebServer& server, const Runtime& runtime, const Form
         request.hasMuteVolume = hasVolumeConfigured || muteVol >= 0;
         request.muteVolume =
             volumeConfigured || !hasVolumeConfigured ? static_cast<uint8_t>(std::max(0, muteVol)) : 0xFF;
-        request.hasDarkMode = hasDarkMode;
-        request.darkMode = darkMode;
+        request.hasDarkMode = hasDarkMode || (profileOwned && hasDarkModeConfigured && !darkModeConfigured);
+        request.darkMode = (!profileOwned || darkModeConfigured) ? darkMode : false;
+        request.hasDarkModeConfigured = hasDarkModeConfigured;
+        request.darkModeConfigured = darkModeConfigured;
         request.hasMuteToZero = hasMuteToZero;
         request.muteToZero = muteToZero;
         request.hasAlertPersist = hasAlertPersist && alertPersist >= 0;
@@ -710,7 +730,7 @@ void handleApiSlotSaveBody(WebServer& server, const Runtime& runtime, const uint
         : ExactUrlEncodedForm(body, bodySize, multipartBoundary, multipartBoundarySize);
     static constexpr const char* ALLOWED[] = {
         "slot", "profile", "clearProfile", "mode", "name", "color", "volumeConfigured",
-        "volume", "muteVol", "darkMode", "muteToZero", "alertPersist", "priorityArrowOnly",
+        "volume", "muteVol", "darkMode", "darkModeConfigured", "muteToZero", "alertPersist", "priorityArrowOnly",
     };
     if (!parsed.valid() || !parsed.hasOnly(ALLOWED, sizeof(ALLOWED) / sizeof(ALLOWED[0]))) {
         server.send(400, "application/json", "{\"error\":\"Invalid form body\"}");

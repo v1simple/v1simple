@@ -390,8 +390,8 @@ bool parseBackupFile(fs::FS* fs, const char* path, JsonDocument& doc, bool verbo
         (!currentVersion.isUnbound() && !legacyVersion.isUnbound() &&
          currentVersion.as<int>() != legacyVersion.as<int>())) return false;
     const bool claimsCurrentVersion =
-        (currentVersion.is<int>() && currentVersion.as<int>() == SD_BACKUP_VERSION) ||
-        (legacyVersion.is<int>() && legacyVersion.as<int>() == SD_BACKUP_VERSION);
+        (currentVersion.is<int>() && currentVersion.as<int>() >= SD_EXACT_BACKUP_MIN_VERSION) ||
+        (legacyVersion.is<int>() && legacyVersion.as<int>() >= SD_EXACT_BACKUP_MIN_VERSION);
     if (claimsCurrentVersion &&
         (currentVersion.isUnbound() || !validateCurrentBackupDocumentShape(doc))) return false;
 

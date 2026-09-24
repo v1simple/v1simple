@@ -1,7 +1,7 @@
 <script>
     import CardSectionHead from '$lib/components/CardSectionHead.svelte';
 
-    let { loading, profiles = [], allowEdit = true, oneditProfile, ondeleteProfile } = $props();
+    let { loading, profiles = [], allowEdit = true, oneditProfile, oncopyProfile, ondeleteProfile } = $props();
 </script>
 
 <div class="surface-card">
@@ -36,6 +36,12 @@
                                     onclick={() => oneditProfile(profile.name)}
                                 >
                                     Edit
+                                </button>
+                                <button
+                                    class="btn btn-secondary btn-xs"
+                                    onclick={() => oncopyProfile(profile.name)}
+                                >
+                                    Copy
                                 </button>
                             {/if}
                             <button

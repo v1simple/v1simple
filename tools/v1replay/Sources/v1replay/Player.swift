@@ -41,6 +41,7 @@ final class Player {
         var blinkBogey: Bool = false
         var arrowBlinkProfile: ArrowBlinkProfile = .steady
         var handshakeOnly: Bool = false
+        var quietAfterComplete: Bool = false
     }
 
     enum Phase: String {
@@ -309,9 +310,8 @@ final class Player {
                 onLog?("Replay complete — \(snapshot.packetsSent) packets sent. 'r' replays, 'q' quits.")
             }
 
-            // Hold the link open with idle frames: dropping the connection would
-            // reset the firmware's BLE session and destroy the state you just
-            // spent three minutes building up.
+            // Keep the BLE link open after playback. The quiet option isolates
+            // firmware timer-driven refreshes from later detector notifications.
             switch holdIdleUntilRestart() {
             case .aborted: return
             case .restart, .completed: resetProgress()
@@ -390,7 +390,7 @@ final class Player {
             if isStopped { return .aborted }
             if consumeRestart() { return .restart }
             if consumeSeek() != nil { return .restart }
-            sendIdleFrame()
+            if !options.quietAfterComplete { sendIdleFrame() }
             Thread.sleep(forTimeInterval: interval)
         }
     }

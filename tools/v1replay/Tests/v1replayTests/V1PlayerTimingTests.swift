@@ -167,6 +167,15 @@ final class V1PlayerTimingTests: XCTestCase {
         }
     }
 
+    func testQuietAfterCompleteKeepsTheFinalClearButStopsNotifications() throws {
+        let result = try record("quiet-tail")
+        XCTAssertEqual(result.offsets, [0.0, 0.05])
+        XCTAssertEqual(result.packets.filter { $0.sequence > 0 }.count, 4)
+        XCTAssertEqual(result.packets.filter { $0.bytes[3] == 0x43 && $0.bytes[5] == 0 }.count, 1)
+        XCTAssertTrue(result.packets.contains { $0.phase == "idle tail" })
+        XCTAssertFalse(result.packets.contains { $0.phase == "finished" })
+    }
+
     func testAlertRequestWaitSeedsTimeSliceWithoutStartingScenario() throws {
         let result = try record("startup-gate")
         XCTAssertEqual(result.offsets, [0.4, 0.6])
@@ -262,7 +271,7 @@ final class V1Peripheral {
 
     static func main() throws {
         let mode = CommandLine.arguments[1]
-        let tailMode = ["tail", "zero-tail", "tail-display-only", "tail-no-start"].contains(mode)
+        let tailMode = ["tail", "zero-tail", "tail-display-only", "tail-no-start", "quiet-tail"].contains(mode)
         let offsets = tailMode ? [0.0, 0.05] :
             (mode == "empty" ? [] : (mode == "zero" ? [0.0, 0.2] : [0.4, 0.6]))
         let encounter = Encounter(origin: .externalInput, samples: offsets.enumerated().map {
@@ -279,6 +288,7 @@ final class V1Peripheral {
         options.speed = mode == "double" ? 2 : 1
         options.loop = mode == "loop"
         options.startPaused = ["pause", "step"].contains(mode)
+        options.quietAfterComplete = mode == "quiet-tail"
         let userBytes: [UInt8] = mode == "filter"
             ? [0x7F, 0xF7, 0xFF, 0xFF, 0xFF, 0xFF]
             : Array(repeating: 0xFF, count: 6)
@@ -367,7 +377,14 @@ final class V1Peripheral {
         for _ in 0..<expected {
             precondition(arrived.wait(timeout: .now() + 2) == .success, "missing emission")
         }
-        if tailMode {
+        if mode == "quiet-tail" {
+            let deadline = nowSeconds() + 2
+            while player.snapshot.phase != .finished {
+                precondition(nowSeconds() < deadline, "quiet tail did not reach finished phase")
+                Thread.sleep(forTimeInterval: 0.001)
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        } else if tailMode {
             precondition(finishedIdle.wait(timeout: .now() + 2) == .success, "missing finished idle")
         }
         player.stop()

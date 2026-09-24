@@ -16,10 +16,11 @@ CAMERA_REQUESTED=0
 KU_QUALIFICATION=0
 PHOTO_LABEL_QUALIFICATION=0
 JUNK_QUALIFICATION=0
+QUIET_AFTER_COMPLETE=0
 AGENT_REVIEW_HANDOFF=0
 
 usage() {
-  printf 'Usage: ./bench.sh --replay --camera [--ku-qualification|--photo-label-qualification|--junk-qualification] [--agent-review-handoff]\n'
+  printf 'Usage: ./bench.sh --replay --camera [--ku-qualification|--photo-label-qualification|--junk-qualification] [--quiet-after-complete] [--agent-review-handoff]\n'
   printf 'Builds and flashes the current firmware, sends the generated replay stimuli, and retains raw synchronized capture.\n'
   printf 'With the DUT in maintenance, the bench joins V1-Simple and captures settings before serial discovery or upload.\n'
   printf 'Optional agent handoff uses a local private prompt; it does not run or grade with a model.\n'
@@ -37,6 +38,7 @@ while [[ $# -gt 0 ]]; do
     --ku-qualification) KU_QUALIFICATION=1 ;;
     --photo-label-qualification) PHOTO_LABEL_QUALIFICATION=1 ;;
     --junk-qualification) JUNK_QUALIFICATION=1 ;;
+    --quiet-after-complete) QUIET_AFTER_COMPLETE=1 ;;
     --agent-review-handoff) AGENT_REVIEW_HANDOFF=1 ;;
     -h|--help)
       usage
@@ -138,6 +140,9 @@ if [[ "$PHOTO_LABEL_QUALIFICATION" -eq 1 ]]; then
 fi
 if [[ "$JUNK_QUALIFICATION" -eq 1 ]]; then
   RUNNER_SCENARIO_ARGS+=(--junk-qualification)
+fi
+if [[ "$QUIET_AFTER_COMPLETE" -eq 1 ]]; then
+  RUNNER_SCENARIO_ARGS+=(--quiet-after-complete)
 fi
 "$BENCH_PYTHON" "$ROOT_DIR/scripts/bench/run_logged.py" \
   --stdout "$REPLAY_DIR/run.log" \

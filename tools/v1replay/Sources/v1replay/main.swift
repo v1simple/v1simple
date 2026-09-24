@@ -25,7 +25,7 @@ struct Arguments {
         "loop", "paused", "no-alerts", "always-alerts", "no-wait",
         "no-checksum", "log-packets", "blink-bogey", "blink-arrow", "synthetic", "bench",
         "exit-on-complete", "machine-events", "handshake-only", "reader-qualification", "persistence-coverage",
-        "ku-qualification", "photo-label-qualification", "junk-qualification",
+        "ku-qualification", "photo-label-qualification", "junk-qualification", "quiet-after-complete",
         "help", "h", "version"
     ]
 
@@ -291,6 +291,8 @@ func runHelp() {
       --loop               replay continuously
       --paused             start paused (step through with 'n')
       --exit-on-complete   stop after one complete replay (for bench automation)
+      --quiet-after-complete
+                           keep BLE connected but send no idle packets after replay
       --machine-events     emit stable completion events for an external runner
       --scenario <path>    external encounter for managed bench playback
       --persistence-coverage
@@ -686,6 +688,7 @@ func runPlay(idleOnly: Bool,
     playerOptions.blinkBogey = args.bool("blink-bogey")
     playerOptions.arrowBlinkProfile = try makeArrowBlinkProfile(benchDefault: bench)
     playerOptions.handshakeOnly = args.bool("handshake-only")
+    playerOptions.quietAfterComplete = args.bool("quiet-after-complete")
 
     // Banner
     console.print("")

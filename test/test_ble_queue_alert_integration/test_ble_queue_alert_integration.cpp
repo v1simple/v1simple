@@ -171,6 +171,49 @@ void test_targeted_alerts_do_not_wait_for_firmware_version_discovery() {
     TEST_ASSERT_EQUAL_UINT16(34700, priority.frequency);
 }
 
+void test_long_characteristic_alert_envelopes_reach_real_parser_and_clear() {
+    // respAlertData normally arrives on B4E0. Its 14-byte EAh ESP frame fits
+    // in one 19-byte long-characteristic chunk: prefix 0x11 = index 1/count 1.
+    // Include that real envelope so the production long-RX assembly, framing,
+    // parser and priority selector are exercised together, before discovery.
+    const auto deliverLong = [](const std::vector<uint8_t>& notification,
+                                uint32_t ingressSequence, uint32_t nowMs) {
+        TEST_ASSERT_TRUE(queue.tryOnNotify(notification.data(), notification.size(),
+                                          0xB4E0, kSession, nowMs, ingressSequence));
+        queue.process();
+        TEST_ASSERT_TRUE(queue.consumeParsedFlag());
+    };
+    const std::vector<uint8_t> targeted{
+        0x11, 0xAA, 0xD6, 0xEA, 0x43, 0x08,
+        0x11, 0x87, 0x8C, 0xB0, 0, 0x22, 0x80, 0x2B, 0xAB};
+    const std::vector<uint8_t> clearTargeted{
+        0x11, 0xAA, 0xD6, 0xEA, 0x43, 0x08,
+        0, 0, 0, 0, 0, 0, 0, 0xB5, 0xAB};
+    const std::vector<uint8_t> broadcast{
+        0x11, 0xAA, 0xD8, 0xEA, 0x43, 0x08,
+        0x11, 0x87, 0x8C, 0xB0, 0, 0x22, 0x80, 0x2D, 0xAB};
+
+    TEST_ASSERT_FALSE(parser.getDisplayState().hasV1Version);
+    deliverLong(targeted, 1, 100);
+    TEST_ASSERT_EQUAL_UINT32(1, parser.getAlertCount());
+    AlertData priority;
+    TEST_ASSERT_TRUE(parser.getRenderablePriorityAlert(priority));
+    TEST_ASSERT_EQUAL_UINT16(34700, priority.frequency);
+    TEST_ASSERT_EQUAL(BAND_KA, priority.band);
+    TEST_ASSERT_EQUAL(DIR_FRONT, priority.direction);
+
+    deliverLong(clearTargeted, 2, 101);
+    TEST_ASSERT_EQUAL_UINT32(0, parser.getAlertCount());
+    TEST_ASSERT_FALSE(parser.getRenderablePriorityAlert(priority));
+
+    deliverLong(broadcast, 3, 102);
+    TEST_ASSERT_EQUAL_UINT32(1, parser.getAlertCount());
+    TEST_ASSERT_TRUE(parser.getRenderablePriorityAlert(priority));
+    TEST_ASSERT_EQUAL_UINT16(34700, priority.frequency);
+    TEST_ASSERT_EQUAL(BAND_KA, priority.band);
+    TEST_ASSERT_EQUAL(DIR_FRONT, priority.direction);
+}
+
 void test_alert_destination_compatibility_keeps_origin_checksum_and_shape_validation() {
     // Valid baseline, then rejected rows must neither replace nor clear it.
     const auto baseline = makeAlertFrame(1, 1, 34700, 0x22, 0x80);
@@ -205,6 +248,7 @@ int main(int, char**) {
     RUN_TEST(test_spec_busy_broadcast_reaches_request_owner_but_targeted_busy_does_not);
     RUN_TEST(test_older_gen2_targeted_alerts_and_current_broadcasts_reach_the_alert_table);
     RUN_TEST(test_targeted_alerts_do_not_wait_for_firmware_version_discovery);
+    RUN_TEST(test_long_characteristic_alert_envelopes_reach_real_parser_and_clear);
     RUN_TEST(test_alert_destination_compatibility_keeps_origin_checksum_and_shape_validation);
     return UNITY_END();
 }

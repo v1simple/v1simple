@@ -404,8 +404,18 @@ void checkModifierPreservingRoundTrip(bool editAnotherSlot) {
     TEST_ASSERT_EQUAL_UINT8(4, bundle["version"].as<uint8_t>());
     TEST_ASSERT_EQUAL_UINT8(3, bundle["profiles"][0]["schemaVersion"].as<uint8_t>());
     if (editAnotherSlot) bundle["slots"][0]["alertPersist"] = 5;
-    TEST_ASSERT_TRUE_MESSAGE(applyUsbProfileDocument(*manager, *profileManager, bundle, error).success,
-                             error.c_str());
+    // Cross the production runtime's exact-JSON and PSRAM document boundary;
+    // applying the exporter-owned JsonDocument directly would bypass it.
+    const String payload = jsonText(bundle);
+    UsbProfileJson::ParseStatus parseStatus = UsbProfileJson::ParseStatus::Invalid;
+    const bool applied = UsbProfileJson::parseAndConsume(
+        reinterpret_cast<const uint8_t*>(payload.c_str()), payload.length(), parseStatus,
+        [&](const JsonDocument& parsed) {
+            return applyUsbProfileDocument(*manager, *profileManager, parsed, error).success;
+        });
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(UsbProfileJson::ParseStatus::Ok),
+                          static_cast<int>(parseStatus));
+    TEST_ASSERT_TRUE_MESSAGE(applied, error.c_str());
     for (int load = 0; load < 2; ++load) {
         assertSlotModifiers(0, false, 255, 255, false, false);
         assertSlotModifiers(1, true, 6, 2, true, true);

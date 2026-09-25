@@ -121,6 +121,10 @@ Keep changes focused, read [AGENTS.md](AGENTS.md), run checks proportionate to
 the change, inspect the final diff, and state whether hardware or camera
 evidence was collected. Run the complete gate before a push or release.
 
+For maintenance, the [behavior traces](docs/behavior/README.md) connect the
+repaired profile, protocol, ALP and camera paths to their owners and focused
+tests, with explicit limits on what each fix proves and a bounded agent prompt.
+
 ## Releases
 
 Every successful reviewed publication to public `main` publishes a release.

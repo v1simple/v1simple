@@ -10,6 +10,7 @@ Keep V1Simple simple, in code and docs.
   again before any commit or handoff. Stop if it fails; do not bypass, weaken,
   or treat `./scripts/ci-test.sh` as a substitute for this machine-local check.
 - Ground claims first in the owning code, tests, and build output; use recorded bench and camera observations for physical and visual behavior. Mark unknowns; documentation does not override behavior.
+- For USB profiles, V1 reply timing, ALP session identity, or camera field reading, start with the relevant [behavior trace](docs/behavior/README.md); it maps owners, regression tests, and proof limits.
 - Keep private context, paths, data, and excerpts out of public files, logs, commits, and artifacts.
 - Make the smallest coherent change and inspect the final diff for unrelated work or privacy leaks.
 - Work on local `main` unless asked otherwise. Do not push.

@@ -303,7 +303,11 @@ void V1Display::setAlpLaserEvent(const AlpLaserEvent& ev) {
     const uint8_t prevDirection = static_cast<uint8_t>(alpLaserEvent_.direction);
     const bool prevFreqOverride = alpFreqOverride_;
     const AlpGunType prevGun = alpLaserEvent_.gun;
-    const bool holdLiveGun = prevActive && ev.active && ev.gun == AlpGunType::UNKNOWN && prevGun != AlpGunType::UNKNOWN;
+    // A new engagement can arrive without an inactive display frame between it
+    // and the previous teardown. Retain identity only within the same session.
+    const bool sameSession = ev.sessionGeneration != 0 && ev.sessionGeneration == alpLaserEvent_.sessionGeneration;
+    const bool holdLiveGun = sameSession && prevActive && ev.active && ev.gun == AlpGunType::UNKNOWN &&
+                             prevGun != AlpGunType::UNKNOWN;
     const AlpGunType effectiveGun = holdLiveGun ? prevGun : ev.gun;
     // A persisted ALP tail is allowed to keep gun text/direction while no
     // longer counting as a live ALP event. active gates live-only visuals;

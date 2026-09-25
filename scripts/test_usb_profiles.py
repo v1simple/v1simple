@@ -46,6 +46,19 @@ def bundle_v3(definition_count=64, description="Schema three fixture"):
                           "rawBytes": [1, 17, 33, 65, 129, 255], "detector": detector}]}
 
 
+def bundle_v4():
+    document = bundle_v3()
+    document["version"] = 4
+    for slot in document["slots"]:
+        slot.update(volumeOverride=False, volume=255, muteVolume=255,
+                    darkModeOverride=False, darkMode=False)
+    document["slots"][1].update(volumeOverride=True, volume=6, muteVolume=2,
+                                 darkModeOverride=True, darkMode=True)
+    document["slots"][2].update(volumeOverride=True, volume=0, muteVolume=0,
+                                 darkModeOverride=True, darkMode=False)
+    return document
+
+
 class Clock:
     def __init__(self):
         self.now = 0.0
@@ -305,6 +318,69 @@ class USBProfilesTests(unittest.TestCase):
         self.assertTrue(usb.same_bundle(self.peer.current, original))
         self.assertNotIn("DeleteMe", [entry["name"] for entry in self.peer.current["profiles"]])
 
+    def test_v4_set_slot_preserves_every_modifier_and_exact_original_backup(self):
+        self.peer.current = bundle_v4()
+        before = deepcopy(self.peer.current)
+        saved = self.directory / "before-v4.json"
+        args = self.args("set-slot", slot=0, persistence=5)
+        args.backup_before = saved
+        result = usb.perform(args, self.device, announce=lambda _: None)
+        expected = deepcopy(before)
+        expected["slots"][0]["alertPersist"] = 5
+        self.assertEqual(self.peer.current, expected)
+        backed_up = json.loads(saved.read_bytes())
+        self.assertEqual(backed_up, before)
+        self.assertTrue(result["readback_verified"])
+        self.assertTrue(result["normal_consumer_verified"])
+
+    def test_v4_restore_and_readback_include_values_and_override_flags(self):
+        original = bundle_v4()
+        self.peer.mode = "maintenance"
+        self.assertTrue(self.device.replace(original)["readback_verified"])
+        self.assertEqual(self.peer.current, original)
+        for field, value in (("volume", 5), ("muteVolume", 1), ("darkMode", False)):
+            changed = deepcopy(original)
+            changed["slots"][1][field] = value
+            self.assertFalse(usb.same_bundle(changed, original), field)
+        changed = deepcopy(original)
+        changed["slots"][1].update(volumeOverride=False, volume=255, muteVolume=255)
+        self.assertFalse(usb.same_bundle(changed, original))
+        changed = deepcopy(original)
+        changed["slots"][2]["darkModeOverride"] = False
+        self.assertFalse(usb.same_bundle(changed, original))
+
+    def test_v4_invalid_or_missing_modifier_fields_are_rejected(self):
+        invalid = ({"volumeOverride": 1}, {"darkModeOverride": "true"},
+                   {"volume": -1}, {"muteVolume": 255}, {"volume": "6"},
+                   {"volume": True}, {"volumeOverride": False}, {"darkModeOverride": False})
+        for fields in invalid:
+            with self.subTest(fields=fields):
+                document = bundle_v4()
+                document["slots"][1].update(fields)
+                with self.assertRaises(usb.ProfileError):
+                    usb.validate_bundle(document)
+        for key in ("volumeOverride", "volume", "muteVolume", "darkModeOverride", "darkMode"):
+            document = bundle_v4()
+            del document["slots"][1][key]
+            with self.assertRaises(usb.ProfileError):
+                usb.validate_bundle(document)
+        document = bundle_v4()
+        document["profiles"][0]["schemaVersion"] = 4
+        with self.assertRaises(usb.ProfileError):
+            usb.validate_bundle(document)
+
+    def test_v3_migration_explicitly_disables_unrecorded_slot_overrides(self):
+        original = bundle_v3()
+        migrated = usb.migrate_bundle(original)
+        self.assertEqual(migrated["version"], 4)
+        self.assertEqual(migrated["profiles"], original["profiles"])
+        for slot in migrated["slots"]:
+            self.assertIs(slot["volumeOverride"], False)
+            self.assertEqual((slot["volume"], slot["muteVolume"]), (255, 255))
+            self.assertIs(slot["darkModeOverride"], False)
+            self.assertIs(slot["darkMode"], False)
+        self.assertTrue(usb.same_bundle(original, migrated))
+
     def test_schema_v3_64_definitions_and_maximum_description_round_trip_exactly(self):
         document = bundle_v3(description="d" * usb.MAX_DESCRIPTION_BYTES)
         raw = usb.encode_bundle(document)
@@ -324,7 +400,7 @@ class USBProfilesTests(unittest.TestCase):
         profile["detector"]["bluetoothLed"] = "unchanged"
         profile["detector"]["customFrequencies"] = "unchanged"
         migrated = usb.migrate_bundle(document)
-        self.assertEqual(migrated["version"], 3)
+        self.assertEqual(migrated["version"], 4)
         self.assertEqual(migrated["profiles"][0]["detector"]["bluetoothLed"], "off")
         self.assertEqual(migrated["profiles"][0]["detector"]["volume"]["feedback"], "none")
         self.assertEqual(migrated["profiles"][0]["detector"]["volume"]["disconnect"], "restore_saved")
@@ -337,7 +413,7 @@ class USBProfilesTests(unittest.TestCase):
         document["slots"][1].update(mode=2, darkMode=True, muteToZero=True,
                                      volumeConfigured=True, volume=6, muteVolume=1)
         migrated = usb.migrate_bundle(document)
-        self.assertEqual(migrated["version"], 3)
+        self.assertEqual(migrated["version"], 4)
         self.assertNotEqual(migrated["slots"][0]["profile"], migrated["slots"][1]["profile"])
         by_name = {profile["name"]: profile for profile in migrated["profiles"]}
         dark = by_name[migrated["slots"][1]["profile"]]["detector"]

@@ -101,6 +101,7 @@ public:
     void (*requestAllSweepDefinitionsSendHook)() = nullptr;
     void (*requestSweepSectionsSendHook)() = nullptr;
     void (*requestMaxSweepIndexSendHook)() = nullptr;
+    void (*writeSweepDefinitionSendHook)() = nullptr;
     void (*setDisplayOnSendHook)() = nullptr;
     void (*setModeSendHook)() = nullptr;
     uint8_t sessionUserBytes[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
@@ -198,6 +199,7 @@ public:
         requestAllSweepDefinitionsSendHook = nullptr;
         requestSweepSectionsSendHook = nullptr;
         requestMaxSweepIndexSendHook = nullptr;
+        writeSweepDefinitionSendHook = nullptr;
         setDisplayOnSendHook = nullptr;
         setModeSendHook = nullptr;
         std::memset(sessionUserBytes, 0xFF, sizeof(sessionUserBytes));
@@ -352,6 +354,7 @@ public:
         lastSweepCommit = commit;
         sweepWriteHistory.push_back({index, lower, upper, commit});
         commandHistory.push_back(commit ? "sweep-commit" : "sweep-write");
+        if (writeSweepDefinitionSendHook) writeSweepDefinitionSendHook();
         return writeSweepDefinitionResult;
     }
 

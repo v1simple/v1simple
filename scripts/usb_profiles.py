@@ -18,11 +18,15 @@ import zlib
 MAX_PAYLOAD = 128 * 1024
 MAX_DESCRIPTION_BYTES = 4096
 MAX_PROFILE_COUNT = 10
+BUNDLE_VERSION = 4
 CHUNK = 64
 PREFIX = b"@V1USB1 "
 SLOT_KEYS_V1 = {"name", "profile", "mode", "color", "volumeConfigured", "volume", "muteVolume",
                 "darkMode", "muteToZero", "alertPersist", "priorityArrowOnly"}
 SLOT_KEYS_VERSIONED = {"name", "profile", "color", "alertPersist", "priorityArrowOnly"}
+SLOT_MODIFIER_DEFAULTS = {"volumeOverride": False, "volume": 255, "muteVolume": 255,
+                          "darkModeOverride": False, "darkMode": False}
+SLOT_KEYS_CURRENT = SLOT_KEYS_VERSIONED | SLOT_MODIFIER_DEFAULTS.keys()
 PROFILE_KEYS_V1 = {"name", "description", "rawBytes", "displayOn", "mainVolume", "mutedVolume"}
 PROFILE_KEYS_VERSIONED = {"schemaVersion", "name", "description", "rawBytes", "detector"}
 ASCII_UPPER = str.maketrans("abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
@@ -171,7 +175,7 @@ def validate_bundle(bundle):
         "format", "version", "autoPushEnabled", "activeSlot", "slots", "profiles"},
         "Profile bundle has missing or unknown fields")
     require(bundle["format"] == "v1simple-profiles" and type(bundle["version"]) is int
-            and bundle["version"] in (1, 2, 3), "Unsupported profile bundle format/version")
+            and bundle["version"] in (1, 2, 3, BUNDLE_VERSION), "Unsupported profile bundle format/version")
     require(type(bundle["autoPushEnabled"]) is bool and integer(bundle["activeSlot"], 0, 2),
             "Invalid profile bundle state")
     require(type(bundle["slots"]) is list and len(bundle["slots"]) == 3,
@@ -180,6 +184,7 @@ def validate_bundle(bundle):
     require(len(bundle["profiles"]) <= MAX_PROFILE_COUNT,
             f"Profile catalog supports at most {MAX_PROFILE_COUNT} profiles")
     version = bundle["version"]
+    profile_version = 3 if version == BUNDLE_VERSION else version
     names, folded_names = set(), set()
     for profile in bundle["profiles"]:
         expected = PROFILE_KEYS_V1 if version == 1 else PROFILE_KEYS_VERSIONED
@@ -197,10 +202,11 @@ def validate_bundle(bundle):
             require(all(integer(profile[key], 0, 9) or type(profile[key]) is int and profile[key] == 255
                         for key in ("mainVolume", "mutedVolume")), "Invalid profile volume")
         else:
-            require(profile["schemaVersion"] == version, "Profile schema does not match bundle version")
-            validate_detector(profile["detector"], version)
+            require(profile["schemaVersion"] == profile_version, "Profile schema does not match bundle version")
+            validate_detector(profile["detector"], profile_version)
     for slot in bundle["slots"]:
-        expected = SLOT_KEYS_V1 if version == 1 else SLOT_KEYS_VERSIONED
+        expected = (SLOT_KEYS_V1 if version == 1 else
+                    SLOT_KEYS_CURRENT if version == BUNDLE_VERSION else SLOT_KEYS_VERSIONED)
         require(type(slot) is dict and set(slot) == expected, "Invalid slot fields")
         require(text_within(slot["name"], 20) and slot["name"] == slot["name"].translate(ASCII_UPPER),
                 "Invalid slot name")
@@ -208,6 +214,14 @@ def validate_bundle(bundle):
                 "Slot references an absent profile")
         require(integer(slot["color"], 0, 65535) and integer(slot["alertPersist"], 0, 5)
                 and type(slot["priorityArrowOnly"]) is bool, "Invalid slot presentation")
+        if version == BUNDLE_VERSION:
+            require(slot["color"] != 0, "Invalid slot presentation")
+            require(all(type(slot[key]) is bool for key in (
+                "volumeOverride", "darkModeOverride", "darkMode")), "Invalid slot modifier boolean")
+            require(all(integer(slot[key], 0, 9) if slot["volumeOverride"] else
+                        type(slot[key]) is int and slot[key] == 255
+                        for key in ("volume", "muteVolume")), "Invalid slot override volume")
+            require(slot["darkModeOverride"] or not slot["darkMode"], "Invalid slot dark-mode override")
         if version == 1:
             require(integer(slot["mode"], 0, 3), "Invalid slot mode")
             require(all(type(slot[key]) is bool for key in (
@@ -238,14 +252,17 @@ def migrate_detector_v2(detector):
 
 def migrate_bundle(bundle):
     validate_bundle(bundle)
-    if bundle["version"] == 3:
+    if bundle["version"] == BUNDLE_VERSION:
         return deepcopy(bundle)
-    if bundle["version"] == 2:
+    if bundle["version"] in (2, 3):
         migrated = deepcopy(bundle)
-        migrated["version"] = 3
-        for profile in migrated["profiles"]:
-            profile["schemaVersion"] = 3
-            profile["detector"] = migrate_detector_v2(profile["detector"])
+        migrated["version"] = BUNDLE_VERSION
+        if bundle["version"] == 2:
+            for profile in migrated["profiles"]:
+                profile["schemaVersion"] = 3
+                profile["detector"] = migrate_detector_v2(profile["detector"])
+        for slot in migrated["slots"]:
+            slot.update(SLOT_MODIFIER_DEFAULTS)
         validate_bundle(migrated)
         return migrated
 
@@ -319,11 +336,12 @@ def migrate_bundle(bundle):
         variants.append((source_name, effective_name, effective))
         assigned.append(effective_name)
 
-    migrated = {"format": "v1simple-profiles", "version": 3,
+    migrated = {"format": "v1simple-profiles", "version": BUNDLE_VERSION,
                 "autoPushEnabled": original["autoPushEnabled"], "activeSlot": original["activeSlot"],
                 "slots": [{"name": slot["name"], "profile": assigned[index],
                            "color": slot["color"], "alertPersist": slot["alertPersist"],
-                           "priorityArrowOnly": slot["priorityArrowOnly"]}
+                           "priorityArrowOnly": slot["priorityArrowOnly"],
+                           **SLOT_MODIFIER_DEFAULTS}
                           for index, slot in enumerate(original["slots"])],
                 "profiles": catalog}
     validate_bundle(migrated)

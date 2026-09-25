@@ -226,11 +226,13 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
         return parsed;
     }
     case PACKET_ID_ALERT_DATA: {
-        // Every RespAlertData row, including count-zero clear rows, carries the
-        // seven-byte table shape defined by ESP 3.016. Priority, frequency and
-        // direction must never be sourced from a bad checksum or wrong bus
-        // destination.
-        if (!V1PacketFraming::hasCanonicalResponseEvidenceForDestination(data, length, 7, 0xD8)) {
+        // ESP 3.016 p37 note 2: before 4.1031, RespAlertData targets the
+        // requester (D6); newer V1s broadcast it (D8). Accept both before
+        // version discovery too, so startup alerts need not wait for it.
+        // Both destinations still require the exact seven-byte row, V1
+        // origin and valid checksum, including count-zero clear rows.
+        if (!V1PacketFraming::hasCanonicalResponseEvidenceForDestination(data, length, 7, 0xD8) &&
+            !V1PacketFraming::hasCanonicalResponseEvidenceForDestination(data, length, 7, 0xD6)) {
             return false;
         }
         const bool hadAlerts = hasAlerts();

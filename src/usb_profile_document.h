@@ -8,6 +8,8 @@
 class V1ProfileManager;
 
 inline constexpr size_t kUsbProfileDocumentMaxBytes = 128 * 1024;
+// Bundle version is independent of the detector/profile schema it contains.
+inline constexpr uint8_t kUsbProfileDocumentVersion = 4;
 
 // Complete profile catalog and three Auto-Push slots; excludes network secrets
 // and unrelated device settings. Converges pending storage recovery first;

@@ -127,6 +127,7 @@ struct PreparedUsbSlot {
     uint8_t muteVolume = 0;
     bool volumeConfigured = false;
     bool darkMode = false;
+    bool darkModeOverride = false;
     bool muteToZero = false;
     uint8_t alertPersist = 0;
     bool priorityArrowOnly = false;
@@ -224,7 +225,8 @@ bool toRestoreDocument(const JsonDocument& source, JsonDocument& target, String&
         std::strcmp(root["format"].as<const char*>(), "v1simple-profiles") != 0 ||
         !root["version"].is<int>() ||
         (root["version"].as<int>() != 1 && root["version"].as<int>() != 2 &&
-         root["version"].as<int>() != V1_PROFILE_SCHEMA_VERSION) ||
+         root["version"].as<int>() != 3 &&
+         root["version"].as<int>() != kUsbProfileDocumentVersion) ||
         !root["autoPushEnabled"].is<bool>() || !integerWithin(root["activeSlot"], 2) ||
         !root["slots"].is<JsonArrayConst>() || root["slots"].size() != 3 ||
         !root["profiles"].is<JsonArrayConst>() ||
@@ -238,6 +240,8 @@ bool toRestoreDocument(const JsonDocument& source, JsonDocument& target, String&
 
     const int documentVersion = root["version"].as<int>();
     const bool versioned = documentVersion >= V1_PROFILE_PREVIOUS_SCHEMA_VERSION;
+    const bool hasSlotModifiers = documentVersion == kUsbProfileDocumentVersion;
+    const int profileSchemaVersion = hasSlotModifiers ? V1_PROFILE_SCHEMA_VERSION : documentVersion;
     std::unique_ptr<PreparedUsbProfile[]> preparedProfiles;
 #ifdef UNIT_TEST
     if (g_failPreparedUsbProfileAllocationForTest) {
@@ -276,9 +280,9 @@ bool toRestoreDocument(const JsonDocument& source, JsonDocument& target, String&
         }
         if (!V1SettingsJson::parseRawBytes(profile["rawBytes"], prepared.bytes) ||
             (versioned && (!profile["schemaVersion"].is<int>() ||
-                           profile["schemaVersion"].as<int>() != documentVersion ||
+                           profile["schemaVersion"].as<int>() != profileSchemaVersion ||
                            !profile["detector"].is<JsonObjectConst>() ||
-                           !(documentVersion == V1_PROFILE_SCHEMA_VERSION
+                           !(profileSchemaVersion == V1_PROFILE_SCHEMA_VERSION
                                  ? parseV1DetectorConfiguration(profile["detector"].as<JsonObjectConst>(), prepared.detector)
                                  : parseV1DetectorConfigurationV2(profile["detector"].as<JsonObjectConst>(), prepared.detector)))) ||
             (!versioned && (!profile["displayOn"].is<bool>() || !profileVolume(profile["mainVolume"]) ||
@@ -307,7 +311,10 @@ bool toRestoreDocument(const JsonDocument& source, JsonDocument& target, String&
     for (JsonVariantConst value : root["slots"].as<JsonArrayConst>()) {
         const JsonObjectConst slot = value.as<JsonObjectConst>();
         PreparedUsbSlot& prepared = preparedSlots[slotIndex];
-        const bool validSlotShape = versioned
+        const bool validSlotShape = hasSlotModifiers
+                                        ? exactKeys(slot, {"name", "profile", "color", "alertPersist", "priorityArrowOnly",
+                                                           "volumeOverride", "volume", "muteVolume", "darkModeOverride", "darkMode"})
+                                    : versioned
                                         ? exactKeys(slot, {"name", "profile", "color", "alertPersist", "priorityArrowOnly"})
                                         : exactKeys(slot, {"name", "profile", "mode", "color", "volumeConfigured", "volume", "muteVolume",
                                                            "darkMode", "muteToZero", "alertPersist", "priorityArrowOnly"});
@@ -327,8 +334,16 @@ bool toRestoreDocument(const JsonDocument& source, JsonDocument& target, String&
         }
         if (!slotNameAlreadySanitized(prepared.name) ||
             !integerWithin(slot["color"], 65535) ||
-            (documentVersion == V1_PROFILE_SCHEMA_VERSION && slot["color"].as<int>() == 0) ||
+            (profileSchemaVersion == V1_PROFILE_SCHEMA_VERSION && slot["color"].as<int>() == 0) ||
             !integerWithin(slot["alertPersist"], 5) || !slot["priorityArrowOnly"].is<bool>() ||
+            (hasSlotModifiers &&
+             (!slot["volumeOverride"].is<bool>() || !slot["darkModeOverride"].is<bool>() ||
+              !slot["darkMode"].is<bool>() || !profileVolume(slot["volume"]) ||
+              !profileVolume(slot["muteVolume"]) ||
+              (slot["volumeOverride"].as<bool>()
+                   ? !integerWithin(slot["volume"], 9) || !integerWithin(slot["muteVolume"], 9)
+                   : slot["volume"].as<int>() != 255 || slot["muteVolume"].as<int>() != 255) ||
+              (!slot["darkModeOverride"].as<bool>() && slot["darkMode"].as<bool>()))) ||
             (!versioned && (!integerWithin(slot["mode"], 3) || !slot["volumeConfigured"].is<bool>() ||
                            !integerWithin(slot["volume"], 9) || !integerWithin(slot["muteVolume"], 9) ||
                            !slot["darkMode"].is<bool>() || !slot["muteToZero"].is<bool>() ||
@@ -348,6 +363,13 @@ bool toRestoreDocument(const JsonDocument& source, JsonDocument& target, String&
         prepared.color = slot["color"].as<uint16_t>();
         prepared.alertPersist = slot["alertPersist"].as<uint8_t>();
         prepared.priorityArrowOnly = slot["priorityArrowOnly"].as<bool>();
+        if (hasSlotModifiers) {
+            prepared.volumeConfigured = slot["volumeOverride"].as<bool>();
+            prepared.volume = slot["volume"].as<uint8_t>();
+            prepared.muteVolume = slot["muteVolume"].as<uint8_t>();
+            prepared.darkModeOverride = slot["darkModeOverride"].as<bool>();
+            prepared.darkMode = slot["darkMode"].as<bool>();
+        }
         if (!versioned) {
             prepared.mode = slot["mode"].as<uint8_t>();
             prepared.volumeConfigured = slot["volumeConfigured"].as<bool>();
@@ -405,23 +427,19 @@ bool toRestoreDocument(const JsonDocument& source, JsonDocument& target, String&
             copyValue("Mode", prepared.mode);
         }
         copyValue("Color", prepared.color);
-        if (versioned) {
-            char darkKey[32], muteZeroKey[32];
-            std::snprintf(darkKey, sizeof(darkKey), "slot%uDarkMode", static_cast<unsigned>(index));
-            std::snprintf(muteZeroKey, sizeof(muteZeroKey), "slot%uMuteToZero", static_cast<unsigned>(index));
-            target[darkKey] = false;
-            target[muteZeroKey] = false;
-        } else {
-            copyValue("DarkMode", prepared.darkMode);
-            copyValue("MuteToZero", prepared.muteToZero);
-        }
+        copyValue("DarkMode", prepared.darkMode);
+        copyValue("MuteToZero", prepared.muteToZero);
+        // Older bundles never recorded profile-owned overrides. Their complete
+        // replacement must use profile policy, not inherit the recipient's flags.
+        copyValue("VolumeOverride", hasSlotModifiers && prepared.volumeConfigured);
+        copyValue("DarkModeOverride", prepared.darkModeOverride);
         copyValue("AlertPersist", prepared.alertPersist);
         copyValue("PriorityArrow", prepared.priorityArrowOnly);
         char volumeKey[24], muteKey[24];
         std::snprintf(volumeKey, sizeof(volumeKey), "slot%uVolume", static_cast<unsigned>(index));
         std::snprintf(muteKey, sizeof(muteKey), "slot%uMuteVolume", static_cast<unsigned>(index));
-        target[volumeKey] = versioned ? 255 : (prepared.volumeConfigured ? prepared.volume : 255);
-        target[muteKey] = versioned ? 255 : (prepared.volumeConfigured ? prepared.muteVolume : 255);
+        target[volumeKey] = prepared.volumeConfigured ? prepared.volume : 255;
+        target[muteKey] = prepared.volumeConfigured ? prepared.muteVolume : 255;
     }
     if (target.overflowed()) {
         target.clear();
@@ -461,7 +479,7 @@ bool buildUsbProfileDocument(JsonDocument& doc, SettingsManager& settings, V1Pro
         return std::strcmp(a.name.c_str(), b.name.c_str()) < 0;
     });
     doc["format"] = "v1simple-profiles";
-    doc["version"] = V1_PROFILE_SCHEMA_VERSION;
+    doc["version"] = kUsbProfileDocumentVersion;
     const V1Settings& state = settings.get();
     doc["autoPushEnabled"] = state.autoPushEnabled;
     doc["activeSlot"] = state.activeSlot;
@@ -474,6 +492,11 @@ bool buildUsbProfileDocument(JsonDocument& doc, SettingsManager& settings, V1Pro
         output["color"] = slot.color;
         output["alertPersist"] = slot.alertPersist;
         output["priorityArrowOnly"] = slot.priorityArrow;
+        output["volumeOverride"] = slot.volumeOverride;
+        output["volume"] = slot.volume;
+        output["muteVolume"] = slot.muteVolume;
+        output["darkModeOverride"] = slot.darkModeOverride;
+        output["darkMode"] = slot.darkMode;
     }
     JsonArray outputProfiles = doc["profiles"].to<JsonArray>();
     for (const V1Profile& profile : snapshot) {

@@ -1274,6 +1274,9 @@ void AutoPushModule::process() {
         if (state_.sendDeadlineMs == 0) {
             state_.sendDeadlineMs = now + kVerificationTimeoutMs;
         }
+        // Notifications can enter while the acknowledged send waits. Arm
+        // capture only after success, using the boundary from before send.
+        const uint32_t ingressBoundary = bleClient_->latestV1NotificationIngressSequence();
         const SendResult sent = bleClient_->requestSweepSectionsResult();
         if (sent == SendResult::NOT_YET) {
             if (deadlineReached(now, state_.sendDeadlineMs)) {
@@ -1290,8 +1293,7 @@ void AutoPushModule::process() {
             return;
         }
         state_.sendDeadlineMs = 0;
-        bleClient_->beginSessionSweepSectionsCapture(
-            bleClient_->latestV1NotificationIngressSequence());
+        bleClient_->beginSessionSweepSectionsCapture(ingressBoundary);
         state_.step = Step::CustomRefreshMax;
         state_.nextStepAtMs = now + 30;
         return;
@@ -1301,6 +1303,7 @@ void AutoPushModule::process() {
         if (state_.sendDeadlineMs == 0) {
             state_.sendDeadlineMs = now + kVerificationTimeoutMs;
         }
+        const uint32_t ingressBoundary = bleClient_->latestV1NotificationIngressSequence();
         const SendResult sent = bleClient_->requestMaxSweepIndexResult();
         if (sent == SendResult::NOT_YET) {
             if (deadlineReached(now, state_.sendDeadlineMs)) {
@@ -1317,8 +1320,7 @@ void AutoPushModule::process() {
             return;
         }
         state_.sendDeadlineMs = 0;
-        bleClient_->beginSessionSweepMaxCapture(
-            bleClient_->latestV1NotificationIngressSequence());
+        bleClient_->beginSessionSweepMaxCapture(ingressBoundary);
         state_.step = Step::CustomRefreshDefinitions;
         state_.nextStepAtMs = now + 30;
         return;
@@ -1328,6 +1330,7 @@ void AutoPushModule::process() {
         if (state_.sendDeadlineMs == 0) {
             state_.sendDeadlineMs = now + kVerificationTimeoutMs;
         }
+        const uint32_t ingressBoundary = bleClient_->latestV1NotificationIngressSequence();
         const SendResult sent = bleClient_->requestAllSweepDefinitionsResult();
         if (sent == SendResult::NOT_YET) {
             if (deadlineReached(now, state_.sendDeadlineMs)) {
@@ -1344,8 +1347,7 @@ void AutoPushModule::process() {
             return;
         }
         state_.sendDeadlineMs = 0;
-        bleClient_->beginSessionSweepDefinitionsCapture(
-            bleClient_->latestV1NotificationIngressSequence());
+        bleClient_->beginSessionSweepDefinitionsCapture(ingressBoundary);
         state_.step = Step::CustomRefreshVerify;
         state_.verifyDeadlineMs = now + kVerificationTimeoutMs;
         state_.nextStepAtMs = now;
@@ -1435,6 +1437,7 @@ void AutoPushModule::process() {
         const bool commit = state_.customWriteIndex == state_.customLastUsedIndex;
         if (commit) {
             state_.observationRevision = parser_->sweepWriteResultObservation().revision;
+            state_.observationIngressBoundary = bleClient_->latestV1NotificationIngressSequence();
         }
         const SendResult sent = bleClient_->writeSweepDefinition(
             definition.index, definition.lowerMHz, definition.upperMHz, commit);
@@ -1460,7 +1463,6 @@ void AutoPushModule::process() {
         }
         status_.customFrequencies.sent = true;
         status_.customFrequencies.outcome = Outcome::SENT;
-        state_.observationIngressBoundary = bleClient_->latestV1NotificationIngressSequence();
         state_.step = Step::CustomCommitVerify;
         state_.verifyDeadlineMs = now + kVerificationTimeoutMs;
         state_.nextStepAtMs = now;

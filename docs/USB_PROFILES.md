@@ -46,8 +46,8 @@ applied a profile, or that display or audio behavior passed a camera test.
 
 Preserve device data when updating; do not delete or reset valid profiles first.
 On boot, the firmware atomically converts supported version-1 and version-2
-bundles to the current version-3 schema. Existing catalog entries, Auto-Push
-state, slot presentation, and explicit detector choices are retained. When
+stored profile data to the current version-3 profile schema. Existing catalog
+entries, Auto-Push state, slot presentation, and explicit detector choices are retained. When
 legacy slot-owned behavior differs, migration creates deterministic profile
 variants instead of silently merging it.
 
@@ -57,9 +57,24 @@ on a later boot. Conversion changes stored ownership only; it does not itself
 send detector commands or prove detector, RF, display, or audio behavior.
 
 Exports contain the profile catalog and all three Auto-Push slots. Network
-credentials and unrelated device settings are excluded. The importer accepts
-exact version-1, version-2, and version-3 bundles, validates them before mutation,
-and rejects conversions that cannot fit the supported catalog.
+credentials and unrelated device settings are excluded. Current USB bundles use
+version 4 and contain version-3 detector profiles. Each slot explicitly records
+its volume and dark-mode override flags and values, including zero volume and
+an explicit dark-mode-off override. Backups, restore readback, and unrelated
+`set-slot` edits preserve these choices.
+
+The importer also accepts exact version-1, version-2, and version-3 bundles,
+validates them before mutation, and rejects conversions that cannot fit the
+supported catalog. Version-1 slot-owned detector choices migrate into profiles
+as described above. Version-2 and version-3 USB bundles did not record slot
+overrides; restoring them disables those overrides and uses the imported
+profiles' policies. They cannot recover modifier choices omitted by an older
+export. No import inherits override flags from the receiving device.
+
+Use the updated USB client with the updated firmware. Older clients reject
+version-4 exports. The updated client can read older bundles, but sends version 4
+for all replacements; older firmware rejects those replacements without changing
+the stored catalog or settings. Update firmware before using its mutation commands.
 
 The supported catalog contains at most 10 profiles. Names are at most 64 UTF-8
 bytes, descriptions at most 4096 UTF-8 bytes, and slot display names at most 20

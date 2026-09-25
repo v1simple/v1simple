@@ -122,9 +122,89 @@ void test_spec_busy_broadcast_reaches_request_owner_but_targeted_busy_does_not()
     TEST_ASSERT_EQUAL_HEX8(PACKET_ID_REQ_MAX_SWEEP_INDEX, client.lastBusyPacketIds[0]);
 }
 
+void test_older_gen2_targeted_alerts_and_current_broadcasts_reach_the_alert_table() {
+    // ESP 3.016 p37 note 2 and p54: respAlertData changed from requester
+    // destination D6 to General Broadcast D8 at V1 version 4.1031.
+    // Fixed wire vectors use independently summed checksums. Row 1/1 is a
+    // 34,700 MHz Ka priority ahead; the all-zero row clears the table.
+    const std::vector<uint8_t> version41030{0xAA, 0xD6, 0xEA, 0x02, 0x08,
+                                           'v', '4', '.', '1', '0', '3', '0', 0x10, 0xAB};
+    const std::vector<uint8_t> targeted{0xAA, 0xD6, 0xEA, 0x43, 0x08,
+                                       0x11, 0x87, 0x8C, 0xB0, 0, 0x22, 0x80, 0x2B, 0xAB};
+    const std::vector<uint8_t> clearTargeted{0xAA, 0xD6, 0xEA, 0x43, 0x08,
+                                            0, 0, 0, 0, 0, 0, 0, 0xB5, 0xAB};
+    const std::vector<uint8_t> broadcast{0xAA, 0xD8, 0xEA, 0x43, 0x08,
+                                        0x11, 0x87, 0x8C, 0xB0, 0, 0x22, 0x80, 0x2D, 0xAB};
+    deliver(version41030, 1, 100);
+    TEST_ASSERT_EQUAL_UINT32(41030, parser.getDisplayState().v1FirmwareVersion);
+    queue.consumeParsedFlag();
+    deliver(targeted, 2, 101);
+    TEST_ASSERT_TRUE(queue.consumeParsedFlag());
+    AlertData priority;
+    TEST_ASSERT_TRUE(parser.getRenderablePriorityAlert(priority));
+    TEST_ASSERT_EQUAL_UINT16(34700, priority.frequency);
+    TEST_ASSERT_EQUAL(BAND_KA, priority.band);
+    TEST_ASSERT_EQUAL(DIR_FRONT, priority.direction);
+    deliver(clearTargeted, 3, 102);
+    TEST_ASSERT_TRUE(queue.consumeParsedFlag());
+    TEST_ASSERT_EQUAL_UINT32(0, parser.getAlertCount());
+
+    auto version41031 = version41030;
+    version41031[11] = '1';
+    ++version41031[12];
+    deliver(version41031, 4, 103);
+    TEST_ASSERT_EQUAL_UINT32(41031, parser.getDisplayState().v1FirmwareVersion);
+    deliver(broadcast, 5, 104);
+    TEST_ASSERT_TRUE(queue.consumeParsedFlag());
+    TEST_ASSERT_TRUE(parser.getRenderablePriorityAlert(priority));
+    TEST_ASSERT_EQUAL_UINT16(34700, priority.frequency);
+}
+
+void test_targeted_alerts_do_not_wait_for_firmware_version_discovery() {
+    const std::vector<uint8_t> targeted{0xAA, 0xD6, 0xEA, 0x43, 0x08,
+                                       0x11, 0x87, 0x8C, 0xB0, 0, 0x22, 0x80, 0x2B, 0xAB};
+    TEST_ASSERT_FALSE(parser.getDisplayState().hasV1Version);
+    deliver(targeted, 1, 100);
+    TEST_ASSERT_TRUE(queue.consumeParsedFlag());
+    AlertData priority;
+    TEST_ASSERT_TRUE(parser.getRenderablePriorityAlert(priority));
+    TEST_ASSERT_EQUAL_UINT16(34700, priority.frequency);
+}
+
+void test_alert_destination_compatibility_keeps_origin_checksum_and_shape_validation() {
+    // Valid baseline, then rejected rows must neither replace nor clear it.
+    const auto baseline = makeAlertFrame(1, 1, 34700, 0x22, 0x80);
+    deliver(baseline, 1, 100);
+    queue.consumeParsedFlag();
+    const std::vector<std::vector<uint8_t>> rejected{
+        // Foreign destination D5, with a valid checksum.
+        {0xAA, 0xD5, 0xEA, 0x43, 0x08, 0, 0, 0, 0, 0, 0, 0, 0xB4, 0xAB},
+        // Accessory origin E6, with a valid checksum.
+        {0xAA, 0xD6, 0xE6, 0x43, 0x08, 0, 0, 0, 0, 0, 0, 0, 0xB1, 0xAB},
+        // Corrupt checksum for D6 and D8.
+        {0xAA, 0xD6, 0xEA, 0x43, 0x08, 0, 0, 0, 0, 0, 0, 0, 0xB4, 0xAB},
+        {0xAA, 0xD8, 0xEA, 0x43, 0x08, 0, 0, 0, 0, 0, 0, 0, 0xB6, 0xAB},
+        // Six data bytes instead of seven, with valid checksum and framing.
+        {0xAA, 0xD6, 0xEA, 0x43, 0x07, 0, 0, 0, 0, 0, 0, 0xB4, 0xAB},
+    };
+    uint32_t ingress = 1;
+    for (const auto& frame : rejected) {
+        ++ingress;
+        deliver(frame, ingress, 100 + ingress);
+        TEST_ASSERT_FALSE(queue.consumeParsedFlag());
+        TEST_ASSERT_EQUAL_UINT32(1, parser.getAlertCount());
+        AlertData priority;
+        TEST_ASSERT_TRUE(parser.getRenderablePriorityAlert(priority));
+        TEST_ASSERT_EQUAL_UINT16(34700, priority.frequency);
+    }
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_queue_gap_prevents_cross_cycle_alert_table_publication);
     RUN_TEST(test_spec_busy_broadcast_reaches_request_owner_but_targeted_busy_does_not);
+    RUN_TEST(test_older_gen2_targeted_alerts_and_current_broadcasts_reach_the_alert_table);
+    RUN_TEST(test_targeted_alerts_do_not_wait_for_firmware_version_discovery);
+    RUN_TEST(test_alert_destination_compatibility_keeps_origin_checksum_and_shape_validation);
     return UNITY_END();
 }

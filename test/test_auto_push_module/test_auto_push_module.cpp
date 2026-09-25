@@ -54,6 +54,16 @@ unsigned long mockMicros = 0;
 #include "../../src/modules/quiet/quiet_coordinator_templates.h"
 #include "../../src/modules/auto_push/auto_push_module.cpp"
 
+// Exercise response ingress through the production queue and parser as well as
+// the AutoPush owner. Only the synchronous BLE transport is mocked.
+#include "../mocks/modules/power/power_module.h"
+class DisplayPreviewModule {
+  public:
+    bool isRunning() const { return false; }
+    void cancel() {}
+};
+#include "../../src/modules/ble/ble_queue_module.cpp"
+
 #include <array>
 #include <vector>
 
@@ -64,6 +74,7 @@ static SettingsManager settings;
 static V1ProfileManager profiles;
 static QuietCoordinatorModule quiet;
 static AutoPushModule module;
+static BleQueueModule protocolQueue;
 
 namespace {
 
@@ -249,6 +260,17 @@ void observeUserBytes(const uint8_t* bytes, uint32_t ingressSequence = UINT32_MA
 
 uint32_t responseIngressDuringSend = 0;
 void queueResponseDuringSend() { responseIngressDuringSend = ble.noteV1NotificationIngress(); }
+std::vector<uint8_t> replyDuringSend;
+void enqueueProtocolReply(const std::vector<uint8_t>& wire) {
+    const uint32_t ingress = ble.noteV1NotificationIngress();
+    TEST_ASSERT_TRUE(protocolQueue.tryOnNotify(wire.data(), wire.size(), 0xB2CE,
+                                               ble.sessionGeneration(), mockMillis, ingress));
+}
+void enqueueProtocolReplyDuringSend() { enqueueProtocolReply(replyDuringSend); }
+void deliverProtocolReply(const std::vector<uint8_t>& wire) {
+    enqueueProtocolReply(wire);
+    protocolQueue.process();
+}
 void injectMatchingDisplayDuringSend() { observeDisplay(ble.lastDisplayOnValue, 1); }
 void injectMatchingModeDuringSend() { observeDisplay(true, ble.lastModeValue); }
 void injectMatchingVolumeDuringSend() { observeCurrentVolume(ble.lastVolume, ble.lastMuteVolume); }
@@ -394,6 +416,8 @@ void finishFullApply() {
 } // namespace
 
 void setUp() {
+    protocolQueue.end();
+    replyDuringSend.clear();
     ble.reset();
     display = V1Display{};
     parser = PacketParser{};
@@ -407,7 +431,7 @@ void setUp() {
     g_autoPushAdmissionFailurePointForTest = AutoPushAdmissionFailurePoint::None;
 }
 
-void tearDown() {}
+void tearDown() { protocolQueue.end(); }
 
 void test_queue_rejects_failed_active_slot_persistence_before_operation_or_detector_write() {
     configureProfile();
@@ -1363,6 +1387,126 @@ void test_custom_commit_result_and_full_readback_are_both_required() {
     at(1605);
     TEST_ASSERT_TRUE(statusContains("custom_commit_timeout"));
 }
+
+void runQueuedCustomCommitReply(bool duringSend) {
+    configureCustomOnly({{0, 24200, 24300}, {1, 0, 0}, {2, 34500, 34600}, {3, 0, 0}});
+    auto snapshot = makeSnapshot();
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    TEST_ASSERT_TRUE(protocolQueue.begin(&ble, &parser, &profiles, nullptr, nullptr));
+    protocolQueue.openSession(ble.sessionGeneration());
+    queueAndPreflight();
+    at(100); // First used definition, without commit.
+
+    replyDuringSend = makeV1Packet(PACKET_ID_RESP_SWEEP_WRITE_RESULT, {0});
+    if (duringSend) ble.writeSweepDefinitionSendHook = enqueueProtocolReplyDuringSend;
+    else enqueueProtocolReply(replyDuringSend); // Queued before the commit, parsed afterward.
+    at(105); // Last used definition commits the set.
+    ble.writeSweepDefinitionSendHook = nullptr;
+    protocolQueue.process();
+    at(105);
+
+    if (!duringSend) {
+        TEST_ASSERT_TRUE(statusContains("\"step\":\"CustomCommitVerify\""));
+        TEST_ASSERT_EQUAL_INT(0, ble.requestAllSweepDefinitionsCalls);
+        at(1605);
+        TEST_ASSERT_TRUE(statusContains("custom_commit_timeout"));
+        return;
+    }
+    TEST_ASSERT_TRUE(statusContains("\"step\":\"CustomRead\""));
+    at(135);
+    deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x80, 0x5E, 0xF1, 0x5E, 0x83}));
+    deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x81, 0, 0, 0, 0}));
+    deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x82, 0x87, 0x2D, 0x86, 0xBF}));
+    deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x83, 0, 0, 0, 0}));
+    at(135);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_EQUAL_INT(2, ble.writeSweepDefinitionCalls);
+}
+
+void test_custom_commit_accepts_reply_queued_during_send() { runQueuedCustomCommitReply(true); }
+void test_custom_commit_rejects_reply_queued_before_send() { runQueuedCustomCommitReply(false); }
+
+void runQueuedCustomRefreshReply(uint8_t selectedStep, bool duringSend) {
+    // A supported custom-on USA -> custom-on Euro change first disables custom
+    // sweeps, reads the new region's capabilities, then writes and verifies them.
+    const std::array<uint8_t, 6> before{{0xFF, 0xF7, 0xFF, 0xFF, 0xA4, 0x5A}};
+    configureProfile({{0xFF, 0xF6, 0xFF, 0xFF, 0xFF, 0xFF}});
+    auto& detector = profiles.loadableProfile.detector;
+    detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    detector.modePolicy = V1ModePolicy::Unchanged;
+    detector.volumePolicy = V1VolumePolicy::Unchanged;
+    detector.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+    TEST_ASSERT_TRUE(detector.customFrequencyDefinitions.assign(
+        std::array<V1CustomFrequencyDefinition, 2>{{{0, 24200, 24300}, {1, 34500, 34600}}}));
+    auto snapshot = makeSnapshot(41039, before);
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    TEST_ASSERT_TRUE(protocolQueue.begin(&ble, &parser, &profiles, nullptr, nullptr));
+    protocolQueue.openSession(ble.sessionGeneration());
+    queueAndPreflight();
+    verifyUserBytes();
+    TEST_ASSERT_EQUAL_HEX8(0xFE, ble.lastUserBytes[1]);
+    TEST_ASSERT_TRUE(statusContains("\"step\":\"CustomRefreshSections\""));
+
+    const std::vector<uint8_t> replies[] = {
+        makeV1Packet(PACKET_ID_RESP_SWEEP_SECTIONS,
+                     {0x12, 0x61, 0xA8, 0x5D, 0x5C, 0x22, 0x90, 0x88, 0x80, 0xE8}),
+        makeV1Packet(PACKET_ID_RESP_MAX_SWEEP_INDEX, {3}),
+        makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x80, 0x5E, 0x56, 0x5D, 0xF2}),
+    };
+    using SendHook = void (*)();
+    SendHook* hooks[] = {&ble.requestSweepSectionsSendHook, &ble.requestMaxSweepIndexSendHook,
+                        &ble.requestAllSweepDefinitionsSendHook};
+    bool* resetPending[] = {&ble.sweepSectionsResetPending, &ble.sweepMaxResetPending,
+                           &ble.sweepDefinitionsResetPending};
+    for (uint8_t step = 0; step < 3; ++step) {
+        const bool selected = step == selectedStep;
+        replyDuringSend = replies[step];
+        if (selected && duringSend) *hooks[step] = enqueueProtocolReplyDuringSend;
+        if (selected && !duringSend) enqueueProtocolReply(replyDuringSend);
+        at(160 + step * 30);
+        *hooks[step] = nullptr;
+        protocolQueue.process(); // Main-loop parsing always follows send return.
+        if (selected && !duringSend) {
+            // A stale queued reply cannot consume the new capture's reset or
+            // authorize a write. A fresh reply must still establish the capture.
+            TEST_ASSERT_TRUE(*resetPending[step]);
+            TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+        }
+        if (!selected || !duringSend) deliverProtocolReply(replies[step]);
+        TEST_ASSERT_FALSE(*resetPending[step]);
+    }
+    deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x81, 0, 0, 0, 0}));
+    deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x82, 0x85, 0x98, 0x85, 0x34}));
+    deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x83, 0, 0, 0, 0}));
+    at(220);
+    TEST_ASSERT_TRUE(statusContains("\"step\":\"CustomWrite\""));
+    at(250);
+    at(255);
+    deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_WRITE_RESULT, {0}));
+    at(255);
+    at(285);
+    deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x80, 0x5E, 0xF1, 0x5E, 0x83}));
+    deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x81, 0x87, 0x2D, 0x86, 0xBF}));
+    deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x82, 0, 0, 0, 0}));
+    deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x83, 0, 0, 0, 0}));
+    at(285);
+    at(315);
+    at(345);
+    observeUserBytes(ble.lastUserBytes);
+    at(345);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_EQUAL_HEX8(0xF6, ble.lastUserBytes[1]);
+    TEST_ASSERT_EQUAL_INT(2, ble.writeSweepDefinitionCalls);
+}
+
+void test_custom_refresh_sections_accepts_reply_queued_during_send() { runQueuedCustomRefreshReply(0, true); }
+void test_custom_refresh_max_accepts_reply_queued_during_send() { runQueuedCustomRefreshReply(1, true); }
+void test_custom_refresh_definition_accepts_reply_queued_during_send() { runQueuedCustomRefreshReply(2, true); }
+void test_custom_refresh_sections_rejects_reply_queued_before_send() { runQueuedCustomRefreshReply(0, false); }
+void test_custom_refresh_max_rejects_reply_queued_before_send() { runQueuedCustomRefreshReply(1, false); }
+void test_custom_refresh_definition_rejects_reply_queued_before_send() { runQueuedCustomRefreshReply(2, false); }
 
 void test_custom_readback_rejects_lost_used_range_and_cross_section_calibration() {
     const std::vector<V1CustomFrequencyDefinition> desired = {
@@ -2926,6 +3070,14 @@ int main() {
     RUN_TEST(test_exact_custom_definition_set_is_unchanged_and_sends_no_sweep_packets);
     RUN_TEST(test_null_sweep_slots_round_trip_but_cannot_substitute_for_required_band_topology);
     RUN_TEST(test_custom_commit_result_and_full_readback_are_both_required);
+    RUN_TEST(test_custom_commit_accepts_reply_queued_during_send);
+    RUN_TEST(test_custom_commit_rejects_reply_queued_before_send);
+    RUN_TEST(test_custom_refresh_sections_accepts_reply_queued_during_send);
+    RUN_TEST(test_custom_refresh_max_accepts_reply_queued_during_send);
+    RUN_TEST(test_custom_refresh_definition_accepts_reply_queued_during_send);
+    RUN_TEST(test_custom_refresh_sections_rejects_reply_queued_before_send);
+    RUN_TEST(test_custom_refresh_max_rejects_reply_queued_before_send);
+    RUN_TEST(test_custom_refresh_definition_rejects_reply_queued_before_send);
     RUN_TEST(test_custom_readback_rejects_lost_used_range_and_cross_section_calibration);
     RUN_TEST(test_custom_readback_requires_every_definition_after_request_boundary);
     RUN_TEST(test_custom_readback_accepts_first_definition_ingressed_during_send);

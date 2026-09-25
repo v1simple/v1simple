@@ -15,6 +15,7 @@ import argparse
 import bisect
 from collections import Counter
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -59,6 +60,36 @@ CARD_GLYPHS = {
 PHOTO_LABELS = {1: "MRCT", 2: "3D", 3: "3DHD", 4: "HALO", 5: "NK7", 6: "EKIN", 7: "RT4",
                 255: "PHOTO"}
 PHOTO_CANDIDATES = tuple(PHOTO_LABELS.values()) + tuple(f"P{x}" for x in range(8, 16))
+
+# The field rectangles and glyph sizes below were calibrated in this camera
+# pose. Map each run's registered display crop into that same coordinate system
+# before reading pixels. These are geometry measurements, not expected text.
+READER_REFERENCE_CROP = (0.13584776, 0.18375252, 0.81380837, 0.59470611)
+
+
+def registered_pixels(rgb, registration):
+    """Normalize a captured frame to the reader's calibrated display pose."""
+    if rgb.shape != (720, 1280, 3):
+        raise ValueError("unsupported camera geometry")
+    transform = registration.get("transform", {})
+    crop = transform.get("crop_fractions")
+    if (registration.get("result") != "PASS" or
+            transform.get("kind") != "dynamic_similarity" or
+            not isinstance(crop, (list, tuple)) or len(crop) != 4 or
+            any(isinstance(value, bool) or not isinstance(value, (int, float)) or
+                not math.isfinite(value) for value in crop)):
+        raise ValueError("camera registration has no supported display transform")
+    x, y, width, height = crop
+    if x < 0 or y < 0 or width <= 0 or height <= 0 or x + width > 1 or y + height > 1:
+        raise ValueError("registered display crop is outside the camera frame")
+    reference_x, reference_y, reference_width, reference_height = READER_REFERENCE_CROP
+    scale_x, scale_y = width / reference_width, height / reference_height
+    # Pillow's affine coefficients map destination pixels to source pixels.
+    return np.asarray(Image.fromarray(rgb).transform(
+        (1280, 720), Image.Transform.AFFINE,
+        (scale_x, 0, 1280 * (x - scale_x * reference_x),
+         0, scale_y, 720 * (y - scale_y * reference_y)),
+        resample=Image.Resampling.BILINEAR))
 
 
 def card_templates():
@@ -344,7 +375,7 @@ def compare_run(run, limit=None, progress=None):
         when = (row["video_pts_value"] / row["video_pts_timescale"] +
                 (requested - row["host_capture_ns"]) / 1e9)
         video_time, rgb = frame_at(video, when)
-        observed = read_pixels(rgb)
+        observed = read_pixels(registered_pixels(rgb, preflight["registration"]))
         expected = expectation(stimulus)
         for field in totals:
             if expected[field] is None:

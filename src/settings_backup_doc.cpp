@@ -1585,7 +1585,8 @@ bool validateBackupDocumentForApply(const JsonDocument& doc, const V1Settings& c
                                     std::vector<V1Profile>& existingProfiles, bool replaceProfiles,
                                     PreparedProfileSlotFields* preparedSlots = nullptr,
                                     PreparedNetworkFields* preparedNetwork = nullptr,
-                                    PreparedObdFields* preparedObd = nullptr) {
+                                    PreparedObdFields* preparedObd = nullptr,
+                                    SettingsBackupScope scope = SettingsBackupScope::Full) {
     if (!doc.is<JsonObjectConst>()) {
         return false;
     }
@@ -1706,8 +1707,13 @@ bool validateBackupDocumentForApply(const JsonDocument& doc, const V1Settings& c
             std::snprintf(darkOverrideKey, sizeof(darkOverrideKey), "slot%dDarkModeOverride", slot);
             const bool volumeOverride = doc[volumeOverrideKey].as<bool>();
             const bool darkOverride = doc[darkOverrideKey].as<bool>();
-            const bool modifiersAllowed = currentVersion.is<int>() && currentVersion.as<int>() >= 22 &&
-                                          profileSchemaMarker.as<int>() == V1_PROFILE_SCHEMA_VERSION;
+            // The USB adapter has already validated its complete profile-only
+            // bundle; it does not claim the full-backup envelope. Full restores
+            // still require the exact backup version that introduced modifiers.
+            const bool modifiersAllowed =
+                (scope == SettingsBackupScope::ProfilesOnly ||
+                 (currentVersion.is<int>() && currentVersion.as<int>() >= 22)) &&
+                profileSchemaMarker.as<int>() == V1_PROFILE_SCHEMA_VERSION;
             if ((!doc[modeKey].isUnbound() && (!doc[modeKey].is<int>() || doc[modeKey].as<int>() != 0)) ||
                 ((volumeOverride || darkOverride) && !modifiersAllowed) ||
                 (!doc[volumeKey].isUnbound() &&
@@ -2784,7 +2790,7 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
     const bool profilesOnly = scope == SettingsBackupScope::ProfilesOnly;
     const bool replaceProfiles = profilesOnly || currentBackupReplacesProfileCatalog(doc);
     if (!validateBackupDocumentForApply(doc, settingsBefore, *profiles_, incomingProfiles, profilesBefore,
-                                        replaceProfiles, &preparedSlots, &preparedNetwork, &preparedObd)) {
+                                        replaceProfiles, &preparedSlots, &preparedNetwork, &preparedObd, scope)) {
         Serial.println("[Settings] ERROR: Backup document failed transaction validation");
         return result;
     }

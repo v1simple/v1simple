@@ -360,6 +360,141 @@ void test_bundle_round_trip_replaces_catalog_and_preserves_unrelated_state() {
     TEST_ASSERT_EQUAL_UINT(255, manager->getSlotVolume(0));
 }
 
+void setSlotModifiers(int slot, uint8_t main, uint8_t muted, bool dark) {
+    AutoPushSlotUpdate update;
+    update.slot = slot;
+    update.hasVolume = update.hasMuteVolume = update.hasVolumeOverride = true;
+    update.volume = main;
+    update.muteVolume = muted;
+    update.volumeOverride = true;
+    update.hasDarkMode = update.hasDarkModeOverride = true;
+    update.darkMode = dark;
+    update.darkModeOverride = true;
+    TEST_ASSERT_TRUE(manager->applyAutoPushSlotUpdatePersisted(update).success);
+}
+
+void assertSlotModifiers(int index, bool volumeOverride, uint8_t main, uint8_t muted,
+                        bool darkOverride, bool dark) {
+    const auto slot = manager->get().autoPushSlotView(index);
+    TEST_ASSERT_EQUAL(volumeOverride, slot.volumeOverride);
+    TEST_ASSERT_EQUAL_UINT8(main, slot.volume);
+    TEST_ASSERT_EQUAL_UINT8(muted, slot.muteVolume);
+    TEST_ASSERT_EQUAL(darkOverride, slot.darkModeOverride);
+    TEST_ASSERT_EQUAL(dark, slot.darkMode);
+}
+
+void assertFullBackupAvailable() {
+    JsonDocument backup;
+    TEST_ASSERT_TRUE(BackupPayloadBuilder::buildBackupDocument(
+        backup, manager->get(), *profileManager,
+        BackupPayloadBuilder::BackupTransport::HttpDownload, 1000).safeToCommit);
+    TEST_ASSERT_TRUE(manager->migrateAutoPushProfilesToV2());
+}
+
+void checkModifierPreservingRoundTrip(bool editAnotherSlot) {
+    seed();
+    setSlotModifiers(1, 6, 2, true);
+    // Explicit zero volumes and an explicit dark-mode-off override must also
+    // remain distinct from "use profile".
+    setSlotModifiers(2, 0, 0, false);
+    assertFullBackupAvailable();
+    JsonDocument bundle;
+    String error;
+    TEST_ASSERT_TRUE(buildUsbProfileDocument(bundle, *manager, *profileManager, error));
+    TEST_ASSERT_EQUAL_UINT8(4, bundle["version"].as<uint8_t>());
+    TEST_ASSERT_EQUAL_UINT8(3, bundle["profiles"][0]["schemaVersion"].as<uint8_t>());
+    if (editAnotherSlot) bundle["slots"][0]["alertPersist"] = 5;
+    TEST_ASSERT_TRUE_MESSAGE(applyUsbProfileDocument(*manager, *profileManager, bundle, error).success,
+                             error.c_str());
+    for (int load = 0; load < 2; ++load) {
+        assertSlotModifiers(0, false, 255, 255, false, false);
+        assertSlotModifiers(1, true, 6, 2, true, true);
+        assertSlotModifiers(2, true, 0, 0, true, false);
+        TEST_ASSERT_EQUAL_UINT8(editAnotherSlot ? 5 : 1, manager->get().slot0AlertPersist);
+        assertFullBackupAvailable();
+        TEST_ASSERT_EQUAL_STRING(jsonText(bundle).c_str(), snapshot().c_str());
+        // Load directly from committed NVS so an SD backup cannot hide loss.
+        if (load == 0) {
+            manager = std::make_unique<SettingsManager>(storage, *profileManager);
+            manager->load();
+        }
+    }
+}
+
+void test_usb_round_trip_preserves_real_slot_modifiers_and_nvs() {
+    checkModifierPreservingRoundTrip(false);
+}
+
+void test_usb_set_slot_preserves_other_slots_and_full_backup_validity() {
+    checkModifierPreservingRoundTrip(true);
+}
+
+void checkBundleDisablesRecipientOverrides(int version) {
+    seed();
+    JsonDocument old;
+    String error;
+    TEST_ASSERT_TRUE(buildUsbProfileDocument(old, *manager, *profileManager, error));
+    old["version"] = version;
+    if (version < 4) {
+        for (JsonObject slot : old["slots"].as<JsonArray>()) {
+            for (const char* key : {"volumeOverride", "volume", "muteVolume", "darkModeOverride", "darkMode"}) {
+                slot.remove(key);
+            }
+        }
+    }
+    if (version == 2) {
+        for (JsonObject profile : old["profiles"].as<JsonArray>()) {
+            profile["schemaVersion"] = 2;
+            profile["detector"]["volume"].remove("feedback");
+            profile["detector"]["volume"].remove("disconnect");
+            profile["detector"]["bluetoothLed"] = "unchanged";
+            profile["detector"]["customFrequencies"] = "unchanged";
+        }
+    }
+    setSlotModifiers(1, 6, 2, true);
+    TEST_ASSERT_TRUE_MESSAGE(applyUsbProfileDocument(*manager, *profileManager, old, error).success,
+                             error.c_str());
+    for (int load = 0; load < 2; ++load) {
+        for (int slot = 0; slot < 3; ++slot) assertSlotModifiers(slot, false, 255, 255, false, false);
+        assertFullBackupAvailable();
+        if (load == 0) {
+            manager = std::make_unique<SettingsManager>(storage, *profileManager);
+            manager->load();
+        }
+    }
+}
+
+void test_v2_bundle_does_not_inherit_recipient_overrides() {
+    checkBundleDisablesRecipientOverrides(2);
+}
+
+void test_v3_bundle_does_not_inherit_recipient_overrides() {
+    checkBundleDisablesRecipientOverrides(3);
+}
+
+void test_v4_explicit_disabled_overrides_replace_recipient_values() {
+    checkBundleDisablesRecipientOverrides(4);
+}
+
+void test_usb_modifiers_require_explicit_profiles_only_scope() {
+    seed();
+    setSlotModifiers(1, 6, 2, true);
+    JsonDocument bundle, restore;
+    String error;
+    TEST_ASSERT_TRUE(buildUsbProfileDocument(bundle, *manager, *profileManager, error));
+    TEST_ASSERT_TRUE(toRestoreDocument(bundle, restore, error));
+    const auto filesBefore = filesSnapshot();
+    const auto prefsBefore = mock_preferences::store();
+    const String before = snapshot();
+    // This partial internal document must not become a valid full backup just
+    // because USB is allowed to carry schema-3 slot overrides.
+    TEST_ASSERT_FALSE(manager->applyBackupDocument(restore, true).success);
+    TEST_ASSERT_TRUE(filesBefore == filesSnapshot());
+    TEST_ASSERT_TRUE(preferencesEqual(prefsBefore));
+    TEST_ASSERT_EQUAL_STRING(before.c_str(), snapshot().c_str());
+    TEST_ASSERT_TRUE(applyUsbProfileDocument(*manager, *profileManager, bundle, error).success);
+}
+
 void test_exact_legacy_profile_and_shared_slots_migrate_without_command_drift() {
     const uint8_t raw[] = {0xBF, 0xE1, 0x92, 0x73, 0xA5, 0x5A};
     writeLegacyProfileFile("Road", "Exact pre-v2 file", raw);
@@ -471,6 +606,8 @@ void test_multibyte_legacy_migration_names_preserve_suffixes_on_utf8_boundaries(
 }
 
 void test_exact_v1_usb_import_is_immediately_exportable_with_same_effective_commands() {
+    seed();
+    setSlotModifiers(1, 6, 2, true);
     JsonDocument legacy;
     legacy["format"] = "v1simple-profiles";
     legacy["version"] = 1;
@@ -507,10 +644,12 @@ void test_exact_v1_usb_import_is_immediately_exportable_with_same_effective_comm
         applyUsbProfileDocument(*manager, *profileManager, legacy, error);
     TEST_ASSERT_TRUE_MESSAGE(applied.success, error.c_str());
     TEST_ASSERT_EQUAL_UINT8(V1_PROFILE_SCHEMA_VERSION, manager->get().autoPushProfileSchemaVersion);
+    for (int index = 0; index < 3; ++index) assertSlotModifiers(index, false, 255, 255, false, false);
+    assertFullBackupAvailable();
 
     JsonDocument immediate;
     TEST_ASSERT_TRUE_MESSAGE(buildUsbProfileDocument(immediate, *manager, *profileManager, error), error.c_str());
-    TEST_ASSERT_EQUAL_INT(3, immediate["version"].as<int>());
+    TEST_ASSERT_EQUAL_INT(kUsbProfileDocumentVersion, immediate["version"].as<int>());
     const String slot0 = manager->get().slot0_default.profileName;
     const String slot1 = manager->get().slot1_highway.profileName;
     const String slot2 = manager->get().slot2_comfort.profileName;
@@ -628,7 +767,7 @@ void test_v1_usb_reports_pending_migration_and_reboot_recovers_pre_authority_sta
     TEST_ASSERT_TRUE(manager->migrateAutoPushProfilesToV2());
     JsonDocument exported;
     TEST_ASSERT_TRUE_MESSAGE(buildUsbProfileDocument(exported, *manager, *profileManager, error), error.c_str());
-    TEST_ASSERT_EQUAL_INT(3, exported["version"].as<int>());
+    TEST_ASSERT_EQUAL_INT(kUsbProfileDocumentVersion, exported["version"].as<int>());
 }
 
 void test_invalid_complete_bundle_never_mutates_settings_profiles_or_credentials() {
@@ -640,13 +779,20 @@ void test_invalid_complete_bundle_never_mutates_settings_profiles_or_credentials
     const auto prefsBefore = mock_preferences::store();
     const String before = snapshot();
     const std::vector<std::function<void(JsonDocument&)>> faults = {
-        [](JsonDocument& d) { d["version"] = 4; },
+        [](JsonDocument& d) { d["version"] = 5; },
         [](JsonDocument& d) { d["format"] = std::string("v1simple-profiles\0x", 19); },
         [](JsonDocument& d) { d["wifiClientEnabled"] = true; },
         [](JsonDocument& d) { d["slots"][0]["alertPersist"] = 6; },
         [](JsonDocument& d) { d["slots"][0]["alertPersist"] = "2"; },
         [](JsonDocument& d) { d["slots"][0]["color"] = 0; },
         [](JsonDocument& d) { d["slots"][0]["volume"] = 1; },
+        [](JsonDocument& d) { d["slots"][0].remove("volumeOverride"); },
+        [](JsonDocument& d) { d["slots"][0]["volumeOverride"] = true; },
+        [](JsonDocument& d) { d["slots"][0]["volumeOverride"] = 1; },
+        [](JsonDocument& d) { d["slots"][0]["muteVolume"] = -1; },
+        [](JsonDocument& d) { d["slots"][0]["volume"] = "255"; },
+        [](JsonDocument& d) { d["slots"][0]["darkModeOverride"] = "true"; },
+        [](JsonDocument& d) { d["slots"][0]["darkMode"] = true; },
         [](JsonDocument& d) { d["slots"][0]["mode"] = 4; },
         [](JsonDocument& d) { d["slots"][0]["profile"] = "Absent"; },
         [](JsonDocument& d) { d["slots"][0]["darkMode"] = 1; },
@@ -1213,7 +1359,7 @@ void test_measure_maximum_profile_catalog_transport_shapes() {
             std::numeric_limits<uint32_t>::max());
         TEST_ASSERT_TRUE(result.safeToCommit);
         if (count == V1_PROFILE_CATALOG_MAX_COUNT) {
-            TEST_ASSERT_EQUAL_UINT(116902, measureJson(usb));
+            TEST_ASSERT_EQUAL_UINT(117187, measureJson(usb));
             TEST_ASSERT_EQUAL_UINT(120645, measureJson(backup));
             PsramJson::Document sdBackup;
             const auto sdResult = BackupPayloadBuilder::buildBackupDocument(
@@ -1267,6 +1413,12 @@ int main() {
     RUN_TEST(test_usb_import_string_copy_failure_never_reaches_restore_or_mutates_state);
     RUN_TEST(test_measure_maximum_profile_catalog_transport_shapes);
     RUN_TEST(test_bundle_round_trip_replaces_catalog_and_preserves_unrelated_state);
+    RUN_TEST(test_usb_round_trip_preserves_real_slot_modifiers_and_nvs);
+    RUN_TEST(test_usb_set_slot_preserves_other_slots_and_full_backup_validity);
+    RUN_TEST(test_v2_bundle_does_not_inherit_recipient_overrides);
+    RUN_TEST(test_v3_bundle_does_not_inherit_recipient_overrides);
+    RUN_TEST(test_v4_explicit_disabled_overrides_replace_recipient_values);
+    RUN_TEST(test_usb_modifiers_require_explicit_profiles_only_scope);
     RUN_TEST(test_exact_legacy_profile_and_shared_slots_migrate_without_command_drift);
     RUN_TEST(test_multibyte_legacy_migration_names_preserve_suffixes_on_utf8_boundaries);
     RUN_TEST(test_exact_v1_usb_import_is_immediately_exportable_with_same_effective_commands);

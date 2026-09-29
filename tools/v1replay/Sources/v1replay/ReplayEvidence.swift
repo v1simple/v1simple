@@ -29,6 +29,19 @@ private func encodedMachineEventLine<T: Encodable>(_ event: T) -> String {
     return "V1REPLAY_EVENT " + json
 }
 
+/// A valid mute request received from the DUT by the BLE peripheral. This is
+/// host command-receipt evidence, not proof of detector sound or display state.
+/// Correlate the monotonic timestamp with stimulus_requested for phase context;
+/// the player's next sample index must not be mistaken for the causal input.
+struct ReplayMuteCommandEvent: Encodable, Equatable {
+    let state = "dut_mute_command"
+    let schemaVersion = 1
+    let muted: Bool
+    let hostMonotonicNs: UInt64
+
+    var machineEventLine: String { encodedMachineEventLine(self) }
+}
+
 /// Stable identity assigned when one notification is appended to the
 /// CoreBluetooth queue. A repeated payload receives a different global sequence.
 struct ReplayNotificationIdentity: Equatable {

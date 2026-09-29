@@ -550,6 +550,9 @@ class Device:
         self.client, self.mode_timeout = client, mode_timeout
 
     def status(self, **kwargs):
+        # Opening USB can reset the DUT; measured startup can exceed six seconds.
+        # Keep short, explicitly bounded mode polls and mutation deadlines intact.
+        kwargs.setdefault("timeout", 8.0)
         value = self.client.command("status", **kwargs)
         require(value.get("mode") in ("normal", "maintenance") and integer(value.get("boot"), 0, 0xffffffff),
                 "Device returned invalid mode/boot status")

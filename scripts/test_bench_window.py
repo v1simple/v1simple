@@ -293,6 +293,7 @@ def capture_replay_command(
     ku_qualification: bool = False,
     photo_label_qualification: bool = False,
     junk_qualification: bool = False,
+    profile_controls_qualification: bool = False,
     quiet_after_complete: bool = False,
 ) -> list[str]:
     with tempfile.TemporaryDirectory() as tmp:
@@ -328,6 +329,7 @@ def capture_replay_command(
             machine_event=lambda _payload: None,
             photo_label_qualification=photo_label_qualification,
             junk_qualification=junk_qualification,
+            profile_controls_qualification=profile_controls_qualification,
             quiet_after_complete=quiet_after_complete,
         )
         try:
@@ -350,14 +352,49 @@ def test_replay_process_requests_raw_machine_and_scenario_evidence() -> None:
     for scenario in ("fixture.json", ""):
         command = capture_replay_command(scenario)
         assert_true(("--scenario" in command) is bool(scenario), str(command))
+        assert_true("--profile-controls-qualification" not in command, str(command))
     ku_command = capture_replay_command("", ku_qualification=True)
     assert_true("--ku-qualification" in ku_command, str(ku_command))
     photo_command = capture_replay_command("", photo_label_qualification=True)
     assert_true("--photo-label-qualification" in photo_command, str(photo_command))
     junk_command = capture_replay_command("", junk_qualification=True)
     assert_true("--junk-qualification" in junk_command, str(junk_command))
+    profile_controls_command = capture_replay_command("", profile_controls_qualification=True)
+    assert_true("--profile-controls-qualification" in profile_controls_command,
+                str(profile_controls_command))
+    assert_true("--log-packets" in profile_controls_command, str(profile_controls_command))
     quiet_command = capture_replay_command("", quiet_after_complete=True)
     assert_true("--quiet-after-complete" in quiet_command, str(quiet_command))
+
+
+def test_profile_controls_qualification_arguments_are_replay_only_and_exclusive() -> None:
+    with mock.patch.object(sys, "argv", [
+        "run_window.py", "--suite", "replay", "--out-dir", "unused",
+        "--profile-controls-qualification", "--duration-seconds", "100",
+    ]):
+        args = run_window_module.parse_args()
+    assert_true(args.profile_controls_qualification and args.duration_seconds == 100, str(args))
+
+    cases = [
+        ("core", [], "--profile-controls-qualification is valid only for replay"),
+        ("display", [], "--profile-controls-qualification is valid only for replay"),
+        ("replay", ["--scenario", "fixture.json"],
+         "--scenario cannot be combined with a focused replay qualification"),
+        *[("replay", [flag], "choose only one focused replay qualification")
+          for flag in ("--ku-qualification", "--photo-label-qualification", "--junk-qualification")],
+    ]
+    for suite, extra_args, expected_error in cases:
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(sys, "argv", [
+                    "run_window.py", "--suite", suite, "--out-dir", tmp,
+                    "--profile-controls-qualification", *extra_args,
+                ]), \
+                mock.patch.object(run_window_module, "install_signal_handlers"), \
+                mock.patch.object(run_window_module, "collect_live") as collect:
+            status = run_window_module.main()
+            payload = json.loads((Path(tmp) / "window_result.json").read_text())
+            assert_true(status == 3 and payload["error"] == expected_error, str(payload))
+            collect.assert_not_called()
 
 
 def test_replay_transport_must_be_active_before_the_external_window() -> None:
@@ -1315,6 +1352,43 @@ def test_presentation_capture_retains_visual_inputs_without_private_profile_name
     assert_true(not any(endpoint == "/api/v1/profile" for endpoint, _ in calls), str(calls))
 
 
+def test_presentation_capture_preserves_supported_profile_schema_versions() -> None:
+    for schema_version in (3, 4):
+        get_json, _ = sample_presentation_api()
+        slots = get_json("http://device", "/api/autopush/slots")
+        slots["schemaVersion"] = schema_version
+        captured = capture_presentation_configuration("http://device", get_json=get_json)
+        assert_true(captured["auto_push"]["profile_schema_version"] == schema_version,
+                    str(captured))
+        assert_true(captured["auto_push"]["detector_configuration_owner"] == "profile",
+                    str(captured))
+
+
+def test_presentation_capture_rejects_unsupported_or_inexact_profile_schema() -> None:
+    for schema_version in (None, True, False, 1, 2, 5, 3.0, 4.0, "3", "4"):
+        get_json, _ = sample_presentation_api()
+        slots = get_json("http://device", "/api/autopush/slots")
+        slots["schemaVersion"] = schema_version
+        try:
+            capture_presentation_configuration("http://device", get_json=get_json)
+        except RuntimeError as error:
+            assert_true("profile-owned schema" in str(error), str(error))
+        else:
+            raise AssertionError(f"unsupported profile schema {schema_version!r} was accepted")
+
+    for schema_version in (3, 4):
+        get_json, _ = sample_presentation_api()
+        slots = get_json("http://device", "/api/autopush/slots")
+        slots["schemaVersion"] = schema_version
+        slots["detectorConfigurationOwner"] = "legacy-slot"
+        try:
+            capture_presentation_configuration("http://device", get_json=get_json)
+        except RuntimeError as error:
+            assert_true("profile-owned schema" in str(error), str(error))
+        else:
+            raise AssertionError("legacy slot ownership was accepted as profile-owned")
+
+
 def test_presentation_capture_accepts_unassigned_slot_but_rejects_malformed_slot() -> None:
     get_json, _ = sample_presentation_api()
     slots = get_json("http://device", "/api/autopush/slots")
@@ -1473,6 +1547,7 @@ def test_display_contract_binds_snapshot_stimulus_scenario_runtime_and_camera() 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
         get_json, _ = sample_presentation_api()
+        get_json("http://device", "/api/autopush/slots")["schemaVersion"] = 4
         configuration = capture_presentation_configuration("http://device", get_json=get_json)
         selection = parse_auto_push_selection(
             "[AutoPush] onV1Connected autoPush=on activeSlot=0 selectedSlot=2 defaultProfile=3 mode=1"
@@ -1484,6 +1559,8 @@ def test_display_contract_binds_snapshot_stimulus_scenario_runtime_and_camera() 
             maintenance_capture_ns=10,
         )
         snapshot_payload = json.loads((out_dir / PRESENTATION_SNAPSHOT_NAME).read_text())
+        assert_true(snapshot_payload["configuration"]["auto_push"]["profile_schema_version"] == 4,
+                    str(snapshot_payload))
         assert_true(snapshot_payload["http_source_mode_declared"] == "maintenance", str(snapshot_payload))
         assert_true(snapshot_payload["serial_port_opened_before_capture"] is False,
                     str(snapshot_payload))
@@ -1540,6 +1617,7 @@ def main() -> int:
     test_runner_logs_are_confined_to_the_run_directory()
     test_timeline_keeps_ordered_external_events_and_scrubs_private_paths()
     test_replay_process_requests_raw_machine_and_scenario_evidence()
+    test_profile_controls_qualification_arguments_are_replay_only_and_exclusive()
     test_replay_transport_must_be_active_before_the_external_window()
     test_requested_dropped_complete_stopped_preserves_raw_delivery()
     test_emulator_cleanup_before_start_preserves_primary_failure()
@@ -1567,6 +1645,8 @@ def main() -> int:
     test_serial_carriage_return_framing_preserves_reset_evidence_and_failures()
     test_serial_interrupted_loader_framing_requires_one_exact_rom_banner()
     test_presentation_capture_retains_visual_inputs_without_private_profile_names()
+    test_presentation_capture_preserves_supported_profile_schema_versions()
+    test_presentation_capture_rejects_unsupported_or_inexact_profile_schema()
     test_presentation_capture_accepts_unassigned_slot_but_rejects_malformed_slot()
     test_presentation_selection_intent_is_explicit()
     test_bench_upload_preserves_littlefs_settings()

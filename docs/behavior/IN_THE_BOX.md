@@ -98,3 +98,68 @@ durability. A device check should back up first, apply one explicit policy,
 exercise outside → mixed inside/outside → laser → clear/reappearance, manual
 override and reconnect, then read back and restore the original settings.
 Keep that observed result separate from host-test results.
+
+## Focused DUT bench
+
+`./bench.sh --replay --camera --profile-controls-qualification` runs a 100-second
+capture containing the separate 89-second generated exercise. The exact phase
+table is in [v1replay's profile-controls guide](../../tools/v1replay/README.md#profile-controls-qualification).
+It tests the real V1Simple DUT against the BLE emulator. Physical V1 RF scanning
+and speaker behavior require a physical detector test.
+
+Before loading the temporary profile, power off nearby physical V1 detectors.
+Retain a verified USB catalog backup and the quiet/display settings. Establish
+the starting applied box policy: firmware predating this feature has inactive
+defaults; a current device's last-applied policy cannot be inferred from its
+selected slot or exported profile catalog. If that policy is unknown, preserve
+or identify it before changing it.
+
+The fixture builder performs no device I/O and refuses to replace an existing
+file/profile name or exceed the catalog limit. Against the **fresh managed
+emulator only**, its known initial user bytes are `7fffffffffff`:
+
+```sh
+./profiles.sh --stay-maintenance backup .artifacts/usb-profiles/box-original.json
+python3 scripts/bench/profile_controls_bundle.py \
+  .artifacts/usb-profiles/box-original.json .artifacts/usb-profiles/box-enabled.json \
+  --baseline-user-bytes 7fffffffffff
+python3 scripts/bench/profile_controls_bundle.py \
+  .artifacts/usb-profiles/box-original.json .artifacts/usb-profiles/box-inactive.json \
+  --baseline-user-bytes 7fffffffffff --inactive-box-policy
+```
+
+Update to the committed candidate firmware before loading either version-5
+bundle. The enabled fixture keeps the original profiles and assigns its test
+profile to all three slots, preventing the emulator's saved default slot from
+selecting another profile. It uses an edited K box (24050–24150 MHz), K outside
+muting and inside unmuting, and detector sweeps K 24000–24200 / Ka 33900–35000 MHz.
+Other box audio actions are off. Disable speed mute and volume fade for the
+exercise only if needed, retaining their original settings for restoration.
+
+```sh
+./profiles.sh --stay-maintenance load .artifacts/usb-profiles/box-enabled.json
+./bench.sh --replay --camera --profile-controls-qualification
+```
+
+The run must show the custom-sweep write, successful result and fresh readback
+before evaluating scan phases. Inspect `v1replay.log`, the final
+`v1_emulator_state.json`, and notification payloads. The first connected-detector
+snapshot is captured **before** connect AutoPush, so it is not post-apply proof.
+Timestamped `dut_mute_command` events are actual requests received from the DUT.
+Compare them with the named stimulus phases and camera frames. The one authored
+mute ON at 79 seconds creates a pre-existing mute; only a DUT command can release
+it in the subsequent inside phase. Collection COMPLETE alone is not this verdict.
+
+For a negative control, load `box-inactive.json` and repeat the same command.
+Both scan ranges must still read back and filter the authored rows. There should
+be no box mute commands, and the seeded mute must remain through the new inside
+alert. This also restores the exact default applied box policy when defaults
+were the verified starting state. Otherwise explicitly apply the preserved
+starting policy before removing the temporary profile.
+
+Finally restore the original USB bundle, any changed quiet settings, and the
+original operating mode; verify fresh readback. The isolated emulator's scan
+state belongs to each retained run and is discarded for subsequent runs. A
+physical detector's changed scan state would instead require explicit restoration.
+Keep the recorded outcome beside the private run artifacts, including failed
+attempts and original-frame witnesses, rather than marking this recipe as a pass.

@@ -340,6 +340,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ku-qualification", action="store_true")
     parser.add_argument("--photo-label-qualification", action="store_true")
     parser.add_argument("--junk-qualification", action="store_true")
+    parser.add_argument("--profile-controls-qualification", action="store_true")
     parser.add_argument("--quiet-after-complete", action="store_true")
     parser.add_argument(
         "--blink-profile", choices=["scenario", "steady", "stress"], default=None
@@ -456,8 +457,9 @@ def capture_presentation_configuration(
             active_slot not in range(3) or not isinstance(raw_slots, list) or
             len(raw_slots) != 3):
         raise RuntimeError("Auto-Push slots response is incomplete")
-    if slots_payload.get("schemaVersion") != 3 or \
-            slots_payload.get("detectorConfigurationOwner") != "profile":
+    profile_schema_version = slots_payload.get("schemaVersion")
+    if (type(profile_schema_version) is not int or profile_schema_version not in (3, 4) or
+            slots_payload.get("detectorConfigurationOwner") != "profile"):
         raise RuntimeError("Auto-Push slots do not use the current profile-owned schema")
 
     canonical_slots: list[dict[str, Any]] = []
@@ -492,7 +494,7 @@ def capture_presentation_configuration(
         "auto_push": {
             "enabled": enabled,
             "configured_active_slot": active_slot,
-            "profile_schema_version": 3,
+            "profile_schema_version": profile_schema_version,
             "detector_configuration_owner": "profile",
             "slots": canonical_slots,
         },
@@ -1409,6 +1411,7 @@ class V1Emulator:
         machine_event: Callable[[dict[str, Any]], None],
         photo_label_qualification: bool = False,
         junk_qualification: bool = False,
+        profile_controls_qualification: bool = False,
         quiet_after_complete: bool = False,
     ) -> None:
         self.executable = executable
@@ -1420,6 +1423,7 @@ class V1Emulator:
         self.ku_qualification = ku_qualification
         self.photo_label_qualification = photo_label_qualification
         self.junk_qualification = junk_qualification
+        self.profile_controls_qualification = profile_controls_qualification
         self.quiet_after_complete = quiet_after_complete
         self.machine_event = machine_event
         self.log_path = out_dir / "v1replay.log"
@@ -1482,6 +1486,8 @@ class V1Emulator:
                 command.append("--photo-label-qualification")
             if self.junk_qualification:
                 command.append("--junk-qualification")
+            if self.profile_controls_qualification:
+                command.extend(["--profile-controls-qualification", "--log-packets"])
             if self.quiet_after_complete:
                 command.append("--quiet-after-complete")
             assert self.scenario_path is not None
@@ -1689,6 +1695,7 @@ def collect_live(
             machine_event=lambda payload: timeline.record_external(payload, "v1replay"),
             photo_label_qualification=getattr(args, "photo_label_qualification", False),
             junk_qualification=getattr(args, "junk_qualification", False),
+            profile_controls_qualification=getattr(args, "profile_controls_qualification", False),
             quiet_after_complete=getattr(args, "quiet_after_complete", False),
         )
         emulator_result: dict[str, Any] = {}
@@ -1923,6 +1930,8 @@ def main() -> int:
         return fail("--photo-label-qualification is valid only for replay")
     if args.suite != "replay" and getattr(args, "junk_qualification", False):
         return fail("--junk-qualification is valid only for replay")
+    if args.suite != "replay" and getattr(args, "profile_controls_qualification", False):
+        return fail("--profile-controls-qualification is valid only for replay")
     if args.suite != "replay" and getattr(args, "quiet_after_complete", False):
         return fail("--quiet-after-complete is valid only for replay")
     focused_qualifications = sum(
@@ -1931,6 +1940,7 @@ def main() -> int:
             getattr(args, "ku_qualification", False),
             getattr(args, "photo_label_qualification", False),
             getattr(args, "junk_qualification", False),
+            getattr(args, "profile_controls_qualification", False),
         )
     )
     if focused_qualifications > 1:

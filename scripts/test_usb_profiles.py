@@ -189,6 +189,20 @@ class WireDevice:
         raise AssertionError(verb)
 
 
+class StartingWireDevice(WireDevice):
+    """Drop commands received before setup completes on the same open link."""
+    def __init__(self, clock, ready_at=6.2):
+        super().__init__(clock)
+        self.ready_at = ready_at
+        self.startup_requests = []
+
+    def write(self, data):
+        if self.clock() < self.ready_at:
+            self.startup_requests.append((self.clock(), bytes(data)))
+            return len(data)
+        return super().write(data)
+
+
 class USBProfilesTests(unittest.TestCase):
     def setUp(self):
         self.clock = Clock()
@@ -284,6 +298,40 @@ class USBProfilesTests(unittest.TestCase):
             self.device.status()
         self.assertEqual(len(self.peer.history), 3)
         self.assertEqual(len({row[0] for row in self.peer.history}), 1)
+
+    def test_explicit_two_second_status_probes_expire_before_startup_then_late_probe_works(self):
+        clock = Clock()
+        peer = StartingWireDevice(clock)
+        device = usb.Device(usb.Client(peer, clock=clock, sleep=clock.sleep))
+        with self.assertRaises(usb.TransportError):
+            device.status(timeout=2.0)
+        self.assertEqual(len(peer.startup_requests), 3)
+        self.assertEqual(len({request for _, request in peer.startup_requests}), 1)
+        self.assertEqual(peer.history, [])
+        self.assertGreaterEqual(clock(), 6.0)
+        self.assertLess(clock(), peer.ready_at)
+        clock.sleep(peer.ready_at - clock())
+        self.assertEqual(device.status(timeout=2.0, attempts=1)["mode"], "normal")
+        self.assertEqual(peer.closes, 0)
+
+    def test_default_status_waits_for_startup_without_extending_mutation_deadlines(self):
+        clock = Clock()
+        peer = StartingWireDevice(clock)
+        client = usb.Client(peer, clock=clock, sleep=clock.sleep)
+        device = usb.Device(client)
+        self.assertEqual(device.status()["mode"], "normal")
+        self.assertEqual(len(peer.startup_requests), 1)
+        self.assertEqual(len(peer.history), 1)
+        self.assertGreaterEqual(clock(), 8.0)
+        self.assertLess(clock(), 8.2)
+        self.assertEqual(peer.closes, 0)
+        self.assertEqual(client.timeout, 2.0)
+        peer.drop_always.add("maintenance")
+        started = clock()
+        with self.assertRaises(usb.TransportError):
+            client.command("maintenance")
+        self.assertGreaterEqual(clock() - started, 6.0)
+        self.assertLess(clock() - started, 6.2)
 
     def test_set_slot_changes_only_requested_persistence_and_saves_original(self):
         before = deepcopy(self.peer.current)

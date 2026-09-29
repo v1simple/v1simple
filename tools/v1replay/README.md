@@ -61,6 +61,7 @@ Generated stimuli require no data file:
 .build/v1replay bench --ku-qualification
 .build/v1replay bench --photo-label-qualification
 .build/v1replay bench --junk-qualification
+.build/v1replay bench --profile-controls-qualification
 .build/v1replay bench --persistence-coverage
 .build/v1replay bench --scenario /external/input.json \
   --scenario-evidence /external/run/replay_scenario.json --machine-events
@@ -71,7 +72,8 @@ Generated stimuli require no data file:
 ```
 
 Without `--scenario`, `--reader-qualification`, `--ku-qualification`,
-`--photo-label-qualification`, `--junk-qualification`, or `--persistence-coverage`,
+`--photo-label-qualification`, `--junk-qualification`,
+`--profile-controls-qualification`, or `--persistence-coverage`,
 `bench` uses the generated default stimulus at approximately 3 Hz. Its 276-second
 Phase 0 base covers a resting lead, K and Ka ramps, a priority handoff, complete
 two- and three-row alert tables, card removal and restoration, a long Ka approach,
@@ -140,6 +142,78 @@ characters; the emulator does not infer a verdict from camera output.
 `--persistence-coverage` selects a separate 64-second ordinary radar sequence
 for observing the configured Alert persistence. It does not change that setting
 or establish that persisted content was displayed correctly.
+
+### Profile controls qualification
+
+`v1replay bench --profile-controls-qualification --machine-events` selects a
+separate 89-second generated sequence at 3 Hz (267 samples, last at 88⅔ seconds).
+It does **not** apply settings. Apply this explicit test profile through
+V1Simple, and establish that the complete apply/readback succeeds before the
+first active row at second 12:
+
+- Detector K, Ka, and Laser enabled; Custom Frequencies enabled.
+- Detector sweep index 0: **24000–24200 MHz**; index 1: **33900–35000 MHz**.
+- In-the-Box K box edited to **24050–24150 MHz**, enabled. Other boxes use
+  defaults. K **Mute outside** and **Unmute inside** enabled; other bands'
+  box actions disabled.
+- Speed mute and volume fade disabled; Alert persistence zero. Detector mode,
+  display policy, and main/muted volumes remain explicitly recorded test settings.
+
+These sweeps fit the emulator's two reported sections and cover both required
+bands. A physical V1's live reported sections must govern any physical V1 write;
+the emulator's section bounds are a fixture, not a hardware capability claim.
+
+| Replay seconds | Authored rows (MHz) | Expected behavior with that profile |
+|---|---|---|
+| 0–12 | Clear | Apply/readback lead; elapsed time alone does not prove apply success |
+| 12–15 | K 24049 | Outside box: DUT requests mute |
+| 15–18 | K 24050 | Inclusive lower edge: DUT releases its mute |
+| 18–21 | K 24150 | Inclusive upper edge: stays unmuted |
+| 21–24 | K 24151 | Outside edited upper edge: DUT requests mute |
+| 24–27 | K 24151 priority + K 24100 | Inside secondary prevents global box mute; DUT releases |
+| 27–29 | Clear | Clear encounter |
+| 29–32 | K 24049 | DUT requests mute |
+| 32–35 | K 24049 priority + Ka 33950 | Ka action disabled: DUT releases |
+| 35–38 | Ka 33950 | Unselected band alone stays unmuted |
+| 38–40 | Clear | Clear encounter |
+| 40–43 | K 24049 | DUT requests mute |
+| 43–46 | Laser priority + K 24049 | Laser prevents box mute; DUT releases |
+| 46–48 | Clear | Clear encounter |
+| 48–51 | K 24049 | DUT requests mute |
+| 51–53 | Clear | DUT releases its mute on clear |
+| 53–56 | K 24000 | Scan lower edge admitted; outside box requests mute |
+| 56–59 | K 23999 | Scan excludes row; emitted clear releases owned mute |
+| 59–62 | K 24200 | Scan upper edge admitted; outside edited box requests mute |
+| 62–65 | K 24201 | Scan excludes row; emitted clear releases owned mute |
+| 65–68 | Ka 33900 | Scan lower edge admitted; no Ka box action |
+| 68–71 | Ka 33899 | Scan excludes row |
+| 71–74 | Ka 35000 | Scan upper edge admitted; no Ka box action |
+| 74–77 | Ka 35001 | Scan excludes row |
+| 77–79 | Clear | Separates the following explicit starting-mute control |
+| 79–82 | Ka 33950 | **One modeled detector mute ON checkpoint**; DUT should leave it muted |
+| 82–85 | New K 24100 | Explicit Unmute inside must produce a DUT mute OFF request |
+| 85–89 | Clear | Tail; no authored mute OFF |
+
+All rows before second 79 are authored unmuted with no detector mute checkpoints.
+The final seed remains authored muted through the tail, so the scenario cannot
+fake the required DUT unmute. Received commands change the live modeled mute
+state, which subsequent `infDisplayData` packets report. This preset is separate
+from the default scenario and does not modify its samples.
+
+With `--machine-events`, a valid DUT mute request produces
+`state: "dut_mute_command"`, `schemaVersion: 1`, `muted`, and
+`hostMonotonicNs`. This timestamps the peripheral's received-command callback.
+Correlate it with `stimulus_requested` and notification delivery events; it is
+distinct from the one authored `detector_mute` checkpoint. Resolved scenario
+evidence retains the authored rows; stimulus evidence contains the rows after
+the emulated detector's scan filter.
+
+This exercise can observe real DUT profile writes/readback requests, actual BLE
+mute requests, and the DUT display through camera capture. Scan exclusion and
+returned soft-mute state are modeled by the emulator. It does not establish RF
+reception, physical V1 speaker behavior, all-actions-off behavior, or rejection
+of an invalid profile. Camera and command evidence must establish results;
+generating the expected sequence alone is not a pass.
 
 Normal bench playback defaults to the `scenario` priority blink profile. As a
 provisional generated assumption, it blinks only during the authored

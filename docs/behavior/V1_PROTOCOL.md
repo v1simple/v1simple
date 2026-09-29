@@ -154,6 +154,20 @@ The changed order closes the four in-send response losses without admitting
 pre-request packets. Keep the existing post-send observation boundaries for
 unsolicited display/mode writes: their broadcasts have a different proof contract.
 
+Connection capture has the same freshness requirement. On a retried maximum-index
+request followed by a new definitions request, the parser can still hold the
+previous complete table until the first fresh definition arrives. A fresh maximum
+response formerly marked that old table complete by its index mask alone. The
+stable callback could then run with `captureTimedOut=false`, while its stricter
+snapshot rejected the stale definitions and custom-frequency Apply sent no writes.
+`BleQueueModule::process` now requires every definition's ingress to pass the
+current definitions-request boundary in both completion paths. Fresh definitions
+may still arrive before the maximum response. The real queue/parser regression
+`test_fresh_max_after_retry_cannot_complete_capture_from_old_definitions` in
+[`test_ble_queue_alert_integration`](../../test/test_ble_queue_alert_integration/test_ble_queue_alert_integration.cpp)
+reproduces the premature completion, then requires both fresh rows before capture
+completes. This closes capture admission; it does not itself prove a physical Apply.
+
 ### Executable proof and limits
 
 [`test_auto_push_module`](../../test/test_auto_push_module/test_auto_push_module.cpp)

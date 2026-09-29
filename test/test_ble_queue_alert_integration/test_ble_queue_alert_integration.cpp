@@ -242,6 +242,50 @@ void test_alert_destination_compatibility_keeps_origin_checksum_and_shape_valida
     }
 }
 
+void test_fresh_max_after_retry_cannot_complete_capture_from_old_definitions() {
+    // These are the exact canonical responses used by the generated emulator.
+    // Its first max request is rejected, while the first definitions request
+    // produces rows before the retried max response. The queue retains those
+    // rows until the first response to the new definitions request is parsed.
+    const std::vector<uint8_t> sections{
+        0xAA, 0xD6, 0xEA, 0x23, 0x0B, 0x12, 0x61, 0xA8, 0x5D, 0xC0,
+        0x22, 0x8C, 0xA0, 0x80, 0xE8, 0x86, 0xAB};
+    const std::vector<uint8_t> maxIndex{0xAA, 0xD6, 0xEA, 0x20, 0x02, 0x01, 0x8D, 0xAB};
+    const std::vector<uint8_t> kDefinition{
+        0xAA, 0xD6, 0xEA, 0x17, 0x06, 0x80, 0x5E, 0x56, 0x5D, 0xF2, 0x0A, 0xAB};
+    const std::vector<uint8_t> kaDefinition{
+        0xAA, 0xD6, 0xEA, 0x17, 0x06, 0x81, 0x85, 0x98, 0x85, 0x34, 0xDE, 0xAB};
+    client.beginSessionSweepSectionsCapture(1);
+    client.beginSessionSweepMaxCapture(1);
+    client.beginSessionSweepDefinitionsCapture(1);
+    deliver(sections, 2, 100);
+    deliver(kDefinition, 3, 101);
+    deliver(kaDefinition, 4, 102);
+    TEST_ASSERT_TRUE(client.hasSessionSweepSectionsCapture());
+    TEST_ASSERT_FALSE(client.hasSessionSweepMaxCapture());
+    TEST_ASSERT_FALSE(client.hasSessionSweepDefinitionsCapture());
+    TEST_ASSERT_EQUAL_UINT64(3, parser.sweepDefinitionsObservation().presentMask);
+
+    // As in connected followup, both retry requests have been sent before
+    // the queued max response is processed. A complete *old* table cannot
+    // authorize the stable callback for this new definitions boundary.
+    client.beginSessionSweepMaxCapture(4);
+    client.beginSessionSweepDefinitionsCapture(4);
+    deliver(maxIndex, 5, 103);
+    TEST_ASSERT_TRUE(client.hasSessionSweepMaxCapture());
+    TEST_ASSERT_FALSE(client.hasSessionSweepDefinitionsCapture());
+    TEST_ASSERT_EQUAL_UINT32(3, parser.sweepDefinitionsObservation().ingressSequences[0]);
+    TEST_ASSERT_EQUAL_UINT32(4, parser.sweepDefinitionsObservation().ingressSequences[1]);
+
+    deliver(kDefinition, 6, 104);
+    TEST_ASSERT_FALSE(client.hasSessionSweepDefinitionsCapture());
+    TEST_ASSERT_EQUAL_UINT64(1, parser.sweepDefinitionsObservation().presentMask);
+    deliver(kaDefinition, 7, 105);
+    TEST_ASSERT_TRUE(client.hasSessionSweepDefinitionsCapture());
+    TEST_ASSERT_EQUAL_UINT32(6, parser.sweepDefinitionsObservation().ingressSequences[0]);
+    TEST_ASSERT_EQUAL_UINT32(7, parser.sweepDefinitionsObservation().ingressSequences[1]);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_queue_gap_prevents_cross_cycle_alert_table_publication);
@@ -250,5 +294,6 @@ int main(int, char**) {
     RUN_TEST(test_targeted_alerts_do_not_wait_for_firmware_version_discovery);
     RUN_TEST(test_long_characteristic_alert_envelopes_reach_real_parser_and_clear);
     RUN_TEST(test_alert_destination_compatibility_keeps_origin_checksum_and_shape_validation);
+    RUN_TEST(test_fresh_max_after_retry_cannot_complete_capture_from_old_definitions);
     return UNITY_END();
 }

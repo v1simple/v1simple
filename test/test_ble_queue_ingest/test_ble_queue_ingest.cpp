@@ -673,7 +673,7 @@ void test_user_response_queued_beyond_first_drain_retains_pre_request_ingress() 
     TEST_ASSERT_TRUE(client.sessionUserBytesIngressSequence() > requestBoundary);
 }
 
-void configureSyntheticSweepResponses() {
+void configureSyntheticSweepResponses(uint32_t definitionIngress = 0) {
     parser.synthesizeSweepResponses = true;
     parser.synthesizedSweepSections.available = true;
     parser.synthesizedSweepSections.complete = true;
@@ -682,11 +682,13 @@ void configureSyntheticSweepResponses() {
     parser.synthesizedSweepMax.available = true;
     parser.synthesizedSweepMax.maxIndex = 1;
     parser.synthesizedSweepDefinitions.presentMask = 0x03;
+    parser.synthesizedSweepDefinitions.ingressSequences[0] = definitionIngress;
+    parser.synthesizedSweepDefinitions.ingressSequences[1] = definitionIngress;
 }
 
 void test_sweep_capture_completion_is_response_order_independent() {
     beginQueue();
-    configureSyntheticSweepResponses();
+    configureSyntheticSweepResponses(31);
     client.beginSessionSweepSectionsCapture(10);
     client.beginSessionSweepMaxCapture(20);
     client.beginSessionSweepDefinitionsCapture(30);
@@ -710,7 +712,7 @@ void test_sweep_capture_completion_is_response_order_independent() {
 
     setUp();
     beginQueue();
-    configureSyntheticSweepResponses();
+    configureSyntheticSweepResponses(42);
     client.beginSessionSweepSectionsCapture(40);
     client.beginSessionSweepMaxCapture(40);
     client.beginSessionSweepDefinitionsCapture(40);
@@ -731,7 +733,7 @@ void test_sweep_capture_completion_is_response_order_independent() {
 
 void test_sweep_response_after_common_boundary_but_before_its_specific_request_is_ineligible() {
     beginQueue();
-    configureSyntheticSweepResponses();
+    configureSyntheticSweepResponses(15);
     const auto sections = makeFrame(PACKET_ID_RESP_SWEEP_SECTIONS, 1, 0);
     const auto maxIndex = makeFrame(PACKET_ID_RESP_MAX_SWEEP_INDEX, 1, 0);
     const auto definitions = makeFrame(PACKET_ID_RESP_SWEEP_DEFINITION, 1, 0);

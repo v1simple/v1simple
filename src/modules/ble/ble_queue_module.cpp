@@ -635,6 +635,23 @@ void BleQueueModule::process() {
             ble_->onAllVolumeReceived(packetIngressSequence);
         }
         if (eligibleSweepResponse) {
+            const auto freshDefinitionsComplete = [this]() {
+                const auto& maximum = parser_->sweepMaxObservation();
+                if (!ble_->hasSessionSweepMaxCapture() || !maximum.available ||
+                    maximum.poisoned || maximum.maxIndex >= 64) return false;
+                const uint64_t required = maximum.maxIndex == 63
+                    ? UINT64_MAX : ((uint64_t{1} << (maximum.maxIndex + 1u)) - 1u);
+                const auto& definitions = parser_->sweepDefinitionsObservation();
+                if (definitions.poisoned || definitions.presentMask != required) return false;
+                // A definitions retry keeps the old parser table until its
+                // first fresh row arrives. A queued fresh max response must
+                // not requalify that table and release the stable callback.
+                for (uint8_t index = 0; index <= maximum.maxIndex; ++index) {
+                    if (!ble_->sessionSweepResponseEligible(
+                            PACKET_ID_RESP_SWEEP_DEFINITION, definitions.ingressSequences[index])) return false;
+                }
+                return true;
+            };
             if (packetId == PACKET_ID_RESP_SWEEP_SECTIONS) {
                 const auto& sections = parser_->sweepSectionsObservation();
                 ble_->onSweepSectionsReceived(parseOk && !sections.poisoned && sections.complete);
@@ -642,23 +659,9 @@ void BleQueueModule::process() {
                 const auto& maximum = parser_->sweepMaxObservation();
                 const bool captured = parseOk && maximum.available && !maximum.poisoned;
                 ble_->onSweepMaxReceived(captured);
-                if (captured) {
-                    const uint8_t maxIndex = maximum.maxIndex;
-                    const uint64_t required = maxIndex == 63 ? UINT64_MAX : ((uint64_t{1} << (maxIndex + 1u)) - 1u);
-                    const auto& definitions = parser_->sweepDefinitionsObservation();
-                    ble_->onSweepDefinitionsReceived(!definitions.poisoned && definitions.presentMask == required);
-                } else {
-                    ble_->onSweepDefinitionsReceived(false);
-                }
-            } else if (packetId == PACKET_ID_RESP_SWEEP_DEFINITION &&
-                       parser_->sweepMaxObservation().available) {
-                const uint8_t maxIndex = parser_->sweepMaxObservation().maxIndex;
-                const uint64_t required = maxIndex == 63 ? UINT64_MAX : ((uint64_t{1} << (maxIndex + 1u)) - 1u);
-                const auto& definitions = parser_->sweepDefinitionsObservation();
-                ble_->onSweepDefinitionsReceived(parseOk && !definitions.poisoned &&
-                                                 definitions.presentMask == required);
+                ble_->onSweepDefinitionsReceived(captured && freshDefinitionsComplete());
             } else if (packetId == PACKET_ID_RESP_SWEEP_DEFINITION) {
-                ble_->onSweepDefinitionsReceived(false);
+                ble_->onSweepDefinitionsReceived(parseOk && freshDefinitionsComplete());
             }
         }
 

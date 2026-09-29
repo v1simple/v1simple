@@ -3,11 +3,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { installFixtureFetchMock, jsonResponse } from '../../test/fetch-mock.js';
 import Page from './+page.svelte';
+import wifiApiFixtures from '../../test/fixtures/wifi-api.json';
 
 function installDefaultFetch(overrides = []) {
     return installFixtureFetchMock(
         ['frontend_core_routes', 'autopush_routes', 'v1_profile_routes'],
-        overrides
+        [
+            ...overrides,
+            { method: 'GET', match: '/api/autopush/slots', respond: jsonResponse({
+                ...wifiApiFixtures.scenarios.autopush_routes['GET /api/autopush/slots'][0].body,
+                schemaVersion: 4
+            }) }
+        ]
     );
 }
 
@@ -94,7 +101,10 @@ describe('autopush route page', () => {
 
         expect(await screen.findByLabelText('Profile')).toBeInTheDocument();
         expect(screen.getByText('Alert persistence (seconds)')).toBeInTheDocument();
-        expect(screen.getByRole('button', { name: /^save$/i })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /^save slot$/i })).toBeInTheDocument();
+        expect(screen.getByLabelText('Slot name')).toHaveValue('Default');
+        expect(screen.getByLabelText('Alert persistence value (seconds)')).toHaveValue(1);
+        expect(screen.getByText('Override profile settings').closest('details')).not.toHaveAttribute('open');
 
         unmount();
     });
@@ -108,7 +118,7 @@ describe('autopush route page', () => {
         await fireEvent.click(screen.getByRole('button', { name: 'Choose Default color' }));
         await fireEvent.click(screen.getByRole('button', { name: 'Blue' }));
         await fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
-        await fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+        await fireEvent.click(screen.getByRole('button', { name: /^save slot$/i }));
 
         await screen.findByText('Slot saved!');
         const saveCall = fetchMock.mock.calls.find(
@@ -131,10 +141,10 @@ describe('autopush route page', () => {
 
         await screen.findByText('Highway');
         await fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
-        await fireEvent.click(await screen.findByRole('button', { name: /^save$/i }));
+        await fireEvent.click(await screen.findByRole('button', { name: /^save slot$/i }));
 
         await screen.findByText('Failed to save');
-        expect(screen.getByRole('button', { name: /^save$/i })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /^save slot$/i })).toBeInTheDocument();
         expect(screen.getByLabelText('Profile')).toBeInTheDocument();
 
         unmount();
@@ -149,10 +159,10 @@ describe('autopush route page', () => {
 
         await screen.findByText('Highway');
         await fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
-        await fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+        await fireEvent.click(screen.getByRole('button', { name: /^save slot$/i }));
 
         await screen.findByText('Volume override requires a profile volume policy');
-        expect(screen.getByRole('button', { name: /^save$/i })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /^save slot$/i })).toBeInTheDocument();
         unmount();
     });
 
@@ -162,10 +172,10 @@ describe('autopush route page', () => {
 
         await screen.findByText('Highway');
         await fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
-        await fireEvent.input(screen.getByDisplayValue('Default'), {
+        await fireEvent.input(screen.getByLabelText('Slot name'), {
             target: { value: 'Commute é' }
         });
-        await fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+        await fireEvent.click(screen.getByRole('button', { name: /^save slot$/i }));
 
         await screen.findByText('Slot saved!');
         const saveCall = fetchMock.mock.calls.find(
@@ -181,7 +191,7 @@ describe('autopush route page', () => {
 
         await screen.findByText('Highway');
         await fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
-        const nameInput = screen.getByDisplayValue('Default');
+        const nameInput = screen.getByLabelText('Slot name');
         await fireEvent.input(nameInput, { target: { value: 'Changed Draft' } });
         await fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
 
@@ -199,11 +209,11 @@ describe('autopush route page', () => {
         await fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
         expect(screen.getByLabelText('Profile')).toBeInTheDocument();
         expect(screen.getByText('Alert persistence (seconds)')).toBeInTheDocument();
-        expect(screen.getByText('Priority Arrow Only')).toBeInTheDocument();
+        expect(screen.getByLabelText('Priority arrow only')).toBeInTheDocument();
         expect(screen.getByText('Override profile volume')).toBeInTheDocument();
-        expect(screen.getByText('Dark mode')).toBeInTheDocument();
+        expect(screen.getByLabelText('V1 detector display')).toBeInTheDocument();
         expect(screen.queryByText('Logic Mode')).not.toBeInTheDocument();
-        await fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+        await fireEvent.click(screen.getByRole('button', { name: /^save slot$/i }));
         await screen.findByText('Slot saved!');
 
         const saveCall = fetchMock.mock.calls.find(
@@ -226,7 +236,11 @@ describe('autopush route page', () => {
         unmount();
     });
 
-    it('submits explicit volume and dark-mode modifiers for one slot', async () => {
+    it.each([
+        ['Display off — Bluetooth light follows profile', 'on', 'true', 'true'],
+        ['Display on', 'off', 'true', 'false'],
+        ['Use profile', 'profile', 'false', null]
+    ])('saves %s with the existing override payload', async (label, value, configured, darkMode) => {
         const fetchMock = installDefaultFetch([{
             method: 'GET', match: '/api/v1/profile?name=Road%20Trip',
             respond: jsonResponse({ detector: { volume: { policy: 'temporary' } } })
@@ -235,21 +249,72 @@ describe('autopush route page', () => {
 
         await screen.findByText('Highway');
         await fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
+        await fireEvent.click(screen.getByText('Override profile settings'));
+        expect(screen.getByRole('option', { name: label })).toHaveValue(value);
+        expect(screen.getByRole('link', { name: 'V1 Profiles' })).toHaveAttribute('href', '/profiles');
         await fireEvent.click(screen.getByLabelText('Override profile volume'));
-        await fireEvent.input(screen.getByLabelText('Main volume (0–9)'), { target: { value: '8' } });
+        await fireEvent.input(screen.getByLabelText('Main volume (0–9)'), { target: { value: '0' } });
         await fireEvent.input(screen.getByLabelText('Muted volume (0–9)'), { target: { value: '2' } });
-        await fireEvent.change(screen.getByLabelText('Dark mode'), { target: { value: 'on' } });
-        await fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+        // Begin with an override so Use profile also proves that clearing it omits darkMode.
+        await fireEvent.change(screen.getByLabelText('V1 detector display'), { target: { value: 'on' } });
+        await fireEvent.change(screen.getByLabelText('V1 detector display'), { target: { value } });
+        await fireEvent.click(screen.getByLabelText('Priority arrow only'));
+        await fireEvent.input(screen.getByLabelText('Alert persistence value (seconds)'), { target: { value: '4' } });
+        await fireEvent.click(screen.getByRole('button', { name: /^save slot$/i }));
 
         await screen.findByText('Slot saved!');
         const body = fetchMock.mock.calls.find(
             ([url, init]) => url === '/api/autopush/slot' && init?.method === 'POST'
         )[1].body;
         expect(body.get('volumeConfigured')).toBe('true');
-        expect(body.get('volume')).toBe('8');
+        expect(body.get('volume')).toBe('0');
         expect(body.get('muteVol')).toBe('2');
+        expect(body.get('darkModeConfigured')).toBe(configured);
+        expect(body.get('darkMode')).toBe(darkMode);
+        expect(body.get('profile')).toBe('Road Trip');
+        expect(body.get('clearProfile')).toBe('false');
+        expect(body.get('priorityArrowOnly')).toBe('true');
+        expect(body.get('alertPersist')).toBe('4');
+        expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST'))
+            .toHaveLength(1);
+        unmount();
+    });
+
+    it('shows saved overrides immediately and can return volume to the profile', async () => {
+        const fetchMock = installDefaultFetch([{
+            method: 'GET', match: '/api/autopush/slots',
+            respond: jsonResponse({
+                schemaVersion: 4, enabled: true, activeSlot: 0,
+                slots: [{
+                    name: 'Default', profile: 'Road Trip', color: 31,
+                    volumeConfigured: true, volume: 6, muteVolume: 2,
+                    darkModeConfigured: true, darkMode: false,
+                    alertPersist: 5, priorityArrowOnly: true
+                }]
+            })
+        }]);
+        const { unmount } = render(Page);
+        await screen.findByText('Road Trip');
+        await fireEvent.click(screen.getByRole('button', { name: /^edit$/i }));
+
+        expect(screen.getByText('Override profile settings').closest('details')).toHaveAttribute('open');
+        expect(screen.getByLabelText('Main volume (0–9)')).toHaveValue(6);
+        expect(screen.getByLabelText('Muted volume (0–9)')).toHaveValue(2);
+        expect(screen.getByLabelText('V1 detector display')).toHaveValue('off');
+        await fireEvent.click(screen.getByLabelText('Override profile volume'));
+        await fireEvent.click(screen.getByRole('button', { name: /^save slot$/i }));
+        await screen.findByText('Slot saved!');
+
+        const body = fetchMock.mock.calls.find(
+            ([url, init]) => url === '/api/autopush/slot' && init?.method === 'POST'
+        )[1].body;
+        expect(body.get('volumeConfigured')).toBe('false');
+        expect(body.has('volume')).toBe(false);
+        expect(body.has('muteVol')).toBe(false);
         expect(body.get('darkModeConfigured')).toBe('true');
-        expect(body.get('darkMode')).toBe('true');
+        expect(body.get('darkMode')).toBe('false');
+        expect(body.get('alertPersist')).toBe('5');
+        expect(body.get('priorityArrowOnly')).toBe('true');
         unmount();
     });
 
@@ -288,10 +353,10 @@ describe('autopush route page', () => {
         await screen.findByText(/profile settings migration is still pending/i);
         const edit = screen.getByRole('button', { name: /^edit$/i });
         expect(edit).toBeDisabled();
-        for (const activate of screen.getAllByRole('button', { name: /^activate$/i })) {
+        for (const activate of screen.getAllByRole('button', { name: /^set as default$/i })) {
             expect(activate).toBeDisabled();
         }
-        const push = screen.getByRole('button', { name: /push now/i });
+        const push = screen.getByRole('button', { name: /apply to v1/i });
         await waitFor(() => expect(push).toBeEnabled());
         await fireEvent.click(push);
         await screen.findByText(/Slot 1 queued as operation 42/);
@@ -313,18 +378,18 @@ describe('autopush route page', () => {
         const { unmount } = render(Page);
 
         await screen.findByText('Highway');
-        await fireEvent.click(screen.getAllByRole('button', { name: /^activate$/i })[0]);
+        await fireEvent.click(screen.getAllByRole('button', { name: /^set as default$/i })[0]);
 
-        await screen.findByText('Failed to activate');
+        await screen.findByText('Failed to set default slot');
         expect(screen.getByText('Highway')).toBeInTheDocument();
         expect(screen.getAllByText('Global default')).toHaveLength(1);
-        expect(screen.getAllByRole('button', { name: /^activate$/i })).toHaveLength(2);
+        expect(screen.getAllByRole('button', { name: /^set as default$/i })).toHaveLength(2);
 
         unmount();
     });
 
-    it('announces activation with the 1-based slot number', async () => {
-        installDefaultFetch([
+    it('sets the default with the 1-based slot number without applying the slot', async () => {
+        const fetchMock = installDefaultFetch([
             {
                 method: 'POST',
                 match: '/api/autopush/activate',
@@ -334,11 +399,16 @@ describe('autopush route page', () => {
         const { unmount } = render(Page);
 
         await screen.findByText('Highway');
-        await fireEvent.click(screen.getAllByRole('button', { name: /^activate$/i })[0]);
+        await fireEvent.click(screen.getAllByRole('button', { name: /^set as default$/i })[0]);
 
         // User-facing slot numbers are one-based.
-        await screen.findByText('Slot 1 activated');
+        await screen.findByText('Slot 1 set as default');
         expect(screen.getAllByText('Global default')).toHaveLength(1);
+        const posts = fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST');
+        expect(posts).toHaveLength(1);
+        expect(posts[0][0]).toBe('/api/autopush/activate');
+        expect(posts[0][1].body.get('slot')).toBe('0');
+        expect(posts[0][1].body.get('enable')).toBe('true');
 
         unmount();
     });
@@ -374,7 +444,7 @@ describe('autopush route page', () => {
         await screen.findByText('Road Trip (missing)');
         await fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
         expect(await screen.findByRole('option', { name: 'Road Trip (missing)' })).toBeInTheDocument();
-        expect(screen.getByRole('button', { name: /^save$/i })).toBeDisabled();
+        expect(screen.getByRole('button', { name: /^save slot$/i })).toBeDisabled();
 
         unmount();
     });
@@ -386,7 +456,7 @@ describe('autopush route page', () => {
         await screen.findByText('Global default');
         expect(
             screen.getByText(
-                /Auto-Push sends V1 settings when you connect during normal runtime.*Slot volume and dark mode override the assigned profile only when explicitly set\./s
+                /Each slot uses a saved V1 profile.*unless that detector has its own slot selected in/s
             )
         ).toBeInTheDocument();
 
@@ -401,18 +471,18 @@ describe('autopush route page', () => {
         const { unmount } = render(Page);
 
         await screen.findByText(
-            'Push Now starts a verified Apply for the exact captured V1, restarts briefly into normal runtime, then returns here with the durable result.'
+            'Apply to V1 uses the captured detector. V1Simple restarts to apply and check its settings, then returns here with the result.'
         );
-        expect(await screen.findAllByRole('button', { name: /push now/i })).toHaveLength(3);
-        expect(screen.getAllByRole('button', { name: /push now/i })[0]).toBeEnabled();
-        expect(screen.getAllByRole('button', { name: /push now/i })[1]).toBeEnabled();
-        expect(screen.getAllByRole('button', { name: /push now/i })[2]).toBeDisabled();
-        for (const button of screen.getAllByRole('button', { name: /^activate$/i })) {
+        expect(await screen.findAllByRole('button', { name: /apply to v1/i })).toHaveLength(3);
+        expect(screen.getAllByRole('button', { name: /apply to v1/i })[0]).toBeEnabled();
+        expect(screen.getAllByRole('button', { name: /apply to v1/i })[1]).toBeEnabled();
+        expect(screen.getAllByRole('button', { name: /apply to v1/i })[2]).toBeDisabled();
+        for (const button of screen.getAllByRole('button', { name: /^set as default$/i })) {
             expect(button).toBeEnabled();
         }
 
-        await fireEvent.click(screen.getAllByRole('button', { name: /^activate$/i })[0]);
-        await screen.findByText('Slot 1 activated');
+        await fireEvent.click(screen.getAllByRole('button', { name: /^set as default$/i })[0]);
+        await screen.findByText('Slot 1 set as default');
         expect(
             fetchMock.mock.calls.some(
                 ([url, init]) => url === '/api/autopush/activate' && init?.method === 'POST'
@@ -420,8 +490,8 @@ describe('autopush route page', () => {
         ).toBe(true);
 
         await fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
-        expect(screen.getByRole('button', { name: /^save$/i })).toBeEnabled();
-        await fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+        expect(screen.getByRole('button', { name: /^save slot$/i })).toBeEnabled();
+        await fireEvent.click(screen.getByRole('button', { name: /^save slot$/i }));
         await screen.findByText('Slot saved!');
         expect(
             fetchMock.mock.calls.some(
@@ -437,16 +507,16 @@ describe('autopush route page', () => {
         const { unmount } = render(Page);
 
         await screen.findByText(
-            'Push Now is available in maintenance mode; normal runtime remains dedicated to detector execution.'
+            'Apply to V1 is available in maintenance mode. Auto-Push still applies the selected slot when your V1 connects during normal use.'
         );
-        const pushButton = screen.getAllByRole('button', { name: /push now/i })[0];
+        const pushButton = screen.getAllByRole('button', { name: /apply to v1/i })[0];
         expect(pushButton).toBeDisabled();
 
         // Exercise the handler guard independently from the disabled UI state.
         pushButton.disabled = false;
         await fireEvent.click(pushButton);
         await screen.findByText(
-            'Push Now is available from maintenance mode so the verified operation can restart and return safely.'
+            'Apply to V1 is available in maintenance mode, where V1Simple can restart and return with the result.'
         );
         expect(
             fetchMock.mock.calls.some(
@@ -468,10 +538,10 @@ describe('autopush route page', () => {
         const { unmount } = render(Page);
 
         await screen.findByText(
-            'Live V1 pushes are unavailable because device runtime mode could not be verified.'
+            'Apply to V1 is unavailable because device runtime mode could not be verified.'
         );
         await screen.findByText('Highway');
-        const pushButtons = screen.getAllByRole('button', { name: /push now/i });
+        const pushButtons = screen.getAllByRole('button', { name: /apply to v1/i });
         for (const button of pushButtons) {
             expect(button).toBeDisabled();
         }
@@ -480,7 +550,7 @@ describe('autopush route page', () => {
         pushButtons[0].disabled = false;
         await fireEvent.click(pushButtons[0]);
         await screen.findByText(
-            'Push Now is unavailable until device runtime mode can be verified.'
+            'Apply to V1 is unavailable until device runtime mode can be verified.'
         );
         expect(
             fetchMock.mock.calls.some(
@@ -509,7 +579,7 @@ describe('autopush route page', () => {
         const { unmount } = render(Page);
 
         await screen.findByText('Highway');
-        const pushButton = screen.getAllByRole('button', { name: /push now/i })[0];
+        const pushButton = screen.getAllByRole('button', { name: /apply to v1/i })[0];
         await waitFor(() => expect(pushButton).toBeEnabled());
         await fireEvent.click(pushButton);
 
@@ -524,7 +594,7 @@ describe('autopush route page', () => {
         const { unmount } = render(Page);
 
         await screen.findByText('Highway');
-        const pushButton = screen.getAllByRole('button', { name: /push now/i })[0];
+        const pushButton = screen.getAllByRole('button', { name: /apply to v1/i })[0];
         await waitFor(() => expect(pushButton).toBeEnabled());
         await fireEvent.click(pushButton);
 
@@ -584,7 +654,7 @@ describe('autopush route page', () => {
             }
         ]);
         const { unmount } = render(Page);
-        const push = (await screen.findAllByRole('button', { name: /push now/i }))[0];
+        const push = (await screen.findAllByRole('button', { name: /apply to v1/i }))[0];
         await waitFor(() => expect(push).toBeEnabled());
         vi.useFakeTimers();
         void fireEvent.click(push);
@@ -639,7 +709,7 @@ describe('autopush route page', () => {
             }
         ]);
         const { unmount } = render(Page);
-        const push = (await screen.findAllByRole('button', { name: /push now/i }))[0];
+        const push = (await screen.findAllByRole('button', { name: /apply to v1/i }))[0];
         await waitFor(() => expect(push).toBeEnabled());
         await fireEvent.click(push);
         await screen.findByText(/Slot 1 queued as operation 42/);

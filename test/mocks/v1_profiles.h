@@ -1,4 +1,5 @@
 #pragma once
+#include "../../src/v1_in_the_box.h"
 #ifndef V1_PROFILES_H
 #define V1_PROFILES_H
 
@@ -14,7 +15,7 @@ struct V1UserSettings {
     uint8_t bytes[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 };
 
-inline constexpr uint8_t V1_PROFILE_SCHEMA_VERSION = 3;
+inline constexpr uint8_t V1_PROFILE_SCHEMA_VERSION = 4;
 inline constexpr uint8_t V1_PROFILE_PREVIOUS_SCHEMA_VERSION = 2;
 enum class V1UserSettingsPolicy : uint8_t { Unchanged = 0, Value = 1 };
 enum class V1ModePolicy : uint8_t { Unchanged = 0, Value = 1 };
@@ -79,6 +80,7 @@ struct V1Profile {
     String description;
     V1UserSettings settings;
     V1DetectorConfiguration detector;
+    V1InTheBoxSettings inTheBox;
     uint8_t schemaVersion = V1_PROFILE_SCHEMA_VERSION;
     bool displayOn = true;
     uint8_t mainVolume = 0xFF;

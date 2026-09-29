@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <vector>
 #include "packet_parser_types.h"
+#include "v1_in_the_box.h"
 
 struct V1DetectorSnapshot {
     bool available = false;
@@ -52,6 +53,7 @@ struct V1DeviceRecord {
     uint8_t defaultProfile = 0; // 0=none/global slot, 1..3=auto-push slot override
     uint32_t lastSeenMs = 0; // Informational uptime; durable list order owns recency.
     V1DetectorSnapshot snapshot;
+    V1InTheBoxSettings inTheBox; // Last successfully applied app policy, independent of observed settings.
 };
 
 enum class V1DeviceMutationStatus : uint8_t {
@@ -118,6 +120,8 @@ class V1DeviceStore {
     bool recordSnapshotInMemory(const String& address, const V1DetectorSnapshot& snapshot);
     V1DeviceMutationResult setDeviceName(const String& address, const String& name);
     V1DeviceMutationResult setDeviceDefaultProfile(const String& address, uint8_t defaultProfile);
+    V1DeviceMutationResult setDeviceInTheBox(const String& address, const V1InTheBoxSettings& settings);
+    V1DeviceSnapshotStatus getInTheBoxForAddressChecked(const String& address, V1InTheBoxSettings& settings) const;
     V1DeviceMutationResult removeDevice(const String& address);
     bool hasPendingSave() const { return dirty_ || mirrorDirty_; }
     bool flushPendingSave();
@@ -131,12 +135,10 @@ class V1DeviceStore {
   private:
     static constexpr size_t MAX_DEVICES = 16;
     static constexpr size_t MAX_NAME_LEN = 32;
-    // Native worst-case coverage pins a 16-device catalog with every sweep
-    // field and 32 quote characters in every legal name at 70,180 bytes.
-    // Rounding to the next 4 KiB boundary gives 73,728 bytes and 3,548 bytes
-    // of serialization/parser headroom while bounding malformed input and
-    // peak duplication even when external RAM is available.
-    static constexpr size_t MAX_STORE_BYTES = 72u * 1024u;
+    // Native coverage pins the full sixteen-device catalog at 79,348 bytes,
+    // including every observed sweep and maximal applied app policy. The next
+    // 4 KiB boundary leaves 2,572 bytes while bounding malformed input.
+    static constexpr size_t MAX_STORE_BYTES = 80u * 1024u;
 
     enum class StoreReadStatus : uint8_t { Missing = 0, Valid, Unavailable, Invalid };
 

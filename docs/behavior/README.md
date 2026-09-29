@@ -1,19 +1,21 @@
 # Behavior traces for maintenance
 
-These notes explain the five failures repaired in `daf32ed`: how input reaches
-its final consumer, what the repair changes, and the exact limits of the tests.
+These notes explain maintained behavior paths, including the five failures
+repaired in `daf32ed`: how input reaches its final consumer, what changes at
+that boundary, and the exact limits of the tests.
 Use them to give a bounded agent enough context to handle one behavior without
 rediscovering the repository. They are source navigation and executable
 contracts; source and observed behavior remain authoritative.
 
 Read [AGENTS.md](../../AGENTS.md) and
-[Valentine's philosophy](../VALENTINE_PHILOSOPHY.md) first. This guide covers
-these five paths, not every feature or operating condition in the product.
+[Valentine's philosophy](../VALENTINE_PHILOSOPHY.md) first. Each trace covers its
+named path and operating conditions.
 
 ## Choose the behavior
 
 | Symptom or change | Trace to read | What the fix closes |
 |---|---|---|
+| Profile frequency-box controls, automatic mute ownership, or applied app policy | [In-the-Box](IN_THE_BOX.md) | Explicit audio choices, complete-table classification, manual precedence, and detector-specific persistence. |
 | USB profile replacement or an unrelated slot edit changes volume/dark-mode overrides | [USB profiles](USB_PROFILES.md) | v4 carries the complete slot modifier state through export, validation, replacement and modeled NVS reload. Legacy imports have explicit defaults. |
 | Older Gen2 detailed alert rows disappear, including before version discovery | [V1 protocol: detailed alerts](V1_PROTOCOL.md) | Documented D6 and D8 alert destinations reach the alert table; origin, checksum and payload validation remain enforced. |
 | Custom-sweep apply times out even though a reply arrived during the send | [V1 protocol: AutoPush](V1_PROTOCOL.md) | The three refresh requests and final commit use a boundary captured before sending; older queued replies remain ineligible. |

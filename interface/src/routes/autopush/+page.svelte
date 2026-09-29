@@ -52,13 +52,13 @@
             !$runtimeStatusError &&
             typeof $runtimeStatus?.maintenanceBoot === 'boolean'
     );
-    const profileSchemaReady = $derived(data.schemaVersion === 3);
+    const profileSchemaReady = $derived(data.schemaVersion === 4);
 
     const defaultSlotNames = ['Default', 'Highway', 'Comfort'];
     const defaultSlotColors = [0x400a, 0x07e0, 0x8410];
     const slotIcons = ['🏠', '🏎️', '👥'];
     const MAINTENANCE_PUSH_NOTE =
-        'Push Now starts a verified Apply for the exact captured V1, restarts briefly into normal runtime, then returns here with the durable result.';
+        'Apply to V1 uses the captured detector. V1Simple restarts to apply and check its settings, then returns here with the result.';
 
     onMount(() => {
         const releaseRuntimeStatus = retainRuntimeStatus({ needsStatus: true });
@@ -217,7 +217,7 @@
     async function activateSlot(slot) {
         if (busy) return;
         busy = true;
-        message = { type: 'info', text: `Activating slot ${slot + 1}...` };
+        message = { type: 'info', text: `Setting slot ${slot + 1} as default...` };
         try {
             const formData = new FormData();
             formData.append('slot', slot);
@@ -232,9 +232,9 @@
             if (res.ok) {
                 data.activeSlot = slot;
                 data.enabled = true;
-                message = { type: 'success', text: `Slot ${slot + 1} activated` };
+                message = { type: 'success', text: `Slot ${slot + 1} set as default` };
             } else {
-                message = { type: 'error', text: 'Failed to activate' };
+                message = { type: 'error', text: 'Failed to set default slot' };
             }
         } catch (e) {
             message = { type: 'error', text: 'Connection error' };
@@ -248,14 +248,14 @@
         if (!runtimeModeKnown) {
             message = {
                 type: 'warning',
-                text: 'Push Now is unavailable until device runtime mode can be verified.'
+                text: 'Apply to V1 is unavailable until device runtime mode can be verified.'
             };
             return;
         }
         if (!$isMaintenance) {
             message = {
                 type: 'info',
-                text: 'Push Now is available from maintenance mode so the verified operation can restart and return safely.'
+                text: 'Apply to V1 is available in maintenance mode, where V1Simple can restart and return with the result.'
             };
             return;
         }
@@ -460,7 +460,7 @@
 <div class="page-stack">
     <PageHeader
         title="Auto-Push Profiles"
-        subtitle="Configure saved Auto-Push slots and choose the global default."
+        subtitle="Choose the profiles V1Simple applies when your V1 connects."
     >
         <div class="badge {data.enabled ? 'badge-success' : 'badge-ghost'}">
             {data.enabled ? 'Enabled' : 'Disabled'}
@@ -484,6 +484,9 @@
                 <p class="copy-muted">
                     Result: {operationStatus.result || 'in_progress'} · Reason: {operationStatus.reason || 'none'}
                 </p>
+                {#if operationStatus.reason === 'in_the_box_persist_failed'}
+                    <p class="copy-caption">V1Simple could not confirm saving the In-the-Box choices, so it did not activate them. Detector results are shown below.</p>
+                {/if}
                 {#if operationStatus.kind && operationStatus.targetAddress}
                     <p class="copy-caption">
                         {operationStatus.kind} · target {operationStatus.targetAddress} · source {operationStatus.source}
@@ -511,40 +514,56 @@
 
     {#if !loading && !profileSchemaReady}
         <StatusAlert
-            message="The profile settings migration is still pending. Slot editing and activation are temporarily read-only; existing saved slots can still be pushed."
+            message="The profile settings migration is still pending. Slot editing and default selection are temporarily read-only; existing saved slots can still be applied."
             fallbackType="warning"
         />
     {/if}
 
-    <div class="surface-note">
+    <div class="surface-note space-y-3">
         <p>
-            Auto-Push sends V1 settings when you connect during normal runtime. The global default
-            slot is used unless a saved V1 device override selects another slot. Slot volume and
-            dark mode override the assigned profile only when explicitly set.
+            Each slot uses a saved V1 profile. Auto-Push applies the global default when your V1
+            connects, unless that detector has its own slot selected in <a class="link" href="/devices">Devices</a>.
         </p>
+        <details>
+            <summary class="cursor-pointer text-sm font-semibold">Saving and applying slots</summary>
+            <dl class="mt-3 grid gap-3 sm:grid-cols-3">
+                <div>
+                    <dt class="font-semibold">Save slot</dt>
+                    <dd class="copy-caption">Stores the profile assignment, name, color and options.</dd>
+                </div>
+                <div>
+                    <dt class="font-semibold">Set as default</dt>
+                    <dd class="copy-caption">Enables Auto-Push and chooses the global default for future connections.</dd>
+                </div>
+                <div>
+                    <dt class="font-semibold">Apply to V1</dt>
+                    <dd class="copy-caption">Applies a saved slot to the captured V1 and checks the result.</dd>
+                </div>
+            </dl>
+        </details>
     </div>
 
     {#if $runtimeStatusLoading}
         <StatusAlert
-            message="Checking device runtime mode before enabling live V1 pushes…"
+            message="Checking device runtime mode before enabling Apply to V1…"
             fallbackType="info"
         />
     {:else if !runtimeModeKnown}
         <StatusAlert
-            message="Live V1 pushes are unavailable because device runtime mode could not be verified."
+            message="Apply to V1 is unavailable because device runtime mode could not be verified."
             fallbackType="warning"
         />
     {:else if $isMaintenance}
         <StatusAlert message={MAINTENANCE_PUSH_NOTE} fallbackType="info" />
         {#if !capturedSnapshot}
             <StatusAlert
-                message="No captured V1 target is available. Capture the detector before using Push Now."
+                message="No captured V1 is available. Capture the detector in V1 Profiles before using Apply to V1."
                 fallbackType="warning"
             />
         {/if}
     {:else}
         <StatusAlert
-            message="Push Now is available in maintenance mode; normal runtime remains dedicated to detector execution."
+            message="Apply to V1 is available in maintenance mode. Auto-Push still applies the selected slot when your V1 connects during normal use."
             fallbackType="info"
         />
     {/if}
@@ -558,72 +577,39 @@
             {#each data.slots as slot, i}
                 <div class="surface-card {data.activeSlot === i ? 'ring-2 ring-primary' : ''}">
                     <div class="card-body">
-                        <div class="flex items-start justify-between">
-                            <div class="flex items-center gap-3">
-                                <div class="text-3xl">{slotIcons[i]}</div>
+                        <div class="flex flex-wrap items-start justify-between gap-3">
+                            <div class="flex min-w-0 items-center gap-3">
+                                <div class="text-3xl" aria-hidden="true">{slotIcons[i]}</div>
                                 <span
                                     class="color-swatch-btn sm"
                                     style={`background-color: ${rgb565ToHex(slot.color)}`}
                                     role="img"
                                     aria-label={`${slot.name || defaultSlotNames[i]} color`}
                                 ></span>
-                                <div>
-                                    {#if editingSlot === i}
-                                        <input
-                                            type="text"
-                                            class="input w-40 input-sm"
-                                            bind:value={editingDraft.name}
-                                            placeholder={defaultSlotNames[i]}
-                                        />
-                                    {:else}
-                                        <h3 class="text-lg font-bold">
-                                            {slot.name || defaultSlotNames[i]}
-                                        </h3>
-                                    {/if}
+                                <div class="min-w-0">
+                                    <p class="copy-caption">Slot {i + 1}</p>
+                                    <h3 class="break-words text-lg font-bold">
+                                        {slot.name || defaultSlotNames[i]}
+                                    </h3>
                                     {#if data.activeSlot === i}
-                                        <span class="badge badge-sm badge-primary"
-                                            >Global default</span
-                                        >
+                                        <span class="badge badge-sm badge-primary">Global default</span>
                                     {/if}
                                 </div>
                             </div>
-                            <div class="flex gap-1">
-                                {#if editingSlot === i}
-                                    <button
-                                        class="btn btn-sm btn-success"
-                                        onclick={() => saveSlot(i)}
-                                        disabled={busy ||
-                                            (editingDraft.profile &&
-                                                !hasProfileOption(editingDraft.profile))}
-                                    >
-                                        Save
-                                    </button>
-                                    <button class="btn btn-ghost btn-sm" onclick={cancelEdit}>
-                                        Cancel
-                                    </button>
-                                {:else}
-                                    <button
-                                        class="btn btn-ghost btn-sm"
-                                        disabled={!profileSchemaReady}
-                                        onclick={() => beginEdit(i)}>Edit</button
-                                    >
-                                {/if}
-                            </div>
+                            {#if editingSlot !== i}
+                                <button
+                                    class="btn btn-ghost btn-sm"
+                                    disabled={!profileSchemaReady}
+                                    onclick={() => beginEdit(i)}>Edit</button
+                                >
+                            {/if}
                         </div>
 
                         {#if editingSlot === i}
-                            <div class="mt-3 grid grid-cols-2 gap-3">
-                                <ColorControl
-                                    id={`slot-${i}-color`}
-                                    label="Slot color"
-                                    value={editingDraft.color}
-                                    ariaLabel={`Choose ${editingDraft.name || defaultSlotNames[i]} color`}
-                                    onPick={openSlotColorPicker}
-                                    onHexChange={setSlotColor}
-                                />
+                            <div class="mt-3 space-y-5">
                                 <div class="field-control">
                                     <label class="label py-1" for={`slot-${i}-profile`}>
-                                        <span class="field-label copy-caption">Profile</span>
+                                        <span class="field-label">Profile</span>
                                     </label>
                                     <select
                                         id={`slot-${i}-profile`}
@@ -641,102 +627,158 @@
                                             <option value={p.name}>{p.name}</option>
                                         {/each}
                                     </select>
+                                    <p class="copy-caption">The saved detector settings this slot will apply.</p>
                                 </div>
-                                <div class="field-control col-span-2">
-                                    <label class="label cursor-pointer justify-start gap-3 py-1">
-                                        <input type="checkbox" class="toggle toggle-primary toggle-sm"
-                                            bind:checked={editingDraft.volumeConfigured} />
-                                        <span class="field-label copy-caption">Override profile volume</span>
+
+                                <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                                    <label class="field-control">
+                                        <span class="field-label copy-caption">Slot name</span>
+                                        <input
+                                            type="text"
+                                            class="input w-full input-sm"
+                                            bind:value={editingDraft.name}
+                                            placeholder={defaultSlotNames[i]}
+                                        />
                                     </label>
-                                    {#if editingDraft.volumeConfigured}
-                                        <div class="grid grid-cols-2 gap-3">
-                                            <label class="field-control">
-                                                <span class="field-label copy-caption">Main volume (0–9)</span>
-                                                <input class="input input-sm" type="number" min="0" max="9" bind:value={editingDraft.volume} />
+                                    <ColorControl
+                                        id={`slot-${i}-color`}
+                                        label="Slot color"
+                                        value={editingDraft.color}
+                                        ariaLabel={`Choose ${editingDraft.name || defaultSlotNames[i]} color`}
+                                        onPick={openSlotColorPicker}
+                                        onHexChange={setSlotColor}
+                                    />
+                                </div>
+
+                                <details class="surface-panel" open={editingDraft.volumeConfigured || editingDraft.darkModeConfigured}>
+                                    <summary class="cursor-pointer font-semibold">Override profile settings</summary>
+                                    <div class="mt-3 space-y-4">
+                                        <p class="copy-caption">Optional changes for this slot. The saved profile stays unchanged.</p>
+                                        <div class="field-control">
+                                            <label class="label cursor-pointer justify-start gap-3 py-1">
+                                                <input type="checkbox" class="toggle toggle-primary toggle-sm"
+                                                    bind:checked={editingDraft.volumeConfigured} />
+                                                <span class="field-label copy-caption">Override profile volume</span>
                                             </label>
-                                            <label class="field-control">
-                                                <span class="field-label copy-caption">Muted volume (0–9)</span>
-                                                <input class="input input-sm" type="number" min="0" max="9" bind:value={editingDraft.muteVolume} />
-                                            </label>
+                                            {#if editingDraft.volumeConfigured}
+                                                <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                                                    <label class="field-control">
+                                                        <span class="field-label copy-caption">Main volume (0–9)</span>
+                                                        <input class="input w-full input-sm" type="number" min="0" max="9" bind:value={editingDraft.volume} />
+                                                    </label>
+                                                    <label class="field-control">
+                                                        <span class="field-label copy-caption">Muted volume (0–9)</span>
+                                                        <input class="input w-full input-sm" type="number" min="0" max="9" bind:value={editingDraft.muteVolume} />
+                                                    </label>
+                                                </div>
+                                                <p class="copy-caption">Uses the assigned profile’s {selectedProfileVolumePolicy === 'saved' ? 'Save on V1' : selectedProfileVolumePolicy === 'temporary' ? 'Temporary' : 'volume'} policy. The profile must use Temporary or Save on V1.</p>
+                                            {/if}
                                         </div>
-                                        <p class="copy-caption">Uses the assigned profile’s {selectedProfileVolumePolicy === 'saved' ? 'Save on V1' : selectedProfileVolumePolicy === 'temporary' ? 'Temporary' : 'volume'} policy. The profile must use Temporary or Save on V1.</p>
-                                    {/if}
-                                </div>
-                                <label class="field-control">
-                                    <span class="field-label copy-caption">Dark mode</span>
-                                    <select class="select select-sm" value={editingDraft.darkModeConfigured ? (editingDraft.darkMode ? 'on' : 'off') : 'profile'}
-                                        onchange={(event) => {
-                                            editingDraft.darkModeConfigured = event.currentTarget.value !== 'profile';
-                                            editingDraft.darkMode = event.currentTarget.value === 'on';
-                                        }}>
-                                        <option value="profile">Use profile</option>
-                                        <option value="on">On</option>
-                                        <option value="off">Off</option>
-                                    </select>
-                                </label>
-                                <div class="field-control">
-                                    <label class="label cursor-pointer justify-start gap-3 py-1">
-                                        <input
-                                            type="checkbox"
-                                            class="toggle toggle-primary toggle-sm"
-                                            bind:checked={editingDraft.priorityArrowOnly}
-                                        />
-                                        <span class="field-label copy-caption"
-                                            >Priority Arrow Only</span
-                                        >
-                                    </label>
-                                </div>
-                                <div class="field-control">
-                                    <label class="label py-1" for={`slot-${i}-persist`}>
-                                        <span class="field-label copy-caption"
-                                            >Alert persistence (seconds)</span
-                                        >
-                                        <span class="field-hint copy-micro">0 = off, max 5s</span>
-                                    </label>
-                                    <div class="flex items-center gap-2">
-                                        <input
-                                            id={`slot-${i}-persist`}
-                                            type="range"
-                                            min="0"
-                                            max="5"
-                                            step="1"
-                                            class="range flex-1 range-primary range-xs"
-                                            bind:value={editingDraft.alertPersist}
-                                        />
-                                        <input
-                                            type="number"
-                                            min="0"
-                                            max="5"
-                                            class="input w-16 input-xs"
-                                            bind:value={editingDraft.alertPersist}
-                                        />
-                                        <span class="copy-caption">s</span>
+                                        <label class="field-control">
+                                            <span class="field-label copy-caption">V1 detector display</span>
+                                            <select class="select w-full min-w-0 select-sm" value={editingDraft.darkModeConfigured ? (editingDraft.darkMode ? 'on' : 'off') : 'profile'}
+                                                onchange={(event) => {
+                                                    editingDraft.darkModeConfigured = event.currentTarget.value !== 'profile';
+                                                    editingDraft.darkMode = event.currentTarget.value === 'on';
+                                                }}>
+                                                <option value="profile">Use profile</option>
+                                                <option value="on">Display off — Bluetooth light follows profile</option>
+                                                <option value="off">Display on</option>
+                                            </select>
+                                        </label>
+                                        <p class="copy-caption">
+                                            With the detector display off, the Bluetooth light follows the assigned profile.
+                                            Choose its light setting in <a class="link" href="/profiles">V1 Profiles</a>.
+                                        </p>
                                     </div>
+                                </details>
+
+                                <section class="space-y-3" aria-labelledby={`slot-${i}-screen`}>
+                                    <div>
+                                        <h4 id={`slot-${i}-screen`} class="font-semibold">V1Simple display</h4>
+                                        <p class="copy-caption">Choose how alerts appear on the V1Simple screen.</p>
+                                    </div>
+                                    <div class="field-control">
+                                        <label class="label cursor-pointer justify-start gap-3 py-1">
+                                            <input
+                                                type="checkbox"
+                                                class="toggle toggle-primary toggle-sm"
+                                                bind:checked={editingDraft.priorityArrowOnly}
+                                            />
+                                            <span class="field-label copy-caption">Priority arrow only</span>
+                                        </label>
+                                        <p class="copy-caption">Show only the priority alert’s direction. Leave off to show all V1 alert directions.</p>
+                                    </div>
+                                    <div class="field-control">
+                                        <label class="label flex-wrap py-1" for={`slot-${i}-persist`}>
+                                            <span class="field-label copy-caption">Alert persistence (seconds)</span>
+                                            <span class="field-hint copy-micro">0 = off, max 5s</span>
+                                        </label>
+                                        <div class="flex items-center gap-2">
+                                            <input
+                                                id={`slot-${i}-persist`}
+                                                type="range"
+                                                min="0"
+                                                max="5"
+                                                step="1"
+                                                class="range min-w-0 flex-1 range-primary range-xs"
+                                                bind:value={editingDraft.alertPersist}
+                                            />
+                                            <input
+                                                aria-label="Alert persistence value (seconds)"
+                                                type="number"
+                                                min="0"
+                                                max="5"
+                                                class="input w-16 input-xs"
+                                                bind:value={editingDraft.alertPersist}
+                                            />
+                                            <span class="copy-caption">s</span>
+                                        </div>
+                                        <p class="copy-caption">Keep the last alert visible briefly after it clears.</p>
+                                    </div>
+                                </section>
+                                <div class="card-actions justify-end">
+                                    <button class="btn btn-ghost btn-sm" onclick={cancelEdit}>Cancel</button>
+                                    <button
+                                        class="btn btn-sm btn-success"
+                                        onclick={() => saveSlot(i)}
+                                        disabled={busy ||
+                                            (editingDraft.profile &&
+                                                !hasProfileOption(editingDraft.profile))}
+                                    >
+                                        Save slot
+                                    </button>
                                 </div>
                             </div>
                         {:else}
-                            <div class="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-                                <div class="copy-muted">Profile:</div>
-                                <div class="font-medium">
-                                    {slot.profile || '—'}{slot.profile && !hasProfileOption(slot.profile)
-                                        ? ' (missing)'
-                                        : ''}
+                            <div class="mt-3 space-y-3">
+                                <div>
+                                    <p class="copy-caption">Profile</p>
+                                    <p class="break-words text-lg font-semibold">
+                                        {slot.profile || 'None selected'}{slot.profile && !hasProfileOption(slot.profile)
+                                            ? ' (missing)'
+                                            : ''}
+                                    </p>
                                 </div>
-                                <div class="copy-muted">Options:</div>
-                                <div class="font-medium">
-                                    {#if slot.priorityArrowOnly}↑ Prio Arrow{/if}
-                                    {#if !slot.priorityArrowOnly}—{/if}
-                                </div>
-                                <div class="copy-muted">Alert persistence:</div>
-                                <div class="font-medium">{slot.alertPersist || 0}s</div>
-                                <div class="copy-muted">Volume:</div>
-                                <div class="font-medium">{slot.volumeConfigured ? `${slot.volume} / ${slot.muteVolume}` : 'Use profile'}</div>
-                                <div class="copy-muted">Dark mode:</div>
-                                <div class="font-medium">{slot.darkModeConfigured ? (slot.darkMode ? 'On' : 'Off') : 'Use profile'}</div>
+                                <dl class="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+                                    <div>
+                                        <dt class="copy-muted">Volume</dt>
+                                        <dd>{slot.volumeConfigured ? `Main ${slot.volume} · Muted ${slot.muteVolume}` : 'Use profile'}</dd>
+                                    </div>
+                                    <div>
+                                        <dt class="copy-muted">V1 detector display</dt>
+                                        <dd>{slot.darkModeConfigured ? (slot.darkMode ? 'Display off — Bluetooth light follows profile' : 'Display on') : 'Use profile'}</dd>
+                                    </div>
+                                    <div>
+                                        <dt class="copy-muted">V1Simple arrows</dt>
+                                        <dd>{slot.priorityArrowOnly ? 'Priority arrow only' : 'All alert directions'}</dd>
+                                    </div>
+                                    <div>
+                                        <dt class="copy-muted">V1Simple alert persistence</dt>
+                                        <dd>{slot.alertPersist ? `${slot.alertPersist}s after an alert clears` : 'Off'}</dd>
+                                    </div>
+                                </dl>
                             </div>
-                        {/if}
-
-                        {#if editingSlot !== i}
                             <div class="mt-3 card-actions justify-end">
                                 {#if data.activeSlot !== i}
                                     <button
@@ -744,7 +786,7 @@
                                         onclick={() => activateSlot(i)}
                                         disabled={busy || !profileSchemaReady}
                                     >
-                                        Activate
+                                        Set as default
                                     </button>
                                 {/if}
                                 <button
@@ -756,7 +798,7 @@
                                         !$isMaintenance ||
                                         !capturedSnapshot}
                                 >
-                                    Push Now
+                                    Apply to V1
                                 </button>
                             </div>
                         {/if}

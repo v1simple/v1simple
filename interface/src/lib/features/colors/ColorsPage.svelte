@@ -37,6 +37,25 @@
     } from '$lib/features/colors/colorsPageConfig';
 
     let colors = $state(cloneDefaultColors());
+    let activeSection = $state('screen');
+    const sections = [
+        { id: 'screen', title: 'Screen' },
+        { id: 'status', title: 'Status' },
+        { id: 'alerts', title: 'Alert colors' },
+        { id: 'integrations', title: 'Integrations' }
+    ];
+
+    function sectionSummary(id) {
+        if (id === 'screen') {
+            return `${Math.max(1, Math.round((colors.brightness / 255) * 100))}% brightness · Quiet screen ${stealthEnabled ? 'on' : 'off'}`;
+        }
+        if (id === 'status') {
+            const enabled = VISIBILITY_TOGGLES.filter((toggle) => toggle.inverted && !colors[toggle.key]).length;
+            return `${enabled} indicators enabled · Status colors`;
+        }
+        if (id === 'alerts') return colors.freqUseBandColor ? 'Frequency uses band color · Arrows & signal bars' : 'Custom frequency color · Arrows & signal bars';
+        return 'OBD badge · Four ALP states';
+    }
     // Signal-bar editor: 'simple' authors a 3-stop gradient (bottom/middle/top)
     // and derives bar1..6 from it; 'advanced' edits the six physical segments.
     const STOP_FIELDS = [
@@ -219,7 +238,7 @@
 
     async function resetDefaults() {
         if (saving) return;
-        if (!confirm('Reset all colors to defaults?')) return;
+        if (!confirm('Reset display colors, brightness, and status indicators to defaults?')) return;
         saving = true;
         try {
             const res = await fetchWithTimeout(DISPLAY_SETTINGS_RESET_ENDPOINT, { method: 'POST' });
@@ -273,7 +292,15 @@
 </script>
 
 <div class="page-stack">
-    <PageHeader title="Display Colors" subtitle="Customize alert colors" />
+    <PageHeader
+        title="V1Simple Display"
+        subtitle="Choose screen visibility, brightness, and alert colors."
+    />
+    <p class="copy-muted">
+        These settings control the V1Simple screen.
+        For the V1 detector’s own display and Bluetooth light, open
+        <a class="link link-primary" href="/profiles">V1 Profiles</a>.
+    </p>
 
     <StatusAlert {message} fallbackType="success" dismiss={() => (message = null)} />
 
@@ -295,346 +322,35 @@
             </div>
         </div>
     {:else}
-        <div class="surface-card">
-            <div class="card-body">
-                <CardSectionHead title="Counter & Frequency" />
-                <div class="grid grid-cols-2 gap-4">
-                    <ColorControl
-                        id="bogey-color"
-                        label="Bogey Counter"
-                        value={colors.bogey}
-                        swatchSize="lg"
-                        inputClass="input input-sm w-20 font-mono text-xs"
-                        ariaLabel="Bogey counter color"
-                        onPick={() => openPicker('bogey', 'Bogey Counter')}
-                        onHexChange={(value) => handleHexInput('bogey', value)}
-                    >
-                        <span
-                            class="font-mono text-2xl font-bold"
-                            style={`color: ${rgb565ToHex(colors.bogey)}`}>1.</span
-                        >
-                    </ColorControl>
-
-                    <div class="space-y-2">
-                        <ColorControl
-                            id="freq-color"
-                            label="Frequency Display"
-                            value={colors.freq}
-                            swatchSize="lg"
-                            inputClass="input input-sm w-20 font-mono text-xs"
-                            ariaLabel="Frequency display color"
-                            disabled={colors.freqUseBandColor}
-                            onPick={() => openPicker('freq', 'Frequency Display')}
-                            onHexChange={(value) => handleHexInput('freq', value)}
-                        >
-                            <span
-                                class="font-mono text-2xl font-bold"
-                                class:opacity-50={colors.freqUseBandColor}
-                                style={`color: ${rgb565ToHex(colors.freq)}`}
-                            >
-                                35.5
-                            </span>
-                        </ColorControl>
-                        <label class="label mt-1 cursor-pointer justify-start gap-2">
-                            <input
-                                type="checkbox"
-                                class="toggle toggle-primary toggle-sm"
-                                bind:checked={colors.freqUseBandColor}
-                            />
-                            <span class="field-label-inline">Use band color for frequency</span>
-                        </label>
-                    </div>
-                </div>
-
-                <div class="divider my-2"></div>
-
-                <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
-                    <ColorControl
-                        id="muted-color"
-                        label="Muted Alert Color"
-                        labelHint="When alert is muted"
-                        value={colors.muted}
-                        swatchSize="lg"
-                        inputClass="input input-sm w-20 font-mono text-xs"
-                        ariaLabel="Muted alert color"
-                        onPick={() => openPicker('muted', 'Muted Alert')}
-                        onHexChange={(value) => handleHexInput('muted', value)}
-                    >
-                        <span
-                            class="font-mono text-2xl font-bold"
-                            style={`color: ${rgb565ToHex(colors.muted)}`}>35.5</span
-                        >
-                        <span class="copy-muted">(muted)</span>
-                    </ColorControl>
-
-                    <ColorControl
-                        id="persisted-color"
-                        label="Persisted Alert Color"
-                        labelHint="Ghost alert after V1 clears"
-                        value={colors.persisted}
-                        swatchSize="lg"
-                        inputClass="input input-sm w-20 font-mono text-xs"
-                        ariaLabel="Persisted alert color"
-                        onPick={() => openPicker('persisted', 'Persisted Alert')}
-                        onHexChange={(value) => handleHexInput('persisted', value)}
-                    >
-                        <span
-                            class="font-mono text-2xl font-bold"
-                            style={`color: ${rgb565ToHex(colors.persisted)}`}>35.5</span
-                        >
-                        <span class="copy-muted">(persisted)</span>
-                    </ColorControl>
-                </div>
-
-                <div class="divider my-2"></div>
-                <h3 class="copy-subheading mt-2">Volume Indicator</h3>
-                <div class="grid grid-cols-2 gap-4">
-                    <ColorControl
-                        id="volumeMain-color"
-                        label="Main Volume"
-                        value={colors.volumeMain}
-                        swatchSize="sm"
-                        ariaLabel="Main volume color"
-                        onPick={() => openPicker('volumeMain', 'Main Volume')}
-                        onHexChange={(value) => handleHexInput('volumeMain', value)}
-                    >
-                        <span
-                            class="font-mono text-lg font-bold"
-                            style={`color: ${rgb565ToHex(colors.volumeMain)}`}>5V</span
-                        >
-                    </ColorControl>
-
-                    <ColorControl
-                        id="volumeMute-color"
-                        label="Mute Volume"
-                        value={colors.volumeMute}
-                        swatchSize="sm"
-                        ariaLabel="Mute volume color"
-                        onPick={() => openPicker('volumeMute', 'Mute Volume')}
-                        onHexChange={(value) => handleHexInput('volumeMute', value)}
-                    >
-                        <span
-                            class="font-mono text-lg font-bold"
-                            style={`color: ${rgb565ToHex(colors.volumeMute)}`}>0M</span
-                        >
-                    </ColorControl>
-                </div>
-
-                <div class="divider my-2"></div>
-                <h3 class="copy-subheading mt-2">RSSI Labels</h3>
-                <p class="copy-subtle mb-2">Colors for V1 and Proxy connection strength labels</p>
-                <div class="grid grid-cols-2 gap-4">
-                    <ColorControl
-                        id="rssiV1-color"
-                        label="V1 RSSI (V)"
-                        value={colors.rssiV1}
-                        swatchSize="sm"
-                        ariaLabel="V1 RSSI label color"
-                        onPick={() => openPicker('rssiV1', 'V1 RSSI Label')}
-                        onHexChange={(value) => handleHexInput('rssiV1', value)}
-                    >
-                        <span
-                            class="font-mono text-lg font-bold"
-                            style={`color: ${rgb565ToHex(colors.rssiV1)}`}>V</span
-                        >
-                        <span class="font-mono text-lg text-success">-55</span>
-                    </ColorControl>
-
-                    <ColorControl
-                        id="rssiProxy-color"
-                        label="Proxy RSSI (P)"
-                        value={colors.rssiProxy}
-                        swatchSize="sm"
-                        ariaLabel="Proxy RSSI label color"
-                        onPick={() => openPicker('rssiProxy', 'Proxy RSSI Label')}
-                        onHexChange={(value) => handleHexInput('rssiProxy', value)}
-                    >
-                        <span
-                            class="font-mono text-lg font-bold"
-                            style={`color: ${rgb565ToHex(colors.rssiProxy)}`}>P</span
-                        >
-                        <span class="font-mono text-lg text-success">-62</span>
-                    </ColorControl>
-                </div>
-            </div>
-        </div>
-
-        <ColorFieldsCard
-            title="Band Indicators"
-            fields={BAND_FIELDS}
-            gridClass="grid grid-cols-2 md:grid-cols-4 gap-4"
-            {colors}
-            onPick={openPicker}
-            onHexChange={handleHexInput}
-        />
-
-        <ColorFieldsCard
-            title="Direction Arrows"
-            fields={ARROW_FIELDS}
-            gridClass="grid grid-cols-3 gap-4"
-            defaultSwatchSize="md"
-            {colors}
-            onPick={openPicker}
-            onHexChange={handleHexInput}
-        />
-
-        <ColorFieldsCard
-            title="OBD"
-            subtitle="OBD status text color."
-            fields={BADGE_FIELDS}
-            gridClass="grid grid-cols-1 md:grid-cols-3 gap-4"
-            defaultSwatchSize="md"
-            {colors}
-            onPick={openPicker}
-            onHexChange={handleHexInput}
-        />
-
-        <ColorFieldsCard
-            title="ALP"
-            subtitle="ALP laser-alert badge colors — matches control pad LED states."
-            fields={ALP_BADGE_FIELDS}
-            gridClass="grid grid-cols-2 md:grid-cols-4 gap-4"
-            defaultSwatchSize="md"
-            {colors}
-            onPick={openPicker}
-            onHexChange={handleHexInput}
-        />
-
-        <StatusIndicatorsCard
-            {colors}
-            rows={STATUS_FIELD_ROWS}
-            toggles={VISIBILITY_TOGGLES}
-            onPick={openPicker}
-            onHexChange={handleHexInput}
-            onToggle={updateToggle}
-        />
-
-        <div class="surface-card">
-            <div class="card-body">
-                <CardSectionHead
-                    title="Stealth Mode"
-                    subtitle="Blank screen with OBD speed when idle. Alerts display normally, then return to stealth."
-                />
-                <ToggleSetting
-                    title="Enable Stealth Mode"
-                    description="Double-press BOOT to toggle on/off. Shows -- if OBD speed unavailable."
-                    checked={stealthEnabled}
-                    onChange={saveStealthEnabled}
-                />
-            </div>
-        </div>
-        <div class="surface-card">
-            <div class="card-body">
-                <CardSectionHead
-                    title="Display Brightness"
-                    subtitle="Adjust the screen backlight level."
-                />
-                <div class="field-control">
-                    <div class="flex items-center gap-4">
-                        <label for="brightness-slider" class="copy-subtle">🌑</label>
-                        <input
-                            id="brightness-slider"
-                            type="range"
-                            min="1"
-                            max="255"
-                            bind:value={colors.brightness}
-                            class="range flex-1 range-primary"
-                        />
-                        <span class="copy-subtle">☀️</span>
-                        <span class="w-12 text-right font-mono text-sm"
-                            >{Math.max(1, Math.round((colors.brightness / 255) * 100))}%</span
-                        >
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div class="surface-card">
-            <div class="card-body">
-                <CardSectionHead
-                    title="Signal Bars"
-                    subtitle={barEditor.mode === 'simple'
-                        ? "Pick bottom, middle, and top; the ramp is blended across the display's 6-bar meter."
-                        : 'Edit each of the six physical signal-bar segments.'}
-                />
-                {#if barEditor.mode === 'simple'}
-                    <div class="grid grid-cols-3 gap-2">
-                        {#each STOP_FIELDS as field}
-                            <ColorControl
-                                id={`${field.key}-color`}
-                                label={field.label}
-                                value={barEditor[field.prop]}
-                                swatchSize="sm"
-                                inputClass="input input-xs w-14 font-mono text-xs text-center"
-                                ariaLabel={`${field.label} gradient stop color`}
-                                onPick={() => openPicker(field.key, field.pickerLabel)}
-                                onHexChange={(value) => handleHexInput(field.key, value)}
-                            >
-                                <div
-                                    class="h-3 w-8 rounded"
-                                    style={`background-color: ${rgb565ToHex(barEditor[field.prop])}`}
-                                ></div>
-                            </ColorControl>
-                        {/each}
-                    </div>
+        <div class="space-y-3" aria-label="Display setting categories">
+            <div class="grid grid-cols-2 gap-3 xl:grid-cols-4">
+                {#each sections as section}
                     <button
                         type="button"
-                        class="btn self-start btn-ghost btn-xs"
-                        onclick={() => switchBarEditorMode('advanced')}
+                        class="surface-panel text-left"
+                        class:border-primary={activeSection === section.id}
+                        class:bg-base-200={activeSection === section.id}
+                        aria-label={section.title}
+                        aria-pressed={activeSection === section.id}
+                        onclick={() => (activeSection = section.id)}
                     >
-                        Edit all 6 colors individually
+                        <span class="font-semibold">{section.title}</span>
+                        <span class="copy-caption mt-1 block">{sectionSummary(section.id)}</span>
                     </button>
-                {:else}
-                    <div class="grid grid-cols-3 gap-2 md:grid-cols-6">
-                        {#each SIGNAL_BARS as barNum}
-                            {@const barKey = `bar${barNum}`}
-                            <ColorControl
-                                id={`bar-${barNum}-color`}
-                                label={`Segment ${barNum}`}
-                                value={colors[barKey]}
-                                swatchSize="sm"
-                                inputClass="input input-xs w-14 font-mono text-xs text-center"
-                                ariaLabel={`Signal bar segment ${barNum} color`}
-                                onPick={() => openPicker(barKey, `Signal Bar Segment ${barNum}`)}
-                                onHexChange={(value) => handleHexInput(barKey, value)}
-                            >
-                                <div
-                                    class="h-3 w-8 rounded"
-                                    style={`background-color: ${rgb565ToHex(colors[barKey])}`}
-                                ></div>
-                            </ColorControl>
-                        {/each}
-                    </div>
-                    <button
-                        type="button"
-                        class="btn self-start btn-ghost btn-xs"
-                        onclick={() => switchBarEditorMode('simple')}
-                    >
-                        Use simple 3-stop gradient (editing a stop blends these colors into a smooth
-                        ramp)
-                    </button>
-                {/if}
-                <div class="mt-3 flex justify-center">
-                    <!-- As-rendered preview: the device paints these six stored
-                         segment colours directly, with no interpolation. -->
-                    <div class="flex flex-col-reverse gap-1">
-                        {#each sampleBarRampRgb565(colors) as barColor}
-                            <div
-                                class="h-2 w-12 rounded"
-                                style={`background-color: ${rgb565ToHex(barColor)}`}
-                            ></div>
-                        {/each}
-                    </div>
-                </div>
+                {/each}
             </div>
+            <button type="button" class="btn btn-ghost btn-sm"
+                aria-pressed={activeSection === 'all'} onclick={() => (activeSection = 'all')}>
+                Show all settings
+            </button>
         </div>
 
-        <div class="flex gap-3">
-            <button class="btn flex-1 btn-primary" onclick={saveColors} disabled={saving}>
+        <div class="grid grid-cols-2 gap-3 sm:flex">
+            <button class="btn col-span-2 sm:flex-1 btn-primary" onclick={saveColors} disabled={saving}>
                 {#if saving}
                     <span class="loading loading-sm loading-spinner"></span>
                 {:else}
-                    Save Colors
+                    Save display settings
                 {/if}
             </button>
             <button class="btn btn-secondary" onclick={testColors} disabled={saving}>Preview</button
@@ -645,8 +361,361 @@
         </div>
 
         <div class="copy-micro text-center">
-            Colors use RGB565 format. Save triggers a preview on the display.
+            Save includes every section. Preview shows the saved settings on V1Simple. Quiet screen saves immediately and is separate from Reset Defaults.
         </div>
+
+        <section aria-label="Screen settings" hidden={activeSection !== 'screen' && activeSection !== 'all'}>
+            <div class="page-stack">
+                <div class="surface-card">
+                    <div class="card-body space-y-4">
+                        <CardSectionHead
+                            title="Screen visibility"
+                            subtitle="Brightness and the view between alerts on your V1Simple screen."
+                        />
+                        <div class="field-control">
+                            <label for="brightness-slider" class="field-label">Screen brightness</label>
+                            <div class="flex items-center gap-4">
+                                <input
+                                    id="brightness-slider"
+                                    type="range"
+                                    min="1"
+                                    max="255"
+                                    bind:value={colors.brightness}
+                                    class="range flex-1 range-primary"
+                                />
+                                <span class="w-12 text-right font-mono text-sm"
+                                    >{Math.max(1, Math.round((colors.brightness / 255) * 100))}%</span
+                                >
+                            </div>
+                            <p class="copy-caption-soft">Use Save display settings to apply brightness.</p>
+                        </div>
+                        <div class="divider my-0"></div>
+                        <ToggleSetting
+                            title="Quiet screen between alerts"
+                            description="Stealth mode shows only OBD speed between alerts (-- when unavailable). Alerts display normally."
+                            checked={stealthEnabled}
+                            onChange={saveStealthEnabled}
+                        />
+                        <p class="copy-caption">Saves immediately. You can also double-press BOOT to toggle this setting.</p>
+                    </div>
+                </div>
+
+            </div>
+        </section>
+
+        <section aria-label="Status settings" hidden={activeSection !== 'status' && activeSection !== 'all'}>
+            <div class="page-stack">
+                <StatusIndicatorsCard
+                    {colors}
+                    rows={STATUS_FIELD_ROWS}
+                    toggles={VISIBILITY_TOGGLES}
+                    onPick={openPicker}
+                    onHexChange={handleHexInput}
+                    onToggle={updateToggle}
+                />
+
+                <div class="surface-card">
+                    <div class="card-body">
+                        <h3 class="copy-subheading mt-2">Volume Indicator</h3>
+                        <div class="grid grid-cols-2 gap-4">
+                            <ColorControl
+                                id="volumeMain-color"
+                                label="Main Volume"
+                                value={colors.volumeMain}
+                                swatchSize="sm"
+                                ariaLabel="Main volume color"
+                                onPick={() => openPicker('volumeMain', 'Main Volume')}
+                                onHexChange={(value) => handleHexInput('volumeMain', value)}
+                            >
+                                <span
+                                    class="font-mono text-lg font-bold"
+                                    style={`color: ${rgb565ToHex(colors.volumeMain)}`}>5V</span
+                                >
+                            </ColorControl>
+
+                            <ColorControl
+                                id="volumeMute-color"
+                                label="Mute Volume"
+                                value={colors.volumeMute}
+                                swatchSize="sm"
+                                ariaLabel="Mute volume color"
+                                onPick={() => openPicker('volumeMute', 'Mute Volume')}
+                                onHexChange={(value) => handleHexInput('volumeMute', value)}
+                            >
+                                <span
+                                    class="font-mono text-lg font-bold"
+                                    style={`color: ${rgb565ToHex(colors.volumeMute)}`}>0M</span
+                                >
+                            </ColorControl>
+                        </div>
+
+                        <div class="divider my-2"></div>
+                        <h3 class="copy-subheading mt-2">RSSI Labels</h3>
+                        <p class="copy-subtle mb-2">Colors for V1 and Proxy connection strength labels</p>
+                        <div class="grid grid-cols-2 gap-4">
+                            <ColorControl
+                                id="rssiV1-color"
+                                label="V1 RSSI (V)"
+                                value={colors.rssiV1}
+                                swatchSize="sm"
+                                ariaLabel="V1 RSSI label color"
+                                onPick={() => openPicker('rssiV1', 'V1 RSSI Label')}
+                                onHexChange={(value) => handleHexInput('rssiV1', value)}
+                            >
+                                <span
+                                    class="font-mono text-lg font-bold"
+                                    style={`color: ${rgb565ToHex(colors.rssiV1)}`}>V</span
+                                >
+                                <span class="font-mono text-lg text-success">-55</span>
+                            </ColorControl>
+
+                            <ColorControl
+                                id="rssiProxy-color"
+                                label="Proxy RSSI (P)"
+                                value={colors.rssiProxy}
+                                swatchSize="sm"
+                                ariaLabel="Proxy RSSI label color"
+                                onPick={() => openPicker('rssiProxy', 'Proxy RSSI Label')}
+                                onHexChange={(value) => handleHexInput('rssiProxy', value)}
+                            >
+                                <span
+                                    class="font-mono text-lg font-bold"
+                                    style={`color: ${rgb565ToHex(colors.rssiProxy)}`}>P</span
+                                >
+                                <span class="font-mono text-lg text-success">-62</span>
+                            </ColorControl>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </section>
+
+        <section aria-label="Alert colors" hidden={activeSection !== 'alerts' && activeSection !== 'all'}>
+            <div class="page-stack">
+                <div class="surface-card">
+                    <div class="card-body">
+                        <CardSectionHead title="Counter & Frequency" />
+                        <div class="grid grid-cols-2 gap-4">
+                            <ColorControl
+                                id="bogey-color"
+                                label="Bogey Counter"
+                                value={colors.bogey}
+                                swatchSize="lg"
+                                inputClass="input input-sm w-20 font-mono text-xs"
+                                ariaLabel="Bogey counter color"
+                                onPick={() => openPicker('bogey', 'Bogey Counter')}
+                                onHexChange={(value) => handleHexInput('bogey', value)}
+                            >
+                                <span
+                                    class="font-mono text-2xl font-bold"
+                                    style={`color: ${rgb565ToHex(colors.bogey)}`}>1.</span
+                                >
+                            </ColorControl>
+
+                            <div class="space-y-2">
+                                <ColorControl
+                                    id="freq-color"
+                                    label="Frequency Display"
+                                    value={colors.freq}
+                                    swatchSize="lg"
+                                    inputClass="input input-sm w-20 font-mono text-xs"
+                                    ariaLabel="Frequency display color"
+                                    disabled={colors.freqUseBandColor}
+                                    onPick={() => openPicker('freq', 'Frequency Display')}
+                                    onHexChange={(value) => handleHexInput('freq', value)}
+                                >
+                                    <span
+                                        class="font-mono text-2xl font-bold"
+                                        class:opacity-50={colors.freqUseBandColor}
+                                        style={`color: ${rgb565ToHex(colors.freq)}`}
+                                    >
+                                        35.5
+                                    </span>
+                                </ColorControl>
+                                <label class="label mt-1 cursor-pointer justify-start gap-2">
+                                    <input
+                                        type="checkbox"
+                                        class="toggle toggle-primary toggle-sm"
+                                        bind:checked={colors.freqUseBandColor}
+                                    />
+                                    <span class="field-label-inline">Use band color for frequency</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="divider my-2"></div>
+
+                        <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+                            <ColorControl
+                                id="muted-color"
+                                label="Muted Alert Color"
+                                labelHint="When alert is muted"
+                                value={colors.muted}
+                                swatchSize="lg"
+                                inputClass="input input-sm w-20 font-mono text-xs"
+                                ariaLabel="Muted alert color"
+                                onPick={() => openPicker('muted', 'Muted Alert')}
+                                onHexChange={(value) => handleHexInput('muted', value)}
+                            >
+                                <span
+                                    class="font-mono text-2xl font-bold"
+                                    style={`color: ${rgb565ToHex(colors.muted)}`}>35.5</span
+                                >
+                                <span class="copy-muted">(muted)</span>
+                            </ColorControl>
+
+                            <ColorControl
+                                id="persisted-color"
+                                label="Persisted Alert Color"
+                                labelHint="Ghost alert after V1 clears"
+                                value={colors.persisted}
+                                swatchSize="lg"
+                                inputClass="input input-sm w-20 font-mono text-xs"
+                                ariaLabel="Persisted alert color"
+                                onPick={() => openPicker('persisted', 'Persisted Alert')}
+                                onHexChange={(value) => handleHexInput('persisted', value)}
+                            >
+                                <span
+                                    class="font-mono text-2xl font-bold"
+                                    style={`color: ${rgb565ToHex(colors.persisted)}`}>35.5</span
+                                >
+                                <span class="copy-muted">(persisted)</span>
+                            </ColorControl>
+                        </div>
+
+                    </div>
+                </div>
+
+                <ColorFieldsCard
+                    title="Band Indicators"
+                    fields={BAND_FIELDS}
+                    gridClass="grid grid-cols-2 md:grid-cols-4 gap-4"
+                    {colors}
+                    onPick={openPicker}
+                    onHexChange={handleHexInput}
+                />
+
+                <ColorFieldsCard
+                    title="Direction Arrows"
+                    fields={ARROW_FIELDS}
+                    gridClass="grid grid-cols-3 gap-4"
+                    defaultSwatchSize="md"
+                    {colors}
+                    onPick={openPicker}
+                    onHexChange={handleHexInput}
+                />
+
+                <div class="surface-card">
+                    <div class="card-body">
+                        <CardSectionHead
+                            title="Signal Bars"
+                            subtitle={barEditor.mode === 'simple'
+                                ? "Pick bottom, middle, and top; the ramp is blended across the display's 6-bar meter."
+                                : 'Edit each of the six physical signal-bar segments.'}
+                        />
+                        {#if barEditor.mode === 'simple'}
+                            <div class="grid grid-cols-3 gap-2">
+                                {#each STOP_FIELDS as field}
+                                    <ColorControl
+                                        id={`${field.key}-color`}
+                                        label={field.label}
+                                        value={barEditor[field.prop]}
+                                        swatchSize="sm"
+                                        inputClass="input input-xs w-14 font-mono text-xs text-center"
+                                        ariaLabel={`${field.label} gradient stop color`}
+                                        onPick={() => openPicker(field.key, field.pickerLabel)}
+                                        onHexChange={(value) => handleHexInput(field.key, value)}
+                                    >
+                                        <div
+                                            class="h-3 w-8 rounded"
+                                            style={`background-color: ${rgb565ToHex(barEditor[field.prop])}`}
+                                        ></div>
+                                    </ColorControl>
+                                {/each}
+                            </div>
+                            <button
+                                type="button"
+                                class="btn self-start btn-ghost btn-xs"
+                                onclick={() => switchBarEditorMode('advanced')}
+                            >
+                                Edit all 6 colors individually
+                            </button>
+                        {:else}
+                            <div class="grid grid-cols-3 gap-2 md:grid-cols-6">
+                                {#each SIGNAL_BARS as barNum}
+                                    {@const barKey = `bar${barNum}`}
+                                    <ColorControl
+                                        id={`bar-${barNum}-color`}
+                                        label={`Segment ${barNum}`}
+                                        value={colors[barKey]}
+                                        swatchSize="sm"
+                                        inputClass="input input-xs w-14 font-mono text-xs text-center"
+                                        ariaLabel={`Signal bar segment ${barNum} color`}
+                                        onPick={() => openPicker(barKey, `Signal Bar Segment ${barNum}`)}
+                                        onHexChange={(value) => handleHexInput(barKey, value)}
+                                    >
+                                        <div
+                                            class="h-3 w-8 rounded"
+                                            style={`background-color: ${rgb565ToHex(colors[barKey])}`}
+                                        ></div>
+                                    </ColorControl>
+                                {/each}
+                            </div>
+                            <button
+                                type="button"
+                                class="btn self-start btn-ghost btn-xs"
+                                onclick={() => switchBarEditorMode('simple')}
+                            >
+                                Use simple 3-stop gradient (editing a stop blends these colors into a smooth
+                                ramp)
+                            </button>
+                        {/if}
+                        <div class="mt-3 flex justify-center">
+                            <!-- As-rendered preview: the device paints these six stored
+                                 segment colours directly, with no interpolation. -->
+                            <div class="flex flex-col-reverse gap-1">
+                                {#each sampleBarRampRgb565(colors) as barColor}
+                                    <div
+                                        class="h-2 w-12 rounded"
+                                        style={`background-color: ${rgb565ToHex(barColor)}`}
+                                    ></div>
+                                {/each}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </section>
+
+        <section aria-label="Integration colors" hidden={activeSection !== 'integrations' && activeSection !== 'all'}>
+            <div class="page-stack">
+                <ColorFieldsCard
+                    title="OBD"
+                    subtitle="OBD status text color."
+                    fields={BADGE_FIELDS}
+                    gridClass="grid grid-cols-1 md:grid-cols-3 gap-4"
+                    defaultSwatchSize="md"
+                    {colors}
+                    onPick={openPicker}
+                    onHexChange={handleHexInput}
+                />
+
+                <ColorFieldsCard
+                    title="ALP"
+                    subtitle="ALP laser-alert badge colors — matches control pad LED states."
+                    fields={ALP_BADGE_FIELDS}
+                    gridClass="grid grid-cols-2 md:grid-cols-4 gap-4"
+                    defaultSwatchSize="md"
+                    {colors}
+                    onPick={openPicker}
+                    onHexChange={handleHexInput}
+                />
+
+            </div>
+        </section>
+
     {/if}
 
     <ColorPickerModal

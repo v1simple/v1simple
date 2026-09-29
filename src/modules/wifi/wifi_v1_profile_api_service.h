@@ -29,7 +29,8 @@ struct Runtime {
     bool (*parseSettingsJson)(const JsonObject& settingsObj, uint8_t outBytes[6], void* ctx) = nullptr;
     void* parseSettingsJsonCtx = nullptr;
     bool (*saveProfile)(const String& name, const String& description,
-                        const V1DetectorConfiguration& detector, const uint8_t inBytes[6],
+                        const V1DetectorConfiguration& detector, const V1InTheBoxSettings& inTheBox,
+                        const uint8_t inBytes[6],
                         bool createOnly, String& error, void* ctx) = nullptr;
     void* saveProfileCtx = nullptr;
     bool (*deleteProfile)(const String& name, void* ctx) = nullptr;

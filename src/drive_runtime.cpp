@@ -290,6 +290,7 @@ void DriveRuntime::initializeRuntimeModules() {
     audio_set_volume(settings_.get().voiceVolume);
     volumeFade_.begin(&settings_);
     quiet_.begin(&ble_, &parser_);
+    autoPush_.setInTheBoxApplyCallback(persistInTheBoxApply, this);
 
     DisplayPipelineDependencies pipelineDependencies;
     pipelineDependencies.displayMode = &displayMode_;
@@ -665,6 +666,8 @@ DriveRuntime::DisplayEdges DriveRuntime::consumeDisplayEdges() {
 }
 
 void DriveRuntime::presentDisplay(const DisplayEdges& edges, bool overloadThisLoop) {
+    quiet_.setInTheBoxSuspended(autoPush_.isActive() ||
+                                settingsOperations_.requiresExclusiveDetectorAdmission());
     DisplayOrchestrationParsedContext parsedContext;
     parsedContext.nowMs = edges.nowMs;
     parsedContext.parsedReady = edges.parsedReady;
@@ -768,11 +771,13 @@ void DriveRuntime::finishSettingsRecapture(
         terminal = V1SettingsOperationStore::State::Failed;
         reason = operation.reason;
     } else if (operation.reason == V1SettingsOperationStore::Reason::ApplyPartial ||
+               operation.reason == V1SettingsOperationStore::Reason::InTheBoxPersistFailed ||
                operation.reason == V1SettingsOperationStore::Reason::Interrupted) {
         terminal = V1SettingsOperationStore::State::Partial;
         reason = operation.reason;
     }
     if (!complete && terminal != V1SettingsOperationStore::State::Failed &&
+        reason != V1SettingsOperationStore::Reason::InTheBoxPersistFailed &&
         !preserveInterruptedFactoryTruth) {
         terminal = V1SettingsOperationStore::State::Partial;
         reason = V1SettingsOperationStore::Reason::RecaptureTimedOut;
@@ -926,6 +931,8 @@ void DriveRuntime::processSettingsOperation(uint32_t nowMs) {
         } else if (summary.result == AutoPushModule::PublicResult::Partial) {
             reason = V1SettingsOperationStore::Reason::ApplyPartial;
         }
+        if (summary.inTheBoxPersistFailed)
+            reason = V1SettingsOperationStore::Reason::InTheBoxPersistFailed;
         (void)settingsOperations_.markRecapturing(reason);
         return;
     }
@@ -1334,11 +1341,29 @@ bool DriveRuntime::handleSettingsOperationStableConnection() {
     return true;
 }
 
+bool DriveRuntime::persistInTheBoxApply(const V1InTheBoxSettings& settings, void* context) {
+    auto& self = *static_cast<DriveRuntime*>(context);
+    String address;
+    if (!self.connectedV1Address(address)) return false;
+    if (self.storage_.isSDCard()) {
+        StorageManager::SDTryLock lock(self.storage_.getSDMutex(), /*checkDmaHeap=*/false);
+        return lock && self.devices_.setDeviceInTheBox(address, settings).committed();
+    }
+    return self.devices_.setDeviceInTheBox(address, settings).committed();
+}
+
 void DriveRuntime::onV1Connected() {
     if (!callbackOwner_) {
         return;
     }
     auto& self = *callbackOwner_;
+    String appSettingsAddress;
+    V1InTheBoxSettings appSettings;
+    if (self.connectedV1Address(appSettingsAddress)) {
+        // Failure or an unknown detector leaves automatic audio actions off.
+        (void)self.devices_.getInTheBoxForAddressChecked(appSettingsAddress, appSettings);
+    }
+    self.quiet_.setInTheBoxSettings(appSettings, self.ble_.sessionGeneration());
     if (self.handleSettingsOperationStableConnection()) return;
     const V1Settings& settings = self.settings_.get();
     const int activeSlot = std::max(0, std::min(2, settings.activeSlot));

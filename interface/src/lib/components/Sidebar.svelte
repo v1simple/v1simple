@@ -24,16 +24,21 @@
             ]
         },
         {
-            label: 'Detector',
+            label: 'Valentine One',
             links: [
                 { href: '/profiles', label: 'Profiles', paths: ['M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z', 'M4 21v-1a8 8 0 0 1 16 0v1'] },
-                { href: '/colors', label: 'Colors', paths: ['M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z', 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z'] },
-                { href: '/audio', label: 'Audio & Quiet', paths: ['M11 5 6 9H3v6h3l5 4V5z', 'M15.5 8.5a5 5 0 0 1 0 7'] },
                 { href: '/autopush', label: 'Auto-Push', paths: ['M12 19V5', 'm6 11 6-6 6 6'] }
             ]
         },
         {
-            label: 'Integrations',
+            label: 'V1Simple',
+            links: [
+                { href: '/colors', label: 'Display', paths: ['M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z', 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z'] },
+                { href: '/audio', label: 'Audio & Quiet', paths: ['M11 5 6 9H3v6h3l5 4V5z', 'M15.5 8.5a5 5 0 0 1 0 7'] },
+            ]
+        },
+        {
+            label: 'Connections',
             links: [
                 { href: '/alp', label: 'ALP', paths: ['M2 12h4l3-8 4 16 3-8h6'] },
                 { href: '/obd', label: 'OBD', paths: ['M5 7h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2z', 'M8 7V5h8v2'] },

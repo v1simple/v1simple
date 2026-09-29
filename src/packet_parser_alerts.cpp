@@ -23,6 +23,7 @@ void PacketParser::markAlertStreamDiscontinuous() {
     // protocol's table-start row before assembling again.
     clearAlertCache();
     alertResyncRequired_ = true;
+    alertTableObserved_ = false;
 }
 
 void PacketParser::resetAlertState() {
@@ -37,6 +38,7 @@ void PacketParser::resetAlertState() {
     alertIndexMode_ = AlertIndexMode::Unknown;
     alertResyncRequired_ = false;
     resetAlertStateAt(static_cast<uint32_t>(millis()));
+    alertTableObserved_ = false;
 }
 
 void PacketParser::resetV1Version() {
@@ -101,6 +103,8 @@ void PacketParser::resetAlertStateAt(uint32_t nowMs) {
 }
 
 void PacketParser::notifyAlertTableObserver(uint32_t nowMs) {
+    alertTableObserved_ = true;
+    alertTableObservedAtMs_ = nowMs;
     if (alertTableObserver_) {
         alertTableObserver_(alerts_.data(), alertCount_, displayState_.v1PriorityIndex, nowMs,
                             alertTableObserverContext_);
@@ -261,6 +265,8 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
             displayState_.arrows = DIR_NONE;
         }
         resetAlertStateAt(nowMs);
+        alertTableObserved_ = true;
+        alertTableObservedAtMs_ = nowMs;
         alertResyncRequired_ = false;
         // Preserve signalBars; parseDisplayData() owns the V1 LED bitmap.
         // Preserve muted; its authoritative state comes from

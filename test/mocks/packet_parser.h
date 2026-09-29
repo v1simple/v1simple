@@ -27,6 +27,7 @@ public:
     AlertData priorityAlert;
     bool hasAlertsFlag = false;
     uint32_t alertLifetimeValue = 0;
+    bool freshAlertTable = true;
     int parseCalls = 0;
     bool parseReturnValue = true;
     V1DisplayOnObservation displayOnObservationValue;
@@ -53,6 +54,7 @@ public:
         priorityAlert = AlertData();
         hasAlertsFlag = false;
         alertLifetimeValue = 0;
+        freshAlertTable = true;
         parseCalls = 0;
         parseReturnValue = true;
         displayOnObservationValue = V1DisplayOnObservation{};
@@ -120,6 +122,7 @@ public:
     bool hasDisplayLaserAlert() const { return (state.activeBands & BAND_LASER) != 0; }
     bool hasAlerts()     const { return hasAlertsFlag || hasDisplayLaserAlert(); }
     uint32_t alertLifetime() const { return alertLifetimeValue; }
+    bool hasFreshAlertTable(uint32_t, uint32_t = 1500) const { return freshAlertTable; }
     int  getAlertCount() const { return static_cast<int>(alerts.size()); }
     AlertData getPriorityAlert() const {
         if (!hasDisplayLaserAlert()) return priorityAlert;

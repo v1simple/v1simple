@@ -478,7 +478,7 @@ void handleApiProfileSaveBody(WebServer& server, const Runtime& runtime, const u
     }
 
     static constexpr const char* ROOT_KEYS[] = {
-        "schemaVersion", "name", "description", "detector", "settings", "createOnly",
+        "schemaVersion", "name", "description", "detector", "settings", "createOnly", "inTheBox",
     };
     if (!doc.is<JsonObjectConst>() ||
         !objectHasOnlyKeys(doc.as<JsonObjectConst>(), ROOT_KEYS,
@@ -517,13 +517,15 @@ void handleApiProfileSaveBody(WebServer& server, const Runtime& runtime, const u
     const bool createOnly = createOnlyValue.as<bool>();
     const bool hasDescription = !descriptionValue.isUnbound();
     const bool hasDetector = !detectorValue.isUnbound();
+    const bool hasInTheBox = !doc["inTheBox"].isUnbound();
     String parsedDescription;
     if ((hasDescription &&
          !exactV1JsonString(descriptionValue, parsedDescription, V1_PROFILE_DESCRIPTION_MAX_BYTES)) ||
         (hasDetector && !detectorValue.is<JsonObjectConst>()) ||
         (!doc["schemaVersion"].isUnbound() &&
          (!doc["schemaVersion"].is<int>() ||
-          doc["schemaVersion"].as<int>() != V1_PROFILE_SCHEMA_VERSION)) ||
+          (doc["schemaVersion"].as<int>() != V1_PROFILE_SCHEMA_VERSION &&
+           doc["schemaVersion"].as<int>() != V1_PROFILE_V3_SCHEMA_VERSION))) ||
         !doc["displayOn"].isUnbound() || !doc["mainVolume"].isUnbound() ||
         !doc["mutedVolume"].isUnbound()) {
         server.send(400, "application/json", "{\"error\":\"Invalid profile metadata\"}");
@@ -531,7 +533,11 @@ void handleApiProfileSaveBody(WebServer& server, const Runtime& runtime, const u
     }
 
     PsramJson::Document existingDoc;
-    const bool needsExisting = !hasDescription || !hasDetector;
+    if (doc["schemaVersion"].as<int>() == V1_PROFILE_SCHEMA_VERSION && !hasInTheBox) {
+        server.send(400, "application/json", "{\"error\":\"Missing In-the-Box settings\"}");
+        return;
+    }
+    const bool needsExisting = !hasDescription || !hasDetector || !hasInTheBox;
     if (needsExisting) {
         String existingJson;
         CatalogStatus status = CatalogStatus::NotFound;
@@ -578,6 +584,14 @@ void handleApiProfileSaveBody(WebServer& server, const Runtime& runtime, const u
         server.send(500, "application/json", "{\"error\":\"Existing detector configuration is corrupt\"}");
         return;
     }
+    V1InTheBoxSettings inTheBox;
+    if (hasInTheBox ? !parseV1InTheBoxSettings(doc["inTheBox"], inTheBox)
+                   : (!existingDoc["inTheBox"].isUnbound() &&
+                      !parseV1InTheBoxSettings(existingDoc["inTheBox"], inTheBox))) {
+        server.send(hasInTheBox ? 400 : 500, "application/json",
+                    "{\"error\":\"Invalid In-the-Box settings\"}");
+        return;
+    }
     if (runtime.slotVolumeOverrideConflicts &&
         runtime.slotVolumeOverrideConflicts(name, detector, runtime.slotVolumeOverrideConflictsCtx)) {
         server.send(409, "application/json",
@@ -597,7 +611,7 @@ void handleApiProfileSaveBody(WebServer& server, const Runtime& runtime, const u
     }
 
     String saveError;
-    if (runtime.saveProfile(name, description, detector, settingsBytes, createOnly, saveError,
+    if (runtime.saveProfile(name, description, detector, inTheBox, settingsBytes, createOnly, saveError,
                             runtime.saveProfileCtx)) {
         if (runtime.backupToSd) {
             runtime.backupToSd(runtime.backupToSdCtx);

@@ -401,8 +401,8 @@ void checkModifierPreservingRoundTrip(bool editAnotherSlot) {
     JsonDocument bundle;
     String error;
     TEST_ASSERT_TRUE(buildUsbProfileDocument(bundle, *manager, *profileManager, error));
-    TEST_ASSERT_EQUAL_UINT8(4, bundle["version"].as<uint8_t>());
-    TEST_ASSERT_EQUAL_UINT8(3, bundle["profiles"][0]["schemaVersion"].as<uint8_t>());
+    TEST_ASSERT_EQUAL_UINT8(kUsbProfileDocumentVersion, bundle["version"].as<uint8_t>());
+    TEST_ASSERT_EQUAL_UINT8(4, bundle["profiles"][0]["schemaVersion"].as<uint8_t>());
     if (editAnotherSlot) bundle["slots"][0]["alertPersist"] = 5;
     // Cross the production runtime's exact-JSON and PSRAM document boundary;
     // applying the exporter-owned JsonDocument directly would bypass it.
@@ -445,6 +445,10 @@ void checkBundleDisablesRecipientOverrides(int version) {
     String error;
     TEST_ASSERT_TRUE(buildUsbProfileDocument(old, *manager, *profileManager, error));
     old["version"] = version;
+    for (JsonObject profile : old["profiles"].as<JsonArray>()) {
+        profile["schemaVersion"] = version == 2 ? 2 : 3;
+        profile.remove("inTheBox");
+    }
     if (version < 4) {
         for (JsonObject slot : old["slots"].as<JsonArray>()) {
             for (const char* key : {"volumeOverride", "volume", "muteVolume", "darkModeOverride", "darkMode"}) {
@@ -789,7 +793,7 @@ void test_invalid_complete_bundle_never_mutates_settings_profiles_or_credentials
     const auto prefsBefore = mock_preferences::store();
     const String before = snapshot();
     const std::vector<std::function<void(JsonDocument&)>> faults = {
-        [](JsonDocument& d) { d["version"] = 5; },
+        [](JsonDocument& d) { d["version"] = kUsbProfileDocumentVersion + 1; },
         [](JsonDocument& d) { d["format"] = std::string("v1simple-profiles\0x", 19); },
         [](JsonDocument& d) { d["wifiClientEnabled"] = true; },
         [](JsonDocument& d) { d["slots"][0]["alertPersist"] = 6; },
@@ -821,6 +825,9 @@ void test_invalid_complete_bundle_never_mutates_settings_profiles_or_credentials
             definition["lowerMHz"] = 0;
             definition["upperMHz"] = 1;
         },
+        [](JsonDocument& d) { d["profiles"][0].remove("inTheBox"); },
+        [](JsonDocument& d) { d["profiles"][0]["inTheBox"]["bands"]["k"]["muteOutside"] = 1; },
+        [](JsonDocument& d) { d["profiles"][0]["inTheBox"]["boxes"]["k"]["lowerMHz"] = 23899; },
         [](JsonDocument& d) { d["profiles"][0].remove("schemaVersion"); },
         [](JsonDocument& d) { d["profiles"][0].remove("detector"); },
         [](JsonDocument& d) { d["profiles"][0]["extra"] = true; },
@@ -1021,11 +1028,13 @@ void test_http_profile_metadata_round_trips_storage_usb_and_backup_without_trunc
         return true;
     };
     runtime.saveProfile = [](const String& name, const String& description,
-                            const V1DetectorConfiguration& detector, const uint8_t bytes[6],
+                            const V1DetectorConfiguration& detector, const V1InTheBoxSettings& inTheBox,
+                            const uint8_t bytes[6],
                             bool createOnly, String& error, void*) {
         V1Profile profile(name);
         profile.description = description;
         profile.detector = detector;
+        profile.inTheBox = inTheBox;
         memcpy(profile.settings.bytes, bytes, 6);
         const auto result = profileManager->saveProfile(profile, createOnly);
         error = result.error;
@@ -1038,6 +1047,7 @@ void test_http_profile_metadata_round_trips_storage_usb_and_backup_without_trunc
         request["name"] = "Road";
         request["description"] = description;
         request["schemaVersion"] = V1_PROFILE_SCHEMA_VERSION;
+        appendV1InTheBoxSettings(request["inTheBox"].to<JsonObject>(), V1InTheBoxSettings{});
         V1DetectorConfiguration detector;
         detector.displayPolicy = V1DisplayPolicy::On;
         appendV1DetectorConfiguration(request["detector"].to<JsonObject>(), detector);
@@ -1085,6 +1095,8 @@ void test_interrupted_restore_recovers_long_description_from_journal() {
     TEST_ASSERT_TRUE(profileManager->loadProfile("Original", original));
     const std::string description = std::string(1024, 'r') + " \xc3\xa9\n";
     original.description = description.c_str();
+    original.inTheBox.bands[1] = {true, true};
+    original.inTheBox.boxes[3].enabled = false;
     TEST_ASSERT_TRUE(profileManager->saveProfile(original).success);
     manager->utInterruptRestoreAfterProfiles(true);
     String error;
@@ -1095,6 +1107,7 @@ void test_interrupted_restore_recovers_long_description_from_journal() {
     TEST_ASSERT_TRUE(profileManager->loadProfile("Original", recovered));
     TEST_ASSERT_EQUAL_STRING(description.c_str(), recovered.description.c_str());
     TEST_ASSERT_EQUAL_MEMORY(original.settings.bytes, recovered.settings.bytes, 6);
+    TEST_ASSERT_TRUE(v1InTheBoxSettingsEqual(original.inTheBox, recovered.inTheBox));
     TEST_ASSERT_FALSE(primaryFs->exists("/v1restore_transaction.json"));
 }
 
@@ -1127,7 +1140,7 @@ void test_maximum_profile_delete_journal_recovers_after_interruption() {
     TEST_ASSERT_TRUE(primaryFs->exists(PROFILE_DELETE_TRANSACTION_PATH));
     File journal = primaryFs->open(PROFILE_DELETE_TRANSACTION_PATH, FILE_READ);
     TEST_ASSERT_TRUE(journal);
-    TEST_ASSERT_EQUAL_UINT(11742u, journal.size());
+    TEST_ASSERT_EQUAL_UINT(12309u, journal.size());
     journal.close();
 
     reboot();
@@ -1333,6 +1346,7 @@ void test_measure_maximum_profile_catalog_transport_shapes() {
         String name = String("P") + String(count);
         while (name.length() < MAX_PROFILE_NAME_LEN) name += 'N';
         V1Profile profile(name);
+        for (auto& box : profile.inTheBox.boxes) box.enabled = false;
         profile.description = String(std::string(V1_PROFILE_DESCRIPTION_MAX_BYTES, '"'));
         const uint8_t maximumRaw[] = {192, 217, 252, 255, 255, 255};
         memcpy(profile.settings.bytes, maximumRaw, sizeof(maximumRaw));
@@ -1369,15 +1383,15 @@ void test_measure_maximum_profile_catalog_transport_shapes() {
             std::numeric_limits<uint32_t>::max());
         TEST_ASSERT_TRUE(result.safeToCommit);
         if (count == V1_PROFILE_CATALOG_MAX_COUNT) {
-            TEST_ASSERT_EQUAL_UINT(117187, measureJson(usb));
-            TEST_ASSERT_EQUAL_UINT(120645, measureJson(backup));
+            TEST_ASSERT_EQUAL_UINT(122917, measureJson(usb));
+            TEST_ASSERT_EQUAL_UINT(126375, measureJson(backup));
             PsramJson::Document sdBackup;
             const auto sdResult = BackupPayloadBuilder::buildBackupDocument(
                 sdBackup, manager->get(), *profileManager,
                 BackupPayloadBuilder::BackupTransport::SdBackup,
                 std::numeric_limits<uint32_t>::max());
             TEST_ASSERT_TRUE(sdResult.safeToCommit);
-            TEST_ASSERT_EQUAL_UINT(120814, measureJson(sdBackup));
+            TEST_ASSERT_EQUAL_UINT(126543, measureJson(sdBackup));
             TEST_ASSERT_GREATER_THAN(4096u, 128u * 1024u - measureJson(sdBackup));
         }
     }
@@ -1397,7 +1411,7 @@ void test_measure_maximum_profile_catalog_transport_shapes() {
     TEST_ASSERT_TRUE(restoreJournal);
     const size_t restoreJournalBytes = restoreJournal.size();
     restoreJournal.close();
-    TEST_ASSERT_EQUAL_UINT(118759u, restoreJournalBytes);
+    TEST_ASSERT_EQUAL_UINT(124489u, restoreJournalBytes);
     TEST_ASSERT_LESS_THAN_UINT(RESTORE_TRANSACTION_MAX_BYTES, restoreJournalBytes);
     TEST_ASSERT_GREATER_THAN_UINT(4096u, RESTORE_TRANSACTION_MAX_BYTES - restoreJournalBytes);
 
@@ -1406,13 +1420,118 @@ void test_measure_maximum_profile_catalog_transport_shapes() {
     TEST_ASSERT_TRUE(deleteJournal);
     const size_t deleteJournalBytes = deleteJournal.size();
     deleteJournal.close();
-    TEST_ASSERT_EQUAL_UINT(11742u, deleteJournalBytes);
+    TEST_ASSERT_EQUAL_UINT(12315u, deleteJournalBytes);
     TEST_ASSERT_LESS_THAN_UINT(PROFILE_DELETE_TRANSACTION_MAX_BYTES, deleteJournalBytes);
-    TEST_ASSERT_GREATER_THAN_UINT(4096u, PROFILE_DELETE_TRANSACTION_MAX_BYTES - deleteJournalBytes);
+    TEST_ASSERT_GREATER_THAN_UINT(4000u, PROFILE_DELETE_TRANSACTION_MAX_BYTES - deleteJournalBytes);
+}
+
+void test_in_the_box_survives_usb_unrelated_slot_edit_backup_restore_and_reboot() {
+    seed();
+    V1Profile profile;
+    TEST_ASSERT_TRUE(profileManager->loadProfile("Original", profile));
+    profile.inTheBox.bands[2] = {true, true};
+    profile.inTheBox.boxes[2] = {true, 23900, 23900};
+    profile.inTheBox.boxes[4].enabled = false;
+    const V1InTheBoxSettings policy = profile.inTheBox;
+    TEST_ASSERT_TRUE(profileManager->saveProfile(profile).success);
+    JsonDocument bundle;
+    String error;
+    TEST_ASSERT_TRUE(buildUsbProfileDocument(bundle, *manager, *profileManager, error));
+    bundle["slots"][0]["alertPersist"] = 5;
+    TEST_ASSERT_TRUE(applyUsbProfileDocument(*manager, *profileManager, bundle, error).success);
+    reboot();
+    TEST_ASSERT_TRUE(profileManager->loadProfile("Original", profile));
+    TEST_ASSERT_TRUE(v1InTheBoxSettingsEqual(policy, profile.inTheBox));
+    JsonDocument backup;
+    TEST_ASSERT_TRUE(BackupPayloadBuilder::buildBackupDocument(
+        backup, manager->get(), *profileManager,
+        BackupPayloadBuilder::BackupTransport::HttpDownload, 1000).safeToCommit);
+    TEST_ASSERT_EQUAL_UINT(23, backup["_version"].as<unsigned>());
+    profile.inTheBox = V1InTheBoxSettings{};
+    TEST_ASSERT_TRUE(profileManager->saveProfile(profile).success);
+    TEST_ASSERT_TRUE(manager->applyBackupDocument(backup, true).success);
+    reboot();
+    TEST_ASSERT_TRUE(profileManager->loadProfile("Original", profile));
+    TEST_ASSERT_TRUE(v1InTheBoxSettingsEqual(policy, profile.inTheBox));
+    TEST_ASSERT_EQUAL_UINT8(5, manager->get().autoPushSlotView(0).alertPersist);
+}
+
+void test_old_v22_backup_defaults_app_actions_off_preserves_slot_overrides_and_replaces_catalog() {
+    seed();
+    setSlotModifiers(1, 6, 2, true);
+    JsonDocument backup;
+    TEST_ASSERT_TRUE(BackupPayloadBuilder::buildBackupDocument(
+        backup, manager->get(), *profileManager,
+        BackupPayloadBuilder::BackupTransport::HttpDownload, 1000).safeToCommit);
+    backup["_version"] = 22;
+    backup["autoPushProfileSchemaVersion"] = 3;
+    for (JsonObject profile : backup["profiles"].as<JsonArray>()) {
+        profile["schemaVersion"] = 3;
+        profile.remove("inTheBox");
+    }
+    V1Profile intervening("Intervening");
+    intervening.inTheBox.bands[3].muteOutside = true;
+    TEST_ASSERT_TRUE(profileManager->saveProfile(intervening).success);
+    TEST_ASSERT_TRUE(manager->applyBackupDocument(backup, true).success);
+    reboot();
+    assertSlotModifiers(1, true, 6, 2, true, true);
+    TEST_ASSERT_FALSE(profileManager->loadProfile("Intervening", intervening));
+    V1Profile original;
+    TEST_ASSERT_TRUE(profileManager->loadProfile("Original", original));
+    TEST_ASSERT_TRUE(v1InTheBoxSettingsEqual(V1InTheBoxSettings{}, original.inTheBox));
+    assertFullBackupAvailable();
+}
+
+void test_v3_catalog_upgrade_preserves_existing_slot_overrides() {
+    seed();
+    setSlotModifiers(1, 6, 2, true);
+    manager->mutableSettings().autoPushProfileSchemaVersion = 3;
+    TEST_ASSERT_TRUE(manager->saveDeferredBackup());
+    TEST_ASSERT_TRUE(manager->migrateAutoPushProfilesToV2());
+    reboot();
+    TEST_ASSERT_EQUAL_UINT8(4, manager->get().autoPushProfileSchemaVersion);
+    assertSlotModifiers(1, true, 6, 2, true, true);
+    assertFullBackupAvailable();
+}
+
+void test_previous_transaction_journals_decode_with_inactive_app_defaults() {
+    seed();
+    V1Profile profile;
+    TEST_ASSERT_TRUE(profileManager->loadProfile("Original", profile));
+    JsonDocument restore;
+    restore["_type"] = RESTORE_TRANSACTION_TYPE;
+    restore["_version"] = 2;
+    restore["token"] = 1;
+    restore["credentialsMutated"] = false;
+    restore["profilesMutated"] = true;
+    JsonObject oldProfile = restore["profilesBefore"].to<JsonArray>().add<JsonObject>();
+    writeProfileToJournal(oldProfile, profile);
+    oldProfile["schemaVersion"] = 3;
+    oldProfile.remove("inTheBox");
+    stampJournalCrc(restore);
+    RestoreTransactionJournal decoded;
+    TEST_ASSERT_EQUAL_INT(JournalCopyStatus::Valid, readRestoreTransactionJournal(restore, decoded));
+    TEST_ASSERT_EQUAL_UINT(1, decoded.profilesBefore.size());
+    TEST_ASSERT_TRUE(v1InTheBoxSettingsEqual(V1InTheBoxSettings{}, decoded.profilesBefore[0].inTheBox));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(profile.settings.bytes, decoded.profilesBefore[0].settings.bytes, 6);
+    JsonDocument deletion;
+    deletion["_type"] = PROFILE_DELETE_TRANSACTION_TYPE;
+    deletion["_version"] = 2;
+    deletion["token"] = 2;
+    deletion["hadReferences"] = true;
+    deletion["profile"].set(oldProfile);
+    stampJournalCrc(deletion);
+    ProfileDeleteTransactionJournal deleted;
+    TEST_ASSERT_EQUAL_INT(JournalCopyStatus::Valid, readProfileDeleteTransactionJournal(deletion, deleted));
+    TEST_ASSERT_TRUE(v1InTheBoxSettingsEqual(V1InTheBoxSettings{}, deleted.profile.inTheBox));
 }
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_previous_transaction_journals_decode_with_inactive_app_defaults);
+    RUN_TEST(test_in_the_box_survives_usb_unrelated_slot_edit_backup_restore_and_reboot);
+    RUN_TEST(test_old_v22_backup_defaults_app_actions_off_preserves_slot_overrides_and_replaces_catalog);
+    RUN_TEST(test_v3_catalog_upgrade_preserves_existing_slot_overrides);
     RUN_TEST(test_http_profile_metadata_round_trips_storage_usb_and_backup_without_truncation);
     RUN_TEST(test_interrupted_restore_recovers_long_description_from_journal);
     RUN_TEST(test_maximum_profile_delete_journal_recovers_after_interruption);

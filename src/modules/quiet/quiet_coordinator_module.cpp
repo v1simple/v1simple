@@ -22,6 +22,8 @@ const char* quietOwnerName(const QuietOwner owner) {
         return "wifi_command";
     case QuietOwner::AutoPush:
         return "auto_push";
+    case QuietOwner::InTheBox:
+        return "in_the_box";
     default:
         return "unknown";
     }
@@ -55,6 +57,7 @@ void QuietCoordinatorModule::reset() {
     pendingFadeLaser_ = false;
     pendingFadeLastAttemptMs_ = 0;
     autoPushVolumeTransactionActive_ = false;
+    resetInTheBoxSession();
 
     syncCommittedState();
 }
@@ -113,8 +116,177 @@ SendResult QuietCoordinatorModule::sendMuteResult(QuietOwner owner, bool muted) 
     const SendResult result = ble_->setMuteResult(muted);
     if (result == SendResult::SENT) {
         presentation_.activeMuteOwner = muted ? owner : QuietOwner::None;
+        if (owner != QuietOwner::InTheBox) {
+            // An explicit local mute/unmute supersedes our pending command.
+            // Never release a later manual mute as though it were our own.
+            inTheBoxOwnsMute_ = false;
+            inTheBoxMuteConfirmed_ = false;
+            inTheBoxManualOverride_ = true;
+            inTheBoxInsidePending_ = false;
+            inTheBoxCommandPending_ = false;
+            inTheBoxAttempted_ = false;
+            inTheBoxSuppressVoice_ = false;
+        }
     }
     return result;
+}
+
+void QuietCoordinatorModule::resetInTheBoxSession() {
+    inTheBoxSettings_ = V1InTheBoxSettings{};
+    inTheBox_.reset();
+    inTheBoxSession_ = 0;
+    inTheBoxLifetimeKnown_ = false;
+    inTheBoxOwnsMute_ = false;
+    inTheBoxManualOverride_ = false;
+    inTheBoxInsidePending_ = false;
+    inTheBoxCommandPending_ = false;
+    inTheBoxCommandSent_ = false;
+    inTheBoxMuteConfirmed_ = false;
+    inTheBoxAttempted_ = false;
+    inTheBoxSuppressVoice_ = false;
+    if (presentation_.activeMuteOwner == QuietOwner::InTheBox) {
+        presentation_.activeMuteOwner = QuietOwner::None;
+    }
+}
+
+void QuietCoordinatorModule::setInTheBoxSettings(const V1InTheBoxSettings& settings,
+                                                uint32_t sessionGeneration) {
+    if (sessionGeneration != inTheBoxSession_) resetInTheBoxSession();
+    inTheBoxSettings_ = isValidV1InTheBoxSettings(settings) ? settings : V1InTheBoxSettings{};
+    inTheBoxSession_ = sessionGeneration;
+    inTheBoxLifetimeKnown_ = false;
+    inTheBox_.reset();
+    inTheBoxManualOverride_ = false;
+    inTheBoxInsidePending_ = false;
+    inTheBoxCommandPending_ = false;
+    inTheBoxAttempted_ = false;
+    // Preserve same-session mute ownership so disabling/changing this policy
+    // can release the mute we already sent to that detector.
+}
+
+void QuietCoordinatorModule::processInTheBox(uint32_t nowMs) {
+    inTheBoxSuppressVoice_ = false;
+    if (!ble_ || !parser_) return;
+    if (!ble_->isConnected() || ble_->sessionGeneration() != inTheBoxSession_) {
+        resetInTheBoxSession();
+        return;
+    }
+    if (ble_->isProxyClientConnected()) {
+        // The connected phone owns the detector. Do not queue a command that
+        // could unexpectedly take effect when the phone disconnects.
+        inTheBoxOwnsMute_ = false;
+        inTheBoxInsidePending_ = false;
+        inTheBoxCommandPending_ = false;
+        inTheBoxManualOverride_ = true;
+        inTheBoxAttempted_ = false;
+        if (presentation_.activeMuteOwner == QuietOwner::InTheBox)
+            presentation_.activeMuteOwner = QuietOwner::None;
+        return;
+    }
+
+    const auto& state = parser_->getDisplayState();
+    const auto& observation = parser_->displayOnObservation();
+    if (!observation.available) return;
+
+    const uint32_t lifetime = parser_->alertLifetime();
+    const bool lifetimeChanged = inTheBoxLifetimeKnown_ && lifetime != inTheBoxLifetime_;
+    if (lifetimeChanged) {
+        // The queue can deliver a clear and a new encounter in one drain.
+        // Do not carry an old manual override or inside-seen identity across it.
+        inTheBox_.reset();
+        inTheBoxManualOverride_ = false;
+        inTheBoxInsidePending_ = false;
+    }
+    inTheBoxLifetime_ = lifetime;
+    inTheBoxLifetimeKnown_ = true;
+
+    // Confirm only from a later canonical display packet, using the actual
+    // audio-mute bit (isSoft), rather than the debounced screen icon.
+    if (inTheBoxCommandPending_ && inTheBoxCommandSent_ &&
+        observation.revision != inTheBoxCommandRevision_ &&
+        static_cast<int32_t>(observation.ingressSequence - inTheBoxCommandIngress_) > 0 &&
+        state.softMuted == inTheBoxCommandMute_) {
+        inTheBoxCommandPending_ = false;
+        inTheBoxCommandSent_ = false;
+        inTheBoxMuteConfirmed_ = inTheBoxCommandMute_;
+        if (!inTheBoxCommandMute_) {
+            inTheBoxOwnsMute_ = false;
+            inTheBoxInsidePending_ = false;
+        }
+    }
+    if (inTheBoxOwnsMute_ && inTheBoxMuteConfirmed_ && !state.softMuted &&
+        !inTheBoxCommandPending_ && !lifetimeChanged) {
+        // A later detector-side unmute wins too. The protocol cannot tell us
+        // whether it came from its button or its own alert logic; re-muting
+        // either would override newly observed detector behavior.
+        inTheBoxOwnsMute_ = false;
+        inTheBoxMuteConfirmed_ = false;
+        inTheBoxManualOverride_ = true;
+        if (presentation_.activeMuteOwner == QuietOwner::InTheBox)
+            presentation_.activeMuteOwner = QuietOwner::None;
+    }
+
+    InTheBoxDecision decision;
+    const bool fresh = !inTheBoxSuspended_ && parser_->hasFreshAlertTable(nowMs);
+    if (fresh) {
+        const auto& alerts = parser_->getAllAlerts();
+        decision = inTheBox_.process(inTheBoxSettings_, alerts.data(),
+                                     static_cast<size_t>(parser_->getAlertCount()),
+                                     (state.activeBands & BAND_LASER) != 0);
+        if (!parser_->hasAlerts()) inTheBoxManualOverride_ = false;
+        inTheBoxInsidePending_ = decision.anyInside &&
+                                (inTheBoxInsidePending_ || decision.newInsideUnmute);
+    } else {
+        // Missing/stale data may release our mute, never create a new mute or
+        // an explicit inside-unmute. Keep encounter history through gaps.
+        inTheBoxInsidePending_ = false;
+    }
+
+    bool haveTarget = false;
+    bool targetMute = false;
+    if (inTheBoxOwnsMute_ && !decision.allOutsideMuteEligible) {
+        haveTarget = true;
+    } else if (inTheBoxInsidePending_) {
+        haveTarget = true;
+    } else if (decision.allOutsideMuteEligible && !inTheBoxManualOverride_ &&
+               (inTheBoxOwnsMute_ || !state.softMuted)) {
+        haveTarget = true;
+        targetMute = true;
+    }
+    inTheBoxSuppressVoice_ = haveTarget && targetMute;
+
+    if (!haveTarget) {
+        inTheBoxCommandPending_ = false;
+        inTheBoxAttempted_ = false;
+        return;
+    }
+    if (!inTheBoxCommandPending_ && targetMute && state.softMuted) return;
+    if (!inTheBoxCommandPending_ || targetMute != inTheBoxCommandMute_) {
+        // A reversal is immediate, even inside the retry interval. A queued
+        // outside-mute must not outlive the arrival of an inside/laser alert.
+        inTheBoxCommandPending_ = true;
+        inTheBoxCommandMute_ = targetMute;
+        inTheBoxCommandSent_ = false;
+        inTheBoxAttempted_ = false;
+    }
+    if (!inTheBoxCommandSent_ && state.softMuted == targetMute && !inTheBoxOwnsMute_) {
+        inTheBoxCommandPending_ = false;
+        inTheBoxInsidePending_ = false;
+        return;
+    }
+    if (inTheBoxAttempted_ && static_cast<uint32_t>(nowMs - inTheBoxLastAttemptMs_) < IN_THE_BOX_RETRY_MS)
+        return;
+    inTheBoxAttempted_ = true;
+    inTheBoxLastAttemptMs_ = nowMs;
+    const uint32_t beforeRevision = observation.revision;
+    const uint32_t beforeIngress = ble_->latestV1NotificationIngressSequence();
+    const SendResult result = sendMuteResult(QuietOwner::InTheBox, targetMute);
+    if (result == SendResult::SENT) {
+        inTheBoxCommandSent_ = true;
+        inTheBoxCommandRevision_ = beforeRevision;
+        inTheBoxCommandIngress_ = beforeIngress;
+        if (targetMute) inTheBoxOwnsMute_ = true;
+    }
 }
 
 bool QuietCoordinatorModule::sendVolume(QuietOwner owner, uint8_t volume, uint8_t muteVolume) {

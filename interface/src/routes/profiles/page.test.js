@@ -8,14 +8,21 @@ import {
     textResponse
 } from '../../test/fetch-mock.js';
 import Page from './+page.svelte';
+import wifiApiFixtures from '../../test/fixtures/wifi-api.json';
 
 function installDefaultFetch(overrides = []) {
-    return installFixtureFetchMock(['frontend_core_routes', 'v1_profile_routes'], overrides);
+    return installFixtureFetchMock(['frontend_core_routes', 'v1_profile_routes'], [
+        ...overrides,
+        { method: 'GET', match: '/api/v1/profiles', respond: jsonResponse({
+            ...wifiApiFixtures.scenarios.v1_profile_routes['GET /api/v1/profiles'][0].body,
+            schemaVersion: 4
+        }) }
+    ]);
 }
 
 function profileCatalog(profiles) {
     return {
-        schemaVersion: 3,
+        schemaVersion: 4,
         detectorConfigurationOwner: 'profile',
         profiles
     };
@@ -190,7 +197,7 @@ describe('profiles route page', () => {
         await screen.findByText('Profile "Daily Drive" saved');
         expect(savedPayload.createOnly).toBeUndefined();
         expect(savedPayload.description).toBe('Existing metadata');
-        expect(savedPayload.schemaVersion).toBe(3);
+        expect(savedPayload.schemaVersion).toBe(4);
         expect(savedPayload.detector).toEqual({
             userSettings: 'value',
             mode: { policy: 'value', value: 2 },
@@ -210,6 +217,56 @@ describe('profiles route page', () => {
         unmount();
     });
 
+    it.each([
+        ['unchanged', 'unchanged', 'unchanged'],
+        ['on', 'on', 'unchanged'],
+        ['dark', 'off', 'off'],
+        ['dark_bluetooth_on', 'off', 'on'],
+        ['dark_bluetooth_unchanged', 'off', 'unchanged'],
+        ['bluetooth_off', 'unchanged', 'off'],
+        ['bluetooth_on', 'unchanged', 'on']
+    ])('saves the %s light choice without changing other profile settings', async (choice, display, bluetoothLed) => {
+        let savedPayload;
+        installDefaultFetch([
+            {
+                method: 'GET', match: '/api/v1/profile?name=Daily%20Drive',
+                respond: jsonResponse({
+                    schemaVersion: 3, name: 'Daily Drive', description: 'Night drive',
+                    detector: {
+                        userSettings: 'unchanged', mode: { policy: 'value', value: 2 },
+                        display: 'off', bluetoothLed: 'on',
+                        volume: { policy: 'saved', main: 0, muted: 0, feedback: 'always', disconnect: 'restore_saved' },
+                        customFrequencies: { policy: 'value', definitions: [{ index: 0, lowerMHz: 24050, upperMHz: 24100 }] }
+                    },
+                    settings: { xBand: false, kBand: true }
+                })
+            },
+            {
+                method: 'POST', match: '/api/v1/profile',
+                respond: ({ init }) => {
+                    savedPayload = JSON.parse(init.body);
+                    return jsonResponse({ success: true });
+                }
+            }
+        ]);
+        const { unmount } = render(Page);
+        const row = (await screen.findByText('Daily Drive')).closest('.surface-panel');
+        await fireEvent.click(within(row).getByRole('button', { name: /^edit$/i }));
+        const lights = await screen.findByLabelText('Detector lights');
+        expect(lights).toHaveValue('dark_bluetooth_on');
+        await fireEvent.change(lights, { target: { value: choice } });
+        await fireEvent.click(screen.getByRole('button', { name: /^save profile$/i }));
+        await screen.findByText('Profile "Daily Drive" saved');
+        expect(savedPayload.detector).toEqual({
+            userSettings: 'unchanged', mode: { policy: 'value', value: 2 }, display, bluetoothLed,
+            volume: { policy: 'saved', main: 0, muted: 0, feedback: 'always', disconnect: 'restore_saved' },
+            customFrequencies: { policy: 'value', definitions: [{ index: 0, lowerMHz: 24050, upperMHz: 24100 }] }
+        });
+        expect(savedPayload.settings).toMatchObject({ xBand: false, kBand: true });
+        expect(savedPayload.description).toBe('Night drive');
+        unmount();
+    });
+
     it('requires at least one authored band for an enabled legacy custom-frequency setting', async () => {
         installDefaultFetch([{
             method: 'GET',
@@ -226,11 +283,12 @@ describe('profiles route page', () => {
         const dailyDriveRow = (await screen.findByText('Daily Drive')).closest('.surface-panel');
         await fireEvent.click(within(dailyDriveRow).getByRole('button', { name: /^edit$/i }));
 
-        expect(await screen.findByText(/cannot be enabled until this profile owns at least one K or Ka range/i))
+        expect(await screen.findByText(/To enable custom-frequency detection/i))
             .toBeInTheDocument();
+        await fireEvent.click(screen.getByRole('button', { name: /^Frequency ranges/ }));
         await fireEvent.click(screen.getByRole('button', { name: /add k range/i }));
         expect(screen.getByLabelText('Custom 0 lower MHz')).toHaveValue(23910);
-        expect(screen.queryByText(/cannot be enabled until this profile owns/i)).not.toBeInTheDocument();
+        expect(screen.queryByText(/To enable custom-frequency detection/i)).not.toBeInTheDocument();
         unmount();
     });
 
@@ -290,6 +348,7 @@ describe('profiles route page', () => {
 
                 const nextName = nextEditor === 'another profile' ? 'Beta' : 'Alpha';
                 if (nextName === 'Beta') {
+                    await fireEvent.click(screen.getByText(/Browse saved profiles/));
                     const beta = screen.getByText('Beta').closest('.surface-panel');
                     await fireEvent.click(within(beta).getByRole('button', { name: /^edit$/i }));
                     await screen.findByText('Editing profile: Beta');
@@ -430,7 +489,7 @@ describe('profiles route page', () => {
             await fireEvent.click(save);
             await waitFor(() => expect(pending).toHaveLength(1));
 
-            await fireEvent.change(screen.getByLabelText('Volume policy'), {
+            await fireEvent.change(screen.getByLabelText('Detector volume'), {
                 target: { value: 'saved' }
             });
             await fireEvent.input(screen.getByLabelText('Custom 0 lower MHz'), {
@@ -450,7 +509,7 @@ describe('profiles route page', () => {
             pending[0](jsonResponse({ success: true }));
             await screen.findByText('Profile "Daily Drive" saved');
             expect(screen.getByText('Editing profile: Daily Drive')).toBeInTheDocument();
-            expect(screen.getByLabelText('Volume policy')).toHaveValue('saved');
+            expect(screen.getByLabelText('Detector volume')).toHaveValue('saved');
             expect(screen.getByLabelText('Custom 0 lower MHz')).toHaveValue(24060);
 
             await fireEvent.click(screen.getByRole('button', { name: /^save profile$/i }));
@@ -596,6 +655,146 @@ describe('profiles route page', () => {
         unmount();
     });
 
+    it.each(['new', 'captured'])('can apply a %s profile immediately after saving it', async (source) => {
+        const fetchMock = installDefaultFetch([{
+            method: 'POST', match: '/api/v1/apply',
+            respond: jsonResponse({
+                success: true, queued: true, operationId: 42,
+                state: 'pending_normal_boot', rebooting: true, target: 'normal'
+            }, 202)
+        }]);
+        const { unmount } = render(Page);
+        await screen.findByText('Previous boot · not live');
+        await fireEvent.click(screen.getByRole('button', {
+            name: source === 'new' ? /^new profile$/i : /start draft from captured settings/i
+        }));
+        await fireEvent.click(screen.getByRole('button', { name: /save as profile/i }));
+        const modal = (await screen.findByText('Save Profile')).closest('.modal-box');
+        await fireEvent.input(screen.getByLabelText('Profile Name'), { target: { value: 'Ready Trip' } });
+        await fireEvent.click(within(modal).getByRole('button', { name: /^save$/i }));
+
+        await screen.findByText('Profile "Ready Trip" saved');
+        expect(screen.getByText('Profile: Ready Trip')).toBeInTheDocument();
+        expect(screen.getByText('Selected: Ready Trip')).toBeInTheDocument();
+        expect(screen.queryByText('Creating new offline profile')).not.toBeInTheDocument();
+        await fireEvent.click(screen.getByRole('button', { name: /apply saved profile to v1/i }));
+        await screen.findByText(/queued as operation 42/i);
+        const applyCall = fetchMock.mock.calls.find(([url, init]) =>
+            url === '/api/v1/apply' && init?.method === 'POST');
+        expect(applyCall[1].body.get('profile')).toBe('Ready Trip');
+        expect(applyCall[1].body.get('address')).toBe('AA:BB:CC:DD:EE:FF');
+        expect(fetchMock.mock.calls.some(([url]) => url === '/api/v1/profile?name=Ready%20Trip')).toBe(false);
+        unmount();
+    });
+
+    it('gives a new save its name without discarding edits made while it was pending', async () => {
+        const pending = [];
+        const submitted = [];
+        installDefaultFetch([{
+            method: 'POST', match: '/api/v1/profile',
+            respond: ({ init }) => {
+                submitted.push(JSON.parse(init.body));
+                return new Promise((resolve) => pending.push(resolve));
+            }
+        }]);
+        const { unmount } = render(Page);
+        try {
+            await fireEvent.click(await screen.findByRole('button', { name: /^new profile$/i }));
+            await fireEvent.click(screen.getByRole('button', { name: /save as profile/i }));
+            const modal = (await screen.findByText('Save Profile')).closest('.modal-box');
+            await fireEvent.input(screen.getByLabelText('Profile Name'), { target: { value: 'New Trip' } });
+            await fireEvent.click(within(modal).getByRole('button', { name: /^save$/i }));
+            await waitFor(() => expect(pending).toHaveLength(1));
+            await fireEvent.click(within(modal).getByRole('button', { name: /^cancel$/i }));
+            await fireEvent.click(screen.getByLabelText('X Band'));
+            await fireEvent.change(screen.getByLabelText('Detector lights'), { target: { value: 'dark' } });
+            await fireEvent.input(screen.getByLabelText('Description'), { target: { value: 'Still editing' } });
+            pending[0](jsonResponse({ success: true }));
+
+            await screen.findByText('Profile "New Trip" saved');
+            expect(screen.getByText('Editing profile: New Trip')).toBeInTheDocument();
+            expect(screen.getByLabelText('X Band')).not.toBeChecked();
+            expect(screen.getByLabelText('Detector lights')).toHaveValue('dark');
+            expect(screen.getByLabelText('Description')).toHaveValue('Still editing');
+            expect(submitted[0].settings.xBand).toBe(true);
+            expect(submitted[0].detector.display).toBe('unchanged');
+            await fireEvent.click(screen.getByRole('button', { name: /^save profile$/i }));
+            await waitFor(() => expect(pending).toHaveLength(2));
+            expect(submitted[1]).toMatchObject({
+                name: 'New Trip', description: 'Still editing', settings: { xBand: false },
+                detector: { display: 'off', bluetoothLed: 'off' }
+            });
+            pending[1](jsonResponse({ success: true }));
+        } finally {
+            for (const resolve of pending) resolve(jsonResponse({ success: true }));
+            unmount();
+        }
+    });
+
+    it('does not replace another selected editor when a new profile save finishes', async () => {
+        let finishSave;
+        installDefaultFetch([{
+            method: 'POST', match: '/api/v1/profile',
+            respond: () => new Promise((resolve) => { finishSave = resolve; })
+        }, {
+            method: 'GET', match: '/api/v1/profile?name=Daily%20Drive',
+            respond: jsonResponse({ name: 'Daily Drive', settings: { xBand: true } })
+        }]);
+        const { unmount } = render(Page);
+        try {
+            await screen.findByText('Daily Drive');
+            await fireEvent.click(screen.getByRole('button', { name: /^new profile$/i }));
+            await fireEvent.click(screen.getByRole('button', { name: /save as profile/i }));
+            const modal = (await screen.findByText('Save Profile')).closest('.modal-box');
+            await fireEvent.input(screen.getByLabelText('Profile Name'), { target: { value: 'Earlier draft' } });
+            await fireEvent.click(within(modal).getByRole('button', { name: /^save$/i }));
+            await waitFor(() => expect(finishSave).toBeTypeOf('function'));
+            await fireEvent.click(within(modal).getByRole('button', { name: /^cancel$/i }));
+            await fireEvent.click(screen.getByText(/Browse saved profiles/));
+            const row = screen.getByText('Daily Drive').closest('.surface-panel');
+            await fireEvent.click(within(row).getByRole('button', { name: /^edit$/i }));
+            await screen.findByText('Editing profile: Daily Drive');
+            await fireEvent.input(screen.getByLabelText('Description'), { target: { value: 'Different draft' } });
+            finishSave(jsonResponse({ success: true }));
+
+            await screen.findByText('Profile "Earlier draft" saved');
+            expect(screen.getByText('Editing profile: Daily Drive')).toBeInTheDocument();
+            expect(screen.getByLabelText('Description')).toHaveValue('Different draft');
+            expect(screen.getByText('Earlier draft')).toBeInTheDocument();
+        } finally {
+            finishSave?.(jsonResponse({ success: true }));
+            unmount();
+        }
+    });
+
+    it('preserves newer name and description edits in a pending save dialog', async () => {
+        let finishSave;
+        installDefaultFetch([{
+            method: 'POST', match: '/api/v1/profile',
+            respond: () => new Promise((resolve) => { finishSave = resolve; })
+        }]);
+        const { unmount } = render(Page);
+        try {
+            await fireEvent.click(await screen.findByRole('button', { name: /^new profile$/i }));
+            await fireEvent.click(screen.getByRole('button', { name: /save as profile/i }));
+            const modal = (await screen.findByText('Save Profile')).closest('.modal-box');
+            await fireEvent.input(screen.getByLabelText('Profile Name'), { target: { value: 'First name' } });
+            await fireEvent.click(within(modal).getByRole('button', { name: /^save$/i }));
+            await waitFor(() => expect(finishSave).toBeTypeOf('function'));
+            await fireEvent.input(screen.getByLabelText('Profile Name'), { target: { value: 'Next name' } });
+            await fireEvent.input(screen.getByLabelText('Description (optional)'), { target: { value: 'Next description' } });
+            finishSave(jsonResponse({ success: true }));
+
+            await screen.findByText('Profile "First name" saved');
+            expect(screen.getByLabelText('Profile Name')).toHaveValue('Next name');
+            expect(screen.getByLabelText('Description (optional)')).toHaveValue('Next description');
+            expect(within(modal).getByRole('button', { name: /^save$/i })).toBeEnabled();
+        } finally {
+            finishSave?.(jsonResponse({ success: true }));
+            unmount();
+        }
+    });
+
     it('enforces the firmware 64-byte UTF-8 name limit', async () => {
         const fetchMock = installDefaultFetch([
             { method: 'POST', match: '/api/v1/profile', respond: jsonResponse({ success: true }) }
@@ -666,19 +865,20 @@ describe('profiles route page', () => {
         ]);
         const { unmount } = render(Page);
 
-        await screen.findByText('Offline authoring');
+        await screen.findByRole('link', { name: 'Assign profiles to Auto-Push' });
         await fireEvent.click(screen.getByRole('button', { name: /new profile/i }));
         await screen.findByText('Creating new offline profile');
 
         const xBand = screen.getByLabelText('X Band');
         expect(xBand).toBeChecked();
         expect(screen.getByLabelText('Mute-to-Muted Volume')).toBeChecked();
+        await fireEvent.click(screen.getByRole('button', { name: /^Muting/ }));
         const autoMute = screen.getByLabelText('X, K, Ku Automute');
         expect(within(autoMute).getByRole('option', { name: 'On' })).toHaveValue('2');
         expect(within(autoMute).getByRole('option', { name: 'Advanced' })).toHaveValue('1');
         await fireEvent.change(autoMute, { target: { value: '2' } });
         await fireEvent.click(xBand);
-        await fireEvent.click(screen.getByText('Photo Radar'));
+        await fireEvent.click(screen.getByRole('button', { name: /^Photo radar/ }));
         await fireEvent.click(screen.getByLabelText('DriveSafe™ 3D'));
         await fireEvent.click(screen.getByLabelText('DriveSafe™ 3DHD'));
         await fireEvent.click(screen.getByLabelText('Ekin'));
@@ -726,7 +926,7 @@ describe('profiles route page', () => {
         unmount();
     });
 
-    it('presents the seven profile sections in the screenshot order without dropping extra controls', async () => {
+    it('puts everyday choices before grouped detection settings without dropping extra controls', async () => {
         installDefaultFetch();
         const { unmount } = render(Page);
 
@@ -736,15 +936,18 @@ describe('profiles route page', () => {
             .map((summary) => summary.textContent.trim());
 
         expect(sectionNames).toEqual([
-            'Bands',
-            'Mute Control',
+            'Detection bands & sensitivity',
+            'Muting behavior',
             'Photo Radar',
-            'Special',
-            'SAVVY Settings',
+            'Filtering & startup',
             'Custom Frequencies',
-            'In-the-Box Options'
+            'Feature availability',
+            'Reset this draft'
         ]);
-        expect(within(screen.getByText('Bands').closest('details')).getByLabelText('Ku Band'))
+        expect(within(editor).getByLabelText('Detector lights').closest('details')).toBeNull();
+        expect(within(editor).getByLabelText('Operating mode').closest('details')).toBeNull();
+        expect(within(editor).getByLabelText('Detector volume').closest('details')).toBeNull();
+        expect(within(screen.getByText('Detection bands & sensitivity').closest('details')).getByLabelText('Ku Band'))
             .toBeInTheDocument();
         const photo = screen.getByText('Photo Radar').closest('details');
         expect(within(photo).getByLabelText('DriveSafe™ 3D')).toBeInTheDocument();
@@ -758,6 +961,7 @@ describe('profiles route page', () => {
         const { unmount } = render(Page);
 
         await fireEvent.click(await screen.findByRole('button', { name: /new profile/i }));
+        await fireEvent.click(screen.getByRole('button', { name: /^Frequency ranges/ }));
         const custom = screen.getByText('Custom Frequencies').closest('details');
         await fireEvent.click(custom.querySelector('summary'));
 
@@ -779,23 +983,19 @@ describe('profiles route page', () => {
         unmount();
     });
 
-    it('labels SAVVY and In-the-Box as unavailable without presenting fake controls', async () => {
+    it('keeps unsupported SAVVY controls separate from the In-the-Box group', async () => {
         installDefaultFetch();
         const { unmount } = render(Page);
 
         await fireEvent.click(await screen.findByRole('button', { name: /new profile/i }));
-        const savvy = screen.getByText('SAVVY Settings').closest('details');
-        const inTheBox = screen.getByText('In-the-Box Options').closest('details');
-        await fireEvent.click(savvy.querySelector('summary'));
-        await fireEvent.click(inTheBox.querySelector('summary'));
+        const availability = screen.getByText('Feature availability').closest('details');
+        await fireEvent.click(availability.querySelector('summary'));
 
-        expect(within(savvy).getByText(/SAVVY accessory controls are unavailable/i))
+        expect(within(availability).getByText(/Accessory controls are not currently supported/i))
             .toBeInTheDocument();
-        expect(within(inTheBox).getByText(/In-the-Box profile controls are unavailable/i))
-            .toBeInTheDocument();
-        expect(savvy.querySelector('.collapse-content input, .collapse-content select, .collapse-content button'))
-            .toBeNull();
-        expect(inTheBox.querySelector('.collapse-content input, .collapse-content select, .collapse-content button'))
+        expect(within(availability).queryByText(/In-the-Box/)).not.toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /^In-the-Box/ })).toBeInTheDocument();
+        expect(availability.querySelector('input, select, button'))
             .toBeNull();
 
         unmount();
@@ -806,12 +1006,13 @@ describe('profiles route page', () => {
         const { unmount } = render(Page);
 
         await fireEvent.click(await screen.findByRole('button', { name: /new profile/i }));
-        const special = screen.getByText('Special').closest('details');
-        await fireEvent.click(special.querySelector('summary'));
+        const availability = screen.getByText('Feature availability').closest('details');
+        await fireEvent.click(availability.querySelector('summary'));
 
-        expect(within(special).getByText(/Valentine profile Alert Persistence is not mapped yet/i))
+        expect(within(availability).getByText(/Detector-native alert persistence is not currently configurable here/i))
             .toBeInTheDocument();
-        expect(within(special).queryByRole('checkbox', { name: /Alert Persistence/i }))
+        expect(within(availability).getByRole('link', { name: 'Auto-Push' })).toHaveAttribute('href', '/autopush');
+        expect(within(availability.closest('.surface-card')).queryByRole('checkbox', { name: /Alert Persistence/i }))
             .not.toBeInTheDocument();
 
         unmount();
@@ -843,13 +1044,14 @@ describe('profiles route page', () => {
         const { unmount } = render(Page);
 
         await fireEvent.click(await screen.findByRole('button', { name: /new profile/i }));
+        await fireEvent.click(screen.getByRole('button', { name: /^Frequency ranges/ }));
         const custom = screen.getByText('Custom Frequencies').closest('details');
         const remove = within(custom).getByRole('button', {
             name: new RegExp(`remove custom frequency ${removeIndex} and relinquish ${relinquishedBand} ownership`, 'i')
         });
         await fireEvent.click(remove);
-        expect(within(custom).getByText('Fresh DUT ranges on Apply')).toBeInTheDocument();
-        expect(within(custom).getByText('Profile-owned')).toBeInTheDocument();
+        expect(within(custom).getByText('Keep detector ranges')).toBeInTheDocument();
+        expect(within(custom).getByText('Use profile ranges')).toBeInTheDocument();
 
         await fireEvent.click(screen.getByRole('button', { name: /save as profile/i }));
         const modal = (await screen.findByText('Save Profile')).closest('.modal-box');
@@ -871,14 +1073,15 @@ describe('profiles route page', () => {
         const { unmount } = render(Page);
 
         await fireEvent.click(await screen.findByRole('button', { name: /new profile/i }));
+        await fireEvent.click(screen.getByRole('button', { name: /^Frequency ranges/ }));
         const custom = screen.getByText('Custom Frequencies').closest('details');
         await fireEvent.click(within(custom).getByRole('button', { name: /remove custom frequency 1/i }));
         await fireEvent.click(within(custom).getByRole('button', { name: /remove custom frequency 0/i }));
-        expect(within(custom).getAllByText('Fresh DUT ranges on Apply')).toHaveLength(2);
+        expect(within(custom).getAllByText('Keep detector ranges')).toHaveLength(2);
 
         await fireEvent.click(within(custom).getByLabelText('Enable Custom Frequencies'));
         expect(await within(custom).findByText(
-            'Custom Frequencies cannot be enabled until this profile owns at least one K or Ka range.'
+            'To enable custom-frequency detection, choose profile ranges and add at least one K or Ka range.'
         )).toBeInTheDocument();
 
         await fireEvent.click(screen.getByRole('button', { name: /save as profile/i }));
@@ -887,6 +1090,46 @@ describe('profiles route page', () => {
         await fireEvent.click(within(modal).getByRole('button', { name: /^save$/i }));
         expect(fetchMock.mock.calls.some(([url, init]) =>
             url === '/api/v1/profile' && init?.method === 'POST')).toBe(false);
+        unmount();
+    });
+
+    it.each([false, true])('validates range ownership for a lights-only profile (authored: %s)', async (authored) => {
+        const fetchMock = installDefaultFetch([{
+            method: 'GET', match: '/api/v1/profile?name=Daily%20Drive',
+            respond: jsonResponse({
+                name: 'Daily Drive', settings: { xBand: true, customFreqs: true },
+                detector: {
+                    userSettings: 'unchanged', display: 'unchanged', bluetoothLed: 'unchanged',
+                    mode: { policy: 'unchanged' }, volume: { policy: 'unchanged' },
+                    customFrequencies: authored ? {
+                        policy: 'value', definitions: [{ index: 0, lowerMHz: 25000, upperMHz: 26000 }]
+                    } : { policy: 'unchanged' }
+                }
+            })
+        }]);
+        const { unmount } = render(Page);
+        const row = (await screen.findByText('Daily Drive')).closest('.surface-panel');
+        await fireEvent.click(within(row).getByRole('button', { name: /^edit$/i }));
+        await screen.findByText('Editing profile: Daily Drive');
+        await fireEvent.change(screen.getByLabelText('Detector lights'), { target: { value: 'dark' } });
+        await fireEvent.click(screen.getByRole('button', { name: /^save profile$/i }));
+
+        if (authored) {
+            await screen.findAllByText('Every range must fit inside the published Gen2 K or Ka sweep section.');
+            expect(fetchMock.mock.calls.some(([url, init]) =>
+                url === '/api/v1/profile' && init?.method === 'POST')).toBe(false);
+        } else {
+            await screen.findByText('Profile "Daily Drive" saved');
+            const call = fetchMock.mock.calls.find(([url, init]) =>
+                url === '/api/v1/profile' && init?.method === 'POST');
+            expect(JSON.parse(call[1].body)).toMatchObject({
+                settings: { customFreqs: true },
+                detector: {
+                    userSettings: 'unchanged', display: 'off', bluetoothLed: 'off',
+                    customFrequencies: { policy: 'unchanged' }
+                }
+            });
+        }
         unmount();
     });
 
@@ -899,6 +1142,7 @@ describe('profiles route page', () => {
         const { unmount } = render(Page);
 
         await fireEvent.click(await screen.findByRole('button', { name: /new profile/i }));
+        await fireEvent.click(screen.getByRole('button', { name: /^Frequency ranges/ }));
         const custom = screen.getByText('Custom Frequencies').closest('details');
         await fireEvent.input(within(custom).getByLabelText('Custom 0 lower MHz'), {
             target: { value: String(lowerMHz) }
@@ -945,10 +1189,10 @@ describe('profiles route page', () => {
         const fetchMock = installDefaultFetch();
         const { unmount } = render(Page);
 
-        await screen.findByText('Offline authoring');
+        await screen.findByRole('link', { name: 'Assign profiles to Auto-Push' });
         expect(screen.queryByRole('button', { name: /pull from v1/i })).not.toBeInTheDocument();
         expect(screen.queryByRole('button', { name: /^push$/i })).not.toBeInTheDocument();
-        expect(screen.getByText(/start a target-bound operation/i)).toBeInTheDocument();
+        expect(screen.getByText(/Uses the saved profile on the captured V1 and checks the result/i)).toBeInTheDocument();
 
         await fireEvent.click(screen.getByRole('button', { name: /new profile/i }));
         await screen.findByText('Creating new offline profile');
@@ -983,7 +1227,7 @@ describe('profiles route page', () => {
         await fireEvent.click(within(row).getByRole('button', { name: /^edit$/i }));
         await screen.findByText('Editing profile: Daily Drive');
         await fireEvent.click(screen.getByRole('button', {
-            name: /apply saved profile to captured v1/i
+            name: /apply saved profile to v1/i
         }));
 
         await screen.findByText(/queued as operation 42/i);
@@ -1021,7 +1265,7 @@ describe('profiles route page', () => {
         await fireEvent.click(within(row).getByRole('button', { name: /^edit$/i }));
         await screen.findByText('Editing profile: Daily Drive');
         await fireEvent.click(screen.getByRole('button', {
-            name: /apply saved profile to captured v1/i
+            name: /apply saved profile to v1/i
         }));
         await screen.findByText(/queued as operation 42/i);
 
@@ -1164,10 +1408,10 @@ describe('profiles route page', () => {
         expect(await screen.findByText(/prefills the observed current numbers, but leaves volume unchanged/i))
             .toBeInTheDocument();
         await fireEvent.click(await screen.findByRole('button', { name: /start draft from captured settings/i }));
-        await screen.findByText('Draft started from the last observed V1 user bytes. No detector changes were made.');
+        await screen.findByText('Draft started from the last observed V1 user bytes. In-the-Box actions start off because the detector cannot report these app settings. No detector changes were made.');
         expect(screen.getByText('Creating new offline profile')).toBeInTheDocument();
         expect(screen.getByLabelText('X Band')).toBeChecked();
-        expect(screen.getByLabelText('Volume policy')).toHaveValue('unchanged');
+        expect(screen.getByLabelText('Detector volume')).toHaveValue('unchanged');
 
         await fireEvent.click(screen.getByLabelText('X Band'));
         await fireEvent.click(screen.getByRole('button', { name: /save as profile/i }));

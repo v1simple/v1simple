@@ -103,7 +103,7 @@ bool V1SettingsOperationStore::decodeRecord(const Record& record, Snapshot& snap
         record.source > static_cast<uint8_t>(Source::TripleTap) ||
         record.state < static_cast<uint8_t>(State::PendingNormalBoot) ||
         record.state > static_cast<uint8_t>(State::Failed) ||
-        record.reason > static_cast<uint8_t>(Reason::InvalidRecord) ||
+        record.reason > static_cast<uint8_t>(Reason::InTheBoxPersistFailed) ||
         (record.kind == static_cast<uint8_t>(Kind::ApplySlot) && (record.slot < 0 || record.slot > 2)) ||
         (record.kind == static_cast<uint8_t>(Kind::ApplyProfile) && record.slot != -1) ||
         (record.kind == static_cast<uint8_t>(Kind::FactoryReset) && record.slot != -1) ||
@@ -492,6 +492,7 @@ const char* V1SettingsOperationStore::reasonName(Reason reason) {
     case Reason::Interrupted: return "interrupted";
     case Reason::StorageUnavailable: return "storage_unavailable";
     case Reason::InvalidRecord: return "invalid_record";
+    case Reason::InTheBoxPersistFailed: return "in_the_box_persist_failed";
     }
     return "invalid_record";
 }

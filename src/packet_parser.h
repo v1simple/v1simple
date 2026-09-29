@@ -64,6 +64,13 @@ class PacketParser {
 
     size_t getAlertCount() const { return alertCount_; }
 
+    // Audio policy may use only a recent complete table from an uninterrupted
+    // stream. Rendering can continue showing the last complete publication.
+    bool hasFreshAlertTable(uint32_t nowMs, uint32_t maxAgeMs = 1500) const {
+        return alertTableObserved_ && !alertResyncRequired_ &&
+               static_cast<uint32_t>(nowMs - alertTableObservedAtMs_) <= maxAgeMs;
+    }
+
     // The Alert Table contains radar only. A V1 laser is live from
     // InfDisplayData even when the table has zero rows.
     bool hasAlerts() const { return alertCount_ > 0 || hasDisplayLaserAlert(); }
@@ -121,6 +128,8 @@ class PacketParser {
     std::array<AlertData, MAX_ALERTS> alerts_;
     size_t alertCount_;
     uint32_t alertLifetime_ = 0;
+    bool alertTableObserved_ = false;
+    uint32_t alertTableObservedAtMs_ = 0;
     V1DisplayOnObservation displayOnObservation_;
     V1ModeObservation modeObservation_;
     V1CurrentVolumeObservation currentVolumeObservation_;

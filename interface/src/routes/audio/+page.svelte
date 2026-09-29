@@ -160,6 +160,37 @@
         <div class="surface-card">
             <div class="card-body">
                 <CardSectionHead
+                    title="Speaker Volume"
+                    subtitle="Tune Waveshare ES8311 output level for local voice playback."
+                />
+
+                <div class="form-control">
+                    <label class="label" for="voice-volume-slider">
+                        <span class="label-text font-medium">Volume Level</span>
+                        <span class="label-text-alt">{settings.voiceVolume}%</span>
+                    </label>
+                    <div class="flex items-center gap-3">
+                        <span class="text-lg">🔈</span>
+                        <input
+                            id="voice-volume-slider"
+                            type="range"
+                            min="0"
+                            max="100"
+                            bind:value={settings.voiceVolume}
+                            class="range flex-1 range-primary"
+                        />
+                        <span class="text-lg">🔊</span>
+                    </div>
+                    <p class="copy-caption-soft mt-1">
+                        Controls the Waveshare ES8311 DAC output level
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <div class="surface-card">
+            <div class="card-body">
+                <CardSectionHead
                     title="Voice Alerts"
                     subtitle="Speak alert information through the built-in speaker when no phone app is connected."
                 />
@@ -544,37 +575,6 @@
                             bind:checked={settings.stealthEnabled}
                         />
                     </label>
-                </div>
-            </div>
-        </div>
-
-        <div class="surface-card">
-            <div class="card-body">
-                <CardSectionHead
-                    title="Speaker Volume"
-                    subtitle="Tune Waveshare ES8311 output level for local voice playback."
-                />
-
-                <div class="form-control">
-                    <label class="label" for="voice-volume-slider">
-                        <span class="label-text font-medium">Volume Level</span>
-                        <span class="label-text-alt">{settings.voiceVolume}%</span>
-                    </label>
-                    <div class="flex items-center gap-3">
-                        <span class="text-lg">🔈</span>
-                        <input
-                            id="voice-volume-slider"
-                            type="range"
-                            min="0"
-                            max="100"
-                            bind:value={settings.voiceVolume}
-                            class="range flex-1 range-primary"
-                        />
-                        <span class="text-lg">🔊</span>
-                    </div>
-                    <p class="copy-caption-soft mt-1">
-                        Controls the Waveshare ES8311 DAC output level
-                    </p>
                 </div>
             </div>
         </div>

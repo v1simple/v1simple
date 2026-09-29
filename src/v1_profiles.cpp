@@ -192,7 +192,7 @@ bool parseLegacyProfileSettings(const JsonObjectConst& source, V1UserSettings& s
 
 bool versionedProfileKeyIsKnown(JsonString key) {
     return settingKeyEquals(key, "schemaVersion") || settingKeyEquals(key, "name") ||
-           settingKeyEquals(key, "description") || settingKeyEquals(key, "detector") ||
+           settingKeyEquals(key, "description") || settingKeyEquals(key, "inTheBox") || settingKeyEquals(key, "detector") ||
            settingKeyEquals(key, "detectorCrc32") || settingKeyEquals(key, "bytes") ||
            settingKeyEquals(key, "crc32") || settingKeyEquals(key, "profileCrc32") ||
            (knownUserSettingKey(key) && !settingKeyEquals(key, "baseBytes"));
@@ -497,9 +497,9 @@ ProfileFileInspection inspectProfileFile(fs::FS& filesystem, const String& path,
         uint32_t detectorCrc = 0;
         if (!doc["schemaVersion"].is<int>()) return inspection;
         const int schema = doc["schemaVersion"].as<int>();
-        if ((schema != V1_PROFILE_PREVIOUS_SCHEMA_VERSION && schema != V1_PROFILE_SCHEMA_VERSION) ||
+        if (!isVersionedV1ProfileSchema(schema) ||
             !doc["detector"].is<JsonObjectConst>() ||
-            !(schema == V1_PROFILE_SCHEMA_VERSION
+            !(schema >= V1_PROFILE_V3_SCHEMA_VERSION
                   ? parseV1DetectorConfiguration(doc["detector"].as<JsonObjectConst>(), detector)
                   : parseV1DetectorConfigurationV2(doc["detector"].as<JsonObjectConst>(), detector)) ||
             !doc["detectorCrc32"].is<uint32_t>()) {
@@ -510,13 +510,16 @@ ProfileFileInspection inspectProfileFile(fs::FS& filesystem, const String& path,
             return inspection;
         }
         if (doc["detectorCrc32"].as<uint32_t>() != detectorCrc) return inspection;
-        const bool currentSchema = schema == V1_PROFILE_SCHEMA_VERSION;
+        const bool currentSchema = schema >= V1_PROFILE_V3_SCHEMA_VERSION;
         uint32_t profileCrc = 0;
         if (currentSchema != !doc["profileCrc32"].isUnbound() ||
             (currentSchema && (!doc["profileCrc32"].is<uint32_t>() ||
                                !profileDocumentCrc(doc, profileCrc) ||
                                doc["profileCrc32"].as<uint32_t>() != profileCrc))) return inspection;
     }
+
+    V1InTheBoxSettings inTheBox;
+    if (!parseV1ProfileInTheBox(doc.as<JsonObjectConst>(), hasSchemaVersion ? doc["schemaVersion"].as<int>() : 1, inTheBox)) return inspection;
 
     const JsonVariantConst rawBytes = doc["bytes"];
     if (hasSchemaVersion && (rawBytes.isUnbound() || !doc["crc32"].is<uint32_t>())) return inspection;
@@ -532,7 +535,7 @@ ProfileFileInspection inspectProfileFile(fs::FS& filesystem, const String& path,
         if (!V1SettingsJson::parseRawBytes(rawBytes, parsed)) return inspection;
         const int schema = doc["schemaVersion"].as<int>();
         if (!validateVersionedReadableSettings(doc.as<JsonObjectConst>(), parsed,
-                                               schema == V1_PROFILE_SCHEMA_VERSION)) return inspection;
+                                               schema >= V1_PROFILE_V3_SCHEMA_VERSION)) return inspection;
         if (doc["crc32"].is<uint32_t>() &&
             doc["crc32"].as<uint32_t>() !=
                 computeCrc32(parsed, V1SettingsJson::kSettingsByteCount)) {
@@ -1650,8 +1653,7 @@ ProfileOperationResult V1ProfileManager::loadProfileUnlocked(const String& name,
         return profileResult(ProfileStorageStatus::Corrupt, lastError_);
     }
     if (hasSchema && (!schemaVersion.is<int>() ||
-                      (schemaVersion.as<int>() != V1_PROFILE_PREVIOUS_SCHEMA_VERSION &&
-                       schemaVersion.as<int>() != V1_PROFILE_SCHEMA_VERSION))) {
+                      !isVersionedV1ProfileSchema(schemaVersion.as<int>()))) {
         lastError_ = "Unsupported profile schema version";
         return profileResult(ProfileStorageStatus::Corrupt, lastError_);
     }
@@ -1667,7 +1669,7 @@ ProfileOperationResult V1ProfileManager::loadProfileUnlocked(const String& name,
         return profileResult(ProfileStorageStatus::Corrupt, lastError_);
     }
     if (hasSchema) {
-        const bool currentSchema = schemaVersion.as<int>() == V1_PROFILE_SCHEMA_VERSION;
+        const bool currentSchema = schemaVersion.as<int>() >= V1_PROFILE_V3_SCHEMA_VERSION;
         uint32_t profileCrc = 0;
         if (currentSchema != !doc["profileCrc32"].isUnbound()) {
             lastError_ = "Profile integrity marker does not match schema";
@@ -1691,7 +1693,7 @@ ProfileOperationResult V1ProfileManager::loadProfileUnlocked(const String& name,
         const uint8_t parsedSchema = static_cast<uint8_t>(schemaVersion.as<int>());
         uint32_t detectorCrc = 0;
         if (!doc["detector"].is<JsonObjectConst>() ||
-            !(parsedSchema == V1_PROFILE_SCHEMA_VERSION
+            !(parsedSchema >= V1_PROFILE_V3_SCHEMA_VERSION
                   ? parseV1DetectorConfiguration(doc["detector"].as<JsonObjectConst>(), parsedProfile->detector)
                   : parseV1DetectorConfigurationV2(doc["detector"].as<JsonObjectConst>(), parsedProfile->detector)) ||
             !doc["detectorCrc32"].is<uint32_t>()) {
@@ -1709,6 +1711,11 @@ ProfileOperationResult V1ProfileManager::loadProfileUnlocked(const String& name,
         if (parsedSchema == V1_PROFILE_PREVIOUS_SCHEMA_VERSION) {
             migrateV1DetectorConfigurationV2InPlace(parsedProfile->detector);
         }
+    }
+
+    if (!parseV1ProfileInTheBox(doc.as<JsonObjectConst>(), hasSchema ? schemaVersion.as<int>() : 1,
+                               parsedProfile->inTheBox)) {
+        return profileResult(ProfileStorageStatus::Corrupt, "Invalid In-the-Box settings");
     }
 
     V1UserSettings parsedLegacySettings;
@@ -1738,7 +1745,7 @@ ProfileOperationResult V1ProfileManager::loadProfileUnlocked(const String& name,
         }
         if (hasSchema &&
             !validateVersionedReadableSettings(doc.as<JsonObjectConst>(), rawSettingsBytes,
-                                               schemaVersion.as<int>() == V1_PROFILE_SCHEMA_VERSION)) {
+                                               schemaVersion.as<int>() >= V1_PROFILE_V3_SCHEMA_VERSION)) {
             lastError_ = "Versioned readable settings do not match authoritative bytes";
             return profileResult(ProfileStorageStatus::Corrupt, lastError_);
         }
@@ -1934,6 +1941,12 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
     doc["schemaVersion"] = V1_PROFILE_SCHEMA_VERSION;
     doc["name"] = canonicalName;
     doc["description"] = profile.description;
+    if (!isValidV1InTheBoxSettings(profile.inTheBox)) {
+        file.close();
+        fs_->remove(tmpPath);
+        return ProfileSaveResult(ProfileStorageStatus::Corrupt, "Invalid In-the-Box settings");
+    }
+    appendV1InTheBoxSettings(doc["inTheBox"].to<JsonObject>(), profile.inTheBox);
     JsonObject detector = doc["detector"].to<JsonObject>();
     appendV1DetectorConfiguration(detector, profile.detector);
     if (!parseV1DetectorConfiguration(detector, scratch->validatedDetector) ||
@@ -2097,7 +2110,8 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
         scratch->verifiedProfile.name != canonicalName ||
         scratch->verifiedProfile.description != profile.description ||
         memcmp(scratch->verifiedProfile.settings.bytes, profile.settings.bytes, 6) != 0 ||
-        scratch->verifiedProfile.detector != profile.detector) {
+        scratch->verifiedProfile.detector != profile.detector ||
+        !v1InTheBoxSettingsEqual(scratch->verifiedProfile.inTheBox, profile.inTheBox)) {
         lastError_ = verifyResult.success() ? "Final profile verification mismatch" : verifyResult.error;
         fs_->remove(path);
         if (fs_->exists(bakPath)) {
@@ -2434,6 +2448,7 @@ bool V1ProfileManager::profileToJson(const V1Profile& profile, String& output) c
     doc["description"] = profile.description;
     if (profile.schemaVersion == V1_PROFILE_SCHEMA_VERSION) {
         appendV1DetectorConfiguration(doc["detector"].to<JsonObject>(), profile.detector);
+        appendV1InTheBoxSettings(doc["inTheBox"].to<JsonObject>(), profile.inTheBox);
     } else {
         doc["legacy"] = true;
     }

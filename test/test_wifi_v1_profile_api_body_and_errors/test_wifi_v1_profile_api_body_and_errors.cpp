@@ -49,6 +49,7 @@ struct FakeRuntime {
     uint8_t savedMainVolume = 0xFF;
     uint8_t savedMutedVolume = 0xFF;
     V1DetectorConfiguration savedDetector;
+    V1InTheBoxSettings savedInTheBox;
     WifiV1ProfileApiService::CatalogStatus loadStatus =
         WifiV1ProfileApiService::CatalogStatus::NotFound;
     String existingProfileJson;
@@ -77,6 +78,7 @@ WifiV1ProfileApiService::Runtime makeRuntime(FakeRuntime& rt) {
     runtime.saveProfile = [](const String& /*name*/,
                              const String& description,
                              const V1DetectorConfiguration& detector,
+                             const V1InTheBoxSettings& inTheBox,
                              const uint8_t /*inBytes*/[6],
                              bool createOnly,
                              String& error,
@@ -85,6 +87,7 @@ WifiV1ProfileApiService::Runtime makeRuntime(FakeRuntime& rt) {
         rtp->saveCalls++;
         rtp->savedDescription = description;
         rtp->savedDetector = detector;
+        rtp->savedInTheBox = inTheBox;
         rtp->savedCreateOnly = createOnly;
         if (!rtp->saveOk) {
             error = rtp->saveError;
@@ -414,6 +417,7 @@ void test_profile_save_accepts_complete_64_definition_profile_above_old_cap() {
     FakeRuntime rt;
     JsonDocument request;
     request["schemaVersion"] = V1_PROFILE_SCHEMA_VERSION;
+    appendV1InTheBoxSettings(request["inTheBox"].to<JsonObject>(), V1InTheBoxSettings{});
     request["name"] = std::string(MAX_PROFILE_NAME_LEN, 'M');
     request["description"] = std::string(V1_PROFILE_DESCRIPTION_MAX_BYTES, '\"');
     V1DetectorConfiguration detector;
@@ -447,10 +451,11 @@ void test_profile_save_accepts_complete_64_definition_profile_above_old_cap() {
     settings["kSensitivity"] = 3;
     settings["xSensitivity"] = 3;
     settings["autoMute"] = 3;
+    for (JsonPair box : request["inTheBox"]["boxes"].as<JsonObject>()) box.value()["enabled"] = false;
     String body;
     serializeJson(request, body);
-    TEST_ASSERT_EQUAL_UINT(12199, body.length());
-    TEST_ASSERT_EQUAL_UINT(4185, V1_PROFILE_HTTP_SAVE_MAX_BYTES - body.length());
+    TEST_ASSERT_EQUAL_UINT(12772, body.length());
+    TEST_ASSERT_EQUAL_UINT(3612, V1_PROFILE_HTTP_SAVE_MAX_BYTES - body.length());
     TEST_ASSERT_LESS_THAN(V1_PROFILE_HTTP_SAVE_MAX_BYTES, body.length());
     server.setArg("plain", body);
 
@@ -479,6 +484,7 @@ void test_profile_save_rejects_half_zero_custom_definition_without_saving() {
     FakeRuntime rt;
     JsonDocument request;
     request["schemaVersion"] = V1_PROFILE_SCHEMA_VERSION;
+    appendV1InTheBoxSettings(request["inTheBox"].to<JsonObject>(), V1InTheBoxSettings{});
     request["name"] = "Half Zero";
     V1DetectorConfiguration detector;
     detector.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
@@ -744,8 +750,47 @@ void test_body_caps_are_backstopped_by_socket_preflight_before_framework_parser(
     TEST_ASSERT_NOT_EQUAL(std::string::npos, policySource.find("kMaxBodyBytes"));
 }
 
+void test_in_the_box_http_save_forwards_policy_and_preserves_omitted_legacy_metadata() {
+    FakeRuntime runtime;
+    V1InTheBoxSettings policy;
+    policy.bands[2] = {true, true};
+    policy.boxes[2] = {true, 23900, 23900};
+    JsonDocument request;
+    request["schemaVersion"] = V1_PROFILE_SCHEMA_VERSION;
+    request["name"] = "App Policy";
+    request["description"] = "";
+    appendV1DetectorConfiguration(request["detector"].to<JsonObject>(), V1DetectorConfiguration{});
+    appendV1InTheBoxSettings(request["inTheBox"].to<JsonObject>(), policy);
+    request["settings"]["xBand"] = true;
+    String body;
+    serializeJson(request, body);
+    WebServer server(80);
+    server.setArg("plain", body);
+    WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(runtime), alwaysAllow, nullptr);
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    TEST_ASSERT_TRUE(v1InTheBoxSettingsEqual(policy, runtime.savedInTheBox));
+    runtime.existingProfileJson = body;
+    runtime.loadStatus = WifiV1ProfileApiService::CatalogStatus::Success;
+    request["schemaVersion"] = 3;
+    request.remove("inTheBox");
+    body = "";
+    serializeJson(request, body);
+    server.setArg("plain", body);
+    WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(runtime), alwaysAllow, nullptr);
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    TEST_ASSERT_TRUE(v1InTheBoxSettingsEqual(policy, runtime.savedInTheBox));
+    request["schemaVersion"] = 4;
+    body = "";
+    serializeJson(request, body);
+    server.setArg("plain", body);
+    WifiV1ProfileApiService::handleApiProfileSave(server, makeRuntime(runtime), alwaysAllow, nullptr);
+    TEST_ASSERT_EQUAL_INT(400, server.lastStatusCode);
+    TEST_ASSERT_EQUAL_INT(2, runtime.saveCalls);
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_in_the_box_http_save_forwards_policy_and_preserves_omitted_legacy_metadata);
     RUN_TEST(test_save_error_with_quotes_and_backslashes_stays_valid_json);
     RUN_TEST(test_save_error_with_control_characters_stays_valid_json);
     RUN_TEST(test_plain_save_error_still_reports_error_field_verbatim);

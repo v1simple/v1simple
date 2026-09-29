@@ -109,6 +109,25 @@ void test_component_truth_and_reason_survive_terminal_reboot() {
                           unchanged.outcome);
 }
 
+void test_app_policy_commit_failure_remains_partial_after_reboot() {
+    V1SettingsOperationStore store;
+    TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::LoadStatus::Ready, store.begin());
+    TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::StartStatus::Started,
+        store.startProfileApply("Road", "AA:BB:CC:DD:EE:FF", false, true).status);
+    TEST_ASSERT_TRUE(store.markRunning(78));
+    TEST_ASSERT_TRUE(store.markRecapturing(V1SettingsOperationStore::Reason::InTheBoxPersistFailed));
+    TEST_ASSERT_TRUE(store.finish(V1SettingsOperationStore::State::Partial,
+                                  V1SettingsOperationStore::Reason::InTheBoxPersistFailed));
+
+    V1SettingsOperationStore rebooted;
+    TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::LoadStatus::Ready, rebooted.begin());
+    TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::State::Partial, rebooted.snapshot().state);
+    TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::Reason::InTheBoxPersistFailed,
+                          rebooted.snapshot().reason);
+    TEST_ASSERT_EQUAL_STRING("in_the_box_persist_failed",
+        V1SettingsOperationStore::reasonName(rebooted.snapshot().reason));
+}
+
 void test_component_success_shapes_fail_closed_and_noop_apply_is_valid() {
     V1SettingsOperationStore store;
     TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::LoadStatus::Ready, store.begin());
@@ -556,6 +575,7 @@ int main() {
     RUN_TEST(test_pending_operation_survives_restart_and_repeated_wait_boot_fails_closed);
     RUN_TEST(test_repeated_reboot_cannot_extend_interrupted_recapture);
     RUN_TEST(test_component_truth_and_reason_survive_terminal_reboot);
+    RUN_TEST(test_app_policy_commit_failure_remains_partial_after_reboot);
     RUN_TEST(test_component_success_shapes_fail_closed_and_noop_apply_is_valid);
     RUN_TEST(test_factory_reset_recovery_distinguishes_unproven_and_durable_send_windows);
     RUN_TEST(test_factory_reset_failure_before_send_is_durable_without_invented_component_truth);

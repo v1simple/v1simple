@@ -183,6 +183,7 @@ void appendProfile(JsonArray profilesArr, const V1Profile& profile, bool profile
     if (profileOwned) {
         p["schemaVersion"] = V1_PROFILE_SCHEMA_VERSION;
         appendV1DetectorConfiguration(p["detector"].to<JsonObject>(), profile.detector);
+        appendV1InTheBoxSettings(p["inTheBox"].to<JsonObject>(), profile.inTheBox);
     } else {
         // Until the dedicated ownership marker commits, slots remain the
         // authoritative detector-command source. Keep the pre-v2 profile

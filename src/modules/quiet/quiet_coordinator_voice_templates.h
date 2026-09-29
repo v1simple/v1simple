@@ -11,6 +11,11 @@ void QuietCoordinatorModule::applyVoicePresentation(VoiceContext& voiceCtx, cons
     presentation_.voiceAllowVolZeroBypass = false;
     voiceCtx.isSuppressed = false;
 
+    if (inTheBoxSuppressVoice_) {
+        voiceCtx.isSuppressed = true;
+        presentation_.voiceSuppressed = true;
+    }
+
     if (!voiceCtx.isSuppressed && speedMute) {
         const auto& smSettings = speedMute->getSettings();
         const auto& smState = speedMute->getState();

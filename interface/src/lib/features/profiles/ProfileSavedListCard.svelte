@@ -1,14 +1,20 @@
 <script>
     import CardSectionHead from '$lib/components/CardSectionHead.svelte';
 
-    let { loading, profiles = [], allowEdit = true, oneditProfile, oncopyProfile, ondeleteProfile } = $props();
+    let { loading, profiles = [], allowEdit = true, currentName = '', compact = false, oneditProfile, oncopyProfile, ondeleteProfile } = $props();
 </script>
 
 <div class="surface-card">
+    {#key currentName}
+    <details open={!compact}>
+        <summary class="cursor-pointer p-4" hidden={!compact}>
+            <span class="font-semibold">Browse saved profiles ({profiles.length})</span>
+            <span class="copy-caption ml-2">{currentName ? `Selected: ${currentName}` : 'New profile draft'}</span>
+        </summary>
     <div class="card-body">
         <CardSectionHead
             title="Saved Profiles"
-            subtitle="Named detector configurations available to Auto-Push during normal operation."
+            subtitle="Choose a profile to review or edit. Copy one to use it as a starting point."
         />
 
         {#if loading}
@@ -22,14 +28,17 @@
         {:else}
             <div class="space-y-2">
                 {#each profiles as profile}
-                    <div class="surface-panel flex items-center justify-between">
-                        <div>
-                            <div class="font-medium">{profile.name}</div>
+                    <div class="surface-panel flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between" class:border-primary={profile.name === currentName}>
+                        <div class="min-w-0">
+                            <div class="flex flex-wrap items-center gap-2">
+                                <span class="font-medium break-words">{profile.name}</span>
+                                {#if profile.name === currentName}<span class="badge badge-outline badge-sm">Selected</span>{/if}
+                            </div>
                             <div class="copy-caption">
                                 {profile.description || 'No description'}
                             </div>
                         </div>
-                        <div class="flex gap-2">
+                        <div class="flex shrink-0 gap-2">
                             {#if allowEdit}
                                 <button
                                     class="btn btn-secondary btn-xs"
@@ -56,4 +65,6 @@
             </div>
         {/if}
     </div>
+    </details>
+    {/key}
 </div>

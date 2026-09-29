@@ -45,14 +45,20 @@ ProfileRecoveryStatus restoreProfileEntryFromBackup(const JsonDocument& backup, 
         }
         if (hasSchema != hasDetector ||
             (hasSchema && (!entry["schemaVersion"].is<int>() ||
-                           entry["schemaVersion"].as<int>() != V1_PROFILE_SCHEMA_VERSION ||
+                           !isVersionedV1ProfileSchema(entry["schemaVersion"].as<int>()) ||
                            !entry["detector"].is<JsonObjectConst>() ||
-                           !parseV1DetectorConfiguration(entry["detector"].as<JsonObjectConst>(),
-                                                         profile.detector)))) {
+                           !(entry["schemaVersion"].as<int>() >= V1_PROFILE_V3_SCHEMA_VERSION
+                                 ? parseV1DetectorConfiguration(entry["detector"].as<JsonObjectConst>(), profile.detector)
+                                 : parseV1DetectorConfigurationV2(entry["detector"].as<JsonObjectConst>(), profile.detector))))) {
             Serial.printf("[Settings] Backup profile schema invalid name='%s'\n", canonicalName.c_str());
             return ProfileRecoveryStatus::Invalid;
         }
+        if (!parseV1ProfileInTheBox(entry, hasSchema ? entry["schemaVersion"].as<int>() : 1,
+                                   profile.inTheBox)) return ProfileRecoveryStatus::Invalid;
         if (hasSchema) {
+            if (entry["schemaVersion"].as<int>() == V1_PROFILE_PREVIOUS_SCHEMA_VERSION) {
+                migrateV1DetectorConfigurationV2InPlace(profile.detector);
+            }
             profile.schemaVersion = V1_PROFILE_SCHEMA_VERSION;
         } else {
             profile.schemaVersion = 1;

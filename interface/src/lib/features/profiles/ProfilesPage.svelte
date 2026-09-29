@@ -1,5 +1,5 @@
 <script>
-    import { onMount } from 'svelte';
+    import { onMount, tick } from 'svelte';
     import { fetchJsonWithTimeout, fetchWithTimeout } from '$lib/utils/poll';
     import PageHeader from '$lib/components/PageHeader.svelte';
     import StatusAlert from '$lib/components/StatusAlert.svelte';
@@ -17,6 +17,13 @@
         toApiDetectorConfiguration,
         toApiSettings
     } from '$lib/features/profiles/profileSettingsAdapter';
+    import {
+        createDefaultInTheBoxSettings,
+        cloneInTheBoxSettings,
+        fromApiInTheBoxSettings,
+        toApiInTheBoxSettings,
+        inTheBoxSettingsError
+    } from '$lib/features/profiles/inTheBoxSettings';
     import {
         DETECTOR_OPERATION_POLL_WINDOW_MS,
         DETECTOR_OPERATION_STATES,
@@ -39,6 +46,7 @@
     let editingSettings = $state(false);
     let editedSettings = $state(null);
     let editedDetector = $state(null);
+    let editedInTheBox = $state(null);
     const PROFILE_DESCRIPTION_MAX_BYTES = 4096;
 
     function descriptionForSave(value) {
@@ -106,16 +114,14 @@
             JSON.stringify(toApiDetectorConfiguration(right));
     }
 
+    function inTheBoxConfigurationsEqual(left, right) {
+        return JSON.stringify(toApiInTheBoxSettings(left)) === JSON.stringify(toApiInTheBoxSettings(right));
+    }
+
     function ensureCustomFrequencyOwnership(detector = editedDetector) {
         if (!detector) return;
         detector.customFrequencyPolicy = 'value';
         if (!Array.isArray(detector.customFrequencyDefinitions)) detector.customFrequencyDefinitions = [];
-    }
-
-    function customFrequenciesChanged(enabled) {
-        if (enabled && editedDetector?.customFrequencyDefinitions?.length > 0) {
-            ensureCustomFrequencyOwnership();
-        }
     }
 
     function addCustomFrequencyRange(band) {
@@ -142,13 +148,13 @@
 
     function customFrequencyError(settings, detector) {
         if (detector?.customFrequencyPolicy !== 'value') {
-            return settings?.customFreqs
-                ? 'Custom Frequencies cannot be enabled until this profile owns at least one K or Ka range.'
+            return detector?.userSettings !== 'unchanged' && settings?.customFreqs
+                ? 'To enable custom-frequency detection, choose profile ranges and add at least one K or Ka range.'
                 : null;
         }
         const definitions = detector.customFrequencyDefinitions;
         if (!Array.isArray(definitions) || definitions.length === 0) {
-            return 'Add at least one K or Ka range, or leave the DUT table unowned.';
+            return 'Add at least one K or Ka range, or choose to keep the detector’s current ranges.';
         }
         if (definitions.length > 64) {
             return 'A profile can author at most 64 custom-frequency ranges.';
@@ -377,18 +383,21 @@
             name: '',
             description: '',
             detector: detectorConfigurationFromSnapshot(capturedSnapshot),
+            inTheBox: createDefaultInTheBoxSettings(),
             settings
         };
         editedSettings = { ...settings, baseBytes: settings.baseBytes ? [...settings.baseBytes] : undefined };
         editedDetector = cloneDetectorConfiguration(currentProfile.detector);
+        editedInTheBox = cloneInTheBoxSettings(currentProfile.inTheBox);
         editDescription = '';
         saveName = '';
         saveDescription = '';
         editingSettings = true;
         message = {
             type: 'info',
-            text: 'Draft started from the last observed V1 user bytes. No detector changes were made.'
+            text: 'Draft started from the last observed V1 user bytes. In-the-Box actions start off because the detector cannot report these app settings. No detector changes were made.'
         };
+        void focusEditor();
     }
 
     async function fetchProfiles() {
@@ -408,7 +417,7 @@
                 const data = res.data;
                 if (!Array.isArray(data.profiles)) throw new Error('Invalid profile page');
                 loadedProfiles.push(...data.profiles);
-                schemaReady = schemaReady && data.schemaVersion === 3;
+                schemaReady = schemaReady && data.schemaVersion === 4;
                 if (!data.hasMore) break;
                 if (typeof data.nextCursor !== 'string' || !data.nextCursor || data.nextCursor === cursor) {
                     throw new Error('Invalid profile cursor');
@@ -460,16 +469,35 @@
             message = { type: 'error', text: frequencyError };
             return;
         }
+        const boxError = inTheBoxSettingsError(editedInTheBox || currentProfile?.inTheBox);
+        if (boxError) {
+            message = { type: 'error', text: boxError };
+            return;
+        }
 
+        const sourceProfile = currentProfile;
+        const editSession = editedSettings;
+        const detectorEditSession = editedDetector;
+        const boxEditSession = editedInTheBox;
+        const descriptionAtStart = editDescription;
+        const wasEditing = editingSettings;
+        const copiedProfile = !!copySourceName;
+        const savedSettings = {
+            ...settingsToSave,
+            ...(settingsToSave.baseBytes ? { baseBytes: [...settingsToSave.baseBytes] } : {})
+        };
+        const savedDetector = cloneDetectorConfiguration(editedDetector || currentProfile?.detector);
+        const savedInTheBox = cloneInTheBoxSettings(editedInTheBox || currentProfile?.inTheBox);
         savingProfile = validatedName.canonical;
         try {
             const payload = {
                 name: validatedName.canonical,
-                ...(copySourceName ? { createOnly: true } : {}),
+                ...(copiedProfile ? { createOnly: true } : {}),
                 description: validatedDescription.description,
-                schemaVersion: 3,
-                detector: toApiDetectorConfiguration(editedDetector || currentProfile?.detector),
-                settings: toApiSettings(settingsToSave)
+                schemaVersion: 4,
+                detector: toApiDetectorConfiguration(savedDetector),
+                inTheBox: toApiInTheBoxSettings(savedInTheBox),
+                settings: toApiSettings(savedSettings)
             };
 
             const res = await fetchWithTimeout('/api/v1/profile', {
@@ -491,27 +519,37 @@
 
             if (res.ok) {
                 const canonicalName = validatedName.canonical;
-                const copiedProfile = !!copySourceName;
                 recordSavedProfile(
                     canonicalName,
                     payload.description,
                     true
                 );
-                saveName = canonicalName;
-                if (copiedProfile) {
+                if (currentProfile === sourceProfile && editedSettings === editSession &&
+                    editedDetector === detectorEditSession && editedInTheBox === boxEditSession) {
+                    const dialogUnchanged = saveName.trim() === canonicalName &&
+                        saveDescription.trim() === payload.description;
+                    const draftUnchanged = !wasEditing ||
+                        (editDescription === descriptionAtStart &&
+                            JSON.stringify(toApiSettings(editedSettings)) === JSON.stringify(payload.settings) &&
+                            detectorConfigurationsEqual(editedDetector, savedDetector) &&
+                            inTheBoxConfigurationsEqual(editedInTheBox, savedInTheBox));
                     currentProfile = {
-                        ...currentProfile,
+                        ...sourceProfile,
                         draft: false,
                         name: canonicalName,
                         description: payload.description,
-                        detector: cloneDetectorConfiguration(editedDetector || currentProfile?.detector),
-                        settings: { ...settingsToSave }
+                        detector: savedDetector,
+                        inTheBox: savedInTheBox,
+                        settings: savedSettings
                     };
-                    cancelEditing();
+                    if (draftUnchanged && dialogUnchanged) cancelEditing();
+                    if (dialogUnchanged) {
+                        saveName = canonicalName;
+                        showSaveDialog = false;
+                        copySourceName = null;
+                    }
                 }
                 message = { type: 'success', text: `Profile "${canonicalName}" saved` };
-                showSaveDialog = false;
-                copySourceName = null;
             } else {
                 message = { type: 'error', text: `Failed to save: ${res.error}` };
             }
@@ -522,10 +560,18 @@
         }
     }
 
+    async function focusEditor() {
+        await tick();
+        const editor = document.getElementById('profile-editor');
+        editor?.focus({ preventScroll: true });
+        editor?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+    }
+
     function startEditing() {
         if (currentProfile && currentProfile.settings) {
             editedSettings = { ...currentProfile.settings };
             editedDetector = cloneDetectorConfiguration(currentProfile.detector);
+            editedInTheBox = cloneInTheBoxSettings(currentProfile.inTheBox);
             editDescription = currentProfile.description || '';
             editingSettings = true;
         }
@@ -534,6 +580,7 @@
     function cancelEditing() {
         editedSettings = null;
         editedDetector = null;
+        editedInTheBox = null;
         editDescription = '';
         editingSettings = false;
     }
@@ -583,12 +630,14 @@
             }
             const data = res.body;
             const detector = fromApiDetectorConfiguration(data.detector || {});
+            const inTheBox = fromApiInTheBoxSettings(data.inTheBox);
             const settings = fromApiSettings(data.settings || {});
             currentProfile = {
-                ...data, draft: true, name: '', detector, settings
+                ...data, draft: true, name: '', detector, inTheBox, settings
             };
             editedSettings = { ...settings };
             editedDetector = cloneDetectorConfiguration(detector);
+            editedInTheBox = cloneInTheBoxSettings(inTheBox);
             editDescription = data.description || '';
             saveDescription = editDescription;
             saveName = copyNameSuggestion(name);
@@ -619,13 +668,16 @@
                 currentProfile = {
                     ...data,
                     detector: fromApiDetectorConfiguration(data.detector || {}),
+                    inTheBox: fromApiInTheBoxSettings(data.inTheBox),
                     settings: fromApiSettings(data.settings || {})
                 };
                 editedSettings = { ...currentProfile.settings };
                 editedDetector = cloneDetectorConfiguration(currentProfile.detector);
+                editedInTheBox = cloneInTheBoxSettings(currentProfile.inTheBox);
                 editDescription = data.description || '';
                 editingSettings = true;
-                message = { type: 'info', text: `Editing ${name}` };
+                message = null;
+                void focusEditor();
             } else {
                 message = { type: 'error', text: `Failed to load: ${res.body}` };
             }
@@ -642,24 +694,28 @@
             name: '',
             description: '',
             detector: createProfileDetectorConfiguration(),
+            inTheBox: createDefaultInTheBoxSettings(),
             settings: createDefaultProfileSettings()
         };
         editedSettings = createDefaultProfileSettings();
         editedDetector = createProfileDetectorConfiguration();
+        editedInTheBox = createDefaultInTheBoxSettings();
         editDescription = '';
         saveName = '';
         saveDescription = '';
         editingSettings = true;
         message = {
             type: 'info',
-            text: 'Creating an offline V1 profile. Save it, then assign it on the Auto-Push page.'
+            text: 'Choose your settings, then save this profile. Apply it to your V1 or assign it to Auto-Push.'
         };
+        void focusEditor();
     }
 
     function resetDraftToLocalDefaults() {
         if (!editingSettings) return;
         editedSettings = createDefaultProfileSettings();
         editedDetector = createProfileDetectorConfiguration();
+        editedInTheBox = createDefaultInTheBoxSettings();
         message = {
             type: 'info',
             text: 'Draft reset to V1Simple profile defaults. No command was sent to the detector.'
@@ -682,20 +738,28 @@
             message = { type: 'error', text: frequencyError };
             return;
         }
+        const boxError = inTheBoxSettingsError(editedInTheBox || currentProfile?.inTheBox);
+        if (boxError) {
+            message = { type: 'error', text: boxError };
+            return;
+        }
 
         const profile = currentProfile;
         const editSession = editedSettings;
         const detectorEditSession = editedDetector;
+        const boxEditSession = editedInTheBox;
         const savedSettings = { ...editedSettings };
         const savedDetector = cloneDetectorConfiguration(editedDetector || profile.detector);
+        const savedInTheBox = cloneInTheBoxSettings(editedInTheBox || profile.inTheBox);
         savingProfile = profile.name;
         message = { type: 'info', text: `Saving ${profile.name}...` };
         try {
             const payload = {
                 name: profile.name,
                 description: validatedDescription.description,
-                schemaVersion: 3,
+                schemaVersion: 4,
                 detector: toApiDetectorConfiguration(savedDetector),
+                inTheBox: toApiInTheBoxSettings(savedInTheBox),
                 settings: toApiSettings(savedSettings)
             };
 
@@ -713,14 +777,16 @@
             if (res.ok) {
                 recordSavedProfile(payload.name, payload.description, true);
                 message = { type: 'success', text: `Profile "${payload.name}" saved` };
-                if (editedSettings === editSession && editedDetector === detectorEditSession) {
+                if (editedSettings === editSession && editedDetector === detectorEditSession && editedInTheBox === boxEditSession) {
                     const draftUnchanged = editDescription.trim() === payload.description &&
                         Object.entries(savedSettings).every(([key, value]) => editedSettings[key] === value) &&
-                        detectorConfigurationsEqual(editedDetector, savedDetector);
+                        detectorConfigurationsEqual(editedDetector, savedDetector) &&
+                        inTheBoxConfigurationsEqual(editedInTheBox, savedInTheBox);
                     currentProfile = {
                         ...profile,
                         description: payload.description,
                         detector: savedDetector,
+                        inTheBox: savedInTheBox,
                         settings: savedSettings
                     };
                     if (draftUnchanged) cancelEditing();
@@ -773,9 +839,14 @@
 <div class="page-stack">
     <PageHeader
         title="V1 Profiles"
-        subtitle="Create, edit, and save profiles for automatic use during normal operation."
+        subtitle="Choose how your Valentine One behaves. Save a profile, then apply it or use it automatically."
     >
-        <div class="badge badge-info">Offline authoring</div>
+        <div class="flex flex-wrap items-center gap-2">
+            <a class="btn btn-outline btn-sm" href="/autopush">Assign profiles to Auto-Push</a>
+            {#if profileSchemaReady && currentProfile?.settings}
+                <button class="btn btn-primary btn-sm" onclick={createNewProfile}>New Profile</button>
+            {/if}
+        </div>
     </PageHeader>
 
     <StatusAlert {message} />
@@ -795,6 +866,9 @@
                 <p class="copy-muted">
                     Result: {operationStatus.result || 'in_progress'} · Reason: {operationStatus.reason || 'none'}
                 </p>
+                {#if operationStatus.reason === 'in_the_box_persist_failed'}
+                    <p class="copy-caption">V1Simple could not confirm saving the In-the-Box choices, so it did not activate them. Detector results are shown below.</p>
+                {/if}
                 {#if operationStatus.kind && operationStatus.targetAddress}
                     <p class="copy-caption">
                         {operationStatus.kind} · target {operationStatus.targetAddress} · source {operationStatus.source}
@@ -839,6 +913,8 @@
         {loading}
         {profiles}
         allowEdit={profileSchemaReady}
+        currentName={currentProfile?.name || ''}
+        compact={!!currentProfile?.settings}
         oneditProfile={editProfile}
         oncopyProfile={copyProfile}
         ondeleteProfile={deleteProfile}
@@ -848,9 +924,14 @@
         <ProfileSettingsPanel
             {editingSettings}
             {currentProfile}
+            {capturedSnapshot}
+            canApply={!!currentProfile?.name && profiles.some((profile) => profile.name === currentProfile.name)}
+            applyDisabled={operationBusy || !capturedSnapshot?.address}
+            onapply={applySavedProfile}
             {savingProfile}
             bind:editedSettings
             bind:editedDetector
+            bind:editedInTheBox
             bind:editDescription
             frequencyError={editingSettings && editedSettings && editedDetector
                 ? customFrequencyError(editedSettings, editedDetector)
@@ -859,30 +940,11 @@
             onsaveEditedProfile={saveEditedProfile}
             oncreateNewProfile={createNewProfile}
             onstartEditing={startEditing}
-            oncustomFrequenciesChange={customFrequenciesChanged}
             onaddCustomFrequencyRange={addCustomFrequencyRange}
             onremoveCustomFrequencyRange={removeCustomFrequencyRange}
             onresetDraft={resetDraftToLocalDefaults}
             onshowSaveDialog={openSaveDialog}
         />
-
-        {#if currentProfile?.name && profiles.some((profile) => profile.name === currentProfile.name)}
-            <div class="surface-card">
-                <div class="card-body space-y-2">
-                    <h2 class="card-title">Apply saved profile</h2>
-                    <p class="copy-muted">
-                        Apply uses the saved version of “{currentProfile.name}”, bound to the exact captured detector.
-                        Unsaved edits on this page are never serialized into the operation.
-                    </p>
-                    <button class="btn btn-primary btn-sm" type="button"
-                        disabled={operationBusy || !capturedSnapshot?.address}
-                        onclick={applySavedProfile}>
-                        Apply saved profile to captured V1
-                    </button>
-                </div>
-            </div>
-        {/if}
-
     {/if}
 
     <div class="surface-card">
@@ -909,7 +971,6 @@
                 <div class="surface-panel grid gap-2 sm:grid-cols-2">
                     <div><span class="copy-caption">Detector</span><div>{capturedSnapshot.name || capturedSnapshot.address}</div></div>
                     <div><span class="copy-caption">Firmware</span><div>{formatFirmware(capturedSnapshot.firmware?.value)}</div></div>
-                    <div><span class="copy-caption">User bytes</span><div class="font-mono">{formatBytes(capturedSnapshot.observations?.userBytes?.value)}</div></div>
                     <div><span class="copy-caption">Mode</span><div>{capturedSnapshot.observations?.mode?.available ? capturedSnapshot.observations.mode.value : 'Unavailable'}</div></div>
                     <div><span class="copy-caption">Display</span><div>{capturedSnapshot.observations?.displayOn?.available ? (capturedSnapshot.observations.displayOn.value ? 'On' : 'Off') : 'Unavailable'}</div></div>
                     <div><span class="copy-caption">Bluetooth indicator</span><div>{capturedSnapshot.observations?.bluetoothIndicator?.available ? capturedSnapshot.observations.bluetoothIndicator.value : 'Unavailable'}</div></div>
@@ -946,21 +1007,6 @@
                         Current and saved volume differ. A captured draft prefills the observed current numbers, but leaves volume unchanged until you explicitly choose Temporary or Save on V1.
                     </div>
                 {/if}
-                {#if capturedSnapshot.capabilities?.versionKnown && capturedSnapshot.capabilities?.gen2}
-                    <p class="copy-caption">
-                        Firmware-qualified: {capturedSnapshot.capabilities.supportedUserByteCount} user bytes,
-                        saved volume {capturedSnapshot.capabilities.savedVolume ? 'supported' : 'not supported'},
-                        keep-Bluetooth-indicator-on {capturedSnapshot.capabilities.keepBluetoothLedOn ? 'supported' : 'not supported'},
-                        custom sweeps {capturedSnapshot.capabilities.customSweeps ? 'supported' : 'not supported'},
-                        Gatso RT4 {capturedSnapshot.capabilities.settings?.gatsoRT4 ? 'supported' : 'not supported'}.
-                    </p>
-                {:else if capturedSnapshot.capabilities?.versionKnown}
-                    <p class="copy-caption">
-                        This firmware version is outside the qualified Gen2 range; captured bytes are shown without feature claims.
-                    </p>
-                {:else}
-                    <p class="copy-caption">Firmware capabilities are unknown; the captured bytes are shown without feature claims.</p>
-                {/if}
                 <div>
                     <button
                         class="btn btn-primary btn-sm"
@@ -970,35 +1016,53 @@
                         Start draft from captured settings
                     </button>
                 </div>
-                {#if capturedSnapshot.capabilities?.detectorFactoryResetWorkflowAvailable}
-                    <div class="surface-panel space-y-2">
-                        <h3 class="font-semibold">Factory reset this detector</h3>
-                        <p class="copy-caption">
-                            This sends the vendor factory-default command to {capturedSnapshot.address} in normal mode.
-                            V1Simple will freshly recapture the detector afterward. User-byte defaults can be verified;
-                            numeric factory volume and other undocumented defaults remain explicitly unverified.
-                        </p>
-                        <label class="field-control">
-                            <span class="field-label copy-caption">Type RESET V1 to confirm</span>
-                            <input class="input input-sm" bind:value={factoryConfirmation} autocomplete="off" />
-                        </label>
-                        <button class="btn btn-error btn-sm" type="button"
-                            disabled={operationBusy || factoryConfirmation !== 'RESET V1'}
-                            onclick={factoryResetDetector}>
-                            Factory reset captured V1
-                        </button>
+                <details class="surface-collapse">
+                    <summary class="collapse-title min-h-0 py-3 text-sm font-semibold">Detector details & factory reset</summary>
+                    <div class="collapse-content space-y-3">
+                        <div><span class="copy-caption">Captured settings bytes</span><div class="font-mono">{formatBytes(capturedSnapshot.observations?.userBytes?.value)}</div></div>
+                        {#if capturedSnapshot.capabilities?.versionKnown && capturedSnapshot.capabilities?.gen2}
+                            <p class="copy-caption">
+                                Firmware-qualified: {capturedSnapshot.capabilities.supportedUserByteCount} user bytes,
+                                saved volume {capturedSnapshot.capabilities.savedVolume ? 'supported' : 'not supported'},
+                                keep-Bluetooth-indicator-on {capturedSnapshot.capabilities.keepBluetoothLedOn ? 'supported' : 'not supported'},
+                                custom sweeps {capturedSnapshot.capabilities.customSweeps ? 'supported' : 'not supported'},
+                                Gatso RT4 {capturedSnapshot.capabilities.settings?.gatsoRT4 ? 'supported' : 'not supported'}.
+                            </p>
+                        {:else if capturedSnapshot.capabilities?.versionKnown}
+                            <p class="copy-caption">
+                                This firmware version is outside the qualified Gen2 range; captured bytes are shown without feature claims.
+                            </p>
+                        {:else}
+                            <p class="copy-caption">Firmware capabilities are unknown; the captured bytes are shown without feature claims.</p>
+                        {/if}
+                        {#if capturedSnapshot.capabilities?.detectorFactoryResetWorkflowAvailable}
+                            <div class="surface-panel space-y-2">
+                                <h3 class="font-semibold">Factory reset this detector</h3>
+                                <p class="copy-caption">
+                                    This sends the vendor factory-default command to {capturedSnapshot.address} in normal mode.
+                                    V1Simple will freshly recapture the detector afterward. User-byte defaults can be verified;
+                                    numeric factory volume and other undocumented defaults remain explicitly unverified.
+                                </p>
+                                <label class="field-control">
+                                    <span class="field-label copy-caption">Type RESET V1 to confirm</span>
+                                    <input class="input input-sm" bind:value={factoryConfirmation} autocomplete="off" />
+                                </label>
+                                <button class="btn btn-error btn-sm" type="button"
+                                    disabled={operationBusy || factoryConfirmation !== 'RESET V1'}
+                                    onclick={factoryResetDetector}>
+                                    Factory reset captured V1
+                                </button>
+                            </div>
+                        {/if}
                     </div>
-                {/if}
+                </details>
             {/if}
         </div>
     </div>
 
     <div class="surface-note copy-muted space-y-1">
-        <p><strong>Create:</strong> Build a detector configuration without a V1 connection.</p>
-        <p><strong>Edit:</strong> Update or delete saved profiles during maintenance.</p>
-        <p>
-            <strong>Apply:</strong> Load a saved profile here, then start a target-bound operation. V1Simple
-            restarts into normal mode, verifies the exact captured V1, recaptures its settings, and returns.
-        </p>
+        <p><strong>Save:</strong> Stores a profile on V1Simple. Your detector changes when the profile is applied.</p>
+        <p><strong>Apply:</strong> Uses the saved profile on the captured V1 and checks the result.</p>
+        <p><strong>Auto-Push:</strong> Applies the assigned profile when your detector connects during normal use.</p>
     </div>
 </div>

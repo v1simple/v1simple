@@ -19,11 +19,23 @@
 #include "v1_custom_frequency_definitions.h"
 #include "v1_detector_configuration.h"
 #include "v1_profile_limits.h"
+#include "v1_in_the_box.h"
 
 class StorageManager;
 
-inline constexpr uint8_t V1_PROFILE_SCHEMA_VERSION = 3;
+inline constexpr uint8_t V1_PROFILE_SCHEMA_VERSION = 4;
 inline constexpr uint8_t V1_PROFILE_PREVIOUS_SCHEMA_VERSION = 2;
+inline constexpr uint8_t V1_PROFILE_V3_SCHEMA_VERSION = 3;
+inline bool isVersionedV1ProfileSchema(int version) {
+    return version >= V1_PROFILE_PREVIOUS_SCHEMA_VERSION && version <= V1_PROFILE_SCHEMA_VERSION;
+}
+
+inline bool parseV1ProfileInTheBox(JsonObjectConst object, int version, V1InTheBoxSettings& settings) {
+    settings = V1InTheBoxSettings{};
+    return version == V1_PROFILE_SCHEMA_VERSION
+               ? parseV1InTheBoxSettings(object["inTheBox"], settings)
+               : object["inTheBox"].isUnbound();
+}
 inline bool validV1Utf8(const char* data, size_t length) {
     if (!data && length != 0) return false;
     size_t position = 0;
@@ -111,6 +123,7 @@ struct V1Profile {
     String description;
     V1UserSettings settings;
     V1DetectorConfiguration detector;
+    V1InTheBoxSettings inTheBox;
     uint8_t schemaVersion = V1_PROFILE_SCHEMA_VERSION;
 
     // Read-only migration carriers for pre-v2 files/backups. They were never

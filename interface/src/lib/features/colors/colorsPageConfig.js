@@ -129,38 +129,44 @@ export const STATUS_FIELD_ROWS = [
 export const VISIBILITY_TOGGLES = [
     {
         key: 'hideWifiIcon',
-        title: 'Hide WiFi Icon',
-        description: 'Show briefly on connect, then hide'
+        title: 'Show WiFi status',
+        description: 'Show when WiFi is active.',
+        inverted: true
     },
     {
         key: 'hideProfileIndicator',
-        title: 'Hide Profile Indicator',
-        description: 'Show on profile change, then hide'
+        title: 'Show active slot',
+        description: 'When off, the slot still appears briefly after a change.',
+        inverted: true
     },
     {
         key: 'hideBatteryIcon',
-        title: 'Hide Battery Icon',
-        description: 'Hide the battery indicator'
+        title: 'Show battery level',
+        description: 'Show the V1Simple battery indicator.',
+        inverted: true
     },
     {
         key: 'showBatteryPercent',
-        title: 'Show Battery Percentage',
-        description: 'Show battery level as percentage instead of icon',
+        title: 'Show battery percentage',
+        description: 'Use a percentage instead of the battery icon.',
         disabled: (colors) => colors.hideBatteryIcon
     },
     {
         key: 'hideBleIcon',
-        title: 'Hide BLE Proxy Icon',
-        description: 'Hide the BLE proxy status indicator'
+        title: 'Show Bluetooth proxy status',
+        description: 'Show the phone connection indicator on this screen.',
+        inverted: true
     },
     {
         key: 'hideVolumeIndicator',
-        title: 'Hide Volume Indicator',
-        description: 'Hide the V1 volume display (requires V1 firmware 4.1028+)'
+        title: 'Show V1 volume',
+        description: 'Show volume levels from V1 firmware 4.1028 or later.',
+        inverted: true
     },
     {
         key: 'hideRssiIndicator',
-        title: 'Hide RSSI Indicator',
-        description: 'Hide the BLE signal strength display'
+        title: 'Show connection strength',
+        description: 'Show V1 and phone signal strength while V1 volume is shown.',
+        inverted: true
     }
 ];

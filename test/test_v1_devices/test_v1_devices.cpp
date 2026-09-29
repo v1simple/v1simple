@@ -471,7 +471,7 @@ void test_legacy_v1_device_store_is_loaded_and_upgraded_with_integrity_metadata(
     TEST_ASSERT_TRUE(file);
     TEST_ASSERT_FALSE(deserializeJson(upgraded, file));
     file.close();
-    TEST_ASSERT_EQUAL_UINT8(4u, upgraded["version"].as<uint8_t>());
+    TEST_ASSERT_EQUAL_UINT8(5u, upgraded["version"].as<uint8_t>());
     TEST_ASSERT_EQUAL_UINT32(1u, upgraded["generation"].as<uint32_t>());
     TEST_ASSERT_TRUE(upgraded["crc32"].is<uint32_t>());
 }
@@ -576,14 +576,18 @@ void test_worst_case_complete_sweep_catalog_round_trips_within_bounded_store() {
     JsonDocument maximumStore;
     TEST_ASSERT_FALSE(deserializeJson(maximumStore, readFileToString(fs, "/v1devices.json")));
     maximumStore["generation"] = UINT32_MAX;
+    // false is one byte longer than true; all legal range edges use five digits.
+    for (JsonObject record : maximumStore["devices"].as<JsonArray>()) {
+        for (JsonPair box : record["inTheBox"]["boxes"].as<JsonObject>()) box.value()["enabled"] = false;
+    }
     maximumStore["crc32"] = deviceStoreContentCrc(maximumStore);
     String maximumStoreText;
     TEST_ASSERT_EQUAL_UINT(measureJson(maximumStore), serializeJson(maximumStore, maximumStoreText));
     writeFileFromString(fs, "/v1devices.json", maximumStoreText.c_str());
     const size_t storeSize = maximumStoreText.length();
-    TEST_ASSERT_EQUAL_UINT32(70180, static_cast<uint32_t>(storeSize));
-    TEST_ASSERT_LESS_THAN(72u * 1024u, storeSize);
-    TEST_ASSERT_EQUAL_UINT32(3548, static_cast<uint32_t>(72u * 1024u - storeSize));
+    TEST_ASSERT_EQUAL_UINT32(79348, static_cast<uint32_t>(storeSize));
+    TEST_ASSERT_LESS_THAN(80u * 1024u, storeSize);
+    TEST_ASSERT_EQUAL_UINT32(2572, static_cast<uint32_t>(80u * 1024u - storeSize));
 
     V1DeviceStore reloaded;
     TEST_ASSERT_TRUE(reloaded.begin(&fs));
@@ -604,7 +608,7 @@ void test_worst_case_complete_sweep_catalog_round_trips_within_bounded_store() {
     // must model an interrupted/invalid live write explicitly.
     const std::string validStore = readFileToString(fs, "/v1devices.json");
     writeFileFromString(fs, "/v1devices.json.prev", validStore.c_str());
-    const std::string oversized(72u * 1024u + 1u, ' ');
+    const std::string oversized(80u * 1024u + 1u, ' ');
     writeFileFromString(fs, "/v1devices.json", oversized.c_str());
     V1DeviceStore recovered;
     TEST_ASSERT_TRUE(recovered.begin(&fs));
@@ -910,7 +914,9 @@ void test_current_store_rejects_more_than_supported_device_count_before_copying(
 void test_generation_exhaustion_never_promotes_zero_or_overwrites_valid_copies() {
     fs::FS fs(g_tempRoot);
     JsonDocument maximum;
-    addValidV4Device(maximum, "Maximum generation");
+    JsonObject maximumDevice = addValidV4Device(maximum, "Maximum generation");
+    maximum["version"] = 5;
+    appendV1InTheBoxSettings(maximumDevice["inTheBox"].to<JsonObject>(), V1InTheBoxSettings{});
     maximum["generation"] = 0xFFFFFFFFu;
     writeDeviceStoreDocument(fs, "/v1devices.json", maximum);
     const std::string before = readFileToString(fs, "/v1devices.json");
@@ -934,7 +940,9 @@ void test_generation_exhaustion_never_promotes_zero_or_overwrites_valid_copies()
     std::filesystem::create_directories(secondaryRoot);
     fs::FS secondary(secondaryRoot);
     JsonDocument divergent;
-    addValidV4Device(divergent, "Divergent maximum");
+    JsonObject divergentDevice = addValidV4Device(divergent, "Divergent maximum");
+    divergent["version"] = 5;
+    appendV1InTheBoxSettings(divergentDevice["inTheBox"].to<JsonObject>(), V1InTheBoxSettings{});
     divergent["generation"] = 0xFFFFFFFFu;
     writeDeviceStoreDocument(secondary, "/v1devices.json", divergent);
     const std::string primaryBefore = readFileToString(fs, "/v1devices.json");
@@ -1141,7 +1149,7 @@ void test_v2_device_catalog_upgrades_without_inventing_a_snapshot() {
 
     JsonDocument upgraded;
     TEST_ASSERT_FALSE(deserializeJson(upgraded, readFileToString(fs, "/v1devices.json")));
-    TEST_ASSERT_EQUAL_UINT8(4, upgraded["version"].as<uint8_t>());
+    TEST_ASSERT_EQUAL_UINT8(5, upgraded["version"].as<uint8_t>());
     TEST_ASSERT_FALSE(upgraded["devices"][0]["snapshot"].is<JsonObject>());
 }
 
@@ -1192,7 +1200,7 @@ void test_corrupt_newer_v2_catalog_is_rejected_and_recovered_from_valid_mirror()
 
     JsonDocument repaired;
     TEST_ASSERT_FALSE(deserializeJson(repaired, readFileToString(sd, "/v1devices.json")));
-    TEST_ASSERT_EQUAL_UINT8(4u, repaired["version"].as<uint8_t>());
+    TEST_ASSERT_EQUAL_UINT8(5u, repaired["version"].as<uint8_t>());
     TEST_ASSERT_EQUAL_UINT32(10u, repaired["generation"].as<uint32_t>());
     TEST_ASSERT_EQUAL_UINT32(deviceStoreContentCrc(repaired), repaired["crc32"].as<uint32_t>());
 }
@@ -1229,7 +1237,7 @@ void test_semantic_crc_failure_recovers_same_filesystem_rollback() {
 
     JsonDocument repaired;
     TEST_ASSERT_FALSE(deserializeJson(repaired, readFileToString(fs, "/v1devices.json")));
-    TEST_ASSERT_EQUAL_UINT8(4u, repaired["version"].as<uint8_t>());
+    TEST_ASSERT_EQUAL_UINT8(5u, repaired["version"].as<uint8_t>());
     TEST_ASSERT_EQUAL_UINT32(7u, repaired["generation"].as<uint32_t>());
     TEST_ASSERT_EQUAL_UINT32(deviceStoreContentCrc(repaired), repaired["crc32"].as<uint32_t>());
     TEST_ASSERT_EQUAL_STRING("Committed rollback", repaired["devices"][0]["name"].as<const char*>());
@@ -1420,7 +1428,7 @@ void test_empty_legacy_v1_catalog_overrides_legacy_text_import() {
     TEST_ASSERT_TRUE(devices.listDevices().empty());
     JsonDocument upgraded;
     TEST_ASSERT_FALSE(deserializeJson(upgraded, readFileToString(fs, "/v1devices.json")));
-    TEST_ASSERT_EQUAL_INT(4, upgraded["version"].as<int>());
+    TEST_ASSERT_EQUAL_INT(5, upgraded["version"].as<int>());
     TEST_ASSERT_TRUE(upgraded["crc32"].is<uint32_t>());
 }
 
@@ -1527,8 +1535,81 @@ void test_both_boot_paths_use_catalog_bootstrap_and_connection_still_discovers()
     }
 }
 
+void test_applied_in_the_box_snapshot_survives_unrelated_edits_reload_and_failed_replace() {
+    fs::FS filesystem(g_tempRoot);
+    V1DeviceStore devices;
+    TEST_ASSERT_TRUE(devices.begin(&filesystem));
+    V1InTheBoxSettings applied;
+    applied.bands[2] = {true, true};
+    applied.boxes[2] = {true, 23900, 23900};
+    applied.boxes[4].enabled = false;
+    TEST_ASSERT_TRUE(devices.setDeviceInTheBox("AA:BB:CC:DD:EE:FF", applied).committed());
+    const std::string committed = readFileToString(filesystem, "/v1devices.json");
+    fs::mock_set_fs_write_budget(0);
+    TEST_ASSERT_TRUE(devices.setDeviceInTheBox("AA:BB:CC:DD:EE:FF", applied).fullyMirrored());
+    fs::mock_reset_fs_write_budget();
+    TEST_ASSERT_EQUAL_STRING(committed.c_str(), readFileToString(filesystem, "/v1devices.json").c_str());
+    TEST_ASSERT_TRUE(devices.setDeviceName("AA:BB:CC:DD:EE:FF", "Applied"));
+    TEST_ASSERT_TRUE(devices.setDeviceDefaultProfile("AA:BB:CC:DD:EE:FF", 2));
+    TEST_ASSERT_TRUE(devices.touchDeviceInMemory("AA:BB:CC:DD:EE:FF"));
+    fs::mock_set_fs_write_budget(0);
+    TEST_ASSERT_FALSE(devices.setDeviceInTheBox("AA:BB:CC:DD:EE:FF", applied).committed());
+    fs::mock_reset_fs_write_budget();
+    TEST_ASSERT_TRUE(devices.setDeviceInTheBox("AA:BB:CC:DD:EE:FF", applied).committed());
+    V1DetectorSnapshot snapshot;
+    snapshot.available = true;
+    snapshot.hasMode = true;
+    snapshot.mode = 'A';
+    TEST_ASSERT_TRUE(devices.recordSnapshotInMemory("AA:BB:CC:DD:EE:FF", snapshot));
+    TEST_ASSERT_TRUE(devices.flushPendingSave());
+    V1InTheBoxSettings read;
+    TEST_ASSERT_EQUAL_INT(V1DeviceSnapshotStatus::Found,
+                          devices.getInTheBoxForAddressChecked("AA:BB:CC:DD:EE:FF", read));
+    TEST_ASSERT_TRUE(v1InTheBoxSettingsEqual(applied, read));
+    V1InTheBoxSettings replacement;
+    replacement.bands[0].muteOutside = true;
+    fs::mock_set_fs_write_budget(20);
+    TEST_ASSERT_FALSE(devices.setDeviceInTheBox("AA:BB:CC:DD:EE:FF", replacement).committed());
+    fs::mock_reset_fs_write_budget();
+    TEST_ASSERT_EQUAL_INT(V1DeviceSnapshotStatus::Found,
+                          devices.getInTheBoxForAddressChecked("AA:BB:CC:DD:EE:FF", read));
+    TEST_ASSERT_TRUE(v1InTheBoxSettingsEqual(applied, read));
+    V1DeviceStore rebooted;
+    TEST_ASSERT_TRUE(rebooted.begin(&filesystem));
+    TEST_ASSERT_EQUAL_INT(V1DeviceSnapshotStatus::Found,
+                          rebooted.getInTheBoxForAddressChecked("AA:BB:CC:DD:EE:FF", read));
+    TEST_ASSERT_TRUE(v1InTheBoxSettingsEqual(applied, read));
+    TEST_ASSERT_EQUAL_INT(V1DeviceSnapshotStatus::NotFound,
+                          rebooted.getInTheBoxForAddressChecked("11:22:33:44:55:66", read));
+    TEST_ASSERT_TRUE(v1InTheBoxSettingsEqual(V1InTheBoxSettings{}, read));
+}
+
+void test_v4_device_catalog_defaults_app_actions_off_and_v5_rejects_bad_policy() {
+    fs::FS filesystem(g_tempRoot);
+    JsonDocument legacy;
+    addValidV4Device(legacy);
+    writeDeviceStoreDocument(filesystem, "/v1devices.json", legacy);
+    V1DeviceStore devices;
+    TEST_ASSERT_TRUE(devices.begin(&filesystem));
+    V1InTheBoxSettings read;
+    TEST_ASSERT_EQUAL_INT(V1DeviceSnapshotStatus::Found,
+                          devices.getInTheBoxForAddressChecked("AA:BB:CC:DD:EE:FF", read));
+    TEST_ASSERT_TRUE(v1InTheBoxSettingsEqual(V1InTheBoxSettings{}, read));
+    JsonDocument current;
+    TEST_ASSERT_FALSE(deserializeJson(current, readFileToString(filesystem, "/v1devices.json")));
+    TEST_ASSERT_EQUAL_UINT8(5, current["version"].as<uint8_t>());
+    current["devices"][0]["inTheBox"]["boxes"]["k"]["lowerMHz"] = 23899;
+    writeDeviceStoreDocument(filesystem, "/v1devices.json", current);
+    V1DeviceStore corrupt;
+    corrupt.begin(&filesystem);
+    TEST_ASSERT_EQUAL_INT(V1DeviceSnapshotStatus::Unavailable,
+                          corrupt.getInTheBoxForAddressChecked("AA:BB:CC:DD:EE:FF", read));
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_applied_in_the_box_snapshot_survives_unrelated_edits_reload_and_failed_replace);
+    RUN_TEST(test_v4_device_catalog_defaults_app_actions_off_and_v5_rejects_bad_policy);
     RUN_TEST(test_new_device_survives_cross_boot_capacity_for_every_insertion_path);
     RUN_TEST(test_recency_survives_successive_boots_and_existing_device_metadata_edits);
     RUN_TEST(test_device_name_rejects_non_roundtrippable_bytes_without_mutation);

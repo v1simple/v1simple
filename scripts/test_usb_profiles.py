@@ -318,6 +318,46 @@ class USBProfilesTests(unittest.TestCase):
         self.assertTrue(usb.same_bundle(self.peer.current, original))
         self.assertNotIn("DeleteMe", [entry["name"] for entry in self.peer.current["profiles"]])
 
+    def test_v5_set_slot_and_readback_preserve_app_policy(self):
+        current = usb.migrate_bundle(bundle_v4())
+        policy = current["profiles"][0]["inTheBox"]
+        policy["bands"]["k"] = {"muteOutside": True, "unmuteInside": True}
+        policy["boxes"]["k"] = {"enabled": True, "lowerMHz": 23900, "upperMHz": 23900}
+        policy["boxes"]["kaMid"]["enabled"] = False
+        self.peer.current = deepcopy(current)
+        args = self.args("set-slot", slot=0, persistence=5)
+        args.backup_before = self.directory / "before-v5.json"
+        self.assertTrue(usb.perform(args, self.device, announce=lambda _: None)["readback_verified"])
+        expected = deepcopy(current)
+        expected["slots"][0]["alertPersist"] = 5
+        self.assertEqual(self.peer.current, expected)
+        changed = deepcopy(expected)
+        changed["profiles"][0]["inTheBox"]["bands"]["k"]["unmuteInside"] = False
+        self.assertFalse(usb.same_bundle(changed, expected))
+        self.assertEqual(json.loads(args.backup_before.read_bytes()), current)
+
+    def test_old_bundles_default_to_no_app_audio_actions(self):
+        for original in (bundle(), bundle_v3(), bundle_v4()):
+            migrated = usb.migrate_bundle(original)
+            self.assertEqual(migrated["version"], 5)
+            for profile in migrated["profiles"]:
+                self.assertEqual(profile["schemaVersion"], 4)
+                self.assertEqual(profile["inTheBox"], usb.default_in_the_box())
+
+    def test_in_the_box_strict_shape_edges_and_disabled_range_validation(self):
+        current = usb.migrate_bundle(bundle_v4())
+        invalid = [lambda p: p.pop("inTheBox"),
+                   lambda p: p["inTheBox"]["bands"]["k"].update(muteOutside=1),
+                   lambda p: p["inTheBox"]["boxes"]["k"].update(lowerMHz=23899),
+                   lambda p: p["inTheBox"]["boxes"]["k"].update(enabled=False, upperMHz=24251),
+                   lambda p: p["inTheBox"]["boxes"]["x"].update(lowerMHz=10551),
+                   lambda p: p["inTheBox"]["boxes"]["kaLow"].update(lowerMHz=33901, upperMHz=33900)]
+        for mutate in invalid:
+            changed = deepcopy(current)
+            mutate(changed["profiles"][0])
+            with self.assertRaises(usb.ProfileError):
+                usb.validate_bundle(changed)
+
     def test_v4_set_slot_preserves_every_modifier_and_exact_original_backup(self):
         self.peer.current = bundle_v4()
         before = deepcopy(self.peer.current)
@@ -325,7 +365,7 @@ class USBProfilesTests(unittest.TestCase):
         args = self.args("set-slot", slot=0, persistence=5)
         args.backup_before = saved
         result = usb.perform(args, self.device, announce=lambda _: None)
-        expected = deepcopy(before)
+        expected = usb.migrate_bundle(before)
         expected["slots"][0]["alertPersist"] = 5
         self.assertEqual(self.peer.current, expected)
         backed_up = json.loads(saved.read_bytes())
@@ -337,7 +377,7 @@ class USBProfilesTests(unittest.TestCase):
         original = bundle_v4()
         self.peer.mode = "maintenance"
         self.assertTrue(self.device.replace(original)["readback_verified"])
-        self.assertEqual(self.peer.current, original)
+        self.assertEqual(self.peer.current, usb.migrate_bundle(original))
         for field, value in (("volume", 5), ("muteVolume", 1), ("darkMode", False)):
             changed = deepcopy(original)
             changed["slots"][1][field] = value
@@ -372,8 +412,9 @@ class USBProfilesTests(unittest.TestCase):
     def test_v3_migration_explicitly_disables_unrecorded_slot_overrides(self):
         original = bundle_v3()
         migrated = usb.migrate_bundle(original)
-        self.assertEqual(migrated["version"], 4)
-        self.assertEqual(migrated["profiles"], original["profiles"])
+        self.assertEqual(migrated["version"], usb.BUNDLE_VERSION)
+        for old, new in zip(original["profiles"], migrated["profiles"]):
+            self.assertEqual(new, {**old, "schemaVersion": 4, "inTheBox": usb.default_in_the_box()})
         for slot in migrated["slots"]:
             self.assertIs(slot["volumeOverride"], False)
             self.assertEqual((slot["volume"], slot["muteVolume"]), (255, 255))
@@ -400,7 +441,7 @@ class USBProfilesTests(unittest.TestCase):
         profile["detector"]["bluetoothLed"] = "unchanged"
         profile["detector"]["customFrequencies"] = "unchanged"
         migrated = usb.migrate_bundle(document)
-        self.assertEqual(migrated["version"], 4)
+        self.assertEqual(migrated["version"], usb.BUNDLE_VERSION)
         self.assertEqual(migrated["profiles"][0]["detector"]["bluetoothLed"], "off")
         self.assertEqual(migrated["profiles"][0]["detector"]["volume"]["feedback"], "none")
         self.assertEqual(migrated["profiles"][0]["detector"]["volume"]["disconnect"], "restore_saved")
@@ -413,7 +454,7 @@ class USBProfilesTests(unittest.TestCase):
         document["slots"][1].update(mode=2, darkMode=True, muteToZero=True,
                                      volumeConfigured=True, volume=6, muteVolume=1)
         migrated = usb.migrate_bundle(document)
-        self.assertEqual(migrated["version"], 4)
+        self.assertEqual(migrated["version"], usb.BUNDLE_VERSION)
         self.assertNotEqual(migrated["slots"][0]["profile"], migrated["slots"][1]["profile"])
         by_name = {profile["name"]: profile for profile in migrated["profiles"]}
         dark = by_name[migrated["slots"][1]["profile"]]["detector"]

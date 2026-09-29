@@ -26,7 +26,7 @@
     }
 </script>
 
-<div class="theme-controls theme-controls-desktop" aria-label="Appearance">
+<div class="theme-controls theme-controls-desktop" aria-label="Web appearance">
     <div class="theme-swatches" role="group" aria-label="Color theme">
         {#each THEMES as option}
             <button
@@ -43,9 +43,9 @@
     <button
         type="button"
         class="btn btn-ghost btn-square btn-sm theme-mode-button"
-        aria-label={mode === 'dark' ? 'Use light mode' : 'Use dark mode'}
+        aria-label={mode === 'dark' ? 'Use light web appearance' : 'Use dark web appearance'}
         aria-pressed={mode === 'light'}
-        title={mode === 'dark' ? 'Use light mode' : 'Use dark mode'}
+        title={mode === 'dark' ? 'Use light web appearance' : 'Use dark web appearance'}
         onclick={toggleMode}
     >
         {#if mode === 'dark'}
@@ -57,10 +57,10 @@
 </div>
 
 <details class="theme-controls-compact" bind:this={compactMenu}>
-    <summary class="btn btn-ghost btn-square btn-sm" aria-label="Choose appearance">
+    <summary class="btn btn-ghost btn-square btn-sm" aria-label="Choose web appearance">
         <span class="theme-current theme-{theme}" aria-hidden="true"></span>
     </summary>
-    <div class="theme-popover" role="group" aria-label="Appearance">
+    <div class="theme-popover" role="group" aria-label="Web appearance">
         <div class="theme-popover-heading">Color theme</div>
         <div class="theme-choice-grid">
             {#each THEMES as option}
@@ -78,7 +78,7 @@
             {/each}
         </div>
         <button type="button" class="btn btn-ghost btn-sm theme-mode-choice" onclick={toggleMode}>
-            {mode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            {mode === 'dark' ? 'Switch to light web appearance' : 'Switch to dark web appearance'}
         </button>
     </div>
 </details>

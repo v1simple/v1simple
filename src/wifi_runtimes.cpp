@@ -564,7 +564,7 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
         },
         this,
         [](const String& name, const String& description, const V1DetectorConfiguration& detector,
-           const uint8_t inBytes[6], bool createOnly, String& error, void* ctx) {
+           const V1InTheBoxSettings& inTheBox, const uint8_t inBytes[6], bool createOnly, String& error, void* ctx) {
             V1Profile profile;
             profile.name = name;
             profile.description = description;
@@ -573,6 +573,7 @@ WifiV1ProfileApiService::Runtime WiFiManager::makeV1ProfileRuntime() {
                 return false;
             }
             profile.detector = detector;
+            profile.inTheBox = inTheBox;
             memcpy(profile.settings.bytes, inBytes, 6);
             ProfileSaveResult result = static_cast<WiFiManager*>(ctx)->profiles_.saveProfile(profile, createOnly);
             if (!result.success) {

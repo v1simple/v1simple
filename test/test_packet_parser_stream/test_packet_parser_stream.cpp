@@ -907,8 +907,35 @@ void test_strict_contract_live_top_counter_follows_raw_v1_symbol() {
                              "strict: live top counter must not normalize to alert count");
 }
 
+void test_audio_table_freshness_requires_complete_recent_uninterrupted_session() {
+    PacketParser parser;
+    TEST_ASSERT_FALSE(parser.hasFreshAlertTable(0));
+    const auto first = makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(1, 2, 24020, 100, 0, 0x24, 0x80));
+    const auto second = makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(2, 2, 24150, 100, 0, 0x24, 0));
+    TEST_ASSERT_TRUE(parser.parse(first.data(), first.size(), 10));
+    TEST_ASSERT_FALSE(parser.hasFreshAlertTable(10));
+    TEST_ASSERT_TRUE(parser.parse(second.data(), second.size(), 20));
+    TEST_ASSERT_TRUE(parser.hasFreshAlertTable(1520));
+    TEST_ASSERT_FALSE(parser.hasFreshAlertTable(1521));
+    parser.markAlertStreamDiscontinuous();
+    TEST_ASSERT_FALSE(parser.hasFreshAlertTable(30));
+    TEST_ASSERT_EQUAL_UINT32(2, parser.getAlertCount()); // Rendering retains both rows.
+    TEST_ASSERT_TRUE(parser.parse(second.data(), second.size(), 31));
+    TEST_ASSERT_FALSE(parser.hasFreshAlertTable(31));
+    TEST_ASSERT_TRUE(parser.parse(first.data(), first.size(), 32));
+    TEST_ASSERT_TRUE(parser.parse(second.data(), second.size(), 33));
+    TEST_ASSERT_TRUE(parser.hasFreshAlertTable(33));
+    parser.resetAlertState();
+    TEST_ASSERT_FALSE(parser.hasFreshAlertTable(34));
+    const auto empty = makePacket(PACKET_ID_ALERT_DATA, makeAlertPayload(0, 0, 0, 0, 0, 0, 0));
+    TEST_ASSERT_TRUE(parser.parse(empty.data(), empty.size(), UINT32_MAX - 10));
+    TEST_ASSERT_TRUE(parser.hasFreshAlertTable(5));
+    TEST_ASSERT_FALSE(parser.hasFreshAlertTable(1600));
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_audio_table_freshness_requires_complete_recent_uninterrupted_session);
     RUN_TEST(test_display_stream_decodes_junk_counter_char);
     RUN_TEST(test_display_stream_decodes_both_bogey_image_planes);
     RUN_TEST(test_alert_stream_out_of_order_rows_completes_table);

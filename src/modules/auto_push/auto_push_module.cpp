@@ -58,6 +58,7 @@ bool copyAdmissionProfile(const V1Profile& source, V1Profile& destination) {
         return false;
     }
     destination.settings = source.settings;
+    destination.inTheBox = source.inTheBox;
     // Copy detector scalars individually. The operation state deliberately
     // keeps the profile's std::vector empty; definitions are staged directly
     // into its fixed-capacity list before durable slot activation.
@@ -343,6 +344,10 @@ bool AutoPushModule::configurePlan() {
         }
         if (state_.profile.schemaVersion != V1_PROFILE_SCHEMA_VERSION) {
             failWholePlan(&status_.userSettings, Outcome::INVALID, FailureReason::INVALID_PROFILE_SCHEMA);
+            return false;
+        }
+        if (!isValidV1InTheBoxSettings(state_.profile.inTheBox)) {
+            failWholePlan(nullptr, Outcome::INVALID, FailureReason::INVALID_POLICY);
             return false;
         }
 
@@ -981,6 +986,16 @@ void AutoPushModule::finishOperation() {
     if (candidateSuccess && !liveSessionMatches()) {
         status_.reason = bleClient_ && bleClient_->isConnected() ? FailureReason::SESSION_CHANGED
                                                                  : FailureReason::DISCONNECTED;
+    }
+    if (candidateSuccess && status_.reason == FailureReason::NONE && state_.profileLoaded) {
+        // App policy activates only after detector application succeeded, and
+        // only after the address-bound durable snapshot has committed.
+        if (inTheBoxApply_ && !inTheBoxApply_(state_.profile.inTheBox, inTheBoxApplyContext_)) {
+            status_.reason = FailureReason::IN_THE_BOX_PERSIST_FAILED;
+        } else {
+            quiet_->setInTheBoxSettings(state_.profile.inTheBox, state_.sessionGeneration);
+            status_.inTheBoxApplied = true;
+        }
     }
     if (candidateSuccess && status_.reason == FailureReason::NONE) status_.result = Result::SUCCEEDED;
     else if (status_.customFrequencies.requested && !status_.customFrequencies.verified)
@@ -1702,6 +1717,7 @@ bool AutoPushModule::appendStatusJson(JsonObject root) const {
         case FailureReason::CUSTOM_READBACK_INVALID: return "custom_readback_invalid";
         case FailureReason::CUSTOM_READBACK_TIMEOUT: return "custom_readback_timeout";
         case FailureReason::PROXY_OWNS_DETECTOR: return "proxy_owns_detector";
+        case FailureReason::IN_THE_BOX_PERSIST_FAILED: return "in_the_box_persist_failed";
         }
         return "invalid_policy";
     };
@@ -1735,6 +1751,7 @@ bool AutoPushModule::appendStatusJson(JsonObject root) const {
     root["result"] = operationResultName(status_.result);
     root["reason"] = reasonName(status_.reason);
     root["profileLoaded"] = status_.profileLoaded;
+    root["inTheBoxApplied"] = status_.inTheBoxApplied;
     root["profileConfigured"] = status_.profileName.length() > 0;
     root["profileName"] = status_.profileName;
     JsonObject components = root["components"].to<JsonObject>();
@@ -1822,6 +1839,7 @@ String AutoPushModule::getStatusJson() const {
 AutoPushModule::ExecutionSummary AutoPushModule::executionSummary() const {
     ExecutionSummary summary;
     summary.operationId = status_.operationId;
+    summary.inTheBoxPersistFailed = status_.reason == FailureReason::IN_THE_BOX_PERSIST_FAILED;
     summary.active = isActive();
     switch (status_.result) {
     case Result::NONE: summary.result = PublicResult::None; break;
@@ -1905,6 +1923,7 @@ AutoPushModule::ExecutionSummary AutoPushModule::executionSummary() const {
         case FailureReason::CUSTOM_READBACK_INVALID: return Durable::CustomReadbackInvalid;
         case FailureReason::CUSTOM_READBACK_TIMEOUT: return Durable::CustomReadbackTimeout;
         case FailureReason::PROXY_OWNS_DETECTOR: return Durable::ProxyOwnsDetector;
+        case FailureReason::IN_THE_BOX_PERSIST_FAILED: return Durable::InvalidPolicy;
         }
         return Durable::InvalidPolicy;
     };

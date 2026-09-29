@@ -24,9 +24,9 @@ the production setter, exporter, importer, backup builder, and NVS loader:
 
 Changing only slot 0 persistence reproduced the same loss in slot 1. Comparing
 two exported v3 documents missed it because both omitted the damaged fields.
-The fix closes this representation loss: current USB v4 transports values and
-flags together, validates them, and compares them in stored readback. It does
-not change the profile schema (still v3) or the NVS schema.
+The original fix closed this representation loss with USB v4 and profile
+schema v3. Current USB v5 retains that slot contract and adds profile-schema-v4
+`inTheBox` app policies. The NVS slot representation remains unchanged.
 
 ## Trace: caller to durable state to consumer
 
@@ -64,21 +64,23 @@ not change the profile schema (still v3) or the NVS schema.
    `toRestoreDocument()` stages exact owned strings, profiles, and all three
    slots before constructing the internal restore document. It rejects missing
    or extra fields, bad types/ranges, absent profile references, and oversized
-   catalogs. USB v4 uses `volumeOverride`, `volume`, `muteVolume`,
+   catalogs. USB v4/v5 use `volumeOverride`, `volume`, `muteVolume`,
    `darkModeOverride`, and `darkMode` on every slot:
 
    | Input | Modifier meaning |
    |---|---|
-   | v4, volume enabled | Both volumes are 0–9; zero is a configured value. |
-   | v4, volume disabled | Both volumes must be 255; use profile policy. |
-   | v4, dark override enabled | Either true or false is an explicit choice. |
-   | v4, dark override disabled | Dark value must be false; use profile policy. |
+   | v4/v5, volume enabled | Both volumes are 0–9; zero is a configured value. |
+   | v4/v5, volume disabled | Both volumes must be 255; use profile policy. |
+   | v4/v5, dark override enabled | Either true or false is an explicit choice. |
+   | v4/v5, dark override disabled | Dark value must be false; use profile policy. |
    | v2/v3 | These formats omitted modifiers; import explicitly disables them instead of inheriting recipient flags. |
    | v1 | Legacy slot-owned detector choices migrate into deterministic profile variants; current modifier flags are cleared. |
 
    An older export cannot recover values it never recorded. The current host
-   sends v4 replacements; use matching updated firmware/client. Older firmware
-   rejects v4, and older clients reject v4 exports.
+   sends v5 replacements; use matching updated firmware/client. Firmware that
+   predates v5 rejects that version before constructing the restore document.
+   Older clients reject v5 exports. Profiles in v1–v4 inputs receive inactive
+   In-the-Box defaults; v5 strictly validates and preserves the app policy.
 
 5. **Transaction scope and rollback.** `applyUsbProfileDocument()` passes
    `SettingsBackupScope::ProfilesOnly` to

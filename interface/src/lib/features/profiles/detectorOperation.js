@@ -13,6 +13,7 @@ const REASONS = [
     'none', 'detector_timeout', 'wrong_detector', 'queue_rejected', 'detector_disconnected',
     'executor_busy', 'no_profile_configured', 'profile_busy', 'profile_load_failed',
     'invalid_configuration', 'unsupported_configuration', 'active_slot_persist_failed',
+    'in_the_box_persist_failed',
     'staging_unavailable', 'apply_partial', 'apply_failed', 'factory_reset_send_failed',
     'factory_reset_scope_unverified', 'factory_reset_defaults_mismatch',
     'recapture_start_failed', 'recapture_timed_out', 'snapshot_store_unavailable',

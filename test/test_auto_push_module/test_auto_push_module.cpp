@@ -3025,8 +3025,77 @@ void test_queue_failures_preserve_durable_admission_taxonomy() {
                           AutoPushModule::durableReasonForQueueResult(Queue::STAGING_UNAVAILABLE));
 }
 
+struct InTheBoxApplyProbe {
+    bool success = true;
+    int calls = 0;
+    V1InTheBoxSettings received;
+};
+bool recordInTheBoxApply(const V1InTheBoxSettings& config, void* context) {
+    auto& probe = *static_cast<InTheBoxApplyProbe*>(context);
+    ++probe.calls;
+    probe.received = config;
+    return probe.success;
+}
+
+void test_box_policy_activates_only_after_verified_apply_and_durable_commit() {
+    configureProfile();
+    profiles.loadableProfile.inTheBox.bands[2].muteOutside = true;
+    InTheBoxApplyProbe probe;
+    module.setInTheBoxApplyCallback(recordInTheBoxApply, &probe);
+    stageSnapshot(makeSnapshot());
+    queueAndPreflight();
+    TEST_ASSERT_EQUAL_INT(0, probe.calls);
+    TEST_ASSERT_FALSE(quiet.inTheBoxSettings().bands[2].muteOutside);
+    verifyUserBytes();
+    TEST_ASSERT_EQUAL_INT(0, probe.calls);
+    finishFullApply();
+    TEST_ASSERT_EQUAL_INT(1, probe.calls);
+    TEST_ASSERT_TRUE(probe.received.bands[2].muteOutside);
+    TEST_ASSERT_TRUE(quiet.inTheBoxSettings().bands[2].muteOutside);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_TRUE(statusContains("\"inTheBoxApplied\":true"));
+}
+
+void test_box_policy_commit_failure_keeps_previous_policy_and_reports_partial() {
+    configureProfile();
+    profiles.loadableProfile.inTheBox.bands[2].muteOutside = true;
+    V1InTheBoxSettings before;
+    before.bands[0].unmuteInside = true;
+    quiet.setInTheBoxSettings(before, ble.sessionGeneration());
+    InTheBoxApplyProbe probe;
+    probe.success = false;
+    module.setInTheBoxApplyCallback(recordInTheBoxApply, &probe);
+    stageSnapshot(makeSnapshot());
+    queueAndPreflight();
+    verifyUserBytes();
+    finishFullApply();
+    TEST_ASSERT_EQUAL_INT(1, probe.calls);
+    TEST_ASSERT_TRUE(v1InTheBoxSettingsEqual(before, quiet.inTheBoxSettings()));
+    TEST_ASSERT_TRUE(module.executionSummary().inTheBoxPersistFailed);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"partial\""));
+    TEST_ASSERT_TRUE(statusContains("\"reason\":\"in_the_box_persist_failed\""));
+    TEST_ASSERT_TRUE(statusContains("\"inTheBoxApplied\":false"));
+}
+
+void test_box_policy_is_not_committed_after_detector_apply_failure() {
+    configureProfile();
+    profiles.loadableProfile.inTheBox.bands[2].muteOutside = true;
+    InTheBoxApplyProbe probe;
+    module.setInTheBoxApplyCallback(recordInTheBoxApply, &probe);
+    stageSnapshot(makeSnapshot());
+    ble.setModeResult = false;
+    queueAndPreflight();
+    verifyUserBytes();
+    finishFullApply();
+    TEST_ASSERT_EQUAL_INT(0, probe.calls);
+    TEST_ASSERT_FALSE(quiet.inTheBoxSettings().bands[2].muteOutside);
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_box_policy_activates_only_after_verified_apply_and_durable_commit);
+    RUN_TEST(test_box_policy_commit_failure_keeps_previous_policy_and_reports_partial);
+    RUN_TEST(test_box_policy_is_not_committed_after_detector_apply_failure);
     RUN_TEST(test_queue_rejects_failed_active_slot_persistence_before_operation_or_detector_write);
     RUN_TEST(test_queue_stages_every_owned_string_and_definition_capacity_before_activation);
     RUN_TEST(test_queue_secures_maximum_v3_profile_before_activation_and_preserves_legacy_load_step);

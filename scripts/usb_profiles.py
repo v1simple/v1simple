@@ -18,7 +18,7 @@ import zlib
 MAX_PAYLOAD = 128 * 1024
 MAX_DESCRIPTION_BYTES = 4096
 MAX_PROFILE_COUNT = 10
-BUNDLE_VERSION = 4
+BUNDLE_VERSION = 5
 CHUNK = 64
 PREFIX = b"@V1USB1 "
 SLOT_KEYS_V1 = {"name", "profile", "mode", "color", "volumeConfigured", "volume", "muteVolume",
@@ -29,6 +29,7 @@ SLOT_MODIFIER_DEFAULTS = {"volumeOverride": False, "volume": 255, "muteVolume": 
 SLOT_KEYS_CURRENT = SLOT_KEYS_VERSIONED | SLOT_MODIFIER_DEFAULTS.keys()
 PROFILE_KEYS_V1 = {"name", "description", "rawBytes", "displayOn", "mainVolume", "mutedVolume"}
 PROFILE_KEYS_VERSIONED = {"schemaVersion", "name", "description", "rawBytes", "detector"}
+PROFILE_KEYS_CURRENT = PROFILE_KEYS_VERSIONED | {"inTheBox"}
 ASCII_UPPER = str.maketrans("abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 
@@ -137,7 +138,7 @@ def validate_detector(detector, version):
             "policy", "main", "muted", "feedback", "disconnect"}
         require(set(volume) == keys and integer(volume["main"], 0, 9) and
                 integer(volume["muted"], 0, 9), "Invalid detector volume values")
-        if version == 3:
+        if version >= 3:
             require(volume["feedback"] in ("none", "changed_only", "always") and
                     volume["disconnect"] in ("restore_saved", "keep_current") and
                     not (volume["policy"] == "saved" and volume["disconnect"] != "restore_saved"),
@@ -170,12 +171,41 @@ def validate_detector(detector, version):
                 "Invalid custom-frequency range")
 
 
+def default_in_the_box():
+    return {"bands": {band: {"muteOutside": False, "unmuteInside": False}
+                      for band in ("x", "ku", "k", "ka")},
+            "boxes": {name: {"enabled": True, "lowerMHz": lower, "upperMHz": upper}
+                      for name, lower, upper in (("x", 10500, 10550), ("ku", 13400, 13500),
+                                                ("k", 24050, 24250), ("kaLow", 33700, 33900),
+                                                ("kaMid", 34600, 34800), ("kaHigh", 35400, 35600))}}
+
+
+def validate_in_the_box(settings):
+    require(type(settings) is dict and set(settings) == {"bands", "boxes"},
+            "Invalid In-the-Box settings")
+    require(type(settings["bands"]) is dict and set(settings["bands"]) == {"x", "ku", "k", "ka"},
+            "Invalid In-the-Box bands")
+    for band in settings["bands"].values():
+        require(type(band) is dict and set(band) == {"muteOutside", "unmuteInside"}
+                and all(type(value) is bool for value in band.values()), "Invalid In-the-Box band policy")
+    limits = {"x": (10500, 10550), "ku": (13400, 13500), "k": (23900, 24250),
+              "kaLow": (33400, 36000), "kaMid": (33400, 36000), "kaHigh": (33400, 36000)}
+    require(type(settings["boxes"]) is dict and set(settings["boxes"]) == set(limits),
+            "Invalid In-the-Box boxes")
+    for name, (low, high) in limits.items():
+        box = settings["boxes"][name]
+        require(type(box) is dict and set(box) == {"enabled", "lowerMHz", "upperMHz"}
+                and type(box["enabled"]) is bool and integer(box["lowerMHz"], low, high)
+                and integer(box["upperMHz"], low, high) and box["lowerMHz"] <= box["upperMHz"],
+                "Invalid In-the-Box range")
+
+
 def validate_bundle(bundle):
     require(type(bundle) is dict and set(bundle) == {
         "format", "version", "autoPushEnabled", "activeSlot", "slots", "profiles"},
         "Profile bundle has missing or unknown fields")
     require(bundle["format"] == "v1simple-profiles" and type(bundle["version"]) is int
-            and bundle["version"] in (1, 2, 3, BUNDLE_VERSION), "Unsupported profile bundle format/version")
+            and bundle["version"] in (1, 2, 3, 4, BUNDLE_VERSION), "Unsupported profile bundle format/version")
     require(type(bundle["autoPushEnabled"]) is bool and integer(bundle["activeSlot"], 0, 2),
             "Invalid profile bundle state")
     require(type(bundle["slots"]) is list and len(bundle["slots"]) == 3,
@@ -184,10 +214,11 @@ def validate_bundle(bundle):
     require(len(bundle["profiles"]) <= MAX_PROFILE_COUNT,
             f"Profile catalog supports at most {MAX_PROFILE_COUNT} profiles")
     version = bundle["version"]
-    profile_version = 3 if version == BUNDLE_VERSION else version
+    profile_version = 4 if version == BUNDLE_VERSION else 3 if version == 4 else version
     names, folded_names = set(), set()
     for profile in bundle["profiles"]:
-        expected = PROFILE_KEYS_V1 if version == 1 else PROFILE_KEYS_VERSIONED
+        expected = (PROFILE_KEYS_V1 if version == 1 else
+                    PROFILE_KEYS_CURRENT if version == BUNDLE_VERSION else PROFILE_KEYS_VERSIONED)
         require(type(profile) is dict and set(profile) == expected, "Invalid profile fields")
         name = profile["name"]
         require(canonical_name(name), "Invalid profile name")
@@ -204,9 +235,11 @@ def validate_bundle(bundle):
         else:
             require(profile["schemaVersion"] == profile_version, "Profile schema does not match bundle version")
             validate_detector(profile["detector"], profile_version)
+            if version == BUNDLE_VERSION:
+                validate_in_the_box(profile["inTheBox"])
     for slot in bundle["slots"]:
         expected = (SLOT_KEYS_V1 if version == 1 else
-                    SLOT_KEYS_CURRENT if version == BUNDLE_VERSION else SLOT_KEYS_VERSIONED)
+                    SLOT_KEYS_CURRENT if version >= 4 else SLOT_KEYS_VERSIONED)
         require(type(slot) is dict and set(slot) == expected, "Invalid slot fields")
         require(text_within(slot["name"], 20) and slot["name"] == slot["name"].translate(ASCII_UPPER),
                 "Invalid slot name")
@@ -214,7 +247,7 @@ def validate_bundle(bundle):
                 "Slot references an absent profile")
         require(integer(slot["color"], 0, 65535) and integer(slot["alertPersist"], 0, 5)
                 and type(slot["priorityArrowOnly"]) is bool, "Invalid slot presentation")
-        if version == BUNDLE_VERSION:
+        if version >= 4:
             require(slot["color"] != 0, "Invalid slot presentation")
             require(all(type(slot[key]) is bool for key in (
                 "volumeOverride", "darkModeOverride", "darkMode")), "Invalid slot modifier boolean")
@@ -254,15 +287,17 @@ def migrate_bundle(bundle):
     validate_bundle(bundle)
     if bundle["version"] == BUNDLE_VERSION:
         return deepcopy(bundle)
-    if bundle["version"] in (2, 3):
+    if bundle["version"] in (2, 3, 4):
         migrated = deepcopy(bundle)
         migrated["version"] = BUNDLE_VERSION
-        if bundle["version"] == 2:
-            for profile in migrated["profiles"]:
-                profile["schemaVersion"] = 3
+        for profile in migrated["profiles"]:
+            profile["schemaVersion"] = 4
+            profile["inTheBox"] = default_in_the_box()
+            if bundle["version"] == 2:
                 profile["detector"] = migrate_detector_v2(profile["detector"])
-        for slot in migrated["slots"]:
-            slot.update(SLOT_MODIFIER_DEFAULTS)
+        if bundle["version"] < 4:
+            for slot in migrated["slots"]:
+                slot.update(SLOT_MODIFIER_DEFAULTS)
         validate_bundle(migrated)
         return migrated
 
@@ -270,7 +305,7 @@ def migrate_bundle(bundle):
     catalog = []
     by_name = {}
     for profile in original["profiles"]:
-        migrated = {"schemaVersion": 3, "name": profile["name"],
+        migrated = {"schemaVersion": 4, "inTheBox": default_in_the_box(), "name": profile["name"],
                     "description": profile["description"], "rawBytes": list(profile["rawBytes"]),
                     "detector": default_detector()}
         catalog.append(migrated)
@@ -303,7 +338,7 @@ def migrate_bundle(bundle):
                 effective["rawBytes"][0] |= 0x10
             effective["detector"] = default_detector()
         else:
-            effective = {"schemaVersion": 3, "name": "Default", "description": "",
+            effective = {"schemaVersion": 4, "inTheBox": default_in_the_box(), "name": "Default", "description": "",
                          "rawBytes": [255] * 6, "detector": default_detector("unchanged")}
         if slot["mode"]:
             effective["detector"]["mode"] = {"policy": "value", "value": slot["mode"]}

@@ -97,6 +97,7 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     static void onV1SessionOpened(uint32_t sessionGeneration);
     static void onV1SessionClosed(uint32_t sessionGeneration);
     static void onV1Connected();
+    static bool persistInTheBoxApply(const V1InTheBoxSettings& settings, void* context);
     static void observeAlertTable(const AlertData* alerts, size_t count, uint8_t priorityIndex, uint32_t nowMs,
                                   void* context);
     static bool restoreConnectionDisplayOwner(void* context, uint32_t nowMs);

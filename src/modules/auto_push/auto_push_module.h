@@ -45,12 +45,18 @@ class AutoPushModule {
         uint32_t operationId = 0;
         bool active = false;
         PublicResult result = PublicResult::None;
+        bool inTheBoxPersistFailed = false;
         std::array<V1SettingsOperationStore::ComponentSummary,
                    V1SettingsOperationStore::kComponentCount> components{};
     };
 
     void begin(SettingsManager* settings, V1ProfileManager* profileMgr, V1BLEClient* ble, PacketParser* parser,
                V1Display* disp, QuietCoordinatorModule* quietCoordinator);
+    using InTheBoxApplyCallback = bool (*)(const V1InTheBoxSettings&, void*);
+    void setInTheBoxApplyCallback(InTheBoxApplyCallback callback, void* context) {
+        inTheBoxApply_ = callback;
+        inTheBoxApplyContext_ = context;
+    }
 
     // Supplied by normal runtime immediately before Auto-Push is queued. This
     // is never loaded from durable storage and must match the live BLE session.
@@ -154,6 +160,7 @@ class AutoPushModule {
         CUSTOM_READBACK_INVALID,
         CUSTOM_READBACK_TIMEOUT,
         PROXY_OWNS_DETECTOR,
+        IN_THE_BOX_PERSIST_FAILED,
     };
 
     struct ComponentStatus {
@@ -175,6 +182,7 @@ class AutoPushModule {
         int slotIndex = 0;
         String profileName;
         bool profileLoaded = false;
+        bool inTheBoxApplied = false;
         ComponentStatus userSettings;
         ComponentStatus display;
         ComponentStatus mode;
@@ -292,6 +300,8 @@ class AutoPushModule {
     PacketParser* parser_ = nullptr;
     V1Display* display_ = nullptr;
     QuietCoordinatorModule* quiet_ = nullptr;
+    InTheBoxApplyCallback inTheBoxApply_ = nullptr;
+    void* inTheBoxApplyContext_ = nullptr;
     V1DetectorSnapshot preApplySnapshot_;
     State state_;
     OperationStatus status_;

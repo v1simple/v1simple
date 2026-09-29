@@ -2540,6 +2540,8 @@ void verify_healthy_nvs_recovers_referenced_profile(bool usePreviousBackup) {
     profiles = V1ProfileManager();
     TEST_ASSERT_TRUE(profiles.begin(storage));
     V1Profile road("Road");
+    road.inTheBox.bands[2] = {true, true};
+    road.inTheBox.boxes[2] = {true, 23900, 23900};
     for (int i = 0; i < 6; ++i) road.settings.bytes[i] = static_cast<uint8_t>(40 + i);
     TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
 
@@ -2560,6 +2562,7 @@ void verify_healthy_nvs_recovers_referenced_profile(bool usePreviousBackup) {
     V1Profile recovered;
     TEST_ASSERT_TRUE(profiles.loadProfile("Road", recovered));
     TEST_ASSERT_EQUAL_UINT8_ARRAY(road.settings.bytes, recovered.settings.bytes, 6);
+    TEST_ASSERT_TRUE(v1InTheBoxSettingsEqual(road.inTheBox, recovered.inTheBox));
 }
 
 void test_healthy_nvs_recovers_referenced_profile_from_primary_backup() {
@@ -3811,6 +3814,8 @@ void test_profile_delete_double_failure_recovers_old_profile_and_assignments_on_
     storage.setFilesystem(&fs, true);
     TEST_ASSERT_TRUE(profiles.begin(storage));
     V1Profile road("Road");
+    road.inTheBox.bands[2] = {true, true};
+    road.inTheBox.boxes[4].enabled = false;
     for (int i = 0; i < 6; ++i) road.settings.bytes[i] = static_cast<uint8_t>(i + 3);
     TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
     SettingsManager manager(storage, profiles);
@@ -3819,7 +3824,16 @@ void test_profile_delete_double_failure_recovers_old_profile_and_assignments_on_
 
     // The compact journal and tombstone metadata fit; the larger compensating
     // profile rewrite is short-written after assignment persistence fails.
-    fs::mock_set_fs_write_budget(700);
+    JsonDocument journalShape;
+    journalShape["_type"] = PROFILE_DELETE_TRANSACTION_TYPE;
+    journalShape["_version"] = PROFILE_DELETE_TRANSACTION_VERSION;
+    journalShape["token"] = 1;
+    journalShape["hadReferences"] = true;
+    writeProfileToJournal(journalShape["profile"].to<JsonObject>(), road);
+    stampJournalCrc(journalShape);
+    // Fit this exact journal (plus possible token/CRC digit growth), while
+    // still interrupting the larger pretty profile's compensating rewrite.
+    fs::mock_set_fs_write_budget(measureJson(journalShape) + 32u);
     mock_preferences::set_fail_writes_for_key(kNvsSlot0Profile);
     const ProfileOperationResult failed = manager.deleteProfileAndReferences("Road");
     TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::IoError), static_cast<int>(failed.status));
@@ -3839,6 +3853,7 @@ void test_profile_delete_double_failure_recovers_old_profile_and_assignments_on_
     TEST_ASSERT_FALSE(fs.exists("/v1profile_delete_transaction.json"));
     V1Profile recovered;
     TEST_ASSERT_TRUE(rebootProfiles.loadProfile("Road", recovered));
+    TEST_ASSERT_TRUE(v1InTheBoxSettingsEqual(road.inTheBox, recovered.inTheBox));
     TEST_ASSERT_EQUAL_UINT8_ARRAY(road.settings.bytes, recovered.settings.bytes, 6);
 }
 
@@ -3848,6 +3863,8 @@ void test_grandfathered_profile_delete_failure_restores_twelfth_member_on_reboot
     TEST_ASSERT_TRUE(profiles.begin(storage));
 
     V1Profile road("Road");
+    road.inTheBox.bands[2] = {true, true};
+    road.inTheBox.boxes[4].enabled = false;
     road.description = "grandfathered-delete-target";
     road.settings.bytes[0] = 63;
     TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
@@ -3869,7 +3886,16 @@ void test_grandfathered_profile_delete_failure_restores_twelfth_member_on_reboot
     // Leave the delete journal pending by failing the settings authority commit
     // and the immediate compensating profile rewrite. Boot recovery must still
     // restore the exact journaled member into the 12-profile legacy catalog.
-    fs::mock_set_fs_write_budget(700);
+    JsonDocument journalShape;
+    journalShape["_type"] = PROFILE_DELETE_TRANSACTION_TYPE;
+    journalShape["_version"] = PROFILE_DELETE_TRANSACTION_VERSION;
+    journalShape["token"] = 1;
+    journalShape["hadReferences"] = true;
+    writeProfileToJournal(journalShape["profile"].to<JsonObject>(), road);
+    stampJournalCrc(journalShape);
+    // Fit this exact journal (plus possible token/CRC digit growth), while
+    // still interrupting the larger pretty profile's compensating rewrite.
+    fs::mock_set_fs_write_budget(measureJson(journalShape) + 32u);
     mock_preferences::set_fail_writes_for_key(kNvsSlot0Profile);
     TEST_ASSERT_FALSE(manager.deleteProfileAndReferences("Road").success());
     TEST_ASSERT_TRUE(fs.exists("/v1profile_delete_transaction.json"));
@@ -3885,6 +3911,7 @@ void test_grandfathered_profile_delete_failure_restores_twelfth_member_on_reboot
     TEST_ASSERT_FALSE(fs.exists("/v1profile_delete_transaction.json"));
     V1Profile recovered;
     TEST_ASSERT_TRUE(rebootProfiles.loadProfile("Road", recovered));
+    TEST_ASSERT_TRUE(v1InTheBoxSettingsEqual(road.inTheBox, recovered.inTheBox));
     TEST_ASSERT_EQUAL_STRING("grandfathered-delete-target", recovered.description.c_str());
     TEST_ASSERT_EQUAL_UINT8(63, recovered.settings.bytes[0]);
 }

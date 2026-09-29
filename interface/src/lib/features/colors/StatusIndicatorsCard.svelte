@@ -9,7 +9,25 @@
 
 <div class="surface-card">
     <div class="card-body">
-        <CardSectionHead title="Status Indicators" />
+        <CardSectionHead
+            title="Status on the V1Simple screen"
+            subtitle="Choose what stays visible, then customize its colors. Save display settings to apply these changes."
+        />
+
+        <div class="grid grid-cols-1 gap-3 xl:grid-cols-2">
+            {#each toggles as toggle}
+                <ToggleSetting
+                    title={toggle.title}
+                    description={toggle.description}
+                    checked={toggle.inverted ? !colors[toggle.key] : colors[toggle.key]}
+                    disabled={toggle.disabled?.(colors) ?? false}
+                    onChange={(checked) => onToggle(toggle.key, toggle.inverted ? !checked : checked)}
+                />
+            {/each}
+        </div>
+
+        <div class="divider my-2"></div>
+        <h3 class="copy-subheading">Status colors</h3>
 
         <div class="space-y-4">
             {#each rows as row}
@@ -32,20 +50,6 @@
                         </ColorControl>
                     {/each}
                 </div>
-            {/each}
-        </div>
-
-        <div class="divider my-2"></div>
-
-        <div class="grid grid-cols-1 gap-3 xl:grid-cols-2">
-            {#each toggles as toggle}
-                <ToggleSetting
-                    title={toggle.title}
-                    description={toggle.description}
-                    checked={colors[toggle.key]}
-                    disabled={toggle.disabled?.(colors) ?? false}
-                    onChange={(checked) => onToggle(toggle.key, checked)}
-                />
             {/each}
         </div>
     </div>

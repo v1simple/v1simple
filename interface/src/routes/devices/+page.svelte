@@ -217,7 +217,7 @@
 <div class="page-stack">
     <PageHeader
         title="Saved V1 Devices"
-        subtitle="Name saved V1 addresses and set a default auto-push profile for each."
+        subtitle="Name saved V1 addresses and choose an Auto-Push slot for each."
     >
         <button class="btn btn-outline btn-sm" onclick={refresh} disabled={loading}>
             Refresh
@@ -320,7 +320,7 @@
                         <div class="space-y-2">
                             <label class="label py-0" for={profileSelectId(device.address)}>
                                 <span class="field-label copy-caption"
-                                    >Default Auto-Push Profile</span
+                                    >Default Auto-Push slot</span
                                 >
                             </label>
                             <select

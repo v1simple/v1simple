@@ -78,6 +78,10 @@ bool DisplayOrchestrationModule::processParsedFrame(const DisplayOrchestrationPa
         return false;
     }
 
+    // Audio policy also advances without packets so stale alert data cannot
+    // hold an automatic mute indefinitely.
+    if (quiet_ && !ctx.bootSplashHoldActive) quiet_->processInTheBox(ctx.nowMs);
+
     if (!ctx.parsedReady) {
         syncQuietPresentation();
         return false;

@@ -19,7 +19,7 @@ constexpr const char* STORE_TMP_PATH = "/v1devices.tmp";
 constexpr const char* LEGACY_ADDR_PATH = "/known_v1.txt";
 constexpr const char* LEGACY_NAME_PATH = "/known_v1_names.txt";
 constexpr const char* LEGACY_PROFILE_PATH = "/known_v1_profiles.txt";
-constexpr uint8_t STORE_VERSION = 4;
+constexpr uint8_t STORE_VERSION = 5;
 constexpr uint8_t FIRST_CHECKSUM_STORE_VERSION = 2;
 
 bool deviceJsonKeyEquals(JsonString actual, const char* expected) {
@@ -61,6 +61,7 @@ bool copyDeviceRecordsChecked(const std::vector<V1DeviceRecord>& source,
             copy.defaultProfile = record.defaultProfile;
             copy.lastSeenMs = record.lastSeenMs;
             copy.snapshot = record.snapshot;
+            copy.inTheBox = record.inTheBox;
             destination.push_back(std::move(copy));
             if (destination.back().address != record.address ||
                 destination.back().name != record.name) {
@@ -655,6 +656,8 @@ bool V1DeviceStore::writeStore(fs::FS& filesystem, uint32_t generation, bool pre
         obj["name"] = device.name;
         obj["defaultProfile"] = device.defaultProfile;
         obj["lastSeenMs"] = device.lastSeenMs;
+        if (!isValidV1InTheBoxSettings(device.inTheBox)) return false;
+        appendV1InTheBoxSettings(obj["inTheBox"].to<JsonObject>(), device.inTheBox);
         if (device.snapshot.available) {
             if (!appendSnapshot(obj["snapshot"].to<JsonObject>(), device.snapshot)) return false;
         }
@@ -789,7 +792,7 @@ V1DeviceStore::StoreSnapshot V1DeviceStore::readStore(fs::FS& filesystem) const 
         snapshot.legacy = version < STORE_VERSION;
         snapshot.needsRewrite = loadResult == JsonRollbackLoadResult::LoadedRollback;
         snapshot.loadedFromRollback = loadResult == JsonRollbackLoadResult::LoadedRollback;
-        if (version == STORE_VERSION) {
+        if (version >= 4) {
             static constexpr const char* kRootKeys[] = {"version", "generation", "devices", "crc32"};
             if (!deviceObjectHasExactKeys(doc.as<JsonObjectConst>(), kRootKeys,
                                           sizeof(kRootKeys) / sizeof(kRootKeys[0]))) {
@@ -800,7 +803,7 @@ V1DeviceStore::StoreSnapshot V1DeviceStore::readStore(fs::FS& filesystem) const 
         }
         if (!doc["devices"].is<JsonArray>() ||
             (version < FIRST_CHECKSUM_STORE_VERSION && !doc["crc32"].isUnbound()) ||
-            (version == STORE_VERSION && doc["devices"].size() > MAX_DEVICES)) {
+            (version >= 4 && doc["devices"].size() > MAX_DEVICES)) {
             snapshot.status = StoreReadStatus::Invalid;
             if (retryFromSemanticRollback()) continue;
             return snapshot;
@@ -848,9 +851,9 @@ V1DeviceStore::StoreSnapshot V1DeviceStore::readStore(fs::FS& filesystem) const 
         }
         bool semanticRecordInvalid = false;
         for (JsonObject item : arr) {
-            if (version == STORE_VERSION) {
-                static constexpr const char* kItemKeys[] = {"address", "name", "defaultProfile", "lastSeenMs"};
-                if (!deviceObjectHasExactKeys(item, kItemKeys, sizeof(kItemKeys) / sizeof(kItemKeys[0]),
+            if (version >= 4) {
+                static constexpr const char* kItemKeys[] = {"address", "name", "defaultProfile", "lastSeenMs", "inTheBox"};
+                if (!deviceObjectHasExactKeys(item, kItemKeys, version >= 5 ? 5u : 4u,
                                               "snapshot")) {
                     snapshot.status = StoreReadStatus::Invalid;
                     semanticRecordInvalid = true;
@@ -898,6 +901,12 @@ V1DeviceStore::StoreSnapshot V1DeviceStore::readStore(fs::FS& filesystem) const 
             }
             const uint8_t defaultProfile = static_cast<uint8_t>(item["defaultProfile"].as<int>());
             const uint32_t lastSeenMs = item["lastSeenMs"].as<uint32_t>();
+            V1InTheBoxSettings inTheBox;
+            if (version >= 5 && !parseV1InTheBoxSettings(item["inTheBox"], inTheBox)) {
+                snapshot.status = StoreReadStatus::Invalid;
+                semanticRecordInvalid = true;
+                break;
+            }
             V1DetectorSnapshot detectorSnapshot;
             if (version >= 3 && !parseSnapshot(item["snapshot"], detectorSnapshot)) {
                 snapshot.status = StoreReadStatus::Invalid;
@@ -914,7 +923,7 @@ V1DeviceStore::StoreSnapshot V1DeviceStore::readStore(fs::FS& filesystem) const 
             }
 
             if (existing >= 0) {
-                if (version == STORE_VERSION) {
+                if (version >= 4) {
                     snapshot.status = StoreReadStatus::Invalid;
                     semanticRecordInvalid = true;
                     break;
@@ -930,6 +939,7 @@ V1DeviceStore::StoreSnapshot V1DeviceStore::readStore(fs::FS& filesystem) const 
                 device.defaultProfile = defaultProfile;
                 device.lastSeenMs = lastSeenMs;
                 device.snapshot = detectorSnapshot;
+                device.inTheBox = inTheBox;
                 if (snapshot.devices.size() < MAX_DEVICES) {
                     snapshot.devices.push_back(std::move(device));
                 } else if (version == 1) {
@@ -1527,6 +1537,73 @@ V1DeviceMutationResult V1DeviceStore::setDeviceDefaultProfile(const String& addr
     return result;
 }
 
+V1DeviceMutationResult V1DeviceStore::setDeviceInTheBox(const String& address,
+                                                      const V1InTheBoxSettings& settings) {
+    if (!ready_ || !catalogReadable()) {
+        return {V1DeviceMutationStatus::Unavailable};
+    }
+    if (!isValidV1InTheBoxSettings(settings)) return {V1DeviceMutationStatus::Invalid};
+
+    String normalizedAddress;
+    const V1DeviceMutationStatus addressStatus =
+        stageNormalizedDeviceAddress(address, normalizedAddress);
+    if (addressStatus != V1DeviceMutationStatus::FullyMirrored) {
+        return {addressStatus};
+    }
+
+    const int existingIndex = findDeviceIndex(normalizedAddress);
+    if (existingIndex >= 0 &&
+        v1InTheBoxSettingsEqual(devices_[static_cast<size_t>(existingIndex)].inTheBox, settings)) {
+        // Auto-Push may reapply the same policy on every connection. Only a
+        // completely committed catalog can take the no-write success path.
+        if (!dirty_ && !mirrorDirty_) return {V1DeviceMutationStatus::FullyMirrored};
+        return saveToStoreResult();
+    }
+
+    std::vector<V1DeviceRecord> candidate;
+    if (!copyDeviceRecordsChecked(devices_, candidate, MAX_DEVICES)) {
+        return {V1DeviceMutationStatus::Unavailable};
+    }
+    int index = -1;
+    for (size_t position = 0; position < candidate.size(); ++position) {
+        if (candidate[position].address.equalsIgnoreCase(normalizedAddress)) {
+            index = static_cast<int>(position);
+            break;
+        }
+    }
+    if (index < 0) {
+        V1DeviceRecord device;
+        device.address = std::move(normalizedAddress);
+        if (device.address.length() != 17u) {
+            return {V1DeviceMutationStatus::Unavailable};
+        }
+        device.inTheBox = settings;
+        device.lastSeenMs = millis();
+        if (candidate.size() == MAX_DEVICES) candidate.pop_back();
+        try {
+            candidate.insert(candidate.begin(), std::move(device));
+        } catch (const std::bad_alloc&) {
+            return {V1DeviceMutationStatus::Unavailable};
+        }
+    } else {
+        candidate[static_cast<size_t>(index)].inTheBox = settings;
+    }
+
+    const uint32_t generationBefore = generation_;
+    const bool dirtyBefore = dirty_;
+    const bool mirrorDirtyBefore = mirrorDirty_;
+    devices_.swap(candidate);
+    dirty_ = true;
+    const V1DeviceMutationResult result = saveToStoreResult();
+    if (!result.committed()) {
+        devices_.swap(candidate);
+        generation_ = generationBefore;
+        dirty_ = dirtyBefore;
+        mirrorDirty_ = mirrorDirtyBefore;
+    }
+    return result;
+}
+
 V1DeviceMutationResult V1DeviceStore::removeDevice(const String& address) {
     if (!ready_ || !catalogReadable()) {
         return {V1DeviceMutationStatus::Unavailable};
@@ -1609,6 +1686,7 @@ bool V1DeviceStore::getLatestSnapshot(V1DeviceRecord& device) const {
             copy.defaultProfile = candidate.defaultProfile;
             copy.lastSeenMs = candidate.lastSeenMs;
             copy.snapshot = candidate.snapshot;
+            copy.inTheBox = candidate.inTheBox;
             device = std::move(copy);
             return device.address == candidate.address && device.name == candidate.name;
         }
@@ -1635,4 +1713,16 @@ V1DeviceSnapshotStatus V1DeviceStore::getSnapshotForAddressChecked(
     return device.address == normalized && device.snapshot.available
                ? V1DeviceSnapshotStatus::Found
                : V1DeviceSnapshotStatus::Unavailable;
+}
+
+V1DeviceSnapshotStatus V1DeviceStore::getInTheBoxForAddressChecked(
+    const String& address, V1InTheBoxSettings& settings) const {
+    settings = V1InTheBoxSettings{};
+    if (!ready_ || !catalogReadable()) return V1DeviceSnapshotStatus::Unavailable;
+    const String normalized = normalizeV1DeviceAddress(address);
+    if (normalized.length() != 17u || normalized != address) return V1DeviceSnapshotStatus::NotFound;
+    const int index = findDeviceIndex(normalized);
+    if (index < 0) return V1DeviceSnapshotStatus::NotFound;
+    settings = devices_[static_cast<size_t>(index)].inTheBox;
+    return V1DeviceSnapshotStatus::Found;
 }

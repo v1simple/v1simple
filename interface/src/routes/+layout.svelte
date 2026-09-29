@@ -30,7 +30,7 @@
         { href: '/autopush', label: 'Auto-Push' },
         { href: '/profiles', label: 'Profiles' },
         { href: '/devices', label: 'Devices' },
-        { href: '/colors', label: 'Colors' },
+        { href: '/colors', label: 'Display' },
         { href: '/audio', label: 'Audio & Quiet' },
         { href: '/alp', label: 'ALP' },
         { href: '/obd', label: 'OBD' },

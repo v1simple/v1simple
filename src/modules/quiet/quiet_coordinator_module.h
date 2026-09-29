@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <stdint.h>
+#include "modules/in_the_box/in_the_box_module.h"
 
 class V1BLEClient;
 class PacketParser;
@@ -15,6 +16,7 @@ enum class QuietOwner : uint8_t {
     TapGesture,
     WifiCommand,
     AutoPush,
+    InTheBox,
 };
 
 const char* quietOwnerName(QuietOwner owner);
@@ -60,6 +62,14 @@ class QuietCoordinatorModule {
   public:
     void begin(V1BLEClient* bleClient, PacketParser* parser);
 
+    // The applied configuration belongs to one detector session. Persistence
+    // and profile activation are owned by the runtime, not the audio loop.
+    void setInTheBoxSettings(const V1InTheBoxSettings& settings, uint32_t sessionGeneration);
+    void processInTheBox(uint32_t nowMs);
+    void setInTheBoxSuspended(bool suspended) { inTheBoxSuspended_ = suspended; }
+    const V1InTheBoxSettings& inTheBoxSettings() const { return inTheBoxSettings_; }
+    bool inTheBoxMuteActive() const { return inTheBoxOwnsMute_; }
+
     bool sendMute(QuietOwner owner, bool muted);
     SendResult sendMuteResult(QuietOwner owner, bool muted);
     bool sendVolume(QuietOwner owner, uint8_t volume, uint8_t muteVolume);
@@ -99,6 +109,7 @@ class QuietCoordinatorModule {
     void reset();
     void syncCommittedState();
     void refreshPendingState();
+    void resetInTheBoxSession();
 
     template <typename SpeedMuteLike> void updateSpeedVolPresentation(const SpeedMuteLike* speedMute);
 
@@ -126,6 +137,25 @@ class QuietCoordinatorModule {
     bool pendingFadeLaser_ = false;
     uint32_t pendingFadeLastAttemptMs_ = 0;
     bool autoPushVolumeTransactionActive_ = false;
+    V1InTheBoxSettings inTheBoxSettings_{};
+    InTheBoxModule inTheBox_;
+    uint32_t inTheBoxSession_ = 0;
+    uint32_t inTheBoxLifetime_ = 0;
+    bool inTheBoxLifetimeKnown_ = false;
+    bool inTheBoxOwnsMute_ = false;
+    bool inTheBoxManualOverride_ = false;
+    bool inTheBoxInsidePending_ = false;
+    bool inTheBoxCommandPending_ = false;
+    bool inTheBoxCommandMute_ = false;
+    bool inTheBoxCommandSent_ = false;
+    bool inTheBoxMuteConfirmed_ = false;
+    uint32_t inTheBoxCommandRevision_ = 0;
+    uint32_t inTheBoxCommandIngress_ = 0;
+    uint32_t inTheBoxLastAttemptMs_ = 0;
+    bool inTheBoxAttempted_ = false;
+    bool inTheBoxSuppressVoice_ = false;
+    bool inTheBoxSuspended_ = false;
+    static constexpr uint32_t IN_THE_BOX_RETRY_MS = 100;
     static constexpr uint32_t FADE_RETRY_INTERVAL_MS = 25;
     static constexpr uint32_t SPEED_VOL_RETRY_INTERVAL_MS = 75;
     static constexpr uint32_t SPEED_VOL_RESTORE_TIMEOUT_MS = 2000;

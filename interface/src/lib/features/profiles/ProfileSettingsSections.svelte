@@ -1,352 +1,300 @@
 <script>
     import StatusAlert from '$lib/components/StatusAlert.svelte';
+    import ProfileInTheBoxControls from '$lib/features/profiles/ProfileInTheBoxControls.svelte';
+    import ProfileEverydayControls from '$lib/features/profiles/ProfileEverydayControls.svelte';
     import { customFrequencyBand } from '$lib/features/profiles/profileSettingsAdapter';
+    import { PROFILE_SETTING_GROUPS } from '$lib/features/profiles/profileSettingsCatalog';
 
     let {
-        editingSettings,
-        currentProfile,
-        editedSettings = $bindable(null),
-        editedDetector = $bindable(null),
+        editingSettings, currentProfile, capturedSnapshot = null,
+        editedSettings = $bindable(null), editedDetector = $bindable(null),
+        editedInTheBox = $bindable(null),
         frequencyError = null,
-        oncustomFrequenciesChange,
-        onaddCustomFrequencyRange,
-        onremoveCustomFrequencyRange
+        onaddCustomFrequencyRange, onremoveCustomFrequencyRange
     } = $props();
 
     let settings = $derived(editingSettings ? editedSettings : currentProfile.settings);
     let detector = $derived(editingSettings ? editedDetector : currentProfile.detector);
+    let inTheBox = $derived(editingSettings ? editedInTheBox : currentProfile.inTheBox);
+    let activeGroup = $state('everyday');
+    let showAll = $state(false);
+    let search = $state('');
+    let query = $derived(search.trim().toLowerCase());
+    let knownFirmware = $derived(capturedSnapshot?.capabilities?.versionKnown && capturedSnapshot?.capabilities?.gen2
+        ? capturedSnapshot.firmware?.value : null);
+    const groupLabels = { bands: 'Bands & sensitivity', muting: 'Muting', photo: 'Photo radar', filtering: 'Filters & startup' };
+    const everydayKeywords = 'display everyday detector lights dark bluetooth ble operating mode logic volume main muted feedback disconnect';
+    const boxKeywords = 'in-the-box out-of-the-box in the box out of the box boxes x ku k ka muting unmuting frequency lower upper mhz';
+    const frequencyKeywords = 'custom frequencies frequency ranges sweeps k ka mhz';
 
-    function bandDefinitionCount(band) {
-        if (!Array.isArray(detector?.customFrequencyDefinitions)) return 0;
-        return detector.customFrequencyDefinitions
-            .filter((definition) => customFrequencyBand(definition) === band).length;
+    function matches(text) { return text.toLowerCase().includes(query); }
+    function fieldMatches(field) {
+        return matches(`${field.label} ${field.description || ''} ${field.key}`);
     }
-
+    function groupMatches(group) {
+        return matches(`${group.title} ${group.description}`) || group.fields.some(fieldMatches);
+    }
+    function visible(id) {
+        if (!query) return showAll || activeGroup === id;
+        if (id === 'everyday') return matches(everydayKeywords);
+        if (id === 'frequencies') return matches(frequencyKeywords);
+        if (id === 'boxes') return matches(boxKeywords);
+        return groupMatches(PROFILE_SETTING_GROUPS.find((group) => group.id === id));
+    }
+    function chooseGroup(id) { activeGroup = id; search = ''; showAll = false; }
+    function summary(group) {
+        if (group.id === 'bands') {
+            return group.fields.filter((field) => !field.options && settings[field.key])
+                .map((field) => field.label.replace(' Band', '')).join(', ') || 'All bands off';
+        }
+        if (group.id === 'muting') {
+            return `Automute ${settings.autoMute === 3 ? 'off' : settings.autoMute === 2 ? 'on' : 'advanced'}`;
+        }
+        const toggles = group.fields.filter((field) => !field.options);
+        return `${toggles.filter((field) => settings[field.key]).length} of ${toggles.length} enabled`;
+    }
+    function formatFirmware(version) { return `${String(version)[0]}.${String(version).slice(1)}`; }
+    function bandDefinitionCount(band) {
+        if (detector?.customFrequencyPolicy !== 'value' || !Array.isArray(detector?.customFrequencyDefinitions)) return 0;
+        return detector.customFrequencyDefinitions.filter((definition) => customFrequencyBand(definition) === band).length;
+    }
     function relinquishesBandOwnership(definition) {
         const band = customFrequencyBand(definition);
         return band !== null && bandDefinitionCount(band) === 1;
     }
 </script>
 
-<div class="space-y-3">
-    <details class="surface-collapse">
-        <summary class="collapse-title min-h-0 py-3 text-sm font-semibold">Bands</summary>
-        <div class="collapse-content">
-            <div class="grid grid-cols-1 gap-2 pt-2 text-sm sm:grid-cols-2">
-                <label class="flex items-center justify-between">
-                    <span>Laser</span>
-                    <input type="checkbox" class="toggle toggle-primary toggle-sm" bind:checked={settings.laser} disabled={!editingSettings} />
-                </label>
-                <label class="flex items-center justify-between">
-                    <span>Rear Laser</span>
-                    <input type="checkbox" class="toggle toggle-primary toggle-sm" bind:checked={settings.laserRear} disabled={!editingSettings} />
-                </label>
-                <label class="flex items-center justify-between">
-                    <span>X Band</span>
-                    <input type="checkbox" class="toggle toggle-primary toggle-sm" bind:checked={settings.x} disabled={!editingSettings} />
-                </label>
-                <label class="flex items-center justify-between">
-                    <span>Ka Band</span>
-                    <input type="checkbox" class="toggle toggle-primary toggle-sm" bind:checked={settings.ka} disabled={!editingSettings} />
-                </label>
-                <label class="flex items-center justify-between">
-                    <span>K Band</span>
-                    <input type="checkbox" class="toggle toggle-primary toggle-sm" bind:checked={settings.k} disabled={!editingSettings} />
-                </label>
-                <label class="flex items-center justify-between">
-                    <span>Ku Band</span>
-                    <input type="checkbox" class="toggle toggle-primary toggle-sm" bind:checked={settings.ku} disabled={!editingSettings} />
-                </label>
-            </div>
-        </div>
-    </details>
-
-    <details class="surface-collapse">
-        <summary class="collapse-title min-h-0 py-3 text-sm font-semibold">Mute Control</summary>
-        <div class="collapse-content space-y-3">
-            <div class="grid grid-cols-1 gap-2 pt-2 text-sm sm:grid-cols-2">
-                <label class="flex items-center justify-between">
-                    <span>Mute-to-Muted Volume</span>
-                    <input type="checkbox" class="toggle toggle-primary toggle-sm" bind:checked={settings.muteToMuteVolume} disabled={!editingSettings} />
-                </label>
-                <label class="flex items-center justify-between">
-                    <span>Bogey-Lock tone Loud after muting</span>
-                    <input type="checkbox" class="toggle toggle-primary toggle-sm" bind:checked={settings.bogeyLockLoud} disabled={!editingSettings} />
-                </label>
-                <label class="flex items-center justify-between">
-                    <span>Mute Rear X &amp; K alerts</span>
-                    <input type="checkbox" class="toggle toggle-primary toggle-sm" bind:checked={settings.muteXKRear} disabled={!editingSettings} />
-                </label>
-                <div class="flex items-center justify-between">
-                    <span>Auto Mute</span>
+<div class="space-y-4">
+    <div class="flex flex-wrap items-end gap-3">
+        <label class="field-control min-w-0 flex-1">
+            <span class="field-label text-sm">Find a profile setting</span>
+            <input class="input w-full" type="search" placeholder="Try Bluetooth, rear laser, or Gatso" bind:value={search} />
+        </label>
+        <button class="btn btn-outline btn-sm" aria-pressed={showAll && !query}
+            onclick={() => { showAll = !showAll; search = ''; }}>Show all settings</button>
+    </div>
+    <div class={query ? 'space-y-4' : 'grid gap-4 lg:grid-cols-[12rem_minmax(0,1fr)]'}>
+        <nav hidden={!!query} class="grid content-start grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-1" aria-label="Profile setting groups">
+            <button class="setting-group" class:selected={!query && !showAll && activeGroup === 'everyday'}
+                aria-pressed={!query && !showAll && activeGroup === 'everyday'} onclick={() => chooseGroup('everyday')}>
+                <strong>Lights, mode & volume</strong>
+                <span>Display {detector?.display === 'unchanged' ? 'kept' : detector?.display} · volume {detector?.volumePolicy === 'unchanged' ? 'kept' : detector?.volumePolicy}</span>
+            </button>
+            {#each PROFILE_SETTING_GROUPS as group}
+                <button class="setting-group" class:selected={!query && !showAll && activeGroup === group.id}
+                    aria-pressed={!query && !showAll && activeGroup === group.id} onclick={() => chooseGroup(group.id)}>
+                    <strong>{groupLabels[group.id]}</strong>
+                    <span>{summary(group)}</span>
+                </button>
+            {/each}
+            <button class="setting-group" class:selected={!query && !showAll && activeGroup === 'boxes'}
+                aria-pressed={!query && !showAll && activeGroup === 'boxes'} onclick={() => chooseGroup('boxes')}>
+                <strong>In-the-Box</strong>
+                <span>{Object.values(inTheBox?.bands || {}).some((band) => band.muteOutside || band.unmuteInside) ? 'App muting options on' : 'App muting options off'}</span>
+            </button>
+            <button class="setting-group" class:selected={!query && !showAll && activeGroup === 'frequencies'}
+                aria-pressed={!query && !showAll && activeGroup === 'frequencies'} onclick={() => chooseGroup('frequencies')}>
+                <strong>Frequency ranges</strong>
+                <span>{detector?.customFrequencyPolicy === 'value' ? `${detector.customFrequencyDefinitions.length} profile ranges` : 'Keep detector ranges'}</span>
+            </button>
+        </nav>
+        <div class="min-w-0 space-y-4">
+            {#if query}
+                <p class="copy-caption" role="status">Matching settings for “{search}” · <button class="link" onclick={() => (search = '')}>Clear search</button></p>
+                {#if !visible('everyday') && !visible('frequencies') && !visible('boxes') && !PROFILE_SETTING_GROUPS.some((group) => visible(group.id))}
+                    <p>No matching profile setting. Try a band, feature name, lights, or volume.</p>
+                {/if}
+            {/if}
+            <div hidden={!visible('everyday')}>
+                {#if detector}
                     {#if editingSettings}
-                        <select aria-label="X, K, Ku Automute" class="select w-28 select-xs" bind:value={settings.autoMute}>
-                            <option value={2}>On</option>
-                            <option value={1}>Advanced</option>
-                            <option value={3}>Off</option>
-                        </select>
+                        <ProfileEverydayControls bind:detector={editedDetector} {editingSettings} {knownFirmware} />
                     {:else}
-                        <span class="badge badge-info">{settings.autoMute === 3 ? 'Off' : settings.autoMute === 2 ? 'On' : 'Advanced'}</span>
+                        <ProfileEverydayControls {detector} {editingSettings} {knownFirmware} />
                     {/if}
+                    {#if detector.userSettings === 'value' && settings.euroMode && detector.modePolicy === 'value' && detector.mode === 3}
+                        <StatusAlert fallbackType="warning" message="Advanced Logic (L) cannot be applied with Euro Mode. Choose All Bogeys or Logic, or turn Euro Mode off in Filters & startup." />
+                    {/if}
+                {/if}
+            </div>
+            <div hidden={!PROFILE_SETTING_GROUPS.some((group) => visible(group.id)) && !visible('frequencies')} class="space-y-2">
+                {#if detector}
+                    <label class="field-control">
+                        <span class="field-label">Apply detection settings</span>
+                        <select class="select w-full" bind:value={detector.userSettings} disabled={!editingSettings}>
+                            <option value="value">Use this profile’s detection settings</option>
+                            <option value="unchanged">Keep the detector’s detection settings</option>
+                        </select>
+                    </label>
+                    {#if detector.userSettings === 'unchanged'}
+                        <p class="surface-note copy-caption">Bands, sensitivity, muting, filtering and custom-frequency enable stay saved here but will not be applied. The range-replacement choice is separate.</p>
+                    {/if}
+                    <p class="copy-caption">{knownFirmware ? `Last observed V1: ${formatFirmware(knownFirmware)}. Newer features remain editable for other detectors; requirements appear beside them.` : 'No known V1 firmware captured. You can build a profile offline; compatibility is checked when applied.'}</p>
+                {/if}
+            </div>
+            {#each PROFILE_SETTING_GROUPS as group}
+                <div hidden={!visible(group.id)}>
+                    <details class="surface-collapse" open>
+                        <summary class="collapse-title min-h-0 py-3 text-sm font-semibold">{group.title}</summary>
+                        <div class="collapse-content space-y-3">
+                            <p class="copy-caption">{group.description}</p>
+                            <div class="divide-y divide-base-300">
+                                {#each group.fields as field}
+                                    <div hidden={!!query && !matches(`${group.title} ${group.description}`) && !fieldMatches(field)} class="setting-row">
+                                        <div class="min-w-0">
+                                            <label class="text-sm font-medium" for={`profile-setting-${field.key}`}>{field.label}</label>
+                                            {#if field.description}<p class="copy-caption mt-1">{field.description}</p>{/if}
+                                            {#if field.minFirmware && knownFirmware && knownFirmware < field.minFirmware}
+                                                <p class="mt-1 text-xs text-warning">Requires V1 {formatFirmware(field.minFirmware)}. This choice will not be applied to the last observed detector.</p>
+                                            {/if}
+                                            {#if field.key === 'laser'}
+                                                <p class="copy-caption mt-1"><a class="link" href="/alp">Manage ALP laser handoff</a></p>
+                                            {/if}
+                                        </div>
+                                        {#if field.options}
+                                            <select id={`profile-setting-${field.key}`} aria-label={field.ariaLabel || field.label} class="select select-sm w-32 shrink-0" bind:value={settings[field.key]} disabled={!editingSettings}>
+                                                {#each field.options as option}<option value={option.value}>{option.label}</option>{/each}
+                                            </select>
+                                        {:else}
+                                            <input id={`profile-setting-${field.key}`} aria-label={field.ariaLabel || field.label} type="checkbox" class="toggle toggle-primary toggle-sm shrink-0" bind:checked={settings[field.key]} disabled={!editingSettings} />
+                                        {/if}
+                                    </div>
+                                {/each}
+                            </div>
+                            {#if group.id === 'photo' && settings.photoIntersectionFilter}
+                                <StatusAlert fallbackType="warning" message="Intersection Management suppresses DriveSafe 3D, DriveSafe 3DHD, and Ekin alerts while enabled. Those saved settings are not changed." />
+                            {/if}
+                            {#if group.id === 'filtering' && detector?.userSettings === 'value' && settings.euroMode && detector.modePolicy === 'value' && detector.mode === 3}
+                                <StatusAlert fallbackType="warning" message="Euro Mode cannot be applied with Advanced Logic (L). Choose All Bogeys or Logic in Lights, mode & volume." />
+                            {/if}
+                        </div>
+                    </details>
                 </div>
+            {/each}
+            <div hidden={!visible('boxes')}>
+                {#if inTheBox}
+                    {#if editingSettings}
+                        <ProfileInTheBoxControls bind:settings={editedInTheBox} {editingSettings} />
+                    {:else}
+                        <ProfileInTheBoxControls settings={inTheBox} {editingSettings} />
+                    {/if}
+                {/if}
             </div>
-            {#if detector}
-                <div class="grid gap-3 sm:grid-cols-2">
-                    <label class="field-control">
-                        <span class="field-label copy-caption">Volume policy</span>
-                        <select
-                            class="select select-sm"
-                            bind:value={detector.volumePolicy}
-                            onchange={() => {
-                                if (detector.volumePolicy !== 'temporary') detector.volumeDisconnect = 'restore_saved';
-                            }}
-                            disabled={!editingSettings}
-                        >
-                            <option value="unchanged">Leave unchanged</option>
-                            <option value="temporary">Temporary</option>
-                            <option value="saved">Save on V1</option>
-                        </select>
-                    </label>
-                    <label class="field-control">
-                        <span class="field-label copy-caption">Main volume (0–9)</span>
-                        <input class="input input-sm" type="number" min="0" max="9" bind:value={detector.mainVolume} disabled={!editingSettings || detector.volumePolicy === 'unchanged'} />
-                    </label>
-                    <label class="field-control">
-                        <span class="field-label copy-caption">Muted volume (0–9)</span>
-                        <input class="input input-sm" type="number" min="0" max="9" bind:value={detector.mutedVolume} disabled={!editingSettings || detector.volumePolicy === 'unchanged'} />
-                    </label>
-                    <label class="field-control">
-                        <span class="field-label copy-caption">Volume feedback</span>
-                        <select class="select select-sm" bind:value={detector.volumeFeedback} disabled={!editingSettings || detector.volumePolicy === 'unchanged'}>
-                            <option value="none">None</option>
-                            <option value="changed_only">Only when changed</option>
-                            <option value="always">Always</option>
-                        </select>
-                    </label>
-                    <label class="field-control">
-                        <span class="field-label copy-caption">After Bluetooth disconnect</span>
-                        <select class="select select-sm" bind:value={detector.volumeDisconnect} disabled={!editingSettings || detector.volumePolicy !== 'temporary'}>
-                            <option value="restore_saved">Restore saved volume</option>
-                            <option value="keep_current">Keep temporary volume</option>
-                        </select>
-                    </label>
-                </div>
-            {/if}
-        </div>
-    </details>
-
-    <details class="surface-collapse">
-        <summary class="collapse-title min-h-0 py-3 text-sm font-semibold">Photo Radar</summary>
-        <div class="collapse-content space-y-3">
-            <div class="grid grid-cols-1 gap-2 pt-2 text-sm sm:grid-cols-2">
-                <label class="flex items-center justify-between"><span>Photo Verifier</span><input type="checkbox" class="toggle toggle-primary toggle-sm" bind:checked={settings.photoVerifier} disabled={!editingSettings} /></label>
-                <label class="flex items-center justify-between"><span>MRCT</span><input type="checkbox" class="toggle toggle-primary toggle-sm" bind:checked={settings.mrct} disabled={!editingSettings} /></label>
-                <label class="flex items-center justify-between"><span>DriveSafe™ 3D</span><input type="checkbox" class="toggle toggle-primary toggle-sm" bind:checked={settings.driveSafe3D} disabled={!editingSettings} /></label>
-                <label class="flex items-center justify-between"><span>DriveSafe™ 3DHD</span><input type="checkbox" class="toggle toggle-primary toggle-sm" bind:checked={settings.driveSafe3DHD} disabled={!editingSettings} /></label>
-                <label class="flex items-center justify-between"><span>Redflex® Halo</span><input type="checkbox" class="toggle toggle-primary toggle-sm" bind:checked={settings.redflexHalo} disabled={!editingSettings} /></label>
-                <label class="flex items-center justify-between"><span>Redflex® NK7</span><input type="checkbox" class="toggle toggle-primary toggle-sm" bind:checked={settings.redflexNK7} disabled={!editingSettings} /></label>
-                <label class="flex items-center justify-between"><span>Ekin</span><input type="checkbox" class="toggle toggle-primary toggle-sm" bind:checked={settings.ekin} disabled={!editingSettings} /></label>
-                <label class="flex items-center justify-between"><span>Gatso RT4</span><input type="checkbox" class="toggle toggle-primary toggle-sm" bind:checked={settings.gatsoRT4} disabled={!editingSettings} /></label>
-                <label class="flex items-center justify-between"><span>Photo Radar Intersection Management Filter</span><input aria-label="Intersection Management Filter" type="checkbox" class="toggle toggle-primary toggle-sm" bind:checked={settings.photoIntersectionFilter} disabled={!editingSettings} /></label>
-            </div>
-            {#if settings.photoIntersectionFilter}
-                <StatusAlert
-                    fallbackType="warning"
-                    message="Intersection Management suppresses DriveSafe 3D, DriveSafe 3DHD, and Ekin alerts while enabled. Those saved settings are not changed."
-                />
-            {/if}
-        </div>
-    </details>
-
-    <details class="surface-collapse">
-        <summary class="collapse-title min-h-0 py-3 text-sm font-semibold">Special</summary>
-        <div class="collapse-content space-y-3">
-            <div class="grid grid-cols-1 gap-2 pt-2 text-sm sm:grid-cols-2">
-                <label class="flex items-center justify-between"><span>Euro Mode</span><input type="checkbox" class="toggle toggle-primary toggle-sm" bind:checked={settings.euroMode} disabled={!editingSettings} /></label>
-                <label class="flex items-center justify-between"><span>K-Verifier (TMF)</span><input type="checkbox" class="toggle toggle-primary toggle-sm" bind:checked={settings.kVerifier} disabled={!editingSettings} /></label>
-                <label class="flex items-center justify-between"><span>Ka Always Radar Priority</span><input type="checkbox" class="toggle toggle-primary toggle-sm" bind:checked={settings.kaAlwaysPriority} disabled={!editingSettings} /></label>
-                <label class="flex items-center justify-between"><span>Fast Laser Detection</span><input type="checkbox" class="toggle toggle-primary toggle-sm" bind:checked={settings.fastLaserDetect} disabled={!editingSettings} /></label>
-                <label class="flex items-center justify-between"><span>Startup Sequence</span><input type="checkbox" class="toggle toggle-primary toggle-sm" bind:checked={settings.startupSequence} disabled={!editingSettings} /></label>
-                <label class="flex items-center justify-between"><span>Resting Display</span><input type="checkbox" class="toggle toggle-primary toggle-sm" bind:checked={settings.restingDisplay} disabled={!editingSettings} /></label>
-                <label class="flex items-center justify-between"><span>BSM Plus</span><input type="checkbox" class="toggle toggle-primary toggle-sm" bind:checked={settings.bsmPlus} disabled={!editingSettings} /></label>
-            </div>
-            <StatusAlert
-                fallbackType="info"
-                message="Valentine profile Alert Persistence is not mapped yet. V1Simple's existing 0–5 second display persistence remains a separate Auto-Push slot setting."
-            />
-            <div class="grid grid-cols-1 gap-3 text-sm sm:grid-cols-3">
-                <label class="flex items-center justify-between">
-                    <span>Ka Sensitivity</span>
-                    <select aria-label="Ka Sensitivity" class="select w-24 select-xs" bind:value={settings.kaSensitivity} disabled={!editingSettings}>
-                        <option value={1}>Relaxed</option><option value={2}>Original</option><option value={3}>Full</option>
-                    </select>
-                </label>
-                <label class="flex items-center justify-between">
-                    <span>K Sensitivity</span>
-                    <select aria-label="K Sensitivity" class="select w-24 select-xs" bind:value={settings.kSensitivity} disabled={!editingSettings}>
-                        <option value={1}>Relaxed</option><option value={2}>Full</option><option value={3}>Original</option>
-                    </select>
-                </label>
-                <label class="flex items-center justify-between">
-                    <span>X Sensitivity</span>
-                    <select aria-label="X Sensitivity" class="select w-24 select-xs" bind:value={settings.xSensitivity} disabled={!editingSettings}>
-                        <option value={1}>Relaxed</option><option value={2}>Full</option><option value={3}>Original</option>
-                    </select>
-                </label>
-            </div>
-            {#if detector}
-                <div class="grid gap-3 sm:grid-cols-2">
-                    <label class="field-control">
-                        <span class="field-label copy-caption">User settings bytes</span>
-                        <select class="select select-sm" bind:value={detector.userSettings} disabled={!editingSettings}>
-                            <option value="value">Apply profile settings</option>
-                            <option value="unchanged">Leave unchanged</option>
-                        </select>
-                    </label>
-                    <div class="grid grid-cols-2 gap-2">
-                        <label class="field-control">
-                            <span class="field-label copy-caption">Valentine One mode</span>
-                            <select class="select select-sm" bind:value={detector.modePolicy} disabled={!editingSettings}>
-                                <option value="unchanged">Leave unchanged</option>
-                                <option value="value">Set mode</option>
+            <div hidden={!visible('frequencies')}>
+                <details class="surface-collapse" open>
+                    <summary class="collapse-title min-h-0 py-3 text-sm font-semibold">Custom Frequencies</summary>
+                    <div class="collapse-content space-y-3">
+                        <label class="field-control pt-2">
+                            <span class="field-label">Range replacement</span>
+                            <select class="select w-full" bind:value={detector.customFrequencyPolicy} disabled={!editingSettings}>
+                                <option value="unchanged">Keep the detector’s current ranges</option>
+                                <option value="value">Use this profile’s ranges</option>
                             </select>
                         </label>
-                        <label class="field-control">
-                            <span class="field-label copy-caption">Mode value</span>
-                            <select class="select select-sm" bind:value={detector.mode} disabled={!editingSettings || detector.modePolicy !== 'value'}>
-                                <option value={1}>All Bogeys</option><option value={2}>Logic</option><option value={3}>Advanced Logic</option>
-                            </select>
+                        <p class="copy-caption">Range replacement and custom-frequency detection are separate choices. Switching detection off does not stop profile ranges from being written.</p>
+                        <label class="flex items-center justify-between pt-2 text-sm">
+                            <span>Enable Custom Frequencies</span>
+                            <input
+                                type="checkbox"
+                                class="toggle toggle-primary toggle-sm"
+                                checked={settings.customFreqs}
+                                onchange={(event) => {
+                                    settings.customFreqs = event.currentTarget.checked;
+                                }}
+                                disabled={!editingSettings}
+                            />
                         </label>
+                        <p class="copy-caption">
+                            Ranges listed here replace the detector’s ranges for that band when applied. With no ranges for a band, its current detector ranges are kept. You can edit ranges while Custom Frequencies is off.
+                        </p>
+                        <div class="grid gap-2 text-sm sm:grid-cols-2">
+                            <div class="surface-panel space-y-1">
+                                <div class="flex items-center justify-between gap-2">
+                                    <span class="font-semibold">K ranges</span>
+                                    <span class={`badge ${bandDefinitionCount('K') > 0 ? 'badge-primary' : 'badge-ghost'}`}>
+                                        {bandDefinitionCount('K') > 0 ? 'Use profile ranges' : 'Keep detector ranges'}
+                                    </span>
+                                </div>
+                                {#if bandDefinitionCount('K') === 0}
+                                    <p class="copy-caption">Add a K range to replace the detector’s K ranges.</p>
+                                {/if}
+                            </div>
+                            <div class="surface-panel space-y-1">
+                                <div class="flex items-center justify-between gap-2">
+                                    <span class="font-semibold">Ka ranges</span>
+                                    <span class={`badge ${bandDefinitionCount('Ka') > 0 ? 'badge-primary' : 'badge-ghost'}`}>
+                                        {bandDefinitionCount('Ka') > 0 ? 'Use profile ranges' : 'Keep detector ranges'}
+                                    </span>
+                                </div>
+                                {#if bandDefinitionCount('Ka') === 0}
+                                    <p class="copy-caption">Add a Ka range to replace the detector’s Ka ranges.</p>
+                                {/if}
+                            </div>
+                        </div>
+                        {#if detector?.customFrequencyPolicy === 'value'}
+                            <div class="max-h-72 overflow-auto">
+                                <table class="table table-xs">
+                                    <thead><tr><th>Band</th><th>Lower MHz</th><th>Upper MHz</th><th><span class="sr-only">Actions</span></th></tr></thead>
+                                    <tbody>
+                                        {#each detector.customFrequencyDefinitions as definition (definition.index)}
+                                            <tr>
+                                                <td>{customFrequencyBand(definition) || 'Invalid'}</td>
+                                                <td><input aria-label={`Custom ${definition.index} lower MHz`} class="input input-xs w-28" type="number" min="0" max="65535" bind:value={definition.lowerMHz} disabled={!editingSettings} /></td>
+                                                <td><input aria-label={`Custom ${definition.index} upper MHz`} class="input input-xs w-28" type="number" min="0" max="65535" bind:value={definition.upperMHz} disabled={!editingSettings} /></td>
+                                                <td>
+                                                    <button
+                                                        class="btn btn-ghost btn-xs"
+                                                        type="button"
+                                                        aria-label={relinquishesBandOwnership(definition)
+                                                            ? `Remove custom frequency ${definition.index} and relinquish ${customFrequencyBand(definition)} ownership`
+                                                            : `Remove custom frequency ${definition.index}`}
+                                                        onclick={() => onremoveCustomFrequencyRange?.(definition.index)}
+                                                        disabled={!editingSettings}
+                                                    >
+                                                        {relinquishesBandOwnership(definition)
+                                                            ? `Remove; keep detector ${customFrequencyBand(definition)}`
+                                                            : 'Remove'}
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        {/each}
+                                    </tbody>
+                                </table>
+                            </div>
+                        {:else}
+                            <p class="copy-caption">
+                                This profile keeps the detector’s current ranges. Add a K or Ka range to replace the ranges for that band.
+                            </p>
+                        {/if}
+                        {#if frequencyError}
+                            <div class="surface-alert alert-warning" role="alert">{frequencyError}</div>
+                        {/if}
+                        <div class="flex flex-wrap gap-2">
+                            <button class="btn btn-outline btn-xs" type="button" onclick={() => onaddCustomFrequencyRange?.('k')} disabled={!editingSettings}>Add K range</button>
+                            <button class="btn btn-outline btn-xs" type="button" onclick={() => onaddCustomFrequencyRange?.('ka')} disabled={!editingSettings}>Add Ka range</button>
+                        </div>
                     </div>
-                    <label class="field-control">
-                        <span class="field-label copy-caption">Dark mode</span>
-                        <select
-                            class="select select-sm"
-                            bind:value={detector.display}
-                            onchange={() => {
-                                if (detector.display !== 'off') detector.bluetoothLed = 'unchanged';
-                            }}
-                            disabled={!editingSettings}
-                        >
-                            <option value="unchanged">Leave unchanged</option><option value="on">Off (display on)</option><option value="off">On (main display off)</option>
-                        </select>
-                    </label>
-                    <label class="field-control">
-                        <span class="field-label copy-caption">Bluetooth indicator while display is off</span>
-                        <select class="select select-sm" bind:value={detector.bluetoothLed} disabled={!editingSettings || detector.display !== 'off'}>
-                            <option value="unchanged">Leave unchanged</option><option value="off">Off</option><option value="on">Keep indicator active (on or blinking)</option>
-                        </select>
-                    </label>
-                </div>
-            {/if}
-        </div>
-    </details>
+                </details>
 
-    <details class="surface-collapse">
-        <summary class="collapse-title min-h-0 py-3 text-sm font-semibold">SAVVY Settings</summary>
-        <div class="collapse-content pt-2">
-            <StatusAlert
-                fallbackType="info"
-                message="SAVVY accessory controls are unavailable. V1Simple does not save or send SAVVY settings until their device and protocol behavior is qualified."
-            />
-        </div>
-    </details>
-
-    <details class="surface-collapse">
-        <summary class="collapse-title min-h-0 py-3 text-sm font-semibold">Custom Frequencies</summary>
-        <div class="collapse-content space-y-3">
-            <label class="flex items-center justify-between pt-2 text-sm">
-                <span>Enable Custom Frequencies</span>
-                <input
-                    type="checkbox"
-                    class="toggle toggle-primary toggle-sm"
-                    checked={settings.customFreqs}
-                    onchange={(event) => {
-                        settings.customFreqs = event.currentTarget.checked;
-                        oncustomFrequenciesChange?.(settings.customFreqs);
-                    }}
-                    disabled={!editingSettings}
-                />
-            </label>
-            <p class="copy-caption">
-                A band is profile-owned while it has at least one authored range. An unowned band uses the fresh DUT ranges during Apply. Removing a band's last range relinquishes that ownership. Ranges remain editable while Custom Frequencies is disabled.
-            </p>
-            <div class="grid gap-2 text-sm sm:grid-cols-2">
-                <div class="surface-panel space-y-1">
-                    <div class="flex items-center justify-between gap-2">
-                        <span class="font-semibold">K ranges</span>
-                        <span class={`badge ${bandDefinitionCount('K') > 0 ? 'badge-primary' : 'badge-ghost'}`}>
-                            {bandDefinitionCount('K') > 0 ? 'Profile-owned' : 'Fresh DUT ranges on Apply'}
-                        </span>
-                    </div>
-                    {#if bandDefinitionCount('K') === 0}
-                        <p class="copy-caption">Add a K range to make this profile own K.</p>
-                    {/if}
-                </div>
-                <div class="surface-panel space-y-1">
-                    <div class="flex items-center justify-between gap-2">
-                        <span class="font-semibold">Ka ranges</span>
-                        <span class={`badge ${bandDefinitionCount('Ka') > 0 ? 'badge-primary' : 'badge-ghost'}`}>
-                            {bandDefinitionCount('Ka') > 0 ? 'Profile-owned' : 'Fresh DUT ranges on Apply'}
-                        </span>
-                    </div>
-                    {#if bandDefinitionCount('Ka') === 0}
-                        <p class="copy-caption">Add a Ka range to make this profile own Ka.</p>
-                    {/if}
-                </div>
             </div>
-            {#if detector?.customFrequencyPolicy === 'value'}
-                <div class="max-h-72 overflow-auto">
-                    <table class="table table-xs">
-                        <thead><tr><th>Band</th><th>Lower MHz</th><th>Upper MHz</th><th><span class="sr-only">Actions</span></th></tr></thead>
-                        <tbody>
-                            {#each detector.customFrequencyDefinitions as definition (definition.index)}
-                                <tr>
-                                    <td>{customFrequencyBand(definition) || 'Invalid'}</td>
-                                    <td><input aria-label={`Custom ${definition.index} lower MHz`} class="input input-xs w-28" type="number" min="0" max="65535" bind:value={definition.lowerMHz} disabled={!editingSettings} /></td>
-                                    <td><input aria-label={`Custom ${definition.index} upper MHz`} class="input input-xs w-28" type="number" min="0" max="65535" bind:value={definition.upperMHz} disabled={!editingSettings} /></td>
-                                    <td>
-                                        <button
-                                            class="btn btn-ghost btn-xs"
-                                            type="button"
-                                            aria-label={relinquishesBandOwnership(definition)
-                                                ? `Remove custom frequency ${definition.index} and relinquish ${customFrequencyBand(definition)} ownership`
-                                                : `Remove custom frequency ${definition.index}`}
-                                            onclick={() => onremoveCustomFrequencyRange?.(definition.index)}
-                                            disabled={!editingSettings}
-                                        >
-                                            {relinquishesBandOwnership(definition)
-                                                ? `Remove; use DUT ${customFrequencyBand(definition)}`
-                                                : 'Remove'}
-                                        </button>
-                                    </td>
-                                </tr>
-                            {/each}
-                        </tbody>
-                    </table>
-                </div>
-            {:else}
-                <p class="copy-caption">
-                    This profile owns no frequency table and sends no table update. Add a K or Ka range to take ownership of that band.
-                </p>
-            {/if}
-            {#if frequencyError}
-                <div class="surface-alert alert-warning" role="alert">{frequencyError}</div>
-            {/if}
-            <div class="flex flex-wrap gap-2">
-                <button class="btn btn-outline btn-xs" type="button" onclick={() => onaddCustomFrequencyRange?.('k')} disabled={!editingSettings}>Add K range</button>
-                <button class="btn btn-outline btn-xs" type="button" onclick={() => onaddCustomFrequencyRange?.('ka')} disabled={!editingSettings}>Add Ka range</button>
-            </div>
-        </div>
-    </details>
 
+        </div>
+    </div>
     <details class="surface-collapse">
-        <summary class="collapse-title min-h-0 py-3 text-sm font-semibold">In-the-Box Options</summary>
-        <div class="collapse-content pt-2">
-            <StatusAlert
-                fallbackType="info"
-                message="In-the-Box profile controls are unavailable. V1Simple does not save or enforce box classification, muting, or unmuting behavior until the feature is qualified end to end."
-            />
+        <summary class="collapse-title min-h-0 py-3 text-sm font-semibold">Feature availability</summary>
+        <div class="collapse-content space-y-2 text-sm">
+            <p><strong>SAVVY Settings:</strong> Accessory controls are not currently supported.</p>
+            <p class="copy-caption">V1Simple alert persistence is available in <a class="link" href="/autopush">Auto-Push</a>. Detector-native alert persistence is not currently configurable here.</p>
         </div>
     </details>
 </div>
+
+<style>
+    .setting-group { min-width: 0; padding: .65rem .75rem; border: 1px solid var(--app-border-color); border-radius: .55rem; text-align: left; background: var(--color-base-100); cursor: pointer; }
+    .setting-group strong { display: block; font-size: .8rem; }
+    .setting-group span { display: block; margin-top: .25rem; font-size: .7rem; opacity: .65; line-height: 1.4; }
+    .setting-group.selected { border-color: var(--color-primary); background: color-mix(in oklab, var(--color-primary) 10%, var(--color-base-100)); }
+    .setting-group:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+    .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .75rem 0; }
+    [hidden] { display: none !important; }
+</style>

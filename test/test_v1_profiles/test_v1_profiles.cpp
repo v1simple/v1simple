@@ -560,15 +560,16 @@ void test_maximum_description_and_64_definitions_fit_but_one_extra_byte_preserve
     for (uint8_t index = 0; index < 64; ++index) {
         maximum.detector.customFrequencyDefinitions.push_back({index, 65534, 65535});
     }
+    for (auto& box : maximum.inTheBox.boxes) box.enabled = false;
     const String compactRequest = manager.profileToJson(maximum);
-    TEST_ASSERT_EQUAL_UINT(12195, compactRequest.length());
-    TEST_ASSERT_EQUAL_UINT(4189, V1_PROFILE_HTTP_SAVE_MAX_BYTES - compactRequest.length());
+    TEST_ASSERT_EQUAL_UINT(12768, compactRequest.length());
+    TEST_ASSERT_EQUAL_UINT(3616, V1_PROFILE_HTTP_SAVE_MAX_BYTES - compactRequest.length());
     TEST_ASSERT_LESS_THAN(V1_PROFILE_HTTP_SAVE_MAX_BYTES, compactRequest.length());
     TEST_ASSERT_TRUE(manager.saveProfile(maximum).success);
     const String path = String("/v1profiles/") + maximumName + ".json";
     const std::string before = readFileToString(fs, path.c_str());
-    TEST_ASSERT_EQUAL_UINT(16415, before.size());
-    TEST_ASSERT_EQUAL_UINT(8161, V1_PROFILE_FILE_MAX_BYTES - before.size());
+    TEST_ASSERT_EQUAL_UINT(17479, before.size());
+    TEST_ASSERT_EQUAL_UINT(7097, V1_PROFILE_FILE_MAX_BYTES - before.size());
     TEST_ASSERT_LESS_THAN(V1_PROFILE_FILE_MAX_BYTES, before.size());
 
     maximum.description = String(std::string(V1_PROFILE_DESCRIPTION_MAX_BYTES + 1u, 'x'));
@@ -632,7 +633,7 @@ void test_schema_v3_detector_policy_round_trips_with_authoritative_raw_bytes() {
     JsonDocument api;
     const String apiJson = manager.profileToJson(loaded);
     TEST_ASSERT_FALSE(deserializeJson(api, apiJson));
-    TEST_ASSERT_EQUAL_INT(3, api["schemaVersion"].as<int>());
+    TEST_ASSERT_EQUAL_INT(4, api["schemaVersion"].as<int>());
     TEST_ASSERT_EQUAL_STRING("unchanged", api["detector"]["userSettings"].as<const char*>());
     TEST_ASSERT_EQUAL_STRING("saved", api["detector"]["volume"]["policy"].as<const char*>());
     TEST_ASSERT_EQUAL_STRING("always", api["detector"]["volume"]["feedback"].as<const char*>());
@@ -1444,8 +1445,62 @@ void test_valid_profile_metadata_mirror_repairs_corrupt_primary_and_legacy_is_re
                           static_cast<int>(readSyncState(sd, "/v1profiles/Road.json").status));
 }
 
+void test_in_the_box_profile_file_roundtrip_integrity_and_v3_default() {
+    fs::FS filesystem(g_tempRoot);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&filesystem));
+    V1Profile profile = makeProfile("App Policy", 0x91, "app-owned policy");
+    profile.inTheBox.bands[2] = {true, true};
+    profile.inTheBox.boxes[2] = {true, 23900, 23900};
+    profile.inTheBox.boxes[4].enabled = false;
+    TEST_ASSERT_TRUE(manager.saveProfile(profile).success);
+    V1Profile loaded;
+    TEST_ASSERT_TRUE(manager.loadProfile(profile.name, loaded));
+    TEST_ASSERT_TRUE(v1InTheBoxSettingsEqual(profile.inTheBox, loaded.inTheBox));
+    JsonDocument stored;
+    TEST_ASSERT_FALSE(deserializeJson(stored, readFileToString(filesystem, "/v1profiles/App Policy.json")));
+    stored["inTheBox"]["bands"]["k"]["muteOutside"] = false;
+    String serialized;
+    serializeJson(stored, serialized);
+    writeFileFromString(filesystem, "/v1profiles/App Policy.json", serialized.c_str());
+    TEST_ASSERT_FALSE(manager.loadProfile(profile.name, loaded));
+    stored["schemaVersion"] = 3;
+    stored.remove("inTheBox");
+    uint32_t crc = 0;
+    TEST_ASSERT_TRUE(profileDocumentCrc(stored, crc));
+    stored["profileCrc32"] = crc;
+    serialized = "";
+    serializeJson(stored, serialized);
+    writeFileFromString(filesystem, "/v1profiles/App Policy.json", serialized.c_str());
+    TEST_ASSERT_TRUE(manager.loadProfile(profile.name, loaded));
+    TEST_ASSERT_EQUAL_UINT8(4, loaded.schemaVersion);
+    TEST_ASSERT_TRUE(v1InTheBoxSettingsEqual(V1InTheBoxSettings{}, loaded.inTheBox));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(profile.settings.bytes, loaded.settings.bytes, 6);
+    TEST_ASSERT_TRUE(profile.detector == loaded.detector);
+}
+
+void test_in_the_box_parser_is_exact_and_preserves_output_on_invalid_input() {
+    V1InTheBoxSettings initial;
+    initial.bands[3].unmuteInside = true;
+    JsonDocument document;
+    appendV1InTheBoxSettings(document.to<JsonObject>(), initial);
+    document["boxes"]["k"]["lowerMHz"] = 23900;
+    V1InTheBoxSettings output;
+    TEST_ASSERT_TRUE(parseV1InTheBoxSettings(document.as<JsonVariantConst>(), output));
+    const V1InTheBoxSettings before = output;
+    document["boxes"]["k"]["enabled"] = false;
+    document["boxes"]["k"]["lowerMHz"] = 23899;
+    TEST_ASSERT_FALSE(parseV1InTheBoxSettings(document.as<JsonVariantConst>(), output));
+    TEST_ASSERT_TRUE(v1InTheBoxSettingsEqual(before, output));
+    document["boxes"]["k"]["lowerMHz"] = 23900;
+    document["bands"]["ka"]["unmuteInside"] = 1;
+    TEST_ASSERT_FALSE(parseV1InTheBoxSettings(document.as<JsonVariantConst>(), output));
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_in_the_box_profile_file_roundtrip_integrity_and_v3_default);
+    RUN_TEST(test_in_the_box_parser_is_exact_and_preserves_output_on_invalid_input);
     RUN_TEST(test_save_profile_short_write_new_file_leaves_no_live_json);
     RUN_TEST(test_save_profile_short_write_existing_file_preserves_previous_profile);
     RUN_TEST(test_save_profile_normal_path_still_succeeds);

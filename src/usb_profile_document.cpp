@@ -113,6 +113,7 @@ struct PreparedUsbProfile {
     String description;
     uint8_t bytes[V1SettingsJson::kSettingsByteCount] = {};
     V1DetectorConfiguration detector;
+    V1InTheBoxSettings inTheBox;
     bool displayOn = false;
     uint8_t mainVolume = 0xFF;
     uint8_t mutedVolume = 0xFF;
@@ -225,7 +226,7 @@ bool toRestoreDocument(const JsonDocument& source, JsonDocument& target, String&
         std::strcmp(root["format"].as<const char*>(), "v1simple-profiles") != 0 ||
         !root["version"].is<int>() ||
         (root["version"].as<int>() != 1 && root["version"].as<int>() != 2 &&
-         root["version"].as<int>() != 3 &&
+         root["version"].as<int>() != 3 && root["version"].as<int>() != 4 &&
          root["version"].as<int>() != kUsbProfileDocumentVersion) ||
         !root["autoPushEnabled"].is<bool>() || !integerWithin(root["activeSlot"], 2) ||
         !root["slots"].is<JsonArrayConst>() || root["slots"].size() != 3 ||
@@ -240,8 +241,9 @@ bool toRestoreDocument(const JsonDocument& source, JsonDocument& target, String&
 
     const int documentVersion = root["version"].as<int>();
     const bool versioned = documentVersion >= V1_PROFILE_PREVIOUS_SCHEMA_VERSION;
-    const bool hasSlotModifiers = documentVersion == kUsbProfileDocumentVersion;
-    const int profileSchemaVersion = hasSlotModifiers ? V1_PROFILE_SCHEMA_VERSION : documentVersion;
+    const bool hasSlotModifiers = documentVersion >= 4;
+    const int profileSchemaVersion = documentVersion == 5 ? V1_PROFILE_SCHEMA_VERSION
+                                     : documentVersion == 4 ? V1_PROFILE_V3_SCHEMA_VERSION : documentVersion;
     std::unique_ptr<PreparedUsbProfile[]> preparedProfiles;
 #ifdef UNIT_TEST
     if (g_failPreparedUsbProfileAllocationForTest) {
@@ -260,7 +262,9 @@ bool toRestoreDocument(const JsonDocument& source, JsonDocument& target, String&
     for (JsonVariantConst value : root["profiles"].as<JsonArrayConst>()) {
         const JsonObjectConst profile = value.as<JsonObjectConst>();
         PreparedUsbProfile& prepared = preparedProfiles[preparedProfileCount];
-        const bool validShape = versioned
+        const bool validShape = documentVersion == 5
+                                    ? exactKeys(profile, {"schemaVersion", "name", "description", "rawBytes", "detector", "inTheBox"})
+                                    : versioned
                                     ? exactKeys(profile, {"schemaVersion", "name", "description", "rawBytes", "detector"})
                                     : exactKeys(profile, {"name", "description", "rawBytes", "displayOn", "mainVolume", "mutedVolume"});
         if (!validShape) {
@@ -278,11 +282,12 @@ bool toRestoreDocument(const JsonDocument& source, JsonDocument& target, String&
                 error, "Invalid profile fields")) {
             return false;
         }
-        if (!V1SettingsJson::parseRawBytes(profile["rawBytes"], prepared.bytes) ||
+        if (!parseV1ProfileInTheBox(profile, profileSchemaVersion, prepared.inTheBox) ||
+            !V1SettingsJson::parseRawBytes(profile["rawBytes"], prepared.bytes) ||
             (versioned && (!profile["schemaVersion"].is<int>() ||
                            profile["schemaVersion"].as<int>() != profileSchemaVersion ||
                            !profile["detector"].is<JsonObjectConst>() ||
-                           !(profileSchemaVersion == V1_PROFILE_SCHEMA_VERSION
+                           !(profileSchemaVersion >= V1_PROFILE_V3_SCHEMA_VERSION
                                  ? parseV1DetectorConfiguration(profile["detector"].as<JsonObjectConst>(), prepared.detector)
                                  : parseV1DetectorConfigurationV2(profile["detector"].as<JsonObjectConst>(), prepared.detector)))) ||
             (!versioned && (!profile["displayOn"].is<bool>() || !profileVolume(profile["mainVolume"]) ||
@@ -334,7 +339,7 @@ bool toRestoreDocument(const JsonDocument& source, JsonDocument& target, String&
         }
         if (!slotNameAlreadySanitized(prepared.name) ||
             !integerWithin(slot["color"], 65535) ||
-            (profileSchemaVersion == V1_PROFILE_SCHEMA_VERSION && slot["color"].as<int>() == 0) ||
+            (profileSchemaVersion >= V1_PROFILE_V3_SCHEMA_VERSION && slot["color"].as<int>() == 0) ||
             !integerWithin(slot["alertPersist"], 5) || !slot["priorityArrowOnly"].is<bool>() ||
             (hasSlotModifiers &&
              (!slot["volumeOverride"].is<bool>() || !slot["darkModeOverride"].is<bool>() ||
@@ -401,6 +406,7 @@ bool toRestoreDocument(const JsonDocument& source, JsonDocument& target, String&
         if (versioned) {
             restored["schemaVersion"] = V1_PROFILE_SCHEMA_VERSION;
             appendV1DetectorConfiguration(restored["detector"].to<JsonObject>(), prepared.detector);
+            appendV1InTheBoxSettings(restored["inTheBox"].to<JsonObject>(), prepared.inTheBox);
         } else {
             restored["displayOn"] = prepared.displayOn;
             restored["mainVolume"] = prepared.mainVolume;
@@ -505,6 +511,7 @@ bool buildUsbProfileDocument(JsonDocument& doc, SettingsManager& settings, V1Pro
         output["name"] = profile.name;
         output["description"] = profile.description;
         appendV1DetectorConfiguration(output["detector"].to<JsonObject>(), profile.detector);
+        appendV1InTheBoxSettings(output["inTheBox"].to<JsonObject>(), profile.inTheBox);
         JsonArray bytes = output["rawBytes"].to<JsonArray>();
         for (uint8_t byte : profile.settings.bytes) bytes.add(byte);
     }

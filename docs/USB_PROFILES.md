@@ -45,8 +45,8 @@ applied a profile, or that display or audio behavior passed a camera test.
 ## Upgrading existing device data
 
 Preserve device data when updating; do not delete or reset valid profiles first.
-On boot, the firmware atomically converts supported version-1 and version-2
-stored profile data to the current version-3 profile schema. Existing catalog
+On boot, the firmware atomically converts supported version-1, version-2, and version-3
+stored profile data to the current version-4 profile schema. Existing catalog
 entries, Auto-Push state, slot presentation, and explicit detector choices are retained. When
 legacy slot-owned behavior differs, migration creates deterministic profile
 variants instead of silently merging it.
@@ -58,12 +58,13 @@ send detector commands or prove detector, RF, display, or audio behavior.
 
 Exports contain the profile catalog and all three Auto-Push slots. Network
 credentials and unrelated device settings are excluded. Current USB bundles use
-version 4 and contain version-3 detector profiles. Each slot explicitly records
+version 5 and contain version-4 profiles. Detector configuration retains its
+version-3 meaning; the separate `inTheBox` object stores V1Simple audio policy. Each slot explicitly records
 its volume and dark-mode override flags and values, including zero volume and
 an explicit dark-mode-off override. Backups, restore readback, and unrelated
 `set-slot` edits preserve these choices.
 
-The importer also accepts exact version-1, version-2, and version-3 bundles,
+The importer also accepts exact version-1 through version-4 bundles,
 validates them before mutation, and rejects conversions that cannot fit the
 supported catalog. Version-1 slot-owned detector choices migrate into profiles
 as described above. Version-2 and version-3 USB bundles did not record slot
@@ -71,8 +72,23 @@ overrides; restoring them disables those overrides and uses the imported
 profiles' policies. They cannot recover modifier choices omitted by an older
 export. No import inherits override flags from the receiving device.
 
+Version-1 through version-4 bundles have no In-the-Box policy. Import supplies
+standard box edges with all mute/unmute actions off. Version-5 bundles preserve
+all band actions, enabled flags, and inclusive integer MHz edges, including
+through unrelated `set-slot` edits. The six boxes are independent of custom
+frequency sweeps programmed into the detector.
+
+HTTP/SD backups use version 23 and preserve these profile definitions. Earlier
+version-21/22 backups retain complete catalog replacement and restore inactive
+In-the-Box defaults. Device-specific last-applied app policies remain in the
+separate device store; profile backups do not include that device catalog.
+Saving, importing, editing, or deleting a profile does not change a connected
+detector's last-applied app policy. Apply or Auto-Push must succeed before that
+policy is committed for the detector. On connection it is loaded for that
+address; profiles with all actions off disable the app behavior when applied.
+
 Use the updated USB client with the updated firmware. Older clients reject
-version-4 exports. The updated client can read older bundles, but sends version 4
+version-5 exports. The updated client can read older bundles, but sends version 5
 for all replacements; older firmware rejects those replacements without changing
 the stored catalog or settings. Update firmware before using its mutation commands.
 

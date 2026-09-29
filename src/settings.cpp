@@ -355,8 +355,7 @@ void SettingsManager::load() {
     {
         const uint8_t storedProfileSchema = preferences_.getUChar(kNvsAutoPushProfileSchema, 0);
         settings_.autoPushProfileSchemaVersion =
-            (storedProfileSchema == V1_PROFILE_PREVIOUS_SCHEMA_VERSION ||
-             storedProfileSchema == V1_PROFILE_SCHEMA_VERSION)
+            isVersionedV1ProfileSchema(storedProfileSchema)
                 ? storedProfileSchema
                 : 0;
     }

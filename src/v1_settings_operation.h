@@ -135,6 +135,7 @@ class V1SettingsOperationStore {
         Interrupted,
         StorageUnavailable,
         InvalidRecord,
+        InTheBoxPersistFailed,
     };
     enum class LoadStatus : uint8_t { Ready = 0, Unavailable, Corrupt };
     enum class StartStatus : uint8_t { Started = 0, Active, Invalid, IdentityExhausted, StorageUnavailable };

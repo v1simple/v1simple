@@ -112,11 +112,11 @@ describe('root layout', () => {
         expect(screen.getByRole('region', { name: /test child/i })).toHaveTextContent(
             'Route content'
         );
-        expect(screen.getAllByText('Detector').length).toBeGreaterThan(0);
-        expect(screen.getAllByText('Integrations').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('Valentine One').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('Connections').length).toBeGreaterThan(0);
         expect(screen.getAllByText('System').length).toBeGreaterThan(0);
-        const colorLinks = screen.getAllByRole('link', { name: 'Colors' });
-        expect(colorLinks.every((link) => link.getAttribute('aria-current') === 'page')).toBe(true);
+        const displayLinks = screen.getAllByRole('link', { name: 'Display' });
+        expect(displayLinks.every((link) => link.getAttribute('aria-current') === 'page')).toBe(true);
         expect(screen.getAllByRole('link', { name: 'Profiles' }).every((link) => !link.hasAttribute('aria-current'))).toBe(true);
         expect(screen.queryByRole('link', { name: 'Logs' })).not.toBeInTheDocument();
 
@@ -178,13 +178,13 @@ describe('root layout', () => {
         installLayoutFetch();
         const { unmount } = renderLayout();
 
-        await fireEvent.click(screen.getByRole('button', { name: 'Use light mode' }));
+        await fireEvent.click(screen.getByRole('button', { name: 'Use light web appearance' }));
 
         expect(document.documentElement).toHaveClass('light');
         expect(document.documentElement).not.toHaveClass('dark');
         expect(document.documentElement.style.colorScheme).toBe('light');
         expect(localStorage.getItem('v1simple:colorMode')).toBe('light');
-        expect(screen.getByRole('button', { name: 'Use dark mode' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Use dark web appearance' })).toBeInTheDocument();
 
         unmount();
     });
@@ -193,7 +193,7 @@ describe('root layout', () => {
         installLayoutFetch();
         const first = renderLayout();
         await fireEvent.click(screen.getAllByRole('button', { name: 'Use Forest theme' })[0]);
-        await fireEvent.click(screen.getByRole('button', { name: 'Use light mode' }));
+        await fireEvent.click(screen.getByRole('button', { name: 'Use light web appearance' }));
         first.unmount();
 
         document.documentElement.dataset.theme = 'amethyst';

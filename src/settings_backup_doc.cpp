@@ -746,7 +746,7 @@ void applyBackupProfileSlotFields(const JsonDocument& doc, V1Settings& settings,
     if (doc["autoPushProfileSchemaVersion"].is<int>()) {
         const int version = doc["autoPushProfileSchemaVersion"].as<int>();
         settings.autoPushProfileSchemaVersion =
-            (version == V1_PROFILE_PREVIOUS_SCHEMA_VERSION || version == V1_PROFILE_SCHEMA_VERSION)
+            isVersionedV1ProfileSchema(version)
                 ? V1_PROFILE_SCHEMA_VERSION
                 : 0;
     } else if (doc["profiles"].is<JsonArrayConst>() || !doc["slot0Mode"].isUnbound() ||
@@ -1358,8 +1358,10 @@ bool validateCurrentBackupSchema(const JsonDocument& doc) {
         doc["colorWiFiIcon"].as<int>() != doc["colorWiFiConnected"].as<int>()) return false;
 
     if (doc["proxyBLE"].as<bool>() && doc["obdEnabled"].as<bool>()) return false;
+    const int expectedProfileSchema = doc["_version"].as<int>() >= 23
+                                          ? V1_PROFILE_SCHEMA_VERSION : V1_PROFILE_V3_SCHEMA_VERSION;
     if (!doc["autoPushProfileSchemaVersion"].is<int>() ||
-        doc["autoPushProfileSchemaVersion"].as<int>() != V1_PROFILE_SCHEMA_VERSION) return false;
+        doc["autoPushProfileSchemaVersion"].as<int>() != expectedProfileSchema) return false;
     constexpr bool profileOwnedMarker = true;
 
     for (int slot = 0; slot < 3; ++slot) {
@@ -1460,22 +1462,24 @@ bool validateCurrentBackupSchema(const JsonDocument& doc) {
         if (!doc["profiles"].is<JsonArrayConst>() ||
             doc["profiles"].size() > V1_PROFILE_CATALOG_MAX_COUNT) return false;
         static constexpr const char* kVersionedProfileKeys[] = {
-            "name", "description", "schemaVersion", "detector", "bytes"};
+            "name", "description", "schemaVersion", "detector", "bytes", "inTheBox"};
         const JsonArrayConst catalog = doc["profiles"].as<JsonArrayConst>();
         size_t profileIndex = 0;
         for (JsonVariantConst value : catalog) {
             if (!value.is<JsonObjectConst>()) return false;
             const JsonObjectConst profile = value.as<JsonObjectConst>();
             const char* const* keys = kVersionedProfileKeys;
-            const size_t count = sizeof(kVersionedProfileKeys) / sizeof(kVersionedProfileKeys[0]);
+            const size_t count = expectedProfileSchema == V1_PROFILE_SCHEMA_VERSION ? 6u : 5u;
             if (profile.size() != count || !jsonObjectHasOnlyKeys(profile, keys, count) ||
                 !currentJsonProfileNameIsCanonical(profile["name"]) ||
                 !currentJsonStringIsValid(profile["description"], V1_PROFILE_DESCRIPTION_MAX_BYTES) ||
                 !currentJsonRawSettingsAreValid(profile["bytes"])) return false;
             if (!profile["schemaVersion"].is<int>() ||
-                profile["schemaVersion"].as<int>() != V1_PROFILE_SCHEMA_VERSION ||
+                profile["schemaVersion"].as<int>() != expectedProfileSchema ||
                 !profile["detector"].is<JsonObjectConst>() ||
                 !currentJsonDetectorIsValid(profile["detector"].as<JsonObjectConst>())) return false;
+            V1InTheBoxSettings inTheBox;
+            if (!parseV1ProfileInTheBox(profile, expectedProfileSchema, inTheBox)) return false;
             size_t priorIndex = 0;
             for (JsonVariantConst priorValue : catalog) {
                 if (priorIndex++ >= profileIndex) break;
@@ -1521,13 +1525,14 @@ bool parseBackupProfile(JsonObjectConst source, V1Profile& profile) {
     profile.name = canonical;
     const bool hasSchemaVersion = !source["schemaVersion"].isUnbound();
     const bool hasDetector = !source["detector"].isUnbound();
-    if (hasSchemaVersion != hasDetector) return false;
+    if (hasSchemaVersion != hasDetector ||
+        !parseV1ProfileInTheBox(source, hasSchemaVersion ? source["schemaVersion"].as<int>() : 1,
+                               profile.inTheBox)) return false;
     if (hasSchemaVersion) {
         if (!source["schemaVersion"].is<int>() ||
-            (source["schemaVersion"].as<int>() != V1_PROFILE_PREVIOUS_SCHEMA_VERSION &&
-             source["schemaVersion"].as<int>() != V1_PROFILE_SCHEMA_VERSION) ||
+            !isVersionedV1ProfileSchema(source["schemaVersion"].as<int>()) ||
             !source["detector"].is<JsonObjectConst>() ||
-            !(source["schemaVersion"].as<int>() == V1_PROFILE_SCHEMA_VERSION
+            !(source["schemaVersion"].as<int>() >= V1_PROFILE_V3_SCHEMA_VERSION
                   ? parseV1DetectorConfiguration(source["detector"].as<JsonObjectConst>(), profile.detector)
                   : parseV1DetectorConfigurationV2(source["detector"].as<JsonObjectConst>(), profile.detector))) {
             return false;
@@ -1634,9 +1639,7 @@ bool validateBackupDocumentForApply(const JsonDocument& doc, const V1Settings& c
     const JsonVariantConst profileSchemaMarker = doc["autoPushProfileSchemaVersion"];
     if (!profileSchemaMarker.isUnbound() &&
         (!profileSchemaMarker.is<int>() ||
-         (profileSchemaMarker.as<int>() != 0 &&
-          profileSchemaMarker.as<int>() != V1_PROFILE_PREVIOUS_SCHEMA_VERSION &&
-          profileSchemaMarker.as<int>() != V1_PROFILE_SCHEMA_VERSION))) {
+         (profileSchemaMarker.as<int>() != 0 && !isVersionedV1ProfileSchema(profileSchemaMarker.as<int>())))) {
         return false;
     }
 
@@ -1688,8 +1691,7 @@ bool validateBackupDocumentForApply(const JsonDocument& doc, const V1Settings& c
     if (availableCount > V1_PROFILE_CATALOG_MAX_COUNT) return false;
 
     const bool markerIsVersioned = profileSchemaMarker.is<int>() &&
-        (profileSchemaMarker.as<int>() == V1_PROFILE_PREVIOUS_SCHEMA_VERSION ||
-         profileSchemaMarker.as<int>() == V1_PROFILE_SCHEMA_VERSION);
+        isVersionedV1ProfileSchema(profileSchemaMarker.as<int>());
     if (markerIsVersioned) {
         if (!doc["profiles"].is<JsonArrayConst>()) return false;
         for (const V1Profile& profile : incomingProfiles) {
@@ -1713,7 +1715,7 @@ bool validateBackupDocumentForApply(const JsonDocument& doc, const V1Settings& c
             const bool modifiersAllowed =
                 (scope == SettingsBackupScope::ProfilesOnly ||
                  (currentVersion.is<int>() && currentVersion.as<int>() >= 22)) &&
-                profileSchemaMarker.as<int>() == V1_PROFILE_SCHEMA_VERSION;
+                profileSchemaMarker.as<int>() >= V1_PROFILE_V3_SCHEMA_VERSION;
             if ((!doc[modeKey].isUnbound() && (!doc[modeKey].is<int>() || doc[modeKey].as<int>() != 0)) ||
                 ((volumeOverride || darkOverride) && !modifiersAllowed) ||
                 (!doc[volumeKey].isUnbound() &&
@@ -1839,14 +1841,14 @@ bool restoreProfileSnapshot(V1ProfileManager& profiles, const std::vector<V1Prof
 constexpr const char* RESTORE_TRANSACTION_PATH = "/v1restore_transaction.json";
 constexpr const char* RESTORE_TRANSACTION_TMP_PATH = "/v1restore_transaction.tmp";
 constexpr const char* RESTORE_TRANSACTION_TYPE = "v1simple_restore_transaction";
-constexpr int RESTORE_TRANSACTION_VERSION = 2;
+constexpr int RESTORE_TRANSACTION_VERSION = 3;
 constexpr size_t RESTORE_TRANSACTION_MAX_BYTES = 128 * 1024;
 
 constexpr const char* PROFILE_DELETE_TRANSACTION_PATH = "/v1profile_delete_transaction.json";
 constexpr const char* PROFILE_DELETE_TRANSACTION_TMP_PATH = "/v1profile_delete_transaction.tmp";
 constexpr const char* PROFILE_DELETE_TRANSACTION_TYPE = "v1simple_profile_delete_transaction";
-constexpr int PROFILE_DELETE_TRANSACTION_VERSION = 2;
-// The measured maximal schema-v3 delete journal is pinned by native tests.
+constexpr int PROFILE_DELETE_TRANSACTION_VERSION = 3;
+// The measured maximal schema-v4 delete journal is pinned by native tests.
 // Round its compact representation to the next 4 KiB quantum so deleting a
 // legal maximal profile remains available, including as the over-cap prune
 // path for grandfathered catalogs.
@@ -1892,7 +1894,7 @@ bool jsonHasExactSize(JsonObjectConst object, size_t expected) {
 
 bool profileSnapshotsEqual(const V1Profile& lhs, const V1Profile& rhs) {
     return lhs.name == rhs.name && lhs.description == rhs.description && lhs.schemaVersion == rhs.schemaVersion &&
-           lhs.detector == rhs.detector && lhs.displayOn == rhs.displayOn &&
+           lhs.detector == rhs.detector && v1InTheBoxSettingsEqual(lhs.inTheBox, rhs.inTheBox) && lhs.displayOn == rhs.displayOn &&
            lhs.mainVolume == rhs.mainVolume && lhs.mutedVolume == rhs.mutedVolume &&
            memcmp(lhs.settings.bytes, rhs.settings.bytes, sizeof(lhs.settings.bytes)) == 0;
 }
@@ -1936,6 +1938,7 @@ void writeProfileToJournal(JsonObject target, const V1Profile& profile) {
     target["name"] = profile.name;
     target["description"] = profile.description;
     appendV1DetectorConfiguration(target["detector"].to<JsonObject>(), profile.detector);
+    appendV1InTheBoxSettings(target["inTheBox"].to<JsonObject>(), profile.inTheBox);
     JsonArray bytes = target["bytes"].to<JsonArray>();
     for (uint8_t byte : profile.settings.bytes) {
         bytes.add(byte);
@@ -1944,7 +1947,7 @@ void writeProfileToJournal(JsonObject target, const V1Profile& profile) {
 
 bool readProfileFromJournal(JsonObjectConst source, V1Profile& profile) {
     const bool legacy = source["schemaVersion"].isUnbound();
-    const size_t expectedSize = legacy ? 6 : 5;
+    const size_t expectedSize = legacy || source["schemaVersion"].as<int>() == V1_PROFILE_SCHEMA_VERSION ? 6 : 5;
     return jsonHasExactSize(source, expectedSize) && source["name"].is<const char*>() &&
            source["description"].is<const char*>() && source["bytes"].is<JsonArrayConst>() &&
            (legacy ? (source["displayOn"].is<bool>() && source["mainVolume"].is<uint8_t>() &&
@@ -2246,7 +2249,7 @@ bool writeRestoreTransactionJournal(StorageManager& storage, uint64_t token, boo
 JournalCopyStatus readRestoreTransactionJournal(const JsonDocument& doc,
                                                 RestoreTransactionJournal& journal) {
     if (!exactV1JsonToken(doc["_type"], RESTORE_TRANSACTION_TYPE) ||
-        !doc["_version"].is<int>() || doc["_version"].as<int>() != RESTORE_TRANSACTION_VERSION ||
+        !doc["_version"].is<int>() || (doc["_version"].as<int>() != 2 && doc["_version"].as<int>() != RESTORE_TRANSACTION_VERSION) ||
         !doc["token"].is<int64_t>() || doc["token"].as<int64_t>() <= 0 ||
         !doc["credentialsMutated"].is<bool>() || !doc["profilesMutated"].is<bool>() ||
         !journalCrcValid(doc)) {
@@ -2307,7 +2310,7 @@ bool writeProfileDeleteTransactionJournal(StorageManager& storage, uint64_t toke
 JournalCopyStatus readProfileDeleteTransactionJournal(const JsonDocument& doc,
                                                       ProfileDeleteTransactionJournal& journal) {
     if (!exactV1JsonToken(doc["_type"], PROFILE_DELETE_TRANSACTION_TYPE) ||
-        !doc["_version"].is<int>() || doc["_version"].as<int>() != PROFILE_DELETE_TRANSACTION_VERSION ||
+        !doc["_version"].is<int>() || (doc["_version"].as<int>() != 2 && doc["_version"].as<int>() != PROFILE_DELETE_TRANSACTION_VERSION) ||
         !doc["token"].is<int64_t>() || doc["token"].as<int64_t>() <= 0 ||
         !doc["hadReferences"].is<bool>() || !doc["profile"].is<JsonObjectConst>() ||
         !journalCrcValid(doc) || !jsonHasExactSize(doc.as<JsonObjectConst>(), 6)) {
@@ -2997,9 +3000,10 @@ bool SettingsManager::migrateAutoPushProfilesToV2() {
         }
         return true;
     }
-    if (settings_.autoPushProfileSchemaVersion == V1_PROFILE_PREVIOUS_SCHEMA_VERSION) {
-        // Profile-file reads already validated the v2 detector CRC and
-        // migrated each object in memory. Re-emit the complete catalog as v3
+    if (isVersionedV1ProfileSchema(settings_.autoPushProfileSchemaVersion)) {
+        const bool preserveModifiers = settings_.autoPushProfileSchemaVersion >= V1_PROFILE_V3_SCHEMA_VERSION;
+        // Profile-file reads already validated each old schema and migrated
+        // its object in memory. Re-emit the complete catalog as v4
         // through the existing atomic ProfilesOnly restore transaction.
         for (const V1Profile& profile : catalog) {
             if (profile.schemaVersion != V1_PROFILE_SCHEMA_VERSION) return false;
@@ -3016,11 +3020,15 @@ bool SettingsManager::migrateAutoPushProfilesToV2() {
             std::snprintf(key, sizeof(key), "slot%dMode", slotIndex);
             migration[key] = 0;
             std::snprintf(key, sizeof(key), "slot%dVolume", slotIndex);
-            migration[key] = 255;
+            migration[key] = preserveModifiers ? slot.volume : 255;
             std::snprintf(key, sizeof(key), "slot%dMuteVolume", slotIndex);
-            migration[key] = 255;
+            migration[key] = preserveModifiers ? slot.muteVolume : 255;
             std::snprintf(key, sizeof(key), "slot%dDarkMode", slotIndex);
-            migration[key] = false;
+            migration[key] = preserveModifiers && slot.darkMode;
+            std::snprintf(key, sizeof(key), "slot%dVolumeOverride", slotIndex);
+            migration[key] = preserveModifiers && slot.volumeOverride;
+            std::snprintf(key, sizeof(key), "slot%dDarkModeOverride", slotIndex);
+            migration[key] = preserveModifiers && slot.darkModeOverride;
             std::snprintf(key, sizeof(key), "slot%dMuteToZero", slotIndex);
             migration[key] = false;
         }
@@ -3031,6 +3039,7 @@ bool SettingsManager::migrateAutoPushProfilesToV2() {
             entry["name"] = profile.name;
             entry["description"] = profile.description;
             appendV1DetectorConfiguration(entry["detector"].to<JsonObject>(), profile.detector);
+            appendV1InTheBoxSettings(entry["inTheBox"].to<JsonObject>(), profile.inTheBox);
             JsonArray bytes = entry["bytes"].to<JsonArray>();
             for (uint8_t byte : profile.settings.bytes) bytes.add(byte);
         }
@@ -3249,6 +3258,7 @@ bool SettingsManager::migrateAutoPushProfilesToV2() {
         entry["name"] = profile.name;
         entry["description"] = profile.description;
         appendV1DetectorConfiguration(entry["detector"].to<JsonObject>(), profile.detector);
+        appendV1InTheBoxSettings(entry["inTheBox"].to<JsonObject>(), profile.inTheBox);
         JsonArray bytes = entry["bytes"].to<JsonArray>();
         for (uint8_t byte : profile.settings.bytes) bytes.add(byte);
     }

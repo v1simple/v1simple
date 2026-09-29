@@ -61,6 +61,18 @@ describe('detector operation contract', () => {
         } }), 42)).toBe(false);
     });
 
+    it('accepts partial detector apply when In-the-Box persistence failed without calling it success', () => {
+        const status = succeeded({ display: {
+            requested: true, sent: true, verified: true,
+            outcome: 'verified', reason: 'none'
+        } });
+        status.reason = 'in_the_box_persist_failed';
+        expect(validDetectorOperationStatus(status, 42)).toBe(false);
+        status.state = 'partial';
+        status.result = 'partial';
+        expect(validDetectorOperationStatus(status, 42)).toBe(true);
+    });
+
     it('accepts a truthful factory failure that occurred before any reset send', () => {
         const status = succeeded();
         status.kind = 'factory_reset';

@@ -289,7 +289,7 @@ void test_profile_owned_slots_api_reports_explicit_modifiers() {
     WifiAutoPushApiService::handleApiSlots(server, makeRuntime(fake));
 
     TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
-    TEST_ASSERT_TRUE(contains(server.lastBody, "\"schemaVersion\":3"));
+    TEST_ASSERT_TRUE(contains(server.lastBody, "\"schemaVersion\":4"));
     TEST_ASSERT_TRUE(contains(server.lastBody, "\"detectorConfigurationOwner\":\"profile\""));
     TEST_ASSERT_TRUE(contains(server.lastBody, "\"alertPersist\":3"));
     TEST_ASSERT_TRUE(contains(server.lastBody, "\"priorityArrowOnly\":true"));

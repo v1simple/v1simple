@@ -84,6 +84,7 @@ JsonObject appendCurrentProfile(JsonDocument& doc, const char* name) {
     profile["schemaVersion"] = V1_PROFILE_SCHEMA_VERSION;
     appendV1DetectorConfiguration(profile["detector"].to<JsonObject>(),
                                   V1DetectorConfiguration{});
+    appendV1InTheBoxSettings(profile["inTheBox"].to<JsonObject>(), V1InTheBoxSettings{});
     JsonArray bytes = profile["bytes"].to<JsonArray>();
     for (size_t index = 0; index < V1SettingsJson::kSettingsByteCount; ++index) {
         bytes.add(0xFF);
@@ -473,12 +474,14 @@ void test_intrinsically_invalid_current_candidate_selects_valid_previous_backup(
     JsonDocument malformedDetector;
     buildValidBackupDoc(malformedDetector);
     JsonObject malformedProfile = appendCurrentProfile(malformedDetector, "Road");
+    TEST_ASSERT_TRUE(validateCurrentBackupDocumentShape(malformedDetector));
     malformedProfile["detector"]["volume"]["policy"] = "temporary";
     assertPreviousSelected(malformedDetector, "malformed current detector");
 
     JsonDocument duplicateProfileName;
     buildValidBackupDoc(duplicateProfileName);
     appendCurrentProfile(duplicateProfileName, "Road");
+    TEST_ASSERT_TRUE(validateCurrentBackupDocumentShape(duplicateProfileName));
     appendCurrentProfile(duplicateProfileName, "ROAD");
     assertPreviousSelected(duplicateProfileName, "duplicate canonical profile name");
 
@@ -568,6 +571,8 @@ void test_version_21_exact_backup_remains_readable_without_slot_modifier_fields(
     BackupPayloadBuilder::buildBackupDocument(
         old, settings, profileManager, BackupPayloadBuilder::BackupTransport::HttpDownload, 1000);
     old["_version"] = SD_EXACT_BACKUP_MIN_VERSION;
+    // Backup v21 predates app-owned In-the-Box and carries profile schema 3.
+    old["autoPushProfileSchemaVersion"] = V1_PROFILE_V3_SCHEMA_VERSION;
     for (int slot = 0; slot < 3; ++slot) {
         char key[32];
         std::snprintf(key, sizeof(key), "slot%dVolumeOverride", slot);
@@ -583,6 +588,7 @@ void test_version_21_exact_backup_remains_readable_without_slot_modifier_fields(
     incomplete.remove("brightness");
     TEST_ASSERT_FALSE(validateCurrentBackupDocumentShape(incomplete));
     old["_version"] = SD_BACKUP_VERSION;
+    old["autoPushProfileSchemaVersion"] = V1_PROFILE_SCHEMA_VERSION;
     TEST_ASSERT_FALSE(validateCurrentBackupDocumentShape(old));
 }
 
@@ -599,6 +605,8 @@ void test_version_22_backup_requires_valid_slot_modifiers() {
     JsonDocument doc;
     BackupPayloadBuilder::buildBackupDocument(
         doc, settings, profileManager, BackupPayloadBuilder::BackupTransport::HttpDownload, 1000);
+    doc["_version"] = 22;
+    doc["autoPushProfileSchemaVersion"] = V1_PROFILE_V3_SCHEMA_VERSION;
     TEST_ASSERT_TRUE(validateCurrentBackupDocumentShape(doc));
 
     doc["slot0MuteVolume"] = 255;
@@ -788,10 +796,13 @@ void test_fail_once_while_scanning_any_backup_candidate_never_selects_an_older_c
     newest["_crc32"] = BackupPayloadBuilder::computeBackupCrc32(newest);
     JsonDocument older;
     buildValidBackupDoc(older);
-    older["_version"] = SD_BACKUP_VERSION - 1;
+    older["_version"] = 22;
+    older["autoPushProfileSchemaVersion"] = V1_PROFILE_V3_SCHEMA_VERSION;
     older["brightness"] = 42;
     older.remove("_crc32");
     older["_crc32"] = BackupPayloadBuilder::computeBackupCrc32(older);
+    TEST_ASSERT_TRUE(validateCurrentBackupDocumentShape(newest));
+    TEST_ASSERT_TRUE(validateCurrentBackupDocumentShape(older));
     const std::string newestBytes = serializeDoc(newest);
     const std::string olderBytes = serializeDoc(older);
     writeFileContent(fs, SETTINGS_BACKUP_PATH, newestBytes);

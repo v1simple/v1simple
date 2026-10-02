@@ -222,6 +222,48 @@ void test_obsolete_unsent_mute_and_inside_unmute_are_cancelled() {
     TEST_ASSERT_EQUAL_INT(2, ble.setMuteCalls);
 }
 
+void test_deferred_inside_unmute_is_cancelled_when_only_unselected_band_remains() {
+    settings.bands[2].unmuteInside = true;
+    apply();
+    display(true);
+    const AlertData x = AlertData::create(BAND_X, DIR_FRONT, 4, 0, 10525, true, true);
+    const AlertData k = AlertData::create(BAND_K, DIR_FRONT, 4, 0, 24150, true, false);
+    parser.setAlerts({x});
+    tick(100);
+    TEST_ASSERT_EQUAL_INT(0, ble.setMuteCalls);
+
+    parser.setAlerts({x, k});
+    ble.nextMuteSendResult = SendResult::NOT_YET;
+    tick(200);
+    TEST_ASSERT_EQUAL_INT(1, ble.setMuteCalls);
+    TEST_ASSERT_FALSE(ble.lastMuteValue);
+
+    // K's requested unmute was never sent. Its disappearance leaves only X,
+    // whose inside-unmute action remains disabled, in the same alert episode.
+    parser.setAlerts({x});
+    tick(300);
+    TEST_ASSERT_EQUAL_INT(1, ble.setMuteCalls);
+}
+
+void test_deferred_inside_unmute_continues_when_enabled_band_remains() {
+    settings.bands[0].unmuteInside = true;
+    settings.bands[2].unmuteInside = true;
+    apply();
+    display(true);
+    const AlertData x = AlertData::create(BAND_X, DIR_FRONT, 4, 0, 10525, true, true);
+    const AlertData k = AlertData::create(BAND_K, DIR_FRONT, 4, 0, 24150, true, false);
+    parser.setAlerts({x, k});
+    ble.nextMuteSendResult = SendResult::NOT_YET;
+    tick(200);
+    TEST_ASSERT_EQUAL_INT(1, ble.setMuteCalls);
+    TEST_ASSERT_FALSE(ble.lastMuteValue);
+
+    parser.setAlerts({x});
+    tick(300);
+    TEST_ASSERT_EQUAL_INT(2, ble.setMuteCalls);
+    TEST_ASSERT_FALSE(ble.lastMuteValue);
+}
+
 void test_disconnected_or_new_session_drops_old_policy_and_pending_commands() {
     confirmedOutsideMute();
     ble.setConnected(false);
@@ -445,6 +487,8 @@ int main() {
     RUN_TEST(test_inside_laser_clear_and_stale_each_release_only_owned_mute);
     RUN_TEST(test_preexisting_manual_mute_is_not_owned_or_released_on_clear);
     RUN_TEST(test_obsolete_unsent_mute_and_inside_unmute_are_cancelled);
+    RUN_TEST(test_deferred_inside_unmute_is_cancelled_when_only_unselected_band_remains);
+    RUN_TEST(test_deferred_inside_unmute_continues_when_enabled_band_remains);
     RUN_TEST(test_disconnected_or_new_session_drops_old_policy_and_pending_commands);
     RUN_TEST(test_proxy_handoff_cancels_ownership_without_delayed_command);
     RUN_TEST(test_applying_default_policy_releases_old_owned_mute);

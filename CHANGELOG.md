@@ -3,7 +3,14 @@
 This is the short version of changes users and integrators may notice. Git and
 GitHub Releases retain the complete commit history.
 
-## v2.4.0 — Unreleased
+## Unreleased
+
+- Keep newer profile drafts and selections when an earlier Edit or Copy request
+  finishes later.
+- Cancel a deferred In-the-Box unmute when the remaining alerts are on bands
+  whose inside-unmute option is off.
+
+## v2.4.0 — 2026-10-02
 
 - Simplified profile controls and clarified detector display settings, including
   the Bluetooth indicator in dark mode.

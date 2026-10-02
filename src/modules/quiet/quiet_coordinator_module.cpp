@@ -234,7 +234,7 @@ void QuietCoordinatorModule::processInTheBox(uint32_t nowMs) {
                                      static_cast<size_t>(parser_->getAlertCount()),
                                      (state.activeBands & BAND_LASER) != 0);
         if (!parser_->hasAlerts()) inTheBoxManualOverride_ = false;
-        inTheBoxInsidePending_ = decision.anyInside &&
+        inTheBoxInsidePending_ = decision.anyInsideUnmuteEligible &&
                                 (inTheBoxInsidePending_ || decision.newInsideUnmute);
     } else {
         // Missing/stale data may release our mute, never create a new mute or

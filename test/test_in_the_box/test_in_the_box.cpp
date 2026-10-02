@@ -35,6 +35,7 @@ void test_default_boxes_classify_all_bands_without_audio_actions() {
     }
     const auto decision = process(alerts, 6);
     TEST_ASSERT_TRUE(decision.anyInside);
+    TEST_ASSERT_FALSE(decision.anyInsideUnmuteEligible);
     TEST_ASSERT_FALSE(decision.allOutsideMuteEligible);
     TEST_ASSERT_FALSE(decision.newInsideUnmute);
     AlertData outside = radar(BAND_KA, 34000);
@@ -70,6 +71,7 @@ void test_muting_requires_every_row_outside_and_every_band_opted_in() {
     const auto mixed = process(alerts, 2);
     TEST_ASSERT_FALSE(mixed.allOutsideMuteEligible);
     TEST_ASSERT_TRUE(mixed.anyInside);
+    TEST_ASSERT_TRUE(mixed.anyInsideUnmuteEligible);
     TEST_ASSERT_TRUE(mixed.newInsideUnmute);
 }
 
@@ -158,9 +160,13 @@ void test_photo_and_junk_classify_by_physical_band_without_modifying_rows() {
 void test_inside_unmute_is_once_per_encounter_and_per_band_option() {
     AlertData alert = radar(BAND_K, 24150);
     settings.bands[3].unmuteInside = true;
-    TEST_ASSERT_FALSE(process(&alert, 1).newInsideUnmute);
+    const auto unselected = process(&alert, 1);
+    TEST_ASSERT_FALSE(unselected.anyInsideUnmuteEligible);
+    TEST_ASSERT_FALSE(unselected.newInsideUnmute);
     settings.bands[2].unmuteInside = true;
-    TEST_ASSERT_FALSE(process(&alert, 1).newInsideUnmute);
+    const auto alreadySeen = process(&alert, 1);
+    TEST_ASSERT_TRUE(alreadySeen.anyInsideUnmuteEligible);
+    TEST_ASSERT_FALSE(alreadySeen.newInsideUnmute);
     module.reset();
     TEST_ASSERT_TRUE(process(&alert, 1).newInsideUnmute);
     TEST_ASSERT_FALSE(process(&alert, 1).newInsideUnmute);

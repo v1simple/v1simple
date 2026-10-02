@@ -47,6 +47,7 @@
     let editedSettings = $state(null);
     let editedDetector = $state(null);
     let editedInTheBox = $state(null);
+    let profileLoadGeneration = 0;
     const PROFILE_DESCRIPTION_MAX_BYTES = 4096;
 
     function descriptionForSave(value) {
@@ -375,6 +376,7 @@
 
     function startDraftFromCapturedSettings() {
         if (!capturedSnapshot?.settings || !capturedSnapshot?.observations?.userBytes?.available) return;
+        profileLoadGeneration += 1;
         const settings = fromApiSettings(capturedSnapshot.settings);
         currentProfile = {
             available: true,
@@ -569,6 +571,7 @@
 
     function startEditing() {
         if (currentProfile && currentProfile.settings) {
+            profileLoadGeneration += 1;
             editedSettings = { ...currentProfile.settings };
             editedDetector = cloneDetectorConfiguration(currentProfile.detector);
             editedInTheBox = cloneInTheBoxSettings(currentProfile.inTheBox);
@@ -583,6 +586,11 @@
         editedInTheBox = null;
         editDescription = '';
         editingSettings = false;
+    }
+
+    function cancelProfileEditing() {
+        profileLoadGeneration += 1;
+        cancelEditing();
     }
 
     function openSaveDialog() {
@@ -616,6 +624,7 @@
     }
 
     async function copyProfile(name) {
+        const loadGeneration = ++profileLoadGeneration;
         try {
             const res = await fetchWithTimeout(
                 `/api/v1/profile?name=${encodeURIComponent(name)}`,
@@ -624,6 +633,7 @@
                     body: response.ok ? await response.json() : await response.text()
                 })
             );
+            if (loadGeneration !== profileLoadGeneration) return;
             if (!res.ok) {
                 message = { type: 'error', text: `Failed to load: ${res.body}` };
                 return;
@@ -646,11 +656,13 @@
             showSaveDialog = true;
             message = { type: 'info', text: `Copying ${name}. Save under a new name.` };
         } catch {
+            if (loadGeneration !== profileLoadGeneration) return;
             message = { type: 'error', text: 'Connection error' };
         }
     }
 
     async function editProfile(name) {
+        const loadGeneration = ++profileLoadGeneration;
         copySourceName = null;
         message = { type: 'info', text: `Loading ${name}...` };
         try {
@@ -663,6 +675,7 @@
                     body: response.ok ? await response.json() : await response.text()
                 })
             );
+            if (loadGeneration !== profileLoadGeneration) return;
             if (res.ok) {
                 const data = res.body;
                 currentProfile = {
@@ -682,11 +695,13 @@
                 message = { type: 'error', text: `Failed to load: ${res.body}` };
             }
         } catch (e) {
+            if (loadGeneration !== profileLoadGeneration) return;
             message = { type: 'error', text: 'Connection error' };
         }
     }
 
     function createNewProfile() {
+        profileLoadGeneration += 1;
         copySourceName = null;
         currentProfile = {
             available: true,
@@ -713,6 +728,7 @@
 
     function resetDraftToLocalDefaults() {
         if (!editingSettings) return;
+        profileLoadGeneration += 1;
         editedSettings = createDefaultProfileSettings();
         editedDetector = createProfileDetectorConfiguration();
         editedInTheBox = createDefaultInTheBoxSettings();
@@ -936,7 +952,7 @@
             frequencyError={editingSettings && editedSettings && editedDetector
                 ? customFrequencyError(editedSettings, editedDetector)
                 : null}
-            oncancelEditing={cancelEditing}
+            oncancelEditing={cancelProfileEditing}
             onsaveEditedProfile={saveEditedProfile}
             oncreateNewProfile={createNewProfile}
             onstartEditing={startEditing}

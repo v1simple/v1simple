@@ -11,6 +11,7 @@ enum class InTheBoxClassification : uint8_t { Unknown, Outside, Inside };
 struct InTheBoxDecision {
     bool allOutsideMuteEligible = false;
     bool anyInside = false;
+    bool anyInsideUnmuteEligible = false;
     bool newInsideUnmute = false;
 };
 
@@ -55,6 +56,7 @@ class InTheBoxModule {
             const auto band = static_cast<uint8_t>(bandIndex(alerts[i].band));
             const bool inside = classification == InTheBoxClassification::Inside;
             decision.anyInside |= inside;
+            decision.anyInsideUnmuteEligible |= inside && settings.bands[band].unmuteInside;
             decision.allOutsideMuteEligible &= !inside && settings.bands[band].muteOutside;
             current[currentCount++] = {alerts[i].frequency, band, false};
         }

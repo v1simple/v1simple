@@ -46,9 +46,10 @@ Audio uses only complete tables at most 1500 ms old. Known stream loss invalidat
 eligibility immediately. Partial rows never contribute to the decision; the
 previous complete table remains usable within that age limit. Unknown rows and
 gaps preserve encounter history and cannot manufacture a new inside event.
-Command retries recheck current eligibility. Confirmation requires a canonical
-display packet admitted after the send boundary, using `isSoft` rather than the
-debounced screen icon. A confirmed mute is not repeatedly resent.
+Command retries recheck current eligibility; an inside-unmute retry requires a
+current inside row on a band with inside unmuting enabled. Confirmation requires
+a canonical display packet admitted after the send boundary, using `isSoft`
+rather than the debounced screen icon. A confirmed mute is not repeatedly resent.
 
 During detector settings operations, new box decisions pause; V1Simple may
 release a mute it already owns. A connected phone proxy or a changed/disconnected

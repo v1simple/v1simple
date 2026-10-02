@@ -65,16 +65,27 @@ describe('profile settings workspace', () => {
     });
 
     it('shows firmware requirements without preventing offline authoring', async () => {
+        let resolveSnapshot;
+        const snapshotResponse = new Promise((resolve) => { resolveSnapshot = resolve; });
         const { unmount, editor } = await newProfile([{
-            method: 'GET', match: '/api/v1/snapshot', respond: jsonResponse({
-                available: true, address: 'AA:BB:CC:DD:EE:FF', firmware: { value: 41038 },
-                capabilities: { versionKnown: true, gen2: true }
-            })
+            method: 'GET', match: '/api/v1/snapshot', respond: () => snapshotResponse
         }]);
         await fireEvent.input(within(editor).getByRole('searchbox'), { target: { value: 'Gatso' } });
-        expect(within(editor).getByRole('checkbox', { name: 'Gatso RT4' })).toBeEnabled();
-        const row = within(editor).getByRole('checkbox', { name: 'Gatso RT4' }).closest('.setting-row');
-        expect(within(row).getByText(/Requires V1 4.1039/)).toBeVisible();
+        const gatso = within(editor).getByRole('checkbox', { name: 'Gatso RT4' });
+        const row = gatso.closest('.setting-row');
+        expect(gatso).toBeEnabled();
+        await fireEvent.click(gatso);
+        expect(gatso).toBeChecked();
+        expect(within(row).queryByText(/Requires V1 4.1039/)).not.toBeInTheDocument();
+
+        // The editor is usable before the independent detector snapshot finishes.
+        resolveSnapshot(jsonResponse({
+            available: true, address: 'AA:BB:CC:DD:EE:FF', firmware: { value: 41038 },
+            capabilities: { versionKnown: true, gen2: true }
+        }));
+        expect(await within(row).findByText(/Requires V1 4.1039/)).toBeVisible();
+        expect(gatso).toBeEnabled();
+        expect(gatso).toBeChecked();
         unmount();
     });
 

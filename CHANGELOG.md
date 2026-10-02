@@ -3,6 +3,15 @@
 This is the short version of changes users and integrators may notice. Git and
 GitHub Releases retain the complete commit history.
 
+## v2.4.0 — Unreleased
+
+- Simplified profile controls and clarified detector display settings, including
+  the Bluetooth indicator in dark mode.
+- Added editable In-the-Box frequency ranges with optional outside muting and
+  inside unmuting. Both actions default off, and alerts remain visible.
+- Fixed a sweep-read retry that could block custom-frequency profile application
+  by treating stale definitions as a complete response.
+
 ## v2.3.1 — 2026-09-22
 
 - Replay evidence now captures presentation settings before serial access and

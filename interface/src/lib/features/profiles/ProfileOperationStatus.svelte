@@ -1,4 +1,6 @@
 <script>
+    import { DETECTOR_OPERATION_COMPONENTS } from '$lib/features/profiles/detectorOperation';
+
     let { operationStatus } = $props();
 
     const COMPONENT_NAMES = {
@@ -126,6 +128,10 @@
             class:text-error={operationStatus.state === 'failed'}>
             {stateText(operationStatus)}
         </h2>
+        {#if operationStatus.kind === 'apply_slot' && Number.isInteger(operationStatus.slot) &&
+            operationStatus.slot >= 0 && operationStatus.slot <= 2}
+            <p class="copy-muted">Slot {operationStatus.slot + 1}</p>
+        {/if}
         {#if operationStatus.profileName}
             <p class="copy-muted">Profile: {operationStatus.profileName}</p>
         {/if}
@@ -134,8 +140,9 @@
         {/if}
         {#if operationStatus.components}
             <div class="grid gap-2 sm:grid-cols-2">
-                {#each Object.entries(operationStatus.components) as [name, component] (name)}
-                    {#if component.requested}
+                {#each DETECTOR_OPERATION_COMPONENTS as name (name)}
+                    {@const component = operationStatus.components[name]}
+                    {#if component?.requested}
                         <div class="surface-panel">
                             <div class="copy-caption">{COMPONENT_NAMES[name] || name}</div>
                             <div>{OUTCOME_TEXT[component.outcome] || 'Result unavailable'}</div>
@@ -162,8 +169,9 @@
                 <p class="copy-caption">
                     State: {operationStatus.state || 'unknown'} · Result: {operationStatus.result || 'in_progress'} · Reason: {operationStatus.reason || 'none'}
                 </p>
-                {#each Object.entries(operationStatus.components || {}) as [name, component] (name)}
-                    {#if component.requested}
+                {#each DETECTOR_OPERATION_COMPONENTS as name (name)}
+                    {@const component = operationStatus.components?.[name]}
+                    {#if component?.requested}
                         <p class="copy-caption">{name}: {component.outcome} · {component.reason}</p>
                     {/if}
                 {/each}

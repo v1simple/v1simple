@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { installFixtureFetchMock, jsonResponse } from '../../test/fetch-mock.js';
@@ -616,25 +616,118 @@ describe('autopush route page', () => {
         installDefaultFetch([
             maintenanceStatus,
             {
+                method: 'GET', match: '/api/autopush/slots', respond: jsonResponse({
+                    ...wifiApiFixtures.scenarios.autopush_routes['GET /api/autopush/slots'][0].body,
+                    schemaVersion: 4,
+                    activeSlot: 1,
+                    slots: [{ name: 'Renamed since apply', profile: 'New assignment' },
+                        { name: 'Highway', profile: 'Quiet Commute' }]
+                })
+            },
+            {
                 method: 'GET', match: '/api/autopush/status?operationId=42',
                 respond: jsonResponse({
                     operationId: 42, kind: 'apply_slot', source: 'maintenance_ui', slot: 0,
+                    profileName: null,
                     targetAddress: 'AA:BB:CC:DD:EE:FF', returnToMaintenance: false,
                     state: 'succeeded', reason: 'none', terminal: true, result: 'succeeded',
-                    components: emptyOperationComponents({ display: {
-                        requested: true, sent: false, verified: true,
-                        outcome: 'unchanged', reason: 'none'
-                    } })
+                    components: Object.fromEntries(Object.entries(emptyOperationComponents({
+                        display: {
+                            requested: true, sent: false, verified: true,
+                            outcome: 'unchanged', reason: 'none'
+                        },
+                        volume: {
+                            requested: true, sent: true, verified: true,
+                            outcome: 'verified', reason: 'none'
+                        }
+                    })).reverse())
                 })
             }
         ]);
         const { unmount } = render(Page);
 
         await screen.findByText('Detector operation 42');
+        await screen.findByText('Renamed since apply');
+        const result = screen.getByLabelText('Detector operation status');
+        expect(within(result).getByRole('heading', { name: 'Applied and verified' })).toBeInTheDocument();
+        expect(within(result).getByText('Slot 1')).toBeInTheDocument();
+        expect(within(result).queryByText('Slot 2')).not.toBeInTheDocument();
+        expect(within(result).queryByText(/Renamed since apply|New assignment|Quiet Commute/)).not.toBeInTheDocument();
         expect(screen.getByText('apply_slot · target AA:BB:CC:DD:EE:FF · source maintenance_ui'))
             .toBeInTheDocument();
-        expect(screen.getByText('unchanged · none')).toBeInTheDocument();
+        const display = within(result).getByText('Detector display').closest('.surface-panel');
+        expect(within(display).getByText('Already matched')).toBeInTheDocument();
+        expect(within(display).getByText('Sent: No · Verified: Yes')).toBeInTheDocument();
+        expect(Array.from(result.querySelectorAll('.surface-panel')).map((panel) =>
+            panel.firstElementChild.textContent)).toEqual(['Detector display', 'Detector volume']);
         expect(window.localStorage.getItem('v1simple.detectorSettingsOperationId')).toBeNull();
+        unmount();
+    });
+
+    it('shows a partially confirmed slot apply without turning sent commands into verified results', async () => {
+        window.localStorage.setItem('v1simple.detectorSettingsOperationId', '42');
+        installDefaultFetch([
+            maintenanceStatus,
+            {
+                method: 'GET', match: '/api/autopush/status?operationId=42',
+                respond: jsonResponse({
+                    operationId: 42, kind: 'apply_slot', source: 'maintenance_ui', slot: 2,
+                    profileName: null,
+                    targetAddress: 'AA:BB:CC:DD:EE:FF', returnToMaintenance: false,
+                    state: 'partial', reason: 'recapture_timed_out', terminal: true, result: 'partial',
+                    components: emptyOperationComponents({
+                        display: { requested: true, sent: true, verified: true, outcome: 'verified' },
+                        volume: { requested: true, sent: true, outcome: 'timeout', reason: 'volume_timeout' }
+                    })
+                })
+            }
+        ]);
+        const { unmount } = render(Page);
+        const result = await screen.findByLabelText('Detector operation status');
+
+        expect(within(result).getByRole('heading', { name: 'Apply not fully verified' })).toBeInTheDocument();
+        expect(within(result).getByText('Slot 3')).toBeInTheDocument();
+        expect(within(result).queryByText('Applied and verified')).not.toBeInTheDocument();
+        expect(within(result).getByText('Reading the detector settings after the operation timed out.'))
+            .toBeInTheDocument();
+        const volume = within(result).getByText('Detector volume').closest('.surface-panel');
+        expect(within(volume).getByText('Sent: Yes · Verified: No')).toBeInTheDocument();
+        expect(within(volume).getByText('Confirmation of the volume setting timed out.')).toBeInTheDocument();
+        const display = within(result).getByText('Detector display').closest('.surface-panel');
+        expect(within(display).getByText('Sent: Yes · Verified: Yes')).toBeInTheDocument();
+        expect(window.localStorage.getItem('v1simple.detectorSettingsOperationId')).toBeNull();
+        unmount();
+    });
+
+    it.each([
+        {
+            failure: 'a mismatched saved identity', status: 409,
+            body: { error: 'operation_mismatch', requestedOperationId: 42, currentOperationId: 43 },
+            message: /does not match the detector's current operation/, remembered: null
+        },
+        {
+            failure: 'malformed success evidence', status: 200,
+            body: {
+                operationId: 42, kind: 'apply_slot', source: 'maintenance_ui', slot: 0,
+                targetAddress: 'AA:BB:CC:DD:EE:FF', returnToMaintenance: false,
+                state: 'succeeded', reason: 'none', terminal: true, result: 'succeeded',
+                components: emptyOperationComponents({ volume: {
+                    requested: true, sent: 'yes', verified: true, outcome: 'verified'
+                } })
+            },
+            message: /malformed or mismatched status/, remembered: '42'
+        }
+    ])('rejects $failure before displaying Apply results', async ({ status, body, message, remembered }) => {
+        window.localStorage.setItem('v1simple.detectorSettingsOperationId', '42');
+        installDefaultFetch([
+            maintenanceStatus,
+            { method: 'GET', match: '/api/autopush/status?operationId=42', respond: jsonResponse(body, status) }
+        ]);
+        const { unmount } = render(Page);
+
+        await screen.findByText(message);
+        expect(screen.queryByLabelText('Detector operation status')).not.toBeInTheDocument();
+        expect(window.localStorage.getItem('v1simple.detectorSettingsOperationId')).toBe(remembered);
         unmount();
     });
 

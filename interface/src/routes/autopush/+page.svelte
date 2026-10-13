@@ -3,11 +3,11 @@
     import { fetchJsonWithTimeout, fetchWithTimeout } from '$lib/utils/poll';
     import PageHeader from '$lib/components/PageHeader.svelte';
     import StatusAlert from '$lib/components/StatusAlert.svelte';
+    import ProfileOperationStatus from '$lib/features/profiles/ProfileOperationStatus.svelte';
     import ColorControl from '$lib/components/ColorControl.svelte';
     import ColorPickerModal from '$lib/components/ColorPickerModal.svelte';
     import { parseColorInput, rgb565ToHex, rgb565ToRgb888, rgb888ToRgb565 } from '$lib/utils/colors';
     import {
-        DETECTOR_OPERATION_COMPONENTS,
         DETECTOR_OPERATION_POLL_WINDOW_MS,
         DETECTOR_OPERATION_STATES,
         forgetDetectorOperationId,
@@ -470,46 +470,7 @@
     <StatusAlert {message} />
 
     {#if operationStatus}
-        <div class="surface-card" aria-label="Detector operation status">
-            <div class="card-body space-y-3">
-                <div class="flex flex-wrap items-center justify-between gap-2">
-                    <h2 class="card-title">Detector operation {operationStatus.operationId}</h2>
-                    <span class:badge-success={operationStatus.state === 'succeeded'}
-                          class:badge-warning={operationStatus.state === 'partial'}
-                          class:badge-error={operationStatus.state === 'failed'}
-                          class="badge">
-                        {operationStatus.state || 'unknown'}
-                    </span>
-                </div>
-                <p class="copy-muted">
-                    Result: {operationStatus.result || 'in_progress'} · Reason: {operationStatus.reason || 'none'}
-                </p>
-                {#if operationStatus.reason === 'in_the_box_persist_failed'}
-                    <p class="copy-caption">V1Simple could not confirm saving the In-the-Box choices, so it did not activate them. Detector results are shown below.</p>
-                {/if}
-                {#if operationStatus.kind && operationStatus.targetAddress}
-                    <p class="copy-caption">
-                        {operationStatus.kind} · target {operationStatus.targetAddress} · source {operationStatus.source}
-                    </p>
-                {/if}
-                {#if operationStatus.components}
-                    <div class="grid gap-2 sm:grid-cols-2">
-                        {#each DETECTOR_OPERATION_COMPONENTS as name (name)}
-                            {@const component = operationStatus.components[name]}
-                            {#if component?.requested}
-                                <div class="surface-panel">
-                                    <div class="copy-caption">{name}</div>
-                                    <div>{component.outcome} · {component.reason}</div>
-                                    <div class="copy-caption">
-                                        sent {component.sent ? 'yes' : 'no'} · verified {component.verified ? 'yes' : 'no'}
-                                    </div>
-                                </div>
-                            {/if}
-                        {/each}
-                    </div>
-                {/if}
-            </div>
-        </div>
+        <ProfileOperationStatus {operationStatus} />
     {/if}
 
     {#if !loading && !profileSchemaReady}

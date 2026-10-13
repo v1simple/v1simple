@@ -25,6 +25,16 @@ function operationStatus(overrides = {}, requested = {}) {
 }
 
 describe('ProfileOperationStatus', () => {
+    it.each([0, 1, 2])('shows recorded slot %i as a one-based number without a profile name', (slot) => {
+        const status = operationStatus({ kind: 'apply_slot', slot, profileName: null });
+        expect(validDetectorOperationStatus(status, 42)).toBe(true);
+        const { unmount } = render(ProfileOperationStatus, { operationStatus: status });
+
+        expect(screen.getByText(`Slot ${slot + 1}`)).toBeInTheDocument();
+        expect(screen.queryByText(/^Profile:/)).not.toBeInTheDocument();
+        unmount();
+    });
+
     it('shows verified success without implying already-matched settings were sent', async () => {
         const status = operationStatus({}, {
             display: { requested: true, verified: true, outcome: 'unchanged' },

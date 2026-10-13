@@ -13,6 +13,7 @@
 #include "main_internals.h"
 #include "modules/event_log/product_event_log.h"
 #include "modules/health/health_journal.h"
+#include "modules/quiet/quiet_coordinator_templates.h"
 #include "settings.h"
 #include "storage_manager.h"
 #include "v1_devices.h"
@@ -505,6 +506,8 @@ void DriveRuntime::openBootReadyGate(uint32_t nowMs) {
 
 void DriveRuntime::processBleRuntime() {
     ble_.process(settings_);
+    // Observe phone takeover even when sliders/preview suppress parsed frames.
+    quiet_.syncProxyVolumeOwnership(&volumeFade_);
 }
 
 void DriveRuntime::processBleQueue() {
@@ -1111,7 +1114,11 @@ void DriveRuntime::onV1ConnectImmediate() {
 
 void DriveRuntime::onV1SessionOpened(uint32_t sessionGeneration) {
     if (callbackOwner_) {
-        callbackOwner_->connectionState_.handleSessionOpened(sessionGeneration);
+        auto& self = *callbackOwner_;
+        String address;
+        const bool known = self.connectedV1Address(address);
+        self.quiet_.beginDetectorVolumeSession(known ? address.c_str() : nullptr, &self.volumeFade_);
+        self.connectionState_.handleSessionOpened(sessionGeneration);
     }
 }
 

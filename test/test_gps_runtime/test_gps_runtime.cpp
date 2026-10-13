@@ -9,6 +9,7 @@ class ObdRuntimeModule {
 };
 
 #include "../../src/modules/speed/speed_source_selector.cpp"
+#include "../../src/modules/speed_mute/speed_mute_module.cpp"
 
 #ifndef ARDUINO
 SerialClass Serial;
@@ -285,6 +286,60 @@ void test_new_gps_speed_can_be_selected_in_the_same_loop() {
     TEST_ASSERT_EQUAL_UINT32(1000, selected.timestampMs);
 }
 
+void test_missing_rmc_speed_preserves_fix_without_authorizing_speed_mute() {
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPGGA,123520,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*4D", 9900));
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPRMC,123519,A,4807.038,N,01131.000,E,,084.4,230394,003.1,W*40", 10000));
+
+    SpeedSourceSelector selector;
+    selector.begin(nullptr, false, &gpsRuntimeModule, true);
+    selector.update(10000);
+    const SpeedSelection selected = selector.selectedSpeed();
+    TEST_ASSERT_FALSE(selected.valid);
+    TEST_ASSERT_EQUAL(SpeedSource::NONE, selected.source);
+    const auto status = gpsRuntimeModule.snapshot(10000);
+    TEST_ASSERT_TRUE(status.hasFix);
+    TEST_ASSERT_FALSE(status.sampleValid);
+    TEST_ASSERT_EQUAL_UINT32(0, status.hardwareSamples);
+
+    SpeedMuteModule mute;
+    mute.begin(true, 25, 3, 0);
+    TEST_ASSERT_FALSE(mute.update(selected.speedMph, selected.valid, 10000).shouldMute);
+}
+
+void test_missing_rmc_speed_releases_measured_zero_mute_and_allows_reacquisition() {
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPGGA,123520,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*4D", 9900));
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPRMC,123519,A,4807.038,N,01131.000,E,000.0,084.4,230394,003.1,W*6E", 10000));
+    SpeedSourceSelector selector;
+    selector.begin(nullptr, false, &gpsRuntimeModule, true);
+    selector.update(10000);
+    SpeedMuteModule mute;
+    mute.begin(true, 25, 3, 0);
+    auto selected = selector.selectedSpeed();
+    TEST_ASSERT_TRUE(selected.valid);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, selected.speedMph);
+    TEST_ASSERT_TRUE(mute.update(selected.speedMph, selected.valid, 10000).shouldMute);
+
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPRMC,123519,A,4807.038,N,01131.000,E,,084.4,230394,003.1,W*40", 10100));
+    selector.update(10100);
+    selected = selector.selectedSpeed();
+    TEST_ASSERT_FALSE(selected.valid);
+    TEST_ASSERT_FALSE(mute.update(selected.speedMph, selected.valid, 10100).shouldMute);
+    TEST_ASSERT_EQUAL_UINT32(1, gpsRuntimeModule.snapshot(10100).hardwareSamples);
+
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPRMC,123519,A,4807.038,N,01131.000,E,040.0,084.4,230394,003.1,W*6A", 10200));
+    selector.update(10200);
+    selected = selector.selectedSpeed();
+    TEST_ASSERT_TRUE(selected.valid);
+    TEST_ASSERT_FLOAT_WITHIN(0.02f, 46.03116f, selected.speedMph);
+    TEST_ASSERT_FALSE(mute.update(selected.speedMph, selected.valid, 10200).shouldMute);
+}
+
 void test_overlong_sentence_is_rejected() {
     char longSentence[160];
     for (size_t i = 0; i < sizeof(longSentence) - 1; ++i) {
@@ -314,5 +369,7 @@ int main() {
     RUN_TEST(test_overlong_sentence_is_rejected);
     RUN_TEST(test_repeated_rmc_refreshes_retained_speed_sample);
     RUN_TEST(test_new_gps_speed_can_be_selected_in_the_same_loop);
+    RUN_TEST(test_missing_rmc_speed_preserves_fix_without_authorizing_speed_mute);
+    RUN_TEST(test_missing_rmc_speed_releases_measured_zero_mute_and_allows_reacquisition);
     return UNITY_END();
 }

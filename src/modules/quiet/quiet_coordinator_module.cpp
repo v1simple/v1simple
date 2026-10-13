@@ -32,6 +32,7 @@ const char* quietOwnerName(const QuietOwner owner) {
 void QuietCoordinatorModule::begin(V1BLEClient* bleClient, PacketParser* parser) {
     ble_ = bleClient;
     parser_ = parser;
+    volumeDetectorAddress_[0] = '\0';
     reset();
 }
 
@@ -39,6 +40,20 @@ void QuietCoordinatorModule::reset() {
     desired_ = QuietDesiredState{};
     committed_ = QuietCommittedState{};
     presentation_ = QuietPresentationState{};
+
+    resetVolumeState();
+    resetInTheBoxSession();
+
+    syncCommittedState();
+}
+
+void QuietCoordinatorModule::resetVolumeState() {
+    desired_.volumeOwner = QuietOwner::None;
+    desired_.volumePending = false;
+    desired_.volume = 0xFF;
+    desired_.muteVolume = 0;
+    presentation_.activeVolumeOwner = QuietOwner::None;
+    presentation_.speedVolZeroActive = false;
 
     speedVolActive_ = false;
     speedVolSavedOriginal_ = 0xFF;
@@ -57,9 +72,6 @@ void QuietCoordinatorModule::reset() {
     pendingFadeLaser_ = false;
     pendingFadeLastAttemptMs_ = 0;
     autoPushVolumeTransactionActive_ = false;
-    resetInTheBoxSession();
-
-    syncCommittedState();
 }
 
 void QuietCoordinatorModule::syncCommittedState() {

@@ -2,6 +2,31 @@
 
 #include "quiet_coordinator_module.h"
 
+#include <cstring>
+
+template <typename VolumeFadeLike>
+void QuietCoordinatorModule::beginDetectorVolumeSession(const char* canonicalAddress, VolumeFadeLike* volumeFade) {
+    const bool known = canonicalAddress && std::strlen(canonicalAddress) == 17;
+    // Same-detector reconnects retain recovery. A different/unknown target may
+    // never receive the old detector's baseline or deferred volume command.
+    if (!known || std::strcmp(volumeDetectorAddress_, canonicalAddress) != 0) {
+        resetVolumeState();
+        if (volumeFade) volumeFade->reset();
+    }
+    if (known) std::memcpy(volumeDetectorAddress_, canonicalAddress, sizeof(volumeDetectorAddress_));
+    else volumeDetectorAddress_[0] = '\0';
+}
+
+template <typename VolumeFadeLike>
+bool QuietCoordinatorModule::syncProxyVolumeOwnership(VolumeFadeLike* volumeFade) {
+    if (!ble_ || !ble_->isProxyClientConnected()) return false;
+    // The phone owns volume, including any later restoration. Do not retain a
+    // rejected local drop or an older override to replay after it disconnects.
+    resetVolumeState();
+    if (volumeFade) volumeFade->reset();
+    return true;
+}
+
 template <typename SpeedMuteLike>
 void QuietCoordinatorModule::updateSpeedVolPresentation(const SpeedMuteLike* speedMute) {
     presentation_.speedVolZeroActive = speedVolActive_ && speedMute && speedMute->getSettings().v1Volume == 0;
@@ -15,6 +40,7 @@ void QuietCoordinatorModule::updateSpeedVolPresentation(const SpeedMuteLike* spe
 template <typename SpeedMuteLike, typename VolumeFadeLike>
 bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs, const SpeedMuteLike& speedMute,
                                                 VolumeFadeLike* volumeFade) {
+    if (syncProxyVolumeOwnership(volumeFade)) return false;
     syncCommittedState();
 
     const auto& smSettings = speedMute.getSettings();
@@ -110,6 +136,7 @@ bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs, const Spee
 
 template <typename VolumeFadeLike>
 bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs, VolumeFadeLike* volumeFade) {
+    if (syncProxyVolumeOwnership(volumeFade)) return false;
     syncCommittedState();
     if (!volumeFade || !parser_) {
         return false;

@@ -76,8 +76,8 @@ void test_to_audio_direction_side_is_default() {
                           static_cast<int>(VoiceModule::toAudioDirection(DIR_SIDE)));
 }
 
-void test_to_audio_direction_none_is_side() {
-    TEST_ASSERT_EQUAL_INT(static_cast<int>(AlertDirection::SIDE),
+void test_to_audio_direction_none_is_unknown() {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(AlertDirection::UNKNOWN),
                           static_cast<int>(VoiceModule::toAudioDirection(DIR_NONE)));
 }
 
@@ -645,6 +645,35 @@ void test_prepare_escalation_is_not_marked_announced_before_commit() {
     TEST_ASSERT_FALSE(voiceModule.prepareAction(ctx).type == VoiceAction::Type::ANNOUNCE_ESCALATION);
 }
 
+void test_escalation_does_not_count_unknown_direction_as_side() {
+    settings.settings.announceSecondaryAlerts = true;
+    settings.settings.secondaryK = true;
+    AlertData alerts[2] = {
+        AlertData::create(BAND_KA, DIR_FRONT, 5, 0, 34700),
+        AlertData::create(BAND_K, DIR_NONE, 2, 0, 24120),
+    };
+    VoiceContext ctx;
+    ctx.priority = &alerts[0];
+    ctx.alerts = alerts;
+    ctx.alertCount = 2;
+    ctx.mainVolume = 5;
+    ctx.now = 1000;
+    voiceModule.process(ctx);
+    ctx.now = 4000;
+    voiceModule.process(ctx);
+    voiceModule.testUpdateAlertHistory(BAND_K, 24120, 2, 4100);
+    voiceModule.testUpdateAlertHistory(BAND_K, 24120, 5, 4200);
+    alerts[1].frontStrength = 5;
+    ctx.now = 4800;
+    const auto action = voiceModule.prepareAction(ctx);
+    TEST_ASSERT_EQUAL(VoiceAction::Type::ANNOUNCE_ESCALATION, action.type);
+    TEST_ASSERT_EQUAL(AlertDirection::UNKNOWN, action.dir);
+    TEST_ASSERT_EQUAL_UINT8(2, action.bogeyCount);
+    TEST_ASSERT_EQUAL_UINT8(1, action.aheadCount);
+    TEST_ASSERT_EQUAL_UINT8(0, action.behindCount);
+    TEST_ASSERT_EQUAL_UINT8(0, action.sideCount);
+}
+
 // Run one process() cycle with `priority` first and `secondary` second. Keeping
 // the same priority alert across calls holds canAnnounceSecondary() satisfied.
 static VoiceAction runWithSecondary(const AlertData& priority, const AlertData& secondary, unsigned long now) {
@@ -732,7 +761,7 @@ int main() {
     RUN_TEST(test_to_audio_direction_front);
     RUN_TEST(test_to_audio_direction_rear);
     RUN_TEST(test_to_audio_direction_side_is_default);
-    RUN_TEST(test_to_audio_direction_none_is_side);
+    RUN_TEST(test_to_audio_direction_none_is_unknown);
     RUN_TEST(test_is_band_enabled_for_secondary_ka_follows_setting);
     RUN_TEST(test_is_band_enabled_for_secondary_laser_follows_setting);
     RUN_TEST(test_is_band_enabled_for_secondary_unknown_band_false);
@@ -769,6 +798,7 @@ int main() {
     RUN_TEST(test_prepare_priority_does_not_commit_until_playback_accepts);
     RUN_TEST(test_prepare_direction_and_secondary_remain_retryable_until_commit);
     RUN_TEST(test_prepare_escalation_is_not_marked_announced_before_commit);
+    RUN_TEST(test_escalation_does_not_count_unknown_direction_as_side);
 
     return UNITY_END();
 }

@@ -14,7 +14,8 @@ enum class AlertBand : uint8_t {
 enum class AlertDirection : uint8_t {
     AHEAD = 0,
     BEHIND = 1,
-    SIDE = 2
+    SIDE = 2,
+    UNKNOWN = 3
 };
 enum class AudioPlaybackResult : uint8_t { Accepted, Busy, Unavailable };
 

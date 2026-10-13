@@ -62,6 +62,11 @@ class QuietCoordinatorModule {
   public:
     void begin(V1BLEClient* bleClient, PacketParser* parser);
 
+    template <typename VolumeFadeLike>
+    void beginDetectorVolumeSession(const char* canonicalAddress, VolumeFadeLike* volumeFade);
+    template <typename VolumeFadeLike>
+    bool syncProxyVolumeOwnership(VolumeFadeLike* volumeFade);
+
     // The applied configuration belongs to one detector session. Persistence
     // and profile activation are owned by the runtime, not the audio loop.
     void setInTheBoxSettings(const V1InTheBoxSettings& settings, uint32_t sessionGeneration);
@@ -107,6 +112,7 @@ class QuietCoordinatorModule {
 
   private:
     void reset();
+    void resetVolumeState();
     void syncCommittedState();
     void refreshPendingState();
     void resetInTheBoxSession();
@@ -119,6 +125,7 @@ class QuietCoordinatorModule {
     QuietDesiredState desired_{};
     QuietCommittedState committed_{};
     QuietPresentationState presentation_{};
+    char volumeDetectorAddress_[18] = {};
 
     bool speedVolActive_ = false;
     uint8_t speedVolSavedOriginal_ = 0xFF;

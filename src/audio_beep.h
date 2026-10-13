@@ -10,7 +10,7 @@
 enum class AlertBand : uint8_t { LASER = 0, KA = 1, K = 2, X = 3, KU = 4, PHOTO = 5 };
 
 // Direction types for voice alerts
-enum class AlertDirection : uint8_t { AHEAD = 0, BEHIND = 1, SIDE = 2 };
+enum class AlertDirection : uint8_t { AHEAD = 0, BEHIND = 1, SIDE = 2, UNKNOWN = 3 };
 
 enum class AudioPlaybackResult : uint8_t {
     Accepted,

@@ -67,6 +67,10 @@ class VolumeFadeModule {
 
     void begin(SettingsManager* settings);
 
+    // Discard authority when the detector changes or a proxy phone takes over.
+    // This deliberately emits no restore to the new owner.
+    void reset();
+
     // Main decision method
     VolumeFadeAction process(const VolumeFadeContext& ctx);
 
@@ -85,7 +89,6 @@ class VolumeFadeModule {
     bool hasActiveVolumeOverride() const { return fadeActive_ || pendingRestoreVolume_ != 0xFF; }
 
   private:
-    void reset();
     SettingsManager* settings_ = nullptr;
 
     // Tracking state

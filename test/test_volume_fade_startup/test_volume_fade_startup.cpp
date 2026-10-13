@@ -76,10 +76,12 @@ BleQueueModule queue;
 AlertPersistenceModule persistence;
 ConnectionStateModule connection;
 
-void openSession(uint32_t generation, uint32_t nowMs) {
+void openSession(uint32_t generation, uint32_t nowMs, const char* address = "AA:BB:CC:DD:EE:01") {
     mockMillis = nowMs;
     ble.setConnected(true);
     ble.setSessionGeneration(generation);
+    // Same owner entrypoint used by DriveRuntime before opening parser intake.
+    quiet.beginDetectorVolumeSession(address, &fade);
     connection.handleSessionOpened(generation);
     connection.handleConnected(nowMs, generation);
     connection.process(nowMs);
@@ -574,6 +576,134 @@ void test_not_yet_fade_down_retains_ownership_until_override_lifecycle_clears() 
     TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
 }
 
+void test_different_detector_does_not_receive_old_fade_restore() {
+    startActiveFade();
+    closeSession(2, 14000);
+    openSession(3, 20000, "AA:BB:CC:DD:EE:02");
+    volume(0, 0, 20100);
+    const int before = ble.setVolumeCalls;
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(20100, &fade));
+    TEST_ASSERT_EQUAL_INT(before, ble.setVolumeCalls);
+    TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+    TEST_ASSERT_EQUAL_UINT8(0, parser.getDisplayState().mainVolume);
+
+    // The replacement detector can start an ordinary fade with its own pair.
+    volume(4, 3, 20200);
+    alert(20300);
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(20300, &fade));
+    TEST_ASSERT_TRUE(quiet.executeVolumeFade(23000, &fade));
+    clearAlert(24000);
+    TEST_ASSERT_TRUE(quiet.executeVolumeFade(24000, &fade));
+    TEST_ASSERT_EQUAL_UINT8(4, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(3, ble.lastMuteVolume);
+}
+
+void test_unknown_detector_discards_deferred_fade_and_prior_identity() {
+    volume(6, 2, 9500);
+    alert(10000);
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(10000, &fade));
+    ble.nextVolumeSendResult = SendResult::NOT_YET;
+    TEST_ASSERT_TRUE(quiet.executeVolumeFade(12500, &fade));
+    closeSession(2, 14000);
+    openSession(3, 20000, nullptr);
+    volume(0, 0, 20100);
+    const int before = ble.setVolumeCalls;
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(20100, &fade));
+    TEST_ASSERT_EQUAL_INT(before, ble.setVolumeCalls);
+    closeSession(4, 21000);
+    openSession(5, 22000); // Knowing the original address again cannot revive it.
+    volume(0, 0, 22100);
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(22100, &fade));
+    TEST_ASSERT_EQUAL_INT(before, ble.setVolumeCalls);
+}
+
+void test_different_detector_discards_speed_restore_baseline() {
+    SpeedFadeRuntime runtime;
+    runtime.dropDuringFade();
+    closeSession(2, 16000);
+    openSession(3, 20000, "AA:BB:CC:DD:EE:02");
+    volume(0, 0, 20100);
+    const int before = ble.setVolumeCalls;
+    runtime.step(21000, 50, false);
+    TEST_ASSERT_EQUAL_INT(before, ble.setVolumeCalls);
+    TEST_ASSERT_EQUAL_UINT8(0, parser.getDisplayState().mainVolume);
+}
+
+void test_proxy_rejected_speed_drop_cannot_restore_over_phone_choice() {
+    SpeedFadeRuntime runtime;
+    volume(6, 2, 10000);
+    ble.setProxyConnected(true);
+    // Production transport rejects local writes while a phone owns the V1.
+    ble.nextVolumeSendResult = SendResult::FAILED;
+    runtime.step(11000, 0, false, false);
+    volume(3, 1, 12000);
+    runtime.step(12000, 50, false, false);
+    TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
+    ble.setProxyConnected(false);
+    ble.nextVolumeSendResult = SendResult::SENT;
+    runtime.step(12500, 50, false, false);
+    TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
+    TEST_ASSERT_EQUAL_UINT8(3, parser.getDisplayState().mainVolume);
+    TEST_ASSERT_EQUAL_UINT8(1, parser.getDisplayState().muteVolume);
+
+    // A later local low-speed episode captures and restores the phone's pair.
+    runtime.step(15000, 0, false);
+    TEST_ASSERT_EQUAL_UINT8(0, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(1, ble.lastMuteVolume);
+    runtime.step(17000, 50, false);
+    TEST_ASSERT_EQUAL_UINT8(3, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(1, ble.lastMuteVolume);
+}
+
+void test_proxy_takeover_cancels_pending_restore_without_a_parsed_frame() {
+    SpeedFadeRuntime runtime;
+    runtime.dropDuringFade();
+    runtime.step(21000, 50, false, false);
+    TEST_ASSERT_FALSE(quiet.canApplyAutoPushVolumeExactly());
+    ble.setProxyConnected(true);
+    const int before = ble.setVolumeCalls;
+    // DriveRuntime services this owner immediately after BLE callbacks, even
+    // when an interactive owner prevents any parsed-frame dispatch.
+    TEST_ASSERT_TRUE(quiet.syncProxyVolumeOwnership(&fade));
+    TEST_ASSERT_FALSE(runtime.orchestration.processParsedFrame({21100, false, false}));
+    TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+    ble.setProxyConnected(false);
+    volume(3, 1, 21200);
+    runtime.step(21300, 50, false, false);
+    TEST_ASSERT_EQUAL_INT(before, ble.setVolumeCalls);
+}
+
+void test_proxy_takeover_discards_active_fade_without_replaying_after_disconnect() {
+    SpeedFadeRuntime runtime;
+    startActiveFade();
+    ble.setProxyConnected(true);
+    const int before = ble.setVolumeCalls;
+    TEST_ASSERT_TRUE(quiet.syncProxyVolumeOwnership(&fade));
+    TEST_ASSERT_FALSE(runtime.orchestration.processParsedFrame({13000, false, false}));
+    ble.setProxyConnected(false);
+    volume(3, 1, 13100);
+    clearAlert(13200);
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(13200, &fade));
+    TEST_ASSERT_EQUAL_INT(before, ble.setVolumeCalls);
+    TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+}
+
+void test_speed_drop_not_yet_retries_and_restores_original_pair() {
+    SpeedFadeRuntime runtime;
+    volume(6, 2, 10000);
+    ble.nextVolumeSendResult = SendResult::NOT_YET;
+    runtime.step(11000, 0, false, false);
+    TEST_ASSERT_EQUAL_INT(1, ble.setVolumeCalls);
+    runtime.step(11050, 0, false, false);
+    TEST_ASSERT_EQUAL_INT(1, ble.setVolumeCalls);
+    runtime.step(11100, 0, false);
+    TEST_ASSERT_EQUAL_INT(2, ble.setVolumeCalls);
+    TEST_ASSERT_EQUAL_UINT8(0, parser.getDisplayState().mainVolume);
+    runtime.step(14000, 50, false);
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_alert_before_first_volume_preserves_real_baseline_pair);
@@ -601,5 +731,12 @@ int main() {
     RUN_TEST(test_fade_restore_ownership_releases_only_after_detector_convergence);
     RUN_TEST(test_failed_fade_down_retains_ownership_until_override_lifecycle_clears);
     RUN_TEST(test_not_yet_fade_down_retains_ownership_until_override_lifecycle_clears);
+    RUN_TEST(test_different_detector_does_not_receive_old_fade_restore);
+    RUN_TEST(test_unknown_detector_discards_deferred_fade_and_prior_identity);
+    RUN_TEST(test_different_detector_discards_speed_restore_baseline);
+    RUN_TEST(test_proxy_rejected_speed_drop_cannot_restore_over_phone_choice);
+    RUN_TEST(test_proxy_takeover_cancels_pending_restore_without_a_parsed_frame);
+    RUN_TEST(test_proxy_takeover_discards_active_fade_without_replaying_after_disconnect);
+    RUN_TEST(test_speed_drop_not_yet_retries_and_restores_original_pair);
     return UNITY_END();
 }

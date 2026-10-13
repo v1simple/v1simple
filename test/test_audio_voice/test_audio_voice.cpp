@@ -9,6 +9,9 @@
 #include "../mocks/settings.h"
 #include "../mocks/storage_manager.h"
 #include "../mocks/ble_client.h"
+#include "../../src/packet_parser.h"
+#include "../../src/packet_parser.cpp"
+#include "../../src/packet_parser_alerts.cpp"
 #include "../../include/audio_internals.h"
 #include "../../src/modules/voice/voice_module.cpp"
 #include "../../src/audio_voice.cpp"
@@ -190,6 +193,51 @@ void test_existing_band_frequency_mappings_are_unchanged() {
     expectClips({"band_k.mul", "tens_24.mul", "digit_1.mul", "tens_50.mul", "dir_side.mul"});
 }
 
+void test_parsed_unknown_direction_preserves_alert_without_side_clip() {
+    PacketParser parser;
+    std::vector<uint8_t> packet{0xAA, 0xD8, 0xEA, 0x43, 8, 0x11, 0x87, 0x8C, 0xAC, 0, 0x02, 0x80};
+    uint8_t checksum = 0;
+    for (uint8_t value : packet) checksum = static_cast<uint8_t>(checksum + value);
+    packet.push_back(checksum);
+    packet.push_back(0xAB);
+    TEST_ASSERT_TRUE(parser.parse(packet.data(), packet.size(), mockMillis));
+    AlertData priority;
+    TEST_ASSERT_TRUE(parser.getRenderablePriorityAlert(priority));
+    TEST_ASSERT_EQUAL(DIR_NONE, priority.direction);
+    VoiceModule voice;
+    voice.begin(&settings, nullptr);
+    VoiceContext context;
+    context.alerts = parser.getAllAlerts().data();
+    context.alertCount = parser.getAlertCount();
+    context.priority = &priority;
+    context.mainVolume = 5;
+    context.now = mockMillis;
+    const auto action = voice.prepareAction(context);
+    TEST_ASSERT_EQUAL(VoiceAction::Type::ANNOUNCE_PRIORITY, action.type);
+    TEST_ASSERT_EQUAL(AlertDirection::UNKNOWN, action.dir);
+    TEST_ASSERT_EQUAL(AudioPlaybackResult::Accepted,
+        try_play_frequency_voice(action.band, action.freq, action.dir, VOICE_MODE_BAND_FREQ, true, 1));
+    expectClips({"band_ka.mul", "tens_34.mul", "digit_7.mul", "tens_00.mul"});
+}
+
+void test_unknown_laser_direction_keeps_band_announcement() {
+    TEST_ASSERT_EQUAL(AudioPlaybackResult::Accepted,
+        try_play_frequency_voice(AlertBand::LASER, 0, AlertDirection::UNKNOWN, VOICE_MODE_BAND_FREQ, true, 1));
+    expectClips({"band_laser.mul"});
+}
+
+void test_unknown_simple_direction_keeps_band_announcement() {
+    play_alert_voice(AlertBand::KA, AlertDirection::UNKNOWN);
+    expectClips({"band_ka.mul"});
+}
+
+void test_unknown_escalation_direction_preserves_count_and_known_breakdown() {
+    TEST_ASSERT_EQUAL(AudioPlaybackResult::Accepted,
+        try_play_threat_escalation(AlertBand::K, 24125, AlertDirection::UNKNOWN, 2, 1, 0, 0));
+    expectClips({"band_k.mul", "tens_24.mul", "digit_1.mul", "tens_25.mul", "digit_2.mul",
+                 "bogeys.mul", "digit_1.mul", "dir_ahead.mul"});
+}
+
 int main() {
     // Native tests run before web/LittleFS staging, including on a clean checkout.
     std::filesystem::copy(std::filesystem::path(PROJECT_DIR) / "tools" / "freq_audio" / "mulaw",
@@ -206,6 +254,10 @@ int main() {
     RUN_TEST(test_photo_frequency_only_still_says_photo_without_frequency_tokens);
     RUN_TEST(test_photo_escalation_omits_frequency_and_keeps_breakdown);
     RUN_TEST(test_existing_band_frequency_mappings_are_unchanged);
+    RUN_TEST(test_parsed_unknown_direction_preserves_alert_without_side_clip);
+    RUN_TEST(test_unknown_laser_direction_keeps_band_announcement);
+    RUN_TEST(test_unknown_simple_direction_keeps_band_announcement);
+    RUN_TEST(test_unknown_escalation_direction_preserves_count_and_known_breakdown);
     const int result = UNITY_END();
     std::filesystem::remove_all(audioRoot);
     return result;

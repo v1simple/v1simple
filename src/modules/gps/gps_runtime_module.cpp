@@ -381,7 +381,8 @@ bool GpsRuntimeModule::parseRmc(char* fields[], size_t fieldCount, uint32_t nowM
     }
 
     float speedKnots = 0.0f;
-    if (fields[7] && fields[7][0] != '\0') {
+    const bool hasSpeed = fields[7] && fields[7][0] != '\0';
+    if (hasSpeed) {
         if (!parseFloatStrict(fields[7], speedKnots) || speedKnots < 0.0f) {
             return false;
         }
@@ -394,13 +395,18 @@ bool GpsRuntimeModule::parseRmc(char* fields[], size_t fieldCount, uint32_t nowM
 
     rmcFix_ = true;
     hasFix_ = true;
-    sampleValid_ = true;
-    speedMph_ = std::clamp(speedMph, 0.0f, MAX_VALID_SPEED_MPH);
-    sampleTsMs_ = nowMs;
-    lastFixTsMs_ = sampleTsMs_;
+    if (hasSpeed) {
+        sampleValid_ = true;
+        speedMph_ = std::clamp(speedMph, 0.0f, MAX_VALID_SPEED_MPH);
+        sampleTsMs_ = nowMs;
+        hardwareSamples_++;
+    } else {
+        // A valid position without speed cannot authorize low-speed muting.
+        invalidateSpeedSample();
+    }
+    lastFixTsMs_ = nowMs;
     lastFixTimestampValid_ = true;
-    hardwareSamples_++;
-    updateStableFixState(sampleTsMs_);
+    updateStableFixState(nowMs);
 
     return true;
 }

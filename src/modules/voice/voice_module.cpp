@@ -57,9 +57,10 @@ AlertDirection VoiceModule::toAudioDirection(Direction dir) {
         return AlertDirection::AHEAD;
     } else if (dir & DIR_REAR) {
         return AlertDirection::BEHIND;
-    } else {
+    } else if (dir & DIR_SIDE) {
         return AlertDirection::SIDE;
     }
+    return AlertDirection::UNKNOWN;
 }
 
 // ============================================================================
@@ -303,21 +304,20 @@ VoiceAction VoiceModule::prepareAction(const VoiceContext& ctx) {
                         continue;
 
                     // Count direction breakdown
-                    uint8_t aheadCount = 0, behindCount = 0, sideCount = 0;
+                    uint8_t aheadCount = 0, behindCount = 0, sideCount = 0, total = 0;
                     for (int j = 0; j < ctx.alertCount; j++) {
                         const AlertData& a = ctx.alerts[j];
                         if (!a.isValid || a.band == BAND_NONE)
                             continue;
+                        total++;
 
                         if (a.direction & DIR_FRONT)
                             aheadCount++;
                         else if (a.direction & DIR_REAR)
                             behindCount++;
-                        else
+                        else if (a.direction & DIR_SIDE)
                             sideCount++;
                     }
-
-                    uint8_t total = aheadCount + behindCount + sideCount;
 
                     action.type = VoiceAction::Type::ANNOUNCE_ESCALATION;
                     action.band = toAudioBand(alert);

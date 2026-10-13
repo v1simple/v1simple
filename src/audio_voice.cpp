@@ -295,6 +295,8 @@ static const char* getDirectionClipFile(AlertDirection direction) {
         return "dir_behind.mul";
     case AlertDirection::SIDE:
         return "dir_side.mul";
+    case AlertDirection::UNKNOWN:
+        return nullptr;
     }
     return nullptr;
 }
@@ -325,7 +327,7 @@ void play_alert_voice(AlertBand band, AlertDirection direction) {
     params.numClips = 0;
     const char* bandFile = getBandClipFile(band);
     const char* dirFile = getDirectionClipFile(direction);
-    if (!bandFile || !dirFile) {
+    if (!bandFile) {
         return;
     }
     appendAudioClip(params, bandFile);
@@ -428,6 +430,8 @@ static AudioPlaybackResult play_frequency_voice_impl(AlertBand band, uint16_t fr
         case AlertDirection::SIDE:
             dirFile = "dir_side.mul";
             break;
+        case AlertDirection::UNKNOWN:
+            break;
         }
         if (dirFile) {
             snprintf(params.filePaths[params.numClips++], 48, "%s/%s", AUDIO_PATH, dirFile);
@@ -516,6 +520,8 @@ static AudioPlaybackResult play_direction_only_impl(AlertDirection direction, ui
         break;
     case AlertDirection::SIDE:
         dirFile = "dir_side.mul";
+        break;
+    case AlertDirection::UNKNOWN:
         break;
     }
     if (dirFile) {
@@ -636,6 +642,8 @@ static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t 
         break;
     case AlertDirection::SIDE:
         dirFile = "dir_side.mul";
+        break;
+    case AlertDirection::UNKNOWN:
         break;
     }
     if (dirFile) {

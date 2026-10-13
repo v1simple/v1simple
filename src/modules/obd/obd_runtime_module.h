@@ -312,6 +312,7 @@ class ObdRuntimeModule {
     struct BleEvent {
         BleEventType type = BleEventType::DATA;
         size_t dataLen = 0;
+        uint32_t receivedMs = 0;
         int disconnectReason = 0;
         int8_t rssi = 0;
         uint8_t addrType = 0;
@@ -407,6 +408,7 @@ class ObdRuntimeModule {
     char bleBuf_[BLE_BUF_LEN] = {};
     size_t bleBufLen_ = 0;
     bool bleDataReady_ = false;
+    uint32_t bleResponseReceivedMs_ = 0;
     bool bleDisconnected_ = false;
     int bleDisconnectReason_ = 0;
     bool bleOverflowed_ = false;

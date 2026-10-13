@@ -22,6 +22,9 @@ inline constexpr const char* kNvsRestoreTransactionSequence = "restoreSeq";
 inline constexpr const char* kNvsRestoreCommitWatermark = "restoreMark";
 inline constexpr const char* kNvsProfileDeleteTransactionSequence = "deleteSeq";
 inline constexpr const char* kNvsProfileDeleteCommitWatermark = "deleteMark";
+// Identifies the A/B settings commit belonging to a single-slot credential edit.
+// Ordinary saves retain it even as the settings generation advances.
+inline constexpr const char* kNvsWifiCredentialCommitGeneration = "wifiCredGen";
 
 inline constexpr const char* kNvsApSsid = "apSSID";
 inline constexpr const char* kNvsApPassword = "apPassword";
@@ -216,6 +219,7 @@ inline constexpr const char* kNvsWifiTxnNewSsid = "txnNewSsid";
 inline constexpr const char* kNvsWifiTxnNewPass = "txnNewPass";
 inline constexpr const char* kNvsWifiTxnMode = "txnMode";
 inline constexpr const char* kNvsWifiTxnData = "txnData";
+inline constexpr const char* kNvsWifiTxnSettingsGeneration = "txnGen";
 inline constexpr const char* kNvsMetaActive = "active";
 // Namespace: v1runtime. This single-key store preserves the last confirmed V1
 // connection only while filesystem-backed V1DeviceStore is unavailable.

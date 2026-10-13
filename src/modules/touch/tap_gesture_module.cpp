@@ -49,7 +49,7 @@ void TapGestureModule::process(unsigned long nowMs, bool profileCycleAllowed) {
         // A tap-mute belongs only to the alert that caused it. Do not deliver
         // the old command after that alert clears, and stop retrying once the
         // parser already reflects the desired state.
-        const bool desiredStateAlreadyCommitted = parser_->getDisplayState().muted == pendingMuteValue_;
+        const bool desiredStateAlreadyCommitted = parser_->getDisplayState().softMuted == pendingMuteValue_;
         if (!parser_->hasAlerts() || desiredStateAlreadyCommitted || !quiet_) {
             pendingMuteCommand_ = false;
         } else if ((nowMs - pendingMuteLastAttemptMs_) >= MUTE_RETRY_INTERVAL_MS) {
@@ -72,7 +72,7 @@ void TapGestureModule::process(unsigned long nowMs, bool profileCycleAllowed) {
         }
 
         DisplayState state = parser_->getDisplayState();
-        bool currentMuted = state.muted;
+        bool currentMuted = state.softMuted;
         bool newMuted = !currentMuted;
 
         Serial.printf("Mute: %s -> Sending: %s (%s)\n", currentMuted ? "MUTED" : "UNMUTED",

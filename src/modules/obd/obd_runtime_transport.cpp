@@ -354,6 +354,11 @@ void ObdRuntimeModule::applyBleEvent(const BleEvent& event) {
                 bleOverflowed_ = true;
             }
             if (event.dataReady) {
+                if (!bleDataReady_) {
+                    // Preserve completion time even when settings defer the
+                    // main-loop drain. Later queued bytes cannot renew it.
+                    bleResponseReceivedMs_ = event.receivedMs;
+                }
                 bleDataReady_ = true;
             }
         }
@@ -372,6 +377,7 @@ void ObdRuntimeModule::clearBleResponseState() {
     bleBufLen_ = 0;
     bleBuf_[0] = '\0';
     bleDataReady_ = false;
+    bleResponseReceivedMs_ = 0;
     bleOverflowed_ = false;
 }
 
@@ -850,6 +856,7 @@ void ObdRuntimeModule::onBleData(const uint8_t* data, size_t len) {
 
     BleEvent event{};
     event.type = BleEventType::DATA;
+    event.receivedMs = static_cast<uint32_t>(millis());
     event.dataLen = std::min(len, BLE_BUF_LEN - 1);
     if (event.dataLen > 0) {
         memcpy(event.data, data, event.dataLen);

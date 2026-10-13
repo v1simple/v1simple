@@ -36,6 +36,7 @@ bool BleQueueModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr, V1Pr
 
     rxBuffer_.clear();
     rxIngressSequences_.clear();
+    rxTimestamps_.clear();
     rxDiscontinuities_.clear();
     clearLongRxState();
     rxReadPos_ = 0;
@@ -62,9 +63,10 @@ bool BleQueueModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr, V1Pr
     const size_t desiredRxCap = std::max(config_.rxBufferCap, RX_BUFFER_MAX);
     rxBuffer_.reserve(desiredRxCap);
     rxIngressSequences_.reserve(desiredRxCap);
+    rxTimestamps_.reserve(desiredRxCap);
     rxDiscontinuities_.reserve(desiredRxCap);
     if (rxBuffer_.capacity() < desiredRxCap || rxIngressSequences_.capacity() < desiredRxCap ||
-        rxDiscontinuities_.capacity() < desiredRxCap) {
+        rxTimestamps_.capacity() < desiredRxCap || rxDiscontinuities_.capacity() < desiredRxCap) {
         Serial.printf("[BLE_QUEUE] FATAL: RX buffer reserve failed (cap=%u have=%u)\n",
                       static_cast<unsigned>(desiredRxCap), static_cast<unsigned>(rxBuffer_.capacity()));
         vQueueDelete(queueHandle_);
@@ -172,6 +174,7 @@ bool BleQueueModule::enqueueStampedForTest(const uint8_t* data, size_t length, u
 void BleQueueModule::clearRxState() {
     rxBuffer_.clear();
     rxIngressSequences_.clear();
+    rxTimestamps_.clear();
     rxDiscontinuities_.clear();
     rxReadPos_ = 0;
 }
@@ -191,6 +194,8 @@ void BleQueueModule::compactRxState() {
     memmove(rxIngressSequences_.data(), rxIngressSequences_.data() + shift,
             unread * sizeof(rxIngressSequences_[0]));
     rxIngressSequences_.resize(unread);
+    memmove(rxTimestamps_.data(), rxTimestamps_.data() + shift, unread * sizeof(rxTimestamps_[0]));
+    rxTimestamps_.resize(unread);
     memmove(rxDiscontinuities_.data(), rxDiscontinuities_.data() + shift,
             unread * sizeof(rxDiscontinuities_[0]));
     rxDiscontinuities_.resize(unread);
@@ -198,10 +203,10 @@ void BleQueueModule::compactRxState() {
 }
 
 bool BleQueueModule::appendRxPacket(const BLEDataPacket& packet, bool beginsAfterDiscontinuity) {
-    return appendRxBytes(packet.data, packet.length, packet.ingressSequence, beginsAfterDiscontinuity);
+    return appendRxBytes(packet.data, packet.length, packet.ingressSequence, packet.tsMs, beginsAfterDiscontinuity);
 }
 
-bool BleQueueModule::appendRxBytes(const uint8_t* data, size_t length, uint32_t ingressSequence,
+bool BleQueueModule::appendRxBytes(const uint8_t* data, size_t length, uint32_t ingressSequence, uint32_t timestampMs,
                                    bool beginsAfterDiscontinuity) {
     if (!data || length == 0) {
         return false;
@@ -221,6 +226,8 @@ bool BleQueueModule::appendRxBytes(const uint8_t* data, size_t length, uint32_t 
     memcpy(rxBuffer_.data() + begin, data, length);
     rxIngressSequences_.resize(begin + length);
     std::fill(rxIngressSequences_.begin() + begin, rxIngressSequences_.end(), ingressSequence);
+    rxTimestamps_.resize(begin + length);
+    std::fill(rxTimestamps_.begin() + begin, rxTimestamps_.end(), timestampMs);
     rxDiscontinuities_.resize(begin + length, 0);
     if (beginsAfterDiscontinuity) {
         rxDiscontinuities_[begin] = 1;
@@ -295,6 +302,7 @@ bool BleQueueModule::appendLongRxChunk(const BLEDataPacket& packet, bool beginsA
     if (longRx_.count == 0) {
         longRx_.count = count;
         longRx_.firstIngressSequence = packet.ingressSequence;
+        longRx_.firstTimestampMs = packet.tsMs;
         longRx_.streamDiscontinuity = beginsAfterDiscontinuity;
     } else {
         longRx_.streamDiscontinuity |= beginsAfterDiscontinuity;
@@ -308,6 +316,7 @@ bool BleQueueModule::appendLongRxChunk(const BLEDataPacket& packet, bool beginsA
         clearLongRxState();
         longRx_.count = count;
         longRx_.firstIngressSequence = packet.ingressSequence;
+        longRx_.firstTimestampMs = packet.tsMs;
         longRx_.streamDiscontinuity = true;
     }
 
@@ -346,9 +355,10 @@ bool BleQueueModule::flushCompleteLongRx() {
     }
 
     const uint32_t ingressSequence = longRx_.firstIngressSequence;
+    const uint32_t timestampMs = longRx_.firstTimestampMs;
     const bool streamDiscontinuity = longRx_.streamDiscontinuity || pendingStreamDiscontinuity_;
     for (size_t slot = 0; slot < longRx_.count; ++slot) {
-        if (!appendRxBytes(longRx_.payloads[slot].data(), longRx_.lengths[slot], ingressSequence,
+        if (!appendRxBytes(longRx_.payloads[slot].data(), longRx_.lengths[slot], ingressSequence, timestampMs,
                            streamDiscontinuity && slot == 0)) {
             // Capacity was proven above; preserve the completed candidate if a
             // future implementation changes that invariant.
@@ -568,6 +578,7 @@ void BleQueueModule::process() {
         const uint8_t* packetPtr = rxBuffer_.data() + rxReadPos_;
         const uint8_t packetId = packetPtr[3];
         const uint32_t packetIngressSequence = rxIngressSequences_[rxReadPos_];
+        const uint32_t packetTimestampMs = rxTimestamps_[rxReadPos_];
         const auto discontinuityBegin = rxDiscontinuities_.begin() + rxReadPos_;
         const auto discontinuityEnd = discontinuityBegin + packetSize;
         if (std::find(discontinuityBegin, discontinuityEnd, uint8_t{1}) != discontinuityEnd) {
@@ -605,7 +616,7 @@ void BleQueueModule::process() {
                 if (!ble_->hasSessionSweepMaxCapture()) parser_->resetSweepMaxObservation();
             }
         }
-        bool parseOk = parser_->parse(packetPtr, packetSize, parseTimestampMs, packetIngressSequence);
+        bool parseOk = parser_->parse(packetPtr, packetSize, packetTimestampMs, packetIngressSequence);
         if (!parseOk && packetId == PACKET_ID_ALERT_DATA) {
             markAlertStreamDiscontinuous();
         }

@@ -10,7 +10,7 @@ queue processing, command completion, and verified application are separate even
 |---|---|
 | BLE callback enters | [`V1BLEClient::notifyCallback`](../../src/ble_connection.cpp) stamps ingress sequence, time, and session generation before characteristic mapping or proxy work. The sequence is nonzero and wraps past zero. |
 | Main-loop handoff | [`DriveRuntime::onV1Data`](../../src/drive_runtime.cpp) forwards all stamps to [`BleQueueModule::tryOnNotify`](../../src/modules/ble/ble_queue_module.cpp). Admission and consumption both reject a different session generation. |
-| Notification becomes an ESP frame | `BleQueueModule::process` retains complete notification ownership, reassembles B2CE byte streams and B4E0 indexed chunks, and preserves the frame's first ingress sequence. Gaps mark alert-table discontinuity. |
+| Notification becomes an ESP frame | `BleQueueModule::process` retains complete notification ownership, reassembles B2CE byte streams and B4E0 indexed chunks, and preserves first-arrival ingress and time. A partial B2CE frame keeps its start-byte time; an indexed B4E0 frame keeps its first received chunk's time. Later staging or parsing cannot renew its age. Gaps mark alert-table discontinuity. |
 | Frame becomes an observation | [`PacketParser::parseInternal`](../../src/packet_parser.cpp) validates framing and packet-specific destination/origin/width, then records canonical observations with ingress/revision. User-byte capture has a specialized canonical path in the queue. |
 | Main-loop consumers run | [`DriveLoopCoordinator::tick`](../../src/runtime_coordinator.h) drains the queue before display composition and connection dispatch. AutoPush runs at the end of `DriveRuntime::presentDisplay`; notification callbacks can execute while its synchronous BLE send waits. |
 
@@ -39,6 +39,9 @@ require exactly seven data bytes, V1 origin, framing and the applicable checksum
    calls [`parseAlertData`](../../src/packet_parser_alerts.cpp).
 3. `parseAlertData` assembles a complete table, discards stale cached rows, and
    honors discontinuities before publishing `alerts_` and `alertCount_`.
+   Freshness comparisons use the newest retained receipt time when short and
+   long frames finish out of order; an older copy cannot replace a newer cached row.
+   Publication retains the newest contributing row's receipt time.
    It chooses row priority from aux0 bit 7, with usable-row fallbacks.
    A count-zero row clears the radar table; display-packet mute and primary
    signal bars retain their own authority. Display laser remains separately owned.
@@ -68,6 +71,9 @@ selection. Fixed wire vectors have independently summed checksums.
 | `test_long_characteristic_alert_envelopes_reach_real_parser_and_clear` | Actual B4E0 indexed envelopes for D6 priority/clear and D8 control traverse production long-RX assembly and parser before version discovery. |
 | `test_alert_destination_compatibility_keeps_origin_checksum_and_shape_validation` | D5, accessory E6, bad D6/D8 checksums, and a short row cannot replace or clear a valid table. |
 | `test_queue_gap_prevents_cross_cycle_alert_table_publication` | A dropped notification cannot combine old and new rows into a false complete table. |
+| `test_batched_alert_rows_keep_their_arrival_age` | Short and long notifications retain row age when drained together, including uptime wrap; fresh peer rows still assemble. |
+| `test_delayed_partial_alert_frame_keeps_its_first_arrival_age` | Completing an old partial frame cannot make its row fresh enough to combine with a new peer. |
+| `test_held_long_row_can_complete_a_fresh_newer_short_row` / `test_held_long_row_does_not_overwrite_a_newer_short_copy` | Held long frames neither discard fresh short rows through timestamp underflow nor replace newer copies. |
 | `test_spec_busy_broadcast_reaches_request_owner_but_targeted_busy_does_not` | D6 compatibility is specific to alert data; busy flow control retains its D8 contract. |
 
 The original five-case suite failed two cases before the fix. The additional

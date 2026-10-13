@@ -81,9 +81,10 @@ void setV1Alert(bool active, uint16_t frequency = 34700) {
                          0xB0, 0, 0x22, 0x80});
 }
 
-void setV1Display(bool laser, bool muted = false) {
+void setV1Display(bool laser, bool muted = false, int softMuted = -1) {
     const uint8_t image = static_cast<uint8_t>(0x20 | (laser ? 0x01 : 0) | (muted ? 0x10 : 0));
-    parseV1Packet(0x31, {0x06, 0x06, 0x03, image, image, 0x04, 0, 0x73});
+    const uint8_t audio = static_cast<uint8_t>(0x04 | ((softMuted < 0 ? muted : softMuted != 0) ? 0x01 : 0));
+    parseV1Packet(0x31, {0x06, 0x06, 0x03, image, image, audio, 0, 0x73});
 }
 
 bool wifiInactive(void*) { return false; }
@@ -326,6 +327,39 @@ void test_confirmed_mute_state_stops_pending_retry() {
     TEST_ASSERT_EQUAL_INT(1, ble.setMuteCalls);
 }
 
+void test_tap_toggles_audio_mute_when_the_display_indicator_disagrees() {
+    for (bool softMuted : {false, true}) {
+        setUp();
+        setV1Display(false, !softMuted, softMuted);
+        setV1Display(false, !softMuted, softMuted);
+        TEST_ASSERT_EQUAL(!softMuted, parser.getDisplayState().muted);
+        TEST_ASSERT_EQUAL(softMuted, parser.getDisplayState().softMuted);
+        pollTouch(1000, true);
+        TEST_ASSERT_EQUAL_INT(1, ble.setMuteCalls);
+        TEST_ASSERT_EQUAL(!softMuted, ble.lastMuteValue);
+    }
+}
+
+void test_pending_mute_stops_on_audio_confirmation_before_the_indicator_changes() {
+    ble.nextMuteSendResult = SendResult::NOT_YET;
+    pollTouch(1000, true);
+    setV1Display(false, false, true);
+    pollTouch(1025, false);
+    TEST_ASSERT_EQUAL_INT(1, ble.setMuteCalls);
+}
+
+void test_pending_unmute_waits_for_audio_confirmation_after_the_indicator_clears() {
+    setV1Display(false, true, true);
+    setV1Display(false, true, true);
+    ble.nextMuteSendResult = SendResult::NOT_YET;
+    pollTouch(1000, true);
+    TEST_ASSERT_FALSE(ble.lastMuteValue);
+    setV1Display(false, false, true);
+    pollTouch(1025, false);
+    TEST_ASSERT_EQUAL_INT(2, ble.setMuteCalls);
+    TEST_ASSERT_FALSE(ble.lastMuteValue);
+}
+
 void test_partial_idle_taps_cannot_cross_unobserved_alert_or_session_boundary() {
     for (bool sessionReset : {false, true}) {
         setUp();
@@ -424,6 +458,9 @@ int main() {
     RUN_TEST(test_pending_mute_survives_ongoing_priority_change);
     RUN_TEST(test_empty_radar_table_does_not_cancel_live_laser_mute);
     RUN_TEST(test_confirmed_mute_state_stops_pending_retry);
+    RUN_TEST(test_tap_toggles_audio_mute_when_the_display_indicator_disagrees);
+    RUN_TEST(test_pending_mute_stops_on_audio_confirmation_before_the_indicator_changes);
+    RUN_TEST(test_pending_unmute_waits_for_audio_confirmation_after_the_indicator_clears);
     RUN_TEST(test_partial_idle_taps_cannot_cross_unobserved_alert_or_session_boundary);
     RUN_TEST(test_presentation_suspension_cancels_partial_taps_and_pending_mute);
     RUN_TEST(test_invalid_touch_coordinates_cannot_mute_a_live_alert);

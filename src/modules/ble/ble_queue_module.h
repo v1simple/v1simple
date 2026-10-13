@@ -94,6 +94,7 @@ class BleQueueModule {
         std::array<std::array<uint8_t, MAX_LONG_CHUNK_PAYLOAD>, MAX_LONG_CHUNKS> payloads{};
         std::array<uint8_t, MAX_LONG_CHUNKS> lengths{};
         uint32_t firstIngressSequence = 0;
+        uint32_t firstTimestampMs = 0;
         uint32_t latestTimestampMs = 0;
         bool streamDiscontinuity = false;
     };
@@ -111,6 +112,9 @@ class BleQueueModule {
     // the sequence attached to its start byte so a response that began before
     // a command cannot become fresh merely by completing afterward.
     std::vector<uint32_t> rxIngressSequences_;
+    // Arrival age follows the same first-byte ownership as ingress, including
+    // partial frames retained while later notifications are staged.
+    std::vector<uint32_t> rxTimestamps_;
     // Marks the first staged byte after a known notification-stream gap. The
     // parser is invalidated only when consumption reaches that exact boundary.
     std::vector<uint8_t> rxDiscontinuities_;
@@ -128,7 +132,7 @@ class BleQueueModule {
 
     Config config_;
     void refreshBackpressureState();
-    bool appendRxBytes(const uint8_t* data, size_t length, uint32_t ingressSequence,
+    bool appendRxBytes(const uint8_t* data, size_t length, uint32_t ingressSequence, uint32_t timestampMs,
                        bool beginsAfterDiscontinuity = false);
     bool appendRxPacket(const BLEDataPacket& packet, bool beginsAfterDiscontinuity);
     bool appendLongRxChunk(const BLEDataPacket& packet, bool beginsAfterDiscontinuity);

@@ -409,7 +409,7 @@ void test_real_speed_sample_is_primary_then_expires_and_invalidates_selection() 
     fixture.bootToPolling();
     fixture.startSpeedCommand();
     fixture.sendResponse("41 0D 50\r>");
-    const uint32_t sampleMs = fixture.nowMs;
+    const uint32_t sampleMs = fixture.runtime.snapshot(fixture.nowMs).speedSampleTsMs;
 
     SpeedSourceSelector selector;
     selector.begin(&fixture.runtime, true, nullptr, false);
@@ -506,6 +506,7 @@ void test_searching_response_extends_wait_and_accepts_delayed_elm_reply() {
 
     fixture.update(issuedMs + obd::POLL_TIMEOUT_MS);
     TEST_ASSERT_EQUAL(ObdCommandKind::SPEED, fixture.runtime.snapshot(fixture.nowMs).commandInFlight);
+    mockMillis = issuedMs + 9000; // The reply arrives after searching, before its queue is drained.
     fixture.runtime.onBleData(reinterpret_cast<const uint8_t*>("41 0D 32\r>"), 10);
     fixture.update(issuedMs + 9000);
 
@@ -513,6 +514,49 @@ void test_searching_response_extends_wait_and_accepts_delayed_elm_reply() {
     TEST_ASSERT_TRUE(status.speedValid);
     TEST_ASSERT_EQUAL_UINT32(1, status.pollCount);
     TEST_ASSERT_EQUAL_UINT32(0, status.pollErrors);
+}
+
+void test_speed_response_keeps_callback_time_when_the_queue_drains_later() {
+    Fixture fixture;
+    fixture.bootToPolling();
+    fixture.startSpeedCommand();
+    const uint32_t receivedMs = fixture.nowMs;
+    fixture.sendResponse("41 0D 00\r>", 250);
+    const ObdRuntimeStatus status = fixture.runtime.snapshot(fixture.nowMs);
+    TEST_ASSERT_TRUE(status.speedValid);
+    TEST_ASSERT_EQUAL_UINT32(receivedMs, status.speedSampleTsMs);
+    TEST_ASSERT_EQUAL_UINT32(250, status.speedAgeMs);
+}
+
+void test_stale_queued_speed_cannot_authorize_speed_selection() {
+    Fixture fixture;
+    fixture.bootToPolling();
+    fixture.startSpeedCommand();
+    fixture.sendResponse("41 0D 00\r>", obd::SPEED_MAX_AGE_MS + 3000);
+    const ObdRuntimeStatus status = fixture.runtime.snapshot(fixture.nowMs);
+    TEST_ASSERT_FALSE(status.speedValid);
+    TEST_ASSERT_EQUAL_UINT32(0, status.pollCount);
+    SpeedSourceSelector selector;
+    selector.begin(&fixture.runtime, true, nullptr, false);
+    selector.update(fixture.nowMs);
+    TEST_ASSERT_FALSE(selector.selectedSpeed().valid);
+}
+
+void test_speed_response_freshness_uses_callback_time_across_uptime_wrap() {
+    for (uint32_t receivedMs : {UINT32_MAX - 100, uint32_t{0}}) {
+        Fixture fixture;
+        fixture.bootToPolling();
+        fixture.startSpeedCommand();
+        mockMillis = receivedMs;
+        fixture.runtime.onBleData(reinterpret_cast<const uint8_t*>("41 0D 00\r>"), 10);
+        fixture.update(receivedMs + 250);
+        const ObdRuntimeStatus status = fixture.runtime.snapshot(fixture.nowMs);
+        TEST_ASSERT_TRUE(status.speedValid);
+        TEST_ASSERT_EQUAL_UINT32(receivedMs, status.speedSampleTsMs);
+        TEST_ASSERT_EQUAL_UINT32(250, status.speedAgeMs);
+        fixture.update(receivedMs + obd::SPEED_MAX_AGE_MS + 1);
+        TEST_ASSERT_FALSE(fixture.runtime.snapshot(fixture.nowMs).speedValid);
+    }
 }
 
 void test_current_overflow_is_classified_before_response_state_is_cleared() {
@@ -608,6 +652,9 @@ int main() {
     RUN_TEST(test_malformed_complete_response_is_rejected_without_speed_update);
     RUN_TEST(test_partial_response_completed_before_timeout_is_accepted);
     RUN_TEST(test_searching_response_extends_wait_and_accepts_delayed_elm_reply);
+    RUN_TEST(test_speed_response_keeps_callback_time_when_the_queue_drains_later);
+    RUN_TEST(test_stale_queued_speed_cannot_authorize_speed_selection);
+    RUN_TEST(test_speed_response_freshness_uses_callback_time_across_uptime_wrap);
     RUN_TEST(test_current_overflow_is_classified_before_response_state_is_cleared);
     RUN_TEST(test_historical_overflows_do_not_change_later_no_data_recovery);
     RUN_TEST(test_repeated_current_overflows_still_disconnect_the_transport);

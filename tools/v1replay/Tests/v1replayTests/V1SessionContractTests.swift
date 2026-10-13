@@ -349,7 +349,7 @@ final class V1SessionContractTests: XCTestCase {
         XCTAssertEqual(session.receive(valid)[0].effects, [.reply(V1.ReplyDecision(
             channel: .displayShort,
             bytes: [
-                0xAA, 0xD6, 0xEA, 0x02, 0x07,
+                0xAA, 0xD6, 0xE9, 0x02, 0x07,
                 0x76, 0x34, 0x2E, 0x31, 0x30, 0x33, 0x38,
                 0xAB,
             ]

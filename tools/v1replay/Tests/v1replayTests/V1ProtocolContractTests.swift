@@ -92,6 +92,46 @@ final class V1ProtocolContractTests: XCTestCase {
         XCTAssertEqual(decoded.map(\.payload.count), [7, 8, 8])
     }
 
+    func testChecksumFreeV1InformationUsesCanonicalE9Framing() {
+        let alert = V1.AlertRow.single(
+            bars: 1, band: .ka, direction: .front, frequencyMHz: 34_700, priority: true
+        ).packet(header: .broadcastInformation, checksum: false)
+        let display = V1.DisplayFrame.alerting(
+            bars: 1, band: .ka, direction: .front, bogeyCount: 1,
+            muted: false, volume: 0x40, displayOn: true
+        ).packet(header: .broadcastInformation, checksum: false)
+
+        XCTAssertEqual(alert, [
+            0xAA, 0xD8, 0xE9, 0x43, 0x07,
+            0x11, 0x87, 0x8C, 0x80, 0x00, 0x22, 0x80, 0xAB,
+        ])
+        XCTAssertEqual(display, [
+            0xAA, 0xD8, 0xE9, 0x31, 0x08,
+            0x06, 0x06, 0x01, 0x22, 0x22, 0x0C, 0x0C, 0x40, 0xAB,
+        ])
+    }
+
+    func testChecksumFreeV1SweepRepliesUseCanonicalE9Framing() {
+        XCTAssertEqual(V1.maxSweepIndexPacket(header: .v1ToApp, checksum: false), [
+            0xAA, 0xD6, 0xE9, 0x20, 0x01, 0x01, 0xAB,
+        ])
+        XCTAssertEqual(V1.sweepWriteResultPacket(header: .v1ToApp, result: 0, checksum: false), [
+            0xAA, 0xD6, 0xE9, 0x21, 0x01, 0x00, 0xAB,
+        ])
+    }
+
+    func testHistoricalDraftHeaderPreservesChecksumFreePacketParity() {
+        let display = V1.DisplayFrame.alerting(
+            bars: 1, band: .ka, direction: .front, bogeyCount: 1,
+            muted: false, volume: 0x40, displayOn: true,
+            blinkPlane: true, includeModeBits: false
+        ).packet(header: .draft, checksum: false)
+        XCTAssertEqual(display, [
+            0xAA, 0xDA, 0xE4, 0x31, 0x08,
+            0x06, 0x00, 0x01, 0x22, 0x22, 0x0C, 0x00, 0x40, 0xAB,
+        ])
+    }
+
     func testSweepAndFlowControlUseTheirSpecifiedDestinations() throws {
         let rejected = V1.requestNotProcessedPacket(
             header: .v1ToApp,

@@ -202,6 +202,7 @@ class SettingsManager {
     bool restorePending_ = false;
     uint64_t restoreCommitWatermark_ = 0;
     uint64_t profileDeleteCommitWatermark_ = 0;
+    uint32_t wifiCredentialCommitGeneration_ = 0;
 #ifdef UNIT_TEST
     bool wifiCredentialInterruptBeforeSettingsCommit_ = false;
     bool restoreInterruptAfterCredentials_ = false;

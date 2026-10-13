@@ -142,6 +142,10 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
     case 0x36:
     case PACKET_ID_REQ_WRITE_VOLUME:
     case PACKET_ID_RESP_CURRENT_VOLUME:
+    // These one-byte replies are seven bytes with the E9 originator. Their
+    // owning cases still validate the exact width, destination and checksum.
+    case PACKET_ID_RESP_MAX_SWEEP_INDEX:
+    case PACKET_ID_RESP_SWEEP_WRITE_RESULT:
     case PACKET_ID_RESP_USER_BYTES:
     case PACKET_ID_VERSION:
     case PACKET_ID_RESP_REQUEST_NOT_PROCESSED:

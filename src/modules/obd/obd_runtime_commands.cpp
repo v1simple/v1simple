@@ -190,6 +190,9 @@ void ObdRuntimeModule::handleAtInitResponse(uint32_t nowMs) {
 }
 
 bool ObdRuntimeModule::handleSpeedResponse(uint32_t nowMs) {
+    if (static_cast<uint32_t>(nowMs - bleResponseReceivedMs_) > obd::SPEED_MAX_AGE_MS) {
+        return false;
+    }
     Elm327ParseResult result = parseElm327Response(bleBuf_, bleBufLen_);
     if (!result.valid || result.service != 0x41 || result.pid != 0x0D) {
         return false;
@@ -201,7 +204,7 @@ bool ObdRuntimeModule::handleSpeedResponse(uint32_t nowMs) {
     }
 
     speedMph_ = kmhToMph(kmh);
-    speedSampleTsMs_ = nowMs;
+    speedSampleTsMs_ = bleResponseReceivedMs_;
     speedValid_ = true;
     consecutiveSpeedSamples_++;
     consecutiveErrors_ = 0;
@@ -216,7 +219,7 @@ bool ObdRuntimeModule::handleSpeedResponse(uint32_t nowMs) {
 // ======================================================================
 
 bool ObdRuntimeModule::isSpeedFresh(uint32_t nowMs) const {
-    return speedValid_ && speedSampleTsMs_ != 0 && (nowMs - speedSampleTsMs_) <= obd::SPEED_MAX_AGE_MS;
+    return speedValid_ && (nowMs - speedSampleTsMs_) <= obd::SPEED_MAX_AGE_MS;
 }
 
 bool ObdRuntimeModule::speedDue(uint32_t nowMs) const {

@@ -210,6 +210,7 @@ void SettingsManager::load() {
     const int64_t storedDeleteWatermark = preferences_.getLong64(kNvsProfileDeleteCommitWatermark, 0);
     restoreCommitWatermark_ = storedRestoreWatermark > 0 ? static_cast<uint64_t>(storedRestoreWatermark) : 0;
     profileDeleteCommitWatermark_ = storedDeleteWatermark > 0 ? static_cast<uint64_t>(storedDeleteWatermark) : 0;
+    wifiCredentialCommitGeneration_ = preferences_.getUInt(kNvsWifiCredentialCommitGeneration, 0);
     if (restorePending_) {
         Serial.println("[Settings] NVS marked restore-pending; SD backup remains authoritative");
     }

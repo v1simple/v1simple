@@ -65,6 +65,25 @@ void test_send_mute_tracks_desired_state_and_owner() {
                           static_cast<int>(module.getPresentationState().activeMuteOwner));
 }
 
+void test_mute_pending_uses_audio_state_without_changing_indicator_presentation() {
+    for (bool targetMute : {false, true}) {
+        setUp();
+        parser.state.muted = targetMute;
+        parser.state.softMuted = !targetMute;
+        TEST_ASSERT_TRUE(module.sendMute(QuietOwner::TapGesture, targetMute));
+        TEST_ASSERT_TRUE(module.getDesiredState().mutePending);
+
+        parser.state.muted = !targetMute;
+        (void)module.getCommittedState();
+        TEST_ASSERT_TRUE(module.getDesiredState().mutePending);
+        parser.state.softMuted = targetMute;
+        const QuietCommittedState committed = module.getCommittedState();
+        TEST_ASSERT_FALSE(module.getDesiredState().mutePending);
+        TEST_ASSERT_EQUAL(!targetMute, committed.muted);
+        TEST_ASSERT_EQUAL(!targetMute, module.getPresentationState().effectiveMuted);
+    }
+}
+
 static void enableSpeedVol(uint8_t targetVolume) {
     speedMute.begin(true, 25, 3, targetVolume);
     speedMute.state_.muteActive = true;
@@ -207,6 +226,7 @@ void test_volume_convergence_requires_both_main_and_mute_values() {
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_send_mute_tracks_desired_state_and_owner);
+    RUN_TEST(test_mute_pending_uses_audio_state_without_changing_indicator_presentation);
     RUN_TEST(test_speed_volume_drop_restore_and_zero_presentation);
     RUN_TEST(test_speed_volume_and_voice_honor_user_setting_for_ka);
     RUN_TEST(test_speed_volume_drop_deferred_until_volume_data_received);

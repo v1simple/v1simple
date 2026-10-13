@@ -65,6 +65,12 @@ enum V1 {
         /// Historical alias.
         static let draft = Header.repoConvention
 
+        func origin(checksum: Bool) -> UInt8 {
+            // V1 identifies checksum-free packets as E9. Preserve explicit
+            // fixture origins, including the historical DA E4 header.
+            return src == 0xEA && !checksum ? 0xE9 : src
+        }
+
         static func named(_ name: String) -> Header? {
             switch name.lowercased() {
             case "v1", "v1toapp", "spec": return .v1ToApp
@@ -285,7 +291,7 @@ enum V1 {
         var packet: [UInt8] = [
             packetStart,
             header.dest,
-            header.src,
+            header.origin(checksum: checksum),
             id,
             UInt8(truncatingIfNeeded: payload.count + (checksum ? 1 : 0))
         ]

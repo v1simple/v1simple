@@ -706,7 +706,7 @@ func runPlay(idleOnly: Bool,
     console.print("")
     console.print("\(Ansi.bold)v1replay \(toolVersion)\(Ansi.reset)  —  pretending to be a Valentine One Gen2")
     console.print("\(Ansi.dim)service  \(V1.serviceUUID)\(Ansi.reset)")
-    console.print("\(Ansi.dim)name     \(peripheralConfig.localName)   info \(String(format: "%02X %02X", informationHeader.dest, informationHeader.src))   replies \(String(format: "%02X %02X", replyHeader.dest, replyHeader.src))   checksum \(checksum ? "on" : "off")\(Ansi.reset)")
+    console.print("\(Ansi.dim)name     \(peripheralConfig.localName)   info \(String(format: "%02X %02X", informationHeader.dest, informationHeader.origin(checksum: checksum)))   replies \(String(format: "%02X %02X", replyHeader.dest, replyHeader.origin(checksum: checksum)))   checksum \(checksum ? "on" : "off")\(Ansi.reset)")
     if detectorStateStore != nil {
         console.print("\(Ansi.dim)state    \(restoredDetectorState ? "restored" : "factory seed") — durable detector storage enabled\(Ansi.reset)")
     }

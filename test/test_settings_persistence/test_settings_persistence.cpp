@@ -2834,6 +2834,126 @@ void test_interrupted_wifi_credential_transaction_reboots_to_old_complete_pair()
     TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiTxnReady));
 }
 
+void test_interrupted_same_ssid_password_edit_reboots_to_old_complete_slot() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "SameNet", "old-password", "Old label", 0));
+    const String committedNamespace = activeNamespaceOrEmpty();
+
+    manager.utInterruptWifiCredentialBeforeSettingsCommit(true);
+    TEST_ASSERT_FALSE(manager.setWifiStaSlotCredentials(0, "SameNet", "new-password", "New label", 9));
+    TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiTxnReady));
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.begin();
+    TEST_ASSERT_EQUAL_STRING(committedNamespace.c_str(), activeNamespaceOrEmpty().c_str());
+    TEST_ASSERT_EQUAL_STRING("SameNet", rebooted.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("Old label", rebooted.get().wifiStaSlots[0].label.c_str());
+    TEST_ASSERT_EQUAL_UINT8(0, rebooted.get().wifiStaSlots[0].priority);
+    TEST_ASSERT_EQUAL_STRING("old-password", rebooted.getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiTxnReady));
+}
+
+void test_committed_same_ssid_password_edit_reboots_to_new_complete_slot() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "SameNet", "old-password", "Old label", 0));
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "SameNet", "new-password", "New label", 9));
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.begin();
+    TEST_ASSERT_EQUAL_STRING("SameNet", rebooted.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("New label", rebooted.get().wifiStaSlots[0].label.c_str());
+    TEST_ASSERT_EQUAL_UINT8(9, rebooted.get().wifiStaSlots[0].priority);
+    TEST_ASSERT_EQUAL_STRING("new-password", rebooted.getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiTxnReady));
+}
+
+void test_pending_same_ssid_edit_rolls_back_after_failed_commit_and_later_settings_save() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "SameNet", "old-password", "Old label", 0));
+
+    // The new secret commits, but settings cannot commit and the SD rollback
+    // cannot rotate its file. Retain the journal for a later recovery attempt.
+    fs::mock_fail_rename_on_call(fs::g_mock_fs_rename_state.renameCalls + 3);
+    mock_preferences::set_fail_writes_for_key(kNvsCommittedGeneration);
+    TEST_ASSERT_FALSE(manager.setWifiStaSlotCredentials(0, "SameNet", "new-password", "New label", 9));
+    mock_preferences::set_fail_writes_for_key(nullptr);
+    fs::mock_reset_fs_rename_state();
+    TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiTxnReady));
+
+    // A later unrelated save advances the A/B generation to the failed edit's
+    // intended generation. That must not count as a credential commit.
+    manager.updateBrightness(77);
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    SettingsManager rebooted(storage, profiles);
+    rebooted.begin();
+    TEST_ASSERT_EQUAL_UINT8(77, rebooted.get().brightness);
+    TEST_ASSERT_EQUAL_STRING("Old label", rebooted.get().wifiStaSlots[0].label.c_str());
+    TEST_ASSERT_EQUAL_UINT8(0, rebooted.get().wifiStaSlots[0].priority);
+    TEST_ASSERT_EQUAL_STRING("old-password", rebooted.getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiTxnReady));
+}
+
+void test_committed_same_ssid_journal_survives_later_settings_save_and_selector_loss() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(2, "SameNet", "old-password", "Old label", 0));
+
+    WifiCredentialJournal journal;
+    journal.slotIndex = 2;
+    journal.oldSsid = journal.newSsid = "SameNet";
+    journal.oldEncodedPassword = encodeObfuscatedForStorage("old-password");
+    journal.newEncodedPassword = encodeObfuscatedForStorage("new-password");
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(2, "SameNet", "new-password", "New label", 9));
+    journal.settingsGeneration = static_cast<uint32_t>(mock_preferences::getUnsigned(
+        activeNamespaceOrEmpty().c_str(), kNvsWifiCredentialCommitGeneration, 0));
+    // Recreate the exact committed journal to model an interruption before its
+    // cleanup. Its payload is identical to the setter's retained intent.
+    TEST_ASSERT_TRUE(writeWifiCredentialJournal(journal));
+    manager.updateBrightness(77);
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    mock_preferences::store().erase(SETTINGS_NS_META);
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.begin();
+    TEST_ASSERT_EQUAL_UINT8(77, rebooted.get().brightness);
+    TEST_ASSERT_EQUAL_STRING("New label", rebooted.get().wifiStaSlots[2].label.c_str());
+    TEST_ASSERT_EQUAL_UINT8(9, rebooted.get().wifiStaSlots[2].priority);
+    TEST_ASSERT_EQUAL_STRING("new-password", rebooted.getWifiStaSlotPassword(2).c_str());
+    TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiTxnReady));
+}
+
+void test_tokenless_wifi_journal_retains_legacy_ssid_recovery() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "OldNet", "old-password", "Old label", 0));
+    manager.utInterruptWifiCredentialBeforeSettingsCommit(true);
+    TEST_ASSERT_FALSE(manager.setWifiStaSlotCredentials(0, "NewNet", "new-password", "New label", 9));
+    Preferences prefs;
+    TEST_ASSERT_TRUE(prefs.begin(WIFI_CLIENT_NS, false));
+    TEST_ASSERT_TRUE(prefs.remove(kNvsWifiTxnSettingsGeneration));
+    prefs.end();
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.begin();
+    TEST_ASSERT_EQUAL_STRING("OldNet", rebooted.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("Old label", rebooted.get().wifiStaSlots[0].label.c_str());
+    TEST_ASSERT_EQUAL_STRING("old-password", rebooted.getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiTxnReady));
+}
+
 void test_wifi_credential_setter_rejects_unsafe_or_overlong_text_before_mutation() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
@@ -6010,6 +6130,11 @@ int main() {
     RUN_TEST(test_equal_committed_generations_do_not_make_selector_authoritative);
     RUN_TEST(test_stale_known_selector_is_repaired_to_newest_committed_generation);
     RUN_TEST(test_interrupted_wifi_credential_transaction_reboots_to_old_complete_pair);
+    RUN_TEST(test_interrupted_same_ssid_password_edit_reboots_to_old_complete_slot);
+    RUN_TEST(test_committed_same_ssid_password_edit_reboots_to_new_complete_slot);
+    RUN_TEST(test_pending_same_ssid_edit_rolls_back_after_failed_commit_and_later_settings_save);
+    RUN_TEST(test_committed_same_ssid_journal_survives_later_settings_save_and_selector_loss);
+    RUN_TEST(test_tokenless_wifi_journal_retains_legacy_ssid_recovery);
     RUN_TEST(test_wifi_credential_setter_rejects_unsafe_or_overlong_text_before_mutation);
     RUN_TEST(test_short_wifi_secret_write_preserves_prior_secret_and_reboots_consistently);
     RUN_TEST(test_wifi_secret_presence_uses_bounded_exact_parser_and_distinguishes_unavailable);

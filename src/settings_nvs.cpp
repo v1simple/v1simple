@@ -633,6 +633,7 @@ bool storeWifiPasswordCandidate(size_t slotIndex, const String& encodedPassword)
 
 struct WifiCredentialJournal {
     size_t slotIndex = 0;
+    uint32_t settingsGeneration = 0;
     String oldSsid;
     String oldEncodedPassword;
     String newSsid;
@@ -671,7 +672,7 @@ WifiCredentialJournalMode wifiCredentialJournalMode() {
 }
 
 bool writeWifiCredentialJournal(const WifiCredentialJournal& journal) {
-    if (!validWifiStaSlotIndex(journal.slotIndex)) {
+    if (!validWifiStaSlotIndex(journal.slotIndex) || journal.settingsGeneration == 0) {
         return false;
     }
     Preferences prefs;
@@ -685,6 +686,8 @@ bool writeWifiCredentialJournal(const WifiCredentialJournal& journal) {
     bool written = prefs.putUChar(kNvsWifiTxnMode, static_cast<uint8_t>(WifiCredentialJournalMode::SingleSlot)) ==
                    sizeof(uint8_t);
     written = prefs.putUChar(kNvsWifiTxnSlot, static_cast<uint8_t>(journal.slotIndex)) == sizeof(uint8_t) && written;
+    written = prefs.putUInt(kNvsWifiTxnSettingsGeneration, journal.settingsGeneration) == sizeof(uint32_t) &&
+              prefs.getUInt(kNvsWifiTxnSettingsGeneration, 0) == journal.settingsGeneration && written;
     written = writeWifiPasswordKeyState(prefs, kNvsWifiTxnOldSsid, true, journal.oldSsid) && written;
     written = writeWifiPasswordKeyState(prefs, kNvsWifiTxnOldPass, true, journal.oldEncodedPassword) && written;
     written = writeWifiPasswordKeyState(prefs, kNvsWifiTxnNewSsid, true, journal.newSsid) && written;
@@ -713,6 +716,14 @@ bool readWifiCredentialJournal(WifiCredentialJournal& journal) {
     }
     const uint8_t slotIndex = prefs.getUChar(kNvsWifiTxnSlot, static_cast<uint8_t>(kWifiStaSlotCount));
     journal.slotIndex = slotIndex;
+    journal.settingsGeneration = 0;
+    if (prefs.isKey(kNvsWifiTxnSettingsGeneration)) {
+        if (prefs.getType(kNvsWifiTxnSettingsGeneration) != PT_U32 ||
+            (journal.settingsGeneration = prefs.getUInt(kNvsWifiTxnSettingsGeneration, 0)) == 0) {
+            prefs.end();
+            return false;
+        }
+    }
     const bool stringsRead =
         readPreferenceStringExact(prefs, kNvsWifiTxnOldSsid, MAX_WIFI_SSID_LEN, journal.oldSsid) &&
         readPreferenceStringExact(prefs, kNvsWifiTxnOldPass, MAX_ENCODED_WIFI_PASSWORD_BYTES,
@@ -837,6 +848,7 @@ bool clearWifiCredentialJournal() {
         prefs.remove(kNvsWifiTxnNewPass);
         prefs.remove(kNvsWifiTxnMode);
         prefs.remove(kNvsWifiTxnData);
+        prefs.remove(kNvsWifiTxnSettingsGeneration);
     }
     prefs.end();
     return cleared;
@@ -1198,9 +1210,14 @@ bool SettingsManager::resolveWifiCredentialTransaction() {
     }
 
     const String selectedSsid = settings_.wifiStaSlots[journal.slotIndex].ssid;
-    const bool selectedNew = selectedSsid == journal.newSsid;
-    const bool selectedOld = selectedSsid == journal.oldSsid;
-    if (!selectedNew && !selectedOld) {
+    // SSID equality cannot distinguish an uncommitted password rotation on
+    // the same network. Only the marker loaded from a committed A/B payload
+    // proves that this credential edit committed; later ordinary saves retain it.
+    // Tokenless installed journals retain their historical recovery rule.
+    const bool selectedNew = journal.settingsGeneration != 0
+                                 ? wifiCredentialCommitGeneration_ == journal.settingsGeneration
+                                 : selectedSsid == journal.newSsid;
+    if (selectedSsid != (selectedNew ? journal.newSsid : journal.oldSsid)) {
         Serial.println("[Settings] WARN: WiFi transaction does not match selected settings copy; deferring recovery");
         return false;
     }
@@ -1708,6 +1725,7 @@ bool SettingsManager::writeSettingsToNamespace(const char* ns, uint32_t generati
                                static_cast<int64_t>(restoreCommitWatermark_));
     written += prefs.putLong64(kNvsProfileDeleteCommitWatermark,
                                static_cast<int64_t>(profileDeleteCommitWatermark_));
+    written += prefs.putUInt(kNvsWifiCredentialCommitGeneration, wifiCredentialCommitGeneration_);
     written += prefs.putUInt(kNvsBackupDueRevision, backupDueRevision_);
     written.putString(prefs, kNvsApSsid, settings_.apSSID);
     // Obfuscate passwords before storing
@@ -2108,6 +2126,10 @@ bool SettingsManager::setWifiStaSlotCredentials(size_t index, const String& ssid
                                                   ? passwordBefore.legacyValue : empty);
     WifiCredentialJournal journal;
     journal.slotIndex = index;
+    uint32_t activeGeneration = 0;
+    getActiveNamespace(&activeGeneration);
+    if (activeGeneration == UINT32_MAX) return false;
+    journal.settingsGeneration = activeGeneration + 1u;
     if (!copyStringExact(before.wifiStaSlots[index].ssid, journal.oldSsid) ||
         !copyStringExact(oldEncodedPassword, journal.oldEncodedPassword) ||
         !copyStringExact(slot.ssid, journal.newSsid) ||
@@ -2167,7 +2189,10 @@ bool SettingsManager::setWifiStaSlotCredentials(size_t index, const String& ssid
     }
 #endif
 
+    const uint32_t credentialGenerationBefore = wifiCredentialCommitGeneration_;
+    wifiCredentialCommitGeneration_ = journal.settingsGeneration;
     if (!save()) {
+        wifiCredentialCommitGeneration_ = credentialGenerationBefore;
         rollbackCredentialStores();
         settings_ = std::move(before);
         return false;
@@ -2231,6 +2256,10 @@ bool SettingsManager::clearWifiStaSlot(size_t index) {
     const bool sdRequired = storage_->isReady() && storage_->isSDCard();
     WifiCredentialJournal journal;
     journal.slotIndex = index;
+    uint32_t activeGeneration = 0;
+    getActiveNamespace(&activeGeneration);
+    if (activeGeneration == UINT32_MAX) return false;
+    journal.settingsGeneration = activeGeneration + 1u;
     if (!copyStringExact(before.wifiStaSlots[index].ssid, journal.oldSsid) ||
         !copyStringExact(oldEncodedPassword, journal.oldEncodedPassword)) return false;
     if (!writeWifiCredentialJournal(journal)) {
@@ -2248,7 +2277,10 @@ bool SettingsManager::clearWifiStaSlot(size_t index) {
                            (settings_.hasConfiguredWifiStaSlot()
                                 ? removeWifiClientSecretFromSD(*storage_, index, journal.oldSsid)
                                 : clearWifiClientSecretFromSD(*storage_));
+    const uint32_t credentialGenerationBefore = wifiCredentialCommitGeneration_;
+    if (sdCleared) wifiCredentialCommitGeneration_ = journal.settingsGeneration;
     if (!sdCleared || !save()) {
+        wifiCredentialCommitGeneration_ = credentialGenerationBefore;
         const bool nvsRestored = restoreWifiPasswordNvsSnapshot(index, passwordBefore);
         bool sdRestored = true;
         if (sdRequired && journal.oldSsid.length() > 0) {

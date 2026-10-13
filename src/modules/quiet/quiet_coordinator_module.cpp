@@ -96,7 +96,9 @@ void QuietCoordinatorModule::syncCommittedState() {
 }
 
 void QuietCoordinatorModule::refreshPendingState() {
-    if (desired_.mutePending && committed_.hasDisplayState && committed_.muted == desired_.mute) {
+    // Command convergence follows the audio gate; the debounced mute LED
+    // remains a separate presentation input.
+    if (desired_.mutePending && parser_ && parser_->getDisplayState().softMuted == desired_.mute) {
         desired_.mutePending = false;
     }
     if (desired_.volumePending && committed_.hasDisplayState && committed_.mainVolume == desired_.volume &&
@@ -119,7 +121,7 @@ SendResult QuietCoordinatorModule::sendMuteResult(QuietOwner owner, bool muted) 
 
     desired_.muteOwner = owner;
     desired_.mute = muted;
-    desired_.mutePending = committed_.hasDisplayState ? (committed_.muted != muted) : true;
+    desired_.mutePending = parser_ ? (parser_->getDisplayState().softMuted != muted) : true;
 
     if (!ble_) {
         return SendResult::FAILED;

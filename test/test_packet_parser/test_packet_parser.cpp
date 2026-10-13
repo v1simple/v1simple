@@ -1201,6 +1201,46 @@ void test_sweep_responses_require_canonical_destination_checksum_and_index_bits(
     TEST_ASSERT_TRUE(parser.sweepDefinitionsObservation().poisoned);
 }
 
+void test_no_checksum_max_sweep_response_accepts_canonical_seven_byte_frame() {
+    PacketParser parser;
+    const uint8_t packet[] = {0xAA, 0xD6, 0xE9, 0x20, 0x01, 0x01, 0xAB};
+    TEST_ASSERT_TRUE(parser.parse(packet, sizeof(packet), 1000, 7));
+    TEST_ASSERT_TRUE(parser.sweepMaxObservation().available);
+    TEST_ASSERT_FALSE(parser.sweepMaxObservation().poisoned);
+    TEST_ASSERT_EQUAL_UINT8(1, parser.sweepMaxObservation().maxIndex);
+    TEST_ASSERT_EQUAL_UINT32(7, parser.sweepMaxObservation().ingressSequence);
+
+    const auto wrongDestination = makePacket(PACKET_ID_RESP_MAX_SWEEP_INDEX, {0x01}, 0xE9, 0xD8);
+    const auto wrongOrigin = makePacket(PACKET_ID_RESP_MAX_SWEEP_INDEX, {0x01}, 0xE6, 0xD6);
+    const auto missingChecksum = makePacket(PACKET_ID_RESP_MAX_SWEEP_INDEX, {0x01}, 0xEA, 0xD6);
+    const auto extraByte = makePacket(PACKET_ID_RESP_MAX_SWEEP_INDEX, {0x01, 0x00}, 0xE9, 0xD6);
+    for (const auto& invalid : {wrongDestination, wrongOrigin, missingChecksum, extraByte}) {
+        TEST_ASSERT_FALSE(parser.parse(invalid.data(), invalid.size(), 1001, 8));
+        TEST_ASSERT_EQUAL_UINT32(7, parser.sweepMaxObservation().ingressSequence);
+        TEST_ASSERT_EQUAL_UINT8(1, parser.sweepMaxObservation().maxIndex);
+    }
+}
+
+void test_no_checksum_sweep_commit_response_accepts_canonical_seven_byte_frame() {
+    PacketParser parser;
+    const uint8_t packet[] = {0xAA, 0xD6, 0xE9, 0x21, 0x01, 0x00, 0xAB};
+    TEST_ASSERT_TRUE(parser.parse(packet, sizeof(packet), 1000, 9));
+    TEST_ASSERT_TRUE(parser.sweepWriteResultObservation().available);
+    TEST_ASSERT_EQUAL_UINT8(0, parser.sweepWriteResultObservation().result);
+    TEST_ASSERT_EQUAL_UINT32(9, parser.sweepWriteResultObservation().ingressSequence);
+
+    const auto wrongDestination = makePacket(PACKET_ID_RESP_SWEEP_WRITE_RESULT, {0x00}, 0xE9, 0xD8);
+    const auto wrongOrigin = makePacket(PACKET_ID_RESP_SWEEP_WRITE_RESULT, {0x00}, 0xE6, 0xD6);
+    const auto missingChecksum = makePacket(PACKET_ID_RESP_SWEEP_WRITE_RESULT, {0x00}, 0xEA, 0xD6);
+    const auto extraByte = makePacket(PACKET_ID_RESP_SWEEP_WRITE_RESULT, {0x00, 0x00}, 0xE9, 0xD6);
+    const auto invalidResult = makePacket(PACKET_ID_RESP_SWEEP_WRITE_RESULT, {0x41}, 0xE9, 0xD6);
+    for (const auto& invalid : {wrongDestination, wrongOrigin, missingChecksum, extraByte, invalidResult}) {
+        TEST_ASSERT_FALSE(parser.parse(invalid.data(), invalid.size(), 1001, 10));
+        TEST_ASSERT_EQUAL_UINT32(9, parser.sweepWriteResultObservation().ingressSequence);
+        TEST_ASSERT_EQUAL_UINT8(0, parser.sweepWriteResultObservation().result);
+    }
+}
+
 void test_v1_flow_control_packets_require_their_specified_destinations() {
     PacketParser parser;
 
@@ -1295,6 +1335,8 @@ int main(int argc, char** argv) {
     RUN_TEST(test_bluetooth_indicator_requires_supported_version_and_accepts_both_blink_images);
     RUN_TEST(test_sweep_collectors_poison_conflicts_and_require_exact_max_set);
     RUN_TEST(test_sweep_responses_require_canonical_destination_checksum_and_index_bits);
+    RUN_TEST(test_no_checksum_max_sweep_response_accepts_canonical_seven_byte_frame);
+    RUN_TEST(test_no_checksum_sweep_commit_response_accepts_canonical_seven_byte_frame);
     RUN_TEST(test_v1_flow_control_packets_require_their_specified_destinations);
     return UNITY_END();
 }

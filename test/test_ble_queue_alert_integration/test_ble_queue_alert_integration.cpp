@@ -106,6 +106,96 @@ void test_queue_gap_prevents_cross_cycle_alert_table_publication() {
     TEST_ASSERT_EQUAL_UINT16(34700, parser.getAllAlerts()[1].frequency);
 }
 
+void test_batched_alert_rows_keep_their_arrival_age() {
+    for (const uint16_t characteristic : {uint16_t{0xB2CE}, uint16_t{0xB4E0}}) {
+        for (const uint32_t firstMs : {uint32_t{100}, UINT32_MAX - 50u}) {
+            for (const uint32_t gapMs : {uint32_t{100}, uint32_t{1900}}) {
+                setUp();
+                auto first = makeAlertFrame(1, 2, 24150, 0x24, 0x80);
+                auto second = makeAlertFrame(2, 2, 34700, 0x22, 0x00);
+                if (characteristic == 0xB4E0) {
+                    first.insert(first.begin(), 0x11);
+                    second.insert(second.begin(), 0x11);
+                }
+                const uint32_t secondMs = firstMs + gapMs;
+                TEST_ASSERT_TRUE(queue.tryOnNotify(first.data(), first.size(), characteristic,
+                                                  kSession, firstMs, 1));
+                TEST_ASSERT_TRUE(queue.tryOnNotify(second.data(), second.size(), characteristic,
+                                                  kSession, secondMs, 2));
+                queue.process();
+                queue.process(); // A complete long frame can remain owned until the first drains.
+                TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::inputDrops());
+                if (gapMs == 100) {
+                    TEST_ASSERT_EQUAL_UINT32(2, parser.getAlertCount());
+                    TEST_ASSERT_TRUE(parser.hasFreshAlertTable(secondMs));
+                } else {
+                    TEST_ASSERT_EQUAL_UINT32(0, parser.getAlertCount());
+                    TEST_ASSERT_FALSE(parser.hasFreshAlertTable(secondMs));
+                }
+                tearDown();
+            }
+        }
+    }
+}
+
+void test_delayed_partial_alert_frame_keeps_its_first_arrival_age() {
+    const auto first = makeAlertFrame(1, 2, 24150, 0x24, 0x80);
+    const auto second = makeAlertFrame(2, 2, 34700, 0x22, 0x00);
+    TEST_ASSERT_TRUE(queue.tryOnNotify(first.data(), 8, kCharacteristic, kSession, 100, 1));
+    queue.process();
+    TEST_ASSERT_TRUE(queue.tryOnNotify(first.data() + 8, first.size() - 8,
+                                      kCharacteristic, kSession, 2000, 2));
+    TEST_ASSERT_TRUE(queue.tryOnNotify(second.data(), second.size(),
+                                      kCharacteristic, kSession, 2000, 3));
+    queue.process();
+    TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::inputDrops());
+    TEST_ASSERT_EQUAL_UINT32(0, parser.getAlertCount());
+    TEST_ASSERT_FALSE(parser.hasFreshAlertTable(2000));
+}
+
+void test_held_long_row_can_complete_a_fresh_newer_short_row() {
+    for (const uint32_t firstMs : {uint32_t{100}, UINT32_MAX - 1u}) {
+        setUp();
+        const auto first = makeAlertFrame(1, 2, 24150, 0x24, 0x80);
+        auto second = makeAlertFrame(2, 2, 34700, 0x22, 0x00);
+        second.insert(second.begin(), 0x11);
+        TEST_ASSERT_TRUE(queue.tryOnNotify(first.data(), 8, kCharacteristic, kSession, firstMs, 1));
+        TEST_ASSERT_TRUE(queue.tryOnNotify(second.data(), second.size(), 0xB4E0,
+                                          kSession, firstMs + 1u, 2));
+        TEST_ASSERT_TRUE(queue.tryOnNotify(first.data() + 8, first.size() - 8,
+                                          kCharacteristic, kSession, firstMs + 2u, 3));
+        TEST_ASSERT_TRUE(queue.tryOnNotify(first.data(), first.size(), kCharacteristic,
+                                          kSession, firstMs + 3u, 4));
+        queue.process();
+        queue.process(); // The held long row's original time precedes the short refresh.
+        TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::inputDrops());
+        TEST_ASSERT_EQUAL_UINT32(2, parser.getAlertCount());
+        TEST_ASSERT_TRUE(parser.hasFreshAlertTable(firstMs + 3u, 0));
+        tearDown();
+    }
+}
+
+void test_held_long_row_does_not_overwrite_a_newer_short_copy() {
+    const auto oldFirst = makeAlertFrame(1, 2, 24150, 0x24, 0x80);
+    const auto newFirst = makeAlertFrame(1, 2, 24200, 0x24, 0x80);
+    const auto second = makeAlertFrame(2, 2, 34700, 0x22, 0x00);
+    auto heldFirst = oldFirst;
+    heldFirst.insert(heldFirst.begin(), 0x11);
+    TEST_ASSERT_TRUE(queue.tryOnNotify(oldFirst.data(), 8, kCharacteristic, kSession, 100, 1));
+    TEST_ASSERT_TRUE(queue.tryOnNotify(heldFirst.data(), heldFirst.size(), 0xB4E0, kSession, 101, 2));
+    TEST_ASSERT_TRUE(queue.tryOnNotify(oldFirst.data() + 8, oldFirst.size() - 8,
+                                      kCharacteristic, kSession, 102, 3));
+    TEST_ASSERT_TRUE(queue.tryOnNotify(newFirst.data(), newFirst.size(), kCharacteristic, kSession, 103, 4));
+    queue.process();
+    queue.process();
+    TEST_ASSERT_TRUE(queue.tryOnNotify(second.data(), second.size(), kCharacteristic, kSession, 104, 5));
+    queue.process();
+    TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::inputDrops());
+    TEST_ASSERT_EQUAL_UINT32(2, parser.getAlertCount());
+    TEST_ASSERT_EQUAL_UINT16(24200, parser.getAllAlerts()[0].frequency);
+    TEST_ASSERT_TRUE(parser.hasFreshAlertTable(104, 0));
+}
+
 void test_spec_busy_broadcast_reaches_request_owner_but_targeted_busy_does_not() {
     // ESP 3.016 p40 and p11: one pending ID, General Broadcast D8.
     // Fixed wire vectors include independently summed checksums.
@@ -289,6 +379,10 @@ void test_fresh_max_after_retry_cannot_complete_capture_from_old_definitions() {
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_queue_gap_prevents_cross_cycle_alert_table_publication);
+    RUN_TEST(test_batched_alert_rows_keep_their_arrival_age);
+    RUN_TEST(test_delayed_partial_alert_frame_keeps_its_first_arrival_age);
+    RUN_TEST(test_held_long_row_can_complete_a_fresh_newer_short_row);
+    RUN_TEST(test_held_long_row_does_not_overwrite_a_newer_short_copy);
     RUN_TEST(test_spec_busy_broadcast_reaches_request_owner_but_targeted_busy_does_not);
     RUN_TEST(test_older_gen2_targeted_alerts_and_current_broadcasts_reach_the_alert_table);
     RUN_TEST(test_targeted_alerts_do_not_wait_for_firmware_version_discovery);

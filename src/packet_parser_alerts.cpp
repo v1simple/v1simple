@@ -286,13 +286,22 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
         return false;
     }
 
+    // A held long frame can be consumed after a newer short frame. Compare
+    // age at the newest retained receipt time without renewing either row.
+    uint32_t freshnessNowMs = nowMs;
+    for (size_t i = 0; i < RAW_ALERT_INDEX_SLOTS; ++i) {
+        if (alertChunkPresent_[i] && static_cast<int32_t>(alertChunkRxMs_[i] - freshnessNowMs) > 0) {
+            freshnessNowMs = alertChunkRxMs_[i];
+        }
+    }
+
     // Drop stale cached rows so a missing row from a prior cycle cannot be
     // reused to fake a "complete" table later.
     for (size_t i = 0; i < RAW_ALERT_INDEX_SLOTS; ++i) {
         if (!alertChunkPresent_[i]) {
             continue;
         }
-        if ((nowMs - alertChunkRxMs_[i]) > kAlertRowFreshnessMs) {
+        if ((freshnessNowMs - alertChunkRxMs_[i]) > kAlertRowFreshnessMs) {
             const uint8_t staleCount = alertChunkCountTag_[i];
             alertChunkPresent_[i] = false;
             alertChunkCountTag_[i] = 0;
@@ -339,6 +348,10 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
         alertResyncRequired_ = false;
     }
     const size_t rawSlot = static_cast<size_t>(alertIndex);
+    if (alertChunkPresent_[rawSlot] && alertChunkCountTag_[rawSlot] == receivedAlertCount &&
+        static_cast<int32_t>(nowMs - alertChunkRxMs_[rawSlot]) < 0) {
+        return true; // A delayed row must not replace a newer copy of the same row.
+    }
 
     bool hadRowsForCount = false;
     for (size_t i = 0; i < RAW_ALERT_INDEX_SLOTS; ++i) {
@@ -370,7 +383,7 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
                 continue;
             }
             if (alertChunkPresent_[expectedRawIndex] && alertChunkCountTag_[expectedRawIndex] == receivedAlertCount &&
-                (nowMs - alertChunkRxMs_[expectedRawIndex]) <= kAlertRowFreshnessMs) {
+                (freshnessNowMs - alertChunkRxMs_[expectedRawIndex]) <= kAlertRowFreshnessMs) {
                 ++rows;
             }
         }
@@ -385,7 +398,7 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
     // Rolling raw-index cache: only publish when at least one full scheme is ready.
     if (!completeZeroBased && !completeOneBased) {
         if ((alertTableFirstSeenMs_[receivedAlertCount] != 0) &&
-            ((nowMs - alertTableFirstSeenMs_[receivedAlertCount]) > kAlertAssemblyTimeoutMs)) {
+            ((freshnessNowMs - alertTableFirstSeenMs_[receivedAlertCount]) > kAlertAssemblyTimeoutMs)) {
             clearAlertCacheForCount(receivedAlertCount);
             return true;
         }
@@ -399,6 +412,7 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
     bool anyJunk = false;
     bool anyPhoto = false;
     bool anyKu = false;
+    uint32_t tableTimestampMs = nowMs;
 
     // We have enough rows; validate all required row slots for this count and
     // decode into a new table buffer before publishing.
@@ -406,9 +420,12 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
         const size_t expectedRawIndex = (decodeMode == AlertIndexMode::ZeroBased) ? i : (i + 1);
         const bool rowFresh = (expectedRawIndex < RAW_ALERT_INDEX_SLOTS) && alertChunkPresent_[expectedRawIndex] &&
                               alertChunkCountTag_[expectedRawIndex] == receivedAlertCount &&
-                              ((nowMs - alertChunkRxMs_[expectedRawIndex]) <= kAlertRowFreshnessMs);
+                              ((freshnessNowMs - alertChunkRxMs_[expectedRawIndex]) <= kAlertRowFreshnessMs);
         if (!rowFresh) {
             return true;
+        }
+        if (static_cast<int32_t>(alertChunkRxMs_[expectedRawIndex] - tableTimestampMs) > 0) {
+            tableTimestampMs = alertChunkRxMs_[expectedRawIndex];
         }
 
         const auto& a = alertChunks_[expectedRawIndex];
@@ -507,7 +524,7 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
     displayState_.hasKuAlert = anyKu;
 
 
-    notifyAlertTableObserver(nowMs);
+    notifyAlertTableObserver(tableTimestampMs);
 
     // Match VR AlertDataProcessor behavior: clear per-count rows after a complete
     // table publish so the next table is assembled from fresh rows.

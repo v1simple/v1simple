@@ -161,6 +161,7 @@ void test_five_accepted_full_notifications_survive_staging_capacity() {
     TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::inputDrops());
     for (size_t i = 0; i < frames.size(); ++i) {
         assertParsedPacket(i, frames[i]);
+        TEST_ASSERT_EQUAL_UINT32(100 + i, parser.parseTimestamps[i]);
     }
 }
 
@@ -183,7 +184,7 @@ void test_partial_frame_across_notifications_is_reassembled_once() {
     TEST_ASSERT_EQUAL_INT(1, parser.parseCalls);
     TEST_ASSERT_EQUAL_INT(0, parser.markAlertStreamDiscontinuousCalls);
     assertParsedPacket(0, frame);
-    TEST_ASSERT_EQUAL_UINT32(202, parser.parseTimestamps[0]);
+    TEST_ASSERT_EQUAL_UINT32(200, parser.parseTimestamps[0]);
     // The frame began before the modeled command boundary even though its
     // final bytes arrived afterward. Its start-byte provenance must remain
     // pre-command so it cannot verify that command.
@@ -204,6 +205,8 @@ void test_multiple_frames_in_one_notification_are_all_parsed_in_order() {
     TEST_ASSERT_EQUAL_INT(0, parser.markAlertStreamDiscontinuousCalls);
     assertParsedPacket(0, first);
     assertParsedPacket(1, second);
+    TEST_ASSERT_EQUAL_UINT32(300, parser.parseTimestamps[0]);
+    TEST_ASSERT_EQUAL_UINT32(300, parser.parseTimestamps[1]);
 }
 
 void test_long_characteristic_reassembles_out_of_order_chunks_once() {
@@ -226,7 +229,7 @@ void test_long_characteristic_reassembles_out_of_order_chunks_once() {
 
     TEST_ASSERT_EQUAL_INT(1, parser.parseCalls);
     assertParsedPacket(0, frame);
-    TEST_ASSERT_EQUAL_UINT32(311, parser.parseTimestamps[0]);
+    TEST_ASSERT_EQUAL_UINT32(310, parser.parseTimestamps[0]);
     TEST_ASSERT_EQUAL_UINT32(firstIngress, parser.parseIngressSequences[0]);
 }
 
@@ -248,12 +251,14 @@ void test_long_characteristic_never_splices_into_partial_short_frame() {
 
     TEST_ASSERT_EQUAL_INT(1, parser.parseCalls);
     assertParsedPacket(0, shortFrame);
+    TEST_ASSERT_EQUAL_UINT32(320, parser.parseTimestamps[0]);
 
     // The complete B4E0 candidate remains independently owned until the older
     // B2CE stream is consumed, then publishes on the following main-loop tick.
     queue.process();
     TEST_ASSERT_EQUAL_INT(2, parser.parseCalls);
     assertParsedPacket(1, longFrame);
+    TEST_ASSERT_EQUAL_UINT32(321, parser.parseTimestamps[1]);
 }
 
 void test_session_reset_discards_partial_long_packet() {

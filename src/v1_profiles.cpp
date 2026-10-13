@@ -68,6 +68,39 @@ ProfileOperationResult profileResult(ProfileStorageStatus status, const String& 
     return result;
 }
 
+void appendHumanReadableSettings(JsonObject settings, const V1UserSettings& s) {
+    settings["xBand"] = s.xBandEnabled();
+    settings["kBand"] = s.kBandEnabled();
+    settings["kaBand"] = s.kaBandEnabled();
+    settings["laser"] = s.laserEnabled();
+    settings["kuBand"] = s.kuBandEnabled();
+    settings["euro"] = s.euroMode();
+    settings["kVerifier"] = s.kVerifier();
+    settings["laserRear"] = s.laserRear();
+    settings["customFreqs"] = s.customFreqs();
+    settings["kaAlwaysPriority"] = s.kaAlwaysPriority();
+    settings["fastLaserDetect"] = s.fastLaserDetect();
+    settings["kaSensitivity"] = s.kaSensitivity();
+    settings["kSensitivity"] = s.kSensitivity();
+    settings["xSensitivity"] = s.xSensitivity();
+    settings["autoMute"] = s.autoMute();
+    settings["muteToMuteVolume"] = s.muteToMuteVolume();
+    settings["bogeyLockLoud"] = s.bogeyLockLoud();
+    settings["muteXKRear"] = s.muteXKRear();
+    settings["startupSequence"] = s.startupSequence();
+    settings["restingDisplay"] = s.restingDisplay();
+    settings["bsmPlus"] = s.bsmPlus();
+    settings["mrct"] = s.mrct();
+    settings["driveSafe3D"] = s.driveSafe3D();
+    settings["driveSafe3DHD"] = s.driveSafe3DHD();
+    settings["redflexHalo"] = s.redflexHalo();
+    settings["redflexNK7"] = s.redflexNK7();
+    settings["ekin"] = s.ekin();
+    settings["photoVerifier"] = s.photoVerifier();
+    settings["gatsoRT4"] = s.gatsoRT4();
+    settings["photoIntersectionFilter"] = s.photoIntersectionFilter();
+}
+
 constexpr const char* kBooleanSettingFields[] = {
     "xBand",          "kBand",           "kaBand",          "laser",
     "kuBand",         "euro",            "kVerifier",       "laserRear",
@@ -1972,36 +2005,7 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
     }
 
     // Also store human-readable settings
-    doc["xBand"] = s.xBandEnabled();
-    doc["kBand"] = s.kBandEnabled();
-    doc["kaBand"] = s.kaBandEnabled();
-    doc["laser"] = s.laserEnabled();
-    doc["kuBand"] = s.kuBandEnabled();
-    doc["euro"] = s.euroMode();
-    doc["kVerifier"] = s.kVerifier();
-    doc["laserRear"] = s.laserRear();
-    doc["customFreqs"] = s.customFreqs();
-    doc["kaAlwaysPriority"] = s.kaAlwaysPriority();
-    doc["fastLaserDetect"] = s.fastLaserDetect();
-    doc["kaSensitivity"] = s.kaSensitivity();
-    doc["kSensitivity"] = s.kSensitivity();
-    doc["xSensitivity"] = s.xSensitivity();
-    doc["autoMute"] = s.autoMute();
-    doc["muteToMuteVolume"] = s.muteToMuteVolume();
-    doc["bogeyLockLoud"] = s.bogeyLockLoud();
-    doc["muteXKRear"] = s.muteXKRear();
-    doc["startupSequence"] = s.startupSequence();
-    doc["restingDisplay"] = s.restingDisplay();
-    doc["bsmPlus"] = s.bsmPlus();
-    doc["mrct"] = s.mrct();
-    doc["driveSafe3D"] = s.driveSafe3D();
-    doc["driveSafe3DHD"] = s.driveSafe3DHD();
-    doc["redflexHalo"] = s.redflexHalo();
-    doc["redflexNK7"] = s.redflexNK7();
-    doc["ekin"] = s.ekin();
-    doc["photoVerifier"] = s.photoVerifier();
-    doc["gatsoRT4"] = s.gatsoRT4();
-    doc["photoIntersectionFilter"] = s.photoIntersectionFilter();
+    appendHumanReadableSettings(doc.as<JsonObject>(), s);
 
     // Calculate and store CRC32 of the settings bytes for integrity checking
     uint32_t crc = calculateCRC32(s.bytes, 6);
@@ -2400,36 +2404,7 @@ bool V1ProfileManager::settingsToJson(const V1UserSettings& s, String& output) c
     }
 
     // Human-readable
-    doc["xBand"] = s.xBandEnabled();
-    doc["kBand"] = s.kBandEnabled();
-    doc["kaBand"] = s.kaBandEnabled();
-    doc["laser"] = s.laserEnabled();
-    doc["kuBand"] = s.kuBandEnabled();
-    doc["euro"] = s.euroMode();
-    doc["kVerifier"] = s.kVerifier();
-    doc["laserRear"] = s.laserRear();
-    doc["customFreqs"] = s.customFreqs();
-    doc["kaAlwaysPriority"] = s.kaAlwaysPriority();
-    doc["fastLaserDetect"] = s.fastLaserDetect();
-    doc["kaSensitivity"] = s.kaSensitivity();
-    doc["kSensitivity"] = s.kSensitivity();
-    doc["xSensitivity"] = s.xSensitivity();
-    doc["autoMute"] = s.autoMute();
-    doc["muteToMuteVolume"] = s.muteToMuteVolume();
-    doc["bogeyLockLoud"] = s.bogeyLockLoud();
-    doc["muteXKRear"] = s.muteXKRear();
-    doc["startupSequence"] = s.startupSequence();
-    doc["restingDisplay"] = s.restingDisplay();
-    doc["bsmPlus"] = s.bsmPlus();
-    doc["mrct"] = s.mrct();
-    doc["driveSafe3D"] = s.driveSafe3D();
-    doc["driveSafe3DHD"] = s.driveSafe3DHD();
-    doc["redflexHalo"] = s.redflexHalo();
-    doc["redflexNK7"] = s.redflexNK7();
-    doc["ekin"] = s.ekin();
-    doc["photoVerifier"] = s.photoVerifier();
-    doc["gatsoRT4"] = s.gatsoRT4();
-    doc["photoIntersectionFilter"] = s.photoIntersectionFilter();
+    appendHumanReadableSettings(doc.as<JsonObject>(), s);
 
     const size_t expected = measureJson(doc);
     if (doc.overflowed() || expected == 0 || serializeJson(doc, output) != expected ||
@@ -2461,36 +2436,7 @@ bool V1ProfileManager::profileToJson(const V1Profile& profile, String& output) c
         bytes.add(s.bytes[i]);
     }
 
-    settings["xBand"] = s.xBandEnabled();
-    settings["kBand"] = s.kBandEnabled();
-    settings["kaBand"] = s.kaBandEnabled();
-    settings["laser"] = s.laserEnabled();
-    settings["kuBand"] = s.kuBandEnabled();
-    settings["euro"] = s.euroMode();
-    settings["kVerifier"] = s.kVerifier();
-    settings["laserRear"] = s.laserRear();
-    settings["customFreqs"] = s.customFreqs();
-    settings["kaAlwaysPriority"] = s.kaAlwaysPriority();
-    settings["fastLaserDetect"] = s.fastLaserDetect();
-    settings["kaSensitivity"] = s.kaSensitivity();
-    settings["kSensitivity"] = s.kSensitivity();
-    settings["xSensitivity"] = s.xSensitivity();
-    settings["autoMute"] = s.autoMute();
-    settings["muteToMuteVolume"] = s.muteToMuteVolume();
-    settings["bogeyLockLoud"] = s.bogeyLockLoud();
-    settings["muteXKRear"] = s.muteXKRear();
-    settings["startupSequence"] = s.startupSequence();
-    settings["restingDisplay"] = s.restingDisplay();
-    settings["bsmPlus"] = s.bsmPlus();
-    settings["mrct"] = s.mrct();
-    settings["driveSafe3D"] = s.driveSafe3D();
-    settings["driveSafe3DHD"] = s.driveSafe3DHD();
-    settings["redflexHalo"] = s.redflexHalo();
-    settings["redflexNK7"] = s.redflexNK7();
-    settings["ekin"] = s.ekin();
-    settings["photoVerifier"] = s.photoVerifier();
-    settings["gatsoRT4"] = s.gatsoRT4();
-    settings["photoIntersectionFilter"] = s.photoIntersectionFilter();
+    appendHumanReadableSettings(settings, s);
 
     const size_t expected = measureJson(doc);
     if (doc.overflowed() || expected == 0 || expected > V1_PROFILE_HTTP_SAVE_MAX_BYTES) return false;

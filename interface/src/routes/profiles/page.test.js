@@ -1309,8 +1309,12 @@ describe('profiles route page', () => {
         await screen.findByText('Detector operation 42');
         expect(screen.getByText('apply_profile · target AA:BB:CC:DD:EE:FF · source maintenance_ui'))
             .toBeInTheDocument();
-        expect(screen.getByText('partial')).toBeInTheDocument();
-        expect(screen.getByText('timeout · volume_timeout')).toBeInTheDocument();
+        expect(screen.getByRole('heading', { name: 'Apply not fully verified' })).toBeInTheDocument();
+        expect(screen.getByText('Reading the detector settings after the operation timed out.')).toBeInTheDocument();
+        const volume = screen.getByText('Detector volume').closest('.surface-panel');
+        expect(within(volume).getByText('Timed out')).toBeInTheDocument();
+        expect(within(volume).getByText('Confirmation of the volume setting timed out.')).toBeInTheDocument();
+        expect(within(volume).getByText('Sent: Yes · Verified: No')).toBeInTheDocument();
         expect(fetchMock.mock.calls.some(([url]) =>
             url === '/api/autopush/status?operationId=42')).toBe(true);
         expect(window.localStorage.getItem('v1simple.detectorSettingsOperationId')).toBeNull();
@@ -1493,6 +1497,38 @@ describe('profiles route page', () => {
 
         await screen.findByText('Failed to save: bad save');
         unmount();
+    });
+
+    it.each([
+        { entry: 'editor', error: '{"error":"Profile busy"}' },
+        { entry: 'dialog', error: 'Profile busy' }
+    ])('preserves the $entry save error body presentation', async ({ entry, error }) => {
+        installDefaultFetch([
+            { method: 'POST', match: '/api/v1/profile', respond: jsonResponse({ error: 'Profile busy' }, 409) },
+            { method: 'GET', match: '/api/v1/profile?name=Daily%20Drive', respond: jsonResponse({
+                name: 'Daily Drive', settings: { kBand: true }
+            }) }
+        ]);
+        const { unmount } = render(Page);
+        try {
+            const row = (await screen.findByText('Daily Drive')).closest('.surface-panel');
+            if (entry === 'editor') {
+                await fireEvent.click(within(row).getByRole('button', { name: /^edit$/i }));
+                await screen.findByText('Editing profile: Daily Drive');
+                await fireEvent.click(screen.getByRole('button', { name: /^save profile$/i }));
+            } else {
+                await fireEvent.click(screen.getByRole('button', { name: /new profile/i }));
+                await fireEvent.click(screen.getByRole('button', { name: /save as profile/i }));
+                const modal = (await screen.findByText('Save Profile')).closest('.modal-box');
+                await fireEvent.input(screen.getByLabelText('Profile Name'), {
+                    target: { value: 'Another Profile' }
+                });
+                await fireEvent.click(within(modal).getByRole('button', { name: /^save$/i }));
+            }
+            await screen.findByText(`Failed to save: ${error}`);
+        } finally {
+            unmount();
+        }
     });
 
     it('shows API error message when delete profile fails', async () => {

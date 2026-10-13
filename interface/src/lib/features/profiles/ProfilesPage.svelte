@@ -6,6 +6,7 @@
     import ProfileSaveDialog from '$lib/features/profiles/ProfileSaveDialog.svelte';
     import ProfileSavedListCard from '$lib/features/profiles/ProfileSavedListCard.svelte';
     import ProfileSettingsPanel from '$lib/features/profiles/ProfileSettingsPanel.svelte';
+    import ProfileOperationStatus from '$lib/features/profiles/ProfileOperationStatus.svelte';
     import {
         createDefaultProfileSettings,
         createProfileDetectorConfiguration,
@@ -438,6 +439,63 @@
         }
     }
 
+    function prepareProfileSave({
+        description, settings, detector, detectorToSave = detector, inTheBox, cloneBaseBytes = false
+    }) {
+        const validatedDescription = descriptionForSave(description);
+        if (validatedDescription.error) return validatedDescription;
+        if (!settings) return { error: 'No settings to save' };
+        const frequencyError = customFrequencyError(settings, detector);
+        if (frequencyError) return { error: frequencyError };
+        const boxError = inTheBoxSettingsError(inTheBox);
+        if (boxError) return { error: boxError };
+
+        // The dialog detaches raw bytes; the existing editor keeps its shallow
+        // snapshot because its completion check compares field identities.
+        const savedSettings = {
+            ...settings,
+            ...(cloneBaseBytes && settings.baseBytes ? { baseBytes: [...settings.baseBytes] } : {})
+        };
+        const savedDetector = cloneDetectorConfiguration(detectorToSave);
+        const savedInTheBox = cloneInTheBoxSettings(inTheBox);
+        return {
+            savedSettings,
+            savedDetector,
+            savedInTheBox,
+            description: validatedDescription.description
+        };
+    }
+
+    async function postProfileSave(name, prepared, { createOnly = false, parseErrorJson = false } = {}) {
+        const payload = {
+            name,
+            ...(createOnly ? { createOnly: true } : {}),
+            description: prepared.description,
+            schemaVersion: 4,
+            detector: toApiDetectorConfiguration(prepared.savedDetector),
+            inTheBox: toApiInTheBoxSettings(prepared.savedInTheBox),
+            settings: toApiSettings(prepared.savedSettings)
+        };
+        const result = await fetchWithTimeout('/api/v1/profile', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        }, undefined, async (response) => {
+            if (response.ok) return { ok: true, error: null };
+            const body = await response.text();
+            // Preserve each save path's existing error presentation.
+            if (parseErrorJson) {
+                try {
+                    return { ok: false, error: JSON.parse(body).error || body };
+                } catch {
+                    // Non-JSON errors are displayed as received.
+                }
+            }
+            return { ok: false, error: body };
+        });
+        return { ...result, payload };
+    }
+
     async function saveCurrentProfile() {
         if (savingProfile) return;
         const validatedName = validateProfileName(saveName);
@@ -450,30 +508,15 @@
             message = { type: 'error', text: 'Choose a new name for the copied profile' };
             return;
         }
-        const validatedDescription = descriptionForSave(saveDescription);
-        if (validatedDescription.error) {
-            message = { type: 'error', text: validatedDescription.error };
-            return;
-        }
-
-        const settingsToSave =
-            editingSettings && editedSettings ? editedSettings : currentProfile?.settings;
-
-        if (!settingsToSave) {
-            message = { type: 'error', text: 'No settings to save' };
-            return;
-        }
-        const frequencyError = customFrequencyError(
-            settingsToSave,
-            editedDetector || currentProfile?.detector
-        );
-        if (frequencyError) {
-            message = { type: 'error', text: frequencyError };
-            return;
-        }
-        const boxError = inTheBoxSettingsError(editedInTheBox || currentProfile?.inTheBox);
-        if (boxError) {
-            message = { type: 'error', text: boxError };
+        const prepared = prepareProfileSave({
+            description: saveDescription,
+            settings: editingSettings && editedSettings ? editedSettings : currentProfile?.settings,
+            detector: editedDetector || currentProfile?.detector,
+            inTheBox: editedInTheBox || currentProfile?.inTheBox,
+            cloneBaseBytes: true
+        });
+        if (prepared.error) {
+            message = { type: 'error', text: prepared.error };
             return;
         }
 
@@ -484,40 +527,14 @@
         const descriptionAtStart = editDescription;
         const wasEditing = editingSettings;
         const copiedProfile = !!copySourceName;
-        const savedSettings = {
-            ...settingsToSave,
-            ...(settingsToSave.baseBytes ? { baseBytes: [...settingsToSave.baseBytes] } : {})
-        };
-        const savedDetector = cloneDetectorConfiguration(editedDetector || currentProfile?.detector);
-        const savedInTheBox = cloneInTheBoxSettings(editedInTheBox || currentProfile?.inTheBox);
+        const { savedSettings, savedDetector, savedInTheBox } = prepared;
         savingProfile = validatedName.canonical;
         try {
-            const payload = {
-                name: validatedName.canonical,
-                ...(copiedProfile ? { createOnly: true } : {}),
-                description: validatedDescription.description,
-                schemaVersion: 4,
-                detector: toApiDetectorConfiguration(savedDetector),
-                inTheBox: toApiInTheBoxSettings(savedInTheBox),
-                settings: toApiSettings(savedSettings)
-            };
-
-            const res = await fetchWithTimeout('/api/v1/profile', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(payload)
-            }, undefined, async (response) => ({
-                ok: response.ok,
-                error: response.ok ? null : await response.text().then((body) => {
-                    try {
-                        return JSON.parse(body).error || body;
-                    } catch {
-                        return body;
-                    }
-                })
-            }));
+            const res = await postProfileSave(validatedName.canonical, prepared, {
+                createOnly: copiedProfile,
+                parseErrorJson: true
+            });
+            const { payload } = res;
 
             if (res.ok) {
                 const canonicalName = validatedName.canonical;
@@ -744,19 +761,15 @@
             message = { type: 'error', text: 'No profile loaded to save' };
             return;
         }
-        const validatedDescription = descriptionForSave(editDescription);
-        if (validatedDescription.error) {
-            message = { type: 'error', text: validatedDescription.error };
-            return;
-        }
-        const frequencyError = customFrequencyError(editedSettings, editedDetector);
-        if (frequencyError) {
-            message = { type: 'error', text: frequencyError };
-            return;
-        }
-        const boxError = inTheBoxSettingsError(editedInTheBox || currentProfile?.inTheBox);
-        if (boxError) {
-            message = { type: 'error', text: boxError };
+        const prepared = prepareProfileSave({
+            description: editDescription,
+            settings: editedSettings,
+            detector: editedDetector,
+            detectorToSave: editedDetector || currentProfile.detector,
+            inTheBox: editedInTheBox || currentProfile.inTheBox
+        });
+        if (prepared.error) {
+            message = { type: 'error', text: prepared.error };
             return;
         }
 
@@ -764,31 +777,12 @@
         const editSession = editedSettings;
         const detectorEditSession = editedDetector;
         const boxEditSession = editedInTheBox;
-        const savedSettings = { ...editedSettings };
-        const savedDetector = cloneDetectorConfiguration(editedDetector || profile.detector);
-        const savedInTheBox = cloneInTheBoxSettings(editedInTheBox || profile.inTheBox);
+        const { savedSettings, savedDetector, savedInTheBox } = prepared;
         savingProfile = profile.name;
         message = { type: 'info', text: `Saving ${profile.name}...` };
         try {
-            const payload = {
-                name: profile.name,
-                description: validatedDescription.description,
-                schemaVersion: 4,
-                detector: toApiDetectorConfiguration(savedDetector),
-                inTheBox: toApiInTheBoxSettings(savedInTheBox),
-                settings: toApiSettings(savedSettings)
-            };
-
-            const res = await fetchWithTimeout('/api/v1/profile', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(payload)
-            }, undefined, async (response) => ({
-                ok: response.ok,
-                error: response.ok ? null : await response.text()
-            }));
+            const res = await postProfileSave(profile.name, prepared);
+            const { payload } = res;
 
             if (res.ok) {
                 recordSavedProfile(payload.name, payload.description, true);
@@ -868,45 +862,7 @@
     <StatusAlert {message} />
 
     {#if operationStatus}
-        <div class="surface-card" aria-label="Detector operation status">
-            <div class="card-body space-y-3">
-                <div class="flex flex-wrap items-center justify-between gap-2">
-                    <h2 class="card-title">Detector operation {operationStatus.operationId}</h2>
-                    <span class:badge-success={operationStatus.state === 'succeeded'}
-                          class:badge-warning={operationStatus.state === 'partial'}
-                          class:badge-error={operationStatus.state === 'failed'}
-                          class="badge">
-                        {operationStatus.state || 'unknown'}
-                    </span>
-                </div>
-                <p class="copy-muted">
-                    Result: {operationStatus.result || 'in_progress'} · Reason: {operationStatus.reason || 'none'}
-                </p>
-                {#if operationStatus.reason === 'in_the_box_persist_failed'}
-                    <p class="copy-caption">V1Simple could not confirm saving the In-the-Box choices, so it did not activate them. Detector results are shown below.</p>
-                {/if}
-                {#if operationStatus.kind && operationStatus.targetAddress}
-                    <p class="copy-caption">
-                        {operationStatus.kind} · target {operationStatus.targetAddress} · source {operationStatus.source}
-                    </p>
-                {/if}
-                {#if operationStatus.components}
-                    <div class="grid gap-2 sm:grid-cols-2">
-                        {#each Object.entries(operationStatus.components) as [name, component] (name)}
-                            {#if component.requested}
-                                <div class="surface-panel">
-                                    <div class="copy-caption">{name}</div>
-                                    <div>{component.outcome} · {component.reason}</div>
-                                    <div class="copy-caption">
-                                        sent {component.sent ? 'yes' : 'no'} · verified {component.verified ? 'yes' : 'no'}
-                                    </div>
-                                </div>
-                            {/if}
-                        {/each}
-                    </div>
-                {/if}
-            </div>
-        </div>
+        <ProfileOperationStatus {operationStatus} />
     {/if}
 
     {#if !loading && !profileSchemaReady}

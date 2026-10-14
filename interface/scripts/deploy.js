@@ -129,7 +129,7 @@ function platformioInfo() {
     try {
         return JSON.parse(result.stdout);
     } catch (error) {
-        throw new Error(`could not parse PlatformIO system info: ${error.message}`);
+        throw new Error(`could not parse PlatformIO system info: ${error.message}`, { cause: error });
     }
 }
 

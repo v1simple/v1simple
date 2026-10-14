@@ -1,8 +1,8 @@
 import { fireEvent, render, screen, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installFixtureFetchMock, jsonResponse } from '../../test/fetch-mock.js';
-import { createDefaultProfileSettings } from '$lib/features/profiles/profileSettingsAdapter';
-import { PROFILE_SETTING_GROUPS } from '$lib/features/profiles/profileSettingsCatalog';
+import { createDefaultProfileSettings } from '#lib/features/profiles/profileSettingsAdapter.js';
+import { PROFILE_SETTING_GROUPS } from '#lib/features/profiles/profileSettingsCatalog.js';
 import Page from './+page.svelte';
 import wifiApiFixtures from '../../test/fixtures/wifi-api.json';
 

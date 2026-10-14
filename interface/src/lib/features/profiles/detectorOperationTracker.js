@@ -1,4 +1,4 @@
-import { fetchWithTimeout } from '$lib/utils/poll';
+import { fetchWithTimeout } from '#lib/utils/poll.js';
 import {
     DETECTOR_OPERATION_POLL_WINDOW_MS,
     DETECTOR_OPERATION_STATES,

@@ -1,8 +1,8 @@
 <script>
     import { onMount } from 'svelte';
-    import { fetchJsonWithTimeout, fetchWithTimeout } from '$lib/utils/poll';
-    import CardSectionHead from '$lib/components/CardSectionHead.svelte';
-    import StatusAlert from '$lib/components/StatusAlert.svelte';
+    import { fetchJsonWithTimeout, fetchWithTimeout } from '#lib/utils/poll.js';
+    import CardSectionHead from '#lib/components/CardSectionHead.svelte';
+    import StatusAlert from '#lib/components/StatusAlert.svelte';
 
     let obdMessage = $state(null);
     let savedDevices = $state([]);

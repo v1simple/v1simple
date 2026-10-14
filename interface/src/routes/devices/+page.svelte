@@ -1,9 +1,9 @@
 <script>
     import { onMount } from 'svelte';
-    import { fetchJsonWithTimeout, fetchWithTimeout } from '$lib/utils/poll';
-    import PageHeader from '$lib/components/PageHeader.svelte';
-    import StatusAlert from '$lib/components/StatusAlert.svelte';
-    import { isMaintenance, retainRuntimeStatus } from '$lib/stores/runtimeStatus.svelte.js';
+    import { fetchJsonWithTimeout, fetchWithTimeout } from '#lib/utils/poll.js';
+    import PageHeader from '#lib/components/PageHeader.svelte';
+    import StatusAlert from '#lib/components/StatusAlert.svelte';
+    import { isMaintenance, retainRuntimeStatus } from '#lib/stores/runtimeStatus.svelte.js';
 
     const fallbackSlotNames = ['DEFAULT', 'HIGHWAY', 'COMFORT'];
 

@@ -1,6 +1,6 @@
 <script>
-    import PageHeader from '$lib/components/PageHeader.svelte';
-    import SettingsGpsCard from '$lib/features/settings/SettingsGpsCard.svelte';
+    import PageHeader from '#lib/components/PageHeader.svelte';
+    import SettingsGpsCard from '#lib/features/settings/SettingsGpsCard.svelte';
 </script>
 
 <div class="page-stack">

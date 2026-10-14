@@ -1,17 +1,17 @@
 <script>
     import { onMount } from 'svelte';
-    import { createPoll, fetchJsonWithTimeout, fetchWithTimeout } from '$lib/utils/poll';
+    import { createPoll, fetchJsonWithTimeout, fetchWithTimeout } from '#lib/utils/poll.js';
     import {
         invalidateDeviceSettings,
         refreshDeviceSettings,
         retainDeviceSettings
-    } from '$lib/stores/deviceSettings.svelte.js';
-    import { postSettingsForm } from '$lib/api/settings';
-    import CardSectionHead from '$lib/components/CardSectionHead.svelte';
-    import SettingsAutoPowerOffCard from '$lib/features/settings/SettingsAutoPowerOffCard.svelte';
-    import PageHeader from '$lib/components/PageHeader.svelte';
-    import SettingsBackupCard from '$lib/features/settings/SettingsBackupCard.svelte';
-    import * as settingsLazyComponents from '$lib/features/settings/settingsLazyComponents.js';
+    } from '#lib/stores/deviceSettings.svelte.js';
+    import { postSettingsForm } from '#lib/api/settings.js';
+    import CardSectionHead from '#lib/components/CardSectionHead.svelte';
+    import SettingsAutoPowerOffCard from '#lib/features/settings/SettingsAutoPowerOffCard.svelte';
+    import PageHeader from '#lib/components/PageHeader.svelte';
+    import SettingsBackupCard from '#lib/features/settings/SettingsBackupCard.svelte';
+    import * as settingsLazyComponents from '#lib/features/settings/settingsLazyComponents.js';
     import {
         applyWifiScanResponse,
         beginWifiScan,
@@ -25,8 +25,8 @@
         openWifiEditorState,
         selectWifiScanNetwork,
         setWifiScanSaving
-    } from '$lib/features/settings/wifiNetworkUiModel.js';
-    import StatusAlert from '$lib/components/StatusAlert.svelte';
+    } from '#lib/features/settings/wifiNetworkUiModel.js';
+    import StatusAlert from '#lib/components/StatusAlert.svelte';
     let settings = $state({
         ap_ssid: '',
         ap_password: '',

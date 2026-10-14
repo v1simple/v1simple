@@ -1,18 +1,18 @@
 <script>
     import '../app.css';
     import { onMount } from 'svelte';
-    import { page } from '$app/stores';
-    import Sidebar from '$lib/components/Sidebar.svelte';
-    import ThemeControls from '$lib/components/ThemeControls.svelte';
-    import { createPoll, fetchWithTimeout } from '$lib/utils/poll';
-    import { refreshDeviceSettings, retainDeviceSettings } from '$lib/stores/deviceSettings.svelte.js';
+    import { page } from '$app/state';
+    import Sidebar from '#lib/components/Sidebar.svelte';
+    import ThemeControls from '#lib/components/ThemeControls.svelte';
+    import { createPoll, fetchWithTimeout } from '#lib/utils/poll.js';
+    import { refreshDeviceSettings, retainDeviceSettings } from '#lib/stores/deviceSettings.svelte.js';
     import {
         isMaintenance,
         retainRuntimeStatus,
         runtimeStatus,
         runtimeStatusError,
         runtimeStatusLoading
-    } from '$lib/stores/runtimeStatus.svelte.js';
+    } from '#lib/stores/runtimeStatus.svelte.js';
 
     let { children } = $props();
     let showPasswordWarning = $state(false);
@@ -40,8 +40,8 @@
     const currentRouteLabel = $derived(
         routeLabels.find(({ href }) =>
             href === '/'
-                ? $page.url.pathname === '/'
-                : $page.url.pathname === href || $page.url.pathname.startsWith(`${href}/`)
+                ? page.url.pathname === '/'
+                : page.url.pathname === href || page.url.pathname.startsWith(`${href}/`)
         )?.label || 'V1Simple'
     );
 

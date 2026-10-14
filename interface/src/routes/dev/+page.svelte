@@ -1,12 +1,12 @@
 <script>
-    import { dev } from '$app/environment';
+    import { dev } from '$app/env';
     import { onMount } from 'svelte';
 
     let DevPage = $state(null);
 
     onMount(() => {
         if (!dev) return;
-        void import('$lib/features/dev/DevPage.svelte').then((module) => {
+        void import('#lib/features/dev/DevPage.svelte').then((module) => {
             DevPage = module.default;
         });
     });

@@ -1,5 +1,5 @@
 <script>
-    import CardSectionHead from '$lib/components/CardSectionHead.svelte';
+    import CardSectionHead from '#lib/components/CardSectionHead.svelte';
 
     let {
         backingUpNow = false,

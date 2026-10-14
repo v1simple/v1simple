@@ -6,7 +6,7 @@
         DEFAULT_THEME,
         restorePreferences,
         THEMES
-    } from '$lib/theme.js';
+    } from '#lib/theme.js';
 
     let theme = $state(DEFAULT_THEME);
     let mode = $state(DEFAULT_MODE);

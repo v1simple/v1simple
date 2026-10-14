@@ -1,15 +1,15 @@
 <script>
     import { onMount } from 'svelte';
-    import { postSettingsForm } from '$lib/api/settings';
-    import CardSectionHead from '$lib/components/CardSectionHead.svelte';
-    import PageHeader from '$lib/components/PageHeader.svelte';
-    import StatusAlert from '$lib/components/StatusAlert.svelte';
-    import ToggleSetting from '$lib/components/ToggleSetting.svelte';
+    import { postSettingsForm } from '#lib/api/settings.js';
+    import CardSectionHead from '#lib/components/CardSectionHead.svelte';
+    import PageHeader from '#lib/components/PageHeader.svelte';
+    import StatusAlert from '#lib/components/StatusAlert.svelte';
+    import ToggleSetting from '#lib/components/ToggleSetting.svelte';
     import {
         invalidateDeviceSettings,
         refreshDeviceSettings,
         retainDeviceSettings
-    } from '$lib/stores/deviceSettings.svelte.js';
+    } from '#lib/stores/deviceSettings.svelte.js';
 
     let settings = $state({
         alpEnabled: false,

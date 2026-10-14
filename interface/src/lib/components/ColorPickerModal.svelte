@@ -1,5 +1,5 @@
 <script>
-    import { COLOR_PICKER_PRESETS, rgbComponentsToHex } from '$lib/utils/colors';
+    import { COLOR_PICKER_PRESETS, rgbComponentsToHex } from '#lib/utils/colors.js';
 
     let {
         open = false,

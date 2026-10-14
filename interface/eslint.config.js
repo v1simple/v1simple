@@ -1,7 +1,6 @@
 import js from '@eslint/js';
 import svelte from 'eslint-plugin-svelte';
 import globals from 'globals';
-import svelteConfig from './svelte.config.js';
 
 /** Globals injected by Vitest when tests opt into the global API. */
 const vitestGlobals = {
@@ -50,7 +49,7 @@ export default [
 
             // Off: SvelteKit's resolve() guards against a non-empty `base` path.
             // This app ships as a static SPA served from the ESP32 root with
-            // `paths.base: ''` (see svelte.config.js), so plain hrefs are correct.
+            // `paths.base: ''` (see vite.config.js), so plain hrefs are correct.
             'svelte/no-navigation-without-resolve': 'off',
 
             // Off: the two flagged `new URLSearchParams()` uses are throwaway
@@ -68,16 +67,6 @@ export default [
             sourceType: 'module',
             globals: {
                 ...globals.browser
-            }
-        }
-    },
-
-    // Svelte 5 / runes: hand the plugin the project's svelte.config.js.
-    {
-        files: ['**/*.svelte', '**/*.svelte.js'],
-        languageOptions: {
-            parserOptions: {
-                svelteConfig
             }
         }
     },

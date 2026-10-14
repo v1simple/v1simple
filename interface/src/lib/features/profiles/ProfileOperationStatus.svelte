@@ -1,5 +1,5 @@
 <script>
-    import { DETECTOR_OPERATION_COMPONENTS } from '$lib/features/profiles/detectorOperation';
+    import { DETECTOR_OPERATION_COMPONENTS } from '#lib/features/profiles/detectorOperation.js';
 
     let { operationStatus } = $props();
 

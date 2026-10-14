@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installFixtureFetchMock, jsonResponse } from '../../test/fetch-mock.js';
-import { createDefaultInTheBoxSettings } from '$lib/features/profiles/inTheBoxSettings';
+import { createDefaultInTheBoxSettings } from '#lib/features/profiles/inTheBoxSettings.js';
 import Page from './+page.svelte';
 
 function savedProfile(name) {

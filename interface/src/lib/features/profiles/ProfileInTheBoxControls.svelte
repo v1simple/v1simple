@@ -1,5 +1,5 @@
 <script>
-    import { IN_THE_BOX_BANDS, IN_THE_BOX_BOXES, inTheBoxSettingsError } from '$lib/features/profiles/inTheBoxSettings';
+    import { IN_THE_BOX_BANDS, IN_THE_BOX_BOXES, inTheBoxSettingsError } from '#lib/features/profiles/inTheBoxSettings.js';
 
     let { settings = $bindable(), editingSettings = false } = $props();
     let error = $derived(inTheBoxSettingsError(settings));

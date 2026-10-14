@@ -1,5 +1,5 @@
 <script>
-    import { rgb565ToHex, rgb565ToHexStr } from '$lib/utils/colors';
+    import { rgb565ToHex, rgb565ToHexStr } from '#lib/utils/colors.js';
 
     let {
         id,

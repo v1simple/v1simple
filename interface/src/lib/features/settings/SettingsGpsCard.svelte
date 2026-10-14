@@ -1,8 +1,8 @@
 <script>
     import { onMount } from 'svelte';
-    import { fetchJsonWithTimeout, fetchWithTimeout } from '$lib/utils/poll';
-    import CardSectionHead from '$lib/components/CardSectionHead.svelte';
-    import ToggleSetting from '$lib/components/ToggleSetting.svelte';
+    import { fetchJsonWithTimeout, fetchWithTimeout } from '#lib/utils/poll.js';
+    import CardSectionHead from '#lib/components/CardSectionHead.svelte';
+    import ToggleSetting from '#lib/components/ToggleSetting.svelte';
 
     const BAUD_OPTIONS = [9600, 38400, 115200];
 

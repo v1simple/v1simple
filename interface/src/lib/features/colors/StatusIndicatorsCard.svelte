@@ -1,8 +1,8 @@
 <script>
-    import CardSectionHead from '$lib/components/CardSectionHead.svelte';
-    import ColorControl from '$lib/components/ColorControl.svelte';
-    import ToggleSetting from '$lib/components/ToggleSetting.svelte';
-    import { rgb565ToHex } from '$lib/utils/colors';
+    import CardSectionHead from '#lib/components/CardSectionHead.svelte';
+    import ColorControl from '#lib/components/ColorControl.svelte';
+    import ToggleSetting from '#lib/components/ToggleSetting.svelte';
+    import { rgb565ToHex } from '#lib/utils/colors.js';
 
     let { colors, rows, toggles, onPick, onHexChange, onToggle } = $props();
 </script>

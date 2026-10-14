@@ -1,8 +1,8 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installFixtureFetchMock, jsonResponse } from '../../test/fetch-mock.js';
-import { createDefaultInTheBoxSettings } from '$lib/features/profiles/inTheBoxSettings';
-import { DETECTOR_OPERATION_COMPONENTS, DETECTOR_OPERATION_STORAGE_KEY } from '$lib/features/profiles/detectorOperation';
+import { createDefaultInTheBoxSettings } from '#lib/features/profiles/inTheBoxSettings.js';
+import { DETECTOR_OPERATION_COMPONENTS, DETECTOR_OPERATION_STORAGE_KEY } from '#lib/features/profiles/detectorOperation.js';
 import Page from './+page.svelte';
 
 function profileWithBoxes() {

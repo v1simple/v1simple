@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { cloneDefaultColors, COLOR_PARAM_ORDER } from '$lib/utils/colors';
+import { cloneDefaultColors, COLOR_PARAM_ORDER } from '#lib/utils/colors.js';
 import { installFetchMock, installFixtureFetchMock, jsonResponse } from '../../test/fetch-mock.js';
 import Page from './+page.svelte';
 
@@ -55,7 +55,7 @@ describe('colors route page', () => {
     });
 
     it('opens the bar editor in simple mode when the saved theme is a 3-stop ramp', async () => {
-        const { deriveBarsFromStops } = await import('$lib/utils/colors');
+        const { deriveBarsFromStops } = await import('#lib/utils/colors.js');
         installDefaultFetch([
             {
                 method: 'GET',

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { URLENCODED_FORM_CONTENT_TYPE } from '$lib/utils/poll';
+import { URLENCODED_FORM_CONTENT_TYPE } from '#lib/utils/poll.js';
 import { postSettingsForm } from './settings.js';
 
 describe('postSettingsForm', () => {

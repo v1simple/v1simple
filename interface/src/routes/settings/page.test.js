@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import * as settingsLazyComponents from '$lib/features/settings/settingsLazyComponents.js';
+import * as settingsLazyComponents from '#lib/features/settings/settingsLazyComponents.js';
 import { apiFixtureMatchers, installFetchMock, jsonResponse } from '../../test/fetch-mock.js';
 import Page from './+page.svelte';
 
@@ -1251,7 +1251,7 @@ describe('settings route page', () => {
         expect(wifiModalLoader).toHaveBeenCalledTimes(1);
         await screen.findByText('Loading WiFi modal...');
 
-        deferred.resolve(await import('$lib/features/settings/SettingsWifiModal.svelte'));
+        deferred.resolve(await import('#lib/features/settings/SettingsWifiModal.svelte'));
         await screen.findByText('Pick WiFi Network to Save');
         await fireEvent.click(screen.getByRole('button', { name: /^Close$/i }));
         await waitFor(() => {

@@ -1,6 +1,6 @@
 <script>
-    import PageHeader from '$lib/components/PageHeader.svelte';
-    import SettingsObdCard from '$lib/features/settings/SettingsObdCard.svelte';
+    import PageHeader from '#lib/components/PageHeader.svelte';
+    import SettingsObdCard from '#lib/features/settings/SettingsObdCard.svelte';
 </script>
 
 <div class="page-stack">

@@ -1,6 +1,6 @@
 import { writable } from 'svelte/store';
 
-import { createPoll, fetchWithTimeout } from '$lib/utils/poll';
+import { createPoll, fetchWithTimeout } from '#lib/utils/poll.js';
 
 const DEVICE_SETTINGS_POLL_INTERVAL_MS = 15000;
 

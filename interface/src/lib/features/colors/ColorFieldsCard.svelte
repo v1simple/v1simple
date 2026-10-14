@@ -1,7 +1,7 @@
 <script>
-    import CardSectionHead from '$lib/components/CardSectionHead.svelte';
-    import ColorControl from '$lib/components/ColorControl.svelte';
-    import { rgb565ToHex } from '$lib/utils/colors';
+    import CardSectionHead from '#lib/components/CardSectionHead.svelte';
+    import ColorControl from '#lib/components/ColorControl.svelte';
+    import { rgb565ToHex } from '#lib/utils/colors.js';
 
     let {
         title,

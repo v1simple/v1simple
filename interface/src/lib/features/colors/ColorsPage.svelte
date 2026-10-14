@@ -1,14 +1,14 @@
 <script>
     import { onMount } from 'svelte';
-    import { fetchJsonWithTimeout, fetchWithTimeout } from '$lib/utils/poll';
-    import CardSectionHead from '$lib/components/CardSectionHead.svelte';
-    import ColorControl from '$lib/components/ColorControl.svelte';
-    import ColorFieldsCard from '$lib/features/colors/ColorFieldsCard.svelte';
-    import ColorPickerModal from '$lib/components/ColorPickerModal.svelte';
-    import PageHeader from '$lib/components/PageHeader.svelte';
-    import StatusIndicatorsCard from '$lib/features/colors/StatusIndicatorsCard.svelte';
-    import StatusAlert from '$lib/components/StatusAlert.svelte';
-    import ToggleSetting from '$lib/components/ToggleSetting.svelte';
+    import { fetchJsonWithTimeout, fetchWithTimeout } from '#lib/utils/poll.js';
+    import CardSectionHead from '#lib/components/CardSectionHead.svelte';
+    import ColorControl from '#lib/components/ColorControl.svelte';
+    import ColorFieldsCard from '#lib/features/colors/ColorFieldsCard.svelte';
+    import ColorPickerModal from '#lib/components/ColorPickerModal.svelte';
+    import PageHeader from '#lib/components/PageHeader.svelte';
+    import StatusIndicatorsCard from '#lib/features/colors/StatusIndicatorsCard.svelte';
+    import StatusAlert from '#lib/components/StatusAlert.svelte';
+    import ToggleSetting from '#lib/components/ToggleSetting.svelte';
     import {
         buildColorParams,
         cloneDefaultColors,
@@ -20,7 +20,7 @@
         rgb888ToRgb565,
         sampleBarRampRgb565,
         stopsFromBars
-    } from '$lib/utils/colors';
+    } from '#lib/utils/colors.js';
 
     import {
         ALP_BADGE_FIELDS,
@@ -34,7 +34,7 @@
         SIGNAL_BARS,
         STATUS_FIELD_ROWS,
         VISIBILITY_TOGGLES
-    } from '$lib/features/colors/colorsPageConfig';
+    } from '#lib/features/colors/colorsPageConfig.js';
 
     let colors = $state(cloneDefaultColors());
     let activeSection = $state('screen');

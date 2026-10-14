@@ -1,21 +1,21 @@
 <script>
     import { onMount } from 'svelte';
-    import BrandMark from '$lib/components/BrandMark.svelte';
-    import PageHeader from '$lib/components/PageHeader.svelte';
-    import StatusAlert from '$lib/components/StatusAlert.svelte';
+    import BrandMark from '#lib/components/BrandMark.svelte';
+    import PageHeader from '#lib/components/PageHeader.svelte';
+    import StatusAlert from '#lib/components/StatusAlert.svelte';
     import {
         retainRuntimeStatus,
         runtimeStatus,
         runtimeStatusError,
         runtimeStatusLoading,
         isMaintenance
-    } from '$lib/stores/runtimeStatus.svelte.js';
+    } from '#lib/stores/runtimeStatus.svelte.js';
     import {
         invalidateDeviceSettings,
         refreshDeviceSettings,
         retainDeviceSettings
-    } from '$lib/stores/deviceSettings.svelte.js';
-    import { fetchJsonWithTimeout, fetchWithTimeout } from '$lib/utils/poll';
+    } from '#lib/stores/deviceSettings.svelte.js';
+    import { fetchJsonWithTimeout, fetchWithTimeout } from '#lib/utils/poll.js';
 
     let modeLoaded = $state(false);
     let modeLoading = $state(false);

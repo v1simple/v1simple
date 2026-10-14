@@ -1,9 +1,9 @@
 <script>
     import { onMount } from 'svelte';
-    import { fetchJsonWithTimeout, fetchWithTimeout } from '$lib/utils/poll';
-    import CardSectionHead from '$lib/components/CardSectionHead.svelte';
-    import PageHeader from '$lib/components/PageHeader.svelte';
-    import StatusAlert from '$lib/components/StatusAlert.svelte';
+    import { fetchJsonWithTimeout, fetchWithTimeout } from '#lib/utils/poll.js';
+    import CardSectionHead from '#lib/components/CardSectionHead.svelte';
+    import PageHeader from '#lib/components/PageHeader.svelte';
+    import StatusAlert from '#lib/components/StatusAlert.svelte';
 
     let settings = $state({
         voiceAlertMode: 3,

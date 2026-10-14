@@ -80,7 +80,7 @@ The lockfile resolves these direct build inputs:
   maintenance web bundle embeds its Latin variable WOFF2. See
   `licenses/Geist-OFL-1.1.txt`.
 - Svelte 5.57.2 — MIT — `licenses/Svelte-LICENSE.md`
-- SvelteKit 2.70.3 — MIT — `licenses/SvelteKit-LICENSE.txt`
+- SvelteKit 3.0.1 — MIT — `licenses/SvelteKit-LICENSE.txt`
 - daisyUI 5.7.50 — MIT — `licenses/daisyUI-LICENSE.txt`
 - Tailwind CSS 4.3.3 — MIT — `licenses/Tailwind-CSS-LICENSE.txt`
 

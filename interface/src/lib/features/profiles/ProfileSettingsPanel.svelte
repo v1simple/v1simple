@@ -1,6 +1,6 @@
 <script>
-    import CardSectionHead from '$lib/components/CardSectionHead.svelte';
-    import ProfileSettingsSections from '$lib/features/profiles/ProfileSettingsSections.svelte';
+    import CardSectionHead from '#lib/components/CardSectionHead.svelte';
+    import ProfileSettingsSections from '#lib/features/profiles/ProfileSettingsSections.svelte';
 
     let {
         editingSettings,

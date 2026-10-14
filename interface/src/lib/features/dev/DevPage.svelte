@@ -4,10 +4,10 @@
         invalidateDeviceSettings,
         refreshDeviceSettings,
         retainDeviceSettings
-    } from '$lib/stores/deviceSettings.svelte.js';
-    import CardSectionHead from '$lib/components/CardSectionHead.svelte';
-    import PageHeader from '$lib/components/PageHeader.svelte';
-    import StatusAlert from '$lib/components/StatusAlert.svelte';
+    } from '#lib/stores/deviceSettings.svelte.js';
+    import CardSectionHead from '#lib/components/CardSectionHead.svelte';
+    import PageHeader from '#lib/components/PageHeader.svelte';
+    import StatusAlert from '#lib/components/StatusAlert.svelte';
 
     let acknowledged = $state(false);
     const DEV_WARNING_ACK_BYPASS_KEY = 'v1simple:devWarningAckBypass';

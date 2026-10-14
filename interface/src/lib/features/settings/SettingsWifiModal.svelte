@@ -1,5 +1,5 @@
 <script>
-    import StatusAlert from '$lib/components/StatusAlert.svelte';
+    import StatusAlert from '#lib/components/StatusAlert.svelte';
 
     let {
         open = false,

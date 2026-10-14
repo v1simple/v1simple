@@ -1,21 +1,21 @@
 <script>
     import { onMount } from 'svelte';
-    import { fetchJsonWithTimeout, fetchWithTimeout } from '$lib/utils/poll';
-    import PageHeader from '$lib/components/PageHeader.svelte';
-    import StatusAlert from '$lib/components/StatusAlert.svelte';
-    import ProfileOperationStatus from '$lib/features/profiles/ProfileOperationStatus.svelte';
-    import ColorControl from '$lib/components/ColorControl.svelte';
-    import ColorPickerModal from '$lib/components/ColorPickerModal.svelte';
-    import { parseColorInput, rgb565ToHex, rgb565ToRgb888, rgb888ToRgb565 } from '$lib/utils/colors';
-    import { validDetectorOperationStart } from '$lib/features/profiles/detectorOperation';
-    import { createDetectorOperationTracker } from '$lib/features/profiles/detectorOperationTracker';
+    import { fetchJsonWithTimeout, fetchWithTimeout } from '#lib/utils/poll.js';
+    import PageHeader from '#lib/components/PageHeader.svelte';
+    import StatusAlert from '#lib/components/StatusAlert.svelte';
+    import ProfileOperationStatus from '#lib/features/profiles/ProfileOperationStatus.svelte';
+    import ColorControl from '#lib/components/ColorControl.svelte';
+    import ColorPickerModal from '#lib/components/ColorPickerModal.svelte';
+    import { parseColorInput, rgb565ToHex, rgb565ToRgb888, rgb888ToRgb565 } from '#lib/utils/colors.js';
+    import { validDetectorOperationStart } from '#lib/features/profiles/detectorOperation.js';
+    import { createDetectorOperationTracker } from '#lib/features/profiles/detectorOperationTracker.js';
     import {
         isMaintenance,
         retainRuntimeStatus,
         runtimeStatus,
         runtimeStatusError,
         runtimeStatusLoading
-    } from '$lib/stores/runtimeStatus.svelte.js';
+    } from '#lib/stores/runtimeStatus.svelte.js';
 
     let data = $state({
         enabled: false,

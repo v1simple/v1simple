@@ -4,27 +4,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { installFetchMock, installFixtureFetchMock, jsonResponse } from '../test/fetch-mock.js';
 
-const pageStore = vi.hoisted(() => {
-    let value = { url: new URL('http://localhost/') };
-    const subscribers = new Set();
+vi.mock('$app/state', async () => {
+    const { SvelteURL } = await import('svelte/reactivity');
     return {
         page: {
-            subscribe(callback) {
-                callback(value);
-                subscribers.add(callback);
-                return () => subscribers.delete(callback);
-            }
-        },
-        setPath(path) {
-            value = { url: new URL(path, 'http://localhost') };
-            for (const callback of subscribers) callback(value);
+            url: new SvelteURL('http://localhost/')
         }
     };
 });
 
-vi.mock('$app/stores', () => ({ page: pageStore.page }));
-
+import { page } from '$app/state';
 import Layout from './+layout.svelte';
+
+function setPath(path) {
+    page.url.href = new URL(path, 'http://localhost').href;
+}
 
 function createMemoryStorage() {
     const values = new Map();
@@ -91,7 +85,7 @@ describe('root layout', () => {
         document.documentElement.classList.remove('light');
         document.documentElement.classList.add('dark');
         document.documentElement.style.colorScheme = 'dark';
-        pageStore.setPath('/');
+        setPath('/');
     });
 
     afterEach(() => {
@@ -105,7 +99,7 @@ describe('root layout', () => {
             [{ method: 'GET', match: '/api/device/settings', respond: jsonResponse({}) }],
             jsonResponse({})
         );
-        pageStore.setPath('/colors');
+        setPath('/colors');
 
         const { unmount } = renderLayout();
 
@@ -120,6 +114,21 @@ describe('root layout', () => {
         expect(screen.getAllByRole('link', { name: 'Profiles' }).every((link) => !link.hasAttribute('aria-current'))).toBe(true);
         expect(screen.queryByRole('link', { name: 'Logs' })).not.toBeInTheDocument();
 
+        unmount();
+    });
+
+    it('updates the route header and active navigation after the mounted page changes', async () => {
+        installLayoutFetch();
+        const { unmount } = renderLayout();
+        expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Dashboard');
+
+        setPath('/profiles');
+
+        await waitFor(() => {
+            expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Profiles');
+            expect(screen.getAllByRole('link', { name: 'Profiles' }).every((link) => link.getAttribute('aria-current') === 'page')).toBe(true);
+            expect(screen.getAllByRole('link', { name: 'Dashboard' }).every((link) => !link.hasAttribute('aria-current'))).toBe(true);
+        });
         unmount();
     });
 
@@ -267,7 +276,7 @@ describe('root layout', () => {
 
     it('closes mobile navigation at the desktop breakpoint and restores workspace interaction', async () => {
         installLayoutFetch();
-        pageStore.setPath('/colors');
+        setPath('/colors');
         document.body.style.overflow = 'scroll';
         const { container, unmount } = renderLayout();
         try {

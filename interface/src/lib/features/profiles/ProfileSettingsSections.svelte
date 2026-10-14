@@ -1,9 +1,9 @@
 <script>
-    import StatusAlert from '$lib/components/StatusAlert.svelte';
-    import ProfileInTheBoxControls from '$lib/features/profiles/ProfileInTheBoxControls.svelte';
-    import ProfileEverydayControls from '$lib/features/profiles/ProfileEverydayControls.svelte';
-    import { customFrequencyBand } from '$lib/features/profiles/profileSettingsAdapter';
-    import { PROFILE_SETTING_GROUPS } from '$lib/features/profiles/profileSettingsCatalog';
+    import StatusAlert from '#lib/components/StatusAlert.svelte';
+    import ProfileInTheBoxControls from '#lib/features/profiles/ProfileInTheBoxControls.svelte';
+    import ProfileEverydayControls from '#lib/features/profiles/ProfileEverydayControls.svelte';
+    import { customFrequencyBand } from '#lib/features/profiles/profileSettingsAdapter.js';
+    import { PROFILE_SETTING_GROUPS } from '#lib/features/profiles/profileSettingsCatalog.js';
 
     let {
         editingSettings, currentProfile, capturedSnapshot = null,

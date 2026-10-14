@@ -1,12 +1,12 @@
 <script>
     import { onMount, tick } from 'svelte';
-    import { fetchJsonWithTimeout, fetchWithTimeout } from '$lib/utils/poll';
-    import PageHeader from '$lib/components/PageHeader.svelte';
-    import StatusAlert from '$lib/components/StatusAlert.svelte';
-    import ProfileSaveDialog from '$lib/features/profiles/ProfileSaveDialog.svelte';
-    import ProfileSavedListCard from '$lib/features/profiles/ProfileSavedListCard.svelte';
-    import ProfileSettingsPanel from '$lib/features/profiles/ProfileSettingsPanel.svelte';
-    import ProfileOperationStatus from '$lib/features/profiles/ProfileOperationStatus.svelte';
+    import { fetchJsonWithTimeout, fetchWithTimeout } from '#lib/utils/poll.js';
+    import PageHeader from '#lib/components/PageHeader.svelte';
+    import StatusAlert from '#lib/components/StatusAlert.svelte';
+    import ProfileSaveDialog from '#lib/features/profiles/ProfileSaveDialog.svelte';
+    import ProfileSavedListCard from '#lib/features/profiles/ProfileSavedListCard.svelte';
+    import ProfileSettingsPanel from '#lib/features/profiles/ProfileSettingsPanel.svelte';
+    import ProfileOperationStatus from '#lib/features/profiles/ProfileOperationStatus.svelte';
     import {
         createDefaultProfileSettings,
         createProfileDetectorConfiguration,
@@ -17,16 +17,16 @@
         fromApiSettings,
         toApiDetectorConfiguration,
         toApiSettings
-    } from '$lib/features/profiles/profileSettingsAdapter';
+    } from '#lib/features/profiles/profileSettingsAdapter.js';
     import {
         createDefaultInTheBoxSettings,
         cloneInTheBoxSettings,
         fromApiInTheBoxSettings,
         toApiInTheBoxSettings,
         inTheBoxSettingsError
-    } from '$lib/features/profiles/inTheBoxSettings';
-    import { validDetectorOperationStart } from '$lib/features/profiles/detectorOperation';
-    import { createDetectorOperationTracker } from '$lib/features/profiles/detectorOperationTracker';
+    } from '#lib/features/profiles/inTheBoxSettings.js';
+    import { validDetectorOperationStart } from '#lib/features/profiles/detectorOperation.js';
+    import { createDetectorOperationTracker } from '#lib/features/profiles/detectorOperationTracker.js';
 
     let profiles = $state([]);
     let currentProfile = $state(null);

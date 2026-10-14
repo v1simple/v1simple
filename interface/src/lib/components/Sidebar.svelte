@@ -1,6 +1,6 @@
 <script>
     import { onMount, tick } from 'svelte';
-    import { page } from '$app/stores';
+    import { page } from '$app/state';
 
     let {
         open = false,
@@ -98,7 +98,7 @@
     });
 
     function isActivePath(href) {
-        const path = $page.url.pathname;
+        const path = page.url.pathname;
         return href === '/' ? path === '/' : path === href || path.startsWith(`${href}/`);
     }
 

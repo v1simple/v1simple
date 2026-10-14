@@ -38,8 +38,8 @@ LICENSE_PATHS = (
     "licenses/Tailwind-CSS-LICENSE.txt",
 )
 EXPECTED_INSTALL_SCRIPT = (
-    "https://unpkg.com/esp-web-tools@10.2.1/dist/web/install-button.js?module",
-    "sha384-2Ea4WL8tjFb0qQKUqBoX45KlPVoUgL+Z3zUqsD0MHmtJ3faDbfNyZulLg/LfYDUZ",
+    "https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module",
+    "sha384-f+fR3K1mnKB2tVps4hdEh+qJvLgH2bKw81Yn+eNE3+gE8YpqocjkxQON4k19I3e/",
     "anonymous",
 )
 EXPECTED_ANALYTICS_SCRIPT = (

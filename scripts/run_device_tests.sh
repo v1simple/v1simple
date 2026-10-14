@@ -432,8 +432,11 @@ run_suite() {
   local suite_status="PASS"
   local metric_count="0"
 
+  # The uploader already resets the ESP32-S3 into the test application.
+  # The test monitor's extra DTR/RTS reset can select native USB download mode.
   set +e
   "$PIO_CMD" test -e device -f "$suite" \
+    --no-reset --monitor-rts 0 --monitor-dtr 0 \
     --upload-port "$run_port" \
     --test-port "$run_port" \
     --json-output-path "$suite_json" \

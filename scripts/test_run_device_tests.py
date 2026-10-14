@@ -36,7 +36,7 @@ class DeviceRunOutputTests(unittest.TestCase):
             import json, os, sys
             from pathlib import Path
             with Path(os.environ['PIO_CALLS']).open('a') as handle:
-                handle.write('test\\n')
+                handle.write(json.dumps(sys.argv[1:]) + '\\n')
             if os.environ.get('PIO_FAIL_BEFORE_REPORT') == '1':
                 print('Fixture failure before report creation', file=sys.stderr)
                 sys.exit(1)
@@ -88,6 +88,17 @@ class DeviceRunOutputTests(unittest.TestCase):
                 manifest = json.loads((out / "manifest.json").read_text())
                 self.assertEqual(manifest["result"], "PASS")
                 self.assertEqual(len(manifest["suite_results"]), 2)
+
+        calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
+        self.assertEqual(
+            [args[args.index("-f") + 1] for args in calls],
+            ["test_device_boot", "test_device_heap"] * 2,
+        )
+        for args in calls:
+            self.assertEqual(args.count("--no-reset"), 1)
+            for option in ("--monitor-rts", "--monitor-dtr"):
+                self.assertEqual(args.count(option), 1)
+                self.assertEqual(args[args.index(option) + 1], "0")
 
     def test_reused_passing_output_is_refused_and_preserved_before_running(self):
         out = self.root / "output"

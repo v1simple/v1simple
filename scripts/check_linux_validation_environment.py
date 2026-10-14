@@ -18,8 +18,8 @@ import check_platformio_core_version
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_NODE = "22.23.2"
-EXPECTED_NPM = "10.9.8"
+EXPECTED_NODE = "22.23.3"
+EXPECTED_NPM = "10.9.9"
 EXPECTED_PYTHON = "3.12"
 EXPECTED_PIO = "6.1.19"
 EXPECTED_ESPTOOL = "5.3.0"

@@ -10,7 +10,7 @@ import check_workflow_action_pins as checker
 
 
 VALID_BOOTSTRAP = f'''#!/bin/bash
-NODE_VERSION="22.23.2"
+NODE_VERSION="22.23.3"
 SWIFT_VERSION="6.3.3"
 COMMON=(
   {checker.PIOARDUINO_CORE_PIN}
@@ -86,7 +86,7 @@ def test_rejects_mutable_runner_and_broad_cache_restore() -> None:
     runs-on: ubuntu-latest
 """,
         bootstrap_source=f'''#!/bin/bash
-NODE_VERSION="22.23.2"
+NODE_VERSION="22.23.3"
 SWIFT_VERSION="6.3.3"
 apt-get install {checker.CPP_CHECK_RUNTIME}
 python3 -m pip install "platformio==6.1.19"
@@ -105,7 +105,7 @@ python3 -m pip install "platformio==6.1.19"
         f"overlapping core packages were accepted: {errors}",
     )
     require("Python 3.12" in joined, f"Python version drift was accepted: {errors}")
-    require("Node.js 22.23.2" in joined, f"Node version drift was accepted: {errors}")
+    require("Node.js 22.23.3" in joined, f"Node version drift was accepted: {errors}")
     require("bootstrap invocation" in joined, f"missing bootstrap was accepted: {errors}")
     require("bootstrap owner" in joined, f"inline install was accepted: {errors}")
 
@@ -126,7 +126,7 @@ def test_rejects_missing_cppcheck_runtime() -> None:
       - run: ./scripts/bootstrap_linux_validation.sh ci
 """,
         bootstrap_source=f'''#!/bin/bash
-NODE_VERSION="22.23.2"
+NODE_VERSION="22.23.3"
 SWIFT_VERSION="6.3.3"
 COMMON=(
   {checker.PIOARDUINO_CORE_PIN}

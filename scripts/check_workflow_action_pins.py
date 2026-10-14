@@ -16,7 +16,7 @@ USES_PREFIX_RE = re.compile(r"^(?:-\s*)?uses\s*:")
 PINNED_ACTION_RE = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 PINNED_LINUX_RUNNER = "ubuntu-24.04"
 PINNED_PYTHON = "python-version: '3.12'"
-PINNED_NODE = "node-version: '22.23.2'"
+PINNED_NODE = "node-version: '22.23.3'"
 PIO_CACHE_HASH = (
     "hashFiles('platformio.ini', 'scripts/patch_*.py', "
     "'scripts/verify_esp32s3_framework.py', "
@@ -79,7 +79,7 @@ def check_reproducible_linux_contract(path: Path) -> list[str]:
     if text.count(PINNED_PYTHON) != 1:
         errors.append(f"{relative}: expected one shared Python 3.12 toolchain pin")
     if text.count(PINNED_NODE) != 1:
-        errors.append(f"{relative}: expected one shared Node.js 22.23.2 toolchain pin")
+        errors.append(f"{relative}: expected one shared Node.js 22.23.3 toolchain pin")
 
     profile = "ci" if relative.endswith("/ci.yml") else "release"
     bootstrap_call = f"./scripts/bootstrap_linux_validation.sh {profile}"
@@ -125,7 +125,7 @@ def check_bootstrap_contract() -> list[str]:
         errors.append(
             f"scripts/bootstrap_linux_validation.sh: install {CPP_CHECK_RUNTIME} exactly once"
         )
-    if 'NODE_VERSION="22.23.2"' not in text:
+    if 'NODE_VERSION="22.23.3"' not in text:
         errors.append(
             "scripts/bootstrap_linux_validation.sh: Node.js bootstrap pin must match workflows"
         )

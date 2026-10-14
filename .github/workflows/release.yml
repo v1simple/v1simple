@@ -117,9 +117,9 @@ jobs:
             --prepare \
             --resume-tag "$RESUME_TAG"
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '22.23.2'
+          node-version: '22.23.3'
           cache: 'npm'
           cache-dependency-path: interface/package-lock.json
 
@@ -167,7 +167,7 @@ jobs:
           python3 scripts/package_release_artifacts.py --version "$RELEASE_TAG"
 
       - name: Upload image-info report
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-image-info-report-${{ steps.version.outputs.tag }}
           path: release/merged-firmware-image-info.txt
@@ -197,8 +197,8 @@ jobs:
 
       - name: Create GitHub Release
         if: steps.publish.outputs.published == 'true'
-        # v3.0.2, pinned so a mutable tag cannot change code running with contents:write.
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
+        # v3.0.3, pinned so a mutable tag cannot change code running with contents:write.
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: ${{ steps.version.outputs.tag }}
@@ -240,4 +240,4 @@ jobs:
     steps:
       - name: Deploy GitHub Pages installer
         id: deployment
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

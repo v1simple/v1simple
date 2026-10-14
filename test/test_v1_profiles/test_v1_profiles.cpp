@@ -1156,6 +1156,109 @@ void test_save_scratch_allocation_failure_precedes_new_save_files() {
     TEST_ASSERT_FALSE(fs.exists("/v1profiles/Road.json.meta"));
 }
 
+void test_unchanged_current_profile_mirrors_do_not_rewrite_metadata() {
+    fs::FS sd(g_tempRoot / "sd");
+    fs::FS little(g_tempRoot / "little");
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&sd, &little));
+    for (size_t index = 0; index < V1_PROFILE_CATALOG_MAX_COUNT; ++index) {
+        TEST_ASSERT_TRUE(manager.saveProfile(
+            makeProfile(String("Road") + String(index), static_cast<uint8_t>(index))).success);
+    }
+    const auto before = filesSnapshot();
+
+    fs::mock_reset_fs_rename_state();
+    V1ProfileManager rebooted;
+    TEST_ASSERT_TRUE(rebooted.begin(&sd, &little));
+    TEST_ASSERT_TRUE(before == filesSnapshot());
+    TEST_ASSERT_EQUAL_UINT(V1_PROFILE_CATALOG_MAX_COUNT, rebooted.listProfiles().size());
+    TEST_ASSERT_EQUAL_UINT(0u, fs::g_mock_fs_rename_state.renameCalls);
+}
+
+void test_matching_legacy_profile_mirrors_still_materialize_current_metadata() {
+    fs::FS sd(g_tempRoot / "sd");
+    fs::FS little(g_tempRoot / "little");
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&sd, &little));
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 10)).success);
+    const std::string payload = readFileToString(sd, "/v1profiles/Road.json");
+    const char* legacyForms[] = {nullptr, "{\"version\":1,\"deleted\":false}"};
+
+    for (const char* legacy : legacyForms) {
+        for (const unsigned legacyMask : {1u, 2u, 3u}) {
+            const auto setLegacy = [&](fs::FS& filesystem) {
+                if (legacy) {
+                    writeFileFromString(filesystem, "/v1profiles/Road.json.meta", legacy);
+                } else {
+                    TEST_ASSERT_TRUE(filesystem.remove("/v1profiles/Road.json.meta"));
+                }
+            };
+            if (legacyMask & 1u) setLegacy(sd);
+            if (legacyMask & 2u) setLegacy(little);
+
+            V1ProfileManager rebooted;
+            TEST_ASSERT_TRUE(rebooted.begin(&sd, &little));
+            for (fs::FS* filesystem : {&sd, &little}) {
+                const ProfileSyncState state = readSyncState(*filesystem, "/v1profiles/Road.json");
+                TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileSyncState::Status::Current),
+                                      static_cast<int>(state.status));
+                TEST_ASSERT_EQUAL_UINT32(1u, state.version);
+                TEST_ASSERT_FALSE(state.deleted);
+                TEST_ASSERT_EQUAL_STRING(payload.c_str(),
+                                         readFileToString(*filesystem, "/v1profiles/Road.json").c_str());
+            }
+        }
+    }
+}
+
+void test_matching_tombstones_skip_writes_only_when_both_payloads_are_absent() {
+    fs::FS sd(g_tempRoot / "sd");
+    fs::FS little(g_tempRoot / "little");
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&sd, &little));
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 10)).success);
+    const std::string stalePayload = readFileToString(sd, "/v1profiles/Road.json");
+    TEST_ASSERT_TRUE(manager.deleteProfileResult("Road").success());
+    const auto cleanTombstones = filesSnapshot();
+
+    for (const unsigned staleMask : {0u, 1u, 2u, 3u}) {
+        if (staleMask & 1u) writeFileFromString(sd, "/v1profiles/Road.json", stalePayload.c_str());
+        if (staleMask & 2u) writeFileFromString(little, "/v1profiles/Road.json", stalePayload.c_str());
+        fs::mock_reset_fs_rename_state();
+
+        V1ProfileManager rebooted;
+        TEST_ASSERT_TRUE(rebooted.begin(&sd, &little));
+        TEST_ASSERT_TRUE(cleanTombstones == filesSnapshot());
+        TEST_ASSERT_TRUE(rebooted.listProfilesResult().genuinelyEmpty);
+        if (staleMask == 0u) TEST_ASSERT_EQUAL_UINT(0u, fs::g_mock_fs_rename_state.renameCalls);
+    }
+}
+
+void test_matching_profile_mirrors_still_clean_interrupted_metadata_promotions() {
+    fs::FS sd(g_tempRoot / "sd");
+    fs::FS little(g_tempRoot / "little");
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&sd, &little));
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 10)).success);
+    const auto cleanMirrors = filesSnapshot();
+
+    for (fs::FS* filesystem : {&sd, &little}) {
+        for (const char* suffix : {".tmp", ".prev"}) {
+            const String artifact = String("/v1profiles/Road.json.meta") + suffix;
+            writeFileFromString(*filesystem, artifact.c_str(), "interrupted metadata promotion");
+            V1ProfileManager recovering;
+            TEST_ASSERT_TRUE(recovering.begin(&sd, &little));
+            TEST_ASSERT_TRUE(cleanMirrors == filesSnapshot());
+
+            fs::mock_reset_fs_rename_state();
+            V1ProfileManager cleanReboot;
+            TEST_ASSERT_TRUE(cleanReboot.begin(&sd, &little));
+            TEST_ASSERT_TRUE(cleanMirrors == filesSnapshot());
+            TEST_ASSERT_EQUAL_UINT(0u, fs::g_mock_fs_rename_state.renameCalls);
+        }
+    }
+}
+
 void test_littlefs_fallback_edits_and_deletion_reconcile_without_resurrection() {
     const std::filesystem::path sdRoot = g_tempRoot / "sd";
     const std::filesystem::path littleRoot = g_tempRoot / "little";
@@ -1527,6 +1630,10 @@ int main() {
     RUN_TEST(test_sd_contention_returns_busy_for_every_profile_transaction);
     RUN_TEST(test_catalog_collection_allocation_failures_return_unavailable_without_throw_or_mutation);
     RUN_TEST(test_save_scratch_allocation_failure_precedes_new_save_files);
+    RUN_TEST(test_unchanged_current_profile_mirrors_do_not_rewrite_metadata);
+    RUN_TEST(test_matching_legacy_profile_mirrors_still_materialize_current_metadata);
+    RUN_TEST(test_matching_tombstones_skip_writes_only_when_both_payloads_are_absent);
+    RUN_TEST(test_matching_profile_mirrors_still_clean_interrupted_metadata_promotions);
     RUN_TEST(test_littlefs_fallback_edits_and_deletion_reconcile_without_resurrection);
     RUN_TEST(test_equal_generation_divergence_converges_to_offline_fallback_edit);
     RUN_TEST(test_corrupt_newer_profile_cannot_replace_valid_older_mirror);

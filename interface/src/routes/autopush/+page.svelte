@@ -7,15 +7,8 @@
     import ColorControl from '$lib/components/ColorControl.svelte';
     import ColorPickerModal from '$lib/components/ColorPickerModal.svelte';
     import { parseColorInput, rgb565ToHex, rgb565ToRgb888, rgb888ToRgb565 } from '$lib/utils/colors';
-    import {
-        DETECTOR_OPERATION_POLL_WINDOW_MS,
-        DETECTOR_OPERATION_STATES,
-        forgetDetectorOperationId,
-        readDetectorOperationId,
-        rememberDetectorOperationId,
-        validDetectorOperationStart,
-        validDetectorOperationStatus
-    } from '$lib/features/profiles/detectorOperation';
+    import { validDetectorOperationStart } from '$lib/features/profiles/detectorOperation';
+    import { createDetectorOperationTracker } from '$lib/features/profiles/detectorOperationTracker';
     import {
         isMaintenance,
         retainRuntimeStatus,
@@ -43,10 +36,7 @@
     let pickerB = $state(0);
     let capturedSnapshot = $state(null);
     let operationStatus = $state(null);
-    let operationPollTimer = null;
-    let operationPollDeadline = 0;
-    let operationPollFailures = 0;
-    let operationPollEpoch = 0;
+    let operationTracker;
     const runtimeModeKnown = $derived(
         !$runtimeStatusLoading &&
             !$runtimeStatusError &&
@@ -66,12 +56,15 @@
             await Promise.all([fetchSlots(), fetchProfiles(), fetchCapturedSnapshot()]);
             loading = false;
         })();
-        operationPollDeadline = Date.now() + DETECTOR_OPERATION_POLL_WINDOW_MS;
-        void resumeDetectorOperation();
+        operationTracker = createDetectorOperationTracker({
+            storage: window.localStorage,
+            onStatus: (status) => { operationStatus = status; },
+            onMessage: (nextMessage) => { message = nextMessage; }
+        });
+        void operationTracker.resume();
         return () => {
-            operationPollEpoch += 1;
+            operationTracker.dispose();
             releaseRuntimeStatus();
-            if (operationPollTimer) clearTimeout(operationPollTimer);
         };
     });
 
@@ -90,73 +83,6 @@
                 : null;
         } catch {
             capturedSnapshot = null;
-        }
-    }
-
-    function scheduleOperationPoll() {
-        if (Date.now() >= operationPollDeadline) {
-            message = {
-                type: 'warning',
-                text: 'Detector operation status polling paused after five minutes. Reload to resume the exact operation.'
-            };
-            return;
-        }
-        if (operationPollTimer) clearTimeout(operationPollTimer);
-        const delay = Math.min(5000, 750 * (2 ** Math.min(operationPollFailures, 3)));
-        operationPollTimer = setTimeout(() => void resumeDetectorOperation(), delay);
-    }
-
-    async function resumeDetectorOperation() {
-        const operationId = readDetectorOperationId(window.localStorage);
-        if (!operationId) return;
-        const pollEpoch = operationPollEpoch;
-        try {
-            const res = await fetchWithTimeout(
-                `/api/autopush/status?operationId=${encodeURIComponent(operationId)}`,
-                {}, undefined, async (response) => ({
-                    status: response.status,
-                    ok: response.ok,
-                    body: await response.json()
-                })
-            );
-            if (pollEpoch !== operationPollEpoch ||
-                readDetectorOperationId(window.localStorage) !== operationId) return;
-            if (res.status === 409) {
-                operationStatus = null;
-                forgetDetectorOperationId(window.localStorage);
-                message = {
-                    type: 'error',
-                    text: `Saved operation ${operationId} does not match the detector's current operation. No status was reused.`
-                };
-                return;
-            }
-            if (!res.ok) {
-                operationPollFailures += 1;
-                scheduleOperationPoll();
-                return;
-            }
-            const status = res.body;
-            if (!validDetectorOperationStatus(status, operationId)) {
-                operationStatus = null;
-                message = { type: 'error', text: 'Detector operation returned malformed or mismatched status.' };
-                return;
-            }
-            const priorState = operationStatus?.operationId === operationId ? operationStatus.state : null;
-            const priorRank = DETECTOR_OPERATION_STATES.indexOf(priorState);
-            const nextRank = DETECTOR_OPERATION_STATES.indexOf(status.state);
-            if (priorRank >= 0 && !status.terminal && nextRank < priorRank) {
-                message = { type: 'error', text: 'Detector operation status regressed; stale status was rejected.' };
-                return;
-            }
-            operationStatus = status;
-            operationPollFailures = 0;
-            if (status.terminal) forgetDetectorOperationId(window.localStorage);
-            else scheduleOperationPoll();
-        } catch {
-            if (pollEpoch !== operationPollEpoch ||
-                readDetectorOperationId(window.localStorage) !== operationId) return;
-            operationPollFailures += 1;
-            scheduleOperationPoll();
         }
     }
 
@@ -292,19 +218,7 @@
                 message = { type: 'error', text: 'Apply returned an invalid operation identity.' };
                 return;
             }
-            operationPollEpoch += 1;
-            if (operationPollTimer) clearTimeout(operationPollTimer);
-            rememberDetectorOperationId(window.localStorage, response.operationId);
-            operationStatus = {
-                operationId: response.operationId,
-                state: response.state,
-                result: 'in_progress',
-                terminal: false,
-                components: {}
-            };
-            operationPollDeadline = Date.now() + DETECTOR_OPERATION_POLL_WINDOW_MS;
-            operationPollFailures = 0;
-            scheduleOperationPoll();
+            operationTracker.accepted(response);
             message = {
                 type: 'info',
                 text: `Slot ${slot + 1} queued as operation ${response.operationId} for ${address}. V1Simple will return here with verification results.`

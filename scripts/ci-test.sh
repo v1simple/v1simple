@@ -167,6 +167,7 @@ run_step "Camera preflight regression suite" python3 scripts/test_camera_preflig
 BENCH_PYTHON="$(./scripts/bench_python.sh)" || exit 1
 run_step "Bench Python environment regression suite" "$BENCH_PYTHON" scripts/test_bench_python.py
 run_step "USB profile host regression suite" python3 scripts/test_usb_profiles.py
+run_step "Profile controls bundle regression suite" python3 scripts/bench/test_profile_controls_bundle.py
 run_step "Bench window regression suite" python3 scripts/test_bench_window.py
 VISUAL_PYTHON="$(./scripts/bench_python.sh --visual)" || exit 1
 run_step "Replay visual field reader regression suite" env PYTHONPATH=scripts \

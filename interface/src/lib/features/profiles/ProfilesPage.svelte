@@ -25,15 +25,8 @@
         toApiInTheBoxSettings,
         inTheBoxSettingsError
     } from '$lib/features/profiles/inTheBoxSettings';
-    import {
-        DETECTOR_OPERATION_POLL_WINDOW_MS,
-        DETECTOR_OPERATION_STATES,
-        forgetDetectorOperationId,
-        readDetectorOperationId,
-        rememberDetectorOperationId,
-        validDetectorOperationStart,
-        validDetectorOperationStatus
-    } from '$lib/features/profiles/detectorOperation';
+    import { validDetectorOperationStart } from '$lib/features/profiles/detectorOperation';
+    import { createDetectorOperationTracker } from '$lib/features/profiles/detectorOperationTracker';
 
     let profiles = $state([]);
     let currentProfile = $state(null);
@@ -65,10 +58,7 @@
     let operationBusy = $state(false);
     let factoryConfirmation = $state('');
     const PROFILE_LOAD_ERROR_TEXT = 'Failed to load profiles';
-    let operationPollTimer = null;
-    let operationPollDeadline = 0;
-    let operationPollFailures = 0;
-    let operationPollEpoch = 0;
+    let operationTracker;
 
     function validateProfileName(raw) {
         const canonical = raw.trim();
@@ -178,95 +168,16 @@
     onMount(() => {
         void fetchProfiles();
         void fetchCapturedSnapshot();
-        operationPollDeadline = Date.now() + DETECTOR_OPERATION_POLL_WINDOW_MS;
-        void resumeDetectorOperation();
+        operationTracker = createDetectorOperationTracker({
+            storage: window.localStorage,
+            onStatus: (status) => { operationStatus = status; },
+            onMessage: (nextMessage) => { message = nextMessage; }
+        });
+        void operationTracker.resume();
         return () => {
-            operationPollEpoch += 1;
-            if (operationPollTimer) clearTimeout(operationPollTimer);
+            operationTracker.dispose();
         };
     });
-
-    function storedOperationId() {
-        return readDetectorOperationId(window.localStorage);
-    }
-
-    function forgetOperationId() {
-        forgetDetectorOperationId(window.localStorage);
-    }
-
-    function scheduleOperationPoll() {
-        if (Date.now() >= operationPollDeadline) {
-            message = {
-                type: 'warning',
-                text: 'Detector operation status polling paused after five minutes. Reload to resume the exact operation.'
-            };
-            return;
-        }
-        if (operationPollTimer) clearTimeout(operationPollTimer);
-        const delay = Math.min(5000, 750 * (2 ** Math.min(operationPollFailures, 3)));
-        operationPollTimer = setTimeout(() => void resumeDetectorOperation(), delay);
-    }
-
-    function validOperationStatus(status, operationId) {
-        return validDetectorOperationStatus(status, operationId);
-    }
-
-    function rememberOperationId(operationId) {
-        rememberDetectorOperationId(window.localStorage, operationId);
-    }
-
-    async function resumeDetectorOperation() {
-        const operationId = storedOperationId();
-        if (!Number.isSafeInteger(operationId) || operationId <= 0) return;
-        const pollEpoch = operationPollEpoch;
-        try {
-            const res = await fetchWithTimeout(
-                `/api/autopush/status?operationId=${encodeURIComponent(operationId)}`,
-                {}, undefined, async (response) => ({
-                    status: response.status,
-                    ok: response.ok,
-                    body: await response.json()
-                })
-            );
-            if (pollEpoch !== operationPollEpoch || storedOperationId() !== operationId) return;
-            if (res.status === 409) {
-                operationStatus = null;
-                forgetOperationId();
-                message = {
-                    type: 'error',
-                    text: `Saved operation ${operationId} does not match the detector's current operation. No status was reused.`
-                };
-                return;
-            }
-            if (!res.ok) {
-                operationPollFailures += 1;
-                scheduleOperationPoll();
-                return;
-            }
-            const status = res.body;
-            if (!validOperationStatus(status, operationId)) {
-                operationStatus = null;
-                message = { type: 'error', text: 'Detector operation returned malformed or mismatched status.' };
-                return;
-            }
-            const priorState = operationStatus?.operationId === operationId ? operationStatus.state : null;
-            const priorRank = DETECTOR_OPERATION_STATES.indexOf(priorState);
-            const nextRank = DETECTOR_OPERATION_STATES.indexOf(status.state);
-            if (priorRank >= 0 && !status.terminal && nextRank < priorRank) {
-                message = { type: 'error', text: 'Detector operation status regressed; stale status was rejected.' };
-                return;
-            }
-            operationStatus = status;
-            operationPollFailures = 0;
-            if (status.terminal) forgetOperationId();
-            else scheduleOperationPoll();
-        } catch {
-            if (pollEpoch !== operationPollEpoch || storedOperationId() !== operationId) return;
-            // Normal mode intentionally takes Wi-Fi down while the operation runs.
-            operationPollFailures += 1;
-            scheduleOperationPoll();
-        }
-    }
 
     async function startDetectorOperation(path, body, label) {
         if (operationBusy) return;
@@ -294,19 +205,7 @@
                 message = { type: 'error', text: `${label} returned an invalid operation identity.` };
                 return;
             }
-            operationPollEpoch += 1;
-            if (operationPollTimer) clearTimeout(operationPollTimer);
-            rememberOperationId(response.operationId);
-            operationStatus = {
-                operationId: response.operationId,
-                state: response.state,
-                result: 'in_progress',
-                terminal: false,
-                components: {}
-            };
-            operationPollDeadline = Date.now() + DETECTOR_OPERATION_POLL_WINDOW_MS;
-            operationPollFailures = 0;
-            scheduleOperationPoll();
+            operationTracker.accepted(response);
             message = {
                 type: 'info',
                 text: `${label} queued as operation ${response.operationId}. V1Simple will restart, verify the exact captured detector in normal mode, and return here.`

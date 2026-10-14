@@ -1160,6 +1160,25 @@ size_t V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs) {
             return;
         }
 
+        // Healthy current mirrors need no metadata rewrite. Legacy metadata,
+        // surviving tombstone payloads and interrupted metadata promotions
+        // must continue through the existing repair/cleanup below.
+        if (sourceState.status == ProfileSyncState::Status::Current &&
+            targetState.status == ProfileSyncState::Status::Current &&
+            sourceState.version == targetState.version && sourceState.deleted == targetState.deleted &&
+            (sourceState.deleted
+                 ? !sourceFile.exists && !targetFile.exists
+                 : sourceFile.valid && targetFile.valid && sourceFile.contentCrc == targetFile.contentCrc)) {
+            String metadataTempPath;
+            String metadataPreviousPath;
+            if (appendPathSuffixChecked(path, ".meta.tmp", metadataTempPath) &&
+                appendPathSuffixChecked(path, ".meta.prev", metadataPreviousPath) &&
+                !sourceFs->exists(metadataTempPath) && !fs_->exists(metadataTempPath) &&
+                !sourceFs->exists(metadataPreviousPath) && !fs_->exists(metadataPreviousPath)) {
+                return;
+            }
+        }
+
         bool sourceWins = sourceUsable && !targetUsable;
         bool needsNewGeneration = false;
         if (sourceUsable && targetUsable) {

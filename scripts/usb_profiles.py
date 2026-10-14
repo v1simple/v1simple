@@ -43,7 +43,9 @@ class TransportError(ProfileError):
 
 
 class DeviceError(ProfileError):
-    pass
+    def __init__(self, code):
+        self.code = code
+        super().__init__(f"Device rejected the command: {code}")
 
 
 def require(condition, message):
@@ -503,7 +505,7 @@ class Client:
                     self.pending.clear()
                     self.discard_line = True
 
-    def command(self, verb, *args, timeout=None, attempts=None):
+    def command(self, verb, *args, timeout=None, attempts=None, deadline=None):
         request_id = self.next_id
         self.next_id = request_id % 0xffffffff + 1
         # A blank line also terminates any interrupted request from a lost link.
@@ -511,17 +513,21 @@ class Client:
         require(len(wire) <= 256, "USB request exceeds transport limit")
         limit = self.timeout if timeout is None else timeout
         for attempt in range(self.attempts if attempts is None else attempts):
-            deadline = self.clock() + limit
+            attempt_deadline = self.clock() + limit
+            if deadline is not None:
+                attempt_deadline = min(attempt_deadline, deadline)
+                if self.clock() >= attempt_deadline:
+                    break
             try:
                 offset = 0
-                while offset < len(wire) and self.clock() < deadline:
+                while offset < len(wire) and self.clock() < attempt_deadline:
                     written = self.link.write(wire[offset:])
                     if not written:
                         raise OSError("USB write stalled")
                     offset += written
                 if offset != len(wire):
                     raise OSError("USB write incomplete")
-                while self.clock() < deadline:
+                while self.clock() < attempt_deadline:
                     for line in self.lines(self.link.read(256)):
                         match = re.fullmatch(rb"@V1USB1 ([0-9]{1,10}) (\{.*\})", line)
                         if not match or int(match[1]) != request_id:
@@ -535,13 +541,16 @@ class Client:
                         if not reply["ok"]:
                             code = reply.get("error")
                             code = code if type(code) is str and re.fullmatch(r"[a-z0-9_]{1,64}", code) else "rejected"
-                            raise DeviceError(f"Device rejected the command: {code}")
+                            raise DeviceError(code)
                         return reply
             except OSError:
                 self.link.close()
                 self.pending.clear()
                 self.discard_line = False
-                self.sleep(min(0.15, limit))
+                pause = min(0.15, limit)
+                if deadline is not None:
+                    pause = min(pause, max(0, deadline - self.clock()))
+                self.sleep(pause)
         raise TransportError(f"No complete USB acknowledgement for {verb}; operation not confirmed")
 
 
@@ -567,11 +576,22 @@ class Device:
         original = self.status() if original is None else original
         if original["mode"] == target:
             return original
-        try:
-            self.client.command(target)
-        except TransportError:
-            pass  # A controlled restart may remove the ACK; status is authoritative.
         deadline = self.client.clock() + self.mode_timeout
+        while self.client.clock() < deadline:
+            try:
+                self.client.command(target, deadline=deadline)
+            except DeviceError as exc:
+                if exc.code != "busy":
+                    raise
+                # A rejected ID stays cached as busy. A fresh request lets the
+                # firmware admit the transition once its live work clears.
+                self.client.sleep(min(0.25, max(0, deadline - self.client.clock())))
+                continue
+            except TransportError:
+                pass  # A controlled restart may remove the ACK; status is authoritative.
+            break  # Accepted or ambiguous: observe the reboot without requesting it again.
+        else:
+            raise TransportError("Device remained busy; requested mode was not confirmed")
         while self.client.clock() < deadline:
             try:
                 current = self.status(timeout=min(2, deadline - self.client.clock()), attempts=1)
@@ -581,7 +601,7 @@ class Device:
                     return current
             except TransportError:
                 pass
-            self.client.sleep(0.1)
+            self.client.sleep(min(0.1, max(0, deadline - self.client.clock())))
         raise TransportError("Requested mode and a new boot were not confirmed")
 
     @contextmanager

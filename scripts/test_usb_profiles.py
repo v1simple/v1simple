@@ -84,9 +84,11 @@ class WireDevice:
         self.commits = 0
         self.drop_once = set()
         self.drop_always = set()
+        self.drop_request_once = set()
         self.torn_once = set()
         self.bad_crc = False
         self.no_transition = False
+        self.mode_rejections = []
         self.extra_after_commit = False
         self.wrong_normal_consumer = False
         self.read_count = 0
@@ -122,6 +124,9 @@ class WireDevice:
             assert parts[0] == "@V1USB1"
             request_id, verb, args = int(parts[1]), parts[2], parts[3:]
             self.history.append((request_id, verb, args))
+            if verb in self.drop_request_once:
+                self.drop_request_once.remove(verb)
+                continue
             if self.cached and self.cached[0] == request_id:
                 assert self.cached[1] == bytes(line), "retry changed its request"
                 reply = self.cached[2]
@@ -150,6 +155,8 @@ class WireDevice:
         if verb in ("maintenance", "normal"):
             if self.mode == verb:
                 return {"ok": True, "mode": verb}
+            if self.mode_rejections:
+                return {"ok": False, "error": self.mode_rejections.pop(0)}
             if not self.no_transition:
                 self.mode = verb
                 self.boot += 1
@@ -269,12 +276,114 @@ class USBProfilesTests(unittest.TestCase):
         self.assertEqual(self.peer.history, [])
 
     def test_lost_mode_ack_still_requires_observed_mode_and_new_boot(self):
-        self.peer.drop_once.add("maintenance")
+        self.device.mode_timeout = 2
+        self.peer.drop_always.add("maintenance")
         status = self.device.mode("maintenance")
         self.assertEqual((status["mode"], status["boot"]), ("maintenance", 11))
+        requests = [request_id for request_id, verb, _ in self.peer.history if verb == "maintenance"]
+        self.assertEqual(len(requests), 3)
+        self.assertEqual(len(set(requests)), 1)
         self.peer.no_transition = True
         with self.assertRaisesRegex(usb.TransportError, "new boot"):
             self.device.mode("normal")
+        self.assertEqual(sum(verb == "normal" for _, verb, _ in self.peer.history), 1)
+
+    def test_lost_mode_request_retries_same_id_before_observing_reboot(self):
+        self.peer.drop_request_once.add("maintenance")
+        self.device.mode_timeout = 2
+        self.client.timeout = .2
+        status = self.device.mode("maintenance")
+        self.assertEqual((status["mode"], status["boot"]), ("maintenance", 11))
+        requests = [request_id for request_id, verb, _ in self.peer.history if verb == "maintenance"]
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(len(set(requests)), 1)
+        self.assertEqual(self.peer.closes, 0)
+
+    def test_busy_mode_requests_retry_with_fresh_ids_in_both_directions(self):
+        self.device.mode_timeout = 2
+        for target, expected_boot in (("maintenance", 11), ("normal", 12)):
+            with self.subTest(target=target):
+                self.peer.mode_rejections = ["busy", "busy"]
+                status = self.device.mode(target)
+                self.assertEqual((status["mode"], status["boot"]), (target, expected_boot))
+                requests = [request_id for request_id, verb, _ in self.peer.history if verb == target]
+                self.assertEqual(len(requests), 3)
+                self.assertEqual(len(set(requests)), 3)
+        self.assertEqual(self.peer.commits, 0)
+        self.assertEqual(self.peer.closes, 0)
+
+    def test_persistent_busy_stops_at_mode_deadline_without_transition(self):
+        original = self.device.status()
+        self.peer.mode_rejections = ["busy"] * 20
+        self.device.mode_timeout = .6
+        started = self.clock()
+        with self.assertRaisesRegex(usb.TransportError, "remained busy"):
+            self.device.mode("maintenance", original)
+        self.assertGreaterEqual(self.clock() - started, .6)
+        self.assertLess(self.clock() - started, .61)
+        requests = [request_id for request_id, verb, _ in self.peer.history if verb == "maintenance"]
+        self.assertGreater(len(requests), 1)
+        self.assertEqual(len(set(requests)), len(requests))
+        self.assertEqual((self.peer.mode, self.peer.boot, self.peer.commits), ("normal", 10, 0))
+
+    def test_non_busy_mode_rejection_is_not_retried(self):
+        self.peer.mode_rejections = ["storage_failed"]
+        with self.assertRaisesRegex(usb.DeviceError, "Device rejected the command: storage_failed"):
+            self.device.mode("maintenance")
+        self.assertEqual(sum(verb == "maintenance" for _, verb, _ in self.peer.history), 1)
+        self.assertEqual((self.peer.mode, self.peer.boot), ("normal", 10))
+
+    def test_mode_ack_and_reboot_observation_share_one_deadline(self):
+        original = self.device.status()
+        self.peer.drop_always.add("status")
+        started = self.clock()
+        with self.assertRaisesRegex(usb.TransportError, "new boot"):
+            self.device.mode("maintenance", original)
+        self.assertGreaterEqual(self.clock() - started, self.device.mode_timeout)
+        self.assertLess(self.clock() - started, self.device.mode_timeout + .01)
+        self.assertEqual(sum(verb == "maintenance" for _, verb, _ in self.peer.history), 1)
+
+    def test_transport_retries_do_not_extend_mode_deadline(self):
+        original = self.device.status()
+        self.peer.no_transition = True
+        self.peer.drop_always.add("maintenance")
+        self.device.mode_timeout = .6
+        started = self.clock()
+        with self.assertRaisesRegex(usb.TransportError, "new boot"):
+            self.device.mode("maintenance", original)
+        self.assertGreaterEqual(self.clock() - started, .6)
+        self.assertLess(self.clock() - started, .61)
+        requests = [request_id for request_id, verb, _ in self.peer.history if verb == "maintenance"]
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(len(set(requests)), 1)
+        self.assertEqual((self.peer.mode, self.peer.boot), ("normal", 10))
+
+    def test_requested_mode_without_new_boot_is_not_confirmed(self):
+        dispatch = self.peer.dispatch
+
+        def same_boot(verb, args):
+            reply = dispatch(verb, args)
+            if verb == "maintenance":
+                self.peer.boot = 10
+            return reply
+
+        with patch.object(self.peer, "dispatch", side_effect=same_boot):
+            with self.assertRaisesRegex(usb.TransportError, "new boot"):
+                self.device.mode("maintenance")
+        self.assertEqual((self.peer.mode, self.peer.boot), ("maintenance", 10))
+
+    def test_requested_mode_with_different_firmware_is_not_confirmed(self):
+        dispatch = self.peer.dispatch
+
+        def changed_image(verb, args):
+            reply = dispatch(verb, args)
+            if verb == "status" and self.peer.mode == "maintenance":
+                reply["image"] = "123abcdef"
+            return reply
+
+        with patch.object(self.peer, "dispatch", side_effect=changed_image):
+            with self.assertRaisesRegex(usb.ProfileError, "Firmware identity changed"):
+                self.device.mode("maintenance")
 
     def test_successful_mode_transition_keeps_live_link_for_status_and_next_command(self):
         status = self.device.mode("maintenance")

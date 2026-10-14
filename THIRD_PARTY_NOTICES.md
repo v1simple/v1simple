@@ -79,9 +79,9 @@ The lockfile resolves these direct build inputs:
 - @fontsource-variable/geist 5.3.0 — SIL Open Font License 1.1. The
   maintenance web bundle embeds its Latin variable WOFF2. See
   `licenses/Geist-OFL-1.1.txt`.
-- Svelte 5.56.8 — MIT — `licenses/Svelte-LICENSE.md`
-- SvelteKit 2.70.2 — MIT — `licenses/SvelteKit-LICENSE.txt`
-- daisyUI 5.7.16 — MIT — `licenses/daisyUI-LICENSE.txt`
+- Svelte 5.57.2 — MIT — `licenses/Svelte-LICENSE.md`
+- SvelteKit 2.70.3 — MIT — `licenses/SvelteKit-LICENSE.txt`
+- daisyUI 5.7.50 — MIT — `licenses/daisyUI-LICENSE.txt`
 - Tailwind CSS 4.3.3 — MIT — `licenses/Tailwind-CSS-LICENSE.txt`
 
 Those entries do not establish the complete contents of generated web chunks

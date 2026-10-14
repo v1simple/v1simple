@@ -1,6 +1,6 @@
 """Retain the pinned Arduino FS byte-buffer overload.
 
-Arduino-ESP32 3.3.11's ``fs::File::readBytes(char *, size)`` hides
+Arduino-ESP32 3.3.12's ``fs::File::readBytes(char *, size)`` hides
 ``Stream::readBytes(uint8_t *, size)`` under GCC 14's overloaded-virtual
 diagnostic.  Repair the owning framework declaration for every ESP32
 environment before framework qualification.  Whole-file fingerprints make

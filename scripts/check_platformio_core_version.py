@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import sys
 
-REQUIRED_VERSION = (6, 1, 19)
+REQUIRED_VERSION = (6, 2, 0)
 REQUIRED_DISTRIBUTION = "pioarduino"
 
 
@@ -133,13 +133,13 @@ def main() -> int:
     )
     print(
         "[toolchain] Install the exact release toolchain, for example:\n"
-        "  python3 -m pip install 'pioarduino==6.1.19'\n"
+        "  python3 -m pip install 'pioarduino==6.2.0'\n"
         "\n"
         "[toolchain] Or use an isolated repo-local toolchain:\n"
-        "  python3 -m venv .artifacts/pio-core-6.1.19\n"
-        "  .artifacts/pio-core-6.1.19/bin/python -m pip install --upgrade pip setuptools wheel\n"
-        "  .artifacts/pio-core-6.1.19/bin/python -m pip install 'pioarduino==6.1.19'\n"
-        "  export PIO_CMD=\"$PWD/.artifacts/pio-core-6.1.19/bin/pio\"\n"
+        "  python3 -m venv .artifacts/pio-core-6.2.0\n"
+        "  .artifacts/pio-core-6.2.0/bin/python -m pip install --upgrade pip setuptools wheel\n"
+        "  .artifacts/pio-core-6.2.0/bin/python -m pip install 'pioarduino==6.2.0'\n"
+        "  export PIO_CMD=\"$PWD/.artifacts/pio-core-6.2.0/bin/pio\"\n"
         "\n"
         "[toolchain] Repo scripts automatically export certifi's CA bundle for PlatformIO TLS downloads.",
         file=sys.stderr,

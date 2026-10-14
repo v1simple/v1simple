@@ -130,7 +130,7 @@ def platformio_python_candidates(pio_cmd: str) -> list[Path]:
         candidates.append(Path(configured))
     candidates.extend(
         [
-            ROOT / ".artifacts" / "pio-core-6.1.19" / "bin" / "python",
+            ROOT / ".artifacts" / "pio-core-6.2.0" / "bin" / "python",
             Path.home() / ".platformio" / "penv" / "bin" / "python",
             Path(sys.executable),
         ]

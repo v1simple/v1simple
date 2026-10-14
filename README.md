@@ -52,7 +52,7 @@ does not verify thermal behavior in any configuration.
 
 ## Build, flash, and use
 
-Install PlatformIO Core 6.1.19 exactly and a Node.js version accepted by
+Install pioarduino Core 6.2.0 exactly and a Node.js version accepted by
 `interface/package.json`. From the repository root:
 
 ```sh

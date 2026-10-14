@@ -1,6 +1,6 @@
 """Harden the pinned Arduino WebServer body readers.
 
-The upstream 3.3.11 implementation grows its buffer by every currently
+The upstream 3.3.12 implementation grows its buffer by every currently
 available byte, even when that exceeds the remaining Content-Length, and then
 constructs the request argument as a NUL-terminated String.  This deterministic
 patch clamps every read to the declared remainder and preserves the explicit
@@ -14,11 +14,8 @@ from pathlib import Path
 
 MARKER = "v1simple-webserver-exact-body-v2"
 CONTRACT_SYMBOL = "v1simple_webserver_exact_body_contract"
-UPSTREAM_SHA256 = "522a46a1b8bed19b5482b65eb96bb87fe068c937c4516d17111179b2e8b88adc"
-V1_PATCHED_SHA256 = "f509fbaac1c776cbcbd3c6040d242d85d95c7d3435c8ed80bcef32890580bc01"
-BROKEN_V2_PATCHED_SHA256 = "864bd3c98b147e267a8176da81afb1a122fe139bdaacc0c0fa578810bb79d406"
-WARNINGFUL_PATCHED_SHA256 = "c43c6827b6ccdf198d6150bddf0b627683e4bdd6d51e957e03df5e1b7ad0db52"
-PATCHED_SHA256 = "74387b5923e880dbd09198e6d3521352b4f1b6cc196a10021862ed466a8cd708"
+UPSTREAM_SHA256 = "c24f1e65b4ce3fb7ab868f6bca7aab7af5dcdfd1ca81ce9716752a922e52ce78"
+PATCHED_SHA256 = "4542ba8a04f50c35eef8939149572ae8f60338d073139cb4ab93e186d0a10aed"
 
 READ_UPSTREAM = """    if (!newLength) {
       break;
@@ -68,26 +65,12 @@ READ_PATCHED = """    if (!newLength) {
     }"""
 
 STRING_UPSTREAM = "          arg.value = String(plainBuf);"
-STRING_BROKEN_PATCHED = (
-    "          // v1simple-webserver-exact-body-v1: retain embedded NUL and the exact Content-Length.\\n"
-    "          arg.value = String(plainBuf, plainLength);"
-)
 STRING_PATCHED = (
     "          // v1simple-webserver-exact-body-v1: retain embedded NUL and the exact Content-Length.\n"
     "          arg.value = String(plainBuf, plainLength);"
 )
 
 INCLUDE_UPSTREAM = '#include "detail/mimetable.h"'
-INCLUDE_V1_PATCHED = """#include "detail/mimetable.h"
-
-// Final-ELF qualification marker for the project-owned body-ingress patch.
-extern "C" const uint32_t v1simple_webserver_exact_body_contract
-  __attribute__((used, retain)) = 0x56314231u;"""
-INCLUDE_WARNINGFUL_PATCHED = """#include "detail/mimetable.h"
-
-// Final-ELF qualification marker for the project-owned body-ingress patch.
-extern "C" const uint32_t v1simple_webserver_exact_body_contract
-  __attribute__((used, retain)) = 0x56314232u;"""
 INCLUDE_PATCHED = """#include "detail/mimetable.h"
 
 // Final-ELF qualification marker for the project-owned body-ingress patch.
@@ -195,42 +178,15 @@ if actual == PATCHED_SHA256:
         if required not in text:
             fail("existing WebServer body patch is incomplete")
     print("[patch_arduino_webserver_body] already applied")
-elif actual in (
-    UPSTREAM_SHA256,
-    V1_PATCHED_SHA256,
-    BROKEN_V2_PATCHED_SHA256,
-    WARNINGFUL_PATCHED_SHA256,
-):
-    if actual in (UPSTREAM_SHA256, V1_PATCHED_SHA256) and text.count(RAW_UPSTREAM) != 1:
-        fail("pinned Parsing.cpp does not contain the unique expected raw-reader shape")
-    if actual == UPSTREAM_SHA256:
-        for upstream in (READ_UPSTREAM, STRING_UPSTREAM, INCLUDE_UPSTREAM, FUNCTION_UPSTREAM):
-            if text.count(upstream) != 1:
-                fail("pinned Parsing.cpp does not contain the unique expected body-reader shape")
-        text = text.replace(INCLUDE_UPSTREAM, INCLUDE_PATCHED, 1)
-        text = text.replace(FUNCTION_UPSTREAM, FUNCTION_PATCHED, 1)
-        text = text.replace(READ_UPSTREAM, READ_PATCHED, 1)
-        text = text.replace(STRING_UPSTREAM, STRING_PATCHED, 1)
-    elif actual == V1_PATCHED_SHA256:
-        if text.count(INCLUDE_V1_PATCHED) != 1:
-            fail("v1-patched Parsing.cpp marker is missing")
-        text = text.replace(INCLUDE_V1_PATCHED, INCLUDE_PATCHED, 1)
-        if text.count(STRING_BROKEN_PATCHED) != 1:
-            fail("v1-patched Parsing.cpp body assignment is missing")
-        text = text.replace(STRING_BROKEN_PATCHED, STRING_PATCHED, 1)
-    elif actual == BROKEN_V2_PATCHED_SHA256:
-        if text.count(INCLUDE_WARNINGFUL_PATCHED) != 1:
-            fail("v2-patched Parsing.cpp warningful marker is missing")
-        text = text.replace(INCLUDE_WARNINGFUL_PATCHED, INCLUDE_PATCHED, 1)
-        if text.count(STRING_BROKEN_PATCHED) != 1:
-            fail("v2-patched Parsing.cpp body assignment is missing")
-        text = text.replace(STRING_BROKEN_PATCHED, STRING_PATCHED, 1)
-    else:
-        if text.count(INCLUDE_WARNINGFUL_PATCHED) != 1:
-            fail("existing Parsing.cpp warningful marker is missing")
-        text = text.replace(INCLUDE_WARNINGFUL_PATCHED, INCLUDE_PATCHED, 1)
-    if actual != BROKEN_V2_PATCHED_SHA256:
-        text = text.replace(RAW_UPSTREAM, RAW_PATCHED, 1)
+elif actual == UPSTREAM_SHA256:
+    for upstream in (READ_UPSTREAM, STRING_UPSTREAM, INCLUDE_UPSTREAM, FUNCTION_UPSTREAM, RAW_UPSTREAM):
+        if text.count(upstream) != 1:
+            fail("pinned Parsing.cpp does not contain the unique expected body-reader shape")
+    text = text.replace(INCLUDE_UPSTREAM, INCLUDE_PATCHED, 1)
+    text = text.replace(FUNCTION_UPSTREAM, FUNCTION_PATCHED, 1)
+    text = text.replace(READ_UPSTREAM, READ_PATCHED, 1)
+    text = text.replace(STRING_UPSTREAM, STRING_PATCHED, 1)
+    text = text.replace(RAW_UPSTREAM, RAW_PATCHED, 1)
     patched = hashlib.sha256(text.encode("utf-8")).hexdigest()
     if patched != PATCHED_SHA256:
         fail(f"generated patched Parsing.cpp identity mismatch: expected {PATCHED_SHA256}, got {patched}")

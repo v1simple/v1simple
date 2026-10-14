@@ -11,7 +11,7 @@ from unittest import mock
 import verify_esp32s3_framework as verifier
 
 
-def fixture(root: Path, ipc_stack: int = 2048, platform_version: str = "55.03.311") -> tuple[Path, Path, Path]:
+def fixture(root: Path, ipc_stack: int = 2048, platform_version: str = "55.03.312") -> tuple[Path, Path, Path]:
     platform = root / "platform"
     arduino = root / "arduino"
     libs = root / "libs"
@@ -20,7 +20,7 @@ def fixture(root: Path, ipc_stack: int = 2048, platform_version: str = "55.03.31
     platform.mkdir()
     arduino.mkdir()
     (platform / "platform.json").write_text(f'{{"version":"{platform_version}"}}', encoding="utf-8")
-    (arduino / "package.json").write_text('{"version":"3.3.11"}', encoding="utf-8")
+    (arduino / "package.json").write_text('{"version":"3.3.12"}', encoding="utf-8")
     (libs / "package.json").write_text('{"version":"5.5.5+sha.b774170ff46"}', encoding="utf-8")
     (selected / "include" / "sdkconfig.h").write_text(
         f"#define CONFIG_ESP_IPC_TASK_STACK_SIZE {ipc_stack}\n"
@@ -55,6 +55,32 @@ def test_framework_version_mismatch_fails_before_build() -> None:
                 assert "platform_version mismatch" in str(exc)
             else:
                 raise AssertionError("unexpected platform identity passed")
+
+
+def test_framework_builder_drift_fails_before_build() -> None:
+    with tempfile.TemporaryDirectory(prefix="framework-contract-") as raw:
+        paths = fixture(Path(raw))
+        builder = paths[1] / "tools" / "pioarduino-build.py"
+        builder.parent.mkdir()
+        builder.write_text(
+            'from copy import deepcopy\n'
+            'action = deepcopy(env["BUILDERS"]["ElfToBin"].action)\n',
+            encoding="utf-8",
+        )
+        real_require_hash = verifier.require_hash
+
+        def verify_builder_hash(path: Path, expected: str, label: str) -> str:
+            if path == builder:
+                return real_require_hash(path, expected, label)
+            return "qualified"
+
+        with mock.patch.object(verifier, "require_hash", side_effect=verify_builder_hash):
+            try:
+                verifier.verify_framework(*paths, "qio_opi")
+            except verifier.ContractError as exc:
+                assert "Arduino builder with SCons fix identity mismatch" in str(exc)
+            else:
+                raise AssertionError("drifted Arduino builder unexpectedly passed")
 
 
 def test_link_marker_policy_is_explicit_and_fail_closed() -> None:
@@ -407,6 +433,7 @@ def main() -> None:
     tests = (
         test_effective_sdkconfig_must_be_2048,
         test_framework_version_mismatch_fails_before_build,
+        test_framework_builder_drift_fails_before_build,
         test_link_marker_policy_is_explicit_and_fail_closed,
         test_linked_elf_must_materialize_2048_stack_argument,
         test_linked_elf_raw_byte_fallback_proves_exact_symbol_call,

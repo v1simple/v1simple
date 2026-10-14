@@ -13,16 +13,18 @@ from pathlib import Path
 
 
 EXPECTED = {
-    "platform_version": "55.03.311",
-    "arduino_version": "3.3.11",
+    "platform_version": "55.03.312",
+    "arduino_version": "3.3.12",
     "libs_version": "5.5.5+sha.b774170ff46",
-    "platform_json_sha256": "cf752e458b9042e4b953f4dc7a0b6ddc1f9e87a02ff1f2ee67c4cfe5acc18f55",
-    "arduino_package_sha256": "9e303d060e4506a3a6370b5297fc24cf2db02c0f9bf24408c97753fb63d6d170",
+    "platform_json_sha256": "35f4aef4bed0e739bc49dc55c7a43df4f4e4ffda463e1ad5ca3ef541369c3107",
+    "arduino_package_sha256": "1b4d8e93a1fcd9e8935312d0d134bca889142a92b7415b660c77eb165bdde963",
+    # 55.03.312 and -1 share a manifest; require the effective -1 SCons fix.
+    "arduino_builder_sha256": "455bce4bd06982e2ea45a60413feda329b70a355c8e27be47aa253bb91e69e2c",
     "libs_package_sha256": "fb288b25fe5b9c883c5bdd30c96cc0542723b66161ae431d7c33d8ee2bfbffab",
-    "sdkconfig_sha256": "9918badd7ca474090cc8bc86d1437163b4a793f58d4c6eaffba3923f1c5b0966",
+    "sdkconfig_sha256": "4be8419250c4b7cd4a4ae668e3adb56c713a4c2fc7e63f25c5e437e3aa569ab2",
     "esp_system_archive_sha256": "3fa34619defd0e4718dac29a93673652a3ad495b2d5551f381d1c78af92c9d38",
-    "versions_sha256": "bb0ce8cff5cdfc1abb17666e4e37ec85d8fff148f4e19cba8e3a5d76c1d662ed",
-    "webserver_parsing_sha256": "74387b5923e880dbd09198e6d3521352b4f1b6cc196a10021862ed466a8cd708",
+    "versions_sha256": "083d859455541382c25ef9d84a8db0264f3a81842f95c0b9f5a0f2e2ac9c0ae8",
+    "webserver_parsing_sha256": "4542ba8a04f50c35eef8939149572ae8f60338d073139cb4ab93e186d0a10aed",
     "fs_header_sha256": "53c9bb70cf573010434c05a546131f7831b448f51797a0c2badaec1c92b7784c",
     "ipc_stack_bytes": 2048,
 }
@@ -60,6 +62,7 @@ def require_hash(path: Path, expected: str, label: str) -> str:
 def verify_framework(platform_dir: Path, arduino_dir: Path, libs_dir: Path, memory_type: str) -> dict[str, object]:
     platform_json = platform_dir / "platform.json"
     arduino_package = arduino_dir / "package.json"
+    arduino_builder = arduino_dir / "tools" / "pioarduino-build.py"
     libs_package = libs_dir / "package.json"
     selected = libs_dir / "esp32s3" / memory_type
     sdkconfig = selected / "include" / "sdkconfig.h"
@@ -83,6 +86,9 @@ def verify_framework(platform_dir: Path, arduino_dir: Path, libs_dir: Path, memo
         ),
         "arduino_package_sha256": require_hash(
             arduino_package, str(EXPECTED["arduino_package_sha256"]), "Arduino package manifest"
+        ),
+        "arduino_builder_sha256": require_hash(
+            arduino_builder, str(EXPECTED["arduino_builder_sha256"]), "Arduino builder with SCons fix"
         ),
         "libs_package_sha256": require_hash(
             libs_package, str(EXPECTED["libs_package_sha256"]), "framework-libs package manifest"

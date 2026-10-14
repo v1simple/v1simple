@@ -53,8 +53,8 @@ if [[ "$EUID" -ne 0 ]]; then
 fi
 
 COMMON_PYTHON_PACKAGES=(
-  "pioarduino==6.1.19"
-  "esptool==5.3.0"
+  "pioarduino==6.2.0"
+  "esptool==5.4.0"
   "Pillow>=10.4,<13"
   "littlefs-python==0.18.0"
 )

@@ -23,7 +23,7 @@ class BuildToolVersionTests(unittest.TestCase):
         module: object,
         output: str,
         *,
-        pioarduino_version: tuple[int, ...] | None = (6, 1, 19),
+        pioarduino_version: tuple[int, ...] | None = (6, 2, 0),
     ) -> int:
         patches = [
             mock.patch.object(sys, "argv", ["checker"]),
@@ -48,13 +48,13 @@ class BuildToolVersionTests(unittest.TestCase):
 
     def test_platformio_exact_pin_passes(self) -> None:
         self.assertEqual(
-            self.run_checker(check_platformio_core_version, "PlatformIO Core, version 6.1.19"),
+            self.run_checker(check_platformio_core_version, "PlatformIO Core, version 6.2.0"),
             0,
         )
 
     def test_platformio_newer_version_does_not_pass(self) -> None:
         self.assertEqual(
-            self.run_checker(check_platformio_core_version, "PlatformIO Core, version 6.1.20"),
+            self.run_checker(check_platformio_core_version, "PlatformIO Core, version 6.2.1"),
             1,
         )
 
@@ -62,7 +62,7 @@ class BuildToolVersionTests(unittest.TestCase):
         self.assertEqual(
             self.run_checker(
                 check_platformio_core_version,
-                "PlatformIO Core, version 6.1.19-dev",
+                "PlatformIO Core, version 6.2.0-dev",
             ),
             1,
         )
@@ -71,21 +71,21 @@ class BuildToolVersionTests(unittest.TestCase):
         self.assertEqual(
             self.run_checker(
                 check_platformio_core_version,
-                "PlatformIO Core, version 6.1.19",
+                "PlatformIO Core, version 6.2.0",
                 pioarduino_version=None,
             ),
             1,
         )
 
     def test_esptool_exact_pin_passes(self) -> None:
-        self.assertEqual(self.run_checker(check_esptool_version, "esptool v5.3.0\n5.3.0"), 0)
+        self.assertEqual(self.run_checker(check_esptool_version, "esptool v5.4.0\n5.4.0"), 0)
 
     def test_esptool_newer_version_does_not_pass(self) -> None:
-        self.assertEqual(self.run_checker(check_esptool_version, "esptool v5.4.0\n5.4.0"), 1)
+        self.assertEqual(self.run_checker(check_esptool_version, "esptool v5.5.0\n5.5.0"), 1)
 
     def test_esptool_prerelease_does_not_pass_as_exact(self) -> None:
         self.assertEqual(
-            self.run_checker(check_esptool_version, "esptool v5.3.0-dev"),
+            self.run_checker(check_esptool_version, "esptool v5.4.0-dev"),
             1,
         )
 

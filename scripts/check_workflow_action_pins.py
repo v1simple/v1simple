@@ -22,7 +22,7 @@ PIO_CACHE_HASH = (
     "'scripts/verify_esp32s3_framework.py', "
     "'scripts/check_platformio_core_version.py')"
 )
-PIOARDUINO_CORE_PIN = '"pioarduino==6.1.19"'
+PIOARDUINO_CORE_PIN = '"pioarduino==6.2.0"'
 CPP_CHECK_RUNTIME = "libpcre3"
 BOOTSTRAP = ROOT / "scripts" / "bootstrap_linux_validation.sh"
 
@@ -115,7 +115,7 @@ def check_bootstrap_contract() -> list[str]:
     errors: list[str] = []
     if text.count(PIOARDUINO_CORE_PIN) != 1:
         errors.append(
-            "scripts/bootstrap_linux_validation.sh: expected one pioarduino 6.1.19 pin"
+            "scripts/bootstrap_linux_validation.sh: expected one pioarduino 6.2.0 pin"
         )
     if "platformio==" in text:
         errors.append(

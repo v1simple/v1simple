@@ -8,7 +8,7 @@ import re
 import subprocess
 import sys
 
-REQUIRED_VERSION = (5, 3, 0)
+REQUIRED_VERSION = (5, 4, 0)
 
 
 def parse_version(raw: str) -> tuple[int, ...] | None:

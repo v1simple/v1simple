@@ -75,7 +75,7 @@ if [[ -n "${_platformio_pio_path}" ]]; then
   fi
 fi
 
-_platformio_add_python_candidate "${_platformio_root_dir}/.artifacts/pio-core-6.1.19/bin/python"
+_platformio_add_python_candidate "${_platformio_root_dir}/.artifacts/pio-core-6.2.0/bin/python"
 _platformio_add_python_candidate "python3"
 
 _platformio_ca_bundle=""

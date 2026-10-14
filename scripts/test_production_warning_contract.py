@@ -190,18 +190,16 @@ def check_webserver_patch() -> None:
     require(isinstance(patched_include, str), "WebServer patched marker is missing")
     require("__attribute__((used))" in patched_include and "used, retain" not in patched_include,
             "WebServer marker must use its live reference, not unsupported retain")
-    warningful_include = constants.get("INCLUDE_WARNINGFUL_PATCHED")
-    require(isinstance(warningful_include, str) and "used, retain" in warningful_include,
-            "WebServer must recognize and migrate the prior warningful patch")
     function_patch = constants.get("FUNCTION_PATCHED")
     require(isinstance(function_patch, str) and
             "&v1simple_webserver_exact_body_contract" in function_patch,
             "WebServer reader must retain a live marker reference")
-    for name in ("UPSTREAM_SHA256", "V1_PATCHED_SHA256", "BROKEN_V2_PATCHED_SHA256",
-                 "WARNINGFUL_PATCHED_SHA256", "PATCHED_SHA256"):
+    for name in ("UPSTREAM_SHA256", "PATCHED_SHA256"):
         value = constants.get(name)
         require(isinstance(value, str) and SHA256.fullmatch(value) is not None,
                 f"WebServer source state {name} is not fingerprinted")
+    require(constants["UPSTREAM_SHA256"] != constants["PATCHED_SHA256"],
+            "WebServer source fingerprints must distinguish pristine and repaired states")
     require("-Wno-" not in source, "WebServer patch must not suppress compiler warnings")
 
     _, framework_constants = literal_constants(ROOT / "scripts" / "verify_esp32s3_framework.py")

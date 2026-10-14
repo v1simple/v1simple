@@ -81,7 +81,7 @@ def test_rejects_mutable_runner_and_broad_cache_restore() -> None:
         with:
           key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini') }}
           restore-keys: ${{ runner.os }}-pio-
-      - run: pip install "platformio==6.1.19"
+      - run: pip install "platformio==6.2.0"
   deploy-pages:
     runs-on: ubuntu-latest
 """,
@@ -89,7 +89,7 @@ def test_rejects_mutable_runner_and_broad_cache_restore() -> None:
 NODE_VERSION="22.23.3"
 SWIFT_VERSION="6.3.3"
 apt-get install {checker.CPP_CHECK_RUNTIME}
-python3 -m pip install "platformio==6.1.19"
+python3 -m pip install "platformio==6.2.0"
 ''',
     )
     joined = "\n".join(errors)

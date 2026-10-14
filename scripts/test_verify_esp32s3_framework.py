@@ -210,6 +210,37 @@ def test_linked_elf_raw_byte_fallback_proves_exact_symbol_call() -> None:
         assert evidence["elf_ipc_stack_bytes"] == 2048
 
 
+def test_linked_elf_section_extraction_preserves_input() -> None:
+    with tempfile.TemporaryDirectory(prefix="framework-contract-") as raw:
+        root = Path(raw)
+        elf = root / "firmware.elf"
+        objdump = root / "xtensa-esp32s3-elf-objdump"
+        objcopy = root / "xtensa-esp32s3-elf-objcopy"
+        original = b"linked ELF bytes whose identity must remain unchanged"
+        elf.write_bytes(original)
+        objdump.write_bytes(b"tool")
+        objcopy.write_bytes(b"tool")
+        original_mtime = elf.stat().st_mtime_ns
+        extracted: list[str] = []
+
+        def objcopy_with_output_semantics(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            result = raw_linked_fixture_result(command, **kwargs)
+            if "--dump-section" in command:
+                extracted.append(command[2].split("=", 1)[0])
+                # GNU objcopy writes to its explicit outfile, or replaces infile
+                # when outfile is omitted, even with --dump-section.
+                output = Path(command[4] if len(command) == 5 else command[3])
+                output.write_bytes(b"objcopy-reencoded ELF")
+            return result
+
+        with mock.patch.object(verifier.subprocess, "run", side_effect=objcopy_with_output_semantics):
+            evidence = verifier.verify_linked_elf(elf, objdump)
+        assert extracted == [".rodata", ".flash.text"]
+        assert elf.read_bytes() == original
+        assert elf.stat().st_mtime_ns == original_mtime
+        assert evidence["elf_sha256"] == verifier.sha256_file(elf)
+
+
 def test_linked_elf_raw_byte_fallback_rejects_wrong_call_target() -> None:
     with tempfile.TemporaryDirectory(prefix="framework-contract-") as raw:
         root = Path(raw)
@@ -437,6 +468,7 @@ def main() -> None:
         test_link_marker_policy_is_explicit_and_fail_closed,
         test_linked_elf_must_materialize_2048_stack_argument,
         test_linked_elf_raw_byte_fallback_proves_exact_symbol_call,
+        test_linked_elf_section_extraction_preserves_input,
         test_linked_elf_raw_byte_fallback_rejects_wrong_call_target,
         test_linked_elf_raw_byte_fallback_rejects_1024_stack,
         test_linked_elf_raw_byte_fallback_rejects_a12_clobber_before_call,

@@ -235,7 +235,9 @@ def verify_raw_linked_ipc(
     with tempfile.TemporaryDirectory(prefix="v1simple-ipc-proof-") as raw:
         section_bytes = Path(raw) / "section.bin"
         run_tool(
-            [str(objcopy), "--dump-section", f"{ipc_section}={section_bytes}", str(elf)],
+            # Without an explicit output file, objcopy rewrites the input ELF.
+            [str(objcopy), "--dump-section", f"{ipc_section}={section_bytes}",
+             str(elf), str(Path(raw) / "unused.elf")],
             "objcopy linked section extraction",
         )
         disassembly = run_tool(
@@ -284,7 +286,9 @@ def verify_linked_elf(
         with tempfile.TemporaryDirectory(prefix="v1simple-webserver-proof-") as raw:
             section_bytes = Path(raw) / "section.bin"
             run_tool(
-                [str(objcopy), "--dump-section", f"{body_section}={section_bytes}", str(elf)],
+                # Keep verification from rewriting the ELF used for image identity.
+                [str(objcopy), "--dump-section", f"{body_section}={section_bytes}",
+                 str(elf), str(Path(raw) / "unused.elf")],
                 "objcopy linked WebServer marker extraction",
             )
             marker = section_bytes.read_bytes()[

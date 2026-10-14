@@ -60,7 +60,7 @@ Versions below come from `platformio.ini`:
 - NimBLE-Arduino 2.5.1 — Apache-2.0 —
   `licenses/NimBLE-Arduino-LICENSE.txt` and
   `licenses/NimBLE-Arduino-NOTICE.txt`
-- GFX Library for Arduino 1.6.7 — BSD —
+- GFX Library for Arduino 1.6.9 — BSD —
   `licenses/Arduino-GFX-LICENSE.txt`
 - OpenFontRender commit `a9acf5498ed058a034acaa1becbad790627b9ec1` —
   FreeType Project License, with separately marked MIT files —

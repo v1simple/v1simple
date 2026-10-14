@@ -1,6 +1,6 @@
 """Retain the pinned Arduino_GFX overload sets without global suppression.
 
-Arduino_GFX 1.6.7's ``flush(bool)`` and ``write(uint8_t)`` hide overloads from
+Arduino_GFX 1.6.9's ``flush(bool)`` and ``write(uint8_t)`` hide overloads from
 Arduino ``Print`` under GCC 14's overloaded-virtual diagnostic.  Repair the
 owning vendor declarations only in environments that declare Arduino_GFX.
 Whole-file fingerprints make the mutation fail closed when the dependency

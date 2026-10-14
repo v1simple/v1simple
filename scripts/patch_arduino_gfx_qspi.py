@@ -1,6 +1,6 @@
 """Apply the v1simple Arduino_GFX QSPI full-frame flush patch (pre-build).
 
-Upstream ``Arduino_ESP32QSPI::writePixels`` (GFX Library for Arduino 1.6.7)
+Upstream ``Arduino_ESP32QSPI::writePixels`` (GFX Library for Arduino 1.6.9)
 packs one chunk of pixels into ``_buffer32`` and then blocks on
 ``POLL_START()``/``POLL_END()`` before packing the next, so the CPU byte-swap
 and the QSPI DMA transfer never overlap. It also reads the source framebuffer

@@ -25,7 +25,7 @@
 #define CANVAS_WIDTH 172
 #define CANVAS_HEIGHT 640
 
-// Arduino_GFX 1.6.7 contains intentional overloads within its own class
+// Arduino_GFX 1.6.9 contains intentional overloads within its own class
 // hierarchy. Keep the compatibility exception on the vendor declarations;
 // project code resumes the production warning contract immediately afterward.
 #if defined(__GNUC__)

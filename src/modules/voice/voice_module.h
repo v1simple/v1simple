@@ -112,7 +112,8 @@ class VoiceModule {
     V1BLEClient* bleClient_ = nullptr;
 
     // Announced alert tracking
-    static constexpr int MAX_ANNOUNCED_ALERTS = 10;
+    // Retain the full radar table plus a separate V1 laser announcement.
+    static constexpr int MAX_ANNOUNCED_ALERTS = PacketParser::MAX_ALERTS + 1;
     uint32_t announcedAlertIds_[MAX_ANNOUNCED_ALERTS] = {0};
     uint8_t announcedAlertCount_ = 0;
 

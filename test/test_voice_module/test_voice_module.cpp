@@ -1,6 +1,7 @@
 // Voice action selection and suppression; playback is owned by a separate worker.
 
 #include <unity.h>
+#include <array>
 #include <cstring>
 
 #include "../mocks/ble_client.h"
@@ -664,6 +665,56 @@ void test_escalation_does_not_count_unknown_direction_as_side() {
     TEST_ASSERT_EQUAL_UINT8(0, action.sideCount);
 }
 
+static void checkStableAlertsAnnouncedOnce(size_t alertCount, bool laserPriority) {
+    settings.settings.announceSecondaryAlerts = true;
+    settings.settings.secondaryK = true;
+    // The voice input can contain all 15 radar rows plus a separate V1 laser.
+    std::array<AlertData, PacketParser::MAX_ALERTS + 1> alerts{};
+    TEST_ASSERT_LESS_OR_EQUAL_UINT(alerts.size(), alertCount);
+    alerts[0] = laserPriority ? AlertData::create(BAND_LASER, DIR_FRONT, 8, 0, 0)
+                              : AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700);
+    for (size_t index = 1; index < alertCount; ++index) {
+        alerts[index] = AlertData::create(BAND_K, DIR_FRONT, 3, 0,
+                                         static_cast<uint16_t>(24100 + index * 10));
+    }
+
+    VoiceContext ctx;
+    ctx.priority = &alerts[0];
+    ctx.alerts = alerts.data();
+    ctx.alertCount = static_cast<int>(alertCount);
+    ctx.mainVolume = 5;
+    ctx.now = 10000;
+    const VoiceAction priority = voiceModule.prepareAction(ctx);
+    TEST_ASSERT_EQUAL(VoiceAction::Type::ANNOUNCE_PRIORITY, priority.type);
+    voiceModule.commitAction(priority, ctx.now);
+
+    for (size_t index = 1; index < alertCount; ++index) {
+        ctx.now += 10000; // Playback has accepted the prior action; all timing gates have elapsed.
+        const VoiceAction secondary = voiceModule.prepareAction(ctx);
+        TEST_ASSERT_EQUAL(VoiceAction::Type::ANNOUNCE_SECONDARY, secondary.type);
+        TEST_ASSERT_EQUAL_UINT16(alerts[index].frequency, secondary.freq);
+        voiceModule.commitAction(secondary, ctx.now);
+    }
+
+    for (size_t pass = 0; pass < alertCount * 2; ++pass) {
+        ctx.now += 10000;
+        TEST_ASSERT_EQUAL_MESSAGE(VoiceAction::Type::NONE, voiceModule.prepareAction(ctx).type,
+                                  "An unchanged alert list must become quiet after each secondary is announced");
+    }
+}
+
+void test_stable_nine_alerts_announce_each_secondary_once() {
+    checkStableAlertsAnnouncedOnce(9, false);
+}
+
+void test_stable_twelve_alerts_announce_each_secondary_once() {
+    checkStableAlertsAnnouncedOnce(12, false);
+}
+
+void test_laser_and_full_radar_table_announce_each_secondary_once() {
+    checkStableAlertsAnnouncedOnce(PacketParser::MAX_ALERTS + 1, true);
+}
+
 // Run one process() cycle with `priority` first and `secondary` second. Keeping
 // the same priority alert across calls holds canAnnounceSecondary() satisfied.
 static VoiceAction runWithSecondary(const AlertData& priority, const AlertData& secondary, unsigned long now) {
@@ -691,10 +742,10 @@ void test_announced_set_evicts_oldest_instead_of_saturating() {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(VoiceAction::Type::ANNOUNCE_PRIORITY),
                           static_cast<int>(voiceModule.process(ctx).type));
 
-    // Announce 10 distinct secondaries. The priority already holds a slot, so the
-    // window fills before the loop ends — the tail is exactly what the old
-    // saturating set silently refused to record.
-    const int kSecondaries = 10;  // VoiceModule::MAX_ANNOUNCED_ALERTS
+    // Fill the recent-ID window with distinct secondary arrivals. The priority
+    // already holds a slot, so the final arrival must evict it rather than leave
+    // the newest secondary unrecorded.
+    const int kSecondaries = PacketParser::MAX_ALERTS + 1;
     uint16_t freqs[kSecondaries];
     unsigned long now = mockMillis;
     for (int i = 0; i < kSecondaries; i++) {
@@ -743,6 +794,9 @@ void test_announced_set_evicts_oldest_instead_of_saturating() {
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_announced_set_evicts_oldest_instead_of_saturating);
+    RUN_TEST(test_stable_nine_alerts_announce_each_secondary_once);
+    RUN_TEST(test_stable_twelve_alerts_announce_each_secondary_once);
+    RUN_TEST(test_laser_and_full_radar_table_announce_each_secondary_once);
 
     RUN_TEST(test_make_alert_id_encodes_band_and_freq);
     RUN_TEST(test_make_alert_id_different_bands_differ);

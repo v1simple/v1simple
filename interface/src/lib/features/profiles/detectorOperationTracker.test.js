@@ -101,6 +101,106 @@ describe('detector operation tracker lifecycle', () => {
         expect(vi.getTimerCount()).toBe(0);
     });
 
+    it('follows the accepted operation when saving its identity fails over an older hint', async () => {
+        vi.spyOn(storage, 'setItem').mockImplementation(() => { throw new Error('Quota exceeded'); });
+        const result = {
+            ...operationStatus('succeeded'), operationId: 43,
+            state: 'partial', result: 'partial', reason: 'apply_partial'
+        };
+        const fetchMock = installFetchMock([
+            { match: '/api/autopush/status?operationId=43', respond: jsonResponse(result) }
+        ]);
+
+        tracker.accepted({ operationId: 43, state: 'pending_normal_boot' });
+        await vi.advanceTimersByTimeAsync(750);
+
+        expect(fetchMock).toHaveBeenCalledExactlyOnceWith('/api/autopush/status?operationId=43', expect.anything());
+        expect(onStatus).toHaveBeenLastCalledWith(result);
+        expect(onMessage).not.toHaveBeenCalled();
+        expect(storage.getItem(DETECTOR_OPERATION_STORAGE_KEY)).toBe('42');
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('publishes the result when storage becomes unreadable during a request', async () => {
+        let resolveResponse;
+        const fetchMock = installFetchMock([{
+            match: '/api/autopush/status?operationId=42',
+            respond: () => new Promise((resolve) => { resolveResponse = resolve; })
+        }]);
+        const pending = tracker.resume();
+        vi.spyOn(storage, 'getItem').mockImplementation(() => { throw new Error('Storage unavailable'); });
+        resolveResponse(jsonResponse(operationStatus('succeeded')));
+        await pending;
+
+        expect(onStatus).toHaveBeenCalledExactlyOnceWith(operationStatus('succeeded'));
+        expect(onMessage).not.toHaveBeenCalled();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('keeps polling without storage and does not promise recovery through reload', async () => {
+        vi.spyOn(storage, 'getItem').mockImplementation(() => { throw new Error('Storage unavailable'); });
+        vi.spyOn(storage, 'setItem').mockImplementation(() => { throw new Error('Storage unavailable'); });
+        const fetchMock = installFetchMock([
+            { match: '/api/autopush/status?operationId=42', respond: jsonResponse(operationStatus()) }
+        ]);
+        tracker.accepted({ operationId: 42, state: 'pending_normal_boot' });
+        await vi.advanceTimersByTimeAsync(750);
+        expect(onStatus).toHaveBeenLastCalledWith(operationStatus());
+        await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+
+        expect(onMessage).toHaveBeenCalledExactlyOnceWith({
+            type: 'warning', text: 'Detector operation status polling paused after five minutes.'
+        });
+        const pausedRequestCount = fetchMock.mock.calls.length;
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(fetchMock).toHaveBeenCalledTimes(pausedRequestCount);
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it.each(['terminal status', 'identity mismatch'])(
+        'preserves another operation\'s resume hint when receiving %s', async (outcome) => {
+            let resolveResponse;
+            installFetchMock([{
+                match: '/api/autopush/status?operationId=42',
+                respond: () => new Promise((resolve) => { resolveResponse = resolve; })
+            }]);
+            const pending = tracker.resume();
+            storage.setItem(DETECTOR_OPERATION_STORAGE_KEY, '43');
+            resolveResponse(outcome === 'terminal status'
+                ? jsonResponse(operationStatus('succeeded'))
+                : jsonResponse({ error: 'operation_mismatch' }, 409));
+            await pending;
+
+            if (outcome === 'terminal status') {
+                expect(onStatus).toHaveBeenCalledExactlyOnceWith(operationStatus('succeeded'));
+                expect(onMessage).not.toHaveBeenCalled();
+            } else {
+                expect(onStatus).toHaveBeenCalledExactlyOnceWith(null);
+                expect(onMessage).toHaveBeenCalledExactlyOnceWith({
+                    type: 'error',
+                    text: 'Saved operation 42 does not match the detector\'s current operation. No status was reused.'
+                });
+            }
+            expect(storage.getItem(DETECTOR_OPERATION_STORAGE_KEY)).toBe('43');
+            expect(vi.getTimerCount()).toBe(0);
+        }
+    );
+
+    it('stops after completion even when removing the resume hint fails', async () => {
+        vi.spyOn(storage, 'removeItem').mockImplementation(() => { throw new Error('Storage unavailable'); });
+        const fetchMock = installFetchMock([
+            { match: '/api/autopush/status?operationId=42', respond: jsonResponse(operationStatus('succeeded')) }
+        ]);
+        await tracker.resume();
+        await vi.advanceTimersByTimeAsync(60_000);
+
+        expect(onStatus).toHaveBeenCalledExactlyOnceWith(operationStatus('succeeded'));
+        expect(onMessage).not.toHaveBeenCalled();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
     it('keeps the accepted progress when a later response regresses and stops polling', async () => {
         let state = 'recapturing';
         const fetchMock = installFetchMock([

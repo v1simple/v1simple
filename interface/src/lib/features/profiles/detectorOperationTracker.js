@@ -11,6 +11,8 @@ import {
 // Each mounted page owns one tracker. Requests to start an operation and their
 // admission checks stay with the page; this follows only the accepted identity.
 export function createDetectorOperationTracker({ storage, onStatus, onMessage }) {
+    // Storage is a reload hint; live tracking must survive storage failures.
+    let activeOperationId = null;
     let status = null;
     let timer = null;
     let deadline = 0;
@@ -31,9 +33,11 @@ export function createDetectorOperationTracker({ storage, onStatus, onMessage })
     function schedulePoll() {
         if (disposed) return;
         if (Date.now() >= deadline) {
+            const resumeHint = readDetectorOperationId(storage) === activeOperationId
+                ? ' Reload to resume the exact operation.' : '';
             onMessage({
                 type: 'warning',
-                text: 'Detector operation status polling paused after five minutes. Reload to resume the exact operation.'
+                text: `Detector operation status polling paused after five minutes.${resumeHint}`
             });
             return;
         }
@@ -43,11 +47,16 @@ export function createDetectorOperationTracker({ storage, onStatus, onMessage })
     }
 
     function isCurrent(pollEpoch, operationId) {
-        return !disposed && pollEpoch === epoch && readDetectorOperationId(storage) === operationId;
+        return !disposed && pollEpoch === epoch && activeOperationId === operationId;
+    }
+
+    function finishTracking(operationId) {
+        activeOperationId = null;
+        if (readDetectorOperationId(storage) === operationId) forgetDetectorOperationId(storage);
     }
 
     async function poll() {
-        const operationId = readDetectorOperationId(storage);
+        const operationId = activeOperationId;
         if (disposed || !operationId) return;
         const pollEpoch = epoch;
         try {
@@ -62,7 +71,7 @@ export function createDetectorOperationTracker({ storage, onStatus, onMessage })
             if (!isCurrent(pollEpoch, operationId)) return;
             if (res.status === 409) {
                 publishStatus(null);
-                forgetDetectorOperationId(storage);
+                finishTracking(operationId);
                 onMessage({
                     type: 'error',
                     text: `Saved operation ${operationId} does not match the detector's current operation. No status was reused.`
@@ -89,7 +98,7 @@ export function createDetectorOperationTracker({ storage, onStatus, onMessage })
             }
             publishStatus(next);
             failures = 0;
-            if (next.terminal) forgetDetectorOperationId(storage);
+            if (next.terminal) finishTracking(operationId);
             else schedulePoll();
         } catch {
             if (!isCurrent(pollEpoch, operationId)) return;
@@ -109,6 +118,7 @@ export function createDetectorOperationTracker({ storage, onStatus, onMessage })
     return {
         resume() {
             if (disposed) return;
+            activeOperationId = readDetectorOperationId(storage);
             resetPollWindow();
             return poll();
         },
@@ -117,6 +127,7 @@ export function createDetectorOperationTracker({ storage, onStatus, onMessage })
             // navigation. The device has already accepted this operation.
             rememberDetectorOperationId(storage, response.operationId);
             if (disposed) return;
+            activeOperationId = response.operationId;
             resetPollWindow();
             publishStatus({
                 operationId: response.operationId,

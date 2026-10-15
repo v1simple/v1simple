@@ -369,7 +369,7 @@ void VoiceModule::markAlertAnnounced(Band band, uint16_t freq, bool isPhoto) {
 
     // Keep a FIFO window of recent IDs. Refusing new IDs when full would
     // repeatedly announce later bogeys. Eviction rearms the oldest; the
-    // MAX_ANNOUNCED_ALERTS=10 shift runs only once per announcement.
+    // bounded shift runs only once per accepted announcement.
     if (announcedAlertCount_ >= MAX_ANNOUNCED_ALERTS) {
         memmove(&announcedAlertIds_[0], &announcedAlertIds_[1],
                 sizeof(announcedAlertIds_[0]) * (MAX_ANNOUNCED_ALERTS - 1));

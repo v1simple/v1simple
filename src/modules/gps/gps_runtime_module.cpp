@@ -340,10 +340,11 @@ bool GpsRuntimeModule::parseGga(char* fields[], size_t fieldCount, uint32_t nowM
 
     ggaFix_ = ggaFix;
     hasFix_ = ggaFix_ || rmcFix_;
-    if (hasFix_) {
+    // A no-fix GGA must not renew a retained RMC fix.
+    if (ggaFix_) {
         lastFixTsMs_ = nowMs;
         lastFixTimestampValid_ = true;
-    } else {
+    } else if (!hasFix_) {
         lastFixTimestampValid_ = false;
         invalidateSpeedSample();
     }

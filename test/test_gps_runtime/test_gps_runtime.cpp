@@ -66,6 +66,20 @@ void test_valid_gga_sets_quality_without_speed_sample() {
     TEST_ASSERT_EQUAL_UINT8(8, status.satellites);
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.9f, status.hdop);
     TEST_ASSERT_EQUAL_UINT32(0, status.fixAgeMs);
+
+    for (uint32_t nowMs = 7000; nowMs <= 22000; nowMs += 5000) {
+        TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+            "$GPGGA,123520,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*4D", nowMs));
+        gpsRuntimeModule.update(nowMs);
+        status = gpsRuntimeModule.snapshot(nowMs);
+        TEST_ASSERT_TRUE(status.hasFix);
+        TEST_ASSERT_FALSE(status.sampleValid);
+        TEST_ASSERT_EQUAL_UINT32(0, status.fixAgeMs);
+    }
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPGGA,123520,4807.038,N,01131.000,E,0,08,0.9,545.4,M,46.9,M,,*4C", 23000));
+    TEST_ASSERT_FALSE(gpsRuntimeModule.snapshot(23000).hasFix);
+    TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, gpsRuntimeModule.snapshot(23000).fixAgeMs);
 }
 
 void test_gga_rejects_signed_and_overflowing_unsigned_fields() {
@@ -155,6 +169,96 @@ void test_stale_fix_is_cleared() {
     TEST_ASSERT_FALSE(status.hasFix);
     TEST_ASSERT_FALSE(status.sampleValid);
     TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, status.fixAgeMs);
+}
+
+static void checkNoFixGgaCannotKeepRmcFixAlive(uint32_t fixMs) {
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPRMC,123519,A,4807.038,N,01131.000,E,010.0,084.4,230394,003.1,W*6F", fixMs));
+    for (uint32_t ageMs = 1000; ageMs <= 15000; ageMs += 1000) {
+        const uint32_t nowMs = fixMs + ageMs;
+        TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+            "$GPGGA,123520,4807.038,N,01131.000,E,0,08,0.9,545.4,M,46.9,M,,*4C", nowMs));
+        gpsRuntimeModule.update(nowMs);
+        TEST_ASSERT_TRUE(gpsRuntimeModule.snapshot(nowMs).hasFix);
+    }
+
+    gpsRuntimeModule.update(fixMs + 15001);
+    const GpsRuntimeStatus stale = gpsRuntimeModule.snapshot(fixMs + 15001);
+    TEST_ASSERT_FALSE(stale.hasFix);
+    TEST_ASSERT_FALSE(stale.sampleValid);
+    TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, stale.fixAgeMs);
+    TEST_ASSERT_TRUE(stale.stableHasFix);
+
+    // The existing display hold runs from the last sentence processed while
+    // the RMC fix was still within its 15-second lifetime.
+    for (uint32_t ageMs = 16000; ageMs <= 18000; ageMs += 1000) {
+        const uint32_t nowMs = fixMs + ageMs;
+        TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+            "$GPGGA,123520,4807.038,N,01131.000,E,0,08,0.9,545.4,M,46.9,M,,*4C", nowMs));
+        gpsRuntimeModule.update(nowMs);
+        TEST_ASSERT_FALSE(gpsRuntimeModule.snapshot(nowMs).hasFix);
+        TEST_ASSERT_TRUE(gpsRuntimeModule.snapshot(nowMs).stableHasFix);
+    }
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPGGA,123520,4807.038,N,01131.000,E,0,08,0.9,545.4,M,46.9,M,,*4C", fixMs + 18001));
+    gpsRuntimeModule.update(fixMs + 18001);
+    TEST_ASSERT_FALSE(gpsRuntimeModule.snapshot(fixMs + 18001).stableHasFix);
+
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPRMC,123519,A,4807.038,N,01131.000,E,010.0,084.4,230394,003.1,W*6F", fixMs + 19000));
+    gpsRuntimeModule.update(fixMs + 19000);
+    const GpsRuntimeStatus reacquired = gpsRuntimeModule.snapshot(fixMs + 19000);
+    TEST_ASSERT_TRUE(reacquired.hasFix);
+    TEST_ASSERT_TRUE(reacquired.stableHasFix);
+    TEST_ASSERT_EQUAL_UINT32(0, reacquired.fixAgeMs);
+    float speedMph = 0.0f;
+    uint32_t sampleTsMs = 0;
+    TEST_ASSERT_TRUE(gpsRuntimeModule.getFreshSpeed(fixMs + 19000, speedMph, sampleTsMs));
+    TEST_ASSERT_EQUAL_UINT32(fixMs + 19000, sampleTsMs);
+}
+
+void test_no_fix_gga_cannot_keep_rmc_fix_alive() {
+    checkNoFixGgaCannotKeepRmcFixAlive(1000);
+}
+
+void test_no_fix_gga_cannot_keep_rmc_fix_alive_across_rollover() {
+    checkNoFixGgaCannotKeepRmcFixAlive(UINT32_MAX - 7000U);
+}
+
+void test_no_fix_gga_preserves_fresh_rmc_without_refreshing_speed() {
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPRMC,123519,A,4807.038,N,01131.000,E,010.0,084.4,230394,003.1,W*6F", 1000));
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPGGA,123520,4807.038,N,01131.000,E,0,08,0.9,545.4,M,46.9,M,,*4C", 4000));
+    gpsRuntimeModule.update(4000);
+    const GpsRuntimeStatus status = gpsRuntimeModule.snapshot(4000);
+    TEST_ASSERT_TRUE(status.hasFix);
+    TEST_ASSERT_TRUE(status.sampleValid);
+    TEST_ASSERT_EQUAL_UINT32(3000, status.fixAgeMs);
+    float speedMph = 0.0f;
+    uint32_t sampleTsMs = 0;
+    TEST_ASSERT_TRUE(gpsRuntimeModule.getFreshSpeed(4000, speedMph, sampleTsMs));
+    TEST_ASSERT_FLOAT_WITHIN(0.02f, 11.50779f, speedMph);
+    TEST_ASSERT_EQUAL_UINT32(1000, sampleTsMs);
+    TEST_ASSERT_FALSE(gpsRuntimeModule.getFreshSpeed(4001, speedMph, sampleTsMs));
+}
+
+void test_valid_gga_refreshes_fix_without_refreshing_rmc_speed() {
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPRMC,123519,A,4807.038,N,01131.000,E,010.0,084.4,230394,003.1,W*6F", 1000));
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPGGA,123520,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*4D", 4000));
+    gpsRuntimeModule.update(4000);
+    TEST_ASSERT_EQUAL_UINT32(0, gpsRuntimeModule.snapshot(4000).fixAgeMs);
+    float speedMph = 0.0f;
+    uint32_t sampleTsMs = 0;
+    TEST_ASSERT_TRUE(gpsRuntimeModule.getFreshSpeed(4000, speedMph, sampleTsMs));
+    TEST_ASSERT_EQUAL_UINT32(1000, sampleTsMs);
+    TEST_ASSERT_FALSE(gpsRuntimeModule.getFreshSpeed(4001, speedMph, sampleTsMs));
+    gpsRuntimeModule.update(19000);
+    TEST_ASSERT_TRUE(gpsRuntimeModule.snapshot(19000).hasFix);
+    gpsRuntimeModule.update(19001);
+    TEST_ASSERT_FALSE(gpsRuntimeModule.snapshot(19001).hasFix);
 }
 
 void test_exact_rollover_fix_is_fresh_and_ages_normally() {
@@ -363,6 +467,10 @@ int main() {
     RUN_TEST(test_rejected_gga_does_not_commit_quality_or_promote_gps);
     RUN_TEST(test_detection_timeout_disables_runtime_polling);
     RUN_TEST(test_stale_fix_is_cleared);
+    RUN_TEST(test_no_fix_gga_cannot_keep_rmc_fix_alive);
+    RUN_TEST(test_no_fix_gga_cannot_keep_rmc_fix_alive_across_rollover);
+    RUN_TEST(test_no_fix_gga_preserves_fresh_rmc_without_refreshing_speed);
+    RUN_TEST(test_valid_gga_refreshes_fix_without_refreshing_rmc_speed);
     RUN_TEST(test_exact_rollover_fix_is_fresh_and_ages_normally);
     RUN_TEST(test_stable_fix_holds_briefly_after_fix_drop);
     RUN_TEST(test_stable_satellites_slew_toward_raw_count);

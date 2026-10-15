@@ -200,21 +200,10 @@ class ObdRuntimeModule {
     static constexpr size_t CMD_BUF_LEN = 16;
     static constexpr size_t BLE_BUF_LEN = 256;
 
-    enum class ParserKind : uint8_t {
-        NONE = 0,
-        AT_TEXT = 1,
-        SIMPLE = 2,
-        VIN = 3,
-    };
-
     struct ActiveObdCommand {
         bool active = false;
         ObdCommandKind kind = ObdCommandKind::NONE;
-        ParserKind parser = ParserKind::NONE;
         char tx[CMD_BUF_LEN] = {};
-        uint8_t expectedService = 0;
-        uint8_t expectedPid = 0;
-        uint16_t expectedDid = 0;
         uint32_t timeoutMs = 0;
         uint8_t retriesRemaining = 0;
         uint32_t sentMs = 0;
@@ -266,8 +255,7 @@ class ObdRuntimeModule {
     int8_t readBleRssi(uint32_t nowMs);
 
     bool validateAtResponse(const char* command, const char* response, size_t len) const;
-    bool startCommand(ObdCommandKind kind, ParserKind parser, const char* tx, uint8_t expectedService,
-                      uint8_t expectedPid, uint16_t expectedDid, uint32_t timeoutMs, uint8_t retries, uint32_t nowMs);
+    bool startCommand(ObdCommandKind kind, const char* tx, uint32_t timeoutMs, uint8_t retries, uint32_t nowMs);
     bool retryActiveCommand(uint32_t nowMs);
     bool retryActiveCommandWithAlternateWriteMode(uint32_t nowMs);
     void completeActiveCommand();

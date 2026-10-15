@@ -62,8 +62,7 @@ bool ObdRuntimeModule::validateSimpleResponse(uint8_t expectedService, uint8_t e
 
 // COMMAND LIFECYCLE — start/retry/complete command sequence
 
-bool ObdRuntimeModule::startCommand(ObdCommandKind kind, ParserKind parser, const char* tx, uint8_t expectedService,
-                                    uint8_t expectedPid, uint16_t expectedDid, uint32_t timeoutMs, uint8_t retries,
+bool ObdRuntimeModule::startCommand(ObdCommandKind kind, const char* tx, uint32_t timeoutMs, uint8_t retries,
                                     uint32_t nowMs) {
     if (!tx || tx[0] == '\0') {
         return false;
@@ -73,10 +72,6 @@ bool ObdRuntimeModule::startCommand(ObdCommandKind kind, ParserKind parser, cons
     activeCommand_ = ActiveObdCommand{};
     activeCommand_.active = true;
     activeCommand_.kind = kind;
-    activeCommand_.parser = parser;
-    activeCommand_.expectedService = expectedService;
-    activeCommand_.expectedPid = expectedPid;
-    activeCommand_.expectedDid = expectedDid;
     activeCommand_.timeoutMs = timeoutMs;
     activeCommand_.retriesRemaining = retries;
     activeCommand_.writeWithResponse = preferWriteWithResponse_;
@@ -210,7 +205,7 @@ bool ObdRuntimeModule::startSpeedCommand(uint32_t nowMs) {
     if (transportRequestActive_ || transportDisconnectPending_ || readyTransportResult_.ready) {
         return false;
     }
-    if (!startCommand(ObdCommandKind::SPEED, ParserKind::SIMPLE, obd::SPEED_POLL_CMD, 0x41, 0x0D, 0x0000,
+    if (!startCommand(ObdCommandKind::SPEED, obd::SPEED_POLL_CMD,
                       obd::POLL_TIMEOUT_MS, obd::POLL_COMMAND_RETRIES, nowMs)) {
         handlePollingError(nowMs, false, ObdFailureReason::WRITE);
         return false;

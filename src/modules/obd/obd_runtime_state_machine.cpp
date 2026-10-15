@@ -257,9 +257,8 @@ void ObdRuntimeModule::updateAtInit(uint32_t nowMs) {
 
     const char* command = commands[initIndex_];
     const bool isSanity = strncmp(command, "0100", 4) == 0;
-    if (!startCommand(isSanity ? ObdCommandKind::SANITY : ObdCommandKind::AT_INIT,
-                      isSanity ? ParserKind::SIMPLE : ParserKind::AT_TEXT, command, isSanity ? 0x41 : 0x00, 0x00,
-                      0x0000, obd::AT_INIT_RESPONSE_TIMEOUT_MS, obd::AT_INIT_RETRIES, nowMs)) {
+    if (!startCommand(isSanity ? ObdCommandKind::SANITY : ObdCommandKind::AT_INIT, command,
+                      obd::AT_INIT_RESPONSE_TIMEOUT_MS, obd::AT_INIT_RETRIES, nowMs)) {
 #ifndef UNIT_TEST
         const int cmdLen = static_cast<int>(commandDisplayLen(command));
         Serial.printf("[OBD] AT init write failed cmd=%.*s writeMode=%s rc=%d (%s) securityReady=%d enc=%d bond=%d "

@@ -323,8 +323,7 @@ void test_write_completion_at_exact_rollover_enters_bounded_response_timeout() {
         runtime.state_ = ObdConnectionState::POLLING;
 
         TEST_ASSERT_TRUE(runtime.startCommand(
-            ObdCommandKind::SPEED, ObdRuntimeModule::ParserKind::SIMPLE,
-            "010D\r", 0x41, 0x0D, 0, obd::POLL_TIMEOUT_MS, 0, issuedMs));
+            ObdCommandKind::SPEED, "010D\r", obd::POLL_TIMEOUT_MS, 0, issuedMs));
         TEST_ASSERT_TRUE(runtime.activeCommand_.writeResultPending);
 
         runtime.updatePolling(issuedMs);

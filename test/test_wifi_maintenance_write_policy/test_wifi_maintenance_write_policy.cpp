@@ -1,6 +1,4 @@
 /**
- * test_wifi_maintenance_write_policy.cpp
- *
  * Pure-logic tests for the dependency-free maintenance write admission policy
  * and the request-shape literals shared with the maintenance WebUI.
  */

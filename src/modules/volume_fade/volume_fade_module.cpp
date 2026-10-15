@@ -89,11 +89,8 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
         return action;
     }
 
-    // Alert muted or suppressed -> restore if we had faded, retry until confirmed.
-    // BUT: if we are the ones that faded the volume (fadeActive_), the V1 may
-    // report its mute indicator at low/zero volume.  Don't fight with ourselves
-    // — only restore when the mute came from an external source (user mute
-    // button) or the alert was suppressed by another module.
+    // Restore for external mute/suppression, not our own fade-induced mute
+    // indicator; retry restoration until confirmed.
     if ((ctx.alertMuted && !fadeActive_) || ctx.alertSuppressed) {
         const bool restoreInFlight = (pendingRestoreVolume_ != 0xFF);
         const bool firstRestoreAttempt = !restoreInFlight;
@@ -126,13 +123,8 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
     unsigned long now = ctx.now;
     uint16_t freq = ctx.currentFrequency;
 
-    // Determine if this is a new distinct alert during the same session.
-    // Frequency identifies radar alerts; laser has no frequency, so it is
-    // deduped as its own distinct-alert class. Valentine's Law
-    // (docs/VALENTINE_PHILOSOPHY.md, screen/speaker contract): a newly
-    // detected, distinct alert releases any active fade mute and sounds
-    // again — and laser, the highest-urgency threat, must never be the one
-    // class a fade can silently ride through.
+    // A new distinct threat releases fade (Valentine's Law). Radar uses
+    // frequency identity; laser is its own distinct class.
     bool isNewFrequency = freq != 0;
     if (isNewFrequency) {
         for (int i = 0; i < seenCount_; i++) {
@@ -199,12 +191,8 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
     // Check if it's time to fade down
     unsigned long fadeDelayMs = static_cast<unsigned long>(s.alertVolumeFadeDelaySec) * 1000UL;
     if (!commandSent_ && (now - alertStartMs_) >= fadeDelayMs) {
-        // Clamp minimum fade volume to 1.  Volume 0 causes the V1 to set its
-        // mute indicator in image1, which feeds back through alertMuted and
-        // triggers a restore→reset→re-fade cycle every fadeDelaySec.
-        //
-        // The clamp also means a fade can never fully silence a live alert as
-        // a side effect — a configured 0 writes 1.
+        // Clamp fade to at least 1, including configured 0. At zero, V1
+        // image1 mute feedback would trigger a restore/reset/re-fade cycle.
         uint8_t fadeVol = std::max<uint8_t>(1, s.alertVolumeFadeVolume);
         if (ctx.currentVolume > fadeVol) {
             action.type = VolumeFadeAction::Type::FADE_DOWN;

@@ -1,40 +1,15 @@
 /**
- * AL Priority serial listener and laser-event state machine.
+ * Receive-only ALP HiFi listener: UART2 RX on GPIO 2 (RJ-45 pin 2), 19200 8N1.
+ * No TX or enable GPIO. begin() owns UART lifecycle; process() runs on the main loop.
  *
- * Owns UART2 RX on GPIO 2 (ALP CPU TX, RJ-45 pin 2).
- * Receives ALP HiFi serial data at 19200 8N1, parses alert frames
- * for gun identification, and tracks laser-event lifecycle.
- * The listener is receive-only; no ALP TX or enable GPIO is assigned.
+ * Frames: byte0 byte1 byte2 checksum; checksum = (b0+b1+b2) & 0x7F.
+ * LID deployment uses 98 00 E3 7B; targeted B0 01 heartbeats also open alerts.
+ * Gun fingerprints use CX 00 YY (LID deployment) or CX YY 00 (detection).
+ * Checksum admission and the RX glitch filter reject DLI/LID crosstalk.
  *
- * Terminology (per AL Priority Software Solution Manual):
- *   The user configures one of three Advanced Options — PDC Only,
- *   PDC & DLI, or PDC & LID. Our unit runs PDC & LID. Within a drive,
- *   the ALP switches between operational states based on speed:
- *     - DLI  (Detection of Laser Interference) — below LID speed limit
- *     - LID  (Laser Interference Defense) — above LID speed limit
- *     - Warm-Up — 60s after boot or after a LID Time expires
- *   Names follow the manual's PDC, DLI, LID, and Warm-Up terminology.
- *
- * Design notes:
- *   - Receive-only: the ESP32 only listens to CPU TX (pin 2 on RJ-45).
- *   - Frames are 4 bytes: byte0 byte1 byte2 checksum.
- *     checksum = (byte0 + byte1 + byte2) & 0x7F.
- *     The native ALP suite pins validation and resynchronization behavior.
- *   - Alert detection uses two signals:
- *     1. LID-deploy trigger: 98 00 E3 7B — ALP is actively firing IR
- *        countermeasures at the source. Rare in daily driving (requires
- *        a real laser hit above LID speed with LID configured).
- *     2. Heartbeat byte1 transition: B0 01 XX = targeted, 02/03/04 = idle.
- *     The heartbeat transition is the universal indicator — works in
- *     all operational states (DLI, LID pre-deploy, LID post-deploy).
- *   - Gun identification comes from CX frames in the alert burst:
- *     - LID-deploy frame variant: CX 00 YY — fingerprint (byte0, byte2)
- *     - Detect frame variant:      CX YY 00 — fingerprint (byte0, byte1)
- *   - During laser events, UART is flooded with noise from detection
- *     circuitry crosstalk (DLI) or I2S speaker crosstalk (LID deploy).
- *     Checksum validation rejects noise; GPIO glitch filter adds HW rejection.
- *
- * begin() owns the UART lifecycle; process() runs from the main loop.
+ * Manual terminology: PDC Only, PDC & DLI, PDC & LID. DLI is detection below
+ * the LID speed limit; LID is countermeasure deployment above it. Manual warm-up
+ * is about 60 seconds after boot or LID timeout; runtime admission is defined below.
  */
 
 #pragma once
@@ -115,31 +90,13 @@ struct AlpStatus {
     uint8_t detectRaw[3];             // most recent accepted sparse detection payload
 };
 
-// A session is a single laser engagement from onset to final clear.
-// It is an internal engagement envelope: gun and direction stay latched
-// across short TEARDOWN↔ALERT_ACTIVE re-arms so the next live detect can
-// resume with the same context. Display accessors intentionally surface
-// only the live ALERT_ACTIVE / NOISE_WINDOW portion of that session.
+// One engagement keeps gun/direction through TEARDOWN rearms and noise.
+// It opens on IDLE/LISTENING -> ALERT_ACTIVE and closes on TEARDOWN ->
+// LISTENING or heartbeat silence. Display eligibility is narrower: see hasLaserEvent().
 //
-// Lifecycle:
-//   open   — LISTENING|IDLE → ALERT_ACTIVE (fresh engagement)
-//   stays open — across TEARDOWN↔ALERT_ACTIVE cycling (in-engagement
-//                re-arms driven by byte1 01↔02 or repeat 98 triggers).
-//                The gun frame arrives once at the opening of an
-//                engagement; persisting the session across re-arms
-//                keeps the gun/direction context available when live
-//                detection resumes without leaking it during the gap.
-//   close  — TEARDOWN → LISTENING (real end), or heartbeat timeout
-//            (ALP went silent) with a session still open.
-//
-// Warm-Up flag:
-//   Set when a session opens inside the 35s preamble envelope, before the
-//   first heartbeat, or while the heartbeat remains in an unconfirmed
-//   detect mode. Cleared by the operational-confirmation paths in the frame
-//   handlers below. While the flag is set, the V1-shape accessors
-//   (hasLaserEvent, isLaserDetecting) return false so the display stays clean
-//   through the ALP Warm-Up window. Per manual: Warm-Up runs ~60s at boot and
-//   after a LID Time timeout.
+// Warm-up hides sessions opened inside the 35-second preamble envelope, before
+// the first heartbeat, or in an unconfirmed detect mode. Frame-handler
+// confirmation releases it.
 
 struct AlertSession {
     bool active = false;   // session open?
@@ -275,32 +232,13 @@ class AlpRuntimeModule {
     /** Most recent B0 heartbeat byte1 (01=Targeted, 02/03/04=listening modes). */
     uint8_t lastHeartbeatByte1() const { return lastHbByte1_; }
 
-    // These are the two questions the display should ask. Everything
-    // else (state machine, TEARDOWN, Warm-Up windowing, re-arm
-    // cycles) is parser-internal and should not leak into consumers.
-
-    /**
-     * Current laser event snapshot for display and API consumers.
-     * Contains active status, gun ID, direction, and LID active flag.
-     */
+    // Consumers use the event snapshot and display eligibility, not parser states.
+    // Current event for display and API consumers.
     const AlpLaserEvent& currentEvent() const { return currentEvent_; }
 
-    /**
-     * Is there a live laser alert that should be shown on the display?
-     * True while the ALP is actively alerting (ALERT_ACTIVE or NOISE_WINDOW),
-     * and during a gun-identified TEARDOWN gap that belongs to the same live
-     * engagement. False during Warm-Up, unconfirmed TEARDOWN/LISTENING gaps,
-     * and when no engagement is active.
-     */
+    // Live ALERT_ACTIVE/NOISE_WINDOW or identified TEARDOWN; never warm-up.
     bool hasLaserEvent() const {
-        // Mirrors updateCurrentEvent's active predicate. Display window
-        // spans the full session lifetime — ALERT_ACTIVE, NOISE_WINDOW,
-        // and TEARDOWN — because real laser engagements oscillate byte1
-        // between Targeted (01) and IDLE (00), which bounces us through
-        // TEARDOWN mid-engagement. See updateCurrentEvent() comment.
-        // TEARDOWN is displayable only when a gun was identified (real
-        // engagement); phantom sessions that entered ALERT_ACTIVE from
-        // noise never get a gun-ID and must not surface during TEARDOWN.
+        // Keep this predicate aligned with updateCurrentEvent().
         const bool teardownDisplayable = (state_ == AlpState::TEARDOWN) && (session_.gun != AlpGunType::UNKNOWN);
         return session_.active && !session_.isWarmUp &&
                (state_ == AlpState::ALERT_ACTIVE || state_ == AlpState::NOISE_WINDOW || teardownDisplayable);
@@ -309,21 +247,8 @@ class AlpRuntimeModule {
     /** Full current session for product state consumers and tests. */
     const AlertSession& currentSession() const { return session_; }
 
-    /**
-     * Is the ALP connected and producing data? True when ALP is enabled
-     * and in any state except OFF or IDLE.
-     *
-     * This reports connection, not authority. It is a precondition for
-     * ALP owning the laser render, never the whole test — see
-     * RenderFrameComposer::compose(), which suppresses the V1's laser
-     * channel only when an ALP branch actually renders one. A connected
-     * ALP with nothing on screen does not displace the V1.
-     *
-     * The V1 Gen2 and the ALP each drive their own speaker for laser, so
-     * v1simple does not duplicate the laser channel when ALP is rendering
-     * it. That also keeps V1 alert persistence from holding a duplicate
-     * visual after an ALP engagement closes.
-     */
+    // Connection is a prerequisite for laser ownership. The composer suppresses
+    // V1 laser only when an ALP branch actually renders; a silent ALP cannot hide it.
     bool ownsLaserDisplay() const { return enabled_ && state_ != AlpState::OFF && state_ != AlpState::IDLE; }
 
 #ifdef UNIT_TEST
@@ -369,8 +294,7 @@ class AlpRuntimeModule {
     uint32_t testGetWarmUpPreambleMs() const { return warmUpPreambleMs_; }
     void testSetFirstFrameMs(uint32_t ms) { firstFrameMs_ = ms; }
     void testSetWarmUpPreambleMs(uint32_t ms) { warmUpPreambleMs_ = ms; }
-    // Seam for other modules' tests (e.g. display pipeline tests that want
-    // to exercise the ALP-active branch without linking alp_runtime_module.cpp).
+    // Display-test seam for consumers that do not link the runtime implementation.
     void testSetEnabled(bool e) {
         enabled_ = e;
         begun_ = true;
@@ -406,36 +330,22 @@ class AlpRuntimeModule {
 
     AlpGunType lastGun_ = AlpGunType::UNKNOWN;
     uint32_t lastGunTimestampMs_ = 0;
-    // Boot-level latch: set the first time any gun identifies in this
-    // module's lifetime, cleared only on module reconstruction. Distinct
-    // from lastGun_, which is intentionally wiped at every fresh engagement
-    // so a previous alert's gun can't leak into a new one. Used by the
-    // freshEngagement Warm-Up gate: once any gun has been identified in this
-    // boot, subsequent sessions bypass the preamble/envelope clause. Boot
-    // Warm-Up never produces a gun-ID frame, so identification proves the boot
-    // sequence has ended.
+    // Persists across sessions while UART remains live; silence timeout clears it.
+    // A confirmed gun lets later sessions bypass the boot preamble/envelope gate.
     bool bootGunConfirmed_ = false;
     uint32_t lastHeartbeatMs_ = 0;
-    // Timestamp 0 is a valid millis() value at boot and rollover. Keep timeout
-    // admission separate from the timestamp so a frame received at exactly 0
-    // still expires normally after silence.
+    // Separate timeout admission from timestamp 0 (valid at boot/rollover).
     bool heartbeatTimeoutArmed_ = false;
     uint32_t lastFrameMs_ = 0;
     uint32_t noiseWindowEntryMs_ = 0;
     uint32_t teardownEntryMs_ = 0;
-    // ALERT_ACTIVE watchdog anchor. Seeded on every state entry so alerts
-    // opened by heartbeat byte1=01 cannot bypass the timeout, then refreshed
-    // only by a 98 trigger rearm. Repeated Targeted heartbeats are not rearms:
-    // captures show stale byte1=01 housekeeping continuing after alert close.
+    // Seed on ALERT_ACTIVE entry; only 98 detection triggers refresh it.
+    // Repeated targeted heartbeats must not extend an alert indefinitely.
     uint32_t alertActiveWatchdogMs_ = 0;
     uint8_t lastHbByte1_ = 0xFF;      // most recent B0 heartbeat byte1
     bool alertDetectedViaHb_ = false; // true when byte1 transitioned to 01
-    // One-process guard after TEARDOWN timeout for heartbeat-driven reopen.
-    // Blocks the two known housekeeping shapes from the just-ended alert:
-    //   (a) steady B0 01 resume in the same process() pass
-    //   (b) cleanup bounce B0 01 -> 00 -> 01 in that same pass
-    // Real reopen still works on the next tick or immediately via a 98
-    // detect trigger frame.
+    // Teardown expiry blocks steady 01 and 01->00->01 reopening for one pass.
+    // A 98 trigger can reopen immediately; heartbeats can reopen next tick.
     bool suppressHeartbeatResumeThisProcess_ = false;
     bool uartHasReceivedData_ = false;
     // Raw UART byte arrival timestamp — updated on every drainUart byte read.

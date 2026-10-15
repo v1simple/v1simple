@@ -1,8 +1,3 @@
-/**
- * DisplayFontManager implementation — font loading and top-counter
- * glyph-bounds cache.
- */
-
 #include "display_font_manager.h"
 #include "display_driver.h" // Arduino_Canvas full definition (via Arduino_GFX_Library)
 #include "display_layout.h"
@@ -10,28 +5,19 @@
 #include <Arduino.h>      // millis(), Serial, psramFound()
 #include <esp_heap_caps.h>
 
-// ============================================================================
-// Lifecycle
-// ============================================================================
-
 void DisplayFontManager::init(Arduino_Canvas* canvas) {
     if (!canvas) {
         Serial.println("[FontMgr] ERROR: null canvas in init()");
         return;
     }
 
-    // Determine cache budget based on PSRAM availability.
-    // One Segment7 renderer now serves both frequency and top-counter draws.
-    // Holds ~40-60 glyphs at typical sizes; reduces OFR cache churn during
-    // varied-frequency alert sequences.  Internal-SRAM metadata overhead
-    // for this glyph count is ~4-6 KB (safe with WiFi+BLE headroom >30 KB).
+    // Frequency and counter share this cache; use the smaller budget without PSRAM.
     const bool psramOk = psramFound() && (ESP.getPsramSize() > 0);
     const uint32_t seg7Cache = psramOk ? 98304u : 8192u; // 96 KB
 
     Serial.printf("[FontMgr] cache budget: psram=%s seg7=%lu\n", psramOk ? "yes" : "no",
                   static_cast<unsigned long>(seg7Cache));
 
-    // --- Segment7 digits ---
     segment7.setDrawer(*canvas);
     segment7.setCacheSize(1, 4, seg7Cache);
     FT_Error err = segment7.loadFont(V1SevenXFont, sizeof(V1SevenXFont));
@@ -40,8 +26,7 @@ void DisplayFontManager::init(Arduino_Canvas* canvas) {
         Serial.printf("[FontMgr] ERROR: Segment7 load failed (0x%02X)\n", err);
     }
 
-    // Prime the top-counter glyph-bounds cache at boot so that
-    // right-aligned counter layout is stable from the first frame.
+    // Prime bounds before the first frame so counter alignment is stable.
     primeTopCounterBoundsCache();
     prewarmSegment7FrequencyGlyphs();
 
@@ -59,8 +44,7 @@ void DisplayFontManager::prewarmSegment7FrequencyGlyphs() {
         return;
     }
 
-    // Warm the hot-path glyphs used by live frequency rendering so first-hit
-    // alerts (e.g., 33.8) do not pay OpenFontRender glyph build latency.
+    // Avoid glyph-build latency on the first live alert.
     static constexpr int kWarmFontSize = DisplayLayout::FREQUENCY_OFR_FONT_SIZE;
     static constexpr const char* kWarmupSamples[] = {
         "33.800", "35.500", "34.700", "24.150", "10.525", "88.888", "--.---", "LASER", "truSPd", "drgEYE",
@@ -81,10 +65,6 @@ void DisplayFontManager::prewarmSegment7FrequencyGlyphs() {
     Serial.printf("[FontMgr] Segment7 prewarm complete in %lu ms\n", millis() - warmStartMs);
 }
 
-// ============================================================================
-// Top-counter glyph bounds cache
-// ============================================================================
-
 void DisplayFontManager::resetTopCounterBoundsCache() {
     for (uint8_t c = 0; c < 128; ++c) {
         topCounterXMin[c][0] = BOUNDS_INVALID;
@@ -101,9 +81,7 @@ void DisplayFontManager::primeTopCounterBoundsCache() {
         return;
     }
 
-    // The V1 bogey counter decoder emits a small fixed symbol set. Cache only
-    // those glyphs instead of every printable ASCII character to avoid boot-time
-    // work for characters the top counter can never display.
+    // Prime only symbols emitted by the V1 counter decoder.
     static constexpr char kTopCounterSymbols[] = " 0123456789AJLPCUEF#&bcdu";
 
     segment7.setFontSize(TOP_COUNTER_FONT_SIZE);

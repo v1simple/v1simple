@@ -1,11 +1,4 @@
-/**
- * ALP Laser Event — atomic event snapshot for display propagation.
- *
- * Consolidates the event-owned fields that the display pipeline
- * reads from AlpRuntimeModule and writes to V1Display in a single,
- * typed struct. This ensures atomic propagation and eliminates the
- * three-flag dance.
- */
+// Event-owned fields carried together from AlpRuntimeModule to the display pipeline.
 
 #pragma once
 

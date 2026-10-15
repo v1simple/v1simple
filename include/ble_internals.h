@@ -7,12 +7,8 @@
 #include <Arduino.h>
 #include <NimBLEDevice.h>
 
-// Forward declaration
 class V1BLEClient;
 
-// ============================================================================
-// SemaphoreGuard - RAII mutex wrapper for BLE operations
-// ============================================================================
 // The default is a non-blocking try-lock. Callers that may wait must provide a
 // bounded timeout explicitly; BLE paths never use portMAX_DELAY.
 class SemaphoreGuard {
@@ -34,10 +30,6 @@ class SemaphoreGuard {
     SemaphoreHandle_t sem_;
     bool locked_;
 };
-
-// ============================================================================
-// UUID Utilities
-// ============================================================================
 
 // Extract 16-bit short UUID from V1's 128-bit custom UUID
 inline bool extractV1ShortUuidFrom128(const NimBLEUUID& uuid, uint16_t& out) {
@@ -82,38 +74,17 @@ inline uint16_t shortUuid(const NimBLEUUID& uuid) {
     return 0;
 }
 
-// ============================================================================
-// V1 reconnect failure threshold
-// ============================================================================
-
 constexpr uint8_t V1_BLE_MAX_BACKOFF_FAILURES = 5;
-// Retained constant name for compatibility; it now represents the number of
-// consecutive failed V1 connection sequences tolerated before a hard reset.
+// Failed V1 connection sequences tolerated before a hard reset.
 
 inline bool hitsV1BleHardResetThreshold(uint8_t consecutiveFailures) {
     return consecutiveFailures >= V1_BLE_MAX_BACKOFF_FAILURES;
 }
 
-// ============================================================================
-// Debug Log Controls
-// ============================================================================
-
-// ============================================================================
-// BLE client lifetime contract.
-// ============================================================================
-// NimBLE maintains a fixed 3-slot internal client array. Deleting a client
-// at runtime (NimBLEDevice::deleteClient) corrupts the heap — the slot is
-// freed but internal bookkeeping is not updated, leading to use-after-free.
-//
-// deleteClient() and deinit() are prohibited. deleteAllBonds() is restricted
-// to fresh-flash recovery in ble_client.cpp.
-// ============================================================================
-
-// ============================================================================
-// Shared State (defined in ble_client.cpp)
-// ============================================================================
+// Keep NimBLE clients alive across reconnects: fixed slots and callbacks share
+// their lifetime. Runtime deleteClient() and deinit() are prohibited.
+// deleteAllBonds() is restricted to fresh-flash recovery in ble_client.cpp.
 
 // Spinlock for deferring settings writes from BLE scan callbacks
 extern portMUX_TYPE pendingAddrMux;
-// Instance pointer for callbacks
 extern V1BLEClient* instancePtr;

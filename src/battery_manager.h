@@ -1,12 +1,3 @@
-/**
- * Battery Manager for Waveshare ESP32-S3-Touch-LCD-3.49
- *
- * Handles:
- * - Battery voltage monitoring via ADC
- * - Power control via TCA9554 I/O expander
- * - Power button handling for battery power on/off
- */
-
 #pragma once
 #ifndef BATTERY_MANAGER_H
 #define BATTERY_MANAGER_H
@@ -18,7 +9,6 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
-// Hardware Pins
 #define BATTERY_ADC_CHANNEL ADC1_CHANNEL_3 // GPIO4
 #define BATTERY_ADC_GPIO 4
 #define BOOT_BUTTON_GPIO 0 // BOOT button for brightness adjustment
@@ -28,7 +18,6 @@
 #define TCA9554_I2C_ADDR 0x20   // ESP_IO_EXPANDER_I2C_TCA9554_ADDRESS_000
 #define TCA9554_PWR_LATCH_PIN 6 // Pin 6 controls battery power latch
 
-// TCA9554 Registers
 #define TCA9554_OUTPUT_PORT 0x01
 #define TCA9554_CONFIG_PORT 0x03
 
@@ -41,34 +30,29 @@ class BatteryManager {
   public:
     BatteryManager();
 
-    // Initialize the battery manager (call in setup)
     bool begin();
 
-    // Check if running on battery power
     bool isOnBattery() const;
 
-    // Check if a battery is present (detects battery even when on USB power)
+    // Includes a battery attached while USB supplies power.
     bool hasBattery() const;
 
     // Update cached battery readings (call in loop, voltage updates every 10s)
     void update();
 
-    // Force one immediate physical ADC acquisition and update the cache. This
-    // never waits for a battery to appear; false means no fresh reading was
-    // available (uninitialized/failed ADC or diagnostic simulation mode).
+    // Attempts one physical ADC read without waiting for a battery. False means
+    // no fresh reading (uninitialized/failed ADC or diagnostic simulation).
     bool refreshVoltage();
 
     // True when at least one successful physical ADC acquisition occurred
     // after sinceMs. Comparison is rollover-safe for normal runtime windows.
     bool hasVoltageReadingAfter(uint32_t sinceMs) const;
 
-    // Get cached battery voltage in millivolts (updated every 10s)
+    // Cached readings, refreshed every ten seconds by update().
     uint16_t getVoltageMillivolts() const;
 
-    // Get cached battery percentage (0-100, updated every 10s)
     uint8_t getPercentage() const;
 
-    // Check if battery is critically low (should shutdown soon)
     bool isCritical() const;
 
     // Safety decision for the shutdown path. Unlike hasBattery(), this does
@@ -91,14 +75,11 @@ class BatteryManager {
     // Enter deep sleep with an EXT1 wake mask.
     bool enterDeepSleep(uint64_t wakeMask, uint64_t pullupMask = 0, const char* outcome = nullptr);
 
-    // Check if power button is pressed
     bool isPowerButtonPressed();
 
     // Process power button (call in loop) - returns true if should power off
     bool processPowerButton();
 
-    // State used by processPowerButtonState(). Exposed so the pure helper can
-    // be tested in isolation without pulling in hardware headers.
     struct PwrButtonState {
         bool buttonWasPressed = false;
         uint32_t buttonPressStart = 0;
@@ -106,9 +87,7 @@ class BatteryManager {
 
   private:
     bool initialized_;
-    // Resolved view of sourceState_.classification. Kept as a plain bool so
-    // every existing caller of isOnBattery() is unaffected; the authoritative
-    // three-valued classification lives in sourceState_.
+    // Resolved view of sourceState_.classification.
     bool onBattery_;
     uint16_t lastVoltage_;
     uint32_t buttonPressStart_;
@@ -123,11 +102,9 @@ class BatteryManager {
     uint32_t lastUpdateMs_;
     bool hasVoltageReading_;
 
-    // Debug simulation
     uint16_t simulatedVoltage_;
 
-    // The hardware-independent policy owns source decisions; this class
-    // supplies pin samples and the clock.
+    // Source policy consumes this class's pin samples and clock.
     battery_source_policy::State sourceState_;
     // Bounded serial evidence replay after a confirmed source transition.
     // This does not influence sourceState_ or any product behavior.
@@ -139,8 +116,7 @@ class BatteryManager {
     bool setTCA9554PinWithBudget(uint8_t pin, bool high, TickType_t timeoutTicks, int maxRetries);
     bool readADCMillivolts(uint16_t& voltage);
 
-    // Take one spaced sampling round of PWR_BUTTON_GPIO and hand it to the
-    // policy. Updates onBattery_ from the policy's resolved answer.
+    // One GPIO16 sampling round; updates onBattery_ through the source policy.
     battery_source_policy::Result observeSourceRound(uint32_t nowMs);
 };
 

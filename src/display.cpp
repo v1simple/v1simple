@@ -1,11 +1,6 @@
-/**
- * Display Driver for V1 Gen2 Display
- * Supports multiple hardware platforms
- */
-
 #include "display.h"
 #include "config.h"
-#include "display_layout.h" // Centralized layout constants
+#include "display_layout.h"
 #include "color_themes.h"
 #include "band_utils.h"
 #include "display_segments.h" // 7/14-segment data tables
@@ -18,11 +13,8 @@
 #include <cstring>
 #include <algorithm>
 
-// Font rendering — all OpenFontRender instances and caches are owned by
-// DisplayFontManager (see display_font_manager.h).
 #include "display_font_manager.h"
 
-// Convenience aliases so that drawing code updates stay concise.
 using TextWidthCacheEntry = DisplayFontManager::WidthCacheEntry;
 
 namespace {
@@ -71,43 +63,22 @@ using ActiveAxs15231B = PatchedAxs15231B;
 
 } // namespace
 
-// ============================================================================
-// Dirty-flag aggregate — see include/display_dirty_flags.h for struct definition
-// ============================================================================
 #include "display_dirty_flags.h"
 #include "display_element_caches.h"
 
-// Use centralized constant from display_layout.h
 using DisplayLayout::PRIMARY_ZONE_HEIGHT;
 
-// ============================================================================
-// Volume-zero warning state machine
-// Shows a flashing "VOL 0" warning when the V1 volume is 0, no app is
-// connected, and speed-mute has not intentionally set volume to 0.
-// ============================================================================
-// VolumeZeroWarning struct — see include/display_vol_warn.h
 #include "display_vol_warn.h"
-
-// getEffectiveScreenHeight() now lives in display_layout.h
-
-// DISPLAY_FLUSH() macro — see include/display_flush.h
 #include "display_flush.h"
-
-// Drawing primitives, coordinate transforms, dimColor — see include/display_draw.h
 #include "display_draw.h"
 
-// Global display instance reference — defined here, declared extern in display_palette.h
 V1Display* g_displayInstance = nullptr;
 
-// Palette helpers and colour macros — see include/display_palette.h
 #include "display_palette.h"
-
-// Cross-platform text drawing helpers — see include/display_text.h
 #include "display_text.h"
 
 using namespace DisplaySegments;
 
-// TOP_COUNTER_* constants now live in display_layout.h
 using DisplayLayout::TOP_COUNTER_FALLBACK_WIDTH;
 using DisplayLayout::TOP_COUNTER_FIELD_H;
 using DisplayLayout::TOP_COUNTER_FIELD_W;
@@ -118,9 +89,7 @@ using DisplayLayout::TOP_COUNTER_PAD_RIGHT;
 using DisplayLayout::TOP_COUNTER_TEXT_Y;
 
 V1Display::V1Display(SettingsManager& settings) : settings_(settings) {
-    // Initialize with standard theme by default
     currentPalette_ = ColorThemes::STANDARD();
-    // Set global instance for color palette access
     g_displayInstance = this;
 
     currentScreen_ = ScreenMode::Unknown;
@@ -299,21 +268,18 @@ bool V1Display::hasFreshBleContext(uint32_t nowMs) const {
 
 void V1Display::setBLEProxyStatus(bool proxyEnabled, bool clientConnected, bool receivingData) {
 #if defined(DISPLAY_WAVESHARE_349)
-    // Detect app disconnect - was connected, now isn't
-    // Reset VOL 0 warning state immediately so it can trigger again
+    // A new standalone session may need to show the VOL 0 warning again.
     if (bleProxyClientConnected_ && !clientConnected) {
         volZeroWarn_.reset();
     }
 
-    // Check if proxy client connection changed - update RSSI display
     bool proxyChanged = (clientConnected != bleProxyClientConnected_);
 
-    // Check if receiving state changed (for heartbeat visual)
     bool receivingChanged = (receivingData != bleReceivingData_);
 
     if (bleProxyDrawn_ && proxyEnabled == bleProxyEnabled_ && clientConnected == bleProxyClientConnected_ &&
         !receivingChanged) {
-        return; // No visual change needed
+        return;
     }
 
     bleProxyEnabled_ = proxyEnabled;
@@ -321,7 +287,6 @@ void V1Display::setBLEProxyStatus(bool proxyEnabled, bool clientConnected, bool 
     bleReceivingData_ = receivingData;
     drawBLEProxyIndicator();
 
-    // Update RSSI display when proxy connection changes
     if (proxyChanged) {
         drawRssiIndicator(bleCtx_.v1Rssi);
     }

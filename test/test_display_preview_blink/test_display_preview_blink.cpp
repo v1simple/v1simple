@@ -1,18 +1,7 @@
-/**
- * Regression boundary: preview mode owns its own blink refresh.
- *
- * The display preview renders one frame per two-second step. Blink animation is
- * driven from a lightweight refresh that the orchestrator explicitly suppresses
- * while preview is running, so every declared flash step was drawn once, in
- * whatever blink phase happened to be current, and then held. Camera evidence of
- * the physical panel confirmed it: zero interior toggles across every observed
- * occurrence of the declared flash steps.
- *
- * These tests pin the repair and its boundaries: preview asks V1Display whether
- * the *shared* 96 ms phase is due and re-renders the already-resolved step, and
- * it does nothing else -- no second clock, no phase reset, no scenario advance,
- * no catch-up burst, and no work at all on a step that does not flash.
- */
+// Preview suppresses the normal blink refresh. It must redraw the current
+// two-second step when the renderer's shared 96 ms phase is due, without
+// resetting that phase, advancing the scenario, or catching up missed ticks.
+// Physical captures previously showed flash steps held at a single phase.
 #include <unity.h>
 
 #include "../mocks/Arduino.h"
@@ -25,12 +14,9 @@ unsigned long mockMillis = 0;
 unsigned long mockMicros = 0;
 #endif
 
-
 #define V1_INCLUDE_DISPLAY_PREVIEW_MODULE_IMPL
 #include "../../src/modules/display/display_preview_module.h"
 #include "../../src/modules/display/display_preview_module.cpp"
-
-// ---------------------------------------------------------------- helpers
 
 namespace {
 
@@ -53,7 +39,6 @@ struct Harness {
         preview.requestHold(durationMs);
     }
 
-    // One loop iteration at an absolute time.
     void loopAt(unsigned long nowMs) {
         mockMillis = nowMs;
         preview.update();
@@ -70,12 +55,9 @@ unsigned long enterStep(Harness& h, int stepIndex) {
 
 } // namespace
 
-// ---------------------------------------------------------------- tests
-
 void setUp() {}
 void tearDown() {}
 
-/** Step 14 must not refresh before the shared phase is due, and must after. */
 void test_arrow_flash_step_refreshes_only_when_the_shared_phase_is_due() {
     Harness h;
     h.begin(0, 120000);
@@ -95,7 +77,6 @@ void test_arrow_flash_step_refreshes_only_when_the_shared_phase_is_due() {
                                   "preview did not refresh when the shared phase came due");
 }
 
-/** The refresh must redraw the same declared masks, not a cleared state. */
 void test_combined_flash_step_retains_arrow_and_band_masks_on_refresh() {
     Harness h;
     h.begin(0, 200000);
@@ -115,7 +96,6 @@ void test_combined_flash_step_retains_arrow_and_band_masks_on_refresh() {
                                     "the blink refresh changed which band is active");
 }
 
-/** Arrow and band are one phase, so one refresh carries both. */
 void test_arrow_and_band_observe_the_same_phase() {
     Harness h;
     h.begin(0, 200000);
@@ -157,7 +137,6 @@ void test_step_boundary_wins_over_a_due_tick() {
                                   "a step transition and a due tick rendered twice in one loop");
 }
 
-/** A refresh must not move the scenario on. */
 void test_a_refresh_does_not_advance_the_scenario() {
     Harness h;
     h.begin(0, 200000);
@@ -175,7 +154,6 @@ void test_a_refresh_does_not_advance_the_scenario() {
                                     "a blink refresh advanced the scenario state");
 }
 
-/** A late loop must refresh once, never a burst of missed ticks. */
 void test_a_delayed_loop_renders_once_not_a_burst() {
     Harness h;
     h.begin(0, 120000);
@@ -188,7 +166,6 @@ void test_a_delayed_loop_renders_once_not_a_burst() {
                                   "a late loop issued a catch-up burst of renders");
 }
 
-/** Cancel, expiry and inactivity must silence the refresh completely. */
 void test_cancelled_or_expired_preview_never_refreshes() {
     Harness h;
     h.begin(0, 120000);
@@ -213,7 +190,6 @@ void test_cancelled_or_expired_preview_never_refreshes() {
                               "an expired preview still reports itself running");
 }
 
-/** Preview must not toggle or reset the renderer's shared phase itself. */
 void test_preview_does_not_own_the_blink_phase() {
     Harness h;
     h.begin(0, 120000);
@@ -247,7 +223,6 @@ void test_a_short_caller_hold_blinks_then_releases() {
                                   "a released hold kept refreshing");
 }
 
-/** Suppressed loops simply do not drive preview, so nothing refreshes. */
 void test_a_suppressed_loop_produces_no_refresh() {
     Harness h;
     h.begin(0, 120000);
@@ -261,7 +236,6 @@ void test_a_suppressed_loop_produces_no_refresh() {
                                   "preview refreshed without being driven");
 }
 
-/** A refresh touches the panel and nothing else. */
 void test_a_refresh_has_no_other_side_effect() {
     Harness h;
     h.begin(0, 120000);

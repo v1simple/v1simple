@@ -1,21 +1,9 @@
-/**
- * Regression tests for the battery-source decision policy.
- *
- * src/battery_manager.cpp cannot be compiled natively (esp_adc, driver/gpio,
- * SD_MMC, FreeRTOS), and test/mocks/battery_manager.h replaces the whole class
- * for every other native suite. Any decision left inside that .cpp is untested
- * by construction. These tests cover three failure modes:
- *
- *   - Zero-spaced samples: five reads in one tight loop are not majority
- *     voting; a transient is read five times identically.
- *   - PWR-wake boots misclassified as USB for ~1s because the button held
- *     GPIO16 LOW through the first classification.
- *   - ADC-init failure disabled the power button because the button was
- *     gated on hasBattery(), which requires a live ADC.
- *
- * The last section is a source contract over src/battery_manager.cpp: it cannot
- * be executed here, so its wiring is asserted textually instead.
- */
+// Battery policy regressions: samples need temporal separation; a held PWR
+// button keeps GPIO16 LOW and can mimic USB power for about a second; ADC
+// failure must not disable the power button.
+// battery_manager.cpp depends on ESP-IDF and is replaced by a whole-class mock
+// in native suites, so test its extracted policy and inspect its wiring here.
+
 #include <unity.h>
 
 #include <filesystem>
@@ -120,8 +108,7 @@ bool contains(const std::string& haystack, const char* needle) {
 void setUp() {}
 void tearDown() {}
 
-// ─── Cold start: fail toward battery ──────────────────────────────────────
-
+// Cold start: fail toward battery
 void test_cold_start_has_no_classification_and_resolves_to_battery() {
     battery_source_policy::State s;
     TEST_ASSERT_EQUAL_INT(sourceInt(Source::Unknown), sourceInt(s.classification));
@@ -196,8 +183,7 @@ void test_pwr_wake_boot_reports_battery_throughout_and_confirms_battery() {
     TEST_ASSERT_TRUE(confirm.changed);
 }
 
-// ─── Two-round agreement ──────────────────────────────────────────────────
-
+// Two-round agreement
 void test_two_agreeing_rounds_change_the_classification() {
     uint32_t now = 10000;
     battery_source_policy::State s = settledUsb(now);
@@ -296,8 +282,7 @@ void test_usb_to_battery_recovery_needs_no_holdoff() {
     TEST_ASSERT_EQUAL_INT(sourceInt(Source::Battery), sourceInt(s.classification));
 }
 
-// ─── Suppression while the button is held ─────────────────────────────────
-
+// Suppression while the button is held
 void test_button_held_rounds_are_suppressed_and_change_nothing() {
     uint32_t now = 10000;
     battery_source_policy::State s = settledBattery(now);
@@ -365,8 +350,7 @@ void test_empty_round_is_treated_as_suppressed() {
     TEST_ASSERT_EQUAL_INT(sourceInt(Source::Battery), sourceInt(s.classification));
 }
 
-// ─── Round scheduling ──────────────────────────────────────────────────────
-
+// Round scheduling
 void test_settled_rounds_run_at_the_cycle_interval() {
     uint32_t now = 10000;
     battery_source_policy::State s = settledBattery(now);
@@ -394,8 +378,7 @@ void test_round_spacing_is_non_zero() {
     TEST_ASSERT_GREATER_THAN_UINT32(0u, kConfig.roundSpacingMs);
 }
 
-// ─── millis() rollover ─────────────────────────────────────────────────────
-
+// millis() rollover
 void test_round_due_is_rollover_safe() {
     battery_source_policy::State s;
     s.clockSeeded = true;
@@ -472,8 +455,7 @@ void test_usb_persistence_window_is_measured_across_a_rollover() {
     TEST_ASSERT_EQUAL_INT(sourceInt(Source::Usb), sourceInt(s.classification));
 }
 
-// ─── Majority vote ─────────────────────────────────────────────────────────
-
+// Majority vote
 void test_majority_vote_boundaries() {
     Observation o;
     o.totalSamples = 5;
@@ -502,8 +484,7 @@ void test_source_names_are_stable_for_logs() {
     TEST_ASSERT_EQUAL_STRING("usb", sourceName(Source::Usb));
 }
 
-// ─── Bounded source-evidence replay ───────────────────────────────────────
-
+// Bounded source-evidence replay
 void test_source_evidence_replay_is_bounded_and_spaced() {
     constexpr EvidenceReplayConfig config{};
     TEST_ASSERT_EQUAL_UINT32(1000, config.intervalMs);
@@ -536,8 +517,7 @@ void test_source_evidence_replay_is_rollover_safe_and_rearms() {
     TEST_ASSERT_TRUE(takeEvidenceReplay(replay, 5000 + config.intervalMs, config));
 }
 
-// ─── Power-button gating ──────────────────────────────────────────────────
-
+// Power-button gating
 void test_power_button_stays_enabled_when_the_adc_failed() {
     ButtonGateInputs in;
     in.managerInitialized = true;
@@ -593,7 +573,7 @@ void test_power_button_is_disabled_only_by_confirmed_usb_or_no_init() {
     TEST_ASSERT_FALSE(powerButtonHandlingEnabled(uninitialised));
 }
 
-// ─── Source contract over the untestable translation unit ──────────────────
+// Source contract over the untestable translation unit
 //
 // src/battery_manager.cpp cannot be compiled or linked natively, so the wiring
 // between it and this policy is asserted textually. These fail loudly if the

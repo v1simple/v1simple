@@ -16,14 +16,12 @@
 using namespace DisplaySegments;
 using DisplayLayout::PRIMARY_ZONE_HEIGHT;
 
-
 void V1Display::showDisconnected() {
     drawBaseFrame();
     drawStatusText("Disconnected", 0xF800); // Red
     drawWiFiIndicator();
     drawBatteryIndicator();
 }
-
 
 void V1Display::showMaintenanceMode(const char* ipAddress, bool stationMode) {
     dirty_.multiAlert = true;
@@ -66,7 +64,6 @@ void V1Display::showMaintenanceMode(const char* ipAddress, bool stationMode) {
 
     DISPLAY_FLUSH();
 }
-
 
 void V1Display::showResting(bool forceRedraw) {
     dirty_.multiAlert = true;
@@ -128,10 +125,9 @@ void V1Display::showResting(bool forceRedraw) {
         }
     }
 
-    lastState_ = DisplayState(); // All defaults: bands=0, arrows=0, bars=0, hasMode=false, modeChar=0
+    lastState_ = DisplayState();
 
 }
-
 
 void V1Display::forceNextRedraw() {
     lastState_ = DisplayState();
@@ -142,7 +138,6 @@ void V1Display::forceNextRedraw() {
 void V1Display::resetChangeTracking() {
     dirty_.resetTracking = true;
 }
-
 
 void V1Display::showScanning() {
     dirty_.multiAlert = true;
@@ -225,7 +220,6 @@ void V1Display::showScanning() {
     lastRestingProfileSlot_ = -1;
 }
 
-
 void V1Display::showBootSplash() {
     const unsigned long splashStartMs = millis();
     drawBaseFrame();
@@ -254,7 +248,7 @@ void V1Display::showBootSplash() {
     }
     const unsigned long logoMs = millis() - logoStartMs;
 
-    GFX_setTextDatum(BR_DATUM); // Bottom-right alignment
+    GFX_setTextDatum(BR_DATUM);
     TFT_CALL(setTextSize)(2);
     TFT_CALL(setTextColor)(0x7BEF, PALETTE_BG); // Gray text (mid-gray RGB565)
     GFX_drawString(tft_, "v" FIRMWARE_VERSION, SCREEN_WIDTH - 8, SCREEN_HEIGHT - 6);
@@ -267,7 +261,6 @@ void V1Display::showBootSplash() {
     Serial.println("Backlight ON (post-splash, inverted)");
     Serial.printf("[BootTiming] splash total=%lu logo=%lu flush=%lu\n", millis() - splashStartMs, logoMs, flushMs);
 }
-
 
 void V1Display::showShutdown() {
     TFT_CALL(fillScreen)(PALETTE_BG);
@@ -283,7 +276,6 @@ void V1Display::showShutdown() {
 
     DISPLAY_FLUSH();
 }
-
 
 void V1Display::showLowBattery() {
     TFT_CALL(fillScreen)(PALETTE_BG);
@@ -309,7 +301,6 @@ void V1Display::showLowBattery() {
 
     DISPLAY_FLUSH();
 }
-
 
 void V1Display::showStealth(float speedMph, bool speedValid) {
     dirty_.multiAlert = true;

@@ -1,11 +1,5 @@
-/**
- * AL Priority serial protocol and laser-event runtime.
- *
- * Frames use a 7-bit checksum.
- * All frames: byte0 byte1 byte2 checksum, where checksum = (b0+b1+b2) & 0x7F.
- *
- * State, session, and display publication are owned by this product runtime.
- */
+// ALP frames: byte0 byte1 byte2 checksum, where checksum = (b0+b1+b2) & 0x7F.
+// This runtime owns frame admission, sessions and display publication.
 
 #include "alp_runtime_module.h"
 #include "alp_laser_event.h"
@@ -125,17 +119,11 @@ AlpLaserDirection classifyLaserDirectionFromHeartbeatByte1(uint8_t byte1) {
 
 } // namespace
 
-// Fingerprints are pinned by the BURST_* vectors in test_alp_runtime; original
-// external provenance is UNKNOWN.
-//
-// LID-deploy frame: CX 00 YY — fingerprint is (byte0, byte2). Fires only when
-//                   LID is actively deploying countermeasures (above LID speed
-//                   limit, real laser hit). Rare in daily driving.
-// Detect frame:     CX YY 00 — fingerprint is (byte0, byte1). Fires in all
-//                   operational states (DLI and LID) on every gun identification.
-//
-// byte0 matches between the two variants for the same physical gun.
-// C8 00 04 is a generic "laser detected" trigger common to all guns in Detect mode.
+// Gun fingerprints are pinned by test_alp_runtime BURST_* fixtures; external
+// provenance is unverified. Both variants use the same byte0 gun family:
+//   LID deploy: CX 00 YY, fingerprint (byte0, byte2).
+//   Detection:  CX YY 00, fingerprint (byte0, byte1).
+// C8 00 04 is a generic detection trigger, not a gun identity.
 
 static constexpr AlpGunCode GUN_TABLE[] = {
     {0xC8, 0xD5, AlpGunType::PL3_PROLITE},        {0xC8, 0xD6, AlpGunType::DRAGONEYE_COMPACT},
@@ -154,9 +142,7 @@ AlpGunType alpLookupGun(uint8_t byte0, uint8_t gunCode) {
     return AlpGunType::UNKNOWN;
 }
 
-// Pattern: CX YY 00 where byte2=0x00, byte1!=0x00.
-// Fingerprint is (byte0, byte1). Live-captured April 2026.
-// byte0 matches the LID-deploy gun family for the same physical gun.
+// Detection variant: CX YY 00, byte1 != 0; fingerprint (byte0, byte1).
 
 static constexpr AlpGunCode DETECT_GUN_TABLE[] = {
     {0xC8, 0x0D, AlpGunType::PL3_PROLITE},        // live capture: PL3 ProLite
@@ -183,9 +169,7 @@ void AlpRuntimeModule::begin(bool enabled) {
     enabled_ = enabled;
     begun_ = true;
 
-    // Reset session + Warm-Up state on every begin(). This matters
-    // when begin() is re-invoked after a settings change: we must not
-    // carry a stale session across re-init.
+    // Reinitialization must not carry a stale session or warm-up state.
     session_ = AlertSession{};
     currentEvent_ = AlpLaserEvent{};
     firstFrameMs_ = 0;
@@ -204,15 +188,9 @@ void AlpRuntimeModule::begin(bool enabled) {
     }
 
 #ifndef UNIT_TEST
-    // Configure UART2 at 19200 8N1, receive-only (no TX pin assigned).
-    // Leave GPIO 2 undriven. The ALP requires no enable signal, and driving
-    // the pin high may interfere with the circuit.
-
-    // Pull RX HIGH *before* Serial2.begin() so the pin is at UART idle level
-    // during the GPIO-matrix mux transition. Without this the pin floats for
-    // a brief window during init and the UART peripheral latches a spurious
-    // start bit. The ~45kΩ internal pull is trivially overridden by the ALP
-    // TX driver when the ALP is actually connected.
+    // UART2: GPIO 2 RX only, 19200 8N1; no TX or enable signal.
+    // Pull RX high before muxing to prevent a floating start bit. The ALP TX
+    // driver overrides the ~45kOhm pull; do not drive this pin as an output.
     gpio_pullup_en(static_cast<gpio_num_t>(ALP_RX_PIN));
 
     Serial2.setRxBufferSize(UART_RX_BUFFER_SIZE);
@@ -244,12 +222,8 @@ void AlpRuntimeModule::process(uint32_t nowMs) {
 
     const AlpLaserEvent displayProjectionBefore = currentEvent_;
 
-    // TEARDOWN timeout runs before parseRingBuffer(). If it returns us to
-    // LISTENING, any queued housekeeping heartbeats still sitting in the
-    // ring for this same process() call must not heartbeat-reopen the
-    // session. Real captures bounce 01->00->01 during cleanup; both the
-    // steady-01 resume and the same-process 00->01 edge must wait until
-    // the next tick.
+    // After teardown expires, queued steady 01 or 01->00->01 housekeeping
+    // must not reopen the session during this process() pass.
     suppressHeartbeatResumeThisProcess_ = false;
 
     if (uartSilenceTimeoutArmed_ && nowMs - lastUartByteMs_ > HEARTBEAT_TIMEOUT_MS) {
@@ -291,10 +265,8 @@ void AlpRuntimeModule::process(uint32_t nowMs) {
     // Keep the atomic snapshot current even when no state transition fires.
     updateCurrentEvent(nowMs);
 
-    // Gun identification and direction sampling can arrive in a later UART
-    // drain than the state transition that opened the alert. Wake the display
-    // for those projection-only changes too; SystemEventBus coalesces this with
-    // any state edge already published during the same process() pass.
+    // Gun/direction can arrive after the opening edge. Publish those changes
+    // too; SystemEventBus coalesces them with any state edge from this pass.
     const bool displayProjectionChanged =
         displayProjectionBefore.active != currentEvent_.active ||
         displayProjectionBefore.gun != currentEvent_.gun ||
@@ -323,25 +295,9 @@ AlpStatus AlpRuntimeModule::snapshot() const {
 
 void AlpRuntimeModule::updateCurrentEvent(uint32_t nowMs) {
     AlpLaserEvent next;
-    // Display window spans the full session lifetime — ALERT_ACTIVE,
-    // NOISE_WINDOW, and TEARDOWN. Real PL3/laser engagements cause byte1 to
-    // oscillate between 01 (Targeted) and 00 (IDLE) as pulses fire and
-    // quiet between, which flips us into TEARDOWN mid-engagement. The
-    // session stays open (session_.active remains true) until engagementEnd
-    // (TEARDOWN→LISTENING) or silentReset in transitionTo(). Gating the
-    // event on ALERT_ACTIVE alone caused display cut-off at ~100-200 ms on
-    // real PL3 captures (alp_6-61aa53a8.csv: DISPLAY_WINDOW_CLOSE at
-    // +115 ms into a 5130 ms engagement).
-    // TEARDOWN gating: a session that reached TEARDOWN without ever
-    // identifying a gun is a phantom — ALP opened ALERT_ACTIVE from noise
-    // and self-cleared without ever classifying laser energy. Real
-    // engagements receive a GUN_ID C-frame while still ALERT_ACTIVE (or
-    // at the latest within ~50 ms of entering TEARDOWN). Gating TEARDOWN
-    // display-active on session_.gun != UNKNOWN prevents phantom sessions
-    // from painting a 5-second false laser alert through the TEARDOWN
-    // timeout (evidence: alp_6-61aa53a8.csv @ 48531 ms — mode=01 session
-    // opens, flips ALERT_ACTIVE→TEARDOWN in ~0 ms, no gun ever identified,
-    // would otherwise display for 5 s with the unconditional TEARDOWN gate).
+    // Targeted (01) / idle (00) oscillation can enter TEARDOWN mid-engagement.
+    // Retain an identified gun through that gap until session close. Unknown
+    // teardown stays hidden so a transient cannot paint the full 5-second tail.
     const bool teardownDisplayable = (state_ == AlpState::TEARDOWN) && (session_.gun != AlpGunType::UNKNOWN);
     next.active = session_.active && !session_.isWarmUp &&
                   (state_ == AlpState::ALERT_ACTIVE || state_ == AlpState::NOISE_WINDOW || teardownDisplayable);
@@ -372,39 +328,21 @@ void AlpRuntimeModule::publishDisplayEdge() {
 void AlpRuntimeModule::transitionTo(AlpState newState, uint32_t nowMs) {
     AlpState oldState = state_;
 
-    // Every ALERT_ACTIVE stint gets its own watchdog window, including alerts
-    // opened solely by heartbeat byte1=01. Recognized 98 triggers refresh this
-    // anchor in handleAlertFrame(); ordinary heartbeats intentionally do not.
+    // Heartbeat-opened alerts also need a watchdog. Only accepted 98 triggers
+    // refresh it; ordinary heartbeats must not extend the alert indefinitely.
     if (newState == AlpState::ALERT_ACTIVE && oldState != AlpState::ALERT_ACTIVE) {
         alertActiveWatchdogMs_ = nowMs;
     }
 
-    // Clear stale gun ID only on a genuinely fresh engagement — one that
-    // arrives from LISTENING or IDLE. TEARDOWN → ALERT_ACTIVE is the ALP
-    // protocol's in-engagement re-arm cycle (driven by byte1 01→02→01 or
-    // by a second 98 trigger during post-alert teardown). The gun frame
-    // arrives only once, at the opening of an engagement — it does not
-    // re-arrive on re-arms. Clearing on every ALERT_ACTIVE entry wiped the
-    // gun mid-engagement. Clearing only from LISTENING or IDLE also prevents a
-    // previous engagement's gun from bleeding into a genuinely new alert.
+    // TEARDOWN rearm keeps the session gun; a fresh IDLE/LISTENING engagement
+    // clears it. A gun-ID frame need not repeat during rearm.
     if (newState == AlpState::ALERT_ACTIVE && (state_ == AlpState::LISTENING || state_ == AlpState::IDLE)) {
         lastGun_ = AlpGunType::UNKNOWN;
         lastGunTimestampMs_ = 0;
     }
 
-    // Four edges matter:
-    //
-    //   (a) LISTENING|IDLE → ALERT_ACTIVE: open a new session. Flag as
-    //       Warm-Up if we're inside the boot envelope AND a preamble
-    //       was observed.
-    //   (b) TEARDOWN → ALERT_ACTIVE: in-engagement re-arm. Session stays
-    //       open; keep the session active.
-    //   (c) TEARDOWN → LISTENING: real engagement end. Close the session.
-    //   (d) * → IDLE with a session still open: heartbeat timeout killed
-    //       the session. Close it with endMs marked.
-    //
-    // NOISE_WINDOW entries/exits do not alter session state — the session
-    // straddles noise as part of a single engagement.
+    // Open on IDLE/LISTENING -> ALERT_ACTIVE; retain through TEARDOWN rearm
+    // and NOISE_WINDOW; close on TEARDOWN -> LISTENING or UART silence -> IDLE.
     const bool freshEngagement =
         (newState == AlpState::ALERT_ACTIVE) && (state_ == AlpState::LISTENING || state_ == AlpState::IDLE);
     const bool engagementEnd = (newState == AlpState::LISTENING) && (state_ == AlpState::TEARDOWN);
@@ -412,28 +350,14 @@ void AlpRuntimeModule::transitionTo(AlpState newState, uint32_t nowMs) {
 
     if (freshEngagement) {
         ++sessionGeneration_;
-        // Envelope clause — only meaningful pre-first-gun-ID. Once any
-        // gun has identified in this boot (bootGunConfirmed_), the ALP
-        // has demonstrably left its post-boot Warm-Up sequence. Treating
-        // post-gun-ID sessions as envelope Warm-Up can suppress real
-        // back-to-back engagements inside the 35s window. Warm-Up never emits
-        // a CX gun-ID, so any gun identification proves it has ended.
+        // A confirmed gun ends the boot envelope for subsequent engagements.
         const bool inEnvelope = (warmUpPreambleMs_ != 0) && (firstFrameMs_ != 0) &&
                                 (nowMs - firstFrameMs_) < WARM_UP_ENVELOPE_MS && !bootGunConfirmed_;
-        // Pre-heartbeat clause: if the ALP has never sent a B0 heartbeat,
-        // the session cannot be a real engagement. Real engagements require
-        // the ALP to have already completed enough boot sequencing to emit
-        // at least one heartbeat. Closes a gap where cold-boot Warm-Up
-        // emits 98 triggers before any F0/A8 preamble is observed. The case is
-        // pinned by the no-heartbeat warm-up tests in test_alp_runtime.
+        // Suppress pre-heartbeat detections even without an F0/A8 preamble.
         const bool noHeartbeatYet = (lastHbByte1_ == 0xFF);
-        // Unconfirmed-detect clause: a bare 98 02 00 that arrives while
-        // the ALP still reports a resting/transitional heartbeat is not
-        // display-ready. Field captures show generic detect triggers landing
-        // in byte1=00, 02, and 06 with no gun frame and later painting a
-        // false generic LASER. Keep the session open, but suppress it from
-        // display until a real confirmation arrives (Targeted byte1=01,
-        // LID-active byte1=04, or a gun-ID frame).
+        // A bare 98 02 00 in heartbeat modes 00/02/06 remains unconfirmed.
+        // Keep the session open but hidden until targeted 01, LID-active 04,
+        // or a gun-ID confirmation releases warm-up.
         const bool unconfirmedDetectMode = isUnconfirmedDetectOpenMode(lastHbByte1_);
         const bool flagWarmUp = inEnvelope || noHeartbeatYet || unconfirmedDetectMode;
         session_ = AlertSession{};
@@ -479,9 +403,8 @@ void AlpRuntimeModule::drainUart(uint32_t nowMs) {
     const size_t bytesRead = Serial2.readBytes(ringBuf_ + ringLen_, toRead);
     ringLen_ += bytesRead;
     if (bytesRead > 0) {
-        // Stamp every batch of bytes — car-mode power-off path watches this.
-        // Raw bytes (not valid frames) because ignition loss drops the line
-        // to zero reception; noise-from-live produces bytes, not silence.
+        // Car-mode power-off watches raw-byte silence, including invalid
+        // traffic: noise still proves the UART source is powered.
         lastUartByteMs_ = nowMs;
         uartSilenceTimeoutArmed_ = true;
     }
@@ -552,8 +475,7 @@ bool AlpRuntimeModule::tryParseFrame(uint32_t nowMs) {
     consecutiveBadChecksums_ = 0;
     heartbeatTimeoutArmed_ = true;
 
-    // Capture first-valid-frame timestamp for the Warm-Up window
-    // calculation. Session gating anchors on this.
+    // Anchor the warm-up window at the first valid frame.
     if (firstFrameMs_ == 0) {
         firstFrameMs_ = nowMs;
     }
@@ -579,11 +501,8 @@ bool AlpRuntimeModule::tryParseFrame(uint32_t nowMs) {
     return true;
 }
 
-// TEARDOWN timer invariant: only transitions into TEARDOWN stamp
-// teardownEntryMs_. Ordinary heartbeat/C-frame/register/discovery traffic
-// that arrives while already in TEARDOWN is housekeeping from the same
-// engagement and must not refresh the timer, or the TEARDOWN timeout can
-// be extended indefinitely by cleanup chatter.
+// Only entry into TEARDOWN stamps teardownEntryMs_; housekeeping frames
+// must not extend the timeout.
 
 void AlpRuntimeModule::handleAlertFrame(uint8_t b1, uint8_t b2, uint32_t nowMs) {
     lastHeartbeatMs_ = nowMs;
@@ -596,21 +515,14 @@ void AlpRuntimeModule::handleAlertFrame(uint8_t b1, uint8_t b2, uint32_t nowMs) 
         if (++detectGeneration_ == 0) {
             ++detectGeneration_;
         }
-        // LID-deploy trigger: 98 00 E3 — ALP is actively firing IR
-        // countermeasures at the source. Fires only when LID is above speed
-        // limit and a real laser hit is detected. Rare in daily driving.
+        // 98 00 E3: LID countermeasure deployment above the LID speed limit.
         alertActiveWatchdogMs_ = nowMs;
 
         if (state_ != AlpState::ALERT_ACTIVE) {
             transitionTo(AlpState::ALERT_ACTIVE, nowMs);
         }
-        // LID deploy is the ALP actively firing countermeasures — an
-        // unambiguous real engagement. Any Warm-Up flag that was speculatively
-        // set at SESSION_OPEN is wrong and is released immediately. No boot
-        // envelope gate applies: LID deploy during
-        // boot Warm-Up is not observed in any capture (the probe burst at
-        // ~5.9 s emits 02→04 heartbeats and detect triggers, but no 98 00 E3).
-        // Revisit this gate if captures show LID deploy during boot.
+        // LID deployment releases warm-up immediately, including during the
+        // boot envelope. Revisit only if captures show this trigger at warm-up.
         if (session_.active && session_.isWarmUp) {
             session_.isWarmUp = false;
             updateCurrentEvent(nowMs);
@@ -643,37 +555,22 @@ void AlpRuntimeModule::handleHeartbeatFrame(uint8_t b0, uint8_t b1, uint32_t now
     lastHeartbeatMs_ = nowMs;
     lastFrameMs_ = nowMs;
 
-    // Warm-Up preamble detection. F0 or A8 frames arriving inside the
-    // first 5 seconds of module uptime mark the boot Warm-Up envelope.
-    // We latch the first occurrence; later F0/A8 frames (which per spec
-    // only arrive at cold boot anyway) are ignored.
+    // Latch the first F0/A8 preamble inside the initial 5-second window.
     if ((b0 == SETUP_BYTE0_F0 || b0 == SETUP_BYTE0_A8) && firstFrameMs_ != 0 && warmUpPreambleMs_ == 0 &&
         (nowMs - firstFrameMs_) < WARM_UP_PREAMBLE_WINDOW_MS) {
         warmUpPreambleMs_ = nowMs;
     }
 
-
-    // B0 heartbeats carry alert status in byte1 (per manual):
-    //   byte1=01 → Targeted (laser detected)
-    //   byte1=02 → Warm-Up (After LID Timeout or boot warm-up)
-    //   byte1=03 → DLI active (Detection of Laser Interference)
-    //   byte1=04 → LID active (Laser Interference Defense)
-    //   byte1=00/06 → transitional / engaged
-    // During ALERT_ACTIVE the same byte1 stream carries the direction
-    // classifier: 01 → FRONT, 03/04 → REAR, 00/02 → defer/unknown.
-    // The byte1 01 state is the universal alert indicator — normally we
-    // key off the edge, but if TEARDOWN timed out back to LISTENING while
-    // the ALP stayed Targeted we must reopen on the steady 01 as well.
+    // B0 byte1 runtime mapping: 01 targeted, 02 warm-up, 03 DLI, 04 LID,
+    // 00/06 transitional. Direction sampling uses 01 front and 03/04 rear.
+    // Steady 01 may reopen after teardown expiry even without a new edge.
     if (b0 == HEARTBEAT_SINGLE_0) {
         uint8_t prevByte1 = lastHbByte1_;
         lastHbByte1_ = b1;
         const bool pastBootEnvelope = (firstFrameMs_ != 0) && (nowMs - firstFrameMs_) >= WARM_UP_ENVELOPE_MS;
 
-        // Targeted heartbeat release: byte1=01 is the ALP's universal
-        // "laser detected" signal in steady-state operation. Boot Warm-Up
-        // also emits a single ~800 ms byte1=01 blip inside the Warm-Up
-        // envelope, so do not release speculative sessions on 01 until the
-        // boot envelope has elapsed unless a real gun already identified.
+        // Warm-up can include a targeted 01 blip. Release only after the
+        // boot envelope or a confirmed gun, not on that heartbeat alone.
         const bool targetedHeartbeatReleaseConfirmed = pastBootEnvelope || session_.gun != AlpGunType::UNKNOWN;
         if (session_.active && session_.isWarmUp && b1 == HB_BYTE1_ALERT && targetedHeartbeatReleaseConfirmed) {
             session_.isWarmUp = false;
@@ -681,16 +578,9 @@ void AlpRuntimeModule::handleHeartbeatFrame(uint8_t b0, uint8_t b1, uint32_t now
             publishDisplayEdge();
         }
 
-        // Release Warm-Up on a confirmed 02/06→03/04 heartbeat edge. A bare
-        // 02→03 transition can follow an unconfirmed detect trigger, so byte1=03
-        // also requires a session-local gun ID. Byte1=04 confirms by itself.
-        //
-        // The boot envelope prevents the rear-probe sequence's 02→04 edge from
-        // promoting Warm-Up to the display. After WARM_UP_ENVELOPE_MS, the same
-        // transition is treated as operational.
-        // Accept 0x06 (transitional/engaged) as equivalent to 0x02
-        // for release purposes. The ALP may insert byte1=06 between Warm-Up
-        // and operational modes, producing a 02→06→03 sequence.
+        // After the boot envelope, 02/06 -> 04 confirms by itself; -> 03
+        // also needs a session-local gun ID. Accept 06 as an intermediate
+        // warm-up state so 02->06->03 can release a confirmed session.
         const bool prevWasResting = (prevByte1 == 0x02 || prevByte1 == 0x06);
         const bool heartbeatReleaseConfirmed = (b1 == 0x04) || (b1 == 0x03 && session_.gun != AlpGunType::UNKNOWN);
         if (session_.active && session_.isWarmUp && pastBootEnvelope && prevWasResting && heartbeatReleaseConfirmed) {
@@ -699,13 +589,8 @@ void AlpRuntimeModule::handleHeartbeatFrame(uint8_t b0, uint8_t b1, uint32_t now
             publishDisplayEdge();
         }
 
-        // During TEARDOWN, byte1 toggles rapidly between 01/00 as the CPU
-        // does post-alert housekeeping. Two same-process shapes matter when
-        // TEARDOWN times out back to LISTENING before the ring is drained:
-        //   (a) steady 01 resume
-        //   (b) 01 -> 00 -> 01 cleanup bounce
-        // Neither is a real new encounter, so the one-process suppressor
-        // blocks heartbeat-driven reopen for this process() pass only.
+        // Teardown expiry suppresses steady 01 and 01->00->01 housekeeping
+        // for this pass only; a later tick can reopen the session.
         if (state_ != AlpState::TEARDOWN) {
             const bool suppressSameProcessHeartbeatAlert =
                 suppressHeartbeatResumeThisProcess_ && (state_ == AlpState::LISTENING || state_ == AlpState::IDLE);
@@ -761,12 +646,7 @@ void AlpRuntimeModule::handleGunCandidate(uint8_t b0, uint8_t b1, uint8_t b2, ui
         lastGun_ = gun;
         lastGunTimestampMs_ = nowMs;
         bootGunConfirmed_ = true;
-        // Session-level update. Also: a real gun ID during the Warm-Up
-        // window un-declares Warm-Up — the ALP's Warm-Up sequence fires
-        // generic 98 02 00 triggers but never produces a CX gun frame,
-        // so any gun-identified session is real by definition. This is
-        // the safety release for the "real laser gun fired during boot
-        // Warm-Up" corner case.
+        // A gun ID confirms the session and immediately releases warm-up.
         if (session_.active) {
             session_.gun = gun;
             session_.gunIdentifiedMs = nowMs;
@@ -800,7 +680,6 @@ void AlpRuntimeModule::handleRegisterFrame(uint8_t b2, uint32_t nowMs) {
 void AlpRuntimeModule::handleDiscoveryFrame(uint32_t nowMs) {
     lastHeartbeatMs_ = nowMs;
     lastFrameMs_ = nowMs;
-
 
     if (state_ == AlpState::IDLE) {
         transitionTo(AlpState::LISTENING, nowMs);
@@ -861,33 +740,17 @@ void AlpRuntimeModule::sampleSessionDirection(uint8_t heartbeatByte1, uint32_t n
         return;
     }
 
-    // Runtime rule: sample the first non-00 B0 byte1 *after* a GUN_ID
-    // frame. Without a gun-ID the ALP has not yet classified the
-    // hit and mid-boot DLI/LID chatter cannot be trusted as a direction
-    // signal. Evidence: alp_5-3fe19956.csv session #7 — 16× byte1=03 with
-    // zero GUN_ID frames would wrongly paint "laser rear" on a front-only
-    // install.
-    //
-    // FRONT exception: byte1=0x01 (Targeted) self-anchors. The LED color
-    // rule is definitive — Targeted = RED LED = laser in front. The ALP
-    // raises the Targeted flag regardless of whether it has had time to
-    // emit a CX gun-ID frame (front shots TEARDOWN within ~50 ms of the
-    // gun-ID, per protocol §5.1). Gating FRONT on lastGun_ would lose
-    // legitimate front classifications in fast TEARDOWN cases.
+    // Rear classification requires a gun ID before a qualifying heartbeat;
+    // unconfirmed DLI/LID chatter cannot establish direction. Targeted 01
+    // self-anchors front, including before a gun ID in short engagements.
     const bool gunAnchored = (lastGun_ != AlpGunType::UNKNOWN);
     const bool selfAnchoringFront = (sampled == AlpLaserDirection::FRONT);
     if (!gunAnchored && !selfAnchoringFront) {
         return;
     }
 
-    // FRONT override: captured byte1=01 Targeted sessions correspond to the
-    // front LED observation. In multi-phase sessions where pre-gun-ID
-    // DLI/LID activity (byte1=03/04) latches REAR first, a later byte1=01
-    // arrival re-latches to FRONT. This matches the driver's physical
-    // observation of the ALP pad LED and resolves the captured edge case
-    // pinned by test_direction_relatches_front_on_byte1_targeted.
-    // REAR→REAR and FRONT→REAR re-sampling is a no-op (REAR is sticky
-    // except against Targeted).
+    // Targeted 01 overrides an earlier rear sample. Other resampling keeps
+    // the latched direction; a later 03/04 cannot replace front.
     if (session_.direction != AlpLaserDirection::UNKNOWN) {
         if (sampled == AlpLaserDirection::FRONT && session_.direction == AlpLaserDirection::REAR) {
             session_.direction = sampled;

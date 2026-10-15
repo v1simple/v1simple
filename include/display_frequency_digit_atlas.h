@@ -1,11 +1,5 @@
-/**
- * PSRAM-backed positioned digit atlas for OFR frequency text.
- *
- * The full-string raster cache is exact but scales with every distinct
- * frequency. This atlas stores alpha masks for the fixed DD.DDD numeric
- * positions, so arbitrary numeric frequencies can be composed with a bounded
- * memory footprint while the existing flush policy remains authoritative.
- */
+// PSRAM alpha masks for fixed DD.DDD positions bound memory independently of
+// the number of distinct frequencies. Restores affect the canvas, not the panel.
 
 #pragma once
 

@@ -18,9 +18,7 @@ extern "C" {
 #include "nimble/nimble/host/include/host/ble_sm.h"
 }
 
-// NimBLE stores bonds in NVS ("nimble_bond" namespace). NVS is volatile —
-// brownouts, partition changes, and flash erases lose all bonds. This backs
-// up bond key material to SD so it can be restored automatically.
+// Back up NimBLE NVS bonds to SD for recovery after bond loss or flash erase.
 //
 // File format: /v1simple_ble_bonds.bin
 //   [4 bytes]  magic "BLB\x01" (BLE Bonds v1)
@@ -110,9 +108,7 @@ void V1BLEClient::hardResetBLEClient() {
     beginClientQuiesce(true);
 }
 
-// Reapply reusable-client configuration after quiescence. NimBLE has a fixed
-// client-slot array, so destroying/recreating a healthy slot is deliberately
-// avoided.
+// Reconfigure the reusable client after quiescence; preserve its NimBLE slot.
 void V1BLEClient::completeHardResetBLEClient() {
 
     NimBLEScan* pScan = NimBLEDevice::getScan();
@@ -120,8 +116,7 @@ void V1BLEClient::completeHardResetBLEClient() {
         pScan->stop();
     }
 
-    // Reuse existing client (don't destroy - NimBLE has fixed 3-slot array,
-    // nulling without deleteClient leaks a slot permanently)
+    // Reuse the client; dropping its pointer would leak a fixed NimBLE slot.
     if (!pClient_) {
         pClient_ = NimBLEDevice::createClient();
     }
@@ -185,17 +180,9 @@ bool V1BLEClient::initBLE(StorageManager& storage, bool enableProxy, const char*
         }
     }
 
-    // BLE initialization pattern for NimBLE dual-role stability:
-    // 1. init() with a generic name
-    // 2. setDeviceName() with the actual advertised name
-    // 3. setPower() and setMTU for better throughput
-    // 4. Create the proxy GATT server BEFORE scanning, even when the saved
-    //    runtime mode has proxy disabled. NimBLE 2.5 resets GATT when a server
-    //    is first advertised; doing that after scan/connect has begun can trip
-    //    ble_svc_gap_init() assertions.
-    // 5. Start advertising then stop (initializes BLE stack)
-    // 6. Runtime proxy toggles only allocate/release queues and start/stop
-    //    advertising; they must not create the server after boot.
+    // Create and briefly advertise the proxy GATT server before scanning, even
+    // when proxy mode is disabled. First advertising resets NimBLE GATT and
+    // must not occur after scan/connect. Runtime toggles reuse this server.
     NimBLEDevice::init(proxyEnabled_ ? "V1 Proxy" : "V1Display");
     NimBLEDevice::setDeviceName(proxyName_.c_str());
     // NimBLE-Arduino expects dBm here, not esp_power_level_t enum indices.
@@ -214,14 +201,11 @@ bool V1BLEClient::initBLE(StorageManager& storage, bool enableProxy, const char*
         proxyEnabled_ = false;
     }
 
-    // Force 1M PHY only. NimBLE 2.x defaults to all-PHY (1M|2M|CODED) which
-    // allows the controller to auto-negotiate 2M PHY after connection.  2M PHY
-    // degrades RSSI readings significantly on the ESP32-S3.
+    // Keep 1M PHY: automatic 2M negotiation degrades ESP32-S3 RSSI readings.
     NimBLEDevice::setDefaultPhy(BLE_GAP_LE_PHY_1M_MASK, BLE_GAP_LE_PHY_1M_MASK);
 
-    // OBDLink CX requires encrypted communication and benefits from bond
-    // restore on reconnect. Keep pairing compatibility high by using
-    // no-input/no-output legacy-capable bonding with ENC+ID key exchange.
+    // OBDLink CX needs encryption: use no-input/no-output, legacy-capable
+    // bonding with ENC+ID exchange and restore bonds on reconnect.
     NimBLEDevice::setSecurityAuth(true, false, false);
     NimBLEDevice::setSecurityIOCap(BLE_SM_IO_CAP_NO_IO);
     NimBLEDevice::setSecurityInitKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
@@ -265,7 +249,6 @@ bool V1BLEClient::initBLE(StorageManager& storage, bool enableProxy, const char*
             return false;
         }
 
-        // Callbacks share the client's lifetime.
         if (!pClientCallbacks_) {
             pClientCallbacks_.reset(new ClientCallbacks());
         }
@@ -284,12 +267,10 @@ bool V1BLEClient::initBLE(StorageManager& storage, bool enableProxy, const char*
 }
 
 bool V1BLEClient::begin(StorageManager& storage, bool enableProxy, const char* proxyName) {
-    // Initialize BLE stack first (idempotent)
     if (!initBLE(storage, enableProxy, proxyName)) {
         return false;
     }
 
-    // Start scanning for V1 - optimized for reliable discovery
     NimBLEScan* pScan = NimBLEDevice::getScan();
 
     // Replace scan callbacks atomically; previous handler is released automatically.
@@ -324,21 +305,17 @@ bool V1BLEClient::isConnected() {
     return pClient_->isConnected();
 }
 
-// RSSI caching - only query BLE stack every 2 seconds to reduce overhead.
-// Atomic for portability: these are written/read from getConnectionRssi()
-// which is a public method with no explicit threading constraint.
+// Two-second RSSI cache; atomic because the public accessor has no thread restriction.
 static std::atomic<int> s_cachedV1Rssi{0};
 static uint32_t s_lastV1RssiQueryMs = 0;
 static constexpr uint32_t RSSI_QUERY_INTERVAL_MS = 2000;
 
 int V1BLEClient::getConnectionRssi() {
-    // Return RSSI of connected_ V1 device, or 0 if not connected_
     if (!connected_.load(std::memory_order_relaxed) || !pClient_ || !pClient_->isConnected()) {
         s_cachedV1Rssi.store(0, std::memory_order_relaxed);
         return 0;
     }
 
-    // Only query BLE stack every 2 seconds - return cached value otherwise
     const uint32_t now = static_cast<uint32_t>(millis());
     if (now - s_lastV1RssiQueryMs >= RSSI_QUERY_INTERVAL_MS) {
         s_cachedV1Rssi.store(pClient_->getRssi(), std::memory_order_relaxed);
@@ -353,13 +330,11 @@ static std::atomic<int> s_cachedProxyRssi{0};
 static uint32_t s_lastProxyRssiQueryMs = 0;
 
 int V1BLEClient::getProxyClientRssi() {
-    // Return RSSI of connected_ proxy client (app), or 0 if not connected_
     if (!proxyClientConnected_ || !pServer_ || pServer_->getConnectedCount() == 0) {
         s_cachedProxyRssi.store(0, std::memory_order_relaxed);
         return 0;
     }
 
-    // Only query BLE stack every 2 seconds
     const uint32_t now = static_cast<uint32_t>(millis());
     if (now - s_lastProxyRssiQueryMs >= RSSI_QUERY_INTERVAL_MS) {
         // Use getPeerDevices() to get a valid handle safely.

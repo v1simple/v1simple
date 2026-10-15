@@ -1,11 +1,3 @@
-/**
- * Band and signal-bar renderers.
- *
- * drawBandIndicators  — vertical L/Ka/K/X stack (left side)
- * drawBandBadge       — small rounded badge overlay
- * drawVerticalSignalBars — six-bar V1Simple projection of the V1 bitmap
- */
-
 #include "display.h"
 #include "display_layout.h"
 #include "display_draw.h"
@@ -19,16 +11,10 @@
 #include <algorithm> // std::max
 #include <cstring>
 
-// Band labels and arrows share V1Display's blink phase.
-
 namespace {
 
 constexpr int kBandLabelX = 82;
-// Ku shares the V1's physical K cell. The full-size FreeSans "Ku" is too wide
-// for the lane between the RSSI field and card 0, so keep the K nearly on its
-// normal anchor and render a compact FreeSans suffix. This preserves a
-// real framebuffer gap on both sides instead of trading card overlap for RSSI
-// overlap.
+// A full-size "Ku" overlaps RSSI or card 0; keep K near its anchor with a compact suffix.
 constexpr int kKuLabelX = 80;
 constexpr int kKuSuffixX = 110;
 constexpr int kKuSuffixVisualW = 18;
@@ -58,18 +44,11 @@ constexpr int kBandLabelClearH = 42;
 
 } // namespace
 
-// ============================================================================
-// Band indicator stack (vertical L / Ka / K / X on the left)
-// ============================================================================
 bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFlashBits) {
-    // Advance the shared blink phase. drawDirectionArrow calls this same
-    // helper so arrows and band labels toggle in lockstep — they describe
-    // the same underlying V1 signal via flashBits / bandFlashBits.
+    // Arrows and bands share one blink phase.
     updateBlinkPhase_();
 
-    // Apply blink: if a flash bit is set and we're in the OFF phase, treat
-    // that physical cell as inactive. Keep the synthetic Ku identity bit so
-    // a flashing Ku label dims as "Ku" instead of changing back to "K".
+    // Dim the physical cell at blink-off, retaining Ku identity instead of relabeling K.
     uint8_t effectiveBandMask = bandMask;
     if (!blinkPhase_) {
         effectiveBandMask &= ~bandFlashBits;
@@ -293,22 +272,8 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
     return true;
 }
 
-// ============================================================================
-// Signal bars render cache is in elementCaches_.bars
-// ============================================================================
-
-// ============================================================================
-// Vertical signal bars (right side, 6-bar meter)
-//
-// The meter paints DisplayState::signalBars, the 0-8 LED count decoded from
-// V1's InfDisplayData bar graph byte per ESP Spec 3.015 Table 9.1. That table
-// is generation-neutral, so the count arrives at protocol scale and this is
-// where V1Simple's six display slots become the ceiling: counts above six
-// saturate the meter. Within 0-6 the meter is an exact passthrough.
-//
-// Colors: each of the six segments is individually addressable via
-// V1Settings::colorBars. Nothing is interpolated at draw time.
-// ============================================================================
+// DisplayState::signalBars is the 0-8 LED count from ESP Spec 3.015 Table 9.1.
+// This six-cell meter passes 0-6 through and saturates higher counts.
 
 void V1Display::drawVerticalSignalBars(uint8_t frontStrength, uint8_t rearStrength, Band band, bool muted) {
     constexpr int barCount = DisplayLayout::MAIN_SIGNAL_BAR_COUNT;
@@ -325,14 +290,10 @@ void V1Display::drawVerticalSignalBars(uint8_t frontStrength, uint8_t rearStreng
     bool hasSignal = (strength > 0);
 
     const V1Settings& s = settings_.get();
-    // Each segment carries its own colour. There is no draw-time interpolation:
-    // the six stored values are painted as-is.
+    // Paint each stored segment color without interpolation.
     const uint16_t* barColors = s.colorBars;
 
-    // Geometry: the bars own their DisplayLayout lane exclusively —
-    // vertical neighbors never enter it (status badges end at x=420, secondary
-    // cards at x=430, arrow cluster starts at x≈493, profile/battery at x≥499).
-    // The restored stack spans y=18..152. 6×(14+10)−10 = 134.
+    // The six-bar stack owns this lane; neighboring badges and cards must stay outside it.
     const DisplayLayout::DisplayRect stackRect = DisplayLayout::mainSignalBarsRect();
     // A palette-revision change repaints the full stack: lit-state deltas
     // can't see color changes, and lit bars must take their new colors.
@@ -377,10 +338,7 @@ void V1Display::drawVerticalSignalBars(uint8_t frontStrength, uint8_t rearStreng
     }
 
     if (!forceFullStack && dirtyTop < dirtyBottom) {
-        // Strength changes affect a contiguous run of bars.  Track that run as
-        // one item-owned window so a large jump does not spend most of the
-        // multi-rect budget on adjacent signal-bar cells and accidentally force
-        // the frame back to a full-canvas push.
+        // Adjacent changed bars share one DrawnRegion entry.
         drawnRegion_.add(stackRect.x, static_cast<int16_t>(dirtyTop), stackRect.w,
                          static_cast<int16_t>(dirtyBottom - dirtyTop), DisplayDirtyRegionSource::SignalBars);
     }

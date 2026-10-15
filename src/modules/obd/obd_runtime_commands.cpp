@@ -1,16 +1,6 @@
-/**
- * OBD runtime ELM327 command lifecycle and response parsing.
- *
- * Owns:
- *   - ELM327 command lifecycle: startCommand, retry, complete, reset.
- *   - Response validation: AT responses, simple responses.
- *   - Response handlers: speed (PID 0x0D), AT init sequence.
- *   - Speed polling scheduler: freshness, due-time, next-poll dispatch.
- *
- * Reads bleBuf_ populated by obd_runtime_transport.cpp::applyBleEvent and
- * drains it during parse. Writes speed fields consumed by the public
- * snapshot() / getFreshSpeed() API which remain in obd_runtime_module.cpp.
- */
+// ELM327 command/retry lifecycle, response validation and speed polling.
+// Drains bleBuf_ populated by transport events; publishes speed through the
+// runtime snapshot/getFreshSpeed API.
 
 #include "obd_runtime_module.h"
 
@@ -25,16 +15,12 @@
 #include "obd_scan_policy.h"
 #include "obd_string_utils.h"
 
-// ======================================================================
 // FILE-SCOPE HELPERS — string utilities for command parsing
-// ======================================================================
 
 using ObdStringUtils::copyString;
 using ObdStringUtils::stringContainsCI;
 
-// ======================================================================
 // SPEED STATE RESET — clear speed polling state on transition
-// ======================================================================
 
 void ObdRuntimeModule::clearSpeedState() {
     speedMph_ = 0.0f;
@@ -51,9 +37,7 @@ void ObdRuntimeModule::resetCommandState() {
     activeCommand_ = ActiveObdCommand{};
 }
 
-// ======================================================================
 // RESPONSE VALIDATION — parse + interpret AT/speed responses
-// ======================================================================
 
 bool ObdRuntimeModule::validateAtResponse(const char* command, const char* response, size_t len) const {
     if (!command || !response || len == 0) {
@@ -76,9 +60,7 @@ bool ObdRuntimeModule::validateSimpleResponse(uint8_t expectedService, uint8_t e
     return result.valid && result.service == expectedService && result.pid == expectedPid;
 }
 
-// ======================================================================
 // COMMAND LIFECYCLE — start/retry/complete command sequence
-// ======================================================================
 
 bool ObdRuntimeModule::startCommand(ObdCommandKind kind, ParserKind parser, const char* tx, uint8_t expectedService,
                                     uint8_t expectedPid, uint16_t expectedDid, uint32_t timeoutMs, uint8_t retries,
@@ -145,9 +127,7 @@ void ObdRuntimeModule::completeActiveCommand() {
     resetCommandState();
 }
 
-// ======================================================================
 // RESPONSE HANDLERS — handleAtInitResponse + handleSpeedResponse
-// ======================================================================
 
 void ObdRuntimeModule::handleAtInitResponse(uint32_t nowMs) {
     if (!activeCommand_.active) {
@@ -214,9 +194,7 @@ bool ObdRuntimeModule::handleSpeedResponse(uint32_t nowMs) {
     return true;
 }
 
-// ======================================================================
 // SPEED POLLING — scheduling and freshness checks
-// ======================================================================
 
 bool ObdRuntimeModule::isSpeedFresh(uint32_t nowMs) const {
     return speedValid_ && (nowMs - speedSampleTsMs_) <= obd::SPEED_MAX_AGE_MS;
@@ -245,9 +223,7 @@ bool ObdRuntimeModule::sendNextPollingCommand(uint32_t nowMs) {
     return speedDue(nowMs) ? startSpeedCommand(nowMs) : false;
 }
 
-// ============================================================================
 // Failure Classification & Recovery
-// ============================================================================
 
 namespace {
 
@@ -289,9 +265,7 @@ const char* obdFailureReasonName(ObdFailureReason reason) {
 
 } // namespace
 
-// ======================================================================
 // ERROR RECOVERY — failure marking, backoff, connection failure handlers
-// ======================================================================
 
 void ObdRuntimeModule::markFailure(ObdFailureReason reason, uint32_t nowMs) {
     lastFailure_ = reason;
@@ -377,9 +351,7 @@ bool ObdRuntimeModule::shouldDisconnectAfterPollingError(ObdFailureReason reason
     }
 }
 
-// ======================================================================
 // BOND AUTO-HEAL — failure recovery, auto-heal decision + retry
-// ======================================================================
 
 bool ObdRuntimeModule::canAutoHealBond() const {
     const char* const addr = connectAddress_[0] != '\0' ? connectAddress_ : savedAddress_;

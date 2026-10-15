@@ -263,19 +263,11 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
         return true;                 // Acknowledged, no further processing needed
 
     case PACKET_ID_RESP_VERSION: { // 0x02 - respVersion (reply from V1)
-        // The response payload is exactly 7 ASCII bytes:
-        //   [0] = device letter ('v'=V1, 'C'=Concealed Display,
-        //                        'R'=Remote Audio, 'S'=Savvy)
-        //   [1] = major version digit
-        //   [2] = literal '.'
-        //   [3] = minor version digit
-        //   [4] = revision digit 1
-        //   [5] = revision digit 2
-        //   [6] = engineering control number digit
-        // Example bytes: 'v','4','.','1','0','2','8' → "v4.1028" → 41028.
-        // ESP originator EAh carries seven ASCII version bytes plus checksum
-        // (PL=8); no-checksum E9h canonically carries just those seven bytes
-        // (PL=7). Other origins cannot qualify persisted V1 capabilities.
+        // Exact seven-byte version payload: device letter, major, '.', minor,
+        // two revision digits, engineering-control digit (e.g. v4.1028 -> 41028).
+        // Letters: v=V1, C=Concealed Display, R=Remote Audio, S=Savvy.
+        // EAh has PL=8 including checksum; E9h has PL=7 without checksum.
+        // Other origins cannot qualify persisted V1 capabilities.
         if (!payload ||
             !V1PacketFraming::hasCanonicalResponseEvidenceForDestination(data, length, 7, 0xD6)) {
             return false;
@@ -297,17 +289,10 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
                            static_cast<uint32_t>(rev1 - '0') * 100u + static_cast<uint32_t>(rev2 - '0') * 10u +
                            static_cast<uint32_t>(ctrl - '0');
 
-        // Only record main V1 firmware versions; ignore replies
-        // from other ESP devices on the bus (Concealed Display,
-        // Remote Audio, Savvy).
+        // Only the main V1 version qualifies capabilities.
         if (letter == 'v' || letter == 'V') {
-            // Log only when this is the first observation OR the
-            // reported version actually changed. V1 firmware does
-            // not hot-swap mid-session, so the steady-state cost
-            // of repeated 0x02 replies must be zero — a blocking
-            // Serial.printf on every reply adds tail-latency on
-            // the BLE-notify hot path (sd_max_peak_us /
-            // wifi_p95_us regressions).
+            // Log first/changed observations only; repeated replies must not
+            // add blocking serial work to the notification path.
             const bool versionChanged =
                 !displayState_.hasV1Version || displayState_.v1FirmwareVersion != version;
             displayState_.v1FirmwareVersion = version;
@@ -320,24 +305,15 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
         return true;
     }
     case PACKET_ID_RESP_ALL_VOLUME: { // 0x3D - respAllVolume
-        // Per Valentine AndroidESPLibrary2
-        // ResponseAllVolume.java the payload is exactly 4 bytes:
-        //   [0] = current main volume   (0..9)
-        //   [1] = current muted volume  (0..9)
-        //   [2] = saved main volume     (0..9)
-        //   [3] = saved muted volume    (0..9)
-        // This is the authoritative source — overwrite the aux2-derived
-        // mainVolume/muteVolume values from display packets when present.
-        // ESP originator EAh uses PL=5 (four values plus checksum), while
-        // no-checksum E9h uses PL=4. Origin-qualified width validation keeps a
-        // checksum byte from becoming persisted saved-muted volume.
+        // VR ResponseAllVolume: four full bytes, each 0..9: current main,
+        // current muted, saved main, saved muted. These override display-derived
+        // volume. EAh PL=5 includes checksum; E9h PL=4 excludes it.
         if (!payload ||
             !V1PacketFraming::hasCanonicalResponseEvidenceForDestination(data, length, 4, 0xD6)) {
             return false;
         }
-        // These are full-byte values, not packed nibbles. Reject the complete
-        // response before mutating state so malformed wire data cannot be
-        // normalized into a truthful-looking 0..9 snapshot.
+        // Reject malformed values before any state mutation; never clamp them
+        // into an apparently valid saved-volume snapshot.
         if (payload[0] > 9 || payload[1] > 9 || payload[2] > 9 || payload[3] > 9) return false;
         displayState_.mainVolume = payload[0];
         displayState_.muteVolume = payload[1];
@@ -467,9 +443,8 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
                 poisonSweepSections();
                 return false;
             }
-            // One canonical response contributes each wire section exactly
-            // once. Accepting even an identical duplicate would make a
-            // missing peer indistinguishable from complete evidence.
+            // Reject duplicate sections, even identical ones: each required
+            // section must contribute once before capture is complete.
             if ((candidate.presentMask & (1u << index)) != 0) {
                 poisonSweepSections();
                 return false;
@@ -550,9 +525,7 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
         return true; // outbound requests/echoes are never proof
 
     case PACKET_ID_VERSION: // 0x01 - reqVersion
-        // 0x01 is the OUTBOUND request id. The V1 should never send 0x01
-        // back to us, but if a buggy peer or replay loop produces one we
-        // ignore it silently rather than parsing it as a version reply.
+        // 0x01 is an outbound request, never version-response evidence.
         return true;
 
     default:
@@ -632,9 +605,7 @@ bool PacketParser::parseDisplayData(const uint8_t* payload, size_t length) {
     // payload[5] = auxData0 (status bits: soft/system/euro/display-active)
     // payload[6] = auxData1 (mode/bluetooth flags)
     // payload[7] = auxData2 (volume: upper=main, lower=mute)
-    // For both bogey-counter bytes and band/arrow bytes the convention is the
-    // same: bits in image1 but NOT in image2 = FLASHING. V1 hardware handles the
-    // actual blink animation internally — we must do the same.
+    // For both image pairs, image1 & ~image2 identifies blinking segments.
 
     uint8_t bogeyByte = payload[0];
     bool hasDot = false;
@@ -719,10 +690,7 @@ bool PacketParser::parseDisplayData(const uint8_t* payload, size_t length) {
     if (arrow.rear)
         displayState_.arrows = static_cast<Direction>(displayState_.arrows | DIR_REAR);
 
-    // Per Valentine InfDisplayData.isSystemStatus,
-    // band/arrow data is only meaningful while the V1 is actively searching.
-    // If aux0 bit 2 is clear, suppress active bands and arrows so we don't
-    // present stale indicators upstream.
+    // Band/arrow bits are meaningful only while aux0 system-status bit 2 is set.
     if (length > 5 && !auxSystemStatus) {
         displayState_.activeBands = BAND_NONE;
         displayState_.arrows = DIR_NONE;
@@ -730,14 +698,9 @@ bool PacketParser::parseDisplayData(const uint8_t* payload, size_t length) {
         displayState_.flashBits = 0;
     }
 
-    // Mute from image1 bit 4.  Single-packet transients (V1 internal display
-    // transitions) can briefly set this bit even when unmuted.  Require two
-    // consecutive display packets with the bit set before committing to
-    // muted=true.  Transition to unmuted is instant — no delay on unmute.
-    //
-    // This debounce delays the MUTED render by one packet, so it errs toward
-    // showing the alert at full urgency. Do not replace it with a raw mirror
-    // without hardware evidence that the transients are gone.
+    // Debounce image1 mute bit 4 across two packets; unmute immediately.
+    // Display transitions can briefly set this bit, so the one-packet delay
+    // preserves full alert urgency. Keep separate from canonical softMuted.
     const bool rawMuteBit = (image1 & 0x10) != 0;
     if (rawMuteBit) {
         if (displayMuteConfirmCount_ < 2) {
@@ -753,11 +716,8 @@ bool PacketParser::parseDisplayData(const uint8_t* payload, size_t length) {
     // EA) checksum evidence. Keep tolerant display parsing limited to visual
     // state so a damaged or fixture-only frame cannot become a control baseline.
 
-    // V1 sends LED bar state directly in the display packet at payload[2].
-    // This is the authoritative signal strength from V1's own display. It is
-    // decoded per ESP Specification 3.015 Table 9.1 into an LED count of 0..8
-    // and carried at protocol scale; V1Simple's six-slot display ceiling is
-    // applied by the renderer, not here. See decodeLEDBitmap() below.
+    // InfDisplayData payload[2] owns primary signal strength: protocol scale
+    // 0..8 (ESP 3.015 Table 9.1), projected to six slots only by the renderer.
     if (length > 2) {
         uint8_t ledBitmap = payload[2];
         displayState_.signalBars = decodeLEDBitmap(ledBitmap);
@@ -783,8 +743,7 @@ bool PacketParser::parseDisplayData(const uint8_t* payload, size_t length) {
 // $00 and defaults unknown bytes to 8. Follow the specification for $00, retain
 // that fail-loud default for undefined bytes, and record those substitutions.
 namespace {
-// Table 9.1 read as a ladder: the index is the LED count, the value is the
-// bar graph byte the V1 sends for it.
+// Ladder index is the LED count; value is the wire bitmap.
 constexpr uint8_t kLedBitmapDomain[] = {0x00, 0x01, 0x03, 0x07, 0x0F, 0x1F, 0x3F, 0x7F, 0xFF};
 // Table 9.1 tops out at eight LEDs; this is also VR's getNumberOfLEDS()
 // default-branch return.
@@ -794,7 +753,6 @@ constexpr uint8_t kLedBitmapMaxBars = 8;
 uint8_t PacketParser::decodeLEDBitmap(uint8_t bitmap) const {
     for (uint8_t index = 0; index < sizeof(kLedBitmapDomain); ++index) {
         if (bitmap == kLedBitmapDomain[index]) {
-            // In domain: Table 9.1's LED count is this value's ladder index.
             return index;
         }
     }

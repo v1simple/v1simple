@@ -46,11 +46,8 @@ bool shouldOpenPassiveProxyWindow(const CycleContext& ctx) {
         return false;
     }
 
-    // When OBD has already settled, opening the proxy advertising window
-    // would invite a phone/proxy connection into a three-way BLE load
-    // (V1 + OBD + phone). OBD speed ingest is higher priority than the
-    // maintenance proxy, so the proxy waits for a later non-OBD cycle or
-    // explicit debug control.
+    // An established OBD session outranks proxy discovery: avoid simultaneous
+    // V1 + OBD + phone load. Retry proxy in a non-OBD cycle or by debug control.
     if (ctx.obdConnected) {
         return false;
     }

@@ -87,11 +87,8 @@ void V1BLEClient::applyDeferredRuntimeEvents(SettingsManager& settings) {
         portEXIT_CRITICAL(&pendingAddrMux);
         if (NimBLEDevice::isBonded(addrToDelete)) {
             if (NimBLEDevice::deleteBond(addrToDelete)) {
-                // The SD backup is authoritative after NVS loss. Force a
-                // post-delete snapshot even when its bond count happens to
-                // match the last backup, or reboot could restore this stale
-                // bond. Snapshot/queue work stays on the main loop; SD I/O
-                // remains on the Core-0 writer.
+                // After deletion, refresh the authoritative SD bond snapshot even
+                // if its count is unchanged. Snapshot here; SD I/O stays on Core 0.
                 schedulePostDeleteBondBackup(static_cast<uint32_t>(millis()));
             }
         }
@@ -218,7 +215,6 @@ void V1BLEClient::arbitrateProxyRuntime(uint32_t now) {
                 proxySuppressedForObdHold_ = true;
             } else if (isConnected() && proxyEnabled_ && proxyServerInitialized_) {
                 proxyAdvertisingStartMs_ = 0; // Clear pending flag
-                // Advertising data already configured in initProxyServer() with proper flags
                 startProxyAdvertising();
             } else {
                 proxyAdvertisingStartMs_ = 0;
@@ -242,7 +238,6 @@ void V1BLEClient::dispatchConnectionState(uint32_t now) {
             break;
         }
 
-        // Not connected_ - keep actively scanning for the V1.
         if (!pScan->isScanning() && (now - lastScanStart_ >= RECONNECT_DELAY)) {
             lastScanStart_ = now;
             pScan->clearResults();
@@ -271,13 +266,11 @@ void V1BLEClient::dispatchConnectionState(uint32_t now) {
         }
 
         if (wantConnect) {
-            // V1 found - stop scan and transition to SCAN_STOPPING
             if (pScan->isScanning()) {
                 pScan->stop();
                 scanStopRequestedMs_ = now;
                 setBLEState(BLEState::SCAN_STOPPING);
             } else {
-                // Scan already stopped, proceed directly
                 scanStopRequestedMs_ = now;
                 setBLEState(BLEState::SCAN_STOPPING);
             }
@@ -296,7 +289,6 @@ void V1BLEClient::dispatchConnectionState(uint32_t now) {
         // Wait for scan to fully stop and radio to settle
         const uint32_t elapsed = now - scanStopRequestedMs_;
 
-        // Ensure scan is actually stopped
         if (pScan->isScanning()) {
             if (elapsed > 1000) { // Force stop if taking too long
                 pScan->stop();
@@ -316,7 +308,6 @@ void V1BLEClient::dispatchConnectionState(uint32_t now) {
                 Serial.println("[BLE] First scan settle complete (extended)");
                 firstScanAfterBoot_ = false;
             }
-            // Ready to connect
             bool wantConnect = false;
             {
                 // HOT PATH: try-lock only, skip if busy
@@ -350,7 +341,6 @@ void V1BLEClient::dispatchConnectionState(uint32_t now) {
             }
         }
 
-        // If we're stuck here for too long, something is wrong.
         if (connectStartMs_ > 0 && (now - connectStartMs_) > 5000) {
             Serial.println("[BLE] Connect initiation stuck for 5s - resetting");
             connectInProgress_ = false;
@@ -361,19 +351,16 @@ void V1BLEClient::dispatchConnectionState(uint32_t now) {
     }
 
     case BLEState::CONNECTING_WAIT: {
-        // Waiting for async connect callback
         processConnectingWait();
         break;
     }
 
     case BLEState::DISCOVERING: {
-        // Performing service discovery
         processDiscovering();
         break;
     }
 
     case BLEState::SUBSCRIBING: {
-        // Subscribing to characteristics (step machine)
         processSubscribing();
         break;
     }
@@ -385,8 +372,6 @@ void V1BLEClient::dispatchConnectionState(uint32_t now) {
     }
 
     case BLEState::CONNECTED: {
-        // All good - nothing to do in state machine
-        // Verify we're actually still connected_
         if (!pClient_ || !pClient_->isConnected()) {
             connected_.store(false, std::memory_order_relaxed);
             connectInProgress_ = false;

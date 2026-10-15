@@ -13,13 +13,12 @@
 #include <cstring>
 #include <memory>
 
-// Include display driver abstraction (Arduino_GFX only)
 #include "display_driver.h"
 #include "packet_parser.h"
 #include "modules/alp/alp_laser_event.h"
 #include "render_frame.h"
 #include "color_themes.h"
-#include "display_layout.h" // Centralized layout constants
+#include "display_layout.h"
 #include "display_ble_context.h"
 #include "display_vol_warn.h"
 #include "display_dirty_flags.h"
@@ -46,10 +45,8 @@ class V1Display {
     explicit V1Display(SettingsManager& settings);
     ~V1Display();
 
-    // Initialize display
     bool begin();
 
-    // Update display with current state
     void update(const DisplayState& state);
     // Multi-alert display: shows the priority alert and eligible secondary-alert cards.
     void update(const AlertData& priority, const AlertData* allAlerts, int alertCount, const DisplayState& state);
@@ -60,30 +57,24 @@ class V1Display {
     // Unified render entry fed by the display pipeline's composed frame.
     void renderFrame(const RenderFrame& frame);
 
-    // Check if currently in persisted mode (for color selection)
     bool isPersistedMode() const { return persistedMode_; }
 
-    // Show connection status
     void showDisconnected();
-    // Maintenance/setup screen. ipAddress: device network address to display
-    // (nullptr/empty = none available yet). stationMode: true when ipAddress is
-    // the STA/DHCP address (device joined a configured network); false when it
-    // is the setup AP's default address.
+    // Empty ipAddress means unavailable; stationMode selects STA/DHCP vs setup AP.
     void showMaintenanceMode(const char* ipAddress = nullptr, bool stationMode = false);
-    void showResting(bool forceRedraw = false);        // idle/rest screen
-    void showScanning();                               // scanning screen (like resting but with SCAN text)
-    void showStealth(float speedMph, bool speedValid); // stealth: blank screen with OBD speed
+    void showResting(bool forceRedraw = false);
+    void showScanning();
+    void showStealth(float speedMph, bool speedValid);
 
     // Force next update() call to fully redraw (use after settings change)
     void forceNextRedraw();
 
-    // Reset singleton-scoped render tracking (call on V1 disconnect to ensure
-    // the single production display path reconnects with a clean redraw state).
+    // Call on V1 disconnect so reconnect cannot reuse stale render state.
     void resetChangeTracking();
 
     void showBootSplash();
-    void showShutdown();   // Shutdown screen with goodbye message
-    void showLowBattery(); // Critical low battery warning
+    void showShutdown();
+    void showLowBattery();
 
     // Set brightness (0-255)
     void setBrightness(uint8_t level);
@@ -91,21 +82,17 @@ class V1Display {
     // Settings adjustment overlay (brightness + voice volume)
     void showSettingsSliders(uint8_t brightnessLevel, uint8_t volumeLevel);
     void updateSettingsSliders(uint8_t brightnessLevel, uint8_t volumeLevel, int activeSlider);
-    void hideBrightnessSlider();                  // Hide slider and restore display
+    void hideBrightnessSlider(); // Caller restores the normal display after clearing.
     int getActiveSliderFromTouch(int16_t touchY); // Returns 0=brightness, 1=volume, -1=none
 
-    // Clear screen
     void clear();
 
-    // Utility
     const char* bandToString(Band band);
     uint16_t getBandColor(Band band);
 
-    // Color theme helpers
-    void updateColorTheme(); // Update colors from settings
+    void updateColorTheme();
     const ColorPalette& getCurrentPalette() const { return currentPalette_; }
 
-    // Profile indicator
     void drawProfileIndicator(int slot); // 0=Default, 1=Highway, 2=Comfort
     void setProfileIndicatorSlot(int slot);
 
@@ -116,21 +103,17 @@ class V1Display {
     // intentionally set the V1 volume to 0.
     void setSpeedVolZeroActive(bool active);
 
-    // BLE context snapshot — populated by the loop orchestration path so display
-    // files never depend on extern V1BLEClient. Freshness is tracked internally.
+    // Snapshot supplied by loop orchestration; freshness is tracked internally.
     void setBleContext(const DisplayBleContext& ctx);
 
-    // BLE proxy indicator (blue = advertising/no client, green = client connected)
-    // receivingData dims the icon when connected but no V1 packets received recently
+    // Dim the connected icon when V1 packets stop arriving.
     void setBLEProxyStatus(bool proxyEnabled, bool clientConnected, bool receivingData = true);
 
-    // WiFi indicator (shows when connected to STA network)
     void drawWiFiIndicator();
     void refreshObdIndicator(uint32_t nowMs);
     void setObdRuntimeModule(ObdRuntimeModule* m);
     void setObdAttention(bool attention);
 
-    // ALP indicator (shows current ALP status left of MUTED badge)
     void setAlpRuntimeModule(AlpRuntimeModule* m);
     void setSystemStatusSources(BatteryManager& battery, WiFiManager& wifi, GpsRuntimeModule& gps) {
         battery_ = &battery;
@@ -143,54 +126,37 @@ class V1Display {
     void setAlpPreviewState(bool enabled, uint8_t state, uint8_t hbByte1);
     void setObdPreviewState(bool enabled, bool connected, bool scanAttention);
 
-    // ALP laser event — atomic setter for all ALP-owned display fields.
-    // ev.active controls only the live-alert visual state (badge red / arrow
-    // color override). Gun/direction may still be provided with active=false
-    // so a persisted ALP tail can retain gun text without masquerading as a
-    // live alert. During a continuous live event, a transient gun=UNKNOWN
-    // update keeps the last known gun text instead of clearing it mid-alert.
+    // ev.active gates live badge/arrow colors; inactive tails may retain gun text
+    // and direction. Transient UNKNOWN gun updates retain identity within a live session.
     void setAlpLaserEvent(const AlpLaserEvent& ev);
 
-    // ALP frequency override — PREVIEW-ONLY.
-    // Live rendering uses setAlpLaserEvent(); display_preview_module.cpp uses
-    // this helper to show sample gun text without a real ALP runtime event.
-    // lidActive=true when ALP is LID active (byte1=04, above LID speed limit) — color
-    // reflects active-jam rendering; lidActive=false renders DLI/detect-only color.
+    // Preview-only gun text; live rendering uses setAlpLaserEvent().
+    // lidActive selects LID (byte1=04) vs DLI/detect-only color.
     void setAlpFrequencyOverride(const char* gunAbbrev, bool lidActive = true);
     void clearAlpFrequencyOverride();
 
-    // Flush canvas to physical display
     void flush();
     void flushRegion(int16_t x, int16_t y, int16_t w, int16_t h); // Partial flush to reduce SPI traffic
 
-    // Logical bounding rect of the direction-arrow cluster. Exposed so the
-    // owning frame can track exactly what drawDirectionArrow's clear/redraw
-    // covers. raisedLayout mirrors drawDirectionArrow's internal
-    // gate (true when dirty_.multiAlert is set, i.e. in every Live-mode frame).
-    //
-    // Returns DisplayLayout::DisplayRect (generic rect type shared with the
-    // partial-flush region-union work — see include/display_layout.h).
+    // Covers arrow drawing and clearing; raisedLayout must match dirty_.multiAlert.
     static DisplayLayout::DisplayRect arrowBoundingRect(bool raisedLayout);
 
   private:
     SettingsManager& settings_;
     enum class ScreenMode { Unknown, Resting, Scanning, Disconnected, Maintenance, Live, Persisted, Stealth };
 
-    // Display driver (Arduino_GFX)
     std::unique_ptr<Arduino_ESP32QSPI> bus_;
     std::unique_ptr<Arduino_AXS15231B> gfxPanel_;
     std::unique_ptr<Arduino_Canvas> tft_; // Canvas for rotation/buffering
 
     DisplayState lastState_;
 
-    // Color palette
-    ColorPalette currentPalette_; // Store current theme palette
+    ColorPalette currentPalette_;
 
-    // Drawing helpers
     bool drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFlashBits = 0);
 
     void drawFrequency(uint32_t freqMHz, Band band = BAND_NONE, bool muted = false, uint8_t photoType = 0);
-    void drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, uint8_t photoType = 0); // 7-segment style
+    void drawFrequencySegment7(uint32_t freqMHz, Band band, bool muted, uint8_t photoType = 0);
     struct FrequencyPresentation {
         char text[16] = "";
         uint16_t color = 0;
@@ -215,7 +181,7 @@ class V1Display {
     void drawBaseFrame();
     void prepareFullRedrawNoClear();
     void drawTopCounter(char symbol, bool muted, bool showDot);
-    void drawTopCounterSegment7(char symbol, bool muted, bool showDot); // 7-segment style
+    void drawTopCounterSegment7(char symbol, bool muted, bool showDot);
     void drawTopCounterPair(char primary, bool muted, bool primaryDot, char secondary = '\0',
                             bool secondaryDot = false);
     void drawStatusStrip(const DisplayState& state, char topChar, bool topMuted, bool topDot);
@@ -235,26 +201,23 @@ class V1Display {
     void draw14SegmentDigit(int x, int y, float scale, char c, bool addDot, uint16_t onColor, uint16_t offColor);
     int draw14SegmentText(const char* text, int x, int y, float scale, uint16_t onColor, uint16_t offColor);
 
-    // Multi-alert card row
     void drawSecondaryAlertCards(const AlertData* alerts, int alertCount, const AlertData& priority,
                                  bool muted = false);
-    // Use centralized constant from display_layout.h
     static constexpr int SECONDARY_ROW_HEIGHT = DisplayLayout::SECONDARY_ROW_HEIGHT;
 
-    int currentProfileSlot_ = 0;                     // Track current profile for display
+    int currentProfileSlot_ = 0;
     ScreenMode currentScreen_ = ScreenMode::Unknown; // Track current screen to avoid redundant full redraws
     uint32_t paletteRevision_ = 0;                   // Incremented on theme change to trigger redraws
-    uint32_t lastRestingPaletteRevision_ = 0;        // Palette revision last used for resting screen
-    int lastRestingProfileSlot_ = -1;                // Last profile shown on resting screen
-    uint32_t lastStealthPaletteRevision_ = 0;        // Palette revision last used for stealth screen
+    uint32_t lastRestingPaletteRevision_ = 0;
+    int lastRestingProfileSlot_ = -1;
+    uint32_t lastStealthPaletteRevision_ = 0;
     int lastStealthRoundedMph_ = -1;                 // Last centered stealth speed text (-1 = "-- MPH")
-    bool lastStealthSpeedValid_ = false;             // Last stealth speed text validity
+    bool lastStealthSpeedValid_ = false;
 
-    // Visibility timeout tracking
-    uint32_t profileChangedTime_ = 0;      // When profile was last changed
-    int lastProfileSlot_ = -1;             // Track profile changes
-    bool bleProxyEnabled_ = false;         // BLE proxy enabled flag
-    bool bleProxyClientConnected_ = false; // BLE proxy client connection flag
+    uint32_t profileChangedTime_ = 0;
+    int lastProfileSlot_ = -1;
+    bool bleProxyEnabled_ = false;
+    bool bleProxyClientConnected_ = false;
     bool bleReceivingData_ = true;         // True when V1 packets received recently (heartbeat)
     bool bleProxyDrawn_ = false;           // Track if icon has been drawn at least once
     bool multiAlertMode_ = false;          // True while rendering a live multi-alert frame
@@ -355,17 +318,8 @@ class V1Display {
     void invalidateRestingNoOpKey();
 #endif
 
-    // Unified blink phase for arrow/band/bogey-counter flash animation.
-    //
-    // This implementation uses a shared 96 ms image1/image2 toggle so arrows,
-    // bands, and the bogey counter remain synchronized. The cadence is VR's:
-    // ESP Specification 3.015 p.26 — "Valentine Research recommends a blink rate
-    // of 10.416 Hz, which requires toggling the display every 96 mS."
-    //
-    // Single source of truth, toggled at BLINK_INTERVAL_MS cadence
-    // by updateBlinkPhase_() — drawDirectionArrow, drawBandIndicators, and
-    // drawStatusStrip (for bogey-counter blink) call it at entry and then
-    // read blinkPhase_.
+    // Shared image1/image2 phase for arrows, bands and counter.
+    // ESP Specification 3.015 p.26 recommends toggling every 96 ms (10.416 Hz).
     static constexpr unsigned long BLINK_INTERVAL_MS = 96;
     bool blinkPhase_ = true;
     unsigned long lastBlinkToggleMs_ = 0;
@@ -378,17 +332,11 @@ class V1Display {
     bool isStealthScreen() const { return currentScreen_ == ScreenMode::Stealth; }
 
   private:
-    // Defined inline so rendering TUs (display_arrow.cpp, display_bands.cpp) that
-    // are linked into native tests without display.cpp still resolve the symbol.
-    // millis() is visible here via display_driver.h/Arduino.h (real build) or the
-    // test mock Arduino.h (native tests include it before display.h).
+    // Inline so renderer tests can link without display.cpp.
     void updateBlinkPhase_() {
         const unsigned long now = millis();
 
-        // First renderer entry establishes the phase epoch.  Starting from
-        // image1 avoids an immediate boot-time inversion caused by
-        // lastBlinkToggleMs_ defaulting to zero while millis() is already well
-        // past 96 ms.
+        // Start at image1 even if boot took longer than one blink interval.
         if (lastBlinkToggleMs_ == 0) {
             lastBlinkToggleMs_ = now;
             return;
@@ -400,17 +348,14 @@ class V1Display {
             if ((elapsedIntervals & 0x01UL) != 0) {
                 blinkPhase_ = !blinkPhase_;
             }
-            // Advance by exact 96 ms quanta instead of snapping to now.  This
-            // keeps the local image1/image2 phase locked to the V1-specified
-            // cadence and prevents a late render from permanently drifting the
-            // blink schedule.  If two intervals elapsed, the final phase is the
-            // same as before and no repaint is forced solely due to missed work.
+            // Whole intervals prevent cadence drift after a late render.
+            // Missing an even number of intervals leaves the phase unchanged.
             lastBlinkToggleMs_ += elapsedIntervals * BLINK_INTERVAL_MS;
         }
     }
 
-    bool obdEnabled_ = false;                      // OBD module enabled
-    bool obdConnected_ = false;                    // OBD adapter connected
+    bool obdEnabled_ = false;
+    bool obdConnected_ = false;
     bool obdScanAttention_ = false;                // Runtime manual scan / scan-pending state
     bool obdAttention_ = false;                    // Temporary UI hold-time attention
     bool previewIndicatorOverridesActive_ = false; // Display preview owns ALP/OBD badges
@@ -419,7 +364,7 @@ class V1Display {
     BatteryManager* battery_ = nullptr;
     WiFiManager* wifi_ = nullptr;
     GpsRuntimeModule* gpsRtMod_ = nullptr;
-    bool alpEnabled_ = false;                      // ALP module enabled
+    bool alpEnabled_ = false;
     uint8_t alpStateRaw_ = 0;                      // AlpState cast to uint8_t for badge color selection
     uint8_t alpHbByte1_ = 0;                       // Last B0 heartbeat byte1 (02=Warm-Up, 03=DLI, 04=LID)
     bool alpHasLaserEvent_ = false; // true when ALP has an active laser session (overrides byte1 → solid red)
@@ -429,15 +374,11 @@ class V1Display {
     char alpFreqText_[16] = "";
     bool alpLidActive_ = false;      // true = LID active (byte1=04, blue), false = DLI (orange)
     AlpLaserEvent alpLaserEvent_{};  // live ALP event-owned direction/gun/lid state for rendering
-    DisplayBleContext bleCtx_;       // BLE state snapshot for display DI
-    uint32_t bleCtxUpdatedAtMs_ = 0; // When setBleContext() last refreshed bleCtx_
-    // Nonzero only while renderFrame() dispatches one composed request. The
-    // overload-specific update paths use this entry timestamp instead of
-    // stamping after card copying and dispatch work has already occurred.
+    DisplayBleContext bleCtx_;
+    uint32_t bleCtxUpdatedAtMs_ = 0;
 
-    static constexpr uint32_t HIDE_TIMEOUT_MS = 3000; // 3 second display timeout
+    static constexpr uint32_t HIDE_TIMEOUT_MS = 3000;
 
-    // Renderer-owned state
     DisplayFontManager fontMgr_;
     DisplayFrequencyDigitAtlas frequencyDigitAtlas_;
     DisplayFrequencyRasterCache frequencyRasterCache_;
@@ -447,16 +388,12 @@ class V1Display {
 
 #ifdef UNIT_TEST
   public:
-    // Test seam: inject a recording canvas and expose it for assertions.
-    // The display takes ownership; caller must allocate with new.
+    // Takes ownership; caller must allocate with new.
     void setTestCanvas(Arduino_Canvas* canvas) { tft_.reset(canvas); }
     Arduino_Canvas* testCanvas() { return tft_.get(); }
-    // Test seam for element caches
     DisplayElementCaches& ut_elementCaches() { return elementCaches_; }
-    // Test seam: simulate a color-theme change. Production path is
-    // updateColorTheme(), which increments the same counter.
+    // Simulate updateColorTheme() invalidation.
     void ut_bumpPaletteRevision() { ++paletteRevision_; }
-    // Public wrappers for private rendering methods (native integration tests only)
     void ut_drawFrequency(uint32_t frequency, Band band, const char* alpText = nullptr, uint8_t photoType = 0) {
         alpFreqOverride_ = alpText != nullptr;
         snprintf(alpFreqText_, sizeof(alpFreqText_), "%s", alpText ? alpText : "");
@@ -498,5 +435,4 @@ class V1Display {
 #endif
 };
 
-// Global display instance (defined in main.cpp)
 #endif // DISPLAY_H

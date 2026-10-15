@@ -3,13 +3,7 @@
 #include <stdint.h>
 #include <math.h> // NAN, UINT32_MAX
 
-/**
- * Snapshot of GPS runtime state returned by GpsRuntimeModule::snapshot().
- *
- * Pure data — no Arduino dependency, safe to include in native unit tests.
- * Both the real GpsRuntimeModule header and all test mocks must include this
- * file rather than redefining the struct locally.
- */
+// Shared GPS snapshot for production and test consumers; no Arduino dependency.
 struct GpsRuntimeStatus {
     // --- Core fix state ---
     bool enabled = false;

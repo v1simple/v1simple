@@ -4,24 +4,10 @@
 
 namespace MainRuntimePolicy {
 
-// Maintenance sessions use a ten-minute idle window and a thirty-minute
-// absolute limit. UI requests extend the idle deadline; the absolute limit
-// ensures that background polling from an unattended browser cannot keep the
-// device out of normal runtime indefinitely.
-//
-// WiFiManager provides recent activity as a predicate rather than a timestamp.
-// The main loop samples that predicate and records the observation time used by
-// this policy. Request-rate heuristics are unsuitable because page loads,
-// per-page polling, and multiple tabs all change the request cadence.
-
-// Base maintenance-session budget and idle window.
+// UI activity extends the idle window, but browser polling cannot extend the
+// absolute session limit. Activity is sampled from WiFiManager's predicate.
 constexpr unsigned long MaintenanceBootTimeoutMs = 10UL * 60UL * 1000UL;
-
-// Hard ceiling on total session length, measured from session start. Never
-// reset. No amount of UI activity can push a session past this.
 constexpr unsigned long MaintenanceBootMaxSessionMs = 30UL * 60UL * 1000UL;
-
-// Sampling window for WiFiManager's recent-activity predicate.
 constexpr unsigned long MaintenanceUiActivityProbeMs = 1000UL;
 
 struct MaintenanceSessionInput {
@@ -45,21 +31,12 @@ struct MaintenanceSessionDecision {
     uint32_t elapsedSinceStartMs = 0;
     uint32_t elapsedSinceActivityMs = 0;
     uint32_t remainingMs = 0;
-    // Anchor T for which remainingMs == idleWindowMs - (nowMs - T). The main
-    // loop republishes it through /api/status so the UI countdown reflects
-    // idle extensions and the absolute cap without changing the response
-    // schema. For an extended session, the reported "uptime" means elapsed
-    // countdown budget rather than literal session age. A live session never
-    // returns 0 because the status payload reserves it as a sentinel.
+    // /api/status countdown anchor: remainingMs == idleWindowMs - (nowMs - T).
+    // This may differ from session start; zero is reserved for inactive sessions.
     uint32_t deadlineAnchorMs = 0;
 };
 
-/// Decide whether a maintenance session has expired, and how much time is
-/// left. Pure: time comes in as a parameter, nothing here calls millis().
-///
-/// All time math is elapsed-difference based
-/// (`static_cast<uint32_t>(now - then) >= interval`) so it survives the
-/// 49-day millis() rollover. No timestamp is ever added to an interval.
+// Unsigned elapsed differences preserve deadlines across millis() rollover.
 inline MaintenanceSessionDecision evaluateMaintenanceSession(const MaintenanceSessionInput& input) {
     MaintenanceSessionDecision decision;
     if (!input.sessionActive || input.sessionStartedMs == 0) {
@@ -109,14 +86,11 @@ struct MainRuntimeState {
     unsigned long v1ConnectedAtMs = 0;
     bool alpSignalActive = false;
     bool maintenanceBootActive = false;
-    // Countdown anchor published through /api/status; not the immutable
-    // session start.
+    // Countdown anchor published through /api/status.
     unsigned long maintenanceBootStartedMs = 0;
-    // Immutable maintenance session start. Anchors the absolute cap and never
-    // moves for the life of the session.
+    // Immutable start for the absolute session cap.
     unsigned long maintenanceBootSessionStartedMs = 0;
-    // Last maintenance-loop observation of UI activity, latched from
-    // WiFiManager::isUiActive(). 0 means "no UI request seen this session".
+    // Last sampled UI activity; zero means none observed this session.
     unsigned long maintenanceLastUiActivityMs = 0;
     unsigned long lastLoopUs = 0;
 };

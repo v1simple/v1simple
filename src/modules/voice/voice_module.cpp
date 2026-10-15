@@ -4,10 +4,6 @@
 
 #include "settings.h"
 
-// ============================================================================
-// Constructor and Initialization
-// ============================================================================
-
 VoiceModule::VoiceModule() {
     // Dependencies set in begin()
 }
@@ -18,10 +14,6 @@ void VoiceModule::begin(SettingsManager* settings, V1BLEClient* ble) {
 
     Serial.println("[VoiceModule] Initialized");
 }
-
-// ============================================================================
-// Static Utilities
-// ============================================================================
 
 uint8_t VoiceModule::getAlertBars(const AlertData& a) {
     if (a.direction & DIR_FRONT)
@@ -63,10 +55,6 @@ AlertDirection VoiceModule::toAudioDirection(Direction dir) {
     return AlertDirection::UNKNOWN;
 }
 
-// ============================================================================
-// Local Helpers
-// ============================================================================
-
 static bool isPhotoPresentation(const AlertData& alert) {
     return alert.band == BAND_K && alert.photoType != 0;
 }
@@ -95,10 +83,6 @@ static AlertBand toAudioBand(const AlertData& alert) {
 static bool isValidAnnounceBand(Band band) {
     return band == BAND_LASER || band == BAND_KA || band == BAND_K || band == BAND_KU || band == BAND_X;
 }
-
-// ============================================================================
-// Main Decision Method
-// ============================================================================
 
 VoiceAction VoiceModule::process(const VoiceContext& ctx) {
     VoiceAction action = prepareAction(ctx);
@@ -154,9 +138,7 @@ VoiceAction VoiceModule::prepareAction(const VoiceContext& ctx) {
     bool directionKnown = (priority.direction != DIR_NONE);
     bool cooldownPassed = hasCooldownPassed(ctx.now);
 
-    // F: track alert-count stability — direction re-announces wait until V1's
-    // count stops fluttering, so we don't blurt stale "left/right" while
-    // priority is still shuffling.
+    // Direction announcements wait for a stable count/priority.
     if (!countStableTracked_) {
         prevAlertCount_ = (uint8_t)ctx.alertCount;
         lastCountStableSinceMs_ = ctx.now;
@@ -192,10 +174,7 @@ VoiceAction VoiceModule::prepareAction(const VoiceContext& ctx) {
         return action;
     }
 
-    // Case 2: Direction Changed (same alert)
-    // Ignore transient DIR_NONE direction drops to avoid noisy "side" chatter.
-    // F: also gate on countStable so we don't announce direction while V1 is
-    // still shuffling priority during a count flutter.
+    // Ignore transient DIR_NONE and count flutter before announcing direction.
     if (!alertChanged && directionChanged && cooldownPassed && s.voiceDirectionEnabled && directionKnown &&
         countStable) {
         bool throttled = shouldThrottleDirectionChange(ctx.now);
@@ -217,10 +196,7 @@ VoiceAction VoiceModule::prepareAction(const VoiceContext& ctx) {
         return action;
     }
 
-    // Case 3 (count-only re-announce) intentionally removed: voice no longer
-    // speaks count outside the initial Case 1 announcement. The display is
-    // the source of truth for current bogey count; redundant audio of a
-    // potentially-stale count caused mismatch perception under heavy V1 churn.
+    // Announce count only with a new alert; the display owns subsequent count changes.
 
     // --- Secondary Alert Logic ---
 
@@ -369,20 +345,12 @@ void VoiceModule::commitAction(const VoiceAction& action, const unsigned long ac
     }
 }
 
-// ============================================================================
-// State Management
-// ============================================================================
-
 void VoiceModule::clearAllState() {
     clearAnnouncedAlerts();
     clearAlertHistories();
     resetLastAnnounced();
     resetPriorityStability();
 }
-
-// ============================================================================
-// Announced Alert Tracking
-// ============================================================================
 
 bool VoiceModule::isAlertAnnounced(Band band, uint16_t freq, bool isPhoto) {
     uint32_t id = makeAlertId(band, freq, isPhoto);
@@ -399,14 +367,9 @@ void VoiceModule::markAlertAnnounced(Band band, uint16_t freq, bool isPhoto) {
         return;
     }
 
-    // The set is a FIFO window over the most recent MAX_ANNOUNCED_ALERTS ids, not
-    // a fixed-capacity set that stops accepting. Silently refusing to record once
-    // full saturates the set during a long multi-alert stretch: every later alert
-    // then reads as un-announced in the secondary-alert loop, so the same bogeys
-    // get announced over and over. Evict the oldest id instead, which keeps the
-    // window useful under sustained load and re-arms only the alert that has been
-    // quiet the longest. MAX_ANNOUNCED_ALERTS is 10 and this runs at most once per
-    // announcement, so the shift is cheaper than carrying a wrap index.
+    // Keep a FIFO window of recent IDs. Refusing new IDs when full would
+    // repeatedly announce later bogeys. Eviction rearms the oldest; the
+    // MAX_ANNOUNCED_ALERTS=10 shift runs only once per announcement.
     if (announcedAlertCount_ >= MAX_ANNOUNCED_ALERTS) {
         memmove(&announcedAlertIds_[0], &announcedAlertIds_[1],
                 sizeof(announcedAlertIds_[0]) * (MAX_ANNOUNCED_ALERTS - 1));
@@ -419,10 +382,6 @@ void VoiceModule::clearAnnouncedAlerts() {
     announcedAlertCount_ = 0;
     memset(announcedAlertIds_, 0, sizeof(announcedAlertIds_));
 }
-
-// ============================================================================
-// Alert History Tracking - Smart Threat Escalation
-// ============================================================================
 
 VoiceModule::AlertHistory* VoiceModule::findAlertHistory(uint32_t alertId) {
     for (int i = 0; i < alertHistoryCount_; i++) {
@@ -540,10 +499,6 @@ void VoiceModule::clearAlertHistories() {
     memset(alertHistories_, 0, sizeof(alertHistories_));
 }
 
-// ============================================================================
-// Direction Change Throttling
-// ============================================================================
-
 void VoiceModule::resetDirectionThrottle(unsigned long now) {
     directionChangeCount_ = 0;
     directionChangeWindowStart_ = now;
@@ -563,10 +518,6 @@ void VoiceModule::recordDirectionChange(unsigned long now) {
     }
     directionChangeCount_++;
 }
-
-// ============================================================================
-// Priority Stability Tracking
-// ============================================================================
 
 void VoiceModule::updatePriorityStability(uint32_t currentAlertId, unsigned long now) {
     if (currentAlertId != lastPriorityAlertId_) {
@@ -590,10 +541,6 @@ bool VoiceModule::canAnnounceSecondary(unsigned long now) const {
     return priorityStabilityTracked_ && (now - priorityStableSince_ >= PRIORITY_STABILITY_MS) &&
            (now - lastPriorityAnnouncementTime_ >= POST_PRIORITY_GAP_MS);
 }
-
-// ============================================================================
-// Last Announced Tracking
-// ============================================================================
 
 bool VoiceModule::hasAlertChanged(Band band, uint16_t freq, bool isPhoto) const {
     return (band != lastVoiceAlertBand_) || (freq != lastVoiceAlertFrequency_) ||

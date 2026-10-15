@@ -1,14 +1,4 @@
-/**
- * VoiceModule decision-logic contract tests.
- *
- * Covers VoiceModule::process() early-exit guards, the ANNOUNCE_PRIORITY
- * happy path, the ANNOUNCE_DIRECTION case, and all static utilities.
- * Does not test audio playback (VoiceModule returns an action; caller executes it).
- *
- * Regression boundary: this suite pins voice action selection and
- * suppression. The separate playback worker remains outside this suite's
- * boundary.
- */
+// Voice action selection and suppression; playback is owned by a separate worker.
 
 #include <unity.h>
 #include <cstring>

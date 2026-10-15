@@ -12,7 +12,6 @@ static constexpr uint16_t SLIDER_BRIGHTNESS_FG = 0x07E0;
 static constexpr uint16_t SLIDER_VOLUME_FG = 0x001F;
 static constexpr uint16_t SLIDER_HINT_TEXT = 0x8410;
 
-// Settings screen with brightness and voice volume sliders.
 void V1Display::showSettingsSliders(uint8_t brightnessLevel, uint8_t volumeLevel) {
     tft_->fillScreen(PALETTE_BG);
 
@@ -88,10 +87,7 @@ void V1Display::updateSettingsSliders(uint8_t brightnessLevel, uint8_t volumeLev
     showSettingsSliders(brightnessLevel, volumeLevel);
 }
 
-// Returns which slider was touched: 0=brightness, 1=volume, -1=none.
-// Touch Y is inverted relative to display Y:
-//   Low touch Y = bottom of display = volume slider
-//   High touch Y = top of display = brightness slider
+// Touch Y is inverted: low is volume (1), high is brightness (0), gap is -1.
 int V1Display::getActiveSliderFromTouch(int16_t touchY) {
     if (touchY <= 60)
         return 1;

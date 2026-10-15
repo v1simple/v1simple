@@ -1,22 +1,12 @@
-// audio_beep.cpp — Hardware layer for ES8311 DAC, I2S driver, and TCA9554 amp.
-// SD-based voice composition lives in audio_voice.cpp.
-//
-// I2C bus: SDA=47, SCL=48 (shared with battery manager TCA9554)
-// I2S pins: MCLK=7, BCLK=15, WS=46, DOUT=45 (for playback)
-// TCA9554 address: 0x20 (ESP_IO_EXPANDER_I2C_TCA9554_ADDRESS_000)
-// ES8311 address: 0x18
-
 #include "audio_internals.h"
-#include "battery_manager.h" // For tca9554Wire (shared I2C bus)
+#include "battery_manager.h"
 #include <Arduino.h>
 #include <Wire.h>
 #include "driver/gpio.h"
 #include <esp_heap_caps.h>
 
-// ES8311 I2C address
 #define ES8311_ADDR 0x18
 
-// TCA9554 I2C address (same chip as battery manager, address 0x20)
 #define TCA9554_ADDR 0x20
 #define TCA9554_SPK_AMP_PIN 7
 
@@ -26,17 +16,14 @@
 #define I2S_WS_PIN GPIO_NUM_46
 #define I2S_DOUT_PIN GPIO_NUM_45 // Data OUT for playback (not DIN=6 which is for recording)
 
-// Audio parameters
 #define SAMPLE_RATE 22050 // Match Waveshare BSP default (22.05kHz)
 
-// Use battery manager's TwoWire instance (already initialized on SDA=47, SCL=48)
-// ES8311 codec and TCA9554 IO expander are both on this bus
+// ES8311 and TCA9554 share the battery manager's bus (SDA=47, SCL=48).
 static TwoWire& audioWire = tca9554Wire;
 bool es8311_initialized = false;
 bool i2s_initialized = false;
 i2s_chan_handle_t i2s_tx_chan = nullptr;
 
-// Current codec volume in percent.
 static uint8_t current_volume_percent = 75;
 
 namespace {
@@ -63,7 +50,6 @@ void audio_log_i2c_failure(const char* context, AudioI2cResult result) {
     Serial.printf("[AUDIO][I2C] %s: %s\n", context, audioI2cResultToString(result));
 }
 
-// Write a register to ES8311
 static AudioI2cResult es8311_write_reg(uint8_t reg, uint8_t val, TickType_t timeoutTicks = pdMS_TO_TICKS(50)) {
     AudioI2cLockGuard lock(tca9554WireMutex, timeoutTicks);
     if (!lock.ok()) {
@@ -85,8 +71,6 @@ AudioI2cResult set_speaker_amp(bool enable, TickType_t timeoutTicks) {
     const AudioI2cResult result =
         audioI2cSetTca9554Pin(audioWire, TCA9554_ADDR, TCA9554_CONFIG_PORT, TCA9554_OUTPUT_PORT, TCA9554_SPK_AMP_PIN,
                               enable, &nextConfig, &nextOutput);
-    AUDIO_LOGF("[AUDIO] Speaker amp %s config=0x%02X output=0x%02X result=%s\n", enable ? "ENABLED" : "DISABLED",
-               nextConfig, nextOutput, audioI2cResultToString(result));
     return result;
 }
 
@@ -123,7 +107,6 @@ AudioI2cResult set_speaker_amp(bool enable, TickType_t timeoutTicks) {
 #define ES8311_GPIO_REG44 0x44
 #define ES8311_GP_REG45 0x45
 
-// Read a register from ES8311
 static AudioI2cResult es8311_read_reg(uint8_t reg, uint8_t& value, TickType_t timeoutTicks = pdMS_TO_TICKS(50)) {
     AudioI2cLockGuard lock(tca9554WireMutex, timeoutTicks);
     if (!lock.ok()) {
@@ -132,13 +115,10 @@ static AudioI2cResult es8311_read_reg(uint8_t reg, uint8_t& value, TickType_t ti
     return audioI2cReadRegister(audioWire, ES8311_ADDR, reg, value);
 }
 
-// Full ES8311 initialization - exact copy of ESP-ADF es8311_codec_init
-// For 24kHz, MCLK=6.144MHz (256*fs), slave mode, DAC output
+// ESP-ADF initialization sequence: slave mode, DAC output, MCLK = 256 * fs.
 bool es8311_init() {
     if (es8311_initialized)
         return true;
-
-    AUDIO_LOGLN("[AUDIO] ES8311 init (ESP-ADF pattern)");
 
     auto writeOrFail = [](const char* context, uint8_t reg, uint8_t value) -> bool {
         const AudioI2cResult result = es8311_write_reg(reg, value);
@@ -158,18 +138,13 @@ bool es8311_init() {
         return false;
     };
 
-    // Coefficient for 24kHz with 6.144MHz MCLK from coeff_div table:
-    // {6144000 , 24000, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10}
-    // pre_div=1, pre_multi=1, adc_div=1, dac_div=1, fs_mode=0, lrck_h=0, lrck_l=0xff, bclk_div=4, adc_osr=0x10,
-    // dac_osr=0x10
-
-    // Step 1: Enhance I2C noise immunity (write twice per ESP-ADF)
+    // Write twice for I2C noise immunity, per ESP-ADF.
     if (!writeOrFail("es8311_init gpio44 noise immunity 1", ES8311_GPIO_REG44, 0x08))
         return false;
     if (!writeOrFail("es8311_init gpio44 noise immunity 2", ES8311_GPIO_REG44, 0x08))
         return false;
 
-    // Step 2: Initial clock setup
+    // Initial clock setup.
     if (!writeOrFail("es8311_init reg01", ES8311_CLK_MANAGER_REG01, 0x30))
         return false;
     if (!writeOrFail("es8311_init reg02", ES8311_CLK_MANAGER_REG02, 0x00))
@@ -191,15 +166,14 @@ bool es8311_init() {
     if (!writeOrFail("es8311_init reg11", ES8311_SYSTEM_REG11, 0x7F))
         return false;
 
-    // Step 3: Enable CSM (clock state machine) in slave mode
+    // Enable the clock state machine in slave mode.
     if (!writeOrFail("es8311_init reset", ES8311_RESET_REG00, 0x80))
         return false;
 
-    // Step 4: Enable all clocks, MCLK from external pin
+    // Enable all clocks with MCLK from the external pin.
     if (!writeOrFail("es8311_init reg01 enable clocks", ES8311_CLK_MANAGER_REG01, 0x3F))
         return false;
 
-    // Step 5: Configure clock dividers for 24kHz @ 6.144MHz MCLK
     // pre_div=1, pre_multi=1 => REG02 = ((1-1)<<5) | (0<<3) = 0x00
     if (!writeOrFail("es8311_init reg02 dividers", ES8311_CLK_MANAGER_REG02, 0x00))
         return false;
@@ -226,7 +200,6 @@ bool es8311_init() {
     if (!writeOrFail("es8311_init reg06", ES8311_CLK_MANAGER_REG06, 0x03))
         return false;
 
-    // Step 6: Additional setup from ESP-ADF
     if (!writeOrFail("es8311_init reg13", ES8311_SYSTEM_REG13, 0x10))
         return false;
     if (!writeOrFail("es8311_init reg1b", ES8311_ADC_REG1B, 0x0A))
@@ -234,7 +207,6 @@ bool es8311_init() {
     if (!writeOrFail("es8311_init reg1c", ES8311_ADC_REG1C, 0x6A))
         return false;
 
-    // Step 7: START the DAC (from es8311_start)
     // REG09: DAC input config - bit6=0 for DAC enabled
     uint8_t dac_iface = 0;
     if (!readOrFail("es8311_init read reg09", ES8311_SDPIN_REG09, dac_iface))
@@ -261,11 +233,10 @@ bool es8311_init() {
     if (!writeOrFail("es8311_init reg45", ES8311_GP_REG45, 0x00))
         return false;
 
-    // Step 8: Set internal reference signal
+    // Set internal reference signal.
     if (!writeOrFail("es8311_init gpio44 ref signal", ES8311_GPIO_REG44, 0x58))
         return false;
 
-    // Step 9: Set DAC volume based on saved setting
     // Use same mapping as audio_set_volume(): 0%=mute, 1-100%=0x90-0xBF
     uint8_t volReg;
     if (current_volume_percent == 0) {
@@ -276,7 +247,7 @@ bool es8311_init() {
     if (!writeOrFail("es8311_init reg32 volume", ES8311_DAC_REG32, volReg))
         return false;
 
-    // Step 10: Unmute DAC (clear bits 6:5 of REG31)
+    // Unmute DAC (clear bits 6:5 of REG31).
     uint8_t regv = 0;
     if (!readOrFail("es8311_init read reg31", ES8311_DAC_REG31, regv))
         return false;
@@ -310,7 +281,6 @@ bool es8311_init() {
     return true;
 }
 
-// Set audio volume (0-100%)
 // ES8311 DAC register 0x32: 0x00 = -95.5dB (mute), 0xBF = 0dB, 0xFF = +32dB
 // The lower range (-95dB to -30dB) is inaudible, so we remap:
 //   0% = 0x00 (mute)
@@ -324,39 +294,29 @@ void audio_set_volume(uint8_t volumePercent) {
     if (volumePercent == 0) {
         regVal = 0x00; // Mute
     } else {
-        // Map 1-100% to 0x90-0xBF (144-191, a 47-step usable range)
-        // This gives audible volume across the full slider
         regVal = 0x90 + ((volumePercent - 1) * (0xBF - 0x90)) / 99;
     }
 
-    // Apply volume if ES8311 is initialized
     if (es8311_initialized) {
         const AudioI2cResult result = es8311_write_reg(ES8311_DAC_REG32, regVal);
         if (result != AudioI2cResult::Ok) {
             audio_log_i2c_failure("audio_set_volume", result);
         }
-        AUDIO_LOGF("[AUDIO] Volume set to %d%% (reg=0x%02X)\n", volumePercent, regVal);
     }
 }
 
-// I2S init for playback using NEW I2S STD driver (like Waveshare BSP)
 void i2s_init() {
     if (i2s_initialized)
         return;
 
-    AUDIO_LOGLN("[AUDIO] Initializing I2S (new STD driver)...");
-
-    // Step 1: Create I2S channel
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true; // Auto clear legacy data in DMA buffer
 
     esp_err_t err = i2s_new_channel(&chan_cfg, &i2s_tx_chan, nullptr); // TX only, no RX
     if (err != ESP_OK) {
-        AUDIO_LOGF("[AUDIO] i2s_new_channel failed: %d\\n", err);
         return;
     }
 
-    // Step 2: Configure I2S standard mode (Philips format, STEREO, 16-bit)
     // The codec uses stereo I2S slots; mono samples are duplicated below.
     i2s_std_config_t std_cfg = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(SAMPLE_RATE),
@@ -379,47 +339,32 @@ void i2s_init() {
 
     err = i2s_channel_init_std_mode(i2s_tx_chan, &std_cfg);
     if (err != ESP_OK) {
-        AUDIO_LOGF("[AUDIO] i2s_channel_init_std_mode failed: %d\\n", err);
         i2s_del_channel(i2s_tx_chan);
         i2s_tx_chan = nullptr;
         return;
     }
 
-    // Step 3: Enable the channel
     err = i2s_channel_enable(i2s_tx_chan);
     if (err != ESP_OK) {
-        AUDIO_LOGF("[AUDIO] i2s_channel_enable failed: %d\\n", err);
         i2s_del_channel(i2s_tx_chan);
         i2s_tx_chan = nullptr;
         return;
     }
 
     i2s_initialized = true;
-    AUDIO_LOGF("[AUDIO] I2S initialized: %dHz, MCLK=%d BCLK=%d WS=%d DOUT=%d\\n", SAMPLE_RATE, I2S_MCLK_PIN,
-               I2S_BCLK_PIN, I2S_WS_PIN, I2S_DOUT_PIN);
 }
 
-// Track if audio is currently playing to prevent overlapping
 std::atomic<bool> audio_playing{false};
 
-// Amp warm-keeping: keep amp on for a few seconds after playback for faster subsequent plays
+// Keep the amp warm between closely spaced clips.
 std::atomic<bool> amp_is_warm{false};
 std::atomic<unsigned long> amp_last_used_ms{0};
 
-// ============================================================================
-// Pre-allocated audio buffers (no malloc in audio tasks)
-// These are safe to use without mutex because audio_playing atomic flag
-// ensures only one audio task runs at a time.
-//
-// Allocated in PSRAM by audio_init_buffers() to keep ~5 KiB off internal
-// .bss — this prevents WiFi/BLE transient allocations from fragmenting
-// the largest contiguous DMA block below the 10 KiB SLO floor.
-// i2s_channel_write() copies from src to its DMA ring, so PSRAM is fine.
-// ============================================================================
+// audio_playing gives one job exclusive access. PSRAM buffers preserve internal
+// DMA headroom; i2s_channel_write() copies them into its internal DMA ring.
 int16_t* g_stereoChunkBuffer = nullptr;
 uint8_t* g_mulawChunkBuffer = nullptr;
 
-// --- PSRAM buffer allocation (call once from setup, before audio_init_sd) ---
 void audio_init_buffers() {
     g_stereoChunkBuffer = static_cast<int16_t*>(
         heap_caps_malloc(AUDIO_STEREO_CHUNK_SIZE * sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM));
@@ -433,13 +378,7 @@ void audio_init_buffers() {
 SDAudioTaskParams g_sdAudioTaskParams;
 
 std::atomic<TaskHandle_t> audioTaskHandle{nullptr};
-// ============================================================================
-// Static task allocation for SD audio playback.
-// Pre-allocates stack and TCB at compile time to avoid heap allocation failures
-// when heap is low during alerts.
-//
-// LittleFS reads disable the SPI cache, making PSRAM inaccessible. Keep the SD
-// audio task stack in internal SRAM to avoid a cache assertion.
-// ============================================================================
+// Static allocation avoids heap pressure during alerts. LittleFS disables the
+// SPI cache, so the audio task stack must stay in internal SRAM.
 StackType_t g_sdAudioTaskStack[SD_AUDIO_TASK_STACK_SIZE];
 StaticTask_t g_sdAudioTaskTCB;

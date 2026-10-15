@@ -6,8 +6,7 @@
 void setUp() {}
 void tearDown() {}
 
-// ── Valid speed responses ──────────────────────────────────────────
-
+// Valid speed responses
 void test_parse_speed_with_spaces() {
     const char* resp = "41 0D 3C";
     Elm327ParseResult r = parseElm327Response(resp, strlen(resp));
@@ -65,8 +64,7 @@ void test_decode_speed_100kmh() {
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 100.0f, kmh);
 }
 
-// ── Response with trailing whitespace / prompt ────────────────────
-
+// Response with trailing whitespace / prompt
 void test_parse_response_with_trailing_cr_lf() {
     const char* resp = "41 0D 3C\r\n";
     Elm327ParseResult r = parseElm327Response(resp, strlen(resp));
@@ -88,8 +86,7 @@ void test_parse_response_with_leading_whitespace() {
     TEST_ASSERT_EQUAL_UINT8(0x3C, r.dataBytes[0]);
 }
 
-// ── NO DATA ───────────────────────────────────────────────────────
-
+// NO DATA
 void test_parse_no_data() {
     const char* resp = "NO DATA";
     Elm327ParseResult r = parseElm327Response(resp, strlen(resp));
@@ -105,8 +102,7 @@ void test_parse_no_data_with_whitespace() {
     TEST_ASSERT_FALSE(r.valid);
 }
 
-// ── Error responses ───────────────────────────────────────────────
-
+// Error responses
 void test_parse_question_mark_error() {
     const char* resp = "?";
     Elm327ParseResult r = parseElm327Response(resp, strlen(resp));
@@ -149,8 +145,7 @@ void test_parse_stopped() {
     TEST_ASSERT_TRUE(r.error);
 }
 
-// ── Bus init / searching ──────────────────────────────────────────
-
+// Bus init / searching
 void test_parse_searching() {
     const char* resp = "SEARCHING...";
     Elm327ParseResult r = parseElm327Response(resp, strlen(resp));
@@ -166,8 +161,7 @@ void test_parse_bus_init() {
     TEST_ASSERT_TRUE(r.busInit);
 }
 
-// ── Edge cases ────────────────────────────────────────────────────
-
+// Edge cases
 void test_parse_empty_string() {
     const char* resp = "";
     Elm327ParseResult r = parseElm327Response(resp, 0);
@@ -350,8 +344,7 @@ void test_decode_u16_raw_offset40_temperature() {
     TEST_ASSERT_EQUAL_INT16(0, temp);
 }
 
-// ── decodeSpeedKmh edge cases ─────────────────────────────────────
-
+// decodeSpeedKmh edge cases
 void test_decode_speed_wrong_service() {
     Elm327ParseResult r;
     r.valid = true;
@@ -378,8 +371,7 @@ void test_decode_speed_invalid_result() {
     TEST_ASSERT_FLOAT_WITHIN(0.01f, -1.0f, decodeSpeedKmh(r));
 }
 
-// ── kmhToMph ──────────────────────────────────────────────────────
-
+// kmhToMph
 void test_kmh_to_mph_conversion() {
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 62.14f, kmhToMph(100.0f));
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, kmhToMph(0.0f));

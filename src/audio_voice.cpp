@@ -1,16 +1,7 @@
-// audio_voice.cpp — SD-based voice composition and clip playback
-// Mu-law compressed clips from LittleFS, multi-clip concatenation,
-// frequency/band/direction/bogey voice announcements.
-// Hardware init and shared state live in audio_beep.cpp via audio_internals.h.
-
 #include "audio_internals.h"
 #include "audio_task_utils.h"
 #include "storage_manager.h"
 #include <Arduino.h>
-
-// ============================================================================
-// SD Card-based Frequency Voice Playback
-// ============================================================================
 
 static bool sd_audio_ready = false;
 static const char* AUDIO_PATH = "/audio";
@@ -19,9 +10,7 @@ static uint8_t amp_disable_fail_count = 0;
 static constexpr uint8_t AMP_DISABLE_MAX_RETRIES = 5;
 static constexpr unsigned long AMP_TIMEOUT_CHECK_INTERVAL_MS = 100UL;
 
-// Initialize filesystem audio system
-// Audio files are stored in LittleFS (uploaded with firmware)
-// This works regardless of whether SD card is the primary storage
+// Clips are bundled in LittleFS, independent of the primary storage device.
 void audio_init_sd(StorageManager& storage) {
     sd_audio_ready = false;
     audioFS = nullptr;
@@ -64,20 +53,13 @@ static const int16_t mulaw_decode_table[256] = {
     148,    132,    120,    112,    104,    96,     88,     80,     72,     64,     56,     48,     40,     32,
     24,     16,     8,      0};
 
-// Forward declaration for helper function
 static void sd_audio_playback_task(void* pvParameters);
 static TaskHandle_t sdAudioWorkerHandle = nullptr;
 
-// Helper to start SD audio task with pre-allocated params
-// Returns the authoritative task-start result. Callers must not infer
-// acceptance by sampling audio_playing after the worker has been notified: a
-// short clip can finish before that sample and make an accepted job look like
-// a failure.
-// Caller should prepare a local SDAudioTaskParams, then call this
+// Use the returned result: a short clip can finish before the caller samples
+// audio_playing, making an accepted job appear to have failed.
 static AudioPlaybackResult start_sd_audio_task(const SDAudioTaskParams& localParams) {
-    // Atomic exchange: if already true, abort; otherwise set to true
     if (audio_playing.exchange(true)) {
-        AUDIO_LOGLN("[AUDIO] Already playing, skipping");
         return AudioPlaybackResult::Busy;
     }
 
@@ -88,10 +70,8 @@ static AudioPlaybackResult start_sd_audio_task(const SDAudioTaskParams& localPar
         g_sdAudioTaskParams.filePaths[i][47] = '\0';
     }
 
-    // Create the static worker once and keep it blocked between jobs. Reusing a
-    // StaticTask_t immediately after self-deletion can race FreeRTOS idle-task
-    // cleanup and corrupt scheduler state; a persistent worker keeps the
-    // preallocated internal stack without any delete/recreate window.
+    // Reuse one worker: deleting/recreating a StaticTask_t can race FreeRTOS
+    // idle-task cleanup and corrupt scheduler state.
     if (sdAudioWorkerHandle == nullptr) {
         sdAudioWorkerHandle =
             xTaskCreateStaticPinnedToCore(sd_audio_playback_task, "sd_audio", SD_AUDIO_TASK_STACK_SIZE,
@@ -116,8 +96,6 @@ static void finish_sd_audio_job() {
     audioResetTaskState(audio_playing, audioTaskHandle);
 }
 
-// Background task for SD audio concatenation playback (mu-law compressed)
-// Uses pre-allocated buffers - no malloc in task
 static void sd_audio_playback_task(void* pvParameters) {
     (void)pvParameters; // Unused - params are in g_sdAudioTaskParams
 
@@ -151,7 +129,6 @@ static void sd_audio_playback_task(void* pvParameters) {
             }
             vTaskDelay(pdMS_TO_TICKS(50)); // Amp stabilization (only on cold start)
             amp_is_warm = true;
-            AUDIO_LOGLN("[AUDIO] Amp cold start - full init");
         } else {
             // Reassert the enable pin without delaying playback.
             const AudioI2cResult ampEnableResult = set_speaker_amp(true);
@@ -160,10 +137,8 @@ static void sd_audio_playback_task(void* pvParameters) {
                 finish_sd_audio_job();
                 continue;
             }
-            AUDIO_LOGLN("[AUDIO] Amp warm - skipping stabilization");
         }
 
-        // Use audioFS (LittleFS) which contains the audio files
         if (!audioFS) {
             Serial.println("[AUDIO] ERROR: audioFS is null!");
             // Preserve the normal warm-timeout ownership of amplifier shutdown.
@@ -171,7 +146,6 @@ static void sd_audio_playback_task(void* pvParameters) {
             continue;
         }
 
-        // Play each clip in sequence using pre-allocated PSRAM buffers
         if (!g_stereoChunkBuffer || !g_mulawChunkBuffer) {
             Serial.println("[AUDIO] ERROR: PSRAM buffers not allocated!");
             finish_sd_audio_job();
@@ -181,13 +155,9 @@ static void sd_audio_playback_task(void* pvParameters) {
         for (int i = 0; i < g_sdAudioTaskParams.numClips; i++) {
             File audioFile = audioFS->open(g_sdAudioTaskParams.filePaths[i], "r");
             if (!audioFile) {
-                AUDIO_LOGF("[AUDIO] Failed to open: %s\n", g_sdAudioTaskParams.filePaths[i]);
                 continue;
             }
 
-            // Use pre-allocated buffers (no malloc needed)
-            // g_mulawChunkBuffer: AUDIO_CHUNK_SAMPLES bytes for mu-law data
-            // g_stereoChunkBuffer: AUDIO_CHUNK_SAMPLES*2 int16_t for stereo output
             size_t bytesRead;
             while ((bytesRead = audioFile.read(g_mulawChunkBuffer, AUDIO_CHUNK_SAMPLES)) > 0) {
                 // Decode mu-law to stereo PCM using pre-allocated buffer
@@ -203,9 +173,6 @@ static void sd_audio_playback_task(void* pvParameters) {
                                              &bytes_written, timeoutTicks);
                 });
                 if (writeResult.status != AudioWriteStatus::Ok) {
-                    AUDIO_LOGF("[AUDIO] i2s_channel_write %s: %d\n",
-                               writeResult.status == AudioWriteStatus::Timeout ? "timed out" : "failed",
-                               writeResult.error);
                     writeAborted = true;
                     break;
                 }
@@ -246,7 +213,6 @@ static void sd_audio_playback_task(void* pvParameters) {
     }
 }
 
-// Get GHz value for band and frequency
 int getGHz(AlertBand band, uint16_t freqMHz) {
     switch (band) {
     case AlertBand::KA:
@@ -309,17 +275,13 @@ static bool appendAudioClip(SDAudioTaskParams& params, const char* clipFile) {
     return true;
 }
 
-// Play voice alert for band/direction (non-blocking)
 void play_alert_voice(AlertBand band, AlertDirection direction) {
-    AUDIO_LOGF("[AUDIO] play_alert_voice() band=%d dir=%d\n", (int)band, (int)direction);
 
     if (audio_playing.load()) {
-        AUDIO_LOGLN("[AUDIO] Already playing, skipping");
         return;
     }
 
     if (!sd_audio_ready) {
-        AUDIO_LOGLN("[AUDIO] LittleFS audio not ready, skipping simple alert");
         return;
     }
 
@@ -337,49 +299,31 @@ void play_alert_voice(AlertBand band, AlertDirection direction) {
         return;
     }
 
-    AUDIO_LOGF("[AUDIO] Playing simple alert: %d clips\n", params.numClips);
     start_sd_audio_task(params);
 }
 
 // Play test voice for volume adjustment (short "Ka ahead" composed clip)
 void play_test_voice() {
-    AUDIO_LOGLN("[AUDIO] play_test_voice() called");
     play_alert_voice(AlertBand::KA, AlertDirection::AHEAD);
 }
 
-// Play frequency voice announcement from SD card
-// Format depends on mode:
-//   BAND_ONLY: "Ka"
-//   FREQ_ONLY: "34 7 49"
-//   BAND_FREQ: "Ka 34 7 49"
-// Photo is semantic rather than a physical band selection: every enabled mode
-// says "Photo" and intentionally omits the underlying 24 GHz frequency.
-// direction appended if includeDirection is true
-// bogeyCount appended if > 1: "2 bogeys", "3 bogeys", etc.
+// Every enabled mode speaks "Photo" without its underlying K-band frequency.
 static AudioPlaybackResult play_frequency_voice_impl(AlertBand band, uint16_t freqMHz, AlertDirection direction,
                                                       VoiceAlertMode mode, bool includeDirection,
                                                       uint8_t bogeyCount) {
-    AUDIO_LOGF("[AUDIO] play_frequency_voice() band=%d freq=%d dir=%d mode=%d incDir=%d bogeys=%d\n", (int)band,
-               freqMHz, (int)direction, (int)mode, includeDirection, bogeyCount);
-
     if (audio_playing.load()) {
-        AUDIO_LOGLN("[AUDIO] Already playing, skipping");
         return AudioPlaybackResult::Busy;
     }
 
     if (mode == VOICE_MODE_DISABLED) {
-        AUDIO_LOGLN("[AUDIO] Voice alerts disabled");
         return AudioPlaybackResult::Unavailable;
     }
 
     if (!sd_audio_ready) {
-        AUDIO_LOGLN("[AUDIO] LittleFS audio not ready, skipping frequency voice");
         return AudioPlaybackResult::Unavailable;
     }
 
-    // Laser alerts have no frequency clip, so pair the band with direction when enabled.
-    // Compose here so the return value comes directly from the worker start,
-    // just like the non-laser paths.
+    // Laser has no frequency; pair its band clip with direction when enabled.
     if (band == AlertBand::LASER) {
         SDAudioTaskParams laserParams;
         laserParams.numClips = 0;
@@ -390,16 +334,13 @@ static AudioPlaybackResult play_frequency_voice_impl(AlertBand band, uint16_t fr
         return laserParams.numClips > 0 ? start_sd_audio_task(laserParams) : AudioPlaybackResult::Unavailable;
     }
 
-    // Prepare params on stack (no malloc needed)
     SDAudioTaskParams params;
     params.numClips = 0;
 
-    // 1. Band clip (if mode includes band)
     if (band == AlertBand::PHOTO || mode == VOICE_MODE_BAND_ONLY || mode == VOICE_MODE_BAND_FREQ) {
         appendAudioClip(params, getBandClipFile(band));
     }
 
-    // 2-4. Frequency clips (if mode includes frequency)
     if (band != AlertBand::PHOTO && (mode == VOICE_MODE_FREQ_ONLY || mode == VOICE_MODE_BAND_FREQ)) {
         // GHz token reuses two-digit number clips (e.g., "thirty four")
         int ghz = getGHz(band, freqMHz);
@@ -417,7 +358,6 @@ static AudioPlaybackResult play_frequency_voice_impl(AlertBand band, uint16_t fr
         snprintf(params.filePaths[params.numClips++], 48, "%s/tens_%02d.mul", AUDIO_PATH, lastTwo);
     }
 
-    // 5. Direction clip (if enabled)
     if (includeDirection) {
         const char* dirFile = nullptr;
         switch (direction) {
@@ -438,25 +378,15 @@ static AudioPlaybackResult play_frequency_voice_impl(AlertBand band, uint16_t fr
         }
     }
 
-    // 6-7. Bogey count (if > 1): "<count> bogeys"
     if (bogeyCount > 1 && bogeyCount <= 10 && params.numClips < 6) {
-        // Add count clip: use digit_X for 2-9, tens_10 for 10
         if (bogeyCount == 10) {
             snprintf(params.filePaths[params.numClips++], 48, "%s/tens_10.mul", AUDIO_PATH);
         } else {
             snprintf(params.filePaths[params.numClips++], 48, "%s/digit_%d.mul", AUDIO_PATH, bogeyCount);
         }
-        // Add "bogeys" clip
         snprintf(params.filePaths[params.numClips++], 48, "%s/bogeys.mul", AUDIO_PATH);
-        AUDIO_LOGF("[AUDIO] Adding bogey count: %d bogeys\n", bogeyCount);
     }
 
-    AUDIO_LOGF("[AUDIO] Playing %d clips for freq announcement\n", params.numClips);
-    for (int i = 0; i < params.numClips; i++) {
-        AUDIO_LOGF("[AUDIO]   %d: %s\n", i, params.filePaths[i]);
-    }
-
-    // Start task using pre-allocated global params
     return params.numClips > 0 ? start_sd_audio_task(params) : AudioPlaybackResult::Unavailable;
 }
 
@@ -465,21 +395,15 @@ void play_frequency_voice(AlertBand band, uint16_t freqMHz, AlertDirection direc
     (void)play_frequency_voice_impl(band, freqMHz, direction, mode, includeDirection, bogeyCount);
 }
 
-// Play band-only announcement (e.g., "Ka", "K", "X", "Laser")
 void play_band_only(AlertBand band) {
-    AUDIO_LOGF("[AUDIO] play_band_only() band=%d\n", (int)band);
-
     if (audio_playing.load()) {
-        AUDIO_LOGLN("[AUDIO] Already playing, skipping");
         return;
     }
 
     if (!sd_audio_ready) {
-        AUDIO_LOGLN("[AUDIO] SD audio not ready");
         return;
     }
 
-    // Prepare params on stack (no malloc needed)
     SDAudioTaskParams params;
     params.numClips = 0;
 
@@ -487,26 +411,18 @@ void play_band_only(AlertBand band) {
         return;
     }
 
-    // Start task using pre-allocated global params
     start_sd_audio_task(params);
 }
 
-// Play direction-only announcement (used when same alert changes direction)
-// Says "ahead", "behind", or "side", optionally with bogey count if > 1
 static AudioPlaybackResult play_direction_only_impl(AlertDirection direction, uint8_t bogeyCount) {
-    AUDIO_LOGF("[AUDIO] play_direction_only() dir=%d bogeys=%d\n", (int)direction, bogeyCount);
-
     if (audio_playing.load()) {
-        AUDIO_LOGLN("[AUDIO] Already playing, skipping");
         return AudioPlaybackResult::Busy;
     }
 
     if (!sd_audio_ready) {
-        AUDIO_LOGLN("[AUDIO] SD audio not ready, skipping direction-only");
         return AudioPlaybackResult::Unavailable;
     }
 
-    // Prepare params on stack (no malloc needed)
     SDAudioTaskParams params;
     params.numClips = 0;
 
@@ -528,7 +444,6 @@ static AudioPlaybackResult play_direction_only_impl(AlertDirection direction, ui
         snprintf(params.filePaths[params.numClips++], 48, "%s/%s", AUDIO_PATH, dirFile);
     }
 
-    // Add bogey count if provided and > 1
     if (bogeyCount > 1 && bogeyCount <= 10) {
         if (bogeyCount == 10) {
             snprintf(params.filePaths[params.numClips++], 48, "%s/tens_10.mul", AUDIO_PATH);
@@ -536,16 +451,12 @@ static AudioPlaybackResult play_direction_only_impl(AlertDirection direction, ui
             snprintf(params.filePaths[params.numClips++], 48, "%s/digit_%d.mul", AUDIO_PATH, bogeyCount);
         }
         snprintf(params.filePaths[params.numClips++], 48, "%s/bogeys.mul", AUDIO_PATH);
-        AUDIO_LOGF("[AUDIO] Adding bogey count: %d bogeys\n", bogeyCount);
     }
 
     if (params.numClips == 0) {
         return AudioPlaybackResult::Unavailable;
     }
 
-    AUDIO_LOGF("[AUDIO] Playing direction-only: %s\n", params.filePaths[0]);
-
-    // Start task using pre-allocated global params
     return start_sd_audio_task(params);
 }
 
@@ -553,10 +464,7 @@ void play_direction_only(AlertDirection direction, uint8_t bogeyCount) {
     (void)play_direction_only_impl(direction, bogeyCount);
 }
 
-// Call from main loop to handle amp warm timeout
-// Disables amp after AMP_WARM_TIMEOUT_MS of inactivity to save power.
-// This runs at most 10 Hz; finer cadence does not change the user-visible
-// timeout behavior but does add pointless main-loop housekeeping.
+// Check amp inactivity at most 10 Hz.
 void audio_process_amp_timeout() {
     if (!amp_is_warm || audio_playing) {
         return;
@@ -574,7 +482,6 @@ void audio_process_amp_timeout() {
         if (result == AudioI2cResult::Ok) {
             amp_is_warm = false;
             amp_disable_fail_count = 0;
-            AUDIO_LOGLN("[AUDIO] Amp timeout - disabled to save power");
         } else if (result != AudioI2cResult::Busy) {
             audio_log_i2c_failure("audio_process_amp_timeout", result);
             amp_disable_fail_count++;
@@ -587,38 +494,26 @@ void audio_process_amp_timeout() {
     }
 }
 
-// Play threat escalation: "[Band] [freq] [direction] [N] bogeys, [X] ahead, [Y] behind"
-// Used when secondary alert ramps up from weak (≤2 bars) to strong (≥4 bars) over time
 static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t freqMHz, AlertDirection direction,
                                                        uint8_t total, uint8_t ahead, uint8_t behind, uint8_t side) {
-    AUDIO_LOGF("[AUDIO] play_threat_escalation() band=%d freq=%d dir=%d total=%d\n", (int)band, freqMHz, (int)direction,
-               total);
-
     if (audio_playing.load()) {
-        AUDIO_LOGLN("[AUDIO] Already playing, skipping");
         return AudioPlaybackResult::Busy;
     }
 
     if (!sd_audio_ready) {
-        AUDIO_LOGLN("[AUDIO] SD audio not ready, skipping threat escalation");
         return AudioPlaybackResult::Unavailable;
     }
 
-    // Laser excluded - shouldn't happen but guard anyway
     if (band == AlertBand::LASER) {
-        AUDIO_LOGLN("[AUDIO] Laser excluded from threat escalation");
         return AudioPlaybackResult::Unavailable;
     }
 
-    // Prepare params on stack (no malloc needed)
     SDAudioTaskParams params;
     params.numClips = 0;
 
-    // 1. Band clip
     appendAudioClip(params, getBandClipFile(band));
 
-    // 2-4. Frequency clips (GHz token reuses two-digit number clips). Photo
-    // keeps the K-band frequency internally but does not speak it.
+    // Photo keeps its K-band frequency internally but does not speak it.
     if (band != AlertBand::PHOTO) {
         int ghz = getGHz(band, freqMHz);
         if (ghz > 0) {
@@ -631,7 +526,6 @@ static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t 
         snprintf(params.filePaths[params.numClips++], 48, "%s/tens_%02d.mul", AUDIO_PATH, lastTwo);
     }
 
-    // 5. Direction clip
     const char* dirFile = nullptr;
     switch (direction) {
     case AlertDirection::AHEAD:
@@ -650,7 +544,6 @@ static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t 
         snprintf(params.filePaths[params.numClips++], 48, "%s/%s", AUDIO_PATH, dirFile);
     }
 
-    // 6-7. Total bogey count if >= 2: "[N] bogeys"
     if (total >= 2 && total <= 10 && params.numClips < MAX_AUDIO_CLIPS - 2) {
         if (total == 10) {
             snprintf(params.filePaths[params.numClips++], 48, "%s/tens_10.mul", AUDIO_PATH);
@@ -660,7 +553,6 @@ static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t 
         snprintf(params.filePaths[params.numClips++], 48, "%s/bogeys.mul", AUDIO_PATH);
     }
 
-    // 8-9. Direction breakdown: "[N] ahead" (only if > 0)
     if (ahead > 0 && ahead <= 10 && params.numClips < MAX_AUDIO_CLIPS - 2) {
         if (ahead == 10) {
             snprintf(params.filePaths[params.numClips++], 48, "%s/tens_10.mul", AUDIO_PATH);
@@ -670,7 +562,6 @@ static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t 
         snprintf(params.filePaths[params.numClips++], 48, "%s/dir_ahead.mul", AUDIO_PATH);
     }
 
-    // 10-11. "[N] behind" (only if > 0)
     if (behind > 0 && behind <= 10 && params.numClips < MAX_AUDIO_CLIPS - 2) {
         if (behind == 10) {
             snprintf(params.filePaths[params.numClips++], 48, "%s/tens_10.mul", AUDIO_PATH);
@@ -680,7 +571,7 @@ static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t 
         snprintf(params.filePaths[params.numClips++], 48, "%s/dir_behind.mul", AUDIO_PATH);
     }
 
-    // 12. "[N] side" (only if > 0, may be truncated if clips exhausted)
+    // Omit the side count if earlier clips exhausted capacity.
     if (side > 0 && side <= 10 && params.numClips < MAX_AUDIO_CLIPS - 2) {
         if (side == 10) {
             snprintf(params.filePaths[params.numClips++], 48, "%s/tens_10.mul", AUDIO_PATH);
@@ -690,12 +581,6 @@ static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t 
         snprintf(params.filePaths[params.numClips++], 48, "%s/dir_side.mul", AUDIO_PATH);
     }
 
-    AUDIO_LOGF("[AUDIO] Playing threat escalation: %d clips\n", params.numClips);
-    for (int i = 0; i < params.numClips; i++) {
-        AUDIO_LOGF("[AUDIO]   %d: %s\n", i, params.filePaths[i]);
-    }
-
-    // Start task using pre-allocated global params
     return params.numClips > 0 ? start_sd_audio_task(params) : AudioPlaybackResult::Unavailable;
 }
 

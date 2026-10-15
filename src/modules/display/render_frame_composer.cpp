@@ -38,15 +38,8 @@ DisplayState synthesizeAlpPrimaryState(const DisplayState& base, const AlpLaserE
     state.signalBars = DisplayLayout::MAIN_SIGNAL_BAR_COUNT; // Laser = full physical meter
     state.flashBits = 0;
     state.bandFlashBits = 0;
-    // Valentine's Law (docs/VALENTINE_PHILOSOPHY.md, Part II corollary): a live
-    // laser event renders at full urgency, always.
-    //
-    // ALP owns both laser detection and its speaker, so the V1 mute state does
-    // not apply to an ALP-owned frame. Normalizing muted here — at the composer,
-    // not per-renderer — is deliberate: it makes the full-urgency frame the only
-    // frame downstream consumers can see, so the status strip, frequency, arrows,
-    // and bands cannot disagree about it and a later refactor cannot reintroduce
-    // mute on the laser path by touching one renderer.
+    // Valentine's Law: ALP laser renders at full urgency, independent of V1
+    // mute. Normalize here so all downstream indicators agree.
     state.muted = false;
     return state;
 }
@@ -112,18 +105,9 @@ RenderFrame RenderFrameComposer::compose(const V1Snapshot& v1, const AlpSnapshot
 
     const bool hasAlpLive = alp.ownsLaserDisplay && alp.event.active;
     const bool hasAlpPersisted = alp.isPersistedLatch && alp.latchedEvent.active;
-    // Valentine's Law (docs/VALENTINE_PHILOSOPHY.md, screen/speaker contract):
-    // ownership order is ALP_LIVE > V1_LIVE > ALP_PERSISTED > V1_PERSISTED >
-    // IDLE. ALP is the better laser instrument and outranks the V1 while it has
-    // a live event to show, but its authority ends there: a persisted ALP frame
-    // never outranks live V1 truth (live beats persisted). The V1's laser
-    // channel is suppressed only when an ALP branch actually renders one — a
-    // connected ALP with nothing on screen is not a reason to drop the V1's own
-    // detection; that would leave a live laser rendered by neither source.
-    // Keying this to the render decision rather than to connection state makes
-    // that state unreachable by construction.
-    // Pinned by test_render_frame_composer_v1_laser_survives_silent_alp and
-    // test_render_frame_composer_v1_live_outranks_alp_persisted.
+    // Valentine's Law: ALP_LIVE > V1_LIVE > ALP_PERSISTED > V1_PERSISTED > IDLE.
+    // Suppress V1 laser only when ALP actually renders it; connection alone
+    // cannot hide a live V1 detection. Live V1 also outranks an ALP tail.
     const bool suppressV1Laser = hasAlpLive;
     const AlertData filteredPriority =
         (v1.hasRenderablePriority && (!suppressV1Laser || v1.priority.band != BAND_LASER))

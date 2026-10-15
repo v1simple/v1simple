@@ -1,12 +1,5 @@
 #!/bin/bash
 # Authoritative repo gate used locally and by GitHub workflows.
-#
-# Gate order: pinned toolchain/workflow checks -> production build contracts ->
-# privacy and publication guards -> firmware static analysis -> Python regression
-# tests -> host-tool tests -> native tests across every host environment ->
-# frontend checks -> production artifact build.
-# Privacy guards run their own regression suites inline; a guard is only as
-# trustworthy as the proof that it still detects.
 
 set -euo pipefail
 

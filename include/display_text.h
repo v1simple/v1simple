@@ -1,20 +1,11 @@
 #pragma once
 
-// ============================================================================
-// Display Text Drawing Helpers — cross-platform text rendering abstraction
-//
-// Arduino_GFX has no setTextDatum()/drawString(). These helpers emulate the
-// TFT_eSPI text-alignment API so callers are platform-agnostic.
-//
-// Each call site provides `tft` as an Arduino_Canvas* or TFT_eSPI&.
-// ============================================================================
+// Emulate TFT_eSPI text alignment on Arduino_Canvas.
 
-#include "display_driver.h" // DISPLAY_USE_ARDUINO_GFX, Arduino_Canvas, etc.
+#include "display_driver.h"
 #include <memory>
 
-// Shared datum state for the current single display context.
-// This intentionally lives in a function-local static so all Arduino_GFX text
-// helpers share one datum without exporting another mutable global symbol.
+// All text helpers share one datum for the single display context.
 inline uint8_t& gfxCurrentTextDatum() {
     static uint8_t datum = TL_DATUM;
     return datum;
@@ -25,8 +16,6 @@ inline uint8_t& gfxCurrentTextDatum() {
         gfxCurrentTextDatum() = (d);                                                                                   \
     } while (0)
 
-// Arduino_GFX implementation of drawString with datum support.
-// Uses getTextBounds() to compute alignment offsets.
 inline void GFX_drawString(Arduino_Canvas* canvas, const char* str, int16_t x, int16_t y) {
     int16_t x1, y1;
     uint16_t w, h;

@@ -1,16 +1,6 @@
-/**
- * OBD runtime transport layer.
- *
- * Owns:
- *   - FreeRTOS transport task + queue infrastructure (sObdTransport anon-ns).
- *   - BLE abstraction wrappers over bleClient_.
- *   - Async transport request API (begin/pump/take).
- *   - BLE event queue (ISR-safe enqueue, main-thread drain+apply).
- *   - BLE callbacks from client (onDeviceFound, onBleDisconnect, onBleData).
- *
- * applyBleEvent writes bleBuf_; obd_runtime_commands.cpp drains it while
- * parsing responses.
- */
+// FreeRTOS transport task, request queues and BLE callbacks. Callbacks enqueue
+// events; the main loop applies them. applyBleEvent fills bleBuf_ for the
+// command parser to drain.
 
 #include "obd_runtime_module.h"
 #include "obd_scan_policy.h"
@@ -35,9 +25,7 @@ extern "C" {
 #include "obd_ble_client.h"
 #endif
 
-// ======================================================================
 // FILE-SCOPE HELPERS — copyString for transport code
-// ======================================================================
 
 using ObdStringUtils::copyString;
 
@@ -63,9 +51,7 @@ constexpr TickType_t OBD_TRANSPORT_CONTROL_RETRY_TICKS = pdMS_TO_TICKS(20);
 constexpr size_t OBD_TRANSPORT_ADDR_BUF_LEN = 18;
 constexpr size_t OBD_TRANSPORT_CMD_BUF_LEN = 16;
 
-// ======================================================================
 // TRANSPORT INFRASTRUCTURE — FreeRTOS task, queues, anonymous namespace state
-// ======================================================================
 
 struct ObdTransportRequest {
     ObdTransportOp op = ObdTransportOp::NONE;
@@ -283,9 +269,7 @@ bool ensureObdTransportRuntime(ObdBleClient* bleClient, ObdRuntimeModule* runtim
 
 #endif
 
-// ======================================================================
 // BLE EVENT QUEUE — enqueue / drain / apply BLE events from callbacks
-// ======================================================================
 
 bool ObdRuntimeModule::enqueueBleEvent(const BleEvent& event) {
     BleEvent queuedEvent = event;
@@ -381,9 +365,7 @@ void ObdRuntimeModule::clearBleResponseState() {
     bleOverflowed_ = false;
 }
 
-// ======================================================================
 // BLE ABSTRACTION WRAPPERS — thin layer over bleClient_
-// ======================================================================
 
 bool ObdRuntimeModule::startBleScan() {
 #ifndef UNIT_TEST
@@ -628,9 +610,7 @@ void ObdRuntimeModule::clearTransportRequest() {
     pendingTransportTimedOut_ = false;
 }
 
-// ======================================================================
 // ASYNC TRANSPORT REQUEST API — queueing and result polling
-// ======================================================================
 
 bool ObdRuntimeModule::beginTransportRequest(ObdTransportOp op, uint32_t nowMs, uint32_t timeoutMs, const char* cmd,
                                              bool withResponse, bool preferCachedAttributes) {
@@ -823,9 +803,7 @@ bool ObdRuntimeModule::takeTransportResult(ObdTransportOp op, ObdTransportResult
     return true;
 }
 
-// ======================================================================
 // BLE CALLBACKS FROM CLIENT — device discovery, disconnect, notify
-// ======================================================================
 
 void ObdRuntimeModule::onDeviceFound(const char* name, const char* address, int rssi, uint8_t addrType) {
     if (!address || address[0] == '\0') {

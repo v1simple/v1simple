@@ -1,7 +1,3 @@
-/**
- * Shared boot, setup, runtime, and persistence declarations.
- */
-
 #pragma once
 
 #include <cstdint>
@@ -12,18 +8,13 @@ class ProductEventLog;
 class SettingsManager;
 class V1Display;
 
-// Keep the fatal-frame transfer as one executable ordering boundary. The
-// display implementation is double buffered, so painting without the flush
-// leaves the panel unchanged.
+// The display is double buffered; painting alone leaves the panel unchanged.
 template <typename DisplayT>
 void presentFatalBootFrame(DisplayT& display) {
     display.showDisconnected();
     display.flush();
 }
 
-// --- Boot helper declarations (main_boot.cpp) ---
-
-/// Map ESP reset reason enum to human-readable string.
 const char* resetReasonToString(esp_reset_reason_t reason);
 
 /// Log crash recovery breadcrumbs (heap stats, coredump) to Serial + LittleFS.
@@ -32,34 +23,27 @@ void logPanicBreadcrumbs();
 /// Check NVS health and attempt cleanup if >80% full.
 void nvsHealthCheck();
 
-/// Increment and return persistent boot ID counter.
+// Increments the persistent counter.
 uint32_t nextBootId();
 
-/// Read the clean-shutdown marker (v1boot NVS) and immediately reset it to
-/// false. Returns the previous value. true = last run called prepareForShutdown
-/// cleanly; false = last run died uncleanly (brownout, car-power cut, etc.).
+// Returns the previous clean-shutdown marker and clears it for this boot.
 bool readAndResetCleanShutdownMarker();
 
-/// Write the clean-shutdown marker to true. Called at the end of
-/// prepareForShutdown() so the next boot can recognize a graceful exit.
+// Called after shutdown preparation completes.
 void markCleanShutdown();
 
-/// Rewrite the clean-shutdown marker to false when the hardware shutdown tail
-/// aborts and the current runtime remains active.
+// Clears the marker when hardware shutdown aborts and the runtime remains active.
 void markUncleanShutdown();
 
 /// Request that the next boot enter maintenance mode. Returns false if the
 /// request could not be persisted to NVS.
 bool requestMaintenanceBoot();
 
-/// Read the one-shot maintenance-boot request and immediately clear it.
-/// true = this boot should skip normal drive runtime and start maintenance WiFi.
+// Consumes the one-shot request; true selects maintenance instead of drive mode.
 bool readAndClearMaintenanceBootRequest();
 
 /// Show fatal error on display (if available), wait, then restart.
 void fatalBootError(V1Display& display, const char* message, bool displayAvailable);
-
-// --- Shared persistence/boot helper declarations (main_setup_helpers.cpp) ---
 
 /// Stop and flush shared persistence services before a runtime tears down its
 /// own transports. Returns true when final writes and the clean marker remain safe.
@@ -79,9 +63,7 @@ void logBootIdentity(uint32_t bootId, esp_reset_reason_t resetReason);
 /// Early setup diagnostics: serial settle, GPIO hold release, panic/NVS checks.
 void initializeEarlyBootDiagnostics();
 
-// --- Persistence helper declarations (main_persist.cpp) ---
-
-/// Periodic best-effort save of deferred V1 device-store updates (Tier 7).
+// Best-effort save of deferred device-store updates.
 class StorageManager;
 class V1DeviceStore;
 void processV1DeviceStoreSave(uint32_t nowMs, StorageManager& storage, V1DeviceStore& devices);

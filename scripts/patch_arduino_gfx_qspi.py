@@ -48,7 +48,7 @@ from pathlib import Path
 
 MARKER = "v1simple-gfx-qspi-flush-patch-v1"
 
-# --- Second, independent patch: spi_bus_config_t::max_transfer_sz -----------
+# Independent spi_bus_config_t::max_transfer_sz patch.
 #
 # Upstream sizes the bus transfer ceiling at (MAX_PIXELS_AT_ONCE * 16) + 8.
 # With ESP32QSPI_MAX_PIXELS_AT_ONCE=4096 (platformio.ini) that is 65,544 B,
@@ -65,14 +65,9 @@ MARKER = "v1simple-gfx-qspi-flush-patch-v1"
 #   writeIndexedPixels     l << 4   l <= MAX             -> 8192 B
 #   writeIndexedPixelsDouble l << 5 l <= MAX>>1          -> 8192 B
 #
-# IDF sizes the bus DMA descriptor pool from max_transfer_sz, so the declared
-# ceiling is 8x the real one. Correcting it is right regardless of the saving;
-# the descriptor arithmetic lives in ESP-IDF and is not checked into this repo,
-# so the byte figure is not quoted here.
-#
-# This is applied independently of MARKER: the marker gates the writePixels
-# replacement only, and a tree patched by an earlier version of this script
-# still needs the bus-config fix. Idempotency is by content.
+# IDF sizes its DMA descriptor pool from this ceiling; the original ceiling is
+# 8x the largest transfer. Apply independently of the writePixels MARKER so an
+# already-patched writePixels cannot skip this correction.
 BUS_UPSTREAM = ".max_transfer_sz = (ESP32QSPI_MAX_PIXELS_AT_ONCE * 16) + 8,"
 BUS_PATCHED = ".max_transfer_sz = (ESP32QSPI_MAX_PIXELS_AT_ONCE * 2) + 8,"
 
@@ -251,7 +246,7 @@ def apply_patch() -> None:
     text = raw.replace("\r\n", "\n")
     original = text
 
-    # --- 1. writePixels ping-pong flush patch (marker-gated) ---------------
+    # writePixels is marker-gated; the bus ceiling below is checked by content.
     if MARKER in text:
         print("[patch_arduino_gfx_qspi] flush patch already applied (v1)")
     elif UPSTREAM not in text:
@@ -265,7 +260,6 @@ def apply_patch() -> None:
         text = text.replace(UPSTREAM, PATCHED, 1)
         print("[patch_arduino_gfx_qspi] applied full-frame flush patch")
 
-    # --- 2. max_transfer_sz ceiling (idempotent by content) ----------------
     if BUS_PATCHED in text:
         print("[patch_arduino_gfx_qspi] max_transfer_sz already corrected")
     elif BUS_UPSTREAM not in text:

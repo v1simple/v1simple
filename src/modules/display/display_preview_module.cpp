@@ -22,13 +22,7 @@
 
 const DisplayPreviewModule::PreviewStep DisplayPreviewModule::STEPS[] = {
 
-    // ════════════════════════════════════════════════════════════════════
-    // PHASE 1: Band + Direction Sweep
-    // ════════════════════════════════════════════════════════════════════
-    // The top-counter symbols deliberately sweep the protocol domain across
-    // these otherwise independent frames. This makes the physical bench cover
-    // every glyph that decodeBogeyCounterByte() can emit while preserving the
-    // existing 44-step sequence and transition discovery.
+    // Band/direction sweep; counter symbols cover the decoder's glyph domain.
 
     // X band (10.525 GHz) — front, side, rear
     {BAND_X, DIR_FRONT, 10525, 2, 0, FLAG_NONE, NO_SEC, NO_THIRD, '0', 'A',
@@ -91,9 +85,7 @@ const DisplayPreviewModule::PreviewStep DisplayPreviewModule::STEPS[] = {
     {BAND_LASER, DIR_REAR, 0, 0, 6, FLAG_NONE, NO_SEC, NO_THIRD, '1', NO_CHG, NO_CHG, NO_CHG, NO_CHG, NO_CHG, NO_CHG,
      NO_CHG, NO_CHG, nullptr},
 
-    // ════════════════════════════════════════════════════════════════════
-    // PHASE 2: Multi-Alert Combos with Cards
-    // ════════════════════════════════════════════════════════════════════
+    // Multi-alert cards.
 
     // Ka 34.700 front (priority) + K 24.150 side (full six-cell card from VR 8)
     {BAND_KA,  DIR_FRONT, 34700,  5,      0,      FLAG_NONE, BAND_K, DIR_SIDE, 24150,  8,      0,
@@ -124,10 +116,7 @@ const DisplayPreviewModule::PreviewStep DisplayPreviewModule::STEPS[] = {
     {BAND_X, DIR_FRONT, 10525, 3,   0,      FLAG_NONE, BAND_X, DIR_SIDE, 10515,  2,      0,      BAND_X, DIR_REAR,
      10535,  0,         1,     '5', NO_CHG, NO_CHG,    NO_CHG, NO_CHG,   NO_CHG, NO_CHG, NO_CHG, NO_CHG, nullptr},
 
-    // ════════════════════════════════════════════════════════════════════
-    // PHASE 3: ALP State Cycling
-    // ════════════════════════════════════════════════════════════════════
-    // Show a Ka alert as backdrop while cycling ALP badge states
+    // ALP states with a Ka backdrop.
 
     // ALP OFF (grey badge hidden)
     {BAND_KA, DIR_FRONT, 35500, 4, 0, FLAG_NONE, NO_SEC, NO_THIRD, '1', NO_CHG, NO_CHG,
@@ -165,9 +154,7 @@ const DisplayPreviewModule::PreviewStep DisplayPreviewModule::STEPS[] = {
     {BAND_KA, DIR_FRONT, 35500, 4, 0, FLAG_NONE, NO_SEC, NO_THIRD, '1', NO_CHG, NO_CHG,
      static_cast<int8_t>(AlpState::LISTENING), 0x04, NO_CHG, NO_CHG, NO_CHG, NO_CHG, nullptr},
 
-    // ════════════════════════════════════════════════════════════════════
-    // PHASE 4: Status Indicator Cycling
-    // ════════════════════════════════════════════════════════════════════
+    // Status indicators.
 
     // OBD connected (green badge) + BLE proxy advertising (blue icon)
     {BAND_KA, DIR_FRONT, 34700, 4, 0, FLAG_NONE, NO_SEC, NO_THIRD, '1', 'A', 0, static_cast<int8_t>(AlpState::OFF),
@@ -213,12 +200,8 @@ const DisplayPreviewModule::PreviewStep DisplayPreviewModule::STEPS[] = {
     {BAND_KA, DIR_FRONT, 34700, 6, 0, FLAG_FLASH_ARROW | FLAG_FLASH_BAND, NO_SEC, NO_THIRD, 'L', 'L', NO_CHG, NO_CHG,
      NO_CHG, NO_CHG, NO_CHG, NO_CHG, NO_CHG, nullptr},
 
-    // ── Meter segment-state coverage ────────────────────────────────────
-    // The visual re-acceptance exercises the weakest and strongest states of
-    // the restored six-segment meter.
-    //
-    // 1 is the weakest lit state. 0 segments is the resting screen rather than
-    // an alert, so it is exercised by the no-alert frames, not authored here.
+    // Meter endpoints: one segment is the weakest alert; no-alert frames
+    // exercise zero segments.
     {BAND_KA, DIR_FRONT, 34700, 1, 0, FLAG_NONE, NO_SEC, NO_THIRD, '1', NO_CHG, NO_CHG, NO_CHG, NO_CHG, NO_CHG, NO_CHG,
      NO_CHG, NO_CHG, nullptr},
 
@@ -333,10 +316,6 @@ void buildResolvedStepFromCarry(int index, const DisplayPreviewModule::PreviewSt
 
 } // namespace
 
-// ============================================================================
-// Lifecycle
-// ============================================================================
-
 DisplayPreviewModule::DisplayPreviewModule() {
     // display set in begin()
 }
@@ -349,9 +328,8 @@ void DisplayPreviewModule::requestHold(uint32_t durationMs) {
     previewActive_ = true;
     previewStartMs_ = millis();
     const uint32_t autoDurationMs = (static_cast<uint32_t>(STEP_COUNT) * STEP_DURATION_MS) + PREVIEW_TAIL_MS;
-    // A zero duration keeps the manual "run the full preview sequence"
-    // behavior. Non-zero durations are caller-owned holds, such as the short
-    // color-save preview, and must release display ownership when requested.
+    // Zero duration runs the full sequence; caller-owned holds must release
+    // display ownership at their requested deadline.
     previewDurationMs_ = (durationMs == 0) ? autoDurationMs : durationMs;
     loopSequence_ = (durationMs != 0) && (durationMs > autoDurationMs);
     previewStep_ = 0;
@@ -433,10 +411,6 @@ void DisplayPreviewModule::cleanupPreviewOverrides() {
     display_->setPreviewIndicatorOverridesActive(false);
 }
 
-// ============================================================================
-// Main update loop
-// ============================================================================
-
 void DisplayPreviewModule::update() {
     if (!previewActive_ || !display_)
         return;
@@ -451,19 +425,13 @@ void DisplayPreviewModule::update() {
         return;
     }
 
-    // Determine which timed frame we should be on.  Short previews and the
-    // manual preview run once through the table. Long caller-owned holds
-    // keep cycling the same visual test instead of parking on the final frame.
+    // Short/manual previews run once; longer holds cycle through the table.
     int targetStep = static_cast<int>(elapsed / STEP_DURATION_MS);
     if (!loopSequence_ && targetStep >= STEP_COUNT)
         targetStep = STEP_COUNT - 1;
 
-    // Render at most one preview frame per loop.  If low-priority preview work
-    // was skipped under load, drop the missed visual steps and render only the
-    // current step; never catch up by issuing multiple display flushes in one
-    // loop.  Carry-forward state is still advanced for skipped steps so the
-    // rendered step matches the table state it would have had after a normal
-    // progression, without paying the display cost for obsolete frames.
+    // Render only the current step after a delay: never catch up with multiple
+    // flushes per loop. Advance skipped state without drawing obsolete frames.
     const bool canRenderStep = loopSequence_ || previewStep_ < STEP_COUNT;
     if (targetStep >= previewStep_ && canRenderStep) {
         for (int skipped = previewStep_; skipped < targetStep; ++skipped) {
@@ -495,10 +463,6 @@ bool DisplayPreviewModule::blinkRefreshDue(unsigned long nowMs) const {
     }
     return (nowMs - lastToggle) >= V1Display::getBlinkIntervalMs();
 }
-
-// ============================================================================
-// Step renderer
-// ============================================================================
 
 void DisplayPreviewModule::applyCarryState(const PreviewStep& step) {
     PreviewCarryState carry = currentCarryState();

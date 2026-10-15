@@ -219,10 +219,7 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
             elementCaches_.cards.lastDrawnPositions[c] = CardDrawnPosition();
         }
 
-        // Clear the card area only when a previous frame actually drew cards.
-        // Resting/persisted updates call this path every idle frame; treating
-        // an already-empty card row as painted forces otherwise cache-hit
-        // resting frames down the safe-but-expensive full-panel flush route.
+        // Clearing an already-empty row would force an unnecessary full-panel transfer.
         if (hadDrawnCards) {
             if (cardsClearRect.w <= 0) {
                 elementCaches_.cards.lastDrawnCount = 0;
@@ -241,10 +238,7 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
     const SecondaryCardFrameEntry* cardsToDraw = frame.cards;
     const int cardsToDrawCount = frame.count;
 
-    // Capture force-redraw state before resetting. Two force inputs feed the
-    // card row: the element-cache invalidation (screen clears route through
-    // invalidateAll()) and dirty_.cards, which display_update.cpp raises when
-    // a full-screen clear invalidated the card area mid-live-session.
+    // Capture both screen-clear invalidation signals before resetting them.
     bool doForceRedraw = elementCaches_.cards.forceRedraw || dirty_.cards;
     dirty_.cards = false;
     elementCaches_.cards.forceRedraw = false;
@@ -257,9 +251,7 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
         auto& last = elementCaches_.cards.lastDrawnPositions[pos];
         auto& curr = cardsToDraw[pos];
 
-        // Use a ±5 MHz hysteresis window here (looser than the synthetic-alert
-        // identity fallback) so same-slot same-bogey frames with typical V1
-        // jitter don't trigger full-card redraws and visible flicker.
+        // ±5 MHz is looser than synthetic identity matching to avoid jitter-driven flicker.
         const uint32_t CARD_REDRAW_HYSTERESIS_MHZ = 5;
         int slot = curr.slot;
         if (elementCaches_.cards.slots[slot].alert.band != last.band)

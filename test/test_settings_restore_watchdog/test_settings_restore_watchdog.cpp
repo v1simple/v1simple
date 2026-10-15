@@ -1,11 +1,6 @@
-// Regression coverage for the settings-restore task watchdog feed.
-//
-// A full /api/settings/restore rewrites the WiFi credential NVS namespace,
-// re-saves every profile in the backup and then performs the A/B settings NVS
-// rewrite. A large backup on a slow SD card can exceed the watchdog window.
-// esp_task_wdt_reset() is ESP-IDF only, so applyBackupDocument() takes an
-// injectable SettingsRestoreWatchdog; these
-// tests count the feeds and pin their placement relative to the profile loop.
+// Restoring credentials, profiles, and A/B settings on slow storage can exceed
+// the task watchdog window. The injected SettingsRestoreWatchdog lets native
+// tests check feed counts and placement without ESP-IDF.
 
 #include <unity.h>
 
@@ -64,9 +59,7 @@ std::filesystem::path nextTempRoot() {
            ("settings_restore_watchdog_" + std::to_string(++g_tempRootIndex));
 }
 
-// Records one entry per watchdog feed holding the number of profiles already
-// written to the profile store at that moment.  That makes feed PLACEMENT
-// assertable without leaking a phase enum into the production API.
+// Record profiles already on disk at each feed to verify watchdog placement.
 struct FeedRecorder {
     std::vector<size_t> profilesOnDiskAtFeed;
 

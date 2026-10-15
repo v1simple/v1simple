@@ -1,11 +1,5 @@
-/**
- * PSRAM-backed frequency raster cache.
- *
- * This cache stores already-rendered frequency-zone pixels in the same raw
- * framebuffer orientation used by Arduino_Canvas. It never talks to the panel;
- * callers copy cache hits back into the canvas and the existing display flush
- * policy remains authoritative.
- */
+// PSRAM cache of rendered pixels in Arduino_Canvas's raw framebuffer orientation.
+// Restores affect the canvas; the caller still owns panel transfers.
 
 #pragma once
 

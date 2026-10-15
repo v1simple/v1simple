@@ -98,11 +98,9 @@ FrameV1Alerts buildFrameV1Alerts(const RenderFrame& frame) {
             result.hasPriority = true;
             result.priority = card.v1Alert;
         }
-        // ALP owns the primary screen while its laser is live, so the V1's
-        // detector-selected priority remains in the card list. Preserve card
-        // order for presentation, but recover that row for speaker decisions.
-        // Keep the first-renderable fallback above only when no flagged
-        // renderable V1 row exists, matching PacketParser's resolution rule.
+        // ALP owns primary presentation, but V1's flagged row still owns its
+        // speaker decision. Keep card order; use the first renderable fallback
+        // only when no flagged renderable row exists.
         if (!frameCarriesV1Primary && !foundFlaggedRenderablePriority && card.v1Alert.isPriority &&
             isRenderableVoiceAlert(card.v1Alert)) {
             result.hasPriority = true;
@@ -432,14 +430,8 @@ void DisplayPipelineModule::renderComposedFrame(uint32_t nowMs, const RenderFram
     const bool deferSecondaryCards =
         ble_->isConnectBurstSettling() && isLivePrimaryKind(frame.primaryKind) && frame.cardCount > 0;
 
-    // Avoid copying the full RenderFrame (std::array<RenderFrameCard, 15>
-    // + scalars, a few hundred bytes) on every pipeline tick just to override one
-    // field. Only copy when we're actually deferring cards; otherwise pass the
-    // caller's const ref straight through. The snapshot formatter reads
-    // deferSecondaryCards as a separate flag and does not consult frame.cardCount
-    // for its own counting (renderAlertCountForSnapshot uses the flag + the
-    // pre-built v1AlertCount), so the log output is identical whether we hand it
-    // `frame` or the deferred clone.
+    // Copy the frame only when deferring cards. Snapshot counting uses
+    // deferSecondaryCards and v1AlertCount independently of frame.cardCount.
     RenderFrame deferredFrame;
     const RenderFrame* renderFramePtr = &frame;
     if (deferSecondaryCards) {

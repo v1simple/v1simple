@@ -321,11 +321,9 @@ static void handlePreviewImpl(WebServer& server, const Runtime& runtime) {
         return;
     }
 
-    // showDisplayDemo() is unsuitable here because it performs three blocking SPI flushes
-    // (~120ms) inside handleClient(), inflating wifiMaxUs.  The preview module
-    // renders the first frame on the very next main-loop display phase.
-    // Pass 0 as a signal to use the full diagnostic auto-duration. Short
-    // save/reset previews pass an explicit non-zero hold duration instead.
+    // Schedule through the preview module: showDisplayDemo blocks handleClient
+    // with three SPI flushes (~120 ms). Zero requests the full sequence;
+    // save/reset previews supply a finite hold.
     if (runtime.requestColorPreviewHoldMs) {
         runtime.requestColorPreviewHoldMs(0, runtime.requestColorPreviewHoldMsCtx);
     }

@@ -1,13 +1,6 @@
-// Protocol-vector regression — the firmware's decode behavior tested against
-// vectors in test/fixtures/protocol_spec_tables.h, held separately so the decode
-// cannot author its own expected values. Provenance of those vectors is mixed and
-// is recorded per-table in the fixture; a table without a citation there is
-// unsourced and pins current behavior only.
-//
-// Motivation: signal-bar defects ship when the decode, its unit test, and its
-// comments all encode the same belief about how the V1 source meter maps to
-// this display. Keeping independent expectations makes a belief error visible
-// instead of leaving a self-consistent green suite.
+// Expected protocol vectors live separately in test/fixtures/protocol_spec_tables.h
+// so the decoder cannot define its own expectations. Provenance is recorded per
+// table; uncited tables pin current behavior rather than an independent source.
 
 #include <unity.h>
 
@@ -276,10 +269,7 @@ void test_ku_uses_k_band_strength_scale() {
         parseAlertFrontStrength(0x10 | 0x20, top.minRaw, nullptr, nullptr));
 }
 
-
-// ============================================================================
 // Alert-row layout + aux0 bits (spec tables: alert-row-layout, alert-aux0-bits)
-// ============================================================================
 
 void test_alert_row_layout_matches_spec_table() {
     // Pin the offsets to the fixture layout (compile-time facts from the
@@ -329,20 +319,12 @@ void test_alert_aux0_priority_bit_matches_spec_table() {
     TEST_ASSERT_FALSE(parser2.getAllAlerts()[0].isPriority);
 }
 
-// ============================================================================
 // User settings bytes (spec table: user-bytes-bit-map)
 //
-// Valentine's Law surface (docs/VALENTINE_PHILOSOPHY.md). These bits are the
-// only path by which this firmware can change what the Valentine One itself
-// detects, so a wrong row here is the most consequential failure available to
-// the project: it would silently disable a band on the detector, and the
-// display would faithfully render the resulting silence.
-//
-// v1_profile_push_policy flips LASER (byte0/0x08) and auto-push rewrites
-// MUTE_TO_MUTE_VOLUME (byte0/0x10). A wrong row here means
-// a profile push could silently disable a detection band. These tests drive
-// the real V1UserSettings accessors against the fixture map.
-// ============================================================================
+// Wrong user-setting bits can disable detector bands (docs/VALENTINE_PHILOSOPHY.md).
+// Pin the real V1UserSettings accessors to the independent fixture map:
+// v1_profile_push_policy flips LASER (byte0/0x08), and auto-push rewrites
+// MUTE_TO_MUTE_VOLUME (byte0/0x10).
 
 namespace {
 

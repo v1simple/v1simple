@@ -1,12 +1,5 @@
-/**
- * test_settings_backup_protection — Exercises the atomic write, validation,
- * rollback, signature, scoring, and parse-rejection logic in
- * settings_backup.cpp.
- *
- * These are the "backup protection" guardrails that keep the SD backup file
- * intact even when writes fail partway through, renames fail, or the file
- * on disk turns out to be corrupt after promotion.
- */
+// Backup validation and atomic-write recovery under partial writes, failed
+// renames, and corruption after promotion.
 
 #include <unity.h>
 

@@ -115,9 +115,7 @@ void V1BLEClient::refreshProxyAdvertisingCadence(const uint32_t nowMs) {
         return;
     }
 
-    // NimBLE applies advertising interval changes reliably on the next start,
-    // so restart in-place when the fast discovery window expires. This is a
-    // single short blip, not a user-visible proxy shutdown.
+    // Interval changes take effect on the next advertising start.
     NimBLEDevice::stopAdvertising();
     applyProxyAdvertisingCadence(fastCadence);
     if (NimBLEDevice::startAdvertising()) {
@@ -330,12 +328,10 @@ void V1BLEClient::ProxyWriteCallbacks::onWrite(NimBLECharacteristic* pCharacteri
         return;
     }
 
-    // Copy to a safe buffer and forward to V1
     uint16_t sourceChar = shortUuid(pCharacteristic->getUUID());
     uint8_t cmdBuf[32];
     memcpy(cmdBuf, rawData, rawLen);
 
-    // Enqueue for main-loop processing to avoid BLE callback blocking
     bleClient->enqueuePhoneCommandForEpoch(cmdBuf, rawLen, sourceChar, queueEpoch, sessionGeneration);
 }
 
@@ -488,19 +484,15 @@ bool V1BLEClient::tryFinalizeProxyQueueRelease() {
 }
 
 bool V1BLEClient::initProxyServer(const char* deviceName) {
-    // Proxy server init (name logged in initBLE summary)
     if (!allocateProxyQueues()) {
         return false;
     }
 
-    // Kenny's exact order:
-    // 1. Create server (no callbacks yet)
     pServer_ = NimBLEDevice::createServer();
 
-    // 2. Create service
     pProxyService_ = pServer_->createService(V1_SERVICE_UUID);
 
-    // 3. Create ALL 6 characteristics that the V1 exposes (apps expect all of them)
+    // Companion apps expect all six V1 characteristics.
     // Characteristic UUIDs from V1:
     // 92A0B2CE - Display data SHORT (notify) - primary alert data
     // 92A0B4E0 - V1 out LONG (notify)
@@ -525,27 +517,22 @@ bool V1BLEClient::initProxyServer(const char* deviceName) {
     NimBLECharacteristic* pWriteLong =
         pProxyService_->createCharacteristic("92A0B8D2-9E05-11E2-AA59-F23C91AEC05E", NIMBLE_PROPERTY::WRITE_NR);
 
-    // Additional notify characteristic - compatibility stub.
-    // The V1 Gen2 exposes this UUID, and some companion apps (V1Driver, JBV1, etc.)
-    // verify its presence when enumerating the V1 service. The proxy never notifies
-    // on it, but the characteristic must exist in the attribute table for those
-    // apps to recognize this device as a V1. Do not remove.
+    // Compatibility-only notify UUID: companion apps require its presence,
+    // although the proxy never sends notifications on it.
     pProxyService_->createCharacteristic(V1_NOTIFY_ALT_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
 
     // Alternate write with response
     NimBLECharacteristic* pWriteAlt = pProxyService_->createCharacteristic(
         "92A0BAD4-9E05-11E2-AA59-F23C91AEC05E", NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
 
-    // 4. Set characteristic callbacks - all write chars forward to V1
     pProxyWriteCallbacks_.reset(new ProxyWriteCallbacks(this));
     pProxyWriteChar_->setCallbacks(pProxyWriteCallbacks_.get());
     pWriteLong->setCallbacks(pProxyWriteCallbacks_.get());
     pWriteAlt->setCallbacks(pProxyWriteCallbacks_.get());
 
-    // 5. (NimBLE 2.4+) Service is started automatically when advertising starts.
-    // pProxyService_->start() is deprecated and must not be called.
+    // NimBLE starts the service when advertising; do not call deprecated start().
 
-    // 6. Set server callbacks (Kenny's order preserved: all characteristics exist before callbacks)
+    // Install server callbacks only after all characteristics exist.
     pProxyServerCallbacks_.reset(new ProxyServerCallbacks(this));
     pServer_->setCallbacks(pProxyServerCallbacks_.get());
 
@@ -606,7 +593,6 @@ void V1BLEClient::forwardToProxyForEpoch(const uint8_t* data, size_t length, uin
         return;
     }
 
-    // Validate packet size
     if (length == 0 || length > PROXY_PACKET_MAX) {
         return;
     }
@@ -624,15 +610,12 @@ void V1BLEClient::forwardToProxyForEpoch(const uint8_t* data, size_t length, uin
         return;
     }
 
-    // Queue packet for async send (non-blocking)
-    // Use simple ring buffer with drop-oldest backpressure
+    // Drop the oldest packet when the ring is full.
     if (proxyQueueCount_ >= PROXY_QUEUE_SIZE) {
-        // Queue full - drop oldest packet
         proxyQueueTail_ = (proxyQueueTail_ + 1) % PROXY_QUEUE_SIZE;
         proxyQueueCount_--;
     }
 
-    // Add packet to queue
     ProxyPacket& pkt = proxyQueue_[proxyQueueHead_];
     memcpy(pkt.data, data, length);
     pkt.length = length;
@@ -662,7 +645,6 @@ int V1BLEClient::processProxyQueue() {
 
     int sent = 0;
 
-    // Process all queued packets (typically 1-2)
     while (proxyQueueCount_ > 0) {
         ProxyPacket& pkt = proxyQueue_[proxyQueueTail_];
         NimBLECharacteristic* targetChar = nullptr;
@@ -736,8 +718,7 @@ int V1BLEClient::processPhoneCommandQueue() {
         return 0;
     }
 
-    // Static pending packet: holds command when pacing/lock says "not yet"
-    // Ensures no command loss from dequeue-before-send pattern
+    // Retain dequeued commands across pacing/lock deferral.
     static ProxyPacket pendingPkt;
     static uint16_t pendingCharUUID = 0;
     static bool hasPending = false;
@@ -754,7 +735,6 @@ int V1BLEClient::processPhoneCommandQueue() {
     uint16_t charUUID = 0;
     bool hasPacket = false;
 
-    // Try pending packet first (from previous pacing/lock deferral)
     if (hasPending) {
         configASSERT(pendingPkt.length <= sizeof(pendingPkt.data)); // Belt-and-suspenders: validated at enqueue
         memcpy(pktCopy.data, pendingPkt.data, pendingPkt.length);
@@ -798,8 +778,7 @@ int V1BLEClient::processPhoneCommandQueue() {
     if (bleNotifyMutex_) {
         SemaphoreGuard lock(bleNotifyMutex_, 0);
         if (!lock.locked()) {
-            // Mutex busy - store in pending for next iteration (NOT_YET semantics)
-            // (counter incremented in SemaphoreGuard)
+            // Retry the pending command next loop; preserve NOT_YET semantics.
             memcpy(pendingPkt.data, pktCopy.data, pktCopy.length);
             pendingPkt.length = pktCopy.length;
             pendingPkt.sessionGeneration = pktCopy.sessionGeneration;
@@ -847,11 +826,9 @@ int V1BLEClient::processPhoneCommandQueue() {
 
     switch (result) {
     case SendResult::SENT:
-        // Successfully sent - clear pending state
         hasPending = false;
         return 1;
     case SendResult::NOT_YET:
-        // Pacing: store in pending for next iteration
         memcpy(pendingPkt.data, pktCopy.data, pktCopy.length);
         pendingPkt.length = pktCopy.length;
         pendingPkt.sessionGeneration = pktCopy.sessionGeneration;
@@ -860,7 +837,6 @@ int V1BLEClient::processPhoneCommandQueue() {
         return 0;
     case SendResult::FAILED:
     default:
-        // Hard failure: drop packet, clear pending, count error
         hasPending = false;
         return 0;
     }

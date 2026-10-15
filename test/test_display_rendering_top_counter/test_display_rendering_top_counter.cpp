@@ -1,6 +1,4 @@
 /**
- * test_display_rendering_top_counter.cpp
- *
  * Integration tests for display_top_counter.cpp.  These pin the bogey counter
  * to a fixed physical LED cell while preserving the Segment7 OFR font path.
  * The suite verifies that later live font-measurement shifts cannot move a glyph

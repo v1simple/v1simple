@@ -1,10 +1,3 @@
-/**
- * Direction-arrow renderer.
- *
- * Draws the stylised front / side / rear direction arrow triplet on the
- * right side of the display, with blink animation and per-arrow caching.
- */
-
 #include "display.h"
 #include "display_layout.h"
 #include "display_draw.h"
@@ -15,54 +8,29 @@
 #include "packet_parser.h"                  // Direction enum, DIR_FRONT/SIDE/REAR
 #include "modules/alp/alp_runtime_module.h" // AlpLaserDirection enum (for laser-color override)
 
-// Arrows and band labels share V1Display's blink phase.
-
-// ============================================================================
-// arrowBoundingRect — logical bounding rect of the entire arrow cluster
-//
-// Mirrors the clear-region math inside drawDirectionArrow (the full-redraw
-// `FILL_RECT(clearLeft, totalTop, ...)` path). Exposed as a static helper so
-// the owning frame can track the pixels drawDirectionArrow may have touched
-// without duplicating layout constants.
-//
-// The layout helper must remain a superset of every arrow draw and clear path.
-// Over-reporting a few pixels is safe; under-reporting leaves stale pixels.
-// ============================================================================
+// Must cover every arrow draw and clear path; under-reporting leaves stale pixels.
 DisplayLayout::DisplayRect V1Display::arrowBoundingRect(bool raisedLayout) {
     return DisplayLayout::directionArrowClusterRect(raisedLayout);
 }
 
-// Draw large direction arrow (t4s3 style)
-// flashBits indicates which arrows should blink (from image1 & ~image2)
+// flashBits = image1 & ~image2, using the V1's physical direction bits.
 void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits, uint16_t frontColorOverride) {
-    // Advance the shared blink phase. drawBandIndicators calls this same
-    // helper so arrows and band labels toggle in lockstep — they describe
-    // the same underlying V1 signal via flashBits / bandFlashBits.
+    // Arrows and band labels share one blink phase.
     updateBlinkPhase_();
 
-    // Determine which arrows belong to this alert direction set.  showXxx is
-    // independent of blink phase: an arrow that V1 reports as flashing is
-    // still part of the current alert, so its cluster geometry never changes.
+    // Active directions keep their geometry through the blink-off phase.
     const bool showFront = (dir & DIR_FRONT) != 0;
     const bool showRear = (dir & DIR_REAR) != 0;
     const bool showSide = (dir & DIR_SIDE) != 0;
 
-    // Per-arrow blink-off-phase flag.  Keep the three visual states distinct:
-    //   1. arrow not in V1's active Image1 direction set → dim resting glyph
-    //   2. arrow in dir, blink ON phase                  → full activeCol
-    //   3. arrow in dir, blink OFF phase                 → PALETTE_BG erase
-    // Keep resting arrows visible during another arrow's off phase; only an
-    // active flashing arrow is erased.
+    // Inactive arrows stay dim; only active flashing arrows erase during blink-off.
     const bool blinkOffFront = showFront && (flashBits & 0x20) && !blinkPhase_;
     const bool blinkOffSide = showSide && (flashBits & 0x40) && !blinkPhase_;
     const bool blinkOffRear = showRear && (flashBits & 0x80) && !blinkPhase_;
 
-    // Stylized stacked arrows sized/positioned to match the real V1 display
     int cx = SCREEN_WIDTH - 70; // right anchor
     int cy = SCREEN_HEIGHT / 2; // vertically centered
 
-    // Position arrows to fit ABOVE frequency display at bottom
-    // With multi-alert always enabled, use raised layout as default
     const bool raisedLayout = dirty_.multiAlert;
     if (raisedLayout) {
         cy = 94; // Raised but allow full-size arrows
@@ -75,64 +43,35 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
     // Use slightly smaller arrows to give profile indicator more room
     float scale = 0.98f;
 
-    // Top arrow (FRONT): Taller triangle pointing up - matches V1 proportions
-    // Wider/shallower angle to match V1 reference
+    // Match the V1's taller front arrow and shorter rear arrow.
     const int topW = (int)(125 * scale);     // Width at base
     const int topH = (int)(70 * scale);      // Height
     const int topNotchW = (int)(63 * scale); // Notch width at bottom
     const int topNotchH = (int)(8 * scale);  // Notch height
 
-    // Bottom arrow (REAR): Shorter/squatter triangle pointing down
     const int bottomW = (int)(125 * scale); // Same width as top
     const int bottomH = (int)(30 * scale);  // Shorter height
     const int bottomNotchW = (int)(63 * scale);
     const int bottomNotchH = (int)(8 * scale);
 
-    // Calculate positions for equal gaps between arrows
     const int sideBarH = (int)(22 * scale);
     const int gap = (int)(15 * scale); // gap between arrows
 
-    // Top arrow center: above side arrow with gap
     int topArrowCenterY = cy - sideBarH / 2 - gap - topH / 2;
-    // Bottom arrow center: below side arrow with gap
     int bottomArrowCenterY = cy + sideBarH / 2 + gap + bottomH / 2;
 
     const V1Settings& s = settings_.get();
-    // Get individual arrow colors (use muted color if muted)
     uint16_t frontCol = muted ? PALETTE_MUTED_OR_PERSISTED : s.colorArrowFront;
     if (!muted && frontColorOverride != 0) {
         frontCol = frontColorOverride;
     }
     uint16_t sideCol = muted ? PALETTE_MUTED_OR_PERSISTED : s.colorArrowSide;
     uint16_t rearCol = muted ? PALETTE_MUTED_OR_PERSISTED : s.colorArrowRear;
-    // Dim resting arrows are intentionally visible when their V1 direction bit
-    // is not active.  Blink OFF is handled separately by blinkOffXxx and must
-    // still erase to PALETTE_BG so the V1 Image1/Image2 blink is visible.
     uint16_t offCol = TFT_DARKGREY;
 
-    // ── ALP laser-direction color override ─────────────────────────────────
-    //
-    // When an ALP laser event is live (set via setAlpLaserEvent()) AND the display isn't
-    // muted, recolor the arrow that matches the classified direction to match
-    // the ALP control-pad LED convention the driver already knows:
-    //
-    //     FRONT → RED   (matches ALP pad front-alert LED; threat already past
-    //                     the countermeasure window — informational but critical)
-    //     REAR  → YELLOW (matches ALP pad rear-alert LED; countermeasure window
-    //                      exists, driver can react)
-    //     UNKNOWN → leave palette defaults (PDC-Only, pre-classification, or
-    //                  above-speed-limit Pro Mode noise — no classified signal)
-    //
-    // Valentine's Law note (docs/VALENTINE_PHILOSOPHY.md, principle #2 — direction
-    // is intelligence, not decoration): each source keeps its own authoritative
-    // direction. ALP colors an ALP-owned laser frame; it never restyles or
-    // suppresses the V1's own radar-band direction arrows.
-    //
-    // This does not suppress the V1's own direction arrows for radar-band
-    // alerts. This override only fires when alpHasLaserEvent_
-    // is true — i.e. when the synthetic ALP laser AlertData is the one being
-    // painted, or when V1 laser is being concurrently suppressed by the
-    // ownsLaserDisplay() path. Radar-band arrows keep their settings-driven colors.
+    // Match ALP pad colors only on an ALP-owned laser frame; unknown direction
+    // keeps the palette. V1 radar arrows retain their own direction and colors
+    // (docs/VALENTINE_PHILOSOPHY.md, principle #2).
     if (!muted && alpHasLaserEvent_) {
         const AlpLaserDirection laserDir = alpLaserEvent_.direction;
         if (laserDir == AlpLaserDirection::FRONT) {
@@ -140,7 +79,6 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
         } else if (laserDir == AlpLaserDirection::REAR) {
             rearCol = TFT_YELLOW;
         }
-        // UNKNOWN falls through — no override, keep existing defaults.
     }
 
     const bool frontVisibilityChanged = elementCaches_.arrow.valid && (showFront != elementCaches_.arrow.showFront);
@@ -157,19 +95,15 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
     bool anyChanged = !elementCaches_.arrow.valid || frontVisibilityChanged || sideVisibilityChanged ||
                       rearVisibilityChanged || blinkOffChanged || mutedChanged || colorsChanged || layoutChanged;
 
-    // If nothing changed, skip redraw entirely
     if (!anyChanged) {
         return;
     }
-    // Past the cache early-return: this call is going to paint pixels into the
-    // arrow region. Contribute the cluster bounding rect to the per-frame
-    // DrawnRegion so the owning frame sends the changed canvas to the panel.
+    // Record paint only after the cache check so unchanged frames need no transfer.
     {
         const DisplayLayout::DisplayRect r = V1Display::arrowBoundingRect(raisedLayout);
         drawnRegion_.add(r.x, r.y, r.w, r.h, DisplayDirtyRegionSource::Arrows);
     }
 
-    // Calculate clear regions for each arrow
     const int maxW = (topW > bottomW) ? topW : bottomW;
     int clearLeft = cx - maxW / 2 - 10;
     int clearWidth = maxW + 20;
@@ -184,19 +118,15 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
     }
     auto drawTriangleArrow = [&](int centerY, bool down, bool active, bool blinkOff, int triW, int triH, int notchW,
                                  int notchH, uint16_t activeCol, bool needsClear) {
-        // Clear just this arrow's region if needed
         if (needsClear) {
             int arrowTop = centerY - triH / 2 - 2;
             int arrowHeight = triH + 4;
             FILL_RECT(clearLeft, arrowTop, clearWidth, arrowHeight, PALETTE_BG);
         }
 
-        // Three-state fill: blinkOff erases the active flashing segment,
-        // active draws bright, and inactive draws the dim resting glyph.
         uint16_t fillCol = blinkOff ? PALETTE_BG : (active ? activeCol : offCol);
         uint16_t outlineCol = TFT_BLACK; // Black outline like V1
 
-        // Triangle points
         int tipX = cx;
         int tipY = centerY + (down ? triH / 2 : -triH / 2);
         int baseLeftX = cx - triW / 2;

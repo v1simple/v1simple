@@ -1,17 +1,6 @@
 #pragma once
 
-/**
- * VoiceModule - Voice announcement decision logic
- *
- * Responsibilities:
- * - Decide WHEN to announce (cooldowns, mute state, settings)
- * - Decide WHAT to announce (priority, secondary, escalation)
- * - Track announcement state (last announced, throttling)
- *
- * Does NOT:
- * - Play audio (returns action for main to execute)
- * - Parse BLE data (receives processed alert data)
- */
+// Decides announcement content and timing from parsed alerts. The caller plays audio.
 
 #include <Arduino.h>
 #include "packet_parser.h" // For AlertData, Band, Direction
@@ -22,13 +11,6 @@ class SettingsManager;
 struct V1Settings;
 class V1BLEClient;
 
-// ============================================================================
-// Voice Alert Processing - Input/Output Structs
-// ============================================================================
-
-/**
- * VoiceContext - All inputs needed for voice alert decisions
- */
 struct VoiceContext {
     // Alert data
     const AlertData* alerts;   // Array of all current alerts
@@ -53,12 +35,7 @@ struct VoiceContext {
           isProxyConnected(false), mainVolume(0), isSuppressed(false), now(0) {}
 };
 
-/**
- * VoiceAction - Output from process()
- *
- * Describes what voice action to take (if any).
- * Main.cpp executes this action by calling the appropriate audio function.
- */
+// Requested voice action; the caller executes the corresponding audio operation.
 struct VoiceAction {
     enum class Type : uint8_t {
         NONE = 0,           // No announcement needed
@@ -97,9 +74,6 @@ struct VoiceAction {
     bool hasAction() const { return type != Type::NONE; }
 };
 
-/**
- * VoiceModule - Voice announcement decision engine
- */
 class VoiceModule {
   public:
     VoiceModule();
@@ -117,10 +91,6 @@ class VoiceModule {
     // State management - call when all alerts clear
     void reset() { clearAllState(); } // Alias for consistency with other modules
     void clearAllState();
-
-    // ============================================================================
-    // Static Utilities
-    // ============================================================================
 
     // Get signal bars for alert based on direction
     static uint8_t getAlertBars(const AlertData& alert);
@@ -140,10 +110,6 @@ class VoiceModule {
     // Dependencies
     SettingsManager* settings_ = nullptr;
     V1BLEClient* bleClient_ = nullptr;
-
-    // ============================================================================
-    // Tracking State
-    // ============================================================================
 
     // Announced alert tracking
     static constexpr int MAX_ANNOUNCED_ALERTS = 10;
@@ -210,9 +176,7 @@ class VoiceModule {
     uint16_t lastVoiceAlertFrequency_ = 0xFFFF;
     uint8_t lastVoiceAlertBogeyCount_ = 0;
     unsigned long lastVoiceAlertTime_ = 0;
-    // Explicit first-announcement flag: lastVoiceAlertTime_ == 0 is a real
-    // timestamp, not a sentinel — without this flag the cooldown silently
-    // suppresses announcements for the first COOLDOWN_MS of uptime.
+    // Timestamp 0 is valid; track the first announcement separately from cooldown.
     bool hasAnnouncedOnce_ = false;
     uint8_t prevAlertCount_ = 0;
     unsigned long lastCountStableSinceMs_ = 0;

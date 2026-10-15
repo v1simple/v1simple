@@ -1,13 +1,6 @@
-// Regression coverage for V1 profile HTTP response and request-body handling.
-//
-// handleApiProfileSave once built its 500 response by concatenating saveError
-// directly into JSON. Quotes, backslashes, or control characters could then
-// produce malformed JSON.
-//
-// Arduino WebServer buffers the whole body before dispatch, and
-// WebServer::arg() returns String by value. Binding it once into a named local
-// is the minimum request-body allocation achievable at this layer. The suite
-// pins the payload caps and one-binding-per-handler contract.
+// Error responses must escape saveError, including quotes and control bytes.
+// WebServer buffers request bodies before dispatch, and arg() copies its String.
+// Pin payload caps and one named body binding per handler to avoid extra copies.
 
 #include <unity.h>
 
@@ -184,9 +177,7 @@ void setUp() {
 
 void tearDown() {}
 
-// ---------------------------------------------------------------------------
 // Profile-save error JSON must be escaped
-// ---------------------------------------------------------------------------
 
 void test_save_error_with_quotes_and_backslashes_stays_valid_json() {
     WebServer server(80);
@@ -281,9 +272,7 @@ void test_delete_rejects_unknown_fields_before_storage_mutation() {
     TEST_ASSERT_EQUAL_INT(0, rt.backupCalls);
 }
 
-// ---------------------------------------------------------------------------
 // Oversize-payload caps
-// ---------------------------------------------------------------------------
 
 void test_profile_save_rejects_oversize_payload_without_saving() {
     WebServer server(80);
@@ -697,9 +686,7 @@ void test_profile_get_rejects_duplicate_unknown_or_truncated_query_before_lookup
     }
 }
 
-// ---------------------------------------------------------------------------
 // Request-body allocation contract
-// ---------------------------------------------------------------------------
 
 // WebServer::arg() returns String by value, so every call allocates a full body
 // copy. Each handler must bind the result once and reuse that binding.

@@ -1,10 +1,3 @@
-/**
- * Top-counter and bogey-counter rendering.
- *
- * Contains 7-segment and 14-segment digit renderers, the top counter
- * (bogey counter) composites, and the mute badge.
- */
-
 #include "display.h"
 #include "display_layout.h"
 #include "display_draw.h"
@@ -26,8 +19,6 @@ using DisplayLayout::TOP_COUNTER_FIELD_Y;
 using DisplayLayout::TOP_COUNTER_FONT_SIZE;
 using DisplayLayout::TOP_COUNTER_PAD_RIGHT;
 using DisplayLayout::TOP_COUNTER_TEXT_Y;
-
-// Top counter render cache is in elementCaches_.topCounter
 
 namespace {
 
@@ -76,20 +67,16 @@ void V1Display::drawSevenSegmentDigit(int x, int y, float scale, char c, bool ad
         // '#' is the decoded byte value for laser (73)
         segments[0] = segments[6] = segments[3] = true;
     } else if (c == 'A' || c == 'a') {
-        // A = all but bottom segment
         segments[0] = segments[1] = segments[2] = segments[4] = segments[5] = segments[6] = true;
     } else if (c == 'L') {
-        // Full L: bottom + lower-left + upper-left
         segments[3] = segments[4] = segments[5] = true;
     } else if (c == 'l' || c == '&') {
         // Logic (lowercase) L: bottom + lower-left only
         // '&' is used in decoder for little L (logic mode, byte value 24)
         segments[3] = segments[4] = true;
     } else if (c == 'S' || c == 's') {
-        // S = top, upper-left, middle, lower-right, bottom (like 5)
         segments[0] = segments[5] = segments[6] = segments[2] = segments[3] = true;
     } else if (c == 'E') {
-        // E = top, upper-left, middle, lower-left, bottom
         segments[0] = segments[5] = segments[6] = segments[4] = segments[3] = true;
     } else if (c == 'R') {
         // R = top, upper-left, middle, lower-left (fuller capital R)
@@ -104,28 +91,20 @@ void V1Display::drawSevenSegmentDigit(int x, int y, float scale, char c, bool ad
         // P = Photo radar: top, upper-right, upper-left, middle, lower-left
         segments[0] = segments[1] = segments[5] = segments[6] = segments[4] = true;
     } else if (c == 'F') {
-        // F = top, upper-left, middle, lower-left
         segments[0] = segments[5] = segments[6] = segments[4] = true;
     } else if (c == 'C') {
-        // C = top, upper-left, lower-left, bottom
         segments[0] = segments[5] = segments[4] = segments[3] = true;
     } else if (c == 'U') {
-        // U = upper-right, lower-right, bottom, lower-left, upper-left
         segments[1] = segments[2] = segments[3] = segments[4] = segments[5] = true;
     } else if (c == 'u') {
-        // lowercase u = lower-right, bottom, lower-left
         segments[2] = segments[3] = segments[4] = true;
     } else if (c == 'b') {
-        // b = upper-left, lower-left, bottom, lower-right, middle
         segments[5] = segments[4] = segments[3] = segments[2] = segments[6] = true;
     } else if (c == 'c') {
-        // lowercase c = middle, lower-left, bottom
         segments[6] = segments[4] = segments[3] = true;
     } else if (c == 'd') {
-        // d = upper-right, lower-right, bottom, lower-left, middle
         segments[1] = segments[2] = segments[3] = segments[4] = segments[6] = true;
     } else if (c == 'e') {
-        // e = top, upper-left, lower-left, bottom, middle, upper-right (differs from capital E by having bottom right)
         segments[0] = segments[5] = segments[4] = segments[3] = segments[6] = true;
     }
 
@@ -224,7 +203,6 @@ void V1Display::draw14SegmentDigit(int x, int y, float scale, char c, bool addDo
         uint16_t col = on ? onColor : offColor;
         if (!on && offColor == PALETTE_BG)
             return;
-        // Draw thick diagonal line
         for (int t = -m.segThick / 2; t <= m.segThick / 2; t++) {
             DRAW_LINE(x1 + t, y1, x2 + t, y2, col);
             DRAW_LINE(x1, y1 + t, x2, y2 + t, col);
@@ -287,10 +265,6 @@ int V1Display::draw14SegmentText(const char* text, int x, int y, float scale, ui
     return cursor - x - m.spacing;
 }
 
-// --- Top counter (bogey counter) — Segment7 style ---
-
-// Segment7 bogey counter (original V1 style).
-// Uses Segment7 TTF font if available, falls back to software renderer.
 void V1Display::drawTopCounterPair(char primary, bool muted, bool primaryDot, char secondary, bool secondaryDot) {
     const V1Settings& s = settings_.get();
     const bool hasSecondary = hasTrailingTopCounterSymbol(secondary, secondaryDot);
@@ -302,20 +276,15 @@ void V1Display::drawTopCounterPair(char primary, bool muted, bool primaryDot, ch
     const bool hasPhotoIdentity = strchr(buf, 'P') != nullptr;
     const uint16_t configuredColor = hasPhotoIdentity ? s.colorBandPhoto : s.colorBogey;
 
-    // Check if color setting changed
     bool colorChanged = (configuredColor != elementCaches_.topCounter.lastBogeyColor);
 
-    // Skip redraw if nothing changed
     if (elementCaches_.topCounter.counterValid && !colorChanged && muted == elementCaches_.topCounter.lastMuted &&
         drawFixedPrimaryDot == elementCaches_.topCounter.lastFixedPrimaryDot &&
         strcmp(buf, elementCaches_.topCounter.lastText) == 0) {
         return;
     }
-    // Drawn-region tracking: own pixels from one column left of the field through
-    // the 6-px gap that sits between us and the band-label clear column (which
-    // starts at x=77 — see drawBandIndicators). Nothing else paints that gap, so
-    // any residue there persists indefinitely; widening here makes the per-frame
-    // FILL_RECT below absorb it.
+    // Include the gap before the band-label clear column; no other renderer
+    // clears counter residue there.
     constexpr int kBandsColumnLeftX = 77; // mirrors unionX in drawBandIndicators (x=82, x-5=77)
     constexpr int kClearLeftPad = 1;
     const int clearX = TOP_COUNTER_FIELD_X - kClearLeftPad;
@@ -329,9 +298,8 @@ void V1Display::drawTopCounterPair(char primary, bool muted, bool primaryDot, ch
     strncpy(elementCaches_.topCounter.lastText, buf, sizeof(elementCaches_.topCounter.lastText));
     elementCaches_.topCounter.lastText[sizeof(elementCaches_.topCounter.lastText) - 1] = '\0';
 
-    // Numeric counts retain the bogey color. The V1's P glyph is Photo
-    // identity and therefore owns the dedicated Photo color; other symbols
-    // retain the bogey color. Muting still takes precedence for symbols.
+    // P keeps the dedicated Photo color; numeric counts retain the bogey color.
+    // Muting takes precedence for symbols.
     const bool allDigits = primaryIsDigit && secondaryIsDigit;
     uint16_t color;
     if (allDigits) {
@@ -340,12 +308,6 @@ void V1Display::drawTopCounterPair(char primary, bool muted, bool primaryDot, ch
         color = muted ? PALETTE_MUTED_OR_PERSISTED : configuredColor;
     }
 
-    // Fixed field clear every update prevents stale pixels from variable-width glyphs.
-    // Clear rect spans from one column left of the field through the 6-px gap before
-    // the band-label clear column (x=77). Without this, antialiased OFR halos or any
-    // earlier render that touched x=72..76 (e.g. a previous fallback 7-segment draw,
-    // boot-time residue) would persist forever — that gap is otherwise never cleared
-    // by any element.
     FILL_RECT(clearX, TOP_COUNTER_FIELD_Y, clearW, TOP_COUNTER_FIELD_H, PALETTE_BG);
 
     const int centerBiasPx = 2;
@@ -359,22 +321,10 @@ void V1Display::drawTopCounterPair(char primary, bool muted, bool primaryDot, ch
     const int textY = TOP_COUNTER_TEXT_Y + ((TOP_COUNTER_FONT_SIZE - fontSize) / 2);
 
     if (fontMgr_.segment7Ready) {
-        // Use the Segment7 TTF for the intended visual style without
-        // center the cursor from the currently displayed glyph. Narrow glyphs
-        // such as '1' and transient mode/volume symbols then appear to move
-        // because their bounding boxes differ. Anchor the cursor to the fixed
-        // physical LED cell using '8' as the canonical full-cell glyph.
-        //
-        // Layout must not depend on a live OFR measurement. OFR's
-        // calculateBoundingBox ignores FreeType cache errors, and under cache
-        // pressure that varies with render history it has returned bounding
-        // boxes shifted by tens of pixels: bench runs 8a599c91/1533471d show
-        // the same '1' rendered 22 px apart between the step and transition
-        // phases because a bogus xMin dragged the cursor through the clamp
-        // below. Single-glyph text (the live bogey counter path) takes its
-        // bounds from the boot-primed deterministic cache; the live measure
-        // remains only for the rare two-symbol layout, whose size-48 bounds
-        // the cache does not cover.
+        // Anchor the cursor to '8', not the current glyph's variable width.
+        // Use boot-primed bounds: live OFR measurements have shifted under cache
+        // pressure after FreeType errors. Only the rare two-symbol size-48 layout
+        // falls back to live measurement because the bounds cache does not cover it.
         fontMgr_.segment7.setFontSize(fontSize);
         int glyphXMin = 0;
         int glyphXMax = 0;
@@ -412,7 +362,6 @@ void V1Display::drawTopCounterPair(char primary, bool muted, bool primaryDot, ch
             x = minCursorX;
         }
 
-        // RGB565 → RGB888 via shared helper.
         const Rgb888 bg = rgb565ToRgb888(PALETTE_BG);
         const Rgb888 fg = rgb565ToRgb888(color);
         fontMgr_.segment7.setBackgroundColor(bg.r, bg.g, bg.b);
@@ -439,10 +388,7 @@ void V1Display::drawTopCounterPair(char primary, bool muted, bool primaryDot, ch
     if (drawFixedPrimaryDot) {
         const int fieldRight = TOP_COUNTER_FIELD_X + TOP_COUNTER_FIELD_W - TOP_COUNTER_PAD_RIGHT;
         const int dotR = 4;
-        // Pull the dot fully inside the field clear-rect so its right edge can never leak
-        // pixels past the per-frame FILL_RECT (was: dotX = fieldRight - 2, which placed
-        // dot pixels at columns just outside the cleared region and left a residual sliver
-        // when the dot toggled off between frames).
+        // Keep the dot inside the clear rect so toggling it off leaves no residue.
         const int dotX = fieldRight - dotR - 1;
         const int dotY = TOP_COUNTER_TEXT_Y + TOP_COUNTER_FONT_SIZE - 5;
         FILL_CIRCLE(dotX, dotY, dotR, color);
@@ -453,15 +399,11 @@ void V1Display::drawTopCounterSegment7(char symbol, bool muted, bool showDot) {
     drawTopCounterPair(symbol, muted, showDot);
 }
 
-// Router: bogey counter uses Segment7.
 void V1Display::drawTopCounter(char symbol, bool muted, bool showDot) {
     drawTopCounterSegment7(symbol, muted, showDot);
 }
 
-// --- Mute icon badge ---
-
 void V1Display::drawMuteIcon(bool muted) {
-    // Skip redraw if nothing changed
     if (elementCaches_.topCounter.muteIconValid && muted == elementCaches_.topCounter.lastMutedState) {
         return;
     }
@@ -473,7 +415,6 @@ void V1Display::drawMuteIcon(bool muted) {
     drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Status);
 
     if (muted) {
-        // Draw badge with muted styling
         uint16_t outline = PALETTE_MUTED;
         uint16_t fill = PALETTE_MUTED;
 
@@ -491,7 +432,6 @@ void V1Display::drawMuteIcon(bool muted) {
         GFX_drawString(tft_, muteText, cx, cy);
         GFX_drawString(tft_, muteText, cx + 1, cy);
     } else {
-        // Clear the badge area when not muted.
         FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
     }
 }

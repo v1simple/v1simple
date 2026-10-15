@@ -3,12 +3,7 @@
 class DisplayPreviewModule;
 class DisplayPipelineModule;
 
-/**
- * DisplayRestoreModule - Handles display restoration after preview modes end.
- *
- * The display pipeline is the sole authority for selecting and restoring the
- * current presentation owner.
- */
+// Restores presentation after preview; the pipeline selects the current owner.
 class DisplayRestoreModule {
   public:
     void begin(DisplayPreviewModule& preview, DisplayPipelineModule& displayPipeline);

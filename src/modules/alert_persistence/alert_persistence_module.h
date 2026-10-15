@@ -12,13 +12,7 @@ class V1Display;
 class SettingsManager;
 class PacketParser;
 
-/**
- * AlertPersistenceModule - V1 alert persistence and cleanup
- *
- * Responsibilities:
- * - Alert persistence (shows faded alert after V1 clears it)
- * - Combined state clearing
- */
+// Holds cleared V1 alerts for display persistence and clears combined state.
 class AlertPersistenceModule {
   public:
     AlertPersistenceModule();

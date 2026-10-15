@@ -2,7 +2,7 @@
 
 // Drawing wrappers expect each call site to provide `tft_`.
 
-#include "display_driver.h" // DISPLAY_USE_ARDUINO_GFX, Arduino_Canvas, etc.
+#include "display_driver.h"
 
 inline uint16_t dimColor(uint16_t c, uint8_t scalePercent = 60) {
     uint8_t r = (c >> 11) & 0x1F;

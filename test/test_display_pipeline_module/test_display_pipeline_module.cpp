@@ -762,7 +762,7 @@ void test_restore_current_owner_restores_v1_persisted_owner() {
     TEST_ASSERT_EQUAL(0, display.showRestingCalls);
 }
 
-// ── ALP synthetic alert path ──────────────────────────────────────────
+// ALP synthetic alert path
 //
 // When ALP reports an active laser event, the composer promotes it to the
 // primary frame and V1Display renders a synthesized BAND_LASER priority. If

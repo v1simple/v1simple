@@ -80,8 +80,7 @@ void setUp() {
 
 void tearDown() {}
 
-// ─── processPowerButton() is skipped in process() ─────────────────────────
-
+// processPowerButton() is skipped in process()
 void test_car_mode_long_press_does_not_trigger_shutdown() {
     // Even if the mock battery reports that the button was held long enough,
     // process() should not call powerOff() because the entire button-check
@@ -106,8 +105,7 @@ void test_car_mode_process_does_not_call_processPowerButton() {
     TEST_ASSERT_EQUAL(3, battery.updateCalls);
 }
 
-// ─── Critical-battery block is skipped ─────────────────────────────────────
-
+// Critical-battery block is skipped
 void test_car_mode_critical_battery_does_not_show_warning() {
     battery.setCritical(true);
 
@@ -127,8 +125,7 @@ void test_car_mode_critical_battery_never_triggers_shutdown() {
     TEST_ASSERT_FALSE(battery.powerOffCalled);
 }
 
-// ─── powerOff() noop ───────────────────────────────────────────────────────
-
+// powerOff() noop
 // Note: the BatteryManager mock's powerOff() does NOT contain the
 // CAR_MODE_PWR_SHORT guard — that guard lives in production battery_manager.cpp
 // which is not compiled in native tests.  The real guard is exercised at
@@ -138,8 +135,7 @@ void test_car_mode_critical_battery_never_triggers_shutdown() {
 // boundary (i.e. that the gates in power_module.cpp prevent powerOff() from
 // being reached at all in the first place).
 
-// ─── All shutdown requests are disabled ────────────────────────────────────
-
+// All shutdown requests are disabled
 void test_car_mode_shutdown_request_is_ignored_before_side_effects() {
     ProbePowerLifecycle lifecycle;
     module.setLifecycle(lifecycle);
@@ -173,8 +169,7 @@ void test_car_mode_auto_power_off_is_compiled_out() {
     TEST_ASSERT_FALSE(battery.powerOffCalled);
 }
 
-// ─── Pure button logic still works (the state machine is unchanged) ────────
-
+// Pure button logic still works (the state machine is unchanged)
 void test_pure_button_logic_still_triggers_at_2000ms() {
     // processPowerButtonState() is not gated — the state machine itself is
     // correct regardless of build flavor.  Only the call-site in process()

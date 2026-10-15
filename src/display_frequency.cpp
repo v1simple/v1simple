@@ -1,9 +1,3 @@
-/**
- * Frequency display rendering.
- *
- * Contains the Segment7 frequency renderer and volume-zero warning.
- */
-
 #include "display.h"
 #include "display_layout.h"
 #include "display_draw.h"
@@ -20,11 +14,8 @@
 using namespace DisplaySegments;
 using TextWidthCacheEntry = DisplayFontManager::WidthCacheEntry;
 
-// File-scoped font width caches for frequency displays.
-// Round-robin computation caches — not render state; render caches are in
-// elementCaches_.  32 entries keeps eviction rare in busy Ka/K environments
-// where many distinct frequency strings cycle through.  Cost: ~768 bytes BSS
-// per cache (WidthCacheEntry is ~24 bytes with alignment).
+// Font metrics survive screen clears; these are separate from pixel render caches.
+// Thirty-two entries limit eviction when many frequencies cycle through.
 static TextWidthCacheEntry s_frequencyWidthCache[32];
 static uint8_t s_frequencyWidthCacheNextSlot = 0;
 static int s_frequencyCachedNumericWidth = 0;
@@ -103,8 +94,6 @@ void getFrequencyTextBounds(DisplayFontManager& fontMgr, int fontSize, const cha
 }
 } // namespace
 
-// --- Segment7 frequency display. Uses Segment7 TTF font if available, falls back to software renderer. ---
-
 V1Display::FrequencyPresentation V1Display::resolveFrequencyPresentation(uint32_t freqMHz, Band band, bool muted,
                                                                         uint8_t photoType) {
     const V1Settings& s = settings_.get();
@@ -119,7 +108,6 @@ V1Display::FrequencyPresentation V1Display::resolveFrequencyPresentation(uint32_
 
     bool isAlpOverride = false;
     if (alpFreqOverride_ && alpFreqText_[0] != '\0') {
-        // ALP gun abbreviation overrides frequency text
         strncpy(presentation.text, alpFreqText_, sizeof(presentation.text));
         presentation.text[sizeof(presentation.text) - 1] = '\0';
         isAlpOverride = true;
@@ -150,9 +138,7 @@ V1Display::FrequencyPresentation V1Display::resolveFrequencyPresentation(uint32_
         } else if (!hasFreq) {
             freqColor = PALETTE_GRAY;
         } else if (isPhotoRadar) {
-            // A Photo subtype label is detector identity, not an ordinary
-            // numeric frequency. Keep it tied to the dedicated Photo color
-            // regardless of the numeric-frequency color policy.
+            // Photo labels keep their identity color regardless of numeric-frequency policy.
             freqColor = s.colorBandPhoto;
         } else if (s.freqUseBandColor && band != BAND_NONE) {
             freqColor = getBandColor(band);
@@ -200,7 +186,6 @@ void V1Display::renderFrequencyPresentation(const FrequencyPresentation& present
     }
 
     if (usingOfr) {
-        // Use Segment7 TTF font
         const int fontSize = DisplayLayout::FREQUENCY_OFR_FONT_SIZE;
         const int leftMargin = DisplayLayout::FREQUENCY_OFR_LEFT_MARGIN;
         const int y = DisplayLayout::frequencyOfrY();
@@ -222,9 +207,7 @@ void V1Display::renderFrequencyPresentation(const FrequencyPresentation& present
             getFrequencyTextBounds(fontMgr_, fontSize, textBuf, glyphXMin, glyphXMax);
             textWidth = glyphXMax - glyphXMin;
         } else if (band == BAND_LASER) {
-            // LASER's leading glyph overhangs the nominal cursor box in Segment7.
-            // Clear against the real glyph bounds so stale edge pixels disappear
-            // when returning from LASER to numeric frequencies.
+            // LASER overhangs its cursor box; clear actual glyph bounds to avoid edge residue.
             getFrequencyTextBounds(fontMgr_, fontSize, textBuf, glyphXMin, glyphXMax);
             textWidth = glyphXMax - glyphXMin;
         } else if (!hasFreq) {
@@ -236,9 +219,7 @@ void V1Display::renderFrequencyPresentation(const FrequencyPresentation& present
         if (x < leftMargin)
             x = leftMargin;
 
-        // Clear only the union of old/new glyph bounds.  Store lastDrawX/Width as
-        // actual glyph bounds rather than the cursor box; Segment7 alpha glyphs
-        // such as LASER can overhang the cursor and otherwise leave edge pixels.
+        // Track actual glyph bounds, not the cursor box, including alpha overhangs.
         constexpr int kClearPadPx = 12;
         int clearY = y - 8;
         int clearH = fontSize + 16;
@@ -317,7 +298,6 @@ void V1Display::renderFrequencyPresentation(const FrequencyPresentation& present
                 cachedRender = frequencyRasterCache_.restore(rasterKey, framebuffer, CANVAS_WIDTH);
             }
             if (!cachedRender) {
-                // RGB565 → RGB888 via shared helper.
                 const Rgb888 bg = rgb565ToRgb888(PALETTE_BG);
                 const Rgb888 fg = rgb565ToRgb888(freqColor);
                 fontMgr_.segment7.setBackgroundColor(bg.r, bg.g, bg.b);
@@ -543,8 +523,6 @@ void V1Display::prewarmFrequencyRasterCache() {
                   millis() - warmStartMs);
 }
 
-// --- Volume zero warning (flashing red text in frequency area) ---
-
 void V1Display::drawVolumeZeroWarning() {
     // Flash at ~2Hz
     static unsigned long lastFlashTime = 0;
@@ -555,7 +533,6 @@ void V1Display::drawVolumeZeroWarning() {
         lastFlashTime = now;
     }
 
-    // Position warning centered in frequency area
     const int leftMargin = 120;
     const int rightMargin = 200;
     const int textScale = 6; // Large for visibility
@@ -563,8 +540,7 @@ void V1Display::drawVolumeZeroWarning() {
     int centerX = leftMargin + maxWidth / 2;
     int centerY = DisplayLayout::CONTENT_BOTTOM_Y / 2 + 10;
 
-    // Use default built-in font (NULL) - has all ASCII characters
-    // Each char is 6x8 pixels at scale 1, so "VOL 0" = 5 chars * 6 * scale wide
+    // Built-in characters are 6x8 pixels at scale 1.
     const char* warningStr = "VOL 0";
     int charW = 6 * textScale;
     int charH = 8 * textScale;
@@ -572,15 +548,12 @@ void V1Display::drawVolumeZeroWarning() {
     int textX = centerX - textW / 2;
     int textY = centerY - charH / 2;
 
-    // Clear the frequency area
     drawnRegion_.add(static_cast<int16_t>(leftMargin), static_cast<int16_t>(textY - 5), static_cast<int16_t>(maxWidth),
                      static_cast<int16_t>(charH + 10), DisplayDirtyRegionSource::Frequency);
     FILL_RECT(leftMargin, textY - 5, maxWidth, charH + 10, PALETTE_BG);
 
-    // This path bypasses drawFrequency*(), so invalidate the normal frequency
-    // render caches. When the warning expires, the next resting frame must
-    // repaint the idle frequency area instead of cache-hitting against the
-    // pre-warning value and leaving VOL 0 pixels in the framebuffer.
+    // This bypasses drawFrequency*(); invalidate its caches so VOL 0 cannot
+    // survive a cache hit when the warning expires.
     elementCaches_.frequency.invalidate();
 
     if (flashOn) {
@@ -591,8 +564,6 @@ void V1Display::drawVolumeZeroWarning() {
         tft_->print(warningStr);
     }
 }
-
-// --- Frequency router ---
 
 void V1Display::drawFrequency(uint32_t freqMHz, Band band, bool muted, uint8_t photoType) {
     drawFrequencySegment7(freqMHz, band, muted, photoType);

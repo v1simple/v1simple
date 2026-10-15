@@ -1,10 +1,4 @@
-/**
- * AlpEventLatch - ALP laser event persistence for the display pipeline.
- *
- * Mirrors the V1 alert persistence behavior, but keeps the ALP event in its
- * live-shaped form so the display can continue rendering the same laser frame
- * through brief raw-event gaps and for the shared post-close persist window.
- */
+// Retains the ALP event through raw-event gaps and the post-close display hold.
 
 #pragma once
 

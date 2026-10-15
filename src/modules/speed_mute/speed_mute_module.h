@@ -1,14 +1,6 @@
-// Speed-Aware Muting Module
-//
-// Lowers V1 alert volume and can suppress voice below a configurable speed
-// threshold. Inspired by JBV1 / Highway Radar / Spectre Nav low-speed muting.
-//
-// Design rules:
-//   - Fail-open: if speed source is lost, NEVER mute (safety first)
-//   - Hysteresis: unmute threshold = threshold + hysteresis to prevent cycling
-//   - User authority: every band honors the configured low-speed volume
-//   - Best-effort (Priority tier 4): never blocks BLE/display/connectivity
-//   - Pure decision function: caller owns BLE commands
+// Low-speed volume/voice policy; the caller sends BLE commands.
+// Fail open on lost speed, honor the configured volume on every band, and
+// release at threshold + hysteresis. Decisions never block BLE or display.
 
 #pragma once
 

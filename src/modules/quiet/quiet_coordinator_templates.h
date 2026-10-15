@@ -51,13 +51,8 @@ bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs, const Spee
 
     if (wantsActive && !speedVolActive_) {
         const DisplayState& ds = parser_->getDisplayState();
-        // Baseline guard: defer DROP until V1 has delivered real volume data.
-        // DisplayState::mainVolume/muteVolume default to 0 and are only valid
-        // once hasVolumeData is set (packet_parser.cpp sets it on the first
-        // volume-bearing display packet). Capturing ds.mainVolume before that
-        // saves 0 as the "original", so the eventual RESTORE sends 0 back and
-        // orphans V1 at mainVolume=0 — firing the VOL 0 warning later at rest.
-        // test_speed_volume_drop_deferred_until_volume_data_received pins it.
+        // Wait for hasVolumeData before DROP. Default zeroes are not a valid
+        // restore baseline; saving them would later restore the detector to VOL 0.
         if (!ds.hasVolumeData) {
             updateSpeedVolPresentation(&speedMute);
             return false;

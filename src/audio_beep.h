@@ -1,15 +1,12 @@
-// audio_beep.h
 #pragma once
 
 #include <stdint.h>
-#include "settings_types.h" // For VoiceAlertMode enum
+#include "settings_types.h"
 
-// Band types for voice alerts
 // Audio presentation labels. PHOTO remains a physical K-band alert in the
 // protocol model; this value only selects the spoken label.
 enum class AlertBand : uint8_t { LASER = 0, KA = 1, K = 2, X = 3, KU = 4, PHOTO = 5 };
 
-// Direction types for voice alerts
 enum class AlertDirection : uint8_t { AHEAD = 0, BEHIND = 1, SIDE = 2, UNKNOWN = 3 };
 
 enum class AudioPlaybackResult : uint8_t {
@@ -24,7 +21,6 @@ void audio_set_volume(uint8_t volumePercent);
 // Play "Test" for volume confirmation
 void play_test_voice();
 
-// Play voice alert for a specific band and direction
 // Returns immediately if already playing or audio disabled
 void play_alert_voice(AlertBand band, AlertDirection direction);
 
@@ -55,7 +51,6 @@ void play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection dir
 AudioPlaybackResult try_play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection direction,
                                                uint8_t total, uint8_t ahead, uint8_t behind, uint8_t side);
 
-// Play band-only announcement (e.g., "Ka", "K", "Ku", "X", "Laser")
 void play_band_only(AlertBand band);
 
 // Initialize SD audio (call after storage manager is ready)
@@ -66,8 +61,7 @@ void audio_init_sd(StorageManager& storage);
 // Frees ~5 KiB of internal .bss to preserve contiguous DMA headroom.
 void audio_init_buffers();
 
-// Process amp warm timeout - call from main loop
-// Disables speaker amp after 3 seconds of inactivity to save power
+// Called from the main loop; disables the amp after three seconds of inactivity.
 void audio_process_amp_timeout();
 
 // Minimum free stack observed at audio task/job completion.  Zero means that

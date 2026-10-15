@@ -1,20 +1,7 @@
-/**
- * Configuration file for V1 Gen2 Simple Display
- * Waveshare ESP32-S3-Touch-LCD-3.49 (AXS15231B, 640x172)
- *
- * This file contains:
- * - Firmware version and board definitions
- * - BLE UUIDs for V1 Gen2 protocol
- * - ESP packet framing constants
- * - Display layout and timing parameters
- */
-
 #pragma once
 
-// Include display driver abstraction
 #include "display_driver.h"
 
-// Firmware Version
 #ifndef FIRMWARE_VERSION
 #define FIRMWARE_VERSION "2.4.0"
 #endif
@@ -43,7 +30,7 @@
 #define ESP_PACKET_END 0xAB
 #define ESP_PACKET_ORIGIN_V1 0x0A // V1 with checksum
 #define ESP_PACKET_DEST_V1 0x0A
-#define ESP_PACKET_REMOTE 0x06 // V1connection type (remote app) - was 0x04
+#define ESP_PACKET_REMOTE 0x06 // V1connection type (remote app)
 
 // Packet IDs
 #define PACKET_ID_DISPLAY_DATA 0x31    // infDisplayData
@@ -61,11 +48,8 @@
 #define PACKET_ID_REQ_WRITE_VOLUME 0x39 // reqWriteVolume (mainVolume, mutedVolume, aux0)
 #define PACKET_ID_REQ_CURRENT_VOLUME 0x37  // reqCurrentVolume (no payload)
 #define PACKET_ID_RESP_CURRENT_VOLUME 0x38 // respCurrentVolume ([main, muted])
-// Dedicated all-volume request/response. test_packet_parser pins the four-byte
-// response payload used below.
-// RESPALLVOLUME payload is exactly 4 bytes: [main, muted, savedMain, savedMuted].
-// We still parse the aux2-nibble in display packets as a fallback for older
-// firmware / before the first 0x3D arrives.
+// RESPALLVOLUME: [main, muted, savedMain, savedMuted]. Display aux2 remains a
+// fallback for older firmware and before the first 0x3D response.
 #define PACKET_ID_REQ_ALL_VOLUME 0x3C   // reqAllVolume (no payload)
 #define PACKET_ID_RESP_ALL_VOLUME 0x3D  // respAllVolume (4-byte payload)
 #define PACKET_ID_REQ_USER_BYTES 0x11   // reqUserBytes
@@ -84,4 +68,4 @@
 #define PACKET_ID_INF_V1_BUSY 0x66
 
 // Timing
-#define DISPLAY_UPDATE_MS 50 // Update display every 50ms (snappier response)
+#define DISPLAY_UPDATE_MS 50

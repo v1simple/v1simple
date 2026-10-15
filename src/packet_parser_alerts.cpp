@@ -167,12 +167,8 @@ Direction PacketParser::decodeDirection(uint8_t bandArrow) const {
 }
 
 uint8_t PacketParser::mapStrengthToBars(Band band, uint8_t raw) const {
-    // Convert raw RSSI to the Valentine bargraph bar count (0..8) for per-alert
-    // direction strength, used by secondary alert context and alert history.
-    // Primary signal bars do not use this path; they mirror the V1's
-    // InfDisplayData LED bitmap in DisplayState::signalBars.
-    // Keep the official diagnostic scale unmodified here. The six-cell card
-    // renderer projects it only at the visual boundary.
+    // Per-alert front/rear RSSI maps to VR bars 0..8; the card renderer alone
+    // projects to six cells. Primary bars use InfDisplayData, not this path.
     auto vrBars = [band, raw]() -> uint8_t {
         switch (band) {
         case BAND_LASER:
@@ -216,10 +212,7 @@ uint8_t PacketParser::mapStrengthToBars(Band band, uint8_t raw) const {
             return 0;
         case BAND_K:
         case BAND_KU:
-            // VR groups K, Ku, and Photo onto the same K-band scale.
-            // (Items 4 and a portion of the Ku/Photo handling depend on
-            // this branch also accepting Ku/Photo bands once item 4 wires
-            // them through decodeBand.)
+            // VR uses the K-band RSSI scale for K, Ku and Photo.
             if (raw >= 0xC2)
                 return 8;
             if (raw >= 0xB8)
@@ -268,11 +261,8 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
         alertTableObserved_ = true;
         alertTableObservedAtMs_ = nowMs;
         alertResyncRequired_ = false;
-        // Preserve signalBars; parseDisplayData() owns the V1 LED bitmap.
-        // Preserve muted; its authoritative state comes from
-        // parseDisplayData() (InfDisplayData image1 mute bit, debounced).
-        // Clearing it here races the display packet path and causes
-        // mute indicator flash on every count=0 alert packet.
+        // InfDisplayData owns signalBars and debounced muted state. Clearing
+        // either here would race display packets and flicker on count-zero rows.
         return true;
     }
 
@@ -321,14 +311,8 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
         }
     }
 
-    // The accepted index behavior is pinned by the two test cases named below.
-    // We deliberately accept BOTH 0-based and 1-based here for robustness —
-    // some older firmware revisions and
-    // third-party V1 emulators emit 0-based rows. The dual-mode auto-detection
-    // logic immediately below (countRowsForMode) decides which scheme is
-    // actually in use for the current count tag, so misclassification is
-    // self-healing rather than fatal. This divergence is intentional; do not
-    // tighten to 1-based without also updating
+    // Accept complete zero- or one-based tables without locking on a partial
+    // first row. The zero-based compatibility path is covered by
     // test_alert_stream_zero_based_index_is_supported and
     // test_alert_stream_ambiguous_first_row_does_not_lock_wrong_mode.
     const bool indexValidOneBased = (alertIndex >= 1 && alertIndex <= receivedAlertCount);
@@ -414,8 +398,7 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
     bool anyKu = false;
     uint32_t tableTimestampMs = nowMs;
 
-    // We have enough rows; validate all required row slots for this count and
-    // decode into a new table buffer before publishing.
+    // Validate and decode the complete candidate before publishing.
     for (size_t i = 0; i < receivedAlertCount && i < MAX_ALERTS; ++i) {
         const size_t expectedRawIndex = (decodeMode == AlertIndexMode::ZeroBased) ? i : (i + 1);
         const bool rowFresh = (expectedRawIndex < RAW_ALERT_INDEX_SLOTS) && alertChunkPresent_[expectedRawIndex] &&
@@ -522,7 +505,6 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
     // still owned by the selected priority row; a secondary Ku must not
     // relabel the shared physical K cell. Cleared above on count=0 tables.
     displayState_.hasKuAlert = anyKu;
-
 
     notifyAlertTableObserver(tableTimestampMs);
 

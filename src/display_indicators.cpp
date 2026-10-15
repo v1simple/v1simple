@@ -1,9 +1,3 @@
-/**
- * Indicator badges and base-frame rendering.
- *
- * Contains drawBaseFrame, drawStatusText, and associated setters.
- */
-
 #include "display.h"
 #include <cstring>
 #include "display_draw.h"
@@ -17,12 +11,7 @@
 #include "modules/alp/alp_laser_event.h"
 #include "modules/gps/gps_runtime_module.h"
 
-// ============================================================================
-// Base frame
-// ============================================================================
-
 void V1Display::drawBaseFrame() {
-    // Clean black background (t4s3-style)
     TFT_CALL(fillScreen)(PALETTE_BG);
     prepareFullRedrawNoClear();
 }
@@ -37,12 +26,6 @@ void V1Display::prepareFullRedrawNoClear() {
 void V1Display::setSpeedVolZeroActive(bool active) {
     speedVolZeroActive_ = active;
 }
-
-// OBD indicator render cache is in elementCaches_.obd
-
-// ============================================================================
-// Status indicators
-// ============================================================================
 
 void V1Display::setObdStatus(bool enabled, bool connected, bool scanAttention) {
     obdEnabled_ = enabled;
@@ -86,10 +69,6 @@ void V1Display::syncTopIndicators(uint32_t nowMs) {
     }
 }
 
-// ============================================================================
-// OBD indicator ("OBD" text badge)
-// ============================================================================
-
 void V1Display::drawObdIndicator() {
 #if defined(DISPLAY_WAVESHARE_349)
     const bool wantShow = obdEnabled_;
@@ -124,10 +103,6 @@ void V1Display::drawObdIndicator() {
 #endif
 }
 
-// ============================================================================
-// GPS indicator ("G7" satellite count badge — left of ALP badge)
-// ============================================================================
-
 void V1Display::drawGpsIndicator() {
 #if defined(DISPLAY_WAVESHARE_349)
     const GpsRuntimeStatus gs = gpsRtMod_ ? gpsRtMod_->snapshot(millis()) : GpsRuntimeStatus{};
@@ -160,10 +135,6 @@ void V1Display::drawGpsIndicator() {
 #endif
 }
 
-// ============================================================================
-// ALP indicator ("ALP" text badge — left of MUTED badge)
-// ============================================================================
-
 void V1Display::setAlpRuntimeModule(AlpRuntimeModule* m) {
     alpRtMod_ = m;
 }
@@ -192,20 +163,9 @@ void V1Display::drawAlpIndicator() {
         return;
     }
 
-    // Badge colors match ALP control pad LED — including LISTENING sub-states
-    // driven by B0 heartbeat byte1 (speed-gated by ALP's internal GPS):
-    // Color rule — session-first, then mode:
-    //   Grey  — OFF / IDLE: not enabled, or UART timed out
-    //   Red   — ALP is actively alerting right now (live laser event,
-    //           not Warm-Up). When the live alert stops, the badge drops
-    //           back to the mode color instead of hanging onto stale gun /
-    //           laser state through TEARDOWN.
-    //   Blue  — LISTENING byte1=04: LID active (above LID speed limit)
-    //   Orange— LISTENING byte1=03: DLI active (below LID speed limit)
-    //   Green — LISTENING byte1=02 / 00: Warm-Up / pre-Warm-Up
-    //
-    // Rationale: the display follows live alert ownership only. byte1 drives
-    // the mode colors whenever no live laser event is active.
+    // ALP pad convention: grey when off/idle, red only during a live laser event.
+    // Otherwise B0 byte1 selects LID=04 (blue), DLI=03 (orange), or warm-up=02/00
+    // (green).
     const V1Settings& s = settings_.get();
     const AlpState alpState = static_cast<AlpState>(alpStateRaw_);
     uint16_t textColor;
@@ -238,19 +198,13 @@ void V1Display::drawAlpIndicator() {
 #endif
 }
 
-// ============================================================================
-// Preview-mode direct setters (bypass runtime modules for display test)
-// ============================================================================
-
 void V1Display::setPreviewIndicatorOverridesActive(bool active) {
     if (previewIndicatorOverridesActive_ == active) {
         return;
     }
 
     previewIndicatorOverridesActive_ = active;
-    // Force the first preview-owned badge draw and the first post-preview
-    // runtime-owned badge draw to repaint instead of cache-hitting against
-    // whichever owner rendered the previous frame.
+    // Changing preview ownership must repaint the previous owner's badges.
     dirty_.obdIndicator = true;
     dirty_.alpIndicator = true;
     elementCaches_.obd.invalidate();
@@ -272,10 +226,7 @@ void V1Display::setAlpPreviewState(bool enabled, uint8_t state, uint8_t hbByte1)
     alpEnabled_ = enabled;
     alpStateRaw_ = state;
     alpHbByte1_ = hbByte1;
-    // Preview mode: derive hasLaserEvent from the previewed state, so the
-    // red-alert color renders correctly during display tests. Alert states
-    // (ALERT_ACTIVE, NOISE_WINDOW, TEARDOWN) count as "has laser event";
-    // everything else is mode-colored by byte1.
+    // Preview synthesizes a live event from these states instead of runtime ownership.
     alpHasLaserEvent_ = nextHasLaserEvent;
     alpLaserEvent_.active = alpHasLaserEvent_;
     alpLaserEvent_.gun = AlpGunType::UNKNOWN;
@@ -295,8 +246,6 @@ void V1Display::setObdPreviewState(bool enabled, bool connected, bool scanAttent
     elementCaches_.obd.invalidate();
 }
 
-// ALP laser-event and frequency-area override.
-
 void V1Display::setAlpLaserEvent(const AlpLaserEvent& ev) {
     const bool prevActive = alpHasLaserEvent_;
     const bool prevLidActive = alpLidActive_;
@@ -309,9 +258,7 @@ void V1Display::setAlpLaserEvent(const AlpLaserEvent& ev) {
     const bool holdLiveGun = sameSession && prevActive && ev.active && ev.gun == AlpGunType::UNKNOWN &&
                              prevGun != AlpGunType::UNKNOWN;
     const AlpGunType effectiveGun = holdLiveGun ? prevGun : ev.gun;
-    // A persisted ALP tail is allowed to keep gun text/direction while no
-    // longer counting as a live ALP event. active gates live-only visuals;
-    // gun presence gates the frequency-area override.
+    // Persisted tails may retain gun text without live badge/arrow colors.
     const bool nextFreqOverride = (effectiveGun != AlpGunType::UNKNOWN);
     const char* nextGunAbbr = nextFreqOverride ? alpGunAbbrev(effectiveGun) : "";
     const bool nextLidActive = nextFreqOverride ? ev.lidActive : false;
@@ -320,7 +267,6 @@ void V1Display::setAlpLaserEvent(const AlpLaserEvent& ev) {
     const bool visualChanged = (ev.active != prevActive) || (static_cast<uint8_t>(ev.direction) != prevDirection) ||
                                gunChanged || (nextLidActive != prevLidActive);
 
-    // Atomic write of all ALP event-owned fields
     alpLaserEvent_ = ev;
     alpLaserEvent_.gun = effectiveGun;
     alpHasLaserEvent_ = ev.active;
@@ -336,7 +282,6 @@ void V1Display::setAlpLaserEvent(const AlpLaserEvent& ev) {
         alpLidActive_ = false;
     }
 
-    // Invalidate caches on change
     if (visualChanged) {
         elementCaches_.alp.invalidate();
         elementCaches_.arrow.invalidate();
@@ -361,10 +306,6 @@ void V1Display::clearAlpFrequencyOverride() {
     alpLidActive_ = false;
     alpFreqText_[0] = '\0';
 }
-
-// ============================================================================
-// Status text (centered message)
-// ============================================================================
 
 void V1Display::drawStatusText(const char* text, uint16_t color) {
     TFT_CALL(setTextColor)(color, PALETTE_BG);

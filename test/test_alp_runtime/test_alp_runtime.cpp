@@ -1,14 +1,5 @@
-/**
- * ALP Runtime Module — Unit Tests
- *
- * Tests gun identification parsing, state machine transitions,
- * heartbeat detection, timeout handling, and checksum validation.
- *
- * All test data uses the 4-byte frame protocol with 7-bit checksum:
- *   checksum = (byte0 + byte1 + byte2) & 0x7F
- *
- * Uses testInjectBytes() to feed raw protocol data without a real UART.
- */
+// ALP parsing and lifecycle tests inject raw UART bytes without hardware.
+// Frames are four bytes: byte0, byte1, byte2, (byte0 + byte1 + byte2) & 0x7F.
 
 #include <unity.h>
 #include <initializer_list>
@@ -20,7 +11,6 @@
 namespace {
 AlpRuntimeModule alpRuntimeModule;
 }
-
 
 static void resetModule() {
     alpRuntimeModule = AlpRuntimeModule();
@@ -239,13 +229,11 @@ static const uint8_t REG_WRITE_FD[] = { 0xD0, 0x00, 0xFD, 0x4D };
 // Register write with FD at byte2 (D3 variant): D3 00 FD checksum
 static const uint8_t REG_WRITE_FD_D3[] = { 0xD3, 0x00, 0xFD, 0x50 };
 
-
 void setUp() {
     resetModule();
 }
 
 void tearDown() {}
-
 
 void test_checksum_calculation() {
     TEST_ASSERT_EQUAL(0x32, alpChecksum(0xB0, 0x02, 0x00));
@@ -296,7 +284,6 @@ void test_checksum_validation_fail() {
     TEST_ASSERT_FALSE(alpValidateChecksum(0xFF, 0xFF, 0xFF, 0xFF));  // All 0xFF
 }
 
-
 void test_begin_disabled_stays_disabled() {
     beginDisabled();
     TEST_ASSERT_EQUAL(AlpState::OFF, alpRuntimeModule.getState());
@@ -315,7 +302,6 @@ void test_process_noop_when_disabled() {
     processAt(1000);
     TEST_ASSERT_EQUAL(AlpState::OFF, alpRuntimeModule.getState());
 }
-
 
 void test_gun_lookup_pl3() {
     TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, alpLookupGun(0xC8, 0xD5));
@@ -403,7 +389,6 @@ void test_gun_guncode_collision_eb_resolved_by_byte0() {
     TEST_ASSERT_EQUAL(AlpGunType::STALKER_LZ1, alpLookupGun(0xCD, 0xEB));
     TEST_ASSERT_EQUAL(AlpGunType::ATLANTA_STEALTH, alpLookupGun(0xCE, 0xEB));
 }
-
 
 void test_burst_identifies_pl3() {
     beginEnabled();
@@ -544,7 +529,6 @@ void test_burst_unknown_gun_still_alerts() {
     TEST_ASSERT_EQUAL(AlpGunType::UNKNOWN, alpRuntimeModule.lastIdentifiedGun());
 }
 
-
 void test_heartbeat_transitions_idle_to_listening() {
     beginEnabled();
     TEST_ASSERT_EQUAL(AlpState::IDLE, alpRuntimeModule.getState());
@@ -571,7 +555,6 @@ void test_discovery_poll_transitions_to_listening() {
 
     TEST_ASSERT_EQUAL(AlpState::LISTENING, alpRuntimeModule.getState());
 }
-
 
 void test_heartbeat_timeout_returns_to_idle() {
     beginEnabled();
@@ -656,7 +639,6 @@ void test_link_epoch_reset_suppresses_return_boot_probe() {
     TEST_ASSERT_FALSE(alpRuntimeModule.currentEvent().active);
 }
 
-
 void test_fd_terminator_triggers_teardown_from_alert() {
     beginEnabled();
 
@@ -683,7 +665,6 @@ void test_fd_terminator_d3_triggers_teardown() {
     processAt(2000);
     TEST_ASSERT_EQUAL(AlpState::TEARDOWN, alpRuntimeModule.getState());
 }
-
 
 void test_teardown_timeout_returns_to_listening() {
     beginEnabled();
@@ -852,7 +833,6 @@ void test_heartbeat_only_alert_ignores_stale_prior_trigger_timestamp() {
     TEST_ASSERT_EQUAL(AlpState::TEARDOWN, alpRuntimeModule.getState());
 }
 
-
 void test_resync_discards_garbage_before_heartbeat() {
     beginEnabled();
 
@@ -879,7 +859,6 @@ void test_resync_discards_garbage_before_alert_burst() {
     TEST_ASSERT_EQUAL(AlpGunType::PL3_PROLITE, alpRuntimeModule.lastIdentifiedGun());
 }
 
-
 void test_bad_checksum_frame_rejected() {
     beginEnabled();
 
@@ -891,7 +870,6 @@ void test_bad_checksum_frame_rejected() {
     // Should still be IDLE — frame was rejected
     TEST_ASSERT_EQUAL(AlpState::IDLE, alpRuntimeModule.getState());
 }
-
 
 void test_consecutive_bad_checksums_trigger_noise_window() {
     beginEnabled();
@@ -1152,7 +1130,6 @@ void test_noise_recovery_does_not_invent_frames_from_repeated_noise() {
     }
 }
 
-
 void test_snapshot_reflects_state() {
     beginEnabled();
     inject(BURST_STALKER, sizeof(BURST_STALKER));
@@ -1173,7 +1150,6 @@ void test_snapshot_default_values() {
     TEST_ASSERT_FALSE(status.uartActive);
 }
 
-
 void test_is_alert_active_during_alert() {
     beginEnabled();
     inject(BURST_PL3, sizeof(BURST_PL3));
@@ -1187,7 +1163,6 @@ void test_is_not_alert_active_during_listening() {
     processAt(1000);
     TEST_ASSERT_FALSE(alpRuntimeModule.isAlertActive());
 }
-
 
 void test_gun_names_not_null() {
     TEST_ASSERT_NOT_NULL(alpGunName(AlpGunType::UNKNOWN));
@@ -1210,7 +1185,6 @@ void test_state_names_not_null() {
     TEST_ASSERT_NOT_NULL(alpStateName(AlpState::TEARDOWN));
 }
 
-
 void test_sequential_bursts_update_gun() {
     beginEnabled();
 
@@ -1222,7 +1196,6 @@ void test_sequential_bursts_update_gun() {
     processAt(2000);
     TEST_ASSERT_EQUAL(AlpGunType::MARKSMAN_ULTRALYTE, alpRuntimeModule.lastIdentifiedGun());
 }
-
 
 void test_full_alert_lifecycle() {
     beginEnabled();
@@ -1248,7 +1221,6 @@ void test_full_alert_lifecycle() {
     TEST_ASSERT_EQUAL(AlpState::LISTENING, alpRuntimeModule.getState());
 }
 
-
 void test_alert_trigger_standalone() {
     beginEnabled();
 
@@ -1261,7 +1233,6 @@ void test_alert_trigger_standalone() {
     // No gun identified yet — gun comes in a later frame
     TEST_ASSERT_EQUAL(AlpGunType::UNKNOWN, alpRuntimeModule.lastIdentifiedGun());
 }
-
 
 void test_detect_trigger_alert_98_02_00() {
     beginEnabled();
@@ -1291,7 +1262,6 @@ void test_detect_trigger_rearm_keeps_alert_active() {
     TEST_ASSERT_EQUAL(AlpState::ALERT_ACTIVE, alpRuntimeModule.getState());
 }
 
-
 void test_status_frame_98_other() {
     beginEnabled();
 
@@ -1304,7 +1274,6 @@ void test_status_frame_98_other() {
     // Should transition to LISTENING (not ALERT_ACTIVE)
     TEST_ASSERT_EQUAL(AlpState::LISTENING, alpRuntimeModule.getState());
 }
-
 
 void test_heartbeat_byte1_alert_transitions_to_alert_active() {
     beginEnabled();
@@ -1620,7 +1589,6 @@ void test_teardown_clears_alert_flag() {
     TEST_ASSERT_EQUAL(AlpState::LISTENING, alpRuntimeModule.getState());
     TEST_ASSERT_FALSE(alpRuntimeModule.testGetAlertDetectedViaHb());
 }
-
 
 void test_new_alert_clears_stale_gun_via_98_trigger() {
     beginEnabled();
@@ -2171,7 +2139,6 @@ void test_event_gun_unknown_between_engagements_even_with_stale_lastgun() {
     TEST_ASSERT_EQUAL(AlpGunType::UNKNOWN, alpRuntimeModule.currentEvent().gun);
     TEST_ASSERT_FALSE(alpRuntimeModule.hasLaserEvent());
 }
-
 
 void test_warm_up_flagged_when_preamble_in_window() {
     // Canonical cold-boot shape: first heartbeat, F0 preamble at +2s,
@@ -2967,7 +2934,6 @@ void test_alp5_post_gun_id_reopen_not_flagged_warmup_in_envelope() {
                             static_cast<uint8_t>(alpRuntimeModule.currentSession().direction));
 }
 
-
 void test_transitionTo_publishes_display_edge() {
     resetModule();
     SystemEventBus bus;
@@ -3112,7 +3078,6 @@ void test_process_loop_does_not_spam_events() {
     TEST_ASSERT_FALSE(bus.consumeAlpStateChanged());
 }
 
-
 void test_current_event_inactive_when_session_inactive() {
     resetModule();
     beginEnabled();
@@ -3213,7 +3178,6 @@ void test_update_current_event_called_before_publish() {
     TEST_ASSERT_EQUAL(AlpGunType::LASER_ATLANTA_PL2, ev.gun);
     TEST_ASSERT_EQUAL(AlpLaserDirection::REAR, ev.direction);
 }
-
 
 int main(int argc, char** argv) {
     UNITY_BEGIN();
@@ -3393,7 +3357,6 @@ int main(int argc, char** argv) {
     RUN_TEST(test_current_event_opened_at_on_edge);
     RUN_TEST(test_current_event_lid_active_tracks_hb_byte1);
     RUN_TEST(test_update_current_event_called_before_publish);
-
 
     return UNITY_END();
 }

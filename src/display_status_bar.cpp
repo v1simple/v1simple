@@ -4,7 +4,7 @@
 #include "display_element_caches.h"
 #include "display_palette.h"
 #include "display_text.h"
-#include "display_segments.h" // DisplaySegments namespace (using-directive below)
+#include "display_segments.h"
 #include "display_font_manager.h"
 #include "settings.h"
 #include "battery_manager.h"
@@ -22,10 +22,7 @@ void V1Display::drawVolumeIndicator(uint8_t mainVol, uint8_t muteVol) {
     const DisplayLayout::DisplayRect muteRect = DisplayLayout::volumeMuteRect();
     const DisplayLayout::DisplayRect clearRect = DisplayLayout::volumeIndicatorRect();
 
-    // Cache short-circuit: skip the FILL_RECT+text render when values + colors
-    // haven't changed. This is load-bearing for partial-flush region math in
-    // update(priority) — without it, drawnRegion_ would expand to the volume
-    // cell every frame by the steady-state status-strip refresh.
+    // Check before painting so a steady status strip does not force a panel transfer.
     if (elementCaches_.volume.valid && mainVol == elementCaches_.volume.lastMainVol &&
         muteVol == elementCaches_.volume.lastMuteVol && s.colorVolumeMain == elementCaches_.volume.lastMainColor &&
         s.colorVolumeMute == elementCaches_.volume.lastMuteColor) {
@@ -63,9 +60,7 @@ void V1Display::drawRssiIndicator(int rssi) {
     const V1Settings& s = settings_.get();
     const bool hidden = (s.hideRssiIndicator || s.hideVolumeIndicator);
     if (hidden) {
-        // Cache short-circuit: skip the clear-FILL_RECT when we already
-        // rendered the hidden (empty) state last time. First transition
-        // into hidden state still paints the clear rect once.
+        // Clear once when entering the hidden state.
         if (elementCaches_.rssi.valid && elementCaches_.rssi.lastHidden) {
             return;
         }
@@ -176,12 +171,8 @@ void V1Display::drawProfileIndicator(int slot) {
     const DisplayLayout::DisplayRect profileRect = DisplayLayout::profileRect();
     const int cx = profileRect.x + profileRect.w / 2;
 
-    // The profile FILL_RECT covers x∈[cx-65, cx+65) = [499, 629), y∈[152, 172)
-    // which clips the bottom-left 11×12 px of the battery body DRAW_RECT at
-    // [618,632) × [136,164). Any path that FILL_RECTs here must invalidate
-    // the battery icon cache and call drawBatteryIndicator() to restore the
-    // clipped corner. The cache short-circuit below ensures both of those
-    // only happen on frames where the profile state actually changed.
+    // Every profile clear clips the battery's bottom-left corner. Invalidate and
+    // redraw the battery after painting here; cache hits must skip both operations.
 
     // A profile change briefly reveals an indicator hidden by user preference.
     if (s.hideProfileIndicator && !inFlashPeriod) {
@@ -217,9 +208,6 @@ void V1Display::drawProfileIndicator(int slot) {
         break;
     }
 
-    // Cache short-circuit: skip FILL_RECT+text render when slot/color/name
-    // match the last-drawn values. This is what makes the arrow-only partial
-    // flush actually fire — profile is called every frame from drawStatusStrip.
     if (elementCaches_.profile.valid && !elementCaches_.profile.hiddenRender &&
         slot == elementCaches_.profile.lastSlot && color == elementCaches_.profile.lastColor &&
         strncmp(name, elementCaches_.profile.lastName, sizeof(elementCaches_.profile.lastName)) == 0) {
@@ -289,8 +277,6 @@ void V1Display::drawBatteryIndicator() {
         }
         textColor = dimColor(textColor);
 
-        // Decide if we actually need to redraw — check BEFORE any FILL_RECT
-        // so the cache short-circuit fires cleanly on steady-state frames.
         const unsigned long nowMs = millis();
         const bool needsRedraw = (!elementCaches_.battery.lastPctVisible) ||
                                  (pct != elementCaches_.battery.lastPctDrawn) ||
@@ -298,8 +284,7 @@ void V1Display::drawBatteryIndicator() {
                                  ((nowMs - elementCaches_.battery.lastPctDrawMs) >= PCT_FORCE_REDRAW_MS) ||
                                  !elementCaches_.battery.iconValid;
 
-        // Mode just transitioned from icon → percent, or first render.
-        // Clear the icon area once; then cache state tracks percent-mode going forward.
+        // Clear the icon once on entry to percent mode.
         if (!elementCaches_.battery.iconValid) {
             drawnRegion_.add(iconRect.x, iconRect.y, iconRect.w, iconRect.h, DisplayDirtyRegionSource::Status);
             FILL_RECT(iconRect.x, iconRect.y, iconRect.w, iconRect.h, PALETTE_BG);
@@ -366,9 +351,7 @@ void V1Display::drawBatteryIndicator() {
     }
     const uint16_t outlineColor = dimColor(PALETTE_TEXT);
 
-    // Cache short-circuit: skip repaint when icon-mode state unchanged.
-    // iconValid=false forces a repaint (used by drawProfileIndicator after
-    // its FILL_RECT clips the battery corner, and by invalidateAll()).
+    // Profile clearing and screen invalidation force a repaint through iconValid.
     if (elementCaches_.battery.iconValid && elementCaches_.battery.lastIconShown == shownNow &&
         elementCaches_.battery.lastFilledSections == filledSections &&
         elementCaches_.battery.lastFillColor == fillColor && elementCaches_.battery.lastOutlineColor == outlineColor &&
@@ -377,7 +360,6 @@ void V1Display::drawBatteryIndicator() {
         elementCaches_.battery.lastShowPercent == s.showBatteryPercent) {
         return;
     }
-    // Clear percent area (in case it was previously showing, or mode transition)
     if (elementCaches_.battery.lastPctVisible || !elementCaches_.battery.iconValid) {
         drawnRegion_.add(percentRect.x, percentRect.y, percentRect.w, percentRect.h, DisplayDirtyRegionSource::Status);
         FILL_RECT(percentRect.x, percentRect.y, percentRect.w, percentRect.h, PALETTE_BG);
@@ -385,7 +367,6 @@ void V1Display::drawBatteryIndicator() {
         elementCaches_.battery.lastPctDrawn = -1;
     }
 
-    // Hide the icon when no battery is present, the setting disables it, or USB is active.
     if (!shownNow) {
         drawnRegion_.add(iconRect.x, iconRect.y, iconRect.w, iconRect.h, DisplayDirtyRegionSource::Status);
         FILL_RECT(iconRect.x, iconRect.y, iconRect.w, iconRect.h, PALETTE_BG);
@@ -470,26 +451,18 @@ void V1Display::drawBLEProxyIndicator() {
         return;
     }
 
-    // Visual-verification preview steps own their BLE state explicitly.  Do not
-    // let an unrelated runtime-context timestamp make the same pinned step
-    // alternate between the bright and stale connected roles across captures.
+    // Preview steps own BLE freshness; runtime timestamps must not dim a pinned step.
     const bool bleContextFresh = previewIndicatorOverridesActive_ || hasFreshBleContext(millis());
 
-    // Icon color from settings: connected vs disconnected
-    // When connected but not receiving data, dim further to show "stale" state
     uint16_t btColor;
     if (bleProxyClientConnected_) {
-        // Connected: bright green when receiving, dimmed when stale
         const bool receivingData = bleReceivingData_ && bleContextFresh;
         btColor = receivingData ? dimColor(s.colorBleConnected, 85)
-                                : dimColor(s.colorBleConnected, 40); // Much dimmer when no data
+                                : dimColor(s.colorBleConnected, 40);
     } else {
         btColor = dimColor(s.colorBleDisconnected, 85);
     }
 
-    // Cache short-circuit: skip rune rebuild when already drawn with same color.
-    // bleProxyDrawn_ is an older singleton latch kept in sync here so existing
-    // consumers (e.g. prepareFullRedrawNoClear) still observe it correctly.
     if (elementCaches_.bleProxy.valid && elementCaches_.bleProxy.lastDrawn &&
         elementCaches_.bleProxy.lastColor == btColor && bleProxyDrawn_) {
         return;
@@ -584,9 +557,7 @@ void V1Display::drawWiFiIndicator() {
         return;
     }
 
-    // WiFi icon color: gave-up (red) > operational (green).
-    // If the icon is visible at all, WiFi is running — show green.
-    // Red only when STA reconnect has exhausted all retries.
+    // Red only after STA retries are exhausted; otherwise use the configured color.
     const bool gaveUp = wifi_ && wifi_->isReconnectGaveUp();
     uint16_t wifiColor;
     if (gaveUp && !staConnected) {
@@ -595,7 +566,6 @@ void V1Display::drawWiFiIndicator() {
         wifiColor = dimColor(s.colorWiFiConnected, 85);
     }
 
-    // Cache short-circuit: skip arc geometry rebuild when already drawn with same color.
     if (elementCaches_.wifi.valid && elementCaches_.wifi.lastVisible && elementCaches_.wifi.lastColor == wifiColor) {
         return;
     }
@@ -611,12 +581,7 @@ void V1Display::drawWiFiIndicator() {
 
     FILL_RECT(cx - 2, cy - 2, 5, 5, wifiColor);
 
-    // Geometry is device-constant (fixed radii 5/9/13 and fixed angle step
-    // tables), so we precompute (dx, dy) offsets once on first call and reuse
-    // them forever.  This removes ~28 double-precision sin/cos evaluations
-    // from every redraw path (full-redraw or indicator-color flip) and leaves
-    // only integer adds + FILL_RECT calls.  Bit-identical to the previous
-    // truncation math: kPi and casts match the original expression exactly.
+    // Fixed geometry avoids repeating trigonometry on each redraw.
     struct ArcPoint {
         int8_t dx;
         int8_t dy;

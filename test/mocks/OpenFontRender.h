@@ -1,9 +1,5 @@
 #pragma once
-// ============================================================================
-// OpenFontRender stub for native unit tests.
-// Provides the minimal interface needed so files that include OpenFontRender.h
-// compile without the real ESP32 OpenFontRender library.
-// ============================================================================
+// Native OpenFontRender stub with call recording and bounding-box fault injection.
 
 #ifndef OPENFONTRENDERH_H
 #define OPENFONTRENDERH_H
@@ -14,13 +10,10 @@
 #include <cstdarg>
 #include <cstdio>
 
-// FreeType error code
 typedef int FT_Error;
 
-// Forward-declare Arduino_GFX so setDrawer can accept a reference
 class Arduino_GFX;
 
-// Minimal FreeType bounding box stub
 struct FT_BBox {
     long xMin = 0;
     long yMin = 0;
@@ -28,7 +21,6 @@ struct FT_BBox {
     long yMax = 0;
 };
 
-// Alignment / Layout enums used by DisplayFontManager
 enum class Align { Left = 0, Center = 1, Right = 2 };
 enum class Layout { Horizontal = 0, Vertical = 1 };
 

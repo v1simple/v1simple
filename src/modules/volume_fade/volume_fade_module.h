@@ -1,17 +1,6 @@
 #pragma once
 
-/**
- * VolumeFadeModule - V1 volume fade logic
- *
- * Responsibilities:
- * - Track when alert starts (for fade delay)
- * - Decide when to fade volume down
- * - Track original volume for restoration
- * - Decide when to restore volume
- *
- * Does NOT:
- * - Send BLE commands (returns action for main to execute)
- */
+// Tracks fade delay, target volume and restoration; the caller sends BLE commands.
 
 #include <stdint.h>
 

@@ -1,14 +1,5 @@
-/**
- * Display update methods — three render functions, one cache layer.
- *
- * Contains update(DisplayState), update(AlertData, ...), updatePersisted.
- *
- * The element caches (V1Display::elementCaches_) are the sole caching layer. Each draw
- * function checks "did my inputs change?" and skips the draw if not. Mode
- * transitions invalidate all element caches via prepareFullRedrawNoClear().
- * Live, resting and persisted frames use drawnRegion_ to choose between a
- * full-panel transfer for changed pixels and no transfer for cache hits.
- */
+// Mode transitions invalidate element caches through prepareFullRedrawNoClear().
+// Changed live, resting and persisted frames use full-panel transfers; cache hits skip them.
 
 #include "display.h"
 #include "display_layout.h"
@@ -88,10 +79,6 @@ uint16_t profileColorForSlot(const V1Settings& s, int slot) {
 
 } // namespace
 
-// ============================================================================
-// renderFrame — display-pipeline frame dispatch
-// ============================================================================
-
 namespace {
 
 AlertData alpEventToSyntheticAlert(const AlpLaserEvent& event) {
@@ -150,16 +137,9 @@ void V1Display::renderFrame(const RenderFrame& frame) {
         break;
 
     case RenderFramePrimaryKind::V1_LIVE: {
-        // The card-row alert list includes the priority alert. The composer
-        // strips it from frame.cards, but drawSecondaryAlertCards() relies on
-        // seeing it. Its old-priority grace admission asks whether the previous
-        // priority remains in the list, and its slot refresh keeps matching
-        // slots alive. A priority-stripped list makes ordinary frequency jitter
-        // look like a handoff and repeatedly admits a ghost card.
-        // The pointer is also never null during live frames: a null list
-        // is the screen-transition "clear card state" signal, not a
-        // "zero secondaries" frame — null here would bypass the grace
-        // window and wipe persisted cards instantly.
+        // Restore the priority row for card continuity/grace matching; omitting it
+        // can turn frequency jitter into a ghost-card handoff. Keep the list non-null:
+        // null means a screen transition that clears card state, not zero secondaries.
         std::array<AlertData, RenderFrame::MAX_CARDS + 1> liveAlerts{};
         int liveCount = 0;
         liveAlerts[liveCount++] = frame.v1Priority;
@@ -183,11 +163,8 @@ void V1Display::renderFrame(const RenderFrame& frame) {
 
     case RenderFramePrimaryKind::ALP_LIVE:
     case RenderFramePrimaryKind::ALP_PERSISTED: {
-        // ALP frames carry the full unstripped V1 alert list in
-        // frame.cards (the composer passes skipPriority=nullptr on this
-        // path), so no priority prepend is needed. Keep the pointer
-        // non-null for the same reason as V1_LIVE: null is the
-        // screen-transition clear signal and would bypass card grace.
+        // ALP frames already contain the full V1 list. Keep it non-null to preserve
+        // card grace; null is the screen-transition clear signal.
         std::array<AlertData, RenderFrame::MAX_CARDS> cardAlerts{};
         const int cardCount = buildV1AlertArrayFromCards(frame, cardAlerts);
         const AlertData syntheticAlert = alpEventToSyntheticAlert(frame.alpPrimary);
@@ -295,8 +272,6 @@ bool V1Display::canSkipRestingNoOp(const RestingNoOpKey& key) const {
         return false;
     }
     const RestingNoOpKey& last = lastRestingNoOpKey_;
-    // Every segment is independently configurable, so any one of them changing
-    // must force the redraw.
     for (int barIndex = 0; barIndex < SIGNAL_BAR_COLOR_COUNT; ++barIndex) {
         if (key.colorBars[barIndex] != last.colorBars[barIndex]) {
             return false;
@@ -356,19 +331,9 @@ void V1Display::invalidateRestingNoOpKey() {
 
 #ifndef DISPLAY_RENDER_FRAME_ONLY
 
-// ============================================================================
-// drawStatusStrip — full status strip render
-// ============================================================================
-
 void V1Display::drawStatusStrip(const DisplayState& state, char topChar, bool topMuted, bool topDot) {
-    // image2 is the blink-off companion for the same physical bogey-counter
-    // LED, not a second digit. Differing images alternate at the shared 96 ms
-    // cadence; matching images remain steady. This preserves junk and photo
-    // glyphs across both blink phases.
-    //
-    // The "blinking J" (junk indicator: image1='J', image2=' ') and
-    // "blinking P" (Photo radar) cases are the visible payoff: V1 itself
-    // blinks them, and now so do we.
+    // image2 is the same LED's blink-off image, not a second digit. Differing
+    // images (including J/P and blank) alternate on the shared 96 ms cadence.
     updateBlinkPhase_();
     char bogeyChar = topChar;
     bool bogeyDot = topDot;
@@ -395,12 +360,7 @@ void V1Display::drawStatusStrip(const DisplayState& state, char topChar, bool to
     drawProfileIndicator(currentProfileSlot_);
 }
 
-// ============================================================================
-// update(DisplayState) — Resting display (no active alerts)
-// ============================================================================
-
 void V1Display::update(const DisplayState& state) {
-    // Not in persisted mode
     persistedMode_ = false;
     const uint32_t nowMs = static_cast<uint32_t>(millis());
 
@@ -411,32 +371,18 @@ void V1Display::update(const DisplayState& state) {
         return;
     }
 
-    // Capture any indicator draws queued by lower-level modules before this
-    // frame (for example connection-state refreshes that draw into the
-    // framebuffer but leave flushing to the display pipeline), then reset the
-    // per-frame accumulator so this update only records pixels it actually
-    // repaints. A queued external draw still forces the safe full push below.
+    // External setters may have painted since the last frame; retain their flush
+    // requirement before resetting this frame's painted bounds.
     const bool hadPendingExternalDraws = !drawnRegion_.empty();
     drawnRegion_.reset();
 
-    // In resting mode, never show muted visual — apps commonly set volume to 0
-    // when idle, adjusting on new alerts.
-    //
-    // This intentionally hides the V1's mute state while resting, so a
-    // lingering mute (tap
-    // gesture, app housekeeping) is invisible until the next alert arrives
-    // already quiet. Accepted because no live threat exists at rest — no
-    // urgency is downgraded — and a mirrored resting mute icon would flicker
-    // meaninglessly in proxy mode where the app owns muting. If revisited,
-    // the sketched adjustment is: mirror mute at rest only when no proxy
-    // client is connected (standalone mode gets instrument state while proxy
-    // mode avoids app-owned mute churn).
+    // Hide mute while resting: apps commonly change idle volume, which would
+    // flicker the badge. A lingering mute becomes visible with the next alert.
     const bool effectiveMuted = false;
 
     const bool bleContextFresh = hasFreshBleContext(nowMs);
     syncTopIndicators(nowMs);
 
-    // Volume-zero warning state machine
     bool showVolumeWarning = false;
     if (!bleContextFresh) {
         volZeroWarn_.reset();
@@ -492,7 +438,6 @@ void V1Display::update(const DisplayState& state) {
 
     drawDirectionArrow(DIR_NONE, effectiveMuted, 0);
 
-    // Clear any persisted card slots
     AlertData emptyPriority;
     drawSecondaryAlertCards(nullptr, 0, emptyPriority, effectiveMuted);
 
@@ -512,10 +457,6 @@ void V1Display::update(const DisplayState& state) {
 #endif
 }
 
-// ============================================================================
-// updatePersisted — last alert held in dark grey
-// ============================================================================
-
 void V1Display::updatePersisted(const AlertData& alert, const DisplayState& state) {
     if (!alert.isValid) {
         persistedMode_ = false;
@@ -525,9 +466,7 @@ void V1Display::updatePersisted(const AlertData& alert, const DisplayState& stat
 
     persistedMode_ = true;
 
-    // Preserve unflushed external indicator draws while keeping this
-    // persisted frame's cache-hit decision independent from stale regions left
-    // by prior frames. Persisted mode still uses only full-panel or no flush.
+    // Preserve external paint before starting this frame's cache-hit decision.
     const bool hadPendingExternalDraws = !drawnRegion_.empty();
     drawnRegion_.reset();
 
@@ -545,25 +484,20 @@ void V1Display::updatePersisted(const AlertData& alert, const DisplayState& stat
     syncTopIndicators(static_cast<uint32_t>(millis()));
     drawStatusStrip(state, topChar, false, state.bogeyCounterDot);
 
-    // Band indicator in persisted color
     const bool bandsPainted = drawBandIndicators(alert.band, true);
     if (bandsPainted || dirty_.gpsIndicator) {
         drawGpsIndicator(); // Repaint: band FILL_RECT overlaps GPS x-range when bands change
     }
 
-    // Frequency in persisted color
     // Persistence owns a specific alert row, so preserve that row's Photo
     // type. The shared P counter may have belonged to a different row.
     const bool isPhotoRadar = (alert.band == BAND_K) && (alert.photoType != 0);
     drawFrequency(alert.frequency, alert.band, true, isPhotoRadar ? alert.photoType : 0);
 
-    // No signal bars — draw empty
     drawVerticalSignalBars(0, 0, alert.band, true);
 
-    // Arrows in persisted grey
     drawDirectionArrow(alert.direction, true);
 
-    // Clear card area
     AlertData emptyPriority;
     drawSecondaryAlertCards(nullptr, 0, emptyPriority, true);
 
@@ -577,30 +511,17 @@ void V1Display::updatePersisted(const AlertData& alert, const DisplayState& stat
     currentScreen_ = ScreenMode::Persisted;
 }
 
-// ============================================================================
-// update(priority, allAlerts, alertCount, state) — Live alert display
-// ============================================================================
-
 void V1Display::update(const AlertData& priority, const AlertData* allAlerts, int alertCount,
                        const DisplayState& state) {
     persistedMode_ = false;
 
     if (!priority.isValid || priority.band == BAND_NONE) {
-        // Do not clear drawnRegion_ here: a lower-level external setter may
-        // have painted an indicator before this invalid live packet. Leaving
-        // the region queued lets the next real display frame flush it.
+        // Leave external paint pending for the next valid frame to flush.
         return;
     }
 
-    // Capture any indicator draws queued by lower-level modules before this
-    // live frame (for example setBLEProxyStatus(), which draws into the
-    // framebuffer and intentionally leaves flushing to the display pipeline).
-    // Then reset the per-frame accumulator so this update only records pixels
-    // it actually repaints. A queued draw also requires a full canvas transfer.
-    //
-    // The end of this function resets drawnRegion_ after consuming it; that is
-    // what makes a non-empty entry region mean "external pending draw" rather
-    // than "the previous live frame already flushed this area."
+    // Prior frames consume their bounds, so non-empty bounds here are external
+    // paint (e.g. setBLEProxyStatus()) that still needs a full-canvas transfer.
     const bool hadPendingExternalDraws = !drawnRegion_.empty();
     drawnRegion_.reset();
 
@@ -610,11 +531,7 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
     dirty_.multiAlert = true;
     multiAlertMode_ = true;
 
-    // Arrow display: priority arrow only if setting enabled, otherwise all V1 arrows.
-    //
-    // Intersecting with priorityArrow hides directions the V1 is lighting.
-    // This is applied only when explicitly enabled per slot; never make it the
-    // default.
+    // Priority-only hides directions the V1 is lighting; require explicit slot opt-in.
     Direction arrowsToShow;
     if (settings_.getSlotPriorityArrowOnly(s.activeSlot)) {
         arrowsToShow = static_cast<Direction>(state.priorityArrow & state.arrows);
@@ -632,12 +549,8 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
     syncTopIndicators(static_cast<uint32_t>(millis()));
     drawStatusStrip(state, liveTopCounterChar, state.muted, liveTopCounterDot);
 
-    // Under blink-pair semantics, image2=='P' also implies image1=='P'.
-    // Photo identity belongs to the K-band alert row, just as Ku identity
-    // belongs to the selected Ku row. A table-wide Photo flag or the shared P
-    // counter must not recolor an unrelated K/Ka priority frequency when the
-    // Photo source is secondary. The P-only fallback is limited to a lone K
-    // row for display-only compatibility.
+    // Photo identity belongs to its K row, not an unrelated priority frequency.
+    // The shared P-counter fallback is valid only for a lone K row.
     const bool isPhotoRadar = (priority.band == BAND_K) &&
                               ((priority.photoType != 0) ||
                                (alertCount <= 1 && liveTopCounterChar == 'P'));
@@ -646,10 +559,8 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
                                           : DisplayVisualContract::PHOTO_TYPE_UNSPECIFIED;
     drawFrequency(priority.frequency, priority.band, state.muted, isPhotoRadar ? priorityPhotoType : 0);
 
-    // Ku shares the V1's physical K cell, but alert identity follows the
-    // V1-selected priority row. A secondary Ku remains in its card and must
-    // not rename a K or Ka primary. The physical K flash bit still drives Ku
-    // when Ku owns the primary alert.
+    // Only a Ku priority may rename the shared K cell; secondary Ku stays in its
+    // card. The physical K flash bit drives the Ku label's blink.
     const uint8_t physicalBandMask = static_cast<uint8_t>(state.activeBands & ~BAND_KU);
     const uint8_t primaryBandMask = static_cast<uint8_t>(
         physicalBandMask | ((priority.band == BAND_KU) ? BAND_KU : BAND_NONE));
@@ -671,21 +582,15 @@ void V1Display::update(const AlertData& priority, const AlertData* allAlerts, in
 
     drawSecondaryAlertCards(allAlerts, alertCount, priority, state.muted);
 
-    // Counter/card-only changes can paint the correct canvas while regional
-    // transfers leave the previous image on AXS15231B. Use the same full-canvas
-    // transfer as resting/persisted frames whenever pixels changed. Element
-    // cache hits still skip both painting and transfer; input cadence alone
-    // must not trigger another panel push.
+    // Regional transfers can leave counter/card changes stale on AXS15231B.
+    // Transfer the full changed canvas; cache hits still skip the panel push.
     const bool nothingToFlush = displayFrameHasNothingToFlush(
         needsFullRedraw, !hadPendingExternalDraws && drawnRegion_.empty());
     if (!nothingToFlush) {
         DISPLAY_FLUSH();
     }
 
-    // Consume the live-frame region after dispatch. This prevents the next
-    // live frame from mistaking already-flushed paint for pending external
-    // work, while still allowing external setters between frames to queue a
-    // region for the next pipeline-owned flush.
+    // Only new external paint should remain pending on entry to the next frame.
     drawnRegion_.reset();
 
     dirty_.resetTracking = false;

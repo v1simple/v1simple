@@ -1,5 +1,3 @@
-// display_vol_warn.h — VolumeZeroWarning state machine for VOL 0 flashing alert
-// Shared between display.cpp (setBLEProxyStatus reset) and display_update.cpp (evaluate/draw).
 #pragma once
 
 #include <Arduino.h>
@@ -10,10 +8,10 @@ struct VolumeZeroWarning {
     bool shown = false;
     bool acknowledged = false;
 
-    static constexpr unsigned long DELAY_MS = 15000;    // Wait before showing
-    static constexpr unsigned long DURATION_MS = 10000; // Show for this long
+    static constexpr unsigned long DELAY_MS = 15000;
+    static constexpr unsigned long DURATION_MS = 10000;
 
-    /// Reset all state (call when volume goes non-zero or app connects/disconnects).
+    // Re-arm when volume becomes nonzero or the app connects/disconnects.
     void reset() {
         detectedMs = 0;
         warningStartMs = 0;
@@ -21,7 +19,7 @@ struct VolumeZeroWarning {
         acknowledged = false;
     }
 
-    /// Evaluate the state machine.  Returns true when the warning should be drawn.
+    /// Returns true while the warning should be drawn.
     /// @param volZero          true when mainVolume == 0 && hasVolumeData
     /// @param proxyConnected   true when BLE proxy client is connected
     /// @param speedVolZeroActive true when speed-mute intentionally set volume to 0
@@ -49,10 +47,9 @@ struct VolumeZeroWarning {
         }
 
         if ((now - warningStartMs) < DURATION_MS) {
-            return true; // Warning is active — caller should draw
+            return true;
         }
 
-        // Duration expired
         acknowledged = true;
         shown = false;
         return false;

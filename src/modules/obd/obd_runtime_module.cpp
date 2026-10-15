@@ -28,21 +28,9 @@ class ObdBleClient;
 bool ensureObdTransportRuntime(ObdBleClient* bleClient, ObdRuntimeModule* runtime);
 #endif
 
-// ======================================================================
-// FILE-SCOPE HELPERS — string utilities
-// ======================================================================
-
 using ObdStringUtils::commandDisplayLen;
 using ObdStringUtils::copyString;
 using ObdStringUtils::stringContainsCI;
-
-// ======================================================================
-// SINGLETON — file-scope module instance
-// ======================================================================
-
-// ======================================================================
-// LIFECYCLE — resetForBegin / begin constructor and reset sequence
-// ======================================================================
 
 void ObdRuntimeModule::resetForBegin() {
     state_ = ObdConnectionState::IDLE;
@@ -142,27 +130,16 @@ void ObdRuntimeModule::begin(ObdBleClient* bleClient, bool enabled, const char* 
         return;
     }
 
-    // Provision only when there is something to talk to. ensureRuntimeResources()
-    // allocates the NimBLE client -- one of only NIMBLE_MAX_CONNECTIONS==3 slots
-    // in NimBLEDevice's fixed m_pClients array -- and the ObdTransport task with
-    // its 8 KiB internal-SRAM stack and queues. Calling it before the saved-address
-    // check meant that merely enabling OBD in settings paid ~8.5 KiB of internal
-    // SRAM plus a connection slot on a unit that had never been paired.
-    //
-    // Both the enable path (setEnabled) and the manual-scan entry point
-    // (requestManualPairScan) call ensureRuntimeResources() themselves, so an
-    // unpaired unit still provisions the moment it actually needs a client.
+    // An unpaired unit needs neither a NimBLE client slot nor the 8 KiB
+    // transport task. Enable/manual-scan paths provision them when needed.
     if (savedAddress_[0] != '\0') {
         ensureRuntimeResources();
         state_ = ObdConnectionState::WAIT_BOOT;
     }
 }
 
-// Allocates the two resources OBD needs to talk to a dongle: the NimBLE client
-// object (one of only NIMBLE_MAX_CONNECTIONS==3 slots in NimBLEDevice's fixed
-// m_pClients array) and the ObdTransport task with its queues (8KB internal
-// stack, wakes every 20ms).  Both are idempotent, so callers need not track
-// whether provisioning already happened.
+// Idempotently provision one NimBLE client slot and the transport task/queues
+// (8 KiB internal stack, 20 ms wake interval).
 void ObdRuntimeModule::ensureRuntimeResources() {
 #ifndef UNIT_TEST
     if (bleClient_) {
@@ -179,10 +156,6 @@ void ObdRuntimeModule::clearBleEventQueue() {
     taskEXIT_CRITICAL(&bleEventQueueMux_);
 }
 
-// ======================================================================
-// RESPONSE + SPEED STATE RESET — clear BLE buffer and speed on transition
-// ======================================================================
-
 void ObdRuntimeModule::resetInitState(bool preferWarmInit) {
     initIndex_ = 0;
     warmInitPreferred_ = preferWarmInit;
@@ -191,10 +164,6 @@ void ObdRuntimeModule::resetInitState(bool preferWarmInit) {
     resetCommandState();
     clearBleResponseState();
 }
-
-// ======================================================================
-// RUNTIME TOGGLES — setEnabled / setMinRssi runtime configuration
-// ======================================================================
 
 void ObdRuntimeModule::setEnabled(bool enabled) {
     if (enabled_ == enabled)
@@ -287,10 +256,6 @@ void ObdRuntimeModule::handlePollingResponse(uint32_t nowMs) {
     handlePollingError(nowMs, false,
                        responseOverflowed ? ObdFailureReason::BUFFER_OVERFLOW : ObdFailureReason::COMMAND_RESPONSE);
 }
-
-// ======================================================================
-// MAIN UPDATE DISPATCHER — FSM pump delegating to per-state handlers
-// ======================================================================
 
 bool ObdRuntimeModule::reconcileProxyOwnership(uint32_t nowMs, bool proxyClientConnected) {
     if (!proxyClientConnected) {
@@ -645,10 +610,6 @@ void ObdRuntimeModule::update(uint32_t nowMs, const ObdBleContext& bootReadyCont
     }
 }
 
-// ======================================================================
-// SNAPSHOT + SPEED QUERY — read-only queries into module state
-// ======================================================================
-
 ObdRuntimeStatus ObdRuntimeModule::snapshot(uint32_t nowMs) const {
 #ifndef UNIT_TEST
     // Guard against calls before begin() — bleClient_ is still nullptr and
@@ -703,10 +664,6 @@ bool ObdRuntimeModule::getFreshSpeed(uint32_t nowMs, float& speedMphOut, uint32_
     return true;
 }
 
-// ======================================================================
-// PUBLIC CONTROL API — stopActiveScan, requestManualPairScan, etc.
-// ======================================================================
-
 void ObdRuntimeModule::stopActiveScan() {
     stopBleScan();
     scanRequested_ = false;
@@ -730,10 +687,7 @@ bool ObdRuntimeModule::requestManualPairScan(uint32_t nowMs) {
         return false;
     }
 
-    // Companion to begin(): provisioning is no longer unconditional there, so a
-    // unit that booted OBD-enabled but unpaired arrives here with a null
-    // pClient_ and would fail to connect forever. Idempotent, so the already-
-    // provisioned paths pay nothing.
+    // Manual scanning must also provision units that booted unpaired.
     ensureRuntimeResources();
 
     stopBleScan();

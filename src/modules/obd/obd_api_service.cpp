@@ -69,13 +69,8 @@ void sendFieldTypeError(WebServer& server, const char* key, const char* expected
     WifiApiResponse::sendJsonDocument(server, 400, errDoc);
 }
 
-// /api/obd/config takes partial updates, so an omitted key legitimately means
-// "leave this setting alone". A key that is present but of the wrong type is a
-// client bug, and answering it with a bare {"success":true} hides the fact that
-// nothing was applied. Report it the way the rest of this service reports bad
-// input: a 400 carrying error/message via WifiApiResponse::setErrorAndMessage,
-// naming the offending field. Validation runs before any settings are applied, so
-// a rejected request never lands a partial update.
+// Omitted config fields remain unchanged. Reject present fields of the wrong
+// type with 400/error/message before applying any part of an update.
 bool readOptionalBool(WebServer& server, const JsonDocument& body, const char* key, bool& hasValue, bool& out) {
     JsonVariantConst value = body[key];
     if (value.isUnbound()) {

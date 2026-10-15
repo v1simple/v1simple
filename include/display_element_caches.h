@@ -1,34 +1,17 @@
 #pragma once
 
-// ============================================================================
-// Display element render caches — unified struct model
-//
-// Replaces the anonymous file-scoped s_* statics in each display_*.cpp.
-// One struct per rendered element; all collected into DisplayElementCaches.
-//
-// Lifecycle:
-//   - Default-initialized to "invalid" (forces first-run full draw)
-//   - DisplayElementCaches::invalidateAll() is called from
-//     prepareFullRedrawNoClear() after every screen clear
-//   - Each render function sets valid = true after a successful draw
-//   - Blink timers, font measurement statics, and active slot state
-//     are NOT part of this system — they remain file-scoped statics
-// ============================================================================
+// Renderers mark caches valid after drawing. Screen clears invalidate them via
+// prepareFullRedrawNoClear(); font metrics and blink timing survive that reset.
 
 #include <cstdint>
 #include "packet_parser.h" // Band, AlertData
 
-// --- Arrow render cache ---------------------------------------------------
 struct ArrowRenderCache {
     bool showFront = false;
     bool showSide = false;
     bool showRear = false;
-    // Per-arrow blink-off-phase: true when V1 reports this arrow as flashing
-    // (image1 != image2 → flashBits bit set) AND the shared blink phase is in
-    // its OFF half.  This is distinct from a non-active "resting" arrow that
-    // stays dimly visible as UI chrome. Including these in the cache key forces
-    // a repaint at every visible blink transition even though showXxx stays
-    // true for the duration of the alert.
+    // Blink-off erases an active arrow; an inactive arrow stays dim. Cache the
+    // phase separately because showXxx stays true through the whole alert.
     bool blinkOffFront = false;
     bool blinkOffSide = false;
     bool blinkOffRear = false;
@@ -42,11 +25,7 @@ struct ArrowRenderCache {
     void invalidate() { valid = false; }
 };
 
-// --- Band indicator render cache ------------------------------------------
-// lastPaletteRevision keys the settings colors this cache paints with
-// (colorBand*, PALETTE_MUTED). Sibling caches embed their colors in the key;
-// without this, a color change that skipped forceNextRedraw() would cache-hit
-// and hold stale colors on the panel.
+// Palette revision prevents stale colors even when forceNextRedraw() was skipped.
 struct BandRenderCache {
     uint8_t lastMask = 0xFF;       // Effective mask; Ku identity remains set while its shared K cell blinks off.
     uint8_t lastFlashBits = 0;     // Needed when a card clear restores the overlapping band label.
@@ -58,8 +37,6 @@ struct BandRenderCache {
     void invalidate() { valid = false; }
 };
 
-// --- Signal bars render cache ---------------------------------------------
-// lastPaletteRevision: same rationale as BandRenderCache (colorBar1..6).
 struct BarsRenderCache {
     uint8_t lastStrength = 0xFF; // 0xFF = undrawn sentinel
     bool lastMuted = false;
@@ -69,9 +46,6 @@ struct BarsRenderCache {
     void invalidate() { valid = false; }
 };
 
-// --- Segment7 frequency render cache --------------------------------------
-// File-scoped frequency width caches hold font metrics rather than render
-// state, so they are intentionally outside this structure.
 struct FrequencyRenderCache {
     char lastText[16] = "";
     uint16_t lastColor = 0;
@@ -83,14 +57,7 @@ struct FrequencyRenderCache {
     void invalidate() { valid = false; }
 };
 
-// --- Battery render cache -------------------------------------------------
-// invalidate() restores undrawn sentinels and clears iconValid so the next
-// icon-mode call repaints the body, cap, and cells.
-//
-// iconValid is exposed for external invalidation (drawProfileIndicator
-// clips the bottom-left 11x12 px of the battery body; it flips iconValid
-// to false before calling drawBatteryIndicator() so the clipped corner
-// gets restored — but only when profile actually redrew).
+// Profile drawing clips the battery corner and clears iconValid to restore it.
 struct BatteryRenderCache {
     // Percent-mode sub-cache
     int lastPctDrawn = -1; // -1 = undrawn sentinel
@@ -117,9 +84,7 @@ struct BatteryRenderCache {
     }
 };
 
-// --- Top counter render cache (bogey counter + mute icon) -----------------
-// drawTopCounterSegment7() and drawMuteIcon() share this structure but maintain
-// independent validity flags.
+// The counter and mute badge invalidate independently.
 struct TopCounterRenderCache {
     // Bogey counter sub-cache
     char lastText[8] = "";
@@ -139,7 +104,6 @@ struct TopCounterRenderCache {
     }
 };
 
-// --- OBD indicator render cache -------------------------------------------
 struct ObdRenderCache {
     bool lastShown = false;
     bool lastConnected = false;
@@ -149,7 +113,6 @@ struct ObdRenderCache {
     void invalidate() { valid = false; }
 };
 
-// --- GPS indicator render cache ------------------------------------------
 struct GpsRenderCache {
     bool lastShown = false;
     uint8_t lastSats = 0xFF; // 0xFF = undrawn sentinel
@@ -158,7 +121,6 @@ struct GpsRenderCache {
     void invalidate() { valid = false; }
 };
 
-// --- ALP indicator render cache -------------------------------------------
 struct AlpRenderCache {
     bool lastShown = false;
     uint8_t lastState = 0;           // AlpState as uint8_t for change detection
@@ -169,18 +131,8 @@ struct AlpRenderCache {
     void invalidate() { valid = false; }
 };
 
-// --- Secondary alert cards render cache -----------------------------------
-// Owns the full per-slot card state:
-//   - slots[2]: active slot data (alert + lastSeen timer). invalidateAll()
-//     resets it on screen clear. The slots carry
-//     alert-identity state (V1 table row, with band/frequency fallback for
-//     synthetic alerts) that must be wiped when the
-//     framebuffer is wiped, otherwise stale slot entries could match
-//     against the next priority/gracing pass and resurrect ghost cards.
-//   - lastDrawnPositions[2]: position-keyed last-drawn fingerprint used
-//     by positionNeedsFullRedraw to decide partial vs full redraw.
-//   - lastPriority / lastDrawnCount / lastProfileSlot / forceRedraw: the
-//     coarser per-frame comparison state.
+// Screen clears must also discard slot identities, or grace matching can
+// resurrect cards that no longer exist in the framebuffer.
 struct CardSlot {
     AlertData alert{};
     unsigned long lastSeen = 0;
@@ -199,14 +151,12 @@ struct CardDrawnPosition {
 struct CardsRenderCache {
     CardSlot slots[2]{};
     CardDrawnPosition lastDrawnPositions[2]{};
-    AlertData lastPriority{}; // Last priority alert drawn (for comparison)
+    AlertData lastPriority{};
     int lastDrawnCount = 0;
     int lastProfileSlot = -1;
-    bool forceRedraw = true; // true = force full redraw on next call
+    bool forceRedraw = true;
 
     void invalidate() {
-        // Zero per-slot state — the framebuffer was cleared, so any alert
-        // identity we were tracking is no longer on-screen.
         for (int i = 0; i < 2; ++i) {
             slots[i].alert = AlertData();
             slots[i].lastSeen = 0;
@@ -219,12 +169,7 @@ struct CardsRenderCache {
     }
 };
 
-// --- Volume indicator render cache ----------------------------------------
-// Tracks last-drawn mainVolume/muteVolume + their text colors. The cache is
-// keyed off the values that actually influence pixels (the two volume
-// numbers and the two user-configurable colors); freshness of BLE context
-// is NOT part of the key because drawVolumeIndicator is only called from
-// drawStatusStrip when state.supportsVolume() is already true.
+// BLE freshness is not a key: drawStatusStrip gates this on supportsVolume().
 struct VolumeRenderCache {
     uint8_t lastMainVol = 0xFF; // 0xFF = undrawn sentinel
     uint8_t lastMuteVol = 0xFF;
@@ -235,10 +180,7 @@ struct VolumeRenderCache {
     void invalidate() { valid = false; }
 };
 
-// --- RSSI indicator render cache ------------------------------------------
-// Tracks last-drawn V1 RSSI and app RSSI + the derived color-code bucket
-// for each. The hidden/cleared state is tracked separately so toggling
-// hideRssiIndicator/hideVolumeIndicator still forces one repaint to clear.
+// Track hidden state so visibility changes clear the old pixels once.
 struct RssiRenderCache {
     int lastV1Rssi = 1;  // 1 = undrawn sentinel (0 is a valid "not connected" value)
     int lastAppRssi = 1; // 1 = undrawn sentinel
@@ -256,11 +198,6 @@ struct RssiRenderCache {
     }
 };
 
-// --- Profile indicator render cache ---------------------------------------
-// Tracks last-drawn slot/color/name so the FILL_RECT+text render can be
-// skipped when nothing changed. hiddenRender tracks whether we rendered
-// the hidden-state (empty rect) vs the shown-state (text) last time,
-// because those paths write different pixels.
 struct ProfileRenderCache {
     int lastSlot = -1;
     uint16_t lastColor = 0;
@@ -274,10 +211,7 @@ struct ProfileRenderCache {
     }
 };
 
-// --- WiFi indicator render cache ------------------------------------------
-// Tracks last-drawn visibility and color. Arc geometry is a pure function
-// of iconSize/wifiX/wifiY (all constants), so color + visibility is a
-// complete cache key.
+// WiFi and BLE icon geometry is fixed; visibility and color are complete keys.
 struct WifiRenderCache {
     bool lastVisible = false;
     uint16_t lastColor = 0;
@@ -286,9 +220,6 @@ struct WifiRenderCache {
     void invalidate() { valid = false; }
 };
 
-// --- BLE proxy indicator render cache -------------------------------------
-// Tracks last-drawn visibility and color. As with WiFi, rune geometry is
-// static so color + drawn-or-hidden is a complete key.
 struct BleProxyRenderCache {
     bool lastDrawn = false; // true if icon was last rendered (not cleared)
     uint16_t lastColor = 0;
@@ -297,7 +228,6 @@ struct BleProxyRenderCache {
     void invalidate() { valid = false; }
 };
 
-// --- Aggregate -----------------------------------------------------------
 struct DisplayElementCaches {
     ArrowRenderCache arrow;
     BandRenderCache bands;

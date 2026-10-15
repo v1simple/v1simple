@@ -1,14 +1,6 @@
-// RenderFrameComposer — Valentine's Law surface.
-//
-// This suite exists because a real defect reached main: with the ALP connected
-// but showing nothing (LISTENING, or a session withheld as Warm-Up /
-// unconfirmed-detect), a live V1 BAND_LASER alert was dropped from the frame
-// and no ALP branch replaced it. The composed frame came back IDLE while the
-// V1 was reporting laser. Found 2026-08-06; reproduced by compiling this file's
-// subject directly and dumping its routing table.
-//
-// This suite pins a bug that actually reached main and protects the
-// safety-critical invariant that a live threat must remain visible.
+// An ALP connection without a presentable event once hid live V1 laser alerts.
+// Exercise the production composer so silent or withheld ALP sessions cannot
+// replace a live threat with an idle frame.
 
 #include <unity.h>
 
@@ -79,8 +71,6 @@ bool frameHasLaserCard(const RenderFrame& frame) {
 
 } // namespace
 
-// ── The defect ───────────────────────────────────────────────────────
-//
 // ALP connected, nothing presentable. The V1's own laser must still render.
 // This covers LISTENING (ALP sees nothing) and a withheld Warm-Up /
 // unconfirmed-detect session identically: both produce ownsLaserDisplay()
@@ -103,8 +93,6 @@ void test_render_frame_composer_v1_laser_renders_without_alp() {
     TEST_ASSERT_EQUAL(BAND_LASER, frame.v1Priority.band);
 }
 
-// ── ALP authority, where it is real ──────────────────────────────────
-
 void test_render_frame_composer_alp_live_outranks_v1_laser() {
     // ALP has something to show: it owns the render, and the V1's duplicate
     // laser is dropped rather than double-rendered.
@@ -115,7 +103,7 @@ void test_render_frame_composer_alp_live_outranks_v1_laser() {
     TEST_ASSERT_FALSE(frameHasLaserCard(frame));
 }
 
-// ── Live beats persisted (screen/speaker contract, ownership rule 3) ─
+// Live beats persisted (screen/speaker contract, ownership rule 3).
 
 void test_render_frame_composer_v1_live_outranks_alp_persisted() {
     // A persisted ALP frame is memory, not a live threat. Live V1 truth —
@@ -148,8 +136,6 @@ void test_render_frame_composer_alp_does_not_suppress_v1_radar() {
     TEST_ASSERT_EQUAL(1, frame.cardCount);
     TEST_ASSERT_EQUAL(BAND_KA, frame.cards[0].v1Alert.band);
 }
-
-// ── Part III claim: a live ALP laser never composes muted ────────────
 
 void test_render_frame_composer_alp_primary_is_never_muted() {
     const AlertData none{};

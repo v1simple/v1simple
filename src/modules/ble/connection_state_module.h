@@ -10,16 +10,8 @@ class PowerModule;
 class BleQueueModule;
 class AlertPersistenceModule;
 
-/**
- * ConnectionStateModule - Tracks V1 BLE connection state transitions
- *
- * Responsibilities:
- * - Detect connect/disconnect transitions
- * - Clear partial and published parser alert state on disconnect
- * - Recover failed alert startup and re-request alert data when traffic stops
- * - Notify power module of connection changes
- * - Refresh display indicators when disconnected
- */
+// Owns V1 link edges, alert-state reset/recovery, power notifications and
+// disconnected display refresh.
 class ConnectionStateModule {
   public:
     using DisplayOwnerRestoreCallback = bool (*)(void* context, uint32_t nowMs);

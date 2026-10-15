@@ -44,10 +44,8 @@ void V1BLEClient::ScanCallbacks::onResult(const NimBLEAdvertisedDevice* advertis
     // adopt the advertised name for proxy identity (deferred to main loop).
     bleClient->deferLastV1Address(addrStr.c_str(), nameLooksV1 ? name.c_str() : nullptr);
 
-    // Publish only an immutable address edge from callback context. The main
-    // loop accepts it only while it still owns the SCANNING state; a delayed
-    // callback can therefore never overwrite an active connection session.
-    // Avoid copying NimBLEAdvertisedDevice because it allocates under heap pressure.
+    // Publish an immutable address only; the main loop admits it in SCANNING.
+    // Copying NimBLEAdvertisedDevice would allocate in callback context.
     portENTER_CRITICAL(&pendingAddrMux);
     snprintf(bleClient->pendingScanTargetAddress_, sizeof(bleClient->pendingScanTargetAddress_), "%s", addrStr.c_str());
     bleClient->pendingScanTargetAddressType_ = static_cast<uint8_t>(advAddrType);
@@ -65,9 +63,7 @@ void V1BLEClient::ScanCallbacks::onResult(const NimBLEAdvertisedDevice* advertis
 void V1BLEClient::ScanCallbacks::onScanEnd(const NimBLEScanResults& scanResults, int reason) {
     (void)scanResults;
     (void)reason;
-    // Callback context publishes an event only. The main loop exclusively owns
-    // connection-state transitions and decides whether this was an empty scan
-    // or a target-driven stop after inspecting pendingScanTargetUpdate_.
+    // The main loop owns scan-end transitions and checks pending target updates.
     if (instancePtr) {
         instancePtr->pendingScanEndUpdate_.store(true, std::memory_order_release);
     }
@@ -99,10 +95,8 @@ void V1BLEClient::ClientCallbacks::onConnect(NimBLEClient* pClient_) {
 
         instancePtr->asyncConnectSuccess_ = true;
         instancePtr->asyncConnectPending_ = false;
-        // The callback must not publish connected_=true directly: quiescence
-        // can close acceptClientCallbacks_ immediately after the acquire above.
-        // Main-loop processing rechecks that gate before publishing link state;
-        // subscribe completion later confirms the fully usable session.
+        // Main-loop publication must recheck acceptClientCallbacks_: quiescence
+        // can close the gate after this acquire. Subscription confirms usability.
         instancePtr->pendingConnectStateGeneration_.store(callbackGeneration, std::memory_order_relaxed);
         instancePtr->pendingConnectStateUpdate_.store(true, std::memory_order_release);
     }
@@ -137,9 +131,8 @@ void V1BLEClient::ClientCallbacks::onDisconnect(NimBLEClient* pClient_, int reas
         }
     }
 
-    // If the disconnect was unexpected (e.g., V1 powered off), clear bonding info
-    // to ensure a clean reconnect next time.
-    // deleteBond() writes NVS, so defer it rather than blocking the host task.
+    // Unexpected disconnects defer bond deletion; NVS writes must not block
+    // the NimBLE host callback.
     if (reason != 0 && reason != BLE_HS_ETIMEOUT) {
         if (instancePtr) {
             const NimBLEAddress peerAddr = pClient_->getPeerAddress();
@@ -158,9 +151,7 @@ void V1BLEClient::ClientCallbacks::onDisconnect(NimBLEClient* pClient_, int reas
         event.type = ProxyCallbackEventType::V1_DISCONNECTED;
         instancePtr->enqueueProxyCallbackEvent(event);
 
-        // Remote attribute ownership stays on the main loop. The callback only
-        // closes the publication gate and queues teardown; this prevents it
-        // from nulling a pointer between a main-loop check and dereference.
+        // Queue teardown without clearing main-loop-owned attribute pointers.
         instancePtr->acceptClientCallbacks_.store(false, std::memory_order_release);
         instancePtr->sessionPublicationGate_.close();
         instancePtr->connected_.store(false, std::memory_order_release);
@@ -177,9 +168,8 @@ bool V1BLEClient::connectToServer() {
         return false;
     }
 
-    // discoverAttributes() mutates/deletes the client's cached services. Never
-    // let a new connection begin until the prior discovery task has published
-    // its final completion and exited the client-mutating portion.
+    // Discovery mutates cached services. Reconnect must wait for its final
+    // completion and exit from the client-mutating portion.
     if (bleState_ == BLEState::QUIESCING || discoveryTaskRunning_.load(std::memory_order_acquire)) {
         return false;
     }
@@ -229,7 +219,6 @@ bool V1BLEClient::startAsyncConnect() {
         NimBLEDevice::stopAdvertising();
     }
 
-    // Ensure no scan remains active before connecting.
     NimBLEScan* pScan = NimBLEDevice::getScan();
     if (pScan && pScan->isScanning()) {
         pScan->stop();
@@ -245,7 +234,6 @@ bool V1BLEClient::startAsyncConnect() {
             setBLEState(BLEState::DISCONNECTED);
             return false;
         }
-        // Callbacks share the client's lifetime.
         if (!pClientCallbacks_) {
             pClientCallbacks_.reset(new ClientCallbacks());
         }
@@ -255,12 +243,9 @@ bool V1BLEClient::startAsyncConnect() {
     // Connection parameters: 12-24 (15-30ms interval), balanced for stability
     pClient_->setConnectionParams(NIMBLE_CONN_INTERVAL_MIN, NIMBLE_CONN_INTERVAL_MAX, NIMBLE_CONN_LATENCY,
                                   NIMBLE_CONN_SUPERVISION_TIMEOUT);
-    // Preserve current active-connect timeout behavior.
     pClient_->setConnectTimeout(NIMBLE_CONNECT_TIMEOUT_ACTIVE_MS);
-    // NimBLE 2.5.0 added a built-in connect retry (default=2). Disable it:
-    // this project manages its own MAX_CONNECT_ATTEMPTS retry loop, and
-    // NimBLE's internal retry would stack on top of the 3s wall-clock timeout
-    // in processConnectingWait(), causing premature disconnect mid-retry.
+    // Disable NimBLE retries: MAX_CONNECT_ATTEMPTS owns retry admission,
+    // bounded by processConnectingWait()'s 3-second deadline.
     pClient_->setConnectRetries(0);
 
     // A stale connection is quiesced asynchronously before another attempt.
@@ -278,8 +263,7 @@ bool V1BLEClient::startAsyncConnect() {
     asyncConnectPending_ = true;
     asyncConnectSuccess_ = false;
 
-    // Use ASYNCHRONOUS connect - returns immediately, callback will set asyncConnectSuccess_
-    // NimBLE 2.x: connect(address, deleteAttributes, asyncConnect, exchangeMTU)
+    // Async connect returns before completion: (address, deleteAttributes, asyncConnect, exchangeMTU).
     bool initiated = pClient_->connect(targetAddress_, true, true);
 
     if (!initiated) {
@@ -295,7 +279,6 @@ bool V1BLEClient::startAsyncConnect() {
             return true; // Keep state machine going
         }
 
-        // All attempts exhausted
         consecutiveConnectFailures_++;
 
         if (hitsV1BleHardResetThreshold(consecutiveConnectFailures_)) {
@@ -310,13 +293,10 @@ bool V1BLEClient::startAsyncConnect() {
         return false;
     }
 
-    // Async connect initiated - transition to CONNECTING_WAIT
     setBLEState(BLEState::CONNECTING_WAIT);
     return true;
 }
 
-// Called from CONNECTING_WAIT when async connect succeeds.
-// Post-connect setup before service discovery.
 bool V1BLEClient::finishConnection() {
     const uint32_t currentGeneration = sessionGeneration_.load(std::memory_order_acquire);
     if (!acceptClientCallbacks_.load(std::memory_order_acquire) ||
@@ -325,14 +305,12 @@ bool V1BLEClient::finishConnection() {
         return false;
     }
 
-    // Success!
     consecutiveConnectFailures_ = 0;
     nextConnectAllowedMs_ = 0;
 
     // Log the negotiated connection parameters (interval units = 1.25ms, timeout units = 10ms)
     logConnParams("post-connect");
 
-    // Transition to discovery phase
     activeDiscoveryGeneration_ = currentGeneration;
     discoveryTaskDone_.store(false, std::memory_order_relaxed);
     discoveryTaskResult_.store(false, std::memory_order_relaxed);
@@ -389,7 +367,6 @@ void V1BLEClient::processConnectingWait() {
         return;
     }
 
-    // All attempts exhausted
     consecutiveConnectFailures_++;
 
     if (hitsV1BleHardResetThreshold(consecutiveConnectFailures_)) {
@@ -457,10 +434,8 @@ void V1BLEClient::beginClientQuiesce(bool requestHardReset) {
 
 // Full cleanup of BLE connection state - call before retry or after failures
 void V1BLEClient::cleanupConnection() {
-    // processClientQuiesce() is the sole caller. It reaches this point only
-    // after discovery has exited and an active link has delivered its
-    // disconnect callback. Remote attribute pointers are main-loop-owned, so
-    // no callback can clear one between a check and dereference.
+    // Called only after discovery exits and the link disconnect callback
+    // completes. Attribute pointers remain main-loop-owned.
     pDisplayDataChar_ = nullptr;
     pCommandChar_ = nullptr;
     pCommandCharLong_ = nullptr;
@@ -516,9 +491,7 @@ void V1BLEClient::processClientQuiesce() {
         QUIESCE_FATAL_TIMEOUT_MS,
     });
 
-    // Apply one deadline to every incomplete teardown path, including the
-    // case where disconnect() repeatedly refuses the request while NimBLE
-    // continues to report the client connected.
+    // One deadline covers every incomplete teardown, including refused disconnects.
     if (decision.action == ble_quiesce_policy::Action::FATAL_RESTART) {
         quiesceTimeoutRecoveryCount_.fetch_add(1, std::memory_order_relaxed);
         Serial.printf(
@@ -532,13 +505,10 @@ void V1BLEClient::processClientQuiesce() {
 
     if (decision.action == ble_quiesce_policy::Action::WAIT ||
         decision.action == ble_quiesce_policy::Action::RETRY_PENDING_OPERATIONS) {
-        // The pinned NimBLE 2.5.0 client invokes onDisconnect while the old
-        // m_connHandle is still available, then clears the handle/status after
-        // the callback returns. We therefore do not release this generation on
-        // isConnected()==false alone: the matching callback is the ownership
-        // fence. If NimBLE violates that contract or discovery never unwinds,
-        // fail closed with a device restart; never admit a new session that a
-        // late callback could tear down.
+        // onDisconnect runs before NimBLE clears its handle/status. The matching
+        // callback, not isConnected()==false alone, releases this generation.
+        // Restart if the callback or discovery cannot quiesce; never expose a
+        // new session to an outgoing callback.
         if (decision.action == ble_quiesce_policy::Action::RETRY_PENDING_OPERATIONS) {
             quiesceLastRetryMs_ = now;
             if (decision.retryConnectCancel && pClient_) {
@@ -600,9 +570,7 @@ void V1BLEClient::discoveryTaskFunc(void* param) {
     // Release is the ownership handoff: after observing false with acquire,
     // the main loop may reuse the context and operate on the client again.
     self->discoveryTaskRunning_.store(false, std::memory_order_release);
-    // Self-delete: IDF recommends external deletion, but this fire-and-forget
-    // task has no external owner.  Deferred cleanup (prvTaskDeleteWithCapsTask)
-    // handles the stack free safely.
+    // No external task owner; deferred IDF cleanup frees this task's stack.
     vTaskDeleteWithCaps(nullptr);
 }
 
@@ -659,7 +627,6 @@ void V1BLEClient::processDiscovering() {
         return; // Yield to loop while task runs
     }
 
-
     const uint32_t completedGeneration = discoveryCompletedGeneration_.load(std::memory_order_acquire);
     if (completedGeneration != activeDiscoveryGeneration_ ||
         completedGeneration != sessionGeneration_.load(std::memory_order_acquire)) {
@@ -708,10 +675,8 @@ void V1BLEClient::notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pDa
     if (!pData || !instancePtr || !pChar) {
         return;
     }
-    // This is the first accepted raw-notification instruction. Stamp before
-    // generation checks, characteristic mapping, or proxy work: any callback
-    // that entered before a settings command must remain pre-command even if
-    // delivery to the main-loop queue is delayed until after that command.
+    // Stamp ingress before all admission/mapping/proxy work. Queue delay must
+    // not turn a pre-command notification into a fresh settings response.
     const uint32_t ingressSequence = instancePtr->noteV1NotificationIngress();
     const uint32_t callbackMillis = static_cast<uint32_t>(millis());
     const uint32_t callbackGeneration = instancePtr->sessionGeneration_.load(std::memory_order_acquire);

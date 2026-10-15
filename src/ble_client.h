@@ -156,10 +156,8 @@ class V1BLEClient {
     // after the complete settings Apply transaction has been verified.
     void publishVerifiedSettingsApplyEdge(uint32_t verifiedSessionGeneration);
 
-    // A callback stamps this at entry, before queue admission or parsing. A
-    // settings request samples the latest value immediately before its send.
-    // Therefore a prompt reply that enters while the transport call is still
-    // returning remains eligible, while every earlier frame stays excluded.
+    // Stamp at callback entry; sample immediately before a settings send.
+    // Replies entering during send remain fresh; earlier queued frames do not.
     uint32_t noteV1NotificationIngress() {
         uint32_t current = v1NotificationIngressSequence_.load(std::memory_order_acquire);
         while (true) {
@@ -238,9 +236,8 @@ class V1BLEClient {
     SendResult requestAllSweepDefinitionsResult();
     SendResult writeSweepDefinition(uint8_t index, uint16_t lowerMHz, uint16_t upperMHz, bool commit);
 
-    // Exact vendor reqFactoryDefault surface. This is deliberately not wired
-    // to ordinary Apply/defaults: the protocol has no ACK and a truthful
-    // operation must own an exclusive destructive workflow plus recapture.
+    // reqFactoryDefault has no ACK. Keep it exclusive to the destructive
+    // reset workflow with recapture; ordinary Apply/defaults cannot call it.
     SendResult factoryResetDetector();
 
     bool requestUserBytes();
@@ -530,9 +527,8 @@ class V1BLEClient {
     size_t proxyCallbackEventQueueCount_ = 0;
     portMUX_TYPE proxyCallbackEventMux_ = portMUX_INITIALIZER_UNLOCKED;
 
-    // Async discovery task (avoids ~2s block on main loop). Each task captures
-    // an immutable session generation. Completion is accepted only for the
-    // generation that launched it; timeout/disconnect invalidates that session.
+    // Async discovery avoids blocking the loop for ~2s. Accept completion only
+    // for its launching generation; timeout/disconnect invalidates that session.
     struct DiscoveryTaskContext {
         V1BLEClient* owner = nullptr;
         NimBLEClient* client = nullptr;

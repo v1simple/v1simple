@@ -1,8 +1,7 @@
 #pragma once
 
-// Per-frame painted-region accumulator. Live alerts may region-flush;
-// resting and persisted screens full-flush whenever any pixel changed.
-// It resets and is consumed within one frame, unlike DisplayDirtyFlags.
+// Per-frame painted bounds. Live, resting and persisted frames full-flush when
+// anything changed; external draws remain pending until the next frame consumes them.
 
 #include <cstdint>
 

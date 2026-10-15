@@ -1,14 +1,5 @@
-/**
- * OBD runtime connection state machine.
- *
- * Owns:
- *   - Connection-state transitions (transitionTo).
- *   - Per-state handlers: updateSecuring, updateAtInit, updatePolling.
- *   - Target-address bookkeeping (saved/connect/manual scan candidates).
- *
- * Called from obd_runtime_module.cpp::update() which dispatches into the
- * appropriate handler based on current state_.
- */
+// Connection transitions, target selection and per-state handlers dispatched
+// by ObdRuntimeModule::update().
 
 #include "obd_runtime_module.h"
 
@@ -29,9 +20,7 @@ static constexpr uint32_t OBD_RSSI_REFRESH_MS = 2000;
 using ObdStringUtils::commandDisplayLen;
 using ObdStringUtils::copyString;
 
-// ======================================================================
 // STATE MACHINE — transitions and per-state handler dispatch
-// ======================================================================
 
 void ObdRuntimeModule::transitionTo(ObdConnectionState newState, uint32_t nowMs) {
     if (newState == ObdConnectionState::POLLING) {
@@ -42,9 +31,7 @@ void ObdRuntimeModule::transitionTo(ObdConnectionState newState, uint32_t nowMs)
     stateEntryPending_ = true;
 }
 
-// ======================================================================
 // ADDRESS / TARGET MANAGEMENT — saved/connect/manual scan addresses
-// ======================================================================
 
 void ObdRuntimeModule::setSavedAddressFromBuffer(const char* address) {
     copyString(savedAddress_, sizeof(savedAddress_), address);
@@ -91,9 +78,7 @@ void ObdRuntimeModule::commitManualScanCandidate() {
     clearManualScanState();
 }
 
-// ======================================================================
 // PER-STATE HANDLERS — Securing / AtInit / Polling state machines
-// ======================================================================
 
 void ObdRuntimeModule::updateSecuring(uint32_t nowMs) {
     ObdTransportResult transportResult{};

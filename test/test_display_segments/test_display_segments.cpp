@@ -1,12 +1,4 @@
-/**
- * test_display_segments.cpp
- *
- * Unit tests for display segment geometry and character mapping.
- *
- * Covers segment geometry and character-map edge cases. All functions are
- * pure math or lookup tables, with no Arduino
- * dependencies, no mocks required.
- */
+// Geometry and character-map tests; no Arduino runtime or mocks required.
 
 #include <unity.h>
 #include <cstdint>
@@ -20,12 +12,9 @@ using namespace DisplaySegments;
 void setUp()    {}
 void tearDown() {}
 
-// ============================================================================
 // segMetrics — geometry invariants
-// ============================================================================
 
 void test_segMetrics_digitH_is_twice_segLen_plus_3_segThick() {
-    // digitH = 2*segLen + 3*segThick
     for (float s : {0.5f, 1.0f, 1.5f, 2.0f, 3.0f}) {
         auto m = segMetrics(s);
         TEST_ASSERT_EQUAL_INT(2 * m.segLen + 3 * m.segThick, m.digitH);
@@ -59,9 +48,7 @@ void test_flush_policy_skips_only_unchanged_empty_frames() {
     TEST_ASSERT_FALSE(displayFrameHasNothingToFlush(true, false));
 }
 
-// ============================================================================
 // DIGIT_SEGMENTS — full pattern verification
-// ============================================================================
 
 void test_digit_2_has_correct_segments() {
     // 2: a,b,–,d,e,–,g → {true,true,false,true,true,false,true}
@@ -96,9 +83,7 @@ void test_all_10_digits_have_exactly_7_segment_values() {
     }
 }
 
-// ============================================================================
 // get14SegPattern — character coverage
-// ============================================================================
 
 void test_14seg_all_uppercase_letters_A_through_E_nonzero() {
     for (char c : {'A', 'B', 'C', 'D', 'E'}) {
@@ -111,7 +96,6 @@ void test_14seg_L_has_only_left_and_bottom_segs() {
     TEST_ASSERT_NOT_EQUAL(0u, p & S14_TL);
     TEST_ASSERT_NOT_EQUAL(0u, p & S14_BL);
     TEST_ASSERT_NOT_EQUAL(0u, p & S14_BOT);
-    // Should NOT have top or right segments
     TEST_ASSERT_EQUAL(0u, p & S14_TOP);
     TEST_ASSERT_EQUAL(0u, p & S14_TR);
     TEST_ASSERT_EQUAL(0u, p & S14_BR);
@@ -121,7 +105,6 @@ void test_14seg_dash_has_only_middle_segs() {
     uint16_t p = get14SegPattern('-');
     TEST_ASSERT_NOT_EQUAL(0u, p & S14_ML);
     TEST_ASSERT_NOT_EQUAL(0u, p & S14_MR);
-    // No top, bottom, or vertical segments
     TEST_ASSERT_EQUAL(0u, p & S14_TOP);
     TEST_ASSERT_EQUAL(0u, p & S14_BOT);
     TEST_ASSERT_EQUAL(0u, p & S14_TL);
@@ -130,14 +113,12 @@ void test_14seg_dash_has_only_middle_segs() {
 
 void test_14seg_zero_has_outer_ring_only() {
     uint16_t p = get14SegPattern('0');
-    // Must have all outer segments
     TEST_ASSERT_NOT_EQUAL(0u, p & S14_TOP);
     TEST_ASSERT_NOT_EQUAL(0u, p & S14_TR);
     TEST_ASSERT_NOT_EQUAL(0u, p & S14_BR);
     TEST_ASSERT_NOT_EQUAL(0u, p & S14_BOT);
     TEST_ASSERT_NOT_EQUAL(0u, p & S14_BL);
     TEST_ASSERT_NOT_EQUAL(0u, p & S14_TL);
-    // Must NOT have middle segments
     TEST_ASSERT_EQUAL(0u, p & S14_ML);
     TEST_ASSERT_EQUAL(0u, p & S14_MR);
 }
@@ -163,10 +144,6 @@ void test_14seg_space_and_unknown_return_zero() {
 void test_char14_map_size_is_29() {
     TEST_ASSERT_EQUAL_INT(29, CHAR14_MAP_SIZE);
 }
-
-// ============================================================================
-// main
-// ============================================================================
 
 int main(int argc, char** argv) {
     UNITY_BEGIN();

@@ -1,14 +1,6 @@
-// Regression suite for maintenance-session timeouts. UI activity extends the
-// idle deadline, while an absolute cap still terminates abandoned sessions.
-//
-// Two layers are covered because the contract spans both:
-//   1. MainRuntimePolicy::evaluateMaintenanceSession — the pure deadline /
-//      extension decision, exercised directly. src/main.cpp cannot be compiled
-//      natively, so the policy is the executable layer.
-//   2. The lifecycle and /api/status emit in src/maintenance_runtime.cpp —
-//      asserted by source inspection, matching
-//      the same explicit owner-call pattern used by the runtime. This is
-//      this protects the deadline-anchor and status-payload wiring.
+// UI activity extends the maintenance idle deadline; an absolute cap bounds
+// abandoned sessions. Tests execute the deadline policy and inspect lifecycle
+// and /api/status wiring in maintenance_runtime.cpp, which cannot run natively.
 
 #include <unity.h>
 
@@ -71,8 +63,7 @@ std::string projectRoot() {
 void setUp() {}
 void tearDown() {}
 
-// ─── Policy constants ─────────────────────────────────────────────────
-
+// Policy constants
 void test_idle_window_is_still_ten_minutes_and_extension_is_bounded() {
     // Preserve the established idle window for untouched sessions.
     TEST_ASSERT_EQUAL_UINT32(10UL * 60UL * 1000UL, kIdleWindowMs);
@@ -84,8 +75,7 @@ void test_idle_window_is_still_ten_minutes_and_extension_is_bounded() {
     TEST_ASSERT_LESS_OR_EQUAL_UINT32(60UL * 60UL * 1000UL, kMaxSessionMs);
 }
 
-// ─── Idle sessions keep the original behaviour ────────────────────────
-
+// Idle sessions keep the original behaviour
 void test_idle_session_survives_until_the_original_deadline() {
     const auto decision =
         MainRuntimePolicy::evaluateMaintenanceSession(sessionAt(1000, 1000 + kIdleWindowMs - 1, 0));
@@ -104,8 +94,7 @@ void test_idle_session_expires_at_exactly_the_original_deadline() {
     TEST_ASSERT_EQUAL_UINT32(0, decision.remainingMs);
 }
 
-// ─── Activity extends the deadline ────────────────────────────────────
-
+// Activity extends the deadline
 void test_activity_extends_past_the_original_deadline() {
     // Activity at t+9m extends the original t+10m deadline.
     const uint32_t start = 5000;
@@ -133,8 +122,7 @@ void test_extended_session_expires_one_idle_window_after_last_activity() {
     TEST_ASSERT_FALSE(expired.maxSessionReached);
 }
 
-// ─── The extension is bounded ─────────────────────────────────────────
-
+// The extension is bounded
 void test_absolute_cap_terminates_a_continuously_active_session() {
     // Activity is perpetually fresh (worst case: an abandoned tab polling
     // /api/status every three seconds). The cap must still fire.
@@ -177,8 +165,7 @@ void test_cap_clamps_reported_remaining_below_the_idle_window() {
     TEST_ASSERT_EQUAL_UINT32(5000, decision.remainingMs);
 }
 
-// ─── Deadline anchor / status-payload arithmetic ──────────────────────
-
+// Deadline anchor / status-payload arithmetic
 void test_deadline_anchor_reproduces_remaining_exactly() {
     // The web UI computes maintenanceBootTimeoutMs - maintenanceBootUptimeMs,
     // where uptime is emitted as (millis() - maintenanceBootStartedMs) and
@@ -218,8 +205,7 @@ void test_deadline_anchor_is_never_the_no_session_sentinel() {
     TEST_ASSERT_NOT_EQUAL_UINT32(0, decision.deadlineAnchorMs);
 }
 
-// ─── Rollover and malformed inputs ────────────────────────────────────
-
+// Rollover and malformed inputs
 void test_deadline_that_overflows_before_now_wraps_does_not_expire_early() {
     // The canonical 49-day bug: the session starts just before the wrap, so
     // `start + idleWindow` overflows while `now` has NOT wrapped yet. Any
@@ -293,8 +279,7 @@ void test_inactive_session_is_inert() {
     TEST_ASSERT_FALSE(MainRuntimePolicy::evaluateMaintenanceSession(startedButFlagged).shouldReboot);
 }
 
-// ─── Wiring contracts (maintenance_runtime.cpp cannot be compiled natively) ──
-
+// Wiring contracts (maintenance_runtime.cpp cannot be compiled natively)
 void test_main_loop_delegates_the_deadline_to_the_policy() {
     const std::string loopBody = extractFunctionBody(readFile(projectRoot() + "/src/maintenance_runtime.cpp"),
                                                      "void MaintenanceRuntime::tick(");

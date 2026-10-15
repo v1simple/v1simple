@@ -516,6 +516,29 @@ void test_activate_reports_persistence_failure_instead_of_success() {
     TEST_ASSERT_TRUE(contains(server.lastBody, "settings_persist_failed"));
 }
 
+void test_slot_save_and_activation_require_persistence_callbacks() {
+    FakeRuntime fake;
+    auto runtime = makeRuntime(fake);
+    runtime.applySlotUpdate = nullptr;
+    runtime.applyActivation = nullptr;
+
+    WebServer slotServer(80);
+    setRequiredSlotArgs(slotServer);
+    WifiAutoPushApiService::handleApiSlotSave(slotServer, runtime, alwaysAllow, nullptr);
+    TEST_ASSERT_EQUAL_INT(500, slotServer.lastStatusCode);
+    TEST_ASSERT_EQUAL_STRING("{\"error\":\"Slot persistence failed\"}", slotServer.lastBody.c_str());
+    TEST_ASSERT_EQUAL_INT(0, fake.updateCalls);
+
+    WebServer activationServer(80);
+    activationServer.setArg("slot", "2");
+    activationServer.setArg("enable", "true");
+    WifiAutoPushApiService::handleApiActivate(activationServer, runtime, alwaysAllow, nullptr);
+    TEST_ASSERT_EQUAL_INT(500, activationServer.lastStatusCode);
+    TEST_ASSERT_EQUAL_STRING("{\"success\":false,\"error\":\"settings_persist_failed\"}",
+                             activationServer.lastBody.c_str());
+    TEST_ASSERT_EQUAL_INT(0, fake.activationCalls);
+}
+
 void test_exact_body_slot_save_preserves_every_optional_field() {
     WebServer server(80);
     FakeRuntime fake;
@@ -668,6 +691,7 @@ int main() {
     RUN_TEST(test_slot_save_reports_busy_for_temporarily_unreadable_profile);
     RUN_TEST(test_slot_save_requires_persistence_but_accepts_noop_success);
     RUN_TEST(test_activate_reports_persistence_failure_instead_of_success);
+    RUN_TEST(test_slot_save_and_activation_require_persistence_callbacks);
     RUN_TEST(test_exact_body_slot_save_preserves_every_optional_field);
     RUN_TEST(test_exact_body_rejects_duplicate_or_missing_requested_optional_without_mutation);
     RUN_TEST(test_exact_body_activation_rejects_unknown_field_without_mutation);

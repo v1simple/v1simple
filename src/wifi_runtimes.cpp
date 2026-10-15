@@ -102,86 +102,6 @@ WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
             return static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushSlotUpdatePersisted(update).success;
         },
         this,
-        [](int slot, const String& name, void* ctx) {
-            AutoPushSlotUpdate update;
-            update.slot = slot;
-            update.hasName = true;
-            update.name = name;
-            (void)static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushSlotUpdate(
-                update, SettingsPersistMode::ImmediateNvsDeferredBackup);
-        },
-        this,
-        [](int slot, uint16_t color, void* ctx) {
-            AutoPushSlotUpdate update;
-            update.slot = slot;
-            update.hasColor = true;
-            update.color = color;
-            (void)static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushSlotUpdate(
-                update, SettingsPersistMode::ImmediateNvsDeferredBackup);
-        },
-        this,
-        [](int slot, void* ctx) { return static_cast<WiFiManager*>(ctx)->settings_.getSlotVolume(slot); },
-        this,
-        [](int slot, void* ctx) { return static_cast<WiFiManager*>(ctx)->settings_.getSlotMuteVolume(slot); },
-        this,
-        [](int slot, uint8_t volume, uint8_t muteVolume, void* ctx) {
-            AutoPushSlotUpdate update;
-            update.slot = slot;
-            update.hasVolume = true;
-            update.volume = volume;
-            update.hasMuteVolume = true;
-            update.muteVolume = muteVolume;
-            (void)static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushSlotUpdate(
-                update, SettingsPersistMode::ImmediateNvsDeferredBackup);
-        },
-        this,
-        [](int slot, bool darkMode, void* ctx) {
-            AutoPushSlotUpdate update;
-            update.slot = slot;
-            update.hasDarkMode = true;
-            update.darkMode = darkMode;
-            (void)static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushSlotUpdate(
-                update, SettingsPersistMode::ImmediateNvsDeferredBackup);
-        },
-        this,
-        [](int slot, bool muteToZero, void* ctx) {
-            AutoPushSlotUpdate update;
-            update.slot = slot;
-            update.hasMuteToZero = true;
-            update.muteToZero = muteToZero;
-            (void)static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushSlotUpdate(
-                update, SettingsPersistMode::ImmediateNvsDeferredBackup);
-        },
-        this,
-        [](int slot, uint8_t alertPersistSec, void* ctx) {
-            AutoPushSlotUpdate update;
-            update.slot = slot;
-            update.hasAlertPersist = true;
-            update.alertPersist = alertPersistSec;
-            (void)static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushSlotUpdate(
-                update, SettingsPersistMode::ImmediateNvsDeferredBackup);
-        },
-        this,
-        [](int slot, bool priorityArrowOnly, void* ctx) {
-            AutoPushSlotUpdate update;
-            update.slot = slot;
-            update.hasPriorityArrowOnly = true;
-            update.priorityArrowOnly = priorityArrowOnly;
-            (void)static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushSlotUpdate(
-                update, SettingsPersistMode::ImmediateNvsDeferredBackup);
-        },
-        this,
-        [](int slot, const String& profile, int mode, void* ctx) {
-            AutoPushSlotUpdate update;
-            update.slot = slot;
-            update.hasProfileName = true;
-            update.profileName = profile;
-            update.hasMode = true;
-            update.mode = normalizeV1ModeValue(mode);
-            (void)static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushSlotUpdate(
-                update, SettingsPersistMode::ImmediateNvsDeferredBackup);
-        },
-        this,
         [](void* ctx) { return static_cast<int>(static_cast<WiFiManager*>(ctx)->settings_.get().activeSlot); },
         this,
         [](int slot, void* ctx) { static_cast<WiFiManager*>(ctx)->display_->drawProfileIndicator(slot); },
@@ -194,22 +114,6 @@ WifiAutoPushApiService::Runtime WiFiManager::makeAutoPushRuntime() {
             update.enabled = request.enable;
             return static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushStateUpdate(
                 update, SettingsPersistMode::ImmediateNvsDeferredBackup).success;
-        },
-        this,
-        [](int slot, void* ctx) {
-            AutoPushStateUpdate update;
-            update.hasActiveSlot = true;
-            update.activeSlot = slot;
-            (void)static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushStateUpdate(
-                update, SettingsPersistMode::ImmediateNvsDeferredBackup);
-        },
-        this,
-        [](bool enabled, void* ctx) {
-            AutoPushStateUpdate update;
-            update.hasEnabled = true;
-            update.enabled = enabled;
-            (void)static_cast<WiFiManager*>(ctx)->settings_.applyAutoPushStateUpdate(
-                update, SettingsPersistMode::ImmediateNvsDeferredBackup);
         },
         this,
         [](const String& profileName, void* ctx) {

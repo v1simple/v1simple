@@ -617,56 +617,6 @@ void handleApiSlotSaveImpl(WebServer& server, const Runtime& runtime, const Form
         request.profile = std::move(profile);
         request.mode = mode;
         persisted = runtime.applySlotUpdate(request, runtime.applySlotUpdateCtx);
-    } else {
-        if (name.length() > 0 && runtime.setSlotName) {
-            runtime.setSlotName(slot, name, runtime.setSlotNameCtx);
-            persisted = true;
-        }
-
-        if (color >= 0 && runtime.setSlotColor) {
-            runtime.setSlotColor(slot, static_cast<uint16_t>(color), runtime.setSlotColorCtx);
-            persisted = true;
-        }
-
-        uint8_t existingVol = runtime.getSlotVolume ? runtime.getSlotVolume(slot, runtime.getSlotVolumeCtx) : 0;
-        uint8_t existingMute =
-            runtime.getSlotMuteVolume ? runtime.getSlotMuteVolume(slot, runtime.getSlotMuteVolumeCtx) : 0;
-        uint8_t vol = hasVolumeConfigured && !volumeConfigured
-                          ? 0xFF
-                          : ((volume >= 0) ? static_cast<uint8_t>(volume) : existingVol);
-        uint8_t mute = hasVolumeConfigured && !volumeConfigured
-                           ? 0xFF
-                           : ((muteVol >= 0) ? static_cast<uint8_t>(muteVol) : existingMute);
-
-        if ((hasVolumeConfigured || volume >= 0 || muteVol >= 0) && runtime.setSlotVolumes) {
-            runtime.setSlotVolumes(slot, vol, mute, runtime.setSlotVolumesCtx);
-            persisted = true;
-        }
-
-        if (hasDarkMode && runtime.setSlotDarkMode) {
-            runtime.setSlotDarkMode(slot, darkMode, runtime.setSlotDarkModeCtx);
-            persisted = true;
-        }
-        if (hasMuteToZero && runtime.setSlotMuteToZero) {
-            runtime.setSlotMuteToZero(slot, muteToZero, runtime.setSlotMuteToZeroCtx);
-            persisted = true;
-        }
-
-        if (hasAlertPersist && alertPersist >= 0 && runtime.setSlotAlertPersistSec) {
-            int clamped = std::max(0, std::min(5, alertPersist));
-            runtime.setSlotAlertPersistSec(slot, static_cast<uint8_t>(clamped), runtime.setSlotAlertPersistSecCtx);
-            persisted = true;
-        }
-
-        if (form.has("priorityArrowOnly") && runtime.setSlotPriorityArrowOnly) {
-            runtime.setSlotPriorityArrowOnly(slot, priorityArrowOnly, runtime.setSlotPriorityArrowOnlyCtx);
-            persisted = true;
-        }
-
-        if (runtime.setSlotProfileAndMode) {
-            runtime.setSlotProfileAndMode(slot, profile, mode, runtime.setSlotProfileAndModeCtx);
-            persisted = true;
-        }
     }
 
     if (!persisted) {
@@ -705,21 +655,13 @@ void handleApiActivateImpl(WebServer& server, const Runtime& runtime, const Form
         return;
     }
 
-    if (runtime.applyActivation) {
-        ActivationRequest request;
-        request.slot = slot;
-        request.enable = enable;
-        if (!runtime.applyActivation(request, runtime.applyActivationCtx)) {
-            server.send(500, "application/json", "{\"success\":false,\"error\":\"settings_persist_failed\"}");
-            return;
-        }
-    } else {
-        if (runtime.setActiveSlot) {
-            runtime.setActiveSlot(slot, runtime.setActiveSlotCtx);
-        }
-        if (runtime.setAutoPushEnabled) {
-            runtime.setAutoPushEnabled(enable, runtime.setAutoPushEnabledCtx);
-        }
+    ActivationRequest request;
+    request.slot = slot;
+    request.enable = enable;
+    if (!runtime.applyActivation ||
+        !runtime.applyActivation(request, runtime.applyActivationCtx)) {
+        server.send(500, "application/json", "{\"success\":false,\"error\":\"settings_persist_failed\"}");
+        return;
     }
 
     server.send(200, "application/json", "{\"success\":true}");

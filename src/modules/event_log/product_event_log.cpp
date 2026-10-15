@@ -12,6 +12,12 @@ namespace {
 constexpr uint32_t kWriterLockTimeoutMs = 250;
 constexpr uint32_t kFlushIntervalMs = 5000;
 constexpr TickType_t kWriterPollTicks = pdMS_TO_TICKS(100);
+constexpr size_t kCsvRowBufferBytes = 256;
+// Reserve a header, a complete maximum-size V1 snapshot, and one pending GAP.
+// Without byte headroom, a log stopped at the cap cannot recover on later boots.
+constexpr size_t kBootWriteReserveBytes = sizeof(kProductEventSchemaHeader) - 1 +
+    (kProductEventMaxV1Alerts + 1) * (kCsvRowBufferBytes - 1);
+static_assert(kBootWriteReserveBytes <= ProductEventLog::kMaxTotalBytes, "boot reserve exceeds event log budget");
 
 struct RetainedEventFile {
     char path[64];
@@ -403,7 +409,7 @@ bool ProductEventLog::writeEvent(const ProductEvent& event) {
 
 bool ProductEventLog::serializedEventBytes(const ProductEvent& event, size_t& bytes) const {
     bytes = 0;
-    char row[256];
+    char row[kCsvRowBufferBytes];
     const size_t count = productEventRowCount(event);
     for (size_t item = 0; item < count; ++item) {
         const size_t length = serializeProductEventRow(event, item, row, sizeof(row));
@@ -416,7 +422,7 @@ bool ProductEventLog::serializedEventBytes(const ProductEvent& event, size_t& by
 }
 
 bool ProductEventLog::writeRowsLocked(const ProductEvent& event) {
-    char row[256];
+    char row[kCsvRowBufferBytes];
     const size_t count = productEventRowCount(event);
     for (size_t item = 0; item < count; ++item) {
         const size_t length = serializeProductEventRow(event, item, row, sizeof(row));
@@ -569,7 +575,7 @@ bool ProductEventLog::pruneRetention() {
     for (size_t i = 0; i < retainedCount; ++i) {
         totalBytes += retained[i].size;
     }
-    while (retainedCount > 0 && totalBytes > kMaxTotalBytes) {
+    while (retainedCount > 0 && totalBytes > kMaxTotalBytes - kBootWriteReserveBytes) {
         const size_t oldest = oldestIndex(retained, retainedCount);
         if (!fs.remove(retained[oldest].path)) {
             return false;

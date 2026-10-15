@@ -47,6 +47,25 @@ ProductEvent multiRowEvent(uint32_t ms) {
     return event;
 }
 
+constexpr char multiRowRecord[] =
+    "500,V1,BEGIN,1,1,0,2,band=Ka;freq=34700;dir=F;front=8;rear=0;priority=1\n"
+    "500,V1,BEGIN,1,1,1,2,band=Laser;freq=24150;dir=S;front=0;rear=4;priority=0\n";
+
+std::string readEventFile(uint32_t bootId) {
+    std::ifstream input(root / "events" / ("events_" + std::to_string(bootId) + ".csv"), std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+}
+
+size_t retainedFileBytes() {
+    size_t bytes = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(root / "events")) {
+        if (entry.is_regular_file() && entry.path().extension() == ".csv") {
+            bytes += entry.file_size();
+        }
+    }
+    return bytes;
+}
+
 size_t serializedBytes(const ProductEvent& event) {
     size_t bytes = 0;
     char row[256];
@@ -56,10 +75,10 @@ size_t serializedBytes(const ProductEvent& event) {
     return bytes;
 }
 
-void writeSizedPriorFile(size_t size) {
+void writeSizedPriorFile(size_t size, uint32_t bootId = 1) {
     const std::filesystem::path events = root / "events";
     std::filesystem::create_directories(events);
-    std::ofstream output(events / "events_1.csv", std::ios::binary);
+    std::ofstream output(events / ("events_" + std::to_string(bootId) + ".csv"), std::ios::binary);
     if (size > 0) {
         output.seekp(static_cast<std::streamoff>(size - 1));
         output.put('x');
@@ -79,6 +98,7 @@ void setUp() {
     mock_reset_task_notify_state();
     StorageManager::resetMockSdLockState();
     fs::mock_reset_fs_write_budget();
+    fs::mock_reset_fs_remove_state();
 }
 void tearDown() {}
 
@@ -415,7 +435,12 @@ void runRetentionBoundary(int32_t finalDelta, bool expectWrite) {
     const ProductEvent event = multiRowEvent(500);
     const size_t headerBytes = sizeof(kProductEventSchemaHeader) - 1;
     const size_t eventBytes = serializedBytes(event);
-    const int64_t priorBytes = static_cast<int64_t>(ProductEventLog::kMaxTotalBytes - headerBytes - eventBytes) +
+    // Reach the runtime limit through writes, after boot has reserved space.
+    const ProductEvent filler = endEvent(0);
+    constexpr size_t fillerCount = 256;
+    const size_t fillerBytes = fillerCount * serializedBytes(filler);
+    const int64_t priorBytes = static_cast<int64_t>(ProductEventLog::kMaxTotalBytes - headerBytes -
+                                                   fillerBytes - eventBytes) +
                                static_cast<int64_t>(finalDelta);
     TEST_ASSERT_GREATER_OR_EQUAL_INT64(0, priorBytes);
     writeSizedPriorFile(static_cast<size_t>(priorBytes));
@@ -424,6 +449,11 @@ void runRetentionBoundary(int32_t finalDelta, bool expectWrite) {
     StorageManager storage = makeStorage(filesystem);
     ProductEventLog log;
     TEST_ASSERT_TRUE(log.begin(40, storage));
+    TEST_ASSERT_TRUE(std::filesystem::exists(root / "events" / "events_1.csv"));
+    for (size_t i = 0; i < fillerCount; ++i) {
+        TEST_ASSERT_TRUE(log.enqueueForTest(filler));
+        TEST_ASSERT_TRUE(log.drainOneForTest());
+    }
     TEST_ASSERT_TRUE(log.enqueueForTest(event));
     TEST_ASSERT_EQUAL(expectWrite, log.drainOneForTest());
 
@@ -438,8 +468,9 @@ void runRetentionBoundary(int32_t finalDelta, bool expectWrite) {
         TEST_ASSERT_EQUAL_UINT32(1, HealthCounters::eventDrops());
     }
     log.resetForTest();
-    TEST_ASSERT_EQUAL_UINT64(expectWrite ? headerBytes + eventBytes : headerBytes,
+    TEST_ASSERT_EQUAL_UINT64(headerBytes + fillerBytes + (expectWrite ? eventBytes : 0),
                              std::filesystem::file_size(active));
+    TEST_ASSERT_LESS_OR_EQUAL_UINT64(ProductEventLog::kMaxTotalBytes, retainedFileBytes());
 }
 
 void test_runtime_retention_multirow_immediately_below_limit() { runRetentionBoundary(-1, true); }
@@ -447,6 +478,117 @@ void test_runtime_retention_multirow_immediately_below_limit() { runRetentionBou
 void test_runtime_retention_multirow_exactly_at_limit() { runRetentionBoundary(0, true); }
 
 void test_runtime_retention_multirow_above_limit_preserves_rows() { runRetentionBoundary(1, false); }
+
+void test_naturally_exhausted_log_recovers_on_following_boots() {
+    fs::FS filesystem(root);
+    StorageManager storage = makeStorage(filesystem);
+    ProductEventLog full;
+    TEST_ASSERT_TRUE(full.begin(40, storage));
+    const ProductEvent event = multiRowEvent(500);
+    size_t written = 0;
+    const size_t maxAttempts = ProductEventLog::kMaxTotalBytes / std::strlen(multiRowRecord) + 1;
+    for (size_t i = 0; i < maxAttempts; ++i) {
+        TEST_ASSERT_TRUE(full.enqueueForTest(event));
+        if (!full.drainOneForTest()) break;
+        ++written;
+    }
+    const bool exhausted = !full.accepting();
+    full.resetForTest();
+    TEST_ASSERT_TRUE(exhausted);
+    TEST_ASSERT_GREATER_THAN_UINT32(0, written);
+    std::string expected = kProductEventSchemaHeader;
+    for (size_t i = 0; i < written; ++i) expected += multiRowRecord;
+    const std::string contents = readEventFile(40);
+    TEST_ASSERT_EQUAL_UINT64(expected.size(), contents.size());
+    TEST_ASSERT_EQUAL_MEMORY(expected.data(), contents.data(), expected.size());
+    TEST_ASSERT_LESS_OR_EQUAL_UINT64(ProductEventLog::kMaxTotalBytes, retainedFileBytes());
+
+    for (uint32_t bootId = 41; bootId <= 43; ++bootId) {
+        ProductEventLog recovered;
+        TEST_ASSERT_TRUE(recovered.begin(bootId, storage));
+        TEST_ASSERT_TRUE(recovered.enqueueForTest(event));
+        const bool wrote = recovered.drainOneForTest();
+        const bool accepting = recovered.accepting();
+        recovered.resetForTest();
+        TEST_ASSERT_TRUE(wrote);
+        TEST_ASSERT_TRUE(accepting);
+        const std::string record = std::string(kProductEventSchemaHeader) + multiRowRecord;
+        TEST_ASSERT_EQUAL_STRING(record.c_str(), readEventFile(bootId).c_str());
+        TEST_ASSERT_LESS_OR_EQUAL_UINT64(ProductEventLog::kMaxTotalBytes, retainedFileBytes());
+    }
+}
+
+void test_boot_reclaims_space_for_full_table_and_pending_gap() {
+    // A header alone fits, but there must also be room for the first complete
+    // snapshot and a GAP if producers fill the queue before the writer runs.
+    writeSizedPriorFile(ProductEventLog::kMaxTotalBytes - (sizeof(kProductEventSchemaHeader) - 1));
+    fs::FS filesystem(root);
+    StorageManager storage = makeStorage(filesystem);
+    ProductEventLog log;
+    TEST_ASSERT_TRUE(log.begin(40, storage));
+    ProductEvent event = multiRowEvent(UINT32_MAX);
+    event.id = UINT32_MAX;
+    event.sequence = UINT32_MAX;
+    event.data.v1.count = kProductEventMaxV1Alerts;
+    for (auto& alert : event.data.v1.alerts) {
+        alert = ProductV1Alert{34700, BAND_KA, DIR_FRONT, 8, 0, 1};
+    }
+    TEST_ASSERT_TRUE(log.enqueueForTest(event));
+    for (size_t i = 1; i < ProductEventLog::kQueueCapacity; ++i) {
+        TEST_ASSERT_TRUE(log.enqueueForTest(endEvent(600)));
+    }
+    TEST_ASSERT_FALSE(log.enqueueForTest(endEvent(999)));
+    const bool wrote = log.drainOneForTest();
+    log.resetForTest();
+    TEST_ASSERT_TRUE(wrote);
+    std::string expected = std::string(kProductEventSchemaHeader) +
+        "999,SYS,GAP,0,1,0,1,lost=1;first_ms=999;last_ms=999\n";
+    for (size_t i = 0; i < kProductEventMaxV1Alerts; ++i) {
+        expected += "4294967295,V1,BEGIN,4294967295,4294967295," + std::to_string(i) +
+            ",15,band=Ka;freq=34700;dir=F;front=8;rear=0;priority=1\n";
+    }
+    TEST_ASSERT_EQUAL_STRING(expected.c_str(), readEventFile(40).c_str());
+    TEST_ASSERT_LESS_OR_EQUAL_UINT64(ProductEventLog::kMaxTotalBytes, retainedFileBytes());
+}
+
+void test_boot_retention_reclaims_oldest_files_until_records_fit() {
+    writeSizedPriorFile(ProductEventLog::kMaxTotalBytes - 23 - 1024 - 4096, 20);
+    writeSizedPriorFile(1024, 3);
+    writeSizedPriorFile(4096, 11);
+    const auto events = root / "events";
+    std::ofstream(events / "notes.txt") << "keep\n";
+    fs::FS filesystem(root);
+    StorageManager storage = makeStorage(filesystem);
+    ProductEventLog log;
+    TEST_ASSERT_TRUE(log.begin(40, storage));
+    TEST_ASSERT_FALSE(std::filesystem::exists(events / "events_3.csv"));
+    TEST_ASSERT_FALSE(std::filesystem::exists(events / "events_11.csv"));
+    TEST_ASSERT_TRUE(std::filesystem::exists(events / "events_20.csv"));
+    TEST_ASSERT_TRUE(std::filesystem::exists(events / "notes.txt"));
+    TEST_ASSERT_FALSE(std::filesystem::exists(events / "events_40.csv"));
+    TEST_ASSERT_TRUE(log.enqueueForTest(multiRowEvent(500)));
+    TEST_ASSERT_TRUE(log.drainOneForTest());
+    log.resetForTest();
+    const std::string expected = std::string(kProductEventSchemaHeader) + multiRowRecord;
+    TEST_ASSERT_EQUAL_STRING(expected.c_str(), readEventFile(40).c_str());
+    TEST_ASSERT_LESS_OR_EQUAL_UINT64(ProductEventLog::kMaxTotalBytes, retainedFileBytes());
+}
+
+void test_boot_retention_removal_failure_preserves_newer_files() {
+    writeSizedPriorFile(ProductEventLog::kMaxTotalBytes - 23 - 1024, 20);
+    writeSizedPriorFile(1024, 3);
+    fs::mock_fail_next_remove("/events/events_3.csv");
+    fs::FS filesystem(root);
+    StorageManager storage = makeStorage(filesystem);
+    ProductEventLog log;
+    TEST_ASSERT_FALSE(log.begin(40, storage));
+    TEST_ASSERT_FALSE(log.accepting());
+    TEST_ASSERT_FALSE(log.enabled());
+    TEST_ASSERT_TRUE(std::filesystem::exists(root / "events" / "events_3.csv"));
+    TEST_ASSERT_TRUE(std::filesystem::exists(root / "events" / "events_20.csv"));
+    TEST_ASSERT_FALSE(std::filesystem::exists(root / "events" / "events_40.csv"));
+    log.resetForTest();
+}
 
 void test_boot_retention_reserves_one_slot_for_the_lazy_active_file() {
     const std::filesystem::path events = root / "events";
@@ -495,5 +637,9 @@ int main() {
     RUN_TEST(test_runtime_retention_multirow_immediately_below_limit);
     RUN_TEST(test_runtime_retention_multirow_exactly_at_limit);
     RUN_TEST(test_runtime_retention_multirow_above_limit_preserves_rows);
+    RUN_TEST(test_naturally_exhausted_log_recovers_on_following_boots);
+    RUN_TEST(test_boot_reclaims_space_for_full_table_and_pending_gap);
+    RUN_TEST(test_boot_retention_reclaims_oldest_files_until_records_fit);
+    RUN_TEST(test_boot_retention_removal_failure_preserves_newer_files);
     return UNITY_END();
 }

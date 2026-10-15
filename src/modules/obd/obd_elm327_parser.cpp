@@ -337,23 +337,6 @@ bool collectNormalizedHexPayload(const char* trimmed, size_t trimmedLen, uint8_t
     return outLen > 0;
 }
 
-bool decodePrintableVin(const uint8_t* bytes, size_t len, char vin[18]) {
-    if (!bytes || !vin)
-        return false;
-    if (len != 17)
-        return false;
-
-    for (size_t i = 0; i < len; ++i) {
-        const uint8_t c = bytes[i];
-        if (c < 0x20 || c > 0x7E) {
-            return false;
-        }
-        vin[i] = static_cast<char>(c);
-    }
-    vin[17] = '\0';
-    return true;
-}
-
 } // namespace
 
 Elm327ParseResult parseElm327Response(const char* response, size_t len) {
@@ -430,124 +413,9 @@ Elm327ParseResult parseElm327Response(const char* response, size_t len) {
     return result;
 }
 
-Elm327VinParseResult parseVinResponse(const char* response, size_t len) {
-    Elm327VinParseResult result;
-    if (response == nullptr || len == 0) {
-        result.error = true;
-        return result;
-    }
-
-    size_t trimmedLen = 0;
-    const char* trimmed = trimResponse(response, len, trimmedLen);
-    if (trimmedLen == 0) {
-        result.error = true;
-        return result;
-    }
-
-    if (hasNormalizedLineOverflow(trimmed, trimmedLen)) {
-        result.error = true;
-        return result;
-    }
-
-    uint8_t vinBytes[24] = {};
-    size_t vinLen = 0;
-    bool sawHexFrame = false;
-
-    size_t cursor = 0;
-    char line[kMaxLineLength] = {};
-    while (nextNormalizedLine(trimmed, trimmedLen, cursor, line)) {
-        if (isNoDataLine(line)) {
-            result.noData = true;
-            continue;
-        }
-        if (isErrorLine(line)) {
-            result.error = true;
-            continue;
-        }
-        if (startsWithCI(line, strlen(line), "SEARCHING") || startsWithCI(line, strlen(line), "BUS INIT") ||
-            isStatusLine(line)) {
-            continue;
-        }
-
-        uint8_t bytes[kMaxPayloadBytes] = {};
-        size_t byteCount = 0;
-        if (!collectHexBytesFromLine(line, bytes, sizeof(bytes), byteCount, true) || byteCount == 0) {
-            result.error = true;
-            continue;
-        }
-
-        sawHexFrame = true;
-        size_t payloadStart = 0;
-        if (byteCount >= 3 && bytes[0] == 0x49 && bytes[1] == 0x02) {
-            payloadStart = 3;
-        } else if (vinLen > 0) {
-            payloadStart = 0;
-        } else {
-            continue;
-        }
-
-        for (size_t idx = payloadStart; idx < byteCount && vinLen < sizeof(vinBytes); ++idx) {
-            vinBytes[vinLen++] = bytes[idx];
-        }
-    }
-
-    if (result.noData && !sawHexFrame) {
-        result.valid = false;
-        result.error = false;
-        return result;
-    }
-    if (!sawHexFrame || vinLen != 17 || !decodePrintableVin(vinBytes, vinLen, result.vin)) {
-        result.valid = false;
-        if (!result.noData) {
-            result.error = true;
-        }
-        return result;
-    }
-
-    result.valid = true;
-    result.noData = false;
-    result.error = false;
-    return result;
-}
-
 float decodeSpeedKmh(const Elm327ParseResult& result) {
     if (!result.valid || result.service != 0x41 || result.pid != 0x0D || result.dataLen < 1) {
         return -1.0f;
     }
     return static_cast<float>(result.dataBytes[0]);
-}
-
-bool decodeTempC_x10(const Elm327ParseResult& result, Elm327TempDecodeFormat format, int16_t& tempC_x10Out) {
-    if (!result.valid) {
-        return false;
-    }
-
-    int32_t value = 0;
-    switch (format) {
-    case Elm327TempDecodeFormat::U8_OFFSET40:
-        if (result.dataLen < 1)
-            return false;
-        value = static_cast<int32_t>(result.dataBytes[0]) * 10 - 400;
-        break;
-
-    case Elm327TempDecodeFormat::U16_DIV10_OFFSET40:
-        if (result.dataLen < 2)
-            return false;
-        value = static_cast<int32_t>((result.dataBytes[0] << 8) | result.dataBytes[1]);
-        value = value / 10 - 400;
-        break;
-
-    case Elm327TempDecodeFormat::U16_RAW_OFFSET40:
-        if (result.dataLen < 2)
-            return false;
-        value = static_cast<int32_t>((result.dataBytes[0] << 8) | result.dataBytes[1]) - 400;
-        break;
-    }
-
-    if (value < INT16_MIN || value > INT16_MAX) {
-        return false;
-    }
-
-    tempC_x10Out = static_cast<int16_t>(value);
-    return true;
 }

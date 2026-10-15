@@ -101,7 +101,7 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
     // Record paint only after the cache check so unchanged frames need no transfer.
     {
         const DisplayLayout::DisplayRect r = V1Display::arrowBoundingRect(raisedLayout);
-        drawnRegion_.add(r.x, r.y, r.w, r.h, DisplayDirtyRegionSource::Arrows);
+        drawnRegion_.add(r.x, r.y, r.w, r.h);
     }
 
     const int maxW = (topW > bottomW) ? topW : bottomW;

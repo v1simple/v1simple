@@ -141,8 +141,8 @@ PRIVATE_BINARY_SUFFIXES = frozenset(
 PUBLIC_BINARY_MEDIA_ALLOWED = frozenset(
     {
         PurePosixPath("interface/static/branding/v1simple-logo-transparent.png"),
-        # Human-verified calibration crops; camera_reference.json binds each
-        # exact image digest to its expected visible frequency and signature.
+        # These reviewed calibration crops remain in Git history and must
+        # stay allowed for publication-history scans after their deletion.
         PurePosixPath("scripts/bench/camera_reference_24150.png"),
         PurePosixPath("scripts/bench/camera_reference_34700.png"),
         PurePosixPath("scripts/bench/camera_reference_35500.png"),

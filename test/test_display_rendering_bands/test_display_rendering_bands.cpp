@@ -523,7 +523,6 @@ void test_drawSignalBars_strength_increment_marks_only_changed_bar_region() {
     TEST_ASSERT_EQUAL_INT(18 + (14 + 10), display.ut_drawnRegionY());
     TEST_ASSERT_EQUAL_INT(44, display.ut_drawnRegionW());
     TEST_ASSERT_EQUAL_INT(14, display.ut_drawnRegionH());
-    TEST_ASSERT_EQUAL_UINT8(1u, display.ut_drawnRegionRectCount());
 }
 
 void test_drawSignalBars_strength_jump_marks_one_compact_run_region() {
@@ -541,7 +540,6 @@ void test_drawSignalBars_strength_jump_marks_one_compact_run_region() {
     TEST_ASSERT_EQUAL_INT(18, display.ut_drawnRegionY());
     TEST_ASSERT_EQUAL_INT(44, display.ut_drawnRegionW());
     TEST_ASSERT_EQUAL_INT((4 * 14) + (3 * 10), display.ut_drawnRegionH());
-    TEST_ASSERT_EQUAL_UINT8(1u, display.ut_drawnRegionRectCount());
 }
 
 // Palette revision is part of both cache keys, so a theme change repaints

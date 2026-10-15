@@ -21,13 +21,6 @@
 
 // Only compile for Waveshare 3.49 board
 
-#define BATTERY_LOGF(...)                                                                                              \
-    do {                                                                                                               \
-    } while (0)
-#define BATTERY_LOGLN(msg)                                                                                             \
-    do {                                                                                                               \
-    } while (0)
-
 // ADC handles
 static adc_oneshot_unit_handle_t adc1_handle = nullptr;
 static adc_cali_handle_t adc_cali_handle = nullptr;
@@ -130,8 +123,6 @@ BatteryManager::BatteryManager()
       lastUpdateMs_(0), hasVoltageReading_(false), simulatedVoltage_(0) {}
 
 bool BatteryManager::begin() {
-    BATTERY_LOGLN("[Battery] Initializing battery manager...");
-
     if (!tca9554WireMutex) {
         tca9554WireMutex = xSemaphoreCreateMutex();
         if (!tca9554WireMutex) {
@@ -143,13 +134,10 @@ bool BatteryManager::begin() {
     // CRITICAL: Initialize TCA9554 and latch power FIRST, before anything else
     // This MUST happen immediately on ANY boot to handle button-press boot scenarios
     // During button boot, GPIO16 is LOW (button pressed) but we still need the latch
-    BATTERY_LOGLN("[Battery] Initializing power latch (required for battery operation)...");
     if (!initTCA9554()) {
         Serial.println("[Battery] WARN: TCA9554 init failed - power latch unavailable");
     } else {
-        if (latchPowerOn()) {
-            BATTERY_LOGLN("[Battery] Power latch engaged - device will stay on after button release");
-        } else {
+        if (!latchPowerOn()) {
             Serial.println("[Battery] WARN: Power latch verification failed!");
         }
         if (!waveshare_349::hardware().detectAndConfigure()) {
@@ -172,7 +160,6 @@ bool BatteryManager::begin() {
                   static_cast<unsigned>(kSourcePolicy.samplesPerRound),
                   static_cast<unsigned long>(kSourcePolicy.roundSpacingMs));
 
-    BATTERY_LOGLN("[Battery] Sampling power source detection...");
     for (uint8_t round = 0; round < kBootClassificationRounds; round++) {
         if (round > 0) {
             delay(kSourcePolicy.roundSpacingMs);
@@ -192,8 +179,6 @@ bool BatteryManager::begin() {
     // Read initial voltage for diagnostics
     uint16_t initialVoltage = 0;
     if (adc1_handle && readADCMillivolts(initialVoltage)) {
-        BATTERY_LOGF("[Battery] Initial voltage reading: %dmV\n", initialVoltage);
-
         // Sanity check: if we think we're on USB but voltage looks like battery
         if (!onBattery_ && initialVoltage > BATTERY_EMPTY_MV && initialVoltage < BATTERY_FULL_MV + 500) {
             Serial.printf("[Battery] WARN: USB mode but battery voltage detected (%dmV)\n", initialVoltage);
@@ -202,11 +187,6 @@ bool BatteryManager::begin() {
         if (onBattery_ && initialVoltage < BATTERY_EMPTY_MV) {
             Serial.printf("[Battery] WARN: Battery mode but voltage too low (%dmV)\n", initialVoltage);
         }
-    }
-
-    // TCA9554 initialization occurs earlier on the battery path.
-    if (onBattery_ && !initialized_) {
-        BATTERY_LOGLN("[Battery] Power latch already set (early init)");
     }
 
     initialized_ = true;
@@ -258,7 +238,6 @@ bool BatteryManager::initADC() {
         return false;
     }
 
-    BATTERY_LOGLN("[Battery] ADC initialized_ for battery monitoring");
     return true;
 }
 
@@ -276,7 +255,6 @@ bool BatteryManager::initTCA9554() {
         error = tca9554Wire.endTransmission();
         if (error == 0)
             break;
-        BATTERY_LOGF("[Battery] TCA9554 probe attempt %d failed\n", retry + 1);
         delay(5);
     }
 
@@ -334,7 +312,6 @@ bool BatteryManager::initTCA9554() {
         return false;
     }
 
-    BATTERY_LOGLN("[Battery] TCA9554 initialized_ - power latch engaged");
     return true;
 }
 
@@ -358,7 +335,6 @@ bool BatteryManager::setTCA9554PinWithBudget(uint8_t pin, bool high, TickType_t 
 
         if (error != 0) {
             if (attempt < maxRetries - 1) {
-                BATTERY_LOGF("[Battery] TCA9554 read start failed, retry %d\n", attempt + 1);
                 delay(RETRY_DELAY_MS);
                 continue;
             }
@@ -371,7 +347,6 @@ bool BatteryManager::setTCA9554PinWithBudget(uint8_t pin, bool high, TickType_t 
 
         if (tca9554Wire.available() < 1) {
             if (attempt < maxRetries - 1) {
-                BATTERY_LOGF("[Battery] TCA9554 read failed, retry %d\n", attempt + 1);
                 delay(RETRY_DELAY_MS);
                 continue;
             }
@@ -401,7 +376,6 @@ bool BatteryManager::setTCA9554PinWithBudget(uint8_t pin, bool high, TickType_t 
         }
 
         if (attempt < maxRetries - 1) {
-            BATTERY_LOGF("[Battery] TCA9554 write failed (err=%d), retry %d\n", error, attempt + 1);
             delay(RETRY_DELAY_MS);
         }
     }
@@ -566,8 +540,6 @@ bool BatteryManager::criticalProtectionRequired() const {
 
 bool BatteryManager::latchPowerOn() {
     // Verify the latch is HIGH (should already be set by initTCA9554)
-    BATTERY_LOGLN("[Battery] Verifying power latch is ON");
-
     // Read current output state
     tca9554Wire.beginTransmission(TCA9554_I2C_ADDR);
     tca9554Wire.write(TCA9554_OUTPUT_PORT);
@@ -581,8 +553,6 @@ bool BatteryManager::latchPowerOn() {
 
     uint8_t current = tca9554Wire.read();
     bool latchHigh = (current & (1 << TCA9554_PWR_LATCH_PIN)) != 0;
-
-    BATTERY_LOGF("[Battery] Power latch pin 6 is %s (0x%02X)\n", latchHigh ? "HIGH" : "LOW", current);
 
     if (!latchHigh) {
         Serial.println("[Battery] WARN: Latch is LOW - forcing HIGH!");
@@ -607,7 +577,6 @@ bool BatteryManager::enterDeepSleep(uint64_t wakeMask, uint64_t pullupMask, cons
     Serial.println("[Battery] Executing deep sleep entry...");
 
     char buf[160];
-    snprintf(buf, sizeof(buf), "onBattery=%d voltage=%dmV percent=%d%%", onBattery_, cachedVoltage_, cachedPercent_);
 
     blankPanelBacklightForSleepOrPowerOff();
 
@@ -677,10 +646,8 @@ bool BatteryManager::powerOff() {
     Serial.println("[Battery] Executing final power-off sequence...");
 
     char buf[128];
-    snprintf(buf, sizeof(buf), "onBattery=%d voltage=%dmV percent=%d%%", onBattery_, cachedVoltage_, cachedPercent_);
 
     const poweroff_policy::Strategy strategy = poweroff_policy::selectStrategy(onBattery_);
-    snprintf(buf, sizeof(buf), "strategy=%s", poweroff_policy::strategyName(strategy));
     Serial.printf("[Battery] Power-off strategy: %s\n", poweroff_policy::strategyName(strategy));
 
     blankPanelBacklightForSleepOrPowerOff();
@@ -738,7 +705,6 @@ bool BatteryManager::powerOff() {
     }
 
     const bool latchDropped = setTCA9554PinWithBudget(TCA9554_PWR_LATCH_PIN, false, pdMS_TO_TICKS(250), 5);
-    snprintf(buf, sizeof(buf), "latchDrop=%s", latchDropped ? "OK" : "FAILED");
     Serial.printf("[Battery] Latch drop result: %s\n", latchDropped ? "OK" : "FAILED");
 
     bool latchReadbackSucceeded = false;
@@ -755,7 +721,6 @@ bool BatteryManager::powerOff() {
             snprintf(buf, sizeof(buf), "readback=0x%02X pin6=%s", readback, latchLow ? "LOW" : "HIGH_STUCK");
             Serial.printf("[Battery] TCA9554 %s\n", buf);
         } else {
-            snprintf(buf, sizeof(buf), "readback=%s", audioI2cResultToString(readbackResult));
             Serial.printf("[Battery] TCA9554 readback failed (%s)\n", audioI2cResultToString(readbackResult));
         }
     }

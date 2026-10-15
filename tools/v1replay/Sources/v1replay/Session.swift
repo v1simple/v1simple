@@ -580,7 +580,7 @@ extension V1 {
                 }
                 controlState.mainVolume = main
                 controlState.mutedVolume = muted
-                // V1Simple sends aux0=00. Documented V1 versions 4.1037+ assign
+                // Documented V1 versions 4.1037+ assign
                 // bit 2 to saving the current pair; that compatibility branch
                 // is host-modeled but not physically confirmed here. Earlier
                 // versions leave saved state unchanged because their handling

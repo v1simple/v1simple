@@ -290,7 +290,7 @@ void V1Display::drawTopCounterPair(char primary, bool muted, bool primaryDot, ch
     const int clearX = TOP_COUNTER_FIELD_X - kClearLeftPad;
     const int clearW = (kBandsColumnLeftX - clearX);
     drawnRegion_.add(static_cast<int16_t>(clearX), DisplayLayout::kTopCounterRect.y, static_cast<int16_t>(clearW),
-                     DisplayLayout::kTopCounterRect.h, DisplayDirtyRegionSource::Status);
+                     DisplayLayout::kTopCounterRect.h);
     elementCaches_.topCounter.counterValid = true;
     elementCaches_.topCounter.lastMuted = muted;
     elementCaches_.topCounter.lastFixedPrimaryDot = drawFixedPrimaryDot;
@@ -412,7 +412,7 @@ void V1Display::drawMuteIcon(bool muted) {
 
     const DisplayLayout::DisplayRect badgeRect = DisplayLayout::muteBadgeRect();
 
-    drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Status);
+    drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h);
 
     if (muted) {
         uint16_t outline = PALETTE_MUTED;

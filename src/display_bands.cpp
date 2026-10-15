@@ -196,7 +196,7 @@ bool V1Display::drawBandIndicators(uint8_t bandMask, bool muted, uint8_t bandFla
             if (pw <= 0 || ph <= 0) {
                 return;
             }
-            drawnRegion_.add(px, py, pw, ph, DisplayDirtyRegionSource::Bands);
+            drawnRegion_.add(px, py, pw, ph);
             FILL_RECT(px, py, pw, ph, PALETTE_BG);
         };
 
@@ -301,7 +301,7 @@ void V1Display::drawVerticalSignalBars(uint8_t frontStrength, uint8_t rearStreng
         elementCaches_.bars.valid && elementCaches_.bars.lastPaletteRevision != paletteRevision_;
     const bool forceFullStack = !elementCaches_.bars.valid || paletteChanged;
     if (forceFullStack) {
-        drawnRegion_.add(stackRect.x, stackRect.y, stackRect.w, stackRect.h, DisplayDirtyRegionSource::SignalBars);
+        drawnRegion_.add(stackRect.x, stackRect.y, stackRect.w, stackRect.h);
     }
     int dirtyTop = SCREEN_HEIGHT;
     int dirtyBottom = 0;
@@ -338,9 +338,8 @@ void V1Display::drawVerticalSignalBars(uint8_t frontStrength, uint8_t rearStreng
     }
 
     if (!forceFullStack && dirtyTop < dirtyBottom) {
-        // Adjacent changed bars share one DrawnRegion entry.
         drawnRegion_.add(stackRect.x, static_cast<int16_t>(dirtyTop), stackRect.w,
-                         static_cast<int16_t>(dirtyBottom - dirtyTop), DisplayDirtyRegionSource::SignalBars);
+                         static_cast<int16_t>(dirtyBottom - dirtyTop));
     }
 
     elementCaches_.bars.lastStrength = strength;

@@ -33,7 +33,6 @@ static constexpr uint8_t ERRORS_BEFORE_DISCONNECT = 10;
 static constexpr uint32_t AUX_INTERVAL_MS = 2000;
 static constexpr uint32_t AUX_WINDOW_MIN_MS = 200;
 static constexpr uint32_t AUX_COMMAND_TIMEOUT_MS = 180;
-static constexpr uint32_t VIN_COMMAND_TIMEOUT_MS = 250;
 static constexpr uint32_t EOT_STALE_MS = 10000;
 
 // ── ECU idle detection (car-off / petrol stop) ─────────────────
@@ -62,6 +61,5 @@ static constexpr uint8_t AT_INIT_RETRIES = 1;
 
 // ── Speed poll command ──────────────────────────────────────────
 static constexpr const char* SPEED_POLL_CMD = "010D\r";
-static constexpr const char* VIN_POLL_CMD = "0902\r";
 
 } // namespace obd

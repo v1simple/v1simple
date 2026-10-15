@@ -276,74 +276,6 @@ void test_parse_too_many_lines_reports_error() {
     TEST_ASSERT_TRUE(r.error);
 }
 
-void test_parse_vin_multiline_response() {
-    const char* resp =
-        "0902\r\n"
-        "0: 49 02 01 31 46 54\r\n"
-        "1: 57 31 45 54 37 44\r\n"
-        "2: 46 41 31 32 33 34\r\n"
-        "3: 35 36\r\n"
-        ">";
-    Elm327VinParseResult vin = parseVinResponse(resp, strlen(resp));
-    TEST_ASSERT_TRUE(vin.valid);
-    TEST_ASSERT_EQUAL_STRING("1FTW1ET7DFA123456", vin.vin);
-}
-
-void test_parse_vin_multiline_response_with_echo_and_status_lines() {
-    const char* resp =
-        "0902\r\n"
-        "SEARCHING...\r\n"
-        "0: 49 02 01 31 46 54\r\n"
-        "1: 57 31 45 54 37 44\r\n"
-        "OK\r\n"
-        "2: 46 41 31 32 33 34\r\n"
-        "3: 35 36\r\n"
-        ">";
-    Elm327VinParseResult vin = parseVinResponse(resp, strlen(resp));
-    TEST_ASSERT_TRUE(vin.valid);
-    TEST_ASSERT_EQUAL_STRING("1FTW1ET7DFA123456", vin.vin);
-}
-
-void test_parse_vin_no_data() {
-    const char* resp = "0902\r\nNO DATA\r\n>";
-    Elm327VinParseResult vin = parseVinResponse(resp, strlen(resp));
-    TEST_ASSERT_FALSE(vin.valid);
-    TEST_ASSERT_TRUE(vin.noData);
-    TEST_ASSERT_FALSE(vin.error);
-}
-
-void test_decode_u8_offset40_temperature() {
-    Elm327ParseResult r;
-    r.valid = true;
-    r.dataLen = 1;
-    r.dataBytes[0] = 0x64;
-    int16_t temp = 0;
-    TEST_ASSERT_TRUE(decodeTempC_x10(r, Elm327TempDecodeFormat::U8_OFFSET40, temp));
-    TEST_ASSERT_EQUAL_INT16(600, temp);
-}
-
-void test_decode_u16_div10_offset40_temperature() {
-    Elm327ParseResult r;
-    r.valid = true;
-    r.dataLen = 2;
-    r.dataBytes[0] = 0x17;
-    r.dataBytes[1] = 0x70;  // 6000 / 10 - 40 = 20.0 C
-    int16_t temp = 0;
-    TEST_ASSERT_TRUE(decodeTempC_x10(r, Elm327TempDecodeFormat::U16_DIV10_OFFSET40, temp));
-    TEST_ASSERT_EQUAL_INT16(200, temp);
-}
-
-void test_decode_u16_raw_offset40_temperature() {
-    Elm327ParseResult r;
-    r.valid = true;
-    r.dataLen = 2;
-    r.dataBytes[0] = 0x01;
-    r.dataBytes[1] = 0x90;  // 400 - 40 = 0.0 C
-    int16_t temp = 0;
-    TEST_ASSERT_TRUE(decodeTempC_x10(r, Elm327TempDecodeFormat::U16_RAW_OFFSET40, temp));
-    TEST_ASSERT_EQUAL_INT16(0, temp);
-}
-
 // decodeSpeedKmh edge cases
 void test_decode_speed_wrong_service() {
     Elm327ParseResult r;
@@ -423,12 +355,6 @@ int main() {
     RUN_TEST(test_parse_mode_22_response_sets_did);
     RUN_TEST(test_parse_response_ignores_echo_and_status_lines);
     RUN_TEST(test_parse_too_many_lines_reports_error);
-    RUN_TEST(test_parse_vin_multiline_response);
-    RUN_TEST(test_parse_vin_multiline_response_with_echo_and_status_lines);
-    RUN_TEST(test_parse_vin_no_data);
-    RUN_TEST(test_decode_u8_offset40_temperature);
-    RUN_TEST(test_decode_u16_div10_offset40_temperature);
-    RUN_TEST(test_decode_u16_raw_offset40_temperature);
 
     // decodeSpeedKmh edge cases
     RUN_TEST(test_decode_speed_wrong_service);

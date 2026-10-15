@@ -425,7 +425,6 @@ class V1Display {
     int16_t ut_drawnRegionY() const { return drawnRegion_.y(); }
     int16_t ut_drawnRegionW() const { return drawnRegion_.w(); }
     int16_t ut_drawnRegionH() const { return drawnRegion_.h(); }
-    uint8_t ut_drawnRegionRectCount() const { return drawnRegion_.rectCount(); }
     void ut_resetDrawnRegion() { drawnRegion_.reset(); }
     bool ut_alpHasLaserEvent() const { return alpHasLaserEvent_; }
     bool ut_alpFreqOverride() const { return alpFreqOverride_; }

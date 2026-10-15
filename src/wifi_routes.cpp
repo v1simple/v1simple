@@ -117,9 +117,8 @@ void WiFiManager::registerMaintenanceExactBodyWriteRoute(
 }
 
 bool WiFiManager::setupWebServer() {
-    // Cache the active AP address before starting the listener. Accepted
-    // sockets for any other local destination are closed before request
-    // parsing; allowed AP sockets then pass through the bounded preflight.
+    // Cache the AP address before starting the listener. Only AP or live STA
+    // destinations reach the bounded request preflight.
     server_.setMaintenanceApIp(WiFi.softAPIP());
     // Consult STA's address at acceptance time. If DHCP assigns the AP's
     // address, localIP alone cannot distinguish interfaces and ingress fails

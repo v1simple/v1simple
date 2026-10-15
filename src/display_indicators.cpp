@@ -87,7 +87,7 @@ void V1Display::drawObdIndicator() {
 
     const DisplayLayout::DisplayRect badgeRect = DisplayLayout::obdBadgeRect();
 
-    drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Indicators);
+    drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h);
     FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
     if (!wantShow) {
         return;
@@ -120,7 +120,7 @@ void V1Display::drawGpsIndicator() {
 
     const DisplayLayout::DisplayRect badgeRect = DisplayLayout::gpsBadgeRect();
 
-    drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Indicators);
+    drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h);
     FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
     if (!wantShow) {
         return;
@@ -157,7 +157,7 @@ void V1Display::drawAlpIndicator() {
 
     const DisplayLayout::DisplayRect badgeRect = DisplayLayout::alpBadgeRect();
 
-    drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, DisplayDirtyRegionSource::Indicators);
+    drawnRegion_.add(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h);
     FILL_RECT(badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, PALETTE_BG);
     if (!wantShow) {
         return;

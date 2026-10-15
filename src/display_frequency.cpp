@@ -261,7 +261,7 @@ void V1Display::renderFrequencyPresentation(const FrequencyPresentation& present
             int16_t dirtyH = 0;
             if (frequencyDigitAtlas_.changedTextRect(elementCaches_.frequency.lastText, textBuf, dirtyX, dirtyY, dirtyW,
                                                      dirtyH)) {
-                drawnRegion_.add(dirtyX, dirtyY, dirtyW, dirtyH, DisplayDirtyRegionSource::Frequency);
+                drawnRegion_.add(dirtyX, dirtyY, dirtyW, dirtyH);
                 FILL_RECT(dirtyX, dirtyY, dirtyW, dirtyH, PALETTE_BG);
                 cachedRender = frequencyDigitAtlas_.restoreTextInRect(textBuf, freqColor, PALETTE_BG, framebuffer,
                                                                       CANVAS_WIDTH, dirtyX, dirtyY, dirtyW, dirtyH);
@@ -271,8 +271,7 @@ void V1Display::renderFrequencyPresentation(const FrequencyPresentation& present
         if (!cachedRender) {
             if (clearH > 0 && clearW > 0) {
                 drawnRegion_.add(static_cast<int16_t>(clearLeft), static_cast<int16_t>(clearY),
-                                 static_cast<int16_t>(clearW), static_cast<int16_t>(clearH),
-                                 DisplayDirtyRegionSource::Frequency);
+                                 static_cast<int16_t>(clearW), static_cast<int16_t>(clearH));
                 FILL_RECT(clearLeft, clearY, clearW, clearH, PALETTE_BG);
             }
 
@@ -337,8 +336,7 @@ void V1Display::renderFrequencyFallback(const FrequencyPresentation& presentatio
     const int clearY = y - 4;
     const int clearBottom = std::min(y + metrics.digitH + 4, DisplayLayout::CONTENT_BOTTOM_Y);
     drawnRegion_.add(static_cast<int16_t>(clearLeft), static_cast<int16_t>(clearY),
-                     static_cast<int16_t>(clearRight - clearLeft), static_cast<int16_t>(clearBottom - clearY),
-                     DisplayDirtyRegionSource::Frequency);
+                     static_cast<int16_t>(clearRight - clearLeft), static_cast<int16_t>(clearBottom - clearY));
     FILL_RECT(clearLeft, clearY, clearRight - clearLeft, clearBottom - clearY, PALETTE_BG);
 
     if (presentation.alpOverride || presentation.band == BAND_LASER || presentation.photoRadar) {
@@ -535,7 +533,7 @@ void V1Display::drawVolumeZeroWarning() {
     int textY = centerY - charH / 2;
 
     drawnRegion_.add(static_cast<int16_t>(leftMargin), static_cast<int16_t>(textY - 5), static_cast<int16_t>(maxWidth),
-                     static_cast<int16_t>(charH + 10), DisplayDirtyRegionSource::Frequency);
+                     static_cast<int16_t>(charH + 10));
     FILL_RECT(leftMargin, textY - 5, maxWidth, charH + 10, PALETTE_BG);
 
     // This bypasses drawFrequency*(); invalidate its caches so VOL 0 cannot

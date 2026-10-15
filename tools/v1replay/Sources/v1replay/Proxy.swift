@@ -23,9 +23,14 @@ final class PacketLog {
     private let started = Date()
     private let tag: String?
 
-    /// Rolling reassembly buffers, one per direction, so a frame split across
-    /// two BLE writes still decodes.
-    private var buffers: [String: [UInt8]] = [:]
+    private struct Stream: Hashable {
+        let direction: String
+        let characteristic: String
+    }
+
+    // Characteristics have independent framing; B4E0/B8D2 carry indexed parts.
+    private var buffers: [Stream: [UInt8]] = [:]
+    private var longChunks: [Stream: [[UInt8]?]] = [:]
 
     init(path: String, tag: String?) throws {
         self.path = path
@@ -80,11 +85,18 @@ final class PacketLog {
             "hex": bytes.hexString
         ])
 
-        var buffer = buffers[direction] ?? []
-        buffer.append(contentsOf: bytes)
-        if buffer.count > 1024 { buffer.removeFirst(buffer.count - 1024) }
-        let frames = V1.drainFrames(from: &buffer)
-        buffers[direction] = buffer
+        let stream = Stream(direction: direction, characteristic: characteristic.uuidString)
+        let frames: [V1.InboundPacket]
+        if characteristic == CBUUID(string: V1.displayLongUUID) ||
+            characteristic == CBUUID(string: V1.commandLongUUID) {
+            frames = decodeLongChunk(bytes, stream: stream)
+        } else {
+            var buffer = buffers[stream] ?? []
+            buffer.append(contentsOf: bytes)
+            if buffer.count > 1024 { buffer.removeFirst(buffer.count - 1024) }
+            frames = V1.drainFrames(from: &buffer)
+            buffers[stream] = buffer
+        }
 
         for frame in frames {
             emit([
@@ -97,6 +109,48 @@ final class PacketLog {
                 "payload": frame.payload.hexString,
                 "hex": frame.raw.hexString
             ])
+        }
+    }
+
+    private func decodeLongChunk(_ bytes: [UInt8], stream: Stream) -> [V1.InboundPacket] {
+        // Bluetooth Addendum rev. 4: one index/count byte plus 1..19 ESP bytes.
+        guard (2...20).contains(bytes.count) else {
+            longChunks.removeValue(forKey: stream)
+            return []
+        }
+        let index = Int(bytes[0] >> 4)
+        let count = Int(bytes[0] & 0x0F)
+        guard index > 0, count > 0, index <= count else {
+            longChunks.removeValue(forKey: stream)
+            return []
+        }
+        var chunks = longChunks[stream] ?? []
+        // A repeated index may belong to a new packet, even when bytes match.
+        if chunks.count != count || chunks[index - 1] != nil {
+            chunks = Array(repeating: nil, count: count)
+        }
+        chunks[index - 1] = Array(bytes.dropFirst())
+        guard chunks.allSatisfy({ $0 != nil }) else {
+            longChunks[stream] = chunks
+            return []
+        }
+        longChunks.removeValue(forKey: stream)
+        let assembled = chunks.compactMap { $0 }.flatMap { $0 }
+        var buffer = assembled
+        let frames = V1.drainFrames(from: &buffer)
+        // An indexed candidate owns one whole frame, never a stream fragment.
+        guard frames.count == 1, frames[0].raw == assembled, buffer.isEmpty else { return [] }
+        return frames
+    }
+
+    /// Called on the shared BLE queue so fragments cannot cross link epochs.
+    func resetReassembly(direction: String? = nil) {
+        if let direction {
+            buffers = buffers.filter { $0.key.direction != direction }
+            longChunks = longChunks.filter { $0.key.direction != direction }
+        } else {
+            buffers.removeAll()
+            longChunks.removeAll()
         }
     }
 

@@ -359,6 +359,22 @@ final class V1SessionContractTests: XCTestCase {
         ])
     }
 
+    func testChecksumFreeCommandsCannotBypassEmulatorValidation() {
+        var session = V1.Session()
+        let checksumFreeV1Origin: [UInt8] = [0xAA, 0xDA, 0xE9, 0x41, 0x00, 0xAB]
+        let missingCommandChecksum: [UInt8] = [0xAA, 0xDA, 0xE6, 0x41, 0x00, 0xAB]
+        let validStart: [UInt8] = [0xAA, 0xDA, 0xE6, 0x41, 0x01, 0xAC, 0xAB]
+
+        XCTAssertEqual(session.receive(checksumFreeV1Origin + missingCommandChecksum).map(\.effects), [
+            [.rejected(.invalidRequestHeader)],
+            [.rejected(.invalidChecksum)],
+        ])
+        XCTAssertFalse(session.alertDataRequested)
+
+        XCTAssertEqual(session.receive(validStart).map(\.effects), [[.alertDataChanged(true)]])
+        XCTAssertTrue(session.alertDataRequested)
+    }
+
     func testStateCommandsValidatePayloadsAndNeverInventReplies() {
         var session = V1.Session()
         let valid: [[UInt8]] = [

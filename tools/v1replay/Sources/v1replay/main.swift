@@ -1008,12 +1008,23 @@ func runProxy() throws {
         return true
     }
 
+    var dutSubscribed = false
+    peripheral.onStateChange = { [weak peripheral] in
+        let subscribed = (peripheral?.subscriberCount ?? 0) > 0
+        if subscribed != dutSubscribed {
+            log.resetReassembly(direction: "dut->v1")
+            dutSubscribed = subscribed
+        }
+    }
+
     central.onConnected = { name, characteristics in
+        log.resetReassembly()
         log.note("v1_connected", ["name": name, "characteristics": characteristics])
         console.log("\(Ansi.green)v1\(Ansi.reset)   connected — advertising to v1simple now")
         peripheral.beginAdvertising()
     }
     central.onDisconnected = { name in
+        log.resetReassembly()
         log.note("v1_disconnected", ["name": name ?? ""])
     }
 

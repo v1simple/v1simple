@@ -82,6 +82,38 @@ final class V1ProtocolContractTests: XCTestCase {
         XCTAssertEqual(try ContractFrame.decode(replies.allVolume).origin, 0xEA)
     }
 
+    func testDrainFramesPreservesAllChecksumFreeV1VolumeBytes() throws {
+        let raw: [UInt8] = [
+            0xAA, 0xD6, 0xE9, 0x3D, 0x04,
+            0x04, 0x00, 0x04, 0x00, 0xAB,
+        ]
+        var buffer = raw
+        let frames = V1.drainFrames(from: &buffer)
+
+        XCTAssertTrue(buffer.isEmpty)
+        XCTAssertEqual(frames.count, 1)
+        let frame = try XCTUnwrap(frames.first)
+        XCTAssertEqual(frame.id, 0x3D)
+        XCTAssertEqual(frame.payload, [0x04, 0x00, 0x04, 0x00])
+        XCTAssertEqual(frame.raw, raw)
+    }
+
+    func testDrainFramesExcludesChecksumFromChecksummedV1VolumeBytes() throws {
+        let raw: [UInt8] = [
+            0xAA, 0xD6, 0xEA, 0x3D, 0x05,
+            0x04, 0x00, 0x04, 0x00, 0xB4, 0xAB,
+        ]
+        var buffer = raw
+        let frames = V1.drainFrames(from: &buffer)
+
+        XCTAssertTrue(buffer.isEmpty)
+        XCTAssertEqual(frames.count, 1)
+        let frame = try XCTUnwrap(frames.first)
+        XCTAssertEqual(frame.id, 0x3D)
+        XCTAssertEqual(frame.payload, [0x04, 0x00, 0x04, 0x00])
+        XCTAssertEqual(frame.raw, raw)
+    }
+
     func testManualCribPresentationUsesCanonicalBroadcastFraming() throws {
         let packets = V1.cribPresentationPackets()
         let decoded = try [packets.alert, packets.oneBar, packets.sixBars].map(ContractFrame.decode)

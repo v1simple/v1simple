@@ -698,7 +698,8 @@ enum V1 {
             }
 
             let raw = Array(buffer[0..<total])
-            let payloadEnd = total - 2                // drop checksum and end byte
+            // E9 has no checksum; its end marker is the only trailer byte.
+            let payloadEnd = total - (raw[2] == 0xE9 ? 1 : 2)
             let payload = payloadEnd > 5 ? Array(raw[5..<payloadEnd]) : []
             packets.append(InboundPacket(id: raw[3], payload: payload, raw: raw))
             buffer.removeFirst(total)

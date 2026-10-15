@@ -192,7 +192,7 @@ elif [[ "${OSTYPE:-}" == "msys" || "${OSTYPE:-}" == "cygwin" || "${OSTYPE:-}" ==
         PIO_CMD="$HOME/.platformio/penv/Scripts/pio.exe"
     else
         echo -e "${RED}PlatformIO not found. Install it first.${NC}"
-        echo "   Run: pip install platformio"
+        echo "   Run: python3 -m pip install 'pioarduino==6.2.0'"
         exit 1
     fi
     echo -e "${BLUE}Detected Windows${NC}"

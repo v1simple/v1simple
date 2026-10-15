@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/svelte';
+import { fireEvent, render, screen } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { installFetchMock, jsonResponse } from '../../test/fetch-mock.js';
@@ -76,23 +76,24 @@ describe('dev route page', () => {
         unmount();
     });
 
-    it('shows NVS diagnostics when present', async () => {
+    it('loads current NVS diagnostics each time the page opens', async () => {
+        let settings = {
+            proxy_ble: true,
+            nvsDiag: {
+                healthy: true,
+                ns: 'settings_a',
+                valid: 1,
+                ver: 2,
+                bright: 180,
+                proxy: 1,
+                autoPush: 0
+            }
+        };
         installDefaultFetch([
             {
                 method: 'GET',
                 match: '/api/device/settings',
-                respond: jsonResponse({
-                    proxy_ble: true,
-                    nvsDiag: {
-                        healthy: true,
-                        ns: 'settings_a',
-                        valid: 1,
-                        ver: 2,
-                        bright: 180,
-                        proxy: 1,
-                        autoPush: 0
-                    }
-                })
+                respond: () => jsonResponse(settings)
             }
         ]);
         const { unmount } = render(Page);
@@ -102,5 +103,42 @@ describe('dev route page', () => {
         expect(screen.getByText('In-memory proxy_ble=true')).toBeInTheDocument();
 
         unmount();
+        settings = {
+            proxy_ble: false,
+            nvsDiag: { ...settings.nvsDiag, ns: 'settings_b', bright: 90, proxy: 0 }
+        };
+        const reopened = render(Page);
+        expect(await screen.findByText('settings_b')).toBeInTheDocument();
+        expect(screen.getByText('90')).toBeInTheDocument();
+        expect(screen.getByText('In-memory proxy_ble=false')).toBeInTheDocument();
+        reopened.unmount();
+    });
+
+    it('preserves the password banner preference and notifies the layout when toggled', async () => {
+        installDefaultFetch();
+        localStorage.setItem('v1simple:passwordWarningDismissedPersist', '1');
+        sessionStorage.setItem('passwordWarningDismissed', 'true');
+        const dismissed = [];
+        const onPreferenceChange = (event) => dismissed.push(event.detail.dismissed);
+        window.addEventListener('v1simple-password-warning-dismissed-change', onPreferenceChange);
+        const { unmount } = render(Page);
+        try {
+            const toggle = await screen.findByRole('checkbox', { name: /Hide default password banner/i });
+            expect(toggle).toBeChecked();
+
+            await fireEvent.click(toggle);
+            expect(toggle).not.toBeChecked();
+            expect(localStorage.getItem('v1simple:passwordWarningDismissedPersist')).toBeNull();
+            expect(sessionStorage.getItem('passwordWarningDismissed')).toBeNull();
+
+            await fireEvent.click(toggle);
+            expect(toggle).toBeChecked();
+            expect(localStorage.getItem('v1simple:passwordWarningDismissedPersist')).toBe('1');
+            expect(sessionStorage.getItem('passwordWarningDismissed')).toBe('true');
+            expect(dismissed).toEqual([false, true]);
+        } finally {
+            unmount();
+            window.removeEventListener('v1simple-password-warning-dismissed-change', onPreferenceChange);
+        }
     });
 });

@@ -8,9 +8,8 @@ VoiceModule::VoiceModule() {
     // Dependencies set in begin()
 }
 
-void VoiceModule::begin(SettingsManager* settings, V1BLEClient* ble) {
+void VoiceModule::begin(SettingsManager* settings) {
     settings_ = settings;
-    bleClient_ = ble;
 
     Serial.println("[VoiceModule] Initialized");
 }

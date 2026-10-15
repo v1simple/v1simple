@@ -3,25 +3,6 @@
 
 #include "alert_persistence_module.h"
 
-#include "ble_client.h"
-#include "display.h"
-#include "packet_parser.h"
-#include "settings.h"
-
-AlertPersistenceModule::AlertPersistenceModule() {
-    // Dependencies set in begin()
-}
-
-void AlertPersistenceModule::begin(V1BLEClient* ble, PacketParser* pParser, V1Display* disp,
-                                   SettingsManager* settings) {
-    bleClient_ = ble;
-    parser_ = pParser;
-    display_ = disp;
-    settings_ = settings;
-
-    Serial.println("[AlertPersistenceModule] Initialized");
-}
-
 // ============================================================================
 // Alert Persistence - shows last alert briefly after V1 clears it
 // ============================================================================

@@ -6,7 +6,6 @@
 
 #include <Arduino.h>
 #include <FS.h>
-#include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <atomic>
 #include <freertos/FreeRTOS.h>
@@ -221,10 +220,6 @@ class StorageManager {
 
         return true;
     }
-
-    // Atomic JSON file write utility (write to .tmp, then promote).
-    // Returns true on success.
-    static bool writeJsonFileAtomic(fs::FS& fs_, const char* path, JsonDocument& doc);
 
   private:
     fs::FS* fs_;

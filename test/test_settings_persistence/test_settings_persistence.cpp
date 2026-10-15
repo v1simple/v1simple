@@ -5673,7 +5673,6 @@ struct ProfileTapHarness {
         ble.reset();
         quiet.begin(&ble, &parser);
         push.begin(&manager, &profiles, &ble, &parser, &display, &quiet);
-        persistence.begin(&ble, &parser, &display, &manager);
         tap.begin(&touch, &manager, &display, &ble, &parser, &push, &persistence, &mode, &quiet);
     }
     void poll(unsigned long now, bool down) {

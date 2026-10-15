@@ -45,7 +45,16 @@ def pio_interpreter(pio: str) -> str | None:
     if not executable:
         return None
     try:
-        first_line = Path(executable).read_text(encoding="utf-8").splitlines()[0]
+        contents = Path(executable).read_bytes()
+        if contents.startswith(b"MZ"):
+            # pip records its interpreter between the Windows launcher and
+            # the ZIP entry point. A neighboring Python may be unrelated.
+            match = re.search(rb"#!([^\r\n\x00]+)\r?\nPK\x03\x04", contents)
+            if match is None:
+                return None
+            command = shlex.split(match.group(1).decode("utf-8"), posix=False)
+            return command[0].strip('"') if len(command) == 1 else None
+        first_line = contents.splitlines()[0].decode("utf-8")
         command = shlex.split(first_line.removeprefix("#!"))
     except (OSError, IndexError, ValueError):
         return None
@@ -62,20 +71,23 @@ def installed_pioarduino_version(pio: str) -> tuple[int, ...] | None:
     interpreter = pio_interpreter(pio)
     if interpreter is None:
         return None
-    probe = subprocess.run(
-        [
-            interpreter,
-            "-c",
-            (
-                "from importlib.metadata import version; "
-                f"print(version({REQUIRED_DISTRIBUTION!r}))"
-            ),
-        ],
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    )
+    try:
+        probe = subprocess.run(
+            [
+                interpreter,
+                "-c",
+                (
+                    "from importlib.metadata import version; "
+                    f"print(version({REQUIRED_DISTRIBUTION!r}))"
+                ),
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return None
     if probe.returncode != 0:
         return None
     return parse_version(probe.stdout.strip())

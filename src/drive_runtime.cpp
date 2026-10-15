@@ -286,8 +286,7 @@ bool DriveRuntime::restoreConnectionDisplayOwner(void* context, uint32_t nowMs) 
 }
 
 void DriveRuntime::initializeRuntimeModules() {
-    alertPersistence_.begin(&ble_, &parser_, &display_, &settings_);
-    voice_.begin(&settings_, &ble_);
+    voice_.begin(&settings_);
     audio_set_volume(settings_.get().voiceVolume);
     volumeFade_.begin(&settings_);
     quiet_.begin(&ble_, &parser_);
@@ -800,7 +799,6 @@ void DriveRuntime::processSettingsOperation(uint32_t nowMs) {
         observedSettingsOperationId_ = initial.operationId;
         observedSettingsOperationState_ = initial.state;
         settingsOperationStartedMs_ = nowMs;
-        settingsOperationStateStartedMs_ = nowMs;
         settingsOperationNextActionMs_ = 0;
         settingsRecaptureIngressBoundary_ = 0;
         settingsRecaptureStarted_ = false;
@@ -812,7 +810,6 @@ void DriveRuntime::processSettingsOperation(uint32_t nowMs) {
         settingsReturnRetry_.clear();
     } else if (initial.state != observedSettingsOperationState_) {
         observedSettingsOperationState_ = initial.state;
-        settingsOperationStateStartedMs_ = nowMs;
         settingsOperationNextActionMs_ = 0;
         if (initial.state == V1SettingsOperationStore::State::Recapturing) {
             settingsRecaptureIngressBoundary_ = 0;
@@ -899,7 +896,6 @@ void DriveRuntime::processSettingsOperation(uint32_t nowMs) {
         if (ble_.beginSettingsRecapture()) {
             settingsFreshObservationGate_.beginCapture(settingsSessionGeneration);
             settingsRecaptureStarted_ = true;
-            settingsOperationStateStartedMs_ = nowMs;
         }
         return;
     }
@@ -948,7 +944,6 @@ void DriveRuntime::processSettingsOperation(uint32_t nowMs) {
             if (ble_.beginSettingsRecapture()) {
                 settingsFreshObservationGate_.beginCapture(settingsSessionGeneration);
                 settingsRecaptureStarted_ = true;
-                settingsOperationStateStartedMs_ = nowMs;
             }
             return;
         }

@@ -9,7 +9,6 @@
 // Forward declarations
 class SettingsManager;
 struct V1Settings;
-class V1BLEClient;
 
 struct VoiceContext {
     // Alert data
@@ -79,7 +78,7 @@ class VoiceModule {
     VoiceModule();
 
     // Initialize with dependencies
-    void begin(SettingsManager* settings, V1BLEClient* ble = nullptr);
+    void begin(SettingsManager* settings);
 
     // Main decision method - returns what to announce (if anything)
     VoiceAction process(const VoiceContext& ctx);
@@ -109,7 +108,6 @@ class VoiceModule {
   private:
     // Dependencies
     SettingsManager* settings_ = nullptr;
-    V1BLEClient* bleClient_ = nullptr;
 
     // Announced alert tracking
     // Retain the full radar table plus a separate V1 laser announcement.

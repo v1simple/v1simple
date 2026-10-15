@@ -65,36 +65,3 @@ String StorageManager::statusText() const {
     }
     return "LittleFS (internal)";
 }
-
-bool StorageManager::writeJsonFileAtomic(fs::FS& fs_, const char* path, JsonDocument& doc) {
-    if (path && path[0] == '/') {
-        String parent(path);
-        int slash = parent.lastIndexOf('/');
-        if (slash > 0) {
-            parent = parent.substring(0, slash);
-            if (!fs_.exists(parent)) {
-                fs_.mkdir(parent);
-            }
-        }
-    }
-    String tmpPath = String(path) + ".tmp";
-    File tmp = fs_.open(tmpPath.c_str(), "w");
-    if (!tmp) {
-        Serial.printf("[Storage] writeJsonFileAtomic: failed to open %s\n", tmpPath.c_str());
-        return false;
-    }
-    size_t written = serializeJson(doc, tmp);
-    tmp.flush();
-    tmp.close();
-    if (written == 0) {
-        Serial.printf("[Storage] writeJsonFileAtomic: wrote 0 bytes to %s\n", tmpPath.c_str());
-        fs_.remove(tmpPath.c_str());
-        return false;
-    }
-
-    if (!promoteTempFileWithRollback(fs_, tmpPath.c_str(), path)) {
-        Serial.printf("[Storage] writeJsonFileAtomic: promote failed %s -> %s\n", tmpPath.c_str(), path);
-        return false;
-    }
-    return true;
-}

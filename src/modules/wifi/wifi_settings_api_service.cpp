@@ -65,7 +65,7 @@ void handleApiDeviceSettingsGet(WebServer& server, const Runtime& runtime) {
     doc["alpAlertPersistSec"] = settings.alpAlertPersistSec;
     doc["alpDisableV1LaserOnPush"] = settings.alpDisableV1LaserOnPush;
 
-    // NVS persistence diagnostics — helps verify settings actually survive reboot
+    // Current flash readback, separate from the in-memory settings above.
     if (runtime.getNvsDiagnostic) {
         SettingsManager::NvsDiagnostic diag = runtime.getNvsDiagnostic(runtime.ctx);
         JsonObject nvs = doc["nvsDiag"].to<JsonObject>();

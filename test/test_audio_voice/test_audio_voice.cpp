@@ -67,7 +67,7 @@ static void expectClips(std::initializer_list<const char*> expected) {
 
 void test_ku_priority_preserves_band_and_composes_true_frequency() {
     VoiceModule voice;
-    voice.begin(&settings, nullptr);
+    voice.begin(&settings);
     AlertData alert = AlertData::create(BAND_KU, DIR_FRONT, 4, 0, 13450);
     VoiceContext context;
     context.priority = &alert;
@@ -94,7 +94,7 @@ void test_ku_frequency_only_keeps_edge_frequency_and_count() {
 
 void test_ku_secondary_action_keeps_its_own_band_and_frequency() {
     VoiceModule voice;
-    voice.begin(&settings, nullptr);
+    voice.begin(&settings);
     AlertData alerts[] = {AlertData::create(BAND_KA, DIR_FRONT, 5, 0, 34700),
                           AlertData::create(BAND_KU, DIR_REAR, 0, 3, 13450)};
     VoiceContext context;
@@ -143,7 +143,7 @@ void test_ku_escalation_preserves_frequency_and_breakdown() {
 
 void test_photo_priority_says_photo_and_direction_without_frequency() {
     VoiceModule voice;
-    voice.begin(&settings, nullptr);
+    voice.begin(&settings);
     AlertData alert = AlertData::create(BAND_K, DIR_FRONT, 4, 0, 24125);
     alert.photoType = 1;
     VoiceContext context;
@@ -205,7 +205,7 @@ void test_parsed_unknown_direction_preserves_alert_without_side_clip() {
     TEST_ASSERT_TRUE(parser.getRenderablePriorityAlert(priority));
     TEST_ASSERT_EQUAL(DIR_NONE, priority.direction);
     VoiceModule voice;
-    voice.begin(&settings, nullptr);
+    voice.begin(&settings);
     VoiceContext context;
     context.alerts = parser.getAllAlerts().data();
     context.alertCount = parser.getAlertCount();

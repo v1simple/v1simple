@@ -219,7 +219,6 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
 
     uint32_t observedSettingsOperationId_ = 0;
     uint32_t settingsOperationStartedMs_ = 0;
-    uint32_t settingsOperationStateStartedMs_ = 0;
     uint32_t settingsRecaptureIngressBoundary_ = 0;
     V1SettingsOperationPolicy::ReturnToMaintenanceRetry settingsReturnRetry_;
     uint32_t settingsOperationNextActionMs_ = 0;

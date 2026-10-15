@@ -4,7 +4,6 @@
 #include <array>
 #include <cstring>
 
-#include "../mocks/ble_client.h"
 #include "../mocks/settings.h"
 #include "../../src/modules/voice/voice_module.h"
 #include "../../src/modules/voice/voice_module.cpp"  // Pull implementation for UNIT_TEST
@@ -17,13 +16,11 @@ unsigned long mockMicros = 0;
 
 SettingsManager settings;
 static VoiceModule voiceModule;
-static V1BLEClient bleClient;
 
 void setUp() {
     settings = SettingsManager();
-    bleClient.reset();
     voiceModule = VoiceModule();
-    voiceModule.begin(&settings, &bleClient);
+    voiceModule.begin(&settings);
     mockMillis = 10000;  // Start at 10 s so cooldown (2 s) is always pre-satisfied
 }
 
@@ -505,7 +502,7 @@ void test_secondary_photo_and_same_frequency_k_have_distinct_dedup_identity() {
 void test_secondary_stability_treats_zero_as_a_real_timestamp() {
     for (unsigned long firstSeenMs : {0UL, 1UL}) {
         voiceModule = VoiceModule();
-        voiceModule.begin(&settings, &bleClient);
+        voiceModule.begin(&settings);
 
         AlertData alerts[] = {
             AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700),

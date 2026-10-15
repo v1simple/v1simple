@@ -27,18 +27,6 @@ static int g_escalationPlaybackAttempts = 0;
 static uint16_t g_lastVoiceFrequency = 0;
 static AlertBand g_lastVoiceBand = AlertBand::KA;
 
-AlertPersistenceModule::AlertPersistenceModule() = default;
-
-void AlertPersistenceModule::begin(V1BLEClient* ble,
-                                   PacketParser* parserRef,
-                                   V1Display* displayRef,
-                                   SettingsManager* settingsRef) {
-    bleClient_ = ble;
-    parser_ = parserRef;
-    display_ = displayRef;
-    settings_ = settingsRef;
-}
-
 void AlertPersistenceModule::setPersistedAlert(const AlertData& alert) {
     persistedAlert_ = alert;
 }
@@ -198,7 +186,7 @@ void setUp() {
     g_lastVoiceFrequency = 0;
     g_lastVoiceBand = AlertBand::KA;
     quiet.begin(&ble, &parser);
-    voice.begin(&settings, &ble);
+    voice.begin(&settings);
     beginModule();
 }
 

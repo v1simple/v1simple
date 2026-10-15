@@ -3,23 +3,11 @@
 
 #pragma once
 
-#include <Arduino.h>
 #include "packet_parser.h" // For AlertData type
-
-// Forward declarations
-class V1BLEClient;
-class V1Display;
-class SettingsManager;
-class PacketParser;
 
 // Holds cleared V1 alerts for display persistence and clears combined state.
 class AlertPersistenceModule {
   public:
-    AlertPersistenceModule();
-
-    // Initialize with dependencies (call from setup())
-    void begin(V1BLEClient* ble, PacketParser* parser, V1Display* display, SettingsManager* settings);
-
     // Alert persistence - shows last alert briefly after V1 clears it
     void setPersistedAlert(const AlertData& alert);
     void startPersistence(unsigned long now);
@@ -29,12 +17,6 @@ class AlertPersistenceModule {
     bool isPersistenceActive() const { return alertPersistenceActive_; }
 
   private:
-    // Dependencies
-    V1BLEClient* bleClient_ = nullptr;
-    PacketParser* parser_ = nullptr;
-    V1Display* display_ = nullptr;
-    SettingsManager* settings_ = nullptr;
-
     // Alert persistence state
     AlertData persistedAlert_;
     unsigned long alertClearedTime_ = 0;

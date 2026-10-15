@@ -175,11 +175,6 @@ void obdTransportTaskEntry(void* param) {
             result.success = false;
             result.bleError = context->bleClient->getLastBleError();
             break;
-        case ObdTransportOp::SECURITY_START:
-            result.success = context->bleClient->beginSecurity();
-            result.bleError = context->bleClient->getLastBleError();
-            result.securityError = context->bleClient->getLastSecurityError();
-            break;
         case ObdTransportOp::DISCOVER:
             result.success = context->bleClient->discoverServices();
             result.bleError = context->bleClient->getLastBleError();
@@ -397,15 +392,6 @@ bool ObdRuntimeModule::isBleConnected() const {
     return bleClient_ && bleClient_->isConnected();
 #else
     return testBleConnected_;
-#endif
-}
-
-bool ObdRuntimeModule::beginBleSecurity() {
-#ifndef UNIT_TEST
-    const bool started = bleClient_->beginSecurity();
-    return started;
-#else
-    return true;
 #endif
 }
 
@@ -669,11 +655,6 @@ bool ObdRuntimeModule::beginTransportRequest(ObdTransportOp op, uint32_t nowMs, 
         result.success = true;
         result.bleError = getBleLastError();
         break;
-    case ObdTransportOp::SECURITY_START:
-        result.success = beginBleSecurity();
-        result.bleError = getBleLastError();
-        result.securityError = getBleSecurityFailure();
-        break;
     case ObdTransportOp::DISCOVER:
         result.success = discoverBleServices();
         result.bleError = getBleLastError();
@@ -712,8 +693,7 @@ bool ObdRuntimeModule::beginTransportRequest(ObdTransportOp op, uint32_t nowMs, 
 }
 
 #ifdef UNIT_TEST
-void ObdRuntimeModule::completePendingTransportForTest(bool success, bool timedOut, int bleError,
-                                                       int securityError) {
+void ObdRuntimeModule::completePendingTransportForTest(bool success, bool timedOut, int bleError) {
     if (!transportRequestActive_) {
         return;
     }
@@ -725,7 +705,6 @@ void ObdRuntimeModule::completePendingTransportForTest(bool success, bool timedO
     result.success = success;
     result.timedOut = timedOut || pendingTransportTimedOut_;
     result.bleError = bleError;
-    result.securityError = securityError;
     clearTransportRequest();
     readyTransportResult_ = result;
 }

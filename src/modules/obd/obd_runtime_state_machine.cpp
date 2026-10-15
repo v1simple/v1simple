@@ -78,74 +78,7 @@ void ObdRuntimeModule::commitManualScanCandidate() {
     clearManualScanState();
 }
 
-// PER-STATE HANDLERS — Securing / AtInit / Polling state machines
-
-void ObdRuntimeModule::updateSecuring(uint32_t nowMs) {
-    ObdTransportResult transportResult{};
-
-    if (bleDisconnected_) {
-#ifndef UNIT_TEST
-        Serial.printf("[OBD] lost connection during securing (ble reason=%d %s)\n", bleDisconnectReason_,
-                      bleReasonName(bleDisconnectReason_));
-#endif
-        bleDisconnected_ = false;
-        if (autoHealBondIfAllowed(nowMs, "securing_disconnect")) {
-            return;
-        }
-        handleConnectFailure(nowMs, ObdFailureReason::SECURITY_TIMEOUT);
-        return;
-    }
-
-    if ((nowMs - stateEnteredMs_) < obd::POST_CONNECT_SETTLE_MS) {
-        return;
-    }
-
-    if (isBleSecurityReady() || isBleEncrypted()) {
-        transitionTo(ObdConnectionState::DISCOVERING, nowMs);
-        return;
-    }
-
-    if (takeTransportResult(ObdTransportOp::SECURITY_START, transportResult) &&
-        (!transportResult.success || transportResult.timedOut)) {
-#ifndef UNIT_TEST
-        Serial.printf("[OBD] secureConnection start failed rc=%d (%s)\n", transportResult.securityError,
-                      bleReasonName(transportResult.securityError));
-#endif
-        if (autoHealBondIfAllowed(nowMs, "securing_start")) {
-            return;
-        }
-        disconnectBle();
-        handleConnectFailure(nowMs, ObdFailureReason::SECURITY_START);
-        return;
-    }
-
-    if (!transportRequestActive_ && !readyTransportResult_.ready &&
-        !beginTransportRequest(ObdTransportOp::SECURITY_START, nowMs, obd::SECURITY_TIMEOUT_MS)) {
-#ifndef UNIT_TEST
-        Serial.printf("[OBD] secureConnection request queue failed rc=%d (%s)\n", getBleSecurityFailure(),
-                      bleReasonName(getBleSecurityFailure()));
-#endif
-        if (autoHealBondIfAllowed(nowMs, "securing_start")) {
-            return;
-        }
-        disconnectBle();
-        handleConnectFailure(nowMs, ObdFailureReason::SECURITY_START);
-        return;
-    }
-
-    if ((nowMs - stateEnteredMs_) >= (obd::POST_CONNECT_SETTLE_MS + obd::SECURITY_TIMEOUT_MS)) {
-#ifndef UNIT_TEST
-        Serial.printf("[OBD] securing timed out bleError=%d (%s) securityError=%d (%s)\n", getBleLastError(),
-                      bleReasonName(getBleLastError()), getBleSecurityFailure(),
-                      bleReasonName(getBleSecurityFailure()));
-#endif
-        if (autoHealBondIfAllowed(nowMs, "securing_timeout")) {
-            return;
-        }
-        disconnectBle();
-        handleConnectFailure(nowMs, ObdFailureReason::SECURITY_TIMEOUT);
-    }
-}
+// PER-STATE HANDLERS — AtInit / Polling state machines
 
 void ObdRuntimeModule::updateAtInit(uint32_t nowMs) {
     ObdTransportResult transportResult{};

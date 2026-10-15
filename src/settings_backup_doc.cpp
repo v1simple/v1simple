@@ -836,8 +836,8 @@ struct PreparedObdFields {
 };
 
 // A full restore keeps the pre-restore settings and every validated external
-// field alive until the NVS selector commits or rollback completes. Keeping
-// that bounded transaction state on the loopTask stack made the fresh-NVS
+// field alive until the NVS settings generation commits or rollback completes.
+// Keeping that bounded transaction state on the loopTask stack made the fresh-NVS
 // restore path retain more than a kilobyte before entering profile storage.
 // Allocate it as one nothrow candidate instead; publication and rollback still
 // use the same validated objects and fail before any mutation when unavailable.
@@ -2920,8 +2920,8 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
     const bool wasRestorePending = restorePending_;
     clearRestorePending();
     if (journalWritten) {
-        // This value becomes authoritative only when the A/B settings selector
-        // advances. Until then the filesystem journal remains rollback intent.
+        // This value becomes authoritative only when the A/B settings generation
+        // commits. Until then the filesystem journal remains rollback intent.
         restoreCommitWatermark_ = restoreToken;
     }
 

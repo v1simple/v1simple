@@ -71,7 +71,6 @@ class ObdBleClient {
 
     /// True if GATT client is connected.
     bool isConnected() const;
-    bool beginSecurity();
     bool isSecurityReady() const;
     bool isEncrypted() const;
     bool isBonded() const;
@@ -126,7 +125,6 @@ class ObdBleClient {
     int8_t cachedRssi_ = 0;
     uint32_t lastRssiQueryMs_ = 0;
     std::atomic<bool> connectPending_{false};
-    std::atomic<bool> securityPending_{false};
     std::atomic<bool> securityReady_{false};
     std::atomic<bool> encrypted_{false};
     std::atomic<bool> bonded_{false};

@@ -15,7 +15,6 @@ static constexpr uint8_t MAX_DIRECT_CONNECT_FAILURES = 3;
 
 // ── Post-connect settle (DA14531 BLE 4.2 needs time before GATT) ─
 static constexpr uint32_t POST_CONNECT_SETTLE_MS = 500;
-static constexpr uint32_t SECURITY_TIMEOUT_MS = 3000;
 static constexpr uint32_t POST_SUBSCRIBE_SETTLE_MS = 150;
 
 // ── Boot dwell (V1 gets priority) ───────────────────────────────

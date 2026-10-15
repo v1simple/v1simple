@@ -121,7 +121,6 @@ void ObdClientCallback::onIdentity(NimBLEConnInfo& connInfo) {
 
 void ObdBleClient::clearLinkState(bool clearErrors) {
     connectPending_.store(false, std::memory_order_release);
-    securityPending_.store(false, std::memory_order_release);
     securityReady_.store(false, std::memory_order_release);
     encrypted_.store(false, std::memory_order_release);
     bonded_.store(false, std::memory_order_release);
@@ -159,7 +158,6 @@ void ObdBleClient::syncSecurityStateFromConnInfo() {
     authenticated_.store(info.isAuthenticated(), std::memory_order_release);
     if (encrypted) {
         securityReady_.store(true, std::memory_order_release);
-        securityPending_.store(false, std::memory_order_release);
         lastSecurityError_.store(0, std::memory_order_release);
     }
 }
@@ -167,7 +165,6 @@ void ObdBleClient::syncSecurityStateFromConnInfo() {
 void ObdBleClient::handleConnected() {
     connectPending_.store(false, std::memory_order_release);
     lastBleError_.store(0, std::memory_order_release);
-    securityPending_.store(false, std::memory_order_release);
     securityReady_.store(false, std::memory_order_release);
     encrypted_.store(false, std::memory_order_release);
     bonded_.store(false, std::memory_order_release);
@@ -177,10 +174,6 @@ void ObdBleClient::handleConnected() {
 
 void ObdBleClient::handleDisconnected(int reason) {
     lastBleError_.store(reason, std::memory_order_release);
-    if (securityPending_.load(std::memory_order_acquire) && !securityReady_.load(std::memory_order_acquire) &&
-        lastSecurityError_.load(std::memory_order_acquire) == 0) {
-        lastSecurityError_.store(reason, std::memory_order_release);
-    }
     clearLinkState(false);
     const uint32_t generation = activeLinkGeneration_.load(std::memory_order_acquire);
     confirmedDownGeneration_.store(generation, std::memory_order_release);
@@ -192,7 +185,6 @@ void ObdBleClient::handleAuthenticationComplete(const NimBLEConnInfo& connInfo) 
     encrypted_.store(encrypted, std::memory_order_release);
     bonded_.store(connInfo.isBonded(), std::memory_order_release);
     authenticated_.store(connInfo.isAuthenticated(), std::memory_order_release);
-    securityPending_.store(false, std::memory_order_release);
     securityReady_.store(encrypted, std::memory_order_release);
     if (encrypted) {
         lastBleError_.store(0, std::memory_order_release);
@@ -209,7 +201,6 @@ void ObdBleClient::handleIdentityResolved(const NimBLEConnInfo& connInfo) {
     encrypted_.store(encrypted, std::memory_order_release);
     if (encrypted) {
         securityReady_.store(true, std::memory_order_release);
-        securityPending_.store(false, std::memory_order_release);
     }
 }
 
@@ -326,34 +317,6 @@ bool ObdBleClient::disconnect() {
 
 bool ObdBleClient::isConnected() const {
     return pClient_ && pClient_->isConnected();
-}
-
-bool ObdBleClient::beginSecurity() {
-    if (!pClient_ || !pClient_->isConnected()) {
-        lastSecurityError_.store(BLE_HS_ENOTCONN, std::memory_order_release);
-        return false;
-    }
-
-    syncSecurityStateFromConnInfo();
-    if (securityReady_.load(std::memory_order_acquire)) {
-        return true;
-    }
-    if (securityPending_.load(std::memory_order_acquire)) {
-        return true;
-    }
-
-    lastSecurityError_.store(0, std::memory_order_release);
-    const bool ok = pClient_->secureConnection(true);
-    if (!ok) {
-        const int error = pClient_->getLastError();
-        lastSecurityError_.store(error, std::memory_order_release);
-        lastBleError_.store(error, std::memory_order_release);
-        securityPending_.store(false, std::memory_order_release);
-        return false;
-    }
-
-    securityPending_.store(true, std::memory_order_release);
-    return true;
 }
 
 bool ObdBleClient::isSecurityReady() const {

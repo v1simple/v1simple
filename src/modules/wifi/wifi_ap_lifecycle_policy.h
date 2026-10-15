@@ -2,11 +2,6 @@
 
 namespace WifiApLifecyclePolicy {
 
-constexpr bool afterBringupAbort(bool wasEnabled) {
-    (void)wasEnabled;
-    return false;
-}
-
 constexpr bool isSetupModeActive(bool serviceStateActive, bool interfaceEnabled) {
     return serviceStateActive && interfaceEnabled;
 }

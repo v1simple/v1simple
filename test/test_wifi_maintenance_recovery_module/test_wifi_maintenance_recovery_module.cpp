@@ -3,7 +3,6 @@
 #include <string>
 
 #include "../mocks/WebServer.h"
-#include "../../src/modules/wifi/wifi_ap_lifecycle_policy.h"
 #include "../../src/modules/wifi/wifi_maintenance_interface_policy.h"
 #include "../../src/modules/wifi/wifi_maintenance_link_policy.h"
 #include "../../src/modules/wifi/wifi_saved_network_mutation_policy.h"
@@ -123,26 +122,13 @@ void test_rollover_safe_delta() {
     TEST_ASSERT_TRUE(module.evaluate(makeInput(false, afterRollover)).attemptRestart);
 }
 
-void test_ap_bringup_abort_clears_stale_interface_state_for_all_consumers() {
-    bool apInterfaceEnabled = true;
-
-    apInterfaceEnabled = WifiApLifecyclePolicy::afterBringupAbort(apInterfaceEnabled);
-
-    TEST_ASSERT_FALSE(apInterfaceEnabled);
-    TEST_ASSERT_FALSE(WifiApLifecyclePolicy::isSetupModeActive(true, apInterfaceEnabled));
-    TEST_ASSERT_FALSE(WifiApLifecyclePolicy::shouldDisableInterfaceOnStop(false, apInterfaceEnabled));
-}
-
 void test_maintenance_with_saved_credentials_uses_ap_sta_auto_connect() {
-    TEST_ASSERT_TRUE(WifiSetupNetworkPolicy::usesSta(true));
     TEST_ASSERT_EQUAL_INT(
         static_cast<int>(WifiSetupNetworkPolicy::SavedNetworkStart::MaintenanceAutoConnect),
         static_cast<int>(WifiSetupNetworkPolicy::selectSavedNetworkStart(true, true)));
 }
 
 void test_normal_setup_preserves_saved_sta_connectivity() {
-    TEST_ASSERT_TRUE(WifiSetupNetworkPolicy::usesSta(true));
-    TEST_ASSERT_FALSE(WifiSetupNetworkPolicy::usesSta(false));
     TEST_ASSERT_EQUAL_INT(static_cast<int>(WifiSetupNetworkPolicy::SavedNetworkStart::DirectConnect),
                           static_cast<int>(WifiSetupNetworkPolicy::selectSavedNetworkStart(false, true)));
     TEST_ASSERT_EQUAL_INT(static_cast<int>(WifiSetupNetworkPolicy::SavedNetworkStart::None),
@@ -733,7 +719,6 @@ int main() {
     RUN_TEST(test_service_recovery_resets_schedule);
     RUN_TEST(test_now_zero_anchor_is_preserved_across_repeated_ticks);
     RUN_TEST(test_rollover_safe_delta);
-    RUN_TEST(test_ap_bringup_abort_clears_stale_interface_state_for_all_consumers);
     RUN_TEST(test_maintenance_with_saved_credentials_uses_ap_sta_auto_connect);
     RUN_TEST(test_normal_setup_preserves_saved_sta_connectivity);
     RUN_TEST(test_wifi_heap_guard_preserves_exact_thresholds_and_jitter_tolerances);

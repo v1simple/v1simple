@@ -78,7 +78,7 @@ bool WiFiManager::canStartSetupMode(uint32_t* freeInternal, uint32_t* largestInt
     const V1Settings& settings = settings_.get();
     uint32_t minFree = 0;
     uint32_t minBlock = 0;
-    getWifiStartThresholds(WifiSetupNetworkPolicy::usesSta(shouldUseApSta(settings)), minFree, minBlock);
+    getWifiStartThresholds(shouldUseApSta(settings), minFree, minBlock);
     return freeNow >= minFree && largestNow >= minBlock;
 }
 
@@ -87,7 +87,7 @@ bool WiFiManager::canStartSetupMode(uint32_t* freeInternal, uint32_t* largestInt
 
 bool WiFiManager::startSetupMode(const bool autoStarted) {
     const V1Settings& settings = settings_.get();
-    const bool apStaMode = WifiSetupNetworkPolicy::usesSta(shouldUseApSta(settings));
+    const bool apStaMode = shouldUseApSta(settings);
     const bool restartingFromStopping = (setupModeState_ == SETUP_MODE_STOPPING);
     const auto cancelDeferredStopForRestart = [this]() {
         setupModeState_ = SETUP_MODE_OFF;
@@ -206,7 +206,7 @@ bool WiFiManager::startSetupMode(const bool autoStarted) {
     if (!setupAP()) {
         Serial.println("[SetupMode] ABORT: AP bring-up failed");
         WiFi.mode(WIFI_OFF);
-        apInterfaceEnabled_ = WifiApLifecyclePolicy::afterBringupAbort(apInterfaceEnabled_);
+        apInterfaceEnabled_ = false;
         wifiClientState_ = WIFI_CLIENT_DISABLED;
         currentConnectedSlotIndex_ = -1;
         return false;

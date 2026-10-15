@@ -10,10 +10,6 @@ enum class SavedNetworkStart {
 
 // Maintenance may use STA for saved-network testing and auto-join, while HTTP
 // ingress independently admits only sockets accepted through approved IPs.
-inline bool usesSta(const bool savedStaAvailable) {
-    return savedStaAvailable;
-}
-
 inline SavedNetworkStart selectSavedNetworkStart(const bool maintenanceBootMode, const bool savedStaAvailable) {
     if (!savedStaAvailable) {
         return SavedNetworkStart::None;

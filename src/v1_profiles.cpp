@@ -1978,7 +1978,7 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
         return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
     }
 
-    // Step 1: Write to temporary file (don't truncate original yet)
+    // Stage the replacement without truncating the original.
     File file = fs_->open(tmpPath, FILE_WRITE);
     if (!file) {
         lastError_ = "Failed to create temp file";
@@ -2048,11 +2048,9 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
     }
     size_t written = serializeJsonPretty(doc, file);
 
-    // Step 2: Flush to ensure data is written to SD before closing
     file.flush();
     file.close();
 
-    // Step 3: Verify write succeeded and file size matches
     if (written == 0) {
         lastError_ = "Serialization failed - no data written";
         Serial.printf("[V1Profiles] %s\n", lastError_.c_str());
@@ -2084,7 +2082,6 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
         }
     }
 
-    // Step 4: Create backup of existing file before replacement
     if (activeFileExisted) {
         // Remove old backup if exists
         if (fs_->exists(bakPath)) {
@@ -2104,7 +2101,6 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
         }
     }
 
-    // Step 5: Rename temp to final
     if (!fs_->rename(tmpPath, path)) {
         lastError_ = "Failed to rename temp to final";
         Serial.printf("[V1Profiles] %s\n", lastError_.c_str());
@@ -2119,7 +2115,7 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
         return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
     }
 
-    // Step 6: prove the promoted final file is readable and its CRC is valid.
+    // Verify the promoted final file is readable and its CRC is valid.
     // Do not let ordinary interrupted-transaction recovery consume the backup
     // while validating a just-promoted candidate. The save transaction owns
     // rollback until final-file verification completes.

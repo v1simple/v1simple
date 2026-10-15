@@ -95,7 +95,6 @@ struct ObdTransportResult {
     bool bondDeleteAttempted = false;
     bool bondDeleted = false;
     int bleError = 0;
-    int securityError = 0;
     int8_t rssi = 0;
 };
 
@@ -191,8 +190,7 @@ class ObdRuntimeModule {
     void setTestBleConnected(bool connected) { testBleConnected_ = connected; }
     void deferNextTransportResultForTest() { testDeferNextTransportResult_ = true; }
     ObdTransportOp pendingTransportOpForTest() const { return pendingTransportOp_; }
-    void completePendingTransportForTest(bool success, bool timedOut = false, int bleError = 0,
-                                         int securityError = 0);
+    void completePendingTransportForTest(bool success, bool timedOut = false, int bleError = 0);
 #endif
 
   private:
@@ -238,7 +236,6 @@ class ObdRuntimeModule {
     bool startBleScan();
     bool connectBle(uint32_t timeoutMs, bool preferCachedAttributes);
     bool isBleConnected() const;
-    bool beginBleSecurity();
     bool isBleSecurityReady() const;
     bool isBleEncrypted() const;
     bool isBleBonded() const;
@@ -261,7 +258,6 @@ class ObdRuntimeModule {
     void completeActiveCommand();
     void handleAtInitResponse(uint32_t nowMs);
     void handlePollingResponse(uint32_t nowMs);
-    void updateSecuring(uint32_t nowMs);
     void updateAtInit(uint32_t nowMs);
     void updatePolling(uint32_t nowMs);
     bool reconcileProxyOwnership(uint32_t nowMs, bool proxyClientConnected);

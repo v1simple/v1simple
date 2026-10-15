@@ -542,7 +542,7 @@ void ObdRuntimeModule::update(uint32_t nowMs, const ObdBleContext& bootReadyCont
         break;
 
     case ObdConnectionState::SECURING:
-        updateSecuring(nowMs);
+        // Reserved state value; connections proceed directly to DISCOVERING.
         break;
 
     case ObdConnectionState::DISCOVERING:
@@ -621,9 +621,9 @@ ObdRuntimeStatus ObdRuntimeModule::snapshot(uint32_t nowMs) const {
     ObdRuntimeStatus status;
     status.enabled = enabled_;
     status.state = state_;
-    status.connected = isBleConnected() || state_ == ObdConnectionState::SECURING ||
-                       state_ == ObdConnectionState::DISCOVERING || state_ == ObdConnectionState::AT_INIT ||
-                       state_ == ObdConnectionState::POLLING || state_ == ObdConnectionState::ERROR_BACKOFF;
+    status.connected = isBleConnected() || state_ == ObdConnectionState::DISCOVERING ||
+                       state_ == ObdConnectionState::AT_INIT || state_ == ObdConnectionState::POLLING ||
+                       state_ == ObdConnectionState::ERROR_BACKOFF;
     status.securityReady = isBleSecurityReady();
     status.encrypted = isBleEncrypted();
     status.bonded = isBleBonded();
@@ -713,12 +713,11 @@ bool ObdRuntimeModule::requestManualPairScan(uint32_t nowMs) {
 
 void ObdRuntimeModule::cancelPendingConnect() {
     const bool connectStateActive = state_ == ObdConnectionState::CONNECTING ||
-                                    state_ == ObdConnectionState::SECURING ||
                                     state_ == ObdConnectionState::DISCOVERING || state_ == ObdConnectionState::AT_INIT;
     const bool connectTransportActive =
         transportRequestActive_ &&
-        (pendingTransportOp_ == ObdTransportOp::CONNECT || pendingTransportOp_ == ObdTransportOp::SECURITY_START ||
-         pendingTransportOp_ == ObdTransportOp::DISCOVER || pendingTransportOp_ == ObdTransportOp::SUBSCRIBE);
+        (pendingTransportOp_ == ObdTransportOp::CONNECT || pendingTransportOp_ == ObdTransportOp::DISCOVER ||
+         pendingTransportOp_ == ObdTransportOp::SUBSCRIBE);
     if (!connectStateActive && !connectTransportActive && !isBleConnected()) {
         return;
     }
@@ -742,12 +741,11 @@ bool ObdRuntimeModule::isScanStopped() const {
 
 bool ObdRuntimeModule::isConnectIdle() const {
     const bool connectStateActive = state_ == ObdConnectionState::CONNECTING ||
-                                    state_ == ObdConnectionState::SECURING ||
                                     state_ == ObdConnectionState::DISCOVERING || state_ == ObdConnectionState::AT_INIT;
     const bool connectTransportActive =
         transportRequestActive_ &&
-        (pendingTransportOp_ == ObdTransportOp::CONNECT || pendingTransportOp_ == ObdTransportOp::SECURITY_START ||
-         pendingTransportOp_ == ObdTransportOp::DISCOVER || pendingTransportOp_ == ObdTransportOp::SUBSCRIBE);
+        (pendingTransportOp_ == ObdTransportOp::CONNECT || pendingTransportOp_ == ObdTransportOp::DISCOVER ||
+         pendingTransportOp_ == ObdTransportOp::SUBSCRIBE);
     return !connectStateActive && !connectTransportActive && !transportDisconnectPending_ && !isBleConnected();
 }
 

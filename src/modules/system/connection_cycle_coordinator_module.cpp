@@ -19,7 +19,6 @@ bool hasElapsed(const uint32_t nowMs, const uint32_t startMs, const uint32_t dur
 bool isObdConnectingState(const ObdConnectionState state) {
     switch (state) {
     case ObdConnectionState::CONNECTING:
-    case ObdConnectionState::SECURING:
     case ObdConnectionState::DISCOVERING:
     case ObdConnectionState::AT_INIT:
         return true;

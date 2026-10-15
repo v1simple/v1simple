@@ -130,21 +130,6 @@ V1Display::FrequencyPresentation V1Display::resolveFrequencyPresentation(uint32_
         // LID active (above LID speed limit) uses colorAlpLidActive; otherwise
         // DLI active uses colorAlpDli. Naming matches AL Priority manual.
         freqColor = muted ? PALETTE_MUTED_OR_PERSISTED : (alpLidActive_ ? s.colorAlpLidActive : s.colorAlpDli);
-    } else if (presentation.useOfr) {
-        if (band == BAND_LASER) {
-            freqColor = muted ? PALETTE_MUTED_OR_PERSISTED : s.colorBandL;
-        } else if (muted) {
-            freqColor = PALETTE_MUTED_OR_PERSISTED;
-        } else if (!hasFreq) {
-            freqColor = PALETTE_GRAY;
-        } else if (isPhotoRadar) {
-            // Photo labels keep their identity color regardless of numeric-frequency policy.
-            freqColor = s.colorBandPhoto;
-        } else if (s.freqUseBandColor && band != BAND_NONE) {
-            freqColor = getBandColor(band);
-        } else {
-            freqColor = s.colorFrequency;
-        }
     } else {
         if (band == BAND_LASER) {
             freqColor = muted ? PALETTE_MUTED_OR_PERSISTED : s.colorBandL;
@@ -153,6 +138,7 @@ V1Display::FrequencyPresentation V1Display::resolveFrequencyPresentation(uint32_
         } else if (!hasFreq) {
             freqColor = PALETTE_GRAY;
         } else if (isPhotoRadar) {
+            // Photo labels keep their identity color regardless of numeric-frequency policy.
             freqColor = s.colorBandPhoto;
         } else if (s.freqUseBandColor && band != BAND_NONE) {
             freqColor = getBandColor(band);

@@ -12,6 +12,7 @@
 
 #include <unity.h>
 
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -26,7 +27,10 @@ unsigned long mockMicros = 0;
 SerialClass Serial;
 #endif
 
+// Exercise mute and ALP presentation without adding firmware test hooks.
+#define private public
 #include "../../src/display.h"
+#undef private
 #include "../../src/packet_parser.h"
 
 V1Display* g_displayInstance = nullptr;
@@ -110,6 +114,7 @@ void assertFrequencyText(const char* expected) {
 } // namespace
 
 void setUp() {
+    settings.mutableSettings() = V1Settings{};
     display.~V1Display();
     new (&display) V1Display(settings);
     display.setTestCanvas(new Arduino_Canvas(SCREEN_WIDTH, SCREEN_HEIGHT, nullptr));
@@ -191,6 +196,68 @@ void test_photo_identity_uses_photo_color_independent_of_numeric_frequency_polic
     mutableSettings.colorBandPhoto = originalPhotoColor;
 }
 
+void test_color_precedence_is_preserved_in_both_font_paths() {
+    V1Settings& s = settings.mutableSettings();
+    s.colorBandK = 0x07E0;
+    s.colorBandL = 0x001F;
+    s.colorBandPhoto = 0xFD20;
+    s.colorFrequency = 0xF800;
+    s.colorAlpDli = 0x780F;
+    s.colorAlpLidActive = 0x07FF;
+    display.currentPalette_.colorMuted = 0x8410;
+    display.currentPalette_.colorPersisted = 0x4208;
+    display.currentPalette_.colorGray = 0xC618;
+
+    for (bool useOfr : {true, false}) {
+        display.ut_fontMgr().segment7Ready = useOfr;
+        display.alpFreqOverride_ = false;
+        display.persistedMode_ = false;
+        s.freqUseBandColor = true;
+
+        const auto assertColor = [&](uint32_t frequency, Band band, bool muted, uint8_t photoType,
+                                     uint16_t expected, const char* reason) {
+            display.ut_elementCaches().frequency.invalidate();
+            resetRecordedOutput();
+            display.drawFrequency(frequency, band, muted, photoType);
+            TEST_ASSERT_EQUAL_HEX16_MESSAGE(expected, display.ut_elementCaches().frequency.lastColor, reason);
+            TEST_ASSERT_EQUAL_MESSAGE(useOfr, display.ut_elementCaches().frequency.lastUsedOfr, reason);
+            TEST_ASSERT_EQUAL_INT_MESSAGE(useOfr ? 1 : 0, frequencyFont().printfCount, reason);
+            if (!useOfr) {
+                const bool paintedColor = std::any_of(
+                    canvas()->fillRoundRectCalls.begin(), canvas()->fillRoundRectCalls.end(),
+                    [expected](const auto& call) { return call.color == expected; }) ||
+                    std::any_of(canvas()->drawLineCalls.begin(), canvas()->drawLineCalls.end(),
+                    [expected](const auto& call) { return call.color == expected; });
+                TEST_ASSERT_TRUE_MESSAGE(paintedColor, reason);
+            }
+        };
+
+        assertColor(24150, BAND_K, false, 0, 0x07E0, "numeric frequency uses band color");
+        assertColor(24150, BAND_NONE, false, 0, 0xF800, "missing band uses frequency color");
+        assertColor(0, BAND_LASER, false, 0, 0x001F, "laser precedes missing frequency");
+        assertColor(0, BAND_LASER, true, 0, 0x8410, "muted laser uses mute color");
+        assertColor(0, BAND_NONE, true, 0, 0x8410, "mute precedes missing frequency");
+        assertColor(0, BAND_K, false, 1, 0xC618, "missing frequency precedes Photo color");
+        assertColor(24125, BAND_K, false, 1, 0xFD20, "Photo precedes band color");
+        assertColor(24125, BAND_K, true, 1, 0x8410, "mute precedes Photo color");
+        s.freqUseBandColor = false;
+        assertColor(24150, BAND_K, false, 0, 0xF800, "numeric frequency uses custom color");
+        assertColor(24125, BAND_K, false, 1, 0xFD20, "Photo precedes custom frequency color");
+
+        display.alpFreqOverride_ = true;
+        std::strcpy(display.alpFreqText_, "LTI");
+        display.alpLidActive_ = true;
+        assertColor(0, BAND_LASER, false, 0, 0x07FF, "ALP LID precedes laser and missing frequency");
+        display.alpLidActive_ = false;
+        assertColor(0, BAND_LASER, false, 0, 0x780F, "ALP DLI precedes laser and missing frequency");
+        assertColor(0, BAND_LASER, true, 0, 0x8410, "muted ALP uses mute color");
+        display.persistedMode_ = true;
+        assertColor(0, BAND_LASER, true, 0, 0x4208, "persisted ALP uses persisted color");
+        display.alpFreqOverride_ = false;
+        assertColor(24150, BAND_K, true, 0, 0x4208, "persisted radar uses persisted color");
+    }
+}
+
 void test_unknown_photo_type_stays_visible_without_inventing_a_named_identity() {
     const AlertData alert = radarAlertFromSpecFields(24125, 0x04, 0x20, 15);
 
@@ -254,6 +321,7 @@ int main(int, char**) {
     RUN_TEST(test_laser_zero_and_alp_presentations_are_distinct);
     RUN_TEST(test_priority_photo_type_replaces_numeric_frequency_with_its_compact_identity);
     RUN_TEST(test_photo_identity_uses_photo_color_independent_of_numeric_frequency_policy);
+    RUN_TEST(test_color_precedence_is_preserved_in_both_font_paths);
     RUN_TEST(test_unknown_photo_type_stays_visible_without_inventing_a_named_identity);
     RUN_TEST(test_photo_metadata_cannot_replace_a_ka_priority_frequency);
     RUN_TEST(test_same_frequency_repaints_when_photo_identity_changes_or_clears);

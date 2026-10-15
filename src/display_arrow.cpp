@@ -117,13 +117,7 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
         clearWidth = SCREEN_WIDTH - clearLeft;
     }
     auto drawTriangleArrow = [&](int centerY, bool down, bool active, bool blinkOff, int triW, int triH, int notchW,
-                                 int notchH, uint16_t activeCol, bool needsClear) {
-        if (needsClear) {
-            int arrowTop = centerY - triH / 2 - 2;
-            int arrowHeight = triH + 4;
-            FILL_RECT(clearLeft, arrowTop, clearWidth, arrowHeight, PALETTE_BG);
-        }
-
+                                 int notchH, uint16_t activeCol) {
         uint16_t fillCol = blinkOff ? PALETTE_BG : (active ? activeCol : offCol);
         uint16_t outlineCol = TFT_BLACK; // Black outline like V1
 
@@ -158,16 +152,7 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
         }
     };
 
-    auto drawSideArrow = [&](bool active, bool blinkOff, bool needsClear) {
-        // Clear just the side arrow region if needed
-        if (needsClear) {
-            [[maybe_unused]] const int headW = (int)(28 * scale);
-            [[maybe_unused]] const int headH = (int)(22 * scale);
-            int sideTop = cy - headH - 2;
-            int sideHeight = headH * 2 + 4;
-            FILL_RECT(clearLeft, sideTop, clearWidth, sideHeight, PALETTE_BG);
-        }
-
+    auto drawSideArrow = [&](bool active, bool blinkOff) {
         uint16_t fillCol = blinkOff ? PALETTE_BG : (active ? sideCol : offCol);
         uint16_t outlineCol = TFT_BLACK;    // Black outline like V1
         const int barW = (int)(66 * scale); // Center bar width
@@ -207,11 +192,10 @@ void V1Display::drawDirectionArrow(Direction dir, bool muted, uint8_t flashBits,
     FILL_RECT(clearLeft, totalTop, clearWidth, totalBottom - totalTop, PALETTE_BG);
 
     // Draw all three arrows
-    drawTriangleArrow(topArrowCenterY, false, showFront, blinkOffFront, topW, topH, topNotchW, topNotchH, frontCol,
-                      false);
-    drawSideArrow(showSide, blinkOffSide, false);
+    drawTriangleArrow(topArrowCenterY, false, showFront, blinkOffFront, topW, topH, topNotchW, topNotchH, frontCol);
+    drawSideArrow(showSide, blinkOffSide);
     drawTriangleArrow(bottomArrowCenterY, true, showRear, blinkOffRear, bottomW, bottomH, bottomNotchW, bottomNotchH,
-                      rearCol, false);
+                      rearCol);
 
     // Update cache
     elementCaches_.arrow.showFront = showFront;

@@ -2815,6 +2815,67 @@ void test_stale_known_selector_is_repaired_to_newest_committed_generation() {
     TEST_ASSERT_TRUE(olderNamespace != activeNamespaceOrEmpty());
 }
 
+void checkPartialWifiCredentialRollback(bool clearSlot, bool failCompensation) {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "SameNet", "old-password", "Old label", 4));
+    const String committedNamespace = activeNamespaceOrEmpty();
+
+    // A retained legacy key is allowed alongside the authoritative slot key.
+    // Keep it different so legacy fallback cannot hide a lost slot password.
+    Preferences legacy;
+    TEST_ASSERT_TRUE(legacy.begin(WIFI_CLIENT_NS, false));
+    TEST_ASSERT_GREATER_THAN(0, legacy.putString(kNvsWifiPassword,
+                                               encodeObfuscatedForStorage("older-legacy-password")));
+    legacy.end();
+    TEST_ASSERT_EQUAL_STRING("old-password", manager.getWifiStaSlotPassword(0).c_str());
+
+    // The slot mutation succeeds, then legacy cleanup fails. Optionally fail
+    // the second slot mutation: the attempt to restore the original password.
+    mock_preferences::set_fail_write_for_key_on_call(kNvsWifiPassword, 1);
+    if (failCompensation) {
+        mock_preferences::set_fail_write_for_key_on_call(kNvsWifiStaSlotPassword[0], 2);
+    }
+    const bool accepted = clearSlot
+        ? manager.clearWifiStaSlot(0)
+        : manager.setWifiStaSlotCredentials(0, "SameNet", "new-password", "New label", 9);
+    TEST_ASSERT_FALSE(accepted);
+    TEST_ASSERT_TRUE(mock_preferences::failWriteCountdowns().empty());
+    TEST_ASSERT_EQUAL_STRING("SameNet", manager.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("Old label", manager.get().wifiStaSlots[0].label.c_str());
+    TEST_ASSERT_EQUAL_UINT8(4, manager.get().wifiStaSlots[0].priority);
+    const bool journalPending = mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiTxnReady);
+
+    SettingsManager rebooted(storage, profiles);
+    rebooted.begin();
+    TEST_ASSERT_EQUAL_STRING(committedNamespace.c_str(), activeNamespaceOrEmpty().c_str());
+    TEST_ASSERT_TRUE(rebooted.get().wifiClientEnabled);
+    TEST_ASSERT_EQUAL_STRING("SameNet", rebooted.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("Old label", rebooted.get().wifiStaSlots[0].label.c_str());
+    TEST_ASSERT_EQUAL_UINT8(4, rebooted.get().wifiStaSlots[0].priority);
+    TEST_ASSERT_EQUAL_STRING("old-password", rebooted.getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_EQUAL(failCompensation, journalPending);
+    TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiTxnReady));
+}
+
+void test_partial_wifi_password_edit_recovers_after_failed_compensation() {
+    checkPartialWifiCredentialRollback(false, true);
+}
+
+void test_partial_wifi_slot_clear_recovers_after_failed_compensation() {
+    checkPartialWifiCredentialRollback(true, true);
+}
+
+void test_partial_wifi_password_edit_rolls_back_without_pending_journal() {
+    checkPartialWifiCredentialRollback(false, false);
+}
+
+void test_partial_wifi_slot_clear_rolls_back_without_pending_journal() {
+    checkPartialWifiCredentialRollback(true, false);
+}
+
 void test_interrupted_wifi_credential_transaction_reboots_to_old_complete_pair() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
@@ -6129,6 +6190,10 @@ int main() {
     RUN_TEST(test_failed_commit_generation_write_preserves_last_committed_settings);
     RUN_TEST(test_equal_committed_generations_do_not_make_selector_authoritative);
     RUN_TEST(test_stale_known_selector_is_repaired_to_newest_committed_generation);
+    RUN_TEST(test_partial_wifi_password_edit_recovers_after_failed_compensation);
+    RUN_TEST(test_partial_wifi_slot_clear_recovers_after_failed_compensation);
+    RUN_TEST(test_partial_wifi_password_edit_rolls_back_without_pending_journal);
+    RUN_TEST(test_partial_wifi_slot_clear_rolls_back_without_pending_journal);
     RUN_TEST(test_interrupted_wifi_credential_transaction_reboots_to_old_complete_pair);
     RUN_TEST(test_interrupted_same_ssid_password_edit_reboots_to_old_complete_slot);
     RUN_TEST(test_committed_same_ssid_password_edit_reboots_to_new_complete_slot);

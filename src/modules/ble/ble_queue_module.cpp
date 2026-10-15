@@ -279,6 +279,19 @@ bool BleQueueModule::longRxComplete() const {
     return longRx_.presentMask == required;
 }
 
+bool BleQueueModule::longRxHasCompleteFrame() const {
+    std::array<uint8_t, MAX_LONG_CHUNKS * MAX_LONG_CHUNK_PAYLOAD> frame;
+    size_t length = 0;
+    for (size_t slot = 0; slot < longRx_.count; ++slot) {
+        memcpy(frame.data() + length, longRx_.payloads[slot].data(), longRx_.lengths[slot]);
+        length += longRx_.lengths[slot];
+    }
+    // Indexed coverage alone cannot qualify a truncated ESP packet. Never
+    // splice such a candidate into the independent short-characteristic stream.
+    return length >= 7 && frame[0] == ESP_PACKET_START && frame[4] != 0 &&
+           length == 6u + frame[4] && frame[length - 1] == ESP_PACKET_END;
+}
+
 bool BleQueueModule::appendLongRxChunk(const BLEDataPacket& packet, bool beginsAfterDiscontinuity) {
     // The prefix is included in the 20-byte ATT value, leaving 19 bytes of
     // framed ESP data per chunk.
@@ -325,7 +338,6 @@ bool BleQueueModule::appendLongRxChunk(const BLEDataPacket& packet, bool beginsA
     memcpy(longRx_.payloads[slot].data(), packet.data + 1, payloadLength);
     longRx_.lengths[slot] = static_cast<uint8_t>(payloadLength);
     longRx_.presentMask = static_cast<uint16_t>(longRx_.presentMask | bit);
-    longRx_.latestTimestampMs = packet.tsMs;
     return true;
 }
 
@@ -385,6 +397,7 @@ void BleQueueModule::process() {
 
     BLEDataPacket pkt;
     uint32_t latestPktTs = 0;
+    bool blockedOnCompleteLong = false;
     const uint32_t activeSessionGeneration = sessionGeneration_.load(std::memory_order_acquire);
     const bool sessionOpen = acceptNotifications_.load(std::memory_order_acquire);
     queueDepthBeforeDrain = queueHandle_ ? uxQueueMessagesWaiting(queueHandle_) : 0;
@@ -394,10 +407,9 @@ void BleQueueModule::process() {
     // packet before consuming later notifications.
     if (longRxComplete() && rxReadPos_ >= rxBuffer_.size()) {
         clearRxState();
-        const uint32_t assembledTimestamp = longRx_.latestTimestampMs;
-        if (flushCompleteLongRx()) {
-            latestPktTs = assembledTimestamp;
-        }
+        // Receipt time was recorded when the chunks were dequeued. Publishing
+        // a held packet must not rewind activity past newer short notifications.
+        flushCompleteLongRx();
     }
 
     // Peek before staging so an accepted short notification remains owned by
@@ -412,9 +424,10 @@ void BleQueueModule::process() {
 
         if (pkt.charUUID == LONG_NOTIFY_CHARACTERISTIC) {
             // Do not overwrite a complete candidate with a later B4E0 packet.
-            // Parse the older short stream first; the next process() call will
-            // publish this candidate and then resume queue draining.
+            // Consume staged short work first; an incomplete-frame circular
+            // wait is resolved below before the next process() call resumes.
             if (longRxComplete()) {
+                blockedOnCompleteLong = true;
                 break;
             }
             bool beginsAfterDiscontinuity = ingressWouldBeDiscontinuous(pkt.ingressSequence) ||
@@ -425,12 +438,14 @@ void BleQueueModule::process() {
             (void)xQueueReceive(queueHandle_, &pkt, 0);
             latestPktTs = pkt.tsMs;
 
+            if (acceptedChunk && longRxComplete() && !longRxHasCompleteFrame()) {
+                clearLongRxState();
+                pendingStreamDiscontinuity_ = true;
+                HealthCounters::recordInputDrop();
+            }
             if (acceptedChunk && longRxComplete() && rxReadPos_ >= rxBuffer_.size()) {
                 clearRxState();
-                const uint32_t assembledTimestamp = longRx_.latestTimestampMs;
-                if (flushCompleteLongRx()) {
-                    latestPktTs = assembledTimestamp;
-                }
+                flushCompleteLongRx();
             }
             continue;
         }
@@ -508,6 +523,7 @@ void BleQueueModule::process() {
     size_t packetsProcessedThisCycle = 0;
     bool loggedTooLargeWarning = false;
     bool loggedMissingEndWarning = false;
+    bool waitingForShortCompletion = false;
 
     while (true) {
         if (packetsProcessedThisCycle >= maxPacketsPerCycle) {
@@ -538,6 +554,7 @@ void BleQueueModule::process() {
             continue;
         }
         if (availableBytes < MIN_HEADER_SIZE) {
+            waitingForShortCompletion = true;
             break;
         }
 
@@ -561,6 +578,7 @@ void BleQueueModule::process() {
             continue;
         }
         if (availableBytes < packetSize) {
+            waitingForShortCompletion = true;
             break;
         }
         if (rxBuffer_[rxReadPos_ + packetSize - 1] != ESP_PACKET_END) {
@@ -693,6 +711,15 @@ void BleQueueModule::process() {
             // This decouples BLE processing from slow display updates
             hadSuccessfulParse_ = true;
         }
+    }
+
+    if (blockedOnCompleteLong && waitingForShortCompletion) {
+        // The short tail may be queued behind the next long notification.
+        // Abandon only this unfinished frame to break that circular wait;
+        // complete frames and parse-budget exhaustion never take this path.
+        markAlertStreamDiscontinuous();
+        clearRxState();
+        HealthCounters::recordInputDrop();
     }
 
     if (rxReadPos_ >= rxBuffer_.size()) {

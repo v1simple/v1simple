@@ -95,7 +95,6 @@ class BleQueueModule {
         std::array<uint8_t, MAX_LONG_CHUNKS> lengths{};
         uint32_t firstIngressSequence = 0;
         uint32_t firstTimestampMs = 0;
-        uint32_t latestTimestampMs = 0;
         bool streamDiscontinuity = false;
     };
 
@@ -138,6 +137,7 @@ class BleQueueModule {
     bool appendLongRxChunk(const BLEDataPacket& packet, bool beginsAfterDiscontinuity);
     bool flushCompleteLongRx();
     bool longRxComplete() const;
+    bool longRxHasCompleteFrame() const;
     bool ingressWouldBeDiscontinuous(uint32_t ingressSequence) const;
     void acceptIngressSequence(uint32_t ingressSequence);
     void markAlertStreamDiscontinuous();

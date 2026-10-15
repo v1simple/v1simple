@@ -65,8 +65,18 @@ inline std::string& failStringReadKey() {
     return g_failStringReadKey;
 }
 
+inline std::unordered_map<std::string, size_t>& failWriteCountdowns() {
+    static std::unordered_map<std::string, size_t> g_failWriteCountdowns;
+    return g_failWriteCountdowns;
+}
+
 inline bool writesFailForKey(const char* key) {
-    return failWrites() || (key && !failWriteKey().empty() && failWriteKey() == key);
+    if (failWrites() || (key && !failWriteKey().empty() && failWriteKey() == key)) return true;
+    if (!key) return false;
+    const auto it = failWriteCountdowns().find(key);
+    if (it == failWriteCountdowns().end() || --it->second != 0) return false;
+    failWriteCountdowns().erase(it);
+    return true;
 }
 
 // Total-entry quota across all namespaces (0 = unlimited). Models the shared
@@ -106,6 +116,7 @@ inline void reset() {
     failBeginNamespace().clear();
     requireExistingNamespaceForRead() = false;
     failStringReadKey().clear();
+    failWriteCountdowns().clear();
     entryLimit() = 0;
     missingStringReadCounts().clear();
     stringReadCounts().clear();
@@ -119,6 +130,13 @@ inline void set_fail_writes(bool enabled) {
 
 inline void set_fail_writes_for_key(const char* key) {
     failWriteKey() = key ? key : "";
+}
+
+// One-shot fault counting string/scalar puts and removals of this key from here.
+inline void set_fail_write_for_key_on_call(const char* key, size_t call) {
+    if (!key) return;
+    if (call == 0) failWriteCountdowns().erase(key);
+    else failWriteCountdowns()[key] = call;
 }
 
 inline void set_fail_begin_for_namespace(const char* name) {

@@ -196,6 +196,55 @@ void test_held_long_row_does_not_overwrite_a_newer_short_copy() {
     TEST_ASSERT_TRUE(parser.hasFreshAlertTable(104, 0));
 }
 
+void test_two_long_frames_behind_partial_short_recover_without_losing_complete_alerts() {
+    for (const size_t prefixBytes : {size_t{1}, size_t{8}, size_t{13}}) {
+        for (const uint32_t firstMs : {uint32_t{100}, UINT32_MAX - 1u}) {
+            setUp();
+            const auto shortFrame = makeAlertFrame(1, 1, 24150, 0x24, 0x80);
+            auto longFirst = makeAlertFrame(1, 1, 34700, 0x22, 0x80);
+            auto longSecond = makeAlertFrame(1, 1, 35500, 0x22, 0x80);
+            longFirst.insert(longFirst.begin(), 0x11);
+            longSecond.insert(longSecond.begin(), 0x11);
+
+            // The second long notification blocks the short tail needed by
+            // the older incomplete frame. Recovery may discard that candidate,
+            // but both independently complete long frames must reach the parser.
+            TEST_ASSERT_TRUE(queue.tryOnNotify(shortFrame.data(), prefixBytes, kCharacteristic,
+                                              kSession, firstMs, 1));
+            TEST_ASSERT_TRUE(queue.tryOnNotify(longFirst.data(), longFirst.size(), 0xB4E0,
+                                              kSession, firstMs + 1u, 2));
+            TEST_ASSERT_TRUE(queue.tryOnNotify(longSecond.data(), longSecond.size(), 0xB4E0,
+                                              kSession, firstMs + 2u, 3));
+            TEST_ASSERT_TRUE(queue.tryOnNotify(shortFrame.data() + prefixBytes,
+                                              shortFrame.size() - prefixBytes, kCharacteristic,
+                                              kSession, firstMs + 3u, 4));
+            for (uint32_t pass = 0; pass < 10; ++pass) {
+                mockMillis = firstMs + 100u + pass;
+                queue.process();
+            }
+
+            TEST_ASSERT_EQUAL_UINT32(0, uxQueueMessagesWaiting(queue.queueHandle_));
+            TEST_ASSERT_FALSE(queue.longRxComplete());
+            TEST_ASSERT_EQUAL_UINT32(1, HealthCounters::inputDrops());
+            TEST_ASSERT_EQUAL_INT(2, power.onV1DataReceivedCalls);
+            TEST_ASSERT_EQUAL_UINT32(1, parser.getAlertCount());
+            TEST_ASSERT_EQUAL_UINT16(35500, parser.getAllAlerts()[0].frequency);
+            TEST_ASSERT_TRUE(parser.hasFreshAlertTable(firstMs + 2u, 0));
+            TEST_ASSERT_FALSE(parser.hasFreshAlertTable(firstMs + 3u, 0));
+
+            mockMillis = firstMs + 200u;
+            deliver(shortFrame, 5, static_cast<uint32_t>(mockMillis));
+            TEST_ASSERT_EQUAL_UINT32(0, uxQueueMessagesWaiting(queue.queueHandle_));
+            TEST_ASSERT_EQUAL_UINT32(1, HealthCounters::inputDrops());
+            TEST_ASSERT_EQUAL_INT(3, power.onV1DataReceivedCalls);
+            TEST_ASSERT_EQUAL_UINT32(1, parser.getAlertCount());
+            TEST_ASSERT_EQUAL_UINT16(24150, parser.getAllAlerts()[0].frequency);
+            TEST_ASSERT_TRUE(parser.hasFreshAlertTable(static_cast<uint32_t>(mockMillis), 0));
+            tearDown();
+        }
+    }
+}
+
 void test_spec_busy_broadcast_reaches_request_owner_but_targeted_busy_does_not() {
     // ESP 3.016 p40 and p11: one pending ID, General Broadcast D8.
     // Fixed wire vectors include independently summed checksums.
@@ -383,6 +432,7 @@ int main(int, char**) {
     RUN_TEST(test_delayed_partial_alert_frame_keeps_its_first_arrival_age);
     RUN_TEST(test_held_long_row_can_complete_a_fresh_newer_short_row);
     RUN_TEST(test_held_long_row_does_not_overwrite_a_newer_short_copy);
+    RUN_TEST(test_two_long_frames_behind_partial_short_recover_without_losing_complete_alerts);
     RUN_TEST(test_spec_busy_broadcast_reaches_request_owner_but_targeted_busy_does_not);
     RUN_TEST(test_older_gen2_targeted_alerts_and_current_broadcasts_reach_the_alert_table);
     RUN_TEST(test_targeted_alerts_do_not_wait_for_firmware_version_discovery);

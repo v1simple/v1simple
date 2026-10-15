@@ -73,9 +73,10 @@ class VolumeFadeModule {
     /// Cleared after first use or 1.5 s.
     void setBaselineHint(uint8_t mainVol, uint8_t muteVol, uint32_t nowMs);
 
-    // True while fade owns a temporary detector volume or a restore is still
-    // awaiting convergence. A sent restore alone does not release ownership.
-    bool hasActiveVolumeOverride() const { return fadeActive_ || pendingRestoreVolume_ != 0xFF; }
+    // A captured baseline owns the pair even during the fade delay: a later
+    // restore must not overwrite an Apply admitted while that baseline is held.
+    // A sent restore alone does not release ownership.
+    bool hasActiveVolumeOverride() const { return originalVolume_ != 0xFF || pendingRestoreVolume_ != 0xFF; }
 
   private:
     SettingsManager* settings_ = nullptr;

@@ -2165,8 +2165,9 @@ bool SettingsManager::setWifiStaSlotCredentials(size_t index, const String& ssid
 
     if (!storeWifiPasswordCandidate(index, encodedPassword)) {
         settings_ = std::move(before);
-        restoreWifiPasswordNvsSnapshot(index, passwordBefore);
-        clearWifiCredentialJournal();
+        if (restoreWifiPasswordNvsSnapshot(index, passwordBefore)) {
+            clearWifiCredentialJournal();
+        }
         return false;
     }
 
@@ -2267,8 +2268,9 @@ bool SettingsManager::clearWifiStaSlot(size_t index) {
     }
     settings_ = std::move(candidate);
     if (!storeWifiPasswordCandidate(index, "")) {
-        restoreWifiPasswordNvsSnapshot(index, passwordBefore);
-        clearWifiCredentialJournal();
+        if (restoreWifiPasswordNvsSnapshot(index, passwordBefore)) {
+            clearWifiCredentialJournal();
+        }
         settings_ = std::move(before);
         return false;
     }

@@ -45,7 +45,7 @@ unsigned long mockMicros = 0;
 #include "../mocks/settings.h"
 #include "../mocks/v1_profiles.h"
 #include "../mocks/modules/speed_mute/speed_mute_module.h"
-#include "../mocks/modules/volume_fade/volume_fade_module.h"
+#include "../../src/modules/volume_fade/volume_fade_module.cpp"
 
 #include "../../src/packet_parser.h"
 #include "../../src/packet_parser.cpp"
@@ -386,11 +386,33 @@ void configureCustomOnly(const std::vector<V1CustomFrequencyDefinition>& definit
     TEST_ASSERT_TRUE(detector.customFrequencyDefinitions.assign(definitions));
 }
 
-void queueAndPreflight() {
+void queueAndPreflight(unsigned long now = 100) {
     TEST_ASSERT_EQUAL_INT(AutoPushModule::QueueResult::QUEUED, module.queueSlotPush(0));
-    at(100); // WaitReady -> LoadProfile
-    at(100); // load -> Preflight
-    at(100); // whole-plan preflight -> first needed component (or terminal)
+    at(now); // WaitReady -> LoadProfile
+    at(now); // load -> Preflight
+    at(now); // whole-plan preflight -> first needed component (or terminal)
+}
+
+void observeFadeAlert(bool active, unsigned long now) {
+    mockMillis = now;
+    const auto packet = makeV1Packet(PACKET_ID_ALERT_DATA,
+                                     active ? std::vector<uint8_t>{0x11, 0x87, 0x8C, 0xAC, 0x00, 0x22, 0x80}
+                                            : std::vector<uint8_t>{0, 0, 0, 0, 0, 0, 0},
+                                     0xEA, 0xD8);
+    TEST_ASSERT_TRUE(parser.parse(packet.data(), packet.size(), now, ble.noteV1NotificationIngress()));
+}
+
+void configureVolumeOnlyApplyWithFade(VolumeFadeModule& fade, uint8_t delaySec = 2) {
+    configureProfile();
+    auto& detector = profiles.loadableProfile.detector;
+    detector.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
+    detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    detector.modePolicy = V1ModePolicy::Unchanged;
+    settings.settings.alertVolumeFadeEnabled = true;
+    settings.settings.alertVolumeFadeDelaySec = delaySec;
+    settings.settings.alertVolumeFadeVolume = 1;
+    fade.begin(&settings);
+    stageSnapshot(makeSnapshot());
 }
 
 void verifyUserBytes(unsigned long now = 130) {
@@ -2577,33 +2599,93 @@ void test_active_volume_fade_owner_blocks_whole_plan_before_writes() {
     TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
 }
 
-void test_successful_fade_restore_releases_apply_while_failed_restore_stays_blocked() {
-    configureProfile();
-    auto& detector = profiles.loadableProfile.detector;
-    detector.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
-    detector.displayPolicy = V1DisplayPolicy::Unchanged;
-    detector.modePolicy = V1ModePolicy::Unchanged;
-    stageSnapshot(makeSnapshot());
-    TEST_ASSERT_TRUE(quiet.sendVolume(QuietOwner::VolumeFade, 4, 2));
-
+void test_fade_delay_blocks_apply_before_any_detector_write() {
     VolumeFadeModule fade;
-    fade.activeVolumeOverride = true;
-    fade.nextAction.type = VolumeFadeAction::Type::RESTORE;
-    fade.nextAction.restoreVolume = 5;
-    fade.nextAction.restoreMuteVolume = 2;
-    ble.nextVolumeSendResult = SendResult::FAILED;
-    TEST_ASSERT_TRUE(quiet.executeVolumeFade(10, &fade));
-    TEST_ASSERT_FALSE(quiet.canApplyAutoPushVolumeExactly());
+    configureVolumeOnlyApplyWithFade(fade);
+    observeFadeAlert(true, 50);
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(50, &fade));
+    TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
 
+    queueAndPreflight(150);
+    TEST_ASSERT_TRUE(statusContains("volume_owner_busy"));
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    at(150);
+    TEST_ASSERT_EQUAL_INT(0, ble.writeUserBytesCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.setDisplayOnCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.setModeCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
+}
+
+void test_alert_clearing_before_fade_delay_releases_apply_without_restore() {
+    VolumeFadeModule fade;
+    configureVolumeOnlyApplyWithFade(fade);
+    observeFadeAlert(true, 50);
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(50, &fade));
+    observeFadeAlert(false, 60);
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(60, &fade));
+    TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
+
+    queueAndPreflight(160);
+    at(160); // VolumeWrite
+    TEST_ASSERT_EQUAL_INT(1, ble.setVolumeCalls);
+    TEST_ASSERT_EQUAL_UINT8(7, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(3, ble.lastMuteVolume);
+    at(190); // VolumeRead
+    observeAllVolume(7, 3, 4, 1);
+    at(190); // VolumeVerify
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(3000, &fade));
+    TEST_ASSERT_EQUAL_INT(1, ble.setVolumeCalls);
+}
+
+void test_apply_without_fade_baseline_restores_applied_pair_after_later_alert() {
+    VolumeFadeModule fade;
+    configureVolumeOnlyApplyWithFade(fade);
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(0, &fade));
+    queueAndPreflight();
+    at(100); // VolumeWrite
+    at(130); // VolumeRead
+    observeAllVolume(7, 3, 4, 1);
+    at(130); // VolumeVerify
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_EQUAL_INT(1, ble.setVolumeCalls);
+
+    observeFadeAlert(true, 150);
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(150, &fade));
+    mockMillis = 2150;
+    TEST_ASSERT_TRUE(quiet.executeVolumeFade(2150, &fade));
+    TEST_ASSERT_EQUAL_UINT8(1, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(3, ble.lastMuteVolume);
+    observeAllVolume(1, 3, 4, 1);
+    observeFadeAlert(false, 2200);
+    TEST_ASSERT_TRUE(quiet.executeVolumeFade(2200, &fade));
+    TEST_ASSERT_EQUAL_UINT8(7, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(3, ble.lastMuteVolume);
+}
+
+void test_successful_fade_restore_releases_apply_while_failed_restore_stays_blocked() {
+    VolumeFadeModule fade;
+    configureVolumeOnlyApplyWithFade(fade, 0);
+    observeFadeAlert(true, 10);
+    TEST_ASSERT_TRUE(quiet.executeVolumeFade(10, &fade));
+    observeAllVolume(1, 2, 4, 1);
+    observeFadeAlert(false, 20);
+    ble.nextVolumeSendResult = SendResult::FAILED;
     TEST_ASSERT_TRUE(quiet.executeVolumeFade(20, &fade));
     TEST_ASSERT_FALSE(quiet.canApplyAutoPushVolumeExactly());
-    fade.activeVolumeOverride = false; // matching detector echo cleared fade's restore state
-    fade.nextAction = VolumeFadeAction{};
-    TEST_ASSERT_FALSE(quiet.executeVolumeFade(30, &fade));
+
+    mockMillis = 100;
+    TEST_ASSERT_TRUE(quiet.executeVolumeFade(100, &fade));
+    TEST_ASSERT_EQUAL_UINT8(5, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
+    TEST_ASSERT_FALSE(quiet.canApplyAutoPushVolumeExactly());
+    observeAllVolume(5, 2, 4, 1);
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(110, &fade));
     TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
     ble.setVolumeCalls = 0;
-    queueAndPreflight();
-    at(100);
+    stageSnapshot(makeSnapshot());
+    queueAndPreflight(200);
+    at(200);
     TEST_ASSERT_EQUAL_INT(1, ble.setVolumeCalls);
 }
 
@@ -2633,20 +2715,12 @@ void test_volume_owner_race_is_rechecked_immediately_before_volume_write() {
 }
 
 void test_volume_verification_lease_defers_competing_owner_until_transaction_finishes() {
-    configureProfile();
-    auto& detector = profiles.loadableProfile.detector;
-    detector.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
-    detector.displayPolicy = V1DisplayPolicy::Unchanged;
-    detector.modePolicy = V1ModePolicy::Unchanged;
-    stageSnapshot(makeSnapshot());
+    VolumeFadeModule fade;
+    configureVolumeOnlyApplyWithFade(fade, 0);
     queueAndPreflight();
     at(100);
-    VolumeFadeModule fade;
-    fade.nextAction.type = VolumeFadeAction::Type::FADE_DOWN;
-    fade.nextAction.targetVolume = 1;
-    fade.nextAction.targetMuteVolume = 1;
+    observeFadeAlert(true, 110);
     TEST_ASSERT_FALSE(quiet.executeVolumeFade(110, &fade));
-    TEST_ASSERT_EQUAL_INT(0, fade.processCalls);
     TEST_ASSERT_EQUAL_INT(SendResult::NOT_YET,
                           quiet.sendVolumeResult(QuietOwner::VolumeFade, 1, 1));
     TEST_ASSERT_EQUAL_INT(1, ble.setVolumeCalls);
@@ -2654,9 +2728,15 @@ void test_volume_verification_lease_defers_competing_owner_until_transaction_fin
     observeAllVolume(7, 3, 4, 1);
     at(130);
     TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
-    TEST_ASSERT_EQUAL_INT(SendResult::SENT,
-                          quiet.sendVolumeResult(QuietOwner::VolumeFade, 1, 1));
+    TEST_ASSERT_TRUE(quiet.executeVolumeFade(140, &fade));
     TEST_ASSERT_EQUAL_INT(2, ble.setVolumeCalls);
+    TEST_ASSERT_EQUAL_UINT8(1, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(3, ble.lastMuteVolume);
+    observeAllVolume(1, 3, 4, 1);
+    observeFadeAlert(false, 200);
+    TEST_ASSERT_TRUE(quiet.executeVolumeFade(200, &fade));
+    TEST_ASSERT_EQUAL_UINT8(7, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(3, ble.lastMuteVolume);
 }
 
 void test_session_change_cancels_operation_and_blocks_remaining_components() {
@@ -3180,6 +3260,9 @@ int main() {
     RUN_TEST(test_advanced_logic_in_existing_euro_mode_is_rejected_before_writes);
     RUN_TEST(test_speed_volume_owner_blocks_whole_plan_before_any_detector_write);
     RUN_TEST(test_active_volume_fade_owner_blocks_whole_plan_before_writes);
+    RUN_TEST(test_fade_delay_blocks_apply_before_any_detector_write);
+    RUN_TEST(test_alert_clearing_before_fade_delay_releases_apply_without_restore);
+    RUN_TEST(test_apply_without_fade_baseline_restores_applied_pair_after_later_alert);
     RUN_TEST(test_successful_fade_restore_releases_apply_while_failed_restore_stays_blocked);
     RUN_TEST(test_volume_owner_race_is_rechecked_immediately_before_volume_write);
     RUN_TEST(test_volume_verification_lease_defers_competing_owner_until_transaction_finishes);

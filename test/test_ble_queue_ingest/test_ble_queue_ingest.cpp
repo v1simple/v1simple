@@ -259,6 +259,111 @@ void test_long_characteristic_never_splices_into_partial_short_frame() {
     TEST_ASSERT_EQUAL_INT(2, parser.parseCalls);
     assertParsedPacket(1, longFrame);
     TEST_ASSERT_EQUAL_UINT32(321, parser.parseTimestamps[1]);
+    TEST_ASSERT_EQUAL_UINT32(323, queue.getLastRxMillis());
+}
+
+void test_blocked_long_packets_recover_only_the_incomplete_short_frame() {
+    for (const size_t split : {size_t{1}, size_t{8}, size_t{17}}) {
+        for (const uint32_t firstMs : {uint32_t{100}, UINT32_MAX - 2u}) {
+            setUp();
+            beginQueue();
+            const auto prior = makeFrame(0x58, 1, 0x31);
+            const auto partial = makeFrame(0x59, 12, 0x32);
+            const auto firstLong = makeFrame(0x60, 16, 0x33);
+            const auto secondLong = makeFrame(0x61, 16, 0x34);
+            const auto fresh = makeFrame(0x62, 1, 0x35);
+            auto prefix = prior;
+            prefix.insert(prefix.end(), partial.begin(), partial.begin() + split);
+            uint32_t ingress = 1;
+            TEST_ASSERT_TRUE(deliverRawNotify(prefix.data(), prefix.size(), kCharacteristic,
+                                              kSession, firstMs, ingress++));
+            for (const auto& frame : {firstLong, secondLong}) {
+                for (const auto& chunk : makeLongChunks(frame)) {
+                    TEST_ASSERT_TRUE(deliverRawNotify(chunk.data(), chunk.size(), kLongCharacteristic,
+                                                      kSession, firstMs + ingress - 1u, ingress));
+                    ++ingress;
+                }
+            }
+            auto tail = std::vector<uint8_t>(partial.begin() + split, partial.end());
+            tail.insert(tail.end(), fresh.begin(), fresh.end());
+            TEST_ASSERT_TRUE(deliverRawNotify(tail.data(), tail.size(), kCharacteristic,
+                                              kSession, firstMs + 5u, ingress));
+
+            queue.process();
+            // Complete short work ahead of the blocked candidate survives;
+            // invalidation must happen before either retained long frame.
+            TEST_ASSERT_EQUAL_INT(1, parser.parseCalls);
+            assertParsedPacket(0, prior);
+            TEST_ASSERT_EQUAL_INT(1, parser.markAlertStreamDiscontinuousCalls);
+            for (int tick = 0; tick < 10; ++tick) queue.process();
+
+            TEST_ASSERT_EQUAL_UINT32(0, uxQueueMessagesWaiting(queue.queueHandle_));
+            TEST_ASSERT_EQUAL_INT(4, parser.parseCalls);
+            assertParsedPacket(1, firstLong);
+            assertParsedPacket(2, fresh); // Existing short-before-held-long order.
+            assertParsedPacket(3, secondLong);
+            TEST_ASSERT_EQUAL_UINT32(firstMs + 1u, parser.parseTimestamps[1]);
+            TEST_ASSERT_EQUAL_UINT32(2, parser.parseIngressSequences[1]);
+            TEST_ASSERT_EQUAL_UINT32(firstMs + 3u, parser.parseTimestamps[3]);
+            TEST_ASSERT_EQUAL_UINT32(4, parser.parseIngressSequences[3]);
+            TEST_ASSERT_EQUAL_UINT32(firstMs + 5u, queue.getLastRxMillis());
+            TEST_ASSERT_EQUAL_UINT32(1, HealthCounters::inputDrops());
+            tearDown();
+        }
+    }
+}
+
+void test_invalid_completed_long_does_not_sacrifice_a_valid_short_partial() {
+    beginQueue();
+    const auto shortFrame = makeFrame(0x58, 12, 0x41);
+    auto invalidLong = makeFrame(0x60, 8, 0x42);
+    invalidLong.pop_back(); // All indexed chunks exist, but the ESP frame is truncated.
+    const auto validLong = makeFrame(0x61, 8, 0x43);
+    TEST_ASSERT_TRUE(deliverRawNotify(shortFrame.data(), 4, kCharacteristic, kSession, 100));
+    for (const auto& frame : {invalidLong, validLong}) {
+        for (const auto& chunk : makeLongChunks(frame)) {
+            TEST_ASSERT_TRUE(deliverRawNotify(chunk.data(), chunk.size(), kLongCharacteristic,
+                                              kSession, 101));
+        }
+    }
+    TEST_ASSERT_TRUE(deliverRawNotify(shortFrame.data() + 4, shortFrame.size() - 4,
+                                      kCharacteristic, kSession, 102));
+    for (int tick = 0; tick < 10; ++tick) queue.process();
+    TEST_ASSERT_EQUAL_UINT32(0, uxQueueMessagesWaiting(queue.queueHandle_));
+    TEST_ASSERT_EQUAL_INT(2, parser.parseCalls);
+    assertParsedPacket(0, shortFrame);
+    assertParsedPacket(1, validLong);
+    TEST_ASSERT_EQUAL_UINT32(1, HealthCounters::inputDrops());
+}
+
+void test_parse_budget_exhaustion_does_not_discard_complete_short_work() {
+    beginQueue();
+    const auto complete = makeFrame(0x58, 1, 0x41);
+    const auto partial = makeFrame(0x59, 12, 0x42);
+    const auto longFrame = makeFrame(0x60, 8, 0x43);
+    std::vector<uint8_t> batch;
+    for (int i = 0; i < 24; ++i) batch.insert(batch.end(), complete.begin(), complete.end());
+    batch.insert(batch.end(), partial.begin(), partial.begin() + 4);
+    TEST_ASSERT_TRUE(deliverRawNotify(batch.data(), batch.size(), kCharacteristic, kSession, 100));
+    for (int i = 0; i < 2; ++i) {
+        for (const auto& chunk : makeLongChunks(longFrame)) {
+            TEST_ASSERT_TRUE(deliverRawNotify(chunk.data(), chunk.size(), kLongCharacteristic,
+                                              kSession, 101 + i));
+        }
+    }
+    TEST_ASSERT_TRUE(deliverRawNotify(partial.data() + 4, partial.size() - 4,
+                                      kCharacteristic, kSession, 103));
+    queue.process();
+    TEST_ASSERT_EQUAL_INT(8, parser.parseCalls);
+    TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::inputDrops());
+    TEST_ASSERT_EQUAL_INT(0, parser.markAlertStreamDiscontinuousCalls);
+    for (int tick = 0; tick < 10; ++tick) queue.process();
+    TEST_ASSERT_EQUAL_UINT32(0, uxQueueMessagesWaiting(queue.queueHandle_));
+    TEST_ASSERT_EQUAL_INT(26, parser.parseCalls);
+    for (size_t i = 0; i < 24; ++i) assertParsedPacket(i, complete);
+    assertParsedPacket(24, longFrame);
+    assertParsedPacket(25, longFrame);
+    TEST_ASSERT_EQUAL_UINT32(1, HealthCounters::inputDrops());
 }
 
 void test_session_reset_discards_partial_long_packet() {
@@ -799,6 +904,9 @@ int main(int, char**) {
     RUN_TEST(test_multiple_frames_in_one_notification_are_all_parsed_in_order);
     RUN_TEST(test_long_characteristic_reassembles_out_of_order_chunks_once);
     RUN_TEST(test_long_characteristic_never_splices_into_partial_short_frame);
+    RUN_TEST(test_blocked_long_packets_recover_only_the_incomplete_short_frame);
+    RUN_TEST(test_invalid_completed_long_does_not_sacrifice_a_valid_short_partial);
+    RUN_TEST(test_parse_budget_exhaustion_does_not_discard_complete_short_work);
     RUN_TEST(test_session_reset_discards_partial_long_packet);
     RUN_TEST(test_invalid_long_chunk_is_dropped_without_poisoning_next_packet);
     RUN_TEST(test_duplicate_long_index_restarts_candidate_without_cross_packet_splice);

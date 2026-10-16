@@ -3,12 +3,25 @@
 This is the short version of changes users and integrators may notice. Git and
 GitHub Releases retain the complete commit history.
 
-## Unreleased
+## v2.4.1 — 2026-10-16
 
-- Keep newer profile drafts and selections when an earlier Edit or Copy request
-  finishes later.
-- Cancel a deferred In-the-Box unmute when the remaining alerts are on bands
+- Preserved newer profile drafts and selections when an earlier Edit or Copy
+  request finishes later.
+- Cancelled a deferred In-the-Box unmute when the remaining alerts are on bands
   whose inside-unmute option is off.
+- Corrected handling of missing GPS speed and stale fixes so they cannot keep
+  low-speed muting active.
+- Preserved alert receipt times through BLE buffering and recovered from
+  incomplete interleaved packets without blocking later traffic.
+- Fixed mute and volume-fade ownership and avoided repeated secondary voice
+  announcements.
+- Improved Wi-Fi credential rollback and reserved event-log space for recovery
+  after reboot.
+- Kept profile Apply feedback visible, shared operation tracking with Auto-Push,
+  and avoided rewriting unchanged profiles.
+- Fixed replay decoding of checksum-free and indexed proxy captures.
+- Updated the maintenance frontend, firmware toolchain, graphics library, and
+  web installer dependencies; improved Windows toolchain discovery.
 
 ## v2.4.0 — 2026-10-02
 

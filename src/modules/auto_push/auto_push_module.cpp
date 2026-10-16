@@ -1537,6 +1537,8 @@ void AutoPushModule::process() {
             return;
         }
         state_.sendDeadlineMs = 0;
+        // Queue admission and final verification must use the same request boundary.
+        bleClient_->beginSessionSweepDefinitionsCapture(state_.observationIngressBoundary);
         state_.step = Step::CustomVerify;
         state_.verifyDeadlineMs = now + kVerificationTimeoutMs;
         state_.nextStepAtMs = now;

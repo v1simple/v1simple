@@ -1449,7 +1449,18 @@ void runQueuedCustomCommitReply(bool duringSend) {
 void test_custom_commit_accepts_reply_queued_during_send() { runQueuedCustomCommitReply(true); }
 void test_custom_commit_rejects_reply_queued_before_send() { runQueuedCustomCommitReply(false); }
 
-void runQueuedCustomRefreshReply(uint8_t selectedStep, bool duringSend) {
+enum class CustomReadReplyTiming {
+    FreshOnly,
+    OldBeforeRequest,
+    OldQueued,
+    IdenticalOldQueued,
+    FreshDuringSend,
+    OldQueuedDuringRetry,
+    FreshConflict,
+};
+
+void runQueuedCustomRefreshReply(uint8_t selectedStep, bool duringSend,
+                                CustomReadReplyTiming readTiming = CustomReadReplyTiming::FreshOnly) {
     // A supported custom-on USA -> custom-on Euro change first disables custom
     // sweeps, reads the new region's capabilities, then writes and verifies them.
     const std::array<uint8_t, 6> before{{0xFF, 0xF7, 0xFF, 0xFF, 0xA4, 0x5A}};
@@ -1508,16 +1519,69 @@ void runQueuedCustomRefreshReply(uint8_t selectedStep, bool duringSend) {
     at(255);
     deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_WRITE_RESULT, {0}));
     at(255);
-    at(285);
-    deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x80, 0x5E, 0xF1, 0x5E, 0x83}));
+    TEST_ASSERT_TRUE(statusContains("\"step\":\"CustomRead\""));
+    mockMillis = 285;
+    protocolQueue.process(); // Queue service precedes callbacks and AutoPush.
+    uint32_t readAt = 285;
+    if (readTiming == CustomReadReplyTiming::OldQueuedDuringRetry) {
+        const uint32_t previousBoundary = ble.sessionSweepDefinitionsIngressBoundary();
+        ble.nextRequestAllSweepDefinitionsResult = SendResult::NOT_YET;
+        at(readAt);
+        TEST_ASSERT_TRUE(statusContains("\"step\":\"CustomRead\""));
+        TEST_ASSERT_EQUAL_UINT32(previousBoundary, ble.sessionSweepDefinitionsIngressBoundary());
+        ble.nextRequestAllSweepDefinitionsResult = SendResult::SENT;
+        readAt += 5;
+        mockMillis = readAt;
+    }
+    if (readTiming == CustomReadReplyTiming::OldBeforeRequest ||
+        readTiming == CustomReadReplyTiming::OldQueued ||
+        readTiming == CustomReadReplyTiming::OldQueuedDuringRetry) {
+        // A valid prior definition differs from the freshly written table.
+        // It enters before the read request, but may wait in the BLE queue.
+        enqueueProtocolReply(replies[2]);
+        if (readTiming == CustomReadReplyTiming::OldBeforeRequest) protocolQueue.process();
+    } else if (readTiming == CustomReadReplyTiming::IdenticalOldQueued) {
+        enqueueProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x83, 0, 0, 0, 0}));
+    }
+    const auto firstReadback = makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x80, 0x5E, 0xF1, 0x5E, 0x83});
+    if (readTiming == CustomReadReplyTiming::FreshDuringSend) {
+        replyDuringSend = firstReadback;
+        ble.requestAllSweepDefinitionsSendHook = enqueueProtocolReplyDuringSend;
+    }
+    at(readAt);
+    ble.requestAllSweepDefinitionsSendHook = nullptr;
+    protocolQueue.process();
+    if (readTiming == CustomReadReplyTiming::OldQueued ||
+        readTiming == CustomReadReplyTiming::OldQueuedDuringRetry) {
+        TEST_ASSERT_EQUAL_UINT64(0, parser.sweepDefinitionsObservation().presentMask);
+        TEST_ASSERT_TRUE(ble.sweepDefinitionsResetPending);
+    }
+    if (readTiming == CustomReadReplyTiming::FreshDuringSend) {
+        TEST_ASSERT_EQUAL_UINT64(1, parser.sweepDefinitionsObservation().presentMask);
+    } else {
+        deliverProtocolReply(firstReadback);
+    }
+    if (readTiming == CustomReadReplyTiming::FreshConflict) {
+        deliverProtocolReply(replies[2]); // Conflicting *fresh* data must still fail.
+    }
     deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x81, 0x87, 0x2D, 0x86, 0xBF}));
     deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x82, 0, 0, 0, 0}));
     deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x83, 0, 0, 0, 0}));
-    at(285);
-    at(315);
-    at(345);
+    at(readAt);
+    if (readTiming == CustomReadReplyTiming::FreshConflict) {
+        TEST_ASSERT_TRUE(parser.sweepDefinitionsObservation().poisoned);
+        at(readAt + 1500);
+        TEST_ASSERT_TRUE(statusContains("custom_readback_timeout"));
+        TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+        TEST_ASSERT_EQUAL_HEX8(0xFE, ble.lastUserBytes[1]);
+        TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
+        return;
+    }
+    TEST_ASSERT_FALSE(parser.sweepDefinitionsObservation().poisoned);
+    at(readAt + 30);
+    at(readAt + 60);
     observeUserBytes(ble.lastUserBytes);
-    at(345);
+    at(readAt + 60);
     TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
     TEST_ASSERT_EQUAL_HEX8(0xF6, ble.lastUserBytes[1]);
     TEST_ASSERT_EQUAL_INT(2, ble.writeSweepDefinitionCalls);
@@ -1529,6 +1593,25 @@ void test_custom_refresh_definition_accepts_reply_queued_during_send() { runQueu
 void test_custom_refresh_sections_rejects_reply_queued_before_send() { runQueuedCustomRefreshReply(0, false); }
 void test_custom_refresh_max_rejects_reply_queued_before_send() { runQueuedCustomRefreshReply(1, false); }
 void test_custom_refresh_definition_rejects_reply_queued_before_send() { runQueuedCustomRefreshReply(2, false); }
+
+void test_custom_readback_ignores_changed_reply_queued_before_request() {
+    runQueuedCustomRefreshReply(2, true, CustomReadReplyTiming::OldQueued);
+}
+void test_custom_readback_old_reply_processed_before_request_control() {
+    runQueuedCustomRefreshReply(2, true, CustomReadReplyTiming::OldBeforeRequest);
+}
+void test_custom_readback_identical_queued_reply_control() {
+    runQueuedCustomRefreshReply(2, true, CustomReadReplyTiming::IdenticalOldQueued);
+}
+void test_custom_readback_accepts_queued_reply_during_send() {
+    runQueuedCustomRefreshReply(2, true, CustomReadReplyTiming::FreshDuringSend);
+}
+void test_custom_readback_retry_rejects_reply_queued_before_successful_send() {
+    runQueuedCustomRefreshReply(2, true, CustomReadReplyTiming::OldQueuedDuringRetry);
+}
+void test_custom_readback_rejects_fresh_conflicting_queue_reply() {
+    runQueuedCustomRefreshReply(2, true, CustomReadReplyTiming::FreshConflict);
+}
 
 void test_custom_readback_rejects_lost_used_range_and_cross_section_calibration() {
     const std::vector<V1CustomFrequencyDefinition> desired = {
@@ -3230,6 +3313,12 @@ int main() {
     RUN_TEST(test_custom_readback_rejects_lost_used_range_and_cross_section_calibration);
     RUN_TEST(test_custom_readback_requires_every_definition_after_request_boundary);
     RUN_TEST(test_custom_readback_accepts_first_definition_ingressed_during_send);
+    RUN_TEST(test_custom_readback_ignores_changed_reply_queued_before_request);
+    RUN_TEST(test_custom_readback_old_reply_processed_before_request_control);
+    RUN_TEST(test_custom_readback_identical_queued_reply_control);
+    RUN_TEST(test_custom_readback_accepts_queued_reply_during_send);
+    RUN_TEST(test_custom_readback_retry_rejects_reply_queued_before_successful_send);
+    RUN_TEST(test_custom_readback_rejects_fresh_conflicting_queue_reply);
     RUN_TEST(test_custom_snapshot_mutation_before_preflight_blocks_every_write);
     RUN_TEST(test_malformed_canonical_sweep_definition_poison_blocks_every_write);
     RUN_TEST(test_poisoned_sweep_max_before_preflight_blocks_every_write);

@@ -159,6 +159,9 @@ Its status types, deadlines and wrap-safe comparison are in
    committing send. `CustomCommitVerify` requires a changed revision, later
    ingress, and canonical result zero. Reject/timeout never advances to readback.
 7. `CustomRead` requests all definitions with its existing pre-send boundary.
+   Only `SENT` arms the queue's definitions capture with that same boundary;
+   a queued older row cannot enter the new collector and poison a changed fresh
+   definition. Retries resample the boundary, and in-send replies remain eligible.
    `CustomVerify` requires every index, including disabled ones, after that request.
    It checks used/unused shape and valid live sections. Preserved definitions must
    match exactly; requested frequencies may be detector-calibrated within the same
@@ -204,8 +207,8 @@ execute physical detector timing or a whole settings Apply.
 ### Executable proof and limits
 
 [`test_auto_push_module`](../../test/test_auto_push_module/test_auto_push_module.cpp)
-uses the production AutoPush owner, parser, quiet coordinator and, in these eight
-regressions, real queue. BLE sends, settings/profile storage, clock and display are
+uses the production AutoPush owner, parser, quiet coordinator and, in the queue
+regressions below, real queue. BLE sends, settings/profile storage, clock and display are
 test doubles. The send hook enqueues a stamped response inside the mock send; the
 queue parses it after return, reproducing the production ordering directly.
 
@@ -215,9 +218,12 @@ queue parses it after return, reproducing the production ordering directly.
 | `test_custom_refresh_sections_rejects_reply_queued_before_send`; `test_custom_refresh_max_rejects_reply_queued_before_send`; `test_custom_refresh_definition_rejects_reply_queued_before_send` | A stale queued reply leaves capture reset pending and sends no sweep write; supplying a fresh reply permits the complete transaction. |
 | `test_custom_commit_accepts_reply_queued_during_send` | An in-send result zero advances to full readback; matching readback completes the actual owner. |
 | `test_custom_commit_rejects_reply_queued_before_send` | A stale commit result cannot request readback and ends as `custom_commit_timeout`. |
+| `test_custom_readback_ignores_changed_reply_queued_before_request`; `test_custom_readback_retry_rejects_reply_queued_before_successful_send` | A changed old row queued before final readback cannot contaminate the collector, including after a deferred send. Fresh readback completes the transaction and final custom enable. |
+| `test_custom_readback_old_reply_processed_before_request_control`; `test_custom_readback_identical_queued_reply_control` | Previously passing old-before-request and unchanged disabled-row schedules still complete successfully; the existing refresh tests retain fresh-only readback. |
+| `test_custom_readback_accepts_queued_reply_during_send`; `test_custom_readback_rejects_fresh_conflicting_queue_reply` | A fresh in-send response reaches the collector; conflicting fresh data still fails verification and blocks final enable. |
 
-At repair time these additions produced four failures in 102 cases before the
-source change and 102 passes afterward. Existing cases also cover `NOT_YET`
+The earlier eight refresh/commit regressions produced four failures in 102 cases
+before their source change and 102 passes afterward. Existing cases also cover `NOT_YET`
 retries/deadlines, request failures, incomplete/poisoned captures, per-definition
 readback freshness, calibrated range validation and disconnects across phases.
 Locate those with `test_region_refresh_`, `test_custom_readback_` and

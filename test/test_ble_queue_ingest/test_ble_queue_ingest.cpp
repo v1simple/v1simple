@@ -249,12 +249,11 @@ void test_long_characteristic_never_splices_into_partial_short_frame() {
                                       kCharacteristic, kSession, 323));
     queue.process();
 
-    TEST_ASSERT_EQUAL_INT(1, parser.parseCalls);
+    TEST_ASSERT_EQUAL_INT(2, parser.parseCalls);
     assertParsedPacket(0, shortFrame);
     TEST_ASSERT_EQUAL_UINT32(320, parser.parseTimestamps[0]);
 
-    // The complete B4E0 candidate remains independently owned until the older
-    // B2CE stream is consumed, then publishes on the following main-loop tick.
+    // Both frames fit the shared budget; the next tick must not repeat either.
     queue.process();
     TEST_ASSERT_EQUAL_INT(2, parser.parseCalls);
     assertParsedPacket(1, longFrame);
@@ -300,12 +299,12 @@ void test_blocked_long_packets_recover_only_the_incomplete_short_frame() {
             TEST_ASSERT_EQUAL_UINT32(0, uxQueueMessagesWaiting(queue.queueHandle_));
             TEST_ASSERT_EQUAL_INT(4, parser.parseCalls);
             assertParsedPacket(1, firstLong);
-            assertParsedPacket(2, fresh); // Existing short-before-held-long order.
-            assertParsedPacket(3, secondLong);
+            assertParsedPacket(2, secondLong);
+            assertParsedPacket(3, fresh);
             TEST_ASSERT_EQUAL_UINT32(firstMs + 1u, parser.parseTimestamps[1]);
             TEST_ASSERT_EQUAL_UINT32(2, parser.parseIngressSequences[1]);
-            TEST_ASSERT_EQUAL_UINT32(firstMs + 3u, parser.parseTimestamps[3]);
-            TEST_ASSERT_EQUAL_UINT32(4, parser.parseIngressSequences[3]);
+            TEST_ASSERT_EQUAL_UINT32(firstMs + 3u, parser.parseTimestamps[2]);
+            TEST_ASSERT_EQUAL_UINT32(4, parser.parseIngressSequences[2]);
             TEST_ASSERT_EQUAL_UINT32(firstMs + 5u, queue.getLastRxMillis());
             TEST_ASSERT_EQUAL_UINT32(1, HealthCounters::inputDrops());
             tearDown();
@@ -392,6 +391,109 @@ void test_session_reset_discards_partial_long_packet() {
 
     TEST_ASSERT_EQUAL_INT(1, parser.parseCalls);
     assertParsedPacket(0, newFrame);
+}
+
+void test_held_long_order_survives_capacity_compaction_and_shared_budget() {
+    beginQueue();
+    const auto before = makeFrame(0x58, 1, 0x31);
+    const auto held = makeFrame(0x59, 8, 0x32);
+    const auto after = makeFrame(0x60, 1, 0x33);
+    const auto sendBatch = [&](const std::vector<uint8_t>& frame, uint32_t timestamp) {
+        std::vector<uint8_t> batch;
+        for (int i = 0; i < 35; ++i) batch.insert(batch.end(), frame.begin(), frame.end());
+        TEST_ASSERT_TRUE(deliverRawNotify(batch.data(), batch.size(), kCharacteristic, kSession, timestamp));
+    };
+    for (int i = 0; i < 3; ++i) sendBatch(before, 100);
+    for (const auto& chunk : makeLongChunks(held)) {
+        TEST_ASSERT_TRUE(deliverRawNotify(chunk.data(), chunk.size(), kLongCharacteristic, kSession, 101));
+    }
+    for (int i = 0; i < 3; ++i) sendBatch(after, 102);
+    queue.process();
+    TEST_ASSERT_EQUAL_INT(24, parser.parseCalls);
+    TEST_ASSERT_TRUE(queue.longRxComplete());
+    TEST_ASSERT_GREATER_THAN_UINT32(0, uxQueueMessagesWaiting(queue.queueHandle_));
+    for (int tick = 0; tick < 40; ++tick) queue.process();
+    TEST_ASSERT_EQUAL_INT(211, parser.parseCalls);
+    for (size_t i = 0; i < 105; ++i) assertParsedPacket(i, before);
+    assertParsedPacket(105, held);
+    for (size_t i = 106; i < 211; ++i) assertParsedPacket(i, after);
+    TEST_ASSERT_EQUAL_UINT32(101, parser.parseTimestamps[105]);
+    TEST_ASSERT_EQUAL_UINT32(4, parser.parseIngressSequences[105]);
+    TEST_ASSERT_EQUAL_UINT32(102, queue.getLastRxMillis());
+    TEST_ASSERT_EQUAL_UINT32(0, uxQueueMessagesWaiting(queue.queueHandle_));
+    TEST_ASSERT_FALSE(queue.longRxComplete());
+    TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::inputDrops());
+    TEST_ASSERT_EQUAL_INT(0, parser.markAlertStreamDiscontinuousCalls);
+}
+
+void test_held_long_user_bytes_dispatches_once_before_newer_settings() {
+    beginQueue();
+    client.beginSessionUserBytesCapture(0);
+    const auto prior = makeFrame(0x58, 1, 0x31);
+    const auto held = makeCanonicalUserBytesFrame(0x43);
+    const auto newer = makeCanonicalUserBytesFrame(0x44);
+    TEST_ASSERT_TRUE(deliverRawNotify(prior.data(), prior.size(), kCharacteristic, kSession, 100));
+    for (const auto& chunk : makeLongChunks(held)) {
+        TEST_ASSERT_TRUE(deliverRawNotify(chunk.data(), chunk.size(), kLongCharacteristic, kSession, 101));
+    }
+    TEST_ASSERT_TRUE(deliverRawNotify(newer.data(), newer.size(), kCharacteristic, kSession, 102));
+    queue.process();
+    queue.process();
+    TEST_ASSERT_EQUAL_INT(1, parser.parseCalls);
+    TEST_ASSERT_EQUAL_INT(2, client.onUserBytesReceivedCalls);
+    TEST_ASSERT_EQUAL_INT(2, profiles.setCurrentSettingsCalls);
+    TEST_ASSERT_EQUAL_HEX8(0x44, client.sessionUserBytes[0]);
+    TEST_ASSERT_EQUAL_UINT32(3, client.sessionUserBytesIngressSequence());
+    TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::inputDrops());
+}
+
+void test_dispatching_held_long_does_not_drop_a_newer_partial_short() {
+    beginQueue();
+    const auto prior = makeFrame(0x58, 1, 0x31);
+    const auto firstLong = makeFrame(0x59, 8, 0x32);
+    const auto partial = makeFrame(0x60, 12, 0x33);
+    const auto secondLong = makeFrame(0x61, 8, 0x34);
+    TEST_ASSERT_TRUE(deliverRawNotify(prior.data(), prior.size(), kCharacteristic, kSession, 100));
+    for (const auto& chunk : makeLongChunks(firstLong)) {
+        TEST_ASSERT_TRUE(deliverRawNotify(chunk.data(), chunk.size(), kLongCharacteristic, kSession, 101));
+    }
+    TEST_ASSERT_TRUE(deliverRawNotify(partial.data(), 4, kCharacteristic, kSession, 102));
+    for (const auto& chunk : makeLongChunks(secondLong)) {
+        TEST_ASSERT_TRUE(deliverRawNotify(chunk.data(), chunk.size(), kLongCharacteristic, kSession, 103));
+    }
+    TEST_ASSERT_TRUE(deliverRawNotify(partial.data() + 4, partial.size() - 4,
+                                      kCharacteristic, kSession, 104));
+    for (int tick = 0; tick < 10; ++tick) queue.process();
+    TEST_ASSERT_EQUAL_INT(4, parser.parseCalls);
+    assertParsedPacket(0, prior);
+    assertParsedPacket(1, firstLong);
+    assertParsedPacket(2, partial);
+    assertParsedPacket(3, secondLong);
+    TEST_ASSERT_EQUAL_UINT32(102, parser.parseTimestamps[2]);
+    TEST_ASSERT_EQUAL_UINT32(103, parser.parseTimestamps[3]);
+    TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::inputDrops());
+    TEST_ASSERT_EQUAL_INT(0, parser.markAlertStreamDiscontinuousCalls);
+}
+
+void test_session_reset_discards_a_complete_held_long_packet() {
+    beginQueue();
+    const auto partial = makeFrame(0x58, 12, 0x31);
+    const auto held = makeFrame(0x59, 8, 0x32);
+    TEST_ASSERT_TRUE(deliverRawNotify(partial.data(), 4, kCharacteristic, kSession, 100));
+    for (const auto& chunk : makeLongChunks(held)) {
+        TEST_ASSERT_TRUE(deliverRawNotify(chunk.data(), chunk.size(), kLongCharacteristic, kSession, 101));
+    }
+    queue.process();
+    TEST_ASSERT_EQUAL_INT(0, parser.parseCalls);
+    TEST_ASSERT_TRUE(queue.longRxComplete());
+    queue.openSession(kSession + 1);
+    const auto fresh = makeFrame(0x60, 8, 0x33);
+    TEST_ASSERT_TRUE(deliverRawNotify(fresh.data(), fresh.size(), kCharacteristic, kSession + 1, 102));
+    queue.process();
+    TEST_ASSERT_EQUAL_INT(1, parser.parseCalls);
+    assertParsedPacket(0, fresh);
+    TEST_ASSERT_FALSE(queue.longRxComplete());
+    TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::inputDrops());
 }
 
 void test_invalid_long_chunk_is_dropped_without_poisoning_next_packet() {
@@ -908,6 +1010,10 @@ int main(int, char**) {
     RUN_TEST(test_invalid_completed_long_does_not_sacrifice_a_valid_short_partial);
     RUN_TEST(test_parse_budget_exhaustion_does_not_discard_complete_short_work);
     RUN_TEST(test_session_reset_discards_partial_long_packet);
+    RUN_TEST(test_held_long_order_survives_capacity_compaction_and_shared_budget);
+    RUN_TEST(test_held_long_user_bytes_dispatches_once_before_newer_settings);
+    RUN_TEST(test_dispatching_held_long_does_not_drop_a_newer_partial_short);
+    RUN_TEST(test_session_reset_discards_a_complete_held_long_packet);
     RUN_TEST(test_invalid_long_chunk_is_dropped_without_poisoning_next_packet);
     RUN_TEST(test_duplicate_long_index_restarts_candidate_without_cross_packet_splice);
     RUN_TEST(test_session_reset_discards_old_queue_and_partial_buffer);

@@ -96,6 +96,9 @@ class BleQueueModule {
         uint32_t firstIngressSequence = 0;
         uint32_t firstTimestampMs = 0;
         bool streamDiscontinuity = false;
+        // End of short bytes staged when this assembly became complete. Only
+        // a frame already started before this boundary may finish ahead of it.
+        size_t shortStreamEnd = 0;
     };
 
     V1BLEClient* ble_ = nullptr;

@@ -177,6 +177,7 @@ void BleQueueModule::clearRxState() {
     rxTimestamps_.clear();
     rxDiscontinuities_.clear();
     rxReadPos_ = 0;
+    longRx_.shortStreamEnd = 0;
 }
 
 void BleQueueModule::compactRxState() {
@@ -199,6 +200,7 @@ void BleQueueModule::compactRxState() {
     memmove(rxDiscontinuities_.data(), rxDiscontinuities_.data() + shift,
             unread * sizeof(rxDiscontinuities_[0]));
     rxDiscontinuities_.resize(unread);
+    longRx_.shortStreamEnd = longRx_.shortStreamEnd > shift ? longRx_.shortStreamEnd - shift : 0;
     rxReadPos_ = 0;
 }
 
@@ -443,9 +445,12 @@ void BleQueueModule::process() {
                 pendingStreamDiscontinuity_ = true;
                 HealthCounters::recordInputDrop();
             }
-            if (acceptedChunk && longRxComplete() && rxReadPos_ >= rxBuffer_.size()) {
-                clearRxState();
-                flushCompleteLongRx();
+            if (acceptedChunk && longRxComplete()) {
+                longRx_.shortStreamEnd = rxBuffer_.size();
+                if (rxReadPos_ >= rxBuffer_.size()) {
+                    clearRxState();
+                    flushCompleteLongRx();
+                }
             }
             continue;
         }
@@ -524,6 +529,7 @@ void BleQueueModule::process() {
     bool loggedTooLargeWarning = false;
     bool loggedMissingEndWarning = false;
     bool waitingForShortCompletion = false;
+    std::array<uint8_t, MAX_LONG_CHUNKS * MAX_LONG_CHUNK_PAYLOAD> longFrame;
 
     while (true) {
         if (packetsProcessedThisCycle >= maxPacketsPerCycle) {
@@ -534,13 +540,25 @@ void BleQueueModule::process() {
             break;
         }
 
+        // Finish an older split short frame, then dispatch the held long frame
+        // before any newer short frame. Both sources share this loop's budget
+        // and callbacks; no extra RX-buffer capacity is needed for the long one.
+        const bool dispatchLong = longRxComplete() && rxReadPos_ >= longRx_.shortStreamEnd;
         availableBytes = rxBuffer_.size() - rxReadPos_;
+        const uint8_t* dataBegin = rxBuffer_.data() + rxReadPos_;
+        if (dispatchLong) {
+            availableBytes = 0;
+            for (size_t slot = 0; slot < longRx_.count; ++slot) {
+                memcpy(longFrame.data() + availableBytes, longRx_.payloads[slot].data(), longRx_.lengths[slot]);
+                availableBytes += longRx_.lengths[slot];
+            }
+            dataBegin = longFrame.data();
+        }
         if (availableBytes == 0)
             break;
 
-        const uint8_t* dataBegin = rxBuffer_.data() + rxReadPos_;
         const uint8_t* startPtr =
-            (rxBuffer_[rxReadPos_] == ESP_PACKET_START)
+            (dataBegin[0] == ESP_PACKET_START)
                 ? dataBegin
                 : static_cast<const uint8_t*>(memchr(dataBegin, ESP_PACKET_START, availableBytes));
         if (startPtr == nullptr) {
@@ -558,7 +576,7 @@ void BleQueueModule::process() {
             break;
         }
 
-        uint8_t lenField = rxBuffer_[rxReadPos_ + 4];
+        uint8_t lenField = dataBegin[4];
         if (lenField == 0) {
             markAlertStreamDiscontinuous();
             rxReadPos_++;
@@ -581,7 +599,7 @@ void BleQueueModule::process() {
             waitingForShortCompletion = true;
             break;
         }
-        if (rxBuffer_[rxReadPos_ + packetSize - 1] != ESP_PACKET_END) {
+        if (dataBegin[packetSize - 1] != ESP_PACKET_END) {
             if (!loggedMissingEndWarning) {
                 if (shouldLogBleConnectionEvent(missingEndWarningLog_, parseTimestampMs, kBleResyncLogMinIntervalMs)) {
                     Serial.println("[BLE] WARN: Packet missing end marker - resyncing");
@@ -593,15 +611,29 @@ void BleQueueModule::process() {
             continue;
         }
 
-        const uint8_t* packetPtr = rxBuffer_.data() + rxReadPos_;
+        const uint8_t* packetPtr = dataBegin;
         const uint8_t packetId = packetPtr[3];
-        const uint32_t packetIngressSequence = rxIngressSequences_[rxReadPos_];
-        const uint32_t packetTimestampMs = rxTimestamps_[rxReadPos_];
-        const auto discontinuityBegin = rxDiscontinuities_.begin() + rxReadPos_;
-        const auto discontinuityEnd = discontinuityBegin + packetSize;
-        if (std::find(discontinuityBegin, discontinuityEnd, uint8_t{1}) != discontinuityEnd) {
-            markAlertStreamDiscontinuous();
+        const uint32_t packetIngressSequence =
+            dispatchLong ? longRx_.firstIngressSequence : rxIngressSequences_[rxReadPos_];
+        const uint32_t packetTimestampMs = dispatchLong ? longRx_.firstTimestampMs : rxTimestamps_[rxReadPos_];
+        if (dispatchLong) {
+            if (longRx_.streamDiscontinuity || pendingStreamDiscontinuity_) markAlertStreamDiscontinuous();
+        } else {
+            const auto discontinuityBegin = rxDiscontinuities_.begin() + rxReadPos_;
+            const auto discontinuityEnd = discontinuityBegin + packetSize;
+            if (std::find(discontinuityBegin, discontinuityEnd, uint8_t{1}) != discontinuityEnd) {
+                markAlertStreamDiscontinuous();
+            }
         }
+        const auto consumePacket = [&]() {
+            if (dispatchLong) {
+                pendingStreamDiscontinuity_ = false;
+                clearLongRxState();
+            } else {
+                rxReadPos_ += packetSize;
+            }
+            packetsProcessedThisCycle++;
+        };
 
         // RESP_USER_BYTES has six settings bytes. Checksum-originator EAh uses
         // PL=7; no-checksum E9h uses PL=6. Origin-qualified width validation
@@ -612,8 +644,7 @@ void BleQueueModule::process() {
             memcpy(userBytes, &packetPtr[5], 6);
             ble_->onUserBytesReceived(userBytes, packetIngressSequence);
             profiles_->setCurrentSettings(userBytes);
-            rxReadPos_ += packetSize;
-            packetsProcessedThisCycle++;
+            consumePacket();
             continue;
         }
 
@@ -694,8 +725,7 @@ void BleQueueModule::process() {
             }
         }
 
-        rxReadPos_ += packetSize;
-        packetsProcessedThisCycle++;
+        consumePacket();
 
         if (parseOk) {
             if (power_) {
@@ -713,7 +743,7 @@ void BleQueueModule::process() {
         }
     }
 
-    if (blockedOnCompleteLong && waitingForShortCompletion) {
+    if (blockedOnCompleteLong && longRxComplete() && waitingForShortCompletion) {
         // The short tail may be queued behind the next long notification.
         // Abandon only this unfinished frame to break that circular wait;
         // complete frames and parse-budget exhaustion never take this path.

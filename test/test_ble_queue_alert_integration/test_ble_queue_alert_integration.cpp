@@ -86,6 +86,79 @@ void tearDown() {
     queue.end();
 }
 
+void checkPublicationOrder(bool clearMiddle, bool longMiddle, bool drainBetween,
+                           uint32_t firstMs, uint32_t stepMs, size_t shortPrefix = 14,
+                           bool combineTail = false) {
+    setUp();
+    const auto first = makeAlertFrame(1, 1, 24150, 0x24, 0x80);
+    auto middle = clearMiddle ? makeAlertFrame(0, 0, 0, 0, 0) : first;
+    const auto latest = makeAlertFrame(1, 1, 34700, 0x22, 0x80);
+    std::vector<uint16_t> publications;
+    parser.setAlertTableObserver([](const AlertData* alerts, size_t count, uint8_t,
+                                    uint32_t, void* context) {
+        static_cast<std::vector<uint16_t>*>(context)->push_back(count ? alerts[0].frequency : 0);
+    }, &publications);
+    uint32_t sequence = 1;
+    const auto send = [&](const uint8_t* data, size_t length, uint16_t characteristic, uint32_t at) {
+        TEST_ASSERT_TRUE(queue.tryOnNotify(data, length, characteristic, kSession, at, sequence++));
+        if (drainBetween) queue.process();
+    };
+    send(first.data(), shortPrefix, kCharacteristic, firstMs);
+    if (longMiddle) middle.insert(middle.begin(), 0x11);
+    send(middle.data(), middle.size(), longMiddle ? 0xB4E0 : kCharacteristic, firstMs + stepMs);
+    if (shortPrefix < first.size()) {
+        std::vector<uint8_t> tail(first.begin() + shortPrefix, first.end());
+        if (combineTail) tail.insert(tail.end(), latest.begin(), latest.end());
+        send(tail.data(), tail.size(), kCharacteristic, firstMs + 2u * stepMs);
+    }
+    if (!combineTail) send(latest.data(), latest.size(), kCharacteristic, firstMs + 2u * stepMs);
+    queue.process();
+    queue.process(); // A later drain must not restore the older table or clear.
+    TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::inputDrops());
+    TEST_ASSERT_EQUAL_UINT32(3, publications.size());
+    TEST_ASSERT_EQUAL_UINT16(24150, publications[0]);
+    TEST_ASSERT_EQUAL_UINT16(clearMiddle ? 0 : 24150, publications[1]);
+    TEST_ASSERT_EQUAL_UINT16(34700, publications[2]);
+    TEST_ASSERT_EQUAL_UINT32(1, parser.getAlertCount());
+    TEST_ASSERT_EQUAL_UINT16(34700, parser.getAllAlerts()[0].frequency);
+    TEST_ASSERT_TRUE(parser.hasFreshAlertTable(firstMs + 2u * stepMs, 0));
+    TEST_ASSERT_EQUAL_INT(3, power.onV1DataReceivedCalls);
+    tearDown();
+}
+
+void test_completed_long_clear_cannot_overtake_newer_short_alert() {
+    for (const uint32_t firstMs : {uint32_t{100}, UINT32_MAX - 1u}) {
+        for (const uint32_t stepMs : {uint32_t{0}, uint32_t{1}}) {
+            checkPublicationOrder(true, true, false, firstMs, stepMs);
+        }
+    }
+}
+
+void test_completed_long_row_cannot_overtake_newer_short_alert() {
+    for (const uint32_t firstMs : {uint32_t{100}, UINT32_MAX - 1u}) {
+        for (const uint32_t stepMs : {uint32_t{0}, uint32_t{1}}) {
+            checkPublicationOrder(false, true, false, firstMs, stepMs);
+        }
+    }
+}
+
+void test_publication_order_controls_all_short_and_drain_between() {
+    for (const bool clearMiddle : {false, true}) {
+        checkPublicationOrder(clearMiddle, false, false, 100, 1);
+        checkPublicationOrder(clearMiddle, true, true, 100, 1);
+    }
+}
+
+void test_held_long_waits_only_for_the_older_short_frame() {
+    for (const bool clearMiddle : {false, true}) {
+        for (const size_t prefix : {size_t{1}, size_t{8}, size_t{13}}) {
+            for (const bool combineTail : {false, true}) {
+                checkPublicationOrder(clearMiddle, true, false, 100, 1, prefix, combineTail);
+            }
+        }
+    }
+}
+
 void test_queue_gap_prevents_cross_cycle_alert_table_publication() {
     const auto oldRow1 = makeAlertFrame(1, 2, 24150, 0x24, 0x80);
     const auto freshRow2 = makeAlertFrame(2, 2, 34700, 0x22, 0x00);
@@ -153,7 +226,7 @@ void test_delayed_partial_alert_frame_keeps_its_first_arrival_age() {
     TEST_ASSERT_FALSE(parser.hasFreshAlertTable(2000));
 }
 
-void test_held_long_row_can_complete_a_fresh_newer_short_row() {
+void test_held_long_row_completes_older_table_before_short_refresh() {
     for (const uint32_t firstMs : {uint32_t{100}, UINT32_MAX - 1u}) {
         setUp();
         const auto first = makeAlertFrame(1, 2, 24150, 0x24, 0x80);
@@ -167,10 +240,13 @@ void test_held_long_row_can_complete_a_fresh_newer_short_row() {
         TEST_ASSERT_TRUE(queue.tryOnNotify(first.data(), first.size(), kCharacteristic,
                                           kSession, firstMs + 3u, 4));
         queue.process();
-        queue.process(); // The held long row's original time precedes the short refresh.
+        queue.process();
         TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::inputDrops());
         TEST_ASSERT_EQUAL_UINT32(2, parser.getAlertCount());
-        TEST_ASSERT_TRUE(parser.hasFreshAlertTable(firstMs + 3u, 0));
+        // Row 2 completes the older table before the later row 1 refresh.
+        // An incomplete next table must not renew that publication's age.
+        TEST_ASSERT_TRUE(parser.hasFreshAlertTable(firstMs + 1u, 0));
+        TEST_ASSERT_FALSE(parser.hasFreshAlertTable(firstMs + 3u, 0));
         tearDown();
     }
 }
@@ -200,6 +276,10 @@ void test_two_long_frames_behind_partial_short_recover_without_losing_complete_a
     for (const size_t prefixBytes : {size_t{1}, size_t{8}, size_t{13}}) {
         for (const uint32_t firstMs : {uint32_t{100}, UINT32_MAX - 1u}) {
             setUp();
+            uint32_t lastPublicationMs = 0;
+            parser.setAlertTableObserver([](const AlertData*, size_t, uint8_t, uint32_t at, void* context) {
+                *static_cast<uint32_t*>(context) = at;
+            }, &lastPublicationMs);
             const auto shortFrame = makeAlertFrame(1, 1, 24150, 0x24, 0x80);
             auto longFirst = makeAlertFrame(1, 1, 34700, 0x22, 0x80);
             auto longSecond = makeAlertFrame(1, 1, 35500, 0x22, 0x80);
@@ -229,7 +309,11 @@ void test_two_long_frames_behind_partial_short_recover_without_losing_complete_a
             TEST_ASSERT_EQUAL_INT(2, power.onV1DataReceivedCalls);
             TEST_ASSERT_EQUAL_UINT32(1, parser.getAlertCount());
             TEST_ASSERT_EQUAL_UINT16(35500, parser.getAllAlerts()[0].frequency);
-            TEST_ASSERT_TRUE(parser.hasFreshAlertTable(firstMs + 2u, 0));
+            TEST_ASSERT_EQUAL_UINT32(firstMs + 2u, lastPublicationMs);
+            // The abandoned short tail follows both long publications. Its
+            // discontinuity keeps the display, but withdraws audio eligibility
+            // until the next clean table; it cannot renew the older table.
+            TEST_ASSERT_FALSE(parser.hasFreshAlertTable(firstMs + 2u, 0));
             TEST_ASSERT_FALSE(parser.hasFreshAlertTable(firstMs + 3u, 0));
 
             mockMillis = firstMs + 200u;
@@ -427,10 +511,14 @@ void test_fresh_max_after_retry_cannot_complete_capture_from_old_definitions() {
 
 int main(int, char**) {
     UNITY_BEGIN();
+    RUN_TEST(test_completed_long_clear_cannot_overtake_newer_short_alert);
+    RUN_TEST(test_completed_long_row_cannot_overtake_newer_short_alert);
+    RUN_TEST(test_publication_order_controls_all_short_and_drain_between);
+    RUN_TEST(test_held_long_waits_only_for_the_older_short_frame);
     RUN_TEST(test_queue_gap_prevents_cross_cycle_alert_table_publication);
     RUN_TEST(test_batched_alert_rows_keep_their_arrival_age);
     RUN_TEST(test_delayed_partial_alert_frame_keeps_its_first_arrival_age);
-    RUN_TEST(test_held_long_row_can_complete_a_fresh_newer_short_row);
+    RUN_TEST(test_held_long_row_completes_older_table_before_short_refresh);
     RUN_TEST(test_held_long_row_does_not_overwrite_a_newer_short_copy);
     RUN_TEST(test_two_long_frames_behind_partial_short_recover_without_losing_complete_alerts);
     RUN_TEST(test_spec_busy_broadcast_reaches_request_owner_but_targeted_busy_does_not);

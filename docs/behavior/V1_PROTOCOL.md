@@ -14,6 +14,12 @@ queue processing, command completion, and verified application are separate even
 | Frame becomes an observation | [`PacketParser::parseInternal`](../../src/packet_parser.cpp) validates framing and packet-specific destination/origin/width, then records canonical observations with ingress/revision. User-byte capture has a specialized canonical path in the queue. |
 | Main-loop consumers run | [`DriveLoopCoordinator::tick`](../../src/runtime_coordinator.h) drains the queue before display composition and connection dispatch. AutoPush runs at the end of `DriveRuntime::presentDisplay`; notification callbacks can execute while its synchronous BLE send waits. |
 
+A complete B4E0 frame waits only for short frames already started when its final
+chunk was staged. It then uses the same parser/callback path and processing budget
+before newer B2CE frames, including when an older short tail and a newer frame
+share one notification. This prevents an older clear or table from overwriting a
+newer publication. Ordering does not change the frame's original receipt stamps.
+
 If a completed B4E0 packet blocks the next long notification while B2CE still
 needs a header or tail, that tail can be trapped behind the blocked notification.
 The queue discards only the unfinished short candidate, marks alert discontinuity,
@@ -80,8 +86,10 @@ selection. Fixed wire vectors have independently summed checksums.
 | `test_queue_gap_prevents_cross_cycle_alert_table_publication` | A dropped notification cannot combine old and new rows into a false complete table. |
 | `test_batched_alert_rows_keep_their_arrival_age` | Short and long notifications retain row age when drained together, including uptime wrap; fresh peer rows still assemble. |
 | `test_delayed_partial_alert_frame_keeps_its_first_arrival_age` | Completing an old partial frame cannot make its row fresh enough to combine with a new peer. |
-| `test_held_long_row_can_complete_a_fresh_newer_short_row` / `test_held_long_row_does_not_overwrite_a_newer_short_copy` | Held long frames neither discard fresh short rows through timestamp underflow nor replace newer copies. |
-| `test_two_long_frames_behind_partial_short_recover_without_losing_complete_alerts` | The circular wait discards one unfinished short frame, delivers both complete long alerts with their original age, and accepts subsequent short traffic, including uptime wrap. |
+| `test_completed_long_clear_cannot_overtake_newer_short_alert` / `test_completed_long_row_cannot_overtake_newer_short_alert` | Older complete long clears and rows precede newer short alerts, including equal receipt times and uptime wrap. All-short and between-notification drains remain controls. |
+| `test_held_long_waits_only_for_the_older_short_frame` | Split headers/tails survive; a newer frame cannot pass the held long frame even when bundled with the older tail. |
+| `test_held_long_row_completes_older_table_before_short_refresh` / `test_held_long_row_does_not_overwrite_a_newer_short_copy` | An incomplete later table cannot renew the earlier publication's age; later complete tables retain their newer row. |
+| `test_two_long_frames_behind_partial_short_recover_without_losing_complete_alerts` | One unfinished short frame is dropped; both complete long alerts retain their receipt stamps, including uptime wrap. Trailing discarded bytes invalidate audio freshness while preserving the latest display; a subsequent clean table restores freshness. |
 | `test_spec_busy_broadcast_reaches_request_owner_but_targeted_busy_does_not` | D6 compatibility is specific to alert data; busy flow control retains its D8 contract. |
 
 The original five-case suite failed two cases before the fix. The additional

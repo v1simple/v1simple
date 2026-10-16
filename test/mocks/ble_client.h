@@ -468,10 +468,13 @@ public:
         sweepDefinitionsResetPending = true;
         sessionSweepDefinitionsCaptured = false;
     }
+    uint32_t sessionSweepIngressBoundary(uint8_t packetId) const {
+        return packetId == 0x23 ? sweepSectionsBoundary :
+               packetId == 0x20 ? sweepMaxBoundary :
+               packetId == 0x17 ? sweepDefinitionsBoundary : 0;
+    }
     bool sessionSweepResponseEligible(uint8_t packetId, uint32_t ingress) const {
-        const uint32_t boundary = packetId == 0x23 ? sweepSectionsBoundary :
-                                  packetId == 0x20 ? sweepMaxBoundary :
-                                  packetId == 0x17 ? sweepDefinitionsBoundary : 0;
+        const uint32_t boundary = sessionSweepIngressBoundary(packetId);
         return boundary != 0 && static_cast<int32_t>(ingress - boundary) > 0;
     }
     bool consumeSessionSweepParserReset(uint8_t packetId) {

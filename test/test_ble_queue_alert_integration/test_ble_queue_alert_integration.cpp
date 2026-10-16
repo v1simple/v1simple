@@ -509,6 +509,143 @@ void test_fresh_max_after_retry_cannot_complete_capture_from_old_definitions() {
     TEST_ASSERT_EQUAL_UINT32(7, parser.sweepDefinitionsObservation().ingressSequences[1]);
 }
 
+std::vector<uint8_t> makeSweepResponse(uint8_t packetId, const std::vector<uint8_t>& payload) {
+    std::vector<uint8_t> frame{0xAA, 0xD6, 0xEA, packetId, static_cast<uint8_t>(payload.size() + 1)};
+    frame.insert(frame.end(), payload.begin(), payload.end());
+    uint8_t checksum = 0;
+    for (uint8_t byte : frame) checksum = static_cast<uint8_t>(checksum + byte);
+    frame.push_back(checksum);
+    frame.push_back(0xAB);
+    return frame;
+}
+
+std::vector<uint8_t> makeSweepSections(const std::vector<uint8_t>& indices) {
+    const uint16_t lower[] = {24000, 33400, 34510, 35010};
+    const uint16_t upper[] = {25000, 34500, 35000, 36000};
+    std::vector<uint8_t> payload;
+    for (uint8_t index : indices) {
+        payload.insert(payload.end(), {static_cast<uint8_t>((index << 4) | 4),
+            static_cast<uint8_t>(upper[index - 1] >> 8), static_cast<uint8_t>(upper[index - 1]),
+            static_cast<uint8_t>(lower[index - 1] >> 8), static_cast<uint8_t>(lower[index - 1])});
+    }
+    return makeSweepResponse(PACKET_ID_RESP_SWEEP_SECTIONS, payload);
+}
+
+void checkSweepSectionsCapture(bool includeOld, bool completeOldBeforeRequest, uint32_t ingress = 0) {
+    setUp();
+    // Both replies contain the same valid geometry and grouping: sections 1..3
+    // in a 22-byte B4E0 frame, section 4 in a 12-byte B2CE frame.
+    const auto longFrame = makeSweepSections({1, 2, 3});
+    const auto shortFrame = makeSweepSections({4});
+    TEST_ASSERT_EQUAL_UINT32(22, longFrame.size());
+    TEST_ASSERT_EQUAL_UINT32(12, shortFrame.size());
+    std::vector<uint8_t> head{0x12};
+    head.insert(head.end(), longFrame.begin(), longFrame.begin() + 19);
+    std::vector<uint8_t> tail{0x22};
+    tail.insert(tail.end(), longFrame.begin() + 19, longFrame.end());
+    uint32_t nowMs = 100;
+    const auto send = [&](const std::vector<uint8_t>& bytes, uint16_t characteristic) {
+        if (++ingress == 0) ++ingress;
+        TEST_ASSERT_TRUE(queue.tryOnNotify(bytes.data(), bytes.size(), characteristic,
+                                          kSession, nowMs++, ingress));
+        queue.process();
+    };
+    send(makeSweepResponse(PACKET_ID_RESP_CURRENT_VOLUME, {5, 3}), kCharacteristic);
+    if (includeOld) {
+        send(head, 0xB4E0);
+        if (completeOldBeforeRequest) send(tail, 0xB4E0);
+        send(shortFrame, kCharacteristic);
+    }
+    client.beginSessionSweepSectionsCapture(ingress);
+    send(shortFrame, kCharacteristic);
+    TEST_ASSERT_FALSE(parser.sweepSectionsObservation().poisoned);
+    TEST_ASSERT_EQUAL_UINT16(8, parser.sweepSectionsObservation().presentMask);
+    const uint32_t freshIngress = ingress;
+    if (includeOld && !completeOldBeforeRequest) {
+        // Only cross-characteristic delivery is delayed; each characteristic
+        // retains its own order. The stale tail must leave the fresh row intact.
+        send(tail, 0xB4E0);
+        TEST_ASSERT_EQUAL_UINT16(8, parser.sweepSectionsObservation().presentMask);
+        TEST_ASSERT_EQUAL_UINT32(freshIngress, parser.sweepSectionsObservation().ingressSequence);
+        TEST_ASSERT_FALSE(client.hasSessionSweepSectionsCapture());
+    }
+    send(head, 0xB4E0);
+    send(tail, 0xB4E0);
+    TEST_ASSERT_FALSE(parser.sweepSectionsObservation().poisoned);
+    TEST_ASSERT_TRUE(parser.sweepSectionsObservation().complete);
+    TEST_ASSERT_TRUE(client.hasSessionSweepSectionsCapture());
+    TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::inputDrops());
+
+    // A genuinely fresh duplicate remains invalid and revokes capture.
+    send(shortFrame, kCharacteristic);
+    TEST_ASSERT_TRUE(parser.sweepSectionsObservation().poisoned);
+    TEST_ASSERT_FALSE(client.hasSessionSweepSectionsCapture());
+    tearDown();
+}
+
+void test_stale_long_sweep_sections_cannot_poison_new_capture() {
+    checkSweepSectionsCapture(true, false);
+    checkSweepSectionsCapture(true, false, UINT32_MAX - 3u);
+}
+
+void test_completed_old_sweep_reply_before_request_control() {
+    checkSweepSectionsCapture(true, true);
+}
+
+void test_sweep_capture_without_old_reply_control() {
+    checkSweepSectionsCapture(false, false);
+}
+
+void test_pre_request_sweep_replies_leave_collectors_and_resets_untouched() {
+    const auto sections = makeSweepSections({4});
+    const auto maximum = makeSweepResponse(PACKET_ID_RESP_MAX_SWEEP_INDEX, {0});
+    const auto definition = makeSweepResponse(PACKET_ID_RESP_SWEEP_DEFINITION, {0x80, 0x5E, 0x56, 0x5D, 0xF2});
+    uint32_t ingress = 0;
+    for (const auto& frame : {sections, maximum, definition}) {
+        ++ingress;
+        TEST_ASSERT_TRUE(queue.tryOnNotify(frame.data(), frame.size(), kCharacteristic,
+                                          kSession, 100 + ingress, ingress));
+    }
+    client.beginSessionSweepSectionsCapture(ingress);
+    client.beginSessionSweepMaxCapture(ingress);
+    client.beginSessionSweepDefinitionsCapture(ingress);
+    queue.process();
+    TEST_ASSERT_FALSE(parser.sweepSectionsObservation().available);
+    TEST_ASSERT_FALSE(parser.sweepMaxObservation().available);
+    TEST_ASSERT_EQUAL_UINT64(0, parser.sweepDefinitionsObservation().presentMask);
+    TEST_ASSERT_TRUE(client.sweepSectionsResetPending);
+    TEST_ASSERT_TRUE(client.sweepMaxResetPending);
+    TEST_ASSERT_TRUE(client.sweepDefinitionsResetPending);
+    TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::inputDrops());
+
+    deliver(sections, 4, 104);
+    deliver(maximum, 5, 105);
+    deliver(definition, 6, 106);
+    TEST_ASSERT_EQUAL_UINT16(8, parser.sweepSectionsObservation().presentMask);
+    TEST_ASSERT_TRUE(client.hasSessionSweepMaxCapture());
+    TEST_ASSERT_TRUE(client.hasSessionSweepDefinitionsCapture());
+}
+
+void test_sweep_replies_without_request_boundaries_still_parse() {
+    // Starting a sections request must not suppress the other response kinds
+    // before their own requests. No request at all also preserves passive data.
+    for (const bool sectionsRequested : {false, true}) {
+        setUp();
+        if (sectionsRequested) client.beginSessionSweepSectionsCapture(1);
+        deliver(makeSweepSections({4}), 2, 102);
+        deliver(makeSweepResponse(PACKET_ID_RESP_MAX_SWEEP_INDEX, {0}), 3, 103);
+        deliver(makeSweepResponse(PACKET_ID_RESP_SWEEP_DEFINITION,
+                                  {0x80, 0x5E, 0x56, 0x5D, 0xF2}), 4, 104);
+        TEST_ASSERT_EQUAL_UINT16(8, parser.sweepSectionsObservation().presentMask);
+        TEST_ASSERT_TRUE(parser.sweepMaxObservation().available);
+        TEST_ASSERT_EQUAL_UINT64(1, parser.sweepDefinitionsObservation().presentMask);
+        TEST_ASSERT_FALSE(client.hasSessionSweepMaxCapture());
+        TEST_ASSERT_FALSE(client.hasSessionSweepDefinitionsCapture());
+        TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::inputDrops());
+        tearDown();
+    }
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_completed_long_clear_cannot_overtake_newer_short_alert);
@@ -527,5 +664,10 @@ int main(int, char**) {
     RUN_TEST(test_long_characteristic_alert_envelopes_reach_real_parser_and_clear);
     RUN_TEST(test_alert_destination_compatibility_keeps_origin_checksum_and_shape_validation);
     RUN_TEST(test_fresh_max_after_retry_cannot_complete_capture_from_old_definitions);
+    RUN_TEST(test_stale_long_sweep_sections_cannot_poison_new_capture);
+    RUN_TEST(test_completed_old_sweep_reply_before_request_control);
+    RUN_TEST(test_sweep_capture_without_old_reply_control);
+    RUN_TEST(test_pre_request_sweep_replies_leave_collectors_and_resets_untouched);
+    RUN_TEST(test_sweep_replies_without_request_boundaries_still_parse);
     return UNITY_END();
 }

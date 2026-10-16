@@ -292,13 +292,15 @@ class V1BLEClient {
         sessionSweepDefinitionsResetPending_ = true;
         hasSessionSweepDefinitions_ = false;
     }
+    uint32_t sessionSweepIngressBoundary(uint8_t packetId) const {
+        if (packetId == 0x23) return sessionSweepSectionsIngressBoundary_;
+        if (packetId == 0x20) return sessionSweepMaxIngressBoundary_;
+        if (packetId == 0x17) return sessionSweepDefinitionsIngressBoundary_;
+        return 0;
+    }
     bool sessionSweepResponseEligible(uint8_t packetId, uint32_t ingressSequence) const {
         if (!expectsSessionSweeps_ || ingressSequence == 0) return false;
-        uint32_t boundary = 0;
-        if (packetId == 0x23) boundary = sessionSweepSectionsIngressBoundary_;
-        else if (packetId == 0x20) boundary = sessionSweepMaxIngressBoundary_;
-        else if (packetId == 0x17) boundary = sessionSweepDefinitionsIngressBoundary_;
-        else return false;
+        const uint32_t boundary = sessionSweepIngressBoundary(packetId);
         return boundary != 0 && static_cast<int32_t>(ingressSequence - boundary) > 0;
     }
     bool consumeSessionSweepParserReset(uint8_t packetId) {

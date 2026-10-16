@@ -148,8 +148,10 @@ Its status types, deadlines and wrap-safe comparison are in
    does not authorize the following table write.
 5. [`V1BLEClient::sessionSweepResponseEligible`](../../src/ble_client.h) requires
    ingress after that packet family's request. `BleQueueModule::process` only
-   consumes its pending parser reset on an eligible reply. A stale queued reply
-   cannot consume the reset; the first fresh reply starts the new collection.
+   parses requested sweep responses and consumes their pending parser reset on
+   an eligible reply. A stale queued reply cannot consume the reset or mutate
+   the collector after a fresh reply has started it. Responses without a request
+   boundary for their own packet family retain passive parsing.
    `CustomRefreshVerify` requires complete unpoisoned captures and every definition
    after its request before compiling the desired table, preserving unowned bands.
 6. `CustomWrite` sends used definitions only; the final used index commits.
@@ -189,6 +191,15 @@ may still arrive before the maximum response. The real queue/parser regression
 [`test_ble_queue_alert_integration`](../../test/test_ble_queue_alert_integration/test_ble_queue_alert_integration.cpp)
 reproduces the premature completion, then requires both fresh rows before capture
 completes. This closes capture admission; it does not itself prove a physical Apply.
+
+The same suite's `test_stale_long_sweep_sections_cannot_poison_new_capture`
+delays an old B4E0 tail until a fresh B2CE section has started the next capture.
+The old frame must leave the collector unchanged, allowing the fresh long reply
+to complete capture. Controls finish the old reply before the request or omit
+it entirely. The suite also checks ingress wrap, untouched pending resets,
+passive parsing before each family's request, and rejection of fresh duplicates.
+These tests use the real queue/parser with a BLE-client double; they do not
+execute physical detector timing or a whole settings Apply.
 
 ### Executable proof and limits
 

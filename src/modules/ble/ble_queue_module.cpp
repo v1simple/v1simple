@@ -653,6 +653,14 @@ void BleQueueModule::process() {
                                    packetId == PACKET_ID_RESP_SWEEP_DEFINITION;
         const bool eligibleSweepResponse = sweepResponse && ble_ &&
             ble_->sessionSweepResponseEligible(packetId, packetIngressSequence);
+        if (sweepResponse && ble_ && ble_->sessionSweepIngressBoundary(packetId) != 0 &&
+            !eligibleSweepResponse) {
+            // A delayed pre-request frame must not mutate the current collector,
+            // even after its first fresh reply consumed the reset. Before a
+            // request exists for this response kind, retain passive parsing.
+            consumePacket();
+            continue;
+        }
         if (eligibleSweepResponse && ble_->consumeSessionSweepParserReset(packetId)) {
             if (packetId == PACKET_ID_RESP_SWEEP_SECTIONS) parser_->resetSweepSectionsObservation();
             else if (packetId == PACKET_ID_RESP_MAX_SWEEP_INDEX) parser_->resetSweepMaxObservation();

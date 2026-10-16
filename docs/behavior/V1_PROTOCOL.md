@@ -27,6 +27,13 @@ and counts one recovery drop before resuming complete packets. Ordinary partial
 frames and parse-budget stops retain their data. An indexed assembly must contain
 one complete ESP frame before it can hold up the short stream.
 
+A known notification gap on either characteristic discards an unfinished B4E0
+assembly. Recovery ignores orphan tails until a valid index-1 chunk arrives, so
+the tail after a loss cannot combine with the next reply's head. Complete held
+frames remain publishable, without clearing that recovery requirement. Session
+reset restores ordinary tail-first assembly; without a gap, indexed reordering
+and short/long interleaving retain their existing behavior.
+
 [`V1PacketFraming`](../../src/v1_packet_framing.h) admits V1 origin EAh with
 checksum or E9h without checksum, using the exact data width for that origin.
 An EAh checksum byte is never usable as a missing data byte.
@@ -203,6 +210,15 @@ it entirely. The suite also checks ingress wrap, untouched pending resets,
 passive parsing before each family's request, and rejection of fresh duplicates.
 These tests use the real queue/parser with a BLE-client double; they do not
 execute physical detector timing or a whole settings Apply.
+
+The same suite's `test_overflow_cannot_mix_checksummed_sweep_fragments` and
+`test_overflow_cannot_mix_checksum_free_sweep_fragments` fill the default queue
+and lose two actual notifications: one reply's tail and the next reply's head.
+Neither may produce a complete hybrid topology. Controls cover a gap first
+observed on B2CE, ingress wrap, intact and reordered replies, recovery with a
+complete new reply, completed held frames, and a new session. This proves the
+modeled overflow/recovery paths; the indexed wire format has no packet identity
+that could distinguish every possible cross-packet reorder.
 
 ### Executable proof and limits
 

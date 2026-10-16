@@ -531,6 +531,194 @@ std::vector<uint8_t> makeSweepSections(const std::vector<uint8_t>& indices) {
     return makeSweepResponse(PACKET_ID_RESP_SWEEP_SECTIONS, payload);
 }
 
+std::vector<uint8_t> makeOverflowSweepSections(bool newer, bool checksum) {
+    const uint16_t lower[] = {static_cast<uint16_t>(newer ? (checksum ? 24001 : 24002) : 24000),
+                              static_cast<uint16_t>(newer ? 33399 : 33400),
+                              static_cast<uint16_t>(newer ? 35001 : 35000)};
+    const uint16_t upper[] = {25000, 34500, 36000};
+    std::vector<uint8_t> payload;
+    for (uint8_t index = 0; index < 3; ++index) {
+        payload.insert(payload.end(), {static_cast<uint8_t>(((index + 1u) << 4) | 3),
+            static_cast<uint8_t>(upper[index] >> 8), static_cast<uint8_t>(upper[index]),
+            static_cast<uint8_t>(lower[index] >> 8), static_cast<uint8_t>(lower[index])});
+    }
+    auto frame = makeSweepResponse(PACKET_ID_RESP_SWEEP_SECTIONS, payload);
+    if (!checksum) {
+        frame[2] = 0xE9;
+        --frame[4];
+        frame.erase(frame.end() - 2);
+    }
+    return frame;
+}
+
+std::vector<uint8_t> sweepSectionChunk(const std::vector<uint8_t>& frame, bool tail) {
+    std::vector<uint8_t> chunk{static_cast<uint8_t>(tail ? 0x22 : 0x12)};
+    chunk.insert(chunk.end(), tail ? frame.begin() + 19 : frame.begin(),
+                 tail ? frame.end() : frame.begin() + 19);
+    return chunk;
+}
+
+void assertOverflowSweepSections(bool newer, bool checksum) {
+    const auto& sections = parser.sweepSectionsObservation();
+    TEST_ASSERT_TRUE(client.hasSessionSweepSectionsCapture());
+    TEST_ASSERT_TRUE(sections.complete);
+    TEST_ASSERT_FALSE(sections.poisoned);
+    TEST_ASSERT_EQUAL_UINT16(7, sections.presentMask);
+    TEST_ASSERT_EQUAL_UINT16(newer ? (checksum ? 24001 : 24002) : 24000, sections.sections[0].lowerMHz);
+    TEST_ASSERT_EQUAL_UINT16(newer ? 33399 : 33400, sections.sections[1].lowerMHz);
+    TEST_ASSERT_EQUAL_UINT16(newer ? 35001 : 35000, sections.sections[2].lowerMHz);
+}
+
+void checkOverflowSweepCapture(bool checksum, bool shortReportsGap, uint32_t ingress) {
+    setUp();
+    const auto oldFrame = makeOverflowSweepSections(false, checksum);
+    const auto newFrame = makeOverflowSweepSections(true, checksum);
+    const auto filler = makeSweepResponse(PACKET_ID_RESP_CURRENT_VOLUME, {5, 3});
+    const auto enqueue = [&](const std::vector<uint8_t>& bytes, uint16_t characteristic) {
+        if (++ingress == 0) ++ingress;
+        return queue.tryOnNotify(bytes.data(), bytes.size(), characteristic, kSession, 100, ingress);
+    };
+    TEST_ASSERT_TRUE(enqueue(filler, kCharacteristic));
+    queue.process();
+    client.beginSessionSweepSectionsCapture(ingress);
+    TEST_ASSERT_TRUE(enqueue(sweepSectionChunk(oldFrame, false), 0xB4E0));
+    queue.process();
+
+    // Saturate the production default queue, losing the old tail and the next
+    // head. For EAh the differing prefixes have equal additive sums; E9h needs
+    // no checksum collision. Either hybrid would otherwise be canonical.
+    for (size_t index = 0; index < BleQueueModule::Config{}.queueDepth; ++index) {
+        TEST_ASSERT_TRUE(enqueue(filler, kCharacteristic));
+    }
+    TEST_ASSERT_FALSE(enqueue(sweepSectionChunk(oldFrame, true), 0xB4E0));
+    TEST_ASSERT_FALSE(enqueue(sweepSectionChunk(newFrame, false), 0xB4E0));
+    queue.process();
+    queue.process();
+    if (shortReportsGap) {
+        TEST_ASSERT_TRUE(enqueue(filler, kCharacteristic));
+        queue.process();
+    }
+    TEST_ASSERT_TRUE(enqueue(sweepSectionChunk(newFrame, true), 0xB4E0));
+    queue.process();
+    TEST_ASSERT_EQUAL_UINT32(2, HealthCounters::inputDrops());
+    TEST_ASSERT_FALSE(client.hasSessionSweepSectionsCapture());
+    TEST_ASSERT_FALSE(parser.sweepSectionsObservation().available);
+    TEST_ASSERT_TRUE(client.sweepSectionsResetPending);
+
+    // Recovery must not keep the orphan tail and splice it onto the next
+    // reply's head. Both halves of that next reply must arrive before capture.
+    TEST_ASSERT_TRUE(enqueue(sweepSectionChunk(oldFrame, false), 0xB4E0));
+    queue.process();
+    TEST_ASSERT_FALSE(client.hasSessionSweepSectionsCapture());
+    TEST_ASSERT_FALSE(parser.sweepSectionsObservation().available);
+    const uint32_t firstFreshIngress = ingress;
+    TEST_ASSERT_TRUE(enqueue(sweepSectionChunk(oldFrame, true), 0xB4E0));
+    queue.process();
+    assertOverflowSweepSections(false, checksum);
+    TEST_ASSERT_EQUAL_UINT32(firstFreshIngress, parser.sweepSectionsObservation().ingressSequence);
+    TEST_ASSERT_EQUAL_UINT32(2, HealthCounters::inputDrops());
+    tearDown();
+}
+
+void test_overflow_cannot_mix_checksummed_sweep_fragments() {
+    checkOverflowSweepCapture(true, false, 0);
+    checkOverflowSweepCapture(true, false, UINT32_MAX - 27u);
+}
+
+void test_overflow_cannot_mix_checksum_free_sweep_fragments() {
+    checkOverflowSweepCapture(false, false, 0);
+    checkOverflowSweepCapture(false, false, UINT32_MAX - 27u);
+}
+
+void test_short_notification_gap_also_discards_incomplete_long_sweep() {
+    checkOverflowSweepCapture(true, true, 0);
+    checkOverflowSweepCapture(false, true, UINT32_MAX - 27u);
+}
+
+void test_intact_sweep_fragments_survive_short_interleaving_and_index_order() {
+    for (const bool checksum : {true, false}) {
+        for (const bool newer : {true, false}) {
+            for (const bool tailFirst : {true, false}) {
+                setUp();
+                const auto frame = makeOverflowSweepSections(newer, checksum);
+                client.beginSessionSweepSectionsCapture(1);
+                const auto first = sweepSectionChunk(frame, tailFirst);
+                const auto second = sweepSectionChunk(frame, !tailFirst);
+                TEST_ASSERT_TRUE(queue.tryOnNotify(first.data(), first.size(), 0xB4E0, kSession, 100, 2));
+                queue.process();
+                deliver(makeSweepResponse(PACKET_ID_RESP_CURRENT_VOLUME, {5, 3}), 3, 101);
+                TEST_ASSERT_TRUE(queue.tryOnNotify(second.data(), second.size(), 0xB4E0, kSession, 102, 4));
+                queue.process();
+                assertOverflowSweepSections(newer, checksum);
+                TEST_ASSERT_EQUAL_UINT32(2, parser.sweepSectionsObservation().ingressSequence);
+                TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::inputDrops());
+                tearDown();
+            }
+        }
+    }
+}
+
+void test_gap_after_completed_held_long_sweep_preserves_capture() {
+    const auto shortFrame = makeSweepResponse(PACKET_ID_RESP_CURRENT_VOLUME, {5, 3});
+    const auto longFrame = makeOverflowSweepSections(false, true);
+    client.beginSessionSweepSectionsCapture(1);
+    TEST_ASSERT_TRUE(queue.tryOnNotify(shortFrame.data(), 4, kCharacteristic, kSession, 100, 2));
+    uint32_t ingress = 2;
+    for (const bool tail : {false, true}) {
+        const auto chunk = sweepSectionChunk(longFrame, tail);
+        TEST_ASSERT_TRUE(queue.tryOnNotify(chunk.data(), chunk.size(), 0xB4E0, kSession, 101, ++ingress));
+    }
+    queue.process();
+    TEST_ASSERT_TRUE(queue.longRxComplete());
+    TEST_ASSERT_FALSE(client.hasSessionSweepSectionsCapture());
+    // The loss is after the complete long frame, while its older short peer
+    // still needs a tail. That gap must not erase already complete evidence.
+    TEST_ASSERT_TRUE(queue.tryOnNotify(shortFrame.data() + 4, shortFrame.size() - 4,
+                                      kCharacteristic, kSession, 102, ingress + 2));
+    queue.process();
+    assertOverflowSweepSections(false, true);
+    TEST_ASSERT_EQUAL_UINT32(3, parser.sweepSectionsObservation().ingressSequence);
+    TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::inputDrops());
+
+    // Publishing the held frame must not forget that subsequent orphan tails
+    // still need a new head before they can contribute to another capture.
+    ingress += 2;
+    client.beginSessionSweepSectionsCapture(ingress);
+    const auto nextFrame = makeOverflowSweepSections(true, true);
+    for (const auto& chunk : {sweepSectionChunk(nextFrame, true), sweepSectionChunk(longFrame, false)}) {
+        TEST_ASSERT_TRUE(queue.tryOnNotify(chunk.data(), chunk.size(), 0xB4E0, kSession, 103, ++ingress));
+        queue.process();
+        TEST_ASSERT_FALSE(client.hasSessionSweepSectionsCapture());
+        TEST_ASSERT_TRUE(client.sweepSectionsResetPending);
+    }
+    const uint32_t firstFreshIngress = ingress;
+    const auto tail = sweepSectionChunk(longFrame, true);
+    TEST_ASSERT_TRUE(queue.tryOnNotify(tail.data(), tail.size(), 0xB4E0, kSession, 104, ++ingress));
+    queue.process();
+    assertOverflowSweepSections(false, true);
+    TEST_ASSERT_EQUAL_UINT32(firstFreshIngress, parser.sweepSectionsObservation().ingressSequence);
+}
+
+void test_new_session_restores_tail_first_long_capture_after_gap() {
+    const auto filler = makeSweepResponse(PACKET_ID_RESP_CURRENT_VOLUME, {5, 3});
+    deliver(filler, 1, 100);
+    deliver(filler, 3, 101); // Require a new long head in the outgoing session.
+    queue.closeSession();
+    queue.openSession(kSession + 1u);
+    client.beginSessionSweepSectionsCapture(3);
+    const auto frame = makeOverflowSweepSections(false, true);
+    uint32_t ingress = 3;
+    for (const bool tail : {true, false}) {
+        const auto chunk = sweepSectionChunk(frame, tail);
+        TEST_ASSERT_TRUE(queue.tryOnNotify(chunk.data(), chunk.size(), 0xB4E0,
+                                          kSession + 1u, 102, ++ingress));
+        queue.process();
+    }
+    assertOverflowSweepSections(false, true);
+    TEST_ASSERT_EQUAL_UINT32(4, parser.sweepSectionsObservation().ingressSequence);
+    TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::inputDrops());
+}
+
 void checkSweepSectionsCapture(bool includeOld, bool completeOldBeforeRequest, uint32_t ingress = 0) {
     setUp();
     // Both replies contain the same valid geometry and grouping: sections 1..3
@@ -664,6 +852,12 @@ int main(int, char**) {
     RUN_TEST(test_long_characteristic_alert_envelopes_reach_real_parser_and_clear);
     RUN_TEST(test_alert_destination_compatibility_keeps_origin_checksum_and_shape_validation);
     RUN_TEST(test_fresh_max_after_retry_cannot_complete_capture_from_old_definitions);
+    RUN_TEST(test_overflow_cannot_mix_checksummed_sweep_fragments);
+    RUN_TEST(test_overflow_cannot_mix_checksum_free_sweep_fragments);
+    RUN_TEST(test_short_notification_gap_also_discards_incomplete_long_sweep);
+    RUN_TEST(test_intact_sweep_fragments_survive_short_interleaving_and_index_order);
+    RUN_TEST(test_gap_after_completed_held_long_sweep_preserves_capture);
+    RUN_TEST(test_new_session_restores_tail_first_long_capture_after_gap);
     RUN_TEST(test_stale_long_sweep_sections_cannot_poison_new_capture);
     RUN_TEST(test_completed_old_sweep_reply_before_request_control);
     RUN_TEST(test_sweep_capture_without_old_reply_control);

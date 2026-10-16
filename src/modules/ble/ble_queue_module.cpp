@@ -39,6 +39,7 @@ bool BleQueueModule::begin(V1BLEClient* bleClient, PacketParser* parserPtr, V1Pr
     rxTimestamps_.clear();
     rxDiscontinuities_.clear();
     clearLongRxState();
+    longRxNeedsStart_ = false;
     rxReadPos_ = 0;
     lastRxMillis_ = 0;
     lastNotifyTsMs_ = 0;
@@ -88,6 +89,7 @@ void BleQueueModule::end() {
     rxBufferReady_ = false;
     clearRxState();
     clearLongRxState();
+    longRxNeedsStart_ = false;
     backpressureActive_ = false;
 }
 
@@ -109,6 +111,7 @@ void BleQueueModule::closeSession() {
 
     clearRxState();
     clearLongRxState();
+    longRxNeedsStart_ = false;
     lastRxMillis_ = 0;
     lastNotifyTsMs_ = 0;
     hadSuccessfulParse_ = false;
@@ -253,6 +256,12 @@ bool BleQueueModule::ingressWouldBeDiscontinuous(uint32_t ingressSequence) const
 }
 
 void BleQueueModule::acceptIngressSequence(uint32_t ingressSequence) {
+    if (ingressWouldBeDiscontinuous(ingressSequence)) {
+        // Either characteristic can expose loss of a long fragment. Preserve
+        // complete work, but never carry an unfinished assembly across that gap.
+        if (!longRxComplete()) clearLongRxState();
+        longRxNeedsStart_ = true;
+    }
     lastDequeuedIngressSequence_ = ingressSequence;
 }
 
@@ -308,6 +317,13 @@ bool BleQueueModule::appendLongRxChunk(const BLEDataPacket& packet, bool beginsA
     if (index == 0 || count == 0 || count > MAX_LONG_CHUNKS || index > count) {
         clearLongRxState();
         return false;
+    }
+
+    // After known loss, an orphan tail could otherwise combine with the next
+    // reply's head. No-gap indexed reordering still accepts either chunk first.
+    if (longRxNeedsStart_) {
+        if (index != 1) return false;
+        longRxNeedsStart_ = false;
     }
 
     if (longRx_.count != 0 && longRx_.count != count) {

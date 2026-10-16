@@ -121,6 +121,7 @@ class BleQueueModule {
     // parser is invalidated only when consumption reaches that exact boundary.
     std::vector<uint8_t> rxDiscontinuities_;
     LongRxAssembly longRx_;
+    bool longRxNeedsStart_ = false; // Known loss requires a new index-1 chunk.
     bool rxBufferReady_ = false;
     size_t rxReadPos_ = 0; // Logical read pointer into rxBuffer (avoids front erases)
     unsigned long lastRxMillis_ = 0;

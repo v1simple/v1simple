@@ -2,10 +2,13 @@
 
 > Keep V1Simple simple, in code and docs.
 
-**IMPLEMENTED:** Firmware for the Valentine One Gen 2 and the Waveshare
-ESP32-S3-Touch-LCD-3.49. It connects to the detector over BLE, parses its
-display stream, renders alerts on the board, and can expose a BLE proxy.
-Configuration runs in a separate maintenance-mode WiFi interface.
+V1Simple gives your Valentine One Gen 2 a separate touchscreen for alerts,
+with saved detector profiles and adjustable display and audio settings. It
+runs on the Waveshare ESP32-S3-Touch-LCD-3.49 and connects over Bluetooth.
+It can also expose a BLE proxy. Configuration runs in a separate WiFi
+maintenance mode.
+
+**[Open the browser installer](https://www.v1simple.com/)** — no build tools required.
 
 ## Hardware and safety
 
@@ -50,7 +53,37 @@ in a parked vehicle can exceed its rated temperature range. Choosing a
 no-battery variant for a permanently mounted install avoids that; this project
 does not verify thermal behavior in any configuration.
 
-## Build, flash, and use
+## Install and use
+
+Follow the browser installer's preparation and flashing steps, then reset the
+board.
+
+On a normal boot, the firmware starts scanning for the detector. Hold and
+release **BOOT** after about four seconds to reboot into maintenance mode. Join
+the default `V1-Simple` network with `setupv1simple`, open
+`http://192.168.35.5`, and change that default password during first setup.
+
+### Upgrading existing device data
+
+- **Firmware-only update:** preserves settings and profiles when **Erase device**
+  is off. It keeps the existing maintenance interface, so interface updates
+  are not installed.
+- **Fresh install:** installs firmware and interface together, but erases saved
+  settings, WiFi networks, and internal fallback profiles, even with
+  **Erase device** off. SD-card contents remain intact; a valid SD backup can restore
+  saved settings on boot. Read the installer's warnings before choosing this path.
+
+A normal firmware-only upgrade does not require deleting profiles, resetting
+settings, or erasing storage. Supported older profile and Auto-Push data is
+converted atomically on boot. If an older catalog has more than 10 profiles,
+delete unused profiles from the maintenance Profiles page and restart so
+migration can finish—do not factory-reset the device.
+
+See [USB profile backup and restore](docs/USB_PROFILES.md#upgrading-existing-device-data)
+for migration and recovery details. Storage migration does not prove that the
+detector received or applied a profile.
+
+## Build from source
 
 Install pioarduino Core 6.2.0 exactly and a Node.js version accepted by
 `interface/package.json`. From the repository root:
@@ -62,24 +95,6 @@ Install pioarduino Core 6.2.0 exactly and a Node.js version accepted by
 
 `--all` overwrites internal LittleFS data. Confirm SD-backed storage before
 relying on saved profiles.
-
-On a normal boot, the firmware starts scanning for the detector. Hold and
-release **BOOT** after about four seconds to reboot into maintenance mode. Join
-the default `V1-Simple` network with `setupv1simple`, open
-`http://192.168.35.5`, and change that default password during first setup.
-
-### Upgrading existing device data
-
-Use an app-only update to preserve device data; a normal upgrade does not
-require deleting profiles, resetting settings, or erasing storage. Supported
-older profile and Auto-Push data is converted atomically on boot. If an older
-catalog has more than 10 profiles, delete unused profiles from the maintenance
-Profiles page and restart so migration can finish—do not factory-reset the
-device.
-
-See [USB profile backup and restore](docs/USB_PROFILES.md#upgrading-existing-device-data)
-for migration and recovery details. Storage migration does not prove that the
-detector received or applied a profile.
 
 ## Verify a change
 

@@ -257,6 +257,12 @@ RenderFrame DisplayPipelineModule::buildRenderFrame(uint32_t nowMs, const V1Sett
         v1PersistRefreshDeadlineMs_ = 0;
     }
 
+    // V1 owns its last-alert identity even while ALP owns the primary display.
+    // Duplicate laser suppression belongs to composition, not this source latch.
+    if (hasRenderablePriority) {
+        alertPersistence_->setPersistedAlert(priority);
+    }
+
     const uint8_t persistSec = settings_->getSlotAlertPersistSec(settingsRef.activeSlot);
     AlertData persistedAlert = alertPersistence_->getPersistedAlert();
     bool showPersistedAlert = false;
@@ -476,14 +482,11 @@ void DisplayPipelineModule::handleParsed(uint32_t nowMs) {
         frame.stealthSpeedValid = spd.valid;
     }
     runVoice(frame, settingsRef, nowMs);
-    if (frame.primaryKind == RenderFramePrimaryKind::V1_LIVE) {
-        alertPersistence_->setPersistedAlert(frame.v1Priority);
-    }
     renderComposedFrame(nowMs, frame);
 }
 
-// Narrow re-render path for blink refreshes. It omits voice and persistence
-// side effects; display caches repaint only elements affected by the phase.
+// Recompose without voice; persistence follows the same live source and expiry
+// checks. Display caches repaint only elements affected by the new frame.
 void DisplayPipelineModule::refreshBlinkTick(uint32_t nowMs) {
     if (!display_ || !parser_ || !settings_ || !ble_ || !displayMode_) {
         return;

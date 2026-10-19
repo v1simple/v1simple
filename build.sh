@@ -21,9 +21,15 @@ reset_device_via_rts() {
     local port="$1"
 
     if [ -z "$port" ]; then
-        RESET_SKIP_REASON="no serial port available for post-upload reset"
+        RESET_SKIP_REASON="upload target was auto-detected; skipping post-upload reset"
         return 1
     fi
+    case "$port" in
+        *'*'*|*'?'*|*'['*)
+            RESET_SKIP_REASON="upload target is a pattern; skipping post-upload reset"
+            return 1
+            ;;
+    esac
 
     if ! command -v python3 >/dev/null 2>&1; then
         RESET_SKIP_REASON="python3 not found; skipping post-upload reset"
@@ -346,14 +352,11 @@ if [ "$UPLOAD_FW" = true ] && [ "$FACTORY_RESET" = false ]; then
     "$PIO_CMD" run "${PIO_RUN_ARGS[@]}" -t upload
     echo -e "${GREEN}Firmware uploaded${NC}"
 
-    # Extra reset after upload to ensure clean BLE state
+    # Reuse only a concrete upload target; the uploader owns auto-detection
+    # and pattern resolution, and already performs its own reset.
     echo -e "${YELLOW}Resetting device for clean start...${NC}"
     sleep 1
-    RESET_PORT="$UPLOAD_PORT"
-    if [ -z "$RESET_PORT" ]; then
-        # Auto-detect port like PlatformIO does
-        RESET_PORT=$(ls /dev/cu.usbmodem* 2>/dev/null | head -1 || true)
-    fi
+    RESET_PORT="${UPLOAD_PORT:-${PLATFORMIO_UPLOAD_PORT:-}}"
     if reset_device_via_rts "$RESET_PORT"; then
         echo -e "${GREEN}Device reset${NC}"
     else

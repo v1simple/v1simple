@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-import shlex
 import shutil
 import subprocess
 import sys
@@ -32,6 +31,8 @@ def run_reset(
     confirmation: str,
     fail_build: bool = False,
     arguments: tuple[str, ...] = ("--reset",),
+    reset_available: bool = False,
+    inherited_upload_port: str = "",
 ) -> tuple[subprocess.CompletedProcess[str], list[list[str]], bool]:
     temp_dir = tempfile.TemporaryDirectory()
     fixture = Path(temp_dir.name)
@@ -55,6 +56,10 @@ import os
 import sys
 with open(os.environ["BUILD_RESET_TEST_LOG"], "a", encoding="utf-8") as log:
     log.write(json.dumps(sys.argv[1:]) + "\\n")
+    if os.environ["BUILD_RESET_FAKE_SERIAL"] == "1" and "upload" in sys.argv:
+        port = (sys.argv[sys.argv.index("--upload-port") + 1]
+                if "--upload-port" in sys.argv else os.environ["PLATFORMIO_UPLOAD_PORT"] or "auto")
+        log.write(json.dumps(["upload-target", port]) + "\\n")
 if os.environ.get("BUILD_RESET_FAIL_BUILD") == "1" and sys.argv[1:] == ["run", "-e", "waveshare-349"]:
     raise SystemExit(42)
 """,
@@ -63,12 +68,31 @@ if os.environ.get("BUILD_RESET_FAIL_BUILD") == "1" and sys.argv[1:] == ["run", "
     write_executable(fake_bin / "sleep", "#!/bin/sh\nexit 0\n")
     write_executable(
         fake_bin / "python3",
-        f"""#!/bin/sh
-if [ "${{1:-}}" = "-" ]; then
-    sed -n '1,$p' >/dev/null
-    exit 1
-fi
-exec {shlex.quote(sys.executable)} "$@"
+        f"""#!{sys.executable}
+import json
+import os
+import subprocess
+import sys
+if sys.argv[1] == "-":
+    sys.stdin.read()
+    if os.environ["BUILD_RESET_FAKE_SERIAL"] != "1":
+        raise SystemExit(1)
+    if len(sys.argv) > 2:
+        with open(os.environ["BUILD_RESET_TEST_LOG"], "a", encoding="utf-8") as log:
+            log.write(json.dumps(["reset", sys.argv[2]]) + "\\n")
+    raise SystemExit(0)
+raise SystemExit(subprocess.call([{sys.executable!r}, *sys.argv[1:]]))
+""",
+    )
+    write_executable(
+        fake_bin / "ls",
+        f"""#!{sys.executable}
+import json
+import os
+with open(os.environ["BUILD_RESET_TEST_LOG"], "a", encoding="utf-8") as log:
+    log.write(json.dumps(["enumerate-reset-ports"]) + "\\n")
+print("/dev/cu.usbmodemUNRELATEDXXX")
+print("/dev/cu.usbmodemTARGETXXX")
 """,
     )
 
@@ -76,6 +100,8 @@ exec {shlex.quote(sys.executable)} "$@"
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     env["PIO_CMD"] = str(fake_bin / "pio")
     env["BUILD_RESET_TEST_LOG"] = str(log_path)
+    env["BUILD_RESET_FAKE_SERIAL"] = "1" if reset_available else "0"
+    env["PLATFORMIO_UPLOAD_PORT"] = inherited_upload_port
     if fail_build:
         env["BUILD_RESET_FAIL_BUILD"] = "1"
 
@@ -196,6 +222,40 @@ def test_help_does_not_require_platformio() -> None:
     assert_true("PlatformIO not found" not in result.stdout + result.stderr, result.stdout + result.stderr)
 
 
+def test_supplemental_reset_uses_only_a_concrete_upload_target() -> None:
+    for explicit, inherited, expected in (
+        ("", "/dev/cu.usbmodemTARGETXXX", "/dev/cu.usbmodemTARGETXXX"),
+        ("/dev/cu.usbmodemTARGETXXX", "", "/dev/cu.usbmodemTARGETXXX"),
+        ("/dev/cu.usbmodemTARGETXXX", "/dev/cu.usbmodemOTHERXXX", "/dev/cu.usbmodemTARGETXXX"),
+        ("", "", ""),
+        ("", "/dev/cu.usbmodem*", ""),
+        ("/dev/cu.usbmodem?", "/dev/cu.usbmodemOTHERXXX", ""),
+        ("/dev/cu.usbmodem[AB]", "", ""),
+    ):
+        arguments = ("--skip-web", "--upload")
+        if explicit:
+            arguments += ("--upload-port", explicit)
+        result, calls, _ = run_reset(
+            confirmation="",
+            arguments=arguments,
+            reset_available=True,
+            inherited_upload_port=inherited,
+        )
+        context = f"explicit={explicit!r}, inherited={inherited!r}"
+        assert_true(result.returncode == 0, f"{context}: {result.stdout}{result.stderr}")
+        assert_true(["enumerate-reset-ports"] not in calls, f"{context}: enumerated unrelated ports")
+        base = ["run", "-e", "waveshare-349"]
+        if explicit:
+            base += ["--upload-port", explicit]
+        expected_calls = [base, [*base, "-t", "size"], [*base, "-t", "upload"],
+                          ["upload-target", explicit or inherited or "auto"]]
+        if expected:
+            expected_calls.append(["reset", expected])
+        assert_true(calls == expected_calls, f"{context}: unexpected target or upload arguments: {calls}")
+        if not expected:
+            assert_true("skipping post-upload reset" in result.stdout, f"{context}: skip was not reported")
+
+
 def main() -> int:
     test_reset_contract()
     test_reset_rejects_missing_confirmation()
@@ -205,6 +265,7 @@ def main() -> int:
     test_option_values_remain_single_arguments()
     test_reset_preserves_port_and_job_arguments()
     test_help_does_not_require_platformio()
+    test_supplemental_reset_uses_only_a_concrete_upload_target()
     print("build reset tests: PASS")
     return 0
 

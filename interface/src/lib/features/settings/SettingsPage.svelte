@@ -956,43 +956,10 @@
                     />
                 </div>
 
-                <div class="field-control mt-4">
-                    <label class="label cursor-pointer">
-                        <span class="field-label">Disable AP Inactivity Timeout</span>
-                        <input
-                            type="checkbox"
-                            class="toggle toggle-primary"
-                            checked={settings.apTimeoutMinutes === 0}
-                            onchange={(e) =>
-                                (settings.apTimeoutMinutes = e.target.checked ? 0 : 15)}
-                        />
-                    </label>
-                    <div class="label">
-                        <span class="field-hint">
-                            This controls AP inactivity only. The separate maintenance-session limit
-                            and remaining time are shown in the banner above.
-                        </span>
-                    </div>
-                    {#if settings.apTimeoutMinutes > 0}
-                        <label class="label" for="ap-timeout">
-                            <span class="field-label">Auto-off after (minutes)</span>
-                        </label>
-                        <input
-                            id="ap-timeout"
-                            type="range"
-                            class="range range-sm"
-                            min="5"
-                            max="60"
-                            step="5"
-                            bind:value={settings.apTimeoutMinutes}
-                        />
-                        <div class="label">
-                            <span class="field-hint">
-                                AP will turn off after {settings.apTimeoutMinutes} minutes of inactivity
-                            </span>
-                        </div>
-                    {/if}
-                </div>
+                <p class="field-hint mt-4">
+                    The device returns to normal mode after 10 idle minutes or 30 minutes total.
+                    The banner shows the remaining time.
+                </p>
             </div>
         </fieldset>
 

@@ -18,7 +18,7 @@ unsigned long mockMillis = 0;
 unsigned long mockMicros = 0;
 #endif
 
-#include "../../src/modules/alert_persistence/alert_persistence_module.h"
+#include "../../src/modules/alert_persistence/alert_persistence_module.cpp"
 
 static int g_voiceProcessCalls = 0;
 static AudioPlaybackResult g_voicePlaybackResult = AudioPlaybackResult::Accepted;
@@ -26,29 +26,6 @@ static int g_voicePlaybackAttempts = 0;
 static int g_escalationPlaybackAttempts = 0;
 static uint16_t g_lastVoiceFrequency = 0;
 static AlertBand g_lastVoiceBand = AlertBand::KA;
-
-void AlertPersistenceModule::setPersistedAlert(const AlertData& alert) {
-    persistedAlert_ = alert;
-}
-
-void AlertPersistenceModule::startPersistence(unsigned long now) {
-    if (!alertPersistenceActive_) {
-        alertClearedTime_ = now;
-        alertPersistenceActive_ = true;
-    }
-}
-
-void AlertPersistenceModule::clearPersistence() {
-    persistedAlert_ = AlertData{};
-    alertClearedTime_ = 0;
-    alertPersistenceActive_ = false;
-}
-
-bool AlertPersistenceModule::shouldShowPersisted(unsigned long now, unsigned long persistMs) const {
-    return alertPersistenceActive_ &&
-           persistedAlert_.isValid &&
-           (now - alertClearedTime_) < persistMs;
-}
 
 // ALP module stubs — pipeline calls alpGunAbbrev() and uses AlpRuntimeModule pointer
 #include "../../src/modules/alp/alp_runtime_module.h"
@@ -766,6 +743,123 @@ static void configureAlpActiveWithGun(AlpGunType gun,
     alpModule.testSetEnabled(true);
     alpModule.testSetState(AlpState::ALERT_ACTIVE);
     alpModule.testOpenSession(gun, /*isWarmUp=*/false, direction);
+}
+
+void test_v1_persistence_tracks_latest_priority_under_live_alp() {
+    for (bool hadEarlierV1 : {true, false}) {
+        setUp();
+        settings.slotAlertPersistSec[0] = 5;
+        settings.alpAlertPersistSec = 0;
+        if (hadEarlierV1) {
+            parser.setAlerts({makeKAlert(24148)});
+            module.handleParsed(1000);
+        }
+
+        configureAlpActiveWithGun(AlpGunType::PL3_PROLITE, AlpLaserDirection::FRONT);
+        AlertData secondary = makeKAlert(24100);
+        secondary.isPriority = false;
+        AlertData latest = makeKaAlert(35500);
+        latest.isPriority = true;
+        parser.setAlerts({secondary, latest});
+        module.handleParsed(2000);
+        TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
+        TEST_ASSERT_EQUAL_INT(2, display.lastRenderFrame.cardCount);
+
+        parser.setAlerts({});
+        alpModule.testCloseSession(3000);
+        module.handleParsed(3000);
+        TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_PERSISTED, display.lastRenderFrame.primaryKind);
+        TEST_ASSERT_EQUAL(BAND_KA, display.lastRenderFrame.v1Priority.band);
+        TEST_ASSERT_EQUAL_UINT16(35500, display.lastRenderFrame.v1Priority.frequency);
+        TEST_ASSERT_EQUAL(DIR_REAR, display.lastRenderFrame.v1Priority.direction);
+    }
+}
+
+void test_new_v1_under_alp_restarts_hold_and_lightweight_refresh_expires_it() {
+    settings.slotAlertPersistSec[0] = 2;
+    settings.alpAlertPersistSec = 0;
+    parser.setAlerts({makeKAlert(24148)});
+    module.handleParsed(1000);
+    parser.setAlerts({});
+    module.handleParsed(1500); // First hold would expire at 3500.
+    TEST_ASSERT_TRUE(alertPersistence.isPersistenceActive());
+
+    configureAlpActiveWithGun(AlpGunType::PL3_PROLITE, AlpLaserDirection::FRONT);
+    parser.setAlerts({makeKaAlert(35500)});
+    TEST_ASSERT_TRUE(module.restoreCurrentOwner(2000));
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_FALSE(alertPersistence.isPersistenceActive());
+    parser.setAlerts({});
+    module.handleParsed(3000); // New hold starts while ALP still owns primary.
+    module.refreshBlinkTick(3500);
+    module.refreshBlinkTick(4000);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_FALSE(module.v1PersistenceRefreshDue(4999));
+
+    alpModule.testCloseSession(4500);
+    module.handleParsed(4500);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_PERSISTED, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL_UINT16(35500, display.lastRenderFrame.v1Priority.frequency);
+    module.refreshBlinkTick(4999);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_PERSISTED, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_TRUE(module.v1PersistenceRefreshDue(5000));
+    module.refreshBlinkTick(5000);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_FALSE(module.v1PersistenceRefreshDue(5000));
+}
+
+void test_slot_change_under_alp_discards_old_v1_hold_and_keeps_current_live_v1() {
+    for (bool v1StillLive : {false, true}) {
+        setUp();
+        settings.slotAlertPersistSec[0] = 5;
+        settings.slotAlertPersistSec[1] = 5;
+        settings.alpAlertPersistSec = 0;
+        parser.setAlerts({makeKAlert(24148)});
+        module.handleParsed(1000);
+        configureAlpActiveWithGun(AlpGunType::PL3_PROLITE, AlpLaserDirection::FRONT);
+        parser.setAlerts({makeKaAlert(35500)});
+        module.handleParsed(2000);
+        if (!v1StillLive) {
+            parser.setAlerts({});
+            module.handleParsed(2100);
+        }
+        settings.settings.activeSlot = 1;
+        module.handleParsed(2200);
+        TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
+        TEST_ASSERT_FALSE(module.v1PersistenceRefreshDue(10000));
+        parser.setAlerts({});
+        alpModule.testCloseSession(2300);
+        module.handleParsed(2300);
+        TEST_ASSERT_EQUAL(v1StillLive ? RenderFramePrimaryKind::V1_PERSISTED : RenderFramePrimaryKind::IDLE,
+                          display.lastRenderFrame.primaryKind);
+        if (v1StillLive) {
+            TEST_ASSERT_EQUAL_UINT16(35500, display.lastRenderFrame.v1Priority.frequency);
+        }
+    }
+}
+
+void test_live_alp_hides_duplicate_v1_laser_but_keeps_its_independent_hold() {
+    settings.slotAlertPersistSec[0] = 2;
+    settings.alpAlertPersistSec = 0;
+    parser.setAlerts({makeKAlert(24148)});
+    module.handleParsed(1000);
+    configureAlpActiveWithGun(AlpGunType::PL3_PROLITE, AlpLaserDirection::FRONT);
+    parser.state.activeBands = BAND_LASER;
+    parser.state.arrows = DIR_REAR;
+    AlertData laser = parser.getPriorityAlert();
+    parser.setAlerts({laser, makeKAlert(24148)});
+    module.handleParsed(2000);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::ALP_LIVE, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL_INT(1, display.lastRenderFrame.cardCount);
+    TEST_ASSERT_EQUAL(BAND_K, display.lastRenderFrame.cards[0].v1Alert.band);
+
+    parser.state.activeBands = BAND_NONE;
+    parser.setAlerts({});
+    alpModule.testCloseSession(3000);
+    module.handleParsed(3000);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_PERSISTED, display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(BAND_LASER, display.lastRenderFrame.v1Priority.band);
+    TEST_ASSERT_EQUAL(DIR_REAR, display.lastRenderFrame.v1Priority.direction);
 }
 
 void test_handle_parsed_synthesizes_laser_alert_when_alp_active_and_no_v1() {
@@ -1601,6 +1695,10 @@ int main() {
     RUN_TEST(test_restore_current_owner_ble_disconnected_restores_alp_live_when_active);
     RUN_TEST(test_restore_current_owner_restores_live_display_when_alerts_present);
     RUN_TEST(test_restore_current_owner_restores_v1_persisted_owner);
+    RUN_TEST(test_v1_persistence_tracks_latest_priority_under_live_alp);
+    RUN_TEST(test_new_v1_under_alp_restarts_hold_and_lightweight_refresh_expires_it);
+    RUN_TEST(test_slot_change_under_alp_discards_old_v1_hold_and_keeps_current_live_v1);
+    RUN_TEST(test_live_alp_hides_duplicate_v1_laser_but_keeps_its_independent_hold);
     RUN_TEST(test_handle_parsed_synthesizes_laser_alert_when_alp_active_and_no_v1);
     RUN_TEST(test_handle_parsed_keeps_unknown_alp_direction_off_screen);
     RUN_TEST(test_handle_parsed_prioritizes_alp_laser_over_v1_radar);

@@ -188,12 +188,49 @@ describe('settings route page', () => {
         expect(fetchMock.mock.calls.some(([url]) => url === '/api/wifi/status')).toBe(true);
         expect(fetchMock.mock.calls.some(([url]) => url === '/api/wifi/networks')).toBe(true);
         expect(screen.queryByText('Bluetooth Proxy')).not.toBeInTheDocument();
-        expect(screen.getByText('Disable AP Inactivity Timeout')).toBeInTheDocument();
-        expect(
-            screen.getByText(/separate maintenance-session.*shown in the banner/i)
-        ).toBeInTheDocument();
 
         unmount();
+    });
+
+    it('preserves the legacy AP timeout without offering an ineffective control', async () => {
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/device/settings',
+                respond: jsonResponse({
+                    ap_ssid: 'V1',
+                    ap_password: '********',
+                    autoPowerOffMinutes: 30,
+                    apTimeoutMinutes: 15
+                })
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        try {
+            const name = await screen.findByLabelText('AP Name');
+            expect(screen.queryByRole('checkbox', {
+                name: /disable ap inactivity timeout/i
+            })).not.toBeInTheDocument();
+            expect(screen.queryByLabelText('Auto-off after (minutes)')).not.toBeInTheDocument();
+            expect(screen.queryByText(/AP will turn off after/i)).not.toBeInTheDocument();
+            expect(screen.getByText(/returns to normal mode after 10 idle minutes or 30 minutes total/i))
+                .toBeInTheDocument();
+
+            await fireEvent.input(name, { target: { value: 'UpdatedAP' } });
+            await fireEvent.click(screen.getByRole('button', { name: /save settings/i }));
+            await screen.findByText('Settings saved! New AP credentials apply the next time the AP starts.');
+            const post = fetchMock.mock.calls.find(([url, init]) =>
+                url === '/api/device/settings' && init?.method === 'POST');
+            expect(Object.fromEntries(post[1].body)).toEqual({
+                ap_ssid: 'UpdatedAP',
+                ap_password: '********',
+                autoPowerOffMinutes: '30',
+                apTimeoutMinutes: '15'
+            });
+        } finally {
+            unmount();
+        }
     });
 
     it('shows load error when settings endpoint fails', async () => {
@@ -231,7 +268,7 @@ describe('settings route page', () => {
     it.each([
         ['connection failure', false],
         ['API failure', true]
-    ])('requires a successful settings retry after %s before saving', async (failure, disableTimeouts) => {
+    ])('requires a successful settings retry after %s before saving', async (failure, disablePowerOff) => {
         let reads = 0;
         const fetchMock = installDefaultFetch([
             {
@@ -273,19 +310,15 @@ describe('settings route page', () => {
         await screen.findByDisplayValue('OriginalAP');
         expect(screen.queryByText('Failed to load settings')).not.toBeInTheDocument();
         expect(screen.getByLabelText(/minutes after disconnect/i)).toHaveValue(30);
-        expect(screen.getByLabelText('Auto-off after (minutes)')).toHaveValue('15');
 
         await fireEvent.input(screen.getByLabelText('AP Name'), { target: { value: 'ChosenAP' } });
         await fireEvent.input(screen.getByLabelText('AP Password'), {
             target: { value: 'ChosenPassword' }
         });
-        if (disableTimeouts) {
+        if (disablePowerOff) {
             await fireEvent.input(screen.getByLabelText(/minutes after disconnect/i), {
                 target: { value: '0' }
             });
-            await fireEvent.click(screen.getByRole('checkbox', {
-                name: /disable ap inactivity timeout/i
-            }));
         }
         await fireEvent.click(screen.getByRole('button', { name: /save settings/i }));
         await screen.findByText('Settings saved! New AP credentials apply the next time the AP starts.');
@@ -295,8 +328,8 @@ describe('settings route page', () => {
         expect(Object.fromEntries(posts[0][1].body)).toEqual({
             ap_ssid: 'ChosenAP',
             ap_password: 'ChosenPassword',
-            autoPowerOffMinutes: disableTimeouts ? '0' : '30',
-            apTimeoutMinutes: disableTimeouts ? '0' : '15'
+            autoPowerOffMinutes: disablePowerOff ? '0' : '30',
+            apTimeoutMinutes: '15'
         });
 
         unmount();
@@ -1514,18 +1547,13 @@ describe('settings route page', () => {
             try {
                 const name = await screen.findByLabelText('AP Name');
                 const password = screen.getByLabelText('AP Password');
-                const timeoutDisabled = screen.getByRole('checkbox', {
-                    name: /disable ap inactivity timeout/i
-                });
-                const timeout = screen.getByLabelText('Auto-off after (minutes)');
                 const powerOff = screen.getByLabelText(/minutes after disconnect/i);
                 const save = screen.getByRole('button', { name: /save settings/i });
-                const controls = [name, password, timeoutDisabled, timeout, powerOff, save];
+                const controls = [name, password, powerOff, save];
                 await screen.findByText('Garage');
 
                 await fireEvent.input(name, { target: { value: 'SavedName' } });
                 await fireEvent.input(password, { target: { value: 'SavedPassword' } });
-                await fireEvent.input(timeout, { target: { value: '20' } });
                 await fireEvent.input(powerOff, { target: { value: '10' } });
                 await fireEvent.click(save);
 
@@ -1537,7 +1565,7 @@ describe('settings route page', () => {
                     ap_ssid: 'SavedName',
                     ap_password: 'SavedPassword',
                     autoPowerOffMinutes: '10',
-                    apTimeoutMinutes: '20'
+                    apTimeoutMinutes: '15'
                 });
 
                 if (phase === 'readback') {
@@ -1549,9 +1577,6 @@ describe('settings route page', () => {
                 // Native interactions honor disabled fieldsets; fireEvent.input does not.
                 name.focus();
                 expect(name).not.toHaveFocus();
-                timeoutDisabled.click();
-                expect(timeoutDisabled).not.toBeChecked();
-                expect(timeout).toHaveValue('20');
 
                 await openManualEditor();
                 const wifiName = screen.getByLabelText('SSID');
@@ -1565,7 +1590,7 @@ describe('settings route page', () => {
                     ap_ssid: 'SavedName',
                     ap_password: '********',
                     autoPowerOffMinutes: 10,
-                    apTimeoutMinutes: 20
+                    apTimeoutMinutes: 15
                 }));
 
                 await waitFor(() => expect(save).toBeEnabled());
@@ -1573,7 +1598,6 @@ describe('settings route page', () => {
                 expect(name).toHaveValue('SavedName');
                 expect(password).toHaveValue('********');
                 expect(powerOff).toHaveValue(10);
-                expect(timeout).toHaveValue('20');
                 expect(wifiName).toHaveValue('IndependentWifiDraft');
                 await fireEvent.click(screen.getByRole('button', { name: /^Cancel$/i }));
                 await fireEvent.input(name, { target: { value: 'NewerDraft' } });

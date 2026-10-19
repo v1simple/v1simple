@@ -134,11 +134,9 @@ class QuietCoordinatorModule {
     bool speedVolBaselineUpdated_ = false; // A newer AutoPush pair supersedes the captured fade baseline.
     uint8_t pendingSpeedVolRestoreVol_ = 0xFF;
     uint8_t pendingSpeedVolRestoreMuteVol_ = 0;
-    uint32_t pendingSpeedVolRestoreSetMs_ = 0;
     uint32_t pendingSpeedVolRestoreLastRetryMs_ = 0;
     uint32_t speedVolLastRetryMs_ = 0;
     bool pendingFadeAction_ = false;
-    bool pendingFadeRestore_ = false;
     uint8_t pendingFadeVolume_ = 0;
     uint8_t pendingFadeMuteVolume_ = 0;
     uint16_t pendingFadeFrequency_ = 0;
@@ -169,5 +167,4 @@ class QuietCoordinatorModule {
     static constexpr uint32_t IN_THE_BOX_RETRY_MS = 100;
     static constexpr uint32_t FADE_RETRY_INTERVAL_MS = 25;
     static constexpr uint32_t SPEED_VOL_RETRY_INTERVAL_MS = 75;
-    static constexpr uint32_t SPEED_VOL_RESTORE_TIMEOUT_MS = 2000;
 };

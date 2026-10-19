@@ -155,6 +155,8 @@ struct CardsRenderCache {
     int lastDrawnCount = 0;
     int lastProfileSlot = -1;
     bool forceRedraw = true;
+    bool expiryPending = false;
+    uint32_t nextExpiryMs = 0;
 
     void invalidate() {
         for (int i = 0; i < 2; ++i) {
@@ -166,6 +168,8 @@ struct CardsRenderCache {
         lastDrawnCount = 0;
         lastProfileSlot = -1;
         forceRedraw = true;
+        expiryPending = false;
+        nextExpiryMs = 0;
     }
 };
 

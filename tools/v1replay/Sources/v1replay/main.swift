@@ -51,7 +51,8 @@ struct Arguments {
                 if Arguments.booleanFlags.contains(key) {
                     flags[key] = "true"
                     index += 1
-                } else if index + 1 < rest.count, !rest[index + 1].hasPrefix("--") {
+                } else if index + 1 < rest.count, !rest[index + 1].hasPrefix("--"),
+                          rest[index + 1] != "-h" {
                     flags[key] = rest[index + 1]
                     index += 2
                 } else {
@@ -1083,6 +1084,16 @@ func runProxy() throws {
 
 // MARK: - Dispatch
 
+// Informational requests must finish before command validation or active handlers.
+if args.command == "help" || args.bool("help") || args.bool("h") {
+    runHelp()
+    exit(0)
+}
+if args.command == "version" || args.bool("version") {
+    console.print("v1replay \(toolVersion)")
+    exit(0)
+}
+
 do {
     let ownerProcess = try parseProcessOwnerGuard(
         args.optionalString("owner-pid"),
@@ -1094,10 +1105,6 @@ do {
         handshakeOnly: args.bool("handshake-only")
     )
     switch args.command {
-    case "help":
-        runHelp()
-    case "version":
-        console.print("v1replay \(toolVersion)")
     case "crib":
         runCrib()
     case "export":
@@ -1116,7 +1123,7 @@ do {
     case "proxy":
         try runProxy()
     default:
-        if args.bool("help") || args.bool("h") || args.positional.isEmpty {
+        if args.positional.isEmpty {
             runHelp()
         } else {
             try runPlay(idleOnly: false)

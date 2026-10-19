@@ -740,6 +740,87 @@ void test_secondary_card_expires_and_clears_after_grace_when_only_priority_remai
     settings.slotAlertPersistSec[0] = 0;
 }
 
+void test_secondary_card_refresh_tracks_each_held_slot_until_its_own_expiry() {
+    settings.slotAlertPersistSec[0] = 2;
+    const AlertData p = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700, true, true);
+    const AlertData k = AlertData::create(BAND_K, DIR_SIDE, 2, 0, 24150, true, false);
+    const AlertData x = AlertData::create(BAND_X, DIR_REAR, 0, 2, 10525, true, false);
+    AlertData rows[] = {p, k, x};
+    display.ut_drawSecondaryAlertCards(rows, 3, p, false);
+    TEST_ASSERT_FALSE(display.secondaryCardRefreshDue(5000)); // Live cards never expire.
+
+    mockMillis = 1200;
+    AlertData remaining[] = {p, x};
+    display.ut_drawSecondaryAlertCards(remaining, 2, p, false);
+    mockMillis = 1300;
+    display.ut_drawSecondaryAlertCards(&p, 1, p, false);
+    TEST_ASSERT_FALSE(display.secondaryCardRefreshDue(3000));
+    TEST_ASSERT_TRUE(display.secondaryCardRefreshDue(3001));
+
+    mockMillis = 3001;
+    display.ut_drawSecondaryAlertCards(&p, 1, p, false);
+    TEST_ASSERT_EQUAL_INT(1, display.ut_elementCaches().cards.lastDrawnCount);
+    TEST_ASSERT_EQUAL_INT(BAND_X, display.ut_elementCaches().cards.lastDrawnPositions[0].band);
+    TEST_ASSERT_FALSE(display.secondaryCardRefreshDue(3001));
+    TEST_ASSERT_FALSE(display.secondaryCardRefreshDue(3200));
+    TEST_ASSERT_TRUE(display.secondaryCardRefreshDue(3201));
+    mockMillis = 3201;
+    display.ut_drawSecondaryAlertCards(&p, 1, p, false);
+    TEST_ASSERT_EQUAL_INT(0, display.ut_elementCaches().cards.lastDrawnCount);
+    TEST_ASSERT_FALSE(display.secondaryCardRefreshDue(5000));
+    settings.slotAlertPersistSec[0] = 0;
+}
+
+void test_secondary_card_refresh_is_cancelled_by_live_replacement_and_resets() {
+    for (int change = 0; change < 5; ++change) {
+        resetDisplayForTest();
+        settings.mutableSettings().activeSlot = 0;
+        settings.slotAlertPersistSec[0] = 2;
+        const AlertData p = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700, true, true);
+        const AlertData k = AlertData::create(BAND_K, DIR_SIDE, 2, 0, 24150, true, false);
+        const AlertData x = AlertData::create(BAND_X, DIR_REAR, 0, 2, 10525, true, false);
+        AlertData rows[] = {p, k, x};
+        display.ut_drawSecondaryAlertCards(rows, 3, p, false);
+        mockMillis = 1100;
+        display.ut_drawSecondaryAlertCards(&p, 1, p, false);
+        TEST_ASSERT_TRUE(display.secondaryCardRefreshDue(3001));
+
+        mockMillis = 1200;
+        switch (change) {
+        case 0: // Both vanished rows revive before their old deadline.
+            display.ut_drawSecondaryAlertCards(rows, 3, p, false);
+            break;
+        case 1: // New live rows replace all graced capacity immediately.
+            rows[1].frequency = 24300;
+            rows[2].frequency = 10600;
+            display.ut_drawSecondaryAlertCards(rows, 3, p, false);
+            TEST_ASSERT_EQUAL_UINT32(24300, display.ut_elementCaches().cards.lastDrawnPositions[0].frequency);
+            TEST_ASSERT_EQUAL_UINT32(10600, display.ut_elementCaches().cards.lastDrawnPositions[1].frequency);
+            break;
+        case 2:
+            display.ut_drawSecondaryAlertCards(nullptr, 0, AlertData{}, false);
+            break;
+        case 3:
+            settings.mutableSettings().activeSlot = 1;
+            display.ut_drawSecondaryAlertCards(&p, 1, p, false);
+            break;
+        case 4:
+            display.ut_elementCaches().invalidateAll();
+            break;
+        }
+        TEST_ASSERT_FALSE(display.secondaryCardRefreshDue(5000));
+        if (change < 2) {
+            TEST_ASSERT_EQUAL_INT(2, display.ut_elementCaches().cards.lastDrawnCount);
+            TEST_ASSERT_FALSE(display.ut_elementCaches().cards.lastDrawnPositions[0].isGraced);
+            TEST_ASSERT_FALSE(display.ut_elementCaches().cards.lastDrawnPositions[1].isGraced);
+        } else {
+            TEST_ASSERT_EQUAL_INT(0, display.ut_elementCaches().cards.lastDrawnCount);
+        }
+    }
+    settings.mutableSettings().activeSlot = 0;
+    settings.slotAlertPersistSec[0] = 0;
+}
+
 void test_removing_card0_leaves_non_overlapping_ku_and_gps_caches_untouched() {
     AlertData priority = AlertData::create(BAND_KA, DIR_FRONT, 4, 0, 34700, true, true);
     AlertData secondary = AlertData::create(BAND_K, DIR_FRONT, 3, 0, 24150, true, true);
@@ -1001,6 +1082,8 @@ int main(int, char**) {
     RUN_TEST(test_new_live_card_uses_promoted_slot_before_new_old_priority_grace);
     RUN_TEST(test_preview_promotion_does_not_grace_the_vanished_old_priority);
     RUN_TEST(test_secondary_card_expires_and_clears_after_grace_when_only_priority_remains);
+    RUN_TEST(test_secondary_card_refresh_tracks_each_held_slot_until_its_own_expiry);
+    RUN_TEST(test_secondary_card_refresh_is_cancelled_by_live_replacement_and_resets);
     RUN_TEST(test_removing_card0_leaves_non_overlapping_ku_and_gps_caches_untouched);
     RUN_TEST(test_visual_preview_bypasses_profile_card_grace);
     RUN_TEST(test_card_meter_projects_vr_strength_onto_six_segments);

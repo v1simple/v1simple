@@ -118,11 +118,11 @@ bool DisplayOrchestrationModule::processLightweightRefresh(const DisplayOrchestr
     AlertData loopPriority;
     const bool loopHasRenderablePriority = loopHasAlerts && parser_->getRenderablePriorityAlert(loopPriority);
 
-    // A lightweight owner refresh advances blinks and clears an expired V1
-    // alert hold even when no new detector packet arrives.
+    // A lightweight owner refresh advances blinks and clears expired primary
+    // or secondary holds even when no new detector packet arrives.
     if (!ctx.pipelineRanThisLoop && !ctx.bootSplashHoldActive && !ctx.overloadLateThisLoop && !preview_->isRunning() &&
         ble_->isConnected()) {
-        if (ctx.v1PersistenceRefreshDue) return true;
+        if (ctx.v1PersistenceRefreshDue || display_->secondaryCardRefreshDue(ctx.nowMs)) return true;
         const DisplayState liveState = parser_->getDisplayState();
         const bool counterBlink = !display_->isStealthScreen() &&
                                   (liveState.bogeyCounterByte != liveState.bogeyCounterByte2 ||

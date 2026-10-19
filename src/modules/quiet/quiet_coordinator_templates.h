@@ -57,13 +57,18 @@ bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs, const Spee
             updateSpeedVolPresentation(&speedMute);
             return false;
         }
-        pendingSpeedVolRestoreVol_ = 0xFF;
-        speedVolBaselineUpdated_ = desired_.volumeOwner == QuietOwner::AutoPush;
+        const bool restoring = pendingSpeedVolRestoreVol_ != 0xFF;
+        if (!restoring) speedVolBaselineUpdated_ = desired_.volumeOwner == QuietOwner::AutoPush;
         // An accepted AutoPush may precede its detector echo. Carry that
         // pending pair; after confirmation, later observed volume is authoritative.
         const bool pendingAutoPush = speedVolBaselineUpdated_ && desired_.volumePending;
-        speedVolSavedOriginal_ = pendingAutoPush ? desired_.volume : ds.mainVolume;
-        speedVolSavedMuteVol_ = pendingAutoPush ? desired_.muteVolume : ds.muteVolume;
+        // Re-entering low speed before restoration completes must not capture
+        // the still-reduced detector pair as the user's new baseline.
+        speedVolSavedOriginal_ = restoring ? pendingSpeedVolRestoreVol_ :
+                                  pendingAutoPush ? desired_.volume : ds.mainVolume;
+        speedVolSavedMuteVol_ = restoring ? pendingSpeedVolRestoreMuteVol_ :
+                                 pendingAutoPush ? desired_.muteVolume : ds.muteVolume;
+        pendingSpeedVolRestoreVol_ = 0xFF;
         speedVolActive_ = true;
         speedVolLastRetryMs_ = nowMs;
         startingSpeedVolume = true;
@@ -84,7 +89,6 @@ bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs, const Spee
                 } else {
                     pendingSpeedVolRestoreVol_ = cleared.restoreVolume;
                     pendingSpeedVolRestoreMuteVol_ = cleared.restoreMuteVolume;
-                    pendingSpeedVolRestoreSetMs_ = nowMs;
                     volumeFade->setBaselineHint(cleared.restoreVolume, cleared.restoreMuteVolume, nowMs);
                 }
             }
@@ -105,7 +109,6 @@ bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs, const Spee
         }
         pendingSpeedVolRestoreVol_ = speedVolSavedOriginal_;
         pendingSpeedVolRestoreMuteVol_ = speedVolSavedMuteVol_;
-        pendingSpeedVolRestoreSetMs_ = nowMs;
         pendingSpeedVolRestoreLastRetryMs_ = nowMs;
         Serial.printf("[SpeedVol] RESTORE: -> %d\n", speedVolSavedOriginal_);
         speedVolActive_ = false;
@@ -177,10 +180,9 @@ bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs, VolumeFadeL
         pendingFadeAction_ = false;
     }
     if (pendingFadeAction_) {
-        const bool staleFadeDown = !pendingFadeRestore_ &&
-                                   (!fadeCtx.hasAlert || fadeCtx.alertMuted || fadeCtx.alertSuppressed ||
-                                    fadeCtx.currentFrequency != pendingFadeFrequency_ ||
-                                    fadeCtx.priorityIsLaser != pendingFadeLaser_);
+        const bool staleFadeDown = !fadeCtx.hasAlert || fadeCtx.alertMuted || fadeCtx.alertSuppressed ||
+                                   fadeCtx.currentFrequency != pendingFadeFrequency_ ||
+                                   fadeCtx.priorityIsLaser != pendingFadeLaser_;
         if (staleFadeDown) {
             pendingFadeAction_ = false;
         } else {
@@ -217,7 +219,6 @@ bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs, VolumeFadeL
             sendVolumeResult(QuietOwner::VolumeFade, fadeAction.targetVolume, fadeAction.targetMuteVolume);
         if (result == SendResult::NOT_YET) {
             pendingFadeAction_ = true;
-            pendingFadeRestore_ = false;
             pendingFadeVolume_ = fadeAction.targetVolume;
             pendingFadeMuteVolume_ = fadeAction.targetMuteVolume;
             pendingFadeFrequency_ = fadeCtx.currentFrequency;
@@ -227,15 +228,9 @@ bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs, VolumeFadeL
         return true;
     }
     if (fadeAction.type == VolumeFadeAction::Type::RESTORE) {
-        const SendResult result =
-            sendVolumeResult(QuietOwner::VolumeFade, fadeAction.restoreVolume, fadeAction.restoreMuteVolume);
-        if (result == SendResult::NOT_YET) {
-            pendingFadeAction_ = true;
-            pendingFadeRestore_ = true;
-            pendingFadeVolume_ = fadeAction.restoreVolume;
-            pendingFadeMuteVolume_ = fadeAction.restoreMuteVolume;
-            pendingFadeLastAttemptMs_ = nowMs;
-        }
+        // Fade owns restore retries through canonical convergence, including
+        // SENT-but-unapplied writes. Do not create a second retry clock here.
+        sendVolumeResult(QuietOwner::VolumeFade, fadeAction.restoreVolume, fadeAction.restoreMuteVolume);
         return true;
     }
     return false;

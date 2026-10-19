@@ -130,6 +130,8 @@ void V1Display::renderFrame(const RenderFrame& frame) {
 
     case RenderFramePrimaryKind::IDLE:
         if (frame.stealthMode) {
+            // Stealth replaces the cards without passing through their painter.
+            elementCaches_.cards.invalidate();
             showStealth(frame.stealthSpeedMph, frame.stealthSpeedValid);
         } else {
             update(frame.primaryState);

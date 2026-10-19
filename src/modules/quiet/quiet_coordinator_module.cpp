@@ -61,11 +61,9 @@ void QuietCoordinatorModule::resetVolumeState() {
     speedVolBaselineUpdated_ = false;
     pendingSpeedVolRestoreVol_ = 0xFF;
     pendingSpeedVolRestoreMuteVol_ = 0;
-    pendingSpeedVolRestoreSetMs_ = 0;
     pendingSpeedVolRestoreLastRetryMs_ = 0;
     speedVolLastRetryMs_ = 0;
     pendingFadeAction_ = false;
-    pendingFadeRestore_ = false;
     pendingFadeVolume_ = 0;
     pendingFadeMuteVolume_ = 0;
     pendingFadeFrequency_ = 0;
@@ -408,16 +406,9 @@ bool QuietCoordinatorModule::retryPendingSpeedVolRestore(const uint32_t nowMs) {
         return false;
     }
 
-    if ((nowMs - pendingSpeedVolRestoreSetMs_) >= SPEED_VOL_RESTORE_TIMEOUT_MS) {
-        Serial.println("[SpeedVol] restore retry timeout");
-        pendingSpeedVolRestoreVol_ = 0xFF;
-        if (presentation_.activeVolumeOwner == QuietOwner::SpeedVolume) {
-            presentation_.activeVolumeOwner = QuietOwner::None;
-        }
-        presentation_.speedVolZeroActive = false;
-        return false;
-    }
-
+    // A deferred or accepted write is still owed until the canonical pair
+    // converges. Time spent in protocol holdoff cannot release that ownership.
+    if (!parser_->getDisplayState().hasVolumeData || !committed_.connected) return true;
     if (committed_.mainVolume == pendingSpeedVolRestoreVol_ &&
         committed_.muteVolume == pendingSpeedVolRestoreMuteVol_) {
         pendingSpeedVolRestoreVol_ = 0xFF;

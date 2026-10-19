@@ -237,13 +237,13 @@ fi
 python3 "$SCRIPT_DIR/scripts/check_platformio_core_version.py" --pio "$PIO_CMD"
 
 # Build PIO arguments
-PIO_ARGS="-e $PIO_ENV"
+PIO_ARGS=(-e "$PIO_ENV")
 if [ -n "$UPLOAD_PORT" ]; then
-    PIO_ARGS="$PIO_ARGS --upload-port $UPLOAD_PORT"
+    PIO_ARGS+=(--upload-port "$UPLOAD_PORT")
 fi
-PIO_RUN_ARGS="$PIO_ARGS"
+PIO_RUN_ARGS=("${PIO_ARGS[@]}")
 if [ -n "$PIO_JOBS" ]; then
-    PIO_RUN_ARGS="$PIO_RUN_ARGS -j $PIO_JOBS"
+    PIO_RUN_ARGS+=(-j "$PIO_JOBS")
 fi
 
 echo -e "${BLUE}== V1 Simple build ==${NC}"
@@ -294,24 +294,24 @@ fi
 
 # Firmware
 echo -e "${YELLOW}Building firmware (env: $PIO_ENV)...${NC}"
-"$PIO_CMD" run $PIO_RUN_ARGS
+"$PIO_CMD" run "${PIO_RUN_ARGS[@]}"
 echo -e "${GREEN}Firmware built successfully${NC}"
 
 # Show build size
 echo -e "${BLUE}Build size:${NC}"
-"$PIO_CMD" run $PIO_RUN_ARGS -t size | grep -E "RAM:|Flash:" || true
+"$PIO_CMD" run "${PIO_RUN_ARGS[@]}" -t size | grep -E "RAM:|Flash:" || true
 echo ""
 
 # Build first so a compile failure cannot leave the device blank. Only erase
 # after every requested local build/test step has succeeded.
 if [ "$FACTORY_RESET" = true ]; then
     echo -e "${YELLOW}Building LittleFS image before erase...${NC}"
-    "$PIO_CMD" run $PIO_RUN_ARGS -t buildfs
+    "$PIO_CMD" run "${PIO_RUN_ARGS[@]}" -t buildfs
     echo -e "${GREEN}LittleFS image built successfully${NC}"
     echo ""
 
     echo -e "${YELLOW}Erasing onboard flash (including NVS)...${NC}"
-    "$PIO_CMD" run $PIO_ARGS -t erase
+    "$PIO_CMD" run "${PIO_ARGS[@]}" -t erase
     echo -e "${GREEN}Onboard flash erased${NC}"
     echo ""
     sleep 1
@@ -319,12 +319,12 @@ if [ "$FACTORY_RESET" = true ]; then
     # Restore the bootloader, partition table, and application before writing
     # LittleFS. This keeps the device bootable if the filesystem upload fails.
     echo -e "${YELLOW}Uploading firmware...${NC}"
-    "$PIO_CMD" run $PIO_RUN_ARGS -t upload
+    "$PIO_CMD" run "${PIO_RUN_ARGS[@]}" -t upload
     echo -e "${GREEN}Firmware uploaded${NC}"
     echo ""
 
     echo -e "${YELLOW}Uploading filesystem (LittleFS)...${NC}"
-    "$PIO_CMD" run $PIO_RUN_ARGS -t uploadfs
+    "$PIO_CMD" run "${PIO_RUN_ARGS[@]}" -t uploadfs
     echo -e "${GREEN}Filesystem uploaded${NC}"
     echo ""
 fi
@@ -335,7 +335,7 @@ if [ "$UPLOAD_FS" = true ] && [ "$FACTORY_RESET" = false ]; then
     echo -e "${YELLOW}   If profile storage ever fell back to LittleFS, those profiles will be erased.${NC}"
     echo -e "${YELLOW}   Confirm SD is mounted in boot logs before relying on profile persistence.${NC}"
     echo -e "${YELLOW}Uploading filesystem (LittleFS)...${NC}"
-    "$PIO_CMD" run $PIO_RUN_ARGS -t uploadfs
+    "$PIO_CMD" run "${PIO_RUN_ARGS[@]}" -t uploadfs
     echo -e "${GREEN}Filesystem uploaded${NC}"
     echo ""
 fi
@@ -343,7 +343,7 @@ fi
 # Upload firmware
 if [ "$UPLOAD_FW" = true ] && [ "$FACTORY_RESET" = false ]; then
     echo -e "${YELLOW}Uploading firmware...${NC}"
-    "$PIO_CMD" run $PIO_RUN_ARGS -t upload
+    "$PIO_CMD" run "${PIO_RUN_ARGS[@]}" -t upload
     echo -e "${GREEN}Firmware uploaded${NC}"
 
     # Extra reset after upload to ensure clean BLE state
@@ -374,15 +374,11 @@ if [ "$MONITOR" = true ]; then
     echo -e "${BLUE}(Press Ctrl+C to exit)${NC}"
     echo ""
     sleep 1
-    # Remap upload port to monitor port and strip upload-only flags
-    MONITOR_ARGS="$PIO_ARGS"
-    if [[ "$MONITOR_ARGS" =~ --upload-port[[:space:]]+([^[:space:]]+) ]]; then
-        PORT_VAL="${BASH_REMATCH[1]}"
-        MONITOR_ARGS="${MONITOR_ARGS/--upload-port $PORT_VAL/}"
-        MONITOR_ARGS="$(echo "$MONITOR_ARGS" | xargs)"
-        MONITOR_ARGS="$MONITOR_ARGS --port $PORT_VAL"
+    MONITOR_ARGS=(-e "$PIO_ENV")
+    if [ -n "$UPLOAD_PORT" ]; then
+        MONITOR_ARGS+=(--port "$UPLOAD_PORT")
     fi
-    "$PIO_CMD" device monitor $MONITOR_ARGS
+    "$PIO_CMD" device monitor "${MONITOR_ARGS[@]}"
 fi
 
 echo ""

@@ -62,10 +62,12 @@ struct SecondaryCardFrame {
 void resetCardTemporalState(CardsRenderCache& cache) {
     for (CardSlot& slot : cache.slots) slot = CardSlot();
     cache.lastPriority = AlertData();
+    cache.expiryPending = false;
+    cache.nextExpiryMs = 0;
 }
 
 SecondaryCardFrame evolveSecondaryCardState(CardsRenderCache& cache, const AlertData* alerts, int alertCount,
-                                            const AlertData& priority, unsigned long now, unsigned long gracePeriodMs,
+                                            const AlertData& priority, uint32_t now, uint32_t gracePeriodMs,
                                             bool expireForVisualPreview) {
     // V1 row assignments distinguish concurrent rows, but may be compacted as
     // a table shrinks. Claim each current row at most once: prefer the exact
@@ -98,7 +100,7 @@ SecondaryCardFrame evolveSecondaryCardState(CardsRenderCache& cache, const Alert
         // Refresh first: continuity jitter can move this slot onto the new priority.
         if (alertMatchesPriority(slot.alert, priority) ||
             (!stillExists && (expireForVisualPreview || gracePeriodMs == 0 ||
-                             (now - slot.lastSeen) > gracePeriodMs))) {
+                             static_cast<uint32_t>(now - slot.lastSeen) > gracePeriodMs))) {
             slot = CardSlot();
         }
         slotIsLive[c] = stillExists && slot.lastSeen > 0;
@@ -171,17 +173,33 @@ SecondaryCardFrame evolveSecondaryCardState(CardsRenderCache& cache, const Alert
     cache.lastPriority = priority;
 
     SecondaryCardFrame frame;
+    cache.expiryPending = false;
+    cache.nextExpiryMs = 0;
     for (int c = 0; c < 2 && frame.count < 2; ++c) {
         if (cache.slots[c].lastSeen == 0 || alertMatchesPriority(cache.slots[c].alert, priority)) continue;
         SecondaryCardFrameEntry& entry = frame.cards[frame.count++];
         entry.slot = c;
         entry.bars = DisplayVisualContract::alertMeterBars(cache.slots[c].alert);
         entry.isGraced = !slotIsLive[c];
+        if (entry.isGraced) {
+            // The hold includes lastSeen + gracePeriodMs. Wake on its first
+            // expired millisecond; zero is a valid deadline at millis() wrap.
+            const uint32_t expiry = static_cast<uint32_t>(cache.slots[c].lastSeen) + gracePeriodMs + 1;
+            if (!cache.expiryPending || static_cast<int32_t>(expiry - cache.nextExpiryMs) < 0) {
+                cache.nextExpiryMs = expiry;
+            }
+            cache.expiryPending = true;
+        }
     }
     return frame;
 }
 
 } // namespace
+
+bool V1Display::secondaryCardRefreshDue(uint32_t nowMs) const {
+    return elementCaches_.cards.expiryPending &&
+           static_cast<int32_t>(nowMs - elementCaches_.cards.nextExpiryMs) >= 0;
+}
 
 void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount, const AlertData& priority,
                                         bool muted) {
@@ -190,9 +208,9 @@ void V1Display::drawSecondaryAlertCards(const AlertData* alerts, int alertCount,
 
     const V1Settings& settings = settings_.get();
     uint8_t persistSec = settings_.getSlotAlertPersistSec(settings.activeSlot);
-    unsigned long gracePeriodMs = persistSec * 1000UL;
+    uint32_t gracePeriodMs = persistSec * 1000UL;
 
-    unsigned long now = millis();
+    uint32_t now = static_cast<uint32_t>(millis());
 
     if (settings.activeSlot != elementCaches_.cards.lastProfileSlot) {
         elementCaches_.cards.lastProfileSlot = settings.activeSlot;

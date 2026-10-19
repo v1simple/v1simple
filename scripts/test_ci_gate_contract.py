@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression tests for release-critical local CI sequencing."""
+"""Regression tests for release-critical local and hosted CI sequencing."""
 
 from pathlib import Path
 
@@ -134,11 +134,42 @@ def test_linux_failure_bundle_retains_environment_and_build_reports() -> None:
     )
 
 
+def test_macos_local_and_hosted_gates_run_both_swift_suites() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    macos_job = workflow.split("  v1replay-swift-oracle:", maxsplit=1)[1].split(
+        "\n  test:", maxsplit=1
+    )[0]
+    require("runs-on: macos-15" in macos_job, "Swift suites require a macOS runner")
+    for invocation in (
+        "run: swift test --package-path tools/v1replay",
+        "run: python3 tools/v1replay/Tests/test_peripheral_lifecycle.py",
+    ):
+        require(macos_job.count(invocation) == 1, f"macOS CI must run {invocation} once")
+        step = next(step for step in macos_job.split("      - name:") if invocation in step)
+        require(
+            "DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer" in step,
+            "Swift suites must use the hosted job's selected Xcode toolchain",
+        )
+
+    gate = (ROOT / "scripts" / "ci-test.sh").read_text(encoding="utf-8")
+    host_tools = gate.split('section "Host Tools"', maxsplit=1)[1].split("\nelse", maxsplit=1)[0]
+    require('if [[ "$(uname -s)" == "Darwin" ]]' in host_tools,
+            "local Swift suites require macOS")
+    for invocation in (
+        'run_step "v1replay Swift package tests" run_v1replay_swift_tests',
+        'run_step "v1replay peripheral lifecycle regression suite" run_peripheral_lifecycle_checks',
+    ):
+        require(host_tools.count(invocation) == 1, f"local macOS gate must run {invocation} once")
+    require(gate.count('"${python_driver[@]}" "$ROOT_DIR/tools/v1replay/Tests/test_peripheral_lifecycle.py"') == 1,
+            "local lifecycle helper must invoke the standalone regression runner")
+
+
 def main() -> int:
     test_car_build_is_clean_and_uses_one_argument_contract()
     test_release_publication_is_owned_by_tested_script()
     test_clean_linux_runner_binds_exact_source_and_cold_amd64_image()
     test_linux_failure_bundle_retains_environment_and_build_reports()
+    test_macos_local_and_hosted_gates_run_both_swift_suites()
     print("CI gate sequencing tests: PASS")
     return 0
 

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import shlex
@@ -31,7 +32,7 @@ def run_reset(
     confirmation: str,
     fail_build: bool = False,
     arguments: tuple[str, ...] = ("--reset",),
-) -> tuple[subprocess.CompletedProcess[str], list[str], bool]:
+) -> tuple[subprocess.CompletedProcess[str], list[list[str]], bool]:
     temp_dir = tempfile.TemporaryDirectory()
     fixture = Path(temp_dir.name)
 
@@ -48,12 +49,14 @@ def run_reset(
     log_path = fixture / "pio.log"
     write_executable(
         fake_bin / "pio",
-        """#!/bin/sh
-printf '%s\\n' "$*" >> "$BUILD_RESET_TEST_LOG"
-if [ "${BUILD_RESET_FAIL_BUILD:-0}" = "1" ] && [ "$*" = "run -e waveshare-349" ]; then
-    exit 42
-fi
-exit 0
+        f"""#!{sys.executable}
+import json
+import os
+import sys
+with open(os.environ["BUILD_RESET_TEST_LOG"], "a", encoding="utf-8") as log:
+    log.write(json.dumps(sys.argv[1:]) + "\\n")
+if os.environ.get("BUILD_RESET_FAIL_BUILD") == "1" and sys.argv[1:] == ["run", "-e", "waveshare-349"]:
+    raise SystemExit(42)
 """,
     )
     write_executable(fake_bin / "npm", "#!/bin/sh\nexit 0\n")
@@ -85,7 +88,7 @@ exec {shlex.quote(sys.executable)} "$@"
         capture_output=True,
         check=False,
     )
-    calls = log_path.read_text(encoding="utf-8").splitlines() if log_path.exists() else []
+    calls = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()] if log_path.exists() else []
     host_build_was_cleaned = not (fixture / ".pio/build").exists()
     temp_dir.cleanup()
     return result, calls, host_build_was_cleaned
@@ -97,13 +100,13 @@ def test_reset_contract() -> None:
     assert_true(
         calls
         == [
-            "run -e waveshare-349",
-            "run -e waveshare-349 -t size",
-            "run -e waveshare-349 -t buildfs",
-            "run -e waveshare-349 -t erase",
-            "run -e waveshare-349 -t upload",
-            "run -e waveshare-349 -t uploadfs",
-            "device monitor -e waveshare-349",
+            ["run", "-e", "waveshare-349"],
+            ["run", "-e", "waveshare-349", "-t", "size"],
+            ["run", "-e", "waveshare-349", "-t", "buildfs"],
+            ["run", "-e", "waveshare-349", "-t", "erase"],
+            ["run", "-e", "waveshare-349", "-t", "upload"],
+            ["run", "-e", "waveshare-349", "-t", "uploadfs"],
+            ["device", "monitor", "-e", "waveshare-349"],
         ],
         f"unexpected reset command order: {calls}",
     )
@@ -121,7 +124,7 @@ def test_reset_rejects_missing_confirmation() -> None:
 def test_build_failure_happens_before_erase() -> None:
     result, calls, _ = run_reset(confirmation="y\n", fail_build=True)
     assert_true(result.returncode != 0, "simulated build failure was ignored")
-    assert_true(calls == ["run -e waveshare-349"], f"erase ran after failed build: {calls}")
+    assert_true(calls == [["run", "-e", "waveshare-349"]], f"erase ran after failed build: {calls}")
 
 
 def test_skip_web_rejects_missing_filesystem_data() -> None:
@@ -138,6 +141,42 @@ def test_build_reuses_frontend_and_firmware_outputs() -> None:
     source = (ROOT / "build.sh").read_text(encoding="utf-8")
     assert_true("npm run deploy:built" in source, "build.sh must deploy the frontend it just built")
     assert_true("npm run deploy\n" not in source, "build.sh still rebuilds the frontend during deploy")
+
+
+def test_option_values_remain_single_arguments() -> None:
+    for option, value in (("--env", "waveshare-349 -t erase"),
+                          ("--upload-port", "test port -t erase *")):
+        result, calls, _ = run_reset(
+            confirmation="",
+            arguments=("--skip-web", option, value, "--jobs", "2", "--monitor"),
+        )
+        assert_true(result.returncode == 0, result.stdout + result.stderr)
+        build_args = ["-e", value] if option == "--env" else ["-e", "waveshare-349", "--upload-port", value]
+        monitor_args = ["-e", value] if option == "--env" else ["-e", "waveshare-349", "--port", value]
+        assert_true(calls == [
+            ["run", *build_args, "-j", "2"],
+            ["run", *build_args, "-j", "2", "-t", "size"],
+            ["device", "monitor", *monitor_args],
+        ], f"option value became separate PlatformIO arguments: {calls}")
+
+
+def test_reset_preserves_port_and_job_arguments() -> None:
+    port = "test port -t erase *"
+    result, calls, _ = run_reset(
+        confirmation="yes\n",
+        arguments=("--reset", "--upload-port", port, "--jobs", "2"),
+    )
+    assert_true(result.returncode == 0, result.stdout + result.stderr)
+    base = ["run", "-e", "waveshare-349", "--upload-port", port]
+    assert_true(calls == [
+        [*base, "-j", "2"],
+        [*base, "-j", "2", "-t", "size"],
+        [*base, "-j", "2", "-t", "buildfs"],
+        [*base, "-t", "erase"],
+        [*base, "-j", "2", "-t", "upload"],
+        [*base, "-j", "2", "-t", "uploadfs"],
+        ["device", "monitor", "-e", "waveshare-349", "--port", port],
+    ], f"reset or monitor split option values: {calls}")
 
 
 def test_help_does_not_require_platformio() -> None:
@@ -163,6 +202,8 @@ def main() -> int:
     test_build_failure_happens_before_erase()
     test_skip_web_rejects_missing_filesystem_data()
     test_build_reuses_frontend_and_firmware_outputs()
+    test_option_values_remain_single_arguments()
+    test_reset_preserves_port_and_job_arguments()
     test_help_does_not_require_platformio()
     print("build reset tests: PASS")
     return 0

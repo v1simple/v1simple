@@ -42,7 +42,7 @@ class DisplayOrchestrationModule {
 
     void processEarly(const DisplayOrchestrationEarlyContext& ctx);
     bool processParsedFrame(const DisplayOrchestrationParsedContext& ctx);
-    // True when a blink or V1 persistence expiry needs a render this loop.
+    // True when a blink or primary/secondary hold expiry needs a render this loop.
     bool processLightweightRefresh(const DisplayOrchestrationRefreshContext& ctx);
 
   private:

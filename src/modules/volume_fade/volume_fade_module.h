@@ -94,13 +94,11 @@ class VolumeFadeModule {
     static constexpr int MAX_FADE_SEEN_FREQS = 12;
     uint16_t seenFreqs_[MAX_FADE_SEEN_FREQS] = {};
 
-    // Short-lived carry-over after issuing RESTORE: if a new alert arrives before
-    // V1 applies the restore command, don't recapture the faded volume as baseline.
+    // Restoration remains owed until the complete canonical pair converges or
+    // an explicit owner/session reset discards authority. SENT is only delivery.
     uint8_t pendingRestoreVolume_ = 0;
     uint8_t pendingRestoreMuteVolume_ = 0;
-    unsigned long pendingRestoreSetMs_ = 0;
     unsigned long lastRestoreAttemptMs_ = 0;
-    static constexpr unsigned long PENDING_RESTORE_WINDOW_MS = 1500;
     static constexpr unsigned long RESTORE_RETRY_MIN_INTERVAL_MS = 75;
 
     // External baseline hint from an external volume owner.

@@ -170,7 +170,7 @@
     }
 
     async function pushNow(slot) {
-        if (busy) return;
+        if (busy || !profileSchemaReady) return;
         if (!runtimeModeKnown) {
             message = {
                 type: 'warning',
@@ -389,7 +389,7 @@
 
     {#if !loading && !profileSchemaReady}
         <StatusAlert
-            message="The profile settings migration is still pending. Slot editing and default selection are temporarily read-only; existing saved slots can still be applied."
+            message="The profile settings migration is still pending. Slot editing, default selection, and Apply to V1 are unavailable until migration completes."
             fallbackType="warning"
         />
     {/if}
@@ -669,6 +669,7 @@
                                     onclick={() => pushNow(i)}
                                     disabled={!slot.profile ||
                                         busy ||
+                                        !profileSchemaReady ||
                                         !runtimeModeKnown ||
                                         !$isMaintenance ||
                                         !capturedSnapshot}

@@ -851,6 +851,146 @@ void test_v1_persisted_alert_expiry_restores_stealth_owner() {
     TEST_ASSERT_FALSE(runtime.persistence.getPersistedAlert().isValid);
     TEST_ASSERT_TRUE(display.isStealthScreen());
 }
+
+void showSecondaryThenHold(CounterBlinkRuntime& runtime, uint32_t lastSeen = 10000) {
+    runtime.feed(PACKET_ID_ALERT_DATA, {0x12, 0x87, 0x8C, 0xAC, 0x00, 0x22, 0x80}, lastSeen);
+    runtime.feed(PACKET_ID_ALERT_DATA, {0x22, 0x5E, 0x56, 0x00, 0xB8, 0x84, 0x00}, lastSeen);
+    runtime.displayFrame(0x5B, 0x5B, 0, 0xA6, 0xA6, lastSeen);
+    TEST_ASSERT_EQUAL_INT(1, display.ut_elementCaches().cards.lastDrawnCount);
+    runtime.feed(PACKET_ID_ALERT_DATA, {0x11, 0x87, 0x8C, 0xAC, 0x00, 0x22, 0x80}, lastSeen + 100);
+    runtime.displayFrame(0x06, 0x06, 0, 0x22, 0x22, lastSeen + 100);
+}
+
+void test_secondary_card_expires_without_packets_while_primary_stays_steady() {
+    CounterBlinkRuntime runtime;
+    settings.slotAlertPersistSec[0] = 2;
+    showSecondaryThenHold(runtime);
+    TEST_ASSERT_TRUE(display.ut_elementCaches().cards.lastDrawnPositions[0].isGraced);
+    clearObservations();
+
+    // The existing card contract includes the last millisecond of its hold.
+    TEST_ASSERT_FALSE(runtime.refresh(11999));
+    TEST_ASSERT_FALSE(runtime.refresh(12000));
+    TEST_ASSERT_TRUE(canvas()->flushSnapshots.empty());
+    TEST_ASSERT_TRUE(runtime.refresh(12001));
+    TEST_ASSERT_EQUAL_INT(0, display.ut_elementCaches().cards.lastDrawnCount);
+    TEST_ASSERT_EQUAL_UINT(1, canvas()->flushSnapshots.size());
+    const auto cardRect = DisplayLayout::cardRect(0);
+    const auto& rectangles = canvas()->flushSnapshots[0].rectangles;
+    TEST_ASSERT_TRUE(std::any_of(rectangles.begin(), rectangles.end(), [&](const auto& rect) {
+        return rect.x == cardRect.x && rect.y == cardRect.y &&
+               rect.w == cardRect.w && rect.h == cardRect.h && rect.color == TFT_BLACK;
+    }));
+    TEST_ASSERT_EQUAL_UINT32(34700, lastFrequencyMHz);
+    TEST_ASSERT_EQUAL_INT(BAND_KA, display.ut_elementCaches().bands.lastMask);
+    TEST_ASSERT_TRUE(display.ut_elementCaches().arrow.showFront);
+    TEST_ASSERT_EQUAL_STRING("1", display.ut_elementCaches().topCounter.lastText);
+    TEST_ASSERT_TRUE(regionalTransfers.empty());
+    clearObservations();
+    TEST_ASSERT_FALSE(runtime.refresh(12001));
+    TEST_ASSERT_FALSE(runtime.refresh(15000));
+    TEST_ASSERT_TRUE(canvas()->flushSnapshots.empty());
+}
+
+void test_secondary_card_expiry_waits_for_existing_presentation_gates() {
+    CounterBlinkRuntime runtime;
+    settings.slotAlertPersistSec[0] = 2;
+    showSecondaryThenHold(runtime);
+    clearObservations();
+    DisplayOrchestrationRefreshContext context;
+    context.bootSplashHoldActive = true;
+    TEST_ASSERT_FALSE(runtime.refresh(12001, context));
+    context = {};
+    context.pipelineRanThisLoop = true;
+    TEST_ASSERT_FALSE(runtime.refresh(12002, context));
+    context = {};
+    context.overloadLateThisLoop = true;
+    TEST_ASSERT_FALSE(runtime.refresh(12003, context));
+    runtime.preview.requestHold(1000);
+    TEST_ASSERT_FALSE(runtime.refresh(12004));
+    runtime.preview.cancel();
+    runtime.ble.setConnected(false);
+    TEST_ASSERT_FALSE(runtime.refresh(12005));
+    TEST_ASSERT_TRUE(canvas()->flushSnapshots.empty());
+    TEST_ASSERT_EQUAL_INT(1, display.ut_elementCaches().cards.lastDrawnCount);
+
+    runtime.ble.setConnected(true);
+    TEST_ASSERT_TRUE(runtime.refresh(12006));
+    TEST_ASSERT_EQUAL_INT(0, display.ut_elementCaches().cards.lastDrawnCount);
+    TEST_ASSERT_EQUAL_UINT(1, canvas()->flushSnapshots.size());
+    TEST_ASSERT_FALSE(runtime.refresh(12007));
+}
+
+void test_zero_secondary_hold_does_not_schedule_an_expiry_refresh() {
+    CounterBlinkRuntime runtime;
+    showSecondaryThenHold(runtime);
+    TEST_ASSERT_EQUAL_INT(0, display.ut_elementCaches().cards.lastDrawnCount);
+    clearObservations();
+    TEST_ASSERT_FALSE(runtime.refresh(10101));
+    TEST_ASSERT_FALSE(runtime.refresh(15000));
+    TEST_ASSERT_TRUE(canvas()->flushSnapshots.empty());
+}
+
+void test_secondary_card_expiry_handles_wrapped_and_zero_deadlines() {
+    for (uint32_t lastSeen : {UINT32_MAX - 2000, UINT32_MAX - 1000}) {
+        setUp();
+        CounterBlinkRuntime runtime;
+        settings.slotAlertPersistSec[0] = 2;
+        showSecondaryThenHold(runtime, lastSeen);
+        TEST_ASSERT_TRUE(display.ut_elementCaches().cards.lastDrawnPositions[0].isGraced);
+        const uint32_t deadline = lastSeen + 2001;
+        clearObservations();
+        TEST_ASSERT_FALSE(runtime.refresh(deadline - 1));
+        TEST_ASSERT_TRUE(runtime.refresh(deadline));
+        TEST_ASSERT_EQUAL_INT(0, display.ut_elementCaches().cards.lastDrawnCount);
+        TEST_ASSERT_EQUAL_UINT(1, canvas()->flushSnapshots.size());
+        TEST_ASSERT_FALSE(runtime.refresh(deadline + 1));
+    }
+}
+
+void test_stealth_transition_cancels_expiry_of_an_alp_owned_v1_card() {
+    CounterBlinkRuntime runtime;
+    settings.slotAlertPersistSec[0] = 2;
+    settings.mutableSettings().stealthEnabled = true;
+    runtime.alp.testSetEnabled(true);
+    runtime.alp.testSetState(AlpState::ALERT_ACTIVE);
+    runtime.alp.testOpenSession(AlpGunType::MARKSMAN_ULTRALYTE, false, AlpLaserDirection::FRONT);
+    runtime.feed(PACKET_ID_ALERT_DATA, {0x11, 0x5E, 0x56, 0xA0, 0x00, 0x24, 0x80}, 10000);
+    runtime.displayFrame(0x06, 0x06, 0, 0x24, 0x24, 10000);
+    TEST_ASSERT_EQUAL_INT(1, display.ut_elementCaches().cards.lastDrawnCount);
+
+    runtime.feed(PACKET_ID_ALERT_DATA, {0, 0, 0, 0, 0, 0, 0}, 10100);
+    runtime.displayFrame(0x38, 0x38, 0, 0, 0, 10100);
+    TEST_ASSERT_TRUE(display.ut_elementCaches().cards.lastDrawnPositions[0].isGraced);
+    TEST_ASSERT_TRUE(display.secondaryCardRefreshDue(12001));
+    // ALP owned the primary throughout, so V1 has no primary hold to show
+    // before returning directly to stealth when ALP's zero-hold session ends.
+    TEST_ASSERT_FALSE(runtime.persistence.getPersistedAlert().isValid);
+    runtime.alp.testSetState(AlpState::TEARDOWN, 10200);
+    runtime.alp.testCloseSession(10200);
+    runtime.displayFrame(0x38, 0x38, 0, 0, 0, 10200);
+    TEST_ASSERT_TRUE(display.isStealthScreen());
+    clearObservations();
+
+    TEST_ASSERT_FALSE(runtime.refresh(12001));
+    TEST_ASSERT_FALSE(runtime.refresh(12002));
+    TEST_ASSERT_FALSE(runtime.refresh(15000));
+    TEST_ASSERT_FALSE(display.secondaryCardRefreshDue(15000));
+    TEST_ASSERT_EQUAL_INT(0, display.ut_elementCaches().cards.lastDrawnCount);
+    TEST_ASSERT_TRUE(canvas()->flushSnapshots.empty());
+    TEST_ASSERT_EQUAL_INT(1, stealthDrawCalls);
+
+    runtime.feed(PACKET_ID_ALERT_DATA, {0x12, 0x87, 0x8C, 0xAC, 0x00, 0x22, 0x80}, 16000);
+    runtime.feed(PACKET_ID_ALERT_DATA, {0x22, 0x5E, 0xEC, 0x00, 0xB8, 0x84, 0x00}, 16000);
+    runtime.displayFrame(0x5B, 0x5B, 0, 0xA6, 0xA6, 16000);
+    TEST_ASSERT_FALSE(display.isStealthScreen());
+    TEST_ASSERT_EQUAL_UINT32(34700, lastFrequencyMHz);
+    TEST_ASSERT_EQUAL_INT(1, display.ut_elementCaches().cards.lastDrawnCount);
+    TEST_ASSERT_EQUAL_UINT32(24300, display.ut_elementCaches().cards.lastDrawnPositions[0].frequency);
+    TEST_ASSERT_FALSE(display.ut_elementCaches().cards.lastDrawnPositions[0].isGraced);
+    TEST_ASSERT_FALSE(display.secondaryCardRefreshDue(19000));
+    TEST_ASSERT_EQUAL_UINT(1, canvas()->flushSnapshots.size());
+}
 } // namespace
 
 void test_idle_junk_counter_blinks_through_parser_pipeline_and_transfer() {
@@ -1185,6 +1325,11 @@ int main() {
     RUN_TEST(test_idle_steady_counter_does_not_request_extra_transfers);
     RUN_TEST(test_v1_persisted_alert_expires_without_another_detector_packet);
     RUN_TEST(test_v1_persisted_alert_expiry_restores_stealth_owner);
+    RUN_TEST(test_secondary_card_expires_without_packets_while_primary_stays_steady);
+    RUN_TEST(test_secondary_card_expiry_waits_for_existing_presentation_gates);
+    RUN_TEST(test_zero_secondary_hold_does_not_schedule_an_expiry_refresh);
+    RUN_TEST(test_secondary_card_expiry_handles_wrapped_and_zero_deadlines);
+    RUN_TEST(test_stealth_transition_cancels_expiry_of_an_alp_owned_v1_card);
     RUN_TEST(test_live_counter_keeps_existing_blink_cadence);
     RUN_TEST(test_two_spec_alert_rows_reach_primary_and_secondary_direction_geometry);
     RUN_TEST(test_changed_spec_priority_swaps_primary_and_card_without_stale_geometry);

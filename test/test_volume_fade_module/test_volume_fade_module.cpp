@@ -92,10 +92,29 @@ void test_laser_at_session_start_is_not_a_release() {
     TEST_ASSERT_FALSE(gModule.process(makeCtx(3600, 0, true, 1)).hasAction());
 }
 
+void test_external_mute_during_restore_requires_pair_and_stops_after_confirmation() {
+    startFadedKbandSession();
+    TEST_ASSERT_EQUAL(VolumeFadeAction::Type::RESTORE, gModule.process(makeCtx(4000, 0, true, 1)).type);
+    VolumeFadeContext ctx = makeCtx(6000, 0, true, 6);
+    ctx.alertMuted = true;
+    ctx.currentMuteVolume = 1;
+    const VolumeFadeAction restore = gModule.process(ctx);
+    TEST_ASSERT_EQUAL(VolumeFadeAction::Type::RESTORE, restore.type);
+    TEST_ASSERT_EQUAL_UINT8(6, restore.restoreVolume);
+    TEST_ASSERT_EQUAL_UINT8(5, restore.restoreMuteVolume);
+    ctx.now = 6100;
+    ctx.currentMuteVolume = 5;
+    TEST_ASSERT_FALSE(gModule.process(ctx).hasAction());
+    TEST_ASSERT_FALSE(gModule.hasActiveVolumeOverride());
+    ctx.now = 6200;
+    TEST_ASSERT_FALSE(gModule.process(ctx).hasAction());
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_new_laser_releases_active_fade);
     RUN_TEST(test_new_frequency_still_releases_active_fade);
     RUN_TEST(test_laser_at_session_start_is_not_a_release);
+    RUN_TEST(test_external_mute_during_restore_requires_pair_and_stops_after_confirmation);
     return UNITY_END();
 }

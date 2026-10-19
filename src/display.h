@@ -58,6 +58,8 @@ class V1Display {
     void renderFrame(const RenderFrame& frame);
 
     bool isPersistedMode() const { return persistedMode_; }
+    // Pending grey-card expiry; live cards never request a timed refresh.
+    bool secondaryCardRefreshDue(uint32_t nowMs) const;
 
     void showDisconnected();
     // Empty ipAddress means unavailable; stationMode selects STA/DHCP vs setup AP.

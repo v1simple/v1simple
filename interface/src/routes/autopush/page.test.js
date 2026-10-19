@@ -318,10 +318,9 @@ describe('autopush route page', () => {
         unmount();
     });
 
-    it('makes pending-migration slots read-only while keeping durable slot Apply available', async () => {
+    it('keeps Apply unavailable with the other slot controls until migration completes', async () => {
         const fetchMock = installDefaultFetch([
             maintenanceStatus,
-            queuedOperation,
             {
                 method: 'GET',
                 match: '/api/autopush/slots',
@@ -357,12 +356,16 @@ describe('autopush route page', () => {
             expect(activate).toBeDisabled();
         }
         const push = screen.getByRole('button', { name: /apply to v1/i });
-        await waitFor(() => expect(push).toBeEnabled());
+        await waitFor(() => expect(screen.queryByText(/checking device runtime mode/i)).not.toBeInTheDocument());
+        expect(push).toBeDisabled();
         await fireEvent.click(push);
-        await screen.findByText(/Slot 1 queued as operation 42/);
+        // A stale enabled control still cannot bypass the migration guard.
+        push.disabled = false;
+        await fireEvent.click(push);
         expect(fetchMock.mock.calls.some(
             ([url, init]) => url === '/api/autopush/push' && init?.method === 'POST'
-        )).toBe(true);
+        )).toBe(false);
+        expect(screen.queryByText(/existing saved slots can still be applied/i)).not.toBeInTheDocument();
 
         unmount();
     });

@@ -36,6 +36,11 @@ jobs:
           SWIFTPM_MODULECACHE_OVERRIDE: ${{ github.workspace }}/tools/v1replay/.build/module-cache
         run: swift test --package-path tools/v1replay
 
+      - name: Run v1replay peripheral lifecycle tests
+        env:
+          DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+        run: python3 tools/v1replay/Tests/test_peripheral_lifecycle.py
+
       - name: Check native camera recorder
         env:
           DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer

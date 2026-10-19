@@ -428,7 +428,7 @@ void test_coalesced_clear_preserves_known_zero_baseline() {
     TEST_ASSERT_EQUAL_UINT8(2, parser.getDisplayState().muteVolume);
 }
 
-void test_coalesced_clear_replaces_deferred_fade_with_retryable_restore() {
+void test_coalesced_clear_cancels_deferred_fade_and_confirms_restore_pair() {
     SpeedFadeRuntime runtime;
     volume(6, 2, 9500);
     runtime.step(10000, 50, true);
@@ -444,11 +444,11 @@ void test_coalesced_clear_replaces_deferred_fade_with_retryable_restore() {
     TEST_ASSERT_FALSE(quiet.canApplyAutoPushVolumeExactly());
     runtime.step(12520, 50, true, false);
     TEST_ASSERT_EQUAL_INT(2, ble.setVolumeCalls);
-    runtime.step(12535, 50, true);
-    TEST_ASSERT_EQUAL_INT(3, ble.setVolumeCalls);
+    runtime.step(12585, 50, true);
+    TEST_ASSERT_EQUAL_INT(2, ble.setVolumeCalls);
     TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
     runtime.step(14509, 50, true);
-    TEST_ASSERT_EQUAL_INT(3, ble.setVolumeCalls);
+    TEST_ASSERT_EQUAL_INT(2, ble.setVolumeCalls);
     runtime.step(14510, 50, true);
     TEST_ASSERT_EQUAL_UINT8(1, ble.lastVolume);
 }
@@ -854,13 +854,197 @@ void test_speed_drop_not_yet_retries_and_restores_original_pair() {
     TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
 }
 
+void test_speed_restore_survives_long_holdoff_and_requires_complete_pair() {
+    SpeedFadeRuntime runtime;
+    volume(6, 2, 10000);
+    runtime.step(11000, 0, false);
+    for (uint32_t now = 14000; now <= 17000; now += 100) {
+        ble.nextVolumeSendResult = SendResult::NOT_YET;
+        runtime.step(now, 50, false, false);
+    }
+    TEST_ASSERT_FALSE(quiet.canApplyAutoPushVolumeExactly());
+    const int before = ble.setVolumeCalls;
+    runtime.step(17025, 50, false, false);
+    TEST_ASSERT_EQUAL_INT(before, ble.setVolumeCalls);
+    runtime.step(17100, 50, false, false);
+    TEST_ASSERT_EQUAL_INT(before + 1, ble.setVolumeCalls);
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
+
+    volume(6, 1, 17200);
+    runtime.step(17200, 50, false, false);
+    TEST_ASSERT_FALSE(quiet.canApplyAutoPushVolumeExactly());
+    TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
+    volume(6, 2, 17300);
+    runtime.step(17300, 50, false, false);
+    TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+    const int confirmed = ble.setVolumeCalls;
+    runtime.step(20000, 50, false, false);
+    TEST_ASSERT_EQUAL_INT(confirmed, ble.setVolumeCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.setMuteCalls);
+}
+
+void test_speed_reentry_preserves_unconfirmed_restore_pair() {
+    SpeedFadeRuntime runtime;
+    volume(6, 2, 10000);
+    runtime.step(11000, 0, false);
+    ble.nextVolumeSendResult = SendResult::NOT_YET;
+    runtime.step(14000, 50, false, false);
+    runtime.step(15500, 0, false);
+    TEST_ASSERT_TRUE(runtime.speed.getState().muteActive);
+    runtime.step(18000, 50, false, false);
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
+}
+
+void test_live_new_threat_restore_retries_until_complete_pair_after_long_holdoff() {
+    startActiveFade();
+    // New Ka priority, 35.500 GHz. Transport acceptance does not update the
+    // production parser's canonical pair: model an unapplied detector write.
+    feed(PACKET_ID_ALERT_DATA, {0x11, 0x8A, 0xAC, 0xAC, 0x00, 0x22, 0x80}, 13000);
+    TEST_ASSERT_TRUE(quiet.executeVolumeFade(13000, &fade));
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+    const int firstRestore = ble.setVolumeCalls;
+    quiet.executeVolumeFade(13010, &fade);
+    TEST_ASSERT_EQUAL_INT(firstRestore, ble.setVolumeCalls);
+    for (uint32_t now = 13100; now <= 17000; now += 100) {
+        ble.nextVolumeSendResult = SendResult::NOT_YET;
+        quiet.executeVolumeFade(now, &fade);
+    }
+    TEST_ASSERT_GREATER_THAN_INT(firstRestore, ble.setVolumeCalls);
+    TEST_ASSERT_TRUE(fade.hasActiveVolumeOverride());
+    TEST_ASSERT_FALSE(quiet.canApplyAutoPushVolumeExactly());
+    ble.nextVolumeSendResult = SendResult::SENT;
+    TEST_ASSERT_TRUE(quiet.executeVolumeFade(17100, &fade));
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
+
+    volume(6, 1, 17200); // Main alone is not convergence of the saved pair.
+    TEST_ASSERT_TRUE(quiet.executeVolumeFade(17200, &fade));
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
+    clearAlert(17300);
+    TEST_ASSERT_TRUE(quiet.executeVolumeFade(17300, &fade));
+    volume(6, 2, 17400);
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(17400, &fade));
+    TEST_ASSERT_FALSE(fade.hasActiveVolumeOverride());
+    TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+    const int confirmed = ble.setVolumeCalls;
+    quiet.executeVolumeFade(20000, &fade);
+    TEST_ASSERT_EQUAL_INT(confirmed, ble.setVolumeCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.setMuteCalls);
+}
+
+void test_invalid_speed_restore_survives_same_detector_reconnect_without_default_confirmation() {
+    SpeedFadeRuntime runtime;
+    volume(6, 2, 10000);
+    runtime.step(11000, 0, false);
+    runtime.speed.update(0, false, 11100);
+    ble.nextVolumeSendResult = SendResult::FAILED;
+    TEST_ASSERT_TRUE(quiet.processSpeedVolume(11100, runtime.speed, &fade));
+    closeSession(2, 11200);
+    openSession(3, 20000);
+    const int before = ble.setVolumeCalls;
+    TEST_ASSERT_TRUE(quiet.processSpeedVolume(20000, runtime.speed, &fade));
+    TEST_ASSERT_EQUAL_INT(before, ble.setVolumeCalls);
+    TEST_ASSERT_FALSE(quiet.canApplyAutoPushVolumeExactly());
+    volume(0, 2, 20100);
+    TEST_ASSERT_TRUE(quiet.processSpeedVolume(20100, runtime.speed, &fade));
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
+    volume(6, 2, 20200);
+    TEST_ASSERT_FALSE(quiet.processSpeedVolume(20200, runtime.speed, &fade));
+    TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+}
+
+void test_new_profile_supersedes_long_pending_speed_restore_including_zero() {
+    for (uint8_t target : {uint8_t(8), uint8_t(0)}) {
+        setUp();
+        SpeedFadeRuntime runtime;
+        volume(6, 2, 10000);
+        runtime.step(11000, 0, false);
+        ble.nextVolumeSendResult = SendResult::NOT_YET;
+        runtime.step(14000, 50, false, false);
+        TEST_ASSERT_TRUE(quiet.sendAutoPushVolume(target, 3));
+        runtime.step(18000, 50, false, false);
+        TEST_ASSERT_EQUAL_UINT8(target, ble.lastVolume);
+        TEST_ASSERT_EQUAL_UINT8(3, ble.lastMuteVolume);
+        volume(target, 3, 18100);
+        runtime.step(18100, 50, false, false);
+        TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+    }
+}
+
+void test_delayed_live_restore_sounds_before_refade_and_then_honors_new_profile() {
+    startActiveFade();
+    feed(PACKET_ID_ALERT_DATA, {0x11, 0x8A, 0xAC, 0xAC, 0x00, 0x22, 0x80}, 13000);
+    ble.nextVolumeSendResult = SendResult::FAILED;
+    TEST_ASSERT_TRUE(quiet.executeVolumeFade(13000, &fade));
+    TEST_ASSERT_TRUE(quiet.executeVolumeFade(17000, &fade));
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+    volume(6, 2, 17100);
+    const int confirmed = ble.setVolumeCalls;
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(17100, &fade));
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(19099, &fade));
+    TEST_ASSERT_EQUAL_INT(confirmed, ble.setVolumeCalls);
+    TEST_ASSERT_TRUE(quiet.executeVolumeFade(19100, &fade));
+    TEST_ASSERT_EQUAL_UINT8(1, ble.lastVolume);
+    volume(1, 2, 19200);
+    clearAlert(20000);
+    TEST_ASSERT_TRUE(quiet.executeVolumeFade(20000, &fade));
+    volume(6, 2, 20100);
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(20100, &fade));
+    TEST_ASSERT_TRUE(quiet.beginAutoPushVolumeTransaction());
+    TEST_ASSERT_TRUE(quiet.sendAutoPushVolume(0, 3));
+    volume(0, 3, 20200);
+    quiet.endAutoPushVolumeTransaction();
+    alert(21000);
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(21000, &fade));
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(24000, &fade));
+    clearAlert(25000);
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(25000, &fade));
+    TEST_ASSERT_EQUAL_UINT8(0, parser.getDisplayState().mainVolume);
+    TEST_ASSERT_EQUAL_UINT8(3, parser.getDisplayState().muteVolume);
+}
+
+void test_pending_new_threat_restore_yields_to_proxy_and_changed_detector() {
+    for (bool proxy : {false, true}) {
+        setUp();
+        startActiveFade();
+        feed(PACKET_ID_ALERT_DATA, {0x11, 0x8A, 0xAC, 0xAC, 0x00, 0x22, 0x80}, 13000);
+        TEST_ASSERT_TRUE(quiet.executeVolumeFade(13000, &fade));
+        const int before = ble.setVolumeCalls;
+        if (proxy) {
+            ble.setProxyConnected(true);
+            TEST_ASSERT_TRUE(quiet.syncProxyVolumeOwnership(&fade));
+            ble.setProxyConnected(false);
+        } else {
+            closeSession(2, 14000);
+            openSession(3, 20000, "AA:BB:CC:DD:EE:02");
+        }
+        volume(3, 1, 20100);
+        clearAlert(20200);
+        TEST_ASSERT_FALSE(quiet.executeVolumeFade(20200, &fade));
+        TEST_ASSERT_EQUAL_INT(before, ble.setVolumeCalls);
+        TEST_ASSERT_FALSE(fade.hasActiveVolumeOverride());
+        TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+    }
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_speed_restore_survives_long_holdoff_and_requires_complete_pair);
+    RUN_TEST(test_speed_reentry_preserves_unconfirmed_restore_pair);
+    RUN_TEST(test_live_new_threat_restore_retries_until_complete_pair_after_long_holdoff);
+    RUN_TEST(test_invalid_speed_restore_survives_same_detector_reconnect_without_default_confirmation);
+    RUN_TEST(test_new_profile_supersedes_long_pending_speed_restore_including_zero);
+    RUN_TEST(test_delayed_live_restore_sounds_before_refade_and_then_honors_new_profile);
+    RUN_TEST(test_pending_new_threat_restore_yields_to_proxy_and_changed_detector);
     RUN_TEST(test_coalesced_clear_and_same_frequency_rearms_fade);
     RUN_TEST(test_coalesced_clear_during_speed_restores_baseline_and_rearms_fade);
     RUN_TEST(test_coalesced_clear_before_fade_restarts_the_delay);
     RUN_TEST(test_coalesced_clear_preserves_known_zero_baseline);
-    RUN_TEST(test_coalesced_clear_replaces_deferred_fade_with_retryable_restore);
+    RUN_TEST(test_coalesced_clear_cancels_deferred_fade_and_confirms_restore_pair);
     RUN_TEST(test_repeated_coalesced_clear_retains_unconfirmed_restore_pair);
     RUN_TEST(test_coalesced_clear_during_delayed_speed_restore_replaces_faded_target);
     RUN_TEST(test_coalesced_speed_clear_preserves_new_autopush_baseline);

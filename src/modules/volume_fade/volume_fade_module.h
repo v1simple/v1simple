@@ -12,6 +12,7 @@ class SettingsManager;
  */
 struct VolumeFadeContext {
     bool hasAlert;             // Currently have active alert
+    bool alertEpisodeEnded;    // A clear occurred since the previous owner pass
     bool alertMuted;           // Alert is muted by user
     bool alertSuppressed;      // Alert is software-suppressed
     uint8_t currentVolume;     // Current V1 volume
@@ -21,8 +22,8 @@ struct VolumeFadeContext {
     unsigned long now;         // Current timestamp
 
     VolumeFadeContext()
-        : hasAlert(false), alertMuted(false), alertSuppressed(false), currentVolume(0), currentMuteVolume(0),
-          currentFrequency(0), priorityIsLaser(false), now(0) {}
+        : hasAlert(false), alertEpisodeEnded(false), alertMuted(false), alertSuppressed(false), currentVolume(0),
+          currentMuteVolume(0), currentFrequency(0), priorityIsLaser(false), now(0) {}
 };
 
 /**

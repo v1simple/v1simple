@@ -116,6 +116,7 @@ class QuietCoordinatorModule {
     void syncCommittedState();
     void refreshPendingState();
     void resetInTheBoxSession();
+    bool consumeFadeAlertEnd();
 
     template <typename SpeedMuteLike> void updateSpeedVolPresentation(const SpeedMuteLike* speedMute);
 
@@ -143,6 +144,9 @@ class QuietCoordinatorModule {
     uint16_t pendingFadeFrequency_ = 0;
     bool pendingFadeLaser_ = false;
     uint32_t pendingFadeLastAttemptMs_ = 0;
+    uint32_t fadeAlertLifetime_ = 0;
+    uint32_t fadeAlertSession_ = 0;
+    bool fadeAlertLifetimeKnown_ = false;
     bool autoPushVolumeTransactionActive_ = false;
     V1InTheBoxSettings inTheBoxSettings_{};
     InTheBoxModule inTheBox_;

@@ -354,6 +354,147 @@ struct SpeedFadeRuntime {
 };
 } // namespace
 
+void test_coalesced_clear_and_same_frequency_rearms_fade() {
+    SpeedFadeRuntime runtime;
+    startActiveFade();
+    const uint32_t lifetime = parser.alertLifetime();
+    // Both publications reach the real parser before one normal owner pass.
+    clearAlert(13000);
+    alert(13000);
+    TEST_ASSERT_EQUAL_UINT32(lifetime + 2, parser.alertLifetime());
+    const int before = ble.setVolumeCalls;
+    runtime.step(13000, 50, true);
+    TEST_ASSERT_EQUAL_INT(before + 1, ble.setVolumeCalls);
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
+    runtime.step(14999, 50, true);
+    TEST_ASSERT_EQUAL_UINT8(6, parser.getDisplayState().mainVolume);
+    runtime.step(15000, 50, true);
+    TEST_ASSERT_EQUAL_UINT8(1, parser.getDisplayState().mainVolume);
+    runtime.step(16000, 50, false);
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
+}
+
+void test_coalesced_clear_during_speed_restores_baseline_and_rearms_fade() {
+    SpeedFadeRuntime runtime;
+    runtime.dropDuringFade();
+    const uint32_t lifetime = parser.alertLifetime();
+    clearAlert(15100);
+    alert(15100);
+    TEST_ASSERT_EQUAL_UINT32(lifetime + 2, parser.alertLifetime());
+    const int before = ble.setVolumeCalls;
+    runtime.step(15100, 0, true);
+    TEST_ASSERT_EQUAL_INT(before, ble.setVolumeCalls);
+    TEST_ASSERT_EQUAL_UINT8(0, parser.getDisplayState().mainVolume);
+    runtime.step(21000, 50, true);
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
+    runtime.step(21100, 50, true);
+    runtime.step(23099, 50, true);
+    TEST_ASSERT_EQUAL_UINT8(6, parser.getDisplayState().mainVolume);
+    runtime.step(23100, 50, true);
+    TEST_ASSERT_EQUAL_UINT8(1, parser.getDisplayState().mainVolume);
+    runtime.step(24000, 50, false);
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
+    TEST_ASSERT_EQUAL_INT(0, ble.setMuteCalls);
+}
+
+void test_coalesced_clear_before_fade_restarts_the_delay() {
+    SpeedFadeRuntime runtime;
+    volume(6, 2, 9500);
+    runtime.step(10000, 50, true);
+    clearAlert(11900);
+    runtime.step(11900, 50, true);
+    runtime.step(13899, 50, true);
+    TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
+    runtime.step(13900, 50, true);
+    TEST_ASSERT_EQUAL_UINT8(1, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
+}
+
+void test_coalesced_clear_preserves_known_zero_baseline() {
+    SpeedFadeRuntime runtime;
+    volume(0, 2, 9500);
+    runtime.step(10000, 50, true);
+    runtime.step(12500, 50, true);
+    clearAlert(13000);
+    runtime.step(13000, 50, true);
+    runtime.step(15000, 50, true);
+    runtime.step(16000, 50, false);
+    TEST_ASSERT_EQUAL_INT(0, ble.setVolumeCalls);
+    TEST_ASSERT_EQUAL_UINT8(0, parser.getDisplayState().mainVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, parser.getDisplayState().muteVolume);
+}
+
+void test_coalesced_clear_replaces_deferred_fade_with_retryable_restore() {
+    SpeedFadeRuntime runtime;
+    volume(6, 2, 9500);
+    runtime.step(10000, 50, true);
+    ble.nextVolumeSendResult = SendResult::NOT_YET;
+    runtime.step(12500, 50, true, false);
+    TEST_ASSERT_EQUAL_UINT8(1, ble.lastVolume);
+    clearAlert(12510);
+    ble.nextVolumeSendResult = SendResult::NOT_YET;
+    runtime.step(12510, 50, true, false);
+    TEST_ASSERT_EQUAL_INT(2, ble.setVolumeCalls);
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
+    TEST_ASSERT_FALSE(quiet.canApplyAutoPushVolumeExactly());
+    runtime.step(12520, 50, true, false);
+    TEST_ASSERT_EQUAL_INT(2, ble.setVolumeCalls);
+    runtime.step(12535, 50, true);
+    TEST_ASSERT_EQUAL_INT(3, ble.setVolumeCalls);
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+    runtime.step(14509, 50, true);
+    TEST_ASSERT_EQUAL_INT(3, ble.setVolumeCalls);
+    runtime.step(14510, 50, true);
+    TEST_ASSERT_EQUAL_UINT8(1, ble.lastVolume);
+}
+
+void test_repeated_coalesced_clear_retains_unconfirmed_restore_pair() {
+    SpeedFadeRuntime runtime;
+    startActiveFade();
+    clearAlert(13000);
+    runtime.step(13000, 50, true, false);
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(1, parser.getDisplayState().mainVolume);
+    clearAlert(13100);
+    runtime.step(13100, 50, true, false);
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
+    TEST_ASSERT_FALSE(quiet.canApplyAutoPushVolumeExactly());
+    feed(PACKET_ID_RESP_ALL_VOLUME, {6, 2, 6, 2}, 13200);
+    runtime.step(15099, 50, true);
+    TEST_ASSERT_EQUAL_UINT8(6, parser.getDisplayState().mainVolume);
+    runtime.step(15100, 50, true);
+    TEST_ASSERT_EQUAL_UINT8(1, parser.getDisplayState().mainVolume);
+    runtime.step(16000, 50, false);
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
+}
+
+void test_coalesced_clear_during_delayed_speed_restore_replaces_faded_target() {
+    SpeedFadeRuntime runtime;
+    runtime.dropDuringFade();
+    runtime.step(21000, 50, true, false);
+    TEST_ASSERT_EQUAL_UINT8(1, ble.lastVolume);
+    clearAlert(21100);
+    runtime.step(21100, 50, true, false);
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+    feed(PACKET_ID_RESP_ALL_VOLUME, {1, 2, 6, 2}, 21150);
+    runtime.step(21200, 50, true, false);
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
+    feed(PACKET_ID_RESP_ALL_VOLUME, {6, 2, 6, 2}, 21300);
+    runtime.step(21300, 50, true);
+    runtime.step(23299, 50, true);
+    TEST_ASSERT_EQUAL_UINT8(6, parser.getDisplayState().mainVolume);
+    runtime.step(23300, 50, true);
+    TEST_ASSERT_EQUAL_UINT8(1, parser.getDisplayState().mainVolume);
+}
+
 void test_speed_owned_clear_rearms_same_frequency_and_restores_baseline_pair() {
     SpeedFadeRuntime runtime;
     runtime.dropDuringFade();
@@ -433,13 +574,14 @@ void test_speed_owned_clear_discards_a_deferred_fade_command() {
     TEST_ASSERT_EQUAL_UINT8(6, parser.getDisplayState().mainVolume);
 }
 
-static void expectAutoPushBaselineAfterSpeedClear(uint8_t main) {
+static void expectAutoPushBaselineAfterSpeedClear(uint8_t main, bool coalesced = false) {
     SpeedFadeRuntime runtime;
     runtime.dropDuringFade();
     TEST_ASSERT_TRUE(quiet.sendAutoPushVolume(main, 3));
     TEST_ASSERT_EQUAL_UINT8(0, ble.lastVolume);
     feed(PACKET_ID_RESP_ALL_VOLUME, {0, 3, main, 3}, 15050);
-    runtime.step(15100, 0, false);
+    if (coalesced) clearAlert(15100);
+    runtime.step(15100, 0, coalesced);
     runtime.step(20000, 0, true);
     runtime.step(21000, 50, true);
     runtime.step(21100, 50, true);
@@ -453,6 +595,14 @@ void test_speed_owned_clear_preserves_new_autopush_baseline() {
 
 void test_speed_owned_clear_preserves_new_autopush_zero_baseline() {
     expectAutoPushBaselineAfterSpeedClear(0);
+}
+
+void test_coalesced_speed_clear_preserves_new_autopush_baseline() {
+    expectAutoPushBaselineAfterSpeedClear(8, true);
+}
+
+void test_coalesced_speed_clear_preserves_new_autopush_zero_baseline() {
+    expectAutoPushBaselineAfterSpeedClear(0, true);
 }
 
 void test_speed_owned_clear_preserves_autopush_applied_before_speed_drop() {
@@ -706,6 +856,15 @@ void test_speed_drop_not_yet_retries_and_restores_original_pair() {
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_coalesced_clear_and_same_frequency_rearms_fade);
+    RUN_TEST(test_coalesced_clear_during_speed_restores_baseline_and_rearms_fade);
+    RUN_TEST(test_coalesced_clear_before_fade_restarts_the_delay);
+    RUN_TEST(test_coalesced_clear_preserves_known_zero_baseline);
+    RUN_TEST(test_coalesced_clear_replaces_deferred_fade_with_retryable_restore);
+    RUN_TEST(test_repeated_coalesced_clear_retains_unconfirmed_restore_pair);
+    RUN_TEST(test_coalesced_clear_during_delayed_speed_restore_replaces_faded_target);
+    RUN_TEST(test_coalesced_speed_clear_preserves_new_autopush_baseline);
+    RUN_TEST(test_coalesced_speed_clear_preserves_new_autopush_zero_baseline);
     RUN_TEST(test_alert_before_first_volume_preserves_real_baseline_pair);
     RUN_TEST(test_volume_before_first_alert_preserves_existing_fade_and_restore);
     RUN_TEST(test_known_zero_volume_is_preserved);

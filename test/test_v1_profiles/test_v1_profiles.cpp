@@ -372,6 +372,94 @@ void test_interrupted_save_recovery_uses_bounded_scans_and_never_replaces_live_p
     TEST_ASSERT_EQUAL_STRING("live", loaded.description.c_str());
 }
 
+void assert_existing_profile_open_failure_preserves_live_and_backup(bool existsUsesReadOpen, bool legacy) {
+    fs::FS fs(g_tempRoot);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&fs));
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 10, "original")).success);
+
+    // A failed cleanup can retain the previous version after a successful save.
+    fs::mock_fail_next_remove("/v1profiles/Road.json.bak");
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 40, "replacement")).success);
+    TEST_ASSERT_TRUE(fs.exists("/v1profiles/Road.json.bak"));
+    if (legacy) TEST_ASSERT_TRUE(fs.remove("/v1profiles/Road.json.meta"));
+    const auto before = filesSnapshot();
+
+    V1Profile loaded;
+    TEST_ASSERT_TRUE(manager.loadProfile("Road", loaded));
+    TEST_ASSERT_EQUAL_STRING("replacement", loaded.description.c_str());
+    TEST_ASSERT_EQUAL_UINT8(40, loaded.settings.bytes[0]);
+    TEST_ASSERT_TRUE(before == filesSnapshot());
+
+    fs::mock_exists_uses_read_open(existsUsesReadOpen);
+    loaded = makeProfile("Sentinel", 90, "unchanged");
+    fs::mock_fail_next_read_open("/v1profiles/Road.json");
+    const ProfileOperationResult result = manager.loadProfileResult("Road", loaded);
+
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::IoError), static_cast<int>(result.status));
+    TEST_ASSERT_EQUAL_STRING("Profile open failed", result.error.c_str());
+    TEST_ASSERT_TRUE(before == filesSnapshot());
+    TEST_ASSERT_EQUAL_STRING("Sentinel", loaded.name.c_str());
+    TEST_ASSERT_EQUAL_STRING("unchanged", loaded.description.c_str());
+    TEST_ASSERT_EQUAL_UINT8(90, loaded.settings.bytes[0]);
+
+    TEST_ASSERT_TRUE(manager.loadProfile("Road", loaded));
+    TEST_ASSERT_EQUAL_STRING("replacement", loaded.description.c_str());
+    TEST_ASSERT_EQUAL_UINT8(40, loaded.settings.bytes[0]);
+    TEST_ASSERT_TRUE(before == filesSnapshot());
+}
+
+void test_load_existing_profile_open_failure_preserves_live_and_backup() {
+    assert_existing_profile_open_failure_preserves_live_and_backup(false, false);
+}
+
+void test_load_open_based_exists_failure_preserves_live_and_backup() {
+    assert_existing_profile_open_failure_preserves_live_and_backup(true, false);
+}
+
+void test_load_legacy_open_based_exists_failure_preserves_live_and_backup() {
+    assert_existing_profile_open_failure_preserves_live_and_backup(true, true);
+}
+
+void test_load_stat_error_preserves_files_and_output() {
+    fs::FS fs(g_tempRoot);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&fs));
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 10, "original")).success);
+    fs::mock_fail_next_remove("/v1profiles/Road.json.bak");
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 40, "replacement")).success);
+
+    // A non-directory path component makes stat fail with ENOTDIR, not ENOENT.
+    TEST_ASSERT_TRUE(fs.rename("/v1profiles", "/preservedprofiles"));
+    writeFileFromString(fs, "/v1profiles", "unavailable directory");
+    const auto before = filesSnapshot();
+    V1Profile loaded = makeProfile("Sentinel", 90, "unchanged");
+    const auto result = manager.loadProfileResult("Road", loaded);
+
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileStorageStatus::IoError), static_cast<int>(result.status));
+    TEST_ASSERT_TRUE(before == filesSnapshot());
+    TEST_ASSERT_EQUAL_STRING("Sentinel", loaded.name.c_str());
+    TEST_ASSERT_EQUAL_STRING("unchanged", loaded.description.c_str());
+    TEST_ASSERT_EQUAL_UINT8(90, loaded.settings.bytes[0]);
+}
+
+void test_load_profile_recovers_backup_when_main_is_missing() {
+    fs::FS fs(g_tempRoot);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&fs));
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 10, "original")).success);
+    const auto before = filesSnapshot();
+    TEST_ASSERT_TRUE(fs.rename("/v1profiles/Road.json", "/v1profiles/Road.json.bak"));
+    TEST_ASSERT_FALSE(fs.exists("/v1profiles/Road.json"));
+
+    V1Profile loaded;
+    TEST_ASSERT_TRUE(manager.loadProfileResult("Road", loaded).success());
+    TEST_ASSERT_EQUAL_STRING("original", loaded.description.c_str());
+    TEST_ASSERT_EQUAL_UINT8(10, loaded.settings.bytes[0]);
+    TEST_ASSERT_FALSE(fs.exists("/v1profiles/Road.json.bak"));
+    TEST_ASSERT_TRUE(before == filesSnapshot());
+}
+
 void test_reconcile_psram_unavailable_never_overwrites_newer_profile_or_tombstone() {
     const std::filesystem::path sdRoot = g_tempRoot / "sd_oom";
     const std::filesystem::path littleRoot = g_tempRoot / "little_oom";
@@ -1653,5 +1741,10 @@ int main() {
     RUN_TEST(test_create_only_save_preserves_existing_profile);
     RUN_TEST(test_profile_reconcile_generation_exhaustion_does_not_choose_or_overwrite_either_copy);
     RUN_TEST(test_interrupted_save_recovery_uses_bounded_scans_and_never_replaces_live_profile);
+    RUN_TEST(test_load_existing_profile_open_failure_preserves_live_and_backup);
+    RUN_TEST(test_load_open_based_exists_failure_preserves_live_and_backup);
+    RUN_TEST(test_load_legacy_open_based_exists_failure_preserves_live_and_backup);
+    RUN_TEST(test_load_stat_error_preserves_files_and_output);
+    RUN_TEST(test_load_profile_recovers_backup_when_main_is_missing);
     return UNITY_END();
 }

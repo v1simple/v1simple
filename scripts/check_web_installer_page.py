@@ -42,6 +42,28 @@ EXPECTED_INSTALL_SCRIPT = (
     "sha384-f+fR3K1mnKB2tVps4hdEh+qJvLgH2bKw81Yn+eNE3+gE8YpqocjkxQON4k19I3e/",
     "anonymous",
 )
+EXPECTED_PRESERVE_IMPORTS = {
+    "esptool-js": "https://unpkg.com/esptool-js@0.6.0/bundle.js",
+    "https://unpkg.com/esp-web-tools@10.4.0/dist/util/sleep":
+        "https://unpkg.com/esp-web-tools@10.4.0/dist/util/sleep.js",
+}
+EXPECTED_PRESERVE_PRELOADS = [
+    (
+        "https://unpkg.com/esp-web-tools@10.4.0/dist/flash.js",
+        "sha384-8d9/UBP9hpFwSNpdM33Mc2GDkyEHVM1L6WIZlt1Ix4hIhmYbL7tgcL7sIVRFPF6P",
+        "anonymous",
+    ),
+    (
+        "https://unpkg.com/esptool-js@0.6.0/bundle.js",
+        "sha384-w6aOfygkgbl9ehV88LT6557lncD9H6dGDe+0oOFgHI3YeAiRIqp2h0MTz5pkjUet",
+        "anonymous",
+    ),
+    (
+        "https://unpkg.com/esp-web-tools@10.4.0/dist/util/sleep.js",
+        "sha384-lxbI4P4M798yIoAQTevskBHQSzk3aI1MVBKV5D8pAIcySag75Xq7uRHV6Z2VvAIG",
+        "anonymous",
+    ),
+]
 EXPECTED_ANALYTICS_SCRIPT = (
     "https://v1simple.goatcounter.com/count",
     '{"path":"/"}',
@@ -65,12 +87,24 @@ class InstallerParser(HTMLParser):
         self.analytics_scripts: list[tuple[str, str, str, str, str]] = []
         self.links: list[str] = []
         self.images: list[str] = []
+        self.import_maps: list[str] = []
+        self.preloads: list[tuple[str, str, str]] = []
+        self._import_map = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attr = {name: value or "" for name, value in attrs}
         if tag == "esp-web-install-button" and "manifest" in attr:
             self.install_manifests.append(attr["manifest"])
             self.install_modes.append(attr.get("data-install-mode", ""))
+        if tag == "button" and attr.get("id") == "preserve-install":
+            self.install_manifests.append(attr.get("data-manifest", ""))
+            self.install_modes.append(attr.get("data-install-mode", ""))
+        if tag == "script" and attr.get("type") == "importmap":
+            self._import_map = True
+        if tag == "link" and attr.get("rel") == "modulepreload":
+            self.preloads.append(
+                (attr.get("href", ""), attr.get("integrity", ""), attr.get("crossorigin", ""))
+            )
         if tag == "script" and attr.get("type") == "module" and "src" in attr:
             self.module_scripts.append(
                 (attr["src"], attr.get("integrity", ""), attr.get("crossorigin", ""))
@@ -85,12 +119,22 @@ class InstallerParser(HTMLParser):
                     attr.get("crossorigin", ""),
                 )
             )
-        if tag == "button" and attr.get("slot") == "activate":
+        if tag == "button" and (
+            attr.get("slot") == "activate" or attr.get("id") == "preserve-install"
+        ):
             self.install_events.append(attr.get("data-goatcounter-click", ""))
         if tag == "a" and "href" in attr:
             self.links.append(attr["href"])
         if tag == "img" and "src" in attr:
             self.images.append(attr["src"])
+
+    def handle_data(self, data: str) -> None:
+        if self._import_map:
+            self.import_maps.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "script":
+            self._import_map = False
 
 
 def display_path(path: Path) -> str:
@@ -285,13 +329,29 @@ def main() -> int:
         "Fresh install — erase and rebuild",
         "destructive even if ESP Web Tools’ optional erase box is off",
         "Physical SD-card contents are not part of this flash operation.",
-        "Checking “Erase device” changes this into a destructive erase.",
+        "This update never erases the whole device.",
     ):
         if required_text not in index_text:
             errors.append(f"index.html must explain installer consequence: {required_text!r}")
 
     if parser_obj.module_scripts != [EXPECTED_INSTALL_SCRIPT]:
         errors.append("index.html must load the exact pinned ESP Web Tools module with SRI")
+    try:
+        imports = [json.loads(value) for value in parser_obj.import_maps]
+    except json.JSONDecodeError:
+        imports = []
+    if imports != [{"imports": EXPECTED_PRESERVE_IMPORTS}]:
+        errors.append("preservation flasher imports must use the pinned browser modules")
+    if parser_obj.preloads != EXPECTED_PRESERVE_PRELOADS:
+        errors.append("preservation flasher modules must be preloaded with the pinned SRI")
+    if not (site_dir / "preserve-install.mjs").is_file():
+        errors.append("preservation installer controller is missing")
+    if "import { bindPreserveInstaller } from './preserve-install.mjs'" not in index_text:
+        errors.append("index.html must load the preservation installer controller")
+    if f"import('{EXPECTED_PRESERVE_PRELOADS[0][0]}')" not in index_text:
+        errors.append("index.html must import the pinned preservation flash API")
+    if '<esp-web-install-button manifest="manifest-update.json"' in index_text:
+        errors.append("app-only updates must not use the stock erase-capable dialog")
     if parser_obj.analytics_scripts != [EXPECTED_ANALYTICS_SCRIPT]:
         errors.append(
             "index.html must load the exact pinned, query-free GoatCounter integration with SRI"

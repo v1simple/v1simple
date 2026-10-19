@@ -182,6 +182,11 @@ final class V1Peripheral: NSObject {
         var notifiesSent = 0
         var notifiesDropped = 0
         var commandsReceived = 0
+        // Read before an off-queue send is dispatched, so queued teardown
+        // cannot transfer that work to a later subscriber or service lifetime.
+        var transportGeneration: UInt64 = 0
+        // A channel's last subscriber can leave while other traffic stays active.
+        var subscriptionGenerations: [V1.Session.SubscriptionChannel: UInt64] = [:]
         var session: V1.Session
     }
 
@@ -270,17 +275,21 @@ final class V1Peripheral: NSObject {
     private var lastValues: [CBUUID: Data] = [:]
     /// In-memory only. One central owns the logical short-notify handshake;
     /// central identifiers never leave the process.
-    private var shortSubscriberIDs: Set<UUID> = []
+    private var subscriberIDs: [V1.Session.SubscriptionChannel: Set<UUID>] = [:]
     private var handshakeSubscriberID: UUID?
     private var handshakeClearDelivery = HandshakeClearDeliveryState()
     private var globalTxSequence: UInt64 = 0
-    private var serviceAdded = false
+    private var registeredService: CBMutableService?
+    private var servicePublished = false
+    private var advertisingRequested: Bool
+    private var advertisingStarting = false
     private var isStopping = false
     private var handshakeNotificationHold: HandshakeNotificationHoldState
 
     init(config: Config,
          onNotificationEvent: ((ReplayNotificationEvent) -> Void)? = nil) {
         self.config = config
+        self.advertisingRequested = !config.deferAdvertising
         self.handshakeNotificationHold = HandshakeNotificationHoldState(
             delayMilliseconds: config.handshakeNotificationHoldMs
         )
@@ -310,7 +319,7 @@ final class V1Peripheral: NSObject {
                      intendedHostMonotonicNs: UInt64? = nil) {
         send(
             bytes,
-            to: displayChar,
+            to: .displayShort,
             stimulusSequence: stimulusSequence,
             emissionOrdinal: emissionOrdinal,
             intendedHostMonotonicNs: intendedHostMonotonicNs
@@ -323,7 +332,7 @@ final class V1Peripheral: NSObject {
                   intendedHostMonotonicNs: UInt64? = nil) {
         send(
             bytes,
-            to: longNotifyChar,
+            to: .displayLong,
             stimulusSequence: stimulusSequence,
             emissionOrdinal: emissionOrdinal,
             intendedHostMonotonicNs: intendedHostMonotonicNs
@@ -333,26 +342,39 @@ final class V1Peripheral: NSObject {
     /// Mirror a notification from the real V1 onto the matching characteristic.
     func forward(_ bytes: [UInt8], toCharacteristicUUID uuid: CBUUID) {
         if uuid == CBUUID(string: V1.displayShortUUID) {
-            send(bytes, to: displayChar)
+            send(bytes, to: .displayShort)
         } else if uuid == CBUUID(string: V1.displayLongUUID) {
-            send(bytes, to: longNotifyChar)
+            send(bytes, to: .displayLong)
         } else if uuid == CBUUID(string: V1.notifyAltUUID) {
-            send(bytes, to: altNotifyChar)
+            send(bytes, to: .compatibilityNotify)
         } else {
             onLog?("dropped notify on unknown characteristic \(V1Peripheral.shortName(uuid))")
         }
     }
 
     private func send(_ bytes: [UInt8],
-                      to characteristic: CBMutableCharacteristic?,
+                      to channel: V1.Session.SubscriptionChannel,
                       stimulusSequence: Int? = nil,
                       emissionOrdinal: Int? = nil,
                       intendedHostMonotonicNs: UInt64? = nil) {
-        guard let characteristic = characteristic else { return }
+        let generation = withState { ($0.transportGeneration, $0.subscriptionGenerations[channel, default: 0]) }
         let data = Data(bytes)
         let requestedHostMonotonicNs = hostMonotonicNanoseconds()
-        queue.async {
-            guard !self.isStopping else { return }
+        let enqueue = {
+            guard !self.isStopping, self.manager.state == .poweredOn,
+                  self.withState({
+                      $0.transportGeneration == generation.0
+                          && $0.subscriptionGenerations[channel, default: 0] == generation.1
+                  }) else { return }
+            // Mutable CoreBluetooth attributes belong exclusively to this
+            // queue and may have been rebuilt after a manager reset.
+            let characteristic: CBMutableCharacteristic?
+            switch channel {
+            case .displayShort: characteristic = self.displayChar
+            case .displayLong: characteristic = self.longNotifyChar
+            case .compatibilityNotify: characteristic = self.altNotifyChar
+            }
+            guard let characteristic else { return }
             self.lastValues[characteristic.uuid] = data
             let notification = self.makePendingNotification(
                 data: data,
@@ -370,6 +392,11 @@ final class V1Peripheral: NSObject {
                 self.onLog?("TX \(Self.shortName(characteristic.uuid)) \(bytes.hexString)")
             }
         }
+        if DispatchQueue.getSpecific(key: queueIdentityKey) == queueIdentityValue {
+            enqueue()
+        } else {
+            queue.async(execute: enqueue)
+        }
     }
 
     /// Ensure handshake-only mode has one canonical clear row pending. Calls
@@ -377,10 +404,18 @@ final class V1Peripheral: NSObject {
     /// later write callback. Calls from the Player polling fallback dispatch
     /// onto that same queue. Repeated calls retry without appending a duplicate.
     func ensureHandshakeClear(_ bytes: [UInt8]) {
+        let generation = withState {
+            ($0.transportGeneration, $0.subscriptionGenerations[.displayShort, default: 0])
+        }
         let data = Data(bytes)
         let requestedHostMonotonicNs = hostMonotonicNanoseconds()
         let ensure = {
             guard !self.isStopping,
+                  self.manager.state == .poweredOn,
+                  self.withState({
+                      $0.transportGeneration == generation.0
+                          && $0.subscriptionGenerations[.displayShort, default: 0] == generation.1
+                  }),
                   self.handshakeSubscriberID != nil,
                   let characteristic = self.displayChar else { return }
             switch self.handshakeClearDelivery.ensure() {
@@ -491,9 +526,10 @@ final class V1Peripheral: NSObject {
         endHandshakeEpoch()
         discardAllPending()
         lastValues.removeAll()
-        shortSubscriberIDs.removeAll()
+        subscriberIDs.removeAll()
         handshakeClearDelivery = HandshakeClearDeliveryState()
         withState {
+            $0.transportGeneration &+= 1
             $0.isAdvertising = false
             $0.session.resetTransport()
         }
@@ -502,9 +538,9 @@ final class V1Peripheral: NSObject {
     private func send(_ decision: V1.ReplyDecision) {
         switch decision.channel {
         case .displayShort:
-            send(decision.bytes, to: displayChar)
+            send(decision.bytes, to: .displayShort)
         case .displayLong:
-            send(decision.bytes, to: longNotifyChar)
+            send(decision.bytes, to: .displayLong)
         }
     }
 
@@ -512,6 +548,7 @@ final class V1Peripheral: NSObject {
     /// `peripheralManagerIsReady(toUpdateSubscribers:)`.
     private func flush() {
         guard !isStopping, !handshakeNotificationHold.blocksFlush else { return }
+        guard manager.state == .poweredOn else { return }
         while let item = pending.first {
             let attemptedHostMonotonicNs = hostMonotonicNanoseconds()
             let accepted = manager.updateValue(
@@ -597,11 +634,24 @@ final class V1Peripheral: NSObject {
 
     /// Proxy mode calls this once the real V1 is connected.
     func beginAdvertising() {
-        queue.async { self.startAdvertising() }
+        let generation = withState { $0.transportGeneration }
+        let begin = {
+            guard !self.isStopping,
+                  self.withState({ $0.transportGeneration == generation }) else { return }
+            self.advertisingRequested = true
+            self.startAdvertising()
+        }
+        if DispatchQueue.getSpecific(key: queueIdentityKey) == queueIdentityValue {
+            begin()
+        } else {
+            queue.async(execute: begin)
+        }
     }
 
     private func startAdvertising() {
-        guard !isAdvertising else { return }
+        guard !isStopping, manager.state == .poweredOn, servicePublished,
+              advertisingRequested, !manager.isAdvertising, !advertisingStarting else { return }
+        advertisingStarting = true
         manager.startAdvertising([
             CBAdvertisementDataLocalNameKey: config.localName,
             CBAdvertisementDataServiceUUIDsKey: [CBUUID(string: V1.serviceUUID)]
@@ -750,9 +800,24 @@ final class V1Peripheral: NSObject {
 extension V1Peripheral: CBPeripheralManagerDelegate {
 
     func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
+        guard !isStopping else { return }
         guard peripheral.state == .poweredOn else {
             withState { $0.isPoweredOn = false }
             resetSessionTransport()
+            advertisingStarting = false
+            // Below poweredOff CoreBluetooth clears its local database and
+            // stops advertising. poweredOff alone only pauses advertising.
+            if peripheral.state.rawValue < CBManagerState.poweredOff.rawValue {
+                registeredService = nil
+                servicePublished = false
+                advertisingRequested = !config.deferAdvertising
+                displayChar = nil
+                longNotifyChar = nil
+                altNotifyChar = nil
+                commandChar = nil
+                commandLongChar = nil
+                commandAltChar = nil
+            }
             switch peripheral.state {
             case .poweredOff:
                 onLog?("Bluetooth is off — turn it on to advertise")
@@ -768,10 +833,16 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
             return
         }
 
-        withState { $0.isPoweredOn = true }
-        if !serviceAdded {
-            serviceAdded = true
-            peripheral.add(buildService())
+        withState {
+            $0.isPoweredOn = true
+            $0.isAdvertising = peripheral.isAdvertising
+        }
+        if registeredService == nil {
+            let service = buildService()
+            registeredService = service
+            peripheral.add(service)
+        } else {
+            startAdvertising()
         }
         onStateChange?()
     }
@@ -779,12 +850,18 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
     func peripheralManager(_ peripheral: CBPeripheralManager,
                            didAdd service: CBService,
                            error: Error?) {
+        // A matching publication may finish while poweredOff preserves the
+        // database. Remember its result; startAdvertising waits for poweredOn.
+        guard !isStopping, service === registeredService else { return }
         if let error = error {
+            registeredService = nil
+            servicePublished = false
             onLog?("Failed to publish service: \(error.localizedDescription)")
             return
         }
+        servicePublished = true
         onLog?("Service 92A0AFF4 published with 6 characteristics")
-        if config.deferAdvertising {
+        if !advertisingRequested {
             onLog?("advertising held until the real V1 is connected")
             return
         }
@@ -792,6 +869,9 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
     }
 
     func peripheralManagerDidStartAdvertising(_ peripheral: CBPeripheralManager, error: Error?) {
+        guard !isStopping, peripheral.state == .poweredOn,
+              servicePublished, advertisingRequested else { return }
+        advertisingStarting = false
         if let error = error {
             onLog?("Advertising failed: \(error.localizedDescription)")
             return
@@ -811,10 +891,10 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
             withState {
                 $0.session.subscribe(central: central.identifier, channel: channel)
             }
+            let inserted = subscriberIDs[channel, default: []].insert(central.identifier).inserted
             if channel == .displayShort {
-                let inserted = shortSubscriberIDs.insert(central.identifier).inserted
-                beganShortSession = inserted && shortSubscriberIDs.count == 1
-                addedSecondShortSubscriber = inserted && shortSubscriberIDs.count > 1
+                beganShortSession = inserted && subscriberIDs[channel]?.count == 1
+                addedSecondShortSubscriber = inserted && subscriberIDs[channel, default: []].count > 1
             }
         }
         if beganShortSession {
@@ -835,18 +915,20 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
                            didUnsubscribeFrom characteristic: CBCharacteristic) {
         let name = V1Peripheral.shortName(characteristic.uuid)
         let remaining: Int
+        var endedChannelSession = false
         var endedShortSession = false
         if let channel = V1Peripheral.sessionChannel(for: characteristic.uuid) {
+            let removed = subscriberIDs[channel]?.remove(central.identifier) != nil
+            endedChannelSession = removed && subscriberIDs[channel]?.isEmpty == true
+            endedShortSession = endedChannelSession && channel == .displayShort
             remaining = withState {
                 let count = $0.session.unsubscribe(
                     central: central.identifier,
                     channel: channel
                 )
+                if count == 0 { $0.transportGeneration &+= 1 }
+                if endedChannelSession { $0.subscriptionGenerations[channel, default: 0] &+= 1 }
                 return count
-            }
-            if channel == .displayShort {
-                let removed = shortSubscriberIDs.remove(central.identifier) != nil
-                endedShortSession = removed && shortSubscriberIDs.isEmpty
             }
         } else {
             remaining = subscriberCount
@@ -854,9 +936,9 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
         onLog?("Central unsubscribed from \(name)")
         if remaining == 0 {
             discardAllPending()
-        } else if endedShortSession {
+        } else if endedChannelSession {
             discardPending {
-                $0.characteristic.uuid == CBUUID(string: V1.displayShortUUID)
+                $0.characteristic.uuid == characteristic.uuid
             }
         }
         if endedShortSession || remaining == 0 {

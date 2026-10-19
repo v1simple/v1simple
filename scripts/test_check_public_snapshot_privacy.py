@@ -116,6 +116,9 @@ def test_replay_tree_is_source_only() -> None:
     for path in (
         "tools/v1replay/Sources/v1replay/main.swift",
         "tools/v1replay/Tests/v1replayTests/V1ProtocolContractTests.swift",
+        "tools/v1replay/Tests/test_peripheral_lifecycle.py",
+        "tools/v1replay/Tests/TestSupport/PeripheralLifecycle/CoreBluetooth.swift",
+        "tools/v1replay/Tests/TestSupport/PeripheralLifecycle/main.swift",
     ):
         assert checker.scan_blob(path, b"import Foundation\n", local_terms=[]) == []
 
@@ -123,6 +126,9 @@ def test_replay_tree_is_source_only() -> None:
         "tools/v1replay/Tests/v1replayTests/Nested/ContractTests.swift",
         "tools/v1replay/Tests/v1replayTests/ContractTests.txt",
         "tools/v1replay/Tests/v1replayTests/ContractTests.json",
+        "tools/v1replay/Tests/test_peripheral_lifecycle.json",
+        "tools/v1replay/Tests/TestSupport/PeripheralLifecycle/Capture.swift",
+        "tools/v1replay/Tests/TestSupport/PeripheralLifecycle/main.json",
     ):
         findings = checker.scan_blob(path, b"safe fixture\n", local_terms=[])
         assert [finding.rule for finding in findings] == ["replay-source-only-boundary"]

@@ -206,11 +206,13 @@ bool TouchHandler::getTouchPoint(int16_t& x, int16_t& y) {
     // Response: gesture, point count, then 12-bit X and Y coordinates.
     uint8_t numPoints = buff[1];
 
-    if (numPoints == 0 || numPoints > 4) {
+    // An impossible contact count cannot confirm a hold or a release.
+    if (numPoints > 4) {
+        return false;
+    }
+
+    if (numPoints == 0) {
         if (releaseRequired_) {
-            if (numPoints != 0) {
-                return false;
-            }
             releaseRequired_ = false;
             lastReleaseTime_ = now;
         }

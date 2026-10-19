@@ -923,7 +923,7 @@
             </button>
         {/if}
 
-        <fieldset class="surface-card" disabled={!settingsLoaded}>
+        <fieldset class="surface-card" disabled={saving || !settingsLoaded}>
             <div class="card-body">
                 <CardSectionHead
                     title="Access Point (AP)"
@@ -1333,7 +1333,7 @@
             </div>
         {/if}
 
-        <fieldset disabled={!settingsLoaded}>
+        <fieldset disabled={saving || !settingsLoaded}>
             <SettingsAutoPowerOffCard {settings} />
         </fieldset>
 

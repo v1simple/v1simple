@@ -1481,6 +1481,111 @@ describe('settings route page', () => {
         unmount();
     });
 
+    it.each(['POST', 'readback'])(
+        'locks settings controls during the pending %s without blocking WiFi editing',
+        async (phase) => {
+            const saveResponse = createDeferred();
+            const readbackResponse = createDeferred();
+            let settingsReads = 0;
+            const fetchMock = installDefaultFetch([
+                {
+                    method: 'GET',
+                    match: '/api/device/settings',
+                    respond: () => {
+                        settingsReads += 1;
+                        return settingsReads === 1
+                            ? jsonResponse({
+                                  ap_ssid: 'V1',
+                                  ap_password: 'InitialPassword',
+                                  autoPowerOffMinutes: 30,
+                                  apTimeoutMinutes: 15
+                              })
+                            : readbackResponse.promise;
+                    }
+                },
+                {
+                    method: 'POST',
+                    match: '/api/device/settings',
+                    respond: () => saveResponse.promise
+                }
+            ]);
+            const { unmount } = render(Page);
+
+            try {
+                const name = await screen.findByLabelText('AP Name');
+                const password = screen.getByLabelText('AP Password');
+                const timeoutDisabled = screen.getByRole('checkbox', {
+                    name: /disable ap inactivity timeout/i
+                });
+                const timeout = screen.getByLabelText('Auto-off after (minutes)');
+                const powerOff = screen.getByLabelText(/minutes after disconnect/i);
+                const save = screen.getByRole('button', { name: /save settings/i });
+                const controls = [name, password, timeoutDisabled, timeout, powerOff, save];
+                await screen.findByText('Garage');
+
+                await fireEvent.input(name, { target: { value: 'SavedName' } });
+                await fireEvent.input(password, { target: { value: 'SavedPassword' } });
+                await fireEvent.input(timeout, { target: { value: '20' } });
+                await fireEvent.input(powerOff, { target: { value: '10' } });
+                await fireEvent.click(save);
+
+                const posts = fetchMock.mock.calls.filter(
+                    ([url, init]) => url === '/api/device/settings' && init?.method === 'POST'
+                );
+                expect(posts).toHaveLength(1);
+                expect(Object.fromEntries(posts[0][1].body)).toEqual({
+                    ap_ssid: 'SavedName',
+                    ap_password: 'SavedPassword',
+                    autoPowerOffMinutes: '10',
+                    apTimeoutMinutes: '20'
+                });
+
+                if (phase === 'readback') {
+                    saveResponse.resolve(jsonResponse({ success: true }));
+                    await waitFor(() => expect(settingsReads).toBe(2));
+                }
+
+                for (const control of controls) expect(control).toBeDisabled();
+                // Native interactions honor disabled fieldsets; fireEvent.input does not.
+                name.focus();
+                expect(name).not.toHaveFocus();
+                timeoutDisabled.click();
+                expect(timeoutDisabled).not.toBeChecked();
+                expect(timeout).toHaveValue('20');
+
+                await openManualEditor();
+                const wifiName = screen.getByLabelText('SSID');
+                expect(wifiName).toBeEnabled();
+                await fireEvent.input(wifiName, { target: { value: 'IndependentWifiDraft' } });
+
+                saveResponse.resolve(jsonResponse({ success: true }));
+                await waitFor(() => expect(settingsReads).toBe(2));
+                for (const control of controls) expect(control).toBeDisabled();
+                readbackResponse.resolve(jsonResponse({
+                    ap_ssid: 'SavedName',
+                    ap_password: '********',
+                    autoPowerOffMinutes: 10,
+                    apTimeoutMinutes: 20
+                }));
+
+                await waitFor(() => expect(save).toBeEnabled());
+                for (const control of controls) expect(control).toBeEnabled();
+                expect(name).toHaveValue('SavedName');
+                expect(password).toHaveValue('********');
+                expect(powerOff).toHaveValue(10);
+                expect(timeout).toHaveValue('20');
+                expect(wifiName).toHaveValue('IndependentWifiDraft');
+                await fireEvent.click(screen.getByRole('button', { name: /^Cancel$/i }));
+                await fireEvent.input(name, { target: { value: 'NewerDraft' } });
+                expect(name).toHaveValue('NewerDraft');
+            } finally {
+                saveResponse.resolve(jsonResponse({ success: true }));
+                readbackResponse.resolve(jsonResponse({ ap_ssid: 'SavedName' }));
+                unmount();
+            }
+        }
+    );
+
     it('shows API error message on save failure', async () => {
         installDefaultFetch([
             {
@@ -1495,6 +1600,38 @@ describe('settings route page', () => {
         await fireEvent.click(saveButton);
 
         await screen.findByText('Failed to save settings');
+        expect(saveButton).toBeEnabled();
+        expect(screen.getByLabelText('AP Name')).toBeEnabled();
+        expect(screen.getByLabelText(/minutes after disconnect/i)).toBeEnabled();
+        unmount();
+    });
+
+    it('unlocks settings and keeps the submitted values when save readback fails', async () => {
+        let settingsReads = 0;
+        installDefaultFetch([
+            {
+                method: 'GET',
+                match: '/api/device/settings',
+                respond: () => {
+                    settingsReads += 1;
+                    return settingsReads === 1
+                        ? jsonResponse({ ap_ssid: 'V1', autoPowerOffMinutes: 30 })
+                        : jsonResponse({ error: 'readback unavailable' }, 500);
+                }
+            }
+        ]);
+        const { unmount } = render(Page);
+        const name = await screen.findByLabelText('AP Name');
+        await fireEvent.input(name, { target: { value: 'SavedName' } });
+        const save = screen.getByRole('button', { name: /save settings/i });
+        await fireEvent.click(save);
+
+        await screen.findByText('Failed to load settings');
+        await waitFor(() => expect(save).toBeEnabled());
+        expect(name).toBeEnabled();
+        expect(name).toHaveValue('SavedName');
+        expect(screen.getByLabelText(/minutes after disconnect/i)).toBeEnabled();
+        expect(screen.getByLabelText(/minutes after disconnect/i)).toHaveValue(30);
         unmount();
     });
 

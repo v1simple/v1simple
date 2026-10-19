@@ -93,6 +93,14 @@ run_camera_recorder_checks() {
   "${xcrun_driver[@]}" swift -module-cache-path "$module_cache" "$recorder" --self-test-raw-frames
 }
 
+run_peripheral_lifecycle_checks() {
+  local python_driver=(python3)
+  if [[ -d /Applications/Xcode.app/Contents/Developer ]]; then
+    python_driver=(env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer python3)
+  fi
+  "${python_driver[@]}" "$ROOT_DIR/tools/v1replay/Tests/test_peripheral_lifecycle.py"
+}
+
 run_tracked_shellcheck() {
   local tracked_scripts=()
   local script
@@ -131,6 +139,7 @@ run_step "Workflow runner/cache regression suite" python3 scripts/test_check_wor
 section "Build Contracts"
 run_step "Memory headroom regression suite" python3 scripts/test_check_memory_headroom.py
 run_step "Build reset regression suite" python3 scripts/test_build_reset.py
+run_step "Fresh web build preparation regression suite" python3 scripts/test_prepare_web_build.py
 run_step "CI gate sequencing regression suite" python3 scripts/test_ci_gate_contract.py
 run_step "ESP32-S3 framework contract regression suite" python3 scripts/test_verify_esp32s3_framework.py
 run_step "Production warning contract regression suite" python3 scripts/test_production_warning_contract.py
@@ -171,6 +180,7 @@ run_step "App-only upload offset regression suite" python3 scripts/test_force_ap
 run_step "Release preparation regression suite" python3 scripts/test_prepare_release.py
 run_step "Release publication regression suite" python3 scripts/test_release_publication.py
 run_step "Release artifact packaging regression suite" python3 scripts/test_release_artifacts.py
+run_step "Preserve installer interaction regression suite" node --test scripts/test_preserve_install.mjs
 run_step "Release license staging regression suite" python3 scripts/test_stage_release_licenses.py
 run_step "Exact build-tool version regression suite" python3 scripts/test_build_tool_versions.py
 run_step "Linux validation environment regression suite" python3 scripts/test_linux_validation_environment.py
@@ -180,6 +190,7 @@ run_step "Maintenance WiFi reconnect ownership" python3 scripts/test_wifi_client
 section "Host Tools"
 if [[ "$(uname -s)" == "Darwin" ]]; then
   run_step "v1replay Swift package tests" run_v1replay_swift_tests
+  run_step "v1replay peripheral lifecycle regression suite" run_peripheral_lifecycle_checks
   run_step "Native camera recorder checks" run_camera_recorder_checks
 else
   echo -e "${YELLOW}[skip] v1replay Swift package tests require macOS CoreBluetooth${NC}"

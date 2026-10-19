@@ -98,6 +98,10 @@ class ReleaseArtifactTests(unittest.TestCase):
             self.assertEqual(update["builds"][0]["parts"][0]["path"], manifests.UPDATE_IMAGE)
             self.assertEqual(fresh["builds"][0]["parts"], [{"path": manifests.FRESH_IMAGE, "offset": 0}])
             self.assertTrue((release / "pages" / manifests.UPDATE_IMAGE).is_file())
+            self.assertEqual(
+                (release / "pages" / "preserve-install.mjs").read_bytes(),
+                (installer.ROOT / "web-installer" / "preserve-install.mjs").read_bytes(),
+            )
             self.assertTrue((release / "pages" / "licenses" / "ArduinoJson-LICENSE.txt").is_file())
             self.assertEqual(len(calls), 3)
 
@@ -165,6 +169,9 @@ class ReleaseArtifactTests(unittest.TestCase):
                 f'\n    crossorigin="{expected_crossorigin}"', "", 1
             )
             (site / "index.html").write_text(template, encoding="utf-8")
+            (site / "preserve-install.mjs").write_bytes(
+                (installer.ROOT / "web-installer" / "preserve-install.mjs").read_bytes()
+            )
             branding = site / "../interface/static/branding/v1simple-logo-transparent.png"
             branding.parent.mkdir(parents=True, exist_ok=True)
             branding.write_bytes(b"branding")
@@ -193,6 +200,9 @@ class ReleaseArtifactTests(unittest.TestCase):
             )
             template = template.replace(f'\n    integrity="{expected_integrity}"', "")
             (site / "index.html").write_text(template, encoding="utf-8")
+            (site / "preserve-install.mjs").write_bytes(
+                (installer.ROOT / "web-installer" / "preserve-install.mjs").read_bytes()
+            )
             branding = site / "../interface/static/branding/v1simple-logo-transparent.png"
             branding.parent.mkdir(parents=True, exist_ok=True)
             branding.write_bytes(b"branding")

@@ -383,13 +383,16 @@ class V1BLEClient {
         if (!data || length < 2) {
             return false;
         }
+        return isV1RequestHeldOff(data[1], length > 3 ? data[3] : 0, length > 3);
+    }
+    bool isV1RequestHeldOff(uint8_t destination, uint8_t requestId, bool hasRequestId = true) const {
         // ESP destination DAh is Valentine One. Time-slice holdoff does not
         // suppress traffic addressed to the V1connection itself.
         constexpr uint8_t kV1DeviceId = 0x0A;
-        const bool v1Bound = (data[1] & 0x0F) == kV1DeviceId;
+        const bool v1Bound = (destination & 0x0F) == kV1DeviceId;
         if (!v1Bound) return false;
         if (v1TimeSliceHoldoff_.load(std::memory_order_acquire)) return true;
-        return length > 3 && v1RequestFlowControl_.holds(data[3]);
+        return hasRequestId && v1RequestFlowControl_.holds(requestId);
     }
     class ClientCallbacks : public NimBLEClientCallbacks {
       public:
@@ -495,6 +498,15 @@ class V1BLEClient {
     std::atomic<size_t> phone2v1QueueHead_{0};
     std::atomic<size_t> phone2v1QueueTail_{0};
     std::atomic<size_t> phone2v1QueueCount_{0};
+    // Main-loop-owned metadata for indexed B8D2 continuations. The payload
+    // remains opaque and is forwarded unchanged, one queued chunk at a time.
+    struct PhoneLongCommandOwner {
+        uint32_t sessionGeneration = 0;
+        uint8_t destination = 0;
+        uint8_t requestId = 0;
+        uint8_t count = 0;
+        uint16_t sentMask = 0;
+    } phoneLongCommandOwner_;
     std::atomic<size_t> proxyQueueHead_{0};  // Next write position
     std::atomic<size_t> proxyQueueTail_{0};  // Next read position
     std::atomic<size_t> proxyQueueCount_{0}; // Current items in queue

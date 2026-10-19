@@ -491,7 +491,7 @@
       background: rgba(243, 108, 108, 0.055);
     }
 
-    esp-web-install-button button {
+    esp-web-install-button button, .preserve-button {
       display: flex;
       width: 100%;
       min-height: 54px;
@@ -509,14 +509,14 @@
       transition: filter 150ms ease, transform 150ms ease;
     }
 
-    esp-web-install-button button:hover {
+    esp-web-install-button button:hover, .preserve-button:hover {
       filter: brightness(1.08);
       transform: translateY(-2px);
     }
 
-    esp-web-install-button button:active { transform: translateY(0); }
-    esp-web-install-button button span:first-child { font-size: 14px; }
-    esp-web-install-button button span:last-child { font-size: 20px; }
+    esp-web-install-button button:active, .preserve-button:active { transform: translateY(0); }
+    esp-web-install-button button span:first-child, .preserve-button span:first-child { font-size: 14px; }
+    esp-web-install-button button span:last-child, .preserve-button span:last-child { font-size: 20px; }
 
     .install-option-destructive esp-web-install-button button {
       border-color: rgba(243, 108, 108, 0.44);
@@ -524,6 +524,29 @@
       box-shadow: 0 14px 32px rgba(198, 71, 100, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.18);
       color: #1b080d;
     }
+
+    #preserve-dialog {
+      max-width: min(440px, calc(100vw - 32px));
+      border: 1px solid var(--border-strong);
+      border-radius: 12px;
+      padding: 24px;
+      background: var(--panel);
+      color: var(--text);
+    }
+    #preserve-dialog::backdrop { background: rgba(0, 0, 0, 0.75); }
+    #preserve-dialog p { line-height: 1.5; }
+    #preserve-progress { width: 100%; }
+    .preserve-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 20px; }
+    .preserve-actions button {
+      padding: 10px 16px;
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      background: var(--raised);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .preserve-actions button:disabled, .preserve-button:disabled { opacity: 0.5; cursor: wait; }
+    #preserve-availability[hidden] { display: none; }
 
     .install-meta {
       display: flex;
@@ -728,7 +751,7 @@
 
     @media (prefers-reduced-motion: reduce) {
       html { scroll-behavior: auto; }
-      esp-web-install-button button { transition: none; }
+      esp-web-install-button button, .preserve-button { transition: none; }
     }
   </style>
 </head>
@@ -807,12 +830,9 @@
             <section class="install-option" aria-labelledby="preserve-title">
               <h3 id="preserve-title">Update firmware — preserve device data</h3>
               <p>Writes only the app partition. NVS settings, saved Wi-Fi networks, internal fallback profiles, and the existing LittleFS web interface are not part of this update image. Supported older profile and Auto-Push data is migrated automatically at boot; do not erase the device just to upgrade it. Because this path deliberately leaves the web interface unchanged, use the fresh-install path if those files also need replacement.</p>
-              <p class="choice-warning">Leave “Erase device” off in ESP Web Tools. Checking “Erase device” changes this into a destructive erase.</p>
-              <esp-web-install-button manifest="manifest-update.json" data-install-mode="preserve">
-                <button slot="activate" type="button" data-goatcounter-click="install-intent-preserve"><span>Update and preserve data</span><span aria-hidden="true">→</span></button>
-                <span slot="unsupported" class="installer-message">This browser does not support Web Serial.<small>Use Firefox 151 or newer, Chrome 89 or newer, or a current version of Edge on desktop.</small></span>
-                <span slot="not-allowed" class="installer-message">Serial access is not available here.<small>Open the installer over HTTPS or localhost and allow the browser’s device-access prompt.</small></span>
-              </esp-web-install-button>
+              <p class="choice-warning">This update never erases the whole device. To erase and rebuild, choose Fresh install below.</p>
+              <button id="preserve-install" class="preserve-button" type="button" data-manifest="manifest-update.json" data-install-mode="preserve" data-goatcounter-click="install-intent-preserve" disabled><span>Update and preserve data</span><span aria-hidden="true">→</span></button>
+              <p id="preserve-availability" class="installer-message">Loading the preservation installer. If this message remains, reload the page in a current desktop browser with Web Serial support.</p>
             </section>
 
             <section class="install-option install-option-destructive" aria-labelledby="fresh-title">
@@ -888,6 +908,39 @@
     </footer>
   </div>
 
+  <dialog id="preserve-dialog" aria-labelledby="preserve-heading">
+    <h2 id="preserve-heading">Update and preserve data</h2>
+    <p>Keep the cable connected until installation completes.</p>
+    <p id="preserve-status" role="status" aria-live="polite"></p>
+    <progress id="preserve-progress" max="100" aria-label="Firmware update progress" hidden></progress>
+    <div class="preserve-actions">
+      <button id="preserve-close" type="button">Cancel</button>
+      <button id="preserve-confirm" type="button">Install firmware</button>
+    </div>
+  </dialog>
+  <script type="importmap">
+    {"imports": {
+      "esptool-js": "https://unpkg.com/esptool-js@0.6.0/bundle.js",
+      "https://unpkg.com/esp-web-tools@10.4.0/dist/util/sleep": "https://unpkg.com/esp-web-tools@10.4.0/dist/util/sleep.js"
+    }}
+  </script>
+  <link rel="modulepreload" href="https://unpkg.com/esp-web-tools@10.4.0/dist/flash.js" integrity="sha384-8d9/UBP9hpFwSNpdM33Mc2GDkyEHVM1L6WIZlt1Ix4hIhmYbL7tgcL7sIVRFPF6P" crossorigin="anonymous">
+  <link rel="modulepreload" href="https://unpkg.com/esptool-js@0.6.0/bundle.js" integrity="sha384-w6aOfygkgbl9ehV88LT6557lncD9H6dGDe+0oOFgHI3YeAiRIqp2h0MTz5pkjUet" crossorigin="anonymous">
+  <link rel="modulepreload" href="https://unpkg.com/esp-web-tools@10.4.0/dist/util/sleep.js" integrity="sha384-lxbI4P4M798yIoAQTevskBHQSzk3aI1MVBKV5D8pAIcySag75Xq7uRHV6Z2VvAIG" crossorigin="anonymous">
+  <script type="module">
+    import { bindPreserveInstaller } from './preserve-install.mjs';
+    import('https://unpkg.com/esp-web-tools@10.4.0/dist/flash.js')
+      .then(({ flash }) => bindPreserveInstaller(document, {
+        flash,
+        serial: navigator.serial,
+        secure: window.isSecureContext,
+        fetchManifest: (url) => fetch(url),
+      }))
+      .catch(() => {
+        document.querySelector('#preserve-availability').textContent =
+          'The preservation installer could not load. Reload the page to try again.';
+      });
+  </script>
   <script
     type="module"
     src="https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module"

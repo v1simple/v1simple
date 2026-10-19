@@ -65,9 +65,9 @@ the default `V1-Simple` network with `setupv1simple`, open
 
 ### Upgrading existing device data
 
-- **Firmware-only update:** preserves settings and profiles when **Erase device**
-  is off. It keeps the existing maintenance interface, so interface updates
-  are not installed.
+- **Firmware-only update:** preserves settings and profiles and never erases
+  the whole device. It keeps the existing maintenance interface, so interface
+  updates are not installed.
 - **Fresh install:** installs firmware and interface together, but erases saved
   settings, WiFi networks, and internal fallback profiles, even with
   **Erase device** off. SD-card contents remain intact; a valid SD backup can restore
@@ -85,13 +85,26 @@ detector received or applied a profile.
 
 ## Build from source
 
-Install pioarduino Core 6.2.0 exactly and a Node.js version accepted by
-`interface/package.json`. From the repository root:
+Install pioarduino Core 6.2.0 and LittleFS Python support in the same Python
+environment, plus a Node.js version accepted by `interface/package.json`:
+
+```sh
+python3 -m pip install 'pioarduino==6.2.0' 'littlefs-python==0.18.0'
+```
+
+From the repository root:
 
 ```sh
 ./build.sh          # build the web interface and default firmware
 ./build.sh --all    # build, flash LittleFS and firmware, then monitor serial
 ```
+
+Before building the interface, `build.sh` checks LittleFS support in the Python
+interpreter reported by the selected PlatformIO executable, then prepares that
+environment's platform and framework packages with `pio pkg install`. The first
+build needs network access for project and npm dependencies. If using an existing
+PlatformIO installation, set `PIO_CMD` to its executable; a missing LittleFS
+dependency reports the installation command for that exact Python interpreter.
 
 `--all` overwrites internal LittleFS data. Confirm SD-backed storage before
 relying on saved profiles.

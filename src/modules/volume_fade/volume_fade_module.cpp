@@ -123,6 +123,14 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
     unsigned long now = ctx.now;
     uint16_t freq = ctx.currentFrequency;
 
+    if (ctx.alertEpisodeEnded) {
+        // A clear and reappearance can share one policy pass. Start a new
+        // delay even at the same frequency, retaining any unconfirmed restore.
+        if (!fadeActive_ && pendingRestoreVolume_ == 0xFF) resetSessionState();
+        seenCount_ = 0;
+        seenLaser_ = false;
+    }
+
     // A new distinct threat releases fade (Valentine's Law). Radar uses
     // frequency identity; laser is its own distinct class.
     bool isNewFrequency = freq != 0;
@@ -138,7 +146,8 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
 
     // If we're currently faded and a new distinct alert shows up, restore and
     // restart the fade timer.
-    if (fadeActive_ && (isNewFrequency || isNewLaser)) {
+    if ((fadeActive_ && (isNewFrequency || isNewLaser || ctx.alertEpisodeEnded)) ||
+        (ctx.alertEpisodeEnded && pendingRestoreVolume_ != 0xFF)) {
         if (originalVolume_ != 0xFF) {
             action.type = VolumeFadeAction::Type::RESTORE;
             action.restoreVolume = originalVolume_;

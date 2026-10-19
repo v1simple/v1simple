@@ -39,6 +39,7 @@ def run_reset(
     (fixture / "scripts").mkdir()
     (fixture / "scripts" / "platformio_ca_bundle.sh").write_text(":\n", encoding="utf-8")
     (fixture / "scripts" / "check_platformio_core_version.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    (fixture / "scripts" / "prepare_web_build.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
     for relative in (".pio/build", "interface/build", "interface/.svelte-kit", "interface/node_modules"):
         (fixture / relative).mkdir(parents=True)
     (fixture / ".pio/build/sentinel").write_text("stale\n", encoding="utf-8")

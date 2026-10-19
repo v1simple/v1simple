@@ -729,6 +729,10 @@ int V1BLEClient::processPhoneCommandQueue() {
         (hasPending && !sessionPublicationGate_.accepts(pendingPkt.sessionGeneration))) {
         hasPending = false;
         pendingPkt.length = 0;
+        phoneLongCommandOwner_ = {};
+    }
+    if (!sessionPublicationGate_.accepts(phoneLongCommandOwner_.sessionGeneration)) {
+        phoneLongCommandOwner_ = {};
     }
 
     ProxyPacket pktCopy;
@@ -772,10 +776,95 @@ int V1BLEClient::processPhoneCommandQueue() {
         return 0;
     }
 
+    // Decode only the four ESP header bytes used for pacing; leave every
+    // queued payload and its order intact. An indexed header may itself span
+    // chunks, and BLE can deliver the chunks out of order.
+    PhoneLongCommandOwner longOwner = phoneLongCommandOwner_;
+    bool indexed = false;
+    bool hasHeader = true;
+    uint16_t chunkBit = 0;
+    if (charUUID == V1_SHORT_UUID_COMMAND_LONG) {
+        const auto isRawFrame = [](const ProxyPacket& packet) {
+            // 0xAA is also index 10/count 10. A complete raw ESP envelope
+            // distinguishes the compatibility path from that continuation.
+            return packet.length >= 6 && packet.data[0] == ESP_PACKET_START &&
+                   (packet.data[1] & 0xF0) == 0xD0 && (packet.data[2] & 0xF0) == 0xE0 &&
+                   packet.length == 6u + packet.data[4] && packet.data[packet.length - 1] == ESP_PACKET_END;
+        };
+        if (isRawFrame(pktCopy)) {
+            phoneLongCommandOwner_ = {};
+        } else {
+            indexed = true;
+            const uint8_t index = pktCopy.data[0] >> 4;
+            const uint8_t count = pktCopy.data[0] & 0x0F;
+            bool valid = pktCopy.length >= 2 && pktCopy.length <= 20 && index != 0 && index <= count;
+            if (valid) chunkBit = uint16_t{1} << (index - 1);
+            if (valid && (longOwner.sessionGeneration != pktCopy.sessionGeneration ||
+                          longOwner.count != count || (longOwner.sentMask & chunkBit) != 0)) {
+                longOwner = {};
+                hasHeader = false;
+                uint8_t starts[4][4] = {};
+                uint8_t lengths[4] = {};
+                uint16_t seen = 0;
+                bool boundary = false;
+                bool otherCommandQueued = false;
+                const auto inspect = [&](const ProxyPacket& chunk) {
+                    const uint8_t part = chunk.data[0] >> 4;
+                    const uint16_t bit = part ? uint16_t{1} << (part - 1) : 0;
+                    if (chunk.length < 2 || chunk.length > 20 || part == 0 || part > count ||
+                        (chunk.data[0] & 0x0F) != count || (seen & bit) != 0 || isRawFrame(chunk)) {
+                        boundary = true;
+                        return;
+                    }
+                    seen |= bit;
+                    if (part <= 4) {
+                        lengths[part - 1] = std::min<size_t>(4, chunk.length - 1);
+                        memcpy(starts[part - 1], chunk.data + 1, lengths[part - 1]);
+                    }
+                };
+                inspect(pktCopy);
+                if (phoneCmdMutex_ && xSemaphoreTake(phoneCmdMutex_, 0) == pdTRUE) {
+                    for (size_t n = 0; n < phone2v1QueueCount_ && !boundary; ++n) {
+                        const ProxyPacket& queued = phone2v1Queue_[(phone2v1QueueTail_ + n) % PHONE_CMD_QUEUE_SIZE];
+                        if (queued.sessionGeneration != pktCopy.sessionGeneration) continue;
+                        if (queued.charUUID == V1_SHORT_UUID_COMMAND_LONG) inspect(queued);
+                        else otherCommandQueued = true;
+                    }
+                    xSemaphoreGive(phoneCmdMutex_);
+                }
+                uint8_t header[4] = {};
+                size_t used = 0;
+                for (size_t part = 0; part < 4 && lengths[part] != 0 && used < sizeof(header); ++part) {
+                    const size_t copy = std::min<size_t>(lengths[part], sizeof(header) - used);
+                    memcpy(header + used, starts[part], copy);
+                    used += copy;
+                }
+                hasHeader = used == sizeof(header);
+                valid = hasHeader ? header[0] == ESP_PACKET_START
+                                  : !boundary && !otherCommandQueued && seen != ((uint16_t{1} << count) - 1);
+                if (valid && hasHeader) {
+                    longOwner = {pktCopy.sessionGeneration, header[1], header[3], count, 0};
+                }
+            }
+            if (!valid) {
+                // A malformed/incomplete candidate must not borrow the next
+                // command's destination or request ID.
+                phoneLongCommandOwner_ = {};
+                hasPending = false;
+                return 0;
+            }
+        }
+    }
+    const bool heldOff = indexed
+        ? !hasHeader || isV1RequestHeldOff(longOwner.destination, longOwner.requestId)
+        : isV1WriteHeldOff(pktCopy.data, pktCopy.length);
+
     // Send outside queue lock - BLE write can take time
     // HOT PATH: try-lock only, skip if busy
     SendResult result = SendResult::FAILED;
-    if (bleNotifyMutex_) {
+    if (heldOff) {
+        result = SendResult::NOT_YET;
+    } else if (bleNotifyMutex_) {
         SemaphoreGuard lock(bleNotifyMutex_, 0);
         if (!lock.locked()) {
             // Retry the pending command next loop; preserve NOT_YET semantics.
@@ -791,9 +880,7 @@ int V1BLEClient::processPhoneCommandQueue() {
 
         if (charUUID == V1_SHORT_UUID_COMMAND_LONG && pCommandCharLongSnapshot) {
             // Long characteristic write - same transient failure semantics as sendCommand
-            if (isV1WriteHeldOff(pktCopy.data, pktCopy.length)) {
-                result = SendResult::NOT_YET;
-            } else if (pCommandCharLongSnapshot->writeValue(pktCopy.data, pktCopy.length, false)) {
+            if (pCommandCharLongSnapshot->writeValue(pktCopy.data, pktCopy.length, false)) {
                 result = SendResult::SENT;
             } else {
                 result = SendResult::NOT_YET; // Transient - retry
@@ -812,9 +899,7 @@ int V1BLEClient::processPhoneCommandQueue() {
         }
 
         if (charUUID == V1_SHORT_UUID_COMMAND_LONG && pCommandCharLongSnapshot) {
-            if (isV1WriteHeldOff(pktCopy.data, pktCopy.length)) {
-                result = SendResult::NOT_YET;
-            } else if (pCommandCharLongSnapshot->writeValue(pktCopy.data, pktCopy.length, false)) {
+            if (pCommandCharLongSnapshot->writeValue(pktCopy.data, pktCopy.length, false)) {
                 result = SendResult::SENT;
             } else {
                 result = SendResult::NOT_YET; // Transient - retry
@@ -826,6 +911,11 @@ int V1BLEClient::processPhoneCommandQueue() {
 
     switch (result) {
     case SendResult::SENT:
+        if (indexed) {
+            longOwner.sentMask |= chunkBit;
+            phoneLongCommandOwner_ = longOwner.sentMask == ((uint16_t{1} << longOwner.count) - 1)
+                ? PhoneLongCommandOwner{} : longOwner;
+        }
         hasPending = false;
         return 1;
     case SendResult::NOT_YET:
@@ -837,6 +927,7 @@ int V1BLEClient::processPhoneCommandQueue() {
         return 0;
     case SendResult::FAILED:
     default:
+        if (indexed) phoneLongCommandOwner_ = {};
         hasPending = false;
         return 0;
     }

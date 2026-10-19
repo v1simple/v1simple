@@ -11,10 +11,12 @@
 #include <ArduinoJson.h>
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cstring>
 #include <limits>
 #include <memory>
 #include <new>
+#include <sys/stat.h>
 #include <utility>
 #include <vector>
 
@@ -361,6 +363,29 @@ bool syncMetaPath(const String& profilePath, String& output) {
     return appendPathSuffixChecked(profilePath, ".meta", output);
 }
 
+enum class ProfilePathStatus { Present, Missing, Unavailable };
+
+ProfilePathStatus profilePathStatus(fs::FS& filesystem, const String& path) {
+    // Arduino FS::exists() opens the file, so false also means an I/O or
+    // allocation failure. Only an explicit ENOENT can authorize recovery.
+    const char* mountpoint = filesystem.mountpoint();
+    if (!mountpoint || mountpoint[0] != '/' || path.length() == 0 || path[0] != '/' ||
+        std::strlen(path.c_str()) != path.length()) return ProfilePathStatus::Unavailable;
+    const size_t mountLength = std::strlen(mountpoint);
+    const size_t pathLength = path.length();
+    if (mountLength > std::numeric_limits<size_t>::max() - pathLength - 1u) {
+        return ProfilePathStatus::Unavailable;
+    }
+    std::unique_ptr<char[]> mountedPath(new (std::nothrow) char[mountLength + pathLength + 1u]);
+    if (!mountedPath) return ProfilePathStatus::Unavailable;
+    std::memcpy(mountedPath.get(), mountpoint, mountLength);
+    std::memcpy(mountedPath.get() + mountLength, path.c_str(), pathLength + 1u);
+    struct stat info {};
+    if (::stat(mountedPath.get(), &info) == 0) return ProfilePathStatus::Present;
+    const int error = errno;
+    return error == ENOENT ? ProfilePathStatus::Missing : ProfilePathStatus::Unavailable;
+}
+
 bool syncStateCrc(const uint32_t version, const bool deleted, uint32_t& out) {
     // The metadata schema has four fixed canonical fields. Hash their exact
     // minified representation without a DOM clone or heap-backed String so a
@@ -406,8 +431,16 @@ ProfileSyncState readSyncState(fs::FS& filesystem, const String& profilePath) {
         state.status = ProfileSyncState::Status::Unavailable;
         return state;
     }
-    if (!filesystem.exists(metaPath)) {
-        if (filesystem.exists(profilePath)) {
+    const ProfilePathStatus metadataStatus = profilePathStatus(filesystem, metaPath);
+    if (metadataStatus == ProfilePathStatus::Unavailable) {
+        state.status = ProfileSyncState::Status::Unavailable;
+        return state;
+    }
+    if (metadataStatus == ProfilePathStatus::Missing) {
+        const ProfilePathStatus payloadStatus = profilePathStatus(filesystem, profilePath);
+        if (payloadStatus == ProfilePathStatus::Unavailable) {
+            state.status = ProfileSyncState::Status::Unavailable;
+        } else if (payloadStatus == ProfilePathStatus::Present) {
             state.version = 1; // backward-compatible baseline for pre-metadata files
             state.deleted = false;
             state.status = ProfileSyncState::Status::LegacyImplicit;
@@ -925,7 +958,14 @@ bool V1ProfileManager::recoverInterruptedSavesUnlocked() {
                 dir.close();
                 return DirectoryProfileNameStatus::Unavailable;
             }
-            if (orphanOnly && fs_->exists(livePath)) continue;
+            if (orphanOnly) {
+                const ProfilePathStatus liveStatus = profilePathStatus(*fs_, livePath);
+                if (liveStatus == ProfilePathStatus::Unavailable) {
+                    dir.close();
+                    return DirectoryProfileNameStatus::Unavailable;
+                }
+                if (liveStatus == ProfilePathStatus::Present) continue;
+            }
             dir.close();
             return DirectoryProfileNameStatus::Profile;
         }
@@ -955,7 +995,7 @@ bool V1ProfileManager::recoverInterruptedSavesUnlocked() {
             // Never replace a live file. A retained backup beside a live file
             // is not an interrupted promotion and stays available for manual
             // diagnosis/cleanup.
-            if (fs_->exists(livePath)) return false;
+            if (profilePathStatus(*fs_, livePath) != ProfilePathStatus::Missing) return false;
             Serial.println("[V1Profiles] RECOVERY: Main file missing, restoring from backup");
             if (!fs_->rename(bakPath, livePath)) return false;
         }
@@ -1624,16 +1664,25 @@ ProfileOperationResult V1ProfileManager::loadProfileUnlocked(const String& name,
         return profileResult(ProfileStorageStatus::NotFound, "Profile not found");
     }
 
-    const bool mainExists = fs_->exists(path);
+    const ProfilePathStatus mainStatus = profilePathStatus(*fs_, path);
+    if (mainStatus == ProfilePathStatus::Unavailable) {
+        return profileResult(ProfileStorageStatus::IoError, "Profile file status unavailable");
+    }
+    bool mainExists = mainStatus == ProfilePathStatus::Present;
     File file = mainExists ? fs_->open(path, FILE_READ) : File();
     if (!file) {
-        // Try to recover from backup file
-        if (allowTransactionRecovery && fs_->exists(bakPath)) {
-            Serial.printf("[V1Profiles] RECOVERY name='%s' path='%s' restoring transaction backup\n", name.c_str(),
-                          path.c_str());
-            // Rename backup to main file
-            if (fs_->rename(bakPath, path)) {
+        // Recover only a missing main file; an open failure must preserve both copies.
+        if (!mainExists && allowTransactionRecovery) {
+            const ProfilePathStatus backupStatus = profilePathStatus(*fs_, bakPath);
+            if (backupStatus == ProfilePathStatus::Unavailable) {
+                return profileResult(ProfileStorageStatus::IoError, "Profile backup status unavailable");
+            }
+            if (backupStatus == ProfilePathStatus::Present) {
+                if (!fs_->rename(bakPath, path)) {
+                    return profileResult(ProfileStorageStatus::IoError, "Profile backup recovery failed");
+                }
                 Serial.printf("[V1Profiles] RECOVERY name='%s' path='%s' restored\n", name.c_str(), path.c_str());
+                mainExists = true;
                 file = fs_->open(path, FILE_READ);
             }
         }

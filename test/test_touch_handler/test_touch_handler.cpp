@@ -23,6 +23,20 @@ bool poll(unsigned long now, uint16_t x, uint16_t y, uint8_t points = 1) {
     mockMillis = now;
     return touch.getTouchPoint(readX, readY);
 }
+
+void assert_invalid_contact_count_preserves_contact(uint8_t count) {
+    TEST_ASSERT_TRUE(poll(1000, 100, 100));
+    TEST_ASSERT_TRUE(touch.isTouchActive());
+    TEST_ASSERT_FALSE(poll(1250, 100, 100, count));
+    TEST_ASSERT_FALSE(touch.isTouchActive());
+    TEST_ASSERT_FALSE(poll(1500, 100, 100));
+    TEST_ASSERT_TRUE(touch.isTouchActive());
+    TEST_ASSERT_FALSE(poll(1550, 0, 0, 0));
+    TEST_ASSERT_FALSE(touch.isTouchActive());
+    TEST_ASSERT_TRUE(poll(1650, 100, 100));
+    TEST_ASSERT_TRUE(touch.isTouchActive());
+    TEST_ASSERT_EQUAL_INT(0, Wire.endCalls);
+}
 } // namespace
 
 void setUp() {
@@ -71,6 +85,14 @@ void test_invalid_coordinates_during_contact_do_not_create_a_recovery_tap() {
     TEST_ASSERT_TRUE(poll(1750, 150, 100));
 }
 
+void test_five_contacts_during_hold_do_not_create_a_recovery_tap() {
+    assert_invalid_contact_count_preserves_contact(5);
+}
+
+void test_max_contact_count_during_hold_does_not_create_a_recovery_tap() {
+    assert_invalid_contact_count_preserves_contact(255);
+}
+
 void test_required_release_ignores_contacts_and_invalid_observations() {
     for (bool previouslyDown : {false, true}) {
         setUp();
@@ -106,6 +128,8 @@ int main() {
     RUN_TEST(test_impossible_coordinates_are_invalid_without_bus_recovery);
     RUN_TEST(test_supplier_raw_extrema_and_contact_counts_remain_accepted);
     RUN_TEST(test_invalid_coordinates_during_contact_do_not_create_a_recovery_tap);
+    RUN_TEST(test_five_contacts_during_hold_do_not_create_a_recovery_tap);
+    RUN_TEST(test_max_contact_count_during_hold_does_not_create_a_recovery_tap);
     RUN_TEST(test_required_release_ignores_contacts_and_invalid_observations);
     return UNITY_END();
 }

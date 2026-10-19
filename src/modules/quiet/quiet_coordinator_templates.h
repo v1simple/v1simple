@@ -72,19 +72,21 @@ bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs, const Spee
     // Speed owns all volume writes, but must not hide the end of an alert
     // episode from fade. Carry the underlying restore pair without lifting
     // the speed override, and discard any unsent fade from the old episode.
-    if (volumeFade && parser_ && (speedVolActive_ || pendingSpeedVolRestoreVol_ != 0xFF) &&
-        !parser_->hasAlerts()) {
-        const VolumeFadeAction cleared = volumeFade->releaseClearedAlert();
-        pendingFadeAction_ = false;
-        if (cleared.type == VolumeFadeAction::Type::RESTORE && !speedVolBaselineUpdated_) {
-            if (speedVolActive_) {
-                speedVolSavedOriginal_ = cleared.restoreVolume;
-                speedVolSavedMuteVol_ = cleared.restoreMuteVolume;
-            } else {
-                pendingSpeedVolRestoreVol_ = cleared.restoreVolume;
-                pendingSpeedVolRestoreMuteVol_ = cleared.restoreMuteVolume;
-                pendingSpeedVolRestoreSetMs_ = nowMs;
-                volumeFade->setBaselineHint(cleared.restoreVolume, cleared.restoreMuteVolume, nowMs);
+    if (volumeFade && parser_ && (speedVolActive_ || pendingSpeedVolRestoreVol_ != 0xFF)) {
+        const bool alertEnded = consumeFadeAlertEnd();
+        if (!parser_->hasAlerts() || alertEnded) {
+            const VolumeFadeAction cleared = volumeFade->releaseClearedAlert();
+            pendingFadeAction_ = false;
+            if (cleared.type == VolumeFadeAction::Type::RESTORE && !speedVolBaselineUpdated_) {
+                if (speedVolActive_) {
+                    speedVolSavedOriginal_ = cleared.restoreVolume;
+                    speedVolSavedMuteVol_ = cleared.restoreMuteVolume;
+                } else {
+                    pendingSpeedVolRestoreVol_ = cleared.restoreVolume;
+                    pendingSpeedVolRestoreMuteVol_ = cleared.restoreMuteVolume;
+                    pendingSpeedVolRestoreSetMs_ = nowMs;
+                    volumeFade->setBaselineHint(cleared.restoreVolume, cleared.restoreMuteVolume, nowMs);
+                }
             }
         }
     }
@@ -155,6 +157,7 @@ bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs, VolumeFadeL
 
     VolumeFadeContext fadeCtx;
     fadeCtx.hasAlert = hasAlerts;
+    fadeCtx.alertEpisodeEnded = consumeFadeAlertEnd();
     fadeCtx.currentVolume = committed_.mainVolume;
     fadeCtx.currentMuteVolume = committed_.muteVolume;
     fadeCtx.now = nowMs;
@@ -168,6 +171,11 @@ bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs, VolumeFadeL
         fadeCtx.priorityIsLaser = hasRenderablePriority && priority.band == BAND_LASER;
     }
 
+    if (fadeCtx.alertEpisodeEnded && hasAlerts) {
+        // Re-evaluate the preceding episode's deferred command against its
+        // retained baseline before any retry can lower the new encounter.
+        pendingFadeAction_ = false;
+    }
     if (pendingFadeAction_) {
         const bool staleFadeDown = !pendingFadeRestore_ &&
                                    (!fadeCtx.hasAlert || fadeCtx.alertMuted || fadeCtx.alertSuppressed ||

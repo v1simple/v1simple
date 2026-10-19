@@ -226,6 +226,14 @@ void writePhoneMute(V1BLEClient& client, NimBLECharacteristic& characteristic) {
     callback.onWrite(&characteristic, phone);
 }
 
+template <size_t N>
+void writePhoneCommand(V1BLEClient& client, NimBLECharacteristic& characteristic, const uint8_t (&bytes)[N]) {
+    characteristic.setValue(bytes, N);
+    NimBLEConnInfo phone;
+    V1BLEClient::ProxyWriteCallbacks callback(&client);
+    callback.onWrite(&characteristic, phone);
+}
+
 }  // namespace
 
 void test_ble_timing_members_and_constants_use_uint32() {
@@ -727,6 +735,259 @@ void test_proxy_write_callback_queues_command() {
     TEST_ASSERT_EQUAL_UINT8_ARRAY(command, g_lastSentCommand.data(), sizeof(command));
 }
 
+void test_indexed_phone_request_waits_for_busy_release() {
+    // Run both long-write lock paths through the real phone callback and queue.
+    for (bool notifyLock : {false, true}) {
+        V1BLEClient client;
+        NimBLEClient link;
+        preparePhoneCommandSession(client, link);
+        if (notifyLock) client.bleNotifyMutex_ = xSemaphoreCreateMutex();
+        NimBLERemoteCharacteristic remote(V1_COMMAND_WRITE_LONG_UUID);
+        client.pCommandCharLong_ = &remote;
+        NimBLECharacteristic input(V1_COMMAND_WRITE_LONG_UUID);
+        NimBLEConnInfo phone;
+        V1BLEClient::ProxyWriteCallbacks callback(&client);
+        const uint8_t request[] = {0x11, 0xAA, 0xDA, 0xE6, 0x01, 0x01, 0x6C, 0xAB};
+        const uint8_t busy[] = {0x01};
+        client.onV1Busy(busy, sizeof(busy));
+        input.setValue(request, sizeof(request));
+        callback.onWrite(&input, phone);
+
+        TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+        TEST_ASSERT_EQUAL_UINT32(0, remote.writeValueCalls());
+        client.onV1DisplayFlowControl(false);
+        TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+        TEST_ASSERT_EQUAL_UINT32(0, remote.writeValueCalls());
+        client.onV1DisplayFlowControl(false);
+        TEST_ASSERT_EQUAL_INT(1, client.processPhoneCommandQueue());
+        TEST_ASSERT_EQUAL_UINT32(1, remote.writeValueCalls());
+        TEST_ASSERT_EQUAL_UINT8_ARRAY(request, remote.lastWriteValue().data(), sizeof(request));
+    }
+}
+
+void test_long_phone_framing_preserves_raw_and_destination_pacing() {
+    V1BLEClient client;
+    NimBLEClient link;
+    preparePhoneCommandSession(client, link);
+    NimBLERemoteCharacteristic remote(V1_COMMAND_WRITE_LONG_UUID);
+    client.pCommandCharLong_ = &remote;
+    NimBLECharacteristic input(V1_COMMAND_WRITE_LONG_UUID);
+    const uint8_t raw[] = {0xAA, 0xDA, 0xE6, 0x01, 0x01, 0x6C, 0xAB};
+    const uint8_t indexed[] = {0x11, 0xAA, 0xDA, 0xE6, 0x01, 0x01, 0x6C, 0xAB};
+    const uint8_t busy[] = {0x01};
+    client.onV1Busy(busy, sizeof(busy));
+    writePhoneCommand(client, input, raw);
+    TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+    TEST_ASSERT_EQUAL_UINT32(0, remote.writeValueCalls());
+    client.onV1DisplayFlowControl(false);
+    client.onV1DisplayFlowControl(true);
+    TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+    client.onV1DisplayFlowControl(false);
+    TEST_ASSERT_EQUAL_INT(1, client.processPhoneCommandQueue());
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(raw, remote.lastWriteValue().data(), sizeof(raw));
+
+    // An unrelated request ID equal to the origin byte must not block reqVersion.
+    const uint8_t unrelatedBusy[] = {0xE6};
+    client.onV1Busy(unrelatedBusy, sizeof(unrelatedBusy));
+    writePhoneCommand(client, input, indexed);
+    TEST_ASSERT_EQUAL_INT(1, client.processPhoneCommandQueue());
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(indexed, remote.lastWriteValue().data(), sizeof(indexed));
+
+    client.onV1Busy(busy, sizeof(busy));
+    client.onV1DisplayFlowControl(true);
+    // V1connection's version request (matching destination/origin IDs) is
+    // independent of V1 time slices and request holds in either envelope.
+    const uint8_t connectionRaw[] = {0xAA, 0xD6, 0xE6, 0x01, 0x01, 0x68, 0xAB};
+    const uint8_t connectionIndexed[] = {0x11, 0xAA, 0xD6, 0xE6, 0x01, 0x01, 0x68, 0xAB};
+    writePhoneCommand(client, input, connectionRaw);
+    TEST_ASSERT_EQUAL_INT(1, client.processPhoneCommandQueue());
+    writePhoneCommand(client, input, connectionIndexed);
+    TEST_ASSERT_EQUAL_INT(1, client.processPhoneCommandQueue());
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(connectionIndexed, remote.lastWriteValue().data(), sizeof(connectionIndexed));
+}
+
+void test_indexed_phone_continuation_keeps_request_hold_and_queue_order() {
+    V1BLEClient client;
+    NimBLEClient link;
+    preparePhoneCommandSession(client, link);
+    NimBLERemoteCharacteristic remote(V1_COMMAND_WRITE_LONG_UUID);
+    client.pCommandCharLong_ = &remote;
+    NimBLECharacteristic input(V1_COMMAND_WRITE_LONG_UUID);
+    // A complete reqWriteSweepDefinition for index 0, 24050..24150 MHz,
+    // commit set. Split this valid 12-byte request into two supported indexed
+    // pieces to test continuation ownership; no vendor use of this split is
+    // claimed. The complete ESP frame is AA DA E6 15 06 C0 5E 56 5D F2 48 AB.
+    const uint8_t first[] = {0x12, 0xAA, 0xDA, 0xE6, 0x15, 0x06, 0xC0};
+    const uint8_t last[] = {0x22, 0x5E, 0x56, 0x5D, 0xF2, 0x48, 0xAB};
+    const uint8_t next[] = {0x11, 0xAA, 0xDA, 0xE6, 0x01, 0x01, 0x6C, 0xAB};
+    writePhoneCommand(client, input, first);
+    writePhoneCommand(client, input, last);
+    writePhoneCommand(client, input, next);
+    TEST_ASSERT_EQUAL_INT(1, client.processPhoneCommandQueue());
+    client.onV1DisplayFlowControl(true);
+    TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+    TEST_ASSERT_EQUAL_UINT32(1, remote.writeValueCalls());
+    TEST_ASSERT_EQUAL_UINT32(1, client.phone2v1QueueCount_);
+    client.onV1RequestNotProcessed(0x15);
+    TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+    const uint8_t busy[] = {0x15};
+    client.onV1Busy(busy, sizeof(busy));
+    client.onV1DisplayFlowControl(false);
+    TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+    TEST_ASSERT_EQUAL_UINT32(1, remote.writeValueCalls());
+    client.onV1DisplayFlowControl(false);
+    TEST_ASSERT_EQUAL_INT(1, client.processPhoneCommandQueue());
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(last, remote.lastWriteValue().data(), sizeof(last));
+    TEST_ASSERT_EQUAL_INT(1, client.processPhoneCommandQueue());
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(next, remote.lastWriteValue().data(), sizeof(next));
+    TEST_ASSERT_EQUAL_UINT32(3, remote.writeValueCalls());
+}
+
+void test_indexed_phone_transport_retries_do_not_advance_continuations() {
+    V1BLEClient client;
+    NimBLEClient link;
+    preparePhoneCommandSession(client, link);
+    NimBLERemoteCharacteristic remote(V1_COMMAND_WRITE_LONG_UUID);
+    client.pCommandCharLong_ = &remote;
+    NimBLECharacteristic input(V1_COMMAND_WRITE_LONG_UUID);
+    const uint8_t first[] = {0x12, 0xAA, 0xDA, 0xE6, 0x15, 0x06, 0xC0};
+    const uint8_t last[] = {0x22, 0x5E, 0x56, 0x5D, 0xF2, 0x48, 0xAB};
+    writePhoneCommand(client, input, first);
+    writePhoneCommand(client, input, last);
+    remote.setWriteValueResult(false);
+    TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+    TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(first, remote.lastWriteValue().data(), sizeof(first));
+    remote.setWriteValueResult(true);
+    TEST_ASSERT_EQUAL_INT(1, client.processPhoneCommandQueue());
+    remote.setWriteValueResult(false);
+    TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(last, remote.lastWriteValue().data(), sizeof(last));
+    remote.setWriteValueResult(true);
+    TEST_ASSERT_EQUAL_INT(1, client.processPhoneCommandQueue());
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(last, remote.lastWriteValue().data(), sizeof(last));
+    TEST_ASSERT_EQUAL_UINT32(5, remote.writeValueCalls());
+    TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+}
+
+void test_indexed_phone_split_header_and_reordered_chunks_keep_their_owner() {
+    // The same complete sweep request as the continuation test, fragmented at
+    // every header byte. Test both ordered and tail-first callback delivery.
+    for (bool tailFirst : {false, true}) {
+        V1BLEClient client;
+        NimBLEClient link;
+        preparePhoneCommandSession(client, link);
+        NimBLERemoteCharacteristic remote(V1_COMMAND_WRITE_LONG_UUID);
+        client.pCommandCharLong_ = &remote;
+        NimBLECharacteristic input(V1_COMMAND_WRITE_LONG_UUID);
+        const uint8_t first[] = {0x14, 0xAA};
+        const uint8_t second[] = {0x24, 0xDA};
+        const uint8_t third[] = {0x34, 0xE6};
+        const uint8_t last[] = {0x44, 0x15, 0x06, 0xC0, 0x5E, 0x56, 0x5D, 0xF2, 0x48, 0xAB};
+        if (tailFirst) writePhoneCommand(client, input, last);
+        else writePhoneCommand(client, input, first);
+        TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+        TEST_ASSERT_EQUAL_UINT32(0, remote.writeValueCalls());
+        writePhoneCommand(client, input, second);
+        writePhoneCommand(client, input, third);
+        if (tailFirst) writePhoneCommand(client, input, first);
+        else writePhoneCommand(client, input, last);
+        const uint8_t busy[] = {0x15};
+        client.onV1Busy(busy, sizeof(busy));
+        TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+        client.onV1DisplayFlowControl(false);
+        TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+        client.onV1DisplayFlowControl(false);
+        TEST_ASSERT_EQUAL_INT(1, client.processPhoneCommandQueue());
+        TEST_ASSERT_EQUAL_UINT8(tailFirst ? 0x44 : 0x14, remote.lastWriteValue()[0]);
+        TEST_ASSERT_EQUAL_INT(1, client.processPhoneCommandQueue());
+        TEST_ASSERT_EQUAL_UINT8_ARRAY(second, remote.lastWriteValue().data(), sizeof(second));
+        TEST_ASSERT_EQUAL_INT(1, client.processPhoneCommandQueue());
+        TEST_ASSERT_EQUAL_UINT8_ARRAY(third, remote.lastWriteValue().data(), sizeof(third));
+        TEST_ASSERT_EQUAL_INT(1, client.processPhoneCommandQueue());
+        TEST_ASSERT_EQUAL_UINT8(tailFirst ? 0x14 : 0x44, remote.lastWriteValue()[0]);
+        TEST_ASSERT_EQUAL_UINT32(4, remote.writeValueCalls());
+    }
+}
+
+void test_indexed_phone_tenth_chunk_is_not_a_raw_esp_header() {
+    V1BLEClient client;
+    NimBLEClient link;
+    preparePhoneCommandSession(client, link);
+    NimBLERemoteCharacteristic remote(V1_COMMAND_WRITE_LONG_UUID);
+    client.pCommandCharLong_ = &remote;
+    NimBLECharacteristic input(V1_COMMAND_WRITE_LONG_UUID);
+    const uint8_t frame[] = {0xAA, 0xDA, 0xE6, 0x15, 0x06, 0xC0, 0x5E, 0x56, 0x5D, 0xF2, 0x48, 0xAB};
+    // Fragment the valid sweep request into ten pieces, each within the
+    // indexed 1..19-byte payload bounds. The tenth prefix is also 0xAA.
+    for (uint8_t part = 0; part < 9; ++part) {
+        const uint8_t chunk[] = {static_cast<uint8_t>(((part + 1) << 4) | 10), frame[part]};
+        writePhoneCommand(client, input, chunk);
+    }
+    const uint8_t last[] = {0xAA, 0xF2, 0x48, 0xAB};
+    writePhoneCommand(client, input, last);
+    for (int part = 0; part < 9; ++part) TEST_ASSERT_EQUAL_INT(1, client.processPhoneCommandQueue());
+    client.onV1DisplayFlowControl(true);
+    TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+    TEST_ASSERT_EQUAL_UINT32(9, remote.writeValueCalls());
+    client.onV1DisplayFlowControl(false);
+    TEST_ASSERT_EQUAL_INT(1, client.processPhoneCommandQueue());
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(last, remote.lastWriteValue().data(), sizeof(last));
+    TEST_ASSERT_EQUAL_UINT32(10, remote.writeValueCalls());
+}
+
+void test_incomplete_indexed_header_cannot_block_a_later_short_command() {
+    V1BLEClient client;
+    NimBLEClient link;
+    preparePhoneCommandSession(client, link);
+    NimBLERemoteCharacteristic remote(V1_COMMAND_WRITE_LONG_UUID);
+    client.pCommandCharLong_ = &remote;
+    NimBLECharacteristic longInput(V1_COMMAND_WRITE_LONG_UUID);
+    NimBLECharacteristic shortInput(V1_COMMAND_WRITE_UUID);
+    const uint8_t orphan[] = {0x22, 0x5E, 0x56, 0x5D, 0xF2, 0x48, 0xAB};
+    const uint8_t next[] = {0xAA, 0xDA, 0xE6, 0x01, 0x01, 0x6C, 0xAB};
+    writePhoneCommand(client, longInput, orphan);
+    TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+    writePhoneCommand(client, shortInput, next);
+    TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+    TEST_ASSERT_EQUAL_INT(1, client.processPhoneCommandQueue());
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(next, g_lastSentCommand.data(), sizeof(next));
+    TEST_ASSERT_EQUAL_UINT32(0, remote.writeValueCalls());
+    TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+}
+
+void test_indexed_phone_owner_and_pending_tail_do_not_cross_reconnect() {
+    V1BLEClient client;
+    NimBLEClient link;
+    preparePhoneCommandSession(client, link);
+    NimBLERemoteCharacteristic remote(V1_COMMAND_WRITE_LONG_UUID);
+    client.pCommandCharLong_ = &remote;
+    NimBLECharacteristic input(V1_COMMAND_WRITE_LONG_UUID);
+    const uint8_t first[] = {0x12, 0xAA, 0xDA, 0xE6, 0x15, 0x06, 0xC0};
+    const uint8_t last[] = {0x22, 0x5E, 0x56, 0x5D, 0xF2, 0x48, 0xAB};
+    writePhoneCommand(client, input, first);
+    writePhoneCommand(client, input, last);
+    TEST_ASSERT_EQUAL_INT(1, client.processPhoneCommandQueue());
+    client.onV1DisplayFlowControl(true);
+    TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+    closePhoneCommandSession(client, link);
+    openPhoneCommandSession(client, link);
+    client.pCommandCharLong_ = &remote;
+    TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+    writePhoneCommand(client, input, last); // No header in this session.
+    TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+    TEST_ASSERT_EQUAL_UINT32(1, remote.writeValueCalls());
+    // A new complete command is a boundary for the unmatched current-session
+    // tail, and must not borrow the previous session's request metadata.
+    const uint8_t next[] = {0x11, 0xAA, 0xDA, 0xE6, 0x01, 0x01, 0x6C, 0xAB};
+    writePhoneCommand(client, input, next);
+    TEST_ASSERT_EQUAL_INT(0, client.processPhoneCommandQueue());
+    TEST_ASSERT_EQUAL_INT(1, client.processPhoneCommandQueue());
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(next, remote.lastWriteValue().data(), sizeof(next));
+    TEST_ASSERT_EQUAL_UINT32(2, remote.writeValueCalls());
+    TEST_ASSERT_EQUAL_UINT32(0, client.phone2v1QueueCount_);
+}
+
 void test_queued_phone_command_does_not_cross_reconnect() {
     V1BLEClient client;
     NimBLEClient link;
@@ -931,6 +1192,14 @@ int main(int argc, char** argv) {
     RUN_TEST(test_proxy_custom_name_does_not_adopt_v1_advertised_name);
     RUN_TEST(test_forward_to_proxy_immediate_queues_until_main_loop_send);
     RUN_TEST(test_proxy_write_callback_queues_command);
+    RUN_TEST(test_indexed_phone_request_waits_for_busy_release);
+    RUN_TEST(test_long_phone_framing_preserves_raw_and_destination_pacing);
+    RUN_TEST(test_indexed_phone_continuation_keeps_request_hold_and_queue_order);
+    RUN_TEST(test_indexed_phone_transport_retries_do_not_advance_continuations);
+    RUN_TEST(test_indexed_phone_split_header_and_reordered_chunks_keep_their_owner);
+    RUN_TEST(test_indexed_phone_tenth_chunk_is_not_a_raw_esp_header);
+    RUN_TEST(test_incomplete_indexed_header_cannot_block_a_later_short_command);
+    RUN_TEST(test_indexed_phone_owner_and_pending_tail_do_not_cross_reconnect);
     RUN_TEST(test_queued_phone_command_does_not_cross_reconnect);
     RUN_TEST(test_pending_phone_command_does_not_cross_reconnect);
     RUN_TEST(test_phone_command_retry_and_new_reconnect_command_are_preserved);

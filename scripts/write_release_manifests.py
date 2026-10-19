@@ -144,8 +144,8 @@ def manifest(version: str, image: str, offset: int) -> dict[str, object]:
         "home_assistant_domain": "",
         "funding_url": "",
         # ESP Web Tools otherwise erases without asking when Improv is absent.
-        # The installer page explains that preservation requires leaving its
-        # explicit erase choice off; the update part itself is app-only.
+        # The fresh-install dialog keeps this explicit choice. Preservation
+        # uses the public flash API with eraseFirst=false, never that dialog.
         "new_install_prompt_erase": True,
         "new_install_improv_wait_time": 0,
         "builds": [

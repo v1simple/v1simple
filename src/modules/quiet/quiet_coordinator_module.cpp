@@ -71,7 +71,23 @@ void QuietCoordinatorModule::resetVolumeState() {
     pendingFadeFrequency_ = 0;
     pendingFadeLaser_ = false;
     pendingFadeLastAttemptMs_ = 0;
+    fadeAlertLifetimeKnown_ = false;
     autoPushVolumeTransactionActive_ = false;
+}
+
+bool QuietCoordinatorModule::consumeFadeAlertEnd() {
+    const uint32_t lifetime = parser_->alertLifetime();
+    const uint32_t session = ble_ ? ble_->sessionGeneration() : 0;
+    const uint32_t transitions = lifetime - fadeAlertLifetime_;
+    // A single transition ending in alerts is only a start. Two or more
+    // transitions include a clear even when the queue's final state is live.
+    // Session resets are separate: same-detector reconnects retain recovery.
+    const bool ended = fadeAlertLifetimeKnown_ && session == fadeAlertSession_ &&
+                       (transitions > 1 || (transitions == 1 && !parser_->hasAlerts()));
+    fadeAlertLifetime_ = lifetime;
+    fadeAlertSession_ = session;
+    fadeAlertLifetimeKnown_ = true;
+    return ended;
 }
 
 void QuietCoordinatorModule::syncCommittedState() {

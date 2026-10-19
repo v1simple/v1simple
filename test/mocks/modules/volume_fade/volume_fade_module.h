@@ -3,6 +3,7 @@
 
 struct VolumeFadeContext {
     bool hasAlert = false;
+    bool alertEpisodeEnded = false;
     bool alertMuted = false;
     bool alertSuppressed = false;
     uint8_t currentVolume = 0;

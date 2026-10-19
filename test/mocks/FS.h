@@ -36,6 +36,7 @@ inline size_t g_new_file_write_budget = kUnlimitedWriteBudget;
 inline std::string g_fail_next_read_path;
 inline std::string g_fail_next_remove_path;
 inline bool g_require_existing_write_parent = false;
+inline bool g_exists_uses_read_open = false;
 
 }  // namespace mock_fs_detail
 
@@ -324,6 +325,11 @@ inline void mock_fail_next_read_open(const char* path) {
 inline void mock_reset_fs_open_state() {
     mock_fs_detail::g_fail_next_read_path.clear();
     mock_fs_detail::g_require_existing_write_parent = false;
+    mock_fs_detail::g_exists_uses_read_open = false;
+}
+
+inline void mock_exists_uses_read_open(bool enabled) {
+    mock_fs_detail::g_exists_uses_read_open = enabled;
 }
 
 inline void mock_require_existing_write_parent(bool enabled) {
@@ -352,6 +358,8 @@ public:
         std::filesystem::create_directories(root_, ec);
     }
 
+    const char* mountpoint() { return root_.c_str(); }
+
     File open(const char* path, const char* mode = FILE_READ, bool /*create*/ = false) {
         if (path && mode && std::string(mode) == FILE_READ &&
             mock_fs_detail::g_fail_next_read_path == path) {
@@ -366,6 +374,12 @@ public:
     }
 
     bool exists(const char* path) {
+        if (mock_fs_detail::g_exists_uses_read_open) {
+            File file = open(path, FILE_READ);
+            const bool present = static_cast<bool>(file);
+            file.close();
+            return present;
+        }
         std::error_code ec;
         return std::filesystem::exists(resolve(path), ec);
     }

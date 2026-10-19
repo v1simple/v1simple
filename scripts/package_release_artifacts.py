@@ -99,6 +99,10 @@ def stage_installer(release_dir: Path) -> Path:
         encoding="utf-8",
     )
     shutil.copyfile(
+        ROOT / "web-installer" / "preserve-install.mjs",
+        pages_dir / "preserve-install.mjs",
+    )
+    shutil.copyfile(
         ROOT / "interface" / "static" / "branding" / "v1simple-logo-transparent.png",
         pages_dir / "v1simple-logo-transparent.png",
     )

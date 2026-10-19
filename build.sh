@@ -259,6 +259,8 @@ fi
 
 # Web interface
 if [ "$SKIP_WEB" = false ]; then
+    echo -e "${YELLOW}Preparing web deployment dependencies...${NC}"
+    python3 "$SCRIPT_DIR/scripts/prepare_web_build.py" --pio "$PIO_CMD" --env "$PIO_ENV"
     echo -e "${YELLOW}Building web interface...${NC}"
 
     # Check if node_modules exists

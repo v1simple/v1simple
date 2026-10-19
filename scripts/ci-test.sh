@@ -189,10 +189,12 @@ run_step "Maintenance WiFi reconnect ownership" python3 scripts/test_wifi_client
 
 section "Host Tools"
 if [[ "$(uname -s)" == "Darwin" ]]; then
+  run_step "v1replay bench executable build" ./tools/v1replay/scripts/build.sh
   run_step "v1replay Swift package tests" run_v1replay_swift_tests
   run_step "v1replay peripheral lifecycle regression suite" run_peripheral_lifecycle_checks
   run_step "Native camera recorder checks" run_camera_recorder_checks
 else
+  echo -e "${YELLOW}[skip] v1replay bench executable build requires macOS CoreBluetooth${NC}"
   echo -e "${YELLOW}[skip] v1replay Swift package tests require macOS CoreBluetooth${NC}"
   echo -e "${YELLOW}[skip] Native camera recorder checks require macOS AVFoundation${NC}"
 fi

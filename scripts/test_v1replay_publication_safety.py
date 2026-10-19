@@ -30,6 +30,11 @@ def load_guard() -> ModuleType:
 
 
 GUARD = load_guard()
+LIFECYCLE_SOURCES = (
+    "Tests/TestSupport/PeripheralLifecycle/CoreBluetooth.swift",
+    "Tests/TestSupport/PeripheralLifecycle/main.swift",
+    "Tests/test_peripheral_lifecycle.py",
+)
 
 
 def run_guard(relative: str, contents: str = "safe fixture\n") -> tuple[int, str]:
@@ -53,6 +58,34 @@ def test_direct_swift_test_is_publishable() -> None:
     )
     assert status == 0, output
     assert "publication safety: OK" in output
+
+
+def test_synthetic_lifecycle_sources_are_publishable() -> None:
+    for relative in LIFECYCLE_SOURCES:
+        status, output = run_guard(relative)
+        assert status == 0, output
+        assert "publication safety: OK" in output
+
+
+def test_lifecycle_allowlist_does_not_admit_neighboring_files() -> None:
+    for relative in (
+        "Tests/TestSupport/PeripheralLifecycle/Capture.swift",
+        "Tests/TestSupport/PeripheralLifecycle/capture.json",
+        "Tests/test_capture.py",
+    ):
+        status, output = run_guard(relative)
+        assert status == 1, output
+        assert (
+            "outside the source-only allowlist" in output
+            or "data or media files are not publishable" in output
+        ), output
+
+
+def test_lifecycle_sources_still_receive_content_checks() -> None:
+    for relative in LIFECYCLE_SOURCES:
+        status, output = run_guard(relative, "BEGIN " + "PRIVATE KEY\n")
+        assert status == 1, output
+        assert "possible private key" in output
 
 
 def test_nested_swift_test_is_rejected() -> None:
@@ -92,6 +125,9 @@ def test_filesystem_scan_rejects_file_without_git_tracking() -> None:
 def main() -> int:
     tests = (
         test_direct_swift_test_is_publishable,
+        test_synthetic_lifecycle_sources_are_publishable,
+        test_lifecycle_allowlist_does_not_admit_neighboring_files,
+        test_lifecycle_sources_still_receive_content_checks,
         test_nested_swift_test_is_rejected,
         test_non_swift_test_is_rejected,
         test_private_directory_is_rejected,

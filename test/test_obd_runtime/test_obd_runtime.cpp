@@ -527,6 +527,41 @@ void test_speed_response_keeps_callback_time_when_the_queue_drains_later() {
     TEST_ASSERT_EQUAL_UINT32(250, status.speedAgeMs);
 }
 
+void test_speed_reply_after_loop_timestamp_waits_without_becoming_a_poll_error() {
+    for (uint32_t loopStartMs : {uint32_t{10000}, UINT32_MAX}) {
+        Fixture fixture;
+        fixture.bootToPolling();
+        fixture.startSpeedCommand();
+        // The drive loop captures its clock before other work. A BLE callback
+        // can then enqueue a reply before OBD drains the queue in that loop.
+        const uint32_t receivedMs = loopStartMs + 1;
+        mockMillis = receivedMs;
+        fixture.runtime.onBleData(reinterpret_cast<const uint8_t*>("41 0D 32\r>"), 10);
+        fixture.runtime.update(loopStartMs, fixture.context);
+        ObdRuntimeStatus status = fixture.runtime.snapshot(loopStartMs);
+        TEST_ASSERT_EQUAL_UINT32(0, status.pollErrors);
+        TEST_ASSERT_EQUAL(ObdCommandKind::SPEED, status.commandInFlight);
+
+        fixture.update(receivedMs);
+        status = fixture.runtime.snapshot(receivedMs);
+        TEST_ASSERT_TRUE(status.speedValid);
+        TEST_ASSERT_EQUAL_UINT32(1, status.pollCount);
+        TEST_ASSERT_EQUAL_UINT32(0, status.pollErrors);
+        TEST_ASSERT_EQUAL_UINT32(receivedMs, status.speedSampleTsMs);
+        TEST_ASSERT_EQUAL_UINT32(0, status.speedAgeMs);
+        SpeedSourceSelector selector;
+        selector.begin(&fixture.runtime, true, nullptr, false);
+        selector.update(receivedMs);
+        TEST_ASSERT_TRUE(selector.selectedSpeed().valid);
+        TEST_ASSERT_EQUAL_UINT32(receivedMs, selector.selectedSpeed().timestampMs);
+        TEST_ASSERT_EQUAL_UINT32(0, selector.selectedSpeed().ageMs);
+
+        fixture.update(receivedMs + obd::SPEED_MAX_AGE_MS + 1);
+        selector.update(fixture.nowMs);
+        TEST_ASSERT_FALSE(selector.selectedSpeed().valid);
+    }
+}
+
 void test_stale_queued_speed_cannot_authorize_speed_selection() {
     Fixture fixture;
     fixture.bootToPolling();
@@ -652,6 +687,7 @@ int main() {
     RUN_TEST(test_partial_response_completed_before_timeout_is_accepted);
     RUN_TEST(test_searching_response_extends_wait_and_accepts_delayed_elm_reply);
     RUN_TEST(test_speed_response_keeps_callback_time_when_the_queue_drains_later);
+    RUN_TEST(test_speed_reply_after_loop_timestamp_waits_without_becoming_a_poll_error);
     RUN_TEST(test_stale_queued_speed_cannot_authorize_speed_selection);
     RUN_TEST(test_speed_response_freshness_uses_callback_time_across_uptime_wrap);
     RUN_TEST(test_current_overflow_is_classified_before_response_state_is_cleared);

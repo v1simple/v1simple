@@ -303,6 +303,45 @@ void test_phase_four_commands_match_vendor_frames_and_firmware_gates() {
     TEST_ASSERT_EQUAL_UINT8_ARRAY(factory, harness.command.lastWriteValue().data(), sizeof(factory));
 }
 
+void test_basic_apply_result_apis_preserve_holdoff_pacing_and_disconnect() {
+    AlertRequestHarness harness(23);
+    harness.client.onV1FirmwareVersionReceived(41039);
+    const uint8_t userBytes[] = {0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    mockMillis = 300000;
+    harness.client.onV1DisplayFlowControl(true);
+    TEST_ASSERT_EQUAL_INT(SendResult::NOT_YET, harness.client.writeUserBytesExactResult(userBytes));
+    TEST_ASSERT_EQUAL_INT(SendResult::NOT_YET, harness.client.requestUserBytesResult());
+    TEST_ASSERT_EQUAL_INT(SendResult::NOT_YET, harness.client.setDisplayOnResult(false));
+    TEST_ASSERT_EQUAL_INT(SendResult::NOT_YET, harness.client.setModeResult(2));
+    TEST_ASSERT_EQUAL_INT(SendResult::NOT_YET, harness.client.setVolumeResult(7, 3));
+    TEST_ASSERT_EQUAL_INT(SendResult::NOT_YET, harness.client.requestAllVolumeResult());
+    TEST_ASSERT_EQUAL_UINT32(0, harness.command.writeValueCalls());
+
+    harness.client.onV1DisplayFlowControl(false);
+    TEST_ASSERT_EQUAL_INT(SendResult::SENT, harness.client.writeUserBytesExactResult(userBytes));
+    TEST_ASSERT_EQUAL_INT(SendResult::NOT_YET, harness.client.requestUserBytesResult());
+    mockMillis += 5;
+    TEST_ASSERT_EQUAL_INT(SendResult::SENT, harness.client.requestUserBytesResult());
+    mockMillis += 5;
+    TEST_ASSERT_EQUAL_INT(SendResult::SENT, harness.client.setDisplayOnResult(false));
+    mockMillis += 5;
+    TEST_ASSERT_EQUAL_INT(SendResult::SENT, harness.client.setModeResult(2));
+    mockMillis += 5;
+    TEST_ASSERT_EQUAL_INT(SendResult::SENT, harness.client.setVolumeResult(7, 3));
+    mockMillis += 5;
+    TEST_ASSERT_EQUAL_INT(SendResult::SENT, harness.client.requestAllVolumeResult());
+    TEST_ASSERT_EQUAL_UINT32(6, harness.command.writeValueCalls());
+
+    harness.link.setConnected(false);
+    TEST_ASSERT_EQUAL_INT(SendResult::FAILED, harness.client.writeUserBytesExactResult(userBytes));
+    TEST_ASSERT_EQUAL_INT(SendResult::FAILED, harness.client.requestUserBytesResult());
+    TEST_ASSERT_EQUAL_INT(SendResult::FAILED, harness.client.setDisplayOnResult(false));
+    TEST_ASSERT_EQUAL_INT(SendResult::FAILED, harness.client.setModeResult(2));
+    TEST_ASSERT_EQUAL_INT(SendResult::FAILED, harness.client.setVolumeResult(7, 3));
+    TEST_ASSERT_EQUAL_INT(SendResult::FAILED, harness.client.requestAllVolumeResult());
+    TEST_ASSERT_EQUAL_UINT32(6, harness.command.writeValueCalls());
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_command_guard_uses_successful_send_time_for_exact_boundary);
@@ -315,5 +354,6 @@ int main(int, char**) {
     RUN_TEST(test_command_guard_interval_survives_millis_wrap);
     RUN_TEST(test_settings_apply_commands_match_vendor_frames_exactly);
     RUN_TEST(test_phase_four_commands_match_vendor_frames_and_firmware_gates);
+    RUN_TEST(test_basic_apply_result_apis_preserve_holdoff_pacing_and_disconnect);
     return UNITY_END();
 }

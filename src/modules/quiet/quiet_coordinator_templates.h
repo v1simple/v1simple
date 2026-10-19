@@ -43,6 +43,11 @@ bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs, const Spee
     if (syncProxyVolumeOwnership(volumeFade)) return false;
     syncCommittedState();
 
+    // Apply owns the exact pair through deferred sends and readback. Do not
+    // capture a speed restore baseline or enter an override until it releases
+    // that lease; the speed owner retains its current desired state meanwhile.
+    if (autoPushVolumeTransactionActive_) return false;
+
     const auto& smSettings = speedMute.getSettings();
     const auto& smState = speedMute.getState();
 

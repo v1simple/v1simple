@@ -207,6 +207,7 @@ class V1BLEClient {
     // Request the V1's authoritative volume settings
     // (RESPALLVOLUME 0x3D will be received with [main, muted, savedMain, savedMuted]).
     bool requestAllVolume();
+    SendResult requestAllVolumeResult();
 
     // Request the current [main, muted] pair (0x37 -> 0x38). This focused
     // response is used to verify temporary-volume Apply transactions.
@@ -217,11 +218,13 @@ class V1BLEClient {
     // On 4.1032+ an off request may independently keep the Bluetooth
     // indicator active. `on=true` never carries Aux0.
     bool setDisplayOn(bool on, bool keepBluetoothIndicatorOn);
+    SendResult setDisplayOnResult(bool on, bool keepBluetoothIndicatorOn = false);
 
     bool setMute(bool muted);
     SendResult setMuteResult(bool muted);
 
     bool setMode(uint8_t mode);
+    SendResult setModeResult(uint8_t mode);
 
     // Volume range is 0..9; 0xFF preserves the current value.
     bool setVolume(uint8_t mainVolume, uint8_t mutedVolume);
@@ -241,6 +244,7 @@ class V1BLEClient {
     SendResult factoryResetDetector();
 
     bool requestUserBytes();
+    SendResult requestUserBytesResult();
 
     bool writeUserBytes(const uint8_t* bytes);
 
@@ -248,6 +252,7 @@ class V1BLEClient {
     // positions with defaults. The settings executor prepares this array by
     // overlaying supported masks onto a same-session live response.
     bool writeUserBytesExact(const uint8_t* bytes);
+    SendResult writeUserBytesExactResult(const uint8_t* bytes);
 
     enum class UserBytesVerificationStatus : uint8_t { INACTIVE = 0, PENDING, MATCH, MISMATCH };
 

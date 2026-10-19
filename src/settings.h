@@ -200,6 +200,9 @@ class SettingsManager {
     bool lastV1AddressFallbackPending_ = false;
     uint32_t lastV1AddressFallbackNextAttemptAtMs_ = 0;
     bool restorePending_ = false;
+    // Boot profile migration and reference cleanup must wait when a recovery
+    // source or write could not be checked. Recomputed by the next SD recovery attempt.
+    bool profileReferenceRecoveryPending_ = false;
     uint64_t restoreCommitWatermark_ = 0;
     uint64_t profileDeleteCommitWatermark_ = 0;
     uint32_t wifiCredentialCommitGeneration_ = 0;

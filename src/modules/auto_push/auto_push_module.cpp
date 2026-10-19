@@ -947,6 +947,27 @@ bool AutoPushModule::liveSessionMatches() const {
     return bleClient_ && bleClient_->isConnected() && bleClient_->sessionGeneration() == state_.sessionGeneration;
 }
 
+bool AutoPushModule::acceptSendResult(SendResult result, ComponentStatus& component, Outcome failureOutcome,
+                                      FailureReason failureReason, FailureReason timeoutReason, uint32_t nowMs) {
+    if (result == SendResult::SENT) {
+        state_.sendDeadlineMs = 0;
+        return true;
+    }
+    if (result == SendResult::NOT_YET) {
+        // TS Holdoff and transport pacing defer this same phase. Retain its
+        // ownership; read phases resample ingress before each retry.
+        if (state_.sendDeadlineMs == 0) state_.sendDeadlineMs = nowMs + kVerificationTimeoutMs;
+        if (deadlineReached(nowMs, state_.sendDeadlineMs)) {
+            failWholePlan(&component, Outcome::TIMEOUT, timeoutReason);
+        } else {
+            state_.nextStepAtMs = nowMs + 5;
+        }
+        return false;
+    }
+    failWholePlan(&component, failureOutcome, failureReason);
+    return false;
+}
+
 void AutoPushModule::failComponent(ComponentStatus& component, Outcome outcome, FailureReason reason) {
     component.outcome = outcome;
     component.reason = reason;
@@ -1093,8 +1114,9 @@ void AutoPushModule::process() {
         return;
 
     case Step::UserWrite:
-        if (!bleClient_->writeUserBytesExact(state_.userWriteBytes.data())) {
-            failWholePlan(&status_.userSettings, Outcome::WRITE_FAILED, FailureReason::USER_BYTES_WRITE_FAILED);
+        if (!acceptSendResult(bleClient_->writeUserBytesExactResult(state_.userWriteBytes.data()),
+                              status_.userSettings, Outcome::WRITE_FAILED, FailureReason::USER_BYTES_WRITE_FAILED,
+                              FailureReason::USER_BYTES_TIMEOUT, now)) {
             return;
         }
         status_.userSettings.sent = true;
@@ -1111,8 +1133,8 @@ void AutoPushModule::process() {
         // The callback may run while the synchronous send waits. Preserve its
         // ingress as fresh even when queue parsing follows the send return.
         state_.observationIngressBoundary = bleClient_->latestV1NotificationIngressSequence();
-        if (!bleClient_->requestUserBytes()) {
-            failWholePlan(&status_.userSettings, Outcome::READ_FAILED, FailureReason::USER_BYTES_READ_FAILED);
+        if (!acceptSendResult(bleClient_->requestUserBytesResult(), status_.userSettings, Outcome::READ_FAILED,
+                              FailureReason::USER_BYTES_READ_FAILED, FailureReason::USER_BYTES_TIMEOUT, now)) {
             return;
         }
         state_.step = Step::UserVerify;
@@ -1151,8 +1173,9 @@ void AutoPushModule::process() {
     case Step::DisplayWrite:
         state_.observationRevision = parser_->displayOnObservationRevision();
         state_.sawFreshMismatch = false;
-        if (!bleClient_->setDisplayOn(state_.displayOn, state_.bluetoothIndicatorActive)) {
-            failWholePlan(&status_.display, Outcome::WRITE_FAILED, FailureReason::DISPLAY_WRITE_FAILED);
+        if (!acceptSendResult(bleClient_->setDisplayOnResult(state_.displayOn, state_.bluetoothIndicatorActive),
+                              status_.display, Outcome::WRITE_FAILED, FailureReason::DISPLAY_WRITE_FAILED,
+                              FailureReason::DISPLAY_TIMEOUT, now)) {
             return;
         }
         state_.observationIngressBoundary = bleClient_->latestV1NotificationIngressSequence();
@@ -1194,8 +1217,8 @@ void AutoPushModule::process() {
     case Step::ModeWrite:
         state_.observationRevision = parser_->modeObservationRevision();
         state_.sawFreshMismatch = false;
-        if (!bleClient_->setMode(state_.desiredMode)) {
-            failWholePlan(&status_.mode, Outcome::WRITE_FAILED, FailureReason::MODE_WRITE_FAILED);
+        if (!acceptSendResult(bleClient_->setModeResult(state_.desiredMode), status_.mode, Outcome::WRITE_FAILED,
+                              FailureReason::MODE_WRITE_FAILED, FailureReason::MODE_TIMEOUT, now)) {
             return;
         }
         state_.observationIngressBoundary = bleClient_->latestV1NotificationIngressSequence();
@@ -1230,13 +1253,14 @@ void AutoPushModule::process() {
     }
 
     case Step::VolumeWrite:
-        if (!quiet_->beginAutoPushVolumeTransaction()) {
+        if (!state_.volumeTransactionActive && !quiet_->beginAutoPushVolumeTransaction()) {
             failWholePlan(&status_.volume, Outcome::BLOCKED, FailureReason::VOLUME_OWNER_BUSY);
             return;
         }
         state_.volumeTransactionActive = true;
-        if (!quiet_->sendAutoPushVolume(state_.volume, state_.muteVolume, state_.volumeAux)) {
-            failWholePlan(&status_.volume, Outcome::WRITE_FAILED, FailureReason::VOLUME_WRITE_FAILED);
+        if (!acceptSendResult(quiet_->sendAutoPushVolumeResult(state_.volume, state_.muteVolume, state_.volumeAux),
+                              status_.volume, Outcome::WRITE_FAILED, FailureReason::VOLUME_WRITE_FAILED,
+                              FailureReason::VOLUME_TIMEOUT, now)) {
             return;
         }
         status_.volume.sent = true;
@@ -1248,8 +1272,8 @@ void AutoPushModule::process() {
     case Step::VolumeRead:
         state_.observationRevision = parser_->allVolumeObservation().revision;
         state_.observationIngressBoundary = bleClient_->latestV1NotificationIngressSequence();
-        if (!bleClient_->requestAllVolume()) {
-            failWholePlan(&status_.volume, Outcome::READ_FAILED, FailureReason::VOLUME_READ_FAILED);
+        if (!acceptSendResult(bleClient_->requestAllVolumeResult(), status_.volume, Outcome::READ_FAILED,
+                              FailureReason::VOLUME_READ_FAILED, FailureReason::VOLUME_TIMEOUT, now)) {
             return;
         }
         state_.step = Step::VolumeVerify;

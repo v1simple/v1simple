@@ -75,6 +75,7 @@ class DisplayPipelineModule {
     uint32_t alpHoldRefreshDeadlineMs_ = 0;
     uint32_t alpPersistRefreshDeadlineMs_ = 0;
     uint32_t v1PersistRefreshDeadlineMs_ = 0;
+    uint32_t voiceAlertLifetime_ = 0;
     VoiceAction pendingVoiceAction_{};
     bool hasPendingVoiceAction_ = false;
     bool voiceRetryScheduled_ = false;

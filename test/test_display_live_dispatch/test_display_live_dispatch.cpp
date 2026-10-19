@@ -963,17 +963,20 @@ void test_stealth_transition_cancels_expiry_of_an_alp_owned_v1_card() {
     runtime.displayFrame(0x38, 0x38, 0, 0, 0, 10100);
     TEST_ASSERT_TRUE(display.ut_elementCaches().cards.lastDrawnPositions[0].isGraced);
     TEST_ASSERT_TRUE(display.secondaryCardRefreshDue(12001));
-    // ALP owned the primary throughout, so V1 has no primary hold to show
-    // before returning directly to stealth when ALP's zero-hold session ends.
-    TEST_ASSERT_FALSE(runtime.persistence.getPersistedAlert().isValid);
+    // V1 retains its own hold while ALP owns the primary. After ALP ends,
+    // that hold must expire before stealth takes the screen.
+    TEST_ASSERT_TRUE(runtime.persistence.getPersistedAlert().isValid);
     runtime.alp.testSetState(AlpState::TEARDOWN, 10200);
     runtime.alp.testCloseSession(10200);
     runtime.displayFrame(0x38, 0x38, 0, 0, 0, 10200);
-    TEST_ASSERT_TRUE(display.isStealthScreen());
+    TEST_ASSERT_FALSE(display.isStealthScreen());
+    TEST_ASSERT_EQUAL_UINT32(24150, lastFrequencyMHz);
     clearObservations();
 
-    TEST_ASSERT_FALSE(runtime.refresh(12001));
-    TEST_ASSERT_FALSE(runtime.refresh(12002));
+    TEST_ASSERT_FALSE(runtime.refresh(12099));
+    TEST_ASSERT_TRUE(runtime.refresh(12100));
+    TEST_ASSERT_TRUE(display.isStealthScreen());
+    TEST_ASSERT_FALSE(runtime.refresh(12101));
     TEST_ASSERT_FALSE(runtime.refresh(15000));
     TEST_ASSERT_FALSE(display.secondaryCardRefreshDue(15000));
     TEST_ASSERT_EQUAL_INT(0, display.ut_elementCaches().cards.lastDrawnCount);

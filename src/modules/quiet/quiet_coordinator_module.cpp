@@ -356,12 +356,22 @@ bool QuietCoordinatorModule::sendAutoPushVolume(uint8_t volume, uint8_t muteVolu
 }
 
 bool QuietCoordinatorModule::sendAutoPushVolume(uint8_t volume, uint8_t muteVolume, uint8_t aux0) {
+    return sendAutoPushVolumeResult(volume, muteVolume, aux0) == SendResult::SENT;
+}
+
+SendResult QuietCoordinatorModule::sendAutoPushVolumeResult(uint8_t volume, uint8_t muteVolume, uint8_t aux0) {
     if (volume > 9 || muteVolume > 9) {
-        return false;
+        return SendResult::FAILED;
     }
 
     syncCommittedState();
     if (!speedVolActive_) {
+        if (!ble_) return SendResult::FAILED;
+        const SendResult result = ble_->setVolumeResult(volume, muteVolume, aux0);
+        if (result != SendResult::SENT) return result;
+        // A deferred or failed Apply did not change the detector. Preserve
+        // its baseline so later speed-volume restoration cannot apply a pair
+        // that this transaction never transmitted.
         if (pendingSpeedVolRestoreVol_ != 0xFF) {
             pendingSpeedVolRestoreVol_ = volume;
             pendingSpeedVolRestoreMuteVol_ = muteVolume;
@@ -371,21 +381,20 @@ bool QuietCoordinatorModule::sendAutoPushVolume(uint8_t volume, uint8_t muteVolu
         desired_.volume = volume;
         desired_.muteVolume = muteVolume;
         desired_.volumePending = true;
-        if (!ble_) return false;
-        const SendResult result = ble_->setVolumeResult(volume, muteVolume, aux0);
-        if (result == SendResult::SENT) presentation_.activeVolumeOwner = QuietOwner::AutoPush;
-        return result == SendResult::SENT;
+        presentation_.activeVolumeOwner = QuietOwner::AutoPush;
+        return SendResult::SENT;
     }
 
     if (!ble_) {
-        return false;
+        return SendResult::FAILED;
     }
 
     // REQWRITEVOLUME is atomic. Keep the temporary speed-mute main volume on
     // the detector while replacing the baseline pair that will be restored.
     const uint8_t temporaryVolume = desired_.volume <= 9 ? desired_.volume : committed_.mainVolume;
-    if (ble_->setVolumeResult(temporaryVolume, muteVolume, aux0) != SendResult::SENT) {
-        return false;
+    const SendResult result = ble_->setVolumeResult(temporaryVolume, muteVolume, aux0);
+    if (result != SendResult::SENT) {
+        return result;
     }
 
     speedVolSavedOriginal_ = volume;
@@ -397,7 +406,7 @@ bool QuietCoordinatorModule::sendAutoPushVolume(uint8_t volume, uint8_t muteVolu
     desired_.volumePending =
         !committed_.hasDisplayState || committed_.mainVolume != temporaryVolume || committed_.muteVolume != muteVolume;
     presentation_.activeVolumeOwner = QuietOwner::SpeedVolume;
-    return true;
+    return SendResult::SENT;
 }
 
 bool QuietCoordinatorModule::retryPendingSpeedVolRestore(const uint32_t nowMs) {

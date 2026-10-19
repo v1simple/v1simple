@@ -3078,6 +3078,255 @@ void test_unsolicited_display_and_mode_ingressed_during_write_cannot_verify_the_
     TEST_ASSERT_TRUE(statusContains("mode_timeout"));
 }
 
+namespace {
+enum class BasicSendPhase { UserWrite, UserRead, Display, Mode, VolumeWrite, VolumeRead };
+constexpr BasicSendPhase kBasicSendPhases[] = {
+    BasicSendPhase::UserWrite, BasicSendPhase::UserRead, BasicSendPhase::Display,
+    BasicSendPhase::Mode, BasicSendPhase::VolumeWrite, BasicSendPhase::VolumeRead};
+
+unsigned long prepareBasicSendPhase(BasicSendPhase phase) {
+    configureProfile();
+    auto& detector = profiles.loadableProfile.detector;
+    const bool user = phase == BasicSendPhase::UserWrite || phase == BasicSendPhase::UserRead;
+    const bool volume = phase == BasicSendPhase::VolumeWrite || phase == BasicSendPhase::VolumeRead;
+    if (!user) detector.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
+    if (phase != BasicSendPhase::Display) detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    if (phase != BasicSendPhase::Mode) detector.modePolicy = V1ModePolicy::Unchanged;
+    if (!volume) detector.volumePolicy = V1VolumePolicy::Unchanged;
+    stageSnapshot(makeSnapshot());
+    queueAndPreflight();
+    if (phase == BasicSendPhase::UserRead || phase == BasicSendPhase::VolumeRead) {
+        at(100); // The write succeeds before this read is deferred.
+        return 130;
+    }
+    return 100;
+}
+
+void setBasicSendResult(BasicSendPhase phase, SendResult result) {
+    switch (phase) {
+    case BasicSendPhase::UserWrite: ble.nextUserBytesWriteSendResult = result; break;
+    case BasicSendPhase::UserRead: ble.nextUserBytesReadSendResult = result; break;
+    case BasicSendPhase::Display: ble.nextDisplaySendResult = result; break;
+    case BasicSendPhase::Mode: ble.nextModeSendResult = result; break;
+    case BasicSendPhase::VolumeWrite: ble.nextVolumeSendResult = result; break;
+    case BasicSendPhase::VolumeRead: ble.nextAllVolumeReadSendResult = result; break;
+    }
+}
+
+void finishBasicSendPhase(BasicSendPhase phase, unsigned long sentAt) {
+    switch (phase) {
+    case BasicSendPhase::UserWrite:
+        sentAt += 30;
+        at(sentAt);
+        [[fallthrough]];
+    case BasicSendPhase::UserRead:
+        observeUserBytes(ble.lastUserBytes);
+        break;
+    case BasicSendPhase::Display: observeDisplay(false, 1); break;
+    case BasicSendPhase::Mode: observeDisplay(true, 2); break;
+    case BasicSendPhase::VolumeWrite:
+        sentAt += 30;
+        at(sentAt);
+        [[fallthrough]];
+    case BasicSendPhase::VolumeRead:
+        observeAllVolume(7, 3, 4, 1);
+        break;
+    }
+    at(sentAt);
+}
+} // namespace
+
+void test_basic_apply_phases_retry_temporary_deferral_and_complete() {
+    for (const auto phase : kBasicSendPhases) {
+        setUp();
+        const unsigned long firstAttempt = prepareBasicSendPhase(phase);
+        setBasicSendResult(phase, SendResult::NOT_YET);
+        at(firstAttempt);
+        TEST_ASSERT_TRUE(module.isActive());
+        TEST_ASSERT_FALSE(ble.consumeVerifyPushMatchEdge());
+        if (phase == BasicSendPhase::VolumeWrite || phase == BasicSendPhase::VolumeRead) {
+            TEST_ASSERT_EQUAL_INT(SendResult::NOT_YET,
+                                  quiet.sendVolumeResult(QuietOwner::VolumeFade, 1, 1));
+        }
+        // The mock returns SENT on the next attempt. Keep the transaction's
+        // volume lease without trying to reacquire it against itself.
+        at(firstAttempt + 5);
+        finishBasicSendPhase(phase, firstAttempt + 5);
+        TEST_ASSERT_FALSE(module.isActive());
+        TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+        TEST_ASSERT_TRUE(ble.consumeVerifyPushMatchEdge());
+    }
+}
+
+void test_basic_apply_phases_bound_persistent_deferral_and_release_ownership() {
+    for (const auto phase : kBasicSendPhases) {
+        setUp();
+        const unsigned long firstAttempt = prepareBasicSendPhase(phase);
+        setBasicSendResult(phase, SendResult::NOT_YET);
+        at(firstAttempt);
+        setBasicSendResult(phase, SendResult::NOT_YET);
+        at(firstAttempt + 1495);
+        TEST_ASSERT_TRUE(module.isActive());
+        setBasicSendResult(phase, SendResult::NOT_YET);
+        at(firstAttempt + 1500);
+        TEST_ASSERT_FALSE(module.isActive());
+        TEST_ASSERT_TRUE(statusContains("\"outcome\":\"timeout\""));
+        TEST_ASSERT_FALSE(ble.consumeVerifyPushMatchEdge());
+        if (phase == BasicSendPhase::VolumeWrite || phase == BasicSendPhase::VolumeRead) {
+            TEST_ASSERT_EQUAL_INT(SendResult::SENT,
+                                  quiet.sendVolumeResult(QuietOwner::VolumeFade, 1, 1));
+        }
+    }
+}
+
+void test_basic_apply_phases_do_not_retry_hard_failures() {
+    for (const auto phase : kBasicSendPhases) {
+        setUp();
+        const unsigned long firstAttempt = prepareBasicSendPhase(phase);
+        setBasicSendResult(phase, SendResult::FAILED);
+        at(firstAttempt);
+        TEST_ASSERT_FALSE(module.isActive());
+        TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+        TEST_ASSERT_TRUE(statusContains("\"outcome\":\"write_failed\"") ||
+                         statusContains("\"outcome\":\"read_failed\""));
+        TEST_ASSERT_FALSE(ble.consumeVerifyPushMatchEdge());
+    }
+}
+
+void test_basic_read_retries_resample_ingress_and_accept_in_send_replies() {
+    for (const auto phase : {BasicSendPhase::UserRead, BasicSendPhase::VolumeRead}) {
+        setUp();
+        const unsigned long firstAttempt = prepareBasicSendPhase(phase);
+        setBasicSendResult(phase, SendResult::NOT_YET);
+        at(firstAttempt);
+        const uint32_t oldIngress = ble.noteV1NotificationIngress();
+        if (phase == BasicSendPhase::UserRead) ble.requestUserBytesSendHook = queueResponseDuringSend;
+        else ble.requestAllVolumeSendHook = queueResponseDuringSend;
+        at(firstAttempt + 5);
+        if (phase == BasicSendPhase::UserRead) observeUserBytes(ble.lastUserBytes, oldIngress);
+        else observeAllVolume(7, 3, 4, 1, 0xEA, false, 0xD6, oldIngress);
+        at(firstAttempt + 5);
+        TEST_ASSERT_TRUE(module.isActive());
+        if (phase == BasicSendPhase::UserRead) observeUserBytes(ble.lastUserBytes, responseIngressDuringSend);
+        else observeAllVolume(7, 3, 4, 1, 0xEA, false, 0xD6, responseIngressDuringSend);
+        at(firstAttempt + 15);
+        TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    }
+}
+
+void test_later_send_deferral_timeout_preserves_earlier_verified_component() {
+    configureProfile();
+    profiles.loadableProfile.detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    profiles.loadableProfile.detector.modePolicy = V1ModePolicy::Unchanged;
+    stageSnapshot(makeSnapshot());
+    queueAndPreflight();
+    verifyUserBytes();
+    ble.nextVolumeSendResult = SendResult::NOT_YET;
+    at(160);
+    TEST_ASSERT_TRUE(module.isActive());
+    ble.nextVolumeSendResult = SendResult::NOT_YET;
+    at(1660);
+    TEST_ASSERT_FALSE(module.isActive());
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"partial\""));
+    TEST_ASSERT_TRUE(statusContains("volume_timeout"));
+    TEST_ASSERT_EQUAL_INT(1, ble.writeUserBytesCalls);
+    TEST_ASSERT_EQUAL_UINT8(0xFE, ble.lastUserBytes[0]);
+    TEST_ASSERT_EQUAL_INT(0, ble.requestAllVolumeCalls);
+    TEST_ASSERT_FALSE(ble.consumeVerifyPushMatchEdge());
+}
+
+void test_unsent_apply_volume_never_becomes_later_speed_restore_baseline() {
+    for (const auto result : {SendResult::NOT_YET, SendResult::FAILED}) {
+        setUp();
+        VolumeFadeModule fade;
+        configureVolumeOnlyApplyWithFade(fade, 0); // Observed 5/2, requested 7/3.
+        queueAndPreflight();
+        ble.nextVolumeSendResult = result;
+        at(100);
+        if (result == SendResult::NOT_YET) {
+            ble.nextVolumeSendResult = SendResult::NOT_YET;
+            at(1600);
+            TEST_ASSERT_TRUE(statusContains("volume_timeout"));
+        } else {
+            TEST_ASSERT_TRUE(statusContains("volume_write_failed"));
+        }
+        TEST_ASSERT_FALSE(module.isActive());
+
+        SpeedMuteModule speedMute;
+        speedMute.begin(true, 25, 3, 0);
+        speedMute.state_.muteActive = true;
+        TEST_ASSERT_TRUE(quiet.processSpeedVolume(1700, speedMute, &fade));
+        observeCurrentVolume(0, 2);
+        speedMute.state_.muteActive = false;
+        TEST_ASSERT_TRUE(quiet.processSpeedVolume(1800, speedMute, &fade));
+        TEST_ASSERT_EQUAL_UINT8(5, ble.lastVolume);
+        TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
+    }
+}
+
+void test_speed_activation_waits_for_deferred_apply_and_uses_its_final_baseline() {
+    for (const bool completes : {true, false}) {
+        setUp();
+        VolumeFadeModule fade;
+        configureVolumeOnlyApplyWithFade(fade, 0);
+        queueAndPreflight();
+        ble.nextVolumeSendResult = SendResult::NOT_YET;
+        at(100);
+        SpeedMuteModule speedMute;
+        speedMute.begin(true, 25, 3, 0);
+        speedMute.state_.muteActive = true;
+        TEST_ASSERT_FALSE(quiet.processSpeedVolume(102, speedMute, &fade));
+        TEST_ASSERT_EQUAL_INT(1, ble.setVolumeCalls);
+        if (completes) {
+            at(105);
+            TEST_ASSERT_EQUAL_UINT8(7, ble.lastVolume);
+            TEST_ASSERT_EQUAL_UINT8(3, ble.lastMuteVolume);
+            TEST_ASSERT_FALSE(quiet.processSpeedVolume(110, speedMute, &fade));
+            at(135);
+            observeAllVolume(7, 3, 4, 1);
+            at(135);
+            TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+        } else {
+            ble.nextVolumeSendResult = SendResult::NOT_YET;
+            at(1600);
+            TEST_ASSERT_TRUE(statusContains("volume_timeout"));
+        }
+        TEST_ASSERT_FALSE(module.isActive());
+        TEST_ASSERT_TRUE(quiet.processSpeedVolume(1700, speedMute, &fade));
+        TEST_ASSERT_EQUAL_UINT8(0, ble.lastVolume);
+        TEST_ASSERT_EQUAL_UINT8(completes ? 3 : 2, ble.lastMuteVolume);
+        observeCurrentVolume(0, completes ? 3 : 2);
+        speedMute.state_.muteActive = false;
+        TEST_ASSERT_TRUE(quiet.processSpeedVolume(1800, speedMute, &fade));
+        TEST_ASSERT_EQUAL_UINT8(completes ? 7 : 5, ble.lastVolume);
+        TEST_ASSERT_EQUAL_UINT8(completes ? 3 : 2, ble.lastMuteVolume);
+    }
+}
+
+void test_speed_activation_cleared_during_apply_readback_leaves_no_restore() {
+    VolumeFadeModule fade;
+    configureVolumeOnlyApplyWithFade(fade, 0);
+    queueAndPreflight();
+    ble.nextVolumeSendResult = SendResult::NOT_YET;
+    at(100);
+    SpeedMuteModule speedMute;
+    speedMute.begin(true, 25, 3, 0);
+    speedMute.state_.muteActive = true;
+    TEST_ASSERT_FALSE(quiet.processSpeedVolume(102, speedMute, &fade));
+    at(105);
+    TEST_ASSERT_FALSE(quiet.processSpeedVolume(110, speedMute, &fade));
+    speedMute.state_.muteActive = false;
+    TEST_ASSERT_FALSE(quiet.processSpeedVolume(120, speedMute, &fade));
+    at(135);
+    observeAllVolume(7, 3, 4, 1);
+    at(135);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_FALSE(quiet.processSpeedVolume(140, speedMute, &fade));
+    TEST_ASSERT_EQUAL_INT(2, ble.setVolumeCalls); // One deferral and the Apply send only.
+    TEST_ASSERT_EQUAL_UINT8(7, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(3, ble.lastMuteVolume);
+}
+
 void test_write_and_read_failures_are_distinct_and_never_applied() {
     configureProfile();
     profiles.loadableProfile.detector.displayPolicy = V1DisplayPolicy::Unchanged;
@@ -3095,7 +3344,7 @@ void test_write_and_read_failures_are_distinct_and_never_applied() {
     profiles.loadableProfile.detector.modePolicy = V1ModePolicy::Unchanged;
     profiles.loadableProfile.detector.volumePolicy = V1VolumePolicy::Unchanged;
     stageSnapshot(makeSnapshot());
-    ble.requestUserBytesResult = false;
+    ble.requestUserBytesSuccess = false;
     queueAndPreflight();
     at(100);
     ble.startUserBytesVerification(ble.lastUserBytes);
@@ -3112,7 +3361,7 @@ void test_display_mode_and_volume_transport_failures_are_distinct_and_release_vo
     displayDetector.modePolicy = V1ModePolicy::Unchanged;
     displayDetector.volumePolicy = V1VolumePolicy::Unchanged;
     stageSnapshot(makeSnapshot());
-    ble.setDisplayOnResult = false;
+    ble.setDisplayOnSuccess = false;
     queueAndPreflight();
     at(100);
     TEST_ASSERT_TRUE(statusContains("display_write_failed"));
@@ -3126,7 +3375,7 @@ void test_display_mode_and_volume_transport_failures_are_distinct_and_release_vo
     modeDetector.displayPolicy = V1DisplayPolicy::Unchanged;
     modeDetector.volumePolicy = V1VolumePolicy::Unchanged;
     stageSnapshot(makeSnapshot());
-    ble.setModeResult = false;
+    ble.setModeSuccess = false;
     queueAndPreflight();
     at(100);
     TEST_ASSERT_TRUE(statusContains("mode_write_failed"));
@@ -3154,7 +3403,7 @@ void test_display_mode_and_volume_transport_failures_are_distinct_and_release_vo
     volumeReadDetector.displayPolicy = V1DisplayPolicy::Unchanged;
     volumeReadDetector.modePolicy = V1ModePolicy::Unchanged;
     stageSnapshot(makeSnapshot());
-    ble.requestAllVolumeResult = false;
+    ble.requestAllVolumeSuccess = false;
     queueAndPreflight();
     at(100);
     at(130);
@@ -3246,7 +3495,7 @@ void test_box_policy_is_not_committed_after_detector_apply_failure() {
     InTheBoxApplyProbe probe;
     module.setInTheBoxApplyCallback(recordInTheBoxApply, &probe);
     stageSnapshot(makeSnapshot());
-    ble.setModeResult = false;
+    ble.setModeSuccess = false;
     queueAndPreflight();
     verifyUserBytes();
     finishFullApply();
@@ -3367,6 +3616,14 @@ int main() {
     RUN_TEST(test_user_reply_ingressed_during_send_verifies_after_queued_parsing);
     RUN_TEST(test_volume_reply_ingressed_during_send_verifies_after_queued_parsing);
     RUN_TEST(test_unsolicited_display_and_mode_ingressed_during_write_cannot_verify_the_operation);
+    RUN_TEST(test_basic_apply_phases_retry_temporary_deferral_and_complete);
+    RUN_TEST(test_basic_apply_phases_bound_persistent_deferral_and_release_ownership);
+    RUN_TEST(test_basic_apply_phases_do_not_retry_hard_failures);
+    RUN_TEST(test_basic_read_retries_resample_ingress_and_accept_in_send_replies);
+    RUN_TEST(test_later_send_deferral_timeout_preserves_earlier_verified_component);
+    RUN_TEST(test_unsent_apply_volume_never_becomes_later_speed_restore_baseline);
+    RUN_TEST(test_speed_activation_waits_for_deferred_apply_and_uses_its_final_baseline);
+    RUN_TEST(test_speed_activation_cleared_during_apply_readback_leaves_no_restore);
     RUN_TEST(test_write_and_read_failures_are_distinct_and_never_applied);
     RUN_TEST(test_display_mode_and_volume_transport_failures_are_distinct_and_release_volume_lease);
     RUN_TEST(test_queue_failures_preserve_durable_admission_taxonomy);

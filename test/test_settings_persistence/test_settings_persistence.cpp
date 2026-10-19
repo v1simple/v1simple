@@ -2573,6 +2573,151 @@ void test_healthy_nvs_recovers_referenced_profile_from_previous_backup() {
     verify_healthy_nvs_recovers_referenced_profile(true);
 }
 
+enum class ProfileRecoveryFailure { BackupRead, StorageLock, ProfileWrite };
+
+void verify_incomplete_profile_recovery_preserves_boot_assignment(ProfileRecoveryFailure failure,
+                                                                 bool retryWithoutBackup = false) {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    V1Profile road("Road");
+    road.settings.bytes[0] = 43;
+    road.inTheBox.bands[2] = {true, true};
+    TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
+    TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("City")).success);
+
+    SettingsManager source(storage, profiles);
+    makeCurrentV21Source(source.mutableSettings());
+    source.mutableSettings().slot0_default.profileName = "Road";
+    source.mutableSettings().slot1_highway.profileName = "City";
+    TEST_ASSERT_TRUE(source.save());
+    const std::string backupBefore = readFileToString(fs, SETTINGS_BACKUP_PATH);
+    TEST_ASSERT_FALSE(backupBefore.empty());
+    TEST_ASSERT_TRUE(fs.remove("/v1profiles/Road.json"));
+    fs.remove("/v1profiles/Road.json.meta");
+
+    SettingsManager boot(storage, profiles);
+    boot.load();
+    switch (failure) {
+    case ProfileRecoveryFailure::BackupRead:
+        fs::mock_fail_next_read_open(SETTINGS_BACKUP_PATH);
+        break;
+    case ProfileRecoveryFailure::StorageLock:
+        StorageManager::mockSdLockState.failNextBlockingLock = true;
+        break;
+    case ProfileRecoveryFailure::ProfileWrite:
+        fs::mock_set_fs_write_budget(0);
+        break;
+    }
+    TEST_ASSERT_FALSE(boot.checkAndRestoreFromSD());
+    fs::mock_reset_fs_write_budget();
+    // Both normal and maintenance boot perform these calls even when the SD
+    // recovery call above returns false. Another intact profile keeps the
+    // catalog nonempty, exercising destructive missing-reference validation.
+    TEST_ASSERT_FALSE(boot.migrateAutoPushProfilesToV2());
+    boot.validateProfileReferences(profiles);
+    TEST_ASSERT_EQUAL_STRING("Road", boot.get().slot0_default.profileName.c_str());
+    TEST_ASSERT_EQUAL_STRING("City", boot.get().slot1_highway.profileName.c_str());
+    TEST_ASSERT_EQUAL_STRING(backupBefore.c_str(), readFileToString(fs, SETTINGS_BACKUP_PATH).c_str());
+    SettingsManager reloaded(storage, profiles);
+    reloaded.load();
+    TEST_ASSERT_EQUAL_STRING("Road", reloaded.get().slot0_default.profileName.c_str());
+
+    if (retryWithoutBackup) {
+        TEST_ASSERT_TRUE(fs.remove(SETTINGS_BACKUP_PATH));
+        fs.remove(SETTINGS_BACKUP_PREV_PATH);
+    }
+    // A later attempt must clear the deferral, either recovering the profile
+    // or allowing cleanup once both backup sources are conclusively absent.
+    TEST_ASSERT_FALSE(boot.checkAndRestoreFromSD());
+    const bool migrated = boot.migrateAutoPushProfilesToV2();
+    TEST_ASSERT_EQUAL(!retryWithoutBackup, migrated);
+    boot.validateProfileReferences(profiles);
+    SettingsManager afterRetry(storage, profiles);
+    afterRetry.load();
+    TEST_ASSERT_EQUAL_STRING(retryWithoutBackup ? "" : "Road",
+                             afterRetry.get().slot0_default.profileName.c_str());
+    TEST_ASSERT_EQUAL_STRING("City", afterRetry.get().slot1_highway.profileName.c_str());
+    if (!retryWithoutBackup) {
+        V1Profile recovered;
+        TEST_ASSERT_TRUE(profiles.loadProfile("Road", recovered));
+        TEST_ASSERT_EQUAL_UINT8_ARRAY(road.settings.bytes, recovered.settings.bytes, 6);
+        TEST_ASSERT_TRUE(v1InTheBoxSettingsEqual(road.inTheBox, recovered.inTheBox));
+    }
+}
+
+void test_boot_backup_read_failure_preserves_assignment_until_recovery_retry() {
+    verify_incomplete_profile_recovery_preserves_boot_assignment(ProfileRecoveryFailure::BackupRead);
+}
+
+void test_boot_storage_lock_failure_preserves_assignment_until_recovery_retry() {
+    verify_incomplete_profile_recovery_preserves_boot_assignment(ProfileRecoveryFailure::StorageLock);
+}
+
+void test_boot_profile_recovery_write_failure_preserves_assignment_until_retry() {
+    verify_incomplete_profile_recovery_preserves_boot_assignment(ProfileRecoveryFailure::ProfileWrite);
+}
+
+void test_recovery_retry_allows_reference_cleanup_when_backups_are_conclusively_absent() {
+    verify_incomplete_profile_recovery_preserves_boot_assignment(ProfileRecoveryFailure::BackupRead, true);
+}
+
+void test_legacy_migration_waits_for_missing_profile_backup_recovery() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("City")).success);
+    SettingsManager source(storage, profiles);
+    source.mutableSettings().autoPushProfileSchemaVersion = 0;
+    source.mutableSettings().slot0_default.profileName = "Road";
+    source.mutableSettings().slot0_default.mode = V1_MODE_LOGIC;
+    source.mutableSettings().slot0Volume = 0;
+    source.mutableSettings().slot0MuteVolume = 0;
+    source.mutableSettings().slot1_highway.profileName = "City";
+    TEST_ASSERT_TRUE(source.saveDeferredBackup());
+    // Current backups require completed profile migration. Supply the actual
+    // older backup representation that an upgrading device can recover from.
+    writeFileFromString(fs, SETTINGS_BACKUP_PATH,
+                        "{\"_type\":\"v1simple_sd_backup\",\"_version\":20,\"brightness\":125,"
+                        "\"profiles\":[{\"name\":\"Road\",\"description\":\"legacy detector choices\","
+                        "\"bytes\":[191,225,242,115,165,90]}]}");
+    JsonDocument verifiedBackup;
+    TEST_ASSERT_TRUE(parseBackupFile(&fs, SETTINGS_BACKUP_PATH, verifiedBackup));
+    const std::string backupBefore = readFileToString(fs, SETTINGS_BACKUP_PATH);
+
+    SettingsManager boot(storage, profiles);
+    boot.load();
+    fs::mock_fail_next_read_open(SETTINGS_BACKUP_PATH);
+    TEST_ASSERT_FALSE(boot.checkAndRestoreFromSD());
+    TEST_ASSERT_FALSE(boot.migrateAutoPushProfilesToV2());
+    boot.validateProfileReferences(profiles);
+    TEST_ASSERT_EQUAL_STRING("Road", boot.get().slot0_default.profileName.c_str());
+    TEST_ASSERT_EQUAL_UINT8(0, boot.get().autoPushProfileSchemaVersion);
+    TEST_ASSERT_EQUAL_STRING(backupBefore.c_str(), readFileToString(fs, SETTINGS_BACKUP_PATH).c_str());
+    SettingsManager reloaded(storage, profiles);
+    reloaded.load();
+    TEST_ASSERT_EQUAL_STRING("Road", reloaded.get().slot0_default.profileName.c_str());
+    TEST_ASSERT_EQUAL_UINT8(0, reloaded.get().autoPushProfileSchemaVersion);
+
+    TEST_ASSERT_FALSE(boot.checkAndRestoreFromSD());
+    TEST_ASSERT_TRUE(boot.migrateAutoPushProfilesToV2());
+    boot.validateProfileReferences(profiles);
+    SettingsManager afterRetry(storage, profiles);
+    afterRetry.load();
+    TEST_ASSERT_EQUAL_STRING("Road", afterRetry.get().slot0_default.profileName.c_str());
+    TEST_ASSERT_EQUAL_UINT8(V1_PROFILE_SCHEMA_VERSION, afterRetry.get().autoPushProfileSchemaVersion);
+    V1Profile recovered;
+    TEST_ASSERT_TRUE(profiles.loadProfile("Road", recovered));
+    const uint8_t expectedBytes[6] = {191, 225, 242, 115, 165, 90};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expectedBytes, recovered.settings.bytes, 6);
+    TEST_ASSERT_EQUAL(V1UserSettingsPolicy::Value, recovered.detector.userSettingsPolicy);
+    TEST_ASSERT_EQUAL(V1ModePolicy::Value, recovered.detector.modePolicy);
+    TEST_ASSERT_EQUAL_UINT8(V1_MODE_LOGIC, recovered.detector.mode);
+    TEST_ASSERT_EQUAL(V1VolumePolicy::Temporary, recovered.detector.volumePolicy);
+    TEST_ASSERT_EQUAL_UINT8(0, recovered.detector.mainVolume);
+    TEST_ASSERT_EQUAL_UINT8(0, recovered.detector.mutedVolume);
+}
+
 void test_enabled_setter_rolls_back_ram_and_reboot_state_on_persist_failure() {
     SettingsManager manager(storage, profiles);
     TEST_ASSERT_TRUE(manager.saveDeferredBackup());
@@ -6178,6 +6323,11 @@ int main() {
     RUN_TEST(test_profile_delete_reconciliation_clears_all_slots_and_survives_reload);
     RUN_TEST(test_healthy_nvs_recovers_referenced_profile_from_primary_backup);
     RUN_TEST(test_healthy_nvs_recovers_referenced_profile_from_previous_backup);
+    RUN_TEST(test_boot_backup_read_failure_preserves_assignment_until_recovery_retry);
+    RUN_TEST(test_boot_storage_lock_failure_preserves_assignment_until_recovery_retry);
+    RUN_TEST(test_boot_profile_recovery_write_failure_preserves_assignment_until_retry);
+    RUN_TEST(test_recovery_retry_allows_reference_cleanup_when_backups_are_conclusively_absent);
+    RUN_TEST(test_legacy_migration_waits_for_missing_profile_backup_recovery);
     RUN_TEST(test_enabled_setter_rolls_back_ram_and_reboot_state_on_persist_failure);
     RUN_TEST(test_autopush_activation_rolls_back_ram_and_reboot_state_on_persist_failure);
     RUN_TEST(test_lost_selector_chooses_newest_committed_generation);

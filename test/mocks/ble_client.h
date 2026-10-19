@@ -61,17 +61,22 @@ public:
     int proxyRssi = -80;
     bool writeUserBytesResult = true;
     int writeUserBytesFailuresRemaining = 0;
-    bool setDisplayOnResult = true;
+    bool setDisplayOnSuccess = true;
     int setDisplayOnFailuresRemaining = 0;
-    bool setModeResult = true;
+    bool setModeSuccess = true;
     int setModeFailuresRemaining = 0;
     bool setVolumeSuccess = true;
     int setVolumeFailuresRemaining = 0;
     SendResult nextMuteSendResult = SendResult::SENT;
     SendResult nextVolumeSendResult = SendResult::SENT;
-    bool requestUserBytesResult = true;
+    SendResult nextUserBytesWriteSendResult = SendResult::SENT;
+    SendResult nextUserBytesReadSendResult = SendResult::SENT;
+    SendResult nextDisplaySendResult = SendResult::SENT;
+    SendResult nextModeSendResult = SendResult::SENT;
+    SendResult nextAllVolumeReadSendResult = SendResult::SENT;
+    bool requestUserBytesSuccess = true;
     bool requestCurrentVolumeResult = true;
-    bool requestAllVolumeResult = true;
+    bool requestAllVolumeSuccess = true;
     int requestSweepSectionsCalls = 0;
     int requestMaxSweepIndexCalls = 0;
     int requestAllSweepDefinitionsCalls = 0;
@@ -163,17 +168,22 @@ public:
         proxyRssi = -80;
         writeUserBytesResult = true;
         writeUserBytesFailuresRemaining = 0;
-        setDisplayOnResult = true;
+        setDisplayOnSuccess = true;
         setDisplayOnFailuresRemaining = 0;
-        setModeResult = true;
+        setModeSuccess = true;
         setModeFailuresRemaining = 0;
         setVolumeSuccess = true;
         setVolumeFailuresRemaining = 0;
         nextMuteSendResult = SendResult::SENT;
         nextVolumeSendResult = SendResult::SENT;
-        requestUserBytesResult = true;
+        nextUserBytesWriteSendResult = SendResult::SENT;
+        nextUserBytesReadSendResult = SendResult::SENT;
+        nextDisplaySendResult = SendResult::SENT;
+        nextModeSendResult = SendResult::SENT;
+        nextAllVolumeReadSendResult = SendResult::SENT;
+        requestUserBytesSuccess = true;
         requestCurrentVolumeResult = true;
-        requestAllVolumeResult = true;
+        requestAllVolumeSuccess = true;
         requestSweepSectionsCalls = 0;
         requestMaxSweepIndexCalls = 0;
         requestAllSweepDefinitionsCalls = 0;
@@ -288,7 +298,16 @@ public:
         return writeUserBytesResult;
     }
 
-    bool writeUserBytesExact(const uint8_t* bytes) { return writeUserBytes(bytes); }
+    bool writeUserBytesExact(const uint8_t* bytes) { return writeUserBytesExactResult(bytes) == SendResult::SENT; }
+    SendResult writeUserBytesExactResult(const uint8_t* bytes) {
+        if (nextUserBytesWriteSendResult != SendResult::SENT) {
+            ++writeUserBytesCalls;
+            const SendResult result = nextUserBytesWriteSendResult;
+            nextUserBytesWriteSendResult = SendResult::SENT;
+            return result;
+        }
+        return writeUserBytes(bytes) ? SendResult::SENT : SendResult::FAILED;
+    }
 
     void startUserBytesVerification(const uint8_t* bytes) {
         startUserBytesVerificationCalls++;
@@ -302,10 +321,16 @@ public:
     uint32_t v1FirmwareVersion() const { return firmwareVersion; }
     bool hasV1FirmwareVersion() const { return firmwareVersion != 0; }
 
-    bool requestUserBytes() {
-        requestUserBytesCalls++;
+    bool requestUserBytes() { return requestUserBytesResult() == SendResult::SENT; }
+    SendResult requestUserBytesResult() {
+        ++requestUserBytesCalls;
+        if (nextUserBytesReadSendResult != SendResult::SENT) {
+            const SendResult result = nextUserBytesReadSendResult;
+            nextUserBytesReadSendResult = SendResult::SENT;
+            return result;
+        }
         if (requestUserBytesSendHook) requestUserBytesSendHook();
-        return requestUserBytesResult;
+        return requestUserBytesSuccess ? SendResult::SENT : SendResult::FAILED;
     }
 
     bool requestCurrentVolume() {
@@ -313,11 +338,17 @@ public:
         if (requestCurrentVolumeSendHook) requestCurrentVolumeSendHook();
         return requestCurrentVolumeResult;
     }
-    bool requestAllVolume() {
+    bool requestAllVolume() { return requestAllVolumeResult() == SendResult::SENT; }
+    SendResult requestAllVolumeResult() {
         ++requestAllVolumeCalls;
         commandHistory.push_back("volume-read");
+        if (nextAllVolumeReadSendResult != SendResult::SENT) {
+            const SendResult result = nextAllVolumeReadSendResult;
+            nextAllVolumeReadSendResult = SendResult::SENT;
+            return result;
+        }
         if (requestAllVolumeSendHook) requestAllVolumeSendHook();
-        return requestAllVolumeResult;
+        return requestAllVolumeSuccess ? SendResult::SENT : SendResult::FAILED;
     }
     bool requestAllSweepDefinitions() {
         return requestAllSweepDefinitionsResult() == SendResult::SENT;
@@ -389,28 +420,42 @@ public:
         return setDisplayOn(displayOn, false);
     }
     bool setDisplayOn(bool displayOn, bool keepBluetoothIndicatorOn) {
+        return setDisplayOnResult(displayOn, keepBluetoothIndicatorOn) == SendResult::SENT;
+    }
+    SendResult setDisplayOnResult(bool displayOn, bool keepBluetoothIndicatorOn = false) {
         setDisplayOnCalls++;
         commandHistory.push_back("display-write");
         lastDisplayOnValue = displayOn;
         lastKeepBluetoothIndicatorOn = keepBluetoothIndicatorOn;
+        if (nextDisplaySendResult != SendResult::SENT) {
+            const SendResult result = nextDisplaySendResult;
+            nextDisplaySendResult = SendResult::SENT;
+            return result;
+        }
         if (setDisplayOnSendHook) setDisplayOnSendHook();
         if (setDisplayOnFailuresRemaining > 0) {
             setDisplayOnFailuresRemaining--;
-            return false;
+            return SendResult::FAILED;
         }
-        return setDisplayOnResult;
+        return setDisplayOnSuccess ? SendResult::SENT : SendResult::FAILED;
     }
 
-    bool setMode(uint8_t mode) {
+    bool setMode(uint8_t mode) { return setModeResult(mode) == SendResult::SENT; }
+    SendResult setModeResult(uint8_t mode) {
         setModeCalls++;
         commandHistory.push_back("mode-write");
         lastModeValue = mode;
+        if (nextModeSendResult != SendResult::SENT) {
+            const SendResult result = nextModeSendResult;
+            nextModeSendResult = SendResult::SENT;
+            return result;
+        }
         if (setModeSendHook) setModeSendHook();
         if (setModeFailuresRemaining > 0) {
             setModeFailuresRemaining--;
-            return false;
+            return SendResult::FAILED;
         }
-        return setModeResult;
+        return setModeSuccess ? SendResult::SENT : SendResult::FAILED;
     }
     
     void requestAlertData() {

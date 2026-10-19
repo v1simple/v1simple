@@ -152,6 +152,7 @@ void DisplayPipelineModule::begin(const DisplayPipelineDependencies& dependencie
     alpHoldRefreshDeadlineMs_ = 0;
     alpPersistRefreshDeadlineMs_ = 0;
     v1PersistRefreshDeadlineMs_ = 0;
+    voiceAlertLifetime_ = parser_ ? parser_->alertLifetime() : 0;
     pendingVoiceAction_ = VoiceAction{};
     hasPendingVoiceAction_ = false;
     voiceRetryScheduled_ = false;
@@ -339,11 +340,19 @@ RenderFrame DisplayPipelineModule::buildDisconnectedRestoreFrame(uint32_t nowMs,
 
 void DisplayPipelineModule::runVoice(const RenderFrame& frame, const V1Settings& settingsRef, uint32_t nowMs) {
     const FrameV1Alerts v1Alerts = buildFrameV1Alerts(frame);
-    if (v1Alerts.alertCount == 0) {
+    // A queue drain can clear and reopen an encounter before we see its idle
+    // frame. Re-arm voice from the parser's episode boundary, including an
+    // identical frequency, without resetting cooldown on ordinary row updates.
+    const uint32_t lifetime = parser_->alertLifetime();
+    const bool episodeChanged = lifetime != voiceAlertLifetime_;
+    voiceAlertLifetime_ = lifetime;
+    if (episodeChanged || v1Alerts.alertCount == 0) {
         hasPendingVoiceAction_ = false;
         voiceRetryScheduled_ = false;
         nextVoiceAttemptMs_ = 0;
         voice_->clearAllState();
+    }
+    if (v1Alerts.alertCount == 0) {
         return;
     }
 

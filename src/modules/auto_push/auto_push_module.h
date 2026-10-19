@@ -282,6 +282,8 @@ class AutoPushModule {
     void advanceAfterDisplay(uint32_t nowMs);
     void advanceAfterMode(uint32_t nowMs);
     void advanceAfterVolume(uint32_t nowMs);
+    bool acceptSendResult(SendResult result, ComponentStatus& component, Outcome failureOutcome,
+                          FailureReason failureReason, FailureReason timeoutReason, uint32_t nowMs);
     void failComponent(ComponentStatus& component, Outcome outcome, FailureReason reason);
     void failWholePlan(ComponentStatus* component, Outcome outcome, FailureReason reason);
     void finishOperation();

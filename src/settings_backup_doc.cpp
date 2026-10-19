@@ -2971,6 +2971,10 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
 }
 
 bool SettingsManager::migrateAutoPushProfilesToV2() {
+    if (profileReferenceRecoveryPending_) {
+        Serial.println("[Settings] Profile recovery incomplete; deferring profile migration");
+        return false;
+    }
     if (!profiles_ || !profiles_->isReady() || !resolveStorageTransactionsForMutation()) return false;
 
     std::vector<V1Profile> catalog;

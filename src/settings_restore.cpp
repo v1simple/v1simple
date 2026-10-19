@@ -223,8 +223,10 @@ void SettingsManager::synchronizeSdBackup(bool hasSdBackup, const char* backupPa
 }
 
 bool SettingsManager::checkAndRestoreFromSD() {
+    profileReferenceRecoveryPending_ = false;
     resolveWifiCredentialTransaction();
     if (!resolveRestoreTransaction() || !resolveProfileDeleteTransaction()) {
+        profileReferenceRecoveryPending_ = true;
         Serial.println("[Settings] Storage transaction recovery remains pending");
         return false;
     }
@@ -250,7 +252,9 @@ bool SettingsManager::checkAndRestoreFromSD() {
             hasPreviousBackup =
                 parseBackupFile(fs, SETTINGS_BACKUP_PREV_PATH, previousBackupDoc, false, &previousBackupStatus);
         } else {
+            profileReferenceRecoveryPending_ = true;
             Serial.println("[Settings] SD busy while reading recovery backups; preserving profile references");
+            if (!needsRestore) return false;
         }
     }
 
@@ -260,6 +264,7 @@ bool SettingsManager::checkAndRestoreFromSD() {
         primaryBackupStatus == BackupDocumentLoadStatus::IoError ||
         previousBackupStatus == BackupDocumentLoadStatus::MemoryUnavailable ||
         previousBackupStatus == BackupDocumentLoadStatus::IoError) {
+        profileReferenceRecoveryPending_ = true;
         Serial.println("[Settings] Backup recovery source unavailable; preserving NVS and SD state");
         return false;
     }
@@ -267,6 +272,7 @@ bool SettingsManager::checkAndRestoreFromSD() {
     if (needsRestore) {
         Serial.println("[Settings] Checking for SD backup restore...");
         if (restoreFromSD()) {
+            profileReferenceRecoveryPending_ = false;
             Serial.println("[Settings] Restored settings_ from SD backup!");
             // Immediately re-emit backup in current schema after a successful restore.
             backupToSD();
@@ -274,6 +280,7 @@ bool SettingsManager::checkAndRestoreFromSD() {
             return true;
         }
         Serial.println("[Settings] Restore requested but no valid SD backup was applied");
+        profileReferenceRecoveryPending_ |= hasSdBackup;
 
         recoverCriticalSettingsAfterFullRestoreFailure(fs, hasSdBackup, bestBackupDoc);
     } else if (hasSdBackup) {
@@ -297,6 +304,7 @@ bool SettingsManager::checkAndRestoreFromSD() {
             const ProfileOperationResult loaded = profiles_->loadProfileResult(slot->profileName, existing, 0);
             if (loaded.status == ProfileStorageStatus::Success) continue;
             if (loaded.status != ProfileStorageStatus::NotFound) {
+                profileReferenceRecoveryPending_ = true;
                 configuredProfilesResolved = false;
                 continue;
             }
@@ -309,6 +317,7 @@ bool SettingsManager::checkAndRestoreFromSD() {
                 recovery = restoreProfileEntryFromBackup(previousBackupDoc, slot->profileName, *profiles_);
             }
             const bool restored = recovery == ProfileRecoveryStatus::Restored;
+            if (recovery == ProfileRecoveryStatus::Unavailable) profileReferenceRecoveryPending_ = true;
             if (!restored) configuredProfilesResolved = false;
         }
     }
@@ -482,6 +491,10 @@ bool SettingsManager::restoreFromSD() {
 }
 
 void SettingsManager::validateProfileReferences(V1ProfileManager& profileMgr) {
+    if (profileReferenceRecoveryPending_) {
+        Serial.println("[Settings] Profile recovery incomplete; preserving slot profile references");
+        return;
+    }
     if (!profileMgr.isReady()) {
         Serial.println("[Settings] Profile manager not ready; skipping profile reference validation");
         return;

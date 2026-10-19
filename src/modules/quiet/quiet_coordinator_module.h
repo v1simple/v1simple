@@ -82,6 +82,7 @@ class QuietCoordinatorModule {
     // Apply an AutoPush baseline pair without lifting an active speed-volume override.
     bool sendAutoPushVolume(uint8_t volume, uint8_t muteVolume);
     bool sendAutoPushVolume(uint8_t volume, uint8_t muteVolume, uint8_t aux0);
+    SendResult sendAutoPushVolumeResult(uint8_t volume, uint8_t muteVolume, uint8_t aux0);
     // A settings transaction may only promise exact volume readback when the
     // coordinator will send the requested pair immediately. During an active
     // speed-volume override AutoPush updates a later restore baseline instead.

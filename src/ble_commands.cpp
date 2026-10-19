@@ -108,6 +108,10 @@ void V1BLEClient::onV1FirmwareVersionReceived(uint32_t version) {
 }
 
 bool V1BLEClient::requestAllVolume() {
+    return requestAllVolumeResult() == SendResult::SENT;
+}
+
+SendResult V1BLEClient::requestAllVolumeResult() {
     // The empty request returns [main, muted, savedMain, savedMuted].
     uint8_t packet[] = {ESP_PACKET_START,
                         static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),
@@ -119,7 +123,7 @@ bool V1BLEClient::requestAllVolume() {
 
     packet[5] = calcV1Checksum(packet, 5);
 
-    return sendCommand(packet, sizeof(packet));
+    return sendCommandWithResult(packet, sizeof(packet));
 }
 
 bool V1BLEClient::requestCurrentVolume() {
@@ -139,8 +143,12 @@ bool V1BLEClient::setDisplayOn(bool on) {
 }
 
 bool V1BLEClient::setDisplayOn(bool on, bool keepBluetoothIndicatorOn) {
+    return setDisplayOnResult(on, keepBluetoothIndicatorOn) == SendResult::SENT;
+}
+
+SendResult V1BLEClient::setDisplayOnResult(bool on, bool keepBluetoothIndicatorOn) {
     if (localV1WriteSuppressedByProxy("display")) {
-        return false;
+        return SendResult::FAILED;
     }
 
     if (on) {
@@ -156,9 +164,9 @@ bool V1BLEClient::setDisplayOn(bool on, bool keepBluetoothIndicatorOn) {
 
         packet[5] = calcV1Checksum(packet, 5);
 
-        return sendCommand(packet, sizeof(packet));
+        return sendCommandWithResult(packet, sizeof(packet));
     } else if (keepBluetoothIndicatorOn) {
-        if (v1FirmwareVersion() < V1FirmwareCompat::kKeepBluetoothLedOnVersion) return false;
+        if (v1FirmwareVersion() < V1FirmwareCompat::kKeepBluetoothLedOnVersion) return SendResult::FAILED;
         uint8_t packet[] = {
             ESP_PACKET_START,
             static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),
@@ -170,7 +178,7 @@ bool V1BLEClient::setDisplayOn(bool on, bool keepBluetoothIndicatorOn) {
             ESP_PACKET_END
         };
         packet[6] = calcV1Checksum(packet, 6);
-        return sendCommand(packet, sizeof(packet));
+        return sendCommandWithResult(packet, sizeof(packet));
     } else {
         uint8_t packet[] = {
             ESP_PACKET_START,                                // [0] 0xAA
@@ -184,7 +192,7 @@ bool V1BLEClient::setDisplayOn(bool on, bool keepBluetoothIndicatorOn) {
 
         packet[5] = calcV1Checksum(packet, 5);
 
-        return sendCommand(packet, sizeof(packet));
+        return sendCommandWithResult(packet, sizeof(packet));
     }
 }
 
@@ -215,8 +223,12 @@ SendResult V1BLEClient::setMuteResult(bool muted) {
 }
 
 bool V1BLEClient::setMode(uint8_t mode) {
+    return setModeResult(mode) == SendResult::SENT;
+}
+
+SendResult V1BLEClient::setModeResult(uint8_t mode) {
     if (localV1WriteSuppressedByProxy("mode")) {
-        return false;
+        return SendResult::FAILED;
     }
 
     // Mode: 0x01 = All Bogeys, 0x02 = Logic, 0x03 = Advanced Logic
@@ -233,7 +245,7 @@ bool V1BLEClient::setMode(uint8_t mode) {
 
     packet[6] = calcV1Checksum(packet, 6);
 
-    return sendCommand(packet, sizeof(packet));
+    return sendCommandWithResult(packet, sizeof(packet));
 }
 
 bool V1BLEClient::setVolume(uint8_t mainVolume, uint8_t mutedVolume) {
@@ -360,6 +372,10 @@ SendResult V1BLEClient::factoryResetDetector() {
 
 
 bool V1BLEClient::requestUserBytes() {
+    return requestUserBytesResult() == SendResult::SENT;
+}
+
+SendResult V1BLEClient::requestUserBytesResult() {
     uint8_t packet[] = {ESP_PACKET_START,
                         static_cast<uint8_t>(0xD0 + ESP_PACKET_DEST_V1),
                         static_cast<uint8_t>(0xE0 + ESP_PACKET_REMOTE),
@@ -370,7 +386,7 @@ bool V1BLEClient::requestUserBytes() {
 
     packet[5] = calcV1Checksum(packet, 5);
 
-    return sendCommand(packet, sizeof(packet));
+    return sendCommandWithResult(packet, sizeof(packet));
 }
 
 bool V1BLEClient::writeUserBytes(const uint8_t* bytes) {
@@ -401,7 +417,11 @@ bool V1BLEClient::writeUserBytes(const uint8_t* bytes) {
 }
 
 bool V1BLEClient::writeUserBytesExact(const uint8_t* bytes) {
-    if (localV1WriteSuppressedByProxy("user-bytes") || !bytes) return false;
+    return writeUserBytesExactResult(bytes) == SendResult::SENT;
+}
+
+SendResult V1BLEClient::writeUserBytesExactResult(const uint8_t* bytes) {
+    if (localV1WriteSuppressedByProxy("user-bytes") || !bytes) return SendResult::FAILED;
 
     uint8_t packet[13];
     packet[0] = ESP_PACKET_START;
@@ -412,7 +432,7 @@ bool V1BLEClient::writeUserBytesExact(const uint8_t* bytes) {
     memcpy(&packet[5], bytes, 6);
     packet[11] = calcV1Checksum(packet, 11);
     packet[12] = ESP_PACKET_END;
-    return sendCommand(packet, sizeof(packet));
+    return sendCommandWithResult(packet, sizeof(packet));
 }
 
 void V1BLEClient::startUserBytesVerification(const uint8_t* expected) {

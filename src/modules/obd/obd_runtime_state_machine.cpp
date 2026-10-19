@@ -242,6 +242,12 @@ void ObdRuntimeModule::updatePolling(uint32_t nowMs) {
             return;
         }
         if (bleDataReady_) {
+            // The callback can arrive after the drive loop samples nowMs but
+            // before this queue drain. Keep that reply for the next tick;
+            // unsigned age checks would otherwise discard it as stale.
+            if (static_cast<int32_t>(nowMs - bleResponseReceivedMs_) < 0) {
+                return;
+            }
             handlePollingResponse(nowMs);
             if (state_ != ObdConnectionState::POLLING) {
                 return;

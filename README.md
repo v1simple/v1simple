@@ -145,6 +145,15 @@ This is not a verdict on every video frame or profile-based hold timing. An
 unavailable maintenance snapshot makes a collection incomplete, not a product
 failure.
 
+Preview old camera videos with `python3 scripts/cleanup_camera_videos.py`; add
+`--apply` to remove them. The command keeps 14 days of video under
+`.artifacts/bench`, preserves reports, logs, timing files and still images, and
+records removals beside each affected run. It skips unfinished runs, symlinks,
+and open or recently modified videos; deletion requires a working `lsof`.
+If cleanup is interrupted between deletion and recording it, the record retains
+that file as pending rather than reporting an unverified removal.
+The command runs once; schedule it locally for recurring cleanup.
+
 Keep changes focused, read [AGENTS.md](AGENTS.md), run checks proportionate to
 the change, inspect the final diff, and state whether hardware or camera
 evidence was collected. Run the complete gate before a push or release.

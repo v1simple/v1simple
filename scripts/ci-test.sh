@@ -165,6 +165,7 @@ section "Python Regression Tests"
 # Safety-critical guard regressions already run inline above.
 run_step "Device run output regression suite" python3 scripts/test_run_device_tests.py
 run_step "Camera artifact regression suite" python3 scripts/test_camera_artifacts.py
+run_step "Camera video retention regression suite" python3 scripts/test_cleanup_camera_videos.py
 run_step "Camera preflight regression suite" python3 scripts/test_camera_preflight.py
 BENCH_PYTHON="$(./scripts/bench_python.sh)" || exit 1
 run_step "Bench Python environment regression suite" "$BENCH_PYTHON" scripts/test_bench_python.py

@@ -62,6 +62,7 @@ void QuietCoordinatorModule::resetVolumeState() {
     pendingSpeedVolRestoreVol_ = 0xFF;
     pendingSpeedVolRestoreMuteVol_ = 0;
     pendingSpeedVolRestoreLastRetryMs_ = 0;
+    speedRestoreSent_ = false;
     speedVolLastRetryMs_ = 0;
     pendingFadeAction_ = false;
     pendingFadeVolume_ = 0;
@@ -367,14 +368,16 @@ SendResult QuietCoordinatorModule::sendAutoPushVolumeResult(uint8_t volume, uint
     syncCommittedState();
     if (!speedVolActive_) {
         if (!ble_) return SendResult::FAILED;
+        const uint32_t session = ble_->sessionGeneration();
+        const uint32_t ingress = ble_->latestV1NotificationIngressSequence();
         const SendResult result = ble_->setVolumeResult(volume, muteVolume, aux0);
         if (result != SendResult::SENT) return result;
         // A deferred or failed Apply did not change the detector. Preserve
         // its baseline so later speed-volume restoration cannot apply a pair
         // that this transaction never transmitted.
         if (pendingSpeedVolRestoreVol_ != 0xFF) {
-            pendingSpeedVolRestoreVol_ = volume;
-            pendingSpeedVolRestoreMuteVol_ = muteVolume;
+            setPendingSpeedRestore(volume, muteVolume);
+            noteSpeedRestoreSent(session, ingress);
             speedVolBaselineUpdated_ = true;
         }
         desired_.volumeOwner = QuietOwner::AutoPush;
@@ -418,9 +421,14 @@ bool QuietCoordinatorModule::retryPendingSpeedVolRestore(const uint32_t nowMs) {
     // A deferred or accepted write is still owed until the canonical pair
     // converges. Time spent in protocol holdoff cannot release that ownership.
     if (!parser_->getDisplayState().hasVolumeData || !committed_.connected) return true;
-    if (committed_.mainVolume == pendingSpeedVolRestoreVol_ &&
-        committed_.muteVolume == pendingSpeedVolRestoreMuteVol_) {
+    uint8_t mainVolume = 0, muteVolume = 0;
+    uint32_t ingress = 0;
+    if (speedRestoreSent_ && speedRestoreSentSession_ == ble_->sessionGeneration() &&
+        parser_->copyLatestCanonicalCurrentVolume(mainVolume, muteVolume, &ingress) &&
+        static_cast<int32_t>(ingress - speedRestoreSentIngress_) > 0 &&
+        mainVolume == pendingSpeedVolRestoreVol_ && muteVolume == pendingSpeedVolRestoreMuteVol_) {
         pendingSpeedVolRestoreVol_ = 0xFF;
+        speedRestoreSent_ = false;
         if (!speedVolActive_ && presentation_.activeVolumeOwner == QuietOwner::SpeedVolume) {
             presentation_.activeVolumeOwner = QuietOwner::None;
         }
@@ -433,8 +441,24 @@ bool QuietCoordinatorModule::retryPendingSpeedVolRestore(const uint32_t nowMs) {
     }
 
     pendingSpeedVolRestoreLastRetryMs_ = nowMs;
-    sendVolume(QuietOwner::SpeedVolume, pendingSpeedVolRestoreVol_, pendingSpeedVolRestoreMuteVol_);
-#ifndef UNIT_TEST
-#endif
+    const uint32_t session = ble_->sessionGeneration();
+    const uint32_t ingressBoundary = ble_->latestV1NotificationIngressSequence();
+    if (sendVolume(QuietOwner::SpeedVolume, pendingSpeedVolRestoreVol_, pendingSpeedVolRestoreMuteVol_))
+        noteSpeedRestoreSent(session, ingressBoundary);
     return true;
+}
+
+void QuietCoordinatorModule::setPendingSpeedRestore(uint8_t volume, uint8_t muteVolume) {
+    if (pendingSpeedVolRestoreVol_ != volume || pendingSpeedVolRestoreMuteVol_ != muteVolume)
+        speedRestoreSent_ = false;
+    pendingSpeedVolRestoreVol_ = volume;
+    pendingSpeedVolRestoreMuteVol_ = muteVolume;
+}
+
+void QuietCoordinatorModule::noteSpeedRestoreSent(uint32_t sessionGeneration, uint32_t ingressBoundary) {
+    if (!speedRestoreSent_ || speedRestoreSentSession_ != sessionGeneration) {
+        speedRestoreSent_ = true;
+        speedRestoreSentSession_ = sessionGeneration;
+        speedRestoreSentIngress_ = ingressBoundary;
+    }
 }

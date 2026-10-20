@@ -62,7 +62,56 @@ struct SensorDriveRuntime {
     void presentDisplay(int, bool) {}
     DriveLoopDispatch processConnectionDispatch(bool) { return {static_cast<uint32_t>(mockMillis), true}; }
 };
+
+static void checkIndependentQualityFreshness() {
+    const char* good = "$GPGGA,123520,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*4D\r\n";
+    const char* corrupt = "$GPGGA,123520,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*00\r\n";
+    const char* speed = "$GPRMC,123519,A,4807.038,N,01131.000,E,000.0,084.4,230394,003.1,W*6E\r\n";
+    for (unsigned mode : {0u, 1u, 2u}) {
+        Serial1.reset();
+        mockMillis = 1;
+        GpsRuntimeModule gps;
+        gps.begin(true);
+        SpeedSourceSelector selector;
+        selector.begin(nullptr, false, &gps, true);
+        SpeedMuteModule mute;
+        mute.begin(true, 25, 3, 0);
+        mockMillis = 10000;
+        if (mode != 0)
+            Serial1.receive(good);
+        Serial1.receive(speed);
+        gps.update(10000);
+        selector.update(10000);
+        auto selected = selector.selectedSpeed();
+        assert(selected.valid == (mode != 0));
+        assert(mute.update(selected.speedMph, selected.valid, 10000).shouldMute == (mode != 0));
+        // Only actual UART parsing can refresh quality. Current RMC sentences
+        // and corrupt GGA traffic must not extend the last good GGA's lifetime.
+        for (uint32_t now = 11000; now <= 71000; now += 1000) {
+            mockMillis = now;
+            if (mode == 2)
+                Serial1.receive(corrupt);
+            Serial1.receive(speed);
+            gps.update(now);
+            selector.update(now);
+            selected = selector.selectedSpeed();
+            mute.update(selected.speedMph, selected.valid, now);
+        }
+        assert(gps.snapshot(71000).hasFix && selector.snapshot().gpsFresh);
+        assert(!selected.valid && !mute.getState().muteActive);
+        printf("fresh UART RMC with quality mode=%u after 61 seconds: selected=%d mute=%d\n",
+               mode, selected.valid, mute.getState().muteActive);
+        mockMillis = 72000;
+        Serial1.receive(std::string(good) + speed);
+        gps.update(72000);
+        selector.update(72000);
+        selected = selector.selectedSpeed();
+        assert(selected.valid && mute.update(selected.speedMph, selected.valid, 72000).shouldMute);
+    }
+}
+
 int main() {
+    checkIndependentQualityFreshness();
     const char *gga = "$GPGGA,123520,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*4D\r\n";
     const char *stoppedRmc = "$GPRMC,123519,A,4807.038,N,01131.000,E,000.0,084.4,230394,003.1,W*6E\r\n";
     const char *movingRmc = "$GPRMC,123519,A,4807.038,N,01131.000,E,040.0,084.4,230394,003.1,W*6A\r\n";

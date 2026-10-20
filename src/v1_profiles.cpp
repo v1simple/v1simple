@@ -720,21 +720,6 @@ bool restoreSyncState(fs::FS& filesystem, const String& profilePath, const Profi
     return writeSyncState(filesystem, profilePath, state);
 }
 
-bool addUniqueName(std::array<String, V1_PROFILE_CATALOG_MAX_COUNT>& names,
-                   size_t& nameCount, const String& candidate, bool& overLimit) {
-    for (size_t index = 0; index < nameCount; ++index) {
-        if (names[index] == candidate) return true;
-    }
-    if (nameCount >= names.size()) {
-        overLimit = true;
-        return false;
-    }
-    names[nameCount] = candidate;
-    if (names[nameCount].length() != candidate.length() || names[nameCount] != candidate) return false;
-    ++nameCount;
-    return true;
-}
-
 bool checkedStringFromBytes(const char* bytes, size_t length, String& output) {
     if (!bytes || length > 256u) return false;
     char terminated[257];
@@ -1010,18 +995,22 @@ bool V1ProfileManager::begin(StorageManager& storage) {
 }
 
 bool V1ProfileManager::begin(fs::FS* filesystem, fs::FS* importFilesystem) {
+    return initialize(filesystem, importFilesystem, 500);
+}
+
+bool V1ProfileManager::initialize(fs::FS* filesystem, fs::FS* importFilesystem, uint32_t timeoutMs) {
     ready_ = false;
+    recoveryRetryAtMs_ = millis() + 1000u;
     lastError_ = "";
+    fs_ = filesystem;
+    secondaryFs_ = importFilesystem != filesystem ? importFilesystem : nullptr;
     if (!filesystem) {
         Serial.println("[V1Profiles] No filesystem provided");
         ;
         return false;
     }
 
-    fs_ = filesystem;
-    secondaryFs_ = importFilesystem != filesystem ? importFilesystem : nullptr;
-
-    ProfileStorageGuard guard(*this, storage_, usingSd_, 500);
+    ProfileStorageGuard guard(*this, storage_, usingSd_, timeoutMs);
     if (!guard.acquired()) {
         lastError_ = "Profile storage busy during initialization";
         Serial.println("[V1Profiles] BUSY: initialization could not acquire SD mutex");
@@ -1053,10 +1042,11 @@ bool V1ProfileManager::begin(fs::FS* filesystem, fs::FS* importFilesystem) {
     }
 
     if (importFilesystem && importFilesystem != fs_) {
-        // Keep the readable primary catalog available for maintenance if its
-        // mirror cannot be reconciled; the reconciler records that degraded
-        // state in lastError_ as well as the serial log.
-        size_t migrated = reconcileProfilesFrom(importFilesystem);
+        // The secondary can contain a newer offline edit or deletion. Until
+        // reconciliation completes, neither a primary read nor an edit based
+        // on it is authoritative.
+        size_t migrated = 0;
+        if (!reconcileProfilesFrom(importFilesystem, migrated)) return false;
         if (migrated > 0) {
             Serial.printf("[V1Profiles] Migrated %u profile(s) from secondary filesystem\n",
                           static_cast<unsigned>(migrated));
@@ -1074,15 +1064,22 @@ bool V1ProfileManager::begin(fs::FS* filesystem, fs::FS* importFilesystem) {
     return true;
 }
 
-size_t V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs) {
-    if (!sourceFs || !fs_ || sourceFs == fs_) {
-        return 0;
+void V1ProfileManager::serviceRecovery(uint32_t nowMs) {
+    if (ready_ || !fs_ || static_cast<int32_t>(nowMs - recoveryRetryAtMs_) < 0) return;
+    if (initialize(fs_, secondaryFs_, 0)) {
+        bumpCatalogRevision();
+    } else {
+        recoveryRetryAtMs_ = nowMs + 1000u;
     }
-    if (!sourceFs->exists(profileDir_)) {
-        return 0;
-    }
+}
 
-    if (!fs_->exists(profileDir_)) fs_->mkdir(profileDir_);
+bool V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs, size_t& reconciled) {
+    reconciled = 0;
+    if (!sourceFs || !fs_ || sourceFs == fs_) {
+        return true;
+    }
+    // begin() has established both directories; only an actual scan can
+    // distinguish an empty catalog from a temporarily unreadable directory.
 
     // Deleted names remain as durable tombstones and are not part of the live
     // catalog limit. Scan all history before changing either store, then visit
@@ -1142,43 +1139,19 @@ size_t V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs) {
     };
 
     {
-        std::array<String, V1_PROFILE_CATALOG_MAX_COUNT> liveNames;
-        size_t liveCount = 0;
-        bool liveOverLimit = false;
+        // Pre-cap catalogs can exceed the current creation/export limit. Keep
+        // validating every member, then reconcile in bounded pages below so
+        // maintenance can list and delete authoritative entries to prune them.
         ReconcileCandidate inspected;
-        auto preflight = [&](const String& name) {
-            if (!inspect(name, inspected)) return false;
-            const bool sourceUsable = inspected.sourceState.status != ProfileSyncState::Status::Corrupt &&
-                                      inspected.sourceState.version > 0 &&
-                                      (inspected.sourceState.deleted || inspected.sourceFile.valid);
-            const bool targetUsable = inspected.targetState.status != ProfileSyncState::Status::Corrupt &&
-                                      inspected.targetState.version > 0 &&
-                                      (inspected.targetState.deleted || inspected.targetFile.valid);
-            if (!sourceUsable && !targetUsable) return true;
-            bool sourceWins = sourceUsable && !targetUsable;
-            if (sourceUsable && targetUsable) {
-                sourceWins = inspected.sourceState.version > inspected.targetState.version ||
-                             (inspected.sourceState.version == inspected.targetState.version &&
-                              (inspected.sourceState.deleted != inspected.targetState.deleted
-                                   ? inspected.sourceState.deleted
-                                   : !inspected.sourceState.deleted &&
-                                         inspected.sourceFile.contentCrc != inspected.targetFile.contentCrc));
-            }
-            if (sourceWins ? inspected.sourceState.deleted : inspected.targetState.deleted) return true;
-            return addUniqueName(liveNames, liveCount, name, liveOverLimit);
-        };
+        auto preflight = [&](const String& name) { return inspect(name, inspected); };
         if (!scanNames(*sourceFs, preflight) || !scanNames(*fs_, preflight)) {
-            lastError_ = liveOverLimit ? "Profile mirror live catalog exceeds supported bound"
-                                       : "Profile mirror inspection unavailable";
-            Serial.println(liveOverLimit
-                               ? "[V1Profiles] RECONCILE live catalog exceeds supported bound; no changes made"
-                               : "[V1Profiles] RECONCILE catalog inspection unavailable; no changes made");
-            return 0;
+            lastError_ = "Profile mirror inspection unavailable";
+            Serial.println("[V1Profiles] RECONCILE catalog inspection unavailable; no changes made");
+            return false;
         }
     }
 
-    size_t reconciled = 0;
-    auto reconcileCandidate = [&](const ReconcileCandidate& candidate) {
+    auto reconcileCandidate = [&](const ReconcileCandidate& candidate) -> bool {
         const String& name = candidate.name;
         const String& path = candidate.path;
         const ProfileSyncState& sourceState = candidate.sourceState;
@@ -1197,7 +1170,7 @@ size_t V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs) {
                 Serial.printf("[V1Profiles] RECONCILE no valid copy name='%s' path='%s'\n", name.c_str(),
                               path.c_str());
             }
-            return;
+            return true;
         }
 
         // Healthy current mirrors need no metadata rewrite. Legacy metadata,
@@ -1215,7 +1188,7 @@ size_t V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs) {
                 appendPathSuffixChecked(path, ".meta.prev", metadataPreviousPath) &&
                 !sourceFs->exists(metadataTempPath) && !fs_->exists(metadataTempPath) &&
                 !sourceFs->exists(metadataPreviousPath) && !fs_->exists(metadataPreviousPath)) {
-                return;
+                return true;
             }
         }
 
@@ -1254,7 +1227,8 @@ size_t V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs) {
             if (maximumVersion == std::numeric_limits<uint32_t>::max()) {
                 Serial.printf("[V1Profiles] RECONCILE generation exhausted name='%s' path='%s'\n",
                               name.c_str(), path.c_str());
-                return;
+                lastError_ = "Profile reconciliation generation exhausted";
+                return false;
             }
             winningState.version = maximumVersion + 1u;
         }
@@ -1272,7 +1246,8 @@ size_t V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs) {
         if (!writeSyncState(*winner, path, winningState)) {
             Serial.printf("[V1Profiles] RECONCILE winner metadata failed name='%s' path='%s'\n", name.c_str(),
                           path.c_str());
-            return;
+            lastError_ = "Profile mirror metadata write unavailable";
+            return false;
         }
 
         if (stateDiffers) {
@@ -1284,16 +1259,22 @@ size_t V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs) {
             }
             if (!applied || !writeSyncState(*loser, path, winningState)) {
                 Serial.printf("[V1Profiles] RECONCILE failed name='%s' path='%s'\n", name.c_str(), path.c_str());
-                return;
+                lastError_ = "Profile mirror repair unavailable";
+                return false;
             }
             reconciled++;
         }
-        if (winningState.deleted && winner->exists(path)) {
-            winner->remove(path);
+        if (winningState.deleted && winner->exists(path) && !winner->remove(path)) {
+            lastError_ = "Profile mirror deletion cleanup unavailable";
+            return false;
         }
         // Materialize metadata for legacy winners so later edits/deletions have
         // an explicit ordering basis on both filesystems.
-        writeSyncState(*loser, path, winningState);
+        if (!writeSyncState(*loser, path, winningState)) {
+            lastError_ = "Profile mirror metadata write unavailable";
+            return false;
+        }
+        return true;
     };
 
     std::array<String, V1_PROFILE_CATALOG_MAX_COUNT> names;
@@ -1319,7 +1300,7 @@ size_t V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs) {
         if (!scanNames(*sourceFs, collectPage) || !scanNames(*fs_, collectPage)) {
             lastError_ = "Profile mirror page enumeration unavailable";
             Serial.println("[V1Profiles] RECONCILE page enumeration unavailable");
-            return reconciled;
+            return false;
         }
         if (candidateCount == 0) break;
         for (size_t index = 0; index < candidateCount; ++index) {
@@ -1327,20 +1308,20 @@ size_t V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs) {
                 lastError_ = "Profile mirror page inspection unavailable";
                 Serial.printf("[V1Profiles] RECONCILE unavailable name='%s'; no further changes made\n",
                               names[index].c_str());
-                return reconciled;
+                return false;
             }
         }
         if (!checkedStringFromBytes(names[candidateCount - 1u].c_str(),
                                     names[candidateCount - 1u].length(), after)) {
             lastError_ = "Profile mirror page cursor unavailable";
             Serial.println("[V1Profiles] RECONCILE page cursor unavailable");
-            return reconciled;
+            return false;
         }
         for (size_t candidateIndex = 0; candidateIndex < candidateCount; ++candidateIndex) {
-            reconcileCandidate(candidates[candidateIndex]);
+            if (!reconcileCandidate(candidates[candidateIndex])) return false;
         }
     }
-    return reconciled;
+    return true;
 }
 
 String V1ProfileManager::profilePath(const String& name) const {

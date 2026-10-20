@@ -737,7 +737,13 @@ void ObdRuntimeModule::cancelPendingConnect() {
     if (manualScanPending_) {
         clearManualScanState();
     }
-    transitionTo(ObdConnectionState::IDLE, static_cast<uint32_t>(millis()));
+    // Cancellation relinquishes the link, not the saved adapter. Keep automatic
+    // recovery possible once the coordinator admits another attempt. Unqualified
+    // pairing candidates must not be retried after cancellation.
+    clearSpeedState();
+    transitionTo(enabled_ && savedAddress_[0] != '\0' ? ObdConnectionState::DISCONNECTED
+                                                   : ObdConnectionState::IDLE,
+                 static_cast<uint32_t>(millis()));
 }
 
 bool ObdRuntimeModule::isScanStopped() const {

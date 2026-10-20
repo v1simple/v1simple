@@ -948,7 +948,7 @@ bool SettingsManager::saveDeferredBackup() {
 }
 
 void SettingsManager::requestDeferredBackupFromCurrentState() {
-    if (nvsLoadPending_ || (nvsRecoveryPending_ && !nvsRecoveryInProgress_)) return;
+    if (nvsLoadPending_ || ((nvsRecoveryPending_ || profileReferenceRecoveryPending_) && !nvsRecoveryInProgress_)) return;
     publishBackupRequest();
     gDeferredSettingsBackupState.pendingRequest.store(true, std::memory_order_relaxed);
     clearDeferredBackupRetry();
@@ -968,7 +968,7 @@ uint32_t SettingsManager::deferredBackupNextAttemptAtMs() const {
 }
 
 void SettingsManager::serviceDeferredBackup(uint32_t nowMs) {
-    if (nvsLoadPending_ || (nvsRecoveryPending_ && !nvsRecoveryInProgress_)) return;
+    if (nvsLoadPending_ || ((nvsRecoveryPending_ || profileReferenceRecoveryPending_) && !nvsRecoveryInProgress_)) return;
     if (gDeferredSettingsBackupState.writerRetryPending.exchange(false, std::memory_order_relaxed)) {
         gDeferredSettingsBackupState.pendingRequest.store(true, std::memory_order_relaxed);
         clearDeferredBackupRetry();

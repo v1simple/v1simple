@@ -42,6 +42,7 @@ bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs, const Spee
                                                 VolumeFadeLike* volumeFade) {
     if (syncProxyVolumeOwnership(volumeFade)) return false;
     syncCommittedState();
+    if (!ble_ || !parser_) return false;
 
     // Apply owns the exact pair through deferred sends and readback. Do not
     // capture a speed restore baseline or enter an override until it releases
@@ -74,6 +75,7 @@ bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs, const Spee
         speedVolSavedMuteVol_ = restoring ? pendingSpeedVolRestoreMuteVol_ :
                                  pendingAutoPush ? desired_.muteVolume : ds.muteVolume;
         pendingSpeedVolRestoreVol_ = 0xFF;
+        speedRestoreSent_ = false;
         speedVolActive_ = true;
         speedVolLastRetryMs_ = nowMs;
         startingSpeedVolume = true;
@@ -92,8 +94,7 @@ bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs, const Spee
                     speedVolSavedOriginal_ = cleared.restoreVolume;
                     speedVolSavedMuteVol_ = cleared.restoreMuteVolume;
                 } else {
-                    pendingSpeedVolRestoreVol_ = cleared.restoreVolume;
-                    pendingSpeedVolRestoreMuteVol_ = cleared.restoreMuteVolume;
+                    setPendingSpeedRestore(cleared.restoreVolume, cleared.restoreMuteVolume);
                     volumeFade->setBaselineHint(cleared.restoreVolume, cleared.restoreMuteVolume, nowMs);
                 }
             }
@@ -108,12 +109,14 @@ bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs, const Spee
     }
 
     if (!wantsActive && speedVolActive_) {
-        sendVolume(QuietOwner::SpeedVolume, speedVolSavedOriginal_, speedVolSavedMuteVol_);
+        setPendingSpeedRestore(speedVolSavedOriginal_, speedVolSavedMuteVol_);
+        const uint32_t session = ble_->sessionGeneration();
+        const uint32_t ingress = ble_->latestV1NotificationIngressSequence();
+        if (sendVolume(QuietOwner::SpeedVolume, speedVolSavedOriginal_, speedVolSavedMuteVol_))
+            noteSpeedRestoreSent(session, ingress);
         if (volumeFade) {
             volumeFade->setBaselineHint(speedVolSavedOriginal_, speedVolSavedMuteVol_, nowMs);
         }
-        pendingSpeedVolRestoreVol_ = speedVolSavedOriginal_;
-        pendingSpeedVolRestoreMuteVol_ = speedVolSavedMuteVol_;
         pendingSpeedVolRestoreLastRetryMs_ = nowMs;
         Serial.printf("[SpeedVol] RESTORE: -> %d\n", speedVolSavedOriginal_);
         speedVolActive_ = false;
@@ -143,7 +146,7 @@ template <typename VolumeFadeLike>
 bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs, VolumeFadeLike* volumeFade) {
     if (syncProxyVolumeOwnership(volumeFade)) return false;
     syncCommittedState();
-    if (!volumeFade || !parser_) {
+    if (!ble_ || !volumeFade || !parser_) {
         return false;
     }
     // Do not even advance fade's state machine while Apply is waiting for the
@@ -168,6 +171,9 @@ bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs, VolumeFadeL
     fadeCtx.alertEpisodeEnded = consumeFadeAlertEnd();
     fadeCtx.currentVolume = committed_.mainVolume;
     fadeCtx.currentMuteVolume = committed_.muteVolume;
+    fadeCtx.hasVolumeObservation = parser_->copyLatestCanonicalCurrentVolume(
+        fadeCtx.currentVolume, fadeCtx.currentMuteVolume, &fadeCtx.volumeObservationIngress);
+    fadeCtx.sessionGeneration = ble_ ? ble_->sessionGeneration() : 0;
     fadeCtx.now = nowMs;
     if (hasAlerts) {
         fadeCtx.alertMuted = committed_.muted;
@@ -235,7 +241,12 @@ bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs, VolumeFadeL
     if (fadeAction.type == VolumeFadeAction::Type::RESTORE) {
         // Fade owns restore retries through canonical convergence, including
         // SENT-but-unapplied writes. Do not create a second retry clock here.
-        sendVolumeResult(QuietOwner::VolumeFade, fadeAction.restoreVolume, fadeAction.restoreMuteVolume);
+        const uint32_t session = ble_->sessionGeneration();
+        const uint32_t ingress = ble_->latestV1NotificationIngressSequence();
+        if (sendVolumeResult(QuietOwner::VolumeFade, fadeAction.restoreVolume, fadeAction.restoreMuteVolume) ==
+            SendResult::SENT) {
+            volumeFade->noteRestoreSent(session, ingress);
+        }
         return true;
     }
     return false;

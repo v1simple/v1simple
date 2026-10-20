@@ -412,6 +412,8 @@ class V1ProfileManager {
     bool begin(StorageManager& storage);
     bool begin(fs::FS* filesystem, fs::FS* importFilesystem = nullptr);
     bool isReady() const { return ready_; }
+    // Retry deferred startup recovery without exposing an unverified primary.
+    void serviceRecovery(uint32_t nowMs);
 
     // Profile CRUD
     std::vector<String> listProfiles() const;
@@ -456,6 +458,7 @@ class V1ProfileManager {
     StorageManager* storage_;
     bool usingSd_;
     bool ready_;
+    uint32_t recoveryRetryAtMs_ = 0;
     String profileDir_;
     mutable String lastError_; // Last error message for detailed reporting
     uint32_t catalogRevisionCounter_ = 1;
@@ -474,6 +477,8 @@ class V1ProfileManager {
     static uint32_t calculateCRC32(const uint8_t* data, size_t length);
     void bumpCatalogRevision();
 
+    bool initialize(fs::FS* filesystem, fs::FS* importFilesystem, uint32_t timeoutMs);
+
     // Startup recovery for interrupted saves
     ProfileOperationResult loadProfileUnlocked(const String& canonicalName, V1Profile& profile,
                                                bool allowTransactionRecovery = true,
@@ -483,7 +488,7 @@ class V1ProfileManager {
                                           bool allowGrandfatheredRestore = false, bool createOnly = false);
     ProfileOperationResult deleteProfileUnlocked(const String& canonicalName);
     bool recoverInterruptedSavesUnlocked();
-    size_t reconcileProfilesFrom(fs::FS* sourceFs);
+    bool reconcileProfilesFrom(fs::FS* sourceFs, size_t& reconciled);
 };
 
 #endif // V1_PROFILES_H

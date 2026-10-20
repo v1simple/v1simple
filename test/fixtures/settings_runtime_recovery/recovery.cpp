@@ -66,7 +66,10 @@ struct RecoveryBle {
   void serviceDeferredBondBackup(uint32_t) {}
 };
 
-struct RecoveryDevices {};
+struct RecoveryDevices {
+  bool catalogReadable() const { return true; }
+  void serviceRecovery(uint32_t) {}
+};
 void processV1DeviceStoreSave(uint32_t, StorageManager &, RecoveryDevices &) {}
 
 class DriveRuntime {
@@ -87,6 +90,7 @@ public:
     void process() {}
   } autoPush_;
   StorageManager &storage_ = storage;
+  V1ProfileManager &profiles_ = profiles;
   RecoveryDevices devices_;
   uint32_t observedSettingsRecoveryRevision_ = 0;
   bool usbTailBusy_ = false, connectedPersistenceWindowAnchored_ = false;

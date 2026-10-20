@@ -487,18 +487,19 @@ void SettingsManager::load() {
 bool SettingsManager::ensureSettingsLoaded() {
     if (nvsLoadPending_) load();
     if (nvsLoadPending_) return false;
-    if (nvsRecoveryPending_ && !nvsRecoveryInProgress_) {
+    if ((nvsRecoveryPending_ || profileReferenceRecoveryPending_) && !nvsRecoveryInProgress_) {
         // A setter can be the first caller after NVS recovers. Finish boot
         // reconciliation before it snapshots or changes settings, otherwise
         // its backup could discard a profile still recoverable only from SD.
         // Recovery itself uses the normal guarded settings mutation paths.
+        const bool recoveredNvs = nvsRecoveryPending_;
         nvsRecoveryInProgress_ = true;
-        checkAndRestoreFromSD();
+        const bool restoredSettings = checkAndRestoreFromSD();
         migrateAutoPushProfilesToV2();
         validateProfileReferences(*profiles_);
         nvsRecoveryInProgress_ = false;
-        nvsRecoveryPending_ = profileReferenceRecoveryPending_;
-        if (nvsRecoveryPending_) return false;
+        if (profileReferenceRecoveryPending_) return false;
+        nvsRecoveryPending_ = false;
         // load() cannot publish a backup while the recovery source is still
         // provisional. Resume its durable intent now, unless reconciliation
         // already completed that revision synchronously.
@@ -506,7 +507,9 @@ bool SettingsManager::ensureSettingsLoaded() {
         if (settings_backup_revision::pending(backupDueRevision_, backupCompletedRevision_)) {
             requestDeferredBackupFromCurrentState();
         }
-        ++recoveryRevision_;
+        // A profile-only repair does not replace the running configuration.
+        // Publishing it as an NVS recovery would unnecessarily restart sensors.
+        if (recoveredNvs || restoredSettings) ++recoveryRevision_;
     }
     return true;
 }
@@ -527,7 +530,7 @@ bool SettingsManager::save() {
 }
 
 void SettingsManager::requestDeferredPersist() {
-    if (nvsLoadPending_ || (nvsRecoveryPending_ && !nvsRecoveryInProgress_)) return;
+    if (nvsLoadPending_ || ((nvsRecoveryPending_ || profileReferenceRecoveryPending_) && !nvsRecoveryInProgress_)) return;
     deferredPersistPending_ = true;
     deferredPersistRetryScheduled_ = false;
     deferredPersistNextAttemptAtMs_ = millis() + SETTINGS_DEFERRED_PERSIST_DEBOUNCE_MS;
@@ -546,7 +549,7 @@ uint32_t SettingsManager::deferredPersistNextAttemptAtMs() const {
 }
 
 void SettingsManager::serviceDeferredPersist(uint32_t nowMs) {
-    if (nvsLoadPending_ || nvsRecoveryPending_) {
+    if (recoveryPending()) {
         if (nvsLoadRetryAtMs_ != 0 && !isDeferredPersistDue(nowMs, nvsLoadRetryAtMs_)) return;
         if (!ensureSettingsLoaded()) {
             nvsLoadRetryAtMs_ = nowMs + SETTINGS_DEFERRED_PERSIST_RETRY_BACKOFF_MS;

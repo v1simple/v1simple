@@ -156,6 +156,7 @@ void DisplayPipelineModule::begin(const DisplayPipelineDependencies& dependencie
     lastAlpEndRevision_ = 0;
     voiceAlertLifetime_ = parser_ ? parser_->alertLifetime() : 0;
     pendingVoiceAction_ = VoiceAction{};
+    pendingVoicePriorityId_ = 0;
     hasPendingVoiceAction_ = false;
     awaitingVoicePlayback_ = false;
     voiceRetryScheduled_ = false;
@@ -435,7 +436,17 @@ void DisplayPipelineModule::runVoice(const RenderFrame& frame, const V1Settings&
                                        v1Alerts.hasPriority ? v1Alerts.priority.band : BAND_NONE);
     }
 
-    if (hasPendingVoiceAction_ && !pendingVoiceActionStillCurrent(pendingVoiceAction_, v1Alerts)) {
+    const uint32_t priorityId =
+        v1Alerts.hasPriority ? VoiceModule::makeAlertId(
+                                  v1Alerts.priority.band, static_cast<uint16_t>(v1Alerts.priority.frequency),
+                                  v1Alerts.priority.band == BAND_K && v1Alerts.priority.photoType != 0)
+                            : 0;
+    // An unheard secondary/escalation was selected under the old priority.
+    // Re-evaluate it before its retry deadline when priority changes; otherwise
+    // accepting it could restart the cooldown and silence a short new threat.
+    if (hasPendingVoiceAction_ &&
+        (pendingVoicePriorityId_ != priorityId ||
+         !pendingVoiceActionStillCurrent(pendingVoiceAction_, v1Alerts))) {
         hasPendingVoiceAction_ = false;
         voiceRetryScheduled_ = false;
         nextVoiceAttemptMs_ = 0;
@@ -488,12 +499,14 @@ void DisplayPipelineModule::runVoice(const RenderFrame& frame, const V1Settings&
 
     if (playbackResult == AudioPlaybackResult::Accepted) {
         pendingVoiceAction_ = voiceAction;
+        pendingVoicePriorityId_ = priorityId;
         hasPendingVoiceAction_ = true;
         awaitingVoicePlayback_ = true;
         voiceAcceptedAtMs_ = nowMs;
         (void)settleVoicePlayback(nowMs); // Also handles a worker that already finished.
     } else if (playbackResult == AudioPlaybackResult::Busy) {
         pendingVoiceAction_ = voiceAction;
+        pendingVoicePriorityId_ = priorityId;
         hasPendingVoiceAction_ = true;
         voiceRetryScheduled_ = true;
         nextVoiceAttemptMs_ = nowMs + VOICE_RETRY_INTERVAL_MS;

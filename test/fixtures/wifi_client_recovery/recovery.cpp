@@ -287,6 +287,75 @@ void transientCandidateDisconnect(wl_status_t firstFailure, uint8_t reason, bool
             "the successful retry must advance only its own recency");
 }
 
+void recoverSettingsAfterApOnlyBoot(bool enabled, bool hasSlot, bool manualDisconnect,
+                                   bool publishRevision = true) {
+    WiFiManager manager{};
+    WiFi = WiFiClass{};
+    WiFi.lost();
+    WiFi.radioMode = WIFI_OFF;
+    manager.settings_.value.wifiClientEnabled = false;
+    manager.settings_.value.wifiClientSSID = "";
+    manager.settings_.pendingRecovery = true;
+    mockMillis = 100;
+    require(manager.startSetupMode(false), "AP-only startup must succeed with provisional defaults");
+    require(manager.wifiClientState_ == WIFI_CLIENT_DISABLED, "provisional client must be disabled");
+    if (manualDisconnect) manager.disconnectFromNetwork();
+    manager.settings_.value.wifiClientEnabled = enabled;
+    if (hasSlot) {
+        manager.settings_.value.wifiStaSlots[0].ssid = "Saved";
+        manager.settings_.value.wifiClientSSID = "Saved";
+    }
+    manager.settings_.pendingRecovery = false;
+    if (publishRevision) ++manager.settings_.recoveredRevision;
+    mockMillis = 1000;
+    manager.runOwnerPass();
+    mockMillis = 1050;
+    manager.runOwnerPass();
+    const bool shouldJoin = enabled && hasSlot && !manualDisconnect;
+    require(WiFi.scans == (shouldJoin ? 1 : 0), "recovered autojoin eligibility mismatch");
+    if (!shouldJoin) {
+        for (mockMillis = 1100; mockMillis < 60000; mockMillis += 50) manager.runOwnerPass();
+        require(WiFi.scans == 0 && WiFi.begins == 0, "ineligible recovery must not start STA later");
+        return;
+    }
+    // A second recovered snapshot must not restart or cancel a live scan.
+    ++manager.settings_.recoveredRevision;
+    mockMillis = 1100;
+    manager.runOwnerPass();
+    require(WiFi.scans == 1 && WiFi.scanAborts == 0, "recovery restarted the active scan");
+    WiFi.scanState = 1;
+    mockMillis = 1150;
+    manager.runOwnerPass();
+    mockMillis = 1200;
+    manager.runOwnerPass();
+    require(WiFi.begins == 1, "recovered network must reach the actual staged connect");
+    WiFi.restored();
+    mockMillis = 1250;
+    manager.runOwnerPass();
+    require(manager.wifiClientState_ == WIFI_CLIENT_CONNECTED && manager.currentConnectedSlotIndex_ == 0,
+            "recovered network must connect without reboot or user action");
+    ++manager.settings_.recoveredRevision;
+    mockMillis = 1300;
+    manager.runOwnerPass();
+    require(WiFi.begins == 1 && WiFi.scans == 1 && WiFi.disconnects == 0,
+            "later recovered snapshot must preserve the working connection");
+}
+
+void loadedSettingsStartOnlyOneScan() {
+    WiFiManager manager{};
+    WiFi = WiFiClass{};
+    WiFi.lost();
+    WiFi.radioMode = WIFI_OFF;
+    manager.settings_.value.wifiStaSlots[0].ssid = "Saved";
+    manager.settings_.recoveredRevision = 1;
+    mockMillis = 100;
+    require(manager.startSetupMode(false), "loaded startup failed");
+    require(WiFi.scans == 1, "loaded startup must start a scan");
+    mockMillis = 1000;
+    manager.runOwnerPass();
+    require(WiFi.scans == 1 && WiFi.scanAborts == 0, "revision must not duplicate startup autoconnect");
+}
+
 int main() {
     int failures = 0;
     const auto run = [&failures](const char* name, void (*test)()) {
@@ -326,5 +395,11 @@ int main() {
     run("initial_auth_retry", []() { transientCandidateDisconnect(WL_NO_SSID_AVAIL, WIFI_REASON_AUTH_FAIL, false); });
     run("association_retry", []() { transientCandidateDisconnect(WL_CONNECT_FAILED, WIFI_REASON_ASSOC_FAIL, false); });
     run("voluntary_disconnect_event", []() { transientCandidateDisconnect(WL_CONNECT_FAILED, WIFI_REASON_ASSOC_LEAVE, false); });
+    run("recovered_saved_network_autojoins", []() { recoverSettingsAfterApOnlyBoot(true, true, false); });
+    run("recovered_disabled_client", []() { recoverSettingsAfterApOnlyBoot(false, true, false); });
+    run("recovered_empty_networks", []() { recoverSettingsAfterApOnlyBoot(true, false, false); });
+    run("recovered_manual_disconnect", []() { recoverSettingsAfterApOnlyBoot(true, true, true); });
+    run("sd_only_healed_network_autojoins", []() { recoverSettingsAfterApOnlyBoot(true, true, false, false); });
+    run("loaded_settings_start_once", loadedSettingsStartOnlyOneScan);
     return failures == 0 ? 0 : 1;
 }

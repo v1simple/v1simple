@@ -79,6 +79,7 @@ class DisplayPipelineModule {
     uint32_t lastAlpEndRevision_ = 0;
     uint32_t voiceAlertLifetime_ = 0;
     VoiceAction pendingVoiceAction_{};
+    uint32_t pendingVoicePriorityId_ = 0;
     bool hasPendingVoiceAction_ = false;
     AudioPlaybackReceipt voicePlaybackReceipt_;
     bool awaitingVoicePlayback_ = false;

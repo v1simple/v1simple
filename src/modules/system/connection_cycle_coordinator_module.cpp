@@ -32,7 +32,6 @@ bool isObdConnectFailureState(const ObdConnectionState state) {
     case ObdConnectionState::IDLE:
     case ObdConnectionState::WAIT_BOOT:
     case ObdConnectionState::DISCONNECTED:
-    case ObdConnectionState::ERROR_BACKOFF:
     case ObdConnectionState::ECU_IDLE:
         return true;
     default:
@@ -172,6 +171,11 @@ void ConnectionCycleCoordinatorModule::update(const CycleContext& ctx) {
     case CycleState::OBD_CONNECT:
         if (obdSettled) {
             transitionTo(CycleState::OBD_SETTLED, ctx.nowMs);
+        } else if (ctx.obdState == ObdConnectionState::ERROR_BACKOFF) {
+            // Polling has already begun. An ECU without speed data yet is an
+            // established session recovering under the runtime's backoff policy,
+            // not a pending connection to cancel.
+            transitionTo(nextPostObdState(ctx), ctx.nowMs);
         } else if (isObdConnectFailureState(ctx.obdState)) {
             lifecycle_->cancelObdConnect();
             transitionTo(nextPostObdState(ctx), ctx.nowMs);

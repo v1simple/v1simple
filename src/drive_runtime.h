@@ -219,6 +219,8 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     MainRuntimeState state_;
     V1SettingsOperationStore settingsOperations_;
 
+    bool settingsOperationBootRecoveryPending_ = false;
+    uint32_t settingsOperationBootRecoveryAttemptMs_ = 0;
     uint32_t observedSettingsOperationId_ = 0;
     uint32_t settingsOperationStartedMs_ = 0;
     uint32_t settingsRecaptureIngressBoundary_ = 0;

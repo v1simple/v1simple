@@ -97,7 +97,7 @@ void closeSession(uint32_t generation, uint32_t nowMs) {
     TEST_ASSERT_FALSE(queue.sessionOpen);
 }
 
-void feed(uint8_t id, std::initializer_list<uint8_t> data, uint32_t nowMs) {
+void feed(uint8_t id, std::initializer_list<uint8_t> data, uint32_t nowMs, uint32_t queuedIngress = 0) {
     // V1 -> remote. ESP length includes the checksum; the end marker does not.
     const uint8_t destination =
         (id == PACKET_ID_DISPLAY_DATA || id == PACKET_ID_ALERT_DATA) ? 0xD8 : 0xD6;
@@ -111,7 +111,8 @@ void feed(uint8_t id, std::initializer_list<uint8_t> data, uint32_t nowMs) {
     packet.push_back(checksum);
     packet.push_back(0xAB);
     mockMillis = nowMs;
-    TEST_ASSERT_TRUE(parser.parse(packet.data(), packet.size(), nowMs));
+    TEST_ASSERT_TRUE(parser.parse(packet.data(), packet.size(), nowMs,
+                                  queuedIngress ? queuedIngress : ble.noteV1NotificationIngress()));
 }
 
 void alert(uint32_t nowMs) {
@@ -444,11 +445,13 @@ void test_coalesced_clear_cancels_deferred_fade_and_confirms_restore_pair() {
     TEST_ASSERT_FALSE(quiet.canApplyAutoPushVolumeExactly());
     runtime.step(12520, 50, true, false);
     TEST_ASSERT_EQUAL_INT(2, ble.setVolumeCalls);
+    // Both earlier commands were deferred. Cached baseline equality cannot
+    // release the obligation; the next accepted restore gets a fresh echo.
     runtime.step(12585, 50, true);
-    TEST_ASSERT_EQUAL_INT(2, ble.setVolumeCalls);
+    TEST_ASSERT_EQUAL_INT(3, ble.setVolumeCalls);
     TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
     runtime.step(14509, 50, true);
-    TEST_ASSERT_EQUAL_INT(2, ble.setVolumeCalls);
+    TEST_ASSERT_EQUAL_INT(3, ble.setVolumeCalls);
     runtime.step(14510, 50, true);
     TEST_ASSERT_EQUAL_UINT8(1, ble.lastVolume);
 }
@@ -1031,8 +1034,116 @@ void test_pending_new_threat_restore_yields_to_proxy_and_changed_detector() {
     }
 }
 
+// A detector can echo the reduction after policy has already released it. Use
+// the real parsed-frame owner and canonical packets; BLE delivery is the first
+// mocked boundary. Both ordinary feedback and the delayed-feedback schedule
+// must retain the restore through SENT, NOT_YET and FAILED transport outcomes.
+void test_delayed_reduction_feedback_cannot_confirm_an_unsent_restore() {
+    for (bool speedOwner : {false, true}) {
+        for (bool dropObserved : {false, true}) {
+            for (SendResult restoreResult : {SendResult::SENT, SendResult::NOT_YET, SendResult::FAILED}) {
+                setUp();
+                SpeedFadeRuntime runtime;
+                volume(6, 2, 10000);
+                if (speedOwner) {
+                    runtime.step(11000, 0, false, false);
+                } else {
+                    runtime.step(10000, 50, true, false);
+                    runtime.step(12500, 50, true, false);
+                }
+                TEST_ASSERT_EQUAL_UINT8(speedOwner ? 0 : 1, ble.lastVolume);
+                TEST_ASSERT_EQUAL_INT(1, ble.setVolumeCalls);
+                if (dropObserved) volume(speedOwner ? 0 : 1, 2, 12501);
+                // This original pair entered before restoration. Parse it only
+                // after the write: it must not count as later detector evidence.
+                const uint32_t queuedBaseline = ble.noteV1NotificationIngress();
+                ble.nextVolumeSendResult = restoreResult;
+                if (speedOwner) runtime.speed.update(0, false, 12600);
+                clearAlert(12600);
+                runtime.orchestration.processParsedFrame({12600, true, false});
+                TEST_ASSERT_EQUAL_INT(2, ble.setVolumeCalls);
+                TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+                feed(PACKET_ID_RESP_ALL_VOLUME, {6, 2, 6, 2}, 12610, queuedBaseline);
+                runtime.orchestration.processParsedFrame({12610, true, false});
+                TEST_ASSERT_FALSE(quiet.canApplyAutoPushVolumeExactly());
+                TEST_ASSERT_EQUAL_INT(2, ble.setVolumeCalls);
+                // Now the delayed drop becomes visible. Both owners must retry.
+                volume(speedOwner ? 0 : 1, 2, 12700);
+                runtime.orchestration.processParsedFrame({12700, true, false});
+                TEST_ASSERT_EQUAL_INT(3, ble.setVolumeCalls);
+                TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+                TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
+                volume(6, 2, 12710);
+                runtime.orchestration.processParsedFrame({12710, true, false});
+                TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+                runtime.orchestration.processParsedFrame({14000, true, false});
+                TEST_ASSERT_EQUAL_INT(3, ble.setVolumeCalls);
+            }
+        }
+    }
+}
+
+void test_restore_accepts_volume_feedback_received_inside_the_send() {
+    static uint32_t duringSendIngress = 0;
+    for (bool speedOwner : {false, true}) {
+        setUp();
+        SpeedFadeRuntime runtime;
+        volume(6, 2, 10000);
+        if (speedOwner) runtime.step(11000, 0, false);
+        else {
+            runtime.step(10000, 50, true);
+            runtime.step(12500, 50, true);
+        }
+        if (speedOwner) runtime.speed.update(0, false, 12600);
+        clearAlert(12600);
+        ble.setVolumeSendHook = [] { duringSendIngress = ble.noteV1NotificationIngress(); };
+        runtime.orchestration.processParsedFrame({12600, true, false});
+        ble.setVolumeSendHook = nullptr;
+        TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+        TEST_ASSERT_EQUAL_INT(2, ble.setVolumeCalls);
+        // As on hardware, the callback arrived during the synchronous write,
+        // and the main loop parses its canonical volume packet after return.
+        feed(PACKET_ID_RESP_ALL_VOLUME, {6, 2, 6, 2}, 12610, duringSendIngress);
+        runtime.orchestration.processParsedFrame({12610, true, false});
+        TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+        runtime.orchestration.processParsedFrame({14000, true, false});
+        TEST_ASSERT_EQUAL_INT(2, ble.setVolumeCalls);
+    }
+}
+
+void test_restore_acknowledgement_survives_retry_and_ingress_rollover() {
+    for (bool speedOwner : {false, true}) {
+        setUp();
+        SpeedFadeRuntime runtime;
+        volume(6, 2, 10000);
+        if (speedOwner) runtime.step(11000, 0, false);
+        else {
+            runtime.step(10000, 50, true);
+            runtime.step(12500, 50, true);
+        }
+        ble.v1NotificationIngressSequenceValue = UINT32_MAX - 1;
+        if (speedOwner) runtime.speed.update(0, false, 12600);
+        clearAlert(12600);
+        runtime.orchestration.processParsedFrame({12600, true, false});
+        const uint32_t acknowledgement = ble.noteV1NotificationIngress();
+        TEST_ASSERT_EQUAL_UINT32(1, acknowledgement);
+        clearAlert(12700);
+        runtime.orchestration.processParsedFrame({12700, true, false});
+        TEST_ASSERT_EQUAL_INT(3, ble.setVolumeCalls);
+        // Receipt after the first send still acknowledges it if a retry was
+        // transmitted before this already-queued packet reached the parser.
+        feed(PACKET_ID_RESP_ALL_VOLUME, {6, 2, 6, 2}, 12710, acknowledgement);
+        runtime.orchestration.processParsedFrame({12710, true, false});
+        TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+        TEST_ASSERT_EQUAL_INT(3, ble.setVolumeCalls);
+    }
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_delayed_reduction_feedback_cannot_confirm_an_unsent_restore);
+    RUN_TEST(test_restore_acknowledgement_survives_retry_and_ingress_rollover);
+    RUN_TEST(test_restore_accepts_volume_feedback_received_inside_the_send);
     RUN_TEST(test_speed_restore_survives_long_holdoff_and_requires_complete_pair);
     RUN_TEST(test_speed_reentry_preserves_unconfirmed_restore_pair);
     RUN_TEST(test_live_new_threat_restore_retries_until_complete_pair_after_long_holdoff);

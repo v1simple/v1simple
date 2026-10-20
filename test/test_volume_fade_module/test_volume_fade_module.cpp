@@ -36,6 +36,9 @@ VolumeFadeContext makeCtx(unsigned long now, uint16_t freq, bool laser, uint8_t 
     ctx.currentFrequency = freq;
     ctx.priorityIsLaser = laser;
     ctx.now = now;
+    ctx.hasVolumeObservation = true;
+    ctx.volumeObservationIngress = static_cast<uint32_t>(now);
+    ctx.sessionGeneration = 1;
     return ctx;
 }
 
@@ -68,6 +71,8 @@ void test_new_laser_releases_active_fade() {
     TEST_ASSERT_EQUAL(VolumeFadeAction::Type::RESTORE, release.type);
     TEST_ASSERT_EQUAL(6, release.restoreVolume);
 
+    gModule.noteRestoreSent(1, 4000);
+
     // Same laser is deduped — no second release.
     TEST_ASSERT_FALSE(gModule.process(makeCtx(4100, 0, true)).hasAction());
 
@@ -95,6 +100,7 @@ void test_laser_at_session_start_is_not_a_release() {
 void test_external_mute_during_restore_requires_pair_and_stops_after_confirmation() {
     startFadedKbandSession();
     TEST_ASSERT_EQUAL(VolumeFadeAction::Type::RESTORE, gModule.process(makeCtx(4000, 0, true, 1)).type);
+    gModule.noteRestoreSent(1, 4000);
     VolumeFadeContext ctx = makeCtx(6000, 0, true, 6);
     ctx.alertMuted = true;
     ctx.currentMuteVolume = 1;
@@ -103,6 +109,7 @@ void test_external_mute_during_restore_requires_pair_and_stops_after_confirmatio
     TEST_ASSERT_EQUAL_UINT8(6, restore.restoreVolume);
     TEST_ASSERT_EQUAL_UINT8(5, restore.restoreMuteVolume);
     ctx.now = 6100;
+    ctx.volumeObservationIngress = 6100;
     ctx.currentMuteVolume = 5;
     TEST_ASSERT_FALSE(gModule.process(ctx).hasAction());
     TEST_ASSERT_FALSE(gModule.hasActiveVolumeOverride());

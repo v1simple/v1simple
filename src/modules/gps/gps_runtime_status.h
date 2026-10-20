@@ -16,12 +16,14 @@ struct GpsRuntimeStatus {
     uint8_t satellites = 0;
     uint8_t stableSatellites = 0;
     float hdop = NAN;
+    bool qualityFresh = false; // GGA quality ages independently of RMC speed/fix.
 
     // --- Timing / age ---
     uint32_t sampleTsMs = 0;
     uint32_t sampleAgeMs = UINT32_MAX;
     uint32_t fixAgeMs = UINT32_MAX;
     uint32_t stableFixAgeMs = UINT32_MAX;
+    uint32_t qualityAgeMs = UINT32_MAX;
 
     // --- Parser / hardware telemetry ---
     uint32_t injectedSamples = 0;

@@ -186,6 +186,7 @@ bool WiFiManager::startSetupMode(const bool autoStarted) {
     lowDmaSinceMs_ = 0;
     lowDmaCooldownUntilMs_ = 0;
     maintenanceAutoConnectRetryAtMs_ = 0;
+    maintenanceSettingsRecoveryPending_ = settings_.recoveryPending();
     maintenanceAddressCollisionSlotMask_ = 0;
     maintenanceManualDisconnect_ = false;
     resetReconnectFailures();

@@ -53,6 +53,8 @@ def build_and_run(build: Path) -> None:
     }), encoding="utf-8")
 
     owner = '#include "owner.h"\n'
+    owner += between(lifecycle, "static bool shouldUseApSta(", "static void getWifiRuntimeThresholds(")
+    owner += between(lifecycle, "bool WiFiManager::startSetupMode(", "bool WiFiManager::stopSetupModeImmediate(")
     for start, end in (
         ("namespace {", "String WiFiManager::getAPIPAddress()"),
         ("int WiFiManager::findConfiguredSlotBySsid(", "bool WiFiManager::upsertSavedNetwork("),

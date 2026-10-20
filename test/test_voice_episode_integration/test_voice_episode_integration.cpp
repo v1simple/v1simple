@@ -36,7 +36,11 @@ class DisplayPreviewModule {
 
 namespace {
 AudioPlaybackResult playbackResult = AudioPlaybackResult::Accepted;
+AudioPlaybackReceipt::State playbackState = AudioPlaybackReceipt::State::Started;
+AudioPlaybackReceipt* activeReceipt = nullptr;
 std::vector<uint16_t> attemptedFrequencies;
+std::vector<AlertBand> attemptedBands;
+unsigned escalationAttempts = 0;
 
 struct VoiceRuntime {
     BleQueueModule queue;
@@ -95,6 +99,12 @@ struct VoiceRuntime {
 
     void clear(uint32_t nowMs) { enqueue(PACKET_ID_ALERT_DATA, {0, 0, 0, 0, 0, 0, 0}, nowMs); }
 
+    void laser(uint32_t nowMs, bool active = true) {
+        enqueue(PACKET_ID_DISPLAY_DATA,
+                {0x06, 0x06, 0x0F, static_cast<uint8_t>(active ? 0x21 : 0x22),
+                 static_cast<uint8_t>(active ? 0x21 : 0x22), 0x04, 0, 0x50}, nowMs);
+    }
+
     void present(uint32_t nowMs) {
         mockMillis = nowMs;
         queue.process();
@@ -105,10 +115,14 @@ struct VoiceRuntime {
 };
 } // namespace
 
-AudioPlaybackResult try_play_frequency_voice(AlertBand, uint16_t frequency, AlertDirection,
+AudioPlaybackResult try_play_frequency_voice(AlertBand band, uint16_t frequency, AlertDirection,
                                              VoiceAlertMode, bool, uint8_t, AudioPlaybackReceipt* receipt) {
-    if (receipt) receipt->state.store(AudioPlaybackReceipt::State::Started);
+    if (receipt && playbackResult == AudioPlaybackResult::Accepted) {
+        activeReceipt = receipt;
+        receipt->state.store(playbackState);
+    }
     attemptedFrequencies.push_back(frequency);
+    attemptedBands.push_back(band);
     return playbackResult;
 }
 AudioPlaybackResult try_play_direction_only(AlertDirection, uint8_t, AudioPlaybackReceipt* receipt) {
@@ -116,17 +130,21 @@ AudioPlaybackResult try_play_direction_only(AlertDirection, uint8_t, AudioPlayba
     TEST_FAIL_MESSAGE("unexpected direction-only announcement");
     return AudioPlaybackResult::Unavailable;
 }
-AudioPlaybackResult try_play_threat_escalation(AlertBand, uint16_t, AlertDirection,
+AudioPlaybackResult try_play_threat_escalation(AlertBand band, uint16_t frequency, AlertDirection,
                                                uint8_t, uint8_t, uint8_t, uint8_t, AudioPlaybackReceipt* receipt) {
-    if (receipt) receipt->state.store(AudioPlaybackReceipt::State::Started);
-    TEST_FAIL_MESSAGE("unexpected escalation announcement");
-    return AudioPlaybackResult::Unavailable;
+    ++escalationAttempts;
+    return try_play_frequency_voice(band, frequency, AlertDirection::AHEAD, VOICE_MODE_BAND_FREQ,
+                                    false, 1, receipt);
 }
 
 void setUp() {
     mockMillis = mockMicros = 0;
     playbackResult = AudioPlaybackResult::Accepted;
+    playbackState = AudioPlaybackReceipt::State::Started;
+    activeReceipt = nullptr;
     attemptedFrequencies.clear();
+    attemptedBands.clear();
+    escalationAttempts = 0;
     HealthCounters::reset();
 }
 void tearDown() {}
@@ -239,6 +257,112 @@ void test_new_encounter_does_not_inherit_unavailable_audio_retry_delay() {
     TEST_ASSERT_EQUAL_UINT(2, attemptedFrequencies.size());
 }
 
+static void startSecondaryEncounter(VoiceRuntime& runtime) {
+    runtime.settings.settings.announceSecondaryAlerts = true;
+    runtime.settings.settings.secondaryK = true;
+    runtime.alert(10000, 34700, true);
+    runtime.present(10000);
+    TEST_ASSERT_EQUAL_UINT(1, attemptedFrequencies.size());
+}
+
+void test_busy_secondary_yields_to_short_laser_before_its_retry_deadline() {
+    VoiceRuntime runtime;
+    startSecondaryEncounter(runtime);
+    playbackResult = AudioPlaybackResult::Busy;
+    runtime.alert(12000, 34700, true);
+    runtime.present(12000);
+    TEST_ASSERT_EQUAL_UINT16(24150, attemptedFrequencies.back());
+    playbackResult = AudioPlaybackResult::Accepted;
+    runtime.laser(12010);
+    runtime.present(12010);
+    TEST_ASSERT_EQUAL_UINT(3, attemptedFrequencies.size());
+    TEST_ASSERT_EQUAL(AlertBand::LASER, attemptedBands.back());
+    runtime.laser(12100, false);
+    runtime.present(12100);
+    TEST_ASSERT_EQUAL_UINT(3, attemptedFrequencies.size());
+}
+
+void test_failed_secondary_start_yields_to_current_priority_without_dedup() {
+    VoiceRuntime runtime;
+    startSecondaryEncounter(runtime);
+    playbackState = AudioPlaybackReceipt::State::Pending;
+    runtime.alert(12000, 34700, true);
+    runtime.present(12000);
+    TEST_ASSERT_NOT_NULL(activeReceipt);
+    runtime.laser(12010);
+    runtime.present(12010);
+    TEST_ASSERT_EQUAL_UINT(2, attemptedFrequencies.size()); // The worker still owns its job.
+    activeReceipt->state.store(AudioPlaybackReceipt::State::FailedBeforeStart);
+    playbackState = AudioPlaybackReceipt::State::Started;
+    runtime.laser(12020);
+    runtime.present(12020);
+    TEST_ASSERT_EQUAL_UINT(3, attemptedFrequencies.size());
+    TEST_ASSERT_EQUAL(AlertBand::LASER, attemptedBands.back());
+    runtime.laser(12100);
+    runtime.present(12100);
+    TEST_ASSERT_EQUAL_UINT(3, attemptedFrequencies.size());
+}
+
+void test_started_secondary_keeps_normal_cooldown_and_is_not_replayed() {
+    VoiceRuntime runtime;
+    startSecondaryEncounter(runtime);
+    runtime.alert(12000, 34700, true);
+    runtime.present(12000);
+    runtime.laser(12010);
+    runtime.present(12010);
+    runtime.laser(13999);
+    runtime.present(13999);
+    TEST_ASSERT_EQUAL_UINT(2, attemptedFrequencies.size());
+    runtime.laser(14000);
+    runtime.present(14000);
+    TEST_ASSERT_EQUAL_UINT(3, attemptedFrequencies.size());
+    TEST_ASSERT_EQUAL(AlertBand::LASER, attemptedBands.back());
+}
+
+void test_pending_escalation_cannot_extend_new_priority_cooldown() {
+    VoiceRuntime runtime;
+    startSecondaryEncounter(runtime);
+    runtime.alert(12000, 34700, true);
+    runtime.present(12000); // Secondary is heard normally.
+    runtime.voice.testUpdateAlertHistory(BAND_K, 24150, 2, 12100);
+    runtime.voice.testUpdateAlertHistory(BAND_K, 24150, 5, 12200);
+    playbackResult = AudioPlaybackResult::Busy;
+    // Complete table with a now-strong K secondary.
+    runtime.enqueue(PACKET_ID_ALERT_DATA, {0x12, 0x87, 0x8C, 0xAC, 0, 0x22, 0x80}, 12800);
+    runtime.enqueue(PACKET_ID_ALERT_DATA, {0x22, 0x5E, 0x56, 0xC4, 0, 0x24, 0}, 12800);
+    runtime.present(12800);
+    TEST_ASSERT_EQUAL_UINT(1, escalationAttempts);
+    playbackResult = AudioPlaybackResult::Accepted;
+    for (uint32_t now : {12810u, 12900u, 13999u}) {
+        runtime.laser(now);
+        runtime.present(now);
+    }
+    TEST_ASSERT_EQUAL_UINT(3, attemptedFrequencies.size());
+    TEST_ASSERT_EQUAL_UINT(1, escalationAttempts);
+    runtime.laser(14000);
+    runtime.present(14000);
+    TEST_ASSERT_EQUAL_UINT(4, attemptedFrequencies.size());
+    TEST_ASSERT_EQUAL(AlertBand::LASER, attemptedBands.back());
+}
+
+void test_priority_replacing_pending_secondary_still_honors_suppression() {
+    VoiceRuntime runtime;
+    startSecondaryEncounter(runtime);
+    playbackResult = AudioPlaybackResult::Busy;
+    runtime.alert(12000, 34700, true);
+    runtime.present(12000);
+    playbackResult = AudioPlaybackResult::Accepted;
+    runtime.ble.setProxyConnected(true);
+    runtime.laser(12010);
+    runtime.present(12010);
+    TEST_ASSERT_EQUAL_UINT(2, attemptedFrequencies.size());
+    runtime.ble.setProxyConnected(false);
+    runtime.laser(12020);
+    runtime.present(12020);
+    TEST_ASSERT_EQUAL_UINT(3, attemptedFrequencies.size());
+    TEST_ASSERT_EQUAL(AlertBand::LASER, attemptedBands.back());
+}
+
 void test_batched_completed_encounter_retains_priority_without_obsolete_voice() {
     VoiceRuntime runtime;
     runtime.settings.slotAlertPersistSec[0] = 3;
@@ -340,5 +464,10 @@ int main() {
     RUN_TEST(test_pending_busy_retry_keeps_its_deadline_within_one_encounter);
     RUN_TEST(test_coalesced_clear_discards_old_pending_secondary_before_new_priority);
     RUN_TEST(test_new_encounter_does_not_inherit_unavailable_audio_retry_delay);
+    RUN_TEST(test_busy_secondary_yields_to_short_laser_before_its_retry_deadline);
+    RUN_TEST(test_failed_secondary_start_yields_to_current_priority_without_dedup);
+    RUN_TEST(test_started_secondary_keeps_normal_cooldown_and_is_not_replayed);
+    RUN_TEST(test_pending_escalation_cannot_extend_new_priority_cooldown);
+    RUN_TEST(test_priority_replacing_pending_secondary_still_honors_suppression);
     return UNITY_END();
 }

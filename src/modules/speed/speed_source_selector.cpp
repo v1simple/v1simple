@@ -58,9 +58,9 @@ SpeedSelectorStatus SpeedSourceSelector::buildStatus(uint32_t nowMs) const {
         const GpsRuntimeStatus gpsStatus = gps_->snapshot(nowMs);
         status.gpsSatellites = gpsStatus.satellites;
         status.gpsHdop = gpsStatus.hdop;
-        // "Good signal" gate: fresh speed sample, stable fix, enough satellites,
+        // "Good signal" gate: fresh speed and GGA quality, stable fix, enough satellites,
         // and HDOP within a reasonable bound. NaN HDOP fails the comparison.
-        status.gpsGoodSignal = status.gpsFresh && gpsStatus.stableHasFix &&
+        status.gpsGoodSignal = status.gpsFresh && gpsStatus.qualityFresh && gpsStatus.stableHasFix &&
                                gpsStatus.satellites >= GPS_MIN_SATELLITES && gpsStatus.hdop > 0.0f &&
                                gpsStatus.hdop <= GPS_MAX_HDOP;
     }

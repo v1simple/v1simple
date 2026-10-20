@@ -1629,8 +1629,11 @@ void exercise_live_catalog_open_availability(bool failOpen, bool rollback) {
         TEST_ASSERT_FALSE(boot.listDevicesChecked(records));
         TEST_ASSERT_FALSE(boot.setDeviceName("AA:BB:CC:DD:EE:FF", "Must not replace").committed());
         TEST_ASSERT_EQUAL_STRING(current.c_str(), readFileToString(primary, "/v1devices.json").c_str());
-        // A later boot can determine authority and repair the stale mirror.
-        TEST_ASSERT_TRUE(boot.begin(&primary, rollback ? nullptr : &mirror));
+        // Retry in the same boot, only after the recovery backoff.
+        boot.serviceRecovery(1999);
+        TEST_ASSERT_FALSE(boot.catalogReadable());
+        boot.serviceRecovery(2000);
+        TEST_ASSERT_TRUE(boot.catalogReadable());
     }
     std::vector<V1DeviceRecord> records;
     TEST_ASSERT_TRUE(boot.listDevicesChecked(records));
@@ -1656,8 +1659,44 @@ void test_readable_live_catalog_wins_over_stale_mirror() {
     exercise_live_catalog_open_availability(false, false);
 }
 
+void test_catalog_recovery_retries_memory_failure_with_backoff_and_keeps_newer_mirror() {
+    fs::FS sd(g_tempRoot / "sd");
+    fs::FS little(g_tempRoot / "little");
+    V1DeviceStore source;
+    TEST_ASSERT_TRUE(source.begin(&little));
+    TEST_ASSERT_TRUE(source.setDeviceDefaultProfile("AA:BB:CC:DD:EE:FF", 1).committed());
+    writeFileFromBytes(sd, "/v1devices.json", readFileToString(little, "/v1devices.json"));
+    TEST_ASSERT_TRUE(source.setDeviceDefaultProfile("AA:BB:CC:DD:EE:FF", 3).committed());
+    const std::string newest = readFileToString(little, "/v1devices.json");
+    g_mock_heap_caps_fail_all_allocations = true;
+    V1DeviceStore boot;
+    TEST_ASSERT_TRUE(boot.begin(&sd, &little));
+    TEST_ASSERT_FALSE(boot.catalogReadable());
+    mock_reset_heap_caps_tracking();
+    g_mock_heap_caps_fail_all_allocations = true;
+    boot.serviceRecovery(1999);
+    TEST_ASSERT_EQUAL_UINT32(0, g_mock_heap_caps_malloc_calls + g_mock_heap_caps_realloc_calls);
+    boot.serviceRecovery(2000);
+    TEST_ASSERT_FALSE(boot.catalogReadable());
+    g_mock_heap_caps_fail_all_allocations = false;
+    boot.serviceRecovery(2999);
+    TEST_ASSERT_FALSE(boot.catalogReadable());
+    boot.serviceRecovery(3000);
+    TEST_ASSERT_TRUE(boot.catalogReadable());
+    TEST_ASSERT_EQUAL_UINT8(3, boot.getDeviceDefaultProfileChecked("AA:BB:CC:DD:EE:FF").profile);
+    TEST_ASSERT_EQUAL_STRING(newest.c_str(), readFileToString(sd, "/v1devices.json").c_str());
+    TEST_ASSERT_EQUAL_STRING(newest.c_str(), readFileToString(little, "/v1devices.json").c_str());
+    // Once readable, service cannot replace accepted in-memory edits.
+    TEST_ASSERT_TRUE(boot.touchDeviceInMemory("11:22:33:44:55:66"));
+    boot.serviceRecovery(60000);
+    bool present = false;
+    TEST_ASSERT_TRUE(boot.containsDeviceChecked("11:22:33:44:55:66", present));
+    TEST_ASSERT_TRUE(present);
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_catalog_recovery_retries_memory_failure_with_backoff_and_keeps_newer_mirror);
     RUN_TEST(test_live_catalog_open_failure_preserves_newer_than_rollback);
     RUN_TEST(test_live_catalog_open_failure_preserves_newer_than_mirror);
     RUN_TEST(test_readable_live_catalog_wins_over_stale_rollback);

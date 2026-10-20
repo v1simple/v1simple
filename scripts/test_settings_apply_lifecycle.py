@@ -30,6 +30,10 @@ def build_and_run(build: Path) -> None:
     periodic = "void DriveRuntime::processPeriodicMaintenance("
     owner = between(source, "void DriveRuntime::processSettingsOperation(uint32_t nowMs)", periodic)
     owner += between(source, periodic, "    const bool hardPressure = bleBackpressure") + "}\n"
+    owner += between(source, "void DriveRuntime::start(", "    initializeStorageAndProfiles();").replace(
+        "esp_reset_reason_t", "int") + "}\n"
+    owner += between(source, "void DriveRuntime::attemptFactoryReset(",
+                     "bool DriveRuntime::handleSettingsOperationStableConnection()")
     (build / "outer_operation.inc").write_text(owner, encoding="utf-8")
     compiler = shlex.split(os.environ.get("CXX", "clang++" if shutil.which("clang++") else "c++"))
     deps = ROOT / ".pio/libdeps/native-sanitized"

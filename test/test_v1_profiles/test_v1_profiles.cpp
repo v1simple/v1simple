@@ -184,42 +184,86 @@ void test_cursor_pages_keep_grandfathered_over_limit_catalog_discoverable_and_pr
     TEST_ASSERT_EQUAL_UINT(11u, manager.listProfilesPageResult("", 3).total);
 }
 
-void test_reconcile_union_over_catalog_bound_is_bounded_and_preserves_both_stores() {
-    const std::filesystem::path sdRoot = g_tempRoot / "sd_over_cap_union";
-    const std::filesystem::path littleRoot = g_tempRoot / "little_over_cap_union";
-    std::filesystem::create_directories(sdRoot);
-    std::filesystem::create_directories(littleRoot);
-    fs::FS sd(sdRoot);
-    fs::FS little(littleRoot);
-    V1ProfileManager sdOnly;
-    V1ProfileManager littleOnly;
+void exercise_over_limit_reconciliation(bool failRead) {
+    fs::FS sd(g_tempRoot / "sd_over_cap_union");
+    fs::FS little(g_tempRoot / "little_over_cap_union");
+    V1ProfileManager sdOnly, littleOnly;
     TEST_ASSERT_TRUE(sdOnly.begin(&sd));
     TEST_ASSERT_TRUE(littleOnly.begin(&little));
     for (int index = 0; index < 6; ++index) {
-        const String sdName = String("SD") + String(index);
-        const String littleName = String("LF") + String(index);
-        TEST_ASSERT_TRUE(sdOnly.saveProfile(makeProfile(sdName, static_cast<uint8_t>(index), "sd")).success);
-        TEST_ASSERT_TRUE(littleOnly.saveProfile(
-            makeProfile(littleName, static_cast<uint8_t>(index + 10), "little")).success);
+        TEST_ASSERT_TRUE(sdOnly.saveProfile(makeProfile(String("SD") + String(index),
+                                                       static_cast<uint8_t>(index), "sd")).success);
+        TEST_ASSERT_TRUE(littleOnly.saveProfile(makeProfile(String("LF") + String(index),
+                                                           static_cast<uint8_t>(index + 10), "little")).success);
     }
+    TEST_ASSERT_TRUE(sdOnly.saveProfile(makeProfile("Road", 1, "older")).success);
+    TEST_ASSERT_TRUE(littleOnly.saveProfile(makeProfile("Road", 2, "newer")).success);
+    TEST_ASSERT_TRUE(littleOnly.saveProfile(makeProfile("Road", 3, "newest")).success);
+    TEST_ASSERT_TRUE(sdOnly.saveProfile(makeProfile("Deleted", 4)).success);
+    TEST_ASSERT_TRUE(littleOnly.saveProfile(makeProfile("Deleted", 4)).success);
+    TEST_ASSERT_TRUE(littleOnly.deleteProfile("Deleted"));
+    const auto original = filesSnapshot();
     const std::string sdSentinel = readFileToString(sd, "/v1profiles/SD0.json");
     const std::string littleSentinel = readFileToString(little, "/v1profiles/LF0.json");
 
-    StorageManager storage;
-    storage.setFilesystem(&sd, true);
-    storage.setLittleFS(&little);
+    StorageManager owner;
+    owner.setFilesystem(&sd, true);
+    owner.setLittleFS(&little);
     V1ProfileManager combined;
-    TEST_ASSERT_TRUE(combined.begin(storage));
-    TEST_ASSERT_EQUAL_STRING("Profile mirror live catalog exceeds supported bound",
-                             combined.getLastError().c_str());
+    if (failRead) fs::mock_fail_next_read_open("/v1profiles/SD5.json");
+    TEST_ASSERT_EQUAL(!failRead, combined.begin(owner));
+    if (failRead) {
+        TEST_ASSERT_FALSE(combined.isReady());
+        TEST_ASSERT_TRUE(original == filesSnapshot());
+        combined.serviceRecovery(2000);
+    }
+    TEST_ASSERT_TRUE(combined.isReady());
+    TEST_ASSERT_EQUAL_STRING(sdSentinel.c_str(), readFileToString(little, "/v1profiles/SD0.json").c_str());
+    TEST_ASSERT_EQUAL_STRING(littleSentinel.c_str(), readFileToString(sd, "/v1profiles/LF0.json").c_str());
+    V1Profile loaded;
+    TEST_ASSERT_TRUE(combined.loadProfile("Road", loaded));
+    TEST_ASSERT_EQUAL_UINT8(3, loaded.settings.bytes[0]);
+    TEST_ASSERT_EQUAL(ProfileStorageStatus::NotFound, combined.loadProfileResult("Deleted", loaded).status);
+    TEST_ASSERT_FALSE(combined.listProfilesResult().success());
+    TEST_ASSERT_FALSE(combined.saveProfile(makeProfile("New", 1)).success);
+    String cursor;
+    size_t seen = 0;
+    do {
+        const ProfilePageResult page = combined.listProfilesPageResult(cursor, 3);
+        TEST_ASSERT_TRUE(page.success());
+        TEST_ASSERT_EQUAL_UINT(13u, page.total);
+        seen += page.profiles.size();
+        if (!page.hasMore) break;
+        cursor = page.nextCursor;
+    } while (seen < 20u);
+    TEST_ASSERT_EQUAL_UINT(13u, seen);
+    // Use the same durable settings/profile transaction as the maintenance
+    // delete route, not an external filesystem edit, to return below the cap.
+    mock_preferences::reset();
+    mock_nvs::reset();
+    SettingsManager settings(owner, combined);
+    settings.load();
+    for (const char* name : {"SD0", "SD1", "SD2"}) {
+        TEST_ASSERT_TRUE(settings.deleteProfileAndReferences(name).success());
+    }
+    TEST_ASSERT_TRUE(combined.listProfilesResult().success());
+    TEST_ASSERT_EQUAL_UINT(10u, combined.listProfilesResult().profiles.size());
+    V1ProfileManager reboot;
+    TEST_ASSERT_TRUE(reboot.begin(owner));
+    TEST_ASSERT_EQUAL_UINT(10u, reboot.listProfilesResult().profiles.size());
+    TEST_ASSERT_TRUE(reboot.loadProfile("Road", loaded));
+    TEST_ASSERT_EQUAL_UINT8(3, loaded.settings.bytes[0]);
+    TEST_ASSERT_EQUAL(ProfileStorageStatus::NotFound, reboot.loadProfileResult("Deleted", loaded).status);
+    mock_preferences::reset();
+    mock_nvs::reset();
+}
 
-    TEST_ASSERT_EQUAL_STRING(sdSentinel.c_str(), readFileToString(sd, "/v1profiles/SD0.json").c_str());
-    TEST_ASSERT_EQUAL_STRING(littleSentinel.c_str(),
-                             readFileToString(little, "/v1profiles/LF0.json").c_str());
-    TEST_ASSERT_FALSE(sd.exists("/v1profiles/LF0.json"));
-    TEST_ASSERT_FALSE(little.exists("/v1profiles/SD0.json"));
-    TEST_ASSERT_EQUAL_UINT(6u, combined.listProfilesPageResult("", 10).total);
- }
+void test_reconcile_over_limit_union_preserves_authority_and_allows_maintenance_pruning() {
+    exercise_over_limit_reconciliation(false);
+}
+void test_over_limit_union_read_failure_still_blocks_stale_authority_until_recovery() {
+    exercise_over_limit_reconciliation(true);
+}
 
 void test_retired_profile_history_does_not_block_supported_live_catalog_reconciliation() {
     // Nine retired names are the old passing boundary; ten exposed the stale
@@ -343,7 +387,8 @@ void test_profile_reconcile_generation_exhaustion_does_not_choose_or_overwrite_e
     storage.setFilesystem(&sd, true);
     storage.setLittleFS(&little);
     V1ProfileManager combined;
-    TEST_ASSERT_TRUE(combined.begin(storage));
+    TEST_ASSERT_FALSE(combined.begin(storage));
+    TEST_ASSERT_FALSE(combined.isReady());
     TEST_ASSERT_EQUAL_STRING(sdJson.c_str(), readFileToString(sd, "/v1profiles/Road.json").c_str());
     TEST_ASSERT_EQUAL_STRING(sdMeta.c_str(), readFileToString(sd, "/v1profiles/Road.json.meta").c_str());
     TEST_ASSERT_EQUAL_STRING(littleJson.c_str(), readFileToString(little, "/v1profiles/Road.json").c_str());
@@ -485,7 +530,8 @@ void test_reconcile_psram_unavailable_never_overwrites_newer_profile_or_tombston
     mock_reset_heap_caps_tracking();
     g_mock_heap_caps_fail_all_allocations = true;
     V1ProfileManager combined;
-    TEST_ASSERT_TRUE(combined.begin(storage));
+    TEST_ASSERT_FALSE(combined.begin(storage));
+    TEST_ASSERT_FALSE(combined.isReady());
     g_mock_heap_caps_fail_all_allocations = false;
     TEST_ASSERT_EQUAL_STRING("Profile mirror inspection unavailable", combined.getLastError().c_str());
 
@@ -1688,8 +1734,117 @@ void test_in_the_box_parser_is_exact_and_preserves_output_on_invalid_input() {
     TEST_ASSERT_FALSE(parseV1InTheBoxSettings(document.as<JsonVariantConst>(), output));
 }
 
+enum class MirrorRecoveryFault { None, Read, Memory, Write };
+
+void exercise_deferred_profile_authority(MirrorRecoveryFault fault, bool deleted) {
+    fs::FS sd(g_tempRoot / "sd");
+    fs::FS little(g_tempRoot / "little");
+    V1ProfileManager sdOnly, littleOnly;
+    TEST_ASSERT_TRUE(sdOnly.begin(&sd));
+    TEST_ASSERT_TRUE(littleOnly.begin(&little));
+    TEST_ASSERT_TRUE(sdOnly.saveProfile(makeProfile("Road", 1, "older")).success);
+    TEST_ASSERT_TRUE(littleOnly.saveProfile(makeProfile("Road", 2, "newer")).success);
+    TEST_ASSERT_TRUE(littleOnly.saveProfile(makeProfile("Road", 3, "newest")).success);
+    if (deleted) TEST_ASSERT_TRUE(littleOnly.deleteProfile("Road"));
+    const auto original = filesSnapshot();
+    StorageManager owner;
+    owner.setFilesystem(&sd, true);
+    owner.setLittleFS(&little);
+    if (fault == MirrorRecoveryFault::Read) fs::mock_fail_next_read_open("/v1profiles/Road.json");
+    if (fault == MirrorRecoveryFault::Memory) g_mock_heap_caps_fail_all_allocations = true;
+    if (fault == MirrorRecoveryFault::Write) fs::mock_set_fs_write_budget(0);
+    V1ProfileManager boot;
+    TEST_ASSERT_EQUAL(fault == MirrorRecoveryFault::None, boot.begin(owner));
+    g_mock_heap_caps_fail_all_allocations = false;
+    fs::mock_reset_fs_write_budget();
+    if (fault != MirrorRecoveryFault::None) {
+        TEST_ASSERT_FALSE(boot.isReady());
+        V1Profile rejected;
+        TEST_ASSERT_FALSE(boot.loadProfileResult("Road", rejected).success());
+        TEST_ASSERT_FALSE(boot.listProfilesResult().success());
+        TEST_ASSERT_FALSE(boot.saveProfile(makeProfile("Road", 1, "stale edit")).success);
+        TEST_ASSERT_FALSE(boot.deleteProfileResult("Road").success());
+        TEST_ASSERT_TRUE(original == filesSnapshot());
+        // Recovery never runs before the bounded retry deadline, even though
+        // the fault has cleared. It publishes only the reconciled authority.
+        boot.serviceRecovery(1999);
+        TEST_ASSERT_FALSE(boot.isReady());
+        boot.serviceRecovery(2000);
+        TEST_ASSERT_TRUE(boot.isReady());
+        TEST_ASSERT_EQUAL_UINT32(2, boot.catalogRevision());
+    }
+    V1Profile recovered;
+    const auto result = boot.loadProfileResult("Road", recovered);
+    TEST_ASSERT_EQUAL(deleted ? ProfileStorageStatus::NotFound : ProfileStorageStatus::Success,
+                      result.status);
+    if (!deleted) {
+        TEST_ASSERT_EQUAL_UINT8(3, recovered.settings.bytes[0]);
+        recovered.description = "Updated description";
+        TEST_ASSERT_TRUE(boot.saveProfile(recovered).success);
+    }
+    V1ProfileManager reboot;
+    TEST_ASSERT_TRUE(reboot.begin(owner));
+    const auto persisted = reboot.loadProfileResult("Road", recovered);
+    TEST_ASSERT_EQUAL(deleted ? ProfileStorageStatus::NotFound : ProfileStorageStatus::Success,
+                      persisted.status);
+    if (!deleted) TEST_ASSERT_EQUAL_UINT8(3, recovered.settings.bytes[0]);
+}
+
+void test_profile_authority_recovers_after_read_failure_without_stale_edit() {
+    exercise_deferred_profile_authority(MirrorRecoveryFault::Read, false);
+}
+void test_profile_tombstone_recovers_after_read_failure_without_resurrection() {
+    exercise_deferred_profile_authority(MirrorRecoveryFault::Read, true);
+}
+void test_profile_authority_recovers_after_memory_failure() {
+    exercise_deferred_profile_authority(MirrorRecoveryFault::Memory, false);
+}
+void test_profile_tombstone_recovers_after_memory_failure() {
+    exercise_deferred_profile_authority(MirrorRecoveryFault::Memory, true);
+}
+void test_profile_authority_recovers_after_reconcile_write_failure() {
+    exercise_deferred_profile_authority(MirrorRecoveryFault::Write, false);
+}
+void test_profile_authority_without_fault_still_selects_newest() {
+    exercise_deferred_profile_authority(MirrorRecoveryFault::None, false);
+}
+void test_profile_authority_without_fault_still_preserves_deletion() {
+    exercise_deferred_profile_authority(MirrorRecoveryFault::None, true);
+}
+
+void test_periodic_profile_recovery_never_waits_for_sd_and_honors_backoff() {
+    fs::FS fs(g_tempRoot);
+    StorageManager owner;
+    owner.setFilesystem(&fs, true);
+    V1ProfileManager manager;
+    mock_queue_semaphore_take_result(pdFALSE);
+    TEST_ASSERT_FALSE(manager.begin(owner));
+    mock_queue_semaphore_take_result(pdFALSE);
+    manager.serviceRecovery(2000);
+    TEST_ASSERT_FALSE(manager.isReady());
+    TEST_ASSERT_EQUAL_UINT32(0, g_mock_semaphore_state.lastTakeTimeout);
+    const unsigned attempts = g_mock_semaphore_state.takeCalls;
+    manager.serviceRecovery(2999);
+    TEST_ASSERT_EQUAL_UINT32(attempts, g_mock_semaphore_state.takeCalls);
+    manager.serviceRecovery(3000);
+    TEST_ASSERT_TRUE(manager.isReady());
+    TEST_ASSERT_EQUAL_UINT32(0, g_mock_semaphore_state.lastTakeTimeout);
+    const unsigned recoveredAttempts = g_mock_semaphore_state.takeCalls;
+    manager.serviceRecovery(60000);
+    TEST_ASSERT_EQUAL_UINT32(recoveredAttempts, g_mock_semaphore_state.takeCalls);
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_periodic_profile_recovery_never_waits_for_sd_and_honors_backoff);
+    RUN_TEST(test_profile_authority_recovers_after_read_failure_without_stale_edit);
+    RUN_TEST(test_profile_tombstone_recovers_after_read_failure_without_resurrection);
+    RUN_TEST(test_profile_authority_recovers_after_memory_failure);
+    RUN_TEST(test_profile_tombstone_recovers_after_memory_failure);
+    RUN_TEST(test_profile_authority_recovers_after_reconcile_write_failure);
+    RUN_TEST(test_profile_authority_without_fault_still_selects_newest);
+    RUN_TEST(test_profile_authority_without_fault_still_preserves_deletion);
+
     RUN_TEST(test_in_the_box_profile_file_roundtrip_integrity_and_v3_default);
     RUN_TEST(test_in_the_box_parser_is_exact_and_preserves_output_on_invalid_input);
     RUN_TEST(test_save_profile_short_write_new_file_leaves_no_live_json);
@@ -1733,7 +1888,8 @@ int main() {
     RUN_TEST(test_valid_tombstone_remains_authoritative_when_json_removal_was_incomplete);
     RUN_TEST(test_valid_profile_metadata_mirror_repairs_corrupt_primary_and_legacy_is_rewritten);
     RUN_TEST(test_cursor_pages_keep_grandfathered_over_limit_catalog_discoverable_and_prunable);
-    RUN_TEST(test_reconcile_union_over_catalog_bound_is_bounded_and_preserves_both_stores);
+    RUN_TEST(test_reconcile_over_limit_union_preserves_authority_and_allows_maintenance_pruning);
+    RUN_TEST(test_over_limit_union_read_failure_still_blocks_stale_authority_until_recovery);
     RUN_TEST(test_retired_profile_history_does_not_block_supported_live_catalog_reconciliation);
     RUN_TEST(test_reconcile_psram_unavailable_never_overwrites_newer_profile_or_tombstone);
     RUN_TEST(test_secondary_rollback_path_allocation_failure_precedes_every_store_mutation);

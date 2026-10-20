@@ -198,6 +198,11 @@ VoiceAction VoiceModule::prepareAction(const VoiceContext& ctx) {
 
     // Announce count only with a new alert; the display owns subsequent count changes.
 
+    // A distinct priority waiting for the normal voice cooldown still owns
+    // the next announcement. A secondary must not restart that cooldown.
+    if (alertChanged)
+        return action;
+
     // --- Secondary Alert Logic ---
 
     if (s.announceSecondaryAlerts && ctx.alertCount > 1 && canAnnounceSecondary(ctx.now)) {

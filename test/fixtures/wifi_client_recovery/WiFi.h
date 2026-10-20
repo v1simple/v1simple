@@ -9,6 +9,7 @@ using wl_status_t = int;
 enum wifi_mode_t { WIFI_OFF = 0, WIFI_STA = 1, WIFI_AP = 2, WIFI_AP_STA = 3 };
 constexpr int WL_IDLE_STATUS = 0, WL_NO_SSID_AVAIL = 1, WL_CONNECTED = 3, WL_CONNECT_FAILED = 4, WL_DISCONNECTED = 6;
 constexpr int WIFI_SCAN_RUNNING = -1, WIFI_SCAN_FAILED = -2, WIFI_AUTH_OPEN = 0;
+constexpr int WIFI_POWER_5dBm = 5;
 using arduino_event_id_t = int;
 constexpr arduino_event_id_t ARDUINO_EVENT_WIFI_STA_DISCONNECTED = 1;
 constexpr uint8_t WIFI_REASON_AUTH_EXPIRE = 2, WIFI_REASON_ASSOC_LEAVE = 8,
@@ -54,6 +55,7 @@ class WiFiClass {
     std::function<void()> beforeScan;
 
     wl_status_t status() const { return cachedStatus; }
+    bool setTxPower(int) { return true; }
     wifi_mode_t getMode() const { return radioMode; }
     bool mode(wifi_mode_t mode) {
         if (mode == WIFI_AP && radioMode != WIFI_AP) {

@@ -9,6 +9,7 @@ class GpsRuntimeModule {
   public:
     // Freshness budget for GPS sample telemetry.
     static constexpr uint32_t SAMPLE_MAX_AGE_MS = 3000;
+    static constexpr uint32_t QUALITY_MAX_AGE_MS = 3000;
 
     void begin(bool enabled, uint32_t baud = 9600);
     void setEnabled(bool enabled);
@@ -79,6 +80,9 @@ class GpsRuntimeModule {
     uint32_t detectionStartMs_ = 0;
     uint32_t lastFixTsMs_ = 0;
     bool lastFixTimestampValid_ = false;
+    uint32_t lastQualityTsMs_ = 0;
+    bool lastQualityTimestampValid_ = false;
+    bool qualityExpired_ = true;
     uint32_t lastStableFixTsMs_ = 0;
     bool lastStableFixTimestampValid_ = false;
     uint32_t lastSentenceTsMs_ = 0;

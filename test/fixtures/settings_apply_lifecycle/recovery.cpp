@@ -9,6 +9,9 @@
 class DriveRuntime {
   public:
     struct BleAdapter {
+        unsigned resetCalls = 0;
+        bool isConnected() const { return ble.isConnected(); }
+        SendResult factoryResetDetector() { ++resetCalls; return SendResult::SENT; }
         void disconnect() { ble.setConnected(false); }
         uint32_t sessionGeneration() const { return ble.sessionGeneration(); }
         uint32_t latestV1NotificationIngressSequence() const {
@@ -17,7 +20,12 @@ class DriveRuntime {
         bool beginSettingsRecapture() { return true; }
     } ble_;
     AutoPushModule &autoPush_ = module;
+    bool active_ = false;
+    struct { bool maintenanceBootActive = true; } state_;
+    void start(uint32_t, uint32_t, int);
     V1SettingsOperationStore settingsOperations_;
+    bool settingsOperationBootRecoveryPending_ = false;
+    uint32_t settingsOperationBootRecoveryAttemptMs_ = 0;
     bool settingsWrongDetectorDisconnectPending_ = false;
     uint32_t observedSettingsOperationId_ = 0;
     V1SettingsOperationStore::State observedSettingsOperationState_ = V1SettingsOperationStore::State::None;
@@ -39,7 +47,7 @@ class DriveRuntime {
     V1DetectorSnapshot captureDetectorSnapshot(uint32_t) { return makeSnapshot(); }
     bool settingsSnapshotComplete(const V1DetectorSnapshot &) { return true; }
     bool persistDetectorSnapshot(const String &, const V1DetectorSnapshot &, bool) { return true; }
-    void attemptFactoryReset(const V1SettingsOperationStore::Snapshot &) {}
+    void attemptFactoryReset(const V1SettingsOperationStore::Snapshot &);
     void queueSettingsApply(const V1SettingsOperationStore::Snapshot &, const V1DetectorSnapshot &) {}
     void finishSettingsRecapture(const V1SettingsOperationStore::Snapshot &, uint32_t) {}
     void processSettingsOperation(uint32_t nowMs);
@@ -205,6 +213,78 @@ void test_disconnect_cancels_without_detector_write() {
     TEST_ASSERT_FALSE(module.isActive());
     TEST_ASSERT_EQUAL_UINT32(0, ble.setVolumeCalls);
 }
+void seedInterruptedFactoryReset(bool sent) {
+    mock_preferences::reset();
+    Store previousBoot;
+    TEST_ASSERT_EQUAL_INT(Store::LoadStatus::Ready, previousBoot.begin());
+    TEST_ASSERT_EQUAL_INT(Store::StartStatus::Started,
+        previousBoot.startFactoryReset("AA:BB:CC:DD:EE:FF", false, false).status);
+    auto components = previousBoot.snapshot().components;
+    for (auto& component : components) {
+        component.requested = true;
+        component.sent = sent;
+        component.outcome = sent ? Store::ComponentOutcome::Sent : Store::ComponentOutcome::Pending;
+    }
+    TEST_ASSERT_TRUE(previousBoot.updateComponents(components, 0));
+    TEST_ASSERT_TRUE(previousBoot.markRunning(0));
+}
+
+void interruptedFactoryResetCannotReplay(bool sent, bool writeFailure) {
+    seedInterruptedFactoryReset(sent);
+    DriveRuntime outer;
+    TEST_ASSERT_EQUAL_INT(Store::LoadStatus::Ready, outer.settingsOperations_.begin());
+    mockMillis = 0;
+    mock_preferences::set_fail_writes(writeFailure);
+    outer.start(0, 0, 0);
+    outer.processSettingsOperation(100);
+    outer.processSettingsOperation(1000);
+    outer.processSettingsOperation(2000);
+    TEST_ASSERT_EQUAL_UINT32(0, outer.ble_.resetCalls);
+    if (writeFailure) {
+        TEST_ASSERT_EQUAL_INT(Store::State::Running, outer.settingsOperations_.snapshot().state);
+        mock_preferences::set_fail_writes(false);
+        outer.processSettingsOperation(2500);
+        TEST_ASSERT_EQUAL_INT(Store::State::Running, outer.settingsOperations_.snapshot().state);
+        outer.processSettingsOperation(3000);
+    }
+    TEST_ASSERT_EQUAL_INT(Store::State::Recapturing, outer.settingsOperations_.snapshot().state);
+    outer.processSettingsOperation(4000);
+    TEST_ASSERT_EQUAL_INT(Store::State::Recapturing, outer.settingsOperations_.snapshot().state);
+    TEST_ASSERT_EQUAL_UINT32(0, outer.ble_.resetCalls);
+    Store reloaded;
+    TEST_ASSERT_EQUAL_INT(Store::LoadStatus::Ready, reloaded.begin());
+    TEST_ASSERT_EQUAL_INT(Store::State::Recapturing, reloaded.snapshot().state);
+}
+void test_sent_factory_reset_never_replayed_after_recovery_write_failure() {
+    interruptedFactoryResetCannotReplay(true, true);
+}
+void test_unknown_factory_reset_never_replayed_after_recovery_write_failure() {
+    interruptedFactoryResetCannotReplay(false, true);
+}
+void test_successful_boot_recovery_only_runs_once() {
+    interruptedFactoryResetCannotReplay(true, false);
+}
+void test_empty_boot_still_allows_a_new_operation() {
+    mock_preferences::reset();
+    DriveRuntime outer;
+    TEST_ASSERT_EQUAL_INT(Store::LoadStatus::Ready, outer.settingsOperations_.begin());
+    outer.start(0, 0, 0);
+    TEST_ASSERT_FALSE(outer.settingsOperationBootRecoveryPending_);
+    TEST_ASSERT_EQUAL_INT(Store::StartStatus::Started,
+        outer.settingsOperations_.startFactoryReset("AA:BB:CC:DD:EE:FF", false, false).status);
+    auto components = outer.settingsOperations_.snapshot().components;
+    for (auto& component : components) {
+        component.requested = true;
+        component.outcome = Store::ComponentOutcome::Pending;
+    }
+    TEST_ASSERT_TRUE(outer.settingsOperations_.updateComponents(components, 0));
+    TEST_ASSERT_TRUE(outer.settingsOperations_.markRunning(0));
+    outer.processSettingsOperation(100);
+    TEST_ASSERT_EQUAL_UINT32(1, outer.ble_.resetCalls);
+    outer.processSettingsOperation(200);
+    TEST_ASSERT_EQUAL_UINT32(1, outer.ble_.resetCalls);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_overdue_modal_cancels_before_any_detector_write);
@@ -212,5 +292,9 @@ int main() {
     RUN_TEST(test_timeout_after_sent_write_preserves_partial_and_releases_volume_owner);
     RUN_TEST(test_persist_failure_cannot_leave_timed_out_executor_running);
     RUN_TEST(test_disconnect_cancels_without_detector_write);
+    RUN_TEST(test_sent_factory_reset_never_replayed_after_recovery_write_failure);
+    RUN_TEST(test_unknown_factory_reset_never_replayed_after_recovery_write_failure);
+    RUN_TEST(test_successful_boot_recovery_only_runs_once);
+    RUN_TEST(test_empty_boot_still_allows_a_new_operation);
     return UNITY_END();
 }

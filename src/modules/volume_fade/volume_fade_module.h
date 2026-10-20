@@ -17,6 +17,9 @@ struct VolumeFadeContext {
     bool alertSuppressed;      // Alert is software-suppressed
     uint8_t currentVolume;     // Current V1 volume
     uint8_t currentMuteVolume; // Current V1 mute volume
+    bool hasVolumeObservation = false;
+    uint32_t volumeObservationIngress = 0;
+    uint32_t sessionGeneration = 0;
     uint16_t currentFrequency; // Current priority frequency (MHz*10) for dedup
     bool priorityIsLaser;      // Priority alert is laser (no frequency; its own distinct-alert class)
     unsigned long now;         // Current timestamp
@@ -68,6 +71,10 @@ class VolumeFadeModule {
     // That owner must carry any returned restore pair until it releases volume.
     VolumeFadeAction releaseClearedAlert();
 
+    // Record actual delivery separately from a requested restore. Cached volume
+    // cannot acknowledge a deferred command or a write from another session.
+    void noteRestoreSent(uint32_t sessionGeneration, uint32_t ingressBoundary);
+
     /// Inject a one-shot baseline hint from an external volume owner.
     /// If a new alert arrives before the V1 echoes back the true volume,
     /// VolumeFade uses this hint instead of the stale DisplayState value.
@@ -99,6 +106,9 @@ class VolumeFadeModule {
     uint8_t pendingRestoreVolume_ = 0;
     uint8_t pendingRestoreMuteVolume_ = 0;
     unsigned long lastRestoreAttemptMs_ = 0;
+    bool restoreSent_ = false;
+    uint32_t restoreSentSession_ = 0;
+    uint32_t restoreSentIngress_ = 0;
     static constexpr unsigned long RESTORE_RETRY_MIN_INTERVAL_MS = 75;
 
     // External baseline hint from an external volume owner.

@@ -20,6 +20,10 @@ struct V1Settings {
 class SettingsManager {
   public:
     V1Settings value;
+    uint32_t recoveredRevision = 0;
+    uint32_t recoveryRevision() const { return recoveredRevision; }
+    bool pendingRecovery = false;
+    bool recoveryPending() const { return pendingRecovery; }
     int credentialWrites = 0;
     int markCalls = 0;
     size_t markedIndex = kWifiStaSlotCount;

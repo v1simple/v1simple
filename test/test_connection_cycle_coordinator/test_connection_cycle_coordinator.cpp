@@ -98,7 +98,7 @@ void test_obd_failure_reaches_steady_and_retry_keeps_original_attempt_anchor() {
     TEST_ASSERT_EQUAL(CycleState::OBD_CONNECT, module.state());
 
     ctx.nowMs = 602;
-    ctx.obdState = ObdConnectionState::ERROR_BACKOFF;
+    ctx.obdState = ObdConnectionState::DISCONNECTED;
     module.update(ctx);
     TEST_ASSERT_EQUAL(CycleState::STEADY, module.state());
     TEST_ASSERT_EQUAL_UINT32(1, probe.cancelObdConnectCalls);

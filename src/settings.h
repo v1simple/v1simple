@@ -69,7 +69,9 @@ class SettingsManager {
     // A delayed boot recovery can replace settings after runtime consumers
     // initialized. They must reapply cached configuration when this changes.
     uint32_t recoveryRevision() const { return recoveryRevision_; }
-    bool recoveryPending() const { return nvsLoadPending_ || nvsRecoveryPending_; }
+    bool recoveryPending() const {
+        return nvsLoadPending_ || nvsRecoveryPending_ || profileReferenceRecoveryPending_;
+    }
 
     uint8_t getApTimeoutMinutes() const { return settings_.apTimeoutMinutes; }
     SettingsPersistResult setActiveSlot(int slot,

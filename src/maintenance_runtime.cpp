@@ -350,6 +350,13 @@ void MaintenanceRuntime::tick(uint32_t nowMs) {
     const bool powerPresentationOwned = power_.ownsDisplayPresentation();
     MaintenanceWifiCoordinator::service(*this, nowMs, powerPresentationOwned);
 
+    profiles_.serviceRecovery(nowMs);
+    if (!devices_.catalogReadable() && storage_.isSDCard()) {
+        StorageManager::SDTryLock lock(storage_.getSDMutex(), /*checkDmaHeap=*/true);
+        if (lock) devices_.serviceRecovery(nowMs);
+    } else {
+        devices_.serviceRecovery(nowMs);
+    }
     settings_.serviceDeferredPersist(nowMs);
     settings_.serviceDeferredBackup(nowMs);
 

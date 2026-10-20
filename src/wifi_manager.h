@@ -276,6 +276,8 @@ class WiFiManager {
     size_t maintenanceAutoConnectSlotCursor_ = 0;
     WifiScanStaDropGate maintenanceAutoConnectStaDropGate_;
     unsigned long maintenanceAutoConnectRetryAtMs_ = 0;
+    uint32_t observedSettingsRecoveryRevision_ = 0;
+    bool maintenanceSettingsRecoveryPending_ = false;
     uint8_t maintenanceAddressCollisionSlotMask_ = 0;
     bool maintenanceManualDisconnect_ = false;
     static constexpr unsigned long WIFI_MAINTENANCE_SCAN_TIMEOUT_MS = 15000;

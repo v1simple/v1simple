@@ -19,6 +19,7 @@
 #include "../../src/modules/obd/obd_runtime_state_machine.cpp"
 #include "../../src/modules/obd/obd_runtime_commands.cpp"
 #include "../../src/modules/obd/obd_runtime_transport.cpp"
+#include "../../src/modules/system/connection_cycle_coordinator_module.cpp"
 
 // SpeedSourceSelector deliberately accepts fixture-provided runtime types in
 // UNIT_TEST builds. OBD is the real runtime above; GPS is disabled in this
@@ -718,8 +719,169 @@ void test_manual_replacement_without_failure_qualifies_candidate() {
     checkManualPairQualification(true, false);
 }
 
+void test_cancelled_pair_candidate_cannot_reconnect_or_qualify_after_late_completion() {
+    for (bool savedAdapter : {false, true}) {
+        Fixture fixture;
+        fixture.begin(true, savedAdapter ? kSavedAddress : "");
+        TEST_ASSERT_TRUE(fixture.runtime.requestManualPairScan(fixture.nowMs));
+        fixture.advance();
+        fixture.runtime.onDeviceFound("OBDLink CX", "A4:C1:38:00:33:44", -55, 0);
+        fixture.advance();
+        fixture.advance();
+        TEST_ASSERT_EQUAL(ObdConnectionState::CONNECTING, fixture.runtime.getState());
+        fixture.runtime.cancelPendingConnect();
+        fixture.context.obdRetryAllowed = false;
+        fixture.runtime.setTestBleConnected(true); // A cancelled transport finishes late.
+        fixture.advance();
+        TEST_ASSERT_FALSE(fixture.runtime.snapshot(fixture.nowMs).connected);
+        TEST_ASSERT_FALSE(fixture.runtime.manualCandidateValid_);
+        TEST_ASSERT_EQUAL_STRING(savedAdapter ? kSavedAddress : "", fixture.runtime.getSavedAddress());
+        fixture.advance(150000);
+        TEST_ASSERT_EQUAL_UINT32(1, fixture.runtime.getConnectCallCountForTest());
+        fixture.context.obdRetryAllowed = true;
+        fixture.advance();
+        TEST_ASSERT_EQUAL(savedAdapter ? ObdConnectionState::CONNECTING : ObdConnectionState::IDLE,
+                          fixture.runtime.getState());
+        if (savedAdapter) TEST_ASSERT_EQUAL_STRING(kSavedAddress, fixture.runtime.connectAddress_);
+    }
+}
+
+// Couple the two production owners. Only the peripheral responses and transport
+// connection completion are scripted; coordinator cancellation calls the real
+// runtime and retry admission follows the actual drive-loop order.
+struct CycleFixture : ConnectionCycleLifecycle {
+    ObdRuntimeModule runtime;
+    ConnectionCycleCoordinatorModule coordinator;
+    uint32_t now = 10;
+    uint32_t cancellationCount = 0;
+    bool validSpeed = false;
+    bool v1Connected = true;
+
+    CycleFixture() {
+        runtime.begin(nullptr, true, kSavedAddress, 0, -80);
+        coordinator.begin(*this);
+    }
+
+    void stopObdScan() override { runtime.stopActiveScan(); }
+    void cancelObdConnect() override {
+        ++cancellationCount;
+        runtime.cancelPendingConnect();
+    }
+    void stopProxyAdvertising() override {}
+    void disconnectProxyPhones() override {}
+    bool isObdScanStopped() const override { return runtime.isScanStopped(); }
+    bool isObdConnectIdle() const override { return runtime.isConnectIdle(); }
+    bool isProxyFullyStopped() const override { return true; }
+
+    void step() {
+        mockMillis = ++now;
+        if (runtime.getState() == ObdConnectionState::CONNECTING &&
+            runtime.getConnectCallCountForTest() > runtime.snapshot(now).connectSuccesses) {
+            runtime.setTestBleConnected(true);
+        }
+        if (runtime.activeCommand_.active && !runtime.activeCommand_.writeResultPending &&
+            !runtime.bleDataReady_ && !runtime.bleEventQueueCount_) {
+            const char* reply = runtime.activeCommand_.kind == ObdCommandKind::SPEED
+                ? (validSpeed ? "41 0D 32\r>" : "NO DATA\r>")
+                : (strncmp(runtime.getLastCommandForTest(), "ATZ", 3) == 0 ? "ELM327 v1.5\r>" : "OK\r>");
+            runtime.onBleData(reinterpret_cast<const uint8_t*>(reply), strlen(reply));
+        }
+        const auto status = runtime.snapshot(now);
+        CycleContext cycle{};
+        cycle.nowMs = now;
+        cycle.bootReady = true;
+        cycle.v1GattConnected = v1Connected;
+        cycle.v1LastEventMs = 10;
+        cycle.obdEnabled = status.enabled;
+        cycle.obdSavedAddressValid = status.savedAddressValid;
+        cycle.obdConnected = status.connected;
+        cycle.obdState = status.state;
+        cycle.obdHasValidSpeedSample = status.speedValid;
+        coordinator.update(cycle);
+
+        const auto before = runtime.getState();
+        const bool retry = coordinator.obdRetryAllowed(now);
+        ObdBleContext ctx{};
+        ctx.bootReady = true;
+        ctx.v1Connected = v1Connected;
+        ctx.bleScanIdle = true;
+        ctx.obdScanAllowed = coordinator.obdScanAllowed();
+        ctx.obdConnectAllowed = coordinator.obdConnectAllowed();
+        ctx.obdRetryAllowed = retry;
+        runtime.update(now, ctx);
+        if (retry && (before == ObdConnectionState::DISCONNECTED || before == ObdConnectionState::ECU_IDLE) &&
+            runtime.getState() == ObdConnectionState::CONNECTING) {
+            coordinator.recordObdRetryAttempt(now);
+        }
+    }
+
+    void runTo(uint32_t end) {
+        while (now < end) step();
+    }
+};
+
+
+void test_initial_no_data_recovers_without_cancelling_established_obd() {
+    CycleFixture fixture;
+    fixture.runTo(20000);
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT32(5, fixture.runtime.snapshot(fixture.now).pollErrors);
+    TEST_ASSERT_EQUAL_UINT32(0, fixture.cancellationCount);
+    fixture.validSpeed = true;
+    fixture.runTo(40000);
+    TEST_ASSERT_TRUE(fixture.runtime.snapshot(fixture.now).speedValid);
+    TEST_ASSERT_EQUAL_UINT32(1, fixture.runtime.getConnectCallCountForTest());
+}
+
+void test_initial_no_data_recovers_after_ecu_idle_under_cycle_retry_policy() {
+    CycleFixture fixture;
+    fixture.runTo(90000);
+    TEST_ASSERT_EQUAL_UINT32(0, fixture.cancellationCount);
+    fixture.validSpeed = true;
+    fixture.runTo(150000);
+    TEST_ASSERT_TRUE(fixture.runtime.snapshot(fixture.now).speedValid);
+    TEST_ASSERT_GREATER_THAN_UINT32(1, fixture.runtime.getConnectCallCountForTest());
+}
+
+void test_cycle_cancellation_disconnects_saved_adapter_but_allows_later_recovery() {
+    CycleFixture fixture;
+    fixture.validSpeed = true;
+    fixture.runTo(10000);
+    TEST_ASSERT_TRUE(fixture.runtime.snapshot(fixture.now).speedValid);
+    const uint32_t connections = fixture.runtime.getConnectCallCountForTest();
+    fixture.v1Connected = false;
+    fixture.runTo(11000);
+    TEST_ASSERT_EQUAL_UINT32(1, fixture.cancellationCount);
+    TEST_ASSERT_EQUAL(ObdConnectionState::DISCONNECTED, fixture.runtime.getState());
+    TEST_ASSERT_FALSE(fixture.runtime.snapshot(fixture.now).connected);
+    TEST_ASSERT_FALSE(fixture.runtime.snapshot(fixture.now).speedValid);
+    fixture.runTo(20000);
+    TEST_ASSERT_EQUAL_UINT32(connections, fixture.runtime.getConnectCallCountForTest());
+    fixture.v1Connected = true;
+    fixture.runTo(150000);
+    TEST_ASSERT_TRUE(fixture.runtime.snapshot(fixture.now).speedValid);
+    TEST_ASSERT_GREATER_THAN_UINT32(connections, fixture.runtime.getConnectCallCountForTest());
+}
+
+void test_cycle_valid_speed_and_later_no_data_recovery_controls() {
+    CycleFixture fixture;
+    fixture.validSpeed = true;
+    fixture.runTo(10000);
+    TEST_ASSERT_TRUE(fixture.runtime.snapshot(fixture.now).speedValid);
+    fixture.validSpeed = false;
+    fixture.runTo(20000);
+    TEST_ASSERT_EQUAL_UINT32(0, fixture.cancellationCount);
+    fixture.validSpeed = true;
+    fixture.runTo(40000);
+    TEST_ASSERT_TRUE(fixture.runtime.snapshot(fixture.now).speedValid);
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_cancelled_pair_candidate_cannot_reconnect_or_qualify_after_late_completion);
+    RUN_TEST(test_initial_no_data_recovers_without_cancelling_established_obd);
+    RUN_TEST(test_initial_no_data_recovers_after_ecu_idle_under_cycle_retry_policy);
+    RUN_TEST(test_cycle_cancellation_disconnects_saved_adapter_but_allows_later_recovery);
+    RUN_TEST(test_cycle_valid_speed_and_later_no_data_recovery_controls);
     RUN_TEST(test_initial_connection_runs_discovery_init_and_acquires_speed);
     RUN_TEST(test_manual_replacement_retry_qualifies_candidate_not_saved_adapter);
     RUN_TEST(test_first_manual_pair_retry_qualifies_candidate);

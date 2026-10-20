@@ -109,6 +109,7 @@ public:
     void (*writeSweepDefinitionSendHook)() = nullptr;
     void (*setDisplayOnSendHook)() = nullptr;
     void (*setModeSendHook)() = nullptr;
+    void (*setVolumeSendHook)() = nullptr;
     uint8_t sessionUserBytes[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
     uint32_t sessionUserBytesRevisionValue = 0;
     uint32_t sessionUserBytesIngressSequenceValue = 0;
@@ -212,6 +213,7 @@ public:
         writeSweepDefinitionSendHook = nullptr;
         setDisplayOnSendHook = nullptr;
         setModeSendHook = nullptr;
+        setVolumeSendHook = nullptr;
         std::memset(sessionUserBytes, 0xFF, sizeof(sessionUserBytes));
         sessionUserBytesRevisionValue = 0;
         sessionUserBytesIngressSequenceValue = 0;
@@ -281,6 +283,7 @@ public:
             setVolumeFailuresRemaining--;
             return SendResult::FAILED;
         }
+        if (setVolumeSuccess && setVolumeSendHook) setVolumeSendHook();
         return setVolumeSuccess ? SendResult::SENT : SendResult::FAILED;
     }
     bool setVolume(uint8_t vol, uint8_t muteVol) { return setVolumeResult(vol, muteVol) == SendResult::SENT; }

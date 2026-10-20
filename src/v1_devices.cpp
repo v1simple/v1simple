@@ -1245,6 +1245,7 @@ bool V1DeviceStore::begin(fs::FS* filesystem, fs::FS* importFilesystem) {
     fs_ = filesystem;
     secondaryFs_ = importFilesystem && importFilesystem != filesystem ? importFilesystem : nullptr;
     ready_ = fs_ != nullptr;
+    recoveryRetryAtMs_ = millis() + 1000u;
     dirty_ = false;
     mirrorDirty_ = false;
     generation_ = 0;
@@ -1289,6 +1290,17 @@ bool V1DeviceStore::begin(fs::FS* filesystem, fs::FS* importFilesystem) {
     }
 
     return true;
+}
+
+void V1DeviceStore::serviceRecovery(uint32_t nowMs) {
+    if (!ready_ || catalogStatus_ != StoreReadStatus::Unavailable ||
+        static_cast<int32_t>(nowMs - recoveryRetryAtMs_) < 0) return;
+    // Unavailable catalogs reject all mutations, so there is no accepted RAM
+    // edit to discard. Re-run authority selection and legacy recovery together.
+    // This restores lookups for the next normal connection; it does not replay
+    // a previously skipped Auto-Push into an already-connected detector.
+    begin(fs_, secondaryFs_);
+    if (!catalogReadable()) recoveryRetryAtMs_ = nowMs + 1000u;
 }
 
 std::vector<V1DeviceRecord> V1DeviceStore::listDevices() const {

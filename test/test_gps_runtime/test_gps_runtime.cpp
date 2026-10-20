@@ -490,6 +490,112 @@ void test_overlong_sentence_is_rejected() {
     TEST_ASSERT_EQUAL_UINT32(1, status.bufferOverruns);
 }
 
+static void injectGoodQuality(uint32_t nowMs) {
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPGGA,123520,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*4D", nowMs));
+}
+
+static void injectStoppedSpeed(uint32_t nowMs) {
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPRMC,123519,A,4807.038,N,01131.000,E,000.0,084.4,230394,003.1,W*6E", nowMs));
+}
+
+void test_fresh_rmc_does_not_keep_old_gga_quality_eligible_for_speed_mute() {
+    injectGoodQuality(1000);
+    SpeedSourceSelector selector;
+    selector.begin(nullptr, false, &gpsRuntimeModule, true);
+    SpeedMuteModule mute;
+    mute.begin(true, 25, 3, 0);
+    for (uint32_t nowMs = 1000; nowMs <= 62000; nowMs += 1000) {
+        injectStoppedSpeed(nowMs);
+        gpsRuntimeModule.update(nowMs);
+        selector.update(nowMs);
+        const auto selected = selector.selectedSpeed();
+        const bool qualityFresh = nowMs - 1000 <= GpsRuntimeModule::QUALITY_MAX_AGE_MS;
+        TEST_ASSERT_EQUAL(qualityFresh, selected.valid);
+        TEST_ASSERT_EQUAL(qualityFresh && nowMs >= 1500,
+                          mute.update(selected.speedMph, selected.valid, nowMs).shouldMute);
+        const auto status = gpsRuntimeModule.snapshot(nowMs);
+        TEST_ASSERT_TRUE(status.hasFix);
+        TEST_ASSERT_TRUE(status.stableHasFix);
+        TEST_ASSERT_EQUAL_UINT32(0, status.sampleAgeMs);
+        TEST_ASSERT_EQUAL_UINT32(nowMs - 1000, status.qualityAgeMs);
+        TEST_ASSERT_EQUAL(qualityFresh, status.qualityFresh);
+        float speed = -1;
+        uint32_t timestamp = 0;
+        TEST_ASSERT_TRUE(gpsRuntimeModule.getFreshSpeed(nowMs, speed, timestamp));
+        TEST_ASSERT_EQUAL_UINT32(nowMs, timestamp);
+    }
+    injectGoodQuality(63000);
+    injectStoppedSpeed(63000);
+    selector.update(63000);
+    const auto selected = selector.selectedSpeed();
+    TEST_ASSERT_TRUE(selected.valid);
+    TEST_ASSERT_TRUE(mute.update(selected.speedMph, selected.valid, 63000).shouldMute);
+}
+
+void test_quality_expiry_handles_zero_rollover_and_exact_boundary() {
+    for (uint32_t qualityTime : {uint32_t{0}, UINT32_MAX - 1000u}) {
+        resetRuntime();
+        injectGoodQuality(qualityTime);
+        SpeedSourceSelector selector;
+        selector.begin(nullptr, false, &gpsRuntimeModule, true);
+        const uint32_t boundary = qualityTime + GpsRuntimeModule::QUALITY_MAX_AGE_MS;
+        injectStoppedSpeed(boundary);
+        selector.update(boundary);
+        TEST_ASSERT_TRUE(selector.selectedSpeed().valid);
+        TEST_ASSERT_TRUE(gpsRuntimeModule.snapshot(boundary).qualityFresh);
+        injectStoppedSpeed(boundary + 1u);
+        selector.update(boundary + 1u);
+        TEST_ASSERT_FALSE(selector.selectedSpeed().valid);
+        TEST_ASSERT_FALSE(gpsRuntimeModule.snapshot(boundary + 1u).qualityFresh);
+        TEST_ASSERT_EQUAL_UINT32(GpsRuntimeModule::QUALITY_MAX_AGE_MS + 1u,
+                                gpsRuntimeModule.snapshot(boundary + 1u).qualityAgeMs);
+    }
+}
+
+void test_invalid_gga_cannot_refresh_quality_and_no_fix_gga_cannot_authorize_mute() {
+    injectGoodQuality(1000);
+    for (uint32_t nowMs = 2000; nowMs <= 10000; nowMs += 1000) {
+        TEST_ASSERT_FALSE(gpsRuntimeModule.injectNmeaSentenceForTest(
+            "$GPGGA,123520,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*00", nowMs));
+        injectStoppedSpeed(nowMs);
+    }
+    SpeedSourceSelector selector;
+    selector.begin(nullptr, false, &gpsRuntimeModule, true);
+    selector.update(10000);
+    TEST_ASSERT_TRUE(selector.snapshot().gpsFresh);
+    TEST_ASSERT_FALSE(selector.selectedSpeed().valid);
+    TEST_ASSERT_EQUAL_UINT32(9000, gpsRuntimeModule.snapshot(10000).qualityAgeMs);
+
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPGGA,123520,4807.038,N,01131.000,E,0,08,0.9,545.4,M,46.9,M,,*4C", 10000));
+    selector.update(10000);
+    TEST_ASSERT_TRUE(gpsRuntimeModule.snapshot(10000).hasFix); // Current RMC position remains valid.
+    TEST_ASSERT_FALSE(selector.selectedSpeed().valid);
+    injectGoodQuality(10100);
+    selector.update(10100);
+    TEST_ASSERT_TRUE(selector.selectedSpeed().valid);
+}
+
+void test_expired_quality_cannot_reappear_after_a_full_millis_cycle() {
+    injectGoodQuality(1000);
+    injectStoppedSpeed(5000);
+    gpsRuntimeModule.update(5000); // The real loop observes and latches expiry.
+    TEST_ASSERT_FALSE(gpsRuntimeModule.snapshot(5000).qualityFresh);
+    // After a complete counter cycle only the RMC stream is still arriving.
+    injectStoppedSpeed(1000);
+    gpsRuntimeModule.update(1000);
+    SpeedSourceSelector selector;
+    selector.begin(nullptr, false, &gpsRuntimeModule, true);
+    selector.update(1000);
+    TEST_ASSERT_TRUE(selector.snapshot().gpsFresh);
+    TEST_ASSERT_FALSE(selector.selectedSpeed().valid);
+    injectGoodQuality(1000);
+    selector.update(1000);
+    TEST_ASSERT_TRUE(selector.selectedSpeed().valid);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_valid_rmc_updates_speed_and_fix);
@@ -514,5 +620,9 @@ int main() {
     RUN_TEST(test_new_gps_speed_can_be_selected_in_the_same_loop);
     RUN_TEST(test_missing_rmc_speed_preserves_fix_without_authorizing_speed_mute);
     RUN_TEST(test_missing_rmc_speed_releases_measured_zero_mute_and_allows_reacquisition);
+    RUN_TEST(test_fresh_rmc_does_not_keep_old_gga_quality_eligible_for_speed_mute);
+    RUN_TEST(test_quality_expiry_handles_zero_rollover_and_exact_boundary);
+    RUN_TEST(test_invalid_gga_cannot_refresh_quality_and_no_fix_gga_cannot_authorize_mute);
+    RUN_TEST(test_expired_quality_cannot_reappear_after_a_full_millis_cycle);
     return UNITY_END();
 }

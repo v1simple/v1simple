@@ -9,6 +9,8 @@
 #include "modules/wifi/wifi_setup_network_policy.h"
 #include "modules/wifi/wifi_reconnect_policy.h"
 #include "modules/wifi/wifi_sta_slot_policy.h"
+#include "modules/wifi/wifi_heap_guard_module.h"
+#include "esp_heap_caps.h"
 
 // Same result as production for this fixture's ordinary five-character SSID.
 inline String sanitizeWifiClientSsidValue(const String& ssid) { return ssid.substring(0, 32); }
@@ -22,7 +24,11 @@ class WiFiManager {
     bool isSetupModeActive() const { return true; }
     bool isWifiServiceActive() const { return true; }
     unsigned long lowDmaCooldownRemainingMs() const { return 0; }
-    struct FakeServer { void handleClient() {} } server_;
+    struct FakeServer {
+        void handleClient() {}
+        void collectHeaders(const char**, size_t) {}
+        void begin() {}
+    } server_;
     void checkAutoTimeout() {}
     struct FakeBle { bool isConnected() const { return false; } };
     FakeBle* bleRuntime_ = nullptr;
@@ -30,6 +36,21 @@ class WiFiManager {
     void* isV1ConnectedCtx_ = nullptr;
     bool wasAutoStarted_ = false;
 
+    // AP/server resources are available; their radio/client lifecycle is real.
+    bool startSetupMode(bool);
+    bool canStartSetupMode(uint32_t*, uint32_t*) { return true; }
+    bool setupAP() { return true; }
+    bool setupWebServer() { return true; }
+    const char* maintenanceApiWriteHeader() { return "fixture"; }
+    enum SetupModeState { SETUP_MODE_OFF, SETUP_MODE_AP_ON, SETUP_MODE_STOPPING };
+    SetupModeState setupModeState_ = SETUP_MODE_OFF;
+    enum class WifiStopPhase { IDLE };
+    WifiStopPhase wifiStopPhase_ = WifiStopPhase::IDLE;
+    unsigned long wifiStopPhaseStartMs_ = 0, wifiStopStartMs_ = 0;
+    String wifiStopReason_;
+    bool wifiStopManual_ = false, wifiStopHadSta_ = false, wifiStopHadAp_ = false;
+    unsigned long lowDmaSinceMs_ = 0, lowDmaCooldownUntilMs_ = 0, lastAnyClientSeenMs_ = 0;
+    void resetReconnectFailures() { wifiReconnectFailures_ = 0; lastReconnectAttemptMs_ = 0; }
     void runOwnerPass();
     int findConfiguredSlotBySsid(const String&) const;
     bool connectToNetwork(const String&, const String&, bool = true, int = -1, bool = false);

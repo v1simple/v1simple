@@ -27,8 +27,11 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
     // BLE acceptance is not detector application. Retain the complete restore
     // pair across holdoff and live alerts until canonical observation agrees.
     if (pendingRestoreVolume_ != 0xFF) {
-        if (ctx.currentVolume == pendingRestoreVolume_ && ctx.currentMuteVolume == pendingRestoreMuteVolume_) {
+        if (restoreSent_ && ctx.hasVolumeObservation && ctx.sessionGeneration == restoreSentSession_ &&
+            static_cast<int32_t>(ctx.volumeObservationIngress - restoreSentIngress_) > 0 &&
+            ctx.currentVolume == pendingRestoreVolume_ && ctx.currentMuteVolume == pendingRestoreMuteVolume_) {
             pendingRestoreVolume_ = 0xFF;
+            restoreSent_ = false;
             pendingRestoreMuteVolume_ = 0;
             fadeActive_ = false;
             // A delayed restoration must still let the new threat sound before
@@ -71,6 +74,7 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
             action.restoreVolume = originalVolume_;
             action.restoreMuteVolume = originalMuteVolume_;
             if (pendingRestoreVolume_ == 0xFF) {
+                restoreSent_ = false;
                 pendingRestoreVolume_ = originalVolume_;
                 pendingRestoreMuteVolume_ = originalMuteVolume_;
             }
@@ -110,6 +114,7 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
             action.restoreVolume = originalVolume_;
             action.restoreMuteVolume = originalMuteVolume_;
             if (pendingRestoreVolume_ == 0xFF) {
+                restoreSent_ = false;
                 pendingRestoreVolume_ = originalVolume_;
                 pendingRestoreMuteVolume_ = originalMuteVolume_;
             }
@@ -155,6 +160,7 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
             action.type = VolumeFadeAction::Type::RESTORE;
             action.restoreVolume = originalVolume_;
             action.restoreMuteVolume = originalMuteVolume_;
+            if (pendingRestoreVolume_ == 0xFF) restoreSent_ = false;
             pendingRestoreVolume_ = originalVolume_;
             pendingRestoreMuteVolume_ = originalMuteVolume_;
             lastRestoreAttemptMs_ = ctx.now;
@@ -252,6 +258,7 @@ void VolumeFadeModule::resetSessionState() {
 void VolumeFadeModule::reset() {
     resetSessionState();
     pendingRestoreVolume_ = 0xFF;
+    restoreSent_ = false;
     pendingRestoreMuteVolume_ = 0;
     lastRestoreAttemptMs_ = 0;
     hintBaselineVolume_ = 0xFF;
@@ -263,4 +270,15 @@ void VolumeFadeModule::setBaselineHint(uint8_t mainVol, uint8_t muteVol, uint32_
     hintBaselineVolume_ = mainVol;
     hintBaselineMuteVolume_ = muteVol;
     hintSetMs_ = nowMs;
+}
+
+void VolumeFadeModule::noteRestoreSent(uint32_t sessionGeneration, uint32_t ingressBoundary) {
+    if (pendingRestoreVolume_ == 0xFF) return;
+    // Retain the first successful write's boundary across retries, so a later
+    // matching observation can still acknowledge it after another retry.
+    if (!restoreSent_ || restoreSentSession_ != sessionGeneration) {
+        restoreSent_ = true;
+        restoreSentSession_ = sessionGeneration;
+        restoreSentIngress_ = ingressBoundary;
+    }
 }

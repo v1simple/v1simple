@@ -118,6 +118,8 @@ class QuietCoordinatorModule {
     void refreshPendingState();
     void resetInTheBoxSession();
     bool consumeFadeAlertEnd();
+    void setPendingSpeedRestore(uint8_t volume, uint8_t muteVolume);
+    void noteSpeedRestoreSent(uint32_t sessionGeneration, uint32_t ingressBoundary);
 
     template <typename SpeedMuteLike> void updateSpeedVolPresentation(const SpeedMuteLike* speedMute);
 
@@ -136,6 +138,9 @@ class QuietCoordinatorModule {
     uint8_t pendingSpeedVolRestoreVol_ = 0xFF;
     uint8_t pendingSpeedVolRestoreMuteVol_ = 0;
     uint32_t pendingSpeedVolRestoreLastRetryMs_ = 0;
+    bool speedRestoreSent_ = false;
+    uint32_t speedRestoreSentSession_ = 0;
+    uint32_t speedRestoreSentIngress_ = 0;
     uint32_t speedVolLastRetryMs_ = 0;
     bool pendingFadeAction_ = false;
     uint8_t pendingFadeVolume_ = 0;

@@ -377,7 +377,11 @@ void DriveRuntime::start(uint32_t setupStartMs, uint32_t stageStartedMs, esp_res
         return;
     }
     state_.maintenanceBootActive = false;
-    (void)settingsOperations_.beginNormalBoot();
+    const bool operationRecovered = settingsOperations_.beginNormalBoot();
+    const auto bootOperation = settingsOperations_.snapshot();
+    settingsOperationBootRecoveryPending_ =
+        !operationRecovered && bootOperation.available && bootOperation.valid;
+    settingsOperationBootRecoveryAttemptMs_ = millis();
     initializeStorageAndProfiles();
 
     const bool previousShutdownClean = readAndResetCleanShutdownMarker();
@@ -810,6 +814,14 @@ void DriveRuntime::finishSettingsRecapture(
 }
 
 void DriveRuntime::processSettingsOperation(uint32_t nowMs) {
+    // A durable Running record can describe a reset already sent before reboot.
+    // Do not admit any operation until its boot transition has been persisted.
+    if (settingsOperationBootRecoveryPending_) {
+        if (static_cast<uint32_t>(nowMs - settingsOperationBootRecoveryAttemptMs_) < 1000u) return;
+        settingsOperationBootRecoveryAttemptMs_ = nowMs;
+        if (!settingsOperations_.beginNormalBoot()) return;
+        settingsOperationBootRecoveryPending_ = false;
+    }
     if (settingsWrongDetectorDisconnectPending_) {
         settingsWrongDetectorDisconnectPending_ = false;
         ble_.disconnect();
@@ -1013,6 +1025,13 @@ void DriveRuntime::processPeriodicMaintenance(uint32_t nowMs, bool bleConnected,
     const bool admitPersistence = !hardPressure && (!bleConnected || connectedPersistenceDue);
 
     if (admitPersistence) {
+        profiles_.serviceRecovery(nowMs);
+        if (!devices_.catalogReadable() && storage_.isSDCard()) {
+            StorageManager::SDTryLock lock(storage_.getSDMutex(), /*checkDmaHeap=*/true);
+            if (lock) devices_.serviceRecovery(nowMs);
+        } else {
+            devices_.serviceRecovery(nowMs);
+        }
         settings_.serviceDeferredPersist(nowMs);
         settings_.serviceDeferredBackup(nowMs);
     }

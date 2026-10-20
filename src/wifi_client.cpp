@@ -913,6 +913,24 @@ bool WiFiManager::maintenanceAddressCollision() const {
 }
 
 void WiFiManager::checkWifiClientStatus() {
+    const uint32_t recoveredRevision = settings_.recoveryRevision();
+    const bool startupRecoveryCompleted =
+        maintenanceSettingsRecoveryPending_ && !settings_.recoveryPending();
+    if (maintenanceBootMode_ &&
+        (recoveredRevision != observedSettingsRecoveryRevision_ || startupRecoveryCompleted)) {
+        observedSettingsRecoveryRevision_ = recoveredRevision;
+        if (startupRecoveryCompleted) maintenanceSettingsRecoveryPending_ = false;
+        const V1Settings& recovered = settings_.get();
+        // AP-only boot may have used provisional defaults while NVS was
+        // unavailable, or WiFi keys healed during a deferred SD-only recovery.
+        // Admit the recovered saved networks through the normal
+        // retry path, preserving explicit disconnects and any active attempt.
+        if (wifiClientState_ == WIFI_CLIENT_DISABLED && !maintenanceManualDisconnect_ &&
+            recovered.wifiClientEnabled && recovered.hasConfiguredWifiStaSlot()) {
+            wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
+            scheduleMaintenanceAutoConnectRetry(1u);
+        }
+    }
     // Skip if WiFi client is disabled
     if (wifiClientState_ == WIFI_CLIENT_DISABLED) {
         if (maintenanceBootMode_ && WiFi.status() == WL_CONNECTED) {

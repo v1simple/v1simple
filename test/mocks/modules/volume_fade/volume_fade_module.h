@@ -8,6 +8,9 @@ struct VolumeFadeContext {
     bool alertSuppressed = false;
     uint8_t currentVolume = 0;
     uint8_t currentMuteVolume = 0;
+    bool hasVolumeObservation = false;
+    uint32_t volumeObservationIngress = 0;
+    uint32_t sessionGeneration = 0;
     uint16_t currentFrequency = 0;
     bool priorityIsLaser = false;
     unsigned long now = 0;
@@ -53,6 +56,8 @@ public:
         activeVolumeOverride = false;
     }
     
+    void noteRestoreSent(uint32_t, uint32_t) {}
+
     bool isTracking() const { return tracking; }
     bool hasActiveVolumeOverride() const { return activeVolumeOverride; }
 

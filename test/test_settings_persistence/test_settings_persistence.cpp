@@ -2898,11 +2898,15 @@ void verify_incomplete_profile_recovery_preserves_boot_assignment(ProfileRecover
         TEST_ASSERT_TRUE(fs.remove(SETTINGS_BACKUP_PATH));
         fs.remove(SETTINGS_BACKUP_PREV_PATH);
     }
-    // A later attempt must clear the deferral, either recovering the profile
-    // or allowing cleanup once both backup sources are conclusively absent.
-    TEST_ASSERT_FALSE(boot.checkAndRestoreFromSD());
-    const bool migrated = boot.migrateAutoPushProfilesToV2();
-    TEST_ASSERT_EQUAL(!retryWithoutBackup, migrated);
+    // Normal periodic servicing retries SD-only recovery without a reboot or
+    // an explicit restore request. Profile repair must not restart sensors.
+    TEST_ASSERT_TRUE(boot.recoveryPending());
+    boot.serviceDeferredPersist(3000);
+    TEST_ASSERT_FALSE(boot.recoveryPending());
+    TEST_ASSERT_EQUAL_UINT32(0, boot.recoveryRevision());
+    // The service has already validated and removed a conclusively missing
+    // reference, so a subsequent migration sees a consistent catalog.
+    TEST_ASSERT_TRUE(boot.migrateAutoPushProfilesToV2());
     boot.validateProfileReferences(profiles);
     SettingsManager afterRetry(storage, profiles);
     afterRetry.load();
@@ -6475,8 +6479,91 @@ void test_profile_taps_keep_local_selection_when_offline_or_auto_push_disabled()
     }
 }
 
+void test_sd_only_recovery_backoff_preserves_backup_until_profile_is_recovered() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    V1Profile road("Road");
+    road.settings.bytes[0] = 43;
+    TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
+    TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("City")).success);
+    SettingsManager source(storage, profiles);
+    makeCurrentV21Source(source.mutableSettings());
+    source.mutableSettings().slot0_default.profileName = "Road";
+    source.mutableSettings().slot1_highway.profileName = "City";
+    TEST_ASSERT_TRUE(source.save());
+    const std::string backup = readFileToString(fs, SETTINGS_BACKUP_PATH);
+    TEST_ASSERT_TRUE(fs.remove("/v1profiles/Road.json"));
+    fs.remove("/v1profiles/Road.json.meta");
+    SettingsManager boot(storage, profiles);
+    boot.load();
+    fs::mock_fail_next_read_open(SETTINGS_BACKUP_PATH);
+    TEST_ASSERT_FALSE(boot.checkAndRestoreFromSD());
+    TEST_ASSERT_TRUE(boot.recoveryPending());
+    fs::mock_fail_next_read_open(SETTINGS_BACKUP_PATH);
+    boot.serviceDeferredPersist(2000);
+    TEST_ASSERT_TRUE(boot.recoveryPending());
+    boot.serviceDeferredBackup(2000);
+    TEST_ASSERT_EQUAL_STRING(backup.c_str(), readFileToString(fs, SETTINGS_BACKUP_PATH).c_str());
+    boot.serviceDeferredPersist(2999);
+    TEST_ASSERT_TRUE(boot.recoveryPending());
+    V1Profile loaded;
+    TEST_ASSERT_FALSE(profiles.loadProfile("Road", loaded));
+    boot.serviceDeferredPersist(3000);
+    TEST_ASSERT_FALSE(boot.recoveryPending());
+    TEST_ASSERT_EQUAL_UINT32(0, boot.recoveryRevision());
+    TEST_ASSERT_TRUE(profiles.loadProfile("Road", loaded));
+    TEST_ASSERT_EQUAL_UINT8(43, loaded.settings.bytes[0]);
+    TEST_ASSERT_EQUAL_STRING("Road", boot.get().slot0_default.profileName.c_str());
+    boot.serviceDeferredPersist(60000);
+    TEST_ASSERT_EQUAL_UINT32(0, boot.recoveryRevision());
+}
+
+void test_sd_only_wifi_healing_completes_recovery_without_restarting_other_consumers() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(&fs));
+    SettingsManager source(storage, profiles);
+    makeCurrentV21Source(source.mutableSettings());
+    TEST_ASSERT_TRUE(source.setWifiStaSlotCredentials(0, "LegacyOpenNetwork", "", "Saved", 0));
+    TEST_ASSERT_TRUE(source.save());
+    JsonDocument backup;
+    TEST_ASSERT_TRUE(loadJsonFile(fs, SETTINGS_BACKUP_PATH, backup));
+    TEST_ASSERT_EQUAL_STRING("LegacyOpenNetwork", backup["wifiStaSlots"][0]["ssid"].as<const char*>());
+    Preferences prefs;
+    TEST_ASSERT_TRUE(prefs.begin(activeNamespaceOrEmpty().c_str(), false));
+    TEST_ASSERT_TRUE(prefs.remove(kNvsWifiClientEnabled));
+    TEST_ASSERT_TRUE(prefs.remove(kNvsWifiStaSlotSsid[0]));
+    prefs.end();
+
+    SettingsManager boot(storage, profiles);
+    boot.load();
+    TEST_ASSERT_TRUE(boot.getNvsDiagnostic().healthy);
+    TEST_ASSERT_FALSE(boot.get().wifiClientEnabled);
+    TEST_ASSERT_FALSE(boot.get().hasConfiguredWifiStaSlot());
+    fs::mock_fail_next_read_open(SETTINGS_BACKUP_PATH);
+    TEST_ASSERT_FALSE(boot.checkAndRestoreFromSD());
+    TEST_ASSERT_TRUE(boot.recoveryPending());
+    TEST_ASSERT_EQUAL_UINT32(0, boot.recoveryRevision());
+    // Maintenance starts while settings are still disabled. This completion
+    // edge lets its WiFi owner adopt the healed network without publishing a
+    // full settings replacement that would also restart drive sensors.
+    boot.serviceDeferredPersist(3000);
+    TEST_ASSERT_FALSE(boot.recoveryPending());
+    TEST_ASSERT_TRUE(boot.get().wifiClientEnabled);
+    TEST_ASSERT_TRUE(boot.get().hasConfiguredWifiStaSlot());
+    TEST_ASSERT_EQUAL_STRING("LegacyOpenNetwork", boot.get().wifiClientSSID.c_str());
+    TEST_ASSERT_EQUAL_UINT32(0, boot.recoveryRevision());
+    SettingsManager reloaded(storage, profiles);
+    reloaded.load();
+    TEST_ASSERT_TRUE(reloaded.get().wifiClientEnabled);
+    TEST_ASSERT_EQUAL_STRING("LegacyOpenNetwork", reloaded.get().wifiClientSSID.c_str());
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_sd_only_wifi_healing_completes_recovery_without_restarting_other_consumers);
+    RUN_TEST(test_sd_only_recovery_backoff_preserves_backup_until_profile_is_recovered);
     RUN_TEST(test_unavailable_newest_nvs_copy_blocks_writes_then_reloads_before_mutation);
     RUN_TEST(test_unavailable_newest_nvs_copy_preserves_sd_backup_then_resumes_boot);
     RUN_TEST(test_unavailable_newest_nvs_probe_preserves_sd_backup_then_resumes_boot);

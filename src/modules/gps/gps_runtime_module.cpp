@@ -66,6 +66,9 @@ void GpsRuntimeModule::resetRuntimeState() {
     detectionStartMs_ = 0;
     lastFixTsMs_ = 0;
     lastFixTimestampValid_ = false;
+    lastQualityTsMs_ = 0;
+    lastQualityTimestampValid_ = false;
+    qualityExpired_ = true;
     lastStableFixTsMs_ = 0;
     lastStableFixTimestampValid_ = false;
     lastSentenceTsMs_ = 0;
@@ -197,6 +200,11 @@ void GpsRuntimeModule::update(uint32_t nowMs) {
 
     updateDetectionTimeout(nowMs);
     updateFixStaleness(nowMs);
+    // Latch expiry so a missing GGA cannot become fresh again after a full
+    // millis() cycle while RMC continues to refresh the position and speed.
+    if (lastQualityTimestampValid_ && elapsedExceeded(nowMs, lastQualityTsMs_, QUALITY_MAX_AGE_MS)) {
+        qualityExpired_ = true;
+    }
 }
 
 void GpsRuntimeModule::ingestByte(char c, uint32_t nowMs) {
@@ -337,6 +345,9 @@ bool GpsRuntimeModule::parseGga(char* fields[], size_t fieldCount, uint32_t nowM
     }
     satellites_ = parsedSatellites;
     hdop_ = std::isfinite(parsedHdop) ? parsedHdop : NAN;
+    lastQualityTsMs_ = nowMs;
+    lastQualityTimestampValid_ = true;
+    qualityExpired_ = false;
 
     ggaFix_ = ggaFix;
     hasFix_ = ggaFix_ || rmcFix_;
@@ -565,6 +576,9 @@ void GpsRuntimeModule::setScaffoldSample(float speedMph, bool hasFix, uint8_t sa
     satellites_ = satellites;
     hdop_ = std::isfinite(hdop) ? std::max(0.0f, hdop) : NAN;
     sampleTsMs_ = timestampMs;
+    lastQualityTsMs_ = timestampMs;
+    lastQualityTimestampValid_ = true;
+    qualityExpired_ = false;
     if (hasFix_) {
         lastFixTsMs_ = sampleTsMs_;
         lastFixTimestampValid_ = true;
@@ -612,6 +626,11 @@ GpsRuntimeStatus GpsRuntimeModule::snapshot(uint32_t nowMs) const {
     status.satellites = satellites_;
     status.stableSatellites = status.stableHasFix ? stableSatellites_ : 0;
     status.hdop = hdop_;
+    status.qualityAgeMs = lastQualityTimestampValid_
+                              ? static_cast<uint32_t>(nowMs - lastQualityTsMs_)
+                              : UINT32_MAX;
+    status.qualityFresh = enabled_ && ggaFix_ && lastQualityTimestampValid_ && !qualityExpired_ &&
+                          status.qualityAgeMs <= QUALITY_MAX_AGE_MS;
     status.sampleTsMs = sampleTsMs_;
     status.injectedSamples = injectedSamples_;
     status.moduleDetected = moduleDetected_;

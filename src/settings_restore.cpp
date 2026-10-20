@@ -228,6 +228,10 @@ bool SettingsManager::checkAndRestoreFromSD() {
         return false;
     }
     profileReferenceRecoveryPending_ = false;
+    if (storage_->isReady() && (!profiles_ || !profiles_->isReady())) {
+        profileReferenceRecoveryPending_ = true;
+        return false;
+    }
     resolveWifiCredentialTransaction();
     if (!resolveRestoreTransaction() || !resolveProfileDeleteTransaction()) {
         profileReferenceRecoveryPending_ = true;
@@ -512,11 +516,11 @@ bool SettingsManager::restoreFromSD() {
 }
 
 void SettingsManager::validateProfileReferences(V1ProfileManager& profileMgr) {
-    if (!ensureSettingsLoaded()) return;
     if (profileReferenceRecoveryPending_) {
         Serial.println("[Settings] Profile recovery incomplete; preserving slot profile references");
         return;
     }
+    if (!ensureSettingsLoaded()) return;
     if (!profileMgr.isReady()) {
         Serial.println("[Settings] Profile manager not ready; skipping profile reference validation");
         return;

@@ -104,6 +104,7 @@ class V1DeviceStore {
 
     bool begin(fs::FS* filesystem, fs::FS* importFilesystem = nullptr);
     bool isReady() const { return ready_; }
+    void serviceRecovery(uint32_t nowMs);
 
     std::vector<V1DeviceRecord> listDevices() const;
     bool listDevicesChecked(std::vector<V1DeviceRecord>& output) const;
@@ -155,6 +156,7 @@ class V1DeviceStore {
     fs::FS* fs_ = nullptr;
     fs::FS* secondaryFs_ = nullptr;
     bool ready_ = false;
+    uint32_t recoveryRetryAtMs_ = 0;
     uint32_t generation_ = 0;
     std::vector<V1DeviceRecord> devices_;
 

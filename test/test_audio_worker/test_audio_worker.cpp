@@ -267,6 +267,95 @@ void test_permanent_amp_failure_releases_job_after_three_attempts() {
     TEST_ASSERT_GREATER_THAN_UINT(0, g_mock_i2s_state.writeCalls);
 }
 
+// Model both expander registers: output can change even if the later
+// configuration write fails. A queued generic I2C failure cannot expose this.
+struct AmpRegisterModel {
+    uint8_t config = 0xff;
+    uint8_t output = 0;
+    unsigned enableFailures = 0;
+    unsigned disableFailures = 0;
+    bool failBeforeOutput = false;
+
+    bool enabled() const { return !(config & 0x80) && (output & 0x80); }
+
+    void install() {
+        tca9554Wire.onEndTransmission = [this] {
+            const auto& tx = tca9554Wire.transmissionHistory.back();
+            if (tx.address != 0x20 || tx.data.empty()) return;
+            const uint8_t reg = tx.data[0];
+            if (tx.data.size() == 1) {
+                tca9554Wire.queueRequestFrom(1, {reg == 3 ? config : output});
+                return;
+            }
+            const bool enableFailure = enableFailures &&
+                ((failBeforeOutput && reg == 1 && (tx.data[1] & 0x80)) ||
+                 (!failBeforeOutput && reg == 3 && (output & 0x80)));
+            const bool disableFailure = disableFailures && reg == 1 && !(tx.data[1] & 0x80);
+            if (enableFailure || disableFailure) {
+                if (enableFailure) --enableFailures;
+                if (disableFailure) --disableFailures;
+                tca9554Wire.queueEndTransmission(4);
+                return;
+            }
+            if (reg == 1) output = tx.data[1];
+            if (reg == 3) config = tx.data[1];
+        };
+    }
+};
+static AmpRegisterModel ampRegisters;
+
+static void exercisePartialAmpStartup(unsigned failures, bool beforeOutput, unsigned disableFailures = 0) {
+    ampRegisters = AmpRegisterModel{};
+    ampRegisters.install();
+    // A healthy job establishes the output configuration, then turns it off.
+    acceptBandJob();
+    runAcceptedJob();
+    TEST_ASSERT_TRUE(ampRegisters.enabled());
+    mockMillis += AMP_WARM_TIMEOUT_MS + 100;
+    audio_process_amp_timeout();
+    TEST_ASSERT_FALSE(ampRegisters.enabled());
+    TEST_ASSERT_FALSE(amp_is_warm.load());
+
+    ampRegisters.enableFailures = failures;
+    ampRegisters.failBeforeOutput = beforeOutput;
+    ampRegisters.disableFailures = disableFailures;
+    const unsigned previousPcmWrites = g_mock_i2s_state.writeCalls;
+    acceptBandJob();
+    runAcceptedJob();
+    if (failures >= 3) {
+        TEST_ASSERT_EQUAL_UINT(previousPcmWrites, g_mock_i2s_state.writeCalls);
+        if (disableFailures) {
+            TEST_ASSERT_TRUE(ampRegisters.enabled());
+            TEST_ASSERT_TRUE(amp_is_warm.load());
+        }
+    } else {
+        TEST_ASSERT_GREATER_THAN_UINT(previousPcmWrites, g_mock_i2s_state.writeCalls);
+    }
+    for (unsigned i = 0; i < 600; ++i) {
+        mockMillis += 100;
+        audio_process_amp_timeout();
+    }
+    tca9554Wire.onEndTransmission = nullptr;
+    TEST_ASSERT_FALSE_MESSAGE(ampRegisters.enabled(), "Failed startup abandoned amplifier shutdown");
+    TEST_ASSERT_FALSE(amp_is_warm.load());
+}
+
+void test_partial_amp_enable_failure_shuts_down_after_startup_exhaustion() {
+    exercisePartialAmpStartup(3, false);
+}
+
+void test_partial_amp_startup_cleanup_keeps_retrying_after_bus_errors() {
+    exercisePartialAmpStartup(3, false, 6);
+}
+
+void test_partial_amp_enable_failure_can_recover_and_play_once() {
+    exercisePartialAmpStartup(1, false);
+}
+
+void test_amp_failures_before_output_leave_hardware_off() {
+    exercisePartialAmpStartup(3, true);
+}
+
 void test_missing_clip_is_not_retried_or_left_busy() {
     SDAudioTaskParams params{};
     params.numClips = 1;
@@ -692,6 +781,10 @@ int main() {
     std::filesystem::copy(std::filesystem::path(PROJECT_DIR) / "tools" / "freq_audio" / "mulaw",
                           audioRoot / "audio", std::filesystem::copy_options::recursive);
     UNITY_BEGIN();
+    RUN_TEST(test_partial_amp_enable_failure_shuts_down_after_startup_exhaustion);
+    RUN_TEST(test_partial_amp_startup_cleanup_keeps_retrying_after_bus_errors);
+    RUN_TEST(test_partial_amp_enable_failure_can_recover_and_play_once);
+    RUN_TEST(test_amp_failures_before_output_leave_hardware_off);
     RUN_TEST(test_escalation_honors_band_only_with_direction_and_count_disabled);
     RUN_TEST(test_shutdown_retry_handles_clock_wrap_and_bus_contention);
     RUN_TEST(test_idle_service_does_not_disable_amp_while_worker_owns_playback);

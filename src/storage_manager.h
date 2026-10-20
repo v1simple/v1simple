@@ -6,6 +6,7 @@
 
 #include <Arduino.h>
 #include <FS.h>
+#include "storage_path_status.h"
 #include <LittleFS.h>
 #include <atomic>
 #include <freertos/FreeRTOS.h>
@@ -192,11 +193,11 @@ class StorageManager {
             backupPathToUse = derivedBackupPath.c_str();
         }
 
-        const bool liveExists = fs_.exists(livePath);
+        const StoragePathStatus liveStatus = storagePathStatus(fs_, livePath);
+        if (liveStatus == StoragePathStatus::Unavailable) return false;
+        const bool liveExists = liveStatus == StoragePathStatus::Present;
         if (liveExists) {
-            if (backupPathToUse && backupPathToUse[0] != '\0' && fs_.exists(backupPathToUse)) {
-                fs_.remove(backupPathToUse);
-            }
+            if (!storageRemoveFileIfPresent(fs_, backupPathToUse)) return false;
             if (!fs_.rename(livePath, backupPathToUse)) {
                 fs_.remove(tempPath);
                 return false;
@@ -204,7 +205,7 @@ class StorageManager {
         }
 
         if (!fs_.rename(tempPath, livePath)) {
-            if (liveExists && fs_.exists(backupPathToUse) && !fs_.exists(livePath)) {
+            if (liveExists && storagePathStatus(fs_, livePath) == StoragePathStatus::Missing) {
                 if (!fs_.rename(backupPathToUse, livePath)) {
                     Serial.printf("[Storage] promoteTempFileWithRollback: rollback failed %s -> %s\n", backupPathToUse,
                                   livePath);
@@ -214,9 +215,9 @@ class StorageManager {
             return false;
         }
 
-        if (backupPathToUse && backupPathToUse[0] != '\0' && fs_.exists(backupPathToUse)) {
-            fs_.remove(backupPathToUse);
-        }
+        // Promotion is already committed. An unsuccessful cleanup may leave a
+        // recovery copy, but must not report the committed write as a failure.
+        storageRemoveFileIfPresent(fs_, backupPathToUse);
 
         return true;
     }

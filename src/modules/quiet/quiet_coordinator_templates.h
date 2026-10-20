@@ -89,6 +89,7 @@ bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs, const Spee
         if (!parser_->hasAlerts() || alertEnded) {
             const VolumeFadeAction cleared = volumeFade->releaseClearedAlert();
             pendingFadeAction_ = false;
+            fadeWriteRevision_ = 0;
             if (cleared.type == VolumeFadeAction::Type::RESTORE && !speedVolBaselineUpdated_) {
                 if (speedVolActive_) {
                     speedVolSavedOriginal_ = cleared.restoreVolume;
@@ -185,29 +186,32 @@ bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs, VolumeFadeL
         fadeCtx.priorityIsLaser = hasRenderablePriority && priority.band == BAND_LASER;
     }
 
-    if (fadeCtx.alertEpisodeEnded && hasAlerts) {
-        // Re-evaluate the preceding episode's deferred command against its
-        // retained baseline before any retry can lower the new encounter.
+    const bool staleFadeDown = !fadeCtx.hasAlert || fadeCtx.alertEpisodeEnded || fadeCtx.alertMuted ||
+                               fadeCtx.alertSuppressed || fadeCtx.sessionGeneration != pendingFadeSession_ ||
+                               fadeCtx.currentFrequency != pendingFadeFrequency_ ||
+                               fadeCtx.priorityIsLaser != pendingFadeLaser_;
+    if (staleFadeDown) {
         pendingFadeAction_ = false;
+        fadeWriteRevision_ = 0;
     }
-    if (pendingFadeAction_) {
-        const bool staleFadeDown = !fadeCtx.hasAlert || fadeCtx.alertMuted || fadeCtx.alertSuppressed ||
-                                   fadeCtx.currentFrequency != pendingFadeFrequency_ ||
-                                   fadeCtx.priorityIsLaser != pendingFadeLaser_;
-        if (staleFadeDown) {
+    if (fadeWriteRevision_ != 0) {
+        const bool newerWriter = ble_->volumeWriteRevision() != fadeWriteRevision_ ||
+                                 desired_.volumeOwner != QuietOwner::VolumeFade;
+        const bool freshVolume = fadeCtx.hasVolumeObservation &&
+            static_cast<int32_t>(fadeCtx.volumeObservationIngress - fadeWriteIngress_) > 0;
+        const bool atTarget = freshVolume && fadeCtx.currentVolume == pendingFadeVolume_ &&
+                              fadeCtx.currentMuteVolume == pendingFadeMuteVolume_;
+        const bool changedPair = freshVolume &&
+            (fadeCtx.currentVolume != fadeWriteBaselineVolume_ ||
+             fadeCtx.currentMuteVolume != fadeWriteBaselineMuteVolume_);
+        if (newerWriter || atTarget || changedPair) {
+            // A confirmed fade or a later manual/profile/phone choice is final.
             pendingFadeAction_ = false;
-        } else {
-            if (static_cast<uint32_t>(nowMs - pendingFadeLastAttemptMs_) < FADE_RETRY_INTERVAL_MS) {
-                return true;
-            }
-            pendingFadeLastAttemptMs_ = nowMs;
-            const SendResult retry =
-                sendVolumeResult(QuietOwner::VolumeFade, pendingFadeVolume_, pendingFadeMuteVolume_);
-            if (retry == SendResult::NOT_YET) {
-                return true;
-            }
-            pendingFadeAction_ = false;
-            return retry == SendResult::SENT;
+            fadeWriteRevision_ = 0;
+        } else if (ble_->volumeWriteRejected(fadeWriteRevision_)) {
+            // Only explicit rejection reopens delivery. The ordinary send path
+            // still enforces busy/time-slice holdoff and the retry cadence below.
+            pendingFadeAction_ = true;
         }
     }
 
@@ -221,24 +225,39 @@ bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs, VolumeFadeL
     } else if (presentation_.activeVolumeOwner == QuietOwner::VolumeFade) {
         presentation_.activeVolumeOwner = QuietOwner::None;
     }
-    if (!fadeAction.hasAction()) {
-        return false;
+    if (!volumeFade->hasActiveVolumeOverride()) {
+        pendingFadeAction_ = false;
+        fadeWriteRevision_ = 0;
     }
-
-    if (fadeAction.type == VolumeFadeAction::Type::FADE_DOWN) {
-        const SendResult result =
-            sendVolumeResult(QuietOwner::VolumeFade, fadeAction.targetVolume, fadeAction.targetMuteVolume);
-        if (result == SendResult::NOT_YET) {
-            pendingFadeAction_ = true;
-            pendingFadeVolume_ = fadeAction.targetVolume;
-            pendingFadeMuteVolume_ = fadeAction.targetMuteVolume;
-            pendingFadeFrequency_ = fadeCtx.currentFrequency;
-            pendingFadeLaser_ = fadeCtx.priorityIsLaser;
-            pendingFadeLastAttemptMs_ = nowMs;
+    const bool newFade = fadeAction.type == VolumeFadeAction::Type::FADE_DOWN;
+    if (newFade) {
+        pendingFadeAction_ = true;
+        pendingFadeVolume_ = fadeAction.targetVolume;
+        pendingFadeMuteVolume_ = fadeAction.targetMuteVolume;
+        pendingFadeFrequency_ = fadeCtx.currentFrequency;
+        pendingFadeLaser_ = fadeCtx.priorityIsLaser;
+        pendingFadeSession_ = fadeCtx.sessionGeneration;
+        fadeWriteBaselineVolume_ = fadeCtx.currentVolume;
+        fadeWriteBaselineMuteVolume_ = fadeCtx.currentMuteVolume;
+    }
+    if (pendingFadeAction_ && fadeAction.type != VolumeFadeAction::Type::RESTORE) {
+        if (!newFade && static_cast<uint32_t>(nowMs - pendingFadeLastAttemptMs_) < FADE_RETRY_INTERVAL_MS)
+            return true;
+        pendingFadeLastAttemptMs_ = nowMs;
+        const uint32_t ingress = ble_->latestV1NotificationIngressSequence();
+        const SendResult result = sendVolumeResult(QuietOwner::VolumeFade, pendingFadeVolume_, pendingFadeMuteVolume_);
+        pendingFadeAction_ = result == SendResult::NOT_YET;
+        if (result == SendResult::SENT) {
+            fadeWriteRevision_ = ble_->volumeWriteRevision();
+            fadeWriteIngress_ = ingress;
+        } else if (result == SendResult::FAILED) {
+            fadeWriteRevision_ = 0;
         }
-        return true;
+        return newFade || result != SendResult::FAILED;
     }
     if (fadeAction.type == VolumeFadeAction::Type::RESTORE) {
+        pendingFadeAction_ = false;
+        fadeWriteRevision_ = 0;
         // Fade owns restore retries through canonical convergence, including
         // SENT-but-unapplied writes. Do not create a second retry clock here.
         const uint32_t session = ble_->sessionGeneration();

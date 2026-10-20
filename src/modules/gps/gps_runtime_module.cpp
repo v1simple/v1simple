@@ -200,6 +200,11 @@ void GpsRuntimeModule::update(uint32_t nowMs) {
 
     updateDetectionTimeout(nowMs);
     updateFixStaleness(nowMs);
+    // Position-only GGA traffic can keep the fix alive without a new speed.
+    // Latch expiry before a full millis() cycle can make the old sample fresh.
+    if (sampleValid_ && elapsedExceeded(nowMs, sampleTsMs_, SAMPLE_MAX_AGE_MS)) {
+        invalidateSpeedSample();
+    }
     // Latch expiry so a missing GGA cannot become fresh again after a full
     // millis() cycle while RMC continues to refresh the position and speed.
     if (lastQualityTimestampValid_ && elapsedExceeded(nowMs, lastQualityTsMs_, QUALITY_MAX_AGE_MS)) {

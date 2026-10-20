@@ -136,6 +136,7 @@ static void finish_sd_audio_job() {
 // retried either. No retry job remains queued after this short bounded window.
 static bool prepare_sd_audio_output() {
     constexpr uint8_t maxAttempts = 3;
+    bool ampEnableMayHaveChanged = false;
     for (uint8_t attempt = 0; attempt < maxAttempts; ++attempt) {
         if (attempt > 0) {
             vTaskDelay(pdMS_TO_TICKS(25));
@@ -157,6 +158,9 @@ static bool prepare_sd_audio_output() {
             vTaskDelay(pdMS_TO_TICKS(20)); // ES8311 lock time
         }
         const AudioI2cResult ampEnableResult = set_speaker_amp(true);
+        // Once the bus was acquired, a failed register sequence can already
+        // have asserted the enable output. Busy never touched the hardware.
+        ampEnableMayHaveChanged |= ampEnableResult != AudioI2cResult::Busy;
         if (ampEnableResult != AudioI2cResult::Ok) {
             audio_log_i2c_failure("sd_audio_playback_task amp enable", ampEnableResult);
             continue;
@@ -168,6 +172,11 @@ static bool prepare_sd_audio_output() {
         amp_last_used_ms = millis();
         amp_disable_fail_count = 0;
         return true;
+    }
+    if (ampEnableMayHaveChanged) {
+        const unsigned long now = millis();
+        amp_last_used_ms = now - AMP_WARM_TIMEOUT_MS;
+        disable_speaker_amp(pdMS_TO_TICKS(50), now, "sd_audio_playback_task failed startup");
     }
     return false;
 }

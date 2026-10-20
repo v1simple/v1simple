@@ -977,8 +977,30 @@ int V1BLEClient::processPhoneCommandQueue() {
     case SendResult::SENT:
         if (indexed) {
             longOwner.sentMask |= chunkBit;
-            phoneLongCommandOwner_ = longOwner.sentMask == ((uint16_t{1} << longOwner.count) - 1)
-                ? PhoneLongCommandOwner{} : longOwner;
+            const bool complete = longOwner.sentMask == ((uint16_t{1} << longOwner.count) - 1);
+            // Indexed writes bypass sendCommandWithResult. Publish stream
+            // state only once the complete command has been forwarded.
+            if (complete && longOwner.destination == 0xDA) {
+                if (longOwner.requestId == 0x42)
+                    alertDataRequestGate_.recordStop(pktCopy.sessionGeneration, pktCopy.phoneSessionGeneration);
+                else if (longOwner.requestId == PACKET_ID_REQ_START_ALERT)
+                    alertDataRequestGate_.recordSuccessfulSend(pktCopy.sessionGeneration, static_cast<uint32_t>(millis()));
+            }
+            phoneLongCommandOwner_ = complete ? PhoneLongCommandOwner{} : longOwner;
+        } else if (pktCopy.length == 7 &&
+                   pktCopy.data[0] == ESP_PACKET_START && pktCopy.data[1] == 0xDA &&
+                   pktCopy.data[2] == 0xE6 && pktCopy.data[4] == 1 &&
+                   pktCopy.data[5] == static_cast<uint8_t>(
+                       pktCopy.data[0] + pktCopy.data[1] + pktCopy.data[2] +
+                       pktCopy.data[3] + pktCopy.data[4]) &&
+                   pktCopy.data[6] == ESP_PACKET_END) {
+            // Bind a stop to the queued sender, even if phone callbacks retire
+            // that sender during the write. Raw long-handle starts need the
+            // same bookkeeping as starts sent through the short handle.
+            if (pktCopy.data[3] == 0x42)
+                alertDataRequestGate_.recordStop(pktCopy.sessionGeneration, pktCopy.phoneSessionGeneration);
+            else if (pktCopy.data[3] == PACKET_ID_REQ_START_ALERT)
+                alertDataRequestGate_.recordSuccessfulSend(pktCopy.sessionGeneration, static_cast<uint32_t>(millis()));
         }
         hasPending = false;
         return 1;

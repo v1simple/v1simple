@@ -133,6 +133,7 @@ void setUp() {
     fs::mock_reset_fs_rename_state();
     fs::mock_reset_fs_write_budget();
     fs::mock_reset_fs_open_state();
+    StorageDirectoryTest::reset();
     mock_reset_semaphore_state();
     mock_reset_heap_caps();
     g_tempRoot = nextTempRoot();
@@ -980,6 +981,7 @@ void test_save_requires_final_file_reopen_and_crc_validation() {
     TEST_ASSERT_TRUE(manager.begin(&fs));
     TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 10, "original")).success);
 
+    fs::mock_exists_uses_read_open(true);
     fs::mock_fail_next_read_open("/v1profiles/Road.json");
     const ProfileSaveResult result = manager.saveProfile(makeProfile("Road", 40, "replacement"));
 
@@ -989,6 +991,52 @@ void test_save_requires_final_file_reopen_and_crc_validation() {
     TEST_ASSERT_TRUE(manager.loadProfile("Road", restored));
     TEST_ASSERT_EQUAL_STRING("original", restored.description.c_str());
     TEST_ASSERT_EQUAL_UINT8(10, restored.settings.bytes[0]);
+}
+
+void test_unreadable_existing_primary_or_mirror_save_preserves_both_originals() {
+    for (bool primaryFails : {true, false}) {
+        fs::FS primary(g_tempRoot / (primaryFails ? "primary_failure/sd" : "mirror_failure/sd"));
+        fs::FS secondary(g_tempRoot / (primaryFails ? "primary_failure/little" : "mirror_failure/little"));
+        V1ProfileManager manager;
+        TEST_ASSERT_TRUE(manager.begin(&primary, &secondary));
+        TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 10, "original")).success);
+        const std::string primaryBefore = readFileToString(primary, "/v1profiles/Road.json");
+        const std::string secondaryBefore = readFileToString(secondary, "/v1profiles/Road.json");
+        const std::string unavailable =
+            std::string((primaryFails ? primary : secondary).mountpoint()) + "/v1profiles/Road.json";
+        fs::mock_exists_uses_read_open(true);
+        fs::mock_fail_read_opens_for_full_path(unavailable.c_str());
+        const ProfileSaveResult result = manager.saveProfile(makeProfile("Road", 40, "replacement"));
+        fs::mock_reset_fs_open_state();
+        TEST_ASSERT_EQUAL(ProfileStorageStatus::IoError, result.status);
+        TEST_ASSERT_EQUAL_STRING(primaryBefore.c_str(), readFileToString(primary, "/v1profiles/Road.json").c_str());
+        TEST_ASSERT_EQUAL_STRING(secondaryBefore.c_str(), readFileToString(secondary, "/v1profiles/Road.json").c_str());
+        V1ProfileManager reboot;
+        TEST_ASSERT_TRUE(reboot.begin(&primary, &secondary));
+        V1Profile restored;
+        TEST_ASSERT_TRUE(reboot.loadProfile("Road", restored));
+        TEST_ASSERT_EQUAL_STRING("original", restored.description.c_str());
+    }
+}
+
+void test_delete_does_not_misclassify_unreadable_payload_or_backup_as_missing() {
+    for (bool backupOnly : {false, true}) {
+        fs::FS fs(g_tempRoot / (backupOnly ? "backup" : "payload"));
+        V1ProfileManager manager;
+        TEST_ASSERT_TRUE(manager.begin(&fs));
+        TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 10)).success);
+        const char* path = backupOnly ? "/v1profiles/Road.json.bak" : "/v1profiles/Road.json";
+        if (backupOnly) TEST_ASSERT_TRUE(fs.rename("/v1profiles/Road.json", path));
+        const std::string unavailable = std::string(fs.mountpoint()) + path;
+        fs::mock_exists_uses_read_open(true);
+        fs::mock_fail_read_opens_for_full_path(unavailable.c_str());
+        TEST_ASSERT_EQUAL(ProfileStorageStatus::Success, manager.deleteProfileResult("Road").status);
+        fs::mock_reset_fs_open_state();
+        TEST_ASSERT_FALSE(fs.exists(path));
+        V1ProfileManager reboot;
+        TEST_ASSERT_TRUE(reboot.begin(&fs));
+        TEST_ASSERT_TRUE(reboot.listProfilesResult().genuinelyEmpty);
+    }
 }
 
 void test_load_profile_rejects_invalid_raw_bytes_without_mutating_output() {
@@ -1272,6 +1320,100 @@ void test_catalog_collection_allocation_failures_return_unavailable_without_thro
     V1Profile durable;
     TEST_ASSERT_TRUE(manager.loadProfile("Road", durable));
     TEST_ASSERT_EQUAL_STRING("durable", durable.description.c_str());
+}
+
+void test_directory_read_errors_never_publish_a_complete_list_page_or_snapshot() {
+    fs::FS fs(g_tempRoot);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&fs));
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 10)).success);
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Spare", 20)).success);
+
+    StorageDirectoryTest::failRead(1);
+    const ProfileListResult list = manager.listProfilesResult();
+    TEST_ASSERT_EQUAL(ProfileStorageStatus::IoError, list.status);
+    TEST_ASSERT_FALSE(list.genuinelyEmpty);
+    TEST_ASSERT_TRUE(list.profiles.empty());
+
+    // Cover both the main page walk and its separate collision-validation walk.
+    for (size_t scan : {1u, 2u}) {
+        StorageDirectoryTest::failRead(1, scan);
+        const ProfilePageResult page = manager.listProfilesPageResult("", 1);
+        TEST_ASSERT_EQUAL(ProfileStorageStatus::IoError, page.status);
+        TEST_ASSERT_TRUE(page.profiles.empty());
+        TEST_ASSERT_EQUAL_UINT(0, page.total);
+    }
+
+    StorageDirectoryTest::failRead(1);
+    std::vector<V1Profile> snapshot;
+    TEST_ASSERT_EQUAL(ProfileStorageStatus::IoError, manager.snapshotProfiles(snapshot).status);
+    TEST_ASSERT_TRUE(snapshot.empty());
+    TEST_ASSERT_EQUAL_UINT(2, manager.listProfilesResult().profiles.size());
+}
+
+void test_directory_read_error_blocks_normal_and_transaction_saves_without_mutation() {
+    fs::FS fs(g_tempRoot);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&fs));
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 10)).success);
+    const auto before = filesSnapshot();
+
+    StorageDirectoryTest::failRead(1);
+    TEST_ASSERT_EQUAL(ProfileStorageStatus::IoError,
+                      manager.saveProfile(makeProfile("Spare", 20)).status);
+    TEST_ASSERT_TRUE(before == filesSnapshot());
+    StorageDirectoryTest::failRead(1);
+    TEST_ASSERT_EQUAL(ProfileStorageStatus::IoError,
+                      manager.restoreProfileForTransaction(makeProfile("Spare", 20)).status);
+    TEST_ASSERT_TRUE(before == filesSnapshot());
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Spare", 20)).success);
+}
+
+void test_directory_read_error_defers_interrupted_save_recovery_until_retry() {
+    fs::FS fs(g_tempRoot);
+    V1ProfileManager original;
+    TEST_ASSERT_TRUE(original.begin(&fs));
+    TEST_ASSERT_TRUE(original.saveProfile(makeProfile("Road", 10)).success);
+    TEST_ASSERT_TRUE(fs.rename("/v1profiles/Road.json", "/v1profiles/Road.json.bak"));
+    const auto before = filesSnapshot();
+
+    StorageDirectoryTest::failRead(0);
+    V1ProfileManager recovering;
+    TEST_ASSERT_FALSE(recovering.begin(&fs));
+    TEST_ASSERT_FALSE(recovering.isReady());
+    TEST_ASSERT_TRUE(before == filesSnapshot());
+    recovering.serviceRecovery(2000);
+    TEST_ASSERT_TRUE(recovering.isReady());
+    V1Profile restored;
+    TEST_ASSERT_TRUE(recovering.loadProfile("Road", restored));
+    TEST_ASSERT_EQUAL_UINT8(10, restored.settings.bytes[0]);
+}
+
+void test_directory_read_error_defers_mirror_preflight_and_page_before_mutation() {
+    fs::FS primary(g_tempRoot / "sd");
+    fs::FS secondary(g_tempRoot / "little");
+    V1ProfileManager old;
+    TEST_ASSERT_TRUE(old.begin(&primary));
+    TEST_ASSERT_TRUE(old.saveProfile(makeProfile("Road", 10)).success);
+    V1ProfileManager newer;
+    TEST_ASSERT_TRUE(newer.begin(&secondary));
+    TEST_ASSERT_TRUE(newer.saveProfile(makeProfile("Road", 20)).success);
+    TEST_ASSERT_TRUE(newer.saveProfile(makeProfile("Road", 30)).success);
+    const auto before = filesSnapshot();
+
+    // Secondary and primary preflight, then secondary and primary page scans.
+    for (size_t scan : {1u, 2u, 3u, 4u}) {
+        StorageDirectoryTest::failRead(1, scan);
+        V1ProfileManager recovering;
+        TEST_ASSERT_FALSE(recovering.begin(&primary, &secondary));
+        TEST_ASSERT_FALSE(recovering.isReady());
+        TEST_ASSERT_TRUE(before == filesSnapshot());
+    }
+    V1ProfileManager recovered;
+    TEST_ASSERT_TRUE(recovered.begin(&primary, &secondary));
+    V1Profile selected;
+    TEST_ASSERT_TRUE(recovered.loadProfile("Road", selected));
+    TEST_ASSERT_EQUAL_UINT8(30, selected.settings.bytes[0]);
 }
 
 void test_save_scratch_allocation_failure_precedes_new_save_files() {
@@ -1883,6 +2025,10 @@ void test_periodic_profile_recovery_never_waits_for_sd_and_honors_backoff() {
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_directory_read_errors_never_publish_a_complete_list_page_or_snapshot);
+    RUN_TEST(test_directory_read_error_blocks_normal_and_transaction_saves_without_mutation);
+    RUN_TEST(test_directory_read_error_defers_interrupted_save_recovery_until_retry);
+    RUN_TEST(test_directory_read_error_defers_mirror_preflight_and_page_before_mutation);
     RUN_TEST(test_periodic_profile_recovery_never_waits_for_sd_and_honors_backoff);
     RUN_TEST(test_profile_authority_recovers_after_read_failure_without_stale_edit);
     RUN_TEST(test_profile_tombstone_recovers_after_read_failure_without_resurrection);
@@ -1909,6 +2055,8 @@ int main() {
     RUN_TEST(test_exact_legacy_profile_without_schema_or_crc_remains_backward_readable);
     RUN_TEST(test_persisted_legacy_profile_shape_is_strict_and_never_mutates_output);
     RUN_TEST(test_save_requires_final_file_reopen_and_crc_validation);
+    RUN_TEST(test_unreadable_existing_primary_or_mirror_save_preserves_both_originals);
+    RUN_TEST(test_delete_does_not_misclassify_unreadable_payload_or_backup_as_missing);
     RUN_TEST(test_load_profile_rejects_invalid_raw_bytes_without_mutating_output);
     RUN_TEST(test_json_to_settings_rejects_invalid_raw_bytes_without_mutating_output);
     RUN_TEST(test_json_to_settings_strictly_validates_human_readable_fields_without_mutation);

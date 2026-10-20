@@ -3,6 +3,7 @@
 #define STORAGE_MANAGER_H
 
 #include <FS.h>
+#include "../../src/storage_path_status.h"
 #include <atomic>
 
 #include "Arduino.h"
@@ -52,24 +53,45 @@ public:
         return String(livePath) + ".prev";
     }
 
-    static bool promoteTempFileWithRollback(fs::FS& fs, const char* tempPath, const char* livePath) {
-        if (!tempPath || !livePath) {
+    static bool promoteTempFileWithRollback(fs::FS& fs_, const char* tempPath, const char* livePath,
+                                            const char* backupPath = nullptr) {
+        if (!tempPath || tempPath[0] == '\0' || !livePath || livePath[0] == '\0') {
             return false;
         }
-        const String backupPath = rollbackPathFor(livePath);
-        const bool hadLive = fs.exists(livePath);
-        if (hadLive && !fs.rename(livePath, backupPath.c_str())) {
-            return false;
+
+        String derivedBackupPath;
+        const char* backupPathToUse = backupPath;
+        if (!backupPathToUse || backupPathToUse[0] == '\0') {
+            derivedBackupPath = rollbackPathFor(livePath);
+            backupPathToUse = derivedBackupPath.c_str();
         }
-        if (!fs.rename(tempPath, livePath)) {
-            if (hadLive) {
-                fs.rename(backupPath.c_str(), livePath);
+
+        const StoragePathStatus liveStatus = storagePathStatus(fs_, livePath);
+        if (liveStatus == StoragePathStatus::Unavailable) return false;
+        const bool liveExists = liveStatus == StoragePathStatus::Present;
+        if (liveExists) {
+            if (!storageRemoveFileIfPresent(fs_, backupPathToUse)) return false;
+            if (!fs_.rename(livePath, backupPathToUse)) {
+                fs_.remove(tempPath);
+                return false;
             }
+        }
+
+        if (!fs_.rename(tempPath, livePath)) {
+            if (liveExists && storagePathStatus(fs_, livePath) == StoragePathStatus::Missing) {
+                if (!fs_.rename(backupPathToUse, livePath)) {
+                    Serial.printf("[Storage] promoteTempFileWithRollback: rollback failed %s -> %s\n", backupPathToUse,
+                                  livePath);
+                }
+            }
+            fs_.remove(tempPath);
             return false;
         }
-        if (hadLive) {
-            fs.remove(backupPath.c_str());
-        }
+
+        // Promotion is already committed. An unsuccessful cleanup may leave a
+        // recovery copy, but must not report the committed write as a failure.
+        storageRemoveFileIfPresent(fs_, backupPathToUse);
+
         return true;
     }
 

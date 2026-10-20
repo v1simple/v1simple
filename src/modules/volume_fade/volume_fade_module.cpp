@@ -224,7 +224,9 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
             action.targetMuteVolume = originalMuteVolume_;
             fadeActive_ = true;
         }
-        commandSent_ = true; // Do not retry if it fails; mirrors prior behavior
+        // The coordinator retains transport deferral and explicitly rejected
+        // writes; this module emits only one new fade intent per encounter.
+        commandSent_ = true;
         return action;
     }
 

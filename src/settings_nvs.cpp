@@ -7,6 +7,7 @@
 #include "json_exact_input.h"
 #include "psram_json_document.h"
 #include "settings_backup_doc.h"
+#include "storage_path_status.h"
 #include <nvs.h>
 
 // --- NVS recovery, crypto, WiFi SD secret helpers ---
@@ -312,9 +313,12 @@ enum class WifiClientSdSecretLoadStatus : uint8_t {
 
 WifiClientSdSecretLoadStatus loadWifiClientSdSecretDocumentStatus(fs::FS* fs, JsonDocument& doc) {
     doc.clear();
-    if (!fs || !fs->exists(WIFI_CLIENT_SD_SECRET_PATH)) {
+    if (!fs) return WifiClientSdSecretLoadStatus::Unavailable;
+    const StoragePathStatus pathStatus = storagePathStatus(*fs, WIFI_CLIENT_SD_SECRET_PATH);
+    if (pathStatus == StoragePathStatus::Missing) {
         return WifiClientSdSecretLoadStatus::NotFound;
     }
+    if (pathStatus == StoragePathStatus::Unavailable) return WifiClientSdSecretLoadStatus::Unavailable;
 
     File file = fs->open(WIFI_CLIENT_SD_SECRET_PATH, FILE_READ);
     if (!file) {
@@ -357,10 +361,6 @@ WifiClientSdSecretLoadStatus loadWifiClientSdSecretDocumentStatus(fs::FS* fs, Js
         return WifiClientSdSecretLoadStatus::Invalid;
     }
     return WifiClientSdSecretLoadStatus::Success;
-}
-
-bool loadWifiClientSdSecretDocument(fs::FS* fs, JsonDocument& doc) {
-    return loadWifiClientSdSecretDocumentStatus(fs, doc) == WifiClientSdSecretLoadStatus::Success;
 }
 
 bool wifiClientSdSecretDocumentIsValid(const JsonDocument& doc) {
@@ -442,18 +442,15 @@ bool writeWifiClientSdSecretEntries(fs::FS* fs, const WifiClientSdSecretEntry en
     }
 
     if (!validWifiStaSlotIndex(legacyIndex)) {
-        if (!fs->exists(WIFI_CLIENT_SD_SECRET_PATH)) {
-            return true;
-        }
         const String rollbackPath = StorageManager::rollbackPathFor(WIFI_CLIENT_SD_SECRET_PATH);
-        if (fs->exists(rollbackPath.c_str()) && !fs->remove(rollbackPath.c_str())) {
-            return false;
+        const StoragePathStatus liveStatus = storagePathStatus(*fs, WIFI_CLIENT_SD_SECRET_PATH);
+        if (liveStatus == StoragePathStatus::Unavailable ||
+            !storageRemoveFileIfPresent(*fs, rollbackPath)) return false;
+        if (liveStatus == StoragePathStatus::Present) {
+            if (!fs->rename(WIFI_CLIENT_SD_SECRET_PATH, rollbackPath.c_str())) return false;
         }
-        if (!fs->rename(WIFI_CLIENT_SD_SECRET_PATH, rollbackPath.c_str())) {
-            return false;
-        }
-        fs->remove(rollbackPath.c_str());
-        return true;
+        return storageRemoveFileIfPresent(*fs, rollbackPath) &&
+               storagePathStatus(*fs, WIFI_CLIENT_SD_SECRET_PATH) == StoragePathStatus::Missing;
     }
 
     PsramJson::Document doc;
@@ -997,11 +994,10 @@ bool saveWifiClientSecretToSD(StorageManager& storage, size_t slotIndex, const S
     }
     WifiClientSdSecretEntry entries[kWifiStaSlotCount];
     PsramJson::Document existingDoc;
-    if (fs->exists(WIFI_CLIENT_SD_SECRET_PATH)) {
-        if (!loadWifiClientSdSecretDocument(fs, existingDoc) ||
-            !wifiClientSdSecretDocumentIsValid(existingDoc) ||
-            !readWifiClientSdSecretEntries(existingDoc, entries)) return false;
-    }
+    const WifiClientSdSecretLoadStatus existingStatus = loadWifiClientSdSecretDocumentStatus(fs, existingDoc);
+    if (existingStatus != WifiClientSdSecretLoadStatus::NotFound &&
+        (existingStatus != WifiClientSdSecretLoadStatus::Success ||
+         !readWifiClientSdSecretEntries(existingDoc, entries))) return false;
 
     const String sanitizedSsid = sanitizeWifiClientSsidValue(ssid);
     if (!existingDoc[WIFI_CLIENT_SD_SECRETS_KEY].is<JsonArrayConst>() && validWifiStaSlotIndex(slotIndex) &&
@@ -1055,10 +1051,6 @@ String loadWifiClientSecretFromSD(StorageManager& storage, const String& expecte
 
     auto backupFallback = [&]() -> String { return loadWifiClientPasswordObfFromSettingsBackup(fs, expectedSsid); };
 
-    if (!fs->exists(WIFI_CLIENT_SD_SECRET_PATH)) {
-        return backupFallback();
-    }
-
     PsramJson::Document doc;
     const WifiClientSdSecretLoadStatus status = loadWifiClientSdSecretDocumentStatus(fs, doc);
     if (status == WifiClientSdSecretLoadStatus::NotFound) return backupFallback();
@@ -1096,13 +1088,12 @@ bool removeWifiClientSecretFromSD(StorageManager& storage, size_t slotIndex, con
     if (!fs) {
         return false;
     }
-    if (!fs->exists(WIFI_CLIENT_SD_SECRET_PATH)) {
-        return true;
-    }
-
     WifiClientSdSecretEntry entries[kWifiStaSlotCount];
     PsramJson::Document existingDoc;
-    if (!loadWifiClientSdSecretDocument(fs, existingDoc) || !readWifiClientSdSecretEntries(existingDoc, entries)) {
+    const WifiClientSdSecretLoadStatus existingStatus = loadWifiClientSdSecretDocumentStatus(fs, existingDoc);
+    if (existingStatus == WifiClientSdSecretLoadStatus::NotFound) return true;
+    if (existingStatus != WifiClientSdSecretLoadStatus::Success ||
+        !readWifiClientSdSecretEntries(existingDoc, entries)) {
         return false;
     }
 

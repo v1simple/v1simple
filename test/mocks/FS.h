@@ -35,6 +35,7 @@ inline constexpr size_t kUnlimitedWriteBudget = std::numeric_limits<size_t>::max
 inline size_t g_new_file_write_budget = kUnlimitedWriteBudget;
 inline std::string g_fail_next_read_path;
 inline std::string g_fail_read_full_path;
+inline std::string g_fail_directory_entry_open;
 inline std::string g_fail_next_remove_path;
 inline bool g_require_existing_write_parent = false;
 inline bool g_exists_uses_read_open = false;
@@ -214,6 +215,12 @@ public:
             return File();
         }
         const std::filesystem::path next = state_->dirEntries[state_->dirIndex++];
+        // Arduino's openNextFile advances readdir before opening the child.
+        // A failed child open is indistinguishable from EOF through that API.
+        if (next.filename().string() == mock_fs_detail::g_fail_directory_entry_open) {
+            mock_fs_detail::g_fail_directory_entry_open.clear();
+            return File();
+        }
         return openPath(next, FILE_READ);
     }
 
@@ -329,9 +336,14 @@ inline void mock_fail_read_opens_for_full_path(const char* path) {
     mock_fs_detail::g_fail_read_full_path = path ? path : "";
 }
 
+inline void mock_fail_next_directory_entry_open(const char* filename) {
+    mock_fs_detail::g_fail_directory_entry_open = filename ? filename : "";
+}
+
 inline void mock_reset_fs_open_state() {
     mock_fs_detail::g_fail_next_read_path.clear();
     mock_fs_detail::g_fail_read_full_path.clear();
+    mock_fs_detail::g_fail_directory_entry_open.clear();
     mock_fs_detail::g_require_existing_write_parent = false;
     mock_fs_detail::g_exists_uses_read_open = false;
 }

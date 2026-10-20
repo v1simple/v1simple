@@ -148,6 +148,11 @@ class QuietCoordinatorModule {
     uint16_t pendingFadeFrequency_ = 0;
     bool pendingFadeLaser_ = false;
     uint32_t pendingFadeLastAttemptMs_ = 0;
+    uint32_t pendingFadeSession_ = 0;
+    uint32_t fadeWriteRevision_ = 0;
+    uint32_t fadeWriteIngress_ = 0;
+    uint8_t fadeWriteBaselineVolume_ = 0;
+    uint8_t fadeWriteBaselineMuteVolume_ = 0;
     uint32_t fadeAlertLifetime_ = 0;
     uint32_t fadeAlertSession_ = 0;
     bool fadeAlertLifetimeKnown_ = false;

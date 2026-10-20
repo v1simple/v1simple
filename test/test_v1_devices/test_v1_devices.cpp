@@ -101,6 +101,8 @@ void setUp() {
     mock_reset_heap_caps();
     fs::mock_reset_fs_rename_state();
     fs::mock_reset_fs_write_budget();
+    fs::mock_reset_fs_open_state();
+    fs::mock_reset_fs_remove_state();
     g_tempRoot = nextTempRoot();
     std::filesystem::remove_all(g_tempRoot);
     std::filesystem::create_directories(g_tempRoot);
@@ -110,6 +112,8 @@ void tearDown() {
     mock_reset_heap_caps();
     fs::mock_reset_fs_rename_state();
     fs::mock_reset_fs_write_budget();
+    fs::mock_reset_fs_open_state();
+    fs::mock_reset_fs_remove_state();
     if (!g_tempRoot.empty()) {
         std::filesystem::remove_all(g_tempRoot);
     }
@@ -1620,6 +1624,9 @@ void exercise_live_catalog_open_availability(bool failOpen, bool rollback) {
     if (rollback) writeFileFromBytes(primary, "/v1devices.json.prev", stale);
     else writeFileFromBytes(mirror, "/v1devices.json", stale);
 
+    // Match Arduino FS::exists(): its read-open must not consume the fault
+    // and turn the newer catalog into an apparently missing file.
+    fs::mock_exists_uses_read_open(true);
     if (failOpen) fs::mock_fail_next_read_open("/v1devices.json");
     V1DeviceStore boot;
     TEST_ASSERT_TRUE(boot.begin(&primary, rollback ? nullptr : &mirror));
@@ -1694,8 +1701,97 @@ void test_catalog_recovery_retries_memory_failure_with_backoff_and_keeps_newer_m
     TEST_ASSERT_TRUE(present);
 }
 
+
+void test_unreadable_semantic_rollback_blocks_stale_mirror_then_recovers() {
+    fs::FS primary(g_tempRoot);
+    fs::FS mirror(g_tempRoot / "mirror");
+    V1DeviceStore source;
+    TEST_ASSERT_TRUE(source.begin(&primary));
+    TEST_ASSERT_TRUE(source.setDeviceName("AA:BB:CC:DD:EE:FF", "Older").committed());
+    writeFileFromBytes(mirror, "/v1devices.json", readFileToString(primary, "/v1devices.json"));
+    TEST_ASSERT_TRUE(source.setDeviceName("AA:BB:CC:DD:EE:FF", "Recover me").committed());
+    const std::string recovery = readFileToString(primary, "/v1devices.json");
+    writeFileFromBytes(primary, "/v1devices.json.prev", recovery);
+    JsonDocument bad;
+    TEST_ASSERT_FALSE(deserializeJson(bad, recovery));
+    bad["crc32"] = bad["crc32"].as<uint32_t>() ^ 1u;
+    String badBytes;
+    serializeJson(bad, badBytes);
+    writeFileFromString(primary, "/v1devices.json", badBytes.c_str());
+    fs::mock_exists_uses_read_open(true);
+    fs::mock_fail_read_opens_for_full_path((g_tempRoot / "v1devices.json.prev").c_str());
+    V1DeviceStore blocked;
+    TEST_ASSERT_TRUE(blocked.begin(&primary, &mirror));
+    TEST_ASSERT_FALSE(blocked.catalogReadable());
+    TEST_ASSERT_FALSE(blocked.setDeviceName("AA:BB:CC:DD:EE:FF", "Wrong").committed());
+    fs::mock_reset_fs_open_state();
+    TEST_ASSERT_EQUAL_STRING(recovery.c_str(), readFileToString(primary, "/v1devices.json.prev").c_str());
+    blocked.serviceRecovery(2000);
+    TEST_ASSERT_TRUE(blocked.catalogReadable());
+    std::vector<V1DeviceRecord> devices;
+    TEST_ASSERT_TRUE(blocked.listDevicesChecked(devices));
+    TEST_ASSERT_EQUAL_STRING("Recover me", devices[0].name.c_str());
+}
+
+void test_unreadable_legacy_catalog_or_maps_defer_migration_without_defaults() {
+    const char* paths[] = {"/known_v1.txt", "/known_v1_names.txt", "/known_v1_profiles.txt"};
+    for (const char* path : paths) {
+        std::filesystem::remove_all(g_tempRoot);
+        fs::FS primary(g_tempRoot);
+        writeFileFromString(primary, paths[0], "AA:BB:CC:DD:EE:FF\n");
+        writeFileFromString(primary, paths[1], "AA:BB:CC:DD:EE:FF|Saved name\n");
+        writeFileFromString(primary, paths[2], "AA:BB:CC:DD:EE:FF|3\n");
+        fs::mock_exists_uses_read_open(true);
+        fs::mock_fail_next_read_open(path);
+        V1DeviceStore blocked;
+        TEST_ASSERT_TRUE(blocked.begin(&primary));
+        TEST_ASSERT_FALSE(blocked.catalogReadable());
+        TEST_ASSERT_FALSE(blocked.setDeviceName("AA:BB:CC:DD:EE:FF", "Wrong").committed());
+        fs::mock_reset_fs_open_state();
+        TEST_ASSERT_FALSE(primary.exists("/v1devices.json"));
+        blocked.serviceRecovery(2000);
+        std::vector<V1DeviceRecord> devices;
+        TEST_ASSERT_TRUE(blocked.listDevicesChecked(devices));
+        TEST_ASSERT_EQUAL_STRING("Saved name", devices[0].name.c_str());
+        TEST_ASSERT_EQUAL_UINT8(3, devices[0].defaultProfile);
+    }
+}
+
+void test_promotion_uses_metadata_and_restores_unreadable_live_on_failed_rename() {
+    fs::FS filesystem(g_tempRoot);
+    writeFileFromString(filesystem, "/live", "authoritative");
+    writeFileFromString(filesystem, "/temp", "candidate");
+    fs::mock_exists_uses_read_open(true);
+    fs::mock_fail_read_opens_for_full_path((g_tempRoot / "live").c_str());
+    fs::mock_fail_rename_on_call(fs::g_mock_fs_rename_state.renameCalls + 2u);
+    TEST_ASSERT_FALSE(StorageManager::promoteTempFileWithRollback(filesystem, "/temp", "/live"));
+    fs::mock_reset_fs_open_state();
+    fs::mock_reset_fs_rename_state();
+    TEST_ASSERT_EQUAL_STRING("authoritative", readFileToString(filesystem, "/live").c_str());
+    writeFileFromString(filesystem, "/temp", "candidate");
+    TEST_ASSERT_TRUE(StorageManager::promoteTempFileWithRollback(filesystem, "/temp", "/live"));
+    TEST_ASSERT_EQUAL_STRING("candidate", readFileToString(filesystem, "/live").c_str());
+}
+
+void test_unknown_path_metadata_is_not_absence_or_cleanup_success() {
+    fs::FS filesystem(g_tempRoot);
+    writeFileFromString(filesystem, "/parent", "not a directory");
+    JsonDocument doc;
+    TEST_ASSERT_EQUAL_INT(StoragePathStatus::Unavailable, storagePathStatus(filesystem, "/parent/live"));
+    TEST_ASSERT_EQUAL_INT(JsonRollbackLoadResult::Unavailable,
+        loadJsonDocumentWithRollback(filesystem, "/parent/live", 1024, doc));
+    TEST_ASSERT_FALSE(storageRemoveFileIfPresent(filesystem, "/parent/live"));
+    TEST_ASSERT_EQUAL_INT(JsonRollbackLoadResult::Missing,
+        loadJsonDocumentWithRollback(filesystem, "/absent", 1024, doc));
+    TEST_ASSERT_TRUE(storageRemoveFileIfPresent(filesystem, "/absent"));
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_unreadable_semantic_rollback_blocks_stale_mirror_then_recovers);
+    RUN_TEST(test_unreadable_legacy_catalog_or_maps_defer_migration_without_defaults);
+    RUN_TEST(test_promotion_uses_metadata_and_restores_unreadable_live_on_failed_rename);
+    RUN_TEST(test_unknown_path_metadata_is_not_absence_or_cleanup_success);
     RUN_TEST(test_catalog_recovery_retries_memory_failure_with_backoff_and_keeps_newer_mirror);
     RUN_TEST(test_live_catalog_open_failure_preserves_newer_than_rollback);
     RUN_TEST(test_live_catalog_open_failure_preserves_newer_than_mirror);

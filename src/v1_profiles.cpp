@@ -8,6 +8,7 @@
 #include "psram_json_document.h"
 #include "storage_manager.h"
 #include "storage_path_status.h"
+#include "storage_directory.h"
 #include "v1_settings_json.h"
 #include <ArduinoJson.h>
 #include <algorithm>
@@ -693,7 +694,7 @@ bool restoreSyncState(fs::FS& filesystem, const String& profilePath, const Profi
     }
     if (state.status == ProfileSyncState::Status::Absent ||
         state.status == ProfileSyncState::Status::LegacyImplicit) {
-        return !filesystem.exists(metaPath) || filesystem.remove(metaPath);
+        return storageRemoveFileIfPresent(filesystem, metaPath);
     }
     return writeSyncState(filesystem, profilePath, state);
 }
@@ -790,18 +791,16 @@ ProfileCatalogSaveScan scanCatalogForGrandfatheredRestore(fs::FS& filesystem,
                                                            const String& profileDirectory,
                                                            const String& targetName) {
     ProfileCatalogSaveScan result;
-    File dir = filesystem.open(profileDirectory);
-    if (!dir || !dir.isDirectory()) {
-        if (dir) dir.close();
+    StorageDirectory dir(filesystem, profileDirectory);
+    if (!dir) {
         result.status = ProfileCatalogScanStatus::IoError;
         return result;
     }
 
-    File entry;
-    while ((entry = dir.openNextFile())) {
+    const char* entry;
+    while ((entry = dir.next())) {
         String name;
-        const DirectoryProfileNameStatus nameStatus = directoryProfileName(entry.name(), ".json", name);
-        entry.close();
+        const DirectoryProfileNameStatus nameStatus = directoryProfileName(entry, ".json", name);
         if (nameStatus == DirectoryProfileNameStatus::Unavailable) {
             result.status = ProfileCatalogScanStatus::IoError;
             break;
@@ -831,7 +830,9 @@ ProfileCatalogSaveScan scanCatalogForGrandfatheredRestore(fs::FS& filesystem,
             break;
         }
     }
-    dir.close();
+    if (result.status == ProfileCatalogScanStatus::Success && !dir.complete()) {
+        result.status = ProfileCatalogScanStatus::IoError;
+    }
     return result;
 }
 
@@ -888,16 +889,14 @@ bool V1ProfileManager::recoverInterruptedSavesUnlocked() {
     // cannot skip an entry.
     const auto findOwnedArtifact = [&](const char* suffix, bool orphanOnly, String& livePath,
                                        String& artifactPath) -> DirectoryProfileNameStatus {
-        File dir = fs_->open(profileDir_);
-        if (!dir || !dir.isDirectory()) {
-            if (dir) dir.close();
+        StorageDirectory dir(*fs_, profileDir_);
+        if (!dir) {
             return DirectoryProfileNameStatus::Unavailable;
         }
-        File entry;
-        while ((entry = dir.openNextFile())) {
+        const char* entry;
+        while ((entry = dir.next())) {
             String canonical;
-            const DirectoryProfileNameStatus status = directoryProfileName(entry.name(), suffix, canonical);
-            entry.close();
+            const DirectoryProfileNameStatus status = directoryProfileName(entry, suffix, canonical);
             if (status == DirectoryProfileNameStatus::Unavailable) {
                 dir.close();
                 return status;
@@ -932,8 +931,8 @@ bool V1ProfileManager::recoverInterruptedSavesUnlocked() {
             dir.close();
             return DirectoryProfileNameStatus::Profile;
         }
-        dir.close();
-        return DirectoryProfileNameStatus::Ignore;
+        return dir.complete() ? DirectoryProfileNameStatus::Ignore
+                              : DirectoryProfileNameStatus::Unavailable;
     };
 
     for (const char* suffix : {".json.tmp", ".json.meta.tmp"}) {
@@ -997,7 +996,9 @@ bool V1ProfileManager::initialize(fs::FS* filesystem, fs::FS* importFilesystem, 
 
     const auto ensureProfileDirectory = [&](fs::FS* filesystem, const char* role) {
         if (!filesystem) return true;
-        if (!filesystem->exists(profileDir_) && !filesystem->mkdir(profileDir_)) {
+        const StoragePathStatus directoryStatus = storagePathStatus(*filesystem, profileDir_);
+        if (directoryStatus == StoragePathStatus::Unavailable ||
+            (directoryStatus == StoragePathStatus::Missing && !filesystem->mkdir(profileDir_))) {
             Serial.printf("[V1Profiles] Failed to create profiles directory on %s storage\n", role);
             return false;
         }
@@ -1063,14 +1064,12 @@ bool V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs, size_t& reconcile
     // catalog limit. Scan all history before changing either store, then visit
     // it in bounded pages so retained RAM does not grow with past deletions.
     auto scanNames = [&](fs::FS& filesystem, const auto& visit) {
-        File dir = filesystem.open(profileDir_);
-        if (!dir || !dir.isDirectory()) {
-            if (dir) dir.close();
+        StorageDirectory dir(filesystem, profileDir_);
+        if (!dir) {
             return false;
         }
-        File entry;
-        while ((entry = dir.openNextFile())) {
-            const char* rawPath = entry.name();
+        const char* rawPath;
+        while ((rawPath = dir.next())) {
             String canonical;
             DirectoryProfileNameStatus status = DirectoryProfileNameStatus::Ignore;
             const size_t rawLength = rawPath ? strnlen(rawPath, 257u) : 257u;
@@ -1081,15 +1080,13 @@ bool V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs, size_t& reconcile
             } else {
                 status = directoryProfileName(rawPath, ".json", canonical);
             }
-            entry.close();
             if (status == DirectoryProfileNameStatus::Unavailable ||
                 (status == DirectoryProfileNameStatus::Profile && !visit(canonical))) {
                 dir.close();
                 return false;
             }
         }
-        dir.close();
-        return true;
+        return dir.complete();
     };
 
     // Inspect the complete candidate set before mutating either store. A
@@ -1162,10 +1159,20 @@ bool V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs, size_t& reconcile
                  : sourceFile.valid && targetFile.valid && sourceFile.contentCrc == targetFile.contentCrc)) {
             String metadataTempPath;
             String metadataPreviousPath;
-            if (appendPathSuffixChecked(path, ".meta.tmp", metadataTempPath) &&
-                appendPathSuffixChecked(path, ".meta.prev", metadataPreviousPath) &&
-                !sourceFs->exists(metadataTempPath) && !fs_->exists(metadataTempPath) &&
-                !sourceFs->exists(metadataPreviousPath) && !fs_->exists(metadataPreviousPath)) {
+            if (!appendPathSuffixChecked(path, ".meta.tmp", metadataTempPath) ||
+                !appendPathSuffixChecked(path, ".meta.prev", metadataPreviousPath)) return false;
+            bool clean = true;
+            for (fs::FS* filesystem : {sourceFs, fs_}) {
+                for (const String* artifact : {&metadataTempPath, &metadataPreviousPath}) {
+                    const StoragePathStatus status = storagePathStatus(*filesystem, *artifact);
+                    if (status == StoragePathStatus::Unavailable) {
+                        lastError_ = "Profile mirror metadata recovery unavailable";
+                        return false;
+                    }
+                    clean &= status == StoragePathStatus::Missing;
+                }
+            }
+            if (clean) {
                 return true;
             }
         }
@@ -1213,8 +1220,8 @@ bool V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs, size_t& reconcile
 
         const bool stateDiffers = winningState.version != losingState.version ||
                                   winningState.deleted != losingState.deleted ||
-                                  (!winningState.deleted && !loser->exists(path)) ||
-                                  (winningState.deleted && loser->exists(path)) ||
+                                  (!winningState.deleted && !(sourceWins ? targetFile.exists : sourceFile.exists)) ||
+                                  (winningState.deleted && (sourceWins ? targetFile.exists : sourceFile.exists)) ||
                                   (!winningState.deleted &&
                                    (sourceFile.contentCrc != targetFile.contentCrc || !loserUsable));
 
@@ -1231,9 +1238,9 @@ bool V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs, size_t& reconcile
         if (stateDiffers) {
             bool applied = true;
             if (winningState.deleted) {
-                if (loser->exists(path)) applied = loser->remove(path);
+                applied = storageRemoveFileIfPresent(*loser, path);
             } else {
-                applied = winner->exists(path) && copyProfileFile(*winner, *loser, path, name);
+                applied = copyProfileFile(*winner, *loser, path, name);
             }
             if (!applied || !writeSyncState(*loser, path, winningState)) {
                 Serial.printf("[V1Profiles] RECONCILE failed name='%s' path='%s'\n", name.c_str(), path.c_str());
@@ -1242,7 +1249,7 @@ bool V1ProfileManager::reconcileProfilesFrom(fs::FS* sourceFs, size_t& reconcile
             }
             reconciled++;
         }
-        if (winningState.deleted && winner->exists(path) && !winner->remove(path)) {
+        if (winningState.deleted && !storageRemoveFileIfPresent(*winner, path)) {
             lastError_ = "Profile mirror deletion cleanup unavailable";
             return false;
         }
@@ -1316,20 +1323,17 @@ ProfileListResult V1ProfileManager::listProfilesUnlocked() const {
         return result;
     }
 
-    File dir = fs_->open(profileDir_);
-    if (!dir || !dir.isDirectory()) {
-        if (dir) dir.close();
+    StorageDirectory dir(*fs_, profileDir_);
+    if (!dir) {
         result.status = ProfileStorageStatus::IoError;
         result.error = "Failed to enumerate profile directory";
         return result;
     }
 
-    File entry;
-    while ((entry = dir.openNextFile())) {
-        const char* rawPath = entry.name();
+    const char* rawPath;
+    while ((rawPath = dir.next())) {
         String name;
         const DirectoryProfileNameStatus nameStatus = directoryProfileName(rawPath, ".json", name);
-        entry.close();
         if (nameStatus == DirectoryProfileNameStatus::Unavailable) {
             dir.close();
             result.status = ProfileStorageStatus::IoError;
@@ -1401,7 +1405,12 @@ ProfileListResult V1ProfileManager::listProfilesUnlocked() const {
             }
         }
     }
-    dir.close();
+    if (!dir.complete()) {
+        result.status = ProfileStorageStatus::IoError;
+        result.error = "Failed to enumerate profile directory";
+        result.profiles.clear();
+        return result;
+    }
     result.status = ProfileStorageStatus::Success;
     result.genuinelyEmpty = result.profiles.empty();
     return result;
@@ -1470,21 +1479,18 @@ ProfilePageResult V1ProfileManager::listProfilesPageResult(const String& after, 
         return !syncState.deleted;
     };
 
-    File dir = fs_->open(profileDir_);
-    if (!dir || !dir.isDirectory()) {
-        if (dir) dir.close();
+    StorageDirectory dir(*fs_, profileDir_);
+    if (!dir) {
         result.status = ProfileStorageStatus::IoError;
         result.error = "Failed to enumerate profile directory";
         return result;
     }
 
     size_t afterCount = 0;
-    File entry;
-    while ((entry = dir.openNextFile())) {
-        const char* rawPath = entry.name();
+    const char* rawPath;
+    while ((rawPath = dir.next())) {
         String canonical;
         const DirectoryProfileNameStatus nameStatus = canonicalEntryName(rawPath, canonical);
-        entry.close();
         if (nameStatus == DirectoryProfileNameStatus::Unavailable) {
             dir.close();
             result.status = ProfileStorageStatus::IoError;
@@ -1509,20 +1515,17 @@ ProfilePageResult V1ProfileManager::listProfilesPageResult(const String& after, 
         // Keep legacy over-limit catalogs fully enumerable without retaining an
         // unbounded name/key vector. This exact O(n^2) collision pass is used
         // only by the maintenance listing path; supported catalogs are ten.
-        File peers = fs_->open(profileDir_);
-        if (!peers || !peers.isDirectory()) {
-            if (peers) peers.close();
+        StorageDirectory peers(*fs_, profileDir_);
+        if (!peers) {
             dir.close();
             result.status = ProfileStorageStatus::IoError;
             result.error = "Failed to validate profile catalog";
             return result;
         }
-        File peer;
-        while ((peer = peers.openNextFile())) {
-            const char* peerPath = peer.name();
+        const char* peerPath;
+        while ((peerPath = peers.next())) {
             String peerName;
             const DirectoryProfileNameStatus peerNameStatus = canonicalEntryName(peerPath, peerName);
-            peer.close();
             if (peerNameStatus == DirectoryProfileNameStatus::Unavailable) {
                 peers.close();
                 dir.close();
@@ -1552,7 +1555,13 @@ ProfilePageResult V1ProfileManager::listProfilesPageResult(const String& after, 
                 return result;
             }
         }
-        peers.close();
+        if (!peers.complete()) {
+            result.status = ProfileStorageStatus::IoError;
+            result.error = "Failed to validate profile catalog";
+            result.profiles.clear();
+            result.total = 0;
+            return result;
+        }
 
         if (after.length() > 0 && std::strcmp(canonical.c_str(), after.c_str()) <= 0) continue;
         ++afterCount;
@@ -1573,7 +1582,13 @@ ProfilePageResult V1ProfileManager::listProfilesPageResult(const String& after, 
         });
         if (result.profiles.size() > limit) result.profiles.pop_back();
     }
-    dir.close();
+    if (!dir.complete()) {
+        result.status = ProfileStorageStatus::IoError;
+        result.error = "Failed to enumerate profile directory";
+        result.profiles.clear();
+        result.total = 0;
+        return result;
+    }
     result.hasMore = afterCount > result.profiles.size();
     if (!result.profiles.empty()) {
         result.nextCursor = result.profiles.back();
@@ -1950,7 +1965,17 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
         lastError_ = "Profile path memory unavailable";
         return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
     }
-    const bool activeFileExisted = fs_->exists(path);
+    // Capture both originals before any promotion. A failed Arduino exists()
+    // probe must not suppress the rollback copy of an existing profile.
+    const StoragePathStatus activeFileStatus = storagePathStatus(*fs_, path);
+    const StoragePathStatus secondaryFileStatus =
+        secondaryFs_ ? storagePathStatus(*secondaryFs_, path) : StoragePathStatus::Missing;
+    if (activeFileStatus == StoragePathStatus::Unavailable ||
+        secondaryFileStatus == StoragePathStatus::Unavailable) {
+        return ProfileSaveResult(ProfileStorageStatus::IoError, "Profile payload availability unknown");
+    }
+    const bool activeFileExisted = activeFileStatus == StoragePathStatus::Present;
+    const bool secondaryFileExisted = secondaryFileStatus == StoragePathStatus::Present;
     const ProfileSyncState activeState = readSyncState(*fs_, path);
     const ProfileSyncState secondaryState = secondaryFs_ ? readSyncState(*secondaryFs_, path) : ProfileSyncState{};
     if (activeState.status == ProfileSyncState::Status::Unavailable ||
@@ -2092,12 +2117,10 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
 
     if (activeFileExisted) {
         // Remove old backup if exists
-        if (fs_->exists(bakPath)) {
-            if (!fs_->remove(bakPath)) {
-                lastError_ = "Failed to remove stale profile transaction backup";
-                fs_->remove(tmpPath);
-                return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
-            }
+        if (!storageRemoveFileIfPresent(*fs_, bakPath)) {
+            lastError_ = "Failed to remove stale profile transaction backup";
+            fs_->remove(tmpPath);
+            return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
         }
         // Rename current to backup (for rollback capability)
         if (!fs_->rename(path, bakPath)) {
@@ -2114,7 +2137,7 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
         Serial.printf("[V1Profiles] %s\n", lastError_.c_str());
 
         // Try to restore from backup
-        if (fs_->exists(bakPath)) {
+        if (activeFileExisted) {
             if (fs_->rename(bakPath, path)) {
                 Serial.println("[V1Profiles] Restored from backup after failed save");
             }
@@ -2141,7 +2164,7 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
         !v1InTheBoxSettingsEqual(scratch->verifiedProfile.inTheBox, profile.inTheBox)) {
         lastError_ = verifyResult.success() ? "Final profile verification mismatch" : verifyResult.error;
         fs_->remove(path);
-        if (fs_->exists(bakPath)) {
+        if (activeFileExisted) {
             fs_->rename(bakPath, path);
         }
         Serial.printf("[V1Profiles] VERIFY_FAILED name='%s' path='%s' reason='%s'\n", canonicalName.c_str(),
@@ -2153,19 +2176,20 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
     if (!writeSyncState(*fs_, path, committedState)) {
         lastError_ = "Failed to persist profile reconciliation metadata";
         fs_->remove(path);
-        if (fs_->exists(bakPath)) fs_->rename(bakPath, path);
+        if (activeFileExisted) fs_->rename(bakPath, path);
         restoreSyncState(*fs_, path, activeState);
         return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
     }
 
     if (secondaryFs_) {
-        const bool secondaryFileExisted = secondaryFs_->exists(path);
         bool secondaryPrepared = true;
         bool secondaryMutationStarted = false;
-        if (!secondaryFs_->exists(profileDir_) && !secondaryFs_->mkdir(profileDir_)) {
+        const StoragePathStatus directoryStatus = storagePathStatus(*secondaryFs_, profileDir_);
+        if (directoryStatus == StoragePathStatus::Unavailable ||
+            (directoryStatus == StoragePathStatus::Missing && !secondaryFs_->mkdir(profileDir_))) {
             secondaryPrepared = false;
         }
-        if (secondaryFs_->exists(secondaryRollbackPath) && !secondaryFs_->remove(secondaryRollbackPath)) {
+        if (!storageRemoveFileIfPresent(*secondaryFs_, secondaryRollbackPath)) {
             secondaryPrepared = false;
         }
         if (secondaryPrepared && secondaryFileExisted &&
@@ -2183,23 +2207,21 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
             bool rollbackOk = true;
 
             if (secondaryMutationStarted) {
-                if (secondaryFs_->exists(path) && !secondaryFs_->remove(path)) rollbackOk = false;
+                if (!storageRemoveFileIfPresent(*secondaryFs_, path)) rollbackOk = false;
                 if (secondaryFileExisted) {
-                    if (!secondaryFs_->exists(secondaryRollbackPath) ||
-                        !secondaryFs_->rename(secondaryRollbackPath, path)) {
+                    if (!secondaryFs_->rename(secondaryRollbackPath, path)) {
                         rollbackOk = false;
                     }
-                } else if (secondaryFs_->exists(secondaryRollbackPath) &&
-                           !secondaryFs_->remove(secondaryRollbackPath)) {
+                } else if (!storageRemoveFileIfPresent(*secondaryFs_, secondaryRollbackPath)) {
                     rollbackOk = false;
                 }
                 if (!restoreSyncState(*secondaryFs_, path, secondaryState)) rollbackOk = false;
             }
 
-            if (fs_->exists(path) && !fs_->remove(path)) rollbackOk = false;
+            if (!storageRemoveFileIfPresent(*fs_, path)) rollbackOk = false;
             if (activeFileExisted) {
-                if (!fs_->exists(bakPath) || !fs_->rename(bakPath, path)) rollbackOk = false;
-            } else if (fs_->exists(bakPath) && !fs_->remove(bakPath)) {
+                if (!fs_->rename(bakPath, path)) rollbackOk = false;
+            } else if (!storageRemoveFileIfPresent(*fs_, bakPath)) {
                 rollbackOk = false;
             }
             if (!restoreSyncState(*fs_, path, activeState)) rollbackOk = false;
@@ -2210,12 +2232,10 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
                           path.c_str(), lastError_.c_str());
             return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
         }
-        if (secondaryFs_->exists(secondaryRollbackPath)) secondaryFs_->remove(secondaryRollbackPath);
+        storageRemoveFileIfPresent(*secondaryFs_, secondaryRollbackPath);
     }
 
-    if (fs_->exists(bakPath)) {
-        fs_->remove(bakPath);
-    }
+    storageRemoveFileIfPresent(*fs_, bakPath);
 
     Serial.printf("[V1Profiles] SAVE success name='%s' path='%s' bytes=%u crc=%08lX\n", canonicalName.c_str(),
                   path.c_str(), written, static_cast<unsigned long>(crc));
@@ -2273,14 +2293,24 @@ ProfileOperationResult V1ProfileManager::deleteProfileUnlocked(const String& nam
     }
     tombstone.version = maximumVersion + 1u;
     tombstone.deleted = true;
-    const bool activeExists = fs_->exists(path);
-    const bool activeBakExists = fs_->exists(bakPath);
-    const bool secondaryExists = secondaryFs_ && secondaryFs_->exists(path);
+    const StoragePathStatus activeStatus = storagePathStatus(*fs_, path);
+    const StoragePathStatus activeBakStatus = storagePathStatus(*fs_, bakPath);
+    const StoragePathStatus secondaryStatus =
+        secondaryFs_ ? storagePathStatus(*secondaryFs_, path) : StoragePathStatus::Missing;
     String secondaryBak;
     if (!appendPathSuffixChecked(path, ".bak", secondaryBak)) {
         return profileResult(ProfileStorageStatus::IoError, "Profile path memory unavailable");
     }
-    const bool secondaryBakExists = secondaryFs_ && secondaryFs_->exists(secondaryBak);
+    const StoragePathStatus secondaryBakStatus =
+        secondaryFs_ ? storagePathStatus(*secondaryFs_, secondaryBak) : StoragePathStatus::Missing;
+    if (activeStatus == StoragePathStatus::Unavailable || activeBakStatus == StoragePathStatus::Unavailable ||
+        secondaryStatus == StoragePathStatus::Unavailable || secondaryBakStatus == StoragePathStatus::Unavailable) {
+        return profileResult(ProfileStorageStatus::IoError, "Profile payload availability unknown");
+    }
+    const bool activeExists = activeStatus == StoragePathStatus::Present;
+    const bool activeBakExists = activeBakStatus == StoragePathStatus::Present;
+    const bool secondaryExists = secondaryStatus == StoragePathStatus::Present;
+    const bool secondaryBakExists = secondaryBakStatus == StoragePathStatus::Present;
     const bool removedAny = activeExists || activeBakExists || secondaryExists || secondaryBakExists;
 
     if (!removedAny) {

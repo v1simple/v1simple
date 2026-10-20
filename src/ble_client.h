@@ -10,6 +10,7 @@
 #include <memory>
 
 #include "ble_alert_request_gate.h"
+#include "ble_volume_write_receipt.h"
 #include "v1_request_flow_control.h"
 #include "ble_log_rate_limit.h"
 #include "ble_quiesce_policy.h"
@@ -186,16 +187,27 @@ class V1BLEClient {
     void onV1Busy(const uint8_t* packetIds, size_t count) {
         v1RequestFlowControl_.onBusy(packetIds, count);
     }
-    void onV1RequestNotProcessed(uint8_t packetId) {
+    void onV1RequestNotProcessed(uint8_t packetId, uint32_t ingressSequence = 0) {
         v1RequestFlowControl_.onRequestNotProcessed(packetId);
         if (packetId == 0x41) { // reqStartAlertData
             alertDataRequestGate_.invalidate(sessionGeneration());
         }
+        volumeWriteReceipt_.reject(packetId, sessionGeneration(), ingressSequence);
+    }
+    uint32_t volumeWriteRevision() const { return volumeWriteReceipt_.revision(); }
+    bool volumeWriteRejected(uint32_t revision) const {
+        return volumeWriteReceipt_.rejected(revision, sessionGeneration());
     }
 
     bool requestAlertData();
+    bool phoneOwnsStoppedAlertStream() const {
+        return proxyClientConnected_.load(std::memory_order_acquire) &&
+               alertDataRequestGate_.stoppedByPhone(
+                   sessionGeneration(), proxyPhoneSessionGeneration_.load(std::memory_order_acquire));
+    }
     bool needsAlertDataStartRecovery() const {
-        return bleState_ == BLEState::CONNECTED && connectedFollowupStep_ == ConnectedFollowupStep::NONE &&
+        return !phoneOwnsStoppedAlertStream() && bleState_ == BLEState::CONNECTED &&
+               connectedFollowupStep_ == ConnectedFollowupStep::NONE &&
                !alertDataRequestGate_.hasSuccessfulSend(sessionGeneration());
     }
 
@@ -382,6 +394,7 @@ class V1BLEClient {
     bool isBootReady() const { return bootReadyFlag_; }
 
   private:
+    BleVolumeWriteReceipt volumeWriteReceipt_;
     void schedulePostDeleteBondBackup(uint32_t nowMs);
 
     bool isV1WriteHeldOff(const uint8_t* data, size_t length) const {

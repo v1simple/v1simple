@@ -2,6 +2,7 @@
 #include "json_exact_input.h"
 #include "psram_json_document.h"
 #include "storage_json_rollback.h"
+#include "storage_path_status.h"
 #include "storage_manager.h"
 
 #include <ArduinoJson.h>
@@ -246,7 +247,9 @@ uint32_t deviceStoreContentCrc(const JsonDocument& doc) {
 
 JsonRollbackLoadResult loadDeviceStoreRollbackDocument(fs::FS& filesystem, size_t maxBytes, JsonDocument& doc) {
     const String rollbackPath = StorageManager::rollbackPathFor(STORE_PATH);
-    if (rollbackPath.length() == 0 || !filesystem.exists(rollbackPath.c_str())) return JsonRollbackLoadResult::Missing;
+    const StoragePathStatus pathStatus = storagePathStatus(filesystem, rollbackPath);
+    if (pathStatus == StoragePathStatus::Missing) return JsonRollbackLoadResult::Missing;
+    if (pathStatus == StoragePathStatus::Unavailable) return JsonRollbackLoadResult::Unavailable;
 
     File file = filesystem.open(rollbackPath.c_str(), FILE_READ);
     if (!file) return JsonRollbackLoadResult::Unavailable;
@@ -714,7 +717,7 @@ bool V1DeviceStore::writeStore(fs::FS& filesystem, uint32_t generation, bool pre
         // filesystem. Do not let the generic rotation replace that good copy
         // with the known-bad live file before the new candidate is promoted.
         const String rollbackPath = StorageManager::rollbackPathFor(STORE_PATH);
-        if (filesystem.exists(STORE_PATH) && !filesystem.remove(STORE_PATH)) {
+        if (!storageRemoveFileIfPresent(filesystem, STORE_PATH)) {
             filesystem.remove(STORE_TMP_PATH);
             return false;
         }
@@ -722,9 +725,7 @@ bool V1DeviceStore::writeStore(fs::FS& filesystem, uint32_t generation, bool pre
             filesystem.remove(STORE_TMP_PATH);
             return false;
         }
-        if (rollbackPath.length() > 0 && filesystem.exists(rollbackPath.c_str())) {
-            filesystem.remove(rollbackPath.c_str());
-        }
+        storageRemoveFileIfPresent(filesystem, rollbackPath);
     } else if (!StorageManager::promoteTempFileWithRollback(filesystem, STORE_TMP_PATH, STORE_PATH)) {
         return false;
     }
@@ -1111,7 +1112,11 @@ bool V1DeviceStore::migrateLegacyFiles(fs::FS* sourceFs) {
     if (!sourceFs) {
         return false;
     }
-    if (!sourceFs->exists(LEGACY_ADDR_PATH)) {
+    const StoragePathStatus addressStatus = storagePathStatus(*sourceFs, LEGACY_ADDR_PATH);
+    if (addressStatus == StoragePathStatus::Missing) return false;
+    if (addressStatus == StoragePathStatus::Unavailable) {
+        storeReadUnavailable_ = true;
+        catalogStatus_ = StoreReadStatus::Unavailable;
         return false;
     }
 
@@ -1124,6 +1129,8 @@ bool V1DeviceStore::migrateLegacyFiles(fs::FS* sourceFs) {
 
     File addressFile = sourceFs->open(LEGACY_ADDR_PATH, FILE_READ);
     if (!addressFile) {
+        storeReadUnavailable_ = true;
+        catalogStatus_ = StoreReadStatus::Unavailable;
         return false;
     }
 
@@ -1132,6 +1139,10 @@ bool V1DeviceStore::migrateLegacyFiles(fs::FS* sourceFs) {
         const LegacyLineReadStatus lineStatus = readLegacyLineExact(addressFile, line);
         if (lineStatus == LegacyLineReadStatus::End) break;
         if (lineStatus != LegacyLineReadStatus::Ok) {
+            if (lineStatus == LegacyLineReadStatus::Unavailable) {
+                storeReadUnavailable_ = true;
+                catalogStatus_ = StoreReadStatus::Unavailable;
+            }
             addressFile.close();
             return false;
         }
@@ -1183,13 +1194,28 @@ bool V1DeviceStore::migrateLegacyFiles(fs::FS* sourceFs) {
     }
 
     const auto applyLegacyMap = [&](const char* path, bool names) {
+        const StoragePathStatus status = storagePathStatus(*sourceFs, path);
+        if (status == StoragePathStatus::Missing) return true;
+        if (status == StoragePathStatus::Unavailable) {
+            storeReadUnavailable_ = true;
+            catalogStatus_ = StoreReadStatus::Unavailable;
+            return false;
+        }
         File mapFile = sourceFs->open(path, FILE_READ);
-        if (!mapFile) return true;
+        if (!mapFile) {
+            storeReadUnavailable_ = true;
+            catalogStatus_ = StoreReadStatus::Unavailable;
+            return false;
+        }
         while (mapFile.available()) {
             String line;
             const LegacyLineReadStatus lineStatus = readLegacyLineExact(mapFile, line);
             if (lineStatus == LegacyLineReadStatus::End) break;
             if (lineStatus != LegacyLineReadStatus::Ok) {
+                if (lineStatus == LegacyLineReadStatus::Unavailable) {
+                    storeReadUnavailable_ = true;
+                    catalogStatus_ = StoreReadStatus::Unavailable;
+                }
                 mapFile.close();
                 return false;
             }
@@ -1263,7 +1289,7 @@ bool V1DeviceStore::begin(fs::FS* filesystem, fs::FS* importFilesystem) {
 
     if (generation_ == 0 && !storeReadUnavailable_) {
         bool migrated = migrateLegacyFiles(fs_);
-        if (!migrated && importFilesystem && importFilesystem != fs_) {
+        if (!migrated && !storeReadUnavailable_ && importFilesystem && importFilesystem != fs_) {
             migrated = migrateLegacyFiles(importFilesystem);
         }
         if (migrated) {

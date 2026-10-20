@@ -70,6 +70,9 @@ void QuietCoordinatorModule::resetVolumeState() {
     pendingFadeFrequency_ = 0;
     pendingFadeLaser_ = false;
     pendingFadeLastAttemptMs_ = 0;
+    pendingFadeSession_ = 0;
+    fadeWriteRevision_ = 0;
+    fadeWriteIngress_ = 0;
     fadeAlertLifetimeKnown_ = false;
     autoPushVolumeTransactionActive_ = false;
 }

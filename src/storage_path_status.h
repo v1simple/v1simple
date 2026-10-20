@@ -30,3 +30,12 @@ inline StoragePathStatus storagePathStatus(fs::FS& filesystem, const String& pat
     const int error = errno;
     return error == ENOENT ? StoragePathStatus::Missing : StoragePathStatus::Unavailable;
 }
+
+// Cleanup may report success only after absence is known. A failed read-open
+// must not hide a journal or credential sidecar that still exists.
+inline bool storageRemoveFileIfPresent(fs::FS& filesystem, const String& path) {
+    const StoragePathStatus status = storagePathStatus(filesystem, path);
+    if (status == StoragePathStatus::Missing) return true;
+    return status == StoragePathStatus::Present && filesystem.remove(path.c_str()) &&
+           storagePathStatus(filesystem, path) == StoragePathStatus::Missing;
+}

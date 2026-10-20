@@ -717,7 +717,7 @@ void BleQueueModule::process() {
         }
 
         if (parseOk && packetId == PACKET_ID_RESP_REQUEST_NOT_PROCESSED && ble_) {
-            ble_->onV1RequestNotProcessed(packetPtr[5]);
+            ble_->onV1RequestNotProcessed(packetPtr[5], packetIngressSequence);
         }
         if (parseOk && packetId == PACKET_ID_INF_V1_BUSY && ble_) {
             const size_t checksumBytes = packetPtr[2] == 0xEA ? 1u : 0u;

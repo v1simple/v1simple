@@ -209,12 +209,19 @@ bool writeSerializedBackupAtomically(fs::FS* fs, const char* data, size_t length
         return false;
     }
 
-    if (fs->exists(SETTINGS_BACKUP_PREV_PATH)) {
-        fs->remove(SETTINGS_BACKUP_PREV_PATH);
+    const StoragePathStatus liveStatus = storagePathStatus(*fs, SETTINGS_BACKUP_PATH);
+    const StoragePathStatus previousStatus = storagePathStatus(*fs, SETTINGS_BACKUP_PREV_PATH);
+    if (liveStatus == StoragePathStatus::Unavailable || previousStatus == StoragePathStatus::Unavailable) {
+        fs->remove(SETTINGS_BACKUP_TMP_PATH);
+        return false;
     }
 
     bool rotatedPrimary = false;
-    if (fs->exists(SETTINGS_BACKUP_PATH)) {
+    if (liveStatus == StoragePathStatus::Present) {
+        if (!storageRemoveFileIfPresent(*fs, SETTINGS_BACKUP_PREV_PATH)) {
+            fs->remove(SETTINGS_BACKUP_TMP_PATH);
+            return false;
+        }
         if (fs->rename(SETTINGS_BACKUP_PATH, SETTINGS_BACKUP_PREV_PATH)) {
             rotatedPrimary = true;
         } else {
@@ -228,7 +235,7 @@ bool writeSerializedBackupAtomically(fs::FS* fs, const char* data, size_t length
         Serial.println("[Settings] ERROR: Failed to promote temp backup to primary");
         fs->remove(SETTINGS_BACKUP_TMP_PATH);
 
-        if (rotatedPrimary && fs->exists(SETTINGS_BACKUP_PREV_PATH) && !fs->exists(SETTINGS_BACKUP_PATH)) {
+        if (rotatedPrimary && storagePathStatus(*fs, SETTINGS_BACKUP_PATH) == StoragePathStatus::Missing) {
             if (!fs->rename(SETTINGS_BACKUP_PREV_PATH, SETTINGS_BACKUP_PATH)) {
                 Serial.println("[Settings] CRITICAL: Failed to rollback previous backup");
             }
@@ -240,12 +247,17 @@ bool writeSerializedBackupAtomically(fs::FS* fs, const char* data, size_t length
     // byte count.  A full JSON re-parse is unnecessary — the temp file was
     // already validated above and rename() is a metadata-only operation.
     File promoted = fs->open(SETTINGS_BACKUP_PATH, FILE_READ);
-    if (!promoted || promoted.size() != length) {
+    if (!promoted) {
+        // Read availability is not evidence of corruption. Preserve both the
+        // validated candidate and its previous recovery copy for the retry.
+        Serial.println("[Settings] ERROR: Promoted backup temporarily unreadable");
+        return false;
+    }
+    if (promoted.size() != length) {
         Serial.println("[Settings] ERROR: Promoted backup size mismatch after rename");
-        if (promoted)
-            promoted.close();
-        fs->remove(SETTINGS_BACKUP_PATH);
-        if (fs->exists(SETTINGS_BACKUP_PREV_PATH) && !fs->exists(SETTINGS_BACKUP_PATH)) {
+        promoted.close();
+        if (storageRemoveFileIfPresent(*fs, SETTINGS_BACKUP_PATH) &&
+            storagePathStatus(*fs, SETTINGS_BACKUP_PREV_PATH) == StoragePathStatus::Present) {
             if (!fs->rename(SETTINGS_BACKUP_PREV_PATH, SETTINGS_BACKUP_PATH)) {
                 Serial.println("[Settings] CRITICAL: Failed to restore previous backup after validation failure");
             }

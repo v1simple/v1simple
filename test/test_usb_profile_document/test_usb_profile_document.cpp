@@ -270,6 +270,7 @@ void setUp() {
     fs::mock_reset_fs_write_budget();
     fs::mock_reset_fs_rename_state();
     fs::mock_reset_fs_open_state();
+    StorageDirectoryTest::reset();
     fs::mock_reset_fs_remove_state();
     root = std::filesystem::temp_directory_path() / ("usb_profile_document_" + std::to_string(++fixtureNumber));
     std::filesystem::remove_all(root);
@@ -358,6 +359,50 @@ void test_bundle_round_trip_replaces_catalog_and_preserves_unrelated_state() {
     TEST_ASSERT_EQUAL_STRING(jsonText(original).c_str(), snapshot().c_str());
     TEST_ASSERT_EQUAL(ProfileStorageStatus::NotFound, profileManager->loadProfileResult("A Replacement", missing).status);
     TEST_ASSERT_EQUAL_UINT(255, manager->getSlotVolume(0));
+}
+
+void test_export_slot_edit_keeps_unassigned_profile_when_child_open_would_fail() {
+    seed();
+    fs::mock_fail_next_directory_entry_open("Spare.json");
+    JsonDocument bundle;
+    String error;
+    TEST_ASSERT_TRUE_MESSAGE(buildUsbProfileDocument(bundle, *manager, *profileManager, error),
+                             error.c_str());
+    TEST_ASSERT_EQUAL_UINT(4, bundle["profiles"].size());
+    bundle["slots"][0]["alertPersist"] = 5;
+    TEST_ASSERT_TRUE_MESSAGE(applyUsbProfileDocument(*manager, *profileManager, bundle, error).success,
+                             error.c_str());
+    fs::mock_reset_fs_open_state();
+    V1ProfileManager reboot;
+    TEST_ASSERT_TRUE(reboot.begin(storage));
+    V1Profile spare;
+    TEST_ASSERT_TRUE(reboot.loadProfile("Spare", spare));
+    TEST_ASSERT_EQUAL_STRING("Unassigned profile must also round trip", spare.description.c_str());
+    TEST_ASSERT_EQUAL_UINT8(5, manager->getSlotAlertPersistSec(0));
+}
+
+void test_directory_error_rejects_usb_export_and_backup_without_mutation() {
+    seed();
+    const auto before = filesSnapshot();
+    JsonDocument bundle;
+    String error;
+    StorageDirectoryTest::failRead(2);
+    TEST_ASSERT_FALSE(buildUsbProfileDocument(bundle, *manager, *profileManager, error));
+    TEST_ASSERT_TRUE(error.length() > 0);
+    TEST_ASSERT_TRUE(before == filesSnapshot());
+
+    StorageDirectoryTest::failRead(2);
+    JsonDocument backup;
+    const auto result = BackupPayloadBuilder::buildBackupDocument(
+        backup, manager->get(), *profileManager, BackupPayloadBuilder::BackupTransport::SdBackup, 1000);
+    TEST_ASSERT_FALSE(result.safeToCommit);
+    TEST_ASSERT_EQUAL(ProfileStorageStatus::IoError, result.profileStatus);
+    TEST_ASSERT_FALSE(result.profileCatalogGenuinelyEmpty);
+    TEST_ASSERT_TRUE(before == filesSnapshot());
+
+    // Recovery must export the complete four-profile catalog, including Spare.
+    TEST_ASSERT_TRUE(buildUsbProfileDocument(bundle, *manager, *profileManager, error));
+    TEST_ASSERT_EQUAL_UINT(4, bundle["profiles"].size());
 }
 
 void setSlotModifiers(int slot, uint8_t main, uint8_t muted, bool dark) {
@@ -1391,7 +1436,10 @@ void test_measure_maximum_profile_catalog_transport_shapes() {
                 BackupPayloadBuilder::BackupTransport::SdBackup,
                 std::numeric_limits<uint32_t>::max());
             TEST_ASSERT_TRUE(sdResult.safeToCommit);
-            TEST_ASSERT_EQUAL_UINT(126543, measureJson(sdBackup));
+            // Directory order may change the CRC and its decimal digit count.
+            // Bound the real wire size with the full ten-digit CRC allowance.
+            TEST_ASSERT_GREATER_OR_EQUAL_UINT(126535, measureJson(sdBackup));
+            TEST_ASSERT_LESS_OR_EQUAL_UINT(126544, measureJson(sdBackup));
             TEST_ASSERT_GREATER_THAN(4096u, 128u * 1024u - measureJson(sdBackup));
         }
     }
@@ -1528,6 +1576,8 @@ void test_previous_transaction_journals_decode_with_inactive_app_defaults() {
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_export_slot_edit_keeps_unassigned_profile_when_child_open_would_fail);
+    RUN_TEST(test_directory_error_rejects_usb_export_and_backup_without_mutation);
     RUN_TEST(test_previous_transaction_journals_decode_with_inactive_app_defaults);
     RUN_TEST(test_in_the_box_survives_usb_unrelated_slot_edit_backup_restore_and_reboot);
     RUN_TEST(test_old_v22_backup_defaults_app_actions_off_preserves_slot_overrides_and_replaces_catalog);

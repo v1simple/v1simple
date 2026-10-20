@@ -16,6 +16,7 @@
 #include "psram_json_document.h"
 #include "settings_backup_doc.h"
 #include "settings_sanitize.h"
+#include "storage_path_status.h"
 #include "v1_settings_json.h"
 
 namespace {
@@ -1870,7 +1871,7 @@ struct ProfileDeleteTransactionJournal {
 enum class JournalCopyStatus : uint8_t {
     Missing,
     Invalid,
-    MemoryUnavailable,
+    Unavailable,
     Parsed,
     Valid,
 };
@@ -2109,24 +2110,38 @@ bool loadJournalMirrors(StorageManager& storage, const char* path, size_t maxByt
     if (mirrors.secondaryFs == mirrors.primaryFs) {
         mirrors.secondaryFs = nullptr;
     }
-    // Preserve the ordinary no-journal fast path: it neither allocates nor
-    // consumes an SD-mutex attempt needed by the caller's real operation.
-    if ((!mirrors.primaryFs || !mirrors.primaryFs->exists(path)) &&
-        (!mirrors.secondaryFs || !mirrors.secondaryFs->exists(path))) {
-        return true;
+    // Only explicit absence authorizes the no-journal fast path. Arduino
+    // exists() also returns false when opening a present journal fails.
+    const auto pathStatus = [&](fs::FS* filesystem) {
+        return filesystem ? storagePathStatus(*filesystem, path) : StoragePathStatus::Missing;
+    };
+    const StoragePathStatus primaryPath = pathStatus(mirrors.primaryFs);
+    const StoragePathStatus secondaryPath = pathStatus(mirrors.secondaryFs);
+    if (primaryPath == StoragePathStatus::Unavailable || secondaryPath == StoragePathStatus::Unavailable) {
+        return false;
     }
+    if (primaryPath == StoragePathStatus::Missing && secondaryPath == StoragePathStatus::Missing) return true;
     StorageManager::SDLockBlocking lock(storage.getSDMutex());
     if (!lock) {
         return false;
     }
     const auto readOne = [&](fs::FS* filesystem, JournalCopy& copy) {
-        if (!filesystem || !filesystem->exists(path)) {
+        const StoragePathStatus status = pathStatus(filesystem);
+        if (status == StoragePathStatus::Missing) {
             copy.status = JournalCopyStatus::Missing;
             return;
         }
+        if (status == StoragePathStatus::Unavailable) {
+            copy.status = JournalCopyStatus::Unavailable;
+            return;
+        }
         File file = filesystem->open(path, FILE_READ);
-        if (!file || file.size() == 0 || file.size() > maxBytes) {
-            if (file) file.close();
+        if (!file) {
+            copy.status = JournalCopyStatus::Unavailable;
+            return;
+        }
+        if (file.size() == 0 || file.size() > maxBytes) {
+            file.close();
             copy.status = JournalCopyStatus::Invalid;
             return;
         }
@@ -2134,25 +2149,25 @@ bool loadJournalMirrors(StorageManager& storage, const char* path, size_t maxByt
         PsramJson::Buffer bytes(fileSize);
         if (!bytes) {
             file.close();
-            copy.status = JournalCopyStatus::MemoryUnavailable;
+            copy.status = JournalCopyStatus::Unavailable;
             return;
         }
         const size_t bytesRead = file.read(bytes.data(), fileSize);
         file.close();
         if (bytesRead != fileSize) {
-            copy.status = JournalCopyStatus::Invalid;
+            copy.status = JournalCopyStatus::Unavailable;
             return;
         }
         const ExactJsonInput::Status exact = ExactJsonInput::validate(bytes.data(), fileSize);
         if (exact != ExactJsonInput::Status::Ok) {
             copy.status = exact == ExactJsonInput::Status::MemoryUnavailable
-                              ? JournalCopyStatus::MemoryUnavailable
+                              ? JournalCopyStatus::Unavailable
                               : JournalCopyStatus::Invalid;
             return;
         }
         const DeserializationError error = deserializeJson(copy.doc, bytes.data(), fileSize);
         if (error == DeserializationError::NoMemory || copy.doc.overflowed()) {
-            copy.status = JournalCopyStatus::MemoryUnavailable;
+            copy.status = JournalCopyStatus::Unavailable;
             return;
         }
         if (error) {
@@ -2163,8 +2178,8 @@ bool loadJournalMirrors(StorageManager& storage, const char* path, size_t maxByt
     };
     readOne(mirrors.primaryFs, mirrors.primary);
     readOne(mirrors.secondaryFs, mirrors.secondary);
-    return mirrors.primary.status != JournalCopyStatus::MemoryUnavailable &&
-           mirrors.secondary.status != JournalCopyStatus::MemoryUnavailable;
+    return mirrors.primary.status != JournalCopyStatus::Unavailable &&
+           mirrors.secondary.status != JournalCopyStatus::Unavailable;
 }
 
 bool removeJournalAfterConvergence(StorageManager& storage, const char* path, const char* tempPath,
@@ -2192,7 +2207,7 @@ bool removeJournalAfterConvergence(StorageManager& storage, const char* path, co
         if (tempPath && fs->exists(tempPath)) {
             fs->remove(tempPath);
         }
-        return !fs->exists(path) || (fs->remove(path) && !fs->exists(path));
+        return storageRemoveFileIfPresent(*fs, path);
     };
     // Remove an invalid/missing mirror before the sole valid recovery record.
     // With two valid mirrors either may go first; a failed second removal still
@@ -2282,7 +2297,7 @@ JournalCopyStatus readRestoreTransactionJournal(const JsonDocument& doc,
             }
         } catch (const std::bad_alloc&) {
             journal.profilesBefore.clear();
-            return JournalCopyStatus::MemoryUnavailable;
+            return JournalCopyStatus::Unavailable;
         }
     }
     const size_t expectedKeys = 6 + (journal.credentialsMutated ? 1 : 0) +
@@ -2353,11 +2368,11 @@ bool resolveMirroredTransactionJournal(StorageManager& storage, const char* path
     validateCopy(mirrors.primary, primaryJournal);
     validateCopy(mirrors.secondary, secondaryJournal);
 
-    // A parsed journal whose bounded C++ staging could not be allocated is
-    // still authoritative unknown state, not corrupt input. Never discard it
-    // in favor of another mirror or remove it as an invalid copy.
-    if (mirrors.primary.status == JournalCopyStatus::MemoryUnavailable ||
-        mirrors.secondary.status == JournalCopyStatus::MemoryUnavailable) {
+    // A journal that could not be read or staged is still authoritative
+    // unknown state, not corrupt input. Never discard it in favor of another
+    // mirror or remove it as an invalid copy.
+    if (mirrors.primary.status == JournalCopyStatus::Unavailable ||
+        mirrors.secondary.status == JournalCopyStatus::Unavailable) {
         return false;
     }
 
@@ -2455,10 +2470,10 @@ bool captureRestoreCredentialSnapshot(StorageManager& storage, RestoreCredential
     if (!fs) {
         return false;
     }
-    snapshot.sdFilePresent = fs->exists(WIFI_CLIENT_SD_SECRET_PATH);
-    if (!snapshot.sdFilePresent) {
-        return true;
-    }
+    const StoragePathStatus secretStatus = storagePathStatus(*fs, WIFI_CLIENT_SD_SECRET_PATH);
+    if (secretStatus == StoragePathStatus::Unavailable) return false;
+    snapshot.sdFilePresent = secretStatus == StoragePathStatus::Present;
+    if (!snapshot.sdFilePresent) return true;
     File file = fs->open(WIFI_CLIENT_SD_SECRET_PATH, FILE_READ);
     if (!file) {
         return false;
@@ -2524,19 +2539,13 @@ bool restoreCredentialSnapshot(StorageManager& storage, const RestoreCredentialS
     constexpr const char* tempPath = "/v1wifi_secret.restore.tmp";
     if (!snapshot.sdFilePresent) {
         const String rollbackPath = StorageManager::rollbackPathFor(WIFI_CLIENT_SD_SECRET_PATH);
-        if (fs->exists(WIFI_CLIENT_SD_SECRET_PATH)) {
-            if (fs->exists(rollbackPath.c_str()) && !fs->remove(rollbackPath.c_str())) {
-                restored = false;
-            }
-            if (!fs->exists(rollbackPath.c_str())) {
-                restored = fs->rename(WIFI_CLIENT_SD_SECRET_PATH, rollbackPath.c_str()) && restored;
-            }
-        }
-        if (fs->exists(rollbackPath.c_str())) {
-            restored = fs->remove(rollbackPath.c_str()) && restored;
-        }
-        return !fs->exists(WIFI_CLIENT_SD_SECRET_PATH) &&
-               !fs->exists(rollbackPath.c_str()) && restored;
+        const StoragePathStatus liveStatus = storagePathStatus(*fs, WIFI_CLIENT_SD_SECRET_PATH);
+        if (liveStatus == StoragePathStatus::Unavailable ||
+            !storageRemoveFileIfPresent(*fs, rollbackPath)) return false;
+        if (liveStatus == StoragePathStatus::Present &&
+            !fs->rename(WIFI_CLIENT_SD_SECRET_PATH, rollbackPath.c_str())) return false;
+        return storageRemoveFileIfPresent(*fs, rollbackPath) &&
+               storagePathStatus(*fs, WIFI_CLIENT_SD_SECRET_PATH) == StoragePathStatus::Missing && restored;
     }
     if (fs->exists(tempPath)) {
         fs->remove(tempPath);

@@ -110,8 +110,43 @@ static void checkIndependentQualityFreshness() {
     }
 }
 
+static void checkIndependentSpeedExpiry() {
+    const char* gga = "$GPGGA,123520,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*4D\r\n";
+    const char* stopped = "$GPRMC,123519,A,4807.038,N,01131.000,E,000.0,084.4,230394,003.1,W*6E\r\n";
+    const char* moving = "$GPRMC,123519,A,4807.038,N,01131.000,E,040.0,084.4,230394,003.1,W*6A\r\n";
+    Serial1.reset();
+    mockMillis = 1;
+    GpsRuntimeModule gps;
+    gps.begin(true);
+    SpeedSourceSelector selector;
+    selector.begin(nullptr, false, &gps, true);
+    SpeedMuteModule mute;
+    mute.begin(true, 25, 3, 0);
+    auto tick = [&](uint32_t now) {
+        mockMillis = now;
+        Serial1.receive(gga);
+        gps.update(now);
+        selector.update(now);
+        const auto selected = selector.selectedSpeed();
+        mute.update(selected.speedMph, selected.valid, now);
+        return selected;
+    };
+    Serial1.receive(stopped);
+    assert(tick(10000).valid && mute.getState().muteActive);
+    for (uint32_t now = 11000; now <= 14000; now += 1000) tick(now);
+    assert(gps.snapshot(14000).hasFix && !gps.snapshot(14000).sampleValid);
+    assert(!selector.selectedSpeed().valid && !mute.getState().muteActive);
+    // Expiry was observed by the actual loop before a complete counter cycle.
+    assert(!tick(10000).valid && !mute.getState().muteActive);
+    assert(gps.snapshot(10000).qualityFresh && gps.snapshot(10000).hardwareSamples == 1);
+    Serial1.receive(moving);
+    assert(tick(11000).speedMph > 46 && !mute.getState().muteActive);
+    puts("expired UART RMC stays invalid across a full timer cycle; fresh RMC recovers");
+}
+
 int main() {
     checkIndependentQualityFreshness();
+    checkIndependentSpeedExpiry();
     const char *gga = "$GPGGA,123520,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*4D\r\n";
     const char *stoppedRmc = "$GPRMC,123519,A,4807.038,N,01131.000,E,000.0,084.4,230394,003.1,W*6E\r\n";
     const char *movingRmc = "$GPRMC,123519,A,4807.038,N,01131.000,E,040.0,084.4,230394,003.1,W*6A\r\n";

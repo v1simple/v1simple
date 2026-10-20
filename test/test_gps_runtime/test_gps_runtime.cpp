@@ -596,6 +596,40 @@ void test_expired_quality_cannot_reappear_after_a_full_millis_cycle() {
     TEST_ASSERT_TRUE(selector.selectedSpeed().valid);
 }
 
+void test_expired_speed_cannot_reappear_while_gga_keeps_fix_and_quality() {
+    for (const uint32_t start : {0u, 1000u, UINT32_MAX - 2000u}) {
+        gpsRuntimeModule.setEnabled(false);
+        gpsRuntimeModule.setEnabled(true);
+        injectGoodQuality(start);
+        injectStoppedSpeed(start);
+        SpeedSourceSelector selector;
+        selector.begin(nullptr, false, &gpsRuntimeModule, true);
+        const uint32_t boundary = start + GpsRuntimeModule::SAMPLE_MAX_AGE_MS;
+        injectGoodQuality(boundary);
+        gpsRuntimeModule.update(boundary);
+        selector.update(boundary);
+        TEST_ASSERT_TRUE(selector.selectedSpeed().valid);
+        injectGoodQuality(boundary + 1u);
+        gpsRuntimeModule.update(boundary + 1u);
+        selector.update(boundary + 1u);
+        TEST_ASSERT_FALSE(selector.selectedSpeed().valid);
+        TEST_ASSERT_FALSE(gpsRuntimeModule.snapshot(boundary + 1u).sampleValid);
+        TEST_ASSERT_TRUE(gpsRuntimeModule.snapshot(boundary + 1u).hasFix);
+
+        // After observed expiry, alias the original timestamp through a full
+        // counter cycle. Only fresh position/quality arrives, not new speed.
+        injectGoodQuality(start);
+        gpsRuntimeModule.update(start);
+        selector.update(start);
+        TEST_ASSERT_TRUE(gpsRuntimeModule.snapshot(start).qualityFresh);
+        TEST_ASSERT_FALSE(selector.selectedSpeed().valid);
+        injectStoppedSpeed(start);
+        gpsRuntimeModule.update(start);
+        selector.update(start);
+        TEST_ASSERT_TRUE(selector.selectedSpeed().valid);
+    }
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_valid_rmc_updates_speed_and_fix);
@@ -624,5 +658,6 @@ int main() {
     RUN_TEST(test_quality_expiry_handles_zero_rollover_and_exact_boundary);
     RUN_TEST(test_invalid_gga_cannot_refresh_quality_and_no_fix_gga_cannot_authorize_mute);
     RUN_TEST(test_expired_quality_cannot_reappear_after_a_full_millis_cycle);
+    RUN_TEST(test_expired_speed_cannot_reappear_while_gga_keeps_fix_and_quality);
     return UNITY_END();
 }

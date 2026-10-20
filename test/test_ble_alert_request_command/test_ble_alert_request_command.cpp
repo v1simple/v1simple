@@ -342,8 +342,53 @@ void test_basic_apply_result_apis_preserve_holdoff_pacing_and_disconnect() {
     TEST_ASSERT_EQUAL_UINT32(6, harness.command.writeValueCalls());
 }
 
+void test_explicit_stop_preserves_start_pacing_but_reopens_recovery() {
+    AlertRequestHarness harness(10);
+    mockMillis = 100000;
+    TEST_ASSERT_TRUE(harness.client.requestAlertData());
+    const uint8_t stop[] = {0xAA,0xDA,0xE6,0x42,1,0xAD,0xAB};
+    mockMillis += 100;
+    TEST_ASSERT_EQUAL(SendResult::SENT,harness.client.sendCommandWithResult(stop,sizeof(stop)));
+    TEST_ASSERT_TRUE(harness.client.needsAlertDataStartRecovery());
+    TEST_ASSERT_TRUE(harness.client.requestAlertData());
+    TEST_ASSERT_EQUAL_UINT32(2,harness.command.writeValueCalls());
+    TEST_ASSERT_TRUE(harness.client.needsAlertDataStartRecovery());
+    mockMillis = 101000;
+    TEST_ASSERT_TRUE(harness.client.requestAlertData());
+    TEST_ASSERT_EQUAL_UINT32(3,harness.command.writeValueCalls());
+    TEST_ASSERT_FALSE(harness.client.needsAlertDataStartRecovery());
+}
+
+void test_volume_rejection_receipt_requires_current_writer_session_and_post_send_ingress() {
+    AlertRequestHarness harness(11);
+    mockMillis = 110000;
+    harness.client.v1NotificationIngressSequence_.store(UINT32_MAX - 1);
+    const uint32_t oldIngress = harness.client.latestV1NotificationIngressSequence();
+    uint32_t duringSend = 0;
+    harness.command.setWriteEntryHook([&] { duringSend = harness.client.noteV1NotificationIngress(); });
+    TEST_ASSERT_EQUAL(SendResult::SENT,harness.client.setVolumeResult(1,2));
+    const uint32_t first = harness.client.volumeWriteRevision();
+    harness.client.onV1RequestNotProcessed(0x39,oldIngress);
+    TEST_ASSERT_FALSE(harness.client.volumeWriteRejected(first));
+    harness.client.onV1RequestNotProcessed(0x39,duringSend);
+    TEST_ASSERT_TRUE(harness.client.volumeWriteRejected(first));
+    harness.client.onV1DisplayFlowControl(false);
+    mockMillis += 100;
+    TEST_ASSERT_EQUAL(SendResult::SENT,harness.client.setVolumeResult(8,3));
+    TEST_ASSERT_EQUAL_UINT32(1,duringSend);
+    const uint32_t second = harness.client.volumeWriteRevision();
+    TEST_ASSERT_FALSE(harness.client.volumeWriteRejected(first));
+    harness.client.onV1RequestNotProcessed(0x38,duringSend);
+    TEST_ASSERT_FALSE(harness.client.volumeWriteRejected(second));
+    harness.client.sessionGeneration_.store(12);
+    harness.client.onV1RequestNotProcessed(0x39,duringSend);
+    TEST_ASSERT_FALSE(harness.client.volumeWriteRejected(second));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
+    RUN_TEST(test_explicit_stop_preserves_start_pacing_but_reopens_recovery);
+    RUN_TEST(test_volume_rejection_receipt_requires_current_writer_session_and_post_send_ingress);
     RUN_TEST(test_command_guard_uses_successful_send_time_for_exact_boundary);
     RUN_TEST(test_time_slice_holdoff_defers_v1_bound_commands_until_display_release);
     RUN_TEST(test_v1_busy_holds_only_listed_request_ids_until_a_clean_display);

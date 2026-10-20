@@ -6651,8 +6651,205 @@ void test_sd_only_wifi_healing_completes_recovery_without_restarting_other_consu
     TEST_ASSERT_EQUAL_STRING("LegacyOpenNetwork", reloaded.get().wifiClientSSID.c_str());
 }
 
+
+void exercise_unreadable_transaction_journal(bool deletion) {
+    fs::FS filesystem(g_tempRoot);
+    storage.setFilesystem(&filesystem, false);
+    storage.setLittleFS(&filesystem);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    makeCurrentV21Source(manager.mutableSettings());
+    JsonDocument emptyBackup;
+    downloadCurrentHttpBackup(manager, emptyBackup);
+    TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("Retained")).success);
+    manager.mutableSettings().slot0_default.profileName = "Retained";
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    const char* path = deletion ? PROFILE_DELETE_TRANSACTION_PATH : RESTORE_TRANSACTION_PATH;
+    if (deletion) {
+        manager.utInterruptProfileDeleteAfterProfile(true);
+        TEST_ASSERT_FALSE(manager.deleteProfileAndReferences("Retained").success());
+    } else {
+        manager.utInterruptRestoreAfterProfiles(true);
+        TEST_ASSERT_FALSE(manager.applyBackupDocument(emptyBackup, true).success);
+    }
+    const std::string journal = readFileToString(filesystem, path);
+    TEST_ASSERT_FALSE(journal.empty());
+    fs::mock_exists_uses_read_open(true);
+    fs::mock_fail_read_opens_for_full_path((g_tempRoot / (path + 1)).c_str());
+    V1ProfileManager unavailableProfiles;
+    TEST_ASSERT_TRUE(unavailableProfiles.begin(storage));
+    SettingsManager unavailable(storage, unavailableProfiles);
+    unavailable.load();
+    unavailable.checkAndRestoreFromSD();
+    unavailable.validateProfileReferences(unavailableProfiles);
+    TEST_ASSERT_TRUE(unavailable.recoveryPending());
+    TEST_ASSERT_EQUAL_STRING("Retained", unavailable.get().slot0_default.profileName.c_str());
+    fs::mock_reset_fs_open_state();
+    TEST_ASSERT_EQUAL_STRING(journal.c_str(), readFileToString(filesystem, path).c_str());
+    V1ProfileManager recoveredProfiles;
+    TEST_ASSERT_TRUE(recoveredProfiles.begin(storage));
+    SettingsManager recovered(storage, recoveredProfiles);
+    recovered.load();
+    recovered.checkAndRestoreFromSD();
+    recovered.validateProfileReferences(recoveredProfiles);
+    TEST_ASSERT_FALSE(recovered.recoveryPending());
+    TEST_ASSERT_EQUAL_STRING("Retained", recovered.get().slot0_default.profileName.c_str());
+    V1Profile retained;
+    TEST_ASSERT_TRUE(recoveredProfiles.loadProfile("Retained", retained));
+    TEST_ASSERT_FALSE(filesystem.exists(path));
+}
+
+void test_unreadable_restore_journal_preserves_references_until_recovery() {
+    exercise_unreadable_transaction_journal(false);
+}
+
+void test_unreadable_delete_journal_preserves_references_until_recovery() {
+    exercise_unreadable_transaction_journal(true);
+}
+
+void test_journal_cleanup_does_not_claim_success_for_unremoved_unreadable_journal() {
+    fs::FS filesystem(g_tempRoot);
+    storage.setFilesystem(&filesystem, false);
+    writeFileFromString(filesystem, RESTORE_TRANSACTION_PATH, "converged journal");
+    fs::mock_exists_uses_read_open(true);
+    fs::mock_fail_read_opens_for_full_path((g_tempRoot / (RESTORE_TRANSACTION_PATH + 1)).c_str());
+    fs::mock_fail_next_remove(RESTORE_TRANSACTION_PATH);
+    TEST_ASSERT_FALSE(removeJournalAfterConvergence(storage, RESTORE_TRANSACTION_PATH, RESTORE_TRANSACTION_TMP_PATH));
+    TEST_ASSERT_EQUAL_INT(StoragePathStatus::Present, storagePathStatus(filesystem, RESTORE_TRANSACTION_PATH));
+    TEST_ASSERT_TRUE(removeJournalAfterConvergence(storage, RESTORE_TRANSACTION_PATH, RESTORE_TRANSACTION_TMP_PATH));
+    TEST_ASSERT_EQUAL_INT(StoragePathStatus::Missing, storagePathStatus(filesystem, RESTORE_TRANSACTION_PATH));
+    TEST_ASSERT_TRUE(removeJournalAfterConvergence(storage, RESTORE_TRANSACTION_PATH, RESTORE_TRANSACTION_TMP_PATH));
+}
+
+void test_unreadable_wifi_secret_merge_preserves_other_network_and_retries() {
+    fs::FS filesystem(g_tempRoot);
+    storage.setFilesystem(&filesystem, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "FirstNet", "first-password", "First", 0));
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(1, "SecondNet", "second-password", "Second", 1));
+    const std::string before = readFileToString(filesystem, WIFI_CLIENT_SD_SECRET_PATH);
+    fs::mock_exists_uses_read_open(true);
+    fs::mock_fail_next_read_open(WIFI_CLIENT_SD_SECRET_PATH);
+    TEST_ASSERT_FALSE(manager.setWifiStaSlotCredentials(1, "SecondNet", "updated-password", "Second", 1));
+    fs::mock_reset_fs_open_state();
+    TEST_ASSERT_EQUAL_STRING(before.c_str(), readFileToString(filesystem, WIFI_CLIENT_SD_SECRET_PATH).c_str());
+    TEST_ASSERT_EQUAL_STRING("second-password", manager.getWifiStaSlotPassword(1).c_str());
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(1, "SecondNet", "updated-password", "Second", 1));
+    Preferences prefs;
+    TEST_ASSERT_TRUE(prefs.begin(WIFI_CLIENT_NS, false));
+    TEST_ASSERT_TRUE(prefs.remove(kNvsWifiStaSlotPassword[0]));
+    prefs.end();
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_EQUAL_STRING("first-password", rebooted.getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_EQUAL_STRING("updated-password", rebooted.getWifiStaSlotPassword(1).c_str());
+}
+
+void test_unreadable_wifi_secret_neither_falls_back_nor_reports_absent() {
+    fs::FS filesystem(g_tempRoot);
+    storage.setFilesystem(&filesystem, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    makeCurrentV21Source(manager.mutableSettings());
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "FirstNet", "older-password", "First", 0));
+    // Installed legacy backups may contain credentials; current exports omit them.
+    JsonDocument legacyBackup;
+    legacyBackup["_type"] = "v1simple_backup";
+    legacyBackup["brightness"] = 80;
+    legacyBackup["wifiClientSSID"] = "FirstNet";
+    legacyBackup["wifiClientPasswordObf"] = encodeObfuscatedForStorage("older-password");
+    writeJsonFile(filesystem, SETTINGS_BACKUP_PATH, legacyBackup);
+    TEST_ASSERT_TRUE(saveWifiClientSecretToSD(storage, 0, "FirstNet", encodeObfuscatedForStorage("newer-password")));
+    fs::mock_exists_uses_read_open(true);
+    fs::mock_fail_read_opens_for_full_path((g_tempRoot / (WIFI_CLIENT_SD_SECRET_PATH + 1)).c_str());
+    TEST_ASSERT_EQUAL_INT(WifiClientSecretReadStatus::Unavailable, readWifiClientSecretPresence(&filesystem).status);
+    TEST_ASSERT_EQUAL_STRING("", loadWifiClientSecretFromSD(storage, "FirstNet", 0).c_str());
+    fs::mock_reset_fs_open_state();
+    TEST_ASSERT_EQUAL_STRING("newer-password", decodeObfuscatedFromStorage(loadWifiClientSecretFromSD(storage, "FirstNet", 0)).c_str());
+    TEST_ASSERT_TRUE(filesystem.remove(WIFI_CLIENT_SD_SECRET_PATH));
+    TEST_ASSERT_EQUAL_INT(WifiClientSecretReadStatus::NotFound, readWifiClientSecretPresence(&filesystem).status);
+    TEST_ASSERT_EQUAL_STRING("older-password", decodeObfuscatedFromStorage(loadWifiClientSecretFromSD(storage, "FirstNet", 0)).c_str());
+}
+
+void test_unreadable_wifi_secret_removal_preserves_all_entries_until_retry() {
+    fs::FS filesystem(g_tempRoot);
+    storage.setFilesystem(&filesystem, true);
+    TEST_ASSERT_TRUE(saveWifiClientSecretToSD(storage, 0, "FirstNet", encodeObfuscatedForStorage("first-password")));
+    TEST_ASSERT_TRUE(saveWifiClientSecretToSD(storage, 1, "SecondNet", encodeObfuscatedForStorage("second-password")));
+    const std::string before = readFileToString(filesystem, WIFI_CLIENT_SD_SECRET_PATH);
+    fs::mock_exists_uses_read_open(true);
+    fs::mock_fail_next_read_open(WIFI_CLIENT_SD_SECRET_PATH);
+    TEST_ASSERT_FALSE(removeWifiClientSecretFromSD(storage, 1, "SecondNet"));
+    fs::mock_reset_fs_open_state();
+    TEST_ASSERT_EQUAL_STRING(before.c_str(), readFileToString(filesystem, WIFI_CLIENT_SD_SECRET_PATH).c_str());
+    TEST_ASSERT_TRUE(removeWifiClientSecretFromSD(storage, 1, "SecondNet"));
+    TEST_ASSERT_EQUAL_STRING("first-password", decodeObfuscatedFromStorage(loadWifiClientSecretFromSD(storage, "FirstNet", 0)).c_str());
+    TEST_ASSERT_EQUAL_STRING("", loadWifiClientSecretFromSD(storage, "SecondNet", 1).c_str());
+}
+
+void test_unreadable_wifi_secret_snapshot_blocks_restore_before_mutation() {
+    fs::FS filesystem(g_tempRoot);
+    storage.setFilesystem(&filesystem, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "FirstNet", "first-password", "First", 0));
+    const std::string before = readFileToString(filesystem, WIFI_CLIENT_SD_SECRET_PATH);
+    fs::mock_exists_uses_read_open(true);
+    fs::mock_fail_read_opens_for_full_path((g_tempRoot / (WIFI_CLIENT_SD_SECRET_PATH + 1)).c_str());
+    RestoreCredentialSnapshot snapshot;
+    TEST_ASSERT_FALSE(captureRestoreCredentialSnapshot(storage, snapshot));
+    JsonDocument doc;
+    doc["_type"] = "v1simple_backup";
+    JsonObject slot = doc["wifiStaSlots"].to<JsonArray>().add<JsonObject>();
+    slot["index"] = 0;
+    slot["ssid"] = "NewNet";
+    slot["passwordObf"] = encodeObfuscatedForStorage("new-password");
+    TEST_ASSERT_FALSE(manager.applyBackupDocument(doc, true).success);
+    fs::mock_reset_fs_open_state();
+    TEST_ASSERT_EQUAL_STRING(before.c_str(), readFileToString(filesystem, WIFI_CLIENT_SD_SECRET_PATH).c_str());
+    TEST_ASSERT_EQUAL_STRING("FirstNet", manager.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("first-password", manager.getWifiStaSlotPassword(0).c_str());
+    TEST_ASSERT_FALSE(filesystem.exists(RESTORE_TRANSACTION_PATH));
+    TEST_ASSERT_TRUE(captureRestoreCredentialSnapshot(storage, snapshot));
+    TEST_ASSERT_TRUE(snapshot.sdFilePresent);
+    TEST_ASSERT_EQUAL_STRING(before.c_str(), snapshot.sdFileBytes.c_str());
+}
+
+void test_secret_clear_and_snapshot_rollback_verify_unreadable_sidecar_removal() {
+    fs::FS filesystem(g_tempRoot);
+    storage.setFilesystem(&filesystem, true);
+    const String previous = StorageManager::rollbackPathFor(WIFI_CLIENT_SD_SECRET_PATH);
+    for (bool restore : {false, true}) {
+        writeFileFromString(filesystem, WIFI_CLIENT_SD_SECRET_PATH, "created by incomplete transaction");
+        fs::mock_exists_uses_read_open(true);
+        fs::mock_fail_read_opens_for_full_path((g_tempRoot / (WIFI_CLIENT_SD_SECRET_PATH + 1)).c_str());
+        fs::mock_fail_next_remove(previous.c_str());
+        RestoreCredentialSnapshot snapshot;
+        snapshot.sdRelevant = true;
+        snapshot.sdFilePresent = false;
+        const auto clear = [&]() { return restore ? restoreCredentialSnapshot(storage, snapshot)
+                                                  : clearWifiClientSecretFromSD(storage); };
+        TEST_ASSERT_FALSE(clear());
+        TEST_ASSERT_EQUAL_INT(StoragePathStatus::Present, storagePathStatus(filesystem, previous));
+        TEST_ASSERT_TRUE(clear());
+        TEST_ASSERT_EQUAL_INT(StoragePathStatus::Missing, storagePathStatus(filesystem, previous));
+        TEST_ASSERT_EQUAL_INT(StoragePathStatus::Missing, storagePathStatus(filesystem, WIFI_CLIENT_SD_SECRET_PATH));
+        fs::mock_reset_fs_open_state();
+    }
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_unreadable_restore_journal_preserves_references_until_recovery);
+    RUN_TEST(test_unreadable_delete_journal_preserves_references_until_recovery);
+    RUN_TEST(test_journal_cleanup_does_not_claim_success_for_unremoved_unreadable_journal);
+    RUN_TEST(test_unreadable_wifi_secret_merge_preserves_other_network_and_retries);
+    RUN_TEST(test_unreadable_wifi_secret_neither_falls_back_nor_reports_absent);
+    RUN_TEST(test_unreadable_wifi_secret_removal_preserves_all_entries_until_retry);
+    RUN_TEST(test_unreadable_wifi_secret_snapshot_blocks_restore_before_mutation);
+    RUN_TEST(test_secret_clear_and_snapshot_rollback_verify_unreadable_sidecar_removal);
+
     RUN_TEST(test_sd_only_wifi_healing_completes_recovery_without_restarting_other_consumers);
     RUN_TEST(test_sd_only_recovery_backoff_preserves_backup_until_profile_is_recovered);
     RUN_TEST(test_unreadable_primary_backup_defers_older_restore_until_retry);

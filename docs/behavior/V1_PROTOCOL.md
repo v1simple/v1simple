@@ -55,6 +55,30 @@ executes the real command-send path to verify that retired phone mute commands
 cannot override a later local unmute, while connected-phone retries still work.
 NimBLE transport, clocks, and locks remain host doubles.
 
+A successfully forwarded `reqStopAlertData` retires the current detailed-stream
+start, including raw and indexed long-characteristic phone writes. While the
+same phone session owns that explicit stop, local requests do not undo it. A
+replacement phone cannot inherit the stop, including when replacement happens
+during the outgoing write. A complete forwarded start releases that ownership
+on either command characteristic. After phone departure, the existing recovery
+cadence sends a new start even if display packets stay fresh. The last
+successful start still owns the minimum send
+interval. An ordinary connected phone that did not stop the stream retains the
+existing initial-start and silence recovery. `test_ble_proxy_alert_stream`
+executes the production proxy, command sender, queue, parser and connection
+owner; detector responses and NimBLE remain host models.
+
+Fade-down delivery retries a canonical `respRequestNotProcessed(0x39)` only
+while the same volume-write receipt, detector session, alert encounter and
+volume owner remain current. Rejection receipt must follow the successful
+write's ingress boundary. The normal busy/time-slice gate and retry cadence
+still apply. Confirmed reduction, a newer volume writer or observed manual pair,
+phone takeover, session change and alert replacement retire that retry; new
+threat restoration runs first. A merely unconfirmed send does not cause
+periodic low-volume writes. `test_volume_fade_startup` exercises the parser and
+quiet/fade owners with a transport double; `test_ble_alert_request_command` and
+`test_ble_proxy_alert_stream` verify the production send/queue receipt boundary.
+
 ## 1. Older Gen2 detailed alert reception
 
 ### Contract and failure

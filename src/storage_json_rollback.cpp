@@ -3,6 +3,7 @@
 #include "json_exact_input.h"
 #include "psram_json_document.h"
 #include "storage_manager.h"
+#include "storage_path_status.h"
 
 namespace {
 
@@ -19,7 +20,7 @@ JsonPathLoadResult loadJsonDocumentAtPath(fs::FS& fs, const char* path, size_t m
     }
     outDoc.clear();
 
-    if (!path || path[0] == '\0' || !fs.exists(path)) {
+    if (!path || path[0] == '\0') {
         if (errorMessage) {
             *errorMessage = "missing";
         }
@@ -87,8 +88,9 @@ JsonRollbackLoadResult loadJsonDocumentWithRollback(fs::FS& fs, const char* live
     }
 
     const String rollbackPath = StorageManager::rollbackPathFor(livePath);
-    const bool liveExists = fs.exists(livePath);
-    const bool rollbackExists = rollbackPath.length() > 0 && fs.exists(rollbackPath.c_str());
+    const StoragePathStatus liveStatus = storagePathStatus(fs, livePath);
+    if (liveStatus == StoragePathStatus::Unavailable) return JsonRollbackLoadResult::Unavailable;
+    const bool liveExists = liveStatus == StoragePathStatus::Present;
 
     const JsonPathLoadResult liveResult = liveExists
                                               ? loadJsonDocumentAtPath(fs, livePath, maxBytes, outDoc, errorMessage)
@@ -107,6 +109,9 @@ JsonRollbackLoadResult loadJsonDocumentWithRollback(fs::FS& fs, const char* live
         return JsonRollbackLoadResult::Unavailable;
     }
 
+    const StoragePathStatus rollbackStatus = storagePathStatus(fs, rollbackPath);
+    if (rollbackStatus == StoragePathStatus::Unavailable) return JsonRollbackLoadResult::Unavailable;
+    const bool rollbackExists = rollbackStatus == StoragePathStatus::Present;
     const JsonPathLoadResult rollbackResult = rollbackExists
                                                   ? loadJsonDocumentAtPath(fs, rollbackPath.c_str(), maxBytes,
                                                                            outDoc, errorMessage)

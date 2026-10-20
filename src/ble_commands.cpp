@@ -53,6 +53,8 @@ SendResult V1BLEClient::sendCommandWithResult(const uint8_t* data, size_t length
     }
     lastCommandMs.store(nowMs, std::memory_order_relaxed);
 
+    const uint32_t sentSession = sessionGeneration();
+    const uint32_t ingressBoundary = latestV1NotificationIngressSequence();
     bool ok = false;
     if (commandChar->canWrite()) {
         ok = commandChar->writeValue(data, length, true);
@@ -66,12 +68,25 @@ SendResult V1BLEClient::sendCommandWithResult(const uint8_t* data, size_t length
         // A post-check write failure may be transient; the next retry rechecks connection state.
         return SendResult::NOT_YET;
     }
+    // Only complete, canonical commands can change these protocol owners.
+    // This includes legitimate phone writes forwarded through the same path.
+    const bool canonical = length >= 7 && data[0] == ESP_PACKET_START && data[1] == 0xDA &&
+                           data[2] == 0xE6 && data[4] + 6u == length &&
+                           data[length - 1] == ESP_PACKET_END &&
+                           data[length - 2] == calcV1Checksum(data, length - 2);
+    if (canonical && length == 7) {
+        if (data[3] == 0x42) alertDataRequestGate_.recordStop(sentSession);
+        else if (data[3] == PACKET_ID_REQ_START_ALERT)
+            alertDataRequestGate_.recordSuccessfulSend(sentSession, static_cast<uint32_t>(millis()));
+    }
+    if (canonical && length == 10 && data[3] == PACKET_ID_REQ_WRITE_VOLUME)
+        volumeWriteReceipt_.sent(sentSession, ingressBoundary);
     return SendResult::SENT;
 }
 
 
 bool V1BLEClient::requestAlertData() {
-    if (!isConnected()) {
+    if (!isConnected() || phoneOwnsStoppedAlertStream()) {
         return false;
     }
 

@@ -134,6 +134,8 @@ void resetRuntimeState() {
     mock_reset_heap_caps();
     fs::mock_reset_fs_rename_state();
     fs::mock_reset_fs_write_budget();
+    fs::mock_reset_fs_open_state();
+    fs::mock_reset_fs_remove_state();
     profiles = V1ProfileManager();
     settings = SettingsManager(storage, profiles);
     mockMillis = 1000;
@@ -850,10 +852,84 @@ void test_atomic_backup_verification_oom_preserves_committed_primary() {
 
 // ════════════════════════════════════════════════════════════════════════════
 
+
+void test_backup_promotion_retains_previous_when_live_is_missing_and_rename_fails() {
+    fs::FS filesystem(g_tempRoot);
+    JsonDocument doc;
+    buildValidBackupDoc(doc);
+    TEST_ASSERT_TRUE(writeBackupAtomicallyFromDoc(&filesystem, doc));
+    const std::string original = readFileContent(filesystem, SETTINGS_BACKUP_PATH);
+    TEST_ASSERT_TRUE(filesystem.rename(SETTINGS_BACKUP_PATH, SETTINGS_BACKUP_PREV_PATH));
+    fs::mock_exists_uses_read_open(true);
+    fs::mock_fail_read_opens_for_full_path((g_tempRoot / (SETTINGS_BACKUP_PREV_PATH + 1)).c_str());
+    fs::mock_fail_next_rename();
+    TEST_ASSERT_FALSE(writeBackupAtomicallyFromDoc(&filesystem, doc));
+    fs::mock_reset_fs_open_state();
+    TEST_ASSERT_EQUAL_STRING(original.c_str(), readFileContent(filesystem, SETTINGS_BACKUP_PREV_PATH).c_str());
+    TEST_ASSERT_TRUE(writeBackupAtomicallyFromDoc(&filesystem, doc));
+    TEST_ASSERT_EQUAL_STRING(original.c_str(), readFileContent(filesystem, SETTINGS_BACKUP_PATH).c_str());
+}
+
+void test_backup_rollback_restores_previous_even_when_previous_read_open_fails() {
+    fs::FS filesystem(g_tempRoot);
+    JsonDocument doc;
+    buildValidBackupDoc(doc);
+    TEST_ASSERT_TRUE(writeBackupAtomicallyFromDoc(&filesystem, doc));
+    const std::string original = readFileContent(filesystem, SETTINGS_BACKUP_PATH);
+    fs::mock_exists_uses_read_open(true);
+    fs::mock_fail_read_opens_for_full_path((g_tempRoot / (SETTINGS_BACKUP_PREV_PATH + 1)).c_str());
+    fs::mock_fail_rename_on_call(fs::g_mock_fs_rename_state.renameCalls + 2u);
+    TEST_ASSERT_FALSE(writeBackupAtomicallyFromDoc(&filesystem, doc));
+    fs::mock_reset_fs_open_state();
+    TEST_ASSERT_EQUAL_STRING(original.c_str(), readFileContent(filesystem, SETTINGS_BACKUP_PATH).c_str());
+}
+
+void test_backup_post_promotion_read_failure_preserves_both_valid_copies() {
+    fs::FS filesystem(g_tempRoot);
+    JsonDocument original;
+    buildValidBackupDoc(original);
+    TEST_ASSERT_TRUE(writeBackupAtomicallyFromDoc(&filesystem, original));
+    const std::string before = readFileContent(filesystem, SETTINGS_BACKUP_PATH);
+    JsonDocument replacement;
+    buildValidBackupDoc(replacement);
+    replacement["brightness"] = 17;
+    replacement.remove("_crc32");
+    replacement["_crc32"] = BackupPayloadBuilder::computeBackupCrc32(replacement);
+    fs::mock_exists_uses_read_open(true);
+    fs::mock_fail_read_opens_for_full_path((g_tempRoot / (SETTINGS_BACKUP_PATH + 1)).c_str());
+    TEST_ASSERT_FALSE(writeBackupAtomicallyFromDoc(&filesystem, replacement));
+    fs::mock_reset_fs_open_state();
+    TEST_ASSERT_EQUAL_STRING(before.c_str(), readFileContent(filesystem, SETTINGS_BACKUP_PREV_PATH).c_str());
+    JsonDocument saved;
+    TEST_ASSERT_TRUE(parseBackupFile(&filesystem, SETTINGS_BACKUP_PATH, saved, false));
+    TEST_ASSERT_EQUAL_UINT8(17, saved["brightness"].as<uint8_t>());
+}
+
+void test_backup_rotation_aborts_if_previous_cannot_be_removed() {
+    fs::FS filesystem(g_tempRoot);
+    JsonDocument doc;
+    buildValidBackupDoc(doc);
+    TEST_ASSERT_TRUE(writeBackupAtomicallyFromDoc(&filesystem, doc));
+    TEST_ASSERT_TRUE(writeBackupAtomicallyFromDoc(&filesystem, doc));
+    const std::string live = readFileContent(filesystem, SETTINGS_BACKUP_PATH);
+    const std::string previous = readFileContent(filesystem, SETTINGS_BACKUP_PREV_PATH);
+    fs::mock_exists_uses_read_open(true);
+    fs::mock_fail_read_opens_for_full_path((g_tempRoot / (SETTINGS_BACKUP_PREV_PATH + 1)).c_str());
+    fs::mock_fail_next_remove(SETTINGS_BACKUP_PREV_PATH);
+    TEST_ASSERT_FALSE(writeBackupAtomicallyFromDoc(&filesystem, doc));
+    fs::mock_reset_fs_open_state();
+    TEST_ASSERT_EQUAL_STRING(live.c_str(), readFileContent(filesystem, SETTINGS_BACKUP_PATH).c_str());
+    TEST_ASSERT_EQUAL_STRING(previous.c_str(), readFileContent(filesystem, SETTINGS_BACKUP_PREV_PATH).c_str());
+}
+
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
     UNITY_BEGIN();
+    RUN_TEST(test_backup_promotion_retains_previous_when_live_is_missing_and_rename_fails);
+    RUN_TEST(test_backup_rollback_restores_previous_even_when_previous_read_open_fails);
+    RUN_TEST(test_backup_post_promotion_read_failure_preserves_both_valid_copies);
+    RUN_TEST(test_backup_rotation_aborts_if_previous_cannot_be_removed);
 
     // Signature
     RUN_TEST(test_signature_accepts_apSSID);

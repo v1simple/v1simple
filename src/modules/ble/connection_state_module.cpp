@@ -204,9 +204,10 @@ bool ConnectionStateModule::process(unsigned long nowMs) {
         presentPendingOwner(nowMs, false, sessionGeneration);
     }
 
-    // Display traffic can stay fresh even when the initial alert-start writes
-    // failed. Once followups finish, keep trying at the existing recovery cadence.
-    if (isConnected && bleQueue_) {
+    // Display traffic can stay fresh when an initial start failed or a phone
+    // stopped detailed alerts. Resume at the existing cadence after the phone
+    // releases that explicit stop; ordinary connected-phone recovery is unchanged.
+    if (isConnected && bleQueue_ && !ble_->phoneOwnsStoppedAlertStream()) {
         unsigned long lastRx = bleQueue_->getLastRxMillis();
         bool dataStale = (nowMs - lastRx) > DATA_STALE_MS;
         const bool alertStartMissing = ble_->needsAlertDataStartRecovery();

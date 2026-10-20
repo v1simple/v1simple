@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include <cstring>
 #include <vector>
+#include "../../src/ble_volume_write_receipt.h"
+#include "../../src/v1_request_flow_control.h"
 
 enum class SendResult { SENT, NOT_YET, FAILED };
 
@@ -13,6 +15,13 @@ enum class SendResult { SENT, NOT_YET, FAILED };
  */
 class V1BLEClient {
 public:
+    BleVolumeWriteReceipt volumeWriteReceipt_;
+    V1RequestFlowControl volumeFlowControl_;
+    bool enforceVolumeFlowControl = false;
+    uint32_t volumeWriteRevision() const { return volumeWriteReceipt_.revision(); }
+    bool volumeWriteRejected(uint32_t revision) const {
+        return volumeWriteReceipt_.rejected(revision, sessionGeneration());
+    }
     struct SweepWrite {
         uint8_t index;
         uint16_t lower;
@@ -127,6 +136,9 @@ public:
     bool changeSessionDuringPublish = false;
     
     void reset() {
+        volumeWriteReceipt_ = {};
+        volumeFlowControl_.reset();
+        enforceVolumeFlowControl = false;
         proxyConnected = false;
         connected = true;
         setMuteCalls = 0;
@@ -229,19 +241,24 @@ public:
     
     // Connection state
     bool isProxyClientConnected() const { return proxyConnected; }
+    bool phoneOwnsStoppedAlertStream() const { return false; }
     void setProxyConnected(bool v) { proxyConnected = v; }
     bool isConnected() const { return connected; }
     void onV1DisplayFlowControl(bool holdoff) {
         onV1DisplayFlowControlCalls++;
         lastTimeSliceHoldoff = holdoff;
+        volumeFlowControl_.onDisplay();
     }
     void onV1Busy(const uint8_t* packetIds, size_t count) {
         onV1BusyCalls++;
         lastBusyPacketIds.assign(packetIds, packetIds + count);
+        volumeFlowControl_.onBusy(packetIds, count);
     }
-    void onV1RequestNotProcessed(uint8_t packetId) {
+    void onV1RequestNotProcessed(uint8_t packetId, uint32_t ingress = 0) {
         onV1RequestNotProcessedCalls++;
         lastNotProcessedPacketId = packetId;
+        volumeFlowControl_.onRequestNotProcessed(packetId);
+        volumeWriteReceipt_.reject(packetId, sessionGeneration(), ingress);
     }
     void setConnected(bool v) { connected = v; }
     uint32_t sessionGeneration() const { return sessionGenerationValue; }
@@ -274,6 +291,8 @@ public:
         lastVolume = vol;
         lastMuteVolume = muteVol;
         lastVolumeAux = aux;
+        if (enforceVolumeFlowControl && (lastTimeSliceHoldoff || volumeFlowControl_.holds(0x39)))
+            return SendResult::NOT_YET;
         if (nextVolumeSendResult != SendResult::SENT) {
             const SendResult result = nextVolumeSendResult;
             nextVolumeSendResult = SendResult::SENT;
@@ -283,7 +302,9 @@ public:
             setVolumeFailuresRemaining--;
             return SendResult::FAILED;
         }
+        const uint32_t ingress = latestV1NotificationIngressSequence();
         if (setVolumeSuccess && setVolumeSendHook) setVolumeSendHook();
+        if (setVolumeSuccess) volumeWriteReceipt_.sent(sessionGeneration(), ingress);
         return setVolumeSuccess ? SendResult::SENT : SendResult::FAILED;
     }
     bool setVolume(uint8_t vol, uint8_t muteVol) { return setVolumeResult(vol, muteVol) == SendResult::SENT; }

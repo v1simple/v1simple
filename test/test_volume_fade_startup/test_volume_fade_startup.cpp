@@ -111,8 +111,11 @@ void feed(uint8_t id, std::initializer_list<uint8_t> data, uint32_t nowMs, uint3
     packet.push_back(checksum);
     packet.push_back(0xAB);
     mockMillis = nowMs;
-    TEST_ASSERT_TRUE(parser.parse(packet.data(), packet.size(), nowMs,
-                                  queuedIngress ? queuedIngress : ble.noteV1NotificationIngress()));
+    const uint32_t ingress = queuedIngress ? queuedIngress : ble.noteV1NotificationIngress();
+    TEST_ASSERT_TRUE(parser.parse(packet.data(), packet.size(), nowMs, ingress));
+    // Same canonical callbacks as BleQueueModule; transport remains a double.
+    if (id == 0x65) ble.onV1RequestNotProcessed(packet[5], ingress);
+    if (id == PACKET_ID_DISPLAY_DATA) ble.onV1DisplayFlowControl(parser.getDisplayState().timeSliceHoldoff);
 }
 
 void alert(uint32_t nowMs) {
@@ -1139,8 +1142,109 @@ void test_restore_acknowledgement_survives_retry_and_ingress_rollover() {
     }
 }
 
+void startUnconfirmedFade() {
+    ble.enforceVolumeFlowControl = true;
+    ble.onV1DisplayFlowControl(false);
+    volume(6, 2, 9500);
+    alert(10000);
+    TEST_ASSERT_FALSE(quiet.executeVolumeFade(10000, &fade));
+    alert(12500);
+    TEST_ASSERT_TRUE(quiet.executeVolumeFade(12500, &fade));
+    TEST_ASSERT_EQUAL_UINT32(1, ble.volumeWriteRevision());
+}
+
+void test_rejected_fade_retries_only_after_holdoff_then_stops_on_confirmation() {
+    startUnconfirmedFade();
+    feed(0x65, {0x39}, 12510);
+    TEST_ASSERT_TRUE(ble.volumeWriteRejected(1));
+    alert(12600);
+    quiet.executeVolumeFade(12600, &fade);
+    TEST_ASSERT_EQUAL_UINT32(1, ble.volumeWriteRevision()); // Explicit rejection still holds the write.
+    const uint8_t busy[] = {0x39};
+    ble.onV1Busy(busy, 1);
+    ble.onV1DisplayFlowControl(false);
+    alert(12700);
+    quiet.executeVolumeFade(12700, &fade);
+    TEST_ASSERT_EQUAL_UINT32(1, ble.volumeWriteRevision()); // First display after busy still holds it.
+    ble.onV1DisplayFlowControl(false);
+    quiet.executeVolumeFade(12710, &fade);
+    TEST_ASSERT_EQUAL_UINT32(1, ble.volumeWriteRevision()); // Retry interval remains bounded.
+    volume(6, 2, 12800);
+    alert(12800);
+    quiet.executeVolumeFade(12800, &fade);
+    TEST_ASSERT_EQUAL_UINT32(2, ble.volumeWriteRevision());
+    TEST_ASSERT_EQUAL_UINT8(1, ble.lastVolume);
+    volume(1, 2, 12900);
+    quiet.executeVolumeFade(12900, &fade);
+    // A later duplicate rejection cannot reopen an already confirmed action.
+    feed(0x65, {0x39}, 12910);
+    ble.onV1DisplayFlowControl(false);
+    for (uint32_t now = 13000; now < 60000; now += 100) {
+        volume(1, 2, now); alert(now); quiet.executeVolumeFade(now, &fade);
+    }
+    TEST_ASSERT_EQUAL_UINT32(2, ble.volumeWriteRevision());
+}
+
+void test_unconfirmed_fade_without_explicit_rejection_is_not_periodically_replayed() {
+    startUnconfirmedFade();
+    for (uint32_t now = 12600; now < 30000; now += 100) {
+        volume(6, 2, now); alert(now); quiet.executeVolumeFade(now, &fade);
+    }
+    TEST_ASSERT_EQUAL_UINT32(1, ble.volumeWriteRevision());
+}
+
+void test_rejected_fade_yields_to_manual_pair_new_writer_and_session() {
+    for (unsigned newer = 0; newer < 3; ++newer) {
+        setUp(); startUnconfirmedFade();
+        feed(0x65, {0x39}, 12510);
+        alert(12600); quiet.executeVolumeFade(12600, &fade); // Held pending retry.
+        ble.onV1DisplayFlowControl(false);
+        if (newer == 0) volume(7, 4, 12700); // Detector/manual observation.
+        if (newer == 1) TEST_ASSERT_TRUE(quiet.sendAutoPushVolume(8, 3));
+        if (newer == 2) ble.setSessionGeneration(2);
+        const uint32_t writes = ble.volumeWriteRevision();
+        for (uint32_t now = 12800; now < 15000; now += 100) {
+            alert(now); quiet.executeVolumeFade(now, &fade);
+        }
+        TEST_ASSERT_EQUAL_UINT32(writes, ble.volumeWriteRevision());
+    }
+}
+
+void test_rejected_fade_yields_to_phone_and_disabled_setting() {
+    for (bool phone : {false, true}) {
+        setUp(); startUnconfirmedFade();
+        feed(0x65, {0x39}, 12510);
+        ble.onV1DisplayFlowControl(false);
+        if (phone) ble.setProxyConnected(true);
+        else settings.settings.alertVolumeFadeEnabled = false;
+        alert(12600); quiet.executeVolumeFade(12600, &fade);
+        TEST_ASSERT_EQUAL_UINT32(1, ble.volumeWriteRevision());
+    }
+}
+
+void test_rejected_fade_releases_new_threat_before_any_reduction() {
+    for (bool coalescedClear : {false, true}) {
+        setUp(); startUnconfirmedFade();
+        feed(0x65, {0x39}, 12510);
+        ble.onV1DisplayFlowControl(false);
+        if (coalescedClear) { clearAlert(12600); alert(12601); }
+        else feed(PACKET_ID_ALERT_DATA, {0x11, 0x8A, 0xAC, 0xAC, 0x00, 0x22, 0x80}, 12601);
+        quiet.executeVolumeFade(12601, &fade);
+        TEST_ASSERT_EQUAL_UINT32(2, ble.volumeWriteRevision());
+        TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume); // Restore wins over the rejected reduction.
+        volume(6, 2, 12700);
+        quiet.executeVolumeFade(12700, &fade);
+        TEST_ASSERT_EQUAL_UINT32(2, ble.volumeWriteRevision());
+    }
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_rejected_fade_retries_only_after_holdoff_then_stops_on_confirmation);
+    RUN_TEST(test_unconfirmed_fade_without_explicit_rejection_is_not_periodically_replayed);
+    RUN_TEST(test_rejected_fade_yields_to_manual_pair_new_writer_and_session);
+    RUN_TEST(test_rejected_fade_yields_to_phone_and_disabled_setting);
+    RUN_TEST(test_rejected_fade_releases_new_threat_before_any_reduction);
     RUN_TEST(test_delayed_reduction_feedback_cannot_confirm_an_unsent_restore);
     RUN_TEST(test_restore_acknowledgement_survives_retry_and_ingress_rollover);
     RUN_TEST(test_restore_accepts_volume_feedback_received_inside_the_send);

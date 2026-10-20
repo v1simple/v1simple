@@ -150,6 +150,81 @@ describe('autopush route page', () => {
         unmount();
     });
 
+    it.each([
+        ['another slot', 1],
+        ['the same slot after cancelling and reopening', 0]
+    ])('preserves a new editor for %s when an earlier save and reload finish', async (_, nextSlot) => {
+        const slots = structuredClone(
+            wifiApiFixtures.scenarios.autopush_routes['GET /api/autopush/slots'][0].body
+        );
+        slots.schemaVersion = 4;
+        let finishSave;
+        let finishReload;
+        let saves = 0;
+        let loads = 0;
+        const pendingSave = new Promise((resolve) => (finishSave = resolve));
+        const pendingReload = new Promise((resolve) => (finishReload = resolve));
+        const fetchMock = installDefaultFetch([
+            { method: 'GET', match: '/api/autopush/slots', respond: () => {
+                loads += 1;
+                return loads === 2 ? pendingReload : jsonResponse(slots);
+            } },
+            { method: 'POST', match: '/api/autopush/slot', respond: ({ init }) => {
+                saves += 1;
+                slots.slots[Number(init.body.get('slot'))].name = init.body.get('name');
+                return saves === 1 ? pendingSave : jsonResponse({ success: true });
+            } }
+        ]);
+        const { unmount } = render(Page);
+        await screen.findByText('Highway');
+        const firstCard = screen.getByRole('heading', { name: 'Default' }).closest('.surface-card');
+        const nextCard = screen.getByRole('heading', {
+            name: nextSlot === 0 ? 'Default' : 'Highway'
+        }).closest('.surface-card');
+        await fireEvent.click(within(firstCard).getByRole('button', { name: /^edit$/i }));
+        await fireEvent.input(screen.getByLabelText('Slot name'), { target: { value: 'Submitted' } });
+        await fireEvent.click(screen.getByRole('button', { name: /^save slot$/i }));
+        if (nextSlot === 0) {
+            await fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+        }
+        await fireEvent.click(within(nextCard).getByRole('button', { name: /^edit$/i }));
+        await fireEvent.input(screen.getByLabelText('Slot name'), { target: { value: 'New draft' } });
+        await fireEvent.input(screen.getByLabelText('Alert persistence value (seconds)'), {
+            target: { value: '3' }
+        });
+        const nextPriorityArrowOnly = !screen.getByLabelText('Priority arrow only').checked;
+        await fireEvent.click(screen.getByLabelText('Priority arrow only'));
+        expect(screen.getByRole('button', { name: /^save slot$/i })).toBeDisabled();
+
+        finishSave(jsonResponse({ success: true }));
+        await screen.findByText('Slot saved!');
+        await waitFor(() => expect(loads).toBe(2));
+        finishReload(jsonResponse(slots));
+        await screen.findByRole('heading', { name: 'SUBMITTED' });
+        expect(screen.queryByLabelText('Slot name')).toHaveValue('New draft');
+        expect(screen.getByLabelText('Alert persistence value (seconds)')).toHaveValue(3);
+        expect(screen.getByLabelText('Priority arrow only')).toHaveProperty('checked', nextPriorityArrowOnly);
+        await waitFor(() => expect(screen.getByRole('button', { name: /^save slot$/i })).toBeEnabled());
+        const firstPost = fetchMock.mock.calls.filter(
+            ([url, init]) => url === '/api/autopush/slot' && init?.method === 'POST'
+        );
+        expect(firstPost).toHaveLength(1);
+        expect(firstPost[0][1].body.get('slot')).toBe('0');
+        expect(firstPost[0][1].body.get('name')).toBe('SUBMITTED');
+
+        await fireEvent.click(screen.getByRole('button', { name: /^save slot$/i }));
+        await waitFor(() => expect(screen.queryByLabelText('Slot name')).not.toBeInTheDocument());
+        const posts = fetchMock.mock.calls.filter(
+            ([url, init]) => url === '/api/autopush/slot' && init?.method === 'POST'
+        );
+        expect(posts).toHaveLength(2);
+        expect(posts[1][1].body.get('slot')).toBe(String(nextSlot));
+        expect(posts[1][1].body.get('name')).toBe('NEW DRAFT');
+        expect(posts[1][1].body.get('alertPersist')).toBe('3');
+        expect(posts[1][1].body.get('priorityArrowOnly')).toBe(String(nextPriorityArrowOnly));
+        unmount();
+    });
+
     it('shows a volume-policy conflict returned by the device', async () => {
         installDefaultFetch([{
             method: 'POST', match: '/api/autopush/slot',

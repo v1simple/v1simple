@@ -2,6 +2,7 @@
 /// OBD-owned BLE client implementation. Fully independent of ble_client.cpp.
 
 #include "obd_ble_client.h"
+#include "ble_bond_backup_store.h"
 
 #if !defined(UNIT_TEST) || defined(V1_LINKED_TEST_OBD_BLE_CLIENT)
 
@@ -348,7 +349,7 @@ bool ObdBleClient::isAuthenticated() const {
 }
 
 bool ObdBleClient::deleteBond(const char* address, uint8_t addrType) {
-    if (!address || address[0] == '\0') {
+    if (!address || address[0] == '\0' || bleBondRecoveryPending()) {
         return false;
     }
 

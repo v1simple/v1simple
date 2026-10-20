@@ -13,6 +13,8 @@
 
 #include "../mocks/Arduino.h"
 #include "../mocks/FS.h"
+#include "../mocks/Preferences.h"
+#include "../mocks/nvs.h"
 #include "../mocks/storage_manager.h"
 #include "../../src/ble_bond_backup_store.h"
 
@@ -33,6 +35,47 @@ fs::FS gFs;
 std::vector<ble_store_value_sec> gOurSecs;
 std::vector<ble_store_value_sec> gPeerSecs;
 std::vector<ble_store_value_sec> gRestoredSecs;
+// The pinned ESP NimBLE store mutates RAM before it attempts NVS persistence.
+// Enable separate durable tables only for recovery lifecycle scenarios.
+bool gModelBondPersistence = false;
+std::vector<ble_store_value_sec> gDurableOurSecs;
+std::vector<ble_store_value_sec> gDurablePeerSecs;
+size_t gBondWriteCalls = 0;
+size_t gFailBondWriteCall = 0;
+size_t gResetAfterBondWriteCall = 0;
+size_t gBondCapacity = 8;
+size_t gOldestBondEvictions = 0;
+struct BondRestoreReset {};
+
+void upsertBond(std::vector<ble_store_value_sec>& entries, const ble_store_value_sec& sec) {
+    for (auto& entry : entries) {
+        if (memcmp(&entry.peer_addr, &sec.peer_addr, sizeof(sec.peer_addr)) == 0) {
+            entry = sec;
+            return;
+        }
+    }
+    entries.push_back(sec);
+}
+
+int persistBond(const ble_store_value_sec* sec, bool ours) {
+    ++gBondWriteCalls;
+    if (gModelBondPersistence) {
+        auto& current = ours ? gOurSecs : gPeerSecs;
+        bool present = false;
+        for (const auto& existing : current)
+            if (memcmp(&existing.peer_addr, &sec->peer_addr, sizeof(sec->peer_addr)) == 0) present = true;
+        if (!present && current.size() >= gBondCapacity) {
+            if (handleBleBondStoreStatus(nullptr, nullptr) != 0) return 0x1f;
+        }
+        upsertBond(ours ? gOurSecs : gPeerSecs, *sec);
+        if (gBondWriteCalls == gFailBondWriteCall) return 0x1e;
+        upsertBond(ours ? gDurableOurSecs : gDurablePeerSecs, *sec);
+        if (gBondWriteCalls == gResetAfterBondWriteCall) throw BondRestoreReset{};
+    }
+    gRestoredSecs.push_back(*sec);
+    return 0;
+}
+
 
 ble_store_value_sec makeSec(uint8_t base) {
     ble_store_value_sec sec = {};
@@ -101,6 +144,12 @@ std::string functionBody(const std::string& source, const std::string& signature
 
 }  // namespace
 
+extern "C" int ble_store_util_status_rr(ble_store_status_event*, void*) {
+    ++gOldestBondEvictions;
+    if (!gOurSecs.empty()) gOurSecs.erase(gOurSecs.begin());
+    return 0;
+}
+
 extern "C" int ble_store_iterate(int objType,
                                   ble_store_iterator_fn callback,
                                   void* cookie) {
@@ -117,13 +166,11 @@ extern "C" int ble_store_iterate(int objType,
 }
 
 extern "C" int ble_store_write_our_sec(const ble_store_value_sec* sec) {
-    gRestoredSecs.push_back(*sec);
-    return 0;
+    return persistBond(sec, true);
 }
 
 extern "C" int ble_store_write_peer_sec(const ble_store_value_sec* sec) {
-    gRestoredSecs.push_back(*sec);
-    return 0;
+    return persistBond(sec, false);
 }
 
 #include "../../src/psram_freertos_alloc.cpp"
@@ -139,6 +186,15 @@ void setUp() {
     gOurSecs.clear();
     gPeerSecs.clear();
     gRestoredSecs.clear();
+    gModelBondPersistence = false;
+    gDurableOurSecs.clear();
+    gDurablePeerSecs.clear();
+    gBondWriteCalls = gFailBondWriteCall = gResetAfterBondWriteCall = 0;
+    gBondCapacity = 8;
+    gOldestBondEvictions = 0;
+    mock_preferences::reset();
+    mock_nvs::reset();
+    initializeBleBondRecovery();
     fs::mock_reset_fs_rename_state();
     fs::mock_reset_fs_open_state();
     fs::mock_reset_fs_remove_state();
@@ -376,6 +432,7 @@ void expectRestoredBond(uint8_t expected) {
 }
 
 void rebootBondOwner() {
+    initializeBleBondRecovery();
     resetBleBondBackupWriterForTest();
     registerBleBondBackupStorage(storage);
     fs::mock_reset_fs_rename_state();
@@ -476,7 +533,9 @@ void test_bond_candidate_validation_failure_preserves_committed_backup_and_retri
     TEST_ASSERT_EQUAL_INT(1, enqueueCurrentBleBondBackupSnapshot());
     TEST_ASSERT_FALSE(runBleBondBackupWriterOnceForTest());
     TEST_ASSERT_EQUAL_UINT(0, fs::g_mock_fs_rename_state.renameCalls);
-    expectRestoredBond(7);
+    // Inspect without starting a recovery: recovery intentionally invalidates
+    // snapshots captured before it, whereas this case exercises writer retry.
+    TEST_ASSERT_EQUAL_UINT8(7, readFirstOurAddressByte());
     TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
     expectRestoredBond(20);
 }
@@ -625,8 +684,288 @@ void test_restore_valid_empty_live_does_not_resurrect_previous_bonds() {
     TEST_ASSERT_TRUE(gRestoredSecs.empty());
 }
 
+namespace {
+void seedCompleteRecovery(bool previous = false) {
+    gOurSecs = {makeSec(1), makeSec(11)};
+    gPeerSecs = {makeSec(21)};
+    TEST_ASSERT_EQUAL_INT(3, enqueueCurrentBleBondBackupSnapshot());
+    TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
+    if (previous) TEST_ASSERT_TRUE(gFs.rename(kTestBondPath, kTestBondPrevious));
+    clearBondNvsForRestore();
+    gModelBondPersistence = true;
+}
+
+void bootRecoveryOwner() {
+    gOurSecs = gDurableOurSecs;
+    gPeerSecs = gDurablePeerSecs;
+    gBondWriteCalls = gFailBondWriteCall = gResetAfterBondWriteCall = 0;
+    mock_preferences::afterWrite() = {};
+    mock_preferences::set_fail_writes_for_key(nullptr);
+    mock_nvs::reset();
+    rebootBondOwner();
+    restoreOrBackupBleBondsAtBoot(storage, gOurSecs.size());
+}
+
+void expectCompleteRecoveredBackup() {
+    TEST_ASSERT_FALSE(bleBondRecoveryPending());
+    TEST_ASSERT_EQUAL_UINT(2, gDurableOurSecs.size());
+    TEST_ASSERT_EQUAL_UINT(1, gDurablePeerSecs.size());
+    bootRecoveryOwner();
+    TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
+    TEST_ASSERT_EQUAL_UINT32(2, readHeader().ourSecCount);
+    TEST_ASSERT_EQUAL_UINT32(1, readHeader().peerSecCount);
+}
+}
+
+void test_interrupted_restore_resumes_after_each_durable_record_without_replacing_backup() {
+    for (size_t interrupted = 1; interrupted <= 3; ++interrupted) {
+        setUp();
+        seedCompleteRecovery();
+        // A stale queued snapshot is also denied once recovery has started.
+        TEST_ASSERT_EQUAL_INT(0, enqueueCurrentBleBondBackupSnapshot());
+        gResetAfterBondWriteCall = interrupted;
+        bool reset = false;
+        try { restoreOrBackupBleBondsAtBoot(storage, 0); }
+        catch (const BondRestoreReset&) { reset = true; }
+        TEST_ASSERT_TRUE(reset);
+        TEST_ASSERT_TRUE(bleBondRecoveryPending());
+        TEST_ASSERT_EQUAL_INT(-1, enqueueCurrentBleBondBackupSnapshot());
+        TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
+        TEST_ASSERT_EQUAL_UINT(0, bleBondBackupQueueDepthForTest());
+        TEST_ASSERT_EQUAL_UINT32(2, readHeader().ourSecCount);
+        TEST_ASSERT_EQUAL_UINT32(1, readHeader().peerSecCount);
+        bootRecoveryOwner();
+        TEST_ASSERT_EQUAL_UINT(3 - interrupted, gBondWriteCalls);
+        expectCompleteRecoveredBackup();
+    }
+}
+
+void test_failed_our_or_peer_write_keeps_recovery_pending_until_fresh_boot() {
+    for (const size_t failed : {size_t(2), size_t(3)}) {
+        setUp();
+        seedCompleteRecovery();
+        gFailBondWriteCall = failed;
+        restoreOrBackupBleBondsAtBoot(storage, 0);
+        TEST_ASSERT_TRUE(bleBondRecoveryPending());
+        TEST_ASSERT_EQUAL_INT(-1, restoreBleBondBackup(gFs, kTestBondPath));
+        TEST_ASSERT_EQUAL_UINT(failed, gBondWriteCalls);
+        TEST_ASSERT_EQUAL_INT(-1, enqueueCurrentBleBondBackupSnapshot());
+        bootRecoveryOwner();
+        expectCompleteRecoveredBackup();
+    }
+}
+
+void test_recovery_marker_failure_does_not_start_nimble_writes() {
+    seedCompleteRecovery();
+    mock_preferences::set_fail_writes_for_key(kBondRecoveryKey);
+    restoreOrBackupBleBondsAtBoot(storage, 0);
+    TEST_ASSERT_TRUE(bleBondRecoveryPending());
+    TEST_ASSERT_EQUAL_UINT(0, gBondWriteCalls);
+    TEST_ASSERT_EQUAL_INT(-1, enqueueCurrentBleBondBackupSnapshot());
+    bootRecoveryOwner();
+    expectCompleteRecoveredBackup();
+}
+
+void test_reset_after_recovery_marker_before_first_bond_write_resumes() {
+    seedCompleteRecovery();
+    mock_preferences::afterWrite() = [](const char* key) {
+        if (std::string(key) == kBondRecoveryKey) throw BondRestoreReset{};
+    };
+    bool reset = false;
+    try { restoreOrBackupBleBondsAtBoot(storage, 0); }
+    catch (const BondRestoreReset&) { reset = true; }
+    TEST_ASSERT_TRUE(reset);
+    TEST_ASSERT_EQUAL_UINT(0, gBondWriteCalls);
+    bootRecoveryOwner();
+    expectCompleteRecoveredBackup();
+}
+
+void test_recovery_marker_read_or_type_error_defers_recovery_and_snapshots() {
+    for (const int error : {-1, ESP_ERR_NVS_TYPE_MISMATCH}) {
+        setUp();
+        seedCompleteRecovery();
+        mock_nvs::set_uint32_probe_result(kBondRecoveryNamespace, kBondRecoveryKey, error);
+        initializeBleBondRecovery();
+        restoreOrBackupBleBondsAtBoot(storage, 1);
+        TEST_ASSERT_TRUE(bleBondRecoveryPending());
+        TEST_ASSERT_EQUAL_UINT(0, gBondWriteCalls);
+        TEST_ASSERT_EQUAL_INT(-1, enqueueCurrentBleBondBackupSnapshot());
+        bootRecoveryOwner();
+        expectCompleteRecoveredBackup();
+    }
+}
+
+void test_recovery_marker_verification_failure_does_not_start_nimble_writes() {
+    seedCompleteRecovery();
+    mock_preferences::afterWrite() = [](const char* key) {
+        if (std::string(key) == kBondRecoveryKey)
+            mock_nvs::set_uint32_probe_result(kBondRecoveryNamespace, kBondRecoveryKey, -1);
+    };
+    restoreOrBackupBleBondsAtBoot(storage, 0);
+    TEST_ASSERT_TRUE(bleBondRecoveryPending());
+    TEST_ASSERT_EQUAL_UINT(0, gBondWriteCalls);
+    bootRecoveryOwner();
+    expectCompleteRecoveredBackup();
+}
+
+void test_recovery_marker_clear_failure_keeps_complete_source_until_next_boot() {
+    seedCompleteRecovery();
+    mock_preferences::set_fail_write_for_key_on_call(kBondRecoveryKey, 2);
+    restoreOrBackupBleBondsAtBoot(storage, 0);
+    TEST_ASSERT_TRUE(bleBondRecoveryPending());
+    TEST_ASSERT_EQUAL_UINT(3, gBondWriteCalls);
+    TEST_ASSERT_EQUAL_INT(-1, enqueueCurrentBleBondBackupSnapshot());
+    bootRecoveryOwner();
+    TEST_ASSERT_EQUAL_UINT(0, gBondWriteCalls);
+    expectCompleteRecoveredBackup();
+}
+
+void test_pending_restore_waits_for_absent_or_unreadable_sd_without_losing_bonds() {
+    seedCompleteRecovery();
+    gFailBondWriteCall = 2;
+    restoreOrBackupBleBondsAtBoot(storage, 0);
+    storage.reset();
+    bootRecoveryOwner();
+    TEST_ASSERT_TRUE(bleBondRecoveryPending());
+    TEST_ASSERT_EQUAL_UINT(1, gOurSecs.size());
+    TEST_ASSERT_EQUAL_INT(-1, enqueueCurrentBleBondBackupSnapshot());
+    storage.setFilesystem(&gFs, true);
+    fs::mock_fail_next_read_open(kTestBondPath);
+    restoreOrBackupBleBondsAtBoot(storage, gOurSecs.size());
+    TEST_ASSERT_TRUE(bleBondRecoveryPending());
+    TEST_ASSERT_EQUAL_UINT(0, gBondWriteCalls);
+    bootRecoveryOwner();
+    expectCompleteRecoveredBackup();
+}
+
+void test_normal_boot_without_sd_retains_existing_bonds_and_allows_runtime_changes() {
+    gOurSecs = {makeSec(1)};
+    storage.reset();
+    initializeBleBondRecovery();
+    restoreOrBackupBleBondsAtBoot(storage, 1);
+    TEST_ASSERT_FALSE(bleBondRecoveryPending());
+    TEST_ASSERT_EQUAL_UINT(1, gOurSecs.size());
+    TEST_ASSERT_EQUAL_UINT(0, gBondWriteCalls);
+    TEST_ASSERT_EQUAL_UINT(1, bleBondBackupQueueDepthForTest());
+}
+
+void test_pending_restore_from_previous_backup_survives_failed_peer_write() {
+    seedCompleteRecovery(true);
+    gFailBondWriteCall = 3;
+    restoreOrBackupBleBondsAtBoot(storage, 0);
+    TEST_ASSERT_TRUE(bleBondRecoveryPending());
+    TEST_ASSERT_TRUE(gFs.exists(kTestBondPrevious));
+    bootRecoveryOwner();
+    expectCompleteRecoveredBackup();
+}
+
+void test_pending_restore_preserves_newer_pairing_keys_and_new_bonds() {
+    seedCompleteRecovery();
+    gFailBondWriteCall = 2;
+    restoreOrBackupBleBondsAtBoot(storage, 0);
+    gDurableOurSecs[0].payload[0] = 99;
+    gDurableOurSecs.push_back(makeSec(31));
+    bootRecoveryOwner();
+    TEST_ASSERT_FALSE(bleBondRecoveryPending());
+    TEST_ASSERT_EQUAL_UINT(3, gDurableOurSecs.size());
+    TEST_ASSERT_EQUAL_UINT8(99, gOurSecs[0].payload[0]);
+    TEST_ASSERT_EQUAL_UINT8(99, gDurableOurSecs[0].payload[0]);
+    bootRecoveryOwner();
+    TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
+    TEST_ASSERT_EQUAL_UINT32(3, readHeader().ourSecCount);
+}
+
+void test_intentional_deletion_after_completed_restore_is_not_revived() {
+    seedCompleteRecovery();
+    bootRecoveryOwner();
+    TEST_ASSERT_FALSE(bleBondRecoveryPending());
+    // Successful normal deletion persists in NimBLE before the regular backup.
+    gDurableOurSecs.clear();
+    gDurablePeerSecs.clear();
+    gOurSecs.clear();
+    gPeerSecs.clear();
+    TEST_ASSERT_EQUAL_INT(0, enqueueCurrentBleBondBackupSnapshot());
+    TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
+    bootRecoveryOwner();
+    TEST_ASSERT_FALSE(bleBondRecoveryPending());
+    TEST_ASSERT_TRUE(gOurSecs.empty());
+    TEST_ASSERT_TRUE(gPeerSecs.empty());
+    TEST_ASSERT_EQUAL_UINT(0, gBondWriteCalls);
+}
+
+void test_recovery_at_capacity_keeps_all_durable_bonds_and_complete_backup() {
+    seedCompleteRecovery();
+    gFailBondWriteCall = 2;
+    restoreOrBackupBleBondsAtBoot(storage, 0);
+    gDurableOurSecs.push_back(makeSec(31));
+    gBondCapacity = 2;
+    bootRecoveryOwner();
+    TEST_ASSERT_TRUE(bleBondRecoveryPending());
+    TEST_ASSERT_EQUAL_UINT(0, gOldestBondEvictions);
+    TEST_ASSERT_EQUAL_UINT(2, gDurableOurSecs.size());
+    TEST_ASSERT_EQUAL_UINT8(1, gOurSecs[0].peer_addr[0]);
+    TEST_ASSERT_EQUAL_UINT8(31, gOurSecs[1].peer_addr[0]);
+    bootRecoveryOwner();
+    TEST_ASSERT_TRUE(bleBondRecoveryPending());
+    TEST_ASSERT_EQUAL_UINT(0, gOldestBondEvictions);
+    TEST_ASSERT_EQUAL_UINT(2, gOurSecs.size());
+    TEST_ASSERT_EQUAL_UINT8(1, gOurSecs[0].peer_addr[0]);
+    TEST_ASSERT_EQUAL_UINT8(31, gOurSecs[1].peer_addr[0]);
+    TEST_ASSERT_EQUAL_UINT32(2, readHeader().ourSecCount);
+    TEST_ASSERT_EQUAL_UINT32(1, readHeader().peerSecCount);
+}
+
+void test_normal_store_overflow_retains_nimble_default_handling() {
+    TEST_ASSERT_FALSE(bleBondRecoveryPending());
+    TEST_ASSERT_EQUAL_INT(0, handleBleBondStoreStatus(nullptr, nullptr));
+    TEST_ASSERT_EQUAL_UINT(1, gOldestBondEvictions);
+}
+
+void test_boot_recovery_precedes_advertising_and_gates_schema_and_runtime_deletion() {
+    const std::string client = readProjectFile("src/ble_client.cpp");
+    const std::string init = functionBody(client, "bool V1BLEClient::initBLE(");
+    TEST_ASSERT_TRUE(init.find("initializeBleBondRecovery()") < init.find("NimBLEDevice::init("));
+    TEST_ASSERT_TRUE(init.find("setDeviceCallbacks(&bondRecoveryCallbacks)") < init.find("restoreOrBackupBleBondsAtBoot"));
+    TEST_ASSERT_TRUE(init.find("restoreOrBackupBleBondsAtBoot") < init.find("initProxyServer("));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, init.find("needsBondSchemaMigration && !bleBondRecoveryPending()"));
+    const auto runtime = functionBody(readProjectFile("src/ble_runtime.cpp"), "void V1BLEClient::applyDeferredRuntimeEvents(");
+    TEST_ASSERT_TRUE(runtime.find("pendingDeleteBond_ && !bleBondRecoveryPending()") < runtime.find("pendingDeleteBond_ = false"));
+}
+
+void test_queued_pre_recovery_snapshot_is_discarded_after_successful_restore() {
+    seedCompleteRecovery();
+    // Models the still-queued empty snapshot after migration's bounded wait
+    // expires; recovery obtains the SD lock before the writer drains it.
+    TEST_ASSERT_EQUAL_INT(0, enqueueCurrentBleBondBackupSnapshot());
+    const uint32_t staleSequence = gBondBackupWriterState.nextSequence.load();
+    restoreOrBackupBleBondsAtBoot(storage, 0);
+    TEST_ASSERT_FALSE(bleBondRecoveryPending());
+    TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
+    TEST_ASSERT_EQUAL_UINT(0, bleBondBackupQueueDepthForTest());
+    TEST_ASSERT_NOT_EQUAL(staleSequence, gBondBackupWriterState.lastSuccessfulSequence.load());
+    TEST_ASSERT_EQUAL_UINT32(2, readHeader().ourSecCount);
+    TEST_ASSERT_EQUAL_UINT32(1, readHeader().peerSecCount);
+    expectCompleteRecoveredBackup();
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_queued_pre_recovery_snapshot_is_discarded_after_successful_restore);
+    RUN_TEST(test_recovery_at_capacity_keeps_all_durable_bonds_and_complete_backup);
+    RUN_TEST(test_normal_store_overflow_retains_nimble_default_handling);
+    RUN_TEST(test_boot_recovery_precedes_advertising_and_gates_schema_and_runtime_deletion);
+    RUN_TEST(test_interrupted_restore_resumes_after_each_durable_record_without_replacing_backup);
+    RUN_TEST(test_failed_our_or_peer_write_keeps_recovery_pending_until_fresh_boot);
+    RUN_TEST(test_recovery_marker_failure_does_not_start_nimble_writes);
+    RUN_TEST(test_reset_after_recovery_marker_before_first_bond_write_resumes);
+    RUN_TEST(test_recovery_marker_read_or_type_error_defers_recovery_and_snapshots);
+    RUN_TEST(test_recovery_marker_verification_failure_does_not_start_nimble_writes);
+    RUN_TEST(test_recovery_marker_clear_failure_keeps_complete_source_until_next_boot);
+    RUN_TEST(test_pending_restore_waits_for_absent_or_unreadable_sd_without_losing_bonds);
+    RUN_TEST(test_normal_boot_without_sd_retains_existing_bonds_and_allows_runtime_changes);
+    RUN_TEST(test_pending_restore_from_previous_backup_survives_failed_peer_write);
+    RUN_TEST(test_pending_restore_preserves_newer_pairing_keys_and_new_bonds);
+    RUN_TEST(test_intentional_deletion_after_completed_restore_is_not_revived);
     RUN_TEST(test_restore_open_failure_never_seeds_previous_bonds_into_nvs);
     RUN_TEST(test_restore_short_header_or_our_entry_read_never_seeds_previous_bonds_into_nvs);
     RUN_TEST(test_restore_short_peer_entry_read_writes_no_partially_read_bonds);

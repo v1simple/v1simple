@@ -27,6 +27,7 @@ constexpr UBaseType_t kBondBackupWriterPriority = 1;
 constexpr uint32_t kBondBackupRetryDelayMs = 1000;
 constexpr uint32_t kBootBackupWaitTimeoutMs = 1500;
 constexpr uint32_t kBootBackupPollMs = 5;
+constexpr int kStaleBondSnapshot = -2;
 
 struct BondCollector {
     std::array<ble_store_value_sec, kMaxBleBondEntries> entries = {};
@@ -37,6 +38,7 @@ struct BondBackupSnapshot {
     BondCollector ourSecs;
     BondCollector peerSecs;
     uint32_t sequence = 0;
+    uint32_t recoveryEpoch = 0;
 
     int totalCount() const { return static_cast<int>(ourSecs.count + peerSecs.count); }
 };
@@ -89,11 +91,16 @@ int bondCollectCallback(int objType, union ble_store_value* value, void* cookie)
 }
 
 void collectCurrentBondSnapshot(BondBackupSnapshot& snapshot) {
+    snapshot.recoveryEpoch = bleBondRecoveryEpoch();
     ble_store_iterate(BLE_STORE_OBJ_TYPE_OUR_SEC, bondCollectCallback, &snapshot.ourSecs);
     ble_store_iterate(BLE_STORE_OBJ_TYPE_PEER_SEC, bondCollectCallback, &snapshot.peerSecs);
 }
 
 int writeBondBackupSnapshot(fs::FS& sdFs, const BondBackupSnapshot& snapshot) {
+    // Also reject a snapshot admitted before recovery started. Its partial NVS
+    // contents must never replace the still-authoritative recovery source.
+    if (snapshot.recoveryEpoch != bleBondRecoveryEpoch()) return kStaleBondSnapshot;
+    if (bleBondRecoveryPending()) return -1;
     const String tmpPath = String(kBleBondBackupPath) + ".tmp";
     File file = sdFs.open(tmpPath.c_str(), "w");
     if (!file) {
@@ -186,7 +193,14 @@ bool processBondBackupSnapshot(BondBackupSnapshot* snapshot, StorageManager& sto
         return false;
     }
 
-    if (writeBondBackupSnapshotWithSdLock(*snapshot, storage) >= 0) {
+    const int result = writeBondBackupSnapshotWithSdLock(*snapshot, storage);
+    if (result == kStaleBondSnapshot) {
+        // Recovery supersedes this table even after it clears its marker.
+        // A timed-out boot backup must not later commit its older snapshot.
+        releaseBondBackupSnapshot(snapshot);
+        return true;
+    }
+    if (result >= 0) {
         gBondBackupWriterState.lastSuccessfulSequence.store(snapshot->sequence, std::memory_order_release);
         releaseBondBackupSnapshot(snapshot);
         return true;
@@ -331,6 +345,8 @@ bool enqueueLatestSnapshot(BondBackupSnapshot* snapshot) {
 }
 
 int enqueueCurrentBondSnapshotImpl(uint32_t* sequenceOut) {
+    const uint32_t recoveryEpoch = bleBondRecoveryEpoch();
+    if (bleBondRecoveryPending()) return -1;
     // NimBLE owns the live bond table, so capture it on the caller while the
     // deletion/pairing event is current. No SD mutex or filesystem operation is
     // performed on this path.
@@ -340,6 +356,10 @@ int enqueueCurrentBondSnapshotImpl(uint32_t* sequenceOut) {
         return -1;
     }
     collectCurrentBondSnapshot(*snapshot);
+    if (bleBondRecoveryPending() || recoveryEpoch != bleBondRecoveryEpoch()) {
+        releaseBondBackupSnapshot(snapshot);
+        return -1;
+    }
     const int totalCount = snapshot->totalCount();
     snapshot->sequence = gBondBackupWriterState.nextSequence.fetch_add(1, std::memory_order_relaxed) + 1;
     if (snapshot->sequence == 0) {

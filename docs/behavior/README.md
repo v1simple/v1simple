@@ -47,6 +47,18 @@ Resume appends to the existing log without using read-open failure as evidence
 of absence. `test_product_event_log` covers failure, disabled admission,
 recovery, oldest-first reclamation and the 2 MiB/file-count bounds.
 
+BLE bond recovery records an unfinished restore in NVS before writing the first
+bond. On a later boot, `restoreOrBackupBleBondsAtBoot` resumes missing records
+before proxy advertising, preserving newer pairing keys already in NVS. The
+backup writer rejects snapshots captured before recovery started. Until recovery
+finishes, existing bonds remain usable, but backup replacement, automatic bond
+deletion and NimBLE's oldest-bond eviction are deferred. Missing storage or a
+bond set that exceeds available capacity can leave recovery pending; the complete
+SD source is retained rather than silently reduced. Normal completed recovery
+releases these guards, including intentional deletion. `test_ble_bond_backup_writer`
+models separate volatile and durable tables, interrupted writes, reboot, storage
+failure and snapshot delivery; it does not establish physical flash durability.
+
 ## Where the proof ends
 
 A passing layer establishes that layer's stated behavior:

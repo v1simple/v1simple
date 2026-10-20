@@ -26,10 +26,18 @@ extern "C" {
 //   [4 bytes]  uint32_t  peerSecCount
 //   [N * sizeof(ble_store_value_sec)]  our_sec entries
 //   [M * sizeof(ble_store_value_sec)]  peer_sec entries
-static constexpr const char* BLE_BOND_BACKUP_PATH = "/v1simple_ble_bonds.bin";
 // Max TX power (21 dBm) to maximize BLE range.
 // ESP32-S3 valid steps: -12, -9, -6, -3, 0, 3, 6, 9, 12, 15, 18, 21.
 static constexpr int8_t BLE_TX_POWER_DBM = 21;
+
+namespace {
+class BondRecoveryCallbacks final : public NimBLEDeviceCallbacks {
+    int onStoreStatus(ble_store_status_event* event, void* context) override {
+        return handleBleBondStoreStatus(event, context);
+    }
+};
+BondRecoveryCallbacks bondRecoveryCallbacks;
+} // namespace
 
 int refreshBleBondBackup() {
     return enqueueCurrentBleBondBackupSnapshot();
@@ -39,31 +47,6 @@ int V1BLEClient::enqueueCurrentBondBackupSnapshot() {
     return enqueueCurrentBleBondBackupSnapshot();
 }
 
-// Must run after NimBLEDevice::init() but before scanning or connecting.
-static int restoreBondsFromSD(StorageManager& storage) {
-    if (!storage.isReady() || !storage.isSDCard()) {
-        return -1;
-    }
-
-    StorageManager::SDLockBlocking sdLock(storage.getSDMutex());
-    if (!sdLock) {
-        return -1;
-    }
-
-    fs::FS* sdFs = storage.getFilesystem();
-    if (!sdFs) {
-        return -1;
-    }
-    const int restored = restoreBleBondBackup(*sdFs, BLE_BOND_BACKUP_PATH);
-    if (restored < 0) {
-        return -1;
-    }
-
-    if (restored > 0) {
-        Serial.printf("[BLE] Restored %d bond(s) from SD backup\n", restored);
-    }
-    return restored;
-}
 portMUX_TYPE pendingAddrMux = portMUX_INITIALIZER_UNLOCKED;
 
 V1BLEClient* instancePtr = nullptr;
@@ -180,26 +163,14 @@ bool V1BLEClient::initBLE(StorageManager& storage, bool enableProxy, const char*
         }
     }
 
-    // Create and briefly advertise the proxy GATT server before scanning, even
-    // when proxy mode is disabled. First advertising resets NimBLE GATT and
-    // must not occur after scan/connect. Runtime toggles reuse this server.
+    initializeBleBondRecovery();
+    NimBLEDevice::setDeviceCallbacks(&bondRecoveryCallbacks);
     NimBLEDevice::init(proxyEnabled_ ? "V1 Proxy" : "V1Display");
     NimBLEDevice::setDeviceName(proxyName_.c_str());
     // NimBLE-Arduino expects dBm here, not esp_power_level_t enum indices.
     // 9 dBm is a supported ESP32-S3 step.
     NimBLEDevice::setPower(BLE_TX_POWER_DBM);
     NimBLEDevice::setMTU(517); // Max MTU for BLE 5.x
-
-    const bool requestedProxyEnabled = proxyEnabled_;
-    proxyServerInitAttempted_ = true;
-    proxyServerInitialized_ = initProxyServer(proxyName_.c_str());
-    if (!proxyServerInitialized_) {
-        Serial.println("[BLE] Proxy server unavailable during init");
-        proxyEnabled_ = false;
-    } else if (!requestedProxyEnabled) {
-        releaseProxyQueues();
-        proxyEnabled_ = false;
-    }
 
     // Keep 1M PHY: automatic 2M negotiation degrades ESP32-S3 RSSI readings.
     NimBLEDevice::setDefaultPhy(BLE_GAP_LE_PHY_1M_MASK, BLE_GAP_LE_PHY_1M_MASK);
@@ -211,7 +182,7 @@ bool V1BLEClient::initBLE(StorageManager& storage, bool enableProxy, const char*
     NimBLEDevice::setSecurityInitKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
     NimBLEDevice::setSecurityRespKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
 
-    if (needsBondSchemaMigration) {
+    if (needsBondSchemaMigration && !bleBondRecoveryPending()) {
         Preferences blePrefs;
         if (blePrefs.begin(BleFreshFlashPolicy::kNamespace, false)) {
             Serial.printf(" bond-schema migration...");
@@ -227,18 +198,24 @@ bool V1BLEClient::initBLE(StorageManager& storage, bool enableProxy, const char*
         }
     }
 
-    // Restore bonds from SD backup if NVS was cleared (fresh-flash or NVS corruption)
-    if (NimBLEDevice::getNumBonds() == 0) {
-        const int restored = restoreBondsFromSD(storage);
-        if (restored > 0) {
-            Serial.printf("[BLE] Restored %d bond(s) from SD\n", restored);
-        }
-    } else {
-        // NVS has bonds — hand a snapshot to the Core-0 writer. Normal boot
-        // must not perform SD I/O on the Arduino loop task.
-        enqueueCurrentBleBondBackupSnapshot();
-    }
+    restoreOrBackupBleBondsAtBoot(storage, NimBLEDevice::getNumBonds());
     lastBondBackupCount_ = static_cast<uint8_t>(NimBLEDevice::getNumBonds());
+
+    // Create and briefly advertise the proxy GATT server before scanning, even
+    // when proxy mode is disabled. First advertising resets NimBLE GATT and
+    // must not occur after scan/connect. Runtime toggles reuse this server.
+    // Recovery must finish reading the fresh NVS table before advertising can
+    // admit a pairing that changes it.
+    const bool requestedProxyEnabled = proxyEnabled_;
+    proxyServerInitAttempted_ = true;
+    proxyServerInitialized_ = initProxyServer(proxyName_.c_str());
+    if (!proxyServerInitialized_) {
+        Serial.println("[BLE] Proxy server unavailable during init");
+        proxyEnabled_ = false;
+    } else if (!requestedProxyEnabled) {
+        releaseProxyQueues();
+        proxyEnabled_ = false;
+    }
 
     // Reuse one client across attempts; runtime deletion invalidates NimBLE's
     // fixed client bookkeeping and callback ownership.

@@ -66,6 +66,8 @@ struct MockNimBLEState {
     std::string scanResponseName;
     bool advertising = false;
     uint8_t bondCount = 0;
+    bool bonded = false;
+    uint32_t deleteBondCalls = 0;
 };
 
 inline MockNimBLEState g_mock_nimble_state{};
@@ -597,8 +599,12 @@ public:
     }
     static uint8_t getNumBonds() { return g_mock_nimble_state.bondCount; }
     static void deleteAllBonds() {}
-    static bool isBonded(const NimBLEAddress&) { return false; }
-    static bool deleteBond(const NimBLEAddress&) { return true; }
+    static bool isBonded(const NimBLEAddress&) { return g_mock_nimble_state.bonded; }
+    static bool deleteBond(const NimBLEAddress&) {
+        ++g_mock_nimble_state.deleteBondCalls;
+        g_mock_nimble_state.bonded = false;
+        return true;
+    }
     static NimBLEAddress getAddress() { return NimBLEAddress(); }
     static void setSecurityAuth(bool, bool, bool) {}
     static void setSecurityIOCap(int) {}

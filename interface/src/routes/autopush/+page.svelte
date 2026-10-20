@@ -28,6 +28,7 @@
     let message = $state(null);
     let editingSlot = $state(null);
     let editingDraft = $state(null);
+    let editGeneration = 0;
     let selectedProfileVolumePolicy = $state(null);
     let busy = $state(false);
     let pickerOpen = $state(false);
@@ -242,6 +243,7 @@
         }
         busy = true;
         const s = editingDraft;
+        const submittedEditGeneration = editGeneration;
         if (s.volumeConfigured && (!Number.isInteger(Number(s.volume)) ||
             !Number.isInteger(Number(s.muteVolume)) || Number(s.volume) < 0 ||
             Number(s.volume) > 9 || Number(s.muteVolume) < 0 || Number(s.muteVolume) > 9)) {
@@ -293,8 +295,9 @@
 
             if (res.ok) {
                 message = { type: 'success', text: 'Slot saved!' };
-                editingSlot = null;
-                editingDraft = null;
+                if (editingSlot === slot && editGeneration === submittedEditGeneration) {
+                    cancelEdit();
+                }
                 await fetchSlots();
             } else {
                 message = { type: 'error', text: res.status === 409 && res.error?.error ? res.error.error : 'Failed to save' };
@@ -312,6 +315,7 @@
     }
 
     function beginEdit(slot) {
+        editGeneration += 1;
         editingSlot = slot;
         editingDraft = {
             ...data.slots[slot],

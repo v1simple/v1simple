@@ -23,6 +23,9 @@ unsigned long mockMillis = 0;
 unsigned long mockMicros = 0;
 #endif
 
+namespace { bool gBondRecoveryPending = false; }
+bool bleBondRecoveryPending() { return gBondRecoveryPending; }
+
 extern "C" int ble_hs_pvcy_set_resolve_enabled(int) {
     return 0;
 }
@@ -73,6 +76,7 @@ void completeControl(ObdTransportControlDispatch<ControlRequest>& dispatch, Queu
 } // namespace
 
 void setUp() {
+    gBondRecoveryPending = false;
     mock_reset_nimble_state();
 }
 void tearDown() {}
@@ -200,8 +204,22 @@ void test_control_disconnect_invalidates_real_write_before_claim() {
     vQueueDelete(requestQueue);
 }
 
+void test_bond_deletion_waits_for_recovery_then_preserves_normal_delete_behavior() {
+    ObdBleClient client;
+    g_mock_nimble_state.bonded = true;
+    gBondRecoveryPending = true;
+    TEST_ASSERT_FALSE(client.deleteBond("A4:C1:38:00:11:22", 0));
+    TEST_ASSERT_TRUE(g_mock_nimble_state.bonded);
+    TEST_ASSERT_EQUAL_UINT32(0, g_mock_nimble_state.deleteBondCalls);
+    gBondRecoveryPending = false;
+    TEST_ASSERT_TRUE(client.deleteBond("A4:C1:38:00:11:22", 0));
+    TEST_ASSERT_FALSE(g_mock_nimble_state.bonded);
+    TEST_ASSERT_EQUAL_UINT32(1, g_mock_nimble_state.deleteBondCalls);
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_bond_deletion_waits_for_recovery_then_preserves_normal_delete_behavior);
     RUN_TEST(test_disconnect_during_write_defers_handle_cleanup_until_operation_returns);
     RUN_TEST(test_disconnect_during_subscribe_defers_handle_cleanup_until_operation_returns);
     RUN_TEST(test_control_disconnect_waits_for_claimed_real_write);

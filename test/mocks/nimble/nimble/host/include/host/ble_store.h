@@ -18,6 +18,9 @@ union ble_store_value {
     struct ble_store_value_sec sec;
 };
 
+struct ble_store_status_event;
+int ble_store_util_status_rr(struct ble_store_status_event* event, void* arg);
+
 typedef int (*ble_store_iterator_fn)(int obj_type, union ble_store_value* value, void* cookie);
 
 int ble_store_iterate(int obj_type, ble_store_iterator_fn callback, void* cookie);

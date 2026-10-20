@@ -1,4 +1,5 @@
 #include "ble_client.h"
+#include "ble_bond_backup_store.h"
 
 #include <cstring>
 #include <string>
@@ -78,7 +79,7 @@ void V1BLEClient::applyDeferredRuntimeEvents(SettingsManager& settings) {
         }
     }
     // Defer bond deletion so the BLE callback performs no NVS writes.
-    if (pendingDeleteBond_) {
+    if (pendingDeleteBond_ && !bleBondRecoveryPending()) {
         // Copy the address under the writer's guard so a second disconnect on
         // the NimBLE host task can't rewrite it mid-read.
         portENTER_CRITICAL(&pendingAddrMux);

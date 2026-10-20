@@ -524,9 +524,10 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
 
     notifyAlertTableObserver(tableTimestampMs);
 
-    // Match VR AlertDataProcessor behavior: clear per-count rows after a complete
-    // table publish so the next table is assembled from fresh rows.
-    clearAlertCacheForCount(receivedAlertCount);
+    // A complete table supersedes every earlier partial candidate, including
+    // other counts. Otherwise a later count change can combine a new row with
+    // an obsolete row from before this publication.
+    clearAlertCache();
     return true;
 }
 

@@ -159,6 +159,102 @@ void test_held_long_waits_only_for_the_older_short_frame() {
     }
 }
 
+void checkAlertCountTransition(bool orphanOldRow, bool longCharacteristic,
+                               bool checksummed, uint8_t destination) {
+    setUp();
+    struct Publication {
+        size_t count;
+        uint32_t priorityFrequency;
+        uint32_t receivedAtMs;
+    };
+    std::vector<Publication> publications;
+    parser.setAlertTableObserver([](const AlertData* alerts, size_t count, uint8_t priorityIndex,
+                                    uint32_t at, void* context) {
+        auto& observed = *static_cast<std::vector<Publication>*>(context);
+        observed.push_back({count, alerts[priorityIndex].frequency, at});
+    }, &publications);
+
+    uint32_t ingress = 0;
+    const auto sendRow = [&](uint8_t index, uint8_t count, uint16_t frequency,
+                             uint8_t bandArrow, uint8_t aux0, uint32_t at) {
+        auto frame = makeAlertFrame(index, count, frequency, bandArrow, aux0);
+        frame[1] = destination;
+        if (checksummed) {
+            uint8_t checksum = 0;
+            for (size_t i = 0; i + 2 < frame.size(); ++i) {
+                checksum = static_cast<uint8_t>(checksum + frame[i]);
+            }
+            frame[frame.size() - 2] = checksum;
+        } else {
+            frame[2] = 0xE9;
+            --frame[4];
+            frame.erase(frame.end() - 2);
+        }
+        if (longCharacteristic) frame.insert(frame.begin(), 0x11);
+        TEST_ASSERT_TRUE(queue.tryOnNotify(frame.data(), frame.size(),
+                                          longCharacteristic ? 0xB4E0 : kCharacteristic,
+                                          kSession, at, ++ingress));
+        queue.process();
+    };
+
+    if (orphanOldRow) {
+        // Subscription begins at the last row of a two-alert table.
+        sendRow(2, 2, 24150, 0x24, 0x80, 100);
+        TEST_ASSERT_EQUAL_UINT32(0, parser.getAlertCount());
+        TEST_ASSERT_EQUAL_UINT32(0, publications.size());
+        TEST_ASSERT_FALSE(parser.hasFreshAlertTable(100));
+    }
+
+    // A complete smaller table establishes that the old K alert is gone.
+    sendRow(1, 1, 34700, 0x22, 0x80, 110);
+    TEST_ASSERT_EQUAL_UINT32(1, parser.getAlertCount());
+    TEST_ASSERT_EQUAL_UINT16(34700, parser.getPriorityAlert().frequency);
+    TEST_ASSERT_EQUAL_UINT32(1, publications.size());
+    TEST_ASSERT_EQUAL_UINT32(1, publications[0].count);
+    TEST_ASSERT_EQUAL_UINT16(34700, publications[0].priorityFrequency);
+    TEST_ASSERT_EQUAL_UINT32(110, publications[0].receivedAtMs);
+
+    // Before the new second row arrives, the previous complete snapshot stays
+    // authoritative. The orphan must not complete this table or renew its age.
+    sendRow(1, 2, 35500, 0x22, 0x00, 120);
+    TEST_ASSERT_EQUAL_UINT32(1, parser.getAlertCount());
+    TEST_ASSERT_EQUAL_UINT16(34700, parser.getAllAlerts()[0].frequency);
+    TEST_ASSERT_EQUAL_UINT16(34700, parser.getPriorityAlert().frequency);
+    TEST_ASSERT_EQUAL_UINT32(1, publications.size());
+    TEST_ASSERT_TRUE(parser.hasFreshAlertTable(110, 0));
+    TEST_ASSERT_FALSE(parser.hasFreshAlertTable(120, 0));
+
+    sendRow(2, 2, 33800, 0x22, 0x80, 130);
+    queue.process(); // A later drain must not republish an obsolete table.
+    TEST_ASSERT_EQUAL_UINT32(2, parser.getAlertCount());
+    TEST_ASSERT_EQUAL_UINT16(35500, parser.getAllAlerts()[0].frequency);
+    TEST_ASSERT_EQUAL_UINT16(33800, parser.getAllAlerts()[1].frequency);
+    TEST_ASSERT_EQUAL_UINT16(33800, parser.getPriorityAlert().frequency);
+    TEST_ASSERT_EQUAL_UINT32(2, publications.size());
+    TEST_ASSERT_EQUAL_UINT32(2, publications[1].count);
+    TEST_ASSERT_EQUAL_UINT16(33800, publications[1].priorityFrequency);
+    TEST_ASSERT_EQUAL_UINT32(130, publications[1].receivedAtMs);
+    TEST_ASSERT_TRUE(parser.hasFreshAlertTable(130, 0));
+    TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::inputDrops());
+    tearDown();
+}
+
+void test_complete_table_retires_orphan_rows_from_other_counts() {
+    for (const bool longCharacteristic : {false, true}) {
+        for (const bool checksummed : {false, true}) {
+            for (const uint8_t destination : {uint8_t{0xD6}, uint8_t{0xD8}}) {
+                checkAlertCountTransition(true, longCharacteristic, checksummed, destination);
+            }
+        }
+    }
+}
+
+void test_complete_count_transition_without_orphan_publishes_only_complete_tables() {
+    for (const bool longCharacteristic : {false, true}) {
+        checkAlertCountTransition(false, longCharacteristic, true, 0xD8);
+    }
+}
+
 void test_queue_gap_prevents_cross_cycle_alert_table_publication() {
     const auto oldRow1 = makeAlertFrame(1, 2, 24150, 0x24, 0x80);
     const auto freshRow2 = makeAlertFrame(2, 2, 34700, 0x22, 0x00);
@@ -939,6 +1035,8 @@ int main(int, char**) {
     RUN_TEST(test_completed_long_row_cannot_overtake_newer_short_alert);
     RUN_TEST(test_publication_order_controls_all_short_and_drain_between);
     RUN_TEST(test_held_long_waits_only_for_the_older_short_frame);
+    RUN_TEST(test_complete_table_retires_orphan_rows_from_other_counts);
+    RUN_TEST(test_complete_count_transition_without_orphan_publishes_only_complete_tables);
     RUN_TEST(test_queue_gap_prevents_cross_cycle_alert_table_publication);
     RUN_TEST(test_batched_alert_rows_keep_their_arrival_age);
     RUN_TEST(test_delayed_partial_alert_frame_keeps_its_first_arrival_age);

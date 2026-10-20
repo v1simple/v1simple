@@ -69,6 +69,11 @@ require exactly seven data bytes, V1 origin, framing and the applicable checksum
    Freshness comparisons use the newest retained receipt time when short and
    long frames finish out of order; an older copy cannot replace a newer cached row.
    Publication retains the newest contributing row's receipt time.
+   A complete publication discards all pending rows, including incomplete
+   candidates with other alert counts. Thus an orphan row from a two-alert
+   table cannot survive a complete one-alert table and later combine with
+   the first row of a new two-alert table. Until that new table is complete,
+   the last complete snapshot and its original freshness timestamp remain.
    It chooses row priority from aux0 bit 7, with usable-row fallbacks.
    A count-zero row clears the radar table; display-packet mute and primary
    signal bars retain their own authority. Display laser remains separately owned.
@@ -133,6 +138,7 @@ selection. Fixed wire vectors have independently summed checksums.
 | `test_completed_long_clear_cannot_overtake_newer_short_alert` / `test_completed_long_row_cannot_overtake_newer_short_alert` | Older complete long clears and rows precede newer short alerts, including equal receipt times and uptime wrap. All-short and between-notification drains remain controls. |
 | `test_held_long_waits_only_for_the_older_short_frame` | Split headers/tails survive; a newer frame cannot pass the held long frame even when bundled with the older tail. |
 | `test_held_long_row_completes_older_table_before_short_refresh` / `test_held_long_row_does_not_overwrite_a_newer_short_copy` | An incomplete later table cannot renew the earlier publication's age; later complete tables retain their newer row. |
+| `test_complete_table_retires_orphan_rows_from_other_counts` / `test_complete_count_transition_without_orphan_publishes_only_complete_tables` | A partial two-alert table cannot survive an intervening complete one-alert table and supply an obsolete priority to the next two-alert table. B2CE/B4E0, E9/EAh, and D6/D8 inputs preserve the old complete snapshot, observer count, and freshness until the new table completes; the no-orphan control still publishes normally. |
 | `test_two_long_frames_behind_partial_short_recover_without_losing_complete_alerts` | One unfinished short frame is dropped; both complete long alerts retain their receipt stamps, including uptime wrap. Trailing discarded bytes invalidate audio freshness while preserving the latest display; a subsequent clean table restores freshness. |
 | `test_spec_busy_broadcast_reaches_request_owner_but_targeted_busy_does_not` | D6 compatibility is specific to alert data; busy flow control retains its D8 contract. |
 
@@ -149,6 +155,13 @@ tests indexed-chunk reassembly, stale-session rejection and queue saturation wit
 a parser double. Neither suite executes the real NimBLE callback or physical
 panel. Qualification on an actual older Gen2 and RF/vehicle behavior remain
 separate work; passing current-version replay does not supply that evidence.
+
+`test_packet_parser_stream` also checks the orphan-row sequence with zero-based
+indices and across uptime rollover. Both new orphan regressions fail without
+the complete-publication cleanup. They establish the parser's response to the
+injected incomplete-table sequence; whether a real detector begins subscription
+mid-table remains unverified. This cleanup does not infer packet generations or
+replace the separate known-gap recovery policy.
 
 ## 2. AutoPush responses arriving during a synchronous send
 

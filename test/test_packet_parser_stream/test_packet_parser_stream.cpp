@@ -516,6 +516,45 @@ void test_alert_stream_missing_row_keeps_previous_complete_table() {
     assertContainsFrequencies(parser, 24150, 34700);
 }
 
+void test_complete_zero_based_table_discards_other_count_partial_rows() {
+    for (const uint32_t firstMs : {uint32_t{100}, UINT32_MAX - 15u}) {
+        PacketParser parser;
+        AlertObserverCapture observed;
+        parser.setAlertTableObserver(captureAlertTable, &observed);
+        const auto oldTail = makePacket(PACKET_ID_ALERT_DATA,
+                                       makeAlertPayload(1, 2, 24150, 0x90, 0, 0x24, 0x80));
+        const auto single = makePacket(PACKET_ID_ALERT_DATA,
+                                      makeAlertPayload(0, 1, 34700, 0xA0, 0, 0x22, 0x80));
+        const auto newFirst = makePacket(PACKET_ID_ALERT_DATA,
+                                        makeAlertPayload(0, 2, 35500, 0xA0, 0, 0x42, 0));
+        const auto newLast = makePacket(PACKET_ID_ALERT_DATA,
+                                       makeAlertPayload(1, 2, 33800, 0xB0, 0, 0x82, 0x80));
+
+        TEST_ASSERT_TRUE(parsePacket(parser, oldTail, firstMs));
+        TEST_ASSERT_EQUAL_UINT32(0, parser.getAlertCount());
+        TEST_ASSERT_TRUE(parsePacket(parser, single, firstMs + 10u));
+        TEST_ASSERT_EQUAL_UINT32(1, parser.getAlertCount());
+        TEST_ASSERT_EQUAL_UINT16(34700, parser.getPriorityAlert().frequency);
+
+        // Completing a different-sized table supersedes the old partial tail.
+        // The next first row must not turn it into an obsolete live priority.
+        TEST_ASSERT_TRUE(parsePacket(parser, newFirst, firstMs + 20u));
+        TEST_ASSERT_EQUAL_UINT32(1, parser.getAlertCount());
+        TEST_ASSERT_EQUAL_UINT16(34700, parser.getPriorityAlert().frequency);
+        TEST_ASSERT_EQUAL_UINT32(1, observed.calls);
+        TEST_ASSERT_EQUAL_UINT32(firstMs + 10u, observed.nowMs);
+        TEST_ASSERT_TRUE(parser.hasFreshAlertTable(firstMs + 10u, 0));
+        TEST_ASSERT_FALSE(parser.hasFreshAlertTable(firstMs + 20u, 0));
+
+        TEST_ASSERT_TRUE(parsePacket(parser, newLast, firstMs + 30u));
+        assertContainsFrequencies(parser, 35500, 33800);
+        TEST_ASSERT_EQUAL_UINT16(33800, parser.getPriorityAlert().frequency);
+        TEST_ASSERT_EQUAL_UINT32(2, observed.calls);
+        TEST_ASSERT_EQUAL_UINT32(firstMs + 30u, observed.nowMs);
+        TEST_ASSERT_TRUE(parser.hasFreshAlertTable(firstMs + 30u, 0));
+    }
+}
+
 void test_alert_stream_known_loss_discards_prestart_row_and_prevents_hybrid() {
     PacketParser parser;
 
@@ -952,6 +991,7 @@ int main() {
     RUN_TEST(test_alert_stream_row_priority_ignores_display_aux0_bits);
     RUN_TEST(test_alert_stream_unusable_row_priority_falls_back_to_first_usable);
     RUN_TEST(test_alert_stream_missing_row_keeps_previous_complete_table);
+    RUN_TEST(test_complete_zero_based_table_discards_other_count_partial_rows);
     RUN_TEST(test_alert_stream_known_loss_discards_prestart_row_and_prevents_hybrid);
     RUN_TEST(test_alert_stream_known_loss_uses_learned_zero_based_start);
     RUN_TEST(test_alert_stream_count_zero_rearms_after_known_loss);

@@ -58,7 +58,7 @@ def build_and_run(build: Path) -> None:
     for start, end in (
         ("namespace {", "String WiFiManager::getAPIPAddress()"),
         ("int WiFiManager::findConfiguredSlotBySsid(", "bool WiFiManager::upsertSavedNetwork("),
-        ("bool WiFiManager::connectToNetwork(", "bool WiFiManager::enableWifiClientFromSavedCredentials("),
+        ("bool WiFiManager::testSavedNetwork(", "bool WiFiManager::enableWifiClientFromSavedCredentials("),
         ("void WiFiManager::disconnectFromNetwork()", "void WiFiManager::disconnectTrackedWifiActivity("),
     ):
         owner += between(client, start, end)

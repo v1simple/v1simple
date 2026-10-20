@@ -49,6 +49,16 @@ bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs, const Spee
     // that lease; the speed owner retains its current desired state meanwhile.
     if (autoPushVolumeTransactionActive_) return false;
 
+    // Retire a superseded restore before a new low-speed episode can inherit
+    // its baseline, and before fade can consume its old pre-echo hint.
+    // A confirmed speed target may still be fade's reduced pair. Let the
+    // alert-end handoff below replace that target before completing it.
+    reconcilePendingSpeedRestore(false);
+    if (speedRestoreHintInvalidated_ && volumeFade) {
+        volumeFade->setBaselineHint(0xFF, 0, nowMs);
+        speedRestoreHintInvalidated_ = false;
+    }
+
     const auto& smSettings = speedMute.getSettings();
     const auto& smState = speedMute.getState();
 

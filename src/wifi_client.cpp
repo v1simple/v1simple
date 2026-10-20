@@ -998,7 +998,12 @@ void WiFiManager::checkWifiClientStatus() {
             break;
         }
 
-        if (status == WL_CONNECTED) {
+        const wl_status_t failure = currentWifiAttemptFailure();
+        // The framework can retain the old link/status when switching fails.
+        // Admit only this target after its start succeeded, never another
+        // network's cached connection as completion of the pending attempt.
+        if (failure != WL_CONNECT_FAILED && failure != WL_NO_SSID_AVAIL && status == WL_CONNECTED &&
+            pendingConnectSSID_.length() > 0 && WiFi.SSID() == pendingConnectSSID_) {
             wifiClientState_ = WIFI_CLIENT_CONNECTED;
             wifiConnectStartMs_ = 0;
             Serial.println("[WiFiClient] Connected");
@@ -1057,8 +1062,7 @@ void WiFiManager::checkWifiClientStatus() {
                 pendingConnectPersistCredentials_ = true;
                 pendingConnectSlotIndex_ = -1;
             }
-        } else if (const wl_status_t failure = currentWifiAttemptFailure();
-                   failure == WL_CONNECT_FAILED || failure == WL_NO_SSID_AVAIL) {
+        } else if (failure == WL_CONNECT_FAILED || failure == WL_NO_SSID_AVAIL) {
             const bool wasMaintenanceAutoConnect =
                 maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::CONNECTING;
             wifiClientState_ = WIFI_CLIENT_FAILED;

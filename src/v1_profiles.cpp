@@ -403,7 +403,8 @@ bool parseSyncStateDocument(const JsonDocument& doc, ProfileSyncState& state) {
 
 ProfileSyncState readSyncStateAtPath(fs::FS& filesystem, const String& metaPath) {
     ProfileSyncState state;
-    const StoragePathStatus metadataStatus = storagePathStatus(filesystem, metaPath);
+    struct stat metadataDetails {};
+    const StoragePathStatus metadataStatus = storagePathStatus(filesystem, metaPath, &metadataDetails);
     if (metadataStatus == StoragePathStatus::Unavailable) {
         state.status = ProfileSyncState::Status::Unavailable;
         return state;
@@ -417,12 +418,12 @@ ProfileSyncState readSyncStateAtPath(fs::FS& filesystem, const String& metaPath)
         state.status = ProfileSyncState::Status::Unavailable;
         return state;
     }
-    if (file.size() == 0 || file.size() > PROFILE_SYNC_META_MAX_BYTES) {
+    if (metadataDetails.st_size <= 0 || static_cast<uint64_t>(metadataDetails.st_size) > PROFILE_SYNC_META_MAX_BYTES) {
         file.close();
         state.status = ProfileSyncState::Status::Corrupt;
         return state;
     }
-    const size_t fileSize = file.size();
+    const size_t fileSize = static_cast<size_t>(metadataDetails.st_size);
     PsramJson::Buffer bytes(fileSize);
     if (!bytes) {
         file.close();
@@ -506,7 +507,8 @@ ProfileSyncState readSyncState(fs::FS& filesystem, const String& profilePath) {
 
 ProfileFileInspection inspectProfileFile(fs::FS& filesystem, const String& path, const String& expectedName) {
     ProfileFileInspection inspection;
-    const StoragePathStatus pathStatus = storagePathStatus(filesystem, path);
+    struct stat details {};
+    const StoragePathStatus pathStatus = storagePathStatus(filesystem, path, &details);
     inspection.unavailable = pathStatus == StoragePathStatus::Unavailable;
     inspection.exists = pathStatus == StoragePathStatus::Present;
     if (!inspection.exists) return inspection;
@@ -516,12 +518,14 @@ ProfileFileInspection inspectProfileFile(fs::FS& filesystem, const String& path,
         inspection.unavailable = true;
         return inspection;
     }
-    if (file.size() == 0 || file.size() > V1_PROFILE_FILE_MAX_BYTES) {
+    if (details.st_size <= 0 || static_cast<uint64_t>(details.st_size) > V1_PROFILE_FILE_MAX_BYTES) {
         if (file) file.close();
         return inspection;
     }
 
-    const size_t fileSize = file.size();
+    // VFS File::size() can return a cached zero after an internal fstat
+    // failure. The successful status probe supplies authoritative metadata.
+    const size_t fileSize = static_cast<size_t>(details.st_size);
     PsramJson::Buffer content(fileSize);
     if (!content) {
         file.close();
@@ -669,6 +673,33 @@ ProfileOperationResult selectProfilePayloadRollback(fs::FS& filesystem, const St
                          corrupt ? "Corrupt profile recovery payload" : "Profile not found");
 }
 
+// Establish a single committed rollback lineage before a new writer can move
+// live. Staging names disappear on promotion and returned-error cleanup, so
+// they cannot disambiguate older backups after a later rollback also fails.
+bool prepareProfilePayloadReplacement(fs::FS& filesystem, const String& path,
+                                      const String& name, bool localSave) {
+    ProfileFileInspection live = inspectProfileFile(filesystem, path, name);
+    if (live.unavailable) return false;
+    if (!live.valid) {
+        String recoveredPath;
+        const auto recovered = selectProfilePayloadRollback(filesystem, path, name, recoveredPath);
+        if (recovered.status == ProfileStorageStatus::IoError) return false;
+        if (recovered.success() &&
+            (!storageRemoveFileIfPresent(filesystem, path) ||
+             !filesystem.rename(recoveredPath, path))) return false;
+    }
+    // A local save owns .bak; a mirror owns .prev. The outer mirrored save's
+    // .syncbak remains available until both stores commit or roll back.
+    const char* obsolete[] = {localSave ? ".prev" : ".bak", localSave ? ".syncbak" : nullptr};
+    for (const char* suffix : obsolete) {
+        if (!suffix) continue;
+        String oldPath;
+        if (!appendPathSuffixChecked(path, suffix, oldPath) ||
+            !storageRemoveFileIfPresent(filesystem, oldPath)) return false;
+    }
+    return true;
+}
+
 bool writeSyncState(fs::FS& filesystem, const String& profilePath, const ProfileSyncState& state) {
     PsramJson::Document doc;
     doc["_type"] = PROFILE_SYNC_META_TYPE;
@@ -733,6 +764,7 @@ bool copyProfileFileAs(fs::FS& source, const String& sourcePath, fs::FS& target,
     const ProfileFileInspection sourceInspection = inspectProfileFile(source, sourcePath, expectedName);
     if (!sourceInspection.valid) return false;
 
+    if (!prepareProfilePayloadReplacement(target, targetPath, expectedName, false)) return false;
     File in = source.open(sourcePath, FILE_READ);
     if (!in || in.size() == 0 || in.size() > V1_PROFILE_FILE_MAX_BYTES) {
         if (in) in.close();
@@ -1729,7 +1761,8 @@ ProfileOperationResult V1ProfileManager::loadProfileUnlocked(const String& name,
         return profileResult(ProfileStorageStatus::NotFound, "Profile not found");
     }
 
-    const StoragePathStatus mainStatus = storagePathStatus(*fs_, path);
+    struct stat mainDetails {};
+    const StoragePathStatus mainStatus = storagePathStatus(*fs_, path, &mainDetails);
     if (mainStatus == StoragePathStatus::Unavailable) {
         return profileResult(ProfileStorageStatus::IoError, "Profile file status unavailable");
     }
@@ -1747,6 +1780,9 @@ ProfileOperationResult V1ProfileManager::loadProfileUnlocked(const String& name,
                 }
                 Serial.printf("[V1Profiles] RECOVERY name='%s' path='%s' restored\n", name.c_str(), path.c_str());
                 mainExists = true;
+                if (storagePathStatus(*fs_, path, &mainDetails) != StoragePathStatus::Present) {
+                    return profileResult(ProfileStorageStatus::IoError, "Recovered profile status unavailable");
+                }
                 file = fs_->open(path, FILE_READ);
             }
         }
@@ -1762,15 +1798,15 @@ ProfileOperationResult V1ProfileManager::loadProfileUnlocked(const String& name,
     }
 
     // Hard cap JSON size to avoid excessive allocation on small devices
-    if (file.size() > V1_PROFILE_FILE_MAX_BYTES) {
-        Serial.printf("[V1Profiles] Profile too large (%u bytes), aborting\n", (unsigned)file.size());
+    if (mainDetails.st_size < 0 || static_cast<uint64_t>(mainDetails.st_size) > V1_PROFILE_FILE_MAX_BYTES) {
+        Serial.printf("[V1Profiles] Profile too large (%u bytes), aborting\n", (unsigned)mainDetails.st_size);
         file.close();
         return profileResult(ProfileStorageStatus::Corrupt, "Profile file exceeds size limit");
     }
 
     // Read file content for CRC validation with RAII-managed storage
     // so all early returns remain leak-safe.
-    const size_t fileSize = file.size();
+    const size_t fileSize = static_cast<size_t>(mainDetails.st_size);
     PsramJson::Buffer fileContent(fileSize);
     if (!fileContent) {
         file.close();
@@ -2054,6 +2090,9 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
         (secondaryFs_ && !appendPathSuffixChecked(path, ".syncbak", secondaryRollbackPath))) {
         lastError_ = "Profile path memory unavailable";
         return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
+    }
+    if (!prepareProfilePayloadReplacement(*fs_, path, canonicalName, true)) {
+        return ProfileSaveResult(ProfileStorageStatus::IoError, "Profile rollback preparation unavailable");
     }
     // Capture both originals before any promotion. A failed Arduino exists()
     // probe must not suppress the rollback copy of an existing profile.

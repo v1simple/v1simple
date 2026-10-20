@@ -44,7 +44,7 @@ class StorageManager {
     // when multiple cores/tasks may access SD simultaneously
     SemaphoreHandle_t getSDMutex() const { return sdMutex_; }
 
-    // WiFi can exhaust or fragment DMA-capable SRAM needed by SD_MMC. The five
+    // WiFi can exhaust or fragment DMA-capable SRAM needed by SD_MMC. The
     // WiFi-secret SD lock sites in settings_nvs.cpp opt into this gate;
     // other normal-boot SD operations run with WiFi off and use the default false.
     static constexpr uint32_t MIN_DMA_FREE_FOR_SD = 16384; // 16KB total free

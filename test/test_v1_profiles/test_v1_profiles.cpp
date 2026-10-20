@@ -2199,14 +2199,123 @@ void test_payload_recovery_selects_the_interrupted_writer_not_an_older_leftover(
             }
         } catch (const fs::SimulatedReset&) { reset = true; }
         TEST_ASSERT_TRUE(reset);
-        TEST_ASSERT_TRUE(sd.exists("/v1profiles/Road.json.prev"));
-        TEST_ASSERT_TRUE(sd.exists("/v1profiles/Road.json.bak"));
+        TEST_ASSERT_EQUAL(!localSave, sd.exists("/v1profiles/Road.json.prev"));
+        TEST_ASSERT_EQUAL(localSave, sd.exists("/v1profiles/Road.json.bak"));
         V1ProfileManager reboot;
         TEST_ASSERT_TRUE(reboot.begin(&sd));
         V1Profile actual;
         TEST_ASSERT_TRUE(reboot.loadProfile("Road", actual));
         TEST_ASSERT_EQUAL_STRING("acknowledged", actual.description.c_str());
     }
+}
+
+void test_profile_failed_promotion_and_failed_rollback_preserve_latest_acknowledged_payload() {
+    for (bool primaryIsSd : {true, false}) {
+        for (bool mirrored : {false, true}) {
+            size_t renameCount = 0;
+            // Measure the real successful lifecycle, then fail each rename and
+            // the immediately following rollback operation with fresh owners.
+            for (size_t failure = 0; failure <= renameCount; ++failure) {
+                const auto root = g_tempRoot / (std::to_string(primaryIsSd) + "_" +
+                    std::to_string(mirrored) + "_" + std::to_string(failure));
+                fs::FS primary(root / (primaryIsSd ? "sd" : "little"));
+                fs::FS secondary(root / (primaryIsSd ? "little" : "sd"));
+                V1ProfileManager initial;
+                TEST_ASSERT_TRUE(initial.begin(&primary, &secondary));
+                TEST_ASSERT_TRUE(initial.saveProfile(makeProfile("Road", 10, "stale")).success);
+                V1ProfileManager offline;
+                TEST_ASSERT_TRUE(offline.begin(&secondary));
+                TEST_ASSERT_TRUE(offline.saveProfile(makeProfile("Road", 20, "acknowledged")).success);
+                fs::mock_fail_next_remove("/v1profiles/Road.json.prev");
+                V1ProfileManager reconcile;
+                TEST_ASSERT_TRUE(reconcile.begin(&primary, &secondary));
+                TEST_ASSERT_TRUE(primary.exists("/v1profiles/Road.json.prev"));
+                V1ProfileManager writer;
+                TEST_ASSERT_TRUE(writer.begin(&primary, mirrored ? &secondary : nullptr));
+                fs::mock_reset_fs_rename_state();
+                if (failure) fs::mock_fail_rename_on_calls(failure, failure + 1u);
+                const auto result = writer.saveProfile(makeProfile("Road", 30, "replacement"));
+                if (failure == 0) renameCount = fs::g_mock_fs_rename_state.renameCalls;
+                fs::mock_reset_fs_rename_state();
+                V1Profile actual;
+                // Direct recovery and a fresh boot must agree, including after
+                // final-file verification / metadata / mirror compensation.
+                TEST_ASSERT_TRUE(writer.loadProfile("Road", actual));
+                TEST_ASSERT_EQUAL_STRING(result.success ? "replacement" : "acknowledged",
+                                         actual.description.c_str());
+                V1ProfileManager reboot;
+                TEST_ASSERT_TRUE(reboot.begin(&primary, mirrored ? &secondary : nullptr));
+                TEST_ASSERT_TRUE(reboot.loadProfile("Road", actual));
+                TEST_ASSERT_EQUAL_STRING(result.success ? "replacement" : "acknowledged",
+                                         actual.description.c_str());
+                V1ProfileManager repeated;
+                TEST_ASSERT_TRUE(repeated.begin(&primary, mirrored ? &secondary : nullptr));
+                TEST_ASSERT_TRUE(repeated.loadProfile("Road", actual));
+                TEST_ASSERT_EQUAL_STRING(result.success ? "replacement" : "acknowledged",
+                                         actual.description.c_str());
+            }
+            TEST_ASSERT_GREATER_THAN_UINT(0, renameCount);
+        }
+    }
+}
+
+void test_profile_final_verification_error_and_failed_rollback_keep_save_authority() {
+    fs::FS primary(g_tempRoot / "sd"), secondary(g_tempRoot / "little");
+    V1ProfileManager initial;
+    TEST_ASSERT_TRUE(initial.begin(&primary, &secondary));
+    TEST_ASSERT_TRUE(initial.saveProfile(makeProfile("Road", 10, "stale")).success);
+    V1ProfileManager offline;
+    TEST_ASSERT_TRUE(offline.begin(&secondary));
+    TEST_ASSERT_TRUE(offline.saveProfile(makeProfile("Road", 20, "acknowledged")).success);
+    fs::mock_fail_next_remove("/v1profiles/Road.json.prev");
+    V1ProfileManager writer;
+    TEST_ASSERT_TRUE(writer.begin(&primary, &secondary));
+    TEST_ASSERT_TRUE(primary.exists("/v1profiles/Road.json.prev"));
+    fs::g_mock_fs_rename_state.afterRename = [](const char* from, const char* to) {
+        if (std::strcmp(from, "/v1profiles/Road.json.tmp") == 0 &&
+            std::strcmp(to, "/v1profiles/Road.json") == 0) {
+            fs::mock_fail_next_read_open("/v1profiles/Road.json");
+            fs::mock_fail_next_rename();
+            fs::g_mock_fs_rename_state.afterRename = nullptr;
+        }
+    };
+    TEST_ASSERT_FALSE(writer.saveProfile(makeProfile("Road", 30, "rejected")).success);
+    TEST_ASSERT_NULL(fs::g_mock_fs_rename_state.afterRename);
+    fs::mock_reset_fs_rename_state();
+    V1Profile actual;
+    TEST_ASSERT_TRUE(writer.loadProfile("Road", actual));
+    TEST_ASSERT_EQUAL_STRING("acknowledged", actual.description.c_str());
+    V1ProfileManager reboot;
+    TEST_ASSERT_TRUE(reboot.begin(&primary, &secondary));
+    TEST_ASSERT_TRUE(reboot.loadProfile("Road", actual));
+    TEST_ASSERT_EQUAL_STRING("acknowledged", actual.description.c_str());
+}
+
+void test_profile_cached_size_failure_never_selects_older_payload_or_metadata() {
+    fs::FS filesystem(g_tempRoot);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&filesystem));
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 10, "stale")).success);
+    fs::mock_fail_next_remove("/v1profiles/Road.json.meta.prev");
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 20, "acknowledged")).success);
+    const auto committed = readSyncState(filesystem, "/v1profiles/Road.json");
+    TEST_ASSERT_TRUE(filesystem.exists("/v1profiles/Road.json.meta.prev"));
+    fs::mock_zero_file_size_for_full_path((g_tempRoot / "v1profiles/Road.json.meta").c_str());
+    const auto withUnavailableCache = readSyncState(filesystem, "/v1profiles/Road.json");
+    TEST_ASSERT_EQUAL_UINT32(committed.version, withUnavailableCache.version);
+    fs::mock_zero_file_size_for_full_path((g_tempRoot / "v1profiles/Road.json").c_str());
+    V1Profile actual;
+    TEST_ASSERT_TRUE(manager.loadProfile("Road", actual));
+    TEST_ASSERT_EQUAL_STRING("acknowledged", actual.description.c_str());
+    fs::mock_reset_fs_rename_state();
+    fs::mock_fail_rename_on_calls(2, 3);
+    TEST_ASSERT_FALSE(manager.saveProfile(makeProfile("Road", 30, "rejected")).success);
+    fs::mock_reset_fs_rename_state();
+    fs::mock_reset_fs_open_state();
+    V1ProfileManager reboot;
+    TEST_ASSERT_TRUE(reboot.begin(&filesystem));
+    TEST_ASSERT_TRUE(reboot.loadProfile("Road", actual));
+    TEST_ASSERT_EQUAL_STRING("acknowledged", actual.description.c_str());
 }
 
 void test_payload_recovery_defers_unreadable_candidate_and_rejects_corrupt_or_staged_payloads() {
@@ -2387,6 +2496,9 @@ int main() {
     RUN_TEST(test_single_store_profile_save_and_delete_survive_every_rename);
     RUN_TEST(test_mirrored_profile_save_and_delete_survive_every_rename_and_mount_topology);
     RUN_TEST(test_payload_recovery_selects_the_interrupted_writer_not_an_older_leftover);
+    RUN_TEST(test_profile_failed_promotion_and_failed_rollback_preserve_latest_acknowledged_payload);
+    RUN_TEST(test_profile_final_verification_error_and_failed_rollback_keep_save_authority);
+    RUN_TEST(test_profile_cached_size_failure_never_selects_older_payload_or_metadata);
     RUN_TEST(test_payload_recovery_defers_unreadable_candidate_and_rejects_corrupt_or_staged_payloads);
     RUN_TEST(test_new_local_save_clears_obsolete_mirror_staging_before_owning_recovery);
     RUN_TEST(test_metadata_rollback_generations_and_tombstones_agree_before_and_after_restart);

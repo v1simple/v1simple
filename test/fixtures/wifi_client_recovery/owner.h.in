@@ -53,6 +53,7 @@ class WiFiManager {
     void resetReconnectFailures() { wifiReconnectFailures_ = 0; lastReconnectAttemptMs_ = 0; }
     void runOwnerPass();
     int findConfiguredSlotBySsid(const String&) const;
+    bool testSavedNetwork(size_t);
     bool connectToNetwork(const String&, const String&, bool = true, int = -1, bool = false);
     void disconnectFromNetwork();
     void clearPendingWifiConnectState();

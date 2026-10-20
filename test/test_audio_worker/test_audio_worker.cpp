@@ -723,10 +723,11 @@ void test_discovery_initialization_cannot_replace_filesystem_owned_by_pending_wo
     TEST_ASSERT_EQUAL_UINT(2, g_mock_task_notify_state.giveCalls);
 }
 
-static void threeDirectionalAlerts(PipelineAudio& runtime, uint8_t secondaryStrength) {
+static void threeDirectionalAlerts(PipelineAudio& runtime, uint8_t secondaryStrength,
+                                   uint8_t thirdDirection = 0x44) {
     runtime.packet(PACKET_ID_ALERT_DATA, {0x13, 0x87, 0x8C, 0xAC, 0, 0x22, 0x80});
     runtime.packet(PACKET_ID_ALERT_DATA, {0x23, 0x8A, 0xAC, 0, secondaryStrength, 0x82, 0});
-    runtime.packet(PACKET_ID_ALERT_DATA, {0x33, 0x5E, 0x56, 0x90, 0, 0x44, 0});
+    runtime.packet(PACKET_ID_ALERT_DATA, {0x33, 0x5E, 0x56, 0x90, 0, thirdDirection, 0});
     runtime.pipeline.handleParsed(mockMillis);
 }
 
@@ -935,6 +936,175 @@ static void twoAlerts(PipelineAudio& runtime, uint8_t secondaryStrength) {
     runtime.pipeline.handleParsed(mockMillis);
 }
 
+static void assertUnheardPriorityUsesCurrentCount(bool startupFails, bool initiallyTwo, bool finallyTwo) {
+    PipelineAudio runtime;
+    runtime.settings.settings.voiceDirectionEnabled = false;
+    runtime.settings.settings.announceSecondaryAlerts = false;
+    runtime.settings.settings.announceBogeyCount = true;
+    if (!startupFails) {
+        play_test_voice(); // Settings preview owns the worker as the live alert arrives.
+    }
+    if (initiallyTwo) twoAlerts(runtime, 0x90);
+    else runtime.alert();
+    TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
+    if (startupFails) {
+        for (unsigned i = 0; i < 3; ++i) mock_queue_semaphore_take_result(pdFALSE);
+        runAcceptedJob();
+        TEST_ASSERT_EQUAL_UINT(0, g_mock_i2s_state.writeCalls);
+    }
+
+    mockMillis += 20;
+    if (finallyTwo) twoAlerts(runtime, 0x90);
+    else runtime.alert();
+    TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
+    if (!startupFails) runAcceptedJob(); // Release the unrelated preview.
+    mockMillis += 100;
+    if (finallyTwo) twoAlerts(runtime, 0x90);
+    else runtime.alert();
+    TEST_ASSERT_EQUAL_UINT(2, g_mock_task_notify_state.giveCalls);
+    TEST_ASSERT_EQUAL_UINT(finallyTwo ? 2 : 1, runtime.parser.getAlertCount());
+    TEST_ASSERT_EQUAL_INT(finallyTwo ? 3 : 1, g_sdAudioTaskParams.numClips);
+    TEST_ASSERT_EQUAL_STRING("/audio/band_ka.mul", g_sdAudioTaskParams.filePaths[0]);
+    if (finallyTwo) {
+        TEST_ASSERT_EQUAL_STRING("/audio/digit_2.mul", g_sdAudioTaskParams.filePaths[1]);
+        TEST_ASSERT_EQUAL_STRING("/audio/bogeys.mul", g_sdAudioTaskParams.filePaths[2]);
+    }
+    const unsigned writesBefore = g_mock_i2s_state.writeCalls;
+    runAcceptedJob();
+    TEST_ASSERT_GREATER_THAN_UINT(writesBefore, g_mock_i2s_state.writeCalls);
+    mockMillis += 3000;
+    if (finallyTwo) twoAlerts(runtime, 0x90);
+    else runtime.alert();
+    TEST_ASSERT_EQUAL_UINT(2, g_mock_task_notify_state.giveCalls); // Commit once.
+}
+
+void test_busy_unheard_priority_uses_decreased_current_count() {
+    assertUnheardPriorityUsesCurrentCount(false, true, false);
+}
+void test_busy_unheard_priority_uses_increased_current_count() {
+    assertUnheardPriorityUsesCurrentCount(false, false, true);
+}
+void test_failed_startup_priority_uses_decreased_current_count() {
+    assertUnheardPriorityUsesCurrentCount(true, true, false);
+}
+void test_failed_startup_priority_uses_increased_current_count() {
+    assertUnheardPriorityUsesCurrentCount(true, false, true);
+}
+void test_busy_unheard_priority_preserves_unchanged_count() {
+    assertUnheardPriorityUsesCurrentCount(false, true, true);
+}
+
+static void configureEscalation(PipelineAudio& runtime) {
+    runtime.settings.settings.voiceAlertMode = VOICE_MODE_FREQ_ONLY;
+    runtime.settings.settings.voiceDirectionEnabled = true;
+    runtime.settings.settings.announceBogeyCount = true;
+    runtime.settings.settings.announceSecondaryAlerts = true;
+    runtime.settings.settings.secondaryKa = true;
+    runtime.settings.settings.secondaryK = false;
+}
+
+static void assertCurrentEscalationBreakdown() {
+    TEST_ASSERT_EQUAL_INT(10, g_sdAudioTaskParams.numClips);
+    TEST_ASSERT_EQUAL_STRING("/audio/digit_3.mul", g_sdAudioTaskParams.filePaths[4]);
+    TEST_ASSERT_EQUAL_STRING("/audio/bogeys.mul", g_sdAudioTaskParams.filePaths[5]);
+    TEST_ASSERT_EQUAL_STRING("/audio/digit_2.mul", g_sdAudioTaskParams.filePaths[6]);
+    TEST_ASSERT_EQUAL_STRING("/audio/dir_ahead.mul", g_sdAudioTaskParams.filePaths[7]);
+    TEST_ASSERT_EQUAL_STRING("/audio/digit_1.mul", g_sdAudioTaskParams.filePaths[8]);
+    TEST_ASSERT_EQUAL_STRING("/audio/dir_behind.mul", g_sdAudioTaskParams.filePaths[9]);
+}
+
+void test_busy_escalation_recomposes_changed_directions_with_unchanged_count() {
+    PipelineAudio runtime;
+    configureEscalation(runtime);
+    threeDirectionalAlerts(runtime, 0x90);
+    runAcceptedJob();
+    mockMillis += 1600;
+    threeDirectionalAlerts(runtime, 0x90);
+    // The secondary is heard while current main-loop tables qualify an escalation.
+    bool interleaved = false;
+    g_mock_i2s_state.onWrite = [&] {
+        if (interleaved) return;
+        interleaved = true;
+        mockMillis += 100;
+        threeDirectionalAlerts(runtime, 0x90); // Consume Started and track weak.
+        mockMillis += 600;
+        threeDirectionalAlerts(runtime, 0x9E);
+        mockMillis += 600;
+        threeDirectionalAlerts(runtime, 0x9E); // Escalation receives Busy.
+        TEST_ASSERT_EQUAL_UINT(2, g_mock_task_notify_state.giveCalls);
+        mockMillis += 20;
+        threeDirectionalAlerts(runtime, 0x9E, 0x24); // Third row moves side -> front.
+    };
+    runAcceptedJob();
+    g_mock_i2s_state.onWrite = nullptr;
+    TEST_ASSERT_TRUE(interleaved);
+    mockMillis += 100;
+    threeDirectionalAlerts(runtime, 0x9E, 0x24);
+    TEST_ASSERT_EQUAL_UINT(3, g_mock_task_notify_state.giveCalls);
+    TEST_ASSERT_EQUAL_UINT(3, runtime.parser.getAlertCount());
+    assertCurrentEscalationBreakdown();
+    runAcceptedJob();
+    mockMillis += 3000;
+    threeDirectionalAlerts(runtime, 0x9E, 0x24);
+    TEST_ASSERT_EQUAL_UINT(3, g_mock_task_notify_state.giveCalls);
+}
+
+void test_failed_startup_escalation_recomposes_current_direction_breakdown() {
+    PipelineAudio runtime;
+    configureEscalation(runtime);
+    threeDirectionalAlerts(runtime, 0x90);
+    runAcceptedJob();
+    mockMillis += 1600;
+    threeDirectionalAlerts(runtime, 0x90);
+    runAcceptedJob();
+    mockMillis += 100;
+    threeDirectionalAlerts(runtime, 0x90);
+    mockMillis += 600;
+    threeDirectionalAlerts(runtime, 0x9E);
+    mockMillis += 600;
+    threeDirectionalAlerts(runtime, 0x9E);
+    TEST_ASSERT_EQUAL_UINT(3, g_mock_task_notify_state.giveCalls);
+    TEST_ASSERT_EQUAL_INT(12, g_sdAudioTaskParams.numClips);
+    const unsigned writesBefore = g_mock_i2s_state.writeCalls;
+    for (unsigned i = 0; i < 3; ++i) mock_queue_semaphore_take_result(pdFALSE);
+    runAcceptedJob();
+    TEST_ASSERT_EQUAL_UINT(writesBefore, g_mock_i2s_state.writeCalls);
+    mockMillis += 20;
+    threeDirectionalAlerts(runtime, 0x9E, 0x24);
+    mockMillis += 100;
+    threeDirectionalAlerts(runtime, 0x9E, 0x24);
+    TEST_ASSERT_EQUAL_UINT(4, g_mock_task_notify_state.giveCalls);
+    assertCurrentEscalationBreakdown();
+    runAcceptedJob();
+    TEST_ASSERT_GREATER_THAN_UINT(writesBefore, g_mock_i2s_state.writeCalls);
+    mockMillis += 3000;
+    threeDirectionalAlerts(runtime, 0x9E, 0x24);
+    TEST_ASSERT_EQUAL_UINT(4, g_mock_task_notify_state.giveCalls);
+}
+
+void test_started_priority_keeps_worker_content_and_does_not_replay_on_count_change() {
+    PipelineAudio runtime;
+    runtime.settings.settings.voiceDirectionEnabled = false;
+    runtime.settings.settings.announceSecondaryAlerts = false;
+    twoAlerts(runtime, 0x90);
+    TEST_ASSERT_EQUAL_INT(3, g_sdAudioTaskParams.numClips);
+    bool interleaved = false;
+    g_mock_i2s_state.onWrite = [&] {
+        if (interleaved) return;
+        interleaved = true;
+        mockMillis += 20;
+        runtime.alert(); // Consume Started after the worker's first PCM submission.
+        TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
+        TEST_ASSERT_EQUAL_INT(3, g_sdAudioTaskParams.numClips);
+    };
+    runAcceptedJob();
+    g_mock_i2s_state.onWrite = nullptr;
+    TEST_ASSERT_TRUE(interleaved);
+    mockMillis += 3000;
+    runtime.alert();
+    TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
+}
+
 void test_escalation_honors_band_only_with_direction_and_count_disabled() {
     PipelineAudio runtime;
     runtime.settings.settings.voiceAlertMode = VOICE_MODE_BAND_ONLY;
@@ -978,6 +1148,14 @@ int main() {
     RUN_TEST(test_missing_asset_directory_remains_quiet_and_recovers_when_installed);
     RUN_TEST(test_discovery_initialization_cannot_replace_filesystem_owned_by_pending_worker);
     RUN_TEST(test_parsed_frequency_only_escalation_plays_all_twelve_clips_once);
+    RUN_TEST(test_busy_unheard_priority_uses_decreased_current_count);
+    RUN_TEST(test_busy_unheard_priority_uses_increased_current_count);
+    RUN_TEST(test_failed_startup_priority_uses_decreased_current_count);
+    RUN_TEST(test_failed_startup_priority_uses_increased_current_count);
+    RUN_TEST(test_busy_unheard_priority_preserves_unchanged_count);
+    RUN_TEST(test_busy_escalation_recomposes_changed_directions_with_unchanged_count);
+    RUN_TEST(test_failed_startup_escalation_recomposes_current_direction_breakdown);
+    RUN_TEST(test_started_priority_keeps_worker_content_and_does_not_replay_on_count_change);
     RUN_TEST(test_partial_amp_enable_failure_shuts_down_after_startup_exhaustion);
     RUN_TEST(test_partial_amp_startup_cleanup_keeps_retrying_after_bus_errors);
     RUN_TEST(test_partial_amp_enable_failure_can_recover_and_play_once);

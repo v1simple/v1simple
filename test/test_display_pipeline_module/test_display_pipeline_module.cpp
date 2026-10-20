@@ -517,6 +517,21 @@ void test_ordinary_busy_secondary_retains_its_retry_timing_and_frequency() {
     TEST_ASSERT_EQUAL_INT(3, g_voicePlaybackAttempts);
 }
 
+void test_busy_secondary_rechecks_current_band_filter_before_retry() {
+    AlertData priority, secondary;
+    prepareBusySecondary(priority, secondary);
+    settings.settings.secondaryK = false;
+    g_voicePlaybackResult = AudioPlaybackResult::Accepted;
+    module.handleParsed(3100);
+    TEST_ASSERT_EQUAL_INT(2, g_voicePlaybackAttempts);
+    settings.settings.secondaryK = true;
+    module.handleParsed(3101);
+    TEST_ASSERT_EQUAL_INT(3, g_voicePlaybackAttempts);
+    TEST_ASSERT_EQUAL_UINT16(24125, g_lastVoiceFrequency);
+    module.handleParsed(3150);
+    TEST_ASSERT_EQUAL_INT(3, g_voicePlaybackAttempts);
+}
+
 static void prepareBusyEscalation(AlertData& priority, AlertData& secondary) {
     settings.settings.announceSecondaryAlerts = true;
     settings.settings.secondaryK = true;
@@ -576,6 +591,26 @@ void test_ordinary_busy_escalation_remains_retryable_until_accepted_once() {
     TEST_ASSERT_EQUAL_INT(2, g_escalationPlaybackAttempts);
     TEST_ASSERT_EQUAL_UINT16(24125, g_lastVoiceFrequency);
     module.handleParsed(5000);
+    TEST_ASSERT_EQUAL_INT(4, g_voicePlaybackAttempts);
+}
+
+void test_busy_escalation_rechecks_sustained_strength_before_retry() {
+    AlertData priority, secondary;
+    prepareBusyEscalation(priority, secondary);
+    secondary.frontStrength = 2;
+    parser.setAlerts({priority, secondary});
+    g_voicePlaybackResult = AudioPlaybackResult::Accepted;
+    module.handleParsed(4900);
+    TEST_ASSERT_EQUAL_INT(3, g_voicePlaybackAttempts);
+    secondary.frontStrength = 5;
+    parser.setAlerts({priority, secondary});
+    module.handleParsed(5000);
+    module.handleParsed(5499);
+    TEST_ASSERT_EQUAL_INT(3, g_voicePlaybackAttempts);
+    module.handleParsed(5500);
+    TEST_ASSERT_EQUAL_INT(4, g_voicePlaybackAttempts);
+    TEST_ASSERT_EQUAL_INT(2, g_escalationPlaybackAttempts);
+    module.handleParsed(5600);
     TEST_ASSERT_EQUAL_INT(4, g_voicePlaybackAttempts);
 }
 
@@ -1687,8 +1722,10 @@ int main() {
     RUN_TEST(test_busy_secondary_reclassified_as_photo_replaces_stale_k_action);
     RUN_TEST(test_reclassified_photo_secondary_does_not_block_later_ordinary_k);
     RUN_TEST(test_ordinary_busy_secondary_retains_its_retry_timing_and_frequency);
+    RUN_TEST(test_busy_secondary_rechecks_current_band_filter_before_retry);
     RUN_TEST(test_busy_escalation_reclassified_as_photo_replaces_stale_action);
     RUN_TEST(test_ordinary_busy_escalation_remains_retryable_until_accepted_once);
+    RUN_TEST(test_busy_escalation_rechecks_sustained_strength_before_retry);
     RUN_TEST(test_unavailable_voice_is_not_retried_every_frame_or_committed);
     RUN_TEST(test_handle_parsed_updates_resting_display_when_idle);
     RUN_TEST(test_handle_parsed_prefers_persisted_alert_when_configured);

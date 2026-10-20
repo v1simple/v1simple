@@ -141,15 +141,12 @@ void successWithoutPendingSlotAdvancesResolvedSlotOnce(bool persistUnchangedCred
     manager.settings_.value.wifiStaSlots[0].ssid = "Saved";
     manager.settings_.value.wifiStaSlots[0].label = "Saved";
     manager.settings_.value.wifiStaSlots[0].priority = 0;
-    manager.wifiClientState_ = WIFI_CLIENT_CONNECTING;
-    manager.wifiConnectPhase_ = WiFiManager::WifiConnectPhase::IDLE;
-    manager.wifiConnectStartMs_ = 1;
-    manager.pendingConnectSSID_ = "Saved";
-    manager.pendingConnectPassword_ = "password";
-    manager.pendingConnectPersistCredentials_ = persistUnchangedCredentials;
-    manager.pendingConnectSlotIndex_ = -1;
-    WiFi.physicalConnected = true;
-    WiFi.cachedStatus = WL_CONNECTED;
+    mockMillis = 1000;
+    require(manager.connectToNetwork("Saved", "password", persistUnchangedCredentials), "direct attempt admission");
+    manager.processWifiClientConnectPhase();
+    mockMillis = 1010;
+    manager.processWifiClientConnectPhase();
+    WiFi.restored();
 
     manager.checkWifiClientStatus();
 
@@ -356,6 +353,79 @@ void loadedSettingsStartOnlyOneScan() {
     require(WiFi.scans == 1 && WiFi.scanAborts == 0, "revision must not duplicate startup autoconnect");
 }
 
+void switchFromExistingLink(bool automatic, bool sameSsid, int outcome) {
+    WiFiManager manager{};
+    WiFi = WiFiClass{};
+    manager.settings_.value.wifiStaSlots[0].ssid = "Saved";
+    manager.settings_.value.wifiStaSlots[1].ssid = "Working";
+    manager.wifiClientState_ = WIFI_CLIENT_CONNECTED;
+    manager.currentConnectedSlotIndex_ = 0;
+    manager.maintenanceAutoConnectPhase_ = WiFiManager::MaintenanceAutoConnectPhase::COMPLETE;
+    const int targetSlot = sameSsid ? 0 : 1;
+    const String target = sameSsid ? "Saved" : "Working";
+    mockMillis = 1000;
+    if (automatic) {
+        // The old connection returns between a disconnected snapshot and
+        // candidate admission. Exercise the actual scan/candidate owners.
+        manager.wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
+        WiFi.scanSsids = {target};
+        require(manager.beginMaintenanceAutoConnectScan(false), "scan admission");
+        WiFi.scanState = 1;
+        manager.processMaintenanceAutoConnect();
+    } else {
+        require(manager.testSavedNetwork(targetSlot), "saved-network test admission");
+    }
+    WiFi.staBeginSucceeds = outcome != 0;
+    WiFi.staConnectSucceeds = outcome != 1;
+    manager.processWifiClientConnectPhase();
+    mockMillis = 1010;
+    manager.processWifiClientConnectPhase();
+    require(WiFi.begins == (outcome == 0 ? 0 : 1), "actual start owner must run");
+    if (outcome == 2) {
+        // A terminal attempt event is authoritative even if an old cached
+        // connected value is published again before the owner polls.
+        WiFi.failure(target, WL_CONNECT_FAILED);
+        WiFi.physicalConnected = true;
+        WiFi.cachedStatus = WL_CONNECTED;
+    } else if (outcome == 3 && sameSsid) {
+        // The driver accepted a reconnect but has not associated yet. The old
+        // status alone must not pass even when testing the same network.
+        WiFi.physicalConnected = false;
+    } else if (outcome == 4) {
+        WiFi.restored();
+    }
+    mockMillis = 1050;
+    manager.checkWifiClientStatus();
+    if (outcome < 3) {
+        require(manager.wifiClientState_ != WIFI_CLIENT_CONNECTED, "failed attempt accepted an old connection");
+        require(manager.currentConnectedSlotIndex_ == -1 && manager.settings_.markCalls == 0,
+                "failed attempt published target slot or recency");
+        // Later physical reconciliation may legitimately publish the actual
+        // old network, but must never claim a switch to the failed target.
+        mockMillis = 1100;
+        manager.checkWifiClientStatus();
+        if (!sameSsid) require(manager.currentConnectedSlotIndex_ != 1, "later poll misattributed old connection");
+    } else if (outcome == 3) {
+        require(manager.wifiClientState_ == WIFI_CLIENT_CONNECTING, "old status/SSID completed the pending attempt");
+        require(manager.settings_.markCalls == 0, "old status advanced recency");
+        mockMillis = 1100;
+        WiFi.restored();
+        manager.checkWifiClientStatus();
+        require(manager.wifiClientState_ == WIFI_CLIENT_CONNECTED && manager.currentConnectedSlotIndex_ == targetSlot,
+                "fresh target association must finish the attempt");
+        require(manager.settings_.markCalls == 1 && manager.settings_.markedIndex == static_cast<size_t>(targetSlot),
+                "only fresh target association advances recency");
+    } else {
+        require(manager.wifiClientState_ == WIFI_CLIENT_CONNECTED && manager.currentConnectedSlotIndex_ == targetSlot,
+                "successful target switch rejected");
+        require(manager.settings_.markCalls == 1 && manager.settings_.markedIndex == static_cast<size_t>(targetSlot),
+                "successful target switch must advance its recency exactly once");
+        manager.checkWifiClientStatus();
+        require(manager.settings_.markCalls == 1, "connected poll duplicated recency");
+    }
+    require(manager.settings_.credentialWrites == 0, "saved-network test must not rewrite credentials");
+}
+
 int main() {
     int failures = 0;
     const auto run = [&failures](const char* name, void (*test)()) {
@@ -401,5 +471,17 @@ int main() {
     run("recovered_manual_disconnect", []() { recoverSettingsAfterApOnlyBoot(true, true, true); });
     run("sd_only_healed_network_autojoins", []() { recoverSettingsAfterApOnlyBoot(true, true, false, false); });
     run("loaded_settings_start_once", loadedSettingsStartOnlyOneScan);
+    run("manual_old_link_sta_start_failure", []() { switchFromExistingLink(false, false, 0); });
+    run("manual_old_link_connect_failure", []() { switchFromExistingLink(false, false, 1); });
+    run("auto_old_link_connect_failure", []() { switchFromExistingLink(true, false, 1); });
+    run("manual_same_ssid_connect_failure", []() { switchFromExistingLink(false, true, 1); });
+    run("auto_same_ssid_connect_failure", []() { switchFromExistingLink(true, true, 1); });
+    run("manual_old_link_terminal_event", []() { switchFromExistingLink(false, false, 2); });
+    run("manual_old_link_pending", []() { switchFromExistingLink(false, false, 3); });
+    run("auto_old_link_pending", []() { switchFromExistingLink(true, false, 3); });
+    run("manual_same_ssid_cached_connected", []() { switchFromExistingLink(false, true, 3); });
+    run("manual_successful_switch", []() { switchFromExistingLink(false, false, 4); });
+    run("auto_successful_switch", []() { switchFromExistingLink(true, false, 4); });
+    run("manual_successful_same_ssid", []() { switchFromExistingLink(false, true, 4); });
     return failures == 0 ? 0 : 1;
 }

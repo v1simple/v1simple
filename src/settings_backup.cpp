@@ -209,6 +209,25 @@ bool writeSerializedBackupAtomically(fs::FS* fs, const char* data, size_t length
         return false;
     }
 
+    // The reader may have selected a valid recovery copy behind a corrupt or
+    // missing live name. Normalize that committed copy before rotation, or a
+    // failed promotion could replace the only good .prev with corrupt bytes.
+    PsramJson::Document existing;
+    const char* selectedPath = nullptr;
+    BackupDocumentLoadStatus selectedStatus;
+    if (loadBestBackupDocument(fs, existing, &selectedPath, false, &selectedStatus)) {
+        if (std::strcmp(selectedPath, SETTINGS_BACKUP_PATH) != 0 &&
+            (!storageRemoveFileIfPresent(*fs, SETTINGS_BACKUP_PATH) ||
+             !fs->rename(selectedPath, SETTINGS_BACKUP_PATH))) {
+            fs->remove(SETTINGS_BACKUP_TMP_PATH);
+            return false;
+        }
+    } else if (selectedStatus == BackupDocumentLoadStatus::IoError ||
+               selectedStatus == BackupDocumentLoadStatus::MemoryUnavailable) {
+        fs->remove(SETTINGS_BACKUP_TMP_PATH);
+        return false;
+    }
+
     const StoragePathStatus liveStatus = storagePathStatus(*fs, SETTINGS_BACKUP_PATH);
     const StoragePathStatus previousStatus = storagePathStatus(*fs, SETTINGS_BACKUP_PREV_PATH);
     if (liveStatus == StoragePathStatus::Unavailable || previousStatus == StoragePathStatus::Unavailable) {
@@ -253,7 +272,12 @@ bool writeSerializedBackupAtomically(fs::FS* fs, const char* data, size_t length
         Serial.println("[Settings] ERROR: Promoted backup temporarily unreadable");
         return false;
     }
-    if (promoted.size() != length) {
+    struct stat promotedDetails {};
+    if (storagePathStatus(*fs, SETTINGS_BACKUP_PATH, &promotedDetails) != StoragePathStatus::Present) {
+        promoted.close();
+        return false;
+    }
+    if (promotedDetails.st_size < 0 || static_cast<size_t>(promotedDetails.st_size) != length) {
         Serial.println("[Settings] ERROR: Promoted backup size mismatch after rename");
         promoted.close();
         if (storageRemoveFileIfPresent(*fs, SETTINGS_BACKUP_PATH) &&
@@ -292,6 +316,14 @@ bool parseBackupFile(fs::FS* fs, const char* path, JsonDocument& doc, bool verbo
         return false;
     }
 
+    struct stat details {};
+    const StoragePathStatus pathStatus = storagePathStatus(*fs, path, &details);
+    if (pathStatus != StoragePathStatus::Present) {
+        if (outStatus) *outStatus = pathStatus == StoragePathStatus::Missing
+                                      ? BackupDocumentLoadStatus::NotFound
+                                      : BackupDocumentLoadStatus::IoError;
+        return false;
+    }
     File file = fs->open(path, FILE_READ);
     if (!file) {
         if (outStatus) {
@@ -305,8 +337,10 @@ bool parseBackupFile(fs::FS* fs, const char* path, JsonDocument& doc, bool verbo
         return false;
     }
 
-    const size_t size = file.size();
-    if (size == 0 || size > SETTINGS_BACKUP_MAX_BYTES) {
+    // Use metadata from the successful status probe; VFS File::size() may
+    // expose a cached zero when its own fstat failed even though reads work.
+    const size_t size = static_cast<size_t>(details.st_size);
+    if (details.st_size <= 0 || static_cast<uint64_t>(details.st_size) > SETTINGS_BACKUP_MAX_BYTES) {
         if (verboseErrors) {
             Serial.printf("[Settings] Backup file size invalid (%u bytes): %s\n", static_cast<unsigned int>(size),
                           path);

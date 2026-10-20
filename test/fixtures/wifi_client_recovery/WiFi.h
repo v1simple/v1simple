@@ -36,6 +36,7 @@ class WiFiClass {
   public:
     wifi_mode_t radioMode = WIFI_AP_STA;
     bool physicalConnected = true;
+    String physicalSsid = "Saved";
     bool autoReconnect = true;
     bool publishStopImmediately = true;
     wl_status_t cachedStatus = WL_CONNECTED;
@@ -89,7 +90,7 @@ class WiFiClass {
         return scanState;
     }
     int16_t scanComplete() { ++scanStatusReads; return scanState; }
-    String SSID() const { return physicalConnected ? "Saved" : ""; }
+    String SSID() const { return physicalConnected ? physicalSsid : String(); }
     String SSID(int16_t index) const { return scanSsids.at(static_cast<size_t>(index)); }
     int32_t RSSI(int16_t) const { return -45; }
     uint8_t encryptionType(int16_t) const { return WIFI_AUTH_OPEN; }
@@ -128,6 +129,7 @@ class WiFiClass {
     }
     void restored() {
         assert(radioMode == WIFI_AP_STA);
+        if (lastBeginSsid.length() > 0) physicalSsid = lastBeginSsid;
         physicalConnected = true;
         cachedStatus = WL_CONNECTED;
     }

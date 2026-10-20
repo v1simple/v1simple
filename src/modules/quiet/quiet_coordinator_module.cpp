@@ -63,6 +63,7 @@ void QuietCoordinatorModule::resetVolumeState() {
     pendingSpeedVolRestoreMuteVol_ = 0;
     pendingSpeedVolRestoreLastRetryMs_ = 0;
     speedRestoreSent_ = false;
+    speedRestoreHintInvalidated_ = false;
     speedVolLastRetryMs_ = 0;
     pendingFadeAction_ = false;
     pendingFadeVolume_ = 0;
@@ -382,6 +383,10 @@ SendResult QuietCoordinatorModule::sendAutoPushVolumeResult(uint8_t volume, uint
         // that this transaction never transmitted.
         if (pendingSpeedVolRestoreVol_ != 0xFF) {
             setPendingSpeedRestore(volume, muteVolume);
+            // This successful app write is newer than any already queued
+            // canonical observation. Only subsequent choices may retire it.
+            speedRestoreObservationSession_ = session;
+            speedRestoreObservationIngress_ = ingress;
             noteSpeedRestoreSent(session, ingress);
             speedVolBaselineUpdated_ = true;
         }
@@ -419,6 +424,7 @@ SendResult QuietCoordinatorModule::sendAutoPushVolumeResult(uint8_t volume, uint
 
 bool QuietCoordinatorModule::retryPendingSpeedVolRestore(const uint32_t nowMs) {
     syncCommittedState();
+    reconcilePendingSpeedRestore();
     if (pendingSpeedVolRestoreVol_ == 0xFF || !ble_ || !parser_) {
         return false;
     }
@@ -426,21 +432,6 @@ bool QuietCoordinatorModule::retryPendingSpeedVolRestore(const uint32_t nowMs) {
     // A deferred or accepted write is still owed until the canonical pair
     // converges. Time spent in protocol holdoff cannot release that ownership.
     if (!parser_->getDisplayState().hasVolumeData || !committed_.connected) return true;
-    uint8_t mainVolume = 0, muteVolume = 0;
-    uint32_t ingress = 0;
-    if (speedRestoreSent_ && speedRestoreSentSession_ == ble_->sessionGeneration() &&
-        parser_->copyLatestCanonicalCurrentVolume(mainVolume, muteVolume, &ingress) &&
-        static_cast<int32_t>(ingress - speedRestoreSentIngress_) > 0 &&
-        mainVolume == pendingSpeedVolRestoreVol_ && muteVolume == pendingSpeedVolRestoreMuteVol_) {
-        pendingSpeedVolRestoreVol_ = 0xFF;
-        speedRestoreSent_ = false;
-        if (!speedVolActive_ && presentation_.activeVolumeOwner == QuietOwner::SpeedVolume) {
-            presentation_.activeVolumeOwner = QuietOwner::None;
-        }
-        presentation_.speedVolZeroActive = false;
-        return false;
-    }
-
     if ((nowMs - pendingSpeedVolRestoreLastRetryMs_) < SPEED_VOL_RETRY_INTERVAL_MS) {
         return true;
     }
@@ -454,16 +445,74 @@ bool QuietCoordinatorModule::retryPendingSpeedVolRestore(const uint32_t nowMs) {
 }
 
 void QuietCoordinatorModule::setPendingSpeedRestore(uint8_t volume, uint8_t muteVolume) {
-    if (pendingSpeedVolRestoreVol_ != volume || pendingSpeedVolRestoreMuteVol_ != muteVolume)
+    if (pendingSpeedVolRestoreVol_ == 0xFF && ble_) {
+        // Preserve the temporary pair separately from the baseline. Delayed
+        // reduction feedback still permits a retry; a later different atomic
+        // pair belongs to the driver, even when restoration was deferred.
+        speedRestoreReducedVolume_ = desired_.volume;
+        speedRestoreReducedMuteVolume_ = desired_.muteVolume;
+        speedRestorePreviousVolume_ = 0xFF;
+        speedRestoreObservationSession_ = ble_->sessionGeneration();
+        speedRestoreObservationIngress_ = ble_->latestV1NotificationIngressSequence();
+    }
+    if (ble_) speedRestoreWriteRevision_ = ble_->volumeWriteRevision();
+    if (pendingSpeedVolRestoreVol_ != volume || pendingSpeedVolRestoreMuteVol_ != muteVolume) {
+        if (speedRestoreSent_) {
+            // Fade clear or a newer app pair can replace an accepted restore.
+            // Its late echo is still our own write, not a manual choice.
+            speedRestorePreviousVolume_ = pendingSpeedVolRestoreVol_;
+            speedRestorePreviousMuteVolume_ = pendingSpeedVolRestoreMuteVol_;
+        }
         speedRestoreSent_ = false;
+    }
     pendingSpeedVolRestoreVol_ = volume;
     pendingSpeedVolRestoreMuteVol_ = muteVolume;
 }
 
 void QuietCoordinatorModule::noteSpeedRestoreSent(uint32_t sessionGeneration, uint32_t ingressBoundary) {
+    speedRestoreWriteRevision_ = ble_->volumeWriteRevision();
     if (!speedRestoreSent_ || speedRestoreSentSession_ != sessionGeneration) {
         speedRestoreSent_ = true;
         speedRestoreSentSession_ = sessionGeneration;
         speedRestoreSentIngress_ = ingressBoundary;
     }
+}
+
+void QuietCoordinatorModule::reconcilePendingSpeedRestore(bool allowConfirmation) {
+    if (pendingSpeedVolRestoreVol_ == 0xFF || !ble_ || !parser_ || !committed_.connected) return;
+
+    const uint32_t session = ble_->sessionGeneration();
+    // Same-detector reconnects retain the obligation but require observations
+    // from their new session. The parser invalidates its pair at session open.
+    const bool newSession = session != speedRestoreObservationSession_;
+    const bool newerWriter = !newSession && ble_->volumeWriteRevision() != speedRestoreWriteRevision_;
+    uint8_t mainVolume = 0, muteVolume = 0;
+    uint32_t ingress = 0;
+    const bool fresh = parser_->copyLatestCanonicalCurrentVolume(mainVolume, muteVolume, &ingress) &&
+        (newSession || static_cast<int32_t>(ingress - speedRestoreObservationIngress_) > 0);
+    const bool atTarget = mainVolume == pendingSpeedVolRestoreVol_ && muteVolume == pendingSpeedVolRestoreMuteVol_;
+    const bool atReduction = mainVolume == speedRestoreReducedVolume_ && muteVolume == speedRestoreReducedMuteVolume_;
+    const bool atPrevious = mainVolume == speedRestorePreviousVolume_ && muteVolume == speedRestorePreviousMuteVolume_;
+    const bool manualPair = fresh && !atTarget && !atReduction && !atPrevious;
+    const bool confirmed = allowConfirmation && fresh && atTarget && speedRestoreSent_ && speedRestoreSentSession_ == session &&
+        static_cast<int32_t>(ingress - speedRestoreSentIngress_) > 0;
+    if (!newerWriter && !manualPair && !confirmed) {
+        if (newSession && fresh) {
+            speedRestoreObservationSession_ = session;
+            speedRestoreObservationIngress_ = ingress;
+            speedRestoreWriteRevision_ = ble_->volumeWriteRevision();
+        }
+        return;
+    }
+    pendingSpeedVolRestoreVol_ = 0xFF;
+    speedRestoreSent_ = false;
+    speedRestoreHintInvalidated_ = newerWriter || manualPair;
+    if ((newerWriter || manualPair) && (desired_.volumeOwner == QuietOwner::SpeedVolume ||
+        (!newerWriter && desired_.volumeOwner == QuietOwner::AutoPush))) {
+        desired_.volumeOwner = QuietOwner::None;
+        desired_.volumePending = false;
+    }
+    if (presentation_.activeVolumeOwner == QuietOwner::SpeedVolume)
+        presentation_.activeVolumeOwner = QuietOwner::None;
+    presentation_.speedVolZeroActive = false;
 }

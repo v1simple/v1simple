@@ -35,8 +35,10 @@ inline constexpr size_t kUnlimitedWriteBudget = std::numeric_limits<size_t>::max
 inline size_t g_new_file_write_budget = kUnlimitedWriteBudget;
 inline std::string g_fail_next_read_path;
 inline std::string g_fail_read_full_path;
+inline std::string g_zero_size_full_path;
 inline std::string g_fail_directory_entry_open;
 inline std::string g_fail_next_remove_path;
+inline std::string g_reset_after_remove_path;
 inline bool g_require_existing_write_parent = false;
 inline bool g_exists_uses_read_open = false;
 
@@ -68,6 +70,7 @@ public:
         if (!state_ || state_->directory) {
             return 0;
         }
+        if (state_->path.string() == mock_fs_detail::g_zero_size_full_path) return 0;
         std::error_code ec;
         return std::filesystem::exists(state_->path, ec)
                    ? static_cast<size_t>(std::filesystem::file_size(state_->path, ec))
@@ -302,8 +305,10 @@ namespace fs {
 struct MockRenameState {
     size_t renameCalls = 0;
     size_t failOnCall = 0;
+    size_t failOnCallAlso = 0;
     size_t resetAfterCall = 0;
     std::string resetAfterTarget;
+    void (*afterRename)(const char* from, const char* to) = nullptr;
 };
 
 // A reset occurs after the rename persisted, so the caller cannot execute its
@@ -322,6 +327,11 @@ inline void mock_fail_next_rename() {
 
 inline void mock_fail_rename_on_call(size_t callNumber) {
     g_mock_fs_rename_state.failOnCall = callNumber;
+}
+
+inline void mock_fail_rename_on_calls(size_t first, size_t second) {
+    g_mock_fs_rename_state.failOnCall = first;
+    g_mock_fs_rename_state.failOnCallAlso = second;
 }
 
 inline void mock_reset_after_rename_on_call(size_t callNumber) {
@@ -357,9 +367,16 @@ inline void mock_fail_next_directory_entry_open(const char* filename) {
 inline void mock_reset_fs_open_state() {
     mock_fs_detail::g_fail_next_read_path.clear();
     mock_fs_detail::g_fail_read_full_path.clear();
+    mock_fs_detail::g_zero_size_full_path.clear();
     mock_fs_detail::g_fail_directory_entry_open.clear();
     mock_fs_detail::g_require_existing_write_parent = false;
     mock_fs_detail::g_exists_uses_read_open = false;
+}
+
+// The target VFS can open a read handle but leave its cached size at zero if
+// fstat fails. A separate stat probe can still report the actual metadata.
+inline void mock_zero_file_size_for_full_path(const char* path) {
+    mock_fs_detail::g_zero_size_full_path = path ? path : "";
 }
 
 inline void mock_exists_uses_read_open(bool enabled) {
@@ -376,6 +393,11 @@ inline void mock_fail_next_remove(const char* path) {
 
 inline void mock_reset_fs_remove_state() {
     mock_fs_detail::g_fail_next_remove_path.clear();
+    mock_fs_detail::g_reset_after_remove_path.clear();
+}
+
+inline void mock_reset_after_remove(const char* path) {
+    mock_fs_detail::g_reset_after_remove_path = path ? path : "";
 }
 
 class FS {
@@ -432,7 +454,12 @@ public:
             return false;
         }
         std::error_code ec;
-        return std::filesystem::remove_all(resolve(path), ec) > 0;
+        const bool removed = std::filesystem::remove_all(resolve(path), ec) > 0;
+        if (removed && path && mock_fs_detail::g_reset_after_remove_path == path) {
+            mock_fs_detail::g_reset_after_remove_path.clear();
+            throw SimulatedReset{};
+        }
+        return removed;
     }
 
     bool remove(const String& path) {
@@ -446,10 +473,18 @@ public:
             g_mock_fs_rename_state.failOnCall = 0;
             return false;
         }
+        if (g_mock_fs_rename_state.failOnCallAlso != 0 &&
+            g_mock_fs_rename_state.renameCalls == g_mock_fs_rename_state.failOnCallAlso) {
+            g_mock_fs_rename_state.failOnCallAlso = 0;
+            return false;
+        }
         std::error_code ec;
         const std::filesystem::path target = resolve(to);
         std::filesystem::create_directories(target.parent_path(), ec);
         std::filesystem::rename(resolve(from), target, ec);
+        if (!ec && g_mock_fs_rename_state.afterRename) {
+            g_mock_fs_rename_state.afterRename(from, to);
+        }
         if (!ec && ((g_mock_fs_rename_state.resetAfterCall != 0 &&
                      g_mock_fs_rename_state.renameCalls == g_mock_fs_rename_state.resetAfterCall) ||
                     target.string() == g_mock_fs_rename_state.resetAfterTarget)) {

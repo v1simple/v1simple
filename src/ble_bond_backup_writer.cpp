@@ -124,6 +124,22 @@ int writeBondBackupSnapshot(fs::FS& sdFs, const BondBackupSnapshot& snapshot) {
         return -1;
     }
 
+    if (inspectBleBondBackup(sdFs, tmpPath.c_str()) != BleBondBackupStatus::Valid) {
+        sdFs.remove(tmpPath.c_str());
+        return -1;
+    }
+
+    const BleBondBackupStatus liveStatus = inspectBleBondBackup(sdFs, kBleBondBackupPath);
+    if (liveStatus == BleBondBackupStatus::Unavailable) return -1;
+    if (liveStatus != BleBondBackupStatus::Valid) {
+        const String rollbackPath = StorageManager::rollbackPathFor(kBleBondBackupPath);
+        const BleBondBackupStatus previousStatus = inspectBleBondBackup(sdFs, rollbackPath.c_str());
+        if (previousStatus == BleBondBackupStatus::Unavailable) return -1;
+        if (previousStatus == BleBondBackupStatus::Valid &&
+            !storageRemoveFileIfPresent(sdFs, kBleBondBackupPath)) return -1;
+        // With no live file the promoter preserves .prev until the new live
+        // commits. Never rotate a known-corrupt live over the recovery copy.
+    }
     if (!StorageManager::promoteTempFileWithRollback(sdFs, tmpPath.c_str(), kBleBondBackupPath)) {
         Serial.println("[BLE] WARN: Bond backup rename failed");
         return -1;

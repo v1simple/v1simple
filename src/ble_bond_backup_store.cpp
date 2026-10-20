@@ -14,40 +14,52 @@ extern "C" {
 
 namespace {
 
-int restoreBleBondBackupFromPath(fs::FS& fs, const char* path) {
-    if (!path || path[0] == '\0' || !fs.exists(path)) {
-        return -1;
-    }
+struct BondBackupContents {
+    BondBackupHeader header = {};
+    std::array<ble_store_value_sec, kMaxBleBondEntries> ourSecs = {};
+    std::array<ble_store_value_sec, kMaxBleBondEntries> peerSecs = {};
+};
+
+BleBondBackupStatus readBleBondBackup(fs::FS& fs, const char* path, BondBackupContents& contents) {
+    if (!path || path[0] == '\0') return BleBondBackupStatus::Unavailable;
+    struct stat details {};
+    const StoragePathStatus status = storagePathStatus(fs, path, &details);
+    if (status == StoragePathStatus::Missing) return BleBondBackupStatus::Missing;
+    if (status != StoragePathStatus::Present) return BleBondBackupStatus::Unavailable;
+    if (!S_ISREG(details.st_mode) || details.st_size < 0) return BleBondBackupStatus::Unavailable;
 
     File file = fs.open(path, FILE_READ);
     if (!file) {
-        return -1;
+        return BleBondBackupStatus::Unavailable;
     }
 
-    const size_t fileSize = file.size();
+    // VFS File::size() can retain a default zero after its initial fstat fails.
+    // Only the successful authoritative stat above may classify a live backup
+    // as malformed and authorize replacement of its committed recovery copy.
+    const uint64_t fileSize = static_cast<uint64_t>(details.st_size);
     const size_t maxSize = sizeof(BondBackupHeader) + 2 * kMaxBleBondEntries * sizeof(struct ble_store_value_sec);
     if (fileSize < sizeof(BondBackupHeader) || fileSize > maxSize) {
         file.close();
         Serial.printf("[BLE] Bond backup file size invalid: %u\n", static_cast<unsigned>(fileSize));
-        return -1;
+        return BleBondBackupStatus::Invalid;
     }
 
-    BondBackupHeader header = {};
+    BondBackupHeader& header = contents.header;
     if (file.read(reinterpret_cast<uint8_t*>(&header), sizeof(header)) != sizeof(header)) {
         file.close();
-        return -1;
+        return BleBondBackupStatus::Unavailable;
     }
 
     if (memcmp(header.magic, kBleBondMagic, sizeof(header.magic)) != 0) {
         file.close();
         Serial.println("[BLE] Bond backup magic mismatch");
-        return -1;
+        return BleBondBackupStatus::Invalid;
     }
 
     if (header.ourSecCount > kMaxBleBondEntries || header.peerSecCount > kMaxBleBondEntries) {
         file.close();
         Serial.println("[BLE] Bond backup count out of range");
-        return -1;
+        return BleBondBackupStatus::Invalid;
     }
 
     const size_t expectedSize = sizeof(BondBackupHeader) + header.ourSecCount * sizeof(struct ble_store_value_sec) +
@@ -55,28 +67,37 @@ int restoreBleBondBackupFromPath(fs::FS& fs, const char* path) {
     if (fileSize < expectedSize) {
         file.close();
         Serial.println("[BLE] Bond backup file truncated");
-        return -1;
+        return BleBondBackupStatus::Invalid;
     }
 
-    std::array<ble_store_value_sec, kMaxBleBondEntries> ourSecs = {};
-    std::array<ble_store_value_sec, kMaxBleBondEntries> peerSecs = {};
+    auto& ourSecs = contents.ourSecs;
+    auto& peerSecs = contents.peerSecs;
 
     for (uint32_t i = 0; i < header.ourSecCount; ++i) {
         if (file.read(reinterpret_cast<uint8_t*>(&ourSecs[i]), sizeof(ourSecs[i])) != sizeof(ourSecs[i])) {
             file.close();
-            return -1;
+            return BleBondBackupStatus::Unavailable;
         }
     }
 
     for (uint32_t i = 0; i < header.peerSecCount; ++i) {
         if (file.read(reinterpret_cast<uint8_t*>(&peerSecs[i]), sizeof(peerSecs[i])) != sizeof(peerSecs[i])) {
             file.close();
-            return -1;
+            return BleBondBackupStatus::Unavailable;
         }
     }
 
     file.close();
 
+    return BleBondBackupStatus::Valid;
+}
+
+int restoreBleBondBackupFromPath(fs::FS& fs, const char* path) {
+    BondBackupContents contents;
+    if (readBleBondBackup(fs, path, contents) != BleBondBackupStatus::Valid) return -1;
+    const auto& header = contents.header;
+    auto& ourSecs = contents.ourSecs;
+    auto& peerSecs = contents.peerSecs;
     int restored = 0;
     for (uint32_t i = 0; i < header.ourSecCount; ++i) {
         if (ble_store_write_our_sec(&ourSecs[i]) == 0) {
@@ -94,6 +115,11 @@ int restoreBleBondBackupFromPath(fs::FS& fs, const char* path) {
 
 } // namespace
 
+BleBondBackupStatus inspectBleBondBackup(fs::FS& fs, const char* path) {
+    BondBackupContents contents;
+    return readBleBondBackup(fs, path, contents);
+}
+
 int restoreBleBondBackup(fs::FS& fs, const char* livePath) {
     if (!livePath || livePath[0] == '\0') {
         return -1;
@@ -105,7 +131,7 @@ int restoreBleBondBackup(fs::FS& fs, const char* livePath) {
     }
 
     const String rollbackPath = StorageManager::rollbackPathFor(livePath);
-    if (rollbackPath.length() == 0 || !fs.exists(rollbackPath.c_str())) {
+    if (rollbackPath.length() == 0) {
         return -1;
     }
 

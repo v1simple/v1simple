@@ -877,7 +877,7 @@ void test_speed_restore_survives_long_holdoff_and_requires_complete_pair() {
     TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
     TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
 
-    volume(6, 1, 17200);
+    volume(0, 2, 17200); // Delayed reduction feedback still requires restoration.
     runtime.step(17200, 50, false, false);
     TEST_ASSERT_FALSE(quiet.canApplyAutoPushVolumeExactly());
     TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
@@ -1422,8 +1422,280 @@ void checkFadeHistory(unsigned priorities, bool completeTable) {
 void test_all_fifteen_table_priorities_remain_faded() { checkFadeHistory(15, true); }
 void test_long_continuous_encounter_remembers_each_current_priority() { checkFadeHistory(64, false); }
 
+void pendingSpeedRestore() {
+    volume(6, 2, 9500);
+    SpeedFadeRuntime runtime;
+    runtime.step(10000, 0, false);
+    TEST_ASSERT_EQUAL_UINT8(0, parser.getDisplayState().mainVolume);
+    runtime.step(12000, 50, false, false);
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
+    TEST_ASSERT_FALSE(quiet.canApplyAutoPushVolumeExactly());
+}
+void test_speed_restore_respects_new_manual_zero() {
+    pendingSpeedRestore();
+    manualDisplayVolume(0, 4, 12100);
+    const int before = ble.setVolumeCalls;
+    quiet.retryPendingSpeedVolRestore(12200);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(before, ble.setVolumeCalls,
+        "Pending speed restore overwrote newer canonical driver zero/4 with old6/2");
+    TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+}
+void test_speed_restore_respects_new_manual_current_volume() {
+    pendingSpeedRestore();
+    feed(PACKET_ID_RESP_CURRENT_VOLUME, {3, 4}, 12100);
+    const int before = ble.setVolumeCalls;
+    quiet.retryPendingSpeedVolRestore(12200);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(before, ble.setVolumeCalls,
+        "Pending speed restore overwrote newer canonical driver3/4 with old6/2");
+    TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+}
+void test_speed_restore_respects_new_manual_all_volume() {
+    pendingSpeedRestore();
+    volume(3, 4, 12100);
+    const int before = ble.setVolumeCalls;
+    quiet.retryPendingSpeedVolRestore(12200);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(before, ble.setVolumeCalls,
+        "Pending speed restore overwrote newer canonical all-volume3/4 with old6/2");
+    TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+}
+void test_pending_restore_retries_original_reduced_pair_control() {
+    pendingSpeedRestore();
+    volume(0, 2, 12100);
+    const int before = ble.setVolumeCalls;
+    TEST_ASSERT_TRUE(quiet.retryPendingSpeedVolRestore(12200));
+    TEST_ASSERT_EQUAL_INT(before + 1, ble.setVolumeCalls);
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
+}
+void test_matching_restore_releases_control() {
+    pendingSpeedRestore();
+    volume(6, 2, 12100);
+    const int before = ble.setVolumeCalls;
+    TEST_ASSERT_FALSE(quiet.retryPendingSpeedVolRestore(12200));
+    TEST_ASSERT_EQUAL_INT(before, ble.setVolumeCalls);
+    TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+}
+void test_deferred_speed_restore_respects_new_manual_pair() {
+    SpeedFadeRuntime runtime;
+    volume(6, 2, 9500);
+    runtime.step(10000, 0, false);
+    ble.nextVolumeSendResult = SendResult::NOT_YET;
+    runtime.step(12000, 50, false, false);
+    feed(PACKET_ID_RESP_CURRENT_VOLUME, {3, 2}, 12100);
+    const int before = ble.setVolumeCalls;
+    runtime.step(12200, 50, false, false);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(before, ble.setVolumeCalls, "Deferred speed restoration revived old baseline");
+}
+void test_rejected_speed_restore_respects_new_manual_pair() {
+    SpeedFadeRuntime runtime;
+    pendingSpeedRestore();
+    feed(0x65, {0x39}, 12050);
+    TEST_ASSERT_TRUE(ble.volumeWriteRejected(ble.volumeWriteRevision()));
+    feed(PACKET_ID_RESP_CURRENT_VOLUME, {3, 2}, 12100);
+    const int before = ble.setVolumeCalls;
+    runtime.step(12200, 50, false, false);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(before, ble.setVolumeCalls, "Rejected speed restoration revived old baseline");
+}
+void test_fade_handoff_speed_restore_respects_new_manual_pair() {
+    SpeedFadeRuntime runtime;
+    runtime.dropDuringFade();
+    runtime.step(18000, 0, false); // Fade transfers its6/2 baseline to speed.
+    runtime.step(21000, 50, false, false);
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+    manualDisplayVolume(0, 4, 21100);
+    const int before = ble.setVolumeCalls;
+    runtime.step(21200, 50, false, false);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(before, ble.setVolumeCalls, "Speed revived former fade baseline over driver choice");
+}
+void test_low_speed_reentry_does_not_carry_superseded_pending_restore() {
+    SpeedFadeRuntime runtime;
+    pendingSpeedRestore();
+    volume(3, 4, 14000);
+    runtime.step(14000, 0, false);
+    runtime.step(16000, 50, false, false);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(3, ble.lastVolume, "New low-speed episode carried obsolete6/2 instead of current3/4");
+    TEST_ASSERT_EQUAL_UINT8(4, ble.lastMuteVolume);
+}
+void test_new_autopush_pair_replaces_pending_restore_control() {
+    SpeedFadeRuntime runtime;
+    pendingSpeedRestore();
+    TEST_ASSERT_TRUE(quiet.sendAutoPushVolume(8, 3));
+    volume(0, 2, 12100);
+    runtime.step(12200, 50, false, false);
+    TEST_ASSERT_EQUAL_UINT8(8, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(3, ble.lastMuteVolume);
+    volume(8, 3, 12300);
+    runtime.step(12300, 50, false, false);
+    TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+}
+void test_confirmed_speed_restore_leaves_later_manual_pair_control() {
+    SpeedFadeRuntime runtime;
+    pendingSpeedRestore();
+    volume(6, 2, 12100);
+    runtime.step(12100, 50, false, false);
+    const int before = ble.setVolumeCalls;
+    volume(0, 4, 12200);
+    runtime.step(12200, 50, false, false);
+    TEST_ASSERT_EQUAL_INT(before, ble.setVolumeCalls);
+    TEST_ASSERT_EQUAL_UINT8(0, parser.getDisplayState().mainVolume);
+    TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+}
+void test_phone_takeover_retires_pending_speed_restore_control() {
+    SpeedFadeRuntime runtime;
+    pendingSpeedRestore();
+    const int before = ble.setVolumeCalls;
+    ble.setProxyConnected(true);
+    quiet.syncProxyVolumeOwnership(&fade);
+    runtime.step(12100, 50, false, false);
+    ble.setProxyConnected(false);
+    volume(0, 4, 12200);
+    runtime.step(12200, 50, false, false);
+    TEST_ASSERT_EQUAL_INT(before, ble.setVolumeCalls);
+    TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+}
+void test_different_detector_retires_pending_speed_restore_control() {
+    SpeedFadeRuntime runtime;
+    pendingSpeedRestore();
+    const int before = ble.setVolumeCalls;
+    closeSession(2, 12500);
+    openSession(3, 13000, "AA:BB:CC:DD:EE:02");
+    volume(0, 4, 13100);
+    runtime.step(13200, 50, false, false);
+    TEST_ASSERT_EQUAL_INT(before, ble.setVolumeCalls);
+    TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+}
+void test_same_detector_reconnect_preserves_recovery_control() {
+    SpeedFadeRuntime runtime;
+    pendingSpeedRestore();
+    closeSession(2, 12500);
+    openSession(3, 13000);
+    volume(0, 2, 13100);
+    runtime.step(13200, 50, false, false);
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
+    volume(6, 2, 13300);
+    runtime.step(13300, 50, false, false);
+    TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+}
+void test_stale_baseline_does_not_acknowledge_pending_restore_control() {
+    SpeedFadeRuntime runtime;
+    volume(6, 2, 9500);
+    runtime.step(10000, 0, false);
+    const uint32_t staleIngress = ble.noteV1NotificationIngress();
+    runtime.step(12000, 50, false, false);
+    feed(PACKET_ID_RESP_ALL_VOLUME, {6, 2, 6, 2}, 12010, staleIngress);
+    runtime.step(12010, 50, false, false);
+    TEST_ASSERT_FALSE(quiet.canApplyAutoPushVolumeExactly());
+    volume(0, 2, 12100);
+    const int before = ble.setVolumeCalls;
+    runtime.step(12200, 50, false, false);
+    TEST_ASSERT_EQUAL_INT(before + 1, ble.setVolumeCalls);
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+}
+void test_low_speed_standing_choice_continues_control() {
+    SpeedFadeRuntime runtime;
+    volume(6, 2, 9500);
+    runtime.step(10000, 0, false);
+    volume(3, 2, 11000);
+    runtime.step(11000, 0, false, false);
+    TEST_ASSERT_EQUAL_UINT8(0, ble.lastVolume); // Active speed choice still applies.
+}
+
+
+void test_pre_restore_manual_packet_parsed_late_does_not_retire_speed_recovery() {
+    SpeedFadeRuntime runtime;
+    volume(6, 2, 9500);
+    runtime.step(10000, 0, false);
+    const uint32_t staleIngress = ble.noteV1NotificationIngress();
+    runtime.step(12000, 50, false, false);
+    feed(PACKET_ID_RESP_CURRENT_VOLUME, {3, 4}, 12100, staleIngress);
+    const int before = ble.setVolumeCalls;
+    TEST_ASSERT_TRUE(quiet.retryPendingSpeedVolRestore(12200));
+    TEST_ASSERT_EQUAL_INT(before + 1, ble.setVolumeCalls);
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+}
+
+void test_new_quiet_writer_retires_speed_restore_before_detector_echo() {
+    pendingSpeedRestore();
+    TEST_ASSERT_TRUE(quiet.sendVolume(QuietOwner::WifiCommand, 8, 3));
+    const int before = ble.setVolumeCalls;
+    TEST_ASSERT_FALSE(quiet.retryPendingSpeedVolRestore(12200));
+    TEST_ASSERT_EQUAL_INT(before, ble.setVolumeCalls);
+    TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+}
+
+void test_failed_new_writer_does_not_cancel_speed_recovery() {
+    pendingSpeedRestore();
+    ble.nextVolumeSendResult = SendResult::FAILED;
+    TEST_ASSERT_FALSE(quiet.sendVolume(QuietOwner::WifiCommand, 8, 3));
+    const int before = ble.setVolumeCalls;
+    TEST_ASSERT_TRUE(quiet.retryPendingSpeedVolRestore(12200));
+    TEST_ASSERT_EQUAL_INT(before + 1, ble.setVolumeCalls);
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+}
+
+void test_new_app_baseline_ignores_preceding_manual_observation_then_honors_later_choice() {
+    pendingSpeedRestore();
+    volume(3, 4, 12100);
+    TEST_ASSERT_TRUE(quiet.sendAutoPushVolume(8, 3));
+    const int before = ble.setVolumeCalls;
+    TEST_ASSERT_TRUE(quiet.retryPendingSpeedVolRestore(12200));
+    TEST_ASSERT_EQUAL_INT(before + 1, ble.setVolumeCalls);
+    TEST_ASSERT_EQUAL_UINT8(8, ble.lastVolume);
+    volume(0, 4, 12300);
+    const int after = ble.setVolumeCalls;
+    TEST_ASSERT_FALSE(quiet.retryPendingSpeedVolRestore(12400));
+    TEST_ASSERT_EQUAL_INT(after, ble.setVolumeCalls);
+}
+
+void test_manual_speed_restore_retirement_discards_old_fade_hint_for_next_alert() {
+    SpeedFadeRuntime runtime;
+    pendingSpeedRestore();
+    volume(3, 4, 12100);
+    runtime.step(12200, 50, true, false);
+    runtime.step(14300, 50, true);
+    TEST_ASSERT_EQUAL_UINT8(1, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(4, ble.lastMuteVolume);
+    runtime.step(14400, 50, false, false);
+    TEST_ASSERT_EQUAL_UINT8(3, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(4, ble.lastMuteVolume);
+}
+
+void test_speed_restore_accepts_fresh_canonical_pair_arriving_inside_send() {
+    SpeedFadeRuntime runtime;
+    volume(6, 2, 9500);
+    runtime.step(10000, 0, false);
+    ble.setVolumeSendHook = [] { volume(6, 2, 12000); };
+    runtime.step(12000, 50, false, false);
+    ble.setVolumeSendHook = nullptr;
+    TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_pre_restore_manual_packet_parsed_late_does_not_retire_speed_recovery);
+    RUN_TEST(test_new_quiet_writer_retires_speed_restore_before_detector_echo);
+    RUN_TEST(test_failed_new_writer_does_not_cancel_speed_recovery);
+    RUN_TEST(test_new_app_baseline_ignores_preceding_manual_observation_then_honors_later_choice);
+    RUN_TEST(test_manual_speed_restore_retirement_discards_old_fade_hint_for_next_alert);
+    RUN_TEST(test_speed_restore_accepts_fresh_canonical_pair_arriving_inside_send);
+    RUN_TEST(test_speed_restore_respects_new_manual_zero);
+    RUN_TEST(test_speed_restore_respects_new_manual_current_volume);
+    RUN_TEST(test_speed_restore_respects_new_manual_all_volume);
+    RUN_TEST(test_pending_restore_retries_original_reduced_pair_control);
+    RUN_TEST(test_matching_restore_releases_control);
+    RUN_TEST(test_deferred_speed_restore_respects_new_manual_pair);
+    RUN_TEST(test_rejected_speed_restore_respects_new_manual_pair);
+    RUN_TEST(test_fade_handoff_speed_restore_respects_new_manual_pair);
+    RUN_TEST(test_low_speed_reentry_does_not_carry_superseded_pending_restore);
+    RUN_TEST(test_new_autopush_pair_replaces_pending_restore_control);
+    RUN_TEST(test_confirmed_speed_restore_leaves_later_manual_pair_control);
+    RUN_TEST(test_phone_takeover_retires_pending_speed_restore_control);
+    RUN_TEST(test_different_detector_retires_pending_speed_restore_control);
+    RUN_TEST(test_same_detector_reconnect_preserves_recovery_control);
+    RUN_TEST(test_stale_baseline_does_not_acknowledge_pending_restore_control);
+    RUN_TEST(test_low_speed_standing_choice_continues_control);
     RUN_TEST(test_manual_pair_retires_fade_across_the_complete_restore_lifecycle);
     RUN_TEST(test_manual_pair_becomes_the_next_threats_baseline_without_old_restore);
     RUN_TEST(test_new_writer_retires_fade_authority_before_its_volume_echo);

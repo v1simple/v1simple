@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include "storage_manager.h"
+#include "storage_path_status.h"
 
 namespace {
 
@@ -46,19 +47,35 @@ bool HealthJournal::begin(StorageManager& storage, uint32_t bootId, const char* 
     }
 
     bool needsHeader = true;
-    if (fs.exists(kPath)) {
-        File existing = fs.open(kPath, FILE_READ);
-        if (!existing) {
+    struct stat details {};
+    const StoragePathStatus pathStatus = storagePathStatus(fs, kPath, &details);
+    if (pathStatus == StoragePathStatus::Unavailable) {
+        return false;
+    }
+    if (pathStatus == StoragePathStatus::Present) {
+        if (!S_ISREG(details.st_mode) || details.st_size < 0 ||
+            static_cast<uint64_t>(details.st_size) > UINT32_MAX) {
             return false;
         }
-        const size_t size = existing.size();
+        File existing = fs.open(kPath, FILE_READ);
+        if (!existing || existing.isDirectory()) {
+            return false;
+        }
+        // VFS File::size() can report zero after its cached fstat fails even
+        // though the read handle opened. Use the successful metadata probe.
+        const size_t size = static_cast<size_t>(details.st_size);
         needsHeader = size == 0;
-        const bool malformedTail = size > 0 &&
-                                   (!existing.seek(static_cast<uint32_t>(size - 1)) || existing.read() != '\n');
+        int tail = '\n';
+        if (size > 0) {
+            if (!existing.seek(static_cast<uint32_t>(size - 1)) || (tail = existing.read()) < 0) {
+                existing.close();
+                return false;
+            }
+        }
         existing.close();
-        if (malformedTail || size >= kMaxBytes) {
-            if (fs.exists(kPreviousPath)) {
-                fs.remove(kPreviousPath);
+        if (tail != '\n' || size >= kMaxBytes) {
+            if (!storageRemoveFileIfPresent(fs, kPreviousPath)) {
+                return false;
             }
             if (!fs.rename(kPath, kPreviousPath)) {
                 return false;

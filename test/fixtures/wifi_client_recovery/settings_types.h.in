@@ -20,6 +20,8 @@ struct V1Settings {
 class SettingsManager {
   public:
     V1Settings value;
+    struct PersistResult { bool success; };
+    PersistResult setWifiClientEnabled(bool enabled) { value.wifiClientEnabled = enabled; return {true}; }
     uint32_t recoveredRevision = 0;
     uint32_t recoveryRevision() const { return recoveredRevision; }
     bool pendingRecovery = false;

@@ -24,6 +24,9 @@ void setUp() {
     std::filesystem::create_directories(root, error);
     StorageManager::resetMockSdLockState();
     fs::mock_reset_fs_write_budget();
+    fs::mock_reset_fs_open_state();
+    fs::mock_reset_fs_remove_state();
+    fs::mock_reset_fs_rename_state();
     HealthCounters::reset();
 }
 void tearDown() {}
@@ -138,6 +141,112 @@ void test_short_writes_are_quarantined_before_next_boot_append() {
     }
 }
 
+void test_read_failure_preserves_existing_log_until_healthy_boot() {
+    for (int kind = 0; kind < 3; ++kind) {
+        setUp();
+        const std::string prior = kind == 0 ? "END,boot=1,result=CL" :
+                                  kind == 1 ? std::string(HealthJournal::kMaxBytes - 1, 'x') + "\n" :
+                                              "# health_schema=1\nBOOT,boot=1\n";
+        std::ofstream(root / "health.log", std::ios::binary) << prior;
+        fs::FS filesystem(root);
+        StorageManager storage;
+        storage.reset();
+        storage.setFilesystem(&filesystem, true);
+        fs::mock_exists_uses_read_open(true);
+        fs::mock_fail_next_read_open("/health.log");
+        HealthJournal failed;
+        TEST_ASSERT_FALSE(failed.begin(storage, 2, "img", "SW", false, false));
+        failed.ready(10);
+        failed.end(20);
+        failed.resumeAfterAbortedShutdown(30);
+        TEST_ASSERT_EQUAL_STRING(prior.c_str(), readFile("health.log").c_str());
+        TEST_ASSERT_FALSE(std::filesystem::exists(root / "health.prev.log"));
+
+        // A later boot can read and classify the exact bytes the failed boot
+        // left untouched, quarantining torn/full logs and appending healthy ones.
+        HealthJournal next;
+        TEST_ASSERT_TRUE(next.begin(storage, 3, "img", "SW", false, false));
+        next.ready(40);
+        next.end(50);
+        if (kind < 2) {
+            TEST_ASSERT_EQUAL_STRING(prior.c_str(), readFile("health.prev.log").c_str());
+            TEST_ASSERT_TRUE(readFile("health.log").rfind("# health_schema=1\nBOOT,boot=3,", 0) == 0);
+            TEST_ASSERT_LESS_THAN(HealthJournal::kMaxBytes, readFile("health.log").size());
+        } else {
+            TEST_ASSERT_FALSE(std::filesystem::exists(root / "health.prev.log"));
+            TEST_ASSERT_TRUE(readFile("health.log").rfind(prior + "BOOT,boot=3,", 0) == 0);
+        }
+    }
+}
+
+void test_persistent_read_failure_and_metadata_error_do_not_admit_append() {
+    fs::FS filesystem(root);
+    StorageManager storage;
+    storage.reset();
+    storage.setFilesystem(&filesystem, true);
+    const std::string prior = "END,boot=1,result=CL";
+    std::ofstream(root / "health.log", std::ios::binary) << prior;
+    fs::mock_fail_read_opens_for_full_path((root / "health.log").c_str());
+    HealthJournal journal;
+    TEST_ASSERT_FALSE(journal.begin(storage, 2, "img", "SW", false, false));
+    TEST_ASSERT_FALSE(journal.begin(storage, 3, "img", "SW", false, false));
+    TEST_ASSERT_EQUAL_STRING(prior.c_str(), readFile("health.log").c_str());
+    fs::mock_reset_fs_open_state();
+
+    // A non-directory mount path produces ENOTDIR, not proven absence.
+    std::filesystem::remove_all(root);
+    std::ofstream(root, std::ios::binary) << "unavailable mount";
+    TEST_ASSERT_FALSE(journal.begin(storage, 4, "img", "SW", false, false));
+    TEST_ASSERT_FALSE(journal.enabled());
+}
+
+void test_failed_previous_removal_or_rotation_preserves_logs_and_retries() {
+    for (bool failRemoval : {true, false}) {
+        setUp();
+        const std::string prior = "END,boot=1,result=CL";
+        std::ofstream(root / "health.log", std::ios::binary) << prior;
+        std::ofstream(root / "health.prev.log", std::ios::binary) << "older\n";
+        fs::FS filesystem(root);
+        StorageManager storage;
+        storage.reset();
+        storage.setFilesystem(&filesystem, true);
+        if (failRemoval) fs::mock_fail_next_remove("/health.prev.log");
+        else fs::mock_fail_rename_on_call(1);
+        HealthJournal failed;
+        TEST_ASSERT_FALSE(failed.begin(storage, 2, "img", "SW", false, false));
+        TEST_ASSERT_EQUAL_STRING(prior.c_str(), readFile("health.log").c_str());
+        if (failRemoval) TEST_ASSERT_EQUAL_STRING("older\n", readFile("health.prev.log").c_str());
+        HealthJournal next;
+        TEST_ASSERT_TRUE(next.begin(storage, 3, "img", "SW", false, false));
+        TEST_ASSERT_EQUAL_STRING(prior.c_str(), readFile("health.prev.log").c_str());
+        TEST_ASSERT_TRUE(readFile("health.log").rfind("# health_schema=1\nBOOT,boot=3,", 0) == 0);
+    }
+}
+
+void test_failed_cached_file_size_does_not_bypass_tail_or_size_validation() {
+    for (bool full : {false, true}) {
+        setUp();
+        const std::string prior = full ? std::string(HealthJournal::kMaxBytes - 1, 'x') + "\n"
+                                       : "END,boot=1,result=CL";
+        std::ofstream(root / "health.log", std::ios::binary) << prior;
+        fs::FS filesystem(root);
+        StorageManager storage;
+        storage.reset();
+        storage.setFilesystem(&filesystem, true);
+        fs::mock_zero_file_size_for_full_path((root / "health.log").c_str());
+        HealthJournal journal;
+        TEST_ASSERT_TRUE(journal.begin(storage, 2, "img", "SW", false, false));
+        TEST_ASSERT_EQUAL_STRING(prior.c_str(), readFile("health.prev.log").c_str());
+        TEST_ASSERT_TRUE(readFile("health.log").rfind("# health_schema=1\nBOOT,boot=2,", 0) == 0);
+        journal.ready(10);
+        journal.end(20);
+        const std::string healthy = readFile("health.log");
+        HealthJournal next;
+        TEST_ASSERT_TRUE(next.begin(storage, 3, "img", "SW", true, false));
+        TEST_ASSERT_TRUE(readFile("health.log").rfind(healthy + "BOOT,boot=3,", 0) == 0);
+    }
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_boot_ready_end_schema_and_drop_aggregates);
@@ -145,5 +254,9 @@ int main() {
     RUN_TEST(test_boot_rotation_is_bounded_to_one_previous_file);
     RUN_TEST(test_lock_failure_disables_journal_for_boot_without_retry);
     RUN_TEST(test_short_writes_are_quarantined_before_next_boot_append);
+    RUN_TEST(test_read_failure_preserves_existing_log_until_healthy_boot);
+    RUN_TEST(test_persistent_read_failure_and_metadata_error_do_not_admit_append);
+    RUN_TEST(test_failed_previous_removal_or_rotation_preserves_logs_and_retries);
+    RUN_TEST(test_failed_cached_file_size_does_not_bypass_tail_or_size_validation);
     return UNITY_END();
 }

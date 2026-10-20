@@ -32,6 +32,7 @@ std::filesystem::path gRoot;
 fs::FS gFs;
 std::vector<ble_store_value_sec> gOurSecs;
 std::vector<ble_store_value_sec> gPeerSecs;
+std::vector<ble_store_value_sec> gRestoredSecs;
 
 ble_store_value_sec makeSec(uint8_t base) {
     ble_store_value_sec sec = {};
@@ -115,15 +116,18 @@ extern "C" int ble_store_iterate(int objType,
     return 0;
 }
 
-extern "C" int ble_store_write_our_sec(const ble_store_value_sec*) {
+extern "C" int ble_store_write_our_sec(const ble_store_value_sec* sec) {
+    gRestoredSecs.push_back(*sec);
     return 0;
 }
 
-extern "C" int ble_store_write_peer_sec(const ble_store_value_sec*) {
+extern "C" int ble_store_write_peer_sec(const ble_store_value_sec* sec) {
+    gRestoredSecs.push_back(*sec);
     return 0;
 }
 
 #include "../../src/psram_freertos_alloc.cpp"
+#include "../../src/ble_bond_backup_store.cpp"
 #include "../../src/ble_bond_backup_writer.cpp"
 
 void setUp() {
@@ -134,6 +138,10 @@ void setUp() {
     gFs = fs::FS(gRoot);
     gOurSecs.clear();
     gPeerSecs.clear();
+    gRestoredSecs.clear();
+    fs::mock_reset_fs_rename_state();
+    fs::mock_reset_fs_open_state();
+    fs::mock_reset_fs_remove_state();
     storage.reset();
     storage.setFilesystem(&gFs, true);
     StorageManager::resetMockSdLockState();
@@ -335,8 +343,181 @@ void test_runtime_callers_contain_no_sd_lock_or_filesystem_write() {
                           writerTask.find("vTaskDeleteWithCaps(nullptr)"));
 }
 
+
+namespace {
+constexpr const char* kTestBondPath = "/v1simple_ble_bonds.bin";
+constexpr const char* kTestBondPrevious = "/v1simple_ble_bonds.bin.prev";
+
+void seedBondRecovery(bool corruptLive) {
+    gOurSecs = {makeSec(5)};
+    TEST_ASSERT_EQUAL_INT(1, enqueueCurrentBleBondBackupSnapshot());
+    TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
+    // A cleanup failure after a successful public replacement legitimately
+    // leaves both generations. Corrupt only the newer live afterward.
+    gOurSecs = {makeSec(7)};
+    fs::mock_fail_next_remove(kTestBondPrevious);
+    TEST_ASSERT_EQUAL_INT(1, enqueueCurrentBleBondBackupSnapshot());
+    TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
+    TEST_ASSERT_TRUE(gFs.exists(kTestBondPrevious));
+    if (corruptLive) {
+        File live = gFs.open(kTestBondPath, FILE_WRITE);
+        TEST_ASSERT_TRUE(bool(live));
+        TEST_ASSERT_EQUAL_UINT(3, live.write(reinterpret_cast<const uint8_t*>("bad"), 3));
+        live.close();
+    }
+    fs::mock_reset_fs_rename_state();
+}
+
+void expectRestoredBond(uint8_t expected) {
+    gRestoredSecs.clear();
+    TEST_ASSERT_EQUAL_INT(1, restoreBleBondBackup(gFs, kTestBondPath));
+    TEST_ASSERT_EQUAL_UINT(1, gRestoredSecs.size());
+    TEST_ASSERT_EQUAL_UINT8(expected, gRestoredSecs[0].peer_addr[0]);
+}
+
+void rebootBondOwner() {
+    resetBleBondBackupWriterForTest();
+    registerBleBondBackupStorage(storage);
+    fs::mock_reset_fs_rename_state();
+    fs::mock_reset_fs_remove_state();
+    fs::mock_reset_fs_open_state();
+}
+
+void failBondReplacement(bool corruptLive, bool missingLive, bool failedRollback) {
+    seedBondRecovery(corruptLive);
+    if (missingLive) TEST_ASSERT_TRUE(gFs.remove(kTestBondPath));
+    expectRestoredBond(corruptLive || missingLive ? 5 : 7);
+    gOurSecs = {makeSec(20)};
+    TEST_ASSERT_EQUAL_INT(1, enqueueCurrentBleBondBackupSnapshot());
+    const size_t promotionCall = corruptLive || missingLive ? 1 : 2;
+    fs::mock_fail_rename_on_calls(promotionCall, failedRollback ? promotionCall + 1 : 0);
+    TEST_ASSERT_FALSE(runBleBondBackupWriterOnceForTest());
+    expectRestoredBond(corruptLive || missingLive ? 5 : 7);
+    TEST_ASSERT_EQUAL_UINT(1, bleBondBackupQueueDepthForTest());
+    rebootBondOwner();
+    expectRestoredBond(corruptLive || missingLive ? 5 : 7);
+    // The next public writer can still replace the preserved recovery copy.
+    TEST_ASSERT_EQUAL_INT(1, enqueueCurrentBleBondBackupSnapshot());
+    TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
+    expectRestoredBond(20);
+}
+
+void resetBondReplacement(bool corruptLive, bool afterNormalization, size_t renameCall) {
+    seedBondRecovery(corruptLive);
+    gOurSecs = {makeSec(20)};
+    BondBackupSnapshot snapshot;
+    collectCurrentBondSnapshot(snapshot);
+    if (afterNormalization) fs::mock_reset_after_remove(kTestBondPath);
+    else fs::mock_reset_after_rename_on_call(renameCall);
+    bool reset = false;
+    try { (void)writeBondBackupSnapshot(gFs, snapshot); }
+    catch (const fs::SimulatedReset&) { reset = true; }
+    TEST_ASSERT_TRUE(reset);
+    rebootBondOwner();
+    const bool committed = !afterNormalization && (corruptLive || renameCall == 2);
+    expectRestoredBond(committed ? 20 : corruptLive ? 5 : 7);
+}
+} // namespace
+
+void test_corrupt_live_failed_bond_promotion_preserves_previous_through_reboot_and_retry() {
+    failBondReplacement(true, false, false);
+}
+void test_missing_live_failed_bond_promotion_preserves_previous_through_reboot_and_retry() {
+    failBondReplacement(false, true, false);
+}
+void test_healthy_live_failed_bond_promotion_restores_latest_through_reboot_and_retry() {
+    failBondReplacement(false, false, false);
+}
+void test_failed_bond_promotion_and_rollback_preserve_latest_through_reboot_and_retry() {
+    failBondReplacement(false, false, true);
+}
+void test_reset_after_corrupt_bond_live_removal_preserves_previous() { resetBondReplacement(true, true, 0); }
+void test_reset_after_valid_bond_live_rotation_preserves_latest() { resetBondReplacement(false, false, 1); }
+void test_reset_after_recovered_bond_promotion_selects_new_commit() { resetBondReplacement(true, false, 1); }
+void test_reset_after_healthy_bond_promotion_selects_new_commit() { resetBondReplacement(false, false, 2); }
+
+void test_bond_live_remove_failure_preserves_both_recovery_candidates() {
+    seedBondRecovery(true);
+    gOurSecs = {makeSec(20)};
+    fs::mock_fail_next_remove(kTestBondPath);
+    TEST_ASSERT_EQUAL_INT(1, enqueueCurrentBleBondBackupSnapshot());
+    TEST_ASSERT_FALSE(runBleBondBackupWriterOnceForTest());
+    TEST_ASSERT_EQUAL_UINT(0, fs::g_mock_fs_rename_state.renameCalls);
+    rebootBondOwner();
+    expectRestoredBond(5);
+}
+
+void test_unreadable_live_bond_backup_does_not_rotate_or_overwrite_recovery() {
+    seedBondRecovery(false);
+    gOurSecs = {makeSec(20)};
+    fs::mock_fail_next_read_open(kTestBondPath);
+    TEST_ASSERT_EQUAL_INT(1, enqueueCurrentBleBondBackupSnapshot());
+    TEST_ASSERT_FALSE(runBleBondBackupWriterOnceForTest());
+    TEST_ASSERT_EQUAL_UINT(0, fs::g_mock_fs_rename_state.renameCalls);
+    rebootBondOwner();
+    expectRestoredBond(7);
+}
+
+void test_unreadable_previous_bond_backup_does_not_replace_it_with_corrupt_live() {
+    seedBondRecovery(true);
+    gOurSecs = {makeSec(20)};
+    fs::mock_fail_next_read_open(kTestBondPrevious);
+    TEST_ASSERT_EQUAL_INT(1, enqueueCurrentBleBondBackupSnapshot());
+    TEST_ASSERT_FALSE(runBleBondBackupWriterOnceForTest());
+    TEST_ASSERT_EQUAL_UINT(0, fs::g_mock_fs_rename_state.renameCalls);
+    rebootBondOwner();
+    expectRestoredBond(5);
+}
+
+void test_bond_candidate_validation_failure_preserves_committed_backup_and_retries() {
+    seedBondRecovery(false);
+    gOurSecs = {makeSec(20)};
+    fs::mock_fail_next_read_open("/v1simple_ble_bonds.bin.tmp");
+    TEST_ASSERT_EQUAL_INT(1, enqueueCurrentBleBondBackupSnapshot());
+    TEST_ASSERT_FALSE(runBleBondBackupWriterOnceForTest());
+    TEST_ASSERT_EQUAL_UINT(0, fs::g_mock_fs_rename_state.renameCalls);
+    expectRestoredBond(7);
+    TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
+    expectRestoredBond(20);
+}
+
+void test_bond_validation_never_changes_the_live_nimble_store() {
+    seedBondRecovery(false);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(BleBondBackupStatus::Valid),
+                          static_cast<int>(inspectBleBondBackup(gFs, kTestBondPath)));
+    TEST_ASSERT_TRUE(gRestoredSecs.empty());
+}
+
+void test_unavailable_cached_file_size_cannot_demote_the_latest_bond_backup() {
+    seedBondRecovery(false);
+    gOurSecs = {makeSec(20)};
+    fs::mock_zero_file_size_for_full_path(bondPath().c_str());
+    TEST_ASSERT_EQUAL_INT(1, enqueueCurrentBleBondBackupSnapshot());
+    fs::mock_fail_rename_on_call(1);
+    TEST_ASSERT_FALSE(runBleBondBackupWriterOnceForTest());
+    rebootBondOwner();
+    expectRestoredBond(7);
+    TEST_ASSERT_EQUAL_INT(1, enqueueCurrentBleBondBackupSnapshot());
+    TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
+    expectRestoredBond(20);
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_unavailable_cached_file_size_cannot_demote_the_latest_bond_backup);
+    RUN_TEST(test_corrupt_live_failed_bond_promotion_preserves_previous_through_reboot_and_retry);
+    RUN_TEST(test_missing_live_failed_bond_promotion_preserves_previous_through_reboot_and_retry);
+    RUN_TEST(test_healthy_live_failed_bond_promotion_restores_latest_through_reboot_and_retry);
+    RUN_TEST(test_failed_bond_promotion_and_rollback_preserve_latest_through_reboot_and_retry);
+    RUN_TEST(test_reset_after_corrupt_bond_live_removal_preserves_previous);
+    RUN_TEST(test_reset_after_valid_bond_live_rotation_preserves_latest);
+    RUN_TEST(test_reset_after_recovered_bond_promotion_selects_new_commit);
+    RUN_TEST(test_reset_after_healthy_bond_promotion_selects_new_commit);
+    RUN_TEST(test_bond_live_remove_failure_preserves_both_recovery_candidates);
+    RUN_TEST(test_unreadable_live_bond_backup_does_not_rotate_or_overwrite_recovery);
+    RUN_TEST(test_unreadable_previous_bond_backup_does_not_replace_it_with_corrupt_live);
+    RUN_TEST(test_bond_candidate_validation_failure_preserves_committed_backup_and_retries);
+    RUN_TEST(test_bond_validation_never_changes_the_live_nimble_store);
     RUN_TEST(test_runtime_enqueue_is_nonblocking_and_writer_is_pinned_to_core_zero);
     RUN_TEST(test_zero_bond_snapshot_replaces_stale_backup_after_auto_heal);
     RUN_TEST(test_full_queue_coalesces_to_latest_snapshot_without_waiting);

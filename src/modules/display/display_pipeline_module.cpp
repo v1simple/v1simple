@@ -461,7 +461,12 @@ void DisplayPipelineModule::runVoice(const RenderFrame& frame, const V1Settings&
         return; // Keep the unheard action eligible when current suppression lifts.
     }
 
-    const VoiceAction voiceAction = hasPendingVoiceAction_ ? pendingVoiceAction_ : voice_->prepareAction(voiceCtx);
+    // Busy and FailedBeforeStart have not consumed voice state. Select again
+    // from this admission frame so counts, direction breakdowns and eligibility
+    // reflect the current table. Once Started, settleVoicePlayback commits the
+    // accepted action instead, so already-heard speech is never replayed.
+    hasPendingVoiceAction_ = false;
+    const VoiceAction voiceAction = voice_->prepareAction(voiceCtx);
 
     if (!voiceAction.hasAction()) {
         return;

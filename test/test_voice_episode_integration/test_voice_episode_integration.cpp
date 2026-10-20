@@ -33,6 +33,7 @@ class DisplayPreviewModule {
     void cancel() {}
 };
 #include "../../src/modules/ble/ble_queue_module.cpp"
+#include "../../src/modules/ble/connection_state_module.cpp"
 
 namespace {
 AudioPlaybackResult playbackResult = AudioPlaybackResult::Accepted;
@@ -55,7 +56,9 @@ struct VoiceRuntime {
     VoiceModule voice;
     DisplayMode mode = DisplayMode::IDLE;
     DisplayPipelineModule pipeline;
+    ConnectionStateModule connection;
     uint32_t ingressSequence = 0;
+    uint32_t generation = 9;
 
     VoiceRuntime() {
         settings.settings.voiceAlertMode = VOICE_MODE_BAND_FREQ;
@@ -70,7 +73,8 @@ struct VoiceRuntime {
         dependencies.voice = &voice;
         pipeline.begin(dependencies);
         TEST_ASSERT_TRUE(queue.begin(&ble, &parser, &profiles, &preview, &power));
-        queue.openSession(9);
+        connection.begin(&ble, &parser, &display, &power, &queue, &persistence);
+        connection.handleSessionOpened(generation);
         enqueue(PACKET_ID_RESP_ALL_VOLUME, {6, 2, 6, 2}, 9000);
         present(9000);
     }
@@ -85,7 +89,21 @@ struct VoiceRuntime {
         for (uint8_t value : frame) checksum = static_cast<uint8_t>(checksum + value);
         frame.push_back(checksum);
         frame.push_back(0xAB);
-        TEST_ASSERT_TRUE(queue.tryOnNotify(frame.data(), frame.size(), 0xB2CE, 9, nowMs, ++ingressSequence));
+        TEST_ASSERT_TRUE(queue.tryOnNotify(frame.data(), frame.size(), 0xB2CE, generation, nowMs, ++ingressSequence));
+    }
+
+    void reconnect(uint32_t nowMs) {
+        mockMillis = nowMs;
+        connection.handleSessionClosed(nowMs, ++generation);
+        connection.handleSessionOpened(generation);
+        enqueue(PACKET_ID_RESP_ALL_VOLUME, {6, 2, 6, 2}, nowMs + 1u);
+    }
+
+    void displayMute(uint32_t nowMs, bool muted, bool softMuted) {
+        const uint8_t image = muted ? 0x32 : 0x22;
+        enqueue(PACKET_ID_DISPLAY_DATA,
+                {0x06, 0x06, 7, image, image, static_cast<uint8_t>(softMuted ? 0x0D : 0x0C), 0, 0x62},
+                nowMs);
     }
 
     void alert(uint32_t nowMs, uint16_t frequency = 34700, bool secondary = false) {
@@ -131,7 +149,8 @@ AudioPlaybackResult try_play_direction_only(AlertDirection, uint8_t, AudioPlayba
     return AudioPlaybackResult::Unavailable;
 }
 AudioPlaybackResult try_play_threat_escalation(AlertBand band, uint16_t frequency, AlertDirection,
-                                               uint8_t, uint8_t, uint8_t, uint8_t, AudioPlaybackReceipt* receipt) {
+                                               uint8_t, uint8_t, uint8_t, uint8_t,
+                                               VoiceAlertMode, bool, bool, AudioPlaybackReceipt* receipt) {
     ++escalationAttempts;
     return try_play_frequency_voice(band, frequency, AlertDirection::AHEAD, VOICE_MODE_BAND_FREQ,
                                     false, 1, receipt);
@@ -450,8 +469,85 @@ void test_batched_display_laser_clear_retains_laser_without_radar_rows() {
     TEST_ASSERT_EQUAL_UINT(0, attemptedFrequencies.size());
 }
 
+static void seedMutedSession(VoiceRuntime& runtime) {
+    runtime.displayMute(10000, true, true);
+    runtime.displayMute(10100, true, true);
+    runtime.present(10100);
+    TEST_ASSERT_TRUE(runtime.parser.getDisplayState().muted);
+    TEST_ASSERT_TRUE(runtime.parser.getDisplayState().softMuted);
+}
+
+void test_reconnect_short_alert_is_announced_before_fresh_display_data() {
+    VoiceRuntime runtime;
+    seedMutedSession(runtime);
+    runtime.reconnect(11000);
+    runtime.alert(11002);
+    runtime.present(11002);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_LIVE, runtime.display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_FALSE(runtime.display.lastRenderFrame.primaryState.muted);
+    TEST_ASSERT_FALSE(runtime.display.lastRenderFrame.primaryState.softMuted);
+    TEST_ASSERT_EQUAL_UINT(1, attemptedFrequencies.size());
+    TEST_ASSERT_EQUAL_UINT16(34700, attemptedFrequencies.back());
+
+    runtime.clear(11100);
+    runtime.present(11100);
+    runtime.displayMute(11300, false, false);
+    runtime.present(11300);
+    TEST_ASSERT_EQUAL_UINT(1, attemptedFrequencies.size());
+}
+
+void test_reconnect_requires_two_new_frames_to_confirm_display_mute() {
+    VoiceRuntime runtime;
+    seedMutedSession(runtime);
+    runtime.reconnect(11000);
+    runtime.displayMute(11002, true, false);
+    runtime.alert(11002);
+    runtime.present(11002);
+    TEST_ASSERT_FALSE(runtime.display.lastRenderFrame.primaryState.muted);
+    TEST_ASSERT_FALSE(runtime.display.lastRenderFrame.primaryState.softMuted);
+    TEST_ASSERT_EQUAL_UINT(1, attemptedFrequencies.size());
+
+    runtime.displayMute(11100, true, false);
+    runtime.present(11100);
+    TEST_ASSERT_TRUE(runtime.display.lastRenderFrame.primaryState.muted);
+    TEST_ASSERT_EQUAL_UINT(1, attemptedFrequencies.size());
+}
+
+void test_reconnect_fresh_soft_mute_still_suppresses_until_unmuted() {
+    VoiceRuntime runtime;
+    seedMutedSession(runtime);
+    runtime.reconnect(11000);
+    runtime.displayMute(11002, false, true);
+    runtime.alert(11002);
+    runtime.present(11002);
+    TEST_ASSERT_TRUE(runtime.display.lastRenderFrame.primaryState.softMuted);
+    TEST_ASSERT_EQUAL_UINT(0, attemptedFrequencies.size());
+
+    runtime.displayMute(11300, false, false);
+    runtime.present(11300);
+    TEST_ASSERT_EQUAL_UINT(1, attemptedFrequencies.size());
+}
+
+void test_table_clear_within_session_preserves_display_mute_authority() {
+    VoiceRuntime runtime;
+    seedMutedSession(runtime);
+    runtime.alert(10200);
+    runtime.present(10200);
+    runtime.clear(10300);
+    runtime.present(10300);
+    runtime.alert(10400);
+    runtime.present(10400);
+    TEST_ASSERT_TRUE(runtime.display.lastRenderFrame.primaryState.muted);
+    TEST_ASSERT_TRUE(runtime.display.lastRenderFrame.primaryState.softMuted);
+    TEST_ASSERT_EQUAL_UINT(0, attemptedFrequencies.size());
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_reconnect_short_alert_is_announced_before_fresh_display_data);
+    RUN_TEST(test_reconnect_requires_two_new_frames_to_confirm_display_mute);
+    RUN_TEST(test_reconnect_fresh_soft_mute_still_suppresses_until_unmuted);
+    RUN_TEST(test_table_clear_within_session_preserves_display_mute_authority);
     RUN_TEST(test_batched_display_laser_clear_retains_laser_without_radar_rows);
     RUN_TEST(test_batched_completed_encounter_retains_priority_without_obsolete_voice);
     RUN_TEST(test_delayed_completed_encounter_cannot_renew_expired_persistence);

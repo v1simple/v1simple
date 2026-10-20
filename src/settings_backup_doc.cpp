@@ -79,6 +79,7 @@ bool loadBestBackupDocument(fs::FS* fs, JsonDocument& outDoc, const char** outPa
     int bestScore = -1;
     uint32_t bestContentCrc = 0;
     const char* bestPath = nullptr;
+    bool invalidCandidate = false;
     {
         // Candidates may be as large as the shared 128 KiB document limit. Keep the
         // sole scan document in PSRAM and destroy it before loading the winner;
@@ -86,10 +87,6 @@ bool loadBestBackupDocument(fs::FS* fs, JsonDocument& outDoc, const char** outPa
         PsramJson::Document candidateDoc;
         for (size_t i = 0; i < SETTINGS_BACKUP_CANDIDATES_COUNT; ++i) {
             const char* candidate = SETTINGS_BACKUP_CANDIDATES[i];
-            if (!fs->exists(candidate)) {
-                continue;
-            }
-
             candidateDoc.clear();
             BackupDocumentLoadStatus candidateStatus = BackupDocumentLoadStatus::Invalid;
             if (!parseBackupFile(fs, candidate, candidateDoc, verboseErrors, &candidateStatus)) {
@@ -102,6 +99,8 @@ bool loadBestBackupDocument(fs::FS* fs, JsonDocument& outDoc, const char** outPa
                     }
                     return false;
                 }
+                if (candidateStatus == BackupDocumentLoadStatus::NotFound) continue;
+                invalidCandidate = true;
                 if (verboseErrors) {
                     Serial.printf("[Settings] WARN: Ignoring invalid backup candidate: %s\n", candidate);
                 }
@@ -118,7 +117,7 @@ bool loadBestBackupDocument(fs::FS* fs, JsonDocument& outDoc, const char** outPa
     }
 
     if (bestScore < 0 || !bestPath) {
-        if (outStatus) *outStatus = BackupDocumentLoadStatus::Invalid;
+        if (outStatus && invalidCandidate) *outStatus = BackupDocumentLoadStatus::Invalid;
         return false;
     }
 

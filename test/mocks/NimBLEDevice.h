@@ -193,7 +193,8 @@ private:
 
 class NimBLEConnInfo {
 public:
-    uint16_t getConnHandle() const { return 1; }
+    uint16_t getConnHandle() const { return connHandle_; }
+    void setConnHandle(uint16_t handle) { connHandle_ = handle; }
     uint16_t getConnInterval() const { return 12; }
     uint16_t getConnLatency() const { return 0; }
     bool isEncrypted() const { return encrypted_; }
@@ -209,6 +210,7 @@ public:
     void setIdAddress(const NimBLEAddress& address) { idAddress_ = address; }
 
 private:
+    uint16_t connHandle_ = 1;
     bool encrypted_ = false;
     bool bonded_ = false;
     bool authenticated_ = false;

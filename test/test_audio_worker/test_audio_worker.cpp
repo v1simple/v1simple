@@ -1,6 +1,7 @@
 // Run the real accepted audio job, including codec/amp setup and PCM emission.
 // Only the task scheduler, I2C/I2S hardware and filesystem are substituted.
 #include <chrono>
+#include <climits>
 #include <filesystem>
 #include <initializer_list>
 #include <string>
@@ -286,6 +287,158 @@ void test_pcm_failure_does_not_retry_an_already_started_announcement() {
     TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
 }
 
+static unsigned countAmpOutputWrites() {
+    unsigned count = 0;
+    for (const auto& tx : tca9554Wire.transmissionHistory) {
+        if (tx.address == 0x20 && tx.data.size() == 2 && tx.data[0] == 1) ++count;
+    }
+    return count;
+}
+
+static bool lastAmpOutputEnabled() {
+    for (auto it = tca9554Wire.transmissionHistory.rbegin(); it != tca9554Wire.transmissionHistory.rend(); ++it) {
+        if (it->address == 0x20 && it->data.size() == 2 && it->data[0] == 1) return (it->data[1] & 0x80) != 0;
+    }
+    TEST_FAIL_MESSAGE("No amplifier output write");
+    return false;
+}
+
+static void failAmpTimeout(unsigned failures) {
+    mockMillis += AMP_WARM_TIMEOUT_MS;
+    for (unsigned i = 0; i < failures; ++i) {
+        tca9554Wire.queueEndTransmission(4); // Fail before the output register can change.
+        audio_process_amp_timeout();
+        mockMillis += 100;
+    }
+}
+
+void test_amp_timeout_recovers_after_four_transient_errors() {
+    acceptBandJob();
+    runAcceptedJob();
+    TEST_ASSERT_TRUE(lastAmpOutputEnabled());
+    failAmpTimeout(4);
+    const unsigned before = countAmpOutputWrites();
+    audio_process_amp_timeout();
+    TEST_ASSERT_EQUAL_UINT(before + 1, countAmpOutputWrites());
+    TEST_ASSERT_FALSE(lastAmpOutputEnabled());
+    TEST_ASSERT_FALSE(amp_is_warm.load());
+}
+
+void test_amp_timeout_keeps_retry_ownership_after_five_transient_errors() {
+    acceptBandJob();
+    runAcceptedJob();
+    failAmpTimeout(5);
+    TEST_ASSERT_TRUE(amp_is_warm.load());
+    TEST_ASSERT_TRUE(lastAmpOutputEnabled());
+    const unsigned callsBefore = tca9554Wire.beginTransmissionCalls;
+    for (unsigned i = 0; i < 9; ++i) {
+        audio_process_amp_timeout();
+        mockMillis += 100;
+    }
+    TEST_ASSERT_EQUAL_UINT(callsBefore, tca9554Wire.beginTransmissionCalls);
+    audio_process_amp_timeout(); // Recovery at the bounded, slower retry cadence.
+    TEST_ASSERT_FALSE(lastAmpOutputEnabled());
+    TEST_ASSERT_FALSE(amp_is_warm.load());
+    const unsigned writesAfterRecovery = countAmpOutputWrites();
+    mockMillis += 10000;
+    audio_process_amp_timeout();
+    TEST_ASSERT_EQUAL_UINT(writesAfterRecovery, countAmpOutputWrites());
+}
+
+void test_amp_timeout_persistent_failure_remains_pending_without_busy_retry() {
+    acceptBandJob();
+    runAcceptedJob();
+    failAmpTimeout(5);
+    const unsigned callsBefore = tca9554Wire.beginTransmissionCalls;
+    for (unsigned i = 0; i < 20; ++i) {
+        // Only the two due retries should consume these failures.
+        if (i == 9 || i == 19) tca9554Wire.queueEndTransmission(4);
+        audio_process_amp_timeout();
+        mockMillis += 100;
+    }
+    TEST_ASSERT_EQUAL_UINT(callsBefore + 2, tca9554Wire.beginTransmissionCalls);
+    TEST_ASSERT_TRUE(amp_is_warm.load());
+    TEST_ASSERT_TRUE(lastAmpOutputEnabled());
+    mockMillis += 1000;
+    audio_process_amp_timeout();
+    TEST_ASSERT_FALSE(lastAmpOutputEnabled());
+}
+
+void test_amp_abort_failure_hands_shutdown_to_periodic_retry() {
+    g_mock_i2s_state.writeResults.push_back(ESP_ERR_TIMEOUT);
+    g_mock_i2s_state.onWrite = [] { tca9554Wire.queueEndTransmission(4); };
+    acceptBandJob();
+    runAcceptedJob();
+    g_mock_i2s_state.onWrite = nullptr;
+    TEST_ASSERT_EQUAL_UINT(1, g_mock_i2s_state.writeCalls);
+    TEST_ASSERT_TRUE(lastAmpOutputEnabled());
+    TEST_ASSERT_TRUE(amp_is_warm.load());
+    // The aborted worker must hand off immediately, without another warm period.
+    for (unsigned i = 0; i < 4; ++i) {
+        mockMillis += 100;
+        tca9554Wire.queueEndTransmission(4);
+        audio_process_amp_timeout();
+    }
+    mockMillis += 1000;
+    audio_process_amp_timeout();
+    TEST_ASSERT_FALSE(lastAmpOutputEnabled());
+    TEST_ASSERT_FALSE(amp_is_warm.load());
+    TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
+}
+
+void test_new_playback_resets_shutdown_backoff_and_owns_new_warm_period() {
+    acceptBandJob();
+    runAcceptedJob();
+    failAmpTimeout(5);
+    acceptBandJob();
+    runAcceptedJob();
+    const unsigned writesBefore = countAmpOutputWrites();
+    mockMillis += 1000;
+    audio_process_amp_timeout();
+    TEST_ASSERT_EQUAL_UINT(writesBefore, countAmpOutputWrites());
+    TEST_ASSERT_TRUE(lastAmpOutputEnabled());
+    mockMillis += 2000;
+    tca9554Wire.queueEndTransmission(4);
+    audio_process_amp_timeout();
+    mockMillis += 100;
+    audio_process_amp_timeout(); // New playback restarts the fast retry allowance.
+    TEST_ASSERT_FALSE(lastAmpOutputEnabled());
+}
+
+void test_shutdown_retry_handles_clock_wrap_and_bus_contention() {
+    mockMillis = ULONG_MAX - AMP_WARM_TIMEOUT_MS - 450;
+    acceptBandJob();
+    runAcceptedJob();
+    failAmpTimeout(5);
+    mockMillis += 1000;
+    mock_queue_semaphore_take_result(pdFALSE);
+    const unsigned callsBefore = tca9554Wire.beginTransmissionCalls;
+    audio_process_amp_timeout();
+    TEST_ASSERT_EQUAL_UINT(callsBefore, tca9554Wire.beginTransmissionCalls);
+    TEST_ASSERT_TRUE(amp_is_warm.load());
+    TEST_ASSERT_TRUE(lastAmpOutputEnabled());
+    mockMillis += 1000;
+    audio_process_amp_timeout();
+    TEST_ASSERT_FALSE(lastAmpOutputEnabled());
+    TEST_ASSERT_FALSE(amp_is_warm.load());
+}
+
+void test_idle_service_does_not_disable_amp_while_worker_owns_playback() {
+    acceptBandJob();
+    runAcceptedJob();
+    failAmpTimeout(5);
+    acceptBandJob(); // The next worker already owns the audio path.
+    const unsigned writesBefore = countAmpOutputWrites();
+    mockMillis += 1000;
+    audio_process_amp_timeout();
+    TEST_ASSERT_EQUAL_UINT(writesBefore, countAmpOutputWrites());
+    TEST_ASSERT_TRUE(lastAmpOutputEnabled());
+    runAcceptedJob();
+    mockMillis += AMP_WARM_TIMEOUT_MS;
+    audio_process_amp_timeout();
+    TEST_ASSERT_FALSE(lastAmpOutputEnabled());
+}
+
 // Exercise receipt ownership through the actual parser, pipeline and worker.
 struct PipelineAudio {
     SettingsManager settings;
@@ -497,10 +650,56 @@ void test_unheard_direction_retries_without_repeating_full_priority() {
     TEST_ASSERT_EQUAL_UINT(3, g_mock_task_notify_state.giveCalls);
 }
 
+static void twoAlerts(PipelineAudio& runtime, uint8_t secondaryStrength) {
+    runtime.packet(PACKET_ID_ALERT_DATA, {0x12, 0x87, 0x8C, 0xAC, 0, 0x22, 0x80});
+    runtime.packet(PACKET_ID_ALERT_DATA, {0x22, 0x8A, 0xAC, secondaryStrength, 0, 0x22, 0});
+    runtime.pipeline.handleParsed(mockMillis);
+}
+
+void test_escalation_honors_band_only_with_direction_and_count_disabled() {
+    PipelineAudio runtime;
+    runtime.settings.settings.voiceAlertMode = VOICE_MODE_BAND_ONLY;
+    runtime.settings.settings.voiceDirectionEnabled = false;
+    runtime.settings.settings.announceBogeyCount = false;
+    runtime.settings.settings.announceSecondaryAlerts = true;
+    runtime.settings.settings.secondaryKa = true;
+    twoAlerts(runtime, 0x90); // Two-bar secondary beside the stable priority.
+    TEST_ASSERT_EQUAL_INT(1, g_sdAudioTaskParams.numClips);
+    TEST_ASSERT_EQUAL_STRING("/audio/band_ka.mul", g_sdAudioTaskParams.filePaths[0]);
+    runAcceptedJob();
+    mockMillis += 1600;
+    twoAlerts(runtime, 0x90);
+    TEST_ASSERT_EQUAL_UINT(2, g_mock_task_notify_state.giveCalls);
+    TEST_ASSERT_EQUAL_INT(1, g_sdAudioTaskParams.numClips);
+    runAcceptedJob();
+    mockMillis += 100;
+    twoAlerts(runtime, 0x90);
+    mockMillis += 600;
+    twoAlerts(runtime, 0x9E); // Four bars, sustained long enough for escalation.
+    TEST_ASSERT_FALSE(audio_playing.load());
+    mockMillis += 600;
+    twoAlerts(runtime, 0x9E);
+    TEST_ASSERT_EQUAL_UINT(3, g_mock_task_notify_state.giveCalls);
+    TEST_ASSERT_EQUAL_INT(1, g_sdAudioTaskParams.numClips);
+    TEST_ASSERT_EQUAL_STRING("/audio/band_ka.mul", g_sdAudioTaskParams.filePaths[0]);
+    runAcceptedJob();
+    mockMillis += 1600;
+    twoAlerts(runtime, 0x9E);
+    TEST_ASSERT_EQUAL_UINT(3, g_mock_task_notify_state.giveCalls);
+}
+
 int main() {
     std::filesystem::copy(std::filesystem::path(PROJECT_DIR) / "tools" / "freq_audio" / "mulaw",
                           audioRoot / "audio", std::filesystem::copy_options::recursive);
     UNITY_BEGIN();
+    RUN_TEST(test_escalation_honors_band_only_with_direction_and_count_disabled);
+    RUN_TEST(test_shutdown_retry_handles_clock_wrap_and_bus_contention);
+    RUN_TEST(test_idle_service_does_not_disable_amp_while_worker_owns_playback);
+    RUN_TEST(test_amp_timeout_recovers_after_four_transient_errors);
+    RUN_TEST(test_amp_timeout_keeps_retry_ownership_after_five_transient_errors);
+    RUN_TEST(test_amp_timeout_persistent_failure_remains_pending_without_busy_retry);
+    RUN_TEST(test_amp_abort_failure_hands_shutdown_to_periodic_retry);
+    RUN_TEST(test_new_playback_resets_shutdown_backoff_and_owns_new_warm_period);
     RUN_TEST(test_unheard_direction_retries_without_repeating_full_priority);
     RUN_TEST(test_pending_worker_does_not_admit_duplicate_announcement);
     RUN_TEST(test_late_failure_receipt_cannot_consume_new_episode);

@@ -6,8 +6,11 @@
 static bool sd_audio_ready = false;
 static const char* AUDIO_PATH = "/audio";
 static fs::FS* audioFS = nullptr; // Filesystem containing audio files
+// The worker owns these while audio_playing; idle service owns them otherwise.
 static uint8_t amp_disable_fail_count = 0;
-static constexpr uint8_t AMP_DISABLE_MAX_RETRIES = 5;
+static unsigned long amp_last_disable_attempt_ms = 0;
+static constexpr uint8_t AMP_DISABLE_FAST_RETRIES = 5;
+static constexpr unsigned long AMP_DISABLE_RETRY_INTERVAL_MS = 1000UL;
 static constexpr unsigned long AMP_TIMEOUT_CHECK_INTERVAL_MS = 100UL;
 
 // Clips are bundled in LittleFS, independent of the primary storage device.
@@ -52,6 +55,25 @@ static const int16_t mulaw_decode_table[256] = {
     372,    356,    340,    324,    308,    292,    276,    260,    244,    228,    212,    196,    180,    164,
     148,    132,    120,    112,    104,    96,     88,     80,     72,     64,     56,     48,     40,     32,
     24,     16,     8,      0};
+
+// Failed writes leave the amplifier state uncertain. Keep shutdown ownership
+// until a successful disable, slowing persistent errors instead of giving up.
+static void disable_speaker_amp(TickType_t timeoutTicks, unsigned long now, const char* context) {
+    const AudioI2cResult result = set_speaker_amp(false, timeoutTicks);
+    amp_last_disable_attempt_ms = now;
+    if (result == AudioI2cResult::Ok) {
+        amp_is_warm = false;
+        amp_disable_fail_count = 0;
+    } else {
+        amp_is_warm = true;
+        if (result != AudioI2cResult::Busy) {
+            audio_log_i2c_failure(context, result);
+            if (amp_disable_fail_count < AMP_DISABLE_FAST_RETRIES) {
+                ++amp_disable_fail_count;
+            }
+        }
+    }
+}
 
 static void sd_audio_playback_task(void* pvParameters);
 static TaskHandle_t sdAudioWorkerHandle = nullptr;
@@ -144,6 +166,7 @@ static bool prepare_sd_audio_output() {
         }
         amp_is_warm = true;
         amp_last_used_ms = millis();
+        amp_disable_fail_count = 0;
         return true;
     }
     return false;
@@ -221,22 +244,11 @@ static void sd_audio_playback_task(void* pvParameters) {
         }
 
         if (writeAborted) {
-            const AudioI2cResult ampDisableResult = set_speaker_amp(false);
-            if (ampDisableResult != AudioI2cResult::Ok) {
-                audio_log_i2c_failure("sd_audio_playback_task amp disable", ampDisableResult);
-                amp_disable_fail_count++;
-                if (amp_disable_fail_count >= AMP_DISABLE_MAX_RETRIES) {
-                    Serial.println("[AUDIO] ERROR: Amp disable failed after max retries — giving up");
-                    amp_is_warm = false;
-                    amp_disable_fail_count = 0;
-                } else {
-                    amp_is_warm = true;
-                    amp_last_used_ms = millis();
-                }
-            } else {
-                amp_is_warm = false;
-                amp_disable_fail_count = 0;
-            }
+            const unsigned long now = millis();
+            // An aborted job has no reason to keep the amplifier warm. If
+            // disabling fails, idle service retries without another warm delay.
+            amp_last_used_ms = now - AMP_WARM_TIMEOUT_MS;
+            disable_speaker_amp(pdMS_TO_TICKS(50), now, "sd_audio_playback_task amp disable");
         } else {
             // Brief delay for DMA buffer to flush
             vTaskDelay(pdMS_TO_TICKS(30)); // Reduced from 50ms
@@ -525,26 +537,17 @@ void audio_process_amp_timeout() {
         return;
     }
 
-    if (now - amp_last_used_ms >= AMP_WARM_TIMEOUT_MS) {
-        const AudioI2cResult result = set_speaker_amp(false, 0);
-        if (result == AudioI2cResult::Ok) {
-            amp_is_warm = false;
-            amp_disable_fail_count = 0;
-        } else if (result != AudioI2cResult::Busy) {
-            audio_log_i2c_failure("audio_process_amp_timeout", result);
-            amp_disable_fail_count++;
-            if (amp_disable_fail_count >= AMP_DISABLE_MAX_RETRIES) {
-                Serial.println("[AUDIO] ERROR: Amp timeout disable failed after max retries — giving up");
-                amp_is_warm = false;
-                amp_disable_fail_count = 0;
-            }
-        }
+    if (now - amp_last_used_ms >= AMP_WARM_TIMEOUT_MS &&
+        (amp_disable_fail_count < AMP_DISABLE_FAST_RETRIES ||
+         now - amp_last_disable_attempt_ms >= AMP_DISABLE_RETRY_INTERVAL_MS)) {
+        disable_speaker_amp(0, now, "audio_process_amp_timeout");
     }
 }
 
 static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t freqMHz, AlertDirection direction,
                                                        uint8_t total, uint8_t ahead, uint8_t behind, uint8_t side,
-                                                       AudioPlaybackReceipt* receipt = nullptr) {
+                                                       VoiceAlertMode mode, bool includeDirection,
+                                                       bool announceBogeyCount, AudioPlaybackReceipt* receipt = nullptr) {
     if (audio_playing.load()) {
         return AudioPlaybackResult::Busy;
     }
@@ -553,17 +556,19 @@ static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t 
         return AudioPlaybackResult::Unavailable;
     }
 
-    if (band == AlertBand::LASER) {
+    if (band == AlertBand::LASER || mode == VOICE_MODE_DISABLED) {
         return AudioPlaybackResult::Unavailable;
     }
 
     SDAudioTaskParams params;
     params.numClips = 0;
 
-    appendAudioClip(params, getBandClipFile(band));
+    if (band == AlertBand::PHOTO || mode == VOICE_MODE_BAND_ONLY || mode == VOICE_MODE_BAND_FREQ) {
+        appendAudioClip(params, getBandClipFile(band));
+    }
 
     // Photo keeps its K-band frequency internally but does not speak it.
-    if (band != AlertBand::PHOTO) {
+    if (band != AlertBand::PHOTO && (mode == VOICE_MODE_FREQ_ONLY || mode == VOICE_MODE_BAND_FREQ)) {
         int ghz = getGHz(band, freqMHz);
         if (ghz > 0) {
             snprintf(params.filePaths[params.numClips++], 48, "%s/tens_%02d.mul", AUDIO_PATH, ghz);
@@ -589,11 +594,11 @@ static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t 
     case AlertDirection::UNKNOWN:
         break;
     }
-    if (dirFile) {
+    if (includeDirection && dirFile) {
         snprintf(params.filePaths[params.numClips++], 48, "%s/%s", AUDIO_PATH, dirFile);
     }
 
-    if (total >= 2 && total <= 10 && params.numClips < MAX_AUDIO_CLIPS - 2) {
+    if (announceBogeyCount && total >= 2 && total <= 10 && params.numClips < MAX_AUDIO_CLIPS - 2) {
         if (total == 10) {
             snprintf(params.filePaths[params.numClips++], 48, "%s/tens_10.mul", AUDIO_PATH);
         } else {
@@ -602,7 +607,7 @@ static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t 
         snprintf(params.filePaths[params.numClips++], 48, "%s/bogeys.mul", AUDIO_PATH);
     }
 
-    if (ahead > 0 && ahead <= 10 && params.numClips < MAX_AUDIO_CLIPS - 2) {
+    if (announceBogeyCount && includeDirection && ahead > 0 && ahead <= 10 && params.numClips < MAX_AUDIO_CLIPS - 2) {
         if (ahead == 10) {
             snprintf(params.filePaths[params.numClips++], 48, "%s/tens_10.mul", AUDIO_PATH);
         } else {
@@ -611,7 +616,7 @@ static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t 
         snprintf(params.filePaths[params.numClips++], 48, "%s/dir_ahead.mul", AUDIO_PATH);
     }
 
-    if (behind > 0 && behind <= 10 && params.numClips < MAX_AUDIO_CLIPS - 2) {
+    if (announceBogeyCount && includeDirection && behind > 0 && behind <= 10 && params.numClips < MAX_AUDIO_CLIPS - 2) {
         if (behind == 10) {
             snprintf(params.filePaths[params.numClips++], 48, "%s/tens_10.mul", AUDIO_PATH);
         } else {
@@ -621,7 +626,7 @@ static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t 
     }
 
     // Omit the side count if earlier clips exhausted capacity.
-    if (side > 0 && side <= 10 && params.numClips < MAX_AUDIO_CLIPS - 2) {
+    if (announceBogeyCount && includeDirection && side > 0 && side <= 10 && params.numClips < MAX_AUDIO_CLIPS - 2) {
         if (side == 10) {
             snprintf(params.filePaths[params.numClips++], 48, "%s/tens_10.mul", AUDIO_PATH);
         } else {
@@ -635,7 +640,8 @@ static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t 
 
 void play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection direction, uint8_t total, uint8_t ahead,
                             uint8_t behind, uint8_t side) {
-    (void)play_threat_escalation_impl(band, freqMHz, direction, total, ahead, behind, side);
+    (void)play_threat_escalation_impl(band, freqMHz, direction, total, ahead, behind, side,
+                                       VOICE_MODE_BAND_FREQ, true, true);
 }
 
 AudioPlaybackResult try_play_frequency_voice(AlertBand band, uint16_t freqMHz, AlertDirection direction,
@@ -651,6 +657,8 @@ AudioPlaybackResult try_play_direction_only(AlertDirection direction, uint8_t bo
 
 AudioPlaybackResult try_play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection direction,
                                                uint8_t total, uint8_t ahead, uint8_t behind, uint8_t side,
+                                               VoiceAlertMode mode, bool includeDirection, bool announceBogeyCount,
                                                AudioPlaybackReceipt* receipt) {
-    return play_threat_escalation_impl(band, freqMHz, direction, total, ahead, behind, side, receipt);
+    return play_threat_escalation_impl(band, freqMHz, direction, total, ahead, behind, side,
+                                       mode, includeDirection, announceBogeyCount, receipt);
 }

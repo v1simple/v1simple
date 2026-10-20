@@ -83,6 +83,11 @@ void PacketParser::resetVolumeState() {
 }
 
 void PacketParser::resetModeAndDisplayState() {
+    // Mute observations and their confirmation history belong to this link.
+    // A new alert must not inherit suppression before fresh display data arrives.
+    displayState_.muted = false;
+    displayState_.softMuted = false;
+    displayMuteConfirmCount_ = 0;
     displayState_.modeChar = 0;
     displayState_.hasMode = false;
     displayState_.displayOn = true;

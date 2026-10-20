@@ -79,7 +79,7 @@ AudioPlaybackResult try_play_direction_only(AlertDirection, uint8_t, AudioPlayba
     return g_voicePlaybackResult;
 }
 AudioPlaybackResult try_play_threat_escalation(AlertBand band, uint16_t freq, AlertDirection, uint8_t, uint8_t, uint8_t,
-                                               uint8_t, AudioPlaybackReceipt* receipt) {
+                                               uint8_t, VoiceAlertMode, bool, bool, AudioPlaybackReceipt* receipt) {
     if (receipt) receipt->state.store(AudioPlaybackReceipt::State::Started);
     ++g_voicePlaybackAttempts;
     ++g_escalationPlaybackAttempts;

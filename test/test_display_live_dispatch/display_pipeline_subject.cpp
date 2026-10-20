@@ -26,7 +26,7 @@ AudioPlaybackResult try_play_direction_only(AlertDirection, uint8_t, AudioPlayba
     return AudioPlaybackResult::Unavailable;
 }
 AudioPlaybackResult try_play_threat_escalation(AlertBand, uint16_t, AlertDirection, uint8_t, uint8_t, uint8_t,
-                                               uint8_t, AudioPlaybackReceipt* receipt) {
+                                               uint8_t, VoiceAlertMode, bool, bool, AudioPlaybackReceipt* receipt) {
     if (receipt) receipt->state.store(AudioPlaybackReceipt::State::Started);
     return AudioPlaybackResult::Unavailable;
 }

@@ -6479,6 +6479,97 @@ void test_profile_taps_keep_local_selection_when_offline_or_auto_push_disabled()
     }
 }
 
+void seedBackupAuthorityFixture(fs::FS& filesystem, bool includePrevious = true) {
+    V1Settings source;
+    makeCurrentV21Source(source);
+    source.brightness = 211;
+    JsonDocument document;
+    TEST_ASSERT_TRUE(BackupPayloadBuilder::buildBackupDocument(
+        document, source, profiles, BackupPayloadBuilder::BackupTransport::SdBackup, 1000).safeToCommit);
+    writeJsonFile(filesystem, SETTINGS_BACKUP_PATH, document);
+    if (includePrevious) {
+        source.brightness = 42;
+        document.clear();
+        TEST_ASSERT_TRUE(BackupPayloadBuilder::buildBackupDocument(
+            document, source, profiles, BackupPayloadBuilder::BackupTransport::SdBackup, 1000).safeToCommit);
+        writeJsonFile(filesystem, SETTINGS_BACKUP_PREV_PATH, document);
+    }
+}
+
+void exerciseBackupReadFailure(const char* unavailablePath, bool includePrevious = true) {
+    fs::FS filesystem(g_tempRoot);
+    storage.setFilesystem(&filesystem, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    seedBackupAuthorityFixture(filesystem, includePrevious);
+    const std::string primary = readFileToString(filesystem, SETTINGS_BACKUP_PATH);
+    const std::string previous = readFileToString(filesystem, SETTINGS_BACKUP_PREV_PATH);
+    fs::mock_exists_uses_read_open(true);
+    const auto unavailable = g_tempRoot / (unavailablePath + 1);
+    fs::mock_fail_read_opens_for_full_path(unavailable.c_str());
+
+    SettingsManager boot(storage, profiles);
+    boot.begin();
+    TEST_ASSERT_TRUE(boot.recoveryPending());
+    TEST_ASSERT_NOT_EQUAL(42, boot.get().brightness);
+    TEST_ASSERT_FALSE(boot.backupToSD());
+    boot.serviceDeferredPersist(2000);
+    TEST_ASSERT_TRUE(boot.recoveryPending());
+    TEST_ASSERT_NOT_EQUAL(42, boot.get().brightness);
+    boot.serviceDeferredBackup(2000);
+    fs::mock_fail_read_opens_for_full_path(nullptr);
+    TEST_ASSERT_EQUAL_STRING(primary.c_str(), readFileToString(filesystem, SETTINGS_BACKUP_PATH).c_str());
+    TEST_ASSERT_EQUAL_STRING(previous.c_str(), readFileToString(filesystem, SETTINGS_BACKUP_PREV_PATH).c_str());
+
+    boot.serviceDeferredPersist(2999);
+    TEST_ASSERT_TRUE(boot.recoveryPending());
+    boot.serviceDeferredPersist(3000);
+    TEST_ASSERT_FALSE(boot.recoveryPending());
+    TEST_ASSERT_EQUAL_UINT8(211, boot.get().brightness);
+    SettingsManager reboot(storage, profiles);
+    reboot.load();
+    TEST_ASSERT_EQUAL_UINT8(211, reboot.get().brightness);
+}
+
+void test_unreadable_primary_backup_defers_older_restore_until_retry() {
+    exerciseBackupReadFailure(SETTINGS_BACKUP_PATH);
+}
+
+void test_unreadable_only_backup_is_preserved_until_retry() {
+    exerciseBackupReadFailure(SETTINGS_BACKUP_PATH, false);
+}
+
+void test_unreadable_previous_backup_defers_authority_selection_until_retry() {
+    exerciseBackupReadFailure(SETTINGS_BACKUP_PREV_PATH);
+}
+
+void exerciseAbsentOrCorruptPrimaryBackup(bool corrupt) {
+    fs::FS filesystem(g_tempRoot);
+    storage.setFilesystem(&filesystem, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    seedBackupAuthorityFixture(filesystem);
+    if (corrupt) {
+        writeFileFromString(filesystem, SETTINGS_BACKUP_PATH, "{broken}");
+    } else {
+        TEST_ASSERT_TRUE(filesystem.remove(SETTINGS_BACKUP_PATH));
+    }
+    fs::mock_exists_uses_read_open(true);
+    SettingsManager boot(storage, profiles);
+    boot.begin();
+    TEST_ASSERT_FALSE(boot.recoveryPending());
+    TEST_ASSERT_EQUAL_UINT8(42, boot.get().brightness);
+    SettingsManager reboot(storage, profiles);
+    reboot.load();
+    TEST_ASSERT_EQUAL_UINT8(42, reboot.get().brightness);
+}
+
+void test_missing_primary_backup_still_restores_previous_backup() {
+    exerciseAbsentOrCorruptPrimaryBackup(false);
+}
+
+void test_corrupt_primary_backup_still_restores_previous_backup() {
+    exerciseAbsentOrCorruptPrimaryBackup(true);
+}
+
 void test_sd_only_recovery_backoff_preserves_backup_until_profile_is_recovered() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
@@ -6564,6 +6655,11 @@ int main() {
     UNITY_BEGIN();
     RUN_TEST(test_sd_only_wifi_healing_completes_recovery_without_restarting_other_consumers);
     RUN_TEST(test_sd_only_recovery_backoff_preserves_backup_until_profile_is_recovered);
+    RUN_TEST(test_unreadable_primary_backup_defers_older_restore_until_retry);
+    RUN_TEST(test_unreadable_only_backup_is_preserved_until_retry);
+    RUN_TEST(test_unreadable_previous_backup_defers_authority_selection_until_retry);
+    RUN_TEST(test_missing_primary_backup_still_restores_previous_backup);
+    RUN_TEST(test_corrupt_primary_backup_still_restores_previous_backup);
     RUN_TEST(test_unavailable_newest_nvs_copy_blocks_writes_then_reloads_before_mutation);
     RUN_TEST(test_unavailable_newest_nvs_copy_preserves_sd_backup_then_resumes_boot);
     RUN_TEST(test_unavailable_newest_nvs_probe_preserves_sd_backup_then_resumes_boot);

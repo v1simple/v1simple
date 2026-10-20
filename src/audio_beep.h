@@ -47,13 +47,16 @@ void play_direction_only(AlertDirection direction, uint8_t bogeyCount = 0);
 AudioPlaybackResult try_play_direction_only(AlertDirection direction, uint8_t bogeyCount = 0,
                                             AudioPlaybackReceipt* receipt = nullptr);
 
-// Play threat escalation announcement with full context:
+// Play threat escalation announcement, with configured content controls:
 // "[Band] [freq] [direction] [N] bogeys, [X] ahead, [Y] behind"
+// Directional counts require both direction and bogey-count announcements.
 // Used when a secondary alert ramps up from weak (≤2 bars) to strong (≥4 bars)
 void play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection direction, uint8_t total, uint8_t ahead,
                             uint8_t behind, uint8_t side);
 AudioPlaybackResult try_play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection direction,
                                                uint8_t total, uint8_t ahead, uint8_t behind, uint8_t side,
+                                               VoiceAlertMode mode = VOICE_MODE_BAND_FREQ,
+                                               bool includeDirection = true, bool announceBogeyCount = true,
                                                AudioPlaybackReceipt* receipt = nullptr);
 
 void play_band_only(AlertBand band);

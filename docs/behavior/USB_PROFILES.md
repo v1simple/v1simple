@@ -114,6 +114,19 @@ schema v3. Current USB v5 retains that slot contract and adds profile-schema-v4
    Both runtime boot paths initialize storage, recover/restore, migrate supported
    legacy profiles, and validate references before ordinary use.
 
+   A failed read-open does not prove a missing recovery source: Arduino
+   `FS::exists()` also opens the file. Profile mirror inspection and settings
+   backup selection use [storage_path_status.h](../../src/storage_path_status.h)
+   to distinguish explicit absence from unavailable storage. An unavailable
+   candidate keeps recovery pending and preserves both copies until retry;
+   genuinely missing or corrupt data can still fall back to a valid copy.
+   `test_reconcile_preserves_unreadable_newer_littlefs_until_retry` and its SD
+   counterpart in `test_v1_profiles` exercise profile authority through retry
+   and reload. The unreadable-backup cases in `test_settings_persistence` cover
+   primary/previous selection, preservation during backup service, retry and
+   NVS reload. These use repeated host read failures with Arduino-style
+   existence probes; they do not measure physical storage failure frequency.
+
 7. **Stored readback and later consumption.** `buildUsbProfileDocument()` first
    resolves storage transactions, requires current profile schema, snapshots the
    complete catalog, serializes all modifiers, then validates its own output.

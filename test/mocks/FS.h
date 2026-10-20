@@ -34,6 +34,7 @@ namespace mock_fs_detail {
 inline constexpr size_t kUnlimitedWriteBudget = std::numeric_limits<size_t>::max();
 inline size_t g_new_file_write_budget = kUnlimitedWriteBudget;
 inline std::string g_fail_next_read_path;
+inline std::string g_fail_read_full_path;
 inline std::string g_fail_next_remove_path;
 inline bool g_require_existing_write_parent = false;
 inline bool g_exists_uses_read_open = false;
@@ -322,8 +323,15 @@ inline void mock_fail_next_read_open(const char* path) {
     mock_fs_detail::g_fail_next_read_path = path ? path : "";
 }
 
+// Keep the fault active across existence probes and repeated recovery reads,
+// and distinguish the same virtual path on SD from its LittleFS mirror.
+inline void mock_fail_read_opens_for_full_path(const char* path) {
+    mock_fs_detail::g_fail_read_full_path = path ? path : "";
+}
+
 inline void mock_reset_fs_open_state() {
     mock_fs_detail::g_fail_next_read_path.clear();
+    mock_fs_detail::g_fail_read_full_path.clear();
     mock_fs_detail::g_require_existing_write_parent = false;
     mock_fs_detail::g_exists_uses_read_open = false;
 }
@@ -361,6 +369,10 @@ public:
     const char* mountpoint() { return root_.c_str(); }
 
     File open(const char* path, const char* mode = FILE_READ, bool /*create*/ = false) {
+        if (path && mode && std::string(mode) == FILE_READ &&
+            resolve(path).string() == mock_fs_detail::g_fail_read_full_path) {
+            return File();
+        }
         if (path && mode && std::string(mode) == FILE_READ &&
             mock_fs_detail::g_fail_next_read_path == path) {
             mock_fs_detail::g_fail_next_read_path.clear();

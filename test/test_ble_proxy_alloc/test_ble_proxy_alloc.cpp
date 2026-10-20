@@ -182,7 +182,15 @@ void tearDown() {}
 
 namespace {
 
+void connectProxyPhone(V1BLEClient& client) {
+    V1BLEClient::ProxyServerCallbacks callbacks(&client);
+    NimBLEConnInfo phone;
+    callbacks.onConnect(nullptr, phone);
+    client.drainProxyCallbackEvents();
+}
+
 void admitPhoneCommands(V1BLEClient& client) {
+    connectProxyPhone(client);
     client.connected_.store(true, std::memory_order_release);
     client.sessionGeneration_.store(1, std::memory_order_release);
     client.sessionPublicationGate_.open(1);
@@ -196,7 +204,7 @@ void openPhoneCommandSession(V1BLEClient& client, NimBLEClient& link) {
     client.connected_.store(true, std::memory_order_release);
     client.activeConnectionHandle_.store(link.getConnHandle(), std::memory_order_release);
     client.bleState_ = BLEState::CONNECTED;
-    client.proxyClientConnected_.store(true, std::memory_order_release);
+    connectProxyPhone(client);
     client.onV1DisplayFlowControl(false);
 }
 
@@ -456,7 +464,7 @@ void test_reallocated_queues_reject_callbacks_from_the_previous_epoch() {
     TEST_ASSERT_TRUE(client.allocateProxyQueues());
     TEST_ASSERT_NOT_EQUAL(staleEpoch, client.proxyQueueEpoch_.load(std::memory_order_acquire));
 
-    TEST_ASSERT_FALSE(client.enqueuePhoneCommandForEpoch(packet, sizeof(packet), 0xB2CE, staleEpoch, 1));
+    TEST_ASSERT_FALSE(client.enqueuePhoneCommandForEpoch(packet, sizeof(packet), 0xB2CE, staleEpoch, 1, client.proxyPhoneSessionGeneration_.load()));
     client.forwardToProxyForEpoch(packet, sizeof(packet), 0xB2CE, staleEpoch);
     TEST_ASSERT_EQUAL_UINT32(0, client.phone2v1QueueCount_);
     TEST_ASSERT_EQUAL_UINT32(0, client.proxyQueueCount_);
@@ -480,7 +488,7 @@ void test_missing_phone_queue_rejects_command() {
     TEST_ASSERT_TRUE(client.proxyEpochObserver_.accepts(queueEpoch));
 
     const uint8_t packet[] = {0x11};
-    TEST_ASSERT_FALSE(client.enqueuePhoneCommandForEpoch(packet, sizeof(packet), 0xB2CE, queueEpoch, 1));
+    TEST_ASSERT_FALSE(client.enqueuePhoneCommandForEpoch(packet, sizeof(packet), 0xB2CE, queueEpoch, 1, client.proxyPhoneSessionGeneration_.load()));
 
 }
 
@@ -614,7 +622,7 @@ void test_proxy_app_disconnect_only_clears_state_when_drained() {
     client.proxyServerInitialized_ = client.initProxyServer("Proxy");
     TEST_ASSERT_TRUE(client.proxyServerInitialized_);
     client.connected_.store(true, std::memory_order_relaxed);
-    client.proxyClientConnected_.store(true, std::memory_order_relaxed);
+    connectProxyPhone(client);
     client.pServer_->setConnectedCount(0);
     mockMillis = 1234;
     const uint32_t startAdvertisingCallsBefore = g_mock_nimble_state.startAdvertisingCalls;

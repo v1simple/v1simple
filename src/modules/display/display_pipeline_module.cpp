@@ -489,7 +489,8 @@ void DisplayPipelineModule::runVoice(const RenderFrame& frame, const V1Settings&
         playbackResult = try_play_threat_escalation(voiceAction.band, voiceAction.freq, voiceAction.dir,
                                                     voiceAction.bogeyCount, voiceAction.aheadCount,
                                                     voiceAction.behindCount, voiceAction.sideCount,
-                                                    &voicePlaybackReceipt_);
+                                                    settingsRef.voiceAlertMode, settingsRef.voiceDirectionEnabled,
+                                                    settingsRef.announceBogeyCount, &voicePlaybackReceipt_);
         break;
 
     case VoiceAction::Type::NONE:

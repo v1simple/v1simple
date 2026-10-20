@@ -1812,6 +1812,53 @@ void test_profile_authority_without_fault_still_preserves_deletion() {
     exercise_deferred_profile_authority(MirrorRecoveryFault::None, true);
 }
 
+void exercise_persistent_profile_read_failure(bool newestOnSd) {
+    fs::FS sd(g_tempRoot / "sd"), little(g_tempRoot / "little");
+    V1ProfileManager sdOnly, littleOnly;
+    TEST_ASSERT_TRUE(sdOnly.begin(&sd));
+    TEST_ASSERT_TRUE(littleOnly.begin(&little));
+    V1ProfileManager& older = newestOnSd ? littleOnly : sdOnly;
+    V1ProfileManager& newer = newestOnSd ? sdOnly : littleOnly;
+    TEST_ASSERT_TRUE(older.saveProfile(makeProfile("Road", 1, "older")).success);
+    TEST_ASSERT_TRUE(newer.saveProfile(makeProfile("Road", 2, "newer")).success);
+    TEST_ASSERT_TRUE(newer.saveProfile(makeProfile("Road", 3, "newest")).success);
+    const auto original = filesSnapshot();
+    StorageManager owner;
+    owner.setFilesystem(&sd, true);
+    owner.setLittleFS(&little);
+    fs::mock_exists_uses_read_open(true); // Arduino FS::exists opens for reading.
+    const auto unavailable = g_tempRoot / (newestOnSd ? "sd" : "little") / "v1profiles/Road.json";
+    fs::mock_fail_read_opens_for_full_path(unavailable.c_str());
+
+    V1ProfileManager boot;
+    TEST_ASSERT_FALSE(boot.begin(owner));
+    TEST_ASSERT_FALSE(boot.isReady());
+    TEST_ASSERT_TRUE(original == filesSnapshot());
+    boot.serviceRecovery(2000);
+    TEST_ASSERT_FALSE(boot.isReady());
+    TEST_ASSERT_TRUE(original == filesSnapshot());
+
+    fs::mock_fail_read_opens_for_full_path(nullptr);
+    boot.serviceRecovery(3000);
+    TEST_ASSERT_TRUE(boot.isReady());
+    V1Profile recovered;
+    TEST_ASSERT_TRUE(boot.loadProfile("Road", recovered));
+    TEST_ASSERT_EQUAL_UINT8(3, recovered.settings.bytes[0]);
+    TEST_ASSERT_EQUAL_STRING("newest", recovered.description.c_str());
+    V1ProfileManager reboot;
+    TEST_ASSERT_TRUE(reboot.begin(owner));
+    TEST_ASSERT_TRUE(reboot.loadProfile("Road", recovered));
+    TEST_ASSERT_EQUAL_UINT8(3, recovered.settings.bytes[0]);
+}
+
+void test_reconcile_preserves_unreadable_newer_littlefs_until_retry() {
+    exercise_persistent_profile_read_failure(false);
+}
+
+void test_reconcile_preserves_unreadable_newer_sd_until_retry() {
+    exercise_persistent_profile_read_failure(true);
+}
+
 void test_periodic_profile_recovery_never_waits_for_sd_and_honors_backoff() {
     fs::FS fs(g_tempRoot);
     StorageManager owner;
@@ -1844,6 +1891,8 @@ int main() {
     RUN_TEST(test_profile_authority_recovers_after_reconcile_write_failure);
     RUN_TEST(test_profile_authority_without_fault_still_selects_newest);
     RUN_TEST(test_profile_authority_without_fault_still_preserves_deletion);
+    RUN_TEST(test_reconcile_preserves_unreadable_newer_littlefs_until_retry);
+    RUN_TEST(test_reconcile_preserves_unreadable_newer_sd_until_retry);
 
     RUN_TEST(test_in_the_box_profile_file_roundtrip_integrity_and_v3_default);
     RUN_TEST(test_in_the_box_parser_is_exact_and_preserves_output_on_invalid_input);

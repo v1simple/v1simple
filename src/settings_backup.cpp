@@ -4,6 +4,7 @@
 #include "psram_json_document.h"
 #include "psram_freertos_alloc.h"
 #include "settings_backup_revision.h"
+#include "storage_path_status.h"
 
 #include <atomic>
 #include <esp_heap_caps.h>
@@ -11,10 +12,12 @@
 namespace {
 void publishBackupRequest();
 
-bool anySettingsBackupCandidateExists(fs::FS* fs) {
+bool anySettingsBackupCandidateMayExist(fs::FS* fs) {
     if (!fs) return false;
     for (size_t index = 0; index < SETTINGS_BACKUP_CANDIDATES_COUNT; ++index) {
-        if (fs->exists(SETTINGS_BACKUP_CANDIDATES[index])) return true;
+        if (storagePathStatus(*fs, SETTINGS_BACKUP_CANDIDATES[index]) != StoragePathStatus::Missing) {
+            return true;
+        }
     }
     return false;
 }
@@ -280,8 +283,9 @@ bool parseBackupFile(fs::FS* fs, const char* path, JsonDocument& doc, bool verbo
     File file = fs->open(path, FILE_READ);
     if (!file) {
         if (outStatus) {
-            *outStatus = fs->exists(path) ? BackupDocumentLoadStatus::IoError
-                                          : BackupDocumentLoadStatus::NotFound;
+            *outStatus = storagePathStatus(*fs, path) == StoragePathStatus::Missing
+                             ? BackupDocumentLoadStatus::NotFound
+                             : BackupDocumentLoadStatus::IoError;
         }
         if (verboseErrors) {
             Serial.printf("[Settings] Failed to open backup file: %s\n", path);
@@ -553,7 +557,7 @@ bool SettingsManager::backupToSD() {
             releaseSerializedSettingsBackupPayload(payload);
             return false;
         }
-        if (anySettingsBackupCandidateExists(fs)) {
+        if (anySettingsBackupCandidateMayExist(fs)) {
             Serial.println("[Settings] Restore pending; preserving unreadable SD backup candidate");
             releaseSerializedSettingsBackupPayload(payload);
             return false;
@@ -700,7 +704,7 @@ bool writeDeferredBackupPayloadNow(const SerializedSettingsBackupPayload& payloa
                 existingBackupPath ? existingBackupPath : "(unknown)");
             return markCompleted();
         }
-        if (anySettingsBackupCandidateExists(fs)) {
+        if (anySettingsBackupCandidateMayExist(fs)) {
             Serial.println("[Settings] Restore pending; preserving unreadable SD backup candidate");
             return false;
         }

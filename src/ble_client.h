@@ -445,6 +445,7 @@ class V1BLEClient {
     struct ProxyCallbackEvent {
         ProxyCallbackEventType type = ProxyCallbackEventType::APP_CONNECTED;
         uint16_t connHandle = 0;
+        uint32_t phoneSessionGeneration = 0;
         int reason = 0;
     };
 
@@ -487,6 +488,7 @@ class V1BLEClient {
         uint16_t charUUID;
         uint32_t tsMs;
         uint32_t sessionGeneration; // Phone commands belong to one V1 connection.
+        uint32_t phoneSessionGeneration; // And to the phone that submitted them.
     };
     ProxyPacket* proxyQueue_ = nullptr;
 
@@ -500,6 +502,15 @@ class V1BLEClient {
     // Fences callbacks that began before a disable/re-enable allocation cycle.
     std::atomic<uint32_t> proxyQueueEpoch_{0};
     BleProxyEpochObserver proxyEpochObserver_{};
+    // The BLE callback retires phone authority before deferring UI/advertising
+    // work. Counter and handle are protected by proxyCallbackEventMux_.
+    std::atomic<uint32_t> proxyPhoneSessionGeneration_{0};
+    uint32_t proxyPhoneGenerationCounter_ = 0;
+    uint16_t proxyPhoneConnectionHandle_ = BLE_HS_CONN_HANDLE_NONE;
+    bool acceptsPhoneSession(uint32_t generation) const {
+        return generation != 0 && proxyPhoneSessionGeneration_.load(std::memory_order_acquire) == generation;
+    }
+    uint32_t phoneSessionForConnection(uint16_t connHandle);
     std::atomic<size_t> phone2v1QueueHead_{0};
     std::atomic<size_t> phone2v1QueueTail_{0};
     std::atomic<size_t> phone2v1QueueCount_{0};
@@ -507,6 +518,7 @@ class V1BLEClient {
     // remains opaque and is forwarded unchanged, one queued chunk at a time.
     struct PhoneLongCommandOwner {
         uint32_t sessionGeneration = 0;
+        uint32_t phoneSessionGeneration = 0;
         uint8_t destination = 0;
         uint8_t requestId = 0;
         uint8_t count = 0;
@@ -706,7 +718,7 @@ class V1BLEClient {
 
     bool enqueuePhoneCommand(const uint8_t* data, size_t length, uint16_t sourceCharUUID);
     bool enqueuePhoneCommandForEpoch(const uint8_t* data, size_t length, uint16_t sourceCharUUID, uint32_t queueEpoch,
-                                    uint32_t sessionGeneration);
+                                    uint32_t sessionGeneration, uint32_t phoneSessionGeneration);
     int processPhoneCommandQueue();
     void logConnParams(const char* tag);
 

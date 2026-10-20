@@ -36,6 +36,8 @@ void play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection dir
                             uint8_t total, uint8_t ahead, uint8_t behind, uint8_t side);
 AudioPlaybackResult try_play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection direction,
                                                uint8_t total, uint8_t ahead, uint8_t behind, uint8_t side,
+                                               VoiceAlertMode mode = VOICE_MODE_BAND_FREQ,
+                                               bool includeDirection = true, bool announceBogeyCount = true,
                                                AudioPlaybackReceipt* receipt = nullptr);
 void play_band_only(AlertBand band);
 class StorageManager;

@@ -239,11 +239,66 @@ void test_unknown_escalation_direction_preserves_count_and_known_breakdown() {
                  "bogeys.mul", "digit_1.mul", "dir_ahead.mul"});
 }
 
+void test_escalation_content_controls_are_independent() {
+    struct Case {
+        VoiceAlertMode mode;
+        bool direction;
+        bool count;
+        std::initializer_list<const char*> clips;
+    };
+    const Case cases[] = {
+        {VOICE_MODE_BAND_ONLY, false, false, {"band_ka.mul"}},
+        {VOICE_MODE_BAND_ONLY, true, false, {"band_ka.mul", "dir_side.mul"}},
+        {VOICE_MODE_BAND_ONLY, false, true, {"band_ka.mul", "digit_2.mul", "bogeys.mul"}},
+        {VOICE_MODE_BAND_ONLY, true, true, {"band_ka.mul", "dir_side.mul", "digit_2.mul", "bogeys.mul",
+                                          "digit_1.mul", "dir_ahead.mul", "digit_1.mul", "dir_behind.mul"}},
+        {VOICE_MODE_FREQ_ONLY, false, false, {"tens_35.mul", "digit_5.mul", "tens_00.mul"}},
+        {VOICE_MODE_FREQ_ONLY, true, false, {"tens_35.mul", "digit_5.mul", "tens_00.mul", "dir_side.mul"}},
+        {VOICE_MODE_FREQ_ONLY, false, true, {"tens_35.mul", "digit_5.mul", "tens_00.mul", "digit_2.mul", "bogeys.mul"}},
+        {VOICE_MODE_FREQ_ONLY, true, true, {"tens_35.mul", "digit_5.mul", "tens_00.mul", "dir_side.mul",
+                                          "digit_2.mul", "bogeys.mul", "digit_1.mul", "dir_ahead.mul",
+                                          "digit_1.mul", "dir_behind.mul"}},
+        {VOICE_MODE_BAND_FREQ, false, false, {"band_ka.mul", "tens_35.mul", "digit_5.mul", "tens_00.mul"}},
+        {VOICE_MODE_BAND_FREQ, true, false, {"band_ka.mul", "tens_35.mul", "digit_5.mul", "tens_00.mul", "dir_side.mul"}},
+        {VOICE_MODE_BAND_FREQ, false, true, {"band_ka.mul", "tens_35.mul", "digit_5.mul", "tens_00.mul",
+                                           "digit_2.mul", "bogeys.mul"}},
+        {VOICE_MODE_BAND_FREQ, true, true, {"band_ka.mul", "tens_35.mul", "digit_5.mul", "tens_00.mul", "dir_side.mul",
+                                          "digit_2.mul", "bogeys.mul", "digit_1.mul", "dir_ahead.mul",
+                                          "digit_1.mul", "dir_behind.mul"}},
+    };
+    for (const auto& entry : cases) {
+        audio_playing = false; // Complete the previous admitted job in this composer-only fixture.
+        mock_reset_task_notify_state();
+        TEST_ASSERT_EQUAL(AudioPlaybackResult::Accepted,
+            try_play_threat_escalation(AlertBand::KA, 35500, AlertDirection::SIDE, 2, 1, 1, 0,
+                                       entry.mode, entry.direction, entry.count));
+        expectClips(entry.clips);
+    }
+}
+
+void test_disabled_escalation_admits_no_job_even_with_context_enabled() {
+    TEST_ASSERT_EQUAL(AudioPlaybackResult::Unavailable,
+        try_play_threat_escalation(AlertBand::KA, 35500, AlertDirection::AHEAD, 2, 2, 0, 0,
+                                   VOICE_MODE_DISABLED, true, true));
+    TEST_ASSERT_FALSE(audio_playing.load());
+    TEST_ASSERT_EQUAL_UINT(0, g_mock_task_notify_state.giveCalls);
+}
+
+void test_photo_escalation_respects_disabled_direction_and_count_in_frequency_mode() {
+    TEST_ASSERT_EQUAL(AudioPlaybackResult::Accepted,
+        try_play_threat_escalation(AlertBand::PHOTO, 24125, AlertDirection::AHEAD, 2, 2, 0, 0,
+                                   VOICE_MODE_FREQ_ONLY, false, false));
+    expectClips({"band_photo.mul"});
+}
+
 int main() {
     // Native tests run before web/LittleFS staging, including on a clean checkout.
     std::filesystem::copy(std::filesystem::path(PROJECT_DIR) / "tools" / "freq_audio" / "mulaw",
                           audioRoot / "audio", std::filesystem::copy_options::recursive);
     UNITY_BEGIN();
+    RUN_TEST(test_escalation_content_controls_are_independent);
+    RUN_TEST(test_disabled_escalation_admits_no_job_even_with_context_enabled);
+    RUN_TEST(test_photo_escalation_respects_disabled_direction_and_count_in_frequency_mode);
     RUN_TEST(test_ku_priority_preserves_band_and_composes_true_frequency);
     RUN_TEST(test_ku_frequency_only_keeps_edge_frequency_and_count);
     RUN_TEST(test_ku_secondary_action_keeps_its_own_band_and_frequency);

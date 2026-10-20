@@ -256,6 +256,8 @@ public:
     int resetModeAndDisplayStateCalls = 0;
     void resetModeAndDisplayState() {
         resetModeAndDisplayStateCalls++;
+        state.muted = false;
+        state.softMuted = false;
         state.modeChar = 0;
         state.hasMode = false;
         state.displayOn = true;

@@ -26,6 +26,7 @@ void V1BLEClient::ProxyServerCallbacks::onDisconnect(NimBLEServer* pServer_, Nim
 
     ProxyCallbackEvent event{};
     event.type = ProxyCallbackEventType::APP_DISCONNECTED;
+    event.connHandle = connInfo.getConnHandle();
     event.reason = reason;
     bleClient->enqueueProxyCallbackEvent(event);
 }
@@ -49,6 +50,21 @@ void V1BLEClient::deferLastV1Address(const char* addr, const char* advertisedNam
 
 bool V1BLEClient::enqueueProxyCallbackEvent(const ProxyCallbackEvent& event) {
     taskENTER_CRITICAL(&proxyCallbackEventMux_);
+    ProxyCallbackEvent queuedEvent = event;
+    if (event.type == ProxyCallbackEventType::APP_CONNECTED) {
+        if (++proxyPhoneGenerationCounter_ == 0) ++proxyPhoneGenerationCounter_;
+        proxyPhoneConnectionHandle_ = event.connHandle;
+        queuedEvent.phoneSessionGeneration = proxyPhoneGenerationCounter_;
+        proxyPhoneSessionGeneration_.store(queuedEvent.phoneSessionGeneration, std::memory_order_release);
+    } else if (event.type == ProxyCallbackEventType::APP_DISCONNECTED) {
+        if (event.connHandle != proxyPhoneConnectionHandle_) {
+            taskEXIT_CRITICAL(&proxyCallbackEventMux_);
+            return false;
+        }
+        queuedEvent.phoneSessionGeneration = proxyPhoneSessionGeneration_.load(std::memory_order_acquire);
+        proxyPhoneSessionGeneration_.store(0, std::memory_order_release);
+        proxyPhoneConnectionHandle_ = BLE_HS_CONN_HANDLE_NONE;
+    }
     if (proxyCallbackEventQueueCount_ >= PROXY_CALLBACK_EVENT_QUEUE_DEPTH) {
         proxyCallbackEventQueueHead_ = (proxyCallbackEventQueueHead_ + 1) % PROXY_CALLBACK_EVENT_QUEUE_DEPTH;
         proxyCallbackEventQueueCount_--;
@@ -56,10 +72,18 @@ bool V1BLEClient::enqueueProxyCallbackEvent(const ProxyCallbackEvent& event) {
 
     const size_t tail =
         (proxyCallbackEventQueueHead_ + proxyCallbackEventQueueCount_) % PROXY_CALLBACK_EVENT_QUEUE_DEPTH;
-    proxyCallbackEventQueue_[tail] = event;
+    proxyCallbackEventQueue_[tail] = queuedEvent;
     proxyCallbackEventQueueCount_++;
     taskEXIT_CRITICAL(&proxyCallbackEventMux_);
     return true;
+}
+
+uint32_t V1BLEClient::phoneSessionForConnection(uint16_t connHandle) {
+    taskENTER_CRITICAL(&proxyCallbackEventMux_);
+    const uint32_t generation = connHandle == proxyPhoneConnectionHandle_
+        ? proxyPhoneSessionGeneration_.load(std::memory_order_acquire) : 0;
+    taskEXIT_CRITICAL(&proxyCallbackEventMux_);
+    return generation;
 }
 
 bool V1BLEClient::popProxyCallbackEvent(ProxyCallbackEvent& event) {
@@ -169,6 +193,7 @@ bool V1BLEClient::setProxyRuntimeEnabled(bool enabled, const char* proxyName) {
     // Linearize runtime disable before advertising or peer teardown so a
     // callback on the other core cannot enter during the main-loop sequence.
     proxyEpochObserver_.close();
+    proxyPhoneSessionGeneration_.store(0, std::memory_order_release);
     clearProxyAdvertisingSchedule();
     stopProxyAdvertisingFromMainLoop();
     disconnectProxyPhones();
@@ -272,21 +297,35 @@ void V1BLEClient::adoptV1AdvertisedNameForProxy(const char* advertisedName) {
 void V1BLEClient::handleProxyCallbackEvent(const ProxyCallbackEvent& event) {
     switch (event.type) {
     case ProxyCallbackEventType::APP_CONNECTED:
-        if (pServer_ && pServer_->getConnectedCount() > 0) {
-            // Request Android-compatible connection parameters from the main loop.
-            pServer_->updateConnParams(event.connHandle, 12, 36, 0, 400);
+        taskENTER_CRITICAL(&proxyCallbackEventMux_);
+        if (!acceptsPhoneSession(event.phoneSessionGeneration)) {
+            taskEXIT_CRITICAL(&proxyCallbackEventMux_);
+            return;
         }
         setProxyClientConnected(true);
         proxyFastAdvertisingUntilMs_ = 0;
         proxySuppressedForObdHold_ = false;
         proxyDisconnectRequestedByCoordinator_ = false;
+        taskEXIT_CRITICAL(&proxyCallbackEventMux_);
+        if (pServer_ && pServer_->getConnectedCount() > 0) {
+            // Request Android-compatible connection parameters from the main loop.
+            pServer_->updateConnParams(event.connHandle, 12, 36, 0, 400);
+        }
         return;
 
     case ProxyCallbackEventType::APP_DISCONNECTED:
+        taskENTER_CRITICAL(&proxyCallbackEventMux_);
+        // A reconnect can arrive before this event is drained. It owns both
+        // its new commands and its connection state; an old event cannot clear it.
+        if (proxyPhoneSessionGeneration_.load(std::memory_order_acquire) != 0) {
+            taskEXIT_CRITICAL(&proxyCallbackEventMux_);
+            return;
+        }
         proxyClientConnected_ = false;
         proxyDisconnectRequestedByCoordinator_ = false;
         clearProxyAdvertisingSchedule();
         armProxyFastAdvertisingWindow(static_cast<uint32_t>(millis()), PROXY_FAST_RECONNECT_WINDOW_MS);
+        taskEXIT_CRITICAL(&proxyCallbackEventMux_);
         return;
 
     case ProxyCallbackEventType::V1_DISCONNECTED:
@@ -310,6 +349,8 @@ void V1BLEClient::ProxyWriteCallbacks::onWrite(NimBLECharacteristic* pCharacteri
     if (!pCharacteristic || !bleClient) {
         return;
     }
+    const uint32_t phoneSessionGeneration = bleClient->phoneSessionForConnection(connInfo.getConnHandle());
+    if (!phoneSessionGeneration) return;
     const uint32_t sessionGeneration = bleClient->sessionGeneration_.load(std::memory_order_acquire);
     const uint32_t queueEpoch = bleClient->proxyQueueEpoch_.load(std::memory_order_acquire);
     BleProxyEpochObserver::CallbackLease callbackLease(bleClient->proxyEpochObserver_,
@@ -332,7 +373,8 @@ void V1BLEClient::ProxyWriteCallbacks::onWrite(NimBLECharacteristic* pCharacteri
     uint8_t cmdBuf[32];
     memcpy(cmdBuf, rawData, rawLen);
 
-    bleClient->enqueuePhoneCommandForEpoch(cmdBuf, rawLen, sourceChar, queueEpoch, sessionGeneration);
+    bleClient->enqueuePhoneCommandForEpoch(cmdBuf, rawLen, sourceChar, queueEpoch, sessionGeneration,
+                                          phoneSessionGeneration);
 }
 
 bool V1BLEClient::allocateProxyQueues() {
@@ -670,16 +712,17 @@ int V1BLEClient::processProxyQueue() {
 bool V1BLEClient::enqueuePhoneCommand(const uint8_t* data, size_t length, uint16_t sourceCharUUID) {
     const uint32_t sessionGeneration = sessionGeneration_.load(std::memory_order_acquire);
     return enqueuePhoneCommandForEpoch(data, length, sourceCharUUID, proxyQueueEpoch_.load(std::memory_order_acquire),
-                                      sessionGeneration);
+                                      sessionGeneration, proxyPhoneSessionGeneration_.load(std::memory_order_acquire));
 }
 
 bool V1BLEClient::enqueuePhoneCommandForEpoch(const uint8_t* data, size_t length, uint16_t sourceCharUUID,
-                                             uint32_t queueEpoch, uint32_t sessionGeneration) {
+                                             uint32_t queueEpoch, uint32_t sessionGeneration, uint32_t phoneSessionGeneration) {
     if (!data || length == 0 || length > 32) {
         return false;
     }
     if (proxyQueueReleasePending_.load(std::memory_order_acquire) || !proxyEpochObserver_.accepts(queueEpoch) ||
-        !connected_.load(std::memory_order_acquire) || !sessionPublicationGate_.accepts(sessionGeneration)) {
+        !connected_.load(std::memory_order_acquire) || !sessionPublicationGate_.accepts(sessionGeneration) ||
+        !acceptsPhoneSession(phoneSessionGeneration)) {
         return false;
     }
 
@@ -687,7 +730,8 @@ bool V1BLEClient::enqueuePhoneCommandForEpoch(const uint8_t* data, size_t length
         return false;
     }
     if (proxyQueueReleasePending_.load(std::memory_order_acquire) || !proxyEpochObserver_.accepts(queueEpoch) ||
-        !connected_.load(std::memory_order_acquire) || !sessionPublicationGate_.accepts(sessionGeneration)) {
+        !connected_.load(std::memory_order_acquire) || !sessionPublicationGate_.accepts(sessionGeneration) ||
+        !acceptsPhoneSession(phoneSessionGeneration)) {
         xSemaphoreGive(phoneCmdMutex_);
         return false;
     }
@@ -707,6 +751,7 @@ bool V1BLEClient::enqueuePhoneCommandForEpoch(const uint8_t* data, size_t length
     pkt.length = length;
     pkt.charUUID = sourceCharUUID;
     pkt.sessionGeneration = sessionGeneration;
+    pkt.phoneSessionGeneration = phoneSessionGeneration;
     phone2v1QueueHead_ = (phone2v1QueueHead_ + 1) % PHONE_CMD_QUEUE_SIZE;
     phone2v1QueueCount_++;
     xSemaphoreGive(phoneCmdMutex_);
@@ -726,12 +771,14 @@ int V1BLEClient::processPhoneCommandQueue() {
     // Queue allocation and V1 connection lifetimes are separate. Preserve the
     // callback's V1 generation through retries so neither can cross reconnect.
     if (phoneCmdPendingClear_.exchange(false, std::memory_order_acq_rel) ||
-        (hasPending && !sessionPublicationGate_.accepts(pendingPkt.sessionGeneration))) {
+        (hasPending && (!sessionPublicationGate_.accepts(pendingPkt.sessionGeneration) ||
+                        !acceptsPhoneSession(pendingPkt.phoneSessionGeneration)))) {
         hasPending = false;
         pendingPkt.length = 0;
         phoneLongCommandOwner_ = {};
     }
-    if (!sessionPublicationGate_.accepts(phoneLongCommandOwner_.sessionGeneration)) {
+    if (!sessionPublicationGate_.accepts(phoneLongCommandOwner_.sessionGeneration) ||
+        !acceptsPhoneSession(phoneLongCommandOwner_.phoneSessionGeneration)) {
         phoneLongCommandOwner_ = {};
     }
 
@@ -744,6 +791,7 @@ int V1BLEClient::processPhoneCommandQueue() {
         memcpy(pktCopy.data, pendingPkt.data, pendingPkt.length);
         pktCopy.length = pendingPkt.length;
         pktCopy.sessionGeneration = pendingPkt.sessionGeneration;
+        pktCopy.phoneSessionGeneration = pendingPkt.phoneSessionGeneration;
         charUUID = pendingCharUUID;
         hasPacket = true;
     } else if (phoneCmdMutex_ && xSemaphoreTake(phoneCmdMutex_, 0) == pdTRUE) {
@@ -753,13 +801,15 @@ int V1BLEClient::processPhoneCommandQueue() {
             ProxyPacket& pkt = phone2v1Queue_[phone2v1QueueTail_];
             phone2v1QueueTail_ = (phone2v1QueueTail_ + 1) % PHONE_CMD_QUEUE_SIZE;
             phone2v1QueueCount_--;
-            if (!sessionPublicationGate_.accepts(pkt.sessionGeneration)) {
+            if (!sessionPublicationGate_.accepts(pkt.sessionGeneration) ||
+                !acceptsPhoneSession(pkt.phoneSessionGeneration)) {
                 continue;
             }
             configASSERT(pkt.length <= sizeof(pkt.data)); // Belt-and-suspenders: validated at enqueue
             memcpy(pktCopy.data, pkt.data, pkt.length);
             pktCopy.length = pkt.length;
             pktCopy.sessionGeneration = pkt.sessionGeneration;
+            pktCopy.phoneSessionGeneration = pkt.phoneSessionGeneration;
             charUUID = pkt.charUUID;
             hasPacket = true;
             break;
@@ -771,7 +821,8 @@ int V1BLEClient::processPhoneCommandQueue() {
         return 0;
     }
     if (proxyQueueReleasePending_.load(std::memory_order_acquire) ||
-        !sessionPublicationGate_.accepts(pktCopy.sessionGeneration)) {
+        !sessionPublicationGate_.accepts(pktCopy.sessionGeneration) ||
+        !acceptsPhoneSession(pktCopy.phoneSessionGeneration)) {
         hasPending = false;
         return 0;
     }
@@ -800,6 +851,7 @@ int V1BLEClient::processPhoneCommandQueue() {
             bool valid = pktCopy.length >= 2 && pktCopy.length <= 20 && index != 0 && index <= count;
             if (valid) chunkBit = uint16_t{1} << (index - 1);
             if (valid && (longOwner.sessionGeneration != pktCopy.sessionGeneration ||
+                          longOwner.phoneSessionGeneration != pktCopy.phoneSessionGeneration ||
                           longOwner.count != count || (longOwner.sentMask & chunkBit) != 0)) {
                 longOwner = {};
                 hasHeader = false;
@@ -826,7 +878,8 @@ int V1BLEClient::processPhoneCommandQueue() {
                 if (phoneCmdMutex_ && xSemaphoreTake(phoneCmdMutex_, 0) == pdTRUE) {
                     for (size_t n = 0; n < phone2v1QueueCount_ && !boundary; ++n) {
                         const ProxyPacket& queued = phone2v1Queue_[(phone2v1QueueTail_ + n) % PHONE_CMD_QUEUE_SIZE];
-                        if (queued.sessionGeneration != pktCopy.sessionGeneration) continue;
+                        if (queued.sessionGeneration != pktCopy.sessionGeneration ||
+                            queued.phoneSessionGeneration != pktCopy.phoneSessionGeneration) continue;
                         if (queued.charUUID == V1_SHORT_UUID_COMMAND_LONG) inspect(queued);
                         else otherCommandQueued = true;
                     }
@@ -843,7 +896,7 @@ int V1BLEClient::processPhoneCommandQueue() {
                 valid = hasHeader ? header[0] == ESP_PACKET_START
                                   : !boundary && !otherCommandQueued && seen != ((uint16_t{1} << count) - 1);
                 if (valid && hasHeader) {
-                    longOwner = {pktCopy.sessionGeneration, header[1], header[3], count, 0};
+                    longOwner = {pktCopy.sessionGeneration, pktCopy.phoneSessionGeneration, header[1], header[3], count, 0};
                 }
             }
             if (!valid) {
@@ -871,8 +924,14 @@ int V1BLEClient::processPhoneCommandQueue() {
             memcpy(pendingPkt.data, pktCopy.data, pktCopy.length);
             pendingPkt.length = pktCopy.length;
             pendingPkt.sessionGeneration = pktCopy.sessionGeneration;
+            pendingPkt.phoneSessionGeneration = pktCopy.phoneSessionGeneration;
             pendingCharUUID = charUUID;
             hasPending = true;
+            return 0;
+        }
+        if (!sessionPublicationGate_.accepts(pktCopy.sessionGeneration) ||
+            !acceptsPhoneSession(pktCopy.phoneSessionGeneration)) {
+            hasPending = false;
             return 0;
         }
         // Snapshot pointer under lock to prevent TOCTOU race with cleanupConnection()
@@ -898,6 +957,11 @@ int V1BLEClient::processPhoneCommandQueue() {
             }
         }
 
+        if (!sessionPublicationGate_.accepts(pktCopy.sessionGeneration) ||
+            !acceptsPhoneSession(pktCopy.phoneSessionGeneration)) {
+            hasPending = false;
+            return 0;
+        }
         if (charUUID == V1_SHORT_UUID_COMMAND_LONG && pCommandCharLongSnapshot) {
             if (pCommandCharLongSnapshot->writeValue(pktCopy.data, pktCopy.length, false)) {
                 result = SendResult::SENT;
@@ -922,6 +986,7 @@ int V1BLEClient::processPhoneCommandQueue() {
         memcpy(pendingPkt.data, pktCopy.data, pktCopy.length);
         pendingPkt.length = pktCopy.length;
         pendingPkt.sessionGeneration = pktCopy.sessionGeneration;
+        pendingPkt.phoneSessionGeneration = pktCopy.phoneSessionGeneration;
         pendingCharUUID = charUUID;
         hasPending = true;
         return 0;

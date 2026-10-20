@@ -45,6 +45,16 @@ original receipt stamps across notification and uptime rollover.
 checksum or E9h without checksum, using the exact data width for that origin.
 An EAh checksum byte is never usable as a missing data byte.
 
+Phone commands retain both the detector-session and phone-session generations
+through queued writes, deferred retries, and indexed B8D2 command ownership.
+The phone disconnect callback retires its generation immediately, before the
+main loop handles connection presentation or advertising. Old callbacks and
+disconnect events cannot acquire a new phone's authority.
+[`test_ble_proxy_phone_session`](../../test/test_ble_proxy_phone_session/test_ble_proxy_phone_session.cpp)
+executes the real command-send path to verify that retired phone mute commands
+cannot override a later local unmute, while connected-phone retries still work.
+NimBLE transport, clocks, and locks remain host doubles.
+
 ## 1. Older Gen2 detailed alert reception
 
 ### Contract and failure
@@ -102,10 +112,17 @@ history; switching slots cannot revive a completed encounter from the previous
 policy. A newer live encounter still owns display and voice. Completed history
 is display-only and never queues a voice announcement for an obsolete alert.
 
+The connection owner also resets display mute, soft mute, and mute-confirmation
+history when a detector session opens or closes. A new alert can therefore
+announce before the first new display packet; fresh mute observations still
+apply immediately for soft mute and after two packets for LED mute. A normal
+count-zero table clear within the same session preserves display mute authority.
+
 [`test_voice_episode_integration`](../../test/test_voice_episode_integration/test_voice_episode_integration.cpp)
 executes queue → parser → pipeline for single-pass live/clear, priority in a
 two-row table, display-only laser, delayed presentation, timestamp zero/rollover,
-new live encounters, session reset and disabled/changed persistence. Existing
+new live encounters, real connection-session mute reset, fresh-mute controls,
+and disabled/changed persistence. Existing
 voice episode tests protect live rearming and pending-action deduplication.
 
 Playback admission reserves the audio worker without consuming voice dedup.
@@ -117,6 +134,13 @@ resubmitting it. A partial playback is never replayed. The host
 this receipt through the parser, pipeline and real worker, including exhausted
 startup attempts followed by recovery and stale-episode controls. Hardware
 I2C/I2S and speaker output remain outside that host test boundary.
+
+Escalation speech follows the same content, direction, and bogey-count settings
+as ordinary speech. Directional counts require both direction and count enabled.
+The audio worker and idle service retain amplifier shutdown responsibility
+until a disable succeeds; after five failed attempts, retries slow to once per
+second. A new playback establishes a fresh warm period. Worker and composer
+tests cover these contracts with simulated I2C results and recorded clip paths.
 
 ### Executable proof and limits
 

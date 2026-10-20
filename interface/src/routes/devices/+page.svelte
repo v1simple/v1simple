@@ -14,6 +14,7 @@
     let editingAddress = $state('');
     let editName = $state('');
     let busyAddress = $state('');
+    let renameGeneration = 0;
 
     onMount(() => {
         const releaseRuntimeStatus = retainRuntimeStatus({ needsStatus: true });
@@ -76,6 +77,7 @@
     }
 
     function startRename(device) {
+        renameGeneration += 1;
         editingAddress = device.address;
         editName = device.name || '';
     }
@@ -103,6 +105,7 @@
 
     async function saveName(address) {
         const submittedName = editName.trim();
+        const submittedRenameGeneration = renameGeneration;
         busyAddress = address;
         try {
             const formData = new FormData();
@@ -128,7 +131,9 @@
                       text: 'Device name saved on primary storage; mirror sync is pending.'
                   }
                 : { type: 'success', text: 'Device name saved.' };
-            cancelRename();
+            if (editingAddress === address && renameGeneration === submittedRenameGeneration) {
+                cancelRename();
+            }
         } catch (e) {
             message = { type: 'error', text: 'Failed to save device name.' };
         } finally {

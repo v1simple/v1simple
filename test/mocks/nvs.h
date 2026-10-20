@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <string>
 #include <unordered_map>
+#include "Preferences.h"
 
 using esp_err_t = int;
 
@@ -14,6 +15,9 @@ using esp_err_t = int;
 #endif
 #ifndef ESP_ERR_NVS_NOT_FOUND
 #define ESP_ERR_NVS_NOT_FOUND 0x1102
+#endif
+#ifndef ESP_ERR_NVS_TYPE_MISMATCH
+#define ESP_ERR_NVS_TYPE_MISMATCH 0x1103
 #endif
 #ifndef ESP_ERR_INVALID_ARG
 #define ESP_ERR_INVALID_ARG 0x102
@@ -54,6 +58,11 @@ inline std::unordered_map<std::string, ProbeResponse>& stringProbeResults() {
     return g_results;
 }
 
+inline std::unordered_map<std::string, ProbeResponse>& uint32ProbeResults() {
+    static std::unordered_map<std::string, ProbeResponse> g_results;
+    return g_results;
+}
+
 inline std::string& openNamespace() {
     static std::string g_namespace;
     return g_namespace;
@@ -67,6 +76,7 @@ inline void reset() {
     stats() = nvs_stats_t{};
     namespaceOpenResults().clear();
     stringProbeResults().clear();
+    uint32ProbeResults().clear();
     openNamespace().clear();
 }
 
@@ -92,6 +102,11 @@ inline void set_string_probe_result(const char* name, const char* key, esp_err_t
 inline void set_next_string_probe_result(const char* name, const char* key, esp_err_t result) {
     if (!name || !key) return;
     stringProbeResults()[stringProbeKey(name, key)] = {result, true};
+}
+
+inline void set_uint32_probe_result(const char* name, const char* key, esp_err_t result) {
+    if (!name || !key) return;
+    uint32ProbeResults()[stringProbeKey(name, key)] = {result, false};
 }
 
 }  // namespace mock_nvs
@@ -136,8 +151,28 @@ inline esp_err_t nvs_get_str(nvs_handle_t handle, const char* key, char* /*out_v
         result = it->second.result;
         if (it->second.once) mock_nvs::stringProbeResults().erase(it);
     }
-    if (result == ESP_OK) *length = 1;
-    return result;
+    if (result != ESP_OK) return result;
+    const auto* entry = mock_preferences::find(mock_nvs::openNamespace(), key);
+    if (!entry) return ESP_ERR_NVS_NOT_FOUND;
+    if (entry->type != PT_STR) return ESP_ERR_NVS_TYPE_MISMATCH;
+    *length = std::get<std::string>(entry->value).size() + 1u;
+    return ESP_OK;
+}
+
+inline esp_err_t nvs_get_u32(nvs_handle_t handle, const char* key, uint32_t* value) {
+    if (handle != 1u || mock_nvs::openNamespace().empty() || !key || !value) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const std::string probeKey = mock_nvs::stringProbeKey(mock_nvs::openNamespace().c_str(), key);
+    const auto it = mock_nvs::uint32ProbeResults().find(probeKey);
+    if (it != mock_nvs::uint32ProbeResults().end() && it->second.result != ESP_OK) {
+        return it->second.result;
+    }
+    const auto* entry = mock_preferences::find(mock_nvs::openNamespace(), key);
+    if (!entry) return ESP_ERR_NVS_NOT_FOUND;
+    if (entry->type != PT_U32) return ESP_ERR_NVS_TYPE_MISMATCH;
+    *value = static_cast<uint32_t>(std::get<uint64_t>(entry->value));
+    return ESP_OK;
 }
 
 inline const char* esp_err_to_name(esp_err_t error) {

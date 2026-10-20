@@ -14,6 +14,7 @@
 #include "display_visual_contract.h"
 #include "settings_internals.h"
 #include "settings_backup_revision.h"
+#include <nvs.h>
 
 const char* SETTINGS_BACKUP_PATH = "/v1simple_backup.json";
 const char* SETTINGS_BACKUP_TMP_PATH = "/v1simple_backup.tmp";
@@ -102,14 +103,36 @@ static void migrateLegacyWifiStaSlotNvs(const String& activeNs, const WifiStaSlo
     }
     const bool legacyPasswordKeyPresent = wifiPrefs.isKey(kNvsWifiPassword);
     if (legacyPasswordKeyPresent) {
-        bool copied = wifiPrefs.isKey(kNvsWifiStaSlotPassword[0]);
-        if (!copied) {
-            const String password = wifiPrefs.getString(kNvsWifiPassword, "");
+        // isKey() also reports false when Preferences cannot read a key's type.
+        // Only proven absence permits replacing the slot credential.
+        nvs_handle_t handle = 0;
+        if (nvs_open(WIFI_CLIENT_NS, NVS_READONLY, &handle) != ESP_OK) {
+            wifiPrefs.end();
+            return;
+        }
+        size_t destinationBytes = 0;
+        const esp_err_t destinationStatus =
+            nvs_get_str(handle, kNvsWifiStaSlotPassword[0], nullptr, &destinationBytes);
+        nvs_close(handle);
+        // Preferences returns the empty default on a failed read too. Check the
+        // stored length before copying or retiring either credential source.
+        const auto readPassword = [&](const char* key, String& password) {
+            const size_t storedBytes = wifiPrefs.getStringLength(key);
+            if (storedBytes == 0) return false;
+            password = wifiPrefs.getString(key, "");
+            return password.length() + 1u == storedBytes;
+        };
+        String password;
+        bool copied = false;
+        if (destinationStatus == ESP_OK) {
+            // A previously committed slot value remains authoritative.
+            copied = readPassword(kNvsWifiStaSlotPassword[0], password);
+        } else if (destinationStatus == ESP_ERR_NVS_NOT_FOUND && readPassword(kNvsWifiPassword, password)) {
             // A successful empty-string write returns zero too; verify key presence
             // and readback before removing the legacy open-network credential.
+            String readBack;
             copied = wifiPrefs.putString(kNvsWifiStaSlotPassword[0], password) == password.length() &&
-                     wifiPrefs.isKey(kNvsWifiStaSlotPassword[0]) &&
-                     wifiPrefs.getString(kNvsWifiStaSlotPassword[0], "") == password;
+                     readPassword(kNvsWifiStaSlotPassword[0], readBack) && readBack == password;
         }
         if (copied && wifiPrefs.remove(kNvsWifiPassword)) {
             Serial.println("[Settings] Migrated legacy WiFi client password into STA slot 0");

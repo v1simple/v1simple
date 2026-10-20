@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <variant>
@@ -38,6 +39,13 @@ using Store = std::unordered_map<std::string, NamespaceStore>;
 inline Store& store() {
     static Store g_store;
     return g_store;
+}
+
+// Called after a successful durable put so lifecycle tests can model a reset
+// between the owner's writes without changing production control flow.
+inline std::function<void(const char*)>& afterWrite() {
+    static std::function<void(const char*)> g_observer;
+    return g_observer;
 }
 
 inline bool& failWrites() {
@@ -111,6 +119,7 @@ inline std::unordered_map<std::string, size_t>& readOnlyBeginCounts() {
 
 inline void reset() {
     store().clear();
+    afterWrite() = {};
     failWrites() = false;
     failWriteKey().clear();
     failBeginNamespace().clear();
@@ -482,6 +491,7 @@ public:
         entry.type = PT_STR;
         entry.value = std::string(value);
         mock_preferences::ensureNamespace(namespaceName_)[key] = std::move(entry);
+        if (mock_preferences::afterWrite()) mock_preferences::afterWrite()(key);
         return std::strlen(value);
     }
 
@@ -510,6 +520,7 @@ private:
         entry.type = type;
         entry.value = value;
         mock_preferences::ensureNamespace(namespaceName_)[key] = std::move(entry);
+        if (mock_preferences::afterWrite()) mock_preferences::afterWrite()(key);
         return writtenBytes;
     }
 

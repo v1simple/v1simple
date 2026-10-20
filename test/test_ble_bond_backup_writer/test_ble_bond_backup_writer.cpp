@@ -502,8 +502,139 @@ void test_unavailable_cached_file_size_cannot_demote_the_latest_bond_backup() {
     expectRestoredBond(20);
 }
 
+namespace {
+
+void clearBondNvsForRestore() {
+    gOurSecs.clear();
+    gPeerSecs.clear();
+    gRestoredSecs.clear();
+}
+
+void expectRestoreAndNextBootSnapshot(uint8_t expected) {
+    rebootBondOwner();
+    expectRestoredBond(expected);
+    // The restore call above reaches the real NimBLE write boundary. Model
+    // those entries persisting in NVS, as seen by normal boot's snapshot.
+    gOurSecs = gRestoredSecs;
+    rebootBondOwner();
+    TEST_ASSERT_EQUAL_INT(1, enqueueCurrentBleBondBackupSnapshot());
+    TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
+    TEST_ASSERT_EQUAL_UINT8(expected, readFirstOurAddressByte());
+    clearBondNvsForRestore();
+    rebootBondOwner();
+    expectRestoredBond(expected);
+}
+
+void expectUnavailableRestorePreservesLatest() {
+    TEST_ASSERT_EQUAL_INT(-1, restoreBleBondBackup(gFs, kTestBondPath));
+    TEST_ASSERT_TRUE(gRestoredSecs.empty());
+    TEST_ASSERT_TRUE(gOurSecs.empty());
+    TEST_ASSERT_TRUE(gPeerSecs.empty());
+    TEST_ASSERT_EQUAL_UINT(0, bleBondBackupQueueDepthForTest());
+    TEST_ASSERT_EQUAL_UINT8(7, readFirstOurAddressByte());
+    TEST_ASSERT_TRUE(gFs.exists(kTestBondPrevious));
+    expectRestoreAndNextBootSnapshot(7);
+}
+
+} // namespace
+
+void test_restore_open_failure_never_seeds_previous_bonds_into_nvs() {
+    seedBondRecovery(false);
+    clearBondNvsForRestore();
+    fs::mock_fail_next_read_open(kTestBondPath);
+    expectUnavailableRestorePreservesLatest();
+}
+
+void test_restore_short_header_or_our_entry_read_never_seeds_previous_bonds_into_nvs() {
+    for (const size_t readable : {size_t(0), sizeof(BondBackupHeader) - 1,
+                                  sizeof(BondBackupHeader), sizeof(BondBackupHeader) + 1}) {
+        setUp();
+        seedBondRecovery(false);
+        clearBondNvsForRestore();
+        fs::mock_set_read_budget_for_full_path(bondPath().c_str(), readable);
+        expectUnavailableRestorePreservesLatest();
+    }
+}
+
+void test_restore_short_peer_entry_read_writes_no_partially_read_bonds() {
+    gOurSecs = {makeSec(5)};
+    TEST_ASSERT_EQUAL_INT(1, enqueueCurrentBleBondBackupSnapshot());
+    TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
+    gOurSecs = {makeSec(7)};
+    gPeerSecs = {makeSec(17)};
+    fs::mock_fail_next_remove(kTestBondPrevious);
+    TEST_ASSERT_EQUAL_INT(2, enqueueCurrentBleBondBackupSnapshot());
+    TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
+    clearBondNvsForRestore();
+    fs::mock_set_read_budget_for_full_path(
+        bondPath().c_str(), sizeof(BondBackupHeader) + sizeof(ble_store_value_sec) + 1);
+
+    TEST_ASSERT_EQUAL_INT(-1, restoreBleBondBackup(gFs, kTestBondPath));
+    TEST_ASSERT_TRUE(gRestoredSecs.empty());
+    TEST_ASSERT_EQUAL_UINT8(7, readFirstOurAddressByte());
+    rebootBondOwner();
+    TEST_ASSERT_EQUAL_INT(2, restoreBleBondBackup(gFs, kTestBondPath));
+    TEST_ASSERT_EQUAL_UINT(2, gRestoredSecs.size());
+    TEST_ASSERT_EQUAL_UINT8(7, gRestoredSecs[0].peer_addr[0]);
+    TEST_ASSERT_EQUAL_UINT8(17, gRestoredSecs[1].peer_addr[0]);
+}
+
+void test_restore_unavailable_live_metadata_does_not_select_readable_previous() {
+    seedBondRecovery(false);
+    clearBondNvsForRestore();
+    const auto heldLive = gRoot / "held-live.bin";
+    std::filesystem::rename(bondPath(), heldLive);
+    // A loop makes stat fail with ELOOP while .prev remains fully readable.
+    std::filesystem::create_symlink(bondPath().filename(), bondPath());
+    TEST_ASSERT_EQUAL_INT(-1, restoreBleBondBackup(gFs, kTestBondPath));
+    TEST_ASSERT_TRUE(gRestoredSecs.empty());
+    std::filesystem::remove(bondPath());
+    std::filesystem::rename(heldLive, bondPath());
+    expectRestoreAndNextBootSnapshot(7);
+}
+
+void test_restore_readable_live_remains_latest_after_normal_boot_backup() {
+    seedBondRecovery(false);
+    clearBondNvsForRestore();
+    expectRestoreAndNextBootSnapshot(7);
+}
+
+void test_restore_missing_live_still_uses_previous_through_normal_boot_backup() {
+    seedBondRecovery(false);
+    TEST_ASSERT_TRUE(gFs.remove(kTestBondPath));
+    clearBondNvsForRestore();
+    expectRestoreAndNextBootSnapshot(5);
+}
+
+void test_restore_corrupt_live_still_uses_previous_through_normal_boot_backup() {
+    seedBondRecovery(true);
+    clearBondNvsForRestore();
+    expectRestoreAndNextBootSnapshot(5);
+}
+
+void test_restore_valid_empty_live_does_not_resurrect_previous_bonds() {
+    gOurSecs = {makeSec(5)};
+    TEST_ASSERT_EQUAL_INT(1, enqueueCurrentBleBondBackupSnapshot());
+    TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
+    clearBondNvsForRestore();
+    fs::mock_fail_next_remove(kTestBondPrevious);
+    TEST_ASSERT_EQUAL_INT(0, enqueueCurrentBleBondBackupSnapshot());
+    TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
+    TEST_ASSERT_TRUE(gFs.exists(kTestBondPrevious));
+    TEST_ASSERT_EQUAL_INT(0, restoreBleBondBackup(gFs, kTestBondPath));
+    TEST_ASSERT_TRUE(gRestoredSecs.empty());
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_restore_open_failure_never_seeds_previous_bonds_into_nvs);
+    RUN_TEST(test_restore_short_header_or_our_entry_read_never_seeds_previous_bonds_into_nvs);
+    RUN_TEST(test_restore_short_peer_entry_read_writes_no_partially_read_bonds);
+    RUN_TEST(test_restore_unavailable_live_metadata_does_not_select_readable_previous);
+    RUN_TEST(test_restore_readable_live_remains_latest_after_normal_boot_backup);
+    RUN_TEST(test_restore_missing_live_still_uses_previous_through_normal_boot_backup);
+    RUN_TEST(test_restore_corrupt_live_still_uses_previous_through_normal_boot_backup);
+    RUN_TEST(test_restore_valid_empty_live_does_not_resurrect_previous_bonds);
     RUN_TEST(test_unavailable_cached_file_size_cannot_demote_the_latest_bond_backup);
     RUN_TEST(test_corrupt_live_failed_bond_promotion_preserves_previous_through_reboot_and_retry);
     RUN_TEST(test_missing_live_failed_bond_promotion_preserves_previous_through_reboot_and_retry);

@@ -1558,13 +1558,19 @@ struct SettingsNamespaceState {
     int health = -1;
     uint32_t payloadGeneration = 0;
     uint32_t committedGeneration = 0;
+    bool payloadGenerationPresent = false;
+    bool committedGenerationPresent = false;
     uint32_t tieBreak = 0;
 
     bool healthy() const { return health >= 1000; }
     bool isGenerationlessLegacyCopy() const {
-        return healthy() && payloadGeneration == 0 && committedGeneration == 0;
+        return healthy() && !payloadGenerationPresent && !committedGenerationPresent;
     }
     uint32_t generation() const {
+        // Adoption publishes one atomic key without altering the valid legacy
+        // payload. Normal staging always writes gen before any payload fields,
+        // so it cannot produce this representation.
+        if (healthy() && !payloadGenerationPresent && committedGeneration == 1) return 1;
         return healthy() && payloadGeneration > 0 && committedGeneration == payloadGeneration
                    ? payloadGeneration
                    : 0;
@@ -1625,6 +1631,16 @@ SettingsNvsProbeResult probeSettingsString(const char* ns, const char* key) {
     return classifySettingsNvsProbe(status, "string", ns, key);
 }
 
+SettingsNvsProbeResult readSettingsGeneration(const char* ns, const char* key, uint32_t& value) {
+    nvs_handle_t handle = 0;
+    esp_err_t status = nvs_open(ns, NVS_READONLY, &handle);
+    if (status == ESP_OK) {
+        status = nvs_get_u32(handle, key, &value);
+        nvs_close(handle);
+    }
+    return classifySettingsNvsProbe(status, "generation", ns, key);
+}
+
 SettingsNamespaceState readSettingsNamespaceState(const char* ns) {
     SettingsNamespaceState state;
     if (!ns || ns[0] == '\0') return state;
@@ -1647,8 +1663,16 @@ SettingsNamespaceState readSettingsNamespaceState(const char* ns) {
     for (const char* key : kCriticalKeys) {
         state.health += prefs.isKey(key) ? 5 : 0;
     }
-    state.payloadGeneration = prefs.getUInt(kNvsSettingsGeneration, 0);
-    state.committedGeneration = prefs.getUInt(kNvsCommittedGeneration, 0);
+    const auto payloadProbe = readSettingsGeneration(ns, kNvsSettingsGeneration, state.payloadGeneration);
+    const auto committedProbe = readSettingsGeneration(ns, kNvsCommittedGeneration, state.committedGeneration);
+    if (payloadProbe.state == SettingsNvsProbeState::Error ||
+        committedProbe.state == SettingsNvsProbeState::Error) {
+        state.available = false;
+        prefs.end();
+        return state;
+    }
+    state.payloadGenerationPresent = payloadProbe.state == SettingsNvsProbeState::Present;
+    state.committedGenerationPresent = committedProbe.state == SettingsNvsProbeState::Present;
 
     // Generationless legacy copies can tie on health. Hash persisted content
     // so recovery remains deterministic without preferring a namespace name.
@@ -1721,10 +1745,10 @@ uint32_t seedLegacyNamespaceGeneration(const String& active, const SettingsNames
     if (!prefs.begin(active.c_str(), false)) {
         return 0;
     }
-    const bool payloadReady = prefs.putUInt(kNvsSettingsGeneration, generation) == sizeof(uint32_t) &&
-                              prefs.getUInt(kNvsSettingsGeneration, 0) == generation;
-    const bool committed = payloadReady &&
-                           prefs.putUInt(kNvsCommittedGeneration, generation) == sizeof(uint32_t) &&
+    // The absent gen key distinguishes this already-valid legacy payload from
+    // an incomplete normal save. A reset before or after this single write
+    // therefore leaves the selected payload eligible on the next boot.
+    const bool committed = prefs.putUInt(kNvsCommittedGeneration, generation) == sizeof(uint32_t) &&
                            prefs.getUInt(kNvsCommittedGeneration, 0) == generation;
     prefs.end();
     if (!committed) {
@@ -1768,6 +1792,7 @@ String SettingsManager::getActiveNamespace(uint32_t* activeGeneration, bool* nam
         return "";
     }
     String recovered = SETTINGS_NS_LEGACY;
+    bool completeLegacyGeneration = false;
 
     // Once a committed generation exists, it is the sole transaction
     // authority. The selector is only a cache.
@@ -1782,6 +1807,9 @@ String SettingsManager::getActiveNamespace(uint32_t* activeGeneration, bool* nam
         if (activeGeneration) {
             *activeGeneration = generationA > generationB ? generationA : generationB;
         }
+        const auto& selectedState = recovered == SETTINGS_NS_A ? stateA : stateB;
+        completeLegacyGeneration = !selectedState.payloadGenerationPresent &&
+                                   selectedState.committedGeneration == 1;
     } else {
         const SettingsNamespaceState* recoveredState = &stateLegacy;
         const auto stateFor = [&](const String& ns) -> const SettingsNamespaceState* {
@@ -1817,9 +1845,24 @@ String SettingsManager::getActiveNamespace(uint32_t* activeGeneration, bool* nam
         }
         if (recovered == SETTINGS_NS_A || recovered == SETTINGS_NS_B) {
             const uint32_t seeded = seedLegacyNamespaceGeneration(recovered, *recoveredState);
+            completeLegacyGeneration = seeded != 0;
             if (activeGeneration) {
+                // A save must not stage a competing generation until the old
+                // payload has a verified commit marker independent of the cache.
+                if (seeded == 0) return "";
                 *activeGeneration = seeded;
             }
+        }
+    }
+
+    if (completeLegacyGeneration) {
+        // Keep a completed adoption readable by older firmware too. This key is
+        // redundant after commitGen=1: failure/reset leaves the adopted copy
+        // authoritative, and the next discovery can retry only this completion.
+        Preferences prefs;
+        if (prefs.begin(recovered.c_str(), false)) {
+            prefs.putUInt(kNvsSettingsGeneration, 1);
+            prefs.end();
         }
     }
 

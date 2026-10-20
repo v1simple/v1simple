@@ -1799,6 +1799,121 @@ void test_legacy_wifi_migration_preserves_credentials_when_nvs_is_full() {
     assertLegacyWifiMigrationRetries(nullptr, true);
 }
 
+void test_legacy_wifi_migration_preserves_source_on_read_failure() {
+    for (bool destinationExists : {false, true}) {
+        resetRuntimeState();
+        writeHealthySettingsCopy(SETTINGS_NS_LEGACY, 73, SETTINGS_VERSION);
+        Preferences legacy;
+        TEST_ASSERT_TRUE(legacy.begin(SETTINGS_NS_LEGACY, false));
+        legacy.putString(kNvsWifiClientSsid, "LegacyNet");
+        legacy.end();
+        Preferences wifi;
+        TEST_ASSERT_TRUE(wifi.begin(WIFI_CLIENT_NS, false));
+        wifi.putString(kNvsWifiPassword, encodeObfuscatedForStorage("legacy-password"));
+        if (destinationExists) {
+            wifi.putString(kNvsWifiStaSlotPassword[0], encodeObfuscatedForStorage("new-password"));
+        }
+        wifi.end();
+
+        mock_preferences::set_fail_string_read_for_key(
+            destinationExists ? kNvsWifiStaSlotPassword[0] : kNvsWifiPassword);
+        for (int boot = 0; boot < 2; ++boot) {
+            SettingsManager failed(storage, profiles);
+            failed.load();
+            TEST_ASSERT_EQUAL_STRING("LegacyNet", failed.get().wifiStaSlots[0].ssid.c_str());
+            TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiPassword));
+            TEST_ASSERT_EQUAL(destinationExists,
+                mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiStaSlotPassword[0]));
+        }
+        mock_preferences::set_fail_string_read_for_key(nullptr);
+        for (int boot = 0; boot < 2; ++boot) {
+            SettingsManager recovered(storage, profiles);
+            recovered.load();
+            TEST_ASSERT_EQUAL_STRING(destinationExists ? "new-password" : "legacy-password",
+                                     recovered.getWifiClientPassword().c_str());
+            TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiPassword));
+        }
+    }
+}
+
+void test_legacy_wifi_migration_preserves_wrong_type_source_or_destination() {
+    for (bool invalidDestination : {false, true}) {
+        resetRuntimeState();
+        writeHealthySettingsCopy(SETTINGS_NS_LEGACY, 73, SETTINGS_VERSION);
+        Preferences legacy;
+        TEST_ASSERT_TRUE(legacy.begin(SETTINGS_NS_LEGACY, false));
+        legacy.putString(kNvsWifiClientSsid, "LegacyNet");
+        legacy.end();
+        Preferences wifi;
+        TEST_ASSERT_TRUE(wifi.begin(WIFI_CLIENT_NS, false));
+        wifi.putString(kNvsWifiPassword, encodeObfuscatedForStorage("legacy-password"));
+        wifi.putUInt(invalidDestination ? kNvsWifiStaSlotPassword[0] : kNvsWifiPassword, 7);
+        wifi.end();
+        SettingsManager failed(storage, profiles);
+        failed.load();
+        TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiPassword));
+        TEST_ASSERT_EQUAL(invalidDestination,
+            mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiStaSlotPassword[0]));
+    }
+}
+
+void test_legacy_wifi_migration_does_not_treat_destination_probe_failure_as_absence() {
+    for (bool destinationExists : {false, true}) {
+        resetRuntimeState();
+        writeHealthySettingsCopy(SETTINGS_NS_LEGACY, 73, SETTINGS_VERSION);
+        Preferences legacy;
+        TEST_ASSERT_TRUE(legacy.begin(SETTINGS_NS_LEGACY, false));
+        legacy.putString(kNvsWifiClientSsid, "LegacyNet");
+        legacy.end();
+        Preferences wifi;
+        TEST_ASSERT_TRUE(wifi.begin(WIFI_CLIENT_NS, false));
+        wifi.putString(kNvsWifiPassword, encodeObfuscatedForStorage("legacy-password"));
+        if (destinationExists) {
+            wifi.putString(kNvsWifiStaSlotPassword[0], encodeObfuscatedForStorage("new-password"));
+        }
+        wifi.end();
+        mock_nvs::set_string_probe_result(WIFI_CLIENT_NS, kNvsWifiStaSlotPassword[0], -79);
+        for (int boot = 0; boot < 2; ++boot) {
+            SettingsManager failed(storage, profiles);
+            failed.load();
+            TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiPassword));
+            TEST_ASSERT_EQUAL(destinationExists,
+                mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiStaSlotPassword[0]));
+            if (destinationExists) {
+                TEST_ASSERT_EQUAL_STRING("new-password", failed.getWifiClientPassword().c_str());
+            }
+        }
+        mock_nvs::set_string_probe_result(WIFI_CLIENT_NS, kNvsWifiStaSlotPassword[0], ESP_OK);
+        SettingsManager recovered(storage, profiles);
+        recovered.load();
+        TEST_ASSERT_EQUAL_STRING(destinationExists ? "new-password" : "legacy-password",
+                                 recovered.getWifiClientPassword().c_str());
+        TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiPassword));
+    }
+}
+
+void test_legacy_wifi_migration_retries_source_removal_without_replacing_destination() {
+    writeHealthySettingsCopy(SETTINGS_NS_LEGACY, 73, SETTINGS_VERSION);
+    Preferences legacy;
+    TEST_ASSERT_TRUE(legacy.begin(SETTINGS_NS_LEGACY, false));
+    legacy.putString(kNvsWifiClientSsid, "LegacyNet");
+    legacy.end();
+    Preferences wifi;
+    TEST_ASSERT_TRUE(wifi.begin(WIFI_CLIENT_NS, false));
+    wifi.putString(kNvsWifiPassword, encodeObfuscatedForStorage("legacy-password"));
+    wifi.end();
+    mock_preferences::set_fail_writes_for_key(kNvsWifiPassword);
+    SettingsManager failed(storage, profiles);
+    failed.load();
+    TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiPassword));
+    TEST_ASSERT_EQUAL_STRING("legacy-password", failed.getWifiClientPassword().c_str());
+    mock_preferences::set_fail_writes_for_key(nullptr);
+    SettingsManager recovered(storage, profiles);
+    recovered.load();
+    TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiPassword));
+    TEST_ASSERT_EQUAL_STRING("legacy-password", recovered.getWifiClientPassword().c_str());
+}
+
 void test_apply_backup_document_unifies_restore_field_coverage_and_profile_restore() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
@@ -3156,6 +3271,144 @@ void test_generationless_ab_copy_is_adopted_as_legacy() {
         1u, mock_preferences::getUnsigned(SETTINGS_NS_A, kNvsSettingsGeneration, 0));
     TEST_ASSERT_EQUAL_UINT32(
         1u, mock_preferences::getUnsigned(SETTINGS_NS_A, kNvsCommittedGeneration, 0));
+    SettingsManager nextBoot(storage, profiles);
+    nextBoot.load();
+    TEST_ASSERT_EQUAL_UINT8(73, nextBoot.get().brightness);
+}
+
+void seedSelectedGenerationlessSettings() {
+    writeHealthySettingsCopy(SETTINGS_NS_LEGACY, 41, SETTINGS_VERSION);
+    writeHealthySettingsCopy(SETTINGS_NS_A, 73, SETTINGS_VERSION);
+    Preferences meta;
+    TEST_ASSERT_TRUE(meta.begin(SETTINGS_NS_META, false));
+    meta.putString(kNvsMetaActive, SETTINGS_NS_A);
+    meta.end();
+}
+
+void test_failed_legacy_adoption_preserves_selection_and_blocks_save_until_retry() {
+    seedSelectedGenerationlessSettings();
+    mock_preferences::set_fail_writes_for_key(kNvsCommittedGeneration);
+    for (int boot = 0; boot < 2; ++boot) {
+        SettingsManager failed(storage, profiles);
+        failed.load();
+        TEST_ASSERT_EQUAL_UINT8(73, failed.get().brightness);
+        failed.mutableSettings().brightness = 99;
+        TEST_ASSERT_FALSE(failed.saveDeferredBackup());
+        TEST_ASSERT_EQUAL_STRING(SETTINGS_NS_A, activeNamespaceOrEmpty().c_str());
+        TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(SETTINGS_NS_A, kNvsSettingsGeneration));
+        TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(SETTINGS_NS_A, kNvsCommittedGeneration));
+        TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(SETTINGS_NS_B, kNvsValid));
+    }
+    mock_preferences::set_fail_writes_for_key(nullptr);
+    SettingsManager recovered(storage, profiles);
+    recovered.load();
+    TEST_ASSERT_EQUAL_UINT8(73, recovered.get().brightness);
+    recovered.mutableSettings().brightness = 99;
+    TEST_ASSERT_TRUE(recovered.saveDeferredBackup());
+    SettingsManager nextBoot(storage, profiles);
+    nextBoot.load();
+    TEST_ASSERT_EQUAL_UINT8(99, nextBoot.get().brightness);
+    TEST_ASSERT_EQUAL_UINT32(2u, mock_preferences::getUnsigned(SETTINGS_NS_B, kNvsCommittedGeneration));
+}
+
+void test_legacy_adoption_and_first_save_survive_resets_at_durable_boundaries() {
+    struct SimulatedReset {};
+    for (int boundary = 0; boundary < 4; ++boundary) {
+        resetRuntimeState();
+        seedSelectedGenerationlessSettings();
+        SettingsManager interrupted(storage, profiles);
+        if (boundary > 1) interrupted.load();
+        const char* resetKey = boundary == 1 ? kNvsSettingsGeneration :
+                              boundary == 2 ? kNvsMetaActive : kNvsCommittedGeneration;
+        mock_preferences::afterWrite() = [resetKey](const char* key) {
+            if (std::strcmp(key, resetKey) == 0) throw SimulatedReset{};
+        };
+        bool reset = false;
+        try {
+            if (boundary < 2) interrupted.load();
+            else {
+                interrupted.mutableSettings().brightness = 99;
+                interrupted.saveDeferredBackup();
+            }
+        } catch (const SimulatedReset&) { reset = true; }
+        mock_preferences::afterWrite() = {};
+        TEST_ASSERT_TRUE(reset);
+        SettingsManager recovered(storage, profiles);
+        recovered.load();
+        TEST_ASSERT_EQUAL_UINT8(boundary == 3 ? 99 : 73, recovered.get().brightness);
+        TEST_ASSERT_EQUAL_STRING(boundary == 3 ? SETTINGS_NS_B : SETTINGS_NS_A,
+                                 activeNamespaceOrEmpty().c_str());
+        if (boundary == 2) {
+            TEST_ASSERT_EQUAL_UINT32(2u, mock_preferences::getUnsigned(SETTINGS_NS_B, kNvsSettingsGeneration));
+            TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(SETTINGS_NS_B, kNvsCommittedGeneration));
+        }
+        recovered.mutableSettings().brightness = 85;
+        TEST_ASSERT_TRUE(recovered.saveDeferredBackup());
+        SettingsManager nextBoot(storage, profiles);
+        nextBoot.load();
+        TEST_ASSERT_EQUAL_UINT8(85, nextBoot.get().brightness);
+    }
+}
+
+void test_failed_legacy_generation_completion_remains_committed_and_allows_save() {
+    seedSelectedGenerationlessSettings();
+    mock_preferences::set_fail_writes_for_key(kNvsSettingsGeneration);
+    for (int boot = 0; boot < 2; ++boot) {
+        SettingsManager incomplete(storage, profiles);
+        incomplete.load();
+        TEST_ASSERT_EQUAL_UINT8(73, incomplete.get().brightness);
+        TEST_ASSERT_EQUAL_UINT32(1u, mock_preferences::getUnsigned(SETTINGS_NS_A, kNvsCommittedGeneration));
+        TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(SETTINGS_NS_A, kNvsSettingsGeneration));
+    }
+    mock_preferences::set_fail_writes_for_key(nullptr);
+    SettingsManager saving(storage, profiles);
+    mock_preferences::set_fail_write_for_key_on_call(kNvsSettingsGeneration, 1);
+    saving.load();
+    TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(SETTINGS_NS_A, kNvsSettingsGeneration));
+    saving.mutableSettings().brightness = 99;
+    // Fail the optional completion again, then allow the actual staging write.
+    mock_preferences::set_fail_write_for_key_on_call(kNvsSettingsGeneration, 1);
+    TEST_ASSERT_TRUE(saving.saveDeferredBackup());
+    TEST_ASSERT_EQUAL_UINT32(2u, mock_preferences::getUnsigned(SETTINGS_NS_B, kNvsCommittedGeneration));
+    SettingsManager nextBoot(storage, profiles);
+    nextBoot.load();
+    TEST_ASSERT_EQUAL_UINT8(99, nextBoot.get().brightness);
+}
+
+void test_generation_read_errors_do_not_reclassify_settings_or_promote_staging() {
+    for (int adoption = 0; adoption < 3; ++adoption) {
+        for (const char* failedKey : {kNvsSettingsGeneration, kNvsCommittedGeneration}) {
+            resetRuntimeState();
+            seedSelectedGenerationlessSettings();
+            if (adoption > 0) {
+                if (adoption == 1) mock_preferences::set_fail_writes_for_key(kNvsSettingsGeneration);
+                SettingsManager first(storage, profiles);
+                first.load();
+                mock_preferences::set_fail_writes_for_key(nullptr);
+            }
+            // A newer, fully written payload without commitGen is not committed.
+            writeHealthySettingsCopy(SETTINGS_NS_B, 99, SETTINGS_VERSION);
+            Preferences staged;
+            TEST_ASSERT_TRUE(staged.begin(SETTINGS_NS_B, false));
+            staged.putUInt(kNvsSettingsGeneration, 2);
+            staged.end();
+            mock_nvs::set_uint32_probe_result(SETTINGS_NS_A, failedKey, -79);
+            SettingsManager unavailable(storage, profiles);
+            unavailable.load();
+            TEST_ASSERT_TRUE(unavailable.recoveryPending());
+            TEST_ASSERT_FALSE(unavailable.setStealthEnabled(true).success);
+            TEST_ASSERT_EQUAL_STRING(SETTINGS_NS_A, activeNamespaceOrEmpty().c_str());
+            TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(SETTINGS_NS_B, kNvsCommittedGeneration));
+            TEST_ASSERT_EQUAL(adoption > 0,
+                mock_preferences::namespaceHasKey(SETTINGS_NS_A, kNvsCommittedGeneration));
+            TEST_ASSERT_EQUAL(adoption == 2,
+                mock_preferences::namespaceHasKey(SETTINGS_NS_A, kNvsSettingsGeneration));
+            mock_nvs::set_uint32_probe_result(SETTINGS_NS_A, failedKey, ESP_OK);
+            SettingsManager recovered(storage, profiles);
+            recovered.load();
+            TEST_ASSERT_EQUAL_UINT8(73, recovered.get().brightness);
+        }
+    }
 }
 
 void test_failed_commit_generation_write_preserves_last_committed_settings() {
@@ -7539,6 +7792,10 @@ int main() {
     RUN_TEST(test_legacy_wifi_migration_retries_failed_settings_writes);
     RUN_TEST(test_legacy_wifi_migration_retries_failed_password_write);
     RUN_TEST(test_legacy_wifi_migration_preserves_credentials_when_nvs_is_full);
+    RUN_TEST(test_legacy_wifi_migration_preserves_source_on_read_failure);
+    RUN_TEST(test_legacy_wifi_migration_preserves_wrong_type_source_or_destination);
+    RUN_TEST(test_legacy_wifi_migration_does_not_treat_destination_probe_failure_as_absence);
+    RUN_TEST(test_legacy_wifi_migration_retries_source_removal_without_replacing_destination);
     RUN_TEST(test_migrated_open_wifi_password_allows_full_restore_and_exact_rollback);
     RUN_TEST(test_http_restore_rejects_case_mismatched_included_profile_reference);
     RUN_TEST(test_http_restore_rejects_case_mismatched_existing_profile_reference);
@@ -7673,6 +7930,10 @@ int main() {
     RUN_TEST(test_first_migration_staging_copy_is_not_committed_by_selector);
     RUN_TEST(test_first_migration_staging_copy_is_not_committed_without_selector);
     RUN_TEST(test_generationless_ab_copy_is_adopted_as_legacy);
+    RUN_TEST(test_failed_legacy_adoption_preserves_selection_and_blocks_save_until_retry);
+    RUN_TEST(test_legacy_adoption_and_first_save_survive_resets_at_durable_boundaries);
+    RUN_TEST(test_failed_legacy_generation_completion_remains_committed_and_allows_save);
+    RUN_TEST(test_generation_read_errors_do_not_reclassify_settings_or_promote_staging);
     RUN_TEST(test_failed_commit_generation_write_preserves_last_committed_settings);
     RUN_TEST(test_equal_committed_generations_do_not_make_selector_authoritative);
     RUN_TEST(test_stale_known_selector_is_repaired_to_newest_committed_generation);

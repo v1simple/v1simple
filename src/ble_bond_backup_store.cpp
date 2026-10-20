@@ -92,9 +92,7 @@ BleBondBackupStatus readBleBondBackup(fs::FS& fs, const char* path, BondBackupCo
     return BleBondBackupStatus::Valid;
 }
 
-int restoreBleBondBackupFromPath(fs::FS& fs, const char* path) {
-    BondBackupContents contents;
-    if (readBleBondBackup(fs, path, contents) != BleBondBackupStatus::Valid) return -1;
+int restoreBleBondBackupContents(BondBackupContents& contents) {
     const auto& header = contents.header;
     auto& ourSecs = contents.ourSecs;
     auto& peerSecs = contents.peerSecs;
@@ -125,15 +123,21 @@ int restoreBleBondBackup(fs::FS& fs, const char* livePath) {
         return -1;
     }
 
-    const int liveResult = restoreBleBondBackupFromPath(fs, livePath);
-    if (liveResult >= 0) {
-        return liveResult;
+    BondBackupContents contents;
+    const BleBondBackupStatus liveStatus = readBleBondBackup(fs, livePath, contents);
+    if (liveStatus == BleBondBackupStatus::Valid) {
+        return restoreBleBondBackupContents(contents);
     }
+    // A temporary read failure says nothing about which generation is valid.
+    // Restoring .prev here would seed older bonds into NVS, then normal boot
+    // would snapshot them over the newer live backup.
+    if (liveStatus == BleBondBackupStatus::Unavailable) return -1;
 
     const String rollbackPath = StorageManager::rollbackPathFor(livePath);
     if (rollbackPath.length() == 0) {
         return -1;
     }
 
-    return restoreBleBondBackupFromPath(fs, rollbackPath.c_str());
+    if (readBleBondBackup(fs, rollbackPath.c_str(), contents) != BleBondBackupStatus::Valid) return -1;
+    return restoreBleBondBackupContents(contents);
 }

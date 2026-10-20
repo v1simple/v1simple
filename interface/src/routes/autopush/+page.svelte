@@ -285,7 +285,11 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
                 body: new URLSearchParams(formData)
-            });
+            }, undefined, async (response) => ({
+                ok: response.ok,
+                status: response.status,
+                error: response.ok ? null : await response.json().catch(() => null)
+            }));
 
             if (res.ok) {
                 message = { type: 'success', text: 'Slot saved!' };
@@ -293,8 +297,7 @@
                 editingDraft = null;
                 await fetchSlots();
             } else {
-                const error = await res.json().catch(() => null);
-                message = { type: 'error', text: res.status === 409 && error?.error ? error.error : 'Failed to save' };
+                message = { type: 'error', text: res.status === 409 && res.error?.error ? res.error.error : 'Failed to save' };
             }
         } catch (e) {
             message = { type: 'error', text: 'Connection error' };

@@ -42,7 +42,7 @@ const queuedOperation = {
     }, 202)
 };
 
-function pendingJson(signal) {
+function pendingJson(signal, status = 200) {
     let controller;
     const abort = () => controller.error(new DOMException('Aborted', 'AbortError'));
     return new Response(new ReadableStream({
@@ -51,7 +51,7 @@ function pendingJson(signal) {
             controller.enqueue(new TextEncoder().encode('{'));
             signal.addEventListener('abort', abort, { once: true });
         }
-    }));
+    }), { status });
 }
 
 describe('autopush route page', () => {
@@ -163,6 +163,67 @@ describe('autopush route page', () => {
 
         await screen.findByText('Volume override requires a profile volume policy');
         expect(screen.getByRole('button', { name: /^save slot$/i })).toBeInTheDocument();
+        unmount();
+    });
+
+    it.each([409, 500])('times out a stalled %i slot error body and keeps the draft available for retry', async (status) => {
+        let attempts = 0;
+        let saveSignal;
+        installDefaultFetch([{
+            method: 'POST', match: '/api/autopush/slot',
+            respond: ({ init }) => {
+                attempts += 1;
+                if (attempts === 1) {
+                    saveSignal = init.signal;
+                    return pendingJson(init.signal, status);
+                }
+                return jsonResponse({ success: true });
+            }
+        }]);
+        const { unmount } = render(Page);
+        await screen.findByText('Highway');
+        await fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
+        await fireEvent.input(screen.getByLabelText('Slot name'), {
+            target: { value: 'Commute' }
+        });
+        vi.useFakeTimers();
+        await fireEvent.click(screen.getByRole('button', { name: /^save slot$/i }));
+        await vi.advanceTimersByTimeAsync(4999);
+        expect(saveSignal.aborted).toBe(false);
+        expect(screen.getByRole('button', { name: /^save slot$/i })).toBeDisabled();
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(saveSignal.aborted).toBe(true);
+        expect(screen.getByText('Failed to save')).toBeInTheDocument();
+        expect(screen.getByLabelText('Slot name')).toHaveValue('Commute');
+        expect(screen.getByRole('button', { name: /^save slot$/i })).toBeEnabled();
+
+        await fireEvent.click(screen.getByRole('button', { name: /^save slot$/i }));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(screen.getByText('Slot saved!')).toBeInTheDocument();
+        expect(attempts).toBe(2);
+        unmount();
+    });
+
+    it('accepts a successful slot save without waiting for its response body', async () => {
+        let stream;
+        installDefaultFetch([{
+            method: 'POST', match: '/api/autopush/slot',
+            respond: () => new Response(new ReadableStream({
+                start(controller) {
+                    stream = controller;
+                    controller.enqueue(new TextEncoder().encode('{'));
+                }
+            }))
+        }]);
+        const { unmount } = render(Page);
+        await screen.findByText('Highway');
+        await fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
+        await fireEvent.click(screen.getByRole('button', { name: /^save slot$/i }));
+
+        await screen.findByText('Slot saved!');
+        expect(screen.queryByRole('button', { name: /^save slot$/i })).not.toBeInTheDocument();
+        stream.close();
         unmount();
     });
 

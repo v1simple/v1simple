@@ -37,7 +37,7 @@ const COMPONENT_REASONS = [
     'custom_configuration_invalid', 'custom_write_failed', 'custom_commit_rejected',
     'custom_commit_timeout', 'custom_read_failed', 'custom_readback_invalid',
     'custom_readback_timeout', 'factory_default_unverified',
-    'factory_user_defaults_mismatch', 'factory_reset_write_failed', 'proxy_owns_detector'
+    'factory_user_defaults_mismatch', 'factory_reset_write_failed', 'proxy_owns_detector', 'operation_timeout'
 ];
 
 export function validDetectorOperationId(value) {

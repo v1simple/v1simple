@@ -183,6 +183,7 @@ VoiceAction VoiceModule::prepareAction(const VoiceContext& ctx) {
         }
 
         action.type = VoiceAction::Type::ANNOUNCE_DIRECTION;
+        action.freq = currentFreq; // Identity is required if playback must be retried.
         action.dir = audioDir;
         // C: never speak bogey-count on direction-only updates — display owns
         // the count; voice is just the directional cue.

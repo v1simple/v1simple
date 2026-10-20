@@ -131,7 +131,7 @@ bool V1SettingsOperationStore::decodeRecord(const Record& record, Snapshot& snap
     bool allRequestedSucceeded = true;
     for (size_t index = 0; index < kComponentCount; ++index) {
         if (record.componentOutcomes[index] > static_cast<uint8_t>(ComponentOutcome::LoadFailed) ||
-            record.componentReasons[index] > static_cast<uint8_t>(ComponentReason::ProxyOwnsDetector)) return false;
+            record.componentReasons[index] > static_cast<uint8_t>(ComponentReason::OperationTimeout)) return false;
         const uint8_t bit = static_cast<uint8_t>(1u << index);
         const bool requested = (record.requestedMask & bit) != 0;
         const bool sent = (record.sentMask & bit) != 0;
@@ -577,6 +577,7 @@ const char* V1SettingsOperationStore::componentReasonName(ComponentReason reason
     case ComponentReason::FactoryUserDefaultsMismatch: return "factory_user_defaults_mismatch";
     case ComponentReason::FactoryResetWriteFailed: return "factory_reset_write_failed";
     case ComponentReason::ProxyOwnsDetector: return "proxy_owns_detector";
+    case ComponentReason::OperationTimeout: return "operation_timeout";
     }
     return "invalid_policy";
 }

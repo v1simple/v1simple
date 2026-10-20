@@ -1606,8 +1606,62 @@ void test_v4_device_catalog_defaults_app_actions_off_and_v5_rejects_bad_policy()
                           corrupt.getInTheBoxForAddressChecked("AA:BB:CC:DD:EE:FF", read));
 }
 
+void exercise_live_catalog_open_availability(bool failOpen, bool rollback) {
+    fs::FS primary(g_tempRoot);
+    fs::FS mirror(g_tempRoot / "mirror");
+    V1DeviceStore original;
+    TEST_ASSERT_TRUE(original.begin(&primary));
+    TEST_ASSERT_TRUE(original.setDeviceName("AA:BB:CC:DD:EE:FF", "Previous").committed());
+    TEST_ASSERT_TRUE(original.setDeviceDefaultProfile("AA:BB:CC:DD:EE:FF", 1).committed());
+    const std::string stale = readFileToString(primary, "/v1devices.json");
+    TEST_ASSERT_TRUE(original.setDeviceName("AA:BB:CC:DD:EE:FF", "Current").committed());
+    TEST_ASSERT_TRUE(original.setDeviceDefaultProfile("AA:BB:CC:DD:EE:FF", 3).committed());
+    const std::string current = readFileToString(primary, "/v1devices.json");
+    if (rollback) writeFileFromBytes(primary, "/v1devices.json.prev", stale);
+    else writeFileFromBytes(mirror, "/v1devices.json", stale);
+
+    if (failOpen) fs::mock_fail_next_read_open("/v1devices.json");
+    V1DeviceStore boot;
+    TEST_ASSERT_TRUE(boot.begin(&primary, rollback ? nullptr : &mirror));
+    TEST_ASSERT_EQUAL_STRING(current.c_str(), readFileToString(primary, "/v1devices.json").c_str());
+    if (failOpen) {
+        std::vector<V1DeviceRecord> records;
+        TEST_ASSERT_FALSE(boot.listDevicesChecked(records));
+        TEST_ASSERT_FALSE(boot.setDeviceName("AA:BB:CC:DD:EE:FF", "Must not replace").committed());
+        TEST_ASSERT_EQUAL_STRING(current.c_str(), readFileToString(primary, "/v1devices.json").c_str());
+        // A later boot can determine authority and repair the stale mirror.
+        TEST_ASSERT_TRUE(boot.begin(&primary, rollback ? nullptr : &mirror));
+    }
+    std::vector<V1DeviceRecord> records;
+    TEST_ASSERT_TRUE(boot.listDevicesChecked(records));
+    TEST_ASSERT_EQUAL_UINT(1, records.size());
+    TEST_ASSERT_EQUAL_STRING("Current", records[0].name.c_str());
+    TEST_ASSERT_EQUAL_UINT8(3, records[0].defaultProfile);
+    TEST_ASSERT_EQUAL_STRING(current.c_str(), readFileToString(primary, "/v1devices.json").c_str());
+    if (!rollback) {
+        TEST_ASSERT_EQUAL_STRING(current.c_str(), readFileToString(mirror, "/v1devices.json").c_str());
+    }
+}
+
+void test_live_catalog_open_failure_preserves_newer_than_rollback() {
+    exercise_live_catalog_open_availability(true, true);
+}
+void test_live_catalog_open_failure_preserves_newer_than_mirror() {
+    exercise_live_catalog_open_availability(true, false);
+}
+void test_readable_live_catalog_wins_over_stale_rollback() {
+    exercise_live_catalog_open_availability(false, true);
+}
+void test_readable_live_catalog_wins_over_stale_mirror() {
+    exercise_live_catalog_open_availability(false, false);
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_live_catalog_open_failure_preserves_newer_than_rollback);
+    RUN_TEST(test_live_catalog_open_failure_preserves_newer_than_mirror);
+    RUN_TEST(test_readable_live_catalog_wins_over_stale_rollback);
+    RUN_TEST(test_readable_live_catalog_wins_over_stale_mirror);
     RUN_TEST(test_applied_in_the_box_snapshot_survives_unrelated_edits_reload_and_failed_replace);
     RUN_TEST(test_v4_device_catalog_defaults_app_actions_off_and_v5_rejects_bad_policy);
     RUN_TEST(test_new_device_survives_cross_boot_capacity_for_every_insertion_path);

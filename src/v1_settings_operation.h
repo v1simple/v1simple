@@ -210,6 +210,7 @@ class V1SettingsOperationStore {
         FactoryUserDefaultsMismatch,
         FactoryResetWriteFailed,
         ProxyOwnsDetector,
+        OperationTimeout,
     };
     static constexpr size_t kComponentCount = static_cast<size_t>(Component::Count);
 

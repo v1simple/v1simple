@@ -2630,6 +2630,7 @@ bool SettingsManager::resolveProfileDeleteTransaction() {
 }
 
 bool SettingsManager::resolveStorageTransactionsForMutation() {
+    if (!ensureSettingsLoaded()) return false;
     if (!resolveWifiCredentialTransaction()) {
         return false;
     }
@@ -2640,6 +2641,9 @@ bool SettingsManager::resolveStorageTransactionsForMutation() {
 }
 
 ProfileOperationResult SettingsManager::deleteProfileAndReferences(const String& canonicalProfileName) {
+    if (!ensureSettingsLoaded()) {
+        return profileOperationResult(ProfileStorageStatus::IoError, "Settings recovery pending");
+    }
     if (!resolveRestoreTransaction() || !resolveProfileDeleteTransaction()) {
         return profileOperationResult(ProfileStorageStatus::IoError, "Storage recovery pending");
     }
@@ -2747,6 +2751,7 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
                                                                const SettingsRestoreWatchdog& watchdog,
                                                                SettingsBackupScope scope) {
     SettingsBackupApplyResult result;
+    if (!ensureSettingsLoaded()) return result;
     // Fed at restore phase boundaries only — see SettingsRestoreWatchdog.
     auto feedWatchdog = [&watchdog]() {
         if (watchdog.feed) {

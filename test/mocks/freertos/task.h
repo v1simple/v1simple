@@ -55,7 +55,11 @@ inline void vTaskDeleteWithCaps(void*) {
 }
 
 inline UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t) { return 1024; }
-inline uint32_t ulTaskNotifyTake(BaseType_t, TickType_t) { return 0; }
+// A worker test can stop at the next wait after executing one real job.
+inline uint32_t (*g_mock_task_notify_take_hook)(BaseType_t, TickType_t) = nullptr;
+inline uint32_t ulTaskNotifyTake(BaseType_t clear, TickType_t timeout) {
+    return g_mock_task_notify_take_hook ? g_mock_task_notify_take_hook(clear, timeout) : 0;
+}
 
 struct MockTaskNotifyState {
     uint32_t giveCalls = 0;
@@ -66,6 +70,7 @@ inline MockTaskNotifyState g_mock_task_notify_state{};
 
 inline void mock_reset_task_notify_state() {
     g_mock_task_notify_state = MockTaskNotifyState{};
+    g_mock_task_notify_take_hook = nullptr;
 }
 
 inline void xTaskNotifyGive(TaskHandle_t handle) {

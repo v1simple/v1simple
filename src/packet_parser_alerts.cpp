@@ -28,6 +28,9 @@ void PacketParser::markAlertStreamDiscontinuous() {
 
 void PacketParser::resetAlertState() {
     ++alertLifetime_;
+    lastRenderableAlert_ = AlertData{};
+    clearedAlert_.alert = AlertData{};
+    ++clearedAlert_.revision;
     // InfDisplayData is session-scoped too. Do not let a laser snapshot from
     // the closed link become live again before the new session sends data.
     displayState_.activeBands = BAND_NONE;
@@ -39,6 +42,19 @@ void PacketParser::resetAlertState() {
     alertResyncRequired_ = false;
     resetAlertStateAt(static_cast<uint32_t>(millis()));
     alertTableObserved_ = false;
+}
+
+void PacketParser::retainAlertPresentation(bool hadAlerts, uint32_t nowMs) {
+    if (hasAlerts()) {
+        if (!hadAlerts) lastRenderableAlert_ = AlertData{};
+        AlertData priority;
+        if (getRenderablePriorityAlert(priority)) lastRenderableAlert_ = priority;
+    } else if (hadAlerts) {
+        clearedAlert_.alert = lastRenderableAlert_;
+        clearedAlert_.clearedAtMs = nowMs;
+        ++clearedAlert_.revision;
+        lastRenderableAlert_ = AlertData{};
+    }
 }
 
 void PacketParser::resetV1Version() {

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "audio_playback_receipt.h"
+
 #include "settings.h"
 
 enum class AlertBand : uint8_t {
@@ -25,13 +27,16 @@ void play_alert_voice(AlertBand band, AlertDirection direction);
 void play_frequency_voice(AlertBand band, uint16_t freqMHz, AlertDirection direction,
                           VoiceAlertMode mode, bool includeDirection, uint8_t bogeyCount = 1);
 AudioPlaybackResult try_play_frequency_voice(AlertBand band, uint16_t freqMHz, AlertDirection direction,
-                                             VoiceAlertMode mode, bool includeDirection, uint8_t bogeyCount = 1);
+                                             VoiceAlertMode mode, bool includeDirection, uint8_t bogeyCount = 1,
+                                             AudioPlaybackReceipt* receipt = nullptr);
 void play_direction_only(AlertDirection direction, uint8_t bogeyCount = 0);
-AudioPlaybackResult try_play_direction_only(AlertDirection direction, uint8_t bogeyCount = 0);
+AudioPlaybackResult try_play_direction_only(AlertDirection direction, uint8_t bogeyCount = 0,
+                                            AudioPlaybackReceipt* receipt = nullptr);
 void play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection direction,
                             uint8_t total, uint8_t ahead, uint8_t behind, uint8_t side);
 AudioPlaybackResult try_play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection direction,
-                                               uint8_t total, uint8_t ahead, uint8_t behind, uint8_t side);
+                                               uint8_t total, uint8_t ahead, uint8_t behind, uint8_t side,
+                                               AudioPlaybackReceipt* receipt = nullptr);
 void play_band_only(AlertBand band);
 class StorageManager;
 void audio_init_sd(StorageManager&);

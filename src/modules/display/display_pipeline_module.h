@@ -75,9 +75,14 @@ class DisplayPipelineModule {
     uint32_t alpHoldRefreshDeadlineMs_ = 0;
     uint32_t alpPersistRefreshDeadlineMs_ = 0;
     uint32_t v1PersistRefreshDeadlineMs_ = 0;
+    uint32_t lastV1ClearRevision_ = 0;
+    uint32_t lastAlpEndRevision_ = 0;
     uint32_t voiceAlertLifetime_ = 0;
     VoiceAction pendingVoiceAction_{};
     bool hasPendingVoiceAction_ = false;
+    AudioPlaybackReceipt voicePlaybackReceipt_;
+    bool awaitingVoicePlayback_ = false;
+    uint32_t voiceAcceptedAtMs_ = 0;
     bool voiceRetryScheduled_ = false;
     uint32_t nextVoiceAttemptMs_ = 0;
     static constexpr uint32_t VOICE_RETRY_INTERVAL_MS = 100;
@@ -86,6 +91,7 @@ class DisplayPipelineModule {
     RenderFrame buildDisconnectedRestoreFrame(uint32_t nowMs, const V1Settings& settingsRef);
     AlpLaserEvent buildPresentedAlpEvent(const AlpLaserEvent& rawAlpEvent, uint32_t nowMs);
     void updateAlpLatch(const AlpLaserEvent& alpEvent, uint32_t nowMs, uint8_t persistSec);
+    bool settleVoicePlayback(uint32_t nowMs);
     void runVoice(const RenderFrame& frame, const V1Settings& settingsRef, uint32_t nowMs);
     void renderComposedFrame(uint32_t nowMs, const RenderFrame& frame, bool forceRedraw = false);
 };

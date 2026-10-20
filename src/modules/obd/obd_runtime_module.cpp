@@ -410,7 +410,12 @@ void ObdRuntimeModule::updateDisconnected(uint32_t nowMs, bool justEntered, bool
         }
     }
     if (obdRetryAllowed || connectTargetFromManualCandidate_) {
-        if (savedAddress_[0] != '\0') {
+        if (connectTargetFromManualCandidate_ && manualCandidateValid_) {
+            // Recovery still belongs to this pairing attempt. A saved adapter
+            // cannot qualify the replacement candidate on its behalf.
+            setConnectTarget(manualCandidateAddress_, manualCandidateAddrType_, true);
+            transitionTo(ObdConnectionState::CONNECTING, nowMs);
+        } else if (savedAddress_[0] != '\0') {
             setConnectTargetFromSaved();
             transitionTo(ObdConnectionState::CONNECTING, nowMs);
         } else if (connectAddress_[0] != '\0') {

@@ -20,20 +20,25 @@
 
 // ES8311 and TCA9554 share the battery manager's bus (SDA=47, SCL=48).
 static TwoWire& audioWire = tca9554Wire;
-bool es8311_initialized = false;
+std::atomic<bool> es8311_initialized{false};
 bool i2s_initialized = false;
 i2s_chan_handle_t i2s_tx_chan = nullptr;
 
-static uint8_t current_volume_percent = 75;
+// Requests arrive on the loop task while the worker applies them on core 1.
+// The I2C mutex serializes hardware writes; a newer request must remain pending
+// even when an older write completes after it was requested.
+static std::atomic<uint8_t> current_volume_percent{75};
+static std::atomic<int> applied_volume_percent{-1};
 
 namespace {
 
 constexpr unsigned long AUDIO_I2C_LOG_MIN_INTERVAL_MS = 2000;
-unsigned long lastAudioI2cErrorLogMs = 0;
+std::atomic<unsigned long> lastAudioI2cErrorLogMs{0};
 
 bool shouldLogAudioI2cFailureNow() {
     const unsigned long now = millis();
-    if (lastAudioI2cErrorLogMs != 0 && now - lastAudioI2cErrorLogMs < AUDIO_I2C_LOG_MIN_INTERVAL_MS) {
+    const unsigned long previous = lastAudioI2cErrorLogMs.load();
+    if (previous != 0 && now - previous < AUDIO_I2C_LOG_MIN_INTERVAL_MS) {
         return false;
     }
     lastAudioI2cErrorLogMs = now;
@@ -237,15 +242,13 @@ bool es8311_init() {
     if (!writeOrFail("es8311_init gpio44 ref signal", ES8311_GPIO_REG44, 0x58))
         return false;
 
-    // Use same mapping as audio_set_volume(): 0%=mute, 1-100%=0x90-0xBF
-    uint8_t volReg;
-    if (current_volume_percent == 0) {
-        volReg = 0x00;
-    } else {
-        volReg = 0x90 + ((current_volume_percent - 1) * (0xBF - 0x90)) / 99;
-    }
-    if (!writeOrFail("es8311_init reg32 volume", ES8311_DAC_REG32, volReg))
+    // A partial initialization may have reset the codec's volume register.
+    applied_volume_percent.store(-1);
+    const AudioI2cResult volumeResult = audio_apply_pending_volume();
+    if (volumeResult != AudioI2cResult::Ok) {
+        audio_log_i2c_failure("es8311_init volume", volumeResult);
         return false;
+    }
 
     // Unmute DAC (clear bits 6:5 of REG31).
     uint8_t regv = 0;
@@ -285,20 +288,36 @@ bool es8311_init() {
 // The lower range (-95dB to -30dB) is inaudible, so we remap:
 //   0% = 0x00 (mute)
 //   1-100% = 0x90-0xBF (usable range: ~-24dB to 0dB)
+AudioI2cResult audio_apply_pending_volume(TickType_t timeoutTicks) {
+    if (applied_volume_percent.load() == current_volume_percent.load()) {
+        return AudioI2cResult::Ok;
+    }
+    AudioI2cLockGuard lock(tca9554WireMutex, timeoutTicks);
+    if (!lock.ok()) {
+        return lock.result();
+    }
+    // Sample after taking the bus, so waiting writers cannot restore an older
+    // request over a newer volume that has already reached the codec.
+    const uint8_t requested = current_volume_percent.load();
+    if (applied_volume_percent.load() != requested) {
+        const uint8_t regVal = requested == 0 ? 0x00 : 0x90 + ((requested - 1) * (0xBF - 0x90)) / 99;
+        const AudioI2cResult result = audioI2cWriteRegister(audioWire, ES8311_ADDR, ES8311_DAC_REG32, regVal);
+        if (result != AudioI2cResult::Ok) {
+            return result;
+        }
+        applied_volume_percent.store(requested);
+    }
+    // Keep a request made during the write pending; callers must not start PCM
+    // at the old level when a newer mute/volume request is waiting.
+    return current_volume_percent.load() == requested ? AudioI2cResult::Ok : AudioI2cResult::Busy;
+}
+
 void audio_set_volume(uint8_t volumePercent) {
     if (volumePercent > 100)
         volumePercent = 100;
-    current_volume_percent = volumePercent;
-
-    uint8_t regVal;
-    if (volumePercent == 0) {
-        regVal = 0x00; // Mute
-    } else {
-        regVal = 0x90 + ((volumePercent - 1) * (0xBF - 0x90)) / 99;
-    }
-
-    if (es8311_initialized) {
-        const AudioI2cResult result = es8311_write_reg(ES8311_DAC_REG32, regVal);
+    current_volume_percent.store(volumePercent);
+    if (es8311_initialized.load()) {
+        const AudioI2cResult result = audio_apply_pending_volume();
         if (result != AudioI2cResult::Ok) {
             audio_log_i2c_failure("audio_set_volume", result);
         }

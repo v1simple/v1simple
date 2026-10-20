@@ -88,7 +88,17 @@ An inactive close into abnormal `LISTENING` can retain known presentation
 context for less than 1000 ms; normal listening modes `02`/`03`/`04` end that
 hold. This bounded hold is separate from runtime session lifetime.
 
-`AlpEventLatch` stores the presented active event. The live-to-inactive edge
+The runtime also retains the latest display-eligible event when it becomes
+inactive, together with its original close time and a revision. If an accepted
+deployment and unknown-gun teardown occur in one UART batch, presentation can
+still latch that completed event. The retained copy is persistence history,
+never a live-owner signal. Warm-up events never enter this history. The pipeline
+consumes each revision once, respects disabled persistence, and rejects an
+already expired tail rather than renewing it when presentation resumes. Runtime
+reinitialization invalidates the retained event. A newer live session always
+supplies its own identity and owns the display.
+
+`AlpEventLatch` stores the presented active event. The source live-to-inactive edge
 starts the global `alpAlertPersistSec` window, not V1's per-slot persistence.
 Repeated inactive frames do not restart it. A new live event replaces the latch;
 expiry or disabled persistence clears it. Hold and persistence deadlines request
@@ -143,7 +153,7 @@ the actual muted argument and LID/DLI setting; expiry clears the override.
 includes the actual runtime parser, pipeline, composer, latch, persistence code
 and **real display setter**. It injects checksummed bytes and models UART arrival
 timestamps. Settings/BLE/clock/panel dependencies are mocked; `renderFrame`
-records a frame instead of painting. Its three tests are:
+records a frame instead of painting. The session identity controls are:
 
 1. `test_new_unknown_session_clears_prior_gun_without_an_inactive_display_frame`:
    normal heartbeat at 100 ms, trigger at 200, PL3 at 210, teardown at 250,
@@ -153,6 +163,12 @@ records a frame instead of painting. Its three tests are:
    retains PL3 when an unknown update reaches the actual setter.
 3. `test_identified_teardown_keeps_gun_in_persisted_tail_then_clears`: a 3-second
    tail keeps PL3 with live flag false at 5251 and clears text/override at 8251.
+
+The same suite also exercises an unknown deployment and teardown in one batch,
+delayed presentation and exact expiry, timestamp zero/rollover, disabled
+persistence, runtime reset, subsequent session ownership, and warm-up exclusion.
+These controls use the actual runtime parser and source retention before reaching
+the pipeline and real display setter.
 
 The first test fails against the pre-repair setter; the latter two protect
 intentional retention and expiry. Useful adjacent controls are:

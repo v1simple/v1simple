@@ -66,6 +66,10 @@ class SettingsManager {
     // Normal-runtime display policy mutations, independent of NVS success.
     // Saturation means continuity can no longer be established from this value.
     uint32_t displayConfigurationRevision() const { return displayConfigurationRevision_; }
+    // A delayed boot recovery can replace settings after runtime consumers
+    // initialized. They must reapply cached configuration when this changes.
+    uint32_t recoveryRevision() const { return recoveryRevision_; }
+    bool recoveryPending() const { return nvsLoadPending_ || nvsRecoveryPending_; }
 
     uint8_t getApTimeoutMinutes() const { return settings_.apTimeoutMinutes; }
     SettingsPersistResult setActiveSlot(int slot,
@@ -117,8 +121,12 @@ class SettingsManager {
         const AutoPushStateUpdate& update, SettingsPersistMode persistMode = SettingsPersistMode::Immediate);
 
     // These mutations require an explicit save().
-    void updateBrightness(uint8_t brightness) { settings_.brightness = brightness; }
-    void updateVoiceVolume(uint8_t volume) { settings_.voiceVolume = volume; }
+    void updateBrightness(uint8_t brightness) {
+        if (ensureSettingsLoaded()) settings_.brightness = brightness;
+    }
+    void updateVoiceVolume(uint8_t volume) {
+        if (ensureSettingsLoaded()) settings_.voiceVolume = volume;
+    }
     // Persist settings atomically to NVS, then synchronously back them up to SD.
     // Reserve this for explicit durability boundaries outside latency-sensitive
     // loop paths.
@@ -200,6 +208,15 @@ class SettingsManager {
     bool lastV1AddressFallbackPending_ = false;
     uint32_t lastV1AddressFallbackNextAttemptAtMs_ = 0;
     bool restorePending_ = false;
+    // Defaults/previous RAM remain provisional when the newest NVS generation
+    // could not be determined. No persistence may use them until load succeeds.
+    bool nvsLoadPending_ = false;
+    uint32_t nvsLoadRetryAtMs_ = 0;
+    // Loading NVS after a boot failure must still complete SD/profile recovery
+    // before an external mutation can replace its recovery sources.
+    bool nvsRecoveryPending_ = false;
+    bool nvsRecoveryInProgress_ = false;
+    uint32_t recoveryRevision_ = 0;
     // Boot profile migration and reference cleanup must wait when a recovery
     // source or write could not be checked. Recomputed by the next SD recovery attempt.
     bool profileReferenceRecoveryPending_ = false;
@@ -231,6 +248,7 @@ class SettingsManager {
     SettingsPersistResult finishSettingsMutation(const V1Settings& before, bool changed,
                                                   SettingsPersistMode persistMode);
     void noteDisplayConfigurationMutation();
+    bool ensureSettingsLoaded();
     void markRestorePending(const char* reason);
     void clearRestorePending();
     bool resolveWifiCredentialTransaction();
@@ -240,9 +258,9 @@ class SettingsManager {
     bool writeSettingsToNamespace(const char* ns, uint32_t generation);
     bool persistLastV1AddressFallbackNow(const String& addr);
     void serviceLastV1AddressFallbackPersist(uint32_t nowMs);
-    String getActiveNamespace(uint32_t* activeGeneration = nullptr);
+    String getActiveNamespace(uint32_t* activeGeneration = nullptr, bool* namespacePresent = nullptr);
     String getStagingNamespace(const String& activeNamespace);
-    bool checkNeedsRestore(); // Returns true if NVS appears to be default/empty
+    bool checkNeedsRestore(bool& unavailable); // Returns true if NVS appears to be default/empty
     void cleanupNamespacesIfNeeded(bool hasSdBackup);
 };
 

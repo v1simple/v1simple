@@ -152,9 +152,12 @@ void DisplayPipelineModule::begin(const DisplayPipelineDependencies& dependencie
     alpHoldRefreshDeadlineMs_ = 0;
     alpPersistRefreshDeadlineMs_ = 0;
     v1PersistRefreshDeadlineMs_ = 0;
+    lastV1ClearRevision_ = 0;
+    lastAlpEndRevision_ = 0;
     voiceAlertLifetime_ = parser_ ? parser_->alertLifetime() : 0;
     pendingVoiceAction_ = VoiceAction{};
     hasPendingVoiceAction_ = false;
+    awaitingVoicePlayback_ = false;
     voiceRetryScheduled_ = false;
     nextVoiceAttemptMs_ = 0;
 }
@@ -165,11 +168,30 @@ void DisplayPipelineModule::updateAlpLatch(const AlpLaserEvent& alpEvent, uint32
         if (alpLatch_) {
             alpLatch_->setEvent(alpEvent);
         }
-    } else if (alpLatch_ && lastPresentedAlpEventActive_) {
-        alpLatch_->startPersistence(nowMs);
-        alpPersistRefreshDeadlineMs_ =
-            persistSec > 0 ? std::max<uint32_t>(1, nowMs + static_cast<uint32_t>(persistSec) * 1000UL) : 0;
+    } else if (alpLatch_) {
+        uint32_t endedAtMs = nowMs;
+        bool ended = lastPresentedAlpEventActive_;
+        if (alp_ && alp_->endedEventRevision() != lastAlpEndRevision_) {
+            const AlpLaserEvent& retained = alp_->endedEvent();
+            if (retained.active) {
+                // The whole eligible event may have opened and closed before
+                // this presentation pass. Keep its source close time so a
+                // delayed drain cannot renew a finished alert's lifetime.
+                alpLatch_->setEvent(retained);
+                endedAtMs = retained.closedAtMs;
+                ended = true;
+            } else {
+                alpLatch_->clearLatch(); // Runtime reinitialization.
+                ended = false;
+            }
+        }
+        if (ended) {
+            alpLatch_->startPersistence(endedAtMs);
+            alpPersistRefreshDeadlineMs_ = persistSec > 0
+                ? std::max<uint32_t>(1, endedAtMs + static_cast<uint32_t>(persistSec) * 1000UL) : 0;
+        }
     }
+    if (alp_) lastAlpEndRevision_ = alp_->endedEventRevision();
 
     lastPresentedAlpEventActive_ = alpEvent.active;
 
@@ -253,9 +275,29 @@ RenderFrame DisplayPipelineModule::buildRenderFrame(uint32_t nowMs, const V1Sett
     const bool hasRenderablePriority = hasAlerts && parser_->getRenderablePriorityAlert(priority);
 
     if (settingsRef.activeSlot != lastPersistenceSlot_) {
+        if (lastPersistenceSlot_ >= 0) {
+            // Switching policies must not revive an older completed encounter.
+            lastV1ClearRevision_ = parser_->clearedAlert().revision;
+        }
         lastPersistenceSlot_ = settingsRef.activeSlot;
         alertPersistence_->clearPersistence();
         v1PersistRefreshDeadlineMs_ = 0;
+    }
+
+    const uint8_t persistSec = settings_->getSlotAlertPersistSec(settingsRef.activeSlot);
+    const ClearedV1Alert& cleared = parser_->clearedAlert();
+    if (cleared.revision != lastV1ClearRevision_) {
+        lastV1ClearRevision_ = cleared.revision;
+        if (!hasAlerts) {
+            alertPersistence_->clearPersistence();
+            v1PersistRefreshDeadlineMs_ = 0;
+            if (cleared.alert.isValid && persistSec > 0) {
+                alertPersistence_->setPersistedAlert(cleared.alert);
+                alertPersistence_->startPersistence(cleared.clearedAtMs);
+                v1PersistRefreshDeadlineMs_ = std::max<uint32_t>(
+                    1, cleared.clearedAtMs + static_cast<uint32_t>(persistSec) * 1000UL);
+            }
+        }
     }
 
     // V1 owns its last-alert identity even while ALP owns the primary display.
@@ -264,7 +306,6 @@ RenderFrame DisplayPipelineModule::buildRenderFrame(uint32_t nowMs, const V1Sett
         alertPersistence_->setPersistedAlert(priority);
     }
 
-    const uint8_t persistSec = settings_->getSlotAlertPersistSec(settingsRef.activeSlot);
     AlertData persistedAlert = alertPersistence_->getPersistedAlert();
     bool showPersistedAlert = false;
     if (!hasAlerts) {
@@ -338,6 +379,27 @@ RenderFrame DisplayPipelineModule::buildDisconnectedRestoreFrame(uint32_t nowMs,
     return composer_.compose(v1, alp, settingsRef, nowMs);
 }
 
+// Admission only reserves the worker. Voice dedup is committed once PCM can
+// have started (or a missing asset is known terminal).
+// Startup failure leaves this exact action unheard; current-frame validation
+// below decides whether it is still eligible for another attempt.
+bool DisplayPipelineModule::settleVoicePlayback(uint32_t nowMs) {
+    if (!awaitingVoicePlayback_) return true;
+    const auto state = voicePlaybackReceipt_.state.load();
+    if (state == AudioPlaybackReceipt::State::Pending) return false;
+    awaitingVoicePlayback_ = false;
+    if (state == AudioPlaybackReceipt::State::FailedBeforeStart) {
+        voiceRetryScheduled_ = true;
+        nextVoiceAttemptMs_ = nowMs + VOICE_RETRY_INTERVAL_MS;
+    } else {
+        voice_->commitAction(pendingVoiceAction_, voiceAcceptedAtMs_);
+        hasPendingVoiceAction_ = false;
+        voiceRetryScheduled_ = false;
+        nextVoiceAttemptMs_ = 0;
+    }
+    return true;
+}
+
 void DisplayPipelineModule::runVoice(const RenderFrame& frame, const V1Settings& settingsRef, uint32_t nowMs) {
     const FrameV1Alerts v1Alerts = buildFrameV1Alerts(frame);
     // A queue drain can clear and reopen an encounter before we see its idle
@@ -347,12 +409,13 @@ void DisplayPipelineModule::runVoice(const RenderFrame& frame, const V1Settings&
     const bool episodeChanged = lifetime != voiceAlertLifetime_;
     voiceAlertLifetime_ = lifetime;
     if (episodeChanged || v1Alerts.alertCount == 0) {
+        awaitingVoicePlayback_ = false;
         hasPendingVoiceAction_ = false;
         voiceRetryScheduled_ = false;
         nextVoiceAttemptMs_ = 0;
         voice_->clearAllState();
     }
-    if (v1Alerts.alertCount == 0) {
+    if (v1Alerts.alertCount == 0 || !settleVoicePlayback(nowMs)) {
         return;
     }
 
@@ -398,22 +461,24 @@ void DisplayPipelineModule::runVoice(const RenderFrame& frame, const V1Settings&
     case VoiceAction::Type::ANNOUNCE_PRIORITY:
         playbackResult = try_play_frequency_voice(voiceAction.band, voiceAction.freq, voiceAction.dir,
                                                   settingsRef.voiceAlertMode, settingsRef.voiceDirectionEnabled,
-                                                  voiceAction.bogeyCount);
+                                                  voiceAction.bogeyCount, &voicePlaybackReceipt_);
         break;
 
     case VoiceAction::Type::ANNOUNCE_DIRECTION:
-        playbackResult = try_play_direction_only(voiceAction.dir, voiceAction.bogeyCount);
+        playbackResult = try_play_direction_only(voiceAction.dir, voiceAction.bogeyCount, &voicePlaybackReceipt_);
         break;
 
     case VoiceAction::Type::ANNOUNCE_SECONDARY:
         playbackResult = try_play_frequency_voice(voiceAction.band, voiceAction.freq, voiceAction.dir,
-                                                  settingsRef.voiceAlertMode, settingsRef.voiceDirectionEnabled, 1);
+                                                  settingsRef.voiceAlertMode, settingsRef.voiceDirectionEnabled, 1,
+                                                  &voicePlaybackReceipt_);
         break;
 
     case VoiceAction::Type::ANNOUNCE_ESCALATION:
         playbackResult = try_play_threat_escalation(voiceAction.band, voiceAction.freq, voiceAction.dir,
                                                     voiceAction.bogeyCount, voiceAction.aheadCount,
-                                                    voiceAction.behindCount, voiceAction.sideCount);
+                                                    voiceAction.behindCount, voiceAction.sideCount,
+                                                    &voicePlaybackReceipt_);
         break;
 
     case VoiceAction::Type::NONE:
@@ -422,10 +487,11 @@ void DisplayPipelineModule::runVoice(const RenderFrame& frame, const V1Settings&
     }
 
     if (playbackResult == AudioPlaybackResult::Accepted) {
-        voice_->commitAction(voiceAction, nowMs);
-        hasPendingVoiceAction_ = false;
-        voiceRetryScheduled_ = false;
-        nextVoiceAttemptMs_ = 0;
+        pendingVoiceAction_ = voiceAction;
+        hasPendingVoiceAction_ = true;
+        awaitingVoicePlayback_ = true;
+        voiceAcceptedAtMs_ = nowMs;
+        (void)settleVoicePlayback(nowMs); // Also handles a worker that already finished.
     } else if (playbackResult == AudioPlaybackResult::Busy) {
         pendingVoiceAction_ = voiceAction;
         hasPendingVoiceAction_ = true;

@@ -1165,6 +1165,7 @@ bool storeWifiClientPasswordObfToNvs(const String& encodedPassword, size_t slotI
 }
 
 bool SettingsManager::resolveWifiCredentialTransaction() {
+    if (nvsLoadPending_) return false;
     if (!wifiCredentialJournalPresent()) {
         return true;
     }
@@ -1387,6 +1388,7 @@ bool SettingsManager::clearLastV1AddressFallback(const String& addressFilter) {
 namespace {
 
 struct SettingsNamespaceState {
+    bool available = true;
     int health = -1;
     uint32_t payloadGeneration = 0;
     uint32_t committedGeneration = 0;
@@ -1462,8 +1464,15 @@ SettingsNamespaceState readSettingsNamespaceState(const char* ns) {
     if (!ns || ns[0] == '\0') return state;
     const SettingsNvsProbeResult namespaceProbe = probeSettingsNamespace(ns);
     if (namespaceProbe.state == SettingsNvsProbeState::NotFound) return state;
+    if (namespaceProbe.state == SettingsNvsProbeState::Error) {
+        state.available = false;
+        return state;
+    }
     Preferences prefs;
-    if (!prefs.begin(ns, true)) return state;
+    if (!prefs.begin(ns, true)) {
+        state.available = false;
+        return state;
+    }
 
     const int nvsMarker = prefs.getInt(kNvsValid, 0);
     const int settingsVersion = prefs.getInt(kNvsSettingsVer, 0);
@@ -1560,7 +1569,8 @@ uint32_t seedLegacyNamespaceGeneration(const String& active, const SettingsNames
     return generation;
 }
 
-String SettingsManager::getActiveNamespace(uint32_t* activeGeneration) {
+String SettingsManager::getActiveNamespace(uint32_t* activeGeneration, bool* namespacePresent) {
+    if (namespacePresent) *namespacePresent = false;
     if (activeGeneration) {
         *activeGeneration = 0;
     }
@@ -1583,6 +1593,14 @@ String SettingsManager::getActiveNamespace(uint32_t* activeGeneration) {
     const SettingsNamespaceState stateLegacy = readSettingsNamespaceState(SETTINGS_NS_LEGACY);
     const uint32_t generationA = stateA.generation();
     const uint32_t generationB = stateB.generation();
+    // An unreadable A/B copy may hold a newer committed generation. Never
+    // make an older copy authoritative or rewrite the selector until both
+    // candidates can be inspected. Legacy matters only before an A/B commit.
+    if (!stateA.available || !stateB.available ||
+        (generationA == 0 && generationB == 0 && !stateLegacy.available)) {
+        Serial.println("[Settings] NVS discovery unavailable; preserving all settings copies");
+        return "";
+    }
     String recovered = SETTINGS_NS_LEGACY;
 
     // Once a committed generation exists, it is the sole transaction
@@ -1650,6 +1668,10 @@ String SettingsManager::getActiveNamespace(uint32_t* activeGeneration) {
         if (writeActiveNamespaceCache(recovered)) {
             Serial.printf("[Settings] Recovered active namespace to %s\n", recovered.c_str());
         }
+    }
+    if (namespacePresent) {
+        *namespacePresent = (recovered == SETTINGS_NS_A ? stateA.health :
+                             recovered == SETTINGS_NS_B ? stateB.health : stateLegacy.health) >= 0;
     }
     return recovered;
 }
@@ -1900,8 +1922,10 @@ bool SettingsManager::writeSettingsToNamespace(const char* ns, uint32_t generati
 }
 
 bool SettingsManager::persistSettingsAtomically() {
+    if (nvsLoadPending_) return false;
     uint32_t activeGeneration = 0;
     String activeNs = getActiveNamespace(&activeGeneration);
+    if (activeNs.length() == 0) return false;
     String stagingNs = getStagingNamespace(activeNs);
     if (activeGeneration == UINT32_MAX) {
         Serial.println("[Settings] ERROR: Settings generation exhausted");
@@ -2032,6 +2056,7 @@ String SettingsManager::getWifiClientPassword() {
 }
 
 SettingsPersistResult SettingsManager::setWifiClientEnabled(bool enabled) {
+    if (!ensureSettingsLoaded()) return {};
     V1Settings before;
     if (!copySettingsExact(settings_, before)) return SettingsPersistResult{};
     if (settings_.wifiClientEnabled == enabled) {
@@ -2048,6 +2073,7 @@ SettingsPersistResult SettingsManager::setWifiClientEnabled(bool enabled) {
 
 bool SettingsManager::setWifiStaSlotCredentials(size_t index, const String& ssid, const String& password,
                                                 const String& label, uint8_t priority) {
+    if (!ensureSettingsLoaded()) return false;
     if (!validWifiStaSlotIndex(index)) {
         Serial.println("[Settings] WARN: Invalid WiFi credential slot index");
         return false;
@@ -2127,8 +2153,7 @@ bool SettingsManager::setWifiStaSlotCredentials(size_t index, const String& ssid
     WifiCredentialJournal journal;
     journal.slotIndex = index;
     uint32_t activeGeneration = 0;
-    getActiveNamespace(&activeGeneration);
-    if (activeGeneration == UINT32_MAX) return false;
+    if (getActiveNamespace(&activeGeneration).length() == 0 || activeGeneration == UINT32_MAX) return false;
     journal.settingsGeneration = activeGeneration + 1u;
     if (!copyStringExact(before.wifiStaSlots[index].ssid, journal.oldSsid) ||
         !copyStringExact(oldEncodedPassword, journal.oldEncodedPassword) ||
@@ -2208,10 +2233,12 @@ bool SettingsManager::setWifiStaSlotCredentials(size_t index, const String& ssid
 }
 
 bool SettingsManager::setWifiClientCredentials(const String& ssid, const String& password) {
+    if (!ensureSettingsLoaded()) return false;
     return setWifiStaSlotCredentials(0, ssid, password, settings_.wifiStaSlots[0].label, 0);
 }
 
 bool SettingsManager::markWifiStaSlotConnected(size_t index) {
+    if (!ensureSettingsLoaded()) return false;
     if (!validWifiStaSlotIndex(index) || !settings_.wifiStaSlots[index].isConfigured()) {
         return false;
     }
@@ -2231,6 +2258,7 @@ bool SettingsManager::markWifiStaSlotConnected(size_t index) {
 }
 
 bool SettingsManager::clearWifiStaSlot(size_t index) {
+    if (!ensureSettingsLoaded()) return false;
     if (!validWifiStaSlotIndex(index)) {
         return false;
     }
@@ -2258,8 +2286,7 @@ bool SettingsManager::clearWifiStaSlot(size_t index) {
     WifiCredentialJournal journal;
     journal.slotIndex = index;
     uint32_t activeGeneration = 0;
-    getActiveNamespace(&activeGeneration);
-    if (activeGeneration == UINT32_MAX) return false;
+    if (getActiveNamespace(&activeGeneration).length() == 0 || activeGeneration == UINT32_MAX) return false;
     journal.settingsGeneration = activeGeneration + 1u;
     if (!copyStringExact(before.wifiStaSlots[index].ssid, journal.oldSsid) ||
         !copyStringExact(oldEncodedPassword, journal.oldEncodedPassword)) return false;
@@ -2302,6 +2329,7 @@ bool SettingsManager::clearWifiStaSlot(size_t index) {
 }
 
 bool SettingsManager::clearWifiClientCredentials() {
+    if (!ensureSettingsLoaded()) return false;
     resolveWifiCredentialTransaction();
     if (wifiCredentialJournalPresent()) {
         return false;

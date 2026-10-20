@@ -224,6 +224,7 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
                 displayState_.hasVolumeData = true;
             }
         }
+        if (parsed) retainAlertPresentation(hadAlerts, hasNowMs ? nowMs : static_cast<uint32_t>(millis()));
         if (hadAlerts != hasAlerts()) {
             ++alertLifetime_;
         }
@@ -242,6 +243,7 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
         const bool hadAlerts = hasAlerts();
         const uint32_t alertNowMs = hasNowMs ? nowMs : static_cast<uint32_t>(millis());
         const bool parsed = parseAlertData(payload, payloadLen, alertNowMs);
+        if (parsed) retainAlertPresentation(hadAlerts, hasNowMs ? nowMs : static_cast<uint32_t>(millis()));
         if (hadAlerts != hasAlerts()) {
             ++alertLifetime_;
         }

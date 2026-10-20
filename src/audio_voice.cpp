@@ -55,10 +55,21 @@ static const int16_t mulaw_decode_table[256] = {
 
 static void sd_audio_playback_task(void* pvParameters);
 static TaskHandle_t sdAudioWorkerHandle = nullptr;
+// Protected by audio_playing: the caller installs this before notification;
+// the worker publishes a terminal receipt before releasing job ownership.
+static AudioPlaybackReceipt* sdAudioReceipt = nullptr;
+
+static void publish_audio_receipt(AudioPlaybackReceipt::State state) {
+    if (sdAudioReceipt) {
+        sdAudioReceipt->state.store(state);
+        sdAudioReceipt = nullptr;
+    }
+}
 
 // Use the returned result: a short clip can finish before the caller samples
 // audio_playing, making an accepted job appear to have failed.
-static AudioPlaybackResult start_sd_audio_task(const SDAudioTaskParams& localParams) {
+static AudioPlaybackResult start_sd_audio_task(const SDAudioTaskParams& localParams,
+                                               AudioPlaybackReceipt* receipt = nullptr) {
     if (audio_playing.exchange(true)) {
         return AudioPlaybackResult::Busy;
     }
@@ -87,6 +98,8 @@ static AudioPlaybackResult start_sd_audio_task(const SDAudioTaskParams& localPar
         }
     }
 
+    sdAudioReceipt = receipt;
+    if (receipt) receipt->state.store(AudioPlaybackReceipt::State::Pending);
     audioTaskHandle.store(sdAudioWorkerHandle);
     xTaskNotifyGive(sdAudioWorkerHandle);
     return AudioPlaybackResult::Accepted;
@@ -96,58 +109,69 @@ static void finish_sd_audio_job() {
     audioResetTaskState(audio_playing, audioTaskHandle);
 }
 
+// Retry only startup of this accepted job. Once PCM starts, replaying a failed
+// job could repeat a partial or obsolete announcement. Missing clips are not
+// retried either. No retry job remains queued after this short bounded window.
+static bool prepare_sd_audio_output() {
+    constexpr uint8_t maxAttempts = 3;
+    for (uint8_t attempt = 0; attempt < maxAttempts; ++attempt) {
+        if (attempt > 0) {
+            vTaskDelay(pdMS_TO_TICKS(25));
+        }
+        if (!i2s_initialized) {
+            i2s_init();
+            vTaskDelay(pdMS_TO_TICKS(30));
+        }
+        if (!i2s_initialized || !es8311_init()) {
+            continue;
+        }
+        const AudioI2cResult volumeResult = audio_apply_pending_volume();
+        if (volumeResult != AudioI2cResult::Ok) {
+            audio_log_i2c_failure("sd_audio_playback_task volume", volumeResult);
+            continue;
+        }
+        const bool cold = !amp_is_warm.load();
+        if (cold) {
+            vTaskDelay(pdMS_TO_TICKS(20)); // ES8311 lock time
+        }
+        const AudioI2cResult ampEnableResult = set_speaker_amp(true);
+        if (ampEnableResult != AudioI2cResult::Ok) {
+            audio_log_i2c_failure("sd_audio_playback_task amp enable", ampEnableResult);
+            continue;
+        }
+        if (cold) {
+            vTaskDelay(pdMS_TO_TICKS(50)); // Amp stabilization
+        }
+        amp_is_warm = true;
+        amp_last_used_ms = millis();
+        return true;
+    }
+    return false;
+}
+
 static void sd_audio_playback_task(void* pvParameters) {
     (void)pvParameters; // Unused - params are in g_sdAudioTaskParams
 
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-        if (i2s_tx_chan == nullptr) {
-            i2s_init();
-            vTaskDelay(pdMS_TO_TICKS(30)); // Reduced from 50ms
-        }
-
-        if (!i2s_initialized) {
-            Serial.println("[AUDIO] ERROR: I2S init failed!");
+        if (!prepare_sd_audio_output()) {
+            publish_audio_receipt(AudioPlaybackReceipt::State::FailedBeforeStart);
             finish_sd_audio_job();
             continue;
-        }
-
-        if (!es8311_init()) {
-            finish_sd_audio_job();
-            continue;
-        }
-
-        // A warm amplifier does not require another stabilization delay.
-        if (!amp_is_warm) {
-            vTaskDelay(pdMS_TO_TICKS(20)); // ES8311 lock time
-            const AudioI2cResult ampEnableResult = set_speaker_amp(true);
-            if (ampEnableResult != AudioI2cResult::Ok) {
-                audio_log_i2c_failure("sd_audio_playback_task amp enable (cold)", ampEnableResult);
-                finish_sd_audio_job();
-                continue;
-            }
-            vTaskDelay(pdMS_TO_TICKS(50)); // Amp stabilization (only on cold start)
-            amp_is_warm = true;
-        } else {
-            // Reassert the enable pin without delaying playback.
-            const AudioI2cResult ampEnableResult = set_speaker_amp(true);
-            if (ampEnableResult != AudioI2cResult::Ok) {
-                audio_log_i2c_failure("sd_audio_playback_task amp enable (warm)", ampEnableResult);
-                finish_sd_audio_job();
-                continue;
-            }
         }
 
         if (!audioFS) {
             Serial.println("[AUDIO] ERROR: audioFS is null!");
             // Preserve the normal warm-timeout ownership of amplifier shutdown.
+            publish_audio_receipt(AudioPlaybackReceipt::State::Unavailable);
             finish_sd_audio_job();
             continue;
         }
 
         if (!g_stereoChunkBuffer || !g_mulawChunkBuffer) {
             Serial.println("[AUDIO] ERROR: PSRAM buffers not allocated!");
+            publish_audio_receipt(AudioPlaybackReceipt::State::Unavailable);
             finish_sd_audio_job();
             continue;
         }
@@ -167,6 +191,18 @@ static void sd_audio_playback_task(void* pvParameters) {
                     g_stereoChunkBuffer[j * 2 + 1] = sample; // Right
                 }
 
+                // Volume can change while a clip is playing. Do not continue
+                // emitting samples at a stale level after an I2C failure.
+                const AudioI2cResult volumeResult = audio_apply_pending_volume();
+                if (volumeResult != AudioI2cResult::Ok) {
+                    audio_log_i2c_failure("sd_audio_playback_task pending volume", volumeResult);
+                    publish_audio_receipt(AudioPlaybackReceipt::State::FailedBeforeStart);
+                    writeAborted = true;
+                    break;
+                }
+                // Once a write is submitted it may have emitted partial PCM,
+                // even if it reports an error. Never retry that announcement.
+                publish_audio_receipt(AudioPlaybackReceipt::State::Started);
                 size_t bytes_written = 0;
                 const AudioWriteResult writeResult = audioWriteWithTimeout([&](TickType_t timeoutTicks) {
                     return i2s_channel_write(i2s_tx_chan, g_stereoChunkBuffer, bytesRead * 2 * sizeof(int16_t),
@@ -209,6 +245,9 @@ static void sd_audio_playback_task(void* pvParameters) {
             amp_last_used_ms = millis();
         }
 
+        // No readable clip means there was no PCM, but retrying the same
+        // missing asset cannot help. A Started receipt is already detached.
+        publish_audio_receipt(AudioPlaybackReceipt::State::Unavailable);
         finish_sd_audio_job();
     }
 }
@@ -310,7 +349,7 @@ void play_test_voice() {
 // Every enabled mode speaks "Photo" without its underlying K-band frequency.
 static AudioPlaybackResult play_frequency_voice_impl(AlertBand band, uint16_t freqMHz, AlertDirection direction,
                                                       VoiceAlertMode mode, bool includeDirection,
-                                                      uint8_t bogeyCount) {
+                                                      uint8_t bogeyCount, AudioPlaybackReceipt* receipt = nullptr) {
     if (audio_playing.load()) {
         return AudioPlaybackResult::Busy;
     }
@@ -331,7 +370,7 @@ static AudioPlaybackResult play_frequency_voice_impl(AlertBand band, uint16_t fr
         if (includeDirection) {
             appendAudioClip(laserParams, getDirectionClipFile(direction));
         }
-        return laserParams.numClips > 0 ? start_sd_audio_task(laserParams) : AudioPlaybackResult::Unavailable;
+        return laserParams.numClips > 0 ? start_sd_audio_task(laserParams, receipt) : AudioPlaybackResult::Unavailable;
     }
 
     SDAudioTaskParams params;
@@ -387,7 +426,7 @@ static AudioPlaybackResult play_frequency_voice_impl(AlertBand band, uint16_t fr
         snprintf(params.filePaths[params.numClips++], 48, "%s/bogeys.mul", AUDIO_PATH);
     }
 
-    return params.numClips > 0 ? start_sd_audio_task(params) : AudioPlaybackResult::Unavailable;
+    return params.numClips > 0 ? start_sd_audio_task(params, receipt) : AudioPlaybackResult::Unavailable;
 }
 
 void play_frequency_voice(AlertBand band, uint16_t freqMHz, AlertDirection direction, VoiceAlertMode mode,
@@ -414,7 +453,8 @@ void play_band_only(AlertBand band) {
     start_sd_audio_task(params);
 }
 
-static AudioPlaybackResult play_direction_only_impl(AlertDirection direction, uint8_t bogeyCount) {
+static AudioPlaybackResult play_direction_only_impl(AlertDirection direction, uint8_t bogeyCount,
+                                                         AudioPlaybackReceipt* receipt = nullptr) {
     if (audio_playing.load()) {
         return AudioPlaybackResult::Busy;
     }
@@ -457,7 +497,7 @@ static AudioPlaybackResult play_direction_only_impl(AlertDirection direction, ui
         return AudioPlaybackResult::Unavailable;
     }
 
-    return start_sd_audio_task(params);
+    return start_sd_audio_task(params, receipt);
 }
 
 void play_direction_only(AlertDirection direction, uint8_t bogeyCount) {
@@ -466,16 +506,24 @@ void play_direction_only(AlertDirection direction, uint8_t bogeyCount) {
 
 // Check amp inactivity at most 10 Hz.
 void audio_process_amp_timeout() {
-    if (!amp_is_warm || audio_playing) {
-        return;
-    }
-
     static unsigned long lastAmpTimeoutCheckMs = 0;
     const unsigned long now = millis();
     if (now - lastAmpTimeoutCheckMs < AMP_TIMEOUT_CHECK_INTERVAL_MS) {
         return;
     }
     lastAmpTimeoutCheckMs = now;
+
+    // Retry a failed user volume change even when there is no next alert. Use
+    // a nonblocking bus attempt; the worker also checks before every PCM chunk.
+    if (es8311_initialized.load()) {
+        const AudioI2cResult result = audio_apply_pending_volume(0);
+        if (result != AudioI2cResult::Ok && result != AudioI2cResult::Busy) {
+            audio_log_i2c_failure("audio_process_amp_timeout volume", result);
+        }
+    }
+    if (!amp_is_warm || audio_playing) {
+        return;
+    }
 
     if (now - amp_last_used_ms >= AMP_WARM_TIMEOUT_MS) {
         const AudioI2cResult result = set_speaker_amp(false, 0);
@@ -495,7 +543,8 @@ void audio_process_amp_timeout() {
 }
 
 static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t freqMHz, AlertDirection direction,
-                                                       uint8_t total, uint8_t ahead, uint8_t behind, uint8_t side) {
+                                                       uint8_t total, uint8_t ahead, uint8_t behind, uint8_t side,
+                                                       AudioPlaybackReceipt* receipt = nullptr) {
     if (audio_playing.load()) {
         return AudioPlaybackResult::Busy;
     }
@@ -581,7 +630,7 @@ static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t 
         snprintf(params.filePaths[params.numClips++], 48, "%s/dir_side.mul", AUDIO_PATH);
     }
 
-    return params.numClips > 0 ? start_sd_audio_task(params) : AudioPlaybackResult::Unavailable;
+    return params.numClips > 0 ? start_sd_audio_task(params, receipt) : AudioPlaybackResult::Unavailable;
 }
 
 void play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection direction, uint8_t total, uint8_t ahead,
@@ -590,15 +639,18 @@ void play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection dir
 }
 
 AudioPlaybackResult try_play_frequency_voice(AlertBand band, uint16_t freqMHz, AlertDirection direction,
-                                             VoiceAlertMode mode, bool includeDirection, uint8_t bogeyCount) {
-    return play_frequency_voice_impl(band, freqMHz, direction, mode, includeDirection, bogeyCount);
+                                             VoiceAlertMode mode, bool includeDirection, uint8_t bogeyCount,
+                                             AudioPlaybackReceipt* receipt) {
+    return play_frequency_voice_impl(band, freqMHz, direction, mode, includeDirection, bogeyCount, receipt);
 }
 
-AudioPlaybackResult try_play_direction_only(AlertDirection direction, uint8_t bogeyCount) {
-    return play_direction_only_impl(direction, bogeyCount);
+AudioPlaybackResult try_play_direction_only(AlertDirection direction, uint8_t bogeyCount,
+                                            AudioPlaybackReceipt* receipt) {
+    return play_direction_only_impl(direction, bogeyCount, receipt);
 }
 
 AudioPlaybackResult try_play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection direction,
-                                               uint8_t total, uint8_t ahead, uint8_t behind, uint8_t side) {
-    return play_threat_escalation_impl(band, freqMHz, direction, total, ahead, behind, side);
+                                               uint8_t total, uint8_t ahead, uint8_t behind, uint8_t side,
+                                               AudioPlaybackReceipt* receipt) {
+    return play_threat_escalation_impl(band, freqMHz, direction, total, ahead, behind, side, receipt);
 }

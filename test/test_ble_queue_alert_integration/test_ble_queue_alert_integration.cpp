@@ -834,8 +834,107 @@ void test_sweep_replies_without_request_boundaries_still_parse() {
     }
 }
 
+void test_short_frame_gap_rejects_hybrid_and_recovers_after_overflow() {
+    for (bool checksummed : {false, true}) {
+        for (uint32_t firstSequence : {uint32_t{1}, UINT32_MAX - 24u}) {
+            setUp();
+            auto first = makeAlertFrame(1, 1, 34500, 0x22, 0x80);
+            auto next = makeAlertFrame(1, 1, 34755, 0x82, 0x80);
+            if (!checksummed) {
+                first[2] = next[2] = 0xE9;
+                --first[4];
+                --next[4];
+                first.erase(first.end() - 2);
+                next.erase(next.end() - 2);
+            }
+            const auto filler = makeSweepResponse(PACKET_ID_RESP_CURRENT_VOLUME, {5, 3});
+            uint32_t sequence = firstSequence;
+            uint32_t now = UINT32_MAX - 24u;
+            const auto enqueue = [&](const uint8_t* data, size_t size) {
+                const uint32_t ingress = sequence++;
+                if (sequence == 0) ++sequence;
+                return queue.tryOnNotify(data, size, kCharacteristic, kSession, now++, ingress);
+            };
+            // Production capacity: 23 complete replies and the first prefix.
+            for (size_t i = 0; i < 23; ++i) TEST_ASSERT_TRUE(enqueue(filler.data(), filler.size()));
+            TEST_ASSERT_TRUE(enqueue(first.data(), 8));
+            TEST_ASSERT_FALSE(enqueue(first.data() + 8, first.size() - 8));
+            TEST_ASSERT_FALSE(enqueue(next.data(), 8));
+            queue.process();
+            queue.process();
+            TEST_ASSERT_TRUE(enqueue(next.data() + 8, next.size() - 8));
+            queue.process();
+            TEST_ASSERT_EQUAL_UINT32(0, parser.getAlertCount());
+            TEST_ASSERT_FALSE(parser.hasFreshAlertTable(now));
+            TEST_ASSERT_EQUAL_UINT32(2, HealthCounters::inputDrops());
+            TEST_ASSERT_TRUE(enqueue(next.data(), next.size()));
+            queue.process();
+            AlertData alert;
+            TEST_ASSERT_TRUE(parser.getRenderablePriorityAlert(alert));
+            TEST_ASSERT_EQUAL_UINT32(34755, alert.frequency);
+            TEST_ASSERT_EQUAL(DIR_REAR, alert.direction);
+            TEST_ASSERT_TRUE(parser.hasFreshAlertTable(now));
+            tearDown();
+        }
+    }
+}
+
+void test_short_gap_preserves_complete_frames_and_resyncs_split_headers() {
+    for (size_t split : {size_t{1}, size_t{4}, size_t{8}}) {
+        setUp();
+        const auto before = makeAlertFrame(1, 1, 24150, 0x24, 0x80);
+        const auto partial = makeAlertFrame(1, 1, 34500, 0x22, 0x80);
+        const auto after = makeAlertFrame(1, 1, 34755, 0x82, 0x80);
+        std::vector<uint8_t> notification = before;
+        notification.insert(notification.end(), partial.begin(), partial.begin() + split);
+        std::vector<uint16_t> published;
+        parser.setAlertTableObserver([](const AlertData* rows, size_t count, uint8_t,
+                                        uint32_t, void* context) {
+            if (count) static_cast<std::vector<uint16_t>*>(context)->push_back(rows[0].frequency);
+        }, &published);
+        TEST_ASSERT_TRUE(queue.tryOnNotify(notification.data(), notification.size(), kCharacteristic,
+                                          kSession, 100, 1));
+        // Lost notification 2. A valid frame begins exactly at the boundary.
+        TEST_ASSERT_TRUE(queue.tryOnNotify(after.data(), after.size(), kCharacteristic, kSession, 101, 3));
+        queue.process();
+        TEST_ASSERT_EQUAL_UINT32(2, published.size());
+        TEST_ASSERT_EQUAL_UINT16(24150, published[0]);
+        TEST_ASSERT_EQUAL_UINT16(34755, published[1]);
+        TEST_ASSERT_TRUE(parser.hasFreshAlertTable(101));
+        tearDown();
+    }
+}
+
+void test_short_frame_split_without_gap_remains_valid_for_both_origins() {
+    for (bool checksummed : {false, true}) {
+        for (size_t split : {size_t{1}, size_t{4}, size_t{8}}) {
+            setUp();
+            auto frame = makeAlertFrame(1, 1, 34500, 0x22, 0x80);
+            if (!checksummed) {
+                frame[2] = 0xE9;
+                --frame[4];
+                frame.erase(frame.end() - 2);
+            }
+            TEST_ASSERT_TRUE(queue.tryOnNotify(frame.data(), split, kCharacteristic, kSession, 100, UINT32_MAX));
+            queue.process();
+            TEST_ASSERT_EQUAL_UINT32(0, parser.getAlertCount());
+            TEST_ASSERT_TRUE(queue.tryOnNotify(frame.data() + split, frame.size() - split,
+                                              kCharacteristic, kSession, 101, 1));
+            queue.process();
+            TEST_ASSERT_EQUAL_UINT32(1, parser.getAlertCount());
+            TEST_ASSERT_EQUAL_UINT32(34500, parser.getAllAlerts()[0].frequency);
+            TEST_ASSERT_TRUE(parser.hasFreshAlertTable(100, 0));
+            TEST_ASSERT_EQUAL_UINT32(0, HealthCounters::inputDrops());
+            tearDown();
+        }
+    }
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
+    RUN_TEST(test_short_frame_gap_rejects_hybrid_and_recovers_after_overflow);
+    RUN_TEST(test_short_gap_preserves_complete_frames_and_resyncs_split_headers);
+    RUN_TEST(test_short_frame_split_without_gap_remains_valid_for_both_origins);
     RUN_TEST(test_completed_long_clear_cannot_overtake_newer_short_alert);
     RUN_TEST(test_completed_long_row_cannot_overtake_newer_short_alert);
     RUN_TEST(test_publication_order_controls_all_short_and_drain_between);

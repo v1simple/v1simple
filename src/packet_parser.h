@@ -78,6 +78,7 @@ class PacketParser {
     // Changes on aggregate alert start/end and session reset, including when
     // multiple publications occur before a consumer next observes the parser.
     uint32_t alertLifetime() const { return alertLifetime_; }
+    const ClearedV1Alert& clearedAlert() const { return clearedAlert_; }
 
     bool supportsVolume() const {
         return displayState_.hasVolumeData || (displayState_.hasV1Version && displayState_.v1FirmwareVersion >= 41028);
@@ -128,6 +129,8 @@ class PacketParser {
     std::array<AlertData, MAX_ALERTS> alerts_;
     size_t alertCount_;
     uint32_t alertLifetime_ = 0;
+    AlertData lastRenderableAlert_;
+    ClearedV1Alert clearedAlert_;
     bool alertTableObserved_ = false;
     uint32_t alertTableObservedAtMs_ = 0;
     V1DisplayOnObservation displayOnObservation_;
@@ -164,6 +167,7 @@ class PacketParser {
     void clearPublishedAlerts();
     void resetAlertStateAt(uint32_t nowMs);
     void notifyAlertTableObserver(uint32_t nowMs);
+    void retainAlertPresentation(bool hadAlerts, uint32_t nowMs);
 
     Band decodeBand(uint8_t bandArrow) const;
     Direction decodeDirection(uint8_t bandArrow) const;

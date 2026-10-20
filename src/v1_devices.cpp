@@ -249,7 +249,7 @@ JsonRollbackLoadResult loadDeviceStoreRollbackDocument(fs::FS& filesystem, size_
     if (rollbackPath.length() == 0 || !filesystem.exists(rollbackPath.c_str())) return JsonRollbackLoadResult::Missing;
 
     File file = filesystem.open(rollbackPath.c_str(), FILE_READ);
-    if (!file) return JsonRollbackLoadResult::OutOfMemory;
+    if (!file) return JsonRollbackLoadResult::Unavailable;
     const size_t fileSize = file.size();
     if (fileSize == 0 || fileSize > maxBytes) {
         file.close();
@@ -259,21 +259,21 @@ JsonRollbackLoadResult loadDeviceStoreRollbackDocument(fs::FS& filesystem, size_
     PsramJson::Buffer bytes(fileSize);
     if (!bytes || file.read(bytes.data(), fileSize) != fileSize) {
         file.close();
-        return JsonRollbackLoadResult::OutOfMemory;
+        return JsonRollbackLoadResult::Unavailable;
     }
     file.close();
     doc.clear();
     const ExactJsonInput::Status exact = ExactJsonInput::validate(bytes.data(), fileSize);
     if (exact != ExactJsonInput::Status::Ok) {
         doc.clear();
-        return exact == ExactJsonInput::Status::MemoryUnavailable ? JsonRollbackLoadResult::OutOfMemory
+        return exact == ExactJsonInput::Status::MemoryUnavailable ? JsonRollbackLoadResult::Unavailable
                                                                   : JsonRollbackLoadResult::Invalid;
     }
     const DeserializationError error = deserializeJson(doc, bytes.data(), fileSize);
     if (error || doc.overflowed()) {
         doc.clear();
         return error == DeserializationError::NoMemory || doc.overflowed()
-                   ? JsonRollbackLoadResult::OutOfMemory : JsonRollbackLoadResult::Invalid;
+                   ? JsonRollbackLoadResult::Unavailable : JsonRollbackLoadResult::Invalid;
     }
     return JsonRollbackLoadResult::LoadedRollback;
 }
@@ -740,7 +740,7 @@ V1DeviceStore::StoreSnapshot V1DeviceStore::readStore(fs::FS& filesystem) const 
     if (loadResult == JsonRollbackLoadResult::Missing) {
         return snapshot;
     }
-    if (loadResult == JsonRollbackLoadResult::OutOfMemory) {
+    if (loadResult == JsonRollbackLoadResult::Unavailable) {
         storeReadUnavailable_ = true;
         snapshot.status = StoreReadStatus::Unavailable;
         return snapshot;
@@ -757,7 +757,7 @@ V1DeviceStore::StoreSnapshot V1DeviceStore::readStore(fs::FS& filesystem) const 
             if (attemptedSemanticRollback || loadResult != JsonRollbackLoadResult::LoadedLive) return false;
             const JsonRollbackLoadResult rollback =
                 loadDeviceStoreRollbackDocument(filesystem, MAX_STORE_BYTES, doc);
-            if (rollback == JsonRollbackLoadResult::OutOfMemory) {
+            if (rollback == JsonRollbackLoadResult::Unavailable) {
                 snapshot.status = StoreReadStatus::Unavailable;
                 storeReadUnavailable_ = true;
                 return false;
@@ -822,7 +822,7 @@ V1DeviceStore::StoreSnapshot V1DeviceStore::readStore(fs::FS& filesystem) const 
             if (!attemptedSemanticRollback && loadResult == JsonRollbackLoadResult::LoadedLive) {
                 const JsonRollbackLoadResult rollback =
                     loadDeviceStoreRollbackDocument(filesystem, MAX_STORE_BYTES, doc);
-                if (rollback == JsonRollbackLoadResult::OutOfMemory) {
+                if (rollback == JsonRollbackLoadResult::Unavailable) {
                     snapshot.status = StoreReadStatus::Unavailable;
                     storeReadUnavailable_ = true;
                     return snapshot;

@@ -21,7 +21,7 @@ struct SDAudioTaskParams {
     int numClips;
 };
 
-extern bool es8311_initialized;
+extern std::atomic<bool> es8311_initialized;
 extern bool i2s_initialized;
 extern i2s_chan_handle_t i2s_tx_chan;
 extern std::atomic<TaskHandle_t> audioTaskHandle;
@@ -42,6 +42,7 @@ extern StackType_t g_sdAudioTaskStack[SD_AUDIO_TASK_STACK_SIZE];
 extern StaticTask_t g_sdAudioTaskTCB;
 
 bool es8311_init();
+AudioI2cResult audio_apply_pending_volume(TickType_t timeoutTicks = pdMS_TO_TICKS(50));
 void i2s_init();
 AudioI2cResult set_speaker_amp(bool enable, TickType_t timeoutTicks = pdMS_TO_TICKS(50));
 void audio_log_i2c_failure(const char* context, AudioI2cResult result);

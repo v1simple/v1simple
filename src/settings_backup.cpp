@@ -519,6 +519,7 @@ bool writeBackupAtomically(fs::FS* fs, const SerializedSettingsBackupPayload& pa
 }
 
 bool SettingsManager::backupToSD() {
+    if (!ensureSettingsLoaded()) return false;
     if (!storage_->isReady() || !storage_->isSDCard()) {
         return false; // SD not available, skip silently
     }
@@ -947,6 +948,7 @@ bool SettingsManager::saveDeferredBackup() {
 }
 
 void SettingsManager::requestDeferredBackupFromCurrentState() {
+    if (nvsLoadPending_ || (nvsRecoveryPending_ && !nvsRecoveryInProgress_)) return;
     publishBackupRequest();
     gDeferredSettingsBackupState.pendingRequest.store(true, std::memory_order_relaxed);
     clearDeferredBackupRetry();
@@ -966,6 +968,7 @@ uint32_t SettingsManager::deferredBackupNextAttemptAtMs() const {
 }
 
 void SettingsManager::serviceDeferredBackup(uint32_t nowMs) {
+    if (nvsLoadPending_ || (nvsRecoveryPending_ && !nvsRecoveryInProgress_)) return;
     if (gDeferredSettingsBackupState.writerRetryPending.exchange(false, std::memory_order_relaxed)) {
         gDeferredSettingsBackupState.pendingRequest.store(true, std::memory_order_relaxed);
         clearDeferredBackupRetry();

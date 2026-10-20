@@ -350,6 +350,9 @@ void test_settings_remains_open_after_alp_processing_without_live_alert() {
                  Call::SETTINGS_PREEMPT,
                  Call::READY_GATE,
                  Call::BLE_RUNTIME,
+                 Call::GPS,
+                 Call::SPEED,
+                 Call::ALERT,
                  Call::OBSERVE_ALP,
                  Call::PERSISTENCE,
                  Call::FINISH});

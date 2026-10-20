@@ -12,7 +12,7 @@ queue processing, command completion, and verified application are separate even
 | Main-loop handoff | [`DriveRuntime::onV1Data`](../../src/drive_runtime.cpp) forwards all stamps to [`BleQueueModule::tryOnNotify`](../../src/modules/ble/ble_queue_module.cpp). Admission and consumption both reject a different session generation. |
 | Notification becomes an ESP frame | `BleQueueModule::process` retains complete notification ownership, reassembles B2CE byte streams and B4E0 indexed chunks, and preserves first-arrival ingress and time. A partial B2CE frame keeps its start-byte time; an indexed B4E0 frame keeps its first received chunk's time. Later staging or parsing cannot renew its age. Gaps mark alert-table discontinuity. |
 | Frame becomes an observation | [`PacketParser::parseInternal`](../../src/packet_parser.cpp) validates framing and packet-specific destination/origin/width, then records canonical observations with ingress/revision. User-byte capture has a specialized canonical path in the queue. |
-| Main-loop consumers run | [`DriveLoopCoordinator::tick`](../../src/runtime_coordinator.h) drains the queue before display composition and connection dispatch. AutoPush runs at the end of `DriveRuntime::presentDisplay`; notification callbacks can execute while its synchronous BLE send waits. |
+| Main-loop consumers run | [`DriveLoopCoordinator::tick`](../../src/runtime_coordinator.h) drains the queue before display composition and connection dispatch. AutoPush runs from `DriveRuntime::processPeriodicMaintenance`, after durable-operation timeout handling, including while local settings own presentation; notification callbacks can execute while its synchronous BLE send waits. |
 
 A complete B4E0 frame waits only for short frames already started when its final
 chunk was staged. It then uses the same parser/callback path and processing budget
@@ -33,6 +33,13 @@ the tail after a loss cannot combine with the next reply's head. Complete held
 frames remain publishable, without clearing that recovery requirement. Session
 reset restores ordinary tail-first assembly; without a gap, indexed reordering
 and short/long interleaving retain their existing behavior.
+
+Short-stream framing rejects any candidate containing a known ingress gap after
+its start byte, even if the mixed bytes have a valid checksum. Resynchronization
+begins at the first byte after the gap. This also discards an incomplete header
+whose missing bytes cannot arrive, while preserving complete frames before the
+gap and valid frames starting exactly at it. An intact split frame retains its
+original receipt stamps across notification and uptime rollover.
 
 [`V1PacketFraming`](../../src/v1_packet_framing.h) admits V1 origin EAh with
 checksum or E9h without checksum, using the exact data width for that origin.
@@ -78,6 +85,34 @@ require exactly seven data bytes, V1 origin, framing and the applicable checksum
    A live ALP primary can instead carry V1 radar in cards. Successful parsing
    alone does not prove these final pixels were transferred to a physical panel.
 
+### Completed encounters between presentation passes
+
+The parser retains the last renderable priority of the aggregate V1 encounter,
+including display-owned laser. When that encounter clears, it records the clear
+packet's receipt time and a revision before later frames can replace the live
+snapshot. The pipeline consumes each completed encounter at most once and uses
+that source timestamp for the configured persistence window. A delayed drain
+cannot restart the window. Resetting the detector session invalidates this
+history; switching slots cannot revive a completed encounter from the previous
+policy. A newer live encounter still owns display and voice. Completed history
+is display-only and never queues a voice announcement for an obsolete alert.
+
+[`test_voice_episode_integration`](../../test/test_voice_episode_integration/test_voice_episode_integration.cpp)
+executes queue → parser → pipeline for single-pass live/clear, priority in a
+two-row table, display-only laser, delayed presentation, timestamp zero/rollover,
+new live encounters, session reset and disabled/changed persistence. Existing
+voice episode tests protect live rearming and pending-action deduplication.
+
+Playback admission reserves the audio worker without consuming voice dedup.
+The worker reports when PCM is submitted, terminally unavailable assets, or a
+failure before any PCM. Only the latter remains retryable, and the pipeline
+checks the current episode, alert identity and suppression policy before
+resubmitting it. A partial playback is never replayed. The host
+[`test_audio_worker`](../../test/test_audio_worker/test_audio_worker.cpp) exercises
+this receipt through the parser, pipeline and real worker, including exhausted
+startup attempts followed by recovery and stale-episode controls. Hardware
+I2C/I2S and speaker output remain outside that host test boundary.
+
 ### Executable proof and limits
 
 [`test_ble_queue_alert_integration`](../../test/test_ble_queue_alert_integration/test_ble_queue_alert_integration.cpp)
@@ -90,6 +125,8 @@ selection. Fixed wire vectors have independently summed checksums.
 | `test_targeted_alerts_do_not_wait_for_firmware_version_discovery` | The D6 row is renderable before version discovery. |
 | `test_long_characteristic_alert_envelopes_reach_real_parser_and_clear` | Actual B4E0 indexed envelopes for D6 priority/clear and D8 control traverse production long-RX assembly and parser before version discovery. |
 | `test_alert_destination_compatibility_keeps_origin_checksum_and_shape_validation` | D5, accessory E6, bad D6/D8 checksums, and a short row cannot replace or clear a valid table. |
+| `test_short_frame_gap_rejects_hybrid_and_recovers_after_overflow` | Production-capacity overflow cannot splice two different alert frames into a fresh hybrid, for E9/EAh origins and ingress/time rollover; a later intact alert recovers. |
+| `test_short_gap_preserves_complete_frames_and_resyncs_split_headers` / `test_short_frame_split_without_gap_remains_valid_for_both_origins` | Pre-gap complete frames and frames beginning at the gap survive; incomplete headers resynchronize; intact split frames remain valid. |
 | `test_queue_gap_prevents_cross_cycle_alert_table_publication` | A dropped notification cannot combine old and new rows into a false complete table. |
 | `test_batched_alert_rows_keep_their_arrival_age` | Short and long notifications retain row age when drained together, including uptime wrap; fresh peer rows still assemble. |
 | `test_delayed_partial_alert_frame_keeps_its_first_arrival_age` | Completing an old partial frame cannot make its row fresh enough to combine with a new peer. |
@@ -262,6 +299,13 @@ python3 scripts/run_native_tests_serial.py --env native-sanitized \
 
 Use `test_ble_queue_ingest` when changing notification admission/reassembly;
 its parser double limits its claim. Do not run another PlatformIO job concurrently.
+
+`python3 scripts/test_settings_apply_lifecycle.py` additionally exercises the
+production outer Apply owner, durable operation store, executor and drive-loop
+ordering. It proves that local settings do not stall an Apply, that the overall
+deadline cancels the executor before another write, and that a failed NVS status
+write cannot leave it running. A command already sent produces a partial result;
+the fixture does not prove physical detector state or the final recapture.
 
 For a small agent task, choose **one** repair and name the expected input and final
 observable above. Read the owning path plus its complete test fixture, preserve

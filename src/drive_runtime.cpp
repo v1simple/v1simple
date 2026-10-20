@@ -330,6 +330,29 @@ void DriveRuntime::initializeRuntimeModules() {
     alp_.begin(settings_.get().alpEnabled);
     alp_.setEventBus(&systemEvents_);
     parser_.setAlertTableObserver(observeAlertTable, this);
+    observedSettingsRecoveryRevision_ = settings_.recoveryRevision();
+}
+
+void DriveRuntime::syncRecoveredSettings() {
+    const uint32_t revision = settings_.recoveryRevision();
+    if (revision == observedSettingsRecoveryRevision_) return;
+    const V1Settings& recovered = settings_.get();
+    // These owners were initialized from provisional defaults when NVS was
+    // unavailable. Adopt the recovered configuration before runtime-to-settings
+    // synchronization can mistake an empty OBD address for a user change.
+    gps_.setEnabled(false);
+    gps_.begin(recovered.gpsEnabled, recovered.gpsBaud);
+    obd_.begin(&obdBle_, recovered.obdEnabled, recovered.obdSavedAddress.c_str(),
+               recovered.obdSavedAddrType, recovered.obdMinRssi);
+    obdSettingsSync_.begin(&settings_, &obd_);
+    speed_.syncEnabledInputs(recovered.obdEnabled, recovered.gpsEnabled);
+    alp_.begin(recovered.alpEnabled);
+    audio_set_volume(recovered.voiceVolume);
+    display_.updateColorTheme();
+    display_.forceNextRedraw();
+    if (!power_.ownsDisplayPresentation()) display_.setBrightness(recovered.brightness);
+    ble_.setProxyRuntimeEnabled(recovered.proxyBLE, recovered.proxyName.c_str());
+    observedSettingsRecoveryRevision_ = revision;
 }
 
 void DriveRuntime::finalizeBoot(uint32_t setupStartMs, uint32_t& stageStartedMs) {
@@ -689,7 +712,6 @@ void DriveRuntime::presentDisplay(const DisplayEdges& edges, bool overloadThisLo
     if (displayOrchestration_.processLightweightRefresh(refreshContext)) {
         displayPipeline_.refreshBlinkTick(edges.nowMs);
     }
-    autoPush_.process();
 }
 
 DriveLoopDispatch DriveRuntime::processConnectionDispatch(bool powerPresentationOwned) {
@@ -836,7 +858,23 @@ void DriveRuntime::processSettingsOperation(uint32_t nowMs) {
         return;
     }
     if (static_cast<uint32_t>(nowMs - settingsOperationStartedMs_) >= kOperationTimeoutMs) {
-        const auto terminal = initial.state == V1SettingsOperationStore::State::Recapturing
+        bool detectorWritesSent = false;
+        if (initial.state == V1SettingsOperationStore::State::Running &&
+            initial.kind != V1SettingsOperationStore::Kind::FactoryReset) {
+            auto summary = autoPush_.executionSummary();
+            if (summary.operationId != 0 &&
+                (initial.executorOperationId == 0 || summary.operationId == initial.executorOperationId)) {
+                // Stop the executor before publishing a terminal result, even
+                // if persisting that result must be retried on a later loop.
+                autoPush_.cancelForTimeout();
+                summary = autoPush_.executionSummary();
+                if (!settingsOperations_.updateComponents(summary.components, summary.operationId)) return;
+                for (const auto& component : summary.components) {
+                    detectorWritesSent = detectorWritesSent || component.sent;
+                }
+            }
+        }
+        const auto terminal = initial.state == V1SettingsOperationStore::State::Recapturing || detectorWritesSent
             ? V1SettingsOperationStore::State::Partial
             : V1SettingsOperationStore::State::Failed;
         (void)settingsOperations_.finish(terminal,
@@ -955,7 +993,11 @@ void DriveRuntime::processSettingsOperation(uint32_t nowMs) {
 
 void DriveRuntime::processPeriodicMaintenance(uint32_t nowMs, bool bleConnected, bool bleBackpressure,
                                               bool loopOverloaded, bool forceTailBleDrainPending) {
+    syncRecoveredSettings();
     processSettingsOperation(nowMs);
+    // Detector transactions run independently of presentation ownership. The
+    // durable deadline/cancellation above is checked before another write.
+    autoPush_.process();
     const bool hardPressure = bleBackpressure || loopOverloaded || forceTailBleDrainPending;
     usbTailBusy_ = hardPressure;
     if (!bleConnected) {
@@ -970,11 +1012,15 @@ void DriveRuntime::processPeriodicMaintenance(uint32_t nowMs, bool bleConnected,
         static_cast<uint32_t>(nowMs - connectedPersistenceWindowStartedMs_) >= kConnectedPersistenceDeferralMs;
     const bool admitPersistence = !hardPressure && (!bleConnected || connectedPersistenceDue);
 
-    obdSettingsSync_.process(nowMs);
     if (admitPersistence) {
         settings_.serviceDeferredPersist(nowMs);
         settings_.serviceDeferredBackup(nowMs);
     }
+    syncRecoveredSettings();
+    // A provisional runtime address is not a user edit. Its setter must not
+    // become the caller that finishes recovery and then overwrites the pairing
+    // with a snapshot captured before the runtime adopted recovered settings.
+    if (!settings_.recoveryPending()) obdSettingsSync_.process(nowMs);
     if (!hardPressure) {
         ble_.serviceDeferredBondBackup(nowMs);
     }

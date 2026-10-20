@@ -14,11 +14,70 @@
 #include "modules/wifi/wifi_saved_network_mutation_policy.h"
 #include "modules/wifi/wifi_setup_network_policy.h"
 #include "modules/wifi/wifi_sta_slot_policy.h"
+#include <algorithm>
+#include <cstring>
 #include <vector>
 
 #include <esp_wifi.h>
+#include <freertos/FreeRTOS.h>
 
 namespace {
+
+// Arduino's cached status survives begin(), including the preceding candidate's
+// failure. Only a failure event for the armed SSID belongs to this attempt.
+// The listener has process lifetime and never captures a WiFiManager instance.
+portMUX_TYPE wifiAttemptMux = portMUX_INITIALIZER_UNLOCKED;
+char wifiAttemptSsid[33] = {};
+size_t wifiAttemptSsidLength = 0;
+wl_status_t wifiAttemptFailure = WL_IDLE_STATUS;
+
+void observeWifiAttemptEvent(arduino_event_id_t, arduino_event_info_t info) {
+    const auto& disconnected = info.wifi_sta_disconnected;
+    // Only these reasons can publish a terminal status in Arduino's system
+    // listener. AUTH_EXPIRE deliberately leaves its old status untouched while
+    // retrying, so even a matching SSID does not make that cached failure fresh.
+    if (disconnected.reason != WIFI_REASON_NO_AP_FOUND && disconnected.reason != WIFI_REASON_AUTH_FAIL &&
+        disconnected.reason != WIFI_REASON_ASSOC_FAIL) {
+        return;
+    }
+    // The system listener runs first; retain its initial-auth retry policy.
+    const wl_status_t status = WiFi.status();
+    if (status != WL_CONNECT_FAILED && status != WL_NO_SSID_AVAIL) {
+        return;
+    }
+    portENTER_CRITICAL(&wifiAttemptMux);
+    if (wifiAttemptSsidLength != 0 && disconnected.ssid_len == wifiAttemptSsidLength &&
+        memcmp(disconnected.ssid, wifiAttemptSsid, wifiAttemptSsidLength) == 0) {
+        wifiAttemptFailure = status;
+    }
+    portEXIT_CRITICAL(&wifiAttemptMux);
+}
+
+void startWifiAttempt(const String& ssid, const String& password) {
+    static const auto listener = WiFi.onEvent(observeWifiAttemptEvent, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+    (void)listener;
+    portENTER_CRITICAL(&wifiAttemptMux);
+    wifiAttemptSsidLength = std::min(static_cast<size_t>(ssid.length()), sizeof(wifiAttemptSsid) - 1);
+    memcpy(wifiAttemptSsid, ssid.c_str(), wifiAttemptSsidLength);
+    wifiAttemptSsid[wifiAttemptSsidLength] = '\0';
+    wifiAttemptFailure = WL_IDLE_STATUS;
+    portEXIT_CRITICAL(&wifiAttemptMux);
+
+    // These are the same operations as WiFi.begin(), but their bool results
+    // distinguish a synchronous start failure from an old cached status.
+    if (!WiFi.STA.begin() || !WiFi.STA.connect(ssid.c_str(), password.c_str())) {
+        portENTER_CRITICAL(&wifiAttemptMux);
+        wifiAttemptFailure = WL_CONNECT_FAILED;
+        portEXIT_CRITICAL(&wifiAttemptMux);
+    }
+}
+
+wl_status_t currentWifiAttemptFailure() {
+    portENTER_CRITICAL(&wifiAttemptMux);
+    const wl_status_t failure = wifiAttemptFailure;
+    portEXIT_CRITICAL(&wifiAttemptMux);
+    return failure;
+}
 
 int16_t startPhysicalWifiScan(void* /*ctx*/) {
     WiFi.scanDelete();
@@ -600,7 +659,7 @@ void WiFiManager::processWifiClientConnectPhase() {
         WiFi.setSleep(false);
         WiFi.setAutoReconnect(true);
         Serial.println("[WiFiClient] Connecting to configured network");
-        WiFi.begin(pendingConnectSSID_.c_str(), pendingConnectPassword_.c_str());
+        startWifiAttempt(pendingConnectSSID_, pendingConnectPassword_);
         wifiConnectStartMs_ = now;
         wifiConnectPhase_ = WifiConnectPhase::IDLE;
         break;
@@ -980,12 +1039,13 @@ void WiFiManager::checkWifiClientStatus() {
                 pendingConnectPersistCredentials_ = true;
                 pendingConnectSlotIndex_ = -1;
             }
-        } else if (status == WL_CONNECT_FAILED || status == WL_NO_SSID_AVAIL) {
+        } else if (const wl_status_t failure = currentWifiAttemptFailure();
+                   failure == WL_CONNECT_FAILED || failure == WL_NO_SSID_AVAIL) {
             const bool wasMaintenanceAutoConnect =
                 maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::CONNECTING;
             wifiClientState_ = WIFI_CLIENT_FAILED;
             currentConnectedSlotIndex_ = -1;
-            Serial.printf("[WiFiClient] Connection failed: %d\n", status);
+            Serial.printf("[WiFiClient] Connection failed: %d\n", failure);
             wifiConnectStartMs_ = 0;
 
             pendingConnectSSID_ = "";

@@ -91,6 +91,7 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     };
 
     static DriveRuntime* callbackOwner_;
+    uint32_t observedSettingsRecoveryRevision_ = 0;
     static void onV1Data(const uint8_t* data, size_t length, uint16_t charUuid, uint32_t sessionGeneration,
                          uint32_t callbackMillis, uint32_t ingressSequence);
     static void onV1ConnectImmediate();
@@ -106,6 +107,7 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     void initializeBle(uint32_t setupStartMs, uint32_t& stageStartedMs);
     void initializeTouchAndUi();
     void initializeRuntimeModules();
+    void syncRecoveredSettings();
     void finalizeBoot(uint32_t setupStartMs, uint32_t& stageStartedMs);
     bool requestMaintenanceBootRestart();
     DriveLoopTiming beginDriveLoop();

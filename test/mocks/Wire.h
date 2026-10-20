@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <vector>
 
 class TwoWire {
@@ -60,6 +61,9 @@ public:
         ++endTransmissionCalls;
         lastSendStop = sendStop;
         transmissionHistory.push_back(TransmissionRecord{lastTxAddress, txBuffer, sendStop});
+        if (onEndTransmission) {
+            onEndTransmission();
+        }
         if (endTransmissionResults.empty()) {
             return 0;
         }
@@ -141,8 +145,10 @@ public:
         endTransmissionResults.clear();
         requestResults.clear();
         started = false;
+        onEndTransmission = nullptr;
     }
 
+    std::function<void()> onEndTransmission;
     int beginCalls = 0;
     int beginTransmissionCalls = 0;
     int endTransmissionCalls = 0;

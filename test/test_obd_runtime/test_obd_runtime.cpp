@@ -666,9 +666,64 @@ void test_transport_binding_is_idempotent_but_rejects_rebinding() {
         obdTransportBindingAccepted(true, &firstClient, &firstRuntime, &firstClient, &secondRuntime));
 }
 
+static void checkManualPairQualification(bool savedAdapter, bool discoveryDisconnect) {
+    Fixture fixture;
+    fixture.begin(true, savedAdapter ? kSavedAddress : "");
+    const char* candidate = "A4:C1:38:00:33:44";
+    TEST_ASSERT_TRUE(fixture.runtime.requestManualPairScan(fixture.nowMs));
+    fixture.advance();
+    TEST_ASSERT_EQUAL(ObdConnectionState::SCANNING, fixture.runtime.getState());
+    fixture.runtime.onDeviceFound("OBDLink CX", candidate, -55, 0);
+    fixture.advance();
+    TEST_ASSERT_EQUAL_STRING(candidate, fixture.runtime.connectAddress_);
+    fixture.advance();
+    fixture.runtime.setTestBleConnected(true);
+    fixture.advance();
+    TEST_ASSERT_EQUAL(ObdConnectionState::DISCOVERING, fixture.runtime.getState());
+    if (discoveryDisconnect) {
+        fixture.runtime.setTestBleConnected(false);
+        fixture.runtime.onBleDisconnect(534);
+        fixture.advance();
+        TEST_ASSERT_EQUAL(ObdConnectionState::DISCONNECTED, fixture.runtime.getState());
+        TEST_ASSERT_TRUE(fixture.runtime.manualCandidateValid_);
+        TEST_ASSERT_EQUAL_UINT32(1, fixture.runtime.snapshot(fixture.nowMs).securityRepairs);
+        fixture.advance();
+        TEST_ASSERT_EQUAL(ObdConnectionState::CONNECTING, fixture.runtime.getState());
+        TEST_ASSERT_EQUAL_STRING(candidate, fixture.runtime.connectAddress_);
+        TEST_ASSERT_TRUE(fixture.runtime.connectTargetFromManualCandidate_);
+        TEST_ASSERT_EQUAL_STRING(savedAdapter ? kSavedAddress : "", fixture.runtime.getSavedAddress());
+        fixture.advance();
+        fixture.runtime.setTestBleConnected(true);
+        fixture.advance();
+    }
+    TEST_ASSERT_EQUAL_STRING(candidate, fixture.runtime.connectAddress_);
+    fixture.advance(obd::POST_CONNECT_SETTLE_MS);
+    fixture.advance();
+    fixture.advance();
+    TEST_ASSERT_EQUAL(ObdConnectionState::AT_INIT, fixture.runtime.getState());
+    fixture.finishInit();
+    TEST_ASSERT_EQUAL_STRING(candidate, fixture.runtime.getSavedAddress());
+    TEST_ASSERT_FALSE(fixture.runtime.manualScanPending_);
+}
+
+void test_manual_replacement_retry_qualifies_candidate_not_saved_adapter() {
+    checkManualPairQualification(true, true);
+}
+
+void test_first_manual_pair_retry_qualifies_candidate() {
+    checkManualPairQualification(false, true);
+}
+
+void test_manual_replacement_without_failure_qualifies_candidate() {
+    checkManualPairQualification(true, false);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_initial_connection_runs_discovery_init_and_acquires_speed);
+    RUN_TEST(test_manual_replacement_retry_qualifies_candidate_not_saved_adapter);
+    RUN_TEST(test_first_manual_pair_retry_qualifies_candidate);
+    RUN_TEST(test_manual_replacement_without_failure_qualifies_candidate);
     RUN_TEST(test_due_speed_poll_waits_for_rssi_without_write_errors);
     RUN_TEST(test_manual_scan_times_out_to_idle_and_discards_candidate_session);
     RUN_TEST(test_manual_scan_honors_persisted_minus_100_dbm_threshold);

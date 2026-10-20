@@ -122,6 +122,8 @@ public:
     bool hasDisplayLaserAlert() const { return (state.activeBands & BAND_LASER) != 0; }
     bool hasAlerts()     const { return hasAlertsFlag || hasDisplayLaserAlert(); }
     uint32_t alertLifetime() const { return alertLifetimeValue; }
+    const ClearedV1Alert& clearedAlert() const { return clearedAlertValue; }
+    ClearedV1Alert clearedAlertValue;
     bool hasFreshAlertTable(uint32_t, uint32_t = 1500) const { return freshAlertTable; }
     int  getAlertCount() const { return static_cast<int>(alerts.size()); }
     AlertData getPriorityAlert() const {

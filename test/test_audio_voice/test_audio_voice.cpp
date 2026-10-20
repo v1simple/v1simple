@@ -19,7 +19,7 @@
 SerialClass Serial;
 unsigned long mockMillis = 10000;
 unsigned long mockMicros = 0;
-bool es8311_initialized = true;
+std::atomic<bool> es8311_initialized{true};
 bool i2s_initialized = true;
 i2s_chan_handle_t i2s_tx_chan = nullptr;
 std::atomic<TaskHandle_t> audioTaskHandle{nullptr};
@@ -32,6 +32,7 @@ SDAudioTaskParams g_sdAudioTaskParams{};
 StackType_t g_sdAudioTaskStack[SD_AUDIO_TASK_STACK_SIZE]{};
 StaticTask_t g_sdAudioTaskTCB{};
 bool es8311_init() { return true; }
+AudioI2cResult audio_apply_pending_volume(TickType_t) { return AudioI2cResult::Ok; }
 void i2s_init() {}
 AudioI2cResult set_speaker_amp(bool, TickType_t) { return AudioI2cResult::Ok; }
 void audio_log_i2c_failure(const char*, AudioI2cResult) {}

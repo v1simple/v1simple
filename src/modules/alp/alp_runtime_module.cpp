@@ -172,6 +172,8 @@ void AlpRuntimeModule::begin(bool enabled) {
     // Reinitialization must not carry a stale session or warm-up state.
     session_ = AlertSession{};
     currentEvent_ = AlpLaserEvent{};
+    endedEvent_ = AlpLaserEvent{};
+    ++endedEventRevision_;
     firstFrameMs_ = 0;
     warmUpPreambleMs_ = 0;
     lastHeartbeatMs_ = 0;
@@ -316,6 +318,7 @@ void AlpRuntimeModule::updateCurrentEvent(uint32_t nowMs) {
         next.closedAtMs = nowMs;
     }
 
+    retainEndedEvent(next, nowMs);
     currentEvent_ = next;
 }
 

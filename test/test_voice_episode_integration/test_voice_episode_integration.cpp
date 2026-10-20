@@ -74,7 +74,7 @@ struct VoiceRuntime {
     ~VoiceRuntime() { queue.end(); }
 
     void enqueue(uint8_t id, std::initializer_list<uint8_t> payload, uint32_t nowMs) {
-        const uint8_t destination = id == PACKET_ID_ALERT_DATA ? 0xD8 : 0xD6;
+        const uint8_t destination = (id == PACKET_ID_ALERT_DATA || id == PACKET_ID_DISPLAY_DATA) ? 0xD8 : 0xD6;
         std::vector<uint8_t> frame{0xAA, destination, 0xEA, id, static_cast<uint8_t>(payload.size() + 1)};
         frame.insert(frame.end(), payload);
         uint8_t checksum = 0;
@@ -106,16 +106,19 @@ struct VoiceRuntime {
 } // namespace
 
 AudioPlaybackResult try_play_frequency_voice(AlertBand, uint16_t frequency, AlertDirection,
-                                             VoiceAlertMode, bool, uint8_t) {
+                                             VoiceAlertMode, bool, uint8_t, AudioPlaybackReceipt* receipt) {
+    if (receipt) receipt->state.store(AudioPlaybackReceipt::State::Started);
     attemptedFrequencies.push_back(frequency);
     return playbackResult;
 }
-AudioPlaybackResult try_play_direction_only(AlertDirection, uint8_t) {
+AudioPlaybackResult try_play_direction_only(AlertDirection, uint8_t, AudioPlaybackReceipt* receipt) {
+    if (receipt) receipt->state.store(AudioPlaybackReceipt::State::Started);
     TEST_FAIL_MESSAGE("unexpected direction-only announcement");
     return AudioPlaybackResult::Unavailable;
 }
 AudioPlaybackResult try_play_threat_escalation(AlertBand, uint16_t, AlertDirection,
-                                               uint8_t, uint8_t, uint8_t, uint8_t) {
+                                               uint8_t, uint8_t, uint8_t, uint8_t, AudioPlaybackReceipt* receipt) {
+    if (receipt) receipt->state.store(AudioPlaybackReceipt::State::Started);
     TEST_FAIL_MESSAGE("unexpected escalation announcement");
     return AudioPlaybackResult::Unavailable;
 }
@@ -236,8 +239,101 @@ void test_new_encounter_does_not_inherit_unavailable_audio_retry_delay() {
     TEST_ASSERT_EQUAL_UINT(2, attemptedFrequencies.size());
 }
 
+void test_batched_completed_encounter_retains_priority_without_obsolete_voice() {
+    VoiceRuntime runtime;
+    runtime.settings.slotAlertPersistSec[0] = 3;
+    runtime.alert(10000, 34700, true);
+    runtime.clear(10100);
+    runtime.present(11500);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_PERSISTED, runtime.display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL_UINT32(34700, runtime.display.lastRenderFrame.v1Priority.frequency);
+    TEST_ASSERT_EQUAL_UINT(0, attemptedFrequencies.size());
+    runtime.pipeline.refreshBlinkTick(13099);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_PERSISTED, runtime.display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_TRUE(runtime.pipeline.v1PersistenceRefreshDue(13100));
+    runtime.pipeline.refreshBlinkTick(13100);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, runtime.display.lastRenderFrame.primaryKind);
+    runtime.pipeline.handleParsed(13200);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, runtime.display.lastRenderFrame.primaryKind);
+}
+
+void test_delayed_completed_encounter_cannot_renew_expired_persistence() {
+    VoiceRuntime runtime;
+    runtime.settings.slotAlertPersistSec[0] = 3;
+    runtime.alert(10000);
+    runtime.clear(10100);
+    runtime.present(13100);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, runtime.display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_FALSE(runtime.persistence.getPersistedAlert().isValid);
+    TEST_ASSERT_EQUAL_UINT(0, attemptedFrequencies.size());
+}
+
+void test_completed_encounter_timestamp_wrap_and_zero_keep_original_expiry() {
+    for (uint32_t clearedAt : {uint32_t{0}, UINT32_MAX - 999u}) {
+        VoiceRuntime runtime;
+        runtime.settings.slotAlertPersistSec[0] = 3;
+        runtime.alert(clearedAt - 100u);
+        runtime.clear(clearedAt);
+        runtime.present(clearedAt + 2000u);
+        TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_PERSISTED, runtime.display.lastRenderFrame.primaryKind);
+        runtime.pipeline.refreshBlinkTick(clearedAt + 2999u);
+        TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_PERSISTED, runtime.display.lastRenderFrame.primaryKind);
+        runtime.pipeline.refreshBlinkTick(clearedAt + 3000u);
+        TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, runtime.display.lastRenderFrame.primaryKind);
+    }
+}
+
+void test_completed_encounter_does_not_replace_new_live_or_survive_session_reset() {
+    VoiceRuntime runtime;
+    runtime.settings.slotAlertPersistSec[0] = 3;
+    runtime.alert(10000);
+    runtime.clear(10100);
+    runtime.alert(10200, 35500);
+    runtime.present(10200);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_LIVE, runtime.display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL_UINT32(35500, runtime.display.lastRenderFrame.v1Priority.frequency);
+    TEST_ASSERT_EQUAL_UINT(1, attemptedFrequencies.size());
+    runtime.clear(10300);
+    runtime.present(10300);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_PERSISTED, runtime.display.lastRenderFrame.primaryKind);
+    runtime.queue.openSession(10);
+    runtime.parser.resetAlertState(); // Connection owner resets parser session state.
+    runtime.pipeline.handleParsed(10400);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, runtime.display.lastRenderFrame.primaryKind);
+}
+
+void test_slot_switch_cannot_resurrect_unpresented_or_expired_encounter() {
+    VoiceRuntime runtime;
+    runtime.settings.slotAlertPersistSec[0] = 0;
+    runtime.settings.slotAlertPersistSec[1] = 3;
+    runtime.alert(10000);
+    runtime.clear(10100);
+    runtime.present(10100);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, runtime.display.lastRenderFrame.primaryKind);
+    runtime.settings.settings.activeSlot = 1;
+    runtime.pipeline.handleParsed(10200);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::IDLE, runtime.display.lastRenderFrame.primaryKind);
+}
+
+void test_batched_display_laser_clear_retains_laser_without_radar_rows() {
+    VoiceRuntime runtime;
+    runtime.settings.slotAlertPersistSec[0] = 3;
+    runtime.enqueue(PACKET_ID_DISPLAY_DATA, {0x49, 0, 0xFF, 0x21, 0, 0x0C, 0, 0x62}, 10000);
+    runtime.enqueue(PACKET_ID_DISPLAY_DATA, {0x3F, 0, 0, 0, 0, 0x0C, 0, 0x62}, 10100);
+    runtime.present(10100);
+    TEST_ASSERT_EQUAL(RenderFramePrimaryKind::V1_PERSISTED, runtime.display.lastRenderFrame.primaryKind);
+    TEST_ASSERT_EQUAL(BAND_LASER, runtime.display.lastRenderFrame.v1Priority.band);
+    TEST_ASSERT_EQUAL_UINT(0, attemptedFrequencies.size());
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_batched_display_laser_clear_retains_laser_without_radar_rows);
+    RUN_TEST(test_batched_completed_encounter_retains_priority_without_obsolete_voice);
+    RUN_TEST(test_delayed_completed_encounter_cannot_renew_expired_persistence);
+    RUN_TEST(test_completed_encounter_timestamp_wrap_and_zero_keep_original_expiry);
+    RUN_TEST(test_completed_encounter_does_not_replace_new_live_or_survive_session_reset);
+    RUN_TEST(test_slot_switch_cannot_resurrect_unpresented_or_expired_encounter);
     RUN_TEST(test_coalesced_clear_rearms_same_frequency_once);
     RUN_TEST(test_separately_presented_clear_also_rearms_inside_cooldown);
     RUN_TEST(test_continuing_encounter_preserves_dedup_and_frequency_change_cooldown);

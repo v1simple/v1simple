@@ -119,6 +119,40 @@ void test_fix_loss_invalidates_speed_sample() {
     TEST_ASSERT_FALSE(status.hasFix);
 }
 
+void test_invalid_rmc_releases_speed_mute_while_gga_retains_position() {
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPGGA,123520,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*4D", 9900));
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPRMC,123519,A,4807.038,N,01131.000,E,000.0,084.4,230394,003.1,W*6E", 10000));
+    SpeedSourceSelector selector;
+    selector.begin(nullptr, false, &gpsRuntimeModule, true);
+    SpeedMuteModule mute;
+    mute.begin(true, 25, 3, 0);
+    selector.update(10000);
+    auto selected = selector.selectedSpeed();
+    TEST_ASSERT_TRUE(selected.valid);
+    TEST_ASSERT_TRUE(mute.update(selected.speedMph, selected.valid, 10000).shouldMute);
+
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPRMC,123521,V,4807.038,N,01131.000,E,000.0,000.0,230394,003.1,W*7A", 11000));
+    gpsRuntimeModule.update(11000);
+    selector.update(11000);
+    selected = selector.selectedSpeed();
+    TEST_ASSERT_TRUE(gpsRuntimeModule.snapshot(11000).hasFix);
+    TEST_ASSERT_FALSE(gpsRuntimeModule.snapshot(11000).sampleValid);
+    TEST_ASSERT_FALSE(selected.valid);
+    TEST_ASSERT_FALSE(mute.update(selected.speedMph, selected.valid, 11000).shouldMute);
+
+    TEST_ASSERT_TRUE(gpsRuntimeModule.injectNmeaSentenceForTest(
+        "$GPRMC,123519,A,4807.038,N,01131.000,E,040.0,084.4,230394,003.1,W*6A", 12000));
+    selector.update(12000);
+    selected = selector.selectedSpeed();
+    TEST_ASSERT_TRUE(selected.valid);
+    TEST_ASSERT_EQUAL_UINT32(12000, selected.timestampMs);
+    TEST_ASSERT_FLOAT_WITHIN(0.02f, 46.03116f, selected.speedMph);
+    TEST_ASSERT_FALSE(mute.update(selected.speedMph, selected.valid, 12000).shouldMute);
+}
+
 void test_invalid_coordinate_is_rejected() {
     const bool accepted = gpsRuntimeModule.injectNmeaSentenceForTest(
         "$GPGGA,123520,4807.038,N,01161.000,E,1,08,0.9,545.4,M,46.9,M,,*48", 2500);
@@ -463,6 +497,7 @@ int main() {
     RUN_TEST(test_gga_rejects_signed_and_overflowing_unsigned_fields);
     RUN_TEST(test_bad_checksum_is_rejected_and_counted);
     RUN_TEST(test_fix_loss_invalidates_speed_sample);
+    RUN_TEST(test_invalid_rmc_releases_speed_mute_while_gga_retains_position);
     RUN_TEST(test_invalid_coordinate_is_rejected);
     RUN_TEST(test_rejected_gga_does_not_commit_quality_or_promote_gps);
     RUN_TEST(test_detection_timeout_disables_runtime_polling);

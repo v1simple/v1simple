@@ -66,18 +66,21 @@ void play_frequency_voice(AlertBand,
 void play_direction_only(AlertDirection, uint8_t) {}
 void play_threat_escalation(AlertBand, uint16_t, AlertDirection, uint8_t, uint8_t, uint8_t, uint8_t) {}
 AudioPlaybackResult try_play_frequency_voice(AlertBand band, uint16_t freq, AlertDirection, VoiceAlertMode, bool,
-                                             uint8_t) {
+                                             uint8_t, AudioPlaybackReceipt* receipt) {
+    if (receipt) receipt->state.store(AudioPlaybackReceipt::State::Started);
     ++g_voicePlaybackAttempts;
     g_lastVoiceBand = band;
     g_lastVoiceFrequency = freq;
     return g_voicePlaybackResult;
 }
-AudioPlaybackResult try_play_direction_only(AlertDirection, uint8_t) {
+AudioPlaybackResult try_play_direction_only(AlertDirection, uint8_t, AudioPlaybackReceipt* receipt) {
+    if (receipt) receipt->state.store(AudioPlaybackReceipt::State::Started);
     ++g_voicePlaybackAttempts;
     return g_voicePlaybackResult;
 }
 AudioPlaybackResult try_play_threat_escalation(AlertBand band, uint16_t freq, AlertDirection, uint8_t, uint8_t, uint8_t,
-                                               uint8_t) {
+                                               uint8_t, AudioPlaybackReceipt* receipt) {
+    if (receipt) receipt->state.store(AudioPlaybackReceipt::State::Started);
     ++g_voicePlaybackAttempts;
     ++g_escalationPlaybackAttempts;
     g_lastVoiceBand = band;
@@ -151,7 +154,7 @@ void setUp() {
     alertPersistence = AlertPersistenceModule{};
     speedMute = SpeedMuteModule{};
     voice = VoiceModule{};
-    module = DisplayPipelineModule{};
+    // begin() resets the pipeline while preserving its receipt address.
     alpModule = AlpRuntimeModule{};
     alpLatch = AlpEventLatch{};
     displayMode = DisplayMode::IDLE;
@@ -1478,7 +1481,7 @@ void test_handle_parsed_keeps_latched_alp_event_within_persist_window() {
     module.handleParsed(1000);
 
     alpModule.testSetState(AlpState::TEARDOWN);
-    alpModule.testCloseSession();
+    alpModule.testCloseSession(1500); // Source close time, before presentation.
 
     display.reset();
     mockMillis = 1500;
@@ -1506,7 +1509,7 @@ void test_handle_parsed_clears_latched_alp_event_after_persist_window() {
     module.handleParsed(1000);
 
     alpModule.testSetState(AlpState::TEARDOWN);
-    alpModule.testCloseSession();
+    alpModule.testCloseSession(1500); // Source close time, before presentation.
 
     mockMillis = 1500;
     mockMicros = 1500 * 1000UL;
@@ -1536,7 +1539,7 @@ void test_handle_parsed_does_not_restart_alp_persistence_window() {
     module.handleParsed(1000);
 
     alpModule.testSetState(AlpState::TEARDOWN);
-    alpModule.testCloseSession();
+    alpModule.testCloseSession(1500); // Source close time, before presentation.
 
     mockMillis = 1500;
     mockMicros = 1500 * 1000UL;

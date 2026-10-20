@@ -51,6 +51,11 @@ class DriveLoopCoordinator {
             if (!runtime.preemptSettingsForLiveAlert()) {
                 runtime.openBootReadyGate(timing.nowMs);
                 runtime.processBleRuntime();
+                // Keep serial input current while sliders own presentation.
+                // Otherwise old UART bytes acquire a fresh timestamp on exit.
+                runtime.processGps(timing.nowMs);
+                runtime.processSpeed(timing.nowMs);
+                runtime.processSpeedAlert(timing.nowMs);
                 runtime.observeAlpProductState(timing.nowMs);
                 runtime.processPeriodicMaintenance(timing.nowMs, bleConnected, false, false, true);
                 runtime.finishDriveLoop(false, timing.loopStartUs, true);

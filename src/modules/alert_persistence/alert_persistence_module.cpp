@@ -20,7 +20,7 @@ void AlertPersistenceModule::startPersistence(unsigned long now) {
         // a call-site regression.
         return;
     }
-    if (alertClearedTime_ != 0) {
+    if (alertPersistenceActive_) {
         // Persistence window already in flight. Expected high-frequency
         // no-op — renderIdleOwner() calls us every idle tick during a
         // window and we idempotently ignore repeats.
@@ -37,5 +37,5 @@ void AlertPersistenceModule::clearPersistence() {
 }
 
 bool AlertPersistenceModule::shouldShowPersisted(unsigned long now, unsigned long persistMs) const {
-    return alertPersistenceActive_ && (now - alertClearedTime_) < persistMs;
+    return alertPersistenceActive_ && static_cast<uint32_t>(now - alertClearedTime_) < persistMs;
 }

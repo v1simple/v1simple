@@ -66,6 +66,8 @@ class AutoPushModule {
     QueueResult queuePushNow(const PushNowRequest& request);
     static V1SettingsOperationStore::Reason durableReasonForQueueResult(QueueResult result);
     void process();
+    // Stop pending detector writes and release leases when the durable owner expires.
+    void cancelForTimeout();
     bool appendStatusJson(JsonObject root) const;
     String getStatusJson() const;
     bool isActive() const { return state_.step != Step::Idle; }
@@ -161,6 +163,7 @@ class AutoPushModule {
         CUSTOM_READBACK_TIMEOUT,
         PROXY_OWNS_DETECTOR,
         IN_THE_BOX_PERSIST_FAILED,
+        OPERATION_TIMEOUT,
     };
 
     struct ComponentStatus {

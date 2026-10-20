@@ -74,7 +74,7 @@
     let colorsLoaded = $state(false);
     let saving = $state(false);
     let message = $state(null);
-    let stealthSaveRequestId = 0;
+    let stealthSaving = $state(false);
 
     let pickerOpen = $state(false);
     let pickerKey = $state(null);
@@ -200,7 +200,7 @@
     }
 
     async function saveColors() {
-        if (saving || loading || !colorsLoaded) return;
+        if (saving || stealthSaving || loading || !colorsLoaded) return;
         saving = true;
         message = null;
         try {
@@ -237,7 +237,7 @@
     }
 
     async function resetDefaults() {
-        if (saving) return;
+        if (saving || stealthSaving) return;
         if (!confirm('Reset display colors, brightness, and status indicators to defaults?')) return;
         saving = true;
         try {
@@ -263,8 +263,9 @@
     }
 
     async function saveStealthEnabled(checked) {
+        if (stealthSaving || saving || loading) return;
         const previous = stealthEnabled;
-        const requestId = ++stealthSaveRequestId;
+        stealthSaving = true;
         stealthEnabled = checked;
         message = null;
 
@@ -279,14 +280,12 @@
             if (!res.ok) {
                 throw new Error('Failed to save stealth setting');
             }
-            if (requestId === stealthSaveRequestId) {
-                message = { type: 'success', text: 'Stealth setting saved' };
-            }
+            message = { type: 'success', text: 'Stealth setting saved' };
         } catch (_) {
-            if (requestId === stealthSaveRequestId) {
-                stealthEnabled = previous;
-                message = { type: 'error', text: 'Failed to save stealth setting' };
-            }
+            stealthEnabled = previous;
+            message = { type: 'error', text: 'Failed to save stealth setting' };
+        } finally {
+            stealthSaving = false;
         }
     }
 </script>
@@ -346,7 +345,7 @@
         </div>
 
         <div class="grid grid-cols-2 gap-3 sm:flex">
-            <button class="btn col-span-2 sm:flex-1 btn-primary" onclick={saveColors} disabled={saving}>
+            <button class="btn col-span-2 sm:flex-1 btn-primary" onclick={saveColors} disabled={saving || stealthSaving}>
                 {#if saving}
                     <span class="loading loading-sm loading-spinner"></span>
                 {:else}
@@ -355,7 +354,7 @@
             </button>
             <button class="btn btn-secondary" onclick={testColors} disabled={saving}>Preview</button
             >
-            <button class="btn btn-outline" onclick={resetDefaults} disabled={saving}
+            <button class="btn btn-outline" onclick={resetDefaults} disabled={saving || stealthSaving}
                 >Reset Defaults</button
             >
         </div>
@@ -394,6 +393,7 @@
                             title="Quiet screen between alerts"
                             description="Stealth mode shows only OBD speed between alerts (-- when unavailable). Alerts display normally."
                             checked={stealthEnabled}
+                            disabled={saving || stealthSaving}
                             onChange={saveStealthEnabled}
                         />
                         <p class="copy-caption">Saves immediately. You can also double-press BOOT to toggle this setting.</p>

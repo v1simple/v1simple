@@ -1,5 +1,7 @@
 #pragma once
 
+#include "audio_playback_receipt.h"
+
 #include <stdint.h>
 #include "settings_types.h"
 
@@ -36,12 +38,14 @@ void play_alert_voice(AlertBand band, AlertDirection direction);
 void play_frequency_voice(AlertBand band, uint16_t freqMHz, AlertDirection direction, VoiceAlertMode mode,
                           bool includeDirection, uint8_t bogeyCount = 1);
 AudioPlaybackResult try_play_frequency_voice(AlertBand band, uint16_t freqMHz, AlertDirection direction,
-                                             VoiceAlertMode mode, bool includeDirection, uint8_t bogeyCount = 1);
+                                             VoiceAlertMode mode, bool includeDirection, uint8_t bogeyCount = 1,
+                                             AudioPlaybackReceipt* receipt = nullptr);
 
 // Play direction-only announcement (used when same alert changes direction)
 // Says "ahead", "behind", or "side", optionally with bogey count if > 1
 void play_direction_only(AlertDirection direction, uint8_t bogeyCount = 0);
-AudioPlaybackResult try_play_direction_only(AlertDirection direction, uint8_t bogeyCount = 0);
+AudioPlaybackResult try_play_direction_only(AlertDirection direction, uint8_t bogeyCount = 0,
+                                            AudioPlaybackReceipt* receipt = nullptr);
 
 // Play threat escalation announcement with full context:
 // "[Band] [freq] [direction] [N] bogeys, [X] ahead, [Y] behind"
@@ -49,7 +53,8 @@ AudioPlaybackResult try_play_direction_only(AlertDirection direction, uint8_t bo
 void play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection direction, uint8_t total, uint8_t ahead,
                             uint8_t behind, uint8_t side);
 AudioPlaybackResult try_play_threat_escalation(AlertBand band, uint16_t freqMHz, AlertDirection direction,
-                                               uint8_t total, uint8_t ahead, uint8_t behind, uint8_t side);
+                                               uint8_t total, uint8_t ahead, uint8_t behind, uint8_t side,
+                                               AudioPlaybackReceipt* receipt = nullptr);
 
 void play_band_only(AlertBand band);
 

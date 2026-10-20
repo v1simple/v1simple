@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { cloneDefaultColors, COLOR_PARAM_ORDER } from '#lib/utils/colors.js';
@@ -375,5 +375,39 @@ describe('colors route page', () => {
         await waitFor(() => expect(stealthToggle).not.toBeChecked());
 
         unmount();
+    });
+
+    it.each([false, true])('serializes quiet saves and rolls back to the last accepted value (first accepted=%s)', async (firstAccepted) => {
+        const pending = [];
+        const fetchMock = installDefaultFetch([{
+            method: 'POST', match: QUIET_SETTINGS_ENDPOINT,
+            respond: () => new Promise((resolve) => pending.push(resolve))
+        }]);
+        const { unmount } = render(Page);
+        try {
+            const toggle = await screen.findByRole('checkbox', { name: /quiet screen between alerts/i });
+            expect(toggle).not.toBeChecked();
+            await fireEvent.click(toggle);
+            expect(toggle).toBeDisabled();
+            expect(screen.getByRole('button', { name: 'Save display settings' })).toBeDisabled();
+            expect(screen.getByRole('button', { name: 'Reset Defaults' })).toBeDisabled();
+            // Native clicks on the disabled control cannot queue another save.
+            await act(() => toggle.click());
+            expect(pending).toHaveLength(1);
+            await act(async () => pending[0](jsonResponse({ success: firstAccepted }, firstAccepted ? 200 : 429)));
+            await waitFor(() => expect(toggle).toBeEnabled());
+            expect(toggle.checked).toBe(firstAccepted);
+
+            await fireEvent.click(toggle);
+            expect(toggle).toBeDisabled();
+            expect(pending).toHaveLength(2);
+            await act(async () => pending[1](jsonResponse({ success: false }, 429)));
+            await screen.findByText('Failed to save stealth setting');
+            await waitFor(() => expect(toggle).toBeEnabled());
+            expect(toggle.checked).toBe(firstAccepted);
+            expect(screen.getByRole('button', { name: 'Save display settings' })).toBeEnabled();
+            expect(fetchMock.mock.calls.filter(([url, init]) =>
+                url === QUIET_SETTINGS_ENDPOINT && init?.method === 'POST')).toHaveLength(2);
+        } finally { unmount(); }
     });
 });

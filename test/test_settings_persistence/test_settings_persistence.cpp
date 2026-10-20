@@ -443,10 +443,13 @@ void test_settings_discovery_reports_transient_namespace_probe_error_and_preserv
     SettingsManager manager(storage, profiles);
     manager.load();
 
-    TEST_ASSERT_EQUAL_UINT8(67, manager.get().brightness);
+    TEST_ASSERT_EQUAL_UINT8(V1Settings{}.brightness, manager.get().brightness);
     TEST_ASSERT_EQUAL_STRING(SETTINGS_NS_A, activeNamespaceOrEmpty().c_str());
-    TEST_ASSERT_GREATER_THAN(0u, mock_preferences::readOnlyBeginCount(SETTINGS_NS_A));
+    TEST_ASSERT_EQUAL_UINT(0u, mock_preferences::readOnlyBeginCount(SETTINGS_NS_A));
     TEST_ASSERT_EQUAL_UINT(probeErrorsBefore + 1u, g_settingsNvsProbeErrorCountForTest);
+    // An explicit mutation retries loading before it snapshots any defaults.
+    TEST_ASSERT_TRUE(manager.setStealthEnabled(true).success);
+    TEST_ASSERT_EQUAL_UINT8(67, manager.get().brightness);
 }
 
 void test_settings_discovery_reports_persistent_namespace_open_failure() {
@@ -455,7 +458,7 @@ void test_settings_discovery_reports_persistent_namespace_open_failure() {
     const size_t probeErrorsBefore = g_settingsNvsProbeErrorCountForTest;
 
     TEST_ASSERT_EQUAL_INT(-1, namespaceHealthScore(SETTINGS_NS_B));
-    TEST_ASSERT_EQUAL_UINT(1u, mock_preferences::readOnlyBeginCount(SETTINGS_NS_B));
+    TEST_ASSERT_EQUAL_UINT(0u, mock_preferences::readOnlyBeginCount(SETTINGS_NS_B));
     TEST_ASSERT_EQUAL_UINT(probeErrorsBefore + 1u, g_settingsNvsProbeErrorCountForTest);
 }
 
@@ -467,6 +470,152 @@ void test_settings_discovery_reports_string_probe_error_and_preserves_value_read
     TEST_ASSERT_GREATER_THAN(1000, namespaceHealthScore(SETTINGS_NS_A));
     TEST_ASSERT_EQUAL_UINT(1u, mock_preferences::stringReadCount(kNvsProxyName));
     TEST_ASSERT_EQUAL_UINT(probeErrorsBefore + 1u, g_settingsNvsProbeErrorCountForTest);
+}
+
+void exercise_unavailable_newest_settings_copy(bool withSd, bool probeFailure) {
+    fs::FS filesystem(g_tempRoot);
+    if (withSd) {
+        storage.setFilesystem(&filesystem, true);
+        TEST_ASSERT_TRUE(profiles.begin(storage));
+        makeCurrentV21Source(settings.mutableSettings());
+    }
+    DisplaySettingsUpdate update;
+    update.hasBrightness = true;
+    update.brightness = 40;
+    TEST_ASSERT_TRUE(settings.applyDisplaySettingsUpdate(update).success);
+    update.brightness = 80;
+    TEST_ASSERT_TRUE(settings.applyDisplaySettingsUpdate(update).success);
+    const String newest = activeNamespaceOrEmpty();
+    const auto nvsBefore = mock_preferences::store();
+    if (withSd) {
+        JsonDocument backup;
+        TEST_ASSERT_TRUE(loadJsonFile(filesystem, SETTINGS_BACKUP_PATH, backup));
+        TEST_ASSERT_EQUAL_UINT8(80, backup["brightness"].as<uint8_t>());
+    }
+
+    storage.reset();
+    profiles = V1ProfileManager();
+    if (probeFailure) mock_nvs::set_namespace_open_result(newest.c_str(), -77);
+    else mock_preferences::set_fail_begin_for_namespace(newest.c_str());
+    SettingsManager boot(storage, profiles);
+    boot.begin();
+    TEST_ASSERT_EQUAL_STRING(newest.c_str(), activeNamespaceOrEmpty().c_str());
+    TEST_ASSERT_EQUAL_UINT8(V1Settings{}.brightness, boot.get().brightness);
+    if (withSd) {
+        storage.setFilesystem(&filesystem, true);
+        TEST_ASSERT_TRUE(profiles.begin(storage));
+    }
+    TEST_ASSERT_FALSE(boot.checkAndRestoreFromSD());
+    TEST_ASSERT_FALSE(boot.save());
+    TEST_ASSERT_FALSE(boot.saveDeferredBackup());
+    TEST_ASSERT_FALSE(boot.backupToSD());
+    TEST_ASSERT_FALSE(boot.setStealthEnabled(true).success);
+    TEST_ASSERT_FALSE(boot.applyDisplaySettingsUpdate(update, SettingsPersistMode::Deferred).success);
+    TEST_ASSERT_FALSE(boot.deferredPersistPending());
+    boot.serviceDeferredPersist(1000);
+    boot.serviceDeferredBackup(1000);
+    if (withSd) {
+        JsonDocument backup;
+        TEST_ASSERT_TRUE(loadJsonFile(filesystem, SETTINGS_BACKUP_PATH, backup));
+        TEST_ASSERT_EQUAL_UINT8(80, backup["brightness"].as<uint8_t>());
+    }
+    // Neither failed discovery nor a blocked save may rotate either A/B copy.
+    for (const char* ns : {SETTINGS_NS_A, SETTINGS_NS_B}) {
+        const auto& before = nvsBefore.at(ns);
+        const auto& after = mock_preferences::store().at(ns);
+        TEST_ASSERT_EQUAL_UINT(before.size(), after.size());
+        for (const auto& entry : before) {
+            TEST_ASSERT_EQUAL_INT(entry.second.type, after.at(entry.first).type);
+            TEST_ASSERT_TRUE(entry.second.value == after.at(entry.first).value);
+        }
+    }
+
+    mock_nvs::reset();
+    mock_preferences::set_fail_begin_for_namespace(nullptr);
+    if (withSd) {
+        // Resume through the actual post-mount boot sequence.
+        boot.checkAndRestoreFromSD();
+        boot.migrateAutoPushProfilesToV2();
+        boot.validateProfileReferences(profiles);
+        TEST_ASSERT_EQUAL_UINT8(80, boot.get().brightness);
+        JsonDocument backup;
+        TEST_ASSERT_TRUE(loadJsonFile(filesystem, SETTINGS_BACKUP_PATH, backup));
+        TEST_ASSERT_EQUAL_UINT8(80, backup["brightness"].as<uint8_t>());
+    }
+    TEST_ASSERT_TRUE(boot.setStealthEnabled(true).success);
+    TEST_ASSERT_EQUAL_UINT8(80, boot.get().brightness);
+    SettingsManager reboot(storage, profiles);
+    reboot.begin();
+    TEST_ASSERT_EQUAL_UINT8(80, reboot.get().brightness);
+    TEST_ASSERT_TRUE(reboot.get().stealthEnabled);
+}
+
+void test_unavailable_newest_nvs_copy_blocks_writes_then_reloads_before_mutation() {
+    exercise_unavailable_newest_settings_copy(false, false);
+}
+void test_unavailable_newest_nvs_copy_preserves_sd_backup_then_resumes_boot() {
+    exercise_unavailable_newest_settings_copy(true, false);
+}
+void test_unavailable_newest_nvs_probe_preserves_sd_backup_then_resumes_boot() {
+    exercise_unavailable_newest_settings_copy(true, true);
+}
+
+void test_pending_nvs_load_recovers_from_runtime_service_without_user_mutation() {
+    settings.mutableSettings().brightness = 80;
+    TEST_ASSERT_TRUE(settings.save());
+    const String newest = activeNamespaceOrEmpty();
+    mock_preferences::set_fail_begin_for_namespace(newest.c_str());
+    SettingsManager boot(storage, profiles);
+    boot.begin();
+    boot.serviceDeferredPersist(1000);
+    mock_preferences::set_fail_begin_for_namespace(nullptr);
+    boot.serviceDeferredPersist(1500);
+    TEST_ASSERT_EQUAL_UINT8(V1Settings{}.brightness, boot.get().brightness);
+    boot.serviceDeferredPersist(2000);
+    TEST_ASSERT_EQUAL_UINT8(80, boot.get().brightness);
+    TEST_ASSERT_TRUE(boot.setStealthEnabled(true).success);
+    SettingsManager reboot(storage, profiles);
+    reboot.load();
+    TEST_ASSERT_EQUAL_UINT8(80, reboot.get().brightness);
+}
+
+void test_runtime_discovery_failure_preserves_already_validated_deferred_edit() {
+    settings.mutableSettings().brightness = 40;
+    TEST_ASSERT_TRUE(settings.save());
+    SettingsManager manager(storage, profiles);
+    manager.begin();
+    DisplaySettingsUpdate update;
+    update.hasBrightness = true;
+    update.brightness = 80;
+    TEST_ASSERT_TRUE(manager.applyDisplaySettingsUpdate(update, SettingsPersistMode::Deferred).success);
+    const String active = activeNamespaceOrEmpty();
+    mock_preferences::set_fail_begin_for_namespace(active.c_str());
+    TEST_ASSERT_FALSE(manager.checkAndRestoreFromSD());
+    manager.serviceDeferredPersist(2000);
+    TEST_ASSERT_TRUE(manager.deferredPersistPending());
+    TEST_ASSERT_EQUAL_UINT8(80, manager.get().brightness);
+    mock_preferences::set_fail_begin_for_namespace(nullptr);
+    manager.serviceDeferredPersist(3000);
+    TEST_ASSERT_FALSE(manager.deferredPersistPending());
+    SettingsManager reboot(storage, profiles);
+    reboot.load();
+    TEST_ASSERT_EQUAL_UINT8(80, reboot.get().brightness);
+}
+
+void test_proven_missing_nvs_allows_first_boot_initialization() {
+    mock_preferences::set_require_existing_namespace_for_read(true);
+    for (const char* ns : {SETTINGS_NS_A, SETTINGS_NS_B, SETTINGS_NS_LEGACY}) {
+        mock_nvs::set_namespace_open_result(ns, ESP_ERR_NVS_NOT_FOUND);
+    }
+    SettingsManager boot(storage, profiles);
+    boot.begin();
+    assertSettingsEqual(V1Settings{}, boot.get());
+    TEST_ASSERT_TRUE(boot.setStealthEnabled(true).success);
+    mock_nvs::reset();
+    mock_preferences::set_require_existing_namespace_for_read(false);
+    SettingsManager reboot(storage, profiles);
+    reboot.load();
+    TEST_ASSERT_TRUE(reboot.get().stealthEnabled);
 }
 
 void test_clearing_absent_wifi_slot_secrets_is_idempotent() {
@@ -2030,6 +2179,40 @@ void test_immediate_nvs_deferred_backup_mode_survives_reboot_before_backup_write
     TEST_ASSERT_EQUAL_UINT8(77, reloaded.get().brightness);
 }
 
+void exercise_pending_backup_intent_after_load(bool delayedLoad, bool setterFirst) {
+    SettingsManager source(storage, profiles);
+    makeCurrentV21Source(source.mutableSettings());
+    source.updateBrightness(77);
+    TEST_ASSERT_TRUE(source.saveDeferredBackup());
+    const String newest = activeNamespaceOrEmpty();
+    resetDeferredSettingsBackupStateForTest();
+    if (delayedLoad) mock_preferences::set_fail_begin_for_namespace(newest.c_str());
+    SettingsManager boot(storage, profiles);
+    boot.begin();
+    mock_preferences::set_fail_begin_for_namespace(nullptr);
+    if (setterFirst) {
+        // A no-op does not create a new backup revision to hide the lost intent.
+        TEST_ASSERT_TRUE(boot.setStealthEnabled(false).success);
+    } else {
+        boot.serviceDeferredPersist(2000);
+    }
+    TEST_ASSERT_EQUAL_UINT8(77, boot.get().brightness);
+    TEST_ASSERT_EQUAL_UINT32(source.backupDueRevision(), boot.backupDueRevision());
+    TEST_ASSERT_TRUE(boot.deferredBackupPending());
+}
+
+void test_normal_load_resumes_pending_backup_intent_without_sd() {
+    exercise_pending_backup_intent_after_load(false, false);
+}
+
+void test_delayed_service_load_resumes_pending_backup_intent_without_sd() {
+    exercise_pending_backup_intent_after_load(true, false);
+}
+
+void test_delayed_setter_load_resumes_pending_backup_intent_without_sd() {
+    exercise_pending_backup_intent_after_load(true, true);
+}
+
 void test_touch_setters_persist_nvs_without_taking_blocking_sd_lock() {
     fs::FS fs(g_tempRoot);
     storage.setFilesystem(&fs, true);
@@ -2571,6 +2754,94 @@ void test_healthy_nvs_recovers_referenced_profile_from_primary_backup() {
 
 void test_healthy_nvs_recovers_referenced_profile_from_previous_backup() {
     verify_healthy_nvs_recovers_referenced_profile(true);
+}
+
+void exercise_delayed_nvs_profile_recovery(bool setterFirst, SettingsPersistMode persistMode) {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    V1Profile road("Road");
+    TEST_ASSERT_TRUE(profiles.saveProfile(road).success);
+    SettingsManager source(storage, profiles);
+    makeCurrentV21Source(source.mutableSettings());
+    source.mutableSettings().slot0_default.profileName = "Road";
+    TEST_ASSERT_TRUE(source.save());
+    const String newest = activeNamespaceOrEmpty();
+    TEST_ASSERT_TRUE(fs.remove("/v1profiles/Road.json"));
+    fs.remove("/v1profiles/Road.json.meta");
+
+    mock_preferences::set_fail_begin_for_namespace(newest.c_str());
+    SettingsManager boot(storage, profiles);
+    boot.begin();
+    boot.checkAndRestoreFromSD();
+    boot.migrateAutoPushProfilesToV2();
+    boot.validateProfileReferences(profiles);
+    TEST_ASSERT_EQUAL_UINT32(0, boot.recoveryRevision());
+    mock_preferences::set_fail_begin_for_namespace(nullptr);
+
+    if (setterFirst) {
+        // Both an immediate backup and a later deferred commit must preserve
+        // the recovery source and include the recovered profile.
+        TEST_ASSERT_TRUE(boot.setStealthEnabled(true, persistMode).success);
+    } else {
+        boot.serviceDeferredPersist(2000);
+    }
+    V1Profile recovered;
+    TEST_ASSERT_TRUE(profiles.loadProfile("Road", recovered));
+    TEST_ASSERT_EQUAL_STRING("Road", boot.get().slot0_default.profileName.c_str());
+    TEST_ASSERT_EQUAL_UINT32(1, boot.recoveryRevision());
+    TEST_ASSERT_EQUAL(setterFirst, boot.get().stealthEnabled);
+    boot.serviceDeferredPersist(3000);
+    TEST_ASSERT_EQUAL_UINT32(1, boot.recoveryRevision());
+    TEST_ASSERT_TRUE(boot.setStealthEnabled(true).success);
+    TEST_ASSERT_EQUAL_UINT32(1, boot.recoveryRevision());
+    SettingsManager reboot(storage, profiles);
+    reboot.load();
+    TEST_ASSERT_TRUE(reboot.get().stealthEnabled);
+    TEST_ASSERT_EQUAL_STRING("Road", reboot.get().slot0_default.profileName.c_str());
+}
+
+void test_setter_first_nvs_recovery_completes_profile_reconciliation_before_mutation() {
+    exercise_delayed_nvs_profile_recovery(true, SettingsPersistMode::Deferred);
+}
+
+void test_immediate_setter_recovery_preserves_missing_profile_backup() {
+    exercise_delayed_nvs_profile_recovery(true, SettingsPersistMode::Immediate);
+}
+
+void test_service_first_nvs_recovery_completes_profile_reconciliation_once() {
+    exercise_delayed_nvs_profile_recovery(false, SettingsPersistMode::Deferred);
+}
+
+void test_delayed_nvs_recovery_retries_unavailable_profile_source_before_mutation() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("Road")).success);
+    SettingsManager source(storage, profiles);
+    makeCurrentV21Source(source.mutableSettings());
+    source.mutableSettings().slot0_default.profileName = "Road";
+    TEST_ASSERT_TRUE(source.save());
+    const String newest = activeNamespaceOrEmpty();
+    TEST_ASSERT_TRUE(fs.remove("/v1profiles/Road.json"));
+    fs.remove("/v1profiles/Road.json.meta");
+    const std::string backupBefore = readFileToString(fs, SETTINGS_BACKUP_PATH);
+    mock_preferences::set_fail_begin_for_namespace(newest.c_str());
+    SettingsManager boot(storage, profiles);
+    boot.begin();
+    mock_preferences::set_fail_begin_for_namespace(nullptr);
+
+    fs::mock_fail_next_read_open(SETTINGS_BACKUP_PATH);
+    TEST_ASSERT_FALSE(boot.setStealthEnabled(true).success);
+    TEST_ASSERT_FALSE(boot.get().stealthEnabled);
+    TEST_ASSERT_EQUAL_UINT32(0, boot.recoveryRevision());
+    TEST_ASSERT_EQUAL_STRING(backupBefore.c_str(), readFileToString(fs, SETTINGS_BACKUP_PATH).c_str());
+    boot.serviceDeferredPersist(3000);
+    V1Profile recovered;
+    TEST_ASSERT_TRUE(profiles.loadProfile("Road", recovered));
+    TEST_ASSERT_EQUAL_UINT32(1, boot.recoveryRevision());
+    TEST_ASSERT_TRUE(boot.setStealthEnabled(true).success);
+    TEST_ASSERT_EQUAL_UINT32(1, boot.recoveryRevision());
 }
 
 enum class ProfileRecoveryFailure { BackupRead, StorageLock, ProfileWrite };
@@ -6206,6 +6477,12 @@ void test_profile_taps_keep_local_selection_when_offline_or_auto_push_disabled()
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_unavailable_newest_nvs_copy_blocks_writes_then_reloads_before_mutation);
+    RUN_TEST(test_unavailable_newest_nvs_copy_preserves_sd_backup_then_resumes_boot);
+    RUN_TEST(test_unavailable_newest_nvs_probe_preserves_sd_backup_then_resumes_boot);
+    RUN_TEST(test_pending_nvs_load_recovers_from_runtime_service_without_user_mutation);
+    RUN_TEST(test_proven_missing_nvs_allows_first_boot_initialization);
+    RUN_TEST(test_runtime_discovery_failure_preserves_already_validated_deferred_edit);
     RUN_TEST(test_legacy_wifi_migration_retries_failed_settings_writes);
     RUN_TEST(test_legacy_wifi_migration_retries_failed_password_write);
     RUN_TEST(test_legacy_wifi_migration_preserves_credentials_when_nvs_is_full);
@@ -6300,6 +6577,9 @@ int main() {
     RUN_TEST(test_audio_shared_fields_update_skips_noop_persist_and_saves_once_on_change);
     RUN_TEST(test_display_batch_update_skips_noop_persist_and_saves_once_on_change);
     RUN_TEST(test_immediate_nvs_deferred_backup_mode_survives_reboot_before_backup_writer);
+    RUN_TEST(test_normal_load_resumes_pending_backup_intent_without_sd);
+    RUN_TEST(test_delayed_service_load_resumes_pending_backup_intent_without_sd);
+    RUN_TEST(test_delayed_setter_load_resumes_pending_backup_intent_without_sd);
     RUN_TEST(test_touch_setters_persist_nvs_without_taking_blocking_sd_lock);
     RUN_TEST(test_obd_batch_update_skips_noop_persist_and_defers_one_save_on_change);
     RUN_TEST(test_autopush_slot_batch_update_skips_noop_persist_and_saves_once_on_change);
@@ -6323,6 +6603,10 @@ int main() {
     RUN_TEST(test_profile_delete_reconciliation_clears_all_slots_and_survives_reload);
     RUN_TEST(test_healthy_nvs_recovers_referenced_profile_from_primary_backup);
     RUN_TEST(test_healthy_nvs_recovers_referenced_profile_from_previous_backup);
+    RUN_TEST(test_setter_first_nvs_recovery_completes_profile_reconciliation_before_mutation);
+    RUN_TEST(test_immediate_setter_recovery_preserves_missing_profile_backup);
+    RUN_TEST(test_service_first_nvs_recovery_completes_profile_reconciliation_once);
+    RUN_TEST(test_delayed_nvs_recovery_retries_unavailable_profile_source_before_mutation);
     RUN_TEST(test_boot_backup_read_failure_preserves_assignment_until_recovery_retry);
     RUN_TEST(test_boot_storage_lock_failure_preserves_assignment_until_recovery_retry);
     RUN_TEST(test_boot_profile_recovery_write_failure_preserves_assignment_until_retry);

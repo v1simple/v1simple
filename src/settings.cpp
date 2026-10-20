@@ -128,6 +128,7 @@ void SettingsManager::noteNvsCommitWithoutBackupIntent() {
 }
 
 bool SettingsManager::persistSettingsWithBackupIntent() {
+    if (!ensureSettingsLoaded()) return false;
     const uint32_t previousCounter = backupRevisionCounter_;
     const uint32_t previousDue = backupDueRevision_;
     const uint32_t previousCompleted = backupCompletedRevision_;
@@ -194,14 +195,22 @@ void SettingsManager::begin() {
 }
 
 void SettingsManager::load() {
-    String activeNs = getActiveNamespace();
+    nvsLoadPending_ = true;
+    bool namespacePresent = false;
+    const String activeNs = getActiveNamespace(nullptr, &namespacePresent);
+    if (activeNs.length() == 0) {
+        nvsRecoveryPending_ = true;
+        return;
+    }
+    if (!namespacePresent) {
+        // Proven empty NVS is an ordinary first boot, not an access failure.
+        nvsLoadPending_ = false;
+        return;
+    }
     if (!preferences_.begin(activeNs.c_str(), true)) {
-        Serial.printf("[Settings] WARN: Failed to open namespace %s, falling back to legacy\n", activeNs.c_str());
-        activeNs = SETTINGS_NS_LEGACY;
-        if (!preferences_.begin(activeNs.c_str(), true)) {
-            Serial.println("[Settings] ERROR: Failed to open preferences for reading!");
-            return;
-        }
+        Serial.printf("[Settings] NVS load unavailable for %s; preserving durable copies\n", activeNs.c_str());
+        nvsRecoveryPending_ = true;
+        return;
     }
 
     int storedVersion = preferences_.getInt(kNvsSettingsVer, 1);
@@ -461,6 +470,8 @@ void SettingsManager::load() {
     }
     backupDueRevision_ = preferences_.getUInt(kNvsBackupDueRevision, 0);
     preferences_.end();
+    nvsLoadPending_ = false;
+    nvsLoadRetryAtMs_ = 0;
     migrateLegacyWifiStaSlotNvs(activeNs, settings_.wifiStaSlots[0], wifiClientSsidKeyPresent);
 
     backupCompletedRevision_ = readBackupRevisionCompleted();
@@ -471,6 +482,33 @@ void SettingsManager::load() {
 
     Serial.printf("[Settings] OK proxy=%s bright=%d autoPush=%s\n", settings_.proxyBLE ? "on" : "off",
                   settings_.brightness, settings_.autoPushEnabled ? "on" : "off");
+}
+
+bool SettingsManager::ensureSettingsLoaded() {
+    if (nvsLoadPending_) load();
+    if (nvsLoadPending_) return false;
+    if (nvsRecoveryPending_ && !nvsRecoveryInProgress_) {
+        // A setter can be the first caller after NVS recovers. Finish boot
+        // reconciliation before it snapshots or changes settings, otherwise
+        // its backup could discard a profile still recoverable only from SD.
+        // Recovery itself uses the normal guarded settings mutation paths.
+        nvsRecoveryInProgress_ = true;
+        checkAndRestoreFromSD();
+        migrateAutoPushProfilesToV2();
+        validateProfileReferences(*profiles_);
+        nvsRecoveryInProgress_ = false;
+        nvsRecoveryPending_ = profileReferenceRecoveryPending_;
+        if (nvsRecoveryPending_) return false;
+        // load() cannot publish a backup while the recovery source is still
+        // provisional. Resume its durable intent now, unless reconciliation
+        // already completed that revision synchronously.
+        backupCompletedRevision_ = readBackupRevisionCompleted();
+        if (settings_backup_revision::pending(backupDueRevision_, backupCompletedRevision_)) {
+            requestDeferredBackupFromCurrentState();
+        }
+        ++recoveryRevision_;
+    }
+    return true;
 }
 
 bool SettingsManager::save() {
@@ -489,6 +527,7 @@ bool SettingsManager::save() {
 }
 
 void SettingsManager::requestDeferredPersist() {
+    if (nvsLoadPending_ || (nvsRecoveryPending_ && !nvsRecoveryInProgress_)) return;
     deferredPersistPending_ = true;
     deferredPersistRetryScheduled_ = false;
     deferredPersistNextAttemptAtMs_ = millis() + SETTINGS_DEFERRED_PERSIST_DEBOUNCE_MS;
@@ -507,6 +546,14 @@ uint32_t SettingsManager::deferredPersistNextAttemptAtMs() const {
 }
 
 void SettingsManager::serviceDeferredPersist(uint32_t nowMs) {
+    if (nvsLoadPending_ || nvsRecoveryPending_) {
+        if (nvsLoadRetryAtMs_ != 0 && !isDeferredPersistDue(nowMs, nvsLoadRetryAtMs_)) return;
+        if (!ensureSettingsLoaded()) {
+            nvsLoadRetryAtMs_ = nowMs + SETTINGS_DEFERRED_PERSIST_RETRY_BACKOFF_MS;
+            return;
+        }
+        nvsLoadRetryAtMs_ = 0;
+    }
     serviceLastV1AddressFallbackPersist(nowMs);
 
     if (!deferredPersistPending_) {

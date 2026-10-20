@@ -87,12 +87,14 @@ SettingsPersistResult SettingsManager::finishSettingsMutation(const V1Settings& 
 }
 
 SettingsPersistResult SettingsManager::setActiveSlot(int slot, SettingsPersistMode persistMode) {
+    if (!ensureSettingsLoaded()) return {};
     const V1Settings before = settings_;
     const bool changed = assignIfChanged(settings_.activeSlot, std::max(0, std::min(2, slot)));
     return finishSettingsMutation(before, changed, persistMode);
 }
 
 SettingsPersistResult SettingsManager::setStealthEnabled(bool enabled, SettingsPersistMode persistMode) {
+    if (!ensureSettingsLoaded()) return {};
     const V1Settings before = settings_;
     const bool changed = assignIfChanged(settings_.stealthEnabled, enabled);
     return finishSettingsMutation(before, changed, persistMode);
@@ -135,6 +137,7 @@ bool SettingsManager::getSlotPriorityArrowOnly(int slotNum) const {
 }
 
 bool SettingsManager::applyAutoPushSlotUpdate(const AutoPushSlotUpdate& update, SettingsPersistMode persistMode) {
+    if (!ensureSettingsLoaded()) return false;
     bool changed = false;
     V1Settings::AutoPushSlotView slot = settings_.autoPushSlotView(update.slot);
     const bool previousPriorityArrow = slot.priorityArrow;
@@ -220,6 +223,7 @@ bool SettingsManager::applyAutoPushSlotUpdate(const AutoPushSlotUpdate& update, 
 }
 
 AutoPushPersistResult SettingsManager::applyAutoPushSlotUpdatePersisted(const AutoPushSlotUpdate& update) {
+    if (!ensureSettingsLoaded()) return {};
     AutoPushPersistResult result;
     V1Settings::AutoPushSlotView slot = settings_.autoPushSlotView(update.slot);
     const uint16_t colorBefore = slot.color;
@@ -326,6 +330,7 @@ AutoPushPersistResult SettingsManager::applyAutoPushSlotUpdatePersisted(const Au
 
 bool SettingsManager::clearProfileReferencesPersisted(const String& canonicalProfileName, bool& changed) {
     changed = false;
+    if (!ensureSettingsLoaded()) return false;
     const V1Settings before = settings_;
     for (int slotIndex = 0; slotIndex < 3; ++slotIndex) {
         V1Settings::AutoPushSlotView slot = settings_.autoPushSlotView(slotIndex);
@@ -347,6 +352,7 @@ bool SettingsManager::clearProfileReferencesPersisted(const String& canonicalPro
 
 SettingsPersistResult SettingsManager::applyAutoPushStateUpdate(const AutoPushStateUpdate& update,
                                                                 SettingsPersistMode persistMode) {
+    if (!ensureSettingsLoaded()) return {};
     const V1Settings before = settings_;
     bool changed = false;
 
@@ -363,6 +369,7 @@ SettingsPersistResult SettingsManager::applyAutoPushStateUpdate(const AutoPushSt
 
 SettingsPersistResult
 SettingsManager::applyWifiStaPriorityUpdates(const std::vector<WifiStaPriorityUpdate>& updates) {
+    if (!ensureSettingsLoaded()) return {};
     const V1Settings before = settings_;
     bool seenSlots[kWifiStaSlotCount] = {};
     bool seenPriorities[kWifiStaSlotCount] = {};
@@ -400,6 +407,7 @@ SettingsManager::applyWifiStaPriorityUpdates(const std::vector<WifiStaPriorityUp
 }
 
 void SettingsManager::setLastV1Address(const String& addr) {
+    if (!ensureSettingsLoaded()) return;
     String safeAddr = sanitizeLastV1AddressValue(addr);
     if (safeAddr != settings_.lastV1Address) {
         settings_.lastV1Address = safeAddr;
@@ -416,6 +424,7 @@ void SettingsManager::setLastV1Address(const String& addr) {
 
 SettingsPersistResult SettingsManager::applyDeviceSettingsUpdate(const DeviceSettingsUpdate& update,
                                                                  SettingsPersistMode persistMode) {
+    if (!ensureSettingsLoaded()) return {};
     String preparedApSsid;
     String preparedApPassword;
     String preparedProxyName;
@@ -503,6 +512,7 @@ SettingsPersistResult SettingsManager::applyDeviceSettingsUpdate(const DeviceSet
 
 SettingsPersistResult SettingsManager::applyAudioSettingsUpdate(const AudioSettingsUpdate& update,
                                                                 SettingsPersistMode persistMode) {
+    if (!ensureSettingsLoaded()) return {};
     const V1Settings before = settings_;
     bool changed = false;
 
@@ -571,6 +581,7 @@ SettingsPersistResult SettingsManager::applyAudioSettingsUpdate(const AudioSetti
 
 SettingsPersistResult SettingsManager::applyDisplaySettingsUpdate(const DisplaySettingsUpdate& update,
                                                                   SettingsPersistMode persistMode) {
+    if (!ensureSettingsLoaded()) return {};
     const V1Settings before = settings_;
     bool changed = false;
 
@@ -664,6 +675,7 @@ SettingsPersistResult SettingsManager::applyDisplaySettingsUpdate(const DisplayS
 }
 
 SettingsPersistResult SettingsManager::resetDisplaySettings(SettingsPersistMode persistMode) {
+    if (!ensureSettingsLoaded()) return {};
     const V1Settings before = settings_;
     settings_.colorBogey = 0xF800;
     settings_.colorFrequency = 0xF800;
@@ -702,6 +714,7 @@ SettingsPersistResult SettingsManager::resetDisplaySettings(SettingsPersistMode 
 
 SettingsPersistResult SettingsManager::applyObdSettingsUpdate(const ObdSettingsUpdate& update,
                                                               SettingsPersistMode persistMode) {
+    if (!ensureSettingsLoaded()) return {};
     const V1Settings before = settings_;
     bool changed = false;
 

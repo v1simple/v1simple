@@ -223,6 +223,10 @@ void SettingsManager::synchronizeSdBackup(bool hasSdBackup, const char* backupPa
 }
 
 bool SettingsManager::checkAndRestoreFromSD() {
+    if (!ensureSettingsLoaded()) {
+        profileReferenceRecoveryPending_ = true;
+        return false;
+    }
     profileReferenceRecoveryPending_ = false;
     resolveWifiCredentialTransaction();
     if (!resolveRestoreTransaction() || !resolveProfileDeleteTransaction()) {
@@ -230,7 +234,12 @@ bool SettingsManager::checkAndRestoreFromSD() {
         Serial.println("[Settings] Storage transaction recovery remains pending");
         return false;
     }
-    bool needsRestore = checkNeedsRestore();
+    bool discoveryUnavailable = false;
+    bool needsRestore = checkNeedsRestore(discoveryUnavailable);
+    if (discoveryUnavailable) {
+        profileReferenceRecoveryPending_ = true;
+        return false;
+    }
     fs::FS* fs = nullptr;
     bool hasSdBackup = false;
     PsramJson::Document bestBackupDoc;
@@ -342,6 +351,7 @@ void SettingsManager::cleanupNamespacesIfNeeded(bool hasSdBackup) {
 
     const uint32_t usedPct = (stats.used_entries * 100u) / stats.total_entries;
     const String activeNs = getActiveNamespace();
+    if (activeNs.length() == 0) return;
     const SettingsNamespaceCleanupPlan plan = buildSettingsNamespaceCleanupPlan(usedPct, activeNs, hasSdBackup);
 
     if (!plan.shouldCleanup) {
@@ -372,12 +382,22 @@ void SettingsManager::cleanupNamespacesIfNeeded(bool hasSdBackup) {
     }
 }
 
-bool SettingsManager::checkNeedsRestore() {
-    String activeNs = getActiveNamespace();
+bool SettingsManager::checkNeedsRestore(bool& unavailable) {
+    unavailable = false;
+    bool namespacePresent = false;
+    const String activeNs = getActiveNamespace(nullptr, &namespacePresent);
+    if (activeNs.length() == 0) {
+        unavailable = true;
+        return false;
+    }
+    if (!namespacePresent) {
+        markRestorePending("NVS empty before SD restore");
+        return true;
+    }
     Preferences checkPrefs;
     if (!checkPrefs.begin(activeNs.c_str(), true)) {
-        markRestorePending("active NVS namespace could not be opened");
-        return true;
+        unavailable = true;
+        return false;
     }
 
     int nvsMarker = checkPrefs.getInt(kNvsValid, 0);
@@ -436,6 +456,7 @@ bool SettingsManager::checkNeedsRestore() {
 }
 
 bool SettingsManager::restoreFromSD() {
+    if (!ensureSettingsLoaded()) return false;
     if (!storage_->isReady() || !storage_->isSDCard()) {
         return false;
     }
@@ -491,6 +512,7 @@ bool SettingsManager::restoreFromSD() {
 }
 
 void SettingsManager::validateProfileReferences(V1ProfileManager& profileMgr) {
+    if (!ensureSettingsLoaded()) return;
     if (profileReferenceRecoveryPending_) {
         Serial.println("[Settings] Profile recovery incomplete; preserving slot profile references");
         return;

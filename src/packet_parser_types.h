@@ -55,6 +55,14 @@ struct AlertData {
     }
 };
 
+// The latest completed aggregate encounter survives coalesced queue drains.
+// It is presentation history, never evidence that an alert remains live.
+struct ClearedV1Alert {
+    AlertData alert;
+    uint32_t clearedAtMs = 0;
+    uint32_t revision = 0;
+};
+
 struct DisplayState {
     uint8_t activeBands;     // Bitmap of active bands
     Direction arrows;        // Bitmap of arrow directions (all active, from display packet)

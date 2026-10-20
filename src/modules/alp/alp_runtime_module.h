@@ -235,6 +235,11 @@ class AlpRuntimeModule {
     // Consumers use the event snapshot and display eligibility, not parser states.
     // Current event for display and API consumers.
     const AlpLaserEvent& currentEvent() const { return currentEvent_; }
+    // Latest display-eligible event that ended, retained across a UART batch.
+    // The copied identity remains active only so the presentation latch can
+    // accept it; closedAtMs owns its persistence age, never live ownership.
+    const AlpLaserEvent& endedEvent() const { return endedEvent_; }
+    uint32_t endedEventRevision() const { return endedEventRevision_; }
 
     // Live ALERT_ACTIVE/NOISE_WINDOW or identified TEARDOWN; never warm-up.
     bool hasLaserEvent() const {
@@ -270,6 +275,7 @@ class AlpRuntimeModule {
         if (!next.active && currentEvent_.active) {
             next.closedAtMs = nowMs;
         }
+        retainEndedEvent(next, nowMs);
         currentEvent_ = next;
     }
     void testInjectBytes(const uint8_t* data, size_t len);
@@ -366,6 +372,15 @@ class AlpRuntimeModule {
     uint8_t detectRaw_[3] = {};
 
     AlpLaserEvent currentEvent_{};
+    AlpLaserEvent endedEvent_{};
+    uint32_t endedEventRevision_ = 0;
+    void retainEndedEvent(const AlpLaserEvent& next, uint32_t nowMs) {
+        if (!next.active && currentEvent_.active) {
+            endedEvent_ = currentEvent_;
+            endedEvent_.closedAtMs = nowMs;
+            ++endedEventRevision_;
+        }
+    }
     void updateCurrentEvent(uint32_t nowMs);
 
     void publishDisplayEdge();

@@ -363,9 +363,10 @@ bool GpsRuntimeModule::parseRmc(char* fields[], size_t fieldCount, uint32_t nowM
     if (status != 'A' && status != 'a') {
         rmcFix_ = false;
         hasFix_ = ggaFix_;
+        // GGA can retain position quality, but only a valid RMC supplies speed.
+        invalidateSpeedSample();
         if (!hasFix_) {
             lastFixTimestampValid_ = false;
-            invalidateSpeedSample();
         }
         updateStableFixState(nowMs);
         return true;

@@ -53,6 +53,8 @@
     let editDescription = $state('');
     let capturedSnapshot = $state(null);
     let snapshotLoading = $state(true);
+    let snapshotGeneration = 0;
+    let disposed = false;
     let profileSchemaReady = $state(true);
     let operationStatus = $state(null);
     let operationBusy = $state(false);
@@ -170,11 +172,24 @@
         void fetchCapturedSnapshot();
         operationTracker = createDetectorOperationTracker({
             storage: window.localStorage,
-            onStatus: (status) => { operationStatus = status; },
+            onStatus: (status) => {
+                operationStatus = status;
+                if (status && !status.terminal) {
+                    // An accepted operation can change every captured value.
+                    // Keep open editors independent, but stop offering this source.
+                    snapshotGeneration += 1;
+                    capturedSnapshot = null;
+                    snapshotLoading = true;
+                } else {
+                    void fetchCapturedSnapshot();
+                }
+            },
             onMessage: (nextMessage) => { message = nextMessage; }
         });
         void operationTracker.resume();
         return () => {
+            disposed = true;
+            snapshotGeneration += 1;
             operationTracker.dispose();
         };
     });
@@ -244,6 +259,9 @@
     }
 
     async function fetchCapturedSnapshot() {
+        const generation = ++snapshotGeneration;
+        capturedSnapshot = null;
+        snapshotLoading = true;
         try {
             const loaded = await fetchWithTimeout(
                 '/api/v1/snapshot', {}, undefined, async (response) => ({
@@ -251,15 +269,18 @@
                     body: response.ok ? await response.json() : null
                 })
             );
+            if (disposed || generation !== snapshotGeneration) return;
             const snapshot = loaded.ok ? loaded.body : null;
             capturedSnapshot = snapshot?.available === true &&
                 /^[0-9A-F]{2}(?::[0-9A-F]{2}){5}$/.test(snapshot.address || '')
                 ? snapshot
                 : { available: false };
         } catch (e) {
-            capturedSnapshot = { available: false };
+            if (!disposed && generation === snapshotGeneration) {
+                capturedSnapshot = { available: false };
+            }
         } finally {
-            snapshotLoading = false;
+            if (!disposed && generation === snapshotGeneration) snapshotLoading = false;
         }
     }
 
@@ -275,7 +296,7 @@
     }
 
     function startDraftFromCapturedSettings() {
-        if (!capturedSnapshot?.settings || !capturedSnapshot?.observations?.userBytes?.available) return;
+        if (snapshotLoading || !capturedSnapshot?.settings || !capturedSnapshot?.observations?.userBytes?.available) return;
         profileLoadGeneration += 1;
         const settings = fromApiSettings(capturedSnapshot.settings);
         currentProfile = {
@@ -833,7 +854,11 @@
             </div>
 
             {#if snapshotLoading}
-                <div class="state-loading compact"><span class="loading loading-spinner"></span></div>
+                {#if operationStatus && !operationStatus.terminal}
+                    <p class="copy-muted">Captured settings will refresh when the detector operation finishes.</p>
+                {:else}
+                    <div class="state-loading compact"><span class="loading loading-spinner"></span></div>
+                {/if}
             {:else if !capturedSnapshot?.available}
                 <p class="state-empty">
                     No detector settings have been captured yet. Connect a V1 during normal operation, then return to maintenance.

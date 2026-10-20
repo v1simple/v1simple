@@ -161,6 +161,132 @@ void successWithoutPendingSlotAdvancesResolvedSlotOnce(bool persistUnchangedCred
             "direct success must clear pending connection state");
 }
 
+void startSecondCandidate(WiFiManager& manager, wl_status_t firstFailure) {
+    WiFi = WiFiClass{};
+    WiFi.lost();
+    WiFi.scanSsids = {"Missing", "Working"};
+    manager.settings_.value.wifiStaSlots[0].ssid = "Missing";
+    manager.settings_.value.wifiStaSlots[0].priority = 0;
+    manager.settings_.value.wifiStaSlots[1].ssid = "Working";
+    manager.settings_.value.wifiStaSlots[1].priority = 1;
+    manager.wifiClientState_ = WIFI_CLIENT_DISCONNECTED;
+    mockMillis = 1000;
+    require(manager.beginMaintenanceAutoConnectScan(false), "candidate scan must start");
+    WiFi.scanState = 2;
+    manager.runOwnerPass();
+    mockMillis = 1010;
+    manager.runOwnerPass();
+    require(WiFi.lastBeginSsid == "Missing", "first candidate must start");
+
+    mockMillis = 2000;
+    WiFi.failure("Missing", firstFailure);
+    manager.runOwnerPass();
+    require(manager.pendingConnectSSID_ == "Working", "fresh first failure must queue the next candidate");
+    mockMillis = 2010;
+    manager.runOwnerPass();
+    mockMillis = 2020;
+    manager.runOwnerPass();
+    require(WiFi.begins == 2 && WiFi.lastBeginSsid == "Working", "second candidate must start");
+    require(WiFi.cachedStatus == firstFailure, "begin must retain the framework's cached prior failure");
+}
+
+void candidateRetry(wl_status_t firstFailure, bool associationBeforePoll, bool latePriorFailure) {
+    WiFiManager manager{};
+    startSecondCandidate(manager, firstFailure);
+    if (latePriorFailure) WiFi.failure("Missing", firstFailure);
+    if (associationBeforePoll) WiFi.cachedStatus = WL_IDLE_STATUS;
+    mockMillis = 2050;
+    manager.runOwnerPass();
+    require(manager.wifiClientState_ == WIFI_CLIENT_CONNECTING,
+            "the prior candidate's cached status or late event must not fail the new attempt");
+    require(WiFi.radioMode == WIFI_AP_STA && WiFi.apOnlyTransitions == 0 && WiFi.disconnects == 0,
+            "candidate retry must preserve the AP and STA radio");
+    mockMillis = 2100;
+    WiFi.restored();
+    manager.runOwnerPass();
+    require(manager.wifiClientState_ == WIFI_CLIENT_CONNECTED && manager.currentConnectedSlotIndex_ == 1,
+            "second candidate must connect after its own GOT_IP");
+    require(manager.settings_.markCalls == 1 && manager.settings_.markedIndex == 1,
+            "only the successful candidate may advance recency");
+}
+
+void secondCandidateFailure(wl_status_t secondFailure, bool duringBegin) {
+    WiFiManager manager{};
+    if (duringBegin) {
+        // Install once the second candidate is armed, before its first poll.
+        startSecondCandidate(manager, secondFailure);
+        // Retrying the same SSID must also clear evidence from the old attempt.
+        require(manager.connectToNetwork("Working", "", false, 1, true), "retry must queue");
+        WiFi.duringBegin = [secondFailure]() { WiFi.failure("Working", secondFailure); };
+        mockMillis = 2030;
+        manager.runOwnerPass();
+        mockMillis = 2040;
+        manager.runOwnerPass();
+    } else {
+        startSecondCandidate(manager, secondFailure);
+        WiFi.failure("Working", secondFailure);
+    }
+    mockMillis = 2050;
+    manager.runOwnerPass();
+    require(manager.maintenanceAutoConnectPhase_ == WiFiManager::MaintenanceAutoConnectPhase::COMPLETE,
+            "fresh second-candidate failure must finish promptly even when cached status did not change");
+    require(WiFi.radioMode == WIFI_AP && manager.settings_.markCalls == 0,
+            "all failed candidates must release STA without marking any slot connected");
+}
+
+void synchronousStartFailure(bool beginFailure) {
+    WiFiManager manager{};
+    WiFi = WiFiClass{};
+    WiFi.lost();
+    WiFi.cachedStatus = WL_CONNECT_FAILED;
+    WiFi.staBeginSucceeds = !beginFailure;
+    WiFi.staConnectSucceeds = beginFailure;
+    mockMillis = 1000;
+    require(manager.connectToNetwork("Working", "", false), "manual candidate must queue");
+    manager.runOwnerPass();
+    mockMillis = 1010;
+    manager.runOwnerPass();
+    mockMillis = 1050;
+    manager.runOwnerPass();
+    require(manager.wifiClientState_ == WIFI_CLIENT_FAILED,
+            "synchronous driver rejection must fail promptly without an asynchronous event");
+    require(manager.settings_.markCalls == 0, "start failure must not mark a connection");
+}
+
+void unreportedCandidateFailureTimesOut() {
+    WiFiManager manager{};
+    startSecondCandidate(manager, WL_NO_SSID_AVAIL);
+    mockMillis = 17000;
+    manager.runOwnerPass();
+    require(manager.wifiClientState_ == WIFI_CLIENT_CONNECTING, "old status must not shorten connection timeout");
+    mockMillis = 17100;
+    manager.runOwnerPass();
+    require(manager.maintenanceAutoConnectPhase_ == WiFiManager::MaintenanceAutoConnectPhase::COMPLETE,
+            "missing events must still hit the bounded connection timeout");
+    require(WiFi.radioMode == WIFI_AP && manager.settings_.markCalls == 0,
+            "timed-out candidate must release STA without claiming success");
+}
+
+void transientCandidateDisconnect(wl_status_t firstFailure, uint8_t reason, bool preservesStatus) {
+    WiFiManager manager{};
+    startSecondCandidate(manager, firstFailure);
+    if (!preservesStatus) WiFi.cachedStatus = WL_DISCONNECTED;
+    WiFi.emitDisconnected("Working", reason);
+    mockMillis = 2050;
+    manager.runOwnerPass();
+    require(manager.wifiClientState_ == WIFI_CLIENT_CONNECTING,
+            "a transient disconnect must not inherit the preceding candidate's terminal status");
+    require(WiFi.radioMode == WIFI_AP_STA && manager.settings_.markCalls == 0,
+            "transient retries must retain STA without marking a successful connection");
+    mockMillis = 2100;
+    WiFi.restored();
+    manager.runOwnerPass();
+    require(manager.wifiClientState_ == WIFI_CLIENT_CONNECTED && manager.currentConnectedSlotIndex_ == 1,
+            "candidate must remain eligible to connect after the framework retry");
+    require(manager.settings_.markCalls == 1 && manager.settings_.markedIndex == 1,
+            "the successful retry must advance only its own recency");
+}
+
 int main() {
     int failures = 0;
     const auto run = [&failures](const char* name, void (*test)()) {
@@ -182,5 +308,23 @@ int main() {
     run("explicit_disconnect", explicitDisconnectStillSuppressesReconnect);
     run("direct_success_without_pending_slot", []() { successWithoutPendingSlotAdvancesResolvedSlotOnce(true); });
     run("reconnect_success_without_pending_slot", []() { successWithoutPendingSlotAdvancesResolvedSlotOnce(false); });
+    run("prior_no_ssid_delayed_association", []() { candidateRetry(WL_NO_SSID_AVAIL, false, false); });
+    run("prior_connect_failed_delayed_association", []() { candidateRetry(WL_CONNECT_FAILED, false, false); });
+    run("prior_no_ssid_fast_association", []() { candidateRetry(WL_NO_SSID_AVAIL, true, false); });
+    run("prior_connect_failed_fast_association", []() { candidateRetry(WL_CONNECT_FAILED, true, false); });
+    run("prior_no_ssid_late_event", []() { candidateRetry(WL_NO_SSID_AVAIL, false, true); });
+    run("prior_connect_failed_late_event", []() { candidateRetry(WL_CONNECT_FAILED, false, true); });
+    run("fresh_same_no_ssid_failure", []() { secondCandidateFailure(WL_NO_SSID_AVAIL, false); });
+    run("fresh_same_connect_failure", []() { secondCandidateFailure(WL_CONNECT_FAILED, false); });
+    run("immediate_async_no_ssid_failure", []() { secondCandidateFailure(WL_NO_SSID_AVAIL, true); });
+    run("immediate_async_connect_failure", []() { secondCandidateFailure(WL_CONNECT_FAILED, true); });
+    run("synchronous_sta_start_failure", []() { synchronousStartFailure(true); });
+    run("synchronous_sta_connect_failure", []() { synchronousStartFailure(false); });
+    run("unreported_failure_timeout", unreportedCandidateFailureTimesOut);
+    run("auth_expire_after_no_ssid", []() { transientCandidateDisconnect(WL_NO_SSID_AVAIL, WIFI_REASON_AUTH_EXPIRE, true); });
+    run("auth_expire_after_connect_failed", []() { transientCandidateDisconnect(WL_CONNECT_FAILED, WIFI_REASON_AUTH_EXPIRE, true); });
+    run("initial_auth_retry", []() { transientCandidateDisconnect(WL_NO_SSID_AVAIL, WIFI_REASON_AUTH_FAIL, false); });
+    run("association_retry", []() { transientCandidateDisconnect(WL_CONNECT_FAILED, WIFI_REASON_ASSOC_FAIL, false); });
+    run("voluntary_disconnect_event", []() { transientCandidateDisconnect(WL_CONNECT_FAILED, WIFI_REASON_ASSOC_LEAVE, false); });
     return failures == 0 ? 0 : 1;
 }

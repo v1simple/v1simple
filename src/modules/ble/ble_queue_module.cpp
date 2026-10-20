@@ -587,6 +587,25 @@ void BleQueueModule::process() {
             rxReadPos_ = static_cast<size_t>(startPtr - rxBuffer_.data());
             continue;
         }
+        // A gap at the first byte is a valid resynchronization boundary. A
+        // gap inside a candidate makes its header/payload ambiguous, even when
+        // fragments happen to form a valid checksum. Inspect short headers too:
+        // an old partial header must not wait for bytes beyond a known loss.
+        size_t nextDiscontinuity = SIZE_MAX;
+        if (!dispatchLong) {
+            if (rxDiscontinuities_[rxReadPos_]) markAlertStreamDiscontinuous();
+            const auto begin = rxDiscontinuities_.begin() + rxReadPos_ + 1;
+            const auto end = rxDiscontinuities_.end();
+            const auto gap = std::find(begin, end, uint8_t{1});
+            if (gap != end) {
+                nextDiscontinuity = static_cast<size_t>(gap - rxDiscontinuities_.begin()) - rxReadPos_;
+            }
+            if (nextDiscontinuity < MIN_HEADER_SIZE) {
+                markAlertStreamDiscontinuous();
+                rxReadPos_ += nextDiscontinuity;
+                continue;
+            }
+        }
         if (availableBytes < MIN_HEADER_SIZE) {
             waitingForShortCompletion = true;
             break;
@@ -609,6 +628,11 @@ void BleQueueModule::process() {
             }
             markAlertStreamDiscontinuous();
             rxReadPos_++;
+            continue;
+        }
+        if (nextDiscontinuity < packetSize) {
+            markAlertStreamDiscontinuous();
+            rxReadPos_ += nextDiscontinuity;
             continue;
         }
         if (availableBytes < packetSize) {
@@ -634,12 +658,6 @@ void BleQueueModule::process() {
         const uint32_t packetTimestampMs = dispatchLong ? longRx_.firstTimestampMs : rxTimestamps_[rxReadPos_];
         if (dispatchLong) {
             if (longRx_.streamDiscontinuity || pendingStreamDiscontinuity_) markAlertStreamDiscontinuous();
-        } else {
-            const auto discontinuityBegin = rxDiscontinuities_.begin() + rxReadPos_;
-            const auto discontinuityEnd = discontinuityBegin + packetSize;
-            if (std::find(discontinuityBegin, discontinuityEnd, uint8_t{1}) != discontinuityEnd) {
-                markAlertStreamDiscontinuous();
-            }
         }
         const auto consumePacket = [&]() {
             if (dispatchLong) {

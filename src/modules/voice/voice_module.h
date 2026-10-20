@@ -58,7 +58,7 @@ struct VoiceAction {
     uint8_t sideCount;   // Bogeys to side (ESCALATION only)
 
     // Source protocol values used to commit dedup/cooldown state only after
-    // the playback boundary accepts this exact action.
+    // the playback boundary reports PCM submission for this exact action.
     Band sourceBand = BAND_NONE;
     bool sourcePhoto = false;
     Direction sourceDirection = DIR_NONE;

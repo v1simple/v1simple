@@ -990,6 +990,12 @@ void AutoPushModule::failWholePlan(ComponentStatus* failed, Outcome outcome, Fai
     finishOperation();
 }
 
+void AutoPushModule::cancelForTimeout() {
+    if (isActive()) {
+        failWholePlan(nullptr, Outcome::TIMEOUT, FailureReason::OPERATION_TIMEOUT);
+    }
+}
+
 void AutoPushModule::finishOperation() {
     if (quiet_ && state_.volumeTransactionActive) {
         quiet_->endAutoPushVolumeTransaction();
@@ -1744,6 +1750,7 @@ bool AutoPushModule::appendStatusJson(JsonObject root) const {
         case FailureReason::CUSTOM_READBACK_TIMEOUT: return "custom_readback_timeout";
         case FailureReason::PROXY_OWNS_DETECTOR: return "proxy_owns_detector";
         case FailureReason::IN_THE_BOX_PERSIST_FAILED: return "in_the_box_persist_failed";
+        case FailureReason::OPERATION_TIMEOUT: return "operation_timeout";
         }
         return "invalid_policy";
     };
@@ -1950,6 +1957,7 @@ AutoPushModule::ExecutionSummary AutoPushModule::executionSummary() const {
         case FailureReason::CUSTOM_READBACK_TIMEOUT: return Durable::CustomReadbackTimeout;
         case FailureReason::PROXY_OWNS_DETECTOR: return Durable::ProxyOwnsDetector;
         case FailureReason::IN_THE_BOX_PERSIST_FAILED: return Durable::InvalidPolicy;
+        case FailureReason::OPERATION_TIMEOUT: return Durable::OperationTimeout;
         }
         return Durable::InvalidPolicy;
     };

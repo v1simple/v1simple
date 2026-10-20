@@ -76,10 +76,11 @@ def apply_in_temporary_framework(source: str, relative: str, patch: Path) -> str
                 raise AssertionError(f"production patch failed with {status}")
 
         with contextlib.redirect_stdout(io.StringIO()):
+            previous = None
             for _ in range(2):
                 runpy.run_path(str(patch), init_globals={"Import": lambda _: None, "env": Environment()})
                 result = target.read_text()
-                if _:
+                if previous is not None:
                     assert result == previous, "production patch is not idempotent"
                 previous = result
         return result

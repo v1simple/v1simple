@@ -61,6 +61,17 @@ failure and snapshot delivery; it does not establish physical flash durability.
 
 ## Where the proof ends
 
+Delayed settings recovery also reconciles connection admission. If provisional
+OBD-disabled settings already completed the V1 cycle, a recovered saved OBD
+adapter reenters the ordinary V1 settling phase before its initial connection.
+This does not replay the BLE connection callback, detector capture or AutoPush.
+Early recovery and teardown retain their existing gates; ordinary mid-session
+user toggles still wait for the next V1 cycle. `test_settings_runtime_recovery.py`
+runs the actual recovery/dispatch methods with the real coordinator and OBD
+state machine through late, early, disconnected, teardown, proxy-only and
+unpaired cases. Its BLE links and peripheral replies are scripted; it does not
+qualify physical OBD connection behavior.
+
 A passing layer establishes that layer's stated behavior:
 
 | Evidence | Establishes | Requires separate evidence |

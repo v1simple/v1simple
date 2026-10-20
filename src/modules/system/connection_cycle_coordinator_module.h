@@ -57,6 +57,9 @@ class ConnectionCycleCoordinatorModule {
     void begin(ConnectionCycleLifecycle& lifecycle);
     void reset();
     void update(const CycleContext& ctx);
+    // Revisit boot admission once provisional settings have been recovered.
+    // Ordinary user toggles still wait for the next V1 connection cycle.
+    void requestRecoveredSettingsAdmission() { recoveredSettingsAdmissionPending_ = true; }
 
     bool obdScanAllowed() const;
     bool obdConnectAllowed() const;
@@ -95,6 +98,7 @@ class ConnectionCycleCoordinatorModule {
     bool wasV1Connected_ = false;
     bool lastProxyClientConnected_ = false;
     bool lastV1Connected_ = false;
+    bool recoveredSettingsAdmissionPending_ = false;
     bool v1VerifyPushMatched_ = false;
     uint32_t v1VerifyPushMatchedAtMs_ = 0;
     uint32_t lastTeardownDurationMs_ = 0;

@@ -1,5 +1,6 @@
 #include "settings_internals.h"
 #include <nvs.h>
+#include "backup_payload_builder.h"
 #include "psram_json_document.h"
 #include "settings_backup_doc.h"
 #include "v1_settings_json.h"
@@ -208,17 +209,32 @@ void SettingsManager::synchronizeSdBackup(bool hasSdBackup, const char* backupPa
                                           const JsonDocument& backupDoc) {
     if (!hasSdBackup) {
         Serial.println("[Settings] No valid SD backup found; creating backup from current settings_");
-        backupToSD();
+        if (!backupToSD()) requestDeferredBackupFromCurrentState();
         return;
     }
     const int version = backupDocumentVersion(backupDoc);
     const bool missingCoreFields = backupDoc["brightness"].isNull();
     const bool outOfSync = !backupAppearsInSyncWithNvs(backupDoc, settings_);
-    if (version < SD_BACKUP_VERSION || missingCoreFields || outOfSync) {
+    bool profilesOutOfSync = false;
+    if (version >= SD_BACKUP_VERSION && !missingCoreFields && !outOfSync) {
+        // Journal rollback can repair profile content without changing NVS or
+        // slot names. Compare the complete bounded catalog, so a backup made
+        // by an older firmware during that transaction cannot remain stale.
+        PsramJson::Document current;
+        const auto built = BackupPayloadBuilder::buildBackupDocument(
+            current, settings_, *profiles_, BackupPayloadBuilder::BackupTransport::SdBackup, millis());
+        if (!built.safeToCommit || current.overflowed()) {
+            requestDeferredBackupFromCurrentState();
+            return;
+        }
+        profilesOutOfSync = backupDoc["profiles"] != current["profiles"];
+    }
+    if (version < SD_BACKUP_VERSION || missingCoreFields || outOfSync || profilesOutOfSync) {
         Serial.printf("[Settings] Refreshing SD backup schema (path=%s version=%d)\n",
                       backupPath ? backupPath : "(unknown)", version);
         if (outOfSync) Serial.println("[Settings] SD backup differs from healthy NVS; refreshing backup content");
-        backupToSD();
+        if (profilesOutOfSync) Serial.println("[Settings] SD backup differs from recovered profile catalog");
+        if (!backupToSD()) requestDeferredBackupFromCurrentState();
     }
 }
 

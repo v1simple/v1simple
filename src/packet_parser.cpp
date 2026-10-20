@@ -119,12 +119,13 @@ bool PacketParser::parse(const uint8_t* data, size_t length, uint32_t nowMs) {
     return parseInternal(data, length, true, nowMs, 0);
 }
 
-bool PacketParser::parse(const uint8_t* data, size_t length, uint32_t nowMs, uint32_t ingressSequence) {
-    return parseInternal(data, length, true, nowMs, ingressSequence);
+bool PacketParser::parse(const uint8_t* data, size_t length, uint32_t nowMs, uint32_t ingressSequence,
+                         bool receivedAfterPhoneStop) {
+    return parseInternal(data, length, true, nowMs, ingressSequence, receivedAfterPhoneStop);
 }
 
 bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNowMs, uint32_t nowMs,
-                                 uint32_t ingressSequence) {
+                                 uint32_t ingressSequence, bool receivedAfterPhoneStop) {
     if (!data || length < 7) {
         return false;
     }
@@ -223,6 +224,9 @@ bool PacketParser::parseInternal(const uint8_t* data, size_t length, bool hasNow
                 displayState_.muteVolume = displayVolumeObservation_.muted;
                 displayState_.hasVolumeData = true;
             }
+        }
+        if (parsed && receivedAfterPhoneStop && hasNowMs) {
+            retireStoppedAllBogeysAlerts(payload, nowMs);
         }
         if (parsed) retainAlertPresentation(hadAlerts, hasNowMs ? nowMs : static_cast<uint32_t>(millis()));
         if (hadAlerts != hasAlerts()) {

@@ -88,6 +88,7 @@ void ConnectionCycleCoordinatorModule::reset() {
     wasV1Connected_ = false;
     lastProxyClientConnected_ = false;
     lastV1Connected_ = false;
+    recoveredSettingsAdmissionPending_ = false;
     v1VerifyPushMatched_ = false;
     v1VerifyPushMatchedAtMs_ = 0;
     lastTeardownDurationMs_ = 0;
@@ -108,10 +109,8 @@ void ConnectionCycleCoordinatorModule::update(const CycleContext& ctx) {
 
     updateTimingConfig(ctx);
 
-    if (ctx.v1VerifyPushMatchEdge) {
-        v1VerifyPushMatched_ = true;
-        v1VerifyPushMatchedAtMs_ = ctx.nowMs;
-    }
+    const bool recoveredSettingsAdmission = recoveredSettingsAdmissionPending_;
+    recoveredSettingsAdmissionPending_ = false;
 
     const bool v1Connected = !wasV1Connected_ && ctx.v1GattConnected;
     const bool v1Dropped = wasV1Connected_ && !ctx.v1GattConnected;
@@ -121,6 +120,21 @@ void ConnectionCycleCoordinatorModule::update(const CycleContext& ctx) {
         lastProxyClientConnected_ = ctx.proxyClientConnected;
         lastV1Connected_ = ctx.v1GattConnected;
         return;
+    }
+
+    // Provisional OBD-disabled settings may already have completed this V1
+    // cycle. A recovered saved adapter still needs its initial admission.
+    // Reuse settling under the recovered policy without resetting the BLE
+    // session, replaying its capture/AutoPush callback, or bypassing teardown.
+    if (recoveredSettingsAdmission && ctx.v1GattConnected && ctx.obdEnabled &&
+        ctx.obdSavedAddressValid && ctx.obdState == ObdConnectionState::WAIT_BOOT &&
+        (state_ == CycleState::PROXY_OPEN || state_ == CycleState::STEADY)) {
+        transitionTo(CycleState::V1_SETTLING, ctx.nowMs);
+    }
+
+    if (ctx.v1VerifyPushMatchEdge) {
+        v1VerifyPushMatched_ = true;
+        v1VerifyPushMatchedAtMs_ = ctx.nowMs;
     }
 
     // Explicit Proxy / App mode must open its phone-advertising window in

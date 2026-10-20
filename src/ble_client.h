@@ -205,6 +205,12 @@ class V1BLEClient {
                alertDataRequestGate_.stoppedByPhone(
                    sessionGeneration(), proxyPhoneSessionGeneration_.load(std::memory_order_acquire));
     }
+    bool receivedAfterPhoneAlertStop(uint32_t ingressSequence) const {
+        return proxyClientConnected_.load(std::memory_order_acquire) &&
+               alertDataRequestGate_.receivedAfterPhoneStop(
+                   sessionGeneration(), proxyPhoneSessionGeneration_.load(std::memory_order_acquire),
+                   ingressSequence);
+    }
     bool needsAlertDataStartRecovery() const {
         return !phoneOwnsStoppedAlertStream() && bleState_ == BLEState::CONNECTED &&
                connectedFollowupStep_ == ConnectedFollowupStep::NONE &&

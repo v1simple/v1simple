@@ -569,7 +569,7 @@ bool writeBackupAtomically(fs::FS* fs, const SerializedSettingsBackupPayload& pa
 }
 
 bool SettingsManager::backupToSD() {
-    if (!ensureSettingsLoaded()) return false;
+    if (!prepareBackupSnapshot()) return false;
     if (!storage_->isReady() || !storage_->isSDCard()) {
         return false; // SD not available, skip silently
     }
@@ -634,6 +634,13 @@ bool SettingsManager::backupToSD() {
     Serial.printf("[Settings] Backed up: slot0Mode=%d, slot1Mode=%d, slot2Mode=%d\n", settings_.slot0_default.mode,
                   settings_.slot1_highway.mode, settings_.slot2_comfort.mode);
     return true;
+}
+
+bool SettingsManager::buildHttpBackupDocument(JsonDocument& doc, uint32_t snapshotMs) {
+    if (!prepareBackupSnapshot()) return false;
+    return BackupPayloadBuilder::buildBackupDocument(
+               doc, settings_, *profiles_, BackupPayloadBuilder::BackupTransport::HttpDownload, snapshotMs)
+        .safeToCommit;
 }
 
 uint32_t SettingsManager::readBackupRevisionCompleted() {
@@ -1030,6 +1037,13 @@ void SettingsManager::serviceDeferredBackup(uint32_t nowMs) {
 
     const uint32_t retryAtMs = gDeferredSettingsBackupState.nextAttemptAtMs;
     if (retryAtMs != 0 && !isDeferredBackupRetryDue(nowMs, retryAtMs)) {
+        return;
+    }
+
+    // The catalog may be complete but still belong to a failed restore whose
+    // rollback journal is authoritative. Do not enqueue that intermediate state.
+    if (!prepareBackupSnapshot()) {
+        scheduleDeferredBackupRetry(nowMs);
         return;
     }
 

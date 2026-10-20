@@ -108,6 +108,17 @@ schema v3. Current USB v5 retains that slot contract and adds profile-schema-v4
    from one requiring rollback. `resolveRestoreTransaction()` removes obsolete
    journals or restores the pre-transaction catalog.
 
+   New HTTP and SD backup snapshots use `prepareBackupSnapshot()` to resolve
+   restore/delete journals before reading profiles. Incomplete rollback remains
+   recovery-pending; an already queued pre-failure snapshot stays authoritative.
+   Password-store transactions retain their own commit sequencing because these
+   snapshots do not read that store. After recovery, healthy-NVS SD synchronization
+   compares the complete canonical profile catalog as well as settings, so an
+   older mixed backup is refreshed even when slot names did not change. An
+   unreadable catalog defers the refresh. The settings persistence tests cover
+   one sustained write outage, full and profiles-only restore, delete recovery,
+   queued-writer ordering, and a second reset after journal cleanup.
+
    [SettingsManager::load()](../../src/settings.cpp) loads the selected NVS
    namespace. It disables a volume override whose stored pair is invalid; this
    is why the old malformed 255/255 state became permanent loss after reload.

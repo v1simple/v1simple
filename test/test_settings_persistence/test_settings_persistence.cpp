@@ -5368,10 +5368,8 @@ BackupApiService::BackupRuntime actualBackupRuntime(SettingsManager& manager) {
     runtime.getBackupRevision = [](void* ctx) { return static_cast<SettingsManager*>(ctx)->backupRevision(); };
     runtime.getCatalogRevision = [](void*) { return profiles.catalogRevision(); };
     runtime.buildDocument = [](JsonDocument& doc, uint32_t nowMs, void* ctx) {
-        const auto result = BackupPayloadBuilder::buildBackupDocument(
-            doc, static_cast<SettingsManager*>(ctx)->get(), profiles,
-            BackupPayloadBuilder::BackupTransport::HttpDownload, nowMs);
-        return BackupApiService::BackupSnapshotBuildResult{result.safeToCommit};
+        return BackupApiService::BackupSnapshotBuildResult{
+            static_cast<SettingsManager*>(ctx)->buildHttpBackupDocument(doc, nowMs)};
     };
     runtime.applyBackup = [](const JsonDocument& doc, bool defer, int& count, void* ctx) {
         const auto result = static_cast<SettingsManager*>(ctx)->applyBackupDocument(
@@ -5403,6 +5401,307 @@ int restoreHttpBackup(SettingsManager& manager, const JsonDocument& backup) {
     upload.setArg("plain", body);
     BackupApiService::handleApiRestore(upload, actualBackupRuntime(manager), nullptr, nullptr, nullptr, nullptr);
     return upload.lastStatusCode;
+}
+
+namespace {
+
+void failWritesAfterBackupRoadCommit(const char*, const char* destination) {
+    if (std::string(destination) == "/v1profiles/Road.json.meta") {
+        fs::g_mock_fs_rename_state.afterRename = nullptr;
+        fs::mock_set_fs_write_budget(0);
+    }
+}
+
+void seedBackupJournalFixture(fs::FS& filesystem, SettingsManager& manager, JsonDocument& incoming) {
+    storage.setFilesystem(&filesystem, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    V1Profile original("Road");
+    original.description = "before";
+    original.settings.bytes[0] = 17;
+    TEST_ASSERT_TRUE(profiles.saveProfile(original).success);
+    makeCurrentV21Source(manager.mutableSettings());
+    manager.mutableSettings().slot0_default.profileName = "Road";
+    manager.mutableSettings().brightness = 33;
+    TEST_ASSERT_TRUE(manager.save());
+    downloadCurrentHttpBackup(manager, incoming);
+    incoming["brightness"] = 88;
+    incoming["profiles"][0]["description"] = "after";
+    incoming["profiles"][0]["bytes"][0] = 70;
+}
+
+void failRestoreWithOneWriteOutage(SettingsManager& manager, JsonDocument& incoming,
+                                  SettingsBackupScope scope = SettingsBackupScope::Full) {
+    JsonObject second = incoming["profiles"].as<JsonArray>().add<JsonObject>();
+    second.set(incoming["profiles"][0]);
+    second["name"] = "Second";
+    // The first replacement is durable. One sustained filesystem write outage
+    // then prevents both the second profile write and immediate compensation.
+    fs::g_mock_fs_rename_state.afterRename = failWritesAfterBackupRoadCommit;
+    TEST_ASSERT_FALSE(manager.applyBackupDocument(incoming, true, {}, scope).success);
+    TEST_ASSERT_NULL(fs::g_mock_fs_rename_state.afterRename);
+    V1Profile changed;
+    TEST_ASSERT_TRUE(profiles.loadProfile("Road", changed));
+    TEST_ASSERT_EQUAL_STRING("after", changed.description.c_str());
+    TEST_ASSERT_EQUAL_UINT8(33, manager.get().brightness);
+}
+
+void assertBackupHasOriginalProfile(fs::FS& filesystem) {
+    JsonDocument backup;
+    TEST_ASSERT_TRUE(loadJsonFile(filesystem, SETTINGS_BACKUP_PATH, backup));
+    TEST_ASSERT_TRUE(validateCurrentBackupDocumentShape(backup));
+    TEST_ASSERT_EQUAL_UINT8(33, backup["brightness"].as<int>());
+    TEST_ASSERT_EQUAL_UINT(1, backup["profiles"].size());
+    TEST_ASSERT_EQUAL_STRING("before", backup["profiles"][0]["description"].as<const char*>());
+    TEST_ASSERT_EQUAL_UINT8(17, backup["profiles"][0]["bytes"][0].as<int>());
+}
+
+void assertPendingRestoreBlocksNewBackupSnapshots(SettingsBackupScope scope) {
+    fs::FS filesystem(g_tempRoot);
+    SettingsManager manager(storage, profiles);
+    JsonDocument incoming;
+    seedBackupJournalFixture(filesystem, manager, incoming);
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    failRestoreWithOneWriteOutage(manager, incoming, scope);
+    TEST_ASSERT_TRUE(filesystem.exists(RESTORE_TRANSACTION_PATH));
+
+    BackupApiService::BackupSnapshotCache cache;
+    WebServer download(80);
+    BackupApiService::handleApiBackup(download, cache, actualBackupRuntime(manager), nullptr, nullptr);
+    BackupApiService::releaseBackupSnapshotCache(cache);
+    TEST_ASSERT_EQUAL_INT(503, download.lastStatusCode);
+    TEST_ASSERT_TRUE(manager.recoveryPending());
+    TEST_ASSERT_FALSE(manager.backupToSD());
+    manager.serviceDeferredBackup(2000);
+    TEST_ASSERT_TRUE(manager.deferredBackupPending());
+    assertBackupHasOriginalProfile(filesystem);
+
+    // A blocked producer must not leave provisional bytes queued for a writer
+    // that runs after storage recovers but before main-thread recovery retries.
+    fs::mock_reset_fs_write_budget();
+    TEST_ASSERT_FALSE(runDeferredSettingsBackupWriterOnceForTest(storage));
+    assertBackupHasOriginalProfile(filesystem);
+    JsonDocument recovered;
+    downloadCurrentHttpBackup(manager, recovered);
+    TEST_ASSERT_EQUAL_STRING("before", recovered["profiles"][0]["description"].as<const char*>());
+    TEST_ASSERT_FALSE(filesystem.exists(RESTORE_TRANSACTION_PATH));
+    TEST_ASSERT_FALSE(manager.recoveryPending());
+    manager.serviceDeferredBackup(4000);
+    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
+    assertBackupHasOriginalProfile(filesystem);
+}
+
+} // namespace
+
+void test_failed_restore_blocks_http_and_deferred_snapshots_until_rollback() {
+    assertPendingRestoreBlocksNewBackupSnapshots(SettingsBackupScope::Full);
+}
+
+void test_failed_profiles_only_restore_blocks_backup_snapshots_until_rollback() {
+    assertPendingRestoreBlocksNewBackupSnapshots(SettingsBackupScope::ProfilesOnly);
+}
+
+void test_synchronous_backup_recovers_failed_restore_before_snapshot() {
+    fs::FS filesystem(g_tempRoot);
+    SettingsManager manager(storage, profiles);
+    JsonDocument incoming;
+    seedBackupJournalFixture(filesystem, manager, incoming);
+    failRestoreWithOneWriteOutage(manager, incoming);
+    fs::mock_reset_fs_write_budget();
+    TEST_ASSERT_TRUE(manager.backupToSD());
+    TEST_ASSERT_FALSE(filesystem.exists(RESTORE_TRANSACTION_PATH));
+    TEST_ASSERT_FALSE(manager.recoveryPending());
+    assertBackupHasOriginalProfile(filesystem);
+}
+
+void test_deferred_backup_never_queues_a_failed_restore_snapshot() {
+    fs::FS filesystem(g_tempRoot);
+    SettingsManager manager(storage, profiles);
+    JsonDocument incoming;
+    seedBackupJournalFixture(filesystem, manager, incoming);
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    failRestoreWithOneWriteOutage(manager, incoming);
+    manager.serviceDeferredBackup(2000);
+    fs::mock_reset_fs_write_budget();
+    TEST_ASSERT_FALSE(runDeferredSettingsBackupWriterOnceForTest(storage));
+    TEST_ASSERT_TRUE(filesystem.exists(RESTORE_TRANSACTION_PATH));
+    assertBackupHasOriginalProfile(filesystem);
+}
+
+void test_pre_failure_queued_backup_remains_authoritative_during_pending_rollback() {
+    fs::FS filesystem(g_tempRoot);
+    SettingsManager manager(storage, profiles);
+    JsonDocument incoming;
+    seedBackupJournalFixture(filesystem, manager, incoming);
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    manager.serviceDeferredBackup(1000);
+    failRestoreWithOneWriteOutage(manager, incoming);
+    fs::mock_reset_fs_write_budget();
+    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
+    TEST_ASSERT_TRUE(filesystem.exists(RESTORE_TRANSACTION_PATH));
+    assertBackupHasOriginalProfile(filesystem);
+}
+
+void test_committed_restore_journal_cleanup_does_not_mark_catalog_provisional() {
+    fs::FS filesystem(g_tempRoot);
+    SettingsManager manager(storage, profiles);
+    JsonDocument incoming;
+    seedBackupJournalFixture(filesystem, manager, incoming);
+    manager.utLeaveRestoreJournalAfterCommit(true);
+    TEST_ASSERT_TRUE(manager.applyBackupDocument(incoming, true).success);
+    TEST_ASSERT_FALSE(manager.recoveryPending());
+    fs::mock_fail_next_remove(RESTORE_TRANSACTION_PATH);
+    BackupApiService::BackupSnapshotCache cache;
+    WebServer download(80);
+    BackupApiService::handleApiBackup(download, cache, actualBackupRuntime(manager), nullptr, nullptr);
+    BackupApiService::releaseBackupSnapshotCache(cache);
+    TEST_ASSERT_EQUAL_INT(503, download.lastStatusCode);
+    TEST_ASSERT_TRUE(filesystem.exists(RESTORE_TRANSACTION_PATH));
+    TEST_ASSERT_FALSE(manager.recoveryPending());
+    JsonDocument recovered;
+    downloadCurrentHttpBackup(manager, recovered);
+    TEST_ASSERT_EQUAL_STRING("after", recovered["profiles"][0]["description"].as<const char*>());
+    TEST_ASSERT_EQUAL_UINT8(88, recovered["brightness"].as<int>());
+    TEST_ASSERT_FALSE(filesystem.exists(RESTORE_TRANSACTION_PATH));
+}
+
+void test_full_restore_credential_rollback_still_blocks_backup_snapshots() {
+    fs::FS filesystem(g_tempRoot);
+    SettingsManager manager(storage, profiles);
+    JsonDocument unused;
+    seedBackupJournalFixture(filesystem, manager, unused);
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "OldNet", "old-password", "Old", 0));
+    JsonDocument incoming;
+    incoming["_type"] = "v1simple_backup";
+    JsonObject slot = incoming["wifiStaSlots"].to<JsonArray>().add<JsonObject>();
+    slot["index"] = 0;
+    slot["ssid"] = "NewNet";
+    slot["passwordObf"] = encodeObfuscatedForStorage("new-password");
+    mock_preferences::set_fail_writes_for_key(kNvsWifiStaSlotPassword[0]);
+    TEST_ASSERT_FALSE(manager.applyBackupDocument(incoming, true).success);
+    TEST_ASSERT_TRUE(manager.recoveryPending());
+    BackupApiService::BackupSnapshotCache cache;
+    WebServer download(80);
+    BackupApiService::handleApiBackup(download, cache, actualBackupRuntime(manager), nullptr, nullptr);
+    BackupApiService::releaseBackupSnapshotCache(cache);
+    TEST_ASSERT_EQUAL_INT(503, download.lastStatusCode);
+    TEST_ASSERT_FALSE(manager.backupToSD());
+    TEST_ASSERT_TRUE(filesystem.exists(RESTORE_TRANSACTION_PATH));
+    mock_preferences::set_fail_writes_for_key(nullptr);
+    JsonDocument recovered;
+    downloadCurrentHttpBackup(manager, recovered);
+    TEST_ASSERT_FALSE(manager.recoveryPending());
+    TEST_ASSERT_FALSE(filesystem.exists(RESTORE_TRANSACTION_PATH));
+    TEST_ASSERT_EQUAL_STRING("OldNet", manager.get().wifiStaSlots[0].ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("old-password", manager.getWifiStaSlotPassword(0).c_str());
+}
+
+void test_healthy_restore_and_rollback_keep_backup_snapshots_available() {
+    for (bool failNvs : {false, true}) {
+        if (failNvs) { tearDown(); setUp(); }
+        fs::FS filesystem(g_tempRoot);
+        SettingsManager manager(storage, profiles);
+        JsonDocument incoming;
+        seedBackupJournalFixture(filesystem, manager, incoming);
+        if (failNvs) mock_preferences::set_fail_writes_for_key(kNvsBrightness);
+        TEST_ASSERT_EQUAL(!failNvs, manager.applyBackupDocument(incoming, true).success);
+        mock_preferences::set_fail_writes_for_key(nullptr);
+        TEST_ASSERT_FALSE(filesystem.exists(RESTORE_TRANSACTION_PATH));
+        TEST_ASSERT_FALSE(manager.recoveryPending());
+        JsonDocument downloaded;
+        downloadCurrentHttpBackup(manager, downloaded);
+        TEST_ASSERT_EQUAL_STRING(failNvs ? "before" : "after",
+                                downloaded["profiles"][0]["description"].as<const char*>());
+        TEST_ASSERT_EQUAL_INT(failNvs ? 33 : 88, downloaded["brightness"].as<int>());
+        TEST_ASSERT_TRUE(manager.backupToSD());
+    }
+}
+
+void test_delete_journal_blocks_unassigned_catalog_export_until_rollback() {
+    fs::FS filesystem(g_tempRoot);
+    SettingsManager manager(storage, profiles);
+    JsonDocument incoming;
+    seedBackupJournalFixture(filesystem, manager, incoming);
+    manager.mutableSettings().slot0_default.profileName = "";
+    TEST_ASSERT_TRUE(manager.save());
+    manager.utInterruptProfileDeleteAfterProfile(true);
+    TEST_ASSERT_FALSE(manager.deleteProfileAndReferences("Road").success());
+    fs::mock_set_fs_write_budget(0);
+    BackupApiService::BackupSnapshotCache cache;
+    WebServer download(80);
+    BackupApiService::handleApiBackup(download, cache, actualBackupRuntime(manager), nullptr, nullptr);
+    BackupApiService::releaseBackupSnapshotCache(cache);
+    TEST_ASSERT_EQUAL_INT(503, download.lastStatusCode);
+    TEST_ASSERT_TRUE(manager.recoveryPending());
+    TEST_ASSERT_FALSE(manager.backupToSD());
+    assertBackupHasOriginalProfile(filesystem);
+    fs::mock_reset_fs_write_budget();
+    JsonDocument recovered;
+    downloadCurrentHttpBackup(manager, recovered);
+    TEST_ASSERT_EQUAL_UINT(1, recovered["profiles"].size());
+    TEST_ASSERT_EQUAL_STRING("before", recovered["profiles"][0]["description"].as<const char*>());
+    TEST_ASSERT_FALSE(filesystem.exists(PROFILE_DELETE_TRANSACTION_PATH));
+    TEST_ASSERT_FALSE(manager.recoveryPending());
+}
+
+void test_catalog_only_backup_mismatch_refresh_survives_second_reboot() {
+    for (bool interruptRefresh : {false, true}) {
+        if (interruptRefresh) { tearDown(); setUp(); }
+        fs::FS filesystem(g_tempRoot);
+        SettingsManager manager(storage, profiles);
+        JsonDocument incoming;
+        seedBackupJournalFixture(filesystem, manager, incoming);
+        failRestoreWithOneWriteOutage(manager, incoming);
+        fs::mock_reset_fs_write_budget();
+        // Model a valid mixed snapshot produced by the older firmware. Its
+        // settings match healthy NVS; only the profile catalog is provisional.
+        JsonDocument oldBackup;
+        TEST_ASSERT_TRUE(BackupPayloadBuilder::buildBackupDocument(
+            oldBackup, manager.get(), profiles, BackupPayloadBuilder::BackupTransport::SdBackup, 1000).safeToCommit);
+        writeJsonFile(filesystem, SETTINGS_BACKUP_PATH, oldBackup);
+        resetDeferredSettingsBackupStateForTest();
+        V1ProfileManager rebootProfiles;
+        TEST_ASSERT_TRUE(rebootProfiles.begin(storage));
+        SettingsManager reboot(storage, rebootProfiles);
+        reboot.load();
+        if (interruptRefresh) {
+            // Recovery finishes and removes the journal, then the backup write
+            // fails. A further reset must not lose the catalog refresh intent.
+            fs::g_mock_fs_rename_state.afterRename = failWritesAfterBackupRoadCommit;
+        }
+        reboot.checkAndRestoreFromSD();
+        TEST_ASSERT_FALSE(filesystem.exists(RESTORE_TRANSACTION_PATH));
+        if (interruptRefresh) {
+            TEST_ASSERT_TRUE(reboot.deferredBackupPending());
+            fs::mock_reset_fs_write_budget();
+            resetDeferredSettingsBackupStateForTest();
+            V1ProfileManager nextProfiles;
+            TEST_ASSERT_TRUE(nextProfiles.begin(storage));
+            SettingsManager nextBoot(storage, nextProfiles);
+            nextBoot.load();
+            nextBoot.checkAndRestoreFromSD();
+        }
+        assertBackupHasOriginalProfile(filesystem);
+    }
+}
+
+void test_unreadable_catalog_backup_comparison_preserves_existing_backup_then_retries() {
+    fs::FS filesystem(g_tempRoot);
+    SettingsManager manager(storage, profiles);
+    JsonDocument incoming;
+    seedBackupJournalFixture(filesystem, manager, incoming);
+    manager.mutableSettings().slot0_default.profileName = "";
+    TEST_ASSERT_TRUE(manager.save());
+    const std::string original = readFileToString(filesystem, SETTINGS_BACKUP_PATH);
+    fs::mock_fail_read_opens_for_full_path((g_tempRoot / "v1profiles/Road.json").c_str());
+    manager.checkAndRestoreFromSD();
+    TEST_ASSERT_TRUE(manager.deferredBackupPending());
+    TEST_ASSERT_EQUAL_STRING(original.c_str(), readFileToString(filesystem, SETTINGS_BACKUP_PATH).c_str());
+    manager.serviceDeferredBackup(2000);
+    fs::mock_fail_read_opens_for_full_path(nullptr);
+    TEST_ASSERT_FALSE(runDeferredSettingsBackupWriterOnceForTest(storage));
+    manager.serviceDeferredBackup(10000);
+    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
+    assertBackupHasOriginalProfile(filesystem);
 }
 
 void test_current_http_restore_removes_profile_absent_from_backup() {
@@ -7750,6 +8049,17 @@ void test_settings_backup_replacement_preserves_valid_previous_across_errors_and
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_failed_restore_blocks_http_and_deferred_snapshots_until_rollback);
+    RUN_TEST(test_failed_profiles_only_restore_blocks_backup_snapshots_until_rollback);
+    RUN_TEST(test_synchronous_backup_recovers_failed_restore_before_snapshot);
+    RUN_TEST(test_deferred_backup_never_queues_a_failed_restore_snapshot);
+    RUN_TEST(test_pre_failure_queued_backup_remains_authoritative_during_pending_rollback);
+    RUN_TEST(test_committed_restore_journal_cleanup_does_not_mark_catalog_provisional);
+    RUN_TEST(test_full_restore_credential_rollback_still_blocks_backup_snapshots);
+    RUN_TEST(test_healthy_restore_and_rollback_keep_backup_snapshots_available);
+    RUN_TEST(test_delete_journal_blocks_unassigned_catalog_export_until_rollback);
+    RUN_TEST(test_catalog_only_backup_mismatch_refresh_survives_second_reboot);
+    RUN_TEST(test_unreadable_catalog_backup_comparison_preserves_existing_backup_then_retries);
     RUN_TEST(test_failed_wifi_mutations_snapshot_sd_only_passwords_before_any_write);
     RUN_TEST(test_wifi_mutation_snapshot_defers_unavailable_sd_and_honors_explicit_empty_nvs);
     RUN_TEST(test_legacy_open_wifi_without_sd_remains_editable_and_removable_after_upgrade);

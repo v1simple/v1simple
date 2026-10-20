@@ -13,8 +13,9 @@
     let message = $state(null);
     let editingAddress = $state('');
     let editName = $state('');
-    let busyAddress = $state('');
+    let busyAddresses = $state([]);
     let renameGeneration = 0;
+    let activeDeviceFetch = null;
 
     onMount(() => {
         const releaseRuntimeStatus = retainRuntimeStatus({ needsStatus: true });
@@ -33,21 +34,37 @@
     }
 
     async function fetchDevices() {
+        const request = { changedAddresses: new Set() };
+        activeDeviceFetch = request;
         try {
             const res = await fetchJsonWithTimeout('/api/v1/devices');
+            if (activeDeviceFetch !== request) return;
             if (!res.ok) {
                 message = { type: 'error', text: 'Failed to load saved devices.' };
                 return;
             }
             const data = res.data;
-            devices = (data.devices || []).map((device) => ({
+            const loaded = (data.devices || []).map((device) => ({
                 address: device.address || '',
                 name: device.name || '',
                 defaultProfile: Number(device.defaultProfile || 0),
                 connected: !!device.connected
             }));
+            const merged = new Map(loaded.map((device) => [device.address, device]));
+            // This snapshot cannot replace an operation that overlapped its read.
+            // Missing current rows also preserve deletions until a later fresh read.
+            for (const address of request.changedAddresses) {
+                const current = devices.find((device) => device.address === address);
+                if (current) merged.set(address, { ...current });
+                else merged.delete(address);
+            }
+            devices = [...merged.values()];
         } catch (e) {
-            message = { type: 'error', text: 'Failed to load saved devices.' };
+            if (activeDeviceFetch === request) {
+                message = { type: 'error', text: 'Failed to load saved devices.' };
+            }
+        } finally {
+            if (activeDeviceFetch === request) activeDeviceFetch = null;
         }
     }
 
@@ -87,6 +104,18 @@
         editName = '';
     }
 
+    function beginDeviceOperation(address) {
+        if (busyAddresses.includes(address)) return false;
+        busyAddresses.push(address);
+        activeDeviceFetch?.changedAddresses.add(address);
+        return true;
+    }
+
+    function finishDeviceOperation(address) {
+        activeDeviceFetch?.changedAddresses.add(address);
+        busyAddresses = busyAddresses.filter((pending) => pending !== address);
+    }
+
     async function readMutationResult(res) {
         let payload;
         try {
@@ -104,9 +133,9 @@
     }
 
     async function saveName(address) {
+        if (!beginDeviceOperation(address)) return;
         const submittedName = editName.trim();
         const submittedRenameGeneration = renameGeneration;
-        busyAddress = address;
         try {
             const formData = new FormData();
             formData.append('address', address);
@@ -137,12 +166,12 @@
         } catch (e) {
             message = { type: 'error', text: 'Failed to save device name.' };
         } finally {
-            busyAddress = '';
+            finishDeviceOperation(address);
         }
     }
 
     async function setDefaultProfile(address, profile) {
-        busyAddress = address;
+        if (!beginDeviceOperation(address)) return;
         try {
             const selected = Math.max(0, Math.min(3, Number(profile)));
             const formData = new FormData();
@@ -173,19 +202,16 @@
             message = { type: 'error', text: 'Failed to save default profile.' };
             await fetchDevices();
         } finally {
-            busyAddress = '';
+            finishDeviceOperation(address);
         }
     }
 
     async function deleteDevice(address) {
-        const device = devices.find((d) => d.address === address);
-        const displayName = device?.name || address;
-        if (!confirm(`Remove ${displayName} from saved devices?`)) {
-            return;
-        }
-
-        busyAddress = address;
+        if (!beginDeviceOperation(address)) return;
         try {
+            const device = devices.find((d) => d.address === address);
+            const displayName = device?.name || address;
+            if (!confirm(`Remove ${displayName} from saved devices?`)) return;
             const formData = new FormData();
             formData.append('address', address);
 
@@ -214,7 +240,7 @@
         } catch (e) {
             message = { type: 'error', text: 'Failed to remove device.' };
         } finally {
-            busyAddress = '';
+            finishDeviceOperation(address);
         }
     }
 </script>
@@ -292,14 +318,13 @@
                                     <button
                                         class="btn btn-sm btn-success"
                                         onclick={() => saveName(device.address)}
-                                        disabled={busyAddress === device.address}
+                                        disabled={busyAddresses.includes(device.address)}
                                     >
                                         Save
                                     </button>
                                     <button
                                         class="btn btn-ghost btn-sm"
                                         onclick={cancelRename}
-                                        disabled={busyAddress === device.address}
                                     >
                                         Cancel
                                     </button>
@@ -307,14 +332,13 @@
                                     <button
                                         class="btn btn-ghost btn-sm"
                                         onclick={() => startRename(device)}
-                                        disabled={busyAddress === device.address}
                                     >
                                         Rename
                                     </button>
                                     <button
                                         class="btn btn-outline btn-error btn-sm"
                                         onclick={() => deleteDevice(device.address)}
-                                        disabled={busyAddress === device.address}
+                                        disabled={busyAddresses.includes(device.address)}
                                     >
                                         Delete
                                     </button>
@@ -332,12 +356,13 @@
                                 id={profileSelectId(device.address)}
                                 class="select w-full max-w-sm select-sm"
                                 value={String(device.defaultProfile || 0)}
-                                onchange={(e) =>
-                                    setDefaultProfile(
-                                        device.address,
-                                        Number(e.currentTarget.value)
-                                    )}
-                                disabled={busyAddress === device.address}
+                                onchange={(e) => {
+                                    const profile = Number(e.currentTarget.value);
+                                    // Keep the selection on the confirmed value until the save completes.
+                                    e.currentTarget.value = String(device.defaultProfile || 0);
+                                    void setDefaultProfile(device.address, profile);
+                                }}
+                                disabled={busyAddresses.includes(device.address)}
                             >
                                 <option value="0">Use global active slot</option>
                                 {#each [1, 2, 3] as profileNumber}

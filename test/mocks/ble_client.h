@@ -242,6 +242,7 @@ public:
     // Connection state
     bool isProxyClientConnected() const { return proxyConnected; }
     bool phoneOwnsStoppedAlertStream() const { return false; }
+    bool receivedAfterPhoneAlertStop(uint32_t) const { return false; }
     void setProxyConnected(bool v) { proxyConnected = v; }
     bool isConnected() const { return connected; }
     void onV1DisplayFlowControl(bool holdoff) {

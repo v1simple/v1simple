@@ -664,10 +664,8 @@ BackupApiService::BackupRuntime WiFiManager::makeBackupRuntime() {
         // buildDocument
         [](JsonDocument& doc, uint32_t snapshotMs, void* ctx) {
             auto* self = static_cast<WiFiManager*>(ctx);
-            const BackupPayloadBuilder::BuildResult result = BackupPayloadBuilder::buildBackupDocument(
-                doc, self->settings_.get(), self->profiles_, BackupPayloadBuilder::BackupTransport::HttpDownload,
-                snapshotMs);
-            return BackupApiService::BackupSnapshotBuildResult{result.safeToCommit};
+            return BackupApiService::BackupSnapshotBuildResult{
+                self->settings_.buildHttpBackupDocument(doc, snapshotMs)};
         },
         // isStorageReady
         [](void* ctx) -> bool { return static_cast<WiFiManager*>(ctx)->storage_.isReady(); },

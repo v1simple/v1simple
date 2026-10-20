@@ -4,13 +4,26 @@
 from __future__ import annotations
 
 import ast
+import configparser
 from contextlib import redirect_stdout
+import csv
 import io
 from pathlib import Path
+import re
 import unittest
 
 
 SOURCE = Path(__file__).with_name("force_app_upload_offset.py")
+ROOT = SOURCE.parent.parent
+
+
+def resolved_option(config: configparser.ConfigParser, section: str, option: str) -> str:
+    """Resolve the section.option references used by this project's config."""
+    return re.sub(
+        r"\$\{([^}.]+)\.([^}]+)\}",
+        lambda match: resolved_option(config, match[1], match[2]),
+        config.get(section, option),
+    )
 
 
 def load_testable_symbols() -> dict[str, object]:
@@ -122,6 +135,45 @@ class ForceAppUploadOffsetTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.symbols = load_testable_symbols()
+
+    def test_board_environments_keep_shipping_partitions_and_app_location(self) -> None:
+        config = configparser.ConfigParser(interpolation=None)
+        config.read(ROOT / "platformio.ini", encoding="utf-8")
+        with (ROOT / "partitions_v1.csv").open(encoding="utf-8") as source:
+            rows = [[field.strip() for field in row] for row in csv.reader(source)
+                    if row and not row[0].lstrip().startswith("#")]
+        app_rows = [row for row in rows if row[1] == "app"]
+        self.assertEqual(len(app_rows), 1)
+        app = app_rows[0]
+        self.assertEqual(app[2], "factory")
+        app_offset = int(app[3], 0)
+        app_size = int(app[4], 0)
+        self.assertEqual(int(self.symbols["APP_OFFSET"], 0), app_offset)
+
+        for name in ("waveshare-349", "esp32-s3-car-install", "device"):
+            with self.subTest(environment=name):
+                section = f"env:{name}"
+                self.assertEqual(
+                    resolved_option(config, section, "board_build.partitions"),
+                    "partitions_v1.csv",
+                )
+                self.assertEqual(
+                    int(resolved_option(config, section, "board_upload.offset_address"), 0),
+                    app_offset,
+                )
+                self.assertEqual(
+                    int(resolved_option(config, section, "board_upload.maximum_size"), 0),
+                    app_size,
+                )
+
+    def test_board_environments_enroll_both_upload_layout_hooks(self) -> None:
+        config = configparser.ConfigParser(interpolation=None)
+        config.read(ROOT / "platformio.ini", encoding="utf-8")
+        for name in ("waveshare-349", "esp32-s3-car-install", "device"):
+            with self.subTest(environment=name):
+                scripts = resolved_option(config, f"env:{name}", "extra_scripts").split()
+                for phase in ("pre", "post"):
+                    self.assertEqual(scripts.count(f"{phase}:scripts/force_app_upload_offset.py"), 1)
 
     def test_upload_command_retains_layout_without_expanding_symbolic_flags(self) -> None:
         patch_command = self.symbols["patch_upload_command"]

@@ -166,6 +166,8 @@ class SettingsManager {
     SettingsPersistResult applyWifiStaPriorityUpdates(const std::vector<WifiStaPriorityUpdate>& updates);
 
     bool backupToSD();
+    // Download snapshots share the same journal admission as SD snapshots.
+    bool buildHttpBackupDocument(JsonDocument& doc, uint32_t snapshotMs);
     void requestDeferredBackupFromCurrentState();
     void serviceDeferredBackup(uint32_t nowMs);
     bool deferredBackupPending() const;
@@ -219,8 +221,8 @@ class SettingsManager {
     bool nvsRecoveryPending_ = false;
     bool nvsRecoveryInProgress_ = false;
     uint32_t recoveryRevision_ = 0;
-    // Boot profile migration and reference cleanup must wait when a recovery
-    // source or write could not be checked. Recomputed by the next SD recovery attempt.
+    // Boot profile migration, reference cleanup and incomplete transaction
+    // rollback wait for recovery. Recomputed by the next SD recovery attempt.
     bool profileReferenceRecoveryPending_ = false;
     uint64_t restoreCommitWatermark_ = 0;
     uint64_t profileDeleteCommitWatermark_ = 0;
@@ -256,6 +258,7 @@ class SettingsManager {
     bool resolveWifiCredentialTransaction();
     bool resolveRestoreTransaction();
     bool resolveProfileDeleteTransaction();
+    bool prepareBackupSnapshot();
     bool persistSettingsAtomically();
     bool writeSettingsToNamespace(const char* ns, uint32_t generation);
     bool persistLastV1AddressFallbackNow(const String& addr);

@@ -205,7 +205,8 @@ public:
         return found;
     }
 
-    bool parse(const uint8_t* data, size_t length, uint32_t nowMs, uint32_t ingressSequence) {
+    bool parse(const uint8_t* data, size_t length, uint32_t nowMs, uint32_t ingressSequence,
+               bool = false) {
         parseCalls++;
         parsedPackets.emplace_back(data, data + length);
         parseTimestamps.push_back(nowMs);

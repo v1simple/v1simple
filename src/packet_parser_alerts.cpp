@@ -1,4 +1,5 @@
 #include "packet_parser.h"
+#include "v1_firmware_compat.h"
 #include <algorithm>
 
 namespace {
@@ -40,6 +41,7 @@ void PacketParser::resetAlertState() {
     displayState_.bandFlashBits = 0;
     alertIndexMode_ = AlertIndexMode::Unknown;
     alertResyncRequired_ = false;
+    positiveAlertObserved_ = false;
     resetAlertStateAt(static_cast<uint32_t>(millis()));
     alertTableObserved_ = false;
 }
@@ -140,6 +142,32 @@ void PacketParser::clearPublishedAlerts() {
     displayState_.hasJunkAlert = false;
     displayState_.hasPhotoAlert = false;
     displayState_.hasKuAlert = false;
+}
+
+void PacketParser::retireStoppedAllBogeysAlerts(const uint8_t* payload, uint32_t nowMs) {
+    // StopAlertData itself says nothing about an encounter. Only the verified
+    // unsuppressed All-Bogeys resting display can retire an old radar table.
+    // Logic/Euro modes, unknown firmware, blink-off and dark displays remain
+    // unqualified; they can hide live detections.
+    if (alertCount_ == 0 || !displayState_.hasV1Version ||
+        !V1FirmwareCompat::capabilities(displayState_.v1FirmwareVersion).logicMuted ||
+        payload[0] != 0x77 || payload[1] != 0x77 || payload[2] != 0 ||
+        payload[3] != 0 || payload[4] != 0 ||
+        (payload[5] & 0x9D) != 0x0C || // scanning, display on, no soft mute/Euro/displayActive
+        (payload[6] & 0x1E) != 0x04) { // mode 1, neither logic nor Auto Mute
+        return;
+    }
+    // Receipt time, not dequeue time, owns both freshness and persistence.
+    // A transport gap can invalidate table freshness while the rows are young.
+    // Recent partial rows also contradict idle, even without a publication.
+    if (static_cast<int32_t>(nowMs - alertTableObservedAtMs_) <= static_cast<int32_t>(kAlertRowFreshnessMs) ||
+        (positiveAlertObserved_ &&
+         static_cast<int32_t>(nowMs - lastPositiveAlertAtMs_) <= static_cast<int32_t>(kAlertRowFreshnessMs))) {
+        return;
+    }
+    clearPublishedAlerts();
+    notifyAlertTableObserver(nowMs);
+    // Preserve partial assembly: this display packet is not a count-zero row.
 }
 
 void PacketParser::clearAlertCache() {
@@ -279,6 +307,7 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
             displayState_.arrows = DIR_NONE;
         }
         resetAlertStateAt(nowMs);
+        positiveAlertObserved_ = false;
         alertTableObserved_ = true;
         alertTableObservedAtMs_ = nowMs;
         alertResyncRequired_ = false;
@@ -340,6 +369,11 @@ bool PacketParser::parseAlertData(const uint8_t* payload, size_t length, uint32_
     const bool indexValidZeroBased = (alertIndex < receivedAlertCount);
     if (!indexValidOneBased && !indexValidZeroBased) {
         return true;
+    }
+
+    if (!positiveAlertObserved_ || static_cast<int32_t>(nowMs - lastPositiveAlertAtMs_) > 0) {
+        positiveAlertObserved_ = true;
+        lastPositiveAlertAtMs_ = nowMs;
     }
 
     if (alertResyncRequired_) {

@@ -974,7 +974,10 @@ int V1BLEClient::processPhoneCommandQueue() {
     }
 
     switch (result) {
-    case SendResult::SENT:
+    case SendResult::SENT: {
+        // Exclude notifications received during the write: they need not
+        // reflect the stop yet. Retirement can wait for the next display.
+        const uint32_t ingressBoundary = latestV1NotificationIngressSequence();
         if (indexed) {
             longOwner.sentMask |= chunkBit;
             const bool complete = longOwner.sentMask == ((uint16_t{1} << longOwner.count) - 1);
@@ -982,7 +985,8 @@ int V1BLEClient::processPhoneCommandQueue() {
             // state only once the complete command has been forwarded.
             if (complete && longOwner.destination == 0xDA) {
                 if (longOwner.requestId == 0x42)
-                    alertDataRequestGate_.recordStop(pktCopy.sessionGeneration, pktCopy.phoneSessionGeneration);
+                    alertDataRequestGate_.recordStop(pktCopy.sessionGeneration, pktCopy.phoneSessionGeneration,
+                                                     ingressBoundary);
                 else if (longOwner.requestId == PACKET_ID_REQ_START_ALERT)
                     alertDataRequestGate_.recordSuccessfulSend(pktCopy.sessionGeneration, static_cast<uint32_t>(millis()));
             }
@@ -998,12 +1002,14 @@ int V1BLEClient::processPhoneCommandQueue() {
             // that sender during the write. Raw long-handle starts need the
             // same bookkeeping as starts sent through the short handle.
             if (pktCopy.data[3] == 0x42)
-                alertDataRequestGate_.recordStop(pktCopy.sessionGeneration, pktCopy.phoneSessionGeneration);
+                alertDataRequestGate_.recordStop(pktCopy.sessionGeneration, pktCopy.phoneSessionGeneration,
+                                                 ingressBoundary);
             else if (pktCopy.data[3] == PACKET_ID_REQ_START_ALERT)
                 alertDataRequestGate_.recordSuccessfulSend(pktCopy.sessionGeneration, static_cast<uint32_t>(millis()));
         }
         hasPending = false;
         return 1;
+    }
     case SendResult::NOT_YET:
         memcpy(pendingPkt.data, pktCopy.data, pktCopy.length);
         pendingPkt.length = pktCopy.length;

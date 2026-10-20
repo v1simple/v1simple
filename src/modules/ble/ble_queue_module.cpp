@@ -707,7 +707,8 @@ void BleQueueModule::process() {
                 if (!ble_->hasSessionSweepMaxCapture()) parser_->resetSweepMaxObservation();
             }
         }
-        bool parseOk = parser_->parse(packetPtr, packetSize, packetTimestampMs, packetIngressSequence);
+        bool parseOk = parser_->parse(packetPtr, packetSize, packetTimestampMs, packetIngressSequence,
+                                      ble_ && ble_->receivedAfterPhoneAlertStop(packetIngressSequence));
         if (!parseOk && packetId == PACKET_ID_ALERT_DATA) {
             markAlertStreamDiscontinuous();
         }

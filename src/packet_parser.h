@@ -18,7 +18,10 @@ class PacketParser {
 
     bool parse(const uint8_t* data, size_t length);
     bool parse(const uint8_t* data, size_t length, uint32_t nowMs);
-    bool parse(const uint8_t* data, size_t length, uint32_t nowMs, uint32_t ingressSequence);
+    // The BLE owner alone qualifies packets received after a successful stop
+    // from the phone that still owns this detector session.
+    bool parse(const uint8_t* data, size_t length, uint32_t nowMs, uint32_t ingressSequence,
+               bool receivedAfterPhoneStop = false);
 
     const DisplayState& getDisplayState() const { return displayState_; }
 
@@ -133,6 +136,8 @@ class PacketParser {
     ClearedV1Alert clearedAlert_;
     bool alertTableObserved_ = false;
     uint32_t alertTableObservedAtMs_ = 0;
+    bool positiveAlertObserved_ = false;
+    uint32_t lastPositiveAlertAtMs_ = 0;
     V1DisplayOnObservation displayOnObservation_;
     V1ModeObservation modeObservation_;
     V1CurrentVolumeObservation currentVolumeObservation_;
@@ -158,7 +163,8 @@ class PacketParser {
     bool hasDisplayLaserAlert() const { return (displayState_.activeBands & BAND_LASER) != 0; }
 
     bool parseInternal(const uint8_t* data, size_t length, bool hasNowMs, uint32_t nowMs,
-                       uint32_t ingressSequence);
+                       uint32_t ingressSequence, bool receivedAfterPhoneStop = false);
+    void retireStoppedAllBogeysAlerts(const uint8_t* payload, uint32_t nowMs);
     bool parseDisplayData(const uint8_t* payload, size_t length);
     bool parseAlertData(const uint8_t* payload, size_t length, uint32_t nowMs);
     bool validatePacket(const uint8_t* data, size_t length);

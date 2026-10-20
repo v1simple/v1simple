@@ -5,6 +5,7 @@
 #include <esp_heap_caps.h>
 #include <esp_system.h>
 #include <esp_chip_info.h>
+#include <esp_ota_ops.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include "../device_test_reset.h"
@@ -121,8 +122,18 @@ void test_boot_flash_size_16mb() {
 }
 
 void test_boot_sketch_has_space() {
-    uint32_t sketchSize = ESP.getSketchSize();
-    uint32_t freeSketch = ESP.getFreeSketchSpace();
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    TEST_ASSERT_NOT_NULL(running);
+    TEST_ASSERT_EQUAL(ESP_PARTITION_TYPE_APP, running->type);
+    TEST_ASSERT_EQUAL(ESP_PARTITION_SUBTYPE_APP_FACTORY, running->subtype);
+    TEST_ASSERT_EQUAL_HEX32(0x20000, running->address);
+    TEST_ASSERT_EQUAL_HEX32(0xD80000, running->size);
+
+    const uint32_t sketchSize = ESP.getSketchSize();
+    TEST_ASSERT_GREATER_THAN_UINT32(0, sketchSize);
+    TEST_ASSERT_LESS_THAN_UINT32(running->size, sketchSize);
+    // getFreeSketchSpace() measures the next OTA slot; this layout has none.
+    const uint32_t freeSketch = running->size - sketchSize;
 
     Serial.printf("  [boot] Sketch: used=%lu free=%lu\n",
                   (unsigned long)sketchSize, (unsigned long)freeSketch);

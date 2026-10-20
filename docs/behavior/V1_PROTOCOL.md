@@ -68,6 +68,49 @@ existing initial-start and silence recovery. `test_ble_proxy_alert_stream`
 executes the production proxy, command sender, queue, parser and connection
 owner; detector responses and NimBLE remain host models.
 
+A stopped stream can leave the last detailed radar row displayed indefinitely
+while the detector continues sending idle display packets. The bounded repair
+qualifies **All-Bogeys A only**, on known Gen2 firmware with the existing 4.1039+
+logic-mute capability. The existing compatibility policy excludes unknown
+versions and unverified future major versions. This is a V1Simple presentation
+rule, not a claim that StopAlertData or every resting glyph proves no detection.
+
+The same connected phone and detector session must still own a successfully
+forwarded stop. The stop owner captures the notification sequence **after** the
+final successful write returns; a display frame's first receipt must be later.
+Frames already queued, received during that write, or begun before it cannot
+qualify by completing later. A start, phone replacement/departure, or detector
+session replacement revokes that authority.
+
+The canonical E9/EAh display must report steady raw `0x77/0x77` A images, zero
+strength and both raw band/arrow images zero, scanning and display-on, non-Euro
+mode 1, display-active off, and no soft, logic or Auto Mute. Both the retained
+table receipt and every newer positive partial-row receipt must be more than
+1500 ms old relative to that display's original receipt. Invalidated freshness
+after a gap does not bypass the age check. Retirement preserves the partial
+assembly and publishes the empty radar state through the existing encounter and
+persistence path, using the display receipt time; queue delay cannot renew the
+configured hold. A repeated idle packet does not create another clear.
+
+Silence, Stop alone, dark/blink-off displays, active band images, laser, muted
+states, logic/Euro modes and unknown firmware retain the existing behavior.
+Those modes are deliberately unqualified and this repair does **not** solve
+stopped-stream retention for all modes. Ordinary streaming still uses complete
+count-zero radar tables. The qualified idle does not override a fresh complete
+or partial positive table.
+
+`test_ble_proxy_alert_stream` now runs the production proxy → notification queue
+→ parser → persistence/composer/display pipeline. Its stopped-idle tests cover
+0/3/5-second persistence (including expiry without another packet), E9/EAh,
+short/indexed first-receipt ownership, final long-command transmission,
+pre/during-write packets, positive partial contradictions, receipt/sequence
+rollover, session replacement, and the excluded states above. The real quiet
+coordinator issues no stale mute/unmute action at the clear or phone departure;
+the parser's event observer receives one empty publication at the receipt time.
+Transport, clocks, panel and speaker remain host substitutes; these assertions
+do not establish physical detector behavior in suppressed modes or RF/audio
+performance.
+
 AutoPush retains the successful volume write's receipt through its remaining
 Apply phases. A canonical rejection of that current write terminates the
 component as `volume_write_failed`, releases its volume lease, and prevents

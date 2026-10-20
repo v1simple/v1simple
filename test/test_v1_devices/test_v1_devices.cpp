@@ -1291,6 +1291,65 @@ void test_failed_recovery_promotion_preserves_only_valid_rollback() {
     TEST_ASSERT_EQUAL_UINT32(deviceStoreContentCrc(repaired), repaired["crc32"].as<uint32_t>());
 }
 
+void exercise_startup_mirror_repair(bool primaryNewer, bool equalGeneration, bool rejectWrites) {
+    fs::FS primary(g_tempRoot / "primary");
+    fs::FS secondary(g_tempRoot / "secondary");
+    V1DeviceStore primarySource;
+    V1DeviceStore secondarySource;
+    TEST_ASSERT_TRUE(primarySource.begin(&primary));
+    TEST_ASSERT_TRUE(secondarySource.begin(&secondary));
+    TEST_ASSERT_TRUE(primarySource.setDeviceName("AA:BB:CC:DD:EE:FF", "Primary edit"));
+    TEST_ASSERT_TRUE(secondarySource.setDeviceName("AA:BB:CC:DD:EE:FF", "Offline edit"));
+    if (!equalGeneration) {
+        V1DeviceStore& newer = primaryNewer ? primarySource : secondarySource;
+        TEST_ASSERT_TRUE(newer.setDeviceDefaultProfile("AA:BB:CC:DD:EE:FF", 3));
+    }
+    const std::string primaryBefore = readFileToString(primary, "/v1devices.json");
+    const std::string secondaryBefore = readFileToString(secondary, "/v1devices.json");
+    const char* expectedName = primaryNewer ? "Primary edit" : "Offline edit";
+    const uint8_t expectedSlot = equalGeneration ? 0 : 3;
+
+    if (rejectWrites) fs::mock_set_fs_write_budget(0);
+    V1DeviceStore boot;
+    TEST_ASSERT_TRUE(boot.begin(&primary, &secondary));
+    TEST_ASSERT_TRUE(boot.catalogReadable());
+    TEST_ASSERT_EQUAL_UINT32(1, boot.listDevices().size());
+    TEST_ASSERT_EQUAL_STRING(expectedName, boot.listDevices()[0].name.c_str());
+    TEST_ASSERT_EQUAL_UINT8(expectedSlot, boot.listDevices()[0].defaultProfile);
+    TEST_ASSERT_EQUAL(rejectWrites, boot.hasPendingSave());
+    if (rejectWrites) {
+        TEST_ASSERT_EQUAL_STRING(primaryBefore.c_str(), readFileToString(primary, "/v1devices.json").c_str());
+        TEST_ASSERT_EQUAL_STRING(secondaryBefore.c_str(), readFileToString(secondary, "/v1devices.json").c_str());
+    }
+
+    fs::mock_reset_fs_write_budget();
+    TEST_ASSERT_TRUE(boot.flushPendingSave());
+    TEST_ASSERT_FALSE(boot.hasPendingSave());
+    TEST_ASSERT_EQUAL_STRING(readFileToString(primary, "/v1devices.json").c_str(),
+                             readFileToString(secondary, "/v1devices.json").c_str());
+    V1DeviceStore reboot;
+    TEST_ASSERT_TRUE(reboot.begin(&primary, &secondary));
+    TEST_ASSERT_EQUAL_UINT32(1, reboot.listDevices().size());
+    TEST_ASSERT_EQUAL_STRING(expectedName, reboot.listDevices()[0].name.c_str());
+    TEST_ASSERT_EQUAL_UINT8(expectedSlot, reboot.listDevices()[0].defaultProfile);
+}
+
+void test_both_startup_repairs_unwritable_preserve_newer_secondary() {
+    exercise_startup_mirror_repair(false, false, true);
+}
+
+void test_both_startup_repairs_unwritable_preserve_equal_generation_offline_edit() {
+    exercise_startup_mirror_repair(false, true, true);
+}
+
+void test_both_startup_repairs_unwritable_preserve_newer_primary() {
+    exercise_startup_mirror_repair(true, false, true);
+}
+
+void test_writable_startup_repairs_preserve_newer_secondary() {
+    exercise_startup_mirror_repair(false, false, false);
+}
+
 void test_failed_primary_repair_remains_pending_after_secondary_succeeds() {
     const std::filesystem::path sdRoot = g_tempRoot / "sd";
     const std::filesystem::path littleRoot = g_tempRoot / "little";
@@ -1846,6 +1905,10 @@ int main() {
     RUN_TEST(test_corrupt_newer_v2_catalog_is_rejected_and_recovered_from_valid_mirror);
     RUN_TEST(test_semantic_crc_failure_recovers_same_filesystem_rollback);
     RUN_TEST(test_failed_recovery_promotion_preserves_only_valid_rollback);
+    RUN_TEST(test_both_startup_repairs_unwritable_preserve_newer_secondary);
+    RUN_TEST(test_both_startup_repairs_unwritable_preserve_equal_generation_offline_edit);
+    RUN_TEST(test_both_startup_repairs_unwritable_preserve_newer_primary);
+    RUN_TEST(test_writable_startup_repairs_preserve_newer_secondary);
     RUN_TEST(test_failed_primary_repair_remains_pending_after_secondary_succeeds);
     RUN_TEST(test_secondary_device_store_failure_is_reported_and_retried);
     return UNITY_END();

@@ -285,6 +285,65 @@ void test_verify_push_quiet_window_is_wrap_safe_when_v1_event_is_newer() {
     TEST_ASSERT_EQUAL(CycleState::OBD_SCAN, module.state());
 }
 
+void test_recovered_admission_accepts_same_tick_verify_edge_without_resetting_counters() {
+    ProviderProbe probe;
+    ConnectionCycleCoordinatorModule module;
+    module.begin(probe);
+    CycleContext ctx = connectedContext(0);
+    ctx.proxyEnabled = true;
+    enterPostV1Phase(module, ctx);
+    TEST_ASSERT_EQUAL(CycleState::PROXY_OPEN, module.state());
+    const uint32_t transitions = module.totalTransitionCount();
+
+    module.requestRecoveredSettingsAdmission();
+    ctx.nowMs = 700;
+    ctx.autoPushEnabled = true;
+    ctx.obdEnabled = true;
+    ctx.obdSavedAddressValid = true;
+    ctx.obdState = ObdConnectionState::WAIT_BOOT;
+    ctx.proxyEnabled = false;
+    ctx.v1SettleQuietMs = 100;
+    ctx.v1VerifyPushMatchEdge = true;
+    module.update(ctx);
+    TEST_ASSERT_EQUAL(CycleState::V1_SETTLING, module.state());
+    TEST_ASSERT_EQUAL_UINT32(transitions + 1, module.totalTransitionCount());
+
+    ctx.v1VerifyPushMatchEdge = false;
+    ctx.nowMs = 799;
+    module.update(ctx);
+    TEST_ASSERT_FALSE(module.obdConnectAllowed());
+    ctx.nowMs = 800;
+    module.update(ctx);
+    TEST_ASSERT_TRUE(module.obdConnectAllowed());
+    TEST_ASSERT_EQUAL_UINT32(0, probe.cancelObdConnectCalls);
+    TEST_ASSERT_EQUAL_UINT32(0, probe.disconnectProxyPhoneCalls);
+}
+
+void test_early_recovery_preserves_existing_verify_quiet_anchor() {
+    ProviderProbe probe;
+    ConnectionCycleCoordinatorModule module;
+    module.begin(probe);
+    CycleContext ctx = connectedContext(100);
+    ctx.autoPushEnabled = true;
+    ctx.obdEnabled = true;
+    ctx.obdSavedAddressValid = true;
+    ctx.obdState = ObdConnectionState::WAIT_BOOT;
+    ctx.v1SettleQuietMs = 100;
+    module.update(ctx);
+    ctx.nowMs = 110;
+    ctx.v1VerifyPushMatchEdge = true;
+    module.update(ctx);
+
+    module.requestRecoveredSettingsAdmission();
+    ctx.nowMs = 209;
+    ctx.v1VerifyPushMatchEdge = false;
+    module.update(ctx);
+    TEST_ASSERT_FALSE(module.obdConnectAllowed());
+    ctx.nowMs = 210;
+    module.update(ctx);
+    TEST_ASSERT_TRUE(module.obdConnectAllowed());
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_proxy_window_exits_directly_to_steady_without_wifi_dwell);
@@ -296,5 +355,7 @@ int main() {
     RUN_TEST(test_verify_push_quiet_window_waits_for_both_ordinary_anchors);
     RUN_TEST(test_verify_push_quiet_window_is_wrap_safe_when_match_is_newer);
     RUN_TEST(test_verify_push_quiet_window_is_wrap_safe_when_v1_event_is_newer);
+    RUN_TEST(test_recovered_admission_accepts_same_tick_verify_edge_without_resetting_counters);
+    RUN_TEST(test_early_recovery_preserves_existing_verify_quiet_anchor);
     return UNITY_END();
 }

@@ -1064,7 +1064,9 @@ bool V1DeviceStore::reconcileStores() {
     // Keep retry state when either copy could not be repaired. A successful
     // secondary write must not hide a failed primary repair.
     mirrorDirty_ = !primaryWritten || (secondaryFs_ && !secondaryWritten);
-    return primaryWritten || secondaryWritten;
+    // A validated winner is already loaded. Repair failure must not make
+    // begin() reload an older primary and later mirror it over that winner.
+    return true;
 }
 
 V1DeviceMutationResult V1DeviceStore::saveToStoreResult() {

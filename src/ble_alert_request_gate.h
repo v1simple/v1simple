@@ -30,13 +30,15 @@ class BleAlertDataRequestGate {
 
     // A transmitted stop ends the stream without erasing the last start's
     // pacing boundary. Phone departure can then request a new start.
-    void recordStop(uint32_t sessionGeneration, uint32_t phoneGeneration = 0) {
+    void recordStop(uint32_t sessionGeneration, uint32_t phoneGeneration = 0,
+                    uint32_t ingressBoundary = 0) {
         if (sessionGeneration != sessionGeneration_) {
             sessionGeneration_ = sessionGeneration;
             hasSuccessfulSend_ = false;
         }
         stopped_ = true;
         stoppingPhoneGeneration_ = phoneGeneration;
+        stopIngressBoundary_ = ingressBoundary;
     }
     bool stopped(uint32_t sessionGeneration) const {
         return stopped_ && sessionGeneration == sessionGeneration_;
@@ -44,6 +46,11 @@ class BleAlertDataRequestGate {
     bool stoppedByPhone(uint32_t sessionGeneration, uint32_t phoneGeneration) const {
         return phoneGeneration != 0 && phoneGeneration == stoppingPhoneGeneration_ &&
                stopped(sessionGeneration);
+    }
+    bool receivedAfterPhoneStop(uint32_t sessionGeneration, uint32_t phoneGeneration,
+                               uint32_t ingressSequence) const {
+        return stoppedByPhone(sessionGeneration, phoneGeneration) && ingressSequence != 0 &&
+               static_cast<int32_t>(ingressSequence - stopIngressBoundary_) > 0;
     }
 
     void invalidate(uint32_t sessionGeneration) {
@@ -54,6 +61,7 @@ class BleAlertDataRequestGate {
     uint32_t sessionGeneration_ = 0;
     uint32_t lastSuccessfulSendMs_ = 0;
     uint32_t stoppingPhoneGeneration_ = 0;
+    uint32_t stopIngressBoundary_ = 0;
     bool hasSuccessfulSend_ = false;
     bool stopped_ = false;
 };

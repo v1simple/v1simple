@@ -82,6 +82,9 @@ public:
   RecoveryAlp alp_;
   RecoveryDisplay display_;
   RecoveryBle ble_;
+  struct {
+    void requestRecoveredSettingsAdmission() {}
+  } connectionCycle_;
   ObdSettingsSyncModule obdSettingsSync_;
   struct {
     bool ownsDisplayPresentation() const { return false; }

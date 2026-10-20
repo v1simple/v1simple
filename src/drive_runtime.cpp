@@ -352,6 +352,7 @@ void DriveRuntime::syncRecoveredSettings() {
     display_.forceNextRedraw();
     if (!power_.ownsDisplayPresentation()) display_.setBrightness(recovered.brightness);
     ble_.setProxyRuntimeEnabled(recovered.proxyBLE, recovered.proxyName.c_str());
+    connectionCycle_.requestRecoveredSettingsAdmission();
     observedSettingsRecoveryRevision_ = revision;
 }
 

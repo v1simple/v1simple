@@ -2600,12 +2600,14 @@ bool SettingsManager::resolveRestoreTransaction() {
             }
             if (journal.profilesMutated) {
                 if (!profiles_->isReady()) {
+                    profileReferenceRecoveryPending_ = true;
                     Serial.println("[Settings] Restore transaction recovery waiting for profile storage");
                     return false;
                 }
                 recovered = restoreProfileSnapshot(*profiles_, journal.profilesBefore) && recovered;
             }
             if (!recovered) {
+                profileReferenceRecoveryPending_ = true;
                 Serial.println("[Settings] ERROR: Pending restore transaction rollback incomplete");
                 return false;
             }
@@ -2627,10 +2629,12 @@ bool SettingsManager::resolveProfileDeleteTransaction() {
         readProfileDeleteTransactionJournal, deleteJournalsEqual,
         [this](const ProfileDeleteTransactionJournal& journal) {
             if (!profiles_->isReady()) {
+                profileReferenceRecoveryPending_ = true;
                 Serial.println("[Settings] Profile delete recovery waiting for profile storage");
                 return false;
             }
             if (!profiles_->restoreProfileForTransaction(journal.profile).success) {
+                profileReferenceRecoveryPending_ = true;
                 Serial.printf("[Settings] ERROR: Could not restore profile '%s' after interrupted delete\n",
                               journal.profile.name.c_str());
                 return false;
@@ -2650,6 +2654,14 @@ bool SettingsManager::resolveStorageTransactionsForMutation() {
         return false;
     }
     return resolveProfileDeleteTransaction();
+}
+
+bool SettingsManager::prepareBackupSnapshot() {
+    if (!ensureSettingsLoaded()) return false;
+    // Backups contain settings and profiles, not password-store bytes. A
+    // synchronous backup can run inside a committed credential save; do not
+    // replay or clear that transaction before its own caller finishes.
+    return resolveRestoreTransaction() && resolveProfileDeleteTransaction();
 }
 
 ProfileOperationResult SettingsManager::deleteProfileAndReferences(const String& canonicalProfileName) {
@@ -2843,6 +2855,7 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
         const bool credentialsRestored = !credentialsMutated || restoreCredentialSnapshot(*storage_, credentialsBefore);
         const bool profilesRestored = !profilesMutated || restoreProfileSnapshot(*profiles_, profilesBefore);
         if (!credentialsRestored || !profilesRestored) {
+            profileReferenceRecoveryPending_ = true;
             Serial.printf("[Settings] ERROR: Restore rollback incomplete credentials=%s profiles=%s\n",
                           credentialsRestored ? "ok" : "failed", profilesRestored ? "ok" : "failed");
         }

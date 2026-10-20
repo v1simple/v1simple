@@ -113,11 +113,18 @@ def production_sources(framework: Path, baseline: bool) -> dict[str, str]:
     parsing_path = "libraries/WebServer/src/Parsing.cpp"
     parsing = (framework / parsing_path).read_text()
     assert identity(parsing) in tuple(literal(body_patch, key) for key in
-                                     ("UPSTREAM_SHA256", "PREVIOUS_SHA256", "PATCHED_SHA256"))
+                                     ("UPSTREAM_SHA256", "PREVIOUS_SHA256", "PROGRESS_SHA256", "PATCHED_SHA256"))
     parsing = apply_in_temporary_framework(parsing, parsing_path, body_patch)
     assert identity(parsing) == literal(body_patch, "PATCHED_SHA256")
-    # Exercise both supported installation/upgrade paths from exact identities.
-    previous = parsing
+    # Exercise every supported installation/upgrade path from exact identities.
+    progress = parsing
+    for name in ("FORM", "BOUNDARY"):
+        before, after = literal(body_patch, name + "_UPSTREAM"), literal(body_patch, name + "_PATCHED")
+        assert progress.count(after) == 1
+        progress = progress.replace(after, before, 1)
+    assert identity(progress) == literal(body_patch, "PROGRESS_SHA256")
+    assert apply_in_temporary_framework(progress, parsing_path, body_patch) == parsing
+    previous = progress
     for name in ("FUNCTION", "READ"):
         before, after = literal(body_patch, name + "_PREVIOUS"), literal(body_patch, name + "_PATCHED")
         assert previous.count(after) == 1
@@ -128,7 +135,7 @@ def production_sources(framework: Path, baseline: bool) -> dict[str, str]:
         previous = previous.replace(after, before, 1)
     assert identity(previous) == literal(body_patch, "PREVIOUS_SHA256")
     assert apply_in_temporary_framework(previous, parsing_path, body_patch) == parsing
-    original = parsing
+    original = progress
     for name in ("READ", "STRING", "INCLUDE", "FUNCTION", "RAW", "LINE", "UPLOAD"):
         before, after = literal(body_patch, name + "_UPSTREAM"), literal(body_patch, name + "_PATCHED")
         assert original.count(after) == 1
@@ -141,7 +148,13 @@ def production_sources(framework: Path, baseline: bool) -> dict[str, str]:
     server = (framework / "libraries/WebServer/src/WebServer.cpp").read_text()
     header = (framework / "libraries/WebServer/src/WebServer.h").read_text()
     json = (ROOT / "include/json_stream_response.h").read_text()
+    # Keep baseline behavior while retaining standard C++ boundary storage so
+    # the negative run reaches its runtime assertions under the same flags.
     selected_parsing = previous if baseline else parsing
+    if baseline:
+        for name in ("FORM", "BOUNDARY"):
+            selected_parsing = selected_parsing.replace(
+                literal(body_patch, name + "_UPSTREAM"), literal(body_patch, name + "_PATCHED"), 1)
 
     def production_branch(marker: str) -> str:
         owner = function(json, marker)
@@ -718,6 +731,28 @@ int main() {
       checkBounded(true);
     }
   }
+  for (size_t length : {size_t{1}, size_t{69}, size_t{70}, size_t{71}}) {
+    auto peer = beginCase("multipart boundary capacity");
+    const std::string boundary(length, 'b');
+    // Include a partial delimiter match so retained bytes must be flushed
+    // correctly before the real closing delimiter.
+    const std::string contents = "start\r\n--" + boundary.substr(0, length - 1) + "Xend";
+    peer->incoming = "--" + boundary +
+        "\r\nContent-Disposition: form-data; name=\"blob\"; filename=\"fixture.txt\"\r\n"
+        "Content-Type: text/plain\r\n\r\n" + contents + "\r\n--" + boundary + "--\r\n";
+    WebServer server(peer);
+    UploadHandler handler;
+    server._currentHandler = &handler;
+    const bool parsed = server._parseForm(server._currentClient, boundary.c_str(), peer->incoming.size());
+    if (length <= 70) {
+      check(parsed, "supported boundary must parse");
+      check(handler.data == contents, "boundary buffer must preserve exact upload bytes");
+    } else {
+      check(!parsed, "oversize boundary must reject before using the buffer");
+      check(!server._currentUpload, "oversize boundary must not begin an upload");
+      check(handler.data.empty(), "rejected boundary must not publish file bytes");
+    }
+  }
   for (uint32_t initial : {100u, UINT32_MAX - 500u}) {
     auto peer = beginCase("direct buffered receive progress", initial);
     peer->incoming.assign(8192, 'r');
@@ -762,7 +797,7 @@ def main() -> None:
         (out / "Arduino.h").write_text(ARDUINO)
         (out / "lifecycle.cpp").write_text(source)
         subprocess.run(compiler + [
-            "-std=c++17", "-DUNIT_TEST", "-fsanitize=address,undefined",
+            "-std=c++17", "-Werror=vla", "-DUNIT_TEST", "-fsanitize=address,undefined",
             "-fno-sanitize-recover=all", "-fno-omit-frame-pointer", "-g",
             "-I" + str(out), "-I" + str(ROOT / "include"),
             "-I" + str(ROOT / "src"),

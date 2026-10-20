@@ -35,6 +35,8 @@ inline constexpr size_t kUnlimitedWriteBudget = std::numeric_limits<size_t>::max
 inline size_t g_new_file_write_budget = kUnlimitedWriteBudget;
 inline std::string g_fail_next_read_path;
 inline std::string g_fail_read_full_path;
+inline std::string g_read_budget_full_path;
+inline size_t g_read_budget_remaining = std::numeric_limits<size_t>::max();
 inline std::string g_zero_size_full_path;
 inline std::string g_fail_directory_entry_open;
 inline std::string g_fail_next_remove_path;
@@ -105,6 +107,10 @@ public:
     size_t read(uint8_t* buffer, size_t length) {
         if (!state_ || state_->directory || !state_->readable || !state_->stream.is_open()) {
             return 0;
+        }
+        if (state_->path.string() == mock_fs_detail::g_read_budget_full_path) {
+            length = std::min(length, mock_fs_detail::g_read_budget_remaining);
+            mock_fs_detail::g_read_budget_remaining -= length;
         }
         state_->stream.read(reinterpret_cast<char*>(buffer), static_cast<std::streamsize>(length));
         return static_cast<size_t>(state_->stream.gcount());
@@ -360,6 +366,12 @@ inline void mock_fail_read_opens_for_full_path(const char* path) {
     mock_fs_detail::g_fail_read_full_path = path ? path : "";
 }
 
+// Stop or shorten a read independently of the file's readable metadata.
+inline void mock_set_read_budget_for_full_path(const char* path, size_t bytes) {
+    mock_fs_detail::g_read_budget_full_path = path ? path : "";
+    mock_fs_detail::g_read_budget_remaining = bytes;
+}
+
 inline void mock_fail_next_directory_entry_open(const char* filename) {
     mock_fs_detail::g_fail_directory_entry_open = filename ? filename : "";
 }
@@ -367,6 +379,8 @@ inline void mock_fail_next_directory_entry_open(const char* filename) {
 inline void mock_reset_fs_open_state() {
     mock_fs_detail::g_fail_next_read_path.clear();
     mock_fs_detail::g_fail_read_full_path.clear();
+    mock_fs_detail::g_read_budget_full_path.clear();
+    mock_fs_detail::g_read_budget_remaining = std::numeric_limits<size_t>::max();
     mock_fs_detail::g_zero_size_full_path.clear();
     mock_fs_detail::g_fail_directory_entry_open.clear();
     mock_fs_detail::g_require_existing_write_parent = false;

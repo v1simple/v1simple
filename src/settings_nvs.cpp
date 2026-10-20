@@ -607,14 +607,20 @@ bool readWifiPasswordNvsSnapshot(size_t slotIndex, WifiPasswordNvsSnapshot& snap
 // password: the SD sidecar (or legacy settings backup) can still own it.
 bool readWifiPasswordForTransaction(StorageManager& storage, size_t index,
                                     const String& ssid, const WifiPasswordNvsSnapshot& nvs,
-                                    String& encoded) {
+                                    String& encoded, bool& unknown) {
+    unknown = false;
     if (nvs.slotPresent) return copyStringExact(nvs.slotValue, encoded);
     if (index == 0 && nvs.legacyPresent) return copyStringExact(nvs.legacyValue, encoded);
     encoded = "";
     if (ssid.length() == 0) return true;
-    // With no explicit NVS value, an unavailable SD source is unknown, not
-    // an open network. Do not journal empty and later erase a remounted secret.
-    if (!storage.isReady() || !storage.isSDCard()) return false;
+    // Older firmware represented open networks by omitting the NVS key. Allow
+    // those installations to change credentials without requiring an SD card,
+    // but retain the ambiguity: a disconnected SD may still hold a password.
+    // Rollback must restore key absence and leave that recovery source alone.
+    if (!storage.isReady() || !storage.isSDCard()) {
+        unknown = true;
+        return true;
+    }
     StorageManager::SDLockBlocking lock(storage.getSDMutex(), /*checkDmaHeap=*/true);
     if (!lock) return false;
     fs::FS* fs = storage.getFilesystem();
@@ -725,6 +731,7 @@ struct WifiCredentialJournal {
     String oldEncodedPassword;
     String newSsid;
     String newEncodedPassword;
+    bool oldPasswordUnknown = false;
 };
 
 enum class WifiCredentialJournalMode : uint8_t {
@@ -735,7 +742,21 @@ enum class WifiCredentialJournalMode : uint8_t {
 struct WifiForgetAllJournal {
     String oldSsid[kWifiStaSlotCount];
     String oldEncodedPassword[kWifiStaSlotCount];
+    uint8_t unknownPasswords = 0;
 };
+
+bool writeWifiUnknownPasswords(Preferences& prefs, uint8_t mask) {
+    return prefs.putUChar(kNvsWifiTxnUnknownPasswords, mask) == sizeof(uint8_t) &&
+           prefs.getUChar(kNvsWifiTxnUnknownPasswords, static_cast<uint8_t>(~mask)) == mask;
+}
+
+bool readWifiUnknownPasswords(Preferences& prefs, uint8_t& mask) {
+    mask = 0; // Installed journals predate provenance and contain known values.
+    if (!prefs.isKey(kNvsWifiTxnUnknownPasswords)) return true;
+    if (prefs.getType(kNvsWifiTxnUnknownPasswords) != PT_U8) return false;
+    mask = prefs.getUChar(kNvsWifiTxnUnknownPasswords, UINT8_MAX);
+    return (mask & ~((1u << kWifiStaSlotCount) - 1u)) == 0;
+}
 
 bool wifiCredentialJournalPresent() {
     Preferences prefs;
@@ -759,7 +780,9 @@ WifiCredentialJournalMode wifiCredentialJournalMode() {
 }
 
 bool writeWifiCredentialJournal(const WifiCredentialJournal& journal) {
-    if (!validWifiStaSlotIndex(journal.slotIndex) || journal.settingsGeneration == 0) {
+    if (!validWifiStaSlotIndex(journal.slotIndex) || journal.settingsGeneration == 0 ||
+        (journal.oldPasswordUnknown &&
+         (journal.oldSsid.length() == 0 || journal.oldEncodedPassword.length() != 0))) {
         return false;
     }
     Preferences prefs;
@@ -775,6 +798,8 @@ bool writeWifiCredentialJournal(const WifiCredentialJournal& journal) {
     written = prefs.putUChar(kNvsWifiTxnSlot, static_cast<uint8_t>(journal.slotIndex)) == sizeof(uint8_t) && written;
     written = prefs.putUInt(kNvsWifiTxnSettingsGeneration, journal.settingsGeneration) == sizeof(uint32_t) &&
               prefs.getUInt(kNvsWifiTxnSettingsGeneration, 0) == journal.settingsGeneration && written;
+    written = writeWifiUnknownPasswords(prefs, journal.oldPasswordUnknown ? 1u << journal.slotIndex : 0) &&
+              written;
     written = writeWifiPasswordKeyState(prefs, kNvsWifiTxnOldSsid, true, journal.oldSsid) && written;
     written = writeWifiPasswordKeyState(prefs, kNvsWifiTxnOldPass, true, journal.oldEncodedPassword) && written;
     written = writeWifiPasswordKeyState(prefs, kNvsWifiTxnNewSsid, true, journal.newSsid) && written;
@@ -803,6 +828,13 @@ bool readWifiCredentialJournal(WifiCredentialJournal& journal) {
     }
     const uint8_t slotIndex = prefs.getUChar(kNvsWifiTxnSlot, static_cast<uint8_t>(kWifiStaSlotCount));
     journal.slotIndex = slotIndex;
+    uint8_t unknownPasswords = 0;
+    if (!validWifiStaSlotIndex(slotIndex) || !readWifiUnknownPasswords(prefs, unknownPasswords) ||
+        (unknownPasswords != 0 && unknownPasswords != (1u << slotIndex))) {
+        prefs.end();
+        return false;
+    }
+    journal.oldPasswordUnknown = unknownPasswords != 0;
     journal.settingsGeneration = 0;
     if (prefs.isKey(kNvsWifiTxnSettingsGeneration)) {
         if (prefs.getType(kNvsWifiTxnSettingsGeneration) != PT_U32 ||
@@ -821,6 +853,8 @@ bool readWifiCredentialJournal(WifiCredentialJournal& journal) {
     prefs.end();
 
     return stringsRead && validWifiStaSlotIndex(journal.slotIndex) &&
+           (!journal.oldPasswordUnknown ||
+            (journal.oldSsid.length() > 0 && journal.oldEncodedPassword.length() == 0)) &&
            sanitizeWifiClientSsidValue(journal.oldSsid) == journal.oldSsid &&
            sanitizeWifiClientSsidValue(journal.newSsid) == journal.newSsid &&
            (journal.oldEncodedPassword.length() == 0 ||
@@ -830,9 +864,14 @@ bool readWifiCredentialJournal(WifiCredentialJournal& journal) {
 }
 
 bool writeWifiForgetAllJournal(const WifiForgetAllJournal& journal) {
+    if ((journal.unknownPasswords & ~((1u << kWifiStaSlotCount) - 1u)) != 0) return false;
     PsramJson::Document doc;
     JsonArray slots = doc["slots"].to<JsonArray>();
     for (size_t index = 0; index < kWifiStaSlotCount; ++index) {
+        if ((journal.unknownPasswords & (1u << index)) != 0 &&
+            (journal.oldSsid[index].length() == 0 || journal.oldEncodedPassword[index].length() != 0)) {
+            return false;
+        }
         JsonObject slot = slots.add<JsonObject>();
         slot["index"] = index;
         slot["ssid"] = journal.oldSsid[index];
@@ -855,6 +894,7 @@ bool writeWifiForgetAllJournal(const WifiForgetAllJournal& journal) {
     }
     bool written = prefs.putUChar(kNvsWifiTxnMode, static_cast<uint8_t>(WifiCredentialJournalMode::ForgetAll)) ==
                    sizeof(uint8_t);
+    written = writeWifiUnknownPasswords(prefs, journal.unknownPasswords) && written;
     written = prefs.putString(kNvsWifiTxnData, payload) == payload.length() &&
               prefs.getStringLength(kNvsWifiTxnData) == payload.length() + 1u && written;
     if (written && payload.length() > 0) {
@@ -881,7 +921,8 @@ bool readWifiForgetAllJournal(WifiForgetAllJournal& journal) {
         return false;
     }
     String payload;
-    const bool payloadRead = readPreferenceStringExact(
+    const bool provenanceRead = readWifiUnknownPasswords(prefs, journal.unknownPasswords);
+    const bool payloadRead = provenanceRead && readPreferenceStringExact(
         prefs, kNvsWifiTxnData, WIFI_FORGET_ALL_JOURNAL_MAX_BYTES, payload);
     prefs.end();
 
@@ -916,6 +957,10 @@ bool readWifiForgetAllJournal(WifiForgetAllJournal& journal) {
              decodeObfuscatedFromStorage(journal.oldEncodedPassword[index]).length() == 0)) {
             return false;
         }
+        if ((journal.unknownPasswords & (1u << index)) != 0 &&
+            (journal.oldSsid[index].length() == 0 || journal.oldEncodedPassword[index].length() != 0)) {
+            return false;
+        }
     }
     return true;
 }
@@ -936,6 +981,7 @@ bool clearWifiCredentialJournal() {
         prefs.remove(kNvsWifiTxnMode);
         prefs.remove(kNvsWifiTxnData);
         prefs.remove(kNvsWifiTxnSettingsGeneration);
+        prefs.remove(kNvsWifiTxnUnknownPasswords);
     }
     prefs.end();
     return cleared;
@@ -1295,15 +1341,19 @@ bool SettingsManager::resolveWifiCredentialTransaction() {
                 return false;
             }
             desiredPasswords[index] = restoreOld ? journal.oldEncodedPassword[index] : String("");
+            const bool unknown = restoreOld && (journal.unknownPasswords & (1u << index)) != 0;
             if (!storeWifiPasswordCandidate(index, desiredPasswords[index],
-                                             settings_.wifiStaSlots[index].isConfigured())) {
+                                             !unknown && settings_.wifiStaSlots[index].isConfigured())) {
                 Serial.println("[Settings] ERROR: Failed to recover WiFi forget password state");
                 return false;
             }
         }
-        const bool sdResolved = storage_->isReady() &&
+        // Any unknown old slot means the original transaction had no SD to
+        // mutate. Preserve the entire recovery document, including other slots,
+        // instead of rebuilding it with an invented empty password.
+        const bool sdResolved = (restoreOld && journal.unknownPasswords != 0) || (storage_->isReady() &&
                                 (!storage_->isSDCard() ||
-                                 writeWifiSecretStateFromSettings(*storage_, settings_, desiredPasswords));
+                                 writeWifiSecretStateFromSettings(*storage_, settings_, desiredPasswords)));
         if (!sdResolved) {
             Serial.println("[Settings] WiFi forget NVS recovered; SD recovery remains pending");
             return false;
@@ -1335,15 +1385,19 @@ bool SettingsManager::resolveWifiCredentialTransaction() {
         return false;
     }
     const String desiredEncoded = selectedNew ? journal.newEncodedPassword : journal.oldEncodedPassword;
-    if (!storeWifiPasswordCandidate(journal.slotIndex, desiredEncoded, selectedSsid.length() > 0)) {
+    const bool restoreUnknown = !selectedNew && journal.oldPasswordUnknown;
+    if (!storeWifiPasswordCandidate(journal.slotIndex, desiredEncoded,
+                                    !restoreUnknown && selectedSsid.length() > 0)) {
         Serial.println("[Settings] ERROR: Failed to recover WiFi password transaction");
         return false;
     }
 
-    bool sdResolved = false;
-    if (storage_->isReady() && !storage_->isSDCard()) {
+    // No SD write occurred for an unknown old password. Removing the candidate
+    // NVS key completes rollback even if the recovery media has since returned.
+    bool sdResolved = restoreUnknown;
+    if (!restoreUnknown && storage_->isReady() && !storage_->isSDCard()) {
         sdResolved = true;
-    } else if (storage_->isReady() && storage_->isSDCard()) {
+    } else if (!restoreUnknown && storage_->isReady() && storage_->isSDCard()) {
         if (selectedSsid.length() > 0) {
             sdResolved = saveWifiClientSecretToSD(*storage_, journal.slotIndex, selectedSsid, desiredEncoded);
         } else {
@@ -2258,9 +2312,11 @@ bool SettingsManager::setWifiStaSlotCredentials(size_t index, const String& ssid
     const bool sdRequired = storage_->isReady() && storage_->isSDCard();
 
     String oldEncodedPassword;
+    bool oldPasswordUnknown = false;
     if (!readWifiPasswordForTransaction(*storage_, index, before.wifiStaSlots[index].ssid,
-                                        passwordBefore, oldEncodedPassword)) return false;
+                                        passwordBefore, oldEncodedPassword, oldPasswordUnknown)) return false;
     WifiCredentialJournal journal;
+    journal.oldPasswordUnknown = oldPasswordUnknown;
     journal.slotIndex = index;
     uint32_t activeGeneration = 0;
     if (getActiveNamespace(&activeGeneration).length() == 0 || activeGeneration == UINT32_MAX) return false;
@@ -2384,14 +2440,16 @@ bool SettingsManager::clearWifiStaSlot(size_t index) {
         return false;
     }
     String oldEncodedPassword;
+    bool oldPasswordUnknown = false;
     if (!readWifiPasswordForTransaction(*storage_, index, before.wifiStaSlots[index].ssid,
-                                        passwordBefore, oldEncodedPassword)) return false;
+                                        passwordBefore, oldEncodedPassword, oldPasswordUnknown)) return false;
     candidate.wifiStaSlots[index] = WifiStaSlot();
     candidate.wifiClientEnabled = candidate.hasConfiguredWifiStaSlot();
     if (!refreshWifiClientAliasExact(candidate)) return false;
 
     const bool sdRequired = storage_->isReady() && storage_->isSDCard();
     WifiCredentialJournal journal;
+    journal.oldPasswordUnknown = oldPasswordUnknown;
     journal.slotIndex = index;
     uint32_t activeGeneration = 0;
     if (getActiveNamespace(&activeGeneration).length() == 0 || activeGeneration == UINT32_MAX) return false;
@@ -2414,6 +2472,12 @@ bool SettingsManager::clearWifiStaSlot(size_t index) {
                            (settings_.hasConfiguredWifiStaSlot()
                                 ? removeWifiClientSecretFromSD(*storage_, index, journal.oldSsid)
                                 : clearWifiClientSecretFromSD(*storage_));
+#ifdef UNIT_TEST
+    if (sdCleared && wifiCredentialInterruptBeforeSettingsCommit_) {
+        wifiCredentialInterruptBeforeSettingsCommit_ = false;
+        return false;
+    }
+#endif
     const uint32_t credentialGenerationBefore = wifiCredentialCommitGeneration_;
     if (sdCleared) wifiCredentialCommitGeneration_ = journal.settingsGeneration;
     if (!sdCleared || !save()) {
@@ -2449,10 +2513,12 @@ bool SettingsManager::clearWifiClientCredentials() {
     WifiPasswordNvsSnapshot passwordBefore[kWifiStaSlotCount];
     WifiForgetAllJournal journal;
     for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
+        bool unknown = false;
         if (!readWifiPasswordNvsSnapshot(i, passwordBefore[i]) ||
             !copyStringExact(settings_.wifiStaSlots[i].ssid, journal.oldSsid[i]) ||
             !readWifiPasswordForTransaction(*storage_, i, journal.oldSsid[i], passwordBefore[i],
-                                            journal.oldEncodedPassword[i])) return false;
+                                            journal.oldEncodedPassword[i], unknown)) return false;
+        if (unknown) journal.unknownPasswords |= 1u << i;
     }
 
     bool changed = settings_.wifiClientEnabled || settings_.hasConfiguredWifiStaSlot();
@@ -2493,7 +2559,8 @@ bool SettingsManager::clearWifiClientCredentials() {
     if (!passwordsCleared || !sdCleared || !save()) {
         settings_ = std::move(before);
         const bool passwordsRestored = restoreAllWifiPasswordSnapshots(passwordBefore);
-        const bool sdRestored = writeWifiSecretStateFromSettings(*storage_, settings_, oldPasswords);
+        const bool sdRestored = journal.unknownPasswords != 0 ||
+                               writeWifiSecretStateFromSettings(*storage_, settings_, oldPasswords);
         if (passwordsRestored && sdRestored) {
             clearWifiCredentialJournal();
         }

@@ -44,7 +44,7 @@ def build_and_run(build: Path) -> None:
         "-std=c++17", "-DUNIT_TEST", "-fsanitize=address,undefined",
         "-fno-sanitize-recover=all", "-fno-omit-frame-pointer", "-g",
         *["-I" + str(path) for path in includes], str(FIXTURE / "recovery.cpp"),
-        str(deps / "Unity/src/unity.c"), "-o", str(executable),
+        "-x", "c++", str(deps / "Unity/src/unity.c"), "-o", str(executable),
     ], check=True)
     subprocess.run([str(executable)], check=True)
 

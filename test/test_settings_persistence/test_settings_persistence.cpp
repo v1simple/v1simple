@@ -3425,6 +3425,7 @@ void test_tokenless_wifi_journal_retains_legacy_ssid_recovery() {
     Preferences prefs;
     TEST_ASSERT_TRUE(prefs.begin(WIFI_CLIENT_NS, false));
     TEST_ASSERT_TRUE(prefs.remove(kNvsWifiTxnSettingsGeneration));
+    TEST_ASSERT_TRUE(prefs.remove(kNvsWifiTxnUnknownPasswords));
     prefs.end();
 
     SettingsManager rebooted(storage, profiles);
@@ -3526,6 +3527,11 @@ void test_interrupted_forget_all_reboots_with_every_slot_and_password_restored()
     manager.utInterruptWifiCredentialBeforeSettingsCommit(true);
     TEST_ASSERT_FALSE(manager.clearWifiClientCredentials());
     TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiTxnReady));
+    // Installed forget journals have no provenance mask.
+    Preferences prefs;
+    TEST_ASSERT_TRUE(prefs.begin(WIFI_CLIENT_NS, false));
+    TEST_ASSERT_TRUE(prefs.remove(kNvsWifiTxnUnknownPasswords));
+    prefs.end();
 
     SettingsManager rebooted(storage, profiles);
     rebooted.begin();
@@ -7171,39 +7177,203 @@ void test_wifi_mutation_snapshot_defers_unavailable_sd_and_honors_explicit_empty
     }
 }
 
-void test_wifi_mutations_defer_missing_password_until_sd_returns_and_open_networks_stay_editable() {
+// Exercise every public mutation sharing credential provenance. Variant 1 edits
+// the same SSID to an explicit open credential; variant 0 renames it securely.
+bool mutateUnknownWifiCredential(SettingsManager& manager, int operation, size_t slot = 0) {
+    if (operation == 0) return manager.setWifiStaSlotCredentials(slot, "NewNet", "replacement", "New", 0);
+    if (operation == 1) return manager.setWifiStaSlotCredentials(slot, "PriorNet", "", "Relabeled", 0);
+    if (operation == 2) return manager.clearWifiStaSlot(slot);
+    return manager.clearWifiClientCredentials();
+}
+
+void removeWifiPasswordKeyForLegacyState(size_t slot = 0) {
+    Preferences prefs;
+    TEST_ASSERT_TRUE(prefs.begin(WIFI_CLIENT_NS, false));
+    TEST_ASSERT_TRUE(prefs.remove(kNvsWifiStaSlotPassword[slot]));
+    TEST_ASSERT_FALSE(prefs.isKey(kNvsWifiPassword));
+    prefs.end();
+}
+
+void test_legacy_open_wifi_without_sd_remains_editable_and_removable_after_upgrade() {
     for (bool littleFsFallback : {false, true}) {
-        for (int operation = 0; operation < 3; ++operation) {
+        for (int operation = 0; operation < 4; ++operation) {
             resetRuntimeState();
-            fs::FS sd(g_tempRoot / (std::to_string(littleFsFallback) + "_" + std::to_string(operation)));
+            fs::FS little(g_tempRoot / (std::to_string(littleFsFallback) + "_" + std::to_string(operation)));
+            storage.setFilesystem(littleFsFallback ? &little : nullptr, false);
+            if (littleFsFallback) TEST_ASSERT_TRUE(profiles.begin(storage));
+            SettingsManager manager(storage, profiles);
+            TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "PriorNet", "", "Open", 0));
+            // Installed firmware before explicit-empty persistence omitted this
+            // key for a valid open network; neither NVS nor media has failed.
+            removeWifiPasswordKeyForLegacyState();
+            SettingsManager upgraded(storage, profiles);
+            upgraded.begin();
+            TEST_ASSERT_TRUE(mutateUnknownWifiCredential(upgraded, operation));
+            for (unsigned boot = 0; boot < 2; ++boot) {
+                SettingsManager reboot(storage, profiles);
+                reboot.begin();
+                const char* expected = operation == 0 ? "NewNet" : operation == 1 ? "PriorNet" : "";
+                TEST_ASSERT_EQUAL_STRING(expected, reboot.get().wifiStaSlots[0].ssid.c_str());
+                TEST_ASSERT_EQUAL_STRING(operation == 0 ? "replacement" : "", reboot.getWifiStaSlotPassword(0).c_str());
+                if (operation == 1) {
+                    TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiStaSlotPassword[0]));
+                    TEST_ASSERT_EQUAL_STRING("Relabeled", reboot.get().wifiStaSlots[0].label.c_str());
+                }
+            }
+        }
+    }
+}
+
+void test_unknown_wifi_rollback_preserves_remounted_sd_credentials_and_known_slots() {
+    for (bool littleFsFallback : {false, true}) {
+        for (int operation = 0; operation < 4; ++operation) {
+            for (bool interrupted : {false, true}) {
+                for (bool remountBeforeRecovery : {false, true}) {
+                    resetRuntimeState();
+                    fs::FS sd(g_tempRoot / (std::to_string(littleFsFallback) + "_" + std::to_string(operation) +
+                        "_" + std::to_string(interrupted) + "_" + std::to_string(remountBeforeRecovery)));
+                    fs::FS little(g_tempRoot / "little");
+                    storage.setFilesystem(&sd, true);
+                    TEST_ASSERT_TRUE(profiles.begin(storage));
+                    SettingsManager manager(storage, profiles);
+                    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "PriorNet", "prior-password", "Prior", 0));
+                    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(1, "OtherNet", "other-password", "Other", 1));
+                    const std::string original = readFileToString(sd, WIFI_CLIENT_SD_SECRET_PATH);
+                    removeWifiPasswordKeyForLegacyState();
+                    storage.setFilesystem(littleFsFallback ? &little : nullptr, false);
+                    if (interrupted) manager.utInterruptWifiCredentialBeforeSettingsCommit(true);
+                    else mock_preferences::set_fail_writes_for_key(kNvsBrightness);
+                    TEST_ASSERT_FALSE(mutateUnknownWifiCredential(manager, operation));
+                    mock_preferences::set_fail_writes_for_key(nullptr);
+                    TEST_ASSERT_EQUAL_STRING(original.c_str(), readFileToString(sd, WIFI_CLIENT_SD_SECRET_PATH).c_str());
+                    if (interrupted) {
+                        TEST_ASSERT_TRUE(wifiCredentialJournalPresent());
+                        TEST_ASSERT_EQUAL_UINT8(1, mock_preferences::getUnsigned(WIFI_CLIENT_NS, kNvsWifiTxnUnknownPasswords, 0));
+                    }
+                    if (remountBeforeRecovery) storage.setFilesystem(&sd, true);
+                    SettingsManager reboot(storage, profiles);
+                    reboot.begin();
+                    TEST_ASSERT_FALSE(wifiCredentialJournalPresent());
+                    TEST_ASSERT_EQUAL_STRING("PriorNet", reboot.get().wifiStaSlots[0].ssid.c_str());
+                    TEST_ASSERT_EQUAL_STRING("OtherNet", reboot.get().wifiStaSlots[1].ssid.c_str());
+                    if (!remountBeforeRecovery) {
+                        TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiStaSlotPassword[0]));
+                        TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiPassword));
+                        storage.setFilesystem(&sd, true);
+                    }
+                    TEST_ASSERT_EQUAL_STRING(original.c_str(), readFileToString(sd, WIFI_CLIENT_SD_SECRET_PATH).c_str());
+                    TEST_ASSERT_EQUAL_STRING("prior-password", reboot.getWifiStaSlotPassword(0).c_str());
+                    TEST_ASSERT_EQUAL_STRING("other-password", reboot.getWifiStaSlotPassword(1).c_str());
+                    SettingsManager secondBoot(storage, profiles);
+                    secondBoot.begin();
+                    TEST_ASSERT_EQUAL_STRING("prior-password", secondBoot.getWifiStaSlotPassword(0).c_str());
+                }
+            }
+        }
+    }
+}
+
+void test_unknown_wifi_commit_survives_journal_cleanup_failure_and_sd_return() {
+    for (int operation = 0; operation < 4; ++operation) {
+        for (bool retainJournal : {false, true}) {
+            resetRuntimeState();
+            fs::FS sd(g_tempRoot / (std::to_string(operation) + "_" + std::to_string(retainJournal)));
             fs::FS little(g_tempRoot / "little");
             storage.setFilesystem(&sd, true);
             TEST_ASSERT_TRUE(profiles.begin(storage));
             SettingsManager manager(storage, profiles);
             TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "PriorNet", "prior-password", "Prior", 0));
-            Preferences prefs;
-            TEST_ASSERT_TRUE(prefs.begin(WIFI_CLIENT_NS, false));
-            TEST_ASSERT_TRUE(prefs.remove(kNvsWifiStaSlotPassword[0]));
-            prefs.end();
-            storage.setFilesystem(littleFsFallback ? &little : nullptr, false);
-            const bool changed = operation == 0
-                ? manager.setWifiStaSlotCredentials(0, "PriorNet", "replacement", "New", 0)
-                : operation == 1 ? manager.clearWifiStaSlot(0) : manager.clearWifiClientCredentials();
-            TEST_ASSERT_FALSE(changed);
-            TEST_ASSERT_FALSE(wifiCredentialJournalPresent());
+            TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(1, "OtherNet", "other-password", "Other", 1));
+            removeWifiPasswordKeyForLegacyState();
+            storage.setFilesystem(&little, false);
+            if (retainJournal) mock_preferences::set_fail_write_for_key_on_call(kNvsWifiTxnReady, 2);
+            TEST_ASSERT_TRUE(mutateUnknownWifiCredential(manager, operation));
+            TEST_ASSERT_EQUAL(retainJournal, wifiCredentialJournalPresent());
             storage.setFilesystem(&sd, true);
-            SettingsManager reboot(storage, profiles);
-            reboot.begin();
-            TEST_ASSERT_EQUAL_STRING("PriorNet", reboot.get().wifiStaSlots[0].ssid.c_str());
-            TEST_ASSERT_EQUAL_STRING("prior-password", reboot.getWifiStaSlotPassword(0).c_str());
+            for (unsigned boot = 0; boot < 2; ++boot) {
+                SettingsManager reboot(storage, profiles);
+                reboot.begin();
+                TEST_ASSERT_FALSE(wifiCredentialJournalPresent());
+                const char* expected = operation == 0 ? "NewNet" : operation == 1 ? "PriorNet" : "";
+                TEST_ASSERT_EQUAL_STRING(expected, reboot.get().wifiStaSlots[0].ssid.c_str());
+                TEST_ASSERT_EQUAL_STRING(operation == 0 ? "replacement" : "", reboot.getWifiStaSlotPassword(0).c_str());
+                TEST_ASSERT_EQUAL_STRING(operation == 3 ? "" : "OtherNet", reboot.get().wifiStaSlots[1].ssid.c_str());
+                if (operation == 1) TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiStaSlotPassword[0]));
+            }
         }
     }
-    resetRuntimeState();
-    SettingsManager manager(storage, profiles);
-    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "OpenNet", "", "Open", 0));
-    TEST_ASSERT_TRUE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiStaSlotPassword[0]));
-    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "OpenNet", "", "Relabeled", 0));
-    TEST_ASSERT_TRUE(manager.clearWifiStaSlot(0));
+}
+
+void test_wifi_unknown_journal_provenance_is_validated_and_legacy_journals_stay_known() {
+    for (bool forget : {false, true}) {
+        resetRuntimeState();
+        WifiCredentialJournal single;
+        single.settingsGeneration = 1;
+        single.oldSsid = "PriorNet";
+        single.oldPasswordUnknown = true;
+        WifiForgetAllJournal all;
+        all.oldSsid[0] = "PriorNet";
+        all.unknownPasswords = 1;
+        TEST_ASSERT_TRUE(forget ? writeWifiForgetAllJournal(all) : writeWifiCredentialJournal(single));
+        auto readJournal = [&]() {
+            WifiCredentialJournal parsedSingle;
+            WifiForgetAllJournal parsedAll;
+            return forget ? readWifiForgetAllJournal(parsedAll) : readWifiCredentialJournal(parsedSingle);
+        };
+        Preferences prefs;
+        TEST_ASSERT_TRUE(prefs.begin(WIFI_CLIENT_NS, false));
+        for (uint8_t badMask : {uint8_t(0x80), uint8_t(2)}) {
+            TEST_ASSERT_EQUAL_UINT(1, prefs.putUChar(kNvsWifiTxnUnknownPasswords, badMask));
+            TEST_ASSERT_FALSE(readJournal());
+            TEST_ASSERT_TRUE(wifiCredentialJournalPresent());
+        }
+        TEST_ASSERT_GREATER_THAN_UINT(0, prefs.putString(kNvsWifiTxnUnknownPasswords, "1"));
+        TEST_ASSERT_FALSE(readJournal());
+        TEST_ASSERT_TRUE(prefs.remove(kNvsWifiTxnUnknownPasswords));
+        // Installed journal without the optional mask keeps the old meaning:
+        // its empty password is known, rather than silently becoming unknown.
+        TEST_ASSERT_TRUE(readJournal());
+        WifiCredentialJournal parsedSingle;
+        WifiForgetAllJournal parsedAll;
+        TEST_ASSERT_TRUE(forget ? readWifiForgetAllJournal(parsedAll) : readWifiCredentialJournal(parsedSingle));
+        TEST_ASSERT_EQUAL_UINT8(0, forget ? parsedAll.unknownPasswords : parsedSingle.oldPasswordUnknown);
+        TEST_ASSERT_EQUAL_UINT(1, prefs.putUChar(kNvsWifiTxnUnknownPasswords, 1));
+        prefs.end();
+        single.oldPasswordUnknown = false;
+        all.unknownPasswords = 0;
+        TEST_ASSERT_TRUE(forget ? writeWifiForgetAllJournal(all) : writeWifiCredentialJournal(single));
+        TEST_ASSERT_EQUAL_UINT8(0, mock_preferences::getUnsigned(WIFI_CLIENT_NS, kNvsWifiTxnUnknownPasswords, 9));
+        TEST_ASSERT_TRUE(readJournal());
+        TEST_ASSERT_TRUE(clearWifiCredentialJournal());
+        TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiTxnUnknownPasswords));
+    }
+}
+
+void test_unknown_wifi_journal_write_failure_preserves_original_state() {
+    for (int operation = 0; operation < 4; ++operation) {
+        resetRuntimeState();
+        SettingsManager manager(storage, profiles);
+        TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(2, "PriorNet", "", "Open", 0));
+        removeWifiPasswordKeyForLegacyState(2);
+        mock_preferences::set_fail_writes_for_key(kNvsWifiTxnUnknownPasswords);
+        TEST_ASSERT_FALSE(mutateUnknownWifiCredential(manager, operation, 2));
+        mock_preferences::set_fail_writes_for_key(nullptr);
+        TEST_ASSERT_FALSE(wifiCredentialJournalPresent());
+        TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiStaSlotPassword[2]));
+        TEST_ASSERT_EQUAL_STRING("PriorNet", manager.get().wifiStaSlots[2].ssid.c_str());
+        SettingsManager reboot(storage, profiles);
+        reboot.begin();
+        TEST_ASSERT_EQUAL_STRING("PriorNet", reboot.get().wifiStaSlots[2].ssid.c_str());
+        reboot.utInterruptWifiCredentialBeforeSettingsCommit(true);
+        TEST_ASSERT_FALSE(mutateUnknownWifiCredential(reboot, operation, 2));
+        TEST_ASSERT_EQUAL_UINT8(4, mock_preferences::getUnsigned(WIFI_CLIENT_NS, kNvsWifiTxnUnknownPasswords, 0));
+        SettingsManager recovered(storage, profiles);
+        recovered.begin();
+        TEST_ASSERT_FALSE(wifiCredentialJournalPresent());
+        TEST_ASSERT_FALSE(mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiStaSlotPassword[2]));
+        TEST_ASSERT_EQUAL_STRING("PriorNet", recovered.get().wifiStaSlots[2].ssid.c_str());
+        TEST_ASSERT_TRUE(mutateUnknownWifiCredential(recovered, operation, 2));
+    }
 }
 
 void test_wifi_mutation_snapshots_legacy_settings_password_and_defers_unreadable_backup() {
@@ -7329,7 +7499,11 @@ int main() {
     UNITY_BEGIN();
     RUN_TEST(test_failed_wifi_mutations_snapshot_sd_only_passwords_before_any_write);
     RUN_TEST(test_wifi_mutation_snapshot_defers_unavailable_sd_and_honors_explicit_empty_nvs);
-    RUN_TEST(test_wifi_mutations_defer_missing_password_until_sd_returns_and_open_networks_stay_editable);
+    RUN_TEST(test_legacy_open_wifi_without_sd_remains_editable_and_removable_after_upgrade);
+    RUN_TEST(test_unknown_wifi_rollback_preserves_remounted_sd_credentials_and_known_slots);
+    RUN_TEST(test_unknown_wifi_commit_survives_journal_cleanup_failure_and_sd_return);
+    RUN_TEST(test_wifi_unknown_journal_provenance_is_validated_and_legacy_journals_stay_known);
+    RUN_TEST(test_unknown_wifi_journal_write_failure_preserves_original_state);
     RUN_TEST(test_wifi_mutation_snapshots_legacy_settings_password_and_defers_unreadable_backup);
     RUN_TEST(test_settings_backup_replacement_preserves_valid_previous_across_errors_and_resets);
     RUN_TEST(test_wifi_snapshot_uses_live_secret_when_file_size_cache_is_unavailable);

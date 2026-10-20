@@ -16,7 +16,8 @@ MARKER = "v1simple-webserver-exact-body-v2"
 CONTRACT_SYMBOL = "v1simple_webserver_exact_body_contract"
 UPSTREAM_SHA256 = "c24f1e65b4ce3fb7ab868f6bca7aab7af5dcdfd1ca81ce9716752a922e52ce78"
 PREVIOUS_SHA256 = "4542ba8a04f50c35eef8939149572ae8f60338d073139cb4ab93e186d0a10aed"
-PATCHED_SHA256 = "2e15b976608499e7e99152e9c8b03e55824908f4dba1de96b2b0e732f8d6a7ea"
+PROGRESS_SHA256 = "2e15b976608499e7e99152e9c8b03e55824908f4dba1de96b2b0e732f8d6a7ea"
+PATCHED_SHA256 = "2fc6f58cf8f1a6c099a1865cc1c530327a69ab9e2804afaa04694f78abb21452"
 
 READ_UPSTREAM = """    if (!newLength) {
       break;
@@ -362,6 +363,20 @@ UPLOAD_PATCHED = """int WebServer::_uploadReadByte(NetworkClient &client) {
   return res;
 }"""
 
+FORM_UPSTREAM = """bool WebServer::_parseForm(NetworkClient &client, const String &boundary, uint32_t len) {
+  (void)len;"""
+FORM_PATCHED = """bool WebServer::_parseForm(NetworkClient &client, const String &boundary, uint32_t len) {
+  // Match the request-header limit before using the fixed boundary buffer.
+  if (boundary.length() > 70) {
+    return false;
+  }
+  (void)len;"""
+BOUNDARY_UPSTREAM = """            int fastBoundaryLen = 4 /* \\r\\n-- */ + boundary.length() + 1 /* \\0 */;
+            char fastBoundary[fastBoundaryLen];"""
+BOUNDARY_PATCHED = """            const int fastBoundaryLen = 4 /* \\r\\n-- */ + boundary.length() + 1 /* \\0 */;
+            // The multipart boundary is at most 70 bytes; no C++ VLA is needed.
+            char fastBoundary[4 + 70 + 1];"""
+
 
 def fail(message: str) -> None:
     print(f"[patch_arduino_webserver_body] ERROR: {message}")
@@ -387,17 +402,25 @@ if actual == PREVIOUS_SHA256:
     text = text.replace(READ_PREVIOUS, READ_PATCHED, 1)
     text = text.replace(LINE_UPSTREAM, LINE_PATCHED, 1)
     text = text.replace(UPLOAD_UPSTREAM, UPLOAD_PATCHED, 1)
-    if hashlib.sha256(text.encode("utf-8")).hexdigest() != PATCHED_SHA256:
+    if hashlib.sha256(text.encode("utf-8")).hexdigest() != PROGRESS_SHA256:
         fail("previous body patch upgrade mismatch")
+    actual = PROGRESS_SHA256
+if actual == PROGRESS_SHA256:
+    text = text.replace(FORM_UPSTREAM, FORM_PATCHED, 1)
+    text = text.replace(BOUNDARY_UPSTREAM, BOUNDARY_PATCHED, 1)
+    if hashlib.sha256(text.encode("utf-8")).hexdigest() != PATCHED_SHA256:
+        fail("bounded multipart boundary upgrade mismatch")
     source.write_text(text, encoding="utf-8")
     actual = PATCHED_SHA256
 if actual == PATCHED_SHA256:
-    for required in (READ_PATCHED, STRING_PATCHED, FUNCTION_PATCHED, RAW_PATCHED, LINE_PATCHED, UPLOAD_PATCHED, CONTRACT_SYMBOL):
+    for required in (READ_PATCHED, STRING_PATCHED, FUNCTION_PATCHED, RAW_PATCHED, LINE_PATCHED,
+                     UPLOAD_PATCHED, FORM_PATCHED, BOUNDARY_PATCHED, CONTRACT_SYMBOL):
         if required not in text:
             fail("existing WebServer body patch is incomplete")
     print("[patch_arduino_webserver_body] already applied")
 elif actual == UPSTREAM_SHA256:
-    for upstream in (READ_UPSTREAM, STRING_UPSTREAM, INCLUDE_UPSTREAM, FUNCTION_UPSTREAM, RAW_UPSTREAM, LINE_UPSTREAM, UPLOAD_UPSTREAM):
+    for upstream in (READ_UPSTREAM, STRING_UPSTREAM, INCLUDE_UPSTREAM, FUNCTION_UPSTREAM, RAW_UPSTREAM,
+                     LINE_UPSTREAM, UPLOAD_UPSTREAM, FORM_UPSTREAM, BOUNDARY_UPSTREAM):
         if text.count(upstream) != 1:
             fail("pinned Parsing.cpp does not contain the unique expected body-reader shape")
     text = text.replace(INCLUDE_UPSTREAM, INCLUDE_PATCHED, 1)
@@ -407,6 +430,8 @@ elif actual == UPSTREAM_SHA256:
     text = text.replace(RAW_UPSTREAM, RAW_PATCHED, 1)
     text = text.replace(LINE_UPSTREAM, LINE_PATCHED, 1)
     text = text.replace(UPLOAD_UPSTREAM, UPLOAD_PATCHED, 1)
+    text = text.replace(FORM_UPSTREAM, FORM_PATCHED, 1)
+    text = text.replace(BOUNDARY_UPSTREAM, BOUNDARY_PATCHED, 1)
     patched = hashlib.sha256(text.encode("utf-8")).hexdigest()
     if patched != PATCHED_SHA256:
         fail(f"generated patched Parsing.cpp identity mismatch: expected {PATCHED_SHA256}, got {patched}")

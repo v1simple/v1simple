@@ -904,6 +904,184 @@ void test_missing_asset_receipt_does_not_retry_forever() {
     audio_init_sd(audioStorage);
 }
 
+static void assert_asset_failure_recovers_current_alert(PipelineAudio& runtime) {
+    TEST_ASSERT_EQUAL_UINT(0, g_mock_i2s_state.writeCalls);
+    runtime.alert(); // Consume the failed receipt and establish the retry deadline.
+    mockMillis += 99;
+    runtime.alert();
+    TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
+    ++mockMillis;
+    runtime.alert();
+    TEST_ASSERT_EQUAL_UINT(2, g_mock_task_notify_state.giveCalls);
+    runAcceptedJob();
+    TEST_ASSERT_GREATER_THAN_UINT(0, g_mock_i2s_state.writeCalls);
+    for (unsigned i = 0; i < 100; ++i) {
+        mockMillis += 100;
+        runtime.alert();
+    }
+    TEST_ASSERT_EQUAL_UINT(2, g_mock_task_notify_state.giveCalls);
+}
+
+void test_transient_clip_open_failure_recovers_unheard_live_alert() {
+    PipelineAudio runtime;
+    // The default direction clip also exists. Do not play that fragment after
+    // a temporary failure of the preceding band clip and consume the episode.
+    runtime.alert();
+    TEST_ASSERT_EQUAL_INT(2, g_sdAudioTaskParams.numClips);
+    fs::mock_fail_next_read_open("/audio/band_ka.mul");
+    runAcceptedJob();
+    File readable = audioFiles.open("/audio/band_ka.mul", FILE_READ);
+    TEST_ASSERT_TRUE(readable);
+    readable.close();
+    assert_asset_failure_recovers_current_alert(runtime);
+}
+
+void test_persistent_clip_open_failure_retries_only_after_current_frame_deadline() {
+    PipelineAudio runtime;
+    runtime.settings.settings.voiceDirectionEnabled = false;
+    runtime.alert();
+    const std::string path = (audioRoot / "audio/band_ka.mul").string();
+    fs::mock_fail_read_opens_for_full_path(path.c_str());
+    for (unsigned attempt = 0; attempt < 4; ++attempt) {
+        runAcceptedJob();
+        TEST_ASSERT_EQUAL_UINT(0, g_mock_i2s_state.writeCalls);
+        runtime.alert();
+        for (unsigned tick = 0; tick < 99; ++tick) {
+            ++mockMillis;
+            runtime.alert();
+        }
+        TEST_ASSERT_EQUAL_UINT(attempt + 1, g_mock_task_notify_state.giveCalls);
+        ++mockMillis;
+        runtime.alert();
+        TEST_ASSERT_EQUAL_UINT(attempt + 2, g_mock_task_notify_state.giveCalls);
+    }
+    fs::mock_fail_read_opens_for_full_path(nullptr);
+    runAcceptedJob();
+    TEST_ASSERT_GREATER_THAN_UINT(0, g_mock_i2s_state.writeCalls);
+    mockMillis += 1000;
+    runtime.alert();
+    TEST_ASSERT_EQUAL_UINT(5, g_mock_task_notify_state.giveCalls);
+}
+
+void test_zero_and_short_first_clip_reads_recover_without_consuming_voice() {
+    for (const size_t availableBytes : {0u, 17u}) {
+        setUp();
+        PipelineAudio runtime;
+        runtime.alert();
+        const std::string path = (audioRoot / "audio/band_ka.mul").string();
+        fs::mock_set_read_budget_for_full_path(path.c_str(), availableBytes);
+        runAcceptedJob();
+        fs::mock_set_read_budget_for_full_path(nullptr, 0);
+        assert_asset_failure_recovers_current_alert(runtime);
+    }
+}
+
+void test_unavailable_clip_metadata_remains_retryable() {
+    PipelineAudio runtime;
+    runtime.alert();
+    const auto unavailableRoot = audioRoot / "unavailable-mount";
+    fs::FS unavailableFiles{unavailableRoot};
+    std::filesystem::remove(unavailableRoot);
+    std::ofstream(unavailableRoot).close(); // stat reports ENOTDIR, not ENOENT.
+    audioFS = &unavailableFiles;
+    runAcceptedJob();
+    audioFS = &audioFiles;
+    std::filesystem::remove(unavailableRoot);
+    assert_asset_failure_recovers_current_alert(runtime);
+}
+
+void test_clip_read_failure_after_pcm_does_not_replay_or_emit_following_clip() {
+    for (const size_t trailingBytes : {0u, 17u}) {
+        setUp();
+        PipelineAudio runtime;
+        runtime.alert();
+        const std::string path = (audioRoot / "audio/band_ka.mul").string();
+        fs::mock_set_read_budget_for_full_path(path.c_str(), AUDIO_CHUNK_SAMPLES + trailingBytes);
+        runAcceptedJob();
+        TEST_ASSERT_EQUAL_UINT(1, g_mock_i2s_state.writeCalls);
+        fs::mock_set_read_budget_for_full_path(nullptr, 0);
+        for (unsigned i = 0; i < 100; ++i) {
+            mockMillis += 100;
+            runtime.alert();
+        }
+        TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
+    }
+}
+
+void test_later_clip_open_failure_does_not_replay_started_speech() {
+    PipelineAudio runtime;
+    runtime.alert();
+    fs::mock_fail_next_read_open("/audio/dir_ahead.mul");
+    runAcceptedJob();
+    TEST_ASSERT_GREATER_THAN_UINT(0, g_mock_i2s_state.writeCalls);
+    for (unsigned i = 0; i < 100; ++i) {
+        mockMillis += 100;
+        runtime.alert();
+    }
+    TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
+}
+
+void test_asset_failure_never_retries_an_ended_episode() {
+    PipelineAudio runtime;
+    runtime.alert();
+    fs::mock_fail_next_read_open("/audio/band_ka.mul");
+    runAcceptedJob();
+    runtime.clear();
+    for (unsigned i = 0; i < 30; ++i) {
+        mockMillis += 100;
+        runtime.clear();
+    }
+    TEST_ASSERT_EQUAL_UINT(0, g_mock_i2s_state.writeCalls);
+    TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
+    runtime.alert(35500);
+    runAcceptedJob();
+    TEST_ASSERT_GREATER_THAN_UINT(0, g_mock_i2s_state.writeCalls);
+    TEST_ASSERT_EQUAL_UINT(2, g_mock_task_notify_state.giveCalls);
+}
+
+void test_verified_missing_and_empty_optional_clips_preserve_playable_content() {
+    File empty = audioFiles.open("/audio/empty.mul", FILE_WRITE);
+    TEST_ASSERT_TRUE(empty);
+    empty.close();
+    SDAudioTaskParams params{};
+    params.numClips = 3;
+    strcpy(params.filePaths[0], "/audio/missing.mul");
+    strcpy(params.filePaths[1], "/audio/empty.mul");
+    strcpy(params.filePaths[2], "/audio/band_ka.mul");
+    AudioPlaybackReceipt receipt;
+    TEST_ASSERT_EQUAL(AudioPlaybackResult::Accepted, start_sd_audio_task(params, &receipt));
+    runAcceptedJob();
+    TEST_ASSERT_EQUAL(AudioPlaybackReceipt::State::Started, receipt.state.load());
+    TEST_ASSERT_GREATER_THAN_UINT(0, g_mock_i2s_state.writeCalls);
+}
+
+void test_empty_only_asset_job_is_terminal_without_pcm() {
+    File empty = audioFiles.open("/audio/empty.mul", FILE_WRITE);
+    TEST_ASSERT_TRUE(empty);
+    empty.close();
+    SDAudioTaskParams params{};
+    params.numClips = 1;
+    strcpy(params.filePaths[0], "/audio/empty.mul");
+    AudioPlaybackReceipt receipt;
+    TEST_ASSERT_EQUAL(AudioPlaybackResult::Accepted, start_sd_audio_task(params, &receipt));
+    runAcceptedJob();
+    TEST_ASSERT_EQUAL(AudioPlaybackReceipt::State::Unavailable, receipt.state.load());
+    TEST_ASSERT_EQUAL_UINT(0, g_mock_i2s_state.writeCalls);
+}
+
+void test_clip_reads_use_independent_size_when_handle_metadata_is_unavailable() {
+    const std::string path = (audioRoot / "audio/band_ka.mul").string();
+    fs::mock_zero_file_size_for_full_path(path.c_str());
+    PipelineAudio runtime;
+    runtime.settings.settings.voiceDirectionEnabled = false;
+    runtime.alert();
+    runAcceptedJob();
+    TEST_ASSERT_GREATER_THAN_UINT(0, g_mock_i2s_state.writeCalls);
+    mockMillis += 1000;
+    runtime.alert();
+    TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
+}
+
 void test_unheard_direction_retries_without_repeating_full_priority() {
     PipelineAudio runtime;
     runtime.settings.settings.voiceDirectionEnabled = true;
@@ -1172,6 +1350,16 @@ int main() {
     RUN_TEST(test_pending_worker_does_not_admit_duplicate_announcement);
     RUN_TEST(test_late_failure_receipt_cannot_consume_new_episode);
     RUN_TEST(test_missing_asset_receipt_does_not_retry_forever);
+    RUN_TEST(test_transient_clip_open_failure_recovers_unheard_live_alert);
+    RUN_TEST(test_persistent_clip_open_failure_retries_only_after_current_frame_deadline);
+    RUN_TEST(test_zero_and_short_first_clip_reads_recover_without_consuming_voice);
+    RUN_TEST(test_unavailable_clip_metadata_remains_retryable);
+    RUN_TEST(test_clip_read_failure_after_pcm_does_not_replay_or_emit_following_clip);
+    RUN_TEST(test_later_clip_open_failure_does_not_replay_started_speech);
+    RUN_TEST(test_asset_failure_never_retries_an_ended_episode);
+    RUN_TEST(test_verified_missing_and_empty_optional_clips_preserve_playable_content);
+    RUN_TEST(test_empty_only_asset_job_is_terminal_without_pcm);
+    RUN_TEST(test_clip_reads_use_independent_size_when_handle_metadata_is_unavailable);
     RUN_TEST(test_unchanged_alert_recovers_after_all_worker_startup_attempts_fail);
     RUN_TEST(test_failed_startup_is_discarded_when_alert_ends);
     RUN_TEST(test_failed_startup_cannot_retry_replaced_priority);

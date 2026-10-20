@@ -1,7 +1,9 @@
 #include "audio_internals.h"
 #include "audio_task_utils.h"
 #include "storage_manager.h"
+#include "storage_path_status.h"
 #include <Arduino.h>
+#include <algorithm>
 
 static bool sd_audio_ready = false;
 static const char* AUDIO_PATH = "/audio";
@@ -237,13 +239,42 @@ static void sd_audio_playback_task(void* pvParameters) {
         }
         bool writeAborted = false;
         for (int i = 0; i < g_sdAudioTaskParams.numClips; i++) {
-            File audioFile = audioFS->open(g_sdAudioTaskParams.filePaths[i], "r");
-            if (!audioFile) {
+            // A failed read-open is not evidence of a missing optional clip.
+            // Use independent metadata so temporary I/O failures remain
+            // retryable until PCM starts, including a failed first read.
+            struct stat details {};
+            const StoragePathStatus status =
+                storagePathStatus(*audioFS, g_sdAudioTaskParams.filePaths[i], &details);
+            if (status == StoragePathStatus::Missing ||
+                (status == StoragePathStatus::Present &&
+                 (!S_ISREG(details.st_mode) || details.st_size == 0))) {
                 continue;
             }
+            if (status != StoragePathStatus::Present || details.st_size < 0) {
+                publish_audio_receipt(AudioPlaybackReceipt::State::FailedBeforeStart);
+                writeAborted = true;
+                break;
+            }
+            File audioFile = audioFS->open(g_sdAudioTaskParams.filePaths[i], "r");
+            if (!audioFile) {
+                publish_audio_receipt(AudioPlaybackReceipt::State::FailedBeforeStart);
+                writeAborted = true;
+                break;
+            }
 
-            size_t bytesRead;
-            while ((bytesRead = audioFile.read(g_mulawChunkBuffer, AUDIO_CHUNK_SAMPLES)) > 0) {
+            uint64_t bytesRemaining = static_cast<uint64_t>(details.st_size);
+            while (bytesRemaining > 0) {
+                const size_t bytesRequested =
+                    static_cast<size_t>(std::min<uint64_t>(bytesRemaining, AUDIO_CHUNK_SAMPLES));
+                const size_t bytesRead = audioFile.read(g_mulawChunkBuffer, bytesRequested);
+                // The pinned VFS uses fread: a short result before the
+                // stat-verified end is an incomplete clip, not clean EOF.
+                if (bytesRead != bytesRequested) {
+                    publish_audio_receipt(AudioPlaybackReceipt::State::FailedBeforeStart);
+                    writeAborted = true;
+                    break;
+                }
+                bytesRemaining -= bytesRead;
                 // Decode mu-law to stereo PCM using pre-allocated buffer
                 for (size_t j = 0; j < bytesRead; j++) {
                     int16_t sample = mulaw_decode_table[g_mulawChunkBuffer[j]];
@@ -294,8 +325,8 @@ static void sd_audio_playback_task(void* pvParameters) {
             amp_last_used_ms = millis();
         }
 
-        // No readable clip means there was no PCM, but retrying the same
-        // missing asset cannot help. A Started receipt is already detached.
+        // Only verified missing/empty clips are terminal without PCM. A
+        // Started or FailedBeforeStart receipt is already detached.
         publish_audio_receipt(AudioPlaybackReceipt::State::Unavailable);
         finish_sd_audio_job();
     }

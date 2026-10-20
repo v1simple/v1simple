@@ -17,12 +17,57 @@ void VolumeFadeModule::begin(SettingsManager* settings) {
     this->settings_ = settings;
 }
 
+bool VolumeFadeModule::observeVolumeOwnership(const VolumeFadeContext& ctx) {
+    if (ctx.volumeOwnerChanged) {
+        reset();
+        manualChoiceActive_ = ctx.hasAlert;
+        manualChoiceFrequency_ = ctx.currentFrequency;
+        manualChoiceLaser_ = ctx.priorityIsLaser;
+        return true;
+    }
+
+    // A canonical pair is atomic. A fresh pair outside both our baseline and
+    // requested reduction belongs to the driver or another volume owner, even
+    // after a fade was confirmed or while its restoration is still pending.
+    // Retire the old obligation before clear/new-priority handling can send it.
+    if (ctx.hasVolumeObservation && ctx.volumeObservationIngress != 0 &&
+        (!volumeObservationKnown_ || ctx.sessionGeneration != volumeObservationSession_ ||
+         static_cast<int32_t>(ctx.volumeObservationIngress - volumeObservationIngress_) > 0)) {
+        const bool atBaseline = ctx.currentVolume == originalVolume_ &&
+                                ctx.currentMuteVolume == originalMuteVolume_;
+        const bool atFade = ctx.currentVolume == fadeTargetVolume_ &&
+                            ctx.currentMuteVolume == fadeTargetMuteVolume_;
+        if (originalVolume_ != 0xFF && !atBaseline && !atFade) {
+            reset();
+            manualChoiceActive_ = ctx.hasAlert;
+            manualChoiceFrequency_ = ctx.currentFrequency;
+            manualChoiceLaser_ = ctx.priorityIsLaser;
+            return true;
+        }
+        volumeObservationKnown_ = true;
+        volumeObservationSession_ = ctx.sessionGeneration;
+        volumeObservationIngress_ = ctx.volumeObservationIngress;
+    }
+    return false;
+}
+
 VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
     VolumeFadeAction action;
 
     if (!settings_)
         return action;
     const V1Settings& s = settings_->get();
+    if (observeVolumeOwnership(ctx)) return action;
+
+    // A manual choice ends this automatic override. Do not immediately acquire
+    // it again and fade the same threat a second time. A distinct next threat
+    // may start a fresh delay using the driver's now-current pair.
+    if (manualChoiceActive_) {
+        if (ctx.hasAlert && !ctx.alertEpisodeEnded &&
+            ctx.currentFrequency == manualChoiceFrequency_ && ctx.priorityIsLaser == manualChoiceLaser_)
+            return action;
+        reset();
+    }
 
     // BLE acceptance is not detector application. Retain the complete restore
     // pair across holdoff and live alerts until canonical observation agrees.
@@ -136,6 +181,7 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
         // delay even at the same frequency, retaining any unconfirmed restore.
         if (!fadeActive_ && pendingRestoreVolume_ == 0xFF) resetSessionState();
         seenCount_ = 0;
+        nextSeenFrequency_ = 0;
         seenLaser_ = false;
     }
 
@@ -168,9 +214,7 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
         alertStartMs_ = now;
         fadeActive_ = false;
         commandSent_ = false;
-        if (seenCount_ < MAX_FADE_SEEN_FREQS && freq != 0) {
-            seenFreqs_[seenCount_++] = freq;
-        }
+        if (isNewFrequency) rememberFrequency(freq);
         if (isNewLaser) {
             seenLaser_ = true;
         }
@@ -206,10 +250,9 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
         fadeActive_ = false;
         commandSent_ = false;
         seenCount_ = 0;
+        nextSeenFrequency_ = 0;
         seenLaser_ = ctx.priorityIsLaser;
-        if (seenCount_ < MAX_FADE_SEEN_FREQS && freq != 0) {
-            seenFreqs_[seenCount_++] = freq;
-        }
+        rememberFrequency(freq);
     }
 
     // Check if it's time to fade down
@@ -222,6 +265,13 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
             action.type = VolumeFadeAction::Type::FADE_DOWN;
             action.targetVolume = fadeVol;
             action.targetMuteVolume = originalMuteVolume_;
+            fadeTargetVolume_ = action.targetVolume;
+            fadeTargetMuteVolume_ = action.targetMuteVolume;
+            // Priority can change during the initial delay, before there was
+            // an active fade to release. The priority we actually reduce must
+            // still be remembered on the next unchanged frame.
+            rememberFrequency(freq);
+            if (ctx.priorityIsLaser) seenLaser_ = true;
             fadeActive_ = true;
         }
         // The coordinator retains transport deferral and explicitly rejected
@@ -253,8 +303,23 @@ void VolumeFadeModule::resetSessionState() {
     restoreLogEmitted_ = false;
     lastRestoreAttemptMs_ = 0;
     seenCount_ = 0;
+    nextSeenFrequency_ = 0;
     seenLaser_ = false;
+    fadeTargetVolume_ = 0xFF;
+    fadeTargetMuteVolume_ = 0;
+    volumeObservationKnown_ = false;
+    manualChoiceActive_ = false;
     memset(seenFreqs_, 0, sizeof(seenFreqs_));
+}
+
+void VolumeFadeModule::rememberFrequency(uint16_t frequency) {
+    if (frequency == 0) return;
+    for (int i = 0; i < seenCount_; ++i) {
+        if (seenFreqs_[i] == frequency) return;
+    }
+    seenFreqs_[nextSeenFrequency_] = frequency;
+    nextSeenFrequency_ = (nextSeenFrequency_ + 1) % MAX_FADE_SEEN_FREQS;
+    if (seenCount_ < MAX_FADE_SEEN_FREQS) ++seenCount_;
 }
 
 void VolumeFadeModule::reset() {

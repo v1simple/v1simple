@@ -26,6 +26,27 @@ Each trace follows the entrypoint, admission rules, state owner, downstream
 consumer, terminal outcome and alternate paths that can overwrite the result.
 Its regression section distinguishes production code from test substitutes.
 
+## Maintenance transfer and log lifecycles
+
+The pinned NetworkClient repair in `scripts/patch_arduino_network_progress.py`
+services an enrolled task watchdog only when bytes move. Plain/raw/multipart
+request bodies, response headers, static files, streamed JSON and cached JSON
+share this transport. Buffer reads own receive progress, including single-byte
+form readers and bounded error-response drains. A stalled read/write uses a
+2500 ms idle deadline and closes its socket; partial transfers cannot restart
+an idle window through an outer retry. The plain-body, protocol-line and multipart upload-byte readers
+also bound their idle waits and close incomplete connections.
+`test_http_transfer_lifecycle.py` compiles these production owners against
+simulated sockets, time and watchdog state; it does not measure physical WiFi
+scheduling or reset behavior.
+
+`ProductEventLog::pruneRetention` admits a writer only after a clean directory
+scan and successful metadata accounting. Child-open failure cannot masquerade
+as EOF, and a failed scan leaves logging disabled until a successful later boot.
+Resume appends to the existing log without using read-open failure as evidence
+of absence. `test_product_event_log` covers failure, disabled admission,
+recovery, oldest-first reclamation and the 2 MiB/file-count bounds.
+
 ## Where the proof ends
 
 A passing layer establishes that layer's stated behavior:

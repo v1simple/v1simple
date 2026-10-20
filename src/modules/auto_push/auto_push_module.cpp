@@ -1096,6 +1096,20 @@ void AutoPushModule::process() {
         return;
     }
 
+    if (state_.volumeWriteRevision != 0) {
+        // Numeric readback cannot confirm command-only feedback/disconnect
+        // policy. Contrary evidence from this write wins even when the pair
+        // already matched, or later components are still being applied.
+        if (bleClient_->volumeWriteRevision() != state_.volumeWriteRevision) {
+            failWholePlan(&status_.volume, Outcome::BLOCKED, FailureReason::VOLUME_OWNER_BUSY);
+            return;
+        }
+        if (bleClient_->volumeWriteRejected(state_.volumeWriteRevision)) {
+            failWholePlan(&status_.volume, Outcome::WRITE_FAILED, FailureReason::VOLUME_WRITE_FAILED);
+            return;
+        }
+    }
+
     const uint32_t now = static_cast<uint32_t>(millis());
     if (!deadlineReached(now, state_.nextStepAtMs)) return;
     if (status_.result == Result::QUEUED) status_.result = Result::IN_PROGRESS;
@@ -1270,6 +1284,7 @@ void AutoPushModule::process() {
             return;
         }
         status_.volume.sent = true;
+        state_.volumeWriteRevision = bleClient_->volumeWriteRevision();
         status_.volume.outcome = Outcome::SENT;
         state_.step = Step::VolumeRead;
         state_.nextStepAtMs = now + 30;

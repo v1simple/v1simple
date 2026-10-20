@@ -311,16 +311,17 @@ enum class WifiClientSdSecretLoadStatus : uint8_t {
     Unavailable,
 };
 
-WifiClientSdSecretLoadStatus loadWifiClientSdSecretDocumentStatus(fs::FS* fs, JsonDocument& doc) {
+WifiClientSdSecretLoadStatus loadWifiClientSdSecretDocumentAtPath(fs::FS* fs, const char* path,
+                                                                 JsonDocument& doc) {
     doc.clear();
     if (!fs) return WifiClientSdSecretLoadStatus::Unavailable;
-    const StoragePathStatus pathStatus = storagePathStatus(*fs, WIFI_CLIENT_SD_SECRET_PATH);
+    const StoragePathStatus pathStatus = storagePathStatus(*fs, path);
     if (pathStatus == StoragePathStatus::Missing) {
         return WifiClientSdSecretLoadStatus::NotFound;
     }
     if (pathStatus == StoragePathStatus::Unavailable) return WifiClientSdSecretLoadStatus::Unavailable;
 
-    File file = fs->open(WIFI_CLIENT_SD_SECRET_PATH, FILE_READ);
+    File file = fs->open(path, FILE_READ);
     if (!file) {
         return WifiClientSdSecretLoadStatus::Unavailable;
     }
@@ -361,6 +362,28 @@ WifiClientSdSecretLoadStatus loadWifiClientSdSecretDocumentStatus(fs::FS* fs, Js
         return WifiClientSdSecretLoadStatus::Invalid;
     }
     return WifiClientSdSecretLoadStatus::Success;
+}
+
+WifiClientSdSecretLoadStatus loadWifiClientSdSecretDocumentStatus(fs::FS* fs, JsonDocument& doc,
+                                                                  String* loadedPath = nullptr) {
+    if (loadedPath) *loadedPath = "";
+    const auto live = loadWifiClientSdSecretDocumentAtPath(fs, WIFI_CLIENT_SD_SECRET_PATH, doc);
+    if (live == WifiClientSdSecretLoadStatus::Success) {
+        if (loadedPath && !copyStringExact(WIFI_CLIENT_SD_SECRET_PATH, *loadedPath)) {
+            return WifiClientSdSecretLoadStatus::Unavailable;
+        }
+        return live;
+    }
+    if (live == WifiClientSdSecretLoadStatus::Unavailable) return live;
+    const String previousPath = StorageManager::rollbackPathFor(WIFI_CLIENT_SD_SECRET_PATH);
+    if (previousPath.length() != std::strlen(WIFI_CLIENT_SD_SECRET_PATH) + sizeof(".prev") - 1u) {
+        return WifiClientSdSecretLoadStatus::Unavailable;
+    }
+    const auto previous = loadWifiClientSdSecretDocumentAtPath(fs, previousPath.c_str(), doc);
+    if (previous == WifiClientSdSecretLoadStatus::Success && loadedPath &&
+        !copyStringExact(previousPath, *loadedPath)) return WifiClientSdSecretLoadStatus::Unavailable;
+    if (previous != WifiClientSdSecretLoadStatus::NotFound) return previous;
+    return live;
 }
 
 bool wifiClientSdSecretDocumentIsValid(const JsonDocument& doc) {
@@ -452,6 +475,8 @@ bool writeWifiClientSdSecretEntries(fs::FS* fs, const WifiClientSdSecretEntry en
         return storageRemoveFileIfPresent(*fs, rollbackPath) &&
                storagePathStatus(*fs, WIFI_CLIENT_SD_SECRET_PATH) == StoragePathStatus::Missing;
     }
+
+    if (!prepareWifiClientSecretReplacement(fs)) return false;
 
     PsramJson::Document doc;
     doc["_type"] = WIFI_CLIENT_SD_SECRET_TYPE;
@@ -886,6 +911,36 @@ bool writeWifiSecretStateFromSettings(StorageManager& storage, const V1Settings&
 }
 
 } // namespace
+
+WifiClientSecretReadStatus readWifiClientSecretDocument(fs::FS* fs, JsonDocument& doc, String& loadedPath) {
+    const auto status = loadWifiClientSdSecretDocumentStatus(fs, doc, &loadedPath);
+    switch (status) {
+    case WifiClientSdSecretLoadStatus::Success:
+        if (loadedPath.length() == 0) return WifiClientSecretReadStatus::Unavailable;
+        return WifiClientSecretReadStatus::Valid;
+    case WifiClientSdSecretLoadStatus::NotFound: return WifiClientSecretReadStatus::NotFound;
+    case WifiClientSdSecretLoadStatus::Invalid: return WifiClientSecretReadStatus::Invalid;
+    case WifiClientSdSecretLoadStatus::Unavailable: return WifiClientSecretReadStatus::Unavailable;
+    }
+    return WifiClientSecretReadStatus::Unavailable;
+}
+
+bool prepareWifiClientSecretReplacement(fs::FS* fs) {
+    // Every replacement writer must restore a selected committed rollback
+    // first. Otherwise rotating a corrupt live file can destroy the sole good
+    // .prev even when the replacement bytes were safely captured in RAM.
+    PsramJson::Document existing;
+    String loadedPath;
+    const WifiClientSecretReadStatus status = readWifiClientSecretDocument(fs, existing, loadedPath);
+    if (status == WifiClientSecretReadStatus::Unavailable) return false;
+    if (status == WifiClientSecretReadStatus::Valid && loadedPath != WIFI_CLIENT_SD_SECRET_PATH) {
+        return storageRemoveFileIfPresent(*fs, WIFI_CLIENT_SD_SECRET_PATH) &&
+               fs->rename(loadedPath.c_str(), WIFI_CLIENT_SD_SECRET_PATH);
+    }
+    // Complete replacements may repair corrupt data or create a missing file.
+    // Merge callers separately require a valid existing document or absence.
+    return true;
+}
 
 WifiClientSecretPresence readWifiClientSecretPresence(fs::FS* fs) {
     WifiClientSecretPresence presence;

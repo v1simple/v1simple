@@ -20,6 +20,7 @@ struct VolumeFadeContext {
     bool hasVolumeObservation = false;
     uint32_t volumeObservationIngress = 0;
     uint32_t sessionGeneration = 0;
+    bool volumeOwnerChanged = false;
     uint16_t currentFrequency; // Current priority frequency (MHz*10) for dedup
     bool priorityIsLaser;      // Priority alert is laser (no frequency; its own distinct-alert class)
     unsigned long now;         // Current timestamp
@@ -67,6 +68,10 @@ class VolumeFadeModule {
     // Main decision method
     VolumeFadeAction process(const VolumeFadeContext& ctx);
 
+    // Reconcile fresh authority before another automatic owner captures or
+    // transfers our baseline. This emits no volume command.
+    bool observeVolumeOwnership(const VolumeFadeContext& ctx);
+
     // End a cleared alert while another volume owner suppresses fade commands.
     // That owner must carry any returned restore pair until it releases volume.
     VolumeFadeAction releaseClearedAlert();
@@ -98,8 +103,20 @@ class VolumeFadeModule {
     bool restoreLogEmitted_ = false;
     int seenCount_ = 0;
     bool seenLaser_ = false; // Laser has no frequency; deduped as its own class
-    static constexpr int MAX_FADE_SEEN_FREQS = 12;
+    // Covers a complete 15-row V1 table. Longer continuous encounters evict
+    // the oldest identity, but always remember the just-handled priority.
+    static constexpr int MAX_FADE_SEEN_FREQS = 15;
     uint16_t seenFreqs_[MAX_FADE_SEEN_FREQS] = {};
+    int nextSeenFrequency_ = 0;
+
+    uint8_t fadeTargetVolume_ = 0xFF;
+    uint8_t fadeTargetMuteVolume_ = 0;
+    bool volumeObservationKnown_ = false;
+    uint32_t volumeObservationSession_ = 0;
+    uint32_t volumeObservationIngress_ = 0;
+    bool manualChoiceActive_ = false;
+    uint16_t manualChoiceFrequency_ = 0;
+    bool manualChoiceLaser_ = false;
 
     // Restoration remains owed until the complete canonical pair converges or
     // an explicit owner/session reset discards authority. SENT is only delivery.
@@ -118,4 +135,5 @@ class VolumeFadeModule {
     static constexpr unsigned long HINT_WINDOW_MS = 1500;
 
     void resetSessionState();
+    void rememberFrequency(uint16_t frequency);
 };

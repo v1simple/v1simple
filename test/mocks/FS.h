@@ -302,7 +302,13 @@ namespace fs {
 struct MockRenameState {
     size_t renameCalls = 0;
     size_t failOnCall = 0;
+    size_t resetAfterCall = 0;
+    std::string resetAfterTarget;
 };
+
+// A reset occurs after the rename persisted, so the caller cannot execute its
+// ordinary returned-error rollback. Fresh owners then consume the real layout.
+struct SimulatedReset {};
 
 inline MockRenameState g_mock_fs_rename_state{};
 
@@ -316,6 +322,14 @@ inline void mock_fail_next_rename() {
 
 inline void mock_fail_rename_on_call(size_t callNumber) {
     g_mock_fs_rename_state.failOnCall = callNumber;
+}
+
+inline void mock_reset_after_rename_on_call(size_t callNumber) {
+    g_mock_fs_rename_state.resetAfterCall = callNumber;
+}
+
+inline void mock_reset_after_rename_to(const char* fullPath) {
+    g_mock_fs_rename_state.resetAfterTarget = fullPath ? fullPath : "";
 }
 
 inline void mock_reset_fs_write_budget() {
@@ -436,6 +450,13 @@ public:
         const std::filesystem::path target = resolve(to);
         std::filesystem::create_directories(target.parent_path(), ec);
         std::filesystem::rename(resolve(from), target, ec);
+        if (!ec && ((g_mock_fs_rename_state.resetAfterCall != 0 &&
+                     g_mock_fs_rename_state.renameCalls == g_mock_fs_rename_state.resetAfterCall) ||
+                    target.string() == g_mock_fs_rename_state.resetAfterTarget)) {
+            g_mock_fs_rename_state.resetAfterCall = 0;
+            g_mock_fs_rename_state.resetAfterTarget.clear();
+            throw SimulatedReset{};
+        }
         return !ec;
     }
 

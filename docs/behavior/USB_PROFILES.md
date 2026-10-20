@@ -127,6 +127,36 @@ schema v3. Current USB v5 retains that slot contract and adds profile-schema-v4
    NVS reload. These use repeated host read failures with Arduino-style
    existence probes; they do not measure physical storage failure frequency.
 
+   Missing names also occur between the two successful renames of a file
+   promotion. Before comparing mirror generations, startup now recovers
+   validated `.meta.prev`/legacy `.meta.bak` metadata on both configured stores,
+   choosing the highest committed generation (deletion wins a tie), and
+   validated `.prev`, `.bak`, or `.syncbak` payloads whose live
+   name is absent. A tombstone prevents any payload recovery from resurrecting
+   the profile. Unavailable candidates defer recovery; uncommitted `.tmp` and
+   `.tmpsync` bytes are never published. When older backups coexist, the
+   interrupted writer's staging name selects its matching rollback family;
+   each writer clears the other's obsolete staging name before starting.
+
+   The rename lifecycle cases in `test_v1_profiles` interrupt **every successful
+   rename** in direct save/delete and mirror reconciliation, then create fresh
+   managers with both stores, SD only, or LittleFS only. They verify public
+   load/catalog/snapshot outcomes and convergence after the missing mirror
+   returns. An acknowledged offline edit or deletion remains authoritative
+   when its store is available. If only an older mirror is available, recovery
+   can provide only the valid state that mirror actually retained.
+
+   The WiFi secret reader follows the same live/validated-`.prev` selection for
+   password recovery, slot merge/removal, presence checks, and restore
+   snapshots. Both credential and snapshot replacement writers restore a
+   selected rollback name before another write can rotate it away, including
+   healing operations whose snapshot exists only in RAM. `test_settings_persistence` exercises interrupted rotation
+   and slot deletion through the credential journal, another interruption
+   during recovery, retained unrelated passwords, snapshot restore, and actual
+   SD password recovery after removing the NVS copy. These host tests prove
+   recovery of the persisted filename layouts, not physical rename durability
+   or SD/brownout endurance.
+
 7. **Stored readback and later consumption.** `buildUsbProfileDocument()` first
    resolves storage transactions, requires current profile schema, snapshots the
    complete catalog, serializes all modifiers, then validates its own output.

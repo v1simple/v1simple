@@ -2023,8 +2023,376 @@ void test_periodic_profile_recovery_never_waits_for_sd_and_honors_backoff() {
     TEST_ASSERT_EQUAL_UINT32(recoveredAttempts, g_mock_semaphore_state.takeCalls);
 }
 
+
+// Each interruption is after an actual successful rename. No error return is
+// delivered to the old owner, so only boot recovery can preserve the durable
+// intent. Exercise both primary choices, every rename and each mount topology.
+void assert_reconcile_rename_lifecycle(bool secondaryWins, bool deleted) {
+    size_t renameCount = 0;
+    for (size_t interruption = 0; interruption <= renameCount; ++interruption) {
+        for (unsigned topology = 0; topology < (interruption == 0 ? 1u : 3u); ++topology) {
+            const std::string suffix = std::to_string(secondaryWins) + "_" + std::to_string(deleted) +
+                "_" + std::to_string(interruption) + "_" + std::to_string(topology);
+            fs::FS sd(g_tempRoot / ("sd_" + suffix));
+            fs::FS little(g_tempRoot / ("little_" + suffix));
+            V1ProfileManager initial;
+            TEST_ASSERT_TRUE(initial.begin(&sd, &little));
+            TEST_ASSERT_TRUE(initial.saveProfile(makeProfile("Road", 10, "original")).success);
+            TEST_ASSERT_TRUE(initial.saveProfile(makeProfile("Road", 20, "previous")).success);
+            fs::FS* winner = secondaryWins ? &little : &sd;
+            V1ProfileManager offline;
+            TEST_ASSERT_TRUE(offline.begin(winner));
+            if (deleted) TEST_ASSERT_TRUE(offline.deleteProfileResult("Road").success());
+            else TEST_ASSERT_TRUE(offline.saveProfile(makeProfile("Road", 30, "acknowledged")).success);
+            fs::mock_reset_fs_rename_state();
+            if (interruption) fs::mock_reset_after_rename_on_call(interruption);
+            bool reset = false;
+            try {
+                V1ProfileManager interrupted;
+                TEST_ASSERT_TRUE(interrupted.begin(&sd, &little));
+            } catch (const fs::SimulatedReset&) { reset = true; }
+            if (interruption == 0) renameCount = fs::g_mock_fs_rename_state.renameCalls;
+            else TEST_ASSERT_TRUE(reset);
+            fs::mock_reset_fs_rename_state();
+            fs::FS* bootPrimary = topology == 2 ? &little : &sd;
+            fs::FS* bootSecondary = topology == 0 ? &little : nullptr;
+            V1ProfileManager reboot;
+            TEST_ASSERT_TRUE(reboot.begin(bootPrimary, bootSecondary));
+            V1Profile actual;
+            const auto loaded = reboot.loadProfileResult("Road", actual);
+            const bool newestAvailable = topology == 0 || bootPrimary == winner;
+            if (deleted && newestAvailable) {
+                TEST_ASSERT_EQUAL(ProfileStorageStatus::NotFound, loaded.status);
+                TEST_ASSERT_TRUE(reboot.listProfilesResult().genuinelyEmpty);
+            } else if (!deleted) {
+                TEST_ASSERT_TRUE(loaded.success());
+                if (newestAvailable) TEST_ASSERT_EQUAL_STRING("acknowledged", actual.description.c_str());
+                else TEST_ASSERT_TRUE(actual.description == "previous" || actual.description == "acknowledged");
+            }
+            // A temporarily absent winner can return later. Repeated recovery
+            // must converge without resurrecting or reverting its prior ACK.
+            for (unsigned repeat = 0; repeat != 2; ++repeat) {
+                V1ProfileManager reunited;
+                TEST_ASSERT_TRUE(reunited.begin(&sd, &little));
+                const auto result = reunited.loadProfileResult("Road", actual);
+                if (deleted) {
+                    TEST_ASSERT_EQUAL(ProfileStorageStatus::NotFound, result.status);
+                    TEST_ASSERT_TRUE(reunited.listProfilesResult().genuinelyEmpty);
+                } else {
+                    TEST_ASSERT_TRUE(result.success());
+                    TEST_ASSERT_EQUAL_STRING("acknowledged", actual.description.c_str());
+                    std::vector<V1Profile> exported;
+                    TEST_ASSERT_TRUE(reunited.snapshotProfiles(exported).success());
+                    TEST_ASSERT_EQUAL_UINT(1, exported.size());
+                    TEST_ASSERT_EQUAL_STRING("acknowledged", exported[0].description.c_str());
+                }
+            }
+        }
+    }
+    TEST_ASSERT_GREATER_THAN_UINT(0, renameCount);
+}
+
+void test_sd_acknowledged_edit_survives_every_reconcile_rename_and_mount_topology() {
+    assert_reconcile_rename_lifecycle(false, false);
+}
+void test_littlefs_acknowledged_edit_survives_every_reconcile_rename_and_mount_topology() {
+    assert_reconcile_rename_lifecycle(true, false);
+}
+void test_sd_acknowledged_delete_survives_every_reconcile_rename_and_mount_topology() {
+    assert_reconcile_rename_lifecycle(false, true);
+}
+void test_littlefs_acknowledged_delete_survives_every_reconcile_rename_and_mount_topology() {
+    assert_reconcile_rename_lifecycle(true, true);
+}
+
+
+void assert_user_mutation_rename_lifecycle(bool deleted, bool mirrored) {
+    size_t renameCount = 0;
+    for (size_t interruption = 0; interruption <= renameCount; ++interruption) {
+        for (unsigned topology = 0; topology < (mirrored && interruption ? 3u : 1u); ++topology) {
+            const std::string suffix = std::to_string(deleted) + "_" + std::to_string(mirrored) +
+                "_" + std::to_string(interruption) + "_" + std::to_string(topology);
+            fs::FS primary(g_tempRoot / ("mutate_" + suffix));
+            fs::FS secondary(g_tempRoot / ("mirror_" + suffix));
+            V1ProfileManager initial;
+            TEST_ASSERT_TRUE(initial.begin(&primary, mirrored ? &secondary : nullptr));
+            TEST_ASSERT_TRUE(initial.saveProfile(makeProfile("Road", 10, "acknowledged")).success);
+            fs::mock_reset_fs_rename_state();
+            if (interruption) fs::mock_reset_after_rename_on_call(interruption);
+            bool reset = false;
+            try {
+                if (deleted) TEST_ASSERT_TRUE(initial.deleteProfileResult("Road").success());
+                else TEST_ASSERT_TRUE(initial.saveProfile(makeProfile("Road", 20, "replacement")).success);
+            } catch (const fs::SimulatedReset&) { reset = true; }
+            if (!interruption) renameCount = fs::g_mock_fs_rename_state.renameCalls;
+            else TEST_ASSERT_TRUE(reset);
+            fs::mock_reset_fs_rename_state();
+            V1ProfileManager reboot;
+            TEST_ASSERT_TRUE(reboot.begin(topology == 2 ? &secondary : &primary,
+                mirrored && topology == 0 ? &secondary : nullptr));
+            V1Profile actual;
+            auto loaded = reboot.loadProfileResult("Road", actual);
+            if (deleted) {
+                TEST_ASSERT_TRUE(loaded.success() || loaded.status == ProfileStorageStatus::NotFound);
+                if (loaded.success()) TEST_ASSERT_EQUAL_STRING("acknowledged", actual.description.c_str());
+            } else {
+                TEST_ASSERT_TRUE(loaded.success());
+                TEST_ASSERT_TRUE(actual.description == "acknowledged" || actual.description == "replacement");
+            }
+            V1ProfileManager reunited;
+            TEST_ASSERT_TRUE(reunited.begin(&primary, mirrored ? &secondary : nullptr));
+            loaded = reunited.loadProfileResult("Road", actual);
+            TEST_ASSERT_TRUE(loaded.success() || (deleted && loaded.status == ProfileStorageStatus::NotFound));
+            const auto stableFiles = filesSnapshot();
+            V1ProfileManager repeated;
+            TEST_ASSERT_TRUE(repeated.begin(&primary, mirrored ? &secondary : nullptr));
+            TEST_ASSERT_TRUE(stableFiles == filesSnapshot());
+        }
+    }
+    TEST_ASSERT_GREATER_THAN_UINT(0, renameCount);
+}
+void test_single_store_profile_save_and_delete_survive_every_rename() {
+    assert_user_mutation_rename_lifecycle(false, false);
+    assert_user_mutation_rename_lifecycle(true, false);
+}
+void test_mirrored_profile_save_and_delete_survive_every_rename_and_mount_topology() {
+    assert_user_mutation_rename_lifecycle(false, true);
+    assert_user_mutation_rename_lifecycle(true, true);
+}
+
+
+void test_payload_recovery_selects_the_interrupted_writer_not_an_older_leftover() {
+    for (bool localSave : {false, true}) {
+        fs::FS sd(g_tempRoot / (localSave ? "save_sd" : "copy_sd"));
+        fs::FS little(g_tempRoot / (localSave ? "save_little" : "copy_little"));
+        V1ProfileManager initial;
+        TEST_ASSERT_TRUE(initial.begin(&sd, &little));
+        TEST_ASSERT_TRUE(initial.saveProfile(makeProfile("Road", 10, "stale")).success);
+        V1ProfileManager offline;
+        TEST_ASSERT_TRUE(offline.begin(localSave ? &little : &sd));
+        if (!localSave) fs::mock_fail_next_remove("/v1profiles/Road.json.bak");
+        TEST_ASSERT_TRUE(offline.saveProfile(makeProfile("Road", 20, "acknowledged")).success);
+        if (localSave) {
+            // Retain the prior mirror payload only when post-commit cleanup
+            // fails; the acknowledged replacement itself is fully committed.
+            fs::mock_fail_next_remove("/v1profiles/Road.json.prev");
+            V1ProfileManager reconcile;
+            TEST_ASSERT_TRUE(reconcile.begin(&sd, &little));
+            TEST_ASSERT_TRUE(sd.exists("/v1profiles/Road.json.prev"));
+        } else {
+            TEST_ASSERT_TRUE(sd.exists("/v1profiles/Road.json.bak"));
+            V1ProfileManager other;
+            TEST_ASSERT_TRUE(other.begin(&little));
+            TEST_ASSERT_TRUE(other.saveProfile(makeProfile("Road", 30, "other intermediate")).success);
+            TEST_ASSERT_TRUE(other.saveProfile(makeProfile("Road", 40, "other latest")).success);
+        }
+        fs::mock_reset_after_rename_to((std::string(sd.mountpoint()) +
+            (localSave ? "/v1profiles/Road.json.bak" : "/v1profiles/Road.json.prev")).c_str());
+        bool reset = false;
+        try {
+            V1ProfileManager interrupted;
+            if (localSave) {
+                TEST_ASSERT_TRUE(interrupted.begin(&sd));
+                interrupted.saveProfile(makeProfile("Road", 50, "uncommitted"));
+            } else {
+                interrupted.begin(&sd, &little);
+            }
+        } catch (const fs::SimulatedReset&) { reset = true; }
+        TEST_ASSERT_TRUE(reset);
+        TEST_ASSERT_TRUE(sd.exists("/v1profiles/Road.json.prev"));
+        TEST_ASSERT_TRUE(sd.exists("/v1profiles/Road.json.bak"));
+        V1ProfileManager reboot;
+        TEST_ASSERT_TRUE(reboot.begin(&sd));
+        V1Profile actual;
+        TEST_ASSERT_TRUE(reboot.loadProfile("Road", actual));
+        TEST_ASSERT_EQUAL_STRING("acknowledged", actual.description.c_str());
+    }
+}
+
+void test_payload_recovery_defers_unreadable_candidate_and_rejects_corrupt_or_staged_payloads() {
+    fs::FS filesystem(g_tempRoot);
+    V1ProfileManager initial;
+    TEST_ASSERT_TRUE(initial.begin(&filesystem));
+    TEST_ASSERT_TRUE(initial.saveProfile(makeProfile("Road", 10, "acknowledged")).success);
+    TEST_ASSERT_TRUE(filesystem.rename("/v1profiles/Road.json", "/v1profiles/Road.json.prev"));
+    writeFileFromString(filesystem, "/v1profiles/Road.json.tmpsync", "not committed");
+    fs::mock_fail_read_opens_for_full_path((g_tempRoot / "v1profiles/Road.json.prev").c_str());
+    V1ProfileManager reboot;
+    TEST_ASSERT_FALSE(reboot.begin(&filesystem));
+    TEST_ASSERT_TRUE(filesystem.exists("/v1profiles/Road.json.prev"));
+    fs::mock_reset_fs_open_state();
+    writeFileFromString(filesystem, "/v1profiles/Road.json.prev", "corrupt payload");
+    TEST_ASSERT_TRUE(reboot.begin(&filesystem));
+    V1Profile actual;
+    TEST_ASSERT_EQUAL(ProfileStorageStatus::Corrupt, reboot.loadProfileResult("Road", actual).status);
+    TEST_ASSERT_FALSE(filesystem.exists("/v1profiles/Road.json"));
+    TEST_ASSERT_FALSE(filesystem.exists("/v1profiles/Road.json.tmpsync"));
+    TEST_ASSERT_TRUE(filesystem.remove("/v1profiles/Road.json.prev"));
+    writeFileFromString(filesystem, "/v1profiles/Road.json.tmp", "not committed");
+    TEST_ASSERT_TRUE(reboot.begin(&filesystem));
+    TEST_ASSERT_EQUAL(ProfileStorageStatus::NotFound, reboot.loadProfileResult("Road", actual).status);
+}
+
+
+void test_new_local_save_clears_obsolete_mirror_staging_before_owning_recovery() {
+    fs::FS filesystem(g_tempRoot);
+    V1ProfileManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&filesystem));
+    TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 10, "acknowledged")).success);
+    writeFileFromString(filesystem, "/v1profiles/Road.json.tmpsync", "failed mirror cleanup");
+    const auto before = filesSnapshot();
+    fs::mock_fail_next_remove("/v1profiles/Road.json.tmpsync");
+    TEST_ASSERT_FALSE(manager.saveProfile(makeProfile("Road", 20, "replacement")).success);
+    TEST_ASSERT_TRUE(before == filesSnapshot());
+    fs::mock_reset_after_rename_to((g_tempRoot / "v1profiles/Road.json.bak").c_str());
+    bool reset = false;
+    try { manager.saveProfile(makeProfile("Road", 20, "replacement")); }
+    catch (const fs::SimulatedReset&) { reset = true; }
+    TEST_ASSERT_TRUE(reset);
+    TEST_ASSERT_FALSE(filesystem.exists("/v1profiles/Road.json.tmpsync"));
+    V1ProfileManager reboot;
+    TEST_ASSERT_TRUE(reboot.begin(&filesystem));
+    V1Profile actual;
+    TEST_ASSERT_TRUE(reboot.loadProfile("Road", actual));
+    TEST_ASSERT_EQUAL_STRING("acknowledged", actual.description.c_str());
+}
+
+
+void test_metadata_rollback_generations_and_tombstones_agree_before_and_after_restart() {
+    for (bool deleted : {false, true}) {
+        for (const char* newestSuffix : {".prev", ".bak"}) {
+            fs::FS filesystem(g_tempRoot / (std::to_string(deleted) + newestSuffix));
+            V1ProfileManager manager;
+            TEST_ASSERT_TRUE(manager.begin(&filesystem));
+            TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 10, "old")).success);
+            const std::string older = readFileToString(filesystem, "/v1profiles/Road.json.meta");
+            TEST_ASSERT_TRUE(manager.saveProfile(makeProfile("Road", 20, "acknowledged")).success);
+            const std::string payload = readFileToString(filesystem, "/v1profiles/Road.json");
+            if (deleted) TEST_ASSERT_TRUE(manager.deleteProfileResult("Road").success());
+            const String newestPath = String("/v1profiles/Road.json.meta") + newestSuffix;
+            const String olderPath = String("/v1profiles/Road.json.meta") +
+                (std::strcmp(newestSuffix, ".prev") == 0 ? ".bak" : ".prev");
+            TEST_ASSERT_TRUE(filesystem.rename("/v1profiles/Road.json.meta", newestPath));
+            writeFileFromString(filesystem, olderPath.c_str(), older.c_str());
+            if (deleted) writeFileFromString(filesystem, "/v1profiles/Road.json.prev", payload.c_str());
+            else TEST_ASSERT_TRUE(filesystem.rename("/v1profiles/Road.json", "/v1profiles/Road.json.prev"));
+            fs::mock_fail_read_opens_for_full_path((std::string(filesystem.mountpoint()) + newestPath.c_str()).c_str());
+            V1Profile actual;
+            TEST_ASSERT_EQUAL(ProfileStorageStatus::IoError, manager.loadProfileResult("Road", actual).status);
+            TEST_ASSERT_FALSE(filesystem.exists("/v1profiles/Road.json"));
+            fs::mock_reset_fs_open_state();
+            // The existing owner must select the same authority as a fresh
+            // boot; callers need not rerun begin() to use retained backups.
+            const auto loaded = manager.loadProfileResult("Road", actual);
+            if (deleted) {
+                TEST_ASSERT_EQUAL(ProfileStorageStatus::NotFound, loaded.status);
+                TEST_ASSERT_FALSE(filesystem.exists("/v1profiles/Road.json"));
+            } else {
+                TEST_ASSERT_TRUE(loaded.success());
+                TEST_ASSERT_EQUAL_STRING("acknowledged", actual.description.c_str());
+            }
+            V1ProfileManager reboot;
+            TEST_ASSERT_TRUE(reboot.begin(&filesystem));
+            const auto rebooted = reboot.loadProfileResult("Road", actual);
+            if (deleted) TEST_ASSERT_EQUAL(ProfileStorageStatus::NotFound, rebooted.status);
+            else {
+                TEST_ASSERT_TRUE(rebooted.success());
+                TEST_ASSERT_EQUAL_STRING("acknowledged", actual.description.c_str());
+            }
+            TEST_ASSERT_EQUAL_UINT32(deleted ? 3u : 2u,
+                readSyncState(filesystem, "/v1profiles/Road.json").version);
+        }
+    }
+}
+
+void test_recovery_candidates_validate_and_defer_without_publishing_temporary_files() {
+    for (const char* suffix : {".prev", ".bak", ".syncbak"}) {
+        fs::FS filesystem(g_tempRoot / (std::string("candidate") + suffix));
+        V1ProfileManager initial;
+        TEST_ASSERT_TRUE(initial.begin(&filesystem));
+        TEST_ASSERT_TRUE(initial.saveProfile(makeProfile("Road", 20, "acknowledged")).success);
+        const String backup = String("/v1profiles/Road.json") + suffix;
+        TEST_ASSERT_TRUE(filesystem.rename("/v1profiles/Road.json", backup));
+        TEST_ASSERT_TRUE(filesystem.rename("/v1profiles/Road.json.meta", "/v1profiles/Road.json.meta.prev"));
+        writeFileFromString(filesystem, "/v1profiles/Road.json.tmp", "incomplete payload");
+        writeFileFromString(filesystem, "/v1profiles/Road.json.meta.tmp", "incomplete metadata");
+        const std::string previousMeta = std::string(filesystem.mountpoint()) + "/v1profiles/Road.json.meta.prev";
+        fs::mock_fail_read_opens_for_full_path(previousMeta.c_str());
+        V1ProfileManager reboot;
+        TEST_ASSERT_FALSE(reboot.begin(&filesystem));
+        TEST_ASSERT_TRUE(filesystem.exists(backup));
+        TEST_ASSERT_TRUE(filesystem.exists("/v1profiles/Road.json.meta.prev"));
+        fs::mock_reset_fs_open_state();
+        fs::mock_reset_after_rename_to((std::string(filesystem.mountpoint()) + "/v1profiles/Road.json.meta").c_str());
+        bool reset = false;
+        try { reboot.serviceRecovery(2000); } catch (const fs::SimulatedReset&) { reset = true; }
+        TEST_ASSERT_TRUE(reset);
+        fs::mock_reset_fs_rename_state();
+        TEST_ASSERT_TRUE(reboot.begin(&filesystem));
+        V1Profile actual;
+        TEST_ASSERT_TRUE(reboot.loadProfile("Road", actual));
+        TEST_ASSERT_EQUAL_STRING("acknowledged", actual.description.c_str());
+        TEST_ASSERT_FALSE(filesystem.exists("/v1profiles/Road.json.tmp"));
+        TEST_ASSERT_FALSE(filesystem.exists("/v1profiles/Road.json.meta.tmp"));
+    }
+}
+
+void test_tombstone_rollback_prevents_all_payload_recovery_names_from_resurrecting() {
+    fs::FS filesystem(g_tempRoot);
+    V1ProfileManager initial;
+    TEST_ASSERT_TRUE(initial.begin(&filesystem));
+    TEST_ASSERT_TRUE(initial.saveProfile(makeProfile("Road", 10)).success);
+    const std::string payload = readFileToString(filesystem, "/v1profiles/Road.json");
+    TEST_ASSERT_TRUE(initial.deleteProfileResult("Road").success());
+    TEST_ASSERT_TRUE(filesystem.rename("/v1profiles/Road.json.meta", "/v1profiles/Road.json.meta.prev"));
+    for (const char* suffix : {".prev", ".bak", ".syncbak", ".tmp", ".tmpsync"}) {
+        writeFileFromString(filesystem, (String("/v1profiles/Road.json") + suffix).c_str(), payload.c_str());
+    }
+    V1ProfileManager reboot;
+    TEST_ASSERT_TRUE(reboot.begin(&filesystem));
+    V1Profile actual;
+    TEST_ASSERT_EQUAL(ProfileStorageStatus::NotFound, reboot.loadProfileResult("Road", actual).status);
+    TEST_ASSERT_TRUE(reboot.listProfilesResult().genuinelyEmpty);
+    TEST_ASSERT_FALSE(filesystem.exists("/v1profiles/Road.json"));
+}
+
+void test_corrupt_rollback_metadata_never_becomes_legacy_and_valid_live_stays_authoritative() {
+    fs::FS filesystem(g_tempRoot);
+    V1ProfileManager initial;
+    TEST_ASSERT_TRUE(initial.begin(&filesystem));
+    TEST_ASSERT_TRUE(initial.saveProfile(makeProfile("Road", 10)).success);
+    const std::string metadata = readFileToString(filesystem, "/v1profiles/Road.json.meta");
+    writeFileFromString(filesystem, "/v1profiles/Road.json.meta.prev", "corrupt");
+    V1ProfileManager healthy;
+    TEST_ASSERT_TRUE(healthy.begin(&filesystem));
+    V1Profile actual;
+    TEST_ASSERT_TRUE(healthy.loadProfile("Road", actual));
+    TEST_ASSERT_TRUE(filesystem.remove("/v1profiles/Road.json.meta"));
+    V1ProfileManager corrupt;
+    TEST_ASSERT_TRUE(corrupt.begin(&filesystem));
+    TEST_ASSERT_EQUAL(ProfileStorageStatus::Corrupt, corrupt.loadProfileResult("Road", actual).status);
+    writeFileFromString(filesystem, "/v1profiles/Road.json.meta.prev", metadata.c_str());
+    writeFileFromString(filesystem, "/v1profiles/Road.json.meta", "corrupt live");
+    V1ProfileManager recovered;
+    TEST_ASSERT_TRUE(recovered.begin(&filesystem));
+    TEST_ASSERT_TRUE(recovered.loadProfile("Road", actual));
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_sd_acknowledged_edit_survives_every_reconcile_rename_and_mount_topology);
+    RUN_TEST(test_littlefs_acknowledged_edit_survives_every_reconcile_rename_and_mount_topology);
+    RUN_TEST(test_sd_acknowledged_delete_survives_every_reconcile_rename_and_mount_topology);
+    RUN_TEST(test_littlefs_acknowledged_delete_survives_every_reconcile_rename_and_mount_topology);
+    RUN_TEST(test_single_store_profile_save_and_delete_survive_every_rename);
+    RUN_TEST(test_mirrored_profile_save_and_delete_survive_every_rename_and_mount_topology);
+    RUN_TEST(test_payload_recovery_selects_the_interrupted_writer_not_an_older_leftover);
+    RUN_TEST(test_payload_recovery_defers_unreadable_candidate_and_rejects_corrupt_or_staged_payloads);
+    RUN_TEST(test_new_local_save_clears_obsolete_mirror_staging_before_owning_recovery);
+    RUN_TEST(test_metadata_rollback_generations_and_tombstones_agree_before_and_after_restart);
+    RUN_TEST(test_recovery_candidates_validate_and_defer_without_publishing_temporary_files);
+    RUN_TEST(test_tombstone_rollback_prevents_all_payload_recovery_names_from_resurrecting);
+    RUN_TEST(test_corrupt_rollback_metadata_never_becomes_legacy_and_valid_live_stays_authoritative);
     RUN_TEST(test_directory_read_errors_never_publish_a_complete_list_page_or_snapshot);
     RUN_TEST(test_directory_read_error_blocks_normal_and_transaction_saves_without_mutation);
     RUN_TEST(test_directory_read_error_defers_interrupted_save_recovery_until_retry);

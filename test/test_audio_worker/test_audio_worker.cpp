@@ -3,6 +3,7 @@
 #include <chrono>
 #include <climits>
 #include <filesystem>
+#include <functional>
 #include <initializer_list>
 #include <string>
 #include <unity.h>
@@ -80,6 +81,8 @@ static uint8_t lastVolumeRegister() {
 
 void setUp() {
     mockMillis += 10000;
+    fs::mock_reset_fs_open_state();
+    fs::mock_exists_uses_read_open(true); // Match ESP32 VFS::exists, including transient read faults.
     tca9554Wire.resetMock();
     mock_reset_semaphore_state();
     mock_reset_task_notify_state();
@@ -100,7 +103,10 @@ void setUp() {
     audioStorage.setLittleFS(&audioFiles);
     audio_init_sd(audioStorage);
 }
-void tearDown() { TEST_ASSERT_TRUE(g_mock_semaphore_state.heldHandles.empty()); }
+void tearDown() {
+    fs::mock_reset_fs_open_state();
+    TEST_ASSERT_TRUE(g_mock_semaphore_state.heldHandles.empty());
+}
 
 void test_failed_mute_is_applied_before_first_pcm_without_another_user_request() {
     mock_queue_semaphore_take_result(pdFALSE);
@@ -576,6 +582,190 @@ struct PipelineAudio {
     }
 };
 
+void test_directory_discovery_failure_recovers_current_episode_without_duplicate_voice() {
+    fs::mock_fail_next_read_open("/audio");
+    audio_init_sd(audioStorage);
+    PipelineAudio runtime;
+    runtime.alert();
+    TEST_ASSERT_EQUAL_UINT(0, g_mock_task_notify_state.giveCalls);
+    // A second fault waits for the due retry instead of being consumed by fast admissions.
+    fs::mock_fail_next_read_open("/audio");
+    for (unsigned i = 0; i < 99; ++i) {
+        mockMillis += 10;
+        runtime.alert();
+        audio_process_amp_timeout();
+    }
+    TEST_ASSERT_EQUAL_UINT(0, g_mock_task_notify_state.giveCalls);
+    mockMillis += 10;
+    runtime.alert();
+    TEST_ASSERT_EQUAL_UINT(0, g_mock_task_notify_state.giveCalls);
+    mockMillis += 1000;
+    runtime.alert();
+    TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
+    TEST_ASSERT_TRUE(audio_playing.load());
+    runAcceptedJob();
+    TEST_ASSERT_GREATER_THAN_UINT(0, g_mock_i2s_state.writeCalls);
+    for (unsigned i = 0; i < 60; ++i) {
+        mockMillis += 100;
+        runtime.alert();
+        audio_process_amp_timeout();
+    }
+    TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
+}
+
+void test_discovery_recovery_does_not_announce_an_ended_or_replaced_episode() {
+    for (bool replace : {false, true}) {
+        setUp();
+        fs::mock_fail_next_read_open("/audio");
+        audio_init_sd(audioStorage);
+        PipelineAudio runtime;
+        runtime.alert();
+        mockMillis += 100;
+        runtime.clear();
+        mockMillis += 1000;
+        audio_process_amp_timeout();
+        runtime.clear();
+        TEST_ASSERT_EQUAL_UINT(0, g_mock_task_notify_state.giveCalls);
+        if (replace) {
+            runtime.alert(35500);
+            TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
+            runAcceptedJob();
+            mockMillis += 1000;
+            runtime.alert(35500);
+            TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
+        }
+    }
+}
+
+void test_all_voice_entry_points_recover_asset_discovery_without_boot_reinitialization() {
+    const std::function<void()> playback[] = {
+        [] { play_test_voice(); },
+        [] { play_alert_voice(AlertBand::KA, AlertDirection::AHEAD); },
+        [] { play_band_only(AlertBand::KA); },
+        [] { play_frequency_voice(AlertBand::KA, 34700, AlertDirection::AHEAD, VOICE_MODE_BAND_FREQ, true, 2); },
+        [] { (void)try_play_frequency_voice(AlertBand::KA, 34700, AlertDirection::AHEAD, VOICE_MODE_BAND_ONLY, false); },
+        [] { play_direction_only(AlertDirection::BEHIND, 2); },
+        [] { (void)try_play_direction_only(AlertDirection::BEHIND, 2); },
+        [] { play_threat_escalation(AlertBand::KA, 34700, AlertDirection::AHEAD, 3, 1, 1, 1); },
+        [] { (void)try_play_threat_escalation(AlertBand::KA, 34700, AlertDirection::AHEAD, 3, 1, 1, 1); },
+    };
+    for (const auto& play : playback) {
+        setUp();
+        fs::mock_fail_next_read_open("/audio");
+        audio_init_sd(audioStorage);
+        play();
+        TEST_ASSERT_EQUAL_UINT(0, g_mock_task_notify_state.giveCalls);
+        mockMillis += 1000;
+        play();
+        TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
+        play(); // Admission during the accepted job must not duplicate it.
+        TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
+        runAcceptedJob();
+        TEST_ASSERT_GREATER_THAN_UINT(0, g_mock_i2s_state.writeCalls);
+    }
+}
+
+void test_idle_discovery_recovers_late_mounted_assets_and_handles_rollover() {
+    mockMillis = UINT32_MAX - 500;
+    audioStorage.setLittleFS(nullptr);
+    audio_init_sd(audioStorage);
+    play_test_voice();
+    TEST_ASSERT_EQUAL_UINT(0, g_mock_task_notify_state.giveCalls);
+    audioStorage.setLittleFS(&audioFiles);
+    mockMillis = 498; // 999 ms since the failed attempt, across the 32-bit wrap.
+    play_test_voice();
+    TEST_ASSERT_EQUAL_UINT(0, g_mock_task_notify_state.giveCalls);
+    mockMillis = 499;
+    audio_process_amp_timeout();
+    TEST_ASSERT_TRUE(sd_audio_ready);
+    TEST_ASSERT_EQUAL_UINT(0, g_mock_task_notify_state.giveCalls);
+    play_test_voice();
+    TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
+    runAcceptedJob();
+    TEST_ASSERT_GREATER_THAN_UINT(0, g_mock_i2s_state.writeCalls);
+}
+
+void test_missing_asset_directory_remains_quiet_and_recovers_when_installed() {
+    const auto missingRoot = audioRoot / "late-assets";
+    fs::FS lateAssets{missingRoot};
+    audioStorage.setLittleFS(&lateAssets);
+    audio_init_sd(audioStorage);
+    for (unsigned i = 0; i < 30; ++i) {
+        mockMillis += 1000;
+        audio_process_amp_timeout();
+        play_test_voice();
+    }
+    TEST_ASSERT_EQUAL_UINT(0, g_mock_task_notify_state.giveCalls);
+    TEST_ASSERT_EQUAL_UINT(0, g_mock_i2s_state.writeCalls);
+    std::filesystem::copy(audioRoot / "audio", missingRoot / "audio", std::filesystem::copy_options::recursive);
+    mockMillis += 1000;
+    audio_process_amp_timeout();
+    play_test_voice();
+    TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
+    runAcceptedJob();
+    TEST_ASSERT_GREATER_THAN_UINT(0, g_mock_i2s_state.writeCalls);
+    audioStorage.setLittleFS(&audioFiles);
+    audio_init_sd(audioStorage);
+    std::filesystem::remove_all(missingRoot);
+}
+
+void test_discovery_initialization_cannot_replace_filesystem_owned_by_pending_worker() {
+    acceptBandJob();
+    StorageManager unavailableStorage;
+    audio_init_sd(unavailableStorage);
+    mockMillis += 1000;
+    audio_process_amp_timeout();
+    TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
+    runAcceptedJob();
+    TEST_ASSERT_GREATER_THAN_UINT(0, g_mock_i2s_state.writeCalls);
+    acceptBandJob();
+    runAcceptedJob();
+    TEST_ASSERT_EQUAL_UINT(2, g_mock_task_notify_state.giveCalls);
+}
+
+static void threeDirectionalAlerts(PipelineAudio& runtime, uint8_t secondaryStrength) {
+    runtime.packet(PACKET_ID_ALERT_DATA, {0x13, 0x87, 0x8C, 0xAC, 0, 0x22, 0x80});
+    runtime.packet(PACKET_ID_ALERT_DATA, {0x23, 0x8A, 0xAC, 0, secondaryStrength, 0x82, 0});
+    runtime.packet(PACKET_ID_ALERT_DATA, {0x33, 0x5E, 0x56, 0x90, 0, 0x44, 0});
+    runtime.pipeline.handleParsed(mockMillis);
+}
+
+void test_parsed_frequency_only_escalation_plays_all_twelve_clips_once() {
+    PipelineAudio runtime;
+    runtime.settings.settings.voiceAlertMode = VOICE_MODE_FREQ_ONLY;
+    runtime.settings.settings.voiceDirectionEnabled = true;
+    runtime.settings.settings.announceBogeyCount = true;
+    runtime.settings.settings.announceSecondaryAlerts = true;
+    runtime.settings.settings.secondaryKa = true;
+    runtime.settings.settings.secondaryK = false;
+    threeDirectionalAlerts(runtime, 0x90);
+    runAcceptedJob();
+    mockMillis += 1600;
+    threeDirectionalAlerts(runtime, 0x90);
+    runAcceptedJob();
+    mockMillis += 100;
+    threeDirectionalAlerts(runtime, 0x90);
+    mockMillis += 600;
+    threeDirectionalAlerts(runtime, 0x9E);
+    mockMillis += 600;
+    threeDirectionalAlerts(runtime, 0x9E);
+    TEST_ASSERT_EQUAL_UINT(3, g_mock_task_notify_state.giveCalls);
+    TEST_ASSERT_EQUAL_INT(12, g_sdAudioTaskParams.numClips);
+    TEST_ASSERT_EQUAL_STRING("/audio/digit_3.mul", g_sdAudioTaskParams.filePaths[4]);
+    TEST_ASSERT_EQUAL_STRING("/audio/dir_ahead.mul", g_sdAudioTaskParams.filePaths[7]);
+    TEST_ASSERT_EQUAL_STRING("/audio/dir_behind.mul", g_sdAudioTaskParams.filePaths[9]);
+    TEST_ASSERT_EQUAL_STRING("/audio/digit_1.mul", g_sdAudioTaskParams.filePaths[10]);
+    TEST_ASSERT_EQUAL_STRING("/audio/dir_side.mul", g_sdAudioTaskParams.filePaths[11]);
+    const unsigned writesBefore = g_mock_i2s_state.writeCalls;
+    runAcceptedJob();
+    TEST_ASSERT_GREATER_THAN_UINT(writesBefore, g_mock_i2s_state.writeCalls);
+    for (unsigned i = 0; i < 20; ++i) {
+        mockMillis += 100;
+        threeDirectionalAlerts(runtime, 0x9E);
+    }
+    TEST_ASSERT_EQUAL_UINT(3, g_mock_task_notify_state.giveCalls);
+}
+
 void test_unchanged_alert_recovers_after_all_worker_startup_attempts_fail() {
     PipelineAudio runtime;
     runtime.alert();
@@ -781,6 +971,13 @@ int main() {
     std::filesystem::copy(std::filesystem::path(PROJECT_DIR) / "tools" / "freq_audio" / "mulaw",
                           audioRoot / "audio", std::filesystem::copy_options::recursive);
     UNITY_BEGIN();
+    RUN_TEST(test_directory_discovery_failure_recovers_current_episode_without_duplicate_voice);
+    RUN_TEST(test_discovery_recovery_does_not_announce_an_ended_or_replaced_episode);
+    RUN_TEST(test_all_voice_entry_points_recover_asset_discovery_without_boot_reinitialization);
+    RUN_TEST(test_idle_discovery_recovers_late_mounted_assets_and_handles_rollover);
+    RUN_TEST(test_missing_asset_directory_remains_quiet_and_recovers_when_installed);
+    RUN_TEST(test_discovery_initialization_cannot_replace_filesystem_owned_by_pending_worker);
+    RUN_TEST(test_parsed_frequency_only_escalation_plays_all_twelve_clips_once);
     RUN_TEST(test_partial_amp_enable_failure_shuts_down_after_startup_exhaustion);
     RUN_TEST(test_partial_amp_startup_cleanup_keeps_retrying_after_bus_errors);
     RUN_TEST(test_partial_amp_enable_failure_can_recover_and_play_once);

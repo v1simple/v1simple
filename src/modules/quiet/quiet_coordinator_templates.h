@@ -64,6 +64,25 @@ bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs, const Spee
             return false;
         }
         const bool restoring = pendingSpeedVolRestoreVol_ != 0xFF;
+        if (!restoring && volumeFade && volumeFade->hasActiveVolumeOverride()) {
+            // A manual pair and clear can arrive in the same parsed frame that
+            // enters low speed. Retire stale fade authority before handing a
+            // restore pair to speed; otherwise speed would revive it later.
+            VolumeFadeContext ownership;
+            ownership.hasAlert = parser_->hasAlerts();
+            ownership.sessionGeneration = ble_->sessionGeneration();
+            ownership.hasVolumeObservation = parser_->copyLatestCanonicalCurrentVolume(
+                ownership.currentVolume, ownership.currentMuteVolume, &ownership.volumeObservationIngress);
+            ownership.volumeOwnerChanged = fadeAuthoritySession_ == ownership.sessionGeneration &&
+                fadeAuthorityWriteRevision_ != ble_->volumeWriteRevision() &&
+                desired_.volumeOwner != QuietOwner::SpeedVolume;
+            AlertData priority;
+            if (parser_->getRenderablePriorityAlert(priority)) {
+                ownership.currentFrequency = static_cast<uint16_t>(priority.frequency);
+                ownership.priorityIsLaser = priority.band == BAND_LASER;
+            }
+            volumeFade->observeVolumeOwnership(ownership);
+        }
         if (!restoring) speedVolBaselineUpdated_ = desired_.volumeOwner == QuietOwner::AutoPush;
         // An accepted AutoPush may precede its detector echo. Carry that
         // pending pair; after confirmation, later observed volume is authoritative.
@@ -175,6 +194,15 @@ bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs, VolumeFadeL
     fadeCtx.hasVolumeObservation = parser_->copyLatestCanonicalCurrentVolume(
         fadeCtx.currentVolume, fadeCtx.currentMuteVolume, &fadeCtx.volumeObservationIngress);
     fadeCtx.sessionGeneration = ble_ ? ble_->sessionGeneration() : 0;
+    // Speed volume intentionally overlays fade and hands its baseline back.
+    // All other successful writers supersede fade's old restoration authority,
+    // even after the reduction receipt itself was retired on confirmation.
+    fadeCtx.volumeOwnerChanged = volumeFade->hasActiveVolumeOverride() &&
+        fadeAuthoritySession_ == fadeCtx.sessionGeneration &&
+        fadeAuthorityWriteRevision_ != ble_->volumeWriteRevision() &&
+        desired_.volumeOwner != QuietOwner::SpeedVolume;
+    fadeAuthorityWriteRevision_ = ble_->volumeWriteRevision();
+    fadeAuthoritySession_ = fadeCtx.sessionGeneration;
     fadeCtx.now = nowMs;
     if (hasAlerts) {
         fadeCtx.alertMuted = committed_.muted;
@@ -249,6 +277,7 @@ bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs, VolumeFadeL
         pendingFadeAction_ = result == SendResult::NOT_YET;
         if (result == SendResult::SENT) {
             fadeWriteRevision_ = ble_->volumeWriteRevision();
+            fadeAuthorityWriteRevision_ = fadeWriteRevision_;
             fadeWriteIngress_ = ingress;
         } else if (result == SendResult::FAILED) {
             fadeWriteRevision_ = 0;
@@ -265,6 +294,7 @@ bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs, VolumeFadeL
         if (sendVolumeResult(QuietOwner::VolumeFade, fadeAction.restoreVolume, fadeAction.restoreMuteVolume) ==
             SendResult::SENT) {
             volumeFade->noteRestoreSent(session, ingress);
+            fadeAuthorityWriteRevision_ = ble_->volumeWriteRevision();
         }
         return true;
     }

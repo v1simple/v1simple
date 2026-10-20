@@ -230,6 +230,7 @@ class AutoPushModule {
         uint32_t observationIngressBoundary = 0;
         bool sawFreshMismatch = false;
         bool volumeTransactionActive = false;
+        uint32_t volumeWriteRevision = 0;
         int slotIndex = 0;
         AutoPushSlot slot;
         V1Profile profile;

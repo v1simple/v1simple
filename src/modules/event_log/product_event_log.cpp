@@ -6,6 +6,8 @@
 #include "modules/health/health_journal.h"
 #include "product_event_csv.h"
 #include "storage_manager.h"
+#include "storage_directory.h"
+#include "storage_path_status.h"
 
 namespace {
 
@@ -443,14 +445,18 @@ bool ProductEventLog::ensureFileOpenLocked() {
         return true;
     }
     fs::FS& fs = *storage_->getFilesystem();
-    if (fs.exists(eventPath_)) {
+    const StoragePathStatus eventStatus = storagePathStatus(fs, eventPath_);
+    if (eventStatus == StoragePathStatus::Unavailable) return false;
+    if (eventStatus == StoragePathStatus::Present) {
         if (!fileCreated_) {
             return false;
         }
         eventFile_ = fs.open(eventPath_, FILE_APPEND);
         return static_cast<bool>(eventFile_);
     }
-    if (!fs.exists("/events") && !fs.mkdir("/events")) {
+    const StoragePathStatus directoryStatus = storagePathStatus(fs, "/events");
+    if (directoryStatus == StoragePathStatus::Unavailable ||
+        (directoryStatus == StoragePathStatus::Missing && !fs.mkdir("/events"))) {
         return false;
     }
     const size_t headerLength = sizeof(kProductEventSchemaHeader) - 1;
@@ -521,58 +527,50 @@ void ProductEventLog::recordRetentionExhaustion(uint32_t dropped) {
 bool ProductEventLog::pruneRetention() {
     fs::FS& fs = *storage_->getFilesystem();
     StorageManager::SDLockTimed lock(storage_->getSDMutex(), kWriterLockTimeoutMs);
-    if (!lock || !fs.exists("/events")) {
-        return static_cast<bool>(lock);
-    }
+    if (!lock) return false;
+    const StoragePathStatus directoryStatus = storagePathStatus(fs, "/events");
+    if (directoryStatus == StoragePathStatus::Missing) return true;
+    if (directoryStatus != StoragePathStatus::Present) return false;
 
-    File directory = fs.open("/events", FILE_READ);
-    if (!directory || !directory.isDirectory()) {
-        return false;
-    }
+    StorageDirectory directory(fs, "/events");
+    if (!directory) return false;
 
     RetainedEventFile retained[kMaxFiles]{};
     size_t retainedCount = 0;
-    File entry;
-    while ((entry = directory.openNextFile())) {
-        if (!entry.isDirectory()) {
-            uint32_t fileBootId = 0;
-            if (parseEventFilename(entry.name(), fileBootId)) {
-                RetainedEventFile candidate{};
-                const int length = std::snprintf(candidate.path, sizeof(candidate.path), "/events/%s", entry.name());
-                if (length <= 0 || static_cast<size_t>(length) >= sizeof(candidate.path)) {
-                    entry.close();
-                    directory.close();
-                    return false;
-                }
-                candidate.bootId = fileBootId;
-                candidate.size = entry.size();
-                // Reserve one of the bounded file slots for this boot's lazy
-                // event file. A quiet boot never consumes the reserved slot.
-                if (retainedCount < kMaxFiles - 1U) {
-                    retained[retainedCount++] = candidate;
-                } else {
-                    const size_t oldest = oldestIndex(retained, retainedCount);
-                    if (candidate.bootId > retained[oldest].bootId) {
-                        if (!fs.remove(retained[oldest].path)) {
-                            entry.close();
-                            directory.close();
-                            return false;
-                        }
-                        retained[oldest] = candidate;
-                    } else if (!fs.remove(candidate.path)) {
-                        entry.close();
-                        directory.close();
-                        return false;
-                    }
-                }
+    while (const char* name = directory.next()) {
+        uint32_t fileBootId = 0;
+        if (!parseEventFilename(name, fileBootId)) continue;
+        RetainedEventFile candidate{};
+        const int length = std::snprintf(candidate.path, sizeof(candidate.path), "/events/%s", name);
+        if (length <= 0 || static_cast<size_t>(length) >= sizeof(candidate.path)) return false;
+        // File::openNextFile() conflates failed child opens with EOF, and
+        // File::size() conflates failed metadata reads with an empty file.
+        // Only a clean directory scan with stat-backed sizes can admit writes.
+        struct stat info {};
+        if (storagePathStatus(fs, candidate.path, &info) != StoragePathStatus::Present) return false;
+        if (!S_ISREG(info.st_mode)) continue;
+        if (info.st_size < 0 || static_cast<uint64_t>(info.st_size) > SIZE_MAX) return false;
+        candidate.bootId = fileBootId;
+        candidate.size = static_cast<size_t>(info.st_size);
+        // Reserve a slot for this boot's lazy event file.
+        if (retainedCount < kMaxFiles - 1U) {
+            retained[retainedCount++] = candidate;
+        } else {
+            const size_t oldest = oldestIndex(retained, retainedCount);
+            if (candidate.bootId > retained[oldest].bootId) {
+                if (!fs.remove(retained[oldest].path)) return false;
+                retained[oldest] = candidate;
+            } else if (!fs.remove(candidate.path)) {
+                return false;
             }
         }
-        entry.close();
     }
+    if (!directory.complete()) return false;
     directory.close();
 
     size_t totalBytes = 0;
     for (size_t i = 0; i < retainedCount; ++i) {
+        if (retained[i].size > SIZE_MAX - totalBytes) return false;
         totalBytes += retained[i].size;
     }
     while (retainedCount > 0 && totalBytes > kMaxTotalBytes - kBootWriteReserveBytes) {

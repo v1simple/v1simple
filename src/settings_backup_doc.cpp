@@ -2470,11 +2470,14 @@ bool captureRestoreCredentialSnapshot(StorageManager& storage, RestoreCredential
     if (!fs) {
         return false;
     }
-    const StoragePathStatus secretStatus = storagePathStatus(*fs, WIFI_CLIENT_SD_SECRET_PATH);
-    if (secretStatus == StoragePathStatus::Unavailable) return false;
-    snapshot.sdFilePresent = secretStatus == StoragePathStatus::Present;
+    PsramJson::Document secretDocument;
+    String secretPath;
+    const WifiClientSecretReadStatus secretStatus = readWifiClientSecretDocument(fs, secretDocument, secretPath);
+    if (secretStatus == WifiClientSecretReadStatus::Unavailable ||
+        secretStatus == WifiClientSecretReadStatus::Invalid) return false;
+    snapshot.sdFilePresent = secretStatus == WifiClientSecretReadStatus::Valid;
     if (!snapshot.sdFilePresent) return true;
-    File file = fs->open(WIFI_CLIENT_SD_SECRET_PATH, FILE_READ);
+    File file = fs->open(secretPath, FILE_READ);
     if (!file) {
         return false;
     }
@@ -2547,6 +2550,7 @@ bool restoreCredentialSnapshot(StorageManager& storage, const RestoreCredentialS
         return storageRemoveFileIfPresent(*fs, rollbackPath) &&
                storagePathStatus(*fs, WIFI_CLIENT_SD_SECRET_PATH) == StoragePathStatus::Missing && restored;
     }
+    if (!prepareWifiClientSecretReplacement(fs)) return false;
     if (fs->exists(tempPath)) {
         fs->remove(tempPath);
     }

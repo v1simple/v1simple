@@ -101,15 +101,17 @@ void test_external_mute_during_restore_requires_pair_and_stops_after_confirmatio
     startFadedKbandSession();
     TEST_ASSERT_EQUAL(VolumeFadeAction::Type::RESTORE, gModule.process(makeCtx(4000, 0, true, 1)).type);
     gModule.noteRestoreSent(1, 4000);
-    VolumeFadeContext ctx = makeCtx(6000, 0, true, 6);
+    VolumeFadeContext ctx = makeCtx(6000, 0, true, 1);
     ctx.alertMuted = true;
-    ctx.currentMuteVolume = 1;
+    // A delayed echo of our reduction must not confirm the restore. A fresh
+    // third pair would instead represent a newer manual volume choice.
     const VolumeFadeAction restore = gModule.process(ctx);
     TEST_ASSERT_EQUAL(VolumeFadeAction::Type::RESTORE, restore.type);
     TEST_ASSERT_EQUAL_UINT8(6, restore.restoreVolume);
     TEST_ASSERT_EQUAL_UINT8(5, restore.restoreMuteVolume);
     ctx.now = 6100;
     ctx.volumeObservationIngress = 6100;
+    ctx.currentVolume = 6;
     ctx.currentMuteVolume = 5;
     TEST_ASSERT_FALSE(gModule.process(ctx).hasAction());
     TEST_ASSERT_FALSE(gModule.hasActiveVolumeOverride());
@@ -117,8 +119,20 @@ void test_external_mute_during_restore_requires_pair_and_stops_after_confirmatio
     TEST_ASSERT_FALSE(gModule.process(ctx).hasAction());
 }
 
+void test_priority_changed_during_delay_does_not_undo_its_own_fade() {
+    for (bool laser : {false, true}) {
+        setUp();
+        TEST_ASSERT_FALSE(gModule.process(makeCtx(1000, 24150, false)).hasAction());
+        TEST_ASSERT_FALSE(gModule.process(makeCtx(2000, laser ? 0 : 34700, laser)).hasAction());
+        TEST_ASSERT_EQUAL(VolumeFadeAction::Type::FADE_DOWN,
+                          gModule.process(makeCtx(3500, laser ? 0 : 34700, laser)).type);
+        TEST_ASSERT_FALSE(gModule.process(makeCtx(3600, laser ? 0 : 34700, laser, 1)).hasAction());
+    }
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
+    RUN_TEST(test_priority_changed_during_delay_does_not_undo_its_own_fade);
     RUN_TEST(test_new_laser_releases_active_fade);
     RUN_TEST(test_new_frequency_still_releases_active_fade);
     RUN_TEST(test_laser_at_session_start_is_not_a_release);

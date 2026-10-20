@@ -216,6 +216,7 @@ run_step "Car install firmware build" "$PIO_CMD" run "${CAR_BUILD_ARGS[@]}"
 
 section "Production Build"
 run_step "Production artifact build" ./scripts/build_production_artifacts.sh
+run_step "HTTP transfer lifecycle with pinned transport" python3 scripts/test_http_transfer_lifecycle.py
 
 END_TIME=$(date +%s)
 ELAPSED=$((END_TIME - START_TIME))

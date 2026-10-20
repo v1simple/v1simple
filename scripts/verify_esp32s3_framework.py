@@ -24,7 +24,8 @@ EXPECTED = {
     "sdkconfig_sha256": "4be8419250c4b7cd4a4ae668e3adb56c713a4c2fc7e63f25c5e437e3aa569ab2",
     "esp_system_archive_sha256": "3fa34619defd0e4718dac29a93673652a3ad495b2d5551f381d1c78af92c9d38",
     "versions_sha256": "083d859455541382c25ef9d84a8db0264f3a81842f95c0b9f5a0f2e2ac9c0ae8",
-    "webserver_parsing_sha256": "4542ba8a04f50c35eef8939149572ae8f60338d073139cb4ab93e186d0a10aed",
+    "webserver_parsing_sha256": "2e15b976608499e7e99152e9c8b03e55824908f4dba1de96b2b0e732f8d6a7ea",
+    "network_client_sha256": "cd81a93a1531db0c85f3f99db7f7d5a96ec1e5c7bc2c5d0476886710257fdbba",
     "fs_header_sha256": "53c9bb70cf573010434c05a546131f7831b448f51797a0c2badaec1c92b7784c",
     "ipc_stack_bytes": 2048,
 }
@@ -69,6 +70,7 @@ def verify_framework(platform_dir: Path, arduino_dir: Path, libs_dir: Path, memo
     esp_system = selected / "libesp_system.a"
     versions = libs_dir / "esp32s3" / "versions.txt"
     webserver_parsing = arduino_dir / "libraries" / "WebServer" / "src" / "Parsing.cpp"
+    network_client = arduino_dir / "libraries" / "Network" / "src" / "NetworkClient.cpp"
     fs_header = arduino_dir / "libraries" / "FS" / "src" / "FS.h"
 
     versions_found = {
@@ -100,6 +102,9 @@ def verify_framework(platform_dir: Path, arduino_dir: Path, libs_dir: Path, memo
         "versions_sha256": require_hash(versions, str(EXPECTED["versions_sha256"]), "framework versions ledger"),
         "webserver_parsing_sha256": require_hash(
             webserver_parsing, str(EXPECTED["webserver_parsing_sha256"]), "hardened WebServer body parser"
+        ),
+        "network_client_sha256": require_hash(
+            network_client, str(EXPECTED["network_client_sha256"]), "progress-aware NetworkClient"
         ),
         "fs_header_sha256": require_hash(
             fs_header, str(EXPECTED["fs_header_sha256"]), "overload-compatible FS header"

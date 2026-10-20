@@ -10,7 +10,7 @@
 
 enum class StoragePathStatus { Present, Missing, Unavailable };
 
-inline StoragePathStatus storagePathStatus(fs::FS& filesystem, const String& path) {
+inline StoragePathStatus storagePathStatus(fs::FS& filesystem, const String& path, struct stat* details = nullptr) {
     // Arduino FS::exists() opens the file, so false also means an I/O or
     // allocation failure. Only an explicit ENOENT can authorize recovery.
     const char* mountpoint = filesystem.mountpoint();
@@ -26,7 +26,10 @@ inline StoragePathStatus storagePathStatus(fs::FS& filesystem, const String& pat
     std::memcpy(mountedPath.get(), mountpoint, mountLength);
     std::memcpy(mountedPath.get() + mountLength, path.c_str(), pathLength + 1u);
     struct stat info {};
-    if (::stat(mountedPath.get(), &info) == 0) return StoragePathStatus::Present;
+    if (::stat(mountedPath.get(), &info) == 0) {
+        if (details) *details = info;
+        return StoragePathStatus::Present;
+    }
     const int error = errno;
     return error == ENOENT ? StoragePathStatus::Missing : StoragePathStatus::Unavailable;
 }

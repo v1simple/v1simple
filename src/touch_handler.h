@@ -42,6 +42,7 @@ class TouchHandler {
   private:
     uint8_t i2cAddr_;
     int rstPin_;
+    bool initialized_ = false;
     bool touchAvailable_ = false;
     bool touchActive_;
     bool touchReadValid_ = false;
@@ -54,6 +55,7 @@ class TouchHandler {
     static constexpr uint8_t I2C_RECOVERY_THRESHOLD = 3;
     static constexpr uint32_t I2C_RECOVERY_COOLDOWN_MS = 250;
     static constexpr uint32_t I2C_RECOVERY_BACKOFF_MS = 50;
+    static constexpr uint32_t I2C_DISCOVERY_RETRY_MS = 1000;
     static constexpr uint8_t I2C_RECOVERY_CLOCK_PULSES = 9;
     static constexpr unsigned int I2C_RECOVERY_PULSE_DELAY_US = 5;
     static constexpr uint32_t I2C_CLOCK_HZ = 400000;
@@ -71,6 +73,7 @@ class TouchHandler {
     uint8_t readRegister(uint8_t reg);
 
     uint32_t lastRecoveryMs_ = 0;
+    uint32_t lastDiscoveryAttemptMs_ = 0;
     uint32_t nextI2cPollAllowedMs_ = 0;
     uint8_t consecutiveI2cFailures_ = 0;
     uint32_t i2cRecoveryCount_ = 0;

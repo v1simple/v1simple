@@ -29,10 +29,17 @@ bool TouchHandler::begin(int sda, int scl, uint8_t addr, int rst) {
     sclPin_ = scl;
     i2cAddr_ = addr;
     rstPin_ = rst;
+    initialized_ = true;
     touchAvailable_ = false;
+    touchActive_ = false;
+    touchReadValid_ = false;
+    releaseRequired_ = false;
+    lastTouchTime_ = 0;
+    lastReleaseTime_ = 0;
     nextI2cPollAllowedMs_ = 0;
     lastRecoveryMs_ = 0;
     consecutiveI2cFailures_ = 0;
+    i2cRecoveryCount_ = 0;
 
     TOUCH_LOGF("[Touch] Initializing AXS15231B touch on I2C SDA=%d SCL=%d addr=0x%02X\n", sda, scl, addr);
 
@@ -46,6 +53,7 @@ bool TouchHandler::begin(int sda, int scl, uint8_t addr, int rst) {
 
     Wire.beginTransmission(i2cAddr_);
     uint8_t error = Wire.endTransmission();
+    lastDiscoveryAttemptMs_ = static_cast<uint32_t>(millis());
 
     if (error == 0) {
         touchAvailable_ = true;
@@ -57,6 +65,10 @@ bool TouchHandler::begin(int sda, int scl, uint8_t addr, int rst) {
 
         return true;
     } else {
+        // Polling owns bounded rediscovery. A finger already down when the
+        // controller returns must not become a synthetic tap or hold.
+        releaseRequired_ = true;
+        recordI2cFailure(lastDiscoveryAttemptMs_);
         Serial.printf("[Touch] ERROR: Device not found at 0x%02X (error=%d)\n", i2cAddr_, error);
         return false;
     }
@@ -163,11 +175,17 @@ void TouchHandler::recoverI2cBus(uint32_t now) {
 
 bool TouchHandler::getTouchPoint(int16_t& x, int16_t& y) {
     touchReadValid_ = false;
-    if (!touchAvailable_) {
+    if (!initialized_) {
         return false;
     }
 
     const uint32_t now = static_cast<uint32_t>(millis());
+    if (!touchAvailable_) {
+        if (!hasElapsedMs(now, lastDiscoveryAttemptMs_, I2C_DISCOVERY_RETRY_MS)) {
+            return false;
+        }
+        lastDiscoveryAttemptMs_ = now;
+    }
     if (nextI2cPollAllowedMs_ != 0 && !isBeforeDeadlineMs(now, nextI2cPollAllowedMs_)) {
         nextI2cPollAllowedMs_ = 0;
     }
@@ -212,6 +230,7 @@ bool TouchHandler::getTouchPoint(int16_t& x, int16_t& y) {
     }
 
     if (numPoints == 0) {
+        touchAvailable_ = true;
         if (releaseRequired_) {
             releaseRequired_ = false;
             lastReleaseTime_ = now;
@@ -226,7 +245,11 @@ bool TouchHandler::getTouchPoint(int16_t& x, int16_t& y) {
 
     // Supplier raw coordinates use the long X axis and short Y axis, with
     // inclusive endpoints. An impossible report is not a finger release.
-    if (x > 640 || y > 172 || releaseRequired_) {
+    if (x > 640 || y > 172) {
+        return false;
+    }
+    touchAvailable_ = true;
+    if (releaseRequired_) {
         return false;
     }
     touchReadValid_ = true;

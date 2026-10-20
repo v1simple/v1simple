@@ -401,27 +401,14 @@ bool parseSyncStateDocument(const JsonDocument& doc, ProfileSyncState& state) {
     return true;
 }
 
-ProfileSyncState readSyncState(fs::FS& filesystem, const String& profilePath) {
+ProfileSyncState readSyncStateAtPath(fs::FS& filesystem, const String& metaPath) {
     ProfileSyncState state;
-    String metaPath;
-    if (!syncMetaPath(profilePath, metaPath)) {
-        state.status = ProfileSyncState::Status::Unavailable;
-        return state;
-    }
     const StoragePathStatus metadataStatus = storagePathStatus(filesystem, metaPath);
     if (metadataStatus == StoragePathStatus::Unavailable) {
         state.status = ProfileSyncState::Status::Unavailable;
         return state;
     }
     if (metadataStatus == StoragePathStatus::Missing) {
-        const StoragePathStatus payloadStatus = storagePathStatus(filesystem, profilePath);
-        if (payloadStatus == StoragePathStatus::Unavailable) {
-            state.status = ProfileSyncState::Status::Unavailable;
-        } else if (payloadStatus == StoragePathStatus::Present) {
-            state.version = 1; // backward-compatible baseline for pre-metadata files
-            state.deleted = false;
-            state.status = ProfileSyncState::Status::LegacyImplicit;
-        }
         return state;
     }
 
@@ -464,6 +451,55 @@ ProfileSyncState readSyncState(fs::FS& filesystem, const String& profilePath) {
     if (exact != ExactJsonInput::Status::Ok || parseError || !parseSyncStateDocument(doc, state)) {
         state = ProfileSyncState{};
         state.status = ProfileSyncState::Status::Corrupt;
+    }
+    return state;
+}
+
+ProfileSyncState selectProfileSyncRollback(fs::FS& filesystem, const String& metaPath, String& selectedPath) {
+    ProfileSyncState selected;
+    bool corrupt = false;
+    for (const char* suffix : {".prev", ".bak"}) {
+        String candidate;
+        if (!appendPathSuffixChecked(metaPath, suffix, candidate)) {
+            selected.status = ProfileSyncState::Status::Unavailable;
+            return selected;
+        }
+        const ProfileSyncState state = readSyncStateAtPath(filesystem, candidate);
+        if (state.status == ProfileSyncState::Status::Unavailable) return state;
+        corrupt |= state.status == ProfileSyncState::Status::Corrupt;
+        if (state.version > selected.version ||
+            (state.version == selected.version && state.deleted && !selected.deleted)) {
+            selected = state;
+            selectedPath = std::move(candidate);
+        }
+    }
+    if (selected.version == 0 && corrupt) selected.status = ProfileSyncState::Status::Corrupt;
+    return selected;
+}
+
+ProfileSyncState readSyncState(fs::FS& filesystem, const String& profilePath) {
+    String metaPath;
+    ProfileSyncState state;
+    if (!syncMetaPath(profilePath, metaPath)) {
+        state.status = ProfileSyncState::Status::Unavailable;
+        return state;
+    }
+    state = readSyncStateAtPath(filesystem, metaPath);
+    if (state.status != ProfileSyncState::Status::Absent &&
+        state.status != ProfileSyncState::Status::Corrupt) return state;
+
+    // A missing live name is also the middle of a committed-file promotion.
+    // Never demote that generation (especially a tombstone) to legacy state.
+    String previousPath;
+    const ProfileSyncState previous = selectProfileSyncRollback(filesystem, metaPath, previousPath);
+    if (previous.status != ProfileSyncState::Status::Absent) return previous;
+    if (state.status == ProfileSyncState::Status::Corrupt) return state;
+    const StoragePathStatus payloadStatus = storagePathStatus(filesystem, profilePath);
+    if (payloadStatus == StoragePathStatus::Unavailable) {
+        state.status = ProfileSyncState::Status::Unavailable;
+    } else if (payloadStatus == StoragePathStatus::Present) {
+        state.version = 1; // backward-compatible baseline for pre-metadata files
+        state.status = ProfileSyncState::Status::LegacyImplicit;
     }
     return state;
 }
@@ -593,6 +629,46 @@ ProfileFileInspection inspectProfileFile(fs::FS& filesystem, const String& path,
     return inspection;
 }
 
+ProfileOperationResult selectProfilePayloadRollback(fs::FS& filesystem, const String& path,
+                                                    const String& name, String& selectedPath) {
+    String saveTemp;
+    String mirrorTemp;
+    if (!appendPathSuffixChecked(path, ".tmp", saveTemp) ||
+        !appendPathSuffixChecked(path, ".tmpsync", mirrorTemp)) {
+        return profileResult(ProfileStorageStatus::IoError, "Profile recovery path unavailable");
+    }
+    const StoragePathStatus saveStatus = storagePathStatus(filesystem, saveTemp);
+    const StoragePathStatus mirrorStatus = storagePathStatus(filesystem, mirrorTemp);
+    if (saveStatus == StoragePathStatus::Unavailable || mirrorStatus == StoragePathStatus::Unavailable ||
+        (saveStatus == StoragePathStatus::Present && mirrorStatus == StoragePathStatus::Present)) {
+        return profileResult(ProfileStorageStatus::IoError, "Profile recovery owner unavailable");
+    }
+    // Retained backups can coexist after a cleanup failure. The staged name
+    // identifies which writer moved the latest live payload; never prefer an
+    // older leftover merely because its suffix appears first in a scan.
+    const bool saving = saveStatus == StoragePathStatus::Present;
+    const char* suffixes[] = {saving ? ".bak" : ".prev", saving ? ".prev" : ".syncbak",
+                              saving ? ".syncbak" : ".bak"};
+    bool corrupt = false;
+    for (const char* suffix : suffixes) {
+        String candidate;
+        if (!appendPathSuffixChecked(path, suffix, candidate)) {
+            return profileResult(ProfileStorageStatus::IoError, "Profile recovery path unavailable");
+        }
+        const ProfileFileInspection backup = inspectProfileFile(filesystem, candidate, name);
+        if (backup.unavailable) {
+            return profileResult(ProfileStorageStatus::IoError, "Profile backup unavailable");
+        }
+        if (backup.valid) {
+            selectedPath = std::move(candidate);
+            return profileResult(ProfileStorageStatus::Success);
+        }
+        corrupt |= backup.exists;
+    }
+    return profileResult(corrupt ? ProfileStorageStatus::Corrupt : ProfileStorageStatus::NotFound,
+                         corrupt ? "Corrupt profile recovery payload" : "Profile not found");
+}
+
 bool writeSyncState(fs::FS& filesystem, const String& profilePath, const ProfileSyncState& state) {
     PsramJson::Document doc;
     doc["_type"] = PROFILE_SYNC_META_TYPE;
@@ -606,6 +682,21 @@ bool writeSyncState(fs::FS& filesystem, const String& profilePath, const Profile
     String tmpPath;
     if (!syncMetaPath(profilePath, metaPath) ||
         !appendPathSuffixChecked(metaPath, ".tmp", tmpPath)) return false;
+    const ProfileSyncState live = readSyncStateAtPath(filesystem, metaPath);
+    if (live.status == ProfileSyncState::Status::Unavailable) return false;
+    if (live.status == ProfileSyncState::Status::Absent ||
+        live.status == ProfileSyncState::Status::Corrupt) {
+        String previousPath;
+        const ProfileSyncState previous = selectProfileSyncRollback(filesystem, metaPath, previousPath);
+        if (previous.status == ProfileSyncState::Status::Unavailable) return false;
+        if (previous.status != ProfileSyncState::Status::Absent &&
+            previous.status != ProfileSyncState::Status::Corrupt) {
+            // Do not rotate a corrupt/missing live name over the only valid
+            // committed metadata while repairing or retrying a transaction.
+            if (!storageRemoveFileIfPresent(filesystem, metaPath) ||
+                !filesystem.rename(previousPath, metaPath)) return false;
+        }
+    }
     File file = filesystem.open(tmpPath, FILE_WRITE);
     if (!file) return false;
     const size_t expected = measureJson(doc);
@@ -648,7 +739,10 @@ bool copyProfileFileAs(fs::FS& source, const String& sourcePath, fs::FS& target,
         return false;
     }
     String tmpPath;
-    if (!appendPathSuffixChecked(targetPath, ".tmpsync", tmpPath)) {
+    String oldSaveTempPath;
+    if (!appendPathSuffixChecked(targetPath, ".tmpsync", tmpPath) ||
+        !appendPathSuffixChecked(targetPath, ".tmp", oldSaveTempPath) ||
+        !storageRemoveFileIfPresent(target, oldSaveTempPath)) {
         in.close();
         return false;
     }
@@ -694,7 +788,10 @@ bool restoreSyncState(fs::FS& filesystem, const String& profilePath, const Profi
     }
     if (state.status == ProfileSyncState::Status::Absent ||
         state.status == ProfileSyncState::Status::LegacyImplicit) {
-        return storageRemoveFileIfPresent(filesystem, metaPath);
+        String previousPath;
+        return appendPathSuffixChecked(metaPath, ".prev", previousPath) &&
+               storageRemoveFileIfPresent(filesystem, previousPath) &&
+               storageRemoveFileIfPresent(filesystem, metaPath);
     }
     return writeSyncState(filesystem, profilePath, state);
 }
@@ -882,84 +979,76 @@ void V1ProfileManager::bumpCatalogRevision() {
     catalogRevisionCounter_++;
 }
 
-bool V1ProfileManager::recoverInterruptedSavesUnlocked() {
-    // Recovery directories can be externally populated. Process one owned
-    // transaction artifact per scan so RAM use never scales with directory
-    // cardinality, and re-open after each mutation so iterator invalidation
-    // cannot skip an entry.
-    const auto findOwnedArtifact = [&](const char* suffix, bool orphanOnly, String& livePath,
-                                       String& artifactPath) -> DirectoryProfileNameStatus {
-        StorageDirectory dir(*fs_, profileDir_);
-        if (!dir) {
-            return DirectoryProfileNameStatus::Unavailable;
-        }
-        const char* entry;
-        while ((entry = dir.next())) {
-            String canonical;
-            const DirectoryProfileNameStatus status = directoryProfileName(entry, suffix, canonical);
-            if (status == DirectoryProfileNameStatus::Unavailable) {
-                dir.close();
-                return status;
-            }
-            if (status != DirectoryProfileNameStatus::Profile) continue;
-            if (!buildProfilePathChecked(profileDir_, canonical, livePath)) {
-                dir.close();
-                return DirectoryProfileNameStatus::Unavailable;
-            }
-            const bool metadata = std::strstr(suffix, ".meta.") != nullptr;
-            if (metadata) {
-                String metaPath;
-                if (!syncMetaPath(livePath, metaPath)) {
-                    dir.close();
-                    return DirectoryProfileNameStatus::Unavailable;
+bool V1ProfileManager::recoverInterruptedSavesUnlocked(fs::FS& filesystem) {
+    // Restore committed recovery names before comparing mirror generations.
+    // Never publish staging files; after a reset their transaction did not
+    // finish. Reopen after each mutation to avoid invalidating an iterator.
+    for (const char* suffix : {".json.meta.prev", ".json.meta.bak", ".json.prev",
+                               ".json.bak", ".json.syncbak", ".json.tmp", ".json.meta.tmp",
+                               ".json.tmpsync", ".json.syncbak.tmpsync"}) {
+        while (true) {
+            StorageDirectory dir(filesystem, profileDir_);
+            if (!dir) return false;
+            String actionPath;
+            String livePath;
+            bool removeArtifact = false;
+            const char* entry;
+            while ((entry = dir.next())) {
+                String name;
+                const DirectoryProfileNameStatus status = directoryProfileName(entry, suffix, name);
+                if (status == DirectoryProfileNameStatus::Unavailable) return false;
+                if (status != DirectoryProfileNameStatus::Profile) continue;
+                String profilePath;
+                String artifactPath;
+                if (!buildProfilePathChecked(profileDir_, name, profilePath) ||
+                    !appendPathSuffixChecked(profilePath, suffix + sizeof(".json") - 1u, artifactPath)) {
+                    return false;
                 }
-                livePath = std::move(metaPath);
-            }
-            const char* transactionSuffix = std::strstr(suffix, ".tmp") ? ".tmp" : ".bak";
-            if (!appendPathSuffixChecked(livePath, transactionSuffix, artifactPath)) {
-                dir.close();
-                return DirectoryProfileNameStatus::Unavailable;
-            }
-            if (orphanOnly) {
-                const StoragePathStatus liveStatus = storagePathStatus(*fs_, livePath);
-                if (liveStatus == StoragePathStatus::Unavailable) {
-                    dir.close();
-                    return DirectoryProfileNameStatus::Unavailable;
+                const bool temporary = std::strstr(suffix, ".tmp") != nullptr;
+                const bool metadata = std::strstr(suffix, ".meta.") != nullptr;
+                if (temporary) {
+                    actionPath = std::move(artifactPath);
+                    removeArtifact = true;
+                    break;
                 }
-                if (liveStatus == StoragePathStatus::Present) continue;
+                if (metadata) {
+                    if (!syncMetaPath(profilePath, livePath)) return false;
+                    const ProfileSyncState live = readSyncStateAtPath(filesystem, livePath);
+                    if (live.status == ProfileSyncState::Status::Unavailable) return false;
+                    if (live.status != ProfileSyncState::Status::Absent &&
+                        live.status != ProfileSyncState::Status::Corrupt) continue;
+                    const ProfileSyncState backup = selectProfileSyncRollback(filesystem, livePath, artifactPath);
+                    if (backup.status == ProfileSyncState::Status::Unavailable) return false;
+                    if (backup.status == ProfileSyncState::Status::Absent ||
+                        backup.status == ProfileSyncState::Status::Corrupt) continue;
+                } else {
+                    livePath = profilePath;
+                    const ProfileSyncState state = readSyncState(filesystem, profilePath);
+                    if (state.status == ProfileSyncState::Status::Unavailable) return false;
+                    if (state.status == ProfileSyncState::Status::Corrupt || state.deleted) continue;
+                    const StoragePathStatus live = storagePathStatus(filesystem, livePath);
+                    if (live == StoragePathStatus::Unavailable) return false;
+                    if (live == StoragePathStatus::Present) continue;
+                    const auto selected = selectProfilePayloadRollback(filesystem, profilePath, name, artifactPath);
+                    if (selected.status == ProfileStorageStatus::IoError) return false;
+                    if (!selected.success()) continue;
+                }
+                actionPath = std::move(artifactPath);
+                break;
+            }
+            if (actionPath.length() == 0) {
+                if (!dir.complete()) return false;
+                break;
             }
             dir.close();
-            return DirectoryProfileNameStatus::Profile;
-        }
-        return dir.complete() ? DirectoryProfileNameStatus::Ignore
-                              : DirectoryProfileNameStatus::Unavailable;
-    };
-
-    for (const char* suffix : {".json.tmp", ".json.meta.tmp"}) {
-        while (true) {
-            String livePath;
-            String tmpPath;
-            const DirectoryProfileNameStatus status = findOwnedArtifact(suffix, false, livePath, tmpPath);
-            if (status == DirectoryProfileNameStatus::Unavailable) return false;
-            if (status == DirectoryProfileNameStatus::Ignore) break;
-            Serial.println("[V1Profiles] Removing incomplete temp file");
-            if (!fs_->remove(tmpPath)) return false;
-        }
-    }
-
-    for (const char* suffix : {".json.bak", ".json.meta.bak"}) {
-        while (true) {
-            String livePath;
-            String bakPath;
-            const DirectoryProfileNameStatus status = findOwnedArtifact(suffix, true, livePath, bakPath);
-            if (status == DirectoryProfileNameStatus::Unavailable) return false;
-            if (status == DirectoryProfileNameStatus::Ignore) break;
-            // Never replace a live file. A retained backup beside a live file
-            // is not an interrupted promotion and stays available for manual
-            // diagnosis/cleanup.
-            if (storagePathStatus(*fs_, livePath) != StoragePathStatus::Missing) return false;
-            Serial.println("[V1Profiles] RECOVERY: Main file missing, restoring from backup");
-            if (!fs_->rename(bakPath, livePath)) return false;
+            if (removeArtifact) {
+                if (!filesystem.remove(actionPath)) return false;
+            } else {
+                // Only an absent or validated-corrupt live candidate reaches
+                // here. Keep the validated backup until its rename succeeds.
+                if (!storageRemoveFileIfPresent(filesystem, livePath) ||
+                    !filesystem.rename(actionPath, livePath)) return false;
+            }
         }
     }
     return true;
@@ -1020,6 +1109,14 @@ bool V1ProfileManager::initialize(fs::FS* filesystem, fs::FS* importFilesystem, 
         return false;
     }
 
+    // A configured secondary can be the only acknowledged winner. Recover
+    // both stores before reconciliation is allowed to select any authority.
+    if (!recoverInterruptedSavesUnlocked(*fs_) ||
+        (secondaryFs_ && !recoverInterruptedSavesUnlocked(*secondaryFs_))) {
+        lastError_ = "Profile save recovery unavailable";
+        return false;
+    }
+
     if (importFilesystem && importFilesystem != fs_) {
         // The secondary can contain a newer offline edit or deletion. Until
         // reconciliation completes, neither a primary read nor an edit based
@@ -1030,12 +1127,6 @@ bool V1ProfileManager::initialize(fs::FS* filesystem, fs::FS* importFilesystem, 
             Serial.printf("[V1Profiles] Migrated %u profile(s) from secondary filesystem\n",
                           static_cast<unsigned>(migrated));
         }
-    }
-
-    // Run startup integrity check - recover any interrupted saves
-    if (!recoverInterruptedSavesUnlocked()) {
-        lastError_ = "Profile save recovery unavailable";
-        return false;
     }
 
     ready_ = true;
@@ -1647,11 +1738,10 @@ ProfileOperationResult V1ProfileManager::loadProfileUnlocked(const String& name,
     if (!file) {
         // Recover only a missing main file; an open failure must preserve both copies.
         if (!mainExists && allowTransactionRecovery) {
-            const StoragePathStatus backupStatus = storagePathStatus(*fs_, bakPath);
-            if (backupStatus == StoragePathStatus::Unavailable) {
-                return profileResult(ProfileStorageStatus::IoError, "Profile backup status unavailable");
-            }
-            if (backupStatus == StoragePathStatus::Present) {
+            const auto selected = selectProfilePayloadRollback(*fs_, path, name, bakPath);
+            if (selected.status == ProfileStorageStatus::IoError ||
+                selected.status == ProfileStorageStatus::Corrupt) return selected;
+            if (selected.success()) {
                 if (!fs_->rename(bakPath, path)) {
                     return profileResult(ProfileStorageStatus::IoError, "Profile backup recovery failed");
                 }
@@ -2009,6 +2099,15 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
     if (!scratch) {
         lastError_ = "Profile save scratch memory unavailable";
         return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
+    }
+
+    // A prior failed mirror cleanup may have retained its staging name.
+    // Remove that obsolete owner before starting a local save so recovery
+    // can unambiguously select this transaction's .bak after a reset.
+    String oldMirrorTempPath;
+    if (!appendPathSuffixChecked(path, ".tmpsync", oldMirrorTempPath) ||
+        !storageRemoveFileIfPresent(*fs_, oldMirrorTempPath)) {
+        return ProfileSaveResult(ProfileStorageStatus::IoError, "Profile staging cleanup unavailable");
     }
 
     // Stage the replacement without truncating the original.

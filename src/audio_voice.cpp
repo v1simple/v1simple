@@ -6,6 +6,10 @@
 static bool sd_audio_ready = false;
 static const char* AUDIO_PATH = "/audio";
 static fs::FS* audioFS = nullptr; // Filesystem containing audio files
+static StorageManager* audioStorageOwner = nullptr;
+static bool audioDiscoveryAttempted = false;
+static uint32_t lastAudioDiscoveryMs = 0;
+static constexpr uint32_t AUDIO_DISCOVERY_RETRY_MS = 1000;
 // The worker owns these while audio_playing; idle service owns them otherwise.
 static uint8_t amp_disable_fail_count = 0;
 static unsigned long amp_last_disable_attempt_ms = 0;
@@ -13,24 +17,48 @@ static constexpr uint8_t AMP_DISABLE_FAST_RETRIES = 5;
 static constexpr unsigned long AMP_DISABLE_RETRY_INTERVAL_MS = 1000UL;
 static constexpr unsigned long AMP_TIMEOUT_CHECK_INTERVAL_MS = 100UL;
 
+// The main-loop admission/idle owner retries discovery, never the worker.
+// A failed open is temporary unavailability, not proof that assets are absent.
+static bool discover_audio_assets() {
+    if (sd_audio_ready) {
+        return true;
+    }
+    if (!audioStorageOwner || audio_playing.load()) {
+        return false;
+    }
+    const uint32_t now = static_cast<uint32_t>(millis());
+    if (audioDiscoveryAttempted &&
+        static_cast<uint32_t>(now - lastAudioDiscoveryMs) < AUDIO_DISCOVERY_RETRY_MS) {
+        return false;
+    }
+    audioDiscoveryAttempted = true;
+    lastAudioDiscoveryMs = now;
+    fs::FS* littlefs = audioStorageOwner->getLittleFS();
+    if (!littlefs) {
+        return false;
+    }
+    File directory = littlefs->open(AUDIO_PATH, FILE_READ);
+    if (!directory || !directory.isDirectory()) {
+        return false;
+    }
+    directory.close();
+    audioFS = littlefs;
+    sd_audio_ready = true;
+    Serial.println("[AUDIO] Frequency audio initialized (LittleFS)");
+    return true;
+}
+
 // Clips are bundled in LittleFS, independent of the primary storage device.
 void audio_init_sd(StorageManager& storage) {
-    sd_audio_ready = false;
-    audioFS = nullptr;
-
-    fs::FS* littlefs = storage.getLittleFS();
-    if (!littlefs) {
-        Serial.println("[AUDIO] LittleFS not available");
+    // An accepted job retains its filesystem until the worker releases it.
+    if (audio_playing.load()) {
         return;
     }
-
-    if (littlefs->exists(AUDIO_PATH)) {
-        audioFS = littlefs;
-        sd_audio_ready = true;
-        Serial.println("[AUDIO] Frequency audio initialized (LittleFS)");
-    } else {
-        Serial.println("[AUDIO] Audio folder not found in LittleFS");
-    }
+    audioStorageOwner = &storage;
+    sd_audio_ready = false;
+    audioFS = nullptr;
+    audioDiscoveryAttempted = false;
+    (void)discover_audio_assets();
 }
 
 // Mu-law decode table (8-bit compressed -> 16-bit linear PCM)
@@ -341,7 +369,7 @@ void play_alert_voice(AlertBand band, AlertDirection direction) {
         return;
     }
 
-    if (!sd_audio_ready) {
+    if (!discover_audio_assets()) {
         return;
     }
 
@@ -379,7 +407,7 @@ static AudioPlaybackResult play_frequency_voice_impl(AlertBand band, uint16_t fr
         return AudioPlaybackResult::Unavailable;
     }
 
-    if (!sd_audio_ready) {
+    if (!discover_audio_assets()) {
         return AudioPlaybackResult::Unavailable;
     }
 
@@ -460,7 +488,7 @@ void play_band_only(AlertBand band) {
         return;
     }
 
-    if (!sd_audio_ready) {
+    if (!discover_audio_assets()) {
         return;
     }
 
@@ -480,7 +508,7 @@ static AudioPlaybackResult play_direction_only_impl(AlertDirection direction, ui
         return AudioPlaybackResult::Busy;
     }
 
-    if (!sd_audio_ready) {
+    if (!discover_audio_assets()) {
         return AudioPlaybackResult::Unavailable;
     }
 
@@ -534,6 +562,8 @@ void audio_process_amp_timeout() {
     }
     lastAmpTimeoutCheckMs = now;
 
+    (void)discover_audio_assets();
+
     // Retry a failed user volume change even when there is no next alert. Use
     // a nonblocking bus attempt; the worker also checks before every PCM chunk.
     if (es8311_initialized.load()) {
@@ -561,7 +591,7 @@ static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t 
         return AudioPlaybackResult::Busy;
     }
 
-    if (!sd_audio_ready) {
+    if (!discover_audio_assets()) {
         return AudioPlaybackResult::Unavailable;
     }
 
@@ -607,7 +637,7 @@ static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t 
         snprintf(params.filePaths[params.numClips++], 48, "%s/%s", AUDIO_PATH, dirFile);
     }
 
-    if (announceBogeyCount && total >= 2 && total <= 10 && params.numClips < MAX_AUDIO_CLIPS - 2) {
+    if (announceBogeyCount && total >= 2 && total <= 10 && params.numClips <= MAX_AUDIO_CLIPS - 2) {
         if (total == 10) {
             snprintf(params.filePaths[params.numClips++], 48, "%s/tens_10.mul", AUDIO_PATH);
         } else {
@@ -616,7 +646,7 @@ static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t 
         snprintf(params.filePaths[params.numClips++], 48, "%s/bogeys.mul", AUDIO_PATH);
     }
 
-    if (announceBogeyCount && includeDirection && ahead > 0 && ahead <= 10 && params.numClips < MAX_AUDIO_CLIPS - 2) {
+    if (announceBogeyCount && includeDirection && ahead > 0 && ahead <= 10 && params.numClips <= MAX_AUDIO_CLIPS - 2) {
         if (ahead == 10) {
             snprintf(params.filePaths[params.numClips++], 48, "%s/tens_10.mul", AUDIO_PATH);
         } else {
@@ -625,7 +655,7 @@ static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t 
         snprintf(params.filePaths[params.numClips++], 48, "%s/dir_ahead.mul", AUDIO_PATH);
     }
 
-    if (announceBogeyCount && includeDirection && behind > 0 && behind <= 10 && params.numClips < MAX_AUDIO_CLIPS - 2) {
+    if (announceBogeyCount && includeDirection && behind > 0 && behind <= 10 && params.numClips <= MAX_AUDIO_CLIPS - 2) {
         if (behind == 10) {
             snprintf(params.filePaths[params.numClips++], 48, "%s/tens_10.mul", AUDIO_PATH);
         } else {
@@ -635,7 +665,7 @@ static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t 
     }
 
     // Omit the side count if earlier clips exhausted capacity.
-    if (announceBogeyCount && includeDirection && side > 0 && side <= 10 && params.numClips < MAX_AUDIO_CLIPS - 2) {
+    if (announceBogeyCount && includeDirection && side > 0 && side <= 10 && params.numClips <= MAX_AUDIO_CLIPS - 2) {
         if (side == 10) {
             snprintf(params.filePaths[params.numClips++], 48, "%s/tens_10.mul", AUDIO_PATH);
         } else {

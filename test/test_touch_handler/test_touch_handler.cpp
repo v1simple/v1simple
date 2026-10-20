@@ -123,8 +123,107 @@ void test_required_release_ignores_contacts_and_invalid_observations() {
     }
 }
 
+static uint32_t beginWithNack(uint32_t now = 10000) {
+    mockMillis = now;
+    Wire.resetMock();
+    touch = TouchHandler{};
+    Wire.queueEndTransmission(2);
+    TEST_ASSERT_FALSE(touch.begin());
+    TEST_ASSERT_FALSE(touch.isAvailable());
+    TEST_ASSERT_FALSE(touch.isTouchActive());
+    return static_cast<uint32_t>(mockMillis);
+}
+
+void test_failed_startup_retries_slowly_then_requires_release_before_contact() {
+    const uint32_t started = beginWithNack();
+    const int initialTransactions = Wire.endTransmissionCalls;
+    for (uint32_t elapsed = 1; elapsed < 1000; ++elapsed) {
+        mockMillis = started + elapsed;
+        TEST_ASSERT_FALSE(touch.getTouchPoint(readX, readY));
+    }
+    TEST_ASSERT_EQUAL_INT(initialTransactions, Wire.endTransmissionCalls);
+    for (uint32_t retry = 1; retry <= 3; ++retry) {
+        mockMillis = started + retry * 1000;
+        Wire.queueEndTransmission(2);
+        TEST_ASSERT_FALSE(touch.getTouchPoint(readX, readY));
+        TEST_ASSERT_FALSE(touch.isAvailable());
+        const int attempts = Wire.endTransmissionCalls;
+        for (uint32_t elapsed = 1; elapsed < 1000; elapsed += 10) {
+            mockMillis = started + retry * 1000 + elapsed;
+            TEST_ASSERT_FALSE(touch.getTouchPoint(readX, readY));
+        }
+        TEST_ASSERT_EQUAL_INT(attempts, Wire.endTransmissionCalls);
+    }
+    TEST_ASSERT_GREATER_THAN_INT(0, Wire.endCalls); // Persistent faults still get bus recovery.
+    TEST_ASSERT_FALSE(poll(started + 4000, 120, 80)); // Held during recovery: no synthetic tap.
+    TEST_ASSERT_TRUE(touch.isAvailable());
+    TEST_ASSERT_FALSE(touch.isTouchActive());
+    TEST_ASSERT_FALSE(poll(started + 4100, 120, 80));
+    TEST_ASSERT_FALSE(poll(started + 4200, 0, 0, 0));
+    TEST_ASSERT_TRUE(poll(started + 4300, 120, 80));
+    TEST_ASSERT_TRUE(touch.isTouchActive());
+    TEST_ASSERT_EQUAL_INT16(120, readX);
+    TEST_ASSERT_EQUAL_INT16(80, readY);
+}
+
+void test_startup_discovery_rejects_short_or_invalid_frames_until_valid_release() {
+    const uint32_t started = beginWithNack();
+    mockMillis = started + 1000;
+    Wire.queueRequestFrom(1, {0});
+    TEST_ASSERT_FALSE(touch.getTouchPoint(readX, readY));
+    TEST_ASSERT_FALSE(touch.isAvailable());
+    TEST_ASSERT_FALSE(poll(started + 2000, 100, 100, 255));
+    TEST_ASSERT_FALSE(touch.isAvailable());
+    TEST_ASSERT_FALSE(poll(started + 3000, 641, 100));
+    TEST_ASSERT_FALSE(touch.isAvailable());
+    TEST_ASSERT_FALSE(poll(started + 4000, 0, 0, 0));
+    TEST_ASSERT_TRUE(touch.isAvailable());
+    TEST_ASSERT_TRUE(poll(started + 4100, 100, 100));
+}
+
+void test_recovered_touch_keeps_runtime_fault_recovery_without_duplicate_taps() {
+    const uint32_t started = beginWithNack();
+    TEST_ASSERT_FALSE(poll(started + 1000, 0, 0, 0));
+    TEST_ASSERT_TRUE(poll(started + 1100, 100, 100));
+    for (uint32_t elapsed : {1200, 1210, 1220}) {
+        mockMillis = started + elapsed;
+        Wire.queueEndTransmission(2);
+        TEST_ASSERT_FALSE(touch.getTouchPoint(readX, readY));
+        TEST_ASSERT_FALSE(touch.isTouchActive());
+    }
+    TEST_ASSERT_GREATER_THAN_INT(0, Wire.endCalls);
+    TEST_ASSERT_FALSE(poll(started + 1300, 100, 100));
+    TEST_ASSERT_TRUE(touch.isTouchActive());
+    TEST_ASSERT_FALSE(poll(started + 1400, 0, 0, 0));
+    TEST_ASSERT_TRUE(poll(started + 1500, 100, 100));
+}
+
+void test_discovery_retry_and_release_debounce_cross_millis_rollover() {
+    const uint32_t started = beginWithNack(UINT32_MAX - 500);
+    const int attempts = Wire.endTransmissionCalls;
+    mockMillis = static_cast<uint32_t>(started + 999);
+    TEST_ASSERT_FALSE(touch.getTouchPoint(readX, readY));
+    TEST_ASSERT_EQUAL_INT(attempts, Wire.endTransmissionCalls);
+    TEST_ASSERT_FALSE(poll(static_cast<uint32_t>(started + 1000), 0, 0, 0));
+    TEST_ASSERT_TRUE(touch.isAvailable());
+    TEST_ASSERT_TRUE(poll(static_cast<uint32_t>(started + 1100), 100, 100));
+}
+
+void test_uninitialized_touch_never_probes_bus() {
+    Wire.resetMock();
+    touch = TouchHandler{};
+    mockMillis = 100000;
+    TEST_ASSERT_FALSE(touch.getTouchPoint(readX, readY));
+    TEST_ASSERT_EQUAL_INT(0, Wire.endTransmissionCalls);
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_failed_startup_retries_slowly_then_requires_release_before_contact);
+    RUN_TEST(test_startup_discovery_rejects_short_or_invalid_frames_until_valid_release);
+    RUN_TEST(test_recovered_touch_keeps_runtime_fault_recovery_without_duplicate_taps);
+    RUN_TEST(test_discovery_retry_and_release_debounce_cross_millis_rollover);
+    RUN_TEST(test_uninitialized_touch_never_probes_bus);
     RUN_TEST(test_impossible_coordinates_are_invalid_without_bus_recovery);
     RUN_TEST(test_supplier_raw_extrema_and_contact_counts_remain_accepted);
     RUN_TEST(test_invalid_coordinates_during_contact_do_not_create_a_recovery_tap);

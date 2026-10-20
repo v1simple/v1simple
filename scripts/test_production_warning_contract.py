@@ -209,11 +209,26 @@ def check_webserver_patch() -> None:
             "framework qualification must require the warning-clean WebServer source")
 
 
+def check_network_progress_patch() -> None:
+    source, constants = literal_constants(ROOT / "scripts" / "patch_arduino_network_progress.py")
+    for name in ("UPSTREAM_SHA256", "PATCHED_SHA256"):
+        require(SHA256.fullmatch(constants.get(name, "")) is not None,
+                f"NetworkClient {name} must be fingerprinted")
+    _, framework_constants = literal_constants(ROOT / "scripts" / "verify_esp32s3_framework.py")
+    require(framework_constants["EXPECTED"]["network_client_sha256"] == constants["PATCHED_SHA256"],
+            "framework qualification must require progress-aware NetworkClient")
+    require("-Wno-" not in source, "NetworkClient patch must not suppress warnings")
+    config = (ROOT / "platformio.ini").read_text()
+    require(config.count("pre:scripts/patch_arduino_network_progress.py") == 2,
+            "both ESP32 framework owners must apply the NetworkClient patch")
+
+
 def main() -> int:
     check_production_flags()
     check_arduino_overload_compatibility()
     check_open_font_render_patch()
     check_webserver_patch()
+    check_network_progress_patch()
     print("[production-warnings] strict builds and fingerprinted vendor repairs validated")
     return 0
 

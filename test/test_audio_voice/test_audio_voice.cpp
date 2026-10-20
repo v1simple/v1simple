@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <initializer_list>
 #include <string>
+#include <vector>
 
 #include "../mocks/settings.h"
 #include "../mocks/storage_manager.h"
@@ -291,11 +292,100 @@ void test_photo_escalation_respects_disabled_direction_and_count_in_frequency_mo
     expectClips({"band_photo.mul"});
 }
 
+void test_escalation_matrix_preserves_full_pairs_at_capacity() {
+    struct BandCase {
+        AlertBand band;
+        uint16_t frequency;
+        const char* bandClip;
+        std::vector<const char*> frequencyClips;
+    };
+    const BandCase bands[] = {
+        {AlertBand::KA, 35500, "band_ka.mul", {"tens_35.mul", "digit_5.mul", "tens_00.mul"}},
+        {AlertBand::K, 24150, "band_k.mul", {"tens_24.mul", "digit_1.mul", "tens_50.mul"}},
+        {AlertBand::X, 10525, "band_x.mul", {"tens_10.mul", "digit_5.mul", "tens_25.mul"}},
+        {AlertBand::KU, 13450, "band_ku.mul", {"tens_13.mul", "digit_4.mul", "tens_50.mul"}},
+        {AlertBand::PHOTO, 24125, "band_photo.mul", {}},
+        {AlertBand::LASER, 0, "band_laser.mul", {}},
+    };
+    struct DirectionCase {
+        AlertDirection direction;
+        const char* clip;
+    };
+    const DirectionCase directions[] = {
+        {AlertDirection::AHEAD, "dir_ahead.mul"},
+        {AlertDirection::BEHIND, "dir_behind.mul"},
+        {AlertDirection::SIDE, "dir_side.mul"},
+        {AlertDirection::UNKNOWN, nullptr},
+    };
+    for (const auto& band : bands) {
+        for (VoiceAlertMode mode :
+             {VOICE_MODE_DISABLED, VOICE_MODE_BAND_ONLY, VOICE_MODE_FREQ_ONLY, VOICE_MODE_BAND_FREQ}) {
+            for (const auto& direction : directions) {
+                for (bool includeDirection : {false, true}) {
+                    for (bool includeCount : {false, true}) {
+                        audio_playing = false;
+                        g_sdAudioTaskParams = {};
+                        mock_reset_task_notify_state();
+                        const auto result = try_play_threat_escalation(
+                            band.band, band.frequency, direction.direction, 3, 1, 1, 1,
+                            mode, includeDirection, includeCount);
+                        if (mode == VOICE_MODE_DISABLED || band.band == AlertBand::LASER) {
+                            TEST_ASSERT_EQUAL(AudioPlaybackResult::Unavailable, result);
+                            TEST_ASSERT_EQUAL_UINT(0, g_mock_task_notify_state.giveCalls);
+                            continue;
+                        }
+                        std::vector<const char*> expected;
+                        if (band.band == AlertBand::PHOTO || mode != VOICE_MODE_FREQ_ONLY) {
+                            expected.push_back(band.bandClip);
+                        }
+                        if (mode != VOICE_MODE_BAND_ONLY) {
+                            expected.insert(expected.end(), band.frequencyClips.begin(), band.frequencyClips.end());
+                        }
+                        if (includeDirection && direction.clip) expected.push_back(direction.clip);
+                        if (includeCount) {
+                            expected.insert(expected.end(), {"digit_3.mul", "bogeys.mul"});
+                            if (includeDirection) {
+                                expected.insert(expected.end(), {"digit_1.mul", "dir_ahead.mul",
+                                                                 "digit_1.mul", "dir_behind.mul"});
+                                // Only full band+frequency speech with a known primary
+                                // direction needs 13 clips. Omit its final pair whole.
+                                if (!(mode == VOICE_MODE_BAND_FREQ && direction.clip &&
+                                      band.band != AlertBand::PHOTO)) {
+                                    expected.insert(expected.end(), {"digit_1.mul", "dir_side.mul"});
+                                }
+                            }
+                        }
+                        TEST_ASSERT_EQUAL(AudioPlaybackResult::Accepted, result);
+                        TEST_ASSERT_EQUAL_UINT(expected.size(), g_sdAudioTaskParams.numClips);
+                        TEST_ASSERT_LESS_OR_EQUAL_INT(12, g_sdAudioTaskParams.numClips);
+                        for (size_t i = 0; i < expected.size(); ++i) {
+                            const std::string path = std::string("/audio/") + expected[i];
+                            TEST_ASSERT_EQUAL_STRING(path.c_str(), g_sdAudioTaskParams.filePaths[i]);
+                            TEST_ASSERT_TRUE(audioFiles.exists(path.c_str()));
+                        }
+                        TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
+                    }
+                }
+            }
+        }
+    }
+}
+
+void test_ten_bogey_escalation_uses_complete_number_direction_pairs() {
+    TEST_ASSERT_EQUAL(AudioPlaybackResult::Accepted,
+        try_play_threat_escalation(AlertBand::KA, 35500, AlertDirection::UNKNOWN, 10, 10, 0, 0,
+                                   VOICE_MODE_FREQ_ONLY, true, true));
+    expectClips({"tens_35.mul", "digit_5.mul", "tens_00.mul", "tens_10.mul", "bogeys.mul",
+                 "tens_10.mul", "dir_ahead.mul"});
+}
+
 int main() {
     // Native tests run before web/LittleFS staging, including on a clean checkout.
     std::filesystem::copy(std::filesystem::path(PROJECT_DIR) / "tools" / "freq_audio" / "mulaw",
                           audioRoot / "audio", std::filesystem::copy_options::recursive);
     UNITY_BEGIN();
+    RUN_TEST(test_escalation_matrix_preserves_full_pairs_at_capacity);
+    RUN_TEST(test_ten_bogey_escalation_uses_complete_number_direction_pairs);
     RUN_TEST(test_escalation_content_controls_are_independent);
     RUN_TEST(test_disabled_escalation_admits_no_job_even_with_context_enabled);
     RUN_TEST(test_photo_escalation_respects_disabled_direction_and_count_in_frequency_mode);

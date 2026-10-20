@@ -925,7 +925,7 @@ void test_live_new_threat_restore_retries_until_complete_pair_after_long_holdoff
     TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
     TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
 
-    volume(6, 1, 17200); // Main alone is not convergence of the saved pair.
+    volume(1, 2, 17200); // Delayed reduction feedback cannot acknowledge restoration.
     TEST_ASSERT_TRUE(quiet.executeVolumeFade(17200, &fade));
     TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
     TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
@@ -1238,8 +1238,198 @@ void test_rejected_fade_releases_new_threat_before_any_reduction() {
     }
 }
 
+void manualDisplayVolume(uint8_t main, uint8_t muted, uint32_t nowMs) {
+    feed(PACKET_ID_DISPLAY_DATA,
+         {0x06, 0x06, 0x07, 0x22, 0x22, 0x0C, 0,
+          static_cast<uint8_t>((main << 4) | muted)}, nowMs);
+    TEST_ASSERT_EQUAL_UINT8(main, parser.getDisplayState().mainVolume);
+    TEST_ASSERT_EQUAL_UINT8(muted, parser.getDisplayState().muteVolume);
+}
+
+void test_manual_pair_retires_fade_across_the_complete_restore_lifecycle() {
+    // Captured delay, unapplied/rejected/confirmed reduction, and accepted
+    // restoration all yield to a fresh manual pair, including explicit zero
+    // and a mute-only change. Clear may arrive in the very same owner pass.
+    for (unsigned stage = 0; stage < 5; ++stage) {
+        for (unsigned pair = 0; pair < 3; ++pair) {
+            for (bool coalescedClear : {false, true}) {
+                setUp();
+                volume(6, 2, 9500);
+                alert(10000);
+                quiet.executeVolumeFade(10000, &fade);
+                if (stage > 0) {
+                    alert(12500);
+                    quiet.executeVolumeFade(12500, &fade);
+                }
+                if (stage == 2) feed(0x65, {0x39}, 12510);
+                if (stage >= 3) {
+                    volume(1, 2, 12510);
+                    quiet.executeVolumeFade(12510, &fade);
+                }
+                if (stage == 4) {
+                    clearAlert(12600);
+                    quiet.executeVolumeFade(12600, &fade);
+                    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+                }
+                const uint8_t main = pair == 0 ? 0 : pair == 1 ? 3 : 6;
+                const uint8_t muted = pair == 2 ? 1 : 4;
+                manualDisplayVolume(main, muted, 12700);
+                if (coalescedClear) clearAlert(12700);
+                const int before = ble.setVolumeCalls;
+                quiet.executeVolumeFade(12700, &fade);
+                TEST_ASSERT_FALSE(fade.hasActiveVolumeOverride());
+                for (uint32_t now = 12800; now < 18000; now += 100)
+                    quiet.executeVolumeFade(now, &fade);
+                clearAlert(18000);
+                quiet.executeVolumeFade(18000, &fade);
+                TEST_ASSERT_EQUAL_INT(before, ble.setVolumeCalls);
+                TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+            }
+        }
+    }
+}
+
+void test_manual_pair_becomes_the_next_threats_baseline_without_old_restore() {
+    for (uint8_t manualMain : {uint8_t(0), uint8_t(3)}) {
+        setUp();
+        startActiveFade();
+        manualDisplayVolume(manualMain, 4, 12700);
+        const int before = ble.setVolumeCalls;
+        quiet.executeVolumeFade(12700, &fade);
+        feed(PACKET_ID_ALERT_DATA, {0x11, 0x8A, 0xAC, 0xAC, 0, 0x22, 0x80}, 14000);
+        quiet.executeVolumeFade(14000, &fade);
+        TEST_ASSERT_EQUAL_INT(before, ble.setVolumeCalls);
+        quiet.executeVolumeFade(16100, &fade);
+        if (manualMain != 0) {
+            TEST_ASSERT_EQUAL_UINT8(1, ble.lastVolume);
+            TEST_ASSERT_EQUAL_UINT8(4, ble.lastMuteVolume);
+            volume(1, 4, 16110);
+            quiet.executeVolumeFade(16110, &fade);
+            clearAlert(17000);
+            quiet.executeVolumeFade(17000, &fade);
+            TEST_ASSERT_EQUAL_UINT8(3, ble.lastVolume);
+            TEST_ASSERT_EQUAL_UINT8(4, ble.lastMuteVolume);
+            volume(3, 4, 17010);
+            quiet.executeVolumeFade(17010, &fade);
+        } else {
+            clearAlert(17000);
+            quiet.executeVolumeFade(17000, &fade);
+            TEST_ASSERT_EQUAL_INT(before, ble.setVolumeCalls);
+        }
+        TEST_ASSERT_FALSE(fade.hasActiveVolumeOverride());
+    }
+}
+
+void test_new_writer_retires_fade_authority_before_its_volume_echo() {
+    for (bool confirmed : {false, true}) {
+        setUp();
+        if (confirmed) startActiveFade();
+        else startUnconfirmedFade();
+        ble.onV1DisplayFlowControl(false);
+        TEST_ASSERT_TRUE(quiet.sendAutoPushVolume(0, 4));
+        const int before = ble.setVolumeCalls;
+        clearAlert(13000);
+        quiet.executeVolumeFade(13000, &fade);
+        TEST_ASSERT_EQUAL_INT(before, ble.setVolumeCalls);
+        TEST_ASSERT_FALSE(fade.hasActiveVolumeOverride());
+        volume(0, 4, 13100);
+        quiet.executeVolumeFade(13100, &fade);
+        TEST_ASSERT_EQUAL_INT(before, ble.setVolumeCalls);
+    }
+}
+
+void test_speed_handoff_cannot_revive_a_fade_baseline_superseded_in_the_same_frame() {
+    for (bool clearOnEntry : {false, true}) {
+        for (uint8_t manualMain : {uint8_t(0), uint8_t(3)}) {
+            setUp();
+            SpeedFadeRuntime runtime;
+            startActiveFade();
+            manualDisplayVolume(manualMain, 4, 14000);
+            runtime.step(14000, 0, !clearOnEntry);
+            TEST_ASSERT_EQUAL_UINT8(0, ble.lastVolume);
+            TEST_ASSERT_EQUAL_UINT8(4, ble.lastMuteVolume);
+            runtime.step(15000, 0, false);
+            runtime.step(18000, 50, false);
+            TEST_ASSERT_EQUAL_UINT8(manualMain, ble.lastVolume);
+            TEST_ASSERT_EQUAL_UINT8(4, ble.lastMuteVolume);
+            const int before = ble.setVolumeCalls;
+            runtime.step(18100, 50, false);
+            TEST_ASSERT_EQUAL_INT(before, ble.setVolumeCalls);
+            TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+        }
+    }
+}
+
+void completePriorityTable(unsigned count, unsigned priority, uint16_t firstMHz, uint32_t nowMs) {
+    for (unsigned i = 0; i < count; ++i) {
+        const uint16_t mhz = static_cast<uint16_t>(firstMHz + i * 10);
+        feed(PACKET_ID_ALERT_DATA,
+             {static_cast<uint8_t>(((i + 1) << 4) | count), static_cast<uint8_t>(mhz >> 8),
+              static_cast<uint8_t>(mhz), 0xAC, 0, 0x24, static_cast<uint8_t>(i == priority ? 0x80 : 0)},
+             nowMs);
+    }
+    TEST_ASSERT_EQUAL_UINT32(count, parser.getAlertCount());
+    AlertData selected{};
+    TEST_ASSERT_TRUE(parser.getRenderablePriorityAlert(selected));
+    TEST_ASSERT_EQUAL_UINT32(firstMHz + priority * 10, selected.frequency);
+}
+
+void checkFadeHistory(unsigned priorities, bool completeTable) {
+    volume(6, 2, 9900);
+    uint32_t now = 10000;
+    for (unsigned priority = 0; priority < priorities; ++priority) {
+        const auto publish = [&](uint32_t atMs) {
+            completePriorityTable(completeTable ? 15 : 1, completeTable ? priority : 0,
+                                  completeTable ? 24050 : 24000 + priority * 10, atMs);
+        };
+        publish(now);
+        quiet.executeVolumeFade(now, &fade);
+        if (priority > 0) {
+            TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+            volume(6, 2, now + 100);
+            publish(now + 100);
+            quiet.executeVolumeFade(now + 100, &fade);
+        }
+        publish(now + 2500);
+        quiet.executeVolumeFade(now + 2500, &fade);
+        TEST_ASSERT_EQUAL_UINT8(1, ble.lastVolume);
+        volume(1, 2, now + 2510);
+        const int before = ble.setVolumeCalls;
+        for (uint32_t offset = 2510; offset < 4000; offset += 100) {
+            publish(now + offset);
+            quiet.executeVolumeFade(now + offset, &fade);
+        }
+        TEST_ASSERT_EQUAL_INT_MESSAGE(before, ble.setVolumeCalls,
+                                     "An unchanged priority must remain faded after history fills");
+        now += 4000;
+    }
+    if (completeTable) {
+        const int before = ble.setVolumeCalls;
+        for (unsigned priority = 0; priority < 15; ++priority) {
+            completePriorityTable(15, priority, 24050, now++);
+            quiet.executeVolumeFade(now, &fade);
+        }
+        TEST_ASSERT_EQUAL_INT(before, ble.setVolumeCalls);
+    }
+    clearAlert(now + 100);
+    quiet.executeVolumeFade(now + 100, &fade);
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+    volume(6, 2, now + 110);
+    quiet.executeVolumeFade(now + 110, &fade);
+    TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+}
+
+void test_all_fifteen_table_priorities_remain_faded() { checkFadeHistory(15, true); }
+void test_long_continuous_encounter_remembers_each_current_priority() { checkFadeHistory(64, false); }
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_manual_pair_retires_fade_across_the_complete_restore_lifecycle);
+    RUN_TEST(test_manual_pair_becomes_the_next_threats_baseline_without_old_restore);
+    RUN_TEST(test_new_writer_retires_fade_authority_before_its_volume_echo);
+    RUN_TEST(test_speed_handoff_cannot_revive_a_fade_baseline_superseded_in_the_same_frame);
+    RUN_TEST(test_all_fifteen_table_priorities_remain_faded);
+    RUN_TEST(test_long_continuous_encounter_remembers_each_current_priority);
     RUN_TEST(test_rejected_fade_retries_only_after_holdoff_then_stops_on_confirmation);
     RUN_TEST(test_unconfirmed_fade_without_explicit_rejection_is_not_periodically_replayed);
     RUN_TEST(test_rejected_fade_yields_to_manual_pair_new_writer_and_session);

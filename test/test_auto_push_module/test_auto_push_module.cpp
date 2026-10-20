@@ -3503,8 +3503,233 @@ void test_box_policy_is_not_committed_after_detector_apply_failure() {
     TEST_ASSERT_FALSE(quiet.inTheBoxSettings().bands[2].muteOutside);
 }
 
+enum class VolumeRejectionTiming { None, BeforeWrite, DuringWrite, BeforeRead, AfterRead, OtherSession };
+
+void checkVolumePolicyReceipt(VolumeRejectionTiming timing, V1VolumeDisconnectPolicy disconnect,
+                              V1VolumeFeedbackPolicy feedback, bool changeNumbers,
+                              V1VolumePolicy policy = V1VolumePolicy::Temporary) {
+    configureProfile();
+    auto& detector = profiles.loadableProfile.detector;
+    detector.userSettingsPolicy = V1UserSettingsPolicy::Unchanged;
+    detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    detector.modePolicy = V1ModePolicy::Unchanged;
+    detector.mainVolume = changeNumbers ? 7 : 5;
+    detector.mutedVolume = changeNumbers ? 3 : 2;
+    detector.volumeFeedback = feedback;
+    detector.volumeDisconnect = disconnect;
+    detector.volumePolicy = policy;
+    stageSnapshot(makeSnapshot());
+    TEST_ASSERT_TRUE(protocolQueue.begin(&ble, &parser, &profiles, nullptr, nullptr));
+    protocolQueue.openSession(ble.sessionGeneration());
+    ble.enforceVolumeFlowControl = true;
+    deliverProtocolReply(makeV1Packet(PACKET_ID_DISPLAY_DATA, {0x3F, 0x3F, 0, 0, 0, 0x0C, 4, 0x52}));
+    int policyActivations = 0;
+    module.setInTheBoxApplyCallback([](const V1InTheBoxSettings&, void* context) {
+        ++*static_cast<int*>(context);
+        return true;
+    }, &policyActivations);
+    const auto rejected = makeV1Packet(0x65, {0x39});
+    if (timing == VolumeRejectionTiming::BeforeWrite) enqueueProtocolReply(rejected);
+    if (timing == VolumeRejectionTiming::DuringWrite) {
+        replyDuringSend = rejected;
+        ble.setVolumeSendHook = enqueueProtocolReplyDuringSend;
+    }
+    queueAndPreflight();
+    at(100);
+    ble.setVolumeSendHook = nullptr;
+    TEST_ASSERT_EQUAL_INT(1, ble.setVolumeCalls);
+    const uint32_t receipt = ble.volumeWriteRevision();
+    TEST_ASSERT_NOT_EQUAL(0, receipt);
+    protocolQueue.process();
+    if (timing == VolumeRejectionTiming::BeforeRead) deliverProtocolReply(rejected);
+    if (timing == VolumeRejectionTiming::OtherSession) {
+        const uint32_t ingress = ble.noteV1NotificationIngress();
+        TEST_ASSERT_FALSE(protocolQueue.tryOnNotify(rejected.data(), rejected.size(), 0xB2CE,
+                                                    ble.sessionGeneration() + 1, mockMillis, ingress));
+    }
+    const bool explicitlyRejected = timing == VolumeRejectionTiming::DuringWrite ||
+        timing == VolumeRejectionTiming::BeforeRead || timing == VolumeRejectionTiming::AfterRead;
+    deliverProtocolReply(makeV1Packet(PACKET_ID_DISPLAY_DATA, {0x3F, 0x3F, 0, 0, 0, 0x0C, 4, 0x52}));
+    at(130);
+    if (timing == VolumeRejectionTiming::AfterRead) deliverProtocolReply(rejected);
+    deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_ALL_VOLUME,
+        {static_cast<uint8_t>(explicitlyRejected ? 5 : detector.mainVolume),
+         static_cast<uint8_t>(explicitlyRejected ? 2 : detector.mutedVolume),
+         static_cast<uint8_t>(!explicitlyRejected && policy == V1VolumePolicy::Saved ? detector.mainVolume : 4),
+         static_cast<uint8_t>(!explicitlyRejected && policy == V1VolumePolicy::Saved ? detector.mutedVolume : 1)}));
+    at(130);
+    const auto summary = module.executionSummary();
+    const auto& volumeResult = summary.components[static_cast<size_t>(V1SettingsOperationStore::Component::Volume)];
+    TEST_ASSERT_FALSE(summary.active);
+    TEST_ASSERT_EQUAL(!explicitlyRejected, volumeResult.verified);
+    TEST_ASSERT_EQUAL_INT(explicitlyRejected ? 0 : 1, policyActivations);
+    TEST_ASSERT_EQUAL_INT(explicitlyRejected ? 0 : 1, ble.publishVerifiedSettingsApplyEdgeCalls);
+    TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+    if (explicitlyRejected) {
+        TEST_ASSERT_EQUAL_INT(AutoPushModule::PublicResult::Failed, summary.result);
+        TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::ComponentOutcome::WriteFailed, volumeResult.outcome);
+        TEST_ASSERT_EQUAL_INT(V1SettingsOperationStore::ComponentReason::VolumeWriteFailed, volumeResult.reason);
+        TEST_ASSERT_TRUE(statusContains("\"inTheBoxApplied\":false"));
+        for (unsigned now = 200; now < 3000; now += 100) at(now);
+        TEST_ASSERT_EQUAL_INT(1, ble.setVolumeCalls); // No blind retries after failure.
+        // A later explicit Apply owns a new receipt and can succeed normally.
+        mockMillis = 3000;
+        stageSnapshot(makeSnapshot());
+        deliverProtocolReply(makeV1Packet(PACKET_ID_DISPLAY_DATA, {0x3F, 0x3F, 0, 0, 0, 0x0C, 4, 0x52}));
+        queueAndPreflight(3100);
+        at(3100);
+        TEST_ASSERT_NOT_EQUAL(receipt, ble.volumeWriteRevision());
+        at(3130);
+        deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_ALL_VOLUME,
+            {detector.mainVolume, detector.mutedVolume,
+             static_cast<uint8_t>(policy == V1VolumePolicy::Saved ? detector.mainVolume : 4),
+             static_cast<uint8_t>(policy == V1VolumePolicy::Saved ? detector.mutedVolume : 1)}));
+        at(3130);
+        TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+        TEST_ASSERT_EQUAL_INT(1, policyActivations);
+        TEST_ASSERT_EQUAL_INT(1, ble.publishVerifiedSettingsApplyEdgeCalls);
+    } else {
+        TEST_ASSERT_EQUAL_INT(AutoPushModule::PublicResult::Succeeded, summary.result);
+    }
+}
+
+void test_explicit_volume_policy_rejection_reaches_terminal_failure_and_releases_ownership() {
+    for (auto timing : {VolumeRejectionTiming::DuringWrite, VolumeRejectionTiming::BeforeRead,
+                        VolumeRejectionTiming::AfterRead}) {
+        for (auto disconnect : {V1VolumeDisconnectPolicy::RestoreSaved, V1VolumeDisconnectPolicy::KeepCurrent}) {
+            for (auto feedback : {V1VolumeFeedbackPolicy::None, V1VolumeFeedbackPolicy::ChangedOnly,
+                                  V1VolumeFeedbackPolicy::Always}) {
+                for (auto policy : {V1VolumePolicy::Temporary, V1VolumePolicy::Saved}) {
+                    if (policy == V1VolumePolicy::Saved && disconnect == V1VolumeDisconnectPolicy::KeepCurrent)
+                        continue; // This combination is rejected by preflight, before any write.
+                    for (bool changeNumbers : {false, true}) {
+                        setUp();
+                        checkVolumePolicyReceipt(timing, disconnect, feedback, changeNumbers, policy);
+                    }
+                }
+            }
+        }
+    }
+}
+
+void test_volume_rejection_keeps_earlier_verified_components_but_never_publishes_success() {
+    configureProfile();
+    stageSnapshot(makeSnapshot());
+    TEST_ASSERT_TRUE(protocolQueue.begin(&ble, &parser, &profiles, nullptr, nullptr));
+    protocolQueue.openSession(ble.sessionGeneration());
+    queueAndPreflight();
+    verifyUserBytes();
+    at(160);
+    observeDisplay(false, 1);
+    at(160);
+    at(190);
+    observeDisplay(false, 2);
+    at(190);
+    at(220);
+    deliverProtocolReply(makeV1Packet(0x65, {0x39}));
+    at(250);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"partial\""));
+    TEST_ASSERT_TRUE(statusContains("\"inTheBoxApplied\":false"));
+    const auto summary = module.executionSummary();
+    TEST_ASSERT_TRUE(summary.components[static_cast<size_t>(V1SettingsOperationStore::Component::UserSettings)].verified);
+    TEST_ASSERT_FALSE(summary.components[static_cast<size_t>(V1SettingsOperationStore::Component::Volume)].verified);
+    TEST_ASSERT_EQUAL_INT(0, ble.publishVerifiedSettingsApplyEdgeCalls);
+    TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+}
+
+void test_stale_and_other_session_volume_rejections_do_not_poison_apply() {
+    for (auto timing : {VolumeRejectionTiming::None, VolumeRejectionTiming::BeforeWrite,
+                        VolumeRejectionTiming::OtherSession}) {
+        for (bool changeNumbers : {false, true}) {
+            setUp();
+            checkVolumePolicyReceipt(timing, V1VolumeDisconnectPolicy::RestoreSaved,
+                                      V1VolumeFeedbackPolicy::None, changeNumbers);
+        }
+    }
+}
+
+void test_new_volume_writer_cannot_verify_an_older_apply_policy() {
+    VolumeFadeModule fade;
+    configureVolumeOnlyApplyWithFade(fade);
+    queueAndPreflight();
+    at(100);
+    const uint32_t original = ble.volumeWriteRevision();
+    TEST_ASSERT_TRUE(ble.setVolume(7, 3));
+    TEST_ASSERT_NOT_EQUAL(original, ble.volumeWriteRevision());
+    ble.onV1RequestNotProcessed(0x39, ble.noteV1NotificationIngress());
+    TEST_ASSERT_FALSE(ble.volumeWriteRejected(original));
+    at(130);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"failed\""));
+    TEST_ASSERT_TRUE(statusContains("\"reason\":\"volume_owner_busy\""));
+    TEST_ASSERT_EQUAL_INT(0, ble.publishVerifiedSettingsApplyEdgeCalls);
+    TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+}
+
+void test_queue_manual_choice_clear_then_verified_apply_uses_only_the_new_baseline() {
+    VolumeFadeModule fade;
+    configureVolumeOnlyApplyWithFade(fade);
+    TEST_ASSERT_TRUE(protocolQueue.begin(&ble, &parser, &profiles, nullptr, nullptr));
+    protocolQueue.openSession(ble.sessionGeneration());
+    const auto live = makeV1Packet(PACKET_ID_ALERT_DATA, {0x11, 0x87, 0x8C, 0xAC, 0, 0x22, 0x80}, 0xEA, 0xD8);
+    const auto clear = makeV1Packet(PACKET_ID_ALERT_DATA, {0, 0, 0, 0, 0, 0, 0}, 0xEA, 0xD8);
+    mockMillis = 10000;
+    deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_ALL_VOLUME, {6, 2, 4, 1}));
+    deliverProtocolReply(live);
+    quiet.executeVolumeFade(10000, &fade);
+    mockMillis = 12500;
+    deliverProtocolReply(live);
+    quiet.executeVolumeFade(12500, &fade);
+    TEST_ASSERT_EQUAL_UINT8(1, ble.lastVolume);
+    deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_ALL_VOLUME, {1, 2, 4, 1}));
+    quiet.executeVolumeFade(12510, &fade);
+    mockMillis = 13000;
+    // Same drain: a manual zero and clear must retire the old restore before
+    // the quiet owner runs, then allow an explicit profile transaction.
+    enqueueProtocolReply(makeV1Packet(PACKET_ID_DISPLAY_DATA, {0x3F, 0x3F, 0, 0, 0, 0x0C, 4, 0x04}));
+    enqueueProtocolReply(clear);
+    protocolQueue.process();
+    const int before = ble.setVolumeCalls;
+    quiet.executeVolumeFade(13000, &fade);
+    TEST_ASSERT_EQUAL_INT(before, ble.setVolumeCalls);
+    TEST_ASSERT_FALSE(fade.hasActiveVolumeOverride());
+    TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+    auto snapshot = makeSnapshot();
+    snapshot.currentMainVolume = 0;
+    snapshot.currentMutedVolume = 4;
+    stageSnapshot(snapshot);
+    queueAndPreflight(13100);
+    at(13100);
+    at(13130);
+    deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_ALL_VOLUME, {7, 3, 4, 1}));
+    at(13130);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    TEST_ASSERT_EQUAL_INT(1, ble.publishVerifiedSettingsApplyEdgeCalls);
+    mockMillis = 14000;
+    deliverProtocolReply(live);
+    quiet.executeVolumeFade(14000, &fade);
+    mockMillis = 16500;
+    deliverProtocolReply(live);
+    quiet.executeVolumeFade(16500, &fade);
+    TEST_ASSERT_EQUAL_UINT8(1, ble.lastVolume);
+    deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_ALL_VOLUME, {1, 3, 4, 1}));
+    quiet.executeVolumeFade(16510, &fade);
+    mockMillis = 17000;
+    deliverProtocolReply(clear);
+    quiet.executeVolumeFade(17000, &fade);
+    TEST_ASSERT_EQUAL_UINT8(7, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(3, ble.lastMuteVolume);
+    deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_ALL_VOLUME, {7, 3, 4, 1}));
+    quiet.executeVolumeFade(17010, &fade);
+    TEST_ASSERT_TRUE(quiet.canApplyAutoPushVolumeExactly());
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_explicit_volume_policy_rejection_reaches_terminal_failure_and_releases_ownership);
+    RUN_TEST(test_stale_and_other_session_volume_rejections_do_not_poison_apply);
+    RUN_TEST(test_new_volume_writer_cannot_verify_an_older_apply_policy);
+    RUN_TEST(test_volume_rejection_keeps_earlier_verified_components_but_never_publishes_success);
+    RUN_TEST(test_queue_manual_choice_clear_then_verified_apply_uses_only_the_new_baseline);
     RUN_TEST(test_box_policy_activates_only_after_verified_apply_and_durable_commit);
     RUN_TEST(test_box_policy_commit_failure_keeps_previous_policy_and_reports_partial);
     RUN_TEST(test_box_policy_is_not_committed_after_detector_apply_failure);

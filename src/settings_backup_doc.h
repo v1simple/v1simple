@@ -35,6 +35,12 @@ struct WifiClientSecretPresence {
 };
 
 WifiClientSecretPresence readWifiClientSecretPresence(fs::FS* fs);
+// Select a fully validated live or committed rollback document. Callers hold
+// the storage lock; unavailable input never falls back to an older document.
+WifiClientSecretReadStatus readWifiClientSecretDocument(fs::FS* fs, JsonDocument& doc, String& loadedPath);
+// Before any non-deletion replacement, preserve a selected committed rollback
+// as live so the next promotion cannot rotate corrupt data over it.
+bool prepareWifiClientSecretReplacement(fs::FS* fs);
 
 class StorageManager;
 bool clearWifiStaSlotPasswordsForRestore(StorageManager& storage, bool clearSdSecret);

@@ -6839,8 +6839,272 @@ void test_secret_clear_and_snapshot_rollback_verify_unreadable_sidecar_removal()
     }
 }
 
+
+void assert_wifi_secret_rename_lifecycle(bool removeSlot) {
+    size_t renameCount = 0;
+    for (size_t interruption = 0; interruption <= renameCount; ++interruption) {
+        resetRuntimeState();
+        fs::mock_reset_fs_rename_state();
+        fs::FS filesystem(g_tempRoot / (std::to_string(removeSlot) + "_" + std::to_string(interruption)));
+        storage.setFilesystem(&filesystem, true);
+        TEST_ASSERT_TRUE(profiles.begin(storage));
+        SettingsManager manager(storage, profiles);
+        manager.load();
+        TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "FirstNet", "first-password", "First", 0));
+        TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(1, "SecondNet", "second-password", "Second", 1));
+        fs::mock_reset_fs_rename_state();
+        if (interruption) fs::mock_reset_after_rename_on_call(interruption);
+        bool reset = false;
+        try {
+            TEST_ASSERT_TRUE(removeSlot ? manager.clearWifiStaSlot(0)
+                : manager.setWifiStaSlotCredentials(0, "FirstNet", "updated-password", "First", 0));
+        } catch (const fs::SimulatedReset&) { reset = true; }
+        if (interruption == 0) renameCount = fs::g_mock_fs_rename_state.renameCalls;
+        else TEST_ASSERT_TRUE(reset);
+        fs::mock_reset_fs_rename_state();
+        resetDeferredSettingsBackupStateForTest();
+        SettingsManager reboot(storage, profiles);
+        reboot.load();
+        TEST_ASSERT_TRUE(reboot.resolveStorageTransactionsForMutation());
+        TEST_ASSERT_FALSE(wifiCredentialJournalPresent());
+        TEST_ASSERT_EQUAL_STRING("second-password", reboot.getWifiStaSlotPassword(1).c_str());
+        TEST_ASSERT_EQUAL_STRING("second-password", decodeObfuscatedFromStorage(
+            loadWifiClientSecretFromSD(storage, "SecondNet", 1)).c_str());
+        if (interruption) {
+            TEST_ASSERT_EQUAL_STRING("first-password", reboot.getWifiStaSlotPassword(0).c_str());
+            TEST_ASSERT_EQUAL_STRING("first-password", decodeObfuscatedFromStorage(
+                loadWifiClientSecretFromSD(storage, "FirstNet", 0)).c_str());
+        }
+        // Exercise the real SD recovery consumer after removing the NVS copy.
+        Preferences prefs;
+        TEST_ASSERT_TRUE(prefs.begin(WIFI_CLIENT_NS, false));
+        TEST_ASSERT_TRUE(prefs.remove(kNvsWifiStaSlotPassword[1]));
+        prefs.end();
+        SettingsManager recoveredAgain(storage, profiles);
+        recoveredAgain.load();
+        TEST_ASSERT_EQUAL_STRING("second-password", recoveredAgain.getWifiStaSlotPassword(1).c_str());
+        TEST_ASSERT_TRUE(recoveredAgain.resolveStorageTransactionsForMutation());
+    }
+    TEST_ASSERT_GREATER_THAN_UINT(0, renameCount);
+}
+
+void test_wifi_rotation_survives_every_secret_promotion_rename() { assert_wifi_secret_rename_lifecycle(false); }
+void test_wifi_slot_delete_survives_every_secret_promotion_rename() { assert_wifi_secret_rename_lifecycle(true); }
+
+void test_wifi_rollback_reader_preserves_snapshot_merge_remove_and_repeated_recovery() {
+    fs::FS filesystem(g_tempRoot);
+    storage.setFilesystem(&filesystem, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    manager.load();
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "FirstNet", "first-password", "First", 0));
+    TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(1, "SecondNet", "second-password", "Second", 1));
+    const String previous = StorageManager::rollbackPathFor(WIFI_CLIENT_SD_SECRET_PATH);
+    fs::mock_reset_after_rename_to((std::string(filesystem.mountpoint()) + previous.c_str()).c_str());
+    bool reset = false;
+    try { manager.setWifiStaSlotCredentials(0, "FirstNet", "updated-password", "First", 0); }
+    catch (const fs::SimulatedReset&) { reset = true; }
+    TEST_ASSERT_TRUE(reset);
+    TEST_ASSERT_TRUE(wifiCredentialJournalPresent());
+    RestoreCredentialSnapshot snapshot;
+    TEST_ASSERT_TRUE(captureRestoreCredentialSnapshot(storage, snapshot));
+    TEST_ASSERT_TRUE(snapshot.sdFilePresent);
+    TEST_ASSERT_EQUAL_STRING(readFileToString(filesystem, previous.c_str()).c_str(), snapshot.sdFileBytes.c_str());
+    fs::mock_fail_read_opens_for_full_path((std::string(filesystem.mountpoint()) + previous.c_str()).c_str());
+    SettingsManager reboot(storage, profiles);
+    reboot.load();
+    TEST_ASSERT_FALSE(reboot.resolveStorageTransactionsForMutation());
+    TEST_ASSERT_TRUE(wifiCredentialJournalPresent());
+    TEST_ASSERT_EQUAL_INT(WifiClientSecretReadStatus::Unavailable, readWifiClientSecretPresence(&filesystem).status);
+    fs::mock_reset_fs_open_state();
+    // Interrupt normalization of .prev itself; a second boot still has a
+    // complete committed document and must retry the pending journal.
+    fs::mock_reset_after_rename_to((std::string(filesystem.mountpoint()) + WIFI_CLIENT_SD_SECRET_PATH).c_str());
+    reset = false;
+    try { reboot.resolveStorageTransactionsForMutation(); }
+    catch (const fs::SimulatedReset&) { reset = true; }
+    TEST_ASSERT_TRUE(reset);
+    SettingsManager finalBoot(storage, profiles);
+    finalBoot.load();
+    TEST_ASSERT_TRUE(finalBoot.resolveStorageTransactionsForMutation());
+    TEST_ASSERT_FALSE(wifiCredentialJournalPresent());
+    TEST_ASSERT_EQUAL_STRING("second-password", decodeObfuscatedFromStorage(
+        loadWifiClientSecretFromSD(storage, "SecondNet", 1)).c_str());
+    // A single-slot removal after recovery must retain the other network.
+    TEST_ASSERT_TRUE(filesystem.rename(WIFI_CLIENT_SD_SECRET_PATH, previous));
+    TEST_ASSERT_TRUE(removeWifiClientSecretFromSD(storage, 0, "FirstNet"));
+    TEST_ASSERT_EQUAL_STRING("second-password", decodeObfuscatedFromStorage(
+        loadWifiClientSecretFromSD(storage, "SecondNet", 1)).c_str());
+    TEST_ASSERT_TRUE(restoreCredentialSnapshot(storage, snapshot));
+    TEST_ASSERT_EQUAL_STRING("first-password", decodeObfuscatedFromStorage(
+        loadWifiClientSecretFromSD(storage, "FirstNet", 0)).c_str());
+}
+
+void test_wifi_rollback_selection_never_masks_unavailable_live_or_accepts_corrupt_or_staging_data() {
+    fs::FS filesystem(g_tempRoot);
+    storage.setFilesystem(&filesystem, true);
+    TEST_ASSERT_TRUE(saveWifiClientSecretToSD(storage, 0, "FirstNet", encodeObfuscatedForStorage("old-password")));
+    const std::string old = readFileToString(filesystem, WIFI_CLIENT_SD_SECRET_PATH);
+    TEST_ASSERT_TRUE(saveWifiClientSecretToSD(storage, 0, "FirstNet", encodeObfuscatedForStorage("new-password")));
+    const String previous = StorageManager::rollbackPathFor(WIFI_CLIENT_SD_SECRET_PATH);
+    writeFileFromString(filesystem, previous.c_str(), old.c_str());
+    fs::mock_fail_read_opens_for_full_path((g_tempRoot / (WIFI_CLIENT_SD_SECRET_PATH + 1)).c_str());
+    TEST_ASSERT_EQUAL_STRING("", loadWifiClientSecretFromSD(storage, "FirstNet", 0).c_str());
+    fs::mock_reset_fs_open_state();
+    TEST_ASSERT_EQUAL_STRING("new-password", decodeObfuscatedFromStorage(
+        loadWifiClientSecretFromSD(storage, "FirstNet", 0)).c_str());
+    writeFileFromString(filesystem, WIFI_CLIENT_SD_SECRET_PATH, "corrupt live");
+    TEST_ASSERT_EQUAL_STRING("old-password", decodeObfuscatedFromStorage(
+        loadWifiClientSecretFromSD(storage, "FirstNet", 0)).c_str());
+    TEST_ASSERT_TRUE(saveWifiClientSecretToSD(storage, 1, "SecondNet", encodeObfuscatedForStorage("second-password")));
+    TEST_ASSERT_EQUAL_STRING("old-password", decodeObfuscatedFromStorage(
+        loadWifiClientSecretFromSD(storage, "FirstNet", 0)).c_str());
+    TEST_ASSERT_TRUE(filesystem.remove(WIFI_CLIENT_SD_SECRET_PATH));
+    writeFileFromString(filesystem, previous.c_str(), "corrupt rollback");
+    writeFileFromString(filesystem, WIFI_CLIENT_SD_SECRET_TEMP_PATH, old.c_str());
+    TEST_ASSERT_EQUAL_INT(WifiClientSecretReadStatus::Invalid, readWifiClientSecretPresence(&filesystem).status);
+    TEST_ASSERT_FALSE(saveWifiClientSecretToSD(storage, 1, "SecondNet", encodeObfuscatedForStorage("second-password")));
+    TEST_ASSERT_EQUAL_STRING("corrupt rollback", readFileToString(filesystem, previous.c_str()).c_str());
+    TEST_ASSERT_TRUE(filesystem.remove(previous));
+    TEST_ASSERT_EQUAL_INT(WifiClientSecretReadStatus::NotFound, readWifiClientSecretPresence(&filesystem).status);
+}
+
+
+void assert_healing_snapshot_replacement_rename_lifecycle(bool criticalRecovery) {
+    // 0: healthy live; 1: absent live with committed .prev;
+    // 2: corrupt live with committed .prev (the only usable recovery copy).
+    for (unsigned layout = 0; layout != 3; ++layout) {
+        size_t renameCount = 0;
+        for (size_t interruption = 0; interruption <= renameCount; ++interruption) {
+            resetRuntimeState();
+            fs::mock_reset_fs_rename_state();
+            const std::string suffix = std::to_string(criticalRecovery) + "_" +
+                std::to_string(layout) + "_" + std::to_string(interruption);
+            fs::FS filesystem(g_tempRoot / suffix);
+            storage.setFilesystem(&filesystem, true);
+            TEST_ASSERT_TRUE(profiles.begin(storage));
+            SettingsManager manager(storage, profiles);
+            manager.load();
+            TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "FirstNet", "first-password", "First", 0));
+            TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(1, "SecondNet", "second-password", "Second", 1));
+            const std::string original = readFileToString(filesystem, WIFI_CLIENT_SD_SECRET_PATH);
+            const String previous = StorageManager::rollbackPathFor(WIFI_CLIENT_SD_SECRET_PATH);
+            if (layout != 0) {
+                TEST_ASSERT_TRUE(filesystem.rename(WIFI_CLIENT_SD_SECRET_PATH, previous));
+                if (layout == 2) writeFileFromString(filesystem, WIFI_CLIENT_SD_SECRET_PATH, "corrupt live");
+            }
+            JsonDocument backup;
+            // The attempted healing owns just slot 0; rollback must retain the
+            // unrelated slot 1 even when no durable restore journal is present.
+            JsonObject slot = backup["wifiStaSlots"].to<JsonArray>().add<JsonObject>();
+            slot["index"] = 0;
+            slot["ssid"] = "FirstNet";
+            slot["label"] = "First";
+            slot["passwordObf"] = encodeObfuscatedForStorage("attempted-password");
+            const auto attempt = [&](V1Settings& target) {
+                bool recovered = false;
+                return criticalRecovery
+                    ? applyBackupCriticalFieldsAtomically(backup, target, storage,
+                        [](void*) { return false; }, nullptr)
+                    : applyBackupWifiClientHealingAtomically(backup, target, storage, recovered,
+                        [](void*) { return false; }, nullptr);
+            };
+            fs::mock_reset_fs_rename_state();
+            if (interruption) fs::mock_reset_after_rename_on_call(interruption);
+            bool reset = false;
+            try { TEST_ASSERT_FALSE(attempt(manager.mutableSettings())); }
+            catch (const fs::SimulatedReset&) { reset = true; }
+            if (interruption == 0) renameCount = fs::g_mock_fs_rename_state.renameCalls;
+            else TEST_ASSERT_TRUE(reset);
+            fs::mock_reset_fs_rename_state();
+            TEST_ASSERT_FALSE(filesystem.exists(RESTORE_TRANSACTION_PATH));
+            TEST_ASSERT_FALSE(wifiCredentialJournalPresent());
+            TEST_ASSERT_EQUAL_STRING("second-password", decodeObfuscatedFromStorage(
+                loadWifiClientSecretFromSD(storage, "SecondNet", 1)).c_str());
+            TEST_ASSERT_EQUAL_STRING("first-password", decodeObfuscatedFromStorage(
+                loadWifiClientSecretFromSD(storage, "FirstNet", 0)).c_str());
+            // Prove recovery through the production consumer, not just JSON
+            // inspection: discard the unrelated NVS password before fresh load.
+            Preferences prefs;
+            TEST_ASSERT_TRUE(prefs.begin(WIFI_CLIENT_NS, false));
+            TEST_ASSERT_TRUE(prefs.remove(kNvsWifiStaSlotPassword[1]));
+            prefs.end();
+            resetDeferredSettingsBackupStateForTest();
+            SettingsManager reboot(storage, profiles);
+            reboot.load();
+            TEST_ASSERT_EQUAL_STRING("second-password", reboot.getWifiStaSlotPassword(1).c_str());
+            TEST_ASSERT_EQUAL_STRING("first-password", reboot.getWifiStaSlotPassword(0).c_str());
+            for (unsigned retry = 0; retry != 2; ++retry) {
+                TEST_ASSERT_FALSE(attempt(reboot.mutableSettings()));
+                TEST_ASSERT_EQUAL_STRING(original.c_str(), readFileToString(filesystem, WIFI_CLIENT_SD_SECRET_PATH).c_str());
+                TEST_ASSERT_FALSE(filesystem.exists(previous));
+            }
+        }
+        TEST_ASSERT_EQUAL_UINT(layout == 0 ? 2u : 3u, renameCount);
+    }
+}
+
+void test_wifi_healing_snapshot_rollback_preserves_all_credentials_across_every_rename() {
+    assert_healing_snapshot_replacement_rename_lifecycle(false);
+}
+void test_critical_healing_snapshot_rollback_preserves_all_credentials_across_every_rename() {
+    assert_healing_snapshot_replacement_rename_lifecycle(true);
+}
+
+void test_snapshot_replacement_defers_unavailable_authority_then_healing_retries() {
+    for (bool previousOnly : {false, true}) {
+        resetRuntimeState();
+        fs::FS filesystem(g_tempRoot / (previousOnly ? "previous" : "live"));
+        storage.setFilesystem(&filesystem, true);
+        TEST_ASSERT_TRUE(profiles.begin(storage));
+        SettingsManager manager(storage, profiles);
+        manager.load();
+        TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(0, "FirstNet", "first-password", "First", 0));
+        TEST_ASSERT_TRUE(manager.setWifiStaSlotCredentials(1, "SecondNet", "second-password", "Second", 1));
+        const std::string original = readFileToString(filesystem, WIFI_CLIENT_SD_SECRET_PATH);
+        const String previous = StorageManager::rollbackPathFor(WIFI_CLIENT_SD_SECRET_PATH);
+        if (previousOnly) {
+            TEST_ASSERT_TRUE(filesystem.rename(WIFI_CLIENT_SD_SECRET_PATH, previous));
+            writeFileFromString(filesystem, WIFI_CLIENT_SD_SECRET_PATH, "corrupt live");
+        } else {
+            writeFileFromString(filesystem, previous.c_str(), original.c_str());
+        }
+        JsonDocument backup;
+        JsonObject slot = backup["wifiStaSlots"].to<JsonArray>().add<JsonObject>();
+        slot["index"] = 0;
+        slot["ssid"] = "FirstNet";
+        slot["passwordObf"] = encodeObfuscatedForStorage("attempted-password");
+        std::string unavailable = std::string(filesystem.mountpoint()) +
+            (previousOnly ? previous.c_str() : WIFI_CLIENT_SD_SECRET_PATH);
+        fs::mock_reset_fs_rename_state();
+        bool recovered = false;
+        TEST_ASSERT_FALSE(applyBackupWifiClientHealingAtomically(backup, manager.mutableSettings(), storage, recovered,
+            [](void* context) {
+                fs::mock_fail_read_opens_for_full_path(static_cast<std::string*>(context)->c_str());
+                return false;
+            }, &unavailable));
+        fs::mock_reset_fs_open_state();
+        TEST_ASSERT_EQUAL_UINT(0, fs::g_mock_fs_rename_state.renameCalls);
+        TEST_ASSERT_EQUAL_STRING(original.c_str(), readFileToString(filesystem, previous.c_str()).c_str());
+        TEST_ASSERT_EQUAL_STRING(previousOnly ? "corrupt live" : original.c_str(),
+                                readFileToString(filesystem, WIFI_CLIENT_SD_SECRET_PATH).c_str());
+        TEST_ASSERT_FALSE(applyBackupWifiClientHealingAtomically(backup, manager.mutableSettings(), storage, recovered,
+            [](void*) { return false; }, nullptr));
+        TEST_ASSERT_EQUAL_STRING(original.c_str(), readFileToString(filesystem, WIFI_CLIENT_SD_SECRET_PATH).c_str());
+        TEST_ASSERT_EQUAL_STRING("second-password", decodeObfuscatedFromStorage(
+            loadWifiClientSecretFromSD(storage, "SecondNet", 1)).c_str());
+    }
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_wifi_healing_snapshot_rollback_preserves_all_credentials_across_every_rename);
+    RUN_TEST(test_critical_healing_snapshot_rollback_preserves_all_credentials_across_every_rename);
+    RUN_TEST(test_snapshot_replacement_defers_unavailable_authority_then_healing_retries);
+    RUN_TEST(test_wifi_rotation_survives_every_secret_promotion_rename);
+    RUN_TEST(test_wifi_slot_delete_survives_every_secret_promotion_rename);
+    RUN_TEST(test_wifi_rollback_reader_preserves_snapshot_merge_remove_and_repeated_recovery);
+    RUN_TEST(test_wifi_rollback_selection_never_masks_unavailable_live_or_accepts_corrupt_or_staging_data);
     RUN_TEST(test_unreadable_restore_journal_preserves_references_until_recovery);
     RUN_TEST(test_unreadable_delete_journal_preserves_references_until_recovery);
     RUN_TEST(test_journal_cleanup_does_not_claim_success_for_unremoved_unreadable_journal);

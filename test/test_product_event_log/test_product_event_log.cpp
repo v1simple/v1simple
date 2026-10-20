@@ -99,6 +99,8 @@ void setUp() {
     StorageManager::resetMockSdLockState();
     fs::mock_reset_fs_write_budget();
     fs::mock_reset_fs_remove_state();
+    fs::mock_reset_fs_open_state();
+    StorageDirectoryTest::reset();
 }
 void tearDown() {}
 
@@ -615,8 +617,108 @@ void test_boot_retention_reserves_one_slot_for_the_lazy_active_file() {
     log.resetForTest();
 }
 
+
+void test_child_open_failure_cannot_hide_retained_bytes() {
+    writeSizedPriorFile(ProductEventLog::kMaxTotalBytes, 1);
+    fs::mock_exists_uses_read_open(true);
+    fs::mock_fail_next_directory_entry_open("events_1.csv");
+    fs::FS filesystem(root);
+    StorageManager storage = makeStorage(filesystem);
+    ProductEventLog log;
+    TEST_ASSERT_TRUE(log.begin(2, storage));
+    TEST_ASSERT_TRUE(log.enqueueForTest(endEvent(100)));
+    TEST_ASSERT_TRUE(log.drainOneForTest());
+    log.resetForTest();
+    TEST_ASSERT_LESS_OR_EQUAL_UINT64(ProductEventLog::kMaxTotalBytes, retainedFileBytes());
+    TEST_ASSERT_FALSE(std::filesystem::exists(root / "events/events_1.csv"));
+}
+
+void test_incomplete_retention_scan_closes_admission_then_next_boot_recovers() {
+    for (size_t failAfter : {0u, 1u}) {
+        setUp();
+        writeSizedPriorFile(ProductEventLog::kMaxTotalBytes / 2, 1);
+        writeSizedPriorFile(ProductEventLog::kMaxTotalBytes / 2, 2);
+        fs::FS filesystem(root);
+        StorageManager storage = makeStorage(filesystem);
+        StorageDirectoryTest::failRead(failAfter);
+        ProductEventLog log;
+        TEST_ASSERT_FALSE(log.begin(3, storage));
+        TEST_ASSERT_FALSE(log.enabled());
+        TEST_ASSERT_FALSE(log.accepting());
+        TEST_ASSERT_FALSE(log.enqueueForTest(endEvent(100)));
+        TEST_ASSERT_EQUAL_UINT64(ProductEventLog::kMaxTotalBytes, retainedFileBytes());
+        log.resetForTest();
+        StorageDirectoryTest::reset();
+        TEST_ASSERT_TRUE(log.begin(4, storage));
+        TEST_ASSERT_TRUE(log.enqueueForTest(multiRowEvent(500)));
+        TEST_ASSERT_TRUE(log.drainOneForTest());
+        log.resetForTest();
+        TEST_ASSERT_LESS_OR_EQUAL_UINT64(ProductEventLog::kMaxTotalBytes, retainedFileBytes());
+        TEST_ASSERT_NOT_EQUAL(std::string::npos, readEventFile(4).find(multiRowRecord));
+    }
+}
+
+void test_directory_open_failure_cannot_be_treated_as_no_retained_files() {
+    std::ofstream(root / "events") << "unavailable directory";
+    fs::FS filesystem(root);
+    StorageManager storage = makeStorage(filesystem);
+    ProductEventLog log;
+    TEST_ASSERT_FALSE(log.begin(2, storage));
+    TEST_ASSERT_FALSE(log.accepting());
+    TEST_ASSERT_FALSE(log.enqueueForTest(endEvent(100)));
+    log.resetForTest();
+}
+
+void test_unreadable_retained_metadata_blocks_writes_until_recovery() {
+    writeSizedPriorFile(1024, 1);
+    // A directory entry whose target vanished models enumeration succeeding
+    // while stat cannot establish a size; it must not count as an empty file.
+    std::filesystem::create_symlink("missing-target", root / "events/events_2.csv");
+    fs::FS filesystem(root);
+    StorageManager storage = makeStorage(filesystem);
+    ProductEventLog log;
+    TEST_ASSERT_FALSE(log.begin(3, storage));
+    TEST_ASSERT_FALSE(log.accepting());
+    TEST_ASSERT_FALSE(log.enqueueForTest(endEvent(100)));
+    log.resetForTest();
+    std::filesystem::remove(root / "events/events_2.csv");
+    TEST_ASSERT_TRUE(log.begin(4, storage));
+    TEST_ASSERT_TRUE(log.enqueueForTest(endEvent(200)));
+    TEST_ASSERT_TRUE(log.drainOneForTest());
+    log.resetForTest();
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, readEventFile(4).find("200,V1,END"));
+    TEST_ASSERT_LESS_OR_EQUAL_UINT64(ProductEventLog::kMaxTotalBytes, retainedFileBytes());
+}
+
+void test_resume_read_open_failure_cannot_truncate_existing_event_file() {
+    fs::FS filesystem(root);
+    StorageManager storage = makeStorage(filesystem);
+    ProductEventLog log;
+    TEST_ASSERT_TRUE(log.begin(2, storage));
+    TEST_ASSERT_TRUE(log.enqueueForTest(endEvent(100)));
+    TEST_ASSERT_TRUE(log.drainOneForTest());
+    log.requestStopForTest(150);
+    log.runWriterForTest();
+    const std::string before = readEventFile(2);
+    TEST_ASSERT_TRUE(log.writerStopped());
+    fs::mock_exists_uses_read_open(true);
+    fs::mock_fail_next_read_open("/events/events_2.csv");
+    TEST_ASSERT_TRUE(log.resumeAfterAbortedShutdown(0));
+    TEST_ASSERT_TRUE(log.enqueueForTest(endEvent(200)));
+    TEST_ASSERT_TRUE(log.drainOneForTest());
+    log.resetForTest();
+    const std::string after = readEventFile(2);
+    TEST_ASSERT_EQUAL_STRING(before.c_str(), after.substr(0, before.size()).c_str());
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, after.find("200,V1,END"));
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_child_open_failure_cannot_hide_retained_bytes);
+    RUN_TEST(test_incomplete_retention_scan_closes_admission_then_next_boot_recovers);
+    RUN_TEST(test_directory_open_failure_cannot_be_treated_as_no_retained_files);
+    RUN_TEST(test_unreadable_retained_metadata_blocks_writes_until_recovery);
+    RUN_TEST(test_resume_read_open_failure_cannot_truncate_existing_event_file);
     RUN_TEST(test_start_creates_one_self_owned_writer);
     RUN_TEST(test_queue_is_single_static_bounded_and_full_coalesces_gap);
     RUN_TEST(test_gap_preserves_zero_timestamp_at_clock_wrap);

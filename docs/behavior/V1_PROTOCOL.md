@@ -68,6 +68,17 @@ existing initial-start and silence recovery. `test_ble_proxy_alert_stream`
 executes the production proxy, command sender, queue, parser and connection
 owner; detector responses and NimBLE remain host models.
 
+AutoPush retains the successful volume write's receipt through its remaining
+Apply phases. A canonical rejection of that current write terminates the
+component as `volume_write_failed`, releases its volume lease, and prevents
+policy activation or a verified Apply edge. Fresh numeric readback cannot
+override an explicit rejection of command-only feedback/disconnect policy.
+A different successful volume writer blocks the older Apply; stale ingress
+and other detector sessions cannot reject the new operation. A later explicit
+Apply obtains a new receipt and may succeed. `test_auto_push_module` delivers
+rejections and readbacks through the real queue/parser and checks terminal
+component summaries, policy activation, ownership release and publication.
+
 Fade-down delivery retries a canonical `respRequestNotProcessed(0x39)` only
 while the same volume-write receipt, detector session, alert encounter and
 volume owner remain current. Rejection receipt must follow the successful
@@ -78,6 +89,23 @@ threat restoration runs first. A merely unconfirmed send does not cause
 periodic low-volume writes. `test_volume_fade_startup` exercises the parser and
 quiet/fade owners with a transport double; `test_ble_alert_request_command` and
 `test_ble_proxy_alert_stream` verify the production send/queue receipt boundary.
+
+Fade restoration authority is separate from its reduction-delivery receipt.
+A fresh canonical pair outside the captured baseline and requested reduction,
+or a newer successful volume writer, retires the old restore obligation even
+after reduction confirmation or during restoration. The same threat cannot
+immediately acquire another fade over that manual choice; a distinct next
+threat uses the current pair for its new delay. Speed-volume entry reconciles
+this authority before carrying a fade baseline across a clear. Ordinary
+baseline/drop feedback still does not acknowledge an unsent restoration.
+The frequency history holds the full 15-row table and evicts oldest identities
+in longer encounters, always remembering the current priority. Revisiting an
+evicted identity may sound again; an unchanged current priority never
+oscillates solely because the history filled. `test_volume_fade_startup`
+covers these owner transitions, all 15 priorities, a 64-priority continuous
+encounter, and complete restore convergence. `test_auto_push_module` also
+executes queue → parser → fade → manual clear → verified Apply → next fade
+and restoration, using a transport substitute rather than physical hardware.
 
 ## 1. Older Gen2 detailed alert reception
 
@@ -150,6 +178,9 @@ and disabled/changed persistence. Existing
 voice episode tests protect live rearming and pending-action deduplication.
 
 Playback admission reserves the audio worker without consuming voice dedup.
+If bundled-asset discovery is unavailable, idle service and every playback
+entrypoint retry at most once per second. Unavailable discovery admits no job
+and consumes no episode; recovery can announce only a still-current alert.
 The worker reports when PCM is submitted, terminally unavailable assets, or a
 failure before any PCM. Only the latter remains retryable, and the pipeline
 checks the current episode, alert identity and suppression policy before
@@ -161,6 +192,8 @@ I2C/I2S and speaker output remain outside that host test boundary.
 
 Escalation speech follows the same content, direction, and bogey-count settings
 as ordinary speech. Directional counts require both direction and count enabled.
+Exactly two free clip slots admit a complete count/direction pair; all four pair append paths
+use the full 12-slot capacity and omit only pairs that cannot fit.
 The audio worker and idle service retain amplifier shutdown responsibility
 until a disable succeeds; after five failed attempts, retries slow to once per
 second. A new playback establishes a fresh warm period. Worker and composer

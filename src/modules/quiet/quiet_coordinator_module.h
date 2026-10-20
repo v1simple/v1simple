@@ -151,6 +151,9 @@ class QuietCoordinatorModule {
     uint32_t pendingFadeSession_ = 0;
     uint32_t fadeWriteRevision_ = 0;
     uint32_t fadeWriteIngress_ = 0;
+    // Restoration authority outlives delivery/confirmation of the reduction.
+    uint32_t fadeAuthorityWriteRevision_ = 0;
+    uint32_t fadeAuthoritySession_ = 0;
     uint8_t fadeWriteBaselineVolume_ = 0;
     uint8_t fadeWriteBaselineMuteVolume_ = 0;
     uint32_t fadeAlertLifetime_ = 0;

@@ -15,7 +15,8 @@ from pathlib import Path
 MARKER = "v1simple-webserver-exact-body-v2"
 CONTRACT_SYMBOL = "v1simple_webserver_exact_body_contract"
 UPSTREAM_SHA256 = "c24f1e65b4ce3fb7ab868f6bca7aab7af5dcdfd1ca81ce9716752a922e52ce78"
-PATCHED_SHA256 = "4542ba8a04f50c35eef8939149572ae8f60338d073139cb4ab93e186d0a10aed"
+PREVIOUS_SHA256 = "4542ba8a04f50c35eef8939149572ae8f60338d073139cb4ab93e186d0a10aed"
+PATCHED_SHA256 = "2e15b976608499e7e99152e9c8b03e55824908f4dba1de96b2b0e732f8d6a7ea"
 
 READ_UPSTREAM = """    if (!newLength) {
       break;
@@ -38,6 +39,8 @@ READ_UPSTREAM = """    if (!newLength) {
     buf[dataLength] = '\\0';"""
 
 READ_PATCHED = """    if (!newLength) {
+      // Do not let a response restart an idle window after a stalled body.
+      client.stop();
       break;
     }
     // v1simple-webserver-exact-body-v1: never read or allocate beyond the
@@ -64,6 +67,10 @@ READ_PATCHED = """    if (!newLength) {
       break;
     }"""
 
+READ_PREVIOUS = READ_PATCHED.replace(
+    "      // Do not let a response restart an idle window after a stalled body.\n      client.stop();\n", "", 1
+)
+
 STRING_UPSTREAM = "          arg.value = String(plainBuf);"
 STRING_PATCHED = (
     "          // v1simple-webserver-exact-body-v1: retain embedded NUL and the exact Content-Length.\n"
@@ -83,10 +90,18 @@ extern "C" const uint32_t v1simple_webserver_exact_body_contract
 FUNCTION_UPSTREAM = """static char *readBytesWithTimeout(NetworkClient &client, size_t maxLength, size_t &dataLength, int timeout_ms) {
   char *buf = nullptr;
   dataLength = 0;"""
+FUNCTION_PREVIOUS = """static char *readBytesWithTimeout(NetworkClient &client, size_t maxLength, size_t &dataLength, int timeout_ms) {
+  // Keep the final-ELF contract marker live in the same translation unit and
+  // section graph as the hardened reader.
+  asm volatile("" : : "r"(&v1simple_webserver_exact_body_contract));
+  char *buf = nullptr;
+  dataLength = 0;"""
 FUNCTION_PATCHED = """static char *readBytesWithTimeout(NetworkClient &client, size_t maxLength, size_t &dataLength, int timeout_ms) {
   // Keep the final-ELF contract marker live in the same translation unit and
   // section graph as the hardened reader.
   asm volatile("" : : "r"(&v1simple_webserver_exact_body_contract));
+  // Bound an idle plain-body wait below the enrolled task watchdog.
+  timeout_ms = std::min(timeout_ms, 2500);
   char *buf = nullptr;
   dataLength = 0;"""
 
@@ -154,6 +169,200 @@ RAW_PATCHED = """    // v1simple-webserver-exact-body-v2: a registered project r
     } else if (!isForm) {"""
 
 
+LINE_UPSTREAM = """static LineStatus readLineWithLimit(NetworkClient &client, String &line, size_t maxLength, unsigned long phaseStart = 0, unsigned long phaseBudget = 0) {
+  line = "";
+  const unsigned long idleTimeout = client.getTimeout();
+  const unsigned long lineStart = millis();
+  unsigned long lastActivity = lineStart;
+
+  while (millis() - lastActivity < idleTimeout) {
+#if WEBSERVER_MAX_LINE_WAIT > 0
+    if (millis() - lineStart >= WEBSERVER_MAX_LINE_WAIT) {
+      log_e("Protocol line still incomplete after %u ms", (unsigned)WEBSERVER_MAX_LINE_WAIT);
+      return LineStatus::TimedOut;
+    }
+#endif
+    if (phaseBudget && millis() - phaseStart >= phaseBudget) {
+      log_e("Request headers still incomplete after %u ms", (unsigned)phaseBudget);
+      return LineStatus::TimedOut;
+    }
+
+    int c = client.read();
+    if (c < 0) {
+      yield();
+      continue;
+    }
+    lastActivity = millis();
+    if (c == '\\r') {
+      // Consume the paired LF, waiting for it as readStringUntil('\\n') would.
+      while (millis() - lastActivity < idleTimeout) {
+        int next = client.peek();
+        if (next < 0) {
+          yield();
+          continue;
+        }
+        if (next == '\\n') {
+          client.read();
+        }
+        break;
+      }
+      return LineStatus::Ok;
+    }
+    if (line.length() >= maxLength) {
+      log_e("Protocol line longer than %u bytes", (unsigned)maxLength);
+      return LineStatus::TooLong;
+    }
+    line += (char)c;
+  }
+  // The peer stopped sending part-way through a line, so there is no complete
+  // request to act on.
+  return LineStatus::TimedOut;
+}"""
+LINE_PATCHED = """static LineStatus readLineWithLimit(NetworkClient &client, String &line, size_t maxLength, unsigned long phaseStart = 0, unsigned long phaseBudget = 0) {
+  line = "";
+  const unsigned long idleTimeout = std::min<uint32_t>(client.getTimeout(), 2500u);
+  const unsigned long lineStart = millis();
+  unsigned long lastActivity = lineStart;
+
+  while (millis() - lastActivity < idleTimeout) {
+#if WEBSERVER_MAX_LINE_WAIT > 0
+    if (millis() - lineStart >= WEBSERVER_MAX_LINE_WAIT) {
+      log_e("Protocol line still incomplete after %u ms", (unsigned)WEBSERVER_MAX_LINE_WAIT);
+      client.stop();
+      return LineStatus::TimedOut;
+    }
+#endif
+    if (phaseBudget && millis() - phaseStart >= phaseBudget) {
+      log_e("Request headers still incomplete after %u ms", (unsigned)phaseBudget);
+      client.stop();
+      return LineStatus::TimedOut;
+    }
+
+    int c = client.read();
+    if (c < 0) {
+      yield();
+      continue;
+    }
+    lastActivity = millis();
+    if (c == '\\r') {
+      // Consume the paired LF, waiting for it as readStringUntil('\\n') would.
+      while (millis() - lastActivity < idleTimeout) {
+        int next = client.peek();
+        if (next < 0) {
+          yield();
+          continue;
+        }
+        if (next == '\\n') {
+          client.read();
+        }
+        break;
+      }
+      if (millis() - lastActivity >= idleTimeout) {
+        client.stop();
+        return LineStatus::TimedOut;
+      }
+      return LineStatus::Ok;
+    }
+    if (line.length() >= maxLength) {
+      log_e("Protocol line longer than %u bytes", (unsigned)maxLength);
+      return LineStatus::TooLong;
+    }
+    line += (char)c;
+  }
+  // The peer stopped sending part-way through a line, so there is no complete
+  // request to act on.
+  client.stop();
+  return LineStatus::TimedOut;
+}"""
+UPLOAD_UPSTREAM = """int WebServer::_uploadReadByte(NetworkClient &client) {
+  int res = client.read();
+
+  if (res < 0) {
+    // keep trying until you either read a valid byte or timeout
+    const unsigned long startMillis = millis();
+    const long timeoutIntervalMillis = client.getTimeout();
+    bool timedOut = false;
+    for (;;) {
+      if (!client.connected()) {
+        return -1;
+      }
+      // loosely modeled after blinkWithoutDelay pattern
+      while (!timedOut && !client.available() && client.connected()) {
+        delay(2);
+        timedOut = (millis() - startMillis) >= timeoutIntervalMillis;
+      }
+
+      res = client.read();
+      if (res >= 0) {
+        return res;  // exit on a valid read
+      }
+      // NOTE: it is possible to get here and have all of the following
+      //       assertions hold true
+      //
+      //       -- client.available() > 0
+      //       -- client.connected == true
+      //       -- res == -1
+      //
+      //       a simple retry strategy overcomes this which is to say the
+      //       assertion is not permanent, but the reason that this works
+      //       is elusive, and possibly indicative of a more subtle underlying
+      //       issue
+
+      timedOut = (millis() - startMillis) >= timeoutIntervalMillis;
+      if (timedOut) {
+        return res;  // exit on a timeout
+      }
+    }
+  }
+
+  return res;
+}"""
+UPLOAD_PATCHED = """int WebServer::_uploadReadByte(NetworkClient &client) {
+  int res = client.read();
+
+  if (res < 0) {
+    // keep trying until you either read a valid byte or timeout
+    const unsigned long startMillis = millis();
+    const uint32_t timeoutIntervalMillis = std::min<uint32_t>(client.getTimeout(), 2500u);
+    bool timedOut = false;
+    for (;;) {
+      if (!client.connected()) {
+        return -1;
+      }
+      // loosely modeled after blinkWithoutDelay pattern
+      while (!timedOut && !client.available() && client.connected()) {
+        delay(2);
+        timedOut = (millis() - startMillis) >= timeoutIntervalMillis;
+      }
+
+      res = client.read();
+      if (res >= 0) {
+        return res;  // exit on a valid read
+      }
+      // NOTE: it is possible to get here and have all of the following
+      //       assertions hold true
+      //
+      //       -- client.available() > 0
+      //       -- client.connected == true
+      //       -- res == -1
+      //
+      //       a simple retry strategy overcomes this which is to say the
+      //       assertion is not permanent, but the reason that this works
+      //       is elusive, and possibly indicative of a more subtle underlying
+      //       issue
+
+      timedOut = (millis() - startMillis) >= timeoutIntervalMillis;
+      if (timedOut) {
+        client.stop();
+        return res;  // exit on a timeout
+      }
+    }
+  }
+
+  return res;
+}"""
+
+
 def fail(message: str) -> None:
     print(f"[patch_arduino_webserver_body] ERROR: {message}")
     env.Exit(1)  # noqa: F821
@@ -173,13 +382,22 @@ text = source.read_text(encoding="utf-8")
 import hashlib
 
 actual = hashlib.sha256(text.encode("utf-8")).hexdigest()
+if actual == PREVIOUS_SHA256:
+    text = text.replace(FUNCTION_PREVIOUS, FUNCTION_PATCHED, 1)
+    text = text.replace(READ_PREVIOUS, READ_PATCHED, 1)
+    text = text.replace(LINE_UPSTREAM, LINE_PATCHED, 1)
+    text = text.replace(UPLOAD_UPSTREAM, UPLOAD_PATCHED, 1)
+    if hashlib.sha256(text.encode("utf-8")).hexdigest() != PATCHED_SHA256:
+        fail("previous body patch upgrade mismatch")
+    source.write_text(text, encoding="utf-8")
+    actual = PATCHED_SHA256
 if actual == PATCHED_SHA256:
-    for required in (READ_PATCHED, STRING_PATCHED, FUNCTION_PATCHED, RAW_PATCHED, CONTRACT_SYMBOL):
+    for required in (READ_PATCHED, STRING_PATCHED, FUNCTION_PATCHED, RAW_PATCHED, LINE_PATCHED, UPLOAD_PATCHED, CONTRACT_SYMBOL):
         if required not in text:
             fail("existing WebServer body patch is incomplete")
     print("[patch_arduino_webserver_body] already applied")
 elif actual == UPSTREAM_SHA256:
-    for upstream in (READ_UPSTREAM, STRING_UPSTREAM, INCLUDE_UPSTREAM, FUNCTION_UPSTREAM, RAW_UPSTREAM):
+    for upstream in (READ_UPSTREAM, STRING_UPSTREAM, INCLUDE_UPSTREAM, FUNCTION_UPSTREAM, RAW_UPSTREAM, LINE_UPSTREAM, UPLOAD_UPSTREAM):
         if text.count(upstream) != 1:
             fail("pinned Parsing.cpp does not contain the unique expected body-reader shape")
     text = text.replace(INCLUDE_UPSTREAM, INCLUDE_PATCHED, 1)
@@ -187,6 +405,8 @@ elif actual == UPSTREAM_SHA256:
     text = text.replace(READ_UPSTREAM, READ_PATCHED, 1)
     text = text.replace(STRING_UPSTREAM, STRING_PATCHED, 1)
     text = text.replace(RAW_UPSTREAM, RAW_PATCHED, 1)
+    text = text.replace(LINE_UPSTREAM, LINE_PATCHED, 1)
+    text = text.replace(UPLOAD_UPSTREAM, UPLOAD_PATCHED, 1)
     patched = hashlib.sha256(text.encode("utf-8")).hexdigest()
     if patched != PATCHED_SHA256:
         fail(f"generated patched Parsing.cpp identity mismatch: expected {PATCHED_SHA256}, got {patched}")

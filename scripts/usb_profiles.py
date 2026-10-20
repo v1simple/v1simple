@@ -20,6 +20,7 @@ MAX_DESCRIPTION_BYTES = 4096
 MAX_PROFILE_COUNT = 10
 BUNDLE_VERSION = 5
 CHUNK = 64
+BACKUP_BUSY_RETRY_SECONDS = 30
 PREFIX = b"@V1USB1 "
 SLOT_KEYS_V1 = {"name", "profile", "mode", "color", "volumeConfigured", "volume", "muteVolume",
                 "darkMode", "muteToZero", "alertPersist", "priorityArrowOnly"}
@@ -43,8 +44,9 @@ class TransportError(ProfileError):
 
 
 class DeviceError(ProfileError):
-    def __init__(self, code):
+    def __init__(self, code, *, backup_storage_busy=False):
         self.code = code
+        self.backup_storage_busy = backup_storage_busy
         super().__init__(f"Device rejected the command: {code}")
 
 
@@ -541,7 +543,9 @@ class Client:
                         if not reply["ok"]:
                             code = reply.get("error")
                             code = code if type(code) is str and re.fullmatch(r"[a-z0-9_]{1,64}", code) else "rejected"
-                            raise DeviceError(code)
+                            raise DeviceError(
+                                code, backup_storage_busy=(verb == "backup" and code == "backup_failed"
+                                                           and reply.get("detail") == "Profile storage busy"))
                         return reply
             except OSError:
                 self.link.close()
@@ -625,7 +629,21 @@ class Device:
                     raise TransportError(message) from exc
 
     def backup(self):
-        result = self.client.command("backup", timeout=30)
+        retry_deadline = None
+        while True:
+            try:
+                result = self.client.command("backup", timeout=30, deadline=retry_deadline)
+                break
+            except DeviceError as exc:
+                if not exc.backup_storage_busy:
+                    raise
+                # A completed restore can still be writing its SD mirror. A
+                # rejected ID stays cached, so retry only this read with a new ID.
+                if retry_deadline is None:
+                    retry_deadline = self.client.clock() + BACKUP_BUSY_RETRY_SECONDS
+                self.client.sleep(min(.25, max(0, retry_deadline - self.client.clock())))
+                if self.client.clock() >= retry_deadline:
+                    raise TransportError("Profile storage remained busy; backup not confirmed") from exc
         length, checksum = result.get("bytes"), result.get("crc32")
         require(integer(length, 1, MAX_PAYLOAD) and type(checksum) is str
                 and re.fullmatch(r"[0-9a-fA-F]{8}", checksum), "Invalid backup length/checksum")

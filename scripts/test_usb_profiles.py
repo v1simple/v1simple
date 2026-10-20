@@ -89,6 +89,7 @@ class WireDevice:
         self.bad_crc = False
         self.no_transition = False
         self.mode_rejections = []
+        self.backup_rejections = []
         self.extra_after_commit = False
         self.wrong_normal_consumer = False
         self.read_count = 0
@@ -163,6 +164,8 @@ class WireDevice:
             return {"ok": True, "mode": "restarting"}
         assert self.mode == "maintenance"
         if verb == "backup":
+            if self.backup_rejections:
+                return self.backup_rejections.pop(0)
             exported = deepcopy(self.current)
             exported["profiles"].reverse()  # Catalog order is not storage meaning.
             self.download = json.dumps(exported, separators=(",", ":")).encode()
@@ -393,6 +396,103 @@ class USBProfilesTests(unittest.TestCase):
         self.assertTrue(raw)
         self.assertTrue(usb.same_bundle(exported, self.peer.current))
         self.assertEqual(self.peer.closes, 0)
+
+    def test_backup_retries_explicit_storage_busy_without_repeating_commit(self):
+        self.peer.mode = "maintenance"
+        self.peer.backup_rejections = [
+            {"ok": False, "error": "backup_failed", "detail": "Profile storage busy"}
+        ] * 2
+        desired = usb.migrate_bundle(bundle_v4())
+        result = self.device.replace(desired)
+
+        self.assertTrue(result["readback_verified"])
+        self.assertTrue(usb.same_bundle(self.peer.current, desired))
+        self.assertEqual((self.peer.mode, self.peer.boot, self.peer.commits), ("maintenance", 10, 1))
+        requests = [request_id for request_id, verb, _ in self.peer.history if verb == "backup"]
+        self.assertEqual(len(requests), 3)
+        self.assertEqual(len(set(requests)), 3)
+        self.assertEqual(sum(verb == "begin" for _, verb, _ in self.peer.history), 1)
+        self.assertEqual(sum(verb == "commit" for _, verb, _ in self.peer.history), 1)
+        writes = [args[0] for _, verb, args in self.peer.history if verb == "write"]
+        self.assertEqual(len(writes), len(set(writes)))
+        self.assertFalse(any(verb in ("maintenance", "normal", "abort") for _, verb, _ in self.peer.history))
+        self.assertEqual(self.peer.closes, 0)
+
+    def test_backup_permanent_storage_busy_stops_at_retry_deadline(self):
+        self.peer.mode = "maintenance"
+        self.peer.backup_rejections = [
+            {"ok": False, "error": "backup_failed", "detail": "Profile storage busy"}
+        ] * 200
+        started = self.clock()
+        with self.assertRaisesRegex(usb.TransportError, "storage remained busy"):
+            self.device.backup()
+
+        # One short explicit rejection precedes the shared 30-second retry window.
+        self.assertGreaterEqual(self.clock() - started, 30)
+        self.assertLess(self.clock() - started, 30.1)
+        requests = [request_id for request_id, verb, _ in self.peer.history if verb == "backup"]
+        self.assertGreater(len(requests), 1)
+        self.assertEqual(len(set(requests)), len(requests))
+        self.assertTrue(all(verb == "backup" for _, verb, _ in self.peer.history))
+        self.assertEqual((self.peer.boot, self.peer.commits), (10, 0))
+
+    def test_backup_other_rejections_fail_immediately_without_exposing_detail(self):
+        self.peer.mode = "maintenance"
+        for error, detail in (
+            ("backup_failed", "Private fixture storage failure"),
+            ("backup_failed", None),
+            ("backup_failed", "Profile storage busy "),
+            ("backup_failed", {"reason": "Profile storage busy"}),
+            ("busy", "Profile storage busy"),
+            ("storage_failed", "Profile storage busy"),
+        ):
+            with self.subTest(error=error, detail=detail):
+                self.peer.history.clear()
+                self.peer.backup_rejections = [{"ok": False, "error": error, "detail": detail}]
+                started = self.clock()
+                with self.assertRaises(usb.DeviceError) as caught:
+                    self.device.backup()
+                self.assertEqual(str(caught.exception), f"Device rejected the command: {error}")
+                self.assertEqual(len(self.peer.history), 1)
+                self.assertEqual(self.peer.history[0][1], "backup")
+                self.assertLess(self.clock() - started, .1)
+                self.assertEqual(self.peer.commits, 0)
+
+    def test_backup_lost_reply_after_busy_cannot_extend_retry_deadline(self):
+        self.peer.mode = "maintenance"
+        self.peer.backup_rejections = [
+            {"ok": False, "error": "backup_failed", "detail": "Profile storage busy"}
+        ]
+        dispatch = self.peer.dispatch
+
+        def lose_retry_reply(verb, args):
+            if verb == "backup" and not self.peer.backup_rejections:
+                self.peer.drop_always.add("backup")
+            return dispatch(verb, args)
+
+        started = self.clock()
+        with patch.object(self.peer, "dispatch", side_effect=lose_retry_reply):
+            with self.assertRaisesRegex(usb.TransportError, "No complete USB acknowledgement for backup"):
+                self.device.backup()
+        self.assertGreaterEqual(self.clock() - started, 30)
+        self.assertLess(self.clock() - started, 30.1)
+        requests = [request_id for request_id, verb, _ in self.peer.history if verb == "backup"]
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(len(set(requests)), 2)
+        self.assertEqual(self.peer.commits, 0)
+
+    def test_backup_initial_transport_timeout_keeps_existing_budget_and_exact_retries(self):
+        self.peer.mode = "maintenance"
+        self.peer.drop_always.add("backup")
+        started = self.clock()
+        with self.assertRaisesRegex(usb.TransportError, "No complete USB acknowledgement for backup"):
+            self.device.backup()
+        self.assertGreaterEqual(self.clock() - started, 90)
+        self.assertLess(self.clock() - started, 90.1)
+        self.assertEqual(len(self.peer.history), 3)
+        self.assertEqual(len({request_id for request_id, _, _ in self.peer.history}), 1)
+        self.assertTrue(all(verb == "backup" for _, verb, _ in self.peer.history))
+        self.assertEqual(self.peer.commits, 0)
 
     def test_actual_io_failure_closes_link_before_exact_retry(self):
         self.peer.write_error_once = True

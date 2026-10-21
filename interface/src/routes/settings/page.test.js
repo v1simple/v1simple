@@ -1021,6 +1021,127 @@ describe('settings route page', () => {
     });
 
     it.each(wifiStatusMutationPaths)(
+        'reads status after Test when %s has an older status request pending',
+        async (operation) => {
+            const testStatus = createDeferred();
+            const { fetchMock, oldStatus, state } = installWifiStatusMutationFetch(operation, {
+                pendingStatus: true
+            });
+            // Keep the existing mutation fixtures, but make the later Test own
+            // the next status request after the held pre-Test response settles.
+            const defaultFetch = fetchMock.getMockImplementation();
+            let testStarted = false;
+            fetchMock.mockImplementation((url, init) => {
+                if (url === '/api/wifi/networks/test' && init?.method === 'POST') {
+                    testStarted = true;
+                    return Promise.resolve(jsonResponse({ success: true }));
+                }
+                if (url === '/api/wifi/status' && testStarted) {
+                    state.statusReads += 1;
+                    return testStatus.promise;
+                }
+                return defaultFetch(url, init);
+            });
+            const { unmount } = render(Page);
+            try {
+                await screen.findByText(/Connected to HomeWifi • Slot 1/);
+                await performWifiStatusMutation(operation);
+                await waitFor(() => expect(state.statusReads).toBe(2));
+                const phone = screen.getByText('Phone').closest('.rounded-box');
+                const testButton = [...phone.querySelectorAll('button')]
+                    .find((button) => button.textContent.trim() === 'Test');
+                expect(testButton).toBeEnabled();
+                await fireEvent.click(testButton);
+                await screen.findByText('Testing connection to PhoneHotspot...');
+                expect(jsonBodies(fetchMock, '/api/wifi/networks/test')).toEqual([{ index: 1 }]);
+                expect(state.statusReads).toBe(2);
+
+                oldStatus.resolve(jsonResponse({
+                    enabled: operation !== 'restore',
+                    state: operation === 'restore' ? 'disabled' : 'disconnected'
+                }));
+                await waitFor(() => expect(state.statusReads).toBe(3));
+                expect(screen.queryByText('Could not connect to PhoneHotspot')).not.toBeInTheDocument();
+                expect(screen.getAllByRole('button', { name: 'Test' }).every((button) => button.disabled)).toBe(true);
+                testStatus.resolve(jsonResponse({
+                    enabled: true,
+                    state: 'connected',
+                    connectedSSID: 'PhoneHotspot',
+                    connectedSlotIndex: 1
+                }));
+                await screen.findByText('Connected to PhoneHotspot');
+                expect(wifiClientToggle()).toBeChecked();
+                expect(screen.getAllByRole('button', { name: 'Test' }).every((button) => !button.disabled)).toBe(true);
+                expect(state.statusReads).toBe(3);
+            } finally {
+                oldStatus.resolve(jsonResponse({ enabled: true, state: 'disconnected' }));
+                testStatus.resolve(jsonResponse({ enabled: true, state: 'disconnected' }));
+                unmount();
+            }
+        }
+    );
+
+    it.each(wifiStatusMutationPaths)(
+        'finishes Test from current status when %s supersedes its pending reply',
+        async (operation) => {
+            vi.useFakeTimers();
+            const { oldStatus, state } = installWifiStatusMutationFetch(operation, { pendingStatus: true });
+            const { unmount } = render(Page);
+            try {
+                await screen.findByText(/Connected to HomeWifi • Slot 1/);
+                await fireEvent.click(screen.getAllByRole('button', { name: 'Test' })[0]);
+                await waitFor(() => expect(state.statusReads).toBe(2));
+                await performWifiStatusMutation(operation);
+                await waitFor(() => expect(state.committed).toBe(true));
+                oldStatus.resolve(jsonResponse({
+                    enabled: true,
+                    state: 'connected',
+                    connectedSSID: 'HomeWifi',
+                    connectedSlotIndex: 0
+                }));
+                await expectReconciledWifiStatus(operation);
+                expect(screen.queryByText('Connected to HomeWifi')).not.toBeInTheDocument();
+                await vi.advanceTimersByTimeAsync(1000);
+                await screen.findByText('Could not connect to HomeWifi');
+                if (operation !== 'restore') {
+                    expect(screen.getAllByRole('button', { name: 'Test' }).every((button) => !button.disabled)).toBe(true);
+                }
+                expect(state.statusReads).toBe(4);
+            } finally { unmount(); }
+        }
+    );
+
+    it('keeps Test polling when a different saved slot is deleted', async () => {
+        vi.useFakeTimers();
+        const { fetchMock, oldStatus, state } = installWifiStatusMutationFetch('delete', { pendingStatus: true });
+        const defaultFetch = fetchMock.getMockImplementation();
+        fetchMock.mockImplementation((url, init) => {
+            if (url === '/api/wifi/status' && state.committed) {
+                state.statusReads += 1;
+                return Promise.resolve(jsonResponse(state.statusReads === 3
+                    ? { enabled: true, state: 'connecting', savedSSID: 'PhoneHotspot' }
+                    : { enabled: true, state: 'connected', connectedSSID: 'PhoneHotspot', connectedSlotIndex: 1 }));
+            }
+            return defaultFetch(url, init);
+        });
+        const { unmount } = render(Page);
+        try {
+            await screen.findByText(/Connected to HomeWifi • Slot 1/);
+            await fireEvent.click(screen.getAllByRole('button', { name: 'Test' })[1]);
+            await waitFor(() => expect(state.statusReads).toBe(2));
+            await performWifiStatusMutation('delete');
+            await waitFor(() => expect(state.committed).toBe(true));
+            oldStatus.resolve(jsonResponse({ enabled: true, state: 'failed' }));
+            await screen.findByText(/Connecting to PhoneHotspot/);
+            expect(screen.queryByText('Could not connect to PhoneHotspot')).not.toBeInTheDocument();
+            await vi.advanceTimersByTimeAsync(1000);
+            await screen.findByText('Connected to PhoneHotspot');
+            expect(screen.getAllByRole('button', { name: 'Test' }).every((button) => !button.disabled)).toBe(true);
+            expect(state.statusReads).toBe(4);
+        } finally { unmount(); }
+    });
+
+    it.each(wifiStatusMutationPaths)(
         'does not launch WiFi status reconciliation when %s settles after unmount',
         async (operation) => {
             const pendingMutation = createDeferred();

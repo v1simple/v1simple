@@ -675,22 +675,29 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ index: slot.index })
             });
+            if (runId !== wifiTestRunId) return;
             if (!res.ok) {
                 message = { type: 'error', text: `Failed to test ${slot.ssid}` };
                 return;
             }
             message = { type: 'info', text: `Testing connection to ${slot.ssid}...` };
+            let firstStatusRead = true;
 
             while (Date.now() < deadlineMs) {
                 const statusTimeoutMs = Math.min(
                     WIFI_TEST_STATUS_TIMEOUT_MS,
                     deadlineMs - Date.now()
                 );
-                const statusRunId = wifiStatusRunId;
-                let status = await fetchWifiStatus({
+                const statusRefresh = fetchWifiStatus({
                     reportError: false,
-                    timeoutMs: statusTimeoutMs
+                    timeoutMs: statusTimeoutMs,
+                    forceFresh: firstStatusRead
                 });
+                // Starting Test changes the connection. Its first read must
+                // follow the POST, and capture the generation it just created.
+                const statusRunId = wifiStatusRunId;
+                firstStatusRead = false;
+                let status = await statusRefresh;
                 if (runId !== wifiTestRunId) return;
                 // A mutation can settle after the reader completes but before
                 // this consumer resumes. Retry through the same bounded loop.

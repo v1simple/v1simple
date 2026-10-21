@@ -54,7 +54,9 @@
     });
     let savedWifiSlots = $state([]);
     let wifiNetworksLoading = $state(false);
-    let wifiNetworkActionInFlight = $state(false);
+    let wifiNetworkActionsInFlight = $state(0);
+    const wifiNetworkActionInFlight = $derived(wifiNetworkActionsInFlight > 0);
+    let wifiNetworksRunId = 0;
     let wifiTestingIndex = $state(null);
     let wifiOrdering = $state(false);
     let wifiScan = $state(createWifiScanState());
@@ -112,6 +114,7 @@
             wifiEditor = closeWifiEditorState(wifiEditor, { force: true }).state;
             wifiTestRunId += 1;
             wifiToggleRunId += 1;
+            invalidateSavedWifiNetworks();
             releaseDeviceSettings();
             stopWifiPoll();
         };
@@ -243,23 +246,38 @@
         };
     }
 
+    function invalidateSavedWifiNetworks() {
+        // A read started before a mutation cannot describe its result. Every
+        // settled mutation starts a fresh read, including failed/ambiguous POSTs.
+        wifiNetworksRunId += 1;
+    }
+
     async function fetchSavedWifiNetworks() {
+        if (!componentMounted) return;
+        const runId = ++wifiNetworksRunId;
+        const isCurrent = () => componentMounted && runId === wifiNetworksRunId;
         wifiNetworksLoading = true;
         try {
             const res = await fetchJsonWithTimeout('/api/wifi/networks');
+            if (!isCurrent()) return;
             if (res.ok) {
                 const data = res.data;
                 savedWifiSlots = Array.isArray(data.slots)
                     ? data.slots.map((slot, index) => normalizeWifiSlot(slot, index))
                     : [];
                 clearMessageText(WIFI_NETWORKS_ERROR_TEXT);
+                return true;
             } else {
                 message = { type: 'error', text: WIFI_NETWORKS_ERROR_TEXT };
+                return false;
             }
         } catch (e) {
-            message = { type: 'error', text: WIFI_NETWORKS_ERROR_TEXT };
+            if (isCurrent()) {
+                message = { type: 'error', text: WIFI_NETWORKS_ERROR_TEXT };
+                return false;
+            }
         } finally {
-            wifiNetworksLoading = false;
+            if (isCurrent()) wifiNetworksLoading = false;
         }
     }
 
@@ -440,6 +458,7 @@
         const password = wifiScan.password;
         const targetIndex = wifiScan.targetIndex;
         wifiScan = setWifiScanSaving(wifiScan, true);
+        invalidateSavedWifiNetworks();
 
         try {
             const body = {
@@ -459,6 +478,7 @@
                 body: JSON.stringify(body)
             });
 
+            if (!componentMounted) return;
             if (!res.ok) {
                 message = { type: 'error', text: 'Failed to save WiFi network' };
                 return;
@@ -466,10 +486,10 @@
 
             message = { type: 'success', text: `Saved ${ssid}` };
             closeWifiModal({ force: true });
-            await fetchSavedWifiNetworks();
         } catch (e) {
-            message = { type: 'error', text: 'Failed to save WiFi network' };
+            if (componentMounted) message = { type: 'error', text: 'Failed to save WiFi network' };
         } finally {
+            await fetchSavedWifiNetworks();
             wifiScan = setWifiScanSaving(wifiScan, false);
         }
     }
@@ -501,6 +521,7 @@
         let response = null;
         let transportFailed = false;
         wifiToggleInFlight = true;
+        invalidateSavedWifiNetworks();
         try {
             try {
                 response = await fetchWithTimeout('/api/wifi/enable', {
@@ -519,8 +540,8 @@
             });
             if (runId !== wifiToggleRunId) return;
 
-            await fetchSavedWifiNetworks();
-            if (runId !== wifiToggleRunId) return;
+            const networksLoaded = await fetchSavedWifiNetworks();
+            if (runId !== wifiToggleRunId || networksLoaded !== true) return;
 
             if (transportFailed) {
                 message = { type: 'error', text: 'Connection error' };
@@ -579,48 +600,52 @@
         const body = buildWifiEditorRequest(wifiEditor);
         if (!body || wifiNetworkActionInFlight) return;
 
-        wifiNetworkActionInFlight = true;
+        wifiNetworkActionsInFlight += 1;
+        invalidateSavedWifiNetworks();
         try {
             const res = await fetchWithTimeout('/api/wifi/networks', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body)
             });
+            if (!componentMounted) return;
             if (!res.ok) {
                 message = { type: 'error', text: 'Failed to save WiFi network' };
                 return;
             }
             message = { type: 'success', text: `Saved ${body.ssid}` };
             closeWifiEditor({ force: true });
-            await fetchSavedWifiNetworks();
         } catch (e) {
-            message = { type: 'error', text: 'Failed to save WiFi network' };
+            if (componentMounted) message = { type: 'error', text: 'Failed to save WiFi network' };
         } finally {
-            wifiNetworkActionInFlight = false;
+            await fetchSavedWifiNetworks();
+            wifiNetworkActionsInFlight -= 1;
         }
     }
 
     async function deleteWifiSlot(slot) {
         if (!confirm(`Delete saved WiFi network "${slot.ssid}"?`)) return;
 
-        wifiNetworkActionInFlight = true;
+        wifiNetworkActionsInFlight += 1;
+        invalidateSavedWifiNetworks();
         try {
             const res = await fetchWithTimeout('/api/wifi/networks/delete', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ index: slot.index })
             });
+            if (!componentMounted) return;
             if (!res.ok) {
                 message = { type: 'error', text: 'Failed to delete WiFi network' };
                 return;
             }
             message = { type: 'success', text: `Deleted ${slot.ssid}` };
+        } catch (e) {
+            if (componentMounted) message = { type: 'error', text: 'Failed to delete WiFi network' };
+        } finally {
             await fetchSavedWifiNetworks();
             await fetchWifiStatus();
-        } catch (e) {
-            message = { type: 'error', text: 'Failed to delete WiFi network' };
-        } finally {
-            wifiNetworkActionInFlight = false;
+            wifiNetworkActionsInFlight -= 1;
         }
     }
 
@@ -717,23 +742,24 @@
         );
 
         wifiOrdering = true;
+        let resultMessage = null;
+        invalidateSavedWifiNetworks();
         try {
             const res = await fetchWithTimeout('/api/wifi/networks/priorities', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ updates })
             });
+            if (!componentMounted) return;
             if (!res.ok) {
-                await fetchSavedWifiNetworks();
-                message = { type: 'error', text: 'Failed to reorder WiFi networks' };
+                resultMessage = { type: 'error', text: 'Failed to reorder WiFi networks' };
                 return;
             }
-            await fetchSavedWifiNetworks();
-            message = { type: 'success', text: 'WiFi network priority updated' };
+            resultMessage = { type: 'success', text: 'WiFi network priority updated' };
         } catch (e) {
-            await fetchSavedWifiNetworks();
-            message = { type: 'error', text: 'Failed to reorder WiFi networks' };
+            resultMessage = { type: 'error', text: 'Failed to reorder WiFi networks' };
         } finally {
+            if (await fetchSavedWifiNetworks()) message = resultMessage;
             wifiOrdering = false;
         }
     }
@@ -864,15 +890,19 @@
 
         restoring = true;
         message = null;
+        let restoreSubmitted = false;
 
         try {
             const text = await restoreFile.text();
+            if (!componentMounted) return;
             const validationError = getBackupValidationError(text);
             if (validationError) {
                 message = { type: 'error', text: validationError };
                 return;
             }
 
+            restoreSubmitted = true;
+            invalidateSavedWifiNetworks();
             const res = await fetchWithTimeout(
                 '/api/settings/restore',
                 {
@@ -887,21 +917,22 @@
                 })
             );
 
+            if (!componentMounted) return;
             const data = res.data;
             if (res.ok && data.success) {
                 message = { type: 'success', text: 'Settings restored and reloaded.' };
                 restoreFile = null;
                 await Promise.all([
                     fetchSettings({ force: true }),
-                    fetchWifiStatus(),
-                    fetchSavedWifiNetworks()
+                    fetchWifiStatus()
                 ]);
             } else {
                 message = { type: 'error', text: data.error || 'Failed to restore backup' };
             }
         } catch (e) {
-            message = { type: 'error', text: 'Failed to read backup file' };
+            if (componentMounted) message = { type: 'error', text: 'Failed to read backup file' };
         } finally {
+            if (restoreSubmitted) await fetchSavedWifiNetworks();
             restoring = false;
         }
     }

@@ -8049,6 +8049,7 @@ void test_settings_backup_replacement_preserves_valid_previous_across_errors_and
 
 #include "nvs_checked_load_tests.h"
 #include "journal_checked_size_tests.h"
+#include "wifi_restore_lifecycle_tests.h"
 
 int main() {
     UNITY_BEGIN();
@@ -8319,5 +8320,14 @@ int main() {
     RUN_TEST(test_divergent_pending_profile_delete_mirrors_fail_closed_and_preserve_evidence);
     RUN_TEST(test_divergent_profile_delete_mirrors_use_watermark_to_select_pending_record);
     RUN_TEST(test_mutation_gate_blocks_same_name_profile_until_pending_journal_cleanup_succeeds);
+    RUN_TEST(test_http_restore_preserves_every_recoverable_password_source_and_slot_move);
+    RUN_TEST(test_http_legacy_same_ssid_restore_uses_the_same_password_resolution);
+    RUN_TEST(test_http_restore_distinguishes_explicit_open_password_from_absent_offline_password);
+    RUN_TEST(test_http_restore_explicit_replacement_empty_and_changed_ssid_take_precedence);
+    RUN_TEST(test_http_restore_credential_source_errors_preserve_bytes_then_retry);
+    RUN_TEST(test_http_restore_interruption_rolls_back_sd_only_password_before_retry);
+    RUN_TEST(test_wifi_healing_late_namespace_faults_leave_disabled_and_retry);
+    RUN_TEST(test_wifi_healing_key_probe_failures_preserve_explicit_disabled_and_recover_missing_keys);
+    RUN_TEST(test_http_legacy_password_replacement_targets_each_primary_slot_and_preserves_other_slots);
     return UNITY_END();
 }

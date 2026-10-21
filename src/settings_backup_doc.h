@@ -11,6 +11,7 @@
 
 // Snapshot of the WiFi client keys present in an NVS settings namespace.
 struct WifiClientKeyPresence {
+    bool available = false;
     bool enabledKeyPresent = false;
     bool ssidKeyPresent = false;
 };

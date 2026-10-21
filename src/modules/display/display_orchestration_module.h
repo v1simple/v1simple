@@ -42,7 +42,7 @@ class DisplayOrchestrationModule {
 
     void processEarly(const DisplayOrchestrationEarlyContext& ctx);
     bool processParsedFrame(const DisplayOrchestrationParsedContext& ctx);
-    // True when a blink or primary/secondary hold expiry needs a render this loop.
+    // True when blinks, hold expiry or disconnected status need an owner refresh.
     bool processLightweightRefresh(const DisplayOrchestrationRefreshContext& ctx);
 
   private:
@@ -58,6 +58,9 @@ class DisplayOrchestrationModule {
     VolumeFadeModule* volumeFade_ = nullptr;
     SpeedMuteModule* speedMute_ = nullptr;
     QuietCoordinatorModule* quiet_ = nullptr;
+
+    uint32_t lastDisconnectedRefreshMs_ = 0;
+    static constexpr uint32_t kDisconnectedRefreshIntervalMs = 250;
 
     // Blink refresh cadence is derived from the renderer's phase timestamp.
 };

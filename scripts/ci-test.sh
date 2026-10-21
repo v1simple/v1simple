@@ -205,6 +205,7 @@ run_step "Native sanitizer unit tests" python3 scripts/run_native_tests_serial.p
 run_step "Native car-mode unit tests" python3 scripts/run_native_tests_serial.py --env native-car
 run_step "Settings Apply lifecycle" python3 scripts/test_settings_apply_lifecycle.py
 run_step "Settings runtime recovery lifecycle" python3 scripts/test_settings_runtime_recovery.py
+run_step "Disconnected display scheduling lifecycle" python3 scripts/test_display_scheduler_lifecycle.py
 run_step "GPS loop ingestion lifecycle" python3 scripts/test_gps_loop_ingestion.py
 
 section "Frontend"

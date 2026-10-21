@@ -238,7 +238,7 @@ class SettingsManager {
 #endif
     void recoverCriticalSettingsAfterFullRestoreFailure(fs::FS* fs, bool hasSdBackup,
                                                         const JsonDocument& backupDoc);
-    void healWifiClientSettings(fs::FS* fs, bool hasSdBackup, const JsonDocument& backupDoc);
+    bool healWifiClientSettings(fs::FS* fs, bool hasSdBackup, const JsonDocument& backupDoc);
     void synchronizeSdBackup(bool hasSdBackup, const char* backupPath, const JsonDocument& backupDoc);
     void noteNvsCommitWithoutBackupIntent();
     bool persistSettingsWithBackupIntent();

@@ -16,6 +16,7 @@
 #include "psram_json_document.h"
 #include "settings_backup_doc.h"
 #include "settings_sanitize.h"
+#include "settings_nvs_reader.h"
 #include "storage_path_status.h"
 #include "v1_settings_json.h"
 
@@ -61,7 +62,8 @@ struct RestoreCredentialSnapshot {
     String sdFileBytes;
 };
 
-bool captureRestoreCredentialSnapshot(StorageManager& storage, RestoreCredentialSnapshot& snapshot);
+bool captureRestoreCredentialSnapshot(StorageManager& storage, RestoreCredentialSnapshot& snapshot,
+                                      const V1Settings* settings = nullptr);
 bool restoreCredentialSnapshot(StorageManager& storage, const RestoreCredentialSnapshot& snapshot);
 
 } // namespace
@@ -422,34 +424,19 @@ bool prepareNetworkFields(const JsonDocument& doc, BackupRestoreScope scope, Pre
 struct StoredSlotPasswordSnapshot {
     String ssid;
     String passwordObf;
+    bool present = false;
 };
 
-bool snapshotWifiStaSlotPasswords(const V1Settings& settings,
+bool snapshotWifiStaSlotPasswords(const V1Settings& settings, StorageManager& storage,
                                   StoredSlotPasswordSnapshot (&snapshot)[kWifiStaSlotCount]) {
-    Preferences prefs;
-    const bool opened = prefs.begin(WIFI_CLIENT_NS, true);
-    if (!opened) {
-        return false;
-    }
     for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
-        if (!exactStringCopy(settings.wifiStaSlots[i].ssid, snapshot[i].ssid)) {
-            prefs.end();
-            return false;
-        }
-        snapshot[i].passwordObf = "";
-        if (snapshot[i].ssid.length() > 0 && prefs.isKey(kNvsWifiStaSlotPassword[i])) {
-            String encoded;
-            String decoded;
-            if (!readBackupPreferenceStringExact(prefs, kNvsWifiStaSlotPassword[i],
-                                                 kMaxEncodedWifiPasswordBytes, encoded) ||
-                !decodeStoredObfuscatedChecked(encoded, decoded)) {
-                prefs.end();
-                return false;
-            }
-            snapshot[i].passwordObf = std::move(encoded);
-        }
+        if (!exactStringCopy(settings.wifiStaSlots[i].ssid, snapshot[i].ssid)) return false;
+        if (snapshot[i].ssid.length() == 0) continue;
+        String decoded;
+        if (!readRecoverableWifiPassword(storage, i, snapshot[i].ssid, snapshot[i].passwordObf,
+                                        snapshot[i].present) ||
+            (snapshot[i].present && !decodeStoredObfuscatedChecked(snapshot[i].passwordObf, decoded))) return false;
     }
-    prefs.end();
     return true;
 }
 
@@ -479,7 +466,7 @@ bool applyPreparedWifiStaSlots(PreparedNetworkFields& prepared, V1Settings& sett
                                bool clearSdSecret) {
     if (!prepared.hasSlotDocument) return false;
     StoredSlotPasswordSnapshot storedPasswords[kWifiStaSlotCount];
-    if (!snapshotWifiStaSlotPasswords(settings, storedPasswords)) {
+    if (!snapshotWifiStaSlotPasswords(settings, storage, storedPasswords)) {
         return false;
     }
 
@@ -492,12 +479,30 @@ bool applyPreparedWifiStaSlots(PreparedNetworkFields& prepared, V1Settings& sett
             continue;
         }
         for (size_t oldIndex = 0; oldIndex < kWifiStaSlotCount; ++oldIndex) {
-            if (storedPasswords[oldIndex].passwordObf.length() > 0 &&
+            if (storedPasswords[oldIndex].present &&
                 storedPasswords[oldIndex].ssid == incoming.slot.ssid) {
                 finalPasswords[index] = &storedPasswords[oldIndex].passwordObf;
                 break;
             }
         }
+    }
+
+    if (prepared.hasWifiClientPasswordObf || prepared.hasLegacyStationPassword) {
+        // Legacy top-level credentials name the primary network, which need
+        // not occupy slot zero in a mixed legacy/slot document.
+        int primary = -1;
+        for (size_t index = 0; index < kWifiStaSlotCount; ++index) {
+            const PreparedWifiStaSlot& candidate = prepared.slots[index];
+            if (!candidate.configured) continue;
+            if (primary < 0 || candidate.slot.priority < prepared.slots[primary].slot.priority ||
+                (candidate.slot.priority == prepared.slots[primary].slot.priority &&
+                 candidate.slot.lastConnectedAtSec > prepared.slots[primary].slot.lastConnectedAtSec)) {
+                primary = static_cast<int>(index);
+            }
+        }
+        if (primary < 0) return false;
+        finalPasswords[primary] = prepared.hasLegacyStationPassword ? &prepared.legacyStationPasswordObf
+                                                                   : &prepared.wifiClientPasswordObf;
     }
 
     if (!clearWifiStaSlotPasswordsForRestore(storage, clearSdSecret)) {
@@ -517,11 +522,6 @@ bool applyPreparedWifiStaSlots(PreparedNetworkFields& prepared, V1Settings& sett
         restoredAny = true;
     }
 
-    if (prepared.hasWifiClientPasswordObf &&
-        !storeWifiClientPasswordObfToNvs(prepared.wifiClientPasswordObf, 0)) return false;
-    if (prepared.hasLegacyStationPassword &&
-        !storeWifiClientPasswordObfToNvs(prepared.legacyStationPasswordObf, 0)) return false;
-
     if (restoredAny && !settings.wifiClientEnabled && !prepared.hasWifiClientEnabled) {
         settings.wifiClientEnabled = true;
     }
@@ -530,8 +530,6 @@ bool applyPreparedWifiStaSlots(PreparedNetworkFields& prepared, V1Settings& sett
     if (clearSdSecret) {
         for (size_t index = 0; index < kWifiStaSlotCount; ++index) {
             const String* encoded = finalPasswords[index];
-            if (index == 0 && prepared.hasWifiClientPasswordObf) encoded = &prepared.wifiClientPasswordObf;
-            if (index == 0 && prepared.hasLegacyStationPassword) encoded = &prepared.legacyStationPasswordObf;
             if (settings.wifiStaSlots[index].isConfigured() && encoded &&
                 !saveWifiClientSecretToSD(storage, index, settings.wifiStaSlots[index].ssid, *encoded)) return false;
         }
@@ -600,31 +598,20 @@ bool applyPreparedNetworkFields(const JsonDocument& doc, PreparedNetworkFields& 
     if (prepared.hasApPassword) settings.apPassword = std::move(prepared.apPassword);
     if (prepared.hasApSsid) settings.apSSID = std::move(prepared.apSsid);
     if (prepared.hasWifiClientEnabled) settings.wifiClientEnabled = prepared.wifiClientEnabled;
-    bool restoredSlots = false;
-    if (prepared.hasSlotDocument) {
-        if (!applyPreparedWifiStaSlots(prepared, settings, storage, synchronizeSdSecrets)) {
-            return false;
-        }
-        restoredSlots = true;
+    // Legacy single-network imports follow the same preservation and clearing
+    // rules as slot documents, including same-SSID credentials outside NVS.
+    if (!prepared.hasSlotDocument && prepared.hasLegacySsid) {
+        prepared.hasSlotDocument = true;
+        PreparedWifiStaSlot& legacy = prepared.slots[0];
+        legacy.present = true;
+        legacy.configured = true;
+        legacy.slot.ssid = std::move(prepared.legacySsid);
+        legacy.slot.label = "Saved";
+        if (legacy.slot.label != "Saved") return false;
+        legacy.slot.priority = 0;
     }
-    if (!restoredSlots && prepared.hasLegacySsid) {
-        if (!clearWifiStaSlotPasswordsForRestore(storage, synchronizeSdSecrets)) {
-            return false;
-        }
-        for (WifiStaSlot& slot : settings.wifiStaSlots) slot = WifiStaSlot();
-        settings.wifiStaSlots[0].ssid = std::move(prepared.legacySsid);
-        settings.wifiStaSlots[0].label = "Saved";
-        settings.wifiStaSlots[0].priority = 0;
-        if (prepared.hasWifiClientPasswordObf &&
-            !storeWifiClientPasswordObfToNvs(prepared.wifiClientPasswordObf, 0)) return false;
-        if (prepared.hasLegacyStationPassword &&
-            !storeWifiClientPasswordObfToNvs(prepared.legacyStationPasswordObf, 0)) return false;
-        const String* encoded = prepared.hasLegacyStationPassword ? &prepared.legacyStationPasswordObf
-                               : prepared.hasWifiClientPasswordObf ? &prepared.wifiClientPasswordObf
-                                                                  : nullptr;
-        if (synchronizeSdSecrets && encoded &&
-            !saveWifiClientSecretToSD(storage, 0, settings.wifiStaSlots[0].ssid, *encoded)) return false;
-    }
+    if (prepared.hasSlotDocument &&
+        !applyPreparedWifiStaSlots(prepared, settings, storage, synchronizeSdSecrets)) return false;
     if (!settings.wifiClientEnabled && settings.hasConfiguredWifiStaSlot() && !prepared.hasWifiClientEnabled)
         settings.wifiClientEnabled = true;
     settings.refreshWifiClientAliasFromSlots();
@@ -649,7 +636,7 @@ bool applyBackupNetworkFields(const JsonDocument& doc, V1Settings& settings, Sto
     V1Settings before;
     RestoreCredentialSnapshot credentialsBefore;
     if (!copySettingsChecked(settings, before) ||
-        (prepared.mutatesCredentials && !captureRestoreCredentialSnapshot(storage, credentialsBefore))) return false;
+        (prepared.mutatesCredentials && !captureRestoreCredentialSnapshot(storage, credentialsBefore, &settings))) return false;
     if (applyPreparedNetworkFields(doc, prepared, settings, storage, scope, clearSdSecret)) return true;
     settings = std::move(before);
     if (prepared.mutatesCredentials && !restoreCredentialSnapshot(storage, credentialsBefore)) {
@@ -910,7 +897,7 @@ bool applyBackupCriticalFieldsAtomically(const JsonDocument& doc, V1Settings& se
     if (!prepareNetworkFields(doc, BackupRestoreScope::CriticalRecovery, network) ||
         !prepareProfileSlotStrings(doc, slots) || !prepareObdFields(doc, obd) ||
         !copySettingsChecked(settings, before) ||
-        (network.mutatesCredentials && !captureRestoreCredentialSnapshot(storage, credentialsBefore))) {
+        (network.mutatesCredentials && !captureRestoreCredentialSnapshot(storage, credentialsBefore, &settings))) {
         return false;
     }
     if (!applyPreparedNetworkFields(doc, network, settings, storage,
@@ -960,7 +947,7 @@ bool applyBackupWifiClientHealingAtomically(const JsonDocument& doc, V1Settings&
     V1Settings before;
     RestoreCredentialSnapshot credentialsBefore;
     if (!copySettingsChecked(settings, before) ||
-        !captureRestoreCredentialSnapshot(storage, credentialsBefore)) return false;
+        !captureRestoreCredentialSnapshot(storage, credentialsBefore, &settings)) return false;
     if (!applyPreparedNetworkFields(doc, network, settings, storage,
                                     BackupRestoreScope::CriticalRecovery, false) ||
         (persist && !persist(persistCtx))) {
@@ -2429,38 +2416,25 @@ ProfileOperationResult profileOperationResult(ProfileStorageStatus status, const
     return result;
 }
 
-bool captureRestoreCredentialSnapshot(StorageManager& storage, RestoreCredentialSnapshot& snapshot) {
-    Preferences prefs;
-    if (!prefs.begin(WIFI_CLIENT_NS, true)) {
-        return false;
-    }
-    for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
-        snapshot.passwordPresent[i] = prefs.isKey(kNvsWifiStaSlotPassword[i]);
-        if (snapshot.passwordPresent[i]) {
-            String encoded;
+bool captureRestoreCredentialSnapshot(StorageManager& storage, RestoreCredentialSnapshot& snapshot,
+                                      const V1Settings* settings) {
+    SettingsNvsReader prefs(WIFI_CLIENT_NS);
+    if (!prefs.good() && prefs.error() != ESP_ERR_NVS_NOT_FOUND) return false;
+    if (prefs.good()) {
+        const auto read = [&](const char* key, bool& present, String& encoded) {
+            present = prefs.isKey(key);
+            if (!prefs.good()) return false;
+            if (!present) return true;
+            encoded = prefs.getString(key);
             String decoded;
-            if (!readBackupPreferenceStringExact(prefs, kNvsWifiStaSlotPassword[i],
-                                                 kMaxEncodedWifiPasswordBytes, encoded) ||
-                !decodeStoredObfuscatedChecked(encoded, decoded)) {
-                prefs.end();
-                return false;
-            }
-            snapshot.passwordValues[i] = std::move(encoded);
+            return prefs.good() && encoded.length() <= kMaxEncodedWifiPasswordBytes &&
+                   decodeStoredObfuscatedChecked(encoded, decoded);
+        };
+        for (size_t i = 0; i < kWifiStaSlotCount; ++i) {
+            if (!read(kNvsWifiStaSlotPassword[i], snapshot.passwordPresent[i], snapshot.passwordValues[i])) return false;
         }
+        if (!read(kNvsWifiPassword, snapshot.legacyPasswordPresent, snapshot.legacyPasswordValue)) return false;
     }
-    snapshot.legacyPasswordPresent = prefs.isKey(kNvsWifiPassword);
-    if (snapshot.legacyPasswordPresent) {
-        String encoded;
-        String decoded;
-        if (!readBackupPreferenceStringExact(prefs, kNvsWifiPassword,
-                                             kMaxEncodedWifiPasswordBytes, encoded) ||
-            !decodeStoredObfuscatedChecked(encoded, decoded)) {
-            prefs.end();
-            return false;
-        }
-        snapshot.legacyPasswordValue = std::move(encoded);
-    }
-    prefs.end();
 
     snapshot.sdRelevant = storage.isReady() && storage.isSDCard();
     if (!snapshot.sdRelevant) {
@@ -2480,7 +2454,23 @@ bool captureRestoreCredentialSnapshot(StorageManager& storage, RestoreCredential
     if (secretStatus == WifiClientSecretReadStatus::Unavailable ||
         secretStatus == WifiClientSecretReadStatus::Invalid) return false;
     snapshot.sdFilePresent = secretStatus == WifiClientSecretReadStatus::Valid;
-    if (!snapshot.sdFilePresent) return true;
+    if (!snapshot.sdFilePresent) {
+        lock.release();
+        // A legacy settings backup may be the only password store. Recovery
+        // refreshes that backup after rollback, so retain its effective password
+        // in the existing NVS rollback record before any replacement occurs.
+        // Existing NVS (including explicit empty) and sidecar bytes stay exact.
+        if (settings) for (size_t index = 0; index < kWifiStaSlotCount; ++index) {
+            if (!settings->wifiStaSlots[index].isConfigured() || snapshot.passwordPresent[index] ||
+                (index == 0 && snapshot.legacyPasswordPresent)) continue;
+            String decoded;
+            if (!readRecoverableWifiPassword(storage, index, settings->wifiStaSlots[index].ssid,
+                                            snapshot.passwordValues[index], snapshot.passwordPresent[index]) ||
+                (snapshot.passwordPresent[index] &&
+                 !decodeStoredObfuscatedChecked(snapshot.passwordValues[index], decoded))) return false;
+        }
+        return true;
+    }
     File file = fs->open(secretPath, FILE_READ);
     if (!file) {
         return false;
@@ -2830,7 +2820,7 @@ SettingsBackupApplyResult SettingsManager::applyBackupDocument(const JsonDocumen
         Serial.println("[Settings] ERROR: Backup document failed transaction validation");
         return result;
     }
-    if (!profilesOnly && !captureRestoreCredentialSnapshot(*storage_, credentialsBefore)) {
+    if (!profilesOnly && !captureRestoreCredentialSnapshot(*storage_, credentialsBefore, &settingsBefore)) {
         Serial.println("[Settings] ERROR: Failed to snapshot credential stores before restore");
         return result;
     }
@@ -3371,12 +3361,12 @@ WifiClientKeyPresence readWifiClientKeyPresence(const char* settingsNamespace) {
         return presence;
     }
 
-    Preferences prefs;
-    if (!prefs.begin(settingsNamespace, true)) {
-        return presence;
-    }
+    SettingsNvsReader prefs(settingsNamespace);
+    if (!prefs.good()) return presence;
     presence.enabledKeyPresent = prefs.isKey(kNvsWifiClientEnabled);
-    presence.ssidKeyPresent = prefs.isKey(kNvsWifiStaSlotSsid[0]) || prefs.isKey(kNvsWifiClientSsid);
-    prefs.end();
+    const bool slotSsidPresent = prefs.isKey(kNvsWifiStaSlotSsid[0]);
+    const bool legacySsidPresent = prefs.isKey(kNvsWifiClientSsid);
+    presence.ssidKeyPresent = slotSsidPresent || legacySsidPresent;
+    presence.available = prefs.good();
     return presence;
 }

@@ -55,6 +55,11 @@ bool loadBestBackupDocument(fs::FS* fs, JsonDocument& outDoc, const char** outPa
                             bool verboseErrors = false, BackupDocumentLoadStatus* outStatus = nullptr);
 bool parseBoolVariant(const JsonVariantConst& value, bool& out);
 
+// Read only: use the same NVS/SD/legacy precedence as credential transactions.
+// An absent key with offline SD remains absent; an explicit empty key is present.
+bool readRecoverableWifiPassword(StorageManager& storage, size_t index, const String& ssid,
+                                 String& encoded, bool& present);
+
 struct SerializedSettingsBackupPayload {
     using MarkCompleted = bool (*)(uint32_t, void*);
 

@@ -909,12 +909,9 @@ void test_secondary_card_expiry_waits_for_existing_presentation_gates() {
     runtime.preview.requestHold(1000);
     TEST_ASSERT_FALSE(runtime.refresh(12004));
     runtime.preview.cancel();
-    runtime.ble.setConnected(false);
-    TEST_ASSERT_FALSE(runtime.refresh(12005));
     TEST_ASSERT_TRUE(canvas()->flushSnapshots.empty());
     TEST_ASSERT_EQUAL_INT(1, display.ut_elementCaches().cards.lastDrawnCount);
 
-    runtime.ble.setConnected(true);
     TEST_ASSERT_TRUE(runtime.refresh(12006));
     TEST_ASSERT_EQUAL_INT(0, display.ut_elementCaches().cards.lastDrawnCount);
     TEST_ASSERT_EQUAL_UINT(1, canvas()->flushSnapshots.size());
@@ -1204,14 +1201,40 @@ void test_idle_counter_blink_respects_splash_preview_and_runtime_gates() {
     runtime.preview.requestHold(1000);
     TEST_ASSERT_FALSE(runtime.refresh(10096));
     runtime.preview.cancel();
-    runtime.ble.setConnected(false);
-    TEST_ASSERT_FALSE(runtime.refresh(10096));
     TEST_ASSERT_TRUE(canvas()->flushSnapshots.empty());
     TEST_ASSERT_EQUAL_STRING("J", display.ut_elementCaches().topCounter.lastText);
-    runtime.ble.setConnected(true);
     TEST_ASSERT_TRUE(runtime.refresh(10096));
     TEST_ASSERT_EQUAL_STRING(" ", display.ut_elementCaches().topCounter.lastText);
     TEST_ASSERT_EQUAL_UINT(1, canvas()->flushSnapshots.size());
+}
+
+void test_disconnected_status_refresh_admission_keeps_presentation_gates_and_cadence() {
+    CounterBlinkRuntime runtime;
+    runtime.ble.setConnected(false);
+    DisplayOrchestrationRefreshContext context;
+    context.nowMs = 10000;
+    context.bootSplashHoldActive = true;
+    TEST_ASSERT_FALSE(runtime.orchestration.processLightweightRefresh(context));
+    context.bootSplashHoldActive = false;
+    context.pipelineRanThisLoop = true;
+    TEST_ASSERT_FALSE(runtime.orchestration.processLightweightRefresh(context));
+    context.pipelineRanThisLoop = false;
+    context.overloadLateThisLoop = true;
+    TEST_ASSERT_FALSE(runtime.orchestration.processLightweightRefresh(context));
+    context.overloadLateThisLoop = false;
+    runtime.preview.requestHold(1000);
+    TEST_ASSERT_FALSE(runtime.orchestration.processLightweightRefresh(context));
+    runtime.preview.cancel();
+
+    // Disconnection now admits a bounded status refresh. This fixture stubs
+    // SCAN, so check admission here; display_scheduler_lifecycle follows the
+    // admitted request through the real disconnected owner and painters.
+    TEST_ASSERT_TRUE(runtime.orchestration.processLightweightRefresh(context));
+    context.nowMs = 10249;
+    TEST_ASSERT_FALSE(runtime.orchestration.processLightweightRefresh(context));
+    context.nowMs = 10250;
+    TEST_ASSERT_TRUE(runtime.orchestration.processLightweightRefresh(context));
+    TEST_ASSERT_FALSE(runtime.orchestration.processLightweightRefresh(context));
 }
 
 void test_timed_preview_expiry_restores_once_on_the_next_unsuppressed_loop() {
@@ -1339,6 +1362,7 @@ int main() {
     RUN_TEST(test_spec_image_pair_blinks_k_band_and_front_arrow_through_full_pipeline);
     RUN_TEST(test_ku_primary_uses_physical_k_flash_cadence_through_full_pipeline);
     RUN_TEST(test_idle_counter_blink_respects_splash_preview_and_runtime_gates);
+    RUN_TEST(test_disconnected_status_refresh_admission_keeps_presentation_gates_and_cadence);
     RUN_TEST(test_timed_preview_expiry_restores_once_on_the_next_unsuppressed_loop);
     RUN_TEST(test_cancelled_preview_waits_through_suppression_then_restores_once);
     RUN_TEST(test_idle_blink_refresh_does_not_replace_stealth_owner);

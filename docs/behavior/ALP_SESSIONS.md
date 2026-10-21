@@ -147,6 +147,12 @@ the actual muted argument and LID/DLI setting; expiry clears the override.
   while changed status badges receive a region transfer;
   explicit restoration forces a repaint after another presentation owner.
   Reconnecting releases SCAN and allows the connected resting/live view.
+- [`DisplayOrchestrationModule::processLightweightRefresh`](../../src/modules/display/display_orchestration_module.cpp)
+  revisits the disconnected owner every 250 ms when the normal boot, overload
+  and preview gates permit it. ALP listening-mode changes need not publish an
+  event, and connection cadence can paint battery status after the presentation
+  phase; this refresh carries both paths through the owner pipeline and flushes
+  changed regions. It does not replace a live, held or persisted ALP owner.
 - [`syncTopIndicators`](../../src/display_indicators.cpp) refreshes ALP badge
   status only; it does not overwrite the pipeline-owned laser event or gun text.
 - [`prewarmFrequencyRasterCache`](../../src/display_frequency.cpp) temporarily
@@ -189,6 +195,17 @@ The font/canvas substitutes record the literal SCAN paint request and full-frame
 transfer; other frequency and peripheral drawing is stubbed. This establishes
 source-level dispatch and paint requests, not rasterized glyphs or physical
 panel/speaker behavior.
+
+[`test_display_scheduler_lifecycle.py`](../../scripts/test_display_scheduler_lifecycle.py)
+adds the caller boundary: the actual drive-loop coordinator and extracted
+production presentation/connection-dispatch methods run the real orchestration,
+ALP event bus, connection cadence, owner pipeline and status painters. UART input
+does not force a pipeline call. It checks a listening `02` to `03` heartbeat with
+no event, battery canvas-to-panel delivery, unchanged idle, ownership gates,
+ALP live/hold/tail expiry, connected behavior and clock rollover. Quiet policy,
+preview contents, hardware observations and unrelated loop phases are scripted.
+Run it with `python3 scripts/test_display_scheduler_lifecycle.py`; it uses address
+and undefined-behavior sanitizers and checks transfer requests, not panel pixels.
 
 The first test fails against the pre-repair setter; the latter two protect
 intentional retention and expiry. Useful adjacent controls are:

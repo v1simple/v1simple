@@ -49,6 +49,7 @@ namespace mock_nvs {
 struct ProbeResponse {
     esp_err_t result = ESP_OK;
     bool once = false;
+    size_t skip = 0;
 };
 
 inline nvs_stats_t& stats() {
@@ -89,10 +90,19 @@ inline void set_read_result(const char* name, const char* key, esp_err_t result,
                             ReadStage stage = ReadStage::Any) {
     readResults()[readResultKey(name, key, stage)] = {result, false};
 }
+inline void set_nth_read_result(const char* name, const char* key, esp_err_t result,
+                                ReadStage stage, size_t occurrence) {
+    readResults()[readResultKey(name, key, stage)] = {result, true, occurrence - 1u};
+}
 inline esp_err_t readResult(const char* name, const char* key, ReadStage stage) {
     for (ReadStage candidate : {stage, ReadStage::Any}) {
         const auto it = readResults().find(readResultKey(name, key, candidate));
-        if (it != readResults().end()) return it->second.result;
+        if (it != readResults().end()) {
+            if (it->second.skip > 0) { --it->second.skip; return ESP_OK; }
+            const esp_err_t result = it->second.result;
+            if (it->second.once) readResults().erase(it);
+            return result;
+        }
     }
     return ESP_OK;
 }
@@ -122,6 +132,9 @@ inline void set_namespace_open_result(const char* name, esp_err_t result) {
 inline void set_next_namespace_open_result(const char* name, esp_err_t result) {
     if (!name) return;
     namespaceOpenResults()[name] = {result, true};
+}
+inline void set_nth_namespace_open_result(const char* name, esp_err_t result, size_t occurrence) {
+    namespaceOpenResults()[name] = {result, true, occurrence - 1u};
 }
 
 inline void set_string_probe_result(const char* name, const char* key, esp_err_t result) {
@@ -154,8 +167,12 @@ inline esp_err_t nvs_open(const char* name, nvs_open_mode_t /*open_mode*/, nvs_h
     esp_err_t result = ESP_OK;
     const auto it = mock_nvs::namespaceOpenResults().find(name);
     if (it != mock_nvs::namespaceOpenResults().end()) {
-        result = it->second.result;
-        if (it->second.once) mock_nvs::namespaceOpenResults().erase(it);
+        if (it->second.skip > 0) {
+            --it->second.skip;
+        } else {
+            result = it->second.result;
+            if (it->second.once) mock_nvs::namespaceOpenResults().erase(it);
+        }
     }
     if (result == ESP_OK && mock_preferences::failBeginNamespace() == name) result = -1;
     if (result == ESP_OK) {

@@ -579,28 +579,19 @@ struct WifiPasswordNvsSnapshot {
 
 bool readWifiPasswordNvsSnapshot(size_t slotIndex, WifiPasswordNvsSnapshot& snapshot) {
     const char* passwordKey = wifiStaSlotPasswordKey(slotIndex);
-    Preferences prefs;
-    if (!passwordKey || !prefs.begin(WIFI_CLIENT_NS, true)) {
-        return false;
-    }
-    snapshot.slotPresent = prefs.isKey(passwordKey);
-    if (snapshot.slotPresent &&
-        !readPreferenceStringExact(prefs, passwordKey, MAX_ENCODED_WIFI_PASSWORD_BYTES,
-                                   snapshot.slotValue)) {
-        prefs.end();
-        return false;
-    }
-    if (slotIndex == 0) {
-        snapshot.legacyPresent = prefs.isKey(kNvsWifiPassword);
-        if (snapshot.legacyPresent &&
-            !readPreferenceStringExact(prefs, kNvsWifiPassword, MAX_ENCODED_WIFI_PASSWORD_BYTES,
-                                       snapshot.legacyValue)) {
-            prefs.end();
-            return false;
-        }
-    }
-    prefs.end();
-    return true;
+    if (!passwordKey) return false;
+    SettingsNvsReader prefs(WIFI_CLIENT_NS);
+    // A namespace that has never existed contains no credentials. Other open
+    // errors must not be interpreted as absent keys before a destructive write.
+    if (prefs.error() == ESP_ERR_NVS_NOT_FOUND) return true;
+    if (!prefs.good()) return false;
+    const auto read = [&](const char* key, bool& present, String& value) {
+        present = prefs.isKey(key);
+        if (present) value = prefs.getString(key);
+        return prefs.good() && value.length() <= MAX_ENCODED_WIFI_PASSWORD_BYTES;
+    };
+    return read(passwordKey, snapshot.slotPresent, snapshot.slotValue) &&
+           (slotIndex != 0 || read(kNvsWifiPassword, snapshot.legacyPresent, snapshot.legacyValue));
 }
 
 // Snapshot the credential the configured slot can actually recover, before a
@@ -608,10 +599,13 @@ bool readWifiPasswordNvsSnapshot(size_t slotIndex, WifiPasswordNvsSnapshot& snap
 // password: the SD sidecar (or legacy settings backup) can still own it.
 bool readWifiPasswordForTransaction(StorageManager& storage, size_t index,
                                     const String& ssid, const WifiPasswordNvsSnapshot& nvs,
-                                    String& encoded, bool& unknown) {
+                                    String& encoded, bool& unknown, bool* present = nullptr) {
     unknown = false;
-    if (nvs.slotPresent) return copyStringExact(nvs.slotValue, encoded);
-    if (index == 0 && nvs.legacyPresent) return copyStringExact(nvs.legacyValue, encoded);
+    if (present) *present = false;
+    if (nvs.slotPresent || (index == 0 && nvs.legacyPresent)) {
+        if (present) *present = true;
+        return copyStringExact(nvs.slotPresent ? nvs.slotValue : nvs.legacyValue, encoded);
+    }
     encoded = "";
     if (ssid.length() == 0) return true;
     // Older firmware represented open networks by omitting the NVS key. Allow
@@ -632,10 +626,14 @@ bool readWifiPasswordForTransaction(StorageManager& storage, size_t index,
         WifiClientSdSecretEntry entries[kWifiStaSlotCount];
         if (!readWifiClientSdSecretEntries(doc, entries)) return false;
         if (entries[index].used && entries[index].ssid == ssid) {
+            if (present) *present = true;
             return copyStringExact(entries[index].encodedPassword, encoded);
         }
         for (const auto& entry : entries) {
-            if (entry.used && entry.ssid == ssid) return copyStringExact(entry.encodedPassword, encoded);
+            if (entry.used && entry.ssid == ssid) {
+                if (present) *present = true;
+                return copyStringExact(entry.encodedPassword, encoded);
+            }
         }
         return true; // A valid sidecar explicitly has no credential for this SSID.
     }
@@ -647,6 +645,7 @@ bool readWifiPasswordForTransaction(StorageManager& storage, size_t index,
     }
     const auto readEncoded = [&](JsonVariantConst value) -> bool {
         if (value.isUnbound()) return true;
+        if (present) *present = true;
         if (!exactV1JsonString(value, encoded, MAX_ENCODED_WIFI_PASSWORD_BYTES)) return false;
         if (encoded.length() == 0) return true;
         const String decoded = decodeObfuscatedFromStorage(encoded);
@@ -1024,6 +1023,14 @@ bool writeWifiSecretStateFromSettings(StorageManager& storage, const V1Settings&
 
 } // namespace
 
+bool readRecoverableWifiPassword(StorageManager& storage, size_t index, const String& ssid,
+                                 String& encoded, bool& present) {
+    WifiPasswordNvsSnapshot nvs;
+    bool unknown = false;
+    return readWifiPasswordNvsSnapshot(index, nvs) &&
+           readWifiPasswordForTransaction(storage, index, ssid, nvs, encoded, unknown, &present);
+}
+
 WifiClientSecretReadStatus readWifiClientSecretDocument(fs::FS* fs, JsonDocument& doc, String& loadedPath) {
     const auto status = loadWifiClientSdSecretDocumentStatus(fs, doc, &loadedPath);
     switch (status) {
@@ -1305,7 +1312,7 @@ bool clearWifiClientSecretFromSD(StorageManager& storage) {
 }
 
 bool storeWifiClientPasswordObfToNvs(const String& encodedPassword, size_t slotIndex) {
-    if (encodedPassword.length() == 0 || decodeObfuscatedFromStorage(encodedPassword).length() == 0) {
+    if (encodedPassword.length() > 0 && decodeObfuscatedFromStorage(encodedPassword).length() == 0) {
         return false;
     }
     const char* passwordKey = wifiStaSlotPasswordKey(slotIndex);
@@ -1317,9 +1324,11 @@ bool storeWifiClientPasswordObfToNvs(const String& encodedPassword, size_t slotI
     if (!prefs.begin(WIFI_CLIENT_NS, false)) {
         return false;
     }
-    const size_t written = prefs.putString(passwordKey, encodedPassword);
+    // Stored empty credentials explicitly identify an open network. Incoming
+    // backup validation remains responsible for rejecting empty encoded input.
+    const bool stored = writeWifiPasswordKeyState(prefs, passwordKey, true, encodedPassword);
     prefs.end();
-    return written > 0;
+    return stored;
 }
 
 bool SettingsManager::resolveWifiCredentialTransaction() {

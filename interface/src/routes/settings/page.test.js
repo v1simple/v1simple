@@ -166,6 +166,27 @@ async function openScanModal() {
     await screen.findByText('Pick WiFi Network to Save');
 }
 
+async function performSavedWifiOperation(operation) {
+    if (operation === 'manual save') {
+        await openManualEditor();
+        await fireEvent.input(screen.getByLabelText('SSID'), { target: { value: 'New network' } });
+        const save = screen.getByRole('button', { name: /^Save$/ });
+        expect(save).toBeEnabled();
+        await fireEvent.click(save);
+    } else if (operation === 'scan save') {
+        await openScanModal();
+        await fireEvent.click(await screen.findByRole('button', { name: /Open network/ }));
+        await fireEvent.click(screen.getByRole('button', { name: /^Save Network$/ }));
+    } else if (operation === 'reorder') {
+        await fireEvent.click(screen.getByRole('button', { name: 'Move PhoneHotspot up' }));
+    } else if (operation === 'restore') {
+        await startRestore(JSON.stringify({ _type: 'v1simple_backup', _version: 1 }));
+    } else {
+        const card = screen.getByText('WiFi Client').closest('.surface-card');
+        await fireEvent.click(card.querySelector('input[type="checkbox"]'));
+    }
+}
+
 describe('settings route page', () => {
     afterEach(() => {
         vi.useRealTimers();
@@ -512,6 +533,345 @@ describe('settings route page', () => {
 
         unmount();
     });
+
+    it.each(['success', 'HTTP error', 'transport error'])(
+        'keeps both completed deletions after an older saved-network read returns %s',
+        async (outcome) => {
+            const oldRead = createDeferred();
+            let reads = 0;
+            let statusReads = 0;
+            const emptySlots = defaultSlots.map((slot) => ({ ...slot, ssid: '', label: '', configured: false }));
+            const fetchMock = installDefaultFetch([
+                { method: 'GET', match: '/api/wifi/networks', respond: () => {
+                    reads += 1;
+                    if (reads === 2) return oldRead.promise;
+                    return jsonResponse({ slots: reads === 1 ? defaultSlots : emptySlots });
+                } },
+                { method: 'GET', match: '/api/wifi/status', respond: () => {
+                    statusReads += 1;
+                    return jsonResponse({ enabled: true, state: 'disconnected' });
+                } }
+            ]);
+            vi.stubGlobal('confirm', vi.fn(() => true));
+            const { unmount } = render(Page);
+            try {
+                await screen.findByText('Garage');
+                const deletes = screen.getAllByRole('button', { name: 'Delete' });
+                await fireEvent.click(deletes[0]);
+                await waitFor(() => expect(reads).toBe(2));
+                expect(deletes[1]).toBeEnabled();
+                await fireEvent.click(deletes[1]);
+                await screen.findByText('Slot 2: Empty slot');
+                await waitFor(() => expect(statusReads).toBe(2));
+                if (outcome === 'transport error') oldRead.reject(new Error('offline'));
+                else oldRead.resolve(jsonResponse({ slots: [emptySlots[0], ...defaultSlots.slice(1)] }, outcome === 'HTTP error' ? 500 : 200));
+                await waitFor(() => expect(statusReads).toBe(3));
+                expect(screen.queryByText('Phone')).not.toBeInTheDocument();
+                expect(screen.queryByText('Failed to load saved WiFi networks')).not.toBeInTheDocument();
+                expect(jsonBodies(fetchMock, '/api/wifi/networks/delete')).toEqual([{ index: 0 }, { index: 1 }]);
+            } finally { unmount(); }
+        }
+    );
+
+    it('invalidates an old saved-network read before the next mutation finishes', async () => {
+        const oldRead = createDeferred();
+        const secondDelete = createDeferred();
+        let reads = 0;
+        let deletes = 0;
+        let statusReads = 0;
+        installDefaultFetch([
+            { method: 'GET', match: '/api/wifi/networks', respond: () => {
+                reads += 1;
+                return reads === 2 ? oldRead.promise : jsonResponse({ slots: defaultSlots });
+            } },
+            { method: 'POST', match: '/api/wifi/networks/delete', respond: () => {
+                deletes += 1;
+                return deletes === 2 ? secondDelete.promise : jsonResponse({ success: true });
+            } },
+            { method: 'GET', match: '/api/wifi/status', respond: () => {
+                statusReads += 1;
+                return jsonResponse({ enabled: true, state: 'disconnected' });
+            } }
+        ]);
+        vi.stubGlobal('confirm', vi.fn(() => true));
+        const { unmount } = render(Page);
+        try {
+            await screen.findByText('Garage');
+            const buttons = screen.getAllByRole('button', { name: 'Delete' });
+            await fireEvent.click(buttons[0]);
+            await waitFor(() => expect(reads).toBe(2));
+            await fireEvent.click(buttons[1]);
+            oldRead.resolve(jsonResponse({ slots: [] }));
+            await waitFor(() => expect(statusReads).toBe(2));
+            // The second operation owns the next authoritative read. An older
+            // completion must not publish or unlock an editor in the meantime.
+            expect(screen.getByText('Garage')).toBeInTheDocument();
+            await openManualEditor();
+            await fireEvent.input(screen.getByLabelText('SSID'), { target: { value: 'Independent draft' } });
+            expect(screen.getByRole('button', { name: /^Save$/ })).toBeDisabled();
+            secondDelete.resolve(jsonResponse({ success: false }, 500));
+            await waitFor(() => expect(reads).toBe(3));
+            await waitFor(() => expect(screen.getByRole('button', { name: /^Save$/ })).toBeEnabled());
+            expect(screen.getByLabelText('SSID')).toHaveValue('Independent draft');
+            expect(screen.getByText('Failed to delete WiFi network')).toBeInTheDocument();
+        } finally { unmount(); }
+    });
+
+    it('reconciles an earlier-started deletion that commits after a newer deletion', async () => {
+        const firstDelete = createDeferred();
+        let reads = 0;
+        let deletes = 0;
+        const emptySlots = defaultSlots.map((slot) => ({ ...slot, ssid: '', label: '', configured: false }));
+        installDefaultFetch([
+            { method: 'POST', match: '/api/wifi/networks/delete', respond: () => {
+                deletes += 1;
+                return deletes === 1 ? firstDelete.promise : jsonResponse({ success: true });
+            } },
+            { method: 'GET', match: '/api/wifi/networks', respond: () => {
+                reads += 1;
+                const slots = reads === 1 ? defaultSlots : reads === 2 ? [defaultSlots[0], ...emptySlots.slice(1)] : emptySlots;
+                return jsonResponse({ slots });
+            } }
+        ]);
+        vi.stubGlobal('confirm', vi.fn(() => true));
+        const { unmount } = render(Page);
+        try {
+            await screen.findByText('Garage');
+            const deletes = screen.getAllByRole('button', { name: 'Delete' });
+            await fireEvent.click(deletes[0]);
+            await fireEvent.click(deletes[1]);
+            await screen.findByText('Slot 2: Empty slot');
+            expect(screen.getByText('Garage')).toBeInTheDocument();
+            firstDelete.resolve(jsonResponse({ success: true }));
+            await screen.findByText('Slot 1: Empty slot');
+            expect(screen.queryByText('Garage')).not.toBeInTheDocument();
+            expect(screen.queryByText('Phone')).not.toBeInTheDocument();
+        } finally { unmount(); }
+    });
+
+    it('keeps the latest saved-network read error when an older success arrives, then recovers', async () => {
+        const oldRead = createDeferred();
+        let reads = 0;
+        let statusReads = 0;
+        const emptySlots = defaultSlots.map((slot) => ({ ...slot, ssid: '', label: '', configured: false }));
+        installDefaultFetch([
+            { method: 'GET', match: '/api/wifi/networks', respond: () => {
+                reads += 1;
+                if (reads === 2) return oldRead.promise;
+                if (reads === 3) return jsonResponse({}, 500);
+                return jsonResponse({ slots: reads === 1 ? defaultSlots : emptySlots });
+            } },
+            { method: 'GET', match: '/api/wifi/status', respond: () => {
+                statusReads += 1;
+                return jsonResponse({ enabled: true, state: 'disconnected' });
+            } }
+        ]);
+        vi.stubGlobal('confirm', vi.fn(() => true));
+        const { unmount } = render(Page);
+        try {
+            await screen.findByText('Garage');
+            const deletes = screen.getAllByRole('button', { name: 'Delete' });
+            await fireEvent.click(deletes[0]);
+            await waitFor(() => expect(reads).toBe(2));
+            await fireEvent.click(deletes[1]);
+            await screen.findByText('Failed to load saved WiFi networks');
+            await waitFor(() => expect(statusReads).toBe(2));
+            oldRead.resolve(jsonResponse({ slots: [] }));
+            await waitFor(() => expect(statusReads).toBe(3));
+            expect(screen.getByText('Failed to load saved WiFi networks')).toBeInTheDocument();
+            expect(screen.getByText('Garage')).toBeInTheDocument();
+            // A later explicit operation reconciles both committed deletions.
+            const card = screen.getByText('WiFi Client').closest('.surface-card');
+            await fireEvent.click(card.querySelector('input[type="checkbox"]'));
+            await screen.findByText('Slot 1: Empty slot');
+            expect(screen.queryByText('Failed to load saved WiFi networks')).not.toBeInTheDocument();
+        } finally { unmount(); }
+    });
+
+    it.each(['manual save', 'scan save', 'reorder', 'restore', 'toggle'])(
+        'protects the saved-network refresh from %s against a stale sibling read',
+        async (operation) => {
+            const oldRead = createDeferred();
+            let reads = 0;
+            let statusReads = 0;
+            const initialIsOrder = operation === 'manual save';
+            installDefaultFetch([
+                { method: 'GET', match: '/api/wifi/networks', respond: () => {
+                    reads += 1;
+                    return reads === 2 ? oldRead.promise : jsonResponse({ slots: defaultSlots });
+                } },
+                { method: 'GET', match: '/api/wifi/status', respond: () => {
+                    statusReads += 1;
+                    return jsonResponse({ enabled: true, state: 'disconnected' });
+                } },
+                { method: 'POST', match: '/api/wifi/scan', respond: jsonResponse({ scanning: false, networks: [{ ssid: 'Open network', secure: false, rssi: -30 }] }) },
+                { method: 'POST', match: '/api/settings/restore', respond: jsonResponse({ success: true }) }
+            ]);
+            vi.stubGlobal('confirm', vi.fn(() => true));
+            const { unmount } = render(Page);
+            try {
+                await screen.findByText('Garage');
+                await fireEvent.click(initialIsOrder ? screen.getByRole('button', { name: 'Move PhoneHotspot up' }) : screen.getAllByRole('button', { name: 'Delete' })[0]);
+                await waitFor(() => expect(reads).toBe(2));
+                await performSavedWifiOperation(operation);
+                await waitFor(() => expect(reads).toBe(3));
+                // Wait until the latest response has published before the old
+                // response reports a failure. Both callbacks enter real UI code.
+                await waitFor(() => expect(screen.getByText('Saved Networks').parentElement.querySelector('.loading')).toBeNull());
+                const expectedStatusReads = statusReads + (initialIsOrder ? 0 : 1);
+                oldRead.resolve(jsonResponse({}, 500));
+                if (initialIsOrder) {
+                    await waitFor(() => expect(screen.getByRole('button', { name: 'Move PhoneHotspot up' })).toBeEnabled());
+                } else {
+                    await waitFor(() => expect(statusReads).toBe(expectedStatusReads));
+                }
+                expect(screen.queryByText('Failed to load saved WiFi networks')).not.toBeInTheDocument();
+                expect(screen.getByText('Garage')).toBeInTheDocument();
+            } finally { unmount(); }
+        }
+    );
+
+    it.each(['HTTP error', 'transport error'])(
+        'reconciles saved networks after an ambiguous deletion %s',
+        async (outcome) => {
+            let reads = 0;
+            installDefaultFetch([
+                { method: 'GET', match: '/api/wifi/networks', respond: () => {
+                    reads += 1;
+                    return jsonResponse({ slots: reads === 1 ? defaultSlots : [] });
+                } },
+                { method: 'POST', match: '/api/wifi/networks/delete', respond: () => {
+                    if (outcome === 'transport error') throw new Error('reply lost');
+                    return jsonResponse({}, 500);
+                } }
+            ]);
+            vi.stubGlobal('confirm', vi.fn(() => true));
+            const { unmount } = render(Page);
+            try {
+                await screen.findByText('Garage');
+                await fireEvent.click(screen.getAllByRole('button', { name: 'Delete' })[0]);
+                await screen.findByText('No saved WiFi networks yet. Add a car hotspot, phone hotspot, or garage AP so future maintenance sessions can auto-join.');
+                expect(screen.getByText('Failed to delete WiFi network')).toBeInTheDocument();
+                expect(screen.queryByText('Garage')).not.toBeInTheDocument();
+                expect(reads).toBe(2);
+            } finally { unmount(); }
+        }
+    );
+
+    it('keeps a manual save newer than the initial saved-network load', async () => {
+        const initialRead = createDeferred();
+        let reads = 0;
+        const fetchMock = installDefaultFetch([
+            { method: 'GET', match: '/api/wifi/networks', respond: () => {
+                reads += 1;
+                return reads === 1 ? initialRead.promise : jsonResponse({ slots: [{ ...defaultSlots[0], label: 'New network' }] });
+            } }
+        ]);
+        const { unmount } = render(Page);
+        try {
+            await openManualEditor();
+            await waitFor(() => expect(reads).toBe(1));
+            await fireEvent.input(screen.getByLabelText('SSID'), { target: { value: 'New network' } });
+            await fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+            await screen.findByText('New network');
+            initialRead.resolve(jsonResponse({ slots: defaultSlots }));
+            // Drain the older fetch body and Svelte update without triggering a
+            // third request that could hide a stale publication.
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            expect(screen.getByText('New network')).toBeInTheDocument();
+            expect(screen.queryByText('Garage')).not.toBeInTheDocument();
+            expect(jsonBodies(fetchMock, '/api/wifi/networks')).toHaveLength(1);
+            expect(reads).toBe(2);
+        } finally { unmount(); }
+    });
+
+    it.each(['manual save', 'scan save', 'reorder', 'restore', 'toggle'])(
+        'keeps a failed latest saved-network read visible after %s succeeds',
+        async (operation) => {
+            let reads = 0;
+            installDefaultFetch([
+                { method: 'GET', match: '/api/wifi/networks', respond: () => {
+                    reads += 1;
+                    return jsonResponse({ slots: defaultSlots }, reads === 1 ? 200 : 500);
+                } },
+                { method: 'POST', match: '/api/wifi/scan', respond: jsonResponse({ scanning: false, networks: [{ ssid: 'Open network', secure: false, rssi: -30 }] }) },
+                { method: 'POST', match: '/api/settings/restore', respond: jsonResponse({ success: true }) }
+            ]);
+            vi.stubGlobal('confirm', vi.fn(() => true));
+            const { unmount } = render(Page);
+            try {
+                await screen.findByText('Garage');
+                await performSavedWifiOperation(operation);
+                await screen.findByText('Failed to load saved WiFi networks');
+                // Include the caller's continuation after its awaited refresh.
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                expect(screen.getByText('Failed to load saved WiFi networks')).toBeInTheDocument();
+                expect(reads).toBe(2);
+            } finally { unmount(); }
+        }
+    );
+
+    it.each([
+        ['manual save', 'HTTP error'], ['manual save', 'transport error'],
+        ['scan save', 'HTTP error'], ['scan save', 'transport error'],
+        ['restore', 'HTTP error'], ['restore', 'transport error']
+    ])('reconciles after %s has an ambiguous %s without discarding its draft', async (operation, outcome) => {
+        let reads = 0;
+        installDefaultFetch([
+            { method: 'GET', match: '/api/wifi/networks', respond: () => {
+                reads += 1;
+                return jsonResponse({ slots: reads === 1 ? defaultSlots : [{ ...defaultSlots[0], label: 'Reconciled network' }] });
+            } },
+            { method: 'POST', match: '/api/wifi/scan', respond: jsonResponse({ scanning: false, networks: [{ ssid: 'Open network', secure: false, rssi: -30 }] }) },
+            { method: 'POST', match: (url) => ['/api/wifi/networks', '/api/settings/restore'].includes(url), respond: () => {
+                if (outcome === 'transport error') throw new Error('reply lost');
+                return jsonResponse({ success: false }, 500);
+            } }
+        ]);
+        vi.stubGlobal('confirm', vi.fn(() => true));
+        const { unmount } = render(Page);
+        try {
+            await screen.findByText('Garage');
+            await performSavedWifiOperation(operation);
+            await screen.findByText('Reconciled network');
+            expect(reads).toBe(2);
+            if (operation === 'manual save') {
+                expect(screen.getByLabelText('SSID')).toHaveValue('New network');
+                await waitFor(() => expect(screen.getByRole('button', { name: /^Save$/ })).toBeEnabled());
+            } else if (operation === 'scan save') {
+                await waitFor(() => expect(screen.getByRole('button', { name: /^Save Network$/ })).toBeEnabled());
+            } else {
+                await waitFor(() => expect(screen.getByRole('button', { name: /restore from backup/i })).toBeEnabled());
+            }
+            expect(screen.queryByText('Settings restored and reloaded.')).not.toBeInTheDocument();
+        } finally { unmount(); }
+    });
+
+    it.each(['read', 'mutation'])(
+        'does not continue saved-network work after navigation during a pending %s',
+        async (pending) => {
+            const response = createDeferred();
+            let reads = 0;
+            const fetchMock = installDefaultFetch([
+                { method: 'GET', match: '/api/wifi/networks', respond: () => {
+                    reads += 1;
+                    return pending === 'read' && reads === 2 ? response.promise : jsonResponse({ slots: defaultSlots });
+                } },
+                { method: 'POST', match: '/api/wifi/networks/delete', respond: () => pending === 'mutation' ? response.promise : jsonResponse({ success: true }) }
+            ]);
+            vi.stubGlobal('confirm', vi.fn(() => true));
+            const { unmount } = render(Page);
+            await screen.findByText('Garage');
+            await fireEvent.click(screen.getAllByRole('button', { name: 'Delete' })[0]);
+            if (pending === 'read') await waitFor(() => expect(reads).toBe(2));
+            unmount();
+            const calls = fetchMock.mock.calls.length;
+            response.resolve(jsonResponse({ slots: [], success: true }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            expect(fetchMock.mock.calls).toHaveLength(calls);
+            expect(document.body).not.toHaveTextContent('Deleted HomeWifi');
+        }
+    );
 
     it('polls a saved-network test through terminal connection success', async () => {
         vi.useFakeTimers();

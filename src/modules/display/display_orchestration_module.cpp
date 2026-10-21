@@ -26,6 +26,7 @@ void DisplayOrchestrationModule::begin(V1Display* displayPtr, V1BLEClient* bleCl
     volumeFade_ = volumeFadeModule;
     speedMute_ = speedMuteModule;
     quiet_ = quietCoordinator;
+    lastDisconnectedRefreshMs_ = 0;
 }
 
 void DisplayOrchestrationModule::syncQuietPresentation() {
@@ -120,8 +121,17 @@ bool DisplayOrchestrationModule::processLightweightRefresh(const DisplayOrchestr
 
     // A lightweight owner refresh advances blinks and clears expired primary
     // or secondary holds even when no new detector packet arrives.
-    if (!ctx.pipelineRanThisLoop && !ctx.bootSplashHoldActive && !ctx.overloadLateThisLoop && !preview_->isRunning() &&
-        ble_->isConnected()) {
+    if (!ctx.pipelineRanThisLoop && !ctx.bootSplashHoldActive && !ctx.overloadLateThisLoop && !preview_->isRunning()) {
+        if (!ble_->isConnected()) {
+            // Some status changes (battery and ALP listening mode) publish no
+            // parsed edge. Revisit the current owner at a bounded cadence;
+            // cached painters transfer only changed pixels, leaving idle SCAN
+            // silent and preserving any live/held/persisted ALP presentation.
+            if (static_cast<uint32_t>(ctx.nowMs - lastDisconnectedRefreshMs_) < kDisconnectedRefreshIntervalMs)
+                return false;
+            lastDisconnectedRefreshMs_ = ctx.nowMs;
+            return true;
+        }
         if (ctx.v1PersistenceRefreshDue || display_->secondaryCardRefreshDue(ctx.nowMs)) return true;
         const DisplayState liveState = parser_->getDisplayState();
         const bool counterBlink = !display_->isStealthScreen() &&

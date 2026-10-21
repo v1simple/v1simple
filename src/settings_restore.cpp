@@ -144,22 +144,22 @@ void SettingsManager::recoverCriticalSettingsAfterFullRestoreFailure(fs::FS* fs,
     }
 }
 
-void SettingsManager::healWifiClientSettings(fs::FS* fs, bool hasSdBackup, const JsonDocument& backupDoc) {
+bool SettingsManager::healWifiClientSettings(fs::FS* fs, bool hasSdBackup, const JsonDocument& backupDoc) {
     const WifiClientKeyPresence keyPresence = readWifiClientKeyPresence(getActiveNamespace().c_str());
+    if (!keyPresence.available) return false;
     const bool legacySsidKeyRequired = settings_.wifiClientEnabled || settings_.hasConfiguredWifiStaSlot();
     const bool keysMissing = !keyPresence.enabledKeyPresent || (legacySsidKeyRequired && !keyPresence.ssidKeyPresent);
     const bool missingCurrentSsid = settings_.wifiClientSSID.length() == 0;
 
     // A successful Forget may precede its SD backup. Healthy, explicitly
     // disabled NVS is authoritative even while the card still has old slots.
-    if (!keysMissing && !settings_.wifiClientEnabled) return;
+    if (keyPresence.enabledKeyPresent && !settings_.wifiClientEnabled) return true;
 
     if (keysMissing && !missingCurrentSsid) {
         Serial.println("[Settings] HEAL: repairing missing WiFi client keys from in-memory SSID");
-        setWifiClientEnabled(true);
-        return;
+        return setWifiClientEnabled(true).success;
     }
-    if (!missingCurrentSsid) return;
+    if (!missingCurrentSsid) return true;
 
     if (hasSdBackup) {
         bool recoveredFromBackup = false;
@@ -167,18 +167,18 @@ void SettingsManager::healWifiClientSettings(fs::FS* fs, bool hasSdBackup, const
                 backupDoc, settings_, *storage_, recoveredFromBackup,
                 [](void* ctx) { return static_cast<SettingsManager*>(ctx)->save(); }, this)) {
             Serial.println("[Settings] WiFi backup healing failed; preserving current state");
-            return;
+            return false;
         }
         if (recoveredFromBackup) {
             Serial.println("[Settings] HEAL: recovered WiFi client config from settings backup");
-            return;
+            return true;
         }
     }
 
     const WifiClientSecretPresence secret = readWifiClientSecretPresence(fs);
     if (secret.status == WifiClientSecretReadStatus::Unavailable) {
         Serial.println("[Settings] WiFi secret unavailable; preserving current WiFi state");
-        return;
+        return false;
     }
     const bool secretHasSsid = secret.valid() && secret.ssid.length() > 0;
     if (secretHasSsid) {
@@ -186,7 +186,7 @@ void SettingsManager::healWifiClientSettings(fs::FS* fs, bool hasSdBackup, const
         secretDoc["wifiClientSSID"] = secret.ssid;
         if (secretDoc.overflowed()) {
             Serial.println("[Settings] WiFi secret staging unavailable; preserving current state");
-            return;
+            return false;
         }
         bool recoveredFromSecret = false;
         if (!applyBackupWifiClientHealingAtomically(
@@ -194,16 +194,17 @@ void SettingsManager::healWifiClientSettings(fs::FS* fs, bool hasSdBackup, const
                 [](void* ctx) { return static_cast<SettingsManager*>(ctx)->save(); }, this) ||
             !recoveredFromSecret) {
             Serial.println("[Settings] WiFi secret healing failed; preserving current state");
-            return;
+            return false;
         }
         Serial.printf("[Settings] HEAL: recovered WiFi client config from wifi_secret (keysMissing=%s)\n",
                       keysMissing ? "yes" : "no");
     } else if (settings_.wifiClientEnabled) {
         Serial.println("[Settings] HEAL: wifiClientEnabled=true but no SSID anywhere — disabling");
-        setWifiClientEnabled(false);
+        return setWifiClientEnabled(false).success;
     } else if (keysMissing) {
         Serial.println("[Settings] WARN: WiFi client keys missing and no SSID recovery source found");
     }
+    return true;
 }
 
 void SettingsManager::synchronizeSdBackup(bool hasSdBackup, const char* backupPath,
@@ -353,7 +354,11 @@ bool SettingsManager::checkAndRestoreFromSD() {
     }
 
     if (!needsRestore && storage_->isReady() && storage_->isSDCard()) {
-        healWifiClientSettings(fs, hasSdBackup, bestBackupDoc);
+        if (!healWifiClientSettings(fs, hasSdBackup, bestBackupDoc)) {
+            profileReferenceRecoveryPending_ = true;
+            Serial.println("[Settings] WiFi healing deferred; preserving recovery sources");
+            return false;
+        }
     }
     if (!needsRestore && configuredProfilesResolved && storage_->isReady() && storage_->isSDCard()) {
         synchronizeSdBackup(hasSdBackup, bestBackupPath, bestBackupDoc);

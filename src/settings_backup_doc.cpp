@@ -2126,7 +2126,9 @@ bool loadJournalMirrors(StorageManager& storage, const char* path, size_t maxByt
         return false;
     }
     const auto readOne = [&](fs::FS* filesystem, JournalCopy& copy) {
-        const StoragePathStatus status = pathStatus(filesystem);
+        struct stat details {};
+        const StoragePathStatus status = filesystem ? storagePathStatus(*filesystem, path, &details)
+                                                    : StoragePathStatus::Missing;
         if (status == StoragePathStatus::Missing) {
             copy.status = JournalCopyStatus::Missing;
             return;
@@ -2140,12 +2142,14 @@ bool loadJournalMirrors(StorageManager& storage, const char* path, size_t maxByt
             copy.status = JournalCopyStatus::Unavailable;
             return;
         }
-        if (file.size() == 0 || file.size() > maxBytes) {
+        // A failed VFS size cache must not hide a pending journal in favor of
+        // an older mirror. Only checked metadata can establish invalid size.
+        if (details.st_size <= 0 || static_cast<uint64_t>(details.st_size) > maxBytes) {
             file.close();
             copy.status = JournalCopyStatus::Invalid;
             return;
         }
-        const size_t fileSize = file.size();
+        const size_t fileSize = static_cast<size_t>(details.st_size);
         PsramJson::Buffer bytes(fileSize);
         if (!bytes) {
             file.close();

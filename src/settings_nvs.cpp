@@ -3,6 +3,7 @@
  */
 
 #include "settings_internals.h"
+#include "settings_nvs_reader.h"
 #include "display_visual_contract.h"
 #include "json_exact_input.h"
 #include "psram_json_document.h"
@@ -1617,20 +1618,6 @@ SettingsNvsProbeResult probeSettingsNamespace(const char* ns) {
     return classifySettingsNvsProbe(status, "namespace", ns);
 }
 
-SettingsNvsProbeResult probeSettingsString(const char* ns, const char* key) {
-    if (!ns || ns[0] == '\0' || !key || key[0] == '\0') {
-        return classifySettingsNvsProbe(ESP_ERR_INVALID_ARG, "string", ns, key);
-    }
-    nvs_handle_t handle = 0;
-    esp_err_t status = nvs_open(ns, NVS_READONLY, &handle);
-    if (status == ESP_OK) {
-        size_t length = 0;
-        status = nvs_get_str(handle, key, nullptr, &length);
-        nvs_close(handle);
-    }
-    return classifySettingsNvsProbe(status, "string", ns, key);
-}
-
 SettingsNvsProbeResult readSettingsGeneration(const char* ns, const char* key, uint32_t& value) {
     nvs_handle_t handle = 0;
     esp_err_t status = nvs_open(ns, NVS_READONLY, &handle);
@@ -1650,8 +1637,8 @@ SettingsNamespaceState readSettingsNamespaceState(const char* ns) {
         state.available = false;
         return state;
     }
-    Preferences prefs;
-    if (!prefs.begin(ns, true)) {
+    SettingsNvsReader prefs(ns);
+    if (!prefs.good()) {
         state.available = false;
         return state;
     }
@@ -1668,7 +1655,6 @@ SettingsNamespaceState readSettingsNamespaceState(const char* ns) {
     if (payloadProbe.state == SettingsNvsProbeState::Error ||
         committedProbe.state == SettingsNvsProbeState::Error) {
         state.available = false;
-        prefs.end();
         return state;
     }
     state.payloadGenerationPresent = payloadProbe.state == SettingsNvsProbeState::Present;
@@ -1687,14 +1673,15 @@ SettingsNamespaceState readSettingsNamespaceState(const char* ns) {
     mix(prefs.getUChar(kNvsBrightness, 0));
     mix(prefs.getBool(kNvsProxyBle, false) ? 1u : 0u);
     mix(prefs.getBool(kNvsAutoPush, false) ? 1u : 0u);
-    const SettingsNvsProbeResult proxyNameProbe = probeSettingsString(ns, kNvsProxyName);
-    if (proxyNameProbe.state != SettingsNvsProbeState::NotFound) {
-        const String proxyName = prefs.getString(kNvsProxyName, "");
-        for (size_t i = 0; i < proxyName.length(); ++i) {
-            mix(static_cast<uint8_t>(proxyName[i]));
-        }
+    const String proxyName = prefs.getString(kNvsProxyName, "");
+    for (size_t i = 0; i < proxyName.length(); ++i) {
+        mix(static_cast<uint8_t>(proxyName[i]));
     }
-    prefs.end();
+    if (!prefs.good()) {
+        classifySettingsNvsProbe(prefs.error(), "snapshot metadata", ns);
+        state.available = false;
+        state.health = -1;
+    }
     return state;
 }
 
@@ -1766,16 +1753,11 @@ String SettingsManager::getActiveNamespace(uint32_t* activeGeneration, bool* nam
     }
     String active = "";
     const SettingsNvsProbeResult metaProbe = probeSettingsNamespace(SETTINGS_NS_META);
-    if (metaProbe.state != SettingsNvsProbeState::NotFound) {
-        Preferences meta;
-        if (meta.begin(SETTINGS_NS_META, true)) {
-            const SettingsNvsProbeResult activeProbe =
-                probeSettingsString(SETTINGS_NS_META, kNvsMetaActive);
-            if (activeProbe.state != SettingsNvsProbeState::NotFound) {
-                active = meta.getString(kNvsMetaActive, "");
-            }
-            meta.end();
-        }
+    bool selectorAvailable = metaProbe.state != SettingsNvsProbeState::Error;
+    if (metaProbe.state == SettingsNvsProbeState::Present) {
+        SettingsNvsReader meta(SETTINGS_NS_META);
+        active = meta.getString(kNvsMetaActive, "");
+        selectorAvailable = meta.good();
     }
 
     const SettingsNamespaceState stateA = readSettingsNamespaceState(SETTINGS_NS_A);
@@ -1811,6 +1793,9 @@ String SettingsManager::getActiveNamespace(uint32_t* activeGeneration, bool* nam
         completeLegacyGeneration = !selectedState.payloadGenerationPresent &&
                                    selectedState.committedGeneration == 1;
     } else {
+        // Before generation-based commits the selector is still authoritative.
+        // A failed selector read cannot justify choosing a different legacy copy.
+        if (!selectorAvailable) return "";
         const SettingsNamespaceState* recoveredState = &stateLegacy;
         const auto stateFor = [&](const String& ns) -> const SettingsNamespaceState* {
             if (ns == SETTINGS_NS_A) return &stateA;

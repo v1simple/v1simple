@@ -50,7 +50,7 @@ bool hasDisplayableAlpAlertContext(const AlpLaserEvent& event) {
     return event.gun != AlpGunType::UNKNOWN || event.direction != AlpLaserDirection::UNKNOWN;
 }
 
-DisplayState sanitizeDisconnectedRestoreState(const DisplayState& base) {
+DisplayState sanitizeDisconnectedState(const DisplayState& base) {
     DisplayState state = base;
     state.activeBands = BAND_NONE;
     state.arrows = DIR_NONE;
@@ -146,6 +146,7 @@ void DisplayPipelineModule::begin(const DisplayPipelineDependencies& dependencie
     alp_ = dependencies.alp;
     alpLatch_ = dependencies.alpLatch;
     speedSelector_ = dependencies.speedSelector;
+    scanningPresented_ = false;
     lastPersistenceSlot_ = -1;
     alpAlertPresentation_ = AlpLaserEvent{};
     lastPresentedAlpEventActive_ = false;
@@ -269,6 +270,9 @@ bool DisplayPipelineModule::v1PersistenceRefreshDue(uint32_t nowMs) const {
 }
 
 RenderFrame DisplayPipelineModule::buildRenderFrame(uint32_t nowMs, const V1Settings& settingsRef) {
+    if (!ble_->isConnected()) {
+        return buildDisconnectedFrame(nowMs, settingsRef);
+    }
     DisplayState state = parser_->getDisplayState();
     const bool hasAlerts = parser_->hasAlerts();
 
@@ -360,7 +364,7 @@ RenderFrame DisplayPipelineModule::buildRenderFrame(uint32_t nowMs, const V1Sett
 // Callers inject stealth fields after buildRenderFrame() returns to keep the
 // composer pure.
 
-RenderFrame DisplayPipelineModule::buildDisconnectedRestoreFrame(uint32_t nowMs, const V1Settings& settingsRef) {
+RenderFrame DisplayPipelineModule::buildDisconnectedFrame(uint32_t nowMs, const V1Settings& settingsRef) {
     const AlpLaserEvent& rawAlpEvent = alp_ ? alp_->currentEvent() : sAlpEventEmpty;
     const AlpLaserEvent displayAlpEvent = buildPresentedAlpEvent(rawAlpEvent, nowMs);
     // ALP persist is global, not per-slot — settingsRef is forwarded to the
@@ -369,7 +373,7 @@ RenderFrame DisplayPipelineModule::buildDisconnectedRestoreFrame(uint32_t nowMs,
     updateAlpLatch(displayAlpEvent, nowMs, alpPersistSec);
 
     V1Snapshot v1;
-    v1.state = sanitizeDisconnectedRestoreState(parser_->getDisplayState());
+    v1.state = sanitizeDisconnectedState(parser_->getDisplayState());
 
     AlpSnapshot alp;
     alp.event = displayAlpEvent;
@@ -550,9 +554,20 @@ void DisplayPipelineModule::renderComposedFrame(uint32_t nowMs, const RenderFram
 
     display_->setAlpLaserEvent(displayAlpEvent);
 
-    if (forceRedraw) {
+    // Every presentation entrypoint uses the same disconnected owner. Keep
+    // SCAN between ordinary heartbeat/blink ticks; explicit restoration can
+    // still repaint after a preview or another temporary screen owner.
+    if (!ble_->isConnected() && !isAlpPrimaryKind(frame.primaryKind)) {
+        display_->showScanning(forceRedraw || !scanningPresented_);
+        scanningPresented_ = true;
+        *displayMode_ = DisplayMode::IDLE;
+        return;
+    }
+
+    if (forceRedraw || scanningPresented_) {
         display_->forceNextRedraw();
     }
+    scanningPresented_ = false;
 
     const bool livePrimary = frame.primaryKind == RenderFramePrimaryKind::V1_LIVE ||
                              frame.primaryKind == RenderFramePrimaryKind::ALP_LIVE ||
@@ -569,7 +584,8 @@ void DisplayPipelineModule::handleParsed(uint32_t nowMs) {
 
     const V1Settings& settingsRef = settings_->get();
     RenderFrame frame = buildRenderFrame(nowMs, settingsRef);
-    if (frame.primaryKind == RenderFramePrimaryKind::IDLE && settingsRef.stealthEnabled && speedSelector_) {
+    if (ble_->isConnected() && frame.primaryKind == RenderFramePrimaryKind::IDLE &&
+        settingsRef.stealthEnabled && speedSelector_) {
         const SpeedSelection spd = speedSelector_->selectedSpeed();
         frame.stealthMode = true;
         frame.stealthSpeedMph = spd.speedMph;
@@ -593,7 +609,8 @@ void DisplayPipelineModule::refreshBlinkTick(uint32_t nowMs) {
     }
     // Resting counters can blink after the alert table clears. Stealth owns
     // the idle screen when enabled, so its hidden counter must not wake it.
-    if (frame.primaryKind == RenderFramePrimaryKind::IDLE && settingsRef.stealthEnabled && speedSelector_) {
+    if (ble_->isConnected() && frame.primaryKind == RenderFramePrimaryKind::IDLE &&
+        settingsRef.stealthEnabled && speedSelector_) {
         if (!v1PersistenceExpired) return;
         const SpeedSelection spd = speedSelector_->selectedSpeed();
         frame.stealthMode = true;
@@ -608,23 +625,10 @@ bool DisplayPipelineModule::restoreCurrentOwner(uint32_t nowMs) {
         return false;
     }
 
-    const bool v1Connected = ble_->isConnected();
     const V1Settings& settingsRef = settings_->get();
-
-    if (!v1Connected) {
-        const RenderFrame frame = buildDisconnectedRestoreFrame(nowMs, settingsRef);
-        if (isAlpPrimaryKind(frame.primaryKind)) {
-            renderComposedFrame(nowMs, frame, true);
-            return true;
-        }
-
-        display_->showScanning();
-        *displayMode_ = DisplayMode::IDLE;
-        return true;
-    }
-
     RenderFrame frame = buildRenderFrame(nowMs, settingsRef);
-    if (frame.primaryKind == RenderFramePrimaryKind::IDLE && settingsRef.stealthEnabled && speedSelector_) {
+    if (ble_->isConnected() && frame.primaryKind == RenderFramePrimaryKind::IDLE &&
+        settingsRef.stealthEnabled && speedSelector_) {
         const SpeedSelection spd = speedSelector_->selectedSpeed();
         frame.stealthMode = true;
         frame.stealthSpeedMph = spd.speedMph;

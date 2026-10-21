@@ -139,10 +139,29 @@ void V1Display::resetChangeTracking() {
     dirty_.resetTracking = true;
 }
 
-void V1Display::showScanning() {
+void V1Display::showScanning(bool forceRedraw) {
     dirty_.multiAlert = true;
 
     const V1Settings& s = settings_.get();
+
+    if (!forceRedraw && currentScreen_ == ScreenMode::Scanning && !dirty_.resetTracking &&
+        lastScanningPaletteRevision_ == paletteRevision_) {
+        // SCAN keeps the primary area, but its status badges still follow the
+        // current sources. Retain pending external draws in the same transfer.
+        syncTopIndicators(millis());
+        drawWiFiIndicator();
+        drawBatteryIndicator();
+        drawBLEProxyIndicator();
+        drawObdIndicator();
+        drawGpsIndicator();
+        drawAlpIndicator();
+        drawProfileIndicator(currentProfileSlot_);
+        if (!drawnRegion_.empty()) {
+            flushRegion(drawnRegion_.x(), drawnRegion_.y(), drawnRegion_.w(), drawnRegion_.h());
+            drawnRegion_.reset();
+        }
+        return;
+    }
 
     drawBaseFrame();
 
@@ -152,7 +171,10 @@ void V1Display::showScanning() {
     drawDirectionArrow(DIR_NONE, false);
     drawMuteIcon(false);
     syncTopIndicators(millis());
+    drawWiFiIndicator();
+    drawBatteryIndicator();
     drawObdIndicator();
+    drawGpsIndicator();
     drawAlpIndicator();
     drawProfileIndicator(currentProfileSlot_);
 
@@ -216,7 +238,10 @@ void V1Display::showScanning() {
 
     DISPLAY_FLUSH();
 
+    drawnRegion_.reset();
+    dirty_.resetTracking = false;
     currentScreen_ = ScreenMode::Scanning;
+    lastScanningPaletteRevision_ = paletteRevision_;
     lastRestingProfileSlot_ = -1;
 }
 

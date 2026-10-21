@@ -139,8 +139,14 @@ the actual muted argument and LID/DLI setting; expiry clears the override.
   restores the current owner through the pipeline when preview ownership ends.
 - Touch restore callbacks, connection-owner restoration and power-warning
   preemption in [`DriveRuntime`](../../src/drive_runtime.cpp) call
-  `restoreCurrentOwner`. Its ALP branches use the same composer and real setter;
-  disconnected restoration removes stale V1 alert state first.
+  `restoreCurrentOwner`. Parsed updates, deadline/blink refreshes and explicit
+  restoration share disconnected composition: stale V1 alert state and rows are
+  excluded, live or persisted ALP retains ownership, and its expiry returns to
+  SCAN. The shared render path clears the ALP setter before scanning. Ordinary
+  disconnected idle ticks preserve SCAN without another full-panel transfer,
+  while changed status badges receive a region transfer;
+  explicit restoration forces a repaint after another presentation owner.
+  Reconnecting releases SCAN and allows the connected resting/live view.
 - [`syncTopIndicators`](../../src/display_indicators.cpp) refreshes ALP badge
   status only; it does not overwrite the pipeline-owned laser event or gun text.
 - [`prewarmFrequencyRasterCache`](../../src/display_frequency.cpp) temporarily
@@ -170,6 +176,20 @@ persistence, runtime reset, subsequent session ownership, and warm-up exclusion.
 These controls use the actual runtime parser and source retention before reaching
 the pipeline and real display setter.
 
+[`test_alp_display_lifecycle`](../../test/test_alp_display_lifecycle/test_alp_display_lifecycle.cpp)
+also runs the real frame dispatch, SCAN painter, counter, bands, bars and arrows.
+Its disconnected cases cover zero persistence, tail and abnormal-listening hold
+deadlines without packets, blink and explicit restoration, stealth settings,
+reconnect/disconnect transitions, repeated idle cadence and stale V1 rows.
+The display receives the real ALP runtime for IDLE/listening and DLI/LID badge
+changes; changed badges transfer their region, unchanged status does not paint,
+and a palette change redraws SCAN once.
+Connected idle remains a control, and unexpected speaker requests fail the test.
+The font/canvas substitutes record the literal SCAN paint request and full-frame
+transfer; other frequency and peripheral drawing is stubbed. This establishes
+source-level dispatch and paint requests, not rasterized glyphs or physical
+panel/speaker behavior.
+
 The first test fails against the pre-repair setter; the latter two protect
 intentional retention and expiry. Useful adjacent controls are:
 
@@ -182,7 +202,7 @@ intentional retention and expiry. Useful adjacent controls are:
 From the repository root with PlatformIO available, run these suites serially:
 
 ```sh
-python3 scripts/run_native_tests_serial.py --env native-sanitized test_alp_display_session test_alp_runtime test_display_pipeline_module test_render_frame_composer
+python3 scripts/run_native_tests_serial.py --env native-sanitized test_alp_display_session test_alp_display_lifecycle test_alp_runtime test_display_pipeline_module test_render_frame_composer
 ```
 
 These tests do not close the UART-electrical → rasterized gun text → physical

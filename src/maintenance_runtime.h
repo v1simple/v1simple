@@ -102,6 +102,7 @@ class MaintenanceRuntime : public PowerLifecycle {
     WifiMaintenanceRecoveryModule wifiRecovery_;
 
     String shownIp_;
+    uint8_t appliedBrightness_ = 0;
     uint32_t bootId_ = 0;
     uint32_t bootButtonPressStartMs_ = 0;
     bool bootButtonReleaseRequired_ = false;

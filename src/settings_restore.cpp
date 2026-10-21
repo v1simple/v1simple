@@ -1,4 +1,5 @@
 #include "settings_internals.h"
+#include "settings_nvs_reader.h"
 #include <nvs.h>
 #include "backup_payload_builder.h"
 #include "psram_json_document.h"
@@ -414,8 +415,8 @@ bool SettingsManager::checkNeedsRestore(bool& unavailable) {
         markRestorePending("NVS empty before SD restore");
         return true;
     }
-    Preferences checkPrefs;
-    if (!checkPrefs.begin(activeNs.c_str(), true)) {
+    SettingsNvsReader checkPrefs(activeNs.c_str());
+    if (!checkPrefs.good()) {
         unavailable = true;
         return false;
     }
@@ -431,7 +432,10 @@ bool SettingsManager::checkNeedsRestore(bool& unavailable) {
             Serial.printf("[Settings] Missing critical key '%s' in active namespace\n", key);
         }
     }
-    checkPrefs.end();
+    if (!checkPrefs.good()) {
+        unavailable = true;
+        return false;
+    }
 
     if (persistedRestorePending || restorePending_) {
         markRestorePending("restore-pending marker set");

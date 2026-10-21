@@ -151,8 +151,6 @@ class SettingsManager {
     uint32_t deferredPersistNextAttemptAtMs() const;
 
     void load();
-    // Load six physical-segment colours, migrating the v11 eight-value shape.
-    void loadSignalBarColors();
 
     String getWifiClientPassword();
     String getWifiStaSlotPassword(size_t index);
@@ -200,7 +198,6 @@ class SettingsManager {
     StorageManager* storage_;
     V1ProfileManager* profiles_;
     V1Settings settings_;
-    Preferences preferences_;
     uint32_t displayConfigurationRevision_ = 0;
     uint32_t backupRevisionCounter_ = 1;
     uint32_t backupDueRevision_ = 0;

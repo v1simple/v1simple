@@ -462,13 +462,13 @@ void test_settings_discovery_reports_persistent_namespace_open_failure() {
     TEST_ASSERT_EQUAL_UINT(probeErrorsBefore + 1u, g_settingsNvsProbeErrorCountForTest);
 }
 
-void test_settings_discovery_reports_string_probe_error_and_preserves_value_read() {
+void test_settings_discovery_defers_on_string_probe_error() {
     writeHealthySettingsCopy(SETTINGS_NS_A, 59, SETTINGS_VERSION);
     mock_nvs::set_next_string_probe_result(SETTINGS_NS_A, kNvsProxyName, -79);
     const size_t probeErrorsBefore = g_settingsNvsProbeErrorCountForTest;
 
-    TEST_ASSERT_GREATER_THAN(1000, namespaceHealthScore(SETTINGS_NS_A));
-    TEST_ASSERT_EQUAL_UINT(1u, mock_preferences::stringReadCount(kNvsProxyName));
+    TEST_ASSERT_EQUAL_INT(-1, namespaceHealthScore(SETTINGS_NS_A));
+    TEST_ASSERT_EQUAL_UINT(0u, mock_preferences::stringReadCount(kNvsProxyName));
     TEST_ASSERT_EQUAL_UINT(probeErrorsBefore + 1u, g_settingsNvsProbeErrorCountForTest);
 }
 
@@ -8047,8 +8047,18 @@ void test_settings_backup_replacement_preserves_valid_previous_across_errors_and
     }
 }
 
+#include "nvs_checked_load_tests.h"
+#include "journal_checked_size_tests.h"
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_every_saved_nvs_field_defers_on_read_error_and_survives_retry_save_and_reboot);
+    RUN_TEST(test_nvs_optional_presence_and_legacy_color_reads_are_checked);
+    RUN_TEST(test_nvs_missing_optional_fields_keep_legacy_default_semantics);
+    RUN_TEST(test_nvs_wrong_types_never_publish_a_partial_snapshot);
+    RUN_TEST(test_legacy_selector_read_failure_does_not_choose_a_different_namespace);
+    RUN_TEST(test_cached_restore_journal_size_preserves_pending_primary_and_secondary);
+    RUN_TEST(test_cached_delete_journal_size_preserves_pending_primary_and_secondary);
     RUN_TEST(test_failed_restore_blocks_http_and_deferred_snapshots_until_rollback);
     RUN_TEST(test_failed_profiles_only_restore_blocks_backup_snapshots_until_rollback);
     RUN_TEST(test_synchronous_backup_recovers_failed_restore_before_snapshot);
@@ -8148,7 +8158,7 @@ int main() {
     RUN_TEST(test_settings_discovery_quietly_skips_not_found_meta_selector);
     RUN_TEST(test_settings_discovery_reports_transient_namespace_probe_error_and_preserves_value);
     RUN_TEST(test_settings_discovery_reports_persistent_namespace_open_failure);
-    RUN_TEST(test_settings_discovery_reports_string_probe_error_and_preserves_value_read);
+    RUN_TEST(test_settings_discovery_defers_on_string_probe_error);
     RUN_TEST(test_clearing_absent_wifi_slot_secrets_is_idempotent);
     RUN_TEST(test_configured_wifi_slot_missing_priority_uses_slot_index);
     RUN_TEST(test_absent_auto_push_key_uses_authoritative_default);

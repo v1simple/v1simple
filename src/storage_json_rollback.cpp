@@ -14,7 +14,8 @@ enum class JsonPathLoadResult : uint8_t {
 };
 
 JsonPathLoadResult loadJsonDocumentAtPath(fs::FS& fs, const char* path, size_t maxBytes,
-                                          JsonDocument& outDoc, String* errorMessage) {
+                                          const struct stat& details, JsonDocument& outDoc,
+                                          String* errorMessage) {
     if (errorMessage) {
         *errorMessage = "";
     }
@@ -35,14 +36,16 @@ JsonPathLoadResult loadJsonDocumentAtPath(fs::FS& fs, const char* path, size_t m
         return JsonPathLoadResult::Unavailable;
     }
 
-    const size_t fileSize = file.size();
-    if (fileSize == 0 || fileSize > maxBytes) {
+    // VFS may leave File::size() at zero when its internal fstat fails.
+    // The successful path-status probe supplies checked metadata instead.
+    if (details.st_size <= 0 || static_cast<uint64_t>(details.st_size) > maxBytes) {
         file.close();
         if (errorMessage) {
             *errorMessage = "size invalid";
         }
         return JsonPathLoadResult::Invalid;
     }
+    const size_t fileSize = static_cast<size_t>(details.st_size);
 
     PsramJson::Buffer bytes(fileSize);
     if (!bytes || file.read(bytes.data(), fileSize) != fileSize) {
@@ -88,12 +91,14 @@ JsonRollbackLoadResult loadJsonDocumentWithRollback(fs::FS& fs, const char* live
     }
 
     const String rollbackPath = StorageManager::rollbackPathFor(livePath);
-    const StoragePathStatus liveStatus = storagePathStatus(fs, livePath);
+    struct stat liveDetails {};
+    const StoragePathStatus liveStatus = storagePathStatus(fs, livePath, &liveDetails);
     if (liveStatus == StoragePathStatus::Unavailable) return JsonRollbackLoadResult::Unavailable;
     const bool liveExists = liveStatus == StoragePathStatus::Present;
 
     const JsonPathLoadResult liveResult = liveExists
-                                              ? loadJsonDocumentAtPath(fs, livePath, maxBytes, outDoc, errorMessage)
+                                              ? loadJsonDocumentAtPath(fs, livePath, maxBytes, liveDetails,
+                                                                       outDoc, errorMessage)
                                               : JsonPathLoadResult::Invalid;
     if (liveResult == JsonPathLoadResult::Loaded) {
         if (loadedPath) {
@@ -109,11 +114,12 @@ JsonRollbackLoadResult loadJsonDocumentWithRollback(fs::FS& fs, const char* live
         return JsonRollbackLoadResult::Unavailable;
     }
 
-    const StoragePathStatus rollbackStatus = storagePathStatus(fs, rollbackPath);
+    struct stat rollbackDetails {};
+    const StoragePathStatus rollbackStatus = storagePathStatus(fs, rollbackPath, &rollbackDetails);
     if (rollbackStatus == StoragePathStatus::Unavailable) return JsonRollbackLoadResult::Unavailable;
     const bool rollbackExists = rollbackStatus == StoragePathStatus::Present;
     const JsonPathLoadResult rollbackResult = rollbackExists
-                                                  ? loadJsonDocumentAtPath(fs, rollbackPath.c_str(), maxBytes,
+                                                  ? loadJsonDocumentAtPath(fs, rollbackPath.c_str(), maxBytes, rollbackDetails,
                                                                            outDoc, errorMessage)
                                                   : JsonPathLoadResult::Invalid;
     if (rollbackResult == JsonPathLoadResult::Unavailable) {

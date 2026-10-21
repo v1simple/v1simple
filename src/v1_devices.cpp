@@ -108,16 +108,19 @@ bool rawDeviceAddressShapeIsValid(const String& address) {
 
 enum class LegacyLineReadStatus : uint8_t { End = 0, Ok, Invalid, Unavailable };
 
-LegacyLineReadStatus readLegacyLineExact(File& file, String& output) {
+LegacyLineReadStatus readLegacyLineExact(File& file, uint64_t& remaining, String& output) {
     // Legacy records are tiny (17-byte address plus an optional 32-byte name),
     // but tolerate historical padding while keeping ingestion bounded.
     char bytes[256] = {};
     size_t length = 0;
     bool sawByte = false;
     bool overflow = false;
-    while (file.available()) {
+    // File::available() shares File::size()'s fallible VFS cache. Consume the
+    // checked stat byte count so a failed cache cannot turn a saved map empty.
+    while (remaining > 0) {
         const int raw = file.read();
         if (raw < 0) return LegacyLineReadStatus::Unavailable;
+        --remaining;
         sawByte = true;
         if (raw == '\n') break;
         if (raw == 0) overflow = true;
@@ -247,17 +250,19 @@ uint32_t deviceStoreContentCrc(const JsonDocument& doc) {
 
 JsonRollbackLoadResult loadDeviceStoreRollbackDocument(fs::FS& filesystem, size_t maxBytes, JsonDocument& doc) {
     const String rollbackPath = StorageManager::rollbackPathFor(STORE_PATH);
-    const StoragePathStatus pathStatus = storagePathStatus(filesystem, rollbackPath);
+    struct stat details {};
+    const StoragePathStatus pathStatus = storagePathStatus(filesystem, rollbackPath, &details);
     if (pathStatus == StoragePathStatus::Missing) return JsonRollbackLoadResult::Missing;
     if (pathStatus == StoragePathStatus::Unavailable) return JsonRollbackLoadResult::Unavailable;
 
     File file = filesystem.open(rollbackPath.c_str(), FILE_READ);
     if (!file) return JsonRollbackLoadResult::Unavailable;
-    const size_t fileSize = file.size();
-    if (fileSize == 0 || fileSize > maxBytes) {
+    // Use checked metadata, not the VFS handle's potentially failed size cache.
+    if (details.st_size <= 0 || static_cast<uint64_t>(details.st_size) > maxBytes) {
         file.close();
         return JsonRollbackLoadResult::Invalid;
     }
+    const size_t fileSize = static_cast<size_t>(details.st_size);
 
     PsramJson::Buffer bytes(fileSize);
     if (!bytes || file.read(bytes.data(), fileSize) != fileSize) {
@@ -1114,9 +1119,10 @@ bool V1DeviceStore::migrateLegacyFiles(fs::FS* sourceFs) {
     if (!sourceFs) {
         return false;
     }
-    const StoragePathStatus addressStatus = storagePathStatus(*sourceFs, LEGACY_ADDR_PATH);
+    struct stat addressDetails {};
+    const StoragePathStatus addressStatus = storagePathStatus(*sourceFs, LEGACY_ADDR_PATH, &addressDetails);
     if (addressStatus == StoragePathStatus::Missing) return false;
-    if (addressStatus == StoragePathStatus::Unavailable) {
+    if (addressStatus == StoragePathStatus::Unavailable || addressDetails.st_size < 0) {
         storeReadUnavailable_ = true;
         catalogStatus_ = StoreReadStatus::Unavailable;
         return false;
@@ -1136,9 +1142,10 @@ bool V1DeviceStore::migrateLegacyFiles(fs::FS* sourceFs) {
         return false;
     }
 
-    while (addressFile.available()) {
+    uint64_t addressBytesRemaining = static_cast<uint64_t>(addressDetails.st_size);
+    while (addressBytesRemaining > 0) {
         String line;
-        const LegacyLineReadStatus lineStatus = readLegacyLineExact(addressFile, line);
+        const LegacyLineReadStatus lineStatus = readLegacyLineExact(addressFile, addressBytesRemaining, line);
         if (lineStatus == LegacyLineReadStatus::End) break;
         if (lineStatus != LegacyLineReadStatus::Ok) {
             if (lineStatus == LegacyLineReadStatus::Unavailable) {
@@ -1196,9 +1203,10 @@ bool V1DeviceStore::migrateLegacyFiles(fs::FS* sourceFs) {
     }
 
     const auto applyLegacyMap = [&](const char* path, bool names) {
-        const StoragePathStatus status = storagePathStatus(*sourceFs, path);
+        struct stat details {};
+        const StoragePathStatus status = storagePathStatus(*sourceFs, path, &details);
         if (status == StoragePathStatus::Missing) return true;
-        if (status == StoragePathStatus::Unavailable) {
+        if (status == StoragePathStatus::Unavailable || details.st_size < 0) {
             storeReadUnavailable_ = true;
             catalogStatus_ = StoreReadStatus::Unavailable;
             return false;
@@ -1209,9 +1217,10 @@ bool V1DeviceStore::migrateLegacyFiles(fs::FS* sourceFs) {
             catalogStatus_ = StoreReadStatus::Unavailable;
             return false;
         }
-        while (mapFile.available()) {
+        uint64_t mapBytesRemaining = static_cast<uint64_t>(details.st_size);
+        while (mapBytesRemaining > 0) {
             String line;
-            const LegacyLineReadStatus lineStatus = readLegacyLineExact(mapFile, line);
+            const LegacyLineReadStatus lineStatus = readLegacyLineExact(mapFile, mapBytesRemaining, line);
             if (lineStatus == LegacyLineReadStatus::End) break;
             if (lineStatus != LegacyLineReadStatus::Ok) {
                 if (lineStatus == LegacyLineReadStatus::Unavailable) {

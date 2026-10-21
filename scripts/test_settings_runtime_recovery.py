@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Exercise delayed settings recovery through the actual periodic runtime owner.
+"""Exercise settings recovery through the actual periodic runtime owners.
 
 One fixture exercises the real settings store, NVS recovery and synchronizer.
 The other carries the real recovery/dispatch methods through the connection
 coordinator and OBD runtime, with BLE links and peripheral replies scripted.
+Maintenance also follows the real restore API through its post-restore callback,
+periodic display application and a settings reload; panel writes are recorded.
 """
 from pathlib import Path
 import os
@@ -36,6 +38,18 @@ def build_and_run(build: Path) -> None:
     connection = recovery + between(source, "void DriveRuntime::processConnectionCycle(",
                                     "void DriveRuntime::processAlp(")
     (build / "connection_recovery.inc").write_text(connection, encoding="utf-8")
+    maintenance = (ROOT / "src/maintenance_runtime.cpp").read_text(encoding="utf-8")
+    maintenance_owner = between(maintenance,
+                                "void MaintenanceRuntime::initializeTouchAndDisplayControls()",
+                                "bool MaintenanceRuntime::preservedPanicEvidencePresent(")
+    maintenance_owner += between(maintenance, "void MaintenanceRuntime::tick(uint32_t nowMs)",
+                                 "void MaintenanceRuntime::stop()")
+    (build / "maintenance_recovery.inc").write_text(maintenance_owner, encoding="utf-8")
+    runtimes = (ROOT / "src/wifi_runtimes.cpp").read_text(encoding="utf-8")
+    callback = between(runtimes, "        // syncAfterRestore\n", "        // ctx\n")
+    callback = callback.split("[](void* ctx) {", 1)[1].rsplit("},", 1)[0]
+    (build / "maintenance_restore_sync.inc").write_text(
+        "void actualPostRestore(void* ctx) {" + callback + "}\n", encoding="utf-8")
     compiler = shlex.split(os.environ.get("CXX", "clang++" if shutil.which("clang++") else "c++"))
     deps = ROOT / ".pio/libdeps/native-sanitized"
     includes = [build, ROOT, ROOT / "src", ROOT / "include", ROOT / "test/mocks",
@@ -48,6 +62,7 @@ def build_and_run(build: Path) -> None:
     fixtures = {
         "recovery": [ROOT / "test/test_settings_persistence/display_nvs_persistence_tests.cpp"],
         "connection_admission": [],
+        "maintenance": [ROOT / "test/test_settings_persistence/display_nvs_persistence_tests.cpp"],
     }
     for name, support in fixtures.items():
         executable = build / name

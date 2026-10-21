@@ -118,7 +118,7 @@ void V1Display::showStealth(float, bool) {
     ++stealthDrawCalls;
     currentScreen_ = ScreenMode::Stealth;
 }
-void V1Display::showScanning() {}
+void V1Display::showScanning(bool) {}
 void V1Display::setBleContext(const DisplayBleContext& context) { bleCtx_ = context; }
 void V1Display::setBLEProxyStatus(bool, bool, bool) {}
 void V1Display::setPreviewIndicatorOverridesActive(bool) {}

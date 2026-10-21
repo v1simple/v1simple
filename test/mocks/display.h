@@ -252,7 +252,7 @@ public:
     }
 
     // Display methods
-    void showScanning() {
+    void showScanning(bool = true) {
         showScanningCalls++;
         recordPresentation(DisplayMockPresentation::SCANNING, DisplayMockOperation::SHOW_SCANNING);
     }

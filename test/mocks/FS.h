@@ -132,6 +132,10 @@ public:
         if (!state_ || state_->directory || !state_->readable || !state_->stream.is_open()) {
             return 0;
         }
+        // Arduino File::available() uses the same cached size as size().
+        if (state_->path.string() == mock_fs_detail::g_zero_size_full_path) {
+            return static_cast<int>(size() - position());
+        }
         const std::streampos current = state_->stream.tellg();
         if (current < 0) {
             return 0;

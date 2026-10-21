@@ -120,8 +120,9 @@ void MaintenanceRuntime::initializeTouchAndDisplayControls() {
     }
 
     pinMode(BOOT_BUTTON_GPIO, INPUT_PULLUP);
-    display_.setBrightness(settings_.get().brightness);
-    Serial.printf("[Settings] Applied saved brightness: %d\n", settings_.get().brightness);
+    appliedBrightness_ = settings_.get().brightness;
+    display_.setBrightness(appliedBrightness_);
+    Serial.printf("[Settings] Applied saved brightness: %d\n", appliedBrightness_);
 }
 
 bool MaintenanceRuntime::preservedPanicEvidencePresent(esp_reset_reason_t resetReason) const {
@@ -359,6 +360,15 @@ void MaintenanceRuntime::tick(uint32_t nowMs) {
     }
     settings_.serviceDeferredPersist(nowMs);
     settings_.serviceDeferredBackup(nowMs);
+
+    // Recovery and backup uploads can replace settings after maintenance has
+    // started. Apply their brightness through the same periodic owner, once
+    // the settings are authoritative and the display is available.
+    if (!powerPresentationOwned && !settings_.recoveryPending() &&
+        appliedBrightness_ != settings_.get().brightness) {
+        appliedBrightness_ = settings_.get().brightness;
+        display_.setBrightness(appliedBrightness_);
+    }
 
     const bool stationConnected = wifi_.isConnected();
     const String ip = stationConnected ? wifi_.getIPAddress() : wifi_.getAPIPAddress();

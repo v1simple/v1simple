@@ -65,7 +65,7 @@ class V1Display {
     // Empty ipAddress means unavailable; stationMode selects STA/DHCP vs setup AP.
     void showMaintenanceMode(const char* ipAddress = nullptr, bool stationMode = false);
     void showResting(bool forceRedraw = false);
-    void showScanning();
+    void showScanning(bool forceRedraw = true);
     void showStealth(float speedMph, bool speedValid);
 
     // Force next update() call to fully redraw (use after settings change)
@@ -211,6 +211,7 @@ class V1Display {
     ScreenMode currentScreen_ = ScreenMode::Unknown; // Track current screen to avoid redundant full redraws
     uint32_t paletteRevision_ = 0;                   // Incremented on theme change to trigger redraws
     uint32_t lastRestingPaletteRevision_ = 0;
+    uint32_t lastScanningPaletteRevision_ = 0;
     int lastRestingProfileSlot_ = -1;
     uint32_t lastStealthPaletteRevision_ = 0;
     int lastStealthRoundedMph_ = -1;                 // Last centered stealth speed text (-1 = "-- MPH")

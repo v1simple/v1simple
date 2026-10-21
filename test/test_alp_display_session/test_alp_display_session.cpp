@@ -47,7 +47,7 @@ void QuietCoordinatorModule::syncCommittedState() { TEST_FAIL_MESSAGE("unexpecte
 static RenderFrame renderedFrame;
 void V1Display::renderFrame(const RenderFrame& frame) { renderedFrame = frame; }
 void V1Display::forceNextRedraw() {}
-void V1Display::showScanning() {}
+void V1Display::showScanning(bool) {}
 void V1Display::drawBLEProxyIndicator() {}
 ObdRuntimeStatus ObdRuntimeModule::snapshot(uint32_t) const { return {}; }
 

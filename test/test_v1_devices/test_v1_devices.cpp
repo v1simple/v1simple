@@ -63,7 +63,8 @@ std::string readFileToString(fs::FS& fs, const char* path) {
     File file = fs.open(path, FILE_READ);
     if (!file) return {};
     std::string contents;
-    while (file.available()) contents.push_back(static_cast<char>(file.read()));
+    int byte = 0;
+    while ((byte = file.read()) >= 0) contents.push_back(static_cast<char>(byte));
     file.close();
     return contents;
 }
@@ -1845,8 +1846,229 @@ void test_unknown_path_metadata_is_not_absence_or_cleanup_success() {
     TEST_ASSERT_TRUE(storageRemoveFileIfPresent(filesystem, "/absent"));
 }
 
+
+// Exercise the real readStore callers with SDK-style cached size failures.
+// The independent path stat and file bytes remain healthy throughout.
+void seedCheckedSizeCatalog(fs::FS& filesystem, std::string& stale, std::string& current) {
+    V1DeviceStore source;
+    TEST_ASSERT_TRUE(source.begin(&filesystem));
+    TEST_ASSERT_TRUE(source.setDeviceName("AA:BB:CC:DD:EE:FF", "Previous").committed());
+    TEST_ASSERT_TRUE(source.setDeviceDefaultProfile("AA:BB:CC:DD:EE:FF", 1).committed());
+    stale = readFileToString(filesystem, "/v1devices.json");
+    TEST_ASSERT_TRUE(source.setDeviceName("AA:BB:CC:DD:EE:FF", "Current").committed());
+    TEST_ASSERT_TRUE(source.setDeviceDefaultProfile("AA:BB:CC:DD:EE:FF", 3).committed());
+    current = readFileToString(filesystem, "/v1devices.json");
+}
+
+void assertCheckedSizeCatalog(V1DeviceStore& store, const char* name = "Current") {
+    std::vector<V1DeviceRecord> records;
+    TEST_ASSERT_TRUE(store.listDevicesChecked(records));
+    TEST_ASSERT_EQUAL_UINT(1, records.size());
+    TEST_ASSERT_EQUAL_STRING(name, records[0].name.c_str());
+    TEST_ASSERT_EQUAL_UINT8(3, records[0].defaultProfile);
+}
+
+void test_cached_live_size_keeps_current_primary_secondary_and_rollback_authority() {
+    for (bool inject : {false, true}) {
+        for (bool secondaryWins : {false, true}) {
+            const auto root = g_tempRoot / (std::to_string(inject) + std::to_string(secondaryWins));
+            fs::FS primary(root / "primary");
+            fs::FS secondary(root / "secondary");
+            fs::FS& winner = secondaryWins ? secondary : primary;
+            fs::FS& loser = secondaryWins ? primary : secondary;
+            std::string stale, current;
+            seedCheckedSizeCatalog(winner, stale, current);
+            writeFileFromBytes(winner, "/v1devices.json.prev", stale);
+            writeFileFromBytes(loser, "/v1devices.json", stale);
+            if (inject) fs::mock_zero_file_size_for_full_path(
+                (root / (secondaryWins ? "secondary" : "primary") / "v1devices.json").c_str());
+            V1DeviceStore boot;
+            TEST_ASSERT_TRUE(boot.begin(&primary, &secondary));
+            assertCheckedSizeCatalog(boot);
+            TEST_ASSERT_EQUAL_STRING(current.c_str(), readFileToString(primary, "/v1devices.json").c_str());
+            TEST_ASSERT_EQUAL_STRING(current.c_str(), readFileToString(secondary, "/v1devices.json").c_str());
+            // Generation probes during a late edit must read the same authority.
+            TEST_ASSERT_TRUE(boot.setDeviceName("AA:BB:CC:DD:EE:FF", "Later").fullyMirrored());
+            boot.serviceRecovery(60000);
+            assertCheckedSizeCatalog(boot, "Later");
+            fs::mock_reset_fs_open_state();
+            V1DeviceStore reboot;
+            TEST_ASSERT_TRUE(reboot.begin(&primary, &secondary));
+            assertCheckedSizeCatalog(reboot, "Later");
+        }
+    }
+}
+
+void test_cached_rollback_size_recovers_missing_empty_syntax_crc_and_semantic_live() {
+    for (bool inject : {false, true}) {
+        // Missing/empty/syntax use the generic .prev reader; CRC/schema/record
+        // errors use both branches of the specialized semantic .prev reader.
+        for (int failure = 0; failure < 6; ++failure) {
+            const auto root = g_tempRoot / (std::to_string(inject) + std::to_string(failure));
+            fs::FS primary(root / "primary");
+            fs::FS mirror(root / "mirror");
+            std::string stale, current;
+            seedCheckedSizeCatalog(primary, stale, current);
+            writeFileFromBytes(primary, "/v1devices.json.prev", current);
+            writeFileFromBytes(mirror, "/v1devices.json", stale);
+            if (failure == 0) TEST_ASSERT_TRUE(primary.remove("/v1devices.json"));
+            else if (failure == 1) writeFileFromString(primary, "/v1devices.json", "");
+            else if (failure == 2) writeFileFromString(primary, "/v1devices.json", "{");
+            else {
+                JsonDocument invalid;
+                TEST_ASSERT_FALSE(deserializeJson(invalid, current));
+                if (failure == 3) invalid["crc32"] = invalid["crc32"].as<uint32_t>() ^ 1u;
+                else if (failure == 4) invalid["version"] = 255;
+                else {
+                    invalid["devices"][0]["defaultProfile"] = 4;
+                    invalid["crc32"] = deviceStoreContentCrc(invalid);
+                }
+                String bytes;
+                serializeJson(invalid, bytes);
+                writeFileFromString(primary, "/v1devices.json", bytes.c_str());
+            }
+            if (inject) fs::mock_zero_file_size_for_full_path((root / "primary/v1devices.json.prev").c_str());
+            V1DeviceStore boot;
+            TEST_ASSERT_TRUE(boot.begin(&primary, &mirror));
+            assertCheckedSizeCatalog(boot);
+            TEST_ASSERT_EQUAL_STRING(current.c_str(), readFileToString(primary, "/v1devices.json").c_str());
+            TEST_ASSERT_EQUAL_STRING(current.c_str(), readFileToString(mirror, "/v1devices.json").c_str());
+            fs::mock_reset_fs_open_state();
+            V1DeviceStore reboot;
+            TEST_ASSERT_TRUE(reboot.begin(&primary, &mirror));
+            assertCheckedSizeCatalog(reboot);
+        }
+    }
+}
+
+void test_unknown_catalog_metadata_blocks_mirror_promotion_until_retry() {
+    for (int candidate = 0; candidate < 4; ++candidate) {
+        const auto root = g_tempRoot / std::to_string(candidate);
+        fs::FS primary(root / "primary");
+        fs::FS mirror(root / "mirror");
+        const bool secondaryWins = candidate == 1;
+        fs::FS& winner = secondaryWins ? mirror : primary;
+        fs::FS& loser = secondaryWins ? primary : mirror;
+        const auto winnerRoot = root / (secondaryWins ? "mirror" : "primary");
+        std::string stale, current;
+        seedCheckedSizeCatalog(winner, stale, current);
+        writeFileFromBytes(loser, "/v1devices.json", stale);
+        const char* path = candidate < 2 ? "/v1devices.json" : "/v1devices.json.prev";
+        if (candidate >= 2) {
+            writeFileFromBytes(winner, path, current);
+            if (candidate == 2) writeFileFromString(winner, "/v1devices.json", "{");
+            else {
+                JsonDocument invalid;
+                TEST_ASSERT_FALSE(deserializeJson(invalid, current));
+                invalid["crc32"] = invalid["crc32"].as<uint32_t>() ^ 1u;
+                String bytes;
+                serializeJson(invalid, bytes);
+                writeFileFromString(winner, "/v1devices.json", bytes.c_str());
+            }
+        }
+        const auto target = winnerRoot / (path + 1);
+        const auto held = winnerRoot / "held.json";
+        std::filesystem::rename(target, held);
+        // A self-referential link produces a real stat ELOOP, distinct from
+        // missing or empty bytes, without depending on host permissions.
+        std::filesystem::create_symlink(target.filename(), target);
+        TEST_ASSERT_EQUAL_INT(StoragePathStatus::Unavailable, storagePathStatus(winner, path));
+        const size_t renameCalls = fs::g_mock_fs_rename_state.renameCalls;
+        V1DeviceStore boot;
+        TEST_ASSERT_TRUE(boot.begin(&primary, &mirror));
+        TEST_ASSERT_FALSE(boot.catalogReadable());
+        TEST_ASSERT_FALSE(boot.setDeviceName("AA:BB:CC:DD:EE:FF", "Wrong").committed());
+        boot.serviceRecovery(2000);
+        TEST_ASSERT_FALSE(boot.catalogReadable());
+        TEST_ASSERT_EQUAL_UINT(renameCalls, fs::g_mock_fs_rename_state.renameCalls);
+        TEST_ASSERT_EQUAL_STRING(stale.c_str(), readFileToString(loser, "/v1devices.json").c_str());
+        std::filesystem::remove(target);
+        std::filesystem::rename(held, target);
+        boot.serviceRecovery(3000);
+        assertCheckedSizeCatalog(boot);
+        TEST_ASSERT_TRUE(boot.setDeviceName("AA:BB:CC:DD:EE:FF", "Later").fullyMirrored());
+        boot.serviceRecovery(60000);
+        assertCheckedSizeCatalog(boot, "Later");
+        V1DeviceStore reboot;
+        TEST_ASSERT_TRUE(reboot.begin(&primary, &mirror));
+        assertCheckedSizeCatalog(reboot, "Later");
+    }
+}
+
+void test_cached_live_size_generation_probe_advances_past_both_durable_copies() {
+    for (bool secondaryHigher : {false, true}) {
+        const auto root = g_tempRoot / std::to_string(secondaryHigher);
+        fs::FS primary(root / "primary");
+        fs::FS mirror(root / "mirror");
+        std::string stale, current;
+        seedCheckedSizeCatalog(primary, stale, current);
+        V1DeviceStore boot;
+        TEST_ASSERT_TRUE(boot.begin(&primary, &mirror));
+        fs::FS& advanced = secondaryHigher ? mirror : primary;
+        JsonDocument newer;
+        TEST_ASSERT_FALSE(deserializeJson(newer, current));
+        const uint32_t higherGeneration = newer["generation"].as<uint32_t>() + 100;
+        newer["generation"] = higherGeneration;
+        writeDeviceStoreDocument(advanced, "/v1devices.json", newer);
+        writeFileFromBytes(advanced, "/v1devices.json.prev", stale);
+        fs::mock_zero_file_size_for_full_path(
+            (root / (secondaryHigher ? "mirror" : "primary") / "v1devices.json").c_str());
+        TEST_ASSERT_TRUE(boot.setDeviceName("AA:BB:CC:DD:EE:FF", "Later").fullyMirrored());
+        fs::mock_reset_fs_open_state();
+        JsonDocument saved;
+        TEST_ASSERT_FALSE(deserializeJson(saved, readFileToString(primary, "/v1devices.json")));
+        TEST_ASSERT_EQUAL_UINT32(higherGeneration + 1, saved["generation"].as<uint32_t>());
+        TEST_ASSERT_EQUAL_STRING(readFileToString(primary, "/v1devices.json").c_str(),
+                                 readFileToString(mirror, "/v1devices.json").c_str());
+        V1DeviceStore reboot;
+        TEST_ASSERT_TRUE(reboot.begin(&primary, &mirror));
+        assertCheckedSizeCatalog(reboot, "Later");
+    }
+}
+
+
+void test_cached_legacy_size_preserves_address_name_and_default_profile_through_migration() {
+    const char* paths[] = {"/known_v1.txt", "/known_v1_names.txt", "/known_v1_profiles.txt"};
+    for (bool inject : {false, true}) {
+        for (int candidate = 0; candidate < 3; ++candidate) {
+            const auto root = g_tempRoot / (std::to_string(inject) + std::to_string(candidate));
+            fs::FS primary(root);
+            writeFileFromString(primary, paths[0], "AA:BB:CC:DD:EE:FF\n");
+            writeFileFromString(primary, paths[1], "AA:BB:CC:DD:EE:FF|Current\n");
+            writeFileFromString(primary, paths[2], "AA:BB:CC:DD:EE:FF|3\n");
+            if (inject) fs::mock_zero_file_size_for_full_path((root / (paths[candidate] + 1)).c_str());
+            V1DeviceStore boot;
+            TEST_ASSERT_TRUE(boot.begin(&primary));
+            assertCheckedSizeCatalog(boot);
+            TEST_ASSERT_TRUE(boot.setDeviceName("AA:BB:CC:DD:EE:FF", "Later").committed());
+            fs::mock_reset_fs_open_state();
+            V1DeviceStore reboot;
+            TEST_ASSERT_TRUE(reboot.begin(&primary));
+            assertCheckedSizeCatalog(reboot, "Later");
+        }
+    }
+}
+
+void test_checked_empty_or_oversized_rollback_remains_invalid() {
+    fs::FS filesystem(g_tempRoot);
+    for (const std::string& invalid : {std::string(), std::string(1025, ' ')}) {
+        writeFileFromBytes(filesystem, "/v1devices.json.prev", invalid);
+        JsonDocument doc;
+        TEST_ASSERT_EQUAL_INT(JsonRollbackLoadResult::Invalid,
+            loadJsonDocumentWithRollback(filesystem, "/v1devices.json", 1024, doc));
+        TEST_ASSERT_EQUAL_INT(JsonRollbackLoadResult::Invalid,
+            loadDeviceStoreRollbackDocument(filesystem, 1024, doc));
+    }
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_cached_live_size_keeps_current_primary_secondary_and_rollback_authority);
+    RUN_TEST(test_cached_rollback_size_recovers_missing_empty_syntax_crc_and_semantic_live);
+    RUN_TEST(test_unknown_catalog_metadata_blocks_mirror_promotion_until_retry);
+    RUN_TEST(test_cached_live_size_generation_probe_advances_past_both_durable_copies);
+    RUN_TEST(test_checked_empty_or_oversized_rollback_remains_invalid);
+    RUN_TEST(test_cached_legacy_size_preserves_address_name_and_default_profile_through_migration);
     RUN_TEST(test_unreadable_semantic_rollback_blocks_stale_mirror_then_recovers);
     RUN_TEST(test_unreadable_legacy_catalog_or_maps_defer_migration_without_defaults);
     RUN_TEST(test_promotion_uses_metadata_and_restores_unreadable_live_on_failed_rename);

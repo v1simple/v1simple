@@ -63,6 +63,7 @@
     let wifiEditor = $state(createWifiEditorState());
     let wifiPoll = null;
     let wifiStatusFetchPromise = null;
+    let wifiStatusRunId = 0;
     let wifiToggleInFlight = $state(false);
     let wifiToggleRunId = 0;
     let componentMounted = false;
@@ -173,6 +174,9 @@
         forceFresh = false
     } = {}) {
         if (forceFresh) {
+            // A mutation has settled. Older reads cannot describe its result,
+            // including results consumed by an in-flight connection test.
+            wifiStatusRunId += 1;
             while (wifiStatusFetchPromise) {
                 await wifiStatusFetchPromise;
             }
@@ -181,6 +185,8 @@
         }
 
         if (!componentMounted) return null;
+        const runId = wifiStatusRunId;
+        const isCurrent = () => componentMounted && runId === wifiStatusRunId;
 
         const request = (async () => {
             try {
@@ -193,6 +199,7 @@
                         data: response.ok ? await response.json() : null
                     })
                 );
+                if (!isCurrent()) return null;
                 if (res.ok) {
                     const data = res.data;
                     const normalizedStatus =
@@ -200,16 +207,14 @@
                     if (typeof normalizedStatus.enabled !== 'boolean') {
                         delete normalizedStatus.enabled;
                     }
-                    if (componentMounted) {
-                        wifiStatus = mergeWifiStatus(wifiStatus, normalizedStatus);
-                        clearMessageText(WIFI_STATUS_ERROR_TEXT);
-                    }
+                    wifiStatus = mergeWifiStatus(wifiStatus, normalizedStatus);
+                    clearMessageText(WIFI_STATUS_ERROR_TEXT);
                     return normalizedStatus;
-                } else if (reportError && componentMounted) {
+                } else if (reportError) {
                     message = { type: 'error', text: WIFI_STATUS_ERROR_TEXT };
                 }
             } catch (e) {
-                if (reportError && componentMounted) {
+                if (reportError && isCurrent()) {
                     message = { type: 'error', text: WIFI_STATUS_ERROR_TEXT };
                 }
             }
@@ -224,6 +229,12 @@
                 wifiStatusFetchPromise = null;
             }
         }
+    }
+
+    async function refreshWifiAfterMutation({ includeNetworks = true } = {}) {
+        const refreshes = [fetchWifiStatus({ forceFresh: true })];
+        if (includeNetworks) refreshes.push(fetchSavedWifiNetworks());
+        await Promise.all(refreshes);
     }
 
     function normalizeWifiSlot(slot, fallbackIndex = 0) {
@@ -489,7 +500,7 @@
         } catch (e) {
             if (componentMounted) message = { type: 'error', text: 'Failed to save WiFi network' };
         } finally {
-            await fetchSavedWifiNetworks();
+            await refreshWifiAfterMutation();
             wifiScan = setWifiScanSaving(wifiScan, false);
         }
     }
@@ -497,14 +508,16 @@
     async function disconnectWifi() {
         try {
             const res = await fetchWithTimeout('/api/wifi/disconnect', { method: 'POST' });
+            if (!componentMounted) return;
             if (!res.ok) {
                 message = { type: 'error', text: 'Failed to disconnect' };
                 return;
             }
-            await fetchWifiStatus();
             message = { type: 'success', text: 'Disconnected from WiFi' };
         } catch (e) {
-            message = { type: 'error', text: 'Failed to disconnect' };
+            if (componentMounted) message = { type: 'error', text: 'Failed to disconnect' };
+        } finally {
+            await refreshWifiAfterMutation({ includeNetworks: false });
         }
     }
 
@@ -534,14 +547,16 @@
             }
             if (runId !== wifiToggleRunId) return;
 
-            const refreshedStatus = await fetchWifiStatus({
+            const statusRefresh = fetchWifiStatus({
                 reportError: false,
                 forceFresh: true
             });
-            if (runId !== wifiToggleRunId) return;
+            const statusRunId = wifiStatusRunId;
+            const refreshedStatus = await statusRefresh;
+            if (runId !== wifiToggleRunId || statusRunId !== wifiStatusRunId) return;
 
             const networksLoaded = await fetchSavedWifiNetworks();
-            if (runId !== wifiToggleRunId || networksLoaded !== true) return;
+            if (runId !== wifiToggleRunId || statusRunId !== wifiStatusRunId || networksLoaded !== true) return;
 
             if (transportFailed) {
                 message = { type: 'error', text: 'Connection error' };
@@ -618,7 +633,7 @@
         } catch (e) {
             if (componentMounted) message = { type: 'error', text: 'Failed to save WiFi network' };
         } finally {
-            await fetchSavedWifiNetworks();
+            await refreshWifiAfterMutation();
             wifiNetworkActionsInFlight -= 1;
         }
     }
@@ -643,8 +658,7 @@
         } catch (e) {
             if (componentMounted) message = { type: 'error', text: 'Failed to delete WiFi network' };
         } finally {
-            await fetchSavedWifiNetworks();
-            await fetchWifiStatus();
+            await refreshWifiAfterMutation();
             wifiNetworkActionsInFlight -= 1;
         }
     }
@@ -672,11 +686,15 @@
                     WIFI_TEST_STATUS_TIMEOUT_MS,
                     deadlineMs - Date.now()
                 );
-                const status = await fetchWifiStatus({
+                const statusRunId = wifiStatusRunId;
+                let status = await fetchWifiStatus({
                     reportError: false,
                     timeoutMs: statusTimeoutMs
                 });
                 if (runId !== wifiTestRunId) return;
+                // A mutation can settle after the reader completes but before
+                // this consumer resumes. Retry through the same bounded loop.
+                if (statusRunId !== wifiStatusRunId) status = null;
 
                 if (status?.state === 'connected') {
                     const connectedIndex = Number(status.connectedSlotIndex);
@@ -891,6 +909,7 @@
         restoring = true;
         message = null;
         let restoreSubmitted = false;
+        let restoreSucceeded = false;
 
         try {
             const text = await restoreFile.text();
@@ -922,17 +941,18 @@
             if (res.ok && data.success) {
                 message = { type: 'success', text: 'Settings restored and reloaded.' };
                 restoreFile = null;
-                await Promise.all([
-                    fetchSettings({ force: true }),
-                    fetchWifiStatus()
-                ]);
+                restoreSucceeded = true;
             } else {
                 message = { type: 'error', text: data.error || 'Failed to restore backup' };
             }
         } catch (e) {
             if (componentMounted) message = { type: 'error', text: 'Failed to read backup file' };
         } finally {
-            if (restoreSubmitted) await fetchSavedWifiNetworks();
+            if (restoreSubmitted) {
+                const refreshes = [refreshWifiAfterMutation()];
+                if (restoreSucceeded) refreshes.push(fetchSettings({ force: true }));
+                await Promise.all(refreshes);
+            }
             restoring = false;
         }
     }

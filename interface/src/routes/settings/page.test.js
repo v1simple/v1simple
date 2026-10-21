@@ -187,6 +187,97 @@ async function performSavedWifiOperation(operation) {
     }
 }
 
+const wifiStatusMutationPaths = ['manual save', 'scan save', 'delete', 'restore', 'disconnect'];
+const connectedWifiStatus = {
+    enabled: true,
+    state: 'connected',
+    connectedSSID: 'HomeWifi',
+    connectedSlotIndex: 0,
+    rssi: -48
+};
+
+function wifiClientToggle() {
+    return screen.getByText('WiFi Client').closest('.surface-card').querySelector('input[type="checkbox"]');
+}
+
+async function performWifiStatusMutation(operation) {
+    if (operation === 'manual save') {
+        await fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[0]);
+        await fireEvent.input(screen.getByLabelText('SSID'), { target: { value: 'ReplacementWifi' } });
+        await fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+    } else if (operation === 'scan save') {
+        await openScanModal();
+        // An existing SSID updates its active slot, including its password.
+        await fireEvent.click(await screen.findByRole('button', { name: /HomeWifi.*dBm/ }));
+        await fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'placeholder' } });
+        await fireEvent.click(screen.getByRole('button', { name: /^Save Network$/ }));
+    } else if (operation === 'delete') {
+        await fireEvent.click(screen.getAllByRole('button', { name: 'Delete' })[0]);
+    } else if (operation === 'restore') {
+        await startRestore(JSON.stringify({ _type: 'v1simple_backup', _version: 1, wifiClientEnabled: false }));
+    } else {
+        await fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    }
+}
+
+function installWifiStatusMutationFetch(operation, {
+    pendingStatus = false,
+    outcome = 'success',
+    pendingMutation = null
+} = {}) {
+    const oldStatus = createDeferred();
+    const state = { committed: false, statusReads: 0, mutations: 0 };
+    const mutationUrl = {
+        'manual save': '/api/wifi/networks',
+        'scan save': '/api/wifi/networks',
+        delete: '/api/wifi/networks/delete',
+        restore: '/api/settings/restore',
+        disconnect: '/api/wifi/disconnect'
+    }[operation];
+    const fetchMock = installDefaultFetch([
+        { method: 'GET', match: '/api/wifi/status', respond: () => {
+            state.statusReads += 1;
+            if (pendingStatus && state.statusReads === 2) return oldStatus.promise;
+            return jsonResponse(!state.committed ? connectedWifiStatus : {
+                enabled: operation !== 'restore',
+                state: operation === 'restore' ? 'disabled' : 'disconnected'
+            });
+        } },
+        { method: 'GET', match: '/api/wifi/networks', respond: () => {
+            const slots = state.committed && operation === 'delete'
+                ? defaultSlots.map((slot) => slot.index === 0 ? { ...slot, ssid: '', label: '', configured: false } : slot)
+                : defaultSlots;
+            return jsonResponse({ slots });
+        } },
+        { method: 'POST', match: (url) => url === mutationUrl, respond: () => {
+            state.mutations += 1;
+            if (pendingMutation) return pendingMutation.promise;
+            // A server can commit even when its reply is lost or unsuccessful.
+            state.committed = true;
+            if (outcome === 'transport error') throw new Error('mutation reply lost');
+            return jsonResponse({ success: outcome === 'success' }, outcome === 'HTTP error' ? 500 : 200);
+        } },
+        { method: 'POST', match: '/api/wifi/scan', respond: jsonResponse({
+            scanning: false,
+            networks: [{ ssid: 'HomeWifi', secure: true, rssi: -35 }]
+        }) }
+    ]);
+    vi.stubGlobal('confirm', vi.fn(() => true));
+    return { fetchMock, oldStatus, state };
+}
+
+async function expectReconciledWifiStatus(operation) {
+    await waitFor(() => {
+        expect(screen.queryByRole('button', { name: 'Disconnect' })).not.toBeInTheDocument();
+        expect(screen.queryByText(/Connected to HomeWifi •/)).not.toBeInTheDocument();
+        if (operation === 'restore') expect(wifiClientToggle()).not.toBeChecked();
+        else expect(wifiClientToggle()).toBeChecked();
+    });
+    expect(screen.getByText(operation === 'restore'
+        ? /WiFi client is disabled/i
+        : 'Saved networks will be tried in priority order while AP stays online.')).toBeInTheDocument();
+}
+
 describe('settings route page', () => {
     afterEach(() => {
         vi.useRealTimers();
@@ -562,10 +653,12 @@ describe('settings route page', () => {
                 expect(deletes[1]).toBeEnabled();
                 await fireEvent.click(deletes[1]);
                 await screen.findByText('Slot 2: Empty slot');
-                await waitFor(() => expect(statusReads).toBe(2));
+                // Status refreshes are independent of the pending list read.
+                await waitFor(() => expect(statusReads).toBe(3));
                 if (outcome === 'transport error') oldRead.reject(new Error('offline'));
                 else oldRead.resolve(jsonResponse({ slots: [emptySlots[0], ...defaultSlots.slice(1)] }, outcome === 'HTTP error' ? 500 : 200));
-                await waitFor(() => expect(statusReads).toBe(3));
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                expect(statusReads).toBe(3);
                 expect(screen.queryByText('Phone')).not.toBeInTheDocument();
                 expect(screen.queryByText('Failed to load saved WiFi networks')).not.toBeInTheDocument();
                 expect(jsonBodies(fetchMock, '/api/wifi/networks/delete')).toEqual([{ index: 0 }, { index: 1 }]);
@@ -675,9 +768,10 @@ describe('settings route page', () => {
             await waitFor(() => expect(reads).toBe(2));
             await fireEvent.click(deletes[1]);
             await screen.findByText('Failed to load saved WiFi networks');
-            await waitFor(() => expect(statusReads).toBe(2));
-            oldRead.resolve(jsonResponse({ slots: [] }));
             await waitFor(() => expect(statusReads).toBe(3));
+            oldRead.resolve(jsonResponse({ slots: [] }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            expect(statusReads).toBe(3);
             expect(screen.getByText('Failed to load saved WiFi networks')).toBeInTheDocument();
             expect(screen.getByText('Garage')).toBeInTheDocument();
             // A later explicit operation reconciles both committed deletions.
@@ -718,12 +812,13 @@ describe('settings route page', () => {
                 // Wait until the latest response has published before the old
                 // response reports a failure. Both callbacks enter real UI code.
                 await waitFor(() => expect(screen.getByText('Saved Networks').parentElement.querySelector('.loading')).toBeNull());
-                const expectedStatusReads = statusReads + (initialIsOrder ? 0 : 1);
+                const expectedStatusReads = statusReads;
                 oldRead.resolve(jsonResponse({}, 500));
                 if (initialIsOrder) {
                     await waitFor(() => expect(screen.getByRole('button', { name: 'Move PhoneHotspot up' })).toBeEnabled());
                 } else {
-                    await waitFor(() => expect(statusReads).toBe(expectedStatusReads));
+                    await new Promise((resolve) => setTimeout(resolve, 0));
+                    expect(statusReads).toBe(expectedStatusReads);
                 }
                 expect(screen.queryByText('Failed to load saved WiFi networks')).not.toBeInTheDocument();
                 expect(screen.getByText('Garage')).toBeInTheDocument();
@@ -872,6 +967,180 @@ describe('settings route page', () => {
             expect(document.body).not.toHaveTextContent('Deleted HomeWifi');
         }
     );
+
+    it.each(['manual save', 'scan save'])(
+        'refreshes connection status when %s changes the active saved network',
+        async (operation) => {
+            const { fetchMock, state } = installWifiStatusMutationFetch(operation);
+            const { unmount } = render(Page);
+            try {
+                await screen.findByText(/Connected to HomeWifi • Slot 1/);
+                await performWifiStatusMutation(operation);
+                await expectReconciledWifiStatus(operation);
+                expect(state.statusReads).toBe(2);
+                const body = jsonBodies(fetchMock, '/api/wifi/networks').at(-1);
+                expect(body).toMatchObject(operation === 'manual save'
+                    ? { index: 0, ssid: 'ReplacementWifi' }
+                    : { ssid: 'HomeWifi', password: 'placeholder' });
+            } finally { unmount(); }
+        }
+    );
+
+    it.each(wifiStatusMutationPaths.flatMap((operation) =>
+        ['success', 'HTTP error', 'transport error'].map((outcome) => [operation, outcome])
+    ))('reconciles %s after %s without reusing a pre-mutation Test status', async (operation, outcome) => {
+        const { oldStatus, state } = installWifiStatusMutationFetch(operation, { pendingStatus: true, outcome });
+        const { unmount } = render(Page);
+        try {
+            await screen.findByText(/Connected to HomeWifi • Slot 1/);
+            await fireEvent.click(screen.getAllByRole('button', { name: 'Test' })[0]);
+            await waitFor(() => expect(state.statusReads).toBe(2));
+            await performWifiStatusMutation(operation);
+            await waitFor(() => expect(state.committed).toBe(true));
+            oldStatus.resolve(jsonResponse(connectedWifiStatus));
+            await expectReconciledWifiStatus(operation);
+            expect(state.statusReads).toBe(3);
+            // The Test consumer must not claim success from the obsolete reply.
+            expect(screen.queryByText('Connected to HomeWifi')).not.toBeInTheDocument();
+            if (outcome !== 'success') {
+                const failureText = operation.includes('save')
+                    ? 'Failed to save WiFi network'
+                    : operation === 'delete' ? 'Failed to delete WiFi network'
+                    : operation === 'disconnect' ? 'Failed to disconnect'
+                    : outcome === 'transport error' ? 'Failed to read backup file' : 'Failed to restore backup';
+                expect(screen.getByText(failureText)).toBeInTheDocument();
+                if (operation === 'manual save') {
+                    expect(screen.getByLabelText('SSID')).toHaveValue('ReplacementWifi');
+                    await waitFor(() => expect(screen.getByRole('button', { name: /^Save$/ })).toBeEnabled());
+                } else if (operation === 'scan save') {
+                    expect(screen.getByLabelText('Password')).toHaveValue('placeholder');
+                    await waitFor(() => expect(screen.getByRole('button', { name: /^Save Network$/ })).toBeEnabled());
+                }
+            }
+        } finally { unmount(); }
+    });
+
+    it.each(wifiStatusMutationPaths)(
+        'does not launch WiFi status reconciliation when %s settles after unmount',
+        async (operation) => {
+            const pendingMutation = createDeferred();
+            const { fetchMock, state } = installWifiStatusMutationFetch(operation, { pendingMutation });
+            const { unmount } = render(Page);
+            await screen.findByText(/Connected to HomeWifi • Slot 1/);
+            await performWifiStatusMutation(operation);
+            await waitFor(() => expect(state.mutations).toBe(1));
+            unmount();
+            const calls = fetchMock.mock.calls.length;
+            pendingMutation.resolve(jsonResponse({ success: true }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            expect(fetchMock.mock.calls).toHaveLength(calls);
+            expect(document.body).not.toHaveTextContent('Disconnected from WiFi');
+        }
+    );
+
+    it.each(Array.from({ length: 25 }, (_, gap) => gap))(
+        'ignores obsolete Test success across status/mutation settlement gap %i',
+        async (microtaskGap) => {
+            const pendingMutation = createDeferred();
+            const { oldStatus, state } = installWifiStatusMutationFetch('disconnect', {
+                pendingStatus: true,
+                pendingMutation
+            });
+            const { unmount } = render(Page);
+            try {
+                await screen.findByText(/Connected to HomeWifi • Slot 1/);
+                await fireEvent.click(screen.getAllByRole('button', { name: 'Test' })[0]);
+                await waitFor(() => expect(state.statusReads).toBe(2));
+                await performWifiStatusMutation('disconnect');
+                // Sweep both sides of the reader's return and the Test caller's
+                // await continuation: a settled mutation invalidates both.
+                oldStatus.resolve(jsonResponse(connectedWifiStatus));
+                for (let i = 0; i < microtaskGap; i += 1) await Promise.resolve();
+                state.committed = true;
+                pendingMutation.resolve(jsonResponse({ success: true }));
+                await expectReconciledWifiStatus('disconnect');
+                expect(state.statusReads).toBe(3);
+                expect(screen.queryByText('Connected to HomeWifi')).not.toBeInTheDocument();
+            } finally { unmount(); }
+        }
+    );
+
+    it.each([0, 1, 24])(
+        'keeps restore status authoritative across enable-confirmation settlement gap %i',
+        async (microtaskGap) => {
+            const toggleStatus = createDeferred();
+            const oldNetworks = createDeferred();
+            const restore = createDeferred();
+            let statusReads = 0;
+            let networkReads = 0;
+            installDefaultFetch([
+                { method: 'GET', match: '/api/wifi/status', respond: () => {
+                    statusReads += 1;
+                    return statusReads === 2 ? toggleStatus.promise
+                        : jsonResponse({ enabled: false, state: 'disabled' });
+                } },
+                { method: 'GET', match: '/api/wifi/networks', respond: () => {
+                    networkReads += 1;
+                    return networkReads === 2 ? oldNetworks.promise : jsonResponse({ slots: defaultSlots });
+                } },
+                { method: 'POST', match: '/api/settings/restore', respond: () => restore.promise }
+            ]);
+            vi.stubGlobal('confirm', vi.fn(() => true));
+            const { unmount } = render(Page);
+            try {
+                await waitFor(() => expect(networkReads).toBe(1));
+                const toggle = wifiClientToggle();
+                await fireEvent.click(toggle);
+                await waitFor(() => expect(statusReads).toBe(2));
+                await startRestore(JSON.stringify({ _type: 'v1simple_backup', _version: 1, wifiClientEnabled: false }));
+                toggleStatus.resolve(jsonResponse({ enabled: true, state: 'connecting', savedSSID: 'HomeWifi' }));
+                await waitFor(() => expect(networkReads).toBe(2));
+                oldNetworks.resolve(jsonResponse({ slots: defaultSlots }));
+                // The enable caller awaits its list refresh after reading status.
+                // A restore settling in that gap supersedes its confirmation too.
+                for (let i = 0; i < microtaskGap; i += 1) await Promise.resolve();
+                restore.resolve(jsonResponse({ success: true }));
+                await waitFor(() => expect(statusReads).toBe(3));
+                await waitFor(() => expect(networkReads).toBe(3));
+                await waitFor(() => expect(toggle).not.toBeChecked());
+                expect(screen.queryByText('WiFi client enabled')).not.toBeInTheDocument();
+                expect(screen.getByText('Settings restored and reloaded.')).toBeInTheDocument();
+            } finally { unmount(); }
+        }
+    );
+
+    it('refreshes WiFi status again when an earlier deletion commits after a later deletion', async () => {
+        const firstDeletion = createDeferred();
+        let deleteCalls = 0;
+        let statusReads = 0;
+        let activeNetworkDeleted = false;
+        installDefaultFetch([
+            { method: 'GET', match: '/api/wifi/status', respond: () => {
+                statusReads += 1;
+                return jsonResponse(activeNetworkDeleted
+                    ? { enabled: true, state: 'disconnected' }
+                    : connectedWifiStatus);
+            } },
+            { method: 'POST', match: '/api/wifi/networks/delete', respond: () => {
+                deleteCalls += 1;
+                return deleteCalls === 1 ? firstDeletion.promise : jsonResponse({ success: true });
+            } }
+        ]);
+        vi.stubGlobal('confirm', vi.fn(() => true));
+        const { unmount } = render(Page);
+        try {
+            await screen.findByText(/Connected to HomeWifi • Slot 1/);
+            const deletes = screen.getAllByRole('button', { name: 'Delete' });
+            await fireEvent.click(deletes[0]);
+            await fireEvent.click(deletes[1]);
+            await waitFor(() => expect(statusReads).toBe(2));
+            expect(screen.getByRole('button', { name: 'Disconnect' })).toBeInTheDocument();
+            activeNetworkDeleted = true;
+            firstDeletion.resolve(jsonResponse({ success: true }));
+            await expectReconciledWifiStatus('delete');
+            expect(statusReads).toBe(3);
+        } finally { unmount(); }
+    });
 
     it('polls a saved-network test through terminal connection success', async () => {
         vi.useFakeTimers();
@@ -1323,7 +1592,7 @@ describe('settings route page', () => {
         unmount();
     });
 
-    it('keeps a newer in-flight status when the forced reconciliation fails', async () => {
+    it('does not publish a pre-mutation status when forced reconciliation fails', async () => {
         const activeStatus = createDeferred();
         let statusCalls = 0;
         const fetchMock = installDefaultFetch([
@@ -1354,7 +1623,8 @@ describe('settings route page', () => {
 
         await waitFor(() => expect(statusCalls).toBe(2));
         await screen.findByText('Failed to change WiFi setting');
-        expect(toggle).toBeChecked();
+        expect(toggle).not.toBeChecked();
+        expect(screen.queryByText(/Connecting to/)).not.toBeInTheDocument();
         expect(fetchMock.mock.calls.filter(([url]) => url === '/api/wifi/status')).toHaveLength(2);
 
         unmount();

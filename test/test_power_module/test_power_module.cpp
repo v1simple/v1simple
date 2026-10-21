@@ -256,8 +256,39 @@ void test_shutdown_preparation_cannot_veto_physical_poweroff() {
     TEST_ASSERT_EQUAL(1, battery.powerOffCalls);
 }
 
+void test_auto_power_reconciliation_does_not_arm_without_real_presence() {
+    power.process(10000);
+    TEST_ASSERT_FALSE(power.autoPowerOffArmedForTest());
+    TEST_ASSERT_FALSE(power.autoPowerOffTimerRunningForTest());
+    TEST_ASSERT_EQUAL_INT(0, battery.powerOffCalls);
+}
+
+void test_disabling_auto_power_cancels_without_shutdown_and_reenable_starts_fresh() {
+    power.onV1DataReceived();
+    setTime(1000);
+    power.onV1ConnectionChange(false);
+    TEST_ASSERT_TRUE(power.autoPowerOffTimerRunningForTest());
+    settings.settings.autoPowerOffMinutes = 0;
+    setTime(2000);
+    power.process(mockMillis);
+    TEST_ASSERT_FALSE(power.autoPowerOffTimerRunningForTest());
+    TEST_ASSERT_EQUAL_INT(0, battery.powerOffCalls);
+    settings.settings.autoPowerOffMinutes = 1;
+    setTime(10000);
+    power.process(mockMillis);
+    TEST_ASSERT_EQUAL_UINT32(10000, power.autoPowerOffTimerStartForTest());
+    setTime(69999);
+    power.process(mockMillis);
+    TEST_ASSERT_EQUAL_INT(0, battery.powerOffCalls);
+    setTime(70000);
+    power.process(mockMillis);
+    TEST_ASSERT_EQUAL_INT(1, battery.powerOffCalls);
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_auto_power_reconciliation_does_not_arm_without_real_presence);
+    RUN_TEST(test_disabling_auto_power_cancels_without_shutdown_and_reenable_starts_fresh);
     RUN_TEST(test_critical_protection_keeps_zero_invalid_but_accepts_deep_discharge);
     RUN_TEST(test_critical_warning_does_not_depend_on_icon_presence_floor);
     RUN_TEST(test_live_alert_preemption_preserves_warning_lifecycle_and_restores_warning);

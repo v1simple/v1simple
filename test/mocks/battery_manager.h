@@ -7,6 +7,7 @@
 #define BATTERY_MANAGER_H
 
 #include <cstdint>
+#include "../../include/battery_source_policy.h"
 
 #ifndef BOOT_BUTTON_GPIO
 #define BOOT_BUTTON_GPIO 0
@@ -23,6 +24,9 @@ public:
         uint32_t buttonPressStart = 0;
     };
 
+    battery_source_policy::Source powerSource() const {
+        return onBattery_ ? battery_source_policy::Source::Battery : battery_source_policy::Source::Usb;
+    }
     bool isOnBattery() const { return onBattery_; }
     bool hasBattery() const { return hasBattery_; }
     int getBatteryPercent() const { return percent_; }

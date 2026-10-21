@@ -134,7 +134,8 @@
 
     async function saveName(address) {
         if (!beginDeviceOperation(address)) return;
-        const submittedName = editName.trim();
+        const submittedDraft = editName;
+        const submittedName = submittedDraft.trim();
         const submittedRenameGeneration = renameGeneration;
         try {
             const formData = new FormData();
@@ -160,7 +161,8 @@
                       text: 'Device name saved on primary storage; mirror sync is pending.'
                   }
                 : { type: 'success', text: 'Device name saved.' };
-            if (editingAddress === address && renameGeneration === submittedRenameGeneration) {
+            if (editingAddress === address && renameGeneration === submittedRenameGeneration &&
+                editName === submittedDraft) {
                 cancelRename();
             }
         } catch (e) {

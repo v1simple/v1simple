@@ -46,6 +46,7 @@ struct SensorDriveRuntime {
     void processConnectionCycle(uint32_t, bool) {}
     void processObd(uint32_t, bool) {}
     void processAlpPresentationAndPower(uint32_t) {}
+    template <typename Edges> bool processParsedPolicies(const Edges&) { return false; }
     void processGps(uint32_t now) {
         ++gpsCalls;
         gps.update(now);

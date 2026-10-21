@@ -264,6 +264,7 @@
         message = { type: 'info', text: 'Saving slot...' };
         const persist = Math.max(0, Math.min(5, Number(s.alertPersist ?? 0)));
         s.alertPersist = persist;
+        const submittedDraft = JSON.stringify(s);
 
         try {
             const formData = new FormData();
@@ -295,7 +296,8 @@
 
             if (res.ok) {
                 message = { type: 'success', text: 'Slot saved!' };
-                if (editingSlot === slot && editGeneration === submittedEditGeneration) {
+                if (editingSlot === slot && editGeneration === submittedEditGeneration &&
+                    JSON.stringify(editingDraft) === submittedDraft && !pickerOpen) {
                     cancelEdit();
                 }
                 await fetchSlots();
@@ -528,6 +530,7 @@
                                         value={editingDraft.color}
                                         ariaLabel={`Choose ${editingDraft.name || defaultSlotNames[i]} color`}
                                         onPick={openSlotColorPicker}
+                                        onHexInput={() => { editGeneration += 1; }}
                                         onHexChange={setSlotColor}
                                     />
                                 </div>

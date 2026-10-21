@@ -37,6 +37,7 @@ enum class Call {
     POWER_ALERT_PRESENTATION,
     DISPLAY_EDGE,
     DISPLAY_PRESENTATION,
+    PARSED_POLICIES,
     CONNECTION_DISPATCH,
     PERSISTENCE,
     FINISH,
@@ -165,6 +166,8 @@ struct FakeDriveRuntime {
         return {};
     }
 
+    bool processParsedPolicies(const FakeDisplayEdges&) { calls.push_back(Call::PARSED_POLICIES); return true; }
+
     void presentDisplay(const FakeDisplayEdges&, bool) { calls.push_back(Call::DISPLAY_PRESENTATION); }
 
     DriveLoopDispatch processConnectionDispatch(bool) {
@@ -249,6 +252,8 @@ void test_drive_coordinator_executes_production_phase_order() {
                  Call::SHOW_SCAN,
                  Call::MARK_SCAN,
                  Call::CONNECTION_PRESENTATION,
+                 Call::PARSING,
+                 Call::ALP_STATE,
                  Call::POWER,
                  Call::TOUCH,
                  Call::POWER_PRESENTATION,
@@ -258,9 +263,7 @@ void test_drive_coordinator_executes_production_phase_order() {
                  Call::BLE_QUEUE,
                  Call::CONNECTION_CYCLE,
                  Call::OBD,
-                 Call::PARSING,
                  Call::OBSERVE_ALP,
-                 Call::ALP_STATE,
                  Call::GPS,
                  Call::SPEED,
                  Call::ALERT,
@@ -343,10 +346,11 @@ void test_settings_remains_open_after_alp_processing_without_live_alert() {
                  Call::SHOW_SCAN,
                  Call::MARK_SCAN,
                  Call::CONNECTION_PRESENTATION,
+                 Call::PARSING,
+                 Call::ALP_STATE,
                  Call::POWER,
                  Call::TOUCH,
                  Call::POWER_PRESENTATION,
-                 Call::PARSING,
                  Call::SETTINGS_PREEMPT,
                  Call::READY_GATE,
                  Call::BLE_RUNTIME,
@@ -354,6 +358,8 @@ void test_settings_remains_open_after_alp_processing_without_live_alert() {
                  Call::SPEED,
                  Call::ALERT,
                  Call::OBSERVE_ALP,
+                 Call::DISPLAY_EDGE,
+                 Call::PARSED_POLICIES,
                  Call::PERSISTENCE,
                  Call::FINISH});
     TEST_ASSERT_EQUAL(1, std::count(runtime.calls.begin(), runtime.calls.end(), Call::PARSING));
@@ -384,10 +390,11 @@ void test_live_alert_preempts_settings_after_single_alp_processing_pass() {
                  Call::SHOW_SCAN,
                  Call::MARK_SCAN,
                  Call::CONNECTION_PRESENTATION,
+                 Call::PARSING,
+                 Call::ALP_STATE,
                  Call::POWER,
                  Call::TOUCH,
                  Call::POWER_PRESENTATION,
-                 Call::PARSING,
                  Call::SETTINGS_PREEMPT,
                  Call::TAP,
                  Call::READY_GATE,
@@ -396,7 +403,6 @@ void test_live_alert_preempts_settings_after_single_alp_processing_pass() {
                  Call::CONNECTION_CYCLE,
                  Call::OBD,
                  Call::OBSERVE_ALP,
-                 Call::ALP_STATE,
                  Call::GPS,
                  Call::SPEED,
                  Call::ALERT,

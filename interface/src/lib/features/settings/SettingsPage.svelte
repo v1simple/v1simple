@@ -103,10 +103,17 @@
     onMount(() => {
         componentMounted = true;
         const releaseDeviceSettings = retainDeviceSettings();
+        const statusPoll = createPoll(async () => {
+            // Explicit Test/Scan and mutations own their reads while active.
+            if (wifiTestingIndex !== null || wifiScan.scanning || wifiScan.saving ||
+                wifiToggleInFlight || wifiNetworkActionInFlight || wifiOrdering) return;
+            await fetchWifiStatus({ reportError: false, timeoutMs: WIFI_TEST_STATUS_TIMEOUT_MS });
+        }, 3000);
         void (async () => {
             await fetchSettings();
             await fetchWifiStatus();
             await fetchSavedWifiNetworks();
+            if (componentMounted) statusPoll.start();
         })();
 
         return () => {
@@ -117,6 +124,7 @@
             wifiToggleRunId += 1;
             invalidateSavedWifiNetworks();
             releaseDeviceSettings();
+            statusPoll.stop();
             stopWifiPoll();
         };
     });
@@ -468,6 +476,7 @@
         const secure = wifiScan.selectedNetwork.secure;
         const password = wifiScan.password;
         const targetIndex = wifiScan.targetIndex;
+        const submittedRunId = wifiScan.runId;
         wifiScan = setWifiScanSaving(wifiScan, true);
         invalidateSavedWifiNetworks();
 
@@ -496,7 +505,9 @@
             }
 
             message = { type: 'success', text: `Saved ${ssid}` };
-            closeWifiModal({ force: true });
+            if (wifiScan.runId === submittedRunId && wifiScan.password === password) {
+                closeWifiModal({ force: true });
+            }
         } catch (e) {
             if (componentMounted) message = { type: 'error', text: 'Failed to save WiFi network' };
         } finally {
@@ -615,6 +626,7 @@
         const body = buildWifiEditorRequest(wifiEditor);
         if (!body || wifiNetworkActionInFlight) return;
 
+        const submittedDraft = JSON.stringify(wifiEditor);
         wifiNetworkActionsInFlight += 1;
         invalidateSavedWifiNetworks();
         try {
@@ -629,7 +641,7 @@
                 return;
             }
             message = { type: 'success', text: `Saved ${body.ssid}` };
-            closeWifiEditor({ force: true });
+            if (JSON.stringify(wifiEditor) === submittedDraft) closeWifiEditor({ force: true });
         } catch (e) {
             if (componentMounted) message = { type: 'error', text: 'Failed to save WiFi network' };
         } finally {

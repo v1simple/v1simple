@@ -758,25 +758,22 @@ bool readWifiUnknownPasswords(Preferences& prefs, uint8_t& mask) {
     return (mask & ~((1u << kWifiStaSlotCount) - 1u)) == 0;
 }
 
-bool wifiCredentialJournalPresent() {
-    Preferences prefs;
-    if (!prefs.begin(WIFI_CLIENT_NS, true)) {
-        return false;
-    }
-    const bool present = prefs.getBool(kNvsWifiTxnReady, false);
-    prefs.end();
-    return present;
-}
+enum class WifiCredentialJournalStatus { Absent, SingleSlot, ForgetAll, Unavailable };
 
-WifiCredentialJournalMode wifiCredentialJournalMode() {
-    Preferences prefs;
-    if (!prefs.begin(WIFI_CLIENT_NS, true)) {
-        return WifiCredentialJournalMode::SingleSlot;
-    }
-    const WifiCredentialJournalMode mode = static_cast<WifiCredentialJournalMode>(
-        prefs.getUChar(kNvsWifiTxnMode, static_cast<uint8_t>(WifiCredentialJournalMode::SingleSlot)));
-    prefs.end();
-    return mode;
+WifiCredentialJournalStatus readWifiCredentialJournalStatus() {
+    SettingsNvsReader reader(WIFI_CLIENT_NS);
+    if (reader.error() == ESP_ERR_NVS_NOT_FOUND) return WifiCredentialJournalStatus::Absent;
+    if (!reader.good()) return WifiCredentialJournalStatus::Unavailable;
+    const uint8_t ready = reader.getUChar(kNvsWifiTxnReady, 0);
+    if (!reader.good() || ready > 1) return WifiCredentialJournalStatus::Unavailable;
+    if (!ready) return WifiCredentialJournalStatus::Absent;
+    // Installed single-slot journals predate the mode key. Only proven absence
+    // may use that legacy default; failed reads must retain the journal.
+    const uint8_t mode = reader.getUChar(kNvsWifiTxnMode, static_cast<uint8_t>(WifiCredentialJournalMode::SingleSlot));
+    if (!reader.good()) return WifiCredentialJournalStatus::Unavailable;
+    if (mode == static_cast<uint8_t>(WifiCredentialJournalMode::SingleSlot)) return WifiCredentialJournalStatus::SingleSlot;
+    if (mode == static_cast<uint8_t>(WifiCredentialJournalMode::ForgetAll)) return WifiCredentialJournalStatus::ForgetAll;
+    return WifiCredentialJournalStatus::Unavailable;
 }
 
 bool writeWifiCredentialJournal(const WifiCredentialJournal& journal) {
@@ -785,6 +782,7 @@ bool writeWifiCredentialJournal(const WifiCredentialJournal& journal) {
          (journal.oldSsid.length() == 0 || journal.oldEncodedPassword.length() != 0))) {
         return false;
     }
+    if (readWifiCredentialJournalStatus() != WifiCredentialJournalStatus::Absent) return false;
     Preferences prefs;
     if (!prefs.begin(WIFI_CLIENT_NS, false)) {
         return false;
@@ -813,17 +811,9 @@ bool writeWifiCredentialJournal(const WifiCredentialJournal& journal) {
 }
 
 bool readWifiCredentialJournal(WifiCredentialJournal& journal) {
+    if (readWifiCredentialJournalStatus() != WifiCredentialJournalStatus::SingleSlot) return false;
     Preferences prefs;
     if (!prefs.begin(WIFI_CLIENT_NS, true)) {
-        return false;
-    }
-    if (!prefs.getBool(kNvsWifiTxnReady, false)) {
-        prefs.end();
-        return false;
-    }
-    if (prefs.getUChar(kNvsWifiTxnMode, static_cast<uint8_t>(WifiCredentialJournalMode::SingleSlot)) !=
-        static_cast<uint8_t>(WifiCredentialJournalMode::SingleSlot)) {
-        prefs.end();
         return false;
     }
     const uint8_t slotIndex = prefs.getUChar(kNvsWifiTxnSlot, static_cast<uint8_t>(kWifiStaSlotCount));
@@ -865,6 +855,7 @@ bool readWifiCredentialJournal(WifiCredentialJournal& journal) {
 
 bool writeWifiForgetAllJournal(const WifiForgetAllJournal& journal) {
     if ((journal.unknownPasswords & ~((1u << kWifiStaSlotCount) - 1u)) != 0) return false;
+    if (readWifiCredentialJournalStatus() != WifiCredentialJournalStatus::Absent) return false;
     PsramJson::Document doc;
     JsonArray slots = doc["slots"].to<JsonArray>();
     for (size_t index = 0; index < kWifiStaSlotCount; ++index) {
@@ -910,14 +901,9 @@ bool writeWifiForgetAllJournal(const WifiForgetAllJournal& journal) {
 }
 
 bool readWifiForgetAllJournal(WifiForgetAllJournal& journal) {
+    if (readWifiCredentialJournalStatus() != WifiCredentialJournalStatus::ForgetAll) return false;
     Preferences prefs;
     if (!prefs.begin(WIFI_CLIENT_NS, true)) {
-        return false;
-    }
-    if (!prefs.getBool(kNvsWifiTxnReady, false) ||
-        prefs.getUChar(kNvsWifiTxnMode, static_cast<uint8_t>(WifiCredentialJournalMode::SingleSlot)) !=
-            static_cast<uint8_t>(WifiCredentialJournalMode::ForgetAll)) {
-        prefs.end();
         return false;
     }
     String payload;
@@ -966,12 +952,19 @@ bool readWifiForgetAllJournal(WifiForgetAllJournal& journal) {
 }
 
 bool clearWifiCredentialJournal() {
+    SettingsNvsReader before(WIFI_CLIENT_NS);
+    if (before.error() == ESP_ERR_NVS_NOT_FOUND) return true;
+    if (!before.good()) return false;
+    const bool markerPresent = before.isKey(kNvsWifiTxnReady);
+    if (!before.good()) return false;
     Preferences prefs;
     if (!prefs.begin(WIFI_CLIENT_NS, false)) {
         return false;
     }
-    const bool markerRemoved = !prefs.isKey(kNvsWifiTxnReady) || prefs.remove(kNvsWifiTxnReady);
-    const bool cleared = markerRemoved && !prefs.isKey(kNvsWifiTxnReady);
+    const bool markerRemoved = !markerPresent || prefs.remove(kNvsWifiTxnReady);
+    SettingsNvsReader after(WIFI_CLIENT_NS);
+    const bool stillPresent = after.good() && after.isKey(kNvsWifiTxnReady);
+    const bool cleared = markerRemoved && after.good() && !stillPresent;
     if (cleared) {
         prefs.remove(kNvsWifiTxnSlot);
         prefs.remove(kNvsWifiTxnOldSsid);
@@ -1333,11 +1326,11 @@ bool storeWifiClientPasswordObfToNvs(const String& encodedPassword, size_t slotI
 
 bool SettingsManager::resolveWifiCredentialTransaction() {
     if (nvsLoadPending_) return false;
-    if (!wifiCredentialJournalPresent()) {
-        return true;
-    }
+    const WifiCredentialJournalStatus status = readWifiCredentialJournalStatus();
+    if (status == WifiCredentialJournalStatus::Absent) return true;
+    if (status == WifiCredentialJournalStatus::Unavailable) return false;
 
-    if (wifiCredentialJournalMode() == WifiCredentialJournalMode::ForgetAll) {
+    if (status == WifiCredentialJournalStatus::ForgetAll) {
         WifiForgetAllJournal journal;
         if (!readWifiForgetAllJournal(journal)) {
             Serial.println("[Settings] ERROR: WiFi forget transaction journal is invalid");
@@ -2281,8 +2274,7 @@ bool SettingsManager::setWifiStaSlotCredentials(size_t index, const String& ssid
         Serial.println("[Settings] WARN: Invalid WiFi credential slot index");
         return false;
     }
-    resolveWifiCredentialTransaction();
-    if (wifiCredentialJournalPresent()) {
+    if (!resolveWifiCredentialTransaction()) {
         Serial.println("[Settings] WARN: Unresolved WiFi credential transaction");
         return false;
     }
@@ -2465,8 +2457,7 @@ bool SettingsManager::clearWifiStaSlot(size_t index) {
     if (!validWifiStaSlotIndex(index)) {
         return false;
     }
-    resolveWifiCredentialTransaction();
-    if (wifiCredentialJournalPresent()) {
+    if (!resolveWifiCredentialTransaction()) {
         return false;
     }
     V1Settings before;
@@ -2539,8 +2530,7 @@ bool SettingsManager::clearWifiStaSlot(size_t index) {
 
 bool SettingsManager::clearWifiClientCredentials() {
     if (!ensureSettingsLoaded()) return false;
-    resolveWifiCredentialTransaction();
-    if (wifiCredentialJournalPresent()) {
+    if (!resolveWifiCredentialTransaction()) {
         return false;
     }
 

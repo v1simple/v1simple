@@ -69,7 +69,7 @@ def build_and_run(build: Path) -> None:
         subprocess.run(compiler + flags + [str(FIXTURE / f"{name}.cpp"),
             *[str(path) for path in support], "-x", "c++", str(deps / "Unity/src/unity.c"),
             "-o", str(executable)], check=True)
-        subprocess.run([str(executable)], check=True)
+        subprocess.run([str(executable)], check=True, env={**os.environ, "TMPDIR": str(build)})
 
 
 if __name__ == "__main__":

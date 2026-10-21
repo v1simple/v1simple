@@ -90,6 +90,7 @@
     }
 
     async function saveConfig(fields) {
+        if (saving) return false;
         saving = true;
         obdMessage = null;
         try {
@@ -162,7 +163,8 @@
     async function saveDeviceName(address) {
         if (renaming) return;
 
-        const submittedName = editName.trim();
+        const submittedDraft = editName;
+        const submittedName = submittedDraft.trim();
         renaming = true;
         obdMessage = null;
         try {
@@ -183,7 +185,7 @@
                 device.address === address ? { ...device, name: submittedName } : device
             );
             obdMessage = { type: 'success', text: 'OBD device name saved.' };
-            cancelRename();
+            if (editingAddress === address && editName === submittedDraft) cancelRename();
         } catch (_) {
             obdMessage = { type: 'error', text: 'Failed to save OBD device name.' };
         } finally {
@@ -228,6 +230,7 @@
                         min="-100"
                         max="-40"
                         placeholder="-80"
+                        disabled={saving}
                         onchange={handleMinRssiChange}
                     />
                 </div>

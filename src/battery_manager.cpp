@@ -32,15 +32,6 @@ constexpr uint32_t kPowerButtonReleaseWaitMs = 1500;
 constexpr uint32_t kBootButtonReleaseWaitMs = 250;
 constexpr uint32_t kWakePinPollMs = 10;
 
-// Power-source classification tuning. The decisions themselves live in
-// include/battery_source_policy.h; only the numbers are board-specific.
-constexpr battery_source_policy::Config kSourcePolicy{};
-
-// Boot seeds the classifier with a full two-round agreement cycle. begin() is
-// allowed to block, so the rounds are separated with a real delay here; the
-// periodic refresh spaces them across loop iterations instead.
-constexpr uint8_t kBootClassificationRounds = 2;
-
 class ScopedWireTimeout {
   public:
     ScopedWireTimeout(TwoWire& wire, uint16_t timeoutMs) : wire_(wire), previousTimeoutMs_(wire.getTimeOut()) {
@@ -118,7 +109,7 @@ TwoWire tca9554Wire(1); // Use I2C port 1
 SemaphoreHandle_t tca9554WireMutex = nullptr;
 
 BatteryManager::BatteryManager()
-    : initialized_(false), onBattery_(false), lastVoltage_(0), buttonPressStart_(0),
+    : initialized_(false), lastVoltage_(0), buttonPressStart_(0),
       buttonWasPressed_(false), buttonSeenReleasedSinceBoot_(false), cachedVoltage_(0), cachedPercent_(0),
       lastUpdateMs_(0), hasVoltageReading_(false), simulatedVoltage_(0) {}
 
@@ -145,30 +136,11 @@ bool BatteryManager::begin() {
         }
     }
 
-    // GPIO16 is HIGH when on battery, LOW when on USB (or button pressed).
-    // INPUT without pullup — a pullup would bias the reading if the pin is driven externally.
+    // SYS_OUT has a board pull-up and PWR pulls it low on either supply.
+    // Keep this input exclusively for the physical button, never USB detection.
     pinMode(PWR_BUTTON_GPIO, INPUT);
-
-    // Seed the classifier through the same policy the periodic refresh uses, so
-    // boot and steady state can never disagree. Rounds are separated in time —
-    // a burst inside one instant is not a majority vote. Until the policy
-    // positively confirms USB the device reports BATTERY, so a PWR-button wake
-    // (button still held, GPIO16 LOW) can no longer report USB.
-    sourceState_ = battery_source_policy::State{};
-    Serial.printf("[Battery] Power classification rounds=%u samples=%u spacingMs=%lu\n",
-                  static_cast<unsigned>(kBootClassificationRounds),
-                  static_cast<unsigned>(kSourcePolicy.samplesPerRound),
-                  static_cast<unsigned long>(kSourcePolicy.roundSpacingMs));
-
-    for (uint8_t round = 0; round < kBootClassificationRounds; round++) {
-        if (round > 0) {
-            delay(kSourcePolicy.roundSpacingMs);
-        }
-        observeSourceRound(static_cast<uint32_t>(millis()));
-    }
-
-    Serial.printf("[Battery] Power detection: classification=%s reported=%s\n",
-                  battery_source_policy::sourceName(sourceState_.classification), onBattery_ ? "BATTERY" : "USB");
+    Serial.printf("[Battery] Power source: %s (conservative battery protection)\n",
+                  battery_source_policy::sourceName(powerSource()));
 
     // Initialize ADC for battery voltage reading.
     const bool adcInitialized = initADC();
@@ -176,24 +148,11 @@ bool BatteryManager::begin() {
         Serial.println("[Battery] WARN: ADC init failed, voltage monitoring disabled");
     }
 
-    // Read initial voltage for diagnostics
-    uint16_t initialVoltage = 0;
-    if (adc1_handle && readADCMillivolts(initialVoltage)) {
-        // Sanity check: if we think we're on USB but voltage looks like battery
-        if (!onBattery_ && initialVoltage > BATTERY_EMPTY_MV && initialVoltage < BATTERY_FULL_MV + 500) {
-            Serial.printf("[Battery] WARN: USB mode but battery voltage detected (%dmV)\n", initialVoltage);
-        }
-        // Sanity check: if we think we're on battery but voltage is too low or zero
-        if (onBattery_ && initialVoltage < BATTERY_EMPTY_MV) {
-            Serial.printf("[Battery] WARN: Battery mode but voltage too low (%dmV)\n", initialVoltage);
-        }
-    }
-
     initialized_ = true;
 
     // Do initial cache update to populate voltage reading
     update();
-    Serial.printf("[Battery] Init OK (%s, %dmV, %d%%, hasBattery=%d)\n", onBattery_ ? "BATTERY" : "USB", cachedVoltage_,
+    Serial.printf("[Battery] Init OK (%s, %dmV, %d%%, hasBattery=%d)\n", battery_source_policy::sourceName(powerSource()), cachedVoltage_,
                   cachedPercent_, hasBattery());
     return true;
 }
@@ -411,37 +370,8 @@ bool BatteryManager::readADCMillivolts(uint16_t& voltage) {
     return true;
 }
 
-battery_source_policy::Result BatteryManager::observeSourceRound(uint32_t nowMs) {
-    battery_source_policy::Observation observation;
-    observation.totalSamples = kSourcePolicy.samplesPerRound;
-
-    // A PWR hold pulls GPIO16 LOW regardless of the supply, so a round taken
-    // while the button state machine has a press in flight says nothing about
-    // the power source. buttonWasPressed_ only ever arms after the pin has been
-    // seen HIGH since boot, so it stays false on a genuinely USB-powered unit
-    // and therefore never blocks a legitimate USB classification.
-    observation.buttonInteraction = buttonWasPressed_;
-
-    for (uint8_t i = 0; i < observation.totalSamples; i++) {
-        if (digitalRead(PWR_BUTTON_GPIO) == HIGH) {
-            observation.highSamples++;
-        }
-    }
-
-    const battery_source_policy::Result result =
-        battery_source_policy::observe(sourceState_, nowMs, observation, kSourcePolicy);
-    onBattery_ = result.onBattery;
-    if (result.changed) {
-        Serial.printf("[Battery] Power source changed: %s confirmation_ms=%lu\n",
-                      battery_source_policy::sourceName(result.classification),
-                      static_cast<unsigned long>(result.usbConfirmationElapsedMs));
-        battery_source_policy::armEvidenceReplay(sourceEvidenceReplayState_, nowMs, result.usbConfirmationElapsedMs);
-    }
-    return result;
-}
-
 bool BatteryManager::isOnBattery() const {
-    return onBattery_;
+    return battery_source_policy::resolveOnBattery(powerSource());
 }
 
 bool BatteryManager::hasBattery() const {
@@ -455,12 +385,7 @@ bool BatteryManager::hasBattery() const {
         return false;
     }
 
-    // A connected USB supply suppresses the battery icon.
-    if (!onBattery_) {
-        return false;
-    }
-
-    // Reject a floating-high source pin when voltage is below the cell floor.
+    // Presence is a voltage heuristic, independent of the physical PWR key.
     if (cachedVoltage_ < BATTERY_EMPTY_MV) {
         return false;
     }
@@ -480,21 +405,7 @@ void BatteryManager::update() {
 
     const uint32_t now = static_cast<uint32_t>(millis());
 
-    // Refresh power-source classification on the policy's schedule so USB and
-    // battery swaps are picked up. Every decision — two-round agreement, button
-    // suppression, fail-toward-battery, rollover-safe timing — belongs to
-    // battery_source_policy; this only asks whether a round is due.
-    if (battery_source_policy::roundDue(sourceState_, now, kSourcePolicy)) {
-        observeSourceRound(now);
-    }
-    if (battery_source_policy::takeEvidenceReplay(sourceEvidenceReplayState_, now)) {
-        Serial.printf("[Battery] Power source stable: %s confirmation_ms=%lu\n",
-                      battery_source_policy::sourceName(sourceState_.classification),
-                      static_cast<unsigned long>(sourceEvidenceReplayState_.usbConfirmationElapsedMs));
-    }
-
     // Update cached voltage/percentage every 10 seconds
-    // Faster polling needed for USB/battery auto-detection via voltage
     // Force immediate read on first call (cachedVoltage_ == 0) so battery icon shows at boot
     if (cachedVoltage_ == 0 || (now - lastUpdateMs_ >= 10000)) {
         (void)refreshVoltage();
@@ -535,7 +446,7 @@ bool BatteryManager::isCritical() const {
 }
 
 bool BatteryManager::criticalProtectionRequired() const {
-    return battery_math::criticalProtectionRequired(onBattery_, cachedVoltage_);
+    return battery_math::criticalProtectionRequired(isOnBattery(), cachedVoltage_);
 }
 
 bool BatteryManager::latchPowerOn() {
@@ -647,7 +558,7 @@ bool BatteryManager::powerOff() {
 
     char buf[128];
 
-    const poweroff_policy::Strategy strategy = poweroff_policy::selectStrategy(onBattery_);
+    const poweroff_policy::Strategy strategy = poweroff_policy::selectStrategy(isOnBattery());
     Serial.printf("[Battery] Power-off strategy: %s\n", poweroff_policy::strategyName(strategy));
 
     blankPanelBacklightForSleepOrPowerOff();
@@ -697,7 +608,8 @@ bool BatteryManager::powerOff() {
 
     // Drop the power latch to cut power entirely.  No deep sleep — the 18650
     // is not kept alive for RTC, so battery drain while "off" is zero.
-    // Deep sleep is only used as a last-resort fallback if the latch drop fails.
+    // If an external supply keeps the rail alive, use the existing bounded
+    // deep-sleep fallback; no GPIO-derived source guess is needed.
     if (isCritical()) {
         Serial.println("[Battery] Critical battery - hard power off to protect cell");
     } else {
@@ -770,11 +682,11 @@ bool BatteryManager::isPowerButtonPressed() {
 // (a hardware-free TU kept separate for testability).
 
 bool BatteryManager::processPowerButton() {
-    // Button availability depends on the confirmed power source, not ADC
-    // health; an ADC failure degrades voltage reporting only.
+    // PWR is a physical input on either supply. ADC/source uncertainty must
+    // not disable it; the released-since-boot guard below owns boot holds.
     battery_source_policy::ButtonGateInputs gate;
     gate.managerInitialized = initialized_;
-    gate.classification = sourceState_.classification;
+    gate.classification = powerSource();
     // adc1_handle is null when ADC initialization fails.
     gate.adcHealthy = static_cast<bool>(adc1_handle);
     gate.batteryVoltageValid = cachedVoltage_ >= BATTERY_EMPTY_MV;

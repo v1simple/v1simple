@@ -1315,10 +1315,85 @@ void test_escalation_honors_band_only_with_direction_and_count_disabled() {
     TEST_ASSERT_EQUAL_UINT(3, g_mock_task_notify_state.giveCalls);
 }
 
+static void checkPrimaryCount(unsigned count, VoiceAlertMode mode, bool direction, bool photo,
+                              bool announceCount = true) {
+    PipelineAudio runtime;
+    runtime.settings.settings.voiceAlertMode = mode;
+    runtime.settings.settings.voiceDirectionEnabled = direction;
+    runtime.settings.settings.announceSecondaryAlerts = false;
+    runtime.settings.settings.announceBogeyCount = announceCount;
+    const unsigned before = g_mock_task_notify_state.giveCalls;
+    const size_t writesBefore = g_mock_i2s_state.writeCalls;
+    for (unsigned i = 0; i < count; ++i) {
+        const uint16_t frequency = static_cast<uint16_t>((photo ? 24125 : 33700) + i * 10);
+        runtime.packet(PACKET_ID_ALERT_DATA,
+                       {static_cast<uint8_t>(((i + 1) << 4) | count), static_cast<uint8_t>(frequency >> 8),
+                        static_cast<uint8_t>(frequency), 0xAC, 0, static_cast<uint8_t>(photo ? 0x24 : 0x22),
+                        static_cast<uint8_t>(i == 0 ? (photo ? 0x81 : 0x80) : 0)});
+    }
+    runtime.pipeline.handleParsed(mockMillis);
+    TEST_ASSERT_EQUAL_UINT(count, runtime.parser.getAlertCount());
+    TEST_ASSERT_EQUAL_UINT(before + 1, g_mock_task_notify_state.giveCalls);
+    runAcceptedJob();
+    TEST_ASSERT_GREATER_THAN_UINT(writesBefore, g_mock_i2s_state.writeCalls);
+    const int base = (photo ? 1 : (mode == VOICE_MODE_BAND_ONLY ? 1 :
+                                 (mode == VOICE_MODE_FREQ_ONLY ? 3 : 4))) + (direction ? 1 : 0);
+    const bool suffix = announceCount && count > 1;
+    TEST_ASSERT_EQUAL_INT(base + (suffix ? 2 : 0), g_sdAudioTaskParams.numClips);
+    if (suffix) {
+        char expected[48];
+        snprintf(expected, sizeof(expected), count >= 10 ? "/audio/tens_%02u.mul" : "/audio/digit_%u.mul", count);
+        TEST_ASSERT_EQUAL_STRING(expected, g_sdAudioTaskParams.filePaths[base]);
+        TEST_ASSERT_EQUAL_STRING("/audio/bogeys.mul", g_sdAudioTaskParams.filePaths[base + 1]);
+    }
+}
+
+void test_primary_bogey_count_covers_complete_protocol_domain() {
+    for (unsigned count = 1; count <= 15; ++count)
+        checkPrimaryCount(count, VOICE_MODE_BAND_ONLY, false, false);
+}
+
+void test_dense_counts_keep_mode_direction_photo_and_disabled_contracts() {
+    for (unsigned count : {10u, 11u, 15u}) {
+        for (VoiceAlertMode mode : {VOICE_MODE_BAND_ONLY, VOICE_MODE_FREQ_ONLY, VOICE_MODE_BAND_FREQ}) {
+            for (bool direction : {false, true}) {
+                checkPrimaryCount(count, mode, direction, false);
+                checkPrimaryCount(count, mode, direction, true);
+            }
+        }
+        checkPrimaryCount(count, VOICE_MODE_BAND_FREQ, true, false, false);
+    }
+}
+
+void test_direction_count_domain_and_laser_exception() {
+    for (uint8_t count : {11, 15, 16}) {
+        TEST_ASSERT_EQUAL(AudioPlaybackResult::Accepted,
+                          try_play_direction_only(AlertDirection::AHEAD, count));
+        runAcceptedJob();
+        TEST_ASSERT_EQUAL_INT(count <= 15 ? 3 : 1, g_sdAudioTaskParams.numClips);
+        if (count <= 15) {
+            char expected[48];
+            snprintf(expected, sizeof(expected), "/audio/tens_%02u.mul", static_cast<unsigned>(count));
+            TEST_ASSERT_EQUAL_STRING(expected, g_sdAudioTaskParams.filePaths[1]);
+            TEST_ASSERT_EQUAL_STRING("/audio/bogeys.mul", g_sdAudioTaskParams.filePaths[2]);
+        }
+    }
+    TEST_ASSERT_EQUAL(AudioPlaybackResult::Accepted,
+                      try_play_frequency_voice(AlertBand::LASER, 0, AlertDirection::AHEAD,
+                                               VOICE_MODE_BAND_FREQ, true, 15));
+    runAcceptedJob();
+    TEST_ASSERT_EQUAL_INT(2, g_sdAudioTaskParams.numClips);
+    TEST_ASSERT_EQUAL_STRING("/audio/band_laser.mul", g_sdAudioTaskParams.filePaths[0]);
+    TEST_ASSERT_EQUAL_STRING("/audio/dir_ahead.mul", g_sdAudioTaskParams.filePaths[1]);
+}
+
 int main() {
     std::filesystem::copy(std::filesystem::path(PROJECT_DIR) / "tools" / "freq_audio" / "mulaw",
                           audioRoot / "audio", std::filesystem::copy_options::recursive);
     UNITY_BEGIN();
+    RUN_TEST(test_primary_bogey_count_covers_complete_protocol_domain);
+    RUN_TEST(test_dense_counts_keep_mode_direction_photo_and_disabled_contracts);
+    RUN_TEST(test_direction_count_domain_and_laser_exception);
     RUN_TEST(test_directory_discovery_failure_recovers_current_episode_without_duplicate_voice);
     RUN_TEST(test_discovery_recovery_does_not_announce_an_ended_or_replaced_episode);
     RUN_TEST(test_all_voice_entry_points_recover_asset_discovery_without_boot_reinitialization);

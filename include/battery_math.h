@@ -23,8 +23,8 @@ inline bool isCritical(uint16_t voltageMV) {
 }
 
 // Critical protection deliberately has a different contract from the battery
-// icon's presence heuristic. Once the source classifier says the device is on
-// the cell, every nonzero reading below the critical threshold is actionable;
+// icon's presence heuristic. While supply is unknown or confirmed battery,
+// every nonzero reading below the critical threshold remains actionable;
 // 0 remains the ADC-invalid/no-reading sentinel.
 inline bool criticalProtectionRequired(bool sourceIsBattery, uint16_t voltageMV) {
     return sourceIsBattery && isCritical(voltageMV);

@@ -1,6 +1,7 @@
 <script>
     import { onMount } from 'svelte';
     import { fetchJsonWithTimeout, fetchWithTimeout } from '#lib/utils/poll.js';
+    import { reconcileSettingsDraft } from '#lib/utils/settingsDraft.js';
     import CardSectionHead from '#lib/components/CardSectionHead.svelte';
     import ColorControl from '#lib/components/ColorControl.svelte';
     import ColorFieldsCard from '#lib/features/colors/ColorFieldsCard.svelte';
@@ -153,26 +154,29 @@
         pickerOpen = false;
     }
 
-    async function fetchColors({ detectMode = false } = {}) {
-        loading = true;
-        colorsLoaded = false;
+    async function fetchColors({ detectMode = false, submitted = null } = {}) {
+        // A loaded editor owns raw text drafts as well as numeric settings.
+        // Keep it mounted during reconciliation so focused edits survive.
+        loading = !colorsLoaded;
+        let refreshed = false;
         message = null;
         try {
             const res = await fetchJsonWithTimeout(DISPLAY_SETTINGS_ENDPOINT);
             if (res.ok) {
                 const data = res.data;
-                colors = normalizeColorPayload(data, colors);
+                colors = reconcileSettingsDraft(colors, submitted, normalizeColorPayload(data, colors));
                 // Auto-detect simple vs advanced only on initial load; refetches
                 // after save/reset must not override an explicit mode choice.
                 syncBarEditorFromColors({ keepMode: !detectMode });
                 colorsLoaded = true;
+                refreshed = true;
             } else {
                 message = { type: 'error', text: 'Failed to load colors' };
             }
         } catch (_) {
             message = { type: 'error', text: 'Failed to load colors' };
         }
-        if (colorsLoaded) {
+        if (refreshed) {
             try {
                 const quietRes = await fetchJsonWithTimeout(QUIET_SETTINGS_ENDPOINT);
                 if (quietRes.ok) {
@@ -184,7 +188,7 @@
             }
         }
         loading = false;
-        return colorsLoaded;
+        return refreshed;
     }
 
     function handleHexInput(key, value) {
@@ -201,19 +205,20 @@
 
     async function saveColors() {
         if (saving || stealthSaving || loading || !colorsLoaded) return;
+        const submitted = { ...colors };
         saving = true;
         message = null;
         try {
             const res = await fetchWithTimeout(DISPLAY_SETTINGS_ENDPOINT, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: buildColorParams(colors)
+                body: buildColorParams(submitted)
             });
             if (!res.ok) {
                 message = { type: 'error', text: 'Failed to save colors' };
                 return;
             }
-            if (await fetchColors()) {
+            if (await fetchColors({ submitted })) {
                 message = { type: 'success', text: 'Colors saved! Previewing on display...' };
             }
             // Firmware owns the save preview's 5.5s hold and expiration.
@@ -239,6 +244,7 @@
     async function resetDefaults() {
         if (saving || stealthSaving) return;
         if (!confirm('Reset display colors, brightness, and status indicators to defaults?')) return;
+        const submitted = { ...colors };
         saving = true;
         try {
             const res = await fetchWithTimeout(DISPLAY_SETTINGS_RESET_ENDPOINT, { method: 'POST' });
@@ -246,9 +252,7 @@
                 message = { type: 'error', text: 'Failed to reset' };
                 return;
             }
-            colors = cloneDefaultColors();
-            syncBarEditorFromColors({ keepMode: true });
-            if (await fetchColors()) {
+            if (await fetchColors({ submitted })) {
                 message = { type: 'success', text: 'Colors reset to defaults!' };
             }
         } catch (_) {

@@ -63,6 +63,23 @@ inline std::string& failBeginNamespace() {
     return g_failBeginNamespace;
 }
 
+inline std::unordered_map<std::string, size_t>& failReadOnlyBeginCounts() {
+    static std::unordered_map<std::string, size_t> counts;
+    return counts;
+}
+
+inline void set_fail_read_only_begin_for_namespace(const char* name, size_t count) {
+    if (name) failReadOnlyBeginCounts()[name] = count;
+}
+
+// Both Preferences and checked NVS opens share the same bounded storage fault.
+inline bool readOnlyBeginFails(const char* name) {
+    const auto it = failReadOnlyBeginCounts().find(name ? name : "");
+    if (it == failReadOnlyBeginCounts().end() || it->second == 0) return false;
+    --it->second;
+    return true;
+}
+
 inline bool& requireExistingNamespaceForRead() {
     static bool g_requireExistingNamespaceForRead = false;
     return g_requireExistingNamespaceForRead;
@@ -123,6 +140,7 @@ inline void reset() {
     failWrites() = false;
     failWriteKey().clear();
     failBeginNamespace().clear();
+    failReadOnlyBeginCounts().clear();
     requireExistingNamespaceForRead() = false;
     failStringReadKey().clear();
     failWriteCountdowns().clear();
@@ -304,6 +322,7 @@ public:
             ++mock_preferences::readOnlyBeginCounts()[name];
         }
         if (!name || name[0] == '\0' ||
+            (readOnly && mock_preferences::readOnlyBeginFails(name)) ||
             (!mock_preferences::failBeginNamespace().empty() &&
              mock_preferences::failBeginNamespace() == name) ||
             (readOnly && mock_preferences::requireExistingNamespaceForRead() &&

@@ -2,6 +2,9 @@
 #include "test/test_settings_persistence/test_settings_persistence.cpp"
 #undef main
 
+#include "test/mocks/battery_manager.h"
+#include "src/modules/power/power_module.cpp"
+
 // Reuse the production settings owner and OBD synchronizer from the native
 // persistence harness. These collaborators record hardware configuration only.
 static uint8_t appliedVoiceVolume = 0;
@@ -86,9 +89,9 @@ public:
     void requestRecoveredSettingsAdmission() {}
   } connectionCycle_;
   ObdSettingsSyncModule obdSettingsSync_;
-  struct {
-    bool ownsDisplayPresentation() const { return false; }
-  } power_;
+  PowerModule power_;
+  BatteryManager battery_;
+  V1Display powerDisplay_;
   struct {
     void process() {}
   } autoPush_;
@@ -98,9 +101,12 @@ public:
   uint32_t observedSettingsRecoveryRevision_ = 0;
   bool usbTailBusy_ = false, connectedPersistenceWindowAnchored_ = false;
   uint32_t connectedPersistenceWindowStartedMs_ = 0;
-  static constexpr uint32_t kConnectedPersistenceDeferralMs = 5000;
+  static constexpr uint32_t kConnectedPersistenceDeferralMs = 10000;
 
   explicit DriveRuntime(SettingsManager &owner) : settings_(owner) {
+    battery_.setOnBattery(true);
+    battery_.setBatteryPercent(90);
+    power_.begin(&battery_, &powerDisplay_, &settings_);
     obdSettingsSync_.begin(&settings_, &obd_);
   }
   void syncRecoveredSettings();
@@ -220,8 +226,50 @@ void test_pending_sd_recovery_cannot_commit_provisional_obd_snapshot() {
   TEST_ASSERT_FALSE(runtime.obdSettingsSync_.hasPendingSnapshotForTest());
 }
 
+
+void test_recovered_auto_off_starts_full_interval_without_new_detector_edge() {
+  fs::FS filesystem(g_tempRoot);
+  storage.setFilesystem(&filesystem, true);
+  TEST_ASSERT_TRUE(profiles.begin(storage));
+  SettingsManager source(storage, profiles);
+  makeCurrentV21Source(source.mutableSettings());
+  source.mutableSettings().autoPowerOffMinutes = 1;
+  TEST_ASSERT_TRUE(source.save());
+  const String newest = activeNamespaceOrEmpty();
+  mock_preferences::set_fail_begin_for_namespace(newest.c_str());
+  SettingsManager boot(storage, profiles);
+  boot.begin();
+  DriveRuntime runtime(boot);
+  TEST_ASSERT_TRUE(boot.recoveryPending());
+  TEST_ASSERT_EQUAL_UINT8(0, boot.get().autoPowerOffMinutes);
+  mockMillis = 500;
+  runtime.power_.onV1ConnectionChange(true);
+  runtime.power_.onV1DataReceived();
+  mockMillis = 1000;
+  runtime.power_.onV1ConnectionChange(false);
+  TEST_ASSERT_TRUE(runtime.power_.autoPowerOffArmedForTest());
+  TEST_ASSERT_FALSE(runtime.power_.autoPowerOffTimerRunningForTest());
+
+  mock_preferences::set_fail_begin_for_namespace(nullptr);
+  mockMillis = 10000;
+  runtime.processPeriodicMaintenance(mockMillis, false, false, false, false);
+  TEST_ASSERT_FALSE(boot.recoveryPending());
+  TEST_ASSERT_EQUAL_UINT32(1, runtime.observedSettingsRecoveryRevision_);
+  TEST_ASSERT_EQUAL_UINT8(1, boot.get().autoPowerOffMinutes);
+  runtime.power_.process(mockMillis);
+  TEST_ASSERT_TRUE(runtime.power_.autoPowerOffTimerRunningForTest());
+  TEST_ASSERT_EQUAL_UINT32(10000, runtime.power_.autoPowerOffTimerStartForTest());
+  mockMillis = 69999;
+  runtime.power_.process(mockMillis);
+  TEST_ASSERT_EQUAL_INT(0, runtime.battery_.powerOffCalls);
+  mockMillis = 70000;
+  runtime.power_.process(mockMillis);
+  TEST_ASSERT_EQUAL_INT(1, runtime.battery_.powerOffCalls);
+}
+
 int main() {
   UNITY_BEGIN();
+  RUN_TEST(test_recovered_auto_off_starts_full_interval_without_new_detector_edge);
   RUN_TEST(test_service_recovery_restores_runtime_before_obd_sync);
   RUN_TEST(test_setter_recovery_restores_runtime_during_persistence_pressure);
   RUN_TEST(test_pending_sd_recovery_cannot_commit_provisional_obd_snapshot);

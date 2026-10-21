@@ -394,6 +394,22 @@ static bool appendAudioClip(SDAudioTaskParams& params, const char* clipFile) {
     return true;
 }
 
+// Alert-table counts occupy four bits. Keep each number/noun pair atomic so
+// capacity limits never leave a spoken count without its meaning.
+static void appendCountPhrase(SDAudioTaskParams& params, uint8_t count, const char* suffix) {
+    if (count == 0 || count > 15 || params.numClips > MAX_AUDIO_CLIPS - 2) {
+        return;
+    }
+    if (count >= 10) {
+        snprintf(params.filePaths[params.numClips++], 48, "%s/tens_%02u.mul", AUDIO_PATH,
+                 static_cast<unsigned>(count));
+    } else {
+        snprintf(params.filePaths[params.numClips++], 48, "%s/digit_%u.mul", AUDIO_PATH,
+                 static_cast<unsigned>(count));
+    }
+    appendAudioClip(params, suffix);
+}
+
 void play_alert_voice(AlertBand band, AlertDirection direction) {
 
     if (audio_playing.load()) {
@@ -497,13 +513,8 @@ static AudioPlaybackResult play_frequency_voice_impl(AlertBand band, uint16_t fr
         }
     }
 
-    if (bogeyCount > 1 && bogeyCount <= 10 && params.numClips < 6) {
-        if (bogeyCount == 10) {
-            snprintf(params.filePaths[params.numClips++], 48, "%s/tens_10.mul", AUDIO_PATH);
-        } else {
-            snprintf(params.filePaths[params.numClips++], 48, "%s/digit_%d.mul", AUDIO_PATH, bogeyCount);
-        }
-        snprintf(params.filePaths[params.numClips++], 48, "%s/bogeys.mul", AUDIO_PATH);
+    if (bogeyCount > 1) {
+        appendCountPhrase(params, bogeyCount, "bogeys.mul");
     }
 
     return params.numClips > 0 ? start_sd_audio_task(params, receipt) : AudioPlaybackResult::Unavailable;
@@ -564,13 +575,8 @@ static AudioPlaybackResult play_direction_only_impl(AlertDirection direction, ui
         snprintf(params.filePaths[params.numClips++], 48, "%s/%s", AUDIO_PATH, dirFile);
     }
 
-    if (bogeyCount > 1 && bogeyCount <= 10) {
-        if (bogeyCount == 10) {
-            snprintf(params.filePaths[params.numClips++], 48, "%s/tens_10.mul", AUDIO_PATH);
-        } else {
-            snprintf(params.filePaths[params.numClips++], 48, "%s/digit_%d.mul", AUDIO_PATH, bogeyCount);
-        }
-        snprintf(params.filePaths[params.numClips++], 48, "%s/bogeys.mul", AUDIO_PATH);
+    if (bogeyCount > 1) {
+        appendCountPhrase(params, bogeyCount, "bogeys.mul");
     }
 
     if (params.numClips == 0) {
@@ -668,41 +674,21 @@ static AudioPlaybackResult play_threat_escalation_impl(AlertBand band, uint16_t 
         snprintf(params.filePaths[params.numClips++], 48, "%s/%s", AUDIO_PATH, dirFile);
     }
 
-    if (announceBogeyCount && total >= 2 && total <= 10 && params.numClips <= MAX_AUDIO_CLIPS - 2) {
-        if (total == 10) {
-            snprintf(params.filePaths[params.numClips++], 48, "%s/tens_10.mul", AUDIO_PATH);
-        } else {
-            snprintf(params.filePaths[params.numClips++], 48, "%s/digit_%d.mul", AUDIO_PATH, total);
-        }
-        snprintf(params.filePaths[params.numClips++], 48, "%s/bogeys.mul", AUDIO_PATH);
+    if (announceBogeyCount && total >= 2) {
+        appendCountPhrase(params, total, "bogeys.mul");
     }
 
-    if (announceBogeyCount && includeDirection && ahead > 0 && ahead <= 10 && params.numClips <= MAX_AUDIO_CLIPS - 2) {
-        if (ahead == 10) {
-            snprintf(params.filePaths[params.numClips++], 48, "%s/tens_10.mul", AUDIO_PATH);
-        } else {
-            snprintf(params.filePaths[params.numClips++], 48, "%s/digit_%d.mul", AUDIO_PATH, ahead);
-        }
-        snprintf(params.filePaths[params.numClips++], 48, "%s/dir_ahead.mul", AUDIO_PATH);
+    if (announceBogeyCount && includeDirection) {
+        appendCountPhrase(params, ahead, "dir_ahead.mul");
     }
 
-    if (announceBogeyCount && includeDirection && behind > 0 && behind <= 10 && params.numClips <= MAX_AUDIO_CLIPS - 2) {
-        if (behind == 10) {
-            snprintf(params.filePaths[params.numClips++], 48, "%s/tens_10.mul", AUDIO_PATH);
-        } else {
-            snprintf(params.filePaths[params.numClips++], 48, "%s/digit_%d.mul", AUDIO_PATH, behind);
-        }
-        snprintf(params.filePaths[params.numClips++], 48, "%s/dir_behind.mul", AUDIO_PATH);
+    if (announceBogeyCount && includeDirection) {
+        appendCountPhrase(params, behind, "dir_behind.mul");
     }
 
     // Omit the side count if earlier clips exhausted capacity.
-    if (announceBogeyCount && includeDirection && side > 0 && side <= 10 && params.numClips <= MAX_AUDIO_CLIPS - 2) {
-        if (side == 10) {
-            snprintf(params.filePaths[params.numClips++], 48, "%s/tens_10.mul", AUDIO_PATH);
-        } else {
-            snprintf(params.filePaths[params.numClips++], 48, "%s/digit_%d.mul", AUDIO_PATH, side);
-        }
-        snprintf(params.filePaths[params.numClips++], 48, "%s/dir_side.mul", AUDIO_PATH);
+    if (announceBogeyCount && includeDirection) {
+        appendCountPhrase(params, side, "dir_side.mul");
     }
 
     return params.numClips > 0 ? start_sd_audio_task(params, receipt) : AudioPlaybackResult::Unavailable;

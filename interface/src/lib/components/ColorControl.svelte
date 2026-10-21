@@ -13,6 +13,7 @@
         placeholder = 'F800',
         onPick = null,
         onHexChange = null,
+        onHexInput = null,
         children
     } = $props();
 
@@ -22,8 +23,19 @@
         lg: 'color-swatch-btn lg'
     };
 
+    // Keep unfinished text separate from the numeric color. Readbacks and
+    // swatch previews must not replace a focused, uncommitted hex draft.
+    let hexDraft = $state(null);
+
+    function handleHexInput(event) {
+        hexDraft = event.currentTarget.value;
+        onHexInput?.(hexDraft);
+    }
+
     function handleHexChange(event) {
-        onHexChange?.(event.currentTarget.value);
+        const raw = event.currentTarget.value;
+        hexDraft = null;
+        onHexChange?.(raw);
     }
 </script>
 
@@ -47,10 +59,11 @@
         <input
             type="text"
             class={inputClass}
-            value={rgb565ToHexStr(value)}
+            value={hexDraft ?? rgb565ToHexStr(value)}
             title="RGB565 hex (or RGB888)"
             {placeholder}
             {disabled}
+            oninput={handleHexInput}
             onchange={handleHexChange}
         />
         {#if children}

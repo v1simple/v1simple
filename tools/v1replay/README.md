@@ -200,6 +200,12 @@ fake the required DUT unmute. Received commands change the live modeled mute
 state, which subsequent `infDisplayData` packets report. This preset is separate
 from the default scenario and does not modify its samples.
 
+Authored mute belongs to the current timeline sample. Looping, restarting, or
+seeking therefore restores that sample's authored value when no live command
+owns mute. A deliberate DUT or console override survives those transport
+controls and held samples until the next authored mute edge (or an explicit
+console release). The idle tail retains the last authored mute state.
+
 With `--machine-events`, a valid DUT mute request produces
 `state: "dut_mute_command"`, `schemaVersion: 1`, `muted`, and
 `hostMonotonicNs`. This timestamps the peripheral's received-command callback.
@@ -329,9 +335,15 @@ With `--machine-events`, notification events include sequence, characteristic,
 payload identity, and host monotonic time. CoreBluetooth accepting an update
 does not prove that the DUT received, parsed, or rendered it.
 
-Host tests cover packet construction and session decisions. BLE subscription,
+Host tests cover packet construction and session decisions. Physical BLE subscription,
 notification delivery, firmware rendering, and visible pixels require
 integration, serial, or camera evidence.
+
+Managed playback freezes its authored deadline whenever the short display
+subscription or START request is missing. Both initial admission and recovery
+send idle ID31 at the configured idle cadence once the short subscription is
+available. This grants the accessory time slice needed to request START after
+a full disconnect; the pending authored sample resumes after admission.
 
 ## Verification
 
@@ -341,6 +353,8 @@ python3 verify/verify_protocol.py
 env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   CLANG_MODULE_CACHE_PATH=.build/clang-cache \
   xcrun swift test --disable-sandbox
+env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  python3 Tests/test_peripheral_lifecycle.py
 ```
 
 The publication check enforces the source-only tree and scans publishable text
@@ -348,6 +362,13 @@ for common local-path, timestamp, credential, and private-key markers. The
 protocol verifier compiles `V1Protocol.swift`, feeds its in-memory packet matrix
 to the firmware parser, and never reads external replay input. The Swift test
 suite covers the scenario timeline and CSV.
+The lifecycle runner compiles the actual Player, Peripheral, Session, packet
+plan and evidence owners against a software CoreBluetooth module. It covers
+subscription replacement, initial/reconnect START admission, frozen deadlines,
+stop/restart/seek, authored mute loops and external-command precedence, and
+compares requested bytes with software-accepted notifications. The admission
+test's central permits START only after canonical idle ID31; the runner does
+not run firmware or open a physical radio.
 
 ## Limitations
 

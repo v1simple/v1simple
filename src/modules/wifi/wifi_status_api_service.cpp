@@ -42,7 +42,10 @@ void buildStatusDoc(const StatusRuntime& runtime, JsonDocument& doc) {
     JsonObject battery = doc["battery"].to<JsonObject>();
     battery["voltage_mv"] = callOr<uint16_t>(runtime.batteryVoltageMv, runtime.batteryVoltageMvCtx, 0);
     battery["percentage"] = callOr<uint8_t>(runtime.batteryPercentage, runtime.batteryPercentageCtx, 0);
+    // on_battery is retained for older clients as a conservative policy bit.
+    // source carries the actual classification, including unavailable sensing.
     battery["on_battery"] = callOr<bool>(runtime.batteryOnBattery, runtime.batteryOnBatteryCtx, false);
+    battery["source"] = callOr<const char*>(runtime.batterySource, runtime.batterySourceCtx, "unknown");
     battery["has_battery"] = callOr<bool>(runtime.batteryHasBattery, runtime.batteryHasBatteryCtx, false);
 
     doc["v1_connected"] = callOr<bool>(runtime.v1Connected, runtime.v1ConnectedCtx, false);

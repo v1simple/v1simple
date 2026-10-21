@@ -189,8 +189,16 @@ V1BLEClient::SubscribeStepResult V1BLEClient::executeSubscribeStep() {
 
     case SubscribeStep::SUBSCRIBE_LONG: {
         NimBLERemoteCharacteristic* pDisplayLong = pRemoteService_->getCharacteristic(V1_DISPLAY_DATA_LONG_UUID);
-        if (pDisplayLong) {
-            (void)pDisplayLong->subscribe(true, notifyCallback, true);
+        // Absence/non-notifiable compatibility was admitted above. Once a
+        // usable long channel is advertised, a failed CCCD write leaves sweep
+        // capture incomplete. Quiesce this attempt so ordinary reconnect
+        // retries both subscriptions before publishing a healthy session.
+        if (!pDisplayLong || !pDisplayLong->subscribe(true, notifyCallback, true)) {
+            static BleLogRateLimitState subscribeFailB4e0Log;
+            if (shouldLogBleConnectionEvent(subscribeFailB4e0Log, static_cast<uint32_t>(millis()))) {
+                Serial.println("[BLE] FAIL subscribe B4E0");
+            }
+            return SubscribeStepResult::Failed;
         }
         subscribeStep_ = SubscribeStep::REQUEST_ALERT_DATA;
         return SubscribeStepResult::InProgress;

@@ -30,9 +30,9 @@ constexpr const char* strategyName(Strategy strategy) {
 }
 
 constexpr WakePlan planExternalPowerWake() {
-    // GPIO16 reads LOW while external power is present, so it is never a safe
-    // active-low wake source for this strategy. BOOT/GPIO0 is the sole wake
-    // input; the hardware tail separately refuses sleep while BOOT is LOW.
+    // Preserve the BOOT wake contract for a qualified external-supply plan.
+    // GPIO16 is a physical button on both supplies, not an external-power
+    // indicator. The hardware tail refuses sleep while the selected input is LOW.
     return {WakeInput::BOOT_GPIO0};
 }
 

@@ -61,6 +61,8 @@ struct StatusRuntime {
     void* mergeStatus2Ctx = nullptr;
     void (*mergeAlert)(JsonObject, void* ctx) = nullptr; // Write fields into alert sub-object
     void* mergeAlertCtx = nullptr;
+    const char* (*batterySource)(void* ctx) = nullptr;
+    void* batterySourceCtx = nullptr;
 };
 
 void releaseStatusJsonCache(StatusJsonCache& cachedStatusJson, unsigned long& lastStatusJsonTime);

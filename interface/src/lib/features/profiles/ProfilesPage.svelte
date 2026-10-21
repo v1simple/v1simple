@@ -29,6 +29,7 @@
     import { createDetectorOperationTracker } from '#lib/features/profiles/detectorOperationTracker.js';
 
     let profiles = $state([]);
+    let catalogGeneration = 0;
     let currentProfile = $state(null);
     let loading = $state(true);
     let message = $state(null);
@@ -96,6 +97,7 @@
     }
 
     function recordSavedProfile(name, description, displayOn) {
+        catalogGeneration += 1;
         const saved = { name, description, displayOn: displayOn ?? true };
         const found = profiles.some((profile) => profile.name === name);
         profiles = found
@@ -324,6 +326,7 @@
     }
 
     async function fetchProfiles() {
+        const generation = catalogGeneration;
         try {
             const loadedProfiles = [];
             let cursor = '';
@@ -333,6 +336,9 @@
                     ? `/api/v1/profiles?after=${encodeURIComponent(cursor)}&limit=10`
                     : '/api/v1/profiles';
                 const res = await fetchJsonWithTimeout(url);
+                if (disposed) return false;
+                // Acknowledged changes invalidate every page of this older catalog.
+                if (generation !== catalogGeneration) return await fetchProfiles();
                 if (!res.ok) {
                     message = { type: 'error', text: PROFILE_LOAD_ERROR_TEXT };
                     return false;
@@ -352,6 +358,8 @@
             clearMessageText(PROFILE_LOAD_ERROR_TEXT);
             return true;
         } catch (e) {
+            if (disposed) return false;
+            if (generation !== catalogGeneration) return await fetchProfiles();
             message = { type: 'error', text: PROFILE_LOAD_ERROR_TEXT };
             return false;
         } finally {
@@ -751,6 +759,7 @@
                 })
             );
             if (res.ok) {
+                catalogGeneration += 1;
                 profiles = profiles.filter((profile) => profile.name !== name);
                 message = { type: 'success', text: 'Profile deleted' };
             } else {

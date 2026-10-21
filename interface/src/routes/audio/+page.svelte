@@ -1,6 +1,7 @@
 <script>
     import { onMount } from 'svelte';
     import { fetchJsonWithTimeout, fetchWithTimeout } from '#lib/utils/poll.js';
+    import { reconcileSettingsDraft } from '#lib/utils/settingsDraft.js';
     import CardSectionHead from '#lib/components/CardSectionHead.svelte';
     import PageHeader from '#lib/components/PageHeader.svelte';
     import StatusAlert from '#lib/components/StatusAlert.svelte';
@@ -43,7 +44,7 @@
         await fetchSettings();
     });
 
-    async function fetchSettings() {
+    async function fetchSettings(submitted = null) {
         loading = true;
         settingsLoaded = false;
         try {
@@ -53,25 +54,27 @@
                 return;
             }
             const data = res.data;
-            settings.voiceAlertMode = data.voiceAlertMode ?? 3;
-            settings.voiceDirectionEnabled = data.voiceDirectionEnabled ?? true;
-            settings.announceBogeyCount = data.announceBogeyCount ?? true;
-            settings.muteVoiceIfVolZero = data.muteVoiceIfVolZero ?? false;
-            settings.voiceVolume = data.voiceVolume ?? 75;
-            settings.announceSecondaryAlerts = data.announceSecondaryAlerts ?? false;
-            settings.secondaryLaser = data.secondaryLaser ?? true;
-            settings.secondaryKa = data.secondaryKa ?? true;
-            settings.secondaryK = data.secondaryK ?? false;
-            settings.secondaryX = data.secondaryX ?? false;
-            settings.alertVolumeFadeEnabled = data.alertVolumeFadeEnabled ?? false;
-            settings.alertVolumeFadeDelaySec = data.alertVolumeFadeDelaySec ?? 2;
-            settings.alertVolumeFadeVolume = data.alertVolumeFadeVolume ?? 1;
-            settings.speedMuteEnabled = data.speedMuteEnabled ?? false;
-            settings.speedMuteThresholdMph = data.speedMuteThresholdMph ?? 25;
-            settings.speedMuteHysteresisMph = data.speedMuteHysteresisMph ?? 3;
-            settings.speedMuteVolume = data.speedMuteVolume ?? 0;
-            settings.speedMuteVoice = data.speedMuteVoice ?? true;
-            settings.stealthEnabled = data.stealthEnabled ?? false;
+            settings = reconcileSettingsDraft(settings, submitted, {
+                voiceAlertMode: data.voiceAlertMode ?? 3,
+                voiceDirectionEnabled: data.voiceDirectionEnabled ?? true,
+                announceBogeyCount: data.announceBogeyCount ?? true,
+                muteVoiceIfVolZero: data.muteVoiceIfVolZero ?? false,
+                voiceVolume: data.voiceVolume ?? 75,
+                announceSecondaryAlerts: data.announceSecondaryAlerts ?? false,
+                secondaryLaser: data.secondaryLaser ?? true,
+                secondaryKa: data.secondaryKa ?? true,
+                secondaryK: data.secondaryK ?? false,
+                secondaryX: data.secondaryX ?? false,
+                alertVolumeFadeEnabled: data.alertVolumeFadeEnabled ?? false,
+                alertVolumeFadeDelaySec: data.alertVolumeFadeDelaySec ?? 2,
+                alertVolumeFadeVolume: data.alertVolumeFadeVolume ?? 1,
+                speedMuteEnabled: data.speedMuteEnabled ?? false,
+                speedMuteThresholdMph: data.speedMuteThresholdMph ?? 25,
+                speedMuteHysteresisMph: data.speedMuteHysteresisMph ?? 3,
+                speedMuteVolume: data.speedMuteVolume ?? 0,
+                speedMuteVoice: data.speedMuteVoice ?? true,
+                stealthEnabled: data.stealthEnabled ?? false
+            });
             settingsLoaded = true;
         } catch (e) {
             message = { type: 'error', text: 'Failed to load settings' };
@@ -81,34 +84,36 @@
     }
 
     async function saveSettings() {
+        if (saving) return;
         if (!settingsLoaded) {
             message = { type: 'error', text: 'Failed to load settings' };
             return;
         }
+        const submitted = { ...settings };
         saving = true;
         message = null;
 
         try {
             const params = new URLSearchParams();
-            params.append('voiceAlertMode', settings.voiceAlertMode);
-            params.append('voiceDirectionEnabled', settings.voiceDirectionEnabled);
-            params.append('announceBogeyCount', settings.announceBogeyCount);
-            params.append('muteVoiceIfVolZero', settings.muteVoiceIfVolZero);
-            params.append('voiceVolume', settings.voiceVolume);
-            params.append('announceSecondaryAlerts', settings.announceSecondaryAlerts);
-            params.append('secondaryLaser', settings.secondaryLaser);
-            params.append('secondaryKa', settings.secondaryKa);
-            params.append('secondaryK', settings.secondaryK);
-            params.append('secondaryX', settings.secondaryX);
-            params.append('alertVolumeFadeEnabled', settings.alertVolumeFadeEnabled);
-            params.append('alertVolumeFadeDelaySec', settings.alertVolumeFadeDelaySec);
-            params.append('alertVolumeFadeVolume', settings.alertVolumeFadeVolume);
-            params.append('speedMuteEnabled', settings.speedMuteEnabled);
-            params.append('speedMuteThresholdMph', settings.speedMuteThresholdMph);
-            params.append('speedMuteHysteresisMph', settings.speedMuteHysteresisMph);
-            params.append('speedMuteVolume', settings.speedMuteVolume);
-            params.append('speedMuteVoice', settings.speedMuteVoice);
-            params.append('stealthEnabled', settings.stealthEnabled);
+            params.append('voiceAlertMode', submitted.voiceAlertMode);
+            params.append('voiceDirectionEnabled', submitted.voiceDirectionEnabled);
+            params.append('announceBogeyCount', submitted.announceBogeyCount);
+            params.append('muteVoiceIfVolZero', submitted.muteVoiceIfVolZero);
+            params.append('voiceVolume', submitted.voiceVolume);
+            params.append('announceSecondaryAlerts', submitted.announceSecondaryAlerts);
+            params.append('secondaryLaser', submitted.secondaryLaser);
+            params.append('secondaryKa', submitted.secondaryKa);
+            params.append('secondaryK', submitted.secondaryK);
+            params.append('secondaryX', submitted.secondaryX);
+            params.append('alertVolumeFadeEnabled', submitted.alertVolumeFadeEnabled);
+            params.append('alertVolumeFadeDelaySec', submitted.alertVolumeFadeDelaySec);
+            params.append('alertVolumeFadeVolume', submitted.alertVolumeFadeVolume);
+            params.append('speedMuteEnabled', submitted.speedMuteEnabled);
+            params.append('speedMuteThresholdMph', submitted.speedMuteThresholdMph);
+            params.append('speedMuteHysteresisMph', submitted.speedMuteHysteresisMph);
+            params.append('speedMuteVolume', submitted.speedMuteVolume);
+            params.append('speedMuteVoice', submitted.speedMuteVoice);
+            params.append('stealthEnabled', submitted.stealthEnabled);
 
             const res = await fetchWithTimeout('/api/audio/settings', {
                 method: 'POST',
@@ -118,7 +123,7 @@
 
             if (res.ok) {
                 message = { type: 'success', text: 'Audio settings saved!' };
-                await fetchSettings();
+                await fetchSettings(submitted);
             } else {
                 message = { type: 'error', text: 'Failed to save settings' };
             }

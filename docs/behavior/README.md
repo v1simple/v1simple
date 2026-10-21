@@ -21,6 +21,7 @@ named path and operating conditions.
 | Custom-sweep apply times out even though a reply arrived during the send | [V1 protocol: AutoPush](V1_PROTOCOL.md) | The three refresh requests and final commit use a boundary captured before sending; older queued replies remain ineligible. |
 | A new unidentified ALP engagement keeps the preceding gun name | [ALP sessions](ALP_SESSIONS.md) | The final display setter retains a known gun only within the same nonzero session generation. |
 | Correct visible fields fail after an admitted camera translation/scale | [Camera fields](CAMERA_FIELDS.md) | Every pixel reader consumes the registered pose; genuinely wrong content still fails. |
+| Sliders, recovered auto-off, power input, shutdown snapshots, or retrying storage writes | [Runtime and recovery boundaries](RUNTIME_RECOVERY.md) | Live policies continue across presentation ownership; uncertain storage cannot authorize a replacement; power input is independent of supply reporting. |
 
 Each trace follows the entrypoint, admission rules, state owner, downstream
 consumer, terminal outcome and alternate paths that can overwrite the result.

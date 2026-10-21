@@ -39,15 +39,16 @@ class DriveLoopCoordinator {
 
         bool bleConnected = connection.connected;
         bool bleBackpressure = connection.backpressured;
+        // Fresh ALP presence must reach power before an expiry is acted on,
+        // regardless of the current screen owner.
+        runtime.processAlp(timing.nowMs);
+        runtime.processAlpPresentationAndPower(timing.nowMs);
         runtime.processPower(timing.nowMs);
         const bool inSettings = !runtime.powerOwnsPresentation() && runtime.processTouch(timing.nowMs);
         runtime.servicePowerDisplayOwnership(timing.nowMs);
         const bool powerPresentationOwned = runtime.powerOwnsPresentation();
 
-        bool alpProcessed = false;
         if (inSettings) {
-            runtime.processAlp(timing.nowMs);
-            alpProcessed = true;
             if (!runtime.preemptSettingsForLiveAlert()) {
                 runtime.openBootReadyGate(timing.nowMs);
                 runtime.processBleRuntime();
@@ -57,6 +58,8 @@ class DriveLoopCoordinator {
                 runtime.processSpeed(timing.nowMs);
                 runtime.processSpeedAlert(timing.nowMs);
                 runtime.observeAlpProductState(timing.nowMs);
+                // Parsed detector policy remains eligible while sliders own pixels.
+                runtime.processParsedPolicies(runtime.consumeDisplayEdges());
                 runtime.processPeriodicMaintenance(timing.nowMs, bleConnected, false, false, true);
                 runtime.finishDriveLoop(false, timing.loopStartUs, true);
                 return;
@@ -74,11 +77,7 @@ class DriveLoopCoordinator {
 
         runtime.processConnectionCycle(timing.nowMs, bleConnected);
         runtime.processObd(timing.nowMs, bleConnected);
-        if (!alpProcessed) {
-            runtime.processAlp(timing.nowMs);
-        }
         runtime.observeAlpProductState(timing.nowMs);
-        runtime.processAlpPresentationAndPower(timing.nowMs);
         runtime.processGps(timing.nowMs);
         runtime.processSpeed(timing.nowMs);
         runtime.processSpeedAlert(timing.nowMs);

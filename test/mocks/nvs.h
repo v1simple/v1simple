@@ -162,7 +162,7 @@ inline esp_err_t nvs_get_stats(const char* /*part_name*/, nvs_stats_t* out_stats
     return ESP_OK;
 }
 
-inline esp_err_t nvs_open(const char* name, nvs_open_mode_t /*open_mode*/, nvs_handle_t* out_handle) {
+inline esp_err_t nvs_open(const char* name, nvs_open_mode_t open_mode, nvs_handle_t* out_handle) {
     if (!name || !out_handle) return ESP_ERR_INVALID_ARG;
     esp_err_t result = ESP_OK;
     const auto it = mock_nvs::namespaceOpenResults().find(name);
@@ -175,6 +175,7 @@ inline esp_err_t nvs_open(const char* name, nvs_open_mode_t /*open_mode*/, nvs_h
         }
     }
     if (result == ESP_OK && mock_preferences::failBeginNamespace() == name) result = -1;
+    if (result == ESP_OK && open_mode == NVS_READONLY && mock_preferences::readOnlyBeginFails(name)) result = -1;
     if (result == ESP_OK) {
         static nvs_handle_t nextHandle = 0;
         *out_handle = ++nextHandle;

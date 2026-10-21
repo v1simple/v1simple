@@ -94,8 +94,7 @@ describe('colors route page', () => {
             expect(saveCall?.[1]?.body?.get('bar2')).toBe(String(cloneDefaultColors().bar2));
         });
 
-        // Mode choice survives the post-save refetch (findBy waits out the
-        // loading state the refetch puts the page into).
+        // Mode choice survives the post-save refetch.
         await fireEvent.click(await screen.findByRole('button', { name: 'Alert colors' }));
         expect(await screen.findByText('Bottom (weakest)')).toBeVisible();
 

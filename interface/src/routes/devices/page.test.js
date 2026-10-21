@@ -84,7 +84,7 @@ describe('devices route page', () => {
         unmount();
     });
 
-    it('displays the submitted name when the input changes during a pending save', async () => {
+    it('preserves a later rename draft while confirming only the submitted name', async () => {
         let finishSave;
         const pendingSave = new Promise((resolve) => (finishSave = resolve));
         const fetchMock = installDefaultFetch([
@@ -101,8 +101,8 @@ describe('devices route page', () => {
         finishSave(jsonResponse({ success: true }));
 
         await screen.findByText('Device name saved.');
-        expect(screen.getByRole('heading', { name: 'SentName' })).toBeInTheDocument();
-        expect(screen.queryByText('NeverSentName')).not.toBeInTheDocument();
+        expect(screen.getByRole('textbox')).toHaveValue('NeverSentName');
+        expect(screen.getByRole('button', { name: /^save$/i })).toBeEnabled();
         const saveCall = fetchMock.mock.calls.find(
             ([url, init]) => url === '/api/v1/devices/name' && init?.method === 'POST'
         );

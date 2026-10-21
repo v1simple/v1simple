@@ -2,7 +2,7 @@ import Foundation
 import CoreBluetooth
 import XCTest
 
-private final class Fixture {
+final class Fixture {
     let peripheral: V1Peripheral
     let manager: CBPeripheralManager
     let first = CBCentral()
@@ -440,6 +440,349 @@ final class PeripheralLifecycleTests: XCTestCase {
 
 }
 
-let suite = XCTestSuite(forTestCaseClass: PeripheralLifecycleTests.self)
+// Real Player -> packet plan -> Peripheral -> Session, with only the Bluetooth
+// framework replaced. Firmware START admission is modeled below: the central
+// cannot issue it until this subscription has accepted a canonical idle ID31.
+private final class PlaybackFixture {
+    let transport = Fixture()
+    let player: Player
+    private let lock = NSLock()
+    private var requested: [ReplayStimulusEvent] = []
+    private var accepted: [ReplayNotificationEvent] = []
+    var onSample: ((Int) -> Void)?
+
+    init(muted: [Bool], gap: Double = 0.04, loop: Bool = false, managed: Bool = false,
+         idleTail: Double = 0) {
+        let encounter = Encounter(origin: .externalInput, samples: muted.enumerated().map {
+            TimedSample(offset: Double($0.offset) * gap, phase: "test", muted: $0.element,
+                        alerts: [ReplayAlert(band: .ka, frequencyMHz: 34_700, strength: 3,
+                                             direction: .front, isPriority: true)], sourceIndex: $0.offset)
+        })
+        var options = Player.Options()
+        options.idleLead = 0
+        options.idleTail = idleTail
+        options.idleHz = 20
+        options.loop = loop
+        options.waitForAlertData = managed
+        options.quietAfterComplete = true
+        player = Player(encounter: encounter, peripheral: transport.peripheral, options: options)
+        player.onStimulusRequested = { [weak self] event in
+            guard let self else { return }
+            self.lock.lock()
+            self.requested.append(event)
+            let count = self.requested.count
+            self.lock.unlock()
+            self.onSample?(count)
+        }
+        transport.peripheral.onNotificationEvent = { [weak self] event in
+            guard let self, event.state == "notification_accepted" else { return }
+            self.lock.lock(); self.accepted.append(event); self.lock.unlock()
+        }
+        // Match main.swift's actual command wiring.
+        transport.peripheral.onMuteCommand = { [weak player] in player?.setMuteOverride($0) }
+    }
+
+    var events: [ReplayStimulusEvent] {
+        lock.lock(); defer { lock.unlock() }; return requested
+    }
+
+    func subscribe(_ central: CBCentral, channels: [String] = [V1.displayShortUUID]) {
+        transport.peripheral.queue.sync { for channel in channels { transport.subscribe(central, to: channel) } }
+    }
+
+    func startOrdinary() {
+        subscribe(transport.first)
+        transport.peripheral.queue.sync { transport.write(transport.first, id: 0x41) }
+        player.start()
+    }
+
+    func baselineCount(_ central: CBCentral, muted: Bool = false) -> Int {
+        let packet = V1.PlaybackPacketPlan.idleDisplayPacket(
+            controlState: transport.peripheral.controlState, displayOn: true, muted: muted)
+        return transport.peripheral.queue.sync { transport.received(central).filter { $0 == packet }.count }
+    }
+
+    @discardableResult
+    func admitStart(_ central: CBCentral) -> Bool {
+        guard baselineCount(central) > 0 else { return false }
+        transport.peripheral.queue.sync { transport.write(central, id: 0x41) }
+        return transport.peripheral.alertDataRequested
+    }
+
+    func stop() {
+        player.stop()
+        Thread.sleep(forTimeInterval: 0.06)
+        transport.drain()
+        onSample = nil
+    }
+
+    func assertRequestedBytesAccepted(file: StaticString = #filePath, line: UInt = #line) {
+        transport.drain()
+        lock.lock(); let delivery = accepted; let samples = requested; lock.unlock()
+        for sample in samples {
+            let actual = delivery.filter { $0.stimulusSequence == sample.stimulusSequence }
+            XCTAssertEqual(actual.map(\.emissionOrdinal), sample.notifications.map { Optional($0.ordinal) },
+                           file: file, line: line)
+            XCTAssertEqual(actual.map(\.payloadHex), sample.notifications.map(\.bytesHex), file: file, line: line)
+        }
+        // Also compare the owner's acceptance witness to the software adapter's
+        // actual payloads, including baseline and clear packets outside samples.
+        let adapter = transport.peripheral.queue.sync {
+            transport.manager.notifications.map { $0.bytes.map { String(format: "%02X", $0) }.joined() }
+        }
+        XCTAssertEqual(delivery.map(\.payloadHex), adapter, file: file, line: line)
+    }
+}
+
+final class PlayerLifecycleTests: XCTestCase {
+    @discardableResult
+    private func until(_ description: String, timeout: Double = 2,
+                       file: StaticString = #filePath, line: UInt = #line,
+                       condition: () -> Bool) -> Bool {
+        let deadline = nowSeconds() + timeout
+        while !condition() && nowSeconds() < deadline { Thread.sleep(forTimeInterval: 0.002) }
+        let result = condition()
+        XCTAssertTrue(result, description, file: file, line: line)
+        return result
+    }
+
+    @objc func testInitialAndReplacementStartRequireCanonicalBaselineAndFreezeDeadline() {
+        for channels in [[V1.displayShortUUID], [V1.displayShortUUID, V1.displayLongUUID, V1.notifyAltUUID]] {
+            let f = PlaybackFixture(muted: [false, false, false], gap: 0.6, managed: true)
+            defer { f.stop() }
+            f.subscribe(f.transport.first, channels: channels)
+            XCTAssertFalse(f.admitStart(f.transport.first), "START is held until canonical ID31")
+            f.player.start()
+            guard until("initial ID31", condition: { f.baselineCount(f.transport.first) > 0 }) else { continue }
+            Thread.sleep(forTimeInterval: 0.12)
+            XCTAssertTrue(f.events.isEmpty)
+            XCTAssertEqual(f.player.currentIndex, 0)
+            XCTAssertLessThanOrEqual(f.baselineCount(f.transport.first), 4, "baseline cadence must be bounded")
+            XCTAssertTrue(f.admitStart(f.transport.first))
+            guard until("first authored sample", condition: { f.player.currentIndex == 1 }) else { continue }
+            Thread.sleep(forTimeInterval: 0.10)
+            let lostAt = hostMonotonicNanoseconds()
+            f.transport.peripheral.queue.sync {
+                for (index, channel) in channels.enumerated() {
+                    f.transport.unsubscribe(f.transport.first, from: channel)
+                    XCTAssertEqual(f.transport.peripheral.alertDataRequested, index < channels.count - 1,
+                                   "only the final channel departure clears START")
+                }
+            }
+            guard until("recovery wait", condition: { f.player.snapshot.phase == .waiting }) else { continue }
+            Thread.sleep(forTimeInterval: 0.12)
+            XCTAssertFalse(f.admitStart(f.transport.second))
+            f.subscribe(f.transport.second, channels: channels)
+            guard until("replacement subscription must receive ID31", condition: { f.baselineCount(f.transport.second) > 0 }) else { continue }
+            Thread.sleep(forTimeInterval: 0.12)
+            XCTAssertEqual(f.player.currentIndex, 1)
+            XCTAssertEqual(f.events.count, 1, "waiting cannot advance the authored encounter")
+            XCTAssertLessThanOrEqual(f.baselineCount(f.transport.second), 4)
+            XCTAssertTrue(f.admitStart(f.transport.second))
+            let restoredAt = hostMonotonicNanoseconds()
+            guard until("pending and following samples", condition: { f.events.count == 3 }) else { continue }
+            f.stop()
+            let events = f.events
+            XCTAssertEqual(events.map(\.sourceIndex), [0, 1, 2])
+            let frozenGap = Double(events[1].intendedHostMonotonicNs - events[0].intendedHostMonotonicNs) / 1e9
+            XCTAssertGreaterThanOrEqual(frozenGap, 0.6 + Double(restoredAt - lostAt) / 1e9 - 0.04)
+            XCTAssertEqual(Double(events[2].intendedHostMonotonicNs - events[1].intendedHostMonotonicNs) / 1e9,
+                           0.6, accuracy: 0.000001, "recovery must not introduce catch-up samples")
+            f.assertRequestedBytesAccepted()
+        }
+    }
+
+    @objc func testRecoveryWaitHonorsRestartSeekAndStop() {
+        for action in ["restart", "seek", "stop"] {
+            let f = PlaybackFixture(muted: [false, false, false, false], gap: 0.3, managed: true)
+            defer { f.stop() }
+            f.startOrdinary()
+            guard until("initial sample", condition: { f.player.currentIndex == 1 }) else { continue }
+            f.transport.peripheral.queue.sync { f.transport.unsubscribe(f.transport.first) }
+            guard until("readiness lost", condition: { f.player.snapshot.phase == .waiting }) else { continue }
+            if action == "restart" { f.player.restart() }
+            else if action == "seek" { f.player.seek(to: 2) }
+            else { f.player.stop() }
+            if action != "stop" {
+                guard until("transport control consumed while disconnected", condition: {
+                    f.player.currentIndex == (action == "seek" ? 2 : 0)
+                }) else { continue }
+            }
+            f.subscribe(f.transport.second)
+            if action == "stop" {
+                Thread.sleep(forTimeInterval: 0.12)
+                XCTAssertEqual(f.baselineCount(f.transport.second), 0)
+                XCTAssertEqual(f.events.count, 1)
+            } else {
+                guard until("controlled recovery baseline", condition: { f.baselineCount(f.transport.second) > 0 }) else { continue }
+                XCTAssertTrue(f.admitStart(f.transport.second))
+                guard until("controlled recovery sample", condition: { f.events.count >= 2 }) else { continue }
+                XCTAssertEqual(f.events[1].sourceIndex, action == "seek" ? 2 : 0)
+            }
+            f.stop()
+            f.assertRequestedBytesAccepted()
+        }
+    }
+
+    @objc func testStoppedPeripheralCannotReceiveAdmissionTraffic() {
+        let f = PlaybackFixture(muted: [false, false], gap: 0.3, managed: true)
+        defer { f.stop() }
+        f.startOrdinary()
+        guard until("initial sample", condition: { f.player.currentIndex == 1 }) else { return }
+        f.transport.peripheral.stop()
+        guard until("stopped transport wait", condition: { f.player.snapshot.phase == .waiting }) else { return }
+        let count = f.transport.peripheral.queue.sync { f.transport.manager.notifications.count }
+        Thread.sleep(forTimeInterval: 0.15)
+        XCTAssertEqual(f.events.count, 1)
+        XCTAssertEqual(f.transport.peripheral.queue.sync { f.transport.manager.notifications.count }, count)
+        XCTAssertEqual(f.transport.manager.invalidOperations, [])
+    }
+
+    @objc func testAuthoredMuteLoopsDoNotCreateExternalOverrides() {
+        for authored in [[false, true], [false, true, false], [false, false], [true, true]] {
+            let f = PlaybackFixture(muted: authored, loop: true)
+            defer { f.stop() }
+            let count = authored.count * 3
+            f.onSample = { if $0 == count { f.player.stop() } }
+            f.startOrdinary()
+            guard until("three authored passes", condition: { f.events.count == count }) else { continue }
+            f.stop()
+            XCTAssertEqual(f.events.map(\.expected.muted), Array(repeating: authored, count: 3).flatMap { $0 })
+            XCTAssertNil(f.player.snapshot.muteOverride, "authored state must not become a command override")
+            f.assertRequestedBytesAccepted()
+        }
+    }
+
+    @objc func testAuthoredMuteRebasesOnRestartAndBackwardOrForwardSeek() {
+        for action in ["restart", "backward", "forward"] {
+            let f = PlaybackFixture(muted: [false, false, true, true, false], gap: 0.04)
+            defer { f.stop() }
+            f.onSample = { count in
+                if count == 3 {
+                    if action == "restart" { f.player.restart() }
+                    else { f.player.seek(to: action == "backward" ? 1 : 4) }
+                }
+                if count == 4 { f.player.stop() }
+            }
+            f.startOrdinary()
+            guard until("repositioned authored sample", condition: { f.events.count == 4 }) else { continue }
+            f.stop()
+            XCTAssertEqual(f.events.map(\.sourceIndex), [0, 1, 2, action == "restart" ? 0 : action == "backward" ? 1 : 4])
+            XCTAssertEqual(f.events.map(\.expected.muted), [false, false, true, false])
+            f.assertRequestedBytesAccepted()
+        }
+    }
+
+    @objc func testIdleTailRetainsAuthoredMuteUntilTheNextPass() {
+        let f = PlaybackFixture(muted: [false, true], loop: true, idleTail: 0.12)
+        defer { f.stop() }
+        f.onSample = { if $0 == 3 { f.player.stop() } }
+        f.startOrdinary()
+        guard until("next pass after muted idle tail", condition: { f.events.count == 3 }) else { return }
+        f.stop()
+        XCTAssertGreaterThan(f.baselineCount(f.transport.first, muted: true), 0,
+                             "idle tail must report the last authored state")
+        XCTAssertEqual(f.events.map(\.expected.muted), [false, true, false])
+        f.assertRequestedBytesAccepted()
+    }
+
+    @objc func testDUTAndManualCommandsPersistBetweenAuthoredEdges() {
+        for dut in [false, true] {
+            let f = PlaybackFixture(muted: [false, false, true, true, false, false])
+            defer { f.stop() }
+            f.onSample = { count in
+                if count == 1 || count == 3 {
+                    let muted = count == 1
+                    if dut {
+                        f.transport.peripheral.queue.sync {
+                            f.transport.write(f.transport.first, id: muted ? 0x34 : 0x35)
+                        }
+                    } else { f.player.setMuteOverride(muted) }
+                }
+                if count == 6 { f.player.stop() }
+            }
+            f.startOrdinary()
+            guard until("command and checkpoint precedence", condition: { f.events.count == 6 }) else { continue }
+            f.stop()
+            XCTAssertEqual(f.events.map(\.expected.muted), [false, true, true, false, false, false])
+            f.assertRequestedBytesAccepted()
+        }
+    }
+
+    @objc func testExternalMuteSurvivesLoopRestartAndSeekUntilAnAuthoredEdge() {
+        for dut in [false, true] {
+            for action in ["loop", "restart", "seek"] {
+                let f = PlaybackFixture(muted: [false, false, true, true], loop: true)
+                defer { f.stop() }
+                f.onSample = { count in
+                    if count == 3 {
+                        if dut {
+                            f.transport.peripheral.queue.sync { f.transport.write(f.transport.first, id: 0x35) }
+                        } else { f.player.setMuteOverride(false) }
+                    }
+                    if count == 4 {
+                        if action == "restart" { f.player.restart() }
+                        else if action == "seek" { f.player.seek(to: 1) }
+                    }
+                    if count == (action == "seek" ? 6 : 7) { f.player.stop() }
+                }
+                f.startOrdinary()
+                let count = action == "seek" ? 6 : 7
+                guard until("command retained across reposition", condition: { f.events.count == count }) else { continue }
+                f.stop()
+                XCTAssertEqual(f.events.map(\.expected.muted),
+                               action == "seek" ? [false, false, true, false, false, true]
+                                                : [false, false, true, false, false, false, true])
+                f.assertRequestedBytesAccepted()
+            }
+        }
+    }
+
+    @objc func testExternalMuteOnSurvivesRepositionWithoutAuthoredEdges() {
+        for dut in [false, true] {
+            for action in ["loop", "restart", "seek"] {
+                let f = PlaybackFixture(muted: [false, false], loop: true)
+                defer { f.stop() }
+                f.onSample = { count in
+                    if count == 1 {
+                        if dut {
+                            f.transport.peripheral.queue.sync { f.transport.write(f.transport.first, id: 0x34) }
+                        } else { f.player.setMuteOverride(true) }
+                    }
+                    if count == 2 {
+                        if action == "restart" { f.player.restart() }
+                        else if action == "seek" { f.player.seek(to: 1) }
+                    }
+                    if count == 4 { f.player.stop() }
+                }
+                f.startOrdinary()
+                guard until("external ON survives reposition", condition: { f.events.count == 4 }) else { continue }
+                f.stop()
+                XCTAssertEqual(f.events.map(\.expected.muted), [false, true, true, true])
+                XCTAssertEqual(f.player.snapshot.muteOverride, true)
+                f.assertRequestedBytesAccepted()
+            }
+        }
+    }
+
+    @objc func testManualToggleCanReleaseOverrideBackToAuthoredMute() {
+        let f = PlaybackFixture(muted: [true, true, true, true])
+        defer { f.stop() }
+        f.onSample = { count in
+            if count < 4 { f.player.toggleMuteOverride() }
+            else { f.player.stop() }
+        }
+        f.startOrdinary()
+        guard until("manual toggle ownership", condition: { f.events.count == 4 }) else { return }
+        f.stop()
+        XCTAssertEqual(f.events.map(\.expected.muted), [true, true, false, true])
+        XCTAssertNil(f.player.snapshot.muteOverride)
+        f.assertRequestedBytesAccepted()
+    }
+}
+
+let suite = XCTestSuite(name: "Replay software transport")
+suite.addTest(XCTestSuite(forTestCaseClass: PeripheralLifecycleTests.self))
+suite.addTest(XCTestSuite(forTestCaseClass: PlayerLifecycleTests.self))
 suite.run()
 exit(suite.testRun?.hasSucceeded == true ? 0 : 1)

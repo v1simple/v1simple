@@ -24,7 +24,7 @@ void PowerModule::performShutdown() {
     }
 
     if (battery_) {
-        Serial.printf("[Power] Shutdown handoff: source=%s\n", battery_->isOnBattery() ? "battery" : "external");
+        Serial.printf("[Power] Shutdown handoff: source=%s\n", battery_source_policy::sourceName(battery_->powerSource()));
 #ifdef UNIT_TEST
         if (shutdownHandoffObserverForTest_) {
             shutdownHandoffObserverForTest_(shutdownHandoffObserverContextForTest_);
@@ -126,7 +126,7 @@ void PowerModule::restoreCriticalBatteryWarning() {
 void PowerModule::logStartupStatus() {
     if (!battery_)
         return;
-    Serial.printf("[Battery] Power source: %s\n", battery_->isOnBattery() ? "BATTERY" : "USB");
+    Serial.printf("[Battery] Power source: %s\n", battery_source_policy::sourceName(battery_->powerSource()));
     Serial.printf("[Battery] Icon display: %s\n", battery_->hasBattery() ? "YES" : "NO");
     if (battery_->hasBattery()) {
         Serial.printf("[Battery] Voltage: %dmV (%d%%)\n", battery_->getVoltageMillivolts(), battery_->getPercentage());
@@ -181,9 +181,9 @@ void PowerModule::reevaluateAutoPowerOffTimer(const V1Settings& s, unsigned long
     (void)s;
     (void)nowMs;
 #else
-    if (v1SignalPresent_ || alpSignalPresent_) {
+    if (s.autoPowerOffMinutes == 0 || v1SignalPresent_ || alpSignalPresent_) {
         if (autoPowerOffTimerRunning_) {
-            Serial.println("[AutoPowerOff] Timer cancelled - activity resumed");
+            Serial.println("[AutoPowerOff] Timer cancelled - disabled or activity resumed");
             autoPowerOffTimerRunning_ = false;
             autoPowerOffTimerStart_ = 0;
         }
@@ -249,6 +249,9 @@ void PowerModule::process(unsigned long nowMs) {
     // Auto power-off is disabled in car installs. Ignition power controls the
     // device lifetime, so no signal transition may tear down a still-running unit.
     const V1Settings& s = settings_->get();
+    // Deferred recovery can enable auto-off after the last presence edge.
+    // Reconcile without renewing an already-running interval on every tick.
+    reevaluateAutoPowerOffTimer(s, nowMs);
     if (autoPowerOffTimerRunning_) {
         unsigned long elapsedMs = nowMs - autoPowerOffTimerStart_;
         unsigned long timeoutMs = (unsigned long)s.autoPowerOffMinutes * 60UL * 1000UL;

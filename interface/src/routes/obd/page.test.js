@@ -129,7 +129,7 @@ describe('obd route page', () => {
         unmount();
     });
 
-    it('confirms the submitted OBD name when the input changes during a pending save', async () => {
+    it('preserves a later OBD rename draft while confirming only the submitted name', async () => {
         let resolveRename;
         const pendingRename = new Promise((resolve) => {
             resolveRename = resolve;
@@ -148,8 +148,8 @@ describe('obd route page', () => {
 
         resolveRename(jsonResponse({ success: true }));
         await screen.findByText('OBD device name saved.');
-        expect(screen.getByText('Submitted name')).toBeInTheDocument();
-        expect(screen.queryByText('Later edit')).not.toBeInTheDocument();
+        expect(screen.getByRole('textbox')).toHaveValue('Later edit');
+        expect(screen.getByRole('button', { name: /^save$/i })).toBeEnabled();
         const posts = fetchMock.mock.calls.filter(([url]) => url === '/api/obd/devices/name');
         expect(posts).toHaveLength(1);
         expect(posts[0][1].body.get('name')).toBe('Submitted name');

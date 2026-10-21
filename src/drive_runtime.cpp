@@ -695,15 +695,19 @@ DriveRuntime::DisplayEdges DriveRuntime::consumeDisplayEdges() {
     return edges;
 }
 
-void DriveRuntime::presentDisplay(const DisplayEdges& edges, bool overloadThisLoop) {
+bool DriveRuntime::processParsedPolicies(const DisplayEdges& edges) {
     quiet_.setInTheBoxSuspended(autoPush_.isActive() ||
                                 settingsOperations_.requiresExclusiveDetectorAdmission());
     DisplayOrchestrationParsedContext parsedContext;
     parsedContext.nowMs = edges.nowMs;
     parsedContext.parsedReady = edges.parsedReady;
     parsedContext.bootSplashHoldActive = state_.bootSplashHoldActive;
+    return displayOrchestration_.processParsedFrame(parsedContext);
+}
+
+void DriveRuntime::presentDisplay(const DisplayEdges& edges, bool overloadThisLoop) {
     bool pipelineRan = false;
-    if (displayOrchestration_.processParsedFrame(parsedContext)) {
+    if (processParsedPolicies(edges)) {
         displayPipeline_.handleParsed(edges.nowMs);
         pipelineRan = true;
     }
@@ -1096,7 +1100,22 @@ void DriveRuntime::tick() {
 }
 
 bool DriveRuntime::preparePersistenceForShutdownPhase() {
-    return preparePersistenceForShutdown(events_, health_, settings_);
+    // Wait for competing writers to release storage before the final snapshot
+    // write. Physical shutdown remains non-vetoing; failures withhold only the
+    // clean marker and leave pending state available if the hardware tail aborts.
+    if (!preparePersistenceForShutdown(events_, health_, settings_)) return false;
+    if (!devices_.hasPendingSave()) return true;
+    bool devicesCommitted = false;
+    if (storage_.isSDCard()) {
+        StorageManager::SDTryLock lock(storage_.getSDMutex(), /*checkDmaHeap=*/false);
+        devicesCommitted = lock && devices_.flushPendingSave();
+    } else {
+        devicesCommitted = devices_.flushPendingSave();
+    }
+    if (!devicesCommitted) {
+        Serial.println("[Battery] ERROR: Final detector snapshot commit failed; shutdown remains unclean");
+    }
+    return devicesCommitted;
 }
 
 void DriveRuntime::disconnectDriveBleForShutdown() {

@@ -332,6 +332,10 @@ WifiStatusApiService::StatusRuntime WiFiManager::makeStatusRuntime() {
         mergeStatus2Ctx_,
         mergeAlert_,
         mergeAlertCtx_,
+        [](void* ctx) {
+            return battery_source_policy::sourceName(static_cast<WiFiManager*>(ctx)->battery_->powerSource());
+        },
+        this,
     };
 }
 

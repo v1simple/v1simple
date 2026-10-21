@@ -96,9 +96,9 @@ BleBondBackupStatus readBleBondBackup(fs::FS& fs, const char* path, BondBackupCo
 
     const size_t expectedSize = sizeof(BondBackupHeader) + header.ourSecCount * sizeof(struct ble_store_value_sec) +
                                 header.peerSecCount * sizeof(struct ble_store_value_sec);
-    if (fileSize < expectedSize) {
+    if (fileSize != expectedSize) {
         file.close();
-        Serial.println("[BLE] Bond backup file truncated");
+        Serial.println("[BLE] Bond backup size does not match record counts");
         return BleBondBackupStatus::Invalid;
     }
 

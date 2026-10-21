@@ -141,8 +141,11 @@ void test_14seg_space_and_unknown_return_zero() {
     TEST_ASSERT_EQUAL(0, get14SegPattern('Z'));
 }
 
-void test_char14_map_size_is_29() {
-    TEST_ASSERT_EQUAL_INT(29, CHAR14_MAP_SIZE);
+void test_14seg_alp_G_and_Y_have_distinct_recognizable_strokes() {
+    TEST_ASSERT_EQUAL_UINT16(S14_TOP | S14_TL | S14_BL | S14_BOT | S14_BR | S14_MR, get14SegPattern('G'));
+    TEST_ASSERT_EQUAL_UINT16(get14SegPattern('G'), get14SegPattern('g'));
+    TEST_ASSERT_EQUAL_UINT16(S14_DTL | S14_DTR | S14_CB, get14SegPattern('Y'));
+    TEST_ASSERT_EQUAL_UINT16(get14SegPattern('Y'), get14SegPattern('y'));
 }
 
 int main(int argc, char** argv) {
@@ -167,7 +170,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_14seg_lowercase_e_matches_uppercase_E);
     RUN_TEST(test_14seg_photo_labels_have_no_blank_glyphs);
     RUN_TEST(test_14seg_space_and_unknown_return_zero);
-    RUN_TEST(test_char14_map_size_is_29);
+    RUN_TEST(test_14seg_alp_G_and_Y_have_distinct_recognizable_strokes);
 
     return UNITY_END();
 }

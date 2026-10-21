@@ -137,6 +137,7 @@ class DriveRuntime final : public PowerLifecycle, public ConnectionCycleLifecycl
     bool powerAlertPresentationNeedsRestore() const;
     void servicePowerAlertPresentation(uint32_t nowMs, bool liveAlertPresentation);
     DisplayEdges consumeDisplayEdges();
+    bool processParsedPolicies(const DisplayEdges& edges);
     void presentDisplay(const DisplayEdges& edges, bool overloadThisLoop);
     DriveLoopDispatch processConnectionDispatch(bool powerPresentationOwned);
     void processPeriodicMaintenance(uint32_t nowMs, bool bleConnected, bool bleBackpressure,

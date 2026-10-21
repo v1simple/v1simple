@@ -210,7 +210,6 @@ void SettingsManager::begin() {
     }
 
     load();
-    resolveWifiCredentialTransaction();
 
     // Note: SD card may not be mounted yet during begin().
     // checkAndRestoreFromSD() should be called after storage is ready.

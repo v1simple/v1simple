@@ -76,7 +76,10 @@ final class Player {
     private var _seekRequest: Int? = nil
     private var _restartRequested = false
     private var _stopped = false
+    // Only deliberate DUT/console commands own this override. Authored mute
+    // belongs to the current sample, including after loop/restart/seek.
     private var _muteOverride: Bool? = nil
+    private var _authoredMuted = false
     private var _displayOn = true
     private var _packetsSent = 0
     private var _lastBars = 0
@@ -326,30 +329,26 @@ final class Player {
             _phase = .waiting
         }
         lock.unlock()
-        let idleIntervalNs = replayIntervalNanoseconds(1.0 / max(0.5, options.idleHz))
         var nextIdleFrameNs: UInt64 = 0
         while !isStopped {
             if transportReady() { return }
+            seedAlertRequest(nextIdleFrameNs: &nextIdleFrameNs)
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+    }
 
-            // A physical V1 emits infDisplayData before alert-table streaming
-            // is requested. That packet starts the accessory time slices and
-            // is what permits v1simple to send reqStartAlertData. Keep the
-            // authored encounter stopped, but model that baseline display
-            // traffic so managed playback cannot deadlock at connection time.
-            let awaitingAlertRequest = options.waitForAlertData
-                && options.sendAlerts
-                && peripheral.displaySubscribed
-                && !peripheral.alertDataRequested
-            if awaitingAlertRequest {
-                let nowNs = hostMonotonicNanoseconds()
-                if nextIdleFrameNs == 0 || nowNs >= nextIdleFrameNs {
-                    sendIdleFrame()
-                    nextIdleFrameNs = advanceReplayDeadline(nowNs, by: idleIntervalNs)
-                }
-                Thread.sleep(forTimeInterval: 0.01)
-            } else {
-                Thread.sleep(forTimeInterval: 0.05)
-            }
+    /// A physical V1 emits ID31 before START to grant the accessory time slice.
+    /// The same admission is needed after the last subscription leaves and a
+    /// replacement session clears START. Keep this traffic outside the authored
+    /// timeline and bound it to the configured idle cadence in both waits.
+    private func seedAlertRequest(nextIdleFrameNs: inout UInt64) {
+        guard options.waitForAlertData, options.sendAlerts,
+              peripheral.displaySubscribed, !peripheral.alertDataRequested else { return }
+        let nowNs = hostMonotonicNanoseconds()
+        if nextIdleFrameNs == 0 || nowNs >= nextIdleFrameNs {
+            sendIdleFrame()
+            let interval = replayIntervalNanoseconds(1.0 / max(0.5, options.idleHz))
+            nextIdleFrameNs = advanceReplayDeadline(nowNs, by: interval)
         }
     }
 
@@ -397,7 +396,7 @@ final class Player {
 
     private func sendIdleFrame() {
         lock.lock()
-        let muted = _muteOverride ?? false
+        let muted = _muteOverride ?? _authoredMuted
         let displayOn = _displayOn
         lock.unlock()
         let control = peripheral.controlState
@@ -514,13 +513,15 @@ final class Player {
 
         let muteCheckpoint = encounter.detectorMuteCheckpoint(at: index)
         lock.lock()
-        // A physical detector mute edge updates the live modeled state once.
-        // Held samples then observe later V1Simple commands instead of forcing
-        // the scenario value on every frame.
-        if let muteCheckpoint = muteCheckpoint {
-            _muteOverride = muteCheckpoint.muted
+        // An authored edge takes ownership once; later commands remain in force
+        // between edges. Do not store authored state as an external override:
+        // replaying or seeking to an earlier held sample must use that sample's
+        // authored value unless a deliberate command still owns mute.
+        _authoredMuted = authoredSample.muted
+        if muteCheckpoint != nil {
+            _muteOverride = nil
         }
-        let muted = _muteOverride ?? authoredSample.muted
+        let muted = _muteOverride ?? _authoredMuted
         let displayOn = _displayOn
         lock.unlock()
         if let muteCheckpoint = muteCheckpoint {
@@ -621,6 +622,7 @@ final class Player {
                 // ready. Catching up would omit alert tables and make the
                 // expected CSV diverge from what the firmware actually saw.
                 let readinessLostAt = hostMonotonicNanoseconds()
+                var nextIdleFrameNs: UInt64 = 0
                 setPhase(.waiting)
                 while !isStopped && !transportReady() {
                     if consumeRestart() {
@@ -637,7 +639,8 @@ final class Player {
                         )
                         return .seek
                     }
-                    Thread.sleep(forTimeInterval: 0.02)
+                    seedAlertRequest(nextIdleFrameNs: &nextIdleFrameNs)
+                    Thread.sleep(forTimeInterval: 0.01)
                 }
                 deadline = advanceReplayDeadline(
                     deadline,
@@ -706,6 +709,7 @@ final class Player {
         lock.lock()
         _index = 0
         _elapsed = 0
+        _authoredMuted = false
         lock.unlock()
     }
 
@@ -738,6 +742,7 @@ final class Player {
             _restartRequested = false
             _index = 0
             _elapsed = 0
+            _authoredMuted = false
             return true
         }
         return false

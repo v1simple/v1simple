@@ -684,6 +684,93 @@ void test_restore_valid_empty_live_does_not_resurrect_previous_bonds() {
     TEST_ASSERT_TRUE(gRestoredSecs.empty());
 }
 
+void test_decreased_bond_counts_restore_previous_before_new_pairing_and_reboot() {
+    for (bool peerCount : {false, true}) {
+        if (peerCount) { tearDown(); setUp(); }
+        if (peerCount) {
+            gOurSecs = {makeSec(5)};
+            TEST_ASSERT_EQUAL_INT(1, enqueueCurrentBleBondBackupSnapshot());
+            TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
+            // Keep the older valid generation while writing a peer-only live.
+            gOurSecs.clear();
+            gPeerSecs = {makeSec(21)};
+            fs::mock_fail_next_remove(kTestBondPrevious);
+            TEST_ASSERT_EQUAL_INT(1, enqueueCurrentBleBondBackupSnapshot());
+            TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
+        } else seedBondRecovery(false);
+        {
+            std::fstream file(bondPath(), std::ios::binary | std::ios::in | std::ios::out);
+            TEST_ASSERT_TRUE(file.is_open());
+            const uint32_t zero = 0;
+            file.seekp(peerCount ? offsetof(BondBackupHeader, peerSecCount) : offsetof(BondBackupHeader, ourSecCount));
+            file.write(reinterpret_cast<const char*>(&zero), sizeof(zero));
+        }
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(BleBondBackupStatus::Invalid),
+                             static_cast<int>(inspectBleBondBackup(gFs, kTestBondPath)));
+        clearBondNvsForRestore();
+        gModelBondPersistence = true;
+        initializeBleBondRecovery();
+        restoreOrBackupBleBondsAtBoot(storage, 0);
+        TEST_ASSERT_EQUAL_UINT(1, gDurableOurSecs.size());
+        TEST_ASSERT_EQUAL_UINT8(5, gDurableOurSecs[0].peer_addr[0]);
+        TEST_ASSERT_TRUE(gDurablePeerSecs.empty());
+        TEST_ASSERT_FALSE(bleBondRecoveryPending());
+
+        const auto paired = makeSec(31);
+        TEST_ASSERT_EQUAL_INT(0, ble_store_write_our_sec(&paired));
+        TEST_ASSERT_EQUAL_INT(2, enqueueCurrentBleBondBackupSnapshot());
+        TEST_ASSERT_TRUE(runBleBondBackupWriterOnceForTest());
+        TEST_ASSERT_EQUAL_UINT32(2, readHeader().ourSecCount);
+        TEST_ASSERT_FALSE(gFs.exists(kTestBondPrevious));
+        // The replacement backup must contain both the recovered and new pair.
+        clearBondNvsForRestore();
+        gDurableOurSecs.clear();
+        initializeBleBondRecovery();
+        restoreOrBackupBleBondsAtBoot(storage, 0);
+        TEST_ASSERT_EQUAL_UINT(2, gDurableOurSecs.size());
+        TEST_ASSERT_EQUAL_UINT8(5, gDurableOurSecs[0].peer_addr[0]);
+        TEST_ASSERT_EQUAL_UINT8(31, gDurableOurSecs[1].peer_addr[0]);
+    }
+}
+
+void test_bond_fixed_format_rejects_extra_bytes_and_count_length_mismatches() {
+    for (int corruption = 0; corruption < 5; ++corruption) {
+        if (corruption) { tearDown(); setUp(); }
+        seedBondRecovery(false);
+        if (corruption == 0) {
+            std::ofstream file(bondPath(), std::ios::binary | std::ios::app);
+            file.put('x');
+        } else if (corruption == 1) {
+            std::filesystem::resize_file(bondPath(), std::filesystem::file_size(bondPath()) - 1u);
+        } else {
+            std::fstream file(bondPath(), std::ios::binary | std::ios::in | std::ios::out);
+            const uint32_t count = corruption == 4 ? kMaxBleBondEntries + 1u : 2u;
+            file.seekp(corruption == 3 ? offsetof(BondBackupHeader, peerSecCount) : offsetof(BondBackupHeader, ourSecCount));
+            file.write(reinterpret_cast<const char*>(&count), sizeof(count));
+        }
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(BleBondBackupStatus::Invalid),
+                             static_cast<int>(inspectBleBondBackup(gFs, kTestBondPath)));
+        clearBondNvsForRestore();
+        expectRestoreAndNextBootSnapshot(5);
+    }
+}
+
+void test_count_corrupted_previous_is_not_used_when_live_is_missing() {
+    seedBondRecovery(false);
+    TEST_ASSERT_TRUE(gFs.remove(kTestBondPath));
+    {
+        std::fstream file(gRoot / "v1simple_ble_bonds.bin.prev", std::ios::binary | std::ios::in | std::ios::out);
+        const uint32_t zero = 0;
+        file.seekp(offsetof(BondBackupHeader, ourSecCount));
+        file.write(reinterpret_cast<const char*>(&zero), sizeof(zero));
+    }
+    clearBondNvsForRestore();
+    TEST_ASSERT_EQUAL_INT(-1, restoreBleBondBackup(gFs, kTestBondPath));
+    TEST_ASSERT_TRUE(gRestoredSecs.empty());
+    TEST_ASSERT_TRUE(gFs.exists(kTestBondPrevious));
+    TEST_ASSERT_EQUAL_UINT(0, bleBondBackupQueueDepthForTest());
+}
+
 namespace {
 void seedCompleteRecovery(bool previous = false) {
     gOurSecs = {makeSec(1), makeSec(11)};
@@ -950,6 +1037,9 @@ void test_queued_pre_recovery_snapshot_is_discarded_after_successful_restore() {
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_decreased_bond_counts_restore_previous_before_new_pairing_and_reboot);
+    RUN_TEST(test_bond_fixed_format_rejects_extra_bytes_and_count_length_mismatches);
+    RUN_TEST(test_count_corrupted_previous_is_not_used_when_live_is_missing);
     RUN_TEST(test_queued_pre_recovery_snapshot_is_discarded_after_successful_restore);
     RUN_TEST(test_recovery_at_capacity_keeps_all_durable_bonds_and_complete_backup);
     RUN_TEST(test_normal_store_overflow_retains_nimble_default_handling);

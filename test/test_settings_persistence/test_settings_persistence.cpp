@@ -71,6 +71,11 @@ void ObdRuntimeModule::begin(ObdBleClient*, bool enabled, const char* savedAddre
 #include "../../src/settings_backup.cpp"
 #include "../../src/settings_backup_doc.cpp"
 #include "../../src/settings_restore.cpp"
+
+bool wifiCredentialJournalPresent() {
+    return readWifiCredentialJournalStatus() != WifiCredentialJournalStatus::Absent;
+}
+
 #include "../../src/usb_profile_document.cpp"
 #include "../../src/modules/wifi/wifi_client_api_service.cpp"
 #include "../../src/modules/wifi/wifi_settings_api_service.cpp"
@@ -7893,6 +7898,9 @@ void test_wifi_unknown_journal_provenance_is_validated_and_legacy_journals_stay_
         prefs.end();
         single.oldPasswordUnknown = false;
         all.unknownPasswords = 0;
+        // A new serialization fixture needs a cleared transaction slot;
+        // production writers must never replace an unresolved ready journal.
+        TEST_ASSERT_TRUE(clearWifiCredentialJournal());
         TEST_ASSERT_TRUE(forget ? writeWifiForgetAllJournal(all) : writeWifiCredentialJournal(single));
         TEST_ASSERT_EQUAL_UINT8(0, mock_preferences::getUnsigned(WIFI_CLIENT_NS, kNvsWifiTxnUnknownPasswords, 9));
         TEST_ASSERT_TRUE(readJournal());
@@ -8050,9 +8058,18 @@ void test_settings_backup_replacement_preserves_valid_previous_across_errors_and
 #include "nvs_checked_load_tests.h"
 #include "journal_checked_size_tests.h"
 #include "wifi_restore_lifecycle_tests.h"
+#include "wifi_journal_discovery_tests.h"
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_wifi_http_three_unavailable_discovery_opens_preserve_prior_rollback);
+    RUN_TEST(test_wifi_http_two_unavailable_discovery_opens_still_block);
+    RUN_TEST(test_wifi_http_healthy_discovery_recovers_before_unrelated_edit);
+    RUN_TEST(test_wifi_set_delete_and_forget_preserve_journal_when_discovery_is_unavailable);
+    RUN_TEST(test_wifi_journal_ready_and_mode_read_errors_preserve_authority);
+    RUN_TEST(test_wifi_unknown_discovery_blocks_sd_recovery_and_backup_import);
+    RUN_TEST(test_wifi_journal_writers_cannot_replace_unresolved_authority);
+    RUN_TEST(test_wifi_legacy_missing_mode_and_proven_absence_keep_recovery_compatible);
     RUN_TEST(test_every_saved_nvs_field_defers_on_read_error_and_survives_retry_save_and_reboot);
     RUN_TEST(test_nvs_optional_presence_and_legacy_color_reads_are_checked);
     RUN_TEST(test_nvs_missing_optional_fields_keep_legacy_default_semantics);

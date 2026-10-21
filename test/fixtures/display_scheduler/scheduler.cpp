@@ -104,6 +104,7 @@ class DriveRuntime : public Runtime {
     void processObd(uint32_t, bool) {}
     void observeAlpProductState(uint32_t) {}
     void processAlpPresentationAndPower(uint32_t) {}
+    bool processParsedPolicies(const DisplayEdges&);
     void processGps(uint32_t) {}
     void processSpeed(uint32_t) {}
     void processSpeedAlert(uint32_t) {}

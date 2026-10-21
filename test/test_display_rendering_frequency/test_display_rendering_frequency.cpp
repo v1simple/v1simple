@@ -315,8 +315,29 @@ void test_unchanged_frequency_produces_no_paint_commands() {
     TEST_ASSERT_EQUAL_UINT(0u, canvas()->fillRectCalls.size());
 }
 
+void test_font_failure_paints_every_alp_and_photo_label_character() {
+    display.ut_fontMgr().segment7Ready = false;
+    // Production ALP/Photo abbreviations, including lowercase normalization.
+    for (const char* label : {"PL3", "drgEYE", "truSPd", "PL2", "ULtrLt", "StLr", "LALLY", "StLtH",
+                              "LASER", "MRCT", "3D", "3DHD", "HALO", "NK7", "EKIN", "RT4",
+                              "P8", "P9", "P10", "P11", "P12", "P13", "P14", "P15", "PHOTO", "SCAN"}) {
+        for (const char* ch = label; *ch; ++ch) {
+            display.ut_elementCaches().frequency.invalidate();
+            resetRecordedOutput();
+            const char glyph[] = {*ch, 0};
+            display.ut_drawFrequency(0, BAND_LASER, glyph);
+            const size_t strokes = canvas()->fillRoundRectCalls.size() + canvas()->drawLineCalls.size() +
+                                   canvas()->fillCircleCalls.size();
+            TEST_ASSERT_GREATER_THAN_UINT_MESSAGE(0, strokes, glyph);
+            TEST_ASSERT_EQUAL_STRING(glyph, display.ut_elementCaches().frequency.lastText);
+            TEST_ASSERT_EQUAL_INT(0, frequencyFont().printfCount);
+        }
+    }
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
+    RUN_TEST(test_font_failure_paints_every_alp_and_photo_label_character);
     RUN_TEST(test_parsed_k_frequency_is_handed_to_renderer_in_ghz_text);
     RUN_TEST(test_laser_zero_and_alp_presentations_are_distinct);
     RUN_TEST(test_priority_photo_type_replaces_numeric_frequency_with_its_compact_identity);

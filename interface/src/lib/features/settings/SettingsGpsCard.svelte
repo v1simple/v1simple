@@ -10,6 +10,7 @@
     let gpsBaud = $state(9600);
     let message = $state(null);
     let loaded = $state(false);
+    let saving = $state(false);
 
     onMount(() => {
         void (async () => {
@@ -32,6 +33,8 @@
     }
 
     async function saveField(fields) {
+        if (saving) return false;
+        saving = true;
         message = null;
         try {
             const res = await fetchWithTimeout('/api/gps/config', {
@@ -49,15 +52,19 @@
             message = { type: 'error', text: 'Connection error.' };
             await fetchGpsConfig();
             return false;
+        } finally {
+            saving = false;
         }
     }
 
     async function handleToggleEnabled(checked) {
+        if (saving) return;
         gpsEnabled = checked;
         await saveField({ gpsEnabled });
     }
 
     async function handleBaudChange(event) {
+        if (saving) return;
         gpsBaud = Number(event.currentTarget.value);
         await saveField({ gpsBaud });
     }
@@ -81,6 +88,7 @@
             <ToggleSetting
                 title="Enable GPS"
                 description="Activates the GPS module on Serial1 (RX=GPIO1, TX=GPIO5). EN pin not driven — module is always powered via internal pull-up."
+                disabled={saving}
                 checked={gpsEnabled}
                 onChange={handleToggleEnabled}
             />
@@ -92,6 +100,7 @@
                 <select
                     id="gps-baud"
                     class="select w-32"
+                    disabled={saving}
                     value={gpsBaud}
                     onchange={handleBaudChange}
                 >

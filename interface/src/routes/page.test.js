@@ -71,6 +71,31 @@ describe('dashboard route page', () => {
         unmount();
     });
 
+    it.each([
+        ['unknown', true, 'Power source unavailable'],
+        ['unknown', false, 'Power source unavailable'],
+        ['battery', false, 'On battery power'],
+        ['usb', true, 'External power'],
+        [undefined, true, 'On battery power'],
+        [undefined, false, 'External power']
+    ])('uses battery source %s ahead of legacy on_battery=%s', async (source, onBattery, expected) => {
+        installDefaultFetch([{
+            method: 'GET', match: '/api/status', respond: jsonResponse({
+                wifi: { sta_connected: false, ap_active: true },
+                maintenanceBoot: true,
+                battery: { has_battery: true, on_battery: onBattery, source,
+                    percentage: 75, voltage_mv: 3900 }
+            })
+        }]);
+        const { unmount } = render(Page);
+        const caption = await screen.findByText(new RegExp(expected));
+        expect(caption).toHaveTextContent(`${expected} • 3900 mV`);
+        if (source === 'unknown') {
+            expect(screen.queryByText(/On battery power|External power/)).not.toBeInTheDocument();
+        }
+        unmount();
+    });
+
     it('polls status every 3s through the shared runtime module', async () => {
         vi.useFakeTimers();
         const fetchMock = installDefaultFetch();

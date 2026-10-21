@@ -17,6 +17,13 @@
     } from '#lib/stores/deviceSettings.svelte.js';
     import { fetchJsonWithTimeout, fetchWithTimeout } from '#lib/utils/poll.js';
 
+    function batteryPowerSource(battery) {
+        if (battery.source === 'battery') return 'On battery power';
+        if (battery.source === 'usb') return 'External power';
+        if (battery.source !== undefined) return 'Power source unavailable';
+        return battery.on_battery ? 'On battery power' : 'External power';
+    }
+
     let modeLoaded = $state(false);
     let modeLoading = $state(false);
     let modeSaving = $state(false);
@@ -265,7 +272,7 @@
                     {#if $runtimeStatus.battery?.has_battery}
                         <div class="status-heading">{Math.round($runtimeStatus.battery.percentage || 0)}%</div>
                         <div class="copy-caption">
-                            {$runtimeStatus.battery.on_battery ? 'On battery power' : 'External power'}
+                            {batteryPowerSource($runtimeStatus.battery)}
                             {#if $runtimeStatus.battery.voltage_mv}• {$runtimeStatus.battery.voltage_mv} mV{/if}
                         </div>
                     {:else}

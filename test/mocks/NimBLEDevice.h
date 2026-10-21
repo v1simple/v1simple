@@ -267,7 +267,7 @@ public:
     }
     bool canWrite() const { return true; }
     bool canWriteNoResponse() const { return false; }
-    bool canNotify() const { return true; }
+    bool canNotify() const { return canNotify_; }
     bool canIndicate() const { return false; }
     bool unsubscribe() { return true; }
     bool subscribe(bool notify,
@@ -278,12 +278,13 @@ public:
             subscribeEntryHook_();
         }
         notify_ = notify;
-        callback_ = callback;
+        callback_ = subscribeResult_ ? callback : nullptr;
         return subscribeResult_;
     }
     NimBLEUUID getUUID() const { return NimBLEUUID(uuid_.c_str()); }
     NimBLERemoteDescriptor* getDescriptor(const NimBLEUUID&) { return nullptr; }
     void setSubscribeResult(bool ok) { subscribeResult_ = ok; }
+    void setCanNotify(bool value) { canNotify_ = value; }
     void setWriteValueResult(bool ok) { writeValueResult_ = ok; }
     void setWriteEntryHook(std::function<void()> hook) { writeEntryHook_ = std::move(hook); }
     void setSubscribeEntryHook(std::function<void()> hook) { subscribeEntryHook_ = std::move(hook); }
@@ -303,6 +304,7 @@ private:
     std::function<void()> subscribeEntryHook_;
     bool notify_ = true;
     bool subscribeResult_ = true;
+    bool canNotify_ = true;
     bool writeValueResult_ = true;
     uint32_t writeValueCalls_ = 0;
     std::vector<uint8_t> lastWriteValue_;

@@ -81,6 +81,7 @@ constexpr Char14Seg CHAR14_MAP[] = {
     {'C', S14_TOP | S14_TL | S14_BL | S14_BOT},
     {'D', S14_TOP | S14_TR | S14_BR | S14_BOT | S14_CT | S14_CB},
     {'E', S14_TOP | S14_TL | S14_ML | S14_BL | S14_BOT},
+    {'G', S14_TOP | S14_TL | S14_BL | S14_BOT | S14_BR | S14_MR},
     {'H', S14_TL | S14_TR | S14_ML | S14_MR | S14_BL | S14_BR},
     {'I', S14_TOP | S14_BOT | S14_CT | S14_CB},
     {'K', S14_TL | S14_BL | S14_DTR | S14_DBR},
@@ -93,6 +94,7 @@ constexpr Char14Seg CHAR14_MAP[] = {
     {'S', S14_TOP | S14_TL | S14_ML | S14_MR | S14_BR | S14_BOT},
     {'T', S14_TOP | S14_CT | S14_CB},
     {'U', S14_TL | S14_TR | S14_BL | S14_BR | S14_BOT},
+    {'Y', S14_DTL | S14_DTR | S14_CB},
     {'-', S14_ML | S14_MR},
     {'.', 0}, // dot handled separately
 };

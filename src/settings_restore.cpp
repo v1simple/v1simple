@@ -250,8 +250,7 @@ bool SettingsManager::checkAndRestoreFromSD() {
         profileReferenceRecoveryPending_ = true;
         return false;
     }
-    resolveWifiCredentialTransaction();
-    if (!resolveRestoreTransaction() || !resolveProfileDeleteTransaction()) {
+    if (!resolveWifiCredentialTransaction() || !resolveRestoreTransaction() || !resolveProfileDeleteTransaction()) {
         profileReferenceRecoveryPending_ = true;
         Serial.println("[Settings] Storage transaction recovery remains pending");
         return false;

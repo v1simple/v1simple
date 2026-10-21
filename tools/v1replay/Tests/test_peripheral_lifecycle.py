@@ -27,7 +27,7 @@ def main():
         subprocess.run(compiler + ["-emit-module", "-emit-library", "-module-name", "CoreBluetooth",
                        str(support / "CoreBluetooth.swift"), "-o", str(build / "libCoreBluetooth.dylib")],
                        cwd=build, env=env, check=True)
-        owners = ["Encounter", "Peripheral", "PlaybackPacketPlan", "ReplayEvidence",
+        owners = ["Encounter", "Peripheral", "Player", "PlaybackPacketPlan", "ReplayEvidence",
                   "ReplayStimulusEvent", "Session", "V1Protocol"]
         subprocess.run(compiler + ["-I", str(build), "-L", str(build), "-lCoreBluetooth",
                        "-I", str(test_libraries), "-L", str(test_libraries),

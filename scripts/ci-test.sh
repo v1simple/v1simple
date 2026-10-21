@@ -207,6 +207,8 @@ run_step "Settings Apply lifecycle" python3 scripts/test_settings_apply_lifecycl
 run_step "Settings runtime recovery lifecycle" python3 scripts/test_settings_runtime_recovery.py
 run_step "Disconnected display scheduling lifecycle" python3 scripts/test_display_scheduler_lifecycle.py
 run_step "GPS loop ingestion lifecycle" python3 scripts/test_gps_loop_ingestion.py
+run_step "Drive runtime policy lifecycle" python3 scripts/test_drive_runtime_policies.py
+run_step "Battery input and shutdown lifecycle" python3 scripts/test_battery_input_lifecycle.py
 
 section "Frontend"
 run_step "Frontend dependencies" bash -c 'cd interface && npm ci'

@@ -168,8 +168,8 @@ bool V1BLEClient::connectToServer() {
         return false;
     }
 
-    // Discovery mutates cached services. Reconnect must wait for its final
-    // completion and exit from the client-mutating portion.
+    // Discovery and CCCD writes borrow cached services. Reconnect must wait
+    // for the worker to release them.
     if (bleState_ == BLEState::QUIESCING || discoveryTaskRunning_.load(std::memory_order_acquire)) {
         return false;
     }
@@ -434,7 +434,7 @@ void V1BLEClient::beginClientQuiesce(bool requestHardReset) {
 
 // Full cleanup of BLE connection state - call before retry or after failures
 void V1BLEClient::cleanupConnection() {
-    // Called only after discovery exits and the link disconnect callback
+    // Called only after the attribute worker exits and the link disconnect callback
     // completes. Attribute pointers remain main-loop-owned.
     pDisplayDataChar_ = nullptr;
     pCommandChar_ = nullptr;
@@ -645,7 +645,10 @@ void V1BLEClient::processDiscovering() {
         return;
     }
 
-    // Transition to subscribe phase (uses step machine to break up CCCD writes)
+    // Reuse the generation-owned worker/result slot for subscription writes.
+    discoveryTaskDone_.store(false, std::memory_order_relaxed);
+    discoveryTaskResult_.store(false, std::memory_order_relaxed);
+    discoveryCompletedGeneration_.store(0, std::memory_order_relaxed);
     subscribeStep_ = SubscribeStep::GET_SERVICE;
     setBLEState(BLEState::SUBSCRIBING);
 }

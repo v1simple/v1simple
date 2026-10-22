@@ -470,8 +470,8 @@ class V1BLEClient {
 
     // pClient_ and all remote attribute pointers are owned by the main loop.
     // BLE callbacks publish atomic events only; they never clear these handles.
-    // The discovery task may mutate NimBLE's attribute cache only while the
-    // state machine is DISCOVERING, and reconnect is forbidden until it exits.
+    // Discovery and subscription workers borrow these handles. Reconnect and
+    // cache retirement are forbidden until their shared running gate closes.
     NimBLEClient* pClient_;
     NimBLERemoteService* pRemoteService_;
     NimBLERemoteCharacteristic* pDisplayDataChar_;
@@ -577,28 +577,35 @@ class V1BLEClient {
     size_t proxyCallbackEventQueueCount_ = 0;
     portMUX_TYPE proxyCallbackEventMux_ = portMUX_INITIALIZER_UNLOCKED;
 
-    // Async discovery avoids blocking the loop for ~2s. Accept completion only
-    // for its launching generation; timeout/disconnect invalidates that session.
+    // One generation-owned worker at a time performs discovery or a CCCD write.
+    // Both can wait inside NimBLE; the same running gate pins the client/cache
+    // through quiescence. Only the main loop changes handles or subscribeStep_.
     struct DiscoveryTaskContext {
         V1BLEClient* owner = nullptr;
         NimBLEClient* client = nullptr;
         uint32_t generation = 0;
     };
+    struct SubscriptionTaskContext {
+        V1BLEClient* owner = nullptr;
+        NimBLERemoteCharacteristic* characteristic = nullptr;
+        uint32_t generation = 0;
+        bool notifications = true;
+    };
     std::atomic<bool> discoveryTaskRunning_{false};
     std::atomic<bool> discoveryTaskDone_{false};
     std::atomic<bool> discoveryTaskResult_{false};
     std::atomic<uint32_t> discoveryCompletedGeneration_{0};
-    // UINT32_MAX means no discovery task has completed; zero is a valid and
-    // critical measured minimum that must remain visible.
     DiscoveryTaskContext discoveryTaskContext_{};
+    SubscriptionTaskContext subscriptionTaskContext_{};
     std::atomic<uint32_t> sessionGeneration_{0};
     BleAlertDataRequestGate alertDataRequestGate_;
     std::bitset<256> connectedFollowupRetryUsed_;
     uint32_t activeDiscoveryGeneration_ = 0;
     static void discoveryTaskFunc(void* param);
+    static void subscriptionTaskFunc(void* param);
 
     // Client teardown is an explicit state. A new scan/connect cannot begin
-    // until both async connect cancellation and discovery have quiesced, and
+    // until async connect cancellation and the attribute worker have quiesced, and
     // a requested link disconnect has delivered its callback.
     std::atomic<bool> acceptClientCallbacks_{false};
     BleSessionPublicationGate sessionPublicationGate_;
@@ -656,7 +663,7 @@ class V1BLEClient {
     static constexpr uint32_t DEFERRED_BOND_BACKUP_RETRY_MS = 1000;
 
     // Non-blocking subscribe step machine
-    // Each step does one BLE operation then yields to loop()
+    // Cache reads stay on the loop; CCCD writes run on the attribute worker.
     enum class SubscribeStep {
         GET_SERVICE = 0,       // Get V1 service reference
         GET_DISPLAY_CHAR = 1,  // Get B2CE display data characteristic
@@ -676,6 +683,7 @@ class V1BLEClient {
         Complete,
         Failed,
     };
+    SubscribeStepResult processSubscriptionWrite(NimBLERemoteCharacteristic* characteristic, bool notifications);
     enum class ConnectedFollowupStep {
         NONE,
         REQUEST_ALERT_DATA,

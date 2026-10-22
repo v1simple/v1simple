@@ -27,10 +27,10 @@ inline BaseType_t xTaskCreatePinnedToCore(void (*)(void*),
     return pdPASS;
 }
 
-inline BaseType_t xTaskCreatePinnedToCoreWithCaps(void (*)(void*),
+inline BaseType_t xTaskCreatePinnedToCoreWithCaps(void (*function)(void*),
                                                   const char*,
                                                   uint32_t stackSize,
-                                                  void*,
+                                                  void* parameter,
                                                   UBaseType_t priority,
                                                   TaskHandle_t*,
                                                   BaseType_t core,
@@ -40,6 +40,8 @@ inline BaseType_t xTaskCreatePinnedToCoreWithCaps(void (*)(void*),
     g_mock_task_create_state.lastPriority = priority;
     g_mock_task_create_state.lastCore = core;
     g_mock_task_create_state.lastCaps = caps;
+    g_mock_task_create_state.lastTaskFunction = function;
+    g_mock_task_create_state.lastTaskParameter = parameter;
     if (g_mock_task_create_state.failCaps) {
         return pdFALSE;
     }

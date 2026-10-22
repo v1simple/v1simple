@@ -1,6 +1,10 @@
 #include <unity.h>
 
 #include <cstdint>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 
 #include "../mocks/Arduino.h"
 
@@ -14,7 +18,6 @@ unsigned long mockMicros = 0;
 #include "../../src/ble_client.h"
 #undef private
 #include "../../include/config.h"
-#include "../mocks/ble_client_callback_stubs.h"
 #include "../../src/packet_parser.cpp"
 #include "../../src/packet_parser_alerts.cpp"
 #include "../mocks/modules/power/power_module.h"
@@ -24,13 +27,25 @@ class DisplayPreviewModule { public: bool isRunning() const { return false; } vo
 
 namespace {
 
-int quiesceCalls = 0;
-std::function<void(NimBLERemoteCharacteristic*, uint8_t*, size_t)> notificationSink;
+std::function<void(const uint8_t*, size_t, uint16_t, uint32_t, uint32_t, uint32_t)> notificationSink;
+
+void captureNotification(const uint8_t* bytes, size_t length, uint16_t characteristic, uint32_t generation,
+                         uint32_t now, uint32_t sequence) {
+    if (notificationSink) notificationSink(bytes, length, characteristic, generation, now, sequence);
+}
+
+void completePendingTask() {
+    const auto function = g_mock_task_create_state.lastTaskFunction;
+    void* parameter = g_mock_task_create_state.lastTaskParameter;
+    g_mock_task_create_state.lastTaskFunction = nullptr;
+    if (function) function(parameter);
+}
 
 struct SubscriptionFixture {
     V1BLEClient client;
     NimBLEClient link;
-    NimBLERemoteService service;
+    NimBLERemoteService service{V1_SERVICE_UUID};
+    V1BLEClient::ClientCallbacks callbacks;
     NimBLERemoteCharacteristic display{V1_DISPLAY_DATA_UUID};
     NimBLERemoteCharacteristic command{V1_COMMAND_WRITE_UUID};
     NimBLERemoteCharacteristic displayLong{V1_DISPLAY_DATA_LONG_UUID};
@@ -43,6 +58,15 @@ struct SubscriptionFixture {
         client.connectStartMs_ = 10;
         client.shouldConnect_ = true;
         client.bleState_ = BLEState::SUBSCRIBING;
+        client.activeDiscoveryGeneration_ = 1;
+        client.sessionGeneration_.store(1);
+        client.acceptClientCallbacks_.store(true);
+        client.sessionPublicationGate_.open(1);
+        client.dataCallback_ = captureNotification;
+        link.setConnected(true);
+        link.setClientCallbacks(&callbacks);
+        link.setDisconnectEntryHook([this]() { link.emitDisconnect(0); });
+        client.activeConnectionHandle_.store(link.getConnHandle());
     }
 
     void addMandatoryCharacteristics() {
@@ -51,10 +75,13 @@ struct SubscriptionFixture {
     }
 };
 
-void assertImmediateFailure(SubscriptionFixture& fixture) {
+void assertAttemptFailure(SubscriptionFixture& fixture) {
     mockMillis = 100;
     fixture.client.processSubscribing();
-    TEST_ASSERT_EQUAL_INT(1, quiesceCalls);
+    if (fixture.client.discoveryTaskRunning_.load()) {
+        completePendingTask();
+        fixture.client.processSubscribing();
+    }
     TEST_ASSERT_EQUAL(BLEState::QUIESCING, fixture.client.bleState_);
     TEST_ASSERT_FALSE(fixture.client.connectInProgress_);
     TEST_ASSERT_EQUAL_UINT32(0, fixture.client.connectStartMs_);
@@ -63,32 +90,91 @@ void assertImmediateFailure(SubscriptionFixture& fixture) {
 
 } // namespace
 
-V1BLEClient::V1BLEClient() {}
-V1BLEClient::~V1BLEClient() {}
+portMUX_TYPE pendingAddrMux = portMUX_INITIALIZER_UNLOCKED;
+V1BLEClient* instancePtr = nullptr;
+
+V1BLEClient::V1BLEClient()
+    : pClient_(nullptr)
+    , pRemoteService_(nullptr)
+    , pDisplayDataChar_(nullptr)
+    , pCommandChar_(nullptr)
+    , pCommandCharLong_(nullptr)
+    , pServer_(nullptr)
+    , pProxyService_(nullptr)
+    , pProxyNotifyChar_(nullptr)
+    , pProxyNotifyLongChar_(nullptr)
+    , pProxyWriteChar_(nullptr)
+    , proxyEnabled_(false)
+    , proxyServerInitialized_(false)
+    , proxyServerInitAttempted_(false)
+    , proxyName_("V1-Proxy")
+    , proxyQueue_(nullptr)
+    , phone2v1Queue_(nullptr)
+    , proxyQueuesInPsram_(false)
+    , dataCallback_(nullptr)
+    , connectImmediateCallback_(nullptr)
+    , sessionOpenedCallback_(nullptr)
+    , sessionClosedCallback_(nullptr)
+    , connectStableCallback_(nullptr)
+    , targetAddress_()
+    , lastScanStart_(0)
+    , pScanCallbacks_(nullptr)
+    , pClientCallbacks_(nullptr)
+    , pProxyServerCallbacks_(nullptr)
+    , pProxyWriteCallbacks_(nullptr) {
+    instancePtr = this;
+}
+
+V1BLEClient::~V1BLEClient() {
+    releaseProxyQueues();
+}
 
 void V1BLEClient::setBLEState(BLEState newState) {
     bleState_ = newState;
     stateEnteredMs_ = static_cast<uint32_t>(millis());
+    scanStopResultsCleared_ = false;
 }
 
-void V1BLEClient::beginClientQuiesce(bool) {
-    quiesceCalls++;
-    bleState_ = BLEState::QUIESCING;
+void V1BLEClient::disconnect() {
+    connected_.store(false, std::memory_order_relaxed);
 }
 
-void V1BLEClient::notifyCallback(NimBLERemoteCharacteristic* characteristic, uint8_t* bytes, size_t length, bool) {
-    if (notificationSink) notificationSink(characteristic, bytes, length);
+void V1BLEClient::hardResetBLEClient() {
+    connectInProgress_ = false;
+    connectStartMs_ = 0;
+    setBLEState(BLEState::DISCONNECTED);
 }
-int V1BLEClient::processProxyQueue() { return 0; }
+
+void V1BLEClient::completeHardResetBLEClient() {}
+
+void V1BLEClient::setProxyClientConnected(bool connectedState) {
+    proxyClientConnected_ = connectedState;
+    if (connectedState) {
+        proxyClientConnectedOnceThisBoot_ = true;
+        proxyFastAdvertisingUntilMs_ = 0;
+    }
+}
+
+SendResult V1BLEClient::sendCommandWithResult(const uint8_t*, size_t) { return SendResult::SENT; }
+
+#include "../../src/ble_proxy.cpp"
+#include "../../src/ble_connection.cpp"
+
 void V1BLEClient::onUserBytesReceived(const uint8_t*, uint32_t) {}
 void V1BLEClient::onV1FirmwareVersionReceived(uint32_t) {}
 
-#include "../../src/ble_subscription.cpp"
+#ifndef BLE_SUBSCRIPTION_SOURCE
+#define BLE_SUBSCRIPTION_SOURCE "../../src/ble_subscription.cpp"
+#endif
+#include BLE_SUBSCRIPTION_SOURCE
 
 void setUp() {
     mockMillis = 0;
     mockMicros = 0;
-    quiesceCalls = 0;
+    mock_reset_task_create_state();
+    mock_reset_task_delete_state();
+    mock_reset_nimble_state();
+    mock_reset_semaphore_state();
     notificationSink = nullptr;
 }
 
@@ -99,7 +185,7 @@ void test_missing_service_fails_without_deadline_retry() {
     fixture.link.setService(nullptr);
     fixture.client.subscribeStep_ = V1BLEClient::SubscribeStep::GET_SERVICE;
 
-    assertImmediateFailure(fixture);
+    assertAttemptFailure(fixture);
 }
 
 void test_missing_display_characteristic_fails_without_deadline_retry() {
@@ -107,7 +193,7 @@ void test_missing_display_characteristic_fails_without_deadline_retry() {
     fixture.link.setService(&fixture.service);
     fixture.client.subscribeStep_ = V1BLEClient::SubscribeStep::GET_DISPLAY_CHAR;
 
-    assertImmediateFailure(fixture);
+    assertAttemptFailure(fixture);
 }
 
 void test_missing_command_characteristic_fails_without_deadline_retry() {
@@ -116,7 +202,7 @@ void test_missing_command_characteristic_fails_without_deadline_retry() {
     fixture.link.setService(&fixture.service);
     fixture.client.subscribeStep_ = V1BLEClient::SubscribeStep::GET_COMMAND_CHAR;
 
-    assertImmediateFailure(fixture);
+    assertAttemptFailure(fixture);
 }
 
 void test_mandatory_display_subscription_failure_stops_immediately() {
@@ -127,7 +213,7 @@ void test_mandatory_display_subscription_failure_stops_immediately() {
     fixture.client.pDisplayDataChar_ = &fixture.display;
     fixture.client.subscribeStep_ = V1BLEClient::SubscribeStep::SUBSCRIBE_DISPLAY;
 
-    assertImmediateFailure(fixture);
+    assertAttemptFailure(fixture);
     TEST_ASSERT_EQUAL_UINT32(1, fixture.display.subscribeCalls());
 }
 
@@ -146,6 +232,11 @@ void test_successful_steps_report_in_progress_then_complete_explicitly() {
     TEST_ASSERT_EQUAL(V1BLEClient::SubscribeStep::SUBSCRIBE_DISPLAY, fixture.client.subscribeStep_);
     TEST_ASSERT_EQUAL(V1BLEClient::SubscribeStepResult::InProgress, fixture.client.executeSubscribeStep());
 
+    completePendingTask();
+    TEST_ASSERT_EQUAL(V1BLEClient::SubscribeStepResult::InProgress, fixture.client.executeSubscribeStep());
+    TEST_ASSERT_EQUAL(V1BLEClient::SubscribeStep::GET_DISPLAY_LONG, fixture.client.subscribeStep_);
+    TEST_ASSERT_TRUE(fixture.display.subscribeResponse());
+
     fixture.client.subscribeStep_ = V1BLEClient::SubscribeStep::REQUEST_VERSION;
     TEST_ASSERT_EQUAL(V1BLEClient::SubscribeStepResult::Complete, fixture.client.executeSubscribeStep());
     TEST_ASSERT_EQUAL(V1BLEClient::SubscribeStep::COMPLETE, fixture.client.subscribeStep_);
@@ -159,7 +250,7 @@ void test_present_long_subscription_failure_quiesces_instead_of_publishing_conne
     fixture.service.addCharacteristic(&fixture.displayLong);
     fixture.displayLong.setSubscribeResult(false);
     fixture.client.subscribeStep_ = V1BLEClient::SubscribeStep::SUBSCRIBE_LONG;
-    assertImmediateFailure(fixture);
+    assertAttemptFailure(fixture);
     TEST_ASSERT_FALSE(fixture.client.connected_.load());
     TEST_ASSERT_EQUAL_UINT32(1, fixture.displayLong.subscribeCalls());
 }
@@ -184,10 +275,14 @@ void test_reconnect_after_failed_long_subscription_delivers_complete_sweep_respo
     fixture.link.setService(&fixture.service);
     fixture.displayLong.setSubscribeResult(false);
     fixture.client.subscribeStep_ = V1BLEClient::SubscribeStep::SUBSCRIBE_LONG;
-    assertImmediateFailure(fixture);
+    assertAttemptFailure(fixture);
 
     // Transport reconnect creates a fresh accepted session, then the actual
     // subscription owner repeats discovery and publishes the connected state.
+    fixture.client.processClientQuiesce();
+    TEST_ASSERT_EQUAL(BLEState::DISCONNECTED, fixture.client.bleState_);
+    fixture.link.setConnected(true);
+    fixture.client.activeConnectionHandle_.store(fixture.link.getConnHandle());
     fixture.displayLong.setSubscribeResult(true);
     fixture.client.subscribeStep_ = V1BLEClient::SubscribeStep::GET_SERVICE;
     fixture.client.connectInProgress_ = true;
@@ -196,21 +291,26 @@ void test_reconnect_after_failed_long_subscription_delivers_complete_sweep_respo
     fixture.client.sessionGeneration_.store(2);
     fixture.client.acceptClientCallbacks_.store(true);
     fixture.client.sessionPublicationGate_.open(2);
-    for (unsigned i = 0; i < 10 && !fixture.client.connected_.load(); ++i) {
+    for (unsigned i = 0; i < 24 && !fixture.client.connected_.load(); ++i) {
         mockMillis += 10;
         fixture.client.processSubscribing();
+        completePendingTask();
     }
     TEST_ASSERT_TRUE(fixture.client.connected_.load());
     TEST_ASSERT_EQUAL_UINT32(2, fixture.displayLong.subscribeCalls());
+    TEST_ASSERT_TRUE(fixture.displayLong.subscribeResponse());
+    TEST_ASSERT_EQUAL_UINT32(0, fixture.link.lookupCalls());
+    TEST_ASSERT_EQUAL_UINT32(0, fixture.service.lookupCalls());
 
     PacketParser parser;
     BleQueueModule queue;
     TEST_ASSERT_TRUE(queue.begin(&fixture.client, &parser, nullptr, nullptr, nullptr));
     queue.openSession(2);
     fixture.client.beginSessionSweepSectionsCapture(fixture.client.noteV1NotificationIngress());
-    notificationSink = [&](NimBLERemoteCharacteristic* characteristic, uint8_t* bytes, size_t length) {
-        TEST_ASSERT_EQUAL_PTR(&fixture.displayLong, characteristic);
-        queue.onNotify(bytes, length, 0xB4E0, 2, mockMillis, fixture.client.noteV1NotificationIngress());
+    notificationSink = [&](const uint8_t* bytes, size_t length, uint16_t characteristic, uint32_t generation,
+                           uint32_t now, uint32_t sequence) {
+        TEST_ASSERT_EQUAL_UINT16(0xB4E0, characteristic);
+        queue.onNotify(bytes, length, characteristic, generation, now, sequence);
     };
     // Three valid section entries plus checksum/end require B4E0.
     std::vector<uint8_t> frame{0xAA, 0xD6, 0xEA, 0x23, 16,
@@ -237,6 +337,213 @@ void test_reconnect_after_failed_long_subscription_delivers_complete_sweep_respo
     queue.end();
 }
 
+namespace {
+
+// Execute the function captured by the FreeRTOS creation mock on a real host
+// thread, pausing inside the transport call. The wait is bounded so a broken
+// launch/inline call fails the test instead of hanging the test runner.
+class HeldSubscription {
+  public:
+    explicit HeldSubscription(NimBLERemoteCharacteristic& characteristic) {
+        characteristic.setSubscribeEntryHook([this]() {
+            std::unique_lock<std::mutex> lock(mutex_);
+            entered_ = true;
+            condition_.notify_all();
+            expired_ = !condition_.wait_for(lock, std::chrono::seconds(2), [this]() { return released_; });
+        });
+    }
+
+    bool start() {
+        const auto function = g_mock_task_create_state.lastTaskFunction;
+        void* parameter = g_mock_task_create_state.lastTaskParameter;
+        g_mock_task_create_state.lastTaskFunction = nullptr;
+        if (!function) return false;
+        worker_ = std::thread([function, parameter]() { function(parameter); });
+        std::unique_lock<std::mutex> lock(mutex_);
+        return condition_.wait_for(lock, std::chrono::seconds(2), [this]() { return entered_; });
+    }
+
+    void release() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            released_ = true;
+        }
+        condition_.notify_all();
+        if (worker_.joinable()) worker_.join();
+    }
+
+    bool expired() const { return expired_; } // Read only after join.
+    ~HeldSubscription() { release(); }
+
+  private:
+    std::mutex mutex_;
+    std::condition_variable condition_;
+    bool entered_ = false;
+    bool released_ = false;
+    bool expired_ = false;
+    std::thread worker_;
+};
+
+void prepareWrite(SubscriptionFixture& fixture, bool longChannel) {
+    fixture.addMandatoryCharacteristics();
+    fixture.service.addCharacteristic(&fixture.displayLong);
+    fixture.link.setService(&fixture.service);
+    fixture.client.pDisplayDataChar_ = &fixture.display;
+    fixture.client.subscribeStep_ = longChannel ? V1BLEClient::SubscribeStep::SUBSCRIBE_LONG
+                                               : V1BLEClient::SubscribeStep::SUBSCRIBE_DISPLAY;
+    mockMillis = 100;
+}
+
+} // namespace
+
+void test_delayed_ack_returns_to_loop_for_both_channels() {
+    for (bool longChannel : {false, true}) {
+        SubscriptionFixture fixture;
+        prepareWrite(fixture, longChannel);
+        const auto originalStep = fixture.client.subscribeStep_;
+        auto& characteristic = longChannel ? fixture.displayLong : fixture.display;
+        HeldSubscription held(characteristic);
+        fixture.client.processSubscribing();
+        const bool started = held.start();
+        bool remainedPending = true;
+        unsigned servicedLoopPasses = 0;
+        for (unsigned i = 0; i < 8; ++i) {
+            mockMillis += 10;
+            fixture.client.processSubscribeYield();
+            fixture.client.processSubscribing();
+            // Work after BLE dispatch is still reachable while the real task
+            // is inside subscribe(). No second worker may be launched.
+            ++servicedLoopPasses;
+            remainedPending &= fixture.client.discoveryTaskRunning_.load() &&
+                               fixture.client.subscribeStep_ == originalStep && !fixture.client.connected_.load();
+        }
+        held.release(); // Always join before Unity can abort this test.
+        TEST_ASSERT_TRUE(started);
+        TEST_ASSERT_FALSE(held.expired());
+        TEST_ASSERT_TRUE(remainedPending);
+        TEST_ASSERT_EQUAL_UINT32(8, servicedLoopPasses);
+        TEST_ASSERT_EQUAL_UINT32(1, characteristic.subscribeCalls());
+        TEST_ASSERT_TRUE(characteristic.subscribeResponse());
+        TEST_ASSERT_EQUAL(originalStep, fixture.client.subscribeStep_);
+        fixture.client.processSubscribing();
+        TEST_ASSERT_EQUAL(longChannel ? V1BLEClient::SubscribeStep::REQUEST_ALERT_DATA
+                                     : V1BLEClient::SubscribeStep::GET_DISPLAY_LONG, fixture.client.subscribeStep_);
+        TEST_ASSERT_EQUAL(BLEState::SUBSCRIBE_YIELD, fixture.client.bleState_);
+    }
+}
+
+void test_subscribe_timeout_keeps_cache_alive_until_worker_exits() {
+    SubscriptionFixture fixture;
+    prepareWrite(fixture, true);
+    HeldSubscription held(fixture.displayLong);
+    fixture.client.processSubscribing();
+    const bool started = held.start();
+    mockMillis = 12000;
+    fixture.client.processSubscribing();
+    fixture.client.processClientQuiesce();
+    const bool pending = fixture.client.bleState_ == BLEState::QUIESCING &&
+                         fixture.client.pRemoteService_ == &fixture.service &&
+                         fixture.client.pDisplayDataChar_ == &fixture.display &&
+                         !fixture.client.connected_.load() && fixture.client.discoveryTaskRunning_.load();
+    const bool reconnectRejected = !fixture.client.connectToServer();
+    held.release();
+    TEST_ASSERT_TRUE(started);
+    TEST_ASSERT_FALSE(held.expired());
+    TEST_ASSERT_TRUE(pending);
+    TEST_ASSERT_TRUE(reconnectRejected);
+    TEST_ASSERT_EQUAL_UINT32(1, fixture.link.disconnectCalls());
+    TEST_ASSERT_FALSE(fixture.client.sessionPublicationGate_.accepts(1));
+    // A late successful ACK belongs to generation 1, already retired by the
+    // actual timeout/quiesce path. Cleanup can now safely retire its handles.
+    TEST_ASSERT_TRUE(fixture.client.discoveryTaskResult_.load());
+    TEST_ASSERT_EQUAL_UINT32(1, fixture.client.discoveryCompletedGeneration_.load());
+    fixture.client.processClientQuiesce();
+    TEST_ASSERT_EQUAL(BLEState::DISCONNECTED, fixture.client.bleState_);
+    TEST_ASSERT_NULL(fixture.client.pRemoteService_);
+    TEST_ASSERT_NULL(fixture.client.pDisplayDataChar_);
+    TEST_ASSERT_FALSE(fixture.client.discoveryTaskDone_.load());
+    TEST_ASSERT_FALSE(fixture.client.connected_.load());
+    TEST_ASSERT_TRUE(fixture.client.connectToServer());
+}
+
+void test_disconnect_after_ack_rejects_successful_completion() {
+    SubscriptionFixture fixture;
+    prepareWrite(fixture, true);
+    fixture.client.processSubscribing();
+    completePendingTask();
+    TEST_ASSERT_TRUE(fixture.client.discoveryTaskResult_.load());
+    fixture.link.emitDisconnect(0);
+    fixture.client.processSubscribing();
+    TEST_ASSERT_EQUAL(BLEState::QUIESCING, fixture.client.bleState_);
+    TEST_ASSERT_FALSE(fixture.client.connected_.load());
+    TEST_ASSERT_EQUAL(V1BLEClient::SubscribeStep::SUBSCRIBE_LONG, fixture.client.subscribeStep_);
+}
+
+void test_worker_scheduled_after_timeout_does_not_touch_retired_session() {
+    SubscriptionFixture fixture;
+    prepareWrite(fixture, false);
+    fixture.client.processSubscribing();
+    mockMillis = 12000;
+    fixture.client.processSubscribing();
+    fixture.client.processClientQuiesce();
+    TEST_ASSERT_EQUAL_PTR(&fixture.service, fixture.client.pRemoteService_);
+    completePendingTask();
+    TEST_ASSERT_EQUAL_UINT32(0, fixture.display.subscribeCalls());
+    fixture.client.processClientQuiesce();
+    TEST_ASSERT_NULL(fixture.client.pRemoteService_);
+    TEST_ASSERT_FALSE(fixture.client.connected_.load());
+}
+
+void test_subscription_task_launch_failure_quiesces_without_inline_fallback() {
+    SubscriptionFixture fixture;
+    prepareWrite(fixture, false);
+    g_mock_task_create_state.failCaps = true;
+    fixture.client.processSubscribing();
+    TEST_ASSERT_EQUAL(BLEState::QUIESCING, fixture.client.bleState_);
+    TEST_ASSERT_FALSE(fixture.client.discoveryTaskRunning_.load());
+    TEST_ASSERT_EQUAL_UINT32(0, fixture.display.subscribeCalls());
+    fixture.client.processClientQuiesce();
+    TEST_ASSERT_EQUAL(BLEState::DISCONNECTED, fixture.client.bleState_);
+}
+
+void test_indication_only_short_channel_keeps_acknowledged_subscription() {
+    SubscriptionFixture fixture;
+    prepareWrite(fixture, false);
+    fixture.display.setCanNotify(false);
+    fixture.display.setCanIndicate(true);
+    fixture.client.processSubscribing();
+    completePendingTask();
+    fixture.client.processSubscribing();
+    TEST_ASSERT_EQUAL_UINT32(1, fixture.display.subscribeCalls());
+    TEST_ASSERT_FALSE(fixture.display.subscribeNotifications());
+    TEST_ASSERT_TRUE(fixture.display.subscribeResponse());
+    TEST_ASSERT_EQUAL(V1BLEClient::SubscribeStep::GET_DISPLAY_LONG, fixture.client.subscribeStep_);
+}
+
+void test_full_discovery_hands_worker_slot_to_subscription_and_uses_only_cache() {
+    SubscriptionFixture fixture;
+    fixture.addMandatoryCharacteristics();
+    fixture.link.setService(&fixture.service);
+    fixture.client.bleState_ = BLEState::DISCOVERING;
+    mockMillis = 100;
+    fixture.client.processDiscovering();
+    completePendingTask();
+    fixture.client.processDiscovering();
+    TEST_ASSERT_EQUAL(BLEState::SUBSCRIBING, fixture.client.bleState_);
+    TEST_ASSERT_FALSE(fixture.client.discoveryTaskDone_.load());
+    for (unsigned i = 0; i < 24 && !fixture.client.connected_.load(); ++i) {
+        fixture.client.processSubscribing();
+        completePendingTask();
+        mockMillis += 10;
+    }
+    TEST_ASSERT_TRUE(fixture.client.connected_.load());
+    TEST_ASSERT_EQUAL_UINT32(1, fixture.display.subscribeCalls());
+    TEST_ASSERT_EQUAL_UINT32(0, fixture.link.lookupCalls());
+    TEST_ASSERT_EQUAL_UINT32(0, fixture.service.lookupCalls());
+    TEST_ASSERT_EQUAL_UINT32(2, g_mock_task_create_state.capsCalls); // Discovery + short CCCD.
+    TEST_ASSERT_EQUAL_UINT32(2, g_mock_task_delete_state.capsCalls);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_missing_service_fails_without_deadline_retry);
@@ -247,5 +554,12 @@ int main(int, char**) {
     RUN_TEST(test_present_long_subscription_failure_quiesces_instead_of_publishing_connected);
     RUN_TEST(test_missing_or_non_notifiable_long_channel_remains_optional);
     RUN_TEST(test_reconnect_after_failed_long_subscription_delivers_complete_sweep_response);
+    RUN_TEST(test_delayed_ack_returns_to_loop_for_both_channels);
+    RUN_TEST(test_subscribe_timeout_keeps_cache_alive_until_worker_exits);
+    RUN_TEST(test_disconnect_after_ack_rejects_successful_completion);
+    RUN_TEST(test_worker_scheduled_after_timeout_does_not_touch_retired_session);
+    RUN_TEST(test_subscription_task_launch_failure_quiesces_without_inline_fallback);
+    RUN_TEST(test_indication_only_short_channel_keeps_acknowledged_subscription);
+    RUN_TEST(test_full_discovery_hands_worker_slot_to_subscription_and_uses_only_cache);
     return UNITY_END();
 }

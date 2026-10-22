@@ -107,6 +107,9 @@ public:
         raw_[1] = static_cast<uint8_t>((uuid >> 8) & 0xFFu);
     }
 
+    bool operator==(const NimBLEUUID& other) const {
+        return bitSize_ == other.bitSize_ && memcmp(raw_, other.raw_, sizeof(raw_)) == 0;
+    }
     int bitSize() const { return bitSize_; }
     const uint8_t* getValue() const { return raw_; }
     void to16() {
@@ -235,6 +238,13 @@ class NimBLERemoteCharacteristic;
 
 class NimBLERemoteService {
 public:
+    explicit NimBLERemoteService(const char* uuid = "") : uuid_(uuid) {}
+    NimBLEUUID getUUID() const { return uuid_; }
+    const std::vector<NimBLERemoteCharacteristic*>& getCharacteristics(bool refresh = false) {
+        if (refresh) ++lookupCalls_;
+        return characteristics_;
+    }
+    uint32_t lookupCalls() const { return lookupCalls_; }
     NimBLERemoteCharacteristic* getCharacteristic(const NimBLEUUID& uuid);
     NimBLERemoteCharacteristic* getCharacteristic(const char* uuid);
     void addCharacteristic(NimBLERemoteCharacteristic* characteristic) {
@@ -244,6 +254,8 @@ public:
     }
 
 private:
+    NimBLEUUID uuid_;
+    uint32_t lookupCalls_ = 0;
     std::vector<NimBLERemoteCharacteristic*> characteristics_;
 };
 
@@ -268,11 +280,12 @@ public:
     bool canWrite() const { return true; }
     bool canWriteNoResponse() const { return false; }
     bool canNotify() const { return canNotify_; }
-    bool canIndicate() const { return false; }
+    bool canIndicate() const { return canIndicate_; }
     bool unsubscribe() { return true; }
     bool subscribe(bool notify,
                    std::function<void(NimBLERemoteCharacteristic*, uint8_t*, size_t, bool)> callback,
-                   bool = false) {
+                   bool response = true) {
+        subscribeResponse_ = response;
         subscribeCalls_++;
         if (subscribeEntryHook_) {
             subscribeEntryHook_();
@@ -285,6 +298,9 @@ public:
     NimBLERemoteDescriptor* getDescriptor(const NimBLEUUID&) { return nullptr; }
     void setSubscribeResult(bool ok) { subscribeResult_ = ok; }
     void setCanNotify(bool value) { canNotify_ = value; }
+    void setCanIndicate(bool value) { canIndicate_ = value; }
+    bool subscribeResponse() const { return subscribeResponse_; }
+    bool subscribeNotifications() const { return notify_; }
     void setWriteValueResult(bool ok) { writeValueResult_ = ok; }
     void setWriteEntryHook(std::function<void()> hook) { writeEntryHook_ = std::move(hook); }
     void setSubscribeEntryHook(std::function<void()> hook) { subscribeEntryHook_ = std::move(hook); }
@@ -305,6 +321,8 @@ private:
     bool notify_ = true;
     bool subscribeResult_ = true;
     bool canNotify_ = true;
+    bool canIndicate_ = false;
+    bool subscribeResponse_ = false;
     bool writeValueResult_ = true;
     uint32_t writeValueCalls_ = 0;
     std::vector<uint8_t> lastWriteValue_;
@@ -312,6 +330,7 @@ private:
 };
 
 inline NimBLERemoteCharacteristic* NimBLERemoteService::getCharacteristic(const NimBLEUUID& uuid) {
+    ++lookupCalls_;
     for (NimBLERemoteCharacteristic* characteristic : characteristics_) {
         if (characteristic && characteristic->getUUID().toString() == uuid.toString()) {
             return characteristic;
@@ -462,9 +481,18 @@ public:
     bool secureConnection(bool = true) { return secureConnectionResult_; }
     int getLastError() const { return lastError_; }
     bool discoverAttributes() { return true; }
-    NimBLERemoteService* getService(const NimBLEUUID&) { return service_; }
-    NimBLERemoteService* getService(const char*) { return service_; }
-    void setService(NimBLERemoteService* service) { service_ = service; }
+    NimBLERemoteService* getService(const NimBLEUUID&) { ++lookupCalls_; return service_; }
+    NimBLERemoteService* getService(const char*) { ++lookupCalls_; return service_; }
+    const std::vector<NimBLERemoteService*>& getServices(bool refresh = false) {
+        if (refresh) ++lookupCalls_;
+        return services_;
+    }
+    uint32_t lookupCalls() const { return lookupCalls_; }
+    void setService(NimBLERemoteService* service) {
+        service_ = service;
+        services_.clear();
+        if (service) services_.push_back(service);
+    }
     void setConnected(bool connected) {
         connected_ = connected;
         connHandle_ = connected ? 1 : BLE_HS_CONN_HANDLE_NONE;
@@ -478,6 +506,8 @@ public:
     void reset() {
         callbacks_ = nullptr;
         service_ = nullptr;
+        services_.clear();
+        lookupCalls_ = 0;
         connected_ = false;
         lastError_ = 0;
         secureConnectionResult_ = true;
@@ -491,6 +521,8 @@ public:
 private:
     NimBLEClientCallbacks* callbacks_ = nullptr;
     NimBLERemoteService* service_ = nullptr;
+    std::vector<NimBLERemoteService*> services_;
+    uint32_t lookupCalls_ = 0;
     bool connected_ = false;
     bool secureConnectionResult_ = true;
     bool disconnectResult_ = true;

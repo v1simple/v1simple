@@ -31,9 +31,15 @@ public:
     int64_t getLong64(const char* key, int64_t fallback = 0) { return scalar(key, fallback, nvs_get_i64); }
     bool getBool(const char* key, bool fallback = false) { return getUChar(key, fallback ? 1 : 0) == 1; }
 
-    String getString(const char* key, const char* fallback = "") {
+    String getString(const char* key, const char* fallback = "", bool required = false) {
         size_t bytes = 0;
-        if (!accept(nvs_get_str(handle_, key, nullptr, &bytes))) return exactString(fallback);
+        const esp_err_t sizeStatus = nvs_get_str(handle_, key, nullptr, &bytes);
+        if (!accept(sizeStatus)) {
+            // Once a caller established presence, a disappearing value is an
+            // unavailable read, not an optional field with an empty default.
+            if (required && sizeStatus == ESP_ERR_NVS_NOT_FOUND && good()) error_ = sizeStatus;
+            return exactString(fallback);
+        }
         // ESP-IDF NVS strings have a 4000-byte limit including their terminator.
         if (bytes == 0 || bytes > 4000) { error_ = ESP_ERR_INVALID_SIZE; return {}; }
         std::unique_ptr<char[]> buffer(new (std::nothrow) char[bytes]);

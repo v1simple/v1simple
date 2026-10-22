@@ -2181,7 +2181,8 @@ bool SettingsManager::persistSettingsAtomically() {
 
 // --- WiFi client credential methods ---
 
-String SettingsManager::getWifiStaSlotPassword(size_t index) {
+String SettingsManager::getWifiStaSlotPassword(size_t index, bool* nvsReadFailed) {
+    if (nvsReadFailed) *nvsReadFailed = false;
     if (!validWifiStaSlotIndex(index)) {
         return "";
     }
@@ -2190,29 +2191,30 @@ String SettingsManager::getWifiStaSlotPassword(size_t index) {
         return "";
     }
 
-    Preferences prefs;
     bool hasNvsKey = false;
     String storedPwd;
-    bool legacyKeyPresent = false;
-    String legacyStoredPwd;
-    if (!prefs.begin(WIFI_CLIENT_NS, true)) { // Read-only
-        storedPwd = "";
-    } else {
-        hasNvsKey = prefs.isKey(passwordKey);
-        if (hasNvsKey) {
-            storedPwd = prefs.getString(passwordKey, "");
-        } else if (index == 0) {
-            legacyKeyPresent = prefs.isKey(kNvsWifiPassword);
-            if (legacyKeyPresent) {
-                legacyStoredPwd = prefs.getString(kNvsWifiPassword, "");
+    {
+        SettingsNvsReader prefs(WIFI_CLIENT_NS);
+        const auto unavailable = [nvsReadFailed]() -> String {
+            if (nvsReadFailed) *nvsReadFailed = true;
+            return "";
+        };
+        // Only proven absence permits SD recovery. A detached SD can retain
+        // an older password after a successful NVS-only credential update.
+        if (prefs.error() != ESP_ERR_NVS_NOT_FOUND) {
+            if (!prefs.good()) return unavailable();
+            hasNvsKey = prefs.isKey(passwordKey);
+            if (!prefs.good()) return unavailable();
+            if (!hasNvsKey && index == 0) {
+                passwordKey = kNvsWifiPassword;
+                hasNvsKey = prefs.isKey(passwordKey);
+                if (!prefs.good()) return unavailable();
+            }
+            if (hasNvsKey) {
+                storedPwd = prefs.getString(passwordKey, "", true);
+                if (!prefs.good()) return unavailable();
             }
         }
-        prefs.end();
-    }
-
-    if (!hasNvsKey && legacyKeyPresent) {
-        hasNvsKey = true;
-        storedPwd = legacyStoredPwd;
     }
 
     // Open-network credential: key present with empty value is valid.

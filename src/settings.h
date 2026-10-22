@@ -153,7 +153,9 @@ class SettingsManager {
     void load();
 
     String getWifiClientPassword();
-    String getWifiStaSlotPassword(size_t index);
+    // Optional status distinguishes failed NVS reads from an empty password.
+    // It does not describe SD backup availability.
+    String getWifiStaSlotPassword(size_t index, bool* nvsReadFailed = nullptr);
     SettingsPersistResult setWifiClientEnabled(bool enabled);
     bool setWifiClientCredentials(const String& ssid, const String& password);
     bool setWifiStaSlotCredentials(size_t index, const String& ssid, const String& password, const String& label,

@@ -1885,7 +1885,11 @@ void test_legacy_wifi_migration_does_not_treat_destination_probe_failure_as_abse
             TEST_ASSERT_EQUAL(destinationExists,
                 mock_preferences::namespaceHasKey(WIFI_CLIENT_NS, kNvsWifiStaSlotPassword[0]));
             if (destinationExists) {
-                TEST_ASSERT_EQUAL_STRING("new-password", failed.getWifiClientPassword().c_str());
+                // The normal getter must honor the same unavailable read as
+                // migration, while leaving the durable destination intact.
+                TEST_ASSERT_EQUAL_STRING("", failed.getWifiClientPassword().c_str());
+                TEST_ASSERT_EQUAL_STRING(encodeObfuscatedForStorage("new-password").c_str(),
+                    mock_preferences::getString(WIFI_CLIENT_NS, kNvsWifiStaSlotPassword[0]).c_str());
             }
         }
         mock_nvs::set_string_probe_result(WIFI_CLIENT_NS, kNvsWifiStaSlotPassword[0], ESP_OK);
@@ -8060,9 +8064,16 @@ void test_settings_backup_replacement_preserves_valid_previous_across_errors_and
 #include "wifi_restore_lifecycle_tests.h"
 #include "wifi_journal_discovery_tests.h"
 #include "wifi_journal_payload_tests.h"
+#include "wifi_password_lookup_tests.h"
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_wifi_password_lookup_open_failure_does_not_restore_stale_sd);
+    RUN_TEST(test_wifi_password_lookup_key_and_string_read_failures_do_not_restore_stale_sd);
+    RUN_TEST(test_wifi_password_lookup_legacy_read_failures_do_not_restore_stale_sd);
+    RUN_TEST(test_wifi_password_lookup_disappearing_present_value_is_unavailable);
+    RUN_TEST(test_wifi_password_lookup_proven_absence_recovers_sd_and_heals_nvs);
+    RUN_TEST(test_wifi_password_lookup_empty_and_legacy_values_remain_authoritative);
     RUN_TEST(test_wifi_generation_read_failure_retains_same_ssid_password_rollback);
     RUN_TEST(test_wifi_generation_read_failure_retains_clear_one_rollback);
     RUN_TEST(test_wifi_unknown_read_failure_retains_edit_sd_password);

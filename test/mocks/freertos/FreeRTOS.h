@@ -218,6 +218,8 @@ struct MockTaskCreateState {
     TaskHandle_t* lastTaskHandleOutput = nullptr;
     bool failStandard = false;
     bool failCaps = false;
+    void (*lastTaskFunction)(void*) = nullptr;
+    void* lastTaskParameter = nullptr;
 };
 
 inline MockTaskCreateState g_mock_task_create_state{};

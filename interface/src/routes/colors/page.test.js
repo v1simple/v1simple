@@ -333,12 +333,13 @@ describe('colors route page', () => {
         ).toBe(false);
     });
 
-    it('runs preview and reset actions', async () => {
+    it('runs preview and confirms resetting display colors to defaults', async () => {
         const fetchMock = installDefaultFetch();
         const { unmount } = render(Page);
 
         await fireEvent.click(await screen.findByRole('button', { name: /^preview$/i }));
         await fireEvent.click(screen.getByRole('button', { name: /reset defaults/i }));
+        expect(global.confirm).toHaveBeenCalledExactlyOnceWith('Reset display colors to defaults?');
 
         await screen.findByText('Colors reset to defaults!');
         expect(

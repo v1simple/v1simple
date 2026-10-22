@@ -203,7 +203,13 @@ std::vector<WifiClientApiService::SavedNetworkSlotPayload> WiFiManager::getSaved
         payload.priority = slot.priority;
         payload.lastConnectedAtSec = slot.lastConnectedAtSec;
         payload.configured = slot.isConfigured();
-        payload.hasPassword = payload.configured && settings_.getWifiStaSlotPassword(i).length() > 0;
+        if (payload.configured) {
+            bool nvsReadFailed = false;
+            const String password = settings_.getWifiStaSlotPassword(i, &nvsReadFailed);
+            // An unavailable credential must not turn a blank editor field
+            // into an explicit request to replace it with an empty password.
+            payload.hasPassword = nvsReadFailed || password.length() > 0;
+        }
         slots.push_back(payload);
     }
     return slots;
@@ -269,7 +275,9 @@ bool WiFiManager::upsertSavedNetwork(const WifiClientApiService::SavedNetworkUps
     const WifiStaSlot& currentSlot = settings.wifiStaSlots[index];
     const bool maintenanceScanActive = maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::SCANNING;
     const bool maintenanceConnectActive = maintenanceAutoConnectPhase_ == MaintenanceAutoConnectPhase::CONNECTING;
-    const String password = request.hasPassword ? request.password : settings_.getWifiStaSlotPassword(index);
+    bool nvsReadFailed = false;
+    const String password = request.hasPassword ? request.password : settings_.getWifiStaSlotPassword(index, &nvsReadFailed);
+    if (nvsReadFailed) return false;
     const String label = request.hasLabel ? request.label : currentSlot.label;
     const uint8_t priority = request.hasPriority
                                  ? request.priority

@@ -243,7 +243,7 @@
 
     async function resetDefaults() {
         if (saving || stealthSaving) return;
-        if (!confirm('Reset display colors, brightness, and status indicators to defaults?')) return;
+        if (!confirm('Reset display colors to defaults?')) return;
         const submitted = { ...colors };
         saving = true;
         try {

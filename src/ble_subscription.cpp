@@ -3,6 +3,77 @@
 #include "ble_internals.h"
 #include "ble_log_rate_limit.h"
 #include "config.h"
+#include <esp_heap_caps.h>
+
+namespace {
+
+// Full discovery already populated the cache. The single-UUID getters start
+// blocking GATT discovery on a miss, including absent optional channels.
+NimBLERemoteService* cachedService(NimBLEClient* client, const NimBLEUUID& uuid) {
+    if (client) {
+        for (auto* service : client->getServices(false)) {
+            if (service->getUUID() == uuid) return service;
+        }
+    }
+    return nullptr;
+}
+
+NimBLERemoteCharacteristic* cachedCharacteristic(NimBLERemoteService* service, const NimBLEUUID& uuid) {
+    if (service) {
+        for (auto* characteristic : service->getCharacteristics(false)) {
+            if (characteristic->getUUID() == uuid) return characteristic;
+        }
+    }
+    return nullptr;
+}
+
+} // namespace
+
+void V1BLEClient::subscriptionTaskFunc(void* param) {
+    const SubscriptionTaskContext context = *static_cast<SubscriptionTaskContext*>(param);
+    V1BLEClient* self = context.owner;
+    const bool accepted = self->acceptClientCallbacks_.load(std::memory_order_acquire) &&
+                          self->sessionGeneration_.load(std::memory_order_acquire) == context.generation &&
+                          self->sessionPublicationGate_.accepts(context.generation);
+    // Keep acknowledged notifications: a present B4E0 must be usable before
+    // publishing a connected session. The running gate pins this handle even
+    // if timeout/disconnect closes admission while NimBLE waits for the ACK.
+    const bool result = accepted && context.characteristic &&
+        context.characteristic->subscribe(context.notifications, notifyCallback, true);
+    self->discoveryTaskResult_.store(result, std::memory_order_relaxed);
+    self->discoveryCompletedGeneration_.store(context.generation, std::memory_order_relaxed);
+    self->discoveryTaskDone_.store(true, std::memory_order_release);
+    self->discoveryTaskRunning_.store(false, std::memory_order_release);
+    // No owner/context access after releasing the gate.
+    vTaskDeleteWithCaps(nullptr);
+}
+
+V1BLEClient::SubscribeStepResult V1BLEClient::processSubscriptionWrite(
+    NimBLERemoteCharacteristic* characteristic, bool notifications) {
+    if (discoveryTaskRunning_.load(std::memory_order_acquire)) {
+        return SubscribeStepResult::InProgress;
+    }
+    const uint32_t generation = activeDiscoveryGeneration_;
+    if (!acceptClientCallbacks_.load(std::memory_order_acquire) ||
+        sessionGeneration_.load(std::memory_order_acquire) != generation ||
+        !sessionPublicationGate_.accepts(generation)) {
+        return SubscribeStepResult::Failed;
+    }
+    if (discoveryTaskDone_.load(std::memory_order_acquire)) {
+        const bool succeeded = discoveryCompletedGeneration_.load(std::memory_order_relaxed) == generation &&
+                               discoveryTaskResult_.load(std::memory_order_relaxed);
+        discoveryTaskDone_.store(false, std::memory_order_relaxed);
+        return succeeded ? SubscribeStepResult::Complete : SubscribeStepResult::Failed;
+    }
+    subscriptionTaskContext_ = {this, characteristic, generation, notifications};
+    discoveryTaskRunning_.store(true, std::memory_order_release);
+    if (xTaskCreatePinnedToCoreWithCaps(subscriptionTaskFunc, "sub", 4096, &subscriptionTaskContext_, 1,
+                                     nullptr, tskNO_AFFINITY, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL) != pdPASS) {
+        discoveryTaskRunning_.store(false, std::memory_order_release);
+        return SubscribeStepResult::Failed;
+    }
+    return SubscribeStepResult::InProgress;
+}
 
 // Each call executes one step then yields to allow loop() to run.
 void V1BLEClient::processSubscribing() {
@@ -103,7 +174,7 @@ void V1BLEClient::processSubscribeYield() {
 V1BLEClient::SubscribeStepResult V1BLEClient::executeSubscribeStep() {
     switch (subscribeStep_) {
     case SubscribeStep::GET_SERVICE: {
-        pRemoteService_ = pClient_->getService(V1_SERVICE_UUID);
+        pRemoteService_ = cachedService(pClient_, NimBLEUUID(V1_SERVICE_UUID));
         if (!pRemoteService_) {
             static BleLogRateLimitState subscribeFailServiceLog;
             if (shouldLogBleConnectionEvent(subscribeFailServiceLog, static_cast<uint32_t>(millis()))) {
@@ -116,7 +187,7 @@ V1BLEClient::SubscribeStepResult V1BLEClient::executeSubscribeStep() {
     }
 
     case SubscribeStep::GET_DISPLAY_CHAR: {
-        pDisplayDataChar_ = pRemoteService_->getCharacteristic(V1_DISPLAY_DATA_UUID);
+        pDisplayDataChar_ = cachedCharacteristic(pRemoteService_, NimBLEUUID(V1_DISPLAY_DATA_UUID));
         if (!pDisplayDataChar_) {
             static BleLogRateLimitState subscribeFailDisplayCharLog;
             if (shouldLogBleConnectionEvent(subscribeFailDisplayCharLog, static_cast<uint32_t>(millis()))) {
@@ -131,8 +202,8 @@ V1BLEClient::SubscribeStepResult V1BLEClient::executeSubscribeStep() {
     }
 
     case SubscribeStep::GET_COMMAND_CHAR: {
-        pCommandChar_ = pRemoteService_->getCharacteristic(V1_COMMAND_WRITE_UUID);
-        NimBLERemoteCharacteristic* altCommandChar = pRemoteService_->getCharacteristic(V1_COMMAND_WRITE_ALT_UUID);
+        pCommandChar_ = cachedCharacteristic(pRemoteService_, NimBLEUUID(V1_COMMAND_WRITE_UUID));
+        NimBLERemoteCharacteristic* altCommandChar = cachedCharacteristic(pRemoteService_, NimBLEUUID(V1_COMMAND_WRITE_ALT_UUID));
 
         // Prefer primary, fall back to alt if needed.
         if (!pCommandChar_ || (!pCommandChar_->canWrite() && !pCommandChar_->canWriteNoResponse())) {
@@ -152,19 +223,17 @@ V1BLEClient::SubscribeStepResult V1BLEClient::executeSubscribeStep() {
     }
 
     case SubscribeStep::GET_COMMAND_LONG:
-        pCommandCharLong_ = pRemoteService_->getCharacteristic(V1_COMMAND_WRITE_LONG_UUID);
+        pCommandCharLong_ = cachedCharacteristic(pRemoteService_, NimBLEUUID(V1_COMMAND_WRITE_LONG_UUID));
         subscribeStep_ = SubscribeStep::SUBSCRIBE_DISPLAY;
         return SubscribeStepResult::InProgress;
 
     case SubscribeStep::SUBSCRIBE_DISPLAY: {
-        bool subscribed = false;
-        if (pDisplayDataChar_->canNotify()) {
-            subscribed = pDisplayDataChar_->subscribe(true, notifyCallback, true);
-        } else if (pDisplayDataChar_->canIndicate()) {
-            subscribed = pDisplayDataChar_->subscribe(false, notifyCallback);
+        SubscribeStepResult result = SubscribeStepResult::Failed;
+        if (pDisplayDataChar_->canNotify() || pDisplayDataChar_->canIndicate()) {
+            result = processSubscriptionWrite(pDisplayDataChar_, pDisplayDataChar_->canNotify());
         }
-
-        if (!subscribed) {
+        if (result == SubscribeStepResult::InProgress) return result;
+        if (result == SubscribeStepResult::Failed) {
             static BleLogRateLimitState subscribeFailB2ceLog;
             if (shouldLogBleConnectionEvent(subscribeFailB2ceLog, static_cast<uint32_t>(millis()))) {
                 Serial.println("[BLE] FAIL subscribe B2CE");
@@ -179,7 +248,7 @@ V1BLEClient::SubscribeStepResult V1BLEClient::executeSubscribeStep() {
         // B4E0 carries every ESP packet that exceeds one 20-byte BLE value.
         // Keep it optional for compatibility with transports that expose only
         // the short path, but custom-sweep replies require this subscription.
-        NimBLERemoteCharacteristic* pDisplayLong = pRemoteService_->getCharacteristic(V1_DISPLAY_DATA_LONG_UUID);
+        NimBLERemoteCharacteristic* pDisplayLong = cachedCharacteristic(pRemoteService_, NimBLEUUID(V1_DISPLAY_DATA_LONG_UUID));
         notifyLongChar_.store(pDisplayLong, std::memory_order_release);
         notifyLongCharId_.store(pDisplayLong ? shortUuid(pDisplayLong->getUUID()) : 0, std::memory_order_release);
         subscribeStep_ = (pDisplayLong && pDisplayLong->canNotify()) ? SubscribeStep::SUBSCRIBE_LONG
@@ -188,12 +257,15 @@ V1BLEClient::SubscribeStepResult V1BLEClient::executeSubscribeStep() {
     }
 
     case SubscribeStep::SUBSCRIBE_LONG: {
-        NimBLERemoteCharacteristic* pDisplayLong = pRemoteService_->getCharacteristic(V1_DISPLAY_DATA_LONG_UUID);
+        NimBLERemoteCharacteristic* pDisplayLong = cachedCharacteristic(pRemoteService_, NimBLEUUID(V1_DISPLAY_DATA_LONG_UUID));
         // Absence/non-notifiable compatibility was admitted above. Once a
         // usable long channel is advertised, a failed CCCD write leaves sweep
         // capture incomplete. Quiesce this attempt so ordinary reconnect
         // retries both subscriptions before publishing a healthy session.
-        if (!pDisplayLong || !pDisplayLong->subscribe(true, notifyCallback, true)) {
+        const SubscribeStepResult result = pDisplayLong ? processSubscriptionWrite(pDisplayLong, true)
+                                                       : SubscribeStepResult::Failed;
+        if (result == SubscribeStepResult::InProgress) return result;
+        if (result == SubscribeStepResult::Failed) {
             static BleLogRateLimitState subscribeFailB4e0Log;
             if (shouldLogBleConnectionEvent(subscribeFailB4e0Log, static_cast<uint32_t>(millis()))) {
                 Serial.println("[BLE] FAIL subscribe B4E0");

@@ -10,6 +10,7 @@
         applyDisabled = true,
         onapply,
         savingProfile = null,
+        mutationBusy = false,
         editedSettings = $bindable(null),
         editedDetector = $bindable(null),
         editedInTheBox = $bindable(null),
@@ -55,7 +56,7 @@
                 {#if editingSettings}
                     <button class="btn btn-ghost btn-sm" onclick={oncancelEditing}>Cancel</button>
                     {#if currentProfile?.name}
-                        <button class="btn btn-primary btn-sm" onclick={onsaveEditedProfile} disabled={!!savingProfile}>
+                        <button class="btn btn-primary btn-sm" onclick={onsaveEditedProfile} disabled={mutationBusy || !!savingProfile}>
                             {savingProfile ? `Saving ${savingProfile}...` : 'Save Profile'}
                         </button>
                     {:else}

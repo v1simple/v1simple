@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
 from unittest import mock
+import venv
 import zipfile
 
 import check_esptool_version
@@ -111,6 +113,53 @@ class PlatformIOInterpreterDiscoveryTests(unittest.TestCase):
 
     def test_missing_launcher_is_unreadable(self) -> None:
         self.assertIsNone(check_platformio_core_version.pio_interpreter(str(self.root / "missing")))
+
+
+@unittest.skipIf(os.name == "nt", "Unix pip launcher lifecycle")
+class UnixPipLauncherTests(unittest.TestCase):
+    def check_generated_launcher(self, distribution: str | None) -> int:
+        # Use pip's actual generator and a disposable interpreter environment.
+        # No packages are installed; tiny entrypoint/metadata fixtures suffice.
+        from pip._vendor.distlib.scripts import ScriptMaker, enquote_executable
+
+        with tempfile.TemporaryDirectory(prefix="pio launcher ") as directory:
+            root = Path(directory)
+            environment = root / "selected Python"
+            venv.EnvBuilder(with_pip=False).create(environment)
+            interpreter = environment / "bin" / "python"
+            site = Path(subprocess.check_output(
+                [str(interpreter), "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+                text=True,
+            ).strip())
+            (site / "fixture_pio.py").write_text(
+                'def main():\n    print("PlatformIO Core, version 6.2.0")\n', encoding="utf-8"
+            )
+            if distribution is not None:
+                metadata = site / f"pioarduino-{distribution}.dist-info"
+                metadata.mkdir()
+                (metadata / "METADATA").write_text(
+                    f"Metadata-Version: 2.1\nName: pioarduino\nVersion: {distribution}\n", encoding="utf-8"
+                )
+            maker = ScriptMaker(None, str(root / "entrypoints"))
+            maker.executable = enquote_executable(str(interpreter))
+            maker.variants = {""}
+            maker.set_mode = True
+            maker.make("pio = fixture_pio:main")
+            launcher = root / "entrypoints" / "pio"
+            self.assertEqual(launcher.read_text().splitlines()[0], "#!/bin/sh")
+            actual = subprocess.run([str(launcher), "--version"], capture_output=True, text=True, check=True)
+            self.assertIn("version 6.2.0", actual.stdout)
+            with mock.patch.object(sys, "argv", ["checker", "--pio", str(launcher)]):
+                return check_platformio_core_version.main()
+
+    def test_real_pip_trampoline_checks_its_recorded_interpreter(self) -> None:
+        self.assertEqual(self.check_generated_launcher("6.2.0"), 0)
+
+    def test_real_pip_trampoline_rejects_wrong_distribution(self) -> None:
+        self.assertEqual(self.check_generated_launcher("6.2.1"), 1)
+
+    def test_real_pip_trampoline_rejects_missing_distribution(self) -> None:
+        self.assertEqual(self.check_generated_launcher(None), 1)
 
 
 class BuildToolVersionTests(unittest.TestCase):

@@ -34,8 +34,9 @@ class PowerModule {
     // Notify ALP heartbeat-presence changes to manage auto power-off timers. No-op in car builds.
     void onAlpSignalChange(bool active);
 
-    // Run periodic tasks. Car builds retain battery polling but disable shutdown paths.
-    void process(unsigned long nowMs);
+    // Run periodic tasks using a clock captured after battery acquisition.
+    // Car builds retain battery polling but disable shutdown paths.
+    void process();
 
     // A critical-battery warning owns normal interactive presentation while
     // its shutdown-confirmation lifecycle remains active. A live alert may
@@ -58,7 +59,7 @@ class PowerModule {
     using ShutdownHandoffObserver = void (*)(void*);
 
     bool lowBatteryWarningShownForTest() const { return criticalBatteryPresentationActive_; }
-    unsigned long autoPowerOffTimerStartForTest() const { return autoPowerOffTimerStart_; }
+    uint32_t autoPowerOffTimerStartForTest() const { return autoPowerOffTimerStart_; }
     bool autoPowerOffTimerRunningForTest() const { return autoPowerOffTimerRunning_; }
     bool autoPowerOffArmedForTest() const { return autoPowerOffArmed_; }
     void performShutdownRequestForTest() { performShutdownRequest(); }
@@ -70,7 +71,7 @@ class PowerModule {
 
   private:
     void performShutdownRequest();
-    void reevaluateAutoPowerOffTimer(const V1Settings& settings, unsigned long nowMs);
+    void reevaluateAutoPowerOffTimer(const V1Settings& settings, uint32_t nowMs);
     void releaseCriticalBatteryPresentation();
     void requestDisplayRestore();
 
@@ -88,10 +89,10 @@ class PowerModule {
     bool criticalBatteryWarningPreempted_ = false;
     bool displayRestorePending_ = false;
     bool displayBrightnessRestorePending_ = false;
-    unsigned long criticalBatteryTime_ = 0;
+    uint32_t criticalBatteryTime_ = 0;
 
     // Running is explicit because millis() == 0 is a valid start at rollover.
-    unsigned long autoPowerOffTimerStart_ = 0;
+    uint32_t autoPowerOffTimerStart_ = 0;
     bool autoPowerOffTimerRunning_ = false;
     bool autoPowerOffArmed_ = false;
     bool v1SignalPresent_ = false;

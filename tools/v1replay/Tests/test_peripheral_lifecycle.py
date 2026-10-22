@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run real peripheral owner callbacks with a software-only CoreBluetooth module.
+"""Run real replay transport callbacks with a software-only CoreBluetooth module.
 
 Uses installed Xcode tools only. Production sources are compiled unchanged;
 the fake module is visible only to this temporary build, never to SwiftPM.
@@ -27,7 +27,7 @@ def main():
         subprocess.run(compiler + ["-emit-module", "-emit-library", "-module-name", "CoreBluetooth",
                        str(support / "CoreBluetooth.swift"), "-o", str(build / "libCoreBluetooth.dylib")],
                        cwd=build, env=env, check=True)
-        owners = ["Encounter", "Peripheral", "Player", "PlaybackPacketPlan", "ReplayEvidence",
+        owners = ["Encounter", "Peripheral", "Player", "Proxy", "PlaybackPacketPlan", "ReplayEvidence",
                   "ReplayStimulusEvent", "Session", "V1Protocol"]
         subprocess.run(compiler + ["-I", str(build), "-L", str(build), "-lCoreBluetooth",
                        "-I", str(test_libraries), "-L", str(test_libraries),

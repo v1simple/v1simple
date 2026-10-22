@@ -752,8 +752,16 @@ void test_display_configuration_revision_saturates_instead_of_reusing_a_value() 
     TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, manager.displayConfigurationRevision());
 }
 
+#include "device_delete_read_tests.h"
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_device_delete_ready_read_failure_preserves_prior_acknowledged_intent);
+    RUN_TEST(test_device_delete_ready_read_failure_on_fresh_boot_retries_without_loss);
+    RUN_TEST(test_device_delete_healthy_lookup_finishes_prior_intent_before_next_delete);
+    RUN_TEST(test_device_delete_healthy_fresh_boot_finishes_pending_intent);
+    RUN_TEST(test_device_delete_presence_lookup_error_retains_intent);
+
     RUN_TEST(test_successful_slider_exit_persists_selected_brightness);
     RUN_TEST(test_failed_slider_exit_retries_and_reloads_selected_brightness);
     RUN_TEST(test_alert_preemption_retries_and_reloads_selected_brightness);

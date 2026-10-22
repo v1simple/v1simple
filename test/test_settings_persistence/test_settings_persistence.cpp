@@ -8059,9 +8059,22 @@ void test_settings_backup_replacement_preserves_valid_previous_across_errors_and
 #include "journal_checked_size_tests.h"
 #include "wifi_restore_lifecycle_tests.h"
 #include "wifi_journal_discovery_tests.h"
+#include "wifi_journal_payload_tests.h"
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_wifi_generation_read_failure_retains_same_ssid_password_rollback);
+    RUN_TEST(test_wifi_generation_read_failure_retains_clear_one_rollback);
+    RUN_TEST(test_wifi_unknown_read_failure_retains_edit_sd_password);
+    RUN_TEST(test_wifi_unknown_read_failure_retains_clear_one_sd_password);
+    RUN_TEST(test_wifi_unknown_read_failure_retains_forget_all_sd_password);
+    RUN_TEST(test_wifi_payload_faults_block_next_mutations_and_restore_consumers);
+    RUN_TEST(test_wifi_payload_authority_survives_save_and_backup_then_failed_recovery);
+    RUN_TEST(test_wifi_payload_fault_during_begin_keeps_journal_for_next_boot);
+    RUN_TEST(test_wifi_legacy_absent_payload_fields_recover_single_and_forget_all);
+    RUN_TEST(test_wifi_optional_payload_wrong_types_and_invalid_values_retain_authority);
+    RUN_TEST(test_typed_nvs_error_is_false_preferences_presence_but_checked_read_failure);
+
     RUN_TEST(test_wifi_http_three_unavailable_discovery_opens_preserve_prior_rollback);
     RUN_TEST(test_wifi_http_two_unavailable_discovery_opens_still_block);
     RUN_TEST(test_wifi_http_healthy_discovery_recovers_before_unrelated_edit);

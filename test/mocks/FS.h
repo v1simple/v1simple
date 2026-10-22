@@ -40,6 +40,7 @@ inline size_t g_read_budget_remaining = std::numeric_limits<size_t>::max();
 inline std::string g_zero_size_full_path;
 inline std::string g_fail_directory_entry_open;
 inline std::string g_fail_next_remove_path;
+inline std::string g_fail_next_remove_full_path;
 inline std::string g_reset_after_remove_path;
 inline bool g_require_existing_write_parent = false;
 inline bool g_exists_uses_read_open = false;
@@ -409,7 +410,12 @@ inline void mock_fail_next_remove(const char* path) {
     mock_fs_detail::g_fail_next_remove_path = path ? path : "";
 }
 
+inline void mock_fail_next_remove_for_full_path(const char* path) {
+    mock_fs_detail::g_fail_next_remove_full_path = path ? path : "";
+}
+
 inline void mock_reset_fs_remove_state() {
+    mock_fs_detail::g_fail_next_remove_full_path.clear();
     mock_fs_detail::g_fail_next_remove_path.clear();
     mock_fs_detail::g_reset_after_remove_path.clear();
 }
@@ -467,6 +473,10 @@ public:
     }
 
     bool remove(const char* path) {
+        if (path && resolve(path).string() == mock_fs_detail::g_fail_next_remove_full_path) {
+            mock_fs_detail::g_fail_next_remove_full_path.clear();
+            return false;
+        }
         if (path && mock_fs_detail::g_fail_next_remove_path == path) {
             mock_fs_detail::g_fail_next_remove_path.clear();
             return false;

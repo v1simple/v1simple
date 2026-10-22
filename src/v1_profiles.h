@@ -488,6 +488,7 @@ class V1ProfileManager {
                                           bool allowGrandfatheredRestore = false, bool createOnly = false);
     ProfileOperationResult deleteProfileUnlocked(const String& canonicalName);
     bool recoverInterruptedSavesUnlocked(fs::FS& filesystem);
+    bool recoverSaveIntentsUnlocked(bool requireCleanup = false) const;
     bool reconcileProfilesFrom(fs::FS* sourceFs, size_t& reconciled);
 };
 

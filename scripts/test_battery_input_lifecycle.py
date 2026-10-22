@@ -28,7 +28,7 @@ def method(source: str, signature: str) -> str:
     return source[start:end]
 
 
-def build_and_run(build: Path, source_root: Path = ROOT) -> None:
+def write_owners(build: Path, source_root: Path = ROOT) -> bool:
     source = (source_root / "src/battery_manager.cpp").read_text()
     signatures = [
         "BatteryManager::BatteryManager()", "bool BatteryManager::begin()",
@@ -45,11 +45,16 @@ def build_and_run(build: Path, source_root: Path = ROOT) -> None:
     if old_classifier in source:
         signatures.append(old_classifier)
     (build / "battery_owners.inc").write_text("\n\n".join(method(source, s) for s in signatures))
+    return old_classifier in source
+
+
+def build_and_run(build: Path, source_root: Path = ROOT) -> None:
+    legacy_classifier = write_owners(build, source_root)
     compiler = shlex.split(os.environ.get("CXX", "clang++" if shutil.which("clang++") else "c++"))
     includes = [build, source_root, source_root / "include", ROOT / "include", ROOT / "test/mocks"]
     flags = ["-std=c++17", "-fsanitize=address,undefined", "-fno-sanitize-recover=all",
              "-fno-omit-frame-pointer", "-g", *["-I" + str(p) for p in includes]]
-    if old_classifier in source:
+    if legacy_classifier:
         flags.append("-DLEGACY_GPIO_CLASSIFIER")
     executable = build / "battery-input"
     subprocess.run(compiler + flags + [str(FIXTURE / "input.cpp"), "-o", str(executable)], check=True)

@@ -388,7 +388,7 @@ final class Player {
         while true {
             if isStopped { return .aborted }
             if consumeRestart() { return .restart }
-            if consumeSeek() != nil { return .restart }
+            if hasSeekRequest() { return .restart }
             if !options.quietAfterComplete { sendIdleFrame() }
             Thread.sleep(forTimeInterval: interval)
         }

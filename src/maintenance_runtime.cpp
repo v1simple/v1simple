@@ -346,7 +346,7 @@ void MaintenanceRuntime::tick(uint32_t nowMs) {
     }
 
     audio_process_amp_timeout();
-    power_.process(nowMs);
+    power_.process();
     servicePowerDisplayOwnership(nowMs);
     const bool powerPresentationOwned = power_.ownsDisplayPresentation();
     MaintenanceWifiCoordinator::service(*this, nowMs, powerPresentationOwned);

@@ -98,6 +98,33 @@ schema v3. Current USB v5 retains that slot contract and adds profile-schema-v4
    data and reconciliation metadata. A failure rolls back through the enclosing
    settings transaction; unresolved rollback intent remains available for recovery.
 
+   Individual saves also record checked per-profile intent before moving the
+   acknowledged payload. The intent binds the prior payload and metadata to the
+   existing `.bak` or `.syncbak` recovery copy. Failed verification, metadata
+   writes, or mirror writes retain that authority even when removal and rename
+   compensation both fail. Loads, catalog snapshots, boot recovery, and later
+   mutations resolve this intent before publishing or replacing the profile.
+   An unavailable or corrupt intent preserves the files and defers recovery;
+   an unrelated profile can still be loaded by an already initialized owner.
+
+   After both configured stores have the replacement and metadata, renaming the
+   coordinator intent to its committed witness is the save's commit point.
+   Subsequent witness propagation or cleanup failure cannot reject that save
+   or restore its older payload. Ordinary completed saves reopen independently
+   on either store. An isolated pending mirror participant cannot know whether
+   its coordinator committed and remains unavailable until they reunite. An
+   isolated coordinator retains its decision and allows authoritative reads,
+   but defers another mutation of that profile until its peer returns. Distinct
+   acknowledged offline edits retain their own generations and reconcile after
+   their respective commit witnesses are validated.
+
+   `test_v1_profiles` covers combined verification/compensation failure,
+   metadata and mirror compensation, intent preparation and every promotion
+   reset boundary, immediate load/export, fresh owners, later save/delete,
+   missing peers, cleanup retry, and detached-store edits. These are production
+   ownership paths over host filesystems and injected I/O faults; they do not
+   establish physical flash durability or card-error frequency.
+
 6. **Commit and reload.** `saveDeferredBackup()` in
    [settings_backup.cpp](../../src/settings_backup.cpp) persists NVS now and
    schedules SD backup separately. In [settings_nvs.cpp](../../src/settings_nvs.cpp),

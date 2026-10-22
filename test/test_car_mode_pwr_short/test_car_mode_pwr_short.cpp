@@ -87,7 +87,8 @@ void test_car_mode_long_press_does_not_trigger_shutdown() {
     // block is compiled away.
     battery.processPowerButtonResult = true;  // would fire in normal mode
 
-    module.process(1000);
+    mockMillis = 1000;
+    module.process();
 
     TEST_ASSERT_FALSE(battery.powerOffCalled);
     TEST_ASSERT_EQUAL(0, battery.processPowerButtonCalls);
@@ -96,9 +97,12 @@ void test_car_mode_long_press_does_not_trigger_shutdown() {
 
 void test_car_mode_process_does_not_call_processPowerButton() {
     // process() must not reach processPowerButton() at all.
-    module.process(1000);
-    module.process(2000);
-    module.process(3000);
+    mockMillis = 1000;
+    module.process();
+    mockMillis = 2000;
+    module.process();
+    mockMillis = 3000;
+    module.process();
 
     TEST_ASSERT_EQUAL(0, battery.processPowerButtonCalls);
     // battery.update() is NOT gated — it must still run.
@@ -109,7 +113,8 @@ void test_car_mode_process_does_not_call_processPowerButton() {
 void test_car_mode_critical_battery_does_not_show_warning() {
     battery.setCritical(true);
 
-    module.process(1000);
+    mockMillis = 1000;
+    module.process();
 
     TEST_ASSERT_EQUAL(0, display.showLowBatteryCalls);
     TEST_ASSERT_FALSE(battery.powerOffCalled);
@@ -118,8 +123,10 @@ void test_car_mode_critical_battery_does_not_show_warning() {
 void test_car_mode_critical_battery_never_triggers_shutdown() {
     battery.setCritical(true);
 
-    module.process(1000);
-    module.process(6001);  // past the 5-second grace period
+    mockMillis = 1000;
+    module.process();
+    mockMillis = 6001;
+    module.process();  // past the 5-second grace period
 
     TEST_ASSERT_EQUAL(0, display.showShutdownCalls);
     TEST_ASSERT_FALSE(battery.powerOffCalled);
@@ -162,7 +169,7 @@ void test_car_mode_auto_power_off_is_compiled_out() {
     TEST_ASSERT_EQUAL(0, module.autoPowerOffTimerStartForTest());
 
     advanceTime(60001);
-    module.process(mockMillis);
+    module.process();
 
     TEST_ASSERT_EQUAL(1, battery.updateCalls);
     TEST_ASSERT_EQUAL(0, display.showShutdownCalls);

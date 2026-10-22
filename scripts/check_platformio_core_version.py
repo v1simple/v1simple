@@ -54,8 +54,18 @@ def pio_interpreter(pio: str) -> str | None:
                 return None
             command = shlex.split(match.group(1).decode("utf-8"), posix=False)
             return command[0].strip('"') if len(command) == 1 else None
-        first_line = contents.splitlines()[0].decode("utf-8")
+        lines = contents.splitlines()
+        first_line = lines[0].decode("utf-8")
         command = shlex.split(first_line.removeprefix("#!"))
+        if command == ["/bin/sh"]:
+            # pip uses a shell/Python trampoline for spaced or long interpreter
+            # paths. Its exec target, rather than /bin/sh, owns the distribution.
+            if len(lines) < 3 or lines[2] != b"' '''":
+                return None
+            trampoline = shlex.split(lines[1].decode("utf-8"))
+            if len(trampoline) == 4 and trampoline[0] == "exec" and trampoline[2:] == ["$0", "$@"]:
+                return trampoline[1]
+            return None
     except (OSError, IndexError, ValueError):
         return None
     if not first_line.startswith("#!") or not command:

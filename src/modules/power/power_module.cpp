@@ -176,7 +176,7 @@ void PowerModule::onAlpSignalChange(bool active) {
 #endif
 }
 
-void PowerModule::reevaluateAutoPowerOffTimer(const V1Settings& s, unsigned long nowMs) {
+void PowerModule::reevaluateAutoPowerOffTimer(const V1Settings& s, uint32_t nowMs) {
 #ifdef CAR_MODE_PWR_SHORT
     (void)s;
     (void)nowMs;
@@ -198,13 +198,9 @@ void PowerModule::reevaluateAutoPowerOffTimer(const V1Settings& s, unsigned long
 #endif
 }
 
-void PowerModule::process(unsigned long nowMs) {
+void PowerModule::process() {
     if (!battery_ || !display_ || !settings_)
         return;
-
-#ifdef CAR_MODE_PWR_SHORT
-    (void)nowMs;
-#endif
 
     battery_->update();
 #ifndef CAR_MODE_PWR_SHORT
@@ -216,6 +212,10 @@ void PowerModule::process(unsigned long nowMs) {
 
     // Critical battery handling (warning + shutdown)
 #ifndef CAR_MODE_PWR_SHORT
+    // Earlier runtime phases may have started the inactivity timer, and ADC
+    // acquisition may advance millis(). Evaluate both timers after that work:
+    // the trigger reading must not count as a later warning-window sample.
+    const uint32_t nowMs = static_cast<uint32_t>(millis());
     if (battery_->criticalProtectionRequired()) {
         if (!criticalBatteryPresentationActive_) {
             Serial.println("[Battery] CRITICAL - arming low battery warning");
@@ -223,7 +223,7 @@ void PowerModule::process(unsigned long nowMs) {
             criticalBatteryWarningVisible_ = false;
             criticalBatteryWarningPreempted_ = false;
             criticalBatteryTime_ = nowMs;
-        } else if (nowMs - criticalBatteryTime_ > 5000) {
+        } else if (static_cast<uint32_t>(nowMs - criticalBatteryTime_) > 5000) {
             // Any successful sample from the warning window is fresh enough to
             // confirm the cached decision. Only force one immediate acquisition
             // when periodic polling supplied none; never wait for a battery or
@@ -253,8 +253,8 @@ void PowerModule::process(unsigned long nowMs) {
     // Reconcile without renewing an already-running interval on every tick.
     reevaluateAutoPowerOffTimer(s, nowMs);
     if (autoPowerOffTimerRunning_) {
-        unsigned long elapsedMs = nowMs - autoPowerOffTimerStart_;
-        unsigned long timeoutMs = (unsigned long)s.autoPowerOffMinutes * 60UL * 1000UL;
+        const uint32_t elapsedMs = nowMs - autoPowerOffTimerStart_;
+        const uint32_t timeoutMs = static_cast<uint32_t>(s.autoPowerOffMinutes) * 60000u;
         if (elapsedMs >= timeoutMs) {
             Serial.printf("[AutoPowerOff] Timer expired after %d minutes - powering off\n", s.autoPowerOffMinutes);
             autoPowerOffTimerRunning_ = false;

@@ -28,6 +28,11 @@ void setTime(unsigned long nowMs) {
     mockMicros = nowMs * 1000UL;
 }
 
+void processAt(unsigned long nowMs) {
+    setTime(nowMs);
+    power.process();
+}
+
 struct ProbePowerLifecycle final : PowerLifecycle {
     int* preparationCalls = nullptr;
     int* abortCalls = nullptr;
@@ -75,7 +80,7 @@ void test_critical_warning_does_not_depend_on_icon_presence_floor() {
     battery.setHasBattery(false);
     battery.setCritical(true);
 
-    power.process(100);
+    processAt(100);
 
     TEST_ASSERT_TRUE(power.ownsDisplayPresentation());
     TEST_ASSERT_EQUAL_INT_MESSAGE(0, display.showLowBatteryCalls,
@@ -87,7 +92,7 @@ void test_critical_warning_does_not_depend_on_icon_presence_floor() {
 
 void test_live_alert_preemption_preserves_warning_lifecycle_and_restores_warning() {
     battery.setCritical(true);
-    power.process(100);
+    processAt(100);
     TEST_ASSERT_TRUE(power.ownsDisplayPresentation());
     TEST_ASSERT_FALSE(power.criticalBatteryWarningNeedsRestore());
     TEST_ASSERT_EQUAL(0, display.showLowBatteryCalls);
@@ -109,11 +114,11 @@ void test_live_alert_preemption_preserves_warning_lifecycle_and_restores_warning
 
 void test_usb_transition_releases_warning_and_requests_one_authoritative_restore() {
     battery.setCritical(true);
-    power.process(100);
+    processAt(100);
     TEST_ASSERT_TRUE(power.ownsDisplayPresentation());
 
     battery.setOnBattery(false);
-    power.process(200);
+    processAt(200);
 
     TEST_ASSERT_FALSE(power.ownsDisplayPresentation());
     TEST_ASSERT_TRUE(power.consumeDisplayRestoreRequest());
@@ -127,10 +132,9 @@ void test_critical_shutdown_abort_releases_warning_for_authoritative_recovery() 
     power.setLifecycle(lifecycle);
     battery.setCritical(true);
     battery.powerOffResult = false;
-    power.process(100);
+    processAt(100);
 
-    setTime(5101);
-    power.process(5101);
+    processAt(5101);
 
     TEST_ASSERT_EQUAL(1, battery.refreshVoltageCalls);
     TEST_ASSERT_EQUAL(1, battery.powerOffCalls);
@@ -144,9 +148,9 @@ void test_critical_shutdown_abort_releases_warning_for_authoritative_recovery() 
 void test_critical_shutdown_is_cancelled_when_fresh_read_is_unavailable() {
     battery.setCritical(true);
     battery.setRefreshVoltageResult(false);
-    power.process(100);
+    processAt(100);
 
-    power.process(5101);
+    processAt(5101);
 
     TEST_ASSERT_EQUAL(1, battery.refreshVoltageCalls);
     TEST_ASSERT_EQUAL(0, battery.powerOffCalls);
@@ -157,9 +161,9 @@ void test_critical_shutdown_is_cancelled_when_fresh_read_is_unavailable() {
 void test_critical_shutdown_is_cancelled_when_fresh_read_recovers() {
     battery.setCritical(true);
     battery.setCriticalAfterRefresh(false);
-    power.process(100);
+    processAt(100);
 
-    power.process(5101);
+    processAt(5101);
 
     TEST_ASSERT_EQUAL(1, battery.refreshVoltageCalls);
     TEST_ASSERT_EQUAL(0, battery.powerOffCalls);
@@ -169,10 +173,10 @@ void test_critical_shutdown_is_cancelled_when_fresh_read_recovers() {
 
 void test_critical_shutdown_reuses_successful_warning_window_read() {
     battery.setCritical(true);
-    power.process(100);
+    processAt(100);
     battery.setVoltageReadingAt(200);
 
-    power.process(5101);
+    processAt(5101);
 
     TEST_ASSERT_EQUAL(0, battery.refreshVoltageCalls);
     TEST_ASSERT_EQUAL(1, battery.powerOffCalls);
@@ -182,9 +186,9 @@ void test_critical_shutdown_does_not_accept_pre_warning_read() {
     battery.setCritical(true);
     battery.setVoltageReadingAt(99);
     battery.setRefreshVoltageResult(false);
-    power.process(100);
+    processAt(100);
 
-    power.process(5101);
+    processAt(5101);
 
     TEST_ASSERT_EQUAL(1, battery.refreshVoltageCalls);
     TEST_ASSERT_EQUAL(0, battery.powerOffCalls);
@@ -195,9 +199,9 @@ void test_critical_shutdown_does_not_treat_trigger_sample_as_confirmation() {
     battery.setCritical(true);
     battery.setVoltageReadingAt(100);
     battery.setRefreshVoltageResult(false);
-    power.process(100);
+    processAt(100);
 
-    power.process(5101);
+    processAt(5101);
 
     TEST_ASSERT_EQUAL(1, battery.refreshVoltageCalls);
     TEST_ASSERT_EQUAL(0, battery.powerOffCalls);
@@ -210,17 +214,14 @@ void test_auto_power_abort_retries_only_after_a_full_interval() {
     TEST_ASSERT_EQUAL_UINT32(1000, power.autoPowerOffTimerStartForTest());
     battery.powerOffResult = false;
 
-    setTime(61000);
-    power.process(61000);
+    processAt(61000);
     TEST_ASSERT_EQUAL(1, battery.powerOffCalls);
     TEST_ASSERT_EQUAL_UINT32(61000, power.autoPowerOffTimerStartForTest());
 
-    setTime(120999);
-    power.process(120999);
+    processAt(120999);
     TEST_ASSERT_EQUAL(1, battery.powerOffCalls);
 
-    setTime(121000);
-    power.process(121000);
+    processAt(121000);
     TEST_ASSERT_EQUAL(2, battery.powerOffCalls);
     TEST_ASSERT_EQUAL_UINT32(121000, power.autoPowerOffTimerStartForTest());
 }
@@ -232,11 +233,11 @@ void test_auto_power_timer_armed_at_rollover_waits_full_interval() {
     TEST_ASSERT_TRUE(power.autoPowerOffTimerRunningForTest());
     TEST_ASSERT_EQUAL_UINT32(0, power.autoPowerOffTimerStartForTest());
 
-    power.process(0);
+    processAt(0);
     TEST_ASSERT_EQUAL(0, battery.powerOffCalls);
-    power.process(59999);
+    processAt(59999);
     TEST_ASSERT_EQUAL(0, battery.powerOffCalls);
-    power.process(60000);
+    processAt(60000);
     TEST_ASSERT_EQUAL(1, battery.powerOffCalls);
 }
 
@@ -257,7 +258,7 @@ void test_shutdown_preparation_cannot_veto_physical_poweroff() {
 }
 
 void test_auto_power_reconciliation_does_not_arm_without_real_presence() {
-    power.process(10000);
+    processAt(10000);
     TEST_ASSERT_FALSE(power.autoPowerOffArmedForTest());
     TEST_ASSERT_FALSE(power.autoPowerOffTimerRunningForTest());
     TEST_ASSERT_EQUAL_INT(0, battery.powerOffCalls);
@@ -270,18 +271,18 @@ void test_disabling_auto_power_cancels_without_shutdown_and_reenable_starts_fres
     TEST_ASSERT_TRUE(power.autoPowerOffTimerRunningForTest());
     settings.settings.autoPowerOffMinutes = 0;
     setTime(2000);
-    power.process(mockMillis);
+    processAt(mockMillis);
     TEST_ASSERT_FALSE(power.autoPowerOffTimerRunningForTest());
     TEST_ASSERT_EQUAL_INT(0, battery.powerOffCalls);
     settings.settings.autoPowerOffMinutes = 1;
     setTime(10000);
-    power.process(mockMillis);
+    processAt(mockMillis);
     TEST_ASSERT_EQUAL_UINT32(10000, power.autoPowerOffTimerStartForTest());
     setTime(69999);
-    power.process(mockMillis);
+    processAt(mockMillis);
     TEST_ASSERT_EQUAL_INT(0, battery.powerOffCalls);
     setTime(70000);
-    power.process(mockMillis);
+    processAt(mockMillis);
     TEST_ASSERT_EQUAL_INT(1, battery.powerOffCalls);
 }
 

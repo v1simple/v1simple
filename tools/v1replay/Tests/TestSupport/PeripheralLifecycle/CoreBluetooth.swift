@@ -1,4 +1,4 @@
-// Software-only CoreBluetooth surface for the production peripheral callbacks.
+// Software-only CoreBluetooth surface for production replay transport callbacks.
 // This module shadows the framework only in test_peripheral_lifecycle.py's
 // isolated compiler invocation. No Bluetooth manager or radio is opened.
 import Foundation
@@ -29,8 +29,13 @@ public final class CBUUID: Hashable {
 }
 open class CBCharacteristic {
     public let uuid: CBUUID
+    public let properties: CBCharacteristicProperties
+    public var value: Data?
+    public var isNotifying = false
     public init(type: CBUUID, properties: CBCharacteristicProperties,
-                value: Data?, permissions: CBAttributePermissions) { uuid = type }
+                value: Data?, permissions: CBAttributePermissions) {
+        uuid = type; self.properties = properties; self.value = value
+    }
 }
 public final class CBMutableCharacteristic: CBCharacteristic {}
 open class CBService {
@@ -39,6 +44,64 @@ open class CBService {
     public init(type: CBUUID, primary: Bool) { uuid = type }
 }
 public final class CBMutableService: CBService {}
+public enum CBCharacteristicWriteType { case withoutResponse, withResponse }
+public protocol CBPeripheralDelegate: AnyObject {}
+public final class CBPeripheral {
+    public weak var delegate: CBPeripheralDelegate?
+    public var name: String? = "V1-test"
+    public let identifier = UUID()
+    public var services: [CBService]?
+    public var serviceRequests = 0
+    public var characteristicRequests = 0
+    public var notificationRequests: [CBCharacteristic] = []
+    public init() {}
+    public func discoverServices(_ values: [CBUUID]?) { serviceRequests += 1 }
+    public func discoverCharacteristics(_ values: [CBUUID]?, for service: CBService) {
+        characteristicRequests += 1
+    }
+    public func setNotifyValue(_ value: Bool, for characteristic: CBCharacteristic) {
+        if value { notificationRequests.append(characteristic) }
+    }
+    public func writeValue(_ data: Data, for characteristic: CBCharacteristic,
+                           type: CBCharacteristicWriteType) {}
+}
+public protocol CBCentralManagerDelegate: AnyObject {
+    func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral,
+                        error: Error?)
+}
+public final class CBCentralManager {
+    public static var latest: CBCentralManager!
+    public weak var delegate: CBCentralManagerDelegate?
+    public var state: CBManagerState = .poweredOn
+    public var isScanning = false
+    public var scans = 0
+    public var connections: [CBPeripheral] = []
+    public var cancellations: [CBPeripheral] = []
+    private var pendingCancellations: [CBPeripheral] = []
+    public init(delegate: CBCentralManagerDelegate?, queue: DispatchQueue?) {
+        self.delegate = delegate; Self.latest = self
+    }
+    public func scanForPeripherals(withServices: [CBUUID]?, options: [String: Any]?) {
+        scans += 1; isScanning = true
+    }
+    public func stopScan() { isScanning = false }
+    public func connect(_ peripheral: CBPeripheral, options: [String: Any]?) {
+        connections.append(peripheral)
+    }
+    public func cancelPeripheralConnection(_ peripheral: CBPeripheral) {
+        cancellations.append(peripheral)
+        if !pendingCancellations.contains(where: { $0 === peripheral }) {
+            pendingCancellations.append(peripheral)
+        }
+    }
+    // Cancellation completion is a separate delegate event. An ordinary
+    // request error does not synthesize a disconnect by itself.
+    public func completeCancellation() {
+        guard !pendingCancellations.isEmpty else { return }
+        let peripheral = pendingCancellations.removeFirst()
+        delegate?.centralManager(self, didDisconnectPeripheral: peripheral, error: nil)
+    }
+}
 public final class CBCentral {
     public let identifier = UUID()
     public let maximumUpdateValueLength = 20

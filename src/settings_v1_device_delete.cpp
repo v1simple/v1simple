@@ -3,6 +3,7 @@
 
 #include "settings_internals.h"
 #include "settings_sanitize.h"
+#include "settings_nvs_reader.h"
 #include "v1_devices.h"
 
 #include <algorithm>
@@ -49,13 +50,18 @@ bool readExactAddress(Preferences& prefs, String& output) {
 
 IntentReadStatus readIntent(DeleteIntent& intent) {
     intent = DeleteIntent{};
+    SettingsNvsReader reader(kSettingsV1RuntimeNamespace);
+    if (!reader.good()) return IntentReadStatus::Unavailable;
+    const bool present = reader.isKey(kNvsV1DeleteReady);
+    if (!reader.good()) return IntentReadStatus::Unavailable;
+    if (!present) return IntentReadStatus::Absent;
+    const uint8_t version = reader.getUChar(kNvsV1DeleteReady, 0);
+    if (!reader.good()) return IntentReadStatus::Unavailable;
+    // Preferences::isKey collapses a typed read failure into false absence.
+    // Never replace an acknowledged intent unless absence was proved above.
     Preferences prefs;
     if (!prefs.begin(kSettingsV1RuntimeNamespace, true)) return IntentReadStatus::Unavailable;
-    if (!prefs.isKey(kNvsV1DeleteReady)) {
-        prefs.end();
-        return IntentReadStatus::Absent;
-    }
-    if (prefs.getType(kNvsV1DeleteReady) != PT_U8 || prefs.getUChar(kNvsV1DeleteReady, 0) != INTENT_VERSION ||
+    if (version != INTENT_VERSION ||
         prefs.getType(kNvsV1DeleteToken) != PT_U32 || prefs.getType(kNvsV1DeletePhase) != PT_U8 ||
         !readExactAddress(prefs, intent.address)) {
         prefs.end();

@@ -1,7 +1,7 @@
 <script>
     import CardSectionHead from '#lib/components/CardSectionHead.svelte';
 
-    let { loading, profiles = [], allowEdit = true, currentName = '', compact = false, oneditProfile, oncopyProfile, ondeleteProfile } = $props();
+    let { loading, profiles = [], allowEdit = true, mutationBusy = false, currentName = '', compact = false, oneditProfile, oncopyProfile, ondeleteProfile } = $props();
 </script>
 
 <div class="surface-card">
@@ -55,6 +55,7 @@
                             {/if}
                             <button
                                 class="btn btn-outline btn-error btn-xs"
+                                disabled={mutationBusy}
                                 onclick={() => ondeleteProfile(profile.name)}
                             >
                                 Delete

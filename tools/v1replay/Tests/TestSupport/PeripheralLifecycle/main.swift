@@ -535,6 +535,47 @@ private final class PlaybackFixture {
 }
 
 final class PlayerLifecycleTests: XCTestCase {
+    private func assertFinishedNavigation(target: Int, action: (Player) -> Void) {
+        let f = PlaybackFixture(muted: [false, true, false, true], gap: 0.015)
+        defer { f.stop() }
+        f.onSample = { if $0 == 5 { f.player.stop() } }
+        f.startOrdinary()
+        guard until("completed replay", condition: { f.player.snapshot.phase == .finished }) else { return }
+        XCTAssertEqual(f.events.map(\.sourceIndex), [0, 1, 2, 3])
+        action(f.player)
+        guard until("selected sample after completion", condition: { f.events.count == 5 }) else { return }
+        f.stop()
+        XCTAssertEqual(f.events[4].sourceIndex, target)
+        XCTAssertEqual(f.events[4].expected.muted, target % 2 == 1)
+        f.assertRequestedBytesAccepted()
+    }
+
+    @objc func testPreviousChangeAfterCompletionRetainsTarget() {
+        assertFinishedNavigation(target: 2) { $0.jumpToPreviousChange() }
+    }
+
+    @objc func testDirectSeekAfterCompletionRetainsTarget() {
+        assertFinishedNavigation(target: 1) { $0.seek(to: 1) }
+    }
+
+    @objc func testRestartAfterCompletionStartsAtZero() {
+        assertFinishedNavigation(target: 0) { $0.restart() }
+    }
+
+    @objc func testSeekDuringPlaybackRetainsTarget() {
+        let f = PlaybackFixture(muted: [false, true, false, true], gap: 0.3)
+        defer { f.stop() }
+        f.onSample = {
+            if $0 == 1 { f.player.seek(to: 2) }
+            else if $0 == 2 { f.player.stop() }
+        }
+        f.startOrdinary()
+        guard until("selected sample during playback", condition: { f.events.count == 2 }) else { return }
+        f.stop()
+        XCTAssertEqual(f.events.map(\.sourceIndex), [0, 2])
+        f.assertRequestedBytesAccepted()
+    }
+
     @discardableResult
     private func until(_ description: String, timeout: Double = 2,
                        file: StaticString = #filePath, line: UInt = #line,
@@ -781,8 +822,147 @@ final class PlayerLifecycleTests: XCTestCase {
     }
 }
 
+private final class ProxyFixture {
+    let queue = DispatchQueue(label: "v1replay.proxy-test")
+    let proxy: V1ProxyCentral
+    let manager: CBCentralManager
+    var connectedCallbacks = 0
+    var disconnectedCallbacks = 0
+
+    init() {
+        proxy = V1ProxyCentral(config: .init(excludeName: "V1-REPLAY"), queue: queue)
+        manager = CBCentralManager.latest!
+        proxy.onConnected = { [weak self] _, _ in self?.connectedCallbacks += 1 }
+        proxy.onDisconnected = { [weak self] _ in self?.disconnectedCallbacks += 1 }
+        queue.sync { proxy.centralManagerDidUpdateState(manager) }
+    }
+
+    func connect() -> CBPeripheral {
+        let peer = CBPeripheral()
+        let service = CBService(type: CBUUID(string: V1.serviceUUID), primary: true)
+        service.characteristics = V1ProxyCentral.notifyUUIDs.map {
+            CBCharacteristic(type: $0, properties: [.notify], value: nil, permissions: [])
+        } + [CBCharacteristic(type: CBUUID(string: V1.commandUUID),
+                              properties: [.writeWithoutResponse], value: nil, permissions: [])]
+        peer.services = [service]
+        proxy.centralManager(manager, didDiscover: peer,
+                             advertisementData: [CBAdvertisementDataServiceUUIDsKey: [service.uuid]],
+                             rssi: NSNumber(value: -40))
+        proxy.centralManager(manager, didConnect: peer)
+        return peer
+    }
+
+    func discover(_ peer: CBPeripheral, failing stage: String? = nil) {
+        let error = NSError(domain: "CBATTErrorDomain", code: 0x11)
+        proxy.peripheral(peer, didDiscoverServices: stage == "services" ? error : nil)
+        if stage == "services" { return }
+        proxy.peripheral(peer, didDiscoverCharacteristicsFor: peer.services![0],
+                         error: stage == "characteristics" ? error : nil)
+        if stage != nil { return }
+        for characteristic in peer.notificationRequests {
+            characteristic.isNotifying = true
+            proxy.peripheral(peer, didUpdateNotificationStateFor: characteristic, error: nil)
+        }
+    }
+
+    func assertConnected(_ peer: CBPeripheral, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertTrue(proxy.isConnected, file: file, line: line)
+        XCTAssertEqual(connectedCallbacks, 1, file: file, line: line)
+        XCTAssertEqual(peer.serviceRequests, 1, file: file, line: line)
+        XCTAssertEqual(peer.characteristicRequests, 1, file: file, line: line)
+        XCTAssertEqual(peer.notificationRequests.map(\.uuid), V1ProxyCentral.notifyUUIDs,
+                       file: file, line: line)
+        XCTAssertEqual(proxy.subscriptions, 3, file: file, line: line)
+        XCTAssertFalse(manager.isScanning, file: file, line: line)
+    }
+}
+
+final class ProxyLifecycleTests: XCTestCase {
+    private func assertDiscoveryRecovery(stage: String) {
+        let f = ProxyFixture()
+        defer { f.proxy.stop() }
+        f.queue.sync {
+            let failed = f.connect()
+            f.discover(failed, failing: stage)
+            XCTAssertFalse(f.proxy.isConnected)
+            XCTAssertEqual(f.connectedCallbacks, 0, "a failed request cannot advertise a usable proxy")
+            XCTAssertEqual(f.proxy.subscriptions, 0)
+            XCTAssertEqual(failed.notificationRequests.count, 0)
+            XCTAssertEqual(failed.characteristicRequests, stage == "services" ? 0 : 1)
+            XCTAssertEqual(f.manager.cancellations.count, 1)
+            XCTAssertTrue(f.manager.cancellations.first === failed)
+            XCTAssertFalse(f.manager.isScanning, "wait for cancellation completion before rescanning")
+            XCTAssertEqual(f.manager.scans, 1)
+            guard f.manager.cancellations.first === failed else { return }
+
+            // The fake delivers a disconnect only for an actual cancellation.
+            f.manager.completeCancellation()
+            XCTAssertEqual(f.disconnectedCallbacks, 1)
+            XCTAssertTrue(f.manager.isScanning)
+            XCTAssertEqual(f.manager.scans, 2)
+            let recovered = f.connect()
+            XCTAssertFalse(recovered === failed)
+            XCTAssertEqual(f.manager.connections.count, 2)
+            f.discover(recovered)
+            f.assertConnected(recovered)
+        }
+    }
+
+    @objc func testServiceDiscoveryFailureCancelsAndReconnects() {
+        assertDiscoveryRecovery(stage: "services")
+    }
+
+    @objc func testCharacteristicDiscoveryFailureCancelsAndReconnects() {
+        assertDiscoveryRecovery(stage: "characteristics")
+    }
+
+    @objc func testSuccessfulDiscoverySubscribesWithoutCancellation() {
+        let f = ProxyFixture()
+        defer { f.proxy.stop() }
+        f.queue.sync {
+            let peer = f.connect()
+            f.discover(peer)
+            f.assertConnected(peer)
+            XCTAssertEqual(f.manager.cancellations.count, 0)
+            XCTAssertEqual(f.manager.scans, 1)
+        }
+    }
+
+    @objc func testMissingServiceStillCancelsAndRescans() {
+        let f = ProxyFixture()
+        defer { f.proxy.stop() }
+        f.queue.sync {
+            let peer = f.connect()
+            peer.services = []
+            f.proxy.peripheral(peer, didDiscoverServices: nil)
+            XCTAssertEqual(f.manager.cancellations.count, 1)
+            XCTAssertEqual(f.connectedCallbacks, 0)
+            f.manager.completeCancellation()
+            XCTAssertTrue(f.manager.isScanning)
+            XCTAssertEqual(f.manager.scans, 2)
+        }
+    }
+
+    @objc func testStopDuringDiscoveryCancellationDoesNotResumeScanning() {
+        for stage in ["services", "characteristics"] {
+            let f = ProxyFixture()
+            f.queue.sync { f.discover(f.connect(), failing: stage) }
+            f.proxy.stop()
+            f.queue.sync {
+                f.manager.completeCancellation()
+                f.proxy.centralManagerDidUpdateState(f.manager)
+                XCTAssertFalse(f.manager.isScanning)
+                XCTAssertEqual(f.manager.scans, 1)
+                XCTAssertEqual(f.manager.connections.count, 1)
+                XCTAssertEqual(f.connectedCallbacks, 0)
+            }
+        }
+    }
+}
+
 let suite = XCTestSuite(name: "Replay software transport")
 suite.addTest(XCTestSuite(forTestCaseClass: PeripheralLifecycleTests.self))
 suite.addTest(XCTestSuite(forTestCaseClass: PlayerLifecycleTests.self))
+suite.addTest(XCTestSuite(forTestCaseClass: ProxyLifecycleTests.self))
 suite.run()
 exit(suite.testRun?.hasSucceeded == true ? 0 : 1)

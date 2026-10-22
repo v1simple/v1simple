@@ -37,6 +37,9 @@
     let saveName = $state('');
     let saveDescription = $state('');
     let savingProfile = $state(null);
+    let deletingProfile = $state(false);
+    // Publish catalog writes in the same order that they reach storage.
+    let mutationBusy = $derived(!!savingProfile || deletingProfile);
     let copySourceName = $state(null);
     let editingSettings = $state(false);
     let editedSettings = $state(null);
@@ -425,7 +428,7 @@
     }
 
     async function saveCurrentProfile() {
-        if (savingProfile) return;
+        if (mutationBusy) return;
         const validatedName = validateProfileName(saveName);
         if (validatedName.error) {
             message = { type: 'error', text: validatedName.error };
@@ -684,7 +687,7 @@
     }
 
     async function saveEditedProfile() {
-        if (savingProfile) return;
+        if (mutationBusy) return;
         if (!editedSettings || !currentProfile || !currentProfile.name) {
             message = { type: 'error', text: 'No profile loaded to save' };
             return;
@@ -740,8 +743,10 @@
     }
 
     async function deleteProfile(name) {
+        if (mutationBusy) return;
         if (!confirm(`Delete profile "${name}"?`)) return;
 
+        deletingProfile = true;
         try {
             const res = await fetchWithTimeout(
                 '/api/v1/profile/delete',
@@ -771,6 +776,8 @@
             }
         } catch (e) {
             message = { type: 'error', text: 'Failed to delete' };
+        } finally {
+            deletingProfile = false;
         }
     }
 </script>
@@ -804,6 +811,7 @@
     <ProfileSaveDialog
         open={showSaveDialog}
         {savingProfile}
+        {mutationBusy}
         bind:saveName
         bind:saveDescription
         oncancel={closeSaveDialog}
@@ -813,6 +821,7 @@
     <ProfileSavedListCard
         {loading}
         {profiles}
+        {mutationBusy}
         allowEdit={profileSchemaReady}
         currentName={currentProfile?.name || ''}
         compact={!!currentProfile?.settings}
@@ -830,6 +839,7 @@
             applyDisabled={operationBusy || !capturedSnapshot?.address}
             onapply={applySavedProfile}
             {savingProfile}
+            {mutationBusy}
             bind:editedSettings
             bind:editedDetector
             bind:editedInTheBox

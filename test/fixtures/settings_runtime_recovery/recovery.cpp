@@ -256,14 +256,14 @@ void test_recovered_auto_off_starts_full_interval_without_new_detector_edge() {
   TEST_ASSERT_FALSE(boot.recoveryPending());
   TEST_ASSERT_EQUAL_UINT32(1, runtime.observedSettingsRecoveryRevision_);
   TEST_ASSERT_EQUAL_UINT8(1, boot.get().autoPowerOffMinutes);
-  runtime.power_.process(mockMillis);
+  runtime.power_.process();
   TEST_ASSERT_TRUE(runtime.power_.autoPowerOffTimerRunningForTest());
   TEST_ASSERT_EQUAL_UINT32(10000, runtime.power_.autoPowerOffTimerStartForTest());
   mockMillis = 69999;
-  runtime.power_.process(mockMillis);
+  runtime.power_.process();
   TEST_ASSERT_EQUAL_INT(0, runtime.battery_.powerOffCalls);
   mockMillis = 70000;
-  runtime.power_.process(mockMillis);
+  runtime.power_.process();
   TEST_ASSERT_EQUAL_INT(1, runtime.battery_.powerOffCalls);
 }
 

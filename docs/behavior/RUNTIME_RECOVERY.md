@@ -16,11 +16,27 @@ An armed, absent detector with a newly enabled interval starts a full interval
 from recovery. Repeated ticks do not renew a running timer. Disabled auto-off
 cancels it; car builds retain their no-auto-off contract.
 
+Power captures its own 32-bit clock after battery/button work, instead of using
+the earlier loop timestamp. An ALP loss during the pass therefore starts a full
+inactivity interval. A slow ADC trigger also precedes the critical-warning
+anchor, so that acquisition cannot confirm its own warning. After the full
+five-second warning, a distinct successful low reading is still required;
+an unavailable, zero or recovered reading cancels shutdown. A distinct reading
+already acquired during the warning may be reused.
+
 `test_drive_runtime_policies.py` exercises real touch, coordinator, ALP/power,
 quiet policy and parser/queue owners. `test_settings_runtime_recovery.py`
 executes actual failed NVS read, settings recovery and timer expiry. Peripheral
 input and output are modeled; these tests do not qualify a physical ALP, GPS or
 detector connection.
+
+The ALP composition includes advancing phase clocks in normal/sliders views
+and at rollover. `test_power_runtime_lifecycle.py` executes actual battery
+acquisition/cache methods and PowerModule through the drive bridge and complete
+maintenance tick, including acquisition delays, grace expiry, distinct low and
+recovered readings, acquisition failure, rollover and the car shutdown gate.
+Its ADC/rail adapters prove the software decision, not physical cell or cutoff
+behavior.
 
 ## PWR input and unavailable supply sensing
 

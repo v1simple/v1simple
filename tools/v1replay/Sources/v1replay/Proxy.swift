@@ -190,6 +190,7 @@ final class V1ProxyCentral: NSObject {
     private let queue: DispatchQueue
     private var manager: CBCentralManager!
     private var target: CBPeripheral?
+    private var stopped = false
 
     private let stateLock = NSLock()
     private var discovered: [CBUUID: CBCharacteristic] = [:]
@@ -252,12 +253,15 @@ final class V1ProxyCentral: NSObject {
 
     func stop() {
         queue.sync {
+            stopped = true
             if manager.isScanning { manager.stopScan() }
             if let peripheral = target { manager.cancelPeripheralConnection(peripheral) }
         }
     }
 
     private func startScan() {
+        // A cancellation's disconnect callback can arrive after stop().
+        guard !stopped else { return }
         // Scan unfiltered and match manually: not every V1 puts the service
         // UUID in the advertising packet, and we also need the local name to
         // exclude our own peripheral.
@@ -334,7 +338,7 @@ extension V1ProxyCentral: CBCentralManagerDelegate {
             subscribedCount = 0
             discovered.removeAll()
         }
-        onLog?("V1 disconnected\(error.map { ": \($0.localizedDescription)" } ?? "") — rescanning")
+        onLog?("V1 disconnected\(error.map { ": \($0.localizedDescription)" } ?? "")")
         onDisconnected?(name)
         target = nil
         startScan()
@@ -348,6 +352,7 @@ extension V1ProxyCentral: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         if let error = error {
             onLog?("service discovery failed: \(error.localizedDescription)")
+            manager.cancelPeripheralConnection(peripheral)
             return
         }
         guard let service = peripheral.services?.first(where: {
@@ -365,6 +370,7 @@ extension V1ProxyCentral: CBPeripheralDelegate {
                     error: Error?) {
         if let error = error {
             onLog?("characteristic discovery failed: \(error.localizedDescription)")
+            manager.cancelPeripheralConnection(peripheral)
             return
         }
         let characteristics = service.characteristics ?? []

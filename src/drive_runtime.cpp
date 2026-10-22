@@ -471,8 +471,8 @@ void DriveRuntime::presentConnectionState(const ConnectionRuntimeSnapshot& conne
     displayOrchestration_.processEarly(earlyContext);
 }
 
-void DriveRuntime::processPower(uint32_t nowMs) {
-    power_.process(nowMs);
+void DriveRuntime::processPower(uint32_t /*nowMs*/) {
+    power_.process();
 }
 
 bool DriveRuntime::processTouch(uint32_t nowMs) {

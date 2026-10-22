@@ -750,12 +750,11 @@ bool writeWifiUnknownPasswords(Preferences& prefs, uint8_t mask) {
            prefs.getUChar(kNvsWifiTxnUnknownPasswords, static_cast<uint8_t>(~mask)) == mask;
 }
 
-bool readWifiUnknownPasswords(Preferences& prefs, uint8_t& mask) {
-    mask = 0; // Installed journals predate provenance and contain known values.
-    if (!prefs.isKey(kNvsWifiTxnUnknownPasswords)) return true;
-    if (prefs.getType(kNvsWifiTxnUnknownPasswords) != PT_U8) return false;
-    mask = prefs.getUChar(kNvsWifiTxnUnknownPasswords, UINT8_MAX);
-    return (mask & ~((1u << kWifiStaSlotCount) - 1u)) == 0;
+bool readWifiUnknownPasswords(SettingsNvsReader& reader, uint8_t& mask) {
+    // Installed journals predate provenance. Only proven absence may mean
+    // known passwords; a failed read must retain the rollback authority.
+    mask = reader.getUChar(kNvsWifiTxnUnknownPasswords, 0);
+    return reader.good() && (mask & ~((1u << kWifiStaSlotCount) - 1u)) == 0;
 }
 
 enum class WifiCredentialJournalStatus { Absent, SingleSlot, ForgetAll, Unavailable };
@@ -818,20 +817,25 @@ bool readWifiCredentialJournal(WifiCredentialJournal& journal) {
     }
     const uint8_t slotIndex = prefs.getUChar(kNvsWifiTxnSlot, static_cast<uint8_t>(kWifiStaSlotCount));
     journal.slotIndex = slotIndex;
+    SettingsNvsReader reader(WIFI_CLIENT_NS);
     uint8_t unknownPasswords = 0;
-    if (!validWifiStaSlotIndex(slotIndex) || !readWifiUnknownPasswords(prefs, unknownPasswords) ||
+    if (!validWifiStaSlotIndex(slotIndex) || !readWifiUnknownPasswords(reader, unknownPasswords) ||
         (unknownPasswords != 0 && unknownPasswords != (1u << slotIndex))) {
         prefs.end();
         return false;
     }
     journal.oldPasswordUnknown = unknownPasswords != 0;
     journal.settingsGeneration = 0;
-    if (prefs.isKey(kNvsWifiTxnSettingsGeneration)) {
-        if (prefs.getType(kNvsWifiTxnSettingsGeneration) != PT_U32 ||
-            (journal.settingsGeneration = prefs.getUInt(kNvsWifiTxnSettingsGeneration, 0)) == 0) {
+    if (reader.isKey(kNvsWifiTxnSettingsGeneration)) {
+        journal.settingsGeneration = reader.getUInt(kNvsWifiTxnSettingsGeneration, 0);
+        if (journal.settingsGeneration == 0) {
             prefs.end();
             return false;
         }
+    }
+    if (!reader.good()) {
+        prefs.end();
+        return false;
     }
     const bool stringsRead =
         readPreferenceStringExact(prefs, kNvsWifiTxnOldSsid, MAX_WIFI_SSID_LEN, journal.oldSsid) &&
@@ -907,7 +911,8 @@ bool readWifiForgetAllJournal(WifiForgetAllJournal& journal) {
         return false;
     }
     String payload;
-    const bool provenanceRead = readWifiUnknownPasswords(prefs, journal.unknownPasswords);
+    SettingsNvsReader reader(WIFI_CLIENT_NS);
+    const bool provenanceRead = readWifiUnknownPasswords(reader, journal.unknownPasswords);
     const bool payloadRead = provenanceRead && readPreferenceStringExact(
         prefs, kNvsWifiTxnData, WIFI_FORGET_ALL_JOURNAL_MAX_BYTES, payload);
     prefs.end();

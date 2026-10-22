@@ -4,6 +4,7 @@
         saveName = $bindable(''),
         saveDescription = $bindable(''),
         savingProfile = null,
+        mutationBusy = false,
         oncancel,
         onsave
     } = $props();
@@ -43,7 +44,7 @@
             </div>
             <div class="modal-action">
                 <button class="btn btn-ghost" onclick={oncancel}>Cancel</button>
-                <button class="btn btn-primary" onclick={onsave} disabled={!!savingProfile}>
+                <button class="btn btn-primary" onclick={onsave} disabled={mutationBusy || !!savingProfile}>
                     {savingProfile ? `Saving ${savingProfile}...` : 'Save'}
                 </button>
             </div>

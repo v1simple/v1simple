@@ -34,8 +34,8 @@ def function(source: str, signature: str) -> str:
     raise AssertionError(signature)
 
 
-def run(build: Path, names: list[str]) -> None:
-    source = (ROOT / "src/drive_runtime.cpp").read_text()
+def run(build: Path, names: list[str], source_root: Path = ROOT) -> None:
+    source = (source_root / "src/drive_runtime.cpp").read_text()
     alp = "\n\n".join(function(source, signature) for signature in [
         "void DriveRuntime::processAlpPresentationAndPower(",
         "void DriveRuntime::processPower(", "void DriveRuntime::processAlp("])
@@ -47,7 +47,7 @@ def run(build: Path, names: list[str]) -> None:
     (build / "slider_tail.inc").write_text(tail.replace("DriveRuntime::", "Runtime::"))
     policies = function(source, "bool DriveRuntime::processParsedPolicies(")
     (build / "slider_policies.inc").write_text(policies.replace("DriveRuntime::", "SliderRuntime::"))
-    shared = (ROOT / "src/main_setup_helpers.cpp").read_text()
+    shared = (source_root / "src/main_setup_helpers.cpp").read_text()
     persistence = function(shared, "bool preparePersistenceForShutdown(")
     persistence = persistence.replace("ProductEventLog&", "ShutdownEvents&").replace("HealthJournal&", "ShutdownHealth&")
     (build / "shutdown_persistence.inc").write_text(persistence)
@@ -56,7 +56,8 @@ def run(build: Path, names: list[str]) -> None:
     deps = ROOT / ".pio/libdeps/native-sanitized"
     flags = ["-std=c++17", "-DUNIT_TEST", f'-DPROJECT_DIR="{ROOT}"',
              "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-g",
-             *["-I" + str(p) for p in [build, ROOT, ROOT / "src", ROOT / "include",
+             *["-I" + str(p) for p in [build, source_root, source_root / "src", source_root / "include",
+                                     ROOT, ROOT / "src", ROOT / "include",
                                      ROOT / "test/mocks", deps / "Unity/src", deps / "ArduinoJson/src"]]]
     failures = []
     for name in names:

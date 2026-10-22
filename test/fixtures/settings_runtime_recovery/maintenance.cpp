@@ -25,7 +25,7 @@ struct MaintenanceWifi {
 };
 struct MaintenancePower {
     bool displayOwned = false;
-    void process(uint32_t) {}
+    void process() {}
     bool ownsDisplayPresentation() const { return displayOwned; }
 };
 struct MaintenanceDevices {

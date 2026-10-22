@@ -80,6 +80,29 @@ inline bool readOnlyBeginFails(const char* name) {
     return true;
 }
 
+// A fault on the correctly typed NVS scalar read. Pinned Preferences::getType
+// probes each type: every other type mismatches, so this error becomes PT_INVALID
+// and isKey() reports false. Checked NVS readers receive the same error instead.
+struct ScalarReadFault {
+    PreferenceType type = PT_INVALID;
+    int error = 0;
+    size_t remaining = 0;
+};
+inline std::unordered_map<std::string, ScalarReadFault>& scalarReadFaults() {
+    static std::unordered_map<std::string, ScalarReadFault> faults;
+    return faults;
+}
+inline void set_scalar_read_fault(const char* ns, const char* key, PreferenceType type,
+                                  int error, size_t count = 1) {
+    scalarReadFaults()[std::string(ns) + '\x1f' + key] = {type, error, count};
+}
+inline int scalarReadError(const char* ns, const char* key, PreferenceType type) {
+    const auto it = scalarReadFaults().find(std::string(ns) + '\x1f' + (key ? key : ""));
+    if (it == scalarReadFaults().end() || !it->second.remaining || it->second.type != type) return 0;
+    --it->second.remaining;
+    return it->second.error;
+}
+
 inline bool& requireExistingNamespaceForRead() {
     static bool g_requireExistingNamespaceForRead = false;
     return g_requireExistingNamespaceForRead;
@@ -141,6 +164,7 @@ inline void reset() {
     failWriteKey().clear();
     failBeginNamespace().clear();
     failReadOnlyBeginCounts().clear();
+    scalarReadFaults().clear();
     requireExistingNamespaceForRead() = false;
     failStringReadKey().clear();
     failWriteCountdowns().clear();
@@ -367,13 +391,16 @@ public:
         if (!started_ || !key) {
             return false;
         }
-        return mock_preferences::namespaceHasKey(namespaceName_.c_str(), key);
+        return getType(key) != PT_INVALID;
     }
 
     PreferenceType getType(const char* key) const {
         const mock_preferences::Entry* entry =
             (started_ && key) ? mock_preferences::find(namespaceName_, key) : nullptr;
-        return entry ? entry->type : PT_INVALID;
+        if (!entry) return PT_INVALID;
+        const PreferenceType type = entry->type == PT_BOOL ? PT_U8 : entry->type;
+        if (mock_preferences::scalarReadError(namespaceName_.c_str(), key, type)) return PT_INVALID;
+        return entry->type;
     }
 
     bool getBool(const char* key, bool defaultValue = false) const {
@@ -396,6 +423,7 @@ public:
     }
 
     uint8_t getUChar(const char* key, uint8_t defaultValue = 0) const {
+        if (mock_preferences::scalarReadError(namespaceName_.c_str(), key, PT_U8)) return defaultValue;
         return static_cast<uint8_t>(mock_preferences::getUnsigned(namespaceName_.c_str(), key, defaultValue));
     }
 
@@ -412,6 +440,7 @@ public:
     }
 
     uint32_t getUInt(const char* key, uint32_t defaultValue = 0) const {
+        if (mock_preferences::scalarReadError(namespaceName_.c_str(), key, PT_U32)) return defaultValue;
         return static_cast<uint32_t>(mock_preferences::getUnsigned(namespaceName_.c_str(), key, defaultValue));
     }
 

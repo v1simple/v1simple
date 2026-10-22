@@ -11,6 +11,9 @@
 
 using esp_err_t = int;
 
+#ifndef ESP_FAIL
+#define ESP_FAIL -1
+#endif
 #ifndef ESP_OK
 #define ESP_OK 0
 #endif
@@ -242,6 +245,10 @@ inline esp_err_t mock_nvs_get_scalar(nvs_handle_t handle, const char* key, T* va
     if (status != ESP_OK) return status;
     const auto* entry = mock_preferences::find(*ns, key);
     if (!entry) return ESP_ERR_NVS_NOT_FOUND;
+    if (entry->type == type || (type == PT_U8 && entry->type == PT_BOOL)) {
+        const auto error = mock_preferences::scalarReadError(ns->c_str(), key, type);
+        if (error != ESP_OK) return error;
+    }
     if (type == PT_U8 && entry->type == PT_BOOL) {
         *value = std::get<bool>(entry->value) ? 1 : 0;
         return ESP_OK;

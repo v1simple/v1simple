@@ -828,6 +828,209 @@ bool restoreSyncState(fs::FS& filesystem, const String& profilePath, const Profi
     return writeSyncState(filesystem, profilePath, state);
 }
 
+// A pending save is an authority record, not another payload candidate. It is
+// persisted before moving live and survives failed removal/rename compensation.
+// The fixed record contains no strings or padding; ESP32 and supported host
+// tests use the same little-endian uint32_t representation.
+struct ProfileSaveIntent {
+    uint32_t magic = 0x31535056u;
+    uint32_t flags = 0;
+    uint32_t previousVersion = 0;
+    uint32_t previousCrc = 0;
+    uint32_t version = 0;
+    uint32_t contentCrc = 0;
+    uint32_t pathCrc = 0;
+    uint32_t recordCrc = 0;
+};
+static_assert(sizeof(ProfileSaveIntent) == 32, "Profile save intent must have no padding");
+constexpr uint32_t SAVE_COORDINATOR = 1u;
+constexpr uint32_t SAVE_MIRRORED = 2u;
+constexpr uint32_t SAVE_HAD_PAYLOAD = 4u;
+constexpr uint32_t SAVE_WAS_DELETED = 8u;
+
+struct ProfileSaveRecord {
+    ProfileSaveIntent intent;
+    bool present = false;
+    bool committed = false;
+    String path;
+};
+
+bool profilePayloadCrc(fs::FS& filesystem, const String& path, bool& exists, uint32_t& crc) {
+    struct stat details {};
+    const auto status = storagePathStatus(filesystem, path, &details);
+    if (status == StoragePathStatus::Unavailable) return false;
+    exists = status == StoragePathStatus::Present;
+    crc = 0;
+    if (!exists) return true;
+    if (details.st_size < 0 || static_cast<uint64_t>(details.st_size) > V1_PROFILE_FILE_MAX_BYTES) return false;
+    File file = filesystem.open(path, FILE_READ);
+    if (!file) return false;
+    const size_t length = static_cast<size_t>(details.st_size);
+    PsramJson::Buffer bytes(length ? length : 1u);
+    const bool read = bytes && file.read(bytes.data(), length) == length;
+    file.close();
+    if (read) crc = computeCrc32(bytes.data(), length);
+    return read;
+}
+
+bool readProfileSaveRecord(fs::FS& filesystem, const String& path, ProfileSaveRecord& record) {
+    for (const char* suffix : {".savepending", ".savecommitted"}) {
+        String artifact;
+        if (!appendPathSuffixChecked(path, suffix, artifact)) return false;
+        struct stat details {};
+        const auto status = storagePathStatus(filesystem, artifact, &details);
+        if (status == StoragePathStatus::Unavailable) return false;
+        if (status == StoragePathStatus::Missing) continue;
+        if (record.present || details.st_size != sizeof(ProfileSaveIntent)) return false;
+        File file = filesystem.open(artifact, FILE_READ);
+        ProfileSaveIntent intent;
+        const bool read = file && file.read(reinterpret_cast<uint8_t*>(&intent), sizeof(intent)) == sizeof(intent);
+        if (file) file.close();
+        if (!read || intent.magic != 0x31535056u || intent.flags > 63u ||
+            (intent.flags >> 4u) > static_cast<uint32_t>(ProfileSyncState::Status::Current) ||
+            intent.version == 0 || intent.previousVersion >= intent.version ||
+            intent.pathCrc != computeCrc32(reinterpret_cast<const uint8_t*>(path.c_str()), path.length()) ||
+            intent.recordCrc != computeCrc32(reinterpret_cast<const uint8_t*>(&intent), 28u)) return false;
+        record.intent = intent;
+        record.present = true;
+        record.committed = std::strcmp(suffix, ".savecommitted") == 0;
+        record.path = std::move(artifact);
+    }
+    return true;
+}
+
+bool writeProfileSaveIntent(fs::FS& filesystem, const String& path, const ProfileSyncState& previous,
+                            const ProfileSyncState& replacement, uint32_t contentCrc,
+                            bool coordinator, bool mirrored) {
+    ProfileSaveIntent intent;
+    bool existed = false;
+    if (!profilePayloadCrc(filesystem, path, existed, intent.previousCrc)) return false;
+    intent.flags = (coordinator ? SAVE_COORDINATOR : 0u) | (mirrored ? SAVE_MIRRORED : 0u) |
+                   (existed ? SAVE_HAD_PAYLOAD : 0u) | (previous.deleted ? SAVE_WAS_DELETED : 0u) |
+                   (static_cast<uint32_t>(previous.status) << 4u);
+    intent.previousVersion = previous.version;
+    intent.version = replacement.version;
+    intent.contentCrc = contentCrc;
+    intent.pathCrc = computeCrc32(reinterpret_cast<const uint8_t*>(path.c_str()), path.length());
+    intent.recordCrc = computeCrc32(reinterpret_cast<const uint8_t*>(&intent), 28u);
+    String staged, pending;
+    if (!appendPathSuffixChecked(path, ".saveintent.tmp", staged) ||
+        !appendPathSuffixChecked(path, ".savepending", pending)) return false;
+    File file = filesystem.open(staged, FILE_WRITE);
+    if (!file) return false;
+    const size_t written = file.write(reinterpret_cast<const uint8_t*>(&intent), sizeof(intent));
+    file.flush();
+    file.close();
+    ProfileSaveIntent verified;
+    File verify = filesystem.open(staged, FILE_READ);
+    const bool valid = written == sizeof(intent) && verify && verify.size() == sizeof(intent) &&
+                       verify.read(reinterpret_cast<uint8_t*>(&verified), sizeof(verified)) == sizeof(verified) &&
+                       std::memcmp(&intent, &verified, sizeof(intent)) == 0;
+    if (verify) verify.close();
+    if (!valid || !filesystem.rename(staged, pending)) {
+        filesystem.remove(staged);
+        return false;
+    }
+    return true;
+}
+
+bool commitProfileSaveRecord(fs::FS& filesystem, const String& path) {
+    String pending, committed;
+    return appendPathSuffixChecked(path, ".savepending", pending) &&
+           appendPathSuffixChecked(path, ".savecommitted", committed) &&
+           filesystem.rename(pending, committed);
+}
+
+bool restoreProfileSaveRecord(fs::FS& filesystem, const String& path, const ProfileSaveRecord& record) {
+    const auto& intent = record.intent;
+    const bool hadPayload = (intent.flags & SAVE_HAD_PAYLOAD) != 0;
+    bool exists = false;
+    uint32_t crc = 0;
+    if (!profilePayloadCrc(filesystem, path, exists, crc)) return false;
+    if (hadPayload && (!exists || crc != intent.previousCrc)) {
+        String backup;
+        if (!appendPathSuffixChecked(path, (intent.flags & SAVE_COORDINATOR) ? ".bak" : ".syncbak", backup)) return false;
+        bool backupExists = false;
+        uint32_t backupCrc = 0;
+        if (!profilePayloadCrc(filesystem, backup, backupExists, backupCrc) ||
+            !backupExists || backupCrc != intent.previousCrc ||
+            !storageRemoveFileIfPresent(filesystem, path) || !filesystem.rename(backup, path)) return false;
+    } else if (!hadPayload && !storageRemoveFileIfPresent(filesystem, path)) {
+        return false;
+    }
+    ProfileSyncState previous;
+    previous.version = intent.previousVersion;
+    previous.deleted = (intent.flags & SAVE_WAS_DELETED) != 0;
+    previous.status = static_cast<ProfileSyncState::Status>(intent.flags >> 4u);
+    return restoreSyncState(filesystem, path, previous);
+}
+
+bool verifyCommittedProfileSave(fs::FS& filesystem, const String& path, const ProfileSaveRecord& record) {
+    bool exists = false;
+    uint32_t crc = 0;
+    const auto state = readSyncState(filesystem, path);
+    return state.status == ProfileSyncState::Status::Current && !state.deleted &&
+           state.version == record.intent.version &&
+           profilePayloadCrc(filesystem, path, exists, crc) && exists && crc == record.intent.contentCrc;
+}
+
+bool recoverProfileSave(fs::FS& first, fs::FS* second, const String& path, bool requireCleanup,
+                        bool allowCoordinatorCleanup = false) {
+    ProfileSaveRecord records[2];
+    fs::FS* filesystems[] = {&first, second};
+    if (!readProfileSaveRecord(first, path, records[0]) ||
+        (second && !readProfileSaveRecord(*second, path, records[1]))) return false;
+    if (!records[0].present && !records[1].present) return true;
+    const bool paired = records[0].present && records[1].present;
+    if (paired && (records[0].intent.version != records[1].intent.version ||
+                   records[0].intent.contentCrc != records[1].intent.contentCrc ||
+                   !(records[0].intent.flags & SAVE_MIRRORED) ||
+                   !(records[1].intent.flags & SAVE_MIRRORED) ||
+                   ((records[0].intent.flags ^ records[1].intent.flags) & SAVE_COORDINATOR) == 0)) {
+        // A detached store may have completed a later independent save. Two
+        // self-authorizing records retain their own generations; resolve each
+        // before ordinary mirror reconciliation selects the newer state.
+        // An unmatched pending participant still lacks a commit decision.
+        for (const auto& record : records) {
+            if (!record.committed && !(record.intent.flags & SAVE_COORDINATOR)) return false;
+        }
+        return recoverProfileSave(first, nullptr, path, requireCleanup, true) &&
+               recoverProfileSave(*second, nullptr, path, requireCleanup, true);
+    }
+    const bool committed = records[0].committed || records[1].committed;
+    int coordinator = records[0].present && (records[0].intent.flags & SAVE_COORDINATOR) ? 0 : 1;
+    if (!committed && !records[coordinator].present) return false;
+    // A standalone participant cannot distinguish a failed save from a commit
+    // whose coordinator witness has not yet reached it. Preserve both copies.
+    if (!committed && !paired && !(records[coordinator].intent.flags & SAVE_COORDINATOR)) return false;
+    for (size_t index = 0; index < 2; ++index) {
+        if (!records[index].present) continue;
+        if (committed) {
+            if (!verifyCommittedProfileSave(*filesystems[index], path, records[index])) return false;
+            if (!records[index].committed) {
+                if (!commitProfileSaveRecord(*filesystems[index], path)) return !requireCleanup;
+                records[index].committed = true;
+                if (!appendPathSuffixChecked(path, ".savecommitted", records[index].path)) return false;
+            }
+        } else if (!restoreProfileSaveRecord(*filesystems[index], path, records[index])) {
+            return false;
+        }
+    }
+    // Keep the coordinator decision until every participating store has its
+    // own commit witness, or until both old payloads and metadata are restored.
+    // Reads of a committed standalone coordinator are safe; another mutation
+    // waits for the missing peer so it cannot erase the only commit decision.
+    if (!second && !allowCoordinatorCleanup && records[0].present &&
+        (records[0].intent.flags & SAVE_MIRRORED) &&
+        (records[0].intent.flags & SAVE_COORDINATOR)) return !requireCleanup;
+    const int order[] = {1 - coordinator, coordinator};
+    for (int index : order) {
+        if (!records[index].present) continue;
+        if (!storageRemoveFileIfPresent(*filesystems[index], records[index].path)) return !requireCleanup && committed;
+    }
+    return true;
+}
+
 bool checkedStringFromBytes(const char* bytes, size_t length, String& output) {
     if (!bytes || length > 256u) return false;
     char terminated[257];
@@ -1011,13 +1214,44 @@ void V1ProfileManager::bumpCatalogRevision() {
     catalogRevisionCounter_++;
 }
 
+bool V1ProfileManager::recoverSaveIntentsUnlocked(bool requireCleanup) const {
+    // A complete catalog cannot publish a partial transaction. Individual
+    // loads resolve only their own name; listing checks all pending names.
+    String after;
+    while (true) {
+        String next;
+        for (fs::FS* filesystem : {fs_, secondaryFs_}) {
+            if (!filesystem) continue;
+            StorageDirectory dir(*filesystem, profileDir_);
+            if (!dir) return false;
+            const char* entry;
+            while ((entry = dir.next())) {
+                for (const char* suffix : {".json.savepending", ".json.savecommitted"}) {
+                    String name;
+                    const auto status = directoryProfileName(entry, suffix, name);
+                    if (status == DirectoryProfileNameStatus::Unavailable) return false;
+                    if (status == DirectoryProfileNameStatus::Profile &&
+                        std::strcmp(name.c_str(), after.c_str()) > 0 &&
+                        (next.length() == 0 || std::strcmp(name.c_str(), next.c_str()) < 0)) next = std::move(name);
+                }
+            }
+            if (!dir.complete()) return false;
+        }
+        if (next.length() == 0) return true;
+        String path;
+        if (!buildProfilePathChecked(profileDir_, next, path) ||
+            !recoverProfileSave(*fs_, secondaryFs_, path, requireCleanup)) return false;
+        after = std::move(next);
+    }
+}
+
 bool V1ProfileManager::recoverInterruptedSavesUnlocked(fs::FS& filesystem) {
     // Restore committed recovery names before comparing mirror generations.
     // Never publish staging files; after a reset their transaction did not
     // finish. Reopen after each mutation to avoid invalidating an iterator.
     for (const char* suffix : {".json.meta.prev", ".json.meta.bak", ".json.prev",
                                ".json.bak", ".json.syncbak", ".json.tmp", ".json.meta.tmp",
-                               ".json.tmpsync", ".json.syncbak.tmpsync"}) {
+                               ".json.tmpsync", ".json.syncbak.tmpsync", ".json.saveintent.tmp"}) {
         while (true) {
             StorageDirectory dir(filesystem, profileDir_);
             if (!dir) return false;
@@ -1143,7 +1377,7 @@ bool V1ProfileManager::initialize(fs::FS* filesystem, fs::FS* importFilesystem, 
 
     // A configured secondary can be the only acknowledged winner. Recover
     // both stores before reconciliation is allowed to select any authority.
-    if (!recoverInterruptedSavesUnlocked(*fs_) ||
+    if (!recoverSaveIntentsUnlocked() || !recoverInterruptedSavesUnlocked(*fs_) ||
         (secondaryFs_ && !recoverInterruptedSavesUnlocked(*secondaryFs_))) {
         lastError_ = "Profile save recovery unavailable";
         return false;
@@ -1446,6 +1680,12 @@ ProfileListResult V1ProfileManager::listProfilesUnlocked() const {
         return result;
     }
 
+    if (!recoverSaveIntentsUnlocked()) {
+        result.status = ProfileStorageStatus::IoError;
+        result.error = "Profile save recovery unavailable";
+        return result;
+    }
+
     StorageDirectory dir(*fs_, profileDir_);
     if (!dir) {
         result.status = ProfileStorageStatus::IoError;
@@ -1577,6 +1817,12 @@ ProfilePageResult V1ProfileManager::listProfilesPageResult(const String& after, 
     if (!ready_ || !fs_) {
         result.status = ProfileStorageStatus::IoError;
         result.error = "Profile filesystem not ready";
+        return result;
+    }
+
+    if (!recoverSaveIntentsUnlocked()) {
+        result.status = ProfileStorageStatus::IoError;
+        result.error = "Profile save recovery unavailable";
         return result;
     }
 
@@ -1743,6 +1989,10 @@ ProfileOperationResult V1ProfileManager::loadProfileUnlocked(const String& name,
     if (!buildProfilePathChecked(profileDir_, name, path) ||
         !appendPathSuffixChecked(path, ".bak", bakPath)) {
         return profileResult(ProfileStorageStatus::IoError, "Profile path memory unavailable");
+    }
+
+    if (!verifyCandidateOwnedBySave && !recoverProfileSave(*fs_, secondaryFs_, path, false)) {
+        return profileResult(ProfileStorageStatus::IoError, "Profile save recovery unavailable");
     }
 
     // A committed tombstone is authoritative even if stale bytes remain after
@@ -2032,6 +2282,9 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
         Serial.printf("[V1Profiles] Save failed: %s\n", lastError_.c_str());
         return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
     }
+    if (!recoverSaveIntentsUnlocked()) {
+        return ProfileSaveResult(ProfileStorageStatus::IoError, "Profile save recovery unavailable");
+    }
     if (!validV1ProfileDescription(profile.description)) {
         lastError_ = "Profile description exceeds 4096 bytes";
         return ProfileSaveResult(ProfileStorageStatus::Corrupt, lastError_);
@@ -2090,6 +2343,9 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
         (secondaryFs_ && !appendPathSuffixChecked(path, ".syncbak", secondaryRollbackPath))) {
         lastError_ = "Profile path memory unavailable";
         return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
+    }
+    if (!recoverProfileSave(*fs_, secondaryFs_, path, true)) {
+        return ProfileSaveResult(ProfileStorageStatus::IoError, "Profile save recovery unavailable");
     }
     if (!prepareProfilePayloadReplacement(*fs_, path, canonicalName, true)) {
         return ProfileSaveResult(ProfileStorageStatus::IoError, "Profile rollback preparation unavailable");
@@ -2253,16 +2509,37 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
         }
     }
 
+    if (secondaryFs_) {
+        const auto directory = storagePathStatus(*secondaryFs_, profileDir_);
+        if (directory == StoragePathStatus::Unavailable ||
+            (directory == StoragePathStatus::Missing && !secondaryFs_->mkdir(profileDir_))) {
+            fs_->remove(tmpPath);
+            return ProfileSaveResult(ProfileStorageStatus::IoError, "Profile secondary directory unavailable");
+        }
+    }
+    bool stagedExists = false;
+    uint32_t stagedCrc = 0;
+    if (!profilePayloadCrc(*fs_, tmpPath, stagedExists, stagedCrc) || !stagedExists ||
+        !writeProfileSaveIntent(*fs_, path, activeState, committedState, stagedCrc, true, secondaryFs_ != nullptr) ||
+        (secondaryFs_ && !writeProfileSaveIntent(*secondaryFs_, path, secondaryState, committedState,
+                                               stagedCrc, false, true))) {
+        recoverProfileSave(*fs_, secondaryFs_, path, true);
+        fs_->remove(tmpPath);
+        return ProfileSaveResult(ProfileStorageStatus::IoError, "Failed to prepare profile save recovery");
+    }
+
     if (activeFileExisted) {
         // Remove old backup if exists
         if (!storageRemoveFileIfPresent(*fs_, bakPath)) {
             lastError_ = "Failed to remove stale profile transaction backup";
+            recoverProfileSave(*fs_, secondaryFs_, path, true);
             fs_->remove(tmpPath);
             return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
         }
         // Rename current to backup (for rollback capability)
         if (!fs_->rename(path, bakPath)) {
             lastError_ = "Failed to create profile transaction backup";
+            recoverProfileSave(*fs_, secondaryFs_, path, true);
             fs_->remove(tmpPath);
             return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
         } else {
@@ -2274,12 +2551,7 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
         lastError_ = "Failed to rename temp to final";
         Serial.printf("[V1Profiles] %s\n", lastError_.c_str());
 
-        // Try to restore from backup
-        if (activeFileExisted) {
-            if (fs_->rename(bakPath, path)) {
-                Serial.println("[V1Profiles] Restored from backup after failed save");
-            }
-        }
+        recoverProfileSave(*fs_, secondaryFs_, path, true);
         fs_->remove(tmpPath);
         return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
     }
@@ -2301,10 +2573,7 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
         scratch->verifiedProfile.detector != profile.detector ||
         !v1InTheBoxSettingsEqual(scratch->verifiedProfile.inTheBox, profile.inTheBox)) {
         lastError_ = verifyResult.success() ? "Final profile verification mismatch" : verifyResult.error;
-        fs_->remove(path);
-        if (activeFileExisted) {
-            fs_->rename(bakPath, path);
-        }
+        recoverProfileSave(*fs_, secondaryFs_, path, true);
         Serial.printf("[V1Profiles] VERIFY_FAILED name='%s' path='%s' reason='%s'\n", canonicalName.c_str(),
                       path.c_str(), lastError_.c_str());
         return ProfileSaveResult(verifyResult.success() ? ProfileStorageStatus::Corrupt : verifyResult.status,
@@ -2313,15 +2582,12 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
 
     if (!writeSyncState(*fs_, path, committedState)) {
         lastError_ = "Failed to persist profile reconciliation metadata";
-        fs_->remove(path);
-        if (activeFileExisted) fs_->rename(bakPath, path);
-        restoreSyncState(*fs_, path, activeState);
+        recoverProfileSave(*fs_, secondaryFs_, path, true);
         return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
     }
 
     if (secondaryFs_) {
         bool secondaryPrepared = true;
-        bool secondaryMutationStarted = false;
         const StoragePathStatus directoryStatus = storagePathStatus(*secondaryFs_, profileDir_);
         if (directoryStatus == StoragePathStatus::Unavailable ||
             (directoryStatus == StoragePathStatus::Missing && !secondaryFs_->mkdir(profileDir_))) {
@@ -2337,32 +2603,11 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
 
         bool secondaryCommitted = false;
         if (secondaryPrepared) {
-            secondaryMutationStarted = true;
             secondaryCommitted = copyProfileFile(*fs_, *secondaryFs_, path, canonicalName) &&
                                  writeSyncState(*secondaryFs_, path, committedState);
         }
         if (!secondaryCommitted) {
-            bool rollbackOk = true;
-
-            if (secondaryMutationStarted) {
-                if (!storageRemoveFileIfPresent(*secondaryFs_, path)) rollbackOk = false;
-                if (secondaryFileExisted) {
-                    if (!secondaryFs_->rename(secondaryRollbackPath, path)) {
-                        rollbackOk = false;
-                    }
-                } else if (!storageRemoveFileIfPresent(*secondaryFs_, secondaryRollbackPath)) {
-                    rollbackOk = false;
-                }
-                if (!restoreSyncState(*secondaryFs_, path, secondaryState)) rollbackOk = false;
-            }
-
-            if (!storageRemoveFileIfPresent(*fs_, path)) rollbackOk = false;
-            if (activeFileExisted) {
-                if (!fs_->rename(bakPath, path)) rollbackOk = false;
-            } else if (!storageRemoveFileIfPresent(*fs_, bakPath)) {
-                rollbackOk = false;
-            }
-            if (!restoreSyncState(*fs_, path, activeState)) rollbackOk = false;
+            const bool rollbackOk = recoverProfileSave(*fs_, secondaryFs_, path, true);
 
             lastError_ = rollbackOk ? "Failed to commit profile to secondary storage"
                                     : "Failed to commit profile and rollback was incomplete";
@@ -2370,10 +2615,19 @@ ProfileSaveResult V1ProfileManager::saveProfileUnlocked(const V1Profile& profile
                           path.c_str(), lastError_.c_str());
             return ProfileSaveResult(ProfileStorageStatus::IoError, lastError_);
         }
-        storageRemoveFileIfPresent(*secondaryFs_, secondaryRollbackPath);
     }
 
-    storageRemoveFileIfPresent(*fs_, bakPath);
+    // Both payloads and their metadata are durable before this single commit
+    // decision. After it, failures may defer cleanup but cannot reject the save.
+    if (!commitProfileSaveRecord(*fs_, path)) {
+        recoverProfileSave(*fs_, secondaryFs_, path, true);
+        return ProfileSaveResult(ProfileStorageStatus::IoError, "Failed to commit profile save recovery record");
+    }
+    const bool finalized = recoverProfileSave(*fs_, secondaryFs_, path, true);
+    if (finalized) {
+        if (secondaryFs_) storageRemoveFileIfPresent(*secondaryFs_, secondaryRollbackPath);
+        storageRemoveFileIfPresent(*fs_, bakPath);
+    }
 
     Serial.printf("[V1Profiles] SAVE success name='%s' path='%s' bytes=%u crc=%08lX\n", canonicalName.c_str(),
                   path.c_str(), written, static_cast<unsigned long>(crc));
@@ -2413,6 +2667,9 @@ ProfileOperationResult V1ProfileManager::deleteProfileUnlocked(const String& nam
     if (!buildProfilePathChecked(profileDir_, name, path) ||
         !appendPathSuffixChecked(path, ".bak", bakPath)) {
         return profileResult(ProfileStorageStatus::IoError, "Profile path memory unavailable");
+    }
+    if (!recoverProfileSave(*fs_, secondaryFs_, path, true)) {
+        return profileResult(ProfileStorageStatus::IoError, "Profile save recovery unavailable");
     }
     const ProfileSyncState activeState = readSyncState(*fs_, path);
     const ProfileSyncState secondaryState = secondaryFs_ ? readSyncState(*secondaryFs_, path) : ProfileSyncState{};

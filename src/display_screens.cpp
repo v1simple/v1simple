@@ -157,7 +157,9 @@ void V1Display::showScanning(bool forceRedraw) {
         drawAlpIndicator();
         drawProfileIndicator(currentProfileSlot_);
         if (!drawnRegion_.empty()) {
-            flushRegion(drawnRegion_.x(), drawnRegion_.y(), drawnRegion_.w(), drawnRegion_.h());
+            // This panel can leave changed pixels stale after partial transfers.
+            // Use the same full-frame delivery as changed live/idle screens.
+            DISPLAY_FLUSH();
             drawnRegion_.reset();
         }
         return;

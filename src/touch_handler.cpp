@@ -223,6 +223,18 @@ bool TouchHandler::getTouchPoint(int16_t& x, int16_t& y) {
 
     // Response: gesture, point count, then 12-bit X and Y coordinates.
     uint8_t numPoints = buff[1];
+    // This controller also reports a released contact as a complete 0x38 fill.
+    // Match the entire response so a malformed count alone cannot release a hold.
+    bool releasedFill = true;
+    for (uint8_t byte : buff) {
+        if (byte != 0x38) {
+            releasedFill = false;
+            break;
+        }
+    }
+    if (releasedFill) {
+        numPoints = 0;
+    }
 
     // An impossible contact count cannot confirm a hold or a release.
     if (numPoints > 4) {

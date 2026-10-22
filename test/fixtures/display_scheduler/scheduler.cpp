@@ -29,6 +29,31 @@ bool DisplayOrchestrationModule::processSpeedVolume(uint32_t) { return false; }
 void DisplayOrchestrationModule::executeVolumeFade(uint32_t) {}
 void QuietCoordinatorModule::processInTheBox(uint32_t) { TEST_FAIL_MESSAGE("unexpected quiet owner"); }
 #include "orchestration.inc"
+#include "src/touch_handler.cpp"
+#include "src/v1_settings_operation.h"
+#include "src/modules/touch/tap_gesture_module.cpp"
+class AutoPushModule {
+  public: bool active = false; bool isActive() const { return active; }
+};
+SendResult QuietCoordinatorModule::sendMuteResult(QuietOwner, bool) {
+    TEST_FAIL_MESSAGE("unexpected mute command"); return SendResult::FAILED;
+}
+struct SettingsOperationAdapter {
+    bool busy = false;
+    bool prepareOk = true;
+    unsigned starts = 0;
+    unsigned finishes = 0;
+    bool requiresExclusiveDetectorAdmission() const { return busy; }
+    V1SettingsOperationStore::StartResult startApply(int, const char*,
+        V1SettingsOperationStore::Source, bool, bool) {
+        ++starts;
+        return {V1SettingsOperationStore::StartStatus::Started, 1};
+    }
+    bool markPreparing() { return prepareOk; }
+    bool finish(V1SettingsOperationStore::State, V1SettingsOperationStore::Reason) {
+        ++finishes; return true;
+    }
+};
 
 class DriveRuntime : public Runtime {
   public:
@@ -48,8 +73,21 @@ class DriveRuntime : public Runtime {
     DisplayPipelineModule& displayPipeline_ = pipeline;
     struct { bool bootSplashHoldActive = false; uint32_t activeScanScreenDwellMs = 0; } state_;
     struct { void setInTheBoxSuspended(bool) {} } quiet_;
-    struct { bool isActive() const { return false; } } autoPush_;
-    struct { bool requiresExclusiveDetectorAdmission() const { return false; } } settingsOperations_;
+    AutoPushModule autoPush_;
+    SettingsOperationAdapter settingsOperations_;
+    SettingsManager& settings_ = settings;
+    V1Display& display_ = display;
+    AlertPersistenceModule& alertPersistence_ = persistence;
+    DisplayMode& displayMode_ = mode;
+    AlpRuntimeModule& alp_ = alp;
+    TouchHandler touch_;
+    TapGestureModule tapGesture_;
+    uint32_t observedSettingsOperationId_ = 0;
+    bool beginTripleTapProfileCycle(int newSlot);
+    bool connectedV1Address(String& address) {
+        address = "AA:BB:CC:DD:EE:FF";
+        return ble.isConnected();
+    }
     bool overloaded = false;
     bool inSettings = false;
 
@@ -67,6 +105,15 @@ class DriveRuntime : public Runtime {
         battery.setVoltage(3.9f);
         battery.setBatteryPercent(80);
         display.showScanning();
+        Wire.resetMock();
+        TEST_ASSERT_TRUE(touch_.begin());
+        TapGestureModule::Callbacks callbacks{};
+        callbacks.beginProfileCycle = [](int slot, void* context) {
+            return static_cast<DriveRuntime*>(context)->beginTripleTapProfileCycle(slot);
+        };
+        callbacks.beginProfileCycleContext = this;
+        tapGesture_.begin(&touch_, &settings, &display, &ble, &parser, &autoPush_,
+                          &persistence, &mode, nullptr, callbacks);
     }
 
     struct DisplayEdges { uint32_t nowMs = 0; bool parsedReady = false; };
@@ -111,11 +158,23 @@ class DriveRuntime : public Runtime {
     bool hasLiveAlertPresentation() const { return alp.currentEvent().active; }
     void servicePowerAlertPresentation(uint32_t, bool) {}
     bool powerAlertPresentationNeedsRestore() const { return false; }
-    void processTapGesture(uint32_t) {}
+    void processTapGesture(uint32_t nowMs);
     void processPeriodicMaintenance(uint32_t, bool, bool, bool, bool) {}
     void finishDriveLoop(bool, uint32_t, bool) {}
 
     void loop(uint32_t now) { mockMillis = now; DriveLoopCoordinator::tick(*this); }
+    void queueTouchReport(uint16_t x, uint16_t y) {
+        std::vector<uint8_t> frame(32, 0);
+        frame[1] = 1;
+        frame[2] = x >> 8;
+        frame[3] = x;
+        frame[4] = y >> 8;
+        frame[5] = y;
+        Wire.queueRequestFrom(frame.size(), frame);
+    }
+    void queueReleaseReport(uint8_t fill) {
+        Wire.queueRequestFrom(32, std::vector<uint8_t>(32, fill));
+    }
     void uart(uint32_t now, uint8_t a, uint8_t b, uint8_t c) {
         const uint8_t bytes[]{a, b, c, alpChecksum(a, b, c)};
         alp.testInjectBytes(bytes, sizeof(bytes));
@@ -136,6 +195,7 @@ class DriveRuntime : public Runtime {
     }
 };
 #include "drive_display.inc"
+#include "profile_cycle.inc"
 
 void test_disconnected_dli_mode_reaches_panel_without_an_event_or_v1_packet() {
     DriveRuntime r;
@@ -150,8 +210,8 @@ void test_disconnected_dli_mode_reaches_panel_without_an_event_or_v1_packet() {
     r.assertNoTransfer();
     r.loop(250);
     TEST_ASSERT_EQUAL(3, r.display.ut_elementCaches().alp.lastHbByte1);
-    TEST_ASSERT_EQUAL_INT(1, regionTransfers.size());
-    TEST_ASSERT_EQUAL_INT(0, r.display.testCanvas()->getFlushCount());
+    TEST_ASSERT_EQUAL_INT(1, r.display.testCanvas()->getFlushCount());
+    TEST_ASSERT_TRUE(regionTransfers.empty());
     TEST_ASSERT_EQUAL_INT(0, r.display.testCanvas()->getFillScreenCount());
     r.clearPaint();
     for (uint32_t now = 251; now < 10000; ++now) {
@@ -166,7 +226,8 @@ void test_lid_mode_event_still_updates_immediately() {
     r.clearPaint();
     r.heartbeat(200, 4);
     TEST_ASSERT_EQUAL(4, r.display.ut_elementCaches().alp.lastHbByte1);
-    TEST_ASSERT_EQUAL_INT(1, regionTransfers.size());
+    TEST_ASSERT_EQUAL_INT(1, r.display.testCanvas()->getFlushCount());
+    TEST_ASSERT_TRUE(regionTransfers.empty());
 }
 
 void test_battery_canvas_change_is_transferred_by_the_scheduled_owner_once() {
@@ -180,8 +241,8 @@ void test_battery_canvas_change_is_transferred_by_the_scheduled_owner_once() {
     r.assertNoTransfer();
     r.loop(500);
     TEST_ASSERT_TRUE(r.display.ut_drawnRegionEmpty());
-    TEST_ASSERT_EQUAL_INT(1, regionTransfers.size());
-    TEST_ASSERT_EQUAL_INT(0, r.display.testCanvas()->getFlushCount());
+    TEST_ASSERT_EQUAL_INT(1, r.display.testCanvas()->getFlushCount());
+    TEST_ASSERT_TRUE(regionTransfers.empty());
     r.clearPaint();
     for (uint32_t now = 501; now < 3000; ++now) r.loop(now);
     r.assertNoTransfer();
@@ -215,7 +276,8 @@ void test_preview_boot_overload_and_settings_gates_defer_status_refresh() {
         r.inSettings = false;
         r.loop(1001);
         TEST_ASSERT_EQUAL(3, r.display.ut_elementCaches().alp.lastHbByte1);
-        TEST_ASSERT_EQUAL_INT(1, regionTransfers.size());
+        TEST_ASSERT_EQUAL_INT(1, r.display.testCanvas()->getFlushCount());
+        TEST_ASSERT_TRUE(regionTransfers.empty());
     }
 }
 
@@ -342,7 +404,92 @@ void test_disconnected_refresh_cadence_survives_millis_rollover() {
     r.assertNoTransfer();
     r.loop(150);
     TEST_ASSERT_EQUAL(3, r.display.ut_elementCaches().alp.lastHbByte1);
-    TEST_ASSERT_EQUAL_INT(1, regionTransfers.size());
+    TEST_ASSERT_EQUAL_INT(1, r.display.testCanvas()->getFlushCount());
+    TEST_ASSERT_TRUE(regionTransfers.empty());
+}
+
+
+
+// Raw I2C reports pass through the production touch reader, gesture recognizer,
+// profile admission, coordinator, owner pipeline and painter. Storage admission
+// is scripted; panel transfer requests are observed, not physical panel pixels.
+void cycleProfileWithRawReleases(DriveRuntime& r, uint32_t start, uint8_t idleFill) {
+    r.queueTouchReport(300, 80); r.loop(start);
+    r.queueReleaseReport(idleFill); r.loop(start + 50);
+    r.queueTouchReport(300, 80); r.loop(start + 250);
+    r.queueReleaseReport(idleFill); r.loop(start + 300);
+    TEST_ASSERT_EQUAL_INT(0, r.settings.setActiveSlotCalls);
+    r.clearPaint();
+    r.queueTouchReport(300, 80); r.loop(start + 500);
+}
+void assertSelectedProfileReachesPanel(DriveRuntime& r) {
+    TEST_ASSERT_EQUAL_INT(1, r.settings.setActiveSlotCalls);
+    TEST_ASSERT_EQUAL_INT(1, r.settings.get().activeSlot);
+    TEST_ASSERT_EQUAL_INT(1, r.display.ut_elementCaches().profile.lastSlot);
+    TEST_ASSERT_EQUAL_STRING("HIGHWAY", r.display.ut_elementCaches().profile.lastName);
+    const auto profile = DisplayLayout::profileRect();
+    bool transferred = r.display.testCanvas()->getFlushCount() > 0;
+    for (const auto& region : regionTransfers) {
+        if (region.x <= profile.x && region.y <= profile.y &&
+            region.x + region.w >= profile.x + profile.w &&
+            region.y + region.h >= profile.y + profile.h) transferred = true;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(transferred, "selected profile never reached the panel transfer boundary");
+}
+void test_raw_idle_reports_allow_three_taps_to_update_disconnected_scan() {
+    for (uint8_t idleFill : {uint8_t{0}, uint8_t{0x38}}) {
+        DriveRuntime r;
+        r.loop(250);
+        r.settings.mutableSettings().autoPushEnabled = true;
+        TEST_ASSERT_EQUAL_STRING("SCAN", r.display.ut_fontMgr().segment7.lastPrinted);
+        cycleProfileWithRawReleases(r, 1000, idleFill);
+        assertSelectedProfileReachesPanel(r);
+        TEST_ASSERT_FALSE(r.ble.isConnected());
+        TEST_ASSERT_EQUAL_INT(0, r.settingsOperations_.starts);
+        TEST_ASSERT_EQUAL(DisplayMode::IDLE, r.mode);
+        // The SCAN canvas is retained; changed status must use the panel's
+        // reliable full-frame transfer, not redraw or partially blit SCAN.
+        TEST_ASSERT_EQUAL_INT(1, r.display.testCanvas()->getFlushCount());
+        TEST_ASSERT_EQUAL_INT(0, r.display.testCanvas()->getFillScreenCount());
+        TEST_ASSERT_TRUE(regionTransfers.empty());
+        r.queueTouchReport(300, 80); r.loop(1750); // A held third contact is not another tap.
+        TEST_ASSERT_EQUAL_INT(1, r.settings.setActiveSlotCalls);
+    }
+}
+void test_raw_idle_reports_do_not_bypass_rejected_profile_persistence() {
+    DriveRuntime r;
+    r.loop(250);
+    r.settings.setActiveSlotSuccess = false;
+    cycleProfileWithRawReleases(r, 1000, 0x38);
+    TEST_ASSERT_EQUAL_INT(1, r.settings.setActiveSlotCalls);
+    TEST_ASSERT_EQUAL_INT(0, r.settings.saveDeferredBackupCalls);
+    TEST_ASSERT_EQUAL_INT(0, r.settings.get().activeSlot);
+    TEST_ASSERT_EQUAL_INT(0, r.display.ut_elementCaches().profile.lastSlot);
+    r.assertNoTransfer();
+}
+void test_raw_idle_reports_keep_persisted_alp_owner_during_profile_cycle() {
+    DriveRuntime r(false, 3);
+    r.laser();
+    r.loop(3211);
+    TEST_ASSERT_FALSE(r.alp.currentEvent().active);
+    TEST_ASSERT_EQUAL_STRING("PL3", r.display.ut_alpFreqText());
+    cycleProfileWithRawReleases(r, 3500, 0x38);
+    assertSelectedProfileReachesPanel(r);
+    TEST_ASSERT_EQUAL(DisplayMode::LIVE, r.mode);
+    TEST_ASSERT_FALSE(r.display.ut_alpHasLaserEvent());
+    TEST_ASSERT_TRUE(r.display.ut_alpFreqOverride());
+    TEST_ASSERT_EQUAL_STRING("PL3", r.display.ut_alpFreqText());
+}
+void test_raw_idle_reports_reach_connected_profile_admission_without_early_feedback() {
+    DriveRuntime r(true);
+    r.loop(250);
+    r.settings.mutableSettings().autoPushEnabled = true;
+    cycleProfileWithRawReleases(r, 1000, 0x38);
+    TEST_ASSERT_EQUAL_INT(1, r.settingsOperations_.starts);
+    TEST_ASSERT_EQUAL_INT(0, r.settings.setActiveSlotCalls);
+    TEST_ASSERT_EQUAL_INT(0, r.settings.get().activeSlot);
+    TEST_ASSERT_EQUAL_INT(0, r.display.ut_elementCaches().profile.lastSlot);
+    r.assertNoTransfer();
 }
 
 int main() {
@@ -358,5 +505,9 @@ int main() {
     RUN_TEST(test_connection_changes_preserve_live_alp_and_release_to_current_owner);
     RUN_TEST(test_connected_v1_live_owner_survives_idle_ticks_then_disconnect_clears_it);
     RUN_TEST(test_disconnected_refresh_cadence_survives_millis_rollover);
+    RUN_TEST(test_raw_idle_reports_allow_three_taps_to_update_disconnected_scan);
+    RUN_TEST(test_raw_idle_reports_do_not_bypass_rejected_profile_persistence);
+    RUN_TEST(test_raw_idle_reports_keep_persisted_alp_owner_during_profile_cycle);
+    RUN_TEST(test_raw_idle_reports_reach_connected_profile_admission_without_early_feedback);
     return UNITY_END();
 }

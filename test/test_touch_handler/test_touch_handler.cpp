@@ -24,6 +24,12 @@ bool poll(unsigned long now, uint16_t x, uint16_t y, uint8_t points = 1) {
     return touch.getTouchPoint(readX, readY);
 }
 
+bool pollRawFrame(unsigned long now, const std::vector<uint8_t>& frame) {
+    Wire.queueRequestFrom(frame.size(), frame);
+    mockMillis = now;
+    return touch.getTouchPoint(readX, readY);
+}
+
 void assert_invalid_contact_count_preserves_contact(uint8_t count) {
     TEST_ASSERT_TRUE(poll(1000, 100, 100));
     TEST_ASSERT_TRUE(touch.isTouchActive());
@@ -217,6 +223,58 @@ void test_uninitialized_touch_never_probes_bus() {
     TEST_ASSERT_EQUAL_INT(0, Wire.endTransmissionCalls);
 }
 
+void test_full_idle_fill_report_releases_contact_and_allows_the_next_tap() {
+    const std::vector<uint8_t> idle(32, 0x38);
+    TEST_ASSERT_TRUE(poll(1000, 100, 100));
+    TEST_ASSERT_FALSE(pollRawFrame(1050, idle));
+    TEST_ASSERT_FALSE(touch.isTouchActive());
+    TEST_ASSERT_FALSE(pollRawFrame(1100, idle));
+    TEST_ASSERT_TRUE(poll(1250, 120, 80));
+    TEST_ASSERT_TRUE(touch.isTouchActive());
+    TEST_ASSERT_EQUAL_INT16(120, readX);
+    TEST_ASSERT_EQUAL_INT16(80, readY);
+    TEST_ASSERT_EQUAL_INT(0, Wire.endCalls);
+}
+void test_near_miss_idle_fill_and_count_only_reports_do_not_release_a_held_contact() {
+    for (size_t changedByte = 0; changedByte < 32; ++changedByte) {
+        setUp();
+        TEST_ASSERT_TRUE(poll(1000, 100, 100));
+        std::vector<uint8_t> nearMiss(32, 0x38);
+        nearMiss[changedByte] = 0x39;
+        TEST_ASSERT_FALSE(pollRawFrame(1250, nearMiss));
+        TEST_ASSERT_FALSE(touch.isTouchActive());
+        TEST_ASSERT_FALSE(poll(1500, 100, 100));
+        TEST_ASSERT_TRUE(touch.isTouchActive());
+        TEST_ASSERT_EQUAL_INT(0, Wire.endCalls);
+    }
+    setUp();
+    assert_invalid_contact_count_preserves_contact(0x38);
+}
+void test_truncated_idle_fill_is_a_read_failure_and_does_not_release_contact() {
+    TEST_ASSERT_TRUE(poll(1000, 100, 100));
+    TEST_ASSERT_FALSE(pollRawFrame(1250, std::vector<uint8_t>(31, 0x38)));
+    TEST_ASSERT_FALSE(touch.isTouchActive());
+    TEST_ASSERT_FALSE(poll(1500, 100, 100));
+    TEST_ASSERT_TRUE(touch.isTouchActive());
+    TEST_ASSERT_EQUAL_INT(0, Wire.endCalls);
+}
+void test_required_release_accepts_full_idle_fill_with_existing_release_debounce() {
+    for (bool previouslyDown : {false, true}) {
+        setUp();
+        if (previouslyDown) TEST_ASSERT_TRUE(poll(1000, 100, 100));
+        touch.requireRelease();
+        TEST_ASSERT_FALSE(poll(1250, 100, 100));
+        TEST_ASSERT_FALSE(touch.isTouchActive());
+        TEST_ASSERT_FALSE(pollRawFrame(1500, std::vector<uint8_t>(32, 0x38)));
+        TEST_ASSERT_FALSE(touch.isTouchActive());
+        TEST_ASSERT_FALSE(poll(1550, 100, 100)); // Too soon after release.
+        TEST_ASSERT_FALSE(poll(1750, 100, 100)); // Early recontact is one held finger.
+        TEST_ASSERT_FALSE(pollRawFrame(1800, std::vector<uint8_t>(32, 0x38)));
+        TEST_ASSERT_TRUE(poll(1900, 100, 100));
+        TEST_ASSERT_TRUE(touch.isTouchActive());
+    }
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_failed_startup_retries_slowly_then_requires_release_before_contact);
@@ -230,5 +288,9 @@ int main() {
     RUN_TEST(test_five_contacts_during_hold_do_not_create_a_recovery_tap);
     RUN_TEST(test_max_contact_count_during_hold_does_not_create_a_recovery_tap);
     RUN_TEST(test_required_release_ignores_contacts_and_invalid_observations);
+    RUN_TEST(test_full_idle_fill_report_releases_contact_and_allows_the_next_tap);
+    RUN_TEST(test_near_miss_idle_fill_and_count_only_reports_do_not_release_a_held_contact);
+    RUN_TEST(test_truncated_idle_fill_is_a_read_failure_and_does_not_release_contact);
+    RUN_TEST(test_required_release_accepts_full_idle_fill_with_existing_release_debounce);
     return UNITY_END();
 }

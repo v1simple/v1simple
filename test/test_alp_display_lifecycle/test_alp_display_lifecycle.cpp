@@ -9,10 +9,16 @@ void test_disconnected_alp_end_paints_scan_and_repeated_idle_ticks_do_not_repain
     r.pipeline.handleParsed(3212);
     r.pipeline.refreshBlinkTick(3213);
     TEST_ASSERT_TRUE(regionTransfers.empty());
-    r.feed(3300, 0xB0, 0x03, 0);
     TEST_ASSERT_EQUAL_INT(0, r.display.testCanvas()->getFlushCount());
+    r.feed(3300, 0xB0, 0x03, 0); // IDLE -> LISTENING changes the ALP badge.
+    TEST_ASSERT_EQUAL_INT(1, r.display.testCanvas()->getFlushCount());
+    TEST_ASSERT_EQUAL_INT(0, r.display.testCanvas()->getFillScreenCount());
+    TEST_ASSERT_TRUE(regionTransfers.empty());
     r.clearPaint();
-    TEST_ASSERT_TRUE(r.pipeline.restoreCurrentOwner(3301));
+    r.feed(3301, 0xB0, 0x03, 0);
+    TEST_ASSERT_EQUAL_INT(0, r.display.testCanvas()->getFlushCount());
+    TEST_ASSERT_TRUE(regionTransfers.empty());
+    TEST_ASSERT_TRUE(r.pipeline.restoreCurrentOwner(3302));
     r.scan(); // Explicit restoration must repaint a replaced temporary owner.
 }
 
@@ -41,20 +47,17 @@ void test_scan_refreshes_real_alp_badge_without_repainting_primary_or_unchanged_
     r.scan();
     TEST_ASSERT_EQUAL(AlpState::IDLE, r.display.ut_elementCaches().alp.lastState);
 
-    const auto badge = DisplayLayout::alpBadgeRect();
     for (uint8_t mode : {0x03, 0x04}) {
         r.clearPaint();
         r.feed(3300 + mode, 0xB0, mode, 0);
         TEST_ASSERT_EQUAL(AlpState::LISTENING, r.alp.getState());
         TEST_ASSERT_EQUAL(AlpState::LISTENING, r.display.ut_elementCaches().alp.lastState);
         TEST_ASSERT_EQUAL(mode, r.display.ut_elementCaches().alp.lastHbByte1);
-        TEST_ASSERT_EQUAL_INT(0, r.display.testCanvas()->getFlushCount());
+        // Keep the existing primary canvas, but deliver changed SCAN status
+        // through the full-frame path required by the physical panel.
+        TEST_ASSERT_EQUAL_INT(1, r.display.testCanvas()->getFlushCount());
         TEST_ASSERT_EQUAL_INT(0, r.display.testCanvas()->getFillScreenCount());
-        TEST_ASSERT_EQUAL_INT(1, regionTransfers.size());
-        TEST_ASSERT_EQUAL(badge.x, regionTransfers[0].x);
-        TEST_ASSERT_EQUAL(badge.y, regionTransfers[0].y);
-        TEST_ASSERT_EQUAL(badge.w, regionTransfers[0].w);
-        TEST_ASSERT_EQUAL(badge.h, regionTransfers[0].h);
+        TEST_ASSERT_TRUE(regionTransfers.empty());
         TEST_ASSERT_FALSE(r.display.ut_alpHasLaserEvent());
         TEST_ASSERT_FALSE(r.display.ut_alpFreqOverride());
     }

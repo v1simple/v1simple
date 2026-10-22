@@ -2,7 +2,8 @@
 """Run display scheduling through production drive-loop adapters and painters.
 
 The coordinator, ALP parser/event bus, orchestration gates, connection cadence,
-owner pipeline and status painters are real. Hardware observations and unrelated
+owner pipeline, touch reader, gesture recognition, profile admission and status
+painters are real. Hardware observations, persistence admission and unrelated
 loop phases are scripted; this proves transfer requests, not physical pixels.
 """
 from pathlib import Path
@@ -35,6 +36,11 @@ def build_and_run(build: Path, orchestration_source: str | None = None) -> None:
     owner = next(line for line in source.splitlines()
                  if line.startswith("constexpr uint32_t kConnectionStateProcessMaxGapMs =")) + "\n" + owner
     (build / "drive_display.inc").write_text(owner, encoding="utf-8")
+    selection = between(source, "bool DriveRuntime::beginTripleTapProfileCycle(",
+                        "void DriveRuntime::queueSettingsApply(")
+    selection += between(source, "void DriveRuntime::processTapGesture(",
+                         "void DriveRuntime::openBootReadyGate(")
+    (build / "profile_cycle.inc").write_text(selection, encoding="utf-8")
     source = orchestration_source or (ROOT / "src/modules/display/display_orchestration_module.cpp").read_text(
         encoding="utf-8")
     orchestration = between(source, "void DisplayOrchestrationModule::begin(",

@@ -144,7 +144,8 @@ the actual muted argument and LID/DLI setting; expiry clears the override.
   excluded, live or persisted ALP retains ownership, and its expiry returns to
   SCAN. The shared render path clears the ALP setter before scanning. Ordinary
   disconnected idle ticks preserve SCAN without another full-panel transfer,
-  while changed status badges receive a region transfer;
+  while changed status badges receive a full-canvas transfer to avoid stale
+  pixels from partial panel writes;
   explicit restoration forces a repaint after another presentation owner.
   Reconnecting releases SCAN and allows the connected resting/live view.
 - [`DisplayOrchestrationModule::processLightweightRefresh`](../../src/modules/display/display_orchestration_module.cpp)
@@ -152,7 +153,8 @@ the actual muted argument and LID/DLI setting; expiry clears the override.
   and preview gates permit it. ALP listening-mode changes need not publish an
   event, and connection cadence can paint battery status after the presentation
   phase; this refresh carries both paths through the owner pipeline and flushes
-  changed regions. It does not replace a live, held or persisted ALP owner.
+  the canvas only when SCAN content changed. It does not replace a live, held
+  or persisted ALP owner.
 - [`syncTopIndicators`](../../src/display_indicators.cpp) refreshes ALP badge
   status only; it does not overwrite the pipeline-owned laser event or gun text.
 - [`prewarmFrequencyRasterCache`](../../src/display_frequency.cpp) temporarily

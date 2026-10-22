@@ -262,7 +262,7 @@
                             <div>
                                 <span class="label-text font-medium">Mute Voice at Volume 0</span>
                                 <p class="copy-caption-soft">
-                                    Silence alert announcements when V1 volume is 0
+                                    Prevent new alert announcements when V1 volume is 0
                                 </p>
                             </div>
                             <input
@@ -530,7 +530,7 @@
                                         <span class="label-text font-medium">Mute Voice Alerts</span
                                         >
                                         <p class="copy-caption-soft">
-                                            Also suppress voice announcements when speed-muted
+                                            Prevent new voice announcements when speed-muted
                                         </p>
                                     </div>
                                     <input
@@ -589,9 +589,10 @@
                 <CardSectionHead title="How It Works" />
                 <ul class="copy-subtle list-inside list-disc space-y-2">
                     <li>
-                        Voice alerts only play when <strong>no phone app</strong> is connected via BLE
+                        Voice alerts only start when <strong>no phone app</strong> is connected via BLE
                         proxy
                     </li>
+                    <li>When voice becomes suppressed, an announcement already underway finishes</li>
                     <li>New alert: full announcement based on your content settings</li>
                     <li>
                         Direction change: direction-only announcement (e.g., "behind") if direction

@@ -1,112 +1,4 @@
-// Run the real accepted audio job, including codec/amp setup and PCM emission.
-// Only the task scheduler, I2C/I2S hardware and filesystem are substituted.
-#include <chrono>
-#include <climits>
-#include <filesystem>
-#include <functional>
-#include <initializer_list>
-#include <string>
-#include <unity.h>
-#include <vector>
-
-// Include substitutes before production sources; this order is intentional.
-#include "../mocks/settings.h"
-#include "../mocks/storage_manager.h"
-#include "../mocks/ble_client.h"
-#include "../mocks/display.h"
-#include "../../src/packet_parser.h"
-#include "../../src/packet_parser.cpp"
-#include "../../src/packet_parser_alerts.cpp"
-#include "../../include/audio_internals.h"
-#include "../../src/audio_i2c_utils.cpp"
-#include "../../src/audio_beep.cpp"
-#include "../../src/audio_voice.cpp"
-#include "../../src/modules/voice/voice_module.cpp"
-#include "../../src/modules/alert_persistence/alert_persistence_module.cpp"
-#include "../../src/modules/alp/alp_event_latch.cpp"
-#include "../../src/modules/quiet/quiet_coordinator_module.cpp"
-#include "../../src/modules/display/render_frame_composer.cpp"
-#include "../../src/modules/display/display_pipeline_module.cpp"
-
-SerialClass Serial;
-unsigned long mockMillis = 10000;
-unsigned long mockMicros = 0;
-TwoWire tca9554Wire;
-SemaphoreHandle_t tca9554WireMutex = reinterpret_cast<void *>(1);
-
-static const std::filesystem::path audioRoot =
-    std::filesystem::temp_directory_path() /
-    ("v1simple_audio_worker_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-static fs::FS audioFiles{audioRoot};
-static StorageManager audioStorage;
-static int16_t stereoBuffer[AUDIO_STEREO_CHUNK_SIZE];
-static uint8_t mulawBuffer[AUDIO_CHUNK_SAMPLES];
-struct WorkerWaiting {};
-static unsigned workerWaitCalls;
-
-static uint32_t takeOneNotification(BaseType_t, TickType_t) {
-    if (++workerWaitCalls > 1)
-        throw WorkerWaiting{};
-    return 1;
-}
-
-static void runAcceptedJob() {
-    workerWaitCalls = 0;
-    g_mock_task_notify_take_hook = takeOneNotification;
-    try {
-        sd_audio_playback_task(nullptr);
-    } catch (const WorkerWaiting &) {
-    }
-    g_mock_task_notify_take_hook = nullptr;
-    TEST_ASSERT_FALSE(audio_playing.load());
-    TEST_ASSERT_NULL(audioTaskHandle.load());
-    TEST_ASSERT_EQUAL_UINT(2, workerWaitCalls);
-}
-
-static void acceptBandJob() {
-    TEST_ASSERT_EQUAL(
-        AudioPlaybackResult::Accepted,
-        try_play_frequency_voice(AlertBand::KA, 34700, AlertDirection::AHEAD, VOICE_MODE_BAND_ONLY, false));
-}
-
-static uint8_t lastVolumeRegister() {
-    for (auto it = tca9554Wire.transmissionHistory.rbegin(); it != tca9554Wire.transmissionHistory.rend();
-         ++it) {
-        if (it->address == 0x18 && it->data.size() == 2 && it->data[0] == 0x32)
-            return it->data[1];
-    }
-    TEST_FAIL_MESSAGE("No codec volume write");
-    return 0;
-}
-
-void setUp() {
-    mockMillis += 10000;
-    fs::mock_reset_fs_open_state();
-    fs::mock_exists_uses_read_open(true); // Match ESP32 VFS::exists, including transient read faults.
-    tca9554Wire.resetMock();
-    mock_reset_semaphore_state();
-    mock_reset_task_notify_state();
-    g_mock_i2s_state = MockI2sState{};
-    i2s_tx_chan = reinterpret_cast<void *>(1);
-    i2s_initialized = true;
-    es8311_initialized = true;
-    current_volume_percent.store(75);
-    applied_volume_percent.store(-1);
-    audio_set_volume(75);
-    audio_playing = false;
-    audioTaskHandle = nullptr;
-    amp_is_warm = false;
-    amp_last_used_ms = 0;
-    amp_disable_fail_count = 0;
-    g_stereoChunkBuffer = stereoBuffer;
-    g_mulawChunkBuffer = mulawBuffer;
-    audioStorage.setLittleFS(&audioFiles);
-    audio_init_sd(audioStorage);
-}
-void tearDown() {
-    fs::mock_reset_fs_open_state();
-    TEST_ASSERT_TRUE(g_mock_semaphore_state.heldHandles.empty());
-}
+#include "../support/audio_pipeline_harness.h"
 
 void test_failed_mute_is_applied_before_first_pcm_without_another_user_request() {
     mock_queue_semaphore_take_result(pdFALSE);
@@ -534,53 +426,6 @@ void test_idle_service_does_not_disable_amp_while_worker_owns_playback() {
     TEST_ASSERT_FALSE(lastAmpOutputEnabled());
 }
 
-// Exercise receipt ownership through the actual parser, pipeline and worker.
-struct PipelineAudio {
-    SettingsManager settings;
-    PacketParser parser;
-    V1BLEClient ble;
-    V1Display display;
-    AlertPersistenceModule persistence;
-    VoiceModule voice;
-    DisplayMode mode = DisplayMode::IDLE;
-    DisplayPipelineModule pipeline;
-
-    PipelineAudio() {
-        settings.settings.voiceAlertMode = VOICE_MODE_BAND_ONLY;
-        voice.begin(&settings);
-        DisplayPipelineDependencies deps;
-        deps.displayMode = &mode;
-        deps.display = &display;
-        deps.parser = &parser;
-        deps.settings = &settings;
-        deps.ble = &ble;
-        deps.alertPersistence = &persistence;
-        deps.voice = &voice;
-        pipeline.begin(deps);
-        packet(PACKET_ID_RESP_ALL_VOLUME, {6, 2, 6, 2});
-    }
-    void packet(uint8_t id, std::initializer_list<uint8_t> payload) {
-        const uint8_t destination = id == PACKET_ID_ALERT_DATA ? 0xD8 : 0xD6;
-        std::vector<uint8_t> frame{0xAA, destination, 0xEA, id, static_cast<uint8_t>(payload.size() + 1)};
-        frame.insert(frame.end(), payload);
-        uint8_t checksum = 0;
-        for (uint8_t byte : frame)
-            checksum = static_cast<uint8_t>(checksum + byte);
-        frame.push_back(checksum);
-        frame.push_back(0xAB);
-        TEST_ASSERT_TRUE(parser.parse(frame.data(), frame.size()));
-    }
-    void alert(uint16_t frequency = 34700, uint8_t direction = 0x20) {
-        packet(PACKET_ID_ALERT_DATA,
-               {0x11, static_cast<uint8_t>(frequency >> 8), static_cast<uint8_t>(frequency), 0xAC, 0,
-                static_cast<uint8_t>(direction | 0x02), 0x80});
-        pipeline.handleParsed(mockMillis);
-    }
-    void clear() {
-        packet(PACKET_ID_ALERT_DATA, {0, 0, 0, 0, 0, 0, 0});
-        pipeline.handleParsed(mockMillis);
-    }
-};
 
 void test_directory_discovery_failure_recovers_current_episode_without_duplicate_voice() {
     fs::mock_fail_next_read_open("/audio");
@@ -1387,10 +1232,261 @@ void test_direction_count_domain_and_laser_exception() {
     TEST_ASSERT_EQUAL_STRING("/audio/dir_ahead.mul", g_sdAudioTaskParams.filePaths[1]);
 }
 
+static void acceptCancellableBandJob(AudioPlaybackReceipt& receipt) {
+    TEST_ASSERT_EQUAL(AudioPlaybackResult::Accepted,
+                      try_play_frequency_voice(AlertBand::KA, 34700, AlertDirection::AHEAD,
+                                               VOICE_MODE_BAND_ONLY, false, 1, &receipt));
+    TEST_ASSERT_TRUE(receipt.isOwned());
+}
+
+static void assertCancellationFinished(const AudioPlaybackReceipt& receipt) {
+    TEST_ASSERT_EQUAL(AudioPlaybackReceipt::State::CancelledBeforeStart, receipt.state.load());
+    TEST_ASSERT_FALSE(receipt.isOwned());
+    TEST_ASSERT_NULL(sdAudioReceipt);
+    TEST_ASSERT_EQUAL_UINT(0, g_mock_i2s_state.writeCalls);
+}
+
+void test_cancel_before_worker_dispatch_never_prepares_or_writes_pcm() {
+    AudioPlaybackReceipt receipt;
+    acceptCancellableBandJob(receipt);
+    const unsigned busCalls = tca9554Wire.beginTransmissionCalls;
+    TEST_ASSERT_TRUE(receipt.requestCancellation());
+    TEST_ASSERT_FALSE(receipt.requestCancellation());
+    TEST_ASSERT_TRUE(receipt.isOwned());
+    TEST_ASSERT_TRUE(audio_playing.load());
+    runAcceptedJob();
+    assertCancellationFinished(receipt);
+    TEST_ASSERT_EQUAL_UINT(busCalls, tca9554Wire.beginTransmissionCalls);
+    TEST_ASSERT_FALSE(amp_is_warm.load());
+}
+
+void test_cancel_during_each_startup_yield_prevents_pcm_and_finishes_cleanup() {
+    for (const TickType_t targetDelay : {20u, 30u, 50u}) {
+        setUp();
+        AudioPlaybackReceipt receipt;
+        if (targetDelay == 30) i2s_initialized = false;
+        bool cancelled = false;
+        audioWorkerDelayHook = [&](TickType_t ticks) {
+            TEST_ASSERT_FALSE_MESSAGE(cancelled, "Cancelled startup performed another delay");
+            if (ticks != targetDelay) return;
+            TEST_ASSERT_TRUE(g_mock_semaphore_state.heldHandles.empty());
+            TEST_ASSERT_EQUAL_UINT(0, g_mock_i2s_state.writeCalls);
+            TEST_ASSERT_TRUE(receipt.requestCancellation());
+            TEST_ASSERT_TRUE(receipt.isOwned());
+            TEST_ASSERT_TRUE(audio_playing.load());
+            TEST_ASSERT_EQUAL(AudioPlaybackResult::Busy,
+                              try_play_direction_only(AlertDirection::BEHIND, 1, &receipt));
+            cancelled = true;
+        };
+        acceptCancellableBandJob(receipt);
+        runAcceptedJob();
+        TEST_ASSERT_TRUE(cancelled);
+        assertCancellationFinished(receipt);
+        TEST_ASSERT_FALSE(amp_is_warm.load());
+        if (targetDelay == 50) TEST_ASSERT_FALSE(lastAmpOutputEnabled());
+        tearDown();
+    }
+}
+
+void test_cancel_at_either_startup_retry_stops_remaining_attempts() {
+    for (unsigned retry = 1; retry <= 2; ++retry) {
+        setUp();
+        AudioPlaybackReceipt receipt;
+        for (unsigned i = 0; i < retry; ++i) mock_queue_semaphore_take_result(pdFALSE);
+        const auto takesBefore = g_mock_semaphore_state.takeCalls;
+        unsigned delays = 0;
+        audioWorkerDelayHook = [&](TickType_t ticks) {
+            if (ticks == 25 && ++delays == retry) {
+                TEST_ASSERT_TRUE(g_mock_semaphore_state.heldHandles.empty());
+                TEST_ASSERT_TRUE(receipt.requestCancellation());
+            }
+        };
+        acceptCancellableBandJob(receipt);
+        runAcceptedJob();
+        TEST_ASSERT_EQUAL_UINT(retry, delays);
+        TEST_ASSERT_EQUAL_UINT(takesBefore + retry, g_mock_semaphore_state.takeCalls);
+        assertCancellationFinished(receipt);
+        tearDown();
+    }
+}
+
+void test_cancel_at_final_volume_write_wins_first_pcm_commit() {
+    AudioPlaybackReceipt receipt;
+    bool cancelled = false;
+    // Publish a new speaker volume after preparation's volume check, so the
+    // worker performs one more I2C operation immediately before its first PCM.
+    audioWorkerDelayHook = [&](TickType_t ticks) {
+        if (ticks == 50) current_volume_percent.store(60);
+    };
+    tca9554Wire.onEndTransmission = [&] {
+        const auto& tx = tca9554Wire.transmissionHistory.back();
+        if (tx.address != 0x18 || tx.data.size() != 2 || tx.data[0] != 0x32) return;
+        TEST_ASSERT_EQUAL_UINT(0, g_mock_i2s_state.writeCalls);
+        TEST_ASSERT_TRUE(receipt.requestCancellation());
+        cancelled = true;
+    };
+    acceptCancellableBandJob(receipt);
+    runAcceptedJob();
+    TEST_ASSERT_TRUE(cancelled);
+    assertCancellationFinished(receipt);
+    TEST_ASSERT_FALSE(amp_is_warm.load());
+    TEST_ASSERT_FALSE(lastAmpOutputEnabled());
+}
+
+void test_started_commit_wins_later_cancellation_without_truncation() {
+    AudioPlaybackReceipt receipt;
+    g_mock_i2s_state.onWrite = [&] {
+        TEST_ASSERT_EQUAL(AudioPlaybackReceipt::State::Started, receipt.state.load());
+        TEST_ASSERT_FALSE(receipt.isOwned());
+        TEST_ASSERT_FALSE(receipt.requestCancellation());
+        TEST_ASSERT_NULL(sdAudioReceipt);
+    };
+    acceptCancellableBandJob(receipt);
+    const auto clipBytes = std::filesystem::file_size(audioRoot / "audio/band_ka.mul");
+    runAcceptedJob();
+    TEST_ASSERT_EQUAL_UINT((clipBytes + AUDIO_CHUNK_SAMPLES - 1) / AUDIO_CHUNK_SAMPLES,
+                           g_mock_i2s_state.writeCalls);
+    TEST_ASSERT_EQUAL(AudioPlaybackReceipt::State::Started, receipt.state.load());
+    TEST_ASSERT_EQUAL_UINT(1, g_mock_task_notify_state.giveCalls);
+}
+
+void test_cancel_racing_unheard_read_failure_is_acknowledged_after_cleanup() {
+    AudioPlaybackReceipt receipt;
+    bool cancelled = false;
+    fs::mock_fail_next_read_open("/audio/band_ka.mul");
+    tca9554Wire.onEndTransmission = [&] {
+        const auto& tx = tca9554Wire.transmissionHistory.back();
+        if (tx.address == 0x20 && tx.data.size() == 2 && tx.data[0] == 1 && !(tx.data[1] & 0x80)) {
+            // The error is known, but the worker still owns cleanup. A mute
+            // here must not be overwritten by FailedBeforeStart completion.
+            TEST_ASSERT_TRUE(receipt.requestCancellation());
+            TEST_ASSERT_TRUE(receipt.isOwned());
+            TEST_ASSERT_TRUE(audio_playing.load());
+            cancelled = true;
+        }
+    };
+    acceptCancellableBandJob(receipt);
+    runAcceptedJob();
+    TEST_ASSERT_TRUE(cancelled);
+    assertCancellationFinished(receipt);
+    TEST_ASSERT_FALSE(amp_is_warm.load());
+}
+
+void test_cancel_racing_missing_asset_completion_stays_unheard() {
+    AudioPlaybackReceipt receipt;
+    SDAudioTaskParams params{};
+    params.numClips = 1;
+    strcpy(params.filePaths[0], "/audio/missing.mul");
+    bool cancelled = false;
+    audioWorkerDelayHook = [&](TickType_t ticks) {
+        if (ticks == 30) { // Existing completion delay after the missing clip.
+            TEST_ASSERT_EQUAL_UINT(0, g_mock_i2s_state.writeCalls);
+            TEST_ASSERT_TRUE(receipt.requestCancellation());
+            cancelled = true;
+        }
+    };
+    TEST_ASSERT_EQUAL(AudioPlaybackResult::Accepted, start_sd_audio_task(params, &receipt));
+    runAcceptedJob();
+    TEST_ASSERT_TRUE(cancelled);
+    assertCancellationFinished(receipt);
+    TEST_ASSERT_FALSE(amp_is_warm.load());
+}
+
+void test_cancelled_cleanup_failure_retains_shutdown_and_allows_receipt_reuse() {
+    AudioPlaybackReceipt receipt;
+    ampRegisters = AmpRegisterModel{};
+    ampRegisters.install();
+    bool cancellationRequested = false;
+    auto modelWrite = tca9554Wire.onEndTransmission;
+    tca9554Wire.onEndTransmission = [&] {
+        modelWrite();
+        if (cancellationRequested) {
+            TEST_ASSERT_EQUAL(AudioPlaybackReceipt::State::CancelRequested, receipt.state.load());
+            TEST_ASSERT_TRUE(audio_playing.load());
+            TEST_ASSERT_EQUAL(AudioPlaybackResult::Busy,
+                              try_play_direction_only(AlertDirection::BEHIND, 1, &receipt));
+        }
+    };
+    audioWorkerDelayHook = [&](TickType_t ticks) {
+        if (ticks == 50) {
+            TEST_ASSERT_TRUE(receipt.requestCancellation());
+            cancellationRequested = true;
+            ampRegisters.disableFailures = 1;
+        }
+    };
+    acceptCancellableBandJob(receipt);
+    runAcceptedJob();
+    assertCancellationFinished(receipt);
+    TEST_ASSERT_TRUE(amp_is_warm.load());
+    TEST_ASSERT_TRUE(ampRegisters.enabled());
+    cancellationRequested = false;
+    audioWorkerDelayHook = nullptr;
+    mockMillis += 100;
+    audio_process_amp_timeout();
+    TEST_ASSERT_FALSE(amp_is_warm.load());
+    TEST_ASSERT_FALSE(ampRegisters.enabled());
+    TEST_ASSERT_FALSE(receipt.requestCancellation());
+    acceptCancellableBandJob(receipt);
+    runAcceptedJob();
+    TEST_ASSERT_EQUAL(AudioPlaybackReceipt::State::Started, receipt.state.load());
+    TEST_ASSERT_GREATER_THAN_UINT(0, g_mock_i2s_state.writeCalls);
+    TEST_ASSERT_EQUAL_UINT(2, g_mock_task_notify_state.giveCalls);
+}
+
+void test_receiptless_preview_does_not_inherit_previous_cancellation() {
+    AudioPlaybackReceipt receipt;
+    acceptCancellableBandJob(receipt);
+    TEST_ASSERT_TRUE(receipt.requestCancellation());
+    runAcceptedJob();
+    assertCancellationFinished(receipt);
+    play_test_voice();
+    runAcceptedJob();
+    TEST_ASSERT_GREATER_THAN_UINT(0, g_mock_i2s_state.writeCalls);
+    TEST_ASSERT_EQUAL(AudioPlaybackReceipt::State::CancelledBeforeStart, receipt.state.load());
+    TEST_ASSERT_EQUAL_UINT(2, g_mock_task_notify_state.giveCalls);
+}
+
+void test_each_alert_entrypoint_cancels_and_can_accept_a_fresh_job() {
+    for (unsigned entrypoint = 0; entrypoint < 3; ++entrypoint) {
+        setUp();
+        AudioPlaybackReceipt receipt;
+        const auto submit = [&] {
+            if (entrypoint == 0) {
+                return try_play_frequency_voice(AlertBand::KA, 34700, AlertDirection::AHEAD,
+                                                 VOICE_MODE_BAND_FREQ, true, 2, &receipt);
+            }
+            if (entrypoint == 1) return try_play_direction_only(AlertDirection::BEHIND, 2, &receipt);
+            return try_play_threat_escalation(AlertBand::KA, 34700, AlertDirection::AHEAD,
+                                               3, 2, 1, 0, VOICE_MODE_BAND_FREQ, true, true, &receipt);
+        };
+        TEST_ASSERT_EQUAL(AudioPlaybackResult::Accepted, submit());
+        TEST_ASSERT_TRUE(receipt.requestCancellation());
+        runAcceptedJob();
+        assertCancellationFinished(receipt);
+        TEST_ASSERT_EQUAL(AudioPlaybackResult::Accepted, submit());
+        TEST_ASSERT_EQUAL(AudioPlaybackReceipt::State::Pending, receipt.state.load());
+        runAcceptedJob();
+        TEST_ASSERT_EQUAL(AudioPlaybackReceipt::State::Started, receipt.state.load());
+        TEST_ASSERT_GREATER_THAN_UINT(0, g_mock_i2s_state.writeCalls);
+        TEST_ASSERT_EQUAL_UINT(2, g_mock_task_notify_state.giveCalls);
+        tearDown();
+    }
+}
+
 int main() {
     std::filesystem::copy(std::filesystem::path(PROJECT_DIR) / "tools" / "freq_audio" / "mulaw",
                           audioRoot / "audio", std::filesystem::copy_options::recursive);
     UNITY_BEGIN();
+    RUN_TEST(test_cancel_before_worker_dispatch_never_prepares_or_writes_pcm);
+    RUN_TEST(test_cancel_during_each_startup_yield_prevents_pcm_and_finishes_cleanup);
+    RUN_TEST(test_cancel_at_either_startup_retry_stops_remaining_attempts);
+    RUN_TEST(test_cancel_at_final_volume_write_wins_first_pcm_commit);
+    RUN_TEST(test_started_commit_wins_later_cancellation_without_truncation);
+    RUN_TEST(test_cancel_racing_unheard_read_failure_is_acknowledged_after_cleanup);
+    RUN_TEST(test_cancel_racing_missing_asset_completion_stays_unheard);
+    RUN_TEST(test_cancelled_cleanup_failure_retains_shutdown_and_allows_receipt_reuse);
+    RUN_TEST(test_receiptless_preview_does_not_inherit_previous_cancellation);
+    RUN_TEST(test_each_alert_entrypoint_cancels_and_can_accept_a_fresh_job);
     RUN_TEST(test_primary_bogey_count_covers_complete_protocol_domain);
     RUN_TEST(test_dense_counts_keep_mode_direction_photo_and_disabled_contracts);
     RUN_TEST(test_direction_count_domain_and_laser_exception);

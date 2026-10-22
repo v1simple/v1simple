@@ -389,11 +389,19 @@ RenderFrame DisplayPipelineModule::buildDisconnectedFrame(uint32_t nowMs, const 
 // Startup failure leaves this exact action unheard; current-frame validation
 // below decides whether it is still eligible for another attempt.
 bool DisplayPipelineModule::settleVoicePlayback(uint32_t nowMs) {
+    // A clear/new episode may discard selection while the worker still owns
+    // this receipt. Cancellation is not acknowledged until cleanup finishes.
+    if (voicePlaybackReceipt_.isOwned()) return false;
     if (!awaitingVoicePlayback_) return true;
     const auto state = voicePlaybackReceipt_.state.load();
-    if (state == AudioPlaybackReceipt::State::Pending) return false;
     awaitingVoicePlayback_ = false;
-    if (state == AudioPlaybackReceipt::State::FailedBeforeStart) {
+    if (state == AudioPlaybackReceipt::State::CancelledBeforeStart) {
+        // Unheard, not terminally missing: select from current policy/alerts
+        // when suppression lifts, without committing stale content or dedup.
+        hasPendingVoiceAction_ = false;
+        voiceRetryScheduled_ = false;
+        nextVoiceAttemptMs_ = 0;
+    } else if (state == AudioPlaybackReceipt::State::FailedBeforeStart) {
         voiceRetryScheduled_ = true;
         nextVoiceAttemptMs_ = nowMs + VOICE_RETRY_INTERVAL_MS;
     } else {
@@ -405,7 +413,26 @@ bool DisplayPipelineModule::settleVoicePlayback(uint32_t nowMs) {
     return true;
 }
 
+void DisplayPipelineModule::servicePendingVoice() {
+    if (!hasPendingVoicePlayback() || !parser_ || !voice_ || !ble_) return;
+    const DisplayState& state = parser_->getDisplayState();
+    VoiceContext ctx;
+    ctx.isMuted = state.muted;
+    ctx.isSoftMuted = state.softMuted;
+    ctx.mainVolume = state.mainVolume;
+    ctx.isProxyConnected = ble_->isProxyClientConnected();
+    if (quiet_) {
+        // The accepted job itself supplies alert content, even after the live
+        // table clears. Speed suppression must still apply to that job.
+        quiet_->applyVoicePresentation(ctx, speedMute_, true, pendingVoiceAction_.sourceBand);
+    }
+    if (voice_->isContextSuppressed(ctx)) {
+        (void)voicePlaybackReceipt_.requestCancellation();
+    }
+}
+
 void DisplayPipelineModule::runVoice(const RenderFrame& frame, const V1Settings& settingsRef, uint32_t nowMs) {
+    servicePendingVoice();
     const FrameV1Alerts v1Alerts = buildFrameV1Alerts(frame);
     // A queue drain can clear and reopen an encounter before we see its idle
     // frame. Re-arm voice from the parser's episode boundary, including an

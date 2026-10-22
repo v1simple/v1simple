@@ -702,7 +702,9 @@ bool DriveRuntime::processParsedPolicies(const DisplayEdges& edges) {
     parsedContext.nowMs = edges.nowMs;
     parsedContext.parsedReady = edges.parsedReady;
     parsedContext.bootSplashHoldActive = state_.bootSplashHoldActive;
-    return displayOrchestration_.processParsedFrame(parsedContext);
+    const bool present = displayOrchestration_.processParsedFrame(parsedContext);
+    displayPipeline_.servicePendingVoice();
+    return present;
 }
 
 void DriveRuntime::presentDisplay(const DisplayEdges& edges, bool overloadThisLoop) {
@@ -1086,6 +1088,17 @@ void DriveRuntime::logDisplayConfiguration(uint32_t nowMs) {
 uint32_t DriveRuntime::finishLoop(bool bleBackpressure, uint32_t loopStartUs, bool forceBleDrain) {
     if (bleBackpressure || forceBleDrain) {
         bleQueue_.process();
+    }
+    // Tail parsing and non-display owners can change suppression without a
+    // presentation edge. Recheck before yielding to the audio worker, even
+    // when sliders or a warning own the screen. Never admit new speech here.
+    if (displayPipeline_.hasPendingVoicePlayback()) {
+        if (!state_.bootSplashHoldActive) {
+            quiet_.setInTheBoxSuspended(autoPush_.isActive() ||
+                                        settingsOperations_.requiresExclusiveDetectorAdmission());
+            quiet_.processInTheBox(millis());
+        }
+        displayPipeline_.servicePendingVoice();
     }
     vTaskDelay(pdMS_TO_TICKS(1));
     return static_cast<uint32_t>(micros() - loopStartUs);

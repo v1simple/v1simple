@@ -79,6 +79,12 @@ struct SliderRuntime : SpeedFadeRuntime {
     } settingsOperations_;
     QuietCoordinatorModule &quiet_ = quiet;
     DisplayOrchestrationModule &displayOrchestration_ = orchestration;
+    // This fixture has no voice jobs; the tail fixture exercises real pending
+    // receipts. Keep the extracted parsed-policy service observable here.
+    struct {
+        unsigned serviceCalls = 0;
+        void servicePendingVoice() { ++serviceCalls; }
+    } displayPipeline_;
     DisplayEdges consumeDisplayEdges() {
         const DisplayEdges edges{now, parsedReady};
         parsedReady = false;
@@ -136,6 +142,7 @@ void test_slider_view_should_restore_original_pair_on_invalid_speed() {
     TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
     TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
     TEST_ASSERT_EQUAL_INT(0, display.hideBrightnessSliderCalls);
+    TEST_ASSERT_GREATER_THAN_UINT(0, r.displayPipeline_.serviceCalls);
 }
 void test_slider_without_parsed_edge_waits_then_restores() {
     SliderRuntime r;

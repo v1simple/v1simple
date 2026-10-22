@@ -227,11 +227,35 @@ and consumes no episode; recovery can announce only a still-current alert.
 The worker reports when PCM is submitted, terminally unavailable assets, or a
 failure before any PCM. Only the latter remains retryable, and the pipeline
 checks the current episode, alert identity and suppression policy before
-resubmitting it. A partial playback is never replayed. The host
+resubmitting it. Suppression also cancels an accepted announcement that has not
+started: soft mute, phone proxy ownership, configured V1-volume-zero suppression,
+disabled voice, speed voice suppression, and In-The-Box voice suppression share
+the admission policy. The main loop checks this independently of presentation
+edges, including after tail packet processing. Alert clear or priority change
+alone does not cancel a brief accepted warning.
+
+Cancellation competes atomically with the worker's first PCM submission commitment.
+A cancellation request retains receipt/job ownership until worker cleanup is
+acknowledged; it consumes no heard-announcement state. A later admission selects
+only a still-current alert under current policy. Once start wins, speech may
+finish and is never replayed, including after partial playback. This is a software
+decision boundary, not a guarantee about RF arrival or the first acoustic sample.
+The host
 [`test_audio_worker`](../../test/test_audio_worker/test_audio_worker.cpp) exercises
 this receipt through the parser, pipeline and real worker, including exhausted
 startup attempts followed by recovery and stale-episode controls. Hardware
 I2C/I2S and speaker output remain outside that host test boundary.
+
+[`test_voice_suppression`](../../test/test_voice_suppression/test_voice_suppression.cpp)
+executes canonical parser updates, quiet policy, pipeline ownership and the real
+worker at controlled startup yields. It covers cancellation without a display
+edge, all suppression gates, clear/new-episode cleanup, unmute and current-alert
+readmission, and preservation of already-started speech. The extracted runtime
+adapters in
+[`test_drive_runtime_policies.py`](../../scripts/test_drive_runtime_policies.py)
+also verify policy service after tail parsing and while other screens own
+presentation. These tests model scheduling and hardware inputs; they do not
+measure physical sound or radio timing.
 
 Escalation speech follows the same content, direction, and bogey-count settings
 as ordinary speech. Directional counts require both direction and count enabled.

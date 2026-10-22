@@ -83,6 +83,9 @@ class VoiceModule {
     // Main decision method - returns what to announce (if anything)
     VoiceAction process(const VoiceContext& ctx);
     // Current policy only; does not advance selection, history, or dedup state.
+    // Suppression is independent of alert presence: a brief cleared alert may
+    // still have an accepted announcement waiting to start.
+    bool isContextSuppressed(const VoiceContext& ctx) const;
     bool canAnnounceContext(const VoiceContext& ctx) const;
     VoiceAction prepareAction(const VoiceContext& ctx);
     void commitAction(const VoiceAction& action, unsigned long acceptedAtMs);

@@ -42,6 +42,12 @@ class DisplayPipelineModule {
 
     // Process after a successful parser.parse(); expects parser state already updated.
     void handleParsed(uint32_t nowMs);
+    // Main-loop policy service, independent of display/parsed edges. Cancels
+    // suppressed unheard jobs only; never selects or starts an announcement.
+    void servicePendingVoice();
+    bool hasPendingVoicePlayback() const {
+        return voicePlaybackReceipt_.state.load() == AudioPlaybackReceipt::State::Pending;
+    }
     // Re-renders the current owner without voice side effects when a blink or
     // V1 persistence deadline needs a display update.
     void refreshBlinkTick(uint32_t nowMs);

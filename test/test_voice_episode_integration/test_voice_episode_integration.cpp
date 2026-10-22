@@ -542,8 +542,33 @@ void test_table_clear_within_session_preserves_display_mute_authority() {
     TEST_ASSERT_EQUAL_UINT(0, attemptedFrequencies.size());
 }
 
+void test_session_close_pending_voice_follows_configured_volume_zero_policy() {
+    for (const bool muteAtZero : {false, true}) {
+        setUp();
+        VoiceRuntime runtime;
+        runtime.settings.settings.muteVoiceIfVolZero = muteAtZero;
+        playbackState = AudioPlaybackReceipt::State::Pending;
+        runtime.alert(10000);
+        runtime.present(10000);
+        TEST_ASSERT_NOT_NULL(activeReceipt);
+        TEST_ASSERT_EQUAL(AudioPlaybackReceipt::State::Pending, activeReceipt->state.load());
+        runtime.connection.handleSessionClosed(10010, ++runtime.generation);
+        TEST_ASSERT_FALSE(runtime.parser.hasAlerts());
+        TEST_ASSERT_FALSE(runtime.parser.getDisplayState().hasVolumeData);
+        TEST_ASSERT_EQUAL_UINT8(0, runtime.parser.getDisplayState().mainVolume);
+        runtime.pipeline.servicePendingVoice();
+        // Session reset already clears the detector volume to zero. Keep the
+        // same configured policy as admission; no new volume-known exception.
+        TEST_ASSERT_EQUAL(muteAtZero ? AudioPlaybackReceipt::State::CancelRequested
+                                    : AudioPlaybackReceipt::State::Pending,
+                          activeReceipt->state.load());
+        TEST_ASSERT_EQUAL_UINT(1, attemptedFrequencies.size());
+    }
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_session_close_pending_voice_follows_configured_volume_zero_policy);
     RUN_TEST(test_reconnect_short_alert_is_announced_before_fresh_display_data);
     RUN_TEST(test_reconnect_requires_two_new_frames_to_confirm_display_mute);
     RUN_TEST(test_reconnect_fresh_soft_mute_still_suppresses_until_unmuted);

@@ -91,32 +91,33 @@ VoiceAction VoiceModule::process(const VoiceContext& ctx) {
     return action;
 }
 
-bool VoiceModule::canAnnounceContext(const VoiceContext& ctx) const {
+bool VoiceModule::isContextSuppressed(const VoiceContext& ctx) const {
     if (!settings_)
-        return false;
+        return true;
     const V1Settings& s = settings_->get();
 
     if (s.voiceAlertMode == VOICE_MODE_DISABLED)
-        return false;
+        return true;
 
     if (s.muteVoiceIfVolZero && ctx.mainVolume == 0)
-        return false;
+        return true;
 
     // aux0 bit 0 is the V1 audio gate. The visible mute LED is independently
     // debounced and may not match the current audio state.
     if (ctx.isSoftMuted)
-        return false;
+        return true;
 
     if (ctx.isSuppressed)
-        return false;
+        return true;
 
     if (ctx.isProxyConnected)
-        return false;
+        return true;
 
-    if (!ctx.priority || ctx.priority->band == BAND_NONE)
-        return false;
+    return false;
+}
 
-    return true;
+bool VoiceModule::canAnnounceContext(const VoiceContext& ctx) const {
+    return !isContextSuppressed(ctx) && ctx.priority && ctx.priority->band != BAND_NONE;
 }
 
 VoiceAction VoiceModule::prepareAction(const VoiceContext& ctx) {

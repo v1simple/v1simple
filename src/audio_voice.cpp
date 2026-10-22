@@ -111,11 +111,18 @@ static TaskHandle_t sdAudioWorkerHandle = nullptr;
 // the worker publishes a terminal receipt before releasing job ownership.
 static AudioPlaybackReceipt* sdAudioReceipt = nullptr;
 
-static void publish_audio_receipt(AudioPlaybackReceipt::State state) {
-    if (sdAudioReceipt) {
-        sdAudioReceipt->state.store(state);
-        sdAudioReceipt = nullptr;
-    }
+static bool sd_audio_cancel_requested() {
+    return sdAudioReceipt && sdAudioReceipt->state.load() == AudioPlaybackReceipt::State::CancelRequested;
+}
+
+// Cancellation and the first PCM submission have one atomic decision. Once
+// Started wins, the worker no longer accesses caller-owned receipt storage.
+static bool start_sd_audio_pcm() {
+    if (!sdAudioReceipt) return true;
+    AudioPlaybackReceipt* receipt = sdAudioReceipt;
+    if (!receipt->tryStart()) return false;
+    sdAudioReceipt = nullptr;
+    return true;
 }
 
 // Use the returned result: a short clip can finish before the caller samples
@@ -157,7 +164,25 @@ static AudioPlaybackResult start_sd_audio_task(const SDAudioTaskParams& localPar
     return AudioPlaybackResult::Accepted;
 }
 
-static void finish_sd_audio_job() {
+static void finish_sd_audio_job(AudioPlaybackReceipt::State result) {
+    AudioPlaybackReceipt* receipt = sdAudioReceipt;
+    sdAudioReceipt = nullptr;
+    if (receipt) {
+        auto expected = AudioPlaybackReceipt::State::Pending;
+        // A late cancellation also wins against an unheard error/missing asset.
+        // Do not overwrite it with a terminal result that consumes voice dedup.
+        if (!receipt->state.compare_exchange_strong(expected, result) &&
+            expected == AudioPlaybackReceipt::State::CancelRequested) {
+            if (amp_is_warm.load()) {
+                const unsigned long now = millis();
+                amp_last_used_ms = now - AMP_WARM_TIMEOUT_MS;
+                disable_speaker_amp(pdMS_TO_TICKS(50), now, "sd_audio_playback_task cancelled");
+            }
+            // Cleanup is complete (or idle service owns a failed shutdown).
+            // This store is the last access to the caller's receipt.
+            receipt->state.store(AudioPlaybackReceipt::State::CancelledBeforeStart);
+        }
+    }
     audioResetTaskState(audio_playing, audioTaskHandle);
 }
 
@@ -168,16 +193,20 @@ static bool prepare_sd_audio_output() {
     constexpr uint8_t maxAttempts = 3;
     bool ampEnableMayHaveChanged = false;
     for (uint8_t attempt = 0; attempt < maxAttempts; ++attempt) {
+        if (sd_audio_cancel_requested()) break;
         if (attempt > 0) {
             vTaskDelay(pdMS_TO_TICKS(25));
+            if (sd_audio_cancel_requested()) break;
         }
         if (!i2s_initialized) {
             i2s_init();
             vTaskDelay(pdMS_TO_TICKS(30));
+            if (sd_audio_cancel_requested()) break;
         }
         if (!i2s_initialized || !es8311_init()) {
             continue;
         }
+        if (sd_audio_cancel_requested()) break;
         const AudioI2cResult volumeResult = audio_apply_pending_volume();
         if (volumeResult != AudioI2cResult::Ok) {
             audio_log_i2c_failure("sd_audio_playback_task volume", volumeResult);
@@ -187,6 +216,7 @@ static bool prepare_sd_audio_output() {
         if (cold) {
             vTaskDelay(pdMS_TO_TICKS(20)); // ES8311 lock time
         }
+        if (sd_audio_cancel_requested()) break;
         const AudioI2cResult ampEnableResult = set_speaker_amp(true);
         // Once the bus was acquired, a failed register sequence can already
         // have asserted the enable output. Busy never touched the hardware.
@@ -198,15 +228,22 @@ static bool prepare_sd_audio_output() {
         if (cold) {
             vTaskDelay(pdMS_TO_TICKS(50)); // Amp stabilization
         }
+        if (sd_audio_cancel_requested()) break;
         amp_is_warm = true;
         amp_last_used_ms = millis();
         amp_disable_fail_count = 0;
         return true;
     }
     if (ampEnableMayHaveChanged) {
-        const unsigned long now = millis();
-        amp_last_used_ms = now - AMP_WARM_TIMEOUT_MS;
-        disable_speaker_amp(pdMS_TO_TICKS(50), now, "sd_audio_playback_task failed startup");
+        if (sd_audio_cancel_requested()) {
+            // Even a failed enable may have asserted the output. Cancellation
+            // completion retains shutdown ownership until the cleanup attempt.
+            amp_is_warm = true;
+        } else {
+            const unsigned long now = millis();
+            amp_last_used_ms = now - AMP_WARM_TIMEOUT_MS;
+            disable_speaker_amp(pdMS_TO_TICKS(50), now, "sd_audio_playback_task failed startup");
+        }
     }
     return false;
 }
@@ -218,27 +255,29 @@ static void sd_audio_playback_task(void* pvParameters) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
         if (!prepare_sd_audio_output()) {
-            publish_audio_receipt(AudioPlaybackReceipt::State::FailedBeforeStart);
-            finish_sd_audio_job();
+            finish_sd_audio_job(AudioPlaybackReceipt::State::FailedBeforeStart);
             continue;
         }
 
         if (!audioFS) {
             Serial.println("[AUDIO] ERROR: audioFS is null!");
             // Preserve the normal warm-timeout ownership of amplifier shutdown.
-            publish_audio_receipt(AudioPlaybackReceipt::State::Unavailable);
-            finish_sd_audio_job();
+            finish_sd_audio_job(AudioPlaybackReceipt::State::Unavailable);
             continue;
         }
 
         if (!g_stereoChunkBuffer || !g_mulawChunkBuffer) {
             Serial.println("[AUDIO] ERROR: PSRAM buffers not allocated!");
-            publish_audio_receipt(AudioPlaybackReceipt::State::Unavailable);
-            finish_sd_audio_job();
+            finish_sd_audio_job(AudioPlaybackReceipt::State::Unavailable);
             continue;
         }
         bool writeAborted = false;
+        auto result = AudioPlaybackReceipt::State::Unavailable;
         for (int i = 0; i < g_sdAudioTaskParams.numClips; i++) {
+            if (sd_audio_cancel_requested()) {
+                writeAborted = true;
+                break;
+            }
             // A failed read-open is not evidence of a missing optional clip.
             // Use independent metadata so temporary I/O failures remain
             // retryable until PCM starts, including a failed first read.
@@ -251,26 +290,30 @@ static void sd_audio_playback_task(void* pvParameters) {
                 continue;
             }
             if (status != StoragePathStatus::Present || details.st_size < 0) {
-                publish_audio_receipt(AudioPlaybackReceipt::State::FailedBeforeStart);
+                result = AudioPlaybackReceipt::State::FailedBeforeStart;
                 writeAborted = true;
                 break;
             }
             File audioFile = audioFS->open(g_sdAudioTaskParams.filePaths[i], "r");
             if (!audioFile) {
-                publish_audio_receipt(AudioPlaybackReceipt::State::FailedBeforeStart);
+                result = AudioPlaybackReceipt::State::FailedBeforeStart;
                 writeAborted = true;
                 break;
             }
 
             uint64_t bytesRemaining = static_cast<uint64_t>(details.st_size);
             while (bytesRemaining > 0) {
+                if (sd_audio_cancel_requested()) {
+                    writeAborted = true;
+                    break;
+                }
                 const size_t bytesRequested =
                     static_cast<size_t>(std::min<uint64_t>(bytesRemaining, AUDIO_CHUNK_SAMPLES));
                 const size_t bytesRead = audioFile.read(g_mulawChunkBuffer, bytesRequested);
                 // The pinned VFS uses fread: a short result before the
                 // stat-verified end is an incomplete clip, not clean EOF.
                 if (bytesRead != bytesRequested) {
-                    publish_audio_receipt(AudioPlaybackReceipt::State::FailedBeforeStart);
+                    result = AudioPlaybackReceipt::State::FailedBeforeStart;
                     writeAborted = true;
                     break;
                 }
@@ -287,13 +330,16 @@ static void sd_audio_playback_task(void* pvParameters) {
                 const AudioI2cResult volumeResult = audio_apply_pending_volume();
                 if (volumeResult != AudioI2cResult::Ok) {
                     audio_log_i2c_failure("sd_audio_playback_task pending volume", volumeResult);
-                    publish_audio_receipt(AudioPlaybackReceipt::State::FailedBeforeStart);
+                    result = AudioPlaybackReceipt::State::FailedBeforeStart;
                     writeAborted = true;
                     break;
                 }
                 // Once a write is submitted it may have emitted partial PCM,
                 // even if it reports an error. Never retry that announcement.
-                publish_audio_receipt(AudioPlaybackReceipt::State::Started);
+                if (!start_sd_audio_pcm()) {
+                    writeAborted = true;
+                    break;
+                }
                 size_t bytes_written = 0;
                 const AudioWriteResult writeResult = audioWriteWithTimeout([&](TickType_t timeoutTicks) {
                     return i2s_channel_write(i2s_tx_chan, g_stereoChunkBuffer, bytesRead * 2 * sizeof(int16_t),
@@ -311,13 +357,13 @@ static void sd_audio_playback_task(void* pvParameters) {
             }
         }
 
-        if (writeAborted) {
+        if (writeAborted && !sd_audio_cancel_requested()) {
             const unsigned long now = millis();
             // An aborted job has no reason to keep the amplifier warm. If
             // disabling fails, idle service retries without another warm delay.
             amp_last_used_ms = now - AMP_WARM_TIMEOUT_MS;
             disable_speaker_amp(pdMS_TO_TICKS(50), now, "sd_audio_playback_task amp disable");
-        } else {
+        } else if (!writeAborted) {
             // Brief delay for DMA buffer to flush
             vTaskDelay(pdMS_TO_TICKS(30)); // Reduced from 50ms
 
@@ -325,10 +371,9 @@ static void sd_audio_playback_task(void* pvParameters) {
             amp_last_used_ms = millis();
         }
 
-        // Only verified missing/empty clips are terminal without PCM. A
-        // Started or FailedBeforeStart receipt is already detached.
-        publish_audio_receipt(AudioPlaybackReceipt::State::Unavailable);
-        finish_sd_audio_job();
+        // Only verified missing/empty clips are terminal without PCM. Started
+        // already detached; unheard errors and cancellation settle after cleanup.
+        finish_sd_audio_job(result);
     }
 }
 

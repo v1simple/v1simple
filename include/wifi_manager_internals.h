@@ -28,5 +28,5 @@ inline const char* wifiClientStateApiName(WifiClientState state) {
     return "unknown";
 }
 
-/// Serve a file from LittleFS with ETag/gzip support.
+/// Serve firmware web assets or LittleFS audio with ETag/gzip support.
 bool serveLittleFSFileHelper(WebServer& server, const char* path, const char* contentType);

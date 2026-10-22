@@ -10,7 +10,7 @@
   },
   "scripts": {
     "dev": "vite dev",
-    "build": "vite build && bash ../tools/compress_web_assets.sh",
+    "build": "python3 ../scripts/generate_web_bundle.py build",
     "preview": "vite preview",
     "deploy": "npm run build && node scripts/deploy.js",
     "deploy:built": "node scripts/deploy.js",

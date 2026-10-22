@@ -389,6 +389,6 @@ echo -e "${GREEN}== Build complete ==${NC}"
 echo ""
 
 if [ "$UPLOAD_FW" = false ] && [ "$UPLOAD_FS" = false ]; then
-    echo -e "${YELLOW}Tip: use --all to build and upload everything${NC}"
-    echo -e "${YELLOW}   Example: ./build.sh --all${NC}"
+    echo -e "${YELLOW}Tip: use --upload to update firmware and web interface while preserving saved data${NC}"
+    echo -e "${YELLOW}   Example: ./build.sh --upload${NC}"
 fi

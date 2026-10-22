@@ -129,7 +129,7 @@ bool WiFiManager::setupWebServer() {
     server_.setMaintenanceBootMode(maintenanceBootMode_);
     server_.setWriteAdmission([this]() { return admitMaintenanceWriteBeforeBody(); });
 
-    // Initialize LittleFS for serving web UI files
+    // Audio and maintenance persistence still require the existing filesystem.
     if (!fsmount::mountStorage()) {
         return false;
     }
@@ -140,7 +140,7 @@ bool WiFiManager::setupWebServer() {
         return true;
     }
 
-    // Serve the LittleFS UI assets from the _app directory.
+    // Serve the firmware's UI assets from the _app directory.
     server_.on("/_app/env.js", HTTP_GET, [this]() {
         if (!serveLittleFSFile("/_app/env.js", "application/javascript")) {
             server_.send(404, "text/plain", "Not found");
@@ -158,13 +158,12 @@ bool WiFiManager::setupWebServer() {
         if (serveLittleFSFile("/index.html", "text/html")) {
             return;
         }
-        // LittleFS missing - tell user to reflash
-        Serial.println("[HTTP] 500 / -> LittleFS missing");
+        Serial.println("[HTTP] 500 / -> embedded web UI missing");
         server_.send(500, "application/json",
-                     "{\"success\":false,\"error\":\"Web UI not found. Please reflash with ./build.sh --all\"}");
+                     "{\"success\":false,\"error\":\"Web UI not found. Please reinstall the firmware update.\"}");
     });
 
-    // Catch-all for _app/immutable/* files (if Svelte files are uploaded)
+    // Catch-all for the firmware's _app/immutable/* files.
     server_.onNotFound([this]() {
         markUiActivity(); // Track UI activity
         String uri = server_.uri();
@@ -179,7 +178,7 @@ bool WiFiManager::setupWebServer() {
             return;
         }
 
-        // Serve _app files from LittleFS
+        // Serve _app files from firmware.
         if (uri.startsWith("/_app/")) {
             String contentType = "application/octet-stream";
             if (uri.endsWith(".js"))

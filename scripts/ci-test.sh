@@ -178,6 +178,7 @@ run_step "Replay visual field reader regression suite" env PYTHONPATH=scripts \
 run_step "LittleFS compatibility regression suite" python3 scripts/test_check_littlefs_image_compatibility.py
 run_step "Commit metadata regression suite" python3 scripts/test_check_public_commit_metadata.py
 run_step "App-only upload offset regression suite" python3 scripts/test_force_app_upload_offset.py
+run_step "Bundled web interface regression suite" python3 scripts/test_generate_web_bundle.py
 run_step "Release preparation regression suite" python3 scripts/test_prepare_release.py
 run_step "Release publication regression suite" python3 scripts/test_release_publication.py
 run_step "Release artifact packaging regression suite" python3 scripts/test_release_artifacts.py

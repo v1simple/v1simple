@@ -317,8 +317,8 @@ inline Decision evaluate(const char* data, const size_t length, const bool maint
     }
     const bool exactFormPath = isExactFormPath(targetBegin, targetPathEnd);
     if (foundContentType && startsWithIgnoreCase(contentTypeBegin, contentTypeEnd, "multipart/")) {
-        // App-only upgrades preserve the v2.0.3 LittleFS UI, whose string-only
-        // forms use multipart. Bound that compatibility path tightly because
+        // Older installed or cached UIs use multipart for string-only forms.
+        // Bound that compatibility path tightly because
         // pinned WebServer grows String form fields while parsing multipart.
         const char* boundaryBegin = nullptr;
         const char* boundaryEnd = nullptr;

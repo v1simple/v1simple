@@ -179,4 +179,4 @@ function runLittleFsCapacityGate(rawBytes) {
 runLittleFsCapacityGate(totalSize);
 
 console.log('\n💡 Next steps:');
-console.log('   cd .. && ./build.sh --upload-fs');
+console.log('   cd .. && ./build.sh --skip-web --upload');

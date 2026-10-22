@@ -323,9 +323,10 @@ def main() -> int:
 
     index_text = index.read_text(encoding="utf-8")
     for required_text in (
-        "Update firmware — preserve device data",
-        "Writes only the app partition.",
-        "existing LittleFS web interface are not part of this update image",
+        "Update firmware and web interface — preserve device data",
+        "Updates the firmware and maintenance web interface together.",
+        "Preserves saved settings, Wi-Fi networks, profiles, and stored audio.",
+        "Restart after the transfer and reopen maintenance mode",
         "Fresh install — erase and rebuild",
         "destructive even if ESP Web Tools’ optional erase box is off",
         "Physical SD-card contents are not part of this flash operation.",

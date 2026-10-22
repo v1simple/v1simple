@@ -20,7 +20,7 @@ export function bindPreserveInstaller(root, { flash, serial, fetchManifest, secu
   button.disabled = false;
   button.addEventListener('click', () => {
     if (busy) return;
-    status.textContent = 'Only firmware will be replaced. Device data and the existing web interface will be preserved.';
+    status.textContent = 'The firmware and web interface will be updated together. Saved settings, Wi-Fi networks, profiles, and stored audio will be preserved.';
     progress.hidden = true;
     confirm.hidden = false;
     close.textContent = 'Cancel';
@@ -62,7 +62,7 @@ export function bindPreserveInstaller(root, { flash, serial, fetchManifest, secu
       }, port, manifestPath, manifest, false);
       if (failure) throw new Error(failure);
       if (!finished) throw new Error('The update did not report completion.');
-      status.textContent = 'Update complete. Device data and the existing web interface were preserved.';
+      status.textContent = 'Transfer complete. The firmware and web interface were transferred without replacing device data. Restart the device, then reopen maintenance mode to use the updated interface.';
     } catch (error) {
       status.textContent = error.name === 'NotFoundError'
         ? 'No device selected. Nothing was written.'

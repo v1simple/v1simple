@@ -828,8 +828,8 @@
 
           <div class="install-options">
             <section class="install-option" aria-labelledby="preserve-title">
-              <h3 id="preserve-title">Update firmware — preserve device data</h3>
-              <p>Writes only the app partition. NVS settings, saved Wi-Fi networks, internal fallback profiles, and the existing LittleFS web interface are not part of this update image. Supported older profile and Auto-Push data is migrated automatically at boot; do not erase the device just to upgrade it. Because this path deliberately leaves the web interface unchanged, use the fresh-install path if those files also need replacement.</p>
+              <h3 id="preserve-title">Update firmware and web interface — preserve device data</h3>
+              <p>Updates the firmware and maintenance web interface together. Preserves saved settings, Wi-Fi networks, profiles, and stored audio. Use this path for an existing supported V1Simple installation. Supported older profile and Auto-Push data is migrated automatically at boot; do not erase the device just to upgrade it. Restart after the transfer and reopen maintenance mode to use the updated interface.</p>
               <p class="choice-warning">This update never erases the whole device. To erase and rebuild, choose Fresh install below.</p>
               <button id="preserve-install" class="preserve-button" type="button" data-manifest="manifest-update.json" data-install-mode="preserve" data-goatcounter-click="install-intent-preserve" disabled><span>Update and preserve data</span><span aria-hidden="true">→</span></button>
               <p id="preserve-availability" class="installer-message">Loading the preservation installer. If this message remains, reload the page in a current desktop browser with Web Serial support.</p>
@@ -912,10 +912,10 @@
     <h2 id="preserve-heading">Update and preserve data</h2>
     <p>Keep the cable connected until installation completes.</p>
     <p id="preserve-status" role="status" aria-live="polite"></p>
-    <progress id="preserve-progress" max="100" aria-label="Firmware update progress" hidden></progress>
+    <progress id="preserve-progress" max="100" aria-label="Firmware and web interface update progress" hidden></progress>
     <div class="preserve-actions">
       <button id="preserve-close" type="button">Cancel</button>
-      <button id="preserve-confirm" type="button">Install firmware</button>
+      <button id="preserve-confirm" type="button">Install update</button>
     </div>
   </dialog>
   <script type="importmap">

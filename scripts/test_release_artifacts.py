@@ -45,6 +45,10 @@ class ReleaseArtifactTests(unittest.TestCase):
     def emulate_external_tools(self, release: Path, calls: list[list[str]]):
         def run(command: list[str]) -> None:
             calls.append(command)
+            if command[1:3] == ["scripts/generate_web_bundle.py", "verify-firmware"]:
+                self.assertEqual(command[3], str(release / manifests.APP_IMAGE))
+                self.assertTrue((release / manifests.APP_IMAGE).is_file())
+                return
             if Path(command[0]).name == "esptool":
                 self.write_merged_image(release)
                 return
@@ -103,7 +107,36 @@ class ReleaseArtifactTests(unittest.TestCase):
                 (installer.ROOT / "web-installer" / "preserve-install.mjs").read_bytes(),
             )
             self.assertTrue((release / "pages" / "licenses" / "ArduinoJson-LICENSE.txt").is_file())
-            self.assertEqual(len(calls), 3)
+            self.assertEqual(calls[0][1:3], ["scripts/generate_web_bundle.py", "verify-firmware"])
+            self.assertEqual(len(calls), 4)
+
+    def test_package_stops_before_merge_when_firmware_web_bundle_is_stale(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="release_stale_web_") as temporary:
+            root = Path(temporary)
+            build = self.make_build(root)
+            release = root / "release"
+            calls: list[list[str]] = []
+
+            def reject_stale_bundle(command: list[str]) -> None:
+                calls.append(command)
+                self.assertEqual(command[1:3], ["scripts/generate_web_bundle.py", "verify-firmware"])
+                self.assertEqual(command[3], str(release / manifests.APP_IMAGE))
+                raise RuntimeError("firmware does not contain the current web bundle")
+
+            with mock.patch.object(package, "run_checked", reject_stale_bundle):
+                with self.assertRaisesRegex(RuntimeError, "current web bundle"):
+                    package.package_release(
+                        build_dir=build,
+                        release_dir=release,
+                        version="v2.0.3",
+                        environment="waveshare-349",
+                        partitions_path=manifests.DEFAULT_PARTITIONS,
+                    )
+
+            self.assertEqual(len(calls), 1)
+            self.assertFalse((release / manifests.FRESH_IMAGE).exists())
+            self.assertFalse((release / manifests.UPDATE_MANIFEST).exists())
+            self.assertFalse((release / "pages").exists())
 
     def test_package_refuses_mixed_or_missing_inputs(self) -> None:
         with tempfile.TemporaryDirectory(prefix="release_refusal_") as temporary:

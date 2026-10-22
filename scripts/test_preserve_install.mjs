@@ -54,6 +54,8 @@ test('preserve choice confirms before permission, and never offers an erase choi
   const { elements, calls, port } = fixture();
   elements.install.emit('click');
   assert.equal(elements.dialog.open, true);
+  assert.match(elements.status.textContent, /firmware and web interface will be updated together/);
+  assert.match(elements.status.textContent, /settings, Wi-Fi networks, profiles, and stored audio will be preserved/);
   assert.deepEqual(calls, []);
   const pending = elements.confirm.emit('click');
   // No await between the click and requestPort; keeps browser activation.
@@ -68,7 +70,9 @@ test('preserve choice confirms before permission, and never offers an erase choi
     ['manifest', 'https://example.invalid/installer/manifest-update.json'],
     ['flash', port, 'https://example.invalid/installer/manifest-update.json', manifest, false],
   ]);
-  assert.match(elements.status.textContent, /Update complete/);
+  assert.match(elements.status.textContent, /Transfer complete/);
+  assert.match(elements.status.textContent, /firmware and web interface were transferred/);
+  assert.match(elements.status.textContent, /Restart the device, then reopen maintenance mode/);
   assert.equal(elements.progress.value, 50);
   assert.equal(elements.close.disabled, false);
   assert.equal(elements.confirm.hidden, true);
@@ -90,10 +94,18 @@ test('cancel before confirmation and cancel device selection write nothing', asy
   assert.equal(elements.close.disabled, false);
 });
 
-test('preservation rejects a fresh image or unexpected application offset', async () => {
-  for (const part of [{ path: 'merged-firmware.bin', offset: 0 }, { path: 'firmware-update.bin', offset: 0 }]) {
+test('preservation rejects manifests that could change the write region', async () => {
+  const appPart = manifest.builds[0].parts[0];
+  for (const builds of [
+    [{ chipFamily: 'ESP32-S3', parts: [{ path: 'merged-firmware.bin', offset: 0 }] }],
+    [{ chipFamily: 'ESP32-S3', parts: [{ ...appPart, offset: 0 }] }],
+    [{ chipFamily: 'ESP32-S3', parts: [appPart, { path: 'littlefs.bin', offset: 0xDA0000 }] }],
+    [{ chipFamily: 'ESP32', parts: [appPart] }],
+    [manifest.builds[0], manifest.builds[0]],
+    [],
+  ]) {
     const { elements, calls } = fixture({
-      fetchManifest: async () => ({ ok: true, json: async () => ({ builds: [{ chipFamily: 'ESP32-S3', parts: [part] }] }) }),
+      fetchManifest: async () => ({ ok: true, json: async () => ({ builds }) }),
     });
     elements.install.emit('click');
     await elements.confirm.emit('click');
@@ -118,6 +130,7 @@ test('download, transport, and reported flashing errors stay visible and release
     setup.elements.install.emit('click');
     await setup.elements.confirm.emit('click');
     assert.match(setup.elements.status.textContent, /Update failed/);
+    assert.doesNotMatch(setup.elements.status.textContent, /Transfer complete/);
     assert.equal(setup.elements.close.disabled, false);
     if (kind !== 'download') assert.equal(setup.calls.at(-1), 'close');
   }

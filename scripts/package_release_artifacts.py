@@ -127,6 +127,14 @@ def package_release(
 ) -> None:
     require_empty_directory(release_dir)
     copy_build_outputs(build_dir, release_dir)
+    run_checked(
+        [
+            sys.executable,
+            "scripts/generate_web_bundle.py",
+            "verify-firmware",
+            str(release_dir / manifests.APP_IMAGE),
+        ]
+    )
     merge_fresh_image(
         release_dir,
         environment=environment,

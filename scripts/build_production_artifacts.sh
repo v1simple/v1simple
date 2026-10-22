@@ -91,6 +91,8 @@ run_step "Audio asset manifest (source + deployed)" \
 section "Firmware and Filesystem"
 run_step "Firmware clean" "$PIO_CMD" run "${PIO_BUILD_ARGS[@]}" -t clean
 run_step "Firmware build" run_firmware_build_with_memory_log
+run_step "Firmware contains the current web interface" \
+  python3 scripts/generate_web_bundle.py verify-firmware .pio/build/waveshare-349/firmware.bin
 run_step "Firmware memory headroom" python3 scripts/check_memory_headroom.py \
   --env waveshare-349 \
   --no-build \

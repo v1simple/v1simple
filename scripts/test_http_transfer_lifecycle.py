@@ -12,6 +12,7 @@ import argparse
 import ast
 import contextlib
 from functools import lru_cache
+import gzip
 import hashlib
 import io
 import os
@@ -186,6 +187,7 @@ def production_sources(framework: Path, baseline: bool) -> dict[str, str]:
         "UPLOAD_ABORT": function(selected_parsing, "bool WebServer::_parseFormUploadAborted("),
         "FORM": function(selected_parsing, "bool WebServer::_parseForm("),
         "STATIC": function((ROOT / "src/wifi_manager_helpers.cpp").read_text(), "bool streamOpenFile("),
+        "EMBEDDED_STATIC": function((ROOT / "src/wifi_manager_helpers.cpp").read_text(), "bool streamEmbeddedAsset("),
         "JSON_BUFFER": function(json, "template <typename ClientT, size_t kBufferSize = 512>"),
         "JSON": production_branch("inline void sendJsonStream("),
         "CACHED": production_branch("inline void sendSerializedJson("),
@@ -244,6 +246,7 @@ HARNESS = r"""
 #include <ArduinoJson.h>
 #include "Arduino.h"
 #include "client_write_retry.h"
+#include "modules/wifi/embedded_web_assets.h"
 #include "modules/wifi/wifi_maintenance_http_preflight.h"
 #define log_w(...) ((void)0)
 #define log_e(...) ((void)0)
@@ -465,6 +468,7 @@ class WebServer {
 @SEND_CONTENT_STRING@
 void sendStaticCacheHeaders(WebServer&, bool, bool, const String&) {}
 @STATIC@
+@EMBEDDED_STATIC@
 class Print {
  public:
   virtual ~Print() = default;
@@ -529,9 +533,10 @@ int main() {
       }
     }
   }
-  for (int owner = 0; owner < 4; ++owner) {
+  for (int owner = 0; owner < 5; ++owner) {
     for (uint32_t initial : {100u, UINT32_MAX - 500u}) {
-      const char* names[] = {"static output", "streamed JSON output", "cached JSON output", "header output"};
+      const char* names[] = {"static output", "streamed JSON output", "cached JSON output", "header output",
+                             "embedded static output"};
       auto peer = beginCase(names[owner], initial);
       WebServer server(peer);
       std::string expected;
@@ -546,10 +551,16 @@ int main() {
         serializeJson(doc, expected);
         if (owner == 1) sendJsonStream(server, doc);
         else sendSerializedJson(server, expected.data(), expected.size());
-      } else {
+      } else if (owner == 3) {
         server.header.assign(8192, 'H');
         expected = "ok";
         server.send(200, "text/plain", expected.c_str());
+      } else {
+        expected.assign(32768, 'e');
+        const EmbeddedWebAssets::Asset asset{"/index.html",
+            reinterpret_cast<const uint8_t*>(expected.data()), expected.size()};
+        check(streamEmbeddedAsset(server, asset, asset.path, "text/html", false, false, "etag"),
+              "embedded static stream must complete");
       }
       check(peer->outgoing == server.header + expected, "output header/body must remain exact");
       checkProgress();
@@ -590,9 +601,10 @@ int main() {
     check(!peer->connected, "select error must terminate the socket");
     checkBounded(true);
   }
-  for (int owner = 0; owner < 4; ++owner) {
+  for (int owner = 0; owner < 5; ++owner) {
     for (size_t partial : {size_t(0), size_t(128)}) {
-      const char* names[] = {"static output stall", "streamed JSON stall", "cached JSON stall", "header stall"};
+      const char* names[] = {"static output stall", "streamed JSON stall", "cached JSON stall", "header stall",
+                             "embedded static stall"};
       auto peer = beginCase(names[owner]);
       peer->writeLimit = partial;
       WebServer server(peer);
@@ -607,9 +619,15 @@ int main() {
         serializeJson(doc, body);
         if (owner == 1) sendJsonStream(server, doc);
         else sendSerializedJson(server, body.data(), body.size());
-      } else {
+      } else if (owner == 3) {
         server.header.assign(8192, 'H');
         server.send(200, "text/plain", "body");
+      } else {
+        const std::string body(8192, 'e');
+        const EmbeddedWebAssets::Asset asset{"/index.html",
+            reinterpret_cast<const uint8_t*>(body.data()), body.size()};
+        check(!streamEmbeddedAsset(server, asset, asset.path, "text/html", false, false, "etag"),
+              "embedded static stall must fail");
       }
       check(peer->writeAt == partial, "output stall must not duplicate or invent bytes");
       check(!peer->connected, "output stall must terminate the socket");
@@ -777,6 +795,203 @@ int main() {
 """
 
 
+STATIC_FILESYSTEM = r"""
+#pragma once
+#include <algorithm>
+#include <cstring>
+#include <map>
+#include <string>
+struct File {
+  std::string data;
+  bool present = false;
+  size_t at = 0;
+  explicit operator bool() const { return present; }
+  size_t size() const { return data.size(); }
+  bool available() const { return at < data.size(); }
+  size_t read(uint8_t* out, size_t wanted) {
+    const size_t n = std::min(data.size() - at, wanted);
+    memcpy(out, data.data() + at, n); at += n; return n;
+  }
+  void close() {}
+};
+struct LittleFSClass {
+  size_t accesses = 0;
+  std::map<std::string, std::string> files;
+  bool exists(const char* path) { ++accesses; return files.count(path) != 0; }
+  File open(const char* path, const char*) {
+    ++accesses;
+    const auto found = files.find(path);
+    return found == files.end() ? File{} : File{found->second, true};
+  }
+};
+inline LittleFSClass LittleFS;
+"""
+
+
+STATIC_DISPATCH = r"""
+#include <cstdio>
+#include <string>
+#include "wifi_manager_internals.h"
+#include "LittleFS.h"
+#include "modules/wifi/embedded_web_assets.h"
+SerialClass Serial;
+unsigned long mockMillis = 0, mockMicros = 0;
+static unsigned failures = 0, cases = 0;
+static void check(bool ok, const char* reason) {
+  ++cases;
+  if (!ok) { ++failures; fprintf(stderr, "FAIL embedded dispatch: %s\n", reason); }
+}
+static std::string bytes(const char* path) {
+  const auto* asset = EmbeddedWebAssets::find(path);
+  return asset ? std::string(reinterpret_cast<const char*>(asset->data), asset->size) : std::string();
+}
+static std::string body(const WebServer& server) {
+  return std::string(server.lastBody.c_str(), server.lastBody.length());
+}
+static bool serve(WebServer& server, const char* path, const char* type = "application/javascript") {
+  const size_t before = LittleFS.accesses;
+  const bool result = serveLittleFSFileHelper(server, path, type);
+  check(LittleFS.accesses == before, "managed or rejected URL must never access LittleFS");
+  return result;
+}
+int main() {
+  LittleFS.files = {{"/index.html", "old HTML"}, {"/_app/env.js", "old environment"},
+                   {"/_app/immutable/current.js", "old raw JavaScript"},
+                   {"/_app/immutable/current.js.gz", "old compressed JavaScript"},
+                   {"/_app/immutable/old.js.gz", "stale chunk"},
+                   {"/branding/mark.png", "old brand"}, {"/branding/old.png", "stale brand"},
+                   {"/audio/alert.mul", "saved audio"}};
+  for (const char* encoding : {"", "gzip"}) {
+    WebServer server;
+    server.setHeader("Accept-Encoding", encoding);
+    check(serve(server, "/index.html", "text/html"), "HTML must be available with or without gzip");
+    check(body(server) == bytes("/index.html"), "current firmware HTML must override old filesystem HTML");
+    check(server.lastContentType == "text/html", "HTML MIME type must remain exact");
+    check(server.lastContentLength == bytes("/index.html").size(), "HTML length must remain exact");
+    check(server.sentHeader("Content-Encoding") == "", "raw HTML must not claim gzip");
+    check(server.sentHeader("Cache-Control") == "no-store, no-cache, must-revalidate", "HTML must not be cached");
+    check(server.sentHeader("Vary") == "Accept-Encoding", "static representation must vary on encoding");
+  }
+  for (const char* encoding : {"gzip", "br, gzip", "GZip", "gzip;q=0.5", "*;q=1"}) {
+    WebServer server;
+    server.setHeader("Accept-Encoding", encoding);
+    check(serve(server, "/_app/immutable/current.js"), "accepted gzip asset must be served");
+    check(body(server) == bytes("/_app/immutable/current.js.gz"), "gzip bytes must match the firmware");
+    check(server.sentHeader("Content-Encoding") == "gzip", "gzip response must identify its encoding");
+    check(server.lastContentType == "application/javascript", "gzip response retains requested MIME type");
+    check(server.sentHeader("Cache-Control") == "public, max-age=31536000, immutable", "hashed assets retain immutable caching");
+    check(server.sentHeader("ETag").indexOf(EmbeddedWebAssets::fingerprint()) >= 0, "ETag must bind the embedded bundle identity");
+    WebServer cached;
+    cached.setHeader("Accept-Encoding", encoding);
+    cached.setHeader("If-None-Match", server.sentHeader("ETag"));
+    check(serve(cached, "/_app/immutable/current.js"), "matching immutable request must be handled");
+    check(cached.lastStatusCode == 304 && cached.lastBody.length() == 0, "matching ETag must omit the body");
+    check(cached.sentHeader("ETag") == server.sentHeader("ETag"), "304 must retain representation ETag");
+  }
+  for (const char* encoding : {"", "br", "gzip;q=0", "gzip;q=0.000, *;q=1", "notgzip", "gzip;q=invalid"}) {
+    WebServer server;
+    server.setHeader("Accept-Encoding", encoding);
+    check(!serve(server, "/_app/immutable/current.js"), "unaccepted gzip-only asset must not revive a filesystem twin");
+    check(server.sendCount == 0, "missing acceptable representation leaves the caller to return 404");
+    check(serve(server, "/_app/env.js"), "raw environment asset remains available");
+    check(body(server) == bytes("/_app/env.js"), "raw response must match current firmware");
+    check(server.sentHeader("Content-Encoding") == "", "raw environment must not claim gzip");
+  }
+  {
+    WebServer server;
+    server.setHeader("Accept-Encoding", "gzip");
+    check(serve(server, "/_app/env.js"), "environment gzip twin must be available");
+    check(body(server) == bytes("/_app/env.js.gz"), "gzip must be preferred when both representations exist");
+    check(server.sentHeader("Cache-Control") == "no-store, no-cache, must-revalidate", "environment must not receive immutable cache policy");
+  }
+  for (const char* path : {"/_app/immutable/old.js", "/branding/old.png", "/settings.html"}) {
+    WebServer server;
+    server.setHeader("Accept-Encoding", "gzip");
+    check(!serve(server, path), "missing managed asset must not fall through to storage");
+  }
+  for (const char* path : {static_cast<const char*>(nullptr), "/v1profiles/private.json", "/_app/immutable/../../v1profiles/private.json",
+                           "/branding/../settings.json", "/audio/../settings.json"}) {
+    WebServer server;
+    check(!serve(server, path), "unsafe or private path must be rejected without filesystem access");
+  }
+  for (const char* path : {"/branding/mark.png", "/_app/immutable/font.woff2"}) {
+    WebServer server;
+    check(serve(server, path, "application/octet-stream"), "binary embedded asset must be served");
+    check(body(server) == bytes(path), "binary assets must retain embedded NUL bytes");
+  }
+  {
+    WebServer server;
+    server.setClientMaxWriteSize(7);
+    check(serve(server, "/index.html", "text/html"), "short writes must finish the embedded response");
+    check(body(server) == bytes("/index.html"), "short writes must not lose or duplicate bytes");
+    check(server.clientWriteCalls() > 1, "short-write fixture must exercise repeated writes");
+  }
+  for (size_t stop : {size_t(0), size_t(513)}) {
+    WebServer server;
+    server.setClientMaxWriteSize(31);
+    server.setClientDisconnectAfterBytes(stop);
+    check(serve(server, "/index.html", "text/html"), "disconnected embedded request remains handled");
+    check(body(server) == bytes("/index.html").substr(0, stop), "disconnect must retain only actual progress");
+    check(server.sendCount == 1, "stream failure must not append an error response after headers");
+  }
+  {
+    WebServer server;
+    server.setClientMaxWriteSize(0);
+    check(serve(server, "/index.html", "text/html"), "stalled embedded request remains handled");
+    check(server.sendCount == 1 && server.lastBody.length() == 0, "stalled writes must stop without a second response");
+  }
+  {
+    WebServer server;
+    const size_t before = LittleFS.accesses;
+    check(serveLittleFSFileHelper(server, "/audio/alert.mul", "application/octet-stream"), "audio must retain filesystem serving");
+    check(LittleFS.accesses > before && body(server) == "saved audio", "filesystem audio must remain unchanged");
+  }
+  printf("Embedded static dispatch: %u checks, %u failures\n", cases, failures);
+  return failures ? 1 : 0;
+}
+"""
+
+
+def check_embedded_dispatch(compiler: list[str], out: Path) -> None:
+    """Compile the complete production helper and lookup with isolated asset/storage fixtures."""
+    fixture = out / "static-dispatch"
+    fixture.mkdir()
+    (fixture / "wifi_manager_internals.h").write_text(
+        '#pragma once\n#include "WebServer.h"\n'
+        'bool serveLittleFSFileHelper(WebServer&, const char*, const char*);\n'
+    )
+    (fixture / "LittleFS.h").write_text(STATIC_FILESYSTEM)
+    assets = {
+        "/index.html": b"<!doctype html>" + b"current interface " * 200,
+        "/_app/env.js": b"window.current=true;",
+        "/_app/env.js.gz": gzip.compress(b"window.current=true;", mtime=0),
+        "/_app/immutable/current.js.gz": gzip.compress(b"currentJavaScript();" * 100, mtime=0),
+        "/_app/immutable/font.woff2": bytes(range(256)) * 2,
+        "/branding/mark.png": bytes(range(256)) * 4,
+    }
+    generated = ['#include "modules/wifi/embedded_web_assets.h"', 'namespace EmbeddedWebAssets {',
+                 'static const char kBundleFingerprint[] = "V1SimpleWebBundle:fixture";']
+    for i, data in enumerate(assets.values()):
+        generated.append(f'static const uint8_t kData{i}[] = {{{",".join(str(b) for b in data)}}};')
+    generated.append('static const Asset kAssets[] = {')
+    for i, path in enumerate(assets):
+        generated.append(f'{{"{path}", kData{i}, sizeof(kData{i})}},')
+    generated.append('}; }')
+    (fixture / "embedded_web_assets.generated.h").write_text("\n".join(generated) + "\n")
+    (fixture / "dispatch.cpp").write_text(STATIC_DISPATCH)
+    subprocess.run(compiler + [
+        "-std=c++17", "-Wall", "-Wextra", "-Werror", "-DUNIT_TEST", "-fsanitize=address,undefined",
+        "-fno-sanitize-recover=all", "-fno-omit-frame-pointer", "-g",
+        "-I" + str(fixture), "-I" + str(ROOT / "test/mocks"),
+        "-I" + str(ROOT / "include"), "-I" + str(ROOT / "src"),
+        str(fixture / "dispatch.cpp"), str(ROOT / "src/wifi_manager_helpers.cpp"),
+        str(ROOT / "src/modules/wifi/embedded_web_assets.cpp"),
+        str(ROOT / "src/modules/wifi/wifi_static_path_guard.cpp"),
+        "-o", str(fixture / "dispatch"),
+    ], check=True)
+    subprocess.run([str(fixture / "dispatch")], check=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     core = Path(os.environ.get("PIO_CORE_DIR", os.environ.get("PLATFORMIO_CORE_DIR", "~/.platformio"))).expanduser()
@@ -805,6 +1020,7 @@ def main() -> None:
             str(out / "lifecycle.cpp"), "-o", str(out / "lifecycle"),
         ], check=True)
         subprocess.run([str(out / "lifecycle")], check=True)
+        check_embedded_dispatch(compiler, out)
 
 
 if __name__ == "__main__":

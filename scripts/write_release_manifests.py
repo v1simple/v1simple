@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -167,6 +168,10 @@ def write_manifests(release_dir: Path, version: str, partitions_path: Path) -> N
         FRESH_MANIFEST: manifest(version, FRESH_IMAGE, 0),
         UPDATE_MANIFEST: manifest(version, UPDATE_IMAGE, partitions["app"].offset),
     }
+    update = (release_dir / UPDATE_IMAGE).read_bytes()
+    documents[UPDATE_MANIFEST]["builds"][0]["parts"][0].update(
+        {"size": len(update), "sha256": hashlib.sha256(update).hexdigest()}
+    )
     for name, document in documents.items():
         (release_dir / name).write_text(
             json.dumps(document, indent=2) + "\n",

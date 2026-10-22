@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -100,6 +101,8 @@ class ReleaseArtifactTests(unittest.TestCase):
             )
             self.assertEqual(update["version"], "v2.0.3")
             self.assertEqual(update["builds"][0]["parts"][0]["path"], manifests.UPDATE_IMAGE)
+            self.assertEqual(update["builds"][0]["parts"][0]["size"], len(b"firmware"))
+            self.assertEqual(update["builds"][0]["parts"][0]["sha256"], hashlib.sha256(b"firmware").hexdigest())
             self.assertEqual(fresh["builds"][0]["parts"], [{"path": manifests.FRESH_IMAGE, "offset": 0}])
             self.assertTrue((release / "pages" / manifests.UPDATE_IMAGE).is_file())
             self.assertEqual(
@@ -137,6 +140,34 @@ class ReleaseArtifactTests(unittest.TestCase):
             self.assertFalse((release / manifests.FRESH_IMAGE).exists())
             self.assertFalse((release / manifests.UPDATE_MANIFEST).exists())
             self.assertFalse((release / "pages").exists())
+
+    def test_installer_rejects_missing_or_mismatched_update_identity(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="installer_update_identity_") as temporary:
+            site = Path(temporary)
+            image = b"firmware"
+            (site / manifests.UPDATE_IMAGE).write_bytes(image)
+            valid = {"size": len(image), "sha256": hashlib.sha256(image).hexdigest()}
+            for changed in (
+                {"size": None}, {"size": 0}, {"size": True}, {"size": 0xD80001},
+                {"size": len(image) + 1}, {"sha256": None}, {"sha256": "invalid"},
+                {"sha256": "0" * 64},
+            ):
+                with self.subTest(changed=changed):
+                    document = manifests.manifest("v2.0.3", manifests.UPDATE_IMAGE, 0x20000)
+                    document["builds"][0]["parts"][0].update({**valid, **changed})
+                    (site / manifests.UPDATE_MANIFEST).write_text(json.dumps(document), encoding="utf-8")
+                    errors, _ = installer.validate_manifest(
+                        site, manifests.UPDATE_MANIFEST, require_assets=True, expected_version="v2.0.3"
+                    )
+                    self.assertTrue(errors, "invalid update identity was accepted")
+
+            document["builds"][0]["parts"][0].update(valid)
+            (site / manifests.UPDATE_MANIFEST).write_text(json.dumps(document), encoding="utf-8")
+            (site / manifests.UPDATE_IMAGE).write_bytes(b"modified")
+            errors, _ = installer.validate_manifest(
+                site, manifests.UPDATE_MANIFEST, require_assets=True, expected_version="v2.0.3"
+            )
+            self.assertTrue(any("SHA-256 does not match" in error for error in errors))
 
     def test_package_refuses_mixed_or_missing_inputs(self) -> None:
         with tempfile.TemporaryDirectory(prefix="release_refusal_") as temporary:

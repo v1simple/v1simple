@@ -275,20 +275,28 @@ class WebBundleTests(unittest.TestCase):
     def test_pre_hook_uses_environment_build_path_and_registers_header(self):
         self.stamp()
         for environment in ('waveshare-349', 'esp32-s3-car-install'):
-            with self.subTest(environment=environment):
-                env, build_dir = self.run_hook([], environment)
-                self.assertTrue((build_dir / 'include/embedded_web_assets.generated.h').is_file())
-                env.AppendUnique.assert_called_once_with(CPPPATH=[str(build_dir / 'include')])
-                env.Exit.assert_not_called()
+            for targets in ([], ['__idedata']):
+                with self.subTest(environment=environment, targets=targets):
+                    env, build_dir = self.run_hook(targets, environment)
+                    self.assertTrue((build_dir / 'include/embedded_web_assets.generated.h').is_file())
+                    env.AppendUnique.assert_called_once_with(CPPPATH=[str(build_dir / 'include')])
+                    env.Exit.assert_not_called()
 
     def test_clean_only_hook_needs_no_frontend_but_build_upload_still_validate(self):
         env, _ = self.run_hook(['clean'])
         env.subst.assert_not_called()
         env.AppendUnique.assert_not_called()
-        for targets in ([], ['upload'], ['buildfs'], ['clean', 'upload']):
+        for targets in ([], ['__idedata'], ['upload'], ['buildfs'], ['clean', 'upload']):
             with self.subTest(targets=targets):
                 with self.assertRaises(SystemExit):
                     self.run_hook(targets)
+
+    def test_metadata_hook_rejects_stale_frontend_after_a_successful_build(self):
+        self.stamp()
+        self.run_hook(['__idedata'])
+        self.write('interface/src/routes/+page.svelte', b'<p>changed since build</p>')
+        with self.assertRaises(SystemExit):
+            self.run_hook(['__idedata'])
 
 
 if __name__ == '__main__':

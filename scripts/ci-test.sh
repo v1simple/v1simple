@@ -156,6 +156,15 @@ run_step "v1replay source-only publication guard" python3 tools/v1replay/verify/
 run_step "v1replay publication guard regression suite" python3 scripts/test_v1replay_publication_safety.py
 run_step "v1replay producer-to-firmware protocol contract" python3 tools/v1replay/verify/verify_protocol.py
 
+section "Frontend"
+run_step "Frontend dependencies" bash -c 'cd interface && npm ci'
+run_step "Frontend dependency audit" bash -c 'cd interface && npm audit --audit-level=high'
+run_step "Frontend lint and type checks" bash -c 'cd interface && npm run lint'
+run_step "Frontend unit tests" bash -c 'cd interface && npm test'
+# PlatformIO static analysis loads build metadata through the production
+# pre-hooks, so it needs the same verified assets as the later car build.
+run_step "Frontend bundle" bash -c 'cd interface && npm run build'
+
 section "Static Analysis"
 run_step "Firmware static analysis" "$PIO_CMD" check -e waveshare-349 --fail-on-defect=medium
 run_step "Python tooling lint" ruff check scripts/ tools/
@@ -211,12 +220,6 @@ run_step "GPS loop ingestion lifecycle" python3 scripts/test_gps_loop_ingestion.
 run_step "Drive runtime policy lifecycle" python3 scripts/test_drive_runtime_policies.py
 run_step "Battery input and shutdown lifecycle" python3 scripts/test_battery_input_lifecycle.py
 run_step "Power clock and voltage confirmation lifecycle" python3 scripts/test_power_runtime_lifecycle.py
-
-section "Frontend"
-run_step "Frontend dependencies" bash -c 'cd interface && npm ci'
-run_step "Frontend dependency audit" bash -c 'cd interface && npm audit --audit-level=high'
-run_step "Frontend lint and type checks" bash -c 'cd interface && npm run lint'
-run_step "Frontend unit tests" bash -c 'cd interface && npm test'
 
 section "Hardware Variant Builds"
 run_step "Car install dependencies" "$PIO_CMD" pkg install -e esp32-s3-car-install

@@ -39,6 +39,32 @@ def test_car_build_is_clean_and_uses_one_argument_contract() -> None:
     require(source.index(clean) < source.index(build), "car clean must precede car build")
 
 
+def test_current_frontend_bundle_precedes_firmware_metadata_and_car_build() -> None:
+    source = (ROOT / "scripts" / "ci-test.sh").read_text(encoding="utf-8")
+    frontend_steps = (
+        'run_step "Frontend dependencies" bash -c \'cd interface && npm ci\'',
+        'run_step "Frontend dependency audit" bash -c \'cd interface && npm audit --audit-level=high\'',
+        'run_step "Frontend lint and type checks" bash -c \'cd interface && npm run lint\'',
+        'run_step "Frontend unit tests" bash -c \'cd interface && npm test\'',
+        'run_step "Frontend bundle" bash -c \'cd interface && npm run build\'',
+    )
+    previous = -1
+    for step in frontend_steps:
+        require(source.count(step) == 1, f"CI must run this frontend step once: {step}")
+        require(source.index(step) > previous, "frontend validation/build order changed")
+        previous = source.index(step)
+    # pio check calls load_build_metadata, which executes __idedata and all
+    # production pre-hooks even though it does not compile firmware. A warm
+    # developer checkout used to hide this dependency on the ignored stamp.
+    for consumer in (
+        'run_step "Firmware static analysis" "$PIO_CMD" check -e waveshare-349 --fail-on-defect=medium',
+        'run_step "Car install firmware build" "$PIO_CMD" run "${CAR_BUILD_ARGS[@]}"',
+    ):
+        require(source.count(consumer) == 1, f"missing firmware consumer: {consumer}")
+        require(previous < source.index(consumer),
+                "a clean checkout needs a verified frontend before firmware metadata/build hooks")
+
+
 def test_release_publication_is_owned_by_tested_script() -> None:
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
         encoding="utf-8"
@@ -166,6 +192,7 @@ def test_macos_local_and_hosted_gates_run_both_swift_suites() -> None:
 
 def main() -> int:
     test_car_build_is_clean_and_uses_one_argument_contract()
+    test_current_frontend_bundle_precedes_firmware_metadata_and_car_build()
     test_release_publication_is_owned_by_tested_script()
     test_clean_linux_runner_binds_exact_source_and_cold_amd64_image()
     test_linux_failure_bundle_retains_environment_and_build_reports()

@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
 import sys
 from html.parser import HTMLParser
 from pathlib import Path
@@ -211,6 +213,13 @@ def validate_manifest(
         errors.append(
             f"{manifest_path} {expected_path} offset must be {expected_offset:#x}"
         )
+    if manifest_path == release_manifests.UPDATE_MANIFEST:
+        size = part.get("size")
+        checksum = part.get("sha256")
+        if type(size) is not int or not 0 < size <= partitions["app"].size:
+            errors.append(f"{manifest_path} must declare a positive firmware size within the app partition")
+        if not isinstance(checksum, str) or not re.fullmatch(r"[a-f0-9]{64}", checksum):
+            errors.append(f"{manifest_path} must declare the firmware SHA-256 checksum")
 
     if require_assets:
         firmware_path = site_dir / str(part.get("path", ""))
@@ -219,6 +228,10 @@ def validate_manifest(
         elif firmware_path.stat().st_size == 0:
             errors.append(f"{description} is empty: {display_path(firmware_path)}")
         elif manifest_path == release_manifests.UPDATE_MANIFEST:
+            if part.get("size") != firmware_path.stat().st_size:
+                errors.append(f"{expected_path} size does not match the manifest")
+            if part.get("sha256") != hashlib.sha256(firmware_path.read_bytes()).hexdigest():
+                errors.append(f"{expected_path} SHA-256 does not match the manifest")
             start = expected_offset
             end = start + firmware_path.stat().st_size
             app = partitions["app"]

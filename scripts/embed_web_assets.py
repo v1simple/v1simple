@@ -1,4 +1,5 @@
 """PlatformIO pre-hook: compile only a verified, current frontend bundle."""
+# ruff: noqa: F821 -- SCons injects env through Import below.
 
 from pathlib import Path
 import sys

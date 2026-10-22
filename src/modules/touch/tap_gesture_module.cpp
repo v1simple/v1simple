@@ -40,10 +40,11 @@ void TapGestureModule::process(unsigned long nowMs, bool profileCycleAllowed) {
         tapCount_ = 0;
     }
 
-    if (static_cast<int32_t>(nowMs - nextTouchPollMs_) < 0) {
+    if (touchPollScheduled_ && static_cast<int32_t>(nowMs - nextTouchPollMs_) < 0) {
         return;
     }
     nextTouchPollMs_ = nowMs + TOUCH_POLL_INTERVAL_MS;
+    touchPollScheduled_ = true;
 
     if (pendingMuteCommand_) {
         // A tap-mute belongs only to the alert that caused it. Do not deliver
@@ -152,7 +153,8 @@ void TapGestureModule::process(unsigned long nowMs, bool profileCycleAllowed) {
 void TapGestureModule::suspendForPresentationOwner() {
     lastTapTime_ = 0;
     tapCount_ = 0;
-    nextTouchPollMs_ = 0;
+    // Resume immediately at any uptime; zero is also a real deadline at wrap.
+    touchPollScheduled_ = false;
     pendingMuteCommand_ = false;
     pendingMuteValue_ = false;
     pendingMuteLastAttemptMs_ = 0;

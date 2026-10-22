@@ -93,7 +93,9 @@ void requestMaintenanceBoot(void*) { ++maintenanceBootRequests; }
 void processInput(unsigned long nowMs, bool bootPressed = false) {
     mockMillis = nowMs;
     // Match normal runtime ownership: BOOT/settings first, then screen taps.
-    if (!touchUi.process(nowMs, bootPressed)) {
+    if (touchUi.process(nowMs, bootPressed)) {
+        tap.suspendForPresentationOwner();
+    } else {
         tap.process(nowMs, profileCycleAllowed);
     }
 }
@@ -396,6 +398,78 @@ void test_presentation_suspension_cancels_partial_taps_and_pending_mute() {
     TEST_ASSERT_EQUAL_UINT8(0, settings.get().activeSlot);
 }
 
+void test_settings_exit_rearms_profile_taps_across_signed_uptime_boundary() {
+    for (uint32_t start : {1000U, 0x7FFFF000U, 0x7FFFFF00U, 0x80001000U}) {
+        setUp();
+        setV1Alert(false);
+        // Advance an already-running polling clock into the late-uptime cases.
+        if (start > 1000U) pollTouch(0x7FFFE000U, false);
+        pollTouch(start - 600U, true);
+        pollTouch(start - 550U, false);
+        pollTouch(start - 350U, true);
+        pollTouch(start - 300U, false);
+
+        processInput(start, true);
+        processInput(start + 400U, false); // Enter settings; suspend partial taps.
+        TEST_ASSERT_TRUE(touchUi.restorePresentationIfOwned());
+        processInput(start + 1100U, true);
+        processInput(start + 1500U, false); // Exit, outside the double-press window.
+        TEST_ASSERT_FALSE(touchUi.restorePresentationIfOwned());
+
+        const int reads = Wire.requestFromCalls;
+        pollTouch(start + 1525U, false); // Clear the exit release gate.
+        TEST_ASSERT_EQUAL_INT(reads + 1, Wire.requestFromCalls);
+        pollTouch(start + 1650U, true);
+        TEST_ASSERT_EQUAL_UINT8(0, settings.get().activeSlot);
+        pollTouch(start + 1700U, false);
+        pollTouch(start + 1900U, true);
+        TEST_ASSERT_EQUAL_UINT8(0, settings.get().activeSlot);
+        pollTouch(start + 1950U, false);
+        pollTouch(start + 2150U, true);
+        TEST_ASSERT_EQUAL_UINT8(1, settings.get().activeSlot);
+        TEST_ASSERT_EQUAL_INT(1, display.drawProfileIndicatorCalls);
+    }
+}
+
+void test_late_uptime_suspension_cancels_mute_retry_and_accepts_fresh_tap() {
+    pollTouch(0x7FFFFF00U, false);
+    ble.nextMuteSendResult = SendResult::NOT_YET;
+    pollTouch(0x80001000U, true);
+    TEST_ASSERT_EQUAL_INT(1, ble.setMuteCalls);
+    tap.suspendForPresentationOwner();
+    touch.requireRelease();
+    pollTouch(0x80001025U, true); // The carried contact cannot retry or toggle.
+    TEST_ASSERT_EQUAL_INT(1, ble.setMuteCalls);
+    pollTouch(0x80001050U, false);
+    TEST_ASSERT_EQUAL_INT(1, ble.setMuteCalls);
+    pollTouch(0x80001150U, true);
+    TEST_ASSERT_EQUAL_INT(2, ble.setMuteCalls);
+    TEST_ASSERT_TRUE(ble.lastMuteValue);
+}
+
+void test_first_poll_is_immediate_even_at_late_uptime() {
+    const int reads = Wire.requestFromCalls;
+    pollTouch(0x80001000U, true);
+    TEST_ASSERT_EQUAL_INT(reads + 1, Wire.requestFromCalls);
+    TEST_ASSERT_EQUAL_INT(1, ble.setMuteCalls);
+}
+
+void test_poll_cadence_preserves_zero_deadline_at_clock_wrap() {
+    pollTouch(0x7FFFFF00U, false);
+    pollTouch(0xBFFFFF00U, false);
+    pollTouch(0xFFFFFFE7U, false); // The next 32-bit deadline is exactly zero.
+    const int reads = Wire.requestFromCalls;
+    processInput(0xFFFFFFE8U);
+    processInput(0xFFFFFFFFU);
+    TEST_ASSERT_EQUAL_INT(reads, Wire.requestFromCalls);
+    processInput(0);
+    TEST_ASSERT_EQUAL_INT(reads + 1, Wire.requestFromCalls);
+    processInput(24);
+    TEST_ASSERT_EQUAL_INT(reads + 1, Wire.requestFromCalls);
+    processInput(25);
+    TEST_ASSERT_EQUAL_INT(reads + 2, Wire.requestFromCalls);
+}
+
 
 void test_alp_only_context_consumes_contacts_without_cycling_profiles() {
     setV1Alert(false);
@@ -463,6 +537,10 @@ int main() {
     RUN_TEST(test_pending_unmute_waits_for_audio_confirmation_after_the_indicator_clears);
     RUN_TEST(test_partial_idle_taps_cannot_cross_unobserved_alert_or_session_boundary);
     RUN_TEST(test_presentation_suspension_cancels_partial_taps_and_pending_mute);
+    RUN_TEST(test_settings_exit_rearms_profile_taps_across_signed_uptime_boundary);
+    RUN_TEST(test_late_uptime_suspension_cancels_mute_retry_and_accepts_fresh_tap);
+    RUN_TEST(test_first_poll_is_immediate_even_at_late_uptime);
+    RUN_TEST(test_poll_cadence_preserves_zero_deadline_at_clock_wrap);
     RUN_TEST(test_invalid_touch_coordinates_cannot_mute_a_live_alert);
     RUN_TEST(test_active_alert_tap_retries_one_transient_mute_without_resend_after_success);
     RUN_TEST(test_alert_clear_drops_stale_mute_retry);

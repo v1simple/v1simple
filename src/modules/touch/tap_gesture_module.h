@@ -54,7 +54,8 @@ class TapGestureModule {
     static constexpr unsigned long TAP_WINDOW_MS = 600;
     static constexpr unsigned long TAP_DEBOUNCE_MS = 150;
 
-    unsigned long nextTouchPollMs_ = 0;
+    uint32_t nextTouchPollMs_ = 0;
+    bool touchPollScheduled_ = false;
     uint32_t observedAlertLifetime_ = 0;
     bool pendingMuteCommand_ = false;
     bool pendingMuteValue_ = false;

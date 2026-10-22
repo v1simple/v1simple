@@ -160,6 +160,14 @@ SendResult V1BLEClient::sendCommandWithResult(const uint8_t* data, size_t length
     return g_sendCommandResult;
 }
 
+SendResult V1BLEClient::sendCharacteristicCommand(NimBLERemoteCharacteristic* characteristic,
+    const uint8_t* data, size_t length, bool response, uint32_t) {
+    if (characteristic && characteristic == pCommandCharLong_)
+        return characteristic->writeValue(data, length, response) ? SendResult::SENT : SendResult::NOT_YET;
+    return sendCommandWithResult(data, length);
+}
+void V1BLEClient::cancelCommand(V1CommandOwner) {}
+
 #include "../../src/ble_proxy.cpp"
 #include "../../src/ble_connection.cpp"
 

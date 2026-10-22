@@ -21,6 +21,8 @@ bool V1BLEClient::isConnected() {
     return connected_.load(std::memory_order_acquire) && pClient_ && pClient_->isConnected();
 }
 
+void V1BLEClient::beginClientQuiesce(bool) { connected_.store(false); bleState_ = BLEState::QUIESCING; }
+
 #include "../../src/ble_commands.cpp"
 
 namespace {
@@ -35,6 +37,8 @@ struct AlertRequestHarness {
         client.connected_.store(true, std::memory_order_release);
         client.bleState_ = BLEState::CONNECTED;
         client.sessionGeneration_.store(generation, std::memory_order_release);
+        client.sessionPublicationGate_.open(generation);
+        client.acceptClientCallbacks_.store(true);
         client.pClient_ = &link;
         client.pCommandChar_ = &command;
         client.onV1DisplayFlowControl(false);
@@ -157,6 +161,7 @@ void test_new_session_generation_gets_an_immediate_first_command() {
     TEST_ASSERT_FALSE(harness.client.needsAlertDataStartRecovery());
 
     harness.client.sessionGeneration_.store(9, std::memory_order_release);
+    harness.client.sessionPublicationGate_.open(9);
     TEST_ASSERT_TRUE(harness.client.needsAlertDataStartRecovery());
     mockMillis = 30010;
     TEST_ASSERT_TRUE(harness.client.requestAlertData());

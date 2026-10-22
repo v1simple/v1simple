@@ -32,18 +32,23 @@ class ReturnToMaintenanceRetry {
 
 } // namespace V1SettingsOperationPolicy
 
-// RAM-only one-shot guard for a destructive detector command. Once the BLE
-// transport reports SENT, persistence retries may continue but the command
-// itself cannot be emitted again during that boot.
+// RAM-only one-shot guard for a destructive detector command. Admission is
+// distinct from acknowledged completion: a lost ACK must not authorize a
+// second reset on a replacement session, even if persistence also fails.
 class V1DestructiveSendLatch {
   public:
-    void reset() { sent_ = false; }
-    bool shouldSend() const { return !sent_; }
+    void reset() { sent_ = false; admitted_ = false; admittedSession_ = 0; }
+    bool shouldSend() const { return !sent_ && !admitted_; }
     bool sent() const { return sent_; }
+    bool admitted() const { return admitted_; }
+    uint32_t admittedSession() const { return admittedSession_; }
+    void noteAdmitted(uint32_t session) { admitted_ = true; admittedSession_ = session; }
     void noteSent() { sent_ = true; }
 
   private:
     bool sent_ = false;
+    bool admitted_ = false;
+    uint32_t admittedSession_ = 0;
 };
 
 // A completed request/reply follow-up does not imply that every independent

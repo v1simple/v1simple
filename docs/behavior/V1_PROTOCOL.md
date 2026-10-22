@@ -12,7 +12,7 @@ queue processing, command completion, and verified application are separate even
 | Main-loop handoff | [`DriveRuntime::onV1Data`](../../src/drive_runtime.cpp) forwards all stamps to [`BleQueueModule::tryOnNotify`](../../src/modules/ble/ble_queue_module.cpp). Admission and consumption both reject a different session generation. |
 | Notification becomes an ESP frame | `BleQueueModule::process` retains complete notification ownership, reassembles B2CE byte streams and B4E0 indexed chunks, and preserves first-arrival ingress and time. A partial B2CE frame keeps its start-byte time; an indexed B4E0 frame keeps its first received chunk's time. Later staging or parsing cannot renew its age. Gaps mark alert-table discontinuity. |
 | Frame becomes an observation | [`PacketParser::parseInternal`](../../src/packet_parser.cpp) validates framing and packet-specific destination/origin/width, then records canonical observations with ingress/revision. User-byte capture has a specialized canonical path in the queue. |
-| Main-loop consumers run | [`DriveLoopCoordinator::tick`](../../src/runtime_coordinator.h) drains the queue before display composition and connection dispatch. AutoPush runs from `DriveRuntime::processPeriodicMaintenance`, after durable-operation timeout handling, including while local settings own presentation; notification callbacks can execute while its synchronous BLE send waits. |
+| Main-loop consumers run | [`DriveLoopCoordinator::tick`](../../src/runtime_coordinator.h) drains the queue before display composition and connection dispatch. AutoPush runs from `DriveRuntime::processPeriodicMaintenance`, after durable-operation timeout handling, including while local settings own presentation. Acknowledged BLE writes run on an attribute worker, so queue parsing and presentation continue while the acknowledgment is pending. |
 
 A complete B4E0 frame waits only for short frames already started when its final
 chunk was staged. It then uses the same parser/callback path and processing budget
@@ -311,17 +311,17 @@ injected incomplete-table sequence; whether a real detector begins subscription
 mid-table remains unverified. This cleanup does not infer packet generations or
 replace the separate known-gap recovery policy.
 
-## 2. AutoPush responses arriving during a synchronous send
+## 2. AutoPush responses arriving before write completion
 
 ### Contract and failure
 
-A response that enters after a request begins may be parsed after the send
-returns. A response already queued before that request must remain stale even
+A response that enters after a request begins may be parsed before or after the
+write acknowledgment. A response already queued before that request must remain stale even
 when parsed later. Parsing time and observation revision alone cannot distinguish
 these cases.
 
-[`V1BLEClient::sendCommandWithResult`](../../src/ble_commands.cpp) may call
-`writeValue(..., true)`, waiting for an acknowledged BLE write. The prior
+[`V1BLEClient::sendCommandWithResult`](../../src/ble_commands.cpp) previously called
+`writeValue(..., true)` on the main loop, waiting for an acknowledged BLE write. The prior
 `CustomRefreshSections`, `CustomRefreshMax`, `CustomRefreshDefinitions` and final
 `CustomWrite` commit paths sampled ingress after that send. A valid response
 entering during the wait became part of the stale baseline, causing a refresh or
@@ -348,8 +348,10 @@ Its status types, deadlines and wrap-safe comparison are in
    custom filtering disabled, then verifies those user bytes through a fresh read.
 4. The three `CustomRefresh*` requests collect target-region sections, maximum
    index and definitions. Each attempt now saves `latestV1NotificationIngressSequence`
-   **before** sending; only `SENT` arms capture with that saved boundary.
-   `NOT_YET` retries resample and have a bounded send deadline. A failed request
+   **before** sending. `IN_FLIGHT` arms capture once; `SENT` also arms it for a
+   synchronous no-response write. The worker's actual pre-write ingress excludes
+   notifications received between admission and worker start. Polling does not
+   reset an early reply. `NOT_YET` retries resample and have a bounded send deadline. A failed request
    does not authorize the following table write.
 5. [`V1BLEClient::sessionSweepResponseEligible`](../../src/ble_client.h) requires
    ingress after that packet family's request. `BleQueueModule::process` only
@@ -360,13 +362,15 @@ Its status types, deadlines and wrap-safe comparison are in
    `CustomRefreshVerify` requires complete unpoisoned captures and every definition
    after its request before compiling the desired table, preserving unowned bands.
 6. `CustomWrite` sends used definitions only; the final used index commits.
-   Its observation revision **and ingress boundary** are sampled before that
-   committing send. `CustomCommitVerify` requires a changed revision, later
+   Its observation revision is retained from the first admitted send and its
+   ingress boundary is tightened to the worker's pre-write boundary on completion.
+   `CustomCommitVerify` requires a changed revision, later
    ingress, and canonical result zero. Reject/timeout never advances to readback.
 7. `CustomRead` requests all definitions with its existing pre-send boundary.
-   Only `SENT` arms the queue's definitions capture with that same boundary;
+   The first `IN_FLIGHT` or synchronous `SENT` arms the queue's definitions capture;
    a queued older row cannot enter the new collector and poison a changed fresh
-   definition. Retries resample the boundary, and in-send replies remain eligible.
+   definition. Unadmitted retries resample the boundary; admitted polls preserve
+   replies parsed before acknowledgment and use the actual worker boundary.
    `CustomVerify` requires every index, including disabled ones, after that request.
    It checks used/unused shape and valid live sections. Preserved definitions must
    match exactly; requested frequencies may be detector-calibrated within the same

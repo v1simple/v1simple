@@ -150,6 +150,21 @@ final class V1CommandDispatchTests: XCTestCase {
             XCTAssertTrue(result.output.hasPrefix("v1replay: --"), result.output)
         }
     }
+
+    func testCommandAckFaultDispatchIsExplicitAndExclusive() throws {
+        for delay in ["0", "7000"] {
+            let result = try dispatch(["bench", "--command-ack-hold-ms", delay])
+            XCTAssertEqual(result.status, 0)
+            XCTAssertTrue(result.output.hasSuffix(" ackHold=" + delay), result.output)
+        }
+        for arguments in [["idle", "--command-ack-hold-ms", "7000"],
+                          ["bench", "--command-ack-hold-ms"],
+                          ["bench", "--command-ack-hold-ms", "10001"],
+                          ["bench", "--handshake-only", "--handshake-notification-hold-ms", "1",
+                           "--command-ack-hold-ms", "7000"]] {
+            XCTAssertEqual(try dispatch(arguments).status, 2, arguments.joined(separator: " "))
+        }
+    }
 }
 
 private let inertHandlers = #"""
@@ -167,7 +182,9 @@ func runCrib() { print("crib") }
 func runExport() throws { print("export") }
 func runProxy() throws { print("proxy") }
 func runPlay(idleOnly: Bool, synthetic: Bool = false, bench: Bool = false,
-             handshakeNotificationHoldMs: Int = 0, ownerProcess: ProcessOwnerGuard? = nil) throws {
-    print("play idle=\(idleOnly) synthetic=\(synthetic) bench=\(bench) hold=\(handshakeNotificationHoldMs) owner=\(ownerProcess != nil)")
+             handshakeNotificationHoldMs: Int = 0, commandAckHoldMs: Int? = nil,
+             ownerProcess: ProcessOwnerGuard? = nil) throws {
+    let ack = commandAckHoldMs.map { " ackHold=\($0)" } ?? ""
+    print("play idle=\(idleOnly) synthetic=\(synthetic) bench=\(bench) hold=\(handshakeNotificationHoldMs) owner=\(ownerProcess != nil)\(ack)")
 }
 """#

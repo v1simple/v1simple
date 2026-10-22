@@ -34,6 +34,8 @@ void TapGestureModule::process(unsigned long nowMs, bool profileCycleAllowed) {
         // Check before poll throttling so even a brief episode cancels them.
         observedAlertLifetime_ = lifetime;
         tapCount_ = 0;
+        if (ble_->commandInFlight(V1CommandOwner::TapGesture))
+            ble_->cancelCommand(V1CommandOwner::TapGesture);
         pendingMuteCommand_ = false;
     }
     if (!profileCycleAllowed) {
@@ -51,12 +53,16 @@ void TapGestureModule::process(unsigned long nowMs, bool profileCycleAllowed) {
         // the old command after that alert clears, and stop retrying once the
         // parser already reflects the desired state.
         const bool desiredStateAlreadyCommitted = parser_->getDisplayState().softMuted == pendingMuteValue_;
-        if (!parser_->hasAlerts() || desiredStateAlreadyCommitted || !quiet_) {
+        const bool inFlight = ble_->commandInFlight(V1CommandOwner::TapGesture);
+        if (!parser_->hasAlerts() || !quiet_) {
+            if (inFlight) ble_->cancelCommand(V1CommandOwner::TapGesture);
+            pendingMuteCommand_ = false;
+        } else if (desiredStateAlreadyCommitted && !inFlight) {
             pendingMuteCommand_ = false;
         } else if ((nowMs - pendingMuteLastAttemptMs_) >= MUTE_RETRY_INTERVAL_MS) {
             pendingMuteLastAttemptMs_ = nowMs;
             const SendResult result = quiet_->sendMuteResult(QuietOwner::TapGesture, pendingMuteValue_);
-            if (result != SendResult::NOT_YET) {
+            if (result != SendResult::NOT_YET && result != SendResult::IN_FLIGHT) {
                 pendingMuteCommand_ = false;
             }
         }
@@ -81,7 +87,7 @@ void TapGestureModule::process(unsigned long nowMs, bool profileCycleAllowed) {
 
         const SendResult result =
             quiet_ ? quiet_->sendMuteResult(QuietOwner::TapGesture, newMuted) : SendResult::FAILED;
-        if (result == SendResult::NOT_YET) {
+        if (result == SendResult::NOT_YET || result == SendResult::IN_FLIGHT) {
             pendingMuteCommand_ = true;
             pendingMuteValue_ = newMuted;
             pendingMuteLastAttemptMs_ = nowMs;
@@ -151,6 +157,8 @@ void TapGestureModule::process(unsigned long nowMs, bool profileCycleAllowed) {
 }
 
 void TapGestureModule::suspendForPresentationOwner() {
+    if (ble_ && ble_->commandInFlight(V1CommandOwner::TapGesture))
+        ble_->cancelCommand(V1CommandOwner::TapGesture);
     lastTapTime_ = 0;
     tapCount_ = 0;
     // Resume immediately at any uptime; zero is also a real deadline at wrap.

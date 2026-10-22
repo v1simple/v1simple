@@ -70,6 +70,8 @@ bool V1BLEClient::isConnected() {
 }
 
 #include "../../src/ble_proxy.cpp"
+void V1BLEClient::beginClientQuiesce(bool) { connected_.store(false); bleState_ = BLEState::QUIESCING; sessionPublicationGate_.close(); }
+
 #include "../../src/ble_commands.cpp"
 
 void setUp() {

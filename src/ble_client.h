@@ -100,13 +100,42 @@ class BleSessionPublicationGate {
 };
 
 enum class SendResult {
-    SENT,    // Command successfully sent
-    NOT_YET, // Pacing: too soon, caller should retry
+    SENT,    // Transport completed, including the ACK where required
+    NOT_YET, // Not admitted; caller may retry with a fresh observation boundary
+    IN_FLIGHT, // Admitted; retain intent/baselines and poll until acknowledged
     FAILED   // Hard failure: drop and count
+};
+
+enum class V1CommandOwner : uint8_t {
+    Legacy, ConnectedFollowup, AutoPush, SettingsRecapture, FactoryReset, PhoneProxy,
+    AlertStreamRecovery, TapGesture, InTheBox, SpeedVolume, VolumeFade, QuietRestore, DisplayPolicy, WifiCommand, Count
 };
 
 class V1BLEClient {
   public:
+    // Packet-building wrappers retain their API; this main-loop scope identifies
+    // the intent allowed to harvest an asynchronous command's completion.
+    class CommandScope {
+      public:
+        CommandScope(V1BLEClient& client, V1CommandOwner owner)
+            : client_(client), previous_(client.commandOwner_) { client_.commandOwner_ = owner; }
+        ~CommandScope() { client_.commandOwner_ = previous_; }
+        CommandScope(const CommandScope&) = delete;
+        CommandScope& operator=(const CommandScope&) = delete;
+      private:
+        V1BLEClient& client_;
+        V1CommandOwner previous_;
+    };
+    bool commandInFlight(V1CommandOwner owner) const {
+        return commandActive_ && commandTaskContext_.commandOwner == owner;
+    }
+    uint32_t commandIngressBoundary(V1CommandOwner owner) const {
+        if (commandInFlight(owner)) return commandWorkerStarted_.load(std::memory_order_acquire)
+            ? commandWorkerIngress_.load(std::memory_order_relaxed) : 0;
+        return commandCompletedIngress_[static_cast<size_t>(owner)];
+    }
+    void cancelCommand(V1CommandOwner owner);
+
     V1BLEClient();
     ~V1BLEClient();
 
@@ -192,7 +221,13 @@ class V1BLEClient {
         if (packetId == 0x41) { // reqStartAlertData
             alertDataRequestGate_.invalidate(sessionGeneration());
         }
-        volumeWriteReceipt_.reject(packetId, sessionGeneration(), ingressSequence);
+        if (commandActive_ && commandTaskContext_.length > 3 && commandTaskContext_.data[3] == packetId &&
+            commandWorkerStarted_.load(std::memory_order_acquire) && ingressSequence != 0 &&
+            static_cast<int32_t>(ingressSequence - commandWorkerIngress_.load(std::memory_order_relaxed)) > 0) {
+            commandRejectionIngress_ = ingressSequence;
+        } else {
+            volumeWriteReceipt_.reject(packetId, sessionGeneration(), ingressSequence);
+        }
     }
     uint32_t volumeWriteRevision() const { return volumeWriteReceipt_.revision(); }
     bool volumeWriteRejected(uint32_t revision) const {
@@ -282,7 +317,7 @@ class V1BLEClient {
     void onUserBytesReceived(const uint8_t* bytes, uint32_t ingressSequence = 0);
     void onAllVolumeReceived(uint32_t ingressSequence) {
         if (sessionAllVolumeCaptureArmed_ && ingressSequence != 0 &&
-            static_cast<int32_t>(ingressSequence - sessionAllVolumeIngressBoundary_) > 0) {
+            commandResponseEligible(0x3C, ingressSequence, sessionAllVolumeIngressBoundary_)) {
             hasSessionAllVolume_ = true;
             sessionAllVolumeIngressSequence_ = ingressSequence;
         }
@@ -316,9 +351,9 @@ class V1BLEClient {
         hasSessionSweepDefinitions_ = false;
     }
     uint32_t sessionSweepIngressBoundary(uint8_t packetId) const {
-        if (packetId == 0x23) return sessionSweepSectionsIngressBoundary_;
-        if (packetId == 0x20) return sessionSweepMaxIngressBoundary_;
-        if (packetId == 0x17) return sessionSweepDefinitionsIngressBoundary_;
+        if (packetId == 0x23) return commandResponseBoundary(0x22, sessionSweepSectionsIngressBoundary_);
+        if (packetId == 0x20) return commandResponseBoundary(0x19, sessionSweepMaxIngressBoundary_);
+        if (packetId == 0x17) return commandResponseBoundary(0x16, sessionSweepDefinitionsIngressBoundary_);
         return 0;
     }
     bool sessionSweepResponseEligible(uint8_t packetId, uint32_t ingressSequence) const {
@@ -346,7 +381,7 @@ class V1BLEClient {
     bool hasSessionSweepMaxCapture() const { return hasSessionSweepMax_; }
     bool hasSessionSweepSectionsCapture() const { return hasSessionSweepSections_; }
     bool hasSessionSweepDefinitionsCapture() const { return hasSessionSweepDefinitions_; }
-    uint32_t sessionSweepDefinitionsIngressBoundary() const { return sessionSweepDefinitionsIngressBoundary_; }
+    uint32_t sessionSweepDefinitionsIngressBoundary() const { return sessionSweepIngressBoundary(0x17); }
 
     // Session-qualified readback used to persist a pre-Auto-Push detector
     // snapshot. This state is reset at each authoritative session boundary.
@@ -401,6 +436,45 @@ class V1BLEClient {
 
   private:
     BleVolumeWriteReceipt volumeWriteReceipt_;
+    V1CommandOwner commandOwner_ = V1CommandOwner::Legacy;
+    struct CommandTaskContext {
+        V1BLEClient* owner = nullptr;
+        NimBLERemoteCharacteristic* characteristic = nullptr;
+        uint32_t generation = 0;
+        uint32_t phoneGeneration = 0;
+        V1CommandOwner commandOwner = V1CommandOwner::Legacy;
+        uint8_t data[64] = {};
+        size_t length = 0;
+        bool response = true;
+    } commandTaskContext_;
+    bool commandActive_ = false; // Main-loop-owned, including completed-but-unharvested work.
+    uint32_t commandStartedMs_ = 0;
+    uint32_t commandLastSentMs_ = 0;
+    uint32_t commandRejectionIngress_ = 0;
+    std::atomic<bool> commandWorkerStarted_{false};
+    std::atomic<uint32_t> commandWorkerIngress_{0};
+    std::atomic<bool> commandWorkerResult_{false};
+    std::array<uint32_t, static_cast<size_t>(V1CommandOwner::Count)> commandCompletedIngress_{};
+    static constexpr uint32_t COMMAND_WRITE_TIMEOUT_MS = 1000;
+    static void commandTaskFunc(void* param);
+    void serviceCommandWrite();
+    SendResult sendCharacteristicCommand(NimBLERemoteCharacteristic* characteristic, const uint8_t* data,
+                                         size_t length, bool response, uint32_t phoneGeneration = 0);
+    void publishCommandSuccess(const uint8_t* data, size_t length, uint32_t session, uint32_t ingress,
+                               uint32_t rejectedIngress = 0);
+    void promoteCommandCaptureBoundary(uint8_t requestId, uint32_t boundary);
+    uint32_t commandResponseBoundary(uint8_t requestId, uint32_t fallback) const {
+        if (commandActive_ && commandTaskContext_.length > 3 && commandTaskContext_.data[3] == requestId) {
+            return commandWorkerStarted_.load(std::memory_order_acquire)
+                ? commandWorkerIngress_.load(std::memory_order_relaxed) : 0;
+        }
+        return fallback;
+    }
+    bool commandResponseEligible(uint8_t requestId, uint32_t ingress, uint32_t fallback) const {
+        if (commandActive_ && commandTaskContext_.length > 3 && commandTaskContext_.data[3] == requestId &&
+            !commandWorkerStarted_.load(std::memory_order_acquire)) return false;
+        return static_cast<int32_t>(ingress - commandResponseBoundary(requestId, fallback)) > 0;
+    }
     void schedulePostDeleteBondBackup(uint32_t nowMs);
 
     bool isV1WriteHeldOff(const uint8_t* data, size_t length) const {

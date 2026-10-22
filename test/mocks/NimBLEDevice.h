@@ -269,7 +269,8 @@ public:
     explicit NimBLERemoteCharacteristic(const char* uuid = "")
         : uuid_(uuid ? uuid : "") {}
 
-    bool writeValue(const uint8_t* data, size_t length, bool) {
+    bool writeValue(const uint8_t* data, size_t length, bool response) {
+        lastWriteResponse_ = response;
         writeValueCalls_++;
         lastWriteValue_.assign(data, data + length);
         if (writeEntryHook_) {
@@ -277,8 +278,11 @@ public:
         }
         return writeValueResult_;
     }
-    bool canWrite() const { return true; }
-    bool canWriteNoResponse() const { return false; }
+    bool canWrite() const { return canWrite_; }
+    bool canWriteNoResponse() const { return canWriteNoResponse_; }
+    void setCanWrite(bool value) { canWrite_ = value; }
+    void setCanWriteNoResponse(bool value) { canWriteNoResponse_ = value; }
+    bool lastWriteResponse() const { return lastWriteResponse_; }
     bool canNotify() const { return canNotify_; }
     bool canIndicate() const { return canIndicate_; }
     bool unsubscribe() { return true; }
@@ -323,6 +327,9 @@ private:
     bool canNotify_ = true;
     bool canIndicate_ = false;
     bool subscribeResponse_ = false;
+    bool canWrite_ = false;
+    bool canWriteNoResponse_ = true;
+    bool lastWriteResponse_ = false;
     bool writeValueResult_ = true;
     uint32_t writeValueCalls_ = 0;
     std::vector<uint8_t> lastWriteValue_;
@@ -472,6 +479,8 @@ public:
     bool cancelConnect() const { return cancelConnectResult_; }
     int getRssi() const { return -60; }
     uint16_t getConnHandle() const { return connHandle_; }
+    uint16_t getMTU() const { return mtu_; }
+    void setMTU(uint16_t mtu) { mtu_ = mtu; }
     NimBLEConnInfo getConnInfo() const { return NimBLEConnInfo(); }
     NimBLEAddress getPeerAddress() const { return NimBLEAddress(); }
     bool connect(const NimBLEAddress&, bool = false, bool = false, bool = true) {
@@ -528,6 +537,7 @@ private:
     bool disconnectResult_ = true;
     bool cancelConnectResult_ = true;
     int lastError_ = 0;
+    uint16_t mtu_ = 23;
     uint16_t connHandle_ = BLE_HS_CONN_HANDLE_NONE;
     std::function<void()> disconnectEntryHook_;
     uint32_t disconnectCalls_ = 0;

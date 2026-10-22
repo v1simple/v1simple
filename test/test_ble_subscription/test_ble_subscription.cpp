@@ -157,6 +157,9 @@ void V1BLEClient::setProxyClientConnected(bool connectedState) {
 
 SendResult V1BLEClient::sendCommandWithResult(const uint8_t*, size_t) { return SendResult::SENT; }
 
+SendResult V1BLEClient::sendCharacteristicCommand(NimBLERemoteCharacteristic*, const uint8_t* data, size_t length, bool, uint32_t) { return sendCommandWithResult(data, length); }
+void V1BLEClient::cancelCommand(V1CommandOwner) {}
+
 #include "../../src/ble_proxy.cpp"
 #include "../../src/ble_connection.cpp"
 

@@ -8,13 +8,60 @@
 #include "../../src/ble_volume_write_receipt.h"
 #include "../../src/v1_request_flow_control.h"
 
-enum class SendResult { SENT, NOT_YET, FAILED };
+enum class SendResult { SENT, NOT_YET, IN_FLIGHT, FAILED };
+enum class V1CommandOwner : uint8_t {
+    Legacy, ConnectedFollowup, AutoPush, SettingsRecapture, FactoryReset, PhoneProxy,
+    AlertStreamRecovery, TapGesture, InTheBox, SpeedVolume, VolumeFade, QuietRestore,
+    DisplayPolicy, WifiCommand
+};
 
 /**
  * Mock V1BLEClient - tracks method calls for verification
  */
 class V1BLEClient {
 public:
+    class CommandScope {
+    public:
+        CommandScope(V1BLEClient& client, V1CommandOwner owner)
+            : client_(client), previous_(client.commandOwner) { client_.commandOwner = owner; }
+        ~CommandScope() { client_.commandOwner = previous_; }
+    private:
+        V1BLEClient& client_;
+        V1CommandOwner previous_;
+    };
+    V1CommandOwner commandOwner = V1CommandOwner::Legacy;
+    V1CommandOwner lastCommandOwner = V1CommandOwner::Legacy;
+    V1CommandOwner commandPendingOwner = V1CommandOwner::Legacy;
+    V1CommandOwner lastCancelledCommandOwner = V1CommandOwner::Legacy;
+    bool commandPending = false;
+    uint32_t commandBoundaryValue = 0;
+    int cancelCommandCalls = 0;
+    void (*cancelCommandHook)() = nullptr;
+    bool commandInFlight(V1CommandOwner owner) const {
+        return commandPending && commandPendingOwner == owner;
+    }
+    uint32_t commandIngressBoundary(V1CommandOwner) const { return commandBoundaryValue; }
+    void cancelCommand(V1CommandOwner owner) {
+        ++cancelCommandCalls;
+        lastCancelledCommandOwner = owner;
+        if (commandInFlight(owner)) {
+            commandPending = false;
+            if (cancelCommandHook) cancelCommandHook();
+        }
+    }
+    void beginMockCommand() {
+        if (!commandInFlight(commandOwner)) commandBoundaryValue = latestV1NotificationIngressSequence();
+    }
+    SendResult recordCommandResult(SendResult result) {
+        lastCommandOwner = commandOwner;
+        if (result == SendResult::IN_FLIGHT && !commandPending) {
+            commandPending = true;
+            commandPendingOwner = commandOwner;
+        } else if (result == SendResult::SENT && commandPendingOwner == commandOwner) {
+            commandPending = false;
+        }
+        return result;
+    }
     BleVolumeWriteReceipt volumeWriteReceipt_;
     V1RequestFlowControl volumeFlowControl_;
     bool enforceVolumeFlowControl = false;
@@ -51,6 +98,7 @@ public:
     int requestAlertDataCalls = 0;
     bool alertDataRequestSent = true;
     bool requestAlertDataResult = true;
+    SendResult nextAlertDataSendResult = SendResult::SENT;
     int processProxyQueueCalls = 0;
     int onUserBytesReceivedCalls = 0;
     int onAllVolumeReceivedCalls = 0;
@@ -136,6 +184,11 @@ public:
     bool changeSessionDuringPublish = false;
     
     void reset() {
+        commandOwner = lastCommandOwner = commandPendingOwner = lastCancelledCommandOwner = V1CommandOwner::Legacy;
+        commandPending = false;
+        commandBoundaryValue = 0;
+        cancelCommandCalls = 0;
+        cancelCommandHook = nullptr;
         volumeWriteReceipt_ = {};
         volumeFlowControl_.reset();
         enforceVolumeFlowControl = false;
@@ -162,6 +215,7 @@ public:
         requestAlertDataCalls = 0;
         alertDataRequestSent = true;
         requestAlertDataResult = true;
+        nextAlertDataSendResult = SendResult::SENT;
         processProxyQueueCalls = 0;
         onUserBytesReceivedCalls = 0;
         onAllVolumeReceivedCalls = 0;
@@ -275,11 +329,12 @@ public:
     
     // BLE commands (tracked)
     SendResult setMuteResult(bool mute) {
+        beginMockCommand();
         setMuteCalls++; 
         lastMuteValue = mute;
         const SendResult result = nextMuteSendResult;
         nextMuteSendResult = SendResult::SENT;
-        return result;
+        return recordCommandResult(result);
     }
     bool setMute(bool mute) { return setMuteResult(mute) == SendResult::SENT; }
     
@@ -287,6 +342,7 @@ public:
         return setVolumeResult(vol, muteVol, 0);
     }
     SendResult setVolumeResult(uint8_t vol, uint8_t muteVol, uint8_t aux) {
+        beginMockCommand();
         setVolumeCalls++;
         commandHistory.push_back("volume-write");
         lastVolume = vol;
@@ -297,7 +353,7 @@ public:
         if (nextVolumeSendResult != SendResult::SENT) {
             const SendResult result = nextVolumeSendResult;
             nextVolumeSendResult = SendResult::SENT;
-            return result;
+            return recordCommandResult(result);
         }
         if (setVolumeFailuresRemaining > 0) {
             setVolumeFailuresRemaining--;
@@ -306,7 +362,7 @@ public:
         const uint32_t ingress = latestV1NotificationIngressSequence();
         if (setVolumeSuccess && setVolumeSendHook) setVolumeSendHook();
         if (setVolumeSuccess) volumeWriteReceipt_.sent(sessionGeneration(), ingress);
-        return setVolumeSuccess ? SendResult::SENT : SendResult::FAILED;
+        return recordCommandResult(setVolumeSuccess ? SendResult::SENT : SendResult::FAILED);
     }
     bool setVolume(uint8_t vol, uint8_t muteVol) { return setVolumeResult(vol, muteVol) == SendResult::SENT; }
 
@@ -325,13 +381,14 @@ public:
 
     bool writeUserBytesExact(const uint8_t* bytes) { return writeUserBytesExactResult(bytes) == SendResult::SENT; }
     SendResult writeUserBytesExactResult(const uint8_t* bytes) {
+        beginMockCommand();
         if (nextUserBytesWriteSendResult != SendResult::SENT) {
             ++writeUserBytesCalls;
             const SendResult result = nextUserBytesWriteSendResult;
             nextUserBytesWriteSendResult = SendResult::SENT;
-            return result;
+            return recordCommandResult(result);
         }
-        return writeUserBytes(bytes) ? SendResult::SENT : SendResult::FAILED;
+        return recordCommandResult(writeUserBytes(bytes) ? SendResult::SENT : SendResult::FAILED);
     }
 
     void startUserBytesVerification(const uint8_t* bytes) {
@@ -348,14 +405,15 @@ public:
 
     bool requestUserBytes() { return requestUserBytesResult() == SendResult::SENT; }
     SendResult requestUserBytesResult() {
+        beginMockCommand();
         ++requestUserBytesCalls;
         if (nextUserBytesReadSendResult != SendResult::SENT) {
             const SendResult result = nextUserBytesReadSendResult;
             nextUserBytesReadSendResult = SendResult::SENT;
-            return result;
+            return recordCommandResult(result);
         }
         if (requestUserBytesSendHook) requestUserBytesSendHook();
-        return requestUserBytesSuccess ? SendResult::SENT : SendResult::FAILED;
+        return recordCommandResult(requestUserBytesSuccess ? SendResult::SENT : SendResult::FAILED);
     }
 
     bool requestCurrentVolume() {
@@ -365,44 +423,49 @@ public:
     }
     bool requestAllVolume() { return requestAllVolumeResult() == SendResult::SENT; }
     SendResult requestAllVolumeResult() {
+        beginMockCommand();
         ++requestAllVolumeCalls;
         commandHistory.push_back("volume-read");
         if (nextAllVolumeReadSendResult != SendResult::SENT) {
             const SendResult result = nextAllVolumeReadSendResult;
             nextAllVolumeReadSendResult = SendResult::SENT;
-            return result;
+            return recordCommandResult(result);
         }
         if (requestAllVolumeSendHook) requestAllVolumeSendHook();
-        return requestAllVolumeSuccess ? SendResult::SENT : SendResult::FAILED;
+        return recordCommandResult(requestAllVolumeSuccess ? SendResult::SENT : SendResult::FAILED);
     }
     bool requestAllSweepDefinitions() {
         return requestAllSweepDefinitionsResult() == SendResult::SENT;
     }
     SendResult requestAllSweepDefinitionsResult() {
+        beginMockCommand();
         ++requestAllSweepDefinitionsCalls;
         commandHistory.push_back("sweep-read");
         if (requestAllSweepDefinitionsSendHook) requestAllSweepDefinitionsSendHook();
-        return nextRequestAllSweepDefinitionsResult;
+        return recordCommandResult(nextRequestAllSweepDefinitionsResult);
     }
     bool requestSweepSections() {
         return requestSweepSectionsResult() == SendResult::SENT;
     }
     SendResult requestSweepSectionsResult() {
+        beginMockCommand();
         ++requestSweepSectionsCalls;
         commandHistory.push_back("sweep-sections-read");
         if (requestSweepSectionsSendHook) requestSweepSectionsSendHook();
-        return nextRequestSweepSectionsResult;
+        return recordCommandResult(nextRequestSweepSectionsResult);
     }
     bool requestMaxSweepIndex() {
         return requestMaxSweepIndexResult() == SendResult::SENT;
     }
     SendResult requestMaxSweepIndexResult() {
+        beginMockCommand();
         ++requestMaxSweepIndexCalls;
         commandHistory.push_back("sweep-max-read");
         if (requestMaxSweepIndexSendHook) requestMaxSweepIndexSendHook();
-        return nextRequestMaxSweepIndexResult;
+        return recordCommandResult(nextRequestMaxSweepIndexResult);
     }
     SendResult writeSweepDefinition(uint8_t index, uint16_t lower, uint16_t upper, bool commit) {
+        beginMockCommand();
         ++writeSweepDefinitionCalls;
         lastSweepIndex = index;
         lastSweepLower = lower;
@@ -411,7 +474,7 @@ public:
         sweepWriteHistory.push_back({index, lower, upper, commit});
         commandHistory.push_back(commit ? "sweep-commit" : "sweep-write");
         if (writeSweepDefinitionSendHook) writeSweepDefinitionSendHook();
-        return writeSweepDefinitionResult;
+        return recordCommandResult(writeSweepDefinitionResult);
     }
 
     UserBytesVerificationStatus userBytesVerificationStatus() const { return verificationStatus; }
@@ -448,6 +511,7 @@ public:
         return setDisplayOnResult(displayOn, keepBluetoothIndicatorOn) == SendResult::SENT;
     }
     SendResult setDisplayOnResult(bool displayOn, bool keepBluetoothIndicatorOn = false) {
+        beginMockCommand();
         setDisplayOnCalls++;
         commandHistory.push_back("display-write");
         lastDisplayOnValue = displayOn;
@@ -455,39 +519,43 @@ public:
         if (nextDisplaySendResult != SendResult::SENT) {
             const SendResult result = nextDisplaySendResult;
             nextDisplaySendResult = SendResult::SENT;
-            return result;
+            return recordCommandResult(result);
         }
         if (setDisplayOnSendHook) setDisplayOnSendHook();
         if (setDisplayOnFailuresRemaining > 0) {
             setDisplayOnFailuresRemaining--;
             return SendResult::FAILED;
         }
-        return setDisplayOnSuccess ? SendResult::SENT : SendResult::FAILED;
+        return recordCommandResult(setDisplayOnSuccess ? SendResult::SENT : SendResult::FAILED);
     }
 
     bool setMode(uint8_t mode) { return setModeResult(mode) == SendResult::SENT; }
     SendResult setModeResult(uint8_t mode) {
+        beginMockCommand();
         setModeCalls++;
         commandHistory.push_back("mode-write");
         lastModeValue = mode;
         if (nextModeSendResult != SendResult::SENT) {
             const SendResult result = nextModeSendResult;
             nextModeSendResult = SendResult::SENT;
-            return result;
+            return recordCommandResult(result);
         }
         if (setModeSendHook) setModeSendHook();
         if (setModeFailuresRemaining > 0) {
             setModeFailuresRemaining--;
             return SendResult::FAILED;
         }
-        return setModeSuccess ? SendResult::SENT : SendResult::FAILED;
+        return recordCommandResult(setModeSuccess ? SendResult::SENT : SendResult::FAILED);
     }
     
-    void requestAlertData() {
+    bool requestAlertData() {
+        beginMockCommand();
         requestAlertDataCalls++;
-        if (requestAlertDataResult) {
-            alertDataRequestSent = true;
-        }
+        const SendResult result = requestAlertDataResult ? nextAlertDataSendResult : SendResult::FAILED;
+        nextAlertDataSendResult = SendResult::SENT;
+        const bool sent = recordCommandResult(result) == SendResult::SENT;
+        if (sent) alertDataRequestSent = true;
+        return sent;
     }
     bool needsAlertDataStartRecovery() const { return !alertDataRequestSent && !connectBurstSettling; }
 

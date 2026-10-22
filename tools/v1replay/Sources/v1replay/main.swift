@@ -266,6 +266,14 @@ func parseHandshakeNotificationHoldMilliseconds(
     return value
 }
 
+func parseCommandAckHoldMilliseconds(_ raw: String?, bench: Bool) throws -> Int? {
+    guard let raw else { return nil }
+    guard bench, let value = Int(raw), (0...10_000).contains(value) else {
+        throw ReplayError.message("--command-ack-hold-ms requires bench and an integer from 0 through 10000")
+    }
+    return value
+}
+
 // MARK: - Commands
 
 func runHelp() {
@@ -314,6 +322,8 @@ func runHelp() {
       --scenario-evidence P
                            write path-free resolved scenario JSON as raw evidence
       --handshake-only     runner preflight: one clear alert row, then stay quiet
+      --command-ack-hold-ms N
+                           bench only: acknowledged B6D4; hold first START ACK (0 = healthy control)
       --handshake-notification-hold-ms N
                            maximum stress hold; second START releases (0...1999; default 0)
       --no-wait            start without waiting for a central to subscribe
@@ -598,6 +608,7 @@ func runPlay(idleOnly: Bool,
              synthetic: Bool = false,
              bench: Bool = false,
              handshakeNotificationHoldMs: Int = 0,
+             commandAckHoldMs: Int? = nil,
              ownerProcess: ProcessOwnerGuard? = nil) throws {
     if args.bool("handshake-only") && !bench {
         throw ReplayError.message("--handshake-only is available only in bench mode")
@@ -665,6 +676,7 @@ func runPlay(idleOnly: Bool,
     }
     peripheralConfig.logPackets = args.bool("log-packets")
     peripheralConfig.handshakeNotificationHoldMs = handshakeNotificationHoldMs
+    peripheralConfig.commandAckHoldMs = commandAckHoldMs
 
     let statePath = args.optionalString("state-file")
         ?? (bench ? nil : defaultDetectorStatePath(version: peripheralConfig.version))
@@ -746,6 +758,9 @@ func runPlay(idleOnly: Bool,
     )
     peripheral.onPersistentStateChange = { state in
         detectorStateStore?.save(state)
+    }
+    if machineEvents {
+        peripheral.onCommandAckFaultEvent = { console.print($0.machineEventLine) }
     }
     detectorStateStore?.save(peripheral.persistentState)
     let player = Player(encounter: encounter, peripheral: peripheral, options: playerOptions)
@@ -1104,6 +1119,12 @@ do {
         bench: args.command == "bench",
         handshakeOnly: args.bool("handshake-only")
     )
+    let commandAckHoldMs = try parseCommandAckHoldMilliseconds(
+        args.optionalString("command-ack-hold-ms"), bench: args.command == "bench"
+    )
+    if commandAckHoldMs != nil && handshakeNotificationHoldMs > 0 {
+        throw ReplayError.message("command ACK and handshake notification faults must run separately")
+    }
     switch args.command {
     case "crib":
         runCrib()
@@ -1116,6 +1137,7 @@ do {
             idleOnly: false,
             bench: true,
             handshakeNotificationHoldMs: handshakeNotificationHoldMs,
+            commandAckHoldMs: commandAckHoldMs,
             ownerProcess: ownerProcess
         )
     case "idle":

@@ -99,6 +99,47 @@ this format check; physical media and radio behavior are not exercised.
 
 ## Long replies and presentation fallbacks
 
+Acknowledged command writes in `ble_commands.cpp` use the same attribute-worker
+lifetime gate as discovery and subscription. The main loop retains one copied
+packet, caller owner and detector/phone generations. `IN_FLIGHT` means admitted;
+`NOT_YET` means no write was admitted; only `SENT` publishes a completed write.
+Another caller cannot consume the completion. A changed or canceled admitted
+intent retires the session, and cleanup retains the client and characteristic
+until the worker exits. A one-second command deadline starts quiescence before
+the loop watchdog can expire. The existing bounded quiescence recovery still
+owns an unresponsive disconnect.
+
+Only no-response writes fitting the current ATT MTU stay on the main loop.
+NimBLE can promote larger no-response writes to acknowledged long writes, so
+raw and indexed phone commands share the worker path when required. No
+ambiguous acknowledged write is automatically retried on the outgoing session.
+
+Connected follow-up and settings Apply arm reply capture on first admission,
+retain observations parsed before acknowledgment and qualify them against the
+worker's actual pre-write ingress. Completion does not reset those captures.
+An early canonical volume rejection remains attached to the completed write's
+receipt. Quiet policies, tap mute, alert-stream recovery and detector reset
+retain pending intent until acknowledgment or explicit cancellation; incoming
+feedback alone cannot abandon an admitted command.
+
+Detector reset latches admission separately from acknowledgment. Losing that
+job or its session yields an unverified result, including when persisting the
+failure must be retried; reconnect never resends the destructive command.
+An interrupted automatic In The Box mute retains a release obligation only
+for the same known detector. Fresh feedback resolves it after reconnect;
+another detector, phone ownership or an explicit local mute choice revokes it.
+Detector-side manual changes while disconnected are indistinguishable from an
+applied command whose acknowledgment was lost.
+
+`test_ble_command_transport` executes the production sender, worker, connection
+cleanup, notification queue and parser with a deliberately blocked transport.
+Caller regressions in AutoPush, quiet/tap/connection suites and the settings
+Apply lifecycle cover early replies, cancellation and completion ownership.
+These host tests model NimBLE and FreeRTOS. The bench's optional
+`--command-ack-hold-ms` mode supplies a separate physical ESP32/CoreBluetooth
+command-acknowledgment check; it does not inject a subscription acknowledgment
+failure or establish real-detector RF/audio behavior.
+
 If an advertised, notifiable B4E0 channel rejects subscription,
 `ble_subscription.cpp` returns failure into the existing quiesce/reconnect
 path. Absence or a non-notifiable optional channel retains compatibility.

@@ -10,8 +10,18 @@ class DriveRuntime {
   public:
     struct BleAdapter {
         unsigned resetCalls = 0;
+        SendResult nextResetResult = SendResult::SENT;
+        operator V1BLEClient&() { return ble; }
         bool isConnected() const { return ble.isConnected(); }
-        SendResult factoryResetDetector() { ++resetCalls; return SendResult::SENT; }
+        SendResult factoryResetDetector() {
+            ++resetCalls;
+            ble.beginMockCommand();
+            const SendResult result = nextResetResult;
+            nextResetResult = SendResult::SENT;
+            return ble.recordCommandResult(result);
+        }
+        void cancelCommand(V1CommandOwner owner) { ble.cancelCommand(owner); }
+        bool commandInFlight(V1CommandOwner owner) const { return ble.commandInFlight(owner); }
         void disconnect() { ble.setConnected(false); }
         uint32_t sessionGeneration() const { return ble.sessionGeneration(); }
         uint32_t latestV1NotificationIngressSequence() const {
@@ -286,8 +296,91 @@ void test_empty_boot_still_allows_a_new_operation() {
     TEST_ASSERT_EQUAL_UINT32(1, outer.ble_.resetCalls);
 }
 
+void stageFactoryReset(DriveRuntime& outer) {
+    mock_preferences::reset();
+    TEST_ASSERT_EQUAL_INT(Store::LoadStatus::Ready, outer.settingsOperations_.begin());
+    TEST_ASSERT_EQUAL_INT(Store::StartStatus::Started,
+        outer.settingsOperations_.startFactoryReset("AA:BB:CC:DD:EE:FF", false, false).status);
+    auto components = outer.settingsOperations_.snapshot().components;
+    for (auto& component : components) {
+        component.requested = true;
+        component.outcome = Store::ComponentOutcome::Pending;
+    }
+    TEST_ASSERT_TRUE(outer.settingsOperations_.updateComponents(components, 0));
+    TEST_ASSERT_TRUE(outer.settingsOperations_.markRunning(0));
+}
+
+void test_factory_reset_delayed_ack_does_not_latch_or_publish_sent_early() {
+    DriveRuntime outer;
+    stageFactoryReset(outer);
+    outer.ble_.nextResetResult = SendResult::IN_FLIGHT;
+    outer.processSettingsOperation(100);
+    TEST_ASSERT_TRUE(ble.commandInFlight(V1CommandOwner::FactoryReset));
+    TEST_ASSERT_FALSE(outer.factoryResetSendLatch_.sent());
+    TEST_ASSERT_FALSE(Store::hasDurableFactoryResetSend(outer.settingsOperations_.snapshot()));
+    TEST_ASSERT_EQUAL_INT(Store::State::Running, outer.settingsOperations_.snapshot().state);
+    outer.processSettingsOperation(150);
+    TEST_ASSERT_FALSE(ble.commandInFlight(V1CommandOwner::FactoryReset));
+    TEST_ASSERT_TRUE(outer.factoryResetSendLatch_.sent());
+    TEST_ASSERT_TRUE(Store::hasDurableFactoryResetSend(outer.settingsOperations_.snapshot()));
+    TEST_ASSERT_EQUAL_INT(Store::State::Recapturing, outer.settingsOperations_.snapshot().state);
+    outer.processSettingsOperation(200);
+    outer.attemptFactoryReset(outer.settingsOperations_.snapshot());
+    TEST_ASSERT_EQUAL_UINT32(2, outer.ble_.resetCalls); // One admission, one completion poll.
+}
+
+void test_factory_reset_operation_timeout_cancels_unacknowledged_send() {
+    DriveRuntime outer;
+    stageFactoryReset(outer);
+    outer.ble_.nextResetResult = SendResult::IN_FLIGHT;
+    outer.processSettingsOperation(100);
+    TEST_ASSERT_TRUE(ble.commandInFlight(V1CommandOwner::FactoryReset));
+    outer.processSettingsOperation(90100);
+    TEST_ASSERT_FALSE(ble.commandInFlight(V1CommandOwner::FactoryReset));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(V1CommandOwner::FactoryReset),
+                          static_cast<int>(ble.lastCancelledCommandOwner));
+    TEST_ASSERT_FALSE(outer.factoryResetSendLatch_.sent());
+    TEST_ASSERT_FALSE(Store::hasDurableFactoryResetSend(outer.settingsOperations_.snapshot()));
+    TEST_ASSERT_EQUAL_INT(Store::State::Failed, outer.settingsOperations_.snapshot().state);
+    outer.processSettingsOperation(90200);
+    TEST_ASSERT_EQUAL_UINT32(1, outer.ble_.resetCalls);
+}
+
+void test_factory_reset_lost_ack_cannot_replay_after_reconnect_or_persistence_failure() {
+    for (bool failPersistence : {false, true}) {
+        setUp();
+        DriveRuntime outer;
+        stageFactoryReset(outer);
+        outer.ble_.nextResetResult = SendResult::IN_FLIGHT;
+        outer.processSettingsOperation(100);
+        TEST_ASSERT_TRUE(outer.factoryResetSendLatch_.admitted());
+        // Model transport timeout/close retiring the worker, then reconnect to
+        // the same target. The unknown physical outcome does not permit replay.
+        ble.commandPending = false;
+        ble.setConnected(false);
+        ble.setSessionGeneration(ble.sessionGeneration() + 1);
+        outer.processSettingsOperation(150);
+        ble.setConnected(true);
+        mock_preferences::set_fail_writes(failPersistence);
+        outer.processSettingsOperation(200);
+        outer.processSettingsOperation(250);
+        TEST_ASSERT_EQUAL_UINT32(1, outer.ble_.resetCalls);
+        TEST_ASSERT_FALSE(outer.factoryResetSendLatch_.sent());
+        TEST_ASSERT_FALSE(Store::hasDurableFactoryResetSend(outer.settingsOperations_.snapshot()));
+        mock_preferences::set_fail_writes(false);
+        outer.processSettingsOperation(300);
+        TEST_ASSERT_EQUAL_UINT32(1, outer.ble_.resetCalls);
+        TEST_ASSERT_EQUAL_INT(Store::State::Failed, outer.settingsOperations_.snapshot().state);
+        TEST_ASSERT_EQUAL_INT(Store::Reason::FactoryResetScopeUnverified,
+                              outer.settingsOperations_.snapshot().reason);
+    }
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_factory_reset_lost_ack_cannot_replay_after_reconnect_or_persistence_failure);
+    RUN_TEST(test_factory_reset_delayed_ack_does_not_latch_or_publish_sent_early);
+    RUN_TEST(test_factory_reset_operation_timeout_cancels_unacknowledged_send);
     RUN_TEST(test_overdue_modal_cancels_before_any_detector_write);
     RUN_TEST(test_modal_services_apply_and_completes_verification);
     RUN_TEST(test_timeout_after_sent_write_preserves_partial_and_releases_volume_owner);

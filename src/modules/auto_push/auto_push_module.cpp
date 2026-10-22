@@ -951,11 +951,13 @@ bool AutoPushModule::acceptSendResult(SendResult result, ComponentStatus& compon
                                       FailureReason failureReason, FailureReason timeoutReason, uint32_t nowMs) {
     if (result == SendResult::SENT) {
         state_.sendDeadlineMs = 0;
+        state_.sendInFlight = false;
         return true;
     }
-    if (result == SendResult::NOT_YET) {
-        // TS Holdoff and transport pacing defer this same phase. Retain its
-        // ownership; read phases resample ingress before each retry.
+    if (result == SendResult::NOT_YET || result == SendResult::IN_FLIGHT) {
+        // A paced request has not started; an admitted acknowledged write
+        // keeps its original observation baseline until completion.
+        state_.sendInFlight = result == SendResult::IN_FLIGHT;
         if (state_.sendDeadlineMs == 0) state_.sendDeadlineMs = nowMs + kVerificationTimeoutMs;
         if (deadlineReached(nowMs, state_.sendDeadlineMs)) {
             failWholePlan(&component, Outcome::TIMEOUT, timeoutReason);
@@ -997,6 +999,7 @@ void AutoPushModule::cancelForTimeout() {
 }
 
 void AutoPushModule::finishOperation() {
+    if (bleClient_) bleClient_->cancelCommand(V1CommandOwner::AutoPush);
     if (quiet_ && state_.volumeTransactionActive) {
         quiet_->endAutoPushVolumeTransaction();
     }
@@ -1095,6 +1098,7 @@ void AutoPushModule::process() {
         failWholePlan(nullptr, Outcome::SESSION_CHANGED, FailureReason::SESSION_CHANGED);
         return;
     }
+    V1BLEClient::CommandScope commandScope(*bleClient_, V1CommandOwner::AutoPush);
 
     if (state_.volumeWriteRevision != 0) {
         // Numeric readback cannot confirm command-only feedback/disconnect
@@ -1145,15 +1149,16 @@ void AutoPushModule::process() {
         state_.nextStepAtMs = now + 30;
         return;
 
-    case Step::UserRead:
-        // Sample immediately before the focused request. A delayed response
-        // from any earlier request that arrived after the write is now part of
-        // the baseline and cannot prove this operation.
-        state_.observationRevision = bleClient_->sessionUserBytesRevision();
-        // The callback may run while the synchronous send waits. Preserve its
-        // ingress as fresh even when queue parsing follows the send return.
-        state_.observationIngressBoundary = bleClient_->latestV1NotificationIngressSequence();
-        if (!acceptSendResult(bleClient_->requestUserBytesResult(), status_.userSettings, Outcome::READ_FAILED,
+    case Step::UserRead: {
+        const bool wasInFlight = state_.sendInFlight;
+        if (!wasInFlight) {
+            state_.observationRevision = bleClient_->sessionUserBytesRevision();
+            state_.observationIngressBoundary = bleClient_->latestV1NotificationIngressSequence();
+        }
+        const SendResult sent = bleClient_->requestUserBytesResult();
+        if (sent == SendResult::SENT && wasInFlight)
+            state_.observationIngressBoundary = bleClient_->commandIngressBoundary(V1CommandOwner::AutoPush);
+        if (!acceptSendResult(sent, status_.userSettings, Outcome::READ_FAILED,
                               FailureReason::USER_BYTES_READ_FAILED, FailureReason::USER_BYTES_TIMEOUT, now)) {
             return;
         }
@@ -1161,6 +1166,7 @@ void AutoPushModule::process() {
         state_.verifyDeadlineMs = now + kVerificationTimeoutMs;
         state_.nextStepAtMs = now;
         return;
+    }
 
     case Step::UserVerify: {
         if (bleClient_->sessionUserBytesRevision() != state_.observationRevision &&
@@ -1191,8 +1197,10 @@ void AutoPushModule::process() {
     }
 
     case Step::DisplayWrite:
-        state_.observationRevision = parser_->displayOnObservationRevision();
-        state_.sawFreshMismatch = false;
+        if (!state_.sendInFlight) {
+            state_.observationRevision = parser_->displayOnObservationRevision();
+            state_.sawFreshMismatch = false;
+        }
         if (!acceptSendResult(bleClient_->setDisplayOnResult(state_.displayOn, state_.bluetoothIndicatorActive),
                               status_.display, Outcome::WRITE_FAILED, FailureReason::DISPLAY_WRITE_FAILED,
                               FailureReason::DISPLAY_TIMEOUT, now)) {
@@ -1235,8 +1243,10 @@ void AutoPushModule::process() {
     }
 
     case Step::ModeWrite:
-        state_.observationRevision = parser_->modeObservationRevision();
-        state_.sawFreshMismatch = false;
+        if (!state_.sendInFlight) {
+            state_.observationRevision = parser_->modeObservationRevision();
+            state_.sawFreshMismatch = false;
+        }
         if (!acceptSendResult(bleClient_->setModeResult(state_.desiredMode), status_.mode, Outcome::WRITE_FAILED,
                               FailureReason::MODE_WRITE_FAILED, FailureReason::MODE_TIMEOUT, now)) {
             return;
@@ -1290,10 +1300,16 @@ void AutoPushModule::process() {
         state_.nextStepAtMs = now + 30;
         return;
 
-    case Step::VolumeRead:
-        state_.observationRevision = parser_->allVolumeObservation().revision;
-        state_.observationIngressBoundary = bleClient_->latestV1NotificationIngressSequence();
-        if (!acceptSendResult(bleClient_->requestAllVolumeResult(), status_.volume, Outcome::READ_FAILED,
+    case Step::VolumeRead: {
+        const bool wasInFlight = state_.sendInFlight;
+        if (!wasInFlight) {
+            state_.observationRevision = parser_->allVolumeObservation().revision;
+            state_.observationIngressBoundary = bleClient_->latestV1NotificationIngressSequence();
+        }
+        const SendResult sent = bleClient_->requestAllVolumeResult();
+        if (sent == SendResult::SENT && wasInFlight)
+            state_.observationIngressBoundary = bleClient_->commandIngressBoundary(V1CommandOwner::AutoPush);
+        if (!acceptSendResult(sent, status_.volume, Outcome::READ_FAILED,
                               FailureReason::VOLUME_READ_FAILED, FailureReason::VOLUME_TIMEOUT, now)) {
             return;
         }
@@ -1301,6 +1317,7 @@ void AutoPushModule::process() {
         state_.verifyDeadlineMs = now + kVerificationTimeoutMs;
         state_.nextStepAtMs = now;
         return;
+    }
 
     case Step::VolumeVerify:
         if (parser_->allVolumeObservation().revision != state_.observationRevision &&
@@ -1331,83 +1348,51 @@ void AutoPushModule::process() {
         return;
 
     case Step::CustomRefreshSections: {
-        if (state_.sendDeadlineMs == 0) {
-            state_.sendDeadlineMs = now + kVerificationTimeoutMs;
-        }
-        // Notifications can enter while the acknowledged send waits. Arm
-        // capture only after success, using the boundary from before send.
+        const bool wasInFlight = state_.sendInFlight;
         const uint32_t ingressBoundary = bleClient_->latestV1NotificationIngressSequence();
         const SendResult sent = bleClient_->requestSweepSectionsResult();
-        if (sent == SendResult::NOT_YET) {
-            if (deadlineReached(now, state_.sendDeadlineMs)) {
-                failWholePlan(&status_.customFrequencies, Outcome::TIMEOUT,
-                              FailureReason::CUSTOM_READBACK_TIMEOUT);
-                return;
-            }
-            state_.nextStepAtMs = now + 5;
+        if (!wasInFlight && (sent == SendResult::IN_FLIGHT || sent == SendResult::SENT))
+            bleClient_->beginSessionSweepSectionsCapture(ingressBoundary);
+        // An early response may already be parsed while waiting for the ACK.
+        // Keep that capture intact when this same command completes.
+        if (!acceptSendResult(sent, status_.customFrequencies, Outcome::READ_FAILED,
+                              FailureReason::CUSTOM_READ_FAILED, FailureReason::CUSTOM_READBACK_TIMEOUT, now)) {
             return;
         }
-        if (sent != SendResult::SENT) {
-            failWholePlan(&status_.customFrequencies, Outcome::READ_FAILED,
-                          FailureReason::CUSTOM_READ_FAILED);
-            return;
-        }
-        state_.sendDeadlineMs = 0;
-        bleClient_->beginSessionSweepSectionsCapture(ingressBoundary);
         state_.step = Step::CustomRefreshMax;
         state_.nextStepAtMs = now + 30;
         return;
     }
 
     case Step::CustomRefreshMax: {
-        if (state_.sendDeadlineMs == 0) {
-            state_.sendDeadlineMs = now + kVerificationTimeoutMs;
-        }
+        const bool wasInFlight = state_.sendInFlight;
         const uint32_t ingressBoundary = bleClient_->latestV1NotificationIngressSequence();
         const SendResult sent = bleClient_->requestMaxSweepIndexResult();
-        if (sent == SendResult::NOT_YET) {
-            if (deadlineReached(now, state_.sendDeadlineMs)) {
-                failWholePlan(&status_.customFrequencies, Outcome::TIMEOUT,
-                              FailureReason::CUSTOM_READBACK_TIMEOUT);
-                return;
-            }
-            state_.nextStepAtMs = now + 5;
+        if (!wasInFlight && (sent == SendResult::IN_FLIGHT || sent == SendResult::SENT))
+            bleClient_->beginSessionSweepMaxCapture(ingressBoundary);
+        // An early response may already be parsed while waiting for the ACK.
+        // Keep that capture intact when this same command completes.
+        if (!acceptSendResult(sent, status_.customFrequencies, Outcome::READ_FAILED,
+                              FailureReason::CUSTOM_READ_FAILED, FailureReason::CUSTOM_READBACK_TIMEOUT, now)) {
             return;
         }
-        if (sent != SendResult::SENT) {
-            failWholePlan(&status_.customFrequencies, Outcome::READ_FAILED,
-                          FailureReason::CUSTOM_READ_FAILED);
-            return;
-        }
-        state_.sendDeadlineMs = 0;
-        bleClient_->beginSessionSweepMaxCapture(ingressBoundary);
         state_.step = Step::CustomRefreshDefinitions;
         state_.nextStepAtMs = now + 30;
         return;
     }
 
     case Step::CustomRefreshDefinitions: {
-        if (state_.sendDeadlineMs == 0) {
-            state_.sendDeadlineMs = now + kVerificationTimeoutMs;
-        }
+        const bool wasInFlight = state_.sendInFlight;
         const uint32_t ingressBoundary = bleClient_->latestV1NotificationIngressSequence();
         const SendResult sent = bleClient_->requestAllSweepDefinitionsResult();
-        if (sent == SendResult::NOT_YET) {
-            if (deadlineReached(now, state_.sendDeadlineMs)) {
-                failWholePlan(&status_.customFrequencies, Outcome::TIMEOUT,
-                              FailureReason::CUSTOM_READBACK_TIMEOUT);
-                return;
-            }
-            state_.nextStepAtMs = now + 5;
+        if (!wasInFlight && (sent == SendResult::IN_FLIGHT || sent == SendResult::SENT))
+            bleClient_->beginSessionSweepDefinitionsCapture(ingressBoundary);
+        // An early response may already be parsed while waiting for the ACK.
+        // Keep that capture intact when this same command completes.
+        if (!acceptSendResult(sent, status_.customFrequencies, Outcome::READ_FAILED,
+                              FailureReason::CUSTOM_READ_FAILED, FailureReason::CUSTOM_READBACK_TIMEOUT, now)) {
             return;
         }
-        if (sent != SendResult::SENT) {
-            failWholePlan(&status_.customFrequencies, Outcome::READ_FAILED,
-                          FailureReason::CUSTOM_READ_FAILED);
-            return;
-        }
-        state_.sendDeadlineMs = 0;
-        bleClient_->beginSessionSweepDefinitionsCapture(ingressBoundary);
         state_.step = Step::CustomRefreshVerify;
         state_.verifyDeadlineMs = now + kVerificationTimeoutMs;
         state_.nextStepAtMs = now;
@@ -1495,27 +1480,19 @@ void AutoPushModule::process() {
         // only, preserve their original indices, and commit the final used
         // packet. Fresh full readback below proves every omitted index is off.
         const bool commit = state_.customWriteIndex == state_.customLastUsedIndex;
-        if (commit) {
+        const bool wasInFlight = state_.sendInFlight;
+        if (commit && !wasInFlight) {
             state_.observationRevision = parser_->sweepWriteResultObservation().revision;
             state_.observationIngressBoundary = bleClient_->latestV1NotificationIngressSequence();
         }
         const SendResult sent = bleClient_->writeSweepDefinition(
             definition.index, definition.lowerMHz, definition.upperMHz, commit);
-        if (sent == SendResult::NOT_YET) {
-            if (deadlineReached(now, state_.sendDeadlineMs)) {
-                failWholePlan(&status_.customFrequencies, Outcome::TIMEOUT,
-                              FailureReason::CUSTOM_WRITE_FAILED);
-                return;
-            }
-            state_.nextStepAtMs = now + 5;
+        if (sent == SendResult::SENT && wasInFlight && commit)
+            state_.observationIngressBoundary = bleClient_->commandIngressBoundary(V1CommandOwner::AutoPush);
+        if (!acceptSendResult(sent, status_.customFrequencies, Outcome::WRITE_FAILED,
+                              FailureReason::CUSTOM_WRITE_FAILED, FailureReason::CUSTOM_WRITE_FAILED, now)) {
             return;
         }
-        if (sent != SendResult::SENT) {
-            failWholePlan(&status_.customFrequencies, Outcome::WRITE_FAILED,
-                          FailureReason::CUSTOM_WRITE_FAILED);
-            return;
-        }
-        state_.sendDeadlineMs = 0;
         if (!commit) {
             ++state_.customWriteIndex;
             state_.nextStepAtMs = now + 5;
@@ -1557,33 +1534,20 @@ void AutoPushModule::process() {
     }
 
     case Step::CustomRead: {
-        if (state_.sendDeadlineMs == 0) {
-            state_.sendDeadlineMs = now + kVerificationTimeoutMs;
+        const bool wasInFlight = state_.sendInFlight;
+        if (!wasInFlight) {
+            state_.observationIngressBoundary = bleClient_->latestV1NotificationIngressSequence();
+            parser_->resetSweepDefinitionsObservation();
         }
-        // Capture ingress before the synchronous request: the first reply can
-        // enter BLE while the acknowledged send is still waiting to return.
-        // Reset before that reply is parsed, while the ingress boundary still
-        // excludes packets queued before this request (including on retries).
-        state_.observationIngressBoundary = bleClient_->latestV1NotificationIngressSequence();
-        parser_->resetSweepDefinitionsObservation();
         const SendResult sent = bleClient_->requestAllSweepDefinitionsResult();
-        if (sent == SendResult::NOT_YET) {
-            if (deadlineReached(now, state_.sendDeadlineMs)) {
-                failWholePlan(&status_.customFrequencies, Outcome::TIMEOUT,
-                              FailureReason::CUSTOM_READBACK_TIMEOUT);
-                return;
-            }
-            state_.nextStepAtMs = now + 5;
+        if (!wasInFlight && (sent == SendResult::IN_FLIGHT || sent == SendResult::SENT))
+            bleClient_->beginSessionSweepDefinitionsCapture(state_.observationIngressBoundary);
+        if (sent == SendResult::SENT && wasInFlight)
+            state_.observationIngressBoundary = bleClient_->commandIngressBoundary(V1CommandOwner::AutoPush);
+        if (!acceptSendResult(sent, status_.customFrequencies, Outcome::READ_FAILED,
+                              FailureReason::CUSTOM_READ_FAILED, FailureReason::CUSTOM_READBACK_TIMEOUT, now)) {
             return;
         }
-        if (sent != SendResult::SENT) {
-            failWholePlan(&status_.customFrequencies, Outcome::READ_FAILED,
-                          FailureReason::CUSTOM_READ_FAILED);
-            return;
-        }
-        state_.sendDeadlineMs = 0;
-        // Queue admission and final verification must use the same request boundary.
-        bleClient_->beginSessionSweepDefinitionsCapture(state_.observationIngressBoundary);
         state_.step = Step::CustomVerify;
         state_.verifyDeadlineMs = now + kVerificationTimeoutMs;
         state_.nextStepAtMs = now;

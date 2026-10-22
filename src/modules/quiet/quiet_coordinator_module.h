@@ -117,6 +117,7 @@ class QuietCoordinatorModule {
     void syncCommittedState();
     void refreshPendingState();
     void resetInTheBoxSession();
+    void cancelInTheBoxCommand();
     bool consumeFadeAlertEnd();
     void setPendingSpeedRestore(uint8_t volume, uint8_t muteVolume);
     void noteSpeedRestoreSent(uint32_t sessionGeneration, uint32_t ingressBoundary);
@@ -180,6 +181,10 @@ class QuietCoordinatorModule {
     bool inTheBoxCommandPending_ = false;
     bool inTheBoxCommandMute_ = false;
     bool inTheBoxCommandSent_ = false;
+    // Cancelling transport cannot undo a mute already
+    // applied by the detector. Retain that obligation only for the same V1.
+    bool inTheBoxMuteInFlight_ = false;
+    bool inTheBoxRecoveryPending_ = false;
     bool inTheBoxMuteConfirmed_ = false;
     uint32_t inTheBoxCommandRevision_ = 0;
     uint32_t inTheBoxCommandIngress_ = 0;

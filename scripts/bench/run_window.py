@@ -342,6 +342,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--junk-qualification", action="store_true")
     parser.add_argument("--profile-controls-qualification", action="store_true")
     parser.add_argument("--quiet-after-complete", action="store_true")
+    parser.add_argument("--command-ack-hold-ms", type=int, default=None)
     parser.add_argument(
         "--blink-profile", choices=["scenario", "steady", "stress"], default=None
     )
@@ -1413,6 +1414,7 @@ class V1Emulator:
         junk_qualification: bool = False,
         profile_controls_qualification: bool = False,
         quiet_after_complete: bool = False,
+        command_ack_hold_ms: int | None = None,
     ) -> None:
         self.executable = executable
         self.suite = suite
@@ -1425,6 +1427,7 @@ class V1Emulator:
         self.junk_qualification = junk_qualification
         self.profile_controls_qualification = profile_controls_qualification
         self.quiet_after_complete = quiet_after_complete
+        self.command_ack_hold_ms = command_ack_hold_ms
         self.machine_event = machine_event
         self.log_path = out_dir / "v1replay.log"
         self.state_path = out_dir / "v1_emulator_state.json"
@@ -1490,6 +1493,8 @@ class V1Emulator:
                 command.extend(["--profile-controls-qualification", "--log-packets"])
             if self.quiet_after_complete:
                 command.append("--quiet-after-complete")
+            if self.command_ack_hold_ms is not None:
+                command.extend(["--command-ack-hold-ms", str(self.command_ack_hold_ms)])
             assert self.scenario_path is not None
             command.extend(["--scenario-evidence", str(self.scenario_path)])
         command.extend(
@@ -1580,6 +1585,7 @@ class V1Emulator:
             "mode": self.mode,
             "blink_profile": self.blink_profile,
             "quiet_after_complete": self.quiet_after_complete,
+            "command_ack_hold_ms": self.command_ack_hold_ms,
             "managed_stop": process_was_running,
             "graceful_stop_confirmed": stopped and returncode == 0,
             "returncode": returncode,
@@ -1697,6 +1703,7 @@ def collect_live(
             junk_qualification=getattr(args, "junk_qualification", False),
             profile_controls_qualification=getattr(args, "profile_controls_qualification", False),
             quiet_after_complete=getattr(args, "quiet_after_complete", False),
+            command_ack_hold_ms=getattr(args, "command_ack_hold_ms", None),
         )
         emulator_result: dict[str, Any] = {}
         camera_result: dict[str, Any] = {}
@@ -1934,6 +1941,9 @@ def main() -> int:
         return fail("--profile-controls-qualification is valid only for replay")
     if args.suite != "replay" and getattr(args, "quiet_after_complete", False):
         return fail("--quiet-after-complete is valid only for replay")
+    ack_hold_ms = getattr(args, "command_ack_hold_ms", None)
+    if ack_hold_ms is not None and (args.suite != "replay" or not 0 <= ack_hold_ms <= 10000):
+        return fail("--command-ack-hold-ms requires replay and an integer from 0 through 10000")
     focused_qualifications = sum(
         bool(value)
         for value in (

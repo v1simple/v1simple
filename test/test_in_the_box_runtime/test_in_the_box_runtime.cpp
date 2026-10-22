@@ -478,8 +478,205 @@ void test_box_audio_actions_preserve_speed_volume_and_never_bypass_real_mute() {
     TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
 }
 
+
+void test_inflight_mute_accepts_early_feedback_only_after_ack() {
+    settings.bands[2].muteOutside = true;
+    apply();
+    table(24040);
+    ble.v1NotificationIngressSequenceValue = 10;
+    ble.nextMuteSendResult = SendResult::IN_FLIGHT;
+    tick(100);
+    TEST_ASSERT_FALSE(module.inTheBoxMuteActive());
+    display(true, 11);
+    tick(200);
+    TEST_ASSERT_FALSE(ble.commandInFlight(V1CommandOwner::InTheBox));
+    TEST_ASSERT_TRUE(module.inTheBoxMuteActive());
+    tick(210);
+    tick(400);
+    TEST_ASSERT_EQUAL_INT(2, ble.setMuteCalls);
+    TEST_ASSERT_EQUAL_INT(0, ble.cancelCommandCalls);
+}
+
+void test_inside_threat_cancels_inflight_outside_mute() {
+    settings.bands[2].muteOutside = true;
+    apply();
+    table(24040);
+    ble.nextMuteSendResult = SendResult::IN_FLIGHT;
+    tick(100);
+    TEST_ASSERT_TRUE(ble.commandInFlight(V1CommandOwner::InTheBox));
+    table(24150);
+    tick(101);
+    TEST_ASSERT_FALSE(ble.commandInFlight(V1CommandOwner::InTheBox));
+    TEST_ASSERT_EQUAL_INT(1, ble.cancelCommandCalls);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(V1CommandOwner::InTheBox),
+                          static_cast<int>(ble.lastCancelledCommandOwner));
+    TEST_ASSERT_FALSE(ble.lastMuteValue);
+}
+
+
+void interruptAutomaticMute() {
+    module.beginDetectorVolumeSession("AA:BB:CC:DD:EE:FF", &fade);
+    settings.bands[2].muteOutside = true;
+    apply();
+    table(24040);
+    ble.nextMuteSendResult = SendResult::IN_FLIGHT;
+    tick(100);
+    ble.cancelCommandHook = [] {
+        ble.setConnected(false);
+        ble.setSessionGeneration(ble.sessionGeneration() + 1);
+        parser.reset(); // Production session-close invalidates observations.
+    };
+    table(24150);
+    tick(101);
+    TEST_ASSERT_FALSE(ble.isConnected());
+    TEST_ASSERT_FALSE(ble.commandInFlight(V1CommandOwner::InTheBox));
+    TEST_ASSERT_EQUAL_INT(1, ble.setMuteCalls);
+    tick(102);
+    ble.cancelCommandHook = nullptr;
+}
+
+void reconnectMuted(const char* address) {
+    ble.setConnected(true);
+    module.beginDetectorVolumeSession(address, &fade);
+    apply();
+    display(true);
+    table(24150);
+}
+
+void test_cancelled_automatic_mute_restores_only_same_detector_after_reconnect() {
+    interruptAutomaticMute();
+    reconnectMuted("AA:BB:CC:DD:EE:FF");
+    ble.nextMuteSendResult = SendResult::IN_FLIGHT;
+    tick(200);
+    TEST_ASSERT_FALSE(ble.lastMuteValue);
+    TEST_ASSERT_TRUE(ble.commandInFlight(V1CommandOwner::InTheBox));
+    display(false); // Detector applies release before the ATT acknowledgement.
+    tick(300);
+    TEST_ASSERT_FALSE(ble.commandInFlight(V1CommandOwner::InTheBox));
+    tick(310);
+    tick(500);
+    TEST_ASSERT_EQUAL_INT(3, ble.setMuteCalls); // Mute admission, release admission/poll.
+    TEST_ASSERT_FALSE(module.inTheBoxMuteActive());
+}
+
+void test_cancelled_mute_recovery_is_discarded_for_unknown_or_different_detector() {
+    for (const char* address : {static_cast<const char*>(nullptr), "11:22:33:44:55:66"}) {
+        setUp();
+        interruptAutomaticMute();
+        reconnectMuted(address);
+        tick(200);
+        tick(400);
+        TEST_ASSERT_EQUAL_INT(1, ble.setMuteCalls);
+    }
+}
+
+void test_manual_and_phone_ownership_supersede_cancelled_mute_recovery() {
+    for (bool phone : {false, true}) {
+        setUp();
+        interruptAutomaticMute();
+        reconnectMuted("AA:BB:CC:DD:EE:FF");
+        if (phone) {
+            ble.setProxyConnected(true);
+            tick(200);
+            ble.setProxyConnected(false);
+        } else {
+            TEST_ASSERT_EQUAL_INT(static_cast<int>(SendResult::SENT),
+                static_cast<int>(module.sendMuteResult(QuietOwner::TapGesture, true)));
+        }
+        const int manualCalls = ble.setMuteCalls;
+        tick(300);
+        tick(500);
+        TEST_ASSERT_EQUAL_INT(manualCalls, ble.setMuteCalls);
+        TEST_ASSERT_TRUE(parser.state.softMuted);
+    }
+}
+
+
+void test_mute_confirmation_rejects_feedback_queued_before_worker_write() {
+    settings.bands[2].muteOutside = true;
+    apply();
+    table(24040);
+    ble.v1NotificationIngressSequenceValue = 10;
+    ble.nextMuteSendResult = SendResult::IN_FLIGHT;
+    tick(100);
+    display(true, 11);
+    ble.commandBoundaryValue = 11; // Observation arrived before physical write.
+    ble.v1NotificationIngressSequenceValue = 11;
+    tick(200);
+    tick(300);
+    TEST_ASSERT_EQUAL_INT(3, ble.setMuteCalls); // Old feedback cannot finish delivery.
+    display(true, 12);
+    tick(310);
+    tick(500);
+    TEST_ASSERT_EQUAL_INT(3, ble.setMuteCalls);
+}
+
+
+void test_deferred_manual_unmute_cannot_erase_automatic_mute_recovery() {
+    module.beginDetectorVolumeSession("AA:BB:CC:DD:EE:FF", &fade);
+    settings.bands[2].muteOutside = true;
+    apply();
+    table(24040);
+    ble.nextMuteSendResult = SendResult::IN_FLIGHT;
+    tick(100);
+    display(true); // Applied automatic mute, ACK still held.
+    ble.nextMuteSendResult = SendResult::NOT_YET;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(SendResult::NOT_YET),
+        static_cast<int>(module.sendMuteResult(QuietOwner::TapGesture, false)));
+    TEST_ASSERT_TRUE(ble.commandInFlight(V1CommandOwner::InTheBox));
+    ble.cancelCommandHook = [] {
+        ble.setConnected(false);
+        ble.setSessionGeneration(ble.sessionGeneration() + 1);
+        parser.reset();
+    };
+    ble.cancelCommand(V1CommandOwner::InTheBox); // Worker timeout closes session.
+    tick(102);
+    ble.cancelCommandHook = nullptr;
+    reconnectMuted("AA:BB:CC:DD:EE:FF");
+    tick(200);
+    TEST_ASSERT_EQUAL_INT(3, ble.setMuteCalls); // Automatic mute, deferred tap, recovery release.
+    TEST_ASSERT_FALSE(ble.lastMuteValue);
+    display(false);
+    tick(210);
+    tick(400);
+    TEST_ASSERT_EQUAL_INT(3, ble.setMuteCalls);
+}
+
+void test_admitted_manual_mute_supersedes_recovery_but_unconfirmed_unmute_retains_it() {
+    for (bool muted : {false, true}) {
+        setUp();
+        interruptAutomaticMute();
+        reconnectMuted("AA:BB:CC:DD:EE:FF");
+        ble.nextMuteSendResult = SendResult::IN_FLIGHT;
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(SendResult::IN_FLIGHT),
+            static_cast<int>(module.sendMuteResult(QuietOwner::TapGesture, muted)));
+        ble.cancelCommandHook = [] {
+            ble.setConnected(false);
+            ble.setSessionGeneration(ble.sessionGeneration() + 1);
+            parser.reset();
+        };
+        ble.cancelCommand(V1CommandOwner::TapGesture);
+        tick(200);
+        ble.cancelCommandHook = nullptr;
+        reconnectMuted("AA:BB:CC:DD:EE:FF");
+        tick(300);
+        TEST_ASSERT_EQUAL_INT(muted ? 2 : 3, ble.setMuteCalls);
+        TEST_ASSERT_EQUAL(muted, ble.lastMuteValue);
+    }
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_deferred_manual_unmute_cannot_erase_automatic_mute_recovery);
+    RUN_TEST(test_admitted_manual_mute_supersedes_recovery_but_unconfirmed_unmute_retains_it);
+    RUN_TEST(test_mute_confirmation_rejects_feedback_queued_before_worker_write);
+    RUN_TEST(test_cancelled_automatic_mute_restores_only_same_detector_after_reconnect);
+    RUN_TEST(test_cancelled_mute_recovery_is_discarded_for_unknown_or_different_detector);
+    RUN_TEST(test_manual_and_phone_ownership_supersede_cancelled_mute_recovery);
+
+    RUN_TEST(test_inflight_mute_accepts_early_feedback_only_after_ack);
+    RUN_TEST(test_inside_threat_cancels_inflight_outside_mute);
+
     RUN_TEST(test_default_and_missing_display_or_table_do_not_send_mute);
     RUN_TEST(test_busy_and_failed_sends_retry_without_claiming_unsent_mute);
     RUN_TEST(test_queued_precommand_display_cannot_confirm_but_fresh_soft_bit_can);

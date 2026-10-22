@@ -223,8 +223,68 @@ void test_volume_convergence_requires_both_main_and_mute_values() {
     TEST_ASSERT_FALSE(module.getDesiredState().volumePending);
 }
 
+
+void test_speed_drop_harvests_ack_even_when_volume_feedback_arrives_first() {
+    parser.setMainVolume(6);
+    parser.setMuteVolume(2);
+    enableSpeedVol(0);
+    ble.nextVolumeSendResult = SendResult::IN_FLIGHT;
+    TEST_ASSERT_TRUE(module.processSpeedVolume(1000, speedMute, &volumeFade));
+    TEST_ASSERT_TRUE(ble.commandInFlight(V1CommandOwner::SpeedVolume));
+    parser.setMainVolume(0);
+    TEST_ASSERT_TRUE(module.processSpeedVolume(1075, speedMute, &volumeFade));
+    TEST_ASSERT_FALSE(ble.commandInFlight(V1CommandOwner::SpeedVolume));
+    TEST_ASSERT_EQUAL_INT(2, ble.setVolumeCalls);
+    TEST_ASSERT_TRUE(module.processSpeedVolume(1150, speedMute, &volumeFade));
+    TEST_ASSERT_EQUAL_INT(2, ble.setVolumeCalls);
+}
+
+void test_speed_reversal_cancels_pending_drop_before_restoring_baseline() {
+    parser.setMainVolume(6);
+    parser.setMuteVolume(2);
+    enableSpeedVol(0);
+    ble.nextVolumeSendResult = SendResult::IN_FLIGHT;
+    module.processSpeedVolume(1000, speedMute, &volumeFade);
+    speedMute.state_.muteActive = false;
+    module.processSpeedVolume(1010, speedMute, &volumeFade);
+    TEST_ASSERT_FALSE(ble.commandInFlight(V1CommandOwner::SpeedVolume));
+    TEST_ASSERT_EQUAL_INT(1, ble.cancelCommandCalls);
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+    TEST_ASSERT_EQUAL_UINT8(2, ble.lastMuteVolume);
+}
+
+
+void test_speed_restore_uses_wire_boundary_when_feedback_precedes_ack() {
+    parser.setMainVolume(6);
+    parser.setMuteVolume(2);
+    enableSpeedVol(0);
+    module.processSpeedVolume(1000, speedMute, &volumeFade);
+    parser.setMainVolume(0);
+    speedMute.state_.muteActive = false;
+    ble.v1NotificationIngressSequenceValue = 10;
+    ble.nextVolumeSendResult = SendResult::IN_FLIGHT;
+    module.processSpeedVolume(1100, speedMute, &volumeFade);
+    ble.commandBoundaryValue = 11; // Worker starts after admission.
+    ble.v1NotificationIngressSequenceValue = 12;
+    parser.setMainVolume(6);
+    auto& observation = parser.currentVolumeObservationValue;
+    observation.available = true;
+    observation.sequence = 1;
+    observation.main = 6;
+    observation.muted = 2;
+    observation.ingressSequence = 12;
+    module.processSpeedVolume(1175, speedMute, &volumeFade); // ACK harvest.
+    TEST_ASSERT_FALSE(ble.commandInFlight(V1CommandOwner::SpeedVolume));
+    TEST_ASSERT_FALSE(module.processSpeedVolume(1176, speedMute, &volumeFade));
+    TEST_ASSERT_EQUAL_INT(3, ble.setVolumeCalls);
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_speed_restore_uses_wire_boundary_when_feedback_precedes_ack);
+    RUN_TEST(test_speed_drop_harvests_ack_even_when_volume_feedback_arrives_first);
+    RUN_TEST(test_speed_reversal_cancels_pending_drop_before_restoring_baseline);
+
     RUN_TEST(test_send_mute_tracks_desired_state_and_owner);
     RUN_TEST(test_mute_pending_uses_audio_state_without_changing_indicator_presentation);
     RUN_TEST(test_speed_volume_drop_restore_and_zero_presentation);

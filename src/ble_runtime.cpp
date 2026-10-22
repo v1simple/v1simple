@@ -11,6 +11,7 @@
 
 void V1BLEClient::process(SettingsManager& settings) {
     applyDeferredRuntimeEvents(settings);
+    serviceCommandWrite();
     drainCommandAndFollowupWork();
 
     const uint32_t now = static_cast<uint32_t>(millis());

@@ -522,8 +522,43 @@ void test_lifetime_tracks_aggregate_start_end_and_explicit_session_reset() {
     TEST_ASSERT_TRUE(ended != parser.alertLifetime());
 }
 
+
+void test_inflight_tap_is_harvested_after_early_audio_feedback() {
+    ble.nextMuteSendResult = SendResult::IN_FLIGHT;
+    pollTouch(1000, true);
+    TEST_ASSERT_TRUE(ble.commandInFlight(V1CommandOwner::TapGesture));
+    setV1Display(false, false, true);
+    pollTouch(1025, false);
+    TEST_ASSERT_EQUAL_INT(2, ble.setMuteCalls);
+    TEST_ASSERT_FALSE(ble.commandInFlight(V1CommandOwner::TapGesture));
+    pollTouch(1050, false);
+    TEST_ASSERT_EQUAL_INT(2, ble.setMuteCalls);
+}
+
+void test_inflight_tap_is_cancelled_on_alert_end_and_presentation_suspension() {
+    for (bool suspend : {false, true}) {
+        setUp();
+        ble.nextMuteSendResult = SendResult::IN_FLIGHT;
+        pollTouch(1000, true);
+        TEST_ASSERT_TRUE(ble.commandInFlight(V1CommandOwner::TapGesture));
+        if (suspend) tap.suspendForPresentationOwner();
+        else {
+            setV1Alert(false);
+            pollTouch(1025, false);
+        }
+        TEST_ASSERT_FALSE(ble.commandInFlight(V1CommandOwner::TapGesture));
+        TEST_ASSERT_EQUAL_INT(1, ble.cancelCommandCalls);
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(V1CommandOwner::TapGesture),
+                              static_cast<int>(ble.lastCancelledCommandOwner));
+        TEST_ASSERT_EQUAL_INT(1, ble.setMuteCalls);
+    }
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_inflight_tap_is_harvested_after_early_audio_feedback);
+    RUN_TEST(test_inflight_tap_is_cancelled_on_alert_end_and_presentation_suspension);
+
     RUN_TEST(test_alp_only_context_consumes_contacts_without_cycling_profiles);
     RUN_TEST(test_v1_mute_retry_remains_available_with_alp_overlay);
     RUN_TEST(test_lifetime_tracks_aggregate_start_end_and_explicit_session_reset);

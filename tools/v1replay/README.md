@@ -339,6 +339,25 @@ Host tests cover packet construction and session decisions. Physical BLE subscri
 notification delivery, firmware rendering, and visible pixels require
 integration, serial, or camera evidence.
 
+### Controlled command ACK fault
+
+`bench --command-ack-hold-ms 7000 --machine-events` exposes B6D4 with acknowledged
+writes and delays the first canonical START (0x41) ATT response by seven seconds.
+Command parsing, replies, and notifications continue on the peripheral queue.
+The fault is consumed once per process, so a reconnect receives normal ACKs.
+Disconnect, subscription-owner loss, power loss, or stop cancels the pending
+response instead of sending it into a later session. Machine events
+`command_ack_held`, `command_ack_released`, and `command_ack_cancelled` retain
+the command, characteristic, configured hold, and host monotonic time.
+
+Use `--command-ack-hold-ms 0` for acknowledged writes without a delayed response.
+Omitting the option retains the normal write-without-response characteristic.
+The option is restricted to bench and accepts 0–10000 milliseconds; it cannot
+be combined with a handshake-notification hold. The top-level `bench.sh` accepts
+the same option. This exercises a physical DUT command-write timeout when used
+with hardware, not a subscription timeout: CoreBluetooth owns its generated
+CCCD and does not expose that subscription ACK for application delay.
+
 Managed playback freezes its authored deadline whenever the short display
 subscription or START request is missing. Both initial admission and recovery
 send idle ID31 at the configured idle cadence once the short subscription is

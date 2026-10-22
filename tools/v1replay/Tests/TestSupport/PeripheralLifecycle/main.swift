@@ -8,9 +8,10 @@ final class Fixture {
     let first = CBCentral()
     let second = CBCentral()
 
-    init(deferred: Bool = false, publish: Bool = true) {
+    init(deferred: Bool = false, publish: Bool = true, commandAckHoldMs: Int? = nil) {
         var config = V1Peripheral.Config()
         config.deferAdvertising = deferred
+        config.commandAckHoldMs = commandAckHoldMs
         peripheral = V1Peripheral(config: config)
         manager = CBPeripheralManager.latest!
         peripheral.queue.sync {
@@ -86,6 +87,98 @@ final class Fixture {
 }
 
 final class PeripheralLifecycleTests: XCTestCase {
+    @objc func testCommandAckFaultIsOneShotWithoutBlockingNotifications() {
+        let f = Fixture(commandAckHoldMs: 50)
+        var events: [ReplayCommandAckFaultEvent.State] = []
+        var deliveredWhileHeld = false
+        f.peripheral.onCommandAckFaultEvent = { events.append($0.state) }
+        f.peripheral.onNotificationEvent = { event in
+            if event.state == ReplayNotificationEvent.State.accepted.rawValue && event.payloadHex == "010203" {
+                deliveredWhileHeld = events == [.held] && f.manager.responses.count == 1
+            }
+        }
+        f.peripheral.queue.sync {
+            f.subscribe(f.first)
+            XCTAssertTrue(f.characteristic(V1.commandUUID).properties.contains(.write))
+            f.write(f.first, id: 0x3C)
+            XCTAssertEqual(f.manager.responses.count, 1, "unrelated commands ACK immediately")
+            f.write(f.first, id: 0x41)
+            XCTAssertTrue(f.peripheral.alertDataRequested)
+            XCTAssertEqual(f.manager.responses.count, 1, "START ACK is held")
+            XCTAssertEqual(events, [.held])
+        }
+        f.peripheral.sendDisplay([1, 2, 3])
+        f.drain()
+        XCTAssertTrue(f.received(f.first).contains([1, 2, 3]), "hold must not stop notification delivery")
+        XCTAssertTrue(deliveredWhileHeld, "notification must be accepted before START ACK")
+        Thread.sleep(forTimeInterval: 0.08)
+        f.peripheral.queue.sync {
+            XCTAssertEqual(events, [.held, .released])
+            XCTAssertEqual(f.manager.responses.count, 2)
+            f.write(f.first, id: 0x41)
+            XCTAssertEqual(f.manager.responses.count, 3, "fault cannot recur")
+        }
+    }
+
+    @objc func testCommandAckFaultCancelsAtDisconnectOwnerLossPowerLossAndStop() {
+        for ending in ["disconnect", "ownerLoss", "powerLoss", "stop"] {
+            let f = Fixture(commandAckHoldMs: 50)
+            var events: [ReplayCommandAckFaultEvent.State] = []
+            f.peripheral.onCommandAckFaultEvent = { events.append($0.state) }
+            f.peripheral.queue.sync { f.subscribe(f.first); f.write(f.first, id: 0x41) }
+            if ending == "stop" {
+                f.peripheral.stop()
+            } else if ending == "ownerLoss" {
+                f.peripheral.queue.sync { f.subscribe(f.second) }
+            } else if ending == "powerLoss" {
+                f.peripheral.queue.sync { f.transition(.poweredOff) }
+            } else {
+                f.peripheral.queue.sync {
+                    f.unsubscribe(f.first)
+                    f.subscribe(f.second)
+                    f.write(f.second, id: 0x41)
+                    XCTAssertEqual(f.manager.responses.count, 1, "reconnect ACK is healthy")
+                }
+            }
+            Thread.sleep(forTimeInterval: 0.08)
+            f.peripheral.queue.sync {
+                XCTAssertEqual(events, [.held, .cancelled])
+                XCTAssertEqual(f.manager.responses.count, ending == "disconnect" ? 1 : 0,
+                               "stale timer must not respond: \(ending)")
+            }
+        }
+    }
+
+    @objc func testCommandAckDefaultsAndZeroHoldControl() {
+        for delay: Int? in [nil, 0] {
+            let f = Fixture(commandAckHoldMs: delay)
+            f.peripheral.queue.sync {
+                f.subscribe(f.first)
+                XCTAssertEqual(f.characteristic(V1.commandUUID).properties.contains(.write), delay != nil)
+                f.write(f.first, id: 0x41)
+                XCTAssertEqual(f.manager.responses.count, 1)
+            }
+        }
+    }
+
+    @objc func testInvalidAndForeignStartCannotConsumeCommandAckFault() {
+        let f = Fixture(commandAckHoldMs: 50)
+        var events: [ReplayCommandAckFaultEvent.State] = []
+        f.peripheral.onCommandAckFaultEvent = { events.append($0.state) }
+        f.peripheral.queue.sync {
+            f.subscribe(f.first)
+            f.write(f.first, id: 0x41, payload: [1])
+            XCTAssertTrue(events.isEmpty)
+            f.write(f.second, id: 0x41)
+            XCTAssertTrue(events.isEmpty)
+            f.unsubscribe(f.first)
+            f.subscribe(f.first)
+            f.write(f.first, id: 0x41)
+            XCTAssertEqual(events, [.held])
+        }
+        f.peripheral.stop()
+    }
+
     @objc func testReplyCannotCrossQueuedLastUnsubscribeAndNewOwner() {
         let f = Fixture()
         f.peripheral.queue.sync { f.subscribe(f.first) }

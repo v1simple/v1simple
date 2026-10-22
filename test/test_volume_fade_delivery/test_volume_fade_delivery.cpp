@@ -82,8 +82,37 @@ void test_pending_fade_is_replaced_by_restore_when_new_alert_arrives() {
     TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
 }
 
+
+void test_fade_keeps_pending_ack_until_completed_without_reissuing_after_feedback() {
+    quiet.executeVolumeFade(1000, &fade);
+    ble.nextVolumeSendResult = SendResult::IN_FLIGHT;
+    quiet.executeVolumeFade(3500, &fade);
+    TEST_ASSERT_TRUE(ble.commandInFlight(V1CommandOwner::VolumeFade));
+    parser.setMainVolume(1);
+    quiet.executeVolumeFade(3525, &fade);
+    TEST_ASSERT_FALSE(ble.commandInFlight(V1CommandOwner::VolumeFade));
+    TEST_ASSERT_EQUAL_INT(2, ble.setVolumeCalls);
+    quiet.executeVolumeFade(3600, &fade);
+    TEST_ASSERT_EQUAL_INT(2, ble.setVolumeCalls);
+}
+
+void test_new_threat_cancels_inflight_fade_before_restore() {
+    quiet.executeVolumeFade(1000, &fade);
+    ble.nextVolumeSendResult = SendResult::IN_FLIGHT;
+    quiet.executeVolumeFade(3500, &fade);
+    parser.setAlerts({AlertData::create(BAND_KA, DIR_FRONT, 6, 0, 35500, true, true)});
+    quiet.executeVolumeFade(3510, &fade);
+    TEST_ASSERT_EQUAL_INT(1, ble.cancelCommandCalls);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(V1CommandOwner::VolumeFade),
+                          static_cast<int>(ble.lastCancelledCommandOwner));
+    TEST_ASSERT_EQUAL_UINT8(6, ble.lastVolume);
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_fade_keeps_pending_ack_until_completed_without_reissuing_after_feedback);
+    RUN_TEST(test_new_threat_cancels_inflight_fade_before_restore);
+
     RUN_TEST(test_one_time_pacing_not_yet_retries_without_spin_or_resend_after_success);
     RUN_TEST(test_one_time_write_busy_not_yet_retries_without_losing_fade);
     RUN_TEST(test_pending_fade_is_replaced_by_restore_when_new_alert_arrives);

@@ -8,6 +8,20 @@
 #include "../../../test/mocks/packet_parser.h"
 #endif
 
+namespace {
+V1CommandOwner commandOwnerFor(QuietOwner owner) {
+    switch (owner) {
+    case QuietOwner::SpeedVolume: return V1CommandOwner::SpeedVolume;
+    case QuietOwner::VolumeFade: return V1CommandOwner::VolumeFade;
+    case QuietOwner::TapGesture: return V1CommandOwner::TapGesture;
+    case QuietOwner::WifiCommand: return V1CommandOwner::WifiCommand;
+    case QuietOwner::AutoPush: return V1CommandOwner::AutoPush;
+    case QuietOwner::InTheBox: return V1CommandOwner::InTheBox;
+    default: return V1CommandOwner::Legacy;
+    }
+}
+}
+
 const char* quietOwnerName(const QuietOwner owner) {
     switch (owner) {
     case QuietOwner::None:
@@ -37,6 +51,8 @@ void QuietCoordinatorModule::begin(V1BLEClient* bleClient, PacketParser* parser)
 }
 
 void QuietCoordinatorModule::reset() {
+    inTheBoxMuteInFlight_ = false;
+    inTheBoxRecoveryPending_ = false;
     desired_ = QuietDesiredState{};
     committed_ = QuietCommittedState{};
     presentation_ = QuietPresentationState{};
@@ -48,6 +64,10 @@ void QuietCoordinatorModule::reset() {
 }
 
 void QuietCoordinatorModule::resetVolumeState() {
+    if (ble_) {
+        if (ble_->commandInFlight(V1CommandOwner::SpeedVolume)) ble_->cancelCommand(V1CommandOwner::SpeedVolume);
+        if (ble_->commandInFlight(V1CommandOwner::VolumeFade)) ble_->cancelCommand(V1CommandOwner::VolumeFade);
+    }
     desired_.volumeOwner = QuietOwner::None;
     desired_.volumePending = false;
     desired_.volume = 0xFF;
@@ -148,7 +168,16 @@ SendResult QuietCoordinatorModule::sendMuteResult(QuietOwner owner, bool muted) 
         return SendResult::FAILED;
     }
 
+    V1BLEClient::CommandScope commandScope(*ble_, commandOwnerFor(owner));
     const SendResult result = ble_->setMuteResult(muted);
+    if (owner != QuietOwner::InTheBox &&
+        (result == SendResult::SENT || (muted && result == SendResult::IN_FLIGHT))) {
+        // A deferred manual command has not displaced the automatic write.
+        // An admitted manual mute owns the choice; an unmute must complete
+        // before it can discharge recovery of a possibly applied old mute.
+        inTheBoxMuteInFlight_ = false;
+        inTheBoxRecoveryPending_ = false;
+    }
     if (result == SendResult::SENT) {
         presentation_.activeMuteOwner = muted ? owner : QuietOwner::None;
         if (owner != QuietOwner::InTheBox) {
@@ -166,7 +195,14 @@ SendResult QuietCoordinatorModule::sendMuteResult(QuietOwner owner, bool muted) 
     return result;
 }
 
+void QuietCoordinatorModule::cancelInTheBoxCommand() {
+    if (inTheBoxMuteInFlight_ && volumeDetectorAddress_[0] != '\0') inTheBoxRecoveryPending_ = true;
+    inTheBoxMuteInFlight_ = false;
+    if (ble_ && ble_->commandInFlight(V1CommandOwner::InTheBox)) ble_->cancelCommand(V1CommandOwner::InTheBox);
+}
+
 void QuietCoordinatorModule::resetInTheBoxSession() {
+    cancelInTheBoxCommand();
     inTheBoxSettings_ = V1InTheBoxSettings{};
     inTheBox_.reset();
     inTheBoxSession_ = 0;
@@ -186,6 +222,7 @@ void QuietCoordinatorModule::resetInTheBoxSession() {
 
 void QuietCoordinatorModule::setInTheBoxSettings(const V1InTheBoxSettings& settings,
                                                 uint32_t sessionGeneration) {
+    cancelInTheBoxCommand();
     if (sessionGeneration != inTheBoxSession_) resetInTheBoxSession();
     inTheBoxSettings_ = isValidV1InTheBoxSettings(settings) ? settings : V1InTheBoxSettings{};
     inTheBoxSession_ = sessionGeneration;
@@ -207,6 +244,8 @@ void QuietCoordinatorModule::processInTheBox(uint32_t nowMs) {
         return;
     }
     if (ble_->isProxyClientConnected()) {
+        cancelInTheBoxCommand();
+        inTheBoxRecoveryPending_ = false;
         // The connected phone owns the detector. Do not queue a command that
         // could unexpectedly take effect when the phone disconnects.
         inTheBoxOwnsMute_ = false;
@@ -231,6 +270,12 @@ void QuietCoordinatorModule::processInTheBox(uint32_t nowMs) {
         inTheBox_.reset();
         inTheBoxManualOverride_ = false;
         inTheBoxInsidePending_ = false;
+        if (ble_->commandInFlight(V1CommandOwner::InTheBox)) {
+            cancelInTheBoxCommand();
+            inTheBoxCommandPending_ = false;
+            inTheBoxAttempted_ = false;
+            if (!ble_->isConnected()) return;
+        }
     }
     inTheBoxLifetime_ = lifetime;
     inTheBoxLifetimeKnown_ = true;
@@ -245,6 +290,7 @@ void QuietCoordinatorModule::processInTheBox(uint32_t nowMs) {
         inTheBoxCommandSent_ = false;
         inTheBoxMuteConfirmed_ = inTheBoxCommandMute_;
         if (!inTheBoxCommandMute_) {
+            inTheBoxRecoveryPending_ = false;
             inTheBoxOwnsMute_ = false;
             inTheBoxInsidePending_ = false;
         }
@@ -279,18 +325,27 @@ void QuietCoordinatorModule::processInTheBox(uint32_t nowMs) {
 
     bool haveTarget = false;
     bool targetMute = false;
-    if (inTheBoxOwnsMute_ && !decision.allOutsideMuteEligible) {
+    const bool inFlight = ble_->commandInFlight(V1CommandOwner::InTheBox);
+    const bool ownsOrSendingMute = inTheBoxOwnsMute_ || (inFlight && inTheBoxCommandMute_);
+    // A fresh unmuted observation resolves the ambiguity without a write.
+    // Otherwise release our possible old mute before admitting policy again.
+    if (inTheBoxRecoveryPending_ && !state.softMuted && !inFlight)
+        inTheBoxRecoveryPending_ = false;
+    if (inTheBoxRecoveryPending_) {
+        haveTarget = true;
+    } else if (ownsOrSendingMute && !decision.allOutsideMuteEligible) {
         haveTarget = true;
     } else if (inTheBoxInsidePending_) {
         haveTarget = true;
     } else if (decision.allOutsideMuteEligible && !inTheBoxManualOverride_ &&
-               (inTheBoxOwnsMute_ || !state.softMuted)) {
+               (ownsOrSendingMute || !state.softMuted)) {
         haveTarget = true;
         targetMute = true;
     }
     inTheBoxSuppressVoice_ = haveTarget && targetMute;
 
     if (!haveTarget) {
+        if (inFlight) cancelInTheBoxCommand();
         inTheBoxCommandPending_ = false;
         inTheBoxAttempted_ = false;
         return;
@@ -299,12 +354,16 @@ void QuietCoordinatorModule::processInTheBox(uint32_t nowMs) {
     if (!inTheBoxCommandPending_ || targetMute != inTheBoxCommandMute_) {
         // A reversal is immediate, even inside the retry interval. A queued
         // outside-mute must not outlive the arrival of an inside/laser alert.
+        if (inFlight) {
+            cancelInTheBoxCommand();
+            if (!ble_->isConnected()) return;
+        }
         inTheBoxCommandPending_ = true;
         inTheBoxCommandMute_ = targetMute;
         inTheBoxCommandSent_ = false;
         inTheBoxAttempted_ = false;
     }
-    if (!inTheBoxCommandSent_ && state.softMuted == targetMute && !inTheBoxOwnsMute_) {
+    if (!inTheBoxCommandSent_ && !inFlight && state.softMuted == targetMute && !inTheBoxOwnsMute_) {
         inTheBoxCommandPending_ = false;
         inTheBoxInsidePending_ = false;
         return;
@@ -313,14 +372,16 @@ void QuietCoordinatorModule::processInTheBox(uint32_t nowMs) {
         return;
     inTheBoxAttempted_ = true;
     inTheBoxLastAttemptMs_ = nowMs;
-    const uint32_t beforeRevision = observation.revision;
-    const uint32_t beforeIngress = ble_->latestV1NotificationIngressSequence();
+    if (!inFlight) inTheBoxCommandRevision_ = observation.revision;
     const SendResult result = sendMuteResult(QuietOwner::InTheBox, targetMute);
+    if (result == SendResult::IN_FLIGHT && targetMute) inTheBoxMuteInFlight_ = true;
     if (result == SendResult::SENT) {
+        inTheBoxMuteInFlight_ = false;
         inTheBoxCommandSent_ = true;
-        inTheBoxCommandRevision_ = beforeRevision;
-        inTheBoxCommandIngress_ = beforeIngress;
+        inTheBoxCommandIngress_ = ble_->commandIngressBoundary(V1CommandOwner::InTheBox);
         if (targetMute) inTheBoxOwnsMute_ = true;
+    } else if (result == SendResult::FAILED && inTheBoxMuteInFlight_) {
+        cancelInTheBoxCommand();
     }
 }
 
@@ -345,6 +406,7 @@ SendResult QuietCoordinatorModule::sendVolumeResult(QuietOwner owner, uint8_t vo
         return SendResult::FAILED;
     }
 
+    V1BLEClient::CommandScope commandScope(*ble_, commandOwnerFor(owner));
     const SendResult result = ble_->setVolumeResult(volume, muteVolume);
     if (result == SendResult::SENT) {
         presentation_.activeVolumeOwner = owner;
@@ -372,12 +434,13 @@ SendResult QuietCoordinatorModule::sendAutoPushVolumeResult(uint8_t volume, uint
     }
 
     syncCommittedState();
+    if (!ble_) return SendResult::FAILED;
+    V1BLEClient::CommandScope commandScope(*ble_, V1CommandOwner::AutoPush);
     if (!speedVolActive_) {
-        if (!ble_) return SendResult::FAILED;
         const uint32_t session = ble_->sessionGeneration();
-        const uint32_t ingress = ble_->latestV1NotificationIngressSequence();
         const SendResult result = ble_->setVolumeResult(volume, muteVolume, aux0);
         if (result != SendResult::SENT) return result;
+        const uint32_t ingress = ble_->commandIngressBoundary(V1CommandOwner::AutoPush);
         // A deferred or failed Apply did not change the detector. Preserve
         // its baseline so later speed-volume restoration cannot apply a pair
         // that this transaction never transmitted.
@@ -396,10 +459,6 @@ SendResult QuietCoordinatorModule::sendAutoPushVolumeResult(uint8_t volume, uint
         desired_.volumePending = true;
         presentation_.activeVolumeOwner = QuietOwner::AutoPush;
         return SendResult::SENT;
-    }
-
-    if (!ble_) {
-        return SendResult::FAILED;
     }
 
     // REQWRITEVOLUME is atomic. Keep the temporary speed-mute main volume on
@@ -438,9 +497,8 @@ bool QuietCoordinatorModule::retryPendingSpeedVolRestore(const uint32_t nowMs) {
 
     pendingSpeedVolRestoreLastRetryMs_ = nowMs;
     const uint32_t session = ble_->sessionGeneration();
-    const uint32_t ingressBoundary = ble_->latestV1NotificationIngressSequence();
     if (sendVolume(QuietOwner::SpeedVolume, pendingSpeedVolRestoreVol_, pendingSpeedVolRestoreMuteVol_))
-        noteSpeedRestoreSent(session, ingressBoundary);
+        noteSpeedRestoreSent(session, ble_->commandIngressBoundary(V1CommandOwner::SpeedVolume));
     return true;
 }
 
@@ -457,6 +515,8 @@ void QuietCoordinatorModule::setPendingSpeedRestore(uint8_t volume, uint8_t mute
     }
     if (ble_) speedRestoreWriteRevision_ = ble_->volumeWriteRevision();
     if (pendingSpeedVolRestoreVol_ != volume || pendingSpeedVolRestoreMuteVol_ != muteVolume) {
+        if (ble_ && ble_->commandInFlight(V1CommandOwner::SpeedVolume))
+            ble_->cancelCommand(V1CommandOwner::SpeedVolume);
         if (speedRestoreSent_) {
             // Fade clear or a newer app pair can replace an accepted restore.
             // Its late echo is still our own write, not a manual choice.
@@ -504,6 +564,7 @@ void QuietCoordinatorModule::reconcilePendingSpeedRestore(bool allowConfirmation
         }
         return;
     }
+    if (ble_->commandInFlight(V1CommandOwner::SpeedVolume)) ble_->cancelCommand(V1CommandOwner::SpeedVolume);
     pendingSpeedVolRestoreVol_ = 0xFF;
     speedRestoreSent_ = false;
     speedRestoreHintInvalidated_ = newerWriter || manualPair;

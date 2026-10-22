@@ -19,12 +19,14 @@ JUNK_QUALIFICATION=0
 PROFILE_CONTROLS_QUALIFICATION=0
 QUIET_AFTER_COMPLETE=0
 AGENT_REVIEW_HANDOFF=0
+COMMAND_ACK_HOLD_MS=""
 
 usage() {
   printf 'Usage: ./bench.sh --replay --camera [--ku-qualification|--photo-label-qualification|--junk-qualification|--profile-controls-qualification] [--quiet-after-complete] [--agent-review-handoff]\n'
   printf 'Builds and flashes the current firmware, sends the generated replay stimuli, and retains raw synchronized capture.\n'
   printf 'With the DUT in maintenance, the bench joins V1-Simple and captures settings before serial discovery or upload.\n'
   printf 'Optional agent handoff uses a local private prompt; it does not run or grade with a model.\n'
+  printf 'Bench fault: --command-ack-hold-ms 7000 holds one acknowledged START; 0 is the healthy ACK control.\n'
 }
 
 fail() {
@@ -42,6 +44,12 @@ while [[ $# -gt 0 ]]; do
     --profile-controls-qualification) PROFILE_CONTROLS_QUALIFICATION=1 ;;
     --quiet-after-complete) QUIET_AFTER_COMPLETE=1 ;;
     --agent-review-handoff) AGENT_REVIEW_HANDOFF=1 ;;
+    --command-ack-hold-ms)
+      [[ $# -ge 2 ]] || fail 'missing command ACK hold duration'
+      [[ -n "$2" ]] || fail 'missing command ACK hold duration'
+      COMMAND_ACK_HOLD_MS="$2"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -60,6 +68,10 @@ done
 }
 [[ "$DURATION_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail 'duration must be a positive integer'
 [[ "$POST_UPLOAD_SETTLE_SECONDS" =~ ^[0-9]+$ ]] || fail 'post-upload settle time must be an integer'
+if [[ -n "$COMMAND_ACK_HOLD_MS" ]]; then
+  [[ "$COMMAND_ACK_HOLD_MS" =~ ^[0-9]{1,5}$ ]] && (( 10#$COMMAND_ACK_HOLD_MS <= 10000 )) \
+    || fail 'command ACK hold must be an integer from 0 through 10000'
+fi
 if [[ "$KU_QUALIFICATION" -eq 1 && -z "${BENCH_REPLAY_DURATION_SECONDS+x}" ]]; then
   DURATION_SECONDS=25
 fi
@@ -151,6 +163,9 @@ if [[ "$PROFILE_CONTROLS_QUALIFICATION" -eq 1 ]]; then
 fi
 if [[ "$QUIET_AFTER_COMPLETE" -eq 1 ]]; then
   RUNNER_SCENARIO_ARGS+=(--quiet-after-complete)
+fi
+if [[ -n "$COMMAND_ACK_HOLD_MS" ]]; then
+  RUNNER_SCENARIO_ARGS+=(--command-ack-hold-ms "$COMMAND_ACK_HOLD_MS")
 fi
 "$BENCH_PYTHON" "$ROOT_DIR/scripts/bench/run_logged.py" \
   --stdout "$REPLAY_DIR/run.log" \

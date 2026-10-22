@@ -225,6 +225,7 @@ class AutoPushModule {
         uint32_t nextStepAtMs = 0;
         uint32_t verifyDeadlineMs = 0;
         uint32_t sendDeadlineMs = 0;
+        bool sendInFlight = false;
         uint32_t sessionGeneration = 0;
         uint32_t observationRevision = 0;
         uint32_t observationIngressBoundary = 0;

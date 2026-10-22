@@ -10,6 +10,8 @@ void QuietCoordinatorModule::beginDetectorVolumeSession(const char* canonicalAdd
     // Same-detector reconnects retain recovery. A different/unknown target may
     // never receive the old detector's baseline or deferred volume command.
     if (!known || std::strcmp(volumeDetectorAddress_, canonicalAddress) != 0) {
+        inTheBoxMuteInFlight_ = false;
+        inTheBoxRecoveryPending_ = false;
         resetVolumeState();
         if (volumeFade) volumeFade->reset();
     }
@@ -103,6 +105,8 @@ bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs, const Spee
                                   pendingAutoPush ? desired_.volume : ds.mainVolume;
         speedVolSavedMuteVol_ = restoring ? pendingSpeedVolRestoreMuteVol_ :
                                  pendingAutoPush ? desired_.muteVolume : ds.muteVolume;
+        if (ble_->commandInFlight(V1CommandOwner::SpeedVolume)) ble_->cancelCommand(V1CommandOwner::SpeedVolume);
+        if (ble_->commandInFlight(V1CommandOwner::VolumeFade)) ble_->cancelCommand(V1CommandOwner::VolumeFade);
         pendingSpeedVolRestoreVol_ = 0xFF;
         speedRestoreSent_ = false;
         speedVolActive_ = true;
@@ -117,6 +121,7 @@ bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs, const Spee
         const bool alertEnded = consumeFadeAlertEnd();
         if (!parser_->hasAlerts() || alertEnded) {
             const VolumeFadeAction cleared = volumeFade->releaseClearedAlert();
+            if (ble_->commandInFlight(V1CommandOwner::VolumeFade)) ble_->cancelCommand(V1CommandOwner::VolumeFade);
             pendingFadeAction_ = false;
             fadeWriteRevision_ = 0;
             if (cleared.type == VolumeFadeAction::Type::RESTORE && !speedVolBaselineUpdated_) {
@@ -141,9 +146,8 @@ bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs, const Spee
     if (!wantsActive && speedVolActive_) {
         setPendingSpeedRestore(speedVolSavedOriginal_, speedVolSavedMuteVol_);
         const uint32_t session = ble_->sessionGeneration();
-        const uint32_t ingress = ble_->latestV1NotificationIngressSequence();
         if (sendVolume(QuietOwner::SpeedVolume, speedVolSavedOriginal_, speedVolSavedMuteVol_))
-            noteSpeedRestoreSent(session, ingress);
+            noteSpeedRestoreSent(session, ble_->commandIngressBoundary(V1CommandOwner::SpeedVolume));
         if (volumeFade) {
             volumeFade->setBaselineHint(speedVolSavedOriginal_, speedVolSavedMuteVol_, nowMs);
         }
@@ -156,7 +160,8 @@ bool QuietCoordinatorModule::processSpeedVolume(const uint32_t nowMs, const Spee
     }
 
     if (speedVolActive_) {
-        if (committed_.mainVolume == smSettings.v1Volume && committed_.muteVolume == speedVolSavedMuteVol_) {
+        if (committed_.mainVolume == smSettings.v1Volume && committed_.muteVolume == speedVolSavedMuteVol_ &&
+            !ble_->commandInFlight(V1CommandOwner::SpeedVolume)) {
             updateSpeedVolPresentation(&speedMute);
             return true;
         }
@@ -229,6 +234,8 @@ bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs, VolumeFadeL
                                fadeCtx.currentFrequency != pendingFadeFrequency_ ||
                                fadeCtx.priorityIsLaser != pendingFadeLaser_;
     if (staleFadeDown) {
+        if (pendingFadeAction_ && ble_->commandInFlight(V1CommandOwner::VolumeFade))
+            ble_->cancelCommand(V1CommandOwner::VolumeFade);
         pendingFadeAction_ = false;
         fadeWriteRevision_ = 0;
     }
@@ -264,6 +271,7 @@ bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs, VolumeFadeL
         presentation_.activeVolumeOwner = QuietOwner::None;
     }
     if (!volumeFade->hasActiveVolumeOverride()) {
+        if (ble_->commandInFlight(V1CommandOwner::VolumeFade)) ble_->cancelCommand(V1CommandOwner::VolumeFade);
         pendingFadeAction_ = false;
         fadeWriteRevision_ = 0;
     }
@@ -282,13 +290,12 @@ bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs, VolumeFadeL
         if (!newFade && static_cast<uint32_t>(nowMs - pendingFadeLastAttemptMs_) < FADE_RETRY_INTERVAL_MS)
             return true;
         pendingFadeLastAttemptMs_ = nowMs;
-        const uint32_t ingress = ble_->latestV1NotificationIngressSequence();
         const SendResult result = sendVolumeResult(QuietOwner::VolumeFade, pendingFadeVolume_, pendingFadeMuteVolume_);
-        pendingFadeAction_ = result == SendResult::NOT_YET;
+        pendingFadeAction_ = result == SendResult::NOT_YET || result == SendResult::IN_FLIGHT;
         if (result == SendResult::SENT) {
             fadeWriteRevision_ = ble_->volumeWriteRevision();
             fadeAuthorityWriteRevision_ = fadeWriteRevision_;
-            fadeWriteIngress_ = ingress;
+            fadeWriteIngress_ = ble_->commandIngressBoundary(V1CommandOwner::VolumeFade);
         } else if (result == SendResult::FAILED) {
             fadeWriteRevision_ = 0;
         }
@@ -300,10 +307,9 @@ bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs, VolumeFadeL
         // Fade owns restore retries through canonical convergence, including
         // SENT-but-unapplied writes. Do not create a second retry clock here.
         const uint32_t session = ble_->sessionGeneration();
-        const uint32_t ingress = ble_->latestV1NotificationIngressSequence();
         if (sendVolumeResult(QuietOwner::VolumeFade, fadeAction.restoreVolume, fadeAction.restoreMuteVolume) ==
             SendResult::SENT) {
-            volumeFade->noteRestoreSent(session, ingress);
+            volumeFade->noteRestoreSent(session, ble_->commandIngressBoundary(V1CommandOwner::VolumeFade));
             fadeAuthorityWriteRevision_ = ble_->volumeWriteRevision();
         }
         return true;

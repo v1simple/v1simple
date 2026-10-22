@@ -59,6 +59,8 @@ bool V1BLEClient::isConnectBurstSettling() const {
   return connectedFollowupStep_ != ConnectedFollowupStep::NONE;
 }
 
+void V1BLEClient::beginClientQuiesce(bool) { connected_.store(false); bleState_ = BLEState::QUIESCING; sessionPublicationGate_.close(); }
+
 #include "../../src/ble_commands.cpp"
 #include "../../src/ble_proxy.cpp"
 

@@ -153,6 +153,9 @@ final class V1Peripheral: NSObject {
         /// Stress-only maximum hold after the first epoch-owned START. A second
         /// owned START releases sooner; zero preserves immediate notifications.
         var handshakeNotificationHoldMs: Int = 0
+        /// Bench fault only. Nil keeps B6D4 write-without-response. Zero enables
+        /// acknowledged writes as a healthy control; positive holds one START ACK.
+        var commandAckHoldMs: Int? = nil
         /// Proxy mode publishes the service but holds off advertising until the
         /// real V1 is connected, so v1simple cannot win the race to it.
         var deferAdvertising: Bool = false
@@ -167,6 +170,7 @@ final class V1Peripheral: NSObject {
     var onDisplayPowerCommand: ((Bool) -> Void)?
     var onNotificationEvent: ((ReplayNotificationEvent) -> Void)?
     var onPersistentStateChange: ((V1.Session.PersistentState) -> Void)?
+    var onCommandAckFaultEvent: ((ReplayCommandAckFaultEvent) -> Void)?
 
     /// Proxy hook. Receives every inbound write before it is parsed, with the
     /// characteristic it arrived on preserved. Returning true suppresses the
@@ -285,10 +289,13 @@ final class V1Peripheral: NSObject {
     private var advertisingStarting = false
     private var isStopping = false
     private var handshakeNotificationHold: HandshakeNotificationHoldState
+    private var commandAckFaultConsumed = false
+    private var heldCommandAck: CBATTRequest?
 
     init(config: Config,
          onNotificationEvent: ((ReplayNotificationEvent) -> Void)? = nil) {
         self.config = config
+        precondition(config.commandAckHoldMs.map { (0...10_000).contains($0) } ?? true)
         self.advertisingRequested = !config.deferAdvertising
         self.handshakeNotificationHold = HandshakeNotificationHoldState(
             delayMilliseconds: config.handshakeNotificationHoldMs
@@ -516,7 +523,42 @@ final class V1Peripheral: NSObject {
     private func endHandshakeEpoch() {
         handshakeSubscriberID = nil
         handshakeNotificationHold.endEpoch()
+        if let request = heldCommandAck {
+            heldCommandAck = nil
+            emitCommandAckFault(.cancelled, request: request)
+        }
         discardPendingHandshakeClear()
+    }
+
+    private func emitCommandAckFault(_ state: ReplayCommandAckFaultEvent.State,
+                                     request: CBATTRequest) {
+        onCommandAckFaultEvent?(ReplayCommandAckFaultEvent(
+            state: state,
+            characteristic: Self.shortName(request.characteristic.uuid),
+            holdMilliseconds: config.commandAckHoldMs ?? 0,
+            hostMonotonicNs: hostMonotonicNanoseconds()
+        ))
+    }
+
+    private func respondToCommand(_ request: CBATTRequest, acceptedOwnedStart: Bool) {
+        guard let delay = config.commandAckHoldMs, delay > 0,
+              acceptedOwnedStart, !commandAckFaultConsumed,
+              Self.handshakeOwnerMatches(subscriber: handshakeSubscriberID,
+                                         writer: request.central.identifier) else {
+            manager.respond(to: request, withResult: .success)
+            return
+        }
+        commandAckFaultConsumed = true
+        heldCommandAck = request
+        emitCommandAckFault(.held, request: request)
+        // Do not block the peripheral queue: notifications and replies continue.
+        // Epoch end/stop cancels this exact request; reconnect is the healthy control.
+        queue.asyncAfter(deadline: .now() + .milliseconds(delay)) { [weak self] in
+            guard let self, self.heldCommandAck === request else { return }
+            self.heldCommandAck = nil
+            self.manager.respond(to: request, withResult: .success)
+            self.emitCommandAckFault(.released, request: request)
+        }
     }
 
     /// Clear every value owned by one CoreBluetooth transport lifetime. This
@@ -607,7 +649,7 @@ final class V1Peripheral: NSObject {
 
         commandChar = CBMutableCharacteristic(
             type: CBUUID(string: V1.commandUUID),
-            properties: [.writeWithoutResponse],
+            properties: config.commandAckHoldMs == nil ? [.writeWithoutResponse] : [.write],
             value: nil,
             permissions: [.writeable]
         )
@@ -982,6 +1024,7 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
             }
         }
 
+        var acceptedOwnedStart = false
         for request in requests {
             guard let value = request.value else { continue }
             let belongsToHandshakeSubscriber = Self.handshakeOwnerMatches(
@@ -995,6 +1038,19 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
             }
             withState { $0.session.append([UInt8](value)) }
             while let outcome = withState({ $0.session.nextOutcome() }) {
+                // Match a parsed canonical START, not a byte appearing inside an
+                // unrelated/invalid write. Only the active short subscriber owns it.
+                if belongsToHandshakeSubscriber,
+                   request.characteristic.uuid == CBUUID(string: V1.commandUUID),
+                   requests.first?.central.identifier == request.central.identifier,
+                   requests.first?.characteristic.uuid == request.characteristic.uuid,
+                   outcome.packet.id == V1.PacketID.reqStartAlertData.rawValue,
+                   outcome.effects.contains(where: {
+                       if case .alertDataChanged(true) = $0 { return true }
+                       return false
+                   }) {
+                    acceptedOwnedStart = true
+                }
                 handle(
                     outcome,
                     belongsToHandshakeSubscriber: belongsToHandshakeSubscriber
@@ -1004,7 +1060,7 @@ extension V1Peripheral: CBPeripheralManagerDelegate {
         onStateChange?()
 
         if let first = requests.first {
-            peripheral.respond(to: first, withResult: .success)
+            respondToCommand(first, acceptedOwnedStart: acceptedOwnedStart)
         }
     }
 }

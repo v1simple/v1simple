@@ -3214,6 +3214,168 @@ void test_basic_read_retries_resample_ingress_and_accept_in_send_replies() {
     }
 }
 
+// The real queue/parser continue to run while the transport owns an ACK wait.
+// These fixtures isolate the caller contract; the BLE transport suite supplies
+// the actual worker, delayed write, cancellation and session-lifetime checks.
+void test_in_flight_basic_apply_waits_for_ack_before_advancing() {
+    for (const auto phase : kBasicSendPhases) {
+        setUp();
+        const unsigned long first = prepareBasicSendPhase(phase);
+        setBasicSendResult(phase, SendResult::IN_FLIGHT);
+        at(first);
+        TEST_ASSERT_TRUE(module.isActive());
+        TEST_ASSERT_TRUE(ble.commandInFlight(V1CommandOwner::AutoPush));
+        TEST_ASSERT_EQUAL_INT(V1CommandOwner::AutoPush, ble.lastCommandOwner);
+        TEST_ASSERT_FALSE(ble.consumeVerifyPushMatchEdge());
+        setBasicSendResult(phase, SendResult::IN_FLIGHT);
+        at(first + 100);
+        TEST_ASSERT_TRUE(module.isActive());
+        at(first + 105); // ACK completion, rather than a new write.
+        finishBasicSendPhase(phase, first + 105);
+        TEST_ASSERT_FALSE(module.isActive());
+        TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    }
+}
+
+void test_in_flight_focused_reads_keep_replies_parsed_before_ack() {
+    for (const auto phase : {BasicSendPhase::UserRead, BasicSendPhase::VolumeRead}) {
+        setUp();
+        const unsigned long first = prepareBasicSendPhase(phase);
+        TEST_ASSERT_TRUE(protocolQueue.begin(&ble, &parser, &profiles, nullptr, nullptr));
+        protocolQueue.openSession(ble.sessionGeneration());
+        setBasicSendResult(phase, SendResult::IN_FLIGHT);
+        at(first);
+        if (phase == BasicSendPhase::UserRead)
+            deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_USER_BYTES,
+                                  std::vector<uint8_t>(ble.lastUserBytes, ble.lastUserBytes + 6)));
+        else
+            deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_ALL_VOLUME, {7, 3, 4, 1}));
+        setBasicSendResult(phase, SendResult::IN_FLIGHT);
+        at(first + 100); // Parsing the response cannot bypass the pending ACK.
+        TEST_ASSERT_TRUE(module.isActive());
+        TEST_ASSERT_FALSE(ble.consumeVerifyPushMatchEdge());
+        at(first + 105);
+        at(first + 105);
+        TEST_ASSERT_FALSE(module.isActive());
+        TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    }
+}
+
+void test_in_flight_focused_reads_reject_pre_worker_response() {
+    for (const auto phase : {BasicSendPhase::UserRead, BasicSendPhase::VolumeRead}) {
+        setUp();
+        const unsigned long first = prepareBasicSendPhase(phase);
+        setBasicSendResult(phase, SendResult::IN_FLIGHT);
+        at(first);
+        // A response from an earlier request arrives after task admission but
+        // before the worker actually starts this write.
+        if (phase == BasicSendPhase::UserRead) observeUserBytes(ble.lastUserBytes);
+        else observeAllVolume(7, 3, 4, 1);
+        ble.commandBoundaryValue = ble.latestV1NotificationIngressSequence();
+        at(first + 5);
+        at(first + 5);
+        TEST_ASSERT_TRUE(module.isActive());
+        if (phase == BasicSendPhase::UserRead) observeUserBytes(ble.lastUserBytes);
+        else observeAllVolume(7, 3, 4, 1);
+        at(first + 15);
+        TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+    }
+}
+
+void test_in_flight_apply_cancel_retires_owned_command() {
+    for (const auto phase : kBasicSendPhases) {
+        setUp();
+        const unsigned long first = prepareBasicSendPhase(phase);
+        setBasicSendResult(phase, SendResult::IN_FLIGHT);
+        at(first);
+        TEST_ASSERT_TRUE(ble.commandInFlight(V1CommandOwner::AutoPush));
+        module.cancelForTimeout();
+        TEST_ASSERT_FALSE(module.isActive());
+        TEST_ASSERT_FALSE(ble.commandInFlight(V1CommandOwner::AutoPush));
+        TEST_ASSERT_EQUAL_INT(V1CommandOwner::AutoPush, ble.lastCancelledCommandOwner);
+        TEST_ASSERT_FALSE(ble.consumeVerifyPushMatchEdge());
+    }
+}
+
+void test_in_flight_custom_commit_and_readback_keep_early_replies() {
+    configureCustomOnly({{0, 24200, 24300}, {1, 0, 0}, {2, 34500, 34600}, {3, 0, 0}});
+    auto snapshot = makeSnapshot();
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    TEST_ASSERT_TRUE(protocolQueue.begin(&ble, &parser, &profiles, nullptr, nullptr));
+    protocolQueue.openSession(ble.sessionGeneration());
+    queueAndPreflight();
+    at(100);
+    ble.writeSweepDefinitionResult = SendResult::IN_FLIGHT;
+    at(105);
+    deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_WRITE_RESULT, {0}));
+    at(110);
+    TEST_ASSERT_TRUE(statusContains("\"step\":\"CustomWrite\""));
+    ble.writeSweepDefinitionResult = SendResult::SENT;
+    at(115);
+    at(115);
+    TEST_ASSERT_TRUE(statusContains("\"step\":\"CustomRead\""));
+    ble.nextRequestAllSweepDefinitionsResult = SendResult::IN_FLIGHT;
+    at(145);
+    deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x80, 0x5E, 0xF1, 0x5E, 0x83}));
+    deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x81, 0, 0, 0, 0}));
+    deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x82, 0x87, 0x2D, 0x86, 0xBF}));
+    deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x83, 0, 0, 0, 0}));
+    at(150);
+    TEST_ASSERT_TRUE(statusContains("\"step\":\"CustomRead\""));
+    TEST_ASSERT_FALSE(parser.sweepDefinitionsObservation().poisoned);
+    ble.nextRequestAllSweepDefinitionsResult = SendResult::SENT;
+    at(155);
+    at(155);
+    TEST_ASSERT_TRUE(statusContains("\"result\":\"succeeded\""));
+}
+
+void test_in_flight_region_refresh_keeps_each_early_capture() {
+    const std::array<uint8_t, 6> before{{0xFF, 0xF7, 0xFF, 0xFF, 0xA4, 0x5A}};
+    configureProfile({{0xFF, 0xF6, 0xFF, 0xFF, 0xFF, 0xFF}});
+    auto& detector = profiles.loadableProfile.detector;
+    detector.displayPolicy = V1DisplayPolicy::Unchanged;
+    detector.modePolicy = V1ModePolicy::Unchanged;
+    detector.volumePolicy = V1VolumePolicy::Unchanged;
+    detector.customFrequencyPolicy = V1CustomFrequencyPolicy::Value;
+    TEST_ASSERT_TRUE(detector.customFrequencyDefinitions.assign(
+        std::array<V1CustomFrequencyDefinition, 2>{{{0, 24200, 24300}, {1, 34500, 34600}}}));
+    auto snapshot = makeSnapshot(41039, before);
+    addSweepSnapshot(snapshot);
+    stageSnapshot(snapshot);
+    TEST_ASSERT_TRUE(protocolQueue.begin(&ble, &parser, &profiles, nullptr, nullptr));
+    protocolQueue.openSession(ble.sessionGeneration());
+    queueAndPreflight();
+    verifyUserBytes();
+    SendResult* results[] = {&ble.nextRequestSweepSectionsResult, &ble.nextRequestMaxSweepIndexResult,
+                            &ble.nextRequestAllSweepDefinitionsResult};
+    const std::vector<uint8_t> replies[] = {
+        makeV1Packet(PACKET_ID_RESP_SWEEP_SECTIONS,
+                     {0x12, 0x61, 0xA8, 0x5D, 0x5C, 0x22, 0x90, 0x88, 0x80, 0xE8}),
+        makeV1Packet(PACKET_ID_RESP_MAX_SWEEP_INDEX, {3}),
+        makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x80, 0x5E, 0x56, 0x5D, 0xF2}),
+    };
+    for (size_t step = 0; step < 3; ++step) {
+        const unsigned long first = 160 + step * 40;
+        *results[step] = SendResult::IN_FLIGHT;
+        at(first);
+        deliverProtocolReply(replies[step]);
+        if (step == 2) {
+            deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x81, 0, 0, 0, 0}));
+            deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x82, 0x85, 0x98, 0x85, 0x34}));
+            deliverProtocolReply(makeV1Packet(PACKET_ID_RESP_SWEEP_DEFINITION, {0x83, 0, 0, 0, 0}));
+        }
+        at(first + 5);
+        TEST_ASSERT_TRUE(module.isActive());
+        TEST_ASSERT_EQUAL_INT(0, ble.writeSweepDefinitionCalls);
+        *results[step] = SendResult::SENT;
+        at(first + 10);
+    }
+    at(250);
+    TEST_ASSERT_TRUE(statusContains("\"step\":\"CustomWrite\""));
+    TEST_ASSERT_FALSE(parser.sweepDefinitionsObservation().poisoned);
+}
+
 void test_later_send_deferral_timeout_preserves_earlier_verified_component() {
     configureProfile();
     profiles.loadableProfile.detector.displayPolicy = V1DisplayPolicy::Unchanged;
@@ -3845,6 +4007,12 @@ int main() {
     RUN_TEST(test_basic_apply_phases_bound_persistent_deferral_and_release_ownership);
     RUN_TEST(test_basic_apply_phases_do_not_retry_hard_failures);
     RUN_TEST(test_basic_read_retries_resample_ingress_and_accept_in_send_replies);
+    RUN_TEST(test_in_flight_basic_apply_waits_for_ack_before_advancing);
+    RUN_TEST(test_in_flight_focused_reads_keep_replies_parsed_before_ack);
+    RUN_TEST(test_in_flight_focused_reads_reject_pre_worker_response);
+    RUN_TEST(test_in_flight_apply_cancel_retires_owned_command);
+    RUN_TEST(test_in_flight_custom_commit_and_readback_keep_early_replies);
+    RUN_TEST(test_in_flight_region_refresh_keeps_each_early_capture);
     RUN_TEST(test_later_send_deferral_timeout_preserves_earlier_verified_component);
     RUN_TEST(test_unsent_apply_volume_never_becomes_later_speed_restore_baseline);
     RUN_TEST(test_speed_activation_waits_for_deferred_apply_and_uses_its_final_baseline);

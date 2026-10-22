@@ -213,10 +213,14 @@ bool ConnectionStateModule::process(unsigned long nowMs) {
         const bool alertStartMissing = ble_->needsAlertDataStartRecovery();
         bool canRequest = (nowMs - lastDataRequestMs_) > DATA_REQUEST_INTERVAL_MS;
 
-        if ((dataStale || alertStartMissing) && canRequest) {
+        if (ble_->commandInFlight(V1CommandOwner::AlertStreamRecovery) ||
+            ((dataStale || alertStartMissing) && canRequest)) {
+            V1BLEClient::CommandScope commandScope(*ble_, V1CommandOwner::AlertStreamRecovery);
             ble_->requestAlertData();
             lastDataRequestMs_ = nowMs;
         }
+    } else if (ble_->commandInFlight(V1CommandOwner::AlertStreamRecovery)) {
+        ble_->cancelCommand(V1CommandOwner::AlertStreamRecovery);
     }
 
     // When disconnected, refresh indicators in the canvas.

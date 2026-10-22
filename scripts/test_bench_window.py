@@ -295,6 +295,7 @@ def capture_replay_command(
     junk_qualification: bool = False,
     profile_controls_qualification: bool = False,
     quiet_after_complete: bool = False,
+    command_ack_hold_ms: int | None = None,
 ) -> list[str]:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -331,6 +332,7 @@ def capture_replay_command(
             junk_qualification=junk_qualification,
             profile_controls_qualification=profile_controls_qualification,
             quiet_after_complete=quiet_after_complete,
+            command_ack_hold_ms=command_ack_hold_ms,
         )
         try:
             emulator.start()
@@ -353,6 +355,7 @@ def test_replay_process_requests_raw_machine_and_scenario_evidence() -> None:
         command = capture_replay_command(scenario)
         assert_true(("--scenario" in command) is bool(scenario), str(command))
         assert_true("--profile-controls-qualification" not in command, str(command))
+        assert_true("--command-ack-hold-ms" not in command, str(command))
     ku_command = capture_replay_command("", ku_qualification=True)
     assert_true("--ku-qualification" in ku_command, str(ku_command))
     photo_command = capture_replay_command("", photo_label_qualification=True)
@@ -365,6 +368,9 @@ def test_replay_process_requests_raw_machine_and_scenario_evidence() -> None:
     assert_true("--log-packets" in profile_controls_command, str(profile_controls_command))
     quiet_command = capture_replay_command("", quiet_after_complete=True)
     assert_true("--quiet-after-complete" in quiet_command, str(quiet_command))
+    for hold in (0, 7000):
+        command = capture_replay_command("", command_ack_hold_ms=hold)
+        assert_true(command[command.index("--command-ack-hold-ms") + 1] == str(hold), str(command))
 
 
 def test_profile_controls_qualification_arguments_are_replay_only_and_exclusive() -> None:
@@ -394,6 +400,22 @@ def test_profile_controls_qualification_arguments_are_replay_only_and_exclusive(
             status = run_window_module.main()
             payload = json.loads((Path(tmp) / "window_result.json").read_text())
             assert_true(status == 3 and payload["error"] == expected_error, str(payload))
+            collect.assert_not_called()
+
+
+def test_command_ack_fault_rejects_invalid_or_non_replay_use_before_collection() -> None:
+    for suite, hold in (("core", "7000"), ("display", "0"), ("replay", "-1"), ("replay", "10001")):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(sys, "argv", [
+                    "run_window.py", "--suite", suite, "--out-dir", tmp,
+                    "--command-ack-hold-ms", hold,
+                ]), \
+                mock.patch.object(run_window_module, "install_signal_handlers"), \
+                mock.patch.object(run_window_module, "collect_live") as collect:
+            status = run_window_module.main()
+            payload = json.loads((Path(tmp) / "window_result.json").read_text())
+            assert_true(status == 3 and "--command-ack-hold-ms requires replay" in payload["error"],
+                        str(payload))
             collect.assert_not_called()
 
 
@@ -1618,6 +1640,7 @@ def main() -> int:
     test_timeline_keeps_ordered_external_events_and_scrubs_private_paths()
     test_replay_process_requests_raw_machine_and_scenario_evidence()
     test_profile_controls_qualification_arguments_are_replay_only_and_exclusive()
+    test_command_ack_fault_rejects_invalid_or_non_replay_use_before_collection()
     test_replay_transport_must_be_active_before_the_external_window()
     test_requested_dropped_complete_stopped_preserves_raw_delivery()
     test_emulator_cleanup_before_start_preserves_primary_failure()

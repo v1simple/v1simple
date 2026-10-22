@@ -436,6 +436,10 @@ void V1BLEClient::beginClientQuiesce(bool requestHardReset) {
 void V1BLEClient::cleanupConnection() {
     // Called only after the attribute worker exits and the link disconnect callback
     // completes. Attribute pointers remain main-loop-owned.
+    commandActive_ = false;
+    commandTaskContext_ = {};
+    commandCompletedIngress_.fill(0);
+    commandLastSentMs_ = 0;
     pDisplayDataChar_ = nullptr;
     pCommandChar_ = nullptr;
     pCommandCharLong_ = nullptr;

@@ -759,6 +759,7 @@ bool V1BLEClient::enqueuePhoneCommandForEpoch(const uint8_t* data, size_t length
 }
 
 int V1BLEClient::processPhoneCommandQueue() {
+    CommandScope commandScope(*this, V1CommandOwner::PhoneProxy);
     if (proxyQueueReleasePending_.load(std::memory_order_acquire) || !connected_.load(std::memory_order_relaxed)) {
         return 0;
     }
@@ -773,6 +774,7 @@ int V1BLEClient::processPhoneCommandQueue() {
     if (phoneCmdPendingClear_.exchange(false, std::memory_order_acq_rel) ||
         (hasPending && (!sessionPublicationGate_.accepts(pendingPkt.sessionGeneration) ||
                         !acceptsPhoneSession(pendingPkt.phoneSessionGeneration)))) {
+        cancelCommand(V1CommandOwner::PhoneProxy);
         hasPending = false;
         pendingPkt.length = 0;
         phoneLongCommandOwner_ = {};
@@ -915,7 +917,7 @@ int V1BLEClient::processPhoneCommandQueue() {
     // Send outside queue lock - BLE write can take time
     // HOT PATH: try-lock only, skip if busy
     SendResult result = SendResult::FAILED;
-    if (heldOff) {
+    if (heldOff && !commandInFlight(V1CommandOwner::PhoneProxy)) {
         result = SendResult::NOT_YET;
     } else if (bleNotifyMutex_) {
         SemaphoreGuard lock(bleNotifyMutex_, 0);
@@ -934,43 +936,19 @@ int V1BLEClient::processPhoneCommandQueue() {
             hasPending = false;
             return 0;
         }
-        // Snapshot pointer under lock to prevent TOCTOU race with cleanupConnection()
-        NimBLERemoteCharacteristic* pCommandCharLongSnapshot = pCommandCharLong_;
-
-        if (charUUID == V1_SHORT_UUID_COMMAND_LONG && pCommandCharLongSnapshot) {
-            // Long characteristic write - same transient failure semantics as sendCommand
-            if (pCommandCharLongSnapshot->writeValue(pktCopy.data, pktCopy.length, false)) {
-                result = SendResult::SENT;
-            } else {
-                result = SendResult::NOT_YET; // Transient - retry
-            }
-        } else {
-            result = sendCommandWithResult(pktCopy.data, pktCopy.length);
-        }
+        NimBLERemoteCharacteristic* characteristic =
+            charUUID == V1_SHORT_UUID_COMMAND_LONG && pCommandCharLong_ ? pCommandCharLong_ : pCommandChar_;
+        const bool response = characteristic && characteristic == pCommandChar_ && characteristic->canWrite();
+        result = sendCharacteristicCommand(characteristic, pktCopy.data, pktCopy.length, response,
+                                           pktCopy.phoneSessionGeneration);
     } else {
-        // Snapshot pointer under bleMutex_ to prevent TOCTOU race with cleanupConnection()
-        NimBLERemoteCharacteristic* pCommandCharLongSnapshot = nullptr;
-        {
-            SemaphoreGuard lock(bleMutex_, 0);
-            if (lock.locked()) {
-                pCommandCharLongSnapshot = pCommandCharLong_;
-            }
-        }
-
-        if (!sessionPublicationGate_.accepts(pktCopy.sessionGeneration) ||
-            !acceptsPhoneSession(pktCopy.phoneSessionGeneration)) {
-            hasPending = false;
-            return 0;
-        }
-        if (charUUID == V1_SHORT_UUID_COMMAND_LONG && pCommandCharLongSnapshot) {
-            if (pCommandCharLongSnapshot->writeValue(pktCopy.data, pktCopy.length, false)) {
-                result = SendResult::SENT;
-            } else {
-                result = SendResult::NOT_YET; // Transient - retry
-            }
-        } else {
-            result = sendCommandWithResult(pktCopy.data, pktCopy.length);
-        }
+        // Handles are main-loop-owned. The shared worker gate pins them until
+        // completion, including raw B8D2 frames larger than MTU - 3.
+        NimBLERemoteCharacteristic* characteristic =
+            charUUID == V1_SHORT_UUID_COMMAND_LONG && pCommandCharLong_ ? pCommandCharLong_ : pCommandChar_;
+        const bool response = characteristic && characteristic == pCommandChar_ && characteristic->canWrite();
+        result = sendCharacteristicCommand(characteristic, pktCopy.data, pktCopy.length, response,
+                                           pktCopy.phoneSessionGeneration);
     }
 
     switch (result) {
@@ -1004,12 +982,12 @@ int V1BLEClient::processPhoneCommandQueue() {
             if (pktCopy.data[3] == 0x42)
                 alertDataRequestGate_.recordStop(pktCopy.sessionGeneration, pktCopy.phoneSessionGeneration,
                                                  ingressBoundary);
-            else if (pktCopy.data[3] == PACKET_ID_REQ_START_ALERT)
-                alertDataRequestGate_.recordSuccessfulSend(pktCopy.sessionGeneration, static_cast<uint32_t>(millis()));
+            // Raw START success/rejection is published by the command transport.
         }
         hasPending = false;
         return 1;
     }
+    case SendResult::IN_FLIGHT:
     case SendResult::NOT_YET:
         memcpy(pendingPkt.data, pktCopy.data, pktCopy.length);
         pendingPkt.length = pktCopy.length;

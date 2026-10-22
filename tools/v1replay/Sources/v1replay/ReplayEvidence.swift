@@ -42,6 +42,23 @@ struct ReplayMuteCommandEvent: Encodable, Equatable {
     var machineEventLine: String { encodedMachineEventLine(self) }
 }
 
+/// Controlled ATT-response fault. No central identifiers are recorded.
+struct ReplayCommandAckFaultEvent: Encodable, Equatable {
+    enum State: String, Encodable {
+        case held = "command_ack_held"
+        case released = "command_ack_released"
+        case cancelled = "command_ack_cancelled"
+    }
+    let state: State
+    let schemaVersion = 1
+    let commandID: UInt8 = 0x41
+    let characteristic: String
+    let holdMilliseconds: Int
+    let hostMonotonicNs: UInt64
+
+    var machineEventLine: String { encodedMachineEventLine(self) }
+}
+
 /// Stable identity assigned when one notification is appended to the
 /// CoreBluetooth queue. A repeated payload receives a different global sequence.
 struct ReplayNotificationIdentity: Equatable {

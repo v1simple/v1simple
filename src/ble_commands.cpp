@@ -5,6 +5,7 @@
 #include "v1_firmware_compat.h"
 #include <atomic>
 #include <cstring>
+#include <esp_heap_caps.h>
 
 
 static inline uint8_t calcV1Checksum(const uint8_t* data, size_t len) {
@@ -28,60 +29,147 @@ bool V1BLEClient::localV1WriteSuppressedByProxy(const char* operation) const {
     return true;
 }
 
-SendResult V1BLEClient::sendCommandWithResult(const uint8_t* data, size_t length) {
-    // Remote handles are main-loop-owned and remain stable for the connected
-    // session. Keep one local snapshot so every capability check and write is
-    // performed on the same object.
-    NimBLERemoteCharacteristic* const commandChar = pCommandChar_;
+void V1BLEClient::commandTaskFunc(void* param) {
+    const CommandTaskContext context = *static_cast<CommandTaskContext*>(param);
+    V1BLEClient* self = context.owner;
+    const bool accepted = self->acceptClientCallbacks_.load(std::memory_order_acquire) &&
+        self->sessionGeneration_.load(std::memory_order_acquire) == context.generation &&
+        self->sessionPublicationGate_.accepts(context.generation) &&
+        (context.phoneGeneration == 0 || self->acceptsPhoneSession(context.phoneGeneration));
+    bool result = false;
+    if (accepted && context.characteristic) {
+        self->commandWorkerIngress_.store(self->latestV1NotificationIngressSequence(), std::memory_order_relaxed);
+        self->commandWorkerStarted_.store(true, std::memory_order_release);
+        result = context.characteristic->writeValue(context.data, context.length, context.response);
+    }
+    self->commandWorkerResult_.store(result, std::memory_order_relaxed);
+    self->discoveryTaskRunning_.store(false, std::memory_order_release);
+    // The same gate as discovery/subscription pins the client and attributes.
+    // No owner/context access after releasing it.
+    vTaskDeleteWithCaps(nullptr);
+}
 
-    if (!isConnected() || !commandChar) {
-        return SendResult::FAILED;
-    }
-    if (!data || length == 0 || length > 64) {
-        return SendResult::FAILED;
-    }
-    if (isV1WriteHeldOff(data, length)) {
-        return SendResult::NOT_YET;
-    }
+void V1BLEClient::cancelCommand(V1CommandOwner owner) {
+    if (commandInFlight(owner) && bleState_ != BLEState::QUIESCING) beginClientQuiesce();
+}
 
-    // Five-millisecond non-blocking gate; the caller retains NOT_YET packets.
-    static std::atomic<uint32_t> lastCommandMs{0};
-    uint32_t nowMs = millis();
-    uint32_t last = lastCommandMs.load(std::memory_order_relaxed);
-    if (last != 0 && nowMs - last < 5) {
-        return SendResult::NOT_YET;
+void V1BLEClient::serviceCommandWrite() {
+    if (!commandActive_ || bleState_ == BLEState::QUIESCING) return;
+    const auto& context = commandTaskContext_;
+    const bool stale = !sessionPublicationGate_.accepts(context.generation) ||
+        (context.phoneGeneration != 0 && !acceptsPhoneSession(context.phoneGeneration));
+    const bool running = discoveryTaskRunning_.load(std::memory_order_acquire);
+    const bool timedOut = static_cast<uint32_t>(millis() - commandStartedMs_) >= COMMAND_WRITE_TIMEOUT_MS;
+    if (stale || timedOut || (!running && !commandWorkerResult_.load(std::memory_order_relaxed))) {
+        Serial.printf("[BLE] Command %s id=%02X; retiring session\n", timedOut ? "timeout" : "failed",
+                      context.length > 3 ? context.data[3] : 0);
+        beginClientQuiesce();
     }
-    lastCommandMs.store(nowMs, std::memory_order_relaxed);
+}
 
-    const uint32_t sentSession = sessionGeneration();
-    const uint32_t ingressBoundary = latestV1NotificationIngressSequence();
-    bool ok = false;
-    if (commandChar->canWrite()) {
-        ok = commandChar->writeValue(data, length, true);
-    } else if (commandChar->canWriteNoResponse()) {
-        ok = commandChar->writeValue(data, length, false);
-    } else {
-        return SendResult::FAILED; // Characteristic doesn't support write
+void V1BLEClient::promoteCommandCaptureBoundary(uint8_t requestId, uint32_t boundary) {
+    switch (requestId) {
+    case PACKET_ID_REQ_USER_BYTES: sessionUserBytesIngressBoundary_ = boundary; break;
+    case PACKET_ID_REQ_ALL_VOLUME: sessionAllVolumeIngressBoundary_ = boundary; break;
+    case PACKET_ID_REQ_SWEEP_SECTIONS: sessionSweepSectionsIngressBoundary_ = boundary; break;
+    case PACKET_ID_REQ_MAX_SWEEP_INDEX: sessionSweepMaxIngressBoundary_ = boundary; break;
+    case PACKET_ID_REQ_ALL_SWEEP_DEFINITIONS: sessionSweepDefinitionsIngressBoundary_ = boundary; break;
+    default: break;
     }
+}
 
-    if (!ok) {
-        // A post-check write failure may be transient; the next retry rechecks connection state.
-        return SendResult::NOT_YET;
-    }
-    // Only complete, canonical commands can change these protocol owners.
-    // This includes legitimate phone writes forwarded through the same path.
+void V1BLEClient::publishCommandSuccess(const uint8_t* data, size_t length, uint32_t sentSession,
+                                       uint32_t ingressBoundary, uint32_t rejectedIngress) {
     const bool canonical = length >= 7 && data[0] == ESP_PACKET_START && data[1] == 0xDA &&
                            data[2] == 0xE6 && data[4] + 6u == length &&
                            data[length - 1] == ESP_PACKET_END &&
                            data[length - 2] == calcV1Checksum(data, length - 2);
     if (canonical && length == 7) {
         if (data[3] == 0x42) alertDataRequestGate_.recordStop(sentSession);
-        else if (data[3] == PACKET_ID_REQ_START_ALERT)
+        else if (data[3] == PACKET_ID_REQ_START_ALERT && rejectedIngress == 0)
             alertDataRequestGate_.recordSuccessfulSend(sentSession, static_cast<uint32_t>(millis()));
     }
-    if (canonical && length == 10 && data[3] == PACKET_ID_REQ_WRITE_VOLUME)
+    if (canonical && length == 10 && data[3] == PACKET_ID_REQ_WRITE_VOLUME) {
         volumeWriteReceipt_.sent(sentSession, ingressBoundary);
-    return SendResult::SENT;
+        if (rejectedIngress) volumeWriteReceipt_.reject(data[3], sentSession, rejectedIngress);
+    }
+}
+
+SendResult V1BLEClient::sendCharacteristicCommand(NimBLERemoteCharacteristic* characteristic,
+    const uint8_t* data, size_t length, bool response, uint32_t phoneGeneration) {
+    if (!data || length == 0 || length > sizeof(commandTaskContext_.data)) return SendResult::FAILED;
+    serviceCommandWrite();
+    if (!isConnected() || !characteristic || bleState_ == BLEState::QUIESCING) return SendResult::FAILED;
+    if (commandActive_) {
+        const auto& context = commandTaskContext_;
+        if (context.commandOwner != commandOwner_) return SendResult::NOT_YET;
+        if (context.characteristic != characteristic || context.length != length || context.response != response ||
+            context.phoneGeneration != phoneGeneration || memcmp(context.data, data, length) != 0) {
+            // A changed intent cannot leave the previous write queued for later.
+            cancelCommand(commandOwner_);
+            return SendResult::FAILED;
+        }
+        if (discoveryTaskRunning_.load(std::memory_order_acquire)) return SendResult::IN_FLIGHT;
+        const uint32_t boundary = commandWorkerIngress_.load(std::memory_order_relaxed);
+        commandCompletedIngress_[static_cast<size_t>(commandOwner_)] = boundary;
+        if (length > 3) promoteCommandCaptureBoundary(data[3], boundary);
+        publishCommandSuccess(data, length, context.generation, boundary, commandRejectionIngress_);
+        commandActive_ = false;
+        return SendResult::SENT;
+    }
+    if (discoveryTaskRunning_.load(std::memory_order_acquire))
+        return SendResult::NOT_YET;
+    const uint32_t now = static_cast<uint32_t>(millis());
+    // Preserve the long-channel queue's existing contiguous chunk delivery.
+    // Only the short command channel has the five-millisecond pacing gate.
+    const bool paced = characteristic != pCommandCharLong_;
+    if (paced && commandLastSentMs_ != 0 && now - commandLastSentMs_ < 5) return SendResult::NOT_YET;
+    if (paced) commandLastSentMs_ = now;
+    const uint32_t generation = sessionGeneration();
+    // NimBLE promotes oversized no-response writes to acknowledged long writes.
+    // Only a single ATT write command is safe on the shared loop.
+    const uint16_t mtu = pClient_ ? pClient_->getMTU() : 23;
+    if (!response && length <= static_cast<size_t>(mtu >= 3 ? mtu - 3 : 0)) {
+        const uint32_t boundary = latestV1NotificationIngressSequence();
+        if (!characteristic->writeValue(data, length, false)) return SendResult::NOT_YET;
+        if (!sessionPublicationGate_.accepts(generation)) return SendResult::FAILED;
+        // A synchronous write already reached this V1 session. The phone queue
+        // binds STOP ownership to its captured sender, so a phone replacement
+        // cannot inherit it and recovery still observes the delivered STOP.
+        commandCompletedIngress_[static_cast<size_t>(commandOwner_)] = boundary;
+        publishCommandSuccess(data, length, generation, boundary);
+        return SendResult::SENT;
+    }
+    commandTaskContext_ = {};
+    commandTaskContext_.owner = this;
+    commandTaskContext_.characteristic = characteristic;
+    commandTaskContext_.generation = generation;
+    commandTaskContext_.phoneGeneration = phoneGeneration;
+    commandTaskContext_.commandOwner = commandOwner_;
+    commandTaskContext_.length = length;
+    commandTaskContext_.response = response;
+    memcpy(commandTaskContext_.data, data, length);
+    commandStartedMs_ = now;
+    commandRejectionIngress_ = 0;
+    commandWorkerStarted_.store(false, std::memory_order_relaxed);
+    commandWorkerResult_.store(false, std::memory_order_relaxed);
+    commandActive_ = true;
+    discoveryTaskRunning_.store(true, std::memory_order_release);
+    if (xTaskCreatePinnedToCoreWithCaps(commandTaskFunc, "cmd", 4096, &commandTaskContext_, 1,
+                                     nullptr, tskNO_AFFINITY, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL) != pdPASS) {
+        discoveryTaskRunning_.store(false, std::memory_order_release);
+        commandActive_ = false;
+        return SendResult::FAILED;
+    }
+    return SendResult::IN_FLIGHT;
+}
+
+SendResult V1BLEClient::sendCommandWithResult(const uint8_t* data, size_t length) {
+    NimBLERemoteCharacteristic* const characteristic = pCommandChar_;
+    if (!characteristic || (!characteristic->canWrite() && !characteristic->canWriteNoResponse()))
+        return SendResult::FAILED;
+    if (!commandInFlight(commandOwner_) && isV1WriteHeldOff(data, length)) return SendResult::NOT_YET;
+    return sendCharacteristicCommand(characteristic, data, length, characteristic->canWrite());
 }
 
 
@@ -108,12 +196,7 @@ bool V1BLEClient::requestAlertData() {
 
     packet[5] = calcV1Checksum(packet, 5);
 
-    const bool sent = sendCommand(packet, sizeof(packet));
-    if (sent) {
-        // Measure the retry interval from a successful transmission.
-        alertDataRequestGate_.recordSuccessfulSend(requestGeneration, static_cast<uint32_t>(millis()));
-    }
-    return sent;
+    return sendCommand(packet, sizeof(packet));
 }
 
 void V1BLEClient::onV1FirmwareVersionReceived(uint32_t version) {
@@ -485,7 +568,7 @@ void V1BLEClient::publishVerifiedSettingsApplyEdge(uint32_t verifiedSessionGener
 
 void V1BLEClient::onUserBytesReceived(const uint8_t* bytes, uint32_t ingressSequence) {
     const bool sessionEligible = sessionUserBytesCaptureArmed_ && ingressSequence != 0 &&
-                                 static_cast<int32_t>(ingressSequence - sessionUserBytesIngressBoundary_) > 0;
+                                 commandResponseEligible(PACKET_ID_REQ_USER_BYTES, ingressSequence, sessionUserBytesIngressBoundary_);
     if (bytes && sessionEligible) {
         memcpy(sessionUserBytes_, bytes, sizeof(sessionUserBytes_));
         hasSessionUserBytes_ = true;

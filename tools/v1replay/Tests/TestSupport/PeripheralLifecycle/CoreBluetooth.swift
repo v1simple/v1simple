@@ -130,6 +130,7 @@ public final class CBPeripheralManager {
     public var subscribers: [CBUUID: Set<UUID>] = [:]
     public var acceptsNotifications = true
     public var notifications: [Notification] = []
+    public var responses: [CBATTRequest] = []
     public var invalidOperations: [String] = []
     public var addCount = 0
     public var startCount = 0
@@ -160,7 +161,7 @@ public final class CBPeripheralManager {
     }
     public func stopAdvertising() { isAdvertising = false; advertisingPaused = false }
     public func removeAllServices() { services.removeAll() }
-    public func respond(to: CBATTRequest, withResult: CBATTError.Code) {}
+    public func respond(to: CBATTRequest, withResult: CBATTError.Code) { responses.append(to) }
     public func updateValue(_ data: Data, for characteristic: CBMutableCharacteristic,
                             onSubscribedCentrals: [CBCentral]?) -> Bool {
         if state != .poweredOn { invalidOperations.append("notify while unavailable") }

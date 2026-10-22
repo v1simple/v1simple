@@ -837,6 +837,7 @@ void DriveRuntime::processSettingsOperation(uint32_t nowMs) {
     const V1SettingsOperationStore::Snapshot initial = settingsOperations_.snapshot();
     if (!initial.available || !initial.valid) return;
     if (initial.operationId != observedSettingsOperationId_) {
+        ble_.cancelCommand(V1CommandOwner::FactoryReset);
         observedSettingsOperationId_ = initial.operationId;
         observedSettingsOperationState_ = initial.state;
         settingsOperationStartedMs_ = nowMs;
@@ -860,6 +861,7 @@ void DriveRuntime::processSettingsOperation(uint32_t nowMs) {
     }
 
     if (settingsOperations_.isTerminal()) {
+        ble_.cancelCommand(V1CommandOwner::FactoryReset);
         if (initial.returnToMaintenance && settingsReturnRetry_.due(nowMs)) {
             settingsReturnRetry_.defer(nowMs);
             requestMaintenanceBootRestart();
@@ -872,11 +874,13 @@ void DriveRuntime::processSettingsOperation(uint32_t nowMs) {
     if ((initial.state == V1SettingsOperationStore::State::WaitingForDetector ||
          initial.state == V1SettingsOperationStore::State::Preparing) &&
         static_cast<uint32_t>(nowMs - settingsOperationStartedMs_) >= kDetectorWaitTimeoutMs) {
+        ble_.cancelCommand(V1CommandOwner::FactoryReset);
         (void)settingsOperations_.finish(V1SettingsOperationStore::State::Failed,
             V1SettingsOperationStore::Reason::DetectorTimeout);
         return;
     }
     if (static_cast<uint32_t>(nowMs - settingsOperationStartedMs_) >= kOperationTimeoutMs) {
+        ble_.cancelCommand(V1CommandOwner::FactoryReset);
         bool detectorWritesSent = false;
         if (initial.state == V1SettingsOperationStore::State::Running &&
             initial.kind != V1SettingsOperationStore::Kind::FactoryReset) {
@@ -1386,18 +1390,34 @@ void DriveRuntime::attemptFactoryReset(const V1SettingsOperationStore::Snapshot&
         return;
     }
     auto components = operation.components;
-    const SendResult result = ble_.factoryResetDetector();
+    V1BLEClient::CommandScope commandScope(ble_, V1CommandOwner::FactoryReset);
+    const uint32_t session = ble_.sessionGeneration();
+    // A pending request may already have reset the detector before its ACK
+    // disappeared. Only poll that exact admitted job; never recreate it after
+    // reconnect or after an error whose durable failure write needs retrying.
+    const bool admittedJobLost = factoryResetSendLatch_.admitted() &&
+        (factoryResetSendLatch_.admittedSession() != session ||
+         !ble_.commandInFlight(V1CommandOwner::FactoryReset));
+    const SendResult result = admittedJobLost ? SendResult::FAILED : ble_.factoryResetDetector();
+    if (result == SendResult::IN_FLIGHT) {
+        factoryResetSendLatch_.noteAdmitted(session);
+        return;
+    }
     if (result == SendResult::NOT_YET) return;
     if (result != SendResult::SENT) {
+        const bool unacknowledged = factoryResetSendLatch_.admitted();
         for (size_t index = 0; index < V1SettingsOperationStore::kComponentCount; ++index) {
             components[index].outcome = index == static_cast<size_t>(V1SettingsOperationStore::Component::FactoryReset)
                 ? V1SettingsOperationStore::ComponentOutcome::WriteFailed
                 : V1SettingsOperationStore::ComponentOutcome::Blocked;
-            components[index].reason = V1SettingsOperationStore::ComponentReason::FactoryResetWriteFailed;
+            components[index].reason = unacknowledged
+                ? V1SettingsOperationStore::ComponentReason::FactoryDefaultUnverified
+                : V1SettingsOperationStore::ComponentReason::FactoryResetWriteFailed;
         }
         (void)settingsOperations_.updateComponents(components, 0);
         (void)settingsOperations_.finish(V1SettingsOperationStore::State::Failed,
-            V1SettingsOperationStore::Reason::FactoryResetSendFailed);
+            unacknowledged ? V1SettingsOperationStore::Reason::FactoryResetScopeUnverified
+                          : V1SettingsOperationStore::Reason::FactoryResetSendFailed);
         return;
     }
     for (size_t index = 0; index < V1SettingsOperationStore::kComponentCount; ++index) {

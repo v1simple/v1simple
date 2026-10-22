@@ -719,7 +719,27 @@ void setUp() {
     display.resetChangeTrackingCalls = 0;
 }
 
+void test_recovery_polls_inflight_start_even_after_display_traffic_recovers() {
+    ConnectionStateModule real;
+    real.begin(&bleClient, &parser, &display, &powerModule, &bleQueueModule, &alertPersistenceModule);
+    real.handleConnected(10000, bleClient.sessionGeneration());
+    bleClient.alertDataRequestSent = false;
+    bleClient.nextAlertDataSendResult = SendResult::IN_FLIGHT;
+    bleQueueModule.setLastRxMillis(12000);
+    real.process(12000);
+    TEST_ASSERT_TRUE(bleClient.commandInFlight(V1CommandOwner::AlertStreamRecovery));
+    TEST_ASSERT_FALSE(bleClient.alertDataRequestSent);
+    bleQueueModule.setLastRxMillis(12001);
+    real.process(12001);
+    TEST_ASSERT_FALSE(bleClient.commandInFlight(V1CommandOwner::AlertStreamRecovery));
+    TEST_ASSERT_TRUE(bleClient.alertDataRequestSent);
+    TEST_ASSERT_EQUAL_INT(2, bleClient.requestAlertDataCalls);
+    real.process(12002);
+    TEST_ASSERT_EQUAL_INT(2, bleClient.requestAlertDataCalls);
+}
+
 void runAllTests() {
+    RUN_TEST(test_recovery_polls_inflight_start_even_after_display_traffic_recovers);
     RUN_TEST(test_connect_transition_shows_resting);
     RUN_TEST(test_disconnect_transition_shows_scanning);
     RUN_TEST(test_no_transition_when_state_unchanged);

@@ -320,6 +320,75 @@ test('a removed device after selection cannot be reported as an unwritten cancel
   assert.equal(setup.calls.at(-1), 'close');
 });
 
+test('an interrupted write keeps its error through failed reset and allows a preserving retry', async () => {
+  const memory = Buffer.alloc(0x1000000, 0xa5);
+  const before = Buffer.from(memory);
+  const attempts = [];
+  const setup = fixture({
+    async flash(report, port, path, data, eraseFirst) {
+      assert.equal(eraseFirst, false);
+      assert.equal(path, 'https://example.invalid/installer/manifest-update.json');
+      assert.equal(data.builds.length, 1);
+      assert.equal(data.builds[0].parts.length, 1);
+      const part = data.builds[0].parts[0];
+      assert.equal(part.offset, 0x20000);
+      assert.equal(part.size, image.length);
+      assert.equal(part.sha256, sha256(image));
+      const bytes = new Uint8Array(await setup.blobs.get(part.path).arrayBuffer());
+      assert.deepEqual(bytes, image);
+      attempts.push(bytes);
+      port.readable = {};
+      port.writable = {};
+      if (attempts.length === 1) {
+        memory.set(bytes.subarray(0, 2), part.offset);
+        report({ state: 'writing', message: 'Writing', details: { percentage: 50 } });
+        report({ state: 'error', message: 'write interrupted after one block' });
+        throw new Error('reset unavailable after disconnect');
+      }
+      memory.set(bytes, part.offset);
+      report({ state: 'finished', message: 'Done' });
+    },
+  });
+  const { elements } = setup;
+  elements.install.emit('click');
+  await elements.confirm.emit('click');
+  assert.match(elements.status.textContent, /Update failed: write interrupted after one block/);
+  assert.doesNotMatch(elements.status.textContent, /reset unavailable|Transfer complete|Nothing was written/);
+  assert.match(elements.status.textContent, /bootloader mode/);
+  assert.match(elements.status.textContent, /Power \+ GEAR.*USB-C/);
+  assert.match(elements.status.textContent, /Update and preserve data.*again/);
+  assert.match(elements.status.textContent, /Do not choose Fresh install.*erases saved device data/);
+  assert.equal(elements.close.disabled, false);
+  assert.equal(elements.confirm.disabled, false);
+  assert.equal(elements.confirm.hidden, true);
+  assert.equal(setup.port.readable, null);
+  assert.equal(setup.port.writable, null);
+  assert.equal(setup.revoked.length, 1);
+  assert.equal(setup.blobs.size, 0);
+  assert.deepEqual(memory.subarray(0, 0x20000), before.subarray(0, 0x20000));
+  assert.deepEqual(memory.subarray(0x20002), before.subarray(0x20002));
+
+  elements.close.emit('click');
+  assert.equal(elements.dialog.open, false);
+  elements.install.emit('click');
+  assert.equal(elements.dialog.open, true);
+  assert.equal(elements.confirm.hidden, false);
+  await elements.confirm.emit('click');
+  assert.equal(attempts.length, 2);
+  assert.deepEqual(attempts[0], attempts[1]);
+  assert.equal(setup.calls.filter(call => call === 'requestPort').length, 2);
+  assert.equal(setup.calls.filter(call => call[0] === 'firmware').length, 2);
+  assert.equal(setup.calls.filter(call => call === 'close').length, 2);
+  assert.equal(setup.revoked.length, 2);
+  assert.equal(setup.blobs.size, 0);
+  assert.match(elements.status.textContent, /Transfer complete/);
+  assert.doesNotMatch(elements.status.textContent, /Update failed|bootloader mode/);
+  assert.equal(elements.close.disabled, false);
+  assert.deepEqual(memory.subarray(0, 0x20000), before.subarray(0, 0x20000));
+  assert.deepEqual(memory.subarray(0x20000, 0x20004), Buffer.from(image));
+  assert.deepEqual(memory.subarray(0x20004), before.subarray(0x20004));
+});
+
 test('the actual preserve handler leaves boot data, settings and LittleFS untouched', async () => {
   const memory = Buffer.alloc(0x1000000, 0xa5);
   const before = Buffer.from(memory);

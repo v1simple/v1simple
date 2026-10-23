@@ -86,6 +86,13 @@ LittleFS, and SD card intact. This supports existing V1Simple installations with
 the current partition layout. A release that changes that layout needs explicit
 upgrade instructions; this installer does not migrate partition tables.
 
+If power or the USB connection is lost during an update, the device may not
+start until the update is retried. There is one application slot and no automatic
+rollback. Reconnect in bootloader mode by holding **Power + GEAR** while
+connecting USB-C, then choose **Update and preserve data** again. Do not choose
+**Fresh install** to recover: it erases saved device data. After the retry
+completes, restart, reopen maintenance mode, and check your settings and profiles.
+
 See [USB profile backup and restore](docs/USB_PROFILES.md#upgrading-existing-device-data)
 for migration and recovery details. Storage migration does not prove that the
 detector received or applied a profile.

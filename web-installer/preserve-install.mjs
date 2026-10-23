@@ -88,6 +88,8 @@ export function bindPreserveInstaller(root, {
     status.textContent = 'Choose your device. Keep the cable connected until the update completes.';
     let port;
     let firmwareURL;
+    let flashInvoked = false;
+    let failure;
     try {
       // Must run directly inside the click handler, before any await, so the
       // browser's permission prompt retains the user's activation.
@@ -119,12 +121,16 @@ export function bindPreserveInstaller(root, {
       progress.hidden = false;
       progress.removeAttribute('value');
       let finished = false;
-      let failure;
+      flashInvoked = true;
       await flash((state) => {
         status.textContent = state.message;
         if (state.state === 'writing') progress.value = state.details.percentage;
         if (state.state === 'finished') finished = true;
-        if (state.state === 'error') failure = state.message;
+        // The flasher reports write errors before attempting reset/disconnect,
+        // which can throw too. Keep the original failure through that cleanup.
+        if (state.state === 'error' && failure === undefined) {
+          failure = state.message || 'The device reported a flashing error.';
+        }
       }, port, manifestPath, verifiedManifest, false);
       if (failure) throw new Error(failure);
       if (!finished) throw new Error('The update did not report completion.');
@@ -132,7 +138,10 @@ export function bindPreserveInstaller(root, {
     } catch (error) {
       status.textContent = !port && error.name === 'NotFoundError'
         ? 'No device selected. Nothing was written.'
-        : `Update failed: ${error.message}`;
+        : `Update failed: ${failure ?? error.message}`;
+      if (flashInvoked) {
+        status.textContent += ' The update may be incomplete. Disconnect USB-C, hold Power + GEAR, then reconnect USB-C while holding both buttons to enter bootloader mode. Close this dialog and choose Update and preserve data again. Do not choose Fresh install to recover; it erases saved device data.';
+      }
     } finally {
       if (firmwareURL) revokeObjectURL(firmwareURL);
       // flash normally disconnects itself. Also release the port if an

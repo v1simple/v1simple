@@ -45,6 +45,11 @@ def run(build: Path, names: list[str], source_root: Path = ROOT) -> None:
         "bool DriveRuntime::preemptSettingsForLiveAlert(",
         "bool DriveRuntime::hasLiveAlertPresentation("])
     (build / "slider_tail.inc").write_text(tail.replace("DriveRuntime::", "Runtime::"))
+    recovery_constant = next(line for line in source.splitlines()
+                             if line.startswith("constexpr uint32_t kConnectionStateProcessMaxGapMs = "))
+    recovery = recovery_constant + "\n" + "\n\n".join(function(source, signature) for signature in [
+        "void DriveRuntime::processBleRuntime(", "DriveLoopDispatch DriveRuntime::processConnectionDispatch("])
+    (build / "alert_recovery.inc").write_text(recovery.replace("DriveRuntime::", "RecoveryRuntime::"))
     policies = function(source, "bool DriveRuntime::processParsedPolicies(")
     (build / "slider_policies.inc").write_text(policies.replace("DriveRuntime::", "SliderRuntime::"))
     shared = (source_root / "src/main_setup_helpers.cpp").read_text()
@@ -74,4 +79,4 @@ def run(build: Path, names: list[str], source_root: Path = ROOT) -> None:
 
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="drive-runtime-policies-") as temporary:
-        run(Path(temporary), sys.argv[1:] or ["alp_power", "slider_speed", "slider_tail", "shutdown"])
+        run(Path(temporary), sys.argv[1:] or ["alp_power", "slider_speed", "slider_tail", "alert_recovery", "shutdown"])

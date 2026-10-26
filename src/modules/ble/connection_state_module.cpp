@@ -160,6 +160,19 @@ void ConnectionStateModule::presentPendingOwner(unsigned long nowMs, bool v1Conn
     }
 }
 
+void ConnectionStateModule::servicePendingAlertRecovery(unsigned long nowMs) {
+    if (!ble_ || !ble_->commandInFlight(V1CommandOwner::AlertStreamRecovery)) {
+        return;
+    }
+    if (!ble_->isConnected() || ble_->phoneOwnsStoppedAlertStream()) {
+        ble_->cancelCommand(V1CommandOwner::AlertStreamRecovery);
+        return;
+    }
+    V1BLEClient::CommandScope commandScope(*ble_, V1CommandOwner::AlertStreamRecovery);
+    ble_->requestAlertData();
+    lastDataRequestMs_ = nowMs;
+}
+
 bool ConnectionStateModule::process(unsigned long nowMs) {
     if (!ble_ || !parser_ || !display_) {
         return false;
@@ -207,20 +220,19 @@ bool ConnectionStateModule::process(unsigned long nowMs) {
     // Display traffic can stay fresh when an initial start failed or a phone
     // stopped detailed alerts. Resume at the existing cadence after the phone
     // releases that explicit stop; ordinary connected-phone recovery is unchanged.
-    if (isConnected && bleQueue_ && !ble_->phoneOwnsStoppedAlertStream()) {
+    if (ble_->commandInFlight(V1CommandOwner::AlertStreamRecovery)) {
+        servicePendingAlertRecovery(nowMs);
+    } else if (isConnected && bleQueue_ && !ble_->phoneOwnsStoppedAlertStream()) {
         unsigned long lastRx = bleQueue_->getLastRxMillis();
         bool dataStale = (nowMs - lastRx) > DATA_STALE_MS;
         const bool alertStartMissing = ble_->needsAlertDataStartRecovery();
         bool canRequest = (nowMs - lastDataRequestMs_) > DATA_REQUEST_INTERVAL_MS;
 
-        if (ble_->commandInFlight(V1CommandOwner::AlertStreamRecovery) ||
-            ((dataStale || alertStartMissing) && canRequest)) {
+        if ((dataStale || alertStartMissing) && canRequest) {
             V1BLEClient::CommandScope commandScope(*ble_, V1CommandOwner::AlertStreamRecovery);
             ble_->requestAlertData();
             lastDataRequestMs_ = nowMs;
         }
-    } else if (ble_->commandInFlight(V1CommandOwner::AlertStreamRecovery)) {
-        ble_->cancelCommand(V1CommandOwner::AlertStreamRecovery);
     }
 
     // When disconnected, refresh indicators in the canvas.

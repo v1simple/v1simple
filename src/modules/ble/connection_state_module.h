@@ -23,6 +23,10 @@ class ConnectionStateModule {
     // Call once per loop iteration; returns true if connected
     bool process(unsigned long nowMs);
 
+    // Finish only admitted recovery work even while another owner holds the
+    // screen. Initial recovery requests and rendering retain process() cadence.
+    void servicePendingAlertRecovery(unsigned long nowMs);
+
     // Authoritative main-loop BLE lifecycle hooks. Session admission opens
     // before characteristic subscription and closes when quiescence
     // invalidates the generation, so cadence cannot miss a short reconnect.

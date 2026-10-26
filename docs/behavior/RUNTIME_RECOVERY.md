@@ -122,6 +122,18 @@ receipt. Quiet policies, tap mute, alert-stream recovery and detector reset
 retain pending intent until acknowledgment or explicit cancellation; incoming
 feedback alone cannot abandon an admitted command.
 
+`DriveRuntime::processBleRuntime` services admitted alert-stream recovery on
+every loop, including while sliders, preview or a power warning owns the
+screen. `ConnectionStateModule::servicePendingAlertRecovery` polls or cancels
+only that pending command; it neither renders nor starts a recovery request.
+Initial requests retain the connection-display cadence, and the transport's
+one-second timeout still retires blocked work. The `alert_recovery` fixture in
+`test_drive_runtime_policies.py` executes the real BOOT touch handler, drive-loop
+coordinator, extracted runtime adapters, command worker, queue/parser and
+connection owner. It covers successful completion, slot release, suppressed
+presentation, phone stop, timeout, retired sessions and live-alert preemption.
+Radio, panel, clock and unrelated BLE service remain host substitutes.
+
 Detector reset latches admission separately from acknowledgment. Losing that
 job or its session yields an unverified result, including when persisting the
 failure must be retried; reconnect never resends the destructive command.

@@ -533,6 +533,9 @@ void DriveRuntime::openBootReadyGate(uint32_t nowMs) {
 
 void DriveRuntime::processBleRuntime() {
     ble_.process(settings_);
+    // A completed recovery write still owns the command slot until polled.
+    // Sliders, preview and power warnings suppress connection rendering only.
+    connectionState_.servicePendingAlertRecovery(millis());
     // Observe phone takeover even when sliders/preview suppress parsed frames.
     quiet_.syncProxyVolumeOwnership(&volumeFade_);
 }

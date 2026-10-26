@@ -483,13 +483,12 @@
         try {
             const body = {
                 ssid,
-                priority: nextWifiPriority()
+                priority: nextWifiPriority(),
+                // Omission preserves old credentials; an open scan result clears them.
+                password: secure ? password : ''
             };
             if (targetIndex !== null) {
                 body.index = targetIndex;
-            }
-            if (secure || password) {
-                body.password = password;
             }
 
             const res = await fetchWithTimeout('/api/wifi/networks', {

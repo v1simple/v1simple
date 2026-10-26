@@ -1634,6 +1634,58 @@ describe('settings route page', () => {
         unmount();
     });
 
+    it('clears the saved password when the same SSID is selected as an open network', async () => {
+        let savedPassword = 'previous-network-secret';
+        const fetchMock = installDefaultFetch([
+            {
+                method: 'POST',
+                match: '/api/wifi/scan',
+                respond: jsonResponse({
+                    scanning: false,
+                    networks: [{ ssid: 'HomeWifi', secure: false, rssi: -35 }]
+                })
+            },
+            {
+                method: 'POST',
+                match: '/api/wifi/networks',
+                respond: ({ init }) => {
+                    const body = JSON.parse(init.body);
+                    // Match the firmware contract: omission preserves a saved password.
+                    if (Object.hasOwn(body, 'password')) savedPassword = body.password;
+                    return jsonResponse({ success: true, index: 0 });
+                }
+            },
+            {
+                method: 'GET',
+                match: '/api/wifi/networks',
+                respond: () => jsonResponse({
+                    slots: defaultSlots.map((slot) => slot.index === 0
+                        ? { ...slot, hasPassword: savedPassword.length > 0 }
+                        : slot)
+                })
+            }
+        ]);
+        const { unmount } = render(Page);
+
+        await openScanModal();
+        await fireEvent.click(await screen.findByRole('button', { name: /HomeWifi.*dBm/ }));
+        await screen.findByText('This is an open network');
+        expect(screen.queryByLabelText('Password')).not.toBeInTheDocument();
+        await fireEvent.click(screen.getByRole('button', { name: /^Save Network$/ }));
+
+        await screen.findByText('Saved HomeWifi');
+        expect(jsonBodies(fetchMock, '/api/wifi/networks').at(-1)).toMatchObject({
+            ssid: 'HomeWifi',
+            password: ''
+        });
+        expect(savedPassword).toBe('');
+        await waitFor(() => {
+            expect(screen.getByText('Garage').closest('.rounded-box')).toHaveTextContent('open/no saved password');
+        });
+
+        unmount();
+    });
+
     it('uses captured enable success and status-refetch responses', async () => {
         const fetchMock = installDefaultFetch(apiFixtureMatchers('wifi_enable_success'));
         const { unmount } = render(Page);

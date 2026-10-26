@@ -6573,6 +6573,8 @@ void assert_actual_http_save_backup_order(bool oldWriterLate) {
         TEST_ASSERT_EQUAL_INT(9, backup["autoPowerOffMinutes"].as<int>());
         TEST_ASSERT_FALSE(accepted);
         manager.serviceDeferredBackup(2000);
+        TEST_ASSERT_EQUAL_UINT(0u, deferredSettingsBackupQueueDepthForTest());
+        manager.serviceDeferredBackup(2250);
         TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
     }
     JsonDocument backup;

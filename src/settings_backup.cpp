@@ -1027,11 +1027,16 @@ uint32_t SettingsManager::deferredBackupNextAttemptAtMs() const {
 void SettingsManager::serviceDeferredBackup(uint32_t nowMs) {
     if (nvsLoadPending_ || ((nvsRecoveryPending_ || profileReferenceRecoveryPending_) && !nvsRecoveryInProgress_)) return;
     if (gDeferredSettingsBackupState.writerRetryPending.exchange(false, std::memory_order_relaxed)) {
-        gDeferredSettingsBackupState.pendingRequest.store(true, std::memory_order_relaxed);
-        clearDeferredBackupRetry();
+        scheduleDeferredBackupRetry(nowMs);
     }
 
     if (!gDeferredSettingsBackupState.pendingRequest.load(std::memory_order_relaxed)) {
+        return;
+    }
+
+    // Keep the durable request pending until SD is available. Internal-only
+    // operation cannot use this writer, so do not read profiles or build bytes.
+    if (!storage_->isReady() || !storage_->isSDCard()) {
         return;
     }
 

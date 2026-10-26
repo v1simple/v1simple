@@ -93,6 +93,13 @@ bool loadJsonFile(fs::FS& fs, const char* path, JsonDocument& doc) {
     return !err;
 }
 
+void serviceAfterWriterBackoff(SettingsManager& manager, uint32_t nowMs) {
+    manager.serviceDeferredBackup(nowMs);
+    TEST_ASSERT_TRUE(manager.deferredBackupPending());
+    TEST_ASSERT_EQUAL_UINT(0u, deferredSettingsBackupQueueDepthForTest());
+    manager.serviceDeferredBackup(nowMs + 250u);
+}
+
 void writeSeedBackup(fs::FS& fs, const char* apSsid, uint8_t brightness) {
     SettingsManager source(storage, profiles);
     prepareCurrentBackupSource(source);
@@ -221,6 +228,108 @@ void test_service_deferred_backup_retries_after_sd_trylock_busy() {
     TEST_ASSERT_FALSE(manager.deferredBackupRetryScheduled());
     TEST_ASSERT_EQUAL_UINT32(0u, manager.deferredBackupNextAttemptAtMs());
     TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
+}
+
+void assert_deferred_backup_waits_for_sd_without_snapshot_work(bool storageUnavailable) {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, false);
+    storage.setLittleFS(&fs);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+
+    SettingsManager manager(storage, profiles);
+    manager.begin();
+    manager.migrateAutoPushProfilesToV2();
+    manager.validateProfileReferences(profiles);
+    TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("Road")).success);
+    manager.updateBrightness(137);
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    const uint32_t dueRevision = manager.backupDueRevision();
+
+    if (storageUnavailable) storage.reset();
+    const auto profilePath = g_tempRoot / "v1profiles" / "Road.json";
+    constexpr size_t readBudget = 1000000;
+    fs::mock_set_read_budget_for_full_path(profilePath.c_str(), readBudget);
+    const auto allocations = g_mock_heap_caps_malloc_calls;
+    const auto taskCreations = g_mock_task_create_state.capsCalls;
+    const auto queueCreations = g_mock_queue_create_state.staticCalls;
+    for (uint32_t nowMs : {2000u, 2001u, 2249u, 2250u, 2500u, 3000u}) {
+        manager.serviceDeferredBackup(nowMs);
+        TEST_ASSERT_TRUE(manager.deferredBackupPending());
+        TEST_ASSERT_EQUAL_UINT(0u, deferredSettingsBackupQueueDepthForTest());
+        TEST_ASSERT_EQUAL_UINT(allocations, g_mock_heap_caps_malloc_calls);
+        TEST_ASSERT_EQUAL_UINT(taskCreations, g_mock_task_create_state.capsCalls);
+        TEST_ASSERT_EQUAL_UINT(queueCreations, g_mock_queue_create_state.staticCalls);
+        TEST_ASSERT_EQUAL_UINT(readBudget, mock_fs_detail::g_read_budget_remaining);
+    }
+    fs::mock_reset_fs_open_state();
+
+    // The saved setting and backup intent survive a reboot without SD.
+    resetDeferredSettingsBackupStateForTest();
+    SettingsManager rebooted(storage, profiles);
+    rebooted.load();
+    TEST_ASSERT_EQUAL_UINT8(137, rebooted.get().brightness);
+    TEST_ASSERT_EQUAL_UINT32(dueRevision, rebooted.backupDueRevision());
+    TEST_ASSERT_TRUE(rebooted.deferredBackupPending());
+
+    storage.setFilesystem(&fs, true);
+    storage.setLittleFS(&fs);
+    rebooted.serviceDeferredBackup(4000);
+    TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
+    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
+    JsonDocument backup;
+    TEST_ASSERT_TRUE(loadJsonFile(fs, SETTINGS_BACKUP_PATH, backup));
+    TEST_ASSERT_EQUAL_UINT8(137, backup["brightness"].as<uint8_t>());
+    bool foundRoad = false;
+    for (JsonObjectConst profile : backup["profiles"].as<JsonArrayConst>()) {
+        foundRoad |= strcmp(profile["name"].as<const char*>(), "Road") == 0;
+    }
+    TEST_ASSERT_TRUE(foundRoad);
+    TEST_ASSERT_EQUAL_UINT32(dueRevision,
+        mock_preferences::getUnsigned(SETTINGS_NS_META, kNvsBackupCompletedRevision, 0));
+    const auto completedAllocations = g_mock_heap_caps_malloc_calls;
+    rebooted.serviceDeferredBackup(4001);
+    TEST_ASSERT_FALSE(rebooted.deferredBackupPending());
+    TEST_ASSERT_EQUAL_UINT(0u, deferredSettingsBackupQueueDepthForTest());
+    TEST_ASSERT_EQUAL_UINT(completedAllocations, g_mock_heap_caps_malloc_calls);
+}
+
+void test_littlefs_only_backup_waits_for_sd_without_snapshot_work() {
+    assert_deferred_backup_waits_for_sd_without_snapshot_work(false);
+}
+
+void test_unavailable_storage_backup_waits_for_sd_without_snapshot_work() {
+    assert_deferred_backup_waits_for_sd_without_snapshot_work(true);
+}
+
+void test_writer_failure_backs_off_without_rebuilding_or_renewing_deadline() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    prepareCurrentBackupSource(manager);
+    manager.mutableSettings().brightness = 61;
+    TEST_ASSERT_TRUE(manager.saveDeferredBackup());
+    manager.serviceDeferredBackup(1000);
+    fs::mock_fail_next_rename();
+    TEST_ASSERT_FALSE(runDeferredSettingsBackupWriterOnceForTest(storage));
+
+    const auto allocations = g_mock_heap_caps_malloc_calls;
+    for (uint32_t nowMs : {1001u, 1002u, 1100u, 1250u}) {
+        manager.serviceDeferredBackup(nowMs);
+        TEST_ASSERT_TRUE(manager.deferredBackupPending());
+        TEST_ASSERT_EQUAL_UINT32(1251u, manager.deferredBackupNextAttemptAtMs());
+        TEST_ASSERT_EQUAL_UINT(0u, deferredSettingsBackupQueueDepthForTest());
+        TEST_ASSERT_EQUAL_UINT(allocations, g_mock_heap_caps_malloc_calls);
+    }
+
+    manager.updateBrightness(99);
+    manager.serviceDeferredBackup(1251);
+    TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
+    TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
+    JsonDocument backup;
+    TEST_ASSERT_TRUE(loadJsonFile(fs, SETTINGS_BACKUP_PATH, backup));
+    TEST_ASSERT_EQUAL_UINT8(99, backup["brightness"].as<uint8_t>());
+    TEST_ASSERT_FALSE(manager.deferredBackupPending());
 }
 
 void test_repeated_requests_coalesce_to_latest_snapshot() {
@@ -388,7 +497,7 @@ void test_completion_revision_write_failure_preserves_deferred_retry() {
         0u,
         mock_preferences::getUnsigned(SETTINGS_NS_META, kNvsBackupCompletedRevision, 0));
 
-    manager.serviceDeferredBackup(2000);
+    serviceAfterWriterBackoff(manager, 2000);
     TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
     TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
     TEST_ASSERT_EQUAL_UINT64(
@@ -640,7 +749,7 @@ void test_writer_failure_requeues_backup_request_for_rebuild() {
 
     storage.setFilesystem(&fs, true);
     manager.mutableSettings().apSSID = "Recovered";
-    manager.serviceDeferredBackup(2000);
+    serviceAfterWriterBackoff(manager, 2000);
 
     TEST_ASSERT_FALSE(deferredSettingsBackupPendingForTest());
     TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
@@ -769,7 +878,7 @@ void assert_newer_immediate_backup_survives_old_worker(bool oldFirst, bool marke
         TEST_ASSERT_EQUAL_UINT32(completedBeforeOld,
                                  mock_preferences::getUnsigned(SETTINGS_NS_META, kNvsBackupCompletedRevision, 0));
         TEST_ASSERT_TRUE(manager.deferredBackupPending());
-        manager.serviceDeferredBackup(2000);
+        serviceAfterWriterBackoff(manager, 2000);
         TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
     }
     assertBackupBrightness(fs, 99);
@@ -803,7 +912,7 @@ void test_failed_newer_promotion_skips_old_bytes_and_rebuilds_current_state() {
     TEST_ASSERT_FALSE(fs.exists(SETTINGS_BACKUP_PATH));
     TEST_ASSERT_FALSE(runDeferredSettingsBackupWriterOnceForTest(storage));
     TEST_ASSERT_FALSE(fs.exists(SETTINGS_BACKUP_PATH));
-    manager.serviceDeferredBackup(2000);
+    serviceAfterWriterBackoff(manager, 2000);
     TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
     assertBackupBrightness(fs, 99);
 }
@@ -830,7 +939,7 @@ void assert_manual_backup_protects_same_due_profile_snapshot(bool persistedRevis
     TEST_ASSERT_TRUE(loadJsonFile(fs, SETTINGS_BACKUP_PATH, doc));
     TEST_ASSERT_EQUAL_STRING("New profile", doc["profiles"][0]["description"].as<const char*>());
     TEST_ASSERT_FALSE(accepted);
-    manager.serviceDeferredBackup(2000);
+    serviceAfterWriterBackoff(manager, 2000);
     TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
     TEST_ASSERT_FALSE(manager.deferredBackupPending());
 }
@@ -898,10 +1007,10 @@ void test_two_stale_payloads_converge_after_at_most_two_current_writes() {
     TEST_ASSERT_FALSE(processDeferredBackupQueueItem(inFlight, storage));
     // Worker dequeues its second old payload before main consumes the retry.
     TEST_ASSERT_EQUAL(pdTRUE, xQueueReceive(gDeferredSettingsBackupState.queue, &queued, 0));
-    manager.serviceDeferredBackup(2000);
+    serviceAfterWriterBackoff(manager, 2000);
     TEST_ASSERT_FALSE(processDeferredBackupQueueItem(queued, storage));
     TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
-    manager.serviceDeferredBackup(3000);
+    serviceAfterWriterBackoff(manager, 3000);
     TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
     manager.serviceDeferredBackup(4000);
     TEST_ASSERT_EQUAL_UINT(0, deferredSettingsBackupQueueDepthForTest());
@@ -924,7 +1033,7 @@ void test_request_token_wrap_skips_old_payload_and_retry_keeps_current_token() {
     TEST_ASSERT_TRUE(manager.saveDeferredBackup());
     TEST_ASSERT_EQUAL_UINT32(1u, gDeferredSettingsBackupState.requestToken.load());
     TEST_ASSERT_FALSE(runDeferredSettingsBackupWriterOnceForTest(storage));
-    manager.serviceDeferredBackup(2000);
+    serviceAfterWriterBackoff(manager, 2000);
     TEST_ASSERT_EQUAL_UINT32(1u, gDeferredSettingsBackupState.requestToken.load());
     TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
     assertBackupBrightness(fs, 99);
@@ -1042,6 +1151,9 @@ void test_backup_accepts_empty_unassigned_and_complete_canonical_references() {
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_littlefs_only_backup_waits_for_sd_without_snapshot_work);
+    RUN_TEST(test_unavailable_storage_backup_waits_for_sd_without_snapshot_work);
+    RUN_TEST(test_writer_failure_backs_off_without_rebuilding_or_renewing_deadline);
     RUN_TEST(test_partial_profile_loss_preserves_backups_until_assigned_profile_recovers);
     RUN_TEST(test_backup_accepts_empty_unassigned_and_complete_canonical_references);
     RUN_TEST(test_old_worker_before_new_immediate_backup);

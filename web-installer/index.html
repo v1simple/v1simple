@@ -486,6 +486,9 @@
       color: var(--ka);
     }
 
+    .install-option details { margin: 10px 0 14px; }
+    .install-option summary { color: var(--muted); cursor: pointer; font-size: 11px; }
+
     .install-option-destructive {
       border-color: rgba(243, 108, 108, 0.3);
       background: rgba(243, 108, 108, 0.055);
@@ -775,7 +778,7 @@
         <div class="hero-copy">
           <p class="eyebrow">V1 SIMPLE · RELEASE INSTALLER</p>
           <h1 id="hero-title">Install V1 Simple.<br>The simple way.</h1>
-          <p class="hero-summary">Flash the latest release directly from your browser, then connect to the maintenance WebUI to configure your display.</p>
+          <p class="hero-summary">A customizable touchscreen for your Valentine One Gen 2. Install from your computer, then choose your display and audio settings.</p>
           <div class="support-row" aria-label="Supported desktop browsers">
             <span>Chrome</span>
             <span>Edge</span>
@@ -810,8 +813,8 @@
 
           <div class="bootloader-callout">
             <span class="callout-label">BOOTLOADER MODE</span>
-            <h3>Power + GEAR, then connect USB-C</h3>
-            <p>Keep both buttons held while plugging the cable in. A fuzzy or pixelated screen is expected and means the device is ready to flash.</p>
+            <h3>Hold Power + GEAR and plug in USB-C</h3>
+            <p>Keep both buttons held while connecting the cable. A fuzzy or pixelated screen is normal in this mode.</p>
           </div>
         </article>
 
@@ -823,21 +826,30 @@
             <span class="orbit-dot orbit-green"></span>
           </div>
           <p class="eyebrow">READY TO FLASH</p>
-          <h2>Choose what the flash may replace</h2>
-          <p>Your choice is made before the browser connects to the ESP32-S3. Both paths use assets generated with this release.</p>
+          <h2>Update or install</h2>
+          <p>Choose the matching option below, then select your device when the browser asks.</p>
 
           <div class="install-options">
             <section class="install-option" aria-labelledby="preserve-title">
               <h3 id="preserve-title">Update firmware and web interface — preserve device data</h3>
-              <p>Updates the firmware and maintenance web interface together. Preserves saved settings, Wi-Fi networks, profiles, and stored audio. Use this path for an existing supported V1Simple installation. Supported older profile and Auto-Push data is migrated automatically at boot; do not erase the device just to upgrade it. Restart after the transfer and reopen maintenance mode to use the updated interface.</p>
-              <p class="choice-warning">This update never erases the whole device. To erase and rebuild, choose Fresh install below.</p>
+              <p><strong>Already have V1Simple?</strong> Updates the firmware and maintenance web interface together. Preserves saved settings, Wi-Fi networks, profiles, and stored audio.</p>
+              <p class="choice-warning">This update never erases the whole device.</p>
+              <details>
+                <summary>Update details</summary>
+                <p>For an existing supported V1Simple installation. Older supported profile and Auto-Push data is converted automatically; no erase is needed. Restart after the transfer and reopen maintenance mode to use the updated interface.</p>
+              </details>
               <button id="preserve-install" class="preserve-button" type="button" data-manifest="manifest-update.json" data-install-mode="preserve" data-goatcounter-click="install-intent-preserve" disabled><span>Update and preserve data</span><span aria-hidden="true">→</span></button>
-              <p id="preserve-availability" class="installer-message">Loading the preservation installer. If this message remains, reload the page in a current desktop browser with Web Serial support.</p>
+              <p id="preserve-availability" class="installer-message">Loading the updater. If this message remains, reload in a supported desktop browser.</p>
             </section>
 
             <section class="install-option install-option-destructive" aria-labelledby="fresh-title">
               <h3 id="fresh-title">Fresh install — erase and rebuild</h3>
-              <p>This is destructive even if ESP Web Tools’ optional erase box is off: the merged image replaces the bootloader, partition table, firmware, NVS data, and internal LittleFS web interface and fallback profiles. Saved settings and Wi-Fi networks in NVS are erased by the flash. Physical SD-card contents are not part of this flash operation. A valid SD backup can restore saved settings, including access-point credentials, on boot.</p>
+              <p><strong>New board?</strong> Install V1Simple here.</p>
+              <p class="choice-warning"><strong>Erases saved settings, Wi-Fi networks, and internal profiles.</strong> This is destructive even if ESP Web Tools’ optional erase box is off.</p>
+              <details>
+                <summary>What happens to saved data?</summary>
+                <p>Replaces the bootloader, partition table, firmware, NVS settings, and internal LittleFS data. Physical SD-card contents are not part of this flash operation. A valid SD backup can restore saved settings, including the Wi-Fi name and password, on boot.</p>
+              </details>
               <esp-web-install-button manifest="manifest.json" data-install-mode="destructive">
                 <button slot="activate" type="button" data-goatcounter-click="install-intent-fresh"><span>Erase and fresh install</span><span aria-hidden="true">→</span></button>
                 <span slot="unsupported" class="installer-message">This browser does not support Web Serial.<small>Use Firefox 151 or newer, Chrome 89 or newer, or a current version of Edge on desktop.</small></span>
@@ -857,15 +869,15 @@
       <section class="finish-section" id="finish" aria-labelledby="finish-title">
         <div class="finish-intro">
           <p class="eyebrow">AFTER INSTALLATION</p>
-          <h2 id="finish-title">From flash to configured in five steps.</h2>
-          <p>The device walks you through the rest. No desktop application required.</p>
+          <h2 id="finish-title">Connect, customize, and go.</h2>
+          <p>Use your phone or computer for settings. No app required.</p>
         </div>
         <ol class="finish-grid">
-          <li><span class="finish-index">01</span><strong>Reset</strong><p>Press the RESET button to start V1-Simple.</p></li>
-          <li><span class="finish-index">02</span><strong>Pair</strong><p>When the SCAN animation appears, connect your V1 Gen2.</p></li>
-          <li><span class="finish-index">03</span><strong>Maintain</strong><p>Hold BOOT for about four seconds, then release to reboot into maintenance mode.</p></li>
-          <li><span class="finish-index">04</span><strong>Connect</strong><p>Use the access-point name and password already configured or restored from SD. If no name was saved, join <b>V1-Simple</b>; if no password was saved, use <b>setupv1simple</b>.</p></li>
-          <li><span class="finish-index">05</span><strong>Configure</strong><p>Open <b>http://192.168.35.5</b> to finish setup. If the default access-point password is in use, change it.</p></li>
+          <li><span class="finish-index">01</span><strong>Restart and connect</strong><p>Press RESET. Turn on your V1 Gen2 with Bluetooth enabled. V1Simple scans and connects automatically.</p></li>
+          <li><span class="finish-index">02</span><strong>Open Wi-Fi setup</strong><p>Hold BOOT for about four seconds, then release. The display restarts in maintenance mode for settings.</p></li>
+          <li><span class="finish-index">03</span><strong>Join its Wi-Fi</strong><p>Join <b>V1-Simple</b> with password <b>setupv1simple</b>. Use your saved or SD-restored details if either was changed. Stay connected if your phone says “no internet.”</p></li>
+          <li><span class="finish-index">04</span><strong>Choose your settings</strong><p>Open <b>http://192.168.35.5</b> in your browser. Change the default Wi-Fi password, then choose your display and audio settings.</p></li>
+          <li><span class="finish-index">05</span><strong>Return to the display</strong><p>Choose <b>Exit</b> at the top of the settings page. V1Simple restarts and reconnects to your detector.</p></li>
         </ol>
       </section>
 

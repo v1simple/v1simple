@@ -73,6 +73,29 @@
       "related_checks": "113 related driving, OBD, connection-cycle, BLE and ordering cases pass; 20 power cases and battery/GPS lifecycle scripts also pass.",
       "local_before_log": ".artifacts/audit-20261027/runtime/slider-obd-durable-before.log",
       "local_after_log": ".artifacts/audit-20261027/runtime/drive-after.log"
+    },
+    {
+      "id": "A04",
+      "status": "repaired_and_verified_on_host",
+      "discovered_after_initial_pass": true,
+      "defect": "The frontend lockfile selected undici 8.12.1, which has three published advisories and fails the high-severity npm audit gate.",
+      "trigger": "Run the frontend dependency audit after installing the committed lockfile.",
+      "expected": "The committed dependency tree passes npm audit --audit-level=high.",
+      "observed": "One vulnerable transitive package was reported at high aggregate severity.",
+      "owner": "interface/package-lock.json",
+      "dependency_path": "jsdom 30.1.2 -> undici; development/test dependency used by Vitest.",
+      "repair": "Update only the undici lockfile entry from 8.12.1 to 8.12.3 within the existing jsdom dependency range. No package.json or application-code changes.",
+      "before": "npm audit returned exit 1 with one high-severity vulnerable package and the three listed advisories.",
+      "after": "Fresh npm ci succeeded; npm audit --audit-level=high returned exit 0 with zero vulnerabilities. All 512 frontend tests passed, lint/type checks reported zero errors and warnings, and the web bundle rebuilt successfully.",
+      "evidence_level": "Current npm advisory and clean-install verification plus frontend checks; no exploit reproduction or full CI rerun claimed.",
+      "advisories": [
+        "https://github.com/advisories/GHSA-4qv8-2p9j-2685",
+        "https://github.com/advisories/GHSA-f72v-6w45-q472",
+        "https://github.com/advisories/GHSA-xjj6-f33q-929c"
+      ],
+      "local_before_log": ".artifacts/dependency-audit-20261027/before.json",
+      "local_after_log": ".artifacts/dependency-audit-20261027/after.json",
+      "initial_audit_gap": "The initial bounded audit ran functional tests and builds but omitted the dependency advisory check."
     }
   ],
   "coverage": [
@@ -124,6 +147,12 @@
         "Power warning, shutdown and wake logic"
       ],
       "local_evidence": ".artifacts/audit-20261027/runtime/"
+    },
+    {
+      "area": "Frontend dependency security follow-up",
+      "result": "A04 repaired; current npm audit reports zero vulnerabilities.",
+      "checks": "Fresh npm ci, npm audit --audit-level=high, 512 frontend tests, lint/type checks and web build passed.",
+      "local_evidence": ".artifacts/dependency-audit-20261027/"
     }
   ],
   "remaining_evidence_limits": [

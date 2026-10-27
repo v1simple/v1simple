@@ -110,6 +110,13 @@ class ReleaseArtifactTests(unittest.TestCase):
                 (installer.ROOT / "web-installer" / "preserve-install.mjs").read_bytes(),
             )
             self.assertTrue((release / "pages" / "licenses" / "ArduinoJson-LICENSE.txt").is_file())
+            self.assertEqual(
+                (release / "pages" / "first-use.html").read_bytes(),
+                (package.ROOT / "interface" / "static" / "first-use.html").read_bytes(),
+            )
+            installer_html = (release / "pages" / "index.html").read_text(encoding="utf-8")
+            self.assertIn('href="first-use.html"', installer_html)
+            self.assertNotIn('../interface/static/first-use.html', installer_html)
             self.assertEqual(calls[0][1:3], ["scripts/generate_web_bundle.py", "verify-firmware"])
             self.assertEqual(len(calls), 4)
 

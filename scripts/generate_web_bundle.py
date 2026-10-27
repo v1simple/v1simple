@@ -15,7 +15,7 @@ import zlib
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ROUTES = frozenset(("alp", "audio", "autopush", "colors", "devices", "gps",
+ROUTES = frozenset(("alp", "audio", "autopush", "colors", "devices", "first-use", "gps",
                     "index", "obd", "profiles", "settings"))
 STAMP = ".artifacts/web-bundle.json"
 SCHEMA = 1

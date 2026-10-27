@@ -123,6 +123,8 @@ describe('dashboard route page', () => {
 
         await screen.findByText('Device status unavailable');
         expect(screen.getByText(/maintenance shell remains available/i)).toBeInTheDocument();
+        expect(screen.getByRole('link', { name: 'First use guide' })).toHaveAttribute('href', '/first-use.html');
+        expect(screen.getByRole('link', { name: 'First use guide' })).toHaveAttribute('data-sveltekit-reload');
         expect(countCalls(fetchMock, '/api/status')).toBeGreaterThanOrEqual(1);
 
         unmount();

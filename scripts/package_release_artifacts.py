@@ -92,12 +92,16 @@ def stage_installer(release_dir: Path) -> Path:
 
     template = (ROOT / "web-installer" / "index.html").read_text(encoding="utf-8")
     source_logo = "../interface/static/branding/v1simple-logo-transparent.png"
+    source_guide = "../interface/static/first-use.html"
     if template.count(source_logo) != 1:
         raise ValueError("installer template must contain exactly one source logo path")
+    if template.count(source_guide) != 1:
+        raise ValueError("installer template must contain exactly one first-use guide link")
     (pages_dir / "index.html").write_text(
-        template.replace(source_logo, "v1simple-logo-transparent.png"),
+        template.replace(source_logo, "v1simple-logo-transparent.png").replace(source_guide, "first-use.html"),
         encoding="utf-8",
     )
+    shutil.copyfile(ROOT / "interface" / "static" / "first-use.html", pages_dir / "first-use.html")
     shutil.copyfile(
         ROOT / "web-installer" / "preserve-install.mjs",
         pages_dir / "preserve-install.mjs",

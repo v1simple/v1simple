@@ -39,12 +39,20 @@ void test_html_allowlist_accepts_every_page_path() {
         "/autopush", "/autopush.html", "/colors",   "/colors.html",   "/devices", "/devices.html",
         "/gps",      "/gps.html",      "/obd",      "/obd.html",
         "/profiles", "/profiles.html", "/settings", "/settings.html",
+        "/first-use", "/first-use.html",
     };
 
     for (const char* path : kPagePaths) {
         TEST_ASSERT_TRUE_MESSAGE(WifiStaticPathGuard::isHtmlPagePath(path), path);
         TEST_ASSERT_TRUE_MESSAGE(WifiStaticPathGuard::isAllowedServedPath(path), path);
     }
+}
+
+void test_first_use_page_does_not_open_other_paths() {
+    TEST_ASSERT_FALSE(WifiStaticPathGuard::isAllowedServedPath("/first-use/settings.json"));
+    TEST_ASSERT_FALSE(WifiStaticPathGuard::isAllowedServedPath("/first-use.json"));
+    TEST_ASSERT_FALSE(WifiStaticPathGuard::isAllowedServedPath("/first-use.html.bak"));
+    TEST_ASSERT_FALSE(WifiStaticPathGuard::isAllowedServedPath("/first-use/../settings.json"));
 }
 
 void test_app_assets_are_served() {
@@ -72,6 +80,7 @@ int main() {
     RUN_TEST(test_safe_path_allows_dot_dot_substrings);
     RUN_TEST(test_safe_path_rejects_backslashes_anywhere);
     RUN_TEST(test_html_allowlist_accepts_every_page_path);
+    RUN_TEST(test_first_use_page_does_not_open_other_paths);
     RUN_TEST(test_app_assets_are_served);
     RUN_TEST(test_single_file_audio_and_branding_assets_are_served);
     RUN_TEST(test_single_file_assets_reject_nested_paths_and_wrong_suffixes);

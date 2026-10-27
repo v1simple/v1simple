@@ -20,6 +20,12 @@
                     href: '/',
                     label: 'Dashboard',
                     paths: ['M3 3h7v9H3z', 'M14 3h7v5h-7z', 'M14 12h7v9h-7z', 'M3 16h7v5H3z']
+                },
+                {
+                    href: '/first-use.html',
+                    label: 'First use',
+                    paths: ['M4 3h6a3 3 0 0 1 3 3v15a4 4 0 0 0-4-2H4z', 'M13 6a3 3 0 0 1 3-3h4v16h-3a4 4 0 0 0-4 2'],
+                    reload: true
                 }
             ]
         },
@@ -144,6 +150,7 @@
                 {#each group.links as link}
                     <a
                         href={link.href}
+                        data-sveltekit-reload={link.reload || undefined}
                         class="sidebar-link"
                         class:active={isActivePath(link.href)}
                         aria-current={isActivePath(link.href) ? 'page' : undefined}

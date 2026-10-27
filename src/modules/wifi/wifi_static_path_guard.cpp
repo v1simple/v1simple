@@ -78,6 +78,7 @@ bool isHtmlPagePath(const char* path) {
         "/autopush", "/autopush.html", "/colors",   "/colors.html",   "/devices", "/devices.html",
         "/gps",      "/gps.html",      "/obd",      "/obd.html",
         "/profiles", "/profiles.html", "/settings", "/settings.html",
+        "/first-use", "/first-use.html",
     };
 
     return isSafe(path) && equalsAny(path, kPagePaths, sizeof(kPagePaths) / sizeof(kPagePaths[0]));

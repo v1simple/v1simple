@@ -24,6 +24,11 @@ mkdirSync(dataDir, { recursive: true });
 console.log('📁 Copying build files...');
 cpSync(buildDir, dataDir, { recursive: true });
 
+// The guide is a mandatory embedded firmware asset and is also staged for the
+// public installer. Managed HTML never falls back to LittleFS, so this second
+// copy cannot serve the current firmware. Keep legacy web entries unchanged.
+rmSync(join(dataDir, 'first-use.html'), { force: true });
+
 // Keep only compressed runtime assets under /_app when a .gz twin exists.
 // This saves flash while preserving uncompressed HTML entry pages.
 function pruneUncompressedAppAssets(appDir) {

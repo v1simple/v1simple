@@ -861,16 +861,19 @@ int main() {
                    {"/_app/immutable/old.js.gz", "stale chunk"},
                    {"/branding/mark.png", "old brand"}, {"/branding/old.png", "stale brand"},
                    {"/audio/alert.mul", "saved audio"}};
-  for (const char* encoding : {"", "gzip"}) {
-    WebServer server;
-    server.setHeader("Accept-Encoding", encoding);
-    check(serve(server, "/index.html", "text/html"), "HTML must be available with or without gzip");
-    check(body(server) == bytes("/index.html"), "current firmware HTML must override old filesystem HTML");
-    check(server.lastContentType == "text/html", "HTML MIME type must remain exact");
-    check(server.lastContentLength == bytes("/index.html").size(), "HTML length must remain exact");
-    check(server.sentHeader("Content-Encoding") == "", "raw HTML must not claim gzip");
-    check(server.sentHeader("Cache-Control") == "no-store, no-cache, must-revalidate", "HTML must not be cached");
-    check(server.sentHeader("Vary") == "Accept-Encoding", "static representation must vary on encoding");
+  // first-use.html intentionally has no filesystem copy: the firmware owns it.
+  for (const char* path : {"/index.html", "/first-use.html"}) {
+    for (const char* encoding : {"", "gzip"}) {
+      WebServer server;
+      server.setHeader("Accept-Encoding", encoding);
+      check(serve(server, path, "text/html"), "HTML must be available with or without gzip");
+      check(body(server) == bytes(path), "current firmware HTML must override or work without filesystem HTML");
+      check(server.lastContentType == "text/html", "HTML MIME type must remain exact");
+      check(server.lastContentLength == bytes(path).size(), "HTML length must remain exact");
+      check(server.sentHeader("Content-Encoding") == "", "raw HTML must not claim gzip");
+      check(server.sentHeader("Cache-Control") == "no-store, no-cache, must-revalidate", "HTML must not be cached");
+      check(server.sentHeader("Vary") == "Accept-Encoding", "static representation must vary on encoding");
+    }
   }
   for (const char* encoding : {"gzip", "br, gzip", "GZip", "gzip;q=0.5", "*;q=1"}) {
     WebServer server;
@@ -963,6 +966,7 @@ def check_embedded_dispatch(compiler: list[str], out: Path) -> None:
     (fixture / "LittleFS.h").write_text(STATIC_FILESYSTEM)
     assets = {
         "/index.html": b"<!doctype html>" + b"current interface " * 200,
+        "/first-use.html": b"<!doctype html>current offline first-use guide",
         "/_app/env.js": b"window.current=true;",
         "/_app/env.js.gz": gzip.compress(b"window.current=true;", mtime=0),
         "/_app/immutable/current.js.gz": gzip.compress(b"currentJavaScript();" * 100, mtime=0),

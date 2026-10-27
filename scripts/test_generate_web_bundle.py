@@ -74,7 +74,7 @@ class WebBundleTests(unittest.TestCase):
             bundle.validate(self.root)
 
     def test_missing_route_or_app_entry_cannot_be_stamped(self):
-        for name in ('profiles.html', '_app/immutable/entry/app.fixture.js.gz'):
+        for name in ('profiles.html', 'first-use.html', '_app/immutable/entry/app.fixture.js.gz'):
             with self.subTest(name=name):
                 path = self.root / 'interface/build' / name
                 old = path.read_bytes()

@@ -113,6 +113,10 @@ describe('root layout', () => {
         expect(displayLinks.every((link) => link.getAttribute('aria-current') === 'page')).toBe(true);
         expect(screen.getAllByRole('link', { name: 'Profiles' }).every((link) => !link.hasAttribute('aria-current'))).toBe(true);
         expect(screen.queryByRole('link', { name: 'Logs' })).not.toBeInTheDocument();
+        for (const link of screen.getAllByRole('link', { name: 'First use' })) {
+            expect(link).toHaveAttribute('href', '/first-use.html');
+            expect(link).toHaveAttribute('data-sveltekit-reload');
+        }
 
         unmount();
     });

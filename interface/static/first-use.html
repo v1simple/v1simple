@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>First use · V1Simple</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; color: #f4f1fa; background: #111017; --card: #1c1925; --line: #42394f; --muted: #c7bed4; --accent: #d6b8ff; }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body { margin: 0; line-height: 1.6; }
+    main { max-width: 62rem; margin: auto; padding: 2rem 1.25rem 3rem; }
+    h1, h2, h3, p { margin: 0 0 .75rem; }
+    h1 { font-size: clamp(2rem, 6vw, 3.2rem); letter-spacing: -.04em; line-height: 1.15; }
+    h2 { font-size: 1.55rem; line-height: 1.25; }
+    h3 { font-size: 1.05rem; }
+    button, input { font: inherit; }
+    button { padding: .7rem 1rem; border: 1px solid var(--line); border-radius: .7rem; background: var(--card); color: inherit; cursor: pointer; }
+    button:hover { border-color: var(--accent); }
+    button[aria-current="step"], button[aria-pressed="true"] { background: #3e2c58; border-color: var(--accent); }
+    :focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
+    .eyebrow { color: var(--accent); font-size: .8rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+    .muted, small { color: var(--muted); }
+    .intro { max-width: 47rem; margin: 1rem 0 1.5rem; }
+    .steps, .buttons { display: flex; flex-wrap: wrap; gap: .65rem; }
+    .steps { margin: 1.5rem 0; }
+    .steps button { flex: 1 1 11rem; text-align: left; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 1rem; padding: clamp(1.1rem, 3vw, 1.8rem); margin: 1rem 0; }
+    .note { border-left: 3px solid var(--accent); padding: .15rem 0 .15rem 1rem; margin: 1.25rem 0; }
+    .note p:last-child, .card p:last-child { margin-bottom: 0; }
+    fieldset { border: 0; margin: 1rem 0; padding: 0; }
+    legend { font-weight: 600; margin-bottom: .75rem; }
+    .choices { display: grid; grid-template-columns: repeat(3, 1fr); gap: .75rem; }
+    .choice { display: flex; align-items: flex-start; gap: .7rem; padding: 1rem; border: 1px solid var(--line); border-radius: .75rem; cursor: pointer; }
+    .choice:has(input:checked) { border-color: var(--accent); background: #30243f; }
+    .choice input { accent-color: var(--accent); margin-top: .4rem; }
+    .choice strong, .choice small { display: block; }
+    .mode-advice { padding-top: .5rem; }
+    .example { background: #08090d; border: 2px solid #62596e; border-radius: 1.25rem; padding: 1.25rem; margin: 1rem 0; }
+    .example-top { display: flex; justify-content: space-between; flex-wrap: wrap; gap: .5rem; color: #d4c9e0; font-size: .85rem; }
+    .example-main { display: flex; justify-content: center; align-items: center; gap: clamp(1rem, 5vw, 3rem); min-height: 10rem; }
+    .arrow { width: clamp(3rem, 10vw, 5rem); height: 5rem; fill: #ffb876; flex-shrink: 0; }
+    .arrow.rear { transform: rotate(180deg); fill: #ff8a98; }
+    .band { color: #ffb876; font-size: clamp(2.8rem, 10vw, 4.5rem); font-weight: 750; line-height: 1.1; }
+    .band.ka { color: #ff8a98; }
+    .frequency { color: #ddd7e6; font-variant-numeric: tabular-nums; }
+    .example-bottom { display: flex; justify-content: space-between; flex-wrap: wrap; gap: .5rem; border-top: 1px solid #413947; padding-top: .75rem; }
+    .example-bottom strong { color: #f4f1fa; }
+    .lesson { min-height: 4.5rem; }
+    .controls { display: grid; grid-template-columns: minmax(10rem, 1fr) 2fr; margin: 1rem 0 0; }
+    .controls dt, .controls dd { margin: 0; padding: .85rem 0; border-top: 1px solid var(--line); }
+    .controls dt { font-weight: 650; padding-right: 1rem; }
+    .checks { padding-left: 1.4rem; }
+    .checks li { margin: .7rem 0; padding-left: .25rem; }
+    .footer { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; margin-top: 1.5rem; }
+    .footer .primary { background: #d6b8ff; color: #23142f; border-color: #d6b8ff; font-weight: 650; }
+    details { margin: 1.25rem 0; }
+    summary { cursor: pointer; font-weight: 650; }
+    details p { margin-top: .75rem; }
+    @media (max-width: 40rem) { .choices { grid-template-columns: 1fr; } .controls { display: block; } .controls dt { padding-bottom: .15rem; } .controls dd { border: 0; padding-top: 0; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="eyebrow">V1Simple · First use</p>
+      <h1>Know your display<br>before your first drive.</h1>
+      <p class="intro muted">Choose a setup, explore a few examples, then check the real device while parked. This guide works offline and never changes your settings.</p>
+    </header>
+
+    <nav class="steps" id="step-nav" aria-label="Guide steps" hidden>
+      <button type="button" data-go="0" aria-current="step">1 · Choose your setup</button>
+      <button type="button" data-go="1">2 · Learn the display</button>
+      <button type="button" data-go="2">3 · Check the real device</button>
+    </nav>
+
+    <section class="card" data-step="0" aria-labelledby="setup-title">
+      <p class="eyebrow">Step 1 of 3</p>
+      <h2 id="setup-title" tabindex="-1">Choose your setup</h2>
+      <p>Start with the display and your V1 Gen 2. Add the optional phone or speed connection only when you need it.</p>
+      <fieldset>
+        <legend>Which setup would you like to learn about?</legend>
+        <div class="choices">
+          <label class="choice"><input type="radio" name="setup" value="display" checked><span><strong>Display only</strong><small>V1Simple connects to your detector.</small></span></label>
+          <label class="choice"><input type="radio" name="setup" value="proxy"><span><strong>Proxy / App</strong><small>Use a compatible phone app through V1Simple.</small></span></label>
+          <label class="choice"><input type="radio" name="setup" value="obd"><span><strong>OBD</strong><small>Use a supported adapter for vehicle speed.</small></span></label>
+        </div>
+      </fieldset>
+      <p class="muted"><strong>This choice changes the guide only.</strong> To save an operating mode, open Dashboard in the maintenance interface.</p>
+      <div class="mode-advice" id="mode-advice" aria-live="polite">
+        <h3>Start with Display only</h3>
+        <p>In Dashboard, choose Display only and save if you need to change the current mode. Turn on your V1 Gen 2 with Bluetooth enabled; V1Simple connects during normal operation.</p>
+      </div>
+      <p class="note">Phone proxy and OBD are alternative operating modes. They do not run together. Optional GPS is configured separately in GPS; live GPS acquisition begins after leaving maintenance.</p>
+      <details>
+        <summary>Opening maintenance for the first time</summary>
+        <p>After installing, press RESET. Hold BOOT for about four seconds, then release to restart into maintenance. Join the V1-Simple WiFi network with password setupv1simple and open http://192.168.35.5 in your browser. Use your saved or SD-restored WiFi details if they differ. Stay connected if your phone reports no internet.</p>
+        <p>Change the default WiFi password in Settings. The maintenance interface is available only during a maintenance session.</p>
+      </details>
+      <div class="footer" data-enhanced hidden><span class="muted">No setting has been saved by this guide.</span><button class="primary" type="button" data-go="1">Learn the display →</button></div>
+    </section>
+
+    <section class="card" data-step="1" aria-labelledby="learn-title">
+      <p class="eyebrow">Step 2 of 3</p>
+      <h2 id="learn-title" tabindex="-1">Read the alert, then its direction</h2>
+      <p>The band, direction and strength describe the observed signal. A retained alert is a reminder after a signal clears; a new live alert takes priority.</p>
+      <div class="buttons" role="group" aria-label="Illustrated alert scenes" data-enhanced hidden>
+        <button type="button" data-scene="live" aria-pressed="true">Live front alert</button>
+        <button type="button" data-scene="retained" aria-pressed="false">After it clears</button>
+        <button type="button" data-scene="new" aria-pressed="false">New rear alert</button>
+      </div>
+      <!-- Teaching annotations are not screen labels. Values mirror the authored
+           K/Ka front/rear cases in display_preview_module.cpp. This is not a renderer. -->
+      <div class="example" role="img" id="example" aria-label="Illustration: live K alert from the front, 24.150 GHz">
+        <div class="example-top"><span>SCHEMATIC EXAMPLE · NOT LIVE DATA</span><span id="signal-state">Live signal</span></div>
+        <div class="example-main">
+          <svg class="arrow" id="direction-arrow" viewBox="0 0 64 80" aria-hidden="true"><path d="M32 2 62 32H44V78H20V32H2Z"/></svg>
+          <div><div class="band" id="band">K</div><div class="frequency" id="frequency">24.150 GHz</div></div>
+        </div>
+        <div class="example-bottom"><strong id="direction">From the front</strong><span id="example-audio">Illustration: unmuted</span></div>
+      </div>
+      <div class="lesson" aria-live="polite"><p id="scene-explanation">The front arrow points toward a live K-band signal. A direction describes where the signal was received; it does not identify its source.</p></div>
+      <button type="button" id="mute-example" aria-pressed="false" data-enhanced hidden>Mute illustration</button>
+      <p class="muted" style="margin-top: .75rem">The mute button changes this illustration only. It plays no sound and sends nothing to your detector. Muting an alert does not remove it from the display; actual sound follows your configured audio and quiet rules.</p>
+      <p class="note">These simplified scenes teach meaning, not exact pixels or timing. Your colors and layout can differ. A retained alert appears only when persistence is enabled. A live ALP laser alert owns the main display, with concurrent V1 radar alongside it.</p>
+
+      <h3>Controls on the actual device</h3>
+      <dl class="controls">
+        <dt>One screen tap</dt><dd>During an active V1 alert, requests mute or unmute. The alert stays visible. This is not an ALP-only mute control.</dd>
+        <dt>Three screen taps</dt><dd>When there is no live V1 or ALP alert, cycles to the next of the three Auto-Push slots. Tap in a short sequence. To confirm a profile applied, reopen maintenance and check Profiles or Auto-Push.</dd>
+        <dt>Brief BOOT press</dt><dd>Opens brightness and voice-volume sliders. Press again to close and request a save. A live alert can close the sliders so you can see it.</dd>
+        <dt>Two quick BOOT presses</dt><dd>Toggles stealth: a simple speed view while connected and idle. “-- MPH” means speed is unavailable. Alerts still take the display.</dd>
+        <dt>Hold BOOT about 4 seconds, then release</dt><dd>Restarts into maintenance. Release at about four seconds; continuing to ten seconds can trigger OBD pairing when eligible.</dd>
+      </dl>
+      <div class="footer" data-enhanced hidden><button type="button" data-go="0">← Setup</button><button class="primary" type="button" data-go="2">Check the real device →</button></div>
+    </section>
+
+    <section class="card" data-step="2" aria-labelledby="check-title">
+      <p class="eyebrow">Step 3 of 3</p>
+      <h2 id="check-title" tabindex="-1">Check the real device while parked</h2>
+      <p>This page cannot see your detector. Work through these observations on the actual unit; completing the examples is not a readiness test.</p>
+      <ol class="checks">
+        <li><strong>Return to normal operation.</strong> Use your browser’s Back button to return to maintenance, then choose Exit at the top of that interface. If you opened this guide from the public installer, open maintenance first. V1Simple restarts and its maintenance WiFi closes.</li>
+        <li><strong>Observe the detector connection.</strong> Power on your V1 Gen 2 with Bluetooth enabled. In the basic V1 setup, SCAN should give way to the normal resting display once connected. Stealth can show speed or “-- MPH” instead. A live ALP display can appear without a V1 connection, so it is not V1 connection proof.</li>
+        <li><strong>Try the basic controls.</strong> While parked, briefly press BOOT to open and close the sliders. If you choose to test a profile change with three idle taps, check its actual outcome after returning to maintenance: “Sent, not verified” is different from “Applied and verified.”</li>
+        <li><strong>Check only the accessories you use.</strong> Follow the selected mode’s setup in maintenance. GPS needs normal operation and a sky view to acquire a fix. Saved configuration alone does not show that a phone, OBD adapter or GPS has connected.</li>
+      </ol>
+      <details open>
+        <summary>If SCAN remains</summary>
+        <p>Check the V1 is powered, nearby and has Bluetooth enabled. In Proxy / App mode, connect the phone app to the configured V1Simple proxy rather than directly to the detector. Return to maintenance and review Dashboard and Devices if the detector still does not connect.</p>
+        <p>Keep your saved settings while checking the connection; an erase is not needed for these steps.</p>
+      </details>
+      <p class="note"><strong>This guide does not keep maintenance alive.</strong> If the session times out while you read, reopen it with the four-second BOOT hold and release, then reconnect. The guide itself remains readable offline.</p>
+      <p class="muted">You can revisit this guide anytime from First use in maintenance.</p>
+      <div class="footer" data-enhanced hidden><button type="button" data-go="1">← Display & controls</button><button type="button" data-go="0">Review the guide</button></div>
+    </section>
+    <p class="muted">Use your browser’s Back button to return to the page that opened this guide.</p>
+    <noscript><p class="note">JavaScript is off. All three steps are shown; the illustration stays on the live front-alert example.</p></noscript>
+  </main>
+  <script>
+    (() => {
+      const steps = Array.from(document.querySelectorAll('[data-step]'));
+      const stepButtons = Array.from(document.querySelectorAll('#step-nav [data-go]'));
+      function showStep(index, focus = true) {
+        steps.forEach((step, i) => { step.hidden = i !== index; });
+        stepButtons.forEach((button, i) => {
+          if (i === index) button.setAttribute('aria-current', 'step');
+          else button.removeAttribute('aria-current');
+        });
+        if (focus) steps[index].querySelector('h2').focus();
+      }
+      document.querySelectorAll('[data-go]').forEach((button) => {
+        button.addEventListener('click', () => showStep(Number(button.dataset.go)));
+      });
+      const advice = {
+        display: ['Start with Display only', 'In Dashboard, choose Display only and save if you need to change the current mode. Turn on your V1 Gen 2 with Bluetooth enabled; V1Simple connects during normal operation.'],
+        proxy: ['Connect the app through V1Simple', 'In Dashboard, choose Proxy / App and save. After normal startup, connect your compatible app to the configured proxy name (V1-Proxy by default), not directly to the V1. OBD is disabled in this mode.'],
+        obd: ['Set up the adapter after the V1', 'In Dashboard, choose OBD and save. Open OBD in maintenance for adapter selection and pairing instructions. Return to normal operation to check its connection; the phone proxy is disabled in this mode.']
+      };
+      document.querySelectorAll('input[name="setup"]').forEach((input) => {
+        input.addEventListener('change', () => {
+          const [title, text] = advice[input.value];
+          document.querySelector('#mode-advice h3').textContent = title;
+          document.querySelector('#mode-advice p').textContent = text;
+        });
+      });
+      const scenes = {
+        live: { state: 'Live signal', band: 'K', frequency: '24.150 GHz', rear: false, explanation: 'The front arrow points toward a live K-band signal. A direction describes where the signal was received; it does not identify its source.' },
+        retained: { state: 'Retained after clearing', band: 'K', frequency: '24.150 GHz', rear: false, explanation: 'The K signal has cleared. If persistence is enabled, its information can remain briefly as a reminder. This does not mean the detector still receives that signal.' },
+        new: { state: 'New live signal', band: 'Ka', frequency: '35.500 GHz', rear: true, explanation: 'A new live Ka signal arrives from behind. It takes priority over the earlier retained K alert. Live information owns the display.' }
+      };
+      document.querySelectorAll('[data-scene]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const scene = scenes[button.dataset.scene];
+          document.querySelectorAll('[data-scene]').forEach((other) => other.setAttribute('aria-pressed', String(other === button)));
+          document.getElementById('signal-state').textContent = scene.state;
+          document.getElementById('band').textContent = scene.band;
+          document.getElementById('band').classList.toggle('ka', scene.rear);
+          document.getElementById('frequency').textContent = scene.frequency;
+          document.getElementById('direction').textContent = scene.rear ? 'From behind' : 'From the front';
+          document.getElementById('direction-arrow').classList.toggle('rear', scene.rear);
+          document.getElementById('scene-explanation').textContent = scene.explanation;
+          document.getElementById('example').setAttribute('aria-label', `Illustration: ${scene.state.toLowerCase()}, ${scene.band}, ${scene.rear ? 'from behind' : 'from the front'}, ${scene.frequency}`);
+        });
+      });
+      document.getElementById('mute-example').addEventListener('click', (event) => {
+        const button = event.currentTarget;
+        const muted = button.getAttribute('aria-pressed') !== 'true';
+        button.setAttribute('aria-pressed', String(muted));
+        button.textContent = muted ? 'Unmute illustration' : 'Mute illustration';
+        document.getElementById('example-audio').textContent = muted ? 'Illustration: muted · still visible' : 'Illustration: unmuted';
+      });
+      document.getElementById('step-nav').hidden = false;
+      document.querySelectorAll('[data-enhanced]').forEach((element) => { element.hidden = false; });
+      showStep(0, false);
+    })();
+  </script>
+</body>
+</html>

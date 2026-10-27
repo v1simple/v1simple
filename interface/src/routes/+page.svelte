@@ -197,6 +197,11 @@
 <div class="page-stack">
     <PageHeader title="Dashboard" subtitle="Maintenance system status and saved configuration." />
 
+    <div class="surface-note flex flex-wrap items-center justify-between gap-3">
+        <p>New to V1Simple? Learn the setup, display and controls before your first drive.</p>
+        <a class="btn btn-outline btn-sm" href="/first-use.html" data-sveltekit-reload>First use guide</a>
+    </div>
+
     {#if $runtimeStatusLoading}
         <div class="surface-hero" role="status" aria-live="polite">
             <div class="state-loading stack">

@@ -28,6 +28,11 @@ maintenance mode.
 For quick brightness and volume changes, briefly press **BOOT**, use the
 screen sliders, then press **BOOT** again to save and close.
 
+Choose **First use** in the maintenance menu or the browser installer's finish
+steps to practice reading alerts and learn the controls. The examples stay in
+your browser and do not change device settings; the guide ends with checks on
+your actual display.
+
 ## Updating
 
 **Update and preserve data** updates both firmware and the web interface while

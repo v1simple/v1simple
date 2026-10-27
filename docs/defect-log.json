@@ -1,0 +1,154 @@
+{
+  "audit_date": "2026-10-27",
+  "baseline": "641a627",
+  "status": "complete_host_audit",
+  "scope": [
+    "Detector and ALP input, alert display and speech",
+    "Driving loop, connections, speed sources, touch and power",
+    "Settings, profiles, maintenance interface and storage recovery",
+    "Automatic mute, volume fade and restoration"
+  ],
+  "completion_rule": "Complete one pass through these supported behavior paths, repair every confirmed defect recorded here, and run the relevant regression checks. Unobserved hardware behavior is not a confirmed pass.",
+  "completed_before_audit": [
+    {
+      "defect": "WiFi connection test could report success for a different network after its saved slot changed.",
+      "commit": "9496a93",
+      "regression": "interface/src/routes/settings/page.test.js"
+    },
+    {
+      "defect": "Speed-volume restoration confirmation could cancel an identical retry and disconnect the detector.",
+      "commit": "641a627",
+      "regression": "test/test_ble_command_transport/test_ble_command_transport.cpp",
+      "proof": "Before: 4 of 26 command cases failed. After: 26 passed, plus 101 related cases. Host tests with real command and connection owners."
+    }
+  ],
+  "findings": [
+    {
+      "id": "A01",
+      "status": "repaired_and_verified_on_host",
+      "defect": "Volume-fade restoration confirmation can abandon an identical retry and disconnect the detector.",
+      "trigger": "An alert clears or a distinct alert arrives after fading; restore confirmation overlaps an admitted retry.",
+      "expected": "Restore the original volume pair and keep the detector connected.",
+      "observed": "Clear cancels the retry immediately; a continuing new alert leaves it unharvested until the command timeout disconnects the session.",
+      "owner": "src/modules/quiet/quiet_coordinator_templates.h and src/modules/volume_fade/volume_fade_module.cpp",
+      "before": "Real parser, fade, quiet, command and connection owners: both overlap cases fail; ordinary non-overlap timing passes.",
+      "evidence_level": "Host reproduction; radio and worker scheduling modeled.",
+      "commit": "b05a80b",
+      "regression": "test/test_ble_command_transport/test_ble_command_transport.cpp",
+      "after": "All six overlap variants for this owner pass, including retry pending, running and completed before harvest. Correct command values, original connection session, no duplicate writes and subsequent owner admission are verified.",
+      "related_checks": "40 command cases pass (12 failures before the two repairs), plus 176 quiet, fade, box and touch cases. AddressSanitizer and UndefinedBehaviorSanitizer enabled.",
+      "local_before_log": ".artifacts/audit-20261027/quiet/policy-before.log",
+      "local_after_log": ".artifacts/audit-20261027/quiet/test_ble_command_transport-after.log"
+    },
+    {
+      "id": "A02",
+      "status": "repaired_and_verified_on_host",
+      "defect": "Frequency-box mute or unmute confirmation can abandon an identical retry and disconnect the detector.",
+      "trigger": "A canonical audio-state confirmation arrives while an automatic mute or release retry remains admitted.",
+      "expected": "Finish the matching retry, preserve the requested audio state and keep the connection.",
+      "observed": "Mute confirmation leaves the command unharvested until timeout; unmute confirmation cancels it and closes the session.",
+      "owner": "src/modules/quiet/quiet_coordinator_module.cpp",
+      "before": "Real parser, box policy, quiet, command and connection owners: both overlap cases fail; ordinary mute confirmation passes.",
+      "evidence_level": "Host reproduction; radio and worker scheduling modeled.",
+      "commit": "b05a80b",
+      "regression": "test/test_ble_command_transport/test_ble_command_transport.cpp",
+      "after": "All six overlap variants for this owner pass, including retry pending, running and completed before harvest. Correct command values, original connection session, no duplicate writes and subsequent owner admission are verified.",
+      "related_checks": "40 command cases pass (12 failures before the two repairs), plus 176 quiet, fade, box and touch cases. AddressSanitizer and UndefinedBehaviorSanitizer enabled.",
+      "local_before_log": ".artifacts/audit-20261027/quiet/policy-before.log",
+      "local_after_log": ".artifacts/audit-20261027/quiet/test_ble_command_transport-after.log"
+    },
+    {
+      "id": "A03",
+      "status": "repaired_and_verified_on_host",
+      "defect": "Local settings sliders stop OBD polling and make healthy vehicle speed expire.",
+      "trigger": "Keep the local settings sliders open for more than the OBD speed freshness window while speed mute is enabled.",
+      "expected": "Presentation ownership should preserve live OBD polling and speed-based audio policy.",
+      "observed": "The sliders branch performs zero OBD polls; after three seconds selected speed becomes invalid and low-speed mute releases. The first alert-preempted driving frame also lacks speed.",
+      "owner": "src/runtime_coordinator.h",
+      "before": "Real touch/BOOT, loop coordinator, OBD parser/state machine, speed selector and mute owner: normal control polls 8 times over 4 seconds; sliders and alert-exit cases fail.",
+      "evidence_level": "Host reproduction with real touch, OBD, selector and mute owners. BLE responses and clocks modeled; connection-cycle context is substituted in the new fixture and covered by separate tests/source review.",
+      "commit": "5aa1f95",
+      "regression": "test/fixtures/drive_runtime_policies/slider_obd.cpp",
+      "after": "All four cases pass: normal driving, sliders, alert preemption and true adapter-response loss. Before: the two sliders cases failed.",
+      "related_checks": "113 related driving, OBD, connection-cycle, BLE and ordering cases pass; 20 power cases and battery/GPS lifecycle scripts also pass.",
+      "local_before_log": ".artifacts/audit-20261027/runtime/slider-obd-durable-before.log",
+      "local_after_log": ".artifacts/audit-20261027/runtime/drive-after.log"
+    }
+  ],
+  "coverage": [
+    {
+      "area": "Alerts, ALP, display and speech",
+      "result": "No additional confirmed defect",
+      "checks": "381 existing cases and four mixed ALP/V1 probes passed with ASan/UBSan.",
+      "boundaries": [
+        "BLE queue and parser",
+        "Alert lifetime and receipt-time persistence",
+        "ALP sessions and mixed display ownership",
+        "Voice selection, cancellation and playback receipts"
+      ],
+      "local_evidence": ".artifacts/audit-20261027/alerts/"
+    },
+    {
+      "area": "Settings, profiles and storage recovery",
+      "result": "No additional confirmed defect",
+      "checks": "300 settings/NVS/recovery cases, 38 USB/profile integration cases and 237 Settings/Profiles/Auto-Push UI cases passed. C++ suites used ASan/UBSan.",
+      "boundaries": [
+        "Persisted settings rollback and HTTP failure result",
+        "Omitted profile metadata preservation",
+        "Backup/catalog journal recovery and modeled reboot",
+        "Maintenance restore completion and UI draft preservation"
+      ],
+      "local_evidence": ".artifacts/audit-20261027/settings/"
+    },
+    {
+      "area": "Automatic audio controls",
+      "result": "A01 and A02 repaired; no confirmed defect left open",
+      "checks": "216 cases passed after repair with ASan/UBSan.",
+      "boundaries": [
+        "Speed mute and original-volume restoration",
+        "Fade and distinct-threat restoration",
+        "Frequency-box mute/unmute ownership",
+        "Manual/profile/phone supersession",
+        "Real asynchronous command completion, cancellation and timeout"
+      ],
+      "local_evidence": ".artifacts/audit-20261027/quiet/"
+    },
+    {
+      "area": "Driving, connections, speed, touch and power",
+      "result": "A03 repaired; no additional confirmed defect",
+      "checks": "117 driving/connection cases, 20 power cases, battery-input and GPS-ingestion scripts passed.",
+      "boundaries": [
+        "Normal/sliders loop ordering and alert preemption",
+        "BLE followup, proxy sessions and quiescence",
+        "OBD polling, recovery, arbitration and speed expiry",
+        "Power warning, shutdown and wake logic"
+      ],
+      "local_evidence": ".artifacts/audit-20261027/runtime/"
+    }
+  ],
+  "remaining_evidence_limits": [
+    "This is a bounded supported-behavior audit, not proof that every possible defect has been eliminated.",
+    "No physical detector/vehicle, BLE/UART timing, panel pixels, audible output, USB transfer or SD/flash power-loss durability validation was performed.",
+    "Builds verify the repaired source tree, not a published release. No firmware was uploaded and no commits were pushed.",
+    "Local evidence logs are ignored artifacts. Durable regression fixtures and repair commits are tracked in the repository."
+  ],
+  "repair_source_revision": "5aa1f95",
+  "open_confirmed_defects": 0,
+  "build_checks": [
+    {
+      "command": "cd interface && npm run build",
+      "result": "passed",
+      "local_log": ".artifacts/audit-20261027/frontend-build.log"
+    },
+    {
+      "command": "pio run -e waveshare-349 -j 4",
+      "result": "passed",
+      "local_log": ".artifacts/audit-20261027/firmware-build.log"
+    },
+    {
+      "command": "pio run -e esp32-s3-car-install -j 4",
+      "result": "passed",
+      "local_log": ".artifacts/audit-20261027/car-firmware-build.log"
+    }
+  ]
+}

@@ -12,6 +12,7 @@ import itertools
 import json
 import os
 import select
+import shlex
 import stat
 import struct
 import subprocess
@@ -631,6 +632,87 @@ def test_bench_entrypoint_keeps_raw_completion_separate_from_visual_grading() ->
         "recorder_stats",
     ):
         assert_true(retired not in source, f"raw bench still grades {retired}")
+
+
+def test_startup_progress_is_flushed_before_maintenance_usb_and_upload() -> None:
+    class ProgressOutput(io.StringIO):
+        flushed = ""
+
+        def flush(self) -> None:
+            self.flushed = self.getvalue()
+
+    output = ProgressOutput()
+    observed = []
+
+    def require_progress(phase: str) -> None:
+        assert_true(phase in output.flushed.splitlines()[-1], output.getvalue())
+        observed.append(phase)
+
+    def capture(*_args, **_kwargs):
+        require_progress("capturing settings")
+        return {}
+
+    def port(*_args):
+        require_progress("waiting for the USB serial device")
+        return "/dev/test"
+
+    def upload(*_args):
+        require_progress("building and uploading firmware")
+        raise subprocess.CalledProcessError(2, "fixture upload")
+
+    args = SimpleNamespace(
+        camera=False, git_sha=GIT_SHA, port="", skip_web=False,
+        presentation_api_base_url="http://fixture.invalid",
+    )
+    with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(output), \
+            mock.patch.object(run_window_module, "V1RadioLease") as lease, \
+            mock.patch.object(run_window_module, "wait_for_presentation_configuration", capture), \
+            mock.patch.object(run_window_module, "wait_for_port", port), \
+            mock.patch.object(run_window_module, "run_upload", upload):
+        lease.return_value.__enter__.return_value.fd = 3
+        try:
+            run_window_module.collect_live(args, Path(tmp), {})
+        except subprocess.CalledProcessError:
+            pass
+        else:
+            raise AssertionError("failed upload unexpectedly continued")
+    assert_true(len(observed) == 3, str(observed))
+
+
+def test_bench_terminal_filters_show_sanitized_upload_failure() -> None:
+    prefix_args = []
+    for line in (ROOT / "bench.sh").read_text(encoding="utf-8").splitlines():
+        if line.strip().startswith("--terminal-prefix "):
+            prefix_args.extend(shlex.split(line.strip().rstrip("\\")))
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        child = (
+            "import sys\n"
+            "print('[bench] fixture progress')\n"
+            "print('verbose compiler details')\n"
+            "print('Uploading firmware.bin')\n"
+            "print('ERROR: No serial data received on /dev/cu.usbmodemFIXTURE', file=sys.stderr)\n"
+            "print('*** [upload] Error 2', file=sys.stderr)\n"
+            "sys.exit(9)\n"
+        )
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "scripts/bench/run_logged.py"),
+             "--stdout", str(root / "out.log"), "--stderr", str(root / "err.log"),
+             "--combined", str(root / "combined.log"), "--quiet", *prefix_args,
+             "--", sys.executable, "-c", child],
+            capture_output=True, text=True, timeout=10,
+        )
+        terminal = result.stdout + result.stderr
+        combined = (root / "combined.log").read_text(encoding="utf-8")
+        assert_true(result.returncode == 9, terminal)
+        for message in ("[bench] fixture progress", "Uploading firmware.bin",
+                        "ERROR: No serial data received", "*** [upload] Error 2"):
+            assert_true(message in terminal, terminal)
+        assert_true("verbose compiler details" not in terminal, terminal)
+        assert_true("verbose compiler details" in combined, combined)
+        for text in (terminal, combined):
+            assert_true("/dev/cu.usbmodemFIXTURE" not in text, text)
+            assert_true("/dev/<redacted-device>" in text, text)
 
 
 def test_raw_bench_refuses_a_failed_git_status_check() -> None:
@@ -1648,6 +1730,8 @@ def main() -> int:
     test_radio_lease_excludes_concurrent_owners_and_rejects_symlink_parent()
     test_runner_source_is_external_only_and_serial_is_read_only()
     test_bench_entrypoint_keeps_raw_completion_separate_from_visual_grading()
+    test_startup_progress_is_flushed_before_maintenance_usb_and_upload()
+    test_bench_terminal_filters_show_sanitized_upload_failure()
     test_raw_bench_refuses_a_failed_git_status_check()
     test_agent_handoff_requires_local_prompt_before_collection()
     test_source_identity_check_requires_successful_git_inspection()

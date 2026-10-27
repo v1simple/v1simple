@@ -1664,6 +1664,7 @@ def collect_live(
         presentation_capture_ns: int | None = None
         presentation_api_base_url = getattr(args, "presentation_api_base_url", "")
         if presentation_api_base_url:
+            print("[bench] capturing settings from maintenance mode", flush=True)
             presentation_configuration = wait_for_presentation_configuration(
                 presentation_api_base_url,
                 reconnect=lambda remaining: try_join_maintenance_wifi(
@@ -1671,14 +1672,21 @@ def collect_live(
                 ),
             )
             presentation_capture_ns = time.monotonic_ns()
+        print("[bench] waiting for the USB serial device", flush=True)
         port = wait_for_port(args.port)
+        print("[bench] building and uploading firmware; details in replay/run.log", flush=True)
         run_upload(port, args.skip_web)
         artifacts["build_upload"] = retain_build_upload_artifacts(
             out_dir,
             BUILD_OUTPUT_DIR,
             upload_performed=True,
         )
+        print("[bench] firmware uploaded; waiting for USB to return", flush=True)
         port = wait_for_port(port, 30)
+        print(
+            f"[bench] allowing {args.post_upload_settle_seconds}s for the device to settle",
+            flush=True,
+        )
         deadline = time.monotonic() + args.post_upload_settle_seconds
         while time.monotonic() < deadline:
             time.sleep(min(1.0, deadline - time.monotonic()))
@@ -1711,6 +1719,7 @@ def collect_live(
         completion: dict[str, Any] = {}
         try:
             if camera is not None:
+                print("[bench] checking camera capture", flush=True)
                 preflight = run_camera_preflight(camera)
                 if preflight.get("result") != "PASS":
                     try:
@@ -1727,6 +1736,7 @@ def collect_live(
                     )
                     raise CameraPreflightFailure(preflight, camera_result)
 
+            print("[bench] resetting the device and verifying firmware identity", flush=True)
             observer = BenchSerial(port, args.baud, out_dir / "bench_serial.log", timeline)
             observer.reset_for_boot()
             establish_serial_boundary(observer, args.ready_timeout_seconds, require_explicit_reset=True)
@@ -1745,8 +1755,10 @@ def collect_live(
                     capture_host_monotonic_ns=presentation_capture_ns,
                 )
 
+            print("[bench] starting replay and waiting for the device connection", flush=True)
             emulator.start()
             emulator.wait_for_transport(args.ready_timeout_seconds)
+            print(f"[bench] recording external window for {args.duration_seconds}s", flush=True)
             started = time.monotonic()
             timeline.record("external_window_started", duration_seconds=args.duration_seconds)
             next_progress = started + RUN_PROGRESS_INTERVAL_S

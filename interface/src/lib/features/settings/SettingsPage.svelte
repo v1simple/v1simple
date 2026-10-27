@@ -1389,6 +1389,8 @@
 
         <SettingsBackupCard
             {backingUpNow}
+            mutationBusy={saving || restoring || backingUpNow || wifiToggleInFlight ||
+                wifiNetworkActionInFlight || wifiOrdering || wifiScan.saving}
             onbackupNowToSd={backupNowToSd}
             ondownloadBackup={downloadBackup}
             {restoreFile}

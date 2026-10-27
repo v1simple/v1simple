@@ -171,6 +171,8 @@ void test_save_deferred_backup_persists_nvs_and_writes_snapshot_via_writer() {
     manager.saveDeferredBackup();
 
     TEST_ASSERT_EQUAL_UINT32(2u, manager.backupRevision());
+    TEST_ASSERT_TRUE(manager.recoveryStatus().backupQueued);
+    TEST_ASSERT_FALSE(manager.recoveryStatus().hasWrittenSnapshot);
     TEST_ASSERT_TRUE(deferredSettingsBackupPendingForTest());
     TEST_ASSERT_TRUE(manager.deferredBackupPending());
     TEST_ASSERT_FALSE(manager.deferredBackupRetryScheduled());
@@ -187,9 +189,17 @@ void test_save_deferred_backup_persists_nvs_and_writes_snapshot_via_writer() {
     TEST_ASSERT_EQUAL_UINT(1u, deferredSettingsBackupQueueDepthForTest());
     TEST_ASSERT_EQUAL_UINT32(1u, g_mock_queue_create_state.staticCalls);
     TEST_ASSERT_EQUAL_UINT32(1u, g_mock_task_create_state.capsCalls);
+    TEST_ASSERT_TRUE(manager.recoveryStatus().backupQueued);
+    TEST_ASSERT_FALSE(manager.recoveryStatus().backupWriting); // An idle task is not a write.
 
     TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
     TEST_ASSERT_EQUAL_UINT(0u, deferredSettingsBackupQueueDepthForTest());
+
+    const SettingsRecoveryStatus completed = manager.recoveryStatus();
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(SettingsSaveObservation::Succeeded), static_cast<int>(completed.internalSave));
+    TEST_ASSERT_TRUE(completed.hasWrittenSnapshot);
+    TEST_ASSERT_TRUE(completed.lastWriteMatchesCurrent);
+    TEST_ASSERT_EQUAL_UINT32(manager.backupRevision(), completed.lastWrittenRevision);
 
     JsonDocument backupDoc;
     TEST_ASSERT_TRUE(loadJsonFile(fs, SETTINGS_BACKUP_PATH, backupDoc));
@@ -791,6 +801,11 @@ void test_restore_pending_deferred_backup_preserves_existing_sd_backup() {
     TEST_ASSERT_EQUAL_INT(88, backupDoc["brightness"].as<int>());
     TEST_ASSERT_EQUAL_UINT32(pendingWriter.backupDueRevision(),
                             mock_preferences::getUnsigned(SETTINGS_NS_META, kNvsBackupCompletedRevision, 0));
+    const auto status = pendingWriter.recoveryStatus();
+    TEST_ASSERT_TRUE(status.restorePending);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(BackupWriteObservation::Preserved), static_cast<int>(status.lastAttempt));
+    TEST_ASSERT_FALSE(status.hasWrittenSnapshot);
+    TEST_ASSERT_FALSE(status.lastWriteMatchesCurrent);
 }
 
 void test_restore_pending_deferred_backup_creates_baseline_when_no_valid_sd_backup_exists() {
@@ -871,6 +886,9 @@ void assert_newer_immediate_backup_survives_old_worker(bool oldFirst, bool marke
     const uint32_t due = manager.backupDueRevision();
     const uint32_t completedBeforeOld = mock_preferences::getUnsigned(SETTINGS_NS_META, kNvsBackupCompletedRevision, 0);
     assertBackupBrightness(fs, 99); // Promotion succeeded even when its NVS marker failed.
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(markerFailure ? BackupWriteObservation::Failed : BackupWriteObservation::Written),
+                         static_cast<int>(manager.recoveryStatus().lastAttempt));
+    if (markerFailure) TEST_ASSERT_FALSE(manager.recoveryStatus().lastWriteMatchesCurrent);
     if (!oldFirst) {
         const bool accepted = runDeferredSettingsBackupWriterOnceForTest(storage);
         assertBackupBrightness(fs, 99);
@@ -889,6 +907,10 @@ void assert_newer_immediate_backup_survives_old_worker(bool oldFirst, bool marke
     rebooted.load();
     TEST_ASSERT_EQUAL_UINT8(99, rebooted.get().brightness);
     TEST_ASSERT_FALSE(rebooted.deferredBackupPending());
+    TEST_ASSERT_FALSE(rebooted.recoveryStatus().hasWrittenSnapshot);
+    TEST_ASSERT_FALSE(rebooted.recoveryStatus().lastWriteMatchesCurrent);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(SettingsSaveObservation::Unknown),
+                         static_cast<int>(rebooted.recoveryStatus().internalSave));
 }
 
 void test_old_worker_before_new_immediate_backup() { assert_newer_immediate_backup_survives_old_worker(true, false); }
@@ -966,11 +988,13 @@ void test_completion_holds_sd_lock_and_preserves_request_published_during_old_wr
         void* context;
         bool locked = false;
         bool published = false;
+        bool writingObserved = false;
     } probe{&manager, old.markCompleted, old.completionContext};
     old.completionContext = &probe;
     old.markCompleted = [](uint32_t revision, void* context) {
         auto& probe = *static_cast<CompletionProbe*>(context);
         probe.locked = mock_semaphore_is_held(storage.getSDMutex());
+        probe.writingObserved = probe.manager->recoveryStatus().backupWriting;
         // Model main-task publication while this writer owns SD. No second
         // promotion occurs here: only real NVS intent + a fresh pending request.
         probe.manager->mutableSettings().brightness = 99;
@@ -979,8 +1003,11 @@ void test_completion_holds_sd_lock_and_preserves_request_published_during_old_wr
     };
     TEST_ASSERT_TRUE(processDeferredBackupQueueItem(old, storage));
     TEST_ASSERT_TRUE(probe.locked);
+    TEST_ASSERT_TRUE(probe.writingObserved);
     TEST_ASSERT_TRUE(probe.published);
     TEST_ASSERT_TRUE(manager.deferredBackupPending());
+    TEST_ASSERT_TRUE(manager.recoveryStatus().hasWrittenSnapshot);
+    TEST_ASSERT_FALSE(manager.recoveryStatus().lastWriteMatchesCurrent);
     manager.serviceDeferredBackup(2000);
     TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
     assertBackupBrightness(fs, 99);
@@ -1053,15 +1080,56 @@ void test_failed_persist_and_absent_sd_attempt_do_not_invalidate_queued_snapshot
     manager.mutableSettings().brightness = 99;
     mock_preferences::set_fail_writes_for_key("brightness");
     TEST_ASSERT_FALSE(manager.saveDeferredBackup());
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(SettingsSaveObservation::Failed),
+                         static_cast<int>(manager.recoveryStatus().internalSave));
     mock_preferences::set_fail_writes_for_key(nullptr);
     TEST_ASSERT_EQUAL_UINT32(requestToken, gDeferredSettingsBackupState.requestToken.load());
     storage.reset();
     TEST_ASSERT_FALSE(manager.backupToSD());
+    TEST_ASSERT_FALSE(manager.recoveryStatus().sdMounted);
+    TEST_ASSERT_FALSE(manager.recoveryStatus().lastWriteMatchesCurrent);
     TEST_ASSERT_EQUAL_UINT32(requestToken, gDeferredSettingsBackupState.requestToken.load());
     storage.setFilesystem(&fs, true);
     TEST_ASSERT_TRUE(runDeferredSettingsBackupWriterOnceForTest(storage));
     assertBackupBrightness(fs, 61);
     TEST_ASSERT_FALSE(manager.deferredBackupPending());
+    TEST_ASSERT_FALSE(manager.recoveryStatus().lastWriteMatchesCurrent); // Failed RAM change is not the saved payload.
+}
+
+void test_recovery_status_is_observational_and_profile_changes_invalidate_receipt() {
+    fs::FS fs(g_tempRoot);
+    storage.setFilesystem(&fs, true);
+    TEST_ASSERT_TRUE(profiles.begin(storage));
+    SettingsManager manager(storage, profiles);
+    prepareCurrentBackupSource(manager);
+    TEST_ASSERT_TRUE(manager.backupToSD());
+    TEST_ASSERT_TRUE(manager.recoveryStatus().lastWriteMatchesCurrent);
+
+    const auto reads = mock_preferences::readOnlyBeginCounts();
+    unsigned writes = 0;
+    mock_preferences::afterWrite() = [&writes](const char*) { ++writes; };
+    const std::string backupPath = (g_tempRoot / "v1simple_backup.json").string();
+    fs::mock_set_read_budget_for_full_path(backupPath.c_str(), 1);
+    const auto renames = fs::g_mock_fs_rename_state.renameCalls;
+    const auto queues = deferredSettingsBackupQueueDepthForTest();
+    for (int i = 0; i < 50; ++i) {
+        TEST_ASSERT_TRUE(manager.recoveryStatus().lastWriteMatchesCurrent);
+    }
+    TEST_ASSERT_TRUE(reads == mock_preferences::readOnlyBeginCounts());
+    TEST_ASSERT_EQUAL_UINT(0u, writes);
+    TEST_ASSERT_EQUAL_UINT(1u, mock_fs_detail::g_read_budget_remaining);
+    TEST_ASSERT_EQUAL_UINT(renames, fs::g_mock_fs_rename_state.renameCalls);
+    TEST_ASSERT_EQUAL_UINT(queues, deferredSettingsBackupQueueDepthForTest());
+    mock_preferences::afterWrite() = nullptr;
+    fs::mock_reset_fs_open_state();
+
+    TEST_ASSERT_TRUE(profiles.saveProfile(V1Profile("Later")).success);
+    TEST_ASSERT_FALSE(manager.recoveryStatus().lastWriteMatchesCurrent);
+    TEST_ASSERT_TRUE(manager.backupToSD());
+    TEST_ASSERT_TRUE(manager.recoveryStatus().lastWriteMatchesCurrent);
+    manager.requestDeferredPersist();
+    TEST_ASSERT_TRUE(manager.recoveryStatus().internalSavePending);
+    TEST_ASSERT_FALSE(manager.recoveryStatus().lastWriteMatchesCurrent);
 }
 
 
@@ -1151,6 +1219,7 @@ void test_backup_accepts_empty_unassigned_and_complete_canonical_references() {
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_recovery_status_is_observational_and_profile_changes_invalidate_receipt);
     RUN_TEST(test_littlefs_only_backup_waits_for_sd_without_snapshot_work);
     RUN_TEST(test_unavailable_storage_backup_waits_for_sd_without_snapshot_work);
     RUN_TEST(test_writer_failure_backs_off_without_rebuilding_or_renewing_deadline);

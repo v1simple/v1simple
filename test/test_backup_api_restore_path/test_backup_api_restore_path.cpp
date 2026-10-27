@@ -395,8 +395,51 @@ void test_restore_psram_exhaustion_returns_503_without_apply_or_sync() {
     TEST_ASSERT_EQUAL_UINT32(0u, g_mock_heap_caps_outstanding_allocations);
 }
 
+void test_recovery_status_reports_unknown_and_protected_state_without_building_or_restoring() {
+    WebServer server(80);
+    FakeRuntime fake;
+    auto runtime = makeRuntime(fake);
+    runtime.getRecoveryStatus = [](void*) {
+        SettingsRecoveryStatus status;
+        status.sdMounted = true;
+        status.storageReady = true;
+        status.restorePending = true;
+        status.lastAttempt = BackupWriteObservation::Preserved;
+        status.currentRevision = 9;
+        return status;
+    };
+    BackupApiService::handleApiRecoveryStatus(server, runtime);
+    TEST_ASSERT_EQUAL_INT(200, server.lastStatusCode);
+    JsonDocument doc;
+    TEST_ASSERT_FALSE(deserializeJson(doc, server.lastBody));
+    TEST_ASSERT_EQUAL_STRING("unknown", doc["internal_save"]);
+    TEST_ASSERT_EQUAL_STRING("preserved", doc["last_backup_attempt"]);
+    TEST_ASSERT_TRUE(doc["restore_pending"].as<bool>());
+    TEST_ASSERT_FALSE(doc["last_write_matches_current"].as<bool>());
+    TEST_ASSERT_TRUE(doc["last_written_revision"].isNull());
+    TEST_ASSERT_EQUAL_INT(0, fake.buildDocumentCalls);
+    TEST_ASSERT_EQUAL_INT(0, fake.applyBackupCalls);
+    TEST_ASSERT_EQUAL_INT(0, fake.syncAfterRestoreCalls);
+}
+
+void test_recovery_status_missing_owner_or_memory_fails_closed() {
+    WebServer server(80);
+    FakeRuntime fake;
+    auto runtime = makeRuntime(fake);
+    BackupApiService::handleApiRecoveryStatus(server, runtime);
+    TEST_ASSERT_EQUAL_INT(503, server.lastStatusCode);
+    runtime.getRecoveryStatus = [](void*) { return SettingsRecoveryStatus{}; };
+    g_mock_heap_caps_fail_all_allocations = true;
+    BackupApiService::handleApiRecoveryStatus(server, runtime);
+    g_mock_heap_caps_fail_all_allocations = false;
+    TEST_ASSERT_EQUAL_INT(503, server.lastStatusCode);
+    TEST_ASSERT_FALSE(responseContains(server, "succeeded"));
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_recovery_status_reports_unknown_and_protected_state_without_building_or_restoring);
+    RUN_TEST(test_recovery_status_missing_owner_or_memory_fails_closed);
     RUN_TEST(test_backup_default_uses_cached_snapshot_without_passwords);
     RUN_TEST(test_backup_legacy_include_passwords_query_still_returns_sanitized_cached_export);
     RUN_TEST(test_restore_missing_body_returns_400_without_apply_or_sync);

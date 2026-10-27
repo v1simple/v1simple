@@ -14,6 +14,46 @@
 
 namespace BackupApiService {
 
+void handleApiRecoveryStatus(WebServer& server, const BackupRuntime& runtime) {
+    if (!runtime.getRecoveryStatus) {
+        server.send(503, "application/json", "{\"error\":\"Recovery status unavailable\"}");
+        return;
+    }
+    const SettingsRecoveryStatus status = runtime.getRecoveryStatus(runtime.ctx);
+    PsramJson::Document doc;
+    doc["internal_save"] = status.internalSave == SettingsSaveObservation::Succeeded ? "succeeded" :
+                           status.internalSave == SettingsSaveObservation::Failed ? "failed" : "unknown";
+    const char* attempt = "unknown";
+    switch (status.lastAttempt) {
+    case BackupWriteObservation::Written: attempt = "written"; break;
+    case BackupWriteObservation::Preserved: attempt = "preserved"; break;
+    case BackupWriteObservation::Failed: attempt = "failed"; break;
+    case BackupWriteObservation::Superseded: attempt = "superseded"; break;
+    case BackupWriteObservation::Unavailable: attempt = "unavailable"; break;
+    case BackupWriteObservation::Unknown: break;
+    }
+    doc["last_backup_attempt"] = attempt;
+    doc["internal_save_pending"] = status.internalSavePending;
+    doc["storage_ready"] = status.storageReady;
+    doc["sd_mounted"] = status.sdMounted;
+    doc["recovery_pending"] = status.recoveryPending;
+    doc["restore_pending"] = status.restorePending;
+    doc["backup_queued"] = status.backupQueued;
+    doc["backup_writing"] = status.backupWriting;
+    doc["backup_retry_pending"] = status.backupRetryPending;
+    doc["has_written_snapshot"] = status.hasWrittenSnapshot;
+    doc["last_write_matches_current"] = status.lastWriteMatchesCurrent;
+    doc["current_revision"] = status.currentRevision;
+    if (status.hasWrittenSnapshot) doc["last_written_revision"] = status.lastWrittenRevision;
+    else doc["last_written_revision"] = nullptr;
+    if (doc.overflowed()) {
+        server.send(503, "application/json", "{\"error\":\"Recovery status unavailable\"}");
+        return;
+    }
+    server.sendHeader("Cache-Control", "no-store");
+    sendJsonStream(server, doc);
+}
+
 void feedTaskWatchdog(void* /*ctx*/) {
 #if !defined(UNIT_TEST)
     (void)esp_task_wdt_reset();

@@ -700,6 +700,9 @@ BackupApiService::BackupRuntime WiFiManager::makeBackupRuntime() {
         // ctx
         this,
     };
+    runtime.getRecoveryStatus = [](void* ctx) {
+        return static_cast<WiFiManager*>(ctx)->settings_.recoveryStatus();
+    };
     return runtime;
 }
 

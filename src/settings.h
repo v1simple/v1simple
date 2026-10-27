@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "settings_types.h"
+#include "settings_recovery_status.h"
 
 class StorageManager;
 class V1ProfileManager;
@@ -173,6 +174,7 @@ class SettingsManager {
     bool deferredBackupPending() const;
     bool deferredBackupRetryScheduled() const;
     uint32_t deferredBackupNextAttemptAtMs() const;
+    SettingsRecoveryStatus recoveryStatus() const;
     SettingsBackupApplyResult applyBackupDocument(const JsonDocument& doc, bool deferBackupRewrite,
                                                   const SettingsRestoreWatchdog& watchdog = SettingsRestoreWatchdog{},
                                                   SettingsBackupScope scope = SettingsBackupScope::Full);
@@ -204,6 +206,7 @@ class SettingsManager {
     uint32_t backupRevisionCounter_ = 1;
     uint32_t backupDueRevision_ = 0;
     uint32_t backupCompletedRevision_ = 0;
+    SettingsSaveObservation lastInternalSave_ = SettingsSaveObservation::Unknown;
     bool deferredPersistPending_ = false;
     bool deferredPersistRetryScheduled_ = false;
     uint32_t deferredPersistNextAttemptAtMs_ = 0;

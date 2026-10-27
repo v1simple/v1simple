@@ -70,6 +70,20 @@ sleep current, wake behavior or a future supply sensor's reliability.
 
 ## Graceful persistence and interrupted recovery
 
+The maintenance Backup & Restore card reads `/api/settings/recovery`, a pure
+in-memory `SettingsManager::recoveryStatus()` snapshot. It separates the last
+internal-save result, queued/writing/retry state, and known recovery flags
+(including `restorePending_`). Only an actual synchronous or deferred backup
+write with successful completion bookkeeping creates a receipt in this boot;
+preserving an older recovery copy may advance the existing completion marker
+without creating that receipt. Publication happens before the existing SD lock
+is released. A later change makes the receipt insufficient for current state,
+and a reboot starts with no observed write. Mount flags and these observations
+do not establish current card contents or media health; polling performs no
+storage I/O or recovery. `test_settings_deferred_backup` and
+`test_backup_api_restore_path` cover the owning boundaries, and
+`SettingsBackupCard.test.js` covers pending/unknown labels and stale responses.
+
 Drive shutdown first releases competing event/health/settings writers through
 the shared preparation helper. It then flushes a pending detector snapshot and
 recency through `DeviceStore`, taking the nonblocking SD lock when applicable.

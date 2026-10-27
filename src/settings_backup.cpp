@@ -8,9 +8,90 @@
 
 #include <atomic>
 #include <esp_heap_caps.h>
+#ifdef UNIT_TEST
+#include <mutex>
+#endif
 
 namespace {
-void publishBackupRequest();
+uint32_t publishBackupRequest();
+
+struct BackupObservations {
+    BackupWriteObservation lastAttempt = BackupWriteObservation::Unknown;
+    uint32_t attemptsInProgress = 0;
+    bool hasWrittenSnapshot = false;
+    uint32_t writtenSettingsRevision = 0;
+    uint32_t writtenCatalogRevision = 0;
+    uint32_t writtenRequestToken = 0;
+};
+
+BackupObservations gBackupObservations;
+#ifdef UNIT_TEST
+std::mutex gBackupObservationMutex;
+#else
+portMUX_TYPE gBackupObservationMutex = portMUX_INITIALIZER_UNLOCKED;
+#endif
+
+struct BackupObservationLock {
+    BackupObservationLock() {
+#ifdef UNIT_TEST
+        gBackupObservationMutex.lock();
+#else
+        portENTER_CRITICAL(&gBackupObservationMutex);
+#endif
+    }
+    ~BackupObservationLock() {
+#ifdef UNIT_TEST
+        gBackupObservationMutex.unlock();
+#else
+        portEXIT_CRITICAL(&gBackupObservationMutex);
+#endif
+    }
+};
+
+// Only POD assignments occur under this lock. Storage and completion metadata
+// remain exclusively under their existing owners and locks.
+struct BackupAttemptObservation {
+    BackupWriteObservation outcome = BackupWriteObservation::Failed;
+    uint32_t settingsRevision = 0;
+    uint32_t catalogRevision = 0;
+    uint32_t requestToken = 0;
+    bool published = false;
+
+    void written(const SerializedSettingsBackupPayload& payload) {
+        settingsRevision = payload.observedSettingsRevision;
+        catalogRevision = payload.observedCatalogRevision;
+        requestToken = payload.requestToken;
+        outcome = BackupWriteObservation::Written;
+    }
+
+    BackupAttemptObservation() {
+        BackupObservationLock lock;
+        ++gBackupObservations.attemptsInProgress;
+    }
+    void publish() {
+        if (published) return;
+        published = true;
+        BackupObservationLock lock;
+        --gBackupObservations.attemptsInProgress;
+        // Superseded work did not attempt a write. It cannot replace the
+        // observation of a newer successful write already on disk.
+        if (outcome != BackupWriteObservation::Superseded || !gBackupObservations.hasWrittenSnapshot) {
+            gBackupObservations.lastAttempt = outcome;
+        }
+        if (outcome == BackupWriteObservation::Written) {
+            gBackupObservations.hasWrittenSnapshot = true;
+            gBackupObservations.writtenSettingsRevision = settingsRevision;
+            gBackupObservations.writtenCatalogRevision = catalogRevision;
+            gBackupObservations.writtenRequestToken = requestToken;
+        }
+    }
+    ~BackupAttemptObservation() { publish(); }
+};
+
+struct PublishBackupBeforeUnlock {
+    BackupAttemptObservation& observation;
+    ~PublishBackupBeforeUnlock() { observation.publish(); }
+};
 
 bool anySettingsBackupCandidateMayExist(fs::FS* fs) {
     if (!fs) return false;
@@ -559,6 +640,8 @@ void releaseSerializedSettingsBackupPayload(SerializedSettingsBackupPayload& pay
     payload.snapshotMs = 0;
     payload.backupRevision = 0;
     payload.requestToken = 0;
+    payload.observedSettingsRevision = 0;
+    payload.observedCatalogRevision = 0;
     payload.markCompleted = nullptr;
     payload.completionContext = nullptr;
     payload.profilesBackedUp = 0;
@@ -569,8 +652,10 @@ bool writeBackupAtomically(fs::FS* fs, const SerializedSettingsBackupPayload& pa
 }
 
 bool SettingsManager::backupToSD() {
+    BackupAttemptObservation observation;
     if (!prepareBackupSnapshot()) return false;
     if (!storage_->isReady() || !storage_->isSDCard()) {
+        observation.outcome = BackupWriteObservation::Unavailable;
         return false; // SD not available, skip silently
     }
 
@@ -578,16 +663,22 @@ bool SettingsManager::backupToSD() {
     if (!fs)
         return false;
 
-    publishBackupRequest();
+    const uint32_t snapshotRequestToken = publishBackupRequest();
     const uint32_t snapshotRevision = backupDueRevision_;
+    const uint32_t observedSettingsRevision = backupRevisionCounter_;
+    const uint32_t observedCatalogRevision = profiles_->catalogRevision();
     SerializedSettingsBackupPayload payload;
     // V1ProfileManager owns the complete, bounded profile snapshot transaction.
     // Do not hold the SD mutex here or its snapshot lock would nest.
     if (!buildSerializedSdBackupPayload(payload, settings_, *profiles_, millis())) {
         return false;
     }
+    payload.requestToken = snapshotRequestToken;
+    payload.observedSettingsRevision = observedSettingsRevision;
+    payload.observedCatalogRevision = observedCatalogRevision;
 
     StorageManager::SDLockTimed sdLock(storage_->getSDMutex(), 250, /*checkDmaHeap=*/false);
+    PublishBackupBeforeUnlock publishBeforeUnlock{observation};
     if (!sdLock) {
         releaseSerializedSettingsBackupPayload(payload);
         Serial.println("[Settings] Profile backup commit busy; retry required");
@@ -601,6 +692,7 @@ bool SettingsManager::backupToSD() {
             Serial.printf("[Settings] Restore pending; refusing to overwrite SD backup %s from provisional NVS\n",
                           existingBackupPath ? existingBackupPath : "(unknown)");
             releaseSerializedSettingsBackupPayload(payload);
+            observation.outcome = BackupWriteObservation::Preserved;
             return false;
         }
         if (anySettingsBackupCandidateMayExist(fs)) {
@@ -618,6 +710,7 @@ bool SettingsManager::backupToSD() {
 
     const bool ok = writeBackupAtomically(fs, payload);
     const int profilesBackedUp = payload.profilesBackedUp;
+    if (ok) observation.written(payload);
     releaseSerializedSettingsBackupPayload(payload);
 
     if (!ok) {
@@ -626,6 +719,7 @@ bool SettingsManager::backupToSD() {
     }
 
     if (!markBackupRevisionCompleted(snapshotRevision)) {
+        observation.outcome = BackupWriteObservation::Failed;
         return false;
     }
     backupCompletedRevision_ = snapshotRevision;
@@ -699,12 +793,13 @@ struct DeferredSettingsBackupState {
 
 DeferredSettingsBackupState gDeferredSettingsBackupState;
 
-void publishBackupRequest() {
+uint32_t publishBackupRequest() {
     // Settings requests and snapshots have one main-task producer. This is
     // separate from NVS due revisions: profile/manual backups may share one.
     const uint32_t next = settings_backup_revision::next(
         gDeferredSettingsBackupState.requestToken.load(std::memory_order_relaxed));
     gDeferredSettingsBackupState.requestToken.store(next, std::memory_order_release);
+    return next;
 }
 
 bool isDeferredBackupRetryDue(uint32_t nowMs, uint32_t targetMs) {
@@ -721,7 +816,9 @@ void clearDeferredBackupRetry() {
 }
 
 bool writeDeferredBackupPayloadNow(const SerializedSettingsBackupPayload& payload, StorageManager& storage) {
+    BackupAttemptObservation observation;
     if (!storage.isReady() || !storage.isSDCard()) {
+        observation.outcome = BackupWriteObservation::Unavailable;
         return false;
     }
 
@@ -735,12 +832,14 @@ bool writeDeferredBackupPayloadNow(const SerializedSettingsBackupPayload& payloa
     // modes, so this can execute with the AP up. It opts out deliberately rather
     // than by reachability.
     StorageManager::SDLockBlocking lock(storage.getSDMutex(), /*checkDmaHeap=*/false);
+    PublishBackupBeforeUnlock publishBeforeUnlock{observation};
     if (!lock) {
         return false;
     }
 
     if (payload.requestToken == 0 ||
         payload.requestToken != gDeferredSettingsBackupState.requestToken.load(std::memory_order_acquire)) {
+        observation.outcome = BackupWriteObservation::Superseded;
         return false; // Rebuild current state; never complete or requeue these old bytes.
     }
     const auto markCompleted = [&]() {
@@ -755,7 +854,9 @@ bool writeDeferredBackupPayloadNow(const SerializedSettingsBackupPayload& payloa
             Serial.printf(
                 "[Settings] Restore pending; skipping deferred overwrite of SD backup %s from provisional NVS\n",
                 existingBackupPath ? existingBackupPath : "(unknown)");
-            return markCompleted();
+            const bool completed = markCompleted();
+            if (completed) observation.outcome = BackupWriteObservation::Preserved;
+            return completed;
         }
         if (anySettingsBackupCandidateMayExist(fs)) {
             Serial.println("[Settings] Restore pending; preserving unreadable SD backup candidate");
@@ -768,7 +869,9 @@ bool writeDeferredBackupPayloadNow(const SerializedSettingsBackupPayload& payloa
         return false;
     }
 
-    return writeBackupAtomically(fs, payload) && markCompleted();
+    const bool written = writeBackupAtomically(fs, payload) && markCompleted();
+    if (written) observation.written(payload);
+    return written;
 }
 
 bool processDeferredBackupQueueItem(SerializedSettingsBackupPayload& payload, StorageManager& storage) {
@@ -919,6 +1022,10 @@ bool enqueueDeferredBackupPayload(SerializedSettingsBackupPayload& payload) {
 
 #ifdef UNIT_TEST
 void resetDeferredSettingsBackupStateForTest() {
+    {
+        BackupObservationLock lock;
+        gBackupObservations = BackupObservations{};
+    }
     if (gDeferredSettingsBackupState.queue != nullptr) {
         SerializedSettingsBackupPayload payload;
         while (xQueueReceive(gDeferredSettingsBackupState.queue, &payload, 0) == pdTRUE) {
@@ -1024,6 +1131,42 @@ uint32_t SettingsManager::deferredBackupNextAttemptAtMs() const {
     return gDeferredSettingsBackupState.nextAttemptAtMs;
 }
 
+SettingsRecoveryStatus SettingsManager::recoveryStatus() const {
+    BackupObservations observed;
+    {
+        BackupObservationLock lock;
+        observed = gBackupObservations;
+    }
+    SettingsRecoveryStatus result;
+    result.internalSave = lastInternalSave_;
+    result.internalSavePending = deferredPersistPending_;
+    result.storageReady = storage_->isReady();
+    result.sdMounted = result.storageReady && storage_->isSDCard();
+    result.recoveryPending = recoveryPending();
+    result.restorePending = restorePending_;
+    result.backupQueued = gDeferredSettingsBackupState.pendingRequest.load(std::memory_order_relaxed) ||
+                          (gDeferredSettingsBackupState.queue &&
+                           uxQueueMessagesWaiting(gDeferredSettingsBackupState.queue) != 0);
+    result.backupWriting = observed.attemptsInProgress != 0;
+    result.backupRetryPending = gDeferredSettingsBackupState.writerRetryPending.load(std::memory_order_relaxed) ||
+                                gDeferredSettingsBackupState.nextAttemptAtMs != 0;
+    result.lastAttempt = observed.lastAttempt;
+    result.hasWrittenSnapshot = observed.hasWrittenSnapshot;
+    result.currentRevision = backupRevisionCounter_;
+    result.lastWrittenRevision = observed.writtenSettingsRevision;
+    // A matching receipt describes the snapshot written in this boot. It does
+    // not identify/recheck the currently inserted card or establish its health.
+    result.lastWriteMatchesCurrent = observed.hasWrittenSnapshot && result.sdMounted &&
+        !result.internalSavePending && !result.recoveryPending && !result.restorePending &&
+        !result.backupQueued && !result.backupWriting && !result.backupRetryPending &&
+        observed.lastAttempt == BackupWriteObservation::Written &&
+        result.internalSave != SettingsSaveObservation::Failed && profiles_->isReady() &&
+        observed.writtenSettingsRevision == backupRevisionCounter_ &&
+        observed.writtenCatalogRevision == profiles_->catalogRevision() &&
+        observed.writtenRequestToken == gDeferredSettingsBackupState.requestToken.load(std::memory_order_acquire);
+    return result;
+}
+
 void SettingsManager::serviceDeferredBackup(uint32_t nowMs) {
     if (nvsLoadPending_ || ((nvsRecoveryPending_ || profileReferenceRecoveryPending_) && !nvsRecoveryInProgress_)) return;
     if (gDeferredSettingsBackupState.writerRetryPending.exchange(false, std::memory_order_relaxed)) {
@@ -1070,6 +1213,8 @@ void SettingsManager::serviceDeferredBackup(uint32_t nowMs) {
     payload.protectExistingBackupFromProvisionalNvs = restorePending_;
     payload.backupRevision = backupDueRevision_;
     payload.requestToken = requestToken;
+    payload.observedSettingsRevision = backupRevisionCounter_;
+    payload.observedCatalogRevision = profiles_->catalogRevision();
     payload.markCompleted = markDeferredBackupRevisionCompleted;
     payload.completionContext = nullptr;
 

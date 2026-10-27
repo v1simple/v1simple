@@ -3,6 +3,7 @@
 #include <WebServer.h>
 
 #include "backup_snapshot_cache.h"
+#include "../../settings_recovery_status.h"
 
 namespace BackupApiService {
 
@@ -53,7 +54,10 @@ struct BackupRuntime {
     void (*syncAfterRestore)(void* ctx) = nullptr;
 
     void* ctx = nullptr;
+    SettingsRecoveryStatus (*getRecoveryStatus)(void* ctx) = nullptr;
 };
+
+void handleApiRecoveryStatus(WebServer& server, const BackupRuntime& runtime);
 
 /// Feeds the ESP-IDF task watchdog from the HTTP restore path.
 ///

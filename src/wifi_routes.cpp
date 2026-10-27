@@ -422,6 +422,10 @@ bool WiFiManager::setupWebServer() {
     });
 
     // Settings backup/restore API routes
+    server_.on("/api/settings/recovery", HTTP_GET, [this]() {
+        markUiActivity();
+        BackupApiService::handleApiRecoveryStatus(server_, makeBackupRuntime());
+    });
     server_.on("/api/settings/backup", HTTP_GET, [this]() {
         BackupApiService::handleApiBackup(
             server_, cachedBackupSnapshot_, makeBackupRuntime(),

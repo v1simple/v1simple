@@ -72,6 +72,10 @@ struct SerializedSettingsBackupPayload {
     uint32_t snapshotMs = 0;
     uint32_t backupRevision = 0;
     uint32_t requestToken = 0;
+    // Immutable observation identity; these do not change durable revision or
+    // retry semantics, and are never exposed as device identifiers.
+    uint32_t observedSettingsRevision = 0;
+    uint32_t observedCatalogRevision = 0;
     MarkCompleted markCompleted = nullptr;
     void* completionContext = nullptr;
     int profilesBackedUp = 0;

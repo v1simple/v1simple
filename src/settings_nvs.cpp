@@ -2123,6 +2123,7 @@ bool SettingsManager::writeSettingsToNamespace(const char* ns, uint32_t generati
 }
 
 bool SettingsManager::persistSettingsAtomically() {
+    lastInternalSave_ = SettingsSaveObservation::Failed;
     if (nvsLoadPending_) return false;
     uint32_t activeGeneration = 0;
     String activeNs = getActiveNamespace(&activeGeneration);
@@ -2176,6 +2177,7 @@ bool SettingsManager::persistSettingsAtomically() {
     }
 
     Serial.printf("[Settings] Active namespace advanced from %s to %s\n", activeNs.c_str(), stagingNs.c_str());
+    lastInternalSave_ = SettingsSaveObservation::Succeeded;
     return true;
 }
 

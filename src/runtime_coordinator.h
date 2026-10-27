@@ -52,6 +52,10 @@ class DriveLoopCoordinator {
             if (!runtime.preemptSettingsForLiveAlert()) {
                 runtime.openBootReadyGate(timing.nowMs);
                 runtime.processBleRuntime();
+                // Local adjustment must keep OBD polling/recovery eligible so
+                // a healthy speed source cannot expire while sliders are open.
+                runtime.processConnectionCycle(timing.nowMs, bleConnected);
+                runtime.processObd(timing.nowMs, bleConnected);
                 // Keep serial input current while sliders own presentation.
                 // Otherwise old UART bytes acquire a fresh timestamp on exit.
                 runtime.processGps(timing.nowMs);

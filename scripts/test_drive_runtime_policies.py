@@ -2,6 +2,7 @@
 """Exercise drive policy consumers with real coordinator/owners and platform adapters.
 
 ALP parses injected UART frames; slider-tail uses real touch, BLE queue and parser.
+Slider-OBD keeps polling and speed freshness live through actual local input.
 Speed uses canonical parser frames with recorded detector writes. Production
 runtime adapters are extracted verbatim to retain their actual ordering/tail.
 No radio, display panel, physical volume or power cutoff is exercised.
@@ -79,4 +80,4 @@ def run(build: Path, names: list[str], source_root: Path = ROOT) -> None:
 
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="drive-runtime-policies-") as temporary:
-        run(Path(temporary), sys.argv[1:] or ["alp_power", "slider_speed", "slider_tail", "alert_recovery", "shutdown"])
+        run(Path(temporary), sys.argv[1:] or ["alp_power", "slider_speed", "slider_obd", "slider_tail", "alert_recovery", "shutdown"])

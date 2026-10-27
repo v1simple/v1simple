@@ -554,7 +554,11 @@ void QuietCoordinatorModule::reconcilePendingSpeedRestore(bool allowConfirmation
     const bool atReduction = mainVolume == speedRestoreReducedVolume_ && muteVolume == speedRestoreReducedMuteVolume_;
     const bool atPrevious = mainVolume == speedRestorePreviousVolume_ && muteVolume == speedRestorePreviousMuteVolume_;
     const bool manualPair = fresh && !atTarget && !atReduction && !atPrevious;
-    const bool confirmed = allowConfirmation && fresh && atTarget && speedRestoreSent_ && speedRestoreSentSession_ == session &&
+    // Feedback for an earlier successful restore can overlap an identical
+    // retry. Harvest that retry before retiring ownership: cancelling it would
+    // close the detector session even though the requested pair was restored.
+    const bool confirmed = allowConfirmation && !ble_->commandInFlight(V1CommandOwner::SpeedVolume) &&
+        fresh && atTarget && speedRestoreSent_ && speedRestoreSentSession_ == session &&
         static_cast<int32_t>(ingress - speedRestoreSentIngress_) > 0;
     if (!newerWriter && !manualPair && !confirmed) {
         if (newSession && fresh) {

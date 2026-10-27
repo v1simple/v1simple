@@ -150,6 +150,13 @@ int V1BLEClient::enqueueCurrentBondBackupSnapshot() { return 0; }
 #define BLE_SUBSCRIPTION_SOURCE "../../src/ble_subscription.cpp"
 #endif
 #include BLE_SUBSCRIPTION_SOURCE
+#include "../mocks/settings.h"
+#include "../../src/modules/speed_mute/speed_mute_module.cpp"
+#include "../../src/modules/volume_fade/volume_fade_module.cpp"
+#include "../../src/modules/quiet/quiet_coordinator_module.cpp"
+#include "../../src/modules/quiet/quiet_coordinator_templates.h"
+
+bool V1BLEClient::isProxyClientConnected() { return proxyClientConnected_.load(); }
 
 void setUp() {
     mockMillis = 100;
@@ -567,12 +574,187 @@ void test_indexed_phone_chunks_keep_exact_order_on_safe_no_response_path() {
     TEST_ASSERT_EQUAL_UINT32(0,g_mock_task_create_state.capsCalls);
 }
 
+// Real speed/quiet/parser/command/quiesce owners. Only radio, worker scheduling,
+// clocks and settings storage are modeled. A 20 -> 30 mph threshold crossing
+// restores the captured 6/2 pair; overlapping identical retries must be harvested.
+struct SpeedTransport {
+    CommandFixture transport;
+    PacketParser parser;
+    SettingsManager settings;
+    SpeedMuteModule speed;
+    VolumeFadeModule fade;
+    QuietCoordinatorModule quiet;
+    SpeedTransport() {
+        settings.settings.alertVolumeFadeEnabled = false;
+        fade.begin(&settings);
+        quiet.begin(&transport.client, &parser);
+        quiet.beginDetectorVolumeSession("AA:BB:CC:DD:EE:01", &fade);
+        speed.begin(true, 25, 3, 0, true);
+    }
+    void volume(uint8_t main, uint8_t muted, uint32_t at) {
+        mockMillis = at;
+        uint8_t packet[] = {0xAA,0xD6,0xEA,0x3D,5,main,muted,main,muted,0,0xAB};
+        for (size_t i=0;i<sizeof(packet)-2;++i) packet[sizeof(packet)-2] += packet[i];
+        TEST_ASSERT_TRUE(parser.parse(packet,sizeof(packet),at,transport.client.noteV1NotificationIngress()));
+    }
+    void tick(uint32_t at, float mph) {
+        mockMillis = at;
+        transport.client.serviceCommandWrite();
+        speed.update(mph,true,at);
+        quiet.processSpeedVolume(at,speed,&fade);
+    }
+    void finishWorker(uint32_t at) {
+        mockMillis = at;
+        TEST_ASSERT_NOT_NULL(g_mock_task_create_state.lastTaskFunction);
+        completePendingTask();
+        TEST_ASSERT_TRUE(transport.client.commandWorkerResult_.load());
+        TEST_ASSERT_FALSE(transport.client.discoveryTaskRunning_.load());
+    }
+    void initialRestore() {
+        volume(6,2,10000);
+        tick(10000,20);
+        TEST_ASSERT_TRUE(transport.client.commandInFlight(V1CommandOwner::SpeedVolume));
+        finishWorker(10001);
+        volume(0,2,10050);
+        tick(10075,20);
+        TEST_ASSERT_FALSE(transport.client.commandInFlight(V1CommandOwner::SpeedVolume));
+        tick(12000,30);
+        TEST_ASSERT_TRUE(transport.client.commandInFlight(V1CommandOwner::SpeedVolume));
+        finishWorker(12001);
+        tick(12075,30);
+        TEST_ASSERT_FALSE(transport.client.commandInFlight(V1CommandOwner::SpeedVolume));
+        TEST_ASSERT_TRUE(transport.client.isConnected());
+        TEST_ASSERT_EQUAL_UINT8(6,transport.command.lastWriteValue()[5]);
+        TEST_ASSERT_EQUAL_UINT8(2,transport.command.lastWriteValue()[6]);
+    }
+};
+
+void test_restore_echo_before_retry_keeps_connection() {
+    SpeedTransport f;
+    f.initialRestore();
+    f.volume(6,2,12090);
+    f.tick(12090,30);
+    TEST_ASSERT_TRUE(f.transport.client.isConnected());
+    TEST_ASSERT_TRUE(f.quiet.canApplyAutoPushVolumeExactly());
+}
+void test_restore_echo_after_retry_harvest_keeps_connection() {
+    SpeedTransport f;
+    f.initialRestore();
+    f.tick(12150,30);
+    f.finishWorker(12151);
+    f.tick(12225,30);
+    f.volume(6,2,12240);
+    f.tick(12240,30);
+    TEST_ASSERT_TRUE(f.transport.client.isConnected());
+    TEST_ASSERT_TRUE(f.quiet.canApplyAutoPushVolumeExactly());
+}
+void test_first_restore_echo_before_ack_harvest_keeps_connection() {
+    SpeedTransport f;
+    f.volume(6,2,10000);
+    f.tick(10000,20);
+    f.finishWorker(10001);
+    f.volume(0,2,10050);
+    f.tick(10075,20);
+    f.tick(12000,30);
+    f.finishWorker(12001);
+    f.volume(6,2,12010);
+    f.tick(12010,30);
+    TEST_ASSERT_TRUE(f.transport.client.isConnected());
+    TEST_ASSERT_TRUE(f.transport.client.commandInFlight(V1CommandOwner::SpeedVolume));
+    f.tick(12075,30);
+    f.tick(12076,30);
+    TEST_ASSERT_TRUE(f.transport.client.isConnected());
+    TEST_ASSERT_FALSE(f.transport.client.commandInFlight(V1CommandOwner::SpeedVolume));
+    TEST_ASSERT_TRUE(f.quiet.canApplyAutoPushVolumeExactly());
+    TEST_ASSERT_EQUAL_UINT32(2,f.transport.command.writeValueCalls());
+}
+enum class RetryState { Pending, Running, Completed };
+void assertOverlappingEcho(RetryState state) {
+    SpeedTransport f;
+    f.initialRestore();
+    HeldCommand held(f.transport.command);
+    f.tick(12150,30);
+    TEST_ASSERT_TRUE(f.transport.client.commandInFlight(V1CommandOwner::SpeedVolume));
+    bool started = true;
+    if (state == RetryState::Running) started = held.start();
+    if (state == RetryState::Completed) { held.release(); f.finishWorker(12151); }
+    f.volume(6,2,12160);
+    f.tick(12160,30);
+    const bool connectedAtEcho = f.transport.client.isConnected();
+    const uint32_t sessionAtEcho = f.transport.client.sessionGeneration();
+    // Release before any assertion: Unity longjmp must never strand a worker.
+    held.release();
+    TEST_ASSERT_TRUE(started);
+    printf("RETRY=%u CONNECTED=%d SESSION=%u BLE_STATE=%u WRITES=%u\n", (unsigned)state,
+        connectedAtEcho,sessionAtEcho,(unsigned)f.transport.client.getBLEState(),
+        (unsigned)f.transport.command.writeValueCalls());
+    TEST_ASSERT_TRUE_MESSAGE(connectedAtEcho, "Canonical confirmation of successful same-target restoration disconnected detector");
+    TEST_ASSERT_EQUAL_UINT32(1, sessionAtEcho);
+    TEST_ASSERT_TRUE(f.transport.client.commandInFlight(V1CommandOwner::SpeedVolume));
+    TEST_ASSERT_FALSE(f.quiet.canApplyAutoPushVolumeExactly());
+    if (state == RetryState::Pending) f.finishWorker(12161);
+    f.tick(12225,30); // Harvest the exact admitted retry.
+    f.tick(12226,30); // Then retire the confirmed restore obligation.
+    TEST_ASSERT_TRUE(f.transport.client.isConnected());
+    TEST_ASSERT_FALSE(f.transport.client.commandInFlight(V1CommandOwner::SpeedVolume));
+    TEST_ASSERT_TRUE(f.quiet.canApplyAutoPushVolumeExactly());
+    TEST_ASSERT_EQUAL_UINT32(3, f.transport.command.writeValueCalls());
+    TEST_ASSERT_EQUAL_UINT8(6,f.transport.command.lastWriteValue()[5]);
+    TEST_ASSERT_EQUAL_UINT8(2,f.transport.command.lastWriteValue()[6]);
+    f.tick(12400,30);
+    TEST_ASSERT_EQUAL_UINT32(3, f.transport.command.writeValueCalls());
+    V1BLEClient::CommandScope next(f.transport.client,V1CommandOwner::AutoPush);
+    TEST_ASSERT_EQUAL(SendResult::IN_FLIGHT, f.transport.client.requestAllVolumeResult());
+    f.finishWorker(12401);
+    TEST_ASSERT_EQUAL(SendResult::SENT, f.transport.client.requestAllVolumeResult());
+}
+void test_target_echo_with_pending_identical_retry_keeps_connection() { assertOverlappingEcho(RetryState::Pending); }
+void test_target_echo_with_running_identical_retry_keeps_connection() { assertOverlappingEcho(RetryState::Running); }
+void test_target_echo_with_completed_identical_retry_keeps_connection() { assertOverlappingEcho(RetryState::Completed); }
+void test_new_manual_pair_still_cancels_pending_restore_retry() {
+    SpeedTransport f;
+    f.initialRestore();
+    f.tick(12150,30);
+    f.volume(3,4,12160);
+    f.tick(12160,30);
+    TEST_ASSERT_FALSE(f.transport.client.isConnected());
+    TEST_ASSERT_EQUAL(BLEState::QUIESCING, f.transport.client.getBLEState());
+    TEST_ASSERT_EQUAL_UINT32(2, f.transport.command.writeValueCalls());
+}
+void test_same_target_confirmation_does_not_hide_blocked_retry_timeout() {
+    SpeedTransport f;
+    f.initialRestore();
+    HeldCommand held(f.transport.command);
+    f.tick(12150,30);
+    const bool started=held.start();
+    f.volume(6,2,12160);
+    f.tick(12160,30);
+    f.tick(13149,30);
+    const bool connectedBeforeTimeout = f.transport.client.isConnected();
+    f.tick(13150,30);
+    const bool disconnected = !f.transport.client.isConnected();
+    const auto state = f.transport.client.getBLEState();
+    held.release();
+    TEST_ASSERT_TRUE(started);
+    TEST_ASSERT_TRUE(connectedBeforeTimeout);
+    TEST_ASSERT_TRUE(disconnected);
+    TEST_ASSERT_EQUAL(BLEState::QUIESCING, state);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_delayed_ack_keeps_notifications_and_loop_work_responsive);
 #ifdef BLE_COMMAND_LATENCY_ONLY
     return UNITY_END();
 #endif
+    RUN_TEST(test_first_restore_echo_before_ack_harvest_keeps_connection);
+    RUN_TEST(test_restore_echo_before_retry_keeps_connection);
+    RUN_TEST(test_restore_echo_after_retry_harvest_keeps_connection);
+    RUN_TEST(test_target_echo_with_pending_identical_retry_keeps_connection);
+    RUN_TEST(test_target_echo_with_running_identical_retry_keeps_connection);
+    RUN_TEST(test_target_echo_with_completed_identical_retry_keeps_connection);
+    RUN_TEST(test_new_manual_pair_still_cancels_pending_restore_retry);
+    RUN_TEST(test_same_target_confirmation_does_not_hide_blocked_retry_timeout);
     RUN_TEST(test_immediate_worker_success_still_requires_one_owner_harvest);
     RUN_TEST(test_timeout_pins_attributes_until_worker_exits_and_rejects_late_success);
     RUN_TEST(test_cancel_before_worker_start_prevents_wire_write);

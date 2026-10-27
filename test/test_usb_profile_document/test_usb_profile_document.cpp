@@ -1458,19 +1458,49 @@ void test_measure_maximum_profile_catalog_transport_shapes() {
     File restoreJournal = primaryFs->open(RESTORE_TRANSACTION_PATH, FILE_READ);
     TEST_ASSERT_TRUE(restoreJournal);
     const size_t restoreJournalBytes = restoreJournal.size();
+    PsramJson::Document restoreDocument;
+    TEST_ASSERT_FALSE(deserializeJson(restoreDocument, restoreJournal));
     restoreJournal.close();
-    TEST_ASSERT_EQUAL_UINT(124489u, restoreJournalBytes);
-    TEST_ASSERT_LESS_THAN_UINT(RESTORE_TRANSACTION_MAX_BYTES, restoreJournalBytes);
-    TEST_ASSERT_GREATER_THAN_UINT(4096u, RESTORE_TRANSACTION_MAX_BYTES - restoreJournalBytes);
+    TEST_ASSERT_EQUAL_UINT(restoreJournalBytes, measureJson(restoreDocument));
+    RestoreTransactionJournal restored;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(JournalCopyStatus::Valid),
+                          static_cast<int>(readRestoreTransactionJournal(restoreDocument, restored)));
+    const RestoreTransactionJournal expectedRestore{1, true, credentials, true, profilesBefore};
+    TEST_ASSERT_TRUE(restoreJournalsEqual(expectedRestore, restored));
 
-    TEST_ASSERT_TRUE(writeProfileDeleteTransactionJournal(storage, 2, profilesBefore.front(), true));
-    File deleteJournal = primaryFs->open(PROFILE_DELETE_TRANSACTION_PATH, FILE_READ);
-    TEST_ASSERT_TRUE(deleteJournal);
-    const size_t deleteJournalBytes = deleteJournal.size();
-    deleteJournal.close();
-    TEST_ASSERT_EQUAL_UINT(12315u, deleteJournalBytes);
-    TEST_ASSERT_LESS_THAN_UINT(PROFILE_DELETE_TRANSACTION_MAX_BYTES, deleteJournalBytes);
-    TEST_ASSERT_GREATER_THAN_UINT(4000u, PROFILE_DELETE_TRANSACTION_MAX_BYTES - deleteJournalBytes);
+    // Filesystem enumeration changes profile order and therefore the CRC's
+    // decimal width. Validate the real journal first, then measure its maximum
+    // wire size with a ten-digit CRC; only this in-memory size copy is changed.
+    restoreDocument["_crc32"] = std::numeric_limits<uint32_t>::max();
+    const size_t maximumRestoreJournalBytes = measureJson(restoreDocument);
+    TEST_ASSERT_EQUAL_UINT(124489u, maximumRestoreJournalBytes);
+    TEST_ASSERT_LESS_OR_EQUAL_UINT(maximumRestoreJournalBytes, restoreJournalBytes);
+    TEST_ASSERT_LESS_THAN_UINT(RESTORE_TRANSACTION_MAX_BYTES, maximumRestoreJournalBytes);
+    TEST_ASSERT_GREATER_THAN_UINT(4096u, RESTORE_TRANSACTION_MAX_BYTES - maximumRestoreJournalBytes);
+
+    // Every profile has the maximum shape, but their names produce different
+    // CRC widths. Cover all of them instead of depending on directory order.
+    for (const V1Profile& profile : profilesBefore) {
+        TEST_ASSERT_TRUE(writeProfileDeleteTransactionJournal(storage, 2, profile, true));
+        File deleteJournal = primaryFs->open(PROFILE_DELETE_TRANSACTION_PATH, FILE_READ);
+        TEST_ASSERT_TRUE(deleteJournal);
+        const size_t deleteJournalBytes = deleteJournal.size();
+        PsramJson::Document deleteDocument;
+        TEST_ASSERT_FALSE(deserializeJson(deleteDocument, deleteJournal));
+        deleteJournal.close();
+        TEST_ASSERT_EQUAL_UINT(deleteJournalBytes, measureJson(deleteDocument));
+        ProfileDeleteTransactionJournal deleted;
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(JournalCopyStatus::Valid),
+                              static_cast<int>(readProfileDeleteTransactionJournal(deleteDocument, deleted)));
+        const ProfileDeleteTransactionJournal expectedDelete{2, true, profile};
+        TEST_ASSERT_TRUE(deleteJournalsEqual(expectedDelete, deleted));
+        deleteDocument["_crc32"] = std::numeric_limits<uint32_t>::max();
+        const size_t maximumDeleteJournalBytes = measureJson(deleteDocument);
+        TEST_ASSERT_EQUAL_UINT(12315u, maximumDeleteJournalBytes);
+        TEST_ASSERT_LESS_OR_EQUAL_UINT(maximumDeleteJournalBytes, deleteJournalBytes);
+        TEST_ASSERT_LESS_THAN_UINT(PROFILE_DELETE_TRANSACTION_MAX_BYTES, maximumDeleteJournalBytes);
+        TEST_ASSERT_GREATER_THAN_UINT(4000u, PROFILE_DELETE_TRANSACTION_MAX_BYTES - maximumDeleteJournalBytes);
+    }
 }
 
 void test_in_the_box_survives_usb_unrelated_slot_edit_backup_restore_and_reboot() {

@@ -89,9 +89,13 @@ final class Fixture {
 final class PeripheralLifecycleTests: XCTestCase {
     @objc func testCommandAckFaultIsOneShotWithoutBlockingNotifications() {
         let f = Fixture(commandAckHoldMs: 50)
+        let released = expectation(description: "held START ACK is released")
         var events: [ReplayCommandAckFaultEvent.State] = []
         var deliveredWhileHeld = false
-        f.peripheral.onCommandAckFaultEvent = { events.append($0.state) }
+        f.peripheral.onCommandAckFaultEvent = {
+            events.append($0.state)
+            if $0.state == .released { released.fulfill() }
+        }
         f.peripheral.onNotificationEvent = { event in
             if event.state == ReplayNotificationEvent.State.accepted.rawValue && event.payloadHex == "010203" {
                 deliveredWhileHeld = events == [.held] && f.manager.responses.count == 1
@@ -106,12 +110,12 @@ final class PeripheralLifecycleTests: XCTestCase {
             XCTAssertTrue(f.peripheral.alertDataRequested)
             XCTAssertEqual(f.manager.responses.count, 1, "START ACK is held")
             XCTAssertEqual(events, [.held])
+            f.peripheral.sendDisplay([1, 2, 3])
+            XCTAssertTrue(f.received(f.first).contains([1, 2, 3]), "hold must not stop notification delivery")
+            XCTAssertTrue(deliveredWhileHeld, "notification must be accepted before START ACK")
         }
-        f.peripheral.sendDisplay([1, 2, 3])
-        f.drain()
-        XCTAssertTrue(f.received(f.first).contains([1, 2, 3]), "hold must not stop notification delivery")
-        XCTAssertTrue(deliveredWhileHeld, "notification must be accepted before START ACK")
-        Thread.sleep(forTimeInterval: 0.08)
+        // A dispatch deadline does not guarantee when a busy host runs the timer.
+        wait(for: [released], timeout: 2)
         f.peripheral.queue.sync {
             XCTAssertEqual(events, [.held, .released])
             XCTAssertEqual(f.manager.responses.count, 2)

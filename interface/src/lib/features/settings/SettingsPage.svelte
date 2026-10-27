@@ -718,8 +718,11 @@
                     const connectedIndex = Number(status.connectedSlotIndex);
                     const hasConnectedIndex =
                         Number.isInteger(connectedIndex) && connectedIndex >= 0;
+                    // A saved slot can be edited while Test is pending. Its
+                    // index alone cannot confirm the originally requested SSID.
                     const targetConnected = hasConnectedIndex
-                        ? connectedIndex === Number(slot.index)
+                        ? connectedIndex === Number(slot.index) &&
+                          (!status.connectedSSID || status.connectedSSID === slot.ssid)
                         : status.connectedSSID === slot.ssid;
                     if (targetConnected) {
                         message = { type: 'success', text: `Connected to ${slot.ssid}` };

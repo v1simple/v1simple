@@ -1111,6 +1111,62 @@ describe('settings route page', () => {
         }
     );
 
+    it('does not report the original network connected when its tested slot is replaced', async () => {
+        vi.useFakeTimers();
+        const testRequest = createDeferred();
+        let savedSsid = 'HomeWifi';
+        let testedSsid = null;
+        let testStatusReads = 0;
+        const fetchMock = installDefaultFetch([
+            { method: 'POST', match: '/api/wifi/networks/test', respond: () => testRequest.promise },
+            { method: 'POST', match: '/api/wifi/networks', respond: ({ init }) => {
+                savedSsid = JSON.parse(init.body).ssid;
+                return jsonResponse({ success: true, index: 0 });
+            } },
+            { method: 'GET', match: '/api/wifi/networks', respond: () => jsonResponse({
+                    slots: defaultSlots.map((slot) => slot.index === 0
+                        ? { ...slot, ssid: savedSsid }
+                        : slot)
+            }) },
+            { method: 'GET', match: '/api/wifi/status', respond: () => {
+                if (!testedSsid) return jsonResponse({ enabled: true, state: 'disconnected' });
+                testStatusReads += 1;
+                return jsonResponse(testStatusReads === 1
+                    ? { enabled: true, state: 'connecting', savedSSID: testedSsid }
+                    : { enabled: true, state: 'connected', connectedSSID: testedSsid, connectedSlotIndex: 0 });
+            } }
+        ]);
+        const { unmount } = render(Page);
+        try {
+            await screen.findByText('Garage');
+            await fireEvent.click(screen.getAllByRole('button', { name: 'Test' })[0]);
+            await waitFor(() => expect(jsonBodies(fetchMock, '/api/wifi/networks/test'))
+                .toEqual([{ index: 0 }]));
+            expect(screen.getAllByRole('button', { name: 'Test' })[0]).toBeDisabled();
+
+            // The UI permits editing while Test is pending. Model the save
+            // reaching the device first; Test then reads that slot's current SSID.
+            await performWifiStatusMutation('manual save');
+            await screen.findByText('Saved ReplacementWifi');
+            expect(jsonBodies(fetchMock, '/api/wifi/networks')).toEqual([
+                expect.objectContaining({ index: 0, ssid: 'ReplacementWifi' })
+            ]);
+            testedSsid = savedSsid;
+            testRequest.resolve(jsonResponse({ success: true, index: 0 }));
+            await screen.findByText('Testing connection to HomeWifi...');
+            await screen.findByText('Connecting to ReplacementWifi...');
+            await vi.advanceTimersByTimeAsync(1000);
+
+            expect(screen.getByText(/Connected to ReplacementWifi • Slot 1/)).toBeInTheDocument();
+            expect(screen.queryByText('Connected to HomeWifi')).not.toBeInTheDocument();
+            expect(screen.getByText(
+                'Connection test reached ReplacementWifi, not HomeWifi'
+            )).toBeInTheDocument();
+            expect(screen.getAllByRole('button', { name: 'Test' })
+                .every((button) => !button.disabled)).toBe(true);
+        } finally { unmount(); }
+    });
+
     it('keeps Test polling when a different saved slot is deleted', async () => {
         vi.useFakeTimers();
         const { fetchMock, oldStatus, state } = installWifiStatusMutationFetch('delete', { pendingStatus: true });
@@ -1304,6 +1360,36 @@ describe('settings route page', () => {
         expect(jsonBodies(fetchMock, '/api/wifi/networks/test').at(-1)).toEqual({ index: 0 });
 
         unmount();
+    });
+
+    it.each([
+        ['SSID-only status', { connectedSSID: 'HomeWifi' }, true],
+        ['slot-only status', { connectedSlotIndex: 0 }, true],
+        ['another saved network', { connectedSSID: 'PhoneHotspot', connectedSlotIndex: 1 }, false]
+    ])('preserves Test identity handling for %s', async (_label, connection, succeeds) => {
+        let testing = false;
+        installDefaultFetch([
+            { method: 'POST', match: '/api/wifi/networks/test', respond: () => {
+                testing = true;
+                return jsonResponse({ success: true });
+            } },
+            { method: 'GET', match: '/api/wifi/status', respond: () => jsonResponse(testing
+                ? { enabled: true, state: 'connected', ...connection }
+                : { enabled: true, state: 'disconnected' }) }
+        ]);
+        const { unmount } = render(Page);
+        try {
+            await screen.findByText('Garage');
+            await fireEvent.click(screen.getAllByRole('button', { name: 'Test' })[0]);
+            if (succeeds) {
+                await screen.findByText('Connected to HomeWifi');
+            } else {
+                await screen.findByText('Connection test reached PhoneHotspot, not HomeWifi');
+                expect(screen.queryByText('Connected to HomeWifi')).not.toBeInTheDocument();
+            }
+            expect(screen.getAllByRole('button', { name: 'Test' })
+                .every((button) => !button.disabled)).toBe(true);
+        } finally { unmount(); }
     });
 
     it('reports a saved-network test terminal failure', async () => {

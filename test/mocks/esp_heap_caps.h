@@ -27,6 +27,8 @@ static_assert((MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM) !=
 
 using MockHeapCapsFreeObserver = void (*)(void*);
 inline MockHeapCapsFreeObserver g_mock_heap_caps_free_observer = nullptr;
+using MockHeapCapsAllocationObserver = void (*)(void*, bool);
+inline MockHeapCapsAllocationObserver g_mock_heap_caps_allocation_observer = nullptr;
 
 inline void* heap_caps_malloc(size_t size, uint32_t caps) {
     g_mock_heap_caps_malloc_calls++;
@@ -59,6 +61,9 @@ inline void* heap_caps_malloc(size_t size, uint32_t caps) {
     void* ptr = std::malloc(size);
     if (ptr != nullptr) {
         g_mock_heap_caps_outstanding_allocations++;
+        if (g_mock_heap_caps_allocation_observer) {
+            g_mock_heap_caps_allocation_observer(ptr, true);
+        }
     }
     return ptr;
 }
@@ -86,7 +91,18 @@ inline void* heap_caps_realloc(void* ptr, size_t size, uint32_t caps) {
         return nullptr;
     }
 
+    if (ptr != nullptr && g_mock_heap_caps_allocation_observer) {
+        g_mock_heap_caps_allocation_observer(ptr, false);
+    }
     void* resized = std::realloc(ptr, size);
+    if (g_mock_heap_caps_allocation_observer) {
+        if (resized != nullptr) {
+            g_mock_heap_caps_allocation_observer(resized, true);
+        } else if (ptr != nullptr && size != 0u) {
+            // A failed resize leaves the original allocation live.
+            g_mock_heap_caps_allocation_observer(ptr, true);
+        }
+    }
     if (ptr == nullptr && resized != nullptr) {
         g_mock_heap_caps_outstanding_allocations++;
     }
@@ -96,6 +112,9 @@ inline void* heap_caps_realloc(void* ptr, size_t size, uint32_t caps) {
 inline void heap_caps_free(void* ptr) {
     if (g_mock_heap_caps_free_observer) {
         g_mock_heap_caps_free_observer(ptr);
+    }
+    if (ptr != nullptr && g_mock_heap_caps_allocation_observer) {
+        g_mock_heap_caps_allocation_observer(ptr, false);
     }
     g_mock_heap_caps_free_calls++;
     if (ptr != nullptr && g_mock_heap_caps_outstanding_allocations > 0u) {

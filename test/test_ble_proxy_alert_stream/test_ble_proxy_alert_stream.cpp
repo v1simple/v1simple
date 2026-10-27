@@ -20,6 +20,7 @@ unsigned long mockMicros = 0;
 #define private public
 #include "../../src/ble_client.h"
 #undef private
+#include "../mocks/ble_connection_callback_stubs.h"
 
 portMUX_TYPE pendingAddrMux = portMUX_INITIALIZER_UNLOCKED;
 

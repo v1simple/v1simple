@@ -18,6 +18,10 @@ def main():
         ["xcrun", "--sdk", "macosx", "--show-sdk-platform-path"], text=True
     ).strip())
     frameworks = platform / "Developer" / "Library" / "Frameworks"
+    # XCTest's transitive runtime frameworks live outside the public framework
+    # directory, and older Xcodes do not embed every required search path.
+    private_frameworks = platform / "Developer" / "Library" / "PrivateFrameworks"
+    shared_frameworks = platform.parents[2] / "SharedFrameworks"
     test_libraries = platform / "Developer" / "usr" / "lib"
     with tempfile.TemporaryDirectory(prefix="v1replay-peripheral-tests-") as directory:
         build = Path(directory)
@@ -33,6 +37,8 @@ def main():
                        "-I", str(test_libraries), "-L", str(test_libraries),
                        "-Xlinker", "-rpath", "-Xlinker", str(test_libraries),
                        "-F", str(frameworks), "-Xlinker", "-rpath", "-Xlinker", str(frameworks),
+                       "-Xlinker", "-rpath", "-Xlinker", str(private_frameworks),
+                       "-Xlinker", "-rpath", "-Xlinker", str(shared_frameworks),
                        "-Xlinker", "-rpath", "-Xlinker", str(build)] +
                        [str(sources / (name + ".swift")) for name in owners] +
                        [str(support / "main.swift"), "-o", str(build / "peripheral-tests")],

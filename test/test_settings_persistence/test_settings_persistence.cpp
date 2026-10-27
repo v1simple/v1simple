@@ -2,6 +2,7 @@
 #include "display_nvs_persistence_tests.h"
 #include <unity.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -101,6 +102,37 @@ namespace {
 
 std::filesystem::path g_tempRoot;
 int g_tempRootIndex = 0;
+
+class SimulatedResetHeapScope {
+public:
+    SimulatedResetHeapScope() {
+        active_ = this;
+        g_mock_heap_caps_allocation_observer = observe;
+    }
+
+    ~SimulatedResetHeapScope() {
+        g_mock_heap_caps_allocation_observer = nullptr;
+        active_ = nullptr;
+        // Ordinary success/error returns retain leak detection: discard the
+        // pointer list without freeing anything the operation left behind.
+    }
+
+    size_t reclaimAfterReset() {
+        const size_t count = allocations_.size();
+        while (!allocations_.empty()) heap_caps_free(allocations_.back());
+        return count;
+    }
+
+private:
+    static void observe(void* pointer, bool allocated) {
+        auto& allocations = active_->allocations_;
+        if (allocated) allocations.push_back(pointer);
+        else allocations.erase(std::remove(allocations.begin(), allocations.end(), pointer), allocations.end());
+    }
+
+    inline static SimulatedResetHeapScope* active_ = nullptr;
+    std::vector<void*> allocations_;
+};
 
 std::filesystem::path nextTempRoot() {
     return std::filesystem::temp_directory_path() /
@@ -8032,13 +8064,26 @@ void test_settings_backup_replacement_preserves_valid_previous_across_errors_and
                 }
                 bool interrupted = false;
                 bool saved = false;
-                try {
-                    if (deferred) {
-                        manager.requestDeferredBackupFromCurrentState();
-                        manager.serviceDeferredBackup(4000);
-                        saved = runDeferredSettingsBackupWriterOnceForTest(storage);
-                    } else saved = manager.backupToSD();
-                } catch (const fs::SimulatedReset&) { interrupted = true; }
+                size_t abandonedPayloads = 0;
+                {
+                    SimulatedResetHeapScope resetHeap;
+                    try {
+                        if (deferred) {
+                            manager.requestDeferredBackupFromCurrentState();
+                            manager.serviceDeferredBackup(4000);
+                            saved = runDeferredSettingsBackupWriterOnceForTest(storage);
+                        } else saved = manager.backupToSD();
+                    } catch (const fs::SimulatedReset&) {
+                        interrupted = true;
+                        // A real reset reclaims RAM. The exception used here
+                        // skips the no-exceptions firmware's payload release.
+                        // Release still-owned queue memory before reclaiming
+                        // only allocations abandoned by this interrupted call.
+                        resetDeferredSettingsBackupStateForTest();
+                        abandonedPayloads = resetHeap.reclaimAfterReset();
+                    }
+                }
+                if (interrupted) TEST_ASSERT_EQUAL_UINT(1u, abandonedPayloads);
                 if (!failure) {
                     TEST_ASSERT_TRUE(saved);
                     renameCount = fs::g_mock_fs_rename_state.renameCalls;

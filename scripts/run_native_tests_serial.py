@@ -111,7 +111,9 @@ def main() -> int:
             f"with build root {build_root}"
         )
         result = subprocess.run(
-            [os.environ.get("PIO_CMD", "pio"), "test", "-e", env, "-f", test_name],
+            # Preserve sanitizer diagnostics, which PlatformIO otherwise hides
+            # behind a generic process-exit error after the Unity results.
+            [os.environ.get("PIO_CMD", "pio"), "test", "-v", "-e", env, "-f", test_name],
             cwd=ROOT,
             env=child_env,
             stdout=subprocess.PIPE,

@@ -21,6 +21,7 @@ struct VolumeFadeContext {
     uint32_t volumeObservationIngress = 0;
     uint32_t sessionGeneration = 0;
     bool volumeOwnerChanged = false;
+    bool restoreCommandInFlight = false; // Caller must harvest an admitted retry before confirming restoration.
     uint16_t currentFrequency; // Current priority frequency (MHz*10) for dedup
     bool priorityIsLaser;      // Priority alert is laser (no frequency; its own distinct-alert class)
     unsigned long now;         // Current timestamp

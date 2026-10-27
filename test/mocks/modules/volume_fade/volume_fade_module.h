@@ -12,6 +12,7 @@ struct VolumeFadeContext {
     uint32_t volumeObservationIngress = 0;
     uint32_t sessionGeneration = 0;
     bool volumeOwnerChanged = false;
+    bool restoreCommandInFlight = false;
     uint16_t currentFrequency = 0;
     bool priorityIsLaser = false;
     unsigned long now = 0;

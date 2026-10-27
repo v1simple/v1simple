@@ -209,6 +209,9 @@ bool QuietCoordinatorModule::executeVolumeFade(const uint32_t nowMs, VolumeFadeL
     fadeCtx.hasVolumeObservation = parser_->copyLatestCanonicalCurrentVolume(
         fadeCtx.currentVolume, fadeCtx.currentMuteVolume, &fadeCtx.volumeObservationIngress);
     fadeCtx.sessionGeneration = ble_ ? ble_->sessionGeneration() : 0;
+    // A matching observation can arrive while an identical restore retry is
+    // still running or awaiting harvest. Retain its owner until it completes.
+    fadeCtx.restoreCommandInFlight = ble_->commandInFlight(V1CommandOwner::VolumeFade);
     // Speed volume intentionally overlays fade and hands its baseline back.
     // All other successful writers supersede fade's old restoration authority,
     // even after the reduction receipt itself was retired on confirmation.

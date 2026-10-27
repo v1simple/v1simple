@@ -282,7 +282,10 @@ void QuietCoordinatorModule::processInTheBox(uint32_t nowMs) {
 
     // Confirm only from a later canonical display packet, using the actual
     // audio-mute bit (isSoft), rather than the debounced screen icon.
+    // Confirmation of an earlier send must not abandon an identical retry.
+    // Keep polling it until the command owner has harvested its completion.
     if (inTheBoxCommandPending_ && inTheBoxCommandSent_ &&
+        !ble_->commandInFlight(V1CommandOwner::InTheBox) &&
         observation.revision != inTheBoxCommandRevision_ &&
         static_cast<int32_t>(observation.ingressSequence - inTheBoxCommandIngress_) > 0 &&
         state.softMuted == inTheBoxCommandMute_) {

@@ -72,7 +72,8 @@ VolumeFadeAction VolumeFadeModule::process(const VolumeFadeContext& ctx) {
     // BLE acceptance is not detector application. Retain the complete restore
     // pair across holdoff and live alerts until canonical observation agrees.
     if (pendingRestoreVolume_ != 0xFF) {
-        if (restoreSent_ && ctx.hasVolumeObservation && ctx.sessionGeneration == restoreSentSession_ &&
+        if (!ctx.restoreCommandInFlight && restoreSent_ && ctx.hasVolumeObservation &&
+            ctx.sessionGeneration == restoreSentSession_ &&
             static_cast<int32_t>(ctx.volumeObservationIngress - restoreSentIngress_) > 0 &&
             ctx.currentVolume == pendingRestoreVolume_ && ctx.currentMuteVolume == pendingRestoreMuteVolume_) {
             pendingRestoreVolume_ = 0xFF;

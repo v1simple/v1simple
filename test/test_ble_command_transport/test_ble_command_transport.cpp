@@ -741,6 +741,183 @@ void test_same_target_confirmation_does_not_hide_blocked_retry_timeout() {
     TEST_ASSERT_EQUAL(BLEState::QUIESCING, state);
 }
 
+// Exercise the other automatic audio owners against the same real transport.
+// A receipt may precede a retry's start, arrive during its ACK wait, or arrive
+// after its worker completed. In each case, the owner must still harvest it.
+struct QuietPolicyTransport : SpeedTransport {
+    void packet(uint8_t id, std::initializer_list<uint8_t> payload, uint32_t at) {
+        mockMillis = at;
+        std::vector<uint8_t> bytes{0xAA, 0xD8, 0xEA, id, static_cast<uint8_t>(payload.size() + 1)};
+        bytes.insert(bytes.end(), payload.begin(), payload.end());
+        uint8_t sum = 0;
+        for (uint8_t b : bytes) sum += b;
+        bytes.push_back(sum);
+        bytes.push_back(0xAB);
+        TEST_ASSERT_TRUE(parser.parse(bytes.data(), bytes.size(), at, transport.client.noteV1NotificationIngress()));
+    }
+    void alert(bool live, uint32_t at, uint16_t frequency = 34700, uint8_t band = 0x22) {
+        if (live) packet(0x43, {0x11, static_cast<uint8_t>(frequency >> 8), static_cast<uint8_t>(frequency),
+                               0xAC, 0, band, 0x80}, at);
+        else packet(0x43, {0, 0, 0, 0, 0, 0, 0}, at);
+        TEST_ASSERT_EQUAL(live, parser.hasAlerts());
+    }
+    void displayMute(bool muted, uint32_t at) {
+        packet(0x31, {0x06, 0x06, 4, 0x24, 0x24, static_cast<uint8_t>(0x0C | (muted ? 1 : 0)), 1, 0x62}, at);
+        TEST_ASSERT_EQUAL(muted, parser.getDisplayState().softMuted);
+    }
+    void fadeTick(uint32_t at) {
+        mockMillis = at;
+        transport.client.serviceCommandWrite();
+        quiet.executeVolumeFade(at, &fade);
+    }
+    void boxTick(uint32_t at) {
+        mockMillis = at;
+        transport.client.serviceCommandWrite();
+        quiet.processInTheBox(at);
+    }
+    void beginFadeRestore(bool newThreat) {
+        settings.settings.alertVolumeFadeEnabled = true;
+        settings.settings.alertVolumeFadeDelaySec = 2;
+        settings.settings.alertVolumeFadeVolume = 1;
+        volume(6, 2, 10000);
+        alert(true, 10000);
+        fadeTick(10000);
+        alert(true, 12000);
+        fadeTick(12000);
+        finishWorker(12001);
+        volume(1, 2, 12050);
+        fadeTick(12075);
+        TEST_ASSERT_FALSE(transport.client.commandInFlight(V1CommandOwner::VolumeFade));
+        alert(newThreat, 14000, 35500);
+        fadeTick(14000);
+        finishWorker(14001);
+        fadeTick(14075);
+        TEST_ASSERT_FALSE(transport.client.commandInFlight(V1CommandOwner::VolumeFade));
+        TEST_ASSERT_TRUE(transport.client.isConnected());
+        TEST_ASSERT_EQUAL_UINT8(6, transport.command.lastWriteValue()[5]);
+    }
+    uint32_t beginBoxRetry(bool unmute) {
+        V1InTheBoxSettings policy;
+        policy.bands[2].muteOutside = true;
+        quiet.setInTheBoxSettings(policy, 1);
+        displayMute(false, 10000);
+        alert(true, 10000, 24040, 0x24);
+        boxTick(10000);
+        finishWorker(10001);
+        boxTick(10100);
+        TEST_ASSERT_FALSE(transport.client.commandInFlight(V1CommandOwner::InTheBox));
+        TEST_ASSERT_EQUAL_UINT8(0x34, transport.command.lastWriteValue()[3]);
+        if (!unmute) return 10200;
+        displayMute(true, 10110);
+        boxTick(10110);
+        alert(true, 10300, 24150, 0x24);
+        boxTick(10300);
+        finishWorker(10301);
+        boxTick(10400);
+        TEST_ASSERT_FALSE(transport.client.commandInFlight(V1CommandOwner::InTheBox));
+        TEST_ASSERT_EQUAL_UINT8(0x35, transport.command.lastWriteValue()[3]);
+        return 10500;
+    }
+    void assertNextOwnerCanSend(uint32_t at) {
+        mockMillis = at;
+        V1BLEClient::CommandScope scope(transport.client, V1CommandOwner::AutoPush);
+        TEST_ASSERT_EQUAL(SendResult::IN_FLIGHT, transport.client.requestAllVolumeResult());
+        finishWorker(at + 1);
+        TEST_ASSERT_EQUAL(SendResult::SENT, transport.client.requestAllVolumeResult());
+    }
+};
+
+void assertFadeConfirmationOverlap(bool newThreat, RetryState state) {
+    QuietPolicyTransport f;
+    f.beginFadeRestore(newThreat);
+    HeldCommand held(f.transport.command);
+    f.fadeTick(14150);
+    TEST_ASSERT_TRUE(f.transport.client.commandInFlight(V1CommandOwner::VolumeFade));
+    bool started = true;
+    if (state == RetryState::Running) started = held.start();
+    if (state == RetryState::Completed) { held.release(); f.finishWorker(14151); }
+    f.volume(6, 2, 14160);
+    f.fadeTick(14160);
+    const bool connectedAtEcho = f.transport.client.isConnected();
+    held.release();
+    TEST_ASSERT_TRUE(started);
+    TEST_ASSERT_TRUE_MESSAGE(connectedAtEcho, "Fade restore confirmation disconnected the detector");
+    if (state == RetryState::Pending) f.finishWorker(14161);
+    f.fadeTick(14225);
+    f.fadeTick(14226);
+    f.fadeTick(15150);
+    TEST_ASSERT_TRUE_MESSAGE(f.transport.client.isConnected(), "Fade abandoned its identical retry until timeout");
+    TEST_ASSERT_EQUAL_UINT32(1, f.transport.client.sessionGeneration());
+    TEST_ASSERT_FALSE(f.transport.client.commandInFlight(V1CommandOwner::VolumeFade));
+    TEST_ASSERT_EQUAL_UINT32(3, f.transport.command.writeValueCalls());
+    TEST_ASSERT_EQUAL_UINT8(6, f.transport.command.lastWriteValue()[5]);
+    TEST_ASSERT_EQUAL_UINT8(2, f.transport.command.lastWriteValue()[6]);
+    f.assertNextOwnerCanSend(15160);
+}
+void test_fade_clear_confirmation_with_pending_retry() { assertFadeConfirmationOverlap(false, RetryState::Pending); }
+void test_fade_clear_confirmation_with_running_retry() { assertFadeConfirmationOverlap(false, RetryState::Running); }
+void test_fade_clear_confirmation_with_completed_retry() { assertFadeConfirmationOverlap(false, RetryState::Completed); }
+void test_fade_new_threat_confirmation_with_pending_retry() { assertFadeConfirmationOverlap(true, RetryState::Pending); }
+void test_fade_new_threat_confirmation_with_running_retry() { assertFadeConfirmationOverlap(true, RetryState::Running); }
+void test_fade_new_threat_confirmation_with_completed_retry() { assertFadeConfirmationOverlap(true, RetryState::Completed); }
+void test_fade_confirmation_without_overlap() {
+    QuietPolicyTransport f;
+    f.beginFadeRestore(false);
+    f.volume(6, 2, 14090);
+    f.fadeTick(14090);
+    f.fadeTick(15150);
+    TEST_ASSERT_TRUE(f.transport.client.isConnected());
+    TEST_ASSERT_FALSE(f.transport.client.commandInFlight(V1CommandOwner::VolumeFade));
+    TEST_ASSERT_EQUAL_UINT32(2, f.transport.command.writeValueCalls());
+    f.assertNextOwnerCanSend(15160);
+}
+
+void assertBoxConfirmationOverlap(bool unmute, RetryState state) {
+    QuietPolicyTransport f;
+    const uint32_t retryAt = f.beginBoxRetry(unmute);
+    HeldCommand held(f.transport.command);
+    f.boxTick(retryAt);
+    TEST_ASSERT_TRUE(f.transport.client.commandInFlight(V1CommandOwner::InTheBox));
+    bool started = true;
+    if (state == RetryState::Running) started = held.start();
+    if (state == RetryState::Completed) { held.release(); f.finishWorker(retryAt + 1); }
+    f.displayMute(!unmute, retryAt + 10);
+    f.boxTick(retryAt + 10);
+    const bool connectedAtEcho = f.transport.client.isConnected();
+    held.release();
+    TEST_ASSERT_TRUE(started);
+    TEST_ASSERT_TRUE_MESSAGE(connectedAtEcho, "Box confirmation disconnected the detector");
+    if (state == RetryState::Pending) f.finishWorker(retryAt + 11);
+    f.boxTick(retryAt + 100);
+    // The normal display stream continues after the retry's actual wire boundary.
+    f.displayMute(!unmute, retryAt + 110);
+    f.boxTick(retryAt + 110);
+    f.boxTick(retryAt + 1000);
+    TEST_ASSERT_TRUE_MESSAGE(f.transport.client.isConnected(), "Box policy abandoned its identical retry until timeout");
+    TEST_ASSERT_EQUAL_UINT32(1, f.transport.client.sessionGeneration());
+    TEST_ASSERT_FALSE(f.transport.client.commandInFlight(V1CommandOwner::InTheBox));
+    TEST_ASSERT_EQUAL_UINT32(unmute ? 3 : 2, f.transport.command.writeValueCalls());
+    TEST_ASSERT_EQUAL_UINT8(unmute ? 0x35 : 0x34, f.transport.command.lastWriteValue()[3]);
+    f.assertNextOwnerCanSend(retryAt + 1010);
+}
+void test_box_mute_confirmation_with_pending_retry() { assertBoxConfirmationOverlap(false, RetryState::Pending); }
+void test_box_mute_confirmation_with_running_retry() { assertBoxConfirmationOverlap(false, RetryState::Running); }
+void test_box_mute_confirmation_with_completed_retry() { assertBoxConfirmationOverlap(false, RetryState::Completed); }
+void test_box_unmute_confirmation_with_pending_retry() { assertBoxConfirmationOverlap(true, RetryState::Pending); }
+void test_box_unmute_confirmation_with_running_retry() { assertBoxConfirmationOverlap(true, RetryState::Running); }
+void test_box_unmute_confirmation_with_completed_retry() { assertBoxConfirmationOverlap(true, RetryState::Completed); }
+void test_box_confirmation_without_overlap() {
+    QuietPolicyTransport f;
+    f.beginBoxRetry(false);
+    f.displayMute(true, 10110);
+    f.boxTick(10110);
+    f.boxTick(11100);
+    TEST_ASSERT_TRUE(f.transport.client.isConnected());
+    TEST_ASSERT_FALSE(f.transport.client.commandInFlight(V1CommandOwner::InTheBox));
+    TEST_ASSERT_EQUAL_UINT32(1, f.transport.command.writeValueCalls());
+    f.assertNextOwnerCanSend(11110);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_delayed_ack_keeps_notifications_and_loop_work_responsive);
@@ -755,6 +932,20 @@ int main() {
     RUN_TEST(test_target_echo_with_completed_identical_retry_keeps_connection);
     RUN_TEST(test_new_manual_pair_still_cancels_pending_restore_retry);
     RUN_TEST(test_same_target_confirmation_does_not_hide_blocked_retry_timeout);
+    RUN_TEST(test_fade_clear_confirmation_with_pending_retry);
+    RUN_TEST(test_fade_clear_confirmation_with_running_retry);
+    RUN_TEST(test_fade_clear_confirmation_with_completed_retry);
+    RUN_TEST(test_fade_new_threat_confirmation_with_pending_retry);
+    RUN_TEST(test_fade_new_threat_confirmation_with_running_retry);
+    RUN_TEST(test_fade_new_threat_confirmation_with_completed_retry);
+    RUN_TEST(test_fade_confirmation_without_overlap);
+    RUN_TEST(test_box_mute_confirmation_with_pending_retry);
+    RUN_TEST(test_box_mute_confirmation_with_running_retry);
+    RUN_TEST(test_box_mute_confirmation_with_completed_retry);
+    RUN_TEST(test_box_unmute_confirmation_with_pending_retry);
+    RUN_TEST(test_box_unmute_confirmation_with_running_retry);
+    RUN_TEST(test_box_unmute_confirmation_with_completed_retry);
+    RUN_TEST(test_box_confirmation_without_overlap);
     RUN_TEST(test_immediate_worker_success_still_requires_one_owner_harvest);
     RUN_TEST(test_timeout_pins_attributes_until_worker_exits_and_rejects_late_success);
     RUN_TEST(test_cancel_before_worker_start_prevents_wire_write);
